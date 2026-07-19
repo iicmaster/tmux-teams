@@ -244,10 +244,17 @@ means "finished + evidence dumped", never "correct" — the PM decides pass/fail
 The PM loop is plan → dispatch → gate, and the plan/gate ends are owned by two
 sibling skills (same skill root / same plugin `skills/` dir):
 
-- **Before dispatch — `sqthink` (mandatory for multi-worker or high-stakes
-  runs):** run its planning template over the objective to produce the dispatch
-  plan: worker split, per-worker brief + `verify_cmd`, dependency order, stakes
-  level. A single trivial task may skip this — say so in the PM report.
+- **Before dispatch — plan with `sqthink`, then create tasks (mandatory for
+  EVERY run — Master directive 2026-07-19):** first run `sqthink`'s planning
+  template over the objective to produce the dispatch plan: worker split,
+  per-worker brief + `verify_cmd`, dependency order, stakes level. Then
+  materialize that plan in the runtime task tracker (Claude Code:
+  `TaskCreate`; other runtimes: the §6 shared task board) — one task per
+  worker carrying the brief summary, `verify_cmd`, and `blockedBy` for
+  dependency order. Only then dispatch, and update each task's status as its
+  outbox lands. **No sqthink plan + no tasks = no dispatch** — this replaces
+  the earlier multi-worker/high-stakes-only rule; a single trivial task still
+  gets a (short) sqthink pass and one task entry.
 - **After collection — completion gate:** the outbox self-check contract (§6)
   is the worker-level gate; the run-level gate escalates by stakes:
   - Normal runs: PM adversarial verify (§6 / mailbox-run.js Verify stage) —
