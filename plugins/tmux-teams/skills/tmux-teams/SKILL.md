@@ -176,8 +176,9 @@ pane-scraping — use the file-based messaging model borrowed from Claude Code
 teammates: per-agent **inbox** files delivered by a loop that only fires when
 the agent is idle (queueing at turn boundaries, single owner of the
 Enter-verify-retry dance), per-agent **outbox** files as the output contract
-(completion = file exists + `TEAM_DONE <task-id>` sentinel, not
-marker-disappears heuristics), and a shared task board with owner/blockedBy.
+(completion = file exists + a terminal sentinel `TEAM_DONE` / `TEAM_BLOCKED` /
+`TEAM_FAILED` `<task-id>`, not marker-disappears heuristics), and a shared task
+board with owner/blockedBy.
 
 **Outbox self-check contract** — `TEAM_DONE` proves the turn ended, not that the
 work is right. A worker that self-certifies (`✓ done`) is the false-trust failure
@@ -189,9 +190,17 @@ DID:        <files / actions>
 EVIDENCE:   <RAW output of the verification command actually run — not a summary, not a ✓>
 UNVERIFIED: <what could not be checked and why, or "none">
 GAPS:       <what was intentionally skipped, or "none">
-TEAM_DONE <task-id>
+<terminal marker — exactly ONE of:>
+TEAM_DONE <task-id>      finished; evidence above
+TEAM_BLOCKED <task-id>   cannot proceed — why is under UNVERIFIED/GAPS
+TEAM_FAILED <task-id>    attempted and failed — failing output under EVIDENCE
 ```
 
+- **Terminal markers are typed** (borrowed from thClaws' `idle_reason`,
+  2026-07-19 — their lead logic was blind to give-up states until they typed
+  them). The PM wait loop matches all three, so a blocked or failed worker
+  surfaces immediately instead of burning the whole timeout; `BLOCKED`/`FAILED`
+  skip the verify lane and go straight to the PM's re-dispatch decision.
 - **The worker reports; the PM decides.** `TEAM_DONE` = "turn finished + evidence
   dumped", never "it is correct". Read the EVIDENCE and rule pass/fail yourself;
   for high-stakes work re-run the command — the worker's evidence only tells you

@@ -56,6 +56,9 @@ test('semantic anchors: canonical fixes actually shipped', () => {
   assert.ok(tmux.includes('## 7. PM workflow integration'), 'wire-in section (§7) missing')
   const wf = readText(join(PLUGIN, 'skills/tmux-teams/workflows/mailbox-run.js'))
   assert.ok(wf.includes('CLAUDE_PLUGIN_ROOT'), 'mailbox-run.js: no plugin-root deliver.sh candidate')
+  assert.ok(wf.includes('TEAM_BLOCKED') && wf.includes('TEAM_FAILED'), 'mailbox-run.js: typed terminal markers missing')
+  assert.ok(wf.includes('ID_RE'), 'mailbox-run.js: worker-id validation missing')
+  assert.ok(tmux.includes('TEAM_BLOCKED'), 'SKILL.md: typed terminal markers missing from outbox contract')
 })
 
 test('party-auto/party-advise sibling path resolves inside the plugin', () => {
