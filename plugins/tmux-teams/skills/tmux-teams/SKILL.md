@@ -230,9 +230,11 @@ consider native teams instead (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`,
 
 Runnable end-to-end orchestration: `workflows/mailbox-run.js` — a Claude Code
 Workflow (run via the Workflow tool) that pipelines each worker through
-setup → dispatch (with the outbox self-check contract) → wait for `TEAM_DONE`
-→ collect → **PM adversarial verify** (re-runs the worker's own evidence
-command) → report + cleanup. One agent owns each worker's full lifecycle (pane
+setup → dispatch (with the outbox self-check contract) → wait for a terminal
+marker (`TEAM_DONE` / `TEAM_BLOCKED` / `TEAM_FAILED`) → collect → **PM
+adversarial verify** on `TEAM_DONE` results only (re-runs the worker's own
+evidence command; blocked/failed skip verify and go straight to the PM's
+re-dispatch decision) → report + cleanup. One agent owns each worker's full lifecycle (pane
 id stays in that agent's shell); the foreign TUI is driven via `deliver.sh`
 inside it. The self-check contract is evidence-not-attestation: `TEAM_DONE`
 means "finished + evidence dumped", never "correct" — the PM decides pass/fail.

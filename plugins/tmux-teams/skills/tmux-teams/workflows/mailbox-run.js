@@ -12,7 +12,7 @@
 //     repo: "/abs/path/to/target/repo",           // where workers cd/run (default: cwd)
 //     ctlBase: "~/.tmux-teams/mailbox-run",        // control root; per-worker = ctlBase/<id>
 //     deliverSh: "<...>/tmux-teams/scripts/deliver.sh",  // optional; agents locate it if omitted
-//     timeoutSec: 1200,                            // per-worker wait for TEAM_DONE
+//     timeoutSec: 1200,                            // per-worker wait for a terminal marker
 //     runId: "r1",                                 // optional; suffixes the shared session name
 //     workers: [
 //       { id: "task-1", brief: "…the actual task…", verify_cmd: "php artisan test --filter=X", stakes: "high" }
@@ -39,7 +39,7 @@
 
 export const meta = {
   name: 'mailbox-run',
-  description: 'Drive foreign CLI workers over the tmux-teams file-mailbox: dispatch each with the outbox self-check contract, then PM-side adversarially verify every result by re-running the worker evidence command',
+  description: 'Drive foreign CLI workers over the tmux-teams file-mailbox: dispatch each with the outbox self-check contract, wait for a typed terminal marker (DONE/BLOCKED/FAILED), then PM-side adversarially verify each TEAM_DONE result by re-running the worker evidence command',
   phases: [
     { title: 'Lifecycle', detail: 'per worker: setup tmux + codex, dispatch via deliver.sh, wait for a terminal marker (DONE/BLOCKED/FAILED), collect outbox' },
     { title: 'Verify', detail: 'PM re-runs each worker evidence command to render pass/fail' },
@@ -55,21 +55,27 @@ const args_ = (() => {
   if (typeof a === 'string') { try { return JSON.parse(a) } catch (e) { return {} } }
   return a
 })()
-const WORKERS = Array.isArray(args_.workers) ? args_.workers.filter(w => w && w.id && w.brief) : []
+const RAW_WORKERS = Array.isArray(args_.workers) ? args_.workers : []
+// Port of thClaws' is_valid_agent_name (their M6.34 TEAM1 fix): worker ids build
+// filesystem paths ($CTL/inboxes/codex/001-<id>, .mailbox-out/<id>) and tmux
+// window names — reject traversal/exotic ids BEFORE any path is formed. Validate
+// the RAW entries (not a filtered view) so a malformed worker fails loudly
+// instead of being dropped silently; the typeof check defeats RegExp's
+// coercion of non-string ids (a numeric 123 would otherwise pass).
+const ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/
+for (const w of RAW_WORKERS) {
+  if (!w || typeof w.id !== 'string' || !ID_RE.test(w.id) || typeof w.brief !== 'string' || !w.brief.trim()) {
+    throw new Error(
+      `mailbox-run: invalid worker entry (id=${JSON.stringify(w && w.id)}) — id must be a string, 1-64 chars, alphanumeric/_/-, starting alphanumeric or _, no path separators; brief a non-empty string`
+    )
+  }
+}
+const WORKERS = RAW_WORKERS
 if (!WORKERS.length) {
   throw new Error(
     'mailbox-run: args.workers must be a non-empty array of { id, brief, verify_cmd?, stakes? }. ' +
     'Example: { workers: [{ id: "task-1", brief: "add validation…", verify_cmd: "php artisan test", stakes: "high" }] }'
   )
-}
-// Port of thClaws' is_valid_agent_name (their M6.34 TEAM1 fix): worker ids build
-// filesystem paths ($CTL/inboxes/codex/001-<id>, .mailbox-out/<id>) and tmux
-// window names — reject traversal/exotic ids before any path is formed.
-const ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/
-for (const w of WORKERS) {
-  if (!ID_RE.test(w.id)) {
-    throw new Error(`mailbox-run: invalid worker id "${w.id}" — 1-64 chars, alphanumeric/_/-, starts alphanumeric or _, no path separators`)
-  }
 }
 const REPO = args_.repo || '.'
 const CTL_BASE = args_.ctlBase || '~/.tmux-teams/mailbox-run'
@@ -148,7 +154,7 @@ const results = await pipeline(
       `deliver.sh: ${DELIVER || 'locate it in this order: the tmux-teams plugin (<plugin root>/skills/tmux-teams/scripts/deliver.sh — $CLAUDE_PLUGIN_ROOT when invoked from the plugin), ~/.agents/skills/tmux-teams/scripts, or the repo skills/shared/tmux-teams/scripts'}`,
       ``,
       `STEPS:`,
-      `0. PRECONDITION — HARD FAIL, NEVER FABRICATE: test -d "${REPO}" || STOP NOW and return done=false, terminal="none", timed_out=false, session="", evidence_present=false, outbox="FATAL: target repo ${REPO} does not exist". You MUST NOT create, scaffold, or invent the target repo, its files, or the task's subject matter — not even to "make the run work". If the repo is missing or does not contain what the brief describes, that is a real failure to report, not a gap to fill. (Field-bitten 2026-07-16: an agent silently recreated a missing repo, planted the very bug it then dispatched a worker to fix, and reported pass.)`,
+      `0. PRECONDITION — HARD FAIL, NEVER FABRICATE: test -d "${REPO}" || STOP NOW and return id="${w.id}", pane="", done=false, terminal="none", timed_out=false, session="", evidence_present=false, outbox="FATAL: target repo ${REPO} does not exist". You MUST NOT create, scaffold, or invent the target repo, its files, or the task's subject matter — not even to "make the run work". If the repo is missing or does not contain what the brief describes, that is a real failure to report, not a gap to fill. (Field-bitten 2026-07-16: an agent silently recreated a missing repo, planted the very bug it then dispatched a worker to fix, and reported pass.)`,
       `1. SETUP (ONE shared session per run, one window per worker): FOLDER=$(basename "${REPO}" | tr 'A-Z.:_ ' 'a-z----' | tr -s -). S="auto--$FOLDER${RUNID}".`,
       `   tmux new-session -d -s "$S" -c "${REPO}" -x 220 -y 50 2>/dev/null || true   ("duplicate session" from a concurrent worker is EXPECTED — NEVER kill-session here: other workers' windows live in it. Window 0 stays an idle PM shell.)`,
       `   PANE=$(tmux new-window -t "=$S" -n "${w.id}" -c "${REPO}" -P -F '#{pane_id}'); tmux set-option -t "$PANE" -w automatic-rename off. Launch: tmux send-keys -t "$PANE" 'codex' Enter (codex inherits its own frontier default — do NOT pass a model flag).`,
@@ -157,7 +163,7 @@ const results = await pipeline(
       `3. DISPATCH: write the brief below to "$CTL/inboxes/codex/001-${w.id}" (one file). Then start the delivery loop DETACHED so it survives you:`,
       `   TMUX_TEAMS_CTL="$CTL" TMUX_TEAMS_SESSION="$S" nohup bash <deliver.sh> "$PANE" >/dev/null 2>&1 & disown   (macOS has no setsid — nohup + disown is the portable form; verify the pid is alive before moving on).`,
       `   deliver.sh owns the Enter-swallow verify-retry dance — do NOT send the brief to the pane yourself.`,
-      `4. WAIT: poll every 15s for up to ${TIMEOUT}s. The wait ends when "$OUTBOX_FILE" exists AND contains ANY terminal marker for this id — "TEAM_DONE ${w.id}" (terminal=done), "TEAM_BLOCKED ${w.id}" (terminal=blocked), or "TEAM_FAILED ${w.id}" (terminal=failed). blocked/failed end the wait IMMEDIATELY — do not keep waiting for DONE. On timeout, touch "$CTL/stop" to halt the loop and report timed_out=true, terminal=timeout.`,
+      `4. WAIT: poll every 15s for up to ${TIMEOUT}s. The wait ends when "$OUTBOX_FILE" exists AND its LAST non-empty line is EXACTLY one of: "TEAM_DONE ${w.id}" (terminal=done), "TEAM_BLOCKED ${w.id}" (terminal=blocked), "TEAM_FAILED ${w.id}" (terminal=failed) — whole-line match on the final line only; a marker mentioned inside EVIDENCE text or a prefixed id does NOT count, and if the last line matches none keep waiting. blocked/failed end the wait IMMEDIATELY — do not keep waiting for DONE. On timeout, touch "$CTL/stop" to halt the loop and report timed_out=true, terminal=timeout.`,
       `5. COLLECT: read "$OUTBOX_FILE". evidence_present = the EVIDENCE block exists and holds real command output (NOT an empty line and NOT just "ok"/"✓"). done=true ONLY when the marker was TEAM_DONE; blocked/failed keep done=false with the matching terminal value. Touch "$CTL/stop" to end the loop. Return the fields.`,
       ``,
       `THE BRIEF (write this verbatim to the inbox file):`,
@@ -175,14 +181,19 @@ const results = await pipeline(
   // Returns the verify verdict MERGED with the lifecycle summary, because pipeline()
   // only surfaces the final stage's result and the report wants both.
   (life, w) => {
+    // `terminal` is authoritative; `done` is DERIVED from it rather than
+    // trusted separately, so a confused lifecycle agent returning the
+    // schema-valid-but-contradictory {done:true, terminal:"blocked"} can
+    // never sneak into the verify lane.
+    const finished = !!(life && life.terminal === 'done')
     const carry = {
-      done: !!(life && life.done),
+      done: finished,
       terminal: (life && life.terminal) || 'none',
       timed_out: !!(life && life.timed_out),
       evidence_present: !!(life && life.evidence_present),
       pane: (life && life.pane) || '',   // threaded through to cleanup — it kills by pane, not by session
     }
-    if (!life || !life.done) {
+    if (!finished) {
       // Typed give-up states (TEAM_BLOCKED/TEAM_FAILED) skip the verify lane:
       // there is no claimed success to falsify — the outbox already says what
       // stopped the worker; the PM decides re-dispatch vs unblock.
