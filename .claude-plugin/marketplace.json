@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "PM orchestration suite: drive interactive CLI agents via tmux with sqthink planning and party-mode verification.",
-    "version": "0.1.0"
+    "version": "0.1.1"
   },
   "plugins": [
     {
