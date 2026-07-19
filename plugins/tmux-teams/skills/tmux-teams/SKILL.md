@@ -272,3 +272,41 @@ sibling skills (same skill root / same plugin `skills/` dir):
   workflow with its own plan/grill/review cycle.
 - When the run was party-gated, report in party-mode Phase 8 shape (Shipped /
   Evidence / Blockers / Risks) and quote worker outboxes — don't paraphrase.
+
+## 8. ACP transport lane (added 2026-07-19, transport-equivalence proven by PoC)
+
+The mailbox **contract** (§6 brief + outbox + typed markers + PM verify) is
+transport-independent. Two transports carry it:
+
+| transport | for | mechanism |
+|---|---|---|
+| `tmux` | codex (frontier), agy, any TUI without ACP | deliver.sh + markers (§1-§6) |
+| `acp` | claude (`@zed-industries/claude-agent-acp`, e2e-verified); gemini (native `--acp` — see note) | `scripts/acp-companion.mjs` — JSON-RPC over stdio |
+
+Run one worker over ACP (claude lane needs a model the adapter's SDK accepts —
+per the routing directive pass Opus explicitly; a machine default of `fable`
+is rejected by the adapter):
+
+```bash
+ANTHROPIC_MODEL=claude-opus-4-8 \
+  node <skill-root>/scripts/acp-companion.mjs claude <repo> <task-id> <brief-file> [timeout-sec]
+```
+
+gemini note (2026-07-19): protocol-ready but blocked at the product level on
+this machine — Gemini Code Assist for individuals was retired in favor of
+Antigravity (`agy`, which has no ACP yet). Keep the lane; it lights up
+wherever a licensed gemini or an ACP-capable agy exists.
+
+The brief file carries the SAME §6 contract text; the worker writes the same
+`.mailbox-out/<id>` outbox; the companion enforces the same last-line terminal
+match and exits 0=done/blocked/failed, 3=no-or-invalid outbox. What ACP
+removes: Enter-swallow retries, marker calibration, dialog keypress guessing —
+permissions arrive as structured requests (companion auto-approves; tighten
+per-task when the target repo is sensitive).
+
+**codex over ACP is guarded off** for now: codex-acp 0.16.x embeds a codex
+core older than the CLI — the current frontier model is rejected server-side
+("requires a newer version of Codex"), which would force a non-frontier model
+and violate the Frontier-always directive. The companion detects both failure
+signatures and says so; codex stays on the tmux lane until the adapter catches
+up. §7's plan/tasks-before-dispatch rule applies to BOTH transports.

@@ -1,0 +1,163 @@
+// acp-companion.mjs — ACP transport lane for the tmux-teams mailbox contract.
+// Drives an ACP-speaking agent (gemini, claude) with the same brief+contract
+// the tmux lane uses; the worker writes the same .mailbox-out/<id> outbox, so
+// every verification layer above (typed markers, tamper-check, PM verify) is
+// shared between transports.
+//
+// usage: node acp-companion.mjs <agent> <cwd> <task-id> <brief-file> [timeout-sec]
+//   agent: gemini | claude | codex   (or set ACP_CMD="custom command" to override)
+//
+// Lanes (2026-07-19):
+//   gemini -> `gemini --acp`                       (native, verified)
+//   claude -> `npx -y @zed-industries/claude-agent-acp` (Zed adapter)
+//   codex  -> `codex-acp` — GUARDED: the 0.16.x adapter embeds a codex core
+//             older than the CLI and cannot run the current frontier model
+//             (gpt-5.6-sol rejected server-side; `ultra` effort unknown).
+//             Until the adapter catches up, codex work stays on the tmux lane
+//             (Frontier-always directive). The guard maps both failure
+//             signatures to a clear message instead of a raw JSON-RPC error.
+import { spawn } from 'node:child_process'
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { createInterface } from 'node:readline'
+
+const [agentName, cwd, taskId, briefFile, timeoutArg] = process.argv.slice(2)
+if (!agentName || !cwd || !taskId || !briefFile) {
+  console.error('usage: node acp-companion.mjs <gemini|claude|codex> <cwd> <task-id> <brief-file> [timeout-sec]')
+  process.exit(2)
+}
+const ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/
+if (!ID_RE.test(taskId)) {
+  console.error(`invalid task id "${taskId}" — 1-64 chars, alphanumeric/_/-, starts alphanumeric or _`)
+  process.exit(2)
+}
+const TIMEOUT_MS = (Number(timeoutArg) > 0 ? Number(timeoutArg) : 600) * 1000
+const brief = readFileSync(briefFile, 'utf8')
+
+const CMDS = {
+  gemini: ['gemini', ['--acp']],
+  claude: ['npx', ['-y', '@zed-industries/claude-agent-acp']],
+  codex: ['codex-acp', []],
+}
+let cmd
+if (process.env.ACP_CMD) {
+  const parts = process.env.ACP_CMD.split(/\s+/)
+  cmd = [parts[0], parts.slice(1)]
+} else if (CMDS[agentName]) {
+  cmd = CMDS[agentName]
+} else {
+  console.error(`unknown agent "${agentName}" — use gemini|claude|codex or set ACP_CMD`)
+  process.exit(2)
+}
+
+const agent = spawn(cmd[0], cmd[1], { cwd, stdio: ['pipe', 'pipe', 'pipe'] })
+let stderrBuf = ''
+agent.stderr.on('data', (d) => { stderrBuf += d; process.stderr.write(`[agent-err] ${d}`) })
+agent.on('error', (e) => { console.error(`[fatal] cannot spawn ${cmd[0]}: ${e.message}`); process.exit(1) })
+agent.on('exit', (code) => {
+  if (!finished) {
+    codexGuard(stderrBuf)
+    console.error(`[fatal] agent exited early (code ${code})`)
+    process.exit(1)
+  }
+})
+
+// Known codex-acp version-lag signatures -> actionable message.
+function codexGuard(text) {
+  if (/unknown variant `ultra`/.test(text) || /requires a newer version of Codex/.test(text)) {
+    console.error(
+      '[codex-acp guard] the installed codex-acp embeds a codex core older than the CLI: ' +
+      'it cannot use the current frontier model/effort. Use the tmux lane for codex ' +
+      '(Frontier-always), or retry after upgrading codex-acp. A patched CODEX_HOME only ' +
+      'works around the config parse, not the server-side model rejection.'
+    )
+  }
+}
+
+let nextId = 1
+let finished = false
+const pending = new Map()
+function request(method, params) {
+  const id = nextId++
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject })
+    agent.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n')
+  })
+}
+function respond(id, result) {
+  agent.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n')
+}
+
+const rl = createInterface({ input: agent.stdout })
+rl.on('line', (line) => {
+  if (!line.trim()) return
+  let msg
+  try { msg = JSON.parse(line) } catch { return }
+
+  if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined) && pending.has(msg.id)) {
+    const { resolve, reject } = pending.get(msg.id)
+    pending.delete(msg.id)
+    msg.error ? reject(new Error(JSON.stringify(msg.error))) : resolve(msg.result)
+    return
+  }
+  if (msg.id !== undefined && msg.method) {
+    if (msg.method === 'session/request_permission') {
+      const opts = msg.params?.options ?? []
+      const pick = opts.find(o => o.kind === 'allow_always') ?? opts.find(o => o.kind === 'allow_once') ?? opts[0]
+      console.log(`[permission] ${msg.params?.toolCall?.title ?? '?'} -> ${pick?.name ?? pick?.optionId}`)
+      respond(msg.id, { outcome: { outcome: 'selected', optionId: pick.optionId } })
+    } else {
+      agent.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: `not supported: ${msg.method}` } }) + '\n')
+    }
+    return
+  }
+  if (msg.method === 'session/update') {
+    const u = msg.params?.update
+    if (u?.sessionUpdate === 'agent_message_chunk' && u.content?.type === 'text') process.stdout.write(u.content.text)
+    else if (u?.sessionUpdate === 'tool_call') console.log(`[tool] ${u.title ?? ''}`)
+  }
+})
+
+const deadline = setTimeout(() => {
+  console.error(`\n[timeout ${TIMEOUT_MS / 1000}s] — worker did not finish; no auto-retry (PM decides)`)
+  agent.kill(); process.exit(1)
+}, TIMEOUT_MS)
+
+try {
+  await request('initialize', {
+    protocolVersion: 1,
+    clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
+  })
+  const sess = await request('session/new', { cwd, mcpServers: [] })
+  console.log(`[session] ${sess.sessionId}`)
+  const res = await request('session/prompt', {
+    sessionId: sess.sessionId,
+    prompt: [{ type: 'text', text: brief }],
+  })
+  finished = true
+  console.log(`\n[turn done] stopReason=${res.stopReason}`)
+} catch (e) {
+  codexGuard(e.message + stderrBuf)
+  console.error(`[fatal] ${e.message}`)
+  finished = true
+  clearTimeout(deadline); agent.kill(); process.exit(1)
+}
+clearTimeout(deadline)
+agent.kill()
+
+// Same completion semantics as the tmux lane's WAIT step: the outbox's LAST
+// non-empty line must be exactly one terminal marker for this id.
+const outboxPath = join(cwd, '.mailbox-out', taskId)
+if (!existsSync(outboxPath)) {
+  console.error(`[no-outbox] worker finished the turn but wrote no ${outboxPath} — treat as not-done; inspect its final message above`)
+  process.exit(3)
+}
+const lines = readFileSync(outboxPath, 'utf8').split('\n').map(s => s.trim()).filter(Boolean)
+const last = lines[lines.length - 1] ?? ''
+const terminal =
+  last === `TEAM_DONE ${taskId}` ? 'done' :
+  last === `TEAM_BLOCKED ${taskId}` ? 'blocked' :
+  last === `TEAM_FAILED ${taskId}` ? 'failed' : 'invalid'
+console.log(`[outbox] ${outboxPath}`)
+console.log(`[terminal] ${terminal}${terminal === 'invalid' ? ` (last line: "${last}")` : ''}`)
+process.exit(terminal === 'invalid' ? 3 : 0)

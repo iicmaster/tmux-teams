@@ -59,6 +59,9 @@ test('semantic anchors: canonical fixes actually shipped', () => {
   assert.ok(wf.includes('TEAM_BLOCKED') && wf.includes('TEAM_FAILED'), 'mailbox-run.js: typed terminal markers missing')
   assert.ok(wf.includes('ID_RE'), 'mailbox-run.js: worker-id validation missing')
   assert.ok(tmux.includes('TEAM_BLOCKED'), 'SKILL.md: typed terminal markers missing from outbox contract')
+  assert.ok(tmux.includes('## 8. ACP transport lane'), 'SKILL.md: ACP transport section missing')
+  const acp = readText(join(PLUGIN, 'skills/tmux-teams/scripts/acp-companion.mjs'))
+  assert.ok(acp.includes('session/prompt') && acp.includes('TEAM_BLOCKED'), 'acp-companion.mjs: missing protocol or terminal-marker handling')
 })
 
 test('party-auto/party-advise sibling path resolves inside the plugin', () => {
