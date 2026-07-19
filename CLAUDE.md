@@ -1,0 +1,33 @@
+# tmux-teams plugin repo — agent instructions
+
+This repo is a **Claude Code directory marketplace** delivering one plugin
+(`tmux-teams`, see `plugins/tmux-teams/`). It is a MIRROR, not a source:
+skill content is canonical in `~/agent-skills` (`skills/shared/*` and
+`skills/claude/codex-tmux-driver`). Never hand-edit files under
+`plugins/tmux-teams/skills/` — edit in agent-skills, then sync.
+
+## Commands
+
+```bash
+scripts/sync-skills.sh           # mirror the 6 skills from ~/agent-skills
+scripts/sync-skills.sh --check   # drift check (exit 1 on drift)
+node --test tests/plugin-structure.test.mjs   # structure + drift + semantic checks
+claude plugin validate --strict .             # manifest validation
+```
+
+## Release flow (after canonical skill edits in agent-skills)
+
+1. `scripts/sync-skills.sh`
+2. Bump the version in BOTH `.claude-plugin/marketplace.json` and
+   `plugins/tmux-teams/.claude-plugin/plugin.json` (test asserts they match).
+3. `claude plugin update tmux-teams@tmux-teams` (install cache is version-keyed).
+
+## Rules
+
+- Only plugin files are tracked: `.claude-plugin/`, `plugins/`, `scripts/`,
+  `tests/`, `README.md`. BMAD scaffold dirs are gitignored — keep it that way.
+- Do not push without being asked. The marketplace is registered from this
+  directory path, so local commits are immediately live for new sessions.
+- `~/.claude/skills` must NOT contain the six bundled skills (they were
+  deduplicated 2026-07-19; `agent-skills/scripts/sync.sh` skips them for the
+  claude root). Restoring them by hand recreates double-triggering.

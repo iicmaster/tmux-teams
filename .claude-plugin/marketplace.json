@@ -1,0 +1,21 @@
+{
+  "name": "tmux-teams",
+  "owner": {
+    "name": "IIC Master"
+  },
+  "metadata": {
+    "description": "PM orchestration suite: drive interactive CLI agents via tmux with sqthink planning and party-mode verification.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "tmux-teams",
+      "description": "PM-via-tmux orchestration bundling the tmux-teams, codex-tmux-driver, party-mode, party-auto, party-advise, and sqthink skills.",
+      "version": "0.1.1",
+      "author": {
+        "name": "IIC Master"
+      },
+      "source": "./plugins/tmux-teams"
+    }
+  ]
+}

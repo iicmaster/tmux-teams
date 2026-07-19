@@ -1,0 +1,8 @@
+{
+  "name": "tmux-teams",
+  "version": "0.1.1",
+  "description": "PM orchestration suite: tmux-teams dispatch over tmux, codex-tmux-driver calibration, party-mode review workflow, and sqthink planning.",
+  "author": {
+    "name": "IIC Master"
+  }
+}

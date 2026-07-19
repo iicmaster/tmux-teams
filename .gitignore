@@ -1,0 +1,7 @@
+# BMAD project scaffold — not part of the plugin
+_bmad/
+_bmad-output/
+.remember/
+.agents/
+.claude/
+node_modules/
