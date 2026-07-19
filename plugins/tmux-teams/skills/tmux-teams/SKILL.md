@@ -280,8 +280,8 @@ transport-independent. Two transports carry it:
 
 | transport | for | mechanism |
 |---|---|---|
-| `tmux` | codex (frontier), agy, any TUI without ACP | deliver.sh + markers (§1-§6) |
-| `acp` | claude (`@zed-industries/claude-agent-acp`, e2e-verified); gemini (native `--acp` — see note) | `scripts/acp-companion.mjs` — JSON-RPC over stdio |
+| `tmux` | agy, any TUI without ACP; codex fallback | deliver.sh + markers (§1-§6) |
+| `acp` | codex (`@agentclientprotocol/codex-acp`, frontier-verified); claude (`@zed-industries/claude-agent-acp`, e2e-verified); gemini (native `--acp` — see note) | `scripts/acp-companion.mjs` — JSON-RPC over stdio |
 
 Run one worker over ACP (claude lane needs a model the adapter's SDK accepts —
 per the routing directive pass Opus explicitly; a machine default of `fable`
@@ -304,9 +304,11 @@ removes: Enter-swallow retries, marker calibration, dialog keypress guessing —
 permissions arrive as structured requests (companion auto-approves; tighten
 per-task when the target repo is sensitive).
 
-**codex over ACP is guarded off** for now: codex-acp 0.16.x embeds a codex
-core older than the CLI — the current frontier model is rejected server-side
-("requires a newer version of Codex"), which would force a non-frontier model
-and violate the Frontier-always directive. The companion detects both failure
-signatures and says so; codex stays on the tmux lane until the adapter catches
-up. §7's plan/tasks-before-dispatch rule applies to BOTH transports.
+**codex over ACP is UNLOCKED** via the official App Server adapter
+`@agentclientprotocol/codex-acp` (successor to the deprecated
+`zed-industries/codex-acp`): it drives the INSTALLED codex CLI, so
+`gpt-5.6-sol` + `ultra` work exactly as the Frontier-always directive
+requires — e2e-verified 2026-07-19. Do NOT use the old zed-industries binary
+(stale embedded core; the companion maps its failure signatures to a clear
+message). tmux remains codex's fallback lane and the only lane for agy. §7's
+plan/tasks-before-dispatch rule applies to BOTH transports.

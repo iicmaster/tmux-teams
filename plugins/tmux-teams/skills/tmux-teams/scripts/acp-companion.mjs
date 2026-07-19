@@ -8,14 +8,15 @@
 //   agent: gemini | claude | codex   (or set ACP_CMD="custom command" to override)
 //
 // Lanes (2026-07-19):
-//   gemini -> `gemini --acp`                       (native, verified)
-//   claude -> `npx -y @zed-industries/claude-agent-acp` (Zed adapter)
-//   codex  -> `codex-acp` — GUARDED: the 0.16.x adapter embeds a codex core
-//             older than the CLI and cannot run the current frontier model
-//             (gpt-5.6-sol rejected server-side; `ultra` effort unknown).
-//             Until the adapter catches up, codex work stays on the tmux lane
-//             (Frontier-always directive). The guard maps both failure
-//             signatures to a clear message instead of a raw JSON-RPC error.
+//   gemini -> `gemini --acp`                       (native; product-gated, see SKILL.md §8)
+//   claude -> `npx -y @zed-industries/claude-agent-acp` (Zed adapter, e2e-verified)
+//   codex  -> `npx -y @agentclientprotocol/codex-acp` — the NEW official
+//             adapter (Codex App Server-based): it drives the INSTALLED codex
+//             CLI, so the frontier model + ultra effort work as-is
+//             (e2e-verified 2026-07-19 on gpt-5.6-sol). The old
+//             zed-industries binary embedded a stale core; codexGuard below
+//             still maps its failure signatures to a clear message in case a
+//             legacy build is forced via ACP_CMD.
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -37,7 +38,7 @@ const brief = readFileSync(briefFile, 'utf8')
 const CMDS = {
   gemini: ['gemini', ['--acp']],
   claude: ['npx', ['-y', '@zed-industries/claude-agent-acp']],
-  codex: ['codex-acp', []],
+  codex: ['npx', ['-y', '@agentclientprotocol/codex-acp']],
 }
 let cmd
 if (process.env.ACP_CMD) {
@@ -66,10 +67,10 @@ agent.on('exit', (code) => {
 function codexGuard(text) {
   if (/unknown variant `ultra`/.test(text) || /requires a newer version of Codex/.test(text)) {
     console.error(
-      '[codex-acp guard] the installed codex-acp embeds a codex core older than the CLI: ' +
-      'it cannot use the current frontier model/effort. Use the tmux lane for codex ' +
-      '(Frontier-always), or retry after upgrading codex-acp. A patched CODEX_HOME only ' +
-      'works around the config parse, not the server-side model rejection.'
+      '[codex-acp guard] this failure signature means a DEPRECATED zed-industries codex-acp ' +
+      'build (stale embedded core) handled the session. Use the official App Server adapter ' +
+      'instead — `npx -y @agentclientprotocol/codex-acp` (the default here) — which drives ' +
+      'the installed codex CLI and supports the current frontier model.'
     )
   }
 }
