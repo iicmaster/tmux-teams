@@ -24,7 +24,8 @@ claude plugin marketplace add /home/iicmaster/projects/tmux-teams
 claude plugin install tmux-teams@tmux-teams
 ```
 
-For a second machine, push this repo to a remote first, then `claude plugin marketplace add <url>`.
+For a second machine: `claude plugin marketplace add iicmaster/tmux-teams`
+(private repo — authenticate `gh`/git first), then the same `plugin install`.
 
 ## Prerequisites (soft dependencies)
 
