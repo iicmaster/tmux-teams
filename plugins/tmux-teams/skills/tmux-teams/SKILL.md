@@ -81,6 +81,21 @@ tmux send-keys -t "$PANE" Enter                                # Enter as a SEPA
 **TUIs swallow the Enter that arrives with/right after a paste** (bracketed-paste).
 The prompt then sits in the input box forever and the team "never starts".
 
+**MANDATORY pre-dispatch check (field-bitten 2026-07-19)** — capture the pane BEFORE
+sending anything, and do NOT send if either of these is on screen:
+- **An open interactive dialog** — markers: `Enter to select`, `Type something`,
+  checkbox rows `☐/☒`, numbered options with a `❯` cursor. A claude worker that
+  calls AskUserQuestion renders this and it blocks the session forever (nobody is
+  at the screen). Your Enter would *select an option*, your text would land in the
+  dialog. Resolve first: `Escape` to cancel, then deliver the answer via the file
+  protocol (decisions/questions files).
+- **Leftover draft text in the input box** — your `-l` text would append to it and
+  Enter would submit the combined mess.
+⚠️ `❯` is ambiguous: it is BOTH the input-box prompt AND the dialog option-cursor —
+never conclude "a human typed this" from pane text alone; the only evidence of a
+human being attached is `tmux list-clients` (empty = nobody). Headless worker
+briefs must ban AskUserQuestion explicitly (file-based questions only).
+
 **MANDATORY verification** — ~2s after dispatch, capture the pane:
 - Prompt text still visible in the input box → NOT submitted → send `Enter` again.
 - Work indicators visible ("esc to interrupt", "Working", tool activity) → submitted.
