@@ -18,7 +18,7 @@
 //             still maps its failure signatures to a clear message in case a
 //             legacy build is forced via ACP_CMD.
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 
@@ -34,6 +34,12 @@ if (!ID_RE.test(taskId)) {
 }
 const TIMEOUT_MS = (Number(timeoutArg) > 0 ? Number(timeoutArg) : 600) * 1000
 const brief = readFileSync(briefFile, 'utf8')
+// Deterministic preamble: the contract is self-carrying even if the brief has
+// a placeholder id or omits the outbox rules (issue #2).
+const preamble =
+  `Your task-id is ${taskId}. Write your outbox to .mailbox-out/${taskId} — ` +
+  `a single flat FILE (do NOT create it as a directory). Its last line must be exactly: ` +
+  `TEAM_DONE ${taskId} (or TEAM_BLOCKED ${taskId} / TEAM_FAILED ${taskId}).\n\n---\n\n`
 
 const CMDS = {
   gemini: ['gemini', ['--acp']],
@@ -51,11 +57,17 @@ if (process.env.ACP_CMD) {
   process.exit(2)
 }
 
-const agent = spawn(cmd[0], cmd[1], { cwd, stdio: ['pipe', 'pipe', 'pipe'] })
+// detached => agent leads its own process group, so killTree reaches
+// grandchildren (npx -> adapter -> CLI -> build tools); issue #3.
+const agent = spawn(cmd[0], cmd[1], { cwd, stdio: ['pipe', 'pipe', 'pipe'], detached: true })
+function killTree(sig = 'SIGTERM') {
+  try { process.kill(-agent.pid, sig) } catch { try { agent.kill(sig) } catch {} }
+}
 let stderrBuf = ''
 agent.stderr.on('data', (d) => { stderrBuf += d; process.stderr.write(`[agent-err] ${d}`) })
 agent.on('error', (e) => { console.error(`[fatal] cannot spawn ${cmd[0]}: ${e.message}`); process.exit(1) })
 agent.on('exit', (code) => {
+  if (timedOut) return // let the timeout handler finish the SIGKILL escalation
   if (!finished) {
     codexGuard(stderrBuf)
     console.error(`[fatal] agent exited early (code ${code})`)
@@ -119,9 +131,12 @@ rl.on('line', (line) => {
   }
 })
 
+let timedOut = false
 const deadline = setTimeout(() => {
+  timedOut = true
   console.error(`\n[timeout ${TIMEOUT_MS / 1000}s] — worker did not finish; no auto-retry (PM decides)`)
-  agent.kill(); process.exit(1)
+  killTree('SIGTERM')
+  setTimeout(() => { killTree('SIGKILL'); process.exit(1) }, 5000)
 }, TIMEOUT_MS)
 
 try {
@@ -133,7 +148,7 @@ try {
   console.log(`[session] ${sess.sessionId}`)
   const res = await request('session/prompt', {
     sessionId: sess.sessionId,
-    prompt: [{ type: 'text', text: brief }],
+    prompt: [{ type: 'text', text: preamble + brief }],
   })
   finished = true
   console.log(`\n[turn done] stopReason=${res.stopReason}`)
@@ -141,10 +156,10 @@ try {
   codexGuard(e.message + stderrBuf)
   console.error(`[fatal] ${e.message}`)
   finished = true
-  clearTimeout(deadline); agent.kill(); process.exit(1)
+  clearTimeout(deadline); killTree(); process.exit(1)
 }
 clearTimeout(deadline)
-agent.kill()
+killTree()
 
 // Same completion semantics as the tmux lane's WAIT step: the outbox's LAST
 // non-empty line must be exactly one terminal marker for this id.
@@ -153,12 +168,24 @@ if (!existsSync(outboxPath)) {
   console.error(`[no-outbox] worker finished the turn but wrote no ${outboxPath} — treat as not-done; inspect its final message above`)
   process.exit(3)
 }
-const lines = readFileSync(outboxPath, 'utf8').split('\n').map(s => s.trim()).filter(Boolean)
+// Some agents mkdir the outbox path and write a file inside (issue #1):
+// tolerate exactly one file; anything else is a clear exit 3, never a crash.
+let outboxFile = outboxPath
+if (statSync(outboxPath).isDirectory()) {
+  const entries = readdirSync(outboxPath).filter(f => statSync(join(outboxPath, f)).isFile())
+  if (entries.length !== 1) {
+    console.error(`[no-outbox] ${outboxPath} is a directory with ${entries.length} files — expected a single flat file`)
+    process.exit(3)
+  }
+  outboxFile = join(outboxPath, entries[0])
+  console.log(`[outbox] warning: worker wrote outbox as a directory; validating ${entries[0]} inside it`)
+}
+const lines = readFileSync(outboxFile, 'utf8').split('\n').map(s => s.trim()).filter(Boolean)
 const last = lines[lines.length - 1] ?? ''
 const terminal =
   last === `TEAM_DONE ${taskId}` ? 'done' :
   last === `TEAM_BLOCKED ${taskId}` ? 'blocked' :
   last === `TEAM_FAILED ${taskId}` ? 'failed' : 'invalid'
-console.log(`[outbox] ${outboxPath}`)
+console.log(`[outbox] ${outboxFile}`)
 console.log(`[terminal] ${terminal}${terminal === 'invalid' ? ` (last line: "${last}")` : ''}`)
 process.exit(terminal === 'invalid' ? 3 : 0)

@@ -299,7 +299,11 @@ wherever a licensed gemini or an ACP-capable agy exists.
 
 The brief file carries the SAME §6 contract text; the worker writes the same
 `.mailbox-out/<id>` outbox; the companion enforces the same last-line terminal
-match and exits 0=done/blocked/failed, 3=no-or-invalid outbox. What ACP
+match and exits 0=done/blocked/failed, 3=no-or-invalid outbox. Hardening
+(2026-07-20): the companion prepends a deterministic task-id/outbox/marker
+preamble to every prompt (placeholder-safe briefs), tolerates an outbox
+mistakenly written as a directory holding a single file, and on timeout kills
+the worker's whole process group (no orphaned builds). What ACP
 removes: Enter-swallow retries, marker calibration, dialog keypress guessing —
 permissions arrive as structured requests (companion auto-approves; tighten
 per-task when the target repo is sensitive).
