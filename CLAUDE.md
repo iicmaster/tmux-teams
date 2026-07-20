@@ -26,8 +26,11 @@ claude plugin validate --strict .             # manifest validation
 
 - Only plugin files are tracked: `.claude-plugin/`, `plugins/`, `scripts/`,
   `tests/`, `README.md`. BMAD scaffold dirs are gitignored — keep it that way.
-- Do not push without being asked. The marketplace is registered from this
-  directory path, so local commits are immediately live for new sessions.
+- The marketplace on this machine is registered from GitHub
+  (`iicmaster/tmux-teams`) — a release is NOT live until pushed; after
+  pushing run `claude plugin marketplace update tmux-teams` then
+  `claude plugin update tmux-teams@tmux-teams`. Confirm with Master before
+  the push that ships a release.
 - `~/.claude/skills` must NOT contain the six bundled skills (they were
   deduplicated 2026-07-19; `agent-skills/scripts/sync.sh` skips them for the
   claude root). Restoring them by hand recreates double-triggering.
