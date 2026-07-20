@@ -1,7 +1,9 @@
 # tmux-teams — Claude Code plugin
 
-PM orchestration suite in one plugin: dispatch interactive CLI agents (codex)
-over tmux, plan the dispatch with `sqthink`, gate completion with `party-mode`
+PM orchestration suite in one plugin: dispatch CLI agents (codex, claude,
+gemini, agy) over **two transports — tmux and ACP** — on one mailbox contract
+(evidence-not-attestation outbox + typed terminal markers), plan every
+dispatch with `sqthink` + task creation, gate completion with `party-mode`
 verification.
 
 ## Skills
@@ -17,6 +19,28 @@ verification.
 
 Commands: `/tmux-teams:mailbox-run` — run the mailbox PM workflow end to end.
 
+## Transports (v0.2.x)
+
+The mailbox contract (brief in → `.mailbox-out/<id>` outbox +
+`TEAM_DONE`/`TEAM_BLOCKED`/`TEAM_FAILED` out → PM adversarial verify) is
+transport-independent:
+
+| worker | primary | fallback |
+|---|---|---|
+| codex | ACP — `@agentclientprotocol/codex-acp` (drives the installed CLI; frontier model verified) | tmux |
+| claude | ACP — `@zed-industries/claude-agent-acp` (pass `ANTHROPIC_MODEL=claude-opus-4-8`) | tmux |
+| gemini | ACP — native `--acp` (product-gated for individual accounts) | — |
+| agy | tmux — `deliver.sh` + `markers.sh` calibration | — |
+
+One worker over ACP:
+
+```bash
+node plugins/tmux-teams/skills/tmux-teams/scripts/acp-companion.mjs \
+  codex <repo> <task-id> <brief-file> [timeout-sec]
+```
+
+See `skills/tmux-teams/SKILL.md` §6-§8 for the contract, tmux lane, and ACP lane.
+
 ## Install (this machine)
 
 ```bash
@@ -29,7 +53,8 @@ For a second machine: `claude plugin marketplace add iicmaster/tmux-teams`
 
 ## Prerequisites (soft dependencies)
 
-- `tmux`, and the `codex` CLI for the worker lane.
+- `tmux`, and the `codex` CLI for the worker lane; Node 18+ with `npx` for
+  the ACP adapters.
 - party-mode's 3-model review lanes need the `oc` (opencode) and `agy`
   (antigravity) plugins plus Codex MCP — without them party-mode falls back
   per its own review-fallback rules.
