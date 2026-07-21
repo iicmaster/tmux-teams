@@ -420,3 +420,55 @@ amount of escaping closes. Default is to record only; pull `recall` yourself
 when planning, read it as leads, and paste in what you judge worth carrying.
 Recalled output is labelled unverified history and carries a warning not to
 re-run a stored `verify_cmd` blindly — re-derive it from the plan instead.
+
+## 10. Pulse — the live view (added 2026-07-21)
+
+§9 remembers what finished. `scripts/pulse.mjs` shows what is happening now, on
+one read-only page scoped to this repo and to workers this system dispatched:
+
+```bash
+node <skill-root>/scripts/pulse.mjs once  <repo>              # render once
+node <skill-root>/scripts/pulse.mjs watch <repo> [--interval 20]
+```
+
+It writes `<repo>/.tmux-teams/pulse.html`, which refreshes itself — open it and
+leave it open. `watch` is the observer; nothing else keeps it fresh.
+
+**It probes; it does not believe.** No status file is read, because a worker
+announcing its own liveness is the attestation §6 rejects. Three sets are
+compared and the GAPS are the product:
+
+- **footprint** — `<repo>/.tmux-teams/dispatch/<id>.md`, written by the PM at
+  dispatch (the PM stating what *it* did, which a worker cannot forge), plus any
+  `<repo>/.mailbox-out/<id>`. Dispatch DELETES a stale outbox first, so without
+  the dispatch record a worker dying before its first write would leave no trace
+  in this repo at all — the truest silent death would be the invisible one.
+- **alive** — tmux panes whose `/proc/<pane_pid>/cwd` is this repo, and ACP
+  companions found the same way. Session names prove nothing (`auto--api` fits
+  any repo called api). A pane whose shell has **no child** is an idle prompt,
+  not a running job: `mailbox-run` opens a shell and types `codex` into it, so
+  the shell outlives a crashed worker.
+- **recorded** — §9 events, matched by id *and* recency: ids get reused, and
+  yesterday's record must not settle today's dispatch.
+
+| footprint | terminal marker | alive | recorded | state |
+|---|---|---|---|---|
+| yes | — | yes | — | running |
+| yes (<90s) | no | no | no | starting |
+| yes | no | no | no | **DIED SILENTLY** |
+| yes | yes | no | no | awaiting-verdict (<15m) → unrecorded |
+| yes | yes | no | yes | finished — leaves the live view |
+
+`DIED SILENTLY` is the reason this exists: nothing else in the system notices a
+worker that vanished. The two grace windows are what keep that alarm worth
+reading — without them it would fire during every startup and during every PM
+verification, i.e. on every successful run.
+
+**Honesty rules, same as everywhere else here.** Control dirs
+(`~/.tmux-teams/mailbox-run/<id>`) are keyed by worker id alone and cannot prove
+which repo dispatched them, so they appear in their own section and never raise
+an alarm — counting them as ours made the first render report three deaths that
+all belonged to another project. An unreadable `/proc` becomes `unknown`, never
+`dead`. Anything unmeasured prints "not measured", never `0`. The header carries
+the render time, so a dead observer makes the page visibly rot instead of
+quietly showing yesterday.
