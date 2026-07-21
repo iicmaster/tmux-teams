@@ -1,15 +1,18 @@
 #!/usr/bin/env node
 // kms.mjs — Team KMS: run memory for the tmux-teams PM loop (SKILL.md §9).
 //
-// One finished dispatch = one immutable file. No lock, no index, no cross-repo
-// pages: five independent review lanes agreed those were ceremony at this scale
-// (tens of events per repo, one operator), and that one-file-per-event deletes
-// the append-contention and rewrite-blast-radius failure modes outright.
+// One finished dispatch = one immutable file under <repo>/.tmux-teams/kms/events/.
+// No lock, no index, no cross-repo pages: five independent review lanes agreed
+// those were ceremony at this scale (tens of events per repo, one operator), and
+// one-file-per-event deletes the append-contention and rewrite-blast-radius
+// failure modes outright.
 //
 // WHAT THIS IS NOT: a gate. Workers run as the same UID with broad permissions,
-// so this store is worker-writable like everything else in $HOME — it remembers
-// the PM's verdict, it never substitutes for it. Say that out loud rather than
-// letting the file layout imply tamper-resistance it does not have.
+// so this store is worker-writable wherever it sits — it remembers the PM's
+// verdict, it never substitutes for it. Say that out loud rather than letting the
+// file layout imply tamper-resistance it does not have. (Living inside the repo
+// makes that honest rather than worse: `git status` can at least see meddling
+// with the store's own .gitignore, which a $HOME location could never show.)
 //
 // usage:
 //   kms.mjs append <repo-path> <event-file>            # '-' reads stdin
@@ -18,10 +21,8 @@
 // Both commands are best-effort by contract: a failure here must never fail the
 // orchestration run that produced the knowledge. Callers report the warning and
 // carry on (see mailbox-run.js Distill stage).
-import { createHash } from 'node:crypto'
-import { mkdirSync, readFileSync, readdirSync, writeFileSync, realpathSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { basename, join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, realpathSync } from 'node:fs'
+import { join } from 'node:path'
 
 // The completion detector reads .mailbox-out/<id> and matches a whole final line.
 // It never reads this store — so defanging matters on the way OUT, where recalled
@@ -38,16 +39,23 @@ const [cmd, repoArg, ...rest] = process.argv.slice(2)
 const USAGE = 'usage: kms.mjs append <repo> <event-file|->  |  kms.mjs recall <repo> <terms...> [--worker W] [--limit N]'
 if (!cmd || !repoArg) { warn(USAGE); process.exit(2) }
 
-// Slug = readable basename + hash of the RESOLVED path. Basename alone merges
-// ~/work/api and ~/clients/api into one memory — cross-project bleed is the one
-// failure a memory store must not have (4 review lanes flagged it).
-function slugFor(repoPath) {
-  let abs
-  try { abs = realpathSync(repoPath) } catch { warn(`[kms] no such repo: ${repoPath}`); process.exit(2) }
-  const name = basename(abs).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'repo'
-  return `${name}-${createHash('sha256').update(abs).digest('hex').slice(0, 8)}`
+// The store lives IN the repo it remembers — same convention as `.mailbox-out/`
+// (worker outboxes) and `.remember/` (the remember plugin's memory). The repo IS
+// the key, so two projects sharing a basename can no longer share one memory, and
+// the store travels with the project instead of rotting in $HOME after a rename.
+let REPO
+try { REPO = realpathSync(repoArg) } catch { warn(`[kms] no such repo: ${repoArg}`); process.exit(2) }
+const STORE = join(REPO, '.tmux-teams')
+const EVENTS = join(STORE, 'kms', 'events')
+
+// Self-ignoring directory: we cannot edit the target repo's .gitignore, and an
+// event carries verify output that must never reach a commit. `.remember/` uses
+// the same trick.
+function ensureStore() {
+  mkdirSync(EVENTS, { recursive: true })
+  const ignore = join(STORE, '.gitignore')
+  if (!existsSync(ignore)) writeFileSync(ignore, '*\n')
 }
-const EVENTS = join(homedir(), '.tmux-teams', 'kms', slugFor(repoArg), 'events')
 
 // EVIDENCE is raw command output by contract, so it carries whatever the command
 // printed — env dumps, connection strings, bearer tokens. This store outlives the
@@ -101,7 +109,7 @@ if (cmd === 'append') {
 
   // Uncaught here would print an undefanged stack straight to stderr, bypassing
   // every guard below.
-  try { mkdirSync(EVENTS, { recursive: true }) } catch (e) {
+  try { ensureStore() } catch (e) {
     warn(`[kms] cannot create store: ${e.message}`); process.exit(1)
   }
   // wx + a suffix on collision: two workers finishing in the same minute must not

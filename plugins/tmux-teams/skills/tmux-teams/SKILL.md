@@ -352,17 +352,23 @@ system has learned still true and usable?* Both fail differently, and the outbox
 cannot answer the second — it is read once and never again.
 
 `scripts/kms.mjs` — two commands, zero deps, one immutable file per finished
-dispatch under `~/.tmux-teams/kms/<basename>-<hash8>/events/`:
+dispatch under `<repo>/.tmux-teams/kms/events/` — the same in-project convention
+as `.mailbox-out/` (worker outboxes) and `.remember/`. The store travels with the
+project, and `kms.mjs` drops a self-ignoring `.gitignore` (`*`) into
+`.tmux-teams/` on first write, since we cannot edit a target repo's ignore rules
+and an event carries verify output that must never reach a commit:
 
 ```bash
 node <skill-root>/scripts/kms.mjs append <repo> <event-file|->   # write one event
 node <skill-root>/scripts/kms.mjs recall <repo> [terms...] [--worker W] [--limit N]
 ```
 
-- **Not a gate.** Workers run as the same UID with broad permissions, so this
-  store is worker-writable like everything else in `$HOME`. It records the PM's
-  verdict; it never replaces the PM re-running the check. Do not build a
-  "verified by KMS" claim on top of it — the §6 tamper rule applies here too.
+- **Not a gate.** Workers run as the same UID with broad permissions, so the
+  store is worker-writable wherever it sits — a `$HOME` path would not have
+  changed that, it would only have hidden meddling from `git status` as well.
+  It records the PM's verdict; it never replaces the PM re-running the check.
+  Do not build a "verified by KMS" claim on top of it — §6's tamper rule applies
+  here too.
 - **Best-effort, never blocking.** A failed KMS write must not fail a run that
   otherwise worked; `mailbox-run.js` reports the error and continues. But it
   reports it out loud — memory that silently stops being written is the failure
@@ -376,9 +382,14 @@ node <skill-root>/scripts/kms.mjs recall <repo> [terms...] [--worker W] [--limit
 - **Terminal markers are defanged on recall** (`TEAM_DONE` → `[TEAM_DONE]`),
   not on write: the completion detector reads `.mailbox-out/<id>` and never this
   store, so the risk lives where recalled text reaches the next brief.
-- **Slug = basename + hash of the resolved path.** Basename alone merges
-  `~/work/api` and `~/clients/api` into one memory; cross-project bleed is the
-  one failure a memory store must not have.
+- **The repo is the key.** Because the store lives inside the project, two repos
+  sharing a basename cannot share a memory — cross-project bleed is structurally
+  impossible rather than defended against.
+- **Do not confuse the two `.tmux-teams` paths.** `<repo>/.tmux-teams/kms/` is
+  this memory and belongs in the project. `~/.tmux-teams/mailbox-run/` is the
+  delivery CONTROL dir (inboxes, stop flag, pidfile) and must stay OUTSIDE the
+  repo — that is the control/sandbox split §6 depends on. Moving either one to
+  where the other lives breaks a different guarantee.
 
 Event body — `key: value` lines, `task_id` and `worker` required:
 `task_id / worker / transport / repo_rev / tree / terminal / pm_verdict /

@@ -1,10 +1,10 @@
 // kms.test.mjs — behaviour checks for the Team KMS store (SKILL.md §9).
 // Every case runs kms.mjs as a subprocess with HOME pointed at a temp dir, so
-// the real ~/.tmux-teams/kms is never touched.
+// the real store is never touched — each case gets its own temp repo.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -12,7 +12,8 @@ import { fileURLToPath } from 'node:url'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const KMS = join(ROOT, 'plugins/tmux-teams/skills/tmux-teams/scripts/kms.mjs')
 
-/** Fresh HOME + repo dir per test so cases cannot see each other's events. */
+/** Fresh repo dir per test: the store lives inside the repo, so a new repo IS a
+ *  new store. `home` is kept only so a stray $HOME write would be visible. */
 function sandbox() {
   const home = mkdtempSync(join(tmpdir(), 'kms-home-'))
   const repo = mkdtempSync(join(tmpdir(), 'kms-repo-'))
@@ -42,18 +43,14 @@ const FAKE = {
   slack: 'xox' + 'b-1234567890-abcdefghij',
 }
 
-const eventsDir = (home) => {
-  const kmsRoot = join(home, '.tmux-teams', 'kms')
-  const slug = readdirSync(kmsRoot)[0]
-  return join(kmsRoot, slug, 'events')
-}
+const eventsDir = (repo) => join(repo, '.tmux-teams', 'kms', 'events')
 
 test('append writes one file per event and echoes its path', () => {
   const { home, repo } = sandbox()
   const r = run(home, ['append', repo, '-'], EVENT)
   assert.equal(r.status, 0, r.stderr)
   assert.match(r.stdout.trim(), /_t1_codex\.md$/)
-  assert.equal(readdirSync(eventsDir(home)).length, 1)
+  assert.equal(readdirSync(eventsDir(repo)).length, 1)
 })
 
 test('append rejects an event missing task_id or worker', () => {
@@ -92,20 +89,27 @@ test('two events in the same minute both survive — no silent overwrite', () =>
   assert.equal(a.status, 0, a.stderr)
   assert.equal(b.status, 0, b.stderr)
   assert.notEqual(a.stdout.trim(), b.stdout.trim())
-  assert.equal(readdirSync(eventsDir(home)).length, 2)
+  assert.equal(readdirSync(eventsDir(repo)).length, 2)
 })
 
-test('same basename in different paths gets a different store', () => {
+test('same basename in different paths cannot share a store', () => {
   const { home } = sandbox()
   const parentA = mkdtempSync(join(tmpdir(), 'kms-a-'))
   const parentB = mkdtempSync(join(tmpdir(), 'kms-b-'))
   const repoA = join(parentA, 'api'), repoB = join(parentB, 'api')
   mkdirSync(repoA); mkdirSync(repoB)
   run(home, ['append', repoA, '-'], EVENT)
-  run(home, ['append', repoB, '-'], EVENT)
-  const slugs = readdirSync(join(home, '.tmux-teams', 'kms'))
-  assert.equal(slugs.length, 2, `cross-project bleed: ${slugs.join(', ')}`)
-  assert.ok(slugs.every(s => s.startsWith('api-')), slugs.join(', '))
+  run(home, ['append', repoB, '-'], EVENT.replace('task_id: t1', 'task_id: t2'))
+  // The repo IS the key, so cross-project bleed is structurally impossible.
+  assert.deepEqual(readdirSync(eventsDir(repoA)).map(f => f.includes('_t1_')), [true])
+  assert.deepEqual(readdirSync(eventsDir(repoB)).map(f => f.includes('_t2_')), [true])
+  assert.ok(!existsSync(join(home, '.tmux-teams')), 'nothing may be written to $HOME')
+})
+
+test('the store ignores itself so events never reach a commit', () => {
+  const { home, repo } = sandbox()
+  run(home, ['append', repo, '-'], EVENT)
+  assert.equal(readFileSync(join(repo, '.tmux-teams', '.gitignore'), 'utf8').trim(), '*')
 })
 
 test('recall surfaces the event with its verdict, and defangs terminal markers', () => {
@@ -221,7 +225,7 @@ test('filename order matches creation order past nine collisions', () => {
   // the newest event behind the limit.
   const created = []
   for (let i = 0; i < 11; i++) created.push(run(home, ['append', repo, '-'], EVENT).stdout.trim().split('/').pop())
-  assert.equal(readdirSync(eventsDir(home)).length, 11)
+  assert.equal(readdirSync(eventsDir(repo)).length, 11)
   assert.deepEqual([...created].sort(), created, `lexical order diverged from creation order: ${created.join(' ')}`)
 })
 
