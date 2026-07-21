@@ -21,6 +21,9 @@ claude plugin validate --strict .             # manifest validation
 2. Bump the version in BOTH `.claude-plugin/marketplace.json` and
    `plugins/tmux-teams/.claude-plugin/plugin.json` (test asserts they match).
 3. `claude plugin update tmux-teams@tmux-teams` (install cache is version-keyed).
+4. After the release push: bump the `plugins/tmux-teams` submodule pointer in
+   `~/agent-skills` to the new sha and push it (this repo is vendored there as
+   an install-manifest submodule — inventory only, nothing reads it at runtime).
 
 ## Rules
 
@@ -34,3 +37,6 @@ claude plugin validate --strict .             # manifest validation
 - `~/.claude/skills` must NOT contain the six bundled skills (they were
   deduplicated 2026-07-19; `agent-skills/scripts/sync.sh` skips them for the
   claude root). Restoring them by hand recreates double-triggering.
+- `acp-companion.mjs` honors `ACP_CMD="node <stub>.mjs"` — point it at a stub
+  ACP agent (answers initialize/session/new/session/prompt) for fast,
+  model-free tests of the outbox/timeout logic.
