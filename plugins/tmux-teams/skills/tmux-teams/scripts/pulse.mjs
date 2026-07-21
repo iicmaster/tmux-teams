@@ -43,10 +43,11 @@ const CTL = join(homedir(), '.tmux-teams', 'mailbox-run')
 const iFlag = flags.indexOf('--interval')
 const INTERVAL = iFlag >= 0 && Number(flags[iFlag + 1]) > 0 ? Number(flags[iFlag + 1]) : 20
 
-// A dispatch takes a few seconds to open a pane. Without this, every run would
-// flash "died silently" during its own startup and teach the operator to ignore
-// the one alarm that matters.
-const GRACE_SEC = 90
+// Startup is slower than it looks: an ACP lane may sit in `npx` downloading its
+// adapter before anything exists to probe. Announcing death during a worker's
+// own installation is the fastest way to make the alarm worthless. Where a pane
+// id was recorded we check it directly and skip the guessing entirely.
+const GRACE_SEC = 300
 
 const sh = (bin, args) => {
   try { return execFileSync(bin, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }) } catch { return '' }
@@ -71,6 +72,13 @@ const UNRECORDED_SEC = 900
 // Ownership is proven by the process's own cwd, never by a session name:
 // `auto--api` could belong to any repo named api, and this project already paid
 // for that lesson once in the memory store's key.
+/** Pane ids tmux currently knows about — a recorded pane still listed means the
+ *  dispatch has not collapsed, whatever the worker inside it is doing. */
+function livePaneIds() {
+  const out = sh('tmux', ['list-panes', '-a', '-F', '#{pane_id}'])
+  return new Set(out.split('\n').map(s => s.trim()).filter(Boolean))
+}
+
 function aliveWorkers() {
   const rows = [], notes = []
   if (!PROC_OK) notes.push('cannot read /proc — liveness on this host is unverifiable, so "running" and "died" cannot be told apart')
@@ -125,6 +133,7 @@ function footprints() {
     byId.set(id, {
       id, mtime: st.mtimeMs, marker: '', dispatched: true,
       startedAt: field('started_at'), timeoutSec: Number(field('timeout_sec')) || null,
+      transport: field('transport'), worker: field('worker'), pane: field('pane'),
     })
   }
 
@@ -178,6 +187,7 @@ function recorded() {
 // ── DERIVE ───────────────────────────────────────────────────────────────────
 function derive(now) {
   const { rows: live, notes } = aliveWorkers()
+  const panesNow = livePaneIds()
   const foot = footprints()
   const rec = recorded()
   // Worker ids get reused across runs, so an event only settles the footprint it
@@ -201,13 +211,18 @@ function derive(now) {
     // though tmux still lists it. `null` means the check itself failed — that is
     // not evidence of death and must not be treated as any.
     const working = alive && (alive.kind !== 'tmux' || alive.hasChild !== false)
+    // A recorded pane that tmux still lists is evidence the dispatch is intact,
+    // which beats any age heuristic: no guessing how long a cold `npx` takes.
+    const paneHeld = !!(f.pane && panesNow.has(f.pane))
     const state = working ? 'running'
       : !PROC_OK ? 'unknown'
       : f.marker ? (ageSec > UNRECORDED_SEC ? 'unrecorded' : 'awaiting-verdict')
+      : paneHeld ? 'starting'
       : ageSec <= GRACE_SEC ? 'starting'
       : 'died'
     active.push({
-      ...f, alive: !!alive, detail: alive ? alive.detail : '', kind: alive ? alive.kind : '', ageSec, state,
+      ...f, alive: !!alive, detail: alive ? alive.detail : '',
+      kind: (alive && alive.kind) || f.transport || '', ageSec, state,
       idleShell: !!(alive && alive.kind === 'tmux' && alive.hasChild === false),
     })
   }
@@ -223,6 +238,12 @@ function derive(now) {
 }
 
 // ── STATS ────────────────────────────────────────────────────────────────────
+function median(xs) {
+  if (!xs.length) return null
+  const a = [...xs].sort((x, y) => x - y), mid = a.length >> 1
+  return a.length % 2 ? a[mid] : Math.round((a[mid - 1] + a[mid]) / 2)
+}
+
 function stats(rec) {
   const byWorker = new Map()
   for (const r of rec) {
@@ -237,7 +258,7 @@ function stats(rec) {
     ...s,
     // A median over zero measurements is not 0 — it is unknown, and the page
     // says so rather than inventing a confident number.
-    medianWait: s.waits.length ? s.waits.sort((a, b) => a - b)[Math.floor(s.waits.length / 2)] : null,
+    medianWait: median(s.waits),
   })).sort((a, b) => b.runs - a.runs)
 }
 
@@ -258,7 +279,7 @@ function render({ active, rec, notes, unclaimed }, now) {
     <td><span class="pill ${a.state}">${a.state === 'died' ? 'DIED SILENTLY' : a.state}</span></td>
     <td>${esc(a.kind || '—')}</td>
     <td class="mono">${esc(a.detail || '')}</td>
-    <td>${a.ageSec == null ? 'not measured' : dur(a.ageSec)}</td>
+    <td>${a.ageSec == null ? 'not measured' : dur(a.ageSec)}${a.timeoutSec ? ` <span class="dim">/ ${dur(a.timeoutSec)}</span>` : ''}</td>
     <td>${a.idleShell ? '<span class="warn">pane alive but its shell has no child — worker gone</span>' : a.dispatched === false ? '<span class="warn">no dispatch record</span>' : ''}</td>
   </tr>`
 
@@ -286,7 +307,7 @@ td{padding:10px 14px;border-bottom:1px solid var(--line)}tr:last-child td{border
 .pill.awaiting-verdict{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
 .pill.unrecorded{background:color-mix(in srgb,var(--warn) 26%,transparent);color:var(--warn)}
 .pill.died,.pill.unknown{background:color-mix(in srgb,var(--bad) 18%,transparent);color:var(--bad)}
-.warn{color:var(--warn);font-size:12px}
+.warn{color:var(--warn);font-size:12px}.dim{color:var(--dim);font-size:12px}
 .empty{padding:16px;color:var(--dim);font-size:14px}
 .note{border-left:3px solid var(--warn);background:var(--card);padding:10px 14px;margin:10px 0;font-size:13px}
 .verdict-reject{color:var(--bad)}.verdict-pass{color:var(--ok)}.verdict-unresolved{color:var(--warn)}

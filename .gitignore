@@ -6,3 +6,6 @@ _bmad-output/
 .claude/
 node_modules/
 CLAUDE.local.md
+
+# browser scratch from screenshot verification
+.playwright-mcp/

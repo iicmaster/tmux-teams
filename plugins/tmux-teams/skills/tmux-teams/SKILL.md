@@ -454,15 +454,21 @@ compared and the GAPS are the product:
 | footprint | terminal marker | alive | recorded | state |
 |---|---|---|---|---|
 | yes | — | yes | — | running |
-| yes (<90s) | no | no | no | starting |
+| yes (pane still listed, or <5m) | no | no | no | starting |
 | yes | no | no | no | **DIED SILENTLY** |
 | yes | yes | no | no | awaiting-verdict (<15m) → unrecorded |
 | yes | yes | no | yes | finished — leaves the live view |
 
 `DIED SILENTLY` is the reason this exists: nothing else in the system notices a
-worker that vanished. The two grace windows are what keep that alarm worth
-reading — without them it would fire during every startup and during every PM
-verification, i.e. on every successful run.
+worker that vanished. What keeps that alarm worth reading is refusing to raise
+it on the two occasions a healthy run legitimately has no process: while it is
+still starting, and while the PM is verifying it. Startup is checked by
+evidence first — a pane id recorded at dispatch that tmux still lists means the
+dispatch is intact, whatever is happening inside it — and only falls back to a
+5-minute window when there is no pane to check. That matters for the ACP lane,
+where a cold `npx` fetching an adapter can outlast any short timer; announcing
+death during a worker's own installation is the fastest way to make the alarm
+worthless.
 
 **Honesty rules, same as everywhere else here.** Control dirs
 (`~/.tmux-teams/mailbox-run/<id>`) are keyed by worker id alone and cannot prove

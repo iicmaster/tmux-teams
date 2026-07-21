@@ -127,3 +127,24 @@ test('an unmeasured duration never renders as zero', () => {
   assert.match(html, /not measured/)
   assert.doesNotMatch(html, />0s</)
 })
+
+test('a recorded pane that tmux still lists is starting, not dead', () => {
+  // Startup can outlast any age guess — a cold `npx` fetching an ACP adapter
+  // takes minutes. A pane tmux still knows about is evidence, not a heuristic.
+  const dir = repo()
+  const p = join(dir, '.tmux-teams', 'dispatch', 'slow-boot.md')
+  writeFileSync(p, 'task_id: slow-boot\nworker: codex\ntransport: tmux\ntimeout_sec: 1200\npane: %999999\n')
+  age(p, 4000)
+  const html = render(dir)
+  // %999999 does not exist, so with no pane held this must read as died —
+  // proving the pane check is what decides, not the age.
+  assert.match(html, /DIED SILENTLY/)
+})
+
+test('the grace window covers a slow cold start', () => {
+  const dir = repo()
+  dispatch(dir, 'npx-fetching', 200)     // 200s: past the old 90s window
+  const html = render(dir)
+  assert.match(html, /starting/)
+  assert.doesNotMatch(html.split('บันทึกล่าสุด')[0], /DIED SILENTLY/)
+})
