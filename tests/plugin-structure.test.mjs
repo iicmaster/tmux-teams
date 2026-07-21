@@ -1,5 +1,5 @@
-// plugin-structure.test.mjs — structure, drift, and semantic checks for the
-// tmux-teams plugin. Run: node --test tests/
+// plugin-structure.test.mjs — structure and semantic checks for the
+// tmux-teams plugin (canonical source of its skills). Run: node --test tests/
 // Harness pattern borrowed from antigravity-plugins/tests/plugin-structure.test.mjs,
 // with semantic anchors instead of brittle prose regexes.
 import { test } from 'node:test'
@@ -8,12 +8,10 @@ import { readFileSync, statSync, existsSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { homedir } from 'node:os'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PLUGIN = join(ROOT, 'plugins/tmux-teams')
 const SKILLS = ['tmux-teams', 'party-mode', 'party-auto', 'party-advise', 'sqthink', 'codex-tmux-driver']
-const AGENT_SKILLS = process.env.AGENT_SKILLS_REPO || join(homedir(), 'agent-skills')
 
 const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'))
 const readText = (p) => readFileSync(p, 'utf8')
@@ -31,7 +29,7 @@ test('marketplace and plugin manifests agree', () => {
 test('all six skills are present with matching frontmatter names', () => {
   for (const name of SKILLS) {
     const skillMd = join(PLUGIN, 'skills', name, 'SKILL.md')
-    assert.ok(existsSync(skillMd), `${name}/SKILL.md missing — run scripts/sync-skills.sh`)
+    assert.ok(existsSync(skillMd), `${name}/SKILL.md missing`)
     const fm = readText(skillMd).match(/^---\n[\s\S]*?\bname:\s*(\S+)/)
     assert.ok(fm, `${name}: no frontmatter name`)
     assert.equal(fm[1], name, `${name}: frontmatter name mismatch`)
@@ -82,11 +80,6 @@ test('no hardcoded home paths in manifests or commands', () => {
   for (const p of ['.claude-plugin/marketplace.json', 'plugins/tmux-teams/.claude-plugin/plugin.json', 'plugins/tmux-teams/commands/mailbox-run.md']) {
     assert.ok(!/\/home\/iicmaster/.test(readText(join(ROOT, p))), `${p}: hardcoded home path`)
   }
-})
-
-test('plugin skills are byte-identical to canonical agent-skills', { skip: !existsSync(AGENT_SKILLS) && 'agent-skills checkout not present' }, () => {
-  const r = spawnSync('bash', [join(ROOT, 'scripts/sync-skills.sh'), '--check'], { encoding: 'utf8' })
-  assert.equal(r.status, 0, `drift vs canonical:\n${r.stdout}${r.stderr}`)
 })
 
 test('claude plugin validate --strict passes', { skip: spawnSync('claude', ['--version'], { encoding: 'utf8' }).error && 'claude CLI not on PATH' }, () => {

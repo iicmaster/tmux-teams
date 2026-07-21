@@ -59,21 +59,22 @@ For a second machine: `claude plugin marketplace add iicmaster/tmux-teams`
   (antigravity) plugins plus Codex MCP — without them party-mode falls back
   per its own review-fallback rules.
 
-## Update lifecycle (source of truth = agent-skills)
+## Update lifecycle (this repo IS canonical — flipped 2026-07-21)
 
-Skill content is canonical in `~/agent-skills` (`skills/shared/*`,
-`skills/claude/codex-tmux-driver`). This repo mirrors it:
+Skill content lives here, in `plugins/tmux-teams/skills/` — edit it directly.
+(`~/agent-skills` vendors this repo as the submodule `plugins/tmux-teams` and
+deleted its own copy of the tmux-teams skill; remaining duplicates there are
+non-authoritative.)
 
-1. Edit the skill in `~/agent-skills` and commit there.
-2. `scripts/sync-skills.sh` (here) to refresh `plugins/tmux-teams/skills/`.
-3. Bump the version in BOTH `plugins/tmux-teams/.claude-plugin/plugin.json`
+1. Edit the skill under `plugins/tmux-teams/skills/` and commit here.
+2. Bump the version in BOTH `plugins/tmux-teams/.claude-plugin/plugin.json`
    and `.claude-plugin/marketplace.json` (the test asserts they match).
-4. `claude plugin update tmux-teams` (the install cache is version-keyed).
+3. Push, then `claude plugin marketplace update tmux-teams` and
+   `claude plugin update tmux-teams@tmux-teams` (install cache is version-keyed).
+4. Bump the `plugins/tmux-teams` submodule pointer in `~/agent-skills`.
 
-`scripts/sync-skills.sh --check` reports drift; `node --test tests/` runs the
-structure + drift + semantic checks.
+`node --test tests/` runs the structure + semantic checks.
 
 Note: `~/.claude/skills` no longer carries these six skills (they are
-plugin-delivered; `agent-skills/scripts/sync.sh` skips them for the claude
-root). The other tool roots (`~/.agents`, `~/.codex`, `~/.openclaw`) keep
-their copies via the normal fan-out.
+plugin-delivered; `agent-skills/scripts/sync.sh` purges them from the tool
+skill roots since the 2026-07-21 flip).
