@@ -195,3 +195,17 @@ test('an idle pane shell is not counted as a running worker', () => {
   assert.match(html, /ไม่มี worker ทำงานอยู่/)
   assert.doesNotMatch(html.slice(0, html.indexOf('บันทึกล่าสุด')), /pill running/)
 })
+
+test('a recorded pane that tmux no longer lists means dead, not starting', () => {
+  // Killing a worker mid-run showed the grace window overriding real evidence:
+  // the pane was already destroyed and the page still said "starting". A
+  // recorded pane decides in BOTH directions; the window is only for dispatches
+  // that have no pane to check.
+  const dir = repo()
+  const p = join(dir, '.tmux-teams', 'dispatch', 'killed-now.md')
+  writeFileSync(p, 'task_id: killed-now\nworker: codex\ntransport: tmux\ntimeout_sec: 240\npane: %999999\n')
+  age(p, 30)   // well inside the grace window
+  const html = render(dir)
+  assert.match(html, /killed-now/)
+  assert.match(html, /DIED SILENTLY/)
+})

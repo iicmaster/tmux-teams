@@ -211,13 +211,17 @@ function derive(now) {
     // though tmux still lists it. `null` means the check itself failed — that is
     // not evidence of death and must not be treated as any.
     const working = alive && (alive.kind !== 'tmux' || alive.hasChild !== false)
-    // A recorded pane that tmux still lists is evidence the dispatch is intact,
-    // which beats any age heuristic: no guessing how long a cold `npx` takes.
-    const paneHeld = !!(f.pane && panesNow.has(f.pane))
+    // Where a pane id was recorded there is nothing left to guess, in EITHER
+    // direction: still listed means the dispatch is intact (a cold `npx` can
+    // outlast any timer), and gone means gone. The grace window is only for
+    // dispatches with no pane to check. Killing a worker mid-run proved why:
+    // the window kept reporting "starting" about a pane already destroyed.
+    const paneHeld = f.pane ? panesNow.has(f.pane) : null
     const state = working ? 'running'
       : !PROC_OK ? 'unknown'
       : f.marker ? (ageSec > UNRECORDED_SEC ? 'unrecorded' : 'awaiting-verdict')
-      : paneHeld ? 'starting'
+      : paneHeld === true ? 'starting'
+      : paneHeld === false ? 'died'
       : ageSec <= GRACE_SEC ? 'starting'
       : 'died'
     active.push({
