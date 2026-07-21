@@ -53,20 +53,63 @@ const sh = (bin, args) => {
   try { return execFileSync(bin, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }) } catch { return '' }
 }
 
-/** cwd of a live pid, or null when the process is gone or /proc is unavailable. */
+// Liveness is read from /proc on Linux and from lsof/pgrep on macOS/BSD, where
+// no /proc exists. The abstraction is deliberately two primitives — cwd-of-pid
+// and has-a-child — because that is all the rest of the file asks of the OS.
+const DARWIN = process.platform === 'darwin'
+
+/** cwd of a live pid, or null when the process is gone or unreadable. */
 function cwdOf(pid) {
+  if (DARWIN) {
+    // `lsof -Fn -d cwd` prints one `n<path>` line for the cwd descriptor.
+    const out = sh('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'])
+    const line = out.split('\n').find(l => l.startsWith('n'))
+    if (!line) return null
+    try { return realpathSync(line.slice(1)) } catch { return line.slice(1) }
+  }
   try { return realpathSync(`/proc/${pid}/cwd`) } catch { return null }
 }
 const PROC_OK = cwdOf(process.pid) !== null
 
-/** Does this pid have at least one child? A pane shell with none is idle. */
+/** Does this pid have at least one child? A pane shell with none is idle.
+ *  null = unknowable on this host; the callers treat null as "not idle". */
 function hasChild(pid) {
+  if (DARWIN) {
+    // pgrep exits non-zero with no output when a pid has no children; the `sh`
+    // helper maps that to '' — indistinguishable from pgrep being absent, but
+    // pgrep ships with macOS, so an empty result means genuinely no child.
+    return sh('pgrep', ['-P', String(pid)]).trim().length > 0
+  }
   try { return readFileSync(`/proc/${pid}/task/${pid}/children`, 'utf8').trim().length > 0 } catch { return null }
 }
 
 // An outbox with a terminal marker but no event is normal for as long as the PM
 // takes to verify. Past this, the record is not late — it is missing.
 const UNRECORDED_SEC = 900
+
+/** Candidate ACP processes as {pid, cmdline}. On Linux we walk /proc; on macOS
+ *  `ps` gives pid+command in one call and we prefilter by the companion name so
+ *  the per-pid lsof in cwdOf() runs on a handful, not every process. */
+function acpCandidates() {
+  if (DARWIN) {
+    const ps = sh('ps', ['-axww', '-o', 'pid=,command='])
+    const out = []
+    for (const line of ps.split('\n')) {
+      const m = line.match(/^\s*(\d+)\s+(.*)$/)
+      if (m && m[2].includes('acp-companion.mjs')) out.push({ pid: m[1], cmdline: m[2] })
+    }
+    return out
+  }
+  let pids = []
+  try { pids = readdirSync('/proc').filter(d => /^\d+$/.test(d)) } catch { return [] }
+  const out = []
+  for (const pid of pids) {
+    let cmdline = ''
+    try { cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\0/g, ' ') } catch { continue }
+    out.push({ pid, cmdline })
+  }
+  return out
+}
 
 // ── ALIVE ────────────────────────────────────────────────────────────────────
 // Ownership is proven by the process's own cwd, never by a session name:
@@ -81,7 +124,9 @@ function livePaneIds() {
 
 function aliveWorkers() {
   const rows = [], notes = []
-  if (!PROC_OK) notes.push('cannot read /proc — liveness on this host is unverifiable, so "running" and "died" cannot be told apart')
+  if (!PROC_OK) notes.push(DARWIN
+    ? 'lsof did not report this process\'s cwd — liveness on this host is unverifiable, so "running" and "died" cannot be told apart'
+    : 'cannot read /proc — liveness on this host is unverifiable, so "running" and "died" cannot be told apart')
 
   const panes = sh('tmux', ['list-panes', '-a', '-F', '#{session_name}|#{window_name}|#{pane_id}|#{pane_pid}'])
   for (const line of panes.split('\n').filter(Boolean)) {
@@ -97,12 +142,8 @@ function aliveWorkers() {
 
   // ACP workers have no pane at all — find them by their own cwd + command line.
   if (PROC_OK) {
-    let pids = []
-    try { pids = readdirSync('/proc').filter(d => /^\d+$/.test(d)) } catch { pids = [] }
-    for (const pid of pids) {
+    for (const { pid, cmdline } of acpCandidates()) {
       if (cwdOf(pid) !== REPO) continue
-      let cmdline = ''
-      try { cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf8').replace(/\0/g, ' ') } catch { continue }
       const m = cmdline.match(/acp-companion\.mjs\s+\S+\s+\S+\s+(\S+)/)
       if (m) rows.push({ id: m[1], kind: 'acp', detail: `pid ${pid}`, pid })
     }
