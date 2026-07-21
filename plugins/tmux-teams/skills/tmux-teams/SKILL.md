@@ -470,7 +470,19 @@ where a cold `npx` fetching an adapter can outlast any short timer; announcing
 death during a worker's own installation is the fastest way to make the alarm
 worthless.
 
-**The graph is where each run stopped.** Every dispatch walks the same five
+**Two diagrams, and they answer different questions.** The loop chart at the top
+is the SYSTEM: plan → dispatch → work → outbox? → verify → verdict → record →
+memory, with the branch to *died silently* and two back-edges — a rejected
+verdict returning to dispatch, and today's record feeding tomorrow's planning.
+Those two are drawn **dashed on purpose: neither is measured**. We count rejects,
+but nothing records whether a reject was re-dispatched, and recall is opt-in and
+unlogged. Solid lines would claim the loop turns when nobody knows that it does —
+so the dashes double as the list of what to instrument next. Fixed-layout SVG,
+no chart library: the shape is a constant, and a page whose job is to be true
+cannot depend on fetching a renderer that may not arrive (mermaid from a CDN was
+tried and silently failed to load, which settled it).
+
+**The per-run graph is where each run stopped.** Every dispatch walks the same five
 stages — dispatched → alive → outbox → PM verdict → recorded — so the truthful
 picture is not boxes and arrows but one line per worker with a filled dot for
 each stage actually reached. Read across and you see how far a worker got before

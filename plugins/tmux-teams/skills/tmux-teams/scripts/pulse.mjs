@@ -303,6 +303,93 @@ function graphRows(active, rec) {
   return rows
 }
 
+// ── LOOP ─────────────────────────────────────────────────────────────────────
+// The per-worker graph is one run walking a straight line. THIS is the system:
+// a cycle with two back-edges — a rejected verdict returning to dispatch, and
+// today's record feeding tomorrow's planning.
+//
+// Both back-edges are DASHED because neither is measured. We count rejects, but
+// nothing records whether a reject was actually re-dispatched, and recall is
+// opt-in and unlogged. Drawing them solid would claim the loop turns when
+// nobody knows that it does.
+//
+// Hand-drawn SVG with a fixed layout, not a chart library: the shape of this
+// loop is a constant, and a page whose job is to be true cannot depend on
+// fetching a renderer that may not arrive.
+function renderLoop(active, rec) {
+  const c = (xs) => xs.length
+  const running = c(active.filter(a => ['running', 'starting'].includes(a.state)))
+  const waiting = c(active.filter(a => a.state === 'awaiting-verdict'))
+  const dead = c(active.filter(a => ['died', 'unknown', 'unrecorded'].includes(a.state)))
+  const pass = c(rec.filter(r => r.pm_verdict === 'pass'))
+  const reject = c(rec.filter(r => r.pm_verdict === 'reject'))
+  const unres = c(rec.filter(r => r.pm_verdict === 'unresolved'))
+
+  const W = 720, X = 300, BW = 210, BH = 46, GAP = 26
+  const nodes = [
+    { k: 'box', t: 'วางแผน · sqthink', s: 'บรีฟ + verify_cmd + ลำดับ' },
+    { k: 'box', t: 'สั่งงาน', s: `เขียน dispatch record · ค้าง ${active.length}` },
+    { k: 'box', t: 'worker ทำงาน', s: `${running} กำลังวิ่ง` },
+    { k: 'dia', t: 'มี outbox + marker?', s: '' },
+    { k: 'box', t: 'PM ตรวจซ้ำ', s: `รัน verify_cmd เอง · ${waiting} รอตัดสิน` },
+    { k: 'dia', t: 'คำตัดสิน', s: '' },
+    { k: 'box', t: 'บันทึกเหตุการณ์', s: 'ทุกจุดจบ ไม่เฉพาะที่ผ่าน' },
+    { k: 'store', t: 'ความจำ', s: `${rec.length} เหตุการณ์` },
+  ]
+  const y = (i) => 24 + i * (BH + GAP)
+  const H = y(nodes.length - 1) + BH + 24
+  const cy = (i) => y(i) + BH / 2
+
+  const box = (n, i) => {
+    const yy = y(i), half = BW / 2
+    const shape = n.k === 'dia'
+      ? `<polygon class="l-dia" points="${X},${yy - 6} ${X + half + 14},${cy(i)} ${X},${yy + BH + 6} ${X - half - 14},${cy(i)}"/>`
+      : `<rect class="l-box${n.k === 'store' ? ' l-store' : ''}" x="${X - half}" y="${yy}" width="${BW}" height="${BH}" rx="${n.k === 'store' ? 22 : 5}"/>`
+    const label = n.s
+      ? `<text class="l-t" x="${X}" y="${cy(i) - 3}" text-anchor="middle">${esc(`${i + 1}. ${n.t}`)}</text>` +
+        `<text class="l-s" x="${X}" y="${cy(i) + 12}" text-anchor="middle">${esc(n.s)}</text>`
+      : `<text class="l-t" x="${X}" y="${cy(i) + 4}" text-anchor="middle">${esc(`${i + 1}. ${n.t}`)}</text>`
+    return shape + label
+  }
+
+  const down = (i) => `<line class="l-edge" x1="${X}" y1="${y(i) + BH}" x2="${X}" y2="${y(i + 1)}" marker-end="url(#lh)"/>`
+  // straight run down the spine, minus the two hops that carry their own labels
+  const spine = [0, 1, 2, 4, 6].map(down).join('')
+
+  const DX = X + BW / 2 + 195           // the died-silently branch sits off to the right
+  const dyy = cy(3)
+  const died =
+    `<line class="l-edge l-bad" x1="${X + BW / 2 + 14}" y1="${dyy}" x2="${DX - 62}" y2="${dyy}" marker-end="url(#lbad)"/>` +
+    `<text class="l-lbl l-bad-t" x="${X + BW / 2 + 20}" y="${dyy - 9}">ไม่มี marker</text>` +
+    `<text class="l-lbl l-dim" x="${X + BW / 2 + 20}" y="${dyy + 16}">และไม่มีกระบวนการ</text>` +
+    `<rect class="l-box l-bad-box" x="${DX - 60}" y="${dyy - 20}" width="124" height="40" rx="20"/>` +
+    `<text class="l-t l-bad-t" x="${DX + 2}" y="${dyy - 2}" text-anchor="middle">ตายเงียบ</text>` +
+    `<text class="l-s l-bad-t" x="${DX + 2}" y="${dyy + 13}" text-anchor="middle">${dead}</text>`
+
+  const yesEdge = `<text class="l-lbl" x="${X + 8}" y="${(y(3) + BH + y(4)) / 2 + 4}">มี</text>` + down(3)
+  const passEdge = `<text class="l-lbl" x="${X + 8}" y="${(y(5) + BH + y(6)) / 2 + 4}">pass ${pass} · unresolved ${unres}</text>` + down(5)
+
+  // back-edges bow out to the left; dashed, because nothing counts these
+  const LX = X - BW / 2 - 70, LX2 = LX - 46
+  const reEdge =
+    `<path class="l-edge l-dash" d="M ${X - BW / 2 - 14} ${cy(5)} H ${LX} V ${cy(1)} H ${X - BW / 2 - 4}" marker-end="url(#lh)"/>` +
+    `<text class="l-lbl l-dim" x="${LX - 6}" y="${(cy(5) + cy(1)) / 2}" text-anchor="end" transform="rotate(-90 ${LX - 6} ${(cy(5) + cy(1)) / 2})">reject ${reject} · ไม่ได้วัดว่าถูกสั่งใหม่ไหม</text>`
+  const recallEdge =
+    `<path class="l-edge l-dash" d="M ${X - BW / 2 - 14} ${cy(7)} H ${LX2} V ${cy(0)} H ${X - BW / 2 - 4}" marker-end="url(#lh)"/>` +
+    `<text class="l-lbl l-dim" x="${LX2 - 6}" y="${(cy(7) + cy(0)) / 2}" text-anchor="end" transform="rotate(-90 ${LX2 - 6} ${(cy(7) + cy(0)) / 2})">recall · opt-in และไม่มีใครบันทึก</text>`
+
+  const defs = `<defs>
+    <marker id="lh" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path class="l-head" d="M0,0 L8,4 L0,8 z"/></marker>
+    <marker id="lbad" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path class="l-head-bad" d="M0,0 L8,4 L0,8 z"/></marker>
+  </defs>`
+
+  return `<svg viewBox="-30 0 ${W} ${H}" width="100%" height="${H}" role="img"
+     aria-label="ลูปการทำงานของระบบ">${defs}${spine}${yesEdge}${passEdge}${died}${reEdge}${recallEdge}` +
+    nodes.map(box).join('') + `</svg>`
+}
+
 function renderGraph(rows) {
   if (!rows.length) return '<p class="empty">ยังไม่มีงานให้วาด</p>'
   const LEFT = 190, COL = 112, TOP = 34, ROW = 30
@@ -378,6 +465,18 @@ td{padding:10px 14px;border-bottom:1px solid var(--line)}tr:last-child td{border
 .pill.died,.pill.unknown{background:color-mix(in srgb,var(--bad) 18%,transparent);color:var(--bad)}
 .warn{color:var(--warn);font-size:12px}.dim{color:var(--dim);font-size:12px}
 .graph{padding:14px 16px}
+.diagram{padding:16px;overflow-x:auto}
+.l-box{fill:var(--card);stroke:var(--line);stroke-width:1.5}
+.l-store{fill:var(--bg)}
+.l-dia{fill:var(--card);stroke:var(--line);stroke-width:1.5}
+.l-t{font:600 12px var(--mono);fill:var(--ink)}
+.l-s{font:10.5px var(--mono);fill:var(--dim)}
+.l-lbl{font:10.5px var(--mono);fill:var(--ink)}
+.l-dim{fill:var(--dim)}
+.l-edge{stroke:var(--line);stroke-width:1.8;fill:none}
+.l-dash{stroke-dasharray:5 4}
+.l-head{fill:var(--line)}.l-head-bad{fill:var(--bad)}
+.l-bad{stroke:var(--bad)}.l-bad-t{fill:var(--bad)}.l-bad-box{stroke:var(--bad)}
 .g-head{font:600 10px var(--mono);fill:var(--dim);letter-spacing:.06em;text-transform:uppercase}
 .g-id{font:13px var(--mono);fill:var(--ink)}
 .g-tag{font:10px var(--mono);fill:var(--dim);letter-spacing:.04em}
@@ -403,6 +502,12 @@ footer{margin-top:32px;padding-top:12px;border-top:1px solid var(--line);font:12
 </header>
 
 ${notes.map(n => `<p class="note">⚠ ${esc(n)}</p>`).join('')}
+
+<h2>ลูปของระบบ</h2>
+<div class="card diagram">
+  ${renderLoop(active, rec)}
+  <p class="dim">เส้นประ = ทางที่รู้ว่ามีแต่ยังไม่มีใครวัด</p>
+</div>
 
 <h2>เส้นทางของแต่ละงาน</h2>
 <div class="card graph">${renderGraph(graphRows(active, rec))}</div>
@@ -451,7 +556,8 @@ ${st.map(s => `<tr><td>${esc(s.worker)}</td><td>${s.runs}</td>
   · control dir ไม่ได้แยกตามโปรเจกต์ จึงติดป้าย ownership unconfirmed
   · ถ้าเวลาอัปเดตด้านบนหยุดเดิน แปลว่าตัวสังเกตการณ์ตาย ไม่ใช่ว่าไม่มีงาน
 </footer>
-</div></body></html>`
+</div>
+</body></html>`
 }
 
 function once() {

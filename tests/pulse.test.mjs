@@ -42,6 +42,12 @@ const outbox = (dir, id, marker, ageSec = 0) => {
   if (ageSec) age(p, ageSec)
   return p
 }
+/** The page carries two SVGs — the system loop and the per-worker graph. */
+const perWorkerSvg = (html) => {
+  const i = html.indexOf('aria-label="แต่ละงานเดินไปถึงขั้นไหน"')
+  return html.slice(html.lastIndexOf('<svg', i), html.indexOf('</svg>', i))
+}
+
 const event = (dir, id, wait = '42') => writeFileSync(
   join(dir, '.tmux-teams', 'kms', 'events', `20260721-0900_${id}_codex.md`),
   `task_id: ${id}\nworker: codex\nterminal: TEAM_DONE\npm_verdict: pass\nwait_sec: ${wait}\n`,
@@ -159,7 +165,7 @@ test('the graph shows a stage as reached even after the process is gone', () => 
   dispatch(dir, 'wrote-then-died', 4000)
   outbox(dir, 'wrote-then-died', 'TEAM_DONE', 4000)
   const html = render(dir)
-  const graph = html.slice(html.indexOf('<svg'), html.indexOf('</svg>'))
+  const graph = perWorkerSvg(html)
   const dots = [...graph.matchAll(/<circle class="([^"]+)"/g)].map(m => m[1])
   // dispatch + alive + outbox filled, verdict + record hollow
   assert.equal(dots.filter(c => !c.includes('g-off')).length, 3)
@@ -171,7 +177,7 @@ test('an unresolved run is not drawn as a healthy finish', () => {
   writeFileSync(join(dir, '.tmux-teams', 'kms', 'events', '20260721-0900_gave-up_codex.md'),
     'task_id: gave-up\nworker: codex\nterminal: TEAM_FAILED\npm_verdict: unresolved\nwait_sec: 12\n')
   const html = render(dir)
-  const graph = html.slice(html.indexOf('<svg'), html.indexOf('</svg>'))   // CSS also mentions the classes
+  const graph = perWorkerSvg(html)   // CSS also mentions these classes
   assert.match(graph, /gave-up/)
   assert.match(graph, /g-warn/)
   assert.doesNotMatch(graph, /g-ok/)
