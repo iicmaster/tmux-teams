@@ -5,9 +5,9 @@
 // shared between transports.
 //
 // usage: node acp-companion.mjs <agent> <cwd> <task-id> <brief-file> [timeout-sec]
-//   agent: gemini | claude | codex   (or set ACP_CMD="custom command" to override)
+//   agent: gemini | claude | codex | agy   (or set ACP_CMD="custom command" to override)
 //
-// Lanes (2026-07-19):
+// Lanes (2026-07-21):
 //   gemini -> `gemini --acp`                       (native; product-gated, see SKILL.md §8)
 //   claude -> `npx -y @agentclientprotocol/claude-agent-acp` (official adapter,
 //             successor to the zed-industries build — Task-tool subagents
@@ -19,6 +19,15 @@
 //             zed-industries binary embedded a stale core; codexGuard below
 //             still maps its failure signatures to a clear message in case a
 //             legacy build is forced via ACP_CMD.
+//   agy    -> `bunx antigravity-acp@1.0.0` — COMMUNITY adapter (shubzkothekar),
+//             version-pinned to the source-audited release (audit 2026-07-21:
+//             no credential handling, single network call = official Google
+//             release download with SHA-256 pin; e2e-verified same day).
+//             Requires bun on PATH. AGY_SKIP_DOWNLOAD=1 is set below so the
+//             installed `agy` on PATH is always used (the adapter's pinned
+//             auto-download 404s upstream). ToS note: third-party tools
+//             driving an OAuth-authed agy breach Google's Antigravity terms —
+//             same pattern-level risk as the tmux lane; see SKILL.md §8.
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
@@ -26,7 +35,7 @@ import { createInterface } from 'node:readline'
 
 const [agentName, cwd, taskId, briefFile, timeoutArg] = process.argv.slice(2)
 if (!agentName || !cwd || !taskId || !briefFile) {
-  console.error('usage: node acp-companion.mjs <gemini|claude|codex> <cwd> <task-id> <brief-file> [timeout-sec]')
+  console.error('usage: node acp-companion.mjs <gemini|claude|codex|agy> <cwd> <task-id> <brief-file> [timeout-sec]')
   process.exit(2)
 }
 const ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/
@@ -47,6 +56,7 @@ const CMDS = {
   gemini: ['gemini', ['--acp']],
   claude: ['npx', ['-y', '@agentclientprotocol/claude-agent-acp']],
   codex: ['npx', ['-y', '@agentclientprotocol/codex-acp']],
+  agy: ['bunx', ['antigravity-acp@1.0.0']],
 }
 let cmd
 if (process.env.ACP_CMD) {
@@ -55,13 +65,18 @@ if (process.env.ACP_CMD) {
 } else if (CMDS[agentName]) {
   cmd = CMDS[agentName]
 } else {
-  console.error(`unknown agent "${agentName}" — use gemini|claude|codex or set ACP_CMD`)
+  console.error(`unknown agent "${agentName}" — use gemini|claude|codex|agy or set ACP_CMD`)
   process.exit(2)
 }
+// agy: always drive the installed `agy` (PATH/$AGY_BIN); the adapter's pinned
+// auto-download 404s upstream, so skip it unless the user overrides.
+const spawnEnv = agentName === 'agy'
+  ? { ...process.env, AGY_SKIP_DOWNLOAD: process.env.AGY_SKIP_DOWNLOAD ?? '1' }
+  : process.env
 
 // detached => agent leads its own process group, so killTree reaches
 // grandchildren (npx -> adapter -> CLI -> build tools); issue #3.
-const agent = spawn(cmd[0], cmd[1], { cwd, stdio: ['pipe', 'pipe', 'pipe'], detached: true })
+const agent = spawn(cmd[0], cmd[1], { cwd, stdio: ['pipe', 'pipe', 'pipe'], detached: true, env: spawnEnv })
 function killTree(sig = 'SIGTERM') {
   try { process.kill(-agent.pid, sig) } catch { try { agent.kill(sig) } catch {} }
 }

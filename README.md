@@ -29,8 +29,8 @@ transport-independent:
 |---|---|---|
 | codex | ACP — `@agentclientprotocol/codex-acp` (drives the installed CLI; frontier model verified) | tmux |
 | claude | ACP — `@agentclientprotocol/claude-agent-acp` (pass `ANTHROPIC_MODEL=claude-opus-4-8`) | tmux |
-| gemini | ACP — native `--acp` (product-gated for individual accounts) | — |
-| agy | tmux — `deliver.sh` + `markers.sh` calibration | — |
+| gemini | ACP — native `--acp` (dead for individuals 2026-07-21; needs a valid `GEMINI_API_KEY`) | — |
+| agy | ACP — `antigravity-acp@1.0.0` (community adapter, source-audited 2026-07-21; needs `bun`; ToS risk — SKILL.md §8) | tmux |
 
 One worker over ACP:
 

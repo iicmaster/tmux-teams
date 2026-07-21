@@ -280,8 +280,8 @@ transport-independent. Two transports carry it:
 
 | transport | for | mechanism |
 |---|---|---|
-| `tmux` | agy, any TUI without ACP; codex fallback | deliver.sh + markers (§1-§6) |
-| `acp` | codex (`@agentclientprotocol/codex-acp`, frontier-verified); claude (`@agentclientprotocol/claude-agent-acp`, official adapter — e2e-verified 2026-07-21, Task subagents work, effort via `MAX_THINKING_TOKENS`); gemini (native `--acp` — see note) | `scripts/acp-companion.mjs` — JSON-RPC over stdio |
+| `tmux` | any TUI without ACP; codex/agy fallback | deliver.sh + markers (§1-§6) |
+| `acp` | codex (`@agentclientprotocol/codex-acp`, frontier-verified); claude (`@agentclientprotocol/claude-agent-acp`, official adapter — e2e-verified 2026-07-21, Task subagents work, effort via `MAX_THINKING_TOKENS`); agy (`antigravity-acp@1.0.0`, community adapter — audited + e2e-verified 2026-07-21, bun required, see ToS note); gemini (native `--acp` — see note) | `scripts/acp-companion.mjs` — JSON-RPC over stdio |
 
 Run one worker over ACP (claude lane needs a model the adapter's SDK accepts —
 per the routing directive pass Opus explicitly; a machine default of `fable`
@@ -292,10 +292,11 @@ ANTHROPIC_MODEL=claude-opus-4-8 \
   node <skill-root>/scripts/acp-companion.mjs claude <repo> <task-id> <brief-file> [timeout-sec]
 ```
 
-gemini note (2026-07-19): protocol-ready but blocked at the product level on
-this machine — Gemini Code Assist for individuals was retired in favor of
-Antigravity (`agy`, which has no ACP yet). Keep the lane; it lights up
-wherever a licensed gemini or an ACP-capable agy exists.
+gemini note (re-verified 2026-07-21): dead for individuals — oauth-personal is
+hard-blocked (`-32000` "migrate to Antigravity"), the api-key auth path works
+mechanically but needs a valid `GEMINI_API_KEY`, and CLI 0.51.0 is the latest.
+Keep the lane; it lights up wherever a licensed gemini or a valid API key
+exists.
 
 The brief file carries the SAME §6 contract text; the worker writes the same
 `.mailbox-out/<id>` outbox; the companion enforces the same last-line terminal
@@ -314,8 +315,22 @@ per-task when the target repo is sensitive).
 `gpt-5.6-sol` + `ultra` work exactly as the Frontier-always directive
 requires — e2e-verified 2026-07-19. Do NOT use the old zed-industries binary
 (stale embedded core; the companion maps its failure signatures to a clear
-message). tmux remains codex's fallback lane and the only lane for agy. §7's
+message). tmux remains the fallback lane for codex and agy. §7's
 plan/tasks-before-dispatch rule applies to BOTH transports.
+
+**agy over ACP is UNLOCKED (2026-07-21)** via the community adapter
+`antigravity-acp@1.0.0` (shubzkothekar) — version-pinned to the release whose
+source was fully audited that day: no credential handling (OAuth stays inside
+the official `agy` binary it spawns), exactly one network call in the whole
+project (downloading `agy` from Google's official GitHub releases with a
+pinned SHA-256, refused on mismatch), no telemetry, two runtime deps (official
+ACP SDK + protobuf). The companion sets `AGY_SKIP_DOWNLOAD=1` so the installed
+`agy` on PATH/$AGY_BIN is always used. Requires `bun` on PATH (the adapter is
+Bun-native). **ToS risk — say it out loud when proposing this lane:** Google's
+Antigravity terms name third-party tools driving an OAuth-authed agy as a
+breach (account suspension possible); this is the same pattern-level exposure
+as driving agy via tmux, and Google's own mitigation is authenticating agy
+with a Vertex AI / AI Studio API key instead of OAuth.
 
 **Permissions (stall-tested 2026-07-20):** the two transports fail very
 differently here. On tmux, a TUI approval dialog SILENTLY STALLS the turn —
