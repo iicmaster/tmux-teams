@@ -10,9 +10,12 @@ own `skills/shared/tmux-teams`; the old mirror/sync flow is gone.)
 ## Commands
 
 ```bash
-node --test tests/plugin-structure.test.mjs   # structure + semantic checks
-claude plugin validate --strict .             # manifest validation
+node --test                        # whole suite — structure, semantics, KMS
+claude plugin validate --strict .  # manifest validation
 ```
+
+`node --test tests/` (a bare directory) fails on Node 24 with MODULE_NOT_FOUND —
+pass no path at all, or a glob like `tests/*.test.mjs`.
 
 ## Release flow
 

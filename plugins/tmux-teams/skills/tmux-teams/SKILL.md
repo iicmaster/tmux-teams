@@ -344,3 +344,55 @@ either resolve inside the App Server adapter or arrive as structured
 programmatically (auto-approve, allow_always > allow_once > first). For
 sensitive target repos tighten the companion's permission handler instead of
 juggling TUI flags.
+
+## 9. Team KMS — run memory (added 2026-07-21)
+
+The outbox answers *was this piece of work good?*; the KMS answers *is what the
+system has learned still true and usable?* Both fail differently, and the outbox
+cannot answer the second — it is read once and never again.
+
+`scripts/kms.mjs` — two commands, zero deps, one immutable file per finished
+dispatch under `~/.tmux-teams/kms/<basename>-<hash8>/events/`:
+
+```bash
+node <skill-root>/scripts/kms.mjs append <repo> <event-file|->   # write one event
+node <skill-root>/scripts/kms.mjs recall <repo> [terms...] [--worker W] [--limit N]
+```
+
+- **Not a gate.** Workers run as the same UID with broad permissions, so this
+  store is worker-writable like everything else in `$HOME`. It records the PM's
+  verdict; it never replaces the PM re-running the check. Do not build a
+  "verified by KMS" claim on top of it — the §6 tamper rule applies here too.
+- **Best-effort, never blocking.** A failed KMS write must not fail a run that
+  otherwise worked; `mailbox-run.js` reports the error and continues. But it
+  reports it out loud — memory that silently stops being written is the failure
+  nobody notices for weeks.
+- **Every terminal state is recorded** — blocked, failed, timed out, and
+  PM-rejected DONE included. A store that keeps only successes lies about how
+  the work actually goes.
+- **Secrets are scrubbed on write** (EVIDENCE is raw command output by contract,
+  and this store sits outside `.gitignore`'s reach). Events are immutable, so
+  scrubbing after the fact is not an option — keep the excerpt short anyway.
+- **Terminal markers are defanged on recall** (`TEAM_DONE` → `[TEAM_DONE]`),
+  not on write: the completion detector reads `.mailbox-out/<id>` and never this
+  store, so the risk lives where recalled text reaches the next brief.
+- **Slug = basename + hash of the resolved path.** Basename alone merges
+  `~/work/api` and `~/clients/api` into one memory; cross-project bleed is the
+  one failure a memory store must not have.
+
+Event body — `key: value` lines, `task_id` and `worker` required:
+`task_id / worker / transport / repo_rev / tree / terminal / pm_verdict /
+verify_cmd / lesson`. Write `pm_verdict` from the PM's own verdict (`fail` →
+`reject`, `unverifiable|skipped` → `unresolved`), never from the worker's
+self-report. For `lesson`, name why it slipped through rather than narrating:
+`ci-gap | latent-code | workload-gap | incomplete-prior-fix | review-miss |
+brief-too-open | none` (taxonomy adapted from thananon/9arm-skills' post-mortem
+skill, 2026-07-21).
+
+**Recall is opt-in.** Injecting recalled text into a brief means worker-authored
+prose from an earlier run becomes an instruction to a later one — a persistent
+injection path created by the system's own legitimate write path, which no
+amount of escaping closes. Default is to record only; pull `recall` yourself
+when planning, read it as leads, and paste in what you judge worth carrying.
+Recalled output is labelled unverified history and carries a warning not to
+re-run a stored `verify_cmd` blindly — re-derive it from the plan instead.

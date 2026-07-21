@@ -12,6 +12,7 @@
 //     repo: "/abs/path/to/target/repo",           // where workers cd/run (default: cwd)
 //     ctlBase: "~/.tmux-teams/mailbox-run",        // control root; per-worker = ctlBase/<id>
 //     deliverSh: "<...>/tmux-teams/scripts/deliver.sh",  // optional; agents locate it if omitted
+//     kmsPath: "<...>/tmux-teams/scripts/kms.mjs",       // optional; same — Team KMS distill (§9)
 //     timeoutSec: 1200,                            // per-worker wait for a terminal marker
 //     runId: "r1",                                 // optional; suffixes the shared session name
 //     workers: [
@@ -43,7 +44,7 @@ export const meta = {
   phases: [
     { title: 'Lifecycle', detail: 'per worker: setup tmux + codex, dispatch via deliver.sh, wait for a terminal marker (DONE/BLOCKED/FAILED), collect outbox' },
     { title: 'Verify', detail: 'PM re-runs each worker evidence command to render pass/fail' },
-    { title: 'Report', detail: 'synthesize verdicts, then cleanup sessions' },
+    { title: 'Report', detail: 'distill each verdict into the Team KMS (best-effort), synthesize, then cleanup sessions' },
   ],
 }
 
@@ -63,12 +64,17 @@ const RAW_WORKERS = Array.isArray(args_.workers) ? args_.workers : []
 // instead of being dropped silently; the typeof check defeats RegExp's
 // coercion of non-string ids (a numeric 123 would otherwise pass).
 const ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/
+const seenIds = new Set()
 for (const w of RAW_WORKERS) {
   if (!w || typeof w.id !== 'string' || !ID_RE.test(w.id) || typeof w.brief !== 'string' || !w.brief.trim()) {
     throw new Error(
       `mailbox-run: invalid worker entry (id=${JSON.stringify(w && w.id)}) — id must be a string, 1-64 chars, alphanumeric/_/-, starting alphanumeric or _, no path separators; brief a non-empty string`
     )
   }
+  // Duplicate ids would share one outbox path, one inbox dir and one tmux window
+  // name — two workers silently overwriting each other's results.
+  if (seenIds.has(w.id)) throw new Error(`mailbox-run: duplicate worker id "${w.id}" — ids must be unique within a run`)
+  seenIds.add(w.id)
 }
 const WORKERS = RAW_WORKERS
 if (!WORKERS.length) {
@@ -240,10 +246,13 @@ const report = WORKERS.map((w, i) => {
   }
 })
 
-// Best-effort cleanup. The session may be SHARED with a concurrent run on the same
-// folder (runId is optional), so never kill-session blindly: kill only this run's
-// windows by pane id, then the session only once it is empty but for the PM shell.
+// CLEANUP FIRST, then distill. Order is load-bearing: tearing down tmux is the
+// step that must always happen, and the KMS write is best-effort by design
+// (SKILL.md §9). Sharing one agent would let a failed memory write skip cleanup
+// entirely — memory that can break a run is worse than no memory.
 const panes = WORKERS.map((w, i) => ({ id: w.id, pane: (results[i] && results[i].pane) || '' }))
+let cleanupNote = 'ok'
+try {
 await agent(
   [
     `Cleanup for a tmux-teams mailbox run: ONE shared automation session, one window per worker — possibly shared with ANOTHER concurrent run, so kill only this run's own windows.`,
@@ -256,6 +265,45 @@ await agent(
   ].join('\n'),
   { label: 'cleanup', phase: 'Report' }
 )
+} catch (e) {
+  // A failed teardown leaves stray tmux windows — worth reporting, never worth
+  // losing the run's verdicts over. The report below is the whole point of the run.
+  cleanupNote = `cleanup failed (tmux may need manual teardown): ${e && e.message ? e.message : e}`
+}
 
-log(`mailbox-run done: ${report.map(r => `${r.id}=${r.verdict}`).join(', ')}`)
-return { workers: report, raw_outboxes: `${REPO}/.mailbox-out/<id>` }
+// DISTILL — record what happened, after cleanup and inside a catch. A KMS failure
+// is reported into the run's own output (an absent memory must be visible, not
+// silent) and never propagates: the work already shipped and was already verified.
+let kmsNote = 'skipped'
+try {
+  kmsNote = await agent(
+    [
+      `Record this finished tmux-teams run into the Team KMS. This is best-effort bookkeeping AFTER the work is done — never invent or re-run anything.`,
+      `kms.mjs: ${args_.kmsPath || 'locate it next to deliver.sh — <plugin root>/skills/tmux-teams/scripts/kms.mjs ($CLAUDE_PLUGIN_ROOT when invoked from the plugin)'}`,
+      ``,
+      `REV=$(cd "${REPO}" && git rev-parse --short HEAD 2>/dev/null || echo not-a-git-repo)`,
+      `TREE=$(cd "${REPO}" && [ -n "$(git status --porcelain 2>/dev/null)" ] && echo dirty || echo clean)`,
+      `For EACH worker below: write its event to a temp file, then run`,
+      `  node <kms.mjs> append "${REPO}" <that-temp-file>`,
+      ``,
+      `Event body — one "key: value" per line, exactly these keys:`,
+      `  task_id / worker / transport / repo_rev / tree / terminal / pm_verdict / verify_cmd / lesson`,
+      `Value rules:`,
+      `  - pm_verdict comes from the PM verdict listed below, NOT from the worker's self-report. Map: pass -> pass, fail -> reject, unverifiable|skipped -> unresolved.`,
+      `  - RECORD EVERY WORKER — blocked, failed, timed out and PM-rejected included. A store that keeps only successes lies about how the work actually goes.`,
+      `  - lesson: ONE line, only if this run taught something reusable about the worker, the brief, or this repo; otherwise "none". Prefer naming why it slipped through: ci-gap | latent-code | workload-gap | incomplete-prior-fix | review-miss | brief-too-open | none.`,
+      `  - Do NOT paste raw command output into the event. kms.mjs redacts secrets, but the shortest evidence is the safest.`,
+      ``,
+      `Workers to record:`,
+      ...report.map((r, i) => `  - task_id=${r.id} worker=codex transport=tmux terminal=${r.terminal} pm_verdict=${r.verdict} verify_cmd=${JSON.stringify(WORKERS[i].verify_cmd || '')} note=${JSON.stringify(r.note || '')}`),
+      ``,
+      `Return ONE line: the written event paths, or the error if the write failed.`,
+    ].join('\n'),
+    { label: 'distill', phase: 'Report' }
+  )
+} catch (e) {
+  kmsNote = `kms distill failed (run itself is unaffected): ${e && e.message ? e.message : e}`
+}
+
+log(`mailbox-run done: ${report.map(r => `${r.id}=${r.verdict}`).join(', ')} | cleanup: ${String(cleanupNote).split('\n')[0]} | kms: ${String(kmsNote).split('\n')[0]}`)
+return { workers: report, raw_outboxes: `${REPO}/.mailbox-out/<id>`, cleanup: cleanupNote, kms: kmsNote }

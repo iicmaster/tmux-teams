@@ -10,7 +10,7 @@ verification.
 
 | Skill | Purpose |
 |---|---|
-| `tmux-teams:tmux-teams` | PM-via-tmux protocol: dispatch, completion detection, capture, mailbox pattern |
+| `tmux-teams:tmux-teams` | PM protocol over tmux + ACP: dispatch, completion detection, capture, mailbox pattern, run memory (§9) |
 | `tmux-teams:codex-tmux-driver` | Codex TUI calibration (flags, markers, dialogs) for the codex worker lane |
 | `tmux-teams:party-mode` | Multi-agent execution/advisory workflow with 3-model review + grill gate |
 | `tmux-teams:party-auto` | Execution lane of party-mode |
@@ -73,7 +73,8 @@ non-authoritative.)
    `claude plugin update tmux-teams@tmux-teams` (install cache is version-keyed).
 4. Bump the `plugins/tmux-teams` submodule pointer in `~/agent-skills`.
 
-`node --test tests/` runs the structure + semantic checks.
+`node --test` runs the whole suite (structure, semantics, KMS). Pass no path:
+`node --test tests/` fails on Node 24.
 
 Note: `~/.claude/skills` no longer carries these six skills (they are
 plugin-delivered; `agent-skills/scripts/sync.sh` purges them from the tool
