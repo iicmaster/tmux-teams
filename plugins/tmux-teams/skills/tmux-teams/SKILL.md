@@ -281,7 +281,7 @@ transport-independent. Two transports carry it:
 | transport | for | mechanism |
 |---|---|---|
 | `tmux` | agy, any TUI without ACP; codex fallback | deliver.sh + markers (§1-§6) |
-| `acp` | codex (`@agentclientprotocol/codex-acp`, frontier-verified); claude (`@zed-industries/claude-agent-acp`, e2e-verified); gemini (native `--acp` — see note) | `scripts/acp-companion.mjs` — JSON-RPC over stdio |
+| `acp` | codex (`@agentclientprotocol/codex-acp`, frontier-verified); claude (`@agentclientprotocol/claude-agent-acp`, official adapter — e2e-verified 2026-07-21, Task subagents work, effort via `MAX_THINKING_TOKENS`); gemini (native `--acp` — see note) | `scripts/acp-companion.mjs` — JSON-RPC over stdio |
 
 Run one worker over ACP (claude lane needs a model the adapter's SDK accepts —
 per the routing directive pass Opus explicitly; a machine default of `fable`

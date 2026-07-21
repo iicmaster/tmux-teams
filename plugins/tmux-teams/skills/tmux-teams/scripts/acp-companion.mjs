@@ -9,7 +9,9 @@
 //
 // Lanes (2026-07-19):
 //   gemini -> `gemini --acp`                       (native; product-gated, see SKILL.md §8)
-//   claude -> `npx -y @zed-industries/claude-agent-acp` (Zed adapter, e2e-verified)
+//   claude -> `npx -y @agentclientprotocol/claude-agent-acp` (official adapter,
+//             successor to the zed-industries build — Task-tool subagents
+//             allowed, effort via MAX_THINKING_TOKENS env)
 //   codex  -> `npx -y @agentclientprotocol/codex-acp` — the NEW official
 //             adapter (Codex App Server-based): it drives the INSTALLED codex
 //             CLI, so the frontier model + ultra effort work as-is
@@ -43,7 +45,7 @@ const preamble =
 
 const CMDS = {
   gemini: ['gemini', ['--acp']],
-  claude: ['npx', ['-y', '@zed-industries/claude-agent-acp']],
+  claude: ['npx', ['-y', '@agentclientprotocol/claude-agent-acp']],
   codex: ['npx', ['-y', '@agentclientprotocol/codex-acp']],
 }
 let cmd
