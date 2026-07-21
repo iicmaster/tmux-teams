@@ -492,6 +492,11 @@ point even though it is gone now. Finished runs stay on the graph on purpose —
 complete line is what an interrupted one is read against. Drawn as hand-rolled
 SVG: no chart library, nothing fetched, works offline like everything else here.
 
+**Outboxes ignore themselves too.** `.mailbox-out/` holds raw command output,
+so dispatch drops a `.gitignore` containing `*` into it — the target repo's
+ignore rules are not ours to edit, and a real run leaked an outbox into a commit
+before this existed. Same trick as the memory store, same reason.
+
 **Honesty rules, same as everywhere else here.** Control dirs
 (`~/.tmux-teams/mailbox-run/<id>`) are keyed by worker id alone and cannot prove
 which repo dispatched them, so they appear in their own section and never raise

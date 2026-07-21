@@ -9,3 +9,6 @@ CLAUDE.local.md
 
 # browser scratch from screenshot verification
 .playwright-mcp/
+
+# worker outboxes carry raw command output — never commit them
+.mailbox-out/

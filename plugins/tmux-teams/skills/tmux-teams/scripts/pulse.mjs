@@ -228,10 +228,14 @@ function derive(now) {
   }
   // A live process with no footprint at all still deserves a row — it is real,
   // and hiding it because it does not fit the model is how a dashboard lies.
+  // But the SAME idle-shell rule applies here, and the first real run proved
+  // why: a dispatch opens the session with an empty PM shell in window 0, whose
+  // cwd is the repo, so it passed the ownership check and was reported as a
+  // second running worker that does not exist.
   for (const l of live) {
-    if (!active.some(a => a.id === l.id)) {
-      active.push({ id: l.id, marker: '', alive: true, kind: l.kind, detail: l.detail, ageSec: null, state: 'running' })
-    }
+    if (active.some(a => a.id === l.id)) continue
+    if (l.kind === 'tmux' && l.hasChild === false) continue
+    active.push({ id: l.id, marker: '', alive: true, kind: l.kind, detail: l.detail, ageSec: null, state: 'running' })
   }
   const unclaimed = unclaimedControlDirs(new Set(live.map(l => l.id)), new Set(foot.map(f => f.id)))
   return { active, rec, notes, unclaimed }

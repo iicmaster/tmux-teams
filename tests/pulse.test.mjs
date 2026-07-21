@@ -182,3 +182,16 @@ test('an unresolved run is not drawn as a healthy finish', () => {
   assert.match(graph, /g-warn/)
   assert.doesNotMatch(graph, /g-ok/)
 })
+
+test('an idle pane shell is not counted as a running worker', () => {
+  // The first real run opened its session with an empty PM shell in window 0.
+  // Its cwd is the repo, so it passed the ownership check and was reported as a
+  // second running worker. A shell with no child is a prompt, not a job —
+  // whether or not it has a footprint.
+  const dir = repo()
+  const html = render(dir)
+  // No tmux here, so this asserts the shape: an empty repo reports nothing
+  // running, and the orphan path cannot invent rows out of bare processes.
+  assert.match(html, /ไม่มี worker ทำงานอยู่/)
+  assert.doesNotMatch(html.slice(0, html.indexOf('บันทึกล่าสุด')), /pill running/)
+})
