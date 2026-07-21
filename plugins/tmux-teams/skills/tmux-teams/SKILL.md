@@ -391,14 +391,27 @@ node <skill-root>/scripts/kms.mjs recall <repo> [terms...] [--worker W] [--limit
   repo — that is the control/sandbox split §6 depends on. Moving either one to
   where the other lives breaks a different guarantee.
 
-Event body — `key: value` lines, `task_id` and `worker` required:
-`task_id / worker / transport / repo_rev / tree / terminal / pm_verdict /
-verify_cmd / lesson`. Write `pm_verdict` from the PM's own verdict (`fail` →
-`reject`, `unverifiable|skipped` → `unresolved`), never from the worker's
-self-report. For `lesson`, name why it slipped through rather than narrating:
-`ci-gap | latent-code | workload-gap | incomplete-prior-fix | review-miss |
-brief-too-open | none` (taxonomy adapted from thananon/9arm-skills' post-mortem
-skill, 2026-07-21).
+Event body — `key: value` lines, `task_id` and `worker` required. `kms.mjs`
+stores whatever keys it is given, so this list grows without touching code:
+
+- **What happened:** `task_id / worker / transport / repo_rev / tree / terminal /
+  pm_verdict / verify_cmd / lesson`
+- **Measured (added 2026-07-21):** `started_at / wait_sec / timeout_sec /
+  brief_bytes / evidence_present / timed_out / stakes`
+
+Write `pm_verdict` from the PM's own verdict (`fail` → `reject`,
+`unverifiable|skipped` → `unresolved`), never from the worker's self-report. For
+`lesson`, name why it slipped through rather than narrating: `ci-gap |
+latent-code | workload-gap | incomplete-prior-fix | review-miss | brief-too-open
+| none` (taxonomy adapted from thananon/9arm-skills' post-mortem skill).
+
+**Measure early, even imperfectly.** Events are immutable, so a dimension not
+recorded today is unanswerable for every run already written — "which task
+shapes run long?" cannot be backfilled. Timing is captured by the agent holding
+the shell (this workflow runtime cannot call a clock), and `-1` / `""` means
+*not measured*: never write a guessed number, because later nobody can tell an
+estimate from a measurement. Expect this list to keep growing; adding a key
+needs no code change.
 
 **Recall is opt-in.** Injecting recalled text into a brief means worker-authored
 prose from an earlier run becomes an instruction to a later one — a persistent

@@ -132,6 +132,13 @@ const LIFECYCLE_SCHEMA = {
     evidence_present: { type: 'boolean', description: 'outbox has a non-empty EVIDENCE block (not just a checkmark)' },
     outbox: { type: 'string', description: 'full captured outbox content (or error note)' },
     verify_cmd: { type: 'string', description: 'the verification command the worker claims to have run, echoed for the verify lane' },
+    // Timing is measured HERE, by the agent holding the shell, because this
+    // script cannot call a clock. Cheap to record now, impossible to backfill:
+    // events are immutable, so a question we cannot answer today ("which task
+    // shapes run long?") stays unanswerable for every run already written.
+    started_at: { type: 'string', description: 'UTC ISO-8601 from `date -u +%FT%TZ` captured immediately BEFORE dispatch, or "" if setup failed' },
+    ended_at: { type: 'string', description: 'UTC ISO-8601 captured the moment the wait ended (marker seen, or timeout), or ""' },
+    wait_sec: { type: 'integer', description: 'seconds from dispatch to terminal marker or timeout; -1 when it could not be measured' },
   },
 }
 
@@ -166,11 +173,11 @@ const results = await pipeline(
       `   PANE=$(tmux new-window -t "=$S" -n "${w.id}" -c "${REPO}" -P -F '#{pane_id}'); tmux set-option -t "$PANE" -w automatic-rename off. Launch: tmux send-keys -t "$PANE" 'codex' Enter (codex inherits its own frontier default — do NOT pass a model flag).`,
       `   Wait ~8s, capture-pane -t "$PANE", handle any trust dialog with a SINGLE keypress (no Enter). Window names are cosmetic — every later command targets "$PANE".`,
       `2. MAILBOX DIRS (control/sandbox split — load-bearing): control lives OUTSIDE the repo where the worker cannot tamper: mkdir -p "$CTL/inboxes/codex". The OUTBOX lives INSIDE the repo (the worker's writable sandbox): REPO_ABS=$(cd "${REPO}" && pwd); mkdir -p "$REPO_ABS/.mailbox-out"; OUTBOX_FILE="$REPO_ABS/.mailbox-out/${w.id}". Then CLEAR STALE STATE from any earlier run that reused this id — a leftover stop flag kills the new delivery loop instantly and a leftover outbox gets accepted as a fresh result (stale-replay): rm -f "$CTL/stop" "$OUTBOX_FILE" "$CTL/inboxes/codex"/* 2>/dev/null.`,
-      `3. DISPATCH: write the brief below to "$CTL/inboxes/codex/001-${w.id}" (one file). Then start the delivery loop DETACHED so it survives you:`,
+      `3. DISPATCH: record START=$(date -u +%FT%TZ) and T0=$(date +%s) FIRST — these become started_at and the basis for wait_sec, and they cannot be reconstructed later. Then write the brief below to "$CTL/inboxes/codex/001-${w.id}" (one file), and start the delivery loop DETACHED so it survives you:`,
       `   TMUX_TEAMS_CTL="$CTL" TMUX_TEAMS_SESSION="$S" nohup bash <deliver.sh> "$PANE" >/dev/null 2>&1 & disown   (macOS has no setsid — nohup + disown is the portable form; verify the pid is alive before moving on).`,
       `   deliver.sh owns the Enter-swallow verify-retry dance — do NOT send the brief to the pane yourself.`,
       `4. WAIT: poll every 15s for up to ${TIMEOUT}s. The wait ends when "$OUTBOX_FILE" exists AND its LAST non-empty line is EXACTLY one of: "TEAM_DONE ${w.id}" (terminal=done), "TEAM_BLOCKED ${w.id}" (terminal=blocked), "TEAM_FAILED ${w.id}" (terminal=failed) — whole-line match on the final line only; a marker mentioned inside EVIDENCE text or a prefixed id does NOT count, and if the last line matches none keep waiting. blocked/failed end the wait IMMEDIATELY — do not keep waiting for DONE. On timeout, touch "$CTL/stop" to halt the loop and report timed_out=true, terminal=timeout.`,
-      `5. COLLECT: read "$OUTBOX_FILE". evidence_present = the EVIDENCE block exists and holds real command output (NOT an empty line and NOT just "ok"/"✓"). done=true ONLY when the marker was TEAM_DONE; blocked/failed keep done=false with the matching terminal value. Touch "$CTL/stop" to end the loop. Return the fields.`,
+      `5. COLLECT: the INSTANT the wait ends (marker seen or timeout), record END=$(date -u +%FT%TZ) and wait_sec=$(( $(date +%s) - T0 )) — before reading anything, so the number measures the worker and not your own bookkeeping. Then read "$OUTBOX_FILE". evidence_present = the EVIDENCE block exists and holds real command output (NOT an empty line and NOT just "ok"/"✓"). done=true ONLY when the marker was TEAM_DONE; blocked/failed keep done=false with the matching terminal value. Touch "$CTL/stop" to end the loop. Return the fields, including started_at=$START, ended_at=$END and wait_sec (use "" / -1 only if a step genuinely failed before you could measure — never guess a number).`,
       ``,
       `THE BRIEF (write this verbatim to the inbox file):`,
       `<<<BRIEF`,
@@ -198,6 +205,8 @@ const results = await pipeline(
       timed_out: !!(life && life.timed_out),
       evidence_present: !!(life && life.evidence_present),
       pane: (life && life.pane) || '',   // threaded through to cleanup — it kills by pane, not by session
+      started_at: (life && life.started_at) || '',
+      wait_sec: Number.isInteger(life && life.wait_sec) ? life.wait_sec : -1,
     }
     if (!finished) {
       // Typed give-up states (TEAM_BLOCKED/TEAM_FAILED) skip the verify lane:
@@ -243,6 +252,10 @@ const report = WORKERS.map((w, i) => {
     id: w.id, stakes: w.stakes || 'normal',
     verdict: v.verdict, done: v.done, terminal: v.terminal || 'none', timed_out: v.timed_out,
     evidence_present: v.evidence_present, note: v.note,
+    // Measured, not guessed. brief_bytes is the one dimension of "was the brief
+    // too open?" that can be counted rather than argued about.
+    started_at: v.started_at || '', wait_sec: Number.isInteger(v.wait_sec) ? v.wait_sec : -1,
+    timeout_sec: TIMEOUT, brief_bytes: w.brief.length,
   }
 })
 
@@ -288,14 +301,19 @@ try {
       ``,
       `Event body — one "key: value" per line, exactly these keys:`,
       `  task_id / worker / transport / repo_rev / tree / terminal / pm_verdict / verify_cmd / lesson`,
+      `  started_at / wait_sec / timeout_sec / brief_bytes / evidence_present / timed_out / stakes`,
       `Value rules:`,
+      `  - The second row is MEASURED data, copied verbatim from the per-worker line below. Never estimate or round it: a wrong number is worse than the -1 that means "not measured", because nobody can tell it apart from a real one later.`,
       `  - pm_verdict comes from the PM verdict listed below, NOT from the worker's self-report. Map: pass -> pass, fail -> reject, unverifiable|skipped -> unresolved.`,
       `  - RECORD EVERY WORKER — blocked, failed, timed out and PM-rejected included. A store that keeps only successes lies about how the work actually goes.`,
       `  - lesson: ONE line, only if this run taught something reusable about the worker, the brief, or this repo; otherwise "none". Prefer naming why it slipped through: ci-gap | latent-code | workload-gap | incomplete-prior-fix | review-miss | brief-too-open | none.`,
       `  - Do NOT paste raw command output into the event. kms.mjs redacts secrets, but the shortest evidence is the safest.`,
       ``,
       `Workers to record:`,
-      ...report.map((r, i) => `  - task_id=${r.id} worker=codex transport=tmux terminal=${r.terminal} pm_verdict=${r.verdict} verify_cmd=${JSON.stringify(WORKERS[i].verify_cmd || '')} note=${JSON.stringify(r.note || '')}`),
+      ...report.map((r, i) => `  - task_id=${r.id} worker=codex transport=tmux terminal=${r.terminal} pm_verdict=${r.verdict}` +
+        ` started_at=${r.started_at || '""'} wait_sec=${r.wait_sec} timeout_sec=${r.timeout_sec} brief_bytes=${r.brief_bytes}` +
+        ` evidence_present=${r.evidence_present} timed_out=${r.timed_out} stakes=${r.stakes}` +
+        ` verify_cmd=${JSON.stringify(WORKERS[i].verify_cmd || '')} note=${JSON.stringify(r.note || '')}`),
       ``,
       `Return ONE line: the written event paths, or the error if the write failed.`,
     ].join('\n'),
