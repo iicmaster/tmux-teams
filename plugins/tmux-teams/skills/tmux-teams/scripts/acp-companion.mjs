@@ -29,7 +29,7 @@
 //             driving an OAuth-authed agy breach Google's Antigravity terms —
 //             same pattern-level risk as the tmux lane; see SKILL.md §8.
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 
@@ -76,6 +76,26 @@ const spawnEnv = agentName === 'agy'
 
 // detached => agent leads its own process group, so killTree reaches
 // grandchildren (npx -> adapter -> CLI -> build tools); issue #3.
+// Dispatch record (SKILL.md §10) — the same footprint the tmux lane writes, so
+// a worker that dies before producing anything is still visible as a run that
+// happened. A live test proved this lane was observable ONLY while alive: with
+// no footprint, dying mid-run erased it completely, which is precisely the
+// failure the live view exists to catch. No pane here, so that field is omitted
+// and the view falls back to its time window.
+try {
+  const dispatchDir = join(cwd, '.tmux-teams', 'dispatch')
+  mkdirSync(dispatchDir, { recursive: true })
+  const ignore = join(cwd, '.tmux-teams', '.gitignore')
+  if (!existsSync(ignore)) writeFileSync(ignore, '*\n')
+  writeFileSync(join(dispatchDir, `${taskId}.md`),
+    `task_id: ${taskId}\nworker: ${agentName}\ntransport: acp\n` +
+    `started_at: ${new Date().toISOString().replace(/\.\d+Z$/, 'Z')}\ntimeout_sec: ${TIMEOUT_MS / 1000}\n`)
+} catch (e) {
+  // Best-effort, like the memory it feeds: never fail a dispatch over
+  // bookkeeping — but say so, because a silent gap here is invisible later.
+  console.error(`[warn] could not write dispatch record: ${e.message}`)
+}
+
 const agent = spawn(cmd[0], cmd[1], { cwd, stdio: ['pipe', 'pipe', 'pipe'], detached: true, env: spawnEnv })
 function killTree(sig = 'SIGTERM') {
   try { process.kill(-agent.pid, sig) } catch { try { agent.kill(sig) } catch {} }

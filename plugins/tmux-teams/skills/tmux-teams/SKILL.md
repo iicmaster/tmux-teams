@@ -438,9 +438,13 @@ leave it open. `watch` is the observer; nothing else keeps it fresh.
 announcing its own liveness is the attestation §6 rejects. Three sets are
 compared and the GAPS are the product:
 
-- **footprint** — `<repo>/.tmux-teams/dispatch/<id>.md`, written by the PM at
-  dispatch (the PM stating what *it* did, which a worker cannot forge), plus any
-  `<repo>/.mailbox-out/<id>`. Dispatch DELETES a stale outbox first, so without
+- **footprint** — `<repo>/.tmux-teams/dispatch/<id>.md`, written at dispatch by
+  BOTH lanes (the tmux workflow and `acp-companion.mjs`) — the dispatcher
+  stating what *it* did, which a worker cannot forge — plus any
+  `<repo>/.mailbox-out/<id>`. The ACP record omits `pane:` because that lane has
+  none, which is why the pane check must tolerate its absence rather than read
+  it as death. A live test caught this lane writing no footprint at all: it was
+  observable only while alive, so dying mid-run erased it entirely. Dispatch DELETES a stale outbox first, so without
   the dispatch record a worker dying before its first write would leave no trace
   in this repo at all — the truest silent death would be the invisible one.
 - **alive** — tmux panes whose `/proc/<pane_pid>/cwd` is this repo, and ACP
