@@ -267,6 +267,75 @@ const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<':
 const dur = (sec) => sec == null ? 'not measured'
   : sec < 60 ? `${sec}s` : sec < 3600 ? `${Math.floor(sec / 60)}m ${sec % 60}s` : `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`
 
+// ── GRAPH ────────────────────────────────────────────────────────────────────
+// Every dispatch walks the same five stages, so the honest picture of the graph
+// is not a drawing of boxes and arrows — it is WHERE EACH RUN STOPPED. Each row
+// is one worker; a filled dot is a stage reached, a hollow one is not. Read down
+// the column and you see the shape of the run; read across and you see how far a
+// single worker got before it finished, stalled or died.
+//
+// Hand-rolled SVG on purpose: no chart library, nothing fetched, works offline.
+const STAGES = ['สั่งงาน', 'มีชีวิต', 'outbox', 'PM ตัดสิน', 'บันทึก']
+
+function graphRows(active, rec) {
+  const rows = []
+  for (const a of active) {
+    // "Reached" is about the PAST, not the present: a run that produced an
+    // outbox was demonstrably alive at some point, even if it is gone now.
+    // Mixing the two drew a solid line straight through a hollow dot.
+    rows.push({
+      id: a.id, state: a.state, kind: a.kind,
+      reached: [true, a.alive || !!a.marker, !!a.marker, false, false],
+    })
+  }
+  // Finished runs are dropped from the live tables; the graph keeps a few so the
+  // picture is not just alarms — you need the healthy shape to compare against.
+  for (const r of [...rec].sort((x, y) => y.mtime - x.mtime)) {
+    if (rows.length >= 10) break
+    if (rows.some(w => w.id === r.task_id)) continue
+    // A run that ended TEAM_FAILED and was never resolved is not a green line.
+    rows.push({
+      id: r.task_id, kind: r.worker,
+      state: r.pm_verdict === 'reject' ? 'rejected' : r.pm_verdict === 'pass' ? 'finished' : 'unresolved',
+      reached: [true, true, true, true, true],
+    })
+  }
+  return rows
+}
+
+function renderGraph(rows) {
+  if (!rows.length) return '<p class="empty">ยังไม่มีงานให้วาด</p>'
+  const LEFT = 190, COL = 112, TOP = 34, ROW = 30
+  const NAME_MAX = 22
+  const w = LEFT + COL * (STAGES.length - 1) + 90
+  const h = TOP + ROW * rows.length + 12
+  const x = (i) => LEFT + COL * i
+  const cls = (s) => ['died', 'unknown'].includes(s) ? 'g-bad'
+    : ['finished', 'running'].includes(s) ? 'g-ok'
+    : 'g-warn'
+
+  const head = STAGES.map((s, i) =>
+    `<text class="g-head" x="${x(i)}" y="18" text-anchor="middle">${esc(s)}</text>`).join('')
+
+  const body = rows.map((r, n) => {
+    const y = TOP + ROW * n + 10
+    const c = cls(r.state)
+    // The line only extends as far as the run actually got: a track drawn to the
+    // end would imply progress that never happened.
+    const lastReached = r.reached.lastIndexOf(true)
+    const track = `<line class="g-track" x1="${x(0)}" y1="${y}" x2="${x(STAGES.length - 1)}" y2="${y}"/>` +
+      (lastReached > 0 ? `<line class="g-line ${c}" x1="${x(0)}" y1="${y}" x2="${x(lastReached)}" y2="${y}"/>` : '')
+    const dots = r.reached.map((on, i) =>
+      `<circle class="${on ? `g-dot ${c}` : 'g-dot g-off'}" cx="${x(i)}" cy="${y}" r="${on ? 5 : 3.5}"/>`).join('')
+    const name = r.id.length > NAME_MAX ? r.id.slice(0, NAME_MAX - 1) + '…' : r.id
+    return `<g><text class="g-id" x="0" y="${y + 4}">${esc(name)}</text><title>${esc(r.id)}</title>${track}${dots}` +
+      `<text class="g-tag ${c}" x="${x(STAGES.length - 1) + 16}" y="${y + 4}">${esc(r.state)}</text></g>`
+  }).join('')
+
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" role="img"
+     aria-label="แต่ละงานเดินไปถึงขั้นไหน">${head}${body}</svg>`
+}
+
 function render({ active, rec, notes, unclaimed }, now) {
   const attention = active.filter(a => ['died', 'unknown', 'unrecorded'].includes(a.state))
   const running = active.filter(a => ['running', 'starting', 'awaiting-verdict'].includes(a.state))
@@ -308,6 +377,17 @@ td{padding:10px 14px;border-bottom:1px solid var(--line)}tr:last-child td{border
 .pill.unrecorded{background:color-mix(in srgb,var(--warn) 26%,transparent);color:var(--warn)}
 .pill.died,.pill.unknown{background:color-mix(in srgb,var(--bad) 18%,transparent);color:var(--bad)}
 .warn{color:var(--warn);font-size:12px}.dim{color:var(--dim);font-size:12px}
+.graph{padding:14px 16px}
+.g-head{font:600 10px var(--mono);fill:var(--dim);letter-spacing:.06em;text-transform:uppercase}
+.g-id{font:13px var(--mono);fill:var(--ink)}
+.g-tag{font:10px var(--mono);fill:var(--dim);letter-spacing:.04em}
+.g-track{stroke:var(--line);stroke-width:2}
+.g-line{stroke-width:2.5}
+.g-dot{stroke:var(--card);stroke-width:1.5}
+.g-off{fill:var(--line);stroke:none}
+.g-ok{stroke:var(--ok)}.g-ok.g-dot,.g-ok.g-tag{fill:var(--ok)}
+.g-warn{stroke:var(--warn)}.g-warn.g-dot,.g-warn.g-tag{fill:var(--warn)}
+.g-bad{stroke:var(--bad)}.g-bad.g-dot,.g-bad.g-tag{fill:var(--bad)}
 .empty{padding:16px;color:var(--dim);font-size:14px}
 .note{border-left:3px solid var(--warn);background:var(--card);padding:10px 14px;margin:10px 0;font-size:13px}
 .verdict-reject{color:var(--bad)}.verdict-pass{color:var(--ok)}.verdict-unresolved{color:var(--warn)}
@@ -323,6 +403,9 @@ footer{margin-top:32px;padding-top:12px;border-top:1px solid var(--line);font:12
 </header>
 
 ${notes.map(n => `<p class="note">⚠ ${esc(n)}</p>`).join('')}
+
+<h2>เส้นทางของแต่ละงาน</h2>
+<div class="card graph">${renderGraph(graphRows(active, rec))}</div>
 
 <h2>ต้องการความสนใจ</h2>
 <div class="card">${attention.length ? `<table>

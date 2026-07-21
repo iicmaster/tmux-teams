@@ -84,15 +84,18 @@ test('a terminal outbox with no record for too long is unrecorded, not dead', ()
   assert.match(html, /unrecorded/)
 })
 
-test('a recorded run drops out of the live view entirely', () => {
+test('a recorded run leaves the live tables but stays on the graph', () => {
+  // The graph deliberately keeps finished runs: a complete line is what an
+  // interrupted one is read against. The alarm tables must still let it go.
   const dir = repo()
   dispatch(dir, 'all-done', 600)
   outbox(dir, 'all-done', 'TEAM_DONE', 600)
   event(dir, 'all-done')
   const html = render(dir)
-  const live = html.split('บันทึกล่าสุด')[0]
-  assert.doesNotMatch(live, /all-done/)
-  assert.match(html, /all-done/)          // still present as history
+  const tables = html.slice(html.indexOf('ต้องการความสนใจ'), html.indexOf('บันทึกล่าสุด'))
+  assert.doesNotMatch(tables, /all-done/)
+  assert.match(html.slice(0, html.indexOf('ต้องการความสนใจ')), /all-done/)   // on the graph
+  assert.match(html, /all-done/)                                              // and in history
 })
 
 test('an old event does not settle a newer dispatch of the same id', () => {
@@ -147,4 +150,29 @@ test('the grace window covers a slow cold start', () => {
   const html = render(dir)
   assert.match(html, /starting/)
   assert.doesNotMatch(html.split('บันทึกล่าสุด')[0], /DIED SILENTLY/)
+})
+
+test('the graph shows a stage as reached even after the process is gone', () => {
+  // An outbox proves the worker was alive at some point. Drawing that stage as
+  // never-reached put a solid line through a hollow dot.
+  const dir = repo()
+  dispatch(dir, 'wrote-then-died', 4000)
+  outbox(dir, 'wrote-then-died', 'TEAM_DONE', 4000)
+  const html = render(dir)
+  const graph = html.slice(html.indexOf('<svg'), html.indexOf('</svg>'))
+  const dots = [...graph.matchAll(/<circle class="([^"]+)"/g)].map(m => m[1])
+  // dispatch + alive + outbox filled, verdict + record hollow
+  assert.equal(dots.filter(c => !c.includes('g-off')).length, 3)
+  assert.equal(dots.filter(c => c.includes('g-off')).length, 2)
+})
+
+test('an unresolved run is not drawn as a healthy finish', () => {
+  const dir = repo()
+  writeFileSync(join(dir, '.tmux-teams', 'kms', 'events', '20260721-0900_gave-up_codex.md'),
+    'task_id: gave-up\nworker: codex\nterminal: TEAM_FAILED\npm_verdict: unresolved\nwait_sec: 12\n')
+  const html = render(dir)
+  const graph = html.slice(html.indexOf('<svg'), html.indexOf('</svg>'))   // CSS also mentions the classes
+  assert.match(graph, /gave-up/)
+  assert.match(graph, /g-warn/)
+  assert.doesNotMatch(graph, /g-ok/)
 })

@@ -470,6 +470,16 @@ where a cold `npx` fetching an adapter can outlast any short timer; announcing
 death during a worker's own installation is the fastest way to make the alarm
 worthless.
 
+**The graph is where each run stopped.** Every dispatch walks the same five
+stages — dispatched → alive → outbox → PM verdict → recorded — so the truthful
+picture is not boxes and arrows but one line per worker with a filled dot for
+each stage actually reached. Read across and you see how far a worker got before
+it finished, stalled or died; read down and you see the shape of the run. Stages
+record the PAST, not the present: an outbox proves the worker was alive at some
+point even though it is gone now. Finished runs stay on the graph on purpose — a
+complete line is what an interrupted one is read against. Drawn as hand-rolled
+SVG: no chart library, nothing fetched, works offline like everything else here.
+
 **Honesty rules, same as everywhere else here.** Control dirs
 (`~/.tmux-teams/mailbox-run/<id>`) are keyed by worker id alone and cannot prove
 which repo dispatched them, so they appear in their own section and never raise
