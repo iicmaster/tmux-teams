@@ -4,7 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -13,14 +13,20 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const COMPANION = join(HERE, '..', 'plugins', 'tmux-teams', 'skills', 'tmux-teams', 'scripts', 'acp-companion.mjs')
 const MOCK = join(HERE, 'fixtures', 'mock-acp-agent.mjs')
 
-function run(taskId, extraEnv = {}, cwd = mkdtempSync(join(tmpdir(), 'acp-companion-'))) {
+function run(taskId, extraEnv = {}, cwd = mkdtempSync(join(tmpdir(), 'acp-companion-')), timeoutSec = 30) {
   const brief = join(cwd, 'brief.md')
   writeFileSync(brief, 'do the thing\n')
-  const r = spawnSync('node', [COMPANION, 'mock', cwd, taskId, brief, '30'], {
+  const r = spawnSync('node', [COMPANION, 'mock', cwd, taskId, brief, String(timeoutSec)], {
     cwd, encoding: 'utf8',
     env: { ...process.env, ACP_CMD: `node ${MOCK}`, ...extraEnv },
   })
   return { ...r, cwd, stdout: r.stdout || '', stderr: r.stderr || '' }
+}
+
+function eventTexts(cwd) {
+  const dir = join(cwd, '.tmux-teams', 'kms', 'events')
+  if (!existsSync(dir)) return []
+  return readdirSync(dir).filter(f => f.endsWith('.md')).sort().map(f => readFileSync(join(dir, f), 'utf8'))
 }
 
 test('renders every session/update kind and completes via the outbox', () => {
@@ -73,4 +79,78 @@ test('an unreadable persisted-session entry warns and starts fresh', () => {
   assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
   assert.match(r.stderr, /could not read persisted session id/)
   assert.match(r.stdout, /\[session\] sess_mock/)
+})
+
+test('records one mechanical KMS event without inventing a PM judgement', () => {
+  const r = run('task-kms')
+  assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
+  const events = eventTexts(r.cwd)
+  assert.equal(events.length, 1)
+  assert.match(events[0], /^event_kind: transport-terminal$/m)
+  assert.match(events[0], /^task_id: task-kms$/m)
+  assert.match(events[0], /^worker: mock$/m)
+  assert.match(events[0], /^transport: acp$/m)
+  assert.match(events[0], /^terminal: done$/m)
+  assert.match(events[0], /^exit_code: 0$/m)
+  assert.match(events[0], /^evidence_present: false$/m)
+  assert.match(events[0], /^timed_out: false$/m)
+  assert.match(events[0], /^started_at: \d{4}-\d{2}-\d{2}T/m)
+  assert.doesNotMatch(events[0], /^pm_verdict:/m)
+  assert.doesNotMatch(events[0], /^lesson:/m)
+})
+
+test('records whether the terminal outbox contains concrete evidence', () => {
+  const r = run('task-evidence', { MOCK_EVIDENCE: '1' })
+  assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
+  assert.match(eventTexts(r.cwd)[0], /^evidence_present: true$/m)
+})
+
+for (const [mode, status, terminal] of [
+  ['blocked', 0, 'blocked'],
+  ['failed', 0, 'failed'],
+  ['invalid', 3, 'invalid'],
+  ['missing', 3, 'no-outbox'],
+]) {
+  test(`records the ${terminal} terminal path`, () => {
+    const r = run(`task-${mode}`, { MOCK_TERMINAL: mode })
+    assert.equal(r.status, status, `exit ${status} expected; stderr:\n${r.stderr}`)
+    const events = eventTexts(r.cwd)
+    assert.equal(events.length, 1)
+    assert.match(events[0], new RegExp(`^terminal: ${terminal}$`, 'm'))
+    assert.match(events[0], new RegExp(`^exit_code: ${status}$`, 'm'))
+  })
+}
+
+test('ACP_KMS_AUTO=0 opts out of the automatic event', () => {
+  const r = run('task-optout', { ACP_KMS_AUTO: '0' })
+  assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
+  assert.deepEqual(eventTexts(r.cwd), [])
+})
+
+test('records timeout once and exits when the agent accepts SIGTERM', () => {
+  const r = run('task-timeout', { MOCK_HANG: '1' }, undefined, 1)
+  assert.equal(r.status, 1, `exit 1 expected; stderr:\n${r.stderr}`)
+  const events = eventTexts(r.cwd)
+  assert.equal(events.length, 1)
+  assert.match(events[0], /^terminal: timeout$/m)
+  assert.match(events[0], /^timed_out: true$/m)
+  assert.match(events[0], /^exit_code: 1$/m)
+})
+
+test('records an agent that exits before completing the protocol', () => {
+  const r = run('task-early-exit', { MOCK_EXIT_EARLY: '1' })
+  assert.equal(r.status, 1, `exit 1 expected; stderr:\n${r.stderr}`)
+  const events = eventTexts(r.cwd)
+  assert.equal(events.length, 1)
+  assert.match(events[0], /^terminal: agent-exit$/m)
+  assert.match(events[0], /^exit_code: 9$/m)
+})
+
+test('records an agent command that cannot be spawned', () => {
+  const r = run('task-spawn-error', { ACP_CMD: 'tmux-teams-no-such-acp-agent' })
+  assert.equal(r.status, 1, `exit 1 expected; stderr:\n${r.stderr}`)
+  const events = eventTexts(r.cwd)
+  assert.equal(events.length, 1)
+  assert.match(events[0], /^terminal: spawn-error$/m)
+  assert.match(events[0], /^exit_code: 1$/m)
 })

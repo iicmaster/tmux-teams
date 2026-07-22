@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // pulse.mjs — one screen showing what this repo's orchestration is doing now.
 //
-// Read-only by design: it renders a page, it never dispatches, kills or edits.
+// Observation is read-only: it never dispatches or kills workers. `ensure`
+// manages only this observer's repo-local pidfile and detached watch process.
 //
 // It PROBES rather than believes. Nothing here reads a "status: running" file,
 // because a worker announcing its own liveness is the same attestation the
@@ -22,15 +23,17 @@
 // usage:
 //   pulse.mjs once  <repo>                 render once, print the path
 //   pulse.mjs watch <repo> [--interval 20] re-render forever (Ctrl-C to stop)
-import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, realpathSync } from 'node:fs'
+//   pulse.mjs ensure <repo> [--interval 20] render now; idempotently keep watch alive
+import { execFileSync, spawn } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { parseLsofCwd, parsePgrep, parsePsCandidates } from './pulse-platform.mjs'
 
 const [cmd, repoArg, ...flags] = process.argv.slice(2)
-const USAGE = 'usage: pulse.mjs once <repo> | pulse.mjs watch <repo> [--interval SEC]'
-if (!cmd || !repoArg || !['once', 'watch'].includes(cmd)) { console.error(USAGE); process.exit(2) }
+const USAGE = 'usage: pulse.mjs once <repo> | pulse.mjs watch|ensure <repo> [--interval SEC]'
+if (!cmd || !repoArg || !['once', 'watch', 'ensure'].includes(cmd)) { console.error(USAGE); process.exit(2) }
 
 let REPO
 try { REPO = realpathSync(repoArg) } catch { console.error(`[pulse] no such repo: ${repoArg}`); process.exit(2) }
@@ -40,6 +43,9 @@ const EVENTS = join(STORE, 'kms', 'events')
 const DISPATCH = join(STORE, 'dispatch')
 const OUTBOX = join(REPO, '.mailbox-out')
 const CTL = join(homedir(), '.tmux-teams', 'mailbox-run')
+const WATCH_PID = join(STORE, 'pulse-watch.pid')
+const THIS_SCRIPT = fileURLToPath(import.meta.url)
+const MANAGED_WATCH = flags.includes('--managed')
 
 const iFlag = flags.indexOf('--interval')
 const INTERVAL = iFlag >= 0 && Number(flags[iFlag + 1]) > 0 ? Number(flags[iFlag + 1]) : 20
@@ -213,12 +219,16 @@ function recorded() {
     const num = (k) => { const v = Number(get(k)); return Number.isFinite(v) ? v : null }
     return {
       file: f, task_id: get('task_id'), worker: get('worker'), terminal: get('terminal'),
-      pm_verdict: get('pm_verdict'), lesson: get('lesson'), started_at: get('started_at'),
+      event_kind: get('event_kind'), pm_verdict: get('pm_verdict'),
+      lesson: get('lesson'), started_at: get('started_at'),
       wait_sec: num('wait_sec'), timeout_sec: num('timeout_sec'), stakes: get('stakes'),
       mtime: statSync(join(EVENTS, f)).mtimeMs,
     }
   })
 }
+
+const PM_VERDICTS = new Set(['pass', 'reject', 'unresolved'])
+const hasPmVerdict = (r) => PM_VERDICTS.has(r.pm_verdict)
 
 // ── DERIVE ───────────────────────────────────────────────────────────────────
 function derive(now) {
@@ -230,7 +240,11 @@ function derive(now) {
   // belongs to. Matching on id alone would let yesterday's record mark today's
   // dispatch "finished" and quietly drop it off the screen.
   const recAt = new Map()
-  for (const r of rec) if (r.task_id) recAt.set(r.task_id, Math.max(recAt.get(r.task_id) || 0, r.mtime))
+  for (const r of rec) {
+    // ACP writes a transport-terminal event before the PM verifies anything.
+    // It is useful history, but only an explicit PM verdict settles a run.
+    if (r.task_id && hasPmVerdict(r)) recAt.set(r.task_id, Math.max(recAt.get(r.task_id) || 0, r.mtime))
+  }
   const liveById = new Map(live.map(l => [l.id, l]))
 
   const active = []
@@ -291,7 +305,9 @@ function median(xs) {
 function stats(rec) {
   const byWorker = new Map()
   for (const r of rec) {
-    if (!r.worker) continue
+    // Mechanical transport facts are not another reviewed run. Counting both
+    // halves would double totals and blend pre-verdict timing into PM history.
+    if (!r.worker || !hasPmVerdict(r)) continue
     const s = byWorker.get(r.worker) || { worker: r.worker, runs: 0, rejected: 0, waits: [] }
     s.runs++
     if (r.pm_verdict === 'reject') s.rejected++
@@ -334,7 +350,7 @@ function graphRows(active, rec) {
   }
   // Finished runs are dropped from the live tables; the graph keeps a few so the
   // picture is not just alarms — you need the healthy shape to compare against.
-  for (const r of [...rec].sort((x, y) => y.mtime - x.mtime)) {
+  for (const r of [...rec].filter(hasPmVerdict).sort((x, y) => y.mtime - x.mtime)) {
     if (rows.length >= 10) break
     if (rows.some(w => w.id === r.task_id)) continue
     // A run that ended TEAM_FAILED and was never resolved is not a green line.
@@ -615,8 +631,115 @@ function once() {
 
 if (cmd === 'once') { console.log(once()); process.exit(0) }
 
+function watcherPid() {
+  try {
+    const pid = Number(readFileSync(WATCH_PID, 'utf8').trim())
+    return Number.isInteger(pid) && pid > 0 ? pid : null
+  } catch { return null }
+}
+
+function pidAlive(pid) {
+  if (!pid) return false
+  try { process.kill(pid, 0); return true }
+  catch (e) { return e.code === 'EPERM' }
+}
+
+// Same single-operator O_EXCL pattern as deliver.sh: one caller claims the
+// pidfile; another sees a live owner and backs off; a dead owner is reclaimed.
+function claimWatcher() {
+  mkdirSync(STORE, { recursive: true })
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      writeFileSync(WATCH_PID, `${process.pid}\n`, { flag: 'wx' })
+      return { claimed: true, pid: process.pid }
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e
+      const pid = watcherPid()
+      if (pidAlive(pid)) return { claimed: false, pid }
+      try { unlinkSync(WATCH_PID) } catch (unlinkError) {
+        if (unlinkError.code !== 'ENOENT') throw unlinkError
+      }
+    }
+  }
+  const pid = watcherPid()
+  return { claimed: false, pid: pidAlive(pid) ? pid : null }
+}
+
+function releaseWatcher(pid = process.pid) {
+  try { if (watcherPid() === pid) unlinkSync(WATCH_PID) } catch { /* best effort */ }
+}
+
+if (cmd === 'ensure') {
+  console.log(once())
+  const claim = claimWatcher()
+  if (!claim.claimed) {
+    if (!claim.pid) { console.error('[pulse] could not claim watcher pidfile'); process.exit(1) }
+    console.log(`[pulse] watcher already running pid ${claim.pid}`)
+    process.exit(0)
+  }
+  const child = spawn(process.execPath,
+    [THIS_SCRIPT, 'watch', REPO, '--interval', String(INTERVAL), '--managed'], {
+      detached: true,
+      stdio: 'ignore',
+      env: { ...process.env, PULSE_WATCH_CLAIM_OWNER: String(process.pid) },
+    })
+  if (!child.pid) {
+    releaseWatcher()
+    console.error('[pulse] failed to start watcher')
+    process.exit(1)
+  }
+  child.unref()
+  // The child changes the pidfile from this claimant's pid to its own only
+  // after installing signal cleanup. Do not tell cron "started" before that
+  // handoff is real, or an immediate shutdown can strand a stale pidfile.
+  let ready = false
+  for (let i = 0; i < 100; i++) {
+    await new Promise(resolve => setTimeout(resolve, 10))
+    if (watcherPid() === child.pid) { ready = true; break }
+    if (!pidAlive(child.pid)) break
+  }
+  if (!ready) {
+    try { process.kill(child.pid, 'SIGTERM') } catch { /* already gone */ }
+    releaseWatcher()
+    console.error('[pulse] watcher failed its pidfile handoff')
+    process.exit(1)
+  }
+  console.log(`[pulse] watcher started pid ${child.pid}`)
+  process.exit(0)
+}
+
+let managedClaimAccepted = false
+if (MANAGED_WATCH) {
+  const owner = Number(process.env.PULSE_WATCH_CLAIM_OWNER)
+  const recorded = watcherPid()
+  if (recorded !== process.pid && recorded !== owner) {
+    console.error(`[pulse] watcher claim belongs to pid ${recorded ?? 'none'}; refusing duplicate`)
+    process.exit(1)
+  }
+  managedClaimAccepted = true
+} else {
+  const claim = claimWatcher()
+  if (!claim.claimed) {
+    console.error(`[pulse] watcher already running pid ${claim.pid}`)
+    process.exit(1)
+  }
+}
+
+const cleanupWatcher = () => releaseWatcher(process.pid)
+process.once('exit', cleanupWatcher)
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.once(signal, () => { cleanupWatcher(); process.exit(0) })
+}
+if (managedClaimAccepted) writeFileSync(WATCH_PID, `${process.pid}\n`)
+
 console.log(`[pulse] watching ${REPO} every ${INTERVAL}s -> ${OUT}`)
 console.log('[pulse] open that file in a browser; it refreshes itself')
-const tick = () => { try { once() } catch (e) { console.error(`[pulse] render failed: ${e.message}`) } }
-tick()
+const tick = () => {
+  if (watcherPid() !== process.pid) {
+    console.error('[pulse] watcher lost its pidfile claim; exiting')
+    process.exit(1)
+  }
+  try { once() } catch (e) { console.error(`[pulse] render failed: ${e.message}`) }
+}
+if (!MANAGED_WATCH) tick()
 setInterval(tick, INTERVAL * 1000)

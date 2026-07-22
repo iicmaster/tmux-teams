@@ -33,10 +33,11 @@
 //             auto-download 404s upstream). ToS note: third-party tools
 //             driving an OAuth-authed agy breach Google's Antigravity terms —
 //             same pattern-level risk as the tmux lane; see SKILL.md §8.
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
+import { fileURLToPath } from 'node:url'
 
 const [agentName, cwd, taskId, briefFile, timeoutArg] = process.argv.slice(2)
 if (!agentName || !cwd || !taskId || !briefFile) {
@@ -50,6 +51,65 @@ if (!ID_RE.test(taskId)) {
 }
 const TIMEOUT_MS = (Number(timeoutArg) > 0 ? Number(timeoutArg) : 600) * 1000
 const brief = readFileSync(briefFile, 'utf8')
+const startedMs = Date.now()
+const startedAt = new Date(startedMs).toISOString().replace(/\.\d+Z$/, 'Z')
+const KMS = fileURLToPath(new URL('./kms.mjs', import.meta.url))
+let kmsRecorded = false
+
+function gitValue(args) {
+  const result = spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  return result.status === 0 ? result.stdout.trim() : null
+}
+
+// Mechanical facts only. The PM later records its own pass/reject/unresolved
+// verdict as a separate immutable event; this transport event must never pose as
+// that judgement. Set ACP_KMS_AUTO=0 when the caller owns terminal recording.
+function recordTerminal(terminal, { timedOut = false, evidencePresent = false, exitCode = -1 } = {}) {
+  if (process.env.ACP_KMS_AUTO === '0' || kmsRecorded) return
+  kmsRecorded = true
+  const rev = gitValue(['rev-parse', '--short', 'HEAD']) ?? 'not-a-git-repo'
+  const porcelain = gitValue(['status', '--porcelain'])
+  const tree = porcelain === null ? 'unknown' : porcelain ? 'dirty' : 'clean'
+  const body = [
+    'event_kind: transport-terminal',
+    `task_id: ${taskId}`,
+    `worker: ${agentName}`,
+    'transport: acp',
+    `repo_rev: ${rev}`,
+    `tree: ${tree}`,
+    `terminal: ${terminal}`,
+    `exit_code: ${exitCode}`,
+    `started_at: ${startedAt}`,
+    `wait_sec: ${Math.max(0, Math.round((Date.now() - startedMs) / 1000))}`,
+    `timeout_sec: ${TIMEOUT_MS / 1000}`,
+    `brief_bytes: ${Buffer.byteLength(brief)}`,
+    `evidence_present: ${evidencePresent}`,
+    `timed_out: ${timedOut}`,
+  ].join('\n') + '\n'
+  const result = spawnSync(process.execPath, [KMS, 'append', cwd, '-'], {
+    encoding: 'utf8', input: body, stdio: ['pipe', 'pipe', 'pipe'],
+  })
+  if (result.status === 0) console.error(`[kms] recorded ${result.stdout.trim()}`)
+  else console.error(`[warn] could not record KMS terminal event: ${(result.stderr || result.error?.message || `exit ${result.status}`).trim()}`)
+}
+
+function hasEvidence(text) {
+  const chunks = []
+  let inside = false
+  for (const line of String(text).split(/\r?\n/)) {
+    if (!inside) {
+      const match = line.match(/^EVIDENCE:[ \t]*(.*)$/)
+      if (!match) continue
+      inside = true
+      if (match[1]) chunks.push(match[1])
+      continue
+    }
+    if (/^TEAM_(DONE|BLOCKED|FAILED)\b/.test(line) || /^[A-Z][A-Z0-9 _-]*:[ \t]*/.test(line)) break
+    chunks.push(line)
+  }
+  const evidence = chunks.join('\n').trim()
+  return !!evidence && !/^(?:ok|yes|pass(?:ed)?|none|n\/a|✓)$/i.test(evidence)
+}
 // Deterministic preamble: the contract is self-carrying even if the brief has
 // a placeholder id or omits the outbox rules (issue #2).
 const preamble =
@@ -94,7 +154,7 @@ try {
   if (!existsSync(ignore)) writeFileSync(ignore, '*\n')
   writeFileSync(join(dispatchDir, `${taskId}.md`),
     `task_id: ${taskId}\nworker: ${agentName}\ntransport: acp\n` +
-    `started_at: ${new Date().toISOString().replace(/\.\d+Z$/, 'Z')}\ntimeout_sec: ${TIMEOUT_MS / 1000}\n`)
+    `started_at: ${startedAt}\ntimeout_sec: ${TIMEOUT_MS / 1000}\n`)
 } catch (e) {
   // Best-effort, like the memory it feeds: never fail a dispatch over
   // bookkeeping — but say so, because a silent gap here is invisible later.
@@ -106,13 +166,29 @@ function killTree(sig = 'SIGTERM') {
   try { process.kill(-agent.pid, sig) } catch { try { agent.kill(sig) } catch {} }
 }
 let stderrBuf = ''
+let timedOut = false
+let finished = false
+let timeoutKillTimer = null
 agent.stderr.on('data', (d) => { stderrBuf += d; process.stderr.write(`[agent-err] ${d}`) })
-agent.on('error', (e) => { console.error(`[fatal] cannot spawn ${cmd[0]}: ${e.message}`); process.exit(1) })
+// An agent can disappear while a request write is in flight. Its exit handler
+// below owns the terminal result; swallowing this stream-level EPIPE prevents a
+// raw Node stack from racing that clearer diagnosis.
+agent.stdin.on('error', () => {})
+agent.on('error', (e) => {
+  finished = true
+  console.error(`[fatal] cannot spawn ${cmd[0]}: ${e.message}`)
+  recordTerminal('spawn-error', { exitCode: 1 })
+  process.exit(1)
+})
 agent.on('exit', (code) => {
-  if (timedOut) return // let the timeout handler finish the SIGKILL escalation
+  if (timedOut) {
+    if (timeoutKillTimer) clearTimeout(timeoutKillTimer)
+    process.exit(1)
+  }
   if (!finished) {
     codexGuard(stderrBuf)
     console.error(`[fatal] agent exited early (code ${code})`)
+    recordTerminal('agent-exit', { exitCode: Number.isInteger(code) ? code : 1 })
     process.exit(1)
   }
 })
@@ -130,7 +206,6 @@ function codexGuard(text) {
 }
 
 let nextId = 1
-let finished = false
 const pending = new Map()
 function request(method, params) {
   const id = nextId++
@@ -202,12 +277,12 @@ function render(u) {
   }
 }
 
-let timedOut = false
 const deadline = setTimeout(() => {
   timedOut = true
   console.error(`\n[timeout ${TIMEOUT_MS / 1000}s] — worker did not finish; no auto-retry (PM decides)`)
+  recordTerminal('timeout', { timedOut: true, exitCode: 1 })
   killTree('SIGTERM')
-  setTimeout(() => { killTree('SIGKILL'); process.exit(1) }, 5000)
+  timeoutKillTimer = setTimeout(() => { killTree('SIGKILL'); process.exit(1) }, 5000)
 }, TIMEOUT_MS)
 
 // Resume target: an explicit ACP_RESUME wins; otherwise a session id stored for
@@ -265,7 +340,10 @@ try {
   codexGuard(e.message + stderrBuf)
   console.error(`[fatal] ${e.message}`)
   finished = true
-  clearTimeout(deadline); killTree(); process.exit(1)
+  clearTimeout(deadline)
+  recordTerminal('protocol-error', { exitCode: 1 })
+  killTree()
+  process.exit(1)
 }
 clearTimeout(deadline)
 killTree()
@@ -275,21 +353,30 @@ killTree()
 const outboxPath = join(cwd, '.mailbox-out', taskId)
 if (!existsSync(outboxPath)) {
   console.error(`[no-outbox] worker finished the turn but wrote no ${outboxPath} — treat as not-done; inspect its final message above`)
+  recordTerminal('no-outbox', { exitCode: 3 })
   process.exit(3)
 }
 // Some agents mkdir the outbox path and write a file inside (issue #1):
 // tolerate exactly one file; anything else is a clear exit 3, never a crash.
-let outboxFile = outboxPath
-if (statSync(outboxPath).isDirectory()) {
-  const entries = readdirSync(outboxPath).filter(f => statSync(join(outboxPath, f)).isFile())
-  if (entries.length !== 1) {
-    console.error(`[no-outbox] ${outboxPath} is a directory with ${entries.length} files — expected a single flat file`)
-    process.exit(3)
+let outboxFile = outboxPath, outboxText
+try {
+  if (statSync(outboxPath).isDirectory()) {
+    const entries = readdirSync(outboxPath).filter(f => statSync(join(outboxPath, f)).isFile())
+    if (entries.length !== 1) {
+      console.error(`[no-outbox] ${outboxPath} is a directory with ${entries.length} files — expected a single flat file`)
+      recordTerminal('invalid', { exitCode: 3 })
+      process.exit(3)
+    }
+    outboxFile = join(outboxPath, entries[0])
+    console.log(`[outbox] warning: worker wrote outbox as a directory; validating ${entries[0]} inside it`)
   }
-  outboxFile = join(outboxPath, entries[0])
-  console.log(`[outbox] warning: worker wrote outbox as a directory; validating ${entries[0]} inside it`)
+  outboxText = readFileSync(outboxFile, 'utf8')
+} catch (e) {
+  console.error(`[no-outbox] cannot validate ${outboxFile}: ${e.message}`)
+  recordTerminal('invalid', { exitCode: 3 })
+  process.exit(3)
 }
-const lines = readFileSync(outboxFile, 'utf8').split('\n').map(s => s.trim()).filter(Boolean)
+const lines = outboxText.split('\n').map(s => s.trim()).filter(Boolean)
 const last = lines[lines.length - 1] ?? ''
 const terminal =
   last === `TEAM_DONE ${taskId}` ? 'done' :
@@ -297,4 +384,6 @@ const terminal =
   last === `TEAM_FAILED ${taskId}` ? 'failed' : 'invalid'
 console.log(`[outbox] ${outboxFile}`)
 console.log(`[terminal] ${terminal}${terminal === 'invalid' ? ` (last line: "${last}")` : ''}`)
-process.exit(terminal === 'invalid' ? 3 : 0)
+const exitCode = terminal === 'invalid' ? 3 : 0
+recordTerminal(terminal, { evidencePresent: hasEvidence(outboxText), exitCode })
+process.exit(exitCode)
