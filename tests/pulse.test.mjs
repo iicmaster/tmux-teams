@@ -51,6 +51,12 @@ const systemLoopSvg = (html) => {
   const i = html.indexOf('aria-label="ลูปการทำงานของระบบ"')
   return html.slice(html.lastIndexOf('<svg', i), html.indexOf('</svg>', i))
 }
+const sectionBy = (html, labelledBy) => {
+  const marker = `aria-labelledby="${labelledBy}"`
+  const i = html.indexOf(marker)
+  assert.notEqual(i, -1, `missing section ${labelledBy}`)
+  return html.slice(html.lastIndexOf('<section', i), html.indexOf('</section>', i) + 10)
+}
 
 const event = (dir, id, wait = '42') => writeFileSync(
   join(dir, '.tmux-teams', 'kms', 'events', `20260721-0900_${id}_codex.md`),
@@ -68,7 +74,8 @@ test('a dispatch with no process and no record is reported as died silently', ()
   dispatch(dir, 'killed-midrun', 600)
   const html = render(dir)
   assert.match(html, /killed-midrun/)
-  assert.match(html, /DIED SILENTLY/)
+  assert.match(html, /หยุดโดยไม่มีบันทึก/)
+  assert.match(html, /data-state="died"/)
 })
 
 test('a fresh dispatch is starting up, not dead', () => {
@@ -76,7 +83,7 @@ test('a fresh dispatch is starting up, not dead', () => {
   dispatch(dir, 'just-launched', 5)
   const html = render(dir)
   assert.match(html, /just-launched/)
-  assert.doesNotMatch(html.split('บันทึกล่าสุด')[0], /DIED SILENTLY/)
+  assert.doesNotMatch(sectionBy(html, 'running-title'), /หยุดโดยไม่มีบันทึก/)
   assert.match(html, /starting/)
 })
 
@@ -88,7 +95,7 @@ test('a finished worker awaiting the PM verdict is not an alarm', () => {
   outbox(dir, 'awaiting', 'TEAM_DONE', 300)
   const html = render(dir)
   assert.match(html, /awaiting-verdict/)
-  assert.doesNotMatch(html.split('บันทึกล่าสุด')[0], /DIED SILENTLY/)
+  assert.doesNotMatch(sectionBy(html, 'running-title'), /หยุดโดยไม่มีบันทึก/)
 })
 
 test('a terminal outbox with no record for too long is unrecorded, not dead', () => {
@@ -106,7 +113,7 @@ test('the system loop dead counter uses the complete died summary only', () => {
   outbox(dir, 'verdict-not-recorded', 'TEAM_DONE', 4000)
   const html = render(dir)
   const loop = systemLoopSvg(html)
-  const count = loop.match(/>ตายเงียบ<\/text><text[^>]*>(\d+)<\/text>/)
+  const count = loop.match(/>หยุดผิดปกติ<\/text><text[^>]*>(\d+)<\/text>/)
   const snapshot = JSON.parse(readFileSync(join(dir, '.tmux-teams', 'pulse.json'), 'utf8'))
 
   assert.match(html, /unrecorded/, 'the run must remain visible as unrecorded')
@@ -126,10 +133,10 @@ test('a recorded run leaves the live tables but stays on the graph', () => {
   outbox(dir, 'all-done', 'TEAM_DONE', 600)
   event(dir, 'all-done')
   const html = render(dir)
-  const tables = html.slice(html.indexOf('ต้องการความสนใจ'), html.indexOf('บันทึกล่าสุด'))
-  assert.doesNotMatch(tables, /all-done/)
-  assert.match(html.slice(0, html.indexOf('ต้องการความสนใจ')), /all-done/)   // on the graph
-  assert.match(html, /all-done/)                                              // and in history
+  const liveSections = sectionBy(html, 'attention-title') + sectionBy(html, 'running-title')
+  assert.doesNotMatch(liveSections, /all-done/)
+  assert.match(perWorkerSvg(html), /all-done/)                  // on the graph
+  assert.match(sectionBy(html, 'recent-title'), /all-done/)     // and in history
 })
 
 test('a mechanical terminal event does not settle a run before the PM verdict', () => {
@@ -138,14 +145,13 @@ test('a mechanical terminal event does not settle a run before the PM verdict', 
   outbox(dir, 'mechanical-only', 'TEAM_DONE', 300)
   transportEvent(dir, 'mechanical-only')
   const html = render(dir)
-  const liveTables = html.slice(html.indexOf('ต้องการความสนใจ'), html.indexOf('บันทึกล่าสุด'))
-  assert.match(liveTables, /mechanical-only/)
-  assert.match(liveTables, /awaiting-verdict/)
+  const liveSections = sectionBy(html, 'attention-title') + sectionBy(html, 'running-title')
+  assert.match(liveSections, /mechanical-only/)
+  assert.match(liveSections, /awaiting-verdict/)
   const graph = perWorkerSvg(html)
   const dots = [...graph.matchAll(/<circle class="([^"]+)"/g)].map(m => m[1])
   assert.equal(dots.filter(c => !c.includes('g-off')).length, 3, 'PM verdict and record stages stay open')
-  const collectibles = html.slice(html.indexOf('ของสะสม'), html.indexOf('<footer>'))
-  assert.match(collectibles, /ยังไม่มีข้อมูลพอ/)
+  assert.match(html, /ยังไม่มีสถิติ/)
 })
 
 test('an old event does not settle a newer dispatch of the same id', () => {
@@ -156,29 +162,47 @@ test('an old event does not settle a newer dispatch of the same id', () => {
   age(join(dir, '.tmux-teams', 'kms', 'events', '20260721-0900_reused_codex.md'), 86400)
   dispatch(dir, 'reused', 600)
   const html = render(dir)
-  assert.match(html.split('บันทึกล่าสุด')[0], /reused/)
-  assert.match(html, /DIED SILENTLY/)
+  assert.match(sectionBy(html, 'attention-title'), /reused/)
+  assert.match(html, /หยุดโดยไม่มีบันทึก/)
 })
 
 test('the page states its scope and its own age', () => {
   const html = render(repo())
-  assert.match(html, /แสดงเฉพาะ worker ที่ระบบนี้สั่งในโปรเจกต์นี้/)
-  assert.match(html, /อัปเดต \d{4}-\d{2}-\d{2}/)
+  assert.match(html, /ติดตามเฉพาะ worker ที่ระบบสั่งในโปรเจกต์นี้/)
+  assert.match(html, /อัปเดตล่าสุด <time[^>]+>\d{4}-\d{2}-\d{2}/)
   assert.match(html, /http-equiv="refresh"/)
+})
+
+test('the page is Thai-first and ordered for scanning before deep reading', () => {
+  const html = render(repo())
+  const overview = html.indexOf('aria-label="ภาพรวมสถานะ"')
+  const attention = html.indexOf('aria-labelledby="attention-title"')
+  const recent = html.indexOf('aria-labelledby="recent-title"')
+  const details = html.indexOf('aria-labelledby="details-title"')
+
+  assert.ok(overview < attention && attention < recent && recent < details)
+  assert.match(html, /--sans:"Kanit","Noto Sans Thai","Leelawadee UI"/)
+  assert.doesNotMatch(html, /fonts\.(?:googleapis|gstatic)\.com/)
+  assert.match(html, /<a class="skip-link" href="#main">/)
+  assert.match(html, /@media\(max-width:620px\)/)
+  assert.match(html, /class="surface table-scroll responsive-table"/)
+  assert.match(html, /<details class="deep-dive" data-persist-key="progress"><summary>ความคืบหน้าของแต่ละงาน<\/summary>/)
+  assert.match(html, /sessionStorage\.setItem\(key, detail\.open \? 'open' : 'closed'\)/)
+  assert.doesNotMatch(html, />DIED SILENTLY<|>not measured</)
 })
 
 test('an empty repo says there is nothing to see rather than looking broken', () => {
   const html = render(repo())
-  assert.match(html, /ไม่มีอะไรต้องดู/)
-  assert.match(html, /ไม่มี worker ทำงานอยู่/)
+  assert.match(html, /ยังไม่มีงานผิดปกติ/)
+  assert.match(html, /ยังไม่มี worker ทำงาน/)
 })
 
 test('an unmeasured duration never renders as zero', () => {
   const dir = repo()
   event(dir, 'no-timing', '-1')
   const html = render(dir)
-  assert.match(html, /not measured/)
-  assert.doesNotMatch(html, />0s</)
+  assert.match(html, /ยังไม่วัด/)
+  assert.doesNotMatch(html, />0 วิ</)
 })
 
 test('a recorded pane that tmux still lists is starting, not dead', () => {
@@ -191,7 +215,7 @@ test('a recorded pane that tmux still lists is starting, not dead', () => {
   const html = render(dir)
   // %999999 does not exist, so with no pane held this must read as died —
   // proving the pane check is what decides, not the age.
-  assert.match(html, /DIED SILENTLY/)
+  assert.match(html, /หยุดโดยไม่มีบันทึก/)
 })
 
 test('the grace window covers a slow cold start', () => {
@@ -199,7 +223,7 @@ test('the grace window covers a slow cold start', () => {
   dispatch(dir, 'npx-fetching', 200)     // 200s: past the old 90s window
   const html = render(dir)
   assert.match(html, /starting/)
-  assert.doesNotMatch(html.split('บันทึกล่าสุด')[0], /DIED SILENTLY/)
+  assert.doesNotMatch(sectionBy(html, 'running-title'), /หยุดโดยไม่มีบันทึก/)
 })
 
 test('the graph shows a stage as reached even after the process is gone', () => {
@@ -224,7 +248,22 @@ test('an unresolved run is not drawn as a healthy finish', () => {
   const graph = perWorkerSvg(html)   // CSS also mentions these classes
   assert.match(graph, /gave-up/)
   assert.match(graph, /g-warn/)
+  assert.match(graph, /ยังไม่สรุป/)
+  assert.doesNotMatch(graph, /ไม่ทราบสถานะ/)
   assert.doesNotMatch(graph, /g-ok/)
+})
+
+test('the graph uses standardized Thai labels for recorded verdicts', () => {
+  const dir = repo()
+  event(dir, 'accepted')
+  writeFileSync(join(dir, '.tmux-teams', 'kms', 'events', '20260721-0901_needs-fix_codex.md'),
+    'task_id: needs-fix\nworker: codex\nterminal: TEAM_DONE\npm_verdict: reject\nwait_sec: 12\n')
+  const graph = perWorkerSvg(render(dir))
+  assert.match(graph, /accepted/)
+  assert.match(graph, /ผ่าน/)
+  assert.match(graph, /needs-fix/)
+  assert.match(graph, /ให้แก้ไข/)
+  assert.doesNotMatch(graph, /ไม่ทราบสถานะ/)
 })
 
 test('an idle pane shell is not counted as a running worker', () => {
@@ -236,8 +275,8 @@ test('an idle pane shell is not counted as a running worker', () => {
   const html = render(dir)
   // No tmux here, so this asserts the shape: an empty repo reports nothing
   // running, and the orphan path cannot invent rows out of bare processes.
-  assert.match(html, /ไม่มี worker ทำงานอยู่/)
-  assert.doesNotMatch(html.slice(0, html.indexOf('บันทึกล่าสุด')), /pill running/)
+  assert.match(html, /ยังไม่มี worker ทำงาน/)
+  assert.doesNotMatch(sectionBy(html, 'running-title'), /pill running/)
 })
 
 test('a recorded pane that tmux no longer lists means dead, not starting', () => {
@@ -251,5 +290,5 @@ test('a recorded pane that tmux no longer lists means dead, not starting', () =>
   age(p, 30)   // well inside the grace window
   const html = render(dir)
   assert.match(html, /killed-now/)
-  assert.match(html, /DIED SILENTLY/)
+  assert.match(html, /หยุดโดยไม่มีบันทึก/)
 })

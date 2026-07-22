@@ -482,8 +482,57 @@ function derive(now) {
 
 // ── RENDER ───────────────────────────────────────────────────────────────────
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
-const dur = (sec) => sec == null ? 'not measured'
-  : sec < 60 ? `${sec}s` : sec < 3600 ? `${Math.floor(sec / 60)}m ${sec % 60}s` : `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`
+const dur = (sec) => sec == null ? 'ยังไม่วัด'
+  : sec < 60 ? `${sec} วิ`
+    : sec < 3600 ? `${Math.floor(sec / 60)} นาที${sec % 60 ? ` ${sec % 60} วิ` : ''}`
+      : `${Math.floor(sec / 3600)} ชม.${Math.floor((sec % 3600) / 60) ? ` ${Math.floor((sec % 3600) / 60)} นาที` : ''}`
+
+// State codes stay stable for agents; people get one consistent Thai label.
+// Keeping the mapping at the view boundary prevents UX copy from leaking into
+// the versioned Pulse Data contract.
+const STATE_COPY = Object.freeze({
+  running: 'กำลังทำงาน',
+  starting: 'กำลังเริ่มงาน',
+  'awaiting-verdict': 'รอ PM ตรวจผล',
+  unrecorded: 'ยังไม่บันทึกผล',
+  died: 'หยุดโดยไม่มีบันทึก',
+  unknown: 'ตรวจสถานะไม่ได้',
+  orphan_running: 'ไม่พบเจ้าของงาน',
+  finished: 'ผ่าน',
+  rejected: 'ให้แก้ไข',
+  unresolved: 'ยังไม่สรุป',
+})
+const ACTION_COPY = Object.freeze({
+  monitor: 'ติดตามการทำงาน',
+  wait: 'รอให้เริ่มงาน',
+  verify_result: 'ตรวจผลลัพธ์',
+  record_verdict: 'บันทึกคำตัดสิน',
+  inspect_worker: 'ตรวจสอบ worker',
+  restore_observability: 'กู้การตรวจสถานะ',
+  inspect_ownership: 'ตรวจสอบเจ้าของงาน',
+})
+const TERMINAL_COPY = Object.freeze({
+  done: 'เสร็จแล้ว', blocked: 'ติดข้อจำกัด', failed: 'ล้มเหลว',
+  invalid: 'ข้อมูลไม่ถูกต้อง', absent: 'ยังไม่มีข้อมูล',
+})
+const VERDICT_COPY = Object.freeze({
+  pass: 'ผ่าน', reject: 'ให้แก้ไข', unresolved: 'ยังไม่สรุป', absent: 'ยังไม่มีคำตัดสิน',
+})
+const DIAGNOSTIC_COPY = Object.freeze({
+  LIVENESS_UNAVAILABLE: 'ตรวจสถานะ process ไม่ได้',
+  TMUX_UNAVAILABLE: 'เชื่อมต่อ tmux ไม่ได้',
+  DISPATCH_UNREADABLE: 'อ่านข้อมูลการสั่งงานไม่ได้',
+  OUTBOX_UNREADABLE: 'อ่านผลลัพธ์จาก worker ไม่ได้',
+  EVENT_UNREADABLE: 'อ่านบันทึกเหตุการณ์ไม่ได้',
+  INVALID_EVENT_ENTRY: 'พบบันทึกเหตุการณ์ที่ไม่ถูกต้อง',
+  SOURCE_TRUNCATED: 'ข้อมูลต้นทางถูกจำกัดเพื่อความปลอดภัย',
+  SEQUENCE_RESET: 'เริ่มลำดับ snapshot ใหม่',
+})
+const stateLabel = (state) => STATE_COPY[state] || 'ไม่ทราบสถานะ'
+const actionLabel = (action) => ACTION_COPY[action] || 'ตรวจสอบรายละเอียด'
+const terminalLabel = (terminal) => TERMINAL_COPY[terminal] || 'ยังไม่มีข้อมูล'
+const verdictLabel = (verdict) => VERDICT_COPY[verdict] || 'ยังไม่มีคำตัดสิน'
+const transportLabel = (transport) => transport === 'acp' ? 'ACP' : transport === 'tmux' ? 'tmux' : 'ไม่ระบุ'
 
 // ── GRAPH ────────────────────────────────────────────────────────────────────
 // Every dispatch walks the same five stages, so the honest picture of the graph
@@ -493,7 +542,7 @@ const dur = (sec) => sec == null ? 'not measured'
 // single worker got before it finished, stalled or died.
 //
 // Hand-rolled SVG on purpose: no chart library, nothing fetched, works offline.
-const STAGES = ['สั่งงาน', 'มีชีวิต', 'outbox', 'PM ตัดสิน', 'บันทึก']
+const STAGES = ['สั่งงาน', 'เริ่มทำงาน', 'ส่งผลลัพธ์', 'PM ตรวจผล', 'บันทึกผล']
 
 function graphRows(snapshot) {
   const rows = []
@@ -538,26 +587,26 @@ function graphRows(snapshot) {
 // loop is a constant, and a page whose job is to be true cannot depend on
 // fetching a renderer that may not arrive.
 function renderLoop(snapshot) {
-  const active = snapshot.runs
   const rec = snapshot.recent_verdicts
   const c = (xs) => xs.length
-  const running = c(active.filter(a => ['running', 'starting'].includes(a.state)))
-  const waiting = c(active.filter(a => a.state === 'awaiting-verdict'))
-  const died = snapshot.summary.by_state.died
+  const byState = snapshot.summary.by_state
+  const running = byState.running + byState.starting
+  const waiting = byState['awaiting-verdict']
+  const died = byState.died
   const pass = c(rec.filter(r => r.pm_verdict === 'pass'))
   const reject = c(rec.filter(r => r.pm_verdict === 'reject'))
   const unres = c(rec.filter(r => r.pm_verdict === 'unresolved'))
 
   const W = 720, X = 300, BW = 210, BH = 46, GAP = 26
   const nodes = [
-    { k: 'box', t: 'วางแผน · sqthink', s: 'บรีฟ + verify_cmd + ลำดับ' },
-    { k: 'box', t: 'สั่งงาน', s: `เขียน dispatch record · ค้าง ${active.length}` },
-    { k: 'box', t: 'worker ทำงาน', s: `${running} กำลังวิ่ง` },
-    { k: 'dia', t: 'มี outbox + marker?', s: '' },
-    { k: 'box', t: 'PM ตรวจซ้ำ', s: `รัน verify_cmd เอง · ${waiting} รอตัดสิน` },
-    { k: 'dia', t: 'คำตัดสิน', s: '' },
-    { k: 'box', t: 'บันทึกเหตุการณ์', s: 'ทุกจุดจบ ไม่เฉพาะที่ผ่าน' },
-    { k: 'store', t: 'ความจำ', s: `${rec.length} เหตุการณ์` },
+    { k: 'box', t: 'วางแผนงาน', s: 'บรีฟ · วิธีตรวจ · ลำดับงาน' },
+    { k: 'box', t: 'ส่งงานให้ worker', s: `ติดตาม ${snapshot.summary.active} งาน` },
+    { k: 'box', t: 'worker ทำงาน', s: `${running} งานกำลังเดิน` },
+    { k: 'dia', t: 'มีผลลัพธ์จาก worker?', s: '' },
+    { k: 'box', t: 'PM ตรวจผล', s: `${waiting} งานรอตรวจ` },
+    { k: 'dia', t: 'สรุปคำตัดสิน', s: '' },
+    { k: 'box', t: 'บันทึกผล', s: 'เก็บทุกจุดจบ ไม่เฉพาะงานที่ผ่าน' },
+    { k: 'store', t: 'ประวัติการทำงาน', s: `${rec.length} รายการล่าสุด` },
   ]
   const y = (i) => 24 + i * (BH + GAP)
   const H = y(nodes.length - 1) + BH + 24
@@ -583,23 +632,23 @@ function renderLoop(snapshot) {
   const dyy = cy(3)
   const diedBranch =
     `<line class="l-edge l-bad" x1="${X + BW / 2 + 14}" y1="${dyy}" x2="${DX - 62}" y2="${dyy}" marker-end="url(#lbad)"/>` +
-    `<text class="l-lbl l-bad-t" x="${X + BW / 2 + 20}" y="${dyy - 9}">ไม่มี marker</text>` +
-    `<text class="l-lbl l-dim" x="${X + BW / 2 + 20}" y="${dyy + 16}">และไม่มีกระบวนการ</text>` +
+    `<text class="l-lbl l-bad-t" x="${X + BW / 2 + 20}" y="${dyy - 9}">ไม่พบผลลัพธ์</text>` +
+    `<text class="l-lbl l-dim" x="${X + BW / 2 + 20}" y="${dyy + 16}">และไม่พบกระบวนการ</text>` +
     `<rect class="l-box l-bad-box" x="${DX - 60}" y="${dyy - 20}" width="124" height="40" rx="20"/>` +
-    `<text class="l-t l-bad-t" x="${DX + 2}" y="${dyy - 2}" text-anchor="middle">ตายเงียบ</text>` +
+    `<text class="l-t l-bad-t" x="${DX + 2}" y="${dyy - 2}" text-anchor="middle">หยุดผิดปกติ</text>` +
     `<text class="l-s l-bad-t" x="${DX + 2}" y="${dyy + 13}" text-anchor="middle">${died}</text>`
 
   const yesEdge = `<text class="l-lbl" x="${X + 8}" y="${(y(3) + BH + y(4)) / 2 + 4}">มี</text>` + down(3)
-  const passEdge = `<text class="l-lbl" x="${X + 8}" y="${(y(5) + BH + y(6)) / 2 + 4}">pass ${pass} · unresolved ${unres}</text>` + down(5)
+  const passEdge = `<text class="l-lbl" x="${X + 8}" y="${(y(5) + BH + y(6)) / 2 + 4}">ผ่าน ${pass} · ยังไม่สรุป ${unres}</text>` + down(5)
 
   // back-edges bow out to the left; dashed, because nothing counts these
   const LX = X - BW / 2 - 70, LX2 = LX - 46
   const reEdge =
     `<path class="l-edge l-dash" d="M ${X - BW / 2 - 14} ${cy(5)} H ${LX} V ${cy(1)} H ${X - BW / 2 - 4}" marker-end="url(#lh)"/>` +
-    `<text class="l-lbl l-dim" x="${LX - 6}" y="${(cy(5) + cy(1)) / 2}" text-anchor="end" transform="rotate(-90 ${LX - 6} ${(cy(5) + cy(1)) / 2})">reject ${reject} · ไม่ได้วัดว่าถูกสั่งใหม่ไหม</text>`
+    `<text class="l-lbl l-dim" x="${LX - 6}" y="${(cy(5) + cy(1)) / 2}" text-anchor="end" transform="rotate(-90 ${LX - 6} ${(cy(5) + cy(1)) / 2})">ให้แก้ไข ${reject} · ยังไม่วัดการส่งซ้ำ</text>`
   const recallEdge =
     `<path class="l-edge l-dash" d="M ${X - BW / 2 - 14} ${cy(7)} H ${LX2} V ${cy(0)} H ${X - BW / 2 - 4}" marker-end="url(#lh)"/>` +
-    `<text class="l-lbl l-dim" x="${LX2 - 6}" y="${(cy(7) + cy(0)) / 2}" text-anchor="end" transform="rotate(-90 ${LX2 - 6} ${(cy(7) + cy(0)) / 2})">recall · opt-in และไม่มีใครบันทึก</text>`
+    `<text class="l-lbl l-dim" x="${LX2 - 6}" y="${(cy(7) + cy(0)) / 2}" text-anchor="end" transform="rotate(-90 ${LX2 - 6} ${(cy(7) + cy(0)) / 2})">นำประวัติมาใช้ · เปิดตามต้องการ</text>`
 
   const defs = `<defs>
     <marker id="lh" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
@@ -639,7 +688,7 @@ function renderGraph(rows) {
       `<circle class="${on ? `g-dot ${c}` : 'g-dot g-off'}" cx="${x(i)}" cy="${y}" r="${on ? 5 : 3.5}"/>`).join('')
     const name = r.id.length > NAME_MAX ? r.id.slice(0, NAME_MAX - 1) + '…' : r.id
     return `<g><text class="g-id" x="0" y="${y + 4}">${esc(name)}</text><title>${esc(r.id)}</title>${track}${dots}` +
-      `<text class="g-tag ${c}" x="${x(STAGES.length - 1) + 16}" y="${y + 4}">${esc(r.state)}</text></g>`
+      `<text class="g-tag ${c}" x="${x(STAGES.length - 1) + 16}" y="${y + 4}">${esc(stateLabel(r.state))}</text></g>`
   }).join('')
 
   return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" role="img"
@@ -653,143 +702,205 @@ function render(snapshot) {
   const rec = snapshot.recent_verdicts
   const notes = snapshot.diagnostics
   const unclaimed = snapshot.unclaimed_control
-  const attention = active.filter(a => ['died', 'unknown', 'unrecorded', 'orphan_running'].includes(a.state))
+  const attentionStates = ['died', 'unknown', 'unrecorded', 'orphan_running']
+  const attention = active.filter(a => attentionStates.includes(a.state))
   const running = active.filter(a => ['running', 'starting', 'awaiting-verdict'].includes(a.state))
   const recent = rec
   const st = snapshot.worker_stats
-  const stamp = snapshot.generated_at.replace('T', ' ').slice(0, 19) + 'Z'
+  const byState = snapshot.summary.by_state
+  const attentionTotal = attentionStates.reduce((sum, state) => sum + byState[state], 0)
+  const runningTotal = byState.running + byState.starting
+  const waitingTotal = byState['awaiting-verdict']
+  const passTotal = rec.filter(r => r.pm_verdict === 'pass').length
+  const rejectTotal = rec.filter(r => r.pm_verdict === 'reject').length
+  const stamp = snapshot.generated_at.replace('T', ' ').slice(0, 19)
   const repoName = snapshot.scope.repo_name || 'unknown'
   const refreshInterval = snapshot.observation.refresh_interval_sec
+  const qualityLabel = snapshot.complete ? 'ข้อมูลครบถ้วน' : 'ข้อมูลบางส่วน'
+  const qualityClass = snapshot.complete ? 'ok' : 'warn'
 
-  const row = (a) => `<tr>
-    <td class="mono">${esc(a.task_id)}</td>
-    <td><span class="pill ${a.state}">${a.state === 'died' ? 'DIED SILENTLY' : a.state}</span></td>
-    <td>${esc(a.transport || '—')}</td>
-    <td class="mono">${esc(a.dispatch_id || '—')}</td>
-    <td>${a.silence_sec == null ? 'not measured' : dur(a.silence_sec)}${a.timeout_sec != null ? ` <span class="dim">/ ${dur(a.timeout_sec)}</span>` : ''}</td>
-    <td><span class="${a.advisory.attention ? 'warn' : 'dim'}">${esc(a.advisory.action_code)}</span></td>
-  </tr>`
+  const metric = (label, value, note, tone = '') => `<div class="metric ${tone}">
+    <span class="metric-label">${esc(label)}</span>
+    <strong class="metric-value">${value}</strong>
+    <span class="metric-note">${esc(note)}</span>
+  </div>`
+
+  const runItem = (a, timingLabel) => `<article class="run-item" data-state="${esc(a.state)}">
+    <div class="run-summary">
+      <div class="run-name"><span class="status-dot ${a.state}" aria-hidden="true"></span><code>${esc(a.task_id)}</code></div>
+      <span class="pill ${a.state}" title="state: ${esc(a.state)}">${esc(stateLabel(a.state))}</span>
+    </div>
+    <dl class="run-facts">
+      <div><dt>ช่องทาง</dt><dd>${esc(transportLabel(a.transport))}</dd></div>
+      <div><dt>${esc(timingLabel)}</dt><dd class="num">${a.silence_sec == null ? 'ยังไม่วัด' : dur(a.silence_sec)}</dd></div>
+      <div><dt>ขั้นถัดไป</dt><dd class="next-action">${esc(actionLabel(a.advisory.action_code))}</dd></div>
+    </dl>
+    <details class="technical" data-persist-key="run:${esc(a.dispatch_id || a.task_id)}">
+      <summary>รายละเอียดทางเทคนิค</summary>
+      <dl>
+        <div><dt>dispatch</dt><dd><code>${esc(a.dispatch_id || 'ไม่ระบุ')}</code></dd></div>
+        <div><dt>timeout</dt><dd class="num">${a.timeout_sec == null ? 'ไม่ระบุ' : dur(a.timeout_sec)}</dd></div>
+        <div><dt>state code</dt><dd><code>${esc(a.state)}</code></dd></div>
+      </dl>
+    </details>
+  </article>`
+
+  const diagnosticItems = notes.map(n => `<li>
+    <span><strong>${esc(DIAGNOSTIC_COPY[n.code] || 'ข้อมูลบางส่วนอ่านไม่ได้')}</strong>${n.count > 1 ? ` <span class="num">×${n.count}</span>` : ''}</span>
+    <code>${esc(`${n.source}:${n.code}`)}</code>
+  </li>`).join('')
 
   return `<!doctype html><html lang="th"><head><meta charset="utf-8">
 <title>pulse — ${esc(repoName)}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="refresh" content="${refreshInterval}">
 <meta name="tmux-teams-snapshot-id" content="${esc(snapshot.snapshot_id)}">
 <style>
-:root{--bg:#0f1216;--card:#161b22;--line:#262d36;--ink:#e6ebe9;--dim:#8b98a5;--ok:#4ac4a2;--warn:#d99b3d;--bad:#e0716a;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-@media(prefers-color-scheme:light){:root{--bg:#f6f8f7;--card:#fff;--line:#dde3e1;--ink:#141a1f;--dim:#5f6b73;--ok:#12806a;--warn:#a06714;--bad:#b0413a}}
-*{box-sizing:border-box}body{margin:0;padding:24px;background:var(--bg);color:var(--ink);font:15px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
-.wrap{max-width:1100px;margin:0 auto}
-header{display:flex;justify-content:space-between;align-items:baseline;gap:16px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:12px}
-h1{font:600 20px var(--mono);margin:0;letter-spacing:-.01em}
-.age{font:12px var(--mono);color:var(--dim);text-align:right}
-.scope{font:12px var(--mono);color:var(--dim);margin:6px 0 0}
-h2{font:600 14px var(--mono);letter-spacing:.04em;text-transform:uppercase;color:var(--dim);margin:32px 0 10px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:6px;overflow-x:auto}
-table{border-collapse:collapse;width:100%;font-size:14px;min-width:640px}
-th{text-align:left;font:600 11px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--dim);padding:10px 14px;border-bottom:1px solid var(--line)}
-td{padding:10px 14px;border-bottom:1px solid var(--line)}tr:last-child td{border-bottom:0}
-.mono{font-family:var(--mono);font-size:13px}
-.pill{display:inline-block;font:600 11px var(--mono);padding:2px 8px;border-radius:3px;text-transform:uppercase}
+:root{color-scheme:dark;--bg:oklch(17% .012 165);--surface:oklch(21% .014 165);--surface-2:oklch(24% .015 165);--line:oklch(34% .014 165);--ink:oklch(93% .012 165);--dim:oklch(71% .018 165);--ok:oklch(74% .13 165);--warn:oklch(78% .13 78);--bad:oklch(72% .16 28);--focus:oklch(78% .12 235);--sans:"Kanit","Noto Sans Thai","Leelawadee UI",Tahoma,sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--r-sm:8px;--r-md:14px;--s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:24px;--s6:32px;--s7:48px}
+@media(prefers-color-scheme:light){:root{color-scheme:light;--bg:oklch(97% .008 165);--surface:oklch(99% .004 165);--surface-2:oklch(95% .012 165);--line:oklch(87% .014 165);--ink:oklch(24% .018 165);--dim:oklch(50% .022 165);--ok:oklch(50% .12 165);--warn:oklch(53% .13 72);--bad:oklch(52% .16 28);--focus:oklch(52% .13 235)}}
+*{box-sizing:border-box}html{font-size:16px}body{margin:0;padding:var(--s5);background:var(--bg);color:var(--ink);font:400 1rem/1.65 var(--sans);text-rendering:optimizeLegibility}
+.wrap{max-width:1180px;margin:0 auto}.skip-link{position:fixed;top:var(--s3);left:var(--s3);z-index:10;transform:translateY(-180%);background:var(--ink);color:var(--bg);padding:var(--s2) var(--s4);border-radius:var(--r-sm)}.skip-link:focus{transform:none}
+.site-header{display:flex;justify-content:space-between;align-items:flex-start;gap:var(--s5);padding:var(--s2) 0 var(--s5);border-bottom:1px solid var(--line)}
+.eyebrow{display:block;margin:0 0 var(--s1);color:var(--dim);font:500 .75rem/1.4 var(--sans);letter-spacing:.08em;text-transform:uppercase}
+h1{display:flex;align-items:baseline;gap:var(--s3);margin:0;font:600 1.75rem/1.2 var(--sans);letter-spacing:-.02em}h1 .repo{color:var(--dim);font:500 1rem var(--mono);letter-spacing:0}
+.scope{max-width:62ch;margin:var(--s2) 0 0;color:var(--dim);font-size:.875rem}.header-status{display:flex;align-items:flex-start;gap:var(--s3);text-align:right}.age{color:var(--dim);font-size:.8rem;line-height:1.5}.age time{display:block;color:var(--ink);font-family:var(--mono);font-variant-numeric:tabular-nums}
+.quality{display:inline-flex;align-items:center;gap:var(--s2);white-space:nowrap;padding:6px 10px;border:1px solid var(--line);border-radius:999px;font-size:.78rem;font-weight:500}.quality::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}.quality.ok{color:var(--ok)}.quality.warn{color:var(--warn)}
+main{display:grid;gap:var(--s7);padding-top:var(--s6)}.summary-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}.metric{min-width:0;padding:var(--s5);border-left:1px solid var(--line)}.metric:first-child{border-left:0}.metric-label,.metric-note{display:block;color:var(--dim);font-size:.82rem}.metric-value{display:block;margin:2px 0;font:600 2rem/1.2 var(--sans);font-variant-numeric:tabular-nums}.metric.bad .metric-value{color:var(--bad)}.metric.ok .metric-value{color:var(--ok)}.metric.warn .metric-value{color:var(--warn)}
+.diagnostics{border:1px solid color-mix(in oklch,var(--warn) 45%,var(--line));border-radius:var(--r-md);background:color-mix(in oklch,var(--warn) 8%,var(--surface));padding:var(--s4) var(--s5)}.diagnostics h2{margin:0 0 var(--s2);font-size:1rem}.diagnostics ul{display:grid;gap:var(--s2);margin:0;padding:0;list-style:none}.diagnostics li{display:flex;justify-content:space-between;gap:var(--s4);color:var(--dim);font-size:.875rem}.diagnostics strong{color:var(--ink);font-weight:500}.diagnostics code{font-size:.75rem}
+.primary-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s5);align-items:start}.section-head{display:flex;justify-content:space-between;align-items:end;gap:var(--s4);margin-bottom:var(--s3)}.section-head h2{margin:0;font:600 1.25rem/1.3 var(--sans);letter-spacing:-.01em}.section-head p{margin:var(--s1) 0 0;color:var(--dim);font-size:.875rem}.count{flex:none;color:var(--dim);font:500 .82rem var(--sans);font-variant-numeric:tabular-nums}.surface{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}.run-list{display:grid}.run-item{padding:var(--s4);border-top:1px solid var(--line)}.run-item:first-child{border-top:0}.run-summary{display:flex;align-items:center;justify-content:space-between;gap:var(--s3)}.run-name{display:flex;align-items:center;min-width:0;gap:var(--s2)}.run-name code{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink);font:500 .9rem var(--mono)}.status-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--dim)}.status-dot.running{background:var(--ok)}.status-dot.starting,.status-dot.awaiting-verdict,.status-dot.unrecorded,.status-dot.orphan_running{background:var(--warn)}.status-dot.died,.status-dot.unknown{background:var(--bad)}
+.pill{display:inline-flex;align-items:center;white-space:nowrap;font:500 .75rem/1.4 var(--sans);padding:4px 9px;border-radius:999px}
 .pill.running{background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok)}
 .pill.starting{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
 .pill.awaiting-verdict{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
 .pill.unrecorded{background:color-mix(in srgb,var(--warn) 26%,transparent);color:var(--warn)}
 .pill.orphan_running{background:color-mix(in srgb,var(--warn) 26%,transparent);color:var(--warn)}
 .pill.died,.pill.unknown{background:color-mix(in srgb,var(--bad) 18%,transparent);color:var(--bad)}
-.warn{color:var(--warn);font-size:12px}.dim{color:var(--dim);font-size:12px}
-.graph{padding:14px 16px}
-.diagram{padding:16px;overflow-x:auto}
-.l-box{fill:var(--card);stroke:var(--line);stroke-width:1.5}
+.run-facts{display:grid;grid-template-columns:.7fr .8fr 1.4fr;gap:var(--s3);margin:var(--s3) 0 0}.run-facts div{min-width:0}.run-facts dt,.technical dt{color:var(--dim);font-size:.72rem}.run-facts dd,.technical dd{margin:1px 0 0;font-size:.86rem}.next-action{color:var(--ink);font-weight:500}.technical{margin-top:var(--s3);color:var(--dim);font-size:.78rem}.technical summary{width:max-content;cursor:pointer}.technical dl{display:grid;gap:var(--s2);margin:var(--s2) 0 0;padding:var(--s3);background:var(--surface-2);border-radius:var(--r-sm)}.technical dl div{display:grid;grid-template-columns:80px minmax(0,1fr);gap:var(--s2)}.technical code{overflow-wrap:anywhere}.empty{margin:0;padding:var(--s5);color:var(--dim)}.empty strong{display:block;margin-bottom:2px;color:var(--ink);font-weight:500}.limit-note{margin:var(--s3) 0 0;color:var(--dim);font-size:.82rem}
+.warning-list{display:grid;margin:0;padding:0;list-style:none}.warning-list li{display:grid;grid-template-columns:minmax(130px,1fr) auto 2fr;gap:var(--s4);padding:var(--s3) var(--s4);border-top:1px solid var(--line);align-items:center}.warning-list li:first-child{border-top:0}.warning-list p{margin:0;color:var(--warn);font-size:.85rem}
+.table-scroll{overflow-x:auto}.table-scroll:focus-visible{outline:3px solid var(--focus);outline-offset:2px}table{border-collapse:collapse;width:100%;min-width:720px;font-size:.9rem}caption{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}th{text-align:left;color:var(--dim);font:500 .75rem var(--sans);letter-spacing:.04em;padding:var(--s3) var(--s4);border-bottom:1px solid var(--line)}td{padding:var(--s3) var(--s4);border-bottom:1px solid var(--line);vertical-align:top}tr:last-child td{border-bottom:0}.mono,code{font-family:var(--mono)}.num{font-variant-numeric:tabular-nums}.dim{color:var(--dim)}.warn{color:var(--warn)}
+.verdict-reject{color:var(--bad)}.verdict-pass{color:var(--ok)}.verdict-unresolved{color:var(--warn)}
+.details-stack{display:grid;gap:var(--s3)}.deep-dive{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}.deep-dive>summary{display:flex;align-items:center;justify-content:space-between;gap:var(--s4);cursor:pointer;padding:var(--s4) var(--s5);font-weight:500;list-style:none}.deep-dive>summary::-webkit-details-marker{display:none}.deep-dive>summary::after{content:"+";color:var(--dim);font:400 1.25rem var(--sans)}.deep-dive[open]>summary{border-bottom:1px solid var(--line)}.deep-dive[open]>summary::after{content:"−"}.detail-body{padding:var(--s4)}.graph-scroll,.diagram-scroll{overflow-x:auto}.graph-scroll svg,.diagram-scroll svg{display:block;min-width:720px;height:auto}.diagram-note{margin:var(--s3) 0 0;color:var(--dim);font-size:.82rem}
+.l-box{fill:var(--surface);stroke:var(--line);stroke-width:1.5}
 .l-store{fill:var(--bg)}
-.l-dia{fill:var(--card);stroke:var(--line);stroke-width:1.5}
-.l-t{font:600 12px var(--mono);fill:var(--ink)}
-.l-s{font:10.5px var(--mono);fill:var(--dim)}
-.l-lbl{font:10.5px var(--mono);fill:var(--ink)}
+.l-dia{fill:var(--surface);stroke:var(--line);stroke-width:1.5}
+.l-t{font:500 12px var(--sans);fill:var(--ink)}
+.l-s{font:10.5px var(--sans);fill:var(--dim)}
+.l-lbl{font:10.5px var(--sans);fill:var(--ink)}
 .l-dim{fill:var(--dim)}
 .l-edge{stroke:var(--line);stroke-width:1.8;fill:none}
 .l-dash{stroke-dasharray:5 4}
 .l-head{fill:var(--line)}.l-head-bad{fill:var(--bad)}
 .l-bad{stroke:var(--bad)}.l-bad-t{fill:var(--bad)}.l-bad-box{stroke:var(--bad)}
-.g-head{font:600 10px var(--mono);fill:var(--dim);letter-spacing:.06em;text-transform:uppercase}
+.g-head{font:500 10px var(--sans);fill:var(--dim);letter-spacing:.02em}
 .g-id{font:13px var(--mono);fill:var(--ink)}
-.g-tag{font:10px var(--mono);fill:var(--dim);letter-spacing:.04em}
+.g-tag{font:500 10px var(--sans);fill:var(--dim)}
 .g-track{stroke:var(--line);stroke-width:2}
 .g-line{stroke-width:2.5}
-.g-dot{stroke:var(--card);stroke-width:1.5}
+.g-dot{stroke:var(--surface);stroke-width:1.5}
 .g-off{fill:var(--line);stroke:none}
 .g-ok{stroke:var(--ok)}.g-ok.g-dot,.g-ok.g-tag{fill:var(--ok)}
 .g-warn{stroke:var(--warn)}.g-warn.g-dot,.g-warn.g-tag{fill:var(--warn)}
 .g-bad{stroke:var(--bad)}.g-bad.g-dot,.g-bad.g-tag{fill:var(--bad)}
-.empty{padding:16px;color:var(--dim);font-size:14px}
-.note{border-left:3px solid var(--warn);background:var(--card);padding:10px 14px;margin:10px 0;font-size:13px}
-.verdict-reject{color:var(--bad)}.verdict-pass{color:var(--ok)}.verdict-unresolved{color:var(--warn)}
-footer{margin-top:32px;padding-top:12px;border-top:1px solid var(--line);font:12px var(--mono);color:var(--dim)}
+footer{margin-top:var(--s7);padding-top:var(--s4);border-top:1px solid var(--line);color:var(--dim);font-size:.82rem}footer details summary{cursor:pointer;width:max-content;color:var(--ink)}footer ul{max-width:78ch;margin:var(--s3) 0 0;padding-left:1.25rem}footer code{font-size:.76rem}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}summary:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
+@media(max-width:820px){body{padding:var(--s4)}.site-header{display:grid}.header-status{text-align:left}.summary-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.metric{border-top:1px solid var(--line)}.metric:nth-child(-n+2){border-top:0}.metric:nth-child(odd){border-left:0}.primary-grid{grid-template-columns:1fr}main{gap:var(--s6)}}
+@media(max-width:620px){h1{display:grid;gap:2px;font-size:1.5rem}.metric{padding:var(--s4)}.metric-value{font-size:1.65rem}.section-head{align-items:start}.run-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.run-facts div:last-child{grid-column:1/-1}.warning-list li{grid-template-columns:1fr auto}.warning-list p{grid-column:1/-1}.responsive-table table,.responsive-table tbody,.responsive-table tr,.responsive-table td{display:block;min-width:0}.responsive-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}.responsive-table tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s3);padding:var(--s4);border-top:1px solid var(--line)}.responsive-table tbody tr:first-child{border-top:0}.responsive-table td{padding:0;border:0;overflow-wrap:anywhere}.responsive-table td:first-child{grid-column:1/-1}.responsive-table td::before{content:attr(data-label);display:block;margin-bottom:2px;color:var(--dim);font-size:.7rem}.deep-dive>summary{padding:var(--s4)}.detail-body{padding:var(--s3)}}
 </style></head><body><div class="wrap">
 
-<header>
+<a class="skip-link" href="#main">ข้ามไปยังสถานะงาน</a>
+
+<header class="site-header">
   <div>
-    <h1>pulse · ${esc(repoName)}</h1>
-    <p class="scope">แสดงเฉพาะ worker ที่ระบบนี้สั่งในโปรเจกต์นี้ · อ่านอย่างเดียว</p>
+    <span class="eyebrow">tmux teams · live status</span>
+    <h1>Pulse <span class="repo">${esc(repoName)}</span></h1>
+    <p class="scope">ติดตามเฉพาะ worker ที่ระบบสั่งในโปรเจกต์นี้ · หน้านี้อ่านข้อมูลอย่างเดียว</p>
   </div>
-  <div class="age">อัปเดต ${stamp}<br>รีเฟรชทุก ${refreshInterval}s</div>
+  <div class="header-status">
+    <span class="quality ${qualityClass}">${qualityLabel}</span>
+    <div class="age">อัปเดตล่าสุด <time datetime="${esc(snapshot.generated_at)}">${stamp} UTC</time>รีเฟรชทุก ${refreshInterval} วิ</div>
+  </div>
 </header>
 
-${notes.map(n => `<p class="note">⚠ ${esc(`${n.source}:${n.code}${n.count > 1 ? ` ×${n.count}` : ''}`)}</p>`).join('')}
+<main id="main">
+  <section aria-labelledby="overview-title">
+    <h2 class="sr-only" id="overview-title">ภาพรวมสถานะ</h2>
+    <div class="summary-strip" aria-label="ภาพรวมสถานะ">
+      ${metric('ต้องตรวจสอบ', attentionTotal, 'งานผิดปกติหรือข้อมูลขาด', attentionTotal ? 'bad' : '')}
+      ${metric('กำลังทำงาน', runningTotal, 'worker ที่กำลังเริ่มหรือทำงาน', 'ok')}
+      ${metric('รอ PM ตรวจผล', waitingTotal, 'มีผลลัพธ์แล้ว รอคำตัดสิน', waitingTotal ? 'warn' : '')}
+      ${metric('ผลล่าสุด', recent.length, `ผ่าน ${passTotal} · ให้แก้ไข ${rejectTotal}`)}
+    </div>
+    ${snapshot.summary.truncated ? `<p class="limit-note">ยอดรวมครอบคลุมทุกงาน ส่วนรายละเอียดด้านล่างแสดง 100 งานแรก · ยังมีอีก ${snapshot.summary.truncated} งาน</p>` : ''}
+  </section>
 
-<h2>ลูปของระบบ</h2>
-<div class="card diagram">
-  ${renderLoop(snapshot)}
-  <p class="dim">เส้นประ = ทางที่รู้ว่ามีแต่ยังไม่มีใครวัด</p>
-</div>
+  ${notes.length ? `<section class="diagnostics" aria-labelledby="diagnostics-title"><h2 id="diagnostics-title">คุณภาพข้อมูลต้องตรวจสอบ</h2><ul>${diagnosticItems}</ul></section>` : ''}
 
-<h2>เส้นทางของแต่ละงาน</h2>
-<div class="card graph">${renderGraph(graphRows(snapshot))}</div>
+  <div class="primary-grid">
+    <section aria-labelledby="attention-title">
+      <div class="section-head"><div><span class="eyebrow">ทำก่อน</span><h2 id="attention-title">ต้องตรวจสอบ</h2><p>งานผิดปกติหรือยังมีหลักฐานไม่ครบ</p></div><span class="count">${attentionTotal} งาน</span></div>
+      <div class="surface">${attention.length ? `<div class="run-list">${attention.map(a => runItem(a, 'เงียบมา')).join('')}</div>`
+        : '<p class="empty"><strong>ยังไม่มีงานผิดปกติ</strong>ไม่พบงานที่หยุดหรือขาดหลักฐาน</p>'}</div>
+    </section>
 
-<h2>ต้องการความสนใจ</h2>
-<div class="card">${attention.length ? `<table>
-<tr><th>งาน</th><th>สถานะ</th><th>ช่องทาง</th><th>dispatch</th><th>เงียบมานาน</th><th>คำแนะนำ</th></tr>
-${attention.map(row).join('')}</table>`
-    : '<p class="empty">ไม่มีอะไรต้องดู — ไม่มีงานที่หายไปโดยไม่ทิ้งบันทึก</p>'}</div>
+    <section aria-labelledby="running-title">
+      <div class="section-head"><div><span class="eyebrow">สถานะปัจจุบัน</span><h2 id="running-title">กำลังทำงาน</h2><p>รวมงานที่กำลังเริ่ม ทำงาน และรอ PM ตรวจผล</p></div><span class="count">${runningTotal + waitingTotal} งาน</span></div>
+      <div class="surface">${running.length ? `<div class="run-list">${running.map(a => runItem(a, 'ผ่านไป')).join('')}</div>`
+        : '<p class="empty"><strong>ยังไม่มี worker ทำงาน</strong>ระบบพร้อมรับงานใหม่</p>'}</div>
+    </section>
+  </div>
 
-<h2>กำลังทำงาน</h2>
-<div class="card">${running.length ? `<table>
-<tr><th>งาน</th><th>สถานะ</th><th>ช่องทาง</th><th>dispatch</th><th>ผ่านไป</th><th>คำแนะนำ</th></tr>
-${running.map(row).join('')}</table>`
-    : '<p class="empty">ไม่มี worker ทำงานอยู่</p>'}</div>
+  ${unclaimed && unclaimed.length ? `<section aria-labelledby="ownership-title">
+    <div class="section-head"><div><span class="eyebrow">ตรวจแหล่งที่มา</span><h2 id="ownership-title">งานที่ยังยืนยันเจ้าของไม่ได้</h2><p>ข้อมูลควบคุมอาจมาจากโปรเจกต์อื่น</p></div><span class="count">${unclaimed.length} รายการ</span></div>
+    <div class="surface"><ul class="warning-list">${unclaimed.map(u => `<li><code>${esc(u.task_id)}</code><span class="num">${dur(u.age_sec)}</span><p>ยังผูกข้อมูลควบคุมกับโปรเจกต์นี้ไม่ได้</p></li>`).join('')}</ul></div>
+  </section>` : ''}
 
-${unclaimed && unclaimed.length ? `<h2>รอยเท้าที่ยืนยันเจ้าของไม่ได้</h2>
-<div class="card"><table>
-<tr><th>งาน</th><th>อายุ</th><th>หมายเหตุ</th></tr>
-${unclaimed.map(u => `<tr><td class="mono">${esc(u.task_id)}</td><td>${dur(u.age_sec)}</td>
-  <td><span class="warn">control dir ไม่ผูกกับโปรเจกต์ อาจเป็นของ repo อื่น</span></td></tr>`).join('')}
-</table></div>` : ''}
-
-<h2>บันทึกล่าสุด</h2>
-<div class="card">${recent.length ? `<table>
-<tr><th>งาน</th><th>worker</th><th>จบแบบ</th><th>คำตัดสิน PM</th><th>ใช้เวลา</th><th>dispatch</th></tr>
+  <section aria-labelledby="recent-title">
+    <div class="section-head"><div><span class="eyebrow">หลักฐานล่าสุด</span><h2 id="recent-title">ผลการทำงานล่าสุด</h2><p>คำตัดสินของ PM และเวลาที่ใช้</p></div><span class="count">${recent.length} รายการ</span></div>
+    <div class="surface table-scroll responsive-table" tabindex="0">${recent.length ? `<table><caption>ผลการทำงานล่าสุด</caption><thead><tr><th>งาน</th><th>worker</th><th>ผลจาก worker</th><th>คำตัดสิน PM</th><th>ใช้เวลา</th><th>dispatch</th></tr></thead><tbody>
 ${recent.map(r => `<tr>
-  <td class="mono">${esc(r.task_id)}</td><td>${esc(r.worker)}</td>
-  <td class="mono">${esc(r.terminal || '—')}</td>
-  <td class="verdict-${esc(r.pm_verdict)}">${esc(r.pm_verdict || '—')}</td>
-  <td>${r.wait_sec == null || r.wait_sec < 0 ? 'not measured' : dur(r.wait_sec)}</td>
-  <td class="mono">${esc(r.dispatch_id || '—')}</td>
-</tr>`).join('')}</table>`
-    : '<p class="empty">ยังไม่มีบันทึก</p>'}</div>
+  <td data-label="งาน"><code>${esc(r.task_id)}</code></td><td data-label="worker">${esc(r.worker)}</td>
+  <td data-label="ผลจาก worker">${esc(terminalLabel(r.terminal))}</td>
+  <td data-label="คำตัดสิน PM" class="verdict-${esc(r.pm_verdict)}">${esc(verdictLabel(r.pm_verdict))}</td>
+  <td data-label="ใช้เวลา" class="num">${r.wait_sec == null || r.wait_sec < 0 ? 'ยังไม่วัด' : dur(r.wait_sec)}</td>
+  <td data-label="dispatch"><code>${esc(r.dispatch_id || 'ไม่ระบุ')}</code></td>
+</tr>`).join('')}</tbody></table>`
+      : '<p class="empty"><strong>ยังไม่มีผลการทำงาน</strong>รายการจะปรากฏเมื่อ PM บันทึกคำตัดสิน</p>'}</div>
+  </section>
 
-<h2>ของสะสม</h2>
-<div class="card">${st.length ? `<table>
-<tr><th>worker</th><th>รอบทั้งหมด</th><th>ถูกตีตก</th><th>เวลากลาง</th></tr>
-${st.map(s => `<tr><td>${esc(s.worker)}</td><td>${s.runs}</td>
-  <td>${s.rejected ? `<span class="verdict-reject">${s.rejected}</span>` : '0'}</td>
-  <td>${s.median_wait_sec == null ? 'not measured' : dur(s.median_wait_sec)}</td></tr>`).join('')}</table>`
-    : '<p class="empty">ยังไม่มีข้อมูลพอ</p>'}</div>
+  <section aria-labelledby="details-title">
+    <div class="section-head"><div><span class="eyebrow">เปิดเมื่ออยากเจาะลึก</span><h2 id="details-title">รายละเอียดระบบ</h2><p>เส้นทางงาน วิธีติดตาม และสถิติ worker</p></div></div>
+    <div class="details-stack">
+      <details class="deep-dive" data-persist-key="progress"><summary>ความคืบหน้าของแต่ละงาน</summary><div class="detail-body graph-scroll">${renderGraph(graphRows(snapshot))}</div></details>
+      <details class="deep-dive" data-persist-key="system-loop"><summary>วิธีที่ระบบติดตามงาน</summary><div class="detail-body"><div class="diagram-scroll">${renderLoop(snapshot)}</div><p class="diagram-note">เส้นประหมายถึงเส้นทางที่ระบบรู้ว่ามี แต่ยังไม่มีข้อมูลยืนยันว่าเกิดขึ้นจริง</p></div></details>
+      <details class="deep-dive" data-persist-key="worker-stats"><summary>สถิติ worker</summary><div class="detail-body surface table-scroll responsive-table" tabindex="0">${st.length ? `<table><caption>สถิติ worker</caption><thead><tr><th>worker</th><th>รอบทั้งหมด</th><th>ให้แก้ไข</th><th>เวลากลาง</th></tr></thead><tbody>
+${st.map(s => `<tr><td data-label="worker">${esc(s.worker)}</td><td data-label="รอบทั้งหมด" class="num">${s.runs}</td>
+  <td data-label="ให้แก้ไข" class="num ${s.rejected ? 'verdict-reject' : ''}">${s.rejected}</td>
+  <td data-label="เวลากลาง" class="num">${s.median_wait_sec == null ? 'ยังไม่วัด' : dur(s.median_wait_sec)}</td></tr>`).join('')}</tbody></table>`
+        : '<p class="empty"><strong>ยังไม่มีสถิติ</strong>ต้องมีผลการทำงานก่อนจึงจะคำนวณได้</p>'}</div></details>
+    </div>
+  </section>
+</main>
 
 <footer>
-  หน้านี้ตรวจของจริง ไม่เชื่อไฟล์ที่ประกาศสถานะตัวเอง — งานที่ทิ้งรอยเท้าไว้แต่ไม่มีทั้งกระบวนการและบันทึก จะขึ้นว่า DIED SILENTLY
-  · control dir ไม่ได้แยกตามโปรเจกต์ จึงติดป้าย ownership unconfirmed
-  · ถ้าเวลาอัปเดตด้านบนหยุดเดิน แปลว่าตัวสังเกตการณ์ตาย ไม่ใช่ว่าไม่มีงาน
+  <details data-persist-key="limitations"><summary>ข้อจำกัดและวิธีอ่านข้อมูล</summary><ul>
+    <li>Pulse ตรวจหลักฐานจาก process, tmux, dispatch, outbox และ event โดยไม่เชื่อไฟล์ประกาศสถานะเพียงอย่างเดียว</li>
+    <li>“หยุดโดยไม่มีบันทึก” หมายถึงพบหลักฐานการสั่งงาน แต่ไม่พบทั้งกระบวนการและผลลัพธ์</li>
+    <li>ข้อมูลควบคุมบางรายการยังแยกเจ้าของตามโปรเจกต์ไม่ได้ จึงแสดงเป็น “ยังยืนยันเจ้าของไม่ได้”</li>
+    <li>หากเวลา “อัปเดตล่าสุด” หยุดเดิน ให้ตรวจตัวสังเกตการณ์ก่อนสรุปว่าไม่มีงาน</li>
+  </ul></details>
 </footer>
 </div>
+<script>
+(() => {
+  for (const detail of document.querySelectorAll('details[data-persist-key]')) {
+    const key = 'tmux-teams:pulse:' + location.pathname + ':' + detail.dataset.persistKey
+    try {
+      const saved = sessionStorage.getItem(key)
+      if (saved !== null) detail.open = saved === 'open'
+      detail.addEventListener('toggle', () => sessionStorage.setItem(key, detail.open ? 'open' : 'closed'))
+    } catch { /* storage may be disabled; native details still work */ }
+  }
+})()
+</script>
 </body></html>`
 }
 
