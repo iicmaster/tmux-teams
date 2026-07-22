@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import {
-  mkdtempSync, mkdirSync, readFileSync, utimesSync, writeFileSync,
+  chmodSync, mkdtempSync, mkdirSync, readFileSync, utimesSync, writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -32,9 +32,35 @@ function age(path, seconds) {
   utimesSync(path, then, then)
 }
 
-function runJson(dir) {
+function fakeTmuxEnv(dir, stderr, status = 1) {
+  const bin = join(dir, 'fake-bin')
+  mkdirSync(bin)
+  const fakeTmux = join(bin, 'tmux')
+  writeFileSync(fakeTmux, [
+    '#!/bin/sh',
+    `echo '${stderr}' >&2`,
+    `exit ${status}`,
+    '',
+  ].join('\n'))
+  chmodSync(fakeTmux, 0o755)
+  return { ...process.env, PATH: `${bin}:${process.env.PATH || ''}` }
+}
+
+function dispatchWithMissingPane(dir) {
+  const dispatchPath = join(dir, '.tmux-teams', 'dispatch', 'missing-pane.md')
+  writeFileSync(dispatchPath, [
+    'task_id: missing-pane',
+    'worker: codex',
+    'transport: tmux',
+    'pane: %424242',
+    '',
+  ].join('\n'))
+  age(dispatchPath, 600)
+}
+
+function runJson(dir, env = process.env) {
   const result = spawnSync(process.execPath, [PULSE, 'json', dir], {
-    encoding: 'utf8', timeout: 10_000,
+    encoding: 'utf8', timeout: 10_000, env,
   })
   assert.equal(result.status, 0, result.stderr)
   assert.match(result.stdout, /^\s*\{/)
@@ -267,6 +293,41 @@ test('json command publishes exactly one schema-valid document and HTML shares i
   const meta = html.match(/<meta\s+name="tmux-teams-snapshot-id"\s+content="([^"]+)"\s*>/)
   assert.ok(meta, 'HTML must identify the JSON snapshot from which it was rendered')
   assert.equal(meta[1], snapshot.snapshot_id)
+})
+
+test('tmux 3.6a no-server stderr means an available probe with no panes', () => {
+  const dir = repo()
+  dispatchWithMissingPane(dir)
+  const env = fakeTmuxEnv(dir,
+    'error connecting to /private/tmp/tmux-503/default (No such file or directory)')
+  const { snapshot } = runJson(dir, env)
+  const run = snapshot.runs.find(item => item.task_id === 'missing-pane')
+
+  assert.equal(snapshot.source_health.liveness, 'ok', 'the fixture requires a working host liveness probe')
+  assert.equal(snapshot.source_health.tmux, 'ok')
+  assert.ok(!snapshot.diagnostics.some(item => item.code === 'TMUX_UNAVAILABLE'))
+  assert.equal(run?.state, 'died')
+  assert.equal(run?.signals.pane, 'gone')
+})
+
+test('unrelated tmux failures and nonstandard exit codes remain unavailable', () => {
+  const cases = [
+    ['permission denied', 'permission denied', 1],
+    ['no-server text with exit 2', 'error connecting to /tmp/tmux/default (No such file or directory)', 2],
+  ]
+
+  for (const [label, stderr, status] of cases) {
+    const dir = repo()
+    dispatchWithMissingPane(dir)
+    const { snapshot } = runJson(dir, fakeTmuxEnv(dir, stderr, status))
+    const run = snapshot.runs.find(item => item.task_id === 'missing-pane')
+
+    assert.equal(snapshot.source_health.liveness, 'ok', `${label}: liveness precondition`)
+    assert.equal(snapshot.source_health.tmux, 'unavailable', label)
+    assert.ok(snapshot.diagnostics.some(item => item.code === 'TMUX_UNAVAILABLE'), label)
+    assert.equal(run?.state, 'unknown', label)
+    assert.equal(run?.signals.pane, 'probe_unavailable', label)
+  }
 })
 
 test('snapshot sequence is monotonic and corrupt prior identity starts a diagnosed stream', () => {

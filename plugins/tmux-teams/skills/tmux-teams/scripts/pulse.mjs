@@ -84,7 +84,9 @@ function tmux(args) {
     return { available: true, out: execFileSync('tmux', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) }
   } catch (e) {
     const stderr = String(e.stderr || '')
-    if (e.status === 1 && /no server running|failed to connect to server|no current client/i.test(stderr)) {
+    const knownNoServer = /no server running|failed to connect to server|no current client/i.test(stderr) ||
+      /^error connecting to .+ \(No such file or directory\)$/i.test(stderr.trim())
+    if (e.status === 1 && knownNoServer) {
       return { available: true, out: '' }
     }
     return { available: false, out: '' }
@@ -541,7 +543,7 @@ function renderLoop(snapshot) {
   const c = (xs) => xs.length
   const running = c(active.filter(a => ['running', 'starting'].includes(a.state)))
   const waiting = c(active.filter(a => a.state === 'awaiting-verdict'))
-  const dead = c(active.filter(a => ['died', 'unknown', 'unrecorded', 'orphan_running'].includes(a.state)))
+  const died = snapshot.summary.by_state.died
   const pass = c(rec.filter(r => r.pm_verdict === 'pass'))
   const reject = c(rec.filter(r => r.pm_verdict === 'reject'))
   const unres = c(rec.filter(r => r.pm_verdict === 'unresolved'))
@@ -579,13 +581,13 @@ function renderLoop(snapshot) {
 
   const DX = X + BW / 2 + 195           // the died-silently branch sits off to the right
   const dyy = cy(3)
-  const died =
+  const diedBranch =
     `<line class="l-edge l-bad" x1="${X + BW / 2 + 14}" y1="${dyy}" x2="${DX - 62}" y2="${dyy}" marker-end="url(#lbad)"/>` +
     `<text class="l-lbl l-bad-t" x="${X + BW / 2 + 20}" y="${dyy - 9}">ไม่มี marker</text>` +
     `<text class="l-lbl l-dim" x="${X + BW / 2 + 20}" y="${dyy + 16}">และไม่มีกระบวนการ</text>` +
     `<rect class="l-box l-bad-box" x="${DX - 60}" y="${dyy - 20}" width="124" height="40" rx="20"/>` +
     `<text class="l-t l-bad-t" x="${DX + 2}" y="${dyy - 2}" text-anchor="middle">ตายเงียบ</text>` +
-    `<text class="l-s l-bad-t" x="${DX + 2}" y="${dyy + 13}" text-anchor="middle">${dead}</text>`
+    `<text class="l-s l-bad-t" x="${DX + 2}" y="${dyy + 13}" text-anchor="middle">${died}</text>`
 
   const yesEdge = `<text class="l-lbl" x="${X + 8}" y="${(y(3) + BH + y(4)) / 2 + 4}">มี</text>` + down(3)
   const passEdge = `<text class="l-lbl" x="${X + 8}" y="${(y(5) + BH + y(6)) / 2 + 4}">pass ${pass} · unresolved ${unres}</text>` + down(5)
@@ -607,7 +609,7 @@ function renderLoop(snapshot) {
   </defs>`
 
   return `<svg viewBox="-30 0 ${W} ${H}" width="100%" height="${H}" role="img"
-     aria-label="ลูปการทำงานของระบบ">${defs}${spine}${yesEdge}${passEdge}${died}${reEdge}${recallEdge}` +
+     aria-label="ลูปการทำงานของระบบ">${defs}${spine}${yesEdge}${passEdge}${diedBranch}${reEdge}${recallEdge}` +
     nodes.map(box).join('') + `</svg>`
 }
 
