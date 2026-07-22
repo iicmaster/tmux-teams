@@ -309,13 +309,14 @@ removes: Enter-swallow retries, marker calibration, dialog keypress guessing —
 permissions arrive as structured requests (companion auto-approves; tighten
 per-task when the target repo is sensitive).
 
-**The live view is structured, not a black box.** The agent streams five
-`session/update` kinds and the companion renders all of them to stdout:
-`[think]` (reasoning), `[say]` (message text), `[tool] <kind> · <title>
-(<status>)` with its later `→ completed`/`→ failed` transition, and `[plan]`
-with per-entry marks. A tmux pane shows raw scrollback; this shows typed signal —
-what the agent is thinking, doing, and planning, live. Follow the companion's
-stdout (its log file) the way you would `capture-pane`.
+**The live view is structured, not a black box.** The companion renders the
+core text, tool, and plan `session/update` streams to stdout: `[user]` (replayed
+user history), `[think]` (reasoning), `[say]` (agent message text), `[tool]
+<kind> · <title> (<status>)` with its later `→ completed`/`→ failed`
+transition, and `[plan]` with per-entry marks. A tmux pane shows raw scrollback;
+this shows typed signal — what the user asked and what the agent is thinking,
+doing, and planning. Follow the companion's stdout (its log file) the way you
+would `capture-pane`.
 
 **Cross-turn context is opt-in via `ACP_RESUME`.** The mailbox brief is
 one-shot: each dispatch is a fresh `session/new`, so a follow-up cannot see an

@@ -4,7 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -13,8 +13,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const COMPANION = join(HERE, '..', 'plugins', 'tmux-teams', 'skills', 'tmux-teams', 'scripts', 'acp-companion.mjs')
 const MOCK = join(HERE, 'fixtures', 'mock-acp-agent.mjs')
 
-function run(taskId, extraEnv = {}) {
-  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-'))
+function run(taskId, extraEnv = {}, cwd = mkdtempSync(join(tmpdir(), 'acp-companion-'))) {
   const brief = join(cwd, 'brief.md')
   writeFileSync(brief, 'do the thing\n')
   const r = spawnSync('node', [COMPANION, 'mock', cwd, taskId, brief, '30'], {
@@ -33,6 +32,7 @@ test('renders every session/update kind and completes via the outbox', () => {
   // a tool call shows its kind + status, and its later status transition
   assert.match(r.stdout, /\[tool\] execute · run tests \(pending\)/)
   assert.match(r.stdout, /\[tool\] run tests → completed/)
+  assert.match(r.stdout, /\[say\] doing the work\n\[tool\]/, 'tool output starts on a new line')
   // the agent's plan renders with per-entry marks
   assert.match(r.stdout, /\[plan\] ✓ step one/)
   assert.match(r.stdout, /▶ step two/)
@@ -44,7 +44,7 @@ test('ACP_RESUME with loadSession support calls session/load, not session/new', 
   assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
   assert.match(r.stdout, /\[resume\] loading sess_prev/)
   assert.match(r.stdout, /\[resume\] history restored/)
-  assert.match(r.stdout, /\(replayed history\)/)
+  assert.match(r.stdout, /\[user\] \(previous request\)\n\[say\] \(replayed history\)/)
   assert.match(r.stdout, /\[session\] sess_prev/)
 })
 
@@ -55,10 +55,22 @@ test('ACP_RESUME falls back to a fresh session when loadSession is absent', () =
   assert.match(r.stdout, /\[session\] sess_mock/)          // fell back to a new session
 })
 
-test('a resumed session id is persisted for a later same-id dispatch', () => {
-  const r = run('task-persist')
-  assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
-  const stored = join(r.cwd, '.tmux-teams', 'sessions', 'task-persist')
+test('a persisted session id resumes a later same-id dispatch', () => {
+  const first = run('task-persist')
+  assert.equal(first.status, 0, `exit 0 expected; stderr:\n${first.stderr}`)
+  const stored = join(first.cwd, '.tmux-teams', 'sessions', 'task-persist')
   assert.ok(existsSync(stored), 'session id file should be written')
   assert.equal(readFileSync(stored, 'utf8').trim(), 'sess_mock')
+  const second = run('task-persist', {}, first.cwd)
+  assert.equal(second.status, 0, `exit 0 expected; stderr:\n${second.stderr}`)
+  assert.match(second.stdout, /\[resume\] loading sess_mock/)
+})
+
+test('an unreadable persisted-session entry warns and starts fresh', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-'))
+  mkdirSync(join(cwd, '.tmux-teams', 'sessions', 'task-bad-session'), { recursive: true })
+  const r = run('task-bad-session', {}, cwd)
+  assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
+  assert.match(r.stderr, /could not read persisted session id/)
+  assert.match(r.stdout, /\[session\] sess_mock/)
 })

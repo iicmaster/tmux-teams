@@ -159,7 +159,7 @@ rl.on('line', (line) => {
     if (msg.method === 'session/request_permission') {
       const opts = msg.params?.options ?? []
       const pick = opts.find(o => o.kind === 'allow_always') ?? opts.find(o => o.kind === 'allow_once') ?? opts[0]
-      console.log(`[permission] ${msg.params?.toolCall?.title ?? '?'} -> ${pick?.name ?? pick?.optionId}`)
+      line(`[permission] ${msg.params?.toolCall?.title ?? '?'} -> ${pick?.name ?? pick?.optionId}`)
       respond(msg.id, { outcome: { outcome: 'selected', optionId: pick.optionId } })
     } else {
       agent.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: `not supported: ${msg.method}` } }) + '\n')
@@ -169,23 +169,30 @@ rl.on('line', (line) => {
   if (msg.method === 'session/update') render(msg.params?.update)
 })
 
-// Live view: the agent streams five kinds of update; rendering only two of them
-// is why the ACP lane felt like a black box next to a tmux pane. The pane never
-// had structured signal — this does: thoughts, message text, tool calls WITH
-// their kind and status transitions, and the agent's own plan. `mode` tracks the
-// running text stream so a switch between thinking and speaking is marked once,
-// not per chunk (chunks are not line-aligned).
+// Live view: render the text, tool, and plan updates that explain what the agent
+// is doing. `mode` tracks both stream kind and message id so replayed history
+// keeps user/agent turns distinct while chunks of one message stay together.
 let mode = null
-function say(kind, text) {
-  if (mode !== kind) { process.stdout.write(`\n[${kind}] `); mode = kind }
+function say(kind, text, messageId) {
+  const nextMode = `${kind}:${messageId ?? ''}`
+  if (mode !== nextMode) {
+    if (mode !== null) process.stdout.write('\n')
+    process.stdout.write(`[${kind}] `)
+    mode = nextMode
+  }
   process.stdout.write(text)
 }
-function line(s) { mode = null; console.log(s) }
+function line(s) {
+  if (mode !== null) process.stdout.write('\n')
+  mode = null
+  console.log(s)
+}
 const planMark = { completed: '✓', in_progress: '▶', pending: '◯' }
 function render(u) {
   switch (u?.sessionUpdate) {
-    case 'agent_message_chunk': if (u.content?.type === 'text') say('say', u.content.text); break
-    case 'agent_thought_chunk': if (u.content?.type === 'text') say('think', u.content.text); break
+    case 'user_message_chunk': if (u.content?.type === 'text') say('user', u.content.text, u.messageId); break
+    case 'agent_message_chunk': if (u.content?.type === 'text') say('say', u.content.text, u.messageId); break
+    case 'agent_thought_chunk': if (u.content?.type === 'text') say('think', u.content.text, u.messageId); break
     case 'tool_call':
       line(`[tool] ${u.kind ? u.kind + ' · ' : ''}${u.title ?? u.toolCallId ?? ''}${u.status ? ` (${u.status})` : ''}`); break
     case 'tool_call_update':
@@ -210,8 +217,11 @@ const deadline = setTimeout(() => {
 // so cross-turn context is opt-in, never implicit.
 const sessionsDir = join(cwd, '.tmux-teams', 'sessions')
 const sessionFile = join(sessionsDir, taskId)
-let resumeId = process.env.ACP_RESUME?.trim()
-  || (existsSync(sessionFile) ? readFileSync(sessionFile, 'utf8').trim() : '')
+let resumeId = process.env.ACP_RESUME?.trim() ?? ''
+if (!resumeId && existsSync(sessionFile)) {
+  try { resumeId = readFileSync(sessionFile, 'utf8').trim() }
+  catch (e) { console.error(`[warn] could not read persisted session id: ${e.message}; starting fresh`) }
+}
 
 try {
   const init = await request('initialize', {
@@ -224,7 +234,7 @@ try {
 
   let sessionId
   if (resumeId && canLoad) {
-    console.log(`[resume] loading ${resumeId} — the agent will replay its history below`)
+    line(`[resume] loading ${resumeId} — the agent will replay its history below`)
     try {
       await request('session/load', { sessionId: resumeId, cwd, mcpServers: [] })
       sessionId = resumeId
@@ -239,7 +249,7 @@ try {
     const sess = await request('session/new', { cwd, mcpServers: [] })
     sessionId = sess.sessionId
   }
-  console.log(`[session] ${sessionId}`)
+  line(`[session] ${sessionId}`)
   // Persist so a later same-id dispatch — or a follow-up passing this as
   // ACP_RESUME — can continue. Best-effort: a run must never fail over this.
   try { mkdirSync(sessionsDir, { recursive: true }); writeFileSync(sessionFile, sessionId + '\n') }
@@ -250,7 +260,7 @@ try {
     prompt: [{ type: 'text', text: preamble + brief }],
   })
   finished = true
-  console.log(`\n[turn done] stopReason=${res.stopReason}`)
+  line(`[turn done] stopReason=${res.stopReason}`)
 } catch (e) {
   codexGuard(e.message + stderrBuf)
   console.error(`[fatal] ${e.message}`)

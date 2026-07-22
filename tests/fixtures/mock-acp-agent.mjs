@@ -21,13 +21,14 @@ createInterface({ input: process.stdin }).on('line', (l) => {
     case 'session/new':
       return reply(m.id, { sessionId: 'sess_mock' })
     case 'session/load':
-      notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '(replayed history)' } })
+      notify({ sessionUpdate: 'user_message_chunk', messageId: 'history-user', content: { type: 'text', text: '(previous request)' } })
+      notify({ sessionUpdate: 'agent_message_chunk', messageId: 'history-agent', content: { type: 'text', text: '(replayed history)' } })
       return reply(m.id, null)
     case 'session/prompt': {
       const text = (m.params.prompt ?? []).map((p) => p.text ?? '').join('')
       const id = (text.match(/\.mailbox-out\/(\S+)/) ?? [])[1]
-      notify({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'weighing the options' } })
-      notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'doing the work' } })
+      notify({ sessionUpdate: 'agent_thought_chunk', messageId: 'thought-1', content: { type: 'text', text: 'weighing the options' } })
+      notify({ sessionUpdate: 'agent_message_chunk', messageId: 'message-1', content: { type: 'text', text: 'doing the work' } })
       notify({ sessionUpdate: 'tool_call', toolCallId: 't1', title: 'run tests', kind: 'execute', status: 'pending' })
       notify({ sessionUpdate: 'tool_call_update', toolCallId: 't1', title: 'run tests', status: 'completed' })
       notify({ sessionUpdate: 'plan', entries: [{ content: 'step one', status: 'completed' }, { content: 'step two', status: 'in_progress' }] })
