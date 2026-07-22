@@ -26,6 +26,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { parseLsofCwd, parsePgrep, parsePsCandidates } from './pulse-platform.mjs'
 
 const [cmd, repoArg, ...flags] = process.argv.slice(2)
 const USAGE = 'usage: pulse.mjs once <repo> | pulse.mjs watch <repo> [--interval SEC]'
@@ -53,7 +54,7 @@ const sh = (bin, args) => {
   try { return execFileSync(bin, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }) } catch { return '' }
 }
 
-// Liveness is read from /proc on Linux and from lsof/pgrep on macOS/BSD, where
+// Liveness is read from /proc on Linux and from lsof/pgrep on macOS, where
 // no /proc exists. The abstraction is deliberately two primitives — cwd-of-pid
 // and has-a-child — because that is all the rest of the file asks of the OS.
 const DARWIN = process.platform === 'darwin'
@@ -63,9 +64,9 @@ function cwdOf(pid) {
   if (DARWIN) {
     // `lsof -Fn -d cwd` prints one `n<path>` line for the cwd descriptor.
     const out = sh('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'])
-    const line = out.split('\n').find(l => l.startsWith('n'))
-    if (!line) return null
-    try { return realpathSync(line.slice(1)) } catch { return line.slice(1) }
+    const path = parseLsofCwd(out)
+    if (!path) return null
+    try { return realpathSync(path) } catch { return path }
   }
   try { return realpathSync(`/proc/${pid}/cwd`) } catch { return null }
 }
@@ -78,7 +79,7 @@ function hasChild(pid) {
     // pgrep exits non-zero with no output when a pid has no children; the `sh`
     // helper maps that to '' — indistinguishable from pgrep being absent, but
     // pgrep ships with macOS, so an empty result means genuinely no child.
-    return sh('pgrep', ['-P', String(pid)]).trim().length > 0
+    return parsePgrep(sh('pgrep', ['-P', String(pid)]))
   }
   try { return readFileSync(`/proc/${pid}/task/${pid}/children`, 'utf8').trim().length > 0 } catch { return null }
 }
@@ -92,13 +93,7 @@ const UNRECORDED_SEC = 900
  *  the per-pid lsof in cwdOf() runs on a handful, not every process. */
 function acpCandidates() {
   if (DARWIN) {
-    const ps = sh('ps', ['-axww', '-o', 'pid=,command='])
-    const out = []
-    for (const line of ps.split('\n')) {
-      const m = line.match(/^\s*(\d+)\s+(.*)$/)
-      if (m && m[2].includes('acp-companion.mjs')) out.push({ pid: m[1], cmdline: m[2] })
-    }
-    return out
+    return parsePsCandidates(sh('ps', ['-axww', '-o', 'pid=,command=']))
   }
   let pids = []
   try { pids = readdirSync('/proc').filter(d => /^\d+$/.test(d)) } catch { return [] }
