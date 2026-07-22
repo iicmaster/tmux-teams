@@ -1,0 +1,395 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pulse-v1.schema.json",
+  "title": "tmux-teams Pulse Data v1",
+  "description": "A bounded, advisory-only snapshot of repo-local tmux-teams observations. All strings are allowlisted codes or validated identifiers; raw worker-authored content is intentionally excluded.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "stream_id",
+    "sequence",
+    "snapshot_id",
+    "trust_level",
+    "generated_at",
+    "observation",
+    "complete",
+    "scope",
+    "source_health",
+    "summary",
+    "runs",
+    "recent_verdicts",
+    "worker_stats",
+    "unclaimed_control",
+    "diagnostics"
+  ],
+  "properties": {
+    "schema": { "const": "tmux-teams.pulse" },
+    "schema_version": { "const": 1 },
+    "stream_id": { "$ref": "#/$defs/uuid" },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "snapshot_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}:[1-9][0-9]*$"
+    },
+    "trust_level": { "const": "advisory_same_uid" },
+    "generated_at": { "$ref": "#/$defs/timestamp" },
+    "observation": { "$ref": "#/$defs/observation" },
+    "complete": { "type": "boolean" },
+    "scope": { "$ref": "#/$defs/scope" },
+    "source_health": { "$ref": "#/$defs/source_health" },
+    "summary": { "$ref": "#/$defs/summary" },
+    "runs": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "$ref": "#/$defs/run" }
+    },
+    "recent_verdicts": {
+      "type": "array",
+      "maxItems": 12,
+      "items": { "$ref": "#/$defs/recent_verdict" }
+    },
+    "worker_stats": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "$ref": "#/$defs/worker_stat" }
+    },
+    "unclaimed_control": {
+      "type": "array",
+      "maxItems": 8,
+      "items": { "$ref": "#/$defs/unclaimed_control" }
+    },
+    "diagnostics": {
+      "type": "array",
+      "maxItems": 50,
+      "items": { "$ref": "#/$defs/diagnostic" }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "complete": { "const": true } },
+        "required": ["complete"]
+      },
+      "then": {
+        "properties": {
+          "observation": {
+            "properties": { "quality": { "const": "complete" } }
+          },
+          "diagnostics": { "maxItems": 0 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "complete": { "const": false } },
+        "required": ["complete"]
+      },
+      "then": {
+        "properties": {
+          "observation": {
+            "properties": { "quality": { "const": "degraded" } }
+          },
+          "diagnostics": { "minItems": 1 }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$"
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "nullable_timestamp": {
+      "oneOf": [
+        { "$ref": "#/$defs/timestamp" },
+        { "type": "null" }
+      ]
+    },
+    "nullable_id": {
+      "oneOf": [
+        { "$ref": "#/$defs/id" },
+        { "type": "null" }
+      ]
+    },
+    "nullable_uuid": {
+      "oneOf": [
+        { "$ref": "#/$defs/uuid" },
+        { "type": "null" }
+      ]
+    },
+    "nullable_duration": {
+      "type": ["number", "null"],
+      "minimum": 0
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "started_at",
+        "finished_at",
+        "consistency",
+        "refresh_interval_sec",
+        "stale_after_sec",
+        "expires_at",
+        "quality"
+      ],
+      "properties": {
+        "started_at": { "$ref": "#/$defs/timestamp" },
+        "finished_at": { "$ref": "#/$defs/timestamp" },
+        "consistency": { "const": "best_effort" },
+        "refresh_interval_sec": { "type": "integer", "minimum": 1 },
+        "stale_after_sec": { "type": "integer", "minimum": 60 },
+        "expires_at": { "$ref": "#/$defs/timestamp" },
+        "quality": { "enum": ["complete", "degraded"] }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo_name"],
+      "properties": {
+        "repo_name": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80,
+              "pattern": "^[A-Za-z0-9_.-]+$"
+            },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "health": {
+      "enum": ["ok", "degraded", "unavailable"]
+    },
+    "source_health": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["liveness", "tmux", "dispatch", "outbox", "events"],
+      "properties": {
+        "liveness": { "$ref": "#/$defs/health" },
+        "tmux": { "$ref": "#/$defs/health" },
+        "dispatch": { "$ref": "#/$defs/health" },
+        "outbox": { "$ref": "#/$defs/health" },
+        "events": { "$ref": "#/$defs/health" }
+      }
+    },
+    "state": {
+      "enum": [
+        "running",
+        "starting",
+        "awaiting-verdict",
+        "unrecorded",
+        "died",
+        "unknown",
+        "orphan_running"
+      ]
+    },
+    "by_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "running",
+        "starting",
+        "awaiting-verdict",
+        "unrecorded",
+        "died",
+        "unknown",
+        "orphan_running"
+      ],
+      "properties": {
+        "running": { "type": "integer", "minimum": 0 },
+        "starting": { "type": "integer", "minimum": 0 },
+        "awaiting-verdict": { "type": "integer", "minimum": 0 },
+        "unrecorded": { "type": "integer", "minimum": 0 },
+        "died": { "type": "integer", "minimum": 0 },
+        "unknown": { "type": "integer", "minimum": 0 },
+        "orphan_running": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["active", "attention", "by_state", "truncated"],
+      "properties": {
+        "active": { "type": "integer", "minimum": 0 },
+        "attention": { "type": "integer", "minimum": 0 },
+        "by_state": { "$ref": "#/$defs/by_state" },
+        "truncated": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "signals": {
+      "type": "object",
+      "description": "Allowlisted evidence codes only; never raw probe output or pane/process identifiers.",
+      "additionalProperties": false,
+      "required": ["dispatch", "liveness", "pane", "terminal", "pm_verdict", "correlation"],
+      "properties": {
+        "dispatch": { "enum": ["present", "absent", "unknown"] },
+        "liveness": { "enum": ["alive", "dead", "unknown"] },
+        "pane": { "enum": ["held", "gone", "not_recorded", "probe_unavailable"] },
+        "terminal": { "enum": ["done", "blocked", "failed", "absent", "invalid"] },
+        "pm_verdict": { "enum": ["pass", "reject", "unresolved", "absent"] },
+        "correlation": { "enum": ["dispatch_id", "mtime_heuristic", "process_only"] }
+      }
+    },
+    "reason_code": {
+      "enum": [
+        "PROCESS_ALIVE",
+        "STARTUP_IN_PROGRESS",
+        "TERMINAL_WITHOUT_PM_VERDICT",
+        "PM_VERDICT_RECORD_MISSING",
+        "PROCESS_MISSING_AFTER_DISPATCH",
+        "LIVENESS_UNAVAILABLE",
+        "LIVE_PROCESS_WITHOUT_DISPATCH"
+      ]
+    },
+    "action_code": {
+      "enum": [
+        "monitor",
+        "wait",
+        "verify_result",
+        "record_verdict",
+        "inspect_worker",
+        "restore_observability",
+        "inspect_ownership"
+      ]
+    },
+    "advisory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attention", "action_code", "auto_execute"],
+      "properties": {
+        "attention": { "type": "boolean" },
+        "action_code": { "$ref": "#/$defs/action_code" },
+        "auto_execute": { "const": false }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dispatch_id",
+        "task_id",
+        "identity_source",
+        "state",
+        "worker",
+        "transport",
+        "started_at",
+        "elapsed_sec",
+        "silence_sec",
+        "timeout_sec",
+        "signals",
+        "reason_codes",
+        "advisory"
+      ],
+      "properties": {
+        "dispatch_id": { "$ref": "#/$defs/nullable_uuid" },
+        "task_id": { "$ref": "#/$defs/id" },
+        "identity_source": { "enum": ["dispatch_id", "legacy_task_time", "process_only"] },
+        "state": { "$ref": "#/$defs/state" },
+        "worker": { "$ref": "#/$defs/nullable_id" },
+        "transport": {
+          "type": ["string", "null"],
+          "enum": ["tmux", "acp", null]
+        },
+        "started_at": { "$ref": "#/$defs/nullable_timestamp" },
+        "elapsed_sec": { "$ref": "#/$defs/nullable_duration" },
+        "silence_sec": { "$ref": "#/$defs/nullable_duration" },
+        "timeout_sec": { "$ref": "#/$defs/nullable_duration" },
+        "signals": { "$ref": "#/$defs/signals" },
+        "reason_codes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/reason_code" }
+        },
+        "advisory": { "$ref": "#/$defs/advisory" }
+      }
+    },
+    "recent_verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dispatch_id",
+        "task_id",
+        "worker",
+        "transport",
+        "terminal",
+        "pm_verdict",
+        "started_at",
+        "wait_sec",
+        "timeout_sec"
+      ],
+      "properties": {
+        "dispatch_id": { "$ref": "#/$defs/nullable_uuid" },
+        "task_id": { "$ref": "#/$defs/id" },
+        "worker": { "$ref": "#/$defs/id" },
+        "transport": {
+          "type": ["string", "null"],
+          "enum": ["tmux", "acp", null]
+        },
+        "terminal": { "enum": ["done", "blocked", "failed", "absent", "invalid"] },
+        "pm_verdict": { "enum": ["pass", "reject", "unresolved"] },
+        "started_at": { "$ref": "#/$defs/nullable_timestamp" },
+        "wait_sec": { "$ref": "#/$defs/nullable_duration" },
+        "timeout_sec": { "$ref": "#/$defs/nullable_duration" }
+      }
+    },
+    "worker_stat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["worker", "runs", "rejected", "median_wait_sec"],
+      "properties": {
+        "worker": { "$ref": "#/$defs/id" },
+        "runs": { "type": "integer", "minimum": 1 },
+        "rejected": { "type": "integer", "minimum": 0 },
+        "median_wait_sec": { "$ref": "#/$defs/nullable_duration" }
+      }
+    },
+    "unclaimed_control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_id", "age_sec"],
+      "properties": {
+        "task_id": { "$ref": "#/$defs/id" },
+        "age_sec": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "diagnostic_code": {
+      "enum": [
+        "LIVENESS_UNAVAILABLE",
+        "TMUX_UNAVAILABLE",
+        "DISPATCH_UNREADABLE",
+        "OUTBOX_UNREADABLE",
+        "EVENT_UNREADABLE",
+        "INVALID_EVENT_ENTRY",
+        "SOURCE_TRUNCATED",
+        "SEQUENCE_RESET"
+      ]
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "severity", "source", "count"],
+      "properties": {
+        "code": { "$ref": "#/$defs/diagnostic_code" },
+        "severity": { "enum": ["info", "warning", "error"] },
+        "source": { "enum": ["liveness", "tmux", "dispatch", "outbox", "events", "publisher"] },
+        "count": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

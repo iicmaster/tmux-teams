@@ -38,6 +38,8 @@
 //   re-dispatch, not silently retried. Add a bounded resolve stage when a real run
 //   shows it's needed.
 
+import { randomUUID } from 'node:crypto'
+
 export const meta = {
   name: 'mailbox-run',
   description: 'Drive foreign CLI workers over the tmux-teams file-mailbox: dispatch each with the outbox self-check contract, wait for a typed terminal marker (DONE/BLOCKED/FAILED), then PM-side adversarially verify each TEAM_DONE result by re-running the worker evidence command',
@@ -83,6 +85,10 @@ if (!WORKERS.length) {
     'Example: { workers: [{ id: "task-1", brief: "add validation…", verify_cmd: "php artisan test", stakes: "high" }] }'
   )
 }
+// Identity is owned by the workflow, not by the lifecycle agent that drives the
+// shell. The agent receives a fixed value to write; KMS uses this map directly
+// and never trusts an echoed UUID from agent output.
+const WORKER_DISPATCH_IDS = new Map(WORKERS.map(w => [w.id, randomUUID()]))
 const REPO = args_.repo || '.'
 const CTL_BASE = args_.ctlBase || '~/.tmux-teams/mailbox-run'
 const TIMEOUT = Number(args_.timeoutSec) > 0 ? Number(args_.timeoutSec) : 1200
@@ -157,17 +163,20 @@ const results = await pipeline(
   WORKERS,
 
   // STAGE 1 — full mailbox lifecycle for one worker, in one bash-driven agent context.
-  (w) => agent(
+  (w) => {
+    const dispatchId = WORKER_DISPATCH_IDS.get(w.id)
+    return agent(
     [
       `You are the PM driving ONE foreign CLI worker over the tmux-teams file-mailbox. Do everything with Bash. Follow tmux-teams SKILL.md §1/§2/§6 exactly.`,
       ``,
       `Worker id: ${w.id}`,
+      `Dispatch id (PM-owned; copy exactly): ${dispatchId}`,
       `Target repo (cd here): ${REPO}`,
       `Control dir for THIS worker: CTL=${CTL_BASE}/${w.id}   (expand ~ yourself)`,
       `deliver.sh: ${DELIVER || 'locate it in this order: the tmux-teams plugin (<plugin root>/skills/tmux-teams/scripts/deliver.sh — $CLAUDE_PLUGIN_ROOT when invoked from the plugin), ~/.agents/skills/tmux-teams/scripts, or the repo skills/shared/tmux-teams/scripts'}`,
       ``,
       `STEPS:`,
-      `0. PRECONDITION — HARD FAIL, NEVER FABRICATE: test -d "${REPO}" || STOP NOW and return id="${w.id}", pane="", done=false, terminal="none", timed_out=false, session="", evidence_present=false, outbox="FATAL: target repo ${REPO} does not exist". You MUST NOT create, scaffold, or invent the target repo, its files, or the task's subject matter — not even to "make the run work". If the repo is missing or does not contain what the brief describes, that is a real failure to report, not a gap to fill. (Field-bitten 2026-07-16: an agent silently recreated a missing repo, planted the very bug it then dispatched a worker to fix, and reported pass.)`,
+      `0. FIX ID, THEN PRECONDITION — HARD FAIL, NEVER FABRICATE: Set DISPATCH_ID='${dispatchId}' exactly once; do not generate, alter, or infer it. Then test -d "${REPO}" || STOP NOW and return id="${w.id}", pane="", done=false, terminal="none", timed_out=false, session="", evidence_present=false, outbox="FATAL: target repo ${REPO} does not exist". You MUST NOT create, scaffold, or invent the target repo, its files, or the task's subject matter — not even to "make the run work". If the repo is missing or does not contain what the brief describes, that is a real failure to report, not a gap to fill. (Field-bitten 2026-07-16: an agent silently recreated a missing repo, planted the very bug it then dispatched a worker to fix, and reported pass.)`,
       `1. SETUP (ONE shared session per run, one window per worker): FOLDER=$(basename "${REPO}" | tr 'A-Z.:_ ' 'a-z----' | tr -s -). S="auto--$FOLDER${RUNID}".`,
       `   tmux new-session -d -s "$S" -c "${REPO}" -x 220 -y 50 2>/dev/null || true   ("duplicate session" from a concurrent worker is EXPECTED — NEVER kill-session here: other workers' windows live in it. Window 0 stays an idle PM shell.)`,
       `   PANE=$(tmux new-window -t "=$S" -n "${w.id}" -c "${REPO}" -P -F '#{pane_id}'); tmux set-option -t "$PANE" -w automatic-rename off. Launch: tmux send-keys -t "$PANE" 'codex' Enter (codex inherits its own frontier default — do NOT pass a model flag).`,
@@ -176,7 +185,7 @@ const results = await pipeline(
       `3. DISPATCH: record START=$(date -u +%FT%TZ) and T0=$(date +%s) FIRST — these become started_at and the basis for wait_sec, and they cannot be reconstructed later.`,
       `   The outbox dir must ignore itself — an outbox holds RAW command output, and the target repo's .gitignore is not ours to edit: printf '*\\n' > "$REPO_ABS/.mailbox-out/.gitignore" 2>/dev/null || true   (a real run leaked one into a commit before this existed).`,
       `   Then write a DISPATCH RECORD inside the repo, before anything else can fail:`,
-      `     mkdir -p "$REPO_ABS/.tmux-teams/dispatch" && printf 'task_id: %s\\nworker: codex\\ntransport: tmux\\nstarted_at: %s\\ntimeout_sec: %s\\npane: %s\\n' "${w.id}" "$START" "${TIMEOUT}" "$PANE" > "$REPO_ABS/.tmux-teams/dispatch/${w.id}.md"`,
+      `     mkdir -p "$REPO_ABS/.tmux-teams/dispatch" && printf 'dispatch_id: %s\\ntask_id: %s\\nworker: codex\\ntransport: tmux\\nstarted_at: %s\\ntimeout_sec: %s\\npane: %s\\n' "$DISPATCH_ID" "${w.id}" "$START" "${TIMEOUT}" "$PANE" > "$REPO_ABS/.tmux-teams/dispatch/${w.id}.md"`,
       `   This is the PM stating what IT did — not the worker claiming anything — and it is the only durable, repo-scoped proof the dispatch happened. Step 2 deletes the outbox, so a worker that dies before writing one would otherwise leave no trace in this repo at all and its death would be invisible.`,
       `   Then write the brief below to "$CTL/inboxes/codex/001-${w.id}" (one file), and start the delivery loop DETACHED so it survives you:`,
       `   TMUX_TEAMS_CTL="$CTL" TMUX_TEAMS_SESSION="$S" nohup bash <deliver.sh> "$PANE" >/dev/null 2>&1 & disown   (macOS has no setsid — nohup + disown is the portable form; verify the pid is alive before moving on).`,
@@ -193,18 +202,21 @@ const results = await pipeline(
       `Return the structured result. verify_cmd = ${JSON.stringify(w.verify_cmd || '')}.`,
     ].join('\n'),
     { label: `lifecycle:${w.id}`, phase: 'Lifecycle', schema: LIFECYCLE_SCHEMA }
-  ),
+    )
+  },
 
   // STAGE 2 — PM-side adversarial verify: re-run the worker's evidence command yourself.
   // Returns the verify verdict MERGED with the lifecycle summary, because pipeline()
   // only surfaces the final stage's result and the report wants both.
   (life, w) => {
+    const dispatchId = WORKER_DISPATCH_IDS.get(w.id)
     // `terminal` is authoritative; `done` is DERIVED from it rather than
     // trusted separately, so a confused lifecycle agent returning the
     // schema-valid-but-contradictory {done:true, terminal:"blocked"} can
     // never sneak into the verify lane.
     const finished = !!(life && life.terminal === 'done')
     const carry = {
+      dispatch_id: dispatchId,
       done: finished,
       terminal: (life && life.terminal) || 'none',
       timed_out: !!(life && life.timed_out),
@@ -252,9 +264,9 @@ const results = await pipeline(
 // already merged with its lifecycle summary above.
 phase('Report')
 const report = WORKERS.map((w, i) => {
-  const v = results[i] || { id: w.id, verdict: 'skipped', note: 'no result', done: false, terminal: 'none', timed_out: false, evidence_present: false }
+  const v = results[i] || { id: w.id, dispatch_id: WORKER_DISPATCH_IDS.get(w.id), verdict: 'skipped', note: 'no result', done: false, terminal: 'none', timed_out: false, evidence_present: false }
   return {
-    id: w.id, stakes: w.stakes || 'normal',
+    id: w.id, dispatch_id: WORKER_DISPATCH_IDS.get(w.id), stakes: w.stakes || 'normal',
     verdict: v.verdict, done: v.done, terminal: v.terminal || 'none', timed_out: v.timed_out,
     evidence_present: v.evidence_present, note: v.note,
     // Measured, not guessed. brief_bytes is the one dimension of "was the brief
@@ -305,7 +317,7 @@ try {
       `  node <kms.mjs> append "${REPO}" <that-temp-file>`,
       ``,
       `Event body — one "key: value" per line, exactly these keys:`,
-      `  task_id / worker / transport / repo_rev / tree / terminal / pm_verdict / verify_cmd / lesson`,
+      `  dispatch_id / task_id / worker / transport / repo_rev / tree / terminal / pm_verdict / verify_cmd / lesson`,
       `  started_at / wait_sec / timeout_sec / brief_bytes / evidence_present / timed_out / stakes`,
       `Value rules:`,
       `  - The second row is MEASURED data, copied verbatim from the per-worker line below. Never estimate or round it: a wrong number is worse than the -1 that means "not measured", because nobody can tell it apart from a real one later.`,
@@ -315,7 +327,7 @@ try {
       `  - Do NOT paste raw command output into the event. kms.mjs redacts secrets, but the shortest evidence is the safest.`,
       ``,
       `Workers to record:`,
-      ...report.map((r, i) => `  - task_id=${r.id} worker=codex transport=tmux terminal=${r.terminal} pm_verdict=${r.verdict}` +
+      ...report.map((r, i) => `  - dispatch_id=${r.dispatch_id || '""'} task_id=${r.id} worker=codex transport=tmux terminal=${r.terminal} pm_verdict=${r.verdict}` +
         ` started_at=${r.started_at || '""'} wait_sec=${r.wait_sec} timeout_sec=${r.timeout_sec} brief_bytes=${r.brief_bytes}` +
         ` evidence_present=${r.evidence_present} timed_out=${r.timed_out} stakes=${r.stakes}` +
         ` verify_cmd=${JSON.stringify(WORKERS[i].verify_cmd || '')} note=${JSON.stringify(r.note || '')}`),

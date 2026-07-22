@@ -440,8 +440,8 @@ node <skill-root>/scripts/kms.mjs recall <repo> [terms...] [--worker W] [--limit
 Event body — `key: value` lines, `task_id` and `worker` required. `kms.mjs`
 stores whatever keys it is given, so this list grows without touching code:
 
-- **What happened:** `event_kind / task_id / worker / transport / repo_rev /
-  tree / terminal / exit_code / pm_verdict / verify_cmd / lesson`
+- **What happened:** `event_kind / task_id / dispatch_id / worker / transport /
+  repo_rev / tree / terminal / exit_code / pm_verdict / verify_cmd / lesson`
 - **Measured (added 2026-07-21):** `started_at / wait_sec / timeout_sec /
   brief_bytes / evidence_present / timed_out / stakes`
 
@@ -469,18 +469,45 @@ re-run a stored `verify_cmd` blindly — re-derive it from the plan instead.
 
 ## 10. Pulse — the live view (added 2026-07-21)
 
-§9 remembers what finished. `scripts/pulse.mjs` shows what is happening now, on
-one read-only page scoped to this repo and to workers this system dispatched:
+§9 remembers what finished. `scripts/pulse.mjs` shows what is happening now,
+scoped to this repo and to workers this system dispatched. Pulse v1 has one
+deliberately narrow data path:
+
+```text
+probes -> <repo>/.tmux-teams/pulse.json (machine-readable SSOT)
+       -> <repo>/.tmux-teams/pulse.html (rendered only from serialized JSON)
+```
+
+The HTML never derives state independently or renders from the probe model. It
+is a view of the same serialized snapshot an agent reads. The contract is
+`references/pulse-v1.schema.json`.
 
 ```bash
 node <skill-root>/scripts/pulse.mjs once  <repo>              # render once
+node <skill-root>/scripts/pulse.mjs json  <repo>              # print exact persisted Pulse v1 JSON
 node <skill-root>/scripts/pulse.mjs watch <repo> [--interval 20]
 node <skill-root>/scripts/pulse.mjs ensure <repo> [--interval 20]
 ```
 
-It writes `<repo>/.tmux-teams/pulse.html`, which refreshes itself — open it and
-leave it open. `watch` is the observer; `ensure` renders immediately and then
-starts a detached watcher only when this repo's existing watcher is not alive.
+Each render atomically publishes `<repo>/.tmux-teams/pulse.json` and then its
+HTML view. `json` prints that exact JSON document rather than another projection.
+The document carries `stream_id` + monotonic `sequence`, a unique `snapshot_id`,
+render/observation timestamps and freshness, per-source health, and bounded
+diagnostics so agents can distinguish stale or partial observation from a
+healthy empty run. A dispatch's `dispatch_id` is the primary correlation key
+between its footprint and KMS events. A footprint carrying that UUID accepts
+only a matching event; Pulse falls back to task-id + recency only when the
+footprint itself is legacy data without `dispatch_id`.
+
+The contract reports `trust_level: advisory_same_uid`: Pulse observes files,
+processes, panes, and KMS records that same-UID workers may also influence. It is
+read-only, and every suggested action code is advisory with auto-execution
+disabled; Pulse never retries, kills, redispatches, or otherwise remediates a
+run. Humans and agents must verify before acting.
+
+The HTML refreshes itself — open it and leave it open. `watch` is the observer;
+`ensure` renders immediately and then starts a detached watcher only when this
+repo's existing watcher is not alive.
 Its pidfile is `<repo>/.tmux-teams/pulse-watch.pid`: repo-local so same-basename
 projects cannot collide, exclusively claimed so concurrent cron fires do not
 duplicate the watcher, and reclaimed when a prior watcher died. Calling
@@ -564,4 +591,7 @@ an alarm — counting them as ours made the first render report three deaths tha
 all belonged to another project. An unreadable `/proc` becomes `unknown`, never
 `dead`. Anything unmeasured prints "not measured", never `0`. The header carries
 the render time, so a dead observer makes the page visibly rot instead of
-quietly showing yesterday.
+quietly showing yesterday. Repo-writable inputs are bounded to 1 MiB per file,
+1,000 files per source, 32 MiB across a snapshot, and 256 characters per parsed
+field; hitting a bound produces a finite diagnostic instead of exhausting the
+observer.
