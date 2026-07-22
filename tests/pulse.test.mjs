@@ -53,6 +53,11 @@ const event = (dir, id, wait = '42') => writeFileSync(
   `task_id: ${id}\nworker: codex\nterminal: TEAM_DONE\npm_verdict: pass\nwait_sec: ${wait}\n`,
 )
 
+const transportEvent = (dir, id) => writeFileSync(
+  join(dir, '.tmux-teams', 'kms', 'events', `20260721-0901_${id}_codex.md`),
+  `event_kind: transport-terminal\ntask_id: ${id}\nworker: codex\nterminal: done\nwait_sec: 42\n`,
+)
+
 test('a dispatch with no process and no record is reported as died silently', () => {
   // Kill a worker mid-run and see whether the page dares say so.
   const dir = repo()
@@ -102,6 +107,22 @@ test('a recorded run leaves the live tables but stays on the graph', () => {
   assert.doesNotMatch(tables, /all-done/)
   assert.match(html.slice(0, html.indexOf('ต้องการความสนใจ')), /all-done/)   // on the graph
   assert.match(html, /all-done/)                                              // and in history
+})
+
+test('a mechanical terminal event does not settle a run before the PM verdict', () => {
+  const dir = repo()
+  dispatch(dir, 'mechanical-only', 300)
+  outbox(dir, 'mechanical-only', 'TEAM_DONE', 300)
+  transportEvent(dir, 'mechanical-only')
+  const html = render(dir)
+  const liveTables = html.slice(html.indexOf('ต้องการความสนใจ'), html.indexOf('บันทึกล่าสุด'))
+  assert.match(liveTables, /mechanical-only/)
+  assert.match(liveTables, /awaiting-verdict/)
+  const graph = perWorkerSvg(html)
+  const dots = [...graph.matchAll(/<circle class="([^"]+)"/g)].map(m => m[1])
+  assert.equal(dots.filter(c => !c.includes('g-off')).length, 3, 'PM verdict and record stages stay open')
+  const collectibles = html.slice(html.indexOf('ของสะสม'), html.indexOf('<footer>'))
+  assert.match(collectibles, /ยังไม่มีข้อมูลพอ/)
 })
 
 test('an old event does not settle a newer dispatch of the same id', () => {

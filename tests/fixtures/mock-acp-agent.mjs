@@ -10,6 +10,8 @@ const send = (o) => process.stdout.write(JSON.stringify(o) + '\n')
 const notify = (update) => send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's', update } })
 const reply = (id, result) => send({ jsonrpc: '2.0', id, result })
 
+if (process.env.MOCK_EXIT_EARLY === '1') process.exit(9)
+
 createInterface({ input: process.stdin }).on('line', (l) => {
   if (!l.trim()) return
   const m = JSON.parse(l)
@@ -25,6 +27,7 @@ createInterface({ input: process.stdin }).on('line', (l) => {
       notify({ sessionUpdate: 'agent_message_chunk', messageId: 'history-agent', content: { type: 'text', text: '(replayed history)' } })
       return reply(m.id, null)
     case 'session/prompt': {
+      if (process.env.MOCK_HANG === '1') return
       const text = (m.params.prompt ?? []).map((p) => p.text ?? '').join('')
       const id = (text.match(/\.mailbox-out\/(\S+)/) ?? [])[1]
       notify({ sessionUpdate: 'agent_thought_chunk', messageId: 'thought-1', content: { type: 'text', text: 'weighing the options' } })
@@ -32,7 +35,16 @@ createInterface({ input: process.stdin }).on('line', (l) => {
       notify({ sessionUpdate: 'tool_call', toolCallId: 't1', title: 'run tests', kind: 'execute', status: 'pending' })
       notify({ sessionUpdate: 'tool_call_update', toolCallId: 't1', title: 'run tests', status: 'completed' })
       notify({ sessionUpdate: 'plan', entries: [{ content: 'step one', status: 'completed' }, { content: 'step two', status: 'in_progress' }] })
-      if (id) { mkdirSync('.mailbox-out', { recursive: true }); writeFileSync(join('.mailbox-out', id), `DID: mock work\nTEAM_DONE ${id}\n`) }
+      const terminal = process.env.MOCK_TERMINAL ?? 'done'
+      const marker = terminal === 'blocked' ? `TEAM_BLOCKED ${id}`
+        : terminal === 'failed' ? `TEAM_FAILED ${id}`
+        : terminal === 'invalid' ? 'TEAM_DONE wrong-id'
+        : `TEAM_DONE ${id}`
+      if (id && terminal !== 'missing') {
+        mkdirSync('.mailbox-out', { recursive: true })
+        const evidence = process.env.MOCK_EVIDENCE === '1' ? 'EVIDENCE: node --test — 1/1 pass\n' : ''
+        writeFileSync(join('.mailbox-out', id), `DID: mock work\n${evidence}${marker}\n`)
+      }
       return reply(m.id, { stopReason: 'end_turn' })
     }
   }

@@ -292,6 +292,19 @@ ANTHROPIC_MODEL=claude-opus-4-8 \
   node <skill-root>/scripts/acp-companion.mjs claude <repo> <task-id> <brief-file> [timeout-sec]
 ```
 
+The claude adapter's endpoint and model are fully environment-driven; it is not
+limited to Anthropic-hosted models. A real ACP outbox round-trip was verified
+2026-07-20 against Kimi's Anthropic-compatible endpoint. Keep credentials in the
+environment and explicitly blank a stray API key so it cannot take precedence:
+
+```bash
+ANTHROPIC_BASE_URL=https://api.kimi.com/coding/ \
+ANTHROPIC_AUTH_TOKEN="$KIMI_TOKEN" \
+ANTHROPIC_API_KEY= \
+ANTHROPIC_MODEL=k3 \
+  node <skill-root>/scripts/acp-companion.mjs claude <repo> <task-id> <brief-file> [timeout-sec]
+```
+
 gemini note (re-verified 2026-07-21): dead for individuals — oauth-personal is
 hard-blocked (`-32000` "migrate to Antigravity"), the api-key auth path works
 mechanically but needs a valid `GEMINI_API_KEY`, and CLI 0.51.0 is the latest.
@@ -308,6 +321,14 @@ the worker's whole process group (no orphaned builds). What ACP
 removes: Enter-swallow retries, marker calibration, dialog keypress guessing —
 permissions arrive as structured requests (companion auto-approves; tighten
 per-task when the target repo is sensitive).
+
+**Terminal KMS facts are automatic.** On every terminal path the companion
+best-effort appends an immutable `event_kind: transport-terminal` event with the
+mechanical facts it can prove: task/worker/transport, repo revision and tree,
+terminal and exit code, timing, brief size, evidence presence, and timeout
+state. This event deliberately omits `pm_verdict` and `lesson`; the PM appends
+its judgement as a separate event after independent verification. Set
+`ACP_KMS_AUTO=0` only when the caller intentionally owns terminal recording.
 
 **The live view is structured, not a black box.** The companion renders the
 core text, tool, and plan `session/update` streams to stdout: `[user]` (replayed
@@ -370,8 +391,8 @@ The outbox answers *was this piece of work good?*; the KMS answers *is what the
 system has learned still true and usable?* Both fail differently, and the outbox
 cannot answer the second — it is read once and never again.
 
-`scripts/kms.mjs` — two commands, zero deps, one immutable file per finished
-dispatch under `<repo>/.tmux-teams/kms/events/` — the same in-project convention
+`scripts/kms.mjs` — two commands, zero deps, one immutable file per event under
+`<repo>/.tmux-teams/kms/events/` — the same in-project convention
 as `.mailbox-out/` (worker outboxes) and `.remember/`. The store travels with the
 project, and `kms.mjs` drops a self-ignoring `.gitignore` (`*`) into
 `.tmux-teams/` on first write, since we cannot edit a target repo's ignore rules
@@ -382,19 +403,25 @@ node <skill-root>/scripts/kms.mjs append <repo> <event-file|->   # write one eve
 node <skill-root>/scripts/kms.mjs recall <repo> [terms...] [--worker W] [--limit N]
 ```
 
+- **Facts and judgement stay distinct.** An ACP dispatch first writes a
+  mechanical `transport-terminal` event; after verification the PM writes a
+  separate event carrying `pm_verdict` and any `lesson`. Events are immutable,
+  so “fill the verdict later” always means another append, never editing the
+  transport event. The tmux workflow may still write one combined PM event.
 - **Not a gate.** Workers run as the same UID with broad permissions, so the
   store is worker-writable wherever it sits — a `$HOME` path would not have
-  changed that, it would only have hidden meddling from `git status` as well.
-  It records the PM's verdict; it never replaces the PM re-running the check.
+  changed that, it would only have hidden meddling from `git status` as well. A
+  PM event records the PM's verdict; no event replaces the PM re-running the check.
   Do not build a "verified by KMS" claim on top of it — §6's tamper rule applies
   here too.
 - **Best-effort, never blocking.** A failed KMS write must not fail a run that
   otherwise worked; `mailbox-run.js` reports the error and continues. But it
   reports it out loud — memory that silently stops being written is the failure
   nobody notices for weeks.
-- **Every terminal state is recorded** — blocked, failed, timed out, and
-  PM-rejected DONE included. A store that keeps only successes lies about how
-  the work actually goes.
+- **Every terminal state is recorded** — ACP does this automatically unless
+  `ACP_KMS_AUTO=0`; blocked, failed, timed out, malformed/missing outbox, and
+  PM-rejected DONE are included across the mechanical and PM events. A store
+  that keeps only successes lies about how the work actually goes.
 - **Secrets are scrubbed on write** (EVIDENCE is raw command output by contract,
   and this store sits outside `.gitignore`'s reach). Events are immutable, so
   scrubbing after the fact is not an option — keep the excerpt short anyway.
@@ -413,12 +440,12 @@ node <skill-root>/scripts/kms.mjs recall <repo> [terms...] [--worker W] [--limit
 Event body — `key: value` lines, `task_id` and `worker` required. `kms.mjs`
 stores whatever keys it is given, so this list grows without touching code:
 
-- **What happened:** `task_id / worker / transport / repo_rev / tree / terminal /
-  pm_verdict / verify_cmd / lesson`
+- **What happened:** `event_kind / task_id / worker / transport / repo_rev /
+  tree / terminal / exit_code / pm_verdict / verify_cmd / lesson`
 - **Measured (added 2026-07-21):** `started_at / wait_sec / timeout_sec /
   brief_bytes / evidence_present / timed_out / stakes`
 
-Write `pm_verdict` from the PM's own verdict (`fail` → `reject`,
+Write `pm_verdict` only in the PM's follow-up event, from the PM's own verdict (`fail` → `reject`,
 `unverifiable|skipped` → `unresolved`), never from the worker's self-report. For
 `lesson`, name why it slipped through rather than narrating: `ci-gap |
 latent-code | workload-gap | incomplete-prior-fix | review-miss | brief-too-open
@@ -448,10 +475,17 @@ one read-only page scoped to this repo and to workers this system dispatched:
 ```bash
 node <skill-root>/scripts/pulse.mjs once  <repo>              # render once
 node <skill-root>/scripts/pulse.mjs watch <repo> [--interval 20]
+node <skill-root>/scripts/pulse.mjs ensure <repo> [--interval 20]
 ```
 
 It writes `<repo>/.tmux-teams/pulse.html`, which refreshes itself — open it and
-leave it open. `watch` is the observer; nothing else keeps it fresh.
+leave it open. `watch` is the observer; `ensure` renders immediately and then
+starts a detached watcher only when this repo's existing watcher is not alive.
+Its pidfile is `<repo>/.tmux-teams/pulse-watch.pid`: repo-local so same-basename
+projects cannot collide, exclusively claimed so concurrent cron fires do not
+duplicate the watcher, and reclaimed when a prior watcher died. Calling
+`ensure` from every cron gate makes the page reboot-safe without a babysat tmux
+session.
 
 **It probes; it does not believe.** No status file is read, because a worker
 announcing its own liveness is the attestation §6 rejects. Three sets are
@@ -472,9 +506,12 @@ compared and the GAPS are the product:
   not a running job: `mailbox-run` opens a shell and types `codex` into it, so
   the shell outlives a crashed worker.
 - **recorded** — §9 events, matched by id *and* recency: ids get reused, and
-  yesterday's record must not settle today's dispatch.
+  yesterday's record must not settle today's dispatch. All events appear in
+  recent history, but only an event with an explicit `pm_verdict` of `pass`,
+  `reject`, or `unresolved` settles the live run or enters PM statistics. An ACP
+  `transport-terminal` event alone leaves it awaiting verdict.
 
-| footprint | terminal marker | alive | recorded | state |
+| footprint | terminal marker | alive | PM verdict recorded | state |
 |---|---|---|---|---|
 | yes | — | yes | — | running |
 | yes (pane still listed, or <5m) | no | no | no | starting |

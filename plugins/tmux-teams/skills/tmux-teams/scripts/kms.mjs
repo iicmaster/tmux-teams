@@ -1,16 +1,19 @@
 #!/usr/bin/env node
 // kms.mjs — Team KMS: run memory for the tmux-teams PM loop (SKILL.md §9).
 //
-// One finished dispatch = one immutable file under <repo>/.tmux-teams/kms/events/.
+// One event = one immutable file under <repo>/.tmux-teams/kms/events/. An ACP
+// dispatch can append a mechanical transport-terminal event first and a PM can
+// append a distinct verdict event after verification; neither is rewritten.
 // No lock, no index, no cross-repo pages: five independent review lanes agreed
 // those were ceremony at this scale (tens of events per repo, one operator), and
 // one-file-per-event deletes the append-contention and rewrite-blast-radius
 // failure modes outright.
 //
 // WHAT THIS IS NOT: a gate. Workers run as the same UID with broad permissions,
-// so this store is worker-writable wherever it sits — it remembers the PM's
-// verdict, it never substitutes for it. Say that out loud rather than letting the
-// file layout imply tamper-resistance it does not have. (Living inside the repo
+// so this store is worker-writable wherever it sits. It remembers mechanical
+// facts or the PM's verdict; it never substitutes for verification. Say that
+// out loud rather than letting the file layout imply tamper-resistance it does
+// not have. (Living inside the repo
 // makes that honest rather than worse: `git status` can at least see meddling
 // with the store's own .gitignore, which a $HOME location could never show.)
 //
