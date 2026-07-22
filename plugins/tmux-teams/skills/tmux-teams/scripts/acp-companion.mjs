@@ -6,6 +6,11 @@
 //
 // usage: node acp-companion.mjs <agent> <cwd> <task-id> <brief-file> [timeout-sec]
 //   agent: gemini | claude | codex | agy   (or set ACP_CMD="custom command" to override)
+//   env ACP_RESUME=<sessionId>: continue an earlier turn instead of starting a
+//     new session — carries full context across the otherwise one-shot mailbox
+//     brief (needs the agent to advertise loadSession; falls back to a fresh
+//     session with a warning if it does not). The session id is printed as
+//     `[session] <id>` and stored per task-id under .tmux-teams/sessions/.
 //
 // Lanes (2026-07-21):
 //   gemini -> `gemini --acp`                       (native; product-gated, see SKILL.md §8)
@@ -154,19 +159,48 @@ rl.on('line', (line) => {
     if (msg.method === 'session/request_permission') {
       const opts = msg.params?.options ?? []
       const pick = opts.find(o => o.kind === 'allow_always') ?? opts.find(o => o.kind === 'allow_once') ?? opts[0]
-      console.log(`[permission] ${msg.params?.toolCall?.title ?? '?'} -> ${pick?.name ?? pick?.optionId}`)
+      line(`[permission] ${msg.params?.toolCall?.title ?? '?'} -> ${pick?.name ?? pick?.optionId}`)
       respond(msg.id, { outcome: { outcome: 'selected', optionId: pick.optionId } })
     } else {
       agent.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: `not supported: ${msg.method}` } }) + '\n')
     }
     return
   }
-  if (msg.method === 'session/update') {
-    const u = msg.params?.update
-    if (u?.sessionUpdate === 'agent_message_chunk' && u.content?.type === 'text') process.stdout.write(u.content.text)
-    else if (u?.sessionUpdate === 'tool_call') console.log(`[tool] ${u.title ?? ''}`)
-  }
+  if (msg.method === 'session/update') render(msg.params?.update)
 })
+
+// Live view: render the text, tool, and plan updates that explain what the agent
+// is doing. `mode` tracks both stream kind and message id so replayed history
+// keeps user/agent turns distinct while chunks of one message stay together.
+let mode = null
+function say(kind, text, messageId) {
+  const nextMode = `${kind}:${messageId ?? ''}`
+  if (mode !== nextMode) {
+    if (mode !== null) process.stdout.write('\n')
+    process.stdout.write(`[${kind}] `)
+    mode = nextMode
+  }
+  process.stdout.write(text)
+}
+function line(s) {
+  if (mode !== null) process.stdout.write('\n')
+  mode = null
+  console.log(s)
+}
+const planMark = { completed: '✓', in_progress: '▶', pending: '◯' }
+function render(u) {
+  switch (u?.sessionUpdate) {
+    case 'user_message_chunk': if (u.content?.type === 'text') say('user', u.content.text, u.messageId); break
+    case 'agent_message_chunk': if (u.content?.type === 'text') say('say', u.content.text, u.messageId); break
+    case 'agent_thought_chunk': if (u.content?.type === 'text') say('think', u.content.text, u.messageId); break
+    case 'tool_call':
+      line(`[tool] ${u.kind ? u.kind + ' · ' : ''}${u.title ?? u.toolCallId ?? ''}${u.status ? ` (${u.status})` : ''}`); break
+    case 'tool_call_update':
+      if (u.status) line(`[tool] ${u.title ?? u.toolCallId ?? ''} → ${u.status}`); break
+    case 'plan':
+      line(`[plan] ${(u.entries ?? []).map(e => `${planMark[e.status] ?? '◯'} ${e.content}`).join('  ')}`); break
+  }
+}
 
 let timedOut = false
 const deadline = setTimeout(() => {
@@ -176,19 +210,57 @@ const deadline = setTimeout(() => {
   setTimeout(() => { killTree('SIGKILL'); process.exit(1) }, 5000)
 }, TIMEOUT_MS)
 
+// Resume target: an explicit ACP_RESUME wins; otherwise a session id stored for
+// THIS task-id (a retry, or a deliberate re-dispatch of the same id) is resumed.
+// A follow-up under a NEW id continues an earlier turn by passing that turn's
+// printed session id as ACP_RESUME — the mailbox brief is otherwise one-shot,
+// so cross-turn context is opt-in, never implicit.
+const sessionsDir = join(cwd, '.tmux-teams', 'sessions')
+const sessionFile = join(sessionsDir, taskId)
+let resumeId = process.env.ACP_RESUME?.trim() ?? ''
+if (!resumeId && existsSync(sessionFile)) {
+  try { resumeId = readFileSync(sessionFile, 'utf8').trim() }
+  catch (e) { console.error(`[warn] could not read persisted session id: ${e.message}; starting fresh`) }
+}
+
 try {
-  await request('initialize', {
+  const init = await request('initialize', {
     protocolVersion: 1,
     clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
   })
-  const sess = await request('session/new', { cwd, mcpServers: [] })
-  console.log(`[session] ${sess.sessionId}`)
+  // session/load only exists if the agent advertises loadSession; never assume
+  // it (the field is optional and the method is not yet frozen in the spec).
+  const canLoad = init?.agentCapabilities?.loadSession === true
+
+  let sessionId
+  if (resumeId && canLoad) {
+    line(`[resume] loading ${resumeId} — the agent will replay its history below`)
+    try {
+      await request('session/load', { sessionId: resumeId, cwd, mcpServers: [] })
+      sessionId = resumeId
+      line(`[resume] history restored — continuing this session`)
+    } catch (e) {
+      console.error(`[resume] session/load failed (${e.message}); starting a fresh session`)
+    }
+  } else if (resumeId && !canLoad) {
+    console.error(`[resume] ${agentName} does not advertise loadSession — cannot resume ${resumeId}; starting fresh`)
+  }
+  if (!sessionId) {
+    const sess = await request('session/new', { cwd, mcpServers: [] })
+    sessionId = sess.sessionId
+  }
+  line(`[session] ${sessionId}`)
+  // Persist so a later same-id dispatch — or a follow-up passing this as
+  // ACP_RESUME — can continue. Best-effort: a run must never fail over this.
+  try { mkdirSync(sessionsDir, { recursive: true }); writeFileSync(sessionFile, sessionId + '\n') }
+  catch (e) { console.error(`[warn] could not persist session id: ${e.message}`) }
+
   const res = await request('session/prompt', {
-    sessionId: sess.sessionId,
+    sessionId,
     prompt: [{ type: 'text', text: preamble + brief }],
   })
   finished = true
-  console.log(`\n[turn done] stopReason=${res.stopReason}`)
+  line(`[turn done] stopReason=${res.stopReason}`)
 } catch (e) {
   codexGuard(e.message + stderrBuf)
   console.error(`[fatal] ${e.message}`)
