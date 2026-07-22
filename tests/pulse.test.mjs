@@ -47,6 +47,10 @@ const perWorkerSvg = (html) => {
   const i = html.indexOf('aria-label="แต่ละงานเดินไปถึงขั้นไหน"')
   return html.slice(html.lastIndexOf('<svg', i), html.indexOf('</svg>', i))
 }
+const systemLoopSvg = (html) => {
+  const i = html.indexOf('aria-label="ลูปการทำงานของระบบ"')
+  return html.slice(html.lastIndexOf('<svg', i), html.indexOf('</svg>', i))
+}
 
 const event = (dir, id, wait = '42') => writeFileSync(
   join(dir, '.tmux-teams', 'kms', 'events', `20260721-0900_${id}_codex.md`),
@@ -93,6 +97,25 @@ test('a terminal outbox with no record for too long is unrecorded, not dead', ()
   outbox(dir, 'lost-record', 'TEAM_DONE', 4000)
   const html = render(dir)
   assert.match(html, /unrecorded/)
+})
+
+test('the system loop dead counter uses the complete died summary only', () => {
+  const dir = repo()
+  for (let i = 0; i < 101; i++) dispatch(dir, `dead-${String(i).padStart(3, '0')}`, 600)
+  dispatch(dir, 'verdict-not-recorded', 4000)
+  outbox(dir, 'verdict-not-recorded', 'TEAM_DONE', 4000)
+  const html = render(dir)
+  const loop = systemLoopSvg(html)
+  const count = loop.match(/>ตายเงียบ<\/text><text[^>]*>(\d+)<\/text>/)
+  const snapshot = JSON.parse(readFileSync(join(dir, '.tmux-teams', 'pulse.json'), 'utf8'))
+
+  assert.match(html, /unrecorded/, 'the run must remain visible as unrecorded')
+  assert.equal(snapshot.summary.by_state.died, 101)
+  assert.equal(snapshot.summary.by_state.unrecorded, 1)
+  assert.equal(snapshot.runs.length, 100, 'the detailed run list is intentionally bounded')
+  assert.equal(snapshot.summary.truncated, 2)
+  assert.equal(count?.[1], String(snapshot.summary.by_state.died),
+    'the system total must not count other attention states or lose truncated deaths')
 })
 
 test('a recorded run leaves the live tables but stays on the graph', () => {
