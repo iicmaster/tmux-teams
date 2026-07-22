@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const COMPANION = join(HERE, '..', 'plugins', 'tmux-teams', 'skills', 'tmux-teams', 'scripts', 'acp-companion.mjs')
 const MOCK = join(HERE, 'fixtures', 'mock-acp-agent.mjs')
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
 function run(taskId, extraEnv = {}, cwd = mkdtempSync(join(tmpdir(), 'acp-companion-')), timeoutSec = 30) {
   const brief = join(cwd, 'brief.md')
@@ -27,6 +28,10 @@ function eventTexts(cwd) {
   const dir = join(cwd, '.tmux-teams', 'kms', 'events')
   if (!existsSync(dir)) return []
   return readdirSync(dir).filter(f => f.endsWith('.md')).sort().map(f => readFileSync(join(dir, f), 'utf8'))
+}
+
+function field(text, name) {
+  return (text.match(new RegExp(`^${name}: (.+)$`, 'm')) || [, ''])[1]
 }
 
 test('renders every session/update kind and completes via the outbox', () => {
@@ -86,6 +91,10 @@ test('records one mechanical KMS event without inventing a PM judgement', () => 
   assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
   const events = eventTexts(r.cwd)
   assert.equal(events.length, 1)
+  const footprint = readFileSync(join(r.cwd, '.tmux-teams', 'dispatch', 'task-kms.md'), 'utf8')
+  const dispatchId = field(footprint, 'dispatch_id')
+  assert.match(dispatchId, UUID_RE)
+  assert.equal(field(events[0], 'dispatch_id'), dispatchId, 'footprint and terminal event identify the same dispatch')
   assert.match(events[0], /^event_kind: transport-terminal$/m)
   assert.match(events[0], /^task_id: task-kms$/m)
   assert.match(events[0], /^worker: mock$/m)
@@ -97,6 +106,24 @@ test('records one mechanical KMS event without inventing a PM judgement', () => 
   assert.match(events[0], /^started_at: \d{4}-\d{2}-\d{2}T/m)
   assert.doesNotMatch(events[0], /^pm_verdict:/m)
   assert.doesNotMatch(events[0], /^lesson:/m)
+})
+
+test('a repeated task id gets a fresh dispatch UUID without changing legacy paths', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-'))
+  const first = run('task-repeat', {}, cwd)
+  assert.equal(first.status, 0, `first exit 0 expected; stderr:\n${first.stderr}`)
+  const footprintPath = join(cwd, '.tmux-teams', 'dispatch', 'task-repeat.md')
+  const firstId = field(readFileSync(footprintPath, 'utf8'), 'dispatch_id')
+
+  const second = run('task-repeat', {}, cwd)
+  assert.equal(second.status, 0, `second exit 0 expected; stderr:\n${second.stderr}`)
+  const secondId = field(readFileSync(footprintPath, 'utf8'), 'dispatch_id')
+
+  assert.match(firstId, UUID_RE)
+  assert.match(secondId, UUID_RE)
+  assert.notEqual(secondId, firstId)
+  assert.deepEqual(readdirSync(join(cwd, '.tmux-teams', 'dispatch')), ['task-repeat.md'])
+  assert.deepEqual(eventTexts(cwd).map(text => field(text, 'dispatch_id')), [firstId, secondId])
 })
 
 test('records whether the terminal outbox contains concrete evidence', () => {

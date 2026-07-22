@@ -34,6 +34,7 @@
 //             driving an OAuth-authed agy breach Google's Antigravity terms —
 //             same pattern-level risk as the tmux lane; see SKILL.md §8.
 import { spawn, spawnSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -51,6 +52,7 @@ if (!ID_RE.test(taskId)) {
 }
 const TIMEOUT_MS = (Number(timeoutArg) > 0 ? Number(timeoutArg) : 600) * 1000
 const brief = readFileSync(briefFile, 'utf8')
+const dispatchId = randomUUID()
 const startedMs = Date.now()
 const startedAt = new Date(startedMs).toISOString().replace(/\.\d+Z$/, 'Z')
 const KMS = fileURLToPath(new URL('./kms.mjs', import.meta.url))
@@ -72,6 +74,7 @@ function recordTerminal(terminal, { timedOut = false, evidencePresent = false, e
   const tree = porcelain === null ? 'unknown' : porcelain ? 'dirty' : 'clean'
   const body = [
     'event_kind: transport-terminal',
+    `dispatch_id: ${dispatchId}`,
     `task_id: ${taskId}`,
     `worker: ${agentName}`,
     'transport: acp',
@@ -153,7 +156,7 @@ try {
   const ignore = join(cwd, '.tmux-teams', '.gitignore')
   if (!existsSync(ignore)) writeFileSync(ignore, '*\n')
   writeFileSync(join(dispatchDir, `${taskId}.md`),
-    `task_id: ${taskId}\nworker: ${agentName}\ntransport: acp\n` +
+    `dispatch_id: ${dispatchId}\ntask_id: ${taskId}\nworker: ${agentName}\ntransport: acp\n` +
     `started_at: ${startedAt}\ntimeout_sec: ${TIMEOUT_MS / 1000}\n`)
 } catch (e) {
   // Best-effort, like the memory it feeds: never fail a dispatch over

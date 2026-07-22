@@ -41,6 +41,24 @@ node plugins/tmux-teams/skills/tmux-teams/scripts/acp-companion.mjs \
 
 See `skills/tmux-teams/SKILL.md` §6-§8 for the contract, tmux lane, and ACP lane.
 
+## Pulse v1 — agent-readable live state
+
+Pulse has one data path: probes produce
+`<repo>/.tmux-teams/pulse.json`, the machine-readable SSOT, and
+`<repo>/.tmux-teams/pulse.html` is rendered only from that serialized JSON.
+There is no second HTML-side interpretation of the probes.
+
+```bash
+node plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs json <repo>
+```
+
+`json` prints the exact persisted Pulse v1 document. Its contract is
+`plugins/tmux-teams/skills/tmux-teams/references/pulse-v1.schema.json` and
+includes snapshot identity/freshness, source diagnostics, run state, and
+`dispatch_id` correlation. Pulse is read-only and reports
+`trust_level: advisory_same_uid`; suggested action codes are advisory and are
+never executed automatically. See `skills/tmux-teams/SKILL.md` §10.
+
 ## Install (this machine)
 
 ```bash

@@ -24,40 +24,71 @@
 //   pulse.mjs once  <repo>                 render once, print the path
 //   pulse.mjs watch <repo> [--interval 20] re-render forever (Ctrl-C to stop)
 //   pulse.mjs ensure <repo> [--interval 20] render now; idempotently keep watch alive
+//   pulse.mjs json <repo>                  render now; print one JSON document
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync, realpathSync } from 'node:fs'
+import {
+  closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync,
+  readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync,
+} from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseLsofCwd, parsePgrep, parsePsCandidates } from './pulse-platform.mjs'
+import { ID_RE, PULSE_SCHEMA, PULSE_SCHEMA_VERSION, UUID_RE, projectPulseV1 } from './pulse-data.mjs'
 
 const [cmd, repoArg, ...flags] = process.argv.slice(2)
-const USAGE = 'usage: pulse.mjs once <repo> | pulse.mjs watch|ensure <repo> [--interval SEC]'
-if (!cmd || !repoArg || !['once', 'watch', 'ensure'].includes(cmd)) { console.error(USAGE); process.exit(2) }
+const USAGE = 'usage: pulse.mjs once|json <repo> | pulse.mjs watch|ensure <repo> [--interval SEC]'
+if (!cmd || !repoArg || !['once', 'json', 'watch', 'ensure'].includes(cmd)) { console.error(USAGE); process.exit(2) }
 
 let REPO
 try { REPO = realpathSync(repoArg) } catch { console.error(`[pulse] no such repo: ${repoArg}`); process.exit(2) }
 const STORE = join(REPO, '.tmux-teams')
 const OUT = join(STORE, 'pulse.html')
+const JSON_OUT = join(STORE, 'pulse.json')
 const EVENTS = join(STORE, 'kms', 'events')
 const DISPATCH = join(STORE, 'dispatch')
 const OUTBOX = join(REPO, '.mailbox-out')
 const CTL = join(homedir(), '.tmux-teams', 'mailbox-run')
 const WATCH_PID = join(STORE, 'pulse-watch.pid')
+const PUBLISH_LOCK = join(STORE, 'pulse-publish.lock')
 const THIS_SCRIPT = fileURLToPath(import.meta.url)
 const MANAGED_WATCH = flags.includes('--managed')
 
 const iFlag = flags.indexOf('--interval')
-const INTERVAL = iFlag >= 0 && Number(flags[iFlag + 1]) > 0 ? Number(flags[iFlag + 1]) : 20
+const INTERVAL = iFlag >= 0 && Number(flags[iFlag + 1]) > 0 ? Math.max(1, Math.ceil(Number(flags[iFlag + 1]))) : 20
 
 // Startup is slower than it looks: an ACP lane may sit in `npx` downloading its
 // adapter before anything exists to probe. Announcing death during a worker's
 // own installation is the fastest way to make the alarm worthless. Where a pane
 // id was recorded we check it directly and skip the guessing entirely.
 const GRACE_SEC = 300
+const MAX_INPUT_BYTES = 1024 * 1024
+const MAX_SOURCE_FILES = 1000
+const MAX_TOTAL_INPUT_BYTES = 32 * 1024 * 1024
+const MAX_FIELD_CHARS = 256
+
+function fieldValue(text, key) {
+  const match = text.match(new RegExp(`^${key}:[ \\t]*(.+)$`, 'm'))
+  if (!match) return ''
+  const value = match[1].trim()
+  return value.length <= MAX_FIELD_CHARS ? value : ''
+}
 
 const sh = (bin, args) => {
-  try { return execFileSync(bin, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }) } catch { return '' }
+  try { return execFileSync(bin, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) } catch { return '' }
+}
+
+function tmux(args) {
+  try {
+    return { available: true, out: execFileSync('tmux', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) }
+  } catch (e) {
+    const stderr = String(e.stderr || '')
+    if (e.status === 1 && /no server running|failed to connect to server|no current client/i.test(stderr)) {
+      return { available: true, out: '' }
+    }
+    return { available: false, out: '' }
+  }
 }
 
 // Liveness is read from /proc on Linux and from lsof/pgrep on macOS, where
@@ -116,21 +147,28 @@ function acpCandidates() {
 // Ownership is proven by the process's own cwd, never by a session name:
 // `auto--api` could belong to any repo named api, and this project already paid
 // for that lesson once in the memory store's key.
-/** Pane ids tmux currently knows about — a recorded pane still listed means the
- *  dispatch has not collapsed, whatever the worker inside it is doing. */
-function livePaneIds() {
-  const out = sh('tmux', ['list-panes', '-a', '-F', '#{pane_id}'])
-  return new Set(out.split('\n').map(s => s.trim()).filter(Boolean))
+/** One tmux probe feeds both liveness rows and the recorded-pane decision. */
+function paneInventory() {
+  const probe = tmux(['list-panes', '-a', '-F', '#{session_name}|#{window_name}|#{pane_id}|#{pane_pid}'])
+  const lines = probe.out.split('\n').filter(Boolean)
+  return {
+    available: probe.available,
+    lines,
+    ids: new Set(lines.map(line => line.split('|')[2]).filter(Boolean)),
+  }
 }
 
-function aliveWorkers() {
-  const rows = [], notes = []
-  if (!PROC_OK) notes.push(DARWIN
-    ? 'lsof did not report this process\'s cwd — liveness on this host is unverifiable, so "running" and "died" cannot be told apart'
-    : 'cannot read /proc — liveness on this host is unverifiable, so "running" and "died" cannot be told apart')
+function aliveWorkers(panes) {
+  const rows = [], notes = [], diagnostics = []
+  if (!PROC_OK) {
+    notes.push(DARWIN
+      ? 'lsof did not report this process\'s cwd — liveness on this host is unverifiable, so "running" and "died" cannot be told apart'
+      : 'cannot read /proc — liveness on this host is unverifiable, so "running" and "died" cannot be told apart')
+    diagnostics.push({ code: 'LIVENESS_UNAVAILABLE', severity: 'error', source: 'liveness' })
+  }
+  if (!panes.available) diagnostics.push({ code: 'TMUX_UNAVAILABLE', severity: 'warning', source: 'tmux' })
 
-  const panes = sh('tmux', ['list-panes', '-a', '-F', '#{session_name}|#{window_name}|#{pane_id}|#{pane_pid}'])
-  for (const line of panes.split('\n').filter(Boolean)) {
+  for (const line of panes.lines) {
     const [session, windowName, paneId, pid] = line.split('|')
     if (!PROC_OK) continue
     if (cwdOf(pid) !== REPO) continue
@@ -149,7 +187,7 @@ function aliveWorkers() {
       if (m) rows.push({ id: m[1], kind: 'acp', detail: `pid ${pid}`, pid })
     }
   }
-  return { rows, notes }
+  return { rows, notes, diagnostics }
 }
 
 // ── FOOTPRINTS ───────────────────────────────────────────────────────────────
@@ -158,41 +196,117 @@ function aliveWorkers() {
 // repos dispatching "task-1" share that path — so they are collected separately
 // and never raise an alarm on their own. Counting them as ours is how a first
 // render showed three DIED SILENTLY rows that all belonged to another project.
-function footprints() {
+function footprints(inputBudget) {
   const byId = new Map()
+  const diagnostics = []
+  let dispatchHealth = 'ok', outboxHealth = 'ok'
 
   // The dispatch record is written by the PM the moment it dispatches, so it
   // survives a worker that dies before producing anything. Without it, the
   // truest silent death — dying before the first write — leaves no trace at
   // all, because dispatch DELETES any stale outbox first.
   let dispatches = []
-  try { dispatches = readdirSync(DISPATCH).filter(f => f.endsWith('.md')) } catch { dispatches = [] }
+  try { dispatches = readdirSync(DISPATCH).filter(f => f.endsWith('.md')) } catch (e) {
+    if (e.code !== 'ENOENT') {
+      dispatchHealth = 'degraded'
+      diagnostics.push({ code: 'DISPATCH_UNREADABLE', severity: 'error', source: 'dispatch' })
+    }
+  }
+  if (dispatches.length > MAX_SOURCE_FILES) {
+    dispatchHealth = 'degraded'
+    diagnostics.push({ code: 'SOURCE_TRUNCATED', severity: 'warning', source: 'dispatch', count: dispatches.length - MAX_SOURCE_FILES })
+    dispatches = dispatches.sort().slice(-MAX_SOURCE_FILES)
+  }
   for (const f of dispatches) {
     const id = f.replace(/\.md$/, '')
+    if (!ID_RE.test(id)) continue
     let st, text = ''
-    try { st = statSync(join(DISPATCH, f)); text = readFileSync(join(DISPATCH, f), 'utf8') } catch { continue }
-    const field = (k) => (text.match(new RegExp(`^${k}:[ \\t]*(.+)$`, 'm')) || [, ''])[1].trim()
+    try {
+      st = statSync(join(DISPATCH, f))
+      if (st.size > MAX_INPUT_BYTES) throw Object.assign(new Error('oversized'), { code: 'EFBIG' })
+      if (st.size > inputBudget.remaining) {
+        diagnostics.push({ code: 'SOURCE_TRUNCATED', severity: 'warning', source: 'dispatch' })
+        dispatchHealth = 'degraded'
+        break
+      }
+      inputBudget.remaining -= st.size
+      text = readFileSync(join(DISPATCH, f), 'utf8')
+    } catch {
+      diagnostics.push({ code: 'DISPATCH_UNREADABLE', severity: 'error', source: 'dispatch' })
+      dispatchHealth = 'degraded'
+      continue
+    }
+    const timeoutRaw = fieldValue(text, 'timeout_sec'), timeout = timeoutRaw === '' ? null : Number(timeoutRaw)
+    const dispatchId = fieldValue(text, 'dispatch_id')
     byId.set(id, {
-      id, mtime: st.mtimeMs, marker: '', dispatched: true,
-      startedAt: field('started_at'), timeoutSec: Number(field('timeout_sec')) || null,
-      transport: field('transport'), worker: field('worker'), pane: field('pane'),
+      id, mtime: st.mtimeMs, marker: '', terminalStatus: 'absent', dispatched: true, dispatchStatus: 'present',
+      dispatchId: UUID_RE.test(dispatchId) ? dispatchId : '', startedAt: fieldValue(text, 'started_at'),
+      timeoutSec: Number.isFinite(timeout) && timeout >= 0 ? timeout : null,
+      transport: fieldValue(text, 'transport'), worker: fieldValue(text, 'worker'), pane: fieldValue(text, 'pane'),
     })
   }
 
   let names = []
-  try { names = readdirSync(OUTBOX) } catch { names = [] }
+  try { names = readdirSync(OUTBOX) } catch (e) {
+    if (e.code !== 'ENOENT') {
+      outboxHealth = 'degraded'
+      diagnostics.push({ code: 'OUTBOX_UNREADABLE', severity: 'error', source: 'outbox' })
+    }
+  }
+  if (names.length > MAX_SOURCE_FILES) {
+    outboxHealth = 'degraded'
+    diagnostics.push({ code: 'SOURCE_TRUNCATED', severity: 'warning', source: 'outbox', count: names.length - MAX_SOURCE_FILES })
+    names = names.sort().slice(-MAX_SOURCE_FILES)
+  }
   for (const id of names) {
+    if (id.startsWith('.')) continue
+    if (!ID_RE.test(id)) continue
     const path = join(OUTBOX, id)
-    let st, text = ''
-    try { st = statSync(path) } catch { continue }
-    try { if (st.isFile()) text = readFileSync(path, 'utf8') } catch { /* unreadable: treat as no marker */ }
+    let st, text = '', terminalStatus = 'absent'
+    try {
+      st = statSync(path)
+      let file = path, fileStat = st
+      if (st.isDirectory()) {
+        const entries = readdirSync(path).filter(name => {
+          try { return statSync(join(path, name)).isFile() } catch { return false }
+        })
+        if (entries.length !== 1) throw new Error('outbox directory needs exactly one file')
+        file = join(path, entries[0])
+        fileStat = statSync(file)
+      }
+      if (!fileStat.isFile() || fileStat.size > MAX_INPUT_BYTES) throw new Error('outbox unreadable or oversized')
+      if (fileStat.size > inputBudget.remaining) {
+        throw Object.assign(new Error('aggregate input budget exhausted'), { code: 'EBUDGET' })
+      }
+      inputBudget.remaining -= fileStat.size
+      text = readFileSync(file, 'utf8')
+      st = fileStat
+    } catch (e) {
+      if (e.code === 'EBUDGET') {
+        diagnostics.push({ code: 'SOURCE_TRUNCATED', severity: 'warning', source: 'outbox' })
+        outboxHealth = 'degraded'
+        break
+      }
+      terminalStatus = 'unreadable'
+      outboxHealth = 'degraded'
+      diagnostics.push({ code: 'OUTBOX_UNREADABLE', severity: 'error', source: 'outbox' })
+    }
     // Same rule the PM wait loop uses: the LAST non-empty line, whole-line match.
     const last = text.split('\n').map(s => s.trim()).filter(Boolean).pop() || ''
     const m = last.match(/^TEAM_(DONE|BLOCKED|FAILED)\s+(\S+)$/)
-    const prev = byId.get(id) || { id, dispatched: false, startedAt: '', timeoutSec: null }
-    byId.set(id, { ...prev, mtime: Math.max(st.mtimeMs, prev.mtime || 0), marker: m && m[2] === id ? `TEAM_${m[1]}` : '' })
+    const marker = m && m[2] === id ? `TEAM_${m[1]}` : ''
+    if (marker) terminalStatus = 'present'
+    const prev = byId.get(id) || {
+      id, dispatched: false, dispatchStatus: 'absent', dispatchId: '', startedAt: '', timeoutSec: null,
+    }
+    byId.set(id, {
+      ...prev, mtime: Math.max(st?.mtimeMs || 0, prev.mtime || 0), marker, terminalStatus,
+    })
   }
-  return [...byId.values()]
+  return {
+    rows: [...byId.values()], diagnostics,
+    health: { dispatch: dispatchHealth, outbox: outboxHealth },
+  }
 }
 
 /** Control dirs that no live process claims — shown as context, never as alarms. */
@@ -200,6 +314,7 @@ function unclaimedControlDirs(liveIds, footIds) {
   let names = []
   try { names = readdirSync(CTL) } catch { return [] }
   return names
+    .filter(id => ID_RE.test(id))
     .filter(id => !liveIds.has(id) && !footIds.has(id))
     .map(id => {
       try { return { id, mtime: statSync(join(CTL, id)).mtimeMs } } catch { return null }
@@ -210,21 +325,59 @@ function unclaimedControlDirs(liveIds, footIds) {
 }
 
 // ── RECORDED ─────────────────────────────────────────────────────────────────
-function recorded() {
+function recorded(inputBudget) {
   let files = []
-  try { files = readdirSync(EVENTS).filter(f => f.endsWith('.md')).sort() } catch { return [] }
-  return files.map(f => {
-    const text = readFileSync(join(EVENTS, f), 'utf8')
-    const get = (k) => (text.match(new RegExp(`^${k}:[ \\t]*(.+)$`, 'm')) || [, ''])[1].trim()
-    const num = (k) => { const v = Number(get(k)); return Number.isFinite(v) ? v : null }
-    return {
-      file: f, task_id: get('task_id'), worker: get('worker'), terminal: get('terminal'),
-      event_kind: get('event_kind'), pm_verdict: get('pm_verdict'),
-      lesson: get('lesson'), started_at: get('started_at'),
-      wait_sec: num('wait_sec'), timeout_sec: num('timeout_sec'), stakes: get('stakes'),
-      mtime: statSync(join(EVENTS, f)).mtimeMs,
+  const diagnostics = []
+  let health = 'ok'
+  try { files = readdirSync(EVENTS).filter(f => f.endsWith('.md')).sort() } catch (e) {
+    if (e.code !== 'ENOENT') {
+      health = 'degraded'
+      diagnostics.push({ code: 'EVENT_UNREADABLE', severity: 'error', source: 'events' })
     }
-  })
+  }
+  if (files.length > MAX_SOURCE_FILES) {
+    health = 'degraded'
+    diagnostics.push({ code: 'SOURCE_TRUNCATED', severity: 'warning', source: 'events', count: files.length - MAX_SOURCE_FILES })
+    files = files.slice(-MAX_SOURCE_FILES)
+  }
+  const rows = []
+  for (const f of files) {
+    try {
+      const path = join(EVENTS, f), st = statSync(path)
+      if (!st.isFile() || st.size > MAX_INPUT_BYTES) throw new Error('event unreadable or oversized')
+      if (st.size > inputBudget.remaining) {
+        diagnostics.push({ code: 'SOURCE_TRUNCATED', severity: 'warning', source: 'events' })
+        health = 'degraded'
+        break
+      }
+      inputBudget.remaining -= st.size
+      const text = readFileSync(path, 'utf8')
+      const num = (k) => {
+        const raw = fieldValue(text, k)
+        if (raw === '') return null
+        const value = Number(raw)
+        return Number.isFinite(value) ? value : null
+      }
+      const task = fieldValue(text, 'task_id'), worker = fieldValue(text, 'worker')
+      if (!ID_RE.test(task) || !ID_RE.test(worker)) {
+        health = 'degraded'
+        diagnostics.push({ code: 'INVALID_EVENT_ENTRY', severity: 'warning', source: 'events' })
+        continue
+      }
+      const dispatchId = fieldValue(text, 'dispatch_id')
+      rows.push({
+        task_id: task, worker, dispatch_id: UUID_RE.test(dispatchId) ? dispatchId : '',
+        transport: fieldValue(text, 'transport'), terminal: fieldValue(text, 'terminal'),
+        pm_verdict: fieldValue(text, 'pm_verdict'), started_at: fieldValue(text, 'started_at'),
+        wait_sec: num('wait_sec'), timeout_sec: num('timeout_sec'),
+        mtime: st.mtimeMs,
+      })
+    } catch {
+      health = 'degraded'
+      diagnostics.push({ code: 'EVENT_UNREADABLE', severity: 'error', source: 'events' })
+    }
+  }
+  return { rows, diagnostics, health }
 }
 
 const PM_VERDICTS = new Set(['pass', 'reject', 'unresolved'])
@@ -232,27 +385,35 @@ const hasPmVerdict = (r) => PM_VERDICTS.has(r.pm_verdict)
 
 // ── DERIVE ───────────────────────────────────────────────────────────────────
 function derive(now) {
-  const { rows: live, notes } = aliveWorkers()
-  const panesNow = livePaneIds()
-  const foot = footprints()
-  const rec = recorded()
+  const inputBudget = { remaining: MAX_TOTAL_INPUT_BYTES }
+  const panesNow = paneInventory()
+  const { rows: live, notes, diagnostics: liveDiagnostics } = aliveWorkers(panesNow)
+  const footResult = footprints(inputBudget)
+  const recordResult = recorded(inputBudget)
+  const foot = footResult.rows, rec = recordResult.rows
+  const diagnostics = [...liveDiagnostics, ...footResult.diagnostics, ...recordResult.diagnostics]
   // Worker ids get reused across runs, so an event only settles the footprint it
   // belongs to. Matching on id alone would let yesterday's record mark today's
   // dispatch "finished" and quietly drop it off the screen.
-  const recAt = new Map()
-  for (const r of rec) {
-    // ACP writes a transport-terminal event before the PM verifies anything.
-    // It is useful history, but only an explicit PM verdict settles a run.
-    if (r.task_id && hasPmVerdict(r)) recAt.set(r.task_id, Math.max(recAt.get(r.task_id) || 0, r.mtime))
-  }
   const liveById = new Map(live.map(l => [l.id, l]))
 
   const active = []
   for (const f of foot) {
     const alive = liveById.get(f.id)
-    const settled = recAt.has(f.id) && recAt.get(f.id) >= f.mtime - 1000
+    const verdicts = rec.filter(r => {
+      if (r.task_id !== f.id || !hasPmVerdict(r)) return false
+      // Once the footprint has strong identity, never silently downgrade it.
+      // Recency is only a compatibility path for a legacy footprint that has
+      // no dispatch UUID of its own.
+      if (f.dispatchId) return f.dispatchId === r.dispatch_id
+      return r.mtime >= f.mtime - 1000
+    }).sort((a, b) => b.mtime - a.mtime)
+    const currentVerdict = verdicts[0] || null
+    const settled = !!currentVerdict
     if (settled && !alive) continue                    // finished and recorded: history, not now
-    const ageSec = Math.round((now - f.mtime) / 1000)
+    const ageSec = Math.max(0, Math.round((now - f.mtime) / 1000))
+    const startedMs = Date.parse(f.startedAt || '')
+    const elapsedSec = Number.isFinite(startedMs) ? Math.max(0, Math.round((now - startedMs) / 1000)) : null
     // The absence of a process means different things depending on whether the
     // worker got as far as writing its terminal marker. Collapsing those into
     // one red alarm would fire on every successful run, because the PM's verify
@@ -266,17 +427,22 @@ function derive(now) {
     // outlast any timer), and gone means gone. The grace window is only for
     // dispatches with no pane to check. Killing a worker mid-run proved why:
     // the window kept reporting "starting" about a pane already destroyed.
-    const paneHeld = f.pane ? panesNow.has(f.pane) : null
+    const paneHeld = f.pane && panesNow.available ? panesNow.ids.has(f.pane) : null
+    const paneStatus = !f.pane ? 'not_recorded' : !panesNow.available ? 'probe_unavailable' : paneHeld ? 'held' : 'gone'
     const state = working ? 'running'
       : !PROC_OK ? 'unknown'
+      : f.terminalStatus === 'unreadable' ? 'unknown'
       : f.marker ? (ageSec > UNRECORDED_SEC ? 'unrecorded' : 'awaiting-verdict')
       : paneHeld === true ? 'starting'
       : paneHeld === false ? 'died'
+      : f.pane && !panesNow.available ? 'unknown'
       : ageSec <= GRACE_SEC ? 'starting'
       : 'died'
     active.push({
       ...f, alive: !!alive, detail: alive ? alive.detail : '',
-      kind: (alive && alive.kind) || f.transport || '', ageSec, state,
+      kind: (alive && alive.kind) || f.transport || '', ageSec, elapsedSec, state,
+      liveness: working ? 'alive' : PROC_OK ? 'dead' : 'unknown', paneStatus,
+      pmVerdict: currentVerdict?.pm_verdict || '',
       idleShell: !!(alive && alive.kind === 'tmux' && alive.hasChild === false),
     })
   }
@@ -289,37 +455,27 @@ function derive(now) {
   for (const l of live) {
     if (active.some(a => a.id === l.id)) continue
     if (l.kind === 'tmux' && l.hasChild === false) continue
-    active.push({ id: l.id, marker: '', alive: true, kind: l.kind, detail: l.detail, ageSec: null, state: 'running' })
+    active.push({
+      id: l.id, marker: '', terminalStatus: 'absent', alive: true, liveness: 'alive',
+      dispatched: false, dispatchStatus: 'absent', dispatchId: '', worker: '', transport: l.kind,
+      kind: l.kind, detail: l.detail, ageSec: null, elapsedSec: null, timeoutSec: null,
+      paneStatus: l.kind === 'tmux' ? 'held' : 'not_recorded', pmVerdict: '', state: 'orphan_running',
+    })
   }
   const unclaimed = unclaimedControlDirs(new Set(live.map(l => l.id)), new Set(foot.map(f => f.id)))
-  return { active, rec, notes, unclaimed }
-}
-
-// ── STATS ────────────────────────────────────────────────────────────────────
-function median(xs) {
-  if (!xs.length) return null
-  const a = [...xs].sort((x, y) => x - y), mid = a.length >> 1
-  return a.length % 2 ? a[mid] : Math.round((a[mid - 1] + a[mid]) / 2)
-}
-
-function stats(rec) {
-  const byWorker = new Map()
-  for (const r of rec) {
-    // Mechanical transport facts are not another reviewed run. Counting both
-    // halves would double totals and blend pre-verdict timing into PM history.
-    if (!r.worker || !hasPmVerdict(r)) continue
-    const s = byWorker.get(r.worker) || { worker: r.worker, runs: 0, rejected: 0, waits: [] }
-    s.runs++
-    if (r.pm_verdict === 'reject') s.rejected++
-    if (typeof r.wait_sec === 'number' && r.wait_sec >= 0) s.waits.push(r.wait_sec)
-    byWorker.set(r.worker, s)
+  for (const code of [...new Set(diagnostics.map(d => d.code))]) {
+    if (code !== 'LIVENESS_UNAVAILABLE') notes.push(`pulse source degraded: ${code}`)
   }
-  return [...byWorker.values()].map(s => ({
-    ...s,
-    // A median over zero measurements is not 0 — it is unknown, and the page
-    // says so rather than inventing a confident number.
-    medianWait: median(s.waits),
-  })).sort((a, b) => b.runs - a.runs)
+  return {
+    active, rec, notes, unclaimed, diagnostics,
+    sourceHealth: {
+      liveness: PROC_OK ? 'ok' : 'unavailable',
+      tmux: panesNow.available ? 'ok' : 'unavailable',
+      dispatch: footResult.health.dispatch,
+      outbox: footResult.health.outbox,
+      events: recordResult.health,
+    },
+  }
 }
 
 // ── RENDER ───────────────────────────────────────────────────────────────────
@@ -337,26 +493,29 @@ const dur = (sec) => sec == null ? 'not measured'
 // Hand-rolled SVG on purpose: no chart library, nothing fetched, works offline.
 const STAGES = ['สั่งงาน', 'มีชีวิต', 'outbox', 'PM ตัดสิน', 'บันทึก']
 
-function graphRows(active, rec) {
+function graphRows(snapshot) {
   const rows = []
-  for (const a of active) {
+  for (const run of snapshot.runs) {
     // "Reached" is about the PAST, not the present: a run that produced an
     // outbox was demonstrably alive at some point, even if it is gone now.
     // Mixing the two drew a solid line straight through a hollow dot.
+    const terminalReached = ['done', 'blocked', 'failed'].includes(run.signals.terminal)
+    const verdictReached = ['pass', 'reject', 'unresolved'].includes(run.signals.pm_verdict)
     rows.push({
-      id: a.id, state: a.state, kind: a.kind,
-      reached: [true, a.alive || !!a.marker, !!a.marker, false, false],
+      id: run.task_id, state: run.state, kind: run.transport,
+      reached: [run.signals.dispatch === 'present', run.signals.liveness === 'alive' || terminalReached,
+        terminalReached, verdictReached, verdictReached],
     })
   }
   // Finished runs are dropped from the live tables; the graph keeps a few so the
   // picture is not just alarms — you need the healthy shape to compare against.
-  for (const r of [...rec].filter(hasPmVerdict).sort((x, y) => y.mtime - x.mtime)) {
+  for (const event of snapshot.recent_verdicts) {
     if (rows.length >= 10) break
-    if (rows.some(w => w.id === r.task_id)) continue
+    if (rows.some(row => row.id === event.task_id)) continue
     // A run that ended TEAM_FAILED and was never resolved is not a green line.
     rows.push({
-      id: r.task_id, kind: r.worker,
-      state: r.pm_verdict === 'reject' ? 'rejected' : r.pm_verdict === 'pass' ? 'finished' : 'unresolved',
+      id: event.task_id, kind: event.transport,
+      state: event.pm_verdict === 'reject' ? 'rejected' : event.pm_verdict === 'pass' ? 'finished' : 'unresolved',
       reached: [true, true, true, true, true],
     })
   }
@@ -376,11 +535,13 @@ function graphRows(active, rec) {
 // Hand-drawn SVG with a fixed layout, not a chart library: the shape of this
 // loop is a constant, and a page whose job is to be true cannot depend on
 // fetching a renderer that may not arrive.
-function renderLoop(active, rec) {
+function renderLoop(snapshot) {
+  const active = snapshot.runs
+  const rec = snapshot.recent_verdicts
   const c = (xs) => xs.length
   const running = c(active.filter(a => ['running', 'starting'].includes(a.state)))
   const waiting = c(active.filter(a => a.state === 'awaiting-verdict'))
-  const dead = c(active.filter(a => ['died', 'unknown', 'unrecorded'].includes(a.state)))
+  const dead = c(active.filter(a => ['died', 'unknown', 'unrecorded', 'orphan_running'].includes(a.state)))
   const pass = c(rec.filter(r => r.pm_verdict === 'pass'))
   const reject = c(rec.filter(r => r.pm_verdict === 'reject'))
   const unres = c(rec.filter(r => r.pm_verdict === 'unresolved'))
@@ -483,25 +644,34 @@ function renderGraph(rows) {
      aria-label="แต่ละงานเดินไปถึงขั้นไหน">${head}${body}</svg>`
 }
 
-function render({ active, rec, notes, unclaimed }, now) {
-  const attention = active.filter(a => ['died', 'unknown', 'unrecorded'].includes(a.state))
+// HTML is a pure view of the published contract. It never receives the raw
+// observations, so pulse.json is the sole source of truth for humans and agents.
+function render(snapshot) {
+  const active = snapshot.runs
+  const rec = snapshot.recent_verdicts
+  const notes = snapshot.diagnostics
+  const unclaimed = snapshot.unclaimed_control
+  const attention = active.filter(a => ['died', 'unknown', 'unrecorded', 'orphan_running'].includes(a.state))
   const running = active.filter(a => ['running', 'starting', 'awaiting-verdict'].includes(a.state))
-  const recent = [...rec].sort((a, b) => b.mtime - a.mtime).slice(0, 12)
-  const st = stats(rec)
-  const stamp = new Date(now).toISOString().replace('T', ' ').slice(0, 19) + 'Z'
+  const recent = rec
+  const st = snapshot.worker_stats
+  const stamp = snapshot.generated_at.replace('T', ' ').slice(0, 19) + 'Z'
+  const repoName = snapshot.scope.repo_name || 'unknown'
+  const refreshInterval = snapshot.observation.refresh_interval_sec
 
   const row = (a) => `<tr>
-    <td class="mono">${esc(a.id)}</td>
+    <td class="mono">${esc(a.task_id)}</td>
     <td><span class="pill ${a.state}">${a.state === 'died' ? 'DIED SILENTLY' : a.state}</span></td>
-    <td>${esc(a.kind || '—')}</td>
-    <td class="mono">${esc(a.detail || '')}</td>
-    <td>${a.ageSec == null ? 'not measured' : dur(a.ageSec)}${a.timeoutSec ? ` <span class="dim">/ ${dur(a.timeoutSec)}</span>` : ''}</td>
-    <td>${a.idleShell ? '<span class="warn">pane alive but its shell has no child — worker gone</span>' : a.dispatched === false ? '<span class="warn">no dispatch record</span>' : ''}</td>
+    <td>${esc(a.transport || '—')}</td>
+    <td class="mono">${esc(a.dispatch_id || '—')}</td>
+    <td>${a.silence_sec == null ? 'not measured' : dur(a.silence_sec)}${a.timeout_sec != null ? ` <span class="dim">/ ${dur(a.timeout_sec)}</span>` : ''}</td>
+    <td><span class="${a.advisory.attention ? 'warn' : 'dim'}">${esc(a.advisory.action_code)}</span></td>
   </tr>`
 
   return `<!doctype html><html lang="th"><head><meta charset="utf-8">
-<title>pulse — ${esc(REPO.split('/').pop())}</title>
-<meta http-equiv="refresh" content="${INTERVAL}">
+<title>pulse — ${esc(repoName)}</title>
+<meta http-equiv="refresh" content="${refreshInterval}">
+<meta name="tmux-teams-snapshot-id" content="${esc(snapshot.snapshot_id)}">
 <style>
 :root{--bg:#0f1216;--card:#161b22;--line:#262d36;--ink:#e6ebe9;--dim:#8b98a5;--ok:#4ac4a2;--warn:#d99b3d;--bad:#e0716a;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 @media(prefers-color-scheme:light){:root{--bg:#f6f8f7;--card:#fff;--line:#dde3e1;--ink:#141a1f;--dim:#5f6b73;--ok:#12806a;--warn:#a06714;--bad:#b0413a}}
@@ -522,6 +692,7 @@ td{padding:10px 14px;border-bottom:1px solid var(--line)}tr:last-child td{border
 .pill.starting{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
 .pill.awaiting-verdict{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
 .pill.unrecorded{background:color-mix(in srgb,var(--warn) 26%,transparent);color:var(--warn)}
+.pill.orphan_running{background:color-mix(in srgb,var(--warn) 26%,transparent);color:var(--warn)}
 .pill.died,.pill.unknown{background:color-mix(in srgb,var(--bad) 18%,transparent);color:var(--bad)}
 .warn{color:var(--warn);font-size:12px}.dim{color:var(--dim);font-size:12px}
 .graph{padding:14px 16px}
@@ -555,51 +726,51 @@ footer{margin-top:32px;padding-top:12px;border-top:1px solid var(--line);font:12
 
 <header>
   <div>
-    <h1>pulse · ${esc(REPO.split('/').pop())}</h1>
+    <h1>pulse · ${esc(repoName)}</h1>
     <p class="scope">แสดงเฉพาะ worker ที่ระบบนี้สั่งในโปรเจกต์นี้ · อ่านอย่างเดียว</p>
   </div>
-  <div class="age">อัปเดต ${stamp}<br>รีเฟรชทุก ${INTERVAL}s</div>
+  <div class="age">อัปเดต ${stamp}<br>รีเฟรชทุก ${refreshInterval}s</div>
 </header>
 
-${notes.map(n => `<p class="note">⚠ ${esc(n)}</p>`).join('')}
+${notes.map(n => `<p class="note">⚠ ${esc(`${n.source}:${n.code}${n.count > 1 ? ` ×${n.count}` : ''}`)}</p>`).join('')}
 
 <h2>ลูปของระบบ</h2>
 <div class="card diagram">
-  ${renderLoop(active, rec)}
+  ${renderLoop(snapshot)}
   <p class="dim">เส้นประ = ทางที่รู้ว่ามีแต่ยังไม่มีใครวัด</p>
 </div>
 
 <h2>เส้นทางของแต่ละงาน</h2>
-<div class="card graph">${renderGraph(graphRows(active, rec))}</div>
+<div class="card graph">${renderGraph(graphRows(snapshot))}</div>
 
 <h2>ต้องการความสนใจ</h2>
 <div class="card">${attention.length ? `<table>
-<tr><th>งาน</th><th>สถานะ</th><th>ช่องทาง</th><th>ที่อยู่</th><th>เงียบมานาน</th><th>หมายเหตุ</th></tr>
+<tr><th>งาน</th><th>สถานะ</th><th>ช่องทาง</th><th>dispatch</th><th>เงียบมานาน</th><th>คำแนะนำ</th></tr>
 ${attention.map(row).join('')}</table>`
     : '<p class="empty">ไม่มีอะไรต้องดู — ไม่มีงานที่หายไปโดยไม่ทิ้งบันทึก</p>'}</div>
 
 <h2>กำลังทำงาน</h2>
 <div class="card">${running.length ? `<table>
-<tr><th>งาน</th><th>สถานะ</th><th>ช่องทาง</th><th>ที่อยู่</th><th>ผ่านไป</th><th>หมายเหตุ</th></tr>
+<tr><th>งาน</th><th>สถานะ</th><th>ช่องทาง</th><th>dispatch</th><th>ผ่านไป</th><th>คำแนะนำ</th></tr>
 ${running.map(row).join('')}</table>`
     : '<p class="empty">ไม่มี worker ทำงานอยู่</p>'}</div>
 
 ${unclaimed && unclaimed.length ? `<h2>รอยเท้าที่ยืนยันเจ้าของไม่ได้</h2>
 <div class="card"><table>
 <tr><th>งาน</th><th>อายุ</th><th>หมายเหตุ</th></tr>
-${unclaimed.map(u => `<tr><td class="mono">${esc(u.id)}</td><td>${dur(Math.round((now - u.mtime) / 1000))}</td>
+${unclaimed.map(u => `<tr><td class="mono">${esc(u.task_id)}</td><td>${dur(u.age_sec)}</td>
   <td><span class="warn">control dir ไม่ผูกกับโปรเจกต์ อาจเป็นของ repo อื่น</span></td></tr>`).join('')}
 </table></div>` : ''}
 
 <h2>บันทึกล่าสุด</h2>
 <div class="card">${recent.length ? `<table>
-<tr><th>งาน</th><th>worker</th><th>จบแบบ</th><th>คำตัดสิน PM</th><th>ใช้เวลา</th><th>บทเรียน</th></tr>
+<tr><th>งาน</th><th>worker</th><th>จบแบบ</th><th>คำตัดสิน PM</th><th>ใช้เวลา</th><th>dispatch</th></tr>
 ${recent.map(r => `<tr>
   <td class="mono">${esc(r.task_id)}</td><td>${esc(r.worker)}</td>
   <td class="mono">${esc(r.terminal || '—')}</td>
   <td class="verdict-${esc(r.pm_verdict)}">${esc(r.pm_verdict || '—')}</td>
   <td>${r.wait_sec == null || r.wait_sec < 0 ? 'not measured' : dur(r.wait_sec)}</td>
-  <td>${esc(r.lesson && r.lesson !== 'none' ? r.lesson : '')}</td>
+  <td class="mono">${esc(r.dispatch_id || '—')}</td>
 </tr>`).join('')}</table>`
     : '<p class="empty">ยังไม่มีบันทึก</p>'}</div>
 
@@ -608,7 +779,7 @@ ${recent.map(r => `<tr>
 <tr><th>worker</th><th>รอบทั้งหมด</th><th>ถูกตีตก</th><th>เวลากลาง</th></tr>
 ${st.map(s => `<tr><td>${esc(s.worker)}</td><td>${s.runs}</td>
   <td>${s.rejected ? `<span class="verdict-reject">${s.rejected}</span>` : '0'}</td>
-  <td>${s.medianWait == null ? 'not measured' : dur(s.medianWait)}</td></tr>`).join('')}</table>`
+  <td>${s.median_wait_sec == null ? 'not measured' : dur(s.median_wait_sec)}</td></tr>`).join('')}</table>`
     : '<p class="empty">ยังไม่มีข้อมูลพอ</p>'}</div>
 
 <footer>
@@ -620,16 +791,127 @@ ${st.map(s => `<tr><td>${esc(s.worker)}</td><td>${s.runs}</td>
 </body></html>`
 }
 
+const lockWait = new Int32Array(new SharedArrayBuffer(4))
+const pause = (ms) => Atomics.wait(lockWait, 0, 0, ms)
+const PUBLISH_LEASE_MS = 5 * 60_000
+
+function readPublishToken() {
+  try { return readFileSync(PUBLISH_LOCK, 'utf8').trim() }
+  catch { return null }
+}
+
+function assertPublishLock(token) {
+  if (readPublishToken() !== token) throw new Error('publish lock ownership lost')
+}
+
+function claimPublishLock() {
+  mkdirSync(STORE, { recursive: true })
+  const token = `${process.pid}:${randomUUID()}`
+  for (let attempt = 0; attempt < 200; attempt++) {
+    try {
+      writeFileSync(PUBLISH_LOCK, `${token}\n`, { flag: 'wx' })
+      return token
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e
+      let observed = null, owner = null, age = Infinity
+      try {
+        observed = readPublishToken()
+        owner = Number(observed?.split(':', 1)[0])
+        age = Date.now() - statSync(PUBLISH_LOCK).mtimeMs
+      } catch { /* reclaim below */ }
+      if (!pidAlive(owner) || age > PUBLISH_LEASE_MS) {
+        // Re-read immediately before unlinking. A publisher that replaced the
+        // stale claim in between must keep its lock. Every owner also checks
+        // its token before each rename, so a reclaimed lease cannot publish.
+        if (!observed || readPublishToken() !== observed) continue
+        try { unlinkSync(PUBLISH_LOCK) } catch (unlinkError) {
+          if (unlinkError.code !== 'ENOENT') throw unlinkError
+        }
+        continue
+      }
+      pause(5)
+    }
+  }
+  throw new Error('publish lock busy')
+}
+
+function releasePublishLock(token) {
+  try {
+    if (readPublishToken() === token) unlinkSync(PUBLISH_LOCK)
+  } catch { /* best effort */ }
+}
+
+function atomicWrite(path, content) {
+  const temp = join(STORE, `.${path.split('/').pop()}.${process.pid}.${randomUUID()}.tmp`)
+  let fd = null
+  try {
+    fd = openSync(temp, 'wx', 0o600)
+    writeFileSync(fd, content)
+    fsyncSync(fd)
+    closeSync(fd)
+    fd = null
+    renameSync(temp, path)
+  } catch (e) {
+    if (fd !== null) try { closeSync(fd) } catch { /* best effort */ }
+    try { unlinkSync(temp) } catch { /* best effort */ }
+    throw e
+  }
+}
+
+function priorStream(view) {
+  if (!existsSync(JSON_OUT)) return { streamId: randomUUID(), sequence: 1 }
+  try {
+    const prior = JSON.parse(readFileSync(JSON_OUT, 'utf8'))
+    if (prior.schema !== PULSE_SCHEMA || prior.schema_version !== PULSE_SCHEMA_VERSION ||
+        !UUID_RE.test(prior.stream_id) || !Number.isSafeInteger(prior.sequence) ||
+        prior.sequence < 1 || prior.sequence >= Number.MAX_SAFE_INTEGER) throw new Error('invalid prior pulse')
+    return { streamId: prior.stream_id, sequence: prior.sequence + 1 }
+  } catch {
+    view.diagnostics.push({ code: 'SEQUENCE_RESET', severity: 'warning', source: 'publisher' })
+    return { streamId: randomUUID(), sequence: 1 }
+  }
+}
+
 function once() {
-  const now = Date.now()
+  const startedAt = Date.now()
+  const view = derive(startedAt)
+  const finishedAt = Date.now()
   mkdirSync(STORE, { recursive: true })
   const ignore = join(STORE, '.gitignore')
   if (!existsSync(ignore)) writeFileSync(ignore, '*\n')
-  writeFileSync(OUT, render(derive(now), now))
-  return OUT
+  const token = claimPublishLock()
+  try {
+    const stream = priorStream(view)
+    const snapshot = projectPulseV1(view, {
+      ...stream, startedAt, finishedAt, intervalSec: INTERVAL,
+      repoName: REPO.split('/').pop(),
+    })
+    const jsonText = JSON.stringify(snapshot, null, 2) + '\n'
+    // Render the exact serialized contract, not the internal projection object.
+    // This makes pulse.json the literal SSOT and catches serialization drift.
+    const publishedSnapshot = JSON.parse(jsonText)
+    const html = render(publishedSnapshot)
+    assertPublishLock(token)
+    atomicWrite(JSON_OUT, jsonText)
+    assertPublishLock(token)
+    atomicWrite(OUT, html)
+    return { htmlPath: OUT, jsonText, snapshot: publishedSnapshot }
+  } finally {
+    releasePublishLock(token)
+  }
 }
 
-if (cmd === 'once') { console.log(once()); process.exit(0) }
+if (cmd === 'once' || cmd === 'json') {
+  try {
+    const result = once()
+    if (cmd === 'json') process.stdout.write(result.jsonText)
+    else console.log(result.htmlPath)
+    process.exit(0)
+  } catch (e) {
+    console.error(`[pulse] publish failed: ${e.message}`)
+    process.exit(1)
+  }
+}
 
 function watcherPid() {
   try {
@@ -670,7 +952,7 @@ function releaseWatcher(pid = process.pid) {
 }
 
 if (cmd === 'ensure') {
-  console.log(once())
+  console.log(once().htmlPath)
   const claim = claimWatcher()
   if (!claim.claimed) {
     if (!claim.pid) { console.error('[pulse] could not claim watcher pidfile'); process.exit(1) }
