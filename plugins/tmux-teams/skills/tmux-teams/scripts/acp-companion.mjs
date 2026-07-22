@@ -6,6 +6,11 @@
 //
 // usage: node acp-companion.mjs <agent> <cwd> <task-id> <brief-file> [timeout-sec]
 //   agent: gemini | claude | codex | agy   (or set ACP_CMD="custom command" to override)
+//   env ACP_RESUME=<sessionId>: continue an earlier turn instead of starting a
+//     new session — carries full context across the otherwise one-shot mailbox
+//     brief (needs the agent to advertise loadSession; falls back to a fresh
+//     session with a warning if it does not). The session id is printed as
+//     `[session] <id>` and stored per task-id under .tmux-teams/sessions/.
 //
 // Lanes (2026-07-21):
 //   gemini -> `gemini --acp`                       (native; product-gated, see SKILL.md §8)
@@ -161,12 +166,34 @@ rl.on('line', (line) => {
     }
     return
   }
-  if (msg.method === 'session/update') {
-    const u = msg.params?.update
-    if (u?.sessionUpdate === 'agent_message_chunk' && u.content?.type === 'text') process.stdout.write(u.content.text)
-    else if (u?.sessionUpdate === 'tool_call') console.log(`[tool] ${u.title ?? ''}`)
-  }
+  if (msg.method === 'session/update') render(msg.params?.update)
 })
+
+// Live view: the agent streams five kinds of update; rendering only two of them
+// is why the ACP lane felt like a black box next to a tmux pane. The pane never
+// had structured signal — this does: thoughts, message text, tool calls WITH
+// their kind and status transitions, and the agent's own plan. `mode` tracks the
+// running text stream so a switch between thinking and speaking is marked once,
+// not per chunk (chunks are not line-aligned).
+let mode = null
+function say(kind, text) {
+  if (mode !== kind) { process.stdout.write(`\n[${kind}] `); mode = kind }
+  process.stdout.write(text)
+}
+function line(s) { mode = null; console.log(s) }
+const planMark = { completed: '✓', in_progress: '▶', pending: '◯' }
+function render(u) {
+  switch (u?.sessionUpdate) {
+    case 'agent_message_chunk': if (u.content?.type === 'text') say('say', u.content.text); break
+    case 'agent_thought_chunk': if (u.content?.type === 'text') say('think', u.content.text); break
+    case 'tool_call':
+      line(`[tool] ${u.kind ? u.kind + ' · ' : ''}${u.title ?? u.toolCallId ?? ''}${u.status ? ` (${u.status})` : ''}`); break
+    case 'tool_call_update':
+      if (u.status) line(`[tool] ${u.title ?? u.toolCallId ?? ''} → ${u.status}`); break
+    case 'plan':
+      line(`[plan] ${(u.entries ?? []).map(e => `${planMark[e.status] ?? '◯'} ${e.content}`).join('  ')}`); break
+  }
+}
 
 let timedOut = false
 const deadline = setTimeout(() => {
@@ -176,15 +203,50 @@ const deadline = setTimeout(() => {
   setTimeout(() => { killTree('SIGKILL'); process.exit(1) }, 5000)
 }, TIMEOUT_MS)
 
+// Resume target: an explicit ACP_RESUME wins; otherwise a session id stored for
+// THIS task-id (a retry, or a deliberate re-dispatch of the same id) is resumed.
+// A follow-up under a NEW id continues an earlier turn by passing that turn's
+// printed session id as ACP_RESUME — the mailbox brief is otherwise one-shot,
+// so cross-turn context is opt-in, never implicit.
+const sessionsDir = join(cwd, '.tmux-teams', 'sessions')
+const sessionFile = join(sessionsDir, taskId)
+let resumeId = process.env.ACP_RESUME?.trim()
+  || (existsSync(sessionFile) ? readFileSync(sessionFile, 'utf8').trim() : '')
+
 try {
-  await request('initialize', {
+  const init = await request('initialize', {
     protocolVersion: 1,
     clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
   })
-  const sess = await request('session/new', { cwd, mcpServers: [] })
-  console.log(`[session] ${sess.sessionId}`)
+  // session/load only exists if the agent advertises loadSession; never assume
+  // it (the field is optional and the method is not yet frozen in the spec).
+  const canLoad = init?.agentCapabilities?.loadSession === true
+
+  let sessionId
+  if (resumeId && canLoad) {
+    console.log(`[resume] loading ${resumeId} — the agent will replay its history below`)
+    try {
+      await request('session/load', { sessionId: resumeId, cwd, mcpServers: [] })
+      sessionId = resumeId
+      line(`[resume] history restored — continuing this session`)
+    } catch (e) {
+      console.error(`[resume] session/load failed (${e.message}); starting a fresh session`)
+    }
+  } else if (resumeId && !canLoad) {
+    console.error(`[resume] ${agentName} does not advertise loadSession — cannot resume ${resumeId}; starting fresh`)
+  }
+  if (!sessionId) {
+    const sess = await request('session/new', { cwd, mcpServers: [] })
+    sessionId = sess.sessionId
+  }
+  console.log(`[session] ${sessionId}`)
+  // Persist so a later same-id dispatch — or a follow-up passing this as
+  // ACP_RESUME — can continue. Best-effort: a run must never fail over this.
+  try { mkdirSync(sessionsDir, { recursive: true }); writeFileSync(sessionFile, sessionId + '\n') }
+  catch (e) { console.error(`[warn] could not persist session id: ${e.message}`) }
+
   const res = await request('session/prompt', {
-    sessionId: sess.sessionId,
+    sessionId,
     prompt: [{ type: 'text', text: preamble + brief }],
   })
   finished = true

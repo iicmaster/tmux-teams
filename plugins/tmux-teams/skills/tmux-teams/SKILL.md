@@ -309,6 +309,24 @@ removes: Enter-swallow retries, marker calibration, dialog keypress guessing —
 permissions arrive as structured requests (companion auto-approves; tighten
 per-task when the target repo is sensitive).
 
+**The live view is structured, not a black box.** The agent streams five
+`session/update` kinds and the companion renders all of them to stdout:
+`[think]` (reasoning), `[say]` (message text), `[tool] <kind> · <title>
+(<status>)` with its later `→ completed`/`→ failed` transition, and `[plan]`
+with per-entry marks. A tmux pane shows raw scrollback; this shows typed signal —
+what the agent is thinking, doing, and planning, live. Follow the companion's
+stdout (its log file) the way you would `capture-pane`.
+
+**Cross-turn context is opt-in via `ACP_RESUME`.** The mailbox brief is
+one-shot: each dispatch is a fresh `session/new`, so a follow-up cannot see an
+earlier turn's context by default. To continue one, pass its printed
+`[session] <id>` as `ACP_RESUME=<id>` on the next dispatch — the companion calls
+`session/load` (the agent replays its history) instead of starting over. It
+needs the agent to advertise `loadSession`; without it the run falls back to a
+fresh session with a warning, never a silent cold start. Session ids are also
+stored per task-id under `.tmux-teams/sessions/`, so re-dispatching the same id
+resumes automatically.
+
 **codex over ACP is UNLOCKED** via the official App Server adapter
 `@agentclientprotocol/codex-acp` (successor to the deprecated
 `zed-industries/codex-acp`): it drives the INSTALLED codex CLI, so
