@@ -111,6 +111,39 @@ function runCli(args, options = {}) {
   return spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', timeout: 10_000, ...options })
 }
 
+function assertStructuredValidation(input, expectedCode, expectedPath = null) {
+  let validation
+  assert.doesNotThrow(() => {
+    validation = validateExperiment(input)
+  })
+  assert.equal(validation.valid, false)
+  assert.ok(validation.errors.some(({ code }) => code === expectedCode), expectedCode)
+  if (expectedPath !== null) {
+    assert.ok(validation.errors.some(({ code, path }) => code === expectedCode && path === expectedPath),
+      `${expectedCode} at ${expectedPath}`)
+  }
+  assert.throws(
+    () => analyzeExperiment(input),
+    (error) => error instanceof ContractValidationError
+      && error.code === 'DELIVERY_LOOP_VALIDATION_FAILED'
+      && error.errors.some(({ code }) => code === expectedCode),
+  )
+
+  const directory = mkdtempSync(join(tmpdir(), 'delivery-loop-validation-'))
+  const invalid = join(directory, 'invalid.json')
+  writeFileSync(invalid, JSON.stringify(input))
+  const result = runCli(['analyze', invalid])
+  assert.equal(result.status, 1)
+  assert.equal(result.stdout, '')
+  const diagnostic = JSON.parse(result.stderr)
+  assert.equal(diagnostic.error, 'DELIVERY_LOOP_VALIDATION_FAILED')
+  assert.ok(diagnostic.diagnostics.some(({ code }) => code === expectedCode), expectedCode)
+  if (expectedPath !== null) {
+    assert.ok(diagnostic.diagnostics.some(({ code, path }) => code === expectedCode && path === expectedPath),
+      `${expectedCode} at ${expectedPath}`)
+  }
+}
+
 test('closed reducer enforces the complete actor/state/action matrix and preserves its inputs', () => {
   const cases = [
     ['draft', 'propose', 'sender', 'proposed'],
@@ -140,6 +173,18 @@ test('closed reducer enforces the complete actor/state/action matrix and preserv
   }
   for (const event of [{ type: 'invent', actor_id: 'sender' }, { type: 'accept', actor_id: 'sender' }, { type: 'cancel', actor_id: 'sender' }, { type: 'abandon', actor_id: 'pm' }, { type: 'resolve_exception', actor_id: 'pm' }]) {
     assert.throws(() => reduceHandoffAttempt(attempt('draft'), event), ContractValidationError)
+  }
+
+  const overlappingRoles = attempt('draft')
+  overlappingRoles.actors.phase_leads.Development = ['sender']
+  const selfProposed = reduceHandoffAttempt(overlappingRoles, { type: 'propose', actor_id: 'sender' })
+  for (const type of ['accept', 'reject']) {
+    assert.throws(
+      () => reduceHandoffAttempt(selfProposed, { type, actor_id: 'sender' }),
+      (error) => error instanceof ContractValidationError
+        && error.errors.some(({ code }) => code === 'ACTOR_SELF_REVIEW_INVALID'),
+      `an actor cannot propose and ${type} the same attempt`,
+    )
   }
 })
 
@@ -178,6 +223,8 @@ test('revision lineage is same-slice/prior/rejected and terminal sunk costs bind
     assert.equal(validateExperiment(sunk).valid, true, state)
     sunk.slices[0].costs[category] = 3
     assert.ok(invalidCodes(sunk).includes('SUNK_COST_MISMATCH'), category)
+    sunk.slices[0].costs[category] = null
+    assert.ok(invalidCodes(sunk).includes('SUNK_COST_MISMATCH'), `${category} cannot be unknown for a recorded ${state} terminal cost`)
   }
   const acceptedSunk = validInput()
   acceptedSunk.slices[0].handoff_attempts[0].sunk_cost_minutes = 1
@@ -202,6 +249,16 @@ test('the four phase exits have exact artifact mappings and every mandatory fiel
       const noTrace = clone(input)
       noTrace.slices[0].handoff_attempts[0].exit_artifact.predecessor_trace = []
       assert.ok(invalidCodes(noTrace).includes('ARTIFACT_TRACE_REQUIRED'))
+    }
+    for (const [field, code] of [
+      ['predecessor_trace', 'ARTIFACT_TRACE_REQUIRED'],
+      ['validation_evidence', 'ARTIFACT_VALIDATION_REQUIRED'],
+    ]) {
+      for (const invalidRefs of [[null], ['']]) {
+        const malformedRefs = clone(input)
+        malformedRefs.slices[0].handoff_attempts[0].exit_artifact[field] = invalidRefs
+        assert.ok(invalidCodes(malformedRefs).includes(code), `${phase}.${field} requires non-empty string references`)
+      }
     }
     const ref = { Prototype: 'clickable_prototype_ref', Development: 'working_software_ref', QA: 'e2e_uat_report_ref' }[phase]
     if (ref) {
@@ -242,6 +299,9 @@ test('assignment is half-open, slice IDs are globally unique, and both independe
   const strata = validInput()
   delete strata.slices[0].strata.complexity
   assert.ok(invalidCodes(strata).includes('SLICE_STRATUM_REQUIRED'))
+  const noPhaseRegistration = validInput()
+  noPhaseRegistration.preregistration.strata = ['complexity']
+  assert.ok(invalidCodes(noPhaseRegistration).includes('PHASE_STRATUM_REQUIRED'))
   const contamination = validInput()
   delete contamination.slices[0].contamination
   assert.ok(invalidCodes(contamination).includes('CONTAMINATION_REQUIRED'))
@@ -275,6 +335,34 @@ test('assignment is half-open, slice IDs are globally unique, and both independe
   const afterAnalysis = validInput()
   afterAnalysis.slices[0].handoff_attempts[0].events[1].at = '2026-07-23T00:00:00.001Z'
   assert.ok(invalidCodes(afterAnalysis).includes('EVENT_AFTER_ANALYSIS'))
+})
+
+test('validator is total over non-array event and pre-registration shapes and returns structured diagnostics', () => {
+  const invalidEvents = validInput()
+  invalidEvents.slices[0].handoff_attempts[0].events = {}
+  assertStructuredValidation(invalidEvents, 'ATTEMPT_EVENTS_REQUIRED')
+
+  const invalidStrata = validInput()
+  invalidStrata.preregistration.strata = { phase: true }
+  assertStructuredValidation(invalidStrata, 'STRATA_REQUIRED')
+
+  const invalidActorRegistry = validInput()
+  invalidActorRegistry.actors.senders = {}
+  assertStructuredValidation(invalidActorRegistry, 'ACTOR_ROLE_REQUIRED')
+})
+
+test('one actor cannot propose and then accept or reject the same recorded attempt', () => {
+  for (const state of ['accepted', 'rejected']) {
+    const input = validInput()
+    input.actors.phase_leads.QA = ['sender-a']
+    input.slices[0].handoff_attempts[0].state = state
+    input.slices[0].handoff_attempts[0].events[1] = {
+      type: state === 'accepted' ? 'accept' : 'reject',
+      actor_id: 'sender-a',
+      at: '2026-07-11T00:00:00.000Z',
+    }
+    assert.ok(invalidCodes(input).includes('ACTOR_SELF_REVIEW_INVALID'), state)
+  }
 })
 
 test('analysis_as_of, follow-up maturity, and censoring are deterministic while all assigned slices remain ITT', () => {
@@ -352,6 +440,88 @@ test('every declared cost category is explicit: missing, null, and invalid numer
   assert.equal(measuredZero.metrics.cost_complete, true)
 })
 
+test('finite input costs and rates that overflow derived arithmetic are rejected without a report', () => {
+  const aggregateOverflow = validInput()
+  for (const slice of aggregateOverflow.slices) {
+    for (const category of COST_CATEGORIES) slice.costs[category] = 0
+    slice.costs.pm_routing_minutes = Number.MAX_VALUE
+    slice.costs.receiver_review_minutes = Number.MAX_VALUE
+  }
+  assertStructuredValidation(aggregateOverflow, 'COST_AGGREGATE_NON_FINITE', 'slices')
+
+  const explicitUnknown = clone(aggregateOverflow)
+  for (const slice of explicitUnknown.slices) slice.costs.sender_coordination_minutes = null
+  assert.equal(validateExperiment(explicitUnknown).valid, true, 'explicit unknown cost remains valid rather than being treated as overflow')
+  assert.equal(analyzeExperiment(explicitUnknown).measurement_readiness, 'INCONCLUSIVE')
+
+  const knownCategoryOverflow = validInput()
+  knownCategoryOverflow.slices.push(
+    rekeySlice(knownCategoryOverflow.slices[0], 'known-cost-control-overflow'),
+    rekeySlice(knownCategoryOverflow.slices[1], 'known-cost-treatment-overflow'),
+  )
+  for (const slice of knownCategoryOverflow.slices) {
+    for (const category of COST_CATEGORIES) slice.costs[category] = 0
+    slice.costs.pm_routing_minutes = Number.MAX_VALUE
+    slice.costs.pm_evidence_minutes = null
+  }
+  assertStructuredValidation(knownCategoryOverflow, 'COST_AGGREGATE_NON_FINITE', 'slices')
+
+  const loadedCostOverflow = validInput()
+  loadedCostOverflow.cost_model.loaded_cost_per_minute = Number.MAX_VALUE
+  for (const slice of loadedCostOverflow.slices) {
+    for (const category of COST_CATEGORIES) slice.costs[category] = 0
+    slice.costs.pm_routing_minutes = 2
+  }
+  assertStructuredValidation(loadedCostOverflow, 'LOADED_COST_NON_FINITE', 'cost_model.loaded_cost_per_minute')
+
+  const comparisonOverflow = validInput()
+  comparisonOverflow.cost_model.loaded_cost_per_minute = 1
+  for (const slice of comparisonOverflow.slices) {
+    for (const category of COST_CATEGORIES) slice.costs[category] = 0
+    slice.costs.pm_routing_minutes = slice.arm === 'pm_routed' ? Number.MIN_VALUE : Number.MAX_VALUE
+  }
+  assertStructuredValidation(comparisonOverflow, 'COST_COMPARISON_NON_FINITE', 'slices')
+})
+
+for (const [field, code] of [
+  ['time_to_usable_outcome_minutes', 'OUTCOME_TIME_MEAN_NON_FINITE'],
+  ['value_proxy', 'OUTCOME_VALUE_MEAN_NON_FINITE'],
+]) {
+  test(`finite mature ${field} values whose mean overflows are rejected without a report`, () => {
+    const meanOverflow = validInput()
+    meanOverflow.slices.push(
+      rekeySlice(meanOverflow.slices[0], `${field}-control-overflow`),
+      rekeySlice(meanOverflow.slices[1], `${field}-treatment-overflow`),
+    )
+    for (const slice of meanOverflow.slices) slice.outcome[field] = Number.MAX_VALUE
+    assertStructuredValidation(meanOverflow, code, 'slices')
+  })
+}
+
+test('finite time outcomes whose non-inferiority boundary overflows are rejected without a report', () => {
+  const timeComparisonOverflow = validInput()
+  timeComparisonOverflow.slices[0].outcome.time_to_usable_outcome_minutes = Number.MAX_VALUE
+  timeComparisonOverflow.slices[1].outcome.time_to_usable_outcome_minutes = 0
+  timeComparisonOverflow.thresholds.time_to_usable_noninferiority_minutes = Number.MAX_VALUE
+  assertStructuredValidation(
+    timeComparisonOverflow,
+    'OUTCOME_TIME_COMPARISON_NON_FINITE',
+    'thresholds.time_to_usable_noninferiority_minutes',
+  )
+})
+
+test('finite value outcomes whose non-inferiority boundary overflows are rejected without a report', () => {
+  const valueComparisonOverflow = validInput()
+  valueComparisonOverflow.slices[0].outcome.value_proxy = -Number.MAX_VALUE
+  valueComparisonOverflow.slices[1].outcome.value_proxy = 0
+  valueComparisonOverflow.thresholds.value_noninferiority_margin = Number.MAX_VALUE
+  assertStructuredValidation(
+    valueComparisonOverflow,
+    'OUTCOME_VALUE_COMPARISON_NON_FINITE',
+    'thresholds.value_noninferiority_margin',
+  )
+})
+
 test('certifier separation is enforced and a digest-bound claim stays advisory and external-only', () => {
   const input = fixture('delivery-loop-poc-certification-claimed.json')
   const claim = input.evidence.certification_claim
@@ -401,6 +571,16 @@ test('guardrail precedence retains the breach and hold even when the scenario is
   assert.equal(unknownReport.guardrail_status, 'UNKNOWN')
   assert.equal(unknownReport.safety_hold_recommended, false)
   assert.deepEqual(unknownReport.guardrail_unknowns, [{ slice_id: 'control-001', name: 'security' }])
+  const breachAndUnknown = validInput()
+  breachAndUnknown.slices[0].guardrails.security = 'BREACH'
+  breachAndUnknown.slices[0].guardrails.performance = 'UNKNOWN'
+  const combinedReport = analyzeExperiment(breachAndUnknown)
+  assert.equal(combinedReport.measurement_readiness, 'INCONCLUSIVE')
+  assert.equal(combinedReport.scenario_signal, 'INCONCLUSIVE')
+  assert.equal(combinedReport.guardrail_status, 'BREACH')
+  assert.equal(combinedReport.safety_hold_recommended, true)
+  assert.deepEqual(combinedReport.guardrail_breaches, [{ slice_id: 'control-001', name: 'security' }])
+  assert.deepEqual(combinedReport.guardrail_unknowns, [{ slice_id: 'control-001', name: 'performance' }])
   for (const name of GUARDRAIL_NAMES) {
     const missing = validInput()
     delete missing.slices[0].guardrails[name]

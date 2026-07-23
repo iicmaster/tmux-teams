@@ -222,10 +222,10 @@ function respond(id, result) {
 }
 
 const rl = createInterface({ input: agent.stdout })
-rl.on('line', (line) => {
-  if (!line.trim()) return
+rl.on('line', (rawLine) => {
+  if (!rawLine.trim()) return
   let msg
-  try { msg = JSON.parse(line) } catch { return }
+  try { msg = JSON.parse(rawLine) } catch { return }
 
   if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined) && pending.has(msg.id)) {
     const { resolve, reject } = pending.get(msg.id)
@@ -235,10 +235,15 @@ rl.on('line', (line) => {
   }
   if (msg.id !== undefined && msg.method) {
     if (msg.method === 'session/request_permission') {
-      const opts = msg.params?.options ?? []
+      const opts = Array.isArray(msg.params?.options) ? msg.params.options : []
       const pick = opts.find(o => o.kind === 'allow_always') ?? opts.find(o => o.kind === 'allow_once') ?? opts[0]
-      line(`[permission] ${msg.params?.toolCall?.title ?? '?'} -> ${pick?.name ?? pick?.optionId}`)
-      respond(msg.id, { outcome: { outcome: 'selected', optionId: pick.optionId } })
+      if (pick) {
+        line(`[permission] ${msg.params?.toolCall?.title ?? '?'} -> ${pick.name ?? pick.optionId}`)
+        respond(msg.id, { outcome: { outcome: 'selected', optionId: pick.optionId } })
+      } else {
+        line(`[permission] ${msg.params?.toolCall?.title ?? '?'} -> cancelled (no options)`)
+        respond(msg.id, { outcome: { outcome: 'cancelled' } })
+      }
     } else {
       agent.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: `not supported: ${msg.method}` } }) + '\n')
     }

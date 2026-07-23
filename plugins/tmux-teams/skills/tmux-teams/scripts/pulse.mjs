@@ -30,7 +30,7 @@ import {
   closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync,
   readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -47,6 +47,8 @@ try { REPO = realpathSync(repoArg) } catch { console.error(`[pulse] no such repo
 const STORE = join(REPO, '.tmux-teams')
 const OUT = join(STORE, 'pulse.html')
 const JSON_OUT = join(STORE, 'pulse.json')
+const FONT_CSS_NAME = `pulse-fonts-${createHash('sha256').update(KANIT_FONT_CSS).digest('hex')}.css`
+const FONT_CSS_OUT = join(STORE, FONT_CSS_NAME)
 const EVENTS = join(STORE, 'kms', 'events')
 const DISPATCH = join(STORE, 'dispatch')
 const OUTBOX = join(REPO, '.mailbox-out')
@@ -487,6 +489,27 @@ const dur = (sec) => sec == null ? 'ยังไม่วัด'
   : sec < 60 ? `${sec} วิ`
     : sec < 3600 ? `${Math.floor(sec / 60)} นาที${sec % 60 ? ` ${sec % 60} วิ` : ''}`
       : `${Math.floor(sec / 3600)} ชม.${Math.floor((sec % 3600) / 60) ? ` ${Math.floor((sec % 3600) / 60)} นาที` : ''}`
+const THAI_TIME_ZONE = 'Asia/Bangkok'
+const THAI_TIME_LABEL = 'เวลาไทย (UTC+7)'
+const THAI_DATE_TIME = new Intl.DateTimeFormat('en-US-u-ca-gregory-nu-latn', {
+  timeZone: THAI_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23',
+})
+
+function absoluteTime(value) {
+  if (!value || !Number.isFinite(Date.parse(value))) return 'ไม่ระบุ'
+  const parts = Object.fromEntries(THAI_DATE_TIME.formatToParts(new Date(value))
+    .filter(part => part.type !== 'literal')
+    .map(part => [part.type, part.value]))
+  const stamp = `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`
+  return `<time datetime="${esc(value)}" title="${THAI_TIME_ZONE}">${stamp} ${THAI_TIME_LABEL}</time>`
+}
 
 // State codes stay stable for agents; people get one consistent Thai label.
 // Keeping the mapping at the view boundary prevents UX copy from leaking into
@@ -714,7 +737,6 @@ function render(snapshot) {
   const waitingTotal = byState['awaiting-verdict']
   const passTotal = rec.filter(r => r.pm_verdict === 'pass').length
   const rejectTotal = rec.filter(r => r.pm_verdict === 'reject').length
-  const stamp = snapshot.generated_at.replace('T', ' ').slice(0, 19)
   const repoName = snapshot.scope.repo_name || 'unknown'
   const refreshInterval = snapshot.observation.refresh_interval_sec
   const qualityLabel = snapshot.complete ? 'ข้อมูลครบถ้วน' : 'ข้อมูลบางส่วน'
@@ -740,6 +762,7 @@ function render(snapshot) {
       <summary>รายละเอียดทางเทคนิค</summary>
       <dl>
         <div><dt>dispatch</dt><dd><code>${esc(a.dispatch_id || 'ไม่ระบุ')}</code></dd></div>
+        <div><dt>เริ่ม</dt><dd>${absoluteTime(a.started_at)}</dd></div>
         <div><dt>timeout</dt><dd class="num">${a.timeout_sec == null ? 'ไม่ระบุ' : dur(a.timeout_sec)}</dd></div>
         <div><dt>state code</dt><dd><code>${esc(a.state)}</code></dd></div>
       </dl>
@@ -756,8 +779,8 @@ function render(snapshot) {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="refresh" content="${refreshInterval}">
 <meta name="tmux-teams-snapshot-id" content="${esc(snapshot.snapshot_id)}">
+<link rel="stylesheet" href="${FONT_CSS_NAME}">
 <style>
-${KANIT_FONT_CSS}
 :root{color-scheme:dark;--bg:oklch(17% .012 165);--surface:oklch(21% .014 165);--surface-2:oklch(24% .015 165);--line:oklch(34% .014 165);--ink:oklch(93% .012 165);--dim:oklch(71% .018 165);--ok:oklch(74% .13 165);--warn:oklch(78% .13 78);--bad:oklch(72% .16 28);--focus:oklch(78% .12 235);--sans:"Kanit","Noto Sans Thai","Leelawadee UI",Tahoma,sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--r-sm:8px;--r-md:14px;--s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:24px;--s6:32px;--s7:48px}
 @media(prefers-color-scheme:light){:root{color-scheme:light;--bg:oklch(97% .008 165);--surface:oklch(99% .004 165);--surface-2:oklch(95% .012 165);--line:oklch(87% .014 165);--ink:oklch(24% .018 165);--dim:oklch(50% .022 165);--ok:oklch(50% .12 165);--warn:oklch(53% .13 72);--bad:oklch(52% .16 28);--focus:oklch(52% .13 235)}}
 *{box-sizing:border-box}html{font-size:16px}body{margin:0;padding:var(--s5);background:var(--bg);color:var(--ink);font:400 1rem/1.65 var(--sans);text-rendering:optimizeLegibility}
@@ -818,7 +841,7 @@ footer{margin-top:var(--s7);padding-top:var(--s4);border-top:1px solid var(--lin
   </div>
   <div class="header-status">
     <span class="quality ${qualityClass}">${qualityLabel}</span>
-    <div class="age">อัปเดตล่าสุด <time datetime="${esc(snapshot.generated_at)}">${stamp} UTC</time>รีเฟรชทุก ${refreshInterval} วิ</div>
+    <div class="age">อัปเดตล่าสุด ${absoluteTime(snapshot.generated_at)}รีเฟรชทุก ${refreshInterval} วิ</div>
   </div>
 </header>
 
@@ -856,12 +879,13 @@ footer{margin-top:var(--s7);padding-top:var(--s4);border-top:1px solid var(--lin
   </section>` : ''}
 
   <section aria-labelledby="recent-title">
-    <div class="section-head"><div><span class="eyebrow">หลักฐานล่าสุด</span><h2 id="recent-title">ผลการทำงานล่าสุด</h2><p>คำตัดสินของ PM และเวลาที่ใช้</p></div><span class="count">${recent.length} รายการ</span></div>
-    <div class="surface table-scroll responsive-table" tabindex="0">${recent.length ? `<table><caption>ผลการทำงานล่าสุด</caption><thead><tr><th>งาน</th><th>worker</th><th>ผลจาก worker</th><th>คำตัดสิน PM</th><th>ใช้เวลา</th><th>dispatch</th></tr></thead><tbody>
+    <div class="section-head"><div><span class="eyebrow">หลักฐานล่าสุด</span><h2 id="recent-title">ผลการทำงานล่าสุด</h2><p>คำตัดสินของ PM เวลาเริ่ม และเวลาที่ใช้</p></div><span class="count">${recent.length} รายการ</span></div>
+    <div class="surface table-scroll responsive-table" tabindex="0">${recent.length ? `<table><caption>ผลการทำงานล่าสุด</caption><thead><tr><th>งาน</th><th>worker</th><th>ผลจาก worker</th><th>คำตัดสิน PM</th><th>เริ่ม</th><th>ใช้เวลา</th><th>dispatch</th></tr></thead><tbody>
 ${recent.map(r => `<tr>
   <td data-label="งาน"><code>${esc(r.task_id)}</code></td><td data-label="worker">${esc(r.worker)}</td>
   <td data-label="ผลจาก worker">${esc(terminalLabel(r.terminal))}</td>
   <td data-label="คำตัดสิน PM" class="verdict-${esc(r.pm_verdict)}">${esc(verdictLabel(r.pm_verdict))}</td>
+  <td data-label="เริ่ม">${absoluteTime(r.started_at)}</td>
   <td data-label="ใช้เวลา" class="num">${r.wait_sec == null || r.wait_sec < 0 ? 'ยังไม่วัด' : dur(r.wait_sec)}</td>
   <td data-label="dispatch"><code>${esc(r.dispatch_id || 'ไม่ระบุ')}</code></td>
 </tr>`).join('')}</tbody></table>`
@@ -973,6 +997,15 @@ function atomicWrite(path, content) {
   }
 }
 
+function atomicWriteIfChanged(path, content) {
+  try {
+    if (readFileSync(path, 'utf8') === content) return
+  } catch (e) {
+    if (e.code !== 'ENOENT') throw e
+  }
+  atomicWrite(path, content)
+}
+
 function priorStream(view) {
   if (!existsSync(JSON_OUT)) return { streamId: randomUUID(), sequence: 1 }
   try {
@@ -1006,6 +1039,8 @@ function once() {
     // This makes pulse.json the literal SSOT and catches serialization drift.
     const publishedSnapshot = JSON.parse(jsonText)
     const html = render(publishedSnapshot)
+    assertPublishLock(token)
+    atomicWriteIfChanged(FONT_CSS_OUT, KANIT_FONT_CSS)
     assertPublishLock(token)
     atomicWrite(JSON_OUT, jsonText)
     assertPublishLock(token)
