@@ -41,6 +41,7 @@ import {
   ID_RE, PULSE_SCHEMA, PULSE_SCHEMA_VERSION, PULSE_SCHEMA_VERSION_V2, UUID_RE,
   downProjectPulseV1, projectPulseV1, projectPulseV2,
 } from './pulse-data.mjs'
+import { PHASE_BOUNDARIES, PHASE_EXIT_ARTIFACTS } from './delivery-loop-core.mjs'
 
 const [cmd, repoArg, ...flags] = process.argv.slice(2)
 const USAGE = 'usage: pulse.mjs once|json <repo> [--delivery-loop FILE] | pulse.mjs watch|ensure <repo> [--interval SEC] [--delivery-loop FILE] | pulse.mjs compat-v1 <repo>'
@@ -520,12 +521,19 @@ const THAI_DATE_TIME = new Intl.DateTimeFormat('en-US-u-ca-gregory-nu-latn', {
 })
 
 function absoluteTime(value) {
+  const text = thaiTimeText(value)
+  if (text === 'ไม่ระบุ') return text
+  return `<time datetime="${esc(value)}" title="${THAI_TIME_ZONE}">${text}</time>`
+}
+
+// Keep the date computation separately testable from its semantic HTML shell.
+// Pulse timestamps are Gregorian calendar values in Thailand's UTC+7 timezone.
+function thaiTimeText(value) {
   if (!value || !Number.isFinite(Date.parse(value))) return 'ไม่ระบุ'
   const parts = Object.fromEntries(THAI_DATE_TIME.formatToParts(new Date(value))
     .filter(part => part.type !== 'literal')
     .map(part => [part.type, part.value]))
-  const stamp = `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`
-  return `<time datetime="${esc(value)}" title="${THAI_TIME_ZONE}">${stamp} ${THAI_TIME_LABEL}</time>`
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second} ${THAI_TIME_LABEL}`
 }
 
 // State codes stay stable for agents; people get one consistent Thai label.
@@ -594,6 +602,26 @@ const DELIVERY_BOUNDARY_COPY = Object.freeze({
   development_to_qa: 'Development → QA',
   qa_to_project_delivery: 'QA → ProjectDelivery',
 })
+const DELIVERY_PHASE_LABEL = Object.freeze({
+  Requirement: 'ข้อกำหนด', Prototype: 'ต้นแบบ', Development: 'พัฒนา', QA: 'ทดสอบ',
+  ProjectDelivery: 'ส่งมอบโครงการ',
+})
+const DELIVERY_ARTIFACT_LABEL = Object.freeze({
+  requirements_baseline: 'ฐานข้อกำหนด',
+  prototype_evaluation: 'ผลประเมินต้นแบบที่คลิกได้',
+  development_delivery: 'ซอฟต์แวร์ที่ใช้งานได้',
+  qa_release_evidence: 'รายงาน E2E / UAT',
+})
+const boundaryKey = (sender, receiver) => `${sender.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase()}_to_${receiver.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase()}`
+// This is the sole diagram model. Contract exports determine every actor,
+// receiver, artifact and stable boundary key; Thai labels remain view-only.
+const DELIVERY_TOPOLOGY = Object.freeze(Object.entries(PHASE_BOUNDARIES).map(([sender, receiver]) => Object.freeze({
+  sender,
+  receiver,
+  artifact: PHASE_EXIT_ARTIFACTS[sender],
+  artifactLabel: DELIVERY_ARTIFACT_LABEL[PHASE_EXIT_ARTIFACTS[sender]],
+  boundary: boundaryKey(sender, receiver),
+})))
 const DELIVERY_STATUS_COPY = Object.freeze({
   not_configured: 'ยังไม่ได้ตั้งค่า',
   ready: 'พร้อมเริ่ม',
@@ -754,9 +782,74 @@ function renderLoop(snapshot) {
       <path class="l-head-bad" d="M0,0 L8,4 L0,8 z"/></marker>
   </defs>`
 
-  return `<svg viewBox="-30 0 ${W} ${H}" width="100%" height="${H}" role="img"
-     aria-label="ลูปการทำงานของระบบ">${defs}${spine}${yesEdge}${passEdge}${diedBranch}${reEdge}${recallEdge}` +
+  return `<svg id="dispatch-lifecycle-svg" viewBox="-30 0 ${W} ${H}" width="100%" height="${H}" role="img"
+     aria-labelledby="worker-lifecycle-title worker-lifecycle-desc"><title id="worker-lifecycle-title">วงจรการสั่งงาน worker และการตรวจผล</title><desc id="worker-lifecycle-desc">ภาพการสั่งงาน worker การรับผล การตรวจของ PM และการบันทึกผล พร้อมเส้นย้อนกลับที่ยังไม่ได้วัด</desc>${defs}${spine}${yesEdge}${passEdge}${diedBranch}${reEdge}${recallEdge}` +
     nodes.map(box).join('') + `</svg>`
+}
+
+function renderDeliveryFlow(delivery) {
+  const selected = delivery.experiment?.boundary
+  const selectedKnown = DELIVERY_TOPOLOGY.some(edge => edge.boundary === selected)
+  const W = 1120, H = 430
+  const x = { Requirement: 20, Prototype: 245, Development: 470, QA: 695, ProjectDelivery: 920 }
+  const y = 150, w = 180, h = 145
+  const artifactText = (artifact, xx, yy, className = 'df-artifact') => {
+    const parts = artifact.split('_')
+    return `<text class="${className}" x="${xx}" y="${yy}" text-anchor="middle">${parts.map((part, index) => `<tspan x="${xx}" dy="${index ? 11 : 0}">${esc(`${part}${index < parts.length - 1 ? '_' : ''}`)}</tspan>`).join('')}</text>`
+  }
+  const node = (phase) => {
+    const isFinal = phase === 'ProjectDelivery'
+    const label = DELIVERY_PHASE_LABEL[phase] || phase
+    const artifact = isFinal ? 'รับหลักฐาน QA' : PHASE_EXIT_ARTIFACTS[phase]
+    const incoming = DELIVERY_TOPOLOGY.find(edge => edge.receiver === phase)
+    return `<g class="df-node${isFinal ? ' df-final' : ''}">
+      <rect x="${x[phase]}" y="${y}" width="${w}" height="${h}" rx="12"/>
+      <text class="df-title" x="${x[phase] + w / 2}" y="${y + 28}" text-anchor="middle">${esc(label)}</text>
+      ${isFinal
+        ? `<text class="df-copy" x="${x[phase] + w / 2}" y="${y + 52}" text-anchor="middle">ผู้รับปลายทาง · ตรวจรับจาก QA</text><text class="df-copy" x="${x[phase] + w / 2}" y="${y + 78}" text-anchor="middle">ไม่ใช่ทีมลูปที่ห้า</text><text class="df-copy" x="${x[phase] + w / 2}" y="${y + 106}" text-anchor="middle">รับ ≠ รับรอง/อนุมัติธุรกิจ</text>`
+        : `<path class="df-loop" d="M ${x[phase] + 42} ${y + 118} C ${x[phase] + 18} ${y + 118}, ${x[phase] + 18} ${y + 72}, ${x[phase] + 42} ${y + 72}" marker-end="url(#df-head)"/><text class="df-copy" x="${x[phase] + 100}" y="${y + 50}" text-anchor="middle">${incoming ? `ผู้รับตรวจรับจาก${esc(DELIVERY_PHASE_LABEL[incoming.sender])}` : 'เริ่มจากข้อกำหนดธุรกิจ'}</text><text class="df-copy" x="${x[phase] + 100}" y="${y + 69}" text-anchor="middle">ทีมภายในตรวจ/แก้</text>${artifactText(artifact, x[phase] + w / 2, y + 87)}<text class="df-copy" x="${x[phase] + w / 2}" y="${y + 136}" text-anchor="middle">สร้างข้อเสนอใหม่เมื่อแก้</text>`}
+    </g>`
+  }
+  const edges = DELIVERY_TOPOLOGY.map(edge => {
+    const left = x[edge.sender] + w, right = x[edge.receiver]
+    const isSelected = selectedKnown && edge.boundary === selected
+    const mid = (left + right) / 2
+    return `<g class="df-edge${isSelected ? ' df-selected' : ''}" data-boundary="${edge.boundary}" data-selected="${isSelected ? 'true' : 'false'}" data-observed="${isSelected ? 'true' : 'false'}">
+      <path d="M ${left} ${y + 49} H ${right - 8}" marker-end="url(#df-head)"/>
+      <text class="df-artifact-label" x="${mid}" y="${y - 55}" text-anchor="middle">${esc(edge.artifactLabel)}</text>
+      ${artifactText(edge.artifact, mid, y - 31)}
+      ${isSelected ? `<text class="df-observed" x="${mid}" y="${y + h + 24}" text-anchor="middle">★ pilot ที่สังเกต: ${esc(edge.boundary)}</text>` : ''}
+    </g>`
+  }).join('')
+  const exceptionEdges = [...Object.keys(PHASE_EXIT_ARTIFACTS), 'ProjectDelivery']
+    .map(phase => `<path class="df-exception" d="M ${x[phase] + w / 2} ${y} V 94" marker-end="url(#df-head)"/>`)
+    .join('')
+  const selectedCopy = selectedKnown
+    ? `เน้นเฉพาะขอบเขต pilot ที่สังเกต: ${selected}`
+    : 'ยังไม่ได้เลือกขอบเขต pilot ที่ยืนยันได้ จึงไม่เน้นเส้นใด'
+  return `<div class="diagram-scroll" tabindex="0" role="region" aria-label="แผนภาพโมเดลการส่งมอบแบบเลื่อนแนวนอนได้"><svg id="delivery-topology-svg" class="delivery-svg" viewBox="0 0 ${W} ${H}" width="100%" height="${H}" role="img" aria-labelledby="delivery-flow-title delivery-flow-desc" data-selected-boundary="${esc(selectedKnown ? selected : '')}">
+    <title id="delivery-flow-title">โมเดลเส้นทางส่งมอบแบบผู้รับเป็นเจ้าของการตรวจรับ</title><desc id="delivery-flow-desc">แบบจำลองเชิงบรรทัดฐาน ไม่ใช่สถานะจริง: ทีม Requirement Prototype Development และ QA มีลูปภายใน ส่งชิ้นงานให้ผู้รับตรวจรับ และ PM ประสานเฉพาะข้อยกเว้น</desc>
+    <defs><marker id="df-head" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z"/></marker></defs>
+    <rect class="df-pm" x="10" y="22" width="1100" height="395" rx="18"/><text class="df-pm-label" x="32" y="50">PM outer loop: ประสาน ติด bottleneck และแก้ข้อยกเว้นเท่านั้น — ไม่ตรวจรับแทนทีมผู้รับ</text>
+    ${exceptionEdges}<text class="df-exception-label" x="560" y="407" text-anchor="middle">exception / deadlock / policy conflict → PM resolve_exception → กลับให้ผู้รับตัดสิน</text>
+    ${edges}${[...Object.keys(PHASE_EXIT_ARTIFACTS), 'ProjectDelivery'].map(node).join('')}
+  </svg></div><p class="diagram-note"><strong>โมเดลเชิงบรรทัดฐานเพื่อการเรียนรู้</strong> ไม่ใช่สถานะงานจริง; ${esc(selectedCopy)}. การตรวจรับเป็นการตัดสินใจของผู้รับ ไม่เท่ากับส่งมอบสำเร็จ การรับรอง หรือการอนุมัติทางธุรกิจ.</p>`
+}
+
+function renderDeliveryFlowEquivalent() {
+  return `<section class="diagram-equivalent" aria-labelledby="delivery-flow-equivalent-title"><h3 id="delivery-flow-equivalent-title">ข้อความเทียบเท่าแผนภาพการส่งมอบ</h3><p>PM ประสาน ติด bottleneck และแก้ข้อยกเว้นเท่านั้น; งานปกติและการตรวจรับอยู่กับทีมผู้รับ.</p><ol>${DELIVERY_TOPOLOGY.map(edge => `<li><strong>${esc(DELIVERY_PHASE_LABEL[edge.sender])}</strong> ส่ง ${esc(edge.artifactLabel)} <code>${esc(edge.artifact)}</code> เป็นข้อเสนอให้ <strong>${esc(DELIVERY_PHASE_LABEL[edge.receiver])}</strong>; ผู้รับเป็นเจ้าของการตรวจรับและการรับ/ปฏิเสธ. ${edge.receiver === 'ProjectDelivery' ? 'ProjectDelivery เป็นผู้รับปลายทาง ไม่ใช่ทีมลูปที่ห้า; การรับไม่ใช่การรับรองหรืออนุมัติธุรกิจ.' : 'ทีมผู้ส่งทำลูปภายในและสร้างข้อเสนอใหม่เมื่อต้องแก้ไข.'}</li>`).join('')}</ol></section>`
+}
+
+function renderDeliverySequence(delivery) {
+  const selected = DELIVERY_TOPOLOGY.find(edge => edge.boundary === delivery.experiment?.boundary)
+  const boundaryCopy = selected
+    ? `${DELIVERY_PHASE_LABEL[selected.sender]} → ${DELIVERY_PHASE_LABEL[selected.receiver]}`
+    : 'ยังไม่มีขอบเขต pilot ที่ยืนยันได้'
+  return `<div class="diagram-scroll" tabindex="0" role="region" aria-label="แผนภาพลำดับการส่งมอบแบบเลื่อนแนวนอนได้"><svg id="handoff-sequence-svg" class="sequence-svg" viewBox="0 0 980 360" width="100%" height="360" role="img" aria-labelledby="delivery-sequence-title delivery-sequence-desc" data-selected-boundary="${esc(selected?.boundary || '')}"><title id="delivery-sequence-title">ลำดับทั่วไปของการส่งมอบโดยผู้รับเป็นเจ้าของ</title><desc id="delivery-sequence-desc">ผู้ส่งเสนอชิ้นงานถาวรหนึ่งความพยายาม ผู้รับตรวจและเลือกยอมรับหรือปฏิเสธ การปฏิเสธสิ้นสุดความพยายามเดิม ผู้ส่งต้องสร้างความพยายามใหม่ที่อ้าง revision_of_attempt_id; ข้อยกเว้นส่งให้ PM แก้แล้วกลับสู่ข้อเสนอ</desc><defs><marker id="ds-head" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z"/></marker></defs><text class="ds-context" x="490" y="18" text-anchor="middle">ขอบเขต pilot: ${esc(boundaryCopy)} · โปรโตคอลตัวอย่าง ไม่ใช่ event สด</text><g class="ds-lane"><text x="110" y="48">ผู้ส่ง</text><text x="465" y="48">ผู้รับ</text><text x="820" y="48">PM (เฉพาะข้อยกเว้น)</text><path d="M110 62V330M465 62V330M820 62V330"/></g><g class="ds-flow"><path d="M110 88 H465" marker-end="url(#ds-head)"/><text x="287" y="80" text-anchor="middle">เสนอ immutable artifact / attempt</text><path d="M465 118 H545 V142 H465" marker-end="url(#ds-head)"/><text x="620" y="136">ผู้รับตรวจ phase contract</text><path d="M465 176 H110" marker-end="url(#ds-head)"/><text x="287" y="168" text-anchor="middle">ผู้รับเลือก accept หรือ reject</text><text class="ds-terminal" x="110" y="198">reject = attempt เดิมสิ้นสุด</text><path d="M110 214 H190 V238 H110" marker-end="url(#ds-head)"/><text x="300" y="234">ผู้ส่งสร้าง NEW attempt + revision_of_attempt_id</text><path class="ds-exception" d="M465 270 H820" marker-end="url(#ds-head)"/><text x="642" y="262" text-anchor="middle">exception / deadlock / policy conflict</text><path class="ds-exception" d="M820 300 H465" marker-end="url(#ds-head)"/><text x="642" y="322" text-anchor="middle">PM resolve_exception → proposed; ผู้รับยังตัดสินผล</text></g></svg></div><p class="diagram-note"><strong>ลำดับทั่วไปเพื่อการเรียนรู้</strong> ไม่ใช่ event state สด และไม่ยืนยันผลสำเร็จ การรับรอง หรืออนุมัติธุรกิจ.</p>`
+}
+
+function renderDeliverySequenceEquivalent() {
+  return `<section class="diagram-equivalent" aria-labelledby="delivery-sequence-equivalent-title"><h3 id="delivery-sequence-equivalent-title">ข้อความเทียบเท่าลำดับทั่วไป</h3><ol><li>ผู้ส่งเสนอชิ้นงาน immutable และ attempt หนึ่งรายการ</li><li>ผู้รับตรวจและเป็นเจ้าของการยอมรับหรือปฏิเสธตามปกติ</li><li>การปฏิเสธสิ้นสุด attempt เดิม; ผู้ส่งสร้าง attempt ใหม่พร้อม <code>revision_of_attempt_id</code></li><li>ข้อยกเว้น, deadlock หรือ policy conflict ส่งให้ PM แก้ แล้วกลับสู่ proposed; ผู้รับยังเป็นผู้ตัดสินผล</li></ol></section>`
 }
 
 function renderGraph(rows) {
@@ -867,14 +960,17 @@ function render(snapshot) {
       ? `${DELIVERY_BOUNDARY_COPY[bottleneck.boundary] || bottleneck.boundary} · ${dur(bottleneck.age_sec)}`
       : bottleneck.status === 'none' ? 'ยังไม่พบจุดค้าง' : 'ข้อมูลยังไม่พอสรุป'
     return `<section class="delivery-loop" aria-labelledby="delivery-loop-title">
-      <div class="section-head"><div><span class="eyebrow">Stage 1 · advisory only</span><h2 id="delivery-loop-title">วงรอบส่งมอบ</h2><p>มุมมองแบบ fail-closed · ไม่มีการสั่งงานอัตโนมัติ</p></div><span class="quality ${delivery.status === 'degraded' ? 'warn' : 'ok'}">${esc(DELIVERY_STATUS_COPY[delivery.status] || delivery.status)}</span></div>
+      <div class="section-head"><div><span class="eyebrow">Stage 1 · advisory only</span><h2 id="delivery-loop-title">วงรอบส่งมอบ</h2><p>สังเกตเฉพาะ pilot ที่เลือก · ไม่มีการสั่งงานอัตโนมัติ; แผนภาพเต็มเป็นโมเดลเชิงบรรทัดฐาน ไม่ใช่สถานะจริง</p></div><span class="quality ${delivery.status === 'degraded' ? 'warn' : 'ok'}">${esc(DELIVERY_STATUS_COPY[delivery.status] || delivery.status)}</span></div>
+      <dl class="delivery-times" aria-label="เวลาของข้อมูลวงรอบส่งมอบ"><div><dt>ข้อมูลวงรอบ ณ</dt><dd>${absoluteTime(delivery.generated_at)}</dd></div><div><dt>วิเคราะห์ถึง</dt><dd>${absoluteTime(delivery.experiment.analysis_as_of)}</dd></div><div><dt>เริ่มช่วงทดลอง</dt><dd>${absoluteTime(delivery.experiment.assignment_window.start)}</dd></div><div><dt>สิ้นสุดช่วงทดลอง</dt><dd>${absoluteTime(delivery.experiment.assignment_window.end)}</dd></div></dl>
       <div class="delivery-overview">
         <article class="delivery-callout surface"><span class="eyebrow">ทำต่อโดย</span><strong>${esc(DELIVERY_ROLE_COPY[action.owner_role] || action.owner_role)}</strong><p>${esc(actionLabel(action.action_code))}</p><code>${esc(action.reason_codes.join(' · '))}</code></article>
         <article class="delivery-callout surface"><span class="eyebrow">จุดค้างเชิงพรรณนา</span><strong>${esc(bottleneckText)}</strong><p>ใช้เวลาค้างที่เก่าที่สุด ไม่ใช่ข้อสรุปสาเหตุ</p><code>${esc(bottleneck.reason_codes.join(' · '))}</code></article>
         <article class="delivery-callout surface"><span class="eyebrow">ภาพรวม pilot</span><strong>${delivery.summary.in_progress} กำลังเดิน · ${delivery.summary.terminal} สิ้นสุด</strong><p>ต้องดำเนินการ ${delivery.summary.operator_action_total} รายการ</p><code>${esc(DELIVERY_DECISION_COPY[delivery.evidence.business_decision] || delivery.evidence.business_decision)}</code></article>
       </div>
+      <section class="delivery-model surface" aria-labelledby="delivery-model-title"><div class="detail-body"><h3 id="delivery-model-title">โมเดลเส้นทางส่งมอบและเจ้าของการตรวจรับ</h3>${renderDeliveryFlow(delivery)}${renderDeliveryFlowEquivalent()}</div></section>
       <div class="phase-grid">${phaseCards || '<p class="empty"><strong>ยังไม่มีข้อมูลเฟส</strong>ตรวจแหล่งข้อมูลวงรอบส่งมอบก่อน</p>'}</div>
       ${attentionItems ? `<div class="surface delivery-attention"><h3>รายการที่ต้องดำเนินการ</h3><ul class="diagnostics-list">${attentionItems}</ul></div>` : ''}
+      <details class="deep-dive" data-persist-key="delivery-sequence"><summary>ลำดับทั่วไปของ handoff ที่ผู้รับเป็นเจ้าของ</summary><div class="detail-body">${renderDeliverySequence(delivery)}${renderDeliverySequenceEquivalent()}</div></details>
     </section>`
   })() : ''
 
@@ -896,7 +992,7 @@ h1{display:flex;align-items:baseline;gap:var(--s3);margin:0;font:600 1.75rem/1.2
 .quality{display:inline-flex;align-items:center;gap:var(--s2);white-space:nowrap;padding:6px 10px;border:1px solid var(--line);border-radius:999px;font-size:.78rem;font-weight:500}.quality::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}.quality.ok{color:var(--ok)}.quality.warn{color:var(--warn)}
 main{display:grid;gap:var(--s7);padding-top:var(--s6)}.summary-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}.metric{min-width:0;padding:var(--s5);border-left:1px solid var(--line)}.metric:first-child{border-left:0}.metric-label,.metric-note{display:block;color:var(--dim);font-size:.82rem}.metric-value{display:block;margin:2px 0;font:600 2rem/1.2 var(--sans);font-variant-numeric:tabular-nums}.metric.bad .metric-value{color:var(--bad)}.metric.ok .metric-value{color:var(--ok)}.metric.warn .metric-value{color:var(--warn)}
 .diagnostics{border:1px solid color-mix(in oklch,var(--warn) 45%,var(--line));border-radius:var(--r-md);background:color-mix(in oklch,var(--warn) 8%,var(--surface));padding:var(--s4) var(--s5)}.diagnostics h2{margin:0 0 var(--s2);font-size:1rem}.diagnostics ul{display:grid;gap:var(--s2);margin:0;padding:0;list-style:none}.diagnostics li{display:flex;justify-content:space-between;gap:var(--s4);color:var(--dim);font-size:.875rem}.diagnostics strong{color:var(--ink);font-weight:500}.diagnostics code{font-size:.75rem}
-.delivery-loop{display:grid;gap:var(--s4)}.delivery-overview{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--s3)}.delivery-callout{padding:var(--s4)}.delivery-callout strong{display:block;font-size:1.05rem}.delivery-callout p{margin:var(--s2) 0;color:var(--dim);font-size:.85rem}.delivery-callout code{font-size:.72rem;color:var(--dim);overflow-wrap:anywhere}.phase-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s3)}.phase-card{padding:var(--s4);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md)}.delivery-attention{padding:var(--s4)}.delivery-attention h3{margin:0 0 var(--s2);font-size:1rem}.diagnostics-list{display:grid;gap:var(--s2);margin:0;padding:0;list-style:none}.diagnostics-list li{display:flex;justify-content:space-between;gap:var(--s4);color:var(--dim);font-size:.85rem}.diagnostics-list strong{color:var(--ink);font-weight:500}
+.delivery-loop{display:grid;gap:var(--s4)}.delivery-overview{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--s3)}.delivery-callout{padding:var(--s4)}.delivery-callout strong{display:block;font-size:1.05rem}.delivery-callout p{margin:var(--s2) 0;color:var(--dim);font-size:.85rem}.delivery-callout code{font-size:.72rem;color:var(--dim);overflow-wrap:anywhere}.delivery-times{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--s3);margin:0}.delivery-times div{min-width:0;padding:var(--s3);border-left:3px solid var(--line);background:var(--surface-2)}.delivery-times dt{color:var(--dim);font-size:.75rem}.delivery-times dd{margin:2px 0 0;overflow-wrap:anywhere;font-size:.85rem}.delivery-times time{font-family:var(--mono);font-variant-numeric:tabular-nums}.delivery-model .detail-body>h3,.diagram-equivalent h3{margin:0 0 var(--s3);font-size:1rem}.phase-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s3)}.phase-card{padding:var(--s4);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md)}.delivery-attention{padding:var(--s4)}.delivery-attention h3{margin:0 0 var(--s2);font-size:1rem}.diagnostics-list{display:grid;gap:var(--s2);margin:0;padding:0;list-style:none}.diagnostics-list li{display:flex;justify-content:space-between;gap:var(--s4);color:var(--dim);font-size:.85rem}.diagnostics-list strong{color:var(--ink);font-weight:500}
 .primary-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s5);align-items:start}.section-head{display:flex;justify-content:space-between;align-items:end;gap:var(--s4);margin-bottom:var(--s3)}.section-head h2{margin:0;font:600 1.25rem/1.3 var(--sans);letter-spacing:-.01em}.section-head p{margin:var(--s1) 0 0;color:var(--dim);font-size:.875rem}.count{flex:none;color:var(--dim);font:500 .82rem var(--sans);font-variant-numeric:tabular-nums}.surface{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}.run-list{display:grid}.run-item{padding:var(--s4);border-top:1px solid var(--line)}.run-item:first-child{border-top:0}.run-summary{display:flex;align-items:center;justify-content:space-between;gap:var(--s3)}.run-name{display:flex;align-items:center;min-width:0;gap:var(--s2)}.run-name code{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink);font:500 .9rem var(--mono)}.status-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--dim)}.status-dot.running{background:var(--ok)}.status-dot.starting,.status-dot.awaiting-verdict,.status-dot.unrecorded,.status-dot.orphan_running{background:var(--warn)}.status-dot.died,.status-dot.unknown{background:var(--bad)}
 .pill{display:inline-flex;align-items:center;white-space:nowrap;font:500 .75rem/1.4 var(--sans);padding:4px 9px;border-radius:999px}
 .pill.running{background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok)}
@@ -909,7 +1005,8 @@ main{display:grid;gap:var(--s7);padding-top:var(--s6)}.summary-strip{display:gri
 .warning-list{display:grid;margin:0;padding:0;list-style:none}.warning-list li{display:grid;grid-template-columns:minmax(130px,1fr) auto 2fr;gap:var(--s4);padding:var(--s3) var(--s4);border-top:1px solid var(--line);align-items:center}.warning-list li:first-child{border-top:0}.warning-list p{margin:0;color:var(--warn);font-size:.85rem}
 .table-scroll{overflow-x:auto}.table-scroll:focus-visible{outline:3px solid var(--focus);outline-offset:2px}table{border-collapse:collapse;width:100%;min-width:720px;font-size:.9rem}caption{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}th{text-align:left;color:var(--dim);font:500 .75rem var(--sans);letter-spacing:.04em;padding:var(--s3) var(--s4);border-bottom:1px solid var(--line)}td{padding:var(--s3) var(--s4);border-bottom:1px solid var(--line);vertical-align:top}tr:last-child td{border-bottom:0}.mono,code{font-family:var(--mono)}.num{font-variant-numeric:tabular-nums}.dim{color:var(--dim)}.warn{color:var(--warn)}
 .verdict-reject{color:var(--bad)}.verdict-pass{color:var(--ok)}.verdict-unresolved{color:var(--warn)}
-.details-stack{display:grid;gap:var(--s3)}.deep-dive{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}.deep-dive>summary{display:flex;align-items:center;justify-content:space-between;gap:var(--s4);cursor:pointer;padding:var(--s4) var(--s5);font-weight:500;list-style:none}.deep-dive>summary::-webkit-details-marker{display:none}.deep-dive>summary::after{content:"+";color:var(--dim);font:400 1.25rem var(--sans)}.deep-dive[open]>summary{border-bottom:1px solid var(--line)}.deep-dive[open]>summary::after{content:"−"}.detail-body{padding:var(--s4)}.graph-scroll,.diagram-scroll{overflow-x:auto}.graph-scroll svg,.diagram-scroll svg{display:block;min-width:720px;height:auto}.diagram-note{margin:var(--s3) 0 0;color:var(--dim);font-size:.82rem}
+.details-stack{display:grid;gap:var(--s3)}.deep-dive{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}.deep-dive>summary{display:flex;align-items:center;justify-content:space-between;gap:var(--s4);cursor:pointer;padding:var(--s4) var(--s5);font-weight:500;list-style:none}.deep-dive>summary::-webkit-details-marker{display:none}.deep-dive>summary::after{content:"+";color:var(--dim);font:400 1.25rem var(--sans)}.deep-dive[open]>summary{border-bottom:1px solid var(--line)}.deep-dive[open]>summary::after{content:"−"}.detail-body{padding:var(--s4)}.graph-scroll,.diagram-scroll{overflow-x:auto}.diagram-scroll{scrollbar-color:var(--line) transparent}.diagram-scroll:focus-visible{outline:3px solid var(--focus);outline-offset:3px}.graph-scroll svg,.diagram-scroll svg{display:block;min-width:720px;height:auto}.diagram-note{margin:var(--s3) 0 0;color:var(--dim);font-size:.82rem}.diagram-equivalent{margin-top:var(--s4);padding-top:var(--s4);border-top:1px solid var(--line)}.diagram-equivalent p,.diagram-equivalent ol{margin:var(--s2) 0 0;color:var(--dim);font-size:.86rem}.diagram-equivalent ol{padding-left:1.35rem}.diagram-equivalent li+li{margin-top:var(--s2)}
+.delivery-svg{min-width:1120px}.delivery-svg .df-pm{fill:none;stroke:var(--dim);stroke-width:1.5;stroke-dasharray:6 5}.df-pm-label{font:500 14px var(--sans);fill:var(--dim)}.df-node rect{fill:var(--surface-2);stroke:var(--line);stroke-width:1.5}.df-final rect{fill:var(--bg);stroke-width:2}.df-title{font:600 15px var(--sans);fill:var(--ink)}.df-copy,.df-owner{font:11px var(--sans);fill:var(--dim)}.df-artifact{font:500 10px var(--mono);fill:var(--ink)}.df-artifact-label{font:600 11px var(--sans);fill:var(--ink)}.df-loop,.df-edge path{fill:none;stroke:var(--line);stroke-width:1.8}.df-edge marker path,.df-loop marker path,.df-exception marker path,.ds-flow marker path{fill:var(--line)}.df-selected path{stroke:var(--warn);stroke-width:3}.df-observed{font:600 11px var(--sans);fill:var(--warn)}.df-exception{fill:none;stroke:var(--bad);stroke-width:1.8;stroke-dasharray:5 4}.df-exception-label{font:11px var(--sans);fill:var(--bad)}.sequence-svg{min-width:980px}.ds-context{font:500 11px var(--sans);fill:var(--dim)}.ds-lane text{font:600 14px var(--sans);fill:var(--ink)}.ds-lane path{stroke:var(--line);stroke-dasharray:4 4}.ds-flow path{stroke:var(--line);stroke-width:1.8;fill:none}.ds-flow text{font:11px var(--sans);fill:var(--ink)}.ds-flow .ds-terminal{fill:var(--bad);font-weight:500}.ds-flow .ds-exception{stroke:var(--bad);stroke-dasharray:5 4}
 .l-box{fill:var(--surface);stroke:var(--line);stroke-width:1.5}
 .l-store{fill:var(--bg)}
 .l-dia{fill:var(--surface);stroke:var(--line);stroke-width:1.5}
@@ -933,7 +1030,8 @@ main{display:grid;gap:var(--s7);padding-top:var(--s6)}.summary-strip{display:gri
 .g-bad{stroke:var(--bad)}.g-bad.g-dot,.g-bad.g-tag{fill:var(--bad)}
 footer{margin-top:var(--s7);padding-top:var(--s4);border-top:1px solid var(--line);color:var(--dim);font-size:.82rem}footer details summary{cursor:pointer;width:max-content;color:var(--ink)}footer ul{max-width:78ch;margin:var(--s3) 0 0;padding-left:1.25rem}footer code{font-size:.76rem}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}summary:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
 @media(max-width:820px){body{padding:var(--s4)}.site-header{display:grid}.header-status{text-align:left}.summary-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.metric{border-top:1px solid var(--line)}.metric:nth-child(-n+2){border-top:0}.metric:nth-child(odd){border-left:0}.delivery-overview{grid-template-columns:1fr}.primary-grid{grid-template-columns:1fr}main{gap:var(--s6)}}
-@media(max-width:620px){h1{display:grid;gap:2px;font-size:1.5rem}.metric{padding:var(--s4)}.metric-value{font-size:1.65rem}.section-head{align-items:start}.phase-grid{grid-template-columns:1fr}.run-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.run-facts div:last-child{grid-column:1/-1}.warning-list li{grid-template-columns:1fr auto}.warning-list p{grid-column:1/-1}.responsive-table table,.responsive-table tbody,.responsive-table tr,.responsive-table td{display:block;min-width:0}.responsive-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}.responsive-table tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s3);padding:var(--s4);border-top:1px solid var(--line)}.responsive-table tbody tr:first-child{border-top:0}.responsive-table td{padding:0;border:0;overflow-wrap:anywhere}.responsive-table td:first-child{grid-column:1/-1}.responsive-table td::before{content:attr(data-label);display:block;margin-bottom:2px;color:var(--dim);font-size:.7rem}.deep-dive>summary{padding:var(--s4)}.detail-body{padding:var(--s3)}}
+@media(max-width:620px){h1{display:grid;gap:2px;font-size:1.5rem}.metric{padding:var(--s4)}.metric-value{font-size:1.65rem}.section-head{align-items:start}.delivery-times,.phase-grid{grid-template-columns:1fr}.run-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.run-facts div:last-child{grid-column:1/-1}.warning-list li{grid-template-columns:1fr auto}.warning-list p{grid-column:1/-1}.responsive-table table,.responsive-table tbody,.responsive-table tr,.responsive-table td{display:block;min-width:0}.responsive-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}.responsive-table tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s3);padding:var(--s4);border-top:1px solid var(--line)}.responsive-table tbody tr:first-child{border-top:0}.responsive-table td{padding:0;border:0;overflow-wrap:anywhere}.responsive-table td:first-child{grid-column:1/-1}.responsive-table td::before{content:attr(data-label);display:block;margin-bottom:2px;color:var(--dim);font-size:.7rem}.deep-dive>summary{padding:var(--s4)}.detail-body{padding:var(--s3)}}
+@media(forced-colors:active){.df-selected path{stroke:Highlight;stroke-width:4}.df-observed,.df-exception-label,.ds-flow .ds-terminal{color:CanvasText;fill:CanvasText}.df-node rect,.df-pm{stroke:CanvasText}.diagram-scroll:focus-visible{outline-color:Highlight}}
 </style></head><body><div class="wrap">
 
 <a class="skip-link" href="#main">ข้ามไปยังสถานะงาน</a>
@@ -1003,7 +1101,7 @@ ${recent.map(r => `<tr>
     <div class="section-head"><div><span class="eyebrow">เปิดเมื่ออยากเจาะลึก</span><h2 id="details-title">รายละเอียดระบบ</h2><p>เส้นทางงาน วิธีติดตาม และสถิติ worker</p></div></div>
     <div class="details-stack">
       <details class="deep-dive" data-persist-key="progress"><summary>ความคืบหน้าของแต่ละงาน</summary><div class="detail-body graph-scroll">${renderGraph(graphRows(snapshot))}</div></details>
-      <details class="deep-dive" data-persist-key="system-loop"><summary>วิธีที่ระบบติดตามงาน</summary><div class="detail-body"><div class="diagram-scroll">${renderLoop(snapshot)}</div><p class="diagram-note">เส้นประหมายถึงเส้นทางที่ระบบรู้ว่ามี แต่ยังไม่มีข้อมูลยืนยันว่าเกิดขึ้นจริง</p></div></details>
+      <details class="deep-dive" data-persist-key="system-loop"><summary>วงจรการสั่งงาน worker และการตรวจผล</summary><div class="detail-body"><div class="diagram-scroll" tabindex="0" role="region" aria-label="แผนภาพวงจรการสั่งงาน worker และการตรวจผลแบบเลื่อนแนวนอนได้">${renderLoop(snapshot)}</div><p class="diagram-note">นี่คือวงจร dispatch/verification ของ worker ไม่ใช่ระบบส่งมอบทั้งหมด; เส้นประหมายถึงเส้นทางที่ระบบรู้ว่ามี แต่ยังไม่มีข้อมูลยืนยันว่าเกิดขึ้นจริง</p></div></details>
       <details class="deep-dive" data-persist-key="worker-stats"><summary>สถิติ worker</summary><div class="detail-body surface table-scroll responsive-table" tabindex="0">${st.length ? `<table><caption>สถิติ worker</caption><thead><tr><th>worker</th><th>รอบทั้งหมด</th><th>ให้แก้ไข</th><th>เวลากลาง</th></tr></thead><tbody>
 ${st.map(s => `<tr><td data-label="worker">${esc(s.worker)}</td><td data-label="รอบทั้งหมด" class="num">${s.runs}</td>
   <td data-label="ให้แก้ไข" class="num ${s.rejected ? 'verdict-reject' : ''}">${s.rejected}</td>

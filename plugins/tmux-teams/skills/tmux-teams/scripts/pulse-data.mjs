@@ -399,9 +399,11 @@ function cloneBottleneck(value) {
       !isNullableNonNegative(value.age_sec)) return null
   const reasonCodes = cloneReasons(value.reason_codes)
   if (!reasonCodes) return null
-  const available = value.status === 'available'
-  if (available !== (value.boundary !== null && value.age_sec !== null)) return null
-  if (!available && (value.boundary !== null || value.age_sec !== null)) return null
+  const hasBoundary = value.boundary !== null
+  const hasAge = value.age_sec !== null
+  if (value.status === 'available' && (!hasBoundary || !hasAge)) return null
+  if (value.status === 'none' && (hasBoundary || hasAge)) return null
+  if (value.status === 'inconclusive' && hasAge) return null
   return {
     status: value.status,
     basis: 'oldest_open_handoff_age',

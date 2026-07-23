@@ -51,15 +51,18 @@ const outbox = (dir, id, marker, ageSec = 0) => {
   if (ageSec) age(p, ageSec)
   return p
 }
-/** The page carries two SVGs — the system loop and the per-worker graph. */
+/** Extract a named SVG without coupling tests to its surrounding disclosure UI. */
+const svgById = (html, id) => {
+  const match = html.match(new RegExp(`<svg\\b[^>]*\\bid="${id}"[^>]*>[\\s\\S]*?</svg>`))
+  assert.ok(match, `missing SVG ${id}`)
+  return match[0]
+}
+/** The page carries two SVGs — the worker lifecycle and the per-worker graph. */
 const perWorkerSvg = (html) => {
   const i = html.indexOf('aria-label="แต่ละงานเดินไปถึงขั้นไหน"')
   return html.slice(html.lastIndexOf('<svg', i), html.indexOf('</svg>', i))
 }
-const systemLoopSvg = (html) => {
-  const i = html.indexOf('aria-label="ลูปการทำงานของระบบ"')
-  return html.slice(html.lastIndexOf('<svg', i), html.indexOf('</svg>', i))
-}
+const dispatchLifecycleSvg = (html) => svgById(html, 'dispatch-lifecycle-svg')
 const sectionBy = (html, labelledBy) => {
   const marker = `aria-labelledby="${labelledBy}"`
   const i = html.indexOf(marker)
@@ -115,13 +118,13 @@ test('a terminal outbox with no record for too long is unrecorded, not dead', ()
   assert.match(html, /unrecorded/)
 })
 
-test('the system loop dead counter uses the complete died summary only', () => {
+test('the dispatch lifecycle dead counter uses the complete died summary only', () => {
   const dir = repo()
   for (let i = 0; i < 101; i++) dispatch(dir, `dead-${String(i).padStart(3, '0')}`, 600)
   dispatch(dir, 'verdict-not-recorded', 4000)
   outbox(dir, 'verdict-not-recorded', 'TEAM_DONE', 4000)
   const html = render(dir)
-  const loop = systemLoopSvg(html)
+  const loop = dispatchLifecycleSvg(html)
   const count = loop.match(/>หยุดผิดปกติ<\/text><text[^>]*>(\d+)<\/text>/)
   const snapshot = JSON.parse(readFileSync(join(dir, '.tmux-teams', 'pulse.json'), 'utf8'))
 
@@ -130,8 +133,16 @@ test('the system loop dead counter uses the complete died summary only', () => {
   assert.equal(snapshot.summary.by_state.unrecorded, 1)
   assert.equal(snapshot.runs.length, 100, 'the detailed run list is intentionally bounded')
   assert.equal(snapshot.summary.truncated, 2)
+  assert.match(loop, /role="img"/)
+  assert.match(loop, /aria-labelledby="worker-lifecycle-title worker-lifecycle-desc"/)
+  assert.match(loop, /<title id="worker-lifecycle-title">วงจรการสั่งงาน worker และการตรวจผล<\/title>/)
+  assert.match(loop, /<desc id="worker-lifecycle-desc">/)
+  assert.doesNotMatch(html, /aria-label="ลูปการทำงานของระบบ"/,
+    'the worker lifecycle must not be announced as a whole-system loop')
   assert.equal(count?.[1], String(snapshot.summary.by_state.died),
-    'the system total must not count other attention states or lose truncated deaths')
+    'the lifecycle counter must not count other attention states or lose truncated deaths')
+  assert.match(loop, /เส้นย้อนกลับที่ยังไม่ได้วัด/,
+    'the existing unmeasured back-edge explanation must remain available')
 })
 
 test('a recorded run leaves the live tables but stays on the graph', () => {
