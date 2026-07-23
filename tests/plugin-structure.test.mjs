@@ -158,6 +158,17 @@ test('tracked-files policy includes release CI and repository instructions', () 
   }
 })
 
+test('release docs describe the canonical submodule topology without stale install claims', () => {
+  const readme = readText(join(ROOT, 'README.md'))
+  const policy = readText(join(ROOT, 'CLAUDE.md'))
+  assert.doesNotMatch(readme, /\bprivate repository\b/i,
+    'installation docs must not fossilize repository visibility')
+  assert.doesNotMatch(policy, /inventory only|nothing reads it at runtime|still carries duplicate copies/i,
+    'agent-skills uses the submodule for its OpenClaw bridge and purges standalone duplicates')
+  assert.match(`${readme}\n${policy}`, /OpenClaw/,
+    'canonical topology must name the remaining submodule consumer')
+})
+
 test('claude plugin validate --strict passes', { skip: spawnSync('claude', ['--version'], { encoding: 'utf8' }).error && 'claude CLI not on PATH' }, () => {
   for (const target of [ROOT, PLUGIN]) {
     const r = spawnSync('claude', ['plugin', 'validate', '--strict', target], { encoding: 'utf8' })

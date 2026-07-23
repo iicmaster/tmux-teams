@@ -29,8 +29,8 @@ pass no path at all, or a glob like `tests/*.test.mjs`.
    `claude plugin marketplace update tmux-teams` and
    `claude plugin update tmux-teams@tmux-teams` (install cache is version-keyed).
 5. Bump the `plugins/tmux-teams` submodule pointer in `~/agent-skills` to the
-   new sha and push it (this repo is vendored there as an install-manifest
-   submodule — inventory only, nothing reads it at runtime).
+   new sha and push it. `agent-skills` uses that pin as the source for its
+   OpenClaw bridge; Codex and Claude plugin runtimes use version-keyed caches.
 
 ## Rules
 
@@ -42,9 +42,9 @@ pass no path at all, or a glob like `tests/*.test.mjs`.
   pushing run `claude plugin marketplace update tmux-teams` then
   `claude plugin update tmux-teams@tmux-teams`. Confirm with Master before
   the push that ships a release.
-- `~/agent-skills` still carries duplicate copies of five of the six skills
-  (`party-*`, `sqthink`, `codex-tmux-driver`) — treat THIS repo as
-  authoritative; never copy from agent-skills into here.
+- `~/agent-skills` no longer carries standalone copies of these six skills.
+  Treat THIS repo as authoritative; its submodule pin feeds the OpenClaw
+  bridge, and must never be copied back from installed targets.
 - `~/.claude/skills` must NOT contain the six bundled skills (they were
   deduplicated 2026-07-19; `agent-skills/scripts/sync.sh` purges them for the
   tool roots). Restoring them by hand recreates double-triggering.

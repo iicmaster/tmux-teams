@@ -134,8 +134,8 @@ claude plugin marketplace add iicmaster/tmux-teams
 claude plugin install tmux-teams@tmux-teams
 ```
 
-This is a private repository, so authenticate `gh`/git first. Installation
-uses the latest pushed marketplace version; changing a checkout or bumping its
+Authenticate `gh`/git first if your GitHub setup requires it. Installation uses
+the latest pushed marketplace version; changing a checkout or bumping its
 manifest does not update an installed copy. After a release is pushed, run
 `claude plugin marketplace update tmux-teams` followed by
 `claude plugin update tmux-teams@tmux-teams`.
@@ -151,9 +151,10 @@ manifest does not update an installed copy. After a release is pushed, run
 ## Update lifecycle (this repo IS canonical — flipped 2026-07-21)
 
 Skill content lives here, in `plugins/tmux-teams/skills/` — edit it directly.
-(`~/agent-skills` vendors this repo as the submodule `plugins/tmux-teams` and
-deleted its own copy of the tmux-teams skill; remaining duplicates there are
-non-authoritative.)
+`~/agent-skills` vendors this repo as the submodule `plugins/tmux-teams`, has
+deleted its standalone copies of all six bundled skills, and uses the submodule
+as the source for its OpenClaw bridge. Codex and Claude load their own
+version-keyed plugin caches.
 
 1. Edit the skill under `plugins/tmux-teams/skills/` and commit here.
 2. Bump the version in BOTH `plugins/tmux-teams/.claude-plugin/plugin.json`
