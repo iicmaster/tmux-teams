@@ -12,6 +12,22 @@ import { fileURLToPath } from 'node:url'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PLUGIN = join(ROOT, 'plugins/tmux-teams')
 const SKILLS = ['tmux-teams', 'party-mode', 'party-auto', 'party-advise', 'sqthink', 'codex-tmux-driver']
+const STAGE1_SCRIPTS = [
+  'delivery-loop-pilot-core.mjs',
+  'delivery-loop-store.mjs',
+  'delivery-loop-pilot.mjs',
+  'delivery-loop-capture.mjs',
+  'delivery-loop-export.mjs',
+]
+const STAGE1_REFERENCES = [
+  'delivery-loop-pilot-manifest-v1.schema.json',
+  'delivery-loop-event-v1.schema.json',
+  'delivery-loop-evidence-pack-v1.schema.json',
+  'pulse-v2.schema.json',
+  'stage-1-pilot-runbook.md',
+]
+const CLAUDE_VERSION = spawnSync('claude', ['--version'], { encoding: 'utf8' })
+const CLAUDE_AVAILABLE = !CLAUDE_VERSION.error && CLAUDE_VERSION.status === 0
 
 const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'))
 const readText = (p) => readFileSync(p, 'utf8')
@@ -23,7 +39,57 @@ test('marketplace and plugin manifests agree', () => {
   assert.equal(mkt.plugins.length, 1)
   assert.equal(mkt.plugins[0].name, plugin.name)
   assert.equal(mkt.plugins[0].version, plugin.version)
+  assert.equal(mkt.metadata.version, plugin.version)
+  assert.match(plugin.version, /^\d+\.\d+\.\d+$/, 'plugin version must be semver')
   assert.ok(existsSync(join(ROOT, mkt.plugins[0].source)), 'plugins[0].source must exist')
+})
+
+test('Stage 1 field-evidence files and documentation links are wired', () => {
+  const skillRoot = join(PLUGIN, 'skills/tmux-teams')
+  const readme = readText(join(ROOT, 'README.md'))
+  const skill = readText(join(skillRoot, 'SKILL.md'))
+
+  for (const file of STAGE1_SCRIPTS) {
+    assert.ok(existsSync(join(skillRoot, 'scripts', file)), `Stage 1 script missing: ${file}`)
+  }
+  for (const file of STAGE1_REFERENCES) {
+    assert.ok(existsSync(join(skillRoot, 'references', file)), `Stage 1 reference missing: ${file}`)
+    assert.ok(
+      readme.includes(`(plugins/tmux-teams/skills/tmux-teams/references/${file})`),
+      `README.md does not link ${file}`,
+    )
+    assert.ok(skill.includes(`(references/${file})`), `SKILL.md does not link ${file}`)
+  }
+
+  for (const file of STAGE1_REFERENCES.filter(name => name.endsWith('.schema.json'))) {
+    const schema = readJson(join(skillRoot, 'references', file))
+    assert.equal(schema.$schema, 'https://json-schema.org/draft/2020-12/schema',
+      `${file}: wrong JSON Schema draft`)
+    assert.equal(schema.type, 'object', `${file}: top level must be an object`)
+    assert.equal(schema.additionalProperties, false, `${file}: top level must be closed`)
+  }
+
+  const commandAnchors = [
+    'delivery-loop-pilot.mjs freeze',
+    'delivery-loop-pilot.mjs assign',
+    'delivery-loop-capture.mjs capture',
+    'delivery-loop-pilot.mjs replay',
+    'delivery-loop-pilot.mjs rehearse',
+    'delivery-loop-export.mjs export',
+    'delivery-loop-export.mjs verify-pack',
+    'pulse.mjs compat-v1',
+  ]
+  for (const anchor of commandAnchors) {
+    assert.ok(readme.includes(anchor), `README.md command missing: ${anchor}`)
+    assert.ok(skill.includes(anchor), `SKILL.md command missing: ${anchor}`)
+  }
+  for (const doc of [['README.md', readme], ['SKILL.md', skill]]) {
+    assert.match(doc[1], /v0\.7 Stage 1/, `${doc[0]}: Stage 1 section missing`)
+    assert.match(doc[1], /EXTERNAL_REQUIRED/, `${doc[0]}: external-decision boundary missing`)
+    assert.match(doc[1], /NOT_CERTIFIED/, `${doc[0]}: certification boundary missing`)
+    assert.match(doc[1], /never routes|does \*\*not\*\* route/i,
+      `${doc[0]}: no-routing boundary missing`)
+  }
 })
 
 test('all six skills are present with matching frontmatter names', () => {
@@ -82,9 +148,22 @@ test('no hardcoded home paths in manifests or commands', () => {
   }
 })
 
-test('claude plugin validate --strict passes', { skip: spawnSync('claude', ['--version'], { encoding: 'utf8' }).error && 'claude CLI not on PATH' }, () => {
+test('claude plugin validation uses strict mode when the installed CLI supports it', {
+  skip: CLAUDE_AVAILABLE ? false : 'claude CLI not on PATH',
+}, () => {
+  const help = spawnSync('claude', ['plugin', 'validate', '--help'], { encoding: 'utf8' })
+  assert.equal(help.status, 0, `could not inspect installed validator:\n${help.stdout}${help.stderr}`)
+  const supportsStrict = /(?:^|\s)--strict(?:\s|$)/m.test(`${help.stdout}${help.stderr}`)
   for (const target of [ROOT, PLUGIN]) {
-    const r = spawnSync('claude', ['plugin', 'validate', '--strict', target], { encoding: 'utf8' })
-    assert.equal(r.status, 0, `validate --strict failed for ${target}:\n${r.stdout}${r.stderr}`)
+    const args = ['plugin', 'validate', ...(supportsStrict ? ['--strict'] : []), target]
+    const r = spawnSync('claude', args, { encoding: 'utf8' })
+    const mode = supportsStrict ? 'validate --strict' : 'normal validate fallback'
+    assert.equal(r.status, 0, `${mode} failed for ${target}:\n${r.stdout}${r.stderr}`)
+    if (!supportsStrict) {
+      assert.equal(args.includes('--strict'), false,
+        'normal fallback must not pass an unsupported --strict option')
+      assert.match(`${r.stdout}${r.stderr}`, /validat(?:ion|ing).*(?:passed|valid)|\bvalid\b/is,
+        'normal fallback must explicitly report successful validation')
+    }
   }
 })

@@ -1,0 +1,844 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "delivery-loop-event-v1.schema.json",
+  "title": "tmux-teams Delivery Loop Observational Event v1",
+  "description": "One append-only, content-addressed observation in the Stage 1 delivery-loop sidecar. The event vocabulary records experiment facts only: it cannot route work, dispatch a worker, mutate mailbox or KMS state, certify evidence, or express a business decision. event_id is the SHA-256 digest of the canonical event with event_id omitted.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "event_id",
+    "experiment_id",
+    "manifest_digest",
+    "aggregate",
+    "event_type",
+    "occurred_at",
+    "claimed_actor",
+    "source",
+    "payload"
+  ],
+  "properties": {
+    "schema": { "const": "tmux-teams.delivery-loop-event" },
+    "schema_version": { "const": 1 },
+    "event_id": { "$ref": "#/$defs/digest" },
+    "experiment_id": { "$ref": "#/$defs/id" },
+    "manifest_digest": { "$ref": "#/$defs/digest" },
+    "aggregate": { "$ref": "#/$defs/aggregate" },
+    "event_type": {
+      "enum": [
+        "preregistration_frozen",
+        "slice_eligible",
+        "slice_assigned",
+        "source_observed",
+        "artifact_observed",
+        "attempt_transition_observed",
+        "cost_observed",
+        "outcome_observed",
+        "guardrail_observed",
+        "contamination_observed",
+        "observation_superseded",
+        "analysis_window_closed"
+      ]
+    },
+    "occurred_at": { "$ref": "#/$defs/timestamp" },
+    "claimed_actor": { "$ref": "#/$defs/claimed_actor" },
+    "source": { "$ref": "#/$defs/source" },
+    "payload": { "type": "object" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "aggregate": {
+            "properties": { "sequence": { "const": 1 } },
+            "required": ["sequence"]
+          }
+        },
+        "required": ["aggregate"]
+      },
+      "then": {
+        "properties": {
+          "aggregate": {
+            "properties": { "previous_event_id": { "type": "null" } },
+            "required": ["previous_event_id"]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "aggregate": {
+            "properties": { "previous_event_id": { "$ref": "#/$defs/digest" } },
+            "required": ["previous_event_id"]
+          }
+        }
+      }
+    }
+  ],
+  "oneOf": [
+    {
+      "properties": {
+        "event_type": { "const": "preregistration_frozen" },
+        "payload": { "$ref": "#/$defs/preregistration_frozen_payload" }
+      },
+      "required": ["event_type", "payload"]
+    },
+    {
+      "properties": {
+        "event_type": { "const": "slice_eligible" },
+        "payload": { "$ref": "#/$defs/slice_eligible_payload" }
+      },
+      "required": ["event_type", "payload"]
+    },
+    {
+      "properties": {
+        "event_type": { "const": "slice_assigned" },
+        "payload": { "$ref": "#/$defs/slice_assigned_payload" }
+      },
+      "required": ["event_type", "payload"]
+    },
+    {
+      "properties": {
+        "event_type": { "const": "source_observed" },
+        "payload": { "$ref": "#/$defs/source_observed_payload" }
+      },
+      "required": ["event_type", "payload"]
+    },
+    {
+      "properties": {
+        "event_type": { "const": "artifact_observed" },
+        "payload": { "$ref": "#/$defs/artifact_observed_payload" }
+      },
+      "required": ["event_type", "payload"]
+    },
+    {
+      "properties": {
+        "event_type": { "const": "attempt_transition_observed" },
+        "payload": { "$ref": "#/$defs/attempt_transition_observed_payload" }
+      },
+      "required": ["event_type", "payload"]
+    },
+    {
+      "properties": {
+        "event_type": { "const": "cost_observed" },
+        "payload": { "$ref": "#/$defs/cost_observed_payload" }
+      },
+      "required": ["event_type", "payload"]
+    },
+    {
+      "properties": {
+        "event_type": { "const": "outcome_observed" },
+        "payload": { "$ref": "#/$defs/outcome_observed_payload" }
+      },
+      "required": ["event_type", "payload"]
+    },
+    {
+      "properties": {
+        "event_type": { "const": "guardrail_observed" },
+        "payload": { "$ref": "#/$defs/guardrail_observed_payload" }
+      },
+      "required": ["event_type", "payload"]
+    },
+    {
+      "properties": {
+        "event_type": { "const": "contamination_observed" },
+        "payload": { "$ref": "#/$defs/contamination_observed_payload" }
+      },
+      "required": ["event_type", "payload"]
+    },
+    {
+      "properties": {
+        "event_type": { "const": "observation_superseded" },
+        "payload": { "$ref": "#/$defs/observation_superseded_payload" }
+      },
+      "required": ["event_type", "payload"]
+    },
+    {
+      "properties": {
+        "event_type": { "const": "analysis_window_closed" },
+        "payload": { "$ref": "#/$defs/analysis_window_closed_payload" }
+      },
+      "required": ["event_type", "payload"]
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])T(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|[+-](?:[01]\\d|2[0-3]):[0-5]\\d)$"
+    },
+    "reference": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "boundary": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sender_phase", "receiver_phase"],
+          "properties": {
+            "sender_phase": { "const": "Requirement" },
+            "receiver_phase": { "const": "Prototype" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sender_phase", "receiver_phase"],
+          "properties": {
+            "sender_phase": { "const": "Prototype" },
+            "receiver_phase": { "const": "Development" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sender_phase", "receiver_phase"],
+          "properties": {
+            "sender_phase": { "const": "Development" },
+            "receiver_phase": { "const": "QA" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sender_phase", "receiver_phase"],
+          "properties": {
+            "sender_phase": { "const": "QA" },
+            "receiver_phase": { "const": "ProjectDelivery" }
+          }
+        }
+      ]
+    },
+    "strata": {
+      "type": "object",
+      "description": "The only intentionally dynamic map. Every key must have been frozen in the pilot manifest and every value must be scalar.",
+      "minProperties": 1,
+      "propertyNames": { "$ref": "#/$defs/id" },
+      "additionalProperties": {
+        "oneOf": [
+          { "type": "string", "minLength": 1, "maxLength": 80 },
+          { "type": "number" },
+          { "type": "boolean" }
+        ]
+      }
+    },
+    "aggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "sequence", "previous_event_id"],
+      "properties": {
+        "type": {
+          "enum": ["experiment", "slice", "attempt", "artifact", "observation"]
+        },
+        "id": { "$ref": "#/$defs/id" },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "previous_event_id": {
+          "oneOf": [
+            { "$ref": "#/$defs/digest" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "claimed_actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actor_id", "role"],
+      "properties": {
+        "actor_id": { "$ref": "#/$defs/id" },
+        "role": {
+          "enum": [
+            "business_owner",
+            "pm",
+            "sender",
+            "receiver_phase_lead",
+            "experiment_owner",
+            "assignment_custodian",
+            "metric_producer",
+            "guardrail_producer",
+            "external_reviewer",
+            "observer"
+          ]
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "description": "A named source claim. Same-UID files and actor labels remain unauthenticated advisory evidence.",
+      "additionalProperties": false,
+      "required": ["kind", "source_ref", "source_digest", "trust_level"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "pilot_manifest",
+            "assignment_engine",
+            "mailbox_dispatch",
+            "mailbox_outbox",
+            "kms_event",
+            "manual_observation"
+          ]
+        },
+        "source_ref": { "$ref": "#/$defs/reference" },
+        "source_digest": { "$ref": "#/$defs/digest" },
+        "trust_level": { "const": "advisory_same_uid" }
+      }
+    },
+    "preregistration_frozen_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifest_id",
+        "manifest_digest",
+        "frozen_at",
+        "seed_commitment",
+        "external_anchor_ref",
+        "external_anchor_digest",
+        "automatic_routing"
+      ],
+      "properties": {
+        "manifest_id": { "$ref": "#/$defs/id" },
+        "manifest_digest": { "$ref": "#/$defs/digest" },
+        "frozen_at": { "$ref": "#/$defs/timestamp" },
+        "seed_commitment": { "$ref": "#/$defs/digest" },
+        "external_anchor_ref": { "$ref": "#/$defs/reference" },
+        "external_anchor_digest": { "$ref": "#/$defs/digest" },
+        "automatic_routing": { "const": false }
+      }
+    },
+    "slice_eligible_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slice_id",
+        "eligible_at",
+        "stable_source_digest",
+        "boundary",
+        "strata"
+      ],
+      "properties": {
+        "slice_id": { "$ref": "#/$defs/id" },
+        "eligible_at": { "$ref": "#/$defs/timestamp" },
+        "stable_source_digest": { "$ref": "#/$defs/digest" },
+        "boundary": { "$ref": "#/$defs/boundary" },
+        "strata": { "$ref": "#/$defs/strata" }
+      }
+    },
+    "slice_assigned_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slice_id",
+        "arm",
+        "assigned_at",
+        "algorithm",
+        "algorithm_version",
+        "assignment_score",
+        "seed_commitment",
+        "assignment_digest",
+        "strata",
+        "arm_override"
+      ],
+      "properties": {
+        "slice_id": { "$ref": "#/$defs/id" },
+        "arm": { "enum": ["pm_routed", "receiver_owned"] },
+        "assigned_at": { "$ref": "#/$defs/timestamp" },
+        "algorithm": { "const": "hmac_sha256_stratified_v1" },
+        "algorithm_version": { "const": 1 },
+        "assignment_score": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "seed_commitment": { "$ref": "#/$defs/digest" },
+        "assignment_digest": { "$ref": "#/$defs/digest" },
+        "strata": { "$ref": "#/$defs/strata" },
+        "arm_override": { "const": false }
+      }
+    },
+    "source_observed_payload": {
+      "type": "object",
+      "description": "A bounded observation emitted by a named-source adapter. These signals preserve source semantics and never materialize receiver acceptance, outcome, guardrail, certification, or a business decision.",
+      "additionalProperties": false,
+      "required": ["slice_id", "signal", "correlation_id"],
+      "properties": {
+        "slice_id": { "$ref": "#/$defs/id" },
+        "signal": {
+          "enum": [
+            "DISPATCH_RECORDED",
+            "WORKER_TERMINAL_DONE",
+            "WORKER_TERMINAL_BLOCKED",
+            "WORKER_TERMINAL_FAILED",
+            "PM_VERDICT_PASS",
+            "PM_VERDICT_REJECT",
+            "PM_VERDICT_UNRESOLVED"
+          ]
+        },
+        "correlation_id": { "$ref": "#/$defs/id" }
+      }
+    },
+    "artifact_observed_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slice_id",
+        "attempt_id",
+        "artifact_id",
+        "artifact_type",
+        "artifact_version",
+        "artifact_digest",
+        "boundary",
+        "predecessor_trace",
+        "validation_evidence_digests",
+        "observed_at"
+      ],
+      "properties": {
+        "slice_id": { "$ref": "#/$defs/id" },
+        "attempt_id": { "$ref": "#/$defs/id" },
+        "artifact_id": { "$ref": "#/$defs/id" },
+        "artifact_type": {
+          "enum": [
+            "requirements_baseline",
+            "prototype_evaluation",
+            "development_delivery",
+            "qa_release_evidence"
+          ]
+        },
+        "artifact_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$"
+        },
+        "artifact_digest": { "$ref": "#/$defs/digest" },
+        "boundary": { "$ref": "#/$defs/boundary" },
+        "predecessor_trace": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/digest" }
+        },
+        "validation_evidence_digests": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/digest" }
+        },
+        "observed_at": { "$ref": "#/$defs/timestamp" }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "artifact_type": { "const": "requirements_baseline" },
+            "boundary": {
+              "properties": {
+                "sender_phase": { "const": "Requirement" },
+                "receiver_phase": { "const": "Prototype" }
+              },
+              "required": ["sender_phase", "receiver_phase"]
+            }
+          },
+          "required": ["artifact_type", "boundary"]
+        },
+        {
+          "properties": {
+            "artifact_type": { "const": "prototype_evaluation" },
+            "boundary": {
+              "properties": {
+                "sender_phase": { "const": "Prototype" },
+                "receiver_phase": { "const": "Development" }
+              },
+              "required": ["sender_phase", "receiver_phase"]
+            }
+          },
+          "required": ["artifact_type", "boundary"]
+        },
+        {
+          "properties": {
+            "artifact_type": { "const": "development_delivery" },
+            "boundary": {
+              "properties": {
+                "sender_phase": { "const": "Development" },
+                "receiver_phase": { "const": "QA" }
+              },
+              "required": ["sender_phase", "receiver_phase"]
+            }
+          },
+          "required": ["artifact_type", "boundary"]
+        },
+        {
+          "properties": {
+            "artifact_type": { "const": "qa_release_evidence" },
+            "boundary": {
+              "properties": {
+                "sender_phase": { "const": "QA" },
+                "receiver_phase": { "const": "ProjectDelivery" }
+              },
+              "required": ["sender_phase", "receiver_phase"]
+            }
+          },
+          "required": ["artifact_type", "boundary"]
+        }
+      ]
+    },
+    "attempt_transition_observed_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slice_id",
+        "attempt_id",
+        "boundary",
+        "action",
+        "from_state",
+        "to_state",
+        "sender_actor_id",
+        "receiver_actor_id",
+        "artifact_event_id",
+        "revision_of_attempt_id",
+        "transition_at"
+      ],
+      "properties": {
+        "slice_id": { "$ref": "#/$defs/id" },
+        "attempt_id": { "$ref": "#/$defs/id" },
+        "boundary": { "$ref": "#/$defs/boundary" },
+        "action": {
+          "enum": [
+            "propose",
+            "accept",
+            "reject",
+            "cancel",
+            "abandon",
+            "escalate",
+            "resolve_exception"
+          ]
+        },
+        "from_state": {
+          "enum": ["draft", "proposed", "escalated"]
+        },
+        "to_state": {
+          "enum": [
+            "proposed",
+            "accepted",
+            "rejected",
+            "cancelled",
+            "abandoned",
+            "escalated"
+          ]
+        },
+        "sender_actor_id": { "$ref": "#/$defs/id" },
+        "receiver_actor_id": { "$ref": "#/$defs/id" },
+        "artifact_event_id": { "$ref": "#/$defs/digest" },
+        "revision_of_attempt_id": {
+          "oneOf": [
+            { "$ref": "#/$defs/id" },
+            { "type": "null" }
+          ]
+        },
+        "transition_at": { "$ref": "#/$defs/timestamp" }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "action": { "const": "propose" },
+            "from_state": { "const": "draft" },
+            "to_state": { "const": "proposed" }
+          },
+          "required": ["action", "from_state", "to_state"]
+        },
+        {
+          "properties": {
+            "action": { "const": "accept" },
+            "from_state": { "const": "proposed" },
+            "to_state": { "const": "accepted" }
+          },
+          "required": ["action", "from_state", "to_state"]
+        },
+        {
+          "properties": {
+            "action": { "const": "reject" },
+            "from_state": { "const": "proposed" },
+            "to_state": { "const": "rejected" }
+          },
+          "required": ["action", "from_state", "to_state"]
+        },
+        {
+          "properties": {
+            "action": { "const": "cancel" },
+            "from_state": { "const": "proposed" },
+            "to_state": { "const": "cancelled" }
+          },
+          "required": ["action", "from_state", "to_state"]
+        },
+        {
+          "properties": {
+            "action": { "const": "abandon" },
+            "from_state": { "const": "proposed" },
+            "to_state": { "const": "abandoned" }
+          },
+          "required": ["action", "from_state", "to_state"]
+        },
+        {
+          "properties": {
+            "action": { "const": "escalate" },
+            "from_state": { "const": "proposed" },
+            "to_state": { "const": "escalated" }
+          },
+          "required": ["action", "from_state", "to_state"]
+        },
+        {
+          "properties": {
+            "action": { "const": "resolve_exception" },
+            "from_state": { "const": "escalated" },
+            "to_state": { "const": "proposed" }
+          },
+          "required": ["action", "from_state", "to_state"]
+        }
+      ]
+    },
+    "cost_observed_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slice_id",
+        "category",
+        "measurement_status",
+        "minutes",
+        "method_id",
+        "owner_actor_id",
+        "measured_at"
+      ],
+      "properties": {
+        "slice_id": { "$ref": "#/$defs/id" },
+        "category": {
+          "enum": [
+            "pm_routing_minutes",
+            "pm_exception_minutes",
+            "pm_evidence_minutes",
+            "receiver_review_minutes",
+            "governance_minutes",
+            "instrumentation_minutes",
+            "queue_wait_minutes",
+            "rework_minutes",
+            "rejected_work_minutes",
+            "abandoned_work_minutes",
+            "cancelled_work_minutes",
+            "sender_coordination_minutes"
+          ]
+        },
+        "measurement_status": { "enum": ["measured", "unknown"] },
+        "minutes": {
+          "type": ["number", "null"],
+          "minimum": 0
+        },
+        "method_id": { "$ref": "#/$defs/id" },
+        "owner_actor_id": { "$ref": "#/$defs/id" },
+        "measured_at": { "$ref": "#/$defs/timestamp" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "measurement_status": { "const": "measured" } },
+            "required": ["measurement_status"]
+          },
+          "then": {
+            "properties": { "minutes": { "type": "number", "minimum": 0 } }
+          },
+          "else": {
+            "properties": { "minutes": { "type": "null" } }
+          }
+        }
+      ]
+    },
+    "outcome_observed_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slice_id",
+        "status",
+        "time_to_usable_outcome_minutes",
+        "value_proxy",
+        "method_id",
+        "owner_actor_id",
+        "measured_at"
+      ],
+      "properties": {
+        "slice_id": { "$ref": "#/$defs/id" },
+        "status": {
+          "enum": [
+            "mature",
+            "immature",
+            "censored",
+            "pending",
+            "cancelled",
+            "abandoned"
+          ]
+        },
+        "time_to_usable_outcome_minutes": {
+          "type": ["number", "null"],
+          "minimum": 0
+        },
+        "value_proxy": {
+          "type": ["number", "null"]
+        },
+        "method_id": { "$ref": "#/$defs/id" },
+        "owner_actor_id": { "$ref": "#/$defs/id" },
+        "measured_at": { "$ref": "#/$defs/timestamp" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "const": "mature" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "time_to_usable_outcome_minutes": {
+                "type": "number",
+                "minimum": 0
+              },
+              "value_proxy": { "type": "number" }
+            }
+          }
+        }
+      ]
+    },
+    "guardrail_observed_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slice_id",
+        "guardrail",
+        "status",
+        "evidence_ref",
+        "evidence_digest",
+        "method_id",
+        "owner_actor_id",
+        "measured_at"
+      ],
+      "properties": {
+        "slice_id": { "$ref": "#/$defs/id" },
+        "guardrail": {
+          "enum": [
+            "security",
+            "performance",
+            "integration",
+            "uat",
+            "escaped_defects"
+          ]
+        },
+        "status": { "enum": ["PASS", "BREACH", "UNKNOWN"] },
+        "evidence_ref": { "$ref": "#/$defs/reference" },
+        "evidence_digest": { "$ref": "#/$defs/digest" },
+        "method_id": { "$ref": "#/$defs/id" },
+        "owner_actor_id": { "$ref": "#/$defs/id" },
+        "measured_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "contamination_observed_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slice_id",
+        "contaminated",
+        "reason_code",
+        "method_id",
+        "owner_actor_id",
+        "observed_at"
+      ],
+      "properties": {
+        "slice_id": { "$ref": "#/$defs/id" },
+        "contaminated": { "type": "boolean" },
+        "reason_code": {
+          "enum": [
+            "NO_CONTAMINATION_OBSERVED",
+            "ARM_INSTRUCTION_CROSSED",
+            "PM_ROUTING_ADDED_TO_TREATMENT",
+            "RECEIVER_ROUTING_ADDED_TO_CONTROL",
+            "MANUAL_ARM_OVERRIDE_ATTEMPTED",
+            "OTHER_DECLARED"
+          ]
+        },
+        "method_id": { "$ref": "#/$defs/id" },
+        "owner_actor_id": { "$ref": "#/$defs/id" },
+        "observed_at": { "$ref": "#/$defs/timestamp" }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "contaminated": { "const": false },
+            "reason_code": { "const": "NO_CONTAMINATION_OBSERVED" }
+          },
+          "required": ["contaminated", "reason_code"]
+        },
+        {
+          "properties": {
+            "contaminated": { "const": true },
+            "reason_code": {
+              "enum": [
+                "ARM_INSTRUCTION_CROSSED",
+                "PM_ROUTING_ADDED_TO_TREATMENT",
+                "RECEIVER_ROUTING_ADDED_TO_CONTROL",
+                "MANUAL_ARM_OVERRIDE_ATTEMPTED",
+                "OTHER_DECLARED"
+              ]
+            }
+          },
+          "required": ["contaminated", "reason_code"]
+        }
+      ]
+    },
+    "observation_superseded_payload": {
+      "type": "object",
+      "description": "Records an append-only correction for cost, outcome, guardrail, contamination, or named-source observations. Runtime validation requires the replacement to be a strictly later observation of the same allowlisted event kind, slice, and measurement dimension. Assignment, artifact, and handoff-transition facts are not supersedeable. The target remains in the ledger while replay excludes it from materialization; neither event mutates a source system.",
+      "additionalProperties": false,
+      "required": [
+        "target_event_id",
+        "replacement_event_id",
+        "reason_code",
+        "superseded_at"
+      ],
+      "properties": {
+        "target_event_id": { "$ref": "#/$defs/digest" },
+        "replacement_event_id": { "$ref": "#/$defs/digest" },
+        "reason_code": {
+          "enum": [
+            "SOURCE_CORRECTION",
+            "DUPLICATE_OBSERVATION",
+            "MEASUREMENT_CORRECTION",
+            "REDACTION_REFERENCE_REPLACED"
+          ]
+        },
+        "superseded_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "analysis_window_closed_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "analysis_as_of",
+        "event_log_digest",
+        "dataset_digest",
+        "assigned_slice_count",
+        "retained_itt_slice_count"
+      ],
+      "properties": {
+        "analysis_as_of": { "$ref": "#/$defs/timestamp" },
+        "event_log_digest": { "$ref": "#/$defs/digest" },
+        "dataset_digest": { "$ref": "#/$defs/digest" },
+        "assigned_slice_count": { "type": "integer", "minimum": 0 },
+        "retained_itt_slice_count": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

@@ -1,0 +1,395 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "delivery-loop-evidence-pack-v1.schema.json",
+  "title": "tmux-teams Delivery Loop Stage 1 Evidence Pack v1",
+  "description": "A deterministic same-UID export for independent review. The pack binds named files, replay health, completeness, and descriptive analysis, but it cannot authenticate identities, certify evidence, ratify a business decision, or actuate any change. pack_digest is the SHA-256 digest of the canonical pack index with pack_digest omitted.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "pack_id",
+    "pack_digest",
+    "experiment_id",
+    "manifest_digest",
+    "event_log_digest",
+    "dataset_digest",
+    "analysis_as_of",
+    "created_at",
+    "trust_level",
+    "provenance",
+    "identity_authenticated",
+    "certification_status",
+    "business_decision",
+    "actuation",
+    "source_custody",
+    "contents",
+    "replay",
+    "completeness",
+    "analysis_summary",
+    "external_review",
+    "tooling",
+    "diagnostics"
+  ],
+  "properties": {
+    "schema": { "const": "tmux-teams.delivery-loop-evidence-pack" },
+    "schema_version": { "const": 1 },
+    "pack_id": { "$ref": "#/$defs/id" },
+    "pack_digest": { "$ref": "#/$defs/digest" },
+    "experiment_id": { "$ref": "#/$defs/id" },
+    "manifest_digest": { "$ref": "#/$defs/digest" },
+    "event_log_digest": { "$ref": "#/$defs/digest" },
+    "dataset_digest": { "$ref": "#/$defs/digest" },
+    "analysis_as_of": { "$ref": "#/$defs/timestamp" },
+    "created_at": { "$ref": "#/$defs/timestamp" },
+    "trust_level": { "const": "advisory_same_uid" },
+    "provenance": { "const": "observed_unverified" },
+    "identity_authenticated": { "const": false },
+    "certification_status": { "const": "NOT_CERTIFIED" },
+    "business_decision": { "const": "EXTERNAL_REQUIRED" },
+    "actuation": { "const": "NONE" },
+    "source_custody": { "$ref": "#/$defs/source_custody" },
+    "contents": { "$ref": "#/$defs/contents" },
+    "replay": { "$ref": "#/$defs/replay" },
+    "completeness": { "$ref": "#/$defs/completeness" },
+    "analysis_summary": { "$ref": "#/$defs/analysis_summary" },
+    "external_review": { "$ref": "#/$defs/external_review" },
+    "tooling": { "$ref": "#/$defs/tooling" },
+    "diagnostics": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "$ref": "#/$defs/diagnostic" }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])T(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|[+-](?:[01]\\d|2[0-3]):[0-5]\\d)$"
+    },
+    "reference": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^(?!/)(?!.*\\.\\.)(?!.*\\\\)[A-Za-z0-9._/-]+$"
+    },
+    "file_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "digest", "bytes", "media_type"],
+      "properties": {
+        "path": { "$ref": "#/$defs/relative_path" },
+        "digest": { "$ref": "#/$defs/digest" },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "media_type": {
+          "enum": [
+            "application/json",
+            "application/x-ndjson",
+            "text/markdown"
+          ]
+        }
+      }
+    },
+    "external_anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "anchor_type",
+        "anchor_ref",
+        "anchor_digest",
+        "anchored_at",
+        "custodian_actor_id",
+        "outside_worker_writable_repository",
+        "authenticated_by_toolkit"
+      ],
+      "properties": {
+        "anchor_type": {
+          "enum": [
+            "detached_signature",
+            "external_timestamp",
+            "separate_principal_custody"
+          ]
+        },
+        "anchor_ref": { "$ref": "#/$defs/reference" },
+        "anchor_digest": { "$ref": "#/$defs/digest" },
+        "anchored_at": { "$ref": "#/$defs/timestamp" },
+        "custodian_actor_id": { "$ref": "#/$defs/id" },
+        "outside_worker_writable_repository": { "const": true },
+        "authenticated_by_toolkit": { "const": false }
+      }
+    },
+    "source_custody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "local_principal",
+        "same_uid_worker_writable",
+        "local_digest_verification",
+        "external_anchor"
+      ],
+      "properties": {
+        "local_principal": { "$ref": "#/$defs/reference" },
+        "same_uid_worker_writable": { "const": true },
+        "local_digest_verification": { "const": "INTEGRITY_CHECK_ONLY" },
+        "external_anchor": { "$ref": "#/$defs/external_anchor" }
+      }
+    },
+    "contents": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifest",
+        "assignments",
+        "event_log",
+        "dataset",
+        "replay_report",
+        "analysis_report",
+        "trace_index",
+        "pulse_projection",
+        "review_instructions"
+      ],
+      "properties": {
+        "manifest": { "$ref": "#/$defs/file_entry" },
+        "assignments": {
+          "description": "The immutable prospective assignment ledger exported separately from materialized outcomes.",
+          "$ref": "#/$defs/file_entry"
+        },
+        "event_log": { "$ref": "#/$defs/file_entry" },
+        "dataset": { "$ref": "#/$defs/file_entry" },
+        "replay_report": { "$ref": "#/$defs/file_entry" },
+        "analysis_report": { "$ref": "#/$defs/file_entry" },
+        "trace_index": { "$ref": "#/$defs/file_entry" },
+        "pulse_projection": {
+          "description": "The exact bounded delivery-loop operator projection supplied as Pulse v2 input, digest-bound for traceability without making Pulse authoritative.",
+          "$ref": "#/$defs/file_entry"
+        },
+        "review_instructions": { "$ref": "#/$defs/file_entry" }
+      }
+    },
+    "replay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "event_count",
+        "aggregate_count",
+        "sequence_gap_count",
+        "chain_conflict_count",
+        "superseded_event_count",
+        "assigned_slice_count",
+        "retained_itt_slice_count"
+      ],
+      "properties": {
+        "status": { "enum": ["VALID", "DEGRADED", "INVALID"] },
+        "event_count": { "type": "integer", "minimum": 0 },
+        "aggregate_count": { "type": "integer", "minimum": 0 },
+        "sequence_gap_count": { "type": "integer", "minimum": 0 },
+        "chain_conflict_count": { "type": "integer", "minimum": 0 },
+        "superseded_event_count": { "type": "integer", "minimum": 0 },
+        "assigned_slice_count": { "type": "integer", "minimum": 0 },
+        "retained_itt_slice_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "completeness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "assignment_complete",
+        "cost_categories_present",
+        "unknown_cost_fraction",
+        "outcome_observation_complete",
+        "missing_mature_outcome_fraction",
+        "guardrails_present",
+        "contaminated_slice_count"
+      ],
+      "properties": {
+        "assignment_complete": { "type": "boolean" },
+        "cost_categories_present": {
+          "type": "array",
+          "minItems": 12,
+          "maxItems": 12,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "pm_routing_minutes",
+              "pm_exception_minutes",
+              "pm_evidence_minutes",
+              "receiver_review_minutes",
+              "governance_minutes",
+              "instrumentation_minutes",
+              "queue_wait_minutes",
+              "rework_minutes",
+              "rejected_work_minutes",
+              "abandoned_work_minutes",
+              "cancelled_work_minutes",
+              "sender_coordination_minutes"
+            ]
+          }
+        },
+        "unknown_cost_fraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "outcome_observation_complete": { "type": "boolean" },
+        "missing_mature_outcome_fraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "guardrails_present": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "security",
+              "performance",
+              "integration",
+              "uat",
+              "escaped_defects"
+            ]
+          }
+        },
+        "contaminated_slice_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "analysis_summary": {
+      "type": "object",
+      "description": "Descriptive, non-actuating analyzer output. These fields are not a business verdict.",
+      "additionalProperties": false,
+      "required": [
+        "measurement_readiness",
+        "scenario_signal",
+        "guardrail_status",
+        "evidence_eligibility",
+        "safety_hold_recommended"
+      ],
+      "properties": {
+        "measurement_readiness": { "enum": ["READY", "INCONCLUSIVE"] },
+        "scenario_signal": {
+          "enum": ["FAVORABLE", "UNFAVORABLE", "INCONCLUSIVE"]
+        },
+        "guardrail_status": { "enum": ["CLEAR", "BREACH", "UNKNOWN"] },
+        "evidence_eligibility": {
+          "enum": [
+            "OBSERVED_UNVERIFIED",
+            "ELIGIBLE_FOR_EXTERNAL_REVIEW"
+          ]
+        },
+        "safety_hold_recommended": { "type": "boolean" }
+      }
+    },
+    "external_review": {
+      "type": "object",
+      "description": "The export stops here. Custody verification, identity authentication, review findings, and business-owner ratification occur outside this toolkit.",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "review_status",
+        "reviewer_actor_ids",
+        "custody_check_required",
+        "independent_digest_recalculation_required",
+        "role_identity_authentication_required",
+        "review_location",
+        "business_owner_ratification_location"
+      ],
+      "properties": {
+        "required": { "const": true },
+        "review_status": { "const": "PENDING_EXTERNAL" },
+        "reviewer_actor_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "custody_check_required": { "const": true },
+        "independent_digest_recalculation_required": { "const": true },
+        "role_identity_authentication_required": { "const": true },
+        "review_location": { "const": "outside_toolkit" },
+        "business_owner_ratification_location": {
+          "const": "outside_toolkit"
+        }
+      }
+    },
+    "tooling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exporter_version",
+        "event_schema_version",
+        "manifest_schema_version",
+        "evidence_pack_schema_version",
+        "source_revision",
+        "canonicalization"
+      ],
+      "properties": {
+        "exporter_version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[A-Za-z0-9.-]+)?$"
+        },
+        "event_schema_version": { "const": 1 },
+        "manifest_schema_version": { "const": 1 },
+        "evidence_pack_schema_version": { "const": 1 },
+        "source_revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "canonicalization": { "const": "unicode_code_point_order_v1" }
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "severity", "source", "count"],
+      "properties": {
+        "code": {
+          "enum": [
+            "EVENT_SEQUENCE_GAP",
+            "EVENT_CHAIN_CONFLICT",
+            "EVENT_INVALID",
+            "SOURCE_UNAVAILABLE",
+            "SOURCE_DIGEST_MISMATCH",
+            "ASSIGNMENT_INCOMPLETE",
+            "COST_UNKNOWN",
+            "OUTCOME_INCOMPLETE",
+            "GUARDRAIL_UNKNOWN",
+            "CONTAMINATION_RECORDED",
+            "ROLE_SEPARATION_UNVERIFIED",
+            "EXTERNAL_CUSTODY_UNVERIFIED"
+          ]
+        },
+        "severity": { "enum": ["info", "warning", "error"] },
+        "source": {
+          "enum": [
+            "manifest",
+            "event_log",
+            "assignment",
+            "costs",
+            "outcomes",
+            "guardrails",
+            "custody",
+            "exporter"
+          ]
+        },
+        "count": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

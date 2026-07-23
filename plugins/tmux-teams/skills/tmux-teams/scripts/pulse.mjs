@@ -21,26 +21,42 @@
 // footprint, no process and no event; until now it simply vanished.
 //
 // usage:
-//   pulse.mjs once  <repo>                 render once, print the path
-//   pulse.mjs watch <repo> [--interval 20] re-render forever (Ctrl-C to stop)
-//   pulse.mjs ensure <repo> [--interval 20] render now; idempotently keep watch alive
-//   pulse.mjs json <repo>                  render now; print one JSON document
+//   pulse.mjs once  <repo> [--delivery-loop FILE]                 render once, print the path
+//   pulse.mjs watch <repo> [--interval 20] [--delivery-loop FILE] re-render forever
+//   pulse.mjs ensure <repo> [--interval 20] [--delivery-loop FILE] render now; keep watch alive
+//   pulse.mjs json <repo> [--delivery-loop FILE]                  render now; print one JSON document
+//   pulse.mjs compat-v1 <repo>                                    stdout-only v1 downprojection
 import { execFileSync, spawn } from 'node:child_process'
 import {
   closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync,
-  readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync,
+  readSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { KANIT_FONT_CSS } from '../assets/kanit/kanit-embedded.mjs'
 import { parseLsofCwd, parsePgrep, parsePsCandidates } from './pulse-platform.mjs'
-import { ID_RE, PULSE_SCHEMA, PULSE_SCHEMA_VERSION, UUID_RE, projectPulseV1 } from './pulse-data.mjs'
+import {
+  ID_RE, PULSE_SCHEMA, PULSE_SCHEMA_VERSION, PULSE_SCHEMA_VERSION_V2, UUID_RE,
+  downProjectPulseV1, projectPulseV1, projectPulseV2,
+} from './pulse-data.mjs'
 
 const [cmd, repoArg, ...flags] = process.argv.slice(2)
-const USAGE = 'usage: pulse.mjs once|json <repo> | pulse.mjs watch|ensure <repo> [--interval SEC]'
-if (!cmd || !repoArg || !['once', 'json', 'watch', 'ensure'].includes(cmd)) { console.error(USAGE); process.exit(2) }
+const USAGE = 'usage: pulse.mjs once|json <repo> [--delivery-loop FILE] | pulse.mjs watch|ensure <repo> [--interval SEC] [--delivery-loop FILE] | pulse.mjs compat-v1 <repo>'
+if (!cmd || !repoArg || !['once', 'json', 'watch', 'ensure', 'compat-v1'].includes(cmd)) {
+  console.error(USAGE); process.exit(2)
+}
+const deliveryFlagIndexes = flags.flatMap((flag, index) => flag === '--delivery-loop' ? [index] : [])
+if (cmd === 'compat-v1' && flags.length > 0 ||
+    deliveryFlagIndexes.length > 1 ||
+    (deliveryFlagIndexes.length === 1 &&
+      (!flags[deliveryFlagIndexes[0] + 1] || flags[deliveryFlagIndexes[0] + 1].startsWith('--')))) {
+  console.error(USAGE); process.exit(2)
+}
+const DELIVERY_LOOP_PATH = deliveryFlagIndexes.length
+  ? resolve(flags[deliveryFlagIndexes[0] + 1])
+  : null
 
 let REPO
 try { REPO = realpathSync(repoArg) } catch { console.error(`[pulse] no such repo: ${repoArg}`); process.exit(2) }
@@ -52,6 +68,7 @@ const DISPATCH = join(STORE, 'dispatch')
 const OUTBOX = join(REPO, '.mailbox-out')
 const CTL = join(homedir(), '.tmux-teams', 'mailbox-run')
 const WATCH_PID = join(STORE, 'pulse-watch.pid')
+const WATCH_CONFIG = join(STORE, 'pulse-watch.config.json')
 const PUBLISH_LOCK = join(STORE, 'pulse-publish.lock')
 const THIS_SCRIPT = fileURLToPath(import.meta.url)
 const MANAGED_WATCH = flags.includes('--managed')
@@ -511,6 +528,15 @@ const ACTION_COPY = Object.freeze({
   inspect_worker: 'ตรวจสอบ worker',
   restore_observability: 'กู้การตรวจสถานะ',
   inspect_ownership: 'ตรวจสอบเจ้าของงาน',
+  verify_and_recommend_manual_hold: 'ตรวจสอบและเสนอพักงานด้วยคน',
+  inspect_contract_violation: 'ตรวจสอบข้อมูลที่ผิดสัญญา',
+  resolve_exception: 'แก้ข้อยกเว้น',
+  review_handoff: 'ตรวจรับงานส่งมอบ',
+  revise_artifact: 'แก้ไขชิ้นงานส่งมอบ',
+  complete_measurement: 'เติมข้อมูลการวัด',
+  continue_observation: 'ติดตามจนถึงเกณฑ์ครบ',
+  export_evidence: 'ส่งออกชุดหลักฐาน',
+  request_external_review: 'ขอผู้ตรวจอิสระทบทวน',
 })
 const TERMINAL_COPY = Object.freeze({
   done: 'เสร็จแล้ว', blocked: 'ติดข้อจำกัด', failed: 'ล้มเหลว',
@@ -528,6 +554,53 @@ const DIAGNOSTIC_COPY = Object.freeze({
   INVALID_EVENT_ENTRY: 'พบบันทึกเหตุการณ์ที่ไม่ถูกต้อง',
   SOURCE_TRUNCATED: 'ข้อมูลต้นทางถูกจำกัดเพื่อความปลอดภัย',
   SEQUENCE_RESET: 'เริ่มลำดับ snapshot ใหม่',
+  SCHEMA_UPGRADED: 'อัปเกรดข้อมูล Pulse เป็นรุ่นใหม่',
+  DELIVERY_LOOP_INPUT_UNREADABLE: 'อ่านข้อมูลวงรอบส่งมอบไม่ได้',
+  DELIVERY_LOOP_INPUT_INVALID: 'ข้อมูลวงรอบส่งมอบไม่ผ่านสัญญา',
+  DELIVERY_LOOP_STALE: 'ข้อมูลวงรอบส่งมอบหมดอายุ',
+})
+const DELIVERY_PHASE_COPY = Object.freeze({
+  Requirement: 'ข้อกำหนด (Requirement)',
+  Prototype: 'ต้นแบบ (Prototype)',
+  Development: 'พัฒนา (Development)',
+  QA: 'ทดสอบ (QA)',
+})
+const DELIVERY_BOUNDARY_COPY = Object.freeze({
+  requirement_to_prototype: 'Requirement → Prototype',
+  prototype_to_development: 'Prototype → Development',
+  development_to_qa: 'Development → QA',
+  qa_to_project_delivery: 'QA → ProjectDelivery',
+})
+const DELIVERY_STATUS_COPY = Object.freeze({
+  not_configured: 'ยังไม่ได้ตั้งค่า',
+  ready: 'พร้อมเริ่ม',
+  active: 'กำลังเก็บหลักฐาน',
+  paused: 'พักการทดลอง',
+  complete: 'เก็บหลักฐานครบ',
+  degraded: 'ข้อมูลต้องตรวจสอบ',
+})
+const DELIVERY_PHASE_STATE_COPY = Object.freeze({
+  idle: 'ยังไม่มีงาน',
+  active: 'กำลังทำงาน',
+  waiting_receiver: 'รอทีมผู้รับตรวจ',
+  rework: 'กำลังแก้ไข',
+  exception: 'มีข้อยกเว้น',
+  complete: 'ผ่านเฟสแล้ว',
+  unknown: 'ตรวจสถานะไม่ได้',
+})
+const DELIVERY_ROLE_COPY = Object.freeze({
+  operator: 'ผู้ดูแลระบบ',
+  pm: 'PM',
+  sender_phase_lead: 'ทีมผู้ส่ง',
+  receiver_phase_lead: 'ทีมผู้รับ',
+  experiment_owner: 'เจ้าของการทดลอง',
+  metric_producer: 'ผู้ผลิตข้อมูลวัดผล',
+  qa: 'QA',
+  external_reviewer: 'ผู้ตรวจอิสระ',
+  business_owner: 'เจ้าของธุรกิจ',
+})
+const DELIVERY_DECISION_COPY = Object.freeze({
+  EXTERNAL_REQUIRED: 'ต้องให้ผู้มีอำนาจภายนอกตัดสิน',
 })
 const stateLabel = (state) => STATE_COPY[state] || 'ไม่ทราบสถานะ'
 const actionLabel = (action) => ACTION_COPY[action] || 'ตรวจสอบรายละเอียด'
@@ -708,6 +781,7 @@ function render(snapshot) {
   const running = active.filter(a => ['running', 'starting', 'awaiting-verdict'].includes(a.state))
   const recent = rec
   const st = snapshot.worker_stats
+  const delivery = snapshot.delivery_loop || null
   const byState = snapshot.summary.by_state
   const attentionTotal = attentionStates.reduce((sum, state) => sum + byState[state], 0)
   const runningTotal = byState.running + byState.starting
@@ -751,6 +825,36 @@ function render(snapshot) {
     <code>${esc(`${n.source}:${n.code}`)}</code>
   </li>`).join('')
 
+  const deliverySection = delivery ? (() => {
+    const action = delivery.next_action
+    const bottleneck = delivery.bottleneck
+    const phaseCards = delivery.phase_cards.map(card => `<article class="phase-card">
+      <div class="run-summary"><strong>${esc(DELIVERY_PHASE_COPY[card.phase] || card.phase)}</strong><span class="pill ${card.advisory.attention ? 'unrecorded' : 'running'}">${esc(DELIVERY_PHASE_STATE_COPY[card.state] || card.state)}</span></div>
+      <dl class="run-facts">
+        <div><dt>งานที่กำลังอยู่ในเฟส</dt><dd class="num">${card.active_slices}</dd></div>
+        <div><dt>ค้างนานสุด</dt><dd class="num">${card.oldest_open_age_sec == null ? 'ยังไม่วัด' : dur(card.oldest_open_age_sec)}</dd></div>
+        <div><dt>ขั้นถัดไป</dt><dd class="next-action">${esc(actionLabel(card.advisory.action_code))}</dd></div>
+      </dl>
+    </article>`).join('')
+    const attentionItems = delivery.attention.map(item => `<li>
+      <span><strong>${esc(actionLabel(item.action_code))}</strong> · ${esc(DELIVERY_ROLE_COPY[item.owner_role] || item.owner_role)}</span>
+      <code>${esc(item.attention_id)}</code>
+    </li>`).join('')
+    const bottleneckText = bottleneck.status === 'available'
+      ? `${DELIVERY_BOUNDARY_COPY[bottleneck.boundary] || bottleneck.boundary} · ${dur(bottleneck.age_sec)}`
+      : bottleneck.status === 'none' ? 'ยังไม่พบจุดค้าง' : 'ข้อมูลยังไม่พอสรุป'
+    return `<section class="delivery-loop" aria-labelledby="delivery-loop-title">
+      <div class="section-head"><div><span class="eyebrow">Stage 1 · advisory only</span><h2 id="delivery-loop-title">วงรอบส่งมอบ</h2><p>มุมมองแบบ fail-closed · ไม่มีการสั่งงานอัตโนมัติ</p></div><span class="quality ${delivery.status === 'degraded' ? 'warn' : 'ok'}">${esc(DELIVERY_STATUS_COPY[delivery.status] || delivery.status)}</span></div>
+      <div class="delivery-overview">
+        <article class="delivery-callout surface"><span class="eyebrow">ทำต่อโดย</span><strong>${esc(DELIVERY_ROLE_COPY[action.owner_role] || action.owner_role)}</strong><p>${esc(actionLabel(action.action_code))}</p><code>${esc(action.reason_codes.join(' · '))}</code></article>
+        <article class="delivery-callout surface"><span class="eyebrow">จุดค้างเชิงพรรณนา</span><strong>${esc(bottleneckText)}</strong><p>ใช้เวลาค้างที่เก่าที่สุด ไม่ใช่ข้อสรุปสาเหตุ</p><code>${esc(bottleneck.reason_codes.join(' · '))}</code></article>
+        <article class="delivery-callout surface"><span class="eyebrow">ภาพรวม pilot</span><strong>${delivery.summary.in_progress} กำลังเดิน · ${delivery.summary.terminal} สิ้นสุด</strong><p>ต้องดำเนินการ ${delivery.summary.operator_action_total} รายการ</p><code>${esc(DELIVERY_DECISION_COPY[delivery.evidence.business_decision] || delivery.evidence.business_decision)}</code></article>
+      </div>
+      <div class="phase-grid">${phaseCards || '<p class="empty"><strong>ยังไม่มีข้อมูลเฟส</strong>ตรวจแหล่งข้อมูลวงรอบส่งมอบก่อน</p>'}</div>
+      ${attentionItems ? `<div class="surface delivery-attention"><h3>รายการที่ต้องดำเนินการ</h3><ul class="diagnostics-list">${attentionItems}</ul></div>` : ''}
+    </section>`
+  })() : ''
+
   return `<!doctype html><html lang="th"><head><meta charset="utf-8">
 <title>pulse — ${esc(repoName)}</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -769,6 +873,7 @@ h1{display:flex;align-items:baseline;gap:var(--s3);margin:0;font:600 1.75rem/1.2
 .quality{display:inline-flex;align-items:center;gap:var(--s2);white-space:nowrap;padding:6px 10px;border:1px solid var(--line);border-radius:999px;font-size:.78rem;font-weight:500}.quality::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}.quality.ok{color:var(--ok)}.quality.warn{color:var(--warn)}
 main{display:grid;gap:var(--s7);padding-top:var(--s6)}.summary-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}.metric{min-width:0;padding:var(--s5);border-left:1px solid var(--line)}.metric:first-child{border-left:0}.metric-label,.metric-note{display:block;color:var(--dim);font-size:.82rem}.metric-value{display:block;margin:2px 0;font:600 2rem/1.2 var(--sans);font-variant-numeric:tabular-nums}.metric.bad .metric-value{color:var(--bad)}.metric.ok .metric-value{color:var(--ok)}.metric.warn .metric-value{color:var(--warn)}
 .diagnostics{border:1px solid color-mix(in oklch,var(--warn) 45%,var(--line));border-radius:var(--r-md);background:color-mix(in oklch,var(--warn) 8%,var(--surface));padding:var(--s4) var(--s5)}.diagnostics h2{margin:0 0 var(--s2);font-size:1rem}.diagnostics ul{display:grid;gap:var(--s2);margin:0;padding:0;list-style:none}.diagnostics li{display:flex;justify-content:space-between;gap:var(--s4);color:var(--dim);font-size:.875rem}.diagnostics strong{color:var(--ink);font-weight:500}.diagnostics code{font-size:.75rem}
+.delivery-loop{display:grid;gap:var(--s4)}.delivery-overview{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--s3)}.delivery-callout{padding:var(--s4)}.delivery-callout strong{display:block;font-size:1.05rem}.delivery-callout p{margin:var(--s2) 0;color:var(--dim);font-size:.85rem}.delivery-callout code{font-size:.72rem;color:var(--dim);overflow-wrap:anywhere}.phase-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s3)}.phase-card{padding:var(--s4);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md)}.delivery-attention{padding:var(--s4)}.delivery-attention h3{margin:0 0 var(--s2);font-size:1rem}.diagnostics-list{display:grid;gap:var(--s2);margin:0;padding:0;list-style:none}.diagnostics-list li{display:flex;justify-content:space-between;gap:var(--s4);color:var(--dim);font-size:.85rem}.diagnostics-list strong{color:var(--ink);font-weight:500}
 .primary-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s5);align-items:start}.section-head{display:flex;justify-content:space-between;align-items:end;gap:var(--s4);margin-bottom:var(--s3)}.section-head h2{margin:0;font:600 1.25rem/1.3 var(--sans);letter-spacing:-.01em}.section-head p{margin:var(--s1) 0 0;color:var(--dim);font-size:.875rem}.count{flex:none;color:var(--dim);font:500 .82rem var(--sans);font-variant-numeric:tabular-nums}.surface{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}.run-list{display:grid}.run-item{padding:var(--s4);border-top:1px solid var(--line)}.run-item:first-child{border-top:0}.run-summary{display:flex;align-items:center;justify-content:space-between;gap:var(--s3)}.run-name{display:flex;align-items:center;min-width:0;gap:var(--s2)}.run-name code{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink);font:500 .9rem var(--mono)}.status-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--dim)}.status-dot.running{background:var(--ok)}.status-dot.starting,.status-dot.awaiting-verdict,.status-dot.unrecorded,.status-dot.orphan_running{background:var(--warn)}.status-dot.died,.status-dot.unknown{background:var(--bad)}
 .pill{display:inline-flex;align-items:center;white-space:nowrap;font:500 .75rem/1.4 var(--sans);padding:4px 9px;border-radius:999px}
 .pill.running{background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok)}
@@ -804,8 +909,8 @@ main{display:grid;gap:var(--s7);padding-top:var(--s6)}.summary-strip{display:gri
 .g-warn{stroke:var(--warn)}.g-warn.g-dot,.g-warn.g-tag{fill:var(--warn)}
 .g-bad{stroke:var(--bad)}.g-bad.g-dot,.g-bad.g-tag{fill:var(--bad)}
 footer{margin-top:var(--s7);padding-top:var(--s4);border-top:1px solid var(--line);color:var(--dim);font-size:.82rem}footer details summary{cursor:pointer;width:max-content;color:var(--ink)}footer ul{max-width:78ch;margin:var(--s3) 0 0;padding-left:1.25rem}footer code{font-size:.76rem}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}summary:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
-@media(max-width:820px){body{padding:var(--s4)}.site-header{display:grid}.header-status{text-align:left}.summary-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.metric{border-top:1px solid var(--line)}.metric:nth-child(-n+2){border-top:0}.metric:nth-child(odd){border-left:0}.primary-grid{grid-template-columns:1fr}main{gap:var(--s6)}}
-@media(max-width:620px){h1{display:grid;gap:2px;font-size:1.5rem}.metric{padding:var(--s4)}.metric-value{font-size:1.65rem}.section-head{align-items:start}.run-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.run-facts div:last-child{grid-column:1/-1}.warning-list li{grid-template-columns:1fr auto}.warning-list p{grid-column:1/-1}.responsive-table table,.responsive-table tbody,.responsive-table tr,.responsive-table td{display:block;min-width:0}.responsive-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}.responsive-table tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s3);padding:var(--s4);border-top:1px solid var(--line)}.responsive-table tbody tr:first-child{border-top:0}.responsive-table td{padding:0;border:0;overflow-wrap:anywhere}.responsive-table td:first-child{grid-column:1/-1}.responsive-table td::before{content:attr(data-label);display:block;margin-bottom:2px;color:var(--dim);font-size:.7rem}.deep-dive>summary{padding:var(--s4)}.detail-body{padding:var(--s3)}}
+@media(max-width:820px){body{padding:var(--s4)}.site-header{display:grid}.header-status{text-align:left}.summary-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.metric{border-top:1px solid var(--line)}.metric:nth-child(-n+2){border-top:0}.metric:nth-child(odd){border-left:0}.delivery-overview{grid-template-columns:1fr}.primary-grid{grid-template-columns:1fr}main{gap:var(--s6)}}
+@media(max-width:620px){h1{display:grid;gap:2px;font-size:1.5rem}.metric{padding:var(--s4)}.metric-value{font-size:1.65rem}.section-head{align-items:start}.phase-grid{grid-template-columns:1fr}.run-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.run-facts div:last-child{grid-column:1/-1}.warning-list li{grid-template-columns:1fr auto}.warning-list p{grid-column:1/-1}.responsive-table table,.responsive-table tbody,.responsive-table tr,.responsive-table td{display:block;min-width:0}.responsive-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}.responsive-table tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s3);padding:var(--s4);border-top:1px solid var(--line)}.responsive-table tbody tr:first-child{border-top:0}.responsive-table td{padding:0;border:0;overflow-wrap:anywhere}.responsive-table td:first-child{grid-column:1/-1}.responsive-table td::before{content:attr(data-label);display:block;margin-bottom:2px;color:var(--dim);font-size:.7rem}.deep-dive>summary{padding:var(--s4)}.detail-body{padding:var(--s3)}}
 </style></head><body><div class="wrap">
 
 <a class="skip-link" href="#main">ข้ามไปยังสถานะงาน</a>
@@ -835,6 +940,8 @@ footer{margin-top:var(--s7);padding-top:var(--s4);border-top:1px solid var(--lin
   </section>
 
   ${notes.length ? `<section class="diagnostics" aria-labelledby="diagnostics-title"><h2 id="diagnostics-title">คุณภาพข้อมูลต้องตรวจสอบ</h2><ul>${diagnosticItems}</ul></section>` : ''}
+
+  ${deliverySection}
 
   <div class="primary-grid">
     <section aria-labelledby="attention-title">
@@ -973,13 +1080,60 @@ function atomicWrite(path, content) {
   }
 }
 
-function priorStream(view) {
+function readDeliveryLoopInput() {
+  if (!DELIVERY_LOOP_PATH) return { value: null, issue: null }
+  try {
+    const stats = statSync(DELIVERY_LOOP_PATH)
+    if (!stats.isFile()) {
+      return { value: null, issue: 'DELIVERY_LOOP_INPUT_UNREADABLE' }
+    }
+    if (stats.size > MAX_INPUT_BYTES) {
+      return { value: null, issue: 'DELIVERY_LOOP_INPUT_INVALID' }
+    }
+    let descriptor = null
+    try {
+      descriptor = openSync(DELIVERY_LOOP_PATH, 'r')
+      const buffer = Buffer.alloc(MAX_INPUT_BYTES + 1)
+      const bytesRead = readSync(descriptor, buffer, 0, buffer.length, 0)
+      if (bytesRead > MAX_INPUT_BYTES) {
+        return { value: null, issue: 'DELIVERY_LOOP_INPUT_INVALID' }
+      }
+      return {
+        value: JSON.parse(buffer.toString('utf8', 0, bytesRead)),
+        issue: null,
+      }
+    } catch (error) {
+      return {
+        value: null,
+        issue: error instanceof SyntaxError
+          ? 'DELIVERY_LOOP_INPUT_INVALID'
+          : 'DELIVERY_LOOP_INPUT_UNREADABLE',
+      }
+    } finally {
+      if (descriptor !== null) try { closeSync(descriptor) } catch { /* best effort */ }
+    }
+  } catch {
+    return { value: null, issue: 'DELIVERY_LOOP_INPUT_UNREADABLE' }
+  }
+}
+
+function priorStream(view, targetVersion) {
   if (!existsSync(JSON_OUT)) return { streamId: randomUUID(), sequence: 1 }
   try {
     const prior = JSON.parse(readFileSync(JSON_OUT, 'utf8'))
-    if (prior.schema !== PULSE_SCHEMA || prior.schema_version !== PULSE_SCHEMA_VERSION ||
+    if (prior.schema !== PULSE_SCHEMA ||
+        ![PULSE_SCHEMA_VERSION, PULSE_SCHEMA_VERSION_V2].includes(prior.schema_version) ||
         !UUID_RE.test(prior.stream_id) || !Number.isSafeInteger(prior.sequence) ||
         prior.sequence < 1 || prior.sequence >= Number.MAX_SAFE_INTEGER) throw new Error('invalid prior pulse')
+    if (prior.schema_version === PULSE_SCHEMA_VERSION &&
+        targetVersion === PULSE_SCHEMA_VERSION_V2) {
+      view.diagnostics.push({
+        code: 'SCHEMA_UPGRADED',
+        severity: 'info',
+        source: 'publisher',
+        count: 1,
+      })
+    }
     return { streamId: prior.stream_id, sequence: prior.sequence + 1 }
   } catch {
     view.diagnostics.push({ code: 'SEQUENCE_RESET', severity: 'warning', source: 'publisher' })
@@ -991,16 +1145,21 @@ function once() {
   const startedAt = Date.now()
   const view = derive(startedAt)
   const finishedAt = Date.now()
+  const targetVersion = DELIVERY_LOOP_PATH ? PULSE_SCHEMA_VERSION_V2 : PULSE_SCHEMA_VERSION
+  const deliveryLoopInput = readDeliveryLoopInput()
   mkdirSync(STORE, { recursive: true })
   const ignore = join(STORE, '.gitignore')
   if (!existsSync(ignore)) writeFileSync(ignore, '*\n')
   const token = claimPublishLock()
   try {
-    const stream = priorStream(view)
-    const snapshot = projectPulseV1(view, {
+    const stream = priorStream(view, targetVersion)
+    const meta = {
       ...stream, startedAt, finishedAt, intervalSec: INTERVAL,
       repoName: REPO.split('/').pop(),
-    })
+    }
+    const snapshot = targetVersion === PULSE_SCHEMA_VERSION_V2
+      ? projectPulseV2(view, meta, deliveryLoopInput.value, deliveryLoopInput.issue)
+      : projectPulseV1(view, meta)
     const jsonText = JSON.stringify(snapshot, null, 2) + '\n'
     // Render the exact serialized contract, not the internal projection object.
     // This makes pulse.json the literal SSOT and catches serialization drift.
@@ -1013,6 +1172,17 @@ function once() {
     return { htmlPath: OUT, jsonText, snapshot: publishedSnapshot }
   } finally {
     releasePublishLock(token)
+  }
+}
+
+if (cmd === 'compat-v1') {
+  try {
+    const persisted = JSON.parse(readFileSync(JSON_OUT, 'utf8'))
+    process.stdout.write(`${JSON.stringify(downProjectPulseV1(persisted), null, 2)}\n`)
+    process.exit(0)
+  } catch {
+    console.error('[pulse] no compatible persisted Pulse snapshot')
+    process.exit(1)
   }
 }
 
@@ -1041,6 +1211,47 @@ function pidAlive(pid) {
   catch (e) { return e.code === 'EPERM' }
 }
 
+function desiredWatcherConfig(pid) {
+  return {
+    pid,
+    schema_version: DELIVERY_LOOP_PATH ? PULSE_SCHEMA_VERSION_V2 : PULSE_SCHEMA_VERSION,
+    delivery_loop_path: DELIVERY_LOOP_PATH,
+  }
+}
+
+function readWatcherConfig() {
+  try {
+    const stats = statSync(WATCH_CONFIG)
+    if (!stats.isFile() || stats.size > 4096) return null
+    const value = JSON.parse(readFileSync(WATCH_CONFIG, 'utf8'))
+    if (!value || typeof value !== 'object' || Array.isArray(value) ||
+        Object.keys(value).length !== 3 ||
+        !Object.hasOwn(value, 'pid') ||
+        !Object.hasOwn(value, 'schema_version') ||
+        !Object.hasOwn(value, 'delivery_loop_path') ||
+        !Number.isSafeInteger(value.pid) || value.pid < 1 ||
+        ![PULSE_SCHEMA_VERSION, PULSE_SCHEMA_VERSION_V2].includes(value.schema_version) ||
+        !(value.delivery_loop_path === null ||
+          typeof value.delivery_loop_path === 'string') ||
+        (value.schema_version === PULSE_SCHEMA_VERSION) !==
+          (value.delivery_loop_path === null)) return null
+    return value
+  } catch { return null }
+}
+
+function writeWatcherConfig(pid) {
+  atomicWrite(WATCH_CONFIG, `${JSON.stringify(desiredWatcherConfig(pid), null, 2)}\n`)
+}
+
+function watcherConfigMatches(pid) {
+  const actual = readWatcherConfig()
+  const desired = desiredWatcherConfig(pid)
+  return actual !== null &&
+    actual.pid === desired.pid &&
+    actual.schema_version === desired.schema_version &&
+    actual.delivery_loop_path === desired.delivery_loop_path
+}
+
 // Same single-operator O_EXCL pattern as deliver.sh: one caller claims the
 // pidfile; another sees a live owner and backs off; a dead owner is reclaimed.
 function claimWatcher() {
@@ -1048,11 +1259,20 @@ function claimWatcher() {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       writeFileSync(WATCH_PID, `${process.pid}\n`, { flag: 'wx' })
+      try {
+        writeWatcherConfig(process.pid)
+      } catch (error) {
+        try { unlinkSync(WATCH_PID) } catch { /* best effort */ }
+        throw error
+      }
       return { claimed: true, pid: process.pid }
     } catch (e) {
       if (e.code !== 'EEXIST') throw e
       const pid = watcherPid()
       if (pidAlive(pid)) return { claimed: false, pid }
+      try { unlinkSync(WATCH_CONFIG) } catch (unlinkError) {
+        if (unlinkError.code !== 'ENOENT') throw unlinkError
+      }
       try { unlinkSync(WATCH_PID) } catch (unlinkError) {
         if (unlinkError.code !== 'ENOENT') throw unlinkError
       }
@@ -1063,19 +1283,43 @@ function claimWatcher() {
 }
 
 function releaseWatcher(pid = process.pid) {
-  try { if (watcherPid() === pid) unlinkSync(WATCH_PID) } catch { /* best effort */ }
+  try {
+    if (watcherPid() !== pid) return
+    try { unlinkSync(WATCH_CONFIG) } catch { /* best effort */ }
+    unlinkSync(WATCH_PID)
+  } catch { /* best effort */ }
 }
 
 if (cmd === 'ensure') {
-  console.log(once().htmlPath)
   const claim = claimWatcher()
   if (!claim.claimed) {
     if (!claim.pid) { console.error('[pulse] could not claim watcher pidfile'); process.exit(1) }
+    if (!watcherConfigMatches(claim.pid)) {
+      console.error(
+        '[pulse] watcher mode/input mismatch; stop the existing watcher before changing --delivery-loop',
+      )
+      process.exit(1)
+    }
+    try {
+      console.log(once().htmlPath)
+    } catch (error) {
+      console.error(`[pulse] publish failed: ${error.message}`)
+      process.exit(1)
+    }
     console.log(`[pulse] watcher already running pid ${claim.pid}`)
     process.exit(0)
   }
+  try {
+    console.log(once().htmlPath)
+  } catch (error) {
+    releaseWatcher()
+    console.error(`[pulse] publish failed: ${error.message}`)
+    process.exit(1)
+  }
+  const watchArgs = [THIS_SCRIPT, 'watch', REPO, '--interval', String(INTERVAL), '--managed']
+  if (DELIVERY_LOOP_PATH) watchArgs.push('--delivery-loop', DELIVERY_LOOP_PATH)
   const child = spawn(process.execPath,
-    [THIS_SCRIPT, 'watch', REPO, '--interval', String(INTERVAL), '--managed'], {
+    watchArgs, {
       detached: true,
       stdio: 'ignore',
       env: { ...process.env, PULSE_WATCH_CLAIM_OWNER: String(process.pid) },
@@ -1113,6 +1357,10 @@ if (MANAGED_WATCH) {
     console.error(`[pulse] watcher claim belongs to pid ${recorded ?? 'none'}; refusing duplicate`)
     process.exit(1)
   }
+  if (!watcherConfigMatches(owner)) {
+    console.error('[pulse] watcher claim mode/input does not match this process; refusing handoff')
+    process.exit(1)
+  }
   managedClaimAccepted = true
 } else {
   const claim = claimWatcher()
@@ -1127,7 +1375,10 @@ process.once('exit', cleanupWatcher)
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.once(signal, () => { cleanupWatcher(); process.exit(0) })
 }
-if (managedClaimAccepted) writeFileSync(WATCH_PID, `${process.pid}\n`)
+if (managedClaimAccepted) {
+  writeWatcherConfig(process.pid)
+  writeFileSync(WATCH_PID, `${process.pid}\n`)
+}
 
 console.log(`[pulse] watching ${REPO} every ${INTERVAL}s -> ${OUT}`)
 console.log('[pulse] open that file in a browser; it refreshes itself')

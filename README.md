@@ -61,6 +61,76 @@ role-loading, cleanup, or transport semantics. The compact
 [Stage 0 reference contract](plugins/tmux-teams/skills/tmux-teams/references/two-level-delivery-loop-poc.md)
 contains the complete rules plus Mermaid flowchart and sequence diagram.
 
+## v0.7 Stage 1 — field-evidence toolkit
+
+Stage 1 turns the Stage 0 model into an opt-in, append-only field-observation
+toolkit. Its outcome is an integrity-bound evidence pack and a reproducible
+measurement signal for external review—not a causal claim, certified result,
+release approval, ROI claim, or business verdict. Same-UID observations remain
+`advisory_same_uid`; exported packs remain `NOT_CERTIFIED`, require an external
+business decision, and declare no actuation.
+
+The operating model is still two-level: the PM coordinates the outer loop and
+owns exceptions, while sender/receiver phase leads own the inner handoff loop
+and routine acceptance. Assignment compares the frozen `pm_routed` and
+`receiver_owned` protocols, but the toolkit only records assignment and named
+source facts. It never routes or dispatches a worker.
+
+From the repository root, the exact CLI is:
+
+```bash
+# Freeze a private draft into an immutable manifest and new observation store.
+node plugins/tmux-teams/skills/tmux-teams/scripts/delivery-loop-pilot.mjs freeze \
+  <draft.json> --store <absolute-store> --seed-file <outside-repo-seed-file> \
+  --frozen-at <RFC3339>
+
+# Prospectively assign one eligible slice.
+node plugins/tmux-teams/skills/tmux-teams/scripts/delivery-loop-pilot.mjs assign \
+  <candidate.json> --store <absolute-store> --seed-file <outside-repo-seed-file> \
+  --assigned-at <RFC3339> --actor <assignment-custodian-id>
+
+# Capture one named dispatch, outbox, or KMS source without mutating it.
+node plugins/tmux-teams/skills/tmux-teams/scripts/delivery-loop-capture.mjs capture \
+  <mailbox-dispatch|mailbox-outbox|kms-event> <named-source> \
+  --store <absolute-store> --slice <slice-id> --actor <actor-id> --at <RFC3339> \
+  [--role pm|metric_producer] [--correlation <dispatch-id>]
+
+# Deterministically reconstruct state and repeat the evidence build at least 3 times.
+node plugins/tmux-teams/skills/tmux-teams/scripts/delivery-loop-pilot.mjs replay \
+  --store <absolute-store> --as-of <RFC3339>
+node plugins/tmux-teams/skills/tmux-teams/scripts/delivery-loop-pilot.mjs rehearse \
+  --store <absolute-store> --as-of <RFC3339> [--runs 3]
+
+# Export a file-based pack, then verify its index, files, digests, and replay.
+node plugins/tmux-teams/skills/tmux-teams/scripts/delivery-loop-export.mjs export \
+  --store <absolute-store> --out <new-absolute-pack-dir> --as-of <RFC3339> \
+  --source-revision <40-hex-git-sha>
+node plugins/tmux-teams/skills/tmux-teams/scripts/delivery-loop-export.mjs verify-pack \
+  <absolute-pack-dir>
+```
+
+The normative contracts are the
+[pilot manifest schema](plugins/tmux-teams/skills/tmux-teams/references/delivery-loop-pilot-manifest-v1.schema.json),
+[event schema](plugins/tmux-teams/skills/tmux-teams/references/delivery-loop-event-v1.schema.json),
+[evidence-pack schema](plugins/tmux-teams/skills/tmux-teams/references/delivery-loop-evidence-pack-v1.schema.json),
+[Pulse v2 schema](plugins/tmux-teams/skills/tmux-teams/references/pulse-v2.schema.json),
+and Thai-first
+[Stage 1 pilot runbook](plugins/tmux-teams/skills/tmux-teams/references/stage-1-pilot-runbook.md).
+
+Pulse v2 is explicit opt-in and keeps the same single
+`<repo>/.tmux-teams/pulse.json` SSOT:
+
+```bash
+node plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs json \
+  <repo> --delivery-loop <absolute-pulse-projection.json>
+node plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs compat-v1 <repo>
+```
+
+`compat-v1` writes a v1 down-projection to stdout only; it does not create a
+second persisted snapshot. Pulse remains read-only and advisory. No Stage 1
+command automatically routes work, certifies evidence, emits
+`GO`/`ITERATE`/`NO_GO`, or applies a recommendation.
+
 ## Transports (v0.2.x)
 
 The mailbox contract (brief in → `.mailbox-out/<id>` outbox +

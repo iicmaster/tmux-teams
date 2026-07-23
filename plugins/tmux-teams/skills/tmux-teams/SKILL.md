@@ -54,6 +54,79 @@ semantics. See [the Stage 0 reference contract](references/two-level-delivery-lo
 for the full authority/measurement contract, Mermaid flowchart, and sequence
 diagram.
 
+## 0.1 v0.7 Stage 1 — field-evidence toolkit
+
+Stage 1 is an opt-in observational sidecar around the same two-level loop. The
+PM coordinates the outer loop and owns exceptions; sender and receiver phase
+leads own routine handoffs in each inner loop. The toolkit freezes the protocol,
+records prospective assignment and named-source observations, replays them, and
+exports an integrity-bound review pack. It does **not** route or dispatch work,
+turn worker/PM terminal signals into receiver acceptance, authenticate same-UID
+identities, certify evidence, emit a business verdict, or actuate a result.
+
+Run the implemented CLI from a checkout root (replace `<skill-root>` with this
+skill directory):
+
+```bash
+node <skill-root>/scripts/delivery-loop-pilot.mjs freeze \
+  <draft.json> --store <absolute-store> --seed-file <outside-repo-seed-file> \
+  --frozen-at <RFC3339>
+
+node <skill-root>/scripts/delivery-loop-pilot.mjs assign \
+  <candidate.json> --store <absolute-store> --seed-file <outside-repo-seed-file> \
+  --assigned-at <RFC3339> --actor <assignment-custodian-id>
+
+node <skill-root>/scripts/delivery-loop-capture.mjs capture \
+  <mailbox-dispatch|mailbox-outbox|kms-event> <named-source> \
+  --store <absolute-store> --slice <slice-id> --actor <actor-id> --at <RFC3339> \
+  [--role pm|metric_producer] [--correlation <dispatch-id>]
+
+node <skill-root>/scripts/delivery-loop-pilot.mjs replay \
+  --store <absolute-store> --as-of <RFC3339>
+node <skill-root>/scripts/delivery-loop-pilot.mjs rehearse \
+  --store <absolute-store> --as-of <RFC3339> [--runs 3]
+
+node <skill-root>/scripts/delivery-loop-export.mjs export \
+  --store <absolute-store> --out <new-absolute-pack-dir> --as-of <RFC3339> \
+  --source-revision <40-hex-git-sha>
+node <skill-root>/scripts/delivery-loop-export.mjs verify-pack \
+  <absolute-pack-dir>
+```
+
+`freeze` strips the private seed and persists only its commitment. `assign`
+records the frozen `pm_routed` or `receiver_owned` arm without changing the
+operational route. `capture` emits only a bounded `source_observed` signal;
+`TEAM_DONE` and PM verdict records remain observations, never acceptance,
+outcome, guardrail, certification, or approval. `rehearse` requires at least
+three deterministic builds. `verify-pack` checks local integrity and replay,
+not external identity or custody.
+
+The closed contracts are:
+
+- [pilot manifest v1](references/delivery-loop-pilot-manifest-v1.schema.json)
+- [append-only event v1](references/delivery-loop-event-v1.schema.json)
+- [exported evidence pack v1](references/delivery-loop-evidence-pack-v1.schema.json)
+- [Pulse data v2](references/pulse-v2.schema.json)
+- [Thai-first Stage 1 pilot runbook](references/stage-1-pilot-runbook.md)
+
+Local events and packs remain `advisory_same_uid`; the exported index remains
+`NOT_CERTIFIED`, `EXTERNAL_REQUIRED`, and `actuation: NONE`. External custody,
+independent review, and business-owner ratification occur outside this toolkit.
+
+Pulse v2 is enabled only when a bounded delivery-loop projection is named. It
+reuses the single `<repo>/.tmux-teams/pulse.json` SSOT; compatibility output is
+stdout-only:
+
+```bash
+node <skill-root>/scripts/pulse.mjs json \
+  <repo> --delivery-loop <absolute-pulse-projection.json>
+node <skill-root>/scripts/pulse.mjs compat-v1 <repo>
+```
+
+No `pulse-v2.json` or persisted v1 compatibility file is created. Pulse action
+codes are advisory with `auto_execute: false`; favorable metrics can never
+become `GO`, `ITERATE`, `NO_GO`, certification, or an automatic hold/release.
+
 ## 1. Session setup
 
 **One session per run, one window per worker: session `auto--{folder}[--{runid}]`,
