@@ -19,6 +19,48 @@ verification.
 
 Commands: `/tmux-teams:mailbox-run` — run the mailbox PM workflow end to end.
 
+## Experimental Stage 0 — delivery-loop measurement PoC
+
+This opt-in, offline measurement-feasibility PoC is not an activated dispatch
+hierarchy. Invoke it only for a named experiment JSON:
+
+```bash
+node plugins/tmux-teams/skills/tmux-teams/scripts/delivery-loop-poc.mjs analyze <experiment.json>
+```
+
+It models a PM outer loop around four Phase Team inner loops and their exit
+artifacts: Requirement `requirements_baseline`, Prototype
+`prototype_evaluation`, Development `development_delivery`, and QA
+`qa_release_evidence`. Routine handoffs go directly to the receiver-owned
+phase lead; the PM retains the exception, policy-conflict, and deadlock
+boundary. The final boundary is a real `QA -> ProjectDelivery` handoff carrying
+`qa_release_evidence`; its ProjectDelivery receiver owns routine acceptance
+while the PM tracks outer-loop coordination and exceptions.
+
+Recorded handoff attempts are actor-authorized, event-replayed terminal
+histories whose events stay within `[slice.assigned_at, analysis_as_of]`; a
+revision proposal is strictly later than its rejected parent's terminal event.
+Canonical JSON and digests sort keys by true Unicode code-point order, not
+JavaScript UTF-16 code-unit order. The primary estimand is the per-slice mean
+by arm; raw arm totals are descriptive only. Every pre-registered guardrail is
+recorded as `PASS`, `BREACH`, or `UNKNOWN`, and any `UNKNOWN` makes `measurement_readiness`
+`INCONCLUSIVE`. Missing measured cost is explicit `null`, never zero: affected
+totals and cost comparisons remain null, while bottleneck status and readiness
+are `INCONCLUSIVE`.
+
+Its JSON intentionally separates `measurement_readiness`, `scenario_signal`,
+`guardrail_status`, `evidence_eligibility`, `safety_hold_recommended`, and
+`decision_packet`. Deterministic, descriptive-only `bottlenecks.by_arm`
+identifies the highest coordination phase and cost category per arm.
+`business_decision` is always `EXTERNAL_REQUIRED`, so it cannot claim causal
+effect or ROI, or return `GO`/`ITERATE`/`NO_GO`. `READY` means measurement
+completeness, not accepted delivery, delivery success, or business approval.
+It changes none of the existing tmux/ACP dispatch, mailbox, PM verification,
+Party gates, KMS, Pulse,
+role-loading, cleanup, or transport semantics. The compact
+[Stage 0 reference contract](plugins/tmux-teams/skills/tmux-teams/references/two-level-delivery-loop-poc.md)
+contains the complete rules plus Mermaid flowchart and sequence diagram.
+
 ## Transports (v0.2.x)
 
 The mailbox contract (brief in → `.mailbox-out/<id>` outbox +

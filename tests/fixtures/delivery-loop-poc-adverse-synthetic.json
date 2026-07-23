@@ -1,0 +1,23 @@
+{
+  "schema_version": "delivery-loop-poc/v1", "experiment_id": "stage0-adverse-synthetic", "analysis_as_of": "2026-07-23T00:00:00.000Z",
+  "preregistration": {"manifest_id": "manifest-adverse", "hypothesis": "Receiver-owned handoffs reduce per-slice coordination time and loaded cost without regressing mature outcomes.", "primary_kpis": ["total_coordination_minutes_per_slice_mean", "incremental_loaded_cost_per_slice_mean", "time_to_usable_outcome_minutes", "value_proxy"], "guardrails": ["security", "performance", "integration", "uat", "escaped_defects"], "estimand": "per_slice_mean_by_arm", "assignment_window": {"start": "2026-07-01T00:00:00.000Z", "end": "2026-08-01T00:00:00.000Z"}, "assignment_method": "stratified_independent_assignment", "strata": ["phase", "complexity"]},
+  "maturity": {"min_follow_up_days": 7},
+  "thresholds": {"min_mature_per_arm": 1, "coordination_reduction_percent": 10, "incremental_cost_reduction_percent": 10, "time_to_usable_noninferiority_minutes": 5, "value_noninferiority_margin": 2},
+  "actors": {"senders": ["sender-a"], "pms": ["pm-a"], "phase_leads": {"Requirement": ["req-lead"], "Prototype": ["proto-lead"], "Development": ["dev-lead"], "QA": ["qa-lead"], "ProjectDelivery": ["delivery-owner"]}, "certifiers": ["external-certifier"], "experiment_owners": ["experiment-owner"], "metric_producers": ["metric-producer"]},
+  "cost_model": {"loaded_cost_per_minute": 2, "currency": "USD", "unit": "minute", "allocation_basis": "recorded_coordination_minutes"},
+  "evidence": {"provenance": "synthetic"},
+  "slices": [
+    {"slice_id": "control-002", "arm": "pm_routed", "assigned_at": "2026-07-02T00:00:00.000Z", "strata": {"phase": "Development", "complexity": "M"}, "contamination": false,
+      "costs": {"pm_routing_minutes": 40, "pm_exception_minutes": 0, "pm_evidence_minutes": 5, "receiver_review_minutes": 15, "governance_minutes": 5, "instrumentation_minutes": 5, "queue_wait_minutes": 10, "rework_minutes": 10, "rejected_work_minutes": 0, "abandoned_work_minutes": 0, "cancelled_work_minutes": 0, "sender_coordination_minutes": 20},
+      "guardrails": {"security": "PASS", "performance": "PASS", "integration": "PASS", "uat": "PASS", "escaped_defects": "PASS"}, "outcome": {"status": "mature", "time_to_usable_outcome_minutes": 100, "value_proxy": 50},
+      "handoff_attempts": [{"attempt_id": "control-attempt-002", "sender_phase": "Development", "receiver_phase": "QA", "state": "accepted", "sunk_cost_minutes": 0,
+        "exit_artifact": {"type": "development_delivery", "artifact_id": "control-delivery-002", "version": "1", "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "predecessor_trace": ["prototype-control-002"], "validation_evidence": ["unit-tests", "integration-tests"], "expectations": {"security": "pass", "performance": "pass", "integration": "pass", "uat": "pass"}, "working_software_ref": "build://control-002"},
+        "events": [{"type": "propose", "actor_id": "sender-a", "at": "2026-07-10T00:00:00.000Z"}, {"type": "accept", "actor_id": "qa-lead", "at": "2026-07-11T00:00:00.000Z"}]}]},
+    {"slice_id": "treatment-002", "arm": "receiver_owned", "assigned_at": "2026-07-03T00:00:00.000Z", "strata": {"phase": "Development", "complexity": "M"}, "contamination": false,
+      "costs": {"pm_routing_minutes": 5, "pm_exception_minutes": 0, "pm_evidence_minutes": 5, "receiver_review_minutes": 15, "governance_minutes": 5, "instrumentation_minutes": 5, "queue_wait_minutes": 5, "rework_minutes": 5, "rejected_work_minutes": 0, "abandoned_work_minutes": 0, "cancelled_work_minutes": 0, "sender_coordination_minutes": 15},
+      "guardrails": {"security": "BREACH", "performance": "PASS", "integration": "PASS", "uat": "PASS", "escaped_defects": "PASS"}, "outcome": {"status": "mature", "time_to_usable_outcome_minutes": 98, "value_proxy": 51},
+      "handoff_attempts": [{"attempt_id": "treatment-attempt-002", "sender_phase": "Development", "receiver_phase": "QA", "state": "accepted", "sunk_cost_minutes": 0,
+        "exit_artifact": {"type": "development_delivery", "artifact_id": "treatment-delivery-002", "version": "1", "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "predecessor_trace": ["prototype-treatment-002"], "validation_evidence": ["unit-tests", "integration-tests"], "expectations": {"security": "pass", "performance": "pass", "integration": "pass", "uat": "pass"}, "working_software_ref": "build://treatment-002"},
+        "events": [{"type": "propose", "actor_id": "sender-a", "at": "2026-07-10T00:00:00.000Z"}, {"type": "accept", "actor_id": "qa-lead", "at": "2026-07-11T00:00:00.000Z"}]}]}
+  ]
+}
