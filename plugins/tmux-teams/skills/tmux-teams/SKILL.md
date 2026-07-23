@@ -13,6 +13,47 @@ discipline, mailbox pattern). Tool-specific facts live in per-tool driver skills
 and are the source of truth for that tool: **codex → `codex-tmux-driver`**
 (flags, calibrated markers, dialog behavior, notify caveats, slash commands).
 
+## 0. Experimental Stage 0 — two-level delivery-loop measurement PoC
+
+This is an **opt-in, offline measurement-feasibility PoC**, not an activated
+dispatch hierarchy. Run it only with a named experiment JSON:
+
+```bash
+node plugins/tmux-teams/skills/tmux-teams/scripts/delivery-loop-poc.mjs analyze <experiment.json>
+```
+
+It models a PM-coordinated outer loop and four inner Phase Teams with their
+required exit artifacts: Requirement `requirements_baseline`, Prototype
+`prototype_evaluation`, Development `development_delivery`, and QA
+`qa_release_evidence`. Routine handoffs are direct and receiver-owned; the PM
+owns only exceptions, policy conflicts, and cross-team deadlocks. The final
+boundary is a real `QA -> ProjectDelivery` handoff carrying
+`qa_release_evidence`; its ProjectDelivery receiver owns routine acceptance
+while the PM tracks outer-loop coordination and exceptions.
+
+Recorded handoff attempts are actor-authorized, event-replayed terminal
+histories whose events stay within `[slice.assigned_at, analysis_as_of]`; a
+revision proposal is strictly later than its rejected parent's terminal event.
+Canonical JSON and digests sort keys by true Unicode code-point order, not
+JavaScript UTF-16 code-unit order. The primary estimand is the per-slice mean
+by arm; raw arm totals are descriptive only. Every pre-registered guardrail is
+recorded as `PASS`, `BREACH`, or `UNKNOWN`, and any `UNKNOWN` makes `measurement_readiness`
+`INCONCLUSIVE`. Missing measured cost is explicit `null`, never zero: affected
+totals and cost comparisons remain null, while bottleneck status and readiness
+are `INCONCLUSIVE`.
+
+The JSON keeps `measurement_readiness`, `scenario_signal`, `guardrail_status`,
+`evidence_eligibility`, `safety_hold_recommended`, and `decision_packet`
+separate. Deterministic, descriptive-only `bottlenecks.by_arm` reports the
+highest coordination phase and cost category per arm. `business_decision` is
+always `EXTERNAL_REQUIRED`: this PoC never asserts causal effect or ROI, or emits
+`GO`/`ITERATE`/`NO_GO`. `READY` means measurement completeness, not accepted
+delivery, delivery success, or business approval. It does not alter tmux/ACP
+dispatch, mailbox or PM verification, Party gates, KMS, Pulse, role loading, cleanup, or transport
+semantics. See [the Stage 0 reference contract](references/two-level-delivery-loop-poc.md)
+for the full authority/measurement contract, Mermaid flowchart, and sequence
+diagram.
+
 ## 1. Session setup
 
 **One session per run, one window per worker: session `auto--{folder}[--{runid}]`,
