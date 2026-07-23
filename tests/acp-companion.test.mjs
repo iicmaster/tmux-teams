@@ -50,6 +50,30 @@ test('renders every session/update kind and completes via the outbox', () => {
   assert.match(r.stdout, /\[terminal\] done/)
 })
 
+for (const [scenario, decision, display] of [
+  ['prefer-always', 'allow-always', 'Allow always'],
+  ['prefer-once', 'allow-once', 'Allow once'],
+  ['fallback-first', 'reject-once', 'Reject once'],
+]) {
+  test(`session/request_permission ${scenario} selects ${decision} and lets the waiting agent continue`, () => {
+    const taskId = `task-permission-${scenario}`
+    const r = run(taskId, { MOCK_REQUEST_PERMISSION: scenario })
+    assert.equal(r.status, 0, `exit 0 expected; stdout:\n${r.stdout}\nstderr:\n${r.stderr}`)
+    assert.match(r.stdout, new RegExp(`\\[permission\\] write outbox -> ${display}`))
+    assert.match(readFileSync(join(r.cwd, '.mailbox-out', taskId), 'utf8'),
+      new RegExp(`^DID: mock work; permission=${decision}$`, 'm'))
+  })
+}
+
+test('session/request_permission with empty options returns cancelled and continues safely', () => {
+  const taskId = 'task-permission-empty'
+  const r = run(taskId, { MOCK_REQUEST_PERMISSION: 'empty' })
+  assert.equal(r.status, 0, `exit 0 expected; stdout:\n${r.stdout}\nstderr:\n${r.stderr}`)
+  assert.match(r.stdout, /\[permission\] write outbox -> cancelled \(no options\)/)
+  assert.match(readFileSync(join(r.cwd, '.mailbox-out', taskId), 'utf8'),
+    /^DID: mock work; permission=cancelled$/m)
+})
+
 test('ACP_RESUME with loadSession support calls session/load, not session/new', () => {
   const r = run('task-resume', { ACP_RESUME: 'sess_prev' })
   assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
