@@ -4,8 +4,9 @@
 // with semantic anchors instead of brittle prose regexes.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, statSync, existsSync } from 'node:fs'
+import { readFileSync, statSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -45,13 +46,46 @@ test('CI runs the no-secret Node 20 and 24 matrix with event-aware repository hy
   assert.match(ci, /actions\/setup-node@v4/)
   assert.match(ci, /(?:^|\n)\s*permissions:\s*\n\s*contents:\s*read(?:\n|$)/)
   assert.match(ci, /run:\s*node --test/)
-  assert.match(ci, /\$\{\{\s*github\.event_name\s*\}\}/)
-  assert.match(ci, /git diff --check "\$\{\{\s*github\.event\.pull_request\.base\.sha\s*\}\}\.\.\.HEAD"/)
-  assert.match(ci, /git diff --check HEAD\^\.\.HEAD/)
+  assert.match(ci, /EVENT_NAME:\s*\$\{\{\s*github\.event_name\s*\}\}/)
+  assert.match(ci, /PR_BASE_SHA:\s*\$\{\{\s*github\.event\.pull_request\.base\.sha\s*\}\}/)
+  assert.match(ci, /PUSH_BEFORE_SHA:\s*\$\{\{\s*github\.event\.before\s*\}\}/)
+  assert.match(ci, /DEFAULT_BRANCH:\s*\$\{\{\s*github\.event\.repository\.default_branch\s*\}\}/)
+  assert.match(ci, /git diff --check "\$PR_BASE_SHA\.\.\.HEAD"/)
+  assert.match(ci, /git diff --check "\$PUSH_BEFORE_SHA\.\.HEAD"/)
+  assert.match(ci, /git diff --check "origin\/\$\{DEFAULT_BRANCH\}\.\.\.HEAD"/)
+  assert.doesNotMatch(ci, /git diff --check HEAD\^\.\.HEAD/,
+    'HEAD^ checks only the last commit of a multi-commit push')
   assert.doesNotMatch(ci, /run:\s*git diff --check\s*(?:\n|$)/,
     'plain git diff --check is a no-op on a clean checkout')
   assert.doesNotMatch(ci, /\bsecrets\s*[:.]|GITHUB_TOKEN|claude plugin validate/,
     'CI must need no secrets; strict plugin validation remains a local release gate')
+})
+
+test('the event before..HEAD range catches whitespace hidden before the final pushed commit', (t) => {
+  const repo = mkdtempSync(join(tmpdir(), 'tmux-teams-ci-range-'))
+  t.after(() => rmSync(repo, { recursive: true, force: true }))
+  const git = (args) => spawnSync('git', args, { cwd: repo, encoding: 'utf8' })
+  assert.equal(git(['init', '-q']).status, 0)
+  assert.equal(git(['config', 'user.name', 'CI Range Test']).status, 0)
+  assert.equal(git(['config', 'user.email', 'ci-range@example.invalid']).status, 0)
+
+  writeFileSync(join(repo, 'base.txt'), 'base\n')
+  assert.equal(git(['add', 'base.txt']).status, 0)
+  assert.equal(git(['commit', '-qm', 'base']).status, 0)
+  const before = git(['rev-parse', 'HEAD']).stdout.trim()
+
+  writeFileSync(join(repo, 'bad.txt'), 'trailing whitespace \n')
+  assert.equal(git(['add', 'bad.txt']).status, 0)
+  assert.equal(git(['commit', '-qm', 'bad first pushed commit']).status, 0)
+  writeFileSync(join(repo, 'last.txt'), 'clean final commit\n')
+  assert.equal(git(['add', 'last.txt']).status, 0)
+  assert.equal(git(['commit', '-qm', 'clean final pushed commit']).status, 0)
+
+  const headOnly = git(['diff', '--check', 'HEAD^..HEAD'])
+  assert.equal(headOnly.status, 0, 'counterexample requires the old HEAD^ range to miss the defect')
+  const pushedRange = git(['diff', '--check', `${before}..HEAD`])
+  assert.notEqual(pushedRange.status, 0, 'the full pushed range must reject earlier whitespace')
+  assert.match(`${pushedRange.stdout}${pushedRange.stderr}`, /trailing whitespace/)
 })
 
 test('all six skills are present with matching frontmatter names', () => {
