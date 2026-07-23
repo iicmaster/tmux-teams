@@ -123,6 +123,10 @@ its content is unchanged; it makes no font-network request. Keep both files
 together—copying `pulse.html` alone still shows the dashboard with fallback
 fonts, but is not the canonical page.
 
+Human-visible absolute timestamps in the header, recent verdicts, and run
+details use `Asia/Bangkok` and are labelled `เวลาไทย (UTC+7)`. Pulse Data v1
+continues to publish machine timestamps as RFC 3339 UTC.
+
 ## Install
 
 ```bash

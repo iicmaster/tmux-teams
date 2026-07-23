@@ -489,6 +489,27 @@ const dur = (sec) => sec == null ? 'ยังไม่วัด'
   : sec < 60 ? `${sec} วิ`
     : sec < 3600 ? `${Math.floor(sec / 60)} นาที${sec % 60 ? ` ${sec % 60} วิ` : ''}`
       : `${Math.floor(sec / 3600)} ชม.${Math.floor((sec % 3600) / 60) ? ` ${Math.floor((sec % 3600) / 60)} นาที` : ''}`
+const THAI_TIME_ZONE = 'Asia/Bangkok'
+const THAI_TIME_LABEL = 'เวลาไทย (UTC+7)'
+const THAI_DATE_TIME = new Intl.DateTimeFormat('en-US-u-ca-gregory-nu-latn', {
+  timeZone: THAI_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23',
+})
+
+function absoluteTime(value) {
+  if (!value || !Number.isFinite(Date.parse(value))) return 'ไม่ระบุ'
+  const parts = Object.fromEntries(THAI_DATE_TIME.formatToParts(new Date(value))
+    .filter(part => part.type !== 'literal')
+    .map(part => [part.type, part.value]))
+  const stamp = `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`
+  return `<time datetime="${esc(value)}" title="${THAI_TIME_ZONE}">${stamp} ${THAI_TIME_LABEL}</time>`
+}
 
 // State codes stay stable for agents; people get one consistent Thai label.
 // Keeping the mapping at the view boundary prevents UX copy from leaking into
@@ -716,7 +737,6 @@ function render(snapshot) {
   const waitingTotal = byState['awaiting-verdict']
   const passTotal = rec.filter(r => r.pm_verdict === 'pass').length
   const rejectTotal = rec.filter(r => r.pm_verdict === 'reject').length
-  const stamp = snapshot.generated_at.replace('T', ' ').slice(0, 19)
   const repoName = snapshot.scope.repo_name || 'unknown'
   const refreshInterval = snapshot.observation.refresh_interval_sec
   const qualityLabel = snapshot.complete ? 'ข้อมูลครบถ้วน' : 'ข้อมูลบางส่วน'
@@ -742,6 +762,7 @@ function render(snapshot) {
       <summary>รายละเอียดทางเทคนิค</summary>
       <dl>
         <div><dt>dispatch</dt><dd><code>${esc(a.dispatch_id || 'ไม่ระบุ')}</code></dd></div>
+        <div><dt>เริ่ม</dt><dd>${absoluteTime(a.started_at)}</dd></div>
         <div><dt>timeout</dt><dd class="num">${a.timeout_sec == null ? 'ไม่ระบุ' : dur(a.timeout_sec)}</dd></div>
         <div><dt>state code</dt><dd><code>${esc(a.state)}</code></dd></div>
       </dl>
@@ -820,7 +841,7 @@ footer{margin-top:var(--s7);padding-top:var(--s4);border-top:1px solid var(--lin
   </div>
   <div class="header-status">
     <span class="quality ${qualityClass}">${qualityLabel}</span>
-    <div class="age">อัปเดตล่าสุด <time datetime="${esc(snapshot.generated_at)}">${stamp} UTC</time>รีเฟรชทุก ${refreshInterval} วิ</div>
+    <div class="age">อัปเดตล่าสุด ${absoluteTime(snapshot.generated_at)}รีเฟรชทุก ${refreshInterval} วิ</div>
   </div>
 </header>
 
@@ -858,12 +879,13 @@ footer{margin-top:var(--s7);padding-top:var(--s4);border-top:1px solid var(--lin
   </section>` : ''}
 
   <section aria-labelledby="recent-title">
-    <div class="section-head"><div><span class="eyebrow">หลักฐานล่าสุด</span><h2 id="recent-title">ผลการทำงานล่าสุด</h2><p>คำตัดสินของ PM และเวลาที่ใช้</p></div><span class="count">${recent.length} รายการ</span></div>
-    <div class="surface table-scroll responsive-table" tabindex="0">${recent.length ? `<table><caption>ผลการทำงานล่าสุด</caption><thead><tr><th>งาน</th><th>worker</th><th>ผลจาก worker</th><th>คำตัดสิน PM</th><th>ใช้เวลา</th><th>dispatch</th></tr></thead><tbody>
+    <div class="section-head"><div><span class="eyebrow">หลักฐานล่าสุด</span><h2 id="recent-title">ผลการทำงานล่าสุด</h2><p>คำตัดสินของ PM เวลาเริ่ม และเวลาที่ใช้</p></div><span class="count">${recent.length} รายการ</span></div>
+    <div class="surface table-scroll responsive-table" tabindex="0">${recent.length ? `<table><caption>ผลการทำงานล่าสุด</caption><thead><tr><th>งาน</th><th>worker</th><th>ผลจาก worker</th><th>คำตัดสิน PM</th><th>เริ่ม</th><th>ใช้เวลา</th><th>dispatch</th></tr></thead><tbody>
 ${recent.map(r => `<tr>
   <td data-label="งาน"><code>${esc(r.task_id)}</code></td><td data-label="worker">${esc(r.worker)}</td>
   <td data-label="ผลจาก worker">${esc(terminalLabel(r.terminal))}</td>
   <td data-label="คำตัดสิน PM" class="verdict-${esc(r.pm_verdict)}">${esc(verdictLabel(r.pm_verdict))}</td>
+  <td data-label="เริ่ม">${absoluteTime(r.started_at)}</td>
   <td data-label="ใช้เวลา" class="num">${r.wait_sec == null || r.wait_sec < 0 ? 'ยังไม่วัด' : dur(r.wait_sec)}</td>
   <td data-label="dispatch"><code>${esc(r.dispatch_id || 'ไม่ระบุ')}</code></td>
 </tr>`).join('')}</tbody></table>`

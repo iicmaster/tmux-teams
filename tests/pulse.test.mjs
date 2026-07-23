@@ -15,6 +15,9 @@ import { KANIT_FONT_CSS } from '../plugins/tmux-teams/skills/tmux-teams/assets/k
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PULSE = join(ROOT, 'plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs')
+const FIXED_UTC = '2026-07-21T09:00:00Z'
+const FIXED_ISO = '2026-07-21T09:00:00.000Z'
+const FIXED_THAI = '2026-07-21 16:00:00 เวลาไทย (UTC+7)'
 
 function repo() {
   const dir = mkdtempSync(join(tmpdir(), 'pulse-repo-'))
@@ -24,7 +27,10 @@ function repo() {
   return dir
 }
 const render = (dir) => {
-  const r = spawnSync('node', [PULSE, 'once', dir], { encoding: 'utf8' })
+  const r = spawnSync('node', [PULSE, 'once', dir], {
+    encoding: 'utf8',
+    env: { ...process.env, TZ: 'UTC' },
+  })
   assert.equal(r.status, 0, r.stderr)
   return readFileSync(r.stdout.trim(), 'utf8')
 }
@@ -35,7 +41,7 @@ const age = (path, sec) => {
 }
 const dispatch = (dir, id, ageSec = 0) => {
   const p = join(dir, '.tmux-teams', 'dispatch', `${id}.md`)
-  writeFileSync(p, `task_id: ${id}\nworker: codex\ntransport: tmux\nstarted_at: 2026-07-21T09:00:00Z\ntimeout_sec: 1200\n`)
+  writeFileSync(p, `task_id: ${id}\nworker: codex\ntransport: tmux\nstarted_at: ${FIXED_UTC}\ntimeout_sec: 1200\n`)
   if (ageSec) age(p, ageSec)
   return p
 }
@@ -63,7 +69,7 @@ const sectionBy = (html, labelledBy) => {
 
 const event = (dir, id, wait = '42') => writeFileSync(
   join(dir, '.tmux-teams', 'kms', 'events', `20260721-0900_${id}_codex.md`),
-  `task_id: ${id}\nworker: codex\nterminal: TEAM_DONE\npm_verdict: pass\nwait_sec: ${wait}\n`,
+  `task_id: ${id}\nworker: codex\nterminal: TEAM_DONE\npm_verdict: pass\nstarted_at: ${FIXED_UTC}\nwait_sec: ${wait}\n`,
 )
 
 const transportEvent = (dir, id) => writeFileSync(
@@ -172,8 +178,38 @@ test('an old event does not settle a newer dispatch of the same id', () => {
 test('the page states its scope and its own age', () => {
   const html = render(repo())
   assert.match(html, /ติดตามเฉพาะ worker ที่ระบบสั่งในโปรเจกต์นี้/)
-  assert.match(html, /อัปเดตล่าสุด <time[^>]+>\d{4}-\d{2}-\d{2}/)
+  assert.match(html, /อัปเดตล่าสุด <time[^>]+>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} เวลาไทย \(UTC\+7\)<\/time>/)
+  assert.doesNotMatch(html, />\d{4}-\d{2}-\d{2}[^<]* UTC<\/time>/)
   assert.match(html, /http-equiv="refresh"/)
+})
+
+test('header, recent verdicts, and run details render Asia/Bangkok while JSON stays UTC', () => {
+  const dir = repo()
+  dispatch(dir, 'thai-active', 600)
+  event(dir, 'thai-recent')
+
+  const html = render(dir)
+  const snapshot = JSON.parse(readFileSync(join(dir, '.tmux-teams', 'pulse.json'), 'utf8'))
+  const expectedFixedTime = `<time datetime="${FIXED_ISO}" title="Asia/Bangkok">${FIXED_THAI}</time>`
+  const header = html.match(/อัปเดตล่าสุด <time datetime="([^"]+)" title="Asia\/Bangkok">([^<]+)<\/time>/)
+  const generatedThai = new Date(Date.parse(snapshot.generated_at) + 7 * 60 * 60 * 1000)
+    .toISOString().replace('T', ' ').slice(0, 19)
+
+  assert.ok(header, 'header must expose its machine timestamp and explicit IANA zone')
+  assert.equal(header[1], snapshot.generated_at)
+  assert.equal(header[2], `${generatedThai} เวลาไทย (UTC+7)`)
+  assert.ok(sectionBy(html, 'attention-title').includes(expectedFixedTime))
+  assert.ok(sectionBy(html, 'recent-title').includes(expectedFixedTime))
+  assert.equal(snapshot.runs.find(run => run.task_id === 'thai-active')?.started_at, FIXED_ISO)
+  assert.equal(snapshot.recent_verdicts.find(row => row.task_id === 'thai-recent')?.started_at, FIXED_ISO)
+
+  const absoluteTimes = [...html.matchAll(/<time datetime="([^"]+)" title="([^"]+)">([^<]+)<\/time>/g)]
+  assert.equal(absoluteTimes.length, 3, 'fixture covers header, recent, and active-run details')
+  for (const [, machineTime, zone, visibleTime] of absoluteTimes) {
+    assert.match(machineTime, /Z$/, 'machine timestamp remains RFC3339 UTC')
+    assert.equal(zone, 'Asia/Bangkok')
+    assert.match(visibleTime, /เวลาไทย \(UTC\+7\)$/)
+  }
 })
 
 test('the page is Thai-first and ordered for scanning before deep reading', () => {
