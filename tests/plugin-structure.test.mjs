@@ -30,7 +30,7 @@ test('marketplace and plugin manifests agree', () => {
   assert.ok(existsSync(join(ROOT, mkt.plugins[0].source)), 'plugins[0].source must exist')
 })
 
-test('CI runs the no-secret Node 20 and 24 matrix with repository hygiene checks', () => {
+test('CI runs the no-secret Node 20 and 24 matrix with event-aware repository hygiene checks', () => {
   const path = join(ROOT, '.github/workflows/ci.yml')
   assert.ok(existsSync(path), '.github/workflows/ci.yml missing')
   const ci = readText(path)
@@ -41,10 +41,15 @@ test('CI runs the no-secret Node 20 and 24 matrix with repository hygiene checks
   assert.deepEqual(versions, [20, 24])
   assert.match(ci, /actions\/checkout@v4/)
   assert.match(ci, /persist-credentials:\s*false/)
+  assert.match(ci, /fetch-depth:\s*0/)
   assert.match(ci, /actions\/setup-node@v4/)
   assert.match(ci, /(?:^|\n)\s*permissions:\s*\n\s*contents:\s*read(?:\n|$)/)
   assert.match(ci, /run:\s*node --test/)
-  assert.match(ci, /run:\s*git diff --check/)
+  assert.match(ci, /\$\{\{\s*github\.event_name\s*\}\}/)
+  assert.match(ci, /git diff --check "\$\{\{\s*github\.event\.pull_request\.base\.sha\s*\}\}\.\.\.HEAD"/)
+  assert.match(ci, /git diff --check HEAD\^\.\.HEAD/)
+  assert.doesNotMatch(ci, /run:\s*git diff --check\s*(?:\n|$)/,
+    'plain git diff --check is a no-op on a clean checkout')
   assert.doesNotMatch(ci, /\bsecrets\s*[:.]|GITHUB_TOKEN|claude plugin validate/,
     'CI must need no secrets; strict plugin validation remains a local release gate')
 })
