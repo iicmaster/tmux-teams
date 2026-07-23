@@ -612,7 +612,42 @@
         "boundary": { "$ref": "#/$defs/nullable_delivery_boundary" },
         "age_sec": { "$ref": "#/$defs/nullable_duration" },
         "reason_codes": { "$ref": "#/$defs/delivery_reason_codes" }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "const": "available" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "boundary": { "$ref": "#/$defs/delivery_boundary" },
+              "age_sec": { "type": "number", "minimum": 0 }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "status": { "const": "none" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "boundary": { "type": "null" },
+              "age_sec": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "status": { "const": "inconclusive" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": { "age_sec": { "type": "null" } }
+          }
+        }
+      ]
     },
     "delivery_attention": {
       "type": "object",

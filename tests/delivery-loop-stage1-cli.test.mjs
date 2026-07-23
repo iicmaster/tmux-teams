@@ -40,6 +40,7 @@ import {
 } from '../plugins/tmux-teams/skills/tmux-teams/scripts/delivery-loop-store.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+const PLUGIN_MANIFEST = join(ROOT, 'plugins', 'tmux-teams', '.claude-plugin', 'plugin.json')
 const SKILL = join(ROOT, 'plugins', 'tmux-teams', 'skills', 'tmux-teams')
 const SCRIPTS = join(SKILL, 'scripts')
 const REFERENCES = join(SKILL, 'references')
@@ -921,7 +922,9 @@ test('external-store E2E preserves source semantics, replays deterministically, 
   const packPath = join(outputDir, 'pack-index.json')
   const projectionPath = join(outputDir, 'pulse-projection.json')
   const pack = JSON.parse(readFileSync(packPath, 'utf8'))
+  const pluginManifest = JSON.parse(readFileSync(PLUGIN_MANIFEST, 'utf8'))
   const projection = JSON.parse(readFileSync(projectionPath, 'utf8'))
+  assert.equal(pack.tooling.exporter_version, pluginManifest.version)
   assert.equal(pack.business_decision, 'EXTERNAL_REQUIRED')
   assert.equal(pack.actuation, 'NONE')
   assert.equal(pack.completeness.unknown_cost_fraction, 1 / (2 * COST_CATEGORIES.length))
