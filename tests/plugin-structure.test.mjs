@@ -1,5 +1,5 @@
 // plugin-structure.test.mjs — structure and semantic checks for the
-// tmux-teams plugin (canonical source of its skills). Run: node --test tests/
+// tmux-teams plugin (canonical source of its skills). Run: node --test
 // Harness pattern borrowed from antigravity-plugins/tests/plugin-structure.test.mjs,
 // with semantic anchors instead of brittle prose regexes.
 import { test } from 'node:test'
@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PLUGIN = join(ROOT, 'plugins/tmux-teams')
 const SKILLS = ['tmux-teams', 'party-mode', 'party-auto', 'party-advise', 'sqthink', 'codex-tmux-driver']
+const RELEASE_VERSION = '0.6.1'
 
 const readJson = (p) => JSON.parse(readFileSync(p, 'utf8'))
 const readText = (p) => readFileSync(p, 'utf8')
@@ -23,7 +24,29 @@ test('marketplace and plugin manifests agree', () => {
   assert.equal(mkt.plugins.length, 1)
   assert.equal(mkt.plugins[0].name, plugin.name)
   assert.equal(mkt.plugins[0].version, plugin.version)
+  assert.equal(mkt.metadata.version, RELEASE_VERSION)
+  assert.equal(mkt.plugins[0].version, RELEASE_VERSION)
+  assert.equal(plugin.version, RELEASE_VERSION)
   assert.ok(existsSync(join(ROOT, mkt.plugins[0].source)), 'plugins[0].source must exist')
+})
+
+test('CI runs the no-secret Node 20 and 24 matrix with repository hygiene checks', () => {
+  const path = join(ROOT, '.github/workflows/ci.yml')
+  assert.ok(existsSync(path), '.github/workflows/ci.yml missing')
+  const ci = readText(path)
+  const versions = ci.match(/node-version:\s*\[([^\]]+)\]/)?.[1]
+    .split(',')
+    .map(value => Number(value.trim()))
+
+  assert.deepEqual(versions, [20, 24])
+  assert.match(ci, /actions\/checkout@v4/)
+  assert.match(ci, /persist-credentials:\s*false/)
+  assert.match(ci, /actions\/setup-node@v4/)
+  assert.match(ci, /(?:^|\n)\s*permissions:\s*\n\s*contents:\s*read(?:\n|$)/)
+  assert.match(ci, /run:\s*node --test/)
+  assert.match(ci, /run:\s*git diff --check/)
+  assert.doesNotMatch(ci, /\bsecrets\s*[:.]|GITHUB_TOKEN|claude plugin validate/,
+    'CI must need no secrets; strict plugin validation remains a local release gate')
 })
 
 test('all six skills are present with matching frontmatter names', () => {
@@ -76,9 +99,23 @@ test('mailbox-run command uses plugin-root paths', () => {
   assert.ok(cmd.includes('${CLAUDE_PLUGIN_ROOT}/skills/tmux-teams/scripts/deliver.sh'), 'deliverSh must use ${CLAUDE_PLUGIN_ROOT}')
 })
 
-test('no hardcoded home paths in manifests or commands', () => {
-  for (const p of ['.claude-plugin/marketplace.json', 'plugins/tmux-teams/.claude-plugin/plugin.json', 'plugins/tmux-teams/commands/mailbox-run.md']) {
-    assert.ok(!/\/home\/iicmaster/.test(readText(join(ROOT, p))), `${p}: hardcoded home path`)
+test('no hardcoded home paths in release-facing files', () => {
+  for (const p of [
+    '.claude-plugin/marketplace.json',
+    'plugins/tmux-teams/.claude-plugin/plugin.json',
+    'plugins/tmux-teams/commands/mailbox-run.md',
+    'README.md',
+    'CLAUDE.md',
+  ]) {
+    assert.doesNotMatch(readText(join(ROOT, p)), /\/(?:home|Users)\/[^/\s]+/,
+      `${p}: hardcoded absolute home path`)
+  }
+})
+
+test('tracked-files policy includes release CI and repository instructions', () => {
+  const policy = readText(join(ROOT, 'CLAUDE.md'))
+  for (const tracked of ['`.github/`', '`.claude-plugin/`', '`.gitignore`', '`plugins/`', '`tests/`', '`README.md`', '`CLAUDE.md`']) {
+    assert.ok(policy.includes(tracked), `tracked-files policy missing ${tracked}`)
   }
 })
 

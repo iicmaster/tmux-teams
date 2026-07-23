@@ -11,6 +11,7 @@ own `skills/shared/tmux-teams`; the old mirror/sync flow is gone.)
 
 ```bash
 node --test                        # whole suite — structure, semantics, KMS
+git diff --check                  # repository whitespace gate
 claude plugin validate --strict .  # manifest validation
 ```
 
@@ -22,17 +23,20 @@ pass no path at all, or a glob like `tests/*.test.mjs`.
 1. Edit skills under `plugins/tmux-teams/skills/` (this repo IS canonical).
 2. Bump the version in BOTH `.claude-plugin/marketplace.json` and
    `plugins/tmux-teams/.claude-plugin/plugin.json` (test asserts they match).
-3. Push (confirm with Master first — see Rules), then
+3. Run `node --test`, `git diff --check`, and
+   `claude plugin validate --strict .` locally.
+4. Push (confirm with Master first — see Rules), then
    `claude plugin marketplace update tmux-teams` and
    `claude plugin update tmux-teams@tmux-teams` (install cache is version-keyed).
-4. Bump the `plugins/tmux-teams` submodule pointer in `~/agent-skills` to the
+5. Bump the `plugins/tmux-teams` submodule pointer in `~/agent-skills` to the
    new sha and push it (this repo is vendored there as an install-manifest
    submodule — inventory only, nothing reads it at runtime).
 
 ## Rules
 
-- Only plugin files are tracked: `.claude-plugin/`, `plugins/`, `tests/`,
-  `README.md`. BMAD scaffold dirs are gitignored — keep it that way.
+- Only release and plugin files are tracked: `.github/`, `.claude-plugin/`,
+  `.gitignore`, `plugins/`, `tests/`, `README.md`, and `CLAUDE.md`. BMAD
+  scaffold dirs are gitignored — keep it that way.
 - The marketplace on this machine is registered from GitHub
   (`iicmaster/tmux-teams`) — a release is NOT live until pushed; after
   pushing run `claude plugin marketplace update tmux-teams` then

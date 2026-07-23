@@ -6,6 +6,20 @@ gemini, agy) over **two transports — tmux and ACP** — on one mailbox contrac
 dispatch with `sqthink` + task creation, gate completion with `party-mode`
 verification.
 
+## v0.6.1 hardening release
+
+- ACP permission responses check that `options` is an array. Empty or non-array
+  options return the protocol's cancelled outcome instead of dereferencing a
+  missing choice; valid choices retain the existing allow-always,
+  then allow-once, then first-option precedence.
+- The experimental Stage 0 validator returns structured diagnostics for
+  malformed container shapes, enforces proposer/receiver separation even when
+  actor roles overlap, and rejects non-finite aggregate, loaded-cost, or
+  comparison arithmetic instead of emitting an invalid report.
+- Pulse keeps its dynamic HTML small by publishing the bundled Kanit payload
+  once as a local content-addressed stylesheet. The canonical page remains
+  offline and network-free, but it is deliberately no longer a single file.
+
 ## Skills
 
 | Skill | Purpose |
@@ -61,7 +75,7 @@ role-loading, cleanup, or transport semantics. The compact
 [Stage 0 reference contract](plugins/tmux-teams/skills/tmux-teams/references/two-level-delivery-loop-poc.md)
 contains the complete rules plus Mermaid flowchart and sequence diagram.
 
-## Transports (v0.2.x)
+## Transports
 
 The mailbox contract (brief in → `.mailbox-out/<id>` outbox +
 `TEAM_DONE`/`TEAM_BLOCKED`/`TEAM_FAILED` out → PM adversarial verify) is
@@ -101,20 +115,31 @@ includes snapshot identity/freshness, source diagnostics, run state, and
 `trust_level: advisory_same_uid`; suggested action codes are advisory and are
 never executed automatically. See `skills/tmux-teams/SKILL.md` §10.
 
-## Install (this machine)
+The canonical offline page is
+`<repo>/.tmux-teams/pulse.html` together with its sibling
+`pulse-fonts-<sha256>.css`. The stylesheet contains the bundled Kanit WOFF2
+data URLs, is atomically published before the HTML, and is not rewritten when
+its content is unchanged; it makes no font-network request. Keep both files
+together—copying `pulse.html` alone still shows the dashboard with fallback
+fonts, but is not the canonical page.
+
+## Install
 
 ```bash
-claude plugin marketplace add /home/iicmaster/projects/tmux-teams
+claude plugin marketplace add iicmaster/tmux-teams
 claude plugin install tmux-teams@tmux-teams
 ```
 
-For a second machine: `claude plugin marketplace add iicmaster/tmux-teams`
-(private repo — authenticate `gh`/git first), then the same `plugin install`.
+This is a private repository, so authenticate `gh`/git first. Installation
+uses the latest pushed marketplace version; changing a checkout or bumping its
+manifest does not update an installed copy. After a release is pushed, run
+`claude plugin marketplace update tmux-teams` followed by
+`claude plugin update tmux-teams@tmux-teams`.
 
 ## Prerequisites (soft dependencies)
 
-- `tmux`, and the `codex` CLI for the worker lane; Node 18+ with `npx` for
-  the ACP adapters.
+- `tmux`, and the `codex` CLI for the worker lane; Node 20+ with `npx` for
+  the ACP adapters. CI exercises Node 20 and Node 24.
 - party-mode's 3-model review lanes need the `oc` (opencode) and `agy`
   (antigravity) plugins plus Codex MCP — without them party-mode falls back
   per its own review-fallback rules.
@@ -129,11 +154,15 @@ non-authoritative.)
 1. Edit the skill under `plugins/tmux-teams/skills/` and commit here.
 2. Bump the version in BOTH `plugins/tmux-teams/.claude-plugin/plugin.json`
    and `.claude-plugin/marketplace.json` (the test asserts they match).
-3. Push, then `claude plugin marketplace update tmux-teams` and
+3. Run `node --test`, `git diff --check`, and the local-only
+   `claude plugin validate --strict .` release gate.
+4. Push, then `claude plugin marketplace update tmux-teams` and
    `claude plugin update tmux-teams@tmux-teams` (install cache is version-keyed).
-4. Bump the `plugins/tmux-teams` submodule pointer in `~/agent-skills`.
+5. Bump the `plugins/tmux-teams` submodule pointer in `~/agent-skills`.
 
-`node --test` runs the whole suite (structure, semantics, KMS). Pass no path:
+GitHub Actions runs `node --test` plus `git diff --check` with no repository
+secrets on Node 20 and Node 24. Strict plugin validation remains a local release
+gate because the Claude CLI is not provisioned in CI. Pass no path:
 `node --test tests/` fails on Node 24.
 
 Note: `~/.claude/skills` no longer carries these six skills (they are
