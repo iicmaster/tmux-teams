@@ -3,10 +3,12 @@ import assert from 'node:assert/strict'
 import {
   existsSync, mkdtempSync, readFileSync, writeFileSync,
 } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { KANIT_FONT_CSS } from '../plugins/tmux-teams/skills/tmux-teams/assets/kanit/kanit-embedded.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = dirname(HERE)
@@ -17,6 +19,7 @@ const V2_SCHEMA = join(SKILL, 'references', 'pulse-v2.schema.json')
 const HAS_PYTHON_JSONSCHEMA = spawnSync('python3', ['-c', 'import jsonschema'], {
   encoding: 'utf8',
 }).status === 0
+const FONT_CSS_NAME = `pulse-fonts-${createHash('sha256').update(KANIT_FONT_CSS).digest('hex')}.css`
 
 const digest = (char) => `sha256:${char.repeat(64)}`
 const nowIso = (offsetMs = 0) => new Date(Date.now() + offsetMs).toISOString()
@@ -134,6 +137,8 @@ function repo() {
   return mkdtempSync(join(tmpdir(), 'pulse-v2-'))
 }
 
+const fontCssPath = (dir) => join(dir, '.tmux-teams', FONT_CSS_NAME)
+
 function writeProjection(dir, value = projection()) {
   const path = join(dir, 'delivery-loop-projection.json')
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`)
@@ -204,6 +209,13 @@ test('Pulse remains v1 by default and v2 is an explicit delivery-loop opt-in', (
   assert.match(html, /วงรอบส่งมอบ/)
   assert.match(html, /Development/)
   assert.match(html, /ตรวจรับงานส่งมอบ/)
+  assert.match(html, new RegExp(`<link rel="stylesheet" href="${FONT_CSS_NAME}">`))
+  assert.doesNotMatch(html, /data:font\/woff2;base64,|fonts\.(?:googleapis|gstatic)\.com/)
+  assert.equal(readFileSync(fontCssPath(dir), 'utf8'), KANIT_FONT_CSS)
+  assert.match(html, /title="Asia\/Bangkok"/)
+  assert.match(html, /เวลาไทย \(UTC\+7\)/)
+  assert.match(optedIn.snapshot.generated_at, /Z$/,
+    'the v2 machine contract must retain RFC3339 UTC timestamps')
 
   if (HAS_PYTHON_JSONSCHEMA) {
     const validation = validate(V2_SCHEMA, persistedPath)
@@ -328,6 +340,47 @@ test('v1 to v2 upgrade preserves stream identity and advances sequence with a di
   assert.ok(!next.diagnostics.some(item => item.code === 'SCHEMA_UPGRADED'))
 })
 
+test('v2 to v1 keeps one stream while removing the opt-in projection', () => {
+  const dir = repo()
+  const v2 = runJson(dir, writeProjection(dir)).snapshot
+  const v1 = runJson(dir).snapshot
+
+  assert.equal(v2.schema_version, 2)
+  assert.equal(v1.schema_version, 1)
+  assert.equal(v1.stream_id, v2.stream_id)
+  assert.equal(v1.sequence, v2.sequence + 1)
+  assert.equal(Object.hasOwn(v1, 'delivery_loop'), false)
+})
+
+test('publish fencing is checked inside each atomic rename boundary', () => {
+  const source = readFileSync(PULSE, 'utf8')
+  const atomicWrite = source.slice(
+    source.indexOf('function atomicWrite('),
+    source.indexOf('\nfunction atomicWriteIfChanged('),
+  )
+  assert.match(atomicWrite,
+    /if \(publishToken !== null\) assertPublishLock\(publishToken\)\s+renameSync\(temp, path\)/,
+    'a reclaimed publisher must be fenced out immediately before rename')
+  for (const call of [
+    'atomicWriteIfChanged(FONT_CSS_OUT, KANIT_FONT_CSS, token)',
+    'atomicWrite(JSON_OUT, jsonText, token)',
+    'atomicWrite(OUT, html, token)',
+  ]) {
+    assert.ok(source.includes(call), `publisher is missing the lock token: ${call}`)
+  }
+})
+
+test('a corrupted content-addressed font stylesheet is repaired by a v2 publish', () => {
+  const dir = repo()
+  const projectionPath = writeProjection(dir)
+  runJson(dir, projectionPath)
+  writeFileSync(fontCssPath(dir), 'corrupt\n')
+
+  const repaired = runJson(dir, projectionPath).snapshot
+  assert.equal(repaired.schema_version, 2)
+  assert.equal(readFileSync(fontCssPath(dir), 'utf8'), KANIT_FONT_CSS)
+})
+
 test('compat-v1 is a stdout-only downprojection and leaves the sole SSOT untouched', () => {
   const dir = repo()
   runJson(dir)
@@ -412,12 +465,14 @@ test('ensure rejects watcher mode or delivery-loop path mismatches before publis
     assert.equal(started.status, 0, started.stderr)
     v1Pid = Number(readFileSync(v1Pidfile, 'utf8').trim())
     const before = readFileSync(join(v1Dir, '.tmux-teams', 'pulse.json'), 'utf8')
+    const cssBefore = readFileSync(fontCssPath(v1Dir), 'utf8')
     const mismatch = run([
       'ensure', v1Dir, '--interval', '60', '--delivery-loop', writeProjection(v1Dir),
     ])
     assert.equal(mismatch.status, 1)
     assert.match(mismatch.stderr, /watcher mode\/input mismatch/)
     assert.equal(readFileSync(join(v1Dir, '.tmux-teams', 'pulse.json'), 'utf8'), before)
+    assert.equal(readFileSync(fontCssPath(v1Dir), 'utf8'), cssBefore)
   } finally {
     if (v1Pid) await stopWatcher(v1Pid, v1Pidfile)
   }
@@ -433,6 +488,7 @@ test('ensure rejects watcher mode or delivery-loop path mismatches before publis
     assert.equal(started.status, 0, started.stderr)
     v2Pid = Number(readFileSync(v2Pidfile, 'utf8').trim())
     const before = readFileSync(join(v2Dir, '.tmux-teams', 'pulse.json'), 'utf8')
+    const cssBefore = readFileSync(fontCssPath(v2Dir), 'utf8')
     const secondProjection = projection()
     secondProjection.experiment.experiment_id = 'pilot-2'
     const secondPath = join(v2Dir, 'other-projection.json')
@@ -443,6 +499,7 @@ test('ensure rejects watcher mode or delivery-loop path mismatches before publis
     assert.equal(mismatch.status, 1)
     assert.match(mismatch.stderr, /watcher mode\/input mismatch/)
     assert.equal(readFileSync(join(v2Dir, '.tmux-teams', 'pulse.json'), 'utf8'), before)
+    assert.equal(readFileSync(fontCssPath(v2Dir), 'utf8'), cssBefore)
   } finally {
     if (v2Pid) await stopWatcher(v2Pid, v2Pidfile)
   }

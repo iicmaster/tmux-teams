@@ -75,6 +75,7 @@ export class ContractValidationError extends Error {
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const isNonNegative = (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0;
 const isFiniteNumber = (value) => typeof value === 'number' && Number.isFinite(value);
+const arrayOrEmpty = (value) => Array.isArray(value) ? value : [];
 const issue = (errors, code, path, message) => errors.push({ code, path, message });
 function codePointCompare(left, right) {
   const leftIterator = left[Symbol.iterator]();
@@ -151,8 +152,10 @@ export function deriveManifestIdentity(input) {
 
 function roleIds(actors, role, phase) {
   if (!isObject(actors)) return [];
-  if (role === 'receiver_phase_lead') return actors.phase_leads?.[phase] ?? [];
-  return actors[`${role}s`] ?? actors[role] ?? [];
+  const ids = role === 'receiver_phase_lead'
+    ? actors.phase_leads?.[phase]
+    : actors[`${role}s`] ?? actors[role];
+  return arrayOrEmpty(ids);
 }
 
 /**
@@ -172,6 +175,13 @@ export function reduceHandoffAttempt(attempt, event) {
   if (rule && !rule.from.includes(state)) issue(errors, 'TRANSITION_INVALID', 'attempt.state', `Cannot ${event.type} from ${state}.`);
   if (rule && !rule.roles.some((role) => roleIds(attempt.actors, role, attempt.receiver_phase).includes(event.actor_id))) {
     issue(errors, 'ACTOR_UNAUTHORIZED', 'event.actor_id', `Actor is not authorized for ${event.type}.`);
+  }
+  const proposingActor = arrayOrEmpty(attempt.events)
+    .find((recordedEvent) => isObject(recordedEvent) && recordedEvent.type === 'propose')?.actor_id;
+  if ((event.type === 'accept' || event.type === 'reject')
+    && typeof proposingActor === 'string'
+    && event.actor_id === proposingActor) {
+    issue(errors, 'ACTOR_SELF_REVIEW_INVALID', 'event.actor_id', 'The proposing actor cannot accept or reject the same attempt.');
   }
   if (errors.length) throw new ContractValidationError(errors);
 
@@ -207,13 +217,15 @@ function validateArtifact(errors, artifact, phase, path) {
   if (!SHA256_PATTERN.test(artifact.digest ?? '')) {
     issue(errors, 'ARTIFACT_DIGEST_INVALID', `${path}.digest`, 'Artifact digest must use sha256:<64 lowercase hex>.');
   }
-  if (!Array.isArray(artifact.predecessor_trace)) {
-    issue(errors, 'ARTIFACT_TRACE_REQUIRED', `${path}.predecessor_trace`, 'Predecessor trace must be an array.');
-  } else if (phase !== 'Requirement' && artifact.predecessor_trace.length === 0) {
-    issue(errors, 'ARTIFACT_TRACE_REQUIRED', `${path}.predecessor_trace`, 'Post-Requirement artifacts need predecessor trace.');
+  if (!Array.isArray(artifact.predecessor_trace)
+    || artifact.predecessor_trace.some((reference) => typeof reference !== 'string' || reference.length === 0)
+    || (phase !== 'Requirement' && artifact.predecessor_trace.length === 0)) {
+    issue(errors, 'ARTIFACT_TRACE_REQUIRED', `${path}.predecessor_trace`, 'Predecessor trace must contain non-empty string references; only Requirement may use an empty array.');
   }
-  if (!Array.isArray(artifact.validation_evidence) || artifact.validation_evidence.length === 0) {
-    issue(errors, 'ARTIFACT_VALIDATION_REQUIRED', `${path}.validation_evidence`, 'Validation evidence must be non-empty.');
+  if (!Array.isArray(artifact.validation_evidence)
+    || artifact.validation_evidence.length === 0
+    || artifact.validation_evidence.some((reference) => typeof reference !== 'string' || reference.length === 0)) {
+    issue(errors, 'ARTIFACT_VALIDATION_REQUIRED', `${path}.validation_evidence`, 'Validation evidence must contain non-empty string references.');
   }
   if (!isObject(artifact.expectations)) {
     issue(errors, 'ARTIFACT_EXPECTATIONS_REQUIRED', `${path}.expectations`, 'Expectations are required.');
@@ -301,8 +313,9 @@ function validateAttempts(errors, slice, sliceIndex, actors, globalAttempts, glo
       issue(errors, 'ATTEMPT_OBJECT_REQUIRED', attemptPath, 'Attempt must be an object.');
       return;
     }
-    const firstProposalAt = rfc3339Millis(attempt.events?.find((event) => event?.type === 'propose')?.at);
-    const terminalAt = rfc3339Millis(attempt.events?.at(-1)?.at);
+    const recordedEvents = arrayOrEmpty(attempt.events);
+    const firstProposalAt = rfc3339Millis(recordedEvents.find((event) => event?.type === 'propose')?.at);
+    const terminalAt = rfc3339Millis(recordedEvents.at(-1)?.at);
     const record = {
       attempt, slice, sliceIndex, attemptIndex, order: globalAttempts.length,
       path: attemptPath, firstProposalAt, terminalAt,
@@ -342,10 +355,11 @@ function validateAttempts(errors, slice, sliceIndex, actors, globalAttempts, glo
   });
 
   for (const [state, category] of Object.entries(SUNK_CATEGORY_BY_STATE)) {
-    const expected = attempts.filter((attempt) => isObject(attempt) && attempt.state === state && isNonNegative(attempt.sunk_cost_minutes))
-      .reduce((sum, attempt) => sum + attempt.sunk_cost_minutes, 0);
+    const terminalAttempts = attempts.filter((attempt) => isObject(attempt) && attempt.state === state && isNonNegative(attempt.sunk_cost_minutes));
+    const expected = terminalAttempts.reduce((sum, attempt) => sum + attempt.sunk_cost_minutes, 0);
     const actual = slice.costs?.[category];
-    if (actual !== null && isNonNegative(actual) && actual !== expected) {
+    if ((terminalAttempts.length > 0 && !isNonNegative(actual))
+      || (isNonNegative(actual) && actual !== expected)) {
       issue(errors, 'SUNK_COST_MISMATCH', `slices[${sliceIndex}].costs.${category}`, `${category} must equal ${state} attempt sunk costs.`);
     }
   }
@@ -408,6 +422,9 @@ function validatePreregistration(errors, preregistration) {
   if (preregistration.estimand !== 'per_slice_mean_by_arm') issue(errors, 'ESTIMAND_INVALID', 'preregistration.estimand', 'Estimand must be per_slice_mean_by_arm.');
   if (typeof preregistration.assignment_method !== 'string' || preregistration.assignment_method.length === 0) issue(errors, 'ASSIGNMENT_METHOD_REQUIRED', 'preregistration.assignment_method', 'Assignment method is required.');
   validateNonEmptyStrings(errors, preregistration.strata, 'preregistration.strata', 'STRATA_REQUIRED');
+  if (Array.isArray(preregistration.strata) && !preregistration.strata.includes('phase')) {
+    issue(errors, 'PHASE_STRATUM_REQUIRED', 'preregistration.strata', 'phase must be a pre-registered stratum.');
+  }
   const registeredGuardrails = preregistration.guardrails;
   if (!Array.isArray(registeredGuardrails)
     || registeredGuardrails.length !== GUARDRAIL_NAMES.length
@@ -436,15 +453,17 @@ function validateCostModel(errors, costModel) {
 function validateClaimRoles(errors, input) {
   if (input.evidence?.provenance !== 'observed_certification_claimed' || !isObject(input.evidence.certification_claim)) return;
   const certifier = input.evidence.certification_claim.certifier_id;
-  const phaseLeads = Object.values(input.actors?.phase_leads ?? {}).flat();
+  const phaseLeads = isObject(input.actors?.phase_leads)
+    ? Object.values(input.actors.phase_leads).flatMap(arrayOrEmpty)
+    : [];
   const prohibited = [
-    ...(input.actors?.senders ?? []),
-    ...(input.actors?.pms ?? []),
+    ...arrayOrEmpty(input.actors?.senders),
+    ...arrayOrEmpty(input.actors?.pms),
     ...phaseLeads,
-    ...(input.actors?.experiment_owners ?? []),
-    ...(input.actors?.metric_producers ?? []),
+    ...arrayOrEmpty(input.actors?.experiment_owners),
+    ...arrayOrEmpty(input.actors?.metric_producers),
   ];
-  if (typeof certifier !== 'string' || !(input.actors?.certifiers ?? []).includes(certifier)) {
+  if (typeof certifier !== 'string' || !arrayOrEmpty(input.actors?.certifiers).includes(certifier)) {
     issue(errors, 'CERTIFIER_NOT_DECLARED', 'evidence.certification_claim.certifier_id', 'Claimed certifier must be declared.');
   }
   if (typeof certifier === 'string' && prohibited.includes(certifier)) {
@@ -479,6 +498,135 @@ function validateCertificationClaim(errors, input) {
   }
 }
 
+function validateDerivedCosts(errors, input) {
+  const slices = input.slices;
+  const rate = input.cost_model?.loaded_cost_per_minute;
+  if (!Array.isArray(slices) || !isNonNegative(rate)) return;
+  const coordinationMeans = {};
+  const loadedCostMeans = {};
+
+  for (const arm of ARMS) {
+    const armSlices = slices.filter((slice) => isObject(slice) && slice.arm === arm);
+    if (armSlices.length === 0) continue;
+    const categoryTotals = {};
+    let complete = true;
+    let overflowCategory = null;
+    for (const category of COST_CATEGORIES) {
+      let categoryComplete = true;
+      let total = 0;
+      for (const slice of armSlices) {
+        const value = slice.costs?.[category];
+        if (!isNonNegative(value)) {
+          categoryComplete = false;
+          complete = false;
+          break;
+        }
+        total += value;
+        if (!Number.isFinite(total)) {
+          overflowCategory = category;
+          break;
+        }
+      }
+      if (overflowCategory !== null) break;
+      categoryTotals[category] = categoryComplete ? total : null;
+    }
+    if (overflowCategory !== null) {
+      issue(errors, 'COST_AGGREGATE_NON_FINITE', 'slices', `Derived ${overflowCategory} aggregation is non-finite for ${arm}.`);
+      continue;
+    }
+    if (!complete) continue;
+
+    const totalCoordinationMinutes = Object.values(categoryTotals)
+      .reduce((sum, value) => sum + value, 0);
+    if (!Number.isFinite(totalCoordinationMinutes)) {
+      issue(errors, 'COST_AGGREGATE_NON_FINITE', 'slices', `Derived total coordination minutes are non-finite for ${arm}.`);
+      continue;
+    }
+    const loadedCost = totalCoordinationMinutes * rate;
+    if (!Number.isFinite(loadedCost)) {
+      issue(errors, 'LOADED_COST_NON_FINITE', 'cost_model.loaded_cost_per_minute', `Derived loaded cost is non-finite for ${arm}.`);
+      continue;
+    }
+    coordinationMeans[arm] = totalCoordinationMinutes / armSlices.length;
+    loadedCostMeans[arm] = loadedCost / armSlices.length;
+  }
+
+  const coordinationReduction = ((coordinationMeans.pm_routed - coordinationMeans.receiver_owned)
+    / coordinationMeans.pm_routed) * 100;
+  if (isNonNegative(coordinationMeans.pm_routed)
+    && isNonNegative(coordinationMeans.receiver_owned)
+    && coordinationMeans.pm_routed > 0
+    && !Number.isFinite(coordinationReduction)) {
+    issue(errors, 'COST_COMPARISON_NON_FINITE', 'slices', 'Derived coordination-cost reduction is non-finite.');
+  }
+  const loadedCostReduction = ((loadedCostMeans.pm_routed - loadedCostMeans.receiver_owned)
+    / loadedCostMeans.pm_routed) * 100;
+  if (isNonNegative(loadedCostMeans.pm_routed)
+    && isNonNegative(loadedCostMeans.receiver_owned)
+    && loadedCostMeans.pm_routed > 0
+    && !Number.isFinite(loadedCostReduction)) {
+    issue(errors, 'LOADED_COST_COMPARISON_NON_FINITE', 'cost_model.loaded_cost_per_minute', 'Derived loaded-cost reduction is non-finite.');
+  }
+}
+
+function mean(values) {
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+}
+
+function validateDerivedOutcomes(errors, input) {
+  const slices = input.slices;
+  const analysisAsOf = rfc3339Millis(input.analysis_as_of);
+  const minFollowUpDays = input.maturity?.min_follow_up_days;
+  if (!Array.isArray(slices) || analysisAsOf === null || !isNonNegative(minFollowUpDays)) return;
+
+  const byArm = Object.fromEntries(ARMS.map((arm) => [arm, { times: [], values: [] }]));
+  for (const slice of slices) {
+    if (!isObject(slice) || !ARM_SET.has(slice.arm) || !isObject(slice.outcome)) continue;
+    const assignedAt = rfc3339Millis(slice.assigned_at);
+    if (assignedAt === null
+      || assignedAt + minFollowUpDays * 86_400_000 > analysisAsOf
+      || slice.outcome.status !== 'mature') continue;
+    if (isNonNegative(slice.outcome.time_to_usable_outcome_minutes)) {
+      byArm[slice.arm].times.push(slice.outcome.time_to_usable_outcome_minutes);
+    }
+    if (isFiniteNumber(slice.outcome.value_proxy)) {
+      byArm[slice.arm].values.push(slice.outcome.value_proxy);
+    }
+  }
+
+  const timeMeans = {};
+  const valueMeans = {};
+  for (const arm of ARMS) {
+    const timeMean = mean(byArm[arm].times);
+    if (byArm[arm].times.length > 0 && !Number.isFinite(timeMean)) {
+      issue(errors, 'OUTCOME_TIME_MEAN_NON_FINITE', 'slices', `Derived time-to-usable mean is non-finite for ${arm}.`);
+    } else {
+      timeMeans[arm] = timeMean;
+    }
+    const valueMean = mean(byArm[arm].values);
+    if (byArm[arm].values.length > 0 && !Number.isFinite(valueMean)) {
+      issue(errors, 'OUTCOME_VALUE_MEAN_NON_FINITE', 'slices', `Derived value-proxy mean is non-finite for ${arm}.`);
+    } else {
+      valueMeans[arm] = valueMean;
+    }
+  }
+
+  const timeMargin = input.thresholds?.time_to_usable_noninferiority_minutes;
+  if (isNonNegative(timeMeans.pm_routed)
+    && isNonNegative(timeMeans.receiver_owned)
+    && isNonNegative(timeMargin)
+    && !Number.isFinite(timeMeans.pm_routed + timeMargin)) {
+    issue(errors, 'OUTCOME_TIME_COMPARISON_NON_FINITE', 'thresholds.time_to_usable_noninferiority_minutes', 'Derived time-to-usable non-inferiority boundary is non-finite.');
+  }
+  const valueMargin = input.thresholds?.value_noninferiority_margin;
+  if (isFiniteNumber(valueMeans.pm_routed)
+    && isFiniteNumber(valueMeans.receiver_owned)
+    && isNonNegative(valueMargin)
+    && !Number.isFinite(valueMeans.pm_routed - valueMargin)) {
+    issue(errors, 'OUTCOME_VALUE_COMPARISON_NON_FINITE', 'thresholds.value_noninferiority_margin', 'Derived value-proxy non-inferiority boundary is non-finite.');
+  }
+}
+
 export function validateExperiment(input) {
   const errors = [];
   if (!isObject(input)) return { valid: false, errors: [{ code: 'INPUT_OBJECT_REQUIRED', path: '', message: 'Input must be an object.' }] };
@@ -502,6 +650,7 @@ export function validateExperiment(input) {
   validateClaimRoles(errors, input);
 
   const slices = input.slices;
+  const registeredStrata = arrayOrEmpty(input.preregistration?.strata);
   const globalAttempts = [];
   const globalAttemptIds = new Map();
   if (!Array.isArray(slices) || slices.length === 0) {
@@ -523,7 +672,7 @@ export function validateExperiment(input) {
       if (!isObject(slice.strata)) {
         issue(errors, 'SLICE_STRATA_REQUIRED', `${path}.strata`, 'Slice strata are required.');
       } else {
-        for (const key of input.preregistration?.strata ?? []) {
+        for (const key of registeredStrata) {
           if (!Object.hasOwn(slice.strata, key) || slice.strata[key] === null || slice.strata[key] === '') {
             issue(errors, 'SLICE_STRATUM_REQUIRED', `${path}.strata.${key}`, 'Every pre-registered stratum key needs an explicit value.');
           }
@@ -560,6 +709,8 @@ export function validateExperiment(input) {
     if (presentArms.size !== ARMS.length) issue(errors, 'INDEPENDENT_ARMS_REQUIRED', 'slices', 'Both independent arms need assigned slices.');
     validateRevisionLineage(errors, globalAttempts, globalAttemptIds);
   }
+  validateDerivedCosts(errors, input);
+  validateDerivedOutcomes(errors, input);
   validateCertificationClaim(errors, input);
   return { valid: errors.length === 0, errors };
 }
@@ -613,7 +764,6 @@ function aggregateArm(slices, rate, analysisAsOf, minFollowUpDays) {
   return result;
 }
 
-const mean = (values) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
 const percentReduction = (control, treatment) => isNonNegative(control) && isNonNegative(treatment) && control > 0
   ? ((control - treatment) / control) * 100
   : null;
@@ -712,7 +862,7 @@ export function analyzeExperiment(input) {
     && !contaminated
     && allCostComplete
     && allOutcomeComplete
-    && guardrails.status !== 'UNKNOWN'
+    && guardrails.unknowns.length === 0
     ? 'READY'
     : 'INCONCLUSIVE';
 

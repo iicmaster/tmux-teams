@@ -41,7 +41,8 @@ is only a structured claim; same-UID local input cannot authenticate it.
 | `QA` | `qa_release_evidence` | non-empty `e2e_uat_report_ref` | `ProjectDelivery` |
 
 Every artifact has non-empty `artifact_id` and `version`, a lowercase
-`sha256:<64-hex>` `digest`, an array `predecessor_trace`, a non-empty array
+`sha256:<64-hex>` `digest`, an array of non-empty string references
+`predecessor_trace`, a non-empty array of non-empty string references
 `validation_evidence`, and non-empty `expectations.security`,
 `expectations.performance`, `expectations.integration`, and `expectations.uat`.
 `predecessor_trace` may be empty only for `Requirement`; later-phase artifacts
@@ -135,6 +136,9 @@ recorded state. Event timestamps are strict RFC3339, non-decreasing within an
 attempt, and all lie inside the inclusive observation interval
 `[slice.assigned_at, analysis_as_of]`; violations report
 `EVENT_BEFORE_ASSIGNMENT` or `EVENT_AFTER_ANALYSIS`.
+The actor who emits `propose` cannot `accept` or `reject` that same attempt,
+even when the actor registry assigns both roles; this is
+`ACTOR_SELF_REVIEW_INVALID`.
 
 Attempt IDs are globally unique across all slices. A correction after rejection
 is a **new** attempt for the same slice and exact sender/receiver boundary, with
@@ -150,8 +154,10 @@ Every attempt declares finite non-negative `sunk_cost_minutes`; an accepted
 attempt must declare exactly zero. For rejected, cancelled, and abandoned
 attempts, the slice's respective `rejected_work_minutes`,
 `cancelled_work_minutes`, or `abandoned_work_minutes` must equal the sum of that
-terminal state's attempt-level sunk cost. Invalid actors/transitions, duplicate
-IDs, state/replay mismatch, or post-terminal mutation are validation failures.
+terminal state's attempt-level sunk cost. Once such a terminal attempt exists,
+its bound category must be a finite number; `null` cannot stand in for the
+recorded sunk cost. Invalid actors/transitions, duplicate IDs, state/replay
+mismatch, or post-terminal mutation are validation failures.
 
 Delivery acceptance is the receiving phase lead's or final ProjectDelivery
 receiver's artifact decision. Evidence review is the independent certifier's provenance/separation/digest review. They
@@ -208,6 +214,7 @@ sequenceDiagram
   not a completed handoff or an accepted artifact. Each slice has a globally
   unique non-empty `slice_id`, one `arm` (`pm_routed` or `receiver_owned`), and
   an explicit non-null/non-empty value for every pre-registered stratum key.
+  `phase` is a mandatory pre-registered stratum.
 - Arms are independent: `pm_routed` control and `receiver_owned` treatment.
   `assignment_method`, `strata`, and every slice's boolean `contamination` are
   explicit. Both arms must have assigned slices. A duplicate slice ID, missing
@@ -230,8 +237,9 @@ sequenceDiagram
 The pre-registration contains `manifest_id`, a falsifiable `hypothesis`,
 non-empty `primary_kpis`, all five guardrails exactly once, the fixed estimand
 `per_slice_mean_by_arm`, `assignment_window`, `assignment_method`, and non-empty
-`strata`. It is accompanied by fixed `maturity`, `thresholds`, `cost_model`, and
-`actors`. Thresholds are finite non-negative values for
+`strata` that includes `phase`. It is accompanied by fixed `maturity`,
+`thresholds`, `cost_model`, and `actors`. Thresholds are finite non-negative
+values for
 `min_mature_per_arm`, `coordination_reduction_percent`,
 `incremental_cost_reduction_percent`,
 `time_to_usable_noninferiority_minutes`, and
@@ -304,6 +312,27 @@ per-slice coordination mean, incremental loaded cost, and per-slice loaded-cost
 mean remain `null`; `metrics.cost_complete` is false and readiness is
 `INCONCLUSIVE`. Rejected, cancelled, and abandoned work is also tied back to
 attempt-level `sunk_cost_minutes` as specified in section 3.
+Individually finite values are not sufficient when their derived arithmetic is
+unrepresentable: a non-finite category/arm total is
+`COST_AGGREGATE_NON_FINITE` at `slices`, and a non-finite total-times-rate
+result is `LOADED_COST_NON_FINITE` at
+`cost_model.loaded_cost_per_minute`. Either is invalid contract input and
+produces no report; `null` is reserved for an explicitly unknown measured cost,
+not arithmetic overflow. Each known category is accumulated independently, so
+`null` in one category cannot hide overflow in another known category. If
+finite arm means would still overflow the derived reduction, validation reports
+`COST_COMPARISON_NON_FINITE` at `slices` and
+`LOADED_COST_COMPARISON_NON_FINITE` at `cost_model.loaded_cost_per_minute`.
+
+Finite mature outcome values must also remain representable after aggregation.
+Non-finite time-to-usable and value-proxy means are
+`OUTCOME_TIME_MEAN_NON_FINITE` and `OUTCOME_VALUE_MEAN_NON_FINITE` at `slices`.
+Overflow while deriving the time upper boundary or value lower boundary is
+`OUTCOME_TIME_COMPARISON_NON_FINITE` at
+`thresholds.time_to_usable_noninferiority_minutes` or
+`OUTCOME_VALUE_COMPARISON_NON_FINITE` at
+`thresholds.value_noninferiority_margin`. These are contract-validation
+failures and produce no report.
 
 ### Descriptive bottleneck output
 
@@ -323,7 +352,7 @@ The analyzer emits deterministic fields, not an automatic decision:
 
 | Field | Meaning |
 |---|---|
-| `measurement_readiness` | `READY` only when both arms meet `min_mature_per_arm`, every assigned slice is mature, contamination is false, costs and mature outcomes are complete, and aggregate guardrails are not `UNKNOWN`; otherwise `INCONCLUSIVE` |
+| `measurement_readiness` | `READY` only when both arms meet `min_mature_per_arm`, every assigned slice is mature, contamination is false, costs and mature outcomes are complete, and no guardrail observation is `UNKNOWN`; otherwise `INCONCLUSIVE` |
 | `scenario_signal` | `INCONCLUSIVE` unless readiness is `READY`; then `FAVORABLE` only when both per-slice efficiency reductions meet thresholds and both mature outcomes meet their non-inferiority margins, otherwise `UNFAVORABLE` |
 | `guardrail_status` | `BREACH` if any slice guardrail is `BREACH`, otherwise `UNKNOWN` if any is `UNKNOWN`, otherwise `CLEAR`; input slice values are exactly `PASS`, `BREACH`, or `UNKNOWN` |
 | `evidence_eligibility` | exactly `SYNTHETIC_ONLY`, `OBSERVED_UNVERIFIED`, or `ELIGIBLE_FOR_EXTERNAL_REVIEW` for valid inputs |
@@ -353,7 +382,9 @@ Apply precedence in this order:
    `code`, `path`, and `message` values.
 2. Readiness is `INCONCLUSIVE` for any non-mature assigned slice, insufficient
    mature sample, contamination, unknown cost, incomplete mature outcome, or
-   aggregate `UNKNOWN` guardrail. `scenario_signal` is then `INCONCLUSIVE`.
+   any `UNKNOWN` guardrail observation. `scenario_signal` is then
+   `INCONCLUSIVE`, including when another observation makes aggregate
+   `guardrail_status` take the higher-precedence value `BREACH`.
 3. A `BREACH` remains visible even when readiness and the metric comparison are
    otherwise complete. It sets `safety_hold_recommended: true`; it does not get
    erased by a favorable metric signal. A breach alone does not relabel
@@ -397,7 +428,9 @@ Usage errors exit `2` with a structured `USAGE` JSON diagnostic on stderr.
 Unreadable or malformed JSON and contract-validation failures exit `1`, write
 no report to stdout, and emit one structured JSON diagnostic on stderr. A
 validation diagnostic uses `error: "DELIVERY_LOOP_VALIDATION_FAILED"` and an
-array of `{code, path, message}` details.
+array of `{code, path, message}` details. JSON container-shape violations, such
+as object-valued `events` or `preregistration.strata`, remain contract
+validation failures rather than escaping as runtime `TypeError`s.
 
 These commands analyze one named fixture only. They do not dispatch or stop a
 worker, alter project delivery state, write KMS/Pulse/mailbox data, contact a
