@@ -34,6 +34,7 @@ import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { KANIT_FONT_CSS } from '../assets/kanit/kanit-embedded.mjs'
 import { parseLsofCwd, parsePgrep, parsePsCandidates } from './pulse-platform.mjs'
 import { ID_RE, PULSE_SCHEMA, PULSE_SCHEMA_VERSION, UUID_RE, projectPulseV1 } from './pulse-data.mjs'
 
@@ -756,6 +757,7 @@ function render(snapshot) {
 <meta http-equiv="refresh" content="${refreshInterval}">
 <meta name="tmux-teams-snapshot-id" content="${esc(snapshot.snapshot_id)}">
 <style>
+${KANIT_FONT_CSS}
 :root{color-scheme:dark;--bg:oklch(17% .012 165);--surface:oklch(21% .014 165);--surface-2:oklch(24% .015 165);--line:oklch(34% .014 165);--ink:oklch(93% .012 165);--dim:oklch(71% .018 165);--ok:oklch(74% .13 165);--warn:oklch(78% .13 78);--bad:oklch(72% .16 28);--focus:oklch(78% .12 235);--sans:"Kanit","Noto Sans Thai","Leelawadee UI",Tahoma,sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--r-sm:8px;--r-md:14px;--s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:24px;--s6:32px;--s7:48px}
 @media(prefers-color-scheme:light){:root{color-scheme:light;--bg:oklch(97% .008 165);--surface:oklch(99% .004 165);--surface-2:oklch(95% .012 165);--line:oklch(87% .014 165);--ink:oklch(24% .018 165);--dim:oklch(50% .022 165);--ok:oklch(50% .12 165);--warn:oklch(53% .13 72);--bad:oklch(52% .16 28);--focus:oklch(52% .13 235)}}
 *{box-sizing:border-box}html{font-size:16px}body{margin:0;padding:var(--s5);background:var(--bg);color:var(--ink);font:400 1rem/1.65 var(--sans);text-rendering:optimizeLegibility}

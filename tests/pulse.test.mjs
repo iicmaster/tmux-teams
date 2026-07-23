@@ -182,6 +182,9 @@ test('the page is Thai-first and ordered for scanning before deep reading', () =
 
   assert.ok(overview < attention && attention < recent && recent < details)
   assert.match(html, /--sans:"Kanit","Noto Sans Thai","Leelawadee UI"/)
+  assert.equal((html.match(/data:font\/woff2;base64,/g) || []).length, 6)
+  assert.match(html, /@font-face\{font-family:"Kanit"/)
+  assert.match(html, /SIL OPEN FONT LICENSE Version 1\.1/)
   assert.doesNotMatch(html, /fonts\.(?:googleapis|gstatic)\.com/)
   assert.match(html, /<a class="skip-link" href="#main">/)
   assert.match(html, /@media\(max-width:620px\)/)
