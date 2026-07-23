@@ -318,10 +318,21 @@ unrepresentable: a non-finite category/arm total is
 result is `LOADED_COST_NON_FINITE` at
 `cost_model.loaded_cost_per_minute`. Either is invalid contract input and
 produces no report; `null` is reserved for an explicitly unknown measured cost,
-not arithmetic overflow. If finite arm means would still overflow the derived
-reduction, validation reports `COST_COMPARISON_NON_FINITE` at `slices` and
-`LOADED_COST_COMPARISON_NON_FINITE` at
-`cost_model.loaded_cost_per_minute`.
+not arithmetic overflow. Each known category is accumulated independently, so
+`null` in one category cannot hide overflow in another known category. If
+finite arm means would still overflow the derived reduction, validation reports
+`COST_COMPARISON_NON_FINITE` at `slices` and
+`LOADED_COST_COMPARISON_NON_FINITE` at `cost_model.loaded_cost_per_minute`.
+
+Finite mature outcome values must also remain representable after aggregation.
+Non-finite time-to-usable and value-proxy means are
+`OUTCOME_TIME_MEAN_NON_FINITE` and `OUTCOME_VALUE_MEAN_NON_FINITE` at `slices`.
+Overflow while deriving the time upper boundary or value lower boundary is
+`OUTCOME_TIME_COMPARISON_NON_FINITE` at
+`thresholds.time_to_usable_noninferiority_minutes` or
+`OUTCOME_VALUE_COMPARISON_NON_FINITE` at
+`thresholds.value_noninferiority_margin`. These are contract-validation
+failures and produce no report.
 
 ### Descriptive bottleneck output
 

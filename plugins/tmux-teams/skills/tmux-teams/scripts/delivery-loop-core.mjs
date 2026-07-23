@@ -508,28 +508,33 @@ function validateDerivedCosts(errors, input) {
   for (const arm of ARMS) {
     const armSlices = slices.filter((slice) => isObject(slice) && slice.arm === arm);
     if (armSlices.length === 0) continue;
-    const complete = armSlices.every((slice) => isObject(slice.costs)
-      && COST_CATEGORIES.every((category) => isNonNegative(slice.costs[category])));
-    if (!complete) continue;
-    const categoryTotals = Object.fromEntries(COST_CATEGORIES.map((category) => [category, 0]));
-    let aggregateNonFinite = false;
-
-    for (const slice of armSlices) {
-      for (const category of COST_CATEGORIES) {
-        const value = slice.costs[category];
-        const total = categoryTotals[category] + value;
-        if (!Number.isFinite(total)) {
-          aggregateNonFinite = true;
+    const categoryTotals = {};
+    let complete = true;
+    let overflowCategory = null;
+    for (const category of COST_CATEGORIES) {
+      let categoryComplete = true;
+      let total = 0;
+      for (const slice of armSlices) {
+        const value = slice.costs?.[category];
+        if (!isNonNegative(value)) {
+          categoryComplete = false;
+          complete = false;
           break;
         }
-        categoryTotals[category] = total;
+        total += value;
+        if (!Number.isFinite(total)) {
+          overflowCategory = category;
+          break;
+        }
       }
-      if (aggregateNonFinite) break;
+      if (overflowCategory !== null) break;
+      categoryTotals[category] = categoryComplete ? total : null;
     }
-    if (aggregateNonFinite) {
-      issue(errors, 'COST_AGGREGATE_NON_FINITE', 'slices', `Derived cost aggregation is non-finite for ${arm}.`);
+    if (overflowCategory !== null) {
+      issue(errors, 'COST_AGGREGATE_NON_FINITE', 'slices', `Derived ${overflowCategory} aggregation is non-finite for ${arm}.`);
       continue;
     }
+    if (!complete) continue;
 
     const totalCoordinationMinutes = Object.values(categoryTotals)
       .reduce((sum, value) => sum + value, 0);
@@ -561,6 +566,64 @@ function validateDerivedCosts(errors, input) {
     && loadedCostMeans.pm_routed > 0
     && !Number.isFinite(loadedCostReduction)) {
     issue(errors, 'LOADED_COST_COMPARISON_NON_FINITE', 'cost_model.loaded_cost_per_minute', 'Derived loaded-cost reduction is non-finite.');
+  }
+}
+
+function mean(values) {
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+}
+
+function validateDerivedOutcomes(errors, input) {
+  const slices = input.slices;
+  const analysisAsOf = rfc3339Millis(input.analysis_as_of);
+  const minFollowUpDays = input.maturity?.min_follow_up_days;
+  if (!Array.isArray(slices) || analysisAsOf === null || !isNonNegative(minFollowUpDays)) return;
+
+  const byArm = Object.fromEntries(ARMS.map((arm) => [arm, { times: [], values: [] }]));
+  for (const slice of slices) {
+    if (!isObject(slice) || !ARM_SET.has(slice.arm) || !isObject(slice.outcome)) continue;
+    const assignedAt = rfc3339Millis(slice.assigned_at);
+    if (assignedAt === null
+      || assignedAt + minFollowUpDays * 86_400_000 > analysisAsOf
+      || slice.outcome.status !== 'mature') continue;
+    if (isNonNegative(slice.outcome.time_to_usable_outcome_minutes)) {
+      byArm[slice.arm].times.push(slice.outcome.time_to_usable_outcome_minutes);
+    }
+    if (isFiniteNumber(slice.outcome.value_proxy)) {
+      byArm[slice.arm].values.push(slice.outcome.value_proxy);
+    }
+  }
+
+  const timeMeans = {};
+  const valueMeans = {};
+  for (const arm of ARMS) {
+    const timeMean = mean(byArm[arm].times);
+    if (byArm[arm].times.length > 0 && !Number.isFinite(timeMean)) {
+      issue(errors, 'OUTCOME_TIME_MEAN_NON_FINITE', 'slices', `Derived time-to-usable mean is non-finite for ${arm}.`);
+    } else {
+      timeMeans[arm] = timeMean;
+    }
+    const valueMean = mean(byArm[arm].values);
+    if (byArm[arm].values.length > 0 && !Number.isFinite(valueMean)) {
+      issue(errors, 'OUTCOME_VALUE_MEAN_NON_FINITE', 'slices', `Derived value-proxy mean is non-finite for ${arm}.`);
+    } else {
+      valueMeans[arm] = valueMean;
+    }
+  }
+
+  const timeMargin = input.thresholds?.time_to_usable_noninferiority_minutes;
+  if (isNonNegative(timeMeans.pm_routed)
+    && isNonNegative(timeMeans.receiver_owned)
+    && isNonNegative(timeMargin)
+    && !Number.isFinite(timeMeans.pm_routed + timeMargin)) {
+    issue(errors, 'OUTCOME_TIME_COMPARISON_NON_FINITE', 'thresholds.time_to_usable_noninferiority_minutes', 'Derived time-to-usable non-inferiority boundary is non-finite.');
+  }
+  const valueMargin = input.thresholds?.value_noninferiority_margin;
+  if (isFiniteNumber(valueMeans.pm_routed)
+    && isFiniteNumber(valueMeans.receiver_owned)
+    && isNonNegative(valueMargin)
+    && !Number.isFinite(valueMeans.pm_routed - valueMargin)) {
+    issue(errors, 'OUTCOME_VALUE_COMPARISON_NON_FINITE', 'thresholds.value_noninferiority_margin', 'Derived value-proxy non-inferiority boundary is non-finite.');
   }
 }
 
@@ -647,6 +710,7 @@ export function validateExperiment(input) {
     validateRevisionLineage(errors, globalAttempts, globalAttemptIds);
   }
   validateDerivedCosts(errors, input);
+  validateDerivedOutcomes(errors, input);
   validateCertificationClaim(errors, input);
   return { valid: errors.length === 0, errors };
 }
@@ -700,7 +764,6 @@ function aggregateArm(slices, rate, analysisAsOf, minFollowUpDays) {
   return result;
 }
 
-const mean = (values) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
 const percentReduction = (control, treatment) => isNonNegative(control) && isNonNegative(treatment) && control > 0
   ? ((control - treatment) / control) * 100
   : null;

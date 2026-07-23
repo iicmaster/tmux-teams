@@ -454,6 +454,18 @@ test('finite input costs and rates that overflow derived arithmetic are rejected
   assert.equal(validateExperiment(explicitUnknown).valid, true, 'explicit unknown cost remains valid rather than being treated as overflow')
   assert.equal(analyzeExperiment(explicitUnknown).measurement_readiness, 'INCONCLUSIVE')
 
+  const knownCategoryOverflow = validInput()
+  knownCategoryOverflow.slices.push(
+    rekeySlice(knownCategoryOverflow.slices[0], 'known-cost-control-overflow'),
+    rekeySlice(knownCategoryOverflow.slices[1], 'known-cost-treatment-overflow'),
+  )
+  for (const slice of knownCategoryOverflow.slices) {
+    for (const category of COST_CATEGORIES) slice.costs[category] = 0
+    slice.costs.pm_routing_minutes = Number.MAX_VALUE
+    slice.costs.pm_evidence_minutes = null
+  }
+  assertStructuredValidation(knownCategoryOverflow, 'COST_AGGREGATE_NON_FINITE', 'slices')
+
   const loadedCostOverflow = validInput()
   loadedCostOverflow.cost_model.loaded_cost_per_minute = Number.MAX_VALUE
   for (const slice of loadedCostOverflow.slices) {
@@ -469,6 +481,45 @@ test('finite input costs and rates that overflow derived arithmetic are rejected
     slice.costs.pm_routing_minutes = slice.arm === 'pm_routed' ? Number.MIN_VALUE : Number.MAX_VALUE
   }
   assertStructuredValidation(comparisonOverflow, 'COST_COMPARISON_NON_FINITE', 'slices')
+})
+
+for (const [field, code] of [
+  ['time_to_usable_outcome_minutes', 'OUTCOME_TIME_MEAN_NON_FINITE'],
+  ['value_proxy', 'OUTCOME_VALUE_MEAN_NON_FINITE'],
+]) {
+  test(`finite mature ${field} values whose mean overflows are rejected without a report`, () => {
+    const meanOverflow = validInput()
+    meanOverflow.slices.push(
+      rekeySlice(meanOverflow.slices[0], `${field}-control-overflow`),
+      rekeySlice(meanOverflow.slices[1], `${field}-treatment-overflow`),
+    )
+    for (const slice of meanOverflow.slices) slice.outcome[field] = Number.MAX_VALUE
+    assertStructuredValidation(meanOverflow, code, 'slices')
+  })
+}
+
+test('finite time outcomes whose non-inferiority boundary overflows are rejected without a report', () => {
+  const timeComparisonOverflow = validInput()
+  timeComparisonOverflow.slices[0].outcome.time_to_usable_outcome_minutes = Number.MAX_VALUE
+  timeComparisonOverflow.slices[1].outcome.time_to_usable_outcome_minutes = 0
+  timeComparisonOverflow.thresholds.time_to_usable_noninferiority_minutes = Number.MAX_VALUE
+  assertStructuredValidation(
+    timeComparisonOverflow,
+    'OUTCOME_TIME_COMPARISON_NON_FINITE',
+    'thresholds.time_to_usable_noninferiority_minutes',
+  )
+})
+
+test('finite value outcomes whose non-inferiority boundary overflows are rejected without a report', () => {
+  const valueComparisonOverflow = validInput()
+  valueComparisonOverflow.slices[0].outcome.value_proxy = -Number.MAX_VALUE
+  valueComparisonOverflow.slices[1].outcome.value_proxy = 0
+  valueComparisonOverflow.thresholds.value_noninferiority_margin = Number.MAX_VALUE
+  assertStructuredValidation(
+    valueComparisonOverflow,
+    'OUTCOME_VALUE_COMPARISON_NON_FINITE',
+    'thresholds.value_noninferiority_margin',
+  )
 })
 
 test('certifier separation is enforced and a digest-bound claim stays advisory and external-only', () => {
