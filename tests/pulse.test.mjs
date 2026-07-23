@@ -5,10 +5,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, utimesSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { KANIT_FONT_CSS } from '../plugins/tmux-teams/skills/tmux-teams/assets/kanit/kanit-embedded.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PULSE = join(ROOT, 'plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs')
@@ -182,9 +185,8 @@ test('the page is Thai-first and ordered for scanning before deep reading', () =
 
   assert.ok(overview < attention && attention < recent && recent < details)
   assert.match(html, /--sans:"Kanit","Noto Sans Thai","Leelawadee UI"/)
-  assert.equal((html.match(/data:font\/woff2;base64,/g) || []).length, 6)
-  assert.match(html, /@font-face\{font-family:"Kanit"/)
-  assert.match(html, /SIL OPEN FONT LICENSE Version 1\.1/)
+  assert.match(html, /<link rel="stylesheet" href="pulse-fonts-[a-f0-9]{64}\.css">/)
+  assert.doesNotMatch(html, /data:font\/woff2;base64,|@font-face\{font-family:"Kanit"/)
   assert.doesNotMatch(html, /fonts\.(?:googleapis|gstatic)\.com/)
   assert.match(html, /<a class="skip-link" href="#main">/)
   assert.match(html, /@media\(max-width:620px\)/)
@@ -192,6 +194,29 @@ test('the page is Thai-first and ordered for scanning before deep reading', () =
   assert.match(html, /<details class="deep-dive" data-persist-key="progress"><summary>ความคืบหน้าของแต่ละงาน<\/summary>/)
   assert.match(html, /sessionStorage\.setItem\(key, detail\.open \? 'open' : 'closed'\)/)
   assert.doesNotMatch(html, />DIED SILENTLY<|>not measured</)
+})
+
+test('the Kanit payload is content-addressed, offline, and not rewritten on refresh', () => {
+  const dir = repo()
+  const cssHash = createHash('sha256').update(KANIT_FONT_CSS).digest('hex')
+  const cssName = `pulse-fonts-${cssHash}.css`
+  const cssPath = join(dir, '.tmux-teams', cssName)
+
+  const firstHtml = render(dir)
+  assert.match(firstHtml, new RegExp(`<link rel="stylesheet" href="${cssName}">`))
+  assert.doesNotMatch(firstHtml, /data:font\/woff2;base64,|https?:\/\//)
+  assert.equal(readFileSync(cssPath, 'utf8'), KANIT_FONT_CSS)
+  assert.equal((KANIT_FONT_CSS.match(/data:font\/woff2;base64,/g) || []).length, 6)
+  assert.doesNotMatch(KANIT_FONT_CSS, /src:url\((?!\"data:font\/woff2;base64,)/)
+
+  utimesSync(cssPath, new Date('2001-01-01T00:00:00Z'), new Date('2001-01-01T00:00:00Z'))
+  const mtimeBefore = statSync(cssPath).mtimeMs
+  const secondHtml = render(dir)
+
+  assert.match(secondHtml, new RegExp(`<link rel="stylesheet" href="${cssName}">`))
+  assert.equal(readFileSync(cssPath, 'utf8'), KANIT_FONT_CSS)
+  assert.equal(statSync(cssPath).mtimeMs, mtimeBefore, 'unchanged static payload must not be rewritten')
+  assert.equal(JSON.parse(readFileSync(join(dir, '.tmux-teams', 'pulse.json'), 'utf8')).sequence, 2)
 })
 
 test('an empty repo says there is nothing to see rather than looking broken', () => {
