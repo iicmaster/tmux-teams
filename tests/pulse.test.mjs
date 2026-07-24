@@ -17,7 +17,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PULSE = join(ROOT, 'plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs')
 const FIXED_UTC = '2026-07-21T09:00:00Z'
 const FIXED_ISO = '2026-07-21T09:00:00.000Z'
-const FIXED_THAI = '2026-07-21 16:00:00 เวลาไทย (UTC+7)'
+const FIXED_BANGKOK = '2026-07-21 16:00:00'
 
 function repo() {
   const dir = mkdtempSync(join(tmpdir(), 'pulse-repo-'))
@@ -26,11 +26,16 @@ function repo() {
   mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
   return dir
 }
-const render = (dir) => {
-  const r = spawnSync('node', [PULSE, 'once', dir], {
+const runOnce = (dir, { extraEnv = {}, extraArgs = [] } = {}) => spawnSync(
+  'node',
+  [PULSE, 'once', dir, ...extraArgs],
+  {
     encoding: 'utf8',
-    env: { ...process.env, TZ: 'UTC' },
-  })
+    env: { ...process.env, TZ: 'UTC', PULSE_TIME_ZONE: '', ...extraEnv },
+  },
+)
+const render = (dir, options) => {
+  const r = runOnce(dir, options)
   assert.equal(r.status, 0, r.stderr)
   return readFileSync(r.stdout.trim(), 'utf8')
 }
@@ -262,7 +267,7 @@ test('an old event does not settle a newer dispatch of the same id', () => {
 test('the page states its scope and its own age', () => {
   const html = render(repo())
   assert.match(html, /ติดตามเฉพาะ worker ที่ระบบสั่งในโปรเจกต์นี้/)
-  assert.match(html, /ข้อมูลที่สังเกต ณ<\/span><time[^>]+>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} เวลาไทย \(UTC\+7\)<\/time>/)
+  assert.match(html, /id="pulse-timezone-label"[^>]*>เวลาไทย \(UTC\+7\)<\/span><span>ข้อมูลที่สังเกต ณ<\/span><time[^>]+>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}<\/time>/)
   assert.doesNotMatch(html, />\d{4}-\d{2}-\d{2}[^<]* UTC<\/time>/)
   assert.match(html, /http-equiv="refresh"/)
 })
@@ -274,25 +279,78 @@ test('header, recent verdicts, and run details render Asia/Bangkok while JSON st
 
   const html = render(dir)
   const snapshot = JSON.parse(readFileSync(join(dir, '.tmux-teams', 'pulse.json'), 'utf8'))
-  const expectedFixedTime = `<time datetime="${FIXED_ISO}" title="Asia/Bangkok">${FIXED_THAI}</time>`
-  const header = html.match(/ข้อมูลที่สังเกต ณ<\/span><time datetime="([^"]+)" title="Asia\/Bangkok">([^<]+)<\/time>/)
-  const generatedThai = new Date(Date.parse(snapshot.generated_at) + 7 * 60 * 60 * 1000)
+  const expectedFixedTime = `<time datetime="${FIXED_ISO}" title="Asia/Bangkok" aria-describedby="pulse-timezone-label">${FIXED_BANGKOK}</time>`
+  const header = html.match(/ข้อมูลที่สังเกต ณ<\/span><time datetime="([^"]+)" title="Asia\/Bangkok" aria-describedby="pulse-timezone-label">([^<]+)<\/time>/)
+  const generatedBangkok = new Date(Date.parse(snapshot.generated_at) + 7 * 60 * 60 * 1000)
     .toISOString().replace('T', ' ').slice(0, 19)
 
   assert.ok(header, 'header must expose its machine timestamp and explicit IANA zone')
   assert.equal(header[1], snapshot.generated_at)
-  assert.equal(header[2], `${generatedThai} เวลาไทย (UTC+7)`)
+  assert.equal(header[2], generatedBangkok)
   assert.ok(sectionBy(html, 'attention-title').includes(expectedFixedTime))
   assert.ok(sectionBy(html, 'recent-title').includes(expectedFixedTime))
   assert.equal(snapshot.runs.find(run => run.task_id === 'thai-active')?.started_at, FIXED_ISO)
   assert.equal(snapshot.recent_verdicts.find(row => row.task_id === 'thai-recent')?.started_at, FIXED_ISO)
+  assert.equal((html.match(/เวลาไทย \(UTC\+7\)/g) || []).length, 1,
+    'the visible timezone label belongs only in the header')
 
-  const absoluteTimes = [...html.matchAll(/<time datetime="([^"]+)" title="([^"]+)">([^<]+)<\/time>/g)]
+  const absoluteTimes = [...html.matchAll(/<time datetime="([^"]+)" title="([^"]+)" aria-describedby="pulse-timezone-label">([^<]+)<\/time>/g)]
   assert.equal(absoluteTimes.length, 3, 'fixture covers header, recent, and active-run details')
   for (const [, machineTime, zone, visibleTime] of absoluteTimes) {
     assert.match(machineTime, /Z$/, 'machine timestamp remains RFC3339 UTC')
     assert.equal(zone, 'Asia/Bangkok')
-    assert.match(visibleTime, /เวลาไทย \(UTC\+7\)$/)
+    assert.match(visibleTime, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
+  }
+})
+
+test('display timezone supports env and CLI precedence without changing UTC data', () => {
+  const dir = repo()
+  dispatch(dir, 'zone-active', 600)
+  event(dir, 'zone-recent')
+
+  const utc = render(dir, { extraEnv: { PULSE_TIME_ZONE: 'UTC' } })
+  const utcGraph = readFileSync(join(dir, '.tmux-teams', 'loop-graph.html'), 'utf8')
+  assert.match(utc, /id="pulse-timezone-label"[^>]*>เขตเวลา UTC<\/span>/)
+  assert.match(utcGraph, /id="loop-timezone-label"[^>]*>เขตเวลา UTC<\/span>/)
+  assert.match(utcGraph, /<time datetime="[^"]+" title="UTC" aria-describedby="loop-timezone-label">/)
+  assert.match(utc, new RegExp(
+    `<time datetime="${FIXED_ISO}" title="UTC" aria-describedby="pulse-timezone-label">2026-07-21 09:00:00</time>`,
+  ))
+
+  const newYork = render(dir, { extraEnv: { PULSE_TIME_ZONE: 'America/New_York' } })
+  const newYorkGraph = readFileSync(join(dir, '.tmux-teams', 'loop-graph.html'), 'utf8')
+  assert.match(newYork, /id="pulse-timezone-label"[^>]*>เขตเวลา America\/New_York<\/span>/)
+  assert.match(newYorkGraph, /id="loop-timezone-label"[^>]*>เขตเวลา America\/New_York<\/span>/)
+  assert.match(newYorkGraph, /<time datetime="[^"]+" title="America\/New_York" aria-describedby="loop-timezone-label">/)
+  assert.match(newYork, new RegExp(
+    `<time datetime="${FIXED_ISO}" title="America/New_York" aria-describedby="pulse-timezone-label">2026-07-21 05:00:00</time>`,
+  ))
+
+  const cliWins = render(dir, {
+    extraEnv: { PULSE_TIME_ZONE: 'Invalid/Zone' },
+    extraArgs: ['--time-zone', 'Asia/Bangkok'],
+  })
+  const cliWinsGraph = readFileSync(join(dir, '.tmux-teams', 'loop-graph.html'), 'utf8')
+  assert.match(cliWins, /id="pulse-timezone-label"[^>]*>เวลาไทย \(UTC\+7\)<\/span>/)
+  assert.match(cliWinsGraph, /id="loop-timezone-label"[^>]*>เวลาไทย \(UTC\+7\)<\/span>/)
+  assert.equal((cliWinsGraph.match(/เวลาไทย \(UTC\+7\)/g) || []).length, 1)
+  assert.match(cliWins, new RegExp(
+    `<time datetime="${FIXED_ISO}" title="Asia/Bangkok" aria-describedby="pulse-timezone-label">${FIXED_BANGKOK}</time>`,
+  ))
+
+  const snapshot = JSON.parse(readFileSync(join(dir, '.tmux-teams', 'pulse.json'), 'utf8'))
+  assert.equal(snapshot.runs.find(run => run.task_id === 'zone-active')?.started_at, FIXED_ISO)
+  assert.equal(snapshot.recent_verdicts.find(row => row.task_id === 'zone-recent')?.started_at, FIXED_ISO)
+})
+
+test('an explicit invalid display timezone fails before publishing', () => {
+  for (const options of [
+    { extraEnv: { PULSE_TIME_ZONE: 'Invalid/Zone' } },
+    { extraArgs: ['--time-zone', 'Invalid/Zone'] },
+  ]) {
+    const result = runOnce(repo(), options)
+    assert.equal(result.status, 2)
+    assert.match(result.stderr, /\[pulse\] invalid time zone "Invalid\/Zone"/)
   }
 })
 

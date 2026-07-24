@@ -1,8 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import {
-  chmodSync, mkdtempSync, mkdirSync, readFileSync, utimesSync, writeFileSync,
+  chmodSync, mkdtempSync, mkdirSync, readFileSync, rmdirSync, unlinkSync,
+  utimesSync, writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -10,8 +12,12 @@ import { fileURLToPath } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PULSE = join(ROOT, 'plugins', 'tmux-teams', 'skills', 'tmux-teams', 'scripts', 'pulse.mjs')
-const SCHEMA_PATH = join(ROOT, 'plugins', 'tmux-teams', 'skills', 'tmux-teams', 'references', 'pulse-v1.schema.json')
-const SCHEMA = JSON.parse(readFileSync(SCHEMA_PATH, 'utf8'))
+const SCHEMA_DIR = join(ROOT, 'plugins', 'tmux-teams', 'skills', 'tmux-teams', 'references')
+const SCHEMA_PATH = join(SCHEMA_DIR, 'pulse-v4.schema.json')
+const V3_SCHEMA_PATH = join(SCHEMA_DIR, 'pulse-v3.schema.json')
+const V4_SCHEMA = JSON.parse(readFileSync(SCHEMA_PATH, 'utf8'))
+const V3_SCHEMA = JSON.parse(readFileSync(V3_SCHEMA_PATH, 'utf8'))
+const SCHEMA = { ...V4_SCHEMA, $defs: { ...V3_SCHEMA.$defs, ...V4_SCHEMA.$defs } }
 const PULSE_SOURCE = readFileSync(PULSE, 'utf8')
 const HAS_PYTHON_JSONSCHEMA = spawnSync('python3', ['-c', 'import jsonschema'], { encoding: 'utf8' }).status === 0
 
@@ -87,6 +93,34 @@ function runJsonAsync(dir) {
   })
 }
 
+function verifyCommittedBundle(dir) {
+  const store = join(dir, '.tmux-teams')
+  const markerPath = join(store, 'pulse-current.json')
+  const markerBefore = readFileSync(markerPath, 'utf8')
+  const manifest = JSON.parse(markerBefore)
+  assert.equal(manifest.schema, 'tmux-teams.pulse-bundle')
+  assert.equal(manifest.schema_version, 2)
+  assert.deepEqual(Object.keys(manifest.files).sort(),
+    ['d3_js', 'd3_license', 'dashboard', 'data', 'font_css', 'loop_graph'])
+  for (const entry of Object.values(manifest.files)) {
+    assert.match(entry.path, /^[a-z0-9][a-z0-9._-]*$/i)
+    assert.match(entry.sha256, /^[a-f0-9]{64}$/)
+    const content = readFileSync(join(store, entry.path))
+    assert.equal(createHash('sha256').update(content).digest('hex'), entry.sha256)
+  }
+  const snapshot = JSON.parse(readFileSync(join(store, manifest.files.data.path), 'utf8'))
+  assert.equal(snapshot.snapshot_id, manifest.snapshot_id)
+  for (const key of ['dashboard', 'loop_graph']) {
+    const html = readFileSync(join(store, manifest.files[key].path), 'utf8')
+    assert.match(html, new RegExp(
+      `<meta name="tmux-teams-snapshot-id" content="${manifest.snapshot_id}">`,
+    ))
+  }
+  assert.equal(readFileSync(markerPath, 'utf8'), markerBefore,
+    'commit marker must remain stable across the bundle read')
+  return { manifest, snapshot }
+}
+
 function assertExactKeys(value, schema, label) {
   assert.ok(value && typeof value === 'object' && !Array.isArray(value), `${label} must be an object`)
   assert.deepEqual(Object.keys(value).sort(), Object.keys(schema.properties).sort(),
@@ -137,6 +171,11 @@ function assertRun(run, index) {
   assert.equal(typeof run.advisory.attention, 'boolean')
   assertEnum(run.advisory.action_code, SCHEMA.$defs.action_code, `${label}.advisory.action_code`)
   assert.equal(run.advisory.auto_execute, false, `${label} must never authorize automatic action`)
+  assert.ok(run.phase === null || SCHEMA.$defs.nullable_run_phase.oneOf[0].enum.includes(run.phase),
+    `${label}.phase must be an explicit delivery phase or null`)
+  assertEnum(run.phase_source, SCHEMA.$defs.phase_source, `${label}.phase_source`)
+  assert.equal(run.phase === null, ['unassigned', 'conflict'].includes(run.phase_source),
+    `${label} phase and phase_source must agree`)
 }
 
 function assertRecentVerdict(verdict, index) {
@@ -151,6 +190,11 @@ function assertRecentVerdict(verdict, index) {
   if (verdict.started_at !== null) assertTimestamp(verdict.started_at, `${label}.started_at`)
   assertNullableDuration(verdict.wait_sec, `${label}.wait_sec`)
   assertNullableDuration(verdict.timeout_sec, `${label}.timeout_sec`)
+  assert.ok(verdict.phase === null ||
+    SCHEMA.$defs.nullable_run_phase.oneOf[0].enum.includes(verdict.phase))
+  assertEnum(verdict.phase_source, SCHEMA.$defs.phase_source, `${label}.phase_source`)
+  assert.equal(verdict.phase === null, ['unassigned', 'conflict'].includes(verdict.phase_source),
+    `${label} phase and phase_source must agree`)
 }
 
 function assertDiagnostic(diagnostic, index) {
@@ -178,10 +222,11 @@ function assertUnclaimedControl(row, index) {
   assert.ok(Number.isInteger(row.age_sec) && row.age_sec >= 0)
 }
 
-function assertPulseV1(snapshot) {
-  assertExactKeys(snapshot, SCHEMA, 'pulse')
+function assertPulseV4(snapshot) {
+  assert.deepEqual(Object.keys(snapshot).sort(), [...SCHEMA.required].sort(),
+    'default Pulse v3 must contain exactly its required fields')
   assert.equal(snapshot.schema, 'tmux-teams.pulse')
-  assert.equal(snapshot.schema_version, 1)
+  assert.equal(snapshot.schema_version, 4)
   assert.ok(typeof snapshot.stream_id === 'string' && UUID_RE.test(snapshot.stream_id), 'stream_id must be a UUID')
   assert.ok(Number.isSafeInteger(snapshot.sequence) && snapshot.sequence >= 1)
   assert.ok(typeof snapshot.snapshot_id === 'string' && SNAPSHOT_RE.test(snapshot.snapshot_id))
@@ -260,23 +305,27 @@ function walkLeaves(value, visit, path = '') {
   visit(value, path)
 }
 
-test('Pulse Data v1 schema is closed and advisory-only', () => {
+test('Pulse Data v4 schema is closed, advisory-only, phase-explicit, and runtime-optional', () => {
   assert.equal(SCHEMA.$schema, 'https://json-schema.org/draft/2020-12/schema')
   assert.equal(SCHEMA.properties.schema.const, 'tmux-teams.pulse')
-  assert.equal(SCHEMA.properties.schema_version.const, 1)
+  assert.equal(SCHEMA.properties.schema_version.const, 4)
   assert.equal(SCHEMA.properties.trust_level.const, 'advisory_same_uid')
 
   for (const [name, definition] of [['pulse', SCHEMA], ...Object.entries(SCHEMA.$defs)]) {
     if (definition.type !== 'object') continue
     assert.equal(definition.additionalProperties, false, `${name} must reject unknown fields`)
-    assert.deepEqual([...definition.required].sort(), Object.keys(definition.properties).sort(),
-      `${name} must require every declared field`)
+    const optional = name === 'pulse' ? ['delivery_loop', 'delivery_runtime'] : []
+    assert.deepEqual([...definition.required].sort(),
+      Object.keys(definition.properties).filter(key => !optional.includes(key)).sort(),
+      `${name} must require every non-optional declared field`)
   }
   assert.equal(SCHEMA.$defs.advisory.properties.auto_execute.const, false)
+  assert.deepEqual(SCHEMA.$defs.phase_source.enum,
+    ['dispatch', 'event', 'dispatch_join', 'unassigned', 'conflict'])
 
   const rawFieldNames = new Set([
-    'lesson', 'verify_cmd', 'evidence', 'raw_outbox', 'detail', 'pid', 'session',
-    'cmdline', 'raw_error', 'path', 'file',
+    'lesson', 'verify_cmd', 'raw_evidence', 'raw_outbox', 'detail', 'pid',
+    'session', 'cmdline', 'raw_error', 'path', 'file',
   ])
   walkKeys(SCHEMA, (key, path) => {
     if (path.endsWith('.properties')) return
@@ -287,7 +336,7 @@ test('Pulse Data v1 schema is closed and advisory-only', () => {
 test('json command publishes exactly one schema-valid document and HTML shares its snapshot id', () => {
   const dir = repo()
   const { snapshot } = runJson(dir)
-  assertPulseV1(snapshot)
+  assertPulseV4(snapshot)
 
   const html = readFileSync(join(dir, '.tmux-teams', 'pulse.html'), 'utf8')
   const meta = html.match(/<meta\s+name="tmux-teams-snapshot-id"\s+content="([^"]+)"\s*>/)
@@ -347,7 +396,7 @@ test('snapshot sequence is monotonic and corrupt prior identity starts a diagnos
   assert.ok(reset.diagnostics.some(item => item.code === 'SEQUENCE_RESET'))
 })
 
-test('concurrent publishers serialize into one stream with unique sequences', { timeout: 20_000 }, async () => {
+test('concurrent publishers serialize into one committed bundle with unique sequences', { timeout: 30_000 }, async () => {
   const dir = repo()
   const snapshots = await Promise.all(Array.from({ length: 6 }, () => runJsonAsync(dir)))
   assert.equal(new Set(snapshots.map(item => item.stream_id)).size, 1)
@@ -356,7 +405,39 @@ test('concurrent publishers serialize into one stream with unique sequences', { 
   const persisted = JSON.parse(readFileSync(join(dir, '.tmux-teams', 'pulse.json'), 'utf8'))
   assert.equal(persisted.sequence, 6)
   const html = readFileSync(join(dir, '.tmux-teams', 'pulse.html'), 'utf8')
+  const loopGraph = readFileSync(join(dir, '.tmux-teams', 'loop-graph.html'), 'utf8')
   assert.match(html, new RegExp(`content="${persisted.snapshot_id}"`))
+  assert.match(loopGraph, new RegExp(`content="${persisted.snapshot_id}"`))
+  const committed = verifyCommittedBundle(dir)
+  assert.equal(committed.manifest.snapshot_id, persisted.snapshot_id)
+})
+
+test('the bundle marker stays on the last complete snapshot when an HTML rename fails', () => {
+  const dir = repo()
+  const first = runJson(dir).snapshot
+  const markerPath = join(dir, '.tmux-teams', 'pulse-current.json')
+  const markerBefore = readFileSync(markerPath, 'utf8')
+  verifyCommittedBundle(dir)
+
+  const dashboardPath = join(dir, '.tmux-teams', 'pulse.html')
+  unlinkSync(dashboardPath)
+  mkdirSync(dashboardPath)
+  const failed = spawnSync(process.execPath, [PULSE, 'json', dir], {
+    encoding: 'utf8', timeout: 10_000,
+  })
+  assert.equal(failed.status, 1)
+  assert.equal(failed.stdout, '')
+  assert.match(failed.stderr, /\[pulse\] publish failed:/)
+  assert.equal(readFileSync(markerPath, 'utf8'), markerBefore,
+    'the prior commit marker must survive a partial publication')
+  const partial = JSON.parse(readFileSync(join(dir, '.tmux-teams', 'pulse.json'), 'utf8'))
+  assert.ok(partial.sequence > first.sequence, 'the injected failure happens after JSON publication')
+  assert.throws(() => verifyCommittedBundle(dir),
+    'the old marker must make the mixed snapshot detectable')
+
+  rmdirSync(dashboardPath)
+  runJson(dir)
+  verifyCommittedBundle(dir)
 })
 
 test('dispatch UUID prevents a newer verdict for a reused task id from settling this attempt', () => {
@@ -421,11 +502,13 @@ test('published document passes a real Draft 2020-12 validator', {
     'import json, jsonschema, sys',
     'schema = json.load(open(sys.argv[1], encoding="utf-8"))',
     'instance = json.load(open(sys.argv[2], encoding="utf-8"))',
+    'base = json.load(open(sys.argv[3], encoding="utf-8"))',
     'jsonschema.Draft202012Validator.check_schema(schema)',
-    'jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker()).validate(instance)',
+    'resolver = jsonschema.RefResolver.from_schema(schema, store={"pulse-v3.schema.json": base})',
+    'jsonschema.Draft202012Validator(schema, resolver=resolver, format_checker=jsonschema.FormatChecker()).validate(instance)',
   ].join('; ')
   const validation = spawnSync('python3', [
-    '-c', program, SCHEMA_PATH, join(dir, '.tmux-teams', 'pulse.json'),
+    '-c', program, SCHEMA_PATH, join(dir, '.tmux-teams', 'pulse.json'), V3_SCHEMA_PATH,
   ], { encoding: 'utf8', timeout: 10_000 })
   assert.equal(validation.status, 0, validation.stderr || validation.stdout)
 })
@@ -497,7 +580,7 @@ test('JSON is a safe SSOT: corrupt data degrades explicitly while valid data sur
   age(validOutbox, 600)
 
   const { snapshot, stdout } = runJson(dir)
-  assertPulseV1(snapshot)
+  assertPulseV4(snapshot)
 
   const run = snapshot.runs.find(item => item.task_id === 'pulse-valid-run')
   assert.ok(run, 'valid dispatch must survive projection')

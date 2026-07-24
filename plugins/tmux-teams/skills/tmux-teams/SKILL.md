@@ -106,26 +106,92 @@ The closed contracts are:
 - [pilot manifest v1](references/delivery-loop-pilot-manifest-v1.schema.json)
 - [append-only event v1](references/delivery-loop-event-v1.schema.json)
 - [exported evidence pack v1](references/delivery-loop-evidence-pack-v1.schema.json)
-- [Pulse data v2](references/pulse-v2.schema.json)
+- [Pulse data v4](references/pulse-v4.schema.json)
+- [Pulse data v3 compatibility contract](references/pulse-v3.schema.json)
 - [Thai-first Stage 1 pilot runbook](references/stage-1-pilot-runbook.md)
 
 Local events and packs remain `advisory_same_uid`; the exported index remains
 `NOT_CERTIFIED`, `EXTERNAL_REQUIRED`, and `actuation: NONE`. External custody,
 independent review, and business-owner ratification occur outside this toolkit.
 
-Pulse v2 is enabled only when a bounded delivery-loop projection is named. It
-reuses the single `<repo>/.tmux-teams/pulse.json` SSOT; compatibility output is
+Pulse v4 is the default single `<repo>/.tmux-teams/pulse.json` SSOT. It
+preserves the bounded Pulse v3 run/verdict definitions, including explicit
+`phase` and `phase_source` evidence, and adds the optional closed
+`delivery_runtime` field. Existing v3 documents remain covered by the published
+v3 schema; the persisted default is v4. Missing or untrusted attribution is
+unassigned; never infer phase or a handoff from task names, workers, timestamps,
+or provider names. The bounded `delivery_loop` and `delivery_runtime` fields
+appear only when their projections are named. Compatibility output is
 stdout-only:
 
 ```bash
 node <skill-root>/scripts/pulse.mjs json \
   <repo> --delivery-loop <absolute-pulse-projection.json>
+node <skill-root>/scripts/pulse.mjs json \
+  <repo> --delivery-runtime <absolute-delivery-runtime.json>
 node <skill-root>/scripts/pulse.mjs compat-v1 <repo>
 ```
 
-No `pulse-v2.json` or persisted v1 compatibility file is created. Pulse action
+No versioned Pulse file or persisted v1 compatibility file is created. Pulse action
 codes are advisory with `auto_execute: false`; favorable metrics can never
 become `GO`, `ITERATE`, `NO_GO`, certification, or an automatic hold/release.
+
+## 0.8 Governed Phase Gate runtime
+
+This operational path is opt-in and separate from the Stage 1 observational
+pilot. The only supported writer is
+`scripts/phase-gate-controller.mjs`. `init` freezes one manifest/store and
+creates the strict, non-symlink `<repo>/.tmux-teams/phase-gate.json` marker.
+Once present, a raw `acp-companion.mjs` invocation without the exact
+controller-provided reservation environment fails before reading the brief or
+creating random IDs, git probes, directories, footprints, ACP sessions,
+outboxes, or KMS records.
+
+The controller serializes one Delivery Slice through Requirement → Prototype →
+Development → QA. It reserves the current ledger head, exact acceptance and
+artifact digest, receiver, task, agent, brief digest, timeout, and dispatch UUID
+before spawning ACP. The companion's first governed mutation is child
+registration; non-bootstrap receiver dispatches then consume the acceptance
+once, followed by footprint, prompt, and terminal observations. An ambiguous
+post-spawn state becomes `indeterminate` and blocks automatic retry until an
+authorized PM appends a manual reconciliation/resolution. These are structural
+`advisory_same_uid` checks, not authenticated identity.
+
+Normal Requirement, Prototype, and Development completion requires receiver
+acceptance plus exact consumption by the next phase's first dispatch.
+`QA -> ProjectDelivery` ends with ProjectDelivery receiver acceptance and no
+ACP Phase 5 dispatch. ProjectDelivery is a terminal receiver, not a fifth Phase
+Team, and its acceptance is not release, UAT, certification, ROI, or business
+approval.
+
+The reproducible full-loop POC uses the same controller, store, companion,
+projection, Pulse v4 publisher, and vendored D3 operational graph:
+
+```bash
+POC_OUT="$(mktemp -d)/run"
+POC_MOCK="$(realpath tests/fixtures/mock-acp-agent.mjs)"
+node <skill-root>/scripts/phase-gate-poc.mjs \
+  --out "$POC_OUT" \
+  --acp-cmd "node $POC_MOCK" \
+  --time-zone Asia/Bangkok --timeout 15
+```
+
+For this repository POC, run from the checkout root: `mktemp` supplies a fresh
+output and `realpath` survives the companion changing into the generated repo.
+The output directory must be new or empty. `measurement.status:
+scenario_signal` means the deterministic scenario produced measurement-ready
+evidence along its expected path; it is not a causal or business decision.
+`roi.status: ROI_NOT_ESTABLISHED` is intentional because one POC run has no
+production baseline or counterfactual. Establishing ROI requires matched
+production slices and measured PM routing, queue wait, rework, and escaped
+defect costs.
+
+For graph completeness, the POC writes four inner-loop worker-verification
+records, one per Phase Team. They use `verifier_role: phase_team`. The KMS key
+is still named `pm_verdict` for legacy reader compatibility; in these records
+that field name does not assert PM review, PM participation, PM approval, or a
+business decision. It only lets Pulse resolve the otherwise pending
+`ต้องตรวจ` graph state.
 
 ## 1. Session setup
 
@@ -395,7 +461,11 @@ transport-independent. Two transports carry it:
 | transport | for | mechanism |
 |---|---|---|
 | `tmux` | any TUI without ACP; codex/agy fallback | deliver.sh + markers (§1-§6) |
-| `acp` | codex (`@agentclientprotocol/codex-acp`, frontier-verified); claude (`@agentclientprotocol/claude-agent-acp`, official adapter — e2e-verified 2026-07-21, Task subagents work, effort via `MAX_THINKING_TOKENS`); agy (`antigravity-acp@1.0.0`, community adapter — audited + e2e-verified 2026-07-21, bun required, see ToS note); gemini (native `--acp` — see note) | `scripts/acp-companion.mjs` — JSON-RPC over stdio |
+| `acp` | codex (`@agentclientprotocol/codex-acp`, frontier-verified); claude (`@agentclientprotocol/claude-agent-acp`, official adapter — e2e-verified 2026-07-21, Task subagents work, effort via `MAX_THINKING_TOKENS`); agy (`antigravity-acp@1.0.0`, community adapter — audited + e2e-verified 2026-07-21, bun required, see ToS note) | `scripts/acp-companion.mjs` — JSON-RPC over stdio |
+
+The Gemini lane has been removed. The companion normalizes and rejects that
+retired public agent name before considering `ACP_CMD`; a custom command cannot
+silently revive it.
 
 Run one worker over ACP (claude lane needs a model the adapter's SDK accepts —
 per the routing directive pass Opus explicitly; a machine default of `fable`
@@ -418,12 +488,6 @@ ANTHROPIC_API_KEY= \
 ANTHROPIC_MODEL=k3 \
   node <skill-root>/scripts/acp-companion.mjs claude <repo> <task-id> <brief-file> [timeout-sec]
 ```
-
-gemini note (re-verified 2026-07-21): dead for individuals — oauth-personal is
-hard-blocked (`-32000` "migrate to Antigravity"), the api-key auth path works
-mechanically but needs a valid `GEMINI_API_KEY`, and CLI 0.51.0 is the latest.
-Keep the lane; it lights up wherever a licensed gemini or a valid API key
-exists.
 
 The brief file carries the SAME §6 contract text; the worker writes the same
 `.mailbox-out/<id>` outbox; the companion enforces the same last-line terminal
@@ -584,27 +648,43 @@ re-run a stored `verify_cmd` blindly — re-derive it from the plan instead.
 ## 10. Pulse — the live view (added 2026-07-21)
 
 §9 remembers what finished. `scripts/pulse.mjs` shows what is happening now,
-scoped to this repo and to workers this system dispatched. Pulse v1 has one
+scoped to this repo and to workers this system dispatched. Pulse v4 has one
 deliberately narrow data path:
 
 ```text
 probes -> <repo>/.tmux-teams/pulse.json (machine-readable SSOT)
        -> <repo>/.tmux-teams/pulse.html (rendered only from serialized JSON)
+       -> <repo>/.tmux-teams/loop-graph.html (full-screen ACP projection)
+       -> <repo>/.tmux-teams/pulse-current.json (bundle commit marker, written last)
 ```
 
 The HTML never derives state independently or renders from the probe model. It
-is a view of the same serialized snapshot an agent reads. The contract is
-`references/pulse-v1.schema.json`.
+is a view of the same serialized snapshot an agent reads. The default contract
+is `references/pulse-v4.schema.json`. It references the v3 definitions for
+run/verdict/phase compatibility; existing v3 documents remain described by
+`references/pulse-v3.schema.json`. `compat-v1` is a stdout-only down-projection
+for consumers that require the older v1 contract.
 
 ```bash
-node <skill-root>/scripts/pulse.mjs once  <repo>              # render once
-node <skill-root>/scripts/pulse.mjs json  <repo>              # print exact persisted Pulse v1 JSON
-node <skill-root>/scripts/pulse.mjs watch <repo> [--interval 20]
-node <skill-root>/scripts/pulse.mjs ensure <repo> [--interval 20]
+node <skill-root>/scripts/pulse.mjs once  <repo> [--time-zone Asia/Bangkok] # render once
+node <skill-root>/scripts/pulse.mjs json  <repo> [--time-zone Asia/Bangkok] # print exact persisted Pulse v4 JSON
+node <skill-root>/scripts/pulse.mjs watch <repo> [--interval 20] [--time-zone Asia/Bangkok]
+node <skill-root>/scripts/pulse.mjs ensure <repo> [--interval 20] [--time-zone Asia/Bangkok]
 ```
 
-Each render atomically publishes `<repo>/.tmux-teams/pulse.json` and then its
-HTML view. `json` prints that exact JSON document rather than another projection.
+Pass `--delivery-runtime <absolute-delivery-runtime.json>` to include the
+bounded, path/actor/payload-free Phase Gate projection. It exposes exactly four
+phase runs, bounded gates, replay head, and deterministic bottleneck facts.
+Pulse sanitizes and observes this file; it never calls the controller, consumes
+an acceptance, retries a dispatch, or changes the store.
+
+Each file is atomically replaced under one publish lock. The publisher writes
+the JSON, both HTML views, and then `<repo>/.tmux-teams/pulse-current.json`
+last. That commit marker carries their paths and SHA-256 hashes, including the
+content-addressed font CSS, local D3 v7.9.0 JavaScript, and D3 license. A
+reader can detect a mixed/partial bundle and re-read the marker after validation
+to detect a racing publish. `json` prints the exact persisted JSON document
+rather than another projection.
 The document carries `stream_id` + monotonic `sequence`, a unique `snapshot_id`,
 render/observation timestamps and freshness, per-source health, and bounded
 diagnostics so agents can distinguish stale or partial observation from a
@@ -613,15 +693,43 @@ between its footprint and KMS events. A footprint carrying that UUID accepts
 only a matching event; Pulse falls back to task-id + recency only when the
 footprint itself is legacy data without `dispatch_id`.
 
+`loop-graph.html` is the graph-only operational view. It shows one semantic
+node per ACP dispatch instance (`transport: acp`), never one aggregate node per
+provider name. Active nodes use `runs`; recent recorded nodes use
+`recent_verdicts`, with active evidence winning when the same `dispatch_id`
+appears in both. A legacy attempt uses task + start time as its weak identity;
+evidence without both a UUID and usable start time stays visibly
+uncorrelatable rather than collapsing by task id. The fixed D3 phase flowchart
+uses only explicit v4 phase evidence (the v3-compatible `phase`/`phase_source`
+definitions) for placement; nodes
+without it remain in the visible unassigned pool. Runtime state and recorded
+verdict are node evidence, not a heuristic phase or handoff. Dashed phase
+handoffs are labelled unmeasured because Pulse does not record trustworthy
+agent-to-agent, parent, or dependency edges. Do not infer those edges from task
+names, timestamps, workers, or provider names. `TEAM_DONE` does not mean
+verified success, and recorded `pm_verdict: pass` does not mean business
+approval or UAT acceptance.
+A `pass` that conflicts with failed, blocked, invalid, or absent terminal
+evidence remains factual but is marked as requiring attention.
+
+Human timestamps default to `Asia/Bangkok`; the HTML displays the timezone
+once in the header and keeps each semantic timestamp concise. Set an IANA zone
+with `--time-zone` or `PULSE_TIME_ZONE` (CLI wins). Explicit invalid values exit
+2. The canonical zone is part of a watcher's config fingerprint, so stop an
+existing watcher before changing it. This setting is render-only: Pulse v4 JSON
+timestamps remain RFC 3339 UTC.
+
 The contract reports `trust_level: advisory_same_uid`: Pulse observes files,
 processes, panes, and KMS records that same-UID workers may also influence. It is
 read-only, and every suggested action code is advisory with auto-execution
 disabled; Pulse never retries, kills, redispatches, or otherwise remediates a
 run. Humans and agents must verify before acting.
 
-The HTML refreshes itself — open it and leave it open. `watch` is the observer;
-`ensure` renders immediately and then starts a detached watcher only when this
-repo's existing watcher is not alive.
+Both HTML files refresh themselves — open either and leave it open. The
+full-screen graph preserves its scroll position and stable control focus across
+automatic reloads, and its header has a pause control for uninterrupted review.
+`watch` is the observer; `ensure` renders immediately and then starts a detached
+watcher only when this repo's existing watcher is not alive.
 Its pidfile is `<repo>/.tmux-teams/pulse-watch.pid`: repo-local so same-basename
 projects cannot collide, exclusively claimed so concurrent cron fires do not
 duplicate the watcher, and reclaimed when a prior watcher died. Calling
@@ -678,10 +786,10 @@ verdict returning to dispatch, and today's record feeding tomorrow's planning.
 Those two are drawn **dashed on purpose: neither is measured**. We count rejects,
 but nothing records whether a reject was re-dispatched, and recall is opt-in and
 unlogged. Solid lines would claim the loop turns when nobody knows that it does —
-so the dashes double as the list of what to instrument next. Fixed-layout SVG,
-no chart library: the shape is a constant, and a page whose job is to be true
-cannot depend on fetching a renderer that may not arrive (mermaid from a CDN was
-tried and silently failed to load, which settled it).
+so the dashes double as the list of what to instrument next. The dashboard
+diagram is fixed-layout SVG. The separate full-screen phase flowchart uses
+vendored, content-addressed D3 v7.9.0 plus its local license from the committed
+bundle; it never fetches a renderer from a CDN.
 
 **The per-run graph is where each run stopped.** Every dispatch walks the same five
 stages — dispatched → alive → outbox → PM verdict → recorded — so the truthful
@@ -690,8 +798,9 @@ each stage actually reached. Read across and you see how far a worker got before
 it finished, stalled or died; read down and you see the shape of the run. Stages
 record the PAST, not the present: an outbox proves the worker was alive at some
 point even though it is gone now. Finished runs stay on the graph on purpose — a
-complete line is what an interrupted one is read against. Drawn as hand-rolled
-SVG: no chart library, nothing fetched, works offline like everything else here.
+complete line is what an interrupted one is read against. It remains a
+hand-rolled dashboard SVG; the separate phase flowchart is fixed D3 with local
+assets, so both views work offline without network access.
 
 **Outboxes ignore themselves too.** `.mailbox-out/` holds raw command output,
 so dispatch drops a `.gitignore` containing `*` into it — the target repo's

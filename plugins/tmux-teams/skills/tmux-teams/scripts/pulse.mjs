@@ -21,14 +21,14 @@
 // footprint, no process and no event; until now it simply vanished.
 //
 // usage:
-//   pulse.mjs once  <repo> [--delivery-loop FILE]                 render once, print the path
-//   pulse.mjs watch <repo> [--interval 20] [--delivery-loop FILE] re-render forever
-//   pulse.mjs ensure <repo> [--interval 20] [--delivery-loop FILE] render now; keep watch alive
-//   pulse.mjs json <repo> [--delivery-loop FILE]                  render now; print one JSON document
+//   pulse.mjs once  <repo> [--delivery-loop FILE] [--delivery-runtime FILE] [--time-zone ZONE]
+//   pulse.mjs watch <repo> [--interval 20] [--delivery-loop FILE] [--delivery-runtime FILE] [--time-zone ZONE]
+//   pulse.mjs ensure <repo> [--interval 20] [--delivery-loop FILE] [--delivery-runtime FILE] [--time-zone ZONE]
+//   pulse.mjs json <repo> [--delivery-loop FILE] [--delivery-runtime FILE] [--time-zone ZONE]
 //   pulse.mjs compat-v1 <repo>                                    stdout-only v1 downprojection
 import { execFileSync, spawn } from 'node:child_process'
 import {
-  closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync,
+  closeSync, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync,
   readSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
@@ -38,34 +38,80 @@ import { fileURLToPath } from 'node:url'
 import { KANIT_FONT_CSS } from '../assets/kanit/kanit-embedded.mjs'
 import { parseLsofCwd, parsePgrep, parsePsCandidates } from './pulse-platform.mjs'
 import {
-  ID_RE, PULSE_SCHEMA, PULSE_SCHEMA_VERSION, PULSE_SCHEMA_VERSION_V2, UUID_RE,
-  downProjectPulseV1, projectPulseV1, projectPulseV2,
+  ID_RE, PULSE_SCHEMA, PULSE_SCHEMA_VERSION, PULSE_SCHEMA_VERSION_V2,
+  PULSE_SCHEMA_VERSION_V3, PULSE_SCHEMA_VERSION_V4, UUID_RE, downProjectPulseV1,
+  projectPulseV4,
 } from './pulse-data.mjs'
 import { PHASE_BOUNDARIES, PHASE_EXIT_ARTIFACTS } from './delivery-loop-core.mjs'
+import { renderPulseLoopGraph } from './pulse-loop-graph.mjs'
 
 const [cmd, repoArg, ...flags] = process.argv.slice(2)
-const USAGE = 'usage: pulse.mjs once|json <repo> [--delivery-loop FILE] | pulse.mjs watch|ensure <repo> [--interval SEC] [--delivery-loop FILE] | pulse.mjs compat-v1 <repo>'
+const USAGE = 'usage: pulse.mjs once|json <repo> [--delivery-loop FILE] [--delivery-runtime FILE] [--time-zone ZONE] | pulse.mjs watch|ensure <repo> [--interval SEC] [--delivery-loop FILE] [--delivery-runtime FILE] [--time-zone ZONE] | pulse.mjs compat-v1 <repo>'
 if (!cmd || !repoArg || !['once', 'json', 'watch', 'ensure', 'compat-v1'].includes(cmd)) {
   console.error(USAGE); process.exit(2)
 }
 const deliveryFlagIndexes = flags.flatMap((flag, index) => flag === '--delivery-loop' ? [index] : [])
+const runtimeFlagIndexes = flags.flatMap((flag, index) => flag === '--delivery-runtime' ? [index] : [])
+const timeZoneFlagIndexes = flags.flatMap((flag, index) => flag === '--time-zone' ? [index] : [])
 if (cmd === 'compat-v1' && flags.length > 0 ||
     deliveryFlagIndexes.length > 1 ||
     (deliveryFlagIndexes.length === 1 &&
-      (!flags[deliveryFlagIndexes[0] + 1] || flags[deliveryFlagIndexes[0] + 1].startsWith('--')))) {
+      (!flags[deliveryFlagIndexes[0] + 1] || flags[deliveryFlagIndexes[0] + 1].startsWith('--'))) ||
+    runtimeFlagIndexes.length > 1 ||
+    (runtimeFlagIndexes.length === 1 &&
+      (!flags[runtimeFlagIndexes[0] + 1] || flags[runtimeFlagIndexes[0] + 1].startsWith('--'))) ||
+    timeZoneFlagIndexes.length > 1 ||
+    (timeZoneFlagIndexes.length === 1 &&
+      (!flags[timeZoneFlagIndexes[0] + 1] || flags[timeZoneFlagIndexes[0] + 1].startsWith('--')))) {
   console.error(USAGE); process.exit(2)
 }
 const DELIVERY_LOOP_PATH = deliveryFlagIndexes.length
   ? resolve(flags[deliveryFlagIndexes[0] + 1])
   : null
+const DELIVERY_RUNTIME_PATH = runtimeFlagIndexes.length
+  ? resolve(flags[runtimeFlagIndexes[0] + 1])
+  : null
+const DEFAULT_TIME_ZONE = 'Asia/Bangkok'
+const timeZoneInput = cmd === 'compat-v1'
+  ? DEFAULT_TIME_ZONE
+  : timeZoneFlagIndexes.length
+    ? flags[timeZoneFlagIndexes[0] + 1].trim()
+    : process.env.PULSE_TIME_ZONE?.trim() || DEFAULT_TIME_ZONE
+let DISPLAY_TIME_ZONE
+try {
+  DISPLAY_TIME_ZONE = new Intl.DateTimeFormat('en-US', { timeZone: timeZoneInput })
+    .resolvedOptions().timeZone
+} catch {
+  console.error(`[pulse] invalid time zone "${timeZoneInput}"; use an IANA zone such as Asia/Bangkok`)
+  process.exit(2)
+}
+if (!DISPLAY_TIME_ZONE) {
+  console.error(USAGE)
+  process.exit(2)
+}
 
 let REPO
 try { REPO = realpathSync(repoArg) } catch { console.error(`[pulse] no such repo: ${repoArg}`); process.exit(2) }
 const STORE = join(REPO, '.tmux-teams')
 const OUT = join(STORE, 'pulse.html')
+const LOOP_GRAPH_OUT = join(STORE, 'loop-graph.html')
 const JSON_OUT = join(STORE, 'pulse.json')
+const BUNDLE_OUT = join(STORE, 'pulse-current.json')
 const FONT_CSS_NAME = `pulse-fonts-${createHash('sha256').update(KANIT_FONT_CSS).digest('hex')}.css`
 const FONT_CSS_OUT = join(STORE, FONT_CSS_NAME)
+const D3_JS = readFileSync(
+  fileURLToPath(new URL('../assets/d3/d3.v7.9.0.min.js', import.meta.url)),
+  'utf8',
+)
+const D3_LICENSE = readFileSync(
+  fileURLToPath(new URL('../assets/d3/LICENSE', import.meta.url)),
+  'utf8',
+)
+const D3_JS_NAME = `pulse-d3-7.9.0-${createHash('sha256').update(D3_JS).digest('hex')}.min.js`
+const D3_LICENSE_NAME =
+  `pulse-d3-7.9.0-license-${createHash('sha256').update(D3_LICENSE).digest('hex')}.txt`
+const D3_JS_OUT = join(STORE, D3_JS_NAME)
+const D3_LICENSE_OUT = join(STORE, D3_LICENSE_NAME)
 const EVENTS = join(STORE, 'kms', 'events')
 const DISPATCH = join(STORE, 'dispatch')
 const OUTBOX = join(REPO, '.mailbox-out')
@@ -78,6 +124,7 @@ const MANAGED_WATCH = flags.includes('--managed')
 
 const iFlag = flags.indexOf('--interval')
 const INTERVAL = iFlag >= 0 && Number(flags[iFlag + 1]) > 0 ? Math.max(1, Math.ceil(Number(flags[iFlag + 1]))) : 20
+const WATCH_HANDOFF_ATTEMPTS = 300
 
 // Startup is slower than it looks: an ACP lane may sit in `npx` downloading its
 // adapter before anything exists to probe. Announcing death during a worker's
@@ -87,6 +134,7 @@ const GRACE_SEC = 300
 const MAX_INPUT_BYTES = 1024 * 1024
 const MAX_SOURCE_FILES = 1000
 const MAX_TOTAL_INPUT_BYTES = 32 * 1024 * 1024
+const DELIVERY_PHASE_SET = new Set(Object.keys(PHASE_BOUNDARIES))
 const MAX_FIELD_CHARS = 256
 
 function fieldValue(text, key) {
@@ -94,6 +142,17 @@ function fieldValue(text, key) {
   if (!match) return ''
   const value = match[1].trim()
   return value.length <= MAX_FIELD_CHARS ? value : ''
+}
+
+function phaseBindingFromText(text, source) {
+  const match = text.match(/^phase:[ \t]*(.*)$/m)
+  if (!match) return { phase: '', phaseSource: 'unassigned', invalid: false }
+  const value = match[1].trim()
+  if (!value) return { phase: '', phaseSource: 'unassigned', invalid: false }
+  if (!DELIVERY_PHASE_SET.has(value)) {
+    return { phase: '', phaseSource: 'unassigned', invalid: true }
+  }
+  return { phase: value, phaseSource: source, invalid: false }
 }
 
 const sh = (bin, args) => {
@@ -222,6 +281,7 @@ function aliveWorkers(panes) {
 function footprints(inputBudget) {
   const byId = new Map()
   const diagnostics = []
+  let invalidPhaseCount = 0
   let dispatchHealth = 'ok', outboxHealth = 'ok'
 
   // The dispatch record is written by the PM the moment it dispatches, so it
@@ -261,11 +321,26 @@ function footprints(inputBudget) {
     }
     const timeoutRaw = fieldValue(text, 'timeout_sec'), timeout = timeoutRaw === '' ? null : Number(timeoutRaw)
     const dispatchId = fieldValue(text, 'dispatch_id')
+    const dispatchPhase = phaseBindingFromText(text, 'dispatch')
+    if (dispatchPhase.invalid) {
+      invalidPhaseCount += 1
+      dispatchHealth = 'degraded'
+    }
     byId.set(id, {
       id, mtime: st.mtimeMs, marker: '', terminalStatus: 'absent', dispatched: true, dispatchStatus: 'present',
       dispatchId: UUID_RE.test(dispatchId) ? dispatchId : '', startedAt: fieldValue(text, 'started_at'),
       timeoutSec: Number.isFinite(timeout) && timeout >= 0 ? timeout : null,
       transport: fieldValue(text, 'transport'), worker: fieldValue(text, 'worker'), pane: fieldValue(text, 'pane'),
+      phase: dispatchPhase.phase,
+      phaseSource: dispatchPhase.phaseSource,
+    })
+  }
+  if (invalidPhaseCount > 0) {
+    diagnostics.push({
+      code: 'PHASE_BINDING_INVALID',
+      severity: 'warning',
+      source: 'dispatch',
+      count: invalidPhaseCount,
     })
   }
 
@@ -351,6 +426,7 @@ function unclaimedControlDirs(liveIds, footIds) {
 function recorded(inputBudget) {
   let files = []
   const diagnostics = []
+  let invalidPhaseCount = 0
   let health = 'ok'
   try { files = readdirSync(EVENTS).filter(f => f.endsWith('.md')).sort() } catch (e) {
     if (e.code !== 'ENOENT') {
@@ -388,17 +464,32 @@ function recorded(inputBudget) {
         continue
       }
       const dispatchId = fieldValue(text, 'dispatch_id')
+      const eventPhase = phaseBindingFromText(text, 'event')
+      if (eventPhase.invalid) {
+        invalidPhaseCount += 1
+        health = 'degraded'
+      }
       rows.push({
         task_id: task, worker, dispatch_id: UUID_RE.test(dispatchId) ? dispatchId : '',
         transport: fieldValue(text, 'transport'), terminal: fieldValue(text, 'terminal'),
         pm_verdict: fieldValue(text, 'pm_verdict'), started_at: fieldValue(text, 'started_at'),
         wait_sec: num('wait_sec'), timeout_sec: num('timeout_sec'),
+        phase: eventPhase.phase,
+        phaseSource: eventPhase.phaseSource,
         mtime: st.mtimeMs,
       })
     } catch {
       health = 'degraded'
       diagnostics.push({ code: 'EVENT_UNREADABLE', severity: 'error', source: 'events' })
     }
+  }
+  if (invalidPhaseCount > 0) {
+    diagnostics.push({
+      code: 'PHASE_BINDING_INVALID',
+      severity: 'warning',
+      source: 'events',
+      count: invalidPhaseCount,
+    })
   }
   return { rows, diagnostics, health }
 }
@@ -413,8 +504,51 @@ function derive(now) {
   const { rows: live, notes, diagnostics: liveDiagnostics } = aliveWorkers(panesNow)
   const footResult = footprints(inputBudget)
   const recordResult = recorded(inputBudget)
-  const foot = footResult.rows, rec = recordResult.rows
+  const foot = footResult.rows
+  const footprintsByDispatch = new Map()
+  for (const footprint of foot) {
+    if (!footprint.dispatchId) continue
+    const matches = footprintsByDispatch.get(footprint.dispatchId) || []
+    matches.push(footprint)
+    footprintsByDispatch.set(footprint.dispatchId, matches)
+  }
+  const conflictingDispatches = new Set()
+  for (const [dispatchId, matches] of footprintsByDispatch) {
+    const phases = new Set(
+      matches.map(footprint => footprint.phase).filter(phase => DELIVERY_PHASE_SET.has(phase)),
+    )
+    if (phases.size > 1) conflictingDispatches.add(dispatchId)
+  }
+  const rec = recordResult.rows.map((row) => {
+    const matches = row.dispatch_id
+      ? footprintsByDispatch.get(row.dispatch_id) || []
+      : []
+    if (matches.length === 0) return row
+    const dispatchPhases = new Set(
+      matches.map(footprint => footprint.phase).filter(phase => DELIVERY_PHASE_SET.has(phase)),
+    )
+    const eventHasPhase = DELIVERY_PHASE_SET.has(row.phase)
+    const bindingConflicts = dispatchPhases.size > 1 ||
+      eventHasPhase && [...dispatchPhases].some(phase => phase !== row.phase)
+    if (bindingConflicts) {
+      conflictingDispatches.add(row.dispatch_id)
+      return { ...row, phase: '', phaseSource: 'conflict' }
+    }
+    if (eventHasPhase) return row
+    const [dispatchPhase] = dispatchPhases
+    return dispatchPhase
+      ? { ...row, phase: dispatchPhase, phaseSource: 'dispatch_join' }
+      : row
+  })
   const diagnostics = [...liveDiagnostics, ...footResult.diagnostics, ...recordResult.diagnostics]
+  if (conflictingDispatches.size > 0) {
+    diagnostics.push({
+      code: 'PHASE_BINDING_CONFLICT',
+      severity: 'error',
+      source: 'publisher',
+      count: conflictingDispatches.size,
+    })
+  }
   // Worker ids get reused across runs, so an event only settles the footprint it
   // belongs to. Matching on id alone would let yesterday's record mark today's
   // dispatch "finished" and quietly drop it off the screen.
@@ -432,6 +566,8 @@ function derive(now) {
       return r.mtime >= f.mtime - 1000
     }).sort((a, b) => b.mtime - a.mtime)
     const currentVerdict = verdicts[0] || null
+    const verdictPhaseConflict = conflictingDispatches.has(f.dispatchId) ||
+      verdicts.some(verdict => verdict.phaseSource === 'conflict')
     const settled = !!currentVerdict
     if (settled && !alive) continue                    // finished and recorded: history, not now
     const ageSec = Math.max(0, Math.round((now - f.mtime) / 1000))
@@ -467,6 +603,8 @@ function derive(now) {
       liveness: working ? 'alive' : PROC_OK ? 'dead' : 'unknown', paneStatus,
       pmVerdict: currentVerdict?.pm_verdict || '',
       idleShell: !!(alive && alive.kind === 'tmux' && alive.hasChild === false),
+      phase: verdictPhaseConflict ? '' : f.phase,
+      phaseSource: verdictPhaseConflict ? 'conflict' : f.phaseSource,
     })
   }
   // A live process with no footprint at all still deserves a row — it is real,
@@ -483,6 +621,7 @@ function derive(now) {
       dispatched: false, dispatchStatus: 'absent', dispatchId: '', worker: '', transport: l.kind,
       kind: l.kind, detail: l.detail, ageSec: null, elapsedSec: null, timeoutSec: null,
       paneStatus: l.kind === 'tmux' ? 'held' : 'not_recorded', pmVerdict: '', state: 'orphan_running',
+      phase: '', phaseSource: 'unassigned',
     })
   }
   const unclaimed = unclaimedControlDirs(new Set(live.map(l => l.id)), new Set(foot.map(f => f.id)))
@@ -507,10 +646,11 @@ const dur = (sec) => sec == null ? 'ยังไม่วัด'
   : sec < 60 ? `${sec} วิ`
     : sec < 3600 ? `${Math.floor(sec / 60)} นาที${sec % 60 ? ` ${sec % 60} วิ` : ''}`
       : `${Math.floor(sec / 3600)} ชม.${Math.floor((sec % 3600) / 60) ? ` ${Math.floor((sec % 3600) / 60)} นาที` : ''}`
-const THAI_TIME_ZONE = 'Asia/Bangkok'
-const THAI_TIME_LABEL = 'เวลาไทย (UTC+7)'
-const THAI_DATE_TIME = new Intl.DateTimeFormat('en-US-u-ca-gregory-nu-latn', {
-  timeZone: THAI_TIME_ZONE,
+const TIME_ZONE_LABEL = DISPLAY_TIME_ZONE === DEFAULT_TIME_ZONE
+  ? 'เวลาไทย (UTC+7)'
+  : `เขตเวลา ${DISPLAY_TIME_ZONE}`
+const DISPLAY_DATE_TIME = new Intl.DateTimeFormat('en-US-u-ca-gregory-nu-latn', {
+  timeZone: DISPLAY_TIME_ZONE,
   year: 'numeric',
   month: '2-digit',
   day: '2-digit',
@@ -521,19 +661,19 @@ const THAI_DATE_TIME = new Intl.DateTimeFormat('en-US-u-ca-gregory-nu-latn', {
 })
 
 function absoluteTime(value) {
-  const text = thaiTimeText(value)
+  const text = displayTimeText(value)
   if (text === 'ไม่ระบุ') return text
-  return `<time datetime="${esc(value)}" title="${THAI_TIME_ZONE}">${text}</time>`
+  return `<time datetime="${esc(value)}" title="${esc(DISPLAY_TIME_ZONE)}" aria-describedby="pulse-timezone-label">${text}</time>`
 }
 
 // Keep the date computation separately testable from its semantic HTML shell.
-// Pulse timestamps are Gregorian calendar values in Thailand's UTC+7 timezone.
-function thaiTimeText(value) {
+// Pulse JSON stays in UTC; only this human projection uses the configured zone.
+function displayTimeText(value) {
   if (!value || !Number.isFinite(Date.parse(value))) return 'ไม่ระบุ'
-  const parts = Object.fromEntries(THAI_DATE_TIME.formatToParts(new Date(value))
+  const parts = Object.fromEntries(DISPLAY_DATE_TIME.formatToParts(new Date(value))
     .filter(part => part.type !== 'literal')
     .map(part => [part.type, part.value]))
-  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second} ${THAI_TIME_LABEL}`
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`
 }
 
 // State codes stay stable for agents; people get one consistent Thai label.
@@ -638,6 +778,40 @@ const DELIVERY_PHASE_STATE_COPY = Object.freeze({
   exception: 'มีข้อยกเว้น',
   complete: 'ผ่านเฟสแล้ว',
   unknown: 'ตรวจสถานะไม่ได้',
+})
+const DELIVERY_RUNTIME_PHASE_STATE_COPY = Object.freeze({
+  pending: 'รอเริ่มเฟส',
+  working: 'กำลังทำงาน',
+  handoff_pending: 'รอผู้รับตรวจ handoff',
+  blocked: 'ติดขัด',
+  completed: 'เสร็จสิ้น',
+})
+const DELIVERY_RUNTIME_GATE_STATE_COPY = Object.freeze({
+  proposed: 'เสนอให้ตรวจรับ',
+  accepted: 'ผู้รับตอบรับ',
+  rejected: 'ผู้รับปฏิเสธ',
+  escalated: 'ยกระดับข้อยกเว้น',
+  consumed: 'ผู้รับนำไปใช้แล้ว',
+})
+const DELIVERY_RUNTIME_GATE_NOTE = Object.freeze({
+  proposed: 'รอคำตอบการตรวจรับจากทีมผู้รับ',
+  accepted: 'ผู้รับตอบรับแล้ว; ยังไม่เท่ากับการอนุมัติทางธุรกิจ',
+  rejected: 'ผู้ส่งต้องแก้ไขและสร้าง attempt ใหม่ตามความจำเป็น',
+  escalated: 'ต้องจัดการเป็นข้อยกเว้นโดยไม่สั่ง worker อัตโนมัติ',
+  consumed: 'ผู้รับใช้ artifact นี้ในเฟสถัดไปแล้ว',
+})
+const DELIVERY_RUNTIME_ROLE_COPY = Object.freeze({
+  phase_team: 'ทีมของเฟส',
+  receiver_phase_lead: 'หัวหน้าทีมผู้รับ',
+  project_delivery: 'ผู้รับปลายทาง',
+  pm_exception_owner: 'PM ผู้ดูแลข้อยกเว้น',
+})
+const DELIVERY_RUNTIME_BOTTLENECK_COPY = Object.freeze({
+  work: 'งานในเฟสใช้เวลานาน',
+  handoff_review: 'รอผู้รับตรวจ handoff',
+  rework: 'กำลังแก้ไขงาน',
+  exception: 'มีข้อยกเว้น',
+  dispatch_reconcile: 'ต้องตรวจความสอดคล้องของ dispatch',
 })
 const DELIVERY_ROLE_COPY = Object.freeze({
   operator: 'ผู้ดูแลระบบ',
@@ -826,6 +1000,36 @@ function renderDeliveryFlowEquivalent() {
   return `<section class="diagram-equivalent" aria-labelledby="delivery-flow-equivalent-title"><h3 id="delivery-flow-equivalent-title">ข้อความเทียบเท่าแผนภาพการส่งมอบ</h3><p>PM ประสาน ติด bottleneck และแก้ข้อยกเว้นเท่านั้น; งานปกติและการตรวจรับอยู่กับทีมผู้รับ.</p><ol>${DELIVERY_TOPOLOGY.map(edge => `<li><strong>${esc(DELIVERY_PHASE_LABEL[edge.sender])}</strong> ส่ง ${esc(edge.artifactLabel)} <code>${esc(edge.artifact)}</code> เป็นข้อเสนอให้ <strong>${esc(DELIVERY_PHASE_LABEL[edge.receiver])}</strong>; ผู้รับเป็นเจ้าของการตรวจรับและการรับ/ปฏิเสธ. ${edge.receiver === 'ProjectDelivery' ? 'ProjectDelivery เป็นผู้รับปลายทาง ไม่ใช่ทีมลูปที่ห้า; การรับไม่ใช่การรับรองหรืออนุมัติธุรกิจ.' : 'ทีมผู้ส่งทำลูปภายในและสร้างข้อเสนอใหม่เมื่อต้องแก้ไข.'}</li>`).join('')}</ol></section>`
 }
 
+// The runtime projection is already a closed, privacy-reviewed Pulse field.
+// Keep this view deliberately small: ids and digests remain available to agents
+// in pulse.json, while the HTML exposes only the requested attempt identity.
+function renderDeliveryRuntime(runtime) {
+  const attentionCount = runtime.bottleneck === null ? 0 : 1
+  const phaseRows = runtime.phase_runs.map(run => `<li class="runtime-phase" data-phase="${esc(run.phase)}" data-state="${esc(run.state)}">
+    <div class="runtime-row-head"><strong>${esc(DELIVERY_PHASE_LABEL[run.phase] || run.phase)}</strong><span class="runtime-state runtime-phase-state-${esc(run.state)}">${esc(DELIVERY_RUNTIME_PHASE_STATE_COPY[run.state] || run.state)}</span></div>
+    <dl class="runtime-facts">
+      <div><dt>เจ้าของ</dt><dd>${esc(DELIVERY_RUNTIME_ROLE_COPY[run.owner_role] || run.owner_role)}</dd></div>
+      <div><dt>ส่งต่อ</dt><dd class="num">${run.handoff_count} ครั้ง</dd></div>
+      <div><dt>แก้ไข</dt><dd class="num">${run.revision_count} รอบ</dd></div>
+    </dl>
+  </li>`).join('')
+  const gateRows = runtime.phase_gates.map(gate => `<li class="runtime-gate" data-boundary="${esc(gate.boundary)}" data-gate-state="${esc(gate.state)}" data-attempt-id="${esc(gate.attempt_id)}">
+    <div class="runtime-row-head"><strong>${esc(DELIVERY_BOUNDARY_COPY[gate.boundary] || `${gate.sender_phase} → ${gate.receiver_phase}`)}</strong><span class="runtime-state runtime-gate-state-${esc(gate.state)}">${esc(DELIVERY_RUNTIME_GATE_STATE_COPY[gate.state] || gate.state)}</span></div>
+    <p>${esc(DELIVERY_RUNTIME_GATE_NOTE[gate.state] || 'อ่านสถานะ gate จากข้อมูล runtime')}</p>
+  </li>`).join('')
+  const attention = runtime.bottleneck === null
+    ? `<div class="runtime-attention runtime-attention-clear" data-runtime-attention-count="0"><strong>รายการที่ต้องดำเนินการจาก runtime: 0</strong><p>ไม่มี bottleneck ที่ runtime ระบุ</p></div>`
+    : `<div class="runtime-attention" data-runtime-attention-count="1"><strong>รายการที่ต้องดำเนินการจาก runtime: 1</strong><p>${esc(DELIVERY_PHASE_LABEL[runtime.bottleneck.phase] || runtime.bottleneck.phase)} · ${esc(DELIVERY_RUNTIME_BOTTLENECK_COPY[runtime.bottleneck.kind] || runtime.bottleneck.kind)} · รับผิดชอบโดย ${esc(DELIVERY_RUNTIME_ROLE_COPY[runtime.bottleneck.owner_role] || runtime.bottleneck.owner_role)}</p></div>`
+
+  return `<section class="delivery-runtime" aria-labelledby="delivery-runtime-title">
+    <div class="section-head"><div><span class="eyebrow">Delivery runtime · observe only</span><h2 id="delivery-runtime-title">สถานะ runtime ของการส่งมอบ</h2><p>สถานะที่ runtime สรุปจาก phase gate; ไม่สั่งงานหรือเปลี่ยนสถานะใด ๆ</p></div><span class="count">${attentionCount} รายการต้องดำเนินการ</span></div>
+    ${attention}
+    <section class="surface runtime-summary-panel" aria-labelledby="delivery-runtime-summary-title"><div class="detail-body"><h3 id="delivery-runtime-summary-title">สรุป phase gate</h3><dl class="runtime-summary" aria-label="สรุปจำนวน phase gate"><div><dt>เสนอ</dt><dd class="num">${runtime.summary.proposed}</dd></div><div><dt>ตอบรับ</dt><dd class="num">${runtime.summary.accepted}</dd></div><div><dt>ปฏิเสธ</dt><dd class="num">${runtime.summary.rejected}</dd></div><div><dt>ยกระดับ</dt><dd class="num">${runtime.summary.escalated}</dd></div><div><dt>นำไปใช้</dt><dd class="num">${runtime.summary.consumed}</dd></div><div><dt>แสดงอยู่</dt><dd class="num">${runtime.summary.shown}</dd></div><div><dt>ตัดจากรายการ</dt><dd class="num">${runtime.summary.truncated}</dd></div></dl></div></section>
+    <section class="surface runtime-phases" aria-labelledby="delivery-runtime-phases-title"><div class="detail-body"><h3 id="delivery-runtime-phases-title">สี่เฟสตามลำดับ</h3><ol class="runtime-phase-list">${phaseRows}</ol></div></section>
+    <section class="surface runtime-gates" aria-labelledby="delivery-runtime-gates-title"><div class="detail-body"><h3 id="delivery-runtime-gates-title">ผลการส่งต่อระหว่างเฟส</h3><ol class="runtime-gate-list">${gateRows || '<li class="empty"><strong>ยังไม่มี phase gate</strong>runtime ยังไม่มีรายการส่งต่อที่แสดงได้</li>'}</ol><p class="runtime-terminal"><strong>ProjectDelivery เป็นผู้รับปลายทาง</strong> หลัง QA ตอบรับแล้วจะไม่มีการ dispatch worker ลำดับที่ห้า.</p></div></section>
+  </section>`
+}
+
 function renderDeliverySequence(delivery) {
   const selected = DELIVERY_TOPOLOGY.find(edge => edge.boundary === delivery.experiment?.boundary)
   const boundaryCopy = selected
@@ -908,6 +1112,7 @@ function render(snapshot) {
   const recent = rec
   const st = snapshot.worker_stats
   const delivery = snapshot.delivery_loop || null
+  const deliveryRuntime = snapshot.delivery_runtime || null
   const byState = snapshot.summary.by_state
   const graph = graphRows(snapshot)
   const attentionTotal = attentionStates.reduce((sum, state) => sum + byState[state], 0)
@@ -996,6 +1201,7 @@ function render(snapshot) {
       <details class="deep-dive" data-persist-key="delivery-sequence"><summary>ลำดับทั่วไปของ handoff ที่ผู้รับเป็นเจ้าของ</summary><div class="detail-body">${renderDeliverySequence(delivery)}${renderDeliverySequenceEquivalent()}</div></details>
     </section>`
   })() : ''
+  const deliveryRuntimeSection = deliveryRuntime ? renderDeliveryRuntime(deliveryRuntime) : ''
 
   return `<!doctype html><html lang="th"><head><meta charset="utf-8">
 <title>pulse — ${esc(repoName)}</title>
@@ -1012,12 +1218,13 @@ function render(snapshot) {
 .site-header{display:flex;min-width:0;justify-content:space-between;align-items:flex-start;gap:var(--s5);padding:var(--s2) 0 var(--s5);border-bottom:1px solid var(--line)}.site-header>*,main>*,section,.primary-grid>*{min-width:0}
 .eyebrow{display:block;margin:0 0 var(--s1);color:var(--dim);font:500 .75rem/1.4 var(--sans);letter-spacing:.08em;text-transform:uppercase}
 h1{display:flex;min-width:0;align-items:baseline;gap:var(--s3);margin:0;font:600 1.75rem/1.2 var(--sans);letter-spacing:-.02em}h1 .repo{min-width:0;color:var(--dim);font:500 1rem var(--mono);letter-spacing:0;overflow-wrap:anywhere}
-.scope{max-width:62ch;margin:var(--s2) 0 0;color:var(--dim);font-size:.875rem}.header-status{display:flex;min-width:0;align-items:flex-start;justify-content:flex-end;flex-wrap:wrap;gap:var(--s3);text-align:right}.status-badges{display:flex;min-width:0;flex-wrap:wrap;justify-content:flex-end;gap:var(--s2)}.age{min-width:0;color:var(--dim);font-size:.8rem;line-height:1.5;overflow-wrap:anywhere}.age time,.freshness-note{display:block}.age time{color:var(--ink);font-family:var(--mono);font-variant-numeric:tabular-nums}
+.scope{max-width:62ch;margin:var(--s2) 0 0;color:var(--dim);font-size:.875rem}.loop-graph-link{display:inline-block;margin-top:var(--s2);color:var(--ink);font-size:.78rem;text-decoration:none;border-bottom:1px solid var(--line)}.loop-graph-link:hover{border-color:var(--ink)}.header-status{display:flex;min-width:0;align-items:flex-start;justify-content:flex-end;flex-wrap:wrap;gap:var(--s3);text-align:right}.status-badges{display:flex;min-width:0;flex-wrap:wrap;justify-content:flex-end;gap:var(--s2)}.age{min-width:0;color:var(--dim);font-size:.8rem;line-height:1.5;overflow-wrap:anywhere}.age time,.freshness-note,.time-zone-label{display:block}.time-zone-label{color:var(--ink);font-weight:500}.age time{color:var(--ink);font-family:var(--mono);font-variant-numeric:tabular-nums}
 .quality{display:inline-flex;align-items:center;gap:var(--s2);white-space:nowrap;padding:6px 10px;border:1px solid var(--line);border-radius:999px;font-size:.78rem;font-weight:500}.quality::before{content:"";flex:none;width:7px;height:7px;border-radius:50%;background:currentColor}.quality.complete{color:var(--dim)}.quality.ok{color:var(--ok)}.quality.warn{color:var(--warn)}
 main{display:grid;min-width:0;gap:var(--s7);padding-top:var(--s6)}.summary-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}.metric{min-width:0;padding:var(--s5);border-left:1px solid var(--line)}.metric:first-child{border-left:0}.metric-label,.metric-note{display:block;color:var(--dim);font-size:.82rem}.metric-value{display:block;margin:2px 0;font:600 2rem/1.2 var(--sans);font-variant-numeric:tabular-nums}.metric.bad .metric-value{color:var(--bad)}.metric.ok .metric-value{color:var(--ok)}.metric.warn .metric-value{color:var(--warn)}
 body[data-observation-freshness="stale"] .metric.ok .metric-value{color:var(--dim)}body[data-observation-freshness="stale"] .pill.running{background:color-mix(in srgb,var(--dim) 16%,transparent);color:var(--dim)}body[data-observation-freshness="stale"] .status-dot.running{background:var(--dim)}
 .diagnostics{border:1px solid color-mix(in oklch,var(--warn) 45%,var(--line));border-radius:var(--r-md);background:color-mix(in oklch,var(--warn) 8%,var(--surface));padding:var(--s4) var(--s5)}.diagnostics h2{margin:0 0 var(--s2);font-size:1rem}.diagnostics ul{display:grid;gap:var(--s2);margin:0;padding:0;list-style:none}.diagnostics li{display:flex;justify-content:space-between;gap:var(--s4);color:var(--dim);font-size:.875rem}.diagnostics strong{color:var(--ink);font-weight:500}.diagnostics code{font-size:.75rem}
 .delivery-loop{display:grid;min-width:0;gap:var(--s4)}.delivery-overview{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--s3)}.delivery-callout{min-width:0;padding:var(--s4)}.delivery-callout strong{display:block;font-size:1.05rem;overflow-wrap:anywhere}.delivery-callout p{margin:var(--s2) 0;color:var(--dim);font-size:.85rem}.delivery-callout code{font-size:.72rem;color:var(--dim);overflow-wrap:anywhere}.delivery-times{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--s3);margin:0}.delivery-times div{min-width:0;padding:var(--s3);border-left:3px solid var(--line);background:var(--surface-2)}.delivery-times dt{color:var(--dim);font-size:.75rem}.delivery-times dd{margin:2px 0 0;overflow-wrap:anywhere;font-size:.85rem}.delivery-times time{font-family:var(--mono);font-variant-numeric:tabular-nums}.delivery-model .detail-body>h3,.diagram-equivalent h3{margin:0 0 var(--s3);font-size:1rem}.phase-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s3)}.phase-card{min-width:0;padding:var(--s4);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md)}.delivery-attention{padding:var(--s4)}.delivery-attention h3{margin:0 0 var(--s2);font-size:1rem}.diagnostics-list{display:grid;gap:var(--s2);margin:0;padding:0;list-style:none}.diagnostics-list li{display:flex;min-width:0;justify-content:space-between;gap:var(--s4);color:var(--dim);font-size:.85rem}.diagnostics-list li>*{min-width:0;overflow-wrap:anywhere}.diagnostics-list strong{color:var(--ink);font-weight:500}
+.delivery-runtime{display:grid;min-width:0;gap:var(--s4)}.runtime-attention{min-width:0;padding:var(--s3) var(--s4);border:1px solid color-mix(in oklch,var(--warn) 45%,var(--line));border-radius:var(--r-md);background:color-mix(in oklch,var(--warn) 8%,var(--surface))}.runtime-attention-clear{border-color:var(--line);background:var(--surface-2)}.runtime-attention strong{display:block;font-weight:600}.runtime-attention p,.runtime-gate p,.runtime-terminal{margin:var(--s1) 0 0;color:var(--dim);font-size:.85rem;overflow-wrap:anywhere}.runtime-summary{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:var(--s3);margin:0}.runtime-summary div,.runtime-phase,.runtime-gate{min-width:0}.runtime-summary dt,.runtime-facts dt{color:var(--dim);font-size:.75rem}.runtime-summary dd{margin:2px 0 0;font-size:1.2rem;font-weight:600}.runtime-phase-list,.runtime-gate-list{display:grid;min-width:0;gap:var(--s3);margin:0;padding:0;list-style:none}.runtime-phase-list{grid-template-columns:repeat(4,minmax(0,1fr))}.runtime-phase,.runtime-gate{padding:var(--s3);border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2)}.runtime-row-head{display:flex;min-width:0;align-items:start;justify-content:space-between;flex-wrap:wrap;gap:var(--s2)}.runtime-row-head strong{min-width:0;overflow-wrap:anywhere}.runtime-state{display:inline-flex;flex:none;align-items:center;border:1px solid var(--line);border-radius:999px;padding:2px 7px;font-size:.72rem;line-height:1.4}.runtime-phase-state-blocked,.runtime-gate-state-escalated{color:var(--bad);border-color:color-mix(in oklch,var(--bad) 40%,var(--line))}.runtime-phase-state-handoff_pending,.runtime-gate-state-proposed,.runtime-gate-state-rejected{color:var(--warn);border-color:color-mix(in oklch,var(--warn) 40%,var(--line))}.runtime-phase-state-completed,.runtime-gate-state-accepted,.runtime-gate-state-consumed{color:var(--ok);border-color:color-mix(in oklch,var(--ok) 40%,var(--line))}.runtime-facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--s2);margin:var(--s3) 0 0}.runtime-facts dd{margin:1px 0 0;font-size:.82rem;overflow-wrap:anywhere}.runtime-terminal{padding-top:var(--s3);border-top:1px solid var(--line)}.runtime-terminal strong{color:var(--ink)}
 .primary-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s5);align-items:start}.primary-grid-stacked{grid-template-columns:1fr}.section-head{display:flex;min-width:0;justify-content:space-between;align-items:end;gap:var(--s4);margin-bottom:var(--s3)}.section-head h2{margin:0;font:600 1.25rem/1.3 var(--sans);letter-spacing:-.01em}.section-head p{margin:var(--s1) 0 0;color:var(--dim);font-size:.875rem}.count{flex:none;color:var(--dim);font:500 .82rem var(--sans);font-variant-numeric:tabular-nums}.surface{min-width:0;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}.run-list{display:grid;min-width:0}.run-list-dense{grid-template-columns:repeat(2,minmax(0,1fr))}.run-item{min-width:0;padding:var(--s4);border-top:1px solid var(--line)}.run-item:first-child{border-top:0}.run-list-dense .run-item{border-left:1px solid var(--line)}.run-list-dense .run-item:nth-child(-n+2){border-top:0}.run-list-dense .run-item:nth-child(odd){border-left:0}.run-summary{display:flex;min-width:0;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:var(--s3)}.run-name{display:flex;min-width:0;max-width:100%;flex:1 1 12rem;align-items:center;gap:var(--s2)}.run-name code{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink);font:500 .9rem var(--mono)}.status-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--dim)}.status-dot.running{background:var(--ok)}.status-dot.starting,.status-dot.awaiting-verdict,.status-dot.unrecorded,.status-dot.orphan_running{background:var(--warn)}.status-dot.died,.status-dot.unknown{background:var(--bad)}
 .pill{display:inline-flex;align-items:center;white-space:nowrap;font:500 .75rem/1.4 var(--sans);padding:4px 9px;border-radius:999px}
 .pill.running{background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok)}
@@ -1055,9 +1262,9 @@ body[data-observation-freshness="stale"] .metric.ok .metric-value{color:var(--di
 .g-warn{stroke:var(--warn)}.g-warn.g-dot,.g-warn.g-tag{fill:var(--warn)}
 .g-bad{stroke:var(--bad)}.g-bad.g-dot,.g-bad.g-tag{fill:var(--bad)}
 footer{margin-top:var(--s7);padding-top:var(--s4);border-top:1px solid var(--line);color:var(--dim);font-size:.82rem}footer details summary{cursor:pointer;width:max-content;color:var(--ink)}footer ul{max-width:78ch;margin:var(--s3) 0 0;padding-left:1.25rem}footer code{font-size:.76rem}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}summary:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
-@media(max-width:820px){body{padding:var(--s4)}.site-header{display:grid}.header-status,.status-badges{justify-content:flex-start;text-align:left}.summary-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.metric{border-top:1px solid var(--line)}.metric:nth-child(-n+2){border-top:0}.metric:nth-child(odd){border-left:0}.delivery-overview{grid-template-columns:1fr}.primary-grid,.run-list-dense{grid-template-columns:1fr}.run-list-dense .run-item{border-left:0}.run-list-dense .run-item:nth-child(2){border-top:1px solid var(--line)}main{gap:var(--s6)}}
-@media(max-width:620px){h1{display:grid;gap:2px;font-size:1.5rem}.header-status,.status-badges{display:grid;justify-items:start}.quality{white-space:normal}.metric{padding:var(--s4)}.metric-value{font-size:1.65rem}.section-head{align-items:start}.delivery-times,.phase-grid{grid-template-columns:1fr}.run-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.run-facts div:last-child{grid-column:1/-1}.warning-list li{grid-template-columns:1fr auto}.warning-list p{grid-column:1/-1}.responsive-table table,.responsive-table tbody,.responsive-table tr,.responsive-table td{display:block;min-width:0}.responsive-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}.responsive-table tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s3);padding:var(--s4);border-top:1px solid var(--line)}.responsive-table tbody tr:first-child{border-top:0}.responsive-table td{padding:0;border:0;overflow-wrap:anywhere}.responsive-table td:first-child{grid-column:1/-1}.responsive-table td::before{content:attr(data-label);display:block;margin-bottom:2px;color:var(--dim);font-size:.7rem}.deep-dive>summary{padding:var(--s4)}.detail-body{padding:var(--s3)}.graph-legend,.diagram-legend{display:grid}}
-@media(max-width:360px){body{padding:var(--s3)}.summary-strip{grid-template-columns:1fr}.metric,.metric:nth-child(-n+2){border-top:1px solid var(--line);border-left:0}.metric:first-child{border-top:0}.run-facts{grid-template-columns:1fr}.run-facts div:last-child{grid-column:auto}.responsive-table tr{grid-template-columns:1fr}.responsive-table td:first-child{grid-column:auto}}
+@media(max-width:820px){body{padding:var(--s4)}.site-header{display:grid}.header-status,.status-badges{justify-content:flex-start;text-align:left}.summary-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.metric{border-top:1px solid var(--line)}.metric:nth-child(-n+2){border-top:0}.metric:nth-child(odd){border-left:0}.delivery-overview{grid-template-columns:1fr}.runtime-summary{grid-template-columns:repeat(3,minmax(0,1fr))}.runtime-phase-list{grid-template-columns:repeat(2,minmax(0,1fr))}.primary-grid,.run-list-dense{grid-template-columns:1fr}.run-list-dense .run-item{border-left:0}.run-list-dense .run-item:nth-child(2){border-top:1px solid var(--line)}main{gap:var(--s6)}}
+@media(max-width:620px){h1{display:grid;gap:2px;font-size:1.5rem}.header-status,.status-badges{display:grid;justify-items:start}.quality{white-space:normal}.metric{padding:var(--s4)}.metric-value{font-size:1.65rem}.section-head{align-items:start}.delivery-times,.phase-grid,.runtime-phase-list{grid-template-columns:1fr}.runtime-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.runtime-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.runtime-facts div:first-child{grid-column:1/-1}.run-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.run-facts div:last-child{grid-column:1/-1}.warning-list li{grid-template-columns:1fr auto}.warning-list p{grid-column:1/-1}.responsive-table table,.responsive-table tbody,.responsive-table tr,.responsive-table td{display:block;min-width:0}.responsive-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}.responsive-table tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s3);padding:var(--s4);border-top:1px solid var(--line)}.responsive-table tbody tr:first-child{border-top:0}.responsive-table td{padding:0;border:0;overflow-wrap:anywhere}.responsive-table td:first-child{grid-column:1/-1}.responsive-table td::before{content:attr(data-label);display:block;margin-bottom:2px;color:var(--dim);font-size:.7rem}.deep-dive>summary{padding:var(--s4)}.detail-body{padding:var(--s3)}.graph-legend,.diagram-legend{display:grid}}
+@media(max-width:360px){body{padding:var(--s3)}.summary-strip,.runtime-summary{grid-template-columns:1fr}.metric,.metric:nth-child(-n+2){border-top:1px solid var(--line);border-left:0}.metric:first-child{border-top:0}.run-facts{grid-template-columns:1fr}.run-facts div:last-child{grid-column:auto}.responsive-table tr{grid-template-columns:1fr}.responsive-table td:first-child{grid-column:auto}}
 @media(forced-colors:active){.df-selected path{stroke:Highlight;stroke-width:4}.df-observed,.df-exception-label,.ds-flow .ds-terminal{color:CanvasText;fill:CanvasText}.df-node rect,.df-pm{stroke:CanvasText}.graph-scroll:focus-visible,.diagram-scroll:focus-visible{outline-color:Highlight}.legend-dot,.legend-line{border-color:CanvasText;background:CanvasText}}
 </style></head><body data-observation-freshness="${initiallyStale ? 'stale' : 'fresh'}"><div class="wrap">
 
@@ -1068,13 +1275,14 @@ footer{margin-top:var(--s7);padding-top:var(--s4);border-top:1px solid var(--lin
     <span class="eyebrow">tmux teams · live status</span>
     <h1>Pulse <span class="repo">${esc(repoName)}</span></h1>
     <p class="scope">ติดตามเฉพาะ worker ที่ระบบสั่งในโปรเจกต์นี้ · หน้านี้อ่านข้อมูลอย่างเดียว</p>
+    <a class="loop-graph-link" href="loop-graph.html">เปิด ACP Loop Graph เต็มจอ</a>
   </div>
   <div class="header-status" data-observation-expires-at="${esc(expiresAt)}" data-refresh-interval="${refreshInterval}">
     <div class="status-badges">
       <span class="quality ${qualityClass}" title="ความครบถ้วนของหลักฐานที่ Pulse อ่านได้">${qualityLabel}</span>
       <span id="freshness-status" class="quality ${freshnessClass}" role="status" aria-live="polite">${freshnessLabel}</span>
     </div>
-    <div class="age"><span>ข้อมูลที่สังเกต ณ</span>${absoluteTime(snapshot.generated_at)}<span id="freshness-note" class="freshness-note">${!expiryIsValid ? 'ตรวจเวลาหมดอายุไม่ได้' : initiallyStale ? 'ตัวสังเกตการณ์ไม่อัปเดตตามรอบ' : `กำหนดรีเฟรชทุก ${refreshInterval} วิ`}</span></div>
+    <div class="age"><span id="pulse-timezone-label" class="time-zone-label">${esc(TIME_ZONE_LABEL)}</span><span>ข้อมูลที่สังเกต ณ</span>${absoluteTime(snapshot.generated_at)}<span id="freshness-note" class="freshness-note">${!expiryIsValid ? 'ตรวจเวลาหมดอายุไม่ได้' : initiallyStale ? 'ตัวสังเกตการณ์ไม่อัปเดตตามรอบ' : `กำหนดรีเฟรชทุก ${refreshInterval} วิ`}</span></div>
   </div>
 </header>
 
@@ -1093,6 +1301,8 @@ footer{margin-top:var(--s7);padding-top:var(--s4);border-top:1px solid var(--lin
   ${notes.length ? `<section class="diagnostics" aria-labelledby="diagnostics-title"><h2 id="diagnostics-title">คุณภาพข้อมูลต้องตรวจสอบ</h2><ul>${diagnosticItems}</ul></section>` : ''}
 
   ${deliverySection}
+
+  ${deliveryRuntimeSection}
 
   <div class="primary-grid${densePrimary ? ' primary-grid-stacked' : ''}" data-layout="${densePrimary ? 'stacked-dense' : 'paired'}">
     <section aria-labelledby="attention-title">
@@ -1200,6 +1410,7 @@ ${st.map(s => `<tr><td data-label="worker">${esc(s.worker)}</td><td data-label="
 const lockWait = new Int32Array(new SharedArrayBuffer(4))
 const pause = (ms) => Atomics.wait(lockWait, 0, 0, ms)
 const PUBLISH_LEASE_MS = 5 * 60_000
+const PUBLISH_LOCK_WAIT_MS = 10_000
 
 function readPublishToken() {
   try { return readFileSync(PUBLISH_LOCK, 'utf8').trim() }
@@ -1213,7 +1424,9 @@ function assertPublishLock(token) {
 function claimPublishLock() {
   mkdirSync(STORE, { recursive: true })
   const token = `${process.pid}:${randomUUID()}`
-  for (let attempt = 0; attempt < 200; attempt++) {
+  const deadline = Date.now() + PUBLISH_LOCK_WAIT_MS
+  let attempt = 0
+  while (Date.now() < deadline) {
     try {
       writeFileSync(PUBLISH_LOCK, `${token}\n`, { flag: 'wx' })
       return token
@@ -1235,7 +1448,10 @@ function claimPublishLock() {
         }
         continue
       }
-      pause(5)
+      // A bounded stagger avoids waking every concurrent publisher on the
+      // same 5ms cadence while still keeping interactive publication prompt.
+      pause(Math.min(5 + attempt, 50))
+      attempt += 1
     }
   }
   throw new Error('publish lock busy')
@@ -1265,41 +1481,42 @@ function atomicWrite(path, content, publishToken = null) {
   }
 }
 
-function readDeliveryLoopInput() {
-  if (!DELIVERY_LOOP_PATH) return { value: null, issue: null }
+function readProjectionInput(path, unreadableCode, invalidCode) {
+  if (!path) return { value: null, issue: null }
+  let descriptor = null
   try {
-    const stats = statSync(DELIVERY_LOOP_PATH)
-    if (!stats.isFile()) {
-      return { value: null, issue: 'DELIVERY_LOOP_INPUT_UNREADABLE' }
+    descriptor = openSync(path, 'r')
+    const stats = fstatSync(descriptor)
+    if (!stats.isFile()) return { value: null, issue: unreadableCode }
+    if (stats.size > MAX_INPUT_BYTES) return { value: null, issue: invalidCode }
+    const buffer = Buffer.alloc(MAX_INPUT_BYTES + 1)
+    const bytesRead = readSync(descriptor, buffer, 0, buffer.length, 0)
+    if (bytesRead > MAX_INPUT_BYTES) return { value: null, issue: invalidCode }
+    return { value: JSON.parse(buffer.toString('utf8', 0, bytesRead)), issue: null }
+  } catch (error) {
+    return {
+      value: null,
+      issue: error instanceof SyntaxError ? invalidCode : unreadableCode,
     }
-    if (stats.size > MAX_INPUT_BYTES) {
-      return { value: null, issue: 'DELIVERY_LOOP_INPUT_INVALID' }
-    }
-    let descriptor = null
-    try {
-      descriptor = openSync(DELIVERY_LOOP_PATH, 'r')
-      const buffer = Buffer.alloc(MAX_INPUT_BYTES + 1)
-      const bytesRead = readSync(descriptor, buffer, 0, buffer.length, 0)
-      if (bytesRead > MAX_INPUT_BYTES) {
-        return { value: null, issue: 'DELIVERY_LOOP_INPUT_INVALID' }
-      }
-      return {
-        value: JSON.parse(buffer.toString('utf8', 0, bytesRead)),
-        issue: null,
-      }
-    } catch (error) {
-      return {
-        value: null,
-        issue: error instanceof SyntaxError
-          ? 'DELIVERY_LOOP_INPUT_INVALID'
-          : 'DELIVERY_LOOP_INPUT_UNREADABLE',
-      }
-    } finally {
-      if (descriptor !== null) try { closeSync(descriptor) } catch { /* best effort */ }
-    }
-  } catch {
-    return { value: null, issue: 'DELIVERY_LOOP_INPUT_UNREADABLE' }
+  } finally {
+    if (descriptor !== null) try { closeSync(descriptor) } catch { /* best effort */ }
   }
+}
+
+function readDeliveryLoopInput() {
+  return readProjectionInput(
+    DELIVERY_LOOP_PATH,
+    'DELIVERY_LOOP_INPUT_UNREADABLE',
+    'DELIVERY_LOOP_INPUT_INVALID',
+  )
+}
+
+function readDeliveryRuntimeInput() {
+  return readProjectionInput(
+    DELIVERY_RUNTIME_PATH,
+    'DELIVERY_RUNTIME_INPUT_UNREADABLE',
+    'DELIVERY_RUNTIME_INPUT_INVALID',
+  )
 }
 
 function atomicWriteIfChanged(path, content, publishToken = null) {
@@ -1311,16 +1528,43 @@ function atomicWriteIfChanged(path, content, publishToken = null) {
   atomicWrite(path, content, publishToken)
 }
 
+const sha256 = (content) => createHash('sha256').update(content).digest('hex')
+const sourceIdentity = (path) => {
+  if (!path) return null
+  let canonical = path
+  try { canonical = realpathSync(path) } catch { /* unresolved inputs remain stable and private */ }
+  return `sha256:${sha256(canonical)}`
+}
+
+function bundleManifest(snapshot, jsonText, html, loopGraphHtml) {
+  return `${JSON.stringify({
+    schema: 'tmux-teams.pulse-bundle',
+    schema_version: 2,
+    snapshot_id: snapshot.snapshot_id,
+    files: {
+      data: { path: 'pulse.json', sha256: sha256(jsonText) },
+      dashboard: { path: 'pulse.html', sha256: sha256(html) },
+      loop_graph: { path: 'loop-graph.html', sha256: sha256(loopGraphHtml) },
+      font_css: { path: FONT_CSS_NAME, sha256: sha256(KANIT_FONT_CSS) },
+      d3_js: { path: D3_JS_NAME, sha256: sha256(D3_JS) },
+      d3_license: { path: D3_LICENSE_NAME, sha256: sha256(D3_LICENSE) },
+    },
+  }, null, 2)}\n`
+}
+
 function priorStream(view, targetVersion) {
   if (!existsSync(JSON_OUT)) return { streamId: randomUUID(), sequence: 1 }
   try {
     const prior = JSON.parse(readFileSync(JSON_OUT, 'utf8'))
     if (prior.schema !== PULSE_SCHEMA ||
-        ![PULSE_SCHEMA_VERSION, PULSE_SCHEMA_VERSION_V2].includes(prior.schema_version) ||
+        ![
+          PULSE_SCHEMA_VERSION, PULSE_SCHEMA_VERSION_V2, PULSE_SCHEMA_VERSION_V3,
+          PULSE_SCHEMA_VERSION_V4,
+        ]
+          .includes(prior.schema_version) ||
         !UUID_RE.test(prior.stream_id) || !Number.isSafeInteger(prior.sequence) ||
         prior.sequence < 1 || prior.sequence >= Number.MAX_SAFE_INTEGER) throw new Error('invalid prior pulse')
-    if (prior.schema_version === PULSE_SCHEMA_VERSION &&
-        targetVersion === PULSE_SCHEMA_VERSION_V2) {
+    if (prior.schema_version !== targetVersion) {
       view.diagnostics.push({
         code: 'SCHEMA_UPGRADED',
         severity: 'info',
@@ -1339,8 +1583,9 @@ function once() {
   const startedAt = Date.now()
   const view = derive(startedAt)
   const finishedAt = Date.now()
-  const targetVersion = DELIVERY_LOOP_PATH ? PULSE_SCHEMA_VERSION_V2 : PULSE_SCHEMA_VERSION
+  const targetVersion = PULSE_SCHEMA_VERSION_V4
   const deliveryLoopInput = readDeliveryLoopInput()
+  const deliveryRuntimeInput = readDeliveryRuntimeInput()
   mkdirSync(STORE, { recursive: true })
   const ignore = join(STORE, '.gitignore')
   if (!existsSync(ignore)) writeFileSync(ignore, '*\n')
@@ -1351,21 +1596,51 @@ function once() {
       ...stream, startedAt, finishedAt, intervalSec: INTERVAL,
       repoName: REPO.split('/').pop(),
     }
-    const snapshot = targetVersion === PULSE_SCHEMA_VERSION_V2
-      ? projectPulseV2(view, meta, deliveryLoopInput.value, deliveryLoopInput.issue)
-      : projectPulseV1(view, meta)
+    const snapshot = projectPulseV4(
+      view,
+      meta,
+      deliveryLoopInput.value,
+      deliveryLoopInput.issue,
+      Boolean(DELIVERY_LOOP_PATH),
+      deliveryRuntimeInput.value,
+      deliveryRuntimeInput.issue,
+      Boolean(DELIVERY_RUNTIME_PATH),
+    )
     const jsonText = JSON.stringify(snapshot, null, 2) + '\n'
     // Render the exact serialized contract, not the internal projection object.
     // This makes pulse.json the literal SSOT and catches serialization drift.
     const publishedSnapshot = JSON.parse(jsonText)
     const html = render(publishedSnapshot)
+    const loopGraphHtml = renderPulseLoopGraph(publishedSnapshot, {
+      fontCssName: FONT_CSS_NAME,
+      d3JsName: D3_JS_NAME,
+      timeZone: DISPLAY_TIME_ZONE,
+      timeZoneLabel: TIME_ZONE_LABEL,
+    })
+    const bundleText = bundleManifest(publishedSnapshot, jsonText, html, loopGraphHtml)
     assertPublishLock(token)
     atomicWriteIfChanged(FONT_CSS_OUT, KANIT_FONT_CSS, token)
+    assertPublishLock(token)
+    atomicWriteIfChanged(D3_JS_OUT, D3_JS, token)
+    assertPublishLock(token)
+    atomicWriteIfChanged(D3_LICENSE_OUT, D3_LICENSE, token)
     assertPublishLock(token)
     atomicWrite(JSON_OUT, jsonText, token)
     assertPublishLock(token)
     atomicWrite(OUT, html, token)
-    return { htmlPath: OUT, jsonText, snapshot: publishedSnapshot }
+    assertPublishLock(token)
+    atomicWrite(LOOP_GRAPH_OUT, loopGraphHtml, token)
+    // This commit marker is written last. Readers validate its hashes and
+    // snapshot id, then re-read it to detect a publication racing their read.
+    assertPublishLock(token)
+    atomicWrite(BUNDLE_OUT, bundleText, token)
+    return {
+      htmlPath: OUT,
+      loopGraphPath: LOOP_GRAPH_OUT,
+      bundlePath: BUNDLE_OUT,
+      jsonText,
+      snapshot: publishedSnapshot,
+    }
   } finally {
     releasePublishLock(token)
   }
@@ -1410,8 +1685,10 @@ function pidAlive(pid) {
 function desiredWatcherConfig(pid) {
   return {
     pid,
-    schema_version: DELIVERY_LOOP_PATH ? PULSE_SCHEMA_VERSION_V2 : PULSE_SCHEMA_VERSION,
-    delivery_loop_path: DELIVERY_LOOP_PATH,
+    schema_version: PULSE_SCHEMA_VERSION_V4,
+    delivery_loop_source: sourceIdentity(DELIVERY_LOOP_PATH),
+    delivery_runtime_source: sourceIdentity(DELIVERY_RUNTIME_PATH),
+    time_zone: DISPLAY_TIME_ZONE,
   }
 }
 
@@ -1421,16 +1698,22 @@ function readWatcherConfig() {
     if (!stats.isFile() || stats.size > 4096) return null
     const value = JSON.parse(readFileSync(WATCH_CONFIG, 'utf8'))
     if (!value || typeof value !== 'object' || Array.isArray(value) ||
-        Object.keys(value).length !== 3 ||
+        Object.keys(value).length !== 5 ||
         !Object.hasOwn(value, 'pid') ||
         !Object.hasOwn(value, 'schema_version') ||
-        !Object.hasOwn(value, 'delivery_loop_path') ||
+        !Object.hasOwn(value, 'delivery_loop_source') ||
+        !Object.hasOwn(value, 'delivery_runtime_source') ||
+        !Object.hasOwn(value, 'time_zone') ||
         !Number.isSafeInteger(value.pid) || value.pid < 1 ||
-        ![PULSE_SCHEMA_VERSION, PULSE_SCHEMA_VERSION_V2].includes(value.schema_version) ||
-        !(value.delivery_loop_path === null ||
-          typeof value.delivery_loop_path === 'string') ||
-        (value.schema_version === PULSE_SCHEMA_VERSION) !==
-          (value.delivery_loop_path === null)) return null
+        value.schema_version !== PULSE_SCHEMA_VERSION_V4 ||
+        !(value.delivery_loop_source === null ||
+          typeof value.delivery_loop_source === 'string' &&
+            /^sha256:[0-9a-f]{64}$/.test(value.delivery_loop_source)) ||
+        !(value.delivery_runtime_source === null ||
+          typeof value.delivery_runtime_source === 'string' &&
+            /^sha256:[0-9a-f]{64}$/.test(value.delivery_runtime_source)) ||
+        typeof value.time_zone !== 'string' ||
+        value.time_zone.length === 0) return null
     return value
   } catch { return null }
 }
@@ -1445,7 +1728,9 @@ function watcherConfigMatches(pid) {
   return actual !== null &&
     actual.pid === desired.pid &&
     actual.schema_version === desired.schema_version &&
-    actual.delivery_loop_path === desired.delivery_loop_path
+    actual.delivery_loop_source === desired.delivery_loop_source &&
+    actual.delivery_runtime_source === desired.delivery_runtime_source &&
+    actual.time_zone === desired.time_zone
 }
 
 // Same single-operator O_EXCL pattern as deliver.sh: one caller claims the
@@ -1492,7 +1777,7 @@ if (cmd === 'ensure') {
     if (!claim.pid) { console.error('[pulse] could not claim watcher pidfile'); process.exit(1) }
     if (!watcherConfigMatches(claim.pid)) {
       console.error(
-        '[pulse] watcher mode/input mismatch; stop the existing watcher before changing --delivery-loop',
+        '[pulse] watcher mode/input mismatch; stop the existing watcher before changing --delivery-loop, --delivery-runtime, or --time-zone',
       )
       process.exit(1)
     }
@@ -1514,6 +1799,8 @@ if (cmd === 'ensure') {
   }
   const watchArgs = [THIS_SCRIPT, 'watch', REPO, '--interval', String(INTERVAL), '--managed']
   if (DELIVERY_LOOP_PATH) watchArgs.push('--delivery-loop', DELIVERY_LOOP_PATH)
+  if (DELIVERY_RUNTIME_PATH) watchArgs.push('--delivery-runtime', DELIVERY_RUNTIME_PATH)
+  watchArgs.push('--time-zone', DISPLAY_TIME_ZONE)
   const child = spawn(process.execPath,
     watchArgs, {
       detached: true,
@@ -1530,7 +1817,7 @@ if (cmd === 'ensure') {
   // after installing signal cleanup. Do not tell cron "started" before that
   // handoff is real, or an immediate shutdown can strand a stale pidfile.
   let ready = false
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < WATCH_HANDOFF_ATTEMPTS; i++) {
     await new Promise(resolve => setTimeout(resolve, 10))
     if (watcherPid() === child.pid) { ready = true; break }
     if (!pidAlive(child.pid)) break
@@ -1577,7 +1864,8 @@ if (managedClaimAccepted) {
 }
 
 console.log(`[pulse] watching ${REPO} every ${INTERVAL}s -> ${OUT}`)
-console.log('[pulse] open that file in a browser; it refreshes itself')
+console.log(`[pulse] full-screen ACP graph -> ${LOOP_GRAPH_OUT}`)
+console.log('[pulse] open either HTML file in a browser; both refresh themselves')
 const tick = () => {
   if (watcherPid() !== process.pid) {
     console.error('[pulse] watcher lost its pidfile claim; exiting')

@@ -1,19 +1,21 @@
 // acp-companion.mjs — ACP transport lane for the tmux-teams mailbox contract.
-// Drives an ACP-speaking agent (gemini, claude) with the same brief+contract
+// Drives an ACP-speaking agent (claude, codex, or agy) with the same brief+contract
 // the tmux lane uses; the worker writes the same .mailbox-out/<id> outbox, so
 // every verification layer above (typed markers, tamper-check, PM verify) is
 // shared between transports.
 //
 // usage: node acp-companion.mjs <agent> <cwd> <task-id> <brief-file> [timeout-sec]
-//   agent: gemini | claude | codex | agy   (or set ACP_CMD="custom command" to override)
+//   agent: claude | codex | agy   (or set ACP_CMD="custom command" to override)
 //   env ACP_RESUME=<sessionId>: continue an earlier turn instead of starting a
 //     new session — carries full context across the otherwise one-shot mailbox
 //     brief (needs the agent to advertise loadSession; falls back to a fresh
 //     session with a warning if it does not). The session id is printed as
 //     `[session] <id>` and stored per task-id under .tmux-teams/sessions/.
+//   env TMUX_TEAMS_PHASE=Requirement|Prototype|Development|QA: record an
+//     explicit delivery-phase binding in the dispatch footprint and terminal
+//     event. Omit it when the phase is unknown; the observer never infers one.
 //
 // Lanes (2026-07-21):
-//   gemini -> `gemini --acp`                       (native; product-gated, see SKILL.md §8)
 //   claude -> `npx -y @agentclientprotocol/claude-agent-acp` (official adapter,
 //             successor to the zed-industries build — Task-tool subagents
 //             allowed, effort via MAX_THINKING_TOKENS env)
@@ -34,15 +36,16 @@
 //             driving an OAuth-authed agy breach Google's Antigravity terms —
 //             same pattern-level risk as the tmux lane; see SKILL.md §8.
 import { spawn, spawnSync } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
+import { validateCompanionGovernance } from './phase-gate-companion-guard.mjs'
 
 const [agentName, cwd, taskId, briefFile, timeoutArg] = process.argv.slice(2)
 if (!agentName || !cwd || !taskId || !briefFile) {
-  console.error('usage: node acp-companion.mjs <gemini|claude|codex|agy> <cwd> <task-id> <brief-file> [timeout-sec]')
+  console.error('usage: node acp-companion.mjs <claude|codex|agy> <cwd> <task-id> <brief-file> [timeout-sec]')
   process.exit(2)
 }
 const ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/
@@ -50,12 +53,33 @@ if (!ID_RE.test(taskId)) {
   console.error(`invalid task id "${taskId}" — 1-64 chars, alphanumeric/_/-, starts alphanumeric or _`)
   process.exit(2)
 }
+if (agentName.trim().toLowerCase() === 'gemini') {
+  console.error(`unsupported agent "${agentName}" — use claude|codex|agy or another name with ACP_CMD`)
+  process.exit(2)
+}
+let phaseGateContext
+try {
+  phaseGateContext = validateCompanionGovernance({
+    repoRoot: cwd, taskId, agentName, briefFile,
+    timeoutSec: Number(timeoutArg) > 0 ? Number(timeoutArg) : 600,
+  })
+} catch (cause) {
+  console.error(`[phase-gate] ${cause.code ?? 'PHASE_GATE_GUARD_FAILED'}: ${cause.message}`)
+  process.exit(2)
+}
+const DELIVERY_PHASES = new Set(['Requirement', 'Prototype', 'Development', 'QA'])
+const deliveryPhase = process.env.TMUX_TEAMS_PHASE?.trim() || ''
+if (deliveryPhase && !DELIVERY_PHASES.has(deliveryPhase)) {
+  console.error(`invalid TMUX_TEAMS_PHASE "${deliveryPhase}" — use Requirement|Prototype|Development|QA`)
+  process.exit(2)
+}
 const TIMEOUT_MS = (Number(timeoutArg) > 0 ? Number(timeoutArg) : 600) * 1000
 const brief = readFileSync(briefFile, 'utf8')
-const dispatchId = randomUUID()
+const dispatchId = phaseGateContext?.dispatch_uuid ?? randomUUID()
 const startedMs = Date.now()
 const startedAt = new Date(startedMs).toISOString().replace(/\.\d+Z$/, 'Z')
 const KMS = fileURLToPath(new URL('./kms.mjs', import.meta.url))
+const sha256Text = (value) => `sha256:${createHash('sha256').update(value).digest('hex')}`
 let kmsRecorded = false
 
 function gitValue(args) {
@@ -78,6 +102,7 @@ function recordTerminal(terminal, { timedOut = false, evidencePresent = false, e
     `task_id: ${taskId}`,
     `worker: ${agentName}`,
     'transport: acp',
+    ...(deliveryPhase ? [`phase: ${deliveryPhase}`] : []),
     `repo_rev: ${rev}`,
     `tree: ${tree}`,
     `terminal: ${terminal}`,
@@ -94,6 +119,11 @@ function recordTerminal(terminal, { timedOut = false, evidencePresent = false, e
   })
   if (result.status === 0) console.error(`[kms] recorded ${result.stdout.trim()}`)
   else console.error(`[warn] could not record KMS terminal event: ${(result.stderr || result.error?.message || `exit ${result.status}`).trim()}`)
+}
+
+function recordGovernedTerminal(outcome, evidence) {
+  if (!phaseGateContext) return
+  phaseGateContext.recordTerminal(outcome, evidence)
 }
 
 function hasEvidence(text) {
@@ -121,7 +151,6 @@ const preamble =
   `TEAM_DONE ${taskId} (or TEAM_BLOCKED ${taskId} / TEAM_FAILED ${taskId}).\n\n---\n\n`
 
 const CMDS = {
-  gemini: ['gemini', ['--acp']],
   claude: ['npx', ['-y', '@agentclientprotocol/claude-agent-acp']],
   codex: ['npx', ['-y', '@agentclientprotocol/codex-acp']],
   agy: ['bunx', ['antigravity-acp@1.0.0']],
@@ -133,7 +162,7 @@ if (process.env.ACP_CMD) {
 } else if (CMDS[agentName]) {
   cmd = CMDS[agentName]
 } else {
-  console.error(`unknown agent "${agentName}" — use gemini|claude|codex|agy or set ACP_CMD`)
+  console.error(`unknown agent "${agentName}" — use claude|codex|agy or set ACP_CMD`)
   process.exit(2)
 }
 // agy: always drive the installed `agy` (PATH/$AGY_BIN); the adapter's pinned
@@ -150,14 +179,16 @@ const spawnEnv = agentName === 'agy'
 // no footprint, dying mid-run erased it completely, which is precisely the
 // failure the live view exists to catch. No pane here, so that field is omitted
 // and the view falls back to its time window.
-try {
+const dispatchFootprint =
+  `dispatch_id: ${dispatchId}\ntask_id: ${taskId}\nworker: ${agentName}\ntransport: acp\n` +
+  `${deliveryPhase ? `phase: ${deliveryPhase}\n` : ''}` +
+  `started_at: ${startedAt}\ntimeout_sec: ${TIMEOUT_MS / 1000}\n`
+if (!phaseGateContext) try {
   const dispatchDir = join(cwd, '.tmux-teams', 'dispatch')
   mkdirSync(dispatchDir, { recursive: true })
   const ignore = join(cwd, '.tmux-teams', '.gitignore')
   if (!existsSync(ignore)) writeFileSync(ignore, '*\n')
-  writeFileSync(join(dispatchDir, `${taskId}.md`),
-    `dispatch_id: ${dispatchId}\ntask_id: ${taskId}\nworker: ${agentName}\ntransport: acp\n` +
-    `started_at: ${startedAt}\ntimeout_sec: ${TIMEOUT_MS / 1000}\n`)
+  writeFileSync(join(dispatchDir, `${taskId}.md`), dispatchFootprint)
 } catch (e) {
   // Best-effort, like the memory it feeds: never fail a dispatch over
   // bookkeeping — but say so, because a silent gap here is invisible later.
@@ -167,6 +198,22 @@ try {
 const agent = spawn(cmd[0], cmd[1], { cwd, stdio: ['pipe', 'pipe', 'pipe'], detached: true, env: spawnEnv })
 function killTree(sig = 'SIGTERM') {
   try { process.kill(-agent.pid, sig) } catch { try { agent.kill(sig) } catch {} }
+}
+if (phaseGateContext) {
+  try {
+    phaseGateContext.registerChild(agent.pid)
+    const dispatchDir = join(cwd, '.tmux-teams', 'dispatch')
+    mkdirSync(dispatchDir, { recursive: true })
+    const ignore = join(cwd, '.tmux-teams', '.gitignore')
+    if (!existsSync(ignore)) writeFileSync(ignore, '*\n')
+    writeFileSync(join(dispatchDir, `${taskId}.md`), dispatchFootprint)
+    phaseGateContext.recordFootprint(dispatchFootprint)
+  } catch (cause) {
+    try { phaseGateContext.markIndeterminate(`child registration or footprint failed: ${cause.code ?? cause.message}`) } catch {}
+    killTree()
+    console.error(`[phase-gate] ${cause.code ?? 'PHASE_GATE_REGISTER_FAILED'}: ${cause.message}`)
+    process.exit(1)
+  }
 }
 let stderrBuf = ''
 let timedOut = false
@@ -180,6 +227,7 @@ agent.stdin.on('error', () => {})
 agent.on('error', (e) => {
   finished = true
   console.error(`[fatal] cannot spawn ${cmd[0]}: ${e.message}`)
+  try { phaseGateContext?.markIndeterminate(`ACP spawn error: ${e.message}`) } catch {}
   recordTerminal('spawn-error', { exitCode: 1 })
   process.exit(1)
 })
@@ -191,6 +239,7 @@ agent.on('exit', (code) => {
   if (!finished) {
     codexGuard(stderrBuf)
     console.error(`[fatal] agent exited early (code ${code})`)
+    try { phaseGateContext?.markIndeterminate(`ACP child exited before terminal observation: ${code}`) } catch {}
     recordTerminal('agent-exit', { exitCode: Number.isInteger(code) ? code : 1 })
     process.exit(1)
   }
@@ -288,6 +337,7 @@ function render(u) {
 const deadline = setTimeout(() => {
   timedOut = true
   console.error(`\n[timeout ${TIMEOUT_MS / 1000}s] — worker did not finish; no auto-retry (PM decides)`)
+  try { phaseGateContext?.markIndeterminate('ACP timeout after spawn; terminal state is ambiguous') } catch {}
   recordTerminal('timeout', { timedOut: true, exitCode: 1 })
   killTree('SIGTERM')
   timeoutKillTimer = setTimeout(() => { killTree('SIGKILL'); process.exit(1) }, 5000)
@@ -338,6 +388,7 @@ try {
   try { mkdirSync(sessionsDir, { recursive: true }); writeFileSync(sessionFile, sessionId + '\n') }
   catch (e) { console.error(`[warn] could not persist session id: ${e.message}`) }
 
+  phaseGateContext?.recordPrompt(preamble + brief)
   const res = await request('session/prompt', {
     sessionId,
     prompt: [{ type: 'text', text: preamble + brief }],
@@ -347,6 +398,7 @@ try {
 } catch (e) {
   codexGuard(e.message + stderrBuf)
   console.error(`[fatal] ${e.message}`)
+  try { phaseGateContext?.markIndeterminate(`ACP protocol error: ${e.message}`) } catch {}
   finished = true
   clearTimeout(deadline)
   recordTerminal('protocol-error', { exitCode: 1 })
@@ -361,6 +413,7 @@ killTree()
 const outboxPath = join(cwd, '.mailbox-out', taskId)
 if (!existsSync(outboxPath)) {
   console.error(`[no-outbox] worker finished the turn but wrote no ${outboxPath} — treat as not-done; inspect its final message above`)
+  try { recordGovernedTerminal('failure', { terminal: 'no-outbox', exit_code: 3 }) } catch (cause) { console.error(`[phase-gate] ${cause.code ?? 'PHASE_GATE_TERMINAL_FAILED'}: ${cause.message}`) }
   recordTerminal('no-outbox', { exitCode: 3 })
   process.exit(3)
 }
@@ -372,6 +425,7 @@ try {
     const entries = readdirSync(outboxPath).filter(f => statSync(join(outboxPath, f)).isFile())
     if (entries.length !== 1) {
       console.error(`[no-outbox] ${outboxPath} is a directory with ${entries.length} files — expected a single flat file`)
+      try { recordGovernedTerminal('failure', { terminal: 'invalid-outbox', exit_code: 3 }) } catch (cause) { console.error(`[phase-gate] ${cause.code ?? 'PHASE_GATE_TERMINAL_FAILED'}: ${cause.message}`) }
       recordTerminal('invalid', { exitCode: 3 })
       process.exit(3)
     }
@@ -381,6 +435,7 @@ try {
   outboxText = readFileSync(outboxFile, 'utf8')
 } catch (e) {
   console.error(`[no-outbox] cannot validate ${outboxFile}: ${e.message}`)
+  try { recordGovernedTerminal('failure', { terminal: 'unreadable-outbox', exit_code: 3 }) } catch (cause) { console.error(`[phase-gate] ${cause.code ?? 'PHASE_GATE_TERMINAL_FAILED'}: ${cause.message}`) }
   recordTerminal('invalid', { exitCode: 3 })
   process.exit(3)
 }
@@ -393,5 +448,16 @@ const terminal =
 console.log(`[outbox] ${outboxFile}`)
 console.log(`[terminal] ${terminal}${terminal === 'invalid' ? ` (last line: "${last}")` : ''}`)
 const exitCode = terminal === 'invalid' ? 3 : 0
+if (phaseGateContext) {
+  try {
+    recordGovernedTerminal(terminal === 'done' ? 'success' : 'failure', {
+      terminal, exit_code: exitCode, evidence_present: hasEvidence(outboxText), outbox_digest: sha256Text(outboxText),
+    })
+  } catch (cause) {
+    try { phaseGateContext.markIndeterminate(`terminal ledger append failed: ${cause.code ?? cause.message}`) } catch {}
+    console.error(`[phase-gate] ${cause.code ?? 'PHASE_GATE_TERMINAL_FAILED'}: ${cause.message}`)
+    process.exit(1)
+  }
+}
 recordTerminal(terminal, { evidencePresent: hasEvidence(outboxText), exitCode })
 process.exit(exitCode)

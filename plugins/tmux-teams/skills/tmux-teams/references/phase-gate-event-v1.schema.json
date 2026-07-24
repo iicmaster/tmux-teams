@@ -1,0 +1,707 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "phase-gate-event-v1.schema.json",
+  "title": "tmux-teams Phase Gate Event v1",
+  "description": "Closed append-only single-slice operational ledger. Authority comes only from the immutable store manifest; same-UID identity remains advisory.",
+  "oneOf": [
+    { "$ref": "#/$defs/project_genesis" },
+    { "$ref": "#/$defs/phase_work" },
+    { "$ref": "#/$defs/artifact_submission" },
+    { "$ref": "#/$defs/handoff_propose" },
+    { "$ref": "#/$defs/handoff_accept" },
+    { "$ref": "#/$defs/handoff_reject" },
+    { "$ref": "#/$defs/handoff_escalate" },
+    { "$ref": "#/$defs/handoff_resolve" },
+    { "$ref": "#/$defs/project_delivery_accept" },
+    { "$ref": "#/$defs/normal_dispatch_reservation" },
+    { "$ref": "#/$defs/bootstrap_dispatch_reservation" },
+    { "$ref": "#/$defs/normal_dispatch_child_registered" },
+    { "$ref": "#/$defs/bootstrap_dispatch_child_registered" },
+    { "$ref": "#/$defs/dispatch_consumption" },
+    { "$ref": "#/$defs/normal_dispatch_footprint" },
+    { "$ref": "#/$defs/bootstrap_dispatch_footprint" },
+    { "$ref": "#/$defs/normal_dispatch_prompt" },
+    { "$ref": "#/$defs/bootstrap_dispatch_prompt" },
+    { "$ref": "#/$defs/normal_dispatch_terminal" },
+    { "$ref": "#/$defs/bootstrap_dispatch_terminal" },
+    { "$ref": "#/$defs/normal_dispatch_indeterminate" },
+    { "$ref": "#/$defs/bootstrap_dispatch_indeterminate" },
+    { "$ref": "#/$defs/normal_dispatch_resolution" },
+    { "$ref": "#/$defs/bootstrap_dispatch_resolution" }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "uuid": {
+      "type": "string",
+      "maxLength": 36,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actor_id", "role", "trust"],
+      "properties": {
+        "actor_id": { "$ref": "#/$defs/id" },
+        "role": { "enum": ["sender", "receiver_phase_lead", "pm"] },
+        "trust": { "const": "advisory_same_uid" }
+      }
+    },
+    "boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sender_phase", "receiver_phase"],
+      "properties": {
+        "sender_phase": { "enum": ["Requirement", "Prototype", "Development", "QA"] },
+        "receiver_phase": { "enum": ["Prototype", "Development", "QA", "ProjectDelivery"] }
+      },
+      "oneOf": [
+        { "properties": { "sender_phase": { "const": "Requirement" }, "receiver_phase": { "const": "Prototype" } } },
+        { "properties": { "sender_phase": { "const": "Prototype" }, "receiver_phase": { "const": "Development" } } },
+        { "properties": { "sender_phase": { "const": "Development" }, "receiver_phase": { "const": "QA" } } },
+        { "properties": { "sender_phase": { "const": "QA" }, "receiver_phase": { "const": "ProjectDelivery" } } }
+      ]
+    },
+    "bootstrap_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sender_phase", "receiver_phase"],
+      "properties": {
+        "sender_phase": { "const": "ProjectBootstrap" },
+        "receiver_phase": { "const": "Requirement" }
+      }
+    },
+    "expectations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["security", "performance", "integration", "uat"],
+      "properties": {
+        "security": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "performance": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "integration": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "uat": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "artifact_id", "version", "digest", "predecessor_trace", "validation_evidence", "expectations"],
+      "properties": {
+        "type": { "enum": ["requirements_baseline", "prototype_evaluation", "development_delivery", "qa_release_evidence"] },
+        "artifact_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "version": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "digest": { "$ref": "#/$defs/digest" },
+        "predecessor_trace": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 4096 }, "maxItems": 256 },
+        "validation_evidence": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1, "maxLength": 4096 }, "maxItems": 256 },
+        "expectations": { "$ref": "#/$defs/expectations" },
+        "business_functions": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1, "maxLength": 4096 }, "maxItems": 256 },
+        "validation_exceptions": { "type": "array", "items": { "type": "string", "maxLength": 4096 }, "maxItems": 256 },
+        "clickable_prototype_ref": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "working_software_ref": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "e2e_uat_report_ref": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "requirements_baseline" } } },
+          "then": {
+            "required": ["business_functions", "validation_exceptions"],
+            "properties": {
+              "clickable_prototype_ref": false,
+              "working_software_ref": false,
+              "e2e_uat_report_ref": false
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "prototype_evaluation" } } },
+          "then": {
+            "required": ["clickable_prototype_ref"],
+            "properties": {
+              "predecessor_trace": { "minItems": 1 },
+              "business_functions": false,
+              "validation_exceptions": false,
+              "working_software_ref": false,
+              "e2e_uat_report_ref": false
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "development_delivery" } } },
+          "then": {
+            "required": ["working_software_ref"],
+            "properties": {
+              "predecessor_trace": { "minItems": 1 },
+              "business_functions": false,
+              "validation_exceptions": false,
+              "clickable_prototype_ref": false,
+              "e2e_uat_report_ref": false
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "qa_release_evidence" } } },
+          "then": {
+            "required": ["e2e_uat_report_ref"],
+            "properties": {
+              "predecessor_trace": { "minItems": 1 },
+              "business_functions": false,
+              "validation_exceptions": false,
+              "clickable_prototype_ref": false,
+              "working_software_ref": false
+            }
+          }
+        }
+      ]
+    },
+    "head": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sequence", "event_id"],
+      "properties": {
+        "sequence": { "type": "integer", "minimum": 0 },
+        "event_id": { "type": ["string", "null"], "maxLength": 71, "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
+    "event_base": {
+      "type": "object",
+      "required": [
+        "schema", "schema_version", "event_id", "sequence", "previous_event_id",
+        "occurred_at", "project_run_id", "slice_id", "manifest_digest",
+        "phase_run_id", "actor", "command_id", "idempotency_key"
+      ],
+      "properties": {
+        "schema": { "const": "tmux-teams.phase-gate-event" },
+        "schema_version": { "const": 1 },
+        "event_id": { "$ref": "#/$defs/digest" },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "previous_event_id": { "type": ["string", "null"], "maxLength": 71, "pattern": "^sha256:[0-9a-f]{64}$" },
+        "occurred_at": { "type": "string", "format": "date-time", "maxLength": 64 },
+        "project_run_id": { "$ref": "#/$defs/id" },
+        "slice_id": { "$ref": "#/$defs/id" },
+        "manifest_digest": { "$ref": "#/$defs/digest" },
+        "phase_run_id": {
+          "allOf": [{ "$ref": "#/$defs/id" }],
+          "description": "Deterministic stablePhaseRunId(slice_id, governed phase); dispatch events bind the receiver phase and all other boundary events bind the sender phase."
+        },
+        "actor": { "$ref": "#/$defs/actor" },
+        "command_id": { "$ref": "#/$defs/id" },
+        "idempotency_key": { "$ref": "#/$defs/id" }
+      }
+    },
+    "phase_binding": {
+      "type": "object",
+      "required": ["attempt_id", "handoff_id", "revision", "boundary"],
+      "properties": {
+        "attempt_id": { "$ref": "#/$defs/id" },
+        "handoff_id": { "$ref": "#/$defs/id" },
+        "revision": { "type": "integer", "minimum": 1 },
+        "boundary": { "$ref": "#/$defs/boundary" }
+      }
+    },
+    "artifact_binding": {
+      "type": "object",
+      "required": ["artifact", "artifact_event_id"],
+      "properties": {
+        "artifact": { "$ref": "#/$defs/artifact" },
+        "artifact_event_id": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "normal_dispatch_binding": {
+      "type": "object",
+      "required": ["attempt_id", "handoff_id", "revision", "boundary", "dispatch_uuid", "acceptance_event_id"],
+      "properties": {
+        "attempt_id": { "$ref": "#/$defs/id" },
+        "handoff_id": { "$ref": "#/$defs/id" },
+        "revision": { "type": "integer", "minimum": 1 },
+        "boundary": { "$ref": "#/$defs/boundary" },
+        "dispatch_uuid": { "$ref": "#/$defs/uuid" },
+        "acceptance_event_id": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "bootstrap_dispatch_binding": {
+      "type": "object",
+      "required": ["boundary", "dispatch_uuid", "acceptance_event_id"],
+      "properties": {
+        "boundary": { "$ref": "#/$defs/bootstrap_boundary" },
+        "dispatch_uuid": { "$ref": "#/$defs/uuid" },
+        "acceptance_event_id": { "type": "null" }
+      }
+    },
+    "acceptance_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_event_id", "artifact_digest", "sender_phase", "receiver_phase", "sender_actor_id", "receiver_actor_id"],
+      "properties": {
+        "artifact_event_id": { "$ref": "#/$defs/digest" },
+        "artifact_digest": { "$ref": "#/$defs/digest" },
+        "sender_phase": { "enum": ["Requirement", "Prototype", "Development", "QA"] },
+        "receiver_phase": { "enum": ["Prototype", "Development", "QA", "ProjectDelivery"] },
+        "sender_actor_id": { "$ref": "#/$defs/id" },
+        "receiver_actor_id": { "$ref": "#/$defs/id" }
+      },
+      "oneOf": [
+        { "properties": { "sender_phase": { "const": "Requirement" }, "receiver_phase": { "const": "Prototype" } } },
+        { "properties": { "sender_phase": { "const": "Prototype" }, "receiver_phase": { "const": "Development" } } },
+        { "properties": { "sender_phase": { "const": "Development" }, "receiver_phase": { "const": "QA" } } },
+        { "properties": { "sender_phase": { "const": "QA" }, "receiver_phase": { "const": "ProjectDelivery" } } }
+      ]
+    },
+    "child_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reservation_event_id", "pid", "ppid", "process_start", "child_identity_digest"],
+      "properties": {
+        "reservation_event_id": { "$ref": "#/$defs/digest" },
+        "pid": { "type": "integer", "minimum": 1 },
+        "ppid": { "type": "integer", "minimum": 0 },
+        "process_start": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "child_identity_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "project_genesis": {
+      "allOf": [
+        { "$ref": "#/$defs/event_base" },
+        {
+          "type": "object",
+          "required": ["event_type", "payload"],
+          "properties": {
+            "event_type": { "const": "project_genesis" },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["initial_phase"],
+              "properties": { "initial_phase": { "const": "Requirement" } }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "phase_work": {
+      "allOf": [
+        { "$ref": "#/$defs/event_base" },
+        { "$ref": "#/$defs/phase_binding" },
+        {
+          "type": "object",
+          "required": ["event_type", "payload"],
+          "properties": {
+            "event_type": { "const": "phase_work" },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["work_item_id", "status"],
+              "properties": {
+                "work_item_id": { "$ref": "#/$defs/id" },
+                "status": { "enum": ["started", "completed"] }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "artifact_submission": {
+      "allOf": [
+        { "$ref": "#/$defs/event_base" },
+        { "$ref": "#/$defs/phase_binding" },
+        {
+          "type": "object",
+          "required": ["event_type", "artifact", "payload"],
+          "properties": {
+            "event_type": { "const": "artifact_submission" },
+            "artifact": { "$ref": "#/$defs/artifact" },
+            "payload": { "type": "object", "additionalProperties": false, "maxProperties": 0 }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "handoff_propose": {
+      "allOf": [
+        { "$ref": "#/$defs/event_base" },
+        { "$ref": "#/$defs/phase_binding" },
+        { "$ref": "#/$defs/artifact_binding" },
+        {
+          "type": "object",
+          "required": ["event_type", "payload"],
+          "properties": {
+            "event_type": { "const": "handoff_propose" },
+            "payload": { "type": "object", "additionalProperties": false, "maxProperties": 0 }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "handoff_accept": {
+      "allOf": [
+        { "$ref": "#/$defs/event_base" },
+        { "$ref": "#/$defs/phase_binding" },
+        { "$ref": "#/$defs/artifact_binding" },
+        {
+          "type": "object",
+          "required": ["event_type", "payload"],
+          "properties": {
+            "event_type": { "const": "handoff_accept" },
+            "payload": { "$ref": "#/$defs/acceptance_payload" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "project_delivery_accept": {
+      "allOf": [
+        { "$ref": "#/$defs/event_base" },
+        { "$ref": "#/$defs/phase_binding" },
+        { "$ref": "#/$defs/artifact_binding" },
+        {
+          "type": "object",
+          "required": ["event_type", "payload"],
+          "properties": {
+            "event_type": { "const": "project_delivery_accept" },
+            "payload": { "$ref": "#/$defs/acceptance_payload" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "handoff_reject": {
+      "allOf": [
+        { "$ref": "#/$defs/event_base" },
+        { "$ref": "#/$defs/phase_binding" },
+        { "$ref": "#/$defs/artifact_binding" },
+        {
+          "type": "object",
+          "required": ["event_type", "payload"],
+          "properties": {
+            "event_type": { "const": "handoff_reject" },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["reason_code"],
+              "properties": { "reason_code": { "$ref": "#/$defs/id" } }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "handoff_escalate": {
+      "allOf": [
+        { "$ref": "#/$defs/event_base" },
+        { "$ref": "#/$defs/phase_binding" },
+        { "$ref": "#/$defs/artifact_binding" },
+        {
+          "type": "object",
+          "required": ["event_type", "payload"],
+          "properties": {
+            "event_type": { "const": "handoff_escalate" },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["reason_code"],
+              "properties": { "reason_code": { "$ref": "#/$defs/id" } }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "handoff_resolve": {
+      "allOf": [
+        { "$ref": "#/$defs/event_base" },
+        { "$ref": "#/$defs/phase_binding" },
+        { "$ref": "#/$defs/artifact_binding" },
+        {
+          "type": "object",
+          "required": ["event_type", "payload"],
+          "properties": {
+            "event_type": { "const": "handoff_resolve" },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["resolution"],
+              "properties": { "resolution": { "type": "string", "minLength": 1, "maxLength": 1024 } }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "normal_dispatch_reservation": {
+      "allOf": [
+        { "$ref": "#/$defs/event_base" },
+        { "$ref": "#/$defs/normal_dispatch_binding" },
+        {
+          "type": "object",
+          "required": ["event_type", "artifact_event_id", "payload"],
+          "properties": {
+            "event_type": { "const": "dispatch_reservation" },
+            "artifact_event_id": { "$ref": "#/$defs/digest" },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["artifact_event_id", "artifact_digest", "task_id", "agent_id", "brief_digest", "expected_head", "trust_level", "timeout_sec"],
+              "properties": {
+                "artifact_event_id": { "$ref": "#/$defs/digest" },
+                "artifact_digest": { "$ref": "#/$defs/digest" },
+                "task_id": { "$ref": "#/$defs/id" },
+                "agent_id": { "$ref": "#/$defs/id" },
+                "brief_digest": { "$ref": "#/$defs/digest" },
+                "expected_head": { "$ref": "#/$defs/head" },
+                "trust_level": { "const": "advisory_same_uid" },
+                "timeout_sec": { "type": "integer", "minimum": 1, "maximum": 86400 }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "bootstrap_dispatch_reservation": {
+      "allOf": [
+        { "$ref": "#/$defs/event_base" },
+        { "$ref": "#/$defs/bootstrap_dispatch_binding" },
+        {
+          "type": "object",
+          "required": ["event_type", "payload"],
+          "properties": {
+            "event_type": { "const": "dispatch_reservation" },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["bootstrap", "task_id", "agent_id", "brief_digest", "expected_head", "trust_level", "timeout_sec"],
+              "properties": {
+                "bootstrap": { "const": true },
+                "task_id": { "$ref": "#/$defs/id" },
+                "agent_id": { "$ref": "#/$defs/id" },
+                "brief_digest": { "$ref": "#/$defs/digest" },
+                "expected_head": { "$ref": "#/$defs/head" },
+                "trust_level": { "const": "advisory_same_uid" },
+                "timeout_sec": { "type": "integer", "minimum": 1, "maximum": 86400 }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "normal_dispatch_child_registered": {
+      "allOf": [
+        { "$ref": "#/$defs/event_base" },
+        { "$ref": "#/$defs/normal_dispatch_binding" },
+        {
+          "type": "object",
+          "required": ["event_type", "payload"],
+          "properties": {
+            "event_type": { "const": "dispatch_child_registered" },
+            "payload": { "$ref": "#/$defs/child_payload" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "bootstrap_dispatch_child_registered": {
+      "allOf": [
+        { "$ref": "#/$defs/event_base" },
+        { "$ref": "#/$defs/bootstrap_dispatch_binding" },
+        {
+          "type": "object",
+          "required": ["event_type", "payload"],
+          "properties": {
+            "event_type": { "const": "dispatch_child_registered" },
+            "payload": { "$ref": "#/$defs/child_payload" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "dispatch_consumption": {
+      "allOf": [
+        { "$ref": "#/$defs/event_base" },
+        { "$ref": "#/$defs/normal_dispatch_binding" },
+        {
+          "type": "object",
+          "required": ["event_type", "artifact_event_id", "payload"],
+          "properties": {
+            "event_type": { "const": "dispatch_consumption" },
+            "artifact_event_id": { "$ref": "#/$defs/digest" },
+            "payload": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["artifact_event_id", "artifact_digest"],
+              "properties": {
+                "artifact_event_id": { "$ref": "#/$defs/digest" },
+                "artifact_digest": { "$ref": "#/$defs/digest" }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "footprint_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["footprint_digest"],
+      "properties": { "footprint_digest": { "$ref": "#/$defs/digest" } }
+    },
+    "prompt_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prompt_digest"],
+      "properties": { "prompt_digest": { "$ref": "#/$defs/digest" } }
+    },
+    "terminal_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "evidence_digest"],
+      "properties": {
+        "outcome": { "enum": ["success", "failure", "cancelled"] },
+        "evidence_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "indeterminate_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason", "observed_state"],
+      "properties": {
+        "reason": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "observed_state": { "enum": ["reserved", "child_registered", "consumed", "footprint", "prompt"] }
+      }
+    },
+    "normal_dispatch_footprint": { "$ref": "#/$defs/normal_footprint_variant" },
+    "bootstrap_dispatch_footprint": { "$ref": "#/$defs/bootstrap_footprint_variant" },
+    "normal_dispatch_prompt": { "$ref": "#/$defs/normal_prompt_variant" },
+    "bootstrap_dispatch_prompt": { "$ref": "#/$defs/bootstrap_prompt_variant" },
+    "normal_dispatch_terminal": { "$ref": "#/$defs/normal_terminal_variant" },
+    "bootstrap_dispatch_terminal": { "$ref": "#/$defs/bootstrap_terminal_variant" },
+    "normal_dispatch_indeterminate": { "$ref": "#/$defs/normal_indeterminate_variant" },
+    "bootstrap_dispatch_indeterminate": { "$ref": "#/$defs/bootstrap_indeterminate_variant" },
+    "normal_dispatch_resolution": { "$ref": "#/$defs/normal_resolution_variant" },
+    "bootstrap_dispatch_resolution": { "$ref": "#/$defs/bootstrap_resolution_variant" },
+    "normal_footprint_variant": {
+      "allOf": [
+        { "$ref": "#/$defs/event_base" },
+        { "$ref": "#/$defs/normal_dispatch_binding" },
+        { "type": "object", "required": ["event_type", "payload"], "properties": { "event_type": { "const": "dispatch_footprint" }, "payload": { "$ref": "#/$defs/footprint_payload" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "bootstrap_footprint_variant": {
+      "allOf": [
+        { "$ref": "#/$defs/event_base" },
+        { "$ref": "#/$defs/bootstrap_dispatch_binding" },
+        { "type": "object", "required": ["event_type", "payload"], "properties": { "event_type": { "const": "dispatch_footprint" }, "payload": { "$ref": "#/$defs/footprint_payload" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "normal_prompt_variant": {
+      "allOf": [
+        { "$ref": "#/$defs/event_base" },
+        { "$ref": "#/$defs/normal_dispatch_binding" },
+        { "type": "object", "required": ["event_type", "payload"], "properties": { "event_type": { "const": "dispatch_prompt" }, "payload": { "$ref": "#/$defs/prompt_payload" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "bootstrap_prompt_variant": {
+      "allOf": [
+        { "$ref": "#/$defs/event_base" },
+        { "$ref": "#/$defs/bootstrap_dispatch_binding" },
+        { "type": "object", "required": ["event_type", "payload"], "properties": { "event_type": { "const": "dispatch_prompt" }, "payload": { "$ref": "#/$defs/prompt_payload" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "normal_terminal_variant": {
+      "allOf": [
+        { "$ref": "#/$defs/event_base" },
+        { "$ref": "#/$defs/normal_dispatch_binding" },
+        { "type": "object", "required": ["event_type", "payload"], "properties": { "event_type": { "const": "dispatch_terminal" }, "payload": { "$ref": "#/$defs/terminal_payload" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "bootstrap_terminal_variant": {
+      "allOf": [
+        { "$ref": "#/$defs/event_base" },
+        { "$ref": "#/$defs/bootstrap_dispatch_binding" },
+        { "type": "object", "required": ["event_type", "payload"], "properties": { "event_type": { "const": "dispatch_terminal" }, "payload": { "$ref": "#/$defs/terminal_payload" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "normal_indeterminate_variant": {
+      "allOf": [
+        { "$ref": "#/$defs/event_base" },
+        { "$ref": "#/$defs/normal_dispatch_binding" },
+        { "type": "object", "required": ["event_type", "payload"], "properties": { "event_type": { "const": "dispatch_indeterminate" }, "payload": { "$ref": "#/$defs/indeterminate_payload" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "bootstrap_indeterminate_variant": {
+      "allOf": [
+        { "$ref": "#/$defs/event_base" },
+        { "$ref": "#/$defs/bootstrap_dispatch_binding" },
+        { "type": "object", "required": ["event_type", "payload"], "properties": { "event_type": { "const": "dispatch_indeterminate" }, "payload": { "$ref": "#/$defs/indeterminate_payload" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "resolution_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resolution", "reason", "expected_head", "reservation_event_id", "terminal_evidence_digest"],
+      "properties": {
+        "resolution": { "enum": ["abandoned", "terminal_observed"] },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "expected_head": { "$ref": "#/$defs/head" },
+        "reservation_event_id": { "$ref": "#/$defs/digest" },
+        "terminal_evidence_digest": {
+          "oneOf": [
+            { "$ref": "#/$defs/digest" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "resolution": { "const": "terminal_observed" } } },
+          "then": { "properties": { "terminal_evidence_digest": { "$ref": "#/$defs/digest" } } },
+          "else": { "properties": { "terminal_evidence_digest": { "type": "null" } } }
+        }
+      ]
+    },
+    "bootstrap_resolution_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resolution", "reason", "expected_head", "reservation_event_id", "terminal_evidence_digest"],
+      "properties": {
+        "resolution": { "const": "abandoned" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "expected_head": { "$ref": "#/$defs/head" },
+        "reservation_event_id": { "$ref": "#/$defs/digest" },
+        "terminal_evidence_digest": { "type": "null" }
+      }
+    },
+    "normal_resolution_variant": {
+      "allOf": [
+        { "$ref": "#/$defs/event_base" },
+        { "$ref": "#/$defs/normal_dispatch_binding" },
+        { "type": "object", "required": ["event_type", "payload"], "properties": { "event_type": { "const": "dispatch_resolution" }, "payload": { "$ref": "#/$defs/resolution_payload" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "bootstrap_resolution_variant": {
+      "allOf": [
+        { "$ref": "#/$defs/event_base" },
+        { "$ref": "#/$defs/bootstrap_dispatch_binding" },
+        { "type": "object", "required": ["event_type", "payload"], "properties": { "event_type": { "const": "dispatch_resolution" }, "payload": { "$ref": "#/$defs/bootstrap_resolution_payload" } } }
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}

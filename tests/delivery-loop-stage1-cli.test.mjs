@@ -51,7 +51,7 @@ const STORE = join(SCRIPTS, 'delivery-loop-store.mjs')
 const MANIFEST_SCHEMA = join(REFERENCES, 'delivery-loop-pilot-manifest-v1.schema.json')
 const EVENT_SCHEMA = join(REFERENCES, 'delivery-loop-event-v1.schema.json')
 const PACK_SCHEMA = join(REFERENCES, 'delivery-loop-evidence-pack-v1.schema.json')
-const PULSE_SCHEMA = join(REFERENCES, 'pulse-v2.schema.json')
+const PULSE_SCHEMA = join(REFERENCES, 'pulse-v3.schema.json')
 
 const SEED = 'stage1-side-effect-boundary-secret-2026'
 const FROZEN_AT = '2026-07-01T00:00:00.000Z'

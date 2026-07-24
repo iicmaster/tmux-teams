@@ -7,6 +7,8 @@
 export const PULSE_SCHEMA = 'tmux-teams.pulse'
 export const PULSE_SCHEMA_VERSION = 1
 export const PULSE_SCHEMA_VERSION_V2 = 2
+export const PULSE_SCHEMA_VERSION_V3 = 3
+export const PULSE_SCHEMA_VERSION_V4 = 4
 export const ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
@@ -26,6 +28,17 @@ const DIAGNOSTIC_CODES_V2 = new Set([
   'DELIVERY_LOOP_INPUT_UNREADABLE',
   'DELIVERY_LOOP_INPUT_INVALID',
   'DELIVERY_LOOP_STALE',
+])
+const DIAGNOSTIC_CODES_V3 = new Set([
+  ...DIAGNOSTIC_CODES_V2,
+  'PHASE_BINDING_INVALID',
+  'PHASE_BINDING_CONFLICT',
+])
+const DIAGNOSTIC_CODES_V4 = new Set([
+  ...DIAGNOSTIC_CODES_V3,
+  'DELIVERY_RUNTIME_INPUT_UNREADABLE',
+  'DELIVERY_RUNTIME_INPUT_INVALID',
+  'DELIVERY_RUNTIME_STALE',
 ])
 
 const STATE_META = Object.freeze({
@@ -57,8 +70,22 @@ const pane = (value) => ['held', 'gone', 'not_recorded', 'probe_unavailable'].in
 const liveness = (value) => ['alive', 'dead', 'unknown'].includes(value) ? value : 'unknown'
 const sourceState = (value) => ['ok', 'degraded', 'unavailable'].includes(value) ? value : 'degraded'
 const dispatchSignal = (value) => ['present', 'absent'].includes(value) ? value : 'absent'
+const PHASES = new Set(['Requirement', 'Prototype', 'Development', 'QA'])
+const ASSIGNED_PHASE_SOURCES = new Set(['dispatch', 'event', 'dispatch_join'])
+const PHASE_SOURCES = new Set([...ASSIGNED_PHASE_SOURCES, 'unassigned', 'conflict'])
 
-function projectRun(run) {
+// Phase and provenance are one binding. Normalizing the fields independently
+// can publish a real phase with "unassigned" provenance, or retain a phase
+// after its evidence has been marked conflicting.
+const phaseBinding = (phaseValue, sourceValue) => {
+  if (sourceValue === 'conflict') return { phase: null, phase_source: 'conflict' }
+  if (PHASES.has(phaseValue) && ASSIGNED_PHASE_SOURCES.has(sourceValue)) {
+    return { phase: phaseValue, phase_source: sourceValue }
+  }
+  return { phase: null, phase_source: 'unassigned' }
+}
+
+function projectRun(run, includePhase = false) {
   const taskId = safeId(run.id)
   if (!taskId || !STATE_META[run.state]) return null
   const meta = STATE_META[run.state]
@@ -66,7 +93,7 @@ function projectRun(run) {
   const identitySource = dispatchId ? 'dispatch_id'
     : run.dispatched === false ? 'process_only'
       : 'legacy_task_time'
-  return {
+  const projected = {
     dispatch_id: dispatchId,
     task_id: taskId,
     identity_source: identitySource,
@@ -92,6 +119,10 @@ function projectRun(run) {
       auto_execute: false,
     },
   }
+  if (includePhase) {
+    Object.assign(projected, phaseBinding(run.phase, run.phaseSource))
+  }
+  return projected
 }
 
 function median(values) {
@@ -129,11 +160,11 @@ function projectUnclaimed(rows, finishedAt) {
   }).filter(Boolean).slice(0, UNCLAIMED_LIMIT)
 }
 
-function projectRecent(event) {
+function projectRecent(event, includePhase = false) {
   const taskId = safeId(event.task_id)
   const worker = safeId(event.worker)
   if (!taskId || !worker || !['pass', 'reject', 'unresolved'].includes(event.pm_verdict)) return null
-  return {
+  const projected = {
     dispatch_id: safeUuid(event.dispatch_id),
     task_id: taskId,
     worker,
@@ -144,13 +175,19 @@ function projectRecent(event) {
     wait_sec: finiteNonNegative(event.wait_sec),
     timeout_sec: finiteNonNegative(event.timeout_sec),
   }
+  if (includePhase) {
+    Object.assign(projected, phaseBinding(event.phase, event.phaseSource))
+  }
+  return projected
 }
 
 function projectDiagnostic(diagnostic, allowedCodes = DIAGNOSTIC_CODES_V1) {
   const code = allowedCodes.has(diagnostic?.code) ? diagnostic.code : null
   const severity = ['info', 'warning', 'error'].includes(diagnostic?.severity) ? diagnostic.severity : 'warning'
-  const allowedSources = allowedCodes === DIAGNOSTIC_CODES_V2
-    ? ['liveness', 'tmux', 'dispatch', 'outbox', 'events', 'publisher', 'delivery_loop']
+  const allowedSources = allowedCodes === DIAGNOSTIC_CODES_V4
+    ? ['liveness', 'tmux', 'dispatch', 'outbox', 'events', 'publisher', 'delivery_loop', 'delivery_runtime']
+    : allowedCodes !== DIAGNOSTIC_CODES_V1
+      ? ['liveness', 'tmux', 'dispatch', 'outbox', 'events', 'publisher', 'delivery_loop']
     : ['liveness', 'tmux', 'dispatch', 'outbox', 'events', 'publisher']
   const source = allowedSources.includes(diagnostic?.source)
     ? diagnostic.source : 'publisher'
@@ -159,11 +196,12 @@ function projectDiagnostic(diagnostic, allowedCodes = DIAGNOSTIC_CODES_V1) {
   return { code, severity, source, count }
 }
 
-function projectPulse(view, meta, schemaVersion, allowedDiagnosticCodes) {
-  const projected = view.active.map(projectRun).filter(Boolean)
+function projectPulse(view, meta, schemaVersion, allowedDiagnosticCodes, includePhase = false) {
+  const projected = view.active.map(run => projectRun(run, includePhase)).filter(Boolean)
     .sort((a, b) => Number(b.advisory.attention) - Number(a.advisory.attention) || a.task_id.localeCompare(b.task_id))
   const runs = projected.slice(0, RUN_LIMIT)
-  const recent = [...view.rec].sort((a, b) => b.mtime - a.mtime).map(projectRecent).filter(Boolean).slice(0, RECENT_LIMIT)
+  const recent = [...view.rec].sort((a, b) => b.mtime - a.mtime)
+    .map(event => projectRecent(event, includePhase)).filter(Boolean).slice(0, RECENT_LIMIT)
   const workerStats = projectWorkerStats(view.rec)
   const unclaimedControl = projectUnclaimed(view.unclaimed, meta.finishedAt)
   const diagnostics = (view.diagnostics || [])
@@ -672,6 +710,538 @@ export function projectPulseV2(view, meta, deliveryInput, inputIssue = null) {
   }
 }
 
+export function projectPulseV3(
+  view,
+  meta,
+  deliveryInput = null,
+  inputIssue = null,
+  includeDeliveryLoop = false,
+) {
+  const diagnostics = [...(view.diagnostics || [])]
+  let deliveryLoop = null
+  if (includeDeliveryLoop) {
+    const sanitized = sanitizeDeliveryLoopProjection(deliveryInput, meta.finishedAt, inputIssue)
+    deliveryLoop = sanitized.projection
+    if (sanitized.diagnostic) diagnostics.unshift(sanitized.diagnostic)
+  }
+  diagnostics.sort((left, right) => {
+    const priority = (code) => code?.startsWith('DELIVERY_LOOP_')
+      ? 0
+      : code === 'PHASE_BINDING_CONFLICT' ? 1
+        : code === 'PHASE_BINDING_INVALID' ? 2
+          : code === 'SCHEMA_UPGRADED' ? 3 : 4
+    return priority(left?.code) - priority(right?.code)
+  })
+  const projected = projectPulse(
+    { ...view, diagnostics },
+    meta,
+    PULSE_SCHEMA_VERSION_V3,
+    DIAGNOSTIC_CODES_V3,
+    true,
+  )
+  return includeDeliveryLoop
+    ? { ...projected, delivery_loop: deliveryLoop }
+    : projected
+}
+
+const DELIVERY_RUNTIME_SCHEMA = 'tmux-teams.delivery-runtime-projection'
+const DELIVERY_RUNTIME_LIMIT = 100
+const DELIVERY_RUNTIME_INPUT_LIMIT = 1000
+const DELIVERY_RUNTIME_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/
+const DELIVERY_RUNTIME_STATES = new Set(['proposed', 'accepted', 'rejected', 'escalated', 'consumed'])
+const DELIVERY_RUNTIME_INPUT_KEYS = [
+  'schema', 'schema_version', 'generated_at', 'expires_at', 'trust_level', 'mode',
+  'actuation', 'source_health', 'summary', 'replay', 'phase_runs', 'bottleneck',
+  'phase_gates',
+]
+const DELIVERY_RUNTIME_SUMMARY_KEYS = [
+  'proposed', 'accepted', 'rejected', 'escalated', 'consumed', 'shown', 'truncated',
+]
+const DELIVERY_RUNTIME_GATE_KEYS = [
+  'gate_id', 'slice_id', 'attempt_id', 'boundary', 'sender_phase',
+  'receiver_phase', 'artifact_type', 'artifact_digest', 'state', 'proposed_at',
+  'transition_at', 'acceptance_event_id', 'accepted_digest',
+  'receiver_dispatch_id', 'consumed_digest', 'consumed_at',
+]
+const DELIVERY_RUNTIME_BOUNDARIES = Object.freeze({
+  requirement_to_prototype: Object.freeze({
+    sender: 'Requirement', receiver: 'Prototype', artifact: 'requirements_baseline',
+  }),
+  prototype_to_development: Object.freeze({
+    sender: 'Prototype', receiver: 'Development', artifact: 'prototype_evaluation',
+  }),
+  development_to_qa: Object.freeze({
+    sender: 'Development', receiver: 'QA', artifact: 'development_delivery',
+  }),
+  qa_to_project_delivery: Object.freeze({
+    sender: 'QA', receiver: 'ProjectDelivery', artifact: 'qa_release_evidence',
+  }),
+})
+const DELIVERY_RUNTIME_BOUNDARY_ORDER =
+  new Map(Object.keys(DELIVERY_RUNTIME_BOUNDARIES).map((boundary, index) => [boundary, index]))
+const DELIVERY_RUNTIME_PHASES = ['Requirement', 'Prototype', 'Development', 'QA']
+const DELIVERY_RUNTIME_PHASE_STATES =
+  new Set(['pending', 'working', 'handoff_pending', 'blocked', 'completed'])
+const DELIVERY_RUNTIME_OWNER_ROLES =
+  new Set(['phase_team', 'receiver_phase_lead', 'project_delivery'])
+const DELIVERY_RUNTIME_BOTTLENECK_OWNER_ROLES =
+  new Set([...DELIVERY_RUNTIME_OWNER_ROLES, 'pm_exception_owner'])
+const DELIVERY_RUNTIME_BOTTLENECK_KINDS =
+  new Set(['work', 'handoff_review', 'rework', 'exception', 'dispatch_reconcile'])
+const isRuntimeId = value =>
+  typeof value === 'string' && DELIVERY_RUNTIME_ID_RE.test(value)
+const isNullableRuntimeId = value => value === null || isRuntimeId(value)
+
+function cloneRuntimeSummary(value) {
+  if (!exactObject(value, DELIVERY_RUNTIME_SUMMARY_KEYS) ||
+      DELIVERY_RUNTIME_SUMMARY_KEYS.some(key => !isNonNegativeInteger(value[key]))) return null
+  return value
+}
+
+function cloneRuntimeGate(value) {
+  if (!exactObject(value, DELIVERY_RUNTIME_GATE_KEYS)) return null
+  for (const key of ['gate_id', 'slice_id', 'attempt_id']) {
+    if (!isRuntimeId(value[key])) return null
+  }
+  const mapping = DELIVERY_RUNTIME_BOUNDARIES[value.boundary]
+  if (!mapping || value.sender_phase !== mapping.sender || value.receiver_phase !== mapping.receiver ||
+      value.artifact_type !== mapping.artifact || !DELIVERY_RUNTIME_STATES.has(value.state) ||
+      typeof value.artifact_digest !== 'string' || !DIGEST_RE.test(value.artifact_digest)) return null
+  const proposedAt = strictIso(value.proposed_at)
+  const transitionAt = nullableIso(value.transition_at)
+  const consumedAt = nullableIso(value.consumed_at)
+  if (!proposedAt ||
+      (value.transition_at !== null && !transitionAt) ||
+      (value.consumed_at !== null && !consumedAt) ||
+      !isNullableDigest(value.acceptance_event_id) ||
+      !isNullableDigest(value.accepted_digest) ||
+      !(value.receiver_dispatch_id === null ||
+        typeof value.receiver_dispatch_id === 'string' && UUID_RE.test(value.receiver_dispatch_id)) ||
+      !isNullableDigest(value.consumed_digest)) return null
+  const acceptance = value.acceptance_event_id !== null && transitionAt !== null &&
+    value.accepted_digest === value.artifact_digest
+  const noAcceptance = value.acceptance_event_id === null &&
+    value.accepted_digest === null
+  const noConsumption = consumedAt === null && value.receiver_dispatch_id === null &&
+    value.consumed_digest === null
+  if (value.state === 'proposed' &&
+      (!noAcceptance || transitionAt !== null || !noConsumption) ||
+      value.state === 'accepted' &&
+      (!acceptance || !noConsumption) ||
+      value.state === 'rejected' &&
+      (!noAcceptance || transitionAt === null || !noConsumption) ||
+      value.state === 'escalated' &&
+      (!noAcceptance || transitionAt === null || !noConsumption) ||
+      value.state === 'consumed' &&
+      (!acceptance || consumedAt === null ||
+        value.receiver_dispatch_id === null ||
+        value.consumed_digest !== value.artifact_digest)) return null
+  const finalBoundary = value.boundary === 'qa_to_project_delivery'
+  if (finalBoundary && value.state === 'consumed') return null
+  const eventTimes = [transitionAt, consumedAt].filter(Boolean)
+  if (eventTimes.some(timestamp => Date.parse(timestamp) < Date.parse(proposedAt)) ||
+      consumedAt && transitionAt && Date.parse(consumedAt) < Date.parse(transitionAt)) return null
+  return {
+    gate_id: value.gate_id,
+    slice_id: value.slice_id,
+    attempt_id: value.attempt_id,
+    boundary: value.boundary,
+    sender_phase: mapping.sender,
+    receiver_phase: mapping.receiver,
+    artifact_type: mapping.artifact,
+    artifact_digest: value.artifact_digest,
+    state: value.state,
+    proposed_at: proposedAt,
+    transition_at: transitionAt,
+    consumed_at: consumedAt,
+    acceptance_event_id: value.acceptance_event_id,
+    accepted_digest: value.accepted_digest,
+    receiver_dispatch_id: value.receiver_dispatch_id,
+    consumed_digest: value.consumed_digest,
+  }
+}
+
+function cloneRuntimeReplay(value) {
+  if (!exactObject(value, ['sequence', 'head_event_id']) ||
+      !isNonNegativeInteger(value.sequence) || !isNullableDigest(value.head_event_id) ||
+      value.sequence === 0 !== (value.head_event_id === null)) return null
+  return { sequence: value.sequence, head_event_id: value.head_event_id }
+}
+
+function cloneRuntimePhaseRun(value, expectedPhase) {
+  const keys = [
+    'phase', 'phase_run_id', 'state', 'started_at', 'transition_at', 'owner_role',
+    'work_age_sec', 'wait_age_sec', 'handoff_count', 'revision_count',
+  ]
+  if (!exactObject(value, keys) || value.phase !== expectedPhase ||
+      !isRuntimeId(value.phase_run_id) ||
+      !DELIVERY_RUNTIME_PHASE_STATES.has(value.state) ||
+      !DELIVERY_RUNTIME_OWNER_ROLES.has(value.owner_role) ||
+      !isNullableNonNegative(value.work_age_sec) ||
+      !isNullableNonNegative(value.wait_age_sec) ||
+      !isNonNegativeInteger(value.handoff_count) ||
+      !isNonNegativeInteger(value.revision_count)) return null
+  const startedAt = nullableIso(value.started_at)
+  const transitionAt = nullableIso(value.transition_at)
+  if (value.started_at !== null && !startedAt ||
+      value.transition_at !== null && !transitionAt ||
+      startedAt && transitionAt && Date.parse(transitionAt) < Date.parse(startedAt)) return null
+  return {
+    phase: expectedPhase,
+    phase_run_id: value.phase_run_id,
+    state: value.state,
+    started_at: startedAt,
+    transition_at: transitionAt,
+    owner_role: value.owner_role,
+    work_age_sec: value.work_age_sec,
+    wait_age_sec: value.wait_age_sec,
+    handoff_count: value.handoff_count,
+    revision_count: value.revision_count,
+  }
+}
+
+function validRuntimePhaseState(run, generatedMs) {
+  const startedMs = run.started_at === null ? null : Date.parse(run.started_at)
+  const transitionMs = run.transition_at === null ? null : Date.parse(run.transition_at)
+  if (startedMs !== null && startedMs > generatedMs ||
+      transitionMs !== null && transitionMs > generatedMs) return false
+  const noTimesOrAges = run.started_at === null && run.transition_at === null &&
+    run.work_age_sec === null && run.wait_age_sec === null
+  if (run.state === 'pending') return noTimesOrAges && run.owner_role === 'phase_team'
+  if (run.state === 'working') {
+    return run.started_at !== null && run.transition_at === null &&
+      run.work_age_sec !== null && run.wait_age_sec === null && run.owner_role === 'phase_team'
+  }
+  if (run.state === 'handoff_pending') {
+    return run.started_at !== null && run.transition_at === null &&
+      run.work_age_sec !== null && run.wait_age_sec !== null &&
+      run.owner_role === 'receiver_phase_lead'
+  }
+  if (run.state === 'blocked') {
+    return run.started_at !== null && run.transition_at === null &&
+      run.work_age_sec !== null && run.wait_age_sec !== null && run.owner_role === 'phase_team'
+  }
+  return run.state === 'completed' && run.started_at !== null && run.transition_at !== null &&
+    run.work_age_sec === null && run.wait_age_sec === null &&
+    run.owner_role === (run.phase === 'QA' ? 'project_delivery' : 'phase_team')
+}
+
+function hasDuplicateNonNull(values) {
+  const seen = new Set()
+  for (const value of values) {
+    if (value === null) continue
+    if (seen.has(value)) return true
+    seen.add(value)
+  }
+  return false
+}
+
+function gateOrder(left, right) {
+  return Date.parse(left.proposed_at) - Date.parse(right.proposed_at) ||
+    codePointCompare(left.gate_id, right.gate_id)
+}
+
+function currentGateForBoundary(gates, gate) {
+  return !gates.some(candidate => candidate.boundary === gate.boundary &&
+    candidate.gate_id !== gate.gate_id && gateOrder(candidate, gate) > 0)
+}
+
+function validRuntimeChronology(phaseRuns, gates, generatedAt) {
+  const generatedMs = Date.parse(generatedAt)
+  if (phaseRuns.some(run => !validRuntimePhaseState(run, generatedMs))) return false
+  const byPhase = new Map(phaseRuns.map(run => [run.phase, run]))
+  for (const gate of gates) {
+    const proposedMs = Date.parse(gate.proposed_at)
+    const transitionMs = gate.transition_at === null ? null : Date.parse(gate.transition_at)
+    const consumedMs = gate.consumed_at === null ? null : Date.parse(gate.consumed_at)
+    if (proposedMs > generatedMs || transitionMs !== null && transitionMs > generatedMs ||
+        consumedMs !== null && consumedMs > generatedMs) return false
+    const sender = byPhase.get(gate.sender_phase)
+    if (sender?.started_at !== null && proposedMs < Date.parse(sender.started_at)) return false
+    if (consumedMs !== null && gate.receiver_phase !== 'ProjectDelivery') {
+      const receiver = byPhase.get(gate.receiver_phase)
+      if (!receiver || receiver.started_at === null || Date.parse(receiver.started_at) > consumedMs) {
+        return false
+      }
+    }
+    if (gate.boundary === 'qa_to_project_delivery' && transitionMs !== null) {
+      const qa = byPhase.get('QA')
+      if (qa?.started_at !== null && Date.parse(qa.started_at) > transitionMs ||
+          qa?.transition_at !== null && Date.parse(qa.transition_at) < transitionMs) return false
+    }
+  }
+  return true
+}
+
+function cloneRuntimeBottleneck(value) {
+  if (value === null) return null
+  const keys = [
+    'phase', 'kind', 'age_sec', 'since', 'owner_role', 'phase_run_id',
+    'attempt_id', 'gate_id',
+  ]
+  if (!exactObject(value, keys) || !DELIVERY_RUNTIME_PHASES.includes(value.phase) ||
+      !DELIVERY_RUNTIME_BOTTLENECK_KINDS.has(value.kind) ||
+      !isNullableNonNegative(value.age_sec) || value.age_sec === null ||
+      !DELIVERY_RUNTIME_BOTTLENECK_OWNER_ROLES.has(value.owner_role) ||
+      !isRuntimeId(value.phase_run_id) ||
+      !isNullableRuntimeId(value.attempt_id) ||
+      !isNullableRuntimeId(value.gate_id)) return undefined
+  const since = strictIso(value.since)
+  if (!since || (value.gate_id === null) !== (value.attempt_id === null) ||
+      value.owner_role === 'pm_exception_owner' &&
+        !['exception', 'dispatch_reconcile'].includes(value.kind) ||
+      value.kind === 'handoff_review' &&
+        !['receiver_phase_lead', 'project_delivery'].includes(value.owner_role)) return undefined
+  return {
+    phase: value.phase,
+    kind: value.kind,
+    age_sec: value.age_sec,
+    since,
+    owner_role: value.owner_role,
+    phase_run_id: value.phase_run_id,
+    attempt_id: value.attempt_id,
+    gate_id: value.gate_id,
+  }
+}
+
+function validRuntimeBottleneck(bottleneck, phaseRuns, gates, generatedAt) {
+  if (bottleneck === null) return true
+  const phaseRun = phaseRuns.find(run => run.phase === bottleneck.phase)
+  const elapsedSec = Math.max(0, (Date.parse(generatedAt) - Date.parse(bottleneck.since)) / 1000)
+  if (!phaseRun || phaseRun.phase_run_id !== bottleneck.phase_run_id ||
+      Date.parse(bottleneck.since) > Date.parse(generatedAt) ||
+      bottleneck.age_sec < Math.max(0, elapsedSec - 1) || bottleneck.age_sec > elapsedSec + 1) {
+    return false
+  }
+  if (bottleneck.kind === 'work') {
+    return bottleneck.gate_id === null && bottleneck.attempt_id === null &&
+      bottleneck.owner_role === 'phase_team' && phaseRun.state === 'working' &&
+      bottleneck.since === phaseRun.started_at
+  }
+  if (bottleneck.kind === 'dispatch_reconcile' && bottleneck.gate_id === null) {
+    return bottleneck.attempt_id === null && bottleneck.owner_role === 'pm_exception_owner'
+  }
+  const gate = gates.find(candidate => candidate.gate_id === bottleneck.gate_id)
+  if (!gate || gate.attempt_id !== bottleneck.attempt_id || !currentGateForBoundary(gates, gate)) return false
+  if (bottleneck.kind === 'exception') {
+    return gate.state === 'escalated' && bottleneck.phase === gate.sender_phase &&
+      bottleneck.owner_role === 'pm_exception_owner' && bottleneck.since === gate.transition_at
+  }
+  if (bottleneck.kind === 'rework') {
+    return gate.state === 'rejected' && bottleneck.phase === gate.sender_phase &&
+      bottleneck.owner_role === 'phase_team' && bottleneck.since === gate.transition_at
+  }
+  if (bottleneck.kind === 'handoff_review') {
+    const expectedOwner = gate.receiver_phase === 'ProjectDelivery'
+      ? 'project_delivery' : 'receiver_phase_lead'
+    const since = gate.state === 'proposed' ? gate.proposed_at : gate.transition_at
+    return ['proposed', 'accepted'].includes(gate.state) &&
+      bottleneck.phase === gate.sender_phase && bottleneck.owner_role === expectedOwner &&
+      bottleneck.since === since
+  }
+  if (bottleneck.kind === 'dispatch_reconcile') {
+    const observedAt = gate.state === 'accepted' ? gate.transition_at
+      : gate.state === 'consumed' ? gate.consumed_at : null
+    return observedAt !== null && ['accepted', 'consumed'].includes(gate.state) &&
+      bottleneck.phase === gate.receiver_phase && bottleneck.owner_role === 'pm_exception_owner' &&
+      Date.parse(bottleneck.since) >= Date.parse(observedAt)
+  }
+  return false
+}
+
+function summarizeRuntime(gates, shown) {
+  return {
+    proposed: gates.length,
+    accepted: gates.filter(gate => ['accepted', 'consumed'].includes(gate.state)).length,
+    rejected: gates.filter(gate => gate.state === 'rejected').length,
+    escalated: gates.filter(gate => gate.state === 'escalated').length,
+    consumed: gates.filter(gate => gate.state === 'consumed').length,
+    shown: shown.length,
+    truncated: Math.max(0, gates.length - shown.length),
+  }
+}
+
+function cloneDeliveryRuntime(value) {
+  if (!exactObject(value, DELIVERY_RUNTIME_INPUT_KEYS) ||
+      value.schema !== DELIVERY_RUNTIME_SCHEMA || value.schema_version !== 1 ||
+      value.trust_level !== 'advisory_same_uid' || value.mode !== 'observe_only' ||
+      !exactObject(value.actuation, ['enabled', 'auto_execute']) ||
+      value.actuation.enabled !== false || value.actuation.auto_execute !== false ||
+      !exactObject(value.source_health, ['phase_gates', 'receiver_dispatches']) ||
+      !['ok', 'degraded', 'unavailable'].includes(value.source_health.phase_gates) ||
+      !['ok', 'degraded', 'unavailable'].includes(value.source_health.receiver_dispatches) ||
+      !cloneRuntimeSummary(value.summary) || !Array.isArray(value.phase_gates) ||
+      value.phase_gates.length > DELIVERY_RUNTIME_INPUT_LIMIT) return null
+  const generatedAt = strictIso(value.generated_at)
+  const expiresAt = strictIso(value.expires_at)
+  if (!generatedAt || !expiresAt || Date.parse(generatedAt) >= Date.parse(expiresAt)) return null
+  const replay = cloneRuntimeReplay(value.replay)
+  if (!replay || !Array.isArray(value.phase_runs) ||
+      value.phase_runs.length !== DELIVERY_RUNTIME_PHASES.length) return null
+  const phaseRuns = value.phase_runs.map((run, index) =>
+    cloneRuntimePhaseRun(run, DELIVERY_RUNTIME_PHASES[index]))
+  if (phaseRuns.some(run => !run) ||
+      new Set(phaseRuns.map(run => run.phase_run_id)).size !== phaseRuns.length) return null
+  const gates = value.phase_gates.map(cloneRuntimeGate)
+  if (gates.some(gate => !gate) ||
+      new Set(gates.map(gate => gate.slice_id)).size > 1 ||
+      new Set(gates.map(gate => gate.gate_id)).size !== gates.length ||
+      new Set(gates.map(gate => gate.attempt_id)).size !== gates.length ||
+      hasDuplicateNonNull(gates.map(gate => gate.acceptance_event_id)) ||
+      hasDuplicateNonNull(gates.map(gate => gate.receiver_dispatch_id)) ||
+      !validRuntimeChronology(phaseRuns, gates, generatedAt)) return null
+  gates.sort((left, right) =>
+    DELIVERY_RUNTIME_BOUNDARY_ORDER.get(left.boundary) -
+      DELIVERY_RUNTIME_BOUNDARY_ORDER.get(right.boundary) ||
+    gateOrder(left, right))
+  const bottleneck = cloneRuntimeBottleneck(value.bottleneck)
+  if (bottleneck === undefined) return null
+  if (!validRuntimeBottleneck(bottleneck, phaseRuns, gates, generatedAt)) return null
+  let shown = gates.slice(0, DELIVERY_RUNTIME_LIMIT)
+  if (bottleneck?.gate_id && !shown.some(gate => gate.gate_id === bottleneck.gate_id)) {
+    const bottleneckGate = gates.find(gate => gate.gate_id === bottleneck.gate_id)
+    shown = [...shown.slice(0, DELIVERY_RUNTIME_LIMIT - 1), bottleneckGate]
+      .sort((left, right) =>
+        DELIVERY_RUNTIME_BOUNDARY_ORDER.get(left.boundary) -
+          DELIVERY_RUNTIME_BOUNDARY_ORDER.get(right.boundary) ||
+        codePointCompare(left.proposed_at, right.proposed_at) ||
+        codePointCompare(left.gate_id, right.gate_id))
+  }
+  return {
+    schema: DELIVERY_RUNTIME_SCHEMA,
+    schema_version: 1,
+    generated_at: generatedAt,
+    expires_at: expiresAt,
+    trust_level: 'advisory_same_uid',
+    mode: 'observe_only',
+    actuation: { enabled: false, auto_execute: false },
+    source_health: {
+      phase_gates: value.source_health.phase_gates,
+      receiver_dispatches: value.source_health.receiver_dispatches,
+    },
+    summary: summarizeRuntime(gates, shown),
+    replay,
+    phase_runs: phaseRuns,
+    bottleneck,
+    phase_gates: shown,
+  }
+}
+
+function degradedDeliveryRuntime(nowMs) {
+  const timestamp = new Date(nowMs).toISOString()
+  return {
+    schema: DELIVERY_RUNTIME_SCHEMA,
+    schema_version: 1,
+    generated_at: timestamp,
+    expires_at: timestamp,
+    trust_level: 'advisory_same_uid',
+    mode: 'observe_only',
+    actuation: { enabled: false, auto_execute: false },
+    source_health: { phase_gates: 'unavailable', receiver_dispatches: 'unavailable' },
+    summary: {
+      proposed: 0, accepted: 0, rejected: 0, escalated: 0,
+      consumed: 0, shown: 0, truncated: 0,
+    },
+    replay: { sequence: 0, head_event_id: null },
+    phase_runs: DELIVERY_RUNTIME_PHASES.map((phase, index) => ({
+      phase,
+      phase_run_id: `unavailable_${index + 1}`,
+      state: 'pending',
+      started_at: null,
+      transition_at: null,
+      owner_role: 'phase_team',
+      work_age_sec: null,
+      wait_age_sec: null,
+      handoff_count: 0,
+      revision_count: 0,
+    })),
+    bottleneck: null,
+    phase_gates: [],
+  }
+}
+
+export function sanitizeDeliveryRuntimeProjection(input, nowMs = Date.now(), inputIssue = null) {
+  const timestamp = Number.isFinite(nowMs) ? nowMs : Date.now()
+  if (inputIssue) {
+    const code = inputIssue === 'DELIVERY_RUNTIME_INPUT_UNREADABLE'
+      ? 'DELIVERY_RUNTIME_INPUT_UNREADABLE' : 'DELIVERY_RUNTIME_INPUT_INVALID'
+    return {
+      projection: degradedDeliveryRuntime(timestamp),
+      diagnostic: { code, severity: 'error', source: 'delivery_runtime', count: 1 },
+    }
+  }
+  const projection = cloneDeliveryRuntime(input)
+  if (!projection) {
+    return {
+      projection: degradedDeliveryRuntime(timestamp),
+      diagnostic: {
+        code: 'DELIVERY_RUNTIME_INPUT_INVALID',
+        severity: 'error',
+        source: 'delivery_runtime',
+        count: 1,
+      },
+    }
+  }
+  if (Date.parse(projection.expires_at) <= timestamp) {
+    return {
+      projection: degradedDeliveryRuntime(timestamp),
+      diagnostic: {
+        code: 'DELIVERY_RUNTIME_STALE',
+        severity: 'warning',
+        source: 'delivery_runtime',
+        count: 1,
+      },
+    }
+  }
+  return { projection, diagnostic: null }
+}
+
+export function projectPulseV4(
+  view,
+  meta,
+  deliveryInput = null,
+  deliveryIssue = null,
+  includeDeliveryLoop = false,
+  runtimeInput = null,
+  runtimeIssue = null,
+  includeDeliveryRuntime = false,
+) {
+  const diagnostics = [...(view.diagnostics || [])]
+  let deliveryLoop = null
+  let deliveryRuntime = null
+  if (includeDeliveryLoop) {
+    const sanitized = sanitizeDeliveryLoopProjection(deliveryInput, meta.finishedAt, deliveryIssue)
+    deliveryLoop = sanitized.projection
+    if (sanitized.diagnostic) diagnostics.unshift(sanitized.diagnostic)
+  }
+  if (includeDeliveryRuntime) {
+    const sanitized = sanitizeDeliveryRuntimeProjection(runtimeInput, meta.finishedAt, runtimeIssue)
+    deliveryRuntime = sanitized.projection
+    if (sanitized.diagnostic) diagnostics.unshift(sanitized.diagnostic)
+  }
+  diagnostics.sort((left, right) => {
+    const priority = (code) => code?.startsWith('DELIVERY_RUNTIME_')
+      ? 0
+      : code?.startsWith('DELIVERY_LOOP_') ? 1
+        : code === 'PHASE_BINDING_CONFLICT' ? 2
+          : code === 'PHASE_BINDING_INVALID' ? 3
+            : code === 'SCHEMA_UPGRADED' ? 4 : 5
+    return priority(left?.code) - priority(right?.code)
+  })
+  const projected = projectPulse(
+    { ...view, diagnostics },
+    meta,
+    PULSE_SCHEMA_VERSION_V4,
+    DIAGNOSTIC_CODES_V4,
+    true,
+  )
+  return {
+    ...projected,
+    ...(includeDeliveryLoop ? { delivery_loop: deliveryLoop } : {}),
+    ...(includeDeliveryRuntime ? { delivery_runtime: deliveryRuntime } : {}),
+  }
+}
+
 const PULSE_V1_KEYS = [
   'schema', 'schema_version', 'stream_id', 'sequence', 'snapshot_id', 'trust_level',
   'generated_at', 'observation', 'complete', 'scope', 'source_health', 'summary',
@@ -691,6 +1261,8 @@ const PULSE_DIAGNOSTIC_SOURCES_V1 =
   new Set(['liveness', 'tmux', 'dispatch', 'outbox', 'events', 'publisher'])
 const PULSE_DIAGNOSTIC_SOURCES_V2 =
   new Set([...PULSE_DIAGNOSTIC_SOURCES_V1, 'delivery_loop'])
+const PULSE_DIAGNOSTIC_SOURCES_V4 =
+  new Set([...PULSE_DIAGNOSTIC_SOURCES_V2, 'delivery_runtime'])
 
 function incompatibleV1() {
   throw new Error('persisted Pulse snapshot is not compatible with v1')
@@ -831,6 +1403,23 @@ function clonePulseRunV1(value) {
   }
 }
 
+function clonePulseRunV3(value) {
+  const keys = [
+    'dispatch_id', 'task_id', 'identity_source', 'state', 'worker', 'transport',
+    'started_at', 'elapsed_sec', 'silence_sec', 'timeout_sec', 'signals',
+    'reason_codes', 'advisory', 'phase', 'phase_source',
+  ]
+  if (!exactObject(value, keys)) incompatibleV1()
+  const v1 = clonePulseRunV1(Object.fromEntries(
+    Object.entries(value).filter(([key]) => !['phase', 'phase_source'].includes(key)),
+  ))
+  const phaseValue = value.phase === null ? null : requiredEnum(value.phase, PHASES)
+  const source = requiredEnum(value.phase_source, PHASE_SOURCES)
+  if (phaseValue === null && !['unassigned', 'conflict'].includes(source) ||
+      phaseValue !== null && !ASSIGNED_PHASE_SOURCES.has(source)) incompatibleV1()
+  return { ...v1, phase: phaseValue, phase_source: source }
+}
+
 function clonePulseRecentV1(value) {
   const keys = [
     'dispatch_id', 'task_id', 'worker', 'transport', 'terminal', 'pm_verdict',
@@ -852,6 +1441,22 @@ function clonePulseRecentV1(value) {
     wait_sec: requiredDuration(value.wait_sec),
     timeout_sec: requiredDuration(value.timeout_sec),
   }
+}
+
+function clonePulseRecentV3(value) {
+  const keys = [
+    'dispatch_id', 'task_id', 'worker', 'transport', 'terminal', 'pm_verdict',
+    'started_at', 'wait_sec', 'timeout_sec', 'phase', 'phase_source',
+  ]
+  if (!exactObject(value, keys)) incompatibleV1()
+  const v1 = clonePulseRecentV1(Object.fromEntries(
+    Object.entries(value).filter(([key]) => !['phase', 'phase_source'].includes(key)),
+  ))
+  const phaseValue = value.phase === null ? null : requiredEnum(value.phase, PHASES)
+  const source = requiredEnum(value.phase_source, PHASE_SOURCES)
+  if (phaseValue === null && !['unassigned', 'conflict'].includes(source) ||
+      phaseValue !== null && !ASSIGNED_PHASE_SOURCES.has(source)) incompatibleV1()
+  return { ...v1, phase: phaseValue, phase_source: source }
 }
 
 function clonePulseWorkerStatV1(value) {
@@ -876,10 +1481,15 @@ function clonePulseUnclaimedV1(value) {
 
 function clonePulseDiagnosticForCompat(value, schemaVersion) {
   if (!exactObject(value, ['code', 'severity', 'source', 'count'])) incompatibleV1()
-  const codes = schemaVersion === PULSE_SCHEMA_VERSION_V2
-    ? DIAGNOSTIC_CODES_V2 : DIAGNOSTIC_CODES_V1
-  const sources = schemaVersion === PULSE_SCHEMA_VERSION_V2
-    ? PULSE_DIAGNOSTIC_SOURCES_V2 : PULSE_DIAGNOSTIC_SOURCES_V1
+  const codes = schemaVersion === PULSE_SCHEMA_VERSION_V4
+    ? DIAGNOSTIC_CODES_V4
+    : schemaVersion === PULSE_SCHEMA_VERSION_V3
+    ? DIAGNOSTIC_CODES_V3
+    : schemaVersion === PULSE_SCHEMA_VERSION_V2 ? DIAGNOSTIC_CODES_V2 : DIAGNOSTIC_CODES_V1
+  const sources = schemaVersion === PULSE_SCHEMA_VERSION_V4
+    ? PULSE_DIAGNOSTIC_SOURCES_V4
+    : [PULSE_SCHEMA_VERSION_V2, PULSE_SCHEMA_VERSION_V3].includes(schemaVersion)
+      ? PULSE_DIAGNOSTIC_SOURCES_V2 : PULSE_DIAGNOSTIC_SOURCES_V1
   return {
     code: requiredEnum(value.code, codes),
     severity: requiredEnum(value.severity, PULSE_DIAGNOSTIC_SEVERITIES),
@@ -895,9 +1505,21 @@ function cloneBoundedArray(value, limit, cloneItem) {
 
 export function downProjectPulseV1(snapshot) {
   if (!isObject(snapshot) || snapshot.schema !== PULSE_SCHEMA ||
-      ![PULSE_SCHEMA_VERSION, PULSE_SCHEMA_VERSION_V2].includes(snapshot.schema_version)) incompatibleV1()
-  const topKeys = snapshot.schema_version === PULSE_SCHEMA_VERSION_V2
-    ? [...PULSE_V1_KEYS, 'delivery_loop'] : PULSE_V1_KEYS
+      ![
+        PULSE_SCHEMA_VERSION, PULSE_SCHEMA_VERSION_V2, PULSE_SCHEMA_VERSION_V3,
+        PULSE_SCHEMA_VERSION_V4,
+      ]
+        .includes(snapshot.schema_version)) incompatibleV1()
+  const hasDeliveryLoop = Object.hasOwn(snapshot, 'delivery_loop')
+  const hasDeliveryRuntime = Object.hasOwn(snapshot, 'delivery_runtime')
+  const topKeys = [
+    ...PULSE_V1_KEYS,
+    ...(snapshot.schema_version === PULSE_SCHEMA_VERSION_V2 ||
+      [PULSE_SCHEMA_VERSION_V3, PULSE_SCHEMA_VERSION_V4].includes(snapshot.schema_version) &&
+        hasDeliveryLoop ? ['delivery_loop'] : []),
+    ...(snapshot.schema_version === PULSE_SCHEMA_VERSION_V4 && hasDeliveryRuntime
+      ? ['delivery_runtime'] : []),
+  ]
   if (!exactObject(snapshot, topKeys) ||
       typeof snapshot.stream_id !== 'string' || !UUID_RE.test(snapshot.stream_id) ||
       !Number.isSafeInteger(snapshot.sequence) || snapshot.sequence < 1 ||
@@ -928,8 +1550,26 @@ export function downProjectPulseV1(snapshot) {
     scope: { repo_name: snapshot.scope.repo_name },
     source_health: clonePulseSourceHealthV1(snapshot.source_health),
     summary: clonePulseSummaryV1(snapshot.summary),
-    runs: cloneBoundedArray(snapshot.runs, RUN_LIMIT, clonePulseRunV1),
-    recent_verdicts: cloneBoundedArray(snapshot.recent_verdicts, RECENT_LIMIT, clonePulseRecentV1),
+    runs: cloneBoundedArray(
+      snapshot.runs,
+      RUN_LIMIT,
+      [PULSE_SCHEMA_VERSION_V3, PULSE_SCHEMA_VERSION_V4].includes(snapshot.schema_version)
+        ? (item) => {
+            const { phase: _phase, phase_source: _source, ...v1 } = clonePulseRunV3(item)
+            return v1
+          }
+        : clonePulseRunV1,
+    ),
+    recent_verdicts: cloneBoundedArray(
+      snapshot.recent_verdicts,
+      RECENT_LIMIT,
+      [PULSE_SCHEMA_VERSION_V3, PULSE_SCHEMA_VERSION_V4].includes(snapshot.schema_version)
+        ? (item) => {
+            const { phase: _phase, phase_source: _source, ...v1 } = clonePulseRecentV3(item)
+            return v1
+          }
+        : clonePulseRecentV1,
+    ),
     worker_stats: cloneBoundedArray(snapshot.worker_stats, WORKER_STATS_LIMIT, clonePulseWorkerStatV1),
     unclaimed_control: cloneBoundedArray(
       snapshot.unclaimed_control, UNCLAIMED_LIMIT, clonePulseUnclaimedV1,
