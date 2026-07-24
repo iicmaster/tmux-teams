@@ -1,0 +1,869 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pulse-v3.schema.json",
+  "title": "tmux-teams Pulse Data v3",
+  "description": "Pulse v2 plus explicit, evidence-sourced delivery phase attribution on ACP runs and verdicts. The delivery-loop projection remains optional and pulse.json remains the sole persisted snapshot.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "stream_id",
+    "sequence",
+    "snapshot_id",
+    "trust_level",
+    "generated_at",
+    "observation",
+    "complete",
+    "scope",
+    "source_health",
+    "summary",
+    "runs",
+    "recent_verdicts",
+    "worker_stats",
+    "unclaimed_control",
+    "diagnostics"
+  ],
+  "properties": {
+    "schema": { "const": "tmux-teams.pulse" },
+    "schema_version": { "const": 3 },
+    "stream_id": { "$ref": "#/$defs/uuid" },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "snapshot_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}:[1-9][0-9]*$"
+    },
+    "trust_level": { "const": "advisory_same_uid" },
+    "generated_at": { "$ref": "#/$defs/timestamp" },
+    "observation": { "$ref": "#/$defs/observation" },
+    "complete": { "type": "boolean" },
+    "scope": { "$ref": "#/$defs/scope" },
+    "source_health": { "$ref": "#/$defs/source_health" },
+    "summary": { "$ref": "#/$defs/summary" },
+    "runs": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "$ref": "#/$defs/run" }
+    },
+    "recent_verdicts": {
+      "type": "array",
+      "maxItems": 12,
+      "items": { "$ref": "#/$defs/recent_verdict" }
+    },
+    "worker_stats": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "$ref": "#/$defs/worker_stat" }
+    },
+    "unclaimed_control": {
+      "type": "array",
+      "maxItems": 8,
+      "items": { "$ref": "#/$defs/unclaimed_control" }
+    },
+    "diagnostics": {
+      "type": "array",
+      "maxItems": 50,
+      "items": { "$ref": "#/$defs/diagnostic" }
+    },
+    "delivery_loop": { "$ref": "#/$defs/delivery_loop" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "complete": { "const": true } },
+        "required": ["complete"]
+      },
+      "then": {
+        "properties": {
+          "observation": {
+            "properties": { "quality": { "const": "complete" } }
+          },
+          "diagnostics": { "maxItems": 0 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "complete": { "const": false } },
+        "required": ["complete"]
+      },
+      "then": {
+        "properties": {
+          "observation": {
+            "properties": { "quality": { "const": "degraded" } }
+          },
+          "diagnostics": { "minItems": 1 }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$"
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "nullable_timestamp": {
+      "oneOf": [
+        { "$ref": "#/$defs/timestamp" },
+        { "type": "null" }
+      ]
+    },
+    "nullable_id": {
+      "oneOf": [
+        { "$ref": "#/$defs/id" },
+        { "type": "null" }
+      ]
+    },
+    "nullable_uuid": {
+      "oneOf": [
+        { "$ref": "#/$defs/uuid" },
+        { "type": "null" }
+      ]
+    },
+    "nullable_duration": {
+      "type": ["number", "null"],
+      "minimum": 0
+    },
+    "nullable_run_phase": {
+      "oneOf": [
+        { "enum": ["Requirement", "Prototype", "Development", "QA"] },
+        { "type": "null" }
+      ]
+    },
+    "phase_source": {
+      "enum": ["dispatch", "event", "dispatch_join", "unassigned", "conflict"]
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "started_at",
+        "finished_at",
+        "consistency",
+        "refresh_interval_sec",
+        "stale_after_sec",
+        "expires_at",
+        "quality"
+      ],
+      "properties": {
+        "started_at": { "$ref": "#/$defs/timestamp" },
+        "finished_at": { "$ref": "#/$defs/timestamp" },
+        "consistency": { "const": "best_effort" },
+        "refresh_interval_sec": { "type": "integer", "minimum": 1 },
+        "stale_after_sec": { "type": "integer", "minimum": 60 },
+        "expires_at": { "$ref": "#/$defs/timestamp" },
+        "quality": { "enum": ["complete", "degraded"] }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo_name"],
+      "properties": {
+        "repo_name": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80,
+              "pattern": "^[A-Za-z0-9_.-]+$"
+            },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "health": {
+      "enum": ["ok", "degraded", "unavailable"]
+    },
+    "source_health": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["liveness", "tmux", "dispatch", "outbox", "events"],
+      "properties": {
+        "liveness": { "$ref": "#/$defs/health" },
+        "tmux": { "$ref": "#/$defs/health" },
+        "dispatch": { "$ref": "#/$defs/health" },
+        "outbox": { "$ref": "#/$defs/health" },
+        "events": { "$ref": "#/$defs/health" }
+      }
+    },
+    "state": {
+      "enum": [
+        "running",
+        "starting",
+        "awaiting-verdict",
+        "unrecorded",
+        "died",
+        "unknown",
+        "orphan_running"
+      ]
+    },
+    "by_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "running",
+        "starting",
+        "awaiting-verdict",
+        "unrecorded",
+        "died",
+        "unknown",
+        "orphan_running"
+      ],
+      "properties": {
+        "running": { "type": "integer", "minimum": 0 },
+        "starting": { "type": "integer", "minimum": 0 },
+        "awaiting-verdict": { "type": "integer", "minimum": 0 },
+        "unrecorded": { "type": "integer", "minimum": 0 },
+        "died": { "type": "integer", "minimum": 0 },
+        "unknown": { "type": "integer", "minimum": 0 },
+        "orphan_running": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["active", "attention", "by_state", "truncated"],
+      "properties": {
+        "active": { "type": "integer", "minimum": 0 },
+        "attention": { "type": "integer", "minimum": 0 },
+        "by_state": { "$ref": "#/$defs/by_state" },
+        "truncated": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "signals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dispatch", "liveness", "pane", "terminal", "pm_verdict", "correlation"],
+      "properties": {
+        "dispatch": { "enum": ["present", "absent", "unknown"] },
+        "liveness": { "enum": ["alive", "dead", "unknown"] },
+        "pane": { "enum": ["held", "gone", "not_recorded", "probe_unavailable"] },
+        "terminal": { "enum": ["done", "blocked", "failed", "absent", "invalid"] },
+        "pm_verdict": { "enum": ["pass", "reject", "unresolved", "absent"] },
+        "correlation": { "enum": ["dispatch_id", "mtime_heuristic", "process_only"] }
+      }
+    },
+    "reason_code": {
+      "enum": [
+        "PROCESS_ALIVE",
+        "STARTUP_IN_PROGRESS",
+        "TERMINAL_WITHOUT_PM_VERDICT",
+        "PM_VERDICT_RECORD_MISSING",
+        "PROCESS_MISSING_AFTER_DISPATCH",
+        "LIVENESS_UNAVAILABLE",
+        "LIVE_PROCESS_WITHOUT_DISPATCH"
+      ]
+    },
+    "action_code": {
+      "enum": [
+        "monitor",
+        "wait",
+        "verify_result",
+        "record_verdict",
+        "inspect_worker",
+        "restore_observability",
+        "inspect_ownership"
+      ]
+    },
+    "advisory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attention", "action_code", "auto_execute"],
+      "properties": {
+        "attention": { "type": "boolean" },
+        "action_code": { "$ref": "#/$defs/action_code" },
+        "auto_execute": { "const": false }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dispatch_id",
+        "task_id",
+        "identity_source",
+        "state",
+        "worker",
+        "transport",
+        "started_at",
+        "elapsed_sec",
+        "silence_sec",
+        "timeout_sec",
+        "signals",
+        "reason_codes",
+        "advisory",
+        "phase",
+        "phase_source"
+      ],
+      "properties": {
+        "dispatch_id": { "$ref": "#/$defs/nullable_uuid" },
+        "task_id": { "$ref": "#/$defs/id" },
+        "identity_source": { "enum": ["dispatch_id", "legacy_task_time", "process_only"] },
+        "state": { "$ref": "#/$defs/state" },
+        "worker": { "$ref": "#/$defs/nullable_id" },
+        "transport": {
+          "type": ["string", "null"],
+          "enum": ["tmux", "acp", null]
+        },
+        "started_at": { "$ref": "#/$defs/nullable_timestamp" },
+        "elapsed_sec": { "$ref": "#/$defs/nullable_duration" },
+        "silence_sec": { "$ref": "#/$defs/nullable_duration" },
+        "timeout_sec": { "$ref": "#/$defs/nullable_duration" },
+        "signals": { "$ref": "#/$defs/signals" },
+        "reason_codes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/reason_code" }
+        },
+        "advisory": { "$ref": "#/$defs/advisory" },
+        "phase": { "$ref": "#/$defs/nullable_run_phase" },
+        "phase_source": { "$ref": "#/$defs/phase_source" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "phase": { "type": "null" } },
+            "required": ["phase"]
+          },
+          "then": {
+            "properties": {
+              "phase_source": { "enum": ["unassigned", "conflict"] }
+            }
+          },
+          "else": {
+            "properties": {
+              "phase_source": { "enum": ["dispatch", "event", "dispatch_join"] }
+            }
+          }
+        }
+      ]
+    },
+    "recent_verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dispatch_id",
+        "task_id",
+        "worker",
+        "transport",
+        "terminal",
+        "pm_verdict",
+        "started_at",
+        "wait_sec",
+        "timeout_sec",
+        "phase",
+        "phase_source"
+      ],
+      "properties": {
+        "dispatch_id": { "$ref": "#/$defs/nullable_uuid" },
+        "task_id": { "$ref": "#/$defs/id" },
+        "worker": { "$ref": "#/$defs/id" },
+        "transport": {
+          "type": ["string", "null"],
+          "enum": ["tmux", "acp", null]
+        },
+        "terminal": { "enum": ["done", "blocked", "failed", "absent", "invalid"] },
+        "pm_verdict": { "enum": ["pass", "reject", "unresolved"] },
+        "started_at": { "$ref": "#/$defs/nullable_timestamp" },
+        "wait_sec": { "$ref": "#/$defs/nullable_duration" },
+        "timeout_sec": { "$ref": "#/$defs/nullable_duration" },
+        "phase": { "$ref": "#/$defs/nullable_run_phase" },
+        "phase_source": { "$ref": "#/$defs/phase_source" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "phase": { "type": "null" } },
+            "required": ["phase"]
+          },
+          "then": {
+            "properties": {
+              "phase_source": { "enum": ["unassigned", "conflict"] }
+            }
+          },
+          "else": {
+            "properties": {
+              "phase_source": { "enum": ["dispatch", "event", "dispatch_join"] }
+            }
+          }
+        }
+      ]
+    },
+    "worker_stat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["worker", "runs", "rejected", "median_wait_sec"],
+      "properties": {
+        "worker": { "$ref": "#/$defs/id" },
+        "runs": { "type": "integer", "minimum": 1 },
+        "rejected": { "type": "integer", "minimum": 0 },
+        "median_wait_sec": { "$ref": "#/$defs/nullable_duration" }
+      }
+    },
+    "unclaimed_control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_id", "age_sec"],
+      "properties": {
+        "task_id": { "$ref": "#/$defs/id" },
+        "age_sec": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "diagnostic_code": {
+      "enum": [
+        "LIVENESS_UNAVAILABLE",
+        "TMUX_UNAVAILABLE",
+        "DISPATCH_UNREADABLE",
+        "OUTBOX_UNREADABLE",
+        "EVENT_UNREADABLE",
+        "INVALID_EVENT_ENTRY",
+        "SOURCE_TRUNCATED",
+        "SEQUENCE_RESET",
+        "SCHEMA_UPGRADED",
+        "DELIVERY_LOOP_INPUT_UNREADABLE",
+        "DELIVERY_LOOP_INPUT_INVALID",
+        "DELIVERY_LOOP_STALE",
+        "PHASE_BINDING_INVALID",
+        "PHASE_BINDING_CONFLICT"
+      ]
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "severity", "source", "count"],
+      "properties": {
+        "code": { "$ref": "#/$defs/diagnostic_code" },
+        "severity": { "enum": ["info", "warning", "error"] },
+        "source": {
+          "enum": ["liveness", "tmux", "dispatch", "outbox", "events", "publisher", "delivery_loop"]
+        },
+        "count": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "nullable_digest": {
+      "oneOf": [
+        { "$ref": "#/$defs/digest" },
+        { "type": "null" }
+      ]
+    },
+    "delivery_phase": {
+      "enum": ["Requirement", "Prototype", "Development", "QA"]
+    },
+    "nullable_delivery_phase": {
+      "oneOf": [
+        { "$ref": "#/$defs/delivery_phase" },
+        { "type": "null" }
+      ]
+    },
+    "delivery_boundary": {
+      "enum": [
+        "requirement_to_prototype",
+        "prototype_to_development",
+        "development_to_qa",
+        "qa_to_project_delivery"
+      ]
+    },
+    "nullable_delivery_boundary": {
+      "oneOf": [
+        { "$ref": "#/$defs/delivery_boundary" },
+        { "type": "null" }
+      ]
+    },
+    "delivery_role": {
+      "enum": [
+        "operator",
+        "pm",
+        "sender_phase_lead",
+        "receiver_phase_lead",
+        "experiment_owner",
+        "metric_producer",
+        "qa",
+        "external_reviewer",
+        "business_owner"
+      ]
+    },
+    "delivery_action_code": {
+      "enum": [
+        "monitor",
+        "restore_observability",
+        "verify_and_recommend_manual_hold",
+        "inspect_contract_violation",
+        "resolve_exception",
+        "review_handoff",
+        "revise_artifact",
+        "complete_measurement",
+        "continue_observation",
+        "export_evidence",
+        "request_external_review"
+      ]
+    },
+    "delivery_reason_code": {
+      "enum": [
+        "OBSERVATION_CURRENT",
+        "OBSERVATION_STALE",
+        "SOURCE_DEGRADED",
+        "GUARDRAIL_BREACH",
+        "CONTRACT_INVALID",
+        "EXCEPTION_OPEN",
+        "HANDOFF_AWAITING_RECEIVER",
+        "REVISION_REQUIRED",
+        "MEASUREMENT_INCOMPLETE",
+        "MATURITY_PENDING",
+        "EVIDENCE_EXPORT_READY",
+        "EXTERNAL_REVIEW_READY",
+        "NO_ACTIVE_SLICES",
+        "BOTTLENECK_AVAILABLE",
+        "BOTTLENECK_INCONCLUSIVE"
+      ]
+    },
+    "delivery_reason_codes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/delivery_reason_code" }
+    },
+    "delivery_scope": {
+      "enum": ["source", "experiment", "phase", "slice"]
+    },
+    "delivery_actuation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "auto_execute"],
+      "properties": {
+        "enabled": { "const": false },
+        "auto_execute": { "const": false }
+      }
+    },
+    "delivery_assignment_window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "properties": {
+        "start": { "$ref": "#/$defs/nullable_timestamp" },
+        "end": { "$ref": "#/$defs/nullable_timestamp" }
+      }
+    },
+    "delivery_experiment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "experiment_id",
+        "manifest_id",
+        "manifest_digest",
+        "dataset_digest",
+        "boundary",
+        "assignment_window",
+        "analysis_as_of"
+      ],
+      "properties": {
+        "experiment_id": { "$ref": "#/$defs/nullable_id" },
+        "manifest_id": { "$ref": "#/$defs/nullable_id" },
+        "manifest_digest": { "$ref": "#/$defs/nullable_digest" },
+        "dataset_digest": { "$ref": "#/$defs/nullable_digest" },
+        "boundary": { "$ref": "#/$defs/nullable_delivery_boundary" },
+        "assignment_window": { "$ref": "#/$defs/delivery_assignment_window" },
+        "analysis_as_of": { "$ref": "#/$defs/nullable_timestamp" }
+      }
+    },
+    "delivery_health": {
+      "enum": ["ok", "degraded", "unavailable", "not_configured"]
+    },
+    "delivery_source_health": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifest", "assignment", "events", "costs", "outcomes", "guardrails", "export"],
+      "properties": {
+        "manifest": { "$ref": "#/$defs/delivery_health" },
+        "assignment": { "$ref": "#/$defs/delivery_health" },
+        "events": { "$ref": "#/$defs/delivery_health" },
+        "costs": { "$ref": "#/$defs/delivery_health" },
+        "outcomes": { "$ref": "#/$defs/delivery_health" },
+        "guardrails": { "$ref": "#/$defs/delivery_health" },
+        "export": { "$ref": "#/$defs/delivery_health" }
+      }
+    },
+    "delivery_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "assigned",
+        "in_progress",
+        "terminal",
+        "exceptions",
+        "contaminated",
+        "operator_action_total",
+        "operator_action_shown",
+        "operator_action_truncated"
+      ],
+      "properties": {
+        "assigned": { "type": "integer", "minimum": 0 },
+        "in_progress": { "type": "integer", "minimum": 0 },
+        "terminal": { "type": "integer", "minimum": 0 },
+        "exceptions": { "type": "integer", "minimum": 0 },
+        "contaminated": { "type": "integer", "minimum": 0 },
+        "operator_action_total": { "type": "integer", "minimum": 0 },
+        "operator_action_shown": { "type": "integer", "minimum": 0, "maximum": 50 },
+        "operator_action_truncated": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "delivery_advisory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attention", "owner_role", "action_code", "auto_execute"],
+      "properties": {
+        "attention": { "type": "boolean" },
+        "owner_role": { "$ref": "#/$defs/delivery_role" },
+        "action_code": { "$ref": "#/$defs/delivery_action_code" },
+        "auto_execute": { "const": false }
+      }
+    },
+    "delivery_phase_card": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "phase",
+        "state",
+        "active_slices",
+        "oldest_open_age_sec",
+        "reason_codes",
+        "advisory"
+      ],
+      "properties": {
+        "phase": { "$ref": "#/$defs/delivery_phase" },
+        "state": {
+          "enum": ["idle", "active", "waiting_receiver", "rework", "exception", "complete", "unknown"]
+        },
+        "active_slices": { "type": "integer", "minimum": 0 },
+        "oldest_open_age_sec": { "$ref": "#/$defs/nullable_duration" },
+        "reason_codes": { "$ref": "#/$defs/delivery_reason_codes" },
+        "advisory": { "$ref": "#/$defs/delivery_advisory" }
+      }
+    },
+    "delivery_bottleneck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "basis", "boundary", "age_sec", "reason_codes"],
+      "properties": {
+        "status": { "enum": ["available", "none", "inconclusive"] },
+        "basis": { "const": "oldest_open_handoff_age" },
+        "boundary": { "$ref": "#/$defs/nullable_delivery_boundary" },
+        "age_sec": { "$ref": "#/$defs/nullable_duration" },
+        "reason_codes": { "$ref": "#/$defs/delivery_reason_codes" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "const": "available" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "boundary": { "$ref": "#/$defs/delivery_boundary" },
+              "age_sec": { "type": "number", "minimum": 0 }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "status": { "const": "none" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "boundary": { "type": "null" },
+              "age_sec": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "status": { "const": "inconclusive" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": { "age_sec": { "type": "null" } }
+          }
+        }
+      ]
+    },
+    "delivery_attention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attention_id",
+        "severity",
+        "scope",
+        "slice_id",
+        "phase",
+        "owner_role",
+        "reason_codes",
+        "action_code",
+        "auto_execute"
+      ],
+      "properties": {
+        "attention_id": { "$ref": "#/$defs/id" },
+        "severity": { "enum": ["info", "warning", "hold"] },
+        "scope": { "$ref": "#/$defs/delivery_scope" },
+        "slice_id": { "$ref": "#/$defs/nullable_id" },
+        "phase": { "$ref": "#/$defs/nullable_delivery_phase" },
+        "owner_role": { "$ref": "#/$defs/delivery_role" },
+        "reason_codes": { "$ref": "#/$defs/delivery_reason_codes" },
+        "action_code": { "$ref": "#/$defs/delivery_action_code" },
+        "auto_execute": { "const": false }
+      }
+    },
+    "delivery_next_action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope",
+        "slice_id",
+        "phase",
+        "owner_role",
+        "reason_codes",
+        "action_code",
+        "auto_execute"
+      ],
+      "properties": {
+        "scope": { "$ref": "#/$defs/delivery_scope" },
+        "slice_id": { "$ref": "#/$defs/nullable_id" },
+        "phase": { "$ref": "#/$defs/nullable_delivery_phase" },
+        "owner_role": { "$ref": "#/$defs/delivery_role" },
+        "reason_codes": { "$ref": "#/$defs/delivery_reason_codes" },
+        "action_code": { "$ref": "#/$defs/delivery_action_code" },
+        "auto_execute": { "const": false }
+      }
+    },
+    "delivery_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "measurement_readiness",
+        "scenario_signal",
+        "guardrail_status",
+        "evidence_eligibility",
+        "safety_hold_recommended",
+        "business_decision"
+      ],
+      "properties": {
+        "measurement_readiness": { "enum": ["READY", "INCONCLUSIVE"] },
+        "scenario_signal": { "enum": ["FAVORABLE", "UNFAVORABLE", "INCONCLUSIVE"] },
+        "guardrail_status": { "enum": ["CLEAR", "BREACH", "UNKNOWN"] },
+        "evidence_eligibility": {
+          "enum": ["SYNTHETIC_ONLY", "OBSERVED_UNVERIFIED", "ELIGIBLE_FOR_EXTERNAL_REVIEW"]
+        },
+        "safety_hold_recommended": { "type": "boolean" },
+        "business_decision": { "const": "EXTERNAL_REQUIRED" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "measurement_readiness": { "const": "INCONCLUSIVE" } },
+            "required": ["measurement_readiness"]
+          },
+          "then": {
+            "properties": {
+              "scenario_signal": { "enum": ["UNFAVORABLE", "INCONCLUSIVE"] }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "guardrail_status": { "const": "BREACH" } },
+            "required": ["guardrail_status"]
+          },
+          "then": {
+            "properties": { "safety_hold_recommended": { "const": true } }
+          }
+        }
+      ]
+    },
+    "delivery_loop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "schema_version",
+        "generated_at",
+        "expires_at",
+        "trust_level",
+        "mode",
+        "status",
+        "actuation",
+        "experiment",
+        "source_health",
+        "summary",
+        "phase_cards",
+        "bottleneck",
+        "attention",
+        "next_action",
+        "evidence"
+      ],
+      "properties": {
+        "schema": { "const": "tmux-teams.delivery-loop-projection" },
+        "schema_version": { "const": 1 },
+        "generated_at": { "$ref": "#/$defs/timestamp" },
+        "expires_at": { "$ref": "#/$defs/timestamp" },
+        "trust_level": { "const": "advisory_same_uid" },
+        "mode": { "const": "stage1_observe_only" },
+        "status": {
+          "enum": ["not_configured", "ready", "active", "paused", "complete", "degraded"]
+        },
+        "actuation": { "$ref": "#/$defs/delivery_actuation" },
+        "experiment": { "$ref": "#/$defs/delivery_experiment" },
+        "source_health": { "$ref": "#/$defs/delivery_source_health" },
+        "summary": { "$ref": "#/$defs/delivery_summary" },
+        "phase_cards": {
+          "type": "array",
+          "maxItems": 4,
+          "items": { "$ref": "#/$defs/delivery_phase_card" }
+        },
+        "bottleneck": { "$ref": "#/$defs/delivery_bottleneck" },
+        "attention": {
+          "type": "array",
+          "maxItems": 50,
+          "items": { "$ref": "#/$defs/delivery_attention" }
+        },
+        "next_action": { "$ref": "#/$defs/delivery_next_action" },
+        "evidence": { "$ref": "#/$defs/delivery_evidence" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "enum": ["active", "complete"] } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "experiment": {
+                "properties": {
+                  "experiment_id": { "$ref": "#/$defs/id" },
+                  "manifest_id": { "$ref": "#/$defs/id" },
+                  "manifest_digest": { "$ref": "#/$defs/digest" },
+                  "dataset_digest": { "$ref": "#/$defs/digest" }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

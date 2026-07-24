@@ -17,7 +17,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PULSE = join(ROOT, 'plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs')
 const FIXED_UTC = '2026-07-21T09:00:00Z'
 const FIXED_ISO = '2026-07-21T09:00:00.000Z'
-const FIXED_THAI = '2026-07-21 16:00:00 เวลาไทย (UTC+7)'
+const FIXED_BANGKOK = '2026-07-21 16:00:00'
 
 function repo() {
   const dir = mkdtempSync(join(tmpdir(), 'pulse-repo-'))
@@ -26,11 +26,16 @@ function repo() {
   mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
   return dir
 }
-const render = (dir) => {
-  const r = spawnSync('node', [PULSE, 'once', dir], {
+const runOnce = (dir, { extraEnv = {}, extraArgs = [] } = {}) => spawnSync(
+  'node',
+  [PULSE, 'once', dir, ...extraArgs],
+  {
     encoding: 'utf8',
-    env: { ...process.env, TZ: 'UTC' },
-  })
+    env: { ...process.env, TZ: 'UTC', PULSE_TIME_ZONE: '', ...extraEnv },
+  },
+)
+const render = (dir, options) => {
+  const r = runOnce(dir, options)
   assert.equal(r.status, 0, r.stderr)
   return readFileSync(r.stdout.trim(), 'utf8')
 }
@@ -57,7 +62,7 @@ const svgById = (html, id) => {
   assert.ok(match, `missing SVG ${id}`)
   return match[0]
 }
-/** The page carries two SVGs — the worker lifecycle and the per-worker graph. */
+/** The page carries two SVGs — the two-layer worker loop and the per-worker graph. */
 const perWorkerSvg = (html) => {
   const i = html.indexOf('aria-label="แต่ละงานเดินไปถึงขั้นไหน"')
   return html.slice(html.lastIndexOf('<svg', i), html.indexOf('</svg>', i))
@@ -99,7 +104,7 @@ test('a fresh dispatch is starting up, not dead', () => {
   assert.match(html, /starting/)
 })
 
-test('a finished worker awaiting the PM verdict is not an alarm', () => {
+test('a finished worker awaiting a recorded verdict is not an alarm', () => {
   // The window between the worker exiting and the event being written is normal
   // and can last minutes; calling it death would fire on every successful run.
   const dir = repo()
@@ -118,14 +123,17 @@ test('a terminal outbox with no record for too long is unrecorded, not dead', ()
   assert.match(html, /unrecorded/)
 })
 
-test('the dispatch lifecycle dead counter uses the complete died summary only', () => {
+test('the two-layer worker loop keeps ownership boundaries and the complete died counter', () => {
   const dir = repo()
   for (let i = 0; i < 101; i++) dispatch(dir, `dead-${String(i).padStart(3, '0')}`, 600)
   dispatch(dir, 'verdict-not-recorded', 4000)
   outbox(dir, 'verdict-not-recorded', 'TEAM_DONE', 4000)
   const html = render(dir)
   const loop = dispatchLifecycleSvg(html)
+  const graph = perWorkerSvg(html)
   const count = loop.match(/>หยุดผิดปกติ<\/text><text[^>]*>(\d+)<\/text>/)
+  const graphWidth = Number(graph.match(/viewBox="0 0 ([\d.]+) /)?.[1])
+  const graphTagX = Number(graph.match(/class="g-tag [^"]+" x="([\d.]+)"/)?.[1])
   const snapshot = JSON.parse(readFileSync(join(dir, '.tmux-teams', 'pulse.json'), 'utf8'))
 
   assert.match(html, /unrecorded/, 'the run must remain visible as unrecorded')
@@ -135,14 +143,84 @@ test('the dispatch lifecycle dead counter uses the complete died summary only', 
   assert.equal(snapshot.summary.truncated, 2)
   assert.match(loop, /role="img"/)
   assert.match(loop, /aria-labelledby="worker-lifecycle-title worker-lifecycle-desc"/)
-  assert.match(loop, /<title id="worker-lifecycle-title">วงจรการสั่งงาน worker และการตรวจผล<\/title>/)
+  assert.match(loop, /<title id="worker-lifecycle-title">โมเดลเชิงบรรทัดฐานของลูปสองชั้นสำหรับ worker และการส่งมอบ<\/title>/)
   assert.match(loop, /<desc id="worker-lifecycle-desc">/)
+  assert.match(loop, /ลูปชั้นใน · ทีมเฟสเป็นเจ้าของการตรวจ worker/)
+  assert.match(loop, /ลูปชั้นนอก · PM ติดตาม phase และ handoff/)
+  assert.match(loop, /PM รับเฉพาะข้อยกเว้น/)
+  assert.match(loop, />ไม่พบผลลัพธ์<\/text><text[^>]*>และไม่พบ process<\/text>/,
+    'the died condition must use two labels that stay clear of the node and connector')
+  assert.doesNotMatch(loop, />PM ตรวจผล</,
+    'routine worker review must stay inside the phase team loop')
+  assert.match(html, /โมเดลเชิงบรรทัดฐาน ไม่ใช่สถานะสด/)
+  assert.match(html, /ทีมเฟสเป็นเจ้าของ dispatch\/verification ตามปกติ/)
+  assert.match(html, /งานที่ไม่ผ่านควรสร้าง dispatch หรือ attempt ใหม่ภายในทีม/)
+  assert.match(html, /transition ที่ Pulse ยังไม่วัดว่าเกิดจริง/)
+  assert.match(html, /คำอธิบายสัญลักษณ์กราฟความคืบหน้า/)
+  assert.match(html, /จุดทึบ · มีหลักฐานว่าถึงขั้นนี้/)
+  assert.match(html, /ข้อมูลเทียบเท่ากราฟ/)
+  assert.ok(graphWidth - graphTagX >= 140,
+    'the progress graph must reserve enough right padding for its longest Thai status label')
   assert.doesNotMatch(html, /aria-label="ลูปการทำงานของระบบ"/,
     'the worker lifecycle must not be announced as a whole-system loop')
   assert.equal(count?.[1], String(snapshot.summary.by_state.died),
     'the lifecycle counter must not count other attention states or lose truncated deaths')
   assert.match(loop, /เส้นย้อนกลับที่ยังไม่ได้วัด/,
     'the existing unmeasured back-edge explanation must remain available')
+})
+
+test('human-facing review copy stays neutral while legacy pm_verdict remains explicit', () => {
+  const dir = repo()
+  dispatch(dir, 'awaiting-neutral', 300)
+  outbox(dir, 'awaiting-neutral', 'TEAM_DONE', 300)
+  event(dir, 'legacy-verdict')
+  const html = render(dir)
+  const snapshot = JSON.parse(readFileSync(join(dir, '.tmux-teams', 'pulse.json'), 'utf8'))
+
+  for (const routinePmCopy of [
+    /รอ PM ตรวจผล/,
+    />PM ตรวจผล</,
+    /คำตัดสิน PM/,
+    /คำตัดสินของ PM/,
+    /PM บันทึกคำตัดสิน/,
+  ]) {
+    assert.doesNotMatch(html, routinePmCopy)
+  }
+  assert.match(html, /รอตรวจผล/)
+  assert.match(html, /คำตัดสินที่บันทึก \(pm_verdict\)/)
+  assert.match(html, /pm_verdict<\/code> เป็นชื่อฟิลด์เดิมเพื่อความเข้ากันได้ย้อนหลัง/)
+  assert.match(html, /ไม่ได้ยืนยันว่า PM หรือทีมเฟสใดเป็นผู้ตรวจ/)
+  assert.match(html, /PM รับเฉพาะข้อยกเว้น/)
+
+  assert.match(html, /หลักฐานระบบครบ/)
+  assert.match(html, /id="freshness-status"[^>]+role="status" aria-live="polite"/)
+  assert.ok(html.includes(`data-observation-expires-at="${snapshot.observation.expires_at}"`))
+  assert.match(html, /const stale = !valid \|\| Date\.now\(\) >= expiry/)
+  assert.match(html, /document\.addEventListener\('visibilitychange'/)
+  assert.match(html, /data-observation-freshness="fresh"/)
+})
+
+test('a 44-row attention fixture uses a complete, ordered dense list', () => {
+  const dir = repo()
+  const ids = Array.from({ length: 44 }, (_, index) => `dense-${String(index).padStart(2, '0')}`)
+  for (const id of ids) dispatch(dir, id, 600)
+  const html = render(dir)
+  const attention = sectionBy(html, 'attention-title')
+  const snapshot = JSON.parse(readFileSync(join(dir, '.tmux-teams', 'pulse.json'), 'utf8'))
+
+  assert.equal(snapshot.summary.attention, 44)
+  assert.equal(snapshot.summary.by_state.died, 44)
+  assert.match(html, /class="primary-grid primary-grid-stacked" data-layout="stacked-dense"/)
+  assert.match(attention, /class="run-list run-list-dense" data-run-count="44" data-layout="dense"/)
+  assert.equal((attention.match(/class="run-item"/g) || []).length, 44)
+  let previous = -1
+  for (const id of ids) {
+    const position = attention.indexOf(`<code>${id}</code>`)
+    assert.ok(position > previous, `${id} must retain deterministic DOM priority order`)
+    previous = position
+  }
+  assert.match(html, /\.run-list-dense\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)\}/)
+  assert.match(html, /\.primary-grid,\.run-list-dense\{grid-template-columns:1fr\}/)
 })
 
 test('a recorded run leaves the live tables but stays on the graph', () => {
@@ -189,7 +267,7 @@ test('an old event does not settle a newer dispatch of the same id', () => {
 test('the page states its scope and its own age', () => {
   const html = render(repo())
   assert.match(html, /ติดตามเฉพาะ worker ที่ระบบสั่งในโปรเจกต์นี้/)
-  assert.match(html, /อัปเดตล่าสุด <time[^>]+>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} เวลาไทย \(UTC\+7\)<\/time>/)
+  assert.match(html, /id="pulse-timezone-label"[^>]*>เวลาไทย \(UTC\+7\)<\/span><span>ข้อมูลที่สังเกต ณ<\/span><time[^>]+>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}<\/time>/)
   assert.doesNotMatch(html, />\d{4}-\d{2}-\d{2}[^<]* UTC<\/time>/)
   assert.match(html, /http-equiv="refresh"/)
 })
@@ -201,25 +279,78 @@ test('header, recent verdicts, and run details render Asia/Bangkok while JSON st
 
   const html = render(dir)
   const snapshot = JSON.parse(readFileSync(join(dir, '.tmux-teams', 'pulse.json'), 'utf8'))
-  const expectedFixedTime = `<time datetime="${FIXED_ISO}" title="Asia/Bangkok">${FIXED_THAI}</time>`
-  const header = html.match(/อัปเดตล่าสุด <time datetime="([^"]+)" title="Asia\/Bangkok">([^<]+)<\/time>/)
-  const generatedThai = new Date(Date.parse(snapshot.generated_at) + 7 * 60 * 60 * 1000)
+  const expectedFixedTime = `<time datetime="${FIXED_ISO}" title="Asia/Bangkok" aria-describedby="pulse-timezone-label">${FIXED_BANGKOK}</time>`
+  const header = html.match(/ข้อมูลที่สังเกต ณ<\/span><time datetime="([^"]+)" title="Asia\/Bangkok" aria-describedby="pulse-timezone-label">([^<]+)<\/time>/)
+  const generatedBangkok = new Date(Date.parse(snapshot.generated_at) + 7 * 60 * 60 * 1000)
     .toISOString().replace('T', ' ').slice(0, 19)
 
   assert.ok(header, 'header must expose its machine timestamp and explicit IANA zone')
   assert.equal(header[1], snapshot.generated_at)
-  assert.equal(header[2], `${generatedThai} เวลาไทย (UTC+7)`)
+  assert.equal(header[2], generatedBangkok)
   assert.ok(sectionBy(html, 'attention-title').includes(expectedFixedTime))
   assert.ok(sectionBy(html, 'recent-title').includes(expectedFixedTime))
   assert.equal(snapshot.runs.find(run => run.task_id === 'thai-active')?.started_at, FIXED_ISO)
   assert.equal(snapshot.recent_verdicts.find(row => row.task_id === 'thai-recent')?.started_at, FIXED_ISO)
+  assert.equal((html.match(/เวลาไทย \(UTC\+7\)/g) || []).length, 1,
+    'the visible timezone label belongs only in the header')
 
-  const absoluteTimes = [...html.matchAll(/<time datetime="([^"]+)" title="([^"]+)">([^<]+)<\/time>/g)]
+  const absoluteTimes = [...html.matchAll(/<time datetime="([^"]+)" title="([^"]+)" aria-describedby="pulse-timezone-label">([^<]+)<\/time>/g)]
   assert.equal(absoluteTimes.length, 3, 'fixture covers header, recent, and active-run details')
   for (const [, machineTime, zone, visibleTime] of absoluteTimes) {
     assert.match(machineTime, /Z$/, 'machine timestamp remains RFC3339 UTC')
     assert.equal(zone, 'Asia/Bangkok')
-    assert.match(visibleTime, /เวลาไทย \(UTC\+7\)$/)
+    assert.match(visibleTime, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
+  }
+})
+
+test('display timezone supports env and CLI precedence without changing UTC data', () => {
+  const dir = repo()
+  dispatch(dir, 'zone-active', 600)
+  event(dir, 'zone-recent')
+
+  const utc = render(dir, { extraEnv: { PULSE_TIME_ZONE: 'UTC' } })
+  const utcGraph = readFileSync(join(dir, '.tmux-teams', 'loop-graph.html'), 'utf8')
+  assert.match(utc, /id="pulse-timezone-label"[^>]*>เขตเวลา UTC<\/span>/)
+  assert.match(utcGraph, /id="loop-timezone-label"[^>]*>เขตเวลา UTC<\/span>/)
+  assert.match(utcGraph, /<time datetime="[^"]+" title="UTC" aria-describedby="loop-timezone-label">/)
+  assert.match(utc, new RegExp(
+    `<time datetime="${FIXED_ISO}" title="UTC" aria-describedby="pulse-timezone-label">2026-07-21 09:00:00</time>`,
+  ))
+
+  const newYork = render(dir, { extraEnv: { PULSE_TIME_ZONE: 'America/New_York' } })
+  const newYorkGraph = readFileSync(join(dir, '.tmux-teams', 'loop-graph.html'), 'utf8')
+  assert.match(newYork, /id="pulse-timezone-label"[^>]*>เขตเวลา America\/New_York<\/span>/)
+  assert.match(newYorkGraph, /id="loop-timezone-label"[^>]*>เขตเวลา America\/New_York<\/span>/)
+  assert.match(newYorkGraph, /<time datetime="[^"]+" title="America\/New_York" aria-describedby="loop-timezone-label">/)
+  assert.match(newYork, new RegExp(
+    `<time datetime="${FIXED_ISO}" title="America/New_York" aria-describedby="pulse-timezone-label">2026-07-21 05:00:00</time>`,
+  ))
+
+  const cliWins = render(dir, {
+    extraEnv: { PULSE_TIME_ZONE: 'Invalid/Zone' },
+    extraArgs: ['--time-zone', 'Asia/Bangkok'],
+  })
+  const cliWinsGraph = readFileSync(join(dir, '.tmux-teams', 'loop-graph.html'), 'utf8')
+  assert.match(cliWins, /id="pulse-timezone-label"[^>]*>เวลาไทย \(UTC\+7\)<\/span>/)
+  assert.match(cliWinsGraph, /id="loop-timezone-label"[^>]*>เวลาไทย \(UTC\+7\)<\/span>/)
+  assert.equal((cliWinsGraph.match(/เวลาไทย \(UTC\+7\)/g) || []).length, 1)
+  assert.match(cliWins, new RegExp(
+    `<time datetime="${FIXED_ISO}" title="Asia/Bangkok" aria-describedby="pulse-timezone-label">${FIXED_BANGKOK}</time>`,
+  ))
+
+  const snapshot = JSON.parse(readFileSync(join(dir, '.tmux-teams', 'pulse.json'), 'utf8'))
+  assert.equal(snapshot.runs.find(run => run.task_id === 'zone-active')?.started_at, FIXED_ISO)
+  assert.equal(snapshot.recent_verdicts.find(row => row.task_id === 'zone-recent')?.started_at, FIXED_ISO)
+})
+
+test('an explicit invalid display timezone fails before publishing', () => {
+  for (const options of [
+    { extraEnv: { PULSE_TIME_ZONE: 'Invalid/Zone' } },
+    { extraArgs: ['--time-zone', 'Invalid/Zone'] },
+  ]) {
+    const result = runOnce(repo(), options)
+    assert.equal(result.status, 2)
+    assert.match(result.stderr, /\[pulse\] invalid time zone "Invalid\/Zone"/)
   }
 })
 
@@ -233,9 +364,12 @@ test('the page is Thai-first and ordered for scanning before deep reading', () =
   assert.ok(overview < attention && attention < recent && recent < details)
   assert.match(html, /--sans:"Kanit","Noto Sans Thai","Leelawadee UI"/)
   assert.match(html, /<link rel="stylesheet" href="pulse-fonts-[a-f0-9]{64}\.css">/)
+  assert.match(html, /<link rel="icon" href="data:image\/svg\+xml,[^"]+">/)
   assert.doesNotMatch(html, /data:font\/woff2;base64,|@font-face\{font-family:"Kanit"/)
   assert.doesNotMatch(html, /fonts\.(?:googleapis|gstatic)\.com/)
   assert.match(html, /<a class="skip-link" href="#main">/)
+  assert.match(html, /\.skip-link\{[^}]*clip-path:inset\(50%\)[^}]*opacity:0[^}]*\}\.skip-link:focus\{[^}]*clip-path:none[^}]*opacity:1/,
+    'the unfocused skip link must be fully clipped so stitched full-page screenshots cannot expose it')
   assert.match(html, /@media\(max-width:620px\)/)
   assert.match(html, /class="surface table-scroll responsive-table"/)
   assert.match(html, /<details class="deep-dive" data-persist-key="progress"><summary>ความคืบหน้าของแต่ละงาน<\/summary>/)
@@ -269,7 +403,7 @@ test('the Kanit payload is content-addressed, offline, and not rewritten on refr
 test('an empty repo says there is nothing to see rather than looking broken', () => {
   const html = render(repo())
   assert.match(html, /ยังไม่มีงานผิดปกติ/)
-  assert.match(html, /ยังไม่มี worker ทำงาน/)
+  assert.match(html, /ยังไม่พบงานที่กำลังเดิน/)
 })
 
 test('an unmeasured duration never renders as zero', () => {
@@ -341,6 +475,15 @@ test('the graph uses standardized Thai labels for recorded verdicts', () => {
   assert.doesNotMatch(graph, /ไม่ทราบสถานะ/)
 })
 
+test('the progress graph keeps the full task id visible without ellipsis', () => {
+  const dir = repo()
+  const taskId = 'completion-contract-fix-opus-with-visible-full-task-id'
+  dispatch(dir, taskId, 600)
+  const graph = perWorkerSvg(render(dir))
+  assert.match(graph, new RegExp(`<text class="g-id"[^>]*>${taskId}</text>`))
+  assert.doesNotMatch(graph, /<text class="g-id"[^>]*>[^<]*…<\/text>/)
+})
+
 test('an idle pane shell is not counted as a running worker', () => {
   // The first real run opened its session with an empty PM shell in window 0.
   // Its cwd is the repo, so it passed the ownership check and was reported as a
@@ -350,7 +493,7 @@ test('an idle pane shell is not counted as a running worker', () => {
   const html = render(dir)
   // No tmux here, so this asserts the shape: an empty repo reports nothing
   // running, and the orphan path cannot invent rows out of bare processes.
-  assert.match(html, /ยังไม่มี worker ทำงาน/)
+  assert.match(html, /ยังไม่พบงานที่กำลังเดิน/)
   assert.doesNotMatch(sectionBy(html, 'running-title'), /pill running/)
 })
 

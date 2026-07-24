@@ -18,10 +18,18 @@ const SKILL = join(ROOT, 'plugins', 'tmux-teams', 'skills', 'tmux-teams')
 const PULSE = join(SKILL, 'scripts', 'pulse.mjs')
 const V1_SCHEMA = join(SKILL, 'references', 'pulse-v1.schema.json')
 const V2_SCHEMA = join(SKILL, 'references', 'pulse-v2.schema.json')
+const V3_SCHEMA = join(SKILL, 'references', 'pulse-v3.schema.json')
+const V4_SCHEMA = join(SKILL, 'references', 'pulse-v4.schema.json')
 const HAS_PYTHON_JSONSCHEMA = spawnSync('python3', ['-c', 'import jsonschema'], {
   encoding: 'utf8',
 }).status === 0
 const FONT_CSS_NAME = `pulse-fonts-${createHash('sha256').update(KANIT_FONT_CSS).digest('hex')}.css`
+const D3_JS = readFileSync(join(SKILL, 'assets', 'd3', 'd3.v7.9.0.min.js'), 'utf8')
+const D3_LICENSE = readFileSync(join(SKILL, 'assets', 'd3', 'LICENSE'), 'utf8')
+const D3_JS_NAME =
+  `pulse-d3-7.9.0-${createHash('sha256').update(D3_JS).digest('hex')}.min.js`
+const D3_LICENSE_NAME =
+  `pulse-d3-7.9.0-license-${createHash('sha256').update(D3_LICENSE).digest('hex')}.txt`
 
 const digest = (char) => `sha256:${char.repeat(64)}`
 const nowIso = (offsetMs = 0) => new Date(Date.now() + offsetMs).toISOString()
@@ -176,6 +184,8 @@ function repo() {
 }
 
 const fontCssPath = (dir) => join(dir, '.tmux-teams', FONT_CSS_NAME)
+const d3JsPath = (dir) => join(dir, '.tmux-teams', D3_JS_NAME)
+const d3LicensePath = (dir) => join(dir, '.tmux-teams', D3_LICENSE_NAME)
 
 function writeProjection(dir, value = projection()) {
   const path = join(dir, 'delivery-loop-projection.json')
@@ -183,10 +193,11 @@ function writeProjection(dir, value = projection()) {
   return path
 }
 
-function run(args) {
+function run(args, extraEnv = {}) {
   return spawnSync(process.execPath, [PULSE, ...args], {
     encoding: 'utf8',
     timeout: 15_000,
+    env: { ...process.env, PULSE_TIME_ZONE: '', ...extraEnv },
   })
 }
 
@@ -203,10 +214,11 @@ async function stopWatcher(pid, pidfile) {
   assert.equal(existsSync(pidfile), false, 'watcher did not clean its pidfile')
 }
 
-function runJson(dir, projectionPath = null) {
+function runJson(dir, projectionPath = null, { extraEnv = {}, extraArgs = [] } = {}) {
   const args = ['json', dir]
   if (projectionPath) args.push('--delivery-loop', projectionPath)
-  const result = run(args)
+  args.push(...extraArgs)
+  const result = run(args, extraEnv)
   assert.equal(result.status, 0, result.stderr)
   return { result, snapshot: JSON.parse(result.stdout) }
 }
@@ -226,8 +238,22 @@ function sectionByLabel(html, labelledBy) {
   return html.slice(sectionStart, html.indexOf('</section>', start) + '</section>'.length)
 }
 
-const thaiTime = (iso) => `${new Date(Date.parse(iso) + 7 * 60 * 60 * 1000)
-  .toISOString().replace('T', ' ').slice(0, 19)} เวลาไทย (UTC+7)`
+const displayTime = (iso, timeZone) => {
+  const formatter = new Intl.DateTimeFormat('en-US-u-ca-gregory-nu-latn', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  })
+  const parts = Object.fromEntries(formatter.formatToParts(new Date(iso))
+    .filter(part => part.type !== 'literal')
+    .map(part => [part.type, part.value]))
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`
+}
 
 function assertSvgA11y(svg, titleId, descId) {
   assert.match(svg, /role="img"/)
@@ -238,8 +264,10 @@ function assertSvgA11y(svg, titleId, descId) {
 
 function validate(schemaPath, instancePath, definition = null) {
   const program = [
-    'import json, jsonschema, sys',
-    'schema = json.load(open(sys.argv[1], encoding="utf-8"))',
+    'import json, jsonschema, pathlib, sys',
+    'schema_path = pathlib.Path(sys.argv[1]).resolve()',
+    'schema = json.load(open(schema_path, encoding="utf-8"))',
+    'schema["$id"] = schema_path.as_uri()',
     'instance = json.load(open(sys.argv[2], encoding="utf-8"))',
     'definition = sys.argv[3]',
     'schema = {"$schema": schema.get("$schema"), "$defs": schema["$defs"], "$ref": f"#/$defs/{definition}"} if definition != "-" else schema',
@@ -252,15 +280,15 @@ function validate(schemaPath, instancePath, definition = null) {
   })
 }
 
-test('Pulse remains v1 by default and v2 is an explicit delivery-loop opt-in', () => {
+test('Pulse v4 is default and the delivery-loop projection remains an explicit opt-in', () => {
   const dir = repo()
   const defaultRun = runJson(dir)
-  assert.equal(defaultRun.snapshot.schema_version, 1)
+  assert.equal(defaultRun.snapshot.schema_version, 4)
   assert.ok(!Object.hasOwn(defaultRun.snapshot, 'delivery_loop'))
 
   const projectionPath = writeProjection(dir)
   const optedIn = runJson(dir, projectionPath)
-  assert.equal(optedIn.snapshot.schema_version, 2)
+  assert.equal(optedIn.snapshot.schema_version, 4)
   assert.equal(optedIn.snapshot.delivery_loop.schema, 'tmux-teams.delivery-loop-projection')
   assert.equal(optedIn.snapshot.delivery_loop.mode, 'stage1_observe_only')
   assert.deepEqual(optedIn.snapshot.delivery_loop.actuation, { enabled: false, auto_execute: false })
@@ -278,12 +306,12 @@ test('Pulse remains v1 by default and v2 is an explicit delivery-loop opt-in', (
   assert.doesNotMatch(html, /data:font\/woff2;base64,|fonts\.(?:googleapis|gstatic)\.com/)
   assert.equal(readFileSync(fontCssPath(dir), 'utf8'), KANIT_FONT_CSS)
   assert.match(html, /title="Asia\/Bangkok"/)
-  assert.match(html, /เวลาไทย \(UTC\+7\)/)
+  assert.equal((html.match(/เวลาไทย \(UTC\+7\)/g) || []).length, 1)
   assert.match(optedIn.snapshot.generated_at, /Z$/,
-    'the v2 machine contract must retain RFC3339 UTC timestamps')
+    'the v4 machine contract must retain RFC3339 UTC timestamps')
 
   if (HAS_PYTHON_JSONSCHEMA) {
-    const validation = validate(V2_SCHEMA, persistedPath)
+    const validation = validate(V4_SCHEMA, persistedPath)
     assert.equal(validation.status, 0, validation.stderr || validation.stdout)
   }
 })
@@ -329,12 +357,17 @@ test('an in-progress production exporter projection survives sanitizer, persiste
 
   const html = readFileSync(join(dir, '.tmux-teams', 'pulse.html'), 'utf8')
   const topology = svgById(html, 'delivery-topology-svg')
+  const workerLoop = svgById(html, 'dispatch-lifecycle-svg')
   const selected = [...topology.matchAll(
     /data-boundary="([^"]+)" data-selected="true" data-observed="true"/g,
   )].map(([, boundary]) => boundary)
   assert.match(topology, /data-selected-boundary="qa_to_project_delivery"/)
   assert.deepEqual(selected, ['qa_to_project_delivery'])
   assert.doesNotMatch(html, /ยังไม่ได้เลือกขอบเขต pilot ที่ยืนยันได้/)
+  assert.match(workerLoop, /ลูปชั้นใน · ทีมเฟสเป็นเจ้าของการตรวจ worker/)
+  assert.match(workerLoop, /ลูปชั้นนอก · PM ติดตาม phase และ handoff/)
+  assert.match(html, /ลูปสองชั้น: ทีมตรวจ worker · PM ติดตาม phase/)
+  assert.match(html, /PM กำหนดเป้าหมาย ติดตาม phase, handoff และ bottleneck โดยไม่รับตรวจ worker ทุกงาน/)
 
   const completed = exportedProjection(['accepted', 'rejected'])
   assert.deepEqual(completed.bottleneck, {
@@ -352,10 +385,10 @@ test('an in-progress production exporter projection survives sanitizer, persiste
   assert.deepEqual(completedSanitized.projection, completed)
 
   if (HAS_PYTHON_JSONSCHEMA) {
-    const projectionValidation = validate(V2_SCHEMA, projectionPath, 'delivery_loop')
+    const projectionValidation = validate(V3_SCHEMA, projectionPath, 'delivery_loop')
     assert.equal(projectionValidation.status, 0,
       projectionValidation.stderr || projectionValidation.stdout)
-    const snapshotValidation = validate(V2_SCHEMA, persistedPath)
+    const snapshotValidation = validate(V4_SCHEMA, persistedPath)
     assert.equal(snapshotValidation.status, 0,
       snapshotValidation.stderr || snapshotValidation.stdout)
   }
@@ -574,7 +607,7 @@ test('delivery diagrams state receiver ownership, PM exception-only scope, and h
   assert.match(sequenceEquivalent, /กลับสู่ proposed; ผู้รับยังเป็นผู้ตัดสินผล/)
 })
 
-test('delivery times are semantic Thai time elements while the persisted contract retains UTC', () => {
+test('delivery times use one described Bangkok label while the persisted contract retains UTC', () => {
   const dir = repo()
   const value = projection()
   const expectedTimes = [
@@ -596,23 +629,58 @@ test('delivery times are semantic Thai time elements while the persisted contrac
   ], expectedTimes)
   assert.deepEqual(persisted.delivery_loop, snapshot.delivery_loop)
   for (const time of expectedTimes) {
-    assert.ok(delivery.includes(`<time datetime="${time}" title="Asia/Bangkok">${thaiTime(time)}</time>`),
-      `missing Thai semantic time for ${time}`)
+    assert.ok(delivery.includes(
+      `<time datetime="${time}" title="Asia/Bangkok" aria-describedby="pulse-timezone-label">${displayTime(time, 'Asia/Bangkok')}</time>`,
+    ), `missing Bangkok semantic time for ${time}`)
   }
-  assert.equal((delivery.match(/<time datetime="[^"]+" title="Asia\/Bangkok">[^<]+ เวลาไทย \(UTC\+7\)<\/time>/g) || []).length, 4)
+  assert.equal((delivery.match(/<time datetime="[^"]+" title="Asia\/Bangkok" aria-describedby="pulse-timezone-label">\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}<\/time>/g) || []).length, 4)
+  assert.equal((html.match(/เวลาไทย \(UTC\+7\)/g) || []).length, 1)
 })
 
-test('v1 HTML omits opt-in delivery diagrams and artifacts but retains the dispatch lifecycle', () => {
+test('v4 display timezone override changes only the HTML projection', () => {
+  const dir = repo()
+  const value = projection()
+  const expectedTimes = [
+    value.generated_at,
+    value.experiment.analysis_as_of,
+    value.experiment.assignment_window.start,
+    value.experiment.assignment_window.end,
+  ]
+  const projectionPath = writeProjection(dir, value)
+  const { snapshot } = runJson(dir, projectionPath, {
+    extraEnv: { PULSE_TIME_ZONE: 'America/New_York' },
+  })
+  const persisted = JSON.parse(readFileSync(join(dir, '.tmux-teams', 'pulse.json'), 'utf8'))
+  const html = readFileSync(join(dir, '.tmux-teams', 'pulse.html'), 'utf8')
+  const delivery = sectionByLabel(html, 'delivery-loop-title')
+
+  assert.deepEqual(snapshot.delivery_loop, value)
+  assert.deepEqual(persisted.delivery_loop, value)
+  assert.match(html, /id="pulse-timezone-label"[^>]*>เขตเวลา America\/New_York<\/span>/)
+  for (const time of expectedTimes) {
+    assert.ok(delivery.includes(
+      `<time datetime="${time}" title="America/New_York" aria-describedby="pulse-timezone-label">${displayTime(time, 'America/New_York')}</time>`,
+    ), `missing New York semantic time for ${time}`)
+  }
+  assert.doesNotMatch(html, /เวลาไทย \(UTC\+7\)/)
+})
+
+test('v4 without delivery-loop input omits opt-in delivery diagrams but retains the dispatch lifecycle', () => {
   const dir = repo()
   const { snapshot } = runJson(dir)
   const html = readFileSync(join(dir, '.tmux-teams', 'pulse.html'), 'utf8')
-  assert.equal(snapshot.schema_version, 1)
+  assert.equal(snapshot.schema_version, 4)
   assert.ok(!Object.hasOwn(snapshot, 'delivery_loop'))
   assert.doesNotMatch(html, /delivery-topology-svg|handoff-sequence-svg|requirements_baseline|qa_release_evidence/)
-  assertSvgA11y(svgById(html, 'dispatch-lifecycle-svg'), 'worker-lifecycle-title', 'worker-lifecycle-desc')
+  const loop = svgById(html, 'dispatch-lifecycle-svg')
+  assertSvgA11y(loop, 'worker-lifecycle-title', 'worker-lifecycle-desc')
+  assert.match(loop, /โมเดลเชิงบรรทัดฐาน/)
+  assert.match(loop, /ไม่ใช่สถานะสด/)
+  assert.match(html, /เส้นทางของโมเดลไม่ได้ยืนยันว่า transition เกิดขึ้นจริง/)
+  assert.doesNotMatch(html, /pilot ที่สังเกต:/)
 })
 
-test('delivery rendering has no external runtime or chart dependency and keeps its local content-addressed font', () => {
+test('dashboard delivery rendering has no external runtime and keeps its local content-addressed font', () => {
   const dir = repo()
   runJson(dir, writeProjection(dir))
   const html = readFileSync(join(dir, '.tmux-teams', 'pulse.html'), 'utf8')
@@ -641,7 +709,27 @@ test('Pulse v2 schema is closed, bounded, advisory-only, and externally decided'
   assert.equal(schema.$defs.delivery_loop.properties.attention.maxItems, 50)
 })
 
-test('closed projection input and bounds fail closed without leaking raw values', () => {
+test('Pulse v3 schema adds closed phase attribution and keeps delivery_loop optional', () => {
+  const schema = JSON.parse(readFileSync(V3_SCHEMA, 'utf8'))
+  assert.equal(schema.additionalProperties, false)
+  assert.equal(schema.properties.schema_version.const, 3)
+  assert.ok(!schema.required.includes('delivery_loop'))
+  for (const definitionName of ['run', 'recent_verdict']) {
+    const definition = schema.$defs[definitionName]
+    assert.ok(definition.required.includes('phase'))
+    assert.ok(definition.required.includes('phase_source'))
+    assert.equal(definition.additionalProperties, false)
+  }
+  assert.deepEqual(schema.$defs.phase_source.enum,
+    ['dispatch', 'event', 'dispatch_join', 'unassigned', 'conflict'])
+  assert.ok(schema.$defs.diagnostic_code.enum.includes('PHASE_BINDING_INVALID'))
+  assert.ok(schema.$defs.diagnostic_code.enum.includes('PHASE_BINDING_CONFLICT'))
+  assert.equal(schema.$defs.delivery_actuation.properties.enabled.const, false)
+  assert.equal(schema.$defs.delivery_evidence.properties.business_decision.const,
+    'EXTERNAL_REQUIRED')
+})
+
+test('closed projection input and bounds fail closed in v4 without leaking raw values', () => {
   for (const mutate of [
     (value) => { value.raw_worker_message = 'PULSE_V2_RAW_DO_NOT_LEAK' },
     (value) => { value.actuation.command = 'PULSE_V2_RAW_DO_NOT_LEAK' },
@@ -677,7 +765,7 @@ test('closed projection input and bounds fail closed without leaking raw values'
     const value = projection()
     mutate(value)
     const { snapshot, result } = runJson(dir, writeProjection(dir, value))
-    assert.equal(snapshot.schema_version, 2)
+    assert.equal(snapshot.schema_version, 4)
     assert.equal(snapshot.complete, false)
     assert.equal(snapshot.delivery_loop.status, 'degraded')
     assert.equal(snapshot.delivery_loop.next_action.action_code, 'restore_observability')
@@ -690,7 +778,7 @@ test('closed projection input and bounds fail closed without leaking raw values'
   }
 })
 
-test('Pulse v2 schema rejects contradictory evidence and unidentified active experiments', () => {
+test('Pulse v4 schema rejects contradictory evidence and unidentified active experiments', () => {
   if (!HAS_PYTHON_JSONSCHEMA) return
   const dir = repo()
   const valid = runJson(dir, writeProjection(dir)).snapshot
@@ -706,7 +794,7 @@ test('Pulse v2 schema rejects contradictory evidence and unidentified active exp
     mutate(invalid)
     const invalidPath = join(dir, `invalid-${crypto.randomUUID()}.json`)
     writeFileSync(invalidPath, `${JSON.stringify(invalid, null, 2)}\n`)
-    const validation = validate(V2_SCHEMA, invalidPath)
+    const validation = validate(V4_SCHEMA, invalidPath)
     assert.notEqual(validation.status, 0, 'schema accepted a cross-field contradiction')
   }
 })
@@ -731,32 +819,47 @@ test('an unreadable or stale delivery-loop projection degrades to restore-observ
   assert.ok(stale.diagnostics.some(item => item.code === 'DELIVERY_LOOP_STALE'))
 })
 
-test('v1 to v2 upgrade preserves stream identity and advances sequence with a diagnostic', () => {
+test('persisted v1 upgrades to v4 while preserving stream identity and sequence', () => {
   const dir = repo()
-  const v1 = runJson(dir).snapshot
-  const v2 = runJson(dir, writeProjection(dir)).snapshot
+  runJson(dir)
+  const compatResult = run(['compat-v1', dir])
+  assert.equal(compatResult.status, 0, compatResult.stderr)
+  const v1 = JSON.parse(compatResult.stdout)
+  writeFileSync(join(dir, '.tmux-teams', 'pulse.json'), `${JSON.stringify(v1, null, 2)}\n`)
+  const v4 = runJson(dir, writeProjection(dir)).snapshot
   assert.equal(v1.schema_version, 1)
-  assert.equal(v2.schema_version, 2)
-  assert.equal(v2.stream_id, v1.stream_id)
-  assert.equal(v2.sequence, v1.sequence + 1)
-  assert.ok(v2.diagnostics.some(item => item.code === 'SCHEMA_UPGRADED'))
+  assert.equal(v4.schema_version, 4)
+  assert.equal(v4.stream_id, v1.stream_id)
+  assert.equal(v4.sequence, v1.sequence + 1)
+  assert.ok(v4.diagnostics.some(item => item.code === 'SCHEMA_UPGRADED'))
 
   const next = runJson(dir, join(dir, 'delivery-loop-projection.json')).snapshot
-  assert.equal(next.stream_id, v2.stream_id)
-  assert.equal(next.sequence, v2.sequence + 1)
+  assert.equal(next.stream_id, v4.stream_id)
+  assert.equal(next.sequence, v4.sequence + 1)
   assert.ok(!next.diagnostics.some(item => item.code === 'SCHEMA_UPGRADED'))
 })
 
-test('v2 to v1 keeps one stream while removing the opt-in projection', () => {
+test('persisted v2 upgrades to v4 without retaining an unrequested delivery projection', () => {
   const dir = repo()
-  const v2 = runJson(dir, writeProjection(dir)).snapshot
-  const v1 = runJson(dir).snapshot
-
+  const current = runJson(dir, writeProjection(dir)).snapshot
+  const v2 = structuredClone(current)
+  v2.schema_version = 2
+  v2.runs = v2.runs.map(({ phase: _phase, phase_source: _source, ...run }) => run)
+  v2.recent_verdicts = v2.recent_verdicts
+    .map(({ phase: _phase, phase_source: _source, ...record }) => record)
+  const jsonPath = join(dir, '.tmux-teams', 'pulse.json')
+  writeFileSync(jsonPath, `${JSON.stringify(v2, null, 2)}\n`)
+  if (HAS_PYTHON_JSONSCHEMA) {
+    const validation = validate(V2_SCHEMA, jsonPath)
+    assert.equal(validation.status, 0, validation.stderr || validation.stdout)
+  }
+  const v4 = runJson(dir).snapshot
   assert.equal(v2.schema_version, 2)
-  assert.equal(v1.schema_version, 1)
-  assert.equal(v1.stream_id, v2.stream_id)
-  assert.equal(v1.sequence, v2.sequence + 1)
-  assert.equal(Object.hasOwn(v1, 'delivery_loop'), false)
+  assert.equal(v4.schema_version, 4)
+  assert.equal(v4.stream_id, v2.stream_id)
+  assert.equal(v4.sequence, v2.sequence + 1)
+  assert.equal(Object.hasOwn(v4, 'delivery_loop'), false)
+  assert.ok(v4.diagnostics.some(item => item.code === 'SCHEMA_UPGRADED'))
 })
 
 test('publish fencing is checked inside each atomic rename boundary', () => {
@@ -770,30 +873,37 @@ test('publish fencing is checked inside each atomic rename boundary', () => {
     'a reclaimed publisher must be fenced out immediately before rename')
   for (const call of [
     'atomicWriteIfChanged(FONT_CSS_OUT, KANIT_FONT_CSS, token)',
+    'atomicWriteIfChanged(D3_JS_OUT, D3_JS, token)',
+    'atomicWriteIfChanged(D3_LICENSE_OUT, D3_LICENSE, token)',
     'atomicWrite(JSON_OUT, jsonText, token)',
     'atomicWrite(OUT, html, token)',
+    'atomicWrite(LOOP_GRAPH_OUT, loopGraphHtml, token)',
+    'atomicWrite(BUNDLE_OUT, bundleText, token)',
   ]) {
     assert.ok(source.includes(call), `publisher is missing the lock token: ${call}`)
   }
 })
 
-test('a corrupted content-addressed font stylesheet is repaired by a v2 publish', () => {
+test('corrupted content-addressed font and D3 assets are repaired by a v4 publish', () => {
   const dir = repo()
   const projectionPath = writeProjection(dir)
   runJson(dir, projectionPath)
   writeFileSync(fontCssPath(dir), 'corrupt\n')
+  writeFileSync(d3JsPath(dir), 'corrupt\n')
+  writeFileSync(d3LicensePath(dir), 'corrupt\n')
 
   const repaired = runJson(dir, projectionPath).snapshot
-  assert.equal(repaired.schema_version, 2)
+  assert.equal(repaired.schema_version, 4)
   assert.equal(readFileSync(fontCssPath(dir), 'utf8'), KANIT_FONT_CSS)
+  assert.equal(readFileSync(d3JsPath(dir), 'utf8'), D3_JS)
+  assert.equal(readFileSync(d3LicensePath(dir), 'utf8'), D3_LICENSE)
 })
 
 test('compat-v1 is a stdout-only downprojection and leaves the sole SSOT untouched', () => {
   const dir = repo()
   runJson(dir)
-  const v2 = runJson(dir, writeProjection(dir)).snapshot
-  assert.equal(v2.schema_version, 2)
-  assert.ok(v2.diagnostics.some(item => item.code === 'SCHEMA_UPGRADED'))
+  const v4 = runJson(dir, writeProjection(dir)).snapshot
+  assert.equal(v4.schema_version, 4)
 
   const jsonPath = join(dir, '.tmux-teams', 'pulse.json')
   const htmlPath = join(dir, '.tmux-teams', 'pulse.html')
@@ -804,8 +914,12 @@ test('compat-v1 is a stdout-only downprojection and leaves the sole SSOT untouch
   const compat = JSON.parse(result.stdout)
   assert.equal(compat.schema_version, 1)
   assert.ok(!Object.hasOwn(compat, 'delivery_loop'))
-  assert.equal(compat.stream_id, v2.stream_id)
-  assert.equal(compat.sequence, v2.sequence)
+  assert.equal(compat.stream_id, v4.stream_id)
+  assert.equal(compat.sequence, v4.sequence)
+  assert.ok(compat.runs.every(run => !Object.hasOwn(run, 'phase') &&
+    !Object.hasOwn(run, 'phase_source')))
+  assert.ok(compat.recent_verdicts.every(record => !Object.hasOwn(record, 'phase') &&
+    !Object.hasOwn(record, 'phase_source')))
   assert.ok(!compat.diagnostics.some(item => item.code === 'SCHEMA_UPGRADED'))
   assert.equal(readFileSync(jsonPath, 'utf8'), beforeJson)
   assert.equal(readFileSync(htmlPath, 'utf8'), beforeHtml)
@@ -856,7 +970,7 @@ test('ensure forwards the delivery-loop opt-in to its detached watcher', async (
     assert.ok(alive(pid), `watcher ${pid} is not alive`)
     await delay(1_300)
     const snapshot = JSON.parse(readFileSync(join(dir, '.tmux-teams', 'pulse.json'), 'utf8'))
-    assert.equal(snapshot.schema_version, 2)
+    assert.equal(snapshot.schema_version, 4)
     assert.equal(snapshot.delivery_loop.experiment.experiment_id, 'pilot-1')
   } finally {
     if (pid) await stopWatcher(pid, pidfile)

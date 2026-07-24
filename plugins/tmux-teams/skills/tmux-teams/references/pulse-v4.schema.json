@@ -1,0 +1,591 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pulse-v4.schema.json",
+  "title": "tmux-teams Pulse Data v4",
+  "description": "Pulse v3 plus an optional, closed, observe-only phase-gate runtime projection. Pulse remains advisory and never actuates work.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "stream_id",
+    "sequence",
+    "snapshot_id",
+    "trust_level",
+    "generated_at",
+    "observation",
+    "complete",
+    "scope",
+    "source_health",
+    "summary",
+    "runs",
+    "recent_verdicts",
+    "worker_stats",
+    "unclaimed_control",
+    "diagnostics"
+  ],
+  "properties": {
+    "schema": { "const": "tmux-teams.pulse" },
+    "schema_version": { "const": 4 },
+    "stream_id": { "$ref": "pulse-v3.schema.json#/$defs/uuid" },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "snapshot_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}:[1-9][0-9]*$"
+    },
+    "trust_level": { "const": "advisory_same_uid" },
+    "generated_at": { "$ref": "pulse-v3.schema.json#/$defs/timestamp" },
+    "observation": { "$ref": "pulse-v3.schema.json#/$defs/observation" },
+    "complete": { "type": "boolean" },
+    "scope": { "$ref": "pulse-v3.schema.json#/$defs/scope" },
+    "source_health": { "$ref": "pulse-v3.schema.json#/$defs/source_health" },
+    "summary": { "$ref": "pulse-v3.schema.json#/$defs/summary" },
+    "runs": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "$ref": "pulse-v3.schema.json#/$defs/run" }
+    },
+    "recent_verdicts": {
+      "type": "array",
+      "maxItems": 12,
+      "items": { "$ref": "pulse-v3.schema.json#/$defs/recent_verdict" }
+    },
+    "worker_stats": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "$ref": "pulse-v3.schema.json#/$defs/worker_stat" }
+    },
+    "unclaimed_control": {
+      "type": "array",
+      "maxItems": 8,
+      "items": { "$ref": "pulse-v3.schema.json#/$defs/unclaimed_control" }
+    },
+    "diagnostics": {
+      "type": "array",
+      "maxItems": 50,
+      "items": { "$ref": "#/$defs/diagnostic" }
+    },
+    "delivery_loop": { "$ref": "pulse-v3.schema.json#/$defs/delivery_loop" },
+    "delivery_runtime": { "$ref": "#/$defs/delivery_runtime" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "complete": { "const": true } },
+        "required": ["complete"]
+      },
+      "then": {
+        "properties": {
+          "observation": {
+            "properties": { "quality": { "const": "complete" } }
+          },
+          "diagnostics": { "maxItems": 0 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "complete": { "const": false } },
+        "required": ["complete"]
+      },
+      "then": {
+        "properties": {
+          "observation": {
+            "properties": { "quality": { "const": "degraded" } }
+          },
+          "diagnostics": { "minItems": 1 }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "nullable_digest": {
+      "oneOf": [
+        { "$ref": "#/$defs/digest" },
+        { "type": "null" }
+      ]
+    },
+    "nullable_timestamp": {
+      "oneOf": [
+        { "$ref": "pulse-v3.schema.json#/$defs/timestamp" },
+        { "type": "null" }
+      ]
+    },
+    "runtime_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "nullable_id": {
+      "oneOf": [
+        { "$ref": "#/$defs/runtime_id" },
+        { "type": "null" }
+      ]
+    },
+    "nullable_uuid": {
+      "oneOf": [
+        { "$ref": "pulse-v3.schema.json#/$defs/uuid" },
+        { "type": "null" }
+      ]
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "severity", "source", "count"],
+      "properties": {
+        "code": {
+          "enum": [
+            "LIVENESS_UNAVAILABLE",
+            "TMUX_UNAVAILABLE",
+            "DISPATCH_UNREADABLE",
+            "OUTBOX_UNREADABLE",
+            "EVENT_UNREADABLE",
+            "INVALID_EVENT_ENTRY",
+            "SOURCE_TRUNCATED",
+            "SEQUENCE_RESET",
+            "SCHEMA_UPGRADED",
+            "DELIVERY_LOOP_INPUT_UNREADABLE",
+            "DELIVERY_LOOP_INPUT_INVALID",
+            "DELIVERY_LOOP_STALE",
+            "PHASE_BINDING_INVALID",
+            "PHASE_BINDING_CONFLICT",
+            "DELIVERY_RUNTIME_INPUT_UNREADABLE",
+            "DELIVERY_RUNTIME_INPUT_INVALID",
+            "DELIVERY_RUNTIME_STALE"
+          ]
+        },
+        "severity": { "enum": ["info", "warning", "error"] },
+        "source": {
+          "enum": [
+            "liveness",
+            "tmux",
+            "dispatch",
+            "outbox",
+            "events",
+            "publisher",
+            "delivery_loop",
+            "delivery_runtime"
+          ]
+        },
+        "count": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "delivery_runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "schema_version",
+        "generated_at",
+        "expires_at",
+        "trust_level",
+        "mode",
+        "actuation",
+        "source_health",
+        "summary",
+        "replay",
+        "phase_runs",
+        "bottleneck",
+        "phase_gates"
+      ],
+      "properties": {
+        "schema": { "const": "tmux-teams.delivery-runtime-projection" },
+        "schema_version": { "const": 1 },
+        "generated_at": { "$ref": "pulse-v3.schema.json#/$defs/timestamp" },
+        "expires_at": { "$ref": "pulse-v3.schema.json#/$defs/timestamp" },
+        "trust_level": { "const": "advisory_same_uid" },
+        "mode": { "const": "observe_only" },
+        "actuation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "auto_execute"],
+          "properties": {
+            "enabled": { "const": false },
+            "auto_execute": { "const": false }
+          }
+        },
+        "source_health": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["phase_gates", "receiver_dispatches"],
+          "properties": {
+            "phase_gates": { "enum": ["ok", "degraded", "unavailable"] },
+            "receiver_dispatches": { "enum": ["ok", "degraded", "unavailable"] }
+          }
+        },
+        "summary": { "$ref": "#/$defs/runtime_summary" },
+        "replay": { "$ref": "#/$defs/runtime_replay" },
+        "phase_runs": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "prefixItems": [
+            { "$ref": "#/$defs/requirement_phase_run" },
+            { "$ref": "#/$defs/prototype_phase_run" },
+            { "$ref": "#/$defs/development_phase_run" },
+            { "$ref": "#/$defs/qa_phase_run" }
+          ],
+          "items": false
+        },
+        "bottleneck": {
+          "oneOf": [
+            { "$ref": "#/$defs/runtime_bottleneck" },
+            { "type": "null" }
+          ]
+        },
+        "phase_gates": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/phase_gate" }
+        }
+      }
+    },
+    "runtime_replay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sequence", "head_event_id"],
+      "properties": {
+        "sequence": { "type": "integer", "minimum": 0 },
+        "head_event_id": { "$ref": "#/$defs/nullable_digest" }
+      }
+    },
+    "phase_run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "phase",
+        "phase_run_id",
+        "state",
+        "started_at",
+        "transition_at",
+        "owner_role",
+        "work_age_sec",
+        "wait_age_sec",
+        "handoff_count",
+        "revision_count"
+      ],
+      "properties": {
+        "phase": { "enum": ["Requirement", "Prototype", "Development", "QA"] },
+        "phase_run_id": { "$ref": "#/$defs/runtime_id" },
+        "state": {
+          "enum": ["pending", "working", "handoff_pending", "blocked", "completed"]
+        },
+        "started_at": { "$ref": "#/$defs/nullable_timestamp" },
+        "transition_at": { "$ref": "#/$defs/nullable_timestamp" },
+        "owner_role": {
+          "enum": ["phase_team", "receiver_phase_lead", "project_delivery"]
+        },
+        "work_age_sec": {
+          "type": ["number", "null"],
+          "minimum": 0
+        },
+        "wait_age_sec": {
+          "type": ["number", "null"],
+          "minimum": 0
+        },
+        "handoff_count": { "type": "integer", "minimum": 0 },
+        "revision_count": { "type": "integer", "minimum": 0 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "pending" } }, "required": ["state"] },
+          "then": { "properties": {
+            "started_at": { "type": "null" }, "transition_at": { "type": "null" },
+            "work_age_sec": { "type": "null" }, "wait_age_sec": { "type": "null" },
+            "owner_role": { "const": "phase_team" }
+          } }
+        },
+        {
+          "if": { "properties": { "state": { "const": "working" } }, "required": ["state"] },
+          "then": { "properties": {
+            "started_at": { "type": "string" }, "transition_at": { "type": "null" },
+            "work_age_sec": { "type": "number" }, "wait_age_sec": { "type": "null" },
+            "owner_role": { "const": "phase_team" }
+          } }
+        },
+        {
+          "if": { "properties": { "state": { "const": "handoff_pending" } }, "required": ["state"] },
+          "then": { "properties": {
+            "started_at": { "type": "string" }, "transition_at": { "type": "null" },
+            "work_age_sec": { "type": "number" }, "wait_age_sec": { "type": "number" },
+            "owner_role": { "const": "receiver_phase_lead" }
+          } }
+        },
+        {
+          "if": { "properties": { "state": { "const": "blocked" } }, "required": ["state"] },
+          "then": { "properties": {
+            "started_at": { "type": "string" }, "transition_at": { "type": "null" },
+            "work_age_sec": { "type": "number" }, "wait_age_sec": { "type": "number" },
+            "owner_role": { "const": "phase_team" }
+          } }
+        },
+        {
+          "if": { "properties": { "state": { "const": "completed" } }, "required": ["state"] },
+          "then": { "properties": {
+            "started_at": { "type": "string" }, "transition_at": { "type": "string" },
+            "work_age_sec": { "type": "null" }, "wait_age_sec": { "type": "null" }
+          } }
+        }
+      ]
+    },
+    "requirement_phase_run": {
+      "allOf": [
+        { "$ref": "#/$defs/phase_run" },
+        { "properties": { "phase": { "const": "Requirement" } } },
+        { "if": { "properties": { "state": { "const": "completed" } } }, "then": { "properties": { "owner_role": { "const": "phase_team" } } } }
+      ]
+    },
+    "prototype_phase_run": {
+      "allOf": [
+        { "$ref": "#/$defs/phase_run" },
+        { "properties": { "phase": { "const": "Prototype" } } },
+        { "if": { "properties": { "state": { "const": "completed" } } }, "then": { "properties": { "owner_role": { "const": "phase_team" } } } }
+      ]
+    },
+    "development_phase_run": {
+      "allOf": [
+        { "$ref": "#/$defs/phase_run" },
+        { "properties": { "phase": { "const": "Development" } } },
+        { "if": { "properties": { "state": { "const": "completed" } } }, "then": { "properties": { "owner_role": { "const": "phase_team" } } } }
+      ]
+    },
+    "qa_phase_run": {
+      "allOf": [
+        { "$ref": "#/$defs/phase_run" },
+        { "properties": { "phase": { "const": "QA" } } },
+        { "if": { "properties": { "state": { "const": "completed" } } }, "then": { "properties": { "owner_role": { "const": "project_delivery" } } } }
+      ]
+    },
+    "runtime_bottleneck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "phase",
+        "kind",
+        "age_sec",
+        "since",
+        "owner_role",
+        "phase_run_id",
+        "attempt_id",
+        "gate_id"
+      ],
+      "properties": {
+        "phase": { "enum": ["Requirement", "Prototype", "Development", "QA"] },
+        "kind": {
+          "enum": ["work", "handoff_review", "rework", "exception", "dispatch_reconcile"]
+        },
+        "age_sec": { "type": "number", "minimum": 0 },
+        "since": { "$ref": "pulse-v3.schema.json#/$defs/timestamp" },
+        "owner_role": {
+          "enum": [
+            "phase_team",
+            "receiver_phase_lead",
+            "project_delivery",
+            "pm_exception_owner"
+          ]
+        },
+        "phase_run_id": { "$ref": "#/$defs/runtime_id" },
+        "attempt_id": { "$ref": "#/$defs/nullable_id" },
+        "gate_id": { "$ref": "#/$defs/nullable_id" }
+      }
+    },
+    "runtime_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "proposed",
+        "accepted",
+        "rejected",
+        "escalated",
+        "consumed",
+        "shown",
+        "truncated"
+      ],
+      "properties": {
+        "proposed": { "type": "integer", "minimum": 0 },
+        "accepted": { "type": "integer", "minimum": 0 },
+        "rejected": { "type": "integer", "minimum": 0 },
+        "escalated": { "type": "integer", "minimum": 0 },
+        "consumed": { "type": "integer", "minimum": 0 },
+        "shown": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "truncated": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "phase_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gate_id",
+        "slice_id",
+        "attempt_id",
+        "boundary",
+        "sender_phase",
+        "receiver_phase",
+        "artifact_type",
+        "artifact_digest",
+        "state",
+        "proposed_at",
+        "transition_at",
+        "acceptance_event_id",
+        "accepted_digest",
+        "receiver_dispatch_id",
+        "consumed_digest",
+        "consumed_at"
+      ],
+      "properties": {
+        "gate_id": { "$ref": "#/$defs/runtime_id" },
+        "slice_id": { "$ref": "#/$defs/runtime_id" },
+        "attempt_id": { "$ref": "#/$defs/runtime_id" },
+        "boundary": {
+          "enum": [
+            "requirement_to_prototype",
+            "prototype_to_development",
+            "development_to_qa",
+            "qa_to_project_delivery"
+          ]
+        },
+        "sender_phase": {
+          "enum": ["Requirement", "Prototype", "Development", "QA"]
+        },
+        "receiver_phase": {
+          "enum": ["Prototype", "Development", "QA", "ProjectDelivery"]
+        },
+        "artifact_type": {
+          "enum": [
+            "requirements_baseline",
+            "prototype_evaluation",
+            "development_delivery",
+            "qa_release_evidence"
+          ]
+        },
+        "state": {
+          "enum": ["proposed", "accepted", "rejected", "escalated", "consumed"]
+        },
+        "proposed_at": { "$ref": "pulse-v3.schema.json#/$defs/timestamp" },
+        "transition_at": { "$ref": "#/$defs/nullable_timestamp" },
+        "acceptance_event_id": { "$ref": "#/$defs/nullable_digest" },
+        "artifact_digest": { "$ref": "#/$defs/digest" },
+        "accepted_digest": { "$ref": "#/$defs/nullable_digest" },
+        "receiver_dispatch_id": { "$ref": "#/$defs/nullable_uuid" },
+        "consumed_digest": { "$ref": "#/$defs/nullable_digest" },
+        "consumed_at": { "$ref": "#/$defs/nullable_timestamp" }
+      },
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "boundary": { "const": "requirement_to_prototype" },
+                "sender_phase": { "const": "Requirement" },
+                "receiver_phase": { "const": "Prototype" },
+                "artifact_type": { "const": "requirements_baseline" }
+              },
+              "required": ["boundary", "sender_phase", "receiver_phase", "artifact_type"]
+            },
+            {
+              "properties": {
+                "boundary": { "const": "prototype_to_development" },
+                "sender_phase": { "const": "Prototype" },
+                "receiver_phase": { "const": "Development" },
+                "artifact_type": { "const": "prototype_evaluation" }
+              },
+              "required": ["boundary", "sender_phase", "receiver_phase", "artifact_type"]
+            },
+            {
+              "properties": {
+                "boundary": { "const": "development_to_qa" },
+                "sender_phase": { "const": "Development" },
+                "receiver_phase": { "const": "QA" },
+                "artifact_type": { "const": "development_delivery" }
+              },
+              "required": ["boundary", "sender_phase", "receiver_phase", "artifact_type"]
+            },
+            {
+              "properties": {
+                "boundary": { "const": "qa_to_project_delivery" },
+                "sender_phase": { "const": "QA" },
+                "receiver_phase": { "const": "ProjectDelivery" },
+                "artifact_type": { "const": "qa_release_evidence" }
+              },
+              "required": ["boundary", "sender_phase", "receiver_phase", "artifact_type"]
+            }
+          ]
+        },
+        {
+          "if": {
+            "properties": { "state": { "const": "consumed" } },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "transition_at": { "type": "string" },
+              "consumed_at": { "type": "string" },
+              "acceptance_event_id": { "type": "string" },
+              "accepted_digest": { "$ref": "#/$defs/digest" },
+              "receiver_dispatch_id": { "$ref": "pulse-v3.schema.json#/$defs/uuid" },
+              "consumed_digest": { "$ref": "#/$defs/digest" },
+              "boundary": {
+                "enum": [
+                  "requirement_to_prototype",
+                  "prototype_to_development",
+                  "development_to_qa"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "state": { "const": "accepted" } },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "transition_at": { "type": "string" },
+              "acceptance_event_id": { "type": "string" },
+              "accepted_digest": { "$ref": "#/$defs/digest" },
+              "consumed_at": { "type": "null" },
+              "receiver_dispatch_id": { "type": "null" },
+              "consumed_digest": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "state": { "const": "proposed" } },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "transition_at": { "type": "null" },
+              "acceptance_event_id": { "type": "null" },
+              "accepted_digest": { "type": "null" },
+              "receiver_dispatch_id": { "type": "null" },
+              "consumed_digest": { "type": "null" },
+              "consumed_at": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "state": { "enum": ["rejected", "escalated"] } },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "transition_at": { "type": "string" },
+              "acceptance_event_id": { "type": "null" },
+              "accepted_digest": { "type": "null" },
+              "receiver_dispatch_id": { "type": "null" },
+              "consumed_digest": { "type": "null" },
+              "consumed_at": { "type": "null" }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

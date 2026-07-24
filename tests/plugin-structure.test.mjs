@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PLUGIN = join(ROOT, 'plugins/tmux-teams')
 const SKILLS = ['tmux-teams', 'party-mode', 'party-auto', 'party-advise', 'sqthink', 'codex-tmux-driver']
-const RELEASE_VERSION = '0.8.0'
+const RELEASE_VERSION = '0.9.0'
 const STAGE1_SCRIPTS = [
   'delivery-loop-pilot-core.mjs',
   'delivery-loop-store.mjs',
@@ -21,13 +21,20 @@ const STAGE1_SCRIPTS = [
   'delivery-loop-capture.mjs',
   'delivery-loop-export.mjs',
 ]
+const PULSE_GRAPH_FILES = [
+  'scripts/pulse-loop-graph.mjs',
+  'scripts/pulse-loop-graph-topology.mjs',
+  'assets/d3/d3.v7.9.0.min.js',
+  'assets/d3/LICENSE',
+]
 const STAGE1_REFERENCES = [
   'delivery-loop-pilot-manifest-v1.schema.json',
   'delivery-loop-event-v1.schema.json',
   'delivery-loop-evidence-pack-v1.schema.json',
-  'pulse-v2.schema.json',
+  'pulse-v3.schema.json',
   'stage-1-pilot-runbook.md',
 ]
+const PULSE_RUNTIME_REFERENCES = ['pulse-v4.schema.json']
 const CLAUDE_VERSION = spawnSync('claude', ['--version'], { encoding: 'utf8' })
 const CLAUDE_AVAILABLE = !CLAUDE_VERSION.error && CLAUDE_VERSION.status === 0
 
@@ -56,6 +63,9 @@ test('Stage 1 field-evidence files and documentation links are wired', () => {
   for (const file of STAGE1_SCRIPTS) {
     assert.ok(existsSync(join(skillRoot, 'scripts', file)), `Stage 1 script missing: ${file}`)
   }
+  for (const file of PULSE_GRAPH_FILES) {
+    assert.ok(existsSync(join(skillRoot, file)), `Pulse graph asset missing: ${file}`)
+  }
   for (const file of STAGE1_REFERENCES) {
     assert.ok(existsSync(join(skillRoot, 'references', file)), `Stage 1 reference missing: ${file}`)
     assert.ok(
@@ -63,6 +73,19 @@ test('Stage 1 field-evidence files and documentation links are wired', () => {
       `README.md does not link ${file}`,
     )
     assert.ok(skill.includes(`(references/${file})`), `SKILL.md does not link ${file}`)
+  }
+  for (const file of PULSE_RUNTIME_REFERENCES) {
+    const path = join(skillRoot, 'references', file)
+    assert.ok(existsSync(path), `Pulse runtime reference missing: ${file}`)
+    assert.ok(
+      readme.includes(`(plugins/tmux-teams/skills/tmux-teams/references/${file})`),
+      `README.md does not link ${file}`,
+    )
+    assert.ok(skill.includes(`(references/${file})`), `SKILL.md does not link ${file}`)
+    const schema = readJson(path)
+    assert.equal(schema.$schema, 'https://json-schema.org/draft/2020-12/schema')
+    assert.equal(schema.type, 'object')
+    assert.equal(schema.additionalProperties, false)
   }
 
   for (const file of STAGE1_REFERENCES.filter(name => name.endsWith('.schema.json'))) {
@@ -81,6 +104,7 @@ test('Stage 1 field-evidence files and documentation links are wired', () => {
     'delivery-loop-pilot.mjs rehearse',
     'delivery-loop-export.mjs export',
     'delivery-loop-export.mjs verify-pack',
+    'phase-gate-poc.mjs',
     'pulse.mjs compat-v1',
   ]
   for (const anchor of commandAnchors) {
@@ -93,6 +117,18 @@ test('Stage 1 field-evidence files and documentation links are wired', () => {
     assert.match(doc[1], /NOT_CERTIFIED/, `${doc[0]}: certification boundary missing`)
     assert.match(doc[1], /never routes|does \*\*not\*\* route/i,
       `${doc[0]}: no-routing boundary missing`)
+    assert.match(doc[1], /pulse-v3\.schema\.json/, `${doc[0]}: Pulse v3 contract missing`)
+    assert.match(doc[1], /pulse-v4\.schema\.json/, `${doc[0]}: Pulse v4 contract missing`)
+    assert.match(doc[1], /Pulse v4 is the default/i, `${doc[0]}: Pulse v4 default missing`)
+    assert.match(doc[1], /compat-v1/, `${doc[0]}: v1 compatibility contract missing`)
+    assert.match(doc[1], /phase_source/, `${doc[0]}: explicit phase source contract missing`)
+    assert.match(doc[1], /unassigned/i, `${doc[0]}: unassigned phase behavior missing`)
+    assert.match(doc[1], /D3 v7\.9\.0/, `${doc[0]}: local D3 version contract missing`)
+    assert.match(doc[1], /phase-gate\.json/, `${doc[0]}: governed marker contract missing`)
+    assert.match(doc[1], /ROI_NOT_ESTABLISHED/, `${doc[0]}: POC ROI boundary missing`)
+    assert.match(doc[1], /scenario_signal/, `${doc[0]}: POC scenario interpretation missing`)
+    assert.match(doc[1], /ProjectDelivery.*(?:not|ไม่ใช่).*(?:Phase 5|fifth)/is,
+      `${doc[0]}: ProjectDelivery terminal boundary missing`)
   }
 })
 
@@ -187,6 +223,26 @@ test('semantic anchors: canonical fixes actually shipped', () => {
   assert.ok(tmux.includes('## 8. ACP transport lane'), 'SKILL.md: ACP transport section missing')
   const acp = readText(join(PLUGIN, 'skills/tmux-teams/scripts/acp-companion.mjs'))
   assert.ok(acp.includes('session/prompt') && acp.includes('TEAM_BLOCKED'), 'acp-companion.mjs: missing protocol or terminal-marker handling')
+  const readme = readText(join(ROOT, 'README.md'))
+  assert.match(readme, /Gemini worker lane has been removed/i,
+    'README.md must explain that the Gemini lane is retired')
+  assert.match(tmux, /Gemini lane has been removed/i,
+    'SKILL.md must explain that the Gemini lane is retired')
+  assert.doesNotMatch(`${readme}\n${tmux}`, /\|\s*gemini\s*\|/i,
+    'release docs still advertise the retired Gemini CLI lane in a transport table')
+  assert.doesNotMatch(acp, /\bgemini\s*:\s*\[/,
+    'acp-companion.mjs still maps the retired Gemini CLI lane')
+  assert.doesNotMatch(acp, /<gemini\|/,
+    'acp-companion.mjs usage still advertises the retired Gemini CLI lane')
+  assert.match(acp, /trim\(\)\.toLowerCase\(\) === 'gemini'/,
+    'acp-companion.mjs must normalize the retired public agent name')
+  assert.match(acp, /unsupported agent/,
+    'acp-companion.mjs must reject the retired public agent name before ACP_CMD')
+  for (const doc of [['README.md', readme], ['SKILL.md', tmux]]) {
+    assert.match(doc[1], /PULSE_TIME_ZONE/, `${doc[0]}: Pulse timezone env contract missing`)
+    assert.match(doc[1], /--time-zone/, `${doc[0]}: Pulse timezone CLI contract missing`)
+    assert.match(doc[1], /RFC 3339 UTC/, `${doc[0]}: Pulse UTC data invariant missing`)
+  }
 })
 
 test('party-auto/party-advise sibling path resolves inside the plugin', () => {

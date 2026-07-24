@@ -21,14 +21,14 @@
 // footprint, no process and no event; until now it simply vanished.
 //
 // usage:
-//   pulse.mjs once  <repo> [--delivery-loop FILE]                 render once, print the path
-//   pulse.mjs watch <repo> [--interval 20] [--delivery-loop FILE] re-render forever
-//   pulse.mjs ensure <repo> [--interval 20] [--delivery-loop FILE] render now; keep watch alive
-//   pulse.mjs json <repo> [--delivery-loop FILE]                  render now; print one JSON document
+//   pulse.mjs once  <repo> [--delivery-loop FILE] [--delivery-runtime FILE] [--time-zone ZONE]
+//   pulse.mjs watch <repo> [--interval 20] [--delivery-loop FILE] [--delivery-runtime FILE] [--time-zone ZONE]
+//   pulse.mjs ensure <repo> [--interval 20] [--delivery-loop FILE] [--delivery-runtime FILE] [--time-zone ZONE]
+//   pulse.mjs json <repo> [--delivery-loop FILE] [--delivery-runtime FILE] [--time-zone ZONE]
 //   pulse.mjs compat-v1 <repo>                                    stdout-only v1 downprojection
 import { execFileSync, spawn } from 'node:child_process'
 import {
-  closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync,
+  closeSync, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync,
   readSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
@@ -38,34 +38,80 @@ import { fileURLToPath } from 'node:url'
 import { KANIT_FONT_CSS } from '../assets/kanit/kanit-embedded.mjs'
 import { parseLsofCwd, parsePgrep, parsePsCandidates } from './pulse-platform.mjs'
 import {
-  ID_RE, PULSE_SCHEMA, PULSE_SCHEMA_VERSION, PULSE_SCHEMA_VERSION_V2, UUID_RE,
-  downProjectPulseV1, projectPulseV1, projectPulseV2,
+  ID_RE, PULSE_SCHEMA, PULSE_SCHEMA_VERSION, PULSE_SCHEMA_VERSION_V2,
+  PULSE_SCHEMA_VERSION_V3, PULSE_SCHEMA_VERSION_V4, UUID_RE, downProjectPulseV1,
+  projectPulseV4,
 } from './pulse-data.mjs'
 import { PHASE_BOUNDARIES, PHASE_EXIT_ARTIFACTS } from './delivery-loop-core.mjs'
+import { renderPulseLoopGraph } from './pulse-loop-graph.mjs'
 
 const [cmd, repoArg, ...flags] = process.argv.slice(2)
-const USAGE = 'usage: pulse.mjs once|json <repo> [--delivery-loop FILE] | pulse.mjs watch|ensure <repo> [--interval SEC] [--delivery-loop FILE] | pulse.mjs compat-v1 <repo>'
+const USAGE = 'usage: pulse.mjs once|json <repo> [--delivery-loop FILE] [--delivery-runtime FILE] [--time-zone ZONE] | pulse.mjs watch|ensure <repo> [--interval SEC] [--delivery-loop FILE] [--delivery-runtime FILE] [--time-zone ZONE] | pulse.mjs compat-v1 <repo>'
 if (!cmd || !repoArg || !['once', 'json', 'watch', 'ensure', 'compat-v1'].includes(cmd)) {
   console.error(USAGE); process.exit(2)
 }
 const deliveryFlagIndexes = flags.flatMap((flag, index) => flag === '--delivery-loop' ? [index] : [])
+const runtimeFlagIndexes = flags.flatMap((flag, index) => flag === '--delivery-runtime' ? [index] : [])
+const timeZoneFlagIndexes = flags.flatMap((flag, index) => flag === '--time-zone' ? [index] : [])
 if (cmd === 'compat-v1' && flags.length > 0 ||
     deliveryFlagIndexes.length > 1 ||
     (deliveryFlagIndexes.length === 1 &&
-      (!flags[deliveryFlagIndexes[0] + 1] || flags[deliveryFlagIndexes[0] + 1].startsWith('--')))) {
+      (!flags[deliveryFlagIndexes[0] + 1] || flags[deliveryFlagIndexes[0] + 1].startsWith('--'))) ||
+    runtimeFlagIndexes.length > 1 ||
+    (runtimeFlagIndexes.length === 1 &&
+      (!flags[runtimeFlagIndexes[0] + 1] || flags[runtimeFlagIndexes[0] + 1].startsWith('--'))) ||
+    timeZoneFlagIndexes.length > 1 ||
+    (timeZoneFlagIndexes.length === 1 &&
+      (!flags[timeZoneFlagIndexes[0] + 1] || flags[timeZoneFlagIndexes[0] + 1].startsWith('--')))) {
   console.error(USAGE); process.exit(2)
 }
 const DELIVERY_LOOP_PATH = deliveryFlagIndexes.length
   ? resolve(flags[deliveryFlagIndexes[0] + 1])
   : null
+const DELIVERY_RUNTIME_PATH = runtimeFlagIndexes.length
+  ? resolve(flags[runtimeFlagIndexes[0] + 1])
+  : null
+const DEFAULT_TIME_ZONE = 'Asia/Bangkok'
+const timeZoneInput = cmd === 'compat-v1'
+  ? DEFAULT_TIME_ZONE
+  : timeZoneFlagIndexes.length
+    ? flags[timeZoneFlagIndexes[0] + 1].trim()
+    : process.env.PULSE_TIME_ZONE?.trim() || DEFAULT_TIME_ZONE
+let DISPLAY_TIME_ZONE
+try {
+  DISPLAY_TIME_ZONE = new Intl.DateTimeFormat('en-US', { timeZone: timeZoneInput })
+    .resolvedOptions().timeZone
+} catch {
+  console.error(`[pulse] invalid time zone "${timeZoneInput}"; use an IANA zone such as Asia/Bangkok`)
+  process.exit(2)
+}
+if (!DISPLAY_TIME_ZONE) {
+  console.error(USAGE)
+  process.exit(2)
+}
 
 let REPO
 try { REPO = realpathSync(repoArg) } catch { console.error(`[pulse] no such repo: ${repoArg}`); process.exit(2) }
 const STORE = join(REPO, '.tmux-teams')
 const OUT = join(STORE, 'pulse.html')
+const LOOP_GRAPH_OUT = join(STORE, 'loop-graph.html')
 const JSON_OUT = join(STORE, 'pulse.json')
+const BUNDLE_OUT = join(STORE, 'pulse-current.json')
 const FONT_CSS_NAME = `pulse-fonts-${createHash('sha256').update(KANIT_FONT_CSS).digest('hex')}.css`
 const FONT_CSS_OUT = join(STORE, FONT_CSS_NAME)
+const D3_JS = readFileSync(
+  fileURLToPath(new URL('../assets/d3/d3.v7.9.0.min.js', import.meta.url)),
+  'utf8',
+)
+const D3_LICENSE = readFileSync(
+  fileURLToPath(new URL('../assets/d3/LICENSE', import.meta.url)),
+  'utf8',
+)
+const D3_JS_NAME = `pulse-d3-7.9.0-${createHash('sha256').update(D3_JS).digest('hex')}.min.js`
+const D3_LICENSE_NAME =
+  `pulse-d3-7.9.0-license-${createHash('sha256').update(D3_LICENSE).digest('hex')}.txt`
+const D3_JS_OUT = join(STORE, D3_JS_NAME)
+const D3_LICENSE_OUT = join(STORE, D3_LICENSE_NAME)
 const EVENTS = join(STORE, 'kms', 'events')
 const DISPATCH = join(STORE, 'dispatch')
 const OUTBOX = join(REPO, '.mailbox-out')
@@ -78,6 +124,7 @@ const MANAGED_WATCH = flags.includes('--managed')
 
 const iFlag = flags.indexOf('--interval')
 const INTERVAL = iFlag >= 0 && Number(flags[iFlag + 1]) > 0 ? Math.max(1, Math.ceil(Number(flags[iFlag + 1]))) : 20
+const WATCH_HANDOFF_ATTEMPTS = 300
 
 // Startup is slower than it looks: an ACP lane may sit in `npx` downloading its
 // adapter before anything exists to probe. Announcing death during a worker's
@@ -87,6 +134,7 @@ const GRACE_SEC = 300
 const MAX_INPUT_BYTES = 1024 * 1024
 const MAX_SOURCE_FILES = 1000
 const MAX_TOTAL_INPUT_BYTES = 32 * 1024 * 1024
+const DELIVERY_PHASE_SET = new Set(Object.keys(PHASE_BOUNDARIES))
 const MAX_FIELD_CHARS = 256
 
 function fieldValue(text, key) {
@@ -94,6 +142,17 @@ function fieldValue(text, key) {
   if (!match) return ''
   const value = match[1].trim()
   return value.length <= MAX_FIELD_CHARS ? value : ''
+}
+
+function phaseBindingFromText(text, source) {
+  const match = text.match(/^phase:[ \t]*(.*)$/m)
+  if (!match) return { phase: '', phaseSource: 'unassigned', invalid: false }
+  const value = match[1].trim()
+  if (!value) return { phase: '', phaseSource: 'unassigned', invalid: false }
+  if (!DELIVERY_PHASE_SET.has(value)) {
+    return { phase: '', phaseSource: 'unassigned', invalid: true }
+  }
+  return { phase: value, phaseSource: source, invalid: false }
 }
 
 const sh = (bin, args) => {
@@ -222,6 +281,7 @@ function aliveWorkers(panes) {
 function footprints(inputBudget) {
   const byId = new Map()
   const diagnostics = []
+  let invalidPhaseCount = 0
   let dispatchHealth = 'ok', outboxHealth = 'ok'
 
   // The dispatch record is written by the PM the moment it dispatches, so it
@@ -261,11 +321,26 @@ function footprints(inputBudget) {
     }
     const timeoutRaw = fieldValue(text, 'timeout_sec'), timeout = timeoutRaw === '' ? null : Number(timeoutRaw)
     const dispatchId = fieldValue(text, 'dispatch_id')
+    const dispatchPhase = phaseBindingFromText(text, 'dispatch')
+    if (dispatchPhase.invalid) {
+      invalidPhaseCount += 1
+      dispatchHealth = 'degraded'
+    }
     byId.set(id, {
       id, mtime: st.mtimeMs, marker: '', terminalStatus: 'absent', dispatched: true, dispatchStatus: 'present',
       dispatchId: UUID_RE.test(dispatchId) ? dispatchId : '', startedAt: fieldValue(text, 'started_at'),
       timeoutSec: Number.isFinite(timeout) && timeout >= 0 ? timeout : null,
       transport: fieldValue(text, 'transport'), worker: fieldValue(text, 'worker'), pane: fieldValue(text, 'pane'),
+      phase: dispatchPhase.phase,
+      phaseSource: dispatchPhase.phaseSource,
+    })
+  }
+  if (invalidPhaseCount > 0) {
+    diagnostics.push({
+      code: 'PHASE_BINDING_INVALID',
+      severity: 'warning',
+      source: 'dispatch',
+      count: invalidPhaseCount,
     })
   }
 
@@ -351,6 +426,7 @@ function unclaimedControlDirs(liveIds, footIds) {
 function recorded(inputBudget) {
   let files = []
   const diagnostics = []
+  let invalidPhaseCount = 0
   let health = 'ok'
   try { files = readdirSync(EVENTS).filter(f => f.endsWith('.md')).sort() } catch (e) {
     if (e.code !== 'ENOENT') {
@@ -388,17 +464,32 @@ function recorded(inputBudget) {
         continue
       }
       const dispatchId = fieldValue(text, 'dispatch_id')
+      const eventPhase = phaseBindingFromText(text, 'event')
+      if (eventPhase.invalid) {
+        invalidPhaseCount += 1
+        health = 'degraded'
+      }
       rows.push({
         task_id: task, worker, dispatch_id: UUID_RE.test(dispatchId) ? dispatchId : '',
         transport: fieldValue(text, 'transport'), terminal: fieldValue(text, 'terminal'),
         pm_verdict: fieldValue(text, 'pm_verdict'), started_at: fieldValue(text, 'started_at'),
         wait_sec: num('wait_sec'), timeout_sec: num('timeout_sec'),
+        phase: eventPhase.phase,
+        phaseSource: eventPhase.phaseSource,
         mtime: st.mtimeMs,
       })
     } catch {
       health = 'degraded'
       diagnostics.push({ code: 'EVENT_UNREADABLE', severity: 'error', source: 'events' })
     }
+  }
+  if (invalidPhaseCount > 0) {
+    diagnostics.push({
+      code: 'PHASE_BINDING_INVALID',
+      severity: 'warning',
+      source: 'events',
+      count: invalidPhaseCount,
+    })
   }
   return { rows, diagnostics, health }
 }
@@ -413,8 +504,51 @@ function derive(now) {
   const { rows: live, notes, diagnostics: liveDiagnostics } = aliveWorkers(panesNow)
   const footResult = footprints(inputBudget)
   const recordResult = recorded(inputBudget)
-  const foot = footResult.rows, rec = recordResult.rows
+  const foot = footResult.rows
+  const footprintsByDispatch = new Map()
+  for (const footprint of foot) {
+    if (!footprint.dispatchId) continue
+    const matches = footprintsByDispatch.get(footprint.dispatchId) || []
+    matches.push(footprint)
+    footprintsByDispatch.set(footprint.dispatchId, matches)
+  }
+  const conflictingDispatches = new Set()
+  for (const [dispatchId, matches] of footprintsByDispatch) {
+    const phases = new Set(
+      matches.map(footprint => footprint.phase).filter(phase => DELIVERY_PHASE_SET.has(phase)),
+    )
+    if (phases.size > 1) conflictingDispatches.add(dispatchId)
+  }
+  const rec = recordResult.rows.map((row) => {
+    const matches = row.dispatch_id
+      ? footprintsByDispatch.get(row.dispatch_id) || []
+      : []
+    if (matches.length === 0) return row
+    const dispatchPhases = new Set(
+      matches.map(footprint => footprint.phase).filter(phase => DELIVERY_PHASE_SET.has(phase)),
+    )
+    const eventHasPhase = DELIVERY_PHASE_SET.has(row.phase)
+    const bindingConflicts = dispatchPhases.size > 1 ||
+      eventHasPhase && [...dispatchPhases].some(phase => phase !== row.phase)
+    if (bindingConflicts) {
+      conflictingDispatches.add(row.dispatch_id)
+      return { ...row, phase: '', phaseSource: 'conflict' }
+    }
+    if (eventHasPhase) return row
+    const [dispatchPhase] = dispatchPhases
+    return dispatchPhase
+      ? { ...row, phase: dispatchPhase, phaseSource: 'dispatch_join' }
+      : row
+  })
   const diagnostics = [...liveDiagnostics, ...footResult.diagnostics, ...recordResult.diagnostics]
+  if (conflictingDispatches.size > 0) {
+    diagnostics.push({
+      code: 'PHASE_BINDING_CONFLICT',
+      severity: 'error',
+      source: 'publisher',
+      count: conflictingDispatches.size,
+    })
+  }
   // Worker ids get reused across runs, so an event only settles the footprint it
   // belongs to. Matching on id alone would let yesterday's record mark today's
   // dispatch "finished" and quietly drop it off the screen.
@@ -432,6 +566,8 @@ function derive(now) {
       return r.mtime >= f.mtime - 1000
     }).sort((a, b) => b.mtime - a.mtime)
     const currentVerdict = verdicts[0] || null
+    const verdictPhaseConflict = conflictingDispatches.has(f.dispatchId) ||
+      verdicts.some(verdict => verdict.phaseSource === 'conflict')
     const settled = !!currentVerdict
     if (settled && !alive) continue                    // finished and recorded: history, not now
     const ageSec = Math.max(0, Math.round((now - f.mtime) / 1000))
@@ -467,6 +603,8 @@ function derive(now) {
       liveness: working ? 'alive' : PROC_OK ? 'dead' : 'unknown', paneStatus,
       pmVerdict: currentVerdict?.pm_verdict || '',
       idleShell: !!(alive && alive.kind === 'tmux' && alive.hasChild === false),
+      phase: verdictPhaseConflict ? '' : f.phase,
+      phaseSource: verdictPhaseConflict ? 'conflict' : f.phaseSource,
     })
   }
   // A live process with no footprint at all still deserves a row — it is real,
@@ -483,6 +621,7 @@ function derive(now) {
       dispatched: false, dispatchStatus: 'absent', dispatchId: '', worker: '', transport: l.kind,
       kind: l.kind, detail: l.detail, ageSec: null, elapsedSec: null, timeoutSec: null,
       paneStatus: l.kind === 'tmux' ? 'held' : 'not_recorded', pmVerdict: '', state: 'orphan_running',
+      phase: '', phaseSource: 'unassigned',
     })
   }
   const unclaimed = unclaimedControlDirs(new Set(live.map(l => l.id)), new Set(foot.map(f => f.id)))
@@ -507,10 +646,11 @@ const dur = (sec) => sec == null ? 'ยังไม่วัด'
   : sec < 60 ? `${sec} วิ`
     : sec < 3600 ? `${Math.floor(sec / 60)} นาที${sec % 60 ? ` ${sec % 60} วิ` : ''}`
       : `${Math.floor(sec / 3600)} ชม.${Math.floor((sec % 3600) / 60) ? ` ${Math.floor((sec % 3600) / 60)} นาที` : ''}`
-const THAI_TIME_ZONE = 'Asia/Bangkok'
-const THAI_TIME_LABEL = 'เวลาไทย (UTC+7)'
-const THAI_DATE_TIME = new Intl.DateTimeFormat('en-US-u-ca-gregory-nu-latn', {
-  timeZone: THAI_TIME_ZONE,
+const TIME_ZONE_LABEL = DISPLAY_TIME_ZONE === DEFAULT_TIME_ZONE
+  ? 'เวลาไทย (UTC+7)'
+  : `เขตเวลา ${DISPLAY_TIME_ZONE}`
+const DISPLAY_DATE_TIME = new Intl.DateTimeFormat('en-US-u-ca-gregory-nu-latn', {
+  timeZone: DISPLAY_TIME_ZONE,
   year: 'numeric',
   month: '2-digit',
   day: '2-digit',
@@ -521,19 +661,19 @@ const THAI_DATE_TIME = new Intl.DateTimeFormat('en-US-u-ca-gregory-nu-latn', {
 })
 
 function absoluteTime(value) {
-  const text = thaiTimeText(value)
+  const text = displayTimeText(value)
   if (text === 'ไม่ระบุ') return text
-  return `<time datetime="${esc(value)}" title="${THAI_TIME_ZONE}">${text}</time>`
+  return `<time datetime="${esc(value)}" title="${esc(DISPLAY_TIME_ZONE)}" aria-describedby="pulse-timezone-label">${text}</time>`
 }
 
 // Keep the date computation separately testable from its semantic HTML shell.
-// Pulse timestamps are Gregorian calendar values in Thailand's UTC+7 timezone.
-function thaiTimeText(value) {
+// Pulse JSON stays in UTC; only this human projection uses the configured zone.
+function displayTimeText(value) {
   if (!value || !Number.isFinite(Date.parse(value))) return 'ไม่ระบุ'
-  const parts = Object.fromEntries(THAI_DATE_TIME.formatToParts(new Date(value))
+  const parts = Object.fromEntries(DISPLAY_DATE_TIME.formatToParts(new Date(value))
     .filter(part => part.type !== 'literal')
     .map(part => [part.type, part.value]))
-  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second} ${THAI_TIME_LABEL}`
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`
 }
 
 // State codes stay stable for agents; people get one consistent Thai label.
@@ -542,7 +682,7 @@ function thaiTimeText(value) {
 const STATE_COPY = Object.freeze({
   running: 'กำลังทำงาน',
   starting: 'กำลังเริ่มงาน',
-  'awaiting-verdict': 'รอ PM ตรวจผล',
+  'awaiting-verdict': 'รอตรวจผล',
   unrecorded: 'ยังไม่บันทึกผล',
   died: 'หยุดโดยไม่มีบันทึก',
   unknown: 'ตรวจสถานะไม่ได้',
@@ -639,6 +779,40 @@ const DELIVERY_PHASE_STATE_COPY = Object.freeze({
   complete: 'ผ่านเฟสแล้ว',
   unknown: 'ตรวจสถานะไม่ได้',
 })
+const DELIVERY_RUNTIME_PHASE_STATE_COPY = Object.freeze({
+  pending: 'รอเริ่มเฟส',
+  working: 'กำลังทำงาน',
+  handoff_pending: 'รอผู้รับตรวจ handoff',
+  blocked: 'ติดขัด',
+  completed: 'เสร็จสิ้น',
+})
+const DELIVERY_RUNTIME_GATE_STATE_COPY = Object.freeze({
+  proposed: 'เสนอให้ตรวจรับ',
+  accepted: 'ผู้รับตอบรับ',
+  rejected: 'ผู้รับปฏิเสธ',
+  escalated: 'ยกระดับข้อยกเว้น',
+  consumed: 'ผู้รับนำไปใช้แล้ว',
+})
+const DELIVERY_RUNTIME_GATE_NOTE = Object.freeze({
+  proposed: 'รอคำตอบการตรวจรับจากทีมผู้รับ',
+  accepted: 'ผู้รับตอบรับแล้ว; ยังไม่เท่ากับการอนุมัติทางธุรกิจ',
+  rejected: 'ผู้ส่งต้องแก้ไขและสร้าง attempt ใหม่ตามความจำเป็น',
+  escalated: 'ต้องจัดการเป็นข้อยกเว้นโดยไม่สั่ง worker อัตโนมัติ',
+  consumed: 'ผู้รับใช้ artifact นี้ในเฟสถัดไปแล้ว',
+})
+const DELIVERY_RUNTIME_ROLE_COPY = Object.freeze({
+  phase_team: 'ทีมของเฟส',
+  receiver_phase_lead: 'หัวหน้าทีมผู้รับ',
+  project_delivery: 'ผู้รับปลายทาง',
+  pm_exception_owner: 'PM ผู้ดูแลข้อยกเว้น',
+})
+const DELIVERY_RUNTIME_BOTTLENECK_COPY = Object.freeze({
+  work: 'งานในเฟสใช้เวลานาน',
+  handoff_review: 'รอผู้รับตรวจ handoff',
+  rework: 'กำลังแก้ไขงาน',
+  exception: 'มีข้อยกเว้น',
+  dispatch_reconcile: 'ต้องตรวจความสอดคล้องของ dispatch',
+})
 const DELIVERY_ROLE_COPY = Object.freeze({
   operator: 'ผู้ดูแลระบบ',
   pm: 'PM',
@@ -667,7 +841,7 @@ const transportLabel = (transport) => transport === 'acp' ? 'ACP' : transport ==
 // single worker got before it finished, stalled or died.
 //
 // Hand-rolled SVG on purpose: no chart library, nothing fetched, works offline.
-const STAGES = ['สั่งงาน', 'เริ่มทำงาน', 'ส่งผลลัพธ์', 'PM ตรวจผล', 'บันทึกผล']
+const STAGES = ['สั่งงาน', 'เริ่มทำงาน', 'ส่งผลลัพธ์', 'ตรวจผล', 'บันทึกผล']
 
 function graphRows(snapshot) {
   const rows = []
@@ -698,19 +872,19 @@ function graphRows(snapshot) {
   return rows
 }
 
-// ── LOOP ─────────────────────────────────────────────────────────────────────
-// The per-worker graph is one run walking a straight line. THIS is the system:
-// a cycle with two back-edges — a rejected verdict returning to dispatch, and
-// today's record feeding tomorrow's planning.
+// ── TWO-LAYER WORKER LOOP ────────────────────────────────────────────────────
+// The worker lifecycle sits INSIDE a phase team. Routine worker review belongs
+// to that team; PM coordinates the outer phase/handoff loop and intervenes only
+// for exceptions, deadlocks, policy conflicts, or bottlenecks. Keeping both
+// layers in one SVG makes that ownership boundary visible instead of implying
+// that every worker result must climb back to PM.
 //
-// Both back-edges are DASHED because neither is measured. We count rejects, but
-// nothing records whether a reject was actually re-dispatched, and recall is
-// opt-in and unlogged. Drawing them solid would claim the loop turns when
-// nobody knows that it does.
+// Counts are observed from today's dispatch/verdict evidence. The role model
+// and back-edges are normative: re-dispatch and history recall are dashed
+// because Pulse does not yet measure whether those transitions actually fire.
 //
-// Hand-drawn SVG with a fixed layout, not a chart library: the shape of this
-// loop is a constant, and a page whose job is to be true cannot depend on
-// fetching a renderer that may not arrive.
+// Hand-drawn SVG with a fixed layout, not a chart library: it stays offline and
+// cannot fail because an external renderer did not arrive.
 function renderLoop(snapshot) {
   const rec = snapshot.recent_verdicts
   const c = (xs) => xs.length
@@ -722,59 +896,6 @@ function renderLoop(snapshot) {
   const reject = c(rec.filter(r => r.pm_verdict === 'reject'))
   const unres = c(rec.filter(r => r.pm_verdict === 'unresolved'))
 
-  const W = 720, X = 300, BW = 210, BH = 46, GAP = 26
-  const nodes = [
-    { k: 'box', t: 'วางแผนงาน', s: 'บรีฟ · วิธีตรวจ · ลำดับงาน' },
-    { k: 'box', t: 'ส่งงานให้ worker', s: `ติดตาม ${snapshot.summary.active} งาน` },
-    { k: 'box', t: 'worker ทำงาน', s: `${running} งานกำลังเดิน` },
-    { k: 'dia', t: 'มีผลลัพธ์จาก worker?', s: '' },
-    { k: 'box', t: 'PM ตรวจผล', s: `${waiting} งานรอตรวจ` },
-    { k: 'dia', t: 'สรุปคำตัดสิน', s: '' },
-    { k: 'box', t: 'บันทึกผล', s: 'เก็บทุกจุดจบ ไม่เฉพาะงานที่ผ่าน' },
-    { k: 'store', t: 'ประวัติการทำงาน', s: `${rec.length} รายการล่าสุด` },
-  ]
-  const y = (i) => 24 + i * (BH + GAP)
-  const H = y(nodes.length - 1) + BH + 24
-  const cy = (i) => y(i) + BH / 2
-
-  const box = (n, i) => {
-    const yy = y(i), half = BW / 2
-    const shape = n.k === 'dia'
-      ? `<polygon class="l-dia" points="${X},${yy - 6} ${X + half + 14},${cy(i)} ${X},${yy + BH + 6} ${X - half - 14},${cy(i)}"/>`
-      : `<rect class="l-box${n.k === 'store' ? ' l-store' : ''}" x="${X - half}" y="${yy}" width="${BW}" height="${BH}" rx="${n.k === 'store' ? 22 : 5}"/>`
-    const label = n.s
-      ? `<text class="l-t" x="${X}" y="${cy(i) - 3}" text-anchor="middle">${esc(`${i + 1}. ${n.t}`)}</text>` +
-        `<text class="l-s" x="${X}" y="${cy(i) + 12}" text-anchor="middle">${esc(n.s)}</text>`
-      : `<text class="l-t" x="${X}" y="${cy(i) + 4}" text-anchor="middle">${esc(`${i + 1}. ${n.t}`)}</text>`
-    return shape + label
-  }
-
-  const down = (i) => `<line class="l-edge" x1="${X}" y1="${y(i) + BH}" x2="${X}" y2="${y(i + 1)}" marker-end="url(#lh)"/>`
-  // straight run down the spine, minus the two hops that carry their own labels
-  const spine = [0, 1, 2, 4, 6].map(down).join('')
-
-  const DX = X + BW / 2 + 195           // the died-silently branch sits off to the right
-  const dyy = cy(3)
-  const diedBranch =
-    `<line class="l-edge l-bad" x1="${X + BW / 2 + 14}" y1="${dyy}" x2="${DX - 62}" y2="${dyy}" marker-end="url(#lbad)"/>` +
-    `<text class="l-lbl l-bad-t" x="${X + BW / 2 + 20}" y="${dyy - 9}">ไม่พบผลลัพธ์</text>` +
-    `<text class="l-lbl l-dim" x="${X + BW / 2 + 20}" y="${dyy + 16}">และไม่พบกระบวนการ</text>` +
-    `<rect class="l-box l-bad-box" x="${DX - 60}" y="${dyy - 20}" width="124" height="40" rx="20"/>` +
-    `<text class="l-t l-bad-t" x="${DX + 2}" y="${dyy - 2}" text-anchor="middle">หยุดผิดปกติ</text>` +
-    `<text class="l-s l-bad-t" x="${DX + 2}" y="${dyy + 13}" text-anchor="middle">${died}</text>`
-
-  const yesEdge = `<text class="l-lbl" x="${X + 8}" y="${(y(3) + BH + y(4)) / 2 + 4}">มี</text>` + down(3)
-  const passEdge = `<text class="l-lbl" x="${X + 8}" y="${(y(5) + BH + y(6)) / 2 + 4}">ผ่าน ${pass} · ยังไม่สรุป ${unres}</text>` + down(5)
-
-  // back-edges bow out to the left; dashed, because nothing counts these
-  const LX = X - BW / 2 - 70, LX2 = LX - 46
-  const reEdge =
-    `<path class="l-edge l-dash" d="M ${X - BW / 2 - 14} ${cy(5)} H ${LX} V ${cy(1)} H ${X - BW / 2 - 4}" marker-end="url(#lh)"/>` +
-    `<text class="l-lbl l-dim" x="${LX - 6}" y="${(cy(5) + cy(1)) / 2}" text-anchor="end" transform="rotate(-90 ${LX - 6} ${(cy(5) + cy(1)) / 2})">ให้แก้ไข ${reject} · ยังไม่วัดการส่งซ้ำ</text>`
-  const recallEdge =
-    `<path class="l-edge l-dash" d="M ${X - BW / 2 - 14} ${cy(7)} H ${LX2} V ${cy(0)} H ${X - BW / 2 - 4}" marker-end="url(#lh)"/>` +
-    `<text class="l-lbl l-dim" x="${LX2 - 6}" y="${(cy(7) + cy(0)) / 2}" text-anchor="end" transform="rotate(-90 ${LX2 - 6} ${(cy(7) + cy(0)) / 2})">นำประวัติมาใช้ · เปิดตามต้องการ</text>`
-
   const defs = `<defs>
     <marker id="lh" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
       <path class="l-head" d="M0,0 L8,4 L0,8 z"/></marker>
@@ -782,9 +903,48 @@ function renderLoop(snapshot) {
       <path class="l-head-bad" d="M0,0 L8,4 L0,8 z"/></marker>
   </defs>`
 
-  return `<svg id="dispatch-lifecycle-svg" viewBox="-30 0 ${W} ${H}" width="100%" height="${H}" role="img"
-     aria-labelledby="worker-lifecycle-title worker-lifecycle-desc"><title id="worker-lifecycle-title">วงจรการสั่งงาน worker และการตรวจผล</title><desc id="worker-lifecycle-desc">ภาพการสั่งงาน worker การรับผล การตรวจของ PM และการบันทึกผล พร้อมเส้นย้อนกลับที่ยังไม่ได้วัด</desc>${defs}${spine}${yesEdge}${passEdge}${diedBranch}${reEdge}${recallEdge}` +
-    nodes.map(box).join('') + `</svg>`
+  const box = (x, y, w, title, copy, extra = '') => `<g>${extra}<rect class="l-box" x="${x}" y="${y}" width="${w}" height="58" rx="8"/><text class="wl-node-title" x="${x + w / 2}" y="${y + 24}" text-anchor="middle">${esc(title)}</text><text class="wl-node-copy" x="${x + w / 2}" y="${y + 42}" text-anchor="middle">${esc(copy)}</text></g>`
+  const arrow = (x1, y1, x2, y2, cls = 'l-edge', marker = 'lh') =>
+    `<path class="${cls}" d="M ${x1} ${y1} L ${x2} ${y2}" marker-end="url(#${marker})"/>`
+
+  const outer =
+    `<rect class="wl-lane" x="20" y="28" width="1040" height="160" rx="18"/>` +
+    `<text class="wl-lane-title" x="48" y="56">ลูปชั้นนอก · PM ติดตาม phase และ handoff</text>` +
+    `<text class="wl-lane-copy" x="48" y="75">PM ไม่รับตรวจ worker ตามปกติ · เข้ามาเมื่อเกิด exception, deadlock, policy conflict หรือ bottleneck</text>` +
+    box(55, 98, 190, 'PM ติดตามภาพรวม', `หลักฐานที่ต้องติดตาม ${snapshot.summary.active} · ผิดปกติ ${died + unres}`) +
+    box(315, 98, 190, 'ทีมเฟสเป็นเจ้าของ', `ผล worker รอตรวจ ${waiting}`) +
+    `<g><rect class="wl-artifact" x="575" y="98" width="190" height="58" rx="20"/><text class="wl-node-title" x="670" y="122" text-anchor="middle">ประกอบ exit artifact</text><text class="wl-node-copy" x="670" y="140" text-anchor="middle">ส่งมอบเมื่อ phase contract ผ่าน</text></g>` +
+    box(835, 98, 190, 'ทีมถัดไปรับ/ปฏิเสธ', 'receiver owns validation') +
+    arrow(245, 127, 315, 127) + arrow(505, 127, 575, 127) + arrow(765, 127, 835, 127) +
+    `<path class="l-edge wl-unmeasured" d="M 930 156 V 174 H 410 V 158" marker-end="url(#lh)"/>` +
+    `<text class="wl-unmeasured-copy" x="670" y="181" text-anchor="middle">reject → ผู้ส่งสร้าง attempt ใหม่ · ยังไม่วัดการวนจริง</text>`
+
+  const inner =
+    `<rect class="wl-lane wl-lane-inner" x="120" y="224" width="920" height="320" rx="18"/>` +
+    `<text class="wl-lane-title" x="148" y="254">ลูปชั้นใน · ทีมเฟสเป็นเจ้าของการตรวจ worker</text>` +
+    `<text class="wl-lane-copy" x="148" y="273">แต่ละทีมแตกงาน ส่ง worker ตรวจหลักฐาน และวนแก้ภายในก่อนสร้างชิ้นงานส่งมอบ</text>` +
+    box(150, 300, 150, 'วางแผน slice', 'บรีฟ · validation · risks') +
+    box(345, 300, 150, 'ส่งงานให้ worker', `${snapshot.summary.active} dispatch ยังไม่จบ`) +
+    box(540, 300, 150, 'worker ส่งหลักฐาน', `${running} งานกำลังเดิน`) +
+    `<g><polygon class="l-dia" points="820,292 918,329 820,366 722,329"/><text class="wl-node-title" x="820" y="326" text-anchor="middle">ทีมตรวจผล</text><text class="wl-node-copy" x="820" y="344" text-anchor="middle">หลักฐานเดิม: ผ่าน ${pass} · แก้ ${reject} · ค้าง ${unres}</text></g>` +
+    arrow(300, 329, 345, 329) + arrow(495, 329, 540, 329) + arrow(690, 329, 722, 329) +
+    `<path class="l-edge wl-pass" d="M 820 292 V 210 H 670 V 158" marker-end="url(#lh)"/>` +
+    `<text class="wl-unmeasured-copy" x="835" y="211">ผ่าน → รวมเป็น exit artifact</text>` +
+    `<path class="l-edge wl-unmeasured" d="M 820 366 V 405 H 420 V 360" marker-end="url(#lh)"/>` +
+    `<text class="wl-unmeasured-copy" x="620" y="422" text-anchor="middle">ให้แก้ไข ${reject} · สร้าง dispatch/attempt ใหม่ · ยังไม่วัดการส่งซ้ำ</text>` +
+    `<path class="l-edge l-bad" d="M 615 358 V 469 H 730" marker-end="url(#lbad)"/>` +
+    `<text class="wl-exception-copy" x="665" y="438" text-anchor="middle">ไม่พบผลลัพธ์</text>` +
+    `<text class="wl-exception-copy" x="665" y="453" text-anchor="middle">และไม่พบ process</text>` +
+    `<rect class="l-box l-bad-box" x="732" y="448" width="140" height="42" rx="21"/>` +
+    `<text class="l-t l-bad-t" x="802" y="465" text-anchor="middle">หยุดผิดปกติ</text>` +
+    `<text class="l-s l-bad-t" x="802" y="482" text-anchor="middle">${died}</text>` +
+    `<path class="l-edge wl-exception" d="M 872 469 H 1010 V 82 H 150 V 96" marker-end="url(#lbad)"/>` +
+    `<text class="wl-exception-copy" x="1018" y="278" text-anchor="middle" transform="rotate(-90 1018 278)">PM รับเฉพาะข้อยกเว้น</text>` +
+    `<path class="l-edge wl-unmeasured" d="M 670 156 V 514 H 225 V 360" marker-end="url(#lh)"/>` +
+    `<text class="wl-unmeasured-copy" x="455" y="530" text-anchor="middle">นำประวัติ/ผล handoff มาวางแผนรอบถัดไป · เปิดตามต้องการ</text>`
+
+  return `<svg id="dispatch-lifecycle-svg" class="worker-loop-svg" viewBox="0 0 1080 570" width="100%" height="570" role="img"
+     aria-labelledby="worker-lifecycle-title worker-lifecycle-desc"><title id="worker-lifecycle-title">โมเดลเชิงบรรทัดฐานของลูปสองชั้นสำหรับ worker และการส่งมอบ</title><desc id="worker-lifecycle-desc">แบบจำลองความรับผิดชอบ ไม่ใช่สถานะสด: ลูปชั้นในให้ทีมเฟสวางแผน สั่ง worker และตรวจผลเอง ลูปชั้นนอกให้ PM ติดตาม phase และ handoff โดยรับเฉพาะข้อยกเว้น ตัวเลขมาจากหลักฐาน dispatch และ verdict เดิม ส่วนเส้นย้อนกลับที่ยังไม่ได้วัดแสดงด้วยเส้นประ</desc>${defs}${outer}${inner}</svg>`
 }
 
 function renderDeliveryFlow(delivery) {
@@ -840,6 +1000,36 @@ function renderDeliveryFlowEquivalent() {
   return `<section class="diagram-equivalent" aria-labelledby="delivery-flow-equivalent-title"><h3 id="delivery-flow-equivalent-title">ข้อความเทียบเท่าแผนภาพการส่งมอบ</h3><p>PM ประสาน ติด bottleneck และแก้ข้อยกเว้นเท่านั้น; งานปกติและการตรวจรับอยู่กับทีมผู้รับ.</p><ol>${DELIVERY_TOPOLOGY.map(edge => `<li><strong>${esc(DELIVERY_PHASE_LABEL[edge.sender])}</strong> ส่ง ${esc(edge.artifactLabel)} <code>${esc(edge.artifact)}</code> เป็นข้อเสนอให้ <strong>${esc(DELIVERY_PHASE_LABEL[edge.receiver])}</strong>; ผู้รับเป็นเจ้าของการตรวจรับและการรับ/ปฏิเสธ. ${edge.receiver === 'ProjectDelivery' ? 'ProjectDelivery เป็นผู้รับปลายทาง ไม่ใช่ทีมลูปที่ห้า; การรับไม่ใช่การรับรองหรืออนุมัติธุรกิจ.' : 'ทีมผู้ส่งทำลูปภายในและสร้างข้อเสนอใหม่เมื่อต้องแก้ไข.'}</li>`).join('')}</ol></section>`
 }
 
+// The runtime projection is already a closed, privacy-reviewed Pulse field.
+// Keep this view deliberately small: ids and digests remain available to agents
+// in pulse.json, while the HTML exposes only the requested attempt identity.
+function renderDeliveryRuntime(runtime) {
+  const attentionCount = runtime.bottleneck === null ? 0 : 1
+  const phaseRows = runtime.phase_runs.map(run => `<li class="runtime-phase" data-phase="${esc(run.phase)}" data-state="${esc(run.state)}">
+    <div class="runtime-row-head"><strong>${esc(DELIVERY_PHASE_LABEL[run.phase] || run.phase)}</strong><span class="runtime-state runtime-phase-state-${esc(run.state)}">${esc(DELIVERY_RUNTIME_PHASE_STATE_COPY[run.state] || run.state)}</span></div>
+    <dl class="runtime-facts">
+      <div><dt>เจ้าของ</dt><dd>${esc(DELIVERY_RUNTIME_ROLE_COPY[run.owner_role] || run.owner_role)}</dd></div>
+      <div><dt>ส่งต่อ</dt><dd class="num">${run.handoff_count} ครั้ง</dd></div>
+      <div><dt>แก้ไข</dt><dd class="num">${run.revision_count} รอบ</dd></div>
+    </dl>
+  </li>`).join('')
+  const gateRows = runtime.phase_gates.map(gate => `<li class="runtime-gate" data-boundary="${esc(gate.boundary)}" data-gate-state="${esc(gate.state)}" data-attempt-id="${esc(gate.attempt_id)}">
+    <div class="runtime-row-head"><strong>${esc(DELIVERY_BOUNDARY_COPY[gate.boundary] || `${gate.sender_phase} → ${gate.receiver_phase}`)}</strong><span class="runtime-state runtime-gate-state-${esc(gate.state)}">${esc(DELIVERY_RUNTIME_GATE_STATE_COPY[gate.state] || gate.state)}</span></div>
+    <p>${esc(DELIVERY_RUNTIME_GATE_NOTE[gate.state] || 'อ่านสถานะ gate จากข้อมูล runtime')}</p>
+  </li>`).join('')
+  const attention = runtime.bottleneck === null
+    ? `<div class="runtime-attention runtime-attention-clear" data-runtime-attention-count="0"><strong>รายการที่ต้องดำเนินการจาก runtime: 0</strong><p>ไม่มี bottleneck ที่ runtime ระบุ</p></div>`
+    : `<div class="runtime-attention" data-runtime-attention-count="1"><strong>รายการที่ต้องดำเนินการจาก runtime: 1</strong><p>${esc(DELIVERY_PHASE_LABEL[runtime.bottleneck.phase] || runtime.bottleneck.phase)} · ${esc(DELIVERY_RUNTIME_BOTTLENECK_COPY[runtime.bottleneck.kind] || runtime.bottleneck.kind)} · รับผิดชอบโดย ${esc(DELIVERY_RUNTIME_ROLE_COPY[runtime.bottleneck.owner_role] || runtime.bottleneck.owner_role)}</p></div>`
+
+  return `<section class="delivery-runtime" aria-labelledby="delivery-runtime-title">
+    <div class="section-head"><div><span class="eyebrow">Delivery runtime · observe only</span><h2 id="delivery-runtime-title">สถานะ runtime ของการส่งมอบ</h2><p>สถานะที่ runtime สรุปจาก phase gate; ไม่สั่งงานหรือเปลี่ยนสถานะใด ๆ</p></div><span class="count">${attentionCount} รายการต้องดำเนินการ</span></div>
+    ${attention}
+    <section class="surface runtime-summary-panel" aria-labelledby="delivery-runtime-summary-title"><div class="detail-body"><h3 id="delivery-runtime-summary-title">สรุป phase gate</h3><dl class="runtime-summary" aria-label="สรุปจำนวน phase gate"><div><dt>เสนอ</dt><dd class="num">${runtime.summary.proposed}</dd></div><div><dt>ตอบรับ</dt><dd class="num">${runtime.summary.accepted}</dd></div><div><dt>ปฏิเสธ</dt><dd class="num">${runtime.summary.rejected}</dd></div><div><dt>ยกระดับ</dt><dd class="num">${runtime.summary.escalated}</dd></div><div><dt>นำไปใช้</dt><dd class="num">${runtime.summary.consumed}</dd></div><div><dt>แสดงอยู่</dt><dd class="num">${runtime.summary.shown}</dd></div><div><dt>ตัดจากรายการ</dt><dd class="num">${runtime.summary.truncated}</dd></div></dl></div></section>
+    <section class="surface runtime-phases" aria-labelledby="delivery-runtime-phases-title"><div class="detail-body"><h3 id="delivery-runtime-phases-title">สี่เฟสตามลำดับ</h3><ol class="runtime-phase-list">${phaseRows}</ol></div></section>
+    <section class="surface runtime-gates" aria-labelledby="delivery-runtime-gates-title"><div class="detail-body"><h3 id="delivery-runtime-gates-title">ผลการส่งต่อระหว่างเฟส</h3><ol class="runtime-gate-list">${gateRows || '<li class="empty"><strong>ยังไม่มี phase gate</strong>runtime ยังไม่มีรายการส่งต่อที่แสดงได้</li>'}</ol><p class="runtime-terminal"><strong>ProjectDelivery เป็นผู้รับปลายทาง</strong> หลัง QA ตอบรับแล้วจะไม่มีการ dispatch worker ลำดับที่ห้า.</p></div></section>
+  </section>`
+}
+
 function renderDeliverySequence(delivery) {
   const selected = DELIVERY_TOPOLOGY.find(edge => edge.boundary === delivery.experiment?.boundary)
   const boundaryCopy = selected
@@ -854,9 +1044,13 @@ function renderDeliverySequenceEquivalent() {
 
 function renderGraph(rows) {
   if (!rows.length) return '<p class="empty">ยังไม่มีงานให้วาด</p>'
-  const LEFT = 190, COL = 112, TOP = 34, ROW = 30
-  const NAME_MAX = 22
-  const w = LEFT + COL * (STAGES.length - 1) + 90
+  // Keep the visible label authoritative: task IDs must not rely on a hover
+  // title to recover characters hidden by an ellipsis. The graph is already
+  // horizontally scrollable, so a longer label lane is safer than truncation.
+  const longestTaskId = Math.max(...rows.map(row => row.id.length))
+  const LEFT = Math.max(190, Math.ceil(longestTaskId * 8.2) + 16)
+  const COL = 112, RIGHT = 164, TOP = 34, ROW = 30
+  const w = LEFT + COL * (STAGES.length - 1) + RIGHT
   const h = TOP + ROW * rows.length + 12
   const x = (i) => LEFT + COL * i
   const cls = (s) => ['died', 'unknown'].includes(s) ? 'g-bad'
@@ -876,13 +1070,33 @@ function renderGraph(rows) {
       (lastReached > 0 ? `<line class="g-line ${c}" x1="${x(0)}" y1="${y}" x2="${x(lastReached)}" y2="${y}"/>` : '')
     const dots = r.reached.map((on, i) =>
       `<circle class="${on ? `g-dot ${c}` : 'g-dot g-off'}" cx="${x(i)}" cy="${y}" r="${on ? 5 : 3.5}"/>`).join('')
-    const name = r.id.length > NAME_MAX ? r.id.slice(0, NAME_MAX - 1) + '…' : r.id
-    return `<g><text class="g-id" x="0" y="${y + 4}">${esc(name)}</text><title>${esc(r.id)}</title>${track}${dots}` +
+    return `<g><text class="g-id" x="0" y="${y + 4}">${esc(r.id)}</text><title>${esc(r.id)}</title>${track}${dots}` +
       `<text class="g-tag ${c}" x="${x(STAGES.length - 1) + 16}" y="${y + 4}">${esc(stateLabel(r.state))}</text></g>`
   }).join('')
 
   return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" role="img"
-     aria-label="แต่ละงานเดินไปถึงขั้นไหน">${head}${body}</svg>`
+     aria-label="แต่ละงานเดินไปถึงขั้นไหน" aria-describedby="progress-graph-desc progress-graph-contract"><title id="progress-graph-title">แต่ละงานเดินไปถึงขั้นไหน</title><desc id="progress-graph-desc">จุดทึบคือขั้นที่มีหลักฐานว่าไปถึงแล้ว จุดโปร่งคือขั้นที่ยังไม่มีหลักฐาน สีบอกสถานะล่าสุดของแต่ละงาน</desc>${head}${body}</svg>`
+}
+
+function renderGraphLegend() {
+  return `<ul class="graph-legend" aria-label="คำอธิบายสัญลักษณ์กราฟความคืบหน้า">
+    <li><span class="legend-dot reached" aria-hidden="true"></span>จุดทึบ · มีหลักฐานว่าถึงขั้นนี้</li>
+    <li><span class="legend-dot pending" aria-hidden="true"></span>จุดโปร่ง · ยังไม่มีหลักฐานว่าถึงขั้นนี้</li>
+    <li><span class="legend-dot ok" aria-hidden="true"></span>เขียว · กำลังทำงานหรือมีบันทึกว่าผ่าน</li>
+    <li><span class="legend-dot warn" aria-hidden="true"></span>เหลือง · กำลังเริ่ม รอตรวจ หรือหลักฐานยังไม่ครบ</li>
+    <li><span class="legend-dot bad" aria-hidden="true"></span>แดง · หยุดหรือยังตรวจสถานะไม่ได้</li>
+  </ul>`
+}
+
+function renderGraphEquivalent(rows) {
+  if (!rows.length) {
+    return '<section class="graph-equivalent" aria-labelledby="progress-equivalent-title"><h3 id="progress-equivalent-title">ข้อมูลเทียบเท่ากราฟ</h3><p id="progress-graph-contract">ยังไม่มีงานให้สรุปเป็นข้อความ</p></section>'
+  }
+  return `<section class="graph-equivalent" aria-labelledby="progress-equivalent-title">
+    <h3 id="progress-equivalent-title">ข้อมูลเทียบเท่ากราฟ</h3>
+    <p id="progress-graph-contract">ขั้น “ตรวจผล” และ “บันทึกผล” อาศัยฟิลด์เดิม <code>pm_verdict</code> จึงบอกเพียงว่ามี verdict ถูกบันทึก ไม่ได้ยืนยันว่า PM หรือทีมเฟสใดเป็นผู้ตรวจ</p>
+    <ol>${rows.map(row => `<li><span><code>${esc(row.id)}</code> · ${esc(stateLabel(row.state))}</span><span class="graph-stage-list">${row.reached.map((reached, index) => `<span data-reached="${reached ? 'true' : 'false'}">${esc(STAGES[index])}: ${reached ? 'ถึงแล้ว' : 'ยังไม่ถึง'}</span>`).join('')}</span></li>`).join('')}</ol>
+  </section>`
 }
 
 // HTML is a pure view of the published contract. It never receives the raw
@@ -894,11 +1108,13 @@ function render(snapshot) {
   const unclaimed = snapshot.unclaimed_control
   const attentionStates = ['died', 'unknown', 'unrecorded', 'orphan_running']
   const attention = active.filter(a => attentionStates.includes(a.state))
-  const running = active.filter(a => ['running', 'starting', 'awaiting-verdict'].includes(a.state))
+  const tracked = active.filter(a => ['running', 'starting', 'awaiting-verdict'].includes(a.state))
   const recent = rec
   const st = snapshot.worker_stats
   const delivery = snapshot.delivery_loop || null
+  const deliveryRuntime = snapshot.delivery_runtime || null
   const byState = snapshot.summary.by_state
+  const graph = graphRows(snapshot)
   const attentionTotal = attentionStates.reduce((sum, state) => sum + byState[state], 0)
   const runningTotal = byState.running + byState.starting
   const waitingTotal = byState['awaiting-verdict']
@@ -906,8 +1122,18 @@ function render(snapshot) {
   const rejectTotal = rec.filter(r => r.pm_verdict === 'reject').length
   const repoName = snapshot.scope.repo_name || 'unknown'
   const refreshInterval = snapshot.observation.refresh_interval_sec
-  const qualityLabel = snapshot.complete ? 'ข้อมูลครบถ้วน' : 'ข้อมูลบางส่วน'
-  const qualityClass = snapshot.complete ? 'ok' : 'warn'
+  const expiresAt = snapshot.observation.expires_at || ''
+  const expiresMs = Date.parse(expiresAt)
+  const expiryIsValid = Number.isFinite(expiresMs)
+  const initiallyStale = !expiryIsValid || Date.now() >= expiresMs
+  const qualityLabel = snapshot.complete ? 'หลักฐานระบบครบ' : 'หลักฐานระบบบางส่วน'
+  const qualityClass = snapshot.complete ? 'complete' : 'warn'
+  const freshnessLabel = !expiryIsValid ? 'ตรวจเวลาข้อมูลไม่ได้' : initiallyStale ? 'ข้อมูลหมดอายุ' : 'ข้อมูลสด'
+  const freshnessClass = initiallyStale ? 'warn' : 'ok'
+  const denseThreshold = 8
+  const denseAttention = attention.length >= denseThreshold
+  const denseTracked = tracked.length >= denseThreshold
+  const densePrimary = denseAttention || denseTracked
 
   const metric = (label, value, note, tone = '') => `<div class="metric ${tone}">
     <span class="metric-label">${esc(label)}</span>
@@ -935,6 +1161,8 @@ function render(snapshot) {
       </dl>
     </details>
   </article>`
+  const runList = (items, timingLabel, dense) =>
+    `<div class="run-list${dense ? ' run-list-dense' : ''}" data-run-count="${items.length}" data-layout="${dense ? 'dense' : 'single'}">${items.map(item => runItem(item, timingLabel)).join('')}</div>`
 
   const diagnosticItems = notes.map(n => `<li>
     <span><strong>${esc(DIAGNOSTIC_COPY[n.code] || 'ข้อมูลบางส่วนอ่านไม่ได้')}</strong>${n.count > 1 ? ` <span class="num">×${n.count}</span>` : ''}</span>
@@ -973,27 +1201,31 @@ function render(snapshot) {
       <details class="deep-dive" data-persist-key="delivery-sequence"><summary>ลำดับทั่วไปของ handoff ที่ผู้รับเป็นเจ้าของ</summary><div class="detail-body">${renderDeliverySequence(delivery)}${renderDeliverySequenceEquivalent()}</div></details>
     </section>`
   })() : ''
+  const deliveryRuntimeSection = deliveryRuntime ? renderDeliveryRuntime(deliveryRuntime) : ''
 
   return `<!doctype html><html lang="th"><head><meta charset="utf-8">
 <title>pulse — ${esc(repoName)}</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="refresh" content="${refreshInterval}">
 <meta name="tmux-teams-snapshot-id" content="${esc(snapshot.snapshot_id)}">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231f6f5f'/%3E%3Cpath d='M14 35h11l6-19 9 32 7-15h5' fill='none' stroke='%23fff' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="${FONT_CSS_NAME}">
 <style>
 :root{color-scheme:dark;--bg:oklch(17% .012 165);--surface:oklch(21% .014 165);--surface-2:oklch(24% .015 165);--line:oklch(34% .014 165);--ink:oklch(93% .012 165);--dim:oklch(71% .018 165);--ok:oklch(74% .13 165);--warn:oklch(78% .13 78);--bad:oklch(72% .16 28);--focus:oklch(78% .12 235);--sans:"Kanit","Noto Sans Thai","Leelawadee UI",Tahoma,sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--r-sm:8px;--r-md:14px;--s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:24px;--s6:32px;--s7:48px}
 @media(prefers-color-scheme:light){:root{color-scheme:light;--bg:oklch(97% .008 165);--surface:oklch(99% .004 165);--surface-2:oklch(95% .012 165);--line:oklch(87% .014 165);--ink:oklch(24% .018 165);--dim:oklch(50% .022 165);--ok:oklch(50% .12 165);--warn:oklch(53% .13 72);--bad:oklch(52% .16 28);--focus:oklch(52% .13 235)}}
-*{box-sizing:border-box}html{font-size:16px}body{margin:0;padding:var(--s5);background:var(--bg);color:var(--ink);font:400 1rem/1.65 var(--sans);text-rendering:optimizeLegibility}
-.wrap{max-width:1180px;margin:0 auto}.skip-link{position:fixed;top:var(--s3);left:var(--s3);z-index:10;transform:translateY(-180%);background:var(--ink);color:var(--bg);padding:var(--s2) var(--s4);border-radius:var(--r-sm)}.skip-link:focus{transform:none}
-.site-header{display:flex;justify-content:space-between;align-items:flex-start;gap:var(--s5);padding:var(--s2) 0 var(--s5);border-bottom:1px solid var(--line)}
+*{box-sizing:border-box}html{max-width:100%;font-size:16px}body{max-width:100%;margin:0;padding:var(--s5);background:var(--bg);color:var(--ink);font:400 1rem/1.65 var(--sans);text-rendering:optimizeLegibility}
+.wrap{min-width:0;max-width:1180px;margin:0 auto}.skip-link{position:fixed;top:var(--s3);left:var(--s3);z-index:10;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);opacity:0;white-space:nowrap;background:var(--ink);color:var(--bg);padding:0;border-radius:var(--r-sm)}.skip-link:focus{width:auto;height:auto;overflow:visible;clip-path:none;opacity:1;padding:var(--s2) var(--s4)}
+.site-header{display:flex;min-width:0;justify-content:space-between;align-items:flex-start;gap:var(--s5);padding:var(--s2) 0 var(--s5);border-bottom:1px solid var(--line)}.site-header>*,main>*,section,.primary-grid>*{min-width:0}
 .eyebrow{display:block;margin:0 0 var(--s1);color:var(--dim);font:500 .75rem/1.4 var(--sans);letter-spacing:.08em;text-transform:uppercase}
-h1{display:flex;align-items:baseline;gap:var(--s3);margin:0;font:600 1.75rem/1.2 var(--sans);letter-spacing:-.02em}h1 .repo{color:var(--dim);font:500 1rem var(--mono);letter-spacing:0}
-.scope{max-width:62ch;margin:var(--s2) 0 0;color:var(--dim);font-size:.875rem}.header-status{display:flex;align-items:flex-start;gap:var(--s3);text-align:right}.age{color:var(--dim);font-size:.8rem;line-height:1.5}.age time{display:block;color:var(--ink);font-family:var(--mono);font-variant-numeric:tabular-nums}
-.quality{display:inline-flex;align-items:center;gap:var(--s2);white-space:nowrap;padding:6px 10px;border:1px solid var(--line);border-radius:999px;font-size:.78rem;font-weight:500}.quality::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}.quality.ok{color:var(--ok)}.quality.warn{color:var(--warn)}
-main{display:grid;gap:var(--s7);padding-top:var(--s6)}.summary-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}.metric{min-width:0;padding:var(--s5);border-left:1px solid var(--line)}.metric:first-child{border-left:0}.metric-label,.metric-note{display:block;color:var(--dim);font-size:.82rem}.metric-value{display:block;margin:2px 0;font:600 2rem/1.2 var(--sans);font-variant-numeric:tabular-nums}.metric.bad .metric-value{color:var(--bad)}.metric.ok .metric-value{color:var(--ok)}.metric.warn .metric-value{color:var(--warn)}
+h1{display:flex;min-width:0;align-items:baseline;gap:var(--s3);margin:0;font:600 1.75rem/1.2 var(--sans);letter-spacing:-.02em}h1 .repo{min-width:0;color:var(--dim);font:500 1rem var(--mono);letter-spacing:0;overflow-wrap:anywhere}
+.scope{max-width:62ch;margin:var(--s2) 0 0;color:var(--dim);font-size:.875rem}.loop-graph-link{display:inline-block;margin-top:var(--s2);color:var(--ink);font-size:.78rem;text-decoration:none;border-bottom:1px solid var(--line)}.loop-graph-link:hover{border-color:var(--ink)}.header-status{display:flex;min-width:0;align-items:flex-start;justify-content:flex-end;flex-wrap:wrap;gap:var(--s3);text-align:right}.status-badges{display:flex;min-width:0;flex-wrap:wrap;justify-content:flex-end;gap:var(--s2)}.age{min-width:0;color:var(--dim);font-size:.8rem;line-height:1.5;overflow-wrap:anywhere}.age time,.freshness-note,.time-zone-label{display:block}.time-zone-label{color:var(--ink);font-weight:500}.age time{color:var(--ink);font-family:var(--mono);font-variant-numeric:tabular-nums}
+.quality{display:inline-flex;align-items:center;gap:var(--s2);white-space:nowrap;padding:6px 10px;border:1px solid var(--line);border-radius:999px;font-size:.78rem;font-weight:500}.quality::before{content:"";flex:none;width:7px;height:7px;border-radius:50%;background:currentColor}.quality.complete{color:var(--dim)}.quality.ok{color:var(--ok)}.quality.warn{color:var(--warn)}
+main{display:grid;min-width:0;gap:var(--s7);padding-top:var(--s6)}.summary-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}.metric{min-width:0;padding:var(--s5);border-left:1px solid var(--line)}.metric:first-child{border-left:0}.metric-label,.metric-note{display:block;color:var(--dim);font-size:.82rem}.metric-value{display:block;margin:2px 0;font:600 2rem/1.2 var(--sans);font-variant-numeric:tabular-nums}.metric.bad .metric-value{color:var(--bad)}.metric.ok .metric-value{color:var(--ok)}.metric.warn .metric-value{color:var(--warn)}
+body[data-observation-freshness="stale"] .metric.ok .metric-value{color:var(--dim)}body[data-observation-freshness="stale"] .pill.running{background:color-mix(in srgb,var(--dim) 16%,transparent);color:var(--dim)}body[data-observation-freshness="stale"] .status-dot.running{background:var(--dim)}
 .diagnostics{border:1px solid color-mix(in oklch,var(--warn) 45%,var(--line));border-radius:var(--r-md);background:color-mix(in oklch,var(--warn) 8%,var(--surface));padding:var(--s4) var(--s5)}.diagnostics h2{margin:0 0 var(--s2);font-size:1rem}.diagnostics ul{display:grid;gap:var(--s2);margin:0;padding:0;list-style:none}.diagnostics li{display:flex;justify-content:space-between;gap:var(--s4);color:var(--dim);font-size:.875rem}.diagnostics strong{color:var(--ink);font-weight:500}.diagnostics code{font-size:.75rem}
-.delivery-loop{display:grid;gap:var(--s4)}.delivery-overview{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--s3)}.delivery-callout{padding:var(--s4)}.delivery-callout strong{display:block;font-size:1.05rem}.delivery-callout p{margin:var(--s2) 0;color:var(--dim);font-size:.85rem}.delivery-callout code{font-size:.72rem;color:var(--dim);overflow-wrap:anywhere}.delivery-times{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--s3);margin:0}.delivery-times div{min-width:0;padding:var(--s3);border-left:3px solid var(--line);background:var(--surface-2)}.delivery-times dt{color:var(--dim);font-size:.75rem}.delivery-times dd{margin:2px 0 0;overflow-wrap:anywhere;font-size:.85rem}.delivery-times time{font-family:var(--mono);font-variant-numeric:tabular-nums}.delivery-model .detail-body>h3,.diagram-equivalent h3{margin:0 0 var(--s3);font-size:1rem}.phase-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s3)}.phase-card{padding:var(--s4);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md)}.delivery-attention{padding:var(--s4)}.delivery-attention h3{margin:0 0 var(--s2);font-size:1rem}.diagnostics-list{display:grid;gap:var(--s2);margin:0;padding:0;list-style:none}.diagnostics-list li{display:flex;justify-content:space-between;gap:var(--s4);color:var(--dim);font-size:.85rem}.diagnostics-list strong{color:var(--ink);font-weight:500}
-.primary-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s5);align-items:start}.section-head{display:flex;justify-content:space-between;align-items:end;gap:var(--s4);margin-bottom:var(--s3)}.section-head h2{margin:0;font:600 1.25rem/1.3 var(--sans);letter-spacing:-.01em}.section-head p{margin:var(--s1) 0 0;color:var(--dim);font-size:.875rem}.count{flex:none;color:var(--dim);font:500 .82rem var(--sans);font-variant-numeric:tabular-nums}.surface{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}.run-list{display:grid}.run-item{padding:var(--s4);border-top:1px solid var(--line)}.run-item:first-child{border-top:0}.run-summary{display:flex;align-items:center;justify-content:space-between;gap:var(--s3)}.run-name{display:flex;align-items:center;min-width:0;gap:var(--s2)}.run-name code{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink);font:500 .9rem var(--mono)}.status-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--dim)}.status-dot.running{background:var(--ok)}.status-dot.starting,.status-dot.awaiting-verdict,.status-dot.unrecorded,.status-dot.orphan_running{background:var(--warn)}.status-dot.died,.status-dot.unknown{background:var(--bad)}
+.delivery-loop{display:grid;min-width:0;gap:var(--s4)}.delivery-overview{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--s3)}.delivery-callout{min-width:0;padding:var(--s4)}.delivery-callout strong{display:block;font-size:1.05rem;overflow-wrap:anywhere}.delivery-callout p{margin:var(--s2) 0;color:var(--dim);font-size:.85rem}.delivery-callout code{font-size:.72rem;color:var(--dim);overflow-wrap:anywhere}.delivery-times{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--s3);margin:0}.delivery-times div{min-width:0;padding:var(--s3);border-left:3px solid var(--line);background:var(--surface-2)}.delivery-times dt{color:var(--dim);font-size:.75rem}.delivery-times dd{margin:2px 0 0;overflow-wrap:anywhere;font-size:.85rem}.delivery-times time{font-family:var(--mono);font-variant-numeric:tabular-nums}.delivery-model .detail-body>h3,.diagram-equivalent h3{margin:0 0 var(--s3);font-size:1rem}.phase-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s3)}.phase-card{min-width:0;padding:var(--s4);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md)}.delivery-attention{padding:var(--s4)}.delivery-attention h3{margin:0 0 var(--s2);font-size:1rem}.diagnostics-list{display:grid;gap:var(--s2);margin:0;padding:0;list-style:none}.diagnostics-list li{display:flex;min-width:0;justify-content:space-between;gap:var(--s4);color:var(--dim);font-size:.85rem}.diagnostics-list li>*{min-width:0;overflow-wrap:anywhere}.diagnostics-list strong{color:var(--ink);font-weight:500}
+.delivery-runtime{display:grid;min-width:0;gap:var(--s4)}.runtime-attention{min-width:0;padding:var(--s3) var(--s4);border:1px solid color-mix(in oklch,var(--warn) 45%,var(--line));border-radius:var(--r-md);background:color-mix(in oklch,var(--warn) 8%,var(--surface))}.runtime-attention-clear{border-color:var(--line);background:var(--surface-2)}.runtime-attention strong{display:block;font-weight:600}.runtime-attention p,.runtime-gate p,.runtime-terminal{margin:var(--s1) 0 0;color:var(--dim);font-size:.85rem;overflow-wrap:anywhere}.runtime-summary{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:var(--s3);margin:0}.runtime-summary div,.runtime-phase,.runtime-gate{min-width:0}.runtime-summary dt,.runtime-facts dt{color:var(--dim);font-size:.75rem}.runtime-summary dd{margin:2px 0 0;font-size:1.2rem;font-weight:600}.runtime-phase-list,.runtime-gate-list{display:grid;min-width:0;gap:var(--s3);margin:0;padding:0;list-style:none}.runtime-phase-list{grid-template-columns:repeat(4,minmax(0,1fr))}.runtime-phase,.runtime-gate{padding:var(--s3);border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2)}.runtime-row-head{display:flex;min-width:0;align-items:start;justify-content:space-between;flex-wrap:wrap;gap:var(--s2)}.runtime-row-head strong{min-width:0;overflow-wrap:anywhere}.runtime-state{display:inline-flex;flex:none;align-items:center;border:1px solid var(--line);border-radius:999px;padding:2px 7px;font-size:.72rem;line-height:1.4}.runtime-phase-state-blocked,.runtime-gate-state-escalated{color:var(--bad);border-color:color-mix(in oklch,var(--bad) 40%,var(--line))}.runtime-phase-state-handoff_pending,.runtime-gate-state-proposed,.runtime-gate-state-rejected{color:var(--warn);border-color:color-mix(in oklch,var(--warn) 40%,var(--line))}.runtime-phase-state-completed,.runtime-gate-state-accepted,.runtime-gate-state-consumed{color:var(--ok);border-color:color-mix(in oklch,var(--ok) 40%,var(--line))}.runtime-facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--s2);margin:var(--s3) 0 0}.runtime-facts dd{margin:1px 0 0;font-size:.82rem;overflow-wrap:anywhere}.runtime-terminal{padding-top:var(--s3);border-top:1px solid var(--line)}.runtime-terminal strong{color:var(--ink)}
+.primary-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s5);align-items:start}.primary-grid-stacked{grid-template-columns:1fr}.section-head{display:flex;min-width:0;justify-content:space-between;align-items:end;gap:var(--s4);margin-bottom:var(--s3)}.section-head h2{margin:0;font:600 1.25rem/1.3 var(--sans);letter-spacing:-.01em}.section-head p{margin:var(--s1) 0 0;color:var(--dim);font-size:.875rem}.count{flex:none;color:var(--dim);font:500 .82rem var(--sans);font-variant-numeric:tabular-nums}.surface{min-width:0;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}.run-list{display:grid;min-width:0}.run-list-dense{grid-template-columns:repeat(2,minmax(0,1fr))}.run-item{min-width:0;padding:var(--s4);border-top:1px solid var(--line)}.run-item:first-child{border-top:0}.run-list-dense .run-item{border-left:1px solid var(--line)}.run-list-dense .run-item:nth-child(-n+2){border-top:0}.run-list-dense .run-item:nth-child(odd){border-left:0}.run-summary{display:flex;min-width:0;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:var(--s3)}.run-name{display:flex;min-width:0;max-width:100%;flex:1 1 12rem;align-items:center;gap:var(--s2)}.run-name code{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink);font:500 .9rem var(--mono)}.status-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--dim)}.status-dot.running{background:var(--ok)}.status-dot.starting,.status-dot.awaiting-verdict,.status-dot.unrecorded,.status-dot.orphan_running{background:var(--warn)}.status-dot.died,.status-dot.unknown{background:var(--bad)}
 .pill{display:inline-flex;align-items:center;white-space:nowrap;font:500 .75rem/1.4 var(--sans);padding:4px 9px;border-radius:999px}
 .pill.running{background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok)}
 .pill.starting{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
@@ -1001,11 +1233,11 @@ main{display:grid;gap:var(--s7);padding-top:var(--s6)}.summary-strip{display:gri
 .pill.unrecorded{background:color-mix(in srgb,var(--warn) 26%,transparent);color:var(--warn)}
 .pill.orphan_running{background:color-mix(in srgb,var(--warn) 26%,transparent);color:var(--warn)}
 .pill.died,.pill.unknown{background:color-mix(in srgb,var(--bad) 18%,transparent);color:var(--bad)}
-.run-facts{display:grid;grid-template-columns:.7fr .8fr 1.4fr;gap:var(--s3);margin:var(--s3) 0 0}.run-facts div{min-width:0}.run-facts dt,.technical dt{color:var(--dim);font-size:.72rem}.run-facts dd,.technical dd{margin:1px 0 0;font-size:.86rem}.next-action{color:var(--ink);font-weight:500}.technical{margin-top:var(--s3);color:var(--dim);font-size:.78rem}.technical summary{width:max-content;cursor:pointer}.technical dl{display:grid;gap:var(--s2);margin:var(--s2) 0 0;padding:var(--s3);background:var(--surface-2);border-radius:var(--r-sm)}.technical dl div{display:grid;grid-template-columns:80px minmax(0,1fr);gap:var(--s2)}.technical code{overflow-wrap:anywhere}.empty{margin:0;padding:var(--s5);color:var(--dim)}.empty strong{display:block;margin-bottom:2px;color:var(--ink);font-weight:500}.limit-note{margin:var(--s3) 0 0;color:var(--dim);font-size:.82rem}
-.warning-list{display:grid;margin:0;padding:0;list-style:none}.warning-list li{display:grid;grid-template-columns:minmax(130px,1fr) auto 2fr;gap:var(--s4);padding:var(--s3) var(--s4);border-top:1px solid var(--line);align-items:center}.warning-list li:first-child{border-top:0}.warning-list p{margin:0;color:var(--warn);font-size:.85rem}
-.table-scroll{overflow-x:auto}.table-scroll:focus-visible{outline:3px solid var(--focus);outline-offset:2px}table{border-collapse:collapse;width:100%;min-width:720px;font-size:.9rem}caption{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}th{text-align:left;color:var(--dim);font:500 .75rem var(--sans);letter-spacing:.04em;padding:var(--s3) var(--s4);border-bottom:1px solid var(--line)}td{padding:var(--s3) var(--s4);border-bottom:1px solid var(--line);vertical-align:top}tr:last-child td{border-bottom:0}.mono,code{font-family:var(--mono)}.num{font-variant-numeric:tabular-nums}.dim{color:var(--dim)}.warn{color:var(--warn)}
+.run-facts{display:grid;grid-template-columns:.7fr .8fr 1.4fr;gap:var(--s3);margin:var(--s3) 0 0}.run-facts div{min-width:0}.run-facts dt,.technical dt{color:var(--dim);font-size:.72rem}.run-facts dd,.technical dd{min-width:0;margin:1px 0 0;font-size:.86rem;overflow-wrap:anywhere}.next-action{color:var(--ink);font-weight:500}.technical{min-width:0;margin-top:var(--s3);color:var(--dim);font-size:.78rem}.technical summary{max-width:100%;width:max-content;cursor:pointer;overflow-wrap:anywhere}.technical dl{display:grid;gap:var(--s2);margin:var(--s2) 0 0;padding:var(--s3);background:var(--surface-2);border-radius:var(--r-sm)}.technical dl div{display:grid;min-width:0;grid-template-columns:80px minmax(0,1fr);gap:var(--s2)}.technical code{overflow-wrap:anywhere}.empty{margin:0;padding:var(--s5);color:var(--dim)}.empty strong{display:block;margin-bottom:2px;color:var(--ink);font-weight:500}.limit-note,.legacy-note{margin:var(--s3) 0 0;color:var(--dim);font-size:.82rem}.legacy-note code{color:var(--ink)}
+.warning-list{display:grid;margin:0;padding:0;list-style:none}.warning-list li{display:grid;min-width:0;grid-template-columns:minmax(130px,1fr) auto 2fr;gap:var(--s4);padding:var(--s3) var(--s4);border-top:1px solid var(--line);align-items:center}.warning-list li:first-child{border-top:0}.warning-list code,.warning-list p{min-width:0;overflow-wrap:anywhere}.warning-list p{margin:0;color:var(--warn);font-size:.85rem}
+.table-scroll{min-width:0;max-width:100%;overflow-x:auto}.table-scroll:focus-visible{outline:3px solid var(--focus);outline-offset:2px}table{border-collapse:collapse;width:100%;min-width:720px;font-size:.9rem}caption{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}th{text-align:left;color:var(--dim);font:500 .75rem var(--sans);letter-spacing:.04em;padding:var(--s3) var(--s4);border-bottom:1px solid var(--line)}td{min-width:0;padding:var(--s3) var(--s4);border-bottom:1px solid var(--line);vertical-align:top}td code{overflow-wrap:anywhere}tr:last-child td{border-bottom:0}.mono,code{font-family:var(--mono)}.num{font-variant-numeric:tabular-nums}.dim{color:var(--dim)}.warn{color:var(--warn)}
 .verdict-reject{color:var(--bad)}.verdict-pass{color:var(--ok)}.verdict-unresolved{color:var(--warn)}
-.details-stack{display:grid;gap:var(--s3)}.deep-dive{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}.deep-dive>summary{display:flex;align-items:center;justify-content:space-between;gap:var(--s4);cursor:pointer;padding:var(--s4) var(--s5);font-weight:500;list-style:none}.deep-dive>summary::-webkit-details-marker{display:none}.deep-dive>summary::after{content:"+";color:var(--dim);font:400 1.25rem var(--sans)}.deep-dive[open]>summary{border-bottom:1px solid var(--line)}.deep-dive[open]>summary::after{content:"−"}.detail-body{padding:var(--s4)}.graph-scroll,.diagram-scroll{overflow-x:auto}.diagram-scroll{scrollbar-color:var(--line) transparent}.diagram-scroll:focus-visible{outline:3px solid var(--focus);outline-offset:3px}.graph-scroll svg,.diagram-scroll svg{display:block;min-width:720px;height:auto}.diagram-note{margin:var(--s3) 0 0;color:var(--dim);font-size:.82rem}.diagram-equivalent{margin-top:var(--s4);padding-top:var(--s4);border-top:1px solid var(--line)}.diagram-equivalent p,.diagram-equivalent ol{margin:var(--s2) 0 0;color:var(--dim);font-size:.86rem}.diagram-equivalent ol{padding-left:1.35rem}.diagram-equivalent li+li{margin-top:var(--s2)}
+.details-stack{display:grid;min-width:0;gap:var(--s3)}.deep-dive{min-width:0;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}.deep-dive>summary{display:flex;min-width:0;align-items:center;justify-content:space-between;gap:var(--s4);cursor:pointer;padding:var(--s4) var(--s5);font-weight:500;list-style:none;overflow-wrap:anywhere}.deep-dive>summary::-webkit-details-marker{display:none}.deep-dive>summary::after{content:"+";flex:none;color:var(--dim);font:400 1.25rem var(--sans)}.deep-dive[open]>summary{border-bottom:1px solid var(--line)}.deep-dive[open]>summary::after{content:"−"}.detail-body{min-width:0;padding:var(--s4)}.graph-scroll,.diagram-scroll{min-width:0;max-width:100%;overflow-x:auto}.diagram-scroll{scrollbar-color:var(--line) transparent}.graph-scroll:focus-visible,.diagram-scroll:focus-visible{outline:3px solid var(--focus);outline-offset:3px}.graph-scroll svg,.diagram-scroll svg{display:block;min-width:720px;height:auto}.graph-legend,.diagram-legend{display:flex;flex-wrap:wrap;gap:var(--s2) var(--s4);margin:0 0 var(--s3);padding:0;list-style:none;color:var(--dim);font-size:.78rem}.graph-legend li,.diagram-legend li{display:flex;align-items:center;gap:var(--s2)}.legend-dot{width:10px;height:10px;border-radius:50%;border:2px solid var(--dim);background:transparent}.legend-dot.reached{background:var(--ink);border-color:var(--ink)}.legend-dot.pending{border-color:var(--dim)}.legend-dot.ok{background:var(--ok);border-color:var(--ok)}.legend-dot.warn{background:var(--warn);border-color:var(--warn)}.legend-dot.bad{background:var(--bad);border-color:var(--bad)}.legend-line{width:26px;border-top:2px solid var(--ink)}.legend-line.dashed{border-top-style:dashed}.legend-line.bad{border-top-color:var(--bad)}.graph-equivalent{margin-top:var(--s4);padding-top:var(--s4);border-top:1px solid var(--line)}.graph-equivalent h3{margin:0;font-size:1rem}.graph-equivalent>p{margin:var(--s2) 0;color:var(--dim);font-size:.82rem}.graph-equivalent ol{display:grid;gap:var(--s3);margin:var(--s3) 0 0;padding-left:1.35rem}.graph-equivalent li{padding-left:var(--s1)}.graph-stage-list{display:flex;flex-wrap:wrap;gap:var(--s1) var(--s2);margin-top:var(--s1);color:var(--dim);font-size:.76rem}.graph-stage-list span{padding:2px 6px;border:1px solid var(--line);border-radius:999px}.graph-stage-list [data-reached="true"]{color:var(--ink);border-color:var(--dim)}.diagram-note{margin:var(--s3) 0 0;color:var(--dim);font-size:.82rem}.diagram-equivalent{margin-top:var(--s4);padding-top:var(--s4);border-top:1px solid var(--line)}.diagram-equivalent p,.diagram-equivalent ol{margin:var(--s2) 0 0;color:var(--dim);font-size:.86rem}.diagram-equivalent ol{padding-left:1.35rem}.diagram-equivalent li+li{margin-top:var(--s2)}
 .delivery-svg{min-width:1120px}.delivery-svg .df-pm{fill:none;stroke:var(--dim);stroke-width:1.5;stroke-dasharray:6 5}.df-pm-label{font:500 14px var(--sans);fill:var(--dim)}.df-node rect{fill:var(--surface-2);stroke:var(--line);stroke-width:1.5}.df-final rect{fill:var(--bg);stroke-width:2}.df-title{font:600 15px var(--sans);fill:var(--ink)}.df-copy,.df-owner{font:11px var(--sans);fill:var(--dim)}.df-artifact{font:500 10px var(--mono);fill:var(--ink)}.df-artifact-label{font:600 11px var(--sans);fill:var(--ink)}.df-loop,.df-edge path{fill:none;stroke:var(--line);stroke-width:1.8}.df-edge marker path,.df-loop marker path,.df-exception marker path,.ds-flow marker path{fill:var(--line)}.df-selected path{stroke:var(--warn);stroke-width:3}.df-observed{font:600 11px var(--sans);fill:var(--warn)}.df-exception{fill:none;stroke:var(--bad);stroke-width:1.8;stroke-dasharray:5 4}.df-exception-label{font:11px var(--sans);fill:var(--bad)}.sequence-svg{min-width:980px}.ds-context{font:500 11px var(--sans);fill:var(--dim)}.ds-lane text{font:600 14px var(--sans);fill:var(--ink)}.ds-lane path{stroke:var(--line);stroke-dasharray:4 4}.ds-flow path{stroke:var(--line);stroke-width:1.8;fill:none}.ds-flow text{font:11px var(--sans);fill:var(--ink)}.ds-flow .ds-terminal{fill:var(--bad);font-weight:500}.ds-flow .ds-exception{stroke:var(--bad);stroke-dasharray:5 4}
 .l-box{fill:var(--surface);stroke:var(--line);stroke-width:1.5}
 .l-store{fill:var(--bg)}
@@ -1018,6 +1250,7 @@ main{display:grid;gap:var(--s7);padding-top:var(--s6)}.summary-strip{display:gri
 .l-dash{stroke-dasharray:5 4}
 .l-head{fill:var(--line)}.l-head-bad{fill:var(--bad)}
 .l-bad{stroke:var(--bad)}.l-bad-t{fill:var(--bad)}.l-bad-box{stroke:var(--bad)}
+.worker-loop-svg{min-width:1080px}.wl-lane{fill:var(--surface-2);stroke:var(--line);stroke-width:1.5}.wl-lane-inner{fill:var(--surface)}.wl-lane-title{font:600 14px var(--sans);fill:var(--ink)}.wl-lane-copy{font:11px var(--sans);fill:var(--dim)}.wl-role{font:600 10px var(--sans);fill:var(--warn);letter-spacing:.04em}.wl-node-title{font:600 12px var(--sans);fill:var(--ink)}.wl-node-copy{font:10.5px var(--sans);fill:var(--dim)}.wl-artifact{fill:var(--bg);stroke:var(--ok);stroke-width:1.8}.wl-pass{stroke:var(--ok)}.wl-exception{stroke:var(--bad);stroke-dasharray:5 4}.wl-exception-copy{font:600 10.5px var(--sans);fill:var(--bad)}.wl-unmeasured{stroke-dasharray:5 4}.wl-unmeasured-copy{font:10.5px var(--sans);fill:var(--dim)}
 .g-head{font:500 10px var(--sans);fill:var(--dim);letter-spacing:.02em}
 .g-id{font:13px var(--mono);fill:var(--ink)}
 .g-tag{font:500 10px var(--sans);fill:var(--dim)}
@@ -1029,10 +1262,11 @@ main{display:grid;gap:var(--s7);padding-top:var(--s6)}.summary-strip{display:gri
 .g-warn{stroke:var(--warn)}.g-warn.g-dot,.g-warn.g-tag{fill:var(--warn)}
 .g-bad{stroke:var(--bad)}.g-bad.g-dot,.g-bad.g-tag{fill:var(--bad)}
 footer{margin-top:var(--s7);padding-top:var(--s4);border-top:1px solid var(--line);color:var(--dim);font-size:.82rem}footer details summary{cursor:pointer;width:max-content;color:var(--ink)}footer ul{max-width:78ch;margin:var(--s3) 0 0;padding-left:1.25rem}footer code{font-size:.76rem}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}summary:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
-@media(max-width:820px){body{padding:var(--s4)}.site-header{display:grid}.header-status{text-align:left}.summary-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.metric{border-top:1px solid var(--line)}.metric:nth-child(-n+2){border-top:0}.metric:nth-child(odd){border-left:0}.delivery-overview{grid-template-columns:1fr}.primary-grid{grid-template-columns:1fr}main{gap:var(--s6)}}
-@media(max-width:620px){h1{display:grid;gap:2px;font-size:1.5rem}.metric{padding:var(--s4)}.metric-value{font-size:1.65rem}.section-head{align-items:start}.delivery-times,.phase-grid{grid-template-columns:1fr}.run-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.run-facts div:last-child{grid-column:1/-1}.warning-list li{grid-template-columns:1fr auto}.warning-list p{grid-column:1/-1}.responsive-table table,.responsive-table tbody,.responsive-table tr,.responsive-table td{display:block;min-width:0}.responsive-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}.responsive-table tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s3);padding:var(--s4);border-top:1px solid var(--line)}.responsive-table tbody tr:first-child{border-top:0}.responsive-table td{padding:0;border:0;overflow-wrap:anywhere}.responsive-table td:first-child{grid-column:1/-1}.responsive-table td::before{content:attr(data-label);display:block;margin-bottom:2px;color:var(--dim);font-size:.7rem}.deep-dive>summary{padding:var(--s4)}.detail-body{padding:var(--s3)}}
-@media(forced-colors:active){.df-selected path{stroke:Highlight;stroke-width:4}.df-observed,.df-exception-label,.ds-flow .ds-terminal{color:CanvasText;fill:CanvasText}.df-node rect,.df-pm{stroke:CanvasText}.diagram-scroll:focus-visible{outline-color:Highlight}}
-</style></head><body><div class="wrap">
+@media(max-width:820px){body{padding:var(--s4)}.site-header{display:grid}.header-status,.status-badges{justify-content:flex-start;text-align:left}.summary-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.metric{border-top:1px solid var(--line)}.metric:nth-child(-n+2){border-top:0}.metric:nth-child(odd){border-left:0}.delivery-overview{grid-template-columns:1fr}.runtime-summary{grid-template-columns:repeat(3,minmax(0,1fr))}.runtime-phase-list{grid-template-columns:repeat(2,minmax(0,1fr))}.primary-grid,.run-list-dense{grid-template-columns:1fr}.run-list-dense .run-item{border-left:0}.run-list-dense .run-item:nth-child(2){border-top:1px solid var(--line)}main{gap:var(--s6)}}
+@media(max-width:620px){h1{display:grid;gap:2px;font-size:1.5rem}.header-status,.status-badges{display:grid;justify-items:start}.quality{white-space:normal}.metric{padding:var(--s4)}.metric-value{font-size:1.65rem}.section-head{align-items:start}.delivery-times,.phase-grid,.runtime-phase-list{grid-template-columns:1fr}.runtime-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.runtime-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.runtime-facts div:first-child{grid-column:1/-1}.run-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.run-facts div:last-child{grid-column:1/-1}.warning-list li{grid-template-columns:1fr auto}.warning-list p{grid-column:1/-1}.responsive-table table,.responsive-table tbody,.responsive-table tr,.responsive-table td{display:block;min-width:0}.responsive-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}.responsive-table tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s3);padding:var(--s4);border-top:1px solid var(--line)}.responsive-table tbody tr:first-child{border-top:0}.responsive-table td{padding:0;border:0;overflow-wrap:anywhere}.responsive-table td:first-child{grid-column:1/-1}.responsive-table td::before{content:attr(data-label);display:block;margin-bottom:2px;color:var(--dim);font-size:.7rem}.deep-dive>summary{padding:var(--s4)}.detail-body{padding:var(--s3)}.graph-legend,.diagram-legend{display:grid}}
+@media(max-width:360px){body{padding:var(--s3)}.summary-strip,.runtime-summary{grid-template-columns:1fr}.metric,.metric:nth-child(-n+2){border-top:1px solid var(--line);border-left:0}.metric:first-child{border-top:0}.run-facts{grid-template-columns:1fr}.run-facts div:last-child{grid-column:auto}.responsive-table tr{grid-template-columns:1fr}.responsive-table td:first-child{grid-column:auto}}
+@media(forced-colors:active){.df-selected path{stroke:Highlight;stroke-width:4}.df-observed,.df-exception-label,.ds-flow .ds-terminal{color:CanvasText;fill:CanvasText}.df-node rect,.df-pm{stroke:CanvasText}.graph-scroll:focus-visible,.diagram-scroll:focus-visible{outline-color:Highlight}.legend-dot,.legend-line{border-color:CanvasText;background:CanvasText}}
+</style></head><body data-observation-freshness="${initiallyStale ? 'stale' : 'fresh'}"><div class="wrap">
 
 <a class="skip-link" href="#main">ข้ามไปยังสถานะงาน</a>
 
@@ -1041,10 +1275,14 @@ footer{margin-top:var(--s7);padding-top:var(--s4);border-top:1px solid var(--lin
     <span class="eyebrow">tmux teams · live status</span>
     <h1>Pulse <span class="repo">${esc(repoName)}</span></h1>
     <p class="scope">ติดตามเฉพาะ worker ที่ระบบสั่งในโปรเจกต์นี้ · หน้านี้อ่านข้อมูลอย่างเดียว</p>
+    <a class="loop-graph-link" href="loop-graph.html">เปิด ACP Loop Graph เต็มจอ</a>
   </div>
-  <div class="header-status">
-    <span class="quality ${qualityClass}">${qualityLabel}</span>
-    <div class="age">อัปเดตล่าสุด ${absoluteTime(snapshot.generated_at)}รีเฟรชทุก ${refreshInterval} วิ</div>
+  <div class="header-status" data-observation-expires-at="${esc(expiresAt)}" data-refresh-interval="${refreshInterval}">
+    <div class="status-badges">
+      <span class="quality ${qualityClass}" title="ความครบถ้วนของหลักฐานที่ Pulse อ่านได้">${qualityLabel}</span>
+      <span id="freshness-status" class="quality ${freshnessClass}" role="status" aria-live="polite">${freshnessLabel}</span>
+    </div>
+    <div class="age"><span id="pulse-timezone-label" class="time-zone-label">${esc(TIME_ZONE_LABEL)}</span><span>ข้อมูลที่สังเกต ณ</span>${absoluteTime(snapshot.generated_at)}<span id="freshness-note" class="freshness-note">${!expiryIsValid ? 'ตรวจเวลาหมดอายุไม่ได้' : initiallyStale ? 'ตัวสังเกตการณ์ไม่อัปเดตตามรอบ' : `กำหนดรีเฟรชทุก ${refreshInterval} วิ`}</span></div>
   </div>
 </header>
 
@@ -1054,8 +1292,8 @@ footer{margin-top:var(--s7);padding-top:var(--s4);border-top:1px solid var(--lin
     <div class="summary-strip" aria-label="ภาพรวมสถานะ">
       ${metric('ต้องตรวจสอบ', attentionTotal, 'งานผิดปกติหรือข้อมูลขาด', attentionTotal ? 'bad' : '')}
       ${metric('กำลังทำงาน', runningTotal, 'worker ที่กำลังเริ่มหรือทำงาน', 'ok')}
-      ${metric('รอ PM ตรวจผล', waitingTotal, 'มีผลลัพธ์แล้ว รอคำตัดสิน', waitingTotal ? 'warn' : '')}
-      ${metric('ผลล่าสุด', recent.length, `ผ่าน ${passTotal} · ให้แก้ไข ${rejectTotal}`)}
+      ${metric('รอตรวจผล', waitingTotal, 'มีผลลัพธ์แล้ว แต่ยังไม่มีคำตัดสินที่บันทึก', waitingTotal ? 'warn' : '')}
+      ${metric('บันทึกล่าสุด', recent.length, `ผ่าน ${passTotal} · ให้แก้ไข ${rejectTotal}`)}
     </div>
     ${snapshot.summary.truncated ? `<p class="limit-note">ยอดรวมครอบคลุมทุกงาน ส่วนรายละเอียดด้านล่างแสดง 100 งานแรก · ยังมีอีก ${snapshot.summary.truncated} งาน</p>` : ''}
   </section>
@@ -1064,17 +1302,19 @@ footer{margin-top:var(--s7);padding-top:var(--s4);border-top:1px solid var(--lin
 
   ${deliverySection}
 
-  <div class="primary-grid">
+  ${deliveryRuntimeSection}
+
+  <div class="primary-grid${densePrimary ? ' primary-grid-stacked' : ''}" data-layout="${densePrimary ? 'stacked-dense' : 'paired'}">
     <section aria-labelledby="attention-title">
       <div class="section-head"><div><span class="eyebrow">ทำก่อน</span><h2 id="attention-title">ต้องตรวจสอบ</h2><p>งานผิดปกติหรือยังมีหลักฐานไม่ครบ</p></div><span class="count">${attentionTotal} งาน</span></div>
-      <div class="surface">${attention.length ? `<div class="run-list">${attention.map(a => runItem(a, 'เงียบมา')).join('')}</div>`
+      <div class="surface">${attention.length ? runList(attention, 'เงียบมา', denseAttention)
         : '<p class="empty"><strong>ยังไม่มีงานผิดปกติ</strong>ไม่พบงานที่หยุดหรือขาดหลักฐาน</p>'}</div>
     </section>
 
     <section aria-labelledby="running-title">
-      <div class="section-head"><div><span class="eyebrow">สถานะปัจจุบัน</span><h2 id="running-title">กำลังทำงาน</h2><p>รวมงานที่กำลังเริ่ม ทำงาน และรอ PM ตรวจผล</p></div><span class="count">${runningTotal + waitingTotal} งาน</span></div>
-      <div class="surface">${running.length ? `<div class="run-list">${running.map(a => runItem(a, 'ผ่านไป')).join('')}</div>`
-        : '<p class="empty"><strong>ยังไม่มี worker ทำงาน</strong>ระบบพร้อมรับงานใหม่</p>'}</div>
+      <div class="section-head"><div><span class="eyebrow">หลักฐานที่ติดตาม</span><h2 id="running-title">งานที่กำลังเดินหรือรอตรวจ</h2><p>รวมงานที่กำลังเริ่ม กำลังทำ และมีผลลัพธ์รอตรวจตามหลักฐานล่าสุด</p></div><span class="count">${runningTotal + waitingTotal} งาน</span></div>
+      <div class="surface">${tracked.length ? runList(tracked, 'ผ่านไป', denseTracked)
+        : '<p class="empty"><strong>ยังไม่พบงานที่กำลังเดิน</strong>ไม่พบ worker ที่กำลังเริ่ม ทำงาน หรือมีผลลัพธ์รอตรวจในหลักฐานล่าสุด</p>'}</div>
     </section>
   </div>
 
@@ -1084,24 +1324,25 @@ footer{margin-top:var(--s7);padding-top:var(--s4);border-top:1px solid var(--lin
   </section>` : ''}
 
   <section aria-labelledby="recent-title">
-    <div class="section-head"><div><span class="eyebrow">หลักฐานล่าสุด</span><h2 id="recent-title">ผลการทำงานล่าสุด</h2><p>คำตัดสินของ PM เวลาเริ่ม และเวลาที่ใช้</p></div><span class="count">${recent.length} รายการ</span></div>
-    <div class="surface table-scroll responsive-table" tabindex="0">${recent.length ? `<table><caption>ผลการทำงานล่าสุด</caption><thead><tr><th>งาน</th><th>worker</th><th>ผลจาก worker</th><th>คำตัดสิน PM</th><th>เริ่ม</th><th>ใช้เวลา</th><th>dispatch</th></tr></thead><tbody>
+    <div class="section-head"><div><span class="eyebrow">หลักฐานที่บันทึกไว้</span><h2 id="recent-title">บันทึกผลล่าสุด</h2><p>ผลปลายทาง เวลาเริ่ม และเวลาที่ใช้; verdict มาจากฟิลด์เดิม <code>pm_verdict</code></p></div><span class="count">${recent.length} รายการ</span></div>
+    <div class="surface table-scroll responsive-table" tabindex="0">${recent.length ? `<table><caption>บันทึกผลล่าสุด; คำตัดสินอ่านจากฟิลด์เดิม pm_verdict</caption><thead><tr><th>งาน</th><th>worker</th><th>ผลจาก worker</th><th>คำตัดสินที่บันทึก (pm_verdict)</th><th>เริ่ม</th><th>ใช้เวลา</th><th>dispatch</th></tr></thead><tbody>
 ${recent.map(r => `<tr>
   <td data-label="งาน"><code>${esc(r.task_id)}</code></td><td data-label="worker">${esc(r.worker)}</td>
   <td data-label="ผลจาก worker">${esc(terminalLabel(r.terminal))}</td>
-  <td data-label="คำตัดสิน PM" class="verdict-${esc(r.pm_verdict)}">${esc(verdictLabel(r.pm_verdict))}</td>
+  <td data-label="คำตัดสินที่บันทึก (pm_verdict)" class="verdict-${esc(r.pm_verdict)}">${esc(verdictLabel(r.pm_verdict))}</td>
   <td data-label="เริ่ม">${absoluteTime(r.started_at)}</td>
   <td data-label="ใช้เวลา" class="num">${r.wait_sec == null || r.wait_sec < 0 ? 'ยังไม่วัด' : dur(r.wait_sec)}</td>
   <td data-label="dispatch"><code>${esc(r.dispatch_id || 'ไม่ระบุ')}</code></td>
 </tr>`).join('')}</tbody></table>`
-      : '<p class="empty"><strong>ยังไม่มีผลการทำงาน</strong>รายการจะปรากฏเมื่อ PM บันทึกคำตัดสิน</p>'}</div>
+      : '<p class="empty"><strong>ยังไม่มีบันทึกผล</strong>รายการจะปรากฏเมื่อมีคำตัดสินถูกบันทึกในฟิลด์เดิม pm_verdict</p>'}</div>
+    <p class="legacy-note"><strong>ขอบเขตหลักฐาน:</strong> <code>pm_verdict</code> เป็นชื่อฟิลด์เดิมเพื่อความเข้ากันได้ย้อนหลัง การมีค่าไม่ได้ยืนยันว่า PM หรือทีมเฟสใดเป็นผู้ตรวจ และไม่เท่ากับการตรวจรับหรืออนุมัติทางธุรกิจ</p>
   </section>
 
   <section aria-labelledby="details-title">
     <div class="section-head"><div><span class="eyebrow">เปิดเมื่ออยากเจาะลึก</span><h2 id="details-title">รายละเอียดระบบ</h2><p>เส้นทางงาน วิธีติดตาม และสถิติ worker</p></div></div>
     <div class="details-stack">
-      <details class="deep-dive" data-persist-key="progress"><summary>ความคืบหน้าของแต่ละงาน</summary><div class="detail-body graph-scroll">${renderGraph(graphRows(snapshot))}</div></details>
-      <details class="deep-dive" data-persist-key="system-loop"><summary>วงจรการสั่งงาน worker และการตรวจผล</summary><div class="detail-body"><div class="diagram-scroll" tabindex="0" role="region" aria-label="แผนภาพวงจรการสั่งงาน worker และการตรวจผลแบบเลื่อนแนวนอนได้">${renderLoop(snapshot)}</div><p class="diagram-note">นี่คือวงจร dispatch/verification ของ worker ไม่ใช่ระบบส่งมอบทั้งหมด; เส้นประหมายถึงเส้นทางที่ระบบรู้ว่ามี แต่ยังไม่มีข้อมูลยืนยันว่าเกิดขึ้นจริง</p></div></details>
+      <details class="deep-dive" data-persist-key="progress"><summary>ความคืบหน้าของแต่ละงาน</summary><div class="detail-body">${renderGraphLegend()}<div class="graph-scroll" tabindex="0" role="region" aria-label="กราฟความคืบหน้าของแต่ละงานแบบเลื่อนแนวนอนได้">${renderGraph(graph)}</div>${renderGraphEquivalent(graph)}</div></details>
+      <details class="deep-dive" data-persist-key="system-loop"><summary>ลูปสองชั้น: ทีมตรวจ worker · PM ติดตาม phase</summary><div class="detail-body"><ul class="diagram-legend" aria-label="วิธีอ่านเส้นในโมเดลลูปสองชั้น"><li><span class="legend-line" aria-hidden="true"></span>เส้นทึบ · เส้นทางตามโมเดล ไม่ใช่ event สด</li><li><span class="legend-line dashed" aria-hidden="true"></span>เส้นประ · transition ที่ Pulse ยังไม่วัดว่าเกิดจริง</li><li><span class="legend-line bad" aria-hidden="true"></span>เส้นแดง · ทางยกระดับข้อยกเว้น; ตัวเลขมาจากหลักฐานหยุดผิดปกติ</li></ul><div class="diagram-scroll" tabindex="0" role="region" aria-label="แผนภาพลูปสองชั้นเชิงบรรทัดฐานของการสั่งงาน worker และการส่งมอบแบบเลื่อนแนวนอนได้">${renderLoop(snapshot)}</div><p class="diagram-note"><strong>โมเดลเชิงบรรทัดฐาน ไม่ใช่สถานะสด</strong> ทีมเฟสเป็นเจ้าของ dispatch/verification ตามปกติ ส่วน PM คุมลูปชั้นนอกและรับเฉพาะข้อยกเว้น; ตัวเลขมาจากหลักฐาน dispatch และ verdict เดิมที่ Pulse อ่านได้ แต่เส้นทางของโมเดลไม่ได้ยืนยันว่า transition เกิดขึ้นจริง.</p><section class="diagram-equivalent" aria-labelledby="worker-loop-equivalent-title"><h3 id="worker-loop-equivalent-title">ข้อความเทียบเท่าลูปสองชั้น</h3><ol><li>ตามโมเดล PM กำหนดเป้าหมาย ติดตาม phase, handoff และ bottleneck โดยไม่รับตรวจ worker ทุกงาน</li><li>ตามโมเดลทีมเฟสแตกงานเป็น slice พร้อม validation แล้ว dispatch ให้ worker</li><li>ตามโมเดล worker ส่งหลักฐานกลับให้ผู้ตรวจของทีม; ผ่านจึงนำไปประกอบ exit artifact</li><li>งานที่ไม่ผ่านควรสร้าง dispatch หรือ attempt ใหม่ภายในทีม; Pulse ยังไม่วัดว่าการวนนี้เกิดจริง</li><li>exception, deadlock, policy conflict หรือ bottleneck เท่านั้นที่โมเดลยกระดับให้ PM แก้</li></ol></section></div></details>
       <details class="deep-dive" data-persist-key="worker-stats"><summary>สถิติ worker</summary><div class="detail-body surface table-scroll responsive-table" tabindex="0">${st.length ? `<table><caption>สถิติ worker</caption><thead><tr><th>worker</th><th>รอบทั้งหมด</th><th>ให้แก้ไข</th><th>เวลากลาง</th></tr></thead><tbody>
 ${st.map(s => `<tr><td data-label="worker">${esc(s.worker)}</td><td data-label="รอบทั้งหมด" class="num">${s.runs}</td>
   <td data-label="ให้แก้ไข" class="num ${s.rejected ? 'verdict-reject' : ''}">${s.rejected}</td>
@@ -1116,7 +1357,9 @@ ${st.map(s => `<tr><td data-label="worker">${esc(s.worker)}</td><td data-label="
     <li>Pulse ตรวจหลักฐานจาก process, tmux, dispatch, outbox และ event โดยไม่เชื่อไฟล์ประกาศสถานะเพียงอย่างเดียว</li>
     <li>“หยุดโดยไม่มีบันทึก” หมายถึงพบหลักฐานการสั่งงาน แต่ไม่พบทั้งกระบวนการและผลลัพธ์</li>
     <li>ข้อมูลควบคุมบางรายการยังแยกเจ้าของตามโปรเจกต์ไม่ได้ จึงแสดงเป็น “ยังยืนยันเจ้าของไม่ได้”</li>
-    <li>หากเวลา “อัปเดตล่าสุด” หยุดเดิน ให้ตรวจตัวสังเกตการณ์ก่อนสรุปว่าไม่มีงาน</li>
+    <li>ฟิลด์เดิม <code>pm_verdict</code> บอกเพียงว่ามีคำตัดสินถูกบันทึก ไม่ยืนยันผู้ตรวจ การตรวจรับ หรือการอนุมัติธุรกิจ</li>
+    <li>ลูปสองชั้นเป็นโมเดลเชิงบรรทัดฐาน; เส้นทางไม่ได้ยืนยันว่า phase handoff หรือ transition เกิดขึ้นจริง</li>
+    <li>หากป้าย freshness แสดง “ข้อมูลหมดอายุ” ให้ตรวจตัวสังเกตการณ์ก่อนสรุปสถานะงาน</li>
   </ul></details>
 </footer>
 </div>
@@ -1130,6 +1373,35 @@ ${st.map(s => `<tr><td data-label="worker">${esc(s.worker)}</td><td data-label="
       detail.addEventListener('toggle', () => sessionStorage.setItem(key, detail.open ? 'open' : 'closed'))
     } catch { /* storage may be disabled; native details still work */ }
   }
+
+  const header = document.querySelector('[data-observation-expires-at]')
+  const status = document.querySelector('#freshness-status')
+  const note = document.querySelector('#freshness-note')
+  let expiryTimer = 0
+  const updateFreshness = () => {
+    if (!header || !status || !note) return
+    if (expiryTimer) clearTimeout(expiryTimer)
+    const expiry = Date.parse(header.dataset.observationExpiresAt || '')
+    const valid = Number.isFinite(expiry)
+    const stale = !valid || Date.now() >= expiry
+    document.body.dataset.observationFreshness = stale ? 'stale' : 'fresh'
+    status.classList.toggle('ok', !stale)
+    status.classList.toggle('warn', stale)
+    status.textContent = !valid ? 'ตรวจเวลาข้อมูลไม่ได้' : stale ? 'ข้อมูลหมดอายุ' : 'ข้อมูลสด'
+    note.textContent = !valid
+      ? 'ตรวจเวลาหมดอายุไม่ได้'
+      : stale
+        ? 'ตัวสังเกตการณ์ไม่อัปเดตตามรอบ'
+        : 'กำหนดรีเฟรชทุก ' + (header.dataset.refreshInterval || '?') + ' วิ'
+    if (!stale) {
+      const delay = Math.min(Math.max(expiry - Date.now() + 25, 25), 2_147_000_000)
+      expiryTimer = setTimeout(updateFreshness, delay)
+    }
+  }
+  updateFreshness()
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') updateFreshness()
+  })
 })()
 </script>
 </body></html>`
@@ -1138,6 +1410,7 @@ ${st.map(s => `<tr><td data-label="worker">${esc(s.worker)}</td><td data-label="
 const lockWait = new Int32Array(new SharedArrayBuffer(4))
 const pause = (ms) => Atomics.wait(lockWait, 0, 0, ms)
 const PUBLISH_LEASE_MS = 5 * 60_000
+const PUBLISH_LOCK_WAIT_MS = 10_000
 
 function readPublishToken() {
   try { return readFileSync(PUBLISH_LOCK, 'utf8').trim() }
@@ -1151,7 +1424,9 @@ function assertPublishLock(token) {
 function claimPublishLock() {
   mkdirSync(STORE, { recursive: true })
   const token = `${process.pid}:${randomUUID()}`
-  for (let attempt = 0; attempt < 200; attempt++) {
+  const deadline = Date.now() + PUBLISH_LOCK_WAIT_MS
+  let attempt = 0
+  while (Date.now() < deadline) {
     try {
       writeFileSync(PUBLISH_LOCK, `${token}\n`, { flag: 'wx' })
       return token
@@ -1173,7 +1448,10 @@ function claimPublishLock() {
         }
         continue
       }
-      pause(5)
+      // A bounded stagger avoids waking every concurrent publisher on the
+      // same 5ms cadence while still keeping interactive publication prompt.
+      pause(Math.min(5 + attempt, 50))
+      attempt += 1
     }
   }
   throw new Error('publish lock busy')
@@ -1203,41 +1481,42 @@ function atomicWrite(path, content, publishToken = null) {
   }
 }
 
-function readDeliveryLoopInput() {
-  if (!DELIVERY_LOOP_PATH) return { value: null, issue: null }
+function readProjectionInput(path, unreadableCode, invalidCode) {
+  if (!path) return { value: null, issue: null }
+  let descriptor = null
   try {
-    const stats = statSync(DELIVERY_LOOP_PATH)
-    if (!stats.isFile()) {
-      return { value: null, issue: 'DELIVERY_LOOP_INPUT_UNREADABLE' }
+    descriptor = openSync(path, 'r')
+    const stats = fstatSync(descriptor)
+    if (!stats.isFile()) return { value: null, issue: unreadableCode }
+    if (stats.size > MAX_INPUT_BYTES) return { value: null, issue: invalidCode }
+    const buffer = Buffer.alloc(MAX_INPUT_BYTES + 1)
+    const bytesRead = readSync(descriptor, buffer, 0, buffer.length, 0)
+    if (bytesRead > MAX_INPUT_BYTES) return { value: null, issue: invalidCode }
+    return { value: JSON.parse(buffer.toString('utf8', 0, bytesRead)), issue: null }
+  } catch (error) {
+    return {
+      value: null,
+      issue: error instanceof SyntaxError ? invalidCode : unreadableCode,
     }
-    if (stats.size > MAX_INPUT_BYTES) {
-      return { value: null, issue: 'DELIVERY_LOOP_INPUT_INVALID' }
-    }
-    let descriptor = null
-    try {
-      descriptor = openSync(DELIVERY_LOOP_PATH, 'r')
-      const buffer = Buffer.alloc(MAX_INPUT_BYTES + 1)
-      const bytesRead = readSync(descriptor, buffer, 0, buffer.length, 0)
-      if (bytesRead > MAX_INPUT_BYTES) {
-        return { value: null, issue: 'DELIVERY_LOOP_INPUT_INVALID' }
-      }
-      return {
-        value: JSON.parse(buffer.toString('utf8', 0, bytesRead)),
-        issue: null,
-      }
-    } catch (error) {
-      return {
-        value: null,
-        issue: error instanceof SyntaxError
-          ? 'DELIVERY_LOOP_INPUT_INVALID'
-          : 'DELIVERY_LOOP_INPUT_UNREADABLE',
-      }
-    } finally {
-      if (descriptor !== null) try { closeSync(descriptor) } catch { /* best effort */ }
-    }
-  } catch {
-    return { value: null, issue: 'DELIVERY_LOOP_INPUT_UNREADABLE' }
+  } finally {
+    if (descriptor !== null) try { closeSync(descriptor) } catch { /* best effort */ }
   }
+}
+
+function readDeliveryLoopInput() {
+  return readProjectionInput(
+    DELIVERY_LOOP_PATH,
+    'DELIVERY_LOOP_INPUT_UNREADABLE',
+    'DELIVERY_LOOP_INPUT_INVALID',
+  )
+}
+
+function readDeliveryRuntimeInput() {
+  return readProjectionInput(
+    DELIVERY_RUNTIME_PATH,
+    'DELIVERY_RUNTIME_INPUT_UNREADABLE',
+    'DELIVERY_RUNTIME_INPUT_INVALID',
+  )
 }
 
 function atomicWriteIfChanged(path, content, publishToken = null) {
@@ -1249,16 +1528,43 @@ function atomicWriteIfChanged(path, content, publishToken = null) {
   atomicWrite(path, content, publishToken)
 }
 
+const sha256 = (content) => createHash('sha256').update(content).digest('hex')
+const sourceIdentity = (path) => {
+  if (!path) return null
+  let canonical = path
+  try { canonical = realpathSync(path) } catch { /* unresolved inputs remain stable and private */ }
+  return `sha256:${sha256(canonical)}`
+}
+
+function bundleManifest(snapshot, jsonText, html, loopGraphHtml) {
+  return `${JSON.stringify({
+    schema: 'tmux-teams.pulse-bundle',
+    schema_version: 2,
+    snapshot_id: snapshot.snapshot_id,
+    files: {
+      data: { path: 'pulse.json', sha256: sha256(jsonText) },
+      dashboard: { path: 'pulse.html', sha256: sha256(html) },
+      loop_graph: { path: 'loop-graph.html', sha256: sha256(loopGraphHtml) },
+      font_css: { path: FONT_CSS_NAME, sha256: sha256(KANIT_FONT_CSS) },
+      d3_js: { path: D3_JS_NAME, sha256: sha256(D3_JS) },
+      d3_license: { path: D3_LICENSE_NAME, sha256: sha256(D3_LICENSE) },
+    },
+  }, null, 2)}\n`
+}
+
 function priorStream(view, targetVersion) {
   if (!existsSync(JSON_OUT)) return { streamId: randomUUID(), sequence: 1 }
   try {
     const prior = JSON.parse(readFileSync(JSON_OUT, 'utf8'))
     if (prior.schema !== PULSE_SCHEMA ||
-        ![PULSE_SCHEMA_VERSION, PULSE_SCHEMA_VERSION_V2].includes(prior.schema_version) ||
+        ![
+          PULSE_SCHEMA_VERSION, PULSE_SCHEMA_VERSION_V2, PULSE_SCHEMA_VERSION_V3,
+          PULSE_SCHEMA_VERSION_V4,
+        ]
+          .includes(prior.schema_version) ||
         !UUID_RE.test(prior.stream_id) || !Number.isSafeInteger(prior.sequence) ||
         prior.sequence < 1 || prior.sequence >= Number.MAX_SAFE_INTEGER) throw new Error('invalid prior pulse')
-    if (prior.schema_version === PULSE_SCHEMA_VERSION &&
-        targetVersion === PULSE_SCHEMA_VERSION_V2) {
+    if (prior.schema_version !== targetVersion) {
       view.diagnostics.push({
         code: 'SCHEMA_UPGRADED',
         severity: 'info',
@@ -1277,8 +1583,9 @@ function once() {
   const startedAt = Date.now()
   const view = derive(startedAt)
   const finishedAt = Date.now()
-  const targetVersion = DELIVERY_LOOP_PATH ? PULSE_SCHEMA_VERSION_V2 : PULSE_SCHEMA_VERSION
+  const targetVersion = PULSE_SCHEMA_VERSION_V4
   const deliveryLoopInput = readDeliveryLoopInput()
+  const deliveryRuntimeInput = readDeliveryRuntimeInput()
   mkdirSync(STORE, { recursive: true })
   const ignore = join(STORE, '.gitignore')
   if (!existsSync(ignore)) writeFileSync(ignore, '*\n')
@@ -1289,21 +1596,51 @@ function once() {
       ...stream, startedAt, finishedAt, intervalSec: INTERVAL,
       repoName: REPO.split('/').pop(),
     }
-    const snapshot = targetVersion === PULSE_SCHEMA_VERSION_V2
-      ? projectPulseV2(view, meta, deliveryLoopInput.value, deliveryLoopInput.issue)
-      : projectPulseV1(view, meta)
+    const snapshot = projectPulseV4(
+      view,
+      meta,
+      deliveryLoopInput.value,
+      deliveryLoopInput.issue,
+      Boolean(DELIVERY_LOOP_PATH),
+      deliveryRuntimeInput.value,
+      deliveryRuntimeInput.issue,
+      Boolean(DELIVERY_RUNTIME_PATH),
+    )
     const jsonText = JSON.stringify(snapshot, null, 2) + '\n'
     // Render the exact serialized contract, not the internal projection object.
     // This makes pulse.json the literal SSOT and catches serialization drift.
     const publishedSnapshot = JSON.parse(jsonText)
     const html = render(publishedSnapshot)
+    const loopGraphHtml = renderPulseLoopGraph(publishedSnapshot, {
+      fontCssName: FONT_CSS_NAME,
+      d3JsName: D3_JS_NAME,
+      timeZone: DISPLAY_TIME_ZONE,
+      timeZoneLabel: TIME_ZONE_LABEL,
+    })
+    const bundleText = bundleManifest(publishedSnapshot, jsonText, html, loopGraphHtml)
     assertPublishLock(token)
     atomicWriteIfChanged(FONT_CSS_OUT, KANIT_FONT_CSS, token)
+    assertPublishLock(token)
+    atomicWriteIfChanged(D3_JS_OUT, D3_JS, token)
+    assertPublishLock(token)
+    atomicWriteIfChanged(D3_LICENSE_OUT, D3_LICENSE, token)
     assertPublishLock(token)
     atomicWrite(JSON_OUT, jsonText, token)
     assertPublishLock(token)
     atomicWrite(OUT, html, token)
-    return { htmlPath: OUT, jsonText, snapshot: publishedSnapshot }
+    assertPublishLock(token)
+    atomicWrite(LOOP_GRAPH_OUT, loopGraphHtml, token)
+    // This commit marker is written last. Readers validate its hashes and
+    // snapshot id, then re-read it to detect a publication racing their read.
+    assertPublishLock(token)
+    atomicWrite(BUNDLE_OUT, bundleText, token)
+    return {
+      htmlPath: OUT,
+      loopGraphPath: LOOP_GRAPH_OUT,
+      bundlePath: BUNDLE_OUT,
+      jsonText,
+      snapshot: publishedSnapshot,
+    }
   } finally {
     releasePublishLock(token)
   }
@@ -1348,8 +1685,10 @@ function pidAlive(pid) {
 function desiredWatcherConfig(pid) {
   return {
     pid,
-    schema_version: DELIVERY_LOOP_PATH ? PULSE_SCHEMA_VERSION_V2 : PULSE_SCHEMA_VERSION,
-    delivery_loop_path: DELIVERY_LOOP_PATH,
+    schema_version: PULSE_SCHEMA_VERSION_V4,
+    delivery_loop_source: sourceIdentity(DELIVERY_LOOP_PATH),
+    delivery_runtime_source: sourceIdentity(DELIVERY_RUNTIME_PATH),
+    time_zone: DISPLAY_TIME_ZONE,
   }
 }
 
@@ -1359,16 +1698,22 @@ function readWatcherConfig() {
     if (!stats.isFile() || stats.size > 4096) return null
     const value = JSON.parse(readFileSync(WATCH_CONFIG, 'utf8'))
     if (!value || typeof value !== 'object' || Array.isArray(value) ||
-        Object.keys(value).length !== 3 ||
+        Object.keys(value).length !== 5 ||
         !Object.hasOwn(value, 'pid') ||
         !Object.hasOwn(value, 'schema_version') ||
-        !Object.hasOwn(value, 'delivery_loop_path') ||
+        !Object.hasOwn(value, 'delivery_loop_source') ||
+        !Object.hasOwn(value, 'delivery_runtime_source') ||
+        !Object.hasOwn(value, 'time_zone') ||
         !Number.isSafeInteger(value.pid) || value.pid < 1 ||
-        ![PULSE_SCHEMA_VERSION, PULSE_SCHEMA_VERSION_V2].includes(value.schema_version) ||
-        !(value.delivery_loop_path === null ||
-          typeof value.delivery_loop_path === 'string') ||
-        (value.schema_version === PULSE_SCHEMA_VERSION) !==
-          (value.delivery_loop_path === null)) return null
+        value.schema_version !== PULSE_SCHEMA_VERSION_V4 ||
+        !(value.delivery_loop_source === null ||
+          typeof value.delivery_loop_source === 'string' &&
+            /^sha256:[0-9a-f]{64}$/.test(value.delivery_loop_source)) ||
+        !(value.delivery_runtime_source === null ||
+          typeof value.delivery_runtime_source === 'string' &&
+            /^sha256:[0-9a-f]{64}$/.test(value.delivery_runtime_source)) ||
+        typeof value.time_zone !== 'string' ||
+        value.time_zone.length === 0) return null
     return value
   } catch { return null }
 }
@@ -1383,7 +1728,9 @@ function watcherConfigMatches(pid) {
   return actual !== null &&
     actual.pid === desired.pid &&
     actual.schema_version === desired.schema_version &&
-    actual.delivery_loop_path === desired.delivery_loop_path
+    actual.delivery_loop_source === desired.delivery_loop_source &&
+    actual.delivery_runtime_source === desired.delivery_runtime_source &&
+    actual.time_zone === desired.time_zone
 }
 
 // Same single-operator O_EXCL pattern as deliver.sh: one caller claims the
@@ -1430,7 +1777,7 @@ if (cmd === 'ensure') {
     if (!claim.pid) { console.error('[pulse] could not claim watcher pidfile'); process.exit(1) }
     if (!watcherConfigMatches(claim.pid)) {
       console.error(
-        '[pulse] watcher mode/input mismatch; stop the existing watcher before changing --delivery-loop',
+        '[pulse] watcher mode/input mismatch; stop the existing watcher before changing --delivery-loop, --delivery-runtime, or --time-zone',
       )
       process.exit(1)
     }
@@ -1452,6 +1799,8 @@ if (cmd === 'ensure') {
   }
   const watchArgs = [THIS_SCRIPT, 'watch', REPO, '--interval', String(INTERVAL), '--managed']
   if (DELIVERY_LOOP_PATH) watchArgs.push('--delivery-loop', DELIVERY_LOOP_PATH)
+  if (DELIVERY_RUNTIME_PATH) watchArgs.push('--delivery-runtime', DELIVERY_RUNTIME_PATH)
+  watchArgs.push('--time-zone', DISPLAY_TIME_ZONE)
   const child = spawn(process.execPath,
     watchArgs, {
       detached: true,
@@ -1468,7 +1817,7 @@ if (cmd === 'ensure') {
   // after installing signal cleanup. Do not tell cron "started" before that
   // handoff is real, or an immediate shutdown can strand a stale pidfile.
   let ready = false
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < WATCH_HANDOFF_ATTEMPTS; i++) {
     await new Promise(resolve => setTimeout(resolve, 10))
     if (watcherPid() === child.pid) { ready = true; break }
     if (!pidAlive(child.pid)) break
@@ -1515,7 +1864,8 @@ if (managedClaimAccepted) {
 }
 
 console.log(`[pulse] watching ${REPO} every ${INTERVAL}s -> ${OUT}`)
-console.log('[pulse] open that file in a browser; it refreshes itself')
+console.log(`[pulse] full-screen ACP graph -> ${LOOP_GRAPH_OUT}`)
+console.log('[pulse] open either HTML file in a browser; both refresh themselves')
 const tick = () => {
   if (watcherPid() !== process.pid) {
     console.error('[pulse] watcher lost its pidfile claim; exiting')

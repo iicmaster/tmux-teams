@@ -34,6 +34,29 @@ function field(text, name) {
   return (text.match(new RegExp(`^${name}: (.+)$`, 'm')) || [, ''])[1]
 }
 
+for (const retiredName of ['gemini', 'Gemini', 'GEMINI', ' gemini ']) {
+  test(`the retired agent name ${JSON.stringify(retiredName)} is rejected before custom override or dispatch`, () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-retired-'))
+    const brief = join(cwd, 'brief.md')
+    writeFileSync(brief, 'this must never be dispatched\n')
+    const env = { ...process.env, ACP_CMD: `node ${MOCK}` }
+    const result = spawnSync('node', [
+      COMPANION,
+      retiredName,
+      cwd,
+      'task-retired-agent',
+      brief,
+      '30',
+    ], { cwd, encoding: 'utf8', env })
+
+    assert.equal(result.status, 2)
+    assert.match(result.stderr, /unsupported agent/)
+    assert.match(result.stderr, /claude\|codex\|agy/)
+    assert.equal(existsSync(join(cwd, '.tmux-teams', 'dispatch')), false)
+    assert.equal(eventTexts(cwd).length, 0)
+  })
+}
+
 test('renders every session/update kind and completes via the outbox', () => {
   const r = run('task-render')
   assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
@@ -130,6 +153,41 @@ test('records one mechanical KMS event without inventing a PM judgement', () => 
   assert.match(events[0], /^started_at: \d{4}-\d{2}-\d{2}T/m)
   assert.doesNotMatch(events[0], /^pm_verdict:/m)
   assert.doesNotMatch(events[0], /^lesson:/m)
+})
+
+test('an explicit delivery phase is copied to the dispatch footprint and terminal event', () => {
+  const r = run('task-phase', { TMUX_TEAMS_PHASE: 'Development' })
+  assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
+  const footprint = readFileSync(
+    join(r.cwd, '.tmux-teams', 'dispatch', 'task-phase.md'),
+    'utf8',
+  )
+  const events = eventTexts(r.cwd)
+  assert.equal(events.length, 1)
+  assert.equal(field(footprint, 'phase'), 'Development')
+  assert.equal(field(events[0], 'phase'), 'Development')
+  assert.equal(field(events[0], 'dispatch_id'), field(footprint, 'dispatch_id'))
+})
+
+test('an invalid delivery phase fails before dispatch, ACP, or KMS side effects', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-invalid-phase-'))
+  const r = run('task-invalid-phase', { TMUX_TEAMS_PHASE: 'Developmnt' }, cwd)
+  assert.equal(r.status, 2)
+  assert.match(r.stderr, /invalid TMUX_TEAMS_PHASE/)
+  assert.equal(existsSync(join(cwd, '.tmux-teams', 'dispatch')), false)
+  assert.deepEqual(eventTexts(cwd), [])
+})
+
+test('a governed marker cannot be bypassed by invoking the raw companion', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-governed-bypass-'))
+  mkdirSync(join(cwd, '.tmux-teams'), { recursive: true })
+  writeFileSync(join(cwd, '.tmux-teams', 'phase-gate.json'), '{malformed')
+  const result = run('task-governed-bypass', {}, cwd)
+  assert.equal(result.status, 2)
+  assert.match(result.stderr, /PHASE_GATE_MARKER_INVALID/)
+  assert.equal(existsSync(join(cwd, '.tmux-teams', 'dispatch')), false)
+  assert.equal(existsSync(join(cwd, '.tmux-teams', 'sessions')), false)
+  assert.deepEqual(eventTexts(cwd), [])
 })
 
 test('a repeated task id gets a fresh dispatch UUID without changing legacy paths', () => {

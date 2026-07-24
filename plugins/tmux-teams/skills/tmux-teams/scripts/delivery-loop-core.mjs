@@ -252,6 +252,21 @@ function validateArtifact(errors, artifact, phase, path) {
   }
 }
 
+/**
+ * Stable, small public boundary for callers that need phase-exit validation
+ * without depending on the delivery-loop aggregate validator.  The private
+ * accumulator remains the single source of the artifact rules.
+ */
+export function validatePhaseExitArtifact(phase, artifact) {
+  const errors = [];
+  if (!Object.hasOwn(PHASE_EXIT_ARTIFACTS, phase)) {
+    issue(errors, 'PHASE_INVALID', 'phase', 'Phase must have a defined phase-exit artifact.');
+  } else {
+    validateArtifact(errors, artifact, phase, 'artifact');
+  }
+  return { valid: errors.length === 0, errors };
+}
+
 function replayAttempt(errors, attempt, actors, path, assignedAt, analysisAsOf) {
   if (!Array.isArray(attempt.events) || attempt.events.length === 0) {
     issue(errors, 'ATTEMPT_EVENTS_REQUIRED', `${path}.events`, 'Recorded attempt events must be non-empty.');
