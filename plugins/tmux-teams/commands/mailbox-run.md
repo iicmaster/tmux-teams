@@ -29,5 +29,5 @@ Workflow({
 ```
 
 - Derive `repo` and `workers` from the arguments; use AskUserQuestion only when the target repo is genuinely ambiguous.
-- Gate completion per tmux-teams SKILL.md §7: PM adversarial verify for normal runs; for high stakes hand the evidence to party-mode's 3-model review via the review plugins (never through tmux workers).
+- Gate completion per tmux-teams SKILL.md §7: PM adversarial verify for normal runs; for high stakes hand the evidence to party-mode's bundled ACP-only gate, `node <party-mode>/scripts/review-gate.mjs <packet> <runner-owned-absolute-target>`. It requires AGY and exactly three valid, distinct acknowledged reviewers; do not substitute review plugins, MCP review tools, tmux workers, raw review CLIs, or a two-reviewer fallback.
 - Report with quoted worker outboxes, not paraphrase.

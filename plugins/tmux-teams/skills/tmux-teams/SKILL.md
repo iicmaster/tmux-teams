@@ -374,12 +374,12 @@ sibling skills (same skill root / same plugin `skills/` dir):
   - Normal runs: PM adversarial verify (§6 / mailbox-run.js Verify stage) —
     re-run the worker's own evidence command yourself.
   - High-stakes runs (production impact, multi-file, or Master asked for
-    review): hand the collected evidence to `party-mode`'s 3-model review
-    (opencode + codex + antigravity via their review **plugins** — per the
-    2026-06-18 directive reviews NEVER run through tmux workers; tmux is the
-    execution transport, review lanes are MCP). Gate rule = party-mode Phase 6:
-    ≥2-of-3 must return PASS to proceed; an objection ≥2 lanes share is
-    must-fix.
+    review): hand the collected evidence to `party-mode`'s bundled ACP-only
+    3-model gate: `node <party-mode>/scripts/review-gate.mjs <packet> <runner-owned-absolute-target>`. Reviews never
+    run through tmux workers, review plugins, MCP review tools, or raw review
+    CLIs. The final panel must be exactly three valid, distinct, acknowledged
+    reviewers and include AGY; AGY failure or any incomplete/invalid panel is
+    blocked. Matching findings from two or more final reviewers are must-fix.
 - **Precedence:** when the overall task already runs under `party-mode`
   (party-auto), party-mode's phases own the gates — §7 is then just the shape
   of its Phase 5 execution and Phase 6 evidence for tmux runs, not a second

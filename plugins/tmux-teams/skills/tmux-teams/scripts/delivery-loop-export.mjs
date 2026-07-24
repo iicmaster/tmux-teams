@@ -30,7 +30,7 @@ import {
 
 const PACK_SCHEMA = ['t', 'mux-teams.delivery-loop-evidence-pack'].join('')
 const PROJECTION_SCHEMA = ['t', 'mux-teams.delivery-loop-projection'].join('')
-const EXPORTER_VERSION = '0.7.1'
+const EXPORTER_VERSION = '0.8.0'
 const SOURCE_REVISION_RE = /^[0-9a-f]{40}$/
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/
 

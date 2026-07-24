@@ -23,6 +23,6 @@ If `party-mode` is unavailable, report the missing umbrella skill and stop inste
 
 - Keep the task read-only: inspect, compare, critique, and recommend; do not modify files, sync targets, commit, push, or deploy.
 - Apply the `domain hook` read-only when its activation condition holds (no interactive grill interview in this lane): report term/ADR candidates in the advisory output's `Domain candidates` field — never write `CONTEXT.md` or ADR files here.
-- Use the 3-model review when the advice is high-risk, architectural, cross-cutting, production-impacting, or explicitly adversarial.
+- Use the bundled ACP-only 3-model review through `node <party-mode>/scripts/review-gate.mjs <packet> <runner-owned-absolute-target>` when the advice is high-risk, architectural, cross-cutting, production-impacting, or explicitly adversarial. It requires AGY and exactly three valid, distinct, acknowledged reviewers; do not degrade to two reports or substitute plugins, MCP review tools, tmux/TUI review, or raw CLI review.
 - Skip the 3-model review for simple advice and report the lighter path.
 - If the user asks to implement the recommendation, switch to `party-auto` and feed the advisory open questions into its grill gate (Phase 3.5) so they are resolved before execution.
