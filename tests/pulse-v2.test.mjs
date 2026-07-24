@@ -329,12 +329,17 @@ test('an in-progress production exporter projection survives sanitizer, persiste
 
   const html = readFileSync(join(dir, '.tmux-teams', 'pulse.html'), 'utf8')
   const topology = svgById(html, 'delivery-topology-svg')
+  const workerLoop = svgById(html, 'dispatch-lifecycle-svg')
   const selected = [...topology.matchAll(
     /data-boundary="([^"]+)" data-selected="true" data-observed="true"/g,
   )].map(([, boundary]) => boundary)
   assert.match(topology, /data-selected-boundary="qa_to_project_delivery"/)
   assert.deepEqual(selected, ['qa_to_project_delivery'])
   assert.doesNotMatch(html, /ยังไม่ได้เลือกขอบเขต pilot ที่ยืนยันได้/)
+  assert.match(workerLoop, /ลูปชั้นใน · ทีมเฟสเป็นเจ้าของการตรวจ worker/)
+  assert.match(workerLoop, /ลูปชั้นนอก · PM ติดตาม phase และ handoff/)
+  assert.match(html, /ลูปสองชั้น: ทีมตรวจ worker · PM ติดตาม phase/)
+  assert.match(html, /PM กำหนดเป้าหมาย ติดตาม phase, handoff และ bottleneck โดยไม่รับตรวจ worker ทุกงาน/)
 
   const completed = exportedProjection(['accepted', 'rejected'])
   assert.deepEqual(completed.bottleneck, {
@@ -609,7 +614,12 @@ test('v1 HTML omits opt-in delivery diagrams and artifacts but retains the dispa
   assert.equal(snapshot.schema_version, 1)
   assert.ok(!Object.hasOwn(snapshot, 'delivery_loop'))
   assert.doesNotMatch(html, /delivery-topology-svg|handoff-sequence-svg|requirements_baseline|qa_release_evidence/)
-  assertSvgA11y(svgById(html, 'dispatch-lifecycle-svg'), 'worker-lifecycle-title', 'worker-lifecycle-desc')
+  const loop = svgById(html, 'dispatch-lifecycle-svg')
+  assertSvgA11y(loop, 'worker-lifecycle-title', 'worker-lifecycle-desc')
+  assert.match(loop, /โมเดลเชิงบรรทัดฐาน/)
+  assert.match(loop, /ไม่ใช่สถานะสด/)
+  assert.match(html, /เส้นทางของโมเดลไม่ได้ยืนยันว่า transition เกิดขึ้นจริง/)
+  assert.doesNotMatch(html, /pilot ที่สังเกต:/)
 })
 
 test('delivery rendering has no external runtime or chart dependency and keeps its local content-addressed font', () => {
