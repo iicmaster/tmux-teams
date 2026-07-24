@@ -373,17 +373,37 @@ function readRawStore(storeDir) {
 }
 
 export function readPhaseGateStore(storeDir) {
-  const result = readRawStore(storeDir)
-  const { store, head, events, aggregate } = result
-  const last = events.at(-1)
-  if (events.length !== head.count
-    || (events.length
-      ? last.event_id !== head.event_id || last.sequence !== head.sequence
-      : head.event_id !== null || head.sequence !== 0)
-    || !same(aggregate.head, { sequence: head.sequence, event_id: head.event_id })) {
-    throw error('COMMITTED_HEAD_MISMATCH', join(store, 'head.json'), 'Tail/full deletion, insertion, changed body, or interrupted head commit detected.')
+  let result
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    result = readRawStore(storeDir)
+    const { store, head, events, aggregate } = result
+    const last = events.at(-1)
+    const committed = events.length === head.count
+      && (events.length
+        ? last.event_id === head.event_id && last.sequence === head.sequence
+        : head.event_id === null && head.sequence === 0)
+      && same(aggregate.head, { sequence: head.sequence, event_id: head.event_id })
+    if (committed) return result
+    const prefix = head.count > 0 ? events[head.count - 1] : null
+    const inFlightHeadAdvance = events.length === head.count + 1
+      && (head.count > 0
+        ? prefix?.event_id === head.event_id && prefix?.sequence === head.sequence
+        : head.event_id === null && head.sequence === 0)
+    if (!inFlightHeadAdvance) {
+      throw error('COMMITTED_HEAD_MISMATCH', join(store, 'head.json'), 'Tail/full deletion, insertion, changed body, or interrupted head commit detected.')
+    }
+    let activeLock = null
+    try {
+      activeLock = inspectPhaseGateLock(store)
+    } catch (cause) {
+      if (cause?.code !== 'JSON_READ_FAILED'
+        || existsSync(join(store, 'locks', 'store.lock'))) throw cause
+    }
+    if (activeLock !== null && lockIsLive(activeLock)) {
+      throw error('STORE_BUSY', join(store, 'locks', 'store.lock'), 'A live writer is committing the observed store transition.')
+    }
   }
-  return result
+  throw error('COMMITTED_HEAD_MISMATCH', join(result.store, 'head.json'), 'Tail/full deletion, insertion, changed body, or interrupted head commit detected.')
 }
 
 export function appendPhaseGateEventAtomic(storeDir, event, { expected_head } = {}) {

@@ -173,6 +173,21 @@ test('tail/full deletion and changed event body are detected against committed h
   }
 })
 
+test('a live unrelated lock never masks committed tail deletion as ordinary writer contention', () => {
+  const store = makeStore()
+  let held
+  try {
+    const empty = readPhaseGateStore(store)
+    appendPhaseGateEventAtomic(store, genesis(), { expected_head: empty.aggregate.head })
+    held = acquirePhaseGateLock(store)
+    rmSync(join(store, 'events', eventNames(store).at(-1)))
+    assert.throws(() => readPhaseGateStore(store), (cause) => cause.code === 'COMMITTED_HEAD_MISMATCH')
+  } finally {
+    try { held?.release() } catch {}
+    rmSync(store, { recursive: true, force: true })
+  }
+})
+
 test('foreign and symlink entries fail closed in store namespaces', () => {
   for (const placement of ['root', 'events-symlink']) {
     const store = makeStore()
@@ -281,7 +296,10 @@ test('manual store reconciliation only advances head over one valid orphan event
     const next = appendPhaseGateEvent(snapshot.aggregate, genesis(), { expected_head: snapshot.aggregate.head })
     const digest = next.event.event_id.slice('sha256:'.length)
     const filename = `${String(next.event.sequence).padStart(12, '0')}-sha256_${digest}.json`
+    const held = acquirePhaseGateLock(store)
     writeFileSync(join(store, 'events', filename), `${JSON.stringify(next.event)}\n`, { flag: 'wx', mode: 0o600 })
+    assert.throws(() => readPhaseGateStore(store), (cause) => cause.code === 'STORE_BUSY')
+    held.release()
     assert.throws(() => readPhaseGateStore(store), (cause) => cause.code === 'COMMITTED_HEAD_MISMATCH')
     const recovered = manualReconcilePhaseGateStore(store, {
       observed_lock: null,
