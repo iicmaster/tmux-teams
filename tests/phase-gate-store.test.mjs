@@ -216,6 +216,29 @@ test('true multi-process lock contention uses an exclusive Linux final-name crea
   }
 })
 
+test('the staging namespace isolates in-flight writes without weakening canonical namespaces', () => {
+  const store = makeStore()
+  const held = acquirePhaseGateLock(store)
+  const locks = join(store, 'locks')
+  const transient = join(store, '.tmp', `head.json.${process.pid}.${'a'.repeat(16)}.tmp`)
+  const foreign = join(locks, `store.lock.${process.pid}.${'b'.repeat(16)}.tmp`)
+  const stagedSymlink = join(store, '.tmp', `head.json.${process.pid}.${'c'.repeat(16)}.tmp`)
+  try {
+    writeFileSync(transient, 'losing writer temp')
+    assert.doesNotThrow(() => readPhaseGateStore(store))
+    symlinkSync('/etc/hosts', stagedSymlink)
+    assert.throws(() => readPhaseGateStore(store), (cause) => cause.code === 'REGULAR_FILE_REQUIRED')
+    rmSync(stagedSymlink)
+    writeFileSync(foreign, 'foreign')
+    assert.throws(() => readPhaseGateStore(store), (cause) => cause.code === 'FOREIGN_ENTRY')
+    rmSync(foreign)
+    held.release()
+    assert.doesNotThrow(() => readPhaseGateStore(store))
+  } finally {
+    rmSync(store, { recursive: true, force: true })
+  }
+})
+
 test('stale lock reconciliation requires exact observed lock/head, reason, and manifest PM', () => {
   const store = makeStore()
   try {

@@ -23,21 +23,27 @@ If invoked through a subskill wrapper, read this `party-mode` skill and follow t
 
 ## Canonical Terms
 
-- Use `external review` as the stable label for plan and completion reviews — **and it MUST be a `3-model review` (Master directive 2026-06-18)**. (Older lines say "AGY review"/"Codex MCP" — read them as the 3-model review defined here.)
-- **`3-model review`** = synthesize independent critique from **3 different models, one per tool**. The point is model diversity: each lane is a different CLI tool (opencode, codex, antigravity) running **that tool's own configured default model** — do NOT pass an explicit model; whatever each tool defaults to IS the lane's model. Delivered via each tool's **review plugin (MCP)** — **NOT tmux, NOT interactive TUIs, NOT raw one-shot CLI**; the plugins exist to replace that workflow. The three lanes:
-  - **opencode** → the `oc` plugin: `mcp__plugin_oc_oc__oc_review` / `oc_adversarial_review` (read-only `plan` agent, opencode's default model).
-  - **codex** → Codex MCP: the `codex:codex-rescue` agent with a review-only brief (codex's default model).
-  - **antigravity** → the AGY plugin: `mcp__plugin_agy_agy__agy_review` / `agy_adversarial_review` (antigravity's default model).
-  - "หลายโมเดล > โมเดลเดียวแบบก้าวกระโดด."
-- **Synthesis rule: where ≥2 of 3 models agree = must-fix**; disagreement = use judgment. Report each model's verdict.
-- **Use the three review plugins (MCP) — not tmux, not interactive TUIs, not raw one-shot CLI.** The plugins are the reliable replacement for the old tmux flow (raw one-shot CLI such as `agy --print` misroutes to `--print-timeout`; `claude -p` is unreliable — do not use them). A model whose plugin is down = infra failure (2/3 still valid, NOT a skip).
-- **Run every lane non-blocking with a short timeout — never let one plugin hang the review.** For oc/agy, launch with `background: true` and `timeout: "3m0s"`, then poll `oc_status`/`oc_result` and `agy_status`/`agy_result` until each returns or a ~4-minute deadline; for codex, spawn the `codex:codex-rescue` subagent (it runs async) and collect its result. A lane that does not return by the deadline — or times out — counts as **down**: 2/3 is still valid, cancel the stuck job (`oc_cancel` / `agy_cancel`), and report it. Never call a review tool in the foreground and wait, and never claim `blocked` just because one lane stalled.
-- `review fallback`: if a lane's plugin is unavailable, use its CLI equivalent (still the tool's default model) — opencode → the `oc` companion (`node <oc>/scripts/oc-companion.mjs review`); codex → Codex CLI/runtime; antigravity → AGY CLI. Proceed on 2/3 if one lane is fully down; report the substitution.
-- **Review lane hygiene (root-cause fixes, learned 2026-07-12)** — three recurring lane failures and their source fixes:
-  - **Diff-based lanes (oc/agy) can't see untracked work.** oc/agy review `git diff` / working-tree; untracked target files (a spike dir, new docs) are invisible and a flood of untracked scratch (screenshots, logs) can truncate their git context. Keep scratch outside the repo or excluded by the target repo's existing ignore policy; never assume ignore patterns exist or change them without authorization. In read-only `party-advise`, pass untracked work as static artifacts (for example, an embedded `git diff --no-index` patch) without touching the index. In mutation-authorized `party-auto` only, `git add -N -- <target paths>` may expose untracked targets when the task authorizes index mutation, the paths are confirmed untracked and unstaged, and the run records and removes only intent-to-add entries it introduced.
-  - **codex trips the OpenAI cyber content-filter.** Briefing codex to "curl the live service to verify" against an auth server with admin tokens gets the turn killed ("flagged for possible cybersecurity risk"). Fix: brief codex to review from **static artifacts** (code, logs, an `evidence.txt`) — do not invite live admin-curl against auth/token endpoints.
-  - **AGY plugin argv bug is fixed in AGY 1.1.1+.** Older builds emitted `["--print","--print-timeout",…]`, causing reviews to return a CLI-flag explanation; supported builds omit `--print` and pipe the prompt through child **stdin**. If the symptom returns, inspect the active plugin's provenance and version before changing anything, then update it through its supported package or marketplace mechanism. For a source checkout, locate it from runtime configuration, verify its worktree, branch, and upstream state, and fast-forward only when safe; otherwise report the drift and leave it untouched. Never hardcode clone paths, switch branches blindly, or hand-patch a stale install.
-- Use `blocked` when no substantive 3-model (or fallback) review can be produced.
+- `external review` is the mandatory `3-model review` at Phase 2 and Phase 6. It is a **bundled JavaScript ACP-only workflow**, never a tmux/TUI review and never a raw review CLI invocation.
+- Run it only through `node <party-mode>/scripts/review-gate.mjs <static-packet.json> <absolute-target-repository> > <review-report.json>`. Capture the trusted target path before reading the packet; never derive it from packet data. The gate builds a deterministic route, sends the same redacted static packet from a fresh temporary workspace, starts each reviewer in ACP plan mode, denies ACP permission requests, verifies the pinned model/config acknowledgement, and enforces its timeout. Do not substitute `oc`, AGY/Codex review plugins, MCP review tools, or a host-agent review command.
+- Linux review execution requires `/usr/bin/bwrap`. The sandbox omits the target repository and masks host user-data roots, gives each adapter an ephemeral provider HOME, requests no MCP/built-in tools, and uses a new PID namespace. Before launch, the gate resolves the profile-owned executable, rejects target/PATH-shadowed binaries, and requires a trusted runtime root. Runtime, scratch, and target-mask scaffolding live outside the reviewer cwd; AGY sees only one runner-owned read-only guide stating that review input exists solely in the prompt. Packet redaction covers sensitive keys plus bounded assignment, header, and query-string values. Network remains shared for provider APIs; the adapter can read the minimum copied auth in its own ephemeral HOME and the provider may persist remote state. Treat same-process auth and local/LAN network reachability as residual boundaries, not proof of zero live-service access. If AGY ignores the built-in-tool-off request, the gate tolerates only a completed read confined to canonical copied provider-runtime documentation inside its isolated `builtin/` tree, an exact canonical listing of the fresh neutral workspace root, or that exact canonical guide file. The workspace contains no packet file, target content, or other runner scaffolding. Missing paths, all other workspace descendants, relative escapes, symlinks (including `link/..`), mixed scopes, target/arbitrary reads, and every search/fetch/edit/execute call block the lane.
+- The packet must carry `primary` (or `primaryProfile` / `primary_model`). Standard output is exactly one JSON result; diagnostics go to standard error. Exit `0` means the transport/policy gate completed, while `2`, `3`, `4`, and `5` respectively mean invalid input, transport/lane failure, malformed review, and policy/synthesis failure. A successful process still needs PM semantic review of the JSON result.
+- A valid panel has **exactly three** structurally valid ACP reports, each with an explicit acknowledged identity/model/profile and a distinct model from the primary. AGY is mandatory. A missing, malformed, timed-out, colliding, or unacknowledged AGY report blocks the review; fewer than three valid reports also blocks it.
+- The route is deterministic and family-distinct from the primary:
+
+| Primary family | Final reviewers | Eligible non-AGY reserve |
+|---|---|---|
+| OpenAI / Codex / `gpt-*` | AGY + Kimi `kimi/k3` + Zai `zai/glm-5.2` | none while direct Claude is limited; `claude-zai` would duplicate/retry Zai, so block |
+| Claude | AGY + Codex + Kimi `kimi/k3` | Zai `zai/glm-5.2` |
+| Kimi | AGY + Codex + Zai `zai/glm-5.2` | none while direct Claude is limited; `claude-zai` would duplicate/retry Zai, so block |
+| Zai | AGY + Codex + Kimi `kimi/k3` | none while direct Claude is limited; `claude-zai` matches the primary family, so block |
+| Gemini / AGY / unknown | fail closed | none |
+
+  Codex is prohibited from an OpenAI/Codex/`gpt-*` primary panel. Gemini, AGY, and unknown primaries fail closed rather than guessing a reviewer set.
+- A non-AGY lane may be replaced only by an eligible reserve selected by the gate after failure. The final accepted panel must still contain exactly three valid, distinct reviewers and retain AGY. A reserve never turns a degraded two-reviewer panel into a pass.
+- Direct Claude is currently provider-limited and is never launched by the gate. Its deterministic availability alias is `claude-zai`, which launches the pinned Zai GLM-5.2 ACP profile only if the resulting final panel has AGY plus three distinct non-primary families and configured models; otherwise the gate fails closed.
+- The `claude-zai` profile pins a 4096-token thinking budget in its allowlisted ACP environment. This bounds adaptive-thinking output without raising the gate's stdout or timeout ceilings.
+- The gate records transport, runner-owned profile/provider labels, configured-and-acknowledged ACP model, route, packet hash, enforced isolation controls, and report structure. It does not cryptographically attest the remote serving model. The PM still reads the findings, checks the cited evidence, and decides semantic correctness. A finding independently raised by at least two of the final three reviewers is must-fix; other findings require recorded PM judgment.
+- Use `blocked` for every gate failure. Do not call a partial panel, a process exit, or a schema-valid report semantic approval.
 - **`grill gate`** = decision interview adapted from mattpocock/skills `grilling` (Master directive 2026-07-07): after analysis (Phase 2 plan + Phase 3 critique) and before any execution, interview Master about every unresolved decision — **one question at a time**, each with a recommended answer and its reason — until every decision branch is resolved **and Master confirms shared understanding**. Facts discoverable from the repo, docs, or runtime MUST be looked up, never asked. A **genuine decision** = anything whose correct answer depends on Master's priorities, risk tolerance, scope preference, or a tradeoff between valid alternatives — the agent MUST defer these to the gate even with a confident recommendation; model consensus (3-model review, persona critique) never substitutes for Master's answer on such calls. Execution (Phase 4+) starts only after all decisions are answered and confirmed, or Master explicitly waives the gate.
 - **`domain hook`** = conditional add-on to the grill gate adapted from mattpocock/skills `domain-modeling` (Master directive 2026-07-07). Active only when the plan's changes touch, conflict with, or are missing from an existing `CONTEXT.md` / `docs/adr/` entry, or the plan introduces new domain terms, boundaries, or architecture decisions. The mere existence of those files does not activate it — no glossary work for changes with no domain signal (pure bug fixes, formatting, dependency bumps). A term is **new** only if it is not already defined in `CONTEXT.md` and a future engineer would need its definition to reuse it unambiguously; a decision is **architectural** only if it changes a module/service/data boundary or a public contract, or is hard to reverse — not a routine local implementation choice. Record the activation call in the grill ledger (`domain_hook`) either way. During the gate it is read-only: challenge terms that conflict with the existing glossary, propose precise canonical terms for fuzzy ones, cross-reference Master's claims with the code, and record candidates in the grill ledger. Files are written only in Phase 7 (party-auto lane) — never in Phases 3.5-6, even when candidates are already known: `CONTEXT.md` stays a pure glossary (no implementation details), and an ADR is written only when all three hold — hard to reverse, surprising without context, the result of a real tradeoff. In `party-advise`, candidates are reported in the advisory output, never written.
 
@@ -50,7 +56,7 @@ If invoked through a subskill wrapper, read this `party-mode` skill and follow t
 5. MUST keep human-facing output in Thai.
 6. MUST hard-stop the verify loop at 16 iterations and report the blocker.
 7. MUST run the simpler-path gate before expanding into full multi-agent execution.
-8. MUST run a **3-model review** via the three review plugins (opencode → `oc` plugin, codex → Codex MCP, antigravity → AGY plugin; each on its tool's default model; synthesize ≥2-agree = must-fix) for **plan review (Phase 2)** AND **completion review (Phase 6)**. Use the plugins — not tmux or raw one-shot CLI. Run each lane **non-blocking** (`background: true` + short `timeout` + poll) so a stalled plugin never hangs the review. If a plugin is unavailable or a lane stalls past its deadline, use its CLI equivalent or proceed on 2/3 and report the substitution. If fewer than two produce a substantive review, mark `blocked`.
+8. MUST run the bundled ACP-only **3-model review** with `node <party-mode>/scripts/review-gate.mjs <packet> <runner-owned-absolute-target>` for **plan review (Phase 2)** and **completion review (Phase 6)**. Require AGY plus exactly two other valid, distinct gate-selected reviewers; a gate error, AGY failure, identity collision, timeout, or fewer than three valid reports is `blocked`. Apply two-or-more matching findings before proceeding.
 9. MUST preserve installed target changes before sync: diff target copies, integrate intentional target-only changes, verify the repo source, then sync.
 10. SHOULD report only milestones, blockers, risks, decisions, and evidence. Do not narrate keystrokes.
 11. MUST run the `grill gate` (Phase 3.5) after analysis and before execution: no Phase 4/5 work while an unresolved Master decision remains or the closing shared-understanding confirmation is missing, unless Master explicitly waived questions.
@@ -149,13 +155,13 @@ Use the best available equivalent:
 | Track tasks | `TaskCreate` / `TaskUpdate` | plan/checklist updates | runtime task tracker |
 | Edit files | `Edit` / file tools | `apply_patch` or repo tools | runtime-safe file editor |
 | Browser verification | Chrome DevTools MCP | Browser/Playwright/tool available in session | equivalent browser or shell verification |
-| External review (**3-model**) | `oc` plugin (opencode) + Codex MCP (codex) + AGY plugin (antigravity), each on its default model (≥2-agree=must-fix); else each lane's CLI equivalent | same 3 plugins; else CLI equivalents | 3 independent models via their tools' plugins; else equivalent fallback |
+| External review (**3-model**) | `node <party-mode>/scripts/review-gate.mjs <packet> <runner-owned-absolute-target>` (bundled ACP-only gate; exact 3 valid reviewers, AGY required) | same bundled gate | same bundled gate when its ACP prerequisites and primary route are supported; otherwise fail closed |
 | Grill gate (one decision question at a time) | `AskUserQuestion` tool | CLI question to the user | equivalent interactive question channel |
 | Targeted skill sync | copy only the changed skill after verification | copy only the changed skill after verification | equivalent targeted install path |
 
-If a named tool is unavailable, use the closest safe equivalent and state the substitution in the report.
+If a named execution tool is unavailable, use the closest safe equivalent and state the substitution in the report.
+Do not substitute a different review transport or reviewer set: the review gate itself may choose an eligible non-AGY reserve, but any unsupported route or gate failure is blocked.
 Do not treat tool unavailability as verification success.
-If the 3-model panel and all lane fallbacks are unavailable, mark the external review as blocked and do not claim full party-mode verification.
 
 ## Phase 1: RECEIVE
 
@@ -169,19 +175,20 @@ Output:
 เริ่ม party-auto: Phase 1 RECEIVE -> <one-sentence scope confirmation>
 ```
 
-## Phase 2: PLAN (sqthink + 3-model review)
+## Phase 2: PLAN (sqthink + ACP-only 3-model review)
 
 Invoke `sqthink` skill for structured planning (or do sqthink-style structured reasoning inline).
 First record the simpler-path gate result in the plan.
-Then run a mandatory **3-model review** before Phase 3 via the three plugins (opencode → `mcp__plugin_oc_oc__oc_review`; codex → `codex:codex-rescue`; antigravity → `mcp__plugin_agy_agy__agy_review`; each on its tool's default model — no explicit model arg; synthesize ≥2-agree = must-fix). Launch each lane **non-blocking** (`background: true` + `timeout: "3m0s"` for oc/agy, then poll `*_status`/`*_result`; codex runs as an async subagent) so no single lane can hang the plan review. The review prompt (sent to each of the 3 models) must include:
+Then run a mandatory **3-model review** before Phase 3 through the bundled ACP gate. Write a static plan-review packet containing `primary`, capture the trusted repository path independently, then invoke `node <party-mode>/scripts/review-gate.mjs <static-packet.json> <absolute-target-repository> > <review-report.json>`. The gate, not the PM, performs deterministic routing, temporary-workspace isolation, ACP plan-mode launch, permission denial, acknowledgement verification, and timeouts. Do not put `target_repo` in the packet. The packet must include:
 
 - The user's objective and constraints
 - The proposed plan YAML
 - Current repo/runtime assumptions
 - Explicit ask: `find blocking plan flaws, missing dependencies, unsafe sequencing, verification gaps, and cheaper equivalent paths`
 
-If ≥2 models raise the same objection, revise the Phase 2 plan before spawning persona critique agents.
-If a lane's plugin is down, proceed with the remaining 2 (note it — 2/3 is valid, not a skip) or use that lane's CLI equivalent on its default model (opencode → oc companion `review`; antigravity → AGY CLI); record any substitution for Phase 8.
+The report must validate to exactly three distinct reviewers, include AGY, and acknowledge the routed model/profile for every lane. For OpenAI/Codex/`gpt-*`, expect AGY, Kimi K3, and Zai GLM-5.2; Codex is not eligible. For Claude, Kimi, or Zai primary, use the canonical matrix above. Gemini, AGY, or unknown primary identity is blocked.
+
+If two or more final reviewers raise the same objection, revise the Phase 2 plan before spawning persona critique agents. If the AGY lane fails, or the final report has fewer than three valid reports for any reason, mark `blocked`; do not begin persona critique under an unreviewed plan.
 
 Output a plan with this schema:
 
@@ -205,23 +212,30 @@ risks:
 verification_targets:
   - <command, test, screenshot, schema check, or manual evidence>
 three_model_plan_review:
-  lanes:
-    - lane: opencode
-      tool: <oc-mcp|oc-cli|unavailable>
-      model: <the default model the tool reported, if visible>
-      verdict: <pass|objections|blocked>
-    - lane: codex
-      tool: <codex-mcp|codex-cli|unavailable>
-      model: <default>
-      verdict: <pass|objections|blocked>
-    - lane: antigravity
-      tool: <agy-mcp|agy-cli|unavailable>
-      model: <default>
-      verdict: <pass|objections|blocked>
-  synthesis: <>=2-of-3 agreement = must-fix>
+  transport: acp
+  command: node <party-mode>/scripts/review-gate.mjs <packet> <absolute-target-repository>
+  packet: <static packet path or digest>
+  target_repository: <runner-owned canonical absolute path>
+  primary: <acknowledged primary model/profile>
+  workspace: <temporary isolated workspace path or digest>
+  reviewers:
+    - lane: agy
+      model: <acknowledged routed model>
+      profile: <acknowledged routed profile>
+      verdict: <pass|objections>
+    - lane: <kimi-k3|zai-glm-5.2|eligible reserve>
+      model: <acknowledged routed model>
+      profile: <acknowledged routed profile>
+      verdict: <pass|objections>
+    - lane: <zai-glm-5.2|kimi-k3|eligible reserve>
+      model: <acknowledged routed model>
+      profile: <acknowledged routed profile>
+      verdict: <pass|objections>
+  structural_status: <valid|blocked>
+  synthesis: <two-or-more matching findings are must-fix>
   result: <pass|revised|blocked>
   notes:
-    - <blocking issue accepted/rejected/deferred, with the lane(s) that raised it>
+    - <failure/replacement/PM decision, with the lane(s) that raised it>
 evidence_ledger:
   - observation: <fact gathered before execution>
     implication: <what it proves or changes in the plan>
@@ -323,7 +337,7 @@ After each batch:
 3. Update task status.
 4. Run the next dependency batch.
 
-## Phase 6: VERIFY (max 16 iterations + 3-model review)
+## Phase 6: VERIFY (max 16 iterations + ACP-only 3-model review)
 
 First discover verification surfaces from the repo:
 
@@ -351,8 +365,8 @@ Then choose verification by task type:
 Loop body:
 1. Run verification and collect evidence.
 2. Add a verification ledger entry: check, result, ruled-in fact, ruled-out hypothesis, and next action.
-3. Run a mandatory **3-model review** after local verification passes via the three plugins (opencode → `oc` plugin, codex → Codex MCP, antigravity → AGY plugin; each on its tool's default model; synthesize ≥2-agree = must-fix). The review prompt (to each of the 3) must include changed files, key diffs or summaries, verification output, known risks, and the exact acceptance criteria. Ask each to return `PASS` only when there are no blocking issues; require **≥2 of 3 PASS** to proceed.
-4. Require substantive review output: verdict, blocking issues, accepted/rejected objections, evidence references, and residual risks. If any field is missing, retry once with a narrower prompt.
+3. Write a static completion-review packet containing `primary`, changed files, relevant diffs or summaries, verification output, known risks, and exact acceptance criteria. Capture the trusted target independently and invoke `node <party-mode>/scripts/review-gate.mjs <static-packet.json> <absolute-target-repository> > <review-report.json>`. The bundled ACP gate must return exactly three structurally valid, acknowledged reports, including AGY; otherwise record `blocked`.
+4. Require substantive review output: verdict, blocking issues, evidence references, and residual risks. The schema validates the lane structure; the PM reads the findings and records accepted/rejected objections. Two-or-more matching findings are must-fix.
 5. If local verification and the external review both pass, proceed to Phase 7.
 6. If either local verification or the external review fails, diagnose the failure.
 7. Spawn bounded fix agents or patch locally.
@@ -362,10 +376,10 @@ Loop body:
 
 External review rules:
 
-- Run the **3-model panel** (opencode + codex + antigravity, each on its tool's default model) via their **review plugins (MCP)** — `mcp__plugin_oc_oc__oc_review`, `codex:codex-rescue`, `mcp__plugin_agy_agy__agy_review`; synthesize ≥2-agree = must-fix. Launch each lane **non-blocking** (`background: true` + `timeout: "3m0s"` + poll for oc/agy; codex as an async subagent); a lane past its deadline counts as down (2/3 valid). **Use the plugins, not tmux or raw one-shot CLI** (`agy --print` misroutes).
-- If a lane's plugin is down, proceed with 2/3 (note it) or use that lane's CLI equivalent on its default model (opencode → oc companion `review`; antigravity → AGY CLI) and record the substitution.
-- If the review output is irrelevant, empty, or off-task, retry once with a narrower prompt; if still unusable, report the external review as blocked and use a second independent review surface if available.
-- Do not treat a process exit/status check as a substantive review. Read and apply the actual review output.
+- Use only the bundled `review-gate.mjs` ACP workflow. The review packet is static and redacted for sensitive structured fields, bounded assignments/headers, and credential query parameters; the target repository and host user-data roots are not mounted, target/PATH-shadowed ACP executables fail closed, MCP/built-in tools are requested off, ACP permission requests are denied, and only the bounded AGY provider-runtime or neutral-workspace read above is tolerated. Provider network access remains available and ephemeral same-process provider auth is a documented residual boundary.
+- AGY is non-negotiable. When a non-AGY lane fails, the gate may launch an eligible reserve; accept it only if the final report remains exactly three valid, distinct, acknowledged reviewers. No reserve exists for AGY.
+- A timeout, acknowledgement mismatch, duplicate identity/model, unsupported primary, invalid schema, or irrelevant/empty report blocks the gate. Do not fall back to a review plugin, MCP tool, raw CLI review, tmux worker, or two-reviewer vote.
+- Do not treat a process exit/status check as a substantive review. Read and apply the actual reports; schema validity is not semantic correctness.
 
 Verification ledger schema:
 
@@ -415,7 +429,7 @@ Shipped:
 
 Evidence:
 - <command/test/screenshot/schema check>: <result>
-- <3-model review via oc-plugin (opencode) + codex-mcp + agy-plugin (antigravity), default models (or CLI equivalents)>: <synthesized PASS or blocker summary, per-lane verdict, ≥2-of-3 agreement>
+- <3-model ACP gate (`review-gate.mjs`)>: <route, packet/isolation evidence, acknowledged identities, per-lane verdict, matching-finding synthesis, or blocker>
 - <verification ledger>: <key checks and decisions>
 
 Instruction Diff:
@@ -440,7 +454,7 @@ Optional closeout hooks:
 
 ## Regression Checks for This Skill
 
-Test cases `TC-PA-01`..`TC-PA-25` live in `references/regression-checks.md` — use them when testing or revising `party-mode` and its subskills.
+Test cases `TC-PA-01`..`TC-PA-33` live in `references/regression-checks.md` — use them when testing or revising `party-mode` and its subskills.
 
 ## Failure Modes
 
@@ -454,7 +468,12 @@ Test cases `TC-PA-01`..`TC-PA-25` live in `references/regression-checks.md` — 
 - Delegated command back to Master: agent asks Master to run a command it can run.
 - Append-only instruction drift: Phase 7 adds one-off notes instead of revising durable guidance.
 - Runtime mismatch: skill names a tool but does not use an available equivalent.
-- Review theater: workflow records that the 3-model review ran but does not read or act on the plan/review output.
+- Review theater: workflow records that the ACP gate ran but does not read or act on the plan/review output.
+- Degraded-panel acceptance: treating two valid reports, a failed AGY lane, or an unacknowledged reserve as a 3-model review.
+- Identity collision: primary/reviewer or reviewer/reviewer model/profile overlap reaches synthesis instead of blocking.
+- Transport escape: a review plugin, MCP tool, tmux/TUI worker, or raw CLI review replaces the bundled ACP gate.
+- Isolation leak: the review packet is not static, the trusted target path came from packet data, the target or host data roots are mounted, the temporary workspace is shared with the target, ACP plan mode is absent, MCP/built-in tools are enabled, or ACP permission requests are not denied.
+- Schema theater: a structurally valid report is treated as semantic approval without PM review of the actual findings.
 - Model-routing drift: any Codex subagent — thinking or execution — uses anything other than `gpt-5.6-sol` at `ultra` reasoning effort, any Claude subagent uses anything other than Opus at maximum reasoning effort, or non-Codex routing silently misreports unavailable model selection.
 - Simpler-path bypass: workflow expands to multi-agent execution without proving the complexity signal still warrants it.
 - Ledger theater: evidence or verification ledger exists but does not change decisions or rule anything in/out.

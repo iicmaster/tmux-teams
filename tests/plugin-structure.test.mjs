@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PLUGIN = join(ROOT, 'plugins/tmux-teams')
 const SKILLS = ['tmux-teams', 'party-mode', 'party-auto', 'party-advise', 'sqthink', 'codex-tmux-driver']
-const RELEASE_VERSION = '0.7.2'
+const RELEASE_VERSION = '0.9.0'
 const STAGE1_SCRIPTS = [
   'delivery-loop-pilot-core.mjs',
   'delivery-loop-store.mjs',

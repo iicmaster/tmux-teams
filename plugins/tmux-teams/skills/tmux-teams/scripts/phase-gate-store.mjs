@@ -3,7 +3,7 @@ import {
   closeSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync,
   readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync,
 } from 'node:fs'
-import { isAbsolute, join, resolve } from 'node:path'
+import { basename, isAbsolute, join, resolve } from 'node:path'
 import {
   PHASE_GATE_JSON_MAX_BYTES,
   PhaseGateValidationError,
@@ -17,7 +17,8 @@ import { canonicalDigest, canonicalJson } from './delivery-loop-core.mjs'
 
 const EVENT_FILE = /^(\d{12})-sha256_([0-9a-f]{64})\.json$/
 const RECEIPT_FILE = /^sha256_([0-9a-f]{64})\.json$/
-const ROOT_ENTRIES = new Set(['events', 'locks', 'reconciliations', 'manifest.json', 'head.json'])
+const TEMP_FILE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,191}\.\d+\.[0-9a-f]{16}\.tmp$/
+const ROOT_ENTRIES = new Set(['events', 'locks', 'reconciliations', '.tmp', 'manifest.json', 'head.json'])
 const HEAD_KEYS = new Set(['schema', 'schema_version', 'sequence', 'event_id', 'count'])
 const LOCK_KEYS = new Set(['schema', 'schema_version', 'owner_token', 'pid', 'ppid', 'boot_id', 'machine_id', 'created_at', 'process_start'])
 const error = (code, path, message) => new PhaseGateValidationError([{ code, path, message }], code)
@@ -68,13 +69,13 @@ function fsyncDirectory(path) {
   }
 }
 
-function writeTemp(path, value) {
+function writeTemp(path, value, stagingDir = resolve(path, '..')) {
   const serialized = canonicalJson(value)
   if (typeof serialized !== 'string'
     || Buffer.byteLength(`${serialized}\n`, 'utf8') > PHASE_GATE_JSON_MAX_BYTES) {
     throw error('JSON_TOO_LARGE', path, 'Canonical JSON exceeds the persisted byte bound.')
   }
-  const tmp = `${path}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`
+  const tmp = join(stagingDir, `${basename(path)}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`)
   let fd
   try {
     fd = openSync(tmp, 'wx', 0o600)
@@ -91,9 +92,9 @@ function writeTemp(path, value) {
 
 // link(2) makes creation of the final name atomic and truly exclusive.  A
 // check-then-rename sequence is intentionally not used.
-function createExclusive(path, value, conflictCode = 'STORE_CONFLICT') {
+function createExclusive(path, value, conflictCode = 'STORE_CONFLICT', stagingDir = resolve(path, '..')) {
   const parent = resolve(path, '..')
-  const tmp = writeTemp(path, value)
+  const tmp = writeTemp(path, value, stagingDir)
   try {
     linkSync(tmp, path)
     fsyncDirectory(parent)
@@ -105,9 +106,9 @@ function createExclusive(path, value, conflictCode = 'STORE_CONFLICT') {
   }
 }
 
-function replaceAtomic(path, value) {
+function replaceAtomic(path, value, stagingDir = resolve(path, '..')) {
   const parent = resolve(path, '..')
-  const tmp = writeTemp(path, value)
+  const tmp = writeTemp(path, value, stagingDir)
   try {
     renameSync(tmp, path)
     fsyncDirectory(parent)
@@ -169,13 +170,23 @@ function validateLock(lock, path) {
 function validateNamespaces(store) {
   const rootEntries = readdirSync(store)
   if (rootEntries.some((name) => !ROOT_ENTRIES.has(name))) throw error('FOREIGN_ENTRY', store, 'Store root contains a foreign entry.')
-  for (const name of ['events', 'locks', 'reconciliations']) {
+  for (const name of ['events', 'locks', 'reconciliations', '.tmp']) {
     const path = join(store, name)
     const stat = lstatSync(path)
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw error('DIRECTORY_REQUIRED', path, 'Store namespace must be a non-symlink directory.')
   }
   const lockNames = readdirSync(join(store, 'locks'))
   if (lockNames.some((name) => name !== 'store.lock')) throw error('FOREIGN_ENTRY', join(store, 'locks'), 'Locks namespace contains a foreign entry.')
+  const staging = join(store, '.tmp')
+  const tempNames = readdirSync(staging)
+  for (const name of tempNames) {
+    if (!TEMP_FILE.test(name)) throw error('FOREIGN_ENTRY', staging, 'Staging namespace contains a foreign entry.')
+    try {
+      regular(join(staging, name))
+    } catch (cause) {
+      if (cause?.code !== 'ENOENT') throw cause
+    }
+  }
   const receiptNames = readdirSync(join(store, 'reconciliations'))
   if (receiptNames.some((name) => !RECEIPT_FILE.test(name))) throw error('FOREIGN_ENTRY', join(store, 'reconciliations'), 'Reconciliation namespace contains a foreign entry.')
   for (const name of receiptNames) {
@@ -189,7 +200,7 @@ function validateNamespaces(store) {
 function storeSkeleton(storeDir) {
   const store = absoluteDir(storeDir)
   ensureDirectory(store)
-  for (const name of ['events', 'locks', 'reconciliations']) ensureDirectory(join(store, name))
+  for (const name of ['events', 'locks', 'reconciliations', '.tmp']) ensureDirectory(join(store, name))
   return store
 }
 
@@ -205,7 +216,9 @@ export function inspectPhaseGateLock(storeDir) {
 export function acquirePhaseGateLock(storeDir, { owner_token = randomBytes(24).toString('hex'), pid = process.pid } = {}) {
   const store = absoluteDir(storeDir)
   const locks = join(store, 'locks')
+  const staging = join(store, '.tmp')
   ensureDirectory(locks)
+  ensureDirectory(staging)
   const path = join(locks, 'store.lock')
   const lock = {
     schema: 'tmux-teams.phase-gate-lock',
@@ -220,7 +233,7 @@ export function acquirePhaseGateLock(storeDir, { owner_token = randomBytes(24).t
   }
   validateLock(lock, path)
   try {
-    createExclusive(path, lock, 'STORE_BUSY')
+    createExclusive(path, lock, 'STORE_BUSY', staging)
   } catch (cause) {
     if (cause?.code === 'STORE_BUSY') throw error('STORE_BUSY', path, 'Lock exists; inspect and explicitly reconcile it.')
     throw cause
@@ -264,7 +277,7 @@ function writeReceipt(store, body) {
     if (!same(existing, receipt)) throw error('RECONCILIATION_CONFLICT', path, 'Receipt id is bound to different content.')
     return { receipt_id: receiptId, receipt: existing }
   }
-  createExclusive(path, receipt)
+  createExclusive(path, receipt, 'STORE_CONFLICT', join(store, '.tmp'))
   return { receipt_id: receiptId, receipt }
 }
 
@@ -308,13 +321,14 @@ export function manualReconcilePhaseGateLock(storeDir, {
 
 export function initializePhaseGateStore(storeDir, manifestInput) {
   const store = storeSkeleton(storeDir)
+  const staging = join(store, '.tmp')
   const manifest = createPhaseGateManifest(manifestInput)
   const manifestPath = join(store, 'manifest.json')
   if (existsSync(manifestPath)) {
     const old = readJson(manifestPath)
     if (!same(old, manifest)) throw error('MANIFEST_CONFLICT', manifestPath, 'Immutable store manifest differs.')
   } else {
-    createExclusive(manifestPath, manifest)
+    createExclusive(manifestPath, manifest, 'STORE_CONFLICT', staging)
   }
   const headPath = join(store, 'head.json')
   const emptyHead = { schema: 'tmux-teams.phase-gate-head', schema_version: 1, sequence: 0, event_id: null, count: 0 }
@@ -322,7 +336,7 @@ export function initializePhaseGateStore(storeDir, manifestInput) {
     const head = readJson(headPath)
     validateHead(head, headPath)
   } else {
-    createExclusive(headPath, emptyHead)
+    createExclusive(headPath, emptyHead, 'STORE_CONFLICT', staging)
   }
   validateNamespaces(store)
   fsyncDirectory(store)
@@ -375,6 +389,7 @@ export function readPhaseGateStore(storeDir) {
 export function appendPhaseGateEventAtomic(storeDir, event, { expected_head } = {}) {
   if (!expected_head) throw error('EXPECTED_HEAD_REQUIRED', 'expected_head', 'Caller must supply the observed aggregate head.')
   const store = absoluteDir(storeDir)
+  const staging = join(store, '.tmp')
   const lock = acquirePhaseGateLock(store)
   try {
     const current = readPhaseGateStore(store)
@@ -382,14 +397,14 @@ export function appendPhaseGateEventAtomic(storeDir, event, { expected_head } = 
     if (!next.appended) return next
     const digest = next.event.event_id.slice('sha256:'.length)
     const file = join(store, 'events', `${String(next.event.sequence).padStart(12, '0')}-sha256_${digest}.json`)
-    createExclusive(file, next.event)
+    createExclusive(file, next.event, 'STORE_CONFLICT', staging)
     replaceAtomic(join(store, 'head.json'), {
       schema: 'tmux-teams.phase-gate-head',
       schema_version: 1,
       sequence: next.aggregate.head.sequence,
       event_id: next.aggregate.head.event_id,
       count: next.aggregate.events.length,
-    })
+    }, staging)
     return next
   } finally {
     lock.release()
@@ -448,7 +463,7 @@ export function manualReconcilePhaseGateStore(storeDir, {
       sequence: aggregate.head.sequence,
       event_id: aggregate.head.event_id,
       count: events.length,
-    })
+    }, join(store, '.tmp'))
     return { reconciled: true, aggregate, ...result }
   } finally {
     lock.release()

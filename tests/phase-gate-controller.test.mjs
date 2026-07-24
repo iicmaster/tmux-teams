@@ -127,18 +127,33 @@ test('artifact submission verifies immutable bytes before append', () => {
 })
 
 test('true multi-process bootstrap race produces exactly one reservation', async () => {
-  const { repo } = governedRepo(); const brief = join(repo, 'brief.md'); writeFileSync(brief, 'race\n')
-  const children = ['race-one', 'race-two'].map((task) => fork(PROCESS_FIXTURE, [repo, brief, task], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] }))
-  const ready = children.map((child) => new Promise((resolve, reject) => {
-    child.once('message', resolve); child.once('error', reject)
-  }))
-  await Promise.all(ready)
-  const results = children.map((child) => new Promise((resolve, reject) => {
-    child.once('message', resolve); child.once('error', reject); child.send('go')
-  }))
-  const settled = await Promise.all(results)
-  assert.equal(settled.filter((result) => result.ok).length, 1, JSON.stringify(settled))
-  assert.equal(Object.keys(phaseGateStatus(repo).aggregate.dispatches).length, 1)
+  for (let round = 0; round < 4; round += 1) {
+    const { repo } = governedRepo(); const brief = join(repo, 'brief.md'); writeFileSync(brief, `race ${round}\n`)
+    const children = ['one', 'two'].map((lane) => fork(
+      PROCESS_FIXTURE, [repo, brief, `race-${round}-${lane}`],
+      { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] },
+    ))
+    const ready = children.map((child) => new Promise((resolve, reject) => {
+      child.once('message', resolve); child.once('error', reject)
+    }))
+    await Promise.all(ready)
+    const results = children.map((child) => new Promise((resolve, reject) => {
+      child.once('message', resolve); child.once('error', reject); child.send('go')
+    }))
+    const settled = await Promise.all(results)
+    const failures = settled.filter((result) => !result.ok)
+    const failureCodes = new Set([
+      failures[0]?.code,
+      ...(failures[0]?.errors ?? []).map((item) => item.code),
+    ])
+    const allowedFailureCodes = new Set(['STORE_BUSY', 'HEAD_CONFLICT', 'DISPATCH_EXISTS'])
+    assert.equal(settled.filter((result) => result.ok).length, 1, JSON.stringify(settled))
+    assert.equal(failures.length, 1, JSON.stringify(settled))
+    failureCodes.delete('PHASE_GATE_VALIDATION_FAILED')
+    assert.ok(failureCodes.size > 0, JSON.stringify(settled))
+    assert.equal([...failureCodes].every((code) => allowedFailureCodes.has(code)), true, JSON.stringify(settled))
+    assert.equal(Object.keys(phaseGateStatus(repo).aggregate.dispatches).length, 1)
+  }
 })
 
 test('linear four-boundary run reaches final ProjectDelivery acceptance with no QA dispatch', () => {
