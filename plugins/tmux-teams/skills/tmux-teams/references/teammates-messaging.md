@@ -188,8 +188,10 @@ This preserves partial results — the thing raw `kill-session` destroys.
 
 Round-trip proven end-to-end: inbox file → `scripts/deliver.sh` → Codex TUI (pane-id
 targeted) → outbox file, with T2 enqueued mid-T1-turn and submitted only after T1
-finished (queueing at turn boundary, timestamped in deliver.log). Verified by
-2/3-model completion review (oc PASS + codex PASS; agy lane down).
+finished (queueing at turn boundary, timestamped in deliver.log). **Legacy,
+noncompliant review note:** the historical two-reviewer completion check
+(`oc PASS + codex PASS`; AGY down) predates the active ACP-only exact-three
+contract and must not be used as release evidence.
 
 Pattern-level field facts — trust these over assumptions:
 

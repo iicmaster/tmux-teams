@@ -26,7 +26,7 @@ verification.
 |---|---|
 | `tmux-teams:tmux-teams` | PM protocol over tmux + ACP: dispatch, completion detection, capture, mailbox pattern, run memory (§9) |
 | `tmux-teams:codex-tmux-driver` | Codex TUI calibration (flags, markers, dialogs) for the codex worker lane |
-| `tmux-teams:party-mode` | Multi-agent execution/advisory workflow with 3-model review + grill gate |
+| `tmux-teams:party-mode` | Multi-agent execution/advisory workflow with an ACP-only exact-three 3-model review gate + grill gate |
 | `tmux-teams:party-auto` | Execution lane of party-mode |
 | `tmux-teams:party-advise` | Read-only advisory lane of party-mode |
 | `tmux-teams:sqthink` | Sequential-thinking analysis/planning |
@@ -210,13 +210,40 @@ manifest does not update an installed copy. After a release is pushed, run
 `claude plugin marketplace update tmux-teams` followed by
 `claude plugin update tmux-teams@tmux-teams`.
 
-## Prerequisites (soft dependencies)
+## Prerequisites
 
 - `tmux`, and the `codex` CLI for the worker lane; Node 20+ with `npx` for
   the ACP adapters. CI exercises Node 20 and Node 24.
-- party-mode's 3-model review lanes need the `oc` (opencode) and `agy`
-  (antigravity) plugins plus Codex MCP — without them party-mode falls back
-  per its own review-fallback rules.
+- party-mode's 3-model review uses its bundled JavaScript ACP gate
+  (`skills/party-mode/scripts/review-gate.mjs`), not `oc`/AGY/Codex review
+  plugins or MCP review tools. On Linux it fails closed without
+  `/usr/bin/bwrap`. It also needs the supported ACP reviewer runtimes:
+  `antigravity-acp@1.0.0` + trusted `agy`, native `kimi acp`, and the pinned
+  Claude/Codex ACP adapters. Zai must use the explicit official
+  `https://api.z.ai/api/anthropic` settings route. AGY plus exactly two valid,
+  distinct reviewers are mandatory, and unsupported primary routes fail closed.
+  While the direct Claude provider is limited, the policy never launches it:
+  `claude-zai` resolves to the pinned Zai GLM-5.2 ACP profile and is accepted
+  only when it does not duplicate a reviewer/model or match the primary family.
+
+Run the gate from a trusted workflow with the target repository as a separate,
+runner-owned absolute argument; never take it from the untrusted packet:
+
+```bash
+node plugins/tmux-teams/skills/party-mode/scripts/review-gate.mjs \
+  <static-packet.json> "$PWD" > <review-report.json>
+```
+
+Each reviewer gets a fresh temporary workspace, an ephemeral provider HOME,
+no MCP servers or built-in tools, denied ACP permission requests, and no mount
+of the target repository or host user-data roots. The provider network remains
+shared so its remote API can be reached; adapter auth is available inside its
+ephemeral same-process HOME and the provider may retain remote state. Model
+evidence means the pinned ACP model was configured and acknowledged, not
+cryptographic proof of the remote serving model. AGY may report a completed
+read only for copied provider-runtime documentation under its isolated
+`builtin/` tree; target, arbitrary, search, fetch, edit, and execute calls
+remain blocked.
 
 ## Update lifecycle (this repo IS canonical — flipped 2026-07-21)
 

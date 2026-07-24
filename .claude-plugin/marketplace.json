@@ -5,13 +5,13 @@
   },
   "metadata": {
     "description": "PM orchestration suite with tmux/ACP teams, party verification, and an opt-in Stage 1 field-evidence sidecar.",
-    "version": "0.7.1"
+    "version": "0.8.0"
   },
   "plugins": [
     {
       "name": "tmux-teams",
       "description": "PM orchestration with tmux/ACP teams, party verification, and an opt-in Stage 1 field-evidence sidecar.",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "author": {
         "name": "IIC Master"
       },
