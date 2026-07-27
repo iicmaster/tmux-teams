@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "pulse-v4.schema.json",
   "title": "tmux-teams Pulse Data v4",
-  "description": "Pulse v3 plus an optional, closed, observe-only phase-gate runtime projection. Pulse remains advisory and never actuates work.",
+  "description": "Pulse v3 plus closed, optional-source Team controller evidence. Pulse remains advisory and never actuates work.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -22,7 +22,9 @@
     "recent_verdicts",
     "worker_stats",
     "unclaimed_control",
-    "diagnostics"
+    "diagnostics",
+    "history",
+    "team_runtime"
   ],
   "properties": {
     "schema": { "const": "tmux-teams.pulse" },
@@ -43,12 +45,12 @@
     "runs": {
       "type": "array",
       "maxItems": 100,
-      "items": { "$ref": "pulse-v3.schema.json#/$defs/run" }
+      "items": { "$ref": "#/$defs/run" }
     },
     "recent_verdicts": {
       "type": "array",
       "maxItems": 12,
-      "items": { "$ref": "pulse-v3.schema.json#/$defs/recent_verdict" }
+      "items": { "$ref": "#/$defs/recent_verdict" }
     },
     "worker_stats": {
       "type": "array",
@@ -66,7 +68,33 @@
       "items": { "$ref": "#/$defs/diagnostic" }
     },
     "delivery_loop": { "$ref": "pulse-v3.schema.json#/$defs/delivery_loop" },
-    "delivery_runtime": { "$ref": "#/$defs/delivery_runtime" }
+    "delivery_runtime": { "$ref": "#/$defs/delivery_runtime" },
+    "team_graph": {
+      "oneOf": [
+        { "$ref": "#/$defs/team_graph" },
+        { "type": "null" }
+      ]
+    },
+    "history": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runs", "total", "truncated"],
+      "properties": {
+        "runs": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/run" }
+        },
+        "total": { "type": "integer", "minimum": 0 },
+        "truncated": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "team_runtime": {
+      "oneOf": [
+        { "$ref": "team-runtime-v1.schema.json" },
+        { "type": "null" }
+      ]
+    }
   },
   "allOf": [
     {
@@ -125,10 +153,335 @@
         { "type": "null" }
       ]
     },
+    "nullable_text": {
+      "oneOf": [
+        { "type": "string", "minLength": 1, "maxLength": 128 },
+        { "type": "null" }
+      ]
+    },
     "nullable_uuid": {
       "oneOf": [
         { "$ref": "pulse-v3.schema.json#/$defs/uuid" },
         { "type": "null" }
+      ]
+    },
+    "bounded_value": {
+      "oneOf": [
+        { "type": "string", "maxLength": 256 },
+        { "type": "number" },
+        { "type": "boolean" },
+        { "type": "null" },
+        {
+          "type": "array",
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/bounded_value" }
+        },
+        {
+          "type": "object",
+          "maxProperties": 8,
+          "additionalProperties": { "$ref": "#/$defs/bounded_value" }
+        }
+      ]
+    },
+    "liveness_tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tool_call_id", "title", "kind", "status", "updated_at", "update_count"
+      ],
+      "properties": {
+        "tool_call_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "kind": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "status": { "enum": ["pending", "in_progress", "completed", "failed"] },
+        "content_digest": { "$ref": "#/$defs/nullable_digest" },
+        "output_digest": { "$ref": "#/$defs/nullable_digest" },
+        "locations_digest": { "$ref": "#/$defs/nullable_digest" },
+        "updated_at": { "$ref": "pulse-v3.schema.json#/$defs/timestamp" },
+        "update_count": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "liveness_history": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state", "observed_at", "evidence"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "suspected_stalled", "stalled", "recovered", "cancellation_unavailable"
+          ]
+        },
+        "observed_at": { "$ref": "pulse-v3.schema.json#/$defs/timestamp" },
+        "evidence": {
+          "oneOf": [
+            { "type": "string", "minLength": 1, "maxLength": 256 }
+          ]
+        },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "last_protocol_activity_at": { "$ref": "#/$defs/nullable_timestamp" },
+        "last_meaningful_progress_at": { "$ref": "#/$defs/nullable_timestamp" },
+        "active_tools": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/liveness_tool" }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "state": { "const": "cancellation_unavailable" } },
+            "required": ["state"]
+          },
+          "then": { "required": ["reason"] },
+          "else": { "not": { "required": ["reason"] } }
+        }
+      ]
+    },
+    "liveness_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "task_id",
+        "dispatch_id",
+        "agent_id",
+        "observed_at",
+        "liveness_state",
+        "last_protocol_activity_at",
+        "last_meaningful_progress_at",
+        "termination_reason",
+        "active_tools",
+        "tools",
+        "stall_history"
+      ],
+      "properties": {
+        "schema_version": { "const": "acp-liveness.v1" },
+        "task_id": { "$ref": "pulse-v3.schema.json#/$defs/id" },
+        "dispatch_id": { "$ref": "pulse-v3.schema.json#/$defs/uuid" },
+        "agent_id": { "$ref": "pulse-v3.schema.json#/$defs/nullable_id" },
+        "observed_at": { "$ref": "pulse-v3.schema.json#/$defs/timestamp" },
+        "liveness_state": {
+          "enum": [
+            "starting", "awaiting_agent", "active", "tool_running", "suspected_stalled",
+            "cancelling", "cancelled", "stalled", "failed", "completed"
+          ]
+        },
+        "last_protocol_activity_at": { "$ref": "pulse-v3.schema.json#/$defs/timestamp" },
+        "last_meaningful_progress_at": { "$ref": "pulse-v3.schema.json#/$defs/timestamp" },
+        "active_tools": {
+          "type": "array",
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/liveness_tool" }
+        },
+        "tools": {
+          "type": "object",
+          "maxProperties": 64,
+          "additionalProperties": { "$ref": "#/$defs/liveness_tool" }
+        },
+        "termination_reason": {
+          "oneOf": [
+            { "type": "string", "minLength": 1, "maxLength": 256 },
+            { "type": "null" }
+          ]
+        },
+        "stall_history": {
+          "type": "array",
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/liveness_history" }
+        }
+      }
+    },
+    "graph_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "agent_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$"
+    },
+    "graph_team": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "team_id",
+        "name",
+        "dispatcher_id",
+        "worker_ids",
+        "evaluator_id",
+        "downstream_team_id"
+      ],
+      "properties": {
+        "team_id": { "$ref": "#/$defs/graph_id" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "dispatcher_id": { "$ref": "#/$defs/agent_id" },
+        "worker_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/agent_id" }
+        },
+        "evaluator_id": { "$ref": "#/$defs/agent_id" },
+        "downstream_team_id": {
+          "oneOf": [
+            { "$ref": "#/$defs/graph_id" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "team_graph": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project_id", "source_digest", "outer_controller_id", "teams"],
+      "properties": {
+        "project_id": {
+          "oneOf": [
+            { "$ref": "#/$defs/graph_id" },
+            { "type": "null" }
+          ]
+        },
+        "source_digest": { "$ref": "#/$defs/nullable_digest" },
+        "outer_controller_id": {
+          "oneOf": [
+            { "$ref": "#/$defs/agent_id" },
+            { "type": "null" }
+          ]
+        },
+        "teams": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/graph_team" }
+        }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dispatch_id",
+        "task_id",
+        "identity_source",
+        "state",
+        "worker",
+        "agent_id",
+        "identity_conflict",
+        "model",
+        "transport",
+        "started_at",
+        "elapsed_sec",
+        "silence_sec",
+        "timeout_sec",
+        "signals",
+        "reason_codes",
+        "advisory",
+        "phase",
+        "phase_source",
+        "liveness_evidence"
+      ],
+      "properties": {
+        "dispatch_id": { "$ref": "pulse-v3.schema.json#/$defs/nullable_uuid" },
+        "task_id": { "$ref": "pulse-v3.schema.json#/$defs/id" },
+        "identity_source": { "enum": ["dispatch_id", "legacy_task_time", "process_only"] },
+        "state": { "$ref": "pulse-v3.schema.json#/$defs/state" },
+        "worker": { "$ref": "pulse-v3.schema.json#/$defs/nullable_id" },
+        "agent_id": { "$ref": "pulse-v3.schema.json#/$defs/nullable_id" },
+        "identity_conflict": { "type": "boolean" },
+        "model": {
+          "oneOf": [
+            { "type": "string", "minLength": 1, "maxLength": 128 },
+            { "type": "null" }
+          ]
+        },
+        "transport": {
+          "type": ["string", "null"],
+          "enum": ["tmux", "acp", null]
+        },
+        "started_at": { "$ref": "pulse-v3.schema.json#/$defs/nullable_timestamp" },
+        "elapsed_sec": { "$ref": "pulse-v3.schema.json#/$defs/nullable_duration" },
+        "silence_sec": { "$ref": "pulse-v3.schema.json#/$defs/nullable_duration" },
+        "timeout_sec": { "$ref": "pulse-v3.schema.json#/$defs/nullable_duration" },
+        "signals": { "$ref": "pulse-v3.schema.json#/$defs/signals" },
+        "reason_codes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": { "$ref": "pulse-v3.schema.json#/$defs/reason_code" }
+        },
+        "advisory": { "$ref": "pulse-v3.schema.json#/$defs/advisory" },
+        "phase": { "$ref": "pulse-v3.schema.json#/$defs/nullable_run_phase" },
+        "phase_source": { "$ref": "pulse-v3.schema.json#/$defs/phase_source" },
+        "liveness_evidence": {
+          "oneOf": [
+            { "$ref": "#/$defs/liveness_evidence" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "phase": { "type": "null" } },
+            "required": ["phase"]
+          },
+          "then": {
+            "properties": {
+              "phase_source": { "enum": ["unassigned", "conflict"] }
+            }
+          },
+          "else": {
+            "properties": {
+              "phase_source": { "enum": ["dispatch", "event", "dispatch_join"] }
+            }
+          }
+        }
+      ]
+    },
+    "recent_verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dispatch_id", "task_id", "worker", "agent_id", "transport", "terminal", "pm_verdict",
+        "started_at", "wait_sec", "timeout_sec", "phase", "phase_source"
+      ],
+      "properties": {
+        "dispatch_id": { "$ref": "pulse-v3.schema.json#/$defs/nullable_uuid" },
+        "task_id": { "$ref": "pulse-v3.schema.json#/$defs/id" },
+        "worker": { "$ref": "pulse-v3.schema.json#/$defs/id" },
+        "agent_id": { "$ref": "pulse-v3.schema.json#/$defs/nullable_id" },
+        "transport": {
+          "type": ["string", "null"],
+          "enum": ["tmux", "acp", null]
+        },
+        "terminal": { "enum": ["done", "blocked", "failed", "absent", "invalid"] },
+        "pm_verdict": { "enum": ["pass", "reject", "unresolved"] },
+        "started_at": { "$ref": "pulse-v3.schema.json#/$defs/nullable_timestamp" },
+        "wait_sec": { "$ref": "pulse-v3.schema.json#/$defs/nullable_duration" },
+        "timeout_sec": { "$ref": "pulse-v3.schema.json#/$defs/nullable_duration" },
+        "phase": { "$ref": "pulse-v3.schema.json#/$defs/nullable_run_phase" },
+        "phase_source": { "$ref": "pulse-v3.schema.json#/$defs/phase_source" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "phase": { "type": "null" } },
+            "required": ["phase"]
+          },
+          "then": {
+            "properties": {
+              "phase_source": { "enum": ["unassigned", "conflict"] }
+            }
+          },
+          "else": {
+            "properties": {
+              "phase_source": { "enum": ["dispatch", "event", "dispatch_join"] }
+            }
+          }
+        }
       ]
     },
     "diagnostic": {
@@ -154,7 +507,18 @@
             "PHASE_BINDING_CONFLICT",
             "DELIVERY_RUNTIME_INPUT_UNREADABLE",
             "DELIVERY_RUNTIME_INPUT_INVALID",
-            "DELIVERY_RUNTIME_STALE"
+            "DELIVERY_RUNTIME_STALE",
+            "LIVENESS_EVIDENCE_UNREADABLE",
+            "LIVENESS_EVIDENCE_INVALID",
+            "LIVENESS_EVIDENCE_MISMATCH",
+            "LIVENESS_EVIDENCE_FUTURE",
+            "AGENT_ID_CONFLICT",
+            "TEAM_GRAPH_INPUT_UNREADABLE",
+            "TEAM_GRAPH_INPUT_INVALID",
+            "TEAM_RUNTIME_INPUT_UNREADABLE",
+            "TEAM_RUNTIME_INPUT_INVALID",
+            "TEAM_RUNTIME_STALE",
+            "TEAM_RUNTIME_FUTURE"
           ]
         },
         "severity": { "enum": ["info", "warning", "error"] },
@@ -167,7 +531,8 @@
             "events",
             "publisher",
             "delivery_loop",
-            "delivery_runtime"
+            "delivery_runtime",
+            "team_runtime"
           ]
         },
         "count": { "type": "integer", "minimum": 1 }

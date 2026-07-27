@@ -1,0 +1,41 @@
+{
+  "schema_version": "acp-liveness.v1",
+  "task_id": "fixture-startup-stall",
+  "dispatch_id": "97e33f4a-7e17-4c46-afef-39b3f3021bd6",
+  "worker": "codex",
+  "transport": "acp",
+  "session_id": null,
+  "started_at": "2026-07-25T23:22:33Z",
+  "observed_at": "2026-07-25T23:22:39.627Z",
+  "stall_sec": 60,
+  "hard_timeout_sec": 0.09,
+  "stall_policy": "cancel",
+  "cancellation_grace_sec": 0.1,
+  "liveness_state": "failed",
+  "termination_reason": "hard_timeout",
+  "last_protocol_activity_at": "2026-07-25T23:22:33.998Z",
+  "last_meaningful_progress_at": "2026-07-25T23:22:33.998Z",
+  "lease_anchor_at": "2026-07-25T23:22:33.998Z",
+  "meaningful_progress_count": 0,
+  "consecutive_missed_leases": 0,
+  "next_lease_expiry_at": "2026-07-25T23:23:33.998Z",
+  "stall_recoveries": 0,
+  "stall_history": [
+    {
+      "state": "cancellation_unavailable",
+      "evidence": "no_session_id",
+      "observed_at": "2026-07-25T23:22:39.594Z",
+      "reason": "hard_timeout"
+    }
+  ],
+  "active_tools": [],
+  "tools": {},
+  "plan_digest": null,
+  "plan_entry_count": 0,
+  "cancellation_unavailable": true,
+  "requested_model": "gpt-5.6-luna",
+  "requested_reasoning_effort": "ultra",
+  "effective_identity": null,
+  "identity_status": "missing",
+  "agent_id": "root_liveness_implementer"
+}

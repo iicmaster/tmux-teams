@@ -1,881 +1,709 @@
-// Pure full-screen ACP delivery-loop projection for Pulse.
+// Pure operational agent-flow projection for Pulse.
 //
-// The renderer receives only the exact serialized Pulse snapshot. It does not
-// inspect processes, dispatch files, outboxes, or KMS records on its own.
-// Phase placement therefore requires explicit phase attribution in that
-// snapshot. Runs without it remain visibly unassigned; task names and model
-// names are never used to invent a phase or a handoff.
+// This module accepts only the serialized Pulse snapshot. Configuration is
+// normalized into agent instances, runtime evidence enriches those instances,
+// and stale evidence is kept in an audit list instead of the primary flow.
 
 import { renderTopologyGraph } from './pulse-loop-graph-topology.mjs'
+import { isAcpAgentId, validateTeamGraph } from './team-graph-contract.mjs'
+import { isProjectedTeamRuntime, validateTeamRuntime } from './team-runtime.mjs'
 
-const STATE_META = Object.freeze({
-  starting: {
-    runtime_group: 'starting',
-    label: 'กำลังเริ่ม',
-    tone: 'pending',
-    meaning: 'มี dispatch แต่ยังไม่พบ process และยังอยู่ในช่วงเริ่มต้น',
-  },
-  running: {
-    runtime_group: 'running',
-    label: 'กำลังทำงาน',
-    tone: 'ok',
-    meaning: 'พบ ACP companion process ที่ cwd ตรงกับโปรเจกต์',
-  },
-  'awaiting-verdict': {
-    runtime_group: 'waiting',
-    label: 'รอตรวจผล',
-    tone: 'warn',
-    meaning: 'พบ terminal marker จาก worker แต่ยังไม่มีคำตัดสินที่บันทึก',
-  },
-  unrecorded: {
-    runtime_group: 'waiting',
-    label: 'ขาดบันทึกคำตัดสิน',
-    tone: 'bad',
-    meaning: 'terminal marker ค้างเกินกำหนดและยังไม่มี verdict record',
-  },
-  died: {
-    runtime_group: 'exception',
-    label: 'หยุดโดยไม่มีผลลัพธ์',
-    tone: 'bad',
-    meaning: 'มี dispatch แต่ไม่พบ process, terminal marker หรือ verdict หลังช่วงเริ่มต้น',
-  },
-  unknown: {
-    runtime_group: 'exception',
-    label: 'ตรวจสถานะไม่ได้',
-    tone: 'unknown',
-    meaning: 'แหล่งข้อมูลที่จำเป็นต่อการตรวจ liveness ใช้งานไม่ได้',
-  },
-  orphan_running: {
-    runtime_group: 'exception',
-    label: 'พบ process แต่ไม่มี dispatch',
-    tone: 'warn',
-    meaning: 'พบ ACP process ในโปรเจกต์ แต่ไม่พบ dispatch footprint',
-  },
-})
-
-const RECORDED_META = Object.freeze({
-  pass: {
-    label: 'บันทึกว่า “ผ่าน”',
-    tone: 'ok',
-    meaning: 'มี pm_verdict: pass ที่บันทึกไว้; ไม่ใช่ business approval หรือ UAT acceptance',
-  },
-  reject: {
-    label: 'บันทึกว่า “ให้แก้ไข”',
-    tone: 'bad',
-    meaning: 'มี pm_verdict: reject ที่บันทึกไว้',
-  },
-  unresolved: {
-    label: 'บันทึกว่า “ยังไม่สรุป”',
-    tone: 'warn',
-    meaning: 'มี pm_verdict: unresolved ที่บันทึกไว้',
-  },
-})
-
-export const DELIVERY_PHASES = Object.freeze([
-  {
-    id: 'requirement',
-    source_name: 'Requirement',
-    step: '01',
-    title: 'Requirement',
-    thai: 'ข้อกำหนด',
-    exit_artifact: 'requirements_baseline',
-    deliverable: 'Business function · validation · exception · security · performance · integration',
-  },
-  {
-    id: 'prototype',
-    source_name: 'Prototype',
-    step: '02',
-    title: 'Prototype',
-    thai: 'ต้นแบบ',
-    exit_artifact: 'prototype_evaluation',
-    deliverable: 'Clickable prototype',
-  },
-  {
-    id: 'development',
-    source_name: 'Development',
-    step: '03',
-    title: 'Development',
-    thai: 'พัฒนา',
-    exit_artifact: 'development_delivery',
-    deliverable: 'Working software',
-  },
-  {
-    id: 'qa',
-    source_name: 'QA',
-    step: '04',
-    title: 'QA',
-    thai: 'ทดสอบ',
-    exit_artifact: 'qa_release_evidence',
-    deliverable: 'E2E test report · UAT report',
-  },
+const LIVE_RUN_STATES = new Set(['running', 'starting', 'orphan_running'])
+const RECENT_RUN_STATES = new Set([...LIVE_RUN_STATES, 'died', 'unrecorded', 'unknown'])
+const LIVENESS_STATES = new Set([
+  'starting', 'awaiting_agent', 'active', 'tool_running', 'suspected_stalled',
+  'cancelling', 'cancelled', 'stalled', 'failed', 'completed',
 ])
 
-const PHASE_BY_SOURCE = new Map(DELIVERY_PHASES.flatMap((phase) => [
-  [phase.source_name.toLowerCase(), phase.id],
-  [phase.id, phase.id],
-]))
-const BOUND_PHASE_SOURCES = new Set(['dispatch', 'event', 'dispatch_join'])
-const UNBOUND_PHASE_SOURCES = new Set(['unassigned', 'conflict'])
-
-const TERMINAL_COPY = Object.freeze({
-  done: 'TEAM_DONE',
-  blocked: 'TEAM_BLOCKED',
-  failed: 'TEAM_FAILED',
-  invalid: 'marker ไม่ถูกต้อง',
-  absent: 'ยังไม่มี',
+const STATUS_LABELS = Object.freeze({
+  working: 'working',
+  waiting: 'waiting',
+  blocked: 'blocked',
+  stalled: 'stalled',
+  done: 'done',
+  not_started: 'not started',
+  unknown: 'unknown',
 })
 
-const VERDICT_COPY = Object.freeze({
-  pass: 'ผ่าน',
-  reject: 'ให้แก้ไข',
-  unresolved: 'ยังไม่สรุป',
-  absent: 'ยังไม่มี',
+const ROLE_LABELS = Object.freeze({
+  outer_controller: 'Project Control',
+  dispatcher: 'Dispatcher',
+  worker: 'Worker',
+  evaluator: 'Integrator / evaluator',
+  unassigned: 'Observed agent',
 })
 
-const LIVENESS_COPY = Object.freeze({
-  alive: 'พบ process',
-  dead: 'ไม่พบ process',
-  unknown: 'ตรวจไม่ได้',
-})
-
-const ACTION_COPY = Object.freeze({
-  monitor: 'ติดตามต่อ',
-  wait: 'รอช่วงเริ่มต้น',
-  verify_result: 'ตรวจผลลัพธ์',
-  record_verdict: 'บันทึกคำตัดสิน',
-  inspect_worker: 'ตรวจ worker',
-  restore_observability: 'กู้การสังเกตการณ์',
-  inspect_ownership: 'ตรวจเจ้าของ process',
-})
-
-function phaseAssignment(item) {
-  const rawPhase = String(item?.phase ?? '').trim()
-  const phaseId = PHASE_BY_SOURCE.get(rawPhase.toLowerCase()) || null
-  const phaseSource = String(item?.phase_source ?? '').trim()
-  if (phaseId && BOUND_PHASE_SOURCES.has(phaseSource)) {
-    return {
-      phase_id: phaseId,
-      phase_source: phaseSource,
-    }
-  }
-  if (!phaseId && UNBOUND_PHASE_SOURCES.has(phaseSource)) {
-    return {
-      phase_id: 'unassigned',
-      phase_source: phaseSource,
-    }
-  }
-  return {
-    phase_id: 'unassigned',
-    phase_source: 'unassigned',
-    phase_binding_invalid: Boolean(rawPhase || phaseSource),
-  }
+const safeText = (value, fallback = '') => {
+  const text = String(value ?? '').trim()
+  return text.length > 256 ? text.slice(0, 256) : text || fallback
 }
 
-function nodeIdentity(item, source, index) {
-  const dispatchId = String(item.dispatch_id || '').trim()
-  if (dispatchId) {
-    return { dispatchId, key: `dispatch:${dispatchId}`, source: 'dispatch_id' }
-  }
-  const startedMs = Date.parse(String(item.started_at || ''))
-  if (Number.isFinite(startedMs)) {
-    const startedAt = new Date(startedMs).toISOString()
-    return {
-      dispatchId: null,
-      key: `legacy:${JSON.stringify([String(item.task_id || ''), startedAt])}`,
-      source: 'legacy_task_time',
-    }
-  }
-  return {
-    dispatchId: null,
-    key: `uncorrelatable:${source}:${index}:${String(item.task_id || '')}`,
-    source: 'uncorrelatable',
-  }
+const explicitAgentId = (value) => isAcpAgentId(value)
+const graphAgentId = (value) => explicitAgentId(value) ? value : null
+
+const validObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+
+const parseTime = (value) => {
+  const parsed = Date.parse(String(value || ''))
+  return Number.isFinite(parsed) ? parsed : -Infinity
 }
 
-function activeNode(run, identity) {
-  const meta = STATE_META[run.state]
-  return {
-    node_id: identity.key,
-    dispatch_id: identity.dispatchId,
-    identity_source: identity.source,
-    task_id: run.task_id,
-    agent: run.worker || 'ไม่ทราบชื่อ agent',
-    ...phaseAssignment(run),
-    runtime_group: meta.runtime_group,
-    state: run.state,
-    label: meta.label,
-    tone: meta.tone,
-    meaning: meta.meaning,
-    historical: false,
-    elapsed_sec: run.elapsed_sec,
-    silence_sec: run.silence_sec,
-    started_at: run.started_at,
-    signals: {
-      dispatch: run.signals.dispatch === 'present' ? 'มี' : 'ไม่มี',
-      liveness: LIVENESS_COPY[run.signals.liveness] || 'ตรวจไม่ได้',
-      terminal: TERMINAL_COPY[run.signals.terminal] || 'ไม่ทราบ',
-      verdict: VERDICT_COPY[run.signals.pm_verdict] || 'ไม่ทราบ',
-    },
-    next_action: ACTION_COPY[run.advisory.action_code] || 'ตรวจรายละเอียด',
-    attention: run.advisory.attention,
-  }
-}
+const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+}[character]))
 
-function recordedNode(record, identity) {
-  const meta = RECORDED_META[record.pm_verdict]
-  const conflictingPass = record.pm_verdict === 'pass' && record.terminal !== 'done'
-  return {
-    node_id: identity.key,
-    dispatch_id: identity.dispatchId,
-    identity_source: identity.source,
-    task_id: record.task_id,
-    agent: record.worker || 'ไม่ทราบชื่อ agent',
-    ...phaseAssignment(record),
-    runtime_group: 'recorded',
-    state: conflictingPass ? 'recorded-pass-conflict' : `recorded-${record.pm_verdict}`,
-    label: conflictingPass ? 'หลักฐานขัดแย้ง · บันทึกว่า “ผ่าน”' : meta.label,
-    tone: conflictingPass ? 'bad' : meta.tone,
-    meaning: conflictingPass
-      ? `pm_verdict: pass ขัดกับ terminal ${TERMINAL_COPY[record.terminal] || 'ไม่ทราบ'}; ต้องตรวจหลักฐานและไม่ถือเป็น business approval หรือ UAT acceptance`
-      : meta.meaning,
-    historical: true,
-    elapsed_sec: record.wait_sec,
-    silence_sec: null,
-    started_at: record.started_at,
-    signals: {
-      dispatch: identity.dispatchId ? 'มี identity' : 'identity แบบเก่า',
-      liveness: 'ไม่ใช่ process สด',
-      terminal: TERMINAL_COPY[record.terminal] || 'ไม่ทราบ',
-      verdict: VERDICT_COPY[record.pm_verdict] || 'ไม่ทราบ',
-    },
-    next_action: conflictingPass
-      ? 'ตรวจ terminal marker และ verdict record'
-      : record.pm_verdict === 'reject'
-        ? 'สร้าง dispatch ใหม่เมื่อผู้รับผิดชอบสั่งแก้'
-        : record.pm_verdict === 'unresolved'
-          ? 'ตรวจหลักฐานและสรุปผล'
-          : 'เก็บเป็นประวัติ',
-    attention: conflictingPass || record.pm_verdict !== 'pass',
-    verdict_conflict: conflictingPass,
-  }
-}
-
-const nodeOrder = (left, right) =>
-  String(left.task_id).localeCompare(String(right.task_id), 'en') ||
-  String(left.agent).localeCompare(String(right.agent), 'en') ||
-  String(left.state).localeCompare(String(right.state), 'en')
-
-function sharedPhaseAssignment(candidates) {
-  const pairs = new Set(candidates.map((node) =>
-    `${node.phase_id}\u0000${node.phase_source}`))
-  if (pairs.size === 1) {
-    return {
-      phase_id: candidates[0].phase_id,
-      phase_source: candidates[0].phase_source,
-    }
-  }
-  return {
-    phase_id: 'unassigned',
-    phase_source: 'conflict',
-  }
-}
-
-function identityConflict(candidates, evidenceKind = 'active') {
-  const sorted = [...candidates].sort(nodeOrder)
-  const first = sorted[0]
-  const historical = evidenceKind === 'history'
-  const phase = sharedPhaseAssignment(sorted)
-  return {
-    ...first,
-    ...phase,
-    agent: new Set(sorted.map((node) => node.agent)).size === 1
-      ? first.agent
-      : 'หลาย agent · identity ชนกัน',
-    state: historical ? 'recorded-identity-conflict' : 'identity-conflict',
-    label: historical ? 'หลักฐานประวัติ identity ขัดแย้ง' : 'dispatch identity ขัดแย้ง',
-    tone: 'bad',
-    meaning: `พบหลักฐาน ${historical ? 'history' : 'active'} ${sorted.length} แถวใช้ dispatch identity เดียวกัน จึงไม่เลือกสถานะใดสถานะหนึ่ง`,
-    signals: {
-      dispatch: 'identity ชนกัน',
-      liveness: [...new Set(sorted.map((node) => node.signals.liveness))].join(' / '),
-      terminal: [...new Set(sorted.map((node) => node.signals.terminal))].join(' / '),
-      verdict: [...new Set(sorted.map((node) => node.signals.verdict))].join(' / '),
-    },
-    next_action: 'ตรวจ dispatch identity และหลักฐานที่ขัดแย้ง',
-    attention: true,
-    identity_conflict: true,
-    evidence_conflict: evidenceKind,
-  }
+function graphInput(snapshotOrGraph) {
+  if (!validObject(snapshotOrGraph)) return null
+  const candidate = Object.hasOwn(snapshotOrGraph, 'team_graph')
+    ? snapshotOrGraph.team_graph
+    : Object.hasOwn(snapshotOrGraph, 'graph')
+      ? snapshotOrGraph.graph
+      : snapshotOrGraph
+  if (!validObject(candidate)) return null
+  return validObject(candidate.graph) ? candidate.graph : candidate
 }
 
 /**
- * Build one node per ACP dispatch identity. Duplicate active rows with the same
- * strong identity become one explicit conflict node; duplicate history does
- * the same. Neither evidence stream silently uses first-row-wins. Active
- * evidence wins over recent history for the same run.
+ * Normalize either a graph object or the Stage 2 `{ graph: ... }` wrapper.
+ * Only fields needed by the flow are retained; arbitrary fixture metadata is
+ * deliberately not allowed to become rendered UI.
  */
-export function buildLoopGraphNodes(snapshot) {
-  const activeGroups = new Map()
-  for (const [index, run] of (snapshot?.runs || []).entries()) {
-    if (run.transport !== 'acp' || !STATE_META[run.state]) continue
-    const identity = nodeIdentity(run, 'active', index)
-    const group = activeGroups.get(identity.key) || []
-    group.push(activeNode(run, identity))
-    activeGroups.set(identity.key, group)
-  }
-  const active = [...activeGroups.values()].map((group) =>
-    group.length === 1 ? group[0] : identityConflict(group))
-  const activeIds = new Set(active.map((node) => node.node_id))
-
-  const historyGroups = new Map()
-  for (const [index, record] of (snapshot?.recent_verdicts || []).entries()) {
-    if (record.transport !== 'acp' || !RECORDED_META[record.pm_verdict]) continue
-    const identity = nodeIdentity(record, 'history', index)
-    if (activeIds.has(identity.key)) continue
-    const group = historyGroups.get(identity.key) || []
-    group.push(recordedNode(record, identity))
-    historyGroups.set(identity.key, group)
-  }
-  const history = [...historyGroups.values()].map((group) =>
-    group.length === 1 ? group[0] : identityConflict(group, 'history'))
-  return [...active.sort(nodeOrder), ...history.sort(nodeOrder)]
+export function normalizeTeamGraph(snapshotOrGraph) {
+  const input = graphInput(snapshotOrGraph)
+  const checked = validateTeamGraph(input)
+  return checked.ok ? checked.value : null
 }
 
-const PHASE_POSITIONS = Object.freeze({
-  requirement: { x: 60, y: 130, width: 270 },
-  prototype: { x: 390, y: 130, width: 270 },
-  development: { x: 720, y: 130, width: 270 },
-  qa: { x: 1050, y: 130, width: 270 },
-})
-
-const PHASE_HANDOFFS = Object.freeze([
-  ['requirement', 'prototype'],
-  ['prototype', 'development'],
-  ['development', 'qa'],
-  ['qa', 'project-delivery'],
-])
-
-const OPERATIONAL_BOUNDARIES = Object.freeze({
-  requirement_to_prototype: Object.freeze({
-    from: 'requirement',
-    to: 'prototype',
-    sender_phase: 'Requirement',
-    receiver_phase: 'Prototype',
-    artifact_type: 'requirements_baseline',
-  }),
-  prototype_to_development: Object.freeze({
-    from: 'prototype',
-    to: 'development',
-    sender_phase: 'Prototype',
-    receiver_phase: 'Development',
-    artifact_type: 'prototype_evaluation',
-  }),
-  development_to_qa: Object.freeze({
-    from: 'development',
-    to: 'qa',
-    sender_phase: 'Development',
-    receiver_phase: 'QA',
-    artifact_type: 'development_delivery',
-  }),
-  qa_to_project_delivery: Object.freeze({
-    from: 'qa',
-    to: 'project-delivery',
-    sender_phase: 'QA',
-    receiver_phase: 'ProjectDelivery',
-    artifact_type: 'qa_release_evidence',
-  }),
-})
-const OPERATIONAL_BOUNDARY_ORDER = new Map(
-  Object.keys(OPERATIONAL_BOUNDARIES).map((boundary, index) => [boundary, index]),
-)
-
-const OPERATIONAL_STATE = Object.freeze({
-  proposed: Object.freeze({
-    kind: 'observed-gate-proposed',
-    offset: -18,
-  }),
-  accepted: Object.freeze({
-    kind: 'observed-gate-accepted',
-    offset: -9,
-  }),
-  rejected: Object.freeze({
-    kind: 'observed-gate-rejected',
-    offset: 9,
-  }),
-  escalated: Object.freeze({
-    kind: 'observed-gate-escalated',
-    offset: 18,
-  }),
-  consumed: Object.freeze({
-    kind: 'observed-gate-consumed',
-    offset: 0,
-  }),
-})
-
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
-const SHA256 = /^sha256:[0-9a-f]{64}$/
-const OPERATIONAL_GATE_KEYS = Object.freeze([
-  'gate_id',
-  'slice_id',
-  'attempt_id',
-  'boundary',
-  'sender_phase',
-  'receiver_phase',
-  'artifact_type',
-  'artifact_digest',
-  'state',
-  'proposed_at',
-  'transition_at',
-  'acceptance_event_id',
-  'accepted_digest',
-  'receiver_dispatch_id',
-  'consumed_digest',
-  'consumed_at',
-])
-
-const PHASE_AGENT_REGION = Object.freeze({
-  x: 18,
-  y: 205,
-  width: 234,
-  minimum_height: 145,
-})
-
-const stableNodeOrder = (left, right) => {
-  const leftTime = Date.parse(String(left.started_at || ''))
-  const rightTime = Date.parse(String(right.started_at || ''))
-  const leftValid = Number.isFinite(leftTime)
-  const rightValid = Number.isFinite(rightTime)
-  if (leftValid !== rightValid) return leftValid ? -1 : 1
-  if (leftValid && leftTime !== rightTime) return leftTime - rightTime
-  return String(left.node_id).localeCompare(String(right.node_id), 'en')
+function livenessState(run) {
+  const candidate = safeText(run?.liveness_evidence?.liveness_state)
+  if (LIVENESS_STATES.has(candidate)) return candidate
+  if (run?.signals?.liveness === 'alive') return 'active'
+  if (run?.state === 'awaiting-verdict') return 'waiting'
+  if (run?.state === 'running') return 'active'
+  return 'unknown'
 }
 
-function preferredNodeRadius(count, context = 'phase') {
-  if (context === 'unassigned') {
-    if (count <= 40) return 15
-    if (count <= 80) return 13
-    return 10
-  }
-  if (count <= 12) return 17
-  if (count <= 40) return 12
-  if (count <= 80) return 9
-  return 7
+function evidenceKeys(evidence) {
+  const agentId = explicitAgentId(evidence?.agent_id) ? evidence.agent_id : ''
+  return agentId ? [agentId] : []
 }
 
-function gridMetrics(count, width, radius) {
-  if (!count) return { radius, pitch: radius * 2 + 8, columns: 1, rows: 0, used_height: 0 }
-  const pitch = radius * 2 + 8
-  const columns = Math.max(1, Math.floor(width / pitch))
-  const rows = Math.ceil(count / columns)
-  return {
-    radius,
-    pitch,
-    columns,
-    rows,
-    used_height: rows * pitch,
-  }
+function evidenceIdentity(evidence, index = 0) {
+  const dispatchId = safeText(evidence?.dispatch_id)
+  if (dispatchId) return `dispatch:${dispatchId}`
+  const taskId = safeText(evidence?.task_id)
+  const startedAt = safeText(evidence?.started_at)
+  if (taskId) return `attempt:${taskId}:${startedAt || 'unknown-start'}`
+  return `row:${index}`
 }
 
-function gridPlacement(nodes, region, preferredRadius) {
-  if (!nodes.length) return []
-  const { radius, pitch, columns, rows, used_height: usedHeight } =
-    gridMetrics(nodes.length, region.width, preferredRadius)
-  const usedWidth = Math.min(columns, nodes.length) * pitch
-  const startX = region.x + (region.width - usedWidth) / 2 + pitch / 2
-  const startY = region.y + (region.height - usedHeight) / 2 + pitch / 2
-  return nodes.map((node, index) => ({
-    ...node,
-    radius,
-    x: Math.round((startX + (index % columns) * pitch) * 100) / 100,
-    y: Math.round((startY + Math.floor(index / columns) * pitch) * 100) / 100,
-    layout_index: index,
-  }))
+function isCurrentRun(run) {
+  if (!validObject(run)) return false
+  const evidenceState = run.liveness_evidence?.liveness_state
+  if (['completed', 'cancelled', 'failed'].includes(evidenceState)) return false
+  if (['done', 'blocked', 'failed'].includes(run.signals?.terminal)) return false
+  if (['pass', 'reject', 'unresolved'].includes(run.signals?.pm_verdict)) return false
+  if (['awaiting-verdict', 'unrecorded', 'died'].includes(run.state)) return false
+  if (run.signals?.liveness === 'alive' || LIVE_RUN_STATES.has(run.state)) return true
+  return run.state === 'unknown' || run.signals?.liveness === 'unknown'
 }
 
-function phaseStateMap(deliveryLoop) {
-  const cards = Array.isArray(deliveryLoop?.phase_cards) ? deliveryLoop.phase_cards : []
-  return new Map(cards.map((card) => [
-    PHASE_BY_SOURCE.get(String(card.phase || '').toLowerCase()),
-    card,
-  ]).filter(([phaseId]) => phaseId))
-}
-
-function operationalRuntimeAvailable(deliveryRuntime) {
-  return deliveryRuntime?.mode === 'observe_only' &&
-    deliveryRuntime?.trust_level === 'advisory_same_uid' &&
-    deliveryRuntime?.actuation?.enabled === false &&
-    deliveryRuntime?.actuation?.auto_execute === false &&
-    deliveryRuntime?.source_health?.phase_gates === 'ok' &&
-    deliveryRuntime?.source_health?.receiver_dispatches === 'ok' &&
-    Array.isArray(deliveryRuntime.phase_gates)
-}
-
-function operationalPhaseStateMap(deliveryRuntime) {
-  if (!operationalRuntimeAvailable(deliveryRuntime) ||
-      !Array.isArray(deliveryRuntime.phase_runs) ||
-      deliveryRuntime.phase_runs.length !== DELIVERY_PHASES.length) return new Map()
-  const rows = new Map()
-  for (const row of deliveryRuntime.phase_runs) {
-    const phaseId = PHASE_BY_SOURCE.get(String(row?.phase || '').toLowerCase())
-    if (!phaseId || rows.has(phaseId) ||
-        typeof row.phase_run_id !== 'string' || !row.phase_run_id ||
-        typeof row.state !== 'string' || !row.state ||
-        typeof row.owner_role !== 'string' || !row.owner_role) return new Map()
-    rows.set(phaseId, row)
-  }
-  return rows.size === DELIVERY_PHASES.length ? rows : new Map()
-}
-
-function operationalBottleneck(deliveryRuntime, phaseStates) {
-  if (!phaseStates.size || !deliveryRuntime?.bottleneck ||
-      typeof deliveryRuntime.bottleneck !== 'object') return null
-  const phaseId = PHASE_BY_SOURCE.get(
-    String(deliveryRuntime.bottleneck.phase || '').toLowerCase(),
+function isObservedLive(run) {
+  return validObject(run) && run.transport === 'acp' && (
+    run.signals?.liveness === 'alive' || run.state === 'orphan_running'
   )
-  if (!phaseId || !phaseStates.has(phaseId) ||
-      typeof deliveryRuntime.bottleneck.kind !== 'string' ||
-      !deliveryRuntime.bottleneck.kind ||
-      typeof deliveryRuntime.bottleneck.owner_role !== 'string' ||
-      !deliveryRuntime.bottleneck.owner_role ||
-      !Number.isFinite(deliveryRuntime.bottleneck.age_sec)) return null
-  return { ...deliveryRuntime.bottleneck, phase_id: phaseId }
 }
 
-function operationalGateShape(gate) {
-  if (!gate || typeof gate !== 'object' || Array.isArray(gate)) return null
-  const keys = Object.keys(gate)
-  if (keys.length !== OPERATIONAL_GATE_KEYS.length ||
-      !OPERATIONAL_GATE_KEYS.every((key) => Object.hasOwn(gate, key))) return null
-  const boundary = OPERATIONAL_BOUNDARIES[gate.boundary]
-  const state = OPERATIONAL_STATE[gate.state]
-  if (!boundary || !state) return null
-  if (gate.sender_phase !== boundary.sender_phase ||
-      gate.receiver_phase !== boundary.receiver_phase ||
-      gate.artifact_type !== boundary.artifact_type) return null
-  if (![gate.gate_id, gate.slice_id, gate.attempt_id]
-    .every((value) => typeof value === 'string' && value.length > 0)) return null
-  const transitionObserved = Number.isFinite(Date.parse(gate.transition_at))
-  if (!SHA256.test(gate.artifact_digest) ||
-      !Number.isFinite(Date.parse(gate.proposed_at)) ||
-      gate.state === 'proposed' && gate.transition_at !== null ||
-      gate.state !== 'proposed' && !transitionObserved) return null
-  return { boundary, state }
+function candidateScore(evidence) {
+  const state = livenessState(evidence)
+  const statePriority = {
+    tool_running: 8,
+    active: 7,
+    suspected_stalled: 6,
+    stalled: 5,
+    awaiting_agent: 4,
+    starting: 4,
+    cancelling: 3,
+    cancelled: 2,
+    failed: 2,
+    completed: 2,
+  }[state] || 0
+  const livePriority = evidence.signals?.liveness === 'alive' ? 1 : 0
+  return [
+    statePriority,
+    livePriority,
+    parseTime(evidence.started_at),
+    parseTime(evidence.liveness_evidence?.last_meaningful_progress_at),
+  ]
 }
 
-function operationalEdgePath(modelEdge, offset) {
-  const x1 = modelEdge.x1
-  const y1 = modelEdge.y1 + offset
-  const x2 = modelEdge.x2
-  const y2 = modelEdge.y2 + offset
-  const control = Math.max(30, (x2 - x1) / 2)
+function compareEvidence(left, right) {
+  const leftScore = candidateScore(left)
+  const rightScore = candidateScore(right)
+  for (let index = 0; index < leftScore.length; index += 1) {
+    if (leftScore[index] !== rightScore[index]) return rightScore[index] - leftScore[index]
+  }
+  return evidenceIdentity(left).localeCompare(evidenceIdentity(right), 'en')
+}
+
+function terminalStatus(evidence) {
+  const liveState = evidence?.liveness_evidence?.liveness_state
+  if (liveState === 'completed') return 'done'
+  if (evidence?.pm_verdict === 'pass' || evidence?.signals?.pm_verdict === 'pass') return 'done'
+  if (evidence?.pm_verdict === 'reject' || evidence?.signals?.pm_verdict === 'reject') return 'blocked'
+  if (evidence?.signals?.terminal === 'blocked' || evidence?.signals?.terminal === 'failed') return 'blocked'
+  if (['suspected_stalled', 'stalled', 'cancelled', 'failed'].includes(liveState)) return 'stalled'
+  if (['active', 'tool_running'].includes(liveState)) return 'working'
+  if (['starting', 'awaiting_agent', 'cancelling'].includes(liveState)) return 'waiting'
+  if (evidence?.state === 'awaiting-verdict' || evidence?.pm_verdict === 'unresolved') return 'waiting'
+  if (evidence?.state === 'unknown' || evidence?.state === 'unrecorded' || evidence?.signals?.liveness === 'unknown') return 'unknown'
+  if (['running', 'starting'].includes(evidence?.state) || evidence?.signals?.liveness === 'alive') return 'working'
+  if (evidence?.state === 'died') return 'stalled'
+  return 'waiting'
+}
+
+function compactLivenessEvidence(evidence) {
+  const raw = evidence?.liveness_evidence
+  if (!validObject(raw)) return null
+  const compactTool = (tool) => {
+    if (!validObject(tool)) return null
+    const result = {}
+    for (const key of [
+      'tool_call_id', 'title', 'kind', 'status', 'content_digest',
+      'output_digest', 'locations_digest', 'updated_at', 'update_count',
+    ]) {
+      if (Object.hasOwn(tool, key) &&
+          (typeof tool[key] === 'string' || tool[key] === null ||
+            Number.isSafeInteger(tool[key]))) result[key] = tool[key]
+    }
+    return result.tool_call_id && result.title && result.kind && result.status
+      ? result : null
+  }
+  const compactHistory = (entry) => {
+    if (!validObject(entry)) return null
+    const result = {}
+    for (const key of [
+      'state', 'observed_at', 'evidence', 'reason',
+      'last_protocol_activity_at', 'last_meaningful_progress_at',
+    ]) {
+      if (Object.hasOwn(entry, key) && typeof entry[key] === 'string') result[key] = entry[key]
+    }
+    if (Array.isArray(entry.active_tools)) {
+      result.active_tools = entry.active_tools.map(compactTool).filter(Boolean)
+    }
+    return result.state && result.observed_at && result.evidence ? result : null
+  }
+  const tools = validObject(raw.tools)
+    ? Object.fromEntries(Object.entries(raw.tools).map(([toolId, tool]) => [toolId, compactTool(tool)]))
+    : {}
   return {
-    x1,
-    y1,
-    x2,
-    y2,
-    path: `M ${x1} ${y1} C ${x1 + control} ${y1}, ${x2 - control} ${y2}, ${x2} ${y2}`,
+    schema_version: safeText(raw.schema_version),
+    task_id: safeText(raw.task_id),
+    dispatch_id: safeText(raw.dispatch_id),
+    agent_id: explicitAgentId(raw.agent_id) ? raw.agent_id : null,
+    observed_at: safeText(raw.observed_at),
+    liveness_state: safeText(raw.liveness_state, 'unknown'),
+    last_protocol_activity_at: safeText(raw.last_protocol_activity_at),
+    last_meaningful_progress_at: safeText(raw.last_meaningful_progress_at),
+    termination_reason: raw.termination_reason == null ? null : safeText(raw.termination_reason),
+    active_tools: Array.isArray(raw.active_tools) ? raw.active_tools.map(compactTool).filter(Boolean) : [],
+    tools,
+    stall_history: Array.isArray(raw.stall_history) ? raw.stall_history.map(compactHistory).filter(Boolean) : [],
   }
 }
 
-/**
- * Project advisory operational handoff evidence onto the fixed four-phase
- * model. The projection consumes only Pulse's sanitized delivery_runtime rows.
- * It never derives a gate from task text, agent placement, TEAM_DONE, PM
- * verdicts, delivery-loop cards, or digest similarity.
- */
-export function buildOperationalEdges(deliveryRuntime, modelEdges) {
-  if (!operationalRuntimeAvailable(deliveryRuntime)) return []
-  const modelByBoundary = new Map(modelEdges.map((edge) => [
-    `${edge.from}\u0000${edge.to}`,
-    edge,
-  ]))
+function chooseEvidence(agentId, runs, recent, excludedIdentities = new Set()) {
+  const candidates = [
+    ...runs.filter((run) => isCurrentRun(run) && !excludedIdentities.has(evidenceIdentity(run)) && evidenceKeys(run).includes(agentId)),
+    ...recent.filter((record) => recentEvidence(record) && !excludedIdentities.has(evidenceIdentity(record)) && evidenceKeys(record).includes(agentId)),
+  ].sort(compareEvidence)
+  return candidates[0] || null
+}
+
+function runtimeForEvidence(evidence, runtime) {
+  if (!runtime || !evidence || !evidence.agent_id || !evidence.task_id || !evidence.dispatch_id) return null
+  const agentRun = runtime.agent_runs.find((candidate) =>
+    candidate.agent_id === evidence.agent_id && candidate.task_id === evidence.task_id &&
+    candidate.dispatch_id === evidence.dispatch_id)
+  if (!agentRun) return null
+  const attempt = runtime.attempts.find((candidate) => candidate.agent_run_id === agentRun.agent_run_id) || null
+  const bottleneck = runtime.bottleneck && runtime.bottleneck.attempt_id === attempt?.attempt_id
+  return {
+    agent_run_id: agentRun.agent_run_id,
+    state: agentRun.state,
+    queue_wait_ms: agentRun.queue_wait_ms,
+    service_ms: agentRun.service_ms,
+    attempt_id: attempt?.attempt_id || null,
+    bottleneck: Boolean(bottleneck),
+  }
+}
+
+function nodeFromEvidence({ descriptor, evidence, configured, teamId, teamName, index, forceUnknown = false, runtime = null }) {
+  const evidenceIsRun = Object.hasOwn(evidence || {}, 'signals')
+  const status = evidence ? forceUnknown ? 'unknown' : terminalStatus(evidence) : 'not_started'
+  const liveness = evidence ? forceUnknown ? 'unknown' : livenessState(evidence) : 'unknown'
+  const livenessEvidence = compactLivenessEvidence(evidence)
+  const stateGroup = status === 'stalled' ? 'blocked' : status
+  const phase = evidence?.phase == null ? null : safeText(evidence.phase)
+  const phaseSource = safeText(evidence?.phase_source, phase ? 'unknown' : 'unassigned')
+  const runtimeFacts = runtimeForEvidence(evidence, runtime)
+  return {
+    agent_id: descriptor.agent_id,
+    role: descriptor.role,
+    role_label: ROLE_LABELS[descriptor.role] || ROLE_LABELS.unassigned,
+    team_id: teamId,
+    team_name: teamName,
+    configured,
+    observed: Boolean(evidence),
+    source: evidenceIsRun ? 'runtime' : evidence ? 'recent_verdict' : 'configured',
+    provider: safeText(evidence?.worker) || null,
+    task_id: safeText(evidence?.task_id) || null,
+    current_task: safeText(evidence?.task_id, 'not_started'),
+    dispatch_id: safeText(evidence?.dispatch_id) || null,
+    model: safeText(evidence?.model) || null,
+    identity_conflict: Boolean(evidence?.identity_conflict),
+    state: forceUnknown ? 'unknown' : safeText(evidence?.state, evidence ? status : 'not_started'),
+    status,
+    status_label: STATUS_LABELS[status],
+    liveness_state: liveness,
+    progress_evidence: {
+      elapsed_sec: Number.isFinite(evidence?.elapsed_sec) ? evidence.elapsed_sec : null,
+      silence_sec: Number.isFinite(evidence?.silence_sec) ? evidence.silence_sec : null,
+      observed_at: livenessEvidence?.observed_at || null,
+      last_protocol_activity_at: livenessEvidence?.last_protocol_activity_at || null,
+      last_meaningful_progress_at: livenessEvidence?.last_meaningful_progress_at || null,
+      active_tools: livenessEvidence?.active_tools || [],
+    },
+    liveness_evidence: livenessEvidence,
+    phase,
+    phase_source: phaseSource,
+    phase_conflict: phaseSource === 'conflict',
+    state_group: stateGroup || 'unknown',
+    runtime: runtimeFacts,
+    bottleneck: runtimeFacts?.bottleneck === true,
+    queue_wait_ms: runtimeFacts?.queue_wait_ms ?? null,
+    service_ms: runtimeFacts?.service_ms ?? null,
+    attempt_id: runtimeFacts?.attempt_id || null,
+    status_evidence: evidence
+      ? evidenceIsRun
+        ? `${forceUnknown ? 'identity=conflict · ' : ''}state=${safeText(evidence.state, 'unknown')} · liveness=${safeText(evidence.signals?.liveness, 'unknown')} · provider=${safeText(evidence.worker, 'unknown')}`
+        : `recorded verdict=${safeText(evidence.pm_verdict, 'unknown')}`
+      : 'no dispatch or liveness evidence',
+    order: index,
+  }
+}
+
+function buildEdgesForTeam(team, teamsById) {
   const edges = []
-  for (const gate of deliveryRuntime.phase_gates) {
-    const shape = operationalGateShape(gate)
-    if (!shape) continue
-    const { boundary, state } = shape
-    const modelEdge = modelByBoundary.get(`${boundary.from}\u0000${boundary.to}`)
-    if (!modelEdge) continue
-    const finalBoundary = gate.boundary === 'qa_to_project_delivery'
-    if (finalBoundary && gate.state === 'consumed') continue
-
-    const accepted = SHA256.test(gate.acceptance_event_id ?? '') &&
-      gate.accepted_digest === gate.artifact_digest
-    const receiverDispatch = typeof gate.receiver_dispatch_id === 'string' &&
-      UUID.test(gate.receiver_dispatch_id)
-    const consumed = accepted &&
-      receiverDispatch &&
-      typeof gate.consumed_at === 'string' &&
-      gate.consumed_at.length > 0 &&
-      gate.consumed_digest === gate.artifact_digest
-
-    if (gate.state === 'accepted' && !accepted) continue
-    let completed = false
-    let completionBasis = null
-    if (finalBoundary && gate.state === 'accepted') {
-      completed = true
-      completionBasis = 'final_receiver_acceptance'
-    } else if (!finalBoundary && gate.state === 'consumed' && consumed) {
-      completed = true
-      completionBasis = 'accepted_digest_consumed_by_receiver_dispatch'
+  if (team.dispatcher_id) {
+    for (const workerId of team.worker_ids) {
+      edges.push({
+        kind: 'dispatch', from: team.dispatcher_id, to: workerId, label: 'dispatch', team_id: team.team_id,
+      })
     }
-
+  }
+  if (team.evaluator_id) {
+    for (const workerId of team.worker_ids) {
+      edges.push({
+        kind: 'collection', from: workerId, to: team.evaluator_id, label: 'collect', team_id: team.team_id,
+      })
+    }
     edges.push({
-      kind: state.kind,
-      state: gate.state,
-      gate_id: gate.gate_id,
-      slice_id: gate.slice_id,
-      attempt_id: gate.attempt_id,
-      boundary: gate.boundary,
-      from: boundary.from,
-      to: boundary.to,
-      artifact_type: boundary.artifact_type,
-      artifact_digest: gate.artifact_digest,
-      acceptance_event_id: accepted ? gate.acceptance_event_id : null,
-      receiver_dispatch_id: receiverDispatch ? gate.receiver_dispatch_id : null,
-      completed,
-      completion_basis: completionBasis,
-      advisory: true,
-      ...operationalEdgePath(modelEdge, state.offset),
+      kind: 'reject-loop', from: team.evaluator_id,
+      to: team.dispatcher_id || `rework:${team.team_id}`,
+      target: 'dispatcher', label: 'reject → re-dispatch', team_id: team.team_id,
+    })
+    const downstream = team.downstream_team_id && teamsById.get(team.downstream_team_id)
+    edges.push({
+      kind: 'pass-handoff',
+      from: team.evaluator_id,
+      to: downstream?.dispatcher_id || 'project-complete',
+      target: downstream ? downstream.team_id : 'project-complete',
+      label: downstream ? `pass → ${downstream.name} dispatcher` : 'pass → project complete',
+      team_id: team.team_id,
     })
   }
-  return edges.sort((left, right) =>
-    OPERATIONAL_BOUNDARY_ORDER.get(left.boundary) -
-      OPERATIONAL_BOUNDARY_ORDER.get(right.boundary) ||
-    left.gate_id.localeCompare(right.gate_id, 'en') ||
-    left.attempt_id.localeCompare(right.attempt_id, 'en'))
+  return edges
 }
 
-/**
- * Build the agreed PM outer loop and four Phase Team inner loops.
- *
- * Model edges describe the normative Requirement → Prototype → Development →
- * QA → ProjectDelivery flow. Solid placement edges only bind a run to an
- * explicit phase assignment (or to the unassigned evidence pool). Only the
- * closed delivery_runtime contract can create an operational handoff edge;
- * run/task/card fields cannot.
- */
-export function layoutLoopGraph(nodes, deliveryLoop = null, deliveryRuntime = null) {
-  const phaseStates = phaseStateMap(deliveryLoop)
-  const operationalPhaseStates = operationalPhaseStateMap(deliveryRuntime)
-  const bottleneck = operationalBottleneck(deliveryRuntime, operationalPhaseStates)
-  const phaseNodesById = new Map(DELIVERY_PHASES.map((phase) => [
-    phase.id,
-    nodes
-      .filter((node) =>
-        node.phase_id === phase.id && BOUND_PHASE_SOURCES.has(node.phase_source))
-      .sort(stableNodeOrder),
-  ]))
-  const phaseGridMetrics = new Map(DELIVERY_PHASES.map((phase) => {
-    const count = phaseNodesById.get(phase.id).length
-    const radius = preferredNodeRadius(count)
-    return [phase.id, gridMetrics(count, PHASE_AGENT_REGION.width, radius)]
-  }))
-  const phaseAgentRegionHeight = Math.max(
-    PHASE_AGENT_REGION.minimum_height,
-    ...[...phaseGridMetrics.values()].map((metrics) => metrics.used_height + 16),
-  )
-  const reviewY = PHASE_AGENT_REGION.y + phaseAgentRegionHeight + 52
-  const artifactY = reviewY + 48
-  const phaseHeight = artifactY + 56
-
-  const phases = DELIVERY_PHASES.map((phase) => {
-    const position = PHASE_POSITIONS[phase.id]
-    const card = phaseStates.get(phase.id) || null
-    const runtime = operationalPhaseStates.get(phase.id) || null
-    const phaseBottleneck = bottleneck?.phase_id === phase.id ? bottleneck : null
-    const agentRegion = {
-      x: PHASE_AGENT_REGION.x,
-      y: PHASE_AGENT_REGION.y,
-      width: PHASE_AGENT_REGION.width,
-      height: phaseAgentRegionHeight,
-    }
+function runtimeEdgeFacts(edge, runtime) {
+  if (!runtime) return null
+  const decisions = runtime.routing_decisions || []
+  const attempts = runtime.attempts || []
+  const evaluations = runtime.evaluations || []
+  const handoffs = runtime.handoffs || []
+  if (edge.kind === 'dispatch') {
+    const decision = decisions.find((item) => item.target_agent_id === edge.to &&
+      item.actor_id === edge.from && ['enqueue', 'assign', 'requeue'].includes(item.decision_kind))
+    return decision ? {
+      runtime_state: decision.decision_kind,
+      decision_id: decision.decision_id,
+      attempt_id: decision.attempt_id,
+      handoff_id: null,
+    } : null
+  }
+  if (edge.kind === 'collection') {
+    const evaluation = evaluations.find((item) => item.evaluator_agent_id === edge.to &&
+      attempts.find((attempt) => attempt.attempt_id === item.attempt_id)?.agent_id === edge.from)
+    return evaluation ? {
+      runtime_state: evaluation.verdict,
+      decision_id: null,
+      attempt_id: evaluation.attempt_id,
+      handoff_id: null,
+      evaluation_id: evaluation.evaluation_id,
+    } : null
+  }
+  if (edge.kind === 'reject-loop') {
+    const evaluation = evaluations.find((item) => item.team_id === edge.team_id &&
+      item.evaluator_agent_id === edge.from && item.verdict === 'rejected' &&
+      item.return_dispatcher_agent_id === edge.to)
+    if (!evaluation) return null
+    const decision = decisions.find((item) => item.decision_kind === 'requeue' &&
+      item.team_id === edge.team_id && item.attempt_id === evaluation.attempt_id &&
+      item.target_agent_id === edge.to)
     return {
-      ...phase,
-      ...position,
-      height: phaseHeight,
-      plan_y: 137,
-      agent_count_y: 190,
-      agent_region: agentRegion,
-      review_y: reviewY,
-      artifact_y: artifactY,
-      handoff_y: artifactY + 20,
-      state: runtime?.state || card?.state || 'not_observed',
-      active_slices: Number.isFinite(card?.active_slices) ? card.active_slices : null,
-      phase_run_id: runtime?.phase_run_id || null,
-      owner_role: runtime?.owner_role || null,
-      work_age_sec: Number.isFinite(runtime?.work_age_sec) ? runtime.work_age_sec : null,
-      wait_age_sec: Number.isFinite(runtime?.wait_age_sec) ? runtime.wait_age_sec : null,
-      bottleneck: phaseBottleneck
-        ? {
-            kind: phaseBottleneck.kind,
-            age_sec: phaseBottleneck.age_sec,
-            owner_role: phaseBottleneck.owner_role,
-          }
-        : null,
-      attention: Boolean(phaseBottleneck || card?.advisory?.attention),
-      assignment_source: runtime
-        ? 'delivery_runtime_phase_run'
-        : card ? 'delivery_loop_projection' : 'not_configured',
-      anchor_x: position.x + position.width / 2,
-      anchor_y: position.y + agentRegion.y + agentRegion.height / 2,
-      agent_count: phaseNodesById.get(phase.id).length,
+      runtime_state: 'rejected', decision_id: decision?.decision_id || null,
+      attempt_id: evaluation.attempt_id, handoff_id: null, evaluation_id: evaluation.evaluation_id,
     }
-  })
-  const handoffY = phases[0].y + phases[0].handoff_y
-  const endpoint = {
-    id: 'project-delivery',
-    title: 'Project Delivery',
-    thai: 'ส่งมอบโครงการ',
-    x: 1400,
-    y: handoffY - 95,
-    width: 230,
-    height: 190,
-    anchor_x: 1515,
-    anchor_y: handoffY,
   }
-  const unassignedNodes = nodes
-    .filter((node) =>
-      !DELIVERY_PHASES.some((phase) =>
-        phase.id === node.phase_id && BOUND_PHASE_SOURCES.has(node.phase_source)))
-    .sort(stableNodeOrder)
-  const unassignedRadius = preferredNodeRadius(unassignedNodes.length, 'unassigned')
-  const unassignedMetrics = gridMetrics(unassignedNodes.length, 1270, unassignedRadius)
-  const unassignedRegionHeight = Math.max(175, unassignedMetrics.used_height + 16)
-  const unassignedY = phases[0].y + phaseHeight + 120
-  const unassigned = {
-    id: 'unassigned',
-    title: 'ACP agents ที่ยังไม่ผูกเฟส',
-    x: 60,
-    y: unassignedY,
-    width: 1570,
-    height: Math.max(270, 62 + unassignedRegionHeight + 33),
-    anchor_x: 845,
-    anchor_y: unassignedY + 62 + unassignedRegionHeight / 2,
-    agent_region: {
-      x: 305,
-      y: unassignedY + 62,
-      width: 1270,
-      height: unassignedRegionHeight,
-    },
-  }
-
-  const placedNodes = []
-  for (const phase of phases) {
-    const phaseNodes = phaseNodesById.get(phase.id)
-    const placed = gridPlacement(phaseNodes, {
-      x: phase.x + phase.agent_region.x,
-      y: phase.y + phase.agent_region.y,
-      width: phase.agent_region.width,
-      height: phase.agent_region.height,
-    }, phaseGridMetrics.get(phase.id).radius)
-    placedNodes.push(...placed.map((node) => ({
-      ...node,
-      placement_id: phase.id,
-      placement_x: phase.anchor_x,
-      placement_y: phase.anchor_y,
-    })))
-  }
-  const placedUnassigned = gridPlacement(
-    unassignedNodes,
-    unassigned.agent_region,
-    unassignedRadius,
-  )
-  placedNodes.push(...placedUnassigned.map((node) => ({
-    ...node,
-    phase_id: 'unassigned',
-    phase_source: UNBOUND_PHASE_SOURCES.has(node.phase_source)
-      ? node.phase_source
-      : 'unassigned',
-    placement_id: 'unassigned',
-    placement_x: unassigned.anchor_x,
-    placement_y: unassigned.anchor_y,
-  })))
-  unassigned.agent_count = placedUnassigned.length
-
-  const placementById = new Map([
-    ...phases.map((phase) => [phase.id, phase]),
-    ['unassigned', unassigned],
-  ])
-  const observedEdges = placedNodes.map((node) => ({
-    kind: node.placement_id === 'unassigned'
-      ? 'observed-unassigned-placement'
-      : 'observed-phase-placement',
-    agent_id: node.node_id,
-    placement_id: node.placement_id,
-    x1: node.placement_x,
-    y1: node.placement_y,
-    x2: node.x,
-    y2: node.y,
-  }))
-  const phaseById = new Map(phases.map((phase) => [phase.id, phase]))
-  phaseById.set(endpoint.id, endpoint)
-  const modelEdges = PHASE_HANDOFFS.map(([from, to]) => {
-    const source = phaseById.get(from)
-    const target = phaseById.get(to)
-    const x1 = source.x + source.width
-    const y1 = source.y + source.handoff_y
-    const x2 = target.x
-    const y2 = to === endpoint.id ? target.anchor_y : target.y + target.handoff_y
-    const control = Math.max(30, (x2 - x1) / 2)
+  if (edge.kind === 'pass-handoff') {
+    const handoff = handoffs.find((item) => item.upstream_team_id === edge.team_id &&
+      item.upstream_evaluator_agent_id === edge.from &&
+      (item.downstream_dispatcher_agent_id || 'project-complete') === edge.to)
+    if (!handoff) return null
+    const evaluation = evaluations.find((item) => item.team_id === edge.team_id &&
+      item.evaluator_agent_id === edge.from && item.verdict === 'accepted')
+    const decision = decisions.find((item) => item.decision_kind === 'accept_handoff' &&
+      item.team_id === edge.team_id)
     return {
-      kind: 'model-phase-handoff',
-      from,
-      to,
-      artifact: DELIVERY_PHASES.find((phase) => phase.id === from)?.exit_artifact || '',
-      x1,
-      y1,
-      x2,
-      y2,
-      path: `M ${x1} ${y1} C ${x1 + control} ${y1}, ${x2 - control} ${y2}, ${x2} ${y2}`,
+      runtime_state: handoff.state, decision_id: decision?.decision_id || null,
+      attempt_id: evaluation?.attempt_id || null, handoff_id: handoff.handoff_id,
     }
-  })
-  const operationalEdges = buildOperationalEdges(deliveryRuntime, modelEdges)
+  }
+  return null
+}
 
+function decorateEdges(edges, runtime) {
+  return edges.map((edge) => ({ ...edge, runtime: runtimeEdgeFacts(edge, runtime) }))
+}
+
+function counts(nodes) {
+  const result = {
+    total: nodes.length,
+    working: 0,
+    waiting: 0,
+    blocked: 0,
+    stalled: 0,
+    blocked_stalled: 0,
+    done: 0,
+    not_started: 0,
+    unknown: 0,
+  }
+  for (const node of nodes) {
+    if (Object.hasOwn(result, node.status)) result[node.status] += 1
+    if (node.status === 'blocked' || node.status === 'stalled') result.blocked_stalled += 1
+  }
+  return result
+}
+
+function auditEntry(evidence, reason) {
+  const livenessEvidence = compactLivenessEvidence(evidence)
   return {
-    view_box: {
-      x: 0,
-      y: 0,
-      width: 1690,
-      height: unassigned.y + unassigned.height + 60,
-    },
-    pm_boundary: {
-      x: 25,
-      y: 55,
-      width: 1635,
-      height: phases[0].y + phaseHeight + 8,
-    },
-    phases,
-    endpoint,
-    unassigned,
-    nodes: placedNodes,
-    observed_edges: observedEdges,
-    model_edges: modelEdges,
-    operational_edges: operationalEdges,
-    placements: Object.fromEntries([...placementById].map(([id, value]) => [id, value])),
-    assignment: {
-      explicit: placedNodes.filter((node) => node.placement_id !== 'unassigned').length,
-      unassigned: placedUnassigned.length,
-      coverage: placedNodes.length
-        ? placedNodes.filter((node) => node.placement_id !== 'unassigned').length / placedNodes.length
-        : 1,
-    },
-    delivery_context: {
-      source: deliveryLoop ? 'pulse_delivery_loop' : 'not_configured',
-      status: deliveryLoop?.status || 'not_configured',
-      bottleneck: bottleneck || deliveryLoop?.bottleneck || null,
-      operational_source: operationalPhaseStates.size
-        ? 'pulse_delivery_runtime'
-        : 'not_available',
-    },
+    task_id: safeText(evidence?.task_id, 'unknown-task'),
+    agent_id: safeText(evidence?.agent_id, evidenceIdentity(evidence)),
+    dispatch_id: safeText(evidence?.dispatch_id) || null,
+    state: safeText(livenessEvidence?.liveness_state,
+      safeText(evidence?.state, safeText(evidence?.pm_verdict, 'unknown'))),
+    termination_reason: livenessEvidence?.termination_reason || null,
+    observed_at: livenessEvidence?.observed_at || null,
+    stall_history: livenessEvidence?.stall_history || [],
+    reason,
   }
+}
+
+function observedAgentId(evidence, index = 0, conflictingDispatches = new Set()) {
+  const identity = evidenceIdentity(evidence, index)
+  const dispatch = safeText(evidence?.dispatch_id)
+  if (conflictingDispatches.has(identity)) {
+    return dispatch ? `conflict_${dispatch}` : `conflict_unassigned_${index + 1}`
+  }
+  const explicit = safeText(evidence?.agent_id)
+  if (explicit && explicitAgentId(explicit)) return explicit
+  if (dispatch) return `observed_${dispatch}`
+  return `observed_unassigned_${index + 1}`
+}
+
+function conflictingDispatches(evidence) {
+  const byDispatch = new Map()
+  const explicitConflicts = new Set()
+  for (const item of evidence) {
+    const dispatch = safeText(item?.dispatch_id)
+    if (!dispatch) continue
+    const values = byDispatch.get(dispatch) || new Set()
+    const agentId = safeText(item?.agent_id)
+    if (agentId) values.add(agentId)
+    if (item?.identity_conflict === true) explicitConflicts.add(`dispatch:${dispatch}`)
+    byDispatch.set(dispatch, values)
+  }
+  return new Set([...explicitConflicts, ...[...byDispatch.entries()]
+    .filter(([, identities]) => identities.size > 1)
+    .map(([dispatch]) => `dispatch:${dispatch}`)])
+}
+
+function uniqueNodeAgentId(baseId, nodes, index = 0) {
+  const base = explicitAgentId(baseId) ? baseId : `observed_unassigned_${index + 1}`
+  if (!nodes.some((node) => node.agent_id === base)) return base
+  let suffix = 2
+  while (nodes.some((node) => node.agent_id === `${base}_${suffix}`)) suffix += 1
+  return `${base}_${suffix}`
+}
+
+function recentEvidence(evidence) {
+  return validObject(evidence)
+}
+
+function runtimeHandoffEvidence(runtime) {
+  if (!runtime) return []
+  return runtime.handoffs.map((handoff) => ({
+    handoff_id: handoff.handoff_id,
+    downstream_team_id: handoff.downstream_team_id,
+    downstream_dispatcher_agent_id: handoff.downstream_dispatcher_agent_id,
+    state: handoff.state,
+    artifact_digest: handoff.artifact_digest,
+  }))
+}
+
+/** Build the complete normalized model used by the static flowchart. */
+export function buildAgentGraphModel(snapshot = {}) {
+  const configured = normalizeTeamGraph(snapshot)
+  const graphCandidate = graphInput(snapshot)
+  const graphWasRequested = validObject(graphCandidate) && Array.isArray(graphCandidate.teams)
+  const configurationError = graphWasRequested && !configured
+    ? 'invalid Team graph; membership is not inferred' : null
+  const serializedRuntime = isProjectedTeamRuntime(snapshot?.team_runtime) && configured
+    ? validateTeamRuntime(snapshot.team_runtime, {
+        teamGraph: configured,
+        snapshot,
+        nowMs: parseTime(snapshot?.generated_at),
+      })
+    : { ok: false, value: null, reason: null }
+  const runtime = serializedRuntime.ok ? serializedRuntime.value : null
+  const runs = Array.isArray(snapshot?.runs) ? snapshot.runs : []
+  const recent = Array.isArray(snapshot?.recent_verdicts) ? snapshot.recent_verdicts : []
+  const historicalRuns = Array.isArray(snapshot?.history?.runs) ? snapshot.history.runs : []
+  const nodes = []
+  const lanes = []
+  const audit = []
+  const auditKeys = new Set()
+  const recordAudit = (evidence, reason, index = 0) => {
+    const key = evidenceIdentity(evidence, index)
+    if (auditKeys.has(key)) return
+    auditKeys.add(key)
+    audit.push(auditEntry(evidence, reason))
+  }
+  const matchedEvidence = new Set()
+  const currentRuns = runs.filter(isCurrentRun)
+  const currentEvidence = [...currentRuns]
+  const identityConflicts = conflictingDispatches(currentEvidence)
+
+  if (configured) {
+    const teamsById = new Map(configured.teams.map((team) => [team.team_id, team]))
+    if (configured.outer_controller_id) {
+      const descriptor = { agent_id: configured.outer_controller_id, role: 'outer_controller' }
+      const matching = currentEvidence.filter((evidence) =>
+        !identityConflicts.has(evidenceIdentity(evidence)) && evidenceKeys(evidence).includes(descriptor.agent_id))
+      const evidence = chooseEvidence(descriptor.agent_id, currentRuns, [], identityConflicts)
+      for (const matched of matching) matchedEvidence.add(evidenceIdentity(matched))
+      for (const superseded of matching) {
+        if (evidenceIdentity(superseded) !== evidenceIdentity(evidence)) {
+          recordAudit(superseded, `superseded evidence for configured agent ${descriptor.agent_id}`)
+        }
+      }
+      const node = nodeFromEvidence({
+        descriptor, evidence, configured: true, teamId: 'project-control', teamName: 'Project Control',
+        index: 0, runtime,
+      })
+      nodes.push(node)
+      lanes.push({
+        team_id: 'project-control', name: 'Project Control', configured: false,
+        project_control: true, downstream_team_id: null, nodes: [node], edges: [],
+      })
+    }
+    for (const [teamIndex, team] of configured.teams.entries()) {
+      const teamNodes = []
+      for (const [agentIndex, descriptor] of team.agents.entries()) {
+        const matching = currentEvidence.filter((evidence) =>
+          !identityConflicts.has(evidenceIdentity(evidence)) &&
+          evidenceKeys(evidence).includes(descriptor.agent_id))
+        const evidence = chooseEvidence(descriptor.agent_id, currentRuns, [], identityConflicts)
+        for (const matched of matching) matchedEvidence.add(evidenceIdentity(matched))
+        for (const superseded of matching) {
+          if (evidenceIdentity(superseded) !== evidenceIdentity(evidence)) {
+            recordAudit(superseded, `superseded evidence for configured agent ${descriptor.agent_id}`)
+          }
+        }
+        const node = nodeFromEvidence({
+          descriptor, evidence, configured: true,
+          teamId: team.team_id, teamName: team.name,
+          index: teamIndex * 100 + agentIndex + (configured.outer_controller_id ? 1 : 0),
+          runtime,
+        })
+        teamNodes.push(node)
+        nodes.push(node)
+      }
+      lanes.push({
+        team_id: team.team_id,
+        name: team.name,
+        configured: true,
+        downstream_team_id: team.downstream_team_id,
+        nodes: teamNodes,
+        edges: decorateEdges(buildEdgesForTeam(team, teamsById), runtime),
+      })
+    }
+
+    const unmatchedLive = currentRuns.filter((run) => !matchedEvidence.has(evidenceIdentity(run)))
+    const unmatchedByAgent = new Map()
+    for (const [index, evidence] of unmatchedLive.entries()) {
+      const agentId = observedAgentId(evidence, index, identityConflicts)
+      const group = unmatchedByAgent.get(agentId) || { agent_id: agentId, evidence: null, all: [] }
+      group.all.push(evidence)
+      if (!group.evidence || compareEvidence(evidence, group.evidence) < 0) group.evidence = evidence
+      unmatchedByAgent.set(agentId, group)
+      matchedEvidence.add(evidenceIdentity(evidence))
+    }
+    const unmatchedNodes = []
+    for (const [index, group] of [...unmatchedByAgent.values()].entries()) {
+      const nodeAgentId = uniqueNodeAgentId(group.agent_id, nodes, index)
+      const identityConflict = identityConflicts.has(evidenceIdentity(group.evidence))
+      const node = nodeFromEvidence({
+        descriptor: { agent_id: nodeAgentId, role: 'unassigned' },
+        evidence: group.evidence,
+        configured: false,
+        teamId: 'unassigned',
+        teamName: 'Control / Unassigned',
+        index: configured.teams.length * 100 + index,
+        forceUnknown: identityConflict,
+        runtime,
+      })
+      unmatchedNodes.push(node)
+      nodes.push(node)
+      for (const evidence of group.all) {
+        if (evidenceIdentity(evidence) !== evidenceIdentity(group.evidence)) {
+          recordAudit(evidence, `additional evidence for observed dispatch ${group.agent_id}`)
+        }
+      }
+    }
+    if (unmatchedNodes.length) {
+      lanes.push({
+        team_id: 'unassigned', name: 'Control / Unassigned', configured: false,
+        downstream_team_id: null, nodes: unmatchedNodes, edges: [],
+      })
+    }
+    for (const evidence of [...runs.filter((run) => !isCurrentRun(run)), ...historicalRuns, ...recent]) {
+      if (matchedEvidence.has(evidenceIdentity(evidence))) continue
+      recordAudit(evidence, 'historical evidence')
+    }
+  } else {
+    const candidates = []
+    for (const [index, evidence] of runs.entries()) {
+      if (evidence.transport !== 'acp' || !isCurrentRun(evidence)) {
+        if (!isCurrentRun(evidence)) recordAudit(evidence, 'historical evidence', index)
+        continue
+      }
+      candidates.push({ evidence, index })
+    }
+    const byAgent = new Map()
+    const seenEvidence = new Set()
+    for (const candidate of candidates) {
+      const identity = evidenceIdentity(candidate.evidence, candidate.index)
+      if (seenEvidence.has(identity)) continue
+      seenEvidence.add(identity)
+      const agentId = observedAgentId(candidate.evidence, candidate.index, identityConflicts)
+      const group = byAgent.get(agentId) || { agent_id: agentId, evidence: null, all: [] }
+      group.all.push(candidate.evidence)
+      if (!group.evidence || compareEvidence(candidate.evidence, group.evidence) < 0) {
+        group.evidence = candidate.evidence
+      }
+      byAgent.set(agentId, group)
+    }
+    const controlNodes = []
+    for (const [index, group] of [...byAgent.values()].entries()) {
+      const identityConflict = identityConflicts.has(evidenceIdentity(group.evidence))
+      const node = nodeFromEvidence({
+        descriptor: { agent_id: group.agent_id, role: 'unassigned' }, evidence: group.evidence,
+        configured: false, teamId: 'unassigned', teamName: 'Control / Unassigned', index,
+        forceUnknown: identityConflict,
+        runtime,
+      })
+      controlNodes.push(node)
+      nodes.push(node)
+      for (const evidence of group.all) {
+        if (evidenceIdentity(evidence) !== evidenceIdentity(group.evidence)) {
+          recordAudit(evidence, `additional evidence for observed agent ${group.agent_id}`)
+        }
+      }
+    }
+    lanes.push({
+      team_id: 'unassigned', name: 'Control / Unassigned', configured: false,
+      downstream_team_id: null, nodes: controlNodes, edges: [],
+    })
+    for (const evidence of [...historicalRuns, ...recent]) recordAudit(evidence, 'historical evidence')
+  }
+
+  const model = {
+    project_id: configured?.project_id || snapshot?.scope?.repo_name || null,
+    configured: Boolean(configured),
+    configuration_error: configurationError,
+    source_digest: configured?.source_digest || null,
+    handoffs: runtimeHandoffEvidence(runtime),
+    runtime,
+    lanes,
+    nodes,
+    edges: lanes.flatMap((lane) => lane.edges),
+    project_completion_endpoint: {
+      endpoint_id: 'project-complete', type: 'project-completion', label: 'Project complete',
+    },
+    counts: counts(nodes),
+    audit: audit.slice(0, 100),
+    audit_total: Math.max(
+      audit.length,
+      Number.isSafeInteger(snapshot?.history?.total) ? snapshot.history.total : audit.length,
+    ),
+    diagnostics: [
+      ...(Array.isArray(snapshot?.diagnostics) ? snapshot.diagnostics : []),
+      ...(configurationError ? [{
+        code: 'TEAM_GRAPH_INPUT_INVALID', severity: 'error', source: 'publisher', count: 1,
+      }] : []),
+      ...(identityConflicts.size ? [{
+        code: 'AGENT_ID_CONFLICT', severity: 'error', source: 'publisher', count: identityConflicts.size,
+      }] : []),
+    ],
+  }
+  return model
+}
+
+/** Backwards-compatible name for callers that only need the rendered nodes. */
+export function buildLoopGraphNodes(snapshot) {
+  return buildAgentGraphModel(snapshot).nodes
+}
+
+/** The new layout is normal document flow; retain this helper as a model alias. */
+export function layoutLoopGraph(snapshot) {
+  if (Array.isArray(snapshot)) {
+    const nodes = snapshot
+    return { nodes, lanes: [], edges: [], counts: counts(nodes), audit: [], handoffs: [] }
+  }
+  return buildAgentGraphModel(snapshot)
+}
+
+/** Runtime gate data is not part of the agent-instance flow contract. */
+export function buildOperationalEdges() {
+  return []
 }
 
 export function renderPulseLoopGraph(snapshot, options = {}) {
-  const nodes = buildLoopGraphNodes(snapshot)
-  return renderTopologyGraph(
-    snapshot,
-    layoutLoopGraph(nodes, snapshot?.delivery_loop, snapshot?.delivery_runtime),
-    options,
-  )
+  const model = buildAgentGraphModel(snapshot)
+  return renderTopologyGraph(snapshot, model, options)
 }
+
+export { STATUS_LABELS, esc }

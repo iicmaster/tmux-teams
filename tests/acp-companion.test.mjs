@@ -1,27 +1,113 @@
 // Drives the real acp-companion.mjs against a mock ACP agent (fixtures/) so the
 // live-view rendering and the resume selection are exercised end to end — the
 // same shape of proof the rest of this repo prefers over unit fragments.
-import { test } from 'node:test'
+import { after, afterEach, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { spawn, spawnSync } from 'node:child_process'
+import { once } from 'node:events'
+import { mkdtempSync as fsMkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, realpathSync, rmSync, chmodSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, dirname } from 'node:path'
+import { join, dirname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const COMPANION = join(HERE, '..', 'plugins', 'tmux-teams', 'skills', 'tmux-teams', 'scripts', 'acp-companion.mjs')
 const MOCK = join(HERE, 'fixtures', 'mock-acp-agent.mjs')
+const LIVENESS_FIXTURE = join(HERE, 'fixtures', 'acp-liveness-v1.json')
+const STARTUP_FIXTURE = join(HERE, 'fixtures', 'acp-liveness-v1-startup.json')
+const RECOVERY_FIXTURE = join(HERE, 'fixtures', 'acp-liveness-v1-recovery.json')
+const RECEIPT_SCHEMA_FILE = join(HERE, '..', 'plugins', 'tmux-teams', 'skills', 'tmux-teams', 'references', 'acp-session-receipt-v1.schema.json')
+const CODEX_EXECUTABLE = realpathSync(spawnSync('which', ['codex'], { encoding: 'utf8' }).stdout.trim().split(/\r?\n/).find(Boolean))
+const NODE_EXECUTABLE = realpathSync(process.execPath)
+const TEST_TMP_ROOT = fsMkdtempSync(join(tmpdir(), 'acp-receipt-suite-'))
+const TEST_REPOSITORIES = new Set()
+function mkdtempSync(prefix) {
+  const dir = fsMkdtempSync(join(TEST_TMP_ROOT, basename(String(prefix))))
+  TEST_REPOSITORIES.add(dir)
+  return dir
+}
+after(() => {
+  for (const dir of TEST_REPOSITORIES) rmSync(dir, { recursive: true, force: true })
+  rmSync(TEST_TMP_ROOT, { recursive: true, force: true })
+})
+afterEach(() => {
+  for (const dir of TEST_REPOSITORIES) rmSync(dir, { recursive: true, force: true })
+  TEST_REPOSITORIES.clear()
+})
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+const TOOL_STATUSES = new Set(['pending', 'in_progress', 'completed', 'failed'])
+const STALL_HISTORY_STATES = new Set(['suspected_stalled', 'stalled', 'recovered', 'cancellation_unavailable'])
+const TERMINAL_LIVENESS_STATES = new Set(['completed', 'cancelled', 'failed'])
+const DIGEST_FIELDS = ['content_digest', 'output_digest', 'locations_digest']
+const HERMETIC_ENV_KEYS = [
+  'ACP_AGENT_ID',
+  'ACP_EXPECT_MODEL',
+  'ACP_EXPECT_REASONING_EFFORT',
+  'ACP_TEST_SNAPSHOT_BUDGET_BYTES',
+  'ACP_TEST_TERMINAL_PERSISTENCE_FAILURE',
+  'ACP_TEST_MUTATE_SETTLEMENT_AFTER_CAPTURE',
+  'ACP_TEST_RECEIPT_PERSISTENCE_FAILURE',
+  'ACP_TEST_RECEIPT_SERIALIZE_FAILURE',
+  'ACP_TEST_RECEIPT_SCHEMA_FAILURE',
+  'ACP_TEST_RECEIPT_WRITE_FAILURE',
+  'ACP_TEST_RECEIPT_FILE_FSYNC_FAILURE',
+  'ACP_TEST_RECEIPT_PUBLISH_FAILURE',
+  'ACP_TEST_RECEIPT_DIRECTORY_FSYNC_FAILURE',
+  'ACP_TEST_RECEIPT_READBACK_FAILURE',
+  'ACP_TEST_RECEIPT_CORRELATION_FAILURE',
+  'ACP_TEST_CONTROLLER_SIGNAL_PERSISTENCE_FAILURE',
+  'ACP_TEST_RECEIPT_COMMIT_DELAY_MS',
+  'ACP_TEST_PROMPT_DELAY_MS',
+  'MOCK_ASSERT_RECEIPT_BEFORE_PROMPT',
+  'ACP_SESSION_RECEIPT_REQUIRED',
+  'ACP_SESSION_OPERATION',
+  'ACP_PRIOR_DISPATCH_ID',
+  'ACP_PRIOR_RECEIPT_DIGEST',
+  'ACP_EXECUTION_PROFILE',
+  'CODEX_PATH',
+  'NPM_CONFIG_CACHE',
+  'ACP_CONTROL_LOG',
+  'ACP_TEST_STAGE_FILE',
+  'ACP_TEST_GATE_STAGE',
+  'ACP_TEST_GATE_RELEASE_FILE',
+  'ACP_TEST_GATE_WATCHDOG_MS',
+  'ACP_RESUME',
+  'INITIAL_AGENT_MODE',
+  'TMUX_TEAMS_PHASE',
+]
 
-function run(taskId, extraEnv = {}, cwd = mkdtempSync(join(tmpdir(), 'acp-companion-')), timeoutSec = 30) {
+function testEnv(extraEnv = {}) {
+  const env = { ...process.env }
+  for (const key of HERMETIC_ENV_KEYS) delete env[key]
+  Object.assign(env, {
+    ACP_CMD: `${NODE_EXECUTABLE} ${MOCK}`,
+    CODEX_PATH: CODEX_EXECUTABLE,
+    ACP_STALL_POLICY: 'cancel',
+    ACP_HARD_TIMEOUT_SEC: '0',
+    ACP_CANCEL_GRACE_MS: '100',
+    ACP_PROCESS_KILL_GRACE_MS: '100',
+    ACP_RESUME: '',
+    ...extraEnv,
+  })
+  for (const [key, value] of Object.entries(extraEnv)) {
+    if (value === null) delete env[key]
+  }
+  return env
+}
+
+function runAs(agentName, taskId, extraEnv = {}, cwd = mkdtempSync(join(tmpdir(), 'acp-companion-')), timeoutSec = 30) {
   const brief = join(cwd, 'brief.md')
   writeFileSync(brief, 'do the thing\n')
-  const r = spawnSync('node', [COMPANION, 'mock', cwd, taskId, brief, String(timeoutSec)], {
+  const r = spawnSync('node', [COMPANION, agentName, cwd, taskId, brief, String(timeoutSec)], {
     cwd, encoding: 'utf8',
-    env: { ...process.env, ACP_CMD: `node ${MOCK}`, ...extraEnv },
+    env: testEnv(extraEnv),
   })
   return { ...r, cwd, stdout: r.stdout || '', stderr: r.stderr || '' }
+}
+
+function run(taskId, extraEnv = {}, cwd = mkdtempSync(join(tmpdir(), 'acp-companion-')), timeoutSec = 30) {
+  return runAs('mock', taskId, extraEnv, cwd, timeoutSec)
 }
 
 function eventTexts(cwd) {
@@ -34,12 +120,363 @@ function field(text, name) {
   return (text.match(new RegExp(`^${name}: (.+)$`, 'm')) || [, ''])[1]
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function asyncRun(taskId, extraEnv = {}, cwd = mkdtempSync(join(tmpdir(), 'acp-companion-')), stallSec = 30, agentName = 'mock') {
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+  const env = testEnv({
+    ...extraEnv,
+    ACP_TEST_STAGE_FILE: extraEnv.ACP_TEST_STAGE_FILE ?? join(cwd, 'stages.log'),
+  })
+  const child = spawn('node', [COMPANION, agentName, cwd, taskId, brief, String(stallSec)], {
+    cwd,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let stdout = ''
+  let stderr = ''
+  child.stdout.on('data', (chunk) => { stdout += chunk })
+  child.stderr.on('data', (chunk) => { stderr += chunk })
+  return once(child, 'close').then(([status, signal]) => ({
+    status, signal, cwd, stdout, stderr,
+  }))
+}
+
+function liveRun(taskId, extraEnv = {}, cwd = mkdtempSync(join(tmpdir(), 'acp-companion-live-')), stallSec = 30, agentName = 'mock') {
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+  const env = testEnv({
+    ...extraEnv,
+    ACP_TEST_STAGE_FILE: extraEnv.ACP_TEST_STAGE_FILE ?? join(cwd, 'stages.log'),
+  })
+  const child = spawn('node', [COMPANION, agentName, cwd, taskId, brief, String(stallSec)], {
+    cwd,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let stdout = ''
+  let stderr = ''
+  child.stdout.on('data', (chunk) => { stdout += chunk })
+  child.stderr.on('data', (chunk) => { stderr += chunk })
+  const completion = once(child, 'close').then(([status, signal]) => ({ status, signal, cwd, stdout, stderr }))
+  return { child, completion, cwd }
+}
+
+function snapshot(cwd, taskId) {
+  return JSON.parse(readFileSync(join(cwd, '.tmux-teams', 'liveness', `${taskId}.json`), 'utf8'))
+}
+
+function fixture(name) {
+  return JSON.parse(readFileSync(name, 'utf8'))
+}
+
+function stableValue(value) {
+  if (Array.isArray(value)) return value.map(stableValue)
+  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stableValue(value[key])]))
+  return value
+}
+
+function schemaRef(root, ref) {
+  return ref.split('/').slice(1).reduce((node, key) => node[key], root)
+}
+
+function schemaMatches(schema, value, root = schema) {
+  if (schema.$ref) return schemaMatches(schemaRef(root, schema.$ref), value, root)
+  if (schema.not && schemaMatches(schema.not, value, root)) return false
+  if (schema.const !== undefined && value !== schema.const) return false
+  if (schema.enum && !schema.enum.some((candidate) => Object.is(candidate, value))) return false
+  if (schema.oneOf && schema.oneOf.filter((candidate) => schemaMatches(candidate, value, root)).length !== 1) return false
+  if (schema.allOf && !schema.allOf.every((candidate) => schemaMatches(candidate, value, root))) return false
+  if (schema.if) {
+    const condition = schemaMatches(schema.if, value, root)
+    if (condition && schema.then && !schemaMatches(schema.then, value, root)) return false
+    if (!condition && schema.else && !schemaMatches(schema.else, value, root)) return false
+  }
+  if (schema.type === 'null' && value !== null) return false
+  if (schema.type === 'string' && typeof value !== 'string') return false
+  if (schema.type === 'integer' && (!Number.isInteger(value))) return false
+  if (schema.type === 'number' && (typeof value !== 'number' || !Number.isFinite(value))) return false
+  if (schema.type === 'object' && (!value || typeof value !== 'object' || Array.isArray(value))) return false
+  if (schema.type === 'array' && !Array.isArray(value)) return false
+  if (typeof value === 'string') {
+    if (schema.minLength !== undefined && value.length < schema.minLength) return false
+    if (schema.maxLength !== undefined && value.length > schema.maxLength) return false
+    if (schema.pattern && !new RegExp(schema.pattern).test(value)) return false
+  }
+  if (typeof value === 'number' && schema.minimum !== undefined && value < schema.minimum) return false
+  if (schema.required && (!value || typeof value !== 'object' || schema.required.some((key) => !Object.hasOwn(value, key)))) return false
+  if (schema.type === 'object' && schema.additionalProperties === false && Object.keys(value).some((key) => !Object.hasOwn(schema.properties ?? {}, key))) return false
+  if (schema.properties && value && typeof value === 'object' && !Array.isArray(value)) {
+    for (const [key, childSchema] of Object.entries(schema.properties)) {
+      if (Object.hasOwn(value, key) && !schemaMatches(childSchema, value[key], root)) return false
+    }
+  }
+  if (schema.items && Array.isArray(value) && value.some((entry) => !schemaMatches(schema.items, entry, root))) return false
+  return true
+}
+
+function digest(value) {
+  return `sha256:${createHash('sha256').update(Buffer.isBuffer(value) ? value : Buffer.from(String(value), 'utf8')).digest('hex')}`
+}
+
+function writeExecutionProfile(cwd) {
+  const entry = readFileSync(MOCK)
+  const executable = CODEX_EXECUTABLE
+  const version = spawnSync(executable, ['--version'], { encoding: 'utf8' }).stdout.trim().split(/\r?\n/)[0]
+  const executableDigest = digest(readFileSync(executable))
+  const nodeVersion = spawnSync(NODE_EXECUTABLE, ['--version'], { encoding: 'utf8' }).stdout.trim().split(/\r?\n/)[0]
+  const profile = {
+    schema: 'acp-execution-profile',
+    schema_version: 'acp-execution-profile.v1',
+    argv: [NODE_EXECUTABLE, MOCK],
+    agent_info: { name: 'producer-test-client', version: '1' },
+    expected_agent_info: { name: 'mock-acp-agent', version: '1' },
+    initial_agent_mode: 'agent-full-access',
+    adapter: {
+      package_spec: 'producer-test-acp@1.0.0',
+      resolved_version: '1.0.0',
+      integrity: `sha512-${createHash('sha512').update(entry).digest('base64')}`,
+      metadata_path: null,
+      metadata_digest: null,
+      entry_path: MOCK,
+      entry_digest: digest(entry),
+    },
+    codex: { executable_realpath: executable, executable_digest: executableDigest, version },
+    node: { executable_realpath: NODE_EXECUTABLE, executable_digest: digest(readFileSync(NODE_EXECUTABLE)), version: nodeVersion },
+  }
+  profile.profile_digest = digest(JSON.stringify(stableValue(profile)))
+  const path = join(cwd, 'acp-execution-profile.json')
+  writeFileSync(path, `${JSON.stringify(profile, null, 2)}\n`, { mode: 0o600 })
+  return path
+}
+
+function writeBinaryAdapterProfile(cwd, { divergent = false } = {}) {
+  const adapterPath = join(cwd, divergent ? 'binary-adapter-divergent.mjs' : 'binary-adapter.mjs')
+  const prefix = Buffer.concat([readFileSync(MOCK), Buffer.from('\n// binary fixture: NUL and invalid UTF-8 follow ', 'utf8')])
+  const suffix = Buffer.from([0x00, 0xff, 0xfe, 0x80])
+  const bytes = Buffer.concat([prefix, suffix])
+  if (divergent) bytes[bytes.length - 1] = 0x81
+  writeFileSync(adapterPath, bytes, { mode: 0o700 })
+  chmodSync(adapterPath, 0o700)
+  const nodeVersion = spawnSync(NODE_EXECUTABLE, ['--version'], { encoding: 'utf8' }).stdout.trim().split(/\r?\n/)[0]
+  const executableDigest = digest(readFileSync(CODEX_EXECUTABLE))
+  const profile = {
+    schema: 'acp-execution-profile',
+    schema_version: 'acp-execution-profile.v1',
+    argv: [NODE_EXECUTABLE, adapterPath],
+    agent_info: { name: 'producer-test-client', version: '1' },
+    expected_agent_info: { name: 'mock-acp-agent', version: '1' },
+    initial_agent_mode: null,
+    adapter: {
+      package_spec: 'binary-fixture-acp@1.0.0',
+      resolved_version: '1.0.0',
+      integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}`,
+      metadata_path: null,
+      metadata_digest: null,
+      entry_path: adapterPath,
+      entry_digest: digest(bytes),
+    },
+    codex: { executable_realpath: CODEX_EXECUTABLE, executable_digest: executableDigest, version: spawnSync(CODEX_EXECUTABLE, ['--version'], { encoding: 'utf8' }).stdout.trim().split(/\r?\n/)[0] },
+    node: { executable_realpath: NODE_EXECUTABLE, executable_digest: digest(readFileSync(NODE_EXECUTABLE)), version: nodeVersion },
+  }
+  profile.profile_digest = digest(JSON.stringify(stableValue(profile)))
+  const profilePath = join(cwd, `${basename(adapterPath)}.profile.json`)
+  writeFileSync(profilePath, `${JSON.stringify(profile, null, 2)}\n`, { mode: 0o600 })
+  return { adapterPath, profilePath, bytes, profile }
+}
+
+function writeExecutable(path, text = '#!/bin/sh\nexit 0\n') {
+  writeFileSync(path, text, { mode: 0o700 })
+  chmodSync(path, 0o700)
+  return path
+}
+
+function receipt(cwd) {
+  const dir = join(cwd, '.tmux-teams', 'receipts')
+  const names = existsSync(dir) ? readdirSync(dir).filter((name) => name.endsWith('.json')) : []
+  assert.equal(names.length, 1, `expected one immutable receipt, found ${names.join(', ')}`)
+  const raw = readFileSync(join(dir, names[0]), 'utf8')
+  return { raw, value: JSON.parse(raw), path: join(dir, names[0]) }
+}
+
+function receiptFor(cwd, dispatchId) {
+  const path = join(cwd, '.tmux-teams', 'receipts', `${dispatchId}.json`)
+  const raw = readFileSync(path, 'utf8')
+  return { raw, value: JSON.parse(raw), path }
+}
+
+function rewritePriorReceiptPair(cwd, dispatchId, mutate) {
+  const prior = receiptFor(cwd, dispatchId)
+  const value = mutate({ ...prior.value })
+  const raw = `${JSON.stringify(value, null, 2)}\n`
+  writeFileSync(prior.path, raw, { mode: 0o600 })
+  const commitmentPath = join(cwd, '.tmux-teams', 'receipt-commits', `${dispatchId}.json`)
+  writeFileSync(commitmentPath, `${JSON.stringify({
+    schema: 'acp-session-receipt-commit',
+    schema_version: 'acp-session-receipt-commit.v1',
+    dispatch_id: dispatchId,
+    receipt_digest: digest(raw),
+    committed_state: 'committed',
+  }, null, 2)}\n`, { mode: 0o600 })
+  return { raw, value }
+}
+
+const DYNAMIC_COUNT_KEYS = new Set([
+  'meaningful_progress_count',
+  'consecutive_missed_leases',
+  'stall_recoveries',
+  'plan_entry_count',
+  'update_count',
+])
+
+function normalizeFixtureSnapshot(value, key = '') {
+  if (value === null || value === undefined) return value
+  if (Array.isArray(value)) return value.map((entry) => normalizeFixtureSnapshot(entry, key))
+  if (typeof value !== 'object') {
+    if (['task_id', 'dispatch_id', 'session_id'].includes(key)) return '<identifier>'
+    if (key.endsWith('_at')) return '<timestamp>'
+    if (key.endsWith('_digest')) return value === null ? null : '<digest>'
+    if (DYNAMIC_COUNT_KEYS.has(key)) return '<count>'
+    return value
+  }
+  return Object.fromEntries(Object.entries(value).map(([childKey, childValue]) => [
+    childKey,
+    normalizeFixtureSnapshot(childValue, childKey),
+  ]))
+}
+
+function assertIso(value, label) {
+  assert.equal(typeof value, 'string', `${label} should be a string timestamp`)
+  assert.ok(Number.isFinite(Date.parse(value)), `${label} should be an ISO timestamp`)
+}
+
+function assertToolRecord(tool, label) {
+  assert.equal(typeof tool.tool_call_id, 'string', `${label}.tool_call_id`)
+  assert.ok(tool.tool_call_id.length <= 128, `${label}.tool_call_id is bounded`)
+  assert.equal(typeof tool.title, 'string', `${label}.title`)
+  assert.ok(tool.title.length <= 128, `${label}.title is bounded`)
+  assert.equal(typeof tool.kind, 'string', `${label}.kind`)
+  assert.ok(tool.kind.length <= 64, `${label}.kind is bounded`)
+  assert.ok(TOOL_STATUSES.has(tool.status), `${label}.status is an ACP v1 value`)
+  for (const fieldName of DIGEST_FIELDS) {
+    if (tool[fieldName] !== undefined) assert.match(tool[fieldName], /^sha256:[0-9a-f]{64}$/, `${label}.${fieldName}`)
+  }
+  assertIso(tool.updated_at, `${label}.updated_at`)
+  assert.ok(Number.isSafeInteger(tool.update_count) && tool.update_count >= 1, `${label}.update_count`)
+}
+
+function assertV1Semantics(value, { expectedState, expectCancellationUnavailable } = {}) {
+  assert.equal(value.schema_version, 'acp-liveness.v1')
+  assert.equal(Object.hasOwn(value, 'state'), false)
+  assert.ok(value.task_id.length <= 64)
+  assert.ok(value.dispatch_id.length <= 64)
+  assert.ok(value.worker.length <= 64)
+  assert.ok(value.session_id === null || value.session_id.length <= 128)
+  assert.ok(value.requested_model === null || value.requested_model.length <= 128)
+  assert.ok(value.requested_reasoning_effort === null || value.requested_reasoning_effort.length <= 64)
+  assert.ok(value.effective_identity === null || value.effective_identity.length <= 194)
+  if (value.agent_id) assert.ok(value.agent_id.length <= 64)
+  assert.ok(value.termination_reason.length <= 64)
+  assertIso(value.started_at, 'started_at')
+  assertIso(value.observed_at, 'observed_at')
+  assertIso(value.last_protocol_activity_at, 'last_protocol_activity_at')
+  assertIso(value.last_meaningful_progress_at, 'last_meaningful_progress_at')
+  assertIso(value.lease_anchor_at, 'lease_anchor_at')
+  assertIso(value.next_lease_expiry_at, 'next_lease_expiry_at')
+  assert.ok(Date.parse(value.started_at) <= Date.parse(value.observed_at))
+  const leaseDelta = Date.parse(value.next_lease_expiry_at) - Date.parse(value.lease_anchor_at)
+  const hasOpenReportedTool = Object.values(value.tools ?? {}).some((tool) => tool.status === 'in_progress')
+  if ((value.liveness_state === 'tool_running' && value.active_tools?.length > 0)
+    || hasOpenReportedTool || TERMINAL_LIVENESS_STATES.has(value.liveness_state)) {
+    assert.ok(leaseDelta >= value.stall_sec * 1000, 'active tool lease may be extended from a later observation')
+  } else {
+    assert.equal(leaseDelta, value.stall_sec * 1000, 'lease expiry must be derived from its anchor and stall lease')
+  }
+  assert.ok(Array.isArray(value.stall_history) && value.stall_history.length <= 32)
+  for (const [index, event] of value.stall_history.entries()) {
+    assert.ok(STALL_HISTORY_STATES.has(event.state), `stall_history[${index}] state is closed`)
+    assertIso(event.observed_at, `stall_history[${index}].observed_at`)
+    if (event.last_protocol_activity_at) assertIso(event.last_protocol_activity_at, `stall_history[${index}].last_protocol_activity_at`)
+    if (event.last_meaningful_progress_at) assertIso(event.last_meaningful_progress_at, `stall_history[${index}].last_meaningful_progress_at`)
+    if (event.active_tools) {
+      assert.ok(event.active_tools.length <= 1)
+      event.active_tools.forEach((tool, toolIndex) => assertToolRecord(tool, `stall_history[${index}].active_tools[${toolIndex}]`))
+    }
+  }
+  assert.ok(Array.isArray(value.active_tools) && value.active_tools.length <= 8)
+  value.active_tools.forEach((tool, index) => assertToolRecord(tool, `active_tools[${index}]`))
+  for (const [id, tool] of Object.entries(value.tools)) {
+    assert.equal(id, tool.tool_call_id)
+    assertToolRecord(tool, `tools[${id}]`)
+  }
+  assert.ok(value.tools && Object.keys(value.tools).length <= 64)
+  for (const tool of value.active_tools) {
+    assert.ok(value.tools[tool.tool_call_id], `active tool ${tool.tool_call_id} must have a matching tools record`)
+  }
+  if (TERMINAL_LIVENESS_STATES.has(value.liveness_state)) {
+    assert.deepEqual(value.active_tools, [], 'terminal snapshots must not retain current active tools')
+  }
+  assert.ok(value.cancellation_unavailable === expectCancellationUnavailable)
+  if (expectedState) assert.equal(value.liveness_state, expectedState)
+  if (value.liveness_state === 'tool_running') {
+    assert.ok(value.active_tools.length > 0, 'tool_running requires an active tool')
+    assert.ok(value.active_tools.every((tool) => tool.status === 'in_progress'))
+    assert.equal(value.cancellation_unavailable, false)
+    assert.equal(value.stall_history.some((event) => event.state === 'cancellation_unavailable'), false)
+  }
+  const serialized = `${JSON.stringify(value, null, 2)}\n`
+  assert.ok(Buffer.byteLength(serialized, 'utf8') <= 64 * 1024, 'serialized snapshot must stay within 64 KiB')
+}
+
+function persistedArtifacts(cwd, taskId) {
+  const livePath = join(cwd, '.tmux-teams', 'liveness', `${taskId}.json`)
+  const dispatchPath = join(cwd, '.tmux-teams', 'dispatch', `${taskId}.md`)
+  return [
+    existsSync(livePath) ? readFileSync(livePath, 'utf8') : '',
+    existsSync(dispatchPath) ? readFileSync(dispatchPath, 'utf8') : '',
+    ...eventTexts(cwd),
+  ]
+}
+
+async function waitForStage(stagePath, stage, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (existsSync(stagePath) && readFileSync(stagePath, 'utf8').split(/\r?\n/).includes(stage)) return
+    await sleep(10)
+  }
+  assert.fail(`timed out waiting for stage ${stage}`)
+}
+
+function pidAlive(pid) {
+  try {
+    process.kill(Number(pid), 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function assertPidGone(pid, label) {
+  if (!pid) return
+  const deadline = Date.now() + 1500
+  while (Date.now() < deadline && pidAlive(pid)) await sleep(20)
+  assert.equal(pidAlive(pid), false, `${label} pid ${pid} should be reaped`)
+}
+
+function descendantPid(cwd) {
+  const path = join(cwd, '.descendant-pid')
+  return existsSync(path) ? Number(readFileSync(path, 'utf8').trim()) : null
+}
+
 for (const retiredName of ['gemini', 'Gemini', 'GEMINI', ' gemini ']) {
   test(`the retired agent name ${JSON.stringify(retiredName)} is rejected before custom override or dispatch`, () => {
     const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-retired-'))
     const brief = join(cwd, 'brief.md')
     writeFileSync(brief, 'this must never be dispatched\n')
-    const env = { ...process.env, ACP_CMD: `node ${MOCK}` }
+    const env = testEnv({ ACP_CMD: `node ${MOCK}` })
     const result = spawnSync('node', [
       COMPANION,
       retiredName,
@@ -133,6 +570,830 @@ test('an unreadable persisted-session entry warns and starts fresh', () => {
   assert.match(r.stdout, /\[session\] sess_mock/)
 })
 
+test('default mode writes a bounded new-session receipt before prompt delivery', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-receipt-default-'))
+  const protocolLog = join(cwd, 'protocol.log')
+  const r = run('task-receipt-default', { MOCK_PROTOCOL_LOG: protocolLog, MOCK_ASSERT_RECEIPT_BEFORE_PROMPT: '1' }, cwd)
+  assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
+  const committed = receipt(cwd)
+  const dispatch = readFileSync(join(cwd, '.tmux-teams', 'dispatch', 'task-receipt-default.md'), 'utf8')
+  assert.equal(committed.value.schema_version, 'acp-session-receipt.v1')
+  assert.equal(committed.value.requested_operation, 'new')
+  assert.equal(committed.value.performed_operation, 'new')
+  assert.equal(committed.value.operation_outcome, 'succeeded')
+  assert.equal(committed.value.operation_witness, 'new_session_id_returned')
+  assert.equal(committed.value.effective_session_id, 'sess_mock')
+  assert.match(committed.value.operation_request_digest, /^sha256:[0-9a-f]{64}$/)
+  assert.match(committed.value.operation_response_digest, /^sha256:[0-9a-f]{64}$/)
+  assert.equal(committed.value.operation_rpc_id, 2)
+  assert.equal(field(dispatch, 'receipt_digest'), digest(committed.raw))
+  const dispatchId = field(dispatch, 'dispatch_id')
+  const commitment = JSON.parse(readFileSync(join(cwd, '.tmux-teams', 'receipt-commits', `${dispatchId}.json`), 'utf8'))
+  assert.deepEqual(Object.keys(commitment).sort(), ['committed_state', 'dispatch_id', 'receipt_digest', 'schema', 'schema_version'].sort())
+  assert.equal(commitment.schema, 'acp-session-receipt-commit')
+  assert.equal(commitment.schema_version, 'acp-session-receipt-commit.v1')
+  assert.equal(commitment.dispatch_id, dispatchId)
+  assert.equal(commitment.receipt_digest, digest(committed.raw))
+  assert.equal(readFileSync(join(cwd, '.prompt-receipt-seen'), 'utf8').trim(), 'true')
+  assert.match(eventTexts(cwd)[0], new RegExp(`^receipt_digest: ${digest(committed.raw)}$`, 'm'))
+  assert.deepEqual(readFileSync(protocolLog, 'utf8').trim().split('\n').map((line) => line.split(':')[0]), ['initialize', 'session/new', 'session/prompt'])
+  assert.ok(!committed.raw.includes(cwd))
+  assert.doesNotMatch(committed.raw, /(?:\/home|\/tmp)\//)
+  assert.ok(!committed.raw.includes('do the thing'))
+  assert.ok(Buffer.byteLength(committed.raw, 'utf8') <= 32 * 1024)
+})
+
+test('required mode records an exact load witness and ignores a response sessionId', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-receipt-load-'))
+  const profile = writeExecutionProfile(cwd)
+  const first = run('task-receipt-lineage', {
+    ACP_SESSION_RECEIPT_REQUIRED: '1',
+    ACP_SESSION_OPERATION: 'new',
+    ACP_EXECUTION_PROFILE: profile,
+  }, cwd)
+  assert.equal(first.status, 0, `new exit 0 expected; stderr:\n${first.stderr}`)
+  const firstDispatch = field(readFileSync(join(cwd, '.tmux-teams', 'dispatch', 'task-receipt-lineage.md'), 'utf8'), 'dispatch_id')
+  const firstReceipt = receiptFor(cwd, firstDispatch)
+  const second = run('task-receipt-lineage', {
+    ACP_SESSION_RECEIPT_REQUIRED: '1',
+    ACP_SESSION_OPERATION: 'load',
+    ACP_RESUME: firstReceipt.value.effective_session_id,
+    ACP_PRIOR_DISPATCH_ID: firstDispatch,
+    ACP_PRIOR_RECEIPT_DIGEST: digest(firstReceipt.raw),
+    ACP_EXECUTION_PROFILE: profile,
+    MOCK_LOAD_RESPONSE_SESSION_ID: 'spoofed-response-id',
+    MOCK_PROTOCOL_LOG: join(cwd, 'protocol.log'),
+  }, cwd)
+  assert.equal(second.status, 0, `load exit 0 expected; stderr:\n${second.stderr}`)
+  const secondDispatch = field(readFileSync(join(cwd, '.tmux-teams', 'dispatch', 'task-receipt-lineage.md'), 'utf8'), 'dispatch_id')
+  assert.notEqual(secondDispatch, firstDispatch)
+  const secondReceipt = receiptFor(cwd, secondDispatch)
+  assert.equal(secondReceipt.value.requested_operation, 'load')
+  assert.equal(secondReceipt.value.performed_operation, 'load')
+  assert.equal(secondReceipt.value.operation_outcome, 'succeeded')
+  assert.equal(secondReceipt.value.operation_witness, 'load_response_for_exact_request')
+  assert.equal(secondReceipt.value.resume_status, 'loaded')
+  assert.equal(secondReceipt.value.requested_resume_session_id, firstReceipt.value.effective_session_id)
+  assert.equal(secondReceipt.value.effective_session_id, firstReceipt.value.effective_session_id)
+  assert.equal(secondReceipt.value.prior_dispatch_id, firstDispatch)
+  assert.equal(secondReceipt.value.prior_receipt_digest, digest(firstReceipt.raw))
+  assert.match(secondReceipt.value.operation_request_digest, /^sha256:[0-9a-f]{64}$/)
+  assert.match(secondReceipt.value.operation_response_digest, /^sha256:[0-9a-f]{64}$/)
+  assert.equal(snapshot(cwd, 'task-receipt-lineage').session_id, firstReceipt.value.effective_session_id)
+  assert.equal(readdirSync(join(cwd, '.tmux-teams', 'receipts')).length, 2)
+})
+
+test('required load fallback is explicit and cannot claim a loaded session', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-receipt-fallback-'))
+  const profile = writeExecutionProfile(cwd)
+  const first = run('task-receipt-fallback', {
+    ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'new', ACP_EXECUTION_PROFILE: profile,
+  }, cwd)
+  assert.equal(first.status, 0, `new exit 0 expected; stderr:\n${first.stderr}`)
+  const firstDispatch = field(readFileSync(join(cwd, '.tmux-teams', 'dispatch', 'task-receipt-fallback.md'), 'utf8'), 'dispatch_id')
+  const firstReceipt = receiptFor(cwd, firstDispatch)
+  const retry = run('task-receipt-fallback', {
+    ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'load', ACP_RESUME: firstReceipt.value.effective_session_id,
+    ACP_PRIOR_DISPATCH_ID: firstDispatch, ACP_PRIOR_RECEIPT_DIGEST: digest(firstReceipt.raw),
+    ACP_EXECUTION_PROFILE: profile, MOCK_NO_LOAD: '1',
+  }, cwd)
+  assert.equal(retry.status, 0, `fallback exit 0 expected; stderr:\n${retry.stderr}`)
+  const dispatch = field(readFileSync(join(cwd, '.tmux-teams', 'dispatch', 'task-receipt-fallback.md'), 'utf8'), 'dispatch_id')
+  const value = receiptFor(cwd, dispatch).value
+  assert.equal(value.requested_operation, 'load')
+  assert.equal(value.performed_operation, 'new')
+  assert.equal(value.operation_outcome, 'unsupported_fallback')
+  assert.equal(value.resume_status, 'unsupported_fallback')
+  assert.notEqual(value.operation_witness, 'load_response_for_exact_request')
+})
+
+test('required load failure writes a null-operation tombstone and never sends prompt', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-receipt-failure-'))
+  const profile = writeExecutionProfile(cwd)
+  const first = run('task-receipt-failure', {
+    ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'new', ACP_EXECUTION_PROFILE: profile,
+  }, cwd)
+  assert.equal(first.status, 0, `new exit 0 expected; stderr:\n${first.stderr}`)
+  const firstDispatch = field(readFileSync(join(cwd, '.tmux-teams', 'dispatch', 'task-receipt-failure.md'), 'utf8'), 'dispatch_id')
+  const firstReceipt = receiptFor(cwd, firstDispatch)
+  const log = join(cwd, 'load-failure.protocol.log')
+  const retry = run('task-receipt-failure', {
+    ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'load', ACP_RESUME: firstReceipt.value.effective_session_id,
+    ACP_PRIOR_DISPATCH_ID: firstDispatch, ACP_PRIOR_RECEIPT_DIGEST: digest(firstReceipt.raw), ACP_EXECUTION_PROFILE: profile,
+    MOCK_LOAD_ERROR: '1', MOCK_PROTOCOL_LOG: log,
+  }, cwd)
+  assert.notEqual(retry.status, 0, `load failure must be nonzero; stderr:\n${retry.stderr}`)
+  const dispatch = field(readFileSync(join(cwd, '.tmux-teams', 'dispatch', 'task-receipt-failure.md'), 'utf8'), 'dispatch_id')
+  const value = receiptFor(cwd, dispatch).value
+  assert.equal(value.requested_operation, 'load')
+  assert.equal(value.performed_operation, null)
+  assert.equal(value.effective_session_id, null)
+  assert.equal(value.operation_outcome, 'failed')
+  assert.equal(value.resume_status, 'load_failed')
+  assert.ok(!readFileSync(log, 'utf8').includes('session/prompt'))
+  assert.equal(existsSync(join(cwd, '.tmux-teams', 'sessions', 'task-receipt-failure')), true)
+})
+
+test('required load binds every prior identity and execution-profile field before spawn', () => {
+  const mutations = [
+    ['task_id', (value) => ({ ...value, task_id: 'other-task' })],
+    ['worker', (value) => ({ ...value, worker: 'other-worker' })],
+    ['transport', (value) => ({ ...value, transport: 'other' })],
+    ['agent_id', (value) => ({ ...value, agent_id: 'other-agent' })],
+    ['requested_model', (value) => ({ ...value, requested_model: 'other-model' })],
+    ['requested_reasoning_effort', (value) => ({ ...value, requested_reasoning_effort: 'other-effort' })],
+    ['effective_identity', (value) => ({ ...value, effective_identity: 'other-model[ultra]' })],
+    ['identity_status', (value) => ({ ...value, identity_status: 'unverified' })],
+    ['initialize_agent_info', (value) => ({ ...value, initialize_agent_info: { name: 'other-adapter', version: '1' } })],
+    ['adapter_package_spec', (value) => ({ ...value, adapter_package_spec: 'other-acp@1.0.0' })],
+    ['adapter_resolved_version', (value) => ({ ...value, adapter_resolved_version: '9.9.9' })],
+    ['adapter_integrity', (value) => ({ ...value, adapter_integrity: `sha512-${'A'.repeat(88)}` })],
+    ['adapter_metadata_digest', (value) => ({ ...value, adapter_metadata_digest: `sha256:${'1'.repeat(64)}` })],
+    ['adapter_entry_digest', (value) => ({ ...value, adapter_entry_digest: `sha256:${'2'.repeat(64)}` })],
+    ['codex_executable_identity', (value) => ({ ...value, codex_executable_identity: { ...value.codex_executable_identity, executable_digest: `sha256:${'3'.repeat(64)}` } })],
+    ['node_executable_identity', (value) => ({ ...value, node_executable_identity: { ...value.node_executable_identity, executable_digest: `sha256:${'4'.repeat(64)}` } })],
+    ['execution_profile_digest', (value) => ({ ...value, execution_profile_digest: `sha256:${'5'.repeat(64)}` })],
+    ['initial_agent_mode', (value) => ({ ...value, initial_agent_mode: 'read-only' })],
+    ['effective_session_id', (value) => ({ ...value, effective_session_id: 'different_session' })],
+  ]
+  for (const [fieldName, mutate] of mutations) {
+    const cwd = mkdtempSync(join(tmpdir(), `acp-companion-lineage-${fieldName}-`))
+    const taskId = `task-lineage-${fieldName.replaceAll('_', '-')}`
+    const profile = writeExecutionProfile(cwd)
+    const first = runAs('mock', taskId, {
+      ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'new', ACP_EXECUTION_PROFILE: profile,
+      ACP_AGENT_ID: 'stable-agent', ACP_EXPECT_MODEL: 'gpt-test', ACP_EXPECT_REASONING_EFFORT: 'ultra',
+      MOCK_MODEL: 'gpt-test', MOCK_REASONING_EFFORT: 'ultra',
+    }, cwd)
+    assert.equal(first.status, 0, `${fieldName}: first dispatch failed: ${first.stderr}`)
+    const firstDispatch = field(readFileSync(join(cwd, '.tmux-teams', 'dispatch', `${taskId}.md`), 'utf8'), 'dispatch_id')
+    const mutated = rewritePriorReceiptPair(cwd, firstDispatch, mutate)
+    rmSync(join(cwd, '.initial-agent-mode'), { force: true })
+    const retry = runAs('mock', taskId, {
+      ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'load',
+      ACP_RESUME: 'sess_mock', ACP_PRIOR_DISPATCH_ID: firstDispatch, ACP_PRIOR_RECEIPT_DIGEST: digest(mutated.raw),
+      ACP_EXECUTION_PROFILE: profile, ACP_AGENT_ID: 'stable-agent', ACP_EXPECT_MODEL: 'gpt-test', ACP_EXPECT_REASONING_EFFORT: 'ultra',
+      MOCK_MODEL: 'gpt-test', MOCK_REASONING_EFFORT: 'ultra',
+    }, cwd)
+    assert.equal(retry.status, 2, `${fieldName}: mutated prior lineage must fail before spawn: ${retry.stderr}`)
+    assert.equal(existsSync(join(cwd, '.initial-agent-mode')), false, `${fieldName}: adapter must not spawn after prior validation failure`)
+  }
+})
+
+test('required load correlation failure writes a null-operation tombstone and never sends prompt', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-receipt-correlation-'))
+  const profile = writeExecutionProfile(cwd)
+  const first = run('task-receipt-correlation', {
+    ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'new', ACP_EXECUTION_PROFILE: profile,
+  }, cwd)
+  assert.equal(first.status, 0, `new exit 0 expected; stderr:\n${first.stderr}`)
+  const firstDispatch = field(readFileSync(join(cwd, '.tmux-teams', 'dispatch', 'task-receipt-correlation.md'), 'utf8'), 'dispatch_id')
+  const firstReceipt = receiptFor(cwd, firstDispatch)
+  const log = join(cwd, 'load-correlation.protocol.log')
+  const retry = run('task-receipt-correlation', {
+    ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'load', ACP_RESUME: firstReceipt.value.effective_session_id,
+    ACP_PRIOR_DISPATCH_ID: firstDispatch, ACP_PRIOR_RECEIPT_DIGEST: digest(firstReceipt.raw), ACP_EXECUTION_PROFILE: profile,
+    ACP_TEST_RECEIPT_CORRELATION_FAILURE: '1', MOCK_PROTOCOL_LOG: log,
+  }, cwd)
+  assert.notEqual(retry.status, 0, `correlation failure must be nonzero; stderr:\n${retry.stderr}`)
+  const dispatch = field(readFileSync(join(cwd, '.tmux-teams', 'dispatch', 'task-receipt-correlation.md'), 'utf8'), 'dispatch_id')
+  const value = receiptFor(cwd, dispatch).value
+  assert.equal(value.requested_operation, 'load')
+  assert.equal(value.performed_operation, null)
+  assert.equal(value.effective_session_id, null)
+  assert.equal(value.operation_outcome, 'failed')
+  assert.equal(value.resume_status, 'load_failed')
+  assert.equal(readFileSync(log, 'utf8').includes('session/prompt'), false)
+})
+
+test('identity mismatch publishes a failed immutable receipt before prompt delivery', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-receipt-identity-mismatch-'))
+  const protocolLog = join(cwd, 'identity-mismatch.protocol.log')
+  const r = run('task-receipt-identity-mismatch', {
+    ACP_EXPECT_MODEL: 'gpt-5.6-luna',
+    ACP_EXPECT_REASONING_EFFORT: 'ultra',
+    MOCK_MODEL: 'unexpected-model',
+    MOCK_PROTOCOL_LOG: protocolLog,
+  }, cwd)
+  assert.equal(r.status, 1, `identity mismatch must fail; stderr:\n${r.stderr}`)
+  const committed = receipt(cwd)
+  assert.equal(committed.value.operation_outcome, 'failed')
+  assert.equal(committed.value.performed_operation, null)
+  assert.equal(committed.value.effective_session_id, null)
+  assert.equal(committed.value.operation_witness, 'none')
+  assert.equal(committed.value.identity_status, 'mismatched')
+  assert.equal(committed.value.operation_acknowledged_at !== null, true)
+  assert.match(committed.value.operation_response_digest, /^sha256:[0-9a-f]{64}$/)
+  assert.equal(readFileSync(protocolLog, 'utf8').includes('session/prompt'), false)
+})
+
+for (const [scenario, expectedStatus, expectedInfo] of [
+  ['missing', 'missing', null],
+  ['mismatch', 'mismatched', { name: 'unexpected-adapter', version: '9' }],
+]) {
+  test(`observed initialize agent identity ${scenario} fails before session operation`, () => {
+    const cwd = mkdtempSync(join(tmpdir(), `acp-companion-initialize-identity-${scenario}-`))
+    const profile = writeExecutionProfile(cwd)
+    const protocolLog = join(cwd, 'initialize-identity.protocol.log')
+    const r = runAs('mock', `task-initialize-identity-${scenario}`, {
+      ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'new', ACP_EXECUTION_PROFILE: profile,
+      MOCK_PROTOCOL_LOG: protocolLog,
+      ...(scenario === 'missing' ? { MOCK_NO_AGENT_INFO: '1' } : { MOCK_AGENT_NAME: 'unexpected-adapter', MOCK_AGENT_VERSION: '9' }),
+    }, cwd)
+    assert.notEqual(r.status, 0, `identity ${scenario} must fail: ${r.stderr}`)
+    const value = receipt(cwd).value
+    assert.equal(value.operation_outcome, 'failed')
+    assert.equal(value.identity_status, expectedStatus)
+    assert.deepEqual(value.initialize_agent_info, expectedInfo)
+    const protocol = readFileSync(protocolLog, 'utf8')
+    assert.match(protocol, /^initialize:/m)
+    assert.doesNotMatch(protocol, /session\/new|session\/load|session\/prompt/)
+  })
+}
+
+test('required mode rejects an arbitrary ACP_CMD before adapter spawn', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-receipt-cmd-'))
+  const r = run('task-required-command', {
+    ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'new', ACP_CMD: `node ${MOCK}`,
+  }, cwd)
+  assert.equal(r.status, 2)
+  assert.match(r.stderr, /rejects arbitrary ACP_CMD/)
+  assert.equal(existsSync(join(cwd, '.initial-agent-mode')), false)
+  const committed = receipt(cwd)
+  assert.equal(committed.value.operation_outcome, 'failed')
+  assert.equal(committed.value.performed_operation, null)
+  assert.equal(committed.value.effective_session_id, null)
+  assert.equal(committed.value.operation_witness, 'none')
+})
+
+test('required Codex mode rejects a drifted pinned adapter cache before spawn', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-receipt-adapter-drift-'))
+  const cache = join(cwd, 'npm-cache')
+  const packageRoot = join(cache, '_npx', 'fake-cache-entry', 'node_modules', '@agentclientprotocol', 'codex-acp')
+  const binRoot = join(packageRoot, 'bin')
+  mkdirSync(binRoot, { recursive: true })
+  writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({
+    name: '@agentclientprotocol/codex-acp',
+    version: '1.1.7',
+    bin: { 'codex-acp': 'bin/codex-acp' },
+  }), { mode: 0o600 })
+  writeExecutable(join(binRoot, 'codex-acp'), '#!/bin/sh\nexit 0\n')
+  const r = runAs('codex', 'task-required-adapter-drift', {
+    ACP_CMD: null,
+    ACP_SESSION_RECEIPT_REQUIRED: '1',
+    ACP_SESSION_OPERATION: 'new',
+    NPM_CONFIG_CACHE: cache,
+  }, cwd)
+  assert.equal(r.status, 2)
+  assert.match(r.stderr, /drift|ambiguous|verified.*adapter/i)
+  assert.equal(existsSync(join(cwd, '.initial-agent-mode')), false)
+  const committed = receipt(cwd)
+  assert.equal(committed.value.operation_outcome, 'failed')
+  assert.equal(committed.value.performed_operation, null)
+  assert.equal(committed.value.effective_session_id, null)
+})
+
+for (const targetKind of ['symlink', 'non-directory']) {
+  test(`required receipt publication rejects a ${targetKind} receipt directory before prompt`, () => {
+    const cwd = mkdtempSync(join(tmpdir(), `acp-companion-receipt-${targetKind}-target-`))
+    const tmuxDir = join(cwd, '.tmux-teams')
+    const receiptsDir = join(tmuxDir, 'receipts')
+    mkdirSync(tmuxDir, { recursive: true })
+    if (targetKind === 'symlink') {
+      const outside = join(cwd, 'outside-receipts')
+      mkdirSync(outside)
+      symlinkSync(outside, receiptsDir, 'dir')
+    } else {
+      writeFileSync(receiptsDir, 'not a directory\n', { mode: 0o600 })
+    }
+    const profile = writeExecutionProfile(cwd)
+    const protocolLog = join(cwd, `${targetKind}.protocol.log`)
+    const r = run('task-receipt-directory-target', {
+      ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'new', ACP_EXECUTION_PROFILE: profile,
+      MOCK_PROTOCOL_LOG: protocolLog,
+    }, cwd)
+    assert.notEqual(r.status, 0, `${targetKind} receipt directory must fail closed; stderr:\n${r.stderr}`)
+    assert.equal(readFileSync(protocolLog, 'utf8').includes('session/prompt'), false)
+    if (targetKind === 'symlink') assert.deepEqual(readdirSync(join(cwd, 'outside-receipts')), [])
+  })
+}
+
+for (const targetKind of ['symlink', 'directory']) {
+  test(`required load rejects a ${targetKind} commitment target without spawning`, () => {
+    const cwd = mkdtempSync(join(tmpdir(), `acp-companion-receipt-commit-${targetKind}-`))
+    const profile = writeExecutionProfile(cwd)
+    const first = run('task-receipt-commit-target', {
+      ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'new', ACP_EXECUTION_PROFILE: profile,
+    }, cwd)
+    assert.equal(first.status, 0, `seed receipt failed: ${first.stderr}`)
+    const dispatchId = field(readFileSync(join(cwd, '.tmux-teams', 'dispatch', 'task-receipt-commit-target.md'), 'utf8'), 'dispatch_id')
+    const firstReceipt = receiptFor(cwd, dispatchId)
+    const commitmentPath = join(cwd, '.tmux-teams', 'receipt-commits', `${dispatchId}.json`)
+    const commitmentRaw = readFileSync(commitmentPath)
+    rmSync(commitmentPath, { force: true })
+    if (targetKind === 'directory') mkdirSync(commitmentPath)
+    else {
+      const outside = join(cwd, 'outside-commit.json')
+      writeFileSync(outside, commitmentRaw, { mode: 0o600 })
+      symlinkSync(outside, commitmentPath, 'file')
+    }
+    rmSync(join(cwd, '.initial-agent-mode'), { force: true })
+    const retry = run('task-receipt-commit-target', {
+      ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'load', ACP_RESUME: firstReceipt.value.effective_session_id,
+      ACP_PRIOR_DISPATCH_ID: dispatchId, ACP_PRIOR_RECEIPT_DIGEST: digest(firstReceipt.raw), ACP_EXECUTION_PROFILE: profile,
+    }, cwd)
+    assert.equal(retry.status, 2, `${targetKind} commitment target must fail closed: ${retry.stderr}`)
+    assert.equal(existsSync(join(cwd, '.initial-agent-mode')), false)
+  })
+}
+
+test('required mode does not infer operation or resume lineage from mutable session state', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-receipt-intent-'))
+  mkdirSync(join(cwd, '.tmux-teams', 'sessions'), { recursive: true })
+  writeFileSync(join(cwd, '.tmux-teams', 'sessions', 'task-required-intent'), 'sess_prev\n', { mode: 0o600 })
+  const r = run('task-required-intent', { ACP_SESSION_RECEIPT_REQUIRED: '1' }, cwd)
+  assert.equal(r.status, 2)
+  assert.match(r.stderr, /requires explicit ACP_SESSION_OPERATION/)
+  assert.equal(existsSync(join(cwd, '.initial-agent-mode')), false)
+})
+
+test('required execution profile drift fails before ACP operation', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-receipt-profile-'))
+  const profile = writeExecutionProfile(cwd)
+  const value = JSON.parse(readFileSync(profile, 'utf8'))
+  value.adapter.entry_digest = digest('drifted-entry')
+  writeFileSync(profile, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 })
+  const r = run('task-required-profile-drift', {
+    ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'new', ACP_EXECUTION_PROFILE: profile,
+  }, cwd)
+  assert.equal(r.status, 2)
+  assert.match(r.stderr, /execution profile/)
+  assert.equal(existsSync(join(cwd, '.initial-agent-mode')), false)
+})
+
+test('execution profiles attest exact raw adapter bytes, including NUL and invalid UTF-8', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-binary-profile-'))
+  const binary = writeBinaryAdapterProfile(cwd)
+  const sha256sum = spawnSync('sha256sum', [binary.adapterPath], { encoding: 'utf8' })
+  assert.equal(sha256sum.status, 0)
+  const externalDigest = `sha256:${sha256sum.stdout.trim().split(/\s+/)[0]}`
+  assert.equal(digest(binary.bytes), externalDigest)
+  assert.notEqual(digest(String(binary.bytes)), externalDigest, 'replacement-text hashing must differ from raw-byte hashing')
+  assert.ok(binary.bytes.includes(0x00))
+  assert.ok(binary.bytes.includes(0xff))
+
+  const good = runAs('mock', 'task-binary-profile', {
+    ACP_SESSION_RECEIPT_REQUIRED: '1',
+    ACP_SESSION_OPERATION: 'new',
+    ACP_CMD: `${NODE_EXECUTABLE} ${binary.adapterPath}`,
+    ACP_EXECUTION_PROFILE: binary.profilePath,
+  }, cwd)
+  assert.equal(good.status, 0, `raw-byte profile should spawn; stderr:\n${good.stderr}`)
+  assert.equal(receipt(cwd).value.adapter_entry_digest, externalDigest)
+
+  const badCwd = mkdtempSync(join(tmpdir(), 'acp-companion-binary-profile-drift-'))
+  const divergent = writeBinaryAdapterProfile(badCwd, { divergent: true })
+  const divergentValue = JSON.parse(readFileSync(divergent.profilePath, 'utf8'))
+  divergentValue.adapter.entry_digest = binary.profile.adapter.entry_digest
+  divergentValue.adapter.integrity = binary.profile.adapter.integrity
+  divergentValue.profile_digest = digest(JSON.stringify(stableValue(divergentValue)))
+  writeFileSync(divergent.profilePath, `${JSON.stringify(divergentValue, null, 2)}\n`, { mode: 0o600 })
+  const bad = runAs('mock', 'task-binary-profile-drift', {
+    ACP_SESSION_RECEIPT_REQUIRED: '1',
+    ACP_SESSION_OPERATION: 'new',
+    ACP_CMD: `${NODE_EXECUTABLE} ${divergent.adapterPath}`,
+    ACP_EXECUTION_PROFILE: divergent.profilePath,
+  }, badCwd)
+  assert.equal(bad.status, 2)
+  assert.match(bad.stderr, /entry digest|execution profile/i)
+  assert.equal(existsSync(join(badCwd, '.initial-agent-mode')), false)
+})
+
+test('required Codex mode rejects an absolute fake CODEX_PATH before adapter spawn', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-receipt-codex-path-'))
+  const fake = writeExecutable(join(cwd, 'fake-codex'), '#!/bin/sh\nprintf "codex-cli 0.144.6\\n"\n')
+  const r = runAs('codex', 'task-required-fake-codex-path', {
+    ACP_CMD: null,
+    ACP_SESSION_RECEIPT_REQUIRED: '1',
+    ACP_SESSION_OPERATION: 'new',
+    CODEX_PATH: fake,
+  }, cwd)
+  assert.equal(r.status, 2)
+  assert.match(r.stderr, /CODEX_PATH|execution_profile_drift/)
+  assert.equal(existsSync(join(cwd, '.initial-agent-mode')), false)
+})
+
+test('required Codex mode rejects a fake PATH shadow even when CODEX_PATH names the real executable', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-receipt-path-shadow-'))
+  const bin = join(cwd, 'bin')
+  mkdirSync(bin)
+  writeExecutable(join(bin, 'codex'), '#!/bin/sh\nprintf "codex-cli 0.144.6\\n"\n')
+  const r = runAs('codex', 'task-required-path-shadow', {
+    ACP_CMD: null,
+    ACP_SESSION_RECEIPT_REQUIRED: '1',
+    ACP_SESSION_OPERATION: 'new',
+    CODEX_PATH: CODEX_EXECUTABLE,
+    PATH: `${bin}:${process.env.PATH}`,
+  }, cwd)
+  assert.equal(r.status, 2)
+  assert.match(r.stderr, /CODEX_PATH|execution_profile_drift/)
+  assert.equal(existsSync(join(cwd, '.initial-agent-mode')), false)
+})
+
+test('required profile rejects a fake self-reported Codex version before spawn', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-receipt-fake-version-'))
+  const profile = writeExecutionProfile(cwd)
+  const value = JSON.parse(readFileSync(profile, 'utf8'))
+  value.codex.version = 'codex-cli 0.0.0-fake'
+  value.profile_digest = digest(JSON.stringify(stableValue({ ...value, profile_digest: undefined })))
+  delete value.profile_digest
+  value.profile_digest = digest(JSON.stringify(stableValue(value)))
+  writeFileSync(profile, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 })
+  const r = runAs('codex', 'task-required-fake-version', {
+    ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'new', ACP_EXECUTION_PROFILE: profile,
+  }, cwd)
+  assert.equal(r.status, 2)
+  assert.match(r.stderr, /Codex identity drifted|execution profile/)
+  assert.equal(existsSync(join(cwd, '.initial-agent-mode')), false)
+})
+
+test('required mode rejects unsafe session ids before receipt success or prompt', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-receipt-session-id-'))
+  const profile = writeExecutionProfile(cwd)
+  const r = run('task-required-session-id', {
+    ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'new', ACP_EXECUTION_PROFILE: profile,
+    MOCK_SESSION_ID: 'unsafe/session/id', MOCK_PROTOCOL_LOG: join(cwd, 'protocol.log'),
+  }, cwd)
+  assert.notEqual(r.status, 0)
+  assert.match(r.stderr, /unsafe or oversized ACP session id/)
+  assert.equal(readFileSync(join(cwd, 'protocol.log'), 'utf8').includes('session/prompt'), false)
+  const state = snapshot(cwd, 'task-required-session-id')
+  assert.equal(state.liveness_state, 'failed')
+})
+
+for (const failureStage of ['serialize', 'schema', 'write', 'file-fsync', 'publish', 'directory-fsync', 'readback']) {
+  for (const repeat of [1, 2, 3]) test(`required receipt ${failureStage} failure repeat ${repeat} blocks prompt and persists terminal failure evidence`, () => {
+    const cwd = mkdtempSync(join(tmpdir(), `acp-companion-receipt-${failureStage}-`))
+    const profile = writeExecutionProfile(cwd)
+    const envKey = failureStage === 'serialize' ? 'ACP_TEST_RECEIPT_SERIALIZE_FAILURE'
+        : failureStage === 'schema' ? 'ACP_TEST_RECEIPT_SCHEMA_FAILURE'
+          : failureStage === 'write' ? 'ACP_TEST_RECEIPT_WRITE_FAILURE'
+            : failureStage === 'file-fsync' ? 'ACP_TEST_RECEIPT_FILE_FSYNC_FAILURE'
+              : failureStage === 'publish' ? 'ACP_TEST_RECEIPT_PUBLISH_FAILURE'
+                : failureStage === 'directory-fsync' ? 'ACP_TEST_RECEIPT_DIRECTORY_FSYNC_FAILURE'
+                  : 'ACP_TEST_RECEIPT_READBACK_FAILURE'
+    const log = join(cwd, 'protocol.log')
+    const r = run('task-receipt-persist-failure', {
+      ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'new', ACP_EXECUTION_PROFILE: profile,
+      [envKey]: '1', MOCK_PROTOCOL_LOG: log,
+    }, cwd)
+    assert.notEqual(r.status, 0, `receipt ${failureStage} must fail closed; stderr:\n${r.stderr}`)
+    assert.equal(readFileSync(log, 'utf8').includes('session/prompt'), false)
+    const state = snapshot(cwd, 'task-receipt-persist-failure')
+    assert.equal(state.liveness_state, 'failed')
+    assert.equal(state.termination_reason, 'receipt_persistence_failed')
+    const dispatch = readFileSync(join(cwd, '.tmux-teams', 'dispatch', 'task-receipt-persist-failure.md'), 'utf8')
+    assert.match(dispatch, /^liveness_persistence_failed: false$/m)
+    assert.match(dispatch, /^receipt_persistence_failed: true$/m)
+    assert.match(dispatch, /^liveness_state: failed$/m)
+    const committed = receipt(cwd)
+    if (failureStage === 'directory-fsync' || failureStage === 'readback') {
+      assert.equal(committed.value.operation_outcome, 'succeeded', 'a visible receipt is not trusted without its verified commitment/readback')
+      const failuresDir = join(cwd, '.tmux-teams', 'receipt-failures')
+      assert.equal(readdirSync(failuresDir).length, 1)
+    } else {
+      assert.equal(committed.value.operation_outcome, 'failed')
+      assert.equal(committed.value.performed_operation, null)
+      assert.equal(committed.value.effective_session_id, null)
+    }
+    assert.deepEqual(readdirSync(join(cwd, '.tmux-teams', 'receipts')).filter((name) => name.endsWith('.tmp')), [])
+  })
+}
+
+test('receipt schema is closed and all committed receipt strings remain bounded UTF-8 metadata', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-receipt-schema-'))
+  const r = run('task-receipt-schema', { ACP_AGENT_ID: 'receipt-agent' }, cwd)
+  assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
+  const committed = receipt(cwd)
+  const expected = new Set([
+    'schema', 'schema_version', 'task_id', 'dispatch_id', 'agent_id', 'worker', 'transport',
+    'requested_operation', 'performed_operation', 'operation_outcome', 'requested_resume_session_id',
+    'effective_session_id', 'prior_dispatch_id', 'prior_receipt_digest', 'operation_witness',
+    'operation_request_digest', 'operation_response_digest', 'operation_rpc_id', 'operation_acknowledged_at',
+    'requested_model', 'requested_reasoning_effort', 'effective_identity', 'identity_status',
+    'adapter_package_spec', 'adapter_resolved_version', 'adapter_integrity', 'adapter_metadata_digest',
+    'adapter_entry_digest', 'initialize_agent_info', 'execution_profile_digest', 'initial_agent_mode',
+    'codex_executable_identity', 'node_executable_identity', 'resume_status',
+  ])
+  assert.deepEqual(new Set(Object.keys(committed.value)), expected)
+  assert.equal(committed.value.agent_id, 'receipt-agent')
+  assert.ok(Buffer.byteLength(committed.raw, 'utf8') <= 32 * 1024)
+  assert.ok(!committed.raw.includes(cwd))
+  assert.ok(!committed.raw.includes('do the thing'))
+  assert.match(committed.value.adapter_entry_digest, /^sha256:[0-9a-f]{64}$/)
+  assert.match(committed.value.execution_profile_digest, /^sha256:[0-9a-f]{64}$/)
+})
+
+test('schema-only receipt matrix covers 20 valid and 60 invalid named controls', () => {
+  const schema = fixture(RECEIPT_SCHEMA_FILE)
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-receipt-schema-matrix-'))
+  const r = run('task-receipt-schema-matrix', {}, cwd)
+  assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
+  const base = receipt(cwd).value
+  const priorDigest = `sha256:${'0'.repeat(64)}`
+  const loadSuccess = {
+    ...base,
+    requested_operation: 'load', performed_operation: 'load',
+    requested_resume_session_id: 'sess_prev', effective_session_id: 'sess_prev',
+    prior_dispatch_id: 'prior_dispatch', prior_receipt_digest: priorDigest,
+    operation_witness: 'load_response_for_exact_request', resume_status: 'loaded',
+  }
+  const fallback = {
+    ...base,
+    requested_operation: 'load', performed_operation: 'new',
+    operation_outcome: 'unsupported_fallback',
+    requested_resume_session_id: 'sess_prev', effective_session_id: 'sess_new',
+    prior_dispatch_id: 'prior_dispatch', prior_receipt_digest: priorDigest,
+    operation_witness: 'new_session_id_returned', resume_status: 'unsupported_fallback',
+  }
+  const failedNew = {
+    ...base,
+    performed_operation: null, operation_outcome: 'failed', effective_session_id: null,
+    operation_witness: 'none', operation_request_digest: null, operation_response_digest: null,
+    operation_rpc_id: null, operation_acknowledged_at: null, initialize_agent_info: null,
+    identity_status: 'missing', effective_identity: null,
+  }
+  const failedLoad = {
+    ...failedNew,
+    requested_operation: 'load', requested_resume_session_id: 'sess_prev',
+    prior_dispatch_id: 'prior_dispatch', prior_receipt_digest: priorDigest, resume_status: 'load_failed',
+  }
+  const interruptedNew = { ...failedNew, operation_outcome: 'interrupted' }
+  const interruptedLoad = { ...failedLoad, operation_outcome: 'interrupted' }
+  const valid = [
+    ['new-default', base],
+    ['new-agent-id-null', { ...base, agent_id: null }],
+    ['new-agent-id-set', { ...base, agent_id: 'agent_1' }],
+    ['new-initial-mode-read-only', { ...base, initial_agent_mode: 'read-only' }],
+    ['new-initial-mode-agent', { ...base, initial_agent_mode: 'agent' }],
+    ['new-requested-model-matched', { ...base, requested_model: 'model', effective_identity: 'model[ultra]', identity_status: 'matched' }],
+    ['new-requested-effort', { ...base, requested_reasoning_effort: 'ultra' }],
+    ['new-effective-identity-unverified', { ...base, effective_identity: 'model[ultra]' }],
+    ['new-null-adapter-integrity', { ...base, adapter_integrity: null }],
+    ['failed-new-after-initialize', { ...failedNew, initialize_agent_info: base.initialize_agent_info }],
+    ['load-success', loadSuccess],
+    ['load-success-agent-id', { ...loadSuccess, agent_id: 'load_agent' }],
+    ['load-success-initial-mode', { ...loadSuccess, initial_agent_mode: 'agent-full-access' }],
+    ['load-success-requested-model', { ...loadSuccess, requested_model: 'model', effective_identity: 'model[ultra]', identity_status: 'matched' }],
+    ['load-success-requested-effort', { ...loadSuccess, requested_reasoning_effort: 'ultra' }],
+    ['load-fallback', fallback],
+    ['failed-new', failedNew],
+    ['interrupted-new', interruptedNew],
+    ['failed-load', failedLoad],
+    ['interrupted-load', interruptedLoad],
+  ]
+  const invalid = [
+    ['load-missing-requested-session', { ...loadSuccess, requested_resume_session_id: null }],
+    ['load-missing-prior-dispatch', { ...loadSuccess, prior_dispatch_id: null }],
+    ['load-missing-prior-digest', { ...loadSuccess, prior_receipt_digest: null }],
+    ['load-performed-new', { ...loadSuccess, performed_operation: 'new', operation_witness: 'new_session_id_returned' }],
+    ['load-requested-new', { ...loadSuccess, requested_operation: 'new', requested_resume_session_id: null, prior_dispatch_id: null, prior_receipt_digest: null, operation_witness: 'new_session_id_returned', resume_status: 'not_requested', performed_operation: 'load' }],
+    ['load-wrong-witness', { ...loadSuccess, operation_witness: 'new_session_id_returned' }],
+    ['load-wrong-resume-status', { ...loadSuccess, resume_status: 'not_requested' }],
+    ['load-null-request-digest', { ...loadSuccess, operation_request_digest: null }],
+    ['load-null-response-digest', { ...loadSuccess, operation_response_digest: null }],
+    ['load-null-rpc-id', { ...loadSuccess, operation_rpc_id: null }],
+    ['load-null-ack', { ...loadSuccess, operation_acknowledged_at: null }],
+    ['load-null-initialize', { ...loadSuccess, initialize_agent_info: null }],
+    ['load-outcome-failed-with-load', { ...loadSuccess, operation_outcome: 'failed', performed_operation: 'load', effective_session_id: null, operation_witness: 'none', operation_request_digest: null, operation_response_digest: null, operation_rpc_id: null, operation_acknowledged_at: null, initialize_agent_info: null, resume_status: 'load_failed' }],
+    ['fallback-missing-prior-dispatch', { ...fallback, prior_dispatch_id: null }],
+    ['fallback-missing-prior-digest', { ...fallback, prior_receipt_digest: null }],
+    ['fallback-null-request-digest', { ...fallback, operation_request_digest: null }],
+    ['fallback-null-response-digest', { ...fallback, operation_response_digest: null }],
+    ['fallback-null-rpc-id', { ...fallback, operation_rpc_id: null }],
+    ['fallback-null-ack', { ...fallback, operation_acknowledged_at: null }],
+    ['fallback-null-initialize', { ...fallback, initialize_agent_info: null }],
+    ['fallback-performed-load', { ...fallback, performed_operation: 'load', operation_witness: 'load_response_for_exact_request', resume_status: 'loaded' }],
+    ['fallback-wrong-witness', { ...fallback, operation_witness: 'load_response_for_exact_request' }],
+    ['fallback-wrong-status', { ...fallback, resume_status: 'loaded' }],
+    ['fallback-requested-new', { ...fallback, requested_operation: 'new', requested_resume_session_id: null, prior_dispatch_id: null, prior_receipt_digest: null, resume_status: 'not_requested' }],
+    ['fallback-null-effective-session', { ...fallback, effective_session_id: null }],
+    ['fallback-claimed-success', { ...fallback, operation_outcome: 'succeeded', identity_status: 'matched', requested_model: 'model', effective_identity: 'model[ultra]' }],
+    ['failed-load-missing-prior-dispatch', { ...failedLoad, prior_dispatch_id: null }],
+    ['failed-load-missing-prior-digest', { ...failedLoad, prior_receipt_digest: null }],
+    ['failed-load-performed-new', { ...failedLoad, performed_operation: 'new' }],
+    ['failed-load-effective-session', { ...failedLoad, effective_session_id: 'sess_new' }],
+    ['failed-load-witness', { ...failedLoad, operation_witness: 'new_session_id_returned' }],
+    ['failed-load-wrong-status', { ...failedLoad, resume_status: 'unsupported_fallback' }],
+    ['failed-new-performed-new', { ...failedNew, performed_operation: 'new' }],
+    ['failed-new-effective-session', { ...failedNew, effective_session_id: 'sess_new' }],
+    ['failed-new-witness', { ...failedNew, operation_witness: 'new_session_id_returned' }],
+    ['failed-new-wrong-status', { ...failedNew, resume_status: 'load_failed' }],
+    ['success-identity-missing', { ...base, identity_status: 'missing' }],
+    ['success-identity-mismatched', { ...base, identity_status: 'mismatched' }],
+    ['success-requested-model-unverified', { ...base, requested_model: 'model', effective_identity: 'model[ultra]' }],
+    ['success-requested-model-no-effective', { ...base, requested_model: 'model', identity_status: 'matched', effective_identity: null }],
+    ['ack-null-response-present', { ...base, operation_acknowledged_at: null }],
+    ['response-null-ack-present', { ...base, operation_response_digest: null }],
+    ['rpc-null-ack-present', { ...base, operation_rpc_id: null }],
+    ['ack-invalid-precision', { ...base, operation_acknowledged_at: '2026-07-26T00:00:00.000000Z' }],
+    ['response-malformed-digest', { ...base, operation_response_digest: 'sha256:not-a-digest' }],
+    ['request-malformed-digest', { ...base, operation_request_digest: 'sha256:not-a-digest' }],
+    ['prior-malformed-digest', { ...loadSuccess, prior_receipt_digest: 'not-a-digest' }],
+    ['unsafe-task-id', { ...base, task_id: '../task' }],
+    ['unsafe-dispatch-id', { ...base, dispatch_id: '../dispatch' }],
+    ['unsafe-agent-id', { ...base, agent_id: '../agent' }],
+    ['empty-worker', { ...base, worker: '' }],
+    ['unknown-outcome', { ...base, operation_outcome: 'unknown' }],
+    ['unknown-requested-operation', { ...base, requested_operation: 'resume' }],
+    ['unknown-performed-operation', { ...base, performed_operation: 'resume' }],
+    ['success-no-witness', { ...base, operation_witness: 'none' }],
+    ['new-carries-prior-dispatch', { ...base, prior_dispatch_id: 'prior_dispatch' }],
+    ['new-carries-prior-digest', { ...base, prior_receipt_digest: priorDigest }],
+    ['new-carries-resume-session', { ...base, requested_resume_session_id: 'sess_prev' }],
+    ['new-wrong-resume-status', { ...base, resume_status: 'loaded' }],
+    ['empty-initial-mode', { ...base, initial_agent_mode: '' }],
+  ]
+  assert.equal(valid.length, 20)
+  assert.equal(invalid.length, 60)
+  const falseRejects = valid.filter(([name, value]) => !schemaMatches(schema, value)).map(([name]) => name)
+  const falseAccepts = invalid.filter(([name, value]) => schemaMatches(schema, value)).map(([name]) => name)
+  console.log(`[receipt-schema-matrix] valid=${valid.length} invalid=${invalid.length} false_accepts=${falseAccepts.length} false_rejects=${falseRejects.length}`)
+  assert.deepEqual(falseRejects, [])
+  assert.deepEqual(falseAccepts, [])
+})
+
+test('default receipt persistence failure is explicit but does not silently block the legacy lane', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-receipt-optional-'))
+  const r = run('task-receipt-optional-failure', { ACP_TEST_RECEIPT_WRITE_FAILURE: '1' }, cwd)
+  assert.equal(r.status, 0, `default receipt mode remains compatible; stderr:\n${r.stderr}`)
+  assert.match(r.stderr, /could not persist ACP session receipt/)
+  assert.equal(existsSync(join(cwd, '.tmux-teams', 'receipts')), true)
+  assert.deepEqual(readdirSync(join(cwd, '.tmux-teams', 'receipts')).filter((name) => name.endsWith('.json')), [])
+  const dispatch = readFileSync(join(cwd, '.tmux-teams', 'dispatch', 'task-receipt-optional-failure.md'), 'utf8')
+  assert.match(dispatch, /^receipt_digest: none$/m)
+  assert.match(readFileSync(join(cwd, '.mailbox-out', 'task-receipt-optional-failure'), 'utf8'), /^TEAM_DONE task-receipt-optional-failure$/m)
+})
+
+for (const [stage, resume] of [['initialize', ''], ['new', ''], ['load', 'sess_prev']]) {
+  test(`controller SIGTERM during ${stage} creates no prompt and reaps the adapter`, async () => {
+    const taskId = `task-controller-${stage}`
+    const cwd = mkdtempSync(join(tmpdir(), `acp-companion-controller-${stage}-`))
+    const protocolLog = join(cwd, 'protocol.log')
+    const live = liveRun(taskId, {
+      MOCK_SCENARIO: 'startup-stall', MOCK_STALL_STAGE: stage, ACP_RESUME: resume,
+      ACP_PROTOCOL_LOG: protocolLog, MOCK_PROTOCOL_LOG: protocolLog,
+      ACP_CANCEL_GRACE_MS: '30', ACP_PROCESS_KILL_GRACE_MS: '40', MOCK_SPAWN_DESCENDANT: '1',
+    }, cwd, 1)
+    await waitForStage(join(cwd, 'stages.log'), `request-${stage === 'initialize' ? 'initialize' : stage === 'new' ? 'session-new' : 'session-load'}-sent`)
+    assert.equal(live.child.kill('SIGTERM'), true)
+    const result = await live.completion
+    assert.notEqual(result.status, 0, `interruption must be nonzero; stderr:\n${result.stderr}`)
+    const state = snapshot(cwd, taskId)
+    assert.ok(['stalled', 'failed'].includes(state.liveness_state))
+    assert.deepEqual(state.active_tools, [])
+    const transcript = existsSync(protocolLog) ? readFileSync(protocolLog, 'utf8') : ''
+    assert.equal(transcript.includes('session/prompt'), false)
+    const events = eventTexts(cwd)
+    assert.equal(events.length, 1)
+    assert.match(events[0], /^child_settlement_signal_delivered: true$/m)
+    await assertPidGone(descendantPid(cwd), `${stage} controller interruption`)
+  })
+}
+
+test('controller signal persistence failure remains explicitly unavailable', async () => {
+  const taskId = 'task-controller-signal-persistence-unavailable'
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-controller-signal-unavailable-'))
+  const live = liveRun(taskId, {
+    MOCK_SCENARIO: 'startup-stall', MOCK_STALL_STAGE: 'new',
+    ACP_TEST_CONTROLLER_SIGNAL_PERSISTENCE_FAILURE: '1',
+    ACP_CANCEL_GRACE_MS: '30', ACP_PROCESS_KILL_GRACE_MS: '40',
+  }, cwd, 1)
+  await waitForStage(join(cwd, 'stages.log'), 'request-session-new-sent')
+  assert.equal(live.child.kill('SIGTERM'), true)
+  const result = await live.completion
+  assert.notEqual(result.status, 0)
+  const event = eventTexts(cwd)[0]
+  assert.match(event, /^controller_signal_provenance_durable: false$/m)
+  assert.match(readFileSync(join(cwd, 'stages.log'), 'utf8'), /^controller-signal-persistence-unavailable$/m)
+  await assertPidGone(descendantPid(cwd), 'unavailable signal provenance')
+})
+
+test('controller signal during receipt commit fences prompt and preserves the committed receipt', async () => {
+  const taskId = 'task-controller-receipt-commit'
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-controller-receipt-'))
+  const profile = writeExecutionProfile(cwd)
+  const protocolLog = join(cwd, 'protocol.log')
+  const live = liveRun(taskId, {
+    ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'new', ACP_EXECUTION_PROFILE: profile,
+    ACP_TEST_RECEIPT_COMMIT_DELAY_MS: '300', MOCK_PROTOCOL_LOG: protocolLog,
+    ACP_CANCEL_GRACE_MS: '30', ACP_PROCESS_KILL_GRACE_MS: '40', MOCK_SPAWN_DESCENDANT: '1',
+  }, cwd, 1)
+  await waitForStage(join(cwd, 'stages.log'), 'receipt-commit-start')
+  assert.equal(live.child.kill('SIGTERM'), true)
+  const result = await live.completion
+  assert.notEqual(result.status, 0)
+  const transcript = readFileSync(protocolLog, 'utf8')
+  assert.equal(transcript.includes('session/prompt'), false)
+  const dir = join(cwd, '.tmux-teams', 'receipts')
+  assert.equal(readdirSync(dir).length, 1)
+  JSON.parse(readFileSync(join(dir, readdirSync(dir)[0]), 'utf8'))
+  await assertPidGone(descendantPid(cwd), 'receipt-commit interruption')
+})
+
+test('controller signal after exact load response fences the pre-receipt barrier', async () => {
+  const taskId = 'task-controller-load-pre-receipt'
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-controller-load-pre-receipt-'))
+  const profile = writeExecutionProfile(cwd)
+  const first = run(taskId, {
+    ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'new', ACP_EXECUTION_PROFILE: profile,
+  }, cwd)
+  assert.equal(first.status, 0, `lineage seed must complete; stderr:\n${first.stderr}`)
+  const firstDispatch = field(readFileSync(join(cwd, '.tmux-teams', 'dispatch', `${taskId}.md`), 'utf8'), 'dispatch_id')
+  const firstReceipt = receiptFor(cwd, firstDispatch)
+  const release = join(cwd, 'release-pre-receipt')
+  const protocolLog = join(cwd, 'load-pre-receipt.protocol.log')
+  const control = join(cwd, 'load-pre-receipt.control.log')
+  const live = liveRun(taskId, {
+    ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'load',
+    ACP_RESUME: firstReceipt.value.effective_session_id,
+    ACP_PRIOR_DISPATCH_ID: firstDispatch,
+    ACP_PRIOR_RECEIPT_DIGEST: digest(firstReceipt.raw),
+    ACP_EXECUTION_PROFILE: profile,
+    ACP_TEST_GATE_STAGE: 'pre-receipt', ACP_TEST_GATE_RELEASE_FILE: release,
+    ACP_TEST_GATE_WATCHDOG_MS: '15000', ACP_CONTROL_LOG: control,
+    MOCK_PROTOCOL_LOG: protocolLog, MOCK_CANCEL_RESPOND: '0',
+    ACP_CANCEL_GRACE_MS: '30', ACP_PROCESS_KILL_GRACE_MS: '40',
+  }, cwd, 1)
+  await waitForStage(join(cwd, 'stages.log'), 'response-session-load-correlated', 60_000)
+  await waitForStage(join(cwd, 'stages.log'), 'pre-receipt-reached', 60_000)
+  assert.equal(live.child.kill('SIGTERM'), true)
+  await waitForStage(join(cwd, 'stages.log'), 'controller-signal-latched', 60_000)
+  writeFileSync(release, 'release\n', { mode: 0o600 })
+  const result = await live.completion
+  assert.notEqual(result.status, 0, `interrupted load must fail; stderr:\n${result.stderr}`)
+  const transcript = readFileSync(protocolLog, 'utf8')
+  assert.equal(transcript.includes('session/prompt'), false)
+  const dispatch = readFileSync(join(cwd, '.tmux-teams', 'dispatch', `${taskId}.md`), 'utf8')
+  const secondDispatch = field(dispatch, 'dispatch_id')
+  const secondReceipt = receiptFor(cwd, secondDispatch)
+  assert.equal(secondReceipt.value.operation_outcome, 'interrupted')
+  assert.equal(secondReceipt.value.performed_operation, null)
+  assert.equal(secondReceipt.value.effective_session_id, null)
+  assert.equal(secondReceipt.value.resume_status, 'load_failed')
+  const controlText = readFileSync(control, 'utf8')
+  const cancelIndex = controlText.indexOf('session/cancel')
+  const graceIndex = controlText.indexOf('grace')
+  assert.ok(cancelIndex >= 0)
+  if (graceIndex >= 0) assert.ok(graceIndex > cancelIndex, controlText)
+  const processSignalMatches = [...controlText.matchAll(/signal (SIGTERM|SIGKILL) (?:direct-child|process-group) delivered/g)]
+  if (processSignalMatches.length > 0) assert.ok(graceIndex >= 0 && processSignalMatches[0].index > graceIndex)
+})
+
+test('controller signal during an in-progress tool is cancel-first and leaves no descendant', async () => {
+  const taskId = 'task-controller-tool'
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-controller-tool-'))
+  const control = join(cwd, 'control.log')
+  const live = liveRun(taskId, {
+    MOCK_SCENARIO: 'silent-tool', MOCK_TOOL_DELAY_MS: '1000', MOCK_SPAWN_DESCENDANT: '1',
+    ACP_CONTROL_LOG: control, ACP_CANCEL_GRACE_MS: '500', ACP_PROCESS_KILL_GRACE_MS: '40',
+  }, cwd, 1)
+  await waitForStage(join(cwd, 'stages.log'), 'tool-running')
+  assert.equal(live.child.kill('SIGTERM'), true)
+  await waitForStage(join(cwd, 'stages.log'), 'cancel-grace')
+  assert.equal(live.child.kill('SIGINT'), true)
+  const result = await live.completion
+  assert.notEqual(result.status, 0)
+  const controlText = readFileSync(control, 'utf8')
+  assert.ok(controlText.indexOf('session/cancel') >= 0)
+  assert.ok(controlText.indexOf('grace') > controlText.indexOf('session/cancel'))
+  const processSignalMatches = [...controlText.matchAll(/signal (SIGTERM|SIGKILL) (?:direct-child|process-group) delivered/g)]
+  const processSignalIndex = processSignalMatches.length ? processSignalMatches[0].index : -1
+  assert.ok(processSignalIndex > controlText.indexOf('grace'))
+  assert.ok(controlText.includes('controller signal SIGTERM'))
+  assert.ok(controlText.includes('controller signal SIGINT'))
+  const event = eventTexts(cwd)[0]
+  assert.match(event, /^controller_interrupted: true$/m)
+  assert.match(event, /^controller_signal_count: 2$/m)
+  assert.match(event, /^controller_second_signal: SIGINT$/m)
+  await assertPidGone(descendantPid(cwd), 'tool controller interruption')
+})
+
+test('controller signal during prompt fence never emits a prompt request', async () => {
+  const taskId = 'task-controller-prompt'
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-controller-prompt-'))
+  const protocolLog = join(cwd, 'protocol.log')
+  const live = liveRun(taskId, {
+    ACP_TEST_PROMPT_DELAY_MS: '250', MOCK_PROTOCOL_LOG: protocolLog,
+    ACP_CANCEL_GRACE_MS: '30', ACP_PROCESS_KILL_GRACE_MS: '40',
+  }, cwd, 1)
+  await waitForStage(join(cwd, 'stages.log'), 'pre-prompt')
+  assert.equal(live.child.kill('SIGTERM'), true)
+  const result = await live.completion
+  assert.notEqual(result.status, 0)
+  assert.equal(readFileSync(protocolLog, 'utf8').includes('session/prompt'), false)
+})
+
 test('records one mechanical KMS event without inventing a PM judgement', () => {
   const r = run('task-kms')
   assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
@@ -153,6 +1414,7 @@ test('records one mechanical KMS event without inventing a PM judgement', () => 
   assert.match(events[0], /^started_at: \d{4}-\d{2}-\d{2}T/m)
   assert.doesNotMatch(events[0], /^pm_verdict:/m)
   assert.doesNotMatch(events[0], /^lesson:/m)
+  assert.doesNotMatch(footprint, /^active_tool_evidence:/m)
 })
 
 test('an explicit delivery phase is copied to the dispatch footprint and terminal event', () => {
@@ -236,12 +1498,17 @@ test('ACP_KMS_AUTO=0 opts out of the automatic event', () => {
   assert.deepEqual(eventTexts(r.cwd), [])
 })
 
-test('records timeout once and exits when the agent accepts SIGTERM', () => {
-  const r = run('task-timeout', { MOCK_HANG: '1' }, undefined, 1)
+test('records the opt-in hard ceiling once and exits after cancellation grace', () => {
+  const r = run('task-timeout', {
+    MOCK_HANG: '1',
+    ACP_HARD_TIMEOUT_SEC: '0.12',
+    ACP_CANCEL_GRACE_MS: '20',
+    ACP_PROCESS_KILL_GRACE_MS: '30',
+  }, undefined, 30)
   assert.equal(r.status, 1, `exit 1 expected; stderr:\n${r.stderr}`)
   const events = eventTexts(r.cwd)
   assert.equal(events.length, 1)
-  assert.match(events[0], /^terminal: timeout$/m)
+  assert.match(events[0], /^terminal: hard-timeout$/m)
   assert.match(events[0], /^timed_out: true$/m)
   assert.match(events[0], /^exit_code: 1$/m)
 })
@@ -262,4 +1529,652 @@ test('records an agent command that cannot be spawned', () => {
   assert.equal(events.length, 1)
   assert.match(events[0], /^terminal: spawn-error$/m)
   assert.match(events[0], /^exit_code: 1$/m)
+})
+
+for (const [taskId, extraEnv, expectedMode] of [
+  ['task-codex-mode-default', {}, 'agent-full-access'],
+  ['task-codex-mode-override', { INITIAL_AGENT_MODE: 'read-only' }, 'read-only'],
+]) {
+  test(`Codex ACP receives ${expectedMode} INITIAL_AGENT_MODE`, () => {
+    const r = runAs('codex', taskId, extraEnv)
+    assert.equal(r.status, 0, `exit 0 expected; stdout:\n${r.stdout}\nstderr:\n${r.stderr}`)
+    assert.equal(readFileSync(join(r.cwd, '.initial-agent-mode'), 'utf8').trim(), expectedMode)
+    assert.equal(receipt(r.cwd).value.initial_agent_mode, expectedMode)
+  })
+}
+
+test('Codex rejects an invalid INITIAL_AGENT_MODE before spawn or bookkeeping', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-invalid-mode-'))
+  const r = runAs('codex', 'task-invalid-codex-mode', { INITIAL_AGENT_MODE: 'interactive' }, cwd)
+  assert.equal(r.status, 2)
+  assert.match(r.stderr, /invalid INITIAL_AGENT_MODE/)
+  assert.equal(existsSync(join(cwd, '.initial-agent-mode')), false)
+  assert.equal(existsSync(join(cwd, '.tmux-teams')), false)
+})
+
+test('non-Codex ACP preserves an explicit INITIAL_AGENT_MODE unchanged', () => {
+  const r = runAs('mock', 'task-noncodex-mode', { INITIAL_AGENT_MODE: 'interactive' })
+  assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
+  assert.equal(readFileSync(join(r.cwd, '.initial-agent-mode'), 'utf8').trim(), 'interactive')
+})
+
+test('producer-derived v1 fixtures satisfy semantic invariants and separate lifecycle histories', async () => {
+  const toolFixture = fixture(LIVENESS_FIXTURE)
+  const startupFixture = fixture(STARTUP_FIXTURE)
+  const recoveryFixture = fixture(RECOVERY_FIXTURE)
+  assertV1Semantics(toolFixture, { expectedState: 'tool_running', expectCancellationUnavailable: false })
+  assertV1Semantics(startupFixture, { expectedState: 'failed', expectCancellationUnavailable: true })
+  assertV1Semantics(recoveryFixture, { expectedState: 'completed', expectCancellationUnavailable: false })
+  assert.ok(toolFixture.stall_history.every((event) => event.state !== 'cancellation_unavailable'))
+  assert.ok(startupFixture.stall_history.some((event) => event.state === 'cancellation_unavailable'))
+  assert.ok(recoveryFixture.stall_history.some((event) => event.state === 'recovered'))
+  assert.ok(recoveryFixture.stall_history.some((event) => event.state === 'stalled'))
+
+  const toolTask = 'fixture-tool-running'
+  const toolCwd = mkdtempSync(join(tmpdir(), 'acp-companion-fixture-tool-'))
+  const toolPending = asyncRun(toolTask, {
+    MOCK_SCENARIO: 'silent-tool',
+    MOCK_TOOL_DELAY_MS: '500',
+    ACP_LIVENESS_TICK_MS: '10',
+    ACP_AGENT_ID: toolFixture.agent_id,
+    ACP_EXPECT_MODEL: toolFixture.requested_model,
+    ACP_EXPECT_REASONING_EFFORT: toolFixture.requested_reasoning_effort,
+  }, toolCwd, 60, 'codex')
+  await waitForStage(join(toolCwd, 'stages.log'), 'tool-running')
+  const producedTool = snapshot(toolCwd, toolTask)
+  assertV1Semantics(producedTool, { expectedState: 'tool_running', expectCancellationUnavailable: false })
+  assert.deepEqual(normalizeFixtureSnapshot(producedTool), normalizeFixtureSnapshot(toolFixture))
+  await toolPending
+
+  const startup = runAs('codex', 'fixture-startup-stall', {
+    MOCK_SCENARIO: 'startup-stall',
+    MOCK_STALL_STAGE: 'initialize',
+    ACP_HARD_TIMEOUT_SEC: '0.09',
+    ACP_PROCESS_KILL_GRACE_MS: '40',
+    ACP_AGENT_ID: startupFixture.agent_id,
+    ACP_EXPECT_MODEL: startupFixture.requested_model,
+    ACP_EXPECT_REASONING_EFFORT: startupFixture.requested_reasoning_effort,
+  }, undefined, 60)
+  assert.equal(startup.status, 1, `startup fixture producer failed:\n${startup.stderr}`)
+  const producedStartup = snapshot(startup.cwd, 'fixture-startup-stall')
+  assertV1Semantics(producedStartup, { expectedState: 'failed', expectCancellationUnavailable: true })
+  assert.deepEqual(normalizeFixtureSnapshot(producedStartup), normalizeFixtureSnapshot(startupFixture))
+
+  const recoveryCwd = mkdtempSync(join(tmpdir(), 'acp-companion-fixture-recovery-'))
+  const recoveryInitializeRelease = join(recoveryCwd, 'release-initialize')
+  const recoveryRelease = join(recoveryCwd, 'release-recovery')
+  const recoveryPending = asyncRun('fixture-recovery', {
+    MOCK_SCENARIO: 'report-recover',
+    MOCK_GATE_STAGE: 'initialize',
+    MOCK_GATE_RELEASE_FILE: recoveryInitializeRelease,
+    MOCK_RECOVERY_GATE_FILE: recoveryRelease,
+    MOCK_GATE_WATCHDOG_MS: '15000',
+    ACP_LIVENESS_TICK_MS: '20',
+    ACP_STALL_POLICY: 'report',
+    ACP_AGENT_ID: recoveryFixture.agent_id,
+    ACP_EXPECT_MODEL: recoveryFixture.requested_model,
+    ACP_EXPECT_REASONING_EFFORT: recoveryFixture.requested_reasoning_effort,
+  }, recoveryCwd, 1.5, 'codex')
+  await waitForStage(join(recoveryCwd, 'stages.log'), 'suspected-stalled')
+  writeFileSync(recoveryInitializeRelease, 'release\n', { mode: 0o600 })
+  await waitForStage(join(recoveryCwd, 'stages.log'), 'stalled')
+  writeFileSync(recoveryRelease, 'release\n', { mode: 0o600 })
+  const recovery = await recoveryPending
+  assert.equal(recovery.status, 0, `recovery fixture producer failed:\n${recovery.stderr}`)
+  const producedRecovery = snapshot(recovery.cwd, 'fixture-recovery')
+  assertV1Semantics(producedRecovery, { expectedState: 'completed', expectCancellationUnavailable: false })
+  assert.ok(producedRecovery.stall_history.some((event) => event.state === 'recovered'))
+  assert.deepEqual(normalizeFixtureSnapshot(producedRecovery), normalizeFixtureSnapshot(recoveryFixture))
+})
+
+test('ACP_AGENT_ID is validated and reaches dispatch, liveness, and KMS without changing worker identity', () => {
+  const r = run('task-agent-id', { ACP_AGENT_ID: 'graph-worker-a' })
+  assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
+  const dispatch = readFileSync(join(r.cwd, '.tmux-teams', 'dispatch', 'task-agent-id.md'), 'utf8')
+  const event = eventTexts(r.cwd)[0]
+  assert.equal(field(dispatch, 'agent_id'), 'graph-worker-a')
+  assert.equal(field(event, 'agent_id'), 'graph-worker-a')
+  assert.equal(snapshot(r.cwd, 'task-agent-id').agent_id, 'graph-worker-a')
+  assert.equal(field(event, 'worker'), 'mock')
+  assert.equal(field(event, 'transport'), 'acp')
+})
+
+test('an invalid ACP_AGENT_ID fails closed before spawn or bookkeeping', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-invalid-agent-id-'))
+  const r = run('task-invalid-agent-id', { ACP_AGENT_ID: 'graph/worker' }, cwd)
+  assert.equal(r.status, 2)
+  assert.match(r.stderr, /invalid ACP_AGENT_ID/)
+  assert.equal(existsSync(join(cwd, '.tmux-teams', 'dispatch')), false)
+  assert.equal(existsSync(join(cwd, '.tmux-teams', 'liveness')), false)
+  assert.deepEqual(eventTexts(cwd), [])
+})
+
+test('persisted producer metadata is field-bounded, redacted, and remains under 64 KiB', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-bounded-fields-'))
+  const secret = 'sk-r3-persisted-secret-12345678901234567890'
+  const modelPath = '/tmp/provider-model'
+  const r = runAs(`provider-${'x'.repeat(180)}-${secret}`, 'task-bounded-fields', {
+    MOCK_SCENARIO: 'metadata-overflow',
+    MOCK_SESSION_ID: `session-${'x'.repeat(180)} token=${secret}`,
+    MOCK_MODEL: `model-${modelPath}-${'m'.repeat(220)} apiKey=${secret}`,
+    MOCK_REASONING_EFFORT: `reason-${'r'.repeat(160)} password=${secret}`,
+    MOCK_STDERR: `adapter error ${'e'.repeat(500)} password=${secret}`,
+    ACP_EXPECT_MODEL: `model-${modelPath}-${'m'.repeat(220)} apiKey=${secret}`,
+    ACP_EXPECT_REASONING_EFFORT: `reason-${'r'.repeat(160)} password=${secret}`,
+  }, cwd)
+  assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
+  const liveRaw = readFileSync(join(cwd, '.tmux-teams', 'liveness', 'task-bounded-fields.json'), 'utf8')
+  assert.ok(Buffer.byteLength(liveRaw, 'utf8') <= 64 * 1024)
+  const state = JSON.parse(liveRaw)
+  assert.ok(state.worker.length <= 64)
+  assert.ok(state.session_id.length <= 128)
+  assert.ok(state.requested_model.length <= 128)
+  assert.ok(state.requested_reasoning_effort.length <= 64)
+  assert.ok(state.termination_reason.length <= 64)
+  for (const tool of Object.values(state.tools)) assertToolRecord(tool, 'bounded tool')
+  const artifacts = persistedArtifacts(cwd, 'task-bounded-fields')
+  const sessionReceipt = receipt(cwd)
+  assert.ok(field(artifacts[1], 'worker').length <= 64)
+  assert.ok(field(artifacts[1], 'requested_model').length <= 128)
+  assert.ok(field(artifacts[1], 'requested_reasoning_effort').length <= 64)
+  assert.ok(field(artifacts[1], 'error').length <= 512)
+  assert.ok(field(artifacts[2], 'worker').length <= 64)
+  assert.ok(field(artifacts[2], 'session_id').length <= 128)
+  assert.ok(field(artifacts[2], 'error').length <= 512)
+  for (const artifact of artifacts) {
+    assert.ok(!artifact.includes(secret), 'secret must not reach liveness, dispatch, or KMS')
+    assert.ok(!artifact.includes('password='), 'password-shaped text must be redacted')
+    assert.ok(!artifact.includes('apiKey='), 'api-key-shaped text must be redacted')
+  }
+  assert.ok(sessionReceipt.value.requested_model.length <= 256)
+  assert.ok(sessionReceipt.value.requested_reasoning_effort.length <= 256)
+  assert.ok(sessionReceipt.value.effective_identity.length <= 256)
+  assert.ok(!sessionReceipt.raw.includes(secret))
+  assert.ok(!sessionReceipt.raw.includes('password='))
+  assert.ok(!sessionReceipt.raw.includes('apiKey='))
+  assert.ok(!sessionReceipt.raw.includes('token='))
+  assert.doesNotMatch(sessionReceipt.raw, /(?:\/home|\/tmp)\//)
+})
+
+test('invalid ACP tool status fails closed instead of being persisted or counted as progress', () => {
+  const r = run('task-invalid-tool-status', { MOCK_SCENARIO: 'invalid-tool-status' })
+  assert.equal(r.status, 1, `exit 1 expected; stderr:\n${r.stderr}`)
+  const state = snapshot(r.cwd, 'task-invalid-tool-status')
+  assertV1Semantics(state, { expectedState: 'failed', expectCancellationUnavailable: false })
+  assert.equal(state.meaningful_progress_count, 3, 'invalid tool status must not add progress beyond initialize/new/prompt response')
+  assert.equal(Object.values(state.tools).some((tool) => tool.status === 'totally-invalid'), false)
+  assert.ok(Object.values(state.tools).every((tool) => TOOL_STATUSES.has(tool.status)))
+  assert.ok(!persistedArtifacts(r.cwd, 'task-invalid-tool-status').join('\n').includes('totally-invalid'))
+  assert.match(eventTexts(r.cwd)[0], /^terminal: protocol-error$/m)
+})
+
+for (const [stage, resume] of [['initialize', ''], ['new', ''], ['load', 'sess_prev']]) {
+  test(`${stage} startup request can become suspected then confirmed stalled without a hard ceiling`, () => {
+    const taskId = `task-startup-stall-${stage}`
+    const r = run(taskId, {
+      MOCK_SCENARIO: 'startup-stall',
+      MOCK_STALL_STAGE: stage,
+      ACP_RESUME: resume,
+      ACP_CANCEL_GRACE_MS: '20',
+      ACP_PROCESS_KILL_GRACE_MS: '30',
+    }, undefined, 0.045)
+    assert.equal(r.status, 1, `exit 1 expected; stdout:\n${r.stdout}\nstderr:\n${r.stderr}`)
+    const state = snapshot(r.cwd, taskId)
+    assert.equal(state.hard_timeout_sec, 0)
+    assert.equal(state.liveness_state, 'stalled')
+    assert.equal(state.termination_reason, 'stall_confirmed')
+    assert.equal(state.consecutive_missed_leases, 2)
+    assert.ok(state.stall_history.some((entry) => entry.state === 'suspected_stalled'))
+    assert.match(r.stderr, /\[liveness\] awaiting_agent/)
+    assert.match(r.stderr, /\[liveness\] suspected_stalled/)
+    assert.match(eventTexts(r.cwd)[0], /^terminal: stalled$/m)
+  })
+}
+
+test('report-only confirms, recovers, and completes without ACP cancellation', async () => {
+  const taskId = 'task-report-recover'
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-report-recover-'))
+  const release = join(cwd, 'release-recovery')
+  const pending = asyncRun(taskId, {
+    MOCK_SCENARIO: 'report-recover',
+    MOCK_RECOVERY_GATE_FILE: release,
+    MOCK_GATE_WATCHDOG_MS: '15000',
+    MOCK_SPAWN_DESCENDANT: '1',
+    ACP_STALL_POLICY: 'report',
+    ACP_PROCESS_KILL_GRACE_MS: '100',
+  }, cwd, 0.5)
+  await waitForStage(join(cwd, 'stages.log'), 'stalled')
+  writeFileSync(release, 'release\n', { mode: 0o600 })
+  const r = await pending
+  assert.equal(r.status, 0, `exit 0 expected; stdout:\n${r.stdout}\nstderr:\n${r.stderr}`)
+  assert.doesNotMatch(r.stderr, /session\/cancel/)
+  assert.equal(existsSync(join(r.cwd, '.cancel-seen')), false)
+  const state = snapshot(r.cwd, taskId)
+  assert.equal(state.liveness_state, 'completed')
+  assert.equal(state.termination_reason, 'none')
+  assert.ok(state.stall_history.some((entry) => entry.state === 'suspected_stalled'))
+  assert.ok(state.stall_history.some((entry) => entry.state === 'stalled'))
+  assert.ok(state.stall_history.some((entry) => entry.state === 'recovered'))
+  await assertPidGone(descendantPid(r.cwd), 'report-only completion')
+})
+
+test('an in-progress ACP tool spans multiple inactivity leases without hard-timeout cancellation', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-long-tool-'))
+  const r = run('task-long-in-progress-tool', {
+    MOCK_SCENARIO: 'silent-tool',
+    MOCK_TOOL_DELAY_MS: '1200',
+    ACP_HARD_TIMEOUT_SEC: '0',
+    ACP_LIVENESS_TICK_MS: '10',
+    ACP_CANCEL_GRACE_MS: '20',
+    ACP_PROCESS_KILL_GRACE_MS: '50',
+  }, cwd, 0.5)
+  assert.equal(r.status, 0, `exit 0 expected; stdout:\n${r.stdout}\nstderr:\n${r.stderr}`)
+  assert.doesNotMatch(r.stderr, /session\/cancel|signal SIGTERM|signal SIGKILL/)
+  assert.equal(existsSync(join(cwd, '.cancel-seen')), false)
+  const state = snapshot(cwd, 'task-long-in-progress-tool')
+  assert.equal(state.hard_timeout_sec, 0)
+  assert.equal(state.liveness_state, 'completed')
+  assert.equal(state.tools.t1.status, 'completed')
+  assert.equal(state.tools.t1.update_count, 2)
+})
+
+for (const [scenario, expectedState] of [
+  ['cancel-ack', 'cancelled'],
+  ['cancel-no-ack', 'stalled'],
+  ['exit-during-cancel', 'cancelled'],
+]) {
+  test(`${scenario} closes stdin and reaps the detached process group`, async () => {
+    const taskId = `task-${scenario}`
+    const r = run(taskId, {
+      MOCK_SCENARIO: scenario,
+      MOCK_CANCEL_RESPOND: scenario === 'cancel-ack' ? '1' : '0',
+      MOCK_SPAWN_DESCENDANT: '1',
+      ACP_CANCEL_GRACE_MS: '35',
+      ACP_PROCESS_KILL_GRACE_MS: '100',
+    }, undefined, 0.5)
+    assert.equal(r.status, 1, `exit 1 expected; stdout:\n${r.stdout}\nstderr:\n${r.stderr}`)
+    assert.equal(existsSync(join(r.cwd, '.cancel-seen')), true)
+    const state = snapshot(r.cwd, taskId)
+    assert.equal(state.liveness_state, expectedState)
+    assert.deepEqual(state.active_tools, [], `${scenario} terminal snapshot must clear active tools`)
+    const event = eventTexts(r.cwd)[0]
+    if (expectedState === 'cancelled') {
+      assert.match(event, /^child_settlement_signal_delivered: false$/m)
+      assert.match(event, /^descendant_cleanup_signal_delivered: true$/m)
+    } else {
+      assert.match(event, /^child_settlement_signal_delivered: true$/m)
+      assert.match(event, /^descendant_cleanup_signal_delivered: false$/m)
+    }
+    await assertPidGone(descendantPid(r.cwd), scenario)
+  })
+}
+
+test('clean child exit 0 before cancellation grace is cancelled, not forced', () => {
+  const taskId = 'task-cancel-clean-exit'
+  const r = run(taskId, {
+    MOCK_SCENARIO: 'cancel-clean-exit',
+    MOCK_EXIT_DELAY_MS: '5',
+    ACP_CANCEL_GRACE_MS: '80',
+    ACP_PROCESS_KILL_GRACE_MS: '100',
+  }, undefined, 0.5)
+  assert.equal(r.status, 1, `exit 1 expected; stderr:\n${r.stderr}`)
+  const state = snapshot(r.cwd, taskId)
+  assert.equal(state.liveness_state, 'cancelled')
+  assert.deepEqual(state.active_tools, [])
+  const event = eventTexts(r.cwd)[0]
+  assert.match(event, /^terminal: cancelled$/m)
+  assert.match(event, /^child_exit_code: 0$/m)
+  assert.match(event, /^child_signal: none$/m)
+  assert.match(event, /^termination_delivered: false$/m)
+  assert.match(event, /^child_settlement_signal_delivered: false$/m)
+  assert.match(event, /^descendant_cleanup_signal_delivered: false$/m)
+  assert.match(event, /^forced_reap_delivered: false$/m)
+})
+
+test('nonzero child exit before cancellation grace is failed and preserves its code', () => {
+  const taskId = 'task-cancel-exit-seven'
+  const r = run(taskId, {
+    MOCK_SCENARIO: 'cancel-exit-7',
+    MOCK_EXIT_DELAY_MS: '5',
+    ACP_CANCEL_GRACE_MS: '80',
+    ACP_PROCESS_KILL_GRACE_MS: '100',
+  }, undefined, 0.5)
+  assert.equal(r.status, 1, `exit 1 expected; stderr:\n${r.stderr}`)
+  const state = snapshot(r.cwd, taskId)
+  assert.equal(state.liveness_state, 'failed')
+  assert.equal(state.termination_reason, 'agent_exit')
+  assert.deepEqual(state.active_tools, [])
+  const event = eventTexts(r.cwd)[0]
+  assert.match(event, /^terminal: agent-exit$/m)
+  assert.match(event, /^exit_code: 7$/m)
+  assert.match(event, /^child_exit_code: 7$/m)
+  assert.match(event, /^child_signal: none$/m)
+  assert.match(event, /^termination_delivered: false$/m)
+  assert.match(event, /^child_settlement_signal_delivered: false$/m)
+  assert.match(event, /^descendant_cleanup_signal_delivered: false$/m)
+})
+
+test('default SIGTERM termination is stalled and records delivered forced provenance', () => {
+  const taskId = 'task-cancel-sigterm'
+  const r = run(taskId, {
+    MOCK_SCENARIO: 'cancel-no-ack',
+    ACP_CANCEL_GRACE_MS: '20',
+    ACP_PROCESS_KILL_GRACE_MS: '100',
+  }, undefined, 0.5)
+  assert.equal(r.status, 1, `exit 1 expected; stderr:\n${r.stderr}`)
+  const state = snapshot(r.cwd, taskId)
+  assert.equal(state.liveness_state, 'stalled')
+  assert.deepEqual(state.active_tools, [])
+  const event = eventTexts(r.cwd)[0]
+  assert.match(event, /^terminal: stalled$/m)
+  assert.match(event, /^child_exit_code: none$/m)
+  assert.match(event, /^child_signal: SIGTERM$/m)
+  assert.match(event, /^termination_delivered: true$/m)
+  assert.match(event, /^child_settlement_signal_delivered: true$/m)
+  assert.match(event, /^descendant_cleanup_signal_delivered: false$/m)
+})
+
+test('SIGTERM handler exit 0 remains stalled because the companion delivered the signal', () => {
+  const taskId = 'task-cancel-sigterm-exit-zero'
+  const r = run(taskId, {
+    MOCK_SCENARIO: 'cancel-sigterm-exit-zero',
+    ACP_CANCEL_GRACE_MS: '20',
+    ACP_PROCESS_KILL_GRACE_MS: '100',
+  }, undefined, 0.5)
+  assert.equal(r.status, 1, `exit 1 expected; stderr:\n${r.stderr}`)
+  const state = snapshot(r.cwd, taskId)
+  assert.equal(state.liveness_state, 'stalled')
+  assert.deepEqual(state.active_tools, [])
+  const event = eventTexts(r.cwd)[0]
+  assert.match(event, /^terminal: stalled$/m)
+  assert.match(event, /^child_exit_code: 0$/m)
+  assert.match(event, /^child_signal: none$/m)
+  assert.match(event, /^termination_delivered: true$/m)
+  assert.match(event, /^child_settlement_signal_delivered: true$/m)
+  assert.match(event, /^descendant_cleanup_signal_delivered: false$/m)
+})
+
+test('child-exit race follows observed code when signal delivery loses the race', () => {
+  const taskId = 'task-cancel-race-exit-seven'
+  const r = run(taskId, {
+    MOCK_SCENARIO: 'cancel-race-exit-7',
+    MOCK_EXIT_DELAY_MS: '0',
+    MOCK_RACE_HOLDER_MS: '700',
+    ACP_CANCEL_GRACE_MS: '500',
+    ACP_PROCESS_KILL_GRACE_MS: '100',
+  }, undefined, 0.5)
+  assert.equal(r.status, 1, `exit 1 expected; stderr:\n${r.stderr}`)
+  const state = snapshot(r.cwd, taskId)
+  assert.equal(state.liveness_state, 'failed')
+  assert.equal(state.termination_reason, 'agent_exit')
+  const event = eventTexts(r.cwd)[0]
+  assert.match(event, /^child_exit_code: 7$/m)
+  assert.match(event, /^termination_delivered: false$/m)
+  assert.match(event, /^child_settlement_signal_delivered: false$/m)
+  assert.match(event, /^descendant_cleanup_signal_delivered: true$/m)
+})
+
+test('captured settlement facts cannot be rewritten by later mutable bookkeeping', () => {
+  const taskId = 'task-captured-settlement'
+  const r = run(taskId, {
+    MOCK_SCENARIO: 'cancel-clean-exit',
+    MOCK_EXIT_DELAY_MS: '5',
+    ACP_CANCEL_GRACE_MS: '80',
+    ACP_PROCESS_KILL_GRACE_MS: '100',
+    ACP_TEST_MUTATE_SETTLEMENT_AFTER_CAPTURE: '1',
+  }, undefined, 0.5)
+  assert.equal(r.status, 1, `exit 1 expected; stderr:\n${r.stderr}`)
+  const state = snapshot(r.cwd, taskId)
+  assert.equal(state.liveness_state, 'cancelled')
+  const event = eventTexts(r.cwd)[0]
+  assert.match(event, /^cancel_ack: false$/m)
+  assert.match(event, /^child_exit_code: 0$/m)
+  assert.match(event, /^child_settlement_signal_delivered: false$/m)
+  assert.match(event, /^descendant_cleanup_signal_delivered: false$/m)
+  assert.match(event, /^termination_delivered: false$/m)
+  assert.match(event, /^kill_delivered: false$/m)
+  assert.match(event, /^forced_reap_delivered: false$/m)
+})
+
+test('hard timeout remains failed even when cancellation ACK is received', () => {
+  const taskId = 'task-hard-timeout-ack'
+  const r = run(taskId, {
+    MOCK_SCENARIO: 'cancel-no-ack',
+    MOCK_CANCEL_RESPOND: '1',
+    ACP_HARD_TIMEOUT_SEC: '0.8',
+    ACP_CANCEL_GRACE_MS: '20',
+    ACP_PROCESS_KILL_GRACE_MS: '50',
+  }, undefined, 2)
+  assert.equal(r.status, 1, `exit 1 expected; stderr:\n${r.stderr}`)
+  const state = snapshot(r.cwd, taskId)
+  assert.equal(state.liveness_state, 'failed')
+  assert.equal(state.termination_reason, 'hard_timeout')
+  assert.deepEqual(state.active_tools, [])
+  const event = eventTexts(r.cwd)[0]
+  assert.match(event, /^terminal: hard-timeout$/m)
+  assert.match(event, /^cancel_ack: true$/m)
+  assert.match(event, /^timed_out: true$/m)
+})
+
+test('irreducible terminal v1 snapshot may exceed artificial 1070-byte target but never production cap', () => {
+  const taskId = `t${'x'.repeat(63)}`
+  const r = run(taskId, {
+    ACP_TEST_SNAPSHOT_BUDGET_BYTES: '1070',
+  })
+  assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
+  const raw = readFileSync(join(r.cwd, '.tmux-teams', 'liveness', `${taskId}.json`), 'utf8')
+  const state = JSON.parse(raw)
+  assert.equal(state.task_id, taskId)
+  assert.equal(state.liveness_state, 'completed')
+  assert.deepEqual(state.active_tools, [])
+  const bytes = Buffer.byteLength(raw, 'utf8')
+  assert.ok(bytes > 1070, `the valid max-length task envelope should exercise the irreducible path (${bytes})`)
+  assert.ok(bytes <= 64 * 1024)
+  assert.match(readFileSync(join(r.cwd, '.tmux-teams', 'dispatch', `${taskId}.md`), 'utf8'), /^liveness_state: completed$/m)
+})
+
+for (const failureStage of ['write', 'readback']) {
+  test(`terminal ${failureStage} persistence failure fails closed with explicit evidence`, () => {
+    const taskId = `task-persist-${failureStage}`
+    const r = run(taskId, { ACP_TEST_TERMINAL_PERSISTENCE_FAILURE: failureStage })
+    assert.notEqual(r.status, 0, `persistence failure must not exit 0; stderr:\n${r.stderr}`)
+    const state = snapshot(r.cwd, taskId)
+    assert.equal(state.liveness_state, 'failed')
+    assert.equal(state.termination_reason, 'liveness_persistence_failed')
+    assert.deepEqual(state.active_tools, [])
+    const dispatch = readFileSync(join(r.cwd, '.tmux-teams', 'dispatch', `${taskId}.md`), 'utf8')
+    const event = eventTexts(r.cwd)[0]
+    assert.match(dispatch, /^liveness_state: failed$/m)
+    assert.match(dispatch, /^termination_reason: liveness_persistence_failed$/m)
+    assert.match(dispatch, /^liveness_persistence_failed: true$/m)
+    assert.match(event, /^terminal: liveness-persistence-failed$/m)
+    assert.match(event, /^termination_reason: liveness_persistence_failed$/m)
+    assert.match(event, /^liveness_persistence_failed: true$/m)
+  })
+}
+
+test('cancellation ordering is ACP session/cancel, grace, then process-group signal', () => {
+  const r = run('task-cancel-order', {
+    MOCK_SCENARIO: 'cancel-no-ack',
+    ACP_CANCEL_GRACE_MS: '35',
+    ACP_PROCESS_KILL_GRACE_MS: '100',
+  }, undefined, 1)
+  assert.equal(r.status, 1, `exit 1 expected; stderr:\n${r.stderr}`)
+  const cancelIndex = r.stderr.indexOf('[cancel] session/cancel')
+  const graceIndex = r.stderr.indexOf('[cancel] grace')
+  const signalIndex = r.stderr.indexOf('[cancel] signal SIGTERM')
+  assert.ok(cancelIndex >= 0 && graceIndex > cancelIndex && signalIndex > graceIndex, r.stderr)
+})
+
+test('an explicit hard ceiling is cancel-first when a session exists', () => {
+  const r = run('task-hard-ceiling-cancel-first', {
+    MOCK_SCENARIO: 'silent-tool',
+    MOCK_TOOL_DELAY_MS: '1000',
+    ACP_HARD_TIMEOUT_SEC: '0.12',
+    ACP_CANCEL_GRACE_MS: '35',
+    ACP_PROCESS_KILL_GRACE_MS: '40',
+  }, undefined, 2)
+  assert.equal(r.status, 1, `exit 1 expected; stderr:\n${r.stderr}`)
+  const state = snapshot(r.cwd, 'task-hard-ceiling-cancel-first')
+  assert.equal(state.liveness_state, 'failed')
+  assert.equal(state.termination_reason, 'hard_timeout')
+  assert.deepEqual(state.active_tools, [])
+  assert.match(eventTexts(r.cwd)[0], /^terminal: hard-timeout$/m)
+  assert.ok(r.stderr.indexOf('[cancel] session/cancel') < r.stderr.indexOf('[cancel] signal SIGTERM'))
+})
+
+test('a startup hard ceiling records ACP cancellation unavailable before signaling', () => {
+  const r = run('task-hard-startup', {
+    MOCK_SCENARIO: 'startup-stall',
+    MOCK_STALL_STAGE: 'initialize',
+    ACP_HARD_TIMEOUT_SEC: '0.09',
+    ACP_PROCESS_KILL_GRACE_MS: '40',
+  }, undefined, 2)
+  assert.equal(r.status, 1, `exit 1 expected; stderr:\n${r.stderr}`)
+  const state = snapshot(r.cwd, 'task-hard-startup')
+  assert.equal(state.liveness_state, 'failed')
+  assert.equal(state.termination_reason, 'hard_timeout')
+  assert.deepEqual(state.active_tools, [])
+  assert.equal(state.cancellation_unavailable, true)
+  assert.ok(r.stderr.indexOf('session/cancel unavailable') >= 0)
+  assert.ok(r.stderr.indexOf('session/cancel unavailable') < r.stderr.indexOf('[cancel] signal SIGTERM'))
+  assert.match(eventTexts(r.cwd)[0], /^terminal: hard-timeout$/m)
+})
+
+test('duplicate, session-mismatched, and noise updates do not renew the lease', () => {
+  const r = run('task-noop-noise', {
+    MOCK_SCENARIO: 'duplicates-noise',
+    MOCK_DUPLICATE_DELAY_MS: '22',
+    ACP_CANCEL_GRACE_MS: '20',
+    ACP_PROCESS_KILL_GRACE_MS: '100',
+  }, undefined, 0.2)
+  assert.equal(r.status, 1, `exit 1 expected; stderr:\n${r.stderr}`)
+  const state = snapshot(r.cwd, 'task-noop-noise')
+  assert.equal(state.liveness_state, 'stalled')
+  assert.deepEqual(state.active_tools, [])
+  assert.equal(state.meaningful_progress_count, 5, 'initialize/new responses plus one message, one tool lifecycle change, and the turn response count as progress')
+  assert.equal(state.tools['duplicate-tool'].update_count, 1)
+  assert.ok(state.last_protocol_activity_at)
+  assert.match(eventTexts(r.cwd)[0], /^termination_reason: stall_confirmed$/m)
+})
+
+test('long streams keep liveness state bounded and redact tool/output secrets', async () => {
+  const r = run('task-long-stream', {
+    MOCK_SCENARIO: 'long-stream',
+    MOCK_LONG_STREAM_COUNT: '500',
+    MOCK_SPAWN_DESCENDANT: '1',
+    ACP_LIVENESS_TICK_MS: '5',
+    ACP_LIVENESS_WRITE_INTERVAL_MS: '20',
+  }, undefined, 1)
+  assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
+  const raw = readFileSync(join(r.cwd, '.tmux-teams', 'liveness', 'task-long-stream.json'), 'utf8')
+  const state = JSON.parse(raw)
+  assertV1Semantics(state, { expectedState: 'completed', expectCancellationUnavailable: false })
+  assert.ok(Buffer.byteLength(raw, 'utf8') <= 64 * 1024, `liveness snapshot grew to ${Buffer.byteLength(raw, 'utf8')} bytes`)
+  assert.ok(!raw.includes('sk-test-secret-12345678901234567890'))
+  assert.ok(!raw.includes('SUPER_SECRET_VALUE'))
+  assert.ok(Object.keys(state.tools).length <= 64)
+  assert.ok(state.stall_history.length <= 32)
+  assert.ok(state.active_tools.length <= 8)
+  await assertPidGone(descendantPid(r.cwd), 'long-stream completion')
+})
+
+test('Unicode-heavy terminal snapshots compact under the UTF-8 cap and never retain raw tool data', async () => {
+  const taskId = 'task-unicode-large-tools'
+  const r = run(taskId, {
+    MOCK_SCENARIO: 'unicode-large-tools',
+    MOCK_UNICODE_TOOL_COUNT: '96',
+    MOCK_SPAWN_DESCENDANT: '1',
+    ACP_LIVENESS_TICK_MS: '5',
+    ACP_LIVENESS_WRITE_INTERVAL_MS: '5',
+  }, undefined, 1)
+  assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
+  const livePath = join(r.cwd, '.tmux-teams', 'liveness', `${taskId}.json`)
+  const raw = readFileSync(livePath, 'utf8')
+  const state = JSON.parse(raw)
+  assert.equal(state.liveness_state, 'completed')
+  assertV1Semantics(state, { expectedState: 'completed', expectCancellationUnavailable: false })
+  assert.ok(Buffer.byteLength(raw, 'utf8') <= 64 * 1024)
+  assert.deepEqual(state.active_tools, [])
+  assert.ok(Object.values(state.tools).some((tool) => tool.status === 'in_progress'), 'terminal tools retain last ACP-reported status')
+  assert.ok(Object.keys(state.tools).length < 64, 'Unicode stress must exercise deterministic tool compaction')
+  assert.ok(Object.keys(state.tools).length <= 64)
+  assert.ok(state.active_tools.length <= 8)
+  assert.ok(state.active_tools.every((tool) => state.tools[tool.tool_call_id]))
+  assert.ok(!raw.includes('sk-unicode-secret-12345678901234567890'))
+  assert.ok(!raw.includes('password='))
+  assert.ok(!raw.includes('apiKey='))
+  assert.ok(!raw.includes('内容'))
+  assert.ok(!raw.includes('出力'))
+  assert.ok(!raw.includes('場所'))
+  const artifacts = persistedArtifacts(r.cwd, taskId)
+  assert.match(artifacts[1], /^active_tools: \[\]$/m, 'terminal dispatch current-active field must be empty')
+  assert.match(artifacts[2], /^active_tools: \[\]$/m, 'terminal KMS current-active field must be empty')
+  const livenessDir = join(r.cwd, '.tmux-teams', 'liveness')
+  assert.deepEqual(readdirSync(livenessDir).filter((name) => name.endsWith('.tmp')), [])
+  await assertPidGone(descendantPid(r.cwd), 'Unicode-heavy completion')
+})
+
+test('minimal terminal fallback preserves v1 shape and clears current active tools', async () => {
+  const taskId = 'task-minimal-terminal-fallback'
+  const r = run(taskId, {
+    MOCK_SCENARIO: 'unicode-large-tools',
+    MOCK_UNICODE_TOOL_COUNT: '65',
+    MOCK_MODEL: 'gpt-5.6-luna',
+    MOCK_REASONING_EFFORT: 'ultra',
+    ACP_EXPECT_MODEL: 'gpt-5.6-luna',
+    ACP_EXPECT_REASONING_EFFORT: 'ultra',
+    ACP_TEST_SNAPSHOT_BUDGET_BYTES: '1070',
+    ACP_LIVENESS_TICK_MS: '5',
+    ACP_LIVENESS_WRITE_INTERVAL_MS: '5',
+  }, undefined, 1)
+  assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
+  assert.match(r.stderr, /minimal bounded snapshot fallback/)
+  const livePath = join(r.cwd, '.tmux-teams', 'liveness', `${taskId}.json`)
+  const raw = readFileSync(livePath, 'utf8')
+  const state = JSON.parse(raw)
+  assertV1Semantics(state, { expectedState: 'completed', expectCancellationUnavailable: false })
+  assert.deepEqual(state.active_tools, [])
+  assert.equal(state.requested_model, null, 'minimal fallback may omit optional identity metadata')
+  assert.equal(state.effective_identity, null)
+  assert.equal(state.identity_status, 'unverified')
+  assert.ok(Buffer.byteLength(raw, 'utf8') <= 64 * 1024)
+  assert.deepEqual(readdirSync(join(r.cwd, '.tmux-teams', 'liveness')).filter((name) => name.endsWith('.tmp')), [])
+  await assertPidGone(descendantPid(r.cwd), 'minimal fallback completion')
+})
+
+test('concurrent readers never observe partial liveness or dispatch JSON/text', async () => {
+  const taskId = 'task-atomic-readers'
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-atomic-'))
+  const pending = asyncRun(taskId, {
+    MOCK_SCENARIO: 'long-stream',
+    MOCK_LONG_STREAM_COUNT: '240',
+    MOCK_LONG_STREAM_DELAY_MS: '2',
+    ACP_LIVENESS_WRITE_INTERVAL_MS: '5',
+  }, cwd, 1)
+  const failures = []
+  const deadline = Date.now() + 1200
+  while (Date.now() < deadline) {
+    const live = join(cwd, '.tmux-teams', 'liveness', `${taskId}.json`)
+    const dispatch = join(cwd, '.tmux-teams', 'dispatch', `${taskId}.md`)
+    if (existsSync(live)) {
+      try { JSON.parse(readFileSync(live, 'utf8')) } catch (error) { failures.push(`liveness: ${error.message}`) }
+    }
+    if (existsSync(dispatch)) {
+      const text = readFileSync(dispatch, 'utf8')
+      if (!/^task_id: task-atomic-readers$/m.test(text)) failures.push('dispatch: missing complete task_id')
+      if (!text.endsWith('\n')) failures.push('dispatch: missing final newline')
+    }
+    for (const directory of [join(cwd, '.tmux-teams', 'receipts'), join(cwd, '.tmux-teams', 'receipt-commits')]) {
+      if (!existsSync(directory)) continue
+      for (const name of readdirSync(directory).filter((entry) => entry.endsWith('.json'))) {
+        try { JSON.parse(readFileSync(join(directory, name), 'utf8')) } catch (error) { failures.push(`${directory}: ${error.message}`) }
+      }
+    }
+    if ((await Promise.race([pending.then(() => true), sleep(2).then(() => false)]))) break
+  }
+  const result = await pending
+  assert.equal(result.status, 0, `exit 0 expected; stderr:\n${result.stderr}`)
+  assert.deepEqual(failures, [])
+  JSON.parse(readFileSync(join(cwd, '.tmux-teams', 'liveness', `${taskId}.json`), 'utf8'))
 })

@@ -108,6 +108,7 @@ The closed contracts are:
 - [exported evidence pack v1](references/delivery-loop-evidence-pack-v1.schema.json)
 - [Pulse data v4](references/pulse-v4.schema.json)
 - [Pulse data v3 compatibility contract](references/pulse-v3.schema.json)
+- [ACP session operation receipt v1](references/acp-session-receipt-v1.schema.json)
 - [Thai-first Stage 1 pilot runbook](references/stage-1-pilot-runbook.md)
 
 Local events and packs remain `advisory_same_uid`; the exported index remains
@@ -461,7 +462,7 @@ transport-independent. Two transports carry it:
 | transport | for | mechanism |
 |---|---|---|
 | `tmux` | any TUI without ACP; codex/agy fallback | deliver.sh + markers (§1-§6) |
-| `acp` | codex (`@agentclientprotocol/codex-acp`, frontier-verified); claude (`@agentclientprotocol/claude-agent-acp`, official adapter — e2e-verified 2026-07-21, Task subagents work, effort via `MAX_THINKING_TOKENS`); agy (`antigravity-acp@1.0.0`, community adapter — audited + e2e-verified 2026-07-21, bun required, see ToS note) | `scripts/acp-companion.mjs` — JSON-RPC over stdio |
+| `acp` | codex (`@agentclientprotocol/codex-acp@1.1.7`, frontier-verified); claude (`@agentclientprotocol/claude-agent-acp`, official adapter — e2e-verified 2026-07-21, Task subagents work, effort via `MAX_THINKING_TOKENS`); agy (`antigravity-acp@1.0.0`, community adapter — audited + e2e-verified 2026-07-21, bun required, see ToS note) | `scripts/acp-companion.mjs` — JSON-RPC over stdio |
 
 The Gemini lane has been removed. The companion normalizes and rejects that
 retired public agent name before considering `ACP_CMD`; a custom command cannot
@@ -491,14 +492,69 @@ ANTHROPIC_MODEL=k3 \
 
 The brief file carries the SAME §6 contract text; the worker writes the same
 `.mailbox-out/<id>` outbox; the companion enforces the same last-line terminal
-match and exits 0=done/blocked/failed, 3=no-or-invalid outbox. Hardening
-(2026-07-20): the companion prepends a deterministic task-id/outbox/marker
-preamble to every prompt (placeholder-safe briefs), tolerates an outbox
-mistakenly written as a directory holding a single file, and on timeout kills
-the worker's whole process group (no orphaned builds). What ACP
-removes: Enter-swallow retries, marker calibration, dialog keypress guessing —
-permissions arrive as structured requests (companion auto-approves; tighten
-per-task when the target repo is sensitive).
+match and exits 0=done/blocked/failed, 3=no-or-invalid outbox. The optional
+positional duration is an inactivity/stall lease, never a total task timeout.
+There is no wall-clock ceiling by default; set `ACP_HARD_TIMEOUT_SEC>0` only
+when an explicit ceiling is required. A first missed meaningful-progress lease
+is `suspected_stalled`; a second consecutive miss confirms `stalled`. Confirmed
+stalls and hard ceilings use one cancel-first coordinator (`session/cancel`,
+bounded grace/ACK observation, then TERM/KILL only if still unsettled). The
+`ACP_STALL_POLICY=report` mode remains observable and can recover without
+cancelling the ACP child. Snapshots use the exact `acp-liveness.v1` contract;
+the public projection is bounded to `tools` 64, `active_tools` 8,
+`stall_history` 32, and 64 KiB of UTF-8 JSON, with active tools selected first
+and deterministic compaction/fallback for terminal writes. Tool records are
+bounded metadata/digests and common secret shapes are redacted. Every terminal
+path treats terminal `liveness_state` as authoritative and persists
+`active_tools: []`; `tools` may retain bounded last-reported ACP evidence. Every
+successful terminal return requires an atomic liveness write/readback that
+agrees with the dispatch state; failure is nonzero with
+`liveness_persistence_failed` evidence. Mechanical terminal evidence keeps
+cancel ACK, attempted/delivered TERM/KILL, child exit code/signal, child-settlement
+signal delivery, and descendant-only cleanup delivery separate. A clean child
+exit 0 remains `cancelled` when only descendant cleanup was signalled; descendant
+cleanup never reclassifies a clean child settlement as `stalled`/forced. Every
+terminal path closes and reaps the complete detached process group. `ACP_AGENT_ID`,
+when supplied, is validated and preserved as the stable
+Pulse identity; Codex children default to `INITIAL_AGENT_MODE=agent-full-access`
+unless the caller explicitly overrides it with `read-only`, `agent`, or
+`agent-full-access`; invalid Codex modes fail before spawn. ACP v1 tool records
+accept only `pending`, `in_progress`, `completed`, or `failed`, and persist
+bounded metadata/digests rather than content. What ACP removes: Enter-swallow
+retries, marker calibration, dialog keypress guessing — permissions arrive as
+structured requests (companion auto-approves; tighten per-task when the target
+repo is sensitive).
+
+Every dispatch also commits one immutable, bounded
+`.tmux-teams/receipts/<dispatch_id>.json` operation receipt under the closed
+`references/acp-session-receipt-v1.schema.json` contract. It is published with
+same-directory exclusive creation, file and directory fsync, no-replace
+publication, and readback before `recordPrompt`, `markPromptStarted`, or the
+first `session/prompt` byte. Its immutable
+`.tmux-teams/receipt-commits/<dispatch_id>.json` envelope is separate from the
+receipt; a pair is trusted only after a fresh joint durability/readback proof
+and exact digest match. A successful `session/load` receipt proves the exact
+correlated JSON-RPC response to the requested session; ACP does not return a
+load `sessionId`, so the companion never manufactures one from a response
+field. `initialize_agent_info` is the adapter identity observed in initialize,
+and the receipt binds the effective verified `INITIAL_AGENT_MODE` and raw-byte
+execution-profile digests. `ACP_SESSION_RECEIPT_REQUIRED=1` requires explicit
+`new|load` intent and, for load, a validated prior dispatch and receipt digest.
+Failed or interrupted loads write null-operation tombstones and cannot
+cold-start or deliver a prompt. Required-mode receipt, profile, or correlation
+failure exits nonzero before prompt delivery. Receipts contain only bounded
+digests and identity/profile metadata, never prompts, outboxes, tool payloads,
+PIDs, or absolute paths; the receipt digest is joined into dispatch, phase-gate,
+KMS, and terminal evidence by `dispatch_id`. In optional/default mode a
+persistence failure is explicitly warned and carries `receipt_digest: none`;
+required mode always fails closed instead of continuing without the receipt.
+Required Codex dispatches resolve the locally pinned
+`@agentclientprotocol/codex-acp@1.1.7` package, verify package metadata and
+entry bytes, bind the profile to the real Node and `CODEX_PATH` executable
+bytes/version, and spawn that verified Node/entry pair. PATH shadowing, fake
+version output, cache/profile drift, or an unsafe receipt directory fails before
+spawn; a null-operation failure tombstone is published when the receipt root
+remains writable.
 
 **Terminal KMS facts are automatic.** On every terminal path the companion
 best-effort appends an immutable `event_kind: transport-terminal` event with the
@@ -528,7 +584,7 @@ stored per task-id under `.tmux-teams/sessions/`, so re-dispatching the same id
 resumes automatically.
 
 **codex over ACP is UNLOCKED** via the official App Server adapter
-`@agentclientprotocol/codex-acp` (successor to the deprecated
+`@agentclientprotocol/codex-acp@1.1.7` (successor to the deprecated
 `zed-industries/codex-acp`): it drives the INSTALLED codex CLI, so
 `gpt-5.6-sol` + `ultra` work exactly as the Frontier-always directive
 requires — e2e-verified 2026-07-19. Do NOT use the old zed-industries binary
@@ -622,6 +678,11 @@ stores whatever keys it is given, so this list grows without touching code:
   repo_rev / tree / terminal / exit_code / pm_verdict / verify_cmd / lesson`
 - **Measured (added 2026-07-21):** `started_at / wait_sec / timeout_sec /
   brief_bytes / evidence_present / timed_out / stakes`
+- ACP terminal transport facts additionally keep `cancel_attempted /
+  cancel_ack / termination_attempted / termination_delivered / kill_attempted /
+  kill_delivered / child_settlement_signal_delivered /
+  descendant_cleanup_signal_delivered / child_exit_code / child_signal /
+  forced_reap_attempted / forced_reap_delivered / forced_reap` separate.
 
 Write `pm_verdict` only in the PM's follow-up event, from the PM's own verdict (`fail` → `reject`,
 `unverifiable|skipped` → `unresolved`), never from the worker's self-report. For
@@ -666,10 +727,10 @@ run/verdict/phase compatibility; existing v3 documents remain described by
 for consumers that require the older v1 contract.
 
 ```bash
-node <skill-root>/scripts/pulse.mjs once  <repo> [--time-zone Asia/Bangkok] # render once
-node <skill-root>/scripts/pulse.mjs json  <repo> [--time-zone Asia/Bangkok] # print exact persisted Pulse v4 JSON
-node <skill-root>/scripts/pulse.mjs watch <repo> [--interval 20] [--time-zone Asia/Bangkok]
-node <skill-root>/scripts/pulse.mjs ensure <repo> [--interval 20] [--time-zone Asia/Bangkok]
+node <skill-root>/scripts/pulse.mjs once  <repo> [--team-graph FILE] [--team-runtime FILE] [--time-zone Asia/Bangkok]
+node <skill-root>/scripts/pulse.mjs json  <repo> [--team-graph FILE] [--team-runtime FILE] [--time-zone Asia/Bangkok]
+node <skill-root>/scripts/pulse.mjs watch <repo> [--interval 20] [--team-graph FILE] [--team-runtime FILE] [--time-zone Asia/Bangkok]
+node <skill-root>/scripts/pulse.mjs ensure <repo> [--interval 20] [--team-graph FILE] [--team-runtime FILE] [--time-zone Asia/Bangkok]
 ```
 
 Pass `--delivery-runtime <absolute-delivery-runtime.json>` to include the
@@ -677,6 +738,15 @@ bounded, path/actor/payload-free Phase Gate projection. It exposes exactly four
 phase runs, bounded gates, replay head, and deterministic bottleneck facts.
 Pulse sanitizes and observes this file; it never calls the controller, consumes
 an acceptance, retries a dispatch, or changes the store.
+
+Pass `--team-graph <absolute-team-graph.json>` for the configurable Team
+flowchart input, accepting either the graph object or the Stage 2 `{ "graph":
+... }` wrapper. Team and agent membership is validated before publication; ACP
+agent IDs use the same restricted grammar as dispatch. Pass the optional
+`--team-runtime <absolute-team-runtime.json>` to add the closed
+`team_runtime.v1` controller projection. It is content-addressed in the watcher
+fingerprint and remains `null` when omitted. Invalid, stale, conflicting, or
+lineage-incomplete runtime evidence is diagnosed and does not enrich the graph.
 
 Each file is atomically replaced under one publish lock. The publisher writes
 the JSON, both HTML views, and then `<repo>/.tmux-teams/pulse-current.json`
@@ -693,22 +763,21 @@ between its footprint and KMS events. A footprint carrying that UUID accepts
 only a matching event; Pulse falls back to task-id + recency only when the
 footprint itself is legacy data without `dispatch_id`.
 
-`loop-graph.html` is the graph-only operational view. It shows one semantic
-node per ACP dispatch instance (`transport: acp`), never one aggregate node per
-provider name. Active nodes use `runs`; recent recorded nodes use
-`recent_verdicts`, with active evidence winning when the same `dispatch_id`
-appears in both. A legacy attempt uses task + start time as its weak identity;
-evidence without both a UUID and usable start time stays visibly
-uncorrelatable rather than collapsing by task id. The fixed D3 phase flowchart
-uses only explicit v4 phase evidence (the v3-compatible `phase`/`phase_source`
-definitions) for placement; nodes
-without it remain in the visible unassigned pool. Runtime state and recorded
-verdict are node evidence, not a heuristic phase or handoff. Dashed phase
-handoffs are labelled unmeasured because Pulse does not record trustworthy
-agent-to-agent, parent, or dependency edges. Do not infer those edges from task
-names, timestamps, workers, or provider names. `TEAM_DONE` does not mean
-verified success, and recorded `pm_verdict: pass` does not mean business
-approval or UAT acceptance.
+`loop-graph.html` is the graph-only operational view. It renders one semantic
+node per configured or current ACP agent instance, never one aggregate node per
+provider, phase, Team, queue, or status bucket. A configured Team lane has a
+dispatcher fan-out, separate worker cards, an evaluator convergence, one
+reject/rework edge back to the same dispatcher, and one pass edge to its
+configured downstream dispatcher or the single non-agent Project Completion
+endpoint. Configured but undispatched agents are `not_started`; evidence with
+missing or conflicting explicit identity appears once in `Control / Unassigned`
+as `unknown`. Team names and links come only from the validated graph input.
+Current evidence is primary; completed/superseded attempts and verdicts are in
+one collapsed history area. Runtime state, queue/service values, bottlenecks,
+decisions, and handoffs are shown only when the serialized `team_runtime.v1`
+projection validates; no task name, provider, model, elapsed browser time, or
+CSS position can create them. `TEAM_DONE` does not mean verified success, and
+recorded `pm_verdict: pass` does not mean business approval or UAT acceptance.
 A `pass` that conflicts with failed, blocked, invalid, or absent terminal
 evidence remains factual but is marked as requiring attention.
 
@@ -725,9 +794,12 @@ read-only, and every suggested action code is advisory with auto-execution
 disabled; Pulse never retries, kills, redispatches, or otherwise remediates a
 run. Humans and agents must verify before acting.
 
-Both HTML files refresh themselves — open either and leave it open. The
-full-screen graph preserves its scroll position and stable control focus across
-automatic reloads, and its header has a pause control for uninterrupted review.
+Both HTML files refresh themselves — open either and leave it open. Each page
+polls only the same-origin `pulse-current.json` marker and reloads only when its
+`snapshot_id` changes. It visibly marks expiry or marker failure, preserves page
+and flow-region scroll, focused agent/control, and open `<details>` state across
+reloads, and exposes one keyboard-operable pause/resume control. Reduced-motion,
+forced-colors, offline/local-asset, and CSP constraints remain active.
 `watch` is the observer; `ensure` renders immediately and then starts a detached
 watcher only when this repo's existing watcher is not alive.
 Its pidfile is `<repo>/.tmux-teams/pulse-watch.pid`: repo-local so same-basename
@@ -779,7 +851,7 @@ where a cold `npx` fetching an adapter can outlast any short timer; announcing
 death during a worker's own installation is the fastest way to make the alarm
 worthless.
 
-**Two diagrams, and they answer different questions.** The loop chart at the top
+**Legacy diagrams, and the live Team flow answer different questions.** The loop chart at the top
 is the SYSTEM: plan → dispatch → work → outbox? → verify → verdict → record →
 memory, with the branch to *died silently* and two back-edges — a rejected
 verdict returning to dispatch, and today's record feeding tomorrow's planning.
@@ -787,9 +859,11 @@ Those two are drawn **dashed on purpose: neither is measured**. We count rejects
 but nothing records whether a reject was re-dispatched, and recall is opt-in and
 unlogged. Solid lines would claim the loop turns when nobody knows that it does —
 so the dashes double as the list of what to instrument next. The dashboard
-diagram is fixed-layout SVG. The separate full-screen phase flowchart uses
-vendored, content-addressed D3 v7.9.0 plus its local license from the committed
-bundle; it never fetches a renderer from a CDN.
+diagram and delivery/phase illustrations are fixed-layout legacy or normative
+SVGs; they are not the live Team graph and do not define Team membership. The
+current full-screen Team flow uses normal document layout and a minimal static
+SVG connector layer. Bundled D3 remains only for older local consumers and is
+not loaded by either current page.
 
 **The per-run graph is where each run stopped.** Every dispatch walks the same five
 stages — dispatched → alive → outbox → PM verdict → recorded — so the truthful
@@ -799,8 +873,8 @@ it finished, stalled or died; read down and you see the shape of the run. Stages
 record the PAST, not the present: an outbox proves the worker was alive at some
 point even though it is gone now. Finished runs stay on the graph on purpose — a
 complete line is what an interrupted one is read against. It remains a
-hand-rolled dashboard SVG; the separate phase flowchart is fixed D3 with local
-assets, so both views work offline without network access.
+hand-rolled dashboard SVG; the separate current Team flow uses local
+HTML/CSS/SVG only, so both views work offline without network access.
 
 **Outboxes ignore themselves too.** `.mailbox-out/` holds raw command output,
 so dispatch drops a `.gitignore` containing `*` into it — the target repo's

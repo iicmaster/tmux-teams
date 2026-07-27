@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  existsSync, mkdtempSync, readFileSync, writeFileSync,
+  existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync,
 } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
@@ -179,9 +179,19 @@ function exportedProjection(states = ['accepted', 'proposed']) {
   })
 }
 
+const TEMP_REPOS = new Set()
 function repo() {
-  return mkdtempSync(join(tmpdir(), 'pulse-v2-'))
+  const dir = mkdtempSync(join(tmpdir(), 'pulse-v2-'))
+  TEMP_REPOS.add(dir)
+  return dir
 }
+
+test.afterEach(() => {
+  for (const dir of [...TEMP_REPOS]) {
+    TEMP_REPOS.delete(dir)
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 const fontCssPath = (dir) => join(dir, '.tmux-teams', FONT_CSS_NAME)
 const d3JsPath = (dir) => join(dir, '.tmux-teams', D3_JS_NAME)
@@ -686,7 +696,8 @@ test('dashboard delivery rendering has no external runtime and keeps its local c
   const html = readFileSync(join(dir, '.tmux-teams', 'pulse.html'), 'utf8')
   const source = readFileSync(PULSE, 'utf8')
 
-  assert.doesNotMatch(html, /https?:\/\/|<script\b[^>]+src=|(?:d3|chart)\.js/i)
+  assert.doesNotMatch(html, /https?:\/\/|(?:d3|chart)\.js/i)
+  assert.match(html, /<script src="pulse-refresh-[a-f0-9]{64}\.js" defer><\/script>/)
   assert.doesNotMatch(source, /https?:\/\/|\b(?:fetch|XMLHttpRequest)\s*\(/)
   assert.match(html, new RegExp(`<link rel="stylesheet" href="${FONT_CSS_NAME}">`))
   assert.equal(readFileSync(fontCssPath(dir), 'utf8'), KANIT_FONT_CSS)
@@ -844,6 +855,8 @@ test('persisted v2 upgrades to v4 without retaining an unrequested delivery proj
   const current = runJson(dir, writeProjection(dir)).snapshot
   const v2 = structuredClone(current)
   v2.schema_version = 2
+  delete v2.history
+  delete v2.team_runtime
   v2.runs = v2.runs.map(({ phase: _phase, phase_source: _source, ...run }) => run)
   v2.recent_verdicts = v2.recent_verdicts
     .map(({ phase: _phase, phase_source: _source, ...record }) => record)

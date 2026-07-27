@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -24,6 +24,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PULSE = join(ROOT, 'plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs')
 const V4_SCHEMA = join(ROOT, 'plugins/tmux-teams/skills/tmux-teams/references/pulse-v4.schema.json')
 const V3_SCHEMA = join(ROOT, 'plugins/tmux-teams/skills/tmux-teams/references/pulse-v3.schema.json')
+const TEAM_RUNTIME_SCHEMA = join(ROOT, 'plugins/tmux-teams/skills/tmux-teams/references/team-runtime-v1.schema.json')
 const DIGEST_A = `sha256:${'a'.repeat(64)}`
 const DIGEST_B = `sha256:${'b'.repeat(64)}`
 const DIGEST_C = `sha256:${'c'.repeat(64)}`
@@ -132,8 +133,11 @@ function meta(sequence = 1) {
   }
 }
 
+const TEMP_REPOS = new Set()
+
 function tempRepo() {
   const dir = mkdtempSync(join(tmpdir(), 'pulse-v4-runtime-'))
+  TEMP_REPOS.add(dir)
   mkdirSync(join(dir, '.tmux-teams', 'dispatch'), { recursive: true })
   mkdirSync(join(dir, '.tmux-teams', 'kms', 'events'), { recursive: true })
   mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
@@ -142,6 +146,7 @@ function tempRepo() {
 
 function controllerRepo() {
   const repo = mkdtempSync(join(tmpdir(), 'pulse-v4-controller-runtime-'))
+  TEMP_REPOS.add(repo)
   initializePhaseGateController(repo, {
     project_run_id: 'project', slice_id: 'slice', actors: CONTROLLER_ACTORS,
     trust_level: 'advisory_same_uid', pm_actor_id: 'pm-1',
@@ -149,6 +154,13 @@ function controllerRepo() {
   })
   return repo
 }
+
+test.afterEach(() => {
+  for (const dir of [...TEMP_REPOS]) {
+    TEMP_REPOS.delete(dir)
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 function bootstrapController(repo) {
   const brief = join(repo, 'bootstrap.md')
@@ -660,11 +672,12 @@ test('CLI publishes v4, preserves stream migration, and never serializes the sou
         'schema = json.load(open(sys.argv[1], encoding="utf-8"))',
         'instance = json.load(open(sys.argv[2], encoding="utf-8"))',
         'base = json.load(open(sys.argv[3], encoding="utf-8"))',
-        'resolver = jsonschema.RefResolver.from_schema(schema, store={"pulse-v3.schema.json": base})',
+        'runtime = json.load(open(sys.argv[4], encoding="utf-8"))',
+        'resolver = jsonschema.RefResolver.from_schema(schema, store={"pulse-v3.schema.json": base, "team-runtime-v1.schema.json": runtime})',
         'jsonschema.Draft202012Validator(schema, resolver=resolver, format_checker=jsonschema.FormatChecker()).validate(instance)',
       ].join('; ')
       const validation = spawnSync('python3', [
-        '-c', program, V4_SCHEMA, join(dir, '.tmux-teams', 'pulse.json'), V3_SCHEMA,
+        '-c', program, V4_SCHEMA, join(dir, '.tmux-teams', 'pulse.json'), V3_SCHEMA, TEAM_RUNTIME_SCHEMA,
       ], { encoding: 'utf8', timeout: 10_000 })
       assert.equal(validation.status, 0, validation.stderr || validation.stdout)
     }

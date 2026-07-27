@@ -151,6 +151,53 @@ test('oversize static packets are blocked before any ACP agent can be launched',
   assert.throws(() => prepareReviewPacket({ artifact: 'x'.repeat(256) }, { maxBytes: 32 }), e => e.code === 'input')
 })
 
+test('malformed assessment coverage is rejected before an ACP process starts', async () => {
+  let spawned = false
+  await assert.rejects(runAcpReview({
+    profile: profile('oc'),
+    lane: 'oc',
+    packet: {
+      ...packet(),
+      acceptance_criteria: [{ id: 'AC-ONE', text: 'first' }],
+      review_gate: {
+        assessment_coverage: {
+          schema: 'tmux-teams.review-assessment-coverage.v1',
+          required_for_each_accepted_review: true,
+          ordered_criterion_ids: ['AC-TWO'],
+          exact_line_count: 1,
+          min_analysis_chars: 20,
+          max_analysis_chars: 240,
+        },
+      },
+    },
+    timeoutMs: null,
+    spawn: () => {
+      spawned = true
+      throw new Error('must not spawn')
+    },
+  }), error => error.code === 'input')
+  assert.equal(spawned, false)
+  await assert.rejects(runAcpReview({
+    profile: profile('oc'),
+    lane: 'oc',
+    packet: {
+      ...packet(),
+      review_gate: {
+        review_scope: {
+          schema: 'tmux-teams.pre-dispatch-plan-review.v1',
+          stage: 'after_worker_dispatch',
+        },
+      },
+    },
+    timeoutMs: null,
+    spawn: () => {
+      spawned = true
+      throw new Error('must not spawn')
+    },
+  }), error => error.code === 'input')
+  assert.equal(spawned, false)
+})
+
 test('plain assignments, headers, and query credentials are redacted without crossing lines', () => {
   const prepared = prepareReviewPacket({
     diff: [
@@ -192,6 +239,57 @@ test('malformed JSON-RPC, malformed review, and timeout never become accepted re
   await assert.rejects(invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'response-then-invalid' }), e => e.code === 'protocol')
   await assert.rejects(invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'response-then-exit-7' }), e => e.code === 'closed')
   await assert.rejects(runAcpReview({ profile: profile('oc'), lane: 'oc', packet: packet(), timeoutMs: 25, env: { MOCK_REVIEW_BEHAVIOUR: 'late' } }), e => e.code === 'timeout')
+})
+
+test('null timeout disables elapsed cancellation and emits correlated ACP progress', async () => {
+  const progress = []
+  const out = await runAcpReview({
+    profile: profile('oc'),
+    lane: 'oc',
+    packet: packet(),
+    timeoutMs: null,
+    env: {
+      MOCK_REVIEW_BEHAVIOUR: 'late',
+      MOCK_REVIEW_MODEL: 'oc-review-model',
+    },
+    onProgress: event => progress.push(event),
+  })
+  assert.equal(out.review.verdict, 'PASS')
+  assert.equal(out.isolation.stdoutBytesLimit, 2 * 1024 * 1024)
+  assert.equal(out.isolation.messageBytesLimit, 64 * 1024)
+  assert.ok(out.isolation.stdoutBytesObserved > 0)
+  assert.ok(
+    out.isolation.stdoutBytesObserved <= out.isolation.stdoutBytesLimit,
+  )
+  assert.ok(
+    out.isolation.messageBytesObserved <= out.isolation.messageBytesLimit,
+  )
+  assert.equal(
+    progress.some(event =>
+      event.kind === 'response' && event.method === 'session/prompt'),
+    true,
+  )
+  assert.equal(
+    progress.some(event =>
+      event.kind === 'notification' && event.method === 'session/update'),
+    true,
+  )
+  assert.equal(
+    progress.every(event =>
+      typeof event.at === 'string' &&
+      ['process', 'request', 'response', 'notification'].includes(event.kind)),
+    true,
+  )
+})
+
+test('SIGTERM is accepted only after an acknowledged terminal response', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const out = await invoke(
+    profile('oc'),
+    { MOCK_REVIEW_BEHAVIOUR: 'response-then-sigterm' },
+  )
+  assert.equal(out.review.verdict, 'PASS')
 })
 
 test('replayed and wrong-session chunks are rejected rather than mixed into a review', async () => {

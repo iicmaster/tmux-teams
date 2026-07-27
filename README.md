@@ -215,7 +215,7 @@ transport-independent:
 
 | worker | primary | fallback |
 |---|---|---|
-| codex | ACP — `@agentclientprotocol/codex-acp` (drives the installed CLI; frontier model verified) | tmux |
+| codex | ACP — `@agentclientprotocol/codex-acp@1.1.7` (drives the installed CLI; frontier model verified) | tmux |
 | claude | ACP — `@agentclientprotocol/claude-agent-acp` (pass `ANTHROPIC_MODEL=claude-opus-4-8`) | tmux |
 | agy | ACP — `antigravity-acp@1.0.0` (community adapter, source-audited 2026-07-21; needs `bun`; ToS risk — SKILL.md §8) | tmux |
 
@@ -229,6 +229,52 @@ One worker over ACP:
 node plugins/tmux-teams/skills/tmux-teams/scripts/acp-companion.mjs \
   codex <repo> <task-id> <brief-file> [timeout-sec]
 ```
+
+The optional duration is an inactivity/stall lease, not a total task timeout;
+there is no wall-clock ceiling unless `ACP_HARD_TIMEOUT_SEC>0` is set. ACP
+liveness snapshots use the exact `acp-liveness.v1` contract, and Codex defaults
+to `INITIAL_AGENT_MODE=agent-full-access` unless the caller supplies an explicit
+override of `read-only`, `agent`, or `agent-full-access`; other Codex modes fail
+before spawn. Tool records use only the ACP v1 statuses `pending`, `in_progress`,
+`completed`, and `failed`, with bounded redacted metadata and digests. The
+public liveness projection is capped at `tools` 64, `active_tools` 8,
+`stall_history` 32, and 64 KiB of UTF-8 JSON; active tools are selected first
+and terminal snapshots compact deterministically before an atomic write. The
+terminal `liveness_state` is authoritative: terminal `active_tools` is always
+`[]`, while `tools` may retain bounded last-reported ACP evidence. A successful
+terminal return requires an atomic liveness write/readback that agrees with
+the dispatch state; a write or readback failure returns nonzero with
+`liveness_persistence_failed` evidence. Mechanical terminal evidence keeps
+cancel ACK, attempted/delivered TERM/KILL, child exit code/signal, child-settlement
+signal delivery, and descendant-only cleanup delivery separate. A clean child
+exit 0 remains `cancelled` when only the remaining descendant group needed
+cleanup; descendant cleanup never turns that settlement into `stalled`/forced.
+Each dispatch also commits one immutable, no-replace
+`.tmux-teams/receipts/<dispatch_id>.json` operation receipt, described by
+`plugins/tmux-teams/skills/tmux-teams/references/acp-session-receipt-v1.schema.json`.
+The receipt is paired with an immutable
+`.tmux-teams/receipt-commits/<dispatch_id>.json` commitment envelope; only a
+fresh file-fsync, directory-fsync, no-replace publication, joint readback, and
+exact digest check trust the pair. It is committed and read back after the
+correlated `session/new` or `session/load` response, observed adapter identity
+enforcement, and before any prompt byte or prompt phase-gate event. A load is
+proven only by the exact correlated JSON-RPC response for the requested session;
+a response `sessionId` is not trusted or invented. The receipt records the
+effective verified `INITIAL_AGENT_MODE` alongside the raw-byte execution
+profile digests, and `initialize_agent_info` is the adapter identity observed
+in the correlated initialize response, not the companion's sent client info.
+`ACP_SESSION_RECEIPT_REQUIRED=1` requires explicit operation and prior-receipt
+lineage inputs, rejects arbitrary `ACP_CMD` overrides, and fails closed before
+prompt delivery when the receipt pair cannot be committed. In default mode, an
+unavailable receipt is reported with `receipt_digest: none` and the legacy
+prompt path continues; required mode never degrades this way.
+Required Codex dispatches resolve the locally pinned
+`@agentclientprotocol/codex-acp@1.1.7` package, verify its package metadata and
+entry bytes, bind the profile to the real Node and `CODEX_PATH` executable
+bytes/version, and spawn that verified Node/entry pair. Cache drift, PATH
+shadowing, fake version output, profile drift, or an unsafe receipt directory
+fails before spawn; the resulting failure is represented by a null-operation
+receipt tombstone when publication is possible.
 
 See `skills/tmux-teams/SKILL.md` §6-§8 for the contract, tmux lane, and ACP lane.
 
@@ -257,29 +303,54 @@ The canonical offline views are `<repo>/.tmux-teams/pulse.html` and
 `<repo>/.tmux-teams/loop-graph.html` together with their sibling
 `pulse-fonts-<sha256>.css`, `pulse-d3-7.9.0-<sha256>.min.js`, and its adjacent
 `pulse-d3-7.9.0-license-<sha256>.txt`. The stylesheet contains the bundled
-Kanit WOFF2 data URLs; D3 v7.9.0 and its license are vendored local assets. They are
-atomically published before both HTML files and are not rewritten when their
-content is unchanged; neither view makes a network request. Keep the sibling
-assets beside the pages to preserve canonical typography and graph controls.
+Kanit WOFF2 data URLs. The D3 files remain vendored local compatibility assets
+for older consumers; neither current HTML page loads or executes them, and the
+current full-screen Team flow is plain document flow with minimal static SVG
+connectors. All assets are atomically published before both HTML files and are
+not rewritten when their content is unchanged; neither view makes a network
+request. Keep the sibling assets beside the pages for offline bundle identity.
 `<repo>/.tmux-teams/pulse-current.json` is the bundle commit marker written
 last. It names and hashes the JSON, both HTML files, the font stylesheet, local
 D3 JavaScript, and the D3 license; readers can reject a mixed/partial publish
 by validating those hashes and re-reading the marker after the files.
 
-`loop-graph.html` uses the full viewport for ACP status. One node is one ACP
-dispatch instance, keyed by `dispatch_id` when available; it never groups
-simultaneous runs merely because they use the same model. Legacy evidence is
-correlated by task plus start time; rows missing both a UUID and usable start
-time stay visibly uncorrelatable instead of being merged. The fixed D3 phase
-flowchart places a node only at its explicit Pulse v4 phase evidence; all other evidence
-stays in the visible unassigned pool. Runtime state and recorded verdict remain
-node evidence, not a heuristic phase or handoff. Dashed phase handoffs are an
-explicitly unmeasured model—not observed agent-to-agent transitions.
+`team-flow.html` is the Team delivery flowchart and ships ready to use: it draws
+the declared loop as lanes — dispatcher, workers and the team's own evaluator —
+with a `passed · handoff contract` edge into the next team, a rework edge back
+into the same queue, and Project Delivery as a terminal node rather than a fifth
+team. One node is exactly one agent and carries its status, model and transport
+(`acp` or `tmux`). Topology comes from `<repo>/.tmux-teams/team-graph.json`
+validated by the Team contract, or from the bundled four-team template when that
+file is absent; an invalid file fails the page closed with the reason instead of
+falling back. Nodes bind to evidence by `agent_id` only, so a dispatch must set
+`ACP_AGENT_ID` to a declared id to appear. A solid edge means a record exists for
+it and a dashed edge is the operating model with nothing measured yet. Use the
+bundled `team-loop-setup` skill (`team-flow.mjs init|check <repo>`) to declare a
+repo's own loop. The page is full-bleed: the graph is the page, and its SVG
+carries no fixed pixel size so it scales to the viewport.
+
+`loop-graph.html` is the simple configurable Team flow. A configured dispatcher
+fans out to separate worker nodes, every worker collects into that Team's
+integrator/evaluator, rejection returns to the same dispatcher, and a pass goes
+to the configured downstream dispatcher or one non-agent Project Completion
+endpoint. One `.agent-node` is one configured or currently observed ACP agent;
+configured idle agents remain `not_started`, while unmatched or conflicting
+evidence stays once in `Control / Unassigned` with `unknown` truth. Team names,
+roles, membership, and downstream links come from `--team-graph FILE`, not from
+the legacy phase names. Optional `--team-runtime FILE` evidence can add
+validated queue wait, service duration, attempt, bottleneck, decision, and
+handoff facts; invalid or stale controller evidence is shown as a diagnostic
+and never decorates a node. Completed and superseded attempts remain in one
+collapsed audit area. The old fixed phase/delivery diagrams elsewhere on the
+dashboard are legacy/normative illustrations, not the live Team graph.
 `TEAM_DONE` remains separate from a recorded verdict.
 A recorded `pass` does not mean business approval or UAT acceptance, and a
 `pass` that conflicts with terminal evidence is highlighted for attention.
-Automatic refresh preserves graph scroll/focus; the header control can pause
-it while reviewing a dense graph.
+Both pages poll only the same-origin `pulse-current.json` bundle marker while
+open. They reload only after `snapshot_id` changes, update expiry visibly even
+without a new snapshot, preserve page/flow scroll, focus, and disclosures, and
+offer a keyboard-operable pause/resume control. Marker failures are shown as
+unavailable; no external request is made.
 
 Human-visible absolute timestamps default to `Asia/Bangkok`. The page shows
 the timezone once in its top-right header (`เวลาไทย (UTC+7)` for the default)

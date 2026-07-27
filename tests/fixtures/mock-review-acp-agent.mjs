@@ -54,6 +54,30 @@ function review() {
   })
 }
 function finish(id) {
+  if (behaviour === 'response-then-sigterm') {
+    const message = JSON.stringify({
+      jsonrpc: '2.0',
+      method: 'session/update',
+      params: {
+        sessionId: 'review-session',
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          messageId: 'only-current-turn',
+          content: { type: 'text', text: review() },
+        },
+      },
+    })
+    const response = JSON.stringify({
+      jsonrpc: '2.0',
+      id,
+      result: { stopReason: 'end_turn' },
+    })
+    process.stdout.write(
+      `${message}\n${response}\n`,
+      () => process.kill(process.pid, 'SIGTERM'),
+    )
+    return
+  }
   if (behaviour === 'response-then-exit-7') {
     const message = JSON.stringify({
       jsonrpc: '2.0',

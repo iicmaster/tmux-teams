@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "acp-session-receipt-commit-v1.schema.json",
+  "title": "tmux-teams ACP session receipt commitment v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "schema_version", "dispatch_id", "receipt_digest", "committed_state"],
+  "properties": {
+    "schema": { "const": "acp-session-receipt-commit" },
+    "schema_version": { "const": "acp-session-receipt-commit.v1" },
+    "dispatch_id": { "$ref": "#/$defs/id" },
+    "receipt_digest": { "$ref": "#/$defs/digest" },
+    "committed_state": { "const": "committed" }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

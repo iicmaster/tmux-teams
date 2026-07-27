@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -14,13 +14,22 @@ const HAS_JSONSCHEMA = spawnSync('python3', ['-c', 'import jsonschema'], {
   encoding: 'utf8',
 }).status === 0
 
+const TEMP_REPOS = new Set()
 function repo() {
   const dir = mkdtempSync(join(tmpdir(), 'pulse-v3-phase-'))
+  TEMP_REPOS.add(dir)
   mkdirSync(join(dir, '.tmux-teams', 'dispatch'), { recursive: true })
   mkdirSync(join(dir, '.tmux-teams', 'kms', 'events'), { recursive: true })
   mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
   return dir
 }
+
+test.afterEach(() => {
+  for (const dir of [...TEMP_REPOS]) {
+    TEMP_REPOS.delete(dir)
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 function writeDispatch(dir, {
   task,
@@ -152,10 +161,10 @@ test('dispatch and event phase disagreement becomes a conflict instead of event-
     diagnostic.code === 'PHASE_BINDING_CONFLICT'))
 
   const graph = readFileSync(join(dir, '.tmux-teams', 'loop-graph.html'), 'utf8')
-  assert.match(graph, /data-phase-id="unassigned"[^>]*data-task-id="conflicting-phase"/)
-  assert.match(graph, /phase binding ขัดแย้ง · ไม่เลือกเฟสแบบ first-source-wins/)
-  assert.doesNotMatch(graph, /data-phase-id="development"[^>]*data-task-id="conflicting-phase"/)
-  assert.doesNotMatch(graph, /data-phase-id="qa"[^>]*data-task-id="conflicting-phase"/)
+  assert.match(graph, /data-screen-section="history"/)
+  assert.match(graph, /data-history-run="true"[^>]*data-audit-task-id="conflicting-phase"/)
+  assert.match(graph, /PHASE_BINDING_CONFLICT/)
+  assert.doesNotMatch(graph, /data-agent-id="conflicting-phase"/)
 })
 
 test('duplicate dispatch UUID with two phases marks every active projection conflicting', () => {

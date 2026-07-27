@@ -1,0 +1,284 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "acp-session-receipt-v1.schema.json",
+  "title": "tmux-teams ACP session operation receipt v1",
+  "description": "Closed, bounded, immutable pre-prompt evidence for one ACP session/new or session/load operation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "schema_version", "task_id", "dispatch_id", "agent_id", "worker", "transport",
+    "requested_operation", "performed_operation", "operation_outcome", "requested_resume_session_id",
+    "effective_session_id", "prior_dispatch_id", "prior_receipt_digest", "operation_witness",
+    "operation_request_digest", "operation_response_digest", "operation_rpc_id", "operation_acknowledged_at",
+    "requested_model", "requested_reasoning_effort", "effective_identity", "identity_status",
+    "adapter_package_spec", "adapter_resolved_version", "adapter_integrity", "adapter_metadata_digest",
+    "adapter_entry_digest", "initialize_agent_info", "execution_profile_digest", "initial_agent_mode",
+    "codex_executable_identity", "node_executable_identity", "resume_status"
+  ],
+  "properties": {
+    "schema": { "const": "acp-session-receipt" },
+    "schema_version": { "const": "acp-session-receipt.v1" },
+    "task_id": { "$ref": "#/$defs/id" },
+    "dispatch_id": { "$ref": "#/$defs/id" },
+    "agent_id": { "oneOf": [{ "$ref": "#/$defs/agent_id" }, { "type": "null" }] },
+    "worker": { "$ref": "#/$defs/text64" },
+    "transport": { "const": "acp" },
+    "requested_operation": { "enum": ["new", "load"] },
+    "performed_operation": { "oneOf": [{ "enum": ["new", "load"] }, { "type": "null" }] },
+    "operation_outcome": { "enum": ["succeeded", "unsupported_fallback", "failed", "interrupted"] },
+    "requested_resume_session_id": { "oneOf": [{ "$ref": "#/$defs/session_id" }, { "type": "null" }] },
+    "effective_session_id": { "oneOf": [{ "$ref": "#/$defs/session_id" }, { "type": "null" }] },
+    "prior_dispatch_id": { "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
+    "prior_receipt_digest": { "$ref": "#/$defs/nullable_digest" },
+    "operation_witness": { "enum": ["new_session_id_returned", "load_response_for_exact_request", "none"] },
+    "operation_request_digest": { "$ref": "#/$defs/nullable_digest" },
+    "operation_response_digest": { "$ref": "#/$defs/nullable_digest" },
+    "operation_rpc_id": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }] },
+    "operation_acknowledged_at": { "$ref": "#/$defs/nullable_timestamp" },
+    "requested_model": { "$ref": "#/$defs/nullable_text" },
+    "requested_reasoning_effort": { "$ref": "#/$defs/nullable_text" },
+    "effective_identity": { "$ref": "#/$defs/nullable_text" },
+    "identity_status": { "enum": ["unverified", "matched", "missing", "mismatched"] },
+    "adapter_package_spec": { "$ref": "#/$defs/nullable_text" },
+    "adapter_resolved_version": { "$ref": "#/$defs/nullable_text" },
+    "adapter_integrity": { "oneOf": [{ "type": "string", "minLength": 23, "maxLength": 263, "pattern": "^sha512-[A-Za-z0-9+/=]{16,256}$" }, { "type": "null" }] },
+    "adapter_metadata_digest": { "$ref": "#/$defs/nullable_digest" },
+    "adapter_entry_digest": { "$ref": "#/$defs/nullable_digest" },
+    "initialize_agent_info": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object", "additionalProperties": false, "required": ["name", "version"],
+          "properties": { "name": { "$ref": "#/$defs/text" }, "version": { "$ref": "#/$defs/text" } }
+        }
+      ]
+    },
+    "execution_profile_digest": { "$ref": "#/$defs/nullable_digest" },
+    "initial_agent_mode": { "$ref": "#/$defs/nullable_text" },
+    "codex_executable_identity": { "$ref": "#/$defs/executable_identity" },
+    "node_executable_identity": { "$ref": "#/$defs/executable_identity" },
+    "resume_status": { "enum": ["not_requested", "loaded", "unsupported_fallback", "load_failed"] }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "requested_operation": { "const": "new" } } },
+      "then": {
+        "properties": {
+          "requested_resume_session_id": { "type": "null" },
+          "prior_dispatch_id": { "type": "null" },
+          "prior_receipt_digest": { "type": "null" },
+          "resume_status": { "const": "not_requested" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "requested_operation": { "const": "load" } } },
+      "then": {
+        "required": ["requested_resume_session_id", "prior_dispatch_id", "prior_receipt_digest"],
+        "properties": {
+          "requested_resume_session_id": { "$ref": "#/$defs/session_id" },
+          "prior_dispatch_id": { "$ref": "#/$defs/id" },
+          "prior_receipt_digest": { "$ref": "#/$defs/digest" },
+          "resume_status": { "enum": ["loaded", "unsupported_fallback", "load_failed"] }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "operation_outcome": { "const": "succeeded" } } },
+      "then": {
+        "required": ["performed_operation", "effective_session_id", "operation_request_digest", "operation_response_digest", "operation_rpc_id", "operation_acknowledged_at", "initialize_agent_info"],
+        "properties": {
+          "performed_operation": { "enum": ["new", "load"] },
+          "effective_session_id": { "$ref": "#/$defs/session_id" },
+          "operation_request_digest": { "$ref": "#/$defs/digest" },
+          "operation_response_digest": { "$ref": "#/$defs/digest" },
+          "operation_rpc_id": { "type": "integer", "minimum": 1 },
+          "operation_acknowledged_at": { "$ref": "#/$defs/timestamp" },
+          "initialize_agent_info": { "type": "object" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "operation_outcome": { "const": "unsupported_fallback" } } },
+      "then": {
+        "required": ["performed_operation", "effective_session_id", "operation_request_digest", "operation_response_digest", "operation_rpc_id", "operation_acknowledged_at", "initialize_agent_info", "prior_dispatch_id", "prior_receipt_digest"],
+        "properties": {
+          "requested_operation": { "const": "load" },
+          "performed_operation": { "const": "new" },
+          "effective_session_id": { "$ref": "#/$defs/session_id" },
+          "operation_witness": { "const": "new_session_id_returned" },
+          "resume_status": { "const": "unsupported_fallback" },
+          "initialize_agent_info": { "type": "object" },
+          "prior_dispatch_id": { "$ref": "#/$defs/id" },
+          "prior_receipt_digest": { "$ref": "#/$defs/digest" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "performed_operation": { "const": "load" } } },
+      "then": {
+        "properties": {
+          "requested_operation": { "const": "load" },
+          "operation_outcome": { "const": "succeeded" },
+          "operation_witness": { "const": "load_response_for_exact_request" },
+          "resume_status": { "const": "loaded" }
+        }
+      }
+    },
+    {
+      "if": {
+        "allOf": [
+          { "properties": { "performed_operation": { "const": "new" } } },
+          { "properties": { "operation_outcome": { "const": "succeeded" } } }
+        ]
+      },
+      "then": { "properties": { "operation_witness": { "const": "new_session_id_returned" } } }
+    },
+    {
+      "if": { "properties": { "operation_outcome": { "enum": ["failed", "interrupted"] } } },
+      "then": {
+        "properties": {
+          "performed_operation": { "type": "null" },
+          "effective_session_id": { "type": "null" },
+          "operation_witness": { "const": "none" }
+        }
+      }
+    },
+    {
+      "if": {
+        "allOf": [
+          { "properties": { "requested_operation": { "const": "load" } } },
+          { "properties": { "operation_outcome": { "enum": ["failed", "interrupted"] } } }
+        ]
+      },
+      "then": {
+        "required": ["prior_dispatch_id", "prior_receipt_digest"],
+        "properties": {
+          "resume_status": { "const": "load_failed" },
+          "prior_dispatch_id": { "$ref": "#/$defs/id" },
+          "prior_receipt_digest": { "$ref": "#/$defs/digest" }
+        }
+      }
+    },
+    {
+      "if": {
+        "allOf": [
+          { "properties": { "requested_operation": { "const": "new" } } },
+          { "properties": { "operation_outcome": { "enum": ["failed", "interrupted"] } } }
+        ]
+      },
+      "then": { "properties": { "resume_status": { "const": "not_requested" } } }
+    },
+    {
+      "if": {
+        "properties": { "operation_acknowledged_at": { "type": "null" } }
+      },
+      "then": {
+        "properties": {
+          "operation_response_digest": { "type": "null" },
+          "operation_rpc_id": { "type": "null" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "operation_response_digest": { "type": "null" } }
+      },
+      "then": { "properties": { "operation_acknowledged_at": { "type": "null" }, "operation_rpc_id": { "type": "null" } } }
+    },
+    {
+      "if": {
+        "properties": { "operation_acknowledged_at": { "not": { "type": "null" } } }
+      },
+      "then": {
+        "required": ["operation_request_digest", "operation_response_digest", "operation_rpc_id", "initialize_agent_info"],
+        "properties": {
+          "operation_request_digest": { "$ref": "#/$defs/digest" },
+          "operation_response_digest": { "$ref": "#/$defs/digest" },
+          "operation_rpc_id": { "type": "integer", "minimum": 1 },
+          "initialize_agent_info": { "type": "object" }
+        }
+      }
+    },
+    {
+      "if": {
+        "allOf": [
+          { "properties": { "operation_outcome": { "const": "succeeded" } } },
+          { "properties": { "performed_operation": { "const": "new" } } }
+        ]
+      },
+      "then": {
+        "properties": {
+          "requested_operation": { "const": "new" },
+          "operation_witness": { "const": "new_session_id_returned" },
+          "resume_status": { "const": "not_requested" },
+          "requested_resume_session_id": { "type": "null" },
+          "prior_dispatch_id": { "type": "null" },
+          "prior_receipt_digest": { "type": "null" }
+        }
+      }
+    },
+    {
+      "if": {
+        "allOf": [
+          { "properties": { "operation_outcome": { "const": "succeeded" } } },
+          { "properties": { "performed_operation": { "const": "load" } } }
+        ]
+      },
+      "then": {
+        "required": ["prior_dispatch_id", "prior_receipt_digest"],
+        "properties": {
+          "requested_operation": { "const": "load" },
+          "operation_witness": { "const": "load_response_for_exact_request" },
+          "resume_status": { "const": "loaded" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "operation_outcome": { "const": "succeeded" } }
+      },
+      "then": {
+        "properties": {
+          "identity_status": { "enum": ["unverified", "matched"] }
+        }
+      }
+    },
+    {
+      "if": {
+        "allOf": [
+          { "properties": { "operation_outcome": { "const": "succeeded" } } },
+          { "properties": { "requested_model": { "not": { "type": "null" } } } }
+        ]
+      },
+      "then": {
+        "properties": {
+          "identity_status": { "const": "matched" },
+          "effective_identity": { "$ref": "#/$defs/text" }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "text": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "text64": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "nullable_text": { "oneOf": [{ "$ref": "#/$defs/text" }, { "type": "null" }] },
+    "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$" },
+    "agent_id": { "$ref": "#/$defs/id" },
+    "session_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "nullable_digest": { "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+    "timestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$" },
+    "nullable_timestamp": { "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }] },
+    "executable_identity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "realpath_digest", "executable_digest", "version"],
+      "properties": {
+        "name": { "$ref": "#/$defs/text" },
+        "realpath_digest": { "$ref": "#/$defs/nullable_digest" },
+        "executable_digest": { "$ref": "#/$defs/nullable_digest" },
+        "version": { "$ref": "#/$defs/text" }
+      }
+    }
+  }
+}

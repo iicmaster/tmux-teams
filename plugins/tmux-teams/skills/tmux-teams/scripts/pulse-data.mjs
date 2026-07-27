@@ -4,6 +4,9 @@
 // wholesale. Repo-local dispatch/KMS files are writable by the same UID as a
 // worker, so every string crossing this boundary is treated as untrusted data.
 
+import { validateTeamGraph } from './team-graph-contract.mjs'
+import { projectTeamRuntime } from './team-runtime.mjs'
+
 export const PULSE_SCHEMA = 'tmux-teams.pulse'
 export const PULSE_SCHEMA_VERSION = 1
 export const PULSE_SCHEMA_VERSION_V2 = 2
@@ -39,6 +42,17 @@ const DIAGNOSTIC_CODES_V4 = new Set([
   'DELIVERY_RUNTIME_INPUT_UNREADABLE',
   'DELIVERY_RUNTIME_INPUT_INVALID',
   'DELIVERY_RUNTIME_STALE',
+  'TEAM_RUNTIME_INPUT_UNREADABLE',
+  'TEAM_RUNTIME_INPUT_INVALID',
+  'TEAM_RUNTIME_STALE',
+  'TEAM_RUNTIME_FUTURE',
+  'LIVENESS_EVIDENCE_UNREADABLE',
+  'LIVENESS_EVIDENCE_INVALID',
+  'LIVENESS_EVIDENCE_MISMATCH',
+  'LIVENESS_EVIDENCE_FUTURE',
+  'AGENT_ID_CONFLICT',
+  'TEAM_GRAPH_INPUT_UNREADABLE',
+  'TEAM_GRAPH_INPUT_INVALID',
 ])
 
 const STATE_META = Object.freeze({
@@ -73,6 +87,376 @@ const dispatchSignal = (value) => ['present', 'absent'].includes(value) ? value 
 const PHASES = new Set(['Requirement', 'Prototype', 'Development', 'QA'])
 const ASSIGNED_PHASE_SOURCES = new Set(['dispatch', 'event', 'dispatch_join'])
 const PHASE_SOURCES = new Set([...ASSIGNED_PHASE_SOURCES, 'unassigned', 'conflict'])
+export const ACP_LIVENESS_SCHEMA = 'acp-liveness.v1'
+export const ACP_LIVENESS_STATES = new Set([
+  'starting', 'awaiting_agent', 'active', 'tool_running', 'suspected_stalled',
+  'cancelling', 'cancelled', 'stalled', 'failed', 'completed',
+])
+export const ACP_STALL_HISTORY_STATES = new Set([
+  'suspected_stalled', 'stalled', 'recovered', 'cancellation_unavailable',
+])
+const safeEvidenceText = (value, maximum = 256) => {
+  if (typeof value !== 'string') return null
+  const text = value.trim()
+  return text && text.length <= maximum ? text : null
+}
+
+const LIVENESS_TOOL_LIMIT = 16
+const LIVENESS_ACTIVE_TOOL_LIMIT = 8
+const LIVENESS_HISTORY_LIMIT = 32
+const LIVENESS_OBJECT_LIMIT = 8
+const LIVENESS_VALUE_DEPTH = 3
+const LIVENESS_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/
+const LIVENESS_DIGEST_RE = /^sha256:[0-9a-f]{64}$/
+
+const ACP_LIVENESS_RAW_STATES = new Set([
+  ...ACP_LIVENESS_STATES,
+])
+const ACP_LIVENESS_RAW_TOOL_STATUSES = new Set([
+  'pending', 'in_progress', 'completed', 'failed',
+])
+const ACP_LIVENESS_RAW_IDENTITY_STATES = new Set([
+  'matched', 'mismatched', 'missing', 'unverified',
+])
+const ACP_LIVENESS_RAW_KEYS = Object.freeze([
+  'schema_version', 'task_id', 'dispatch_id', 'worker', 'transport', 'session_id',
+  'started_at', 'observed_at', 'stall_sec', 'hard_timeout_sec', 'stall_policy',
+  'cancellation_grace_sec', 'liveness_state', 'termination_reason',
+  'last_protocol_activity_at', 'last_meaningful_progress_at', 'lease_anchor_at',
+  'meaningful_progress_count', 'consecutive_missed_leases', 'next_lease_expiry_at',
+  'stall_recoveries', 'stall_history', 'active_tools', 'tools', 'plan_digest',
+  'plan_entry_count', 'cancellation_unavailable', 'requested_model',
+  'requested_reasoning_effort', 'effective_identity', 'identity_status',
+])
+const ACP_LIVENESS_RAW_TOOL_KEYS = Object.freeze([
+  'tool_call_id', 'title', 'kind', 'status', 'content_digest', 'output_digest',
+  'locations_digest', 'updated_at', 'update_count',
+])
+
+const exactKeys = (value, required, optional = []) => {
+  if (!isObject(value)) return false
+  const allowed = new Set([...required, ...optional])
+  const keys = Object.keys(value)
+  return keys.every((key) => allowed.has(key)) && required.every((key) => Object.hasOwn(value, key))
+}
+
+function rawString(value, maximum) {
+  return typeof value === 'string' && value.length >= 1 && value.length <= maximum
+}
+
+function rawNullableString(value, maximum) {
+  return value === null || rawString(value, maximum)
+}
+
+function rawTimestamp(value) {
+  return typeof value === 'string' && LIVENESS_TIMESTAMP_RE.test(value) && Number.isFinite(Date.parse(value))
+}
+
+function rawNonNegativeNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+}
+
+function rawNonNegativeInteger(value) {
+  return Number.isSafeInteger(value) && value >= 0
+}
+
+function validRawDigest(value) {
+  return value === undefined || value === null || typeof value === 'string' && LIVENESS_DIGEST_RE.test(value)
+}
+
+function validRawTool(value) {
+  if (!exactKeys(value,
+    ['tool_call_id', 'title', 'kind', 'status', 'updated_at', 'update_count'],
+    ['content_digest', 'output_digest', 'locations_digest'])) return false
+  if (!rawString(value.tool_call_id, 128) || !rawString(value.title, 128) ||
+      !rawString(value.kind, 64) || !ACP_LIVENESS_RAW_TOOL_STATUSES.has(value.status) ||
+      !rawTimestamp(value.updated_at) || !Number.isSafeInteger(value.update_count) ||
+      value.update_count < 1 || value.update_count > 1_000_000) return false
+  return ['content_digest', 'output_digest', 'locations_digest'].every((key) => validRawDigest(value[key]))
+}
+
+function validRawHistory(value) {
+  if (!exactKeys(value, ['state', 'evidence', 'observed_at'], [
+    'reason', 'last_protocol_activity_at', 'last_meaningful_progress_at', 'active_tools',
+  ])) return false
+  if (!ACP_STALL_HISTORY_STATES.has(value.state) || !rawString(value.evidence, 128) ||
+      !rawTimestamp(value.observed_at)) return false
+  if (value.state === 'cancellation_unavailable') {
+    if (!rawString(value.reason, 64)) return false
+  } else if (Object.hasOwn(value, 'reason')) {
+    return false
+  }
+  for (const key of ['last_protocol_activity_at', 'last_meaningful_progress_at']) {
+    if (Object.hasOwn(value, key) && !rawTimestamp(value[key])) return false
+  }
+  if (Object.hasOwn(value, 'active_tools')) {
+    if (!Array.isArray(value.active_tools) || value.active_tools.length > 1 ||
+        value.active_tools.some((tool) => !validRawTool(tool))) return false
+  }
+  return true
+}
+
+/**
+ * Validate the producer's complete closed acp-liveness.v1 object.
+ *
+ * This is intentionally separate from the smaller Pulse v4 projection
+ * validator below. A raw source is trusted only after every scalar, lease,
+ * identity, digest-tool, and history member has passed this closed contract.
+ */
+export function validateAcpLivenessV1(value) {
+  if (!exactKeys(value, ACP_LIVENESS_RAW_KEYS, ['agent_id'])) {
+    return { ok: false, code: 'LIVENESS_EVIDENCE_INVALID', reason: 'raw liveness keys are not closed' }
+  }
+  if (value.schema_version !== ACP_LIVENESS_SCHEMA || typeof value.task_id !== 'string' ||
+      !ID_RE.test(value.task_id) || typeof value.dispatch_id !== 'string' ||
+      !UUID_RE.test(value.dispatch_id) || !rawString(value.worker, 64) ||
+      value.transport !== 'acp' || !rawNullableString(value.session_id, 128) ||
+      !rawTimestamp(value.started_at) || !rawTimestamp(value.observed_at) ||
+      !rawNonNegativeNumber(value.stall_sec) || !rawNonNegativeNumber(value.hard_timeout_sec) ||
+      !['cancel', 'report'].includes(value.stall_policy) ||
+      !rawNonNegativeNumber(value.cancellation_grace_sec) ||
+      !ACP_LIVENESS_RAW_STATES.has(value.liveness_state) ||
+      !rawString(value.termination_reason, 64) ||
+      !rawTimestamp(value.last_protocol_activity_at) ||
+      !rawTimestamp(value.last_meaningful_progress_at) || !rawTimestamp(value.lease_anchor_at) ||
+      !rawNonNegativeInteger(value.meaningful_progress_count) ||
+      !rawNonNegativeInteger(value.consecutive_missed_leases) ||
+      !rawTimestamp(value.next_lease_expiry_at) || !rawNonNegativeInteger(value.stall_recoveries) ||
+      !Array.isArray(value.stall_history) || value.stall_history.length > 32 ||
+      value.stall_history.some((entry) => !validRawHistory(entry)) ||
+      !Array.isArray(value.active_tools) || value.active_tools.length > 8 ||
+      value.active_tools.some((tool) => !validRawTool(tool)) ||
+      !isObject(value.tools) || Object.keys(value.tools).length > 64 ||
+      Object.entries(value.tools).some(([id, tool]) =>
+        !rawString(id, 128) || !validRawTool(tool) || tool.tool_call_id !== id) ||
+      !validRawDigest(value.plan_digest) || !rawNonNegativeInteger(value.plan_entry_count) ||
+      typeof value.cancellation_unavailable !== 'boolean' ||
+      !rawNullableString(value.requested_model, 128) ||
+      !rawNullableString(value.requested_reasoning_effort, 64) ||
+      !rawNullableString(value.effective_identity, 194) ||
+      !ACP_LIVENESS_RAW_IDENTITY_STATES.has(value.identity_status) ||
+      Object.hasOwn(value, 'agent_id') &&
+        (typeof value.agent_id !== 'string' || !ID_RE.test(value.agent_id))) {
+    return { ok: false, code: 'LIVENESS_EVIDENCE_INVALID', reason: 'raw liveness field is invalid' }
+  }
+  if (value.identity_status === 'matched') {
+    const expectedIdentity = `${value.requested_model || ''}${value.requested_reasoning_effort ? `[${value.requested_reasoning_effort}]` : ''}`
+    if (!value.requested_model || value.effective_identity !== expectedIdentity) {
+      return { ok: false, code: 'LIVENESS_EVIDENCE_INVALID', reason: 'model identity attestation is invalid' }
+    }
+  }
+  if (Date.parse(value.started_at) > Date.parse(value.observed_at)) {
+    return { ok: false, code: 'LIVENESS_EVIDENCE_INVALID', reason: 'liveness observation predates start' }
+  }
+  const leaseDelta = Date.parse(value.next_lease_expiry_at) - Date.parse(value.lease_anchor_at)
+  const expectedLease = value.stall_sec * 1000
+  if (value.liveness_state === 'tool_running' && value.active_tools.length > 0
+      ? leaseDelta < expectedLease : leaseDelta !== expectedLease) {
+    return { ok: false, code: 'LIVENESS_EVIDENCE_INVALID', reason: 'liveness lease is not derived from its anchor' }
+  }
+  if (value.liveness_state === 'tool_running' &&
+      (value.active_tools.length === 0 || value.active_tools.some((tool) => tool.status !== 'in_progress'))) {
+    return { ok: false, code: 'LIVENESS_EVIDENCE_INVALID', reason: 'tool_running active tools are not in progress' }
+  }
+  if (value.liveness_state === 'tool_running' &&
+      (value.cancellation_unavailable || value.stall_history.some((entry) => entry.state === 'cancellation_unavailable'))) {
+    return { ok: false, code: 'LIVENESS_EVIDENCE_INVALID', reason: 'tool_running cannot report unavailable cancellation' }
+  }
+  for (const tool of value.active_tools) {
+    if (!Object.hasOwn(value.tools, tool.tool_call_id)) {
+      return { ok: false, code: 'LIVENESS_EVIDENCE_INVALID', reason: 'active tool is absent from tools catalog' }
+    }
+  }
+  if (value.liveness_state === 'tool_running' && value.active_tools.length === 0) {
+    return { ok: false, code: 'LIVENESS_EVIDENCE_INVALID', reason: 'tool_running has no active tool' }
+  }
+  return { ok: true, value }
+}
+
+export function verifiedLivenessModel(value) {
+  if (!value || value.identity_status !== 'matched' || !rawString(value.requested_model, 128)) return null
+  const expectedIdentity = `${value.requested_model}${value.requested_reasoning_effort ? `[${value.requested_reasoning_effort}]` : ''}`
+  return value.effective_identity === expectedIdentity ? value.requested_model : null
+}
+
+function boundedLivenessValue(value, depth = 0) {
+  if (value === null || typeof value === 'boolean') return value
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new Error('invalid bounded liveness value')
+    return value
+  }
+  if (typeof value === 'string') {
+    if (value.length > 256) throw new Error('oversized bounded liveness value')
+    return value
+  }
+  if (depth >= LIVENESS_VALUE_DEPTH) {
+    if (value !== '[bounded]') throw new Error('unbounded liveness value')
+    return value
+  }
+  if (Array.isArray(value)) {
+    if (value.length > LIVENESS_OBJECT_LIMIT) throw new Error('oversized liveness value')
+    return value
+      .map((item) => boundedLivenessValue(item, depth + 1))
+  }
+  if (typeof value !== 'object') throw new Error('invalid bounded liveness value')
+  const entries = Object.entries(value)
+  if (entries.length > LIVENESS_OBJECT_LIMIT || entries.some(([key]) =>
+    typeof key !== 'string' || key.length === 0 || key.length > 64)) {
+    throw new Error('oversized bounded liveness value')
+  }
+  return Object.fromEntries(entries.map(([key, child]) => [
+    key, boundedLivenessValue(child, depth + 1),
+  ]))
+}
+
+function projectLivenessTool(value) {
+  const digestKeys = ['content_digest', 'output_digest', 'locations_digest']
+  const required = ['tool_call_id', 'title', 'kind', 'status', 'updated_at', 'update_count']
+  const keys = [...required, ...digestKeys]
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      Object.keys(value).some((key) => !keys.includes(key)) ||
+      !required.every((key) => Object.hasOwn(value, key)) ||
+      required.slice(0, 3).some((key) => typeof value[key] !== 'string' ||
+        value[key].length < 1 || value[key].length > 128) ||
+      !ACP_LIVENESS_RAW_TOOL_STATUSES.has(value.status) ||
+      typeof value.updated_at !== 'string' || !LIVENESS_TIMESTAMP_RE.test(value.updated_at) ||
+      !Number.isFinite(Date.parse(value.updated_at)) ||
+      !Number.isSafeInteger(value.update_count) || value.update_count < 1 ||
+      value.update_count > 1_000_000) {
+    throw new Error('invalid liveness tool evidence')
+  }
+  const tool = {
+    tool_call_id: value.tool_call_id,
+    title: value.title,
+    kind: value.kind,
+    status: value.status,
+    updated_at: value.updated_at,
+    update_count: value.update_count,
+  }
+  for (const key of digestKeys) {
+    if (!Object.hasOwn(value, key) || value[key] === null) {
+      if (Object.hasOwn(value, key)) tool[key] = value[key]
+      continue
+    }
+    if (typeof value[key] !== 'string' || !LIVENESS_DIGEST_RE.test(value[key])) {
+      throw new Error('invalid liveness tool digest')
+    }
+    tool[key] = value[key]
+  }
+  return tool
+}
+
+function projectLivenessHistory(value) {
+  const keys = [
+    'state', 'observed_at', 'evidence', 'last_protocol_activity_at',
+    'last_meaningful_progress_at', 'active_tools', 'reason',
+  ]
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      Object.keys(value).some((key) => !keys.includes(key)) ||
+      !ACP_STALL_HISTORY_STATES.has(value.state) ||
+      !Object.hasOwn(value, 'observed_at') || !Object.hasOwn(value, 'evidence') ||
+      typeof value.evidence !== 'string' || value.evidence.length < 1 || value.evidence.length > 256 ||
+      value.state === 'cancellation_unavailable' &&
+        (!Object.hasOwn(value, 'reason') || typeof value.reason !== 'string' ||
+          value.reason.length < 1 || value.reason.length > 64) ||
+      value.state !== 'cancellation_unavailable' && Object.hasOwn(value, 'reason') ||
+      typeof value.observed_at !== 'string' || !LIVENESS_TIMESTAMP_RE.test(value.observed_at) ||
+      !Number.isFinite(Date.parse(value.observed_at))) {
+    throw new Error('invalid liveness stall history')
+  }
+  const projected = {
+    state: value.state,
+    observed_at: value.observed_at,
+    evidence: value.evidence,
+  }
+  if (Object.hasOwn(value, 'reason')) projected.reason = value.reason
+  for (const key of ['last_protocol_activity_at', 'last_meaningful_progress_at']) {
+    if (!Object.hasOwn(value, key)) continue
+    if (value[key] !== null && (typeof value[key] !== 'string' ||
+        !LIVENESS_TIMESTAMP_RE.test(value[key]) || !Number.isFinite(Date.parse(value[key])))) {
+      throw new Error(`invalid liveness stall history ${key}`)
+    }
+    projected[key] = value[key]
+  }
+  if (Object.hasOwn(value, 'active_tools')) {
+    if (!Array.isArray(value.active_tools) || value.active_tools.length > LIVENESS_TOOL_LIMIT) {
+      throw new Error('invalid liveness stall history tools')
+    }
+    projected.active_tools = value.active_tools.map(projectLivenessTool)
+  }
+  return projected
+}
+
+function projectLivenessTools(value) {
+  if (!isObject(value) || Object.keys(value).length > 64) {
+    throw new Error('invalid liveness tools catalog')
+  }
+  const projected = {}
+  for (const [toolId, tool] of Object.entries(value)) {
+    if (!rawString(toolId, 128)) throw new Error('invalid liveness tool id')
+    const next = projectLivenessTool(tool)
+    if (next.tool_call_id !== toolId) throw new Error('liveness tool id mismatch')
+    projected[toolId] = next
+  }
+  return projected
+}
+
+export function projectLivenessEvidence(value) {
+  const keys = [
+    'schema_version', 'task_id', 'dispatch_id', 'agent_id', 'liveness_state',
+    'observed_at', 'last_protocol_activity_at', 'last_meaningful_progress_at', 'termination_reason',
+    'active_tools', 'tools', 'stall_history',
+  ]
+  if (value == null) return null
+  if (typeof value !== 'object' || Array.isArray(value) ||
+      Object.keys(value).some((key) => !keys.includes(key)) ||
+      value.schema_version !== ACP_LIVENESS_SCHEMA ||
+      typeof value.task_id !== 'string' || !ID_RE.test(value.task_id) ||
+      typeof value.dispatch_id !== 'string' || !UUID_RE.test(value.dispatch_id) ||
+      !ACP_LIVENESS_STATES.has(value.liveness_state) ||
+      !Object.hasOwn(value, 'observed_at') || typeof value.observed_at !== 'string' ||
+      !LIVENESS_TIMESTAMP_RE.test(value.observed_at) || !Number.isFinite(Date.parse(value.observed_at)) ||
+      !Object.hasOwn(value, 'last_protocol_activity_at') ||
+      !Object.hasOwn(value, 'last_meaningful_progress_at') ||
+      !Object.hasOwn(value, 'termination_reason') ||
+      !Object.hasOwn(value, 'active_tools') || !Object.hasOwn(value, 'tools') ||
+      !Object.hasOwn(value, 'stall_history')) {
+    throw new Error('invalid liveness evidence')
+  }
+  for (const key of ['last_protocol_activity_at', 'last_meaningful_progress_at']) {
+    if (typeof value[key] !== 'string' || !LIVENESS_TIMESTAMP_RE.test(value[key]) ||
+        !Number.isFinite(Date.parse(value[key]))) throw new Error('invalid liveness timestamp')
+  }
+  if (value.agent_id !== null && value.agent_id !== undefined &&
+      (typeof value.agent_id !== 'string' || !ID_RE.test(value.agent_id))) {
+    throw new Error('invalid liveness agent id')
+  }
+  if (value.termination_reason !== null &&
+      (typeof value.termination_reason !== 'string' || value.termination_reason.length < 1 ||
+        value.termination_reason.length > 256)) {
+    throw new Error('invalid liveness termination reason')
+  }
+  if (!Array.isArray(value.active_tools) || value.active_tools.length > LIVENESS_ACTIVE_TOOL_LIMIT ||
+      !Array.isArray(value.stall_history) || value.stall_history.length > LIVENESS_HISTORY_LIMIT) {
+    throw new Error('invalid liveness collections')
+  }
+  const activeTools = value.active_tools.map(projectLivenessTool)
+  const stallHistory = value.stall_history.map(projectLivenessHistory)
+  return {
+    schema_version: ACP_LIVENESS_SCHEMA,
+    task_id: value.task_id,
+    dispatch_id: value.dispatch_id,
+    agent_id: value.agent_id == null ? null : value.agent_id,
+    liveness_state: value.liveness_state,
+    observed_at: value.observed_at,
+    last_protocol_activity_at: value.last_protocol_activity_at,
+    last_meaningful_progress_at: value.last_meaningful_progress_at,
+    termination_reason: value.termination_reason,
+    active_tools: activeTools,
+    tools: projectLivenessTools(value.tools),
+    stall_history: stallHistory,
+  }
+}
 
 // Phase and provenance are one binding. Normalizing the fields independently
 // can publish a real phase with "unassigned" provenance, or retain a phase
@@ -85,7 +469,7 @@ const phaseBinding = (phaseValue, sourceValue) => {
   return { phase: null, phase_source: 'unassigned' }
 }
 
-function projectRun(run, includePhase = false) {
+function projectRun(run, includePhase = false, includeExtended = false) {
   const taskId = safeId(run.id)
   if (!taskId || !STATE_META[run.state]) return null
   const meta = STATE_META[run.state]
@@ -99,6 +483,7 @@ function projectRun(run, includePhase = false) {
     identity_source: identitySource,
     state: run.state,
     worker: safeId(run.worker),
+    ...(includeExtended ? { agent_id: safeId(run.agentId) } : {}),
     transport: transport(run.kind || run.transport),
     started_at: safeIso(run.startedAt),
     elapsed_sec: finiteNonNegative(run.elapsedSec),
@@ -121,6 +506,11 @@ function projectRun(run, includePhase = false) {
   }
   if (includePhase) {
     Object.assign(projected, phaseBinding(run.phase, run.phaseSource))
+  }
+  if (includeExtended) {
+    projected.model = safeEvidenceText(run.model, 128)
+    projected.identity_conflict = run.identityConflict === true
+    projected.liveness_evidence = projectLivenessEvidence(run.livenessEvidence)
   }
   return projected
 }
@@ -160,7 +550,7 @@ function projectUnclaimed(rows, finishedAt) {
   }).filter(Boolean).slice(0, UNCLAIMED_LIMIT)
 }
 
-function projectRecent(event, includePhase = false) {
+function projectRecent(event, includePhase = false, includeExtended = false) {
   const taskId = safeId(event.task_id)
   const worker = safeId(event.worker)
   if (!taskId || !worker || !['pass', 'reject', 'unresolved'].includes(event.pm_verdict)) return null
@@ -168,6 +558,7 @@ function projectRecent(event, includePhase = false) {
     dispatch_id: safeUuid(event.dispatch_id),
     task_id: taskId,
     worker,
+    ...(includeExtended ? { agent_id: safeId(event.agentId) } : {}),
     transport: transport(event.transport),
     terminal: terminal(event.terminal && event.terminal.startsWith('TEAM_') ? event.terminal : event.terminal ? `TEAM_${String(event.terminal).toUpperCase()}` : ''),
     pm_verdict: event.pm_verdict,
@@ -185,7 +576,7 @@ function projectDiagnostic(diagnostic, allowedCodes = DIAGNOSTIC_CODES_V1) {
   const code = allowedCodes.has(diagnostic?.code) ? diagnostic.code : null
   const severity = ['info', 'warning', 'error'].includes(diagnostic?.severity) ? diagnostic.severity : 'warning'
   const allowedSources = allowedCodes === DIAGNOSTIC_CODES_V4
-    ? ['liveness', 'tmux', 'dispatch', 'outbox', 'events', 'publisher', 'delivery_loop', 'delivery_runtime']
+    ? ['liveness', 'tmux', 'dispatch', 'outbox', 'events', 'publisher', 'delivery_loop', 'delivery_runtime', 'team_runtime']
     : allowedCodes !== DIAGNOSTIC_CODES_V1
       ? ['liveness', 'tmux', 'dispatch', 'outbox', 'events', 'publisher', 'delivery_loop']
     : ['liveness', 'tmux', 'dispatch', 'outbox', 'events', 'publisher']
@@ -196,12 +587,23 @@ function projectDiagnostic(diagnostic, allowedCodes = DIAGNOSTIC_CODES_V1) {
   return { code, severity, source, count }
 }
 
-function projectPulse(view, meta, schemaVersion, allowedDiagnosticCodes, includePhase = false) {
-  const projected = view.active.map(run => projectRun(run, includePhase)).filter(Boolean)
+function projectPulse(
+  view,
+  meta,
+  schemaVersion,
+  allowedDiagnosticCodes,
+  includePhase = false,
+  includeExtended = false,
+  includeHistory = false,
+) {
+  const projected = view.active.map(run => projectRun(run, includePhase, includeExtended)).filter(Boolean)
     .sort((a, b) => Number(b.advisory.attention) - Number(a.advisory.attention) || a.task_id.localeCompare(b.task_id))
   const runs = projected.slice(0, RUN_LIMIT)
   const recent = [...view.rec].sort((a, b) => b.mtime - a.mtime)
-    .map(event => projectRecent(event, includePhase)).filter(Boolean).slice(0, RECENT_LIMIT)
+    .map(event => projectRecent(event, includePhase, includeExtended)).filter(Boolean).slice(0, RECENT_LIMIT)
+  const historicalRuns = includeHistory
+    ? (view.history || []).map(run => projectRun(run, true, true)).filter(Boolean).slice(0, RUN_LIMIT)
+    : null
   const workerStats = projectWorkerStats(view.rec)
   const unclaimedControl = projectUnclaimed(view.unclaimed, meta.finishedAt)
   const diagnostics = (view.diagnostics || [])
@@ -248,6 +650,18 @@ function projectPulse(view, meta, schemaVersion, allowedDiagnosticCodes, include
     worker_stats: workerStats,
     unclaimed_control: unclaimedControl,
     diagnostics,
+    ...(includeHistory ? {
+      history: {
+        runs: historicalRuns,
+        total: Number.isSafeInteger(view.historyTotal) && view.historyTotal >= historicalRuns.length
+          ? view.historyTotal : (Array.isArray(view.history) ? view.history.length : 0),
+        truncated: Math.max(
+          0,
+          (Number.isSafeInteger(view.historyTotal) && view.historyTotal >= historicalRuns.length
+            ? view.historyTotal : (Array.isArray(view.history) ? view.history.length : 0)) - historicalRuns.length,
+        ),
+      },
+    } : {}),
   }
 }
 
@@ -537,7 +951,7 @@ function cloneDeliveryLoop(value) {
       value.actuation.enabled !== false || value.actuation.auto_execute !== false) return null
   const generatedAt = strictIso(value.generated_at)
   const expiresAt = strictIso(value.expires_at)
-  if (!generatedAt || !expiresAt || Date.parse(generatedAt) >= Date.parse(expiresAt)) return null
+  if (!generatedAt || !expiresAt || Date.parse(generatedAt) > Date.parse(expiresAt)) return null
   const experiment = cloneExperiment(value.experiment)
   const sourceHealth = cloneSourceHealth(value.source_health)
   const summary = cloneSummary(value.summary)
@@ -742,6 +1156,59 @@ export function projectPulseV3(
   return includeDeliveryLoop
     ? { ...projected, delivery_loop: deliveryLoop }
     : projected
+}
+
+/** Sanitize the graph object consumed by the operational flow renderer. */
+export function sanitizeTeamGraphProjection(input, sourceDigest = null, inputIssue = null) {
+  if (inputIssue) {
+    return {
+      projection: null,
+      diagnostic: {
+        code: inputIssue === 'TEAM_GRAPH_INPUT_UNREADABLE'
+          ? 'TEAM_GRAPH_INPUT_UNREADABLE' : 'TEAM_GRAPH_INPUT_INVALID',
+        severity: 'error', source: 'publisher', count: 1,
+      },
+    }
+  }
+  const checked = validateTeamGraph(input, { sourceDigest })
+  if (!checked.ok) {
+    return {
+      projection: null,
+      diagnostic: { code: 'TEAM_GRAPH_INPUT_INVALID', severity: 'error', source: 'publisher', count: 1 },
+    }
+  }
+  const teams = checked.value.teams.map(({ agents: _agents, ...team }) => team)
+  return {
+    projection: { ...checked.value, teams },
+    diagnostic: null,
+  }
+}
+
+export function sanitizeTeamRuntimeProjection(
+  input,
+  nowMs = Date.now(),
+  inputIssue = null,
+  teamGraph = null,
+  snapshot = null,
+) {
+  if (inputIssue) {
+    return {
+      projection: null,
+      diagnostic: {
+        code: inputIssue === 'TEAM_RUNTIME_INPUT_UNREADABLE'
+          ? 'TEAM_RUNTIME_INPUT_UNREADABLE' : 'TEAM_RUNTIME_INPUT_INVALID',
+        severity: 'error', source: 'team_runtime', count: 1,
+      },
+    }
+  }
+  if (input === null) {
+    return {
+      projection: null,
+      diagnostic: { code: 'TEAM_RUNTIME_INPUT_INVALID', severity: 'error', source: 'team_runtime', count: 1 },
+    }
+  }
+  const checked = projectTeamRuntime(input, { teamGraph, snapshot, nowMs })
+  return checked.diagnostic ? checked : { projection: checked.projection, diagnostic: null }
 }
 
 const DELIVERY_RUNTIME_SCHEMA = 'tmux-teams.delivery-runtime-projection'
@@ -1205,10 +1672,18 @@ export function projectPulseV4(
   runtimeInput = null,
   runtimeIssue = null,
   includeDeliveryRuntime = false,
+  teamGraphInput = null,
+  teamGraphIssue = null,
+  includeTeamGraph = false,
+  teamRuntimeInput = null,
+  teamRuntimeIssue = null,
+  includeTeamRuntime = false,
 ) {
   const diagnostics = [...(view.diagnostics || [])]
   let deliveryLoop = null
   let deliveryRuntime = null
+  let teamGraph = null
+  let teamRuntime = null
   if (includeDeliveryLoop) {
     const sanitized = sanitizeDeliveryLoopProjection(deliveryInput, meta.finishedAt, deliveryIssue)
     deliveryLoop = sanitized.projection
@@ -1219,13 +1694,45 @@ export function projectPulseV4(
     deliveryRuntime = sanitized.projection
     if (sanitized.diagnostic) diagnostics.unshift(sanitized.diagnostic)
   }
+  if (includeTeamGraph) {
+    const sanitized = sanitizeTeamGraphProjection(
+      teamGraphInput,
+      meta.teamGraphSourceDigest,
+      teamGraphIssue,
+    )
+    teamGraph = sanitized.projection
+    if (sanitized.diagnostic) diagnostics.unshift(sanitized.diagnostic)
+  }
+  if (includeTeamRuntime) {
+    const preliminary = projectPulse(
+      { ...view, diagnostics },
+      meta,
+      PULSE_SCHEMA_VERSION_V4,
+      DIAGNOSTIC_CODES_V4,
+      true,
+      true,
+      true,
+    )
+    const sanitized = sanitizeTeamRuntimeProjection(
+      teamRuntimeInput,
+      meta.finishedAt,
+      teamRuntimeIssue,
+      teamGraph,
+      { ...preliminary, team_graph: teamGraph },
+    )
+    teamRuntime = sanitized.projection
+    if (sanitized.diagnostic) diagnostics.unshift(sanitized.diagnostic)
+  }
   diagnostics.sort((left, right) => {
-    const priority = (code) => code?.startsWith('DELIVERY_RUNTIME_')
+    const priority = (code) => code?.startsWith('TEAM_RUNTIME_')
       ? 0
-      : code?.startsWith('DELIVERY_LOOP_') ? 1
-        : code === 'PHASE_BINDING_CONFLICT' ? 2
-          : code === 'PHASE_BINDING_INVALID' ? 3
-            : code === 'SCHEMA_UPGRADED' ? 4 : 5
+      : code?.startsWith('DELIVERY_RUNTIME_') ? 1
+        : code?.startsWith('DELIVERY_LOOP_') ? 2
+          : code?.startsWith('TEAM_GRAPH_') ? 3
+            : code?.startsWith('LIVENESS_EVIDENCE_') ? 4
+              : code === 'PHASE_BINDING_CONFLICT' ? 5
+                : code === 'PHASE_BINDING_INVALID' ? 6
+                  : code === 'SCHEMA_UPGRADED' ? 7 : 8
     return priority(left?.code) - priority(right?.code)
   })
   const projected = projectPulse(
@@ -1234,11 +1741,15 @@ export function projectPulseV4(
     PULSE_SCHEMA_VERSION_V4,
     DIAGNOSTIC_CODES_V4,
     true,
+    true,
+    true,
   )
   return {
     ...projected,
     ...(includeDeliveryLoop ? { delivery_loop: deliveryLoop } : {}),
     ...(includeDeliveryRuntime ? { delivery_runtime: deliveryRuntime } : {}),
+    ...(includeTeamGraph ? { team_graph: teamGraph } : {}),
+    team_runtime: teamRuntime,
   }
 }
 
@@ -1262,7 +1773,7 @@ const PULSE_DIAGNOSTIC_SOURCES_V1 =
 const PULSE_DIAGNOSTIC_SOURCES_V2 =
   new Set([...PULSE_DIAGNOSTIC_SOURCES_V1, 'delivery_loop'])
 const PULSE_DIAGNOSTIC_SOURCES_V4 =
-  new Set([...PULSE_DIAGNOSTIC_SOURCES_V2, 'delivery_runtime'])
+  new Set([...PULSE_DIAGNOSTIC_SOURCES_V2, 'delivery_runtime', 'team_runtime'])
 
 function incompatibleV1() {
   throw new Error('persisted Pulse snapshot is not compatible with v1')
@@ -1420,6 +1931,151 @@ function clonePulseRunV3(value) {
   return { ...v1, phase: phaseValue, phase_source: source }
 }
 
+function cloneBoundedLivenessValue(value, depth = 0) {
+  if (value === null || typeof value === 'boolean') return value
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.length <= 256) return value
+  if (depth >= LIVENESS_VALUE_DEPTH) {
+    if (value !== '[bounded]') incompatibleV1()
+    return value
+  }
+  if (Array.isArray(value) && value.length <= LIVENESS_OBJECT_LIMIT) {
+    return value.map((item) => cloneBoundedLivenessValue(item, depth + 1))
+  }
+  if (isObject(value) && Object.keys(value).length <= LIVENESS_OBJECT_LIMIT) {
+    const entries = Object.entries(value)
+    if (entries.some(([key]) => typeof key !== 'string' || key.length === 0 || key.length > 64)) {
+      incompatibleV1()
+    }
+    return Object.fromEntries(entries.map(([key, child]) => [
+      key, cloneBoundedLivenessValue(child, depth + 1),
+    ]))
+  }
+  incompatibleV1()
+}
+
+function cloneLivenessTool(value) {
+  const digestKeys = ['content_digest', 'output_digest', 'locations_digest']
+  const required = ['tool_call_id', 'title', 'kind', 'status', 'updated_at', 'update_count']
+  const keys = [...required, ...digestKeys]
+  if (!isObject(value) || Object.keys(value).some((key) => !keys.includes(key)) ||
+      !required.every((key) => Object.hasOwn(value, key)) ||
+      required.slice(0, 3).some((key) => typeof value[key] !== 'string' ||
+        value[key].length < 1 || value[key].length > 128) ||
+      !ACP_LIVENESS_RAW_TOOL_STATUSES.has(value.status) ||
+      !rawTimestamp(value.updated_at) || !Number.isSafeInteger(value.update_count) ||
+      value.update_count < 1) incompatibleV1()
+  const result = Object.fromEntries(required.map((key) => [
+    key, key === 'updated_at' ? requiredIso(value[key]) : value[key],
+  ]))
+  for (const key of digestKeys) {
+    if (!Object.hasOwn(value, key)) continue
+    if (value[key] !== null &&
+        (typeof value[key] !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(value[key]))) incompatibleV1()
+    result[key] = value[key]
+  }
+  return result
+}
+
+function cloneLivenessTools(value) {
+  if (!isObject(value) || Object.keys(value).length > 64) incompatibleV1()
+  const result = {}
+  for (const [toolId, tool] of Object.entries(value)) {
+    if (typeof toolId !== 'string' || toolId.length < 1 || toolId.length > 128) incompatibleV1()
+    const cloned = cloneLivenessTool(tool)
+    if (cloned.tool_call_id !== toolId) incompatibleV1()
+    result[toolId] = cloned
+  }
+  return result
+}
+
+function cloneLivenessHistory(value) {
+  const required = ['state', 'observed_at', 'evidence']
+  const optional = ['reason', 'last_protocol_activity_at', 'last_meaningful_progress_at', 'active_tools']
+  if (!isObject(value) || Object.keys(value).some((key) => ![...required, ...optional].includes(key)) ||
+      !required.every((key) => Object.hasOwn(value, key)) || !ACP_STALL_HISTORY_STATES.has(value.state) ||
+      typeof value.evidence !== 'string' || value.evidence.length < 1 || value.evidence.length > 256 ||
+      value.state === 'cancellation_unavailable' &&
+        (typeof value.reason !== 'string' || value.reason.length < 1 || value.reason.length > 64) ||
+      value.state !== 'cancellation_unavailable' && Object.hasOwn(value, 'reason')) incompatibleV1()
+  const result = {
+    state: value.state,
+    observed_at: requiredIso(value.observed_at),
+    evidence: value.evidence,
+  }
+  if (Object.hasOwn(value, 'reason')) result.reason = value.reason
+  for (const key of ['last_protocol_activity_at', 'last_meaningful_progress_at']) {
+    if (Object.hasOwn(value, key)) result[key] = requiredNullableIso(value[key])
+  }
+  if (Object.hasOwn(value, 'active_tools')) {
+    result.active_tools = cloneBoundedArray(value.active_tools, LIVENESS_TOOL_LIMIT, cloneLivenessTool)
+  }
+  return result
+}
+
+function cloneLivenessEvidence(value) {
+  const keys = [
+    'schema_version', 'task_id', 'dispatch_id', 'agent_id', 'liveness_state',
+    'observed_at', 'last_protocol_activity_at', 'last_meaningful_progress_at', 'termination_reason',
+    'active_tools', 'tools', 'stall_history',
+  ]
+  if (!exactObject(value, keys) || value.schema_version !== ACP_LIVENESS_SCHEMA ||
+      typeof value.task_id !== 'string' || !ID_RE.test(value.task_id) ||
+      typeof value.dispatch_id !== 'string' || !UUID_RE.test(value.dispatch_id) ||
+      !ACP_LIVENESS_STATES.has(value.liveness_state) ||
+      typeof value.observed_at !== 'string' || !LIVENESS_TIMESTAMP_RE.test(value.observed_at) ||
+      !(value.agent_id === null || typeof value.agent_id === 'string' && ID_RE.test(value.agent_id)) ||
+      !(value.termination_reason === null ||
+        typeof value.termination_reason === 'string' && value.termination_reason.length >= 1 &&
+          value.termination_reason.length <= 256)) incompatibleV1()
+  return {
+    schema_version: ACP_LIVENESS_SCHEMA,
+    task_id: value.task_id,
+    dispatch_id: value.dispatch_id,
+    agent_id: value.agent_id,
+    observed_at: requiredIso(value.observed_at),
+    liveness_state: value.liveness_state,
+    last_protocol_activity_at: requiredIso(value.last_protocol_activity_at),
+    last_meaningful_progress_at: requiredIso(value.last_meaningful_progress_at),
+    termination_reason: value.termination_reason,
+    active_tools: cloneBoundedArray(value.active_tools, LIVENESS_ACTIVE_TOOL_LIMIT, cloneLivenessTool),
+    tools: cloneLivenessTools(value.tools),
+    stall_history: cloneBoundedArray(value.stall_history, LIVENESS_HISTORY_LIMIT, cloneLivenessHistory),
+  }
+}
+
+function clonePulseRunV4(value) {
+  const keys = [
+    'dispatch_id', 'task_id', 'identity_source', 'state', 'worker', 'agent_id', 'identity_conflict', 'model', 'transport',
+    'started_at', 'elapsed_sec', 'silence_sec', 'timeout_sec', 'signals',
+    'reason_codes', 'advisory', 'phase', 'phase_source', 'liveness_evidence',
+  ]
+  if (!exactObject(value, keys) ||
+      !(value.agent_id === null || typeof value.agent_id === 'string' && ID_RE.test(value.agent_id)) ||
+      typeof value.identity_conflict !== 'boolean' ||
+      !(value.model === null || typeof value.model === 'string' && value.model.length >= 1 &&
+        value.model.length <= 128) ||
+      !(value.liveness_evidence === null || isObject(value.liveness_evidence))) incompatibleV1()
+  const v3 = clonePulseRunV3(Object.fromEntries(
+    Object.entries(value).filter(([key]) => !['agent_id', 'identity_conflict', 'model', 'liveness_evidence'].includes(key)),
+  ))
+  const livenessEvidence = value.liveness_evidence === null
+    ? null : cloneLivenessEvidence(value.liveness_evidence)
+  if (livenessEvidence !== null &&
+      (livenessEvidence.task_id !== value.task_id ||
+       livenessEvidence.dispatch_id !== value.dispatch_id ||
+       livenessEvidence.agent_id !== null && livenessEvidence.agent_id !== value.agent_id)) {
+    incompatibleV1()
+  }
+  return {
+    ...v3,
+    agent_id: value.agent_id,
+    identity_conflict: value.identity_conflict,
+    model: value.model,
+    liveness_evidence: livenessEvidence,
+  }
+}
+
 function clonePulseRecentV1(value) {
   const keys = [
     'dispatch_id', 'task_id', 'worker', 'transport', 'terminal', 'pm_verdict',
@@ -1457,6 +2113,21 @@ function clonePulseRecentV3(value) {
   if (phaseValue === null && !['unassigned', 'conflict'].includes(source) ||
       phaseValue !== null && !ASSIGNED_PHASE_SOURCES.has(source)) incompatibleV1()
   return { ...v1, phase: phaseValue, phase_source: source }
+}
+
+function clonePulseRecentV4(value) {
+  const keys = [
+    'dispatch_id', 'task_id', 'worker', 'agent_id', 'transport', 'terminal', 'pm_verdict',
+    'started_at', 'wait_sec', 'timeout_sec', 'phase', 'phase_source',
+  ]
+  if (!exactObject(value, keys) ||
+      !(value.agent_id === null || typeof value.agent_id === 'string' && ID_RE.test(value.agent_id))) {
+    incompatibleV1()
+  }
+  const v3 = clonePulseRecentV3(Object.fromEntries(
+    Object.entries(value).filter(([key]) => key !== 'agent_id'),
+  ))
+  return { ...v3, agent_id: value.agent_id }
 }
 
 function clonePulseWorkerStatV1(value) {
@@ -1512,6 +2183,9 @@ export function downProjectPulseV1(snapshot) {
         .includes(snapshot.schema_version)) incompatibleV1()
   const hasDeliveryLoop = Object.hasOwn(snapshot, 'delivery_loop')
   const hasDeliveryRuntime = Object.hasOwn(snapshot, 'delivery_runtime')
+  const hasTeamGraph = Object.hasOwn(snapshot, 'team_graph')
+  const hasTeamRuntime = Object.hasOwn(snapshot, 'team_runtime')
+  const hasHistory = Object.hasOwn(snapshot, 'history')
   const topKeys = [
     ...PULSE_V1_KEYS,
     ...(snapshot.schema_version === PULSE_SCHEMA_VERSION_V2 ||
@@ -1519,6 +2193,12 @@ export function downProjectPulseV1(snapshot) {
         hasDeliveryLoop ? ['delivery_loop'] : []),
     ...(snapshot.schema_version === PULSE_SCHEMA_VERSION_V4 && hasDeliveryRuntime
       ? ['delivery_runtime'] : []),
+    ...(snapshot.schema_version === PULSE_SCHEMA_VERSION_V4 && hasTeamGraph
+      ? ['team_graph'] : []),
+    ...(snapshot.schema_version === PULSE_SCHEMA_VERSION_V4 && hasHistory
+      ? ['history'] : []),
+    ...(snapshot.schema_version === PULSE_SCHEMA_VERSION_V4 && hasTeamRuntime
+      ? ['team_runtime'] : []),
   ]
   if (!exactObject(snapshot, topKeys) ||
       typeof snapshot.stream_id !== 'string' || !UUID_RE.test(snapshot.stream_id) ||
@@ -1531,6 +2211,15 @@ export function downProjectPulseV1(snapshot) {
         (typeof snapshot.scope.repo_name === 'string' &&
           /^[A-Za-z0-9_.-]{1,80}$/.test(snapshot.scope.repo_name)))) incompatibleV1()
   const observation = clonePulseObservationV1(snapshot.observation)
+  if (hasHistory) {
+    if (!exactObject(snapshot.history, ['runs', 'total', 'truncated']) ||
+        !Number.isSafeInteger(snapshot.history.total) || snapshot.history.total < 0 ||
+        !Number.isSafeInteger(snapshot.history.truncated) || snapshot.history.truncated < 0 ||
+        !Array.isArray(snapshot.history.runs) || snapshot.history.runs.length > RUN_LIMIT) {
+      incompatibleV1()
+    }
+    snapshot.history.runs.forEach((item) => clonePulseRunV4(item))
+  }
   const diagnostics = cloneBoundedArray(
     snapshot.diagnostics,
     DIAGNOSTIC_LIMIT,
@@ -1555,7 +2244,9 @@ export function downProjectPulseV1(snapshot) {
       RUN_LIMIT,
       [PULSE_SCHEMA_VERSION_V3, PULSE_SCHEMA_VERSION_V4].includes(snapshot.schema_version)
         ? (item) => {
-            const { phase: _phase, phase_source: _source, ...v1 } = clonePulseRunV3(item)
+            const { phase: _phase, phase_source: _source, agent_id: _agentId, identity_conflict: _identityConflict, model: _model, liveness_evidence: _liveness, ...v1 } =
+              snapshot.schema_version === PULSE_SCHEMA_VERSION_V4
+                ? clonePulseRunV4(item) : clonePulseRunV3(item)
             return v1
           }
         : clonePulseRunV1,
@@ -1565,7 +2256,9 @@ export function downProjectPulseV1(snapshot) {
       RECENT_LIMIT,
       [PULSE_SCHEMA_VERSION_V3, PULSE_SCHEMA_VERSION_V4].includes(snapshot.schema_version)
         ? (item) => {
-            const { phase: _phase, phase_source: _source, ...v1 } = clonePulseRecentV3(item)
+            const { phase: _phase, phase_source: _source, agent_id: _agentId, ...v1 } =
+              snapshot.schema_version === PULSE_SCHEMA_VERSION_V4
+                ? clonePulseRecentV4(item) : clonePulseRecentV3(item)
             return v1
           }
         : clonePulseRecentV1,
@@ -1578,5 +2271,95 @@ export function downProjectPulseV1(snapshot) {
   }
   projected.complete = projected.diagnostics.length === 0
   projected.observation.quality = projected.complete ? 'complete' : 'degraded'
+  return projected
+}
+
+function compatibilityDiagnostics(snapshot, schemaVersion) {
+  const diagnostics = cloneBoundedArray(
+    snapshot.diagnostics,
+    DIAGNOSTIC_LIMIT,
+    item => clonePulseDiagnosticForCompat(item, schemaVersion),
+  ).filter(item => {
+    const codes = schemaVersion === PULSE_SCHEMA_VERSION_V3
+      ? DIAGNOSTIC_CODES_V3 : DIAGNOSTIC_CODES_V2
+    const sources = schemaVersion === PULSE_SCHEMA_VERSION_V3
+      ? PULSE_DIAGNOSTIC_SOURCES_V2 : PULSE_DIAGNOSTIC_SOURCES_V2
+    return codes.has(item.code) && sources.has(item.source)
+  })
+  return diagnostics
+}
+
+function compatibilityBase(snapshot, schemaVersion) {
+  const base = downProjectPulseV1(snapshot)
+  const diagnostics = compatibilityDiagnostics(snapshot, schemaVersion)
+  const projected = {
+    ...base,
+    schema_version: schemaVersion,
+    diagnostics,
+    complete: diagnostics.length === 0,
+    observation: { ...base.observation, quality: diagnostics.length ? 'degraded' : 'complete' },
+  }
+  return projected
+}
+
+function v3RunFromSnapshot(value, sourceVersion) {
+  if (sourceVersion === PULSE_SCHEMA_VERSION_V4) {
+    const run = clonePulseRunV4(value)
+    const { agent_id: _agentId, identity_conflict: _identityConflict, model: _model, liveness_evidence: _liveness, ...v3 } = run
+    return clonePulseRunV3(v3)
+  }
+  return clonePulseRunV3(value)
+}
+
+function v3RecentFromSnapshot(value, sourceVersion) {
+  if (sourceVersion === PULSE_SCHEMA_VERSION_V4) {
+    const recent = clonePulseRecentV4(value)
+    const { agent_id: _agentId, ...v3 } = recent
+    return clonePulseRecentV3(v3)
+  }
+  return clonePulseRecentV3(value)
+}
+
+/**
+ * Downproject a closed v4 (or compatible newer) snapshot to the real v2
+ * schema. v2 has a required delivery-loop projection but no phase, model,
+ * agent identity, liveness evidence, or historical-run area.
+ */
+export function downProjectPulseV2(snapshot) {
+  if (!isObject(snapshot) || !Object.hasOwn(snapshot, 'delivery_loop')) incompatibleV1()
+  const deliveryLoop = cloneDeliveryLoop(snapshot.delivery_loop)
+  if (!deliveryLoop) incompatibleV1()
+  return {
+    ...compatibilityBase(snapshot, PULSE_SCHEMA_VERSION_V2),
+    delivery_loop: deliveryLoop,
+  }
+}
+
+/**
+ * Downproject to v3 while preserving only evidence-sourced phase attribution.
+ * All v4-only identity, model, liveness, team-graph, and history fields are
+ * deliberately stripped before the closed v3 shape is returned.
+ */
+export function downProjectPulseV3(snapshot) {
+  if (!isObject(snapshot) ||
+      ![PULSE_SCHEMA_VERSION_V3, PULSE_SCHEMA_VERSION_V4].includes(snapshot.schema_version)) {
+    incompatibleV1()
+  }
+  const projected = compatibilityBase(snapshot, PULSE_SCHEMA_VERSION_V3)
+  projected.runs = cloneBoundedArray(
+    snapshot.runs,
+    RUN_LIMIT,
+    item => v3RunFromSnapshot(item, snapshot.schema_version),
+  )
+  projected.recent_verdicts = cloneBoundedArray(
+    snapshot.recent_verdicts,
+    RECENT_LIMIT,
+    item => v3RecentFromSnapshot(item, snapshot.schema_version),
+  )
+  if (Object.hasOwn(snapshot, 'delivery_loop')) {
+    const deliveryLoop = cloneDeliveryLoop(snapshot.delivery_loop)
+    if (!deliveryLoop) incompatibleV1()
+    projected.delivery_loop = deliveryLoop
+  }
   return projected
 }

@@ -1,893 +1,291 @@
-// Standalone D3-assisted phase flowchart for Pulse ACP evidence.
+// Static, document-flow renderer for the operational agent flow.
 //
-// The phase backbone and inner loops are a normative operating model. Solid
-// spokes only place a dispatch at an explicitly observed phase, or at the
-// honest unassigned pool. No agent-to-agent or observed handoff is rendered.
+// The graph model is prepared by pulse-loop-graph.mjs. This module only turns
+// that model into offline HTML; it never probes a process or reads a file.
 
-const STALE_NODE_COPY = 'snapshot หมดอายุ · สถานะนี้เป็นหลักฐานล่าสุด ไม่ใช่สถานะปัจจุบัน'
-const UNKNOWN_NODE_COPY = 'ตรวจ freshness ไม่ได้ · สถานะนี้เป็นหลักฐานล่าสุด ไม่ใช่สถานะปัจจุบัน'
+import { createHash } from 'node:crypto'
+import { PULSE_REFRESH_SOURCE } from './pulse-refresh.mjs'
 
-const esc = (value) => String(value ?? '').replace(
-  /[&<>"]/g,
-  (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[char],
-)
+const DEFAULT_REFRESH_SCRIPT_NAME = `pulse-refresh-${createHash('sha256').update(PULSE_REFRESH_SOURCE).digest('hex')}.js`
 
-const duration = (seconds) => seconds == null
-  ? 'ยังไม่วัด'
-  : seconds < 60
-    ? `${Math.round(seconds)} วิ`
-    : seconds < 3600
-      ? `${Math.floor(seconds / 60)} นาที`
-      : `${Math.floor(seconds / 3600)} ชม. ${Math.floor((seconds % 3600) / 60)} นาที`
+const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+}[character]))
 
-const shortIdentity = (value, max = 22) => {
-  const text = String(value ?? '')
-  if (text.length <= max) return text
-  const side = Math.floor((max - 1) / 2)
-  return `${text.slice(0, side)}…${text.slice(-side)}`
+const numberText = (value, missing = 'unknown') =>
+  Number.isFinite(value) ? String(value) : missing
+
+const durationText = (value) => {
+  if (!Number.isFinite(value)) return 'unknown'
+  if (value < 60) return `${Math.round(value)}s`
+  if (value < 3600) return `${Math.floor(value / 60)}m`
+  return `${Math.floor(value / 3600)}h`
 }
 
-function dateTimeFormatter(timeZone) {
-  return new Intl.DateTimeFormat('en-US-u-ca-gregory-nu-latn', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hourCycle: 'h23',
-  })
-}
-
-function semanticTime(value, timeZone, formatter) {
-  const milliseconds = Date.parse(String(value || ''))
-  if (!Number.isFinite(milliseconds)) return '<span class="time-unavailable">ยังไม่วัด</span>'
-  const parts = Object.fromEntries(
-    formatter.formatToParts(new Date(milliseconds))
-      .filter((part) => part.type !== 'literal')
-      .map((part) => [part.type, part.value]),
-  )
-  const label = `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`
-  return `<time datetime="${esc(new Date(milliseconds).toISOString())}" title="${esc(timeZone)}" aria-describedby="loop-timezone-label">${esc(label)}</time>`
-}
-
-const freshnessCopy = (freshness) => freshness === 'stale'
-  ? STALE_NODE_COPY
-  : freshness === 'unknown' ? UNKNOWN_NODE_COPY : ''
-
-function phaseForNode(topology, node) {
-  if (node.placement_id === 'unassigned') {
-    return {
-      title: 'ยังไม่ผูกเฟส',
-      thai: 'ไม่มี phase binding ที่ใช้ได้',
-      deliverable: 'phase อาจไม่ได้ระบุหรือมีหลักฐานขัดแย้ง จึงยังระบุ outcome ไม่ได้',
-      exit_artifact: 'unassigned',
-    }
-  }
-  return topology.phases.find((phase) => phase.id === node.placement_id) || {
-    title: node.placement_id,
-    thai: '',
-    deliverable: 'ไม่ทราบ outcome',
-    exit_artifact: 'unknown',
+function displayTime(value, timeZone) {
+  if (!value || !Number.isFinite(Date.parse(value))) return 'unknown'
+  try {
+    return new Intl.DateTimeFormat('en-GB-u-ca-gregory-nu-latn', {
+      timeZone,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+    }).format(new Date(value)).replace(',', '')
+  } catch {
+    return 'unknown'
   }
 }
 
-function nodeAria(topology, node, freshness) {
-  const phase = phaseForNode(topology, node)
-  const base = `${node.agent}, งาน ${node.task_id}, เฟส ${phase.title}, ${node.label}. ` +
-    `dispatch ${node.signals.dispatch}, process ${node.signals.liveness}, ` +
-    `terminal ${node.signals.terminal}, verdict ${node.signals.verdict}`
-  const qualifier = freshnessCopy(freshness)
-  return { base, full: qualifier ? `${qualifier}. ${base}` : base }
-}
-
-function agentNodeSvg(topology, node, {
-  selectedNodeId,
-  initialFreshness,
-}) {
-  const aria = nodeAria(topology, node, initialFreshness)
-  const weakIdentity = node.identity_source !== 'dispatch_id'
-  const classes = [
-    'agent-node',
-    `tone-${node.tone}`,
-    node.historical ? 'is-historical' : 'is-live',
-    node.attention ? 'needs-attention' : '',
-    weakIdentity ? 'weak-identity' : '',
-  ].filter(Boolean).join(' ')
-  const selected = node.node_id === selectedNodeId
-  return `<g class="${classes}" transform="translate(${node.x} ${node.y})"
-    data-agent-node="true" data-node-id="${esc(node.node_id)}"
-    data-phase-id="${esc(node.placement_id)}" data-phase-source="${esc(node.phase_source)}"
-    data-state="${esc(node.state)}"
-    data-dispatch-id="${esc(node.dispatch_id || '')}" data-task-id="${esc(node.task_id)}"
-    data-node-freshness="${esc(initialFreshness)}"
-    data-evidence="${node.historical ? 'recorded-event' : 'live-projection'}"
-    data-base-aria-label="${esc(aria.base)}" role="button"
-    aria-label="${esc(aria.full)}" aria-controls="graph-inspector"
-    aria-expanded="false" aria-pressed="${selected ? 'true' : 'false'}"
-    tabindex="${selected ? '0' : '-1'}">
-    <title>${esc(aria.full)}</title>
-    <circle class="node-attention-ring" r="${node.radius + 8}" aria-hidden="true"/>
-    <circle class="node-focus-ring" r="${node.radius + 5}" aria-hidden="true"/>
-    <circle class="node-core" r="${node.radius}" aria-hidden="true"/>
-    ${node.historical
-      ? `<circle class="node-history-ring" r="${Math.max(4, node.radius - 5)}" aria-hidden="true"/>`
-      : ''}
-    <text class="node-agent-label" y="4" text-anchor="middle" aria-hidden="true">${esc(shortIdentity(node.agent, 9))}</text>
-  </g>`
-}
-
-const PHASE_OUTCOME_LINES = Object.freeze({
-  requirement: ['Business function · validation · exception', 'security · performance · integration'],
-  prototype: ['Clickable prototype', 'ยืนยัน flow ที่ใช้งานได้'],
-  development: ['Working software', 'พร้อมส่งให้ QA ตรวจ'],
-  qa: ['E2E test report · UAT report', 'หลักฐานสำหรับผู้รับปลายทาง'],
-})
-
-function phaseCardSvg(phase) {
-  const outcomeLines = PHASE_OUTCOME_LINES[phase.id] || [phase.deliverable]
-  const stateCopy = phase.state === 'not_observed' ? 'ยังไม่มี phase telemetry' : phase.state
-  const activeCopy = phase.owner_role
-    ? `owner: ${phase.owner_role} · work ${duration(phase.work_age_sec)} · wait ${duration(phase.wait_age_sec)}`
-    : phase.active_slices === null ? 'active slices: ไม่ทราบ' : `active slices: ${phase.active_slices}`
-  const bottleneckCopy = phase.bottleneck
-    ? `BOTTLENECK ${phase.bottleneck.kind} · ${duration(phase.bottleneck.age_sec)} · ${phase.bottleneck.owner_role}`
-    : ''
-  const planY = phase.plan_y
-  const agentRegion = phase.agent_region
-  const agentBottom = agentRegion.y + agentRegion.height
-  const reviewY = phase.review_y
-  const artifactY = phase.artifact_y
-  return `<g class="phase-team${phase.attention ? ' phase-attention' : ''}"
-    data-phase-team="true" data-phase-id="${esc(phase.id)}"
-    data-phase-state="${esc(phase.state)}" data-phase-source="${esc(phase.assignment_source)}"
-    data-phase-run-id="${esc(phase.phase_run_id || '')}"
-    data-bottleneck="${phase.bottleneck ? 'true' : 'false'}"
-    transform="translate(${phase.x} ${phase.y})">
-    <rect class="phase-boundary" width="${phase.width}" height="${phase.height}" rx="22"/>
-    <circle class="phase-step" cx="30" cy="32" r="17"/>
-    <text class="phase-step-copy" x="30" y="36" text-anchor="middle">${esc(phase.step)}</text>
-    <text class="phase-title" x="58" y="29">${esc(phase.title)}</text>
-    <text class="phase-thai" x="58" y="49">${esc(phase.thai)}</text>
-    <text class="phase-state" x="${phase.width - 16}" y="28" text-anchor="end">${esc(stateCopy)}</text>
-    <text class="phase-state" x="${phase.width - 16}" y="47" text-anchor="end">${esc(activeCopy)}</text>
-    <text class="phase-bottleneck" x="${phase.width - 16}" y="64" text-anchor="end">${esc(bottleneckCopy)}</text>
-    <text class="phase-outcome-label" x="20" y="76">EXPECTED OUTCOME / EXIT</text>
-    <text class="phase-outcome" x="20" y="96">${esc(outcomeLines[0])}</text>
-    <text class="phase-outcome" x="20" y="114">${esc(outcomeLines[1] || '')}</text>
-    <g class="inner-model" aria-hidden="true">
-      <rect class="flow-action" x="18" y="${planY}" width="112" height="34" rx="17"/>
-      <text class="flow-action-copy" x="74" y="${planY + 21}" text-anchor="middle">1 · วางแผน slice</text>
-      <path class="inner-edge" data-edge-kind="model-inner-loop" d="M 130 ${planY + 17} H 135 V ${agentRegion.y - 7}" marker-end="url(#model-arrow)"/>
-      <path class="inner-edge" data-edge-kind="model-inner-loop" d="M 135 ${agentBottom + 6} V ${reviewY} H 166" marker-end="url(#model-arrow)"/>
-      <polygon class="review-decision" points="212,${reviewY - 30} 252,${reviewY} 212,${reviewY + 30} 172,${reviewY}"/>
-      <text class="review-title" x="212" y="${reviewY - 4}" text-anchor="middle">3 · ทีมตรวจ</text>
-      <text class="review-copy" x="212" y="${reviewY + 12}" text-anchor="middle">accept / reject</text>
-      <path class="inner-edge pass-edge" data-edge-kind="model-inner-loop" d="M 212 ${reviewY + 30} V ${artifactY - 6}" marker-end="url(#model-arrow)"/>
-      <path class="inner-edge rework-edge" data-edge-kind="model-inner-loop" d="M 172 ${reviewY} H 10 V ${planY + 17} H 14" marker-end="url(#model-arrow)"/>
-      <text class="rework-copy" x="24" y="${reviewY - 15}">reject → rework → วางแผนใหม่</text>
-    </g>
-    <g class="artifact-node" aria-hidden="true">
-      <path d="M 22 ${artifactY} H 246 V ${artifactY + 40} H 22 Z M 218 ${artifactY} V ${artifactY + 16} H 246"/>
-      <text class="artifact-label" x="34" y="${artifactY + 17}">4 · EXIT ARTIFACT</text>
-      <text class="artifact-name" x="34" y="${artifactY + 33}">${esc(phase.exit_artifact)}</text>
-    </g>
-    <text class="agent-count" x="135" y="${phase.agent_count_y}" text-anchor="middle">2 · ${phase.agent_count} ACP agents ที่ผูกเฟส</text>
-  </g>`
-}
-
-function signal(label, value, tone = '') {
-  return `<div class="signal${tone ? ` ${tone}` : ''}"><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`
-}
-
-const terminalTone = (node) => node.signals.terminal === 'TEAM_DONE'
-  ? 'neutral'
-  : node.signals.terminal === 'ยังไม่มี' ? '' : 'warn'
-
-const verdictTone = (node) => node.verdict_conflict
-  ? 'bad'
-  : node.signals.verdict === 'ผ่าน'
-    ? 'ok'
-    : node.signals.verdict === 'ให้แก้ไข'
-      ? 'bad'
-      : node.signals.verdict === 'ยังไม่สรุป' ? 'warn' : ''
-
-function identityNote(node) {
-  if (node.evidence_conflict === 'history') {
-    return 'หลักฐาน history ใช้ dispatch identity ซ้ำ · รวมเป็น conflict node และไม่เลือกแถวแรก'
-  }
-  if (node.identity_conflict) return 'dispatch identity ขัดแย้ง · ไม่เลือกสถานะหรือ phase แบบ first-row-wins'
-  if (node.phase_source === 'conflict') {
-    return 'phase binding ขัดแย้ง · ไม่เลือกเฟสแบบ first-source-wins'
-  }
-  if (node.phase_binding_invalid) {
-    return 'phase binding ไม่ผ่าน contract · จัดไว้ใน unassigned'
-  }
-  if (node.identity_source === 'legacy_task_time') return 'identity สำรอง · จับคู่ด้วย task + เวลาเริ่ม'
-  if (node.identity_source === 'uncorrelatable') {
-    return 'เชื่อม attempt ไม่ได้ · ไม่มี dispatch UUID และเวลาเริ่มที่ใช้ได้'
-  }
-  return ''
-}
-
-function inspectorHtml(topology, node, initialFreshness) {
-  const qualifier = freshnessCopy(initialFreshness)
-  if (!node) {
-    return `<aside id="graph-inspector" class="graph-inspector" aria-label="รายละเอียด ACP agent" hidden>
-      <p>ไม่มี ACP agent run ใน snapshot นี้</p>
-    </aside>`
-  }
-  const phase = phaseForNode(topology, node)
-  const elapsedLabel = node.historical
-    ? 'ใช้เวลา'
-    : node.state === 'died' || node.state === 'unrecorded' ? 'เงียบมา' : 'ผ่านไป'
-  const elapsedValue = duration(node.historical
-    ? node.elapsed_sec
-    : node.state === 'died' || node.state === 'unrecorded'
-      ? node.silence_sec
-      : node.elapsed_sec)
-  const note = identityNote(node)
-  return `<aside id="graph-inspector" class="graph-inspector" aria-labelledby="inspector-agent" hidden>
-    <header class="inspector-head">
-      <div><span id="inspector-evidence" class="inspector-kicker">${node.historical ? 'ACP RUN ที่บันทึกแล้ว' : 'ACP RUN ที่กำลังติดตาม'}</span>
-        <h2 id="inspector-agent">${esc(node.agent)}</h2></div>
-      <button id="graph-inspector-close" type="button" aria-label="ปิดรายละเอียด">×</button>
-    </header>
-    <section class="outcome-risk">
-      <span>OUTCOME ที่เกี่ยวข้อง</span>
-      <strong id="inspector-phase">${esc(phase.title)}${phase.thai ? ` · ${esc(phase.thai)}` : ''}</strong>
-      <p id="inspector-outcome">${esc(phase.deliverable)}</p>
-      <code id="inspector-artifact">${esc(phase.exit_artifact)}</code>
-    </section>
-    <code id="inspector-task" class="inspector-task" title="${esc(node.task_id)}">${esc(node.task_id)}</code>
-    <span id="inspector-state" class="inspector-state tone-${esc(node.tone)}">${esc(node.label)}</span>
-    <p id="inspector-freshness" class="freshness-qualifier"${qualifier ? '' : ' hidden'}>${esc(qualifier || STALE_NODE_COPY)}</p>
-    <dl class="inspector-meta priority">
-      <div><dt>ถัดไป</dt><dd id="inspector-action">${esc(node.next_action)}</dd></div>
-      <div><dt id="inspector-elapsed-label">${esc(elapsedLabel)}</dt><dd id="inspector-elapsed">${esc(elapsedValue)}</dd></div>
-    </dl>
-    <dl class="inspector-signals">
-      ${signal('dispatch', node.signals.dispatch)}
-      ${signal('process', node.signals.liveness, node.signals.liveness === 'พบ process' ? 'ok' : '')}
-      ${signal('terminal', node.signals.terminal, terminalTone(node))}
-      ${signal('verdict', node.signals.verdict, verdictTone(node))}
-    </dl>
-    <p id="inspector-meaning" class="inspector-meaning">${esc(node.meaning)}</p>
-    <p id="inspector-identity" class="identity-note"${note ? '' : ' hidden'}>${esc(note)}</p>
-  </aside>`
-}
-
-function semanticSummary(topology, initialFreshness) {
-  return `<section class="sr-only" aria-labelledby="semantic-graph-title">
-    <h2 id="semantic-graph-title">สรุป phase flowchart และ ACP agents แบบข้อความ</h2>
-    <p>Outer flow: Requirement → Prototype → Development → QA → ProjectDelivery. Requirement ส่ง requirements baseline ให้ Prototype; Prototype ส่ง prototype evaluation ให้ Development; Development ส่ง working software ให้ QA; QA ส่ง E2E และ UAT evidence ให้ Project Delivery. เส้นทางนี้เป็นโมเดล ไม่ใช่หลักฐาน handoff สด.</p>
-    <p>Inner loop ของทุก phase คือ วางแผน slice → มอบงานให้ ACP agent → ทีมเฟสตรวจผล → ถ้า reject ให้ rework และวนกลับไปวางแผน → เมื่อ accept จึงออก exit artifact เพื่อ handoff ไปเฟสถัดไป.</p>
-    <p>Operational handoff edges เป็นเพียงการสังเกตแบบ advisory ภายใต้ same-UID trust. Pulse ไม่ accept, reject, consume, dispatch หรือ gate งาน.</p>
-    <ul>${topology.operational_edges.map((edge) =>
-      `<li>Gate ${esc(edge.gate_id)}: ${esc(edge.from)} ไป ${esc(edge.to)}, ${esc(edge.artifact_type)}, สถานะ ${esc(edge.state)}, completed ${edge.completed ? 'true' : 'false'}, basis ${esc(edge.completion_basis ?? 'none')}.</li>`).join('')}</ul>
-    <ol>${topology.phases.map((phase) =>
-      `<li>${esc(phase.title)}: ${esc(phase.deliverable)}; exit ${esc(phase.exit_artifact)}; ${phase.agent_count} agents ที่ผูกเฟส; state ${esc(phase.state)}${phase.owner_role ? `; owner ${esc(phase.owner_role)}; work age ${esc(duration(phase.work_age_sec))}; wait age ${esc(duration(phase.wait_age_sec))}` : ''}${phase.bottleneck ? `; bottleneck ${esc(phase.bottleneck.kind)} age ${esc(duration(phase.bottleneck.age_sec))} owner ${esc(phase.bottleneck.owner_role)}` : ''}</li>`).join('')}</ol>
-    <p>${topology.unassigned.agent_count} agents ยังไม่มี phase binding ที่ใช้ได้ หรือมีหลักฐาน phase ขัดแย้ง.</p>
-    <ul>${topology.nodes.map((node) =>
-      `<li>${esc(nodeAria(topology, node, initialFreshness).full)}</li>`).join('')}</ul>
-  </section>`
-}
-
-function scriptJson(value) {
+function safeJson(value) {
   return JSON.stringify(value)
+    .replace(/&/g, '\\u0026')
     .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029')
 }
 
-function graphData(topology) {
-  const payload = {
-    viewBox: topology.view_box,
-    phases: topology.phases,
-    endpoint: topology.endpoint,
-    unassigned: topology.unassigned,
-    assignment: topology.assignment,
-    delivery_context: topology.delivery_context,
-    operational_edges: topology.operational_edges,
-    observed_edges: topology.observed_edges,
-    nodes: topology.nodes.map((node) => {
-      const phase = phaseForNode(topology, node)
-      return {
-        node_id: node.node_id,
-        agent: node.agent,
-        task_id: node.task_id,
-        state: node.state,
-        label: node.label,
-        tone: node.tone,
-        meaning: node.meaning,
-        historical: node.historical,
-        attention: node.attention,
-        dispatch_id: node.dispatch_id,
-        identity_source: node.identity_source,
-        identity_note: identityNote(node),
-        phase_id: node.placement_id,
-        phase_source: node.phase_source,
-        phase_title: phase.title,
-        phase_thai: phase.thai,
-        phase_outcome: phase.deliverable,
-        exit_artifact: phase.exit_artifact,
-        elapsed_label: node.historical
-          ? 'ใช้เวลา'
-          : node.state === 'died' || node.state === 'unrecorded' ? 'เงียบมา' : 'ผ่านไป',
-        elapsed_value: duration(node.historical
-          ? node.elapsed_sec
-          : node.state === 'died' || node.state === 'unrecorded'
-            ? node.silence_sec
-            : node.elapsed_sec),
-        signals: node.signals,
-        next_action: node.next_action,
-        verdict_conflict: Boolean(node.verdict_conflict),
-        x: node.x,
-        y: node.y,
-        radius: node.radius,
-        base_aria: nodeAria(topology, node, 'fresh').base,
-      }
-    }),
-  }
-  return scriptJson(payload)
+function freshState(snapshot) {
+  const expiry = Date.parse(String(snapshot?.observation?.expires_at || ''))
+  if (!Number.isFinite(expiry)) return 'unknown'
+  return Date.now() >= expiry ? 'stale' : 'fresh'
 }
 
+function nodeForRole(nodes, role) {
+  return nodes.find((node) => node.role === role) || null
+}
+
+function workerY(index) {
+  return 72 + index * 92
+}
+
+function connectorPath(edge, lane) {
+  const dispatcher = nodeForRole(lane.nodes, 'dispatcher')
+  const evaluator = nodeForRole(lane.nodes, 'evaluator')
+  const workerIndex = lane.nodes
+    .filter((node) => node.role === 'worker')
+    .findIndex((node) => node.agent_id === edge.to)
+  if (edge.kind === 'dispatch') {
+    return `M 220 92 H 286 V ${workerY(Math.max(0, workerIndex))} H 320`
+  }
+  if (edge.kind === 'collection') {
+    const index = lane.nodes.filter((node) => node.role === 'worker')
+      .findIndex((node) => node.agent_id === edge.from)
+    return `M 600 ${workerY(Math.max(0, index))} H 660 V 92 H 700`
+  }
+  if (edge.kind === 'reject-loop') {
+    return 'M 790 110 C 760 22, 360 22, 320 72'
+  }
+  if (edge.kind === 'pass-handoff') {
+    return 'M 860 92 H 930'
+  }
+  return 'M 0 0'
+}
+
+function connectorSvg(lane) {
+  if (!lane.configured) return ''
+  return `<svg class="connector-layer" viewBox="0 0 960 ${Math.max(180, 112 + lane.nodes.filter((node) => node.role === 'worker').length * 92)}" aria-hidden="true" focusable="false">
+    ${lane.edges.map((edge) => `<path class="connector connector-${esc(edge.kind)}" d="${connectorPath(edge, lane)}"></path>`).join('')}
+  </svg>`
+}
+
+function livenessDetails(node) {
+  const evidence = node.liveness_evidence
+  if (!evidence) return ''
+  const progress = node.progress_evidence || {}
+  const toolLabel = (tool) => {
+    if (!tool || typeof tool !== 'object') return null
+    const name = [tool.title, tool.kind, tool.status].filter(Boolean).join(' · ')
+    const id = tool.tool_call_id ? ` (${tool.tool_call_id})` : ''
+    const digests = ['content_digest', 'output_digest', 'locations_digest']
+      .filter((key) => typeof tool[key] === 'string')
+      .map((key) => key.replace(/_digest$/, ''))
+    return `${name || 'tool'}${id}${digests.length ? ` · ${digests.join(', ')}` : ''}`
+  }
+  const tools = Array.isArray(evidence.active_tools) && evidence.active_tools.length
+    ? evidence.active_tools.map(toolLabel).filter(Boolean).map((tool) => `<code>${esc(tool)}</code>`).join(', ')
+    : 'none reported'
+  const stallHistory = Array.isArray(evidence.stall_history) ? evidence.stall_history : []
+  const stallText = stallHistory.length
+    ? stallHistory.map((entry) => `${esc(entry.state)} · ${esc(entry.evidence || 'evidence recorded')}${entry.reason ? ` · reason ${esc(entry.reason)}` : ''}`).join('; ')
+    : 'not detected'
+  return `<details class="agent-evidence"><summary>Evidence details</summary><dl>
+    <div><dt>liveness state</dt><dd data-liveness-detail="state">${esc(evidence.liveness_state)}</dd></div>
+    <div><dt>observed at</dt><dd>${esc(evidence.observed_at || 'unknown')}</dd></div>
+    <div><dt>last protocol activity</dt><dd>${esc(evidence.last_protocol_activity_at || 'unknown')}</dd></div>
+    <div><dt>last meaningful progress</dt><dd>${esc(evidence.last_meaningful_progress_at || 'unknown')}</dd></div>
+    <div><dt>active tools</dt><dd>${tools}</dd></div>
+    <div><dt>termination reason</dt><dd>${esc(evidence.termination_reason || 'none reported')}</dd></div>
+    <div><dt>stall history</dt><dd>${stallText}</dd></div>
+    <div><dt>elapsed / silence</dt><dd>${durationText(progress.elapsed_sec)} / ${durationText(progress.silence_sec)}</dd></div>
+  </dl></details>`
+}
+
+function nodeHtml(node) {
+  const phaseId = node.phase ? node.phase.toLowerCase() : 'unassigned'
+  const phaseSource = node.phase_source || 'unassigned'
+  const runtime = node.runtime
+  const runtimeAttrs = `data-agent-run-id="${esc(runtime?.agent_run_id || '')}" data-attempt-id="${esc(runtime?.attempt_id || '')}" data-queue-wait-ms="${runtime?.queue_wait_ms ?? ''}" data-service-ms="${runtime?.service_ms ?? ''}" data-bottleneck="${node.bottleneck ? 'true' : 'false'}"`
+  const runtimeFacts = runtime
+    ? `<div><dt>queue wait</dt><dd>${numberText(runtime.queue_wait_ms)} ms</dd></div><div><dt>service</dt><dd>${numberText(runtime.service_ms)} ms</dd></div><div><dt>attempt</dt><dd><code>${esc(runtime.attempt_id || 'none')}</code></dd></div>${runtime.bottleneck ? '<div><dt>bottleneck</dt><dd>active tool service</dd></div>' : ''}`
+    : ''
+  return `<article class="agent-node role-${esc(node.role)} status-${esc(node.status)}" data-agent-id="${esc(node.agent_id)}" data-agent-node="true" data-identity-conflict="${node.identity_conflict ? 'true' : 'false'}" data-phase-id="${esc(phaseId)}" data-phase-source="${esc(phaseSource)}" data-task-id="${esc(node.task_id || '')}" data-state="${esc(node.state)}" data-status="${esc(node.status)}" data-state-group="${esc(node.state_group || 'unknown')}" data-liveness-state="${esc(node.liveness_state)}" data-team-id="${esc(node.team_id)}" data-role="${esc(node.role)}" data-model="${esc(node.model || '')}" ${runtimeAttrs} tabindex="0" role="group" aria-label="${esc(`${node.role_label}: ${node.agent_id}`)}">
+    <div class="node-heading"><span class="status-dot" aria-hidden="true"></span><code class="agent-id">${esc(node.agent_id)}</code></div>
+    <p class="node-role">${esc(node.role_label)}</p>
+    <dl class="node-facts">
+      <div><dt>task</dt><dd>${esc(node.current_task)}</dd></div>
+      <div><dt>status</dt><dd class="status-value">${esc(node.status_label)}</dd></div>
+      ${node.provider ? `<div><dt>provider</dt><dd><code>${esc(node.provider)}</code></dd></div>` : ''}
+      ${node.model ? `<div><dt>model</dt><dd><code>${esc(node.model)}</code></dd></div>` : ''}
+      ${runtimeFacts}
+      <div><dt>evidence</dt><dd>${esc(node.status_evidence)}</dd></div>
+    </dl>
+    ${node.phase_conflict ? '<p class="node-warning">phase binding ขัดแย้ง · ไม่เลือกเฟสแบบ first-source-wins</p>' : ''}
+    ${livenessDetails(node)}
+  </article>`
+}
+
+function edgeHtml(edge) {
+  const direction = edge.kind === 'reject-loop' ? '↺' : '→'
+  const runtime = edge.runtime
+  return `<div class="flow-edge edge-${esc(edge.kind)}" data-flow-edge="true" data-edge-kind="${esc(edge.kind)}" data-from-agent-id="${esc(edge.from)}" data-to-agent-id="${esc(edge.to)}" data-team-id="${esc(edge.team_id)}" data-runtime-state="${esc(runtime?.runtime_state || '')}" data-decision-id="${esc(runtime?.decision_id || '')}" data-attempt-id="${esc(runtime?.attempt_id || '')}" data-handoff-id="${esc(runtime?.handoff_id || '')}" aria-label="${esc(edge.label)}"><span class="edge-symbol" aria-hidden="true">${direction}</span><span>${esc(edge.label)}</span>${runtime?.runtime_state ? ` <small>${esc(runtime.runtime_state)}</small>` : ''}</div>`
+}
+
+function teamLaneHtml(lane) {
+  const dispatcher = lane.nodes.filter((node) => node.role === 'dispatcher')
+  const workers = lane.nodes.filter((node) => node.role === 'worker')
+  const evaluator = lane.nodes.filter((node) => node.role === 'evaluator')
+  const other = lane.nodes.filter((node) => ['unassigned', 'outer_controller'].includes(node.role))
+  const hasProjectCompletion = lane.edges.some((edge) => edge.to === 'project-complete')
+  const stage = lane.project_control
+    ? `<div class="unassigned-grid">${other.map(nodeHtml).join('')}</div>`
+    : lane.configured
+    ? `<div class="lane-stage">
+        ${connectorSvg(lane)}
+        <div class="lane-columns">
+          <div class="agent-column dispatcher-column"><span class="column-label">Dispatch</span>${dispatcher.map(nodeHtml).join('')}</div>
+          <div class="agent-column worker-column"><span class="column-label">Workers · fan-out</span><div class="worker-grid">${workers.map(nodeHtml).join('')}</div></div>
+          <div class="agent-column evaluator-column"><span class="column-label">Evaluate</span>${evaluator.map(nodeHtml).join('')}${hasProjectCompletion ? '<div class="project-completion-endpoint" data-project-completion-endpoint="true" data-endpoint-id="project-complete" role="status"><strong>Project complete</strong><span>pass handoff endpoint</span></div>' : ''}</div>
+        </div>
+      </div>`
+    : `<div class="unassigned-grid">${other.map(nodeHtml).join('') || '<p class="empty-lane">No observed ACP agents.</p>'}</div>`
+  return `<section class="team-lane${lane.configured ? '' : ' unassigned-lane'}" data-team-lane="true" data-team-id="${esc(lane.team_id)}" data-team-name="${esc(lane.name)}"${lane.configured || lane.project_control ? '' : ' data-control-unassigned="true"'}${lane.project_control ? ' data-project-control="true"' : ''}>
+    <header class="lane-header"><div><span class="lane-kicker">Team lane</span><h2>${esc(lane.name)}</h2></div><span class="lane-agent-count">${lane.nodes.length} agent${lane.nodes.length === 1 ? '' : 's'}</span></header>
+    ${stage}
+    ${lane.edges.length ? `<div class="flow-edge-list" aria-label="Flow edges">${lane.edges.map(edgeHtml).join('')}</div>` : ''}
+  </section>`
+}
+
+function summaryHtml(counts) {
+  const items = [
+    ['working', 'Working', counts.working],
+    ['waiting', 'Waiting', counts.waiting],
+    ['blocked-stalled', 'Blocked / stalled', counts.blocked_stalled],
+    ['done', 'Done', counts.done],
+    ['not-started', 'Not started', counts.not_started],
+    ['unknown', 'Unknown', counts.unknown],
+  ]
+  return `<section data-screen-section="summary" class="summary-strip" aria-label="Operational agent counts" data-operational-node-count="${counts.total}">
+    ${items.map(([key, label, count]) => `<div class="summary-card status-${key}" data-count-state="${esc(key === 'blocked-stalled' ? 'blocked' : key.replace('-', '_'))}" data-count="${count}" data-count-${key}="${count}" data-status="${key}"><span>${label}</span><strong>${count}</strong></div>`).join('')}
+  </section>`
+}
+
+function legendHtml() {
+  return `<section data-screen-section="legend" aria-labelledby="legend-title"><h2 id="legend-title" class="sr-only">Status legend</h2><ul class="legend" aria-label="Status legend">
+    <li><span class="legend-dot working" aria-hidden="true"></span>working</li>
+    <li><span class="legend-dot waiting" aria-hidden="true"></span>waiting</li>
+    <li><span class="legend-dot blocked-stalled" aria-hidden="true"></span>stalled / blocked</li>
+    <li><span class="legend-dot done" aria-hidden="true"></span>done</li>
+    <li><span class="legend-dot not-started" aria-hidden="true"></span>not started</li>
+    <li><span class="legend-dot unknown" aria-hidden="true"></span>unknown</li>
+  </ul></section>`
+}
+
+function auditHtml(audit, auditTotal = audit.length) {
+  const displayed = audit.length
+  const total = Math.max(displayed, Number.isSafeInteger(auditTotal) ? auditTotal : displayed)
+  return `<section data-screen-section="history" aria-labelledby="history-title"><h2 id="history-title" class="sr-only">Historical audit</h2><details class="audit" id="graph-audit" data-history-total="${total}" data-history-displayed="${displayed}"><summary>Historical audit evidence <span>${total}</span></summary>
+    ${audit.length ? `<ul>${audit.map((item) => `<li data-history-run="true" data-audit-task-id="${esc(item.task_id)}"><code>${esc(item.task_id)}</code><span data-history-state="${esc(item.state)}">${esc(item.state)}</span><small>${esc(item.reason)} · agent ${esc(item.agent_id)}${item.termination_reason ? ` · termination ${esc(item.termination_reason)}` : ''}${item.stall_history?.length ? ` · ${item.stall_history.map((entry) => `${entry.state}${entry.reason ? ` (${entry.reason})` : ''}`).join(', ')}` : ''}</small></li>`).join('')}</ul>` : '<p>No historical evidence in this snapshot.</p>'}
+  </details></section>`
+}
+
+function evidenceNoticeHtml(snapshot, topology) {
+  const diagnostics = Array.isArray(topology?.diagnostics) ? topology.diagnostics : []
+  if (!diagnostics.length && !topology?.configuration_error) return ''
+  const labels = diagnostics.slice(0, 8).map((item) => `${item.code || 'unknown'} (${item.source || 'unknown'})`)
+  return `<section data-screen-section="evidence-notice" class="evidence-notice" aria-labelledby="evidence-notice-title"><h2 id="evidence-notice-title">Evidence notice</h2><p>Some inputs are unknown or unassigned; the flow does not infer missing Team, role, task, or progress.</p><ul>${labels.map((label) => `<li>${esc(label)}</li>`).join('')}</ul></section>`
+}
+
+function handoffHtml(handoffs) {
+  if (!Array.isArray(handoffs) || !handoffs.length) return ''
+  return `<section class="observed-handoffs" aria-labelledby="observed-handoffs-title"><span class="lane-kicker">Serialized handoff evidence</span><h2 id="observed-handoffs-title">Passed artifact recipients</h2><ul>${handoffs.map((handoff) => `<li><span class="handoff-arrow" aria-hidden="true">→</span><strong>${esc(handoff.downstream_dispatcher_agent_id || 'Project complete')}</strong><span>${esc(handoff.state)}</span><code>${esc(handoff.handoff_id)}</code></li>`).join('')}</ul></section>`
+}
+
+const CSS = `
+:root{color-scheme:light;--ink:#172126;--muted:#647177;--line:#d8e0e2;--surface:#fff;--surface-2:#f5f8f8;--bg:#eef3f2;--working:#15805d;--waiting:#b7791f;--blocked:#b84444;--done:#2767a6;--not-started:#7c878b;--focus:#315fba;font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);line-height:1.45;overflow-x:hidden}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.graph-shell{max-width:1680px;margin:0 auto;padding:20px 24px 36px}.graph-header{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin-bottom:18px}.eyebrow,.lane-kicker{color:var(--muted);font-size:.7rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase}.graph-header h1{margin:3px 0 4px;font-size:clamp(1.45rem,2vw,2.15rem);line-height:1.1}.graph-header p{margin:0;color:var(--muted)}.graph-time{flex:none;text-align:right;color:var(--muted);font-size:.78rem}.graph-time .time-zone-label,.graph-time time{display:block}.graph-time .time-zone-label{color:var(--ink);font-weight:700}.graph-time time{margin-top:3px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums;color:var(--ink)}.skip-link{position:absolute;left:12px;top:8px;z-index:5;transform:translateY(-160%);padding:8px 12px;border-radius:8px;background:var(--ink);color:var(--surface)}.skip-link:focus{transform:none}
+.graph-time button{min-height:44px;margin-top:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface-2);color:var(--ink);font:600 .75rem ui-sans-serif,system-ui,sans-serif;cursor:pointer}.graph-time button:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+.summary-strip{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:10px;margin:0 0 12px}.summary-card{display:grid;gap:2px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}.summary-card span{color:var(--muted);font-size:.72rem}.summary-card strong{font-size:1.35rem;font-variant-numeric:tabular-nums}.summary-card.status-working strong{color:var(--working)}.summary-card.status-waiting strong{color:var(--waiting)}.summary-card.status-blocked-stalled strong{color:var(--blocked)}.summary-card.status-done strong{color:var(--done)}.summary-card.status-not-started strong{color:var(--not-started)}.summary-card.status-unknown strong{color:var(--muted)}
+.legend{display:flex;flex-wrap:wrap;gap:7px 16px;margin:0 0 15px;padding:0;list-style:none;color:var(--muted);font-size:.78rem}.legend li{display:flex;align-items:center;gap:6px}.legend-dot,.status-dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--not-started);flex:none}.legend-dot.working,.status-working .status-dot{background:var(--working)}.legend-dot.waiting,.status-waiting .status-dot{background:var(--waiting)}.legend-dot.blocked-stalled,.status-blocked .status-dot,.status-stalled .status-dot{background:var(--blocked)}.legend-dot.done,.status-done .status-dot{background:var(--done)}.legend-dot.unknown,.status-unknown .status-dot{background:var(--muted)}
+.graph-viewport{max-width:100%;overflow-x:auto;overflow-y:visible;padding:2px 2px 12px}.team-flow{display:flex;align-items:stretch;gap:16px;min-width:100%;width:max-content}.team-lane{flex:0 1 760px;min-width:min(760px,calc(100vw - 56px));padding:14px;border:1px solid var(--line);border-radius:14px;background:var(--surface);box-shadow:0 2px 10px rgb(23 33 38 / 5%)}.team-lane.unassigned-lane{flex-basis:100%;min-width:min(760px,calc(100vw - 56px))}.lane-header{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding-bottom:10px;border-bottom:1px solid var(--line)}.lane-header h2{margin:2px 0 0;font-size:1.1rem}.lane-agent-count{color:var(--muted);font-size:.78rem;white-space:nowrap}.lane-stage{position:relative;min-height:205px;margin-top:12px}.lane-columns{position:relative;z-index:1;display:grid;grid-template-columns:minmax(150px,1fr) minmax(190px,1.25fr) minmax(170px,1fr);gap:28px;align-items:start}.agent-column{display:grid;align-content:start;gap:7px;min-width:0}.column-label{color:var(--muted);font-size:.68rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase}.worker-grid{display:grid;gap:9px}.connector-layer{position:absolute;inset:0;width:100%;height:100%;z-index:0;overflow:visible}.connector{fill:none;stroke:#9aabad;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;vector-effect:non-scaling-stroke}.connector-reject-loop{stroke:var(--blocked);stroke-dasharray:6 5}.connector-pass-handoff{stroke:var(--done)}
+.agent-node{min-width:0;min-height:44px;padding:10px;border:1px solid var(--line);border-left:4px solid var(--not-started);border-radius:10px;background:var(--surface-2);box-shadow:0 1px 4px rgb(23 33 38 / 5%)}.agent-node:focus-visible,.graph-viewport:focus-visible,.agent-evidence summary:focus-visible,.audit summary:focus-visible{outline:3px solid var(--focus);outline-offset:2px}.agent-node.status-working{border-left-color:var(--working)}.agent-node.status-waiting{border-left-color:var(--waiting)}.agent-node.status-blocked,.agent-node.status-stalled{border-left-color:var(--blocked)}.agent-node.status-done{border-left-color:var(--done)}.agent-node.status-unknown{border-left-color:var(--muted)}.node-heading{display:flex;align-items:center;gap:7px;min-width:0}.agent-id{font-size:.8rem;font-weight:700;color:var(--ink)}.node-role{margin:4px 0 7px;color:var(--muted);font-size:.72rem}.node-facts{display:grid;gap:4px;margin:0;font-size:.73rem}.node-facts div{display:grid;grid-template-columns:58px minmax(0,1fr);gap:7px}.node-facts dt{color:var(--muted)}.node-facts dd{margin:0;overflow-wrap:anywhere}.status-value{font-weight:700}.node-warning{margin:8px 0 0;color:var(--blocked);font-size:.7rem}.agent-evidence{margin-top:8px;border-top:1px solid var(--line);padding-top:6px}.agent-evidence summary{min-height:44px;display:flex;align-items:center;cursor:pointer;color:var(--muted);font-size:.7rem}.agent-evidence dl{display:grid;gap:4px;margin:7px 0 0;font-size:.68rem}.agent-evidence dl div{display:grid;grid-template-columns:100px minmax(0,1fr);gap:7px}.agent-evidence dt{color:var(--muted)}.agent-evidence dd{margin:0;overflow-wrap:anywhere}.unassigned-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:12px}.empty-lane{margin:4px 0;color:var(--muted);font-size:.82rem}.flow-edge-list{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px;padding-top:10px;border-top:1px solid var(--line)}.flow-edge{display:inline-flex;align-items:center;min-height:44px;gap:6px;padding:5px 8px;border:1px solid var(--line);border-radius:999px;background:var(--surface-2);color:var(--muted);font-size:.7rem}.edge-reject-loop{border-color:color-mix(in srgb,var(--blocked) 45%,var(--line));color:var(--blocked)}.edge-pass-handoff{border-color:color-mix(in srgb,var(--done) 45%,var(--line));color:var(--done)}.edge-symbol{font-size:1rem;font-weight:700}.project-completion-endpoint{display:grid;gap:2px;min-height:44px;margin-top:9px;padding:9px 10px;border:2px solid var(--done);border-radius:10px;background:color-mix(in srgb,var(--done) 8%,var(--surface));color:var(--done);font-size:.72rem}.project-completion-endpoint span{color:var(--muted);font-size:.68rem}.audit{margin-top:14px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}.audit summary{min-height:44px;display:flex;align-items:center;padding:10px 12px;cursor:pointer;color:var(--muted);font-size:.8rem}.audit ul{display:grid;gap:7px;margin:0;padding:10px 12px 12px 30px;border-top:1px solid var(--line)}.audit li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;font-size:.72rem}.audit li small{grid-column:1/-1;color:var(--muted)}.graph-footer{margin-top:14px;color:var(--muted);font-size:.7rem}.graph-footer code{color:var(--ink)}
+.observed-handoffs{margin-top:14px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}.observed-handoffs h2{margin:2px 0 8px;font-size:.95rem}.observed-handoffs ul{display:flex;flex-wrap:wrap;gap:7px 14px;margin:0;padding:0;list-style:none;color:var(--muted);font-size:.75rem}.observed-handoffs li{display:inline-flex;align-items:center;gap:6px}.observed-handoffs strong{color:var(--ink)}.handoff-arrow{color:var(--done);font-size:1rem}
+.evidence-notice{margin:0 0 14px;padding:12px;border:1px solid color-mix(in srgb,var(--waiting) 55%,var(--line));border-radius:10px;background:var(--surface)}.evidence-notice h2{margin:0 0 4px;font-size:.95rem}.evidence-notice p{margin:0;color:var(--muted);font-size:.78rem}.evidence-notice ul{display:flex;flex-wrap:wrap;gap:6px 14px;margin:7px 0 0;padding-left:18px;color:var(--muted);font-size:.72rem}
+@media(max-width:760px){.graph-shell{padding:14px 12px 26px}.graph-header{display:grid;gap:10px}.graph-time{text-align:left}.summary-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.summary-card:last-child{grid-column:1/-1}.team-flow{width:100%;display:grid}.team-lane,.team-lane.unassigned-lane{width:100%;min-width:0}.lane-columns{grid-template-columns:1fr;gap:12px}.lane-stage{min-height:0}.connector-layer{display:none}.agent-column{gap:7px}.worker-grid{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}.flow-edge-list{display:grid}.flow-edge{border-radius:8px}.audit li{grid-template-columns:1fr}}
+@media(forced-colors:active){.summary-card,.team-lane,.agent-node,.audit,.flow-edge{border-color:CanvasText}.connector{stroke:CanvasText}.legend-dot{forced-color-adjust:none;background:Highlight}.graph-time .time-zone-label,.status-value{color:CanvasText}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}}
+`
+
 export function renderTopologyGraph(snapshot, topology, {
-  fontCssName,
-  d3JsName = 'pulse-d3-test.min.js',
+  fontCssName = 'pulse-fonts.css',
   timeZone = 'Asia/Bangkok',
   timeZoneLabel = 'เวลาไทย (UTC+7)',
-  mainPageName = 'pulse.html',
+  refreshScriptName = DEFAULT_REFRESH_SCRIPT_NAME,
 } = {}) {
-  const nodes = topology.nodes
-  const activeNodes = nodes.filter((node) => !node.historical)
-  const historyNodes = nodes.filter((node) => node.historical)
-  const attention = nodes.filter((node) => node.attention).length
-  const selectedNode = nodes.find((node) => node.attention) || nodes[0] || null
-  const selectedNodeId = selectedNode?.node_id || ''
-  const repoName = snapshot.scope?.repo_name || 'unknown'
-  const refreshRaw = Number(snapshot.observation?.refresh_interval_sec)
-  const refreshInterval = Number.isFinite(refreshRaw) && refreshRaw > 0 ? Math.ceil(refreshRaw) : 20
-  const expiresAt = snapshot.observation?.expires_at || ''
-  const expiresMs = Date.parse(expiresAt)
-  const initialFreshness = !Number.isFinite(expiresMs)
-    ? 'unknown'
-    : Date.now() >= expiresMs ? 'stale' : 'fresh'
-  const initialQualifier = freshnessCopy(initialFreshness)
-  const initialFreshnessLabel = initialFreshness === 'stale' ? 'ข้อมูลหมดอายุ'
-    : initialFreshness === 'unknown' ? 'ตรวจ freshness ไม่ได้' : 'ข้อมูลสด'
-  const initialFreshnessNote = initialFreshness === 'stale'
-    ? 'ตัวสังเกตการณ์ไม่อัปเดตตามรอบ'
-    : initialFreshness === 'unknown' ? 'ตรวจเวลาหมดอายุไม่ได้' : 'snapshot ยังอยู่ในช่วงสังเกตการณ์'
-  const quality = snapshot.complete ? 'complete' : 'degraded'
-  const formatter = dateTimeFormatter(timeZone)
-  const truncatedRaw = Number(snapshot.summary?.truncated)
-  const truncated = Number.isSafeInteger(truncatedRaw) && truncatedRaw > 0 ? truncatedRaw : 0
-  const degradedSources = Object.entries(snapshot.source_health || {})
-    .filter(([, state]) => state !== 'ok')
-    .map(([source, state]) => `${source}:${state}`)
-  const viewBox = topology.view_box
-  const pmBoundary = topology.pm_boundary || { x: 25, y: 55, width: 1635, height: 560 }
-  const assigned = topology.assignment.explicit
-  const unassigned = topology.assignment.unassigned
-
-  return `<!doctype html><html lang="th"><head><meta charset="utf-8">
-<title>ACP Phase Flow — ${esc(repoName)}</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="tmux-teams-snapshot-id" content="${esc(snapshot.snapshot_id)}">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231f6f5f'/%3E%3Cpath d='M11 32h42M39 18l14 14-14 14' fill='none' stroke='%23fff' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='15' cy='32' r='6' fill='%23fff'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="${esc(fontCssName)}">
-<style>
-:root{color-scheme:dark;--bg:oklch(15% .014 165);--surface:oklch(20% .015 165);--surface-2:oklch(24% .018 165);--line:oklch(35% .018 165);--ink:oklch(94% .012 165);--dim:oklch(70% .02 165);--ok:oklch(74% .13 165);--warn:oklch(79% .13 78);--bad:oklch(72% .17 28);--pending:oklch(73% .10 235);--unknown:oklch(68% .025 165);--focus:oklch(80% .13 235);--phase:oklch(72% .10 205);--sans:"Kanit","Noto Sans Thai","Leelawadee UI",Tahoma,sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-@media(prefers-color-scheme:light){:root{color-scheme:light;--bg:oklch(97% .008 165);--surface:oklch(99% .004 165);--surface-2:oklch(94% .012 165);--line:oklch(82% .02 165);--ink:oklch(23% .02 165);--dim:oklch(47% .025 165);--ok:oklch(47% .12 165);--warn:oklch(52% .13 72);--bad:oklch(52% .17 28);--pending:oklch(48% .12 235);--unknown:oklch(48% .025 165);--focus:oklch(48% .14 235);--phase:oklch(48% .12 205)}}
-*{box-sizing:border-box}[hidden]{display:none!important}html,body{width:100%;min-width:0;height:100%;margin:0}body{display:flex;flex-direction:column;overflow:hidden;background:var(--bg);color:var(--ink);font:400 1rem/1.5 var(--sans);text-rendering:optimizeLegibility}
-body::before{content:"";position:fixed;inset:0;pointer-events:none;background-image:radial-gradient(circle at 1px 1px,color-mix(in oklch,var(--line) 52%,transparent) 1px,transparent 0);background-size:22px 22px;opacity:.22}.sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}.skip-link{position:fixed;z-index:60;top:8px;left:8px;transform:translateY(-150%);padding:8px 12px;border-radius:8px;background:var(--ink);color:var(--bg)}.skip-link:focus{transform:none}
-.hud{position:relative;z-index:20;display:flex;flex:none;align-items:flex-start;justify-content:space-between;gap:22px;padding:12px 18px 10px;border-bottom:1px solid var(--line);background:color-mix(in oklch,var(--bg) 94%,transparent);backdrop-filter:blur(10px)}.hud-main{display:flex;min-width:0;align-items:center;gap:16px}.brand{min-width:0}.eyebrow{display:block;color:var(--dim);font-size:.68rem;font-weight:500;letter-spacing:.1em}.brand h1{display:flex;min-width:0;align-items:baseline;gap:9px;margin:0;font-size:1.28rem;line-height:1.2}.brand h1 span{min-width:0;color:var(--dim);font:500 .78rem var(--mono);overflow-wrap:anywhere}.brand p{margin:3px 0 0;color:var(--dim);font-size:.74rem}.summary{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.summary-chip,.freshness{display:inline-flex;align-items:center;gap:6px;min-height:29px;padding:4px 9px;border:1px solid var(--line);border-radius:999px;background:var(--surface);font-size:.7rem;white-space:nowrap}.summary-chip strong{font-variant-numeric:tabular-nums}.summary-chip.warn{border-color:color-mix(in oklch,var(--warn) 55%,var(--line));color:var(--warn)}.freshness::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}.freshness.fresh{color:var(--ok)}.freshness.stale{color:var(--warn)}.freshness.unknown{color:var(--unknown)}
-.hud-time{flex:none;text-align:right;color:var(--dim);font-size:.7rem}.hud-time span,.hud-time time{display:block}.hud-time time{color:var(--ink);font-family:var(--mono);font-variant-numeric:tabular-nums}.time-zone-label{color:var(--ink);font-weight:500}.back-link{color:var(--dim);text-decoration:none;border-bottom:1px solid var(--line)}.back-link:hover{color:var(--ink)}.refresh-control{margin:4px 0 2px;padding:3px 8px;border:1px solid var(--line);border-radius:999px;background:var(--surface);color:var(--dim);font:500 .65rem var(--sans);cursor:pointer}.refresh-control:hover,.refresh-control:focus-visible{border-color:var(--focus);color:var(--ink);outline:none}.refresh-control[aria-pressed="true"]{border-color:var(--warn);color:var(--warn)}.refresh-state{font-size:.62rem}
-.notice{position:relative;z-index:19;display:flex;flex:none;gap:14px;align-items:center;padding:6px 18px;border-bottom:1px solid color-mix(in oklch,var(--warn) 42%,var(--line));background:color-mix(in oklch,var(--warn) 9%,var(--bg));color:var(--warn);font-size:.73rem}.notice code{font-family:var(--mono)}
-.graph-viewport{position:relative;z-index:1;flex:1;min-width:0;min-height:0;overflow:hidden;outline:none;background:radial-gradient(circle at 50% 42%,color-mix(in oklch,var(--surface-2) 42%,transparent),transparent 62%)}.graph-viewport:focus-visible{box-shadow:inset 0 0 0 3px var(--focus)}#topology-canvas{display:block;width:100%;height:100%;min-height:0;cursor:grab;touch-action:none;user-select:none}#topology-canvas.is-panning{cursor:grabbing}
-.pm-boundary{fill:color-mix(in oklch,var(--surface) 30%,transparent);stroke:var(--line);stroke-width:2;stroke-dasharray:10 9;vector-effect:non-scaling-stroke}.pm-title{fill:var(--ink);font:600 17px var(--sans)}.pm-copy{fill:var(--dim);font:11px var(--sans)}.pm-node{fill:color-mix(in oklch,var(--warn) 10%,var(--surface));stroke:var(--warn);stroke-width:1.5;vector-effect:non-scaling-stroke}.pm-node-title{fill:var(--warn);font:600 12px var(--sans)}.pm-node-copy{fill:var(--dim);font:10px var(--sans)}
-.phase-boundary{fill:color-mix(in oklch,var(--surface) 88%,transparent);stroke:var(--phase);stroke-width:1.5;stroke-dasharray:7 5;vector-effect:non-scaling-stroke}.phase-attention .phase-boundary{stroke:var(--warn);stroke-width:2.5}.phase-step{fill:var(--surface-2);stroke:var(--phase);stroke-width:1.5;vector-effect:non-scaling-stroke}.phase-step-copy{fill:var(--phase);font:600 10px var(--mono)}.phase-title{fill:var(--ink);font:600 17px var(--sans)}.phase-thai{fill:var(--dim);font:11px var(--sans)}.phase-state{fill:var(--dim);font:8.5px var(--sans)}.phase-bottleneck{fill:var(--warn);font:600 7.5px var(--mono)}.phase-outcome-label{fill:var(--phase);font:600 8px var(--mono);letter-spacing:.08em}.phase-outcome{fill:var(--ink);font:500 10px var(--sans)}.agent-count{fill:var(--dim);font:9px var(--sans)}
-.flow-action{fill:var(--surface-2);stroke:var(--line);stroke-width:1.2;vector-effect:non-scaling-stroke}.flow-action-copy{fill:var(--ink);font:9px var(--sans)}.inner-edge{fill:none;stroke:var(--dim);stroke-width:1.2;stroke-dasharray:4 4;opacity:.7;vector-effect:non-scaling-stroke}.pass-edge{stroke:var(--ok)}.rework-edge{stroke:var(--warn)}.review-decision{fill:var(--surface-2);stroke:var(--warn);stroke-width:1.4;vector-effect:non-scaling-stroke}.review-title{fill:var(--ink);font:600 9px var(--sans)}.review-copy,.rework-copy{fill:var(--dim);font:7.5px var(--sans)}.artifact-node path{fill:color-mix(in oklch,var(--ok) 8%,var(--surface));stroke:var(--ok);stroke-width:1.4;vector-effect:non-scaling-stroke}.artifact-label{fill:var(--dim);font:7px var(--mono)}.artifact-name{fill:var(--ok);font:600 9px var(--mono)}
-.model-phase-edge{fill:none;stroke:var(--phase);stroke-width:2;stroke-dasharray:10 8;opacity:.8;vector-effect:non-scaling-stroke}.handoff-label{fill:var(--phase);font:600 8.5px var(--mono)}.observed-edge{stroke:color-mix(in oklch,var(--ink) 30%,transparent);stroke-width:1.1;opacity:.45;vector-effect:non-scaling-stroke}.observed-edge.unassigned{stroke:var(--warn);opacity:.24}.operational-edge{fill:none;stroke-width:3;opacity:.95;vector-effect:non-scaling-stroke}.operational-edge.state-proposed{stroke:var(--pending);stroke-dasharray:3 5}.operational-edge.state-accepted{stroke:var(--phase);stroke-dasharray:8 4}.operational-edge.state-rejected{stroke:var(--bad);stroke-dasharray:4 3}.operational-edge.state-escalated{stroke:var(--warn);stroke-dasharray:2 3}.operational-edge.state-consumed{stroke:var(--unknown);stroke-width:3.5}.operational-edge.state-consumed.completed{stroke:var(--ok);stroke-width:4.5}.operational-edge-label{fill:var(--dim);font:600 7.5px var(--mono)}.operational-edge-label.completed{fill:var(--ok)}.edge-layer{pointer-events:none}
-.project-endpoint{fill:color-mix(in oklch,var(--ok) 10%,var(--surface));stroke:var(--ok);stroke-width:2;vector-effect:non-scaling-stroke}.endpoint-title{fill:var(--ink);font:600 17px var(--sans)}.endpoint-copy{fill:var(--dim);font:10px var(--sans)}.endpoint-warning{fill:var(--warn);font:9px var(--sans)}.unassigned-boundary{fill:color-mix(in oklch,var(--warn) 5%,var(--surface));stroke:var(--warn);stroke-width:1.5;stroke-dasharray:8 6;vector-effect:non-scaling-stroke}.unassigned-title{fill:var(--warn);font:600 16px var(--sans)}.unassigned-copy{fill:var(--dim);font:10px var(--sans)}.unassigned-count{fill:var(--warn);font:600 28px var(--mono)}
-.agent-node{--tone:var(--unknown);cursor:pointer;outline:none}.agent-node.tone-ok{--tone:var(--ok)}.agent-node.tone-warn{--tone:var(--warn)}.agent-node.tone-bad{--tone:var(--bad)}.agent-node.tone-pending{--tone:var(--pending)}.agent-node.tone-unknown{--tone:var(--unknown)}.node-core{fill:var(--tone);stroke:color-mix(in oklch,var(--tone) 36%,var(--ink));stroke-width:1.5;vector-effect:non-scaling-stroke}.is-historical .node-core{fill:var(--bg);stroke:var(--tone);stroke-width:2.5}.node-history-ring{fill:none;stroke:var(--tone);stroke-width:1;opacity:.65;vector-effect:non-scaling-stroke}.weak-identity .node-core{stroke-dasharray:4 3}.node-focus-ring{fill:none;stroke:transparent;stroke-width:3;vector-effect:non-scaling-stroke}.node-attention-ring{fill:none;stroke:transparent;stroke-width:2.5;vector-effect:non-scaling-stroke}.needs-attention .node-attention-ring{stroke:var(--bad);stroke-dasharray:4 4}.agent-node:hover .node-focus-ring,.agent-node:focus .node-focus-ring,.agent-node[aria-pressed="true"] .node-focus-ring{stroke:var(--focus)}.node-agent-label{fill:var(--bg);font:600 7px var(--sans);opacity:0;pointer-events:none}.is-historical .node-agent-label{fill:var(--ink)}#topology-canvas.detail-zoom .node-agent-label{opacity:1}
-.graph-tools{position:absolute;z-index:12;top:10px;left:10px;display:flex;gap:6px;padding:5px;border:1px solid var(--line);border-radius:12px;background:color-mix(in oklch,var(--surface) 92%,transparent);box-shadow:0 8px 30px color-mix(in oklch,var(--bg) 54%,transparent);backdrop-filter:blur(10px)}.graph-tools button{display:grid;place-items:center;min-width:44px;height:44px;padding:0 10px;border:1px solid transparent;border-radius:8px;background:transparent;color:var(--ink);font:600 .75rem var(--sans);cursor:pointer}.graph-tools button:hover,.graph-tools button:focus-visible{border-color:var(--focus);background:var(--surface-2);outline:none}.graph-tools .tool-symbol{font:600 1.15rem var(--mono)}.model-label{position:absolute;z-index:8;left:50%;top:10px;transform:translateX(-50%);max-width:min(720px,calc(100% - 300px));padding:5px 10px;border:1px dashed var(--line);border-radius:999px;background:color-mix(in oklch,var(--bg) 88%,transparent);color:var(--dim);font-size:.65rem;text-align:center;pointer-events:none}.model-label strong{color:var(--ink)}.d3-warning{position:absolute;z-index:13;left:50%;top:52px;transform:translateX(-50%);padding:7px 11px;border:1px solid var(--bad);border-radius:9px;background:var(--surface);color:var(--bad);font-size:.7rem}
-.graph-inspector{position:absolute;z-index:14;right:14px;bottom:14px;width:min(370px,calc(100% - 28px));max-height:calc(100% - 28px);overflow:auto;padding:14px;border:1px solid var(--line);border-top:3px solid var(--focus);border-radius:14px;background:color-mix(in oklch,var(--surface) 96%,transparent);box-shadow:0 18px 54px color-mix(in oklch,var(--bg) 72%,transparent);backdrop-filter:blur(14px)}.inspector-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}.inspector-kicker{display:block;color:var(--dim);font-size:.58rem;font-weight:500;letter-spacing:.08em}.inspector-head h2{margin:1px 0 0;font-size:1.08rem;line-height:1.2;overflow-wrap:anywhere}.inspector-head button{display:grid;place-items:center;width:44px;height:44px;margin:-8px -8px 0 0;border:1px solid transparent;border-radius:9px;background:transparent;color:var(--dim);font:400 1.4rem var(--sans);cursor:pointer}.inspector-head button:hover,.inspector-head button:focus-visible{border-color:var(--focus);color:var(--ink);outline:none}.outcome-risk{margin:10px 0 0;padding:9px;border-left:3px solid var(--phase);background:color-mix(in oklch,var(--phase) 8%,var(--surface-2))}.outcome-risk span{display:block;color:var(--phase);font:.57rem var(--mono);letter-spacing:.08em}.outcome-risk strong{display:block;margin-top:2px;font-size:.85rem}.outcome-risk p{margin:3px 0;color:var(--dim);font-size:.67rem}.outcome-risk code{color:var(--ok);font:.63rem var(--mono)}.inspector-task{display:block;margin:9px 0 7px;color:var(--ink);font:.68rem/1.35 var(--mono);overflow-wrap:anywhere}.inspector-state{display:inline-flex;padding:3px 8px;border-radius:999px;background:color-mix(in oklch,var(--tone) 14%,var(--surface-2));color:var(--tone);font-size:.64rem;font-weight:500}.inspector-state.tone-ok{--tone:var(--ok)}.inspector-state.tone-warn{--tone:var(--warn)}.inspector-state.tone-bad{--tone:var(--bad)}.inspector-state.tone-pending{--tone:var(--pending)}.inspector-state.tone-unknown{--tone:var(--unknown)}.freshness-qualifier{margin:8px 0 0;padding:6px 7px;border-left:3px solid var(--warn);background:color-mix(in oklch,var(--warn) 9%,var(--surface));color:var(--warn);font-size:.62rem;line-height:1.4}.inspector-signals{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;margin:10px 0 0;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--line)}.signal{min-width:0;padding:6px 7px;background:var(--surface-2)}.signal dt{color:var(--dim);font-size:.56rem}.signal dd{margin:0;font-size:.67rem;font-weight:500;overflow-wrap:anywhere}.signal.ok dd{color:var(--ok)}.signal.warn dd{color:var(--warn)}.signal.bad dd{color:var(--bad)}.inspector-meaning{margin:9px 0 0;color:var(--dim);font-size:.68rem;line-height:1.45}.inspector-meta{display:grid;gap:5px;margin:9px 0 0;padding-top:8px;border-top:1px solid var(--line);font-size:.63rem}.inspector-meta div{display:grid;grid-template-columns:64px minmax(0,1fr);gap:8px}.inspector-meta dt{color:var(--dim)}.inspector-meta dd{margin:0;color:var(--ink)}.inspector-meta.priority{border-top:0;padding:8px;background:var(--surface-2)}.identity-note{margin:8px 0 0;color:var(--warn);font-size:.61rem}
-.legend{position:relative;z-index:20;display:flex;flex:none;align-items:center;gap:15px;min-height:42px;padding:8px 18px;border-top:1px solid var(--line);background:var(--bg);color:var(--dim);font-size:.66rem;overflow-x:auto}.legend strong{color:var(--ink);white-space:nowrap}.legend-item{display:flex;align-items:center;gap:6px;white-space:nowrap}.legend-dot{width:9px;height:9px;border-radius:50%;background:var(--legend-tone)}.legend-solid{width:28px;border-top:1.5px solid var(--dim)}.legend-dashed{width:28px;border-top:1.5px dashed var(--phase)}.legend-operational{width:28px;border-top:3px solid var(--legend-tone)}.legend-operational.proposed{border-top-style:dotted}.legend-operational.accepted{border-top-style:dashed}.legend .truth{margin-left:auto;white-space:nowrap}.legend .truth b{color:var(--ink)}
-@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;animation:none!important;transition:none!important}}
-@media(max-width:820px){.hud{display:grid;gap:8px;padding:9px 13px}.hud-main{align-items:flex-start;justify-content:space-between}.summary{gap:5px}.hud-time{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 9px;text-align:left}.hud-time span,.hud-time time{display:inline}.hud-time>.time-zone-label,.hud-time>span:nth-of-type(2){grid-column:1/-1}.refresh-control{justify-self:start}.notice{padding:6px 13px}.model-label{left:auto;right:10px;transform:none;max-width:calc(100% - 205px)}.legend{padding:8px 13px}.legend .truth{margin-left:0}}
-@media(max-width:560px){.brand h1{font-size:1.1rem}.brand p{font-size:.67rem}.summary-chip.history{display:none}.summary-chip{min-height:27px;padding:3px 7px}.model-label{display:none}.graph-viewport{overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}#topology-canvas{width:1400px;height:831px;min-height:831px;max-width:none;touch-action:pan-x pan-y}.graph-tools{position:sticky;top:7px;left:7px;width:max-content;margin-bottom:-60px}.graph-tools button{min-width:44px;padding:0 7px}.graph-inspector{position:sticky;right:0;bottom:0;width:100%;max-width:none;max-height:min(58%,450px);margin-left:auto;border-right:0;border-bottom:0;border-left:0;border-radius:16px 16px 0 0}.legend .truth{display:none}}
-@media(max-height:600px){.hud{padding:5px 11px;gap:7px}.brand p,.summary-chip.history,#loop-freshness-note,#loop-refresh-state,.hud-time>span:nth-of-type(2){display:none}.brand h1{font-size:1.02rem}.summary-chip{min-height:24px;padding:2px 7px}.hud-time{font-size:.63rem}.refresh-control{margin:1px 0}.model-label{display:none}.legend{min-height:34px;padding:4px 11px}.graph-inspector{max-height:78%}}
-@media(forced-colors:active){.summary-chip,.freshness,.graph-tools,.graph-inspector,.inspector-signals{border-color:CanvasText}.node-core,.phase-boundary,.pm-boundary,.unassigned-boundary,.project-endpoint,.model-phase-edge,.observed-edge,.operational-edge{stroke:CanvasText}.node-core{fill:Canvas}.agent-node:focus .node-focus-ring,.agent-node[aria-pressed="true"] .node-focus-ring{stroke:Highlight}.legend-dot,.freshness::before{forced-color-adjust:none;background:Highlight}.graph-viewport:focus-visible{outline:3px solid Highlight;box-shadow:none}}
-</style></head>
-<body data-observation-freshness="${initialFreshness}" data-snapshot-quality="${esc(quality)}">
-<a id="loop-skip-link" class="skip-link" href="#loop-graph">ข้ามไปยัง Phase Flow Graph</a>
-<header class="hud" data-observation-expires-at="${esc(expiresAt)}" data-refresh-interval="${refreshInterval}">
-  <div class="hud-main">
-    <div class="brand"><span class="eyebrow">TMUX TEAMS · TWO-LEVEL DELIVERY FLOW</span>
-      <h1>ACP Phase Flow <span>${esc(repoName)}</span></h1>
-      <p>PM คุม outer loop · 4 phase teams คุม inner loop · 1 node = 1 ACP dispatch</p>
-    </div>
-    <div class="summary" aria-label="สรุป phase binding และ ACP nodes">
-      <span class="summary-chip"><strong>${assigned}</strong> ผูกเฟสแล้ว</span>
-      <span class="summary-chip${unassigned ? ' warn' : ''}"><strong>${unassigned}</strong> ยังไม่ผูกเฟส</span>
-      <span class="summary-chip history"><strong>${historyNodes.length}</strong> บันทึกแล้ว</span>
-      <span class="summary-chip"><strong>${attention}</strong> ต้องตรวจ</span>
-      <span id="loop-freshness-status" class="freshness ${initialFreshness}" role="status" aria-live="polite">${initialFreshnessLabel}</span>
-    </div>
-  </div>
-  <div class="hud-time">
-    <span id="loop-timezone-label" class="time-zone-label">${esc(timeZoneLabel)}</span>
-    <span>สังเกต ณ ${semanticTime(snapshot.generated_at, timeZone, formatter)}</span>
-    <span id="loop-freshness-note">${initialFreshnessNote}</span>
-    <button id="loop-auto-refresh" class="refresh-control" type="button"
-      aria-pressed="false" aria-describedby="loop-refresh-state">พักการรีเฟรชอัตโนมัติ</button>
-    <span id="loop-refresh-state" class="refresh-state" role="status" aria-live="polite">รีเฟรชอัตโนมัติเปิดอยู่ · ทุก ${refreshInterval} วิ</span>
-    <a id="loop-back-link" class="back-link" href="${esc(mainPageName)}">กลับไป Pulse</a>
-  </div>
-</header>
-${truncated || degradedSources.length || unassigned ? `<aside class="notice" role="status">
-  <strong>ขอบเขตหลักฐาน</strong>
-  <span>${unassigned ? `ACP ${unassigned} nodes ไม่มี phase binding ที่ใช้ได้หรือมีหลักฐานขัดแย้ง จึงไม่ถูกเดาเข้า Requirement/Prototype/Development/QA. ` : ''}
-  ${truncated ? `snapshot ตัด active run ${truncated} รายการ. ` : ''}
-  ${degradedSources.length ? `แหล่งข้อมูลผิดปกติ: <code>${esc(degradedSources.join(' · '))}</code>` : ''}</span>
-</aside>` : ''}
-<main id="loop-graph" class="graph-viewport" tabindex="-1"
-  data-base-aria-label="D3 phase flowchart แบบเลื่อนและซูมได้"
-  aria-label="${initialQualifier ? `${esc(initialQualifier)}. ` : ''}D3 phase flowchart แบบเลื่อนและซูมได้"
-  data-agent-node-count="${nodes.length}">
-  <div class="graph-tools" role="group" aria-label="เครื่องมือมุมมองกราฟ">
-    <button id="graph-zoom-in" type="button" title="ขยายกราฟ"><span class="tool-symbol" aria-hidden="true">+</span><span class="sr-only">ขยายกราฟ</span></button>
-    <button id="graph-zoom-out" type="button" title="ย่อกราฟ"><span class="tool-symbol" aria-hidden="true">−</span><span class="sr-only">ย่อกราฟ</span></button>
-    <button id="graph-fit" type="button">พอดีจอ</button>
-  </div>
-  <p class="model-label"><strong>เส้นประบาง</strong> = model · <strong>เส้นทึบบาง</strong> = phase placement · <strong>เส้นสีหนา</strong> = advisory operational handoff</p>
-  <p id="d3-warning" class="d3-warning" role="alert" hidden>โหลด D3 7.9.0 ไม่สำเร็จ · แสดง fallback flowchart แบบคงที่</p>
-  <svg id="topology-canvas" viewBox="${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}"
-    role="group" aria-labelledby="topology-title topology-desc" preserveAspectRatio="xMidYMid meet">
-    <title id="topology-title">Requirement ถึง QA phase flowchart พร้อม ACP agent nodes</title>
-    <desc id="topology-desc">สี่ phase teams เรียง Requirement, Prototype, Development และ QA ภายใน PM outer loop; Project Delivery เป็นปลายทางไม่ใช่ทีมที่ห้า. แต่ละ phase มีแผนงาน, ACP agents, การตรวจของทีม และ exit artifact. Agent ที่ไม่มี phase binding อยู่ในกลุ่ม unassigned.</desc>
-    <defs>
-      <marker id="model-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"/></marker>
-      <marker id="operational-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"/></marker>
-    </defs>
-    <g id="graph-camera">
-      <g class="outer-model" aria-hidden="true">
-        <rect class="pm-boundary" x="${pmBoundary.x}" y="${pmBoundary.y}" width="${pmBoundary.width}" height="${pmBoundary.height}" rx="26"/>
-        <text class="pm-title" x="58" y="87">PM OUTER LOOP</text>
-        <text class="pm-copy" x="58" y="107">ติด phase · handoff · bottleneck · exception — ไม่รับตรวจ worker แทนทีมเฟส</text>
-        <rect class="pm-node" x="1385" y="75" width="240" height="58" rx="29"/>
-        <text class="pm-node-title" x="1505" y="99" text-anchor="middle">PM exception boundary</text>
-        <text class="pm-node-copy" x="1505" y="117" text-anchor="middle">deadlock · policy conflict · bottleneck</text>
-      </g>
-      <g class="edge-layer phase-edge-layer" aria-hidden="true">
-        ${topology.model_edges.map((edge) =>
-          `<path class="model-phase-edge" data-edge-kind="model-phase-handoff" data-from="${esc(edge.from)}" data-to="${esc(edge.to)}" d="${esc(edge.path)}" marker-end="url(#model-arrow)"/>
-          <text class="handoff-label" x="${(edge.x1 + edge.x2) / 2}" y="${Math.min(edge.y1, edge.y2) - 8}" text-anchor="middle">${esc(edge.artifact)}</text>`).join('')}
-      </g>
-      <g class="edge-layer operational-edge-layer" aria-hidden="true">
-        ${topology.operational_edges.map((edge) =>
-          `<path class="operational-edge state-${esc(edge.state)}${edge.completed ? ' completed' : ''}" data-edge-family="operational" data-edge-kind="${esc(edge.kind)}" data-gate-id="${esc(edge.gate_id)}" data-boundary="${esc(edge.boundary)}" data-from="${esc(edge.from)}" data-to="${esc(edge.to)}" data-artifact-type="${esc(edge.artifact_type)}" data-completed="${edge.completed}" data-completion-basis="${esc(edge.completion_basis ?? '')}" d="${esc(edge.path)}" marker-end="url(#operational-arrow)"/>
-          <text class="operational-edge-label${edge.completed ? ' completed' : ''}" x="${(edge.x1 + edge.x2) / 2}" y="${(edge.y1 + edge.y2) / 2 - 5}" text-anchor="middle">${esc(edge.state)}${edge.completed ? ' · completed' : ''}</text>`).join('')}
-      </g>
-      <g class="edge-layer observed-edge-layer" aria-hidden="true">
-        ${topology.observed_edges.map((edge) =>
-          `<line class="observed-edge${edge.kind === 'observed-unassigned-placement' ? ' unassigned' : ''}" data-edge-kind="${esc(edge.kind)}" data-agent-id="${esc(edge.agent_id)}" data-placement-id="${esc(edge.placement_id)}" x1="${edge.x1}" y1="${edge.y1}" x2="${edge.x2}" y2="${edge.y2}"/>`).join('')}
-      </g>
-      <g class="phase-layer">
-        ${topology.phases.map(phaseCardSvg).join('')}
-      </g>
-      <g class="endpoint-layer" aria-hidden="true">
-        <g transform="translate(${topology.endpoint.x} ${topology.endpoint.y})">
-          <rect class="project-endpoint" width="${topology.endpoint.width}" height="${topology.endpoint.height}" rx="28"/>
-          <text class="endpoint-title" x="115" y="48" text-anchor="middle">Project Delivery</text>
-          <text class="endpoint-copy" x="115" y="73" text-anchor="middle">ผู้รับปลายทางจาก QA</text>
-          <text class="endpoint-copy" x="115" y="98" text-anchor="middle">รับ qa_release_evidence</text>
-          <text class="endpoint-warning" x="115" y="127" text-anchor="middle">ไม่ใช่ phase team ที่ห้า</text>
-          <text class="endpoint-warning" x="115" y="149" text-anchor="middle">accept ≠ business approval</text>
-        </g>
-      </g>
-      <g class="unassigned-layer">
-        <rect class="unassigned-boundary" x="${topology.unassigned.x}" y="${topology.unassigned.y}" width="${topology.unassigned.width}" height="${topology.unassigned.height}" rx="22"/>
-        <text class="unassigned-title" x="${topology.unassigned.x + 28}" y="${topology.unassigned.y + 40}">ยังไม่ผูกเฟส · Unassigned ACP evidence</text>
-        <text class="unassigned-copy" x="${topology.unassigned.x + 28}" y="${topology.unassigned.y + 64}">ไม่มี phase attr ที่ใช้ได้หรือหลักฐานขัดแย้ง จึงห้ามอนุมานจาก task name, worker หรือ model</text>
-        <text class="unassigned-count" x="${topology.unassigned.x + 110}" y="${topology.unassigned.y + 137}" text-anchor="middle">${topology.unassigned.agent_count}</text>
-        <text class="unassigned-copy" x="${topology.unassigned.x + 110}" y="${topology.unassigned.y + 160}" text-anchor="middle">ACP agents</text>
-      </g>
-      <g class="agent-layer">
-        ${nodes.map((node) => agentNodeSvg(topology, node, { selectedNodeId, initialFreshness })).join('')}
-      </g>
-    </g>
-  </svg>
-  ${inspectorHtml(topology, selectedNode, initialFreshness)}
-  ${semanticSummary(topology, initialFreshness)}
+  const counts = topology?.counts || {
+    total: 0, working: 0, waiting: 0, blocked_stalled: 0, done: 0, not_started: 0, unknown: 0,
+  }
+  const freshness = freshState(snapshot)
+  const snapshotId = safeText(snapshot?.snapshot_id, 'unknown')
+  const generatedAt = snapshot?.generated_at || ''
+  const repoName = snapshot?.scope?.repo_name || 'unknown'
+  const graphPayload = {
+    project_id: topology?.project_id || null,
+    configured: Boolean(topology?.configured),
+    source_digest: topology?.source_digest || null,
+    counts,
+    lanes: topology?.lanes || [],
+    edges: topology?.edges || [],
+    project_completion_endpoint: topology?.project_completion_endpoint || null,
+    handoffs: topology?.handoffs || [],
+    audit: topology?.audit || [],
+    audit_total: Number.isSafeInteger(topology?.audit_total)
+      ? topology.audit_total : (topology?.audit || []).length,
+    diagnostics: topology?.diagnostics || [],
+    team_runtime: topology?.runtime || null,
+  }
+  return `<!doctype html><html lang="th"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="tmux-teams-snapshot-id" content="${esc(snapshotId)}">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; font-src data:; script-src 'self'; connect-src 'self'; img-src data:; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'">
+<title>Pulse agent flow · ${esc(repoName)}</title>
+<link rel="stylesheet" href="${esc(fontCssName)}"><style>${CSS}</style></head>
+<body data-observation-freshness="${freshness}" data-observation-expires-at="${esc(snapshot?.observation?.expires_at || '')}" data-refresh-interval="${Number(snapshot?.observation?.refresh_interval_sec) || 20}"><a class="skip-link" href="#team-flow">Skip to team flow</a><div class="graph-shell">
+<header data-screen-section="header" class="graph-header"><div><span class="eyebrow">tmux teams · operational flow</span><h1>Agent flow · ${esc(repoName)}</h1><p>One visible node equals one configured or observed agent instance.</p></div>
+<div class="graph-time"><span id="loop-timezone-label" class="time-zone-label">${esc(timeZoneLabel)}</span><span>observed at</span><time datetime="${esc(generatedAt)}" title="${esc(timeZone)}" aria-describedby="loop-timezone-label">${esc(displayTime(generatedAt, timeZone))}</time><span id="graph-freshness-status" data-refresh-status>${freshness === 'stale' ? 'Snapshot expired' : freshness === 'fresh' ? 'Snapshot fresh' : 'Freshness unknown'}</span><button type="button" data-refresh-toggle data-refresh-focus-key="refresh-toggle" aria-pressed="false">Pause updates</button><small id="graph-refresh-note" data-refresh-note>Polling the local snapshot marker</small></div></header>
+<main id="loop-graph" class="graph-page" data-agent-node-count="${counts.total}" data-count-working="${counts.working}" data-count-waiting="${counts.waiting}" data-count-blocked-stalled="${counts.blocked_stalled}" data-count-done="${counts.done}" data-count-not-started="${counts.not_started}" data-count-unknown="${counts.unknown}" data-base-aria-label="Operational agent flow">
+${summaryHtml(counts)}${evidenceNoticeHtml(snapshot, topology)}${legendHtml()}
+<section data-screen-section="team-flow" id="team-flow" aria-labelledby="team-flow-title"><h2 id="team-flow-title" class="sr-only">Team flow</h2><p id="team-flow-semantic-summary" class="sr-only">${esc(`Operational flow with ${counts.total} visible agent nodes: dispatchers fan out work to workers, workers collect into evaluators, evaluators reject back to their dispatcher or pass to the next Team.`)}</p><div class="graph-viewport" data-refresh-scroll-key="team-flow" tabindex="0" role="region" aria-label="Team agent flowchart" aria-describedby="team-flow-semantic-summary">${(topology?.lanes || []).map(teamLaneHtml).join('')}</div></section>
+${handoffHtml(topology?.handoffs || [])}
+${auditHtml(topology?.audit || [], topology?.audit_total)}
+<p class="graph-footer">Source snapshot <code>${esc(snapshotId)}</code> · status and progress are evidence labels; no role or team is inferred from names.</p>
 </main>
-<footer class="legend" aria-label="คำอธิบาย phase flow graph">
-  <strong>Flow truth</strong>
-  <span class="legend-item"><i class="legend-dashed" aria-hidden="true"></i>phase/inner-loop model</span>
-  <span class="legend-item"><i class="legend-solid" aria-hidden="true"></i>observed placement</span>
-  <span class="legend-item"><i class="legend-operational proposed" style="--legend-tone:var(--pending)" aria-hidden="true"></i>gate proposed</span>
-  <span class="legend-item"><i class="legend-operational accepted" style="--legend-tone:var(--phase)" aria-hidden="true"></i>accepted</span>
-  <span class="legend-item"><i class="legend-operational" style="--legend-tone:var(--bad)" aria-hidden="true"></i>rejected</span>
-  <span class="legend-item"><i class="legend-operational" style="--legend-tone:var(--warn)" aria-hidden="true"></i>escalated</span>
-  <span class="legend-item"><i class="legend-operational" style="--legend-tone:var(--ok)" aria-hidden="true"></i>consumed</span>
-  <span class="legend-item"><i class="legend-dot" style="--legend-tone:var(--ok)" aria-hidden="true"></i>runtime state ของ agent</span>
-  <span class="truth"><b>TEAM_DONE ≠ ทีมตรวจรับแล้ว</b> · phase acceptance ≠ business approval · same-UID observations are advisory · Pulse never accepts/rejects/consumes/dispatches/gates</span>
-</footer>
-<script type="application/json" id="loop-graph-data">${graphData(topology)}</script>
-<script src="${esc(d3JsName)}"></script>
-<script>
-(() => {
-  const header = document.querySelector('[data-observation-expires-at]')
-  const status = document.querySelector('#loop-freshness-status')
-  const note = document.querySelector('#loop-freshness-note')
-  const graph = document.querySelector('#loop-graph')
-  const svg = document.querySelector('#topology-canvas')
-  const refreshControl = document.querySelector('#loop-auto-refresh')
-  const refreshState = document.querySelector('#loop-refresh-state')
-  const inspector = document.querySelector('#graph-inspector')
-  const closeInspector = document.querySelector('#graph-inspector-close')
-  const d3Warning = document.querySelector('#d3-warning')
-  const graphPayload = JSON.parse(document.querySelector('#loop-graph-data').textContent)
-  const nodeById = new Map(graphPayload.nodes.map((node) => [node.node_id, node]))
-  const staleCopy = ${scriptJson(STALE_NODE_COPY)}
-  const unknownCopy = ${scriptJson(UNKNOWN_NODE_COPY)}
-  const pauseKey = ${scriptJson(`tmux-teams-phase-graph-paused-v1:${snapshot.stream_id || 'unknown'}`)}
-  const restoreKey = 'tmuxTeamsPhaseGraphRestoreV1'
-  const initialSelectedId = ${scriptJson(selectedNodeId)}
-  let selectedId = initialSelectedId
-  let autoRefreshPaused = false
-  let freshnessTimer = 0
-  let reloadTimer = 0
-  let currentTransform = { x: 0, y: 0, k: 1 }
-  const d3Ready = globalThis.d3?.version === '7.9.0'
-  const reduceMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true
-  const snapshotFreshness = document.body.dataset.observationFreshness || 'unknown'
-  const snapshotQualifier = snapshotFreshness === 'stale'
-    ? staleCopy
-    : snapshotFreshness === 'unknown' ? unknownCopy : ''
-  const nodeAriaLabel = (node) =>
-    snapshotQualifier ? snapshotQualifier + '. ' + node.base_aria : node.base_aria
-  if (!d3Ready && d3Warning) d3Warning.hidden = false
+<script type="application/json" id="loop-graph-data">${safeJson(graphPayload)}</script>
+<script src="${esc(refreshScriptName)}" defer></script>
+</div></body></html>`
+}
 
-  let agentElements = Array.from(document.querySelectorAll('[data-agent-node]'))
-  let zoomBehavior = null
-  let svgSelection = null
-  if (d3Ready && svg) {
-    svgSelection = d3.select(svg)
-    const edgeLayer = d3.select('.observed-edge-layer')
-    edgeLayer.selectAll('line.observed-edge')
-      .data(graphPayload.observed_edges, function(edge) {
-        return edge?.agent_id || this.dataset.agentId
-      })
-      .join('line')
-      .attr('class', (edge) => 'observed-edge' +
-        (edge.kind === 'observed-unassigned-placement' ? ' unassigned' : ''))
-      .attr('data-edge-kind', (edge) => edge.kind)
-      .attr('data-agent-id', (edge) => edge.agent_id)
-      .attr('data-placement-id', (edge) => edge.placement_id)
-      .attr('x1', (edge) => edge.x1)
-      .attr('y1', (edge) => edge.y1)
-      .attr('x2', (edge) => edge.x2)
-      .attr('y2', (edge) => edge.y2)
-
-    const joined = d3.select('.agent-layer').selectAll('g.agent-node')
-      .data(graphPayload.nodes, function(node) {
-        return node?.node_id || this.dataset.nodeId
-      })
-      .join(
-        (enter) => {
-          const group = enter.append('g').attr('class', 'agent-node')
-          group.append('title')
-          group.append('circle').attr('class', 'node-attention-ring')
-          group.append('circle').attr('class', 'node-focus-ring')
-          group.append('circle').attr('class', 'node-core')
-          group.append('text').attr('class', 'node-agent-label')
-            .attr('text-anchor', 'middle').attr('y', 4).attr('aria-hidden', 'true')
-          return group
-        },
-        (update) => update,
-        (exit) => exit.remove(),
-      )
-      .attr('class', (node) => [
-        'agent-node',
-        'tone-' + node.tone,
-        node.historical ? 'is-historical' : 'is-live',
-        node.attention ? 'needs-attention' : '',
-        node.identity_source !== 'dispatch_id' ? 'weak-identity' : '',
-      ].filter(Boolean).join(' '))
-      .attr('transform', (node) => 'translate(' + node.x + ' ' + node.y + ')')
-      .attr('data-agent-node', 'true')
-      .attr('data-node-id', (node) => node.node_id)
-      .attr('data-phase-id', (node) => node.phase_id)
-      .attr('data-phase-source', (node) => node.phase_source)
-      .attr('data-state', (node) => node.state)
-      .attr('data-dispatch-id', (node) => node.dispatch_id || '')
-      .attr('data-task-id', (node) => node.task_id)
-      .attr('data-node-freshness', snapshotFreshness)
-      .attr('data-evidence', (node) => node.historical ? 'recorded-event' : 'live-projection')
-      .attr('data-base-aria-label', (node) => node.base_aria)
-      .attr('role', 'button')
-      .attr('aria-controls', 'graph-inspector')
-      .attr('aria-expanded', 'false')
-      .attr('aria-label', nodeAriaLabel)
-      .attr('aria-pressed', (node) => node.node_id === initialSelectedId ? 'true' : 'false')
-      .attr('tabindex', (node) => node.node_id === initialSelectedId ? '0' : '-1')
-    joined.each(function(node) {
-      const group = d3.select(this)
-      group.select('title').text(nodeAriaLabel(node))
-      group.select('.node-core').attr('r', node.radius)
-      group.select('.node-focus-ring').attr('r', node.radius + 5)
-      group.select('.node-attention-ring').attr('r', node.radius + 8)
-      group.selectAll('circle.node-history-ring')
-        .data(node.historical ? [node] : [])
-        .join(
-          (enter) => enter.insert('circle', 'text.node-agent-label')
-            .attr('class', 'node-history-ring')
-            .attr('aria-hidden', 'true'),
-          (update) => update,
-          (exit) => exit.remove(),
-        )
-        .attr('r', Math.max(4, node.radius - 5))
-      group.select('.node-agent-label').text(node.agent.length > 9
-        ? node.agent.slice(0, 4) + '…' + node.agent.slice(-4)
-        : node.agent)
-    })
-    agentElements = Array.from(document.querySelectorAll('[data-agent-node]'))
-    zoomBehavior = d3.zoom()
-      .scaleExtent([.55, 4.2])
-      .duration(reduceMotion ? 0 : 250)
-      .filter((event) => !event.target?.closest?.('[data-agent-node]') &&
-        (!event.ctrlKey || event.type === 'wheel'))
-      .on('start', () => svg.classList.add('is-panning'))
-      .on('zoom', (event) => {
-        currentTransform = { x: event.transform.x, y: event.transform.y, k: event.transform.k }
-        d3.select('#graph-camera').attr('transform', event.transform)
-        svg.classList.toggle('detail-zoom', event.transform.k >= 1.5)
-      })
-      .on('end', () => svg.classList.remove('is-panning'))
-    svgSelection.call(zoomBehavior)
-  }
-
-  const readPaused = () => {
-    try { return sessionStorage.getItem(pauseKey) === '1' }
-    catch { return false }
-  }
-  const writePaused = () => {
-    try { sessionStorage.setItem(pauseKey, autoRefreshPaused ? '1' : '0') }
-    catch { /* storage may be unavailable for local files */ }
-  }
-  const currentFreshnessQualifier = () => {
-    const freshness = document.body.dataset.observationFreshness
-    return freshness === 'stale' ? staleCopy : freshness === 'unknown' ? unknownCopy : ''
-  }
-  const storeReloadRestore = () => {
-    const active = document.activeElement
-    try {
-      const next = history.state && typeof history.state === 'object' ? { ...history.state } : {}
-      next[restoreKey] = {
-        transform: currentTransform,
-        selectedId,
-        focusNodeId: active?.matches?.('[data-agent-node]') ? active.dataset.nodeId : '',
-        focusId: active?.id || '',
-        inspectorOpen: Boolean(inspector && !inspector.hidden),
-        savedAt: Date.now(),
-      }
-      history.replaceState(next, '')
-    } catch { /* history state may be unavailable for local files */ }
-  }
-  const consumeReloadRestore = () => {
-    try {
-      const state = history.state
-      const saved = state && typeof state === 'object' ? state[restoreKey] : null
-      if (!saved) return null
-      const next = { ...state }
-      delete next[restoreKey]
-      history.replaceState(next, '')
-      return Number.isFinite(saved.savedAt) && Date.now() - saved.savedAt < 300000 ? saved : null
-    } catch { return null }
-  }
-  const setText = (selector, value) => {
-    const element = document.querySelector(selector)
-    if (element) element.textContent = value
-  }
-  const toneForSignal = (kind, value, node) => {
-    if (kind === 'process' && value === 'พบ process') return 'ok'
-    if (kind === 'terminal' && value !== 'ยังไม่มี' && value !== 'TEAM_DONE') return 'warn'
-    if (kind === 'verdict') {
-      if (node.verdict_conflict || value === 'ให้แก้ไข') return 'bad'
-      if (value === 'ผ่าน') return 'ok'
-      if (value === 'ยังไม่สรุป') return 'warn'
-    }
-    return ''
-  }
-  const updateInspector = (node) => {
-    if (!node || !inspector) return
-    setText('#inspector-evidence', node.historical ? 'ACP RUN ที่บันทึกแล้ว' : 'ACP RUN ที่กำลังติดตาม')
-    setText('#inspector-agent', node.agent)
-    setText('#inspector-phase', node.phase_title + (node.phase_thai ? ' · ' + node.phase_thai : ''))
-    setText('#inspector-outcome', node.phase_outcome)
-    setText('#inspector-artifact', node.exit_artifact)
-    setText('#inspector-task', node.task_id)
-    const task = document.querySelector('#inspector-task')
-    if (task) task.title = node.task_id
-    const state = document.querySelector('#inspector-state')
-    if (state) {
-      state.textContent = node.label
-      state.className = 'inspector-state tone-' + node.tone
-    }
-    for (const [kind, value] of Object.entries(node.signals)) {
-      const visibleKind = kind === 'liveness' ? 'process' : kind
-      const term = Array.from(document.querySelectorAll('.inspector-signals dt'))
-        .find((item) => item.textContent === visibleKind)
-      const row = term?.parentElement
-      const output = row?.querySelector('dd')
-      if (output) output.textContent = value
-      if (row) row.className = 'signal ' + toneForSignal(visibleKind, value, node)
-    }
-    setText('#inspector-meaning', node.meaning)
-    setText('#inspector-elapsed-label', node.elapsed_label)
-    setText('#inspector-elapsed', node.elapsed_value)
-    setText('#inspector-action', node.next_action)
-    const identity = document.querySelector('#inspector-identity')
-    if (identity) {
-      identity.textContent = node.identity_note || ''
-      identity.hidden = !node.identity_note
-    }
-    const qualifier = document.querySelector('#inspector-freshness')
-    const qualifierCopy = currentFreshnessQualifier()
-    if (qualifier) {
-      qualifier.textContent = qualifierCopy || staleCopy
-      qualifier.hidden = !qualifierCopy
-    }
-  }
-  const selectNode = (nodeId, { focus = false, open = true } = {}) => {
-    const node = nodeById.get(nodeId)
-    if (!node) return
-    selectedId = nodeId
-    for (const element of agentElements) {
-      const selected = element.dataset.nodeId === nodeId
-      element.setAttribute('aria-pressed', String(selected))
-      element.setAttribute('aria-expanded', String(selected && open))
-      element.tabIndex = selected ? 0 : -1
-    }
-    updateInspector(node)
-    if (inspector) inspector.hidden = !open
-    if (focus) {
-      const target = agentElements.find((element) => element.dataset.nodeId === nodeId)
-      try { target?.focus({ preventScroll: true }) } catch { target?.focus() }
-    }
-  }
-  const closeDetails = () => {
-    if (inspector) inspector.hidden = true
-    for (const element of agentElements) element.setAttribute('aria-expanded', 'false')
-    const target = agentElements.find((element) => element.dataset.nodeId === selectedId)
-    try { target?.focus({ preventScroll: true }) } catch { target?.focus() }
-  }
-  const updateRefreshControl = () => {
-    if (!refreshControl) return
-    refreshControl.setAttribute('aria-pressed', String(autoRefreshPaused))
-    if (refreshState) {
-      refreshState.textContent = autoRefreshPaused
-        ? 'พักการรีเฟรชอัตโนมัติแล้ว'
-        : 'รีเฟรชอัตโนมัติเปิดอยู่ · ทุก ' + (header?.dataset.refreshInterval || '?') + ' วิ'
-    }
-  }
-  const scheduleReload = () => {
-    if (reloadTimer) clearTimeout(reloadTimer)
-    if (autoRefreshPaused) return
-    const seconds = Number(header?.dataset.refreshInterval)
-    const delay = Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 20000
-    reloadTimer = setTimeout(() => {
-      storeReloadRestore()
-      location.reload()
-    }, delay)
-  }
-  const updateFreshness = () => {
-    if (!header || !status || !note) return
-    if (freshnessTimer) clearTimeout(freshnessTimer)
-    const expiry = Date.parse(header.dataset.observationExpiresAt || '')
-    const valid = Number.isFinite(expiry)
-    const freshness = !valid ? 'unknown' : Date.now() >= expiry ? 'stale' : 'fresh'
-    const qualifierCopy = freshness === 'stale' ? staleCopy : freshness === 'unknown' ? unknownCopy : ''
-    document.body.dataset.observationFreshness = freshness
-    for (const name of ['fresh', 'stale', 'unknown']) status.classList.toggle(name, freshness === name)
-    status.textContent = freshness === 'stale' ? 'ข้อมูลหมดอายุ'
-      : freshness === 'unknown' ? 'ตรวจ freshness ไม่ได้' : 'ข้อมูลสด'
-    note.textContent = freshness === 'stale' ? 'ตัวสังเกตการณ์ไม่อัปเดตตามรอบ'
-      : freshness === 'unknown' ? 'ตรวจเวลาหมดอายุไม่ได้' : 'snapshot ยังอยู่ในช่วงสังเกตการณ์'
-    if (graph) {
-      const base = graph.dataset.baseAriaLabel || 'D3 phase flowchart'
-      graph.setAttribute('aria-label', qualifierCopy ? qualifierCopy + '. ' + base : base)
-    }
-    for (const element of agentElements) {
-      element.dataset.nodeFreshness = freshness
-      const base = element.dataset.baseAriaLabel || nodeById.get(element.dataset.nodeId)?.base_aria || ''
-      element.dataset.baseAriaLabel = base
-      element.setAttribute('aria-label', qualifierCopy ? qualifierCopy + '. ' + base : base)
-      const title = element.querySelector('title')
-      if (title) title.textContent = qualifierCopy ? qualifierCopy + '. ' + base : base
-    }
-    if (selectedId) updateInspector(nodeById.get(selectedId))
-    if (freshness === 'fresh') {
-      const delay = Math.min(Math.max(expiry - Date.now() + 25, 25), 2147000000)
-      freshnessTimer = setTimeout(updateFreshness, delay)
-    }
-  }
-
-  const savedRestore = consumeReloadRestore()
-  autoRefreshPaused = readPaused()
-  if (d3Ready && zoomBehavior && savedRestore?.transform &&
-      Object.values(savedRestore.transform).every(Number.isFinite)) {
-    const restored = d3.zoomIdentity
-      .translate(savedRestore.transform.x, savedRestore.transform.y)
-      .scale(savedRestore.transform.k)
-    svgSelection.call(zoomBehavior.transform, restored)
-  }
-  const restoredSelection = nodeById.has(savedRestore?.selectedId) ? savedRestore.selectedId : initialSelectedId
-  if (restoredSelection) selectNode(restoredSelection, {
-    open: savedRestore ? savedRestore.inspectorOpen !== false : false,
-  })
-  updateRefreshControl()
-  updateFreshness()
-  requestAnimationFrame(() => {
-    if (savedRestore?.focusNodeId && nodeById.has(savedRestore.focusNodeId)) {
-      selectNode(savedRestore.focusNodeId, { focus: true, open: savedRestore.inspectorOpen !== false })
-    } else if (savedRestore?.focusId) {
-      const target = document.getElementById(savedRestore.focusId)
-      try { target?.focus({ preventScroll: true }) } catch { target?.focus() }
-    }
-  })
-
-  const bindAgentEvents = () => {
-    for (const [index, element] of agentElements.entries()) {
-      element.addEventListener('click', () => selectNode(element.dataset.nodeId, { focus: true }))
-      element.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault()
-          selectNode(element.dataset.nodeId, { focus: true })
-          return
-        }
-        let nextIndex = index
-        if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = (index + 1) % agentElements.length
-        else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIndex = (index - 1 + agentElements.length) % agentElements.length
-        else if (event.key === 'Home') nextIndex = 0
-        else if (event.key === 'End') nextIndex = agentElements.length - 1
-        else return
-        event.preventDefault()
-        selectNode(agentElements[nextIndex].dataset.nodeId, { focus: true })
-      })
-    }
-  }
-  bindAgentEvents()
-  closeInspector?.addEventListener('click', closeDetails)
-  document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && inspector && !inspector.hidden) {
-      event.preventDefault()
-      closeDetails()
-    }
-  })
-  document.querySelector('#graph-zoom-in')?.addEventListener('click', () => {
-    if (d3Ready && zoomBehavior) svgSelection.call(zoomBehavior.scaleBy, 1.25)
-  })
-  document.querySelector('#graph-zoom-out')?.addEventListener('click', () => {
-    if (d3Ready && zoomBehavior) svgSelection.call(zoomBehavior.scaleBy, .8)
-  })
-  document.querySelector('#graph-fit')?.addEventListener('click', () => {
-    if (d3Ready && zoomBehavior) svgSelection.call(zoomBehavior.transform, d3.zoomIdentity)
-  })
-  refreshControl?.addEventListener('click', () => {
-    autoRefreshPaused = !autoRefreshPaused
-    writePaused()
-    updateRefreshControl()
-    scheduleReload()
-  })
-  scheduleReload()
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') updateFreshness()
-  })
-})()
-</script></body></html>`
+function safeText(value, fallback = '') {
+  const text = String(value ?? '').trim()
+  return text || fallback
 }

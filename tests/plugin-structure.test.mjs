@@ -12,7 +12,8 @@ import { fileURLToPath } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PLUGIN = join(ROOT, 'plugins/tmux-teams')
-const SKILLS = ['tmux-teams', 'party-mode', 'party-auto', 'party-advise', 'sqthink', 'codex-tmux-driver']
+const SKILLS = ['tmux-teams', 'party-mode', 'party-auto', 'party-advise', 'sqthink', 'codex-tmux-driver',
+  'team-loop-setup']
 const RELEASE_VERSION = '0.9.0'
 const STAGE1_SCRIPTS = [
   'delivery-loop-pilot-core.mjs',
@@ -189,7 +190,7 @@ test('the event before..HEAD range catches whitespace hidden before the final pu
   assert.match(`${pushedRange.stdout}${pushedRange.stderr}`, /trailing whitespace/)
 })
 
-test('all six skills are present with matching frontmatter names', () => {
+test('every bundled skill is present with matching frontmatter names', () => {
   for (const name of SKILLS) {
     const skillMd = join(PLUGIN, 'skills', name, 'SKILL.md')
     assert.ok(existsSync(skillMd), `${name}/SKILL.md missing`)

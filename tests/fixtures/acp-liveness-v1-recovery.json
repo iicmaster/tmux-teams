@@ -1,0 +1,69 @@
+{
+  "schema_version": "acp-liveness.v1",
+  "task_id": "fixture-recovery",
+  "dispatch_id": "79b3732a-36fd-4211-9b12-f6b831caee68",
+  "worker": "codex",
+  "transport": "acp",
+  "session_id": "sess_mock",
+  "started_at": "2026-07-25T23:22:39Z",
+  "observed_at": "2026-07-25T23:22:48.068Z",
+  "stall_sec": 1.5,
+  "hard_timeout_sec": 0,
+  "stall_policy": "report",
+  "cancellation_grace_sec": 0.1,
+  "liveness_state": "completed",
+  "termination_reason": "none",
+  "last_protocol_activity_at": "2026-07-25T23:22:48.047Z",
+  "last_meaningful_progress_at": "2026-07-25T23:22:48.047Z",
+  "lease_anchor_at": "2026-07-25T23:22:48.047Z",
+  "meaningful_progress_count": 6,
+  "consecutive_missed_leases": 0,
+  "next_lease_expiry_at": "2026-07-25T23:22:49.547Z",
+  "stall_recoveries": 2,
+  "stall_history": [
+    {
+      "state": "suspected_stalled",
+      "evidence": "progress_lease_expired",
+      "observed_at": "2026-07-25T23:22:44.864Z",
+      "last_protocol_activity_at": "2026-07-25T23:22:39.944Z",
+      "last_meaningful_progress_at": "2026-07-25T23:22:39.944Z",
+      "active_tools": []
+    },
+    {
+      "state": "recovered",
+      "evidence": "initialize_response",
+      "observed_at": "2026-07-25T23:22:44.948Z"
+    },
+    {
+      "state": "suspected_stalled",
+      "evidence": "progress_lease_expired",
+      "observed_at": "2026-07-25T23:22:46.495Z",
+      "last_protocol_activity_at": "2026-07-25T23:22:44.983Z",
+      "last_meaningful_progress_at": "2026-07-25T23:22:44.983Z",
+      "active_tools": []
+    },
+    {
+      "state": "stalled",
+      "evidence": "two_consecutive_expired_progress_leases",
+      "observed_at": "2026-07-25T23:22:48.011Z",
+      "last_protocol_activity_at": "2026-07-25T23:22:44.983Z",
+      "last_meaningful_progress_at": "2026-07-25T23:22:44.984Z",
+      "active_tools": []
+    },
+    {
+      "state": "recovered",
+      "evidence": "message",
+      "observed_at": "2026-07-25T23:22:48.030Z"
+    }
+  ],
+  "active_tools": [],
+  "tools": {},
+  "plan_digest": null,
+  "plan_entry_count": 0,
+  "cancellation_unavailable": false,
+  "requested_model": "gpt-5.6-luna",
+  "requested_reasoning_effort": "ultra",
+  "effective_identity": "gpt-5.6-luna[ultra]",
+  "identity_status": "matched",
+  "agent_id": "root_liveness_implementer"
+}

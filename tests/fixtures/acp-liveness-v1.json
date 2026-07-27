@@ -1,0 +1,58 @@
+{
+  "schema_version": "acp-liveness.v1",
+  "task_id": "fixture-tool-running",
+  "dispatch_id": "74cefa40-caf2-4d9a-8e15-bf4f562fd154",
+  "worker": "codex",
+  "transport": "acp",
+  "session_id": "sess_mock",
+  "started_at": "2026-07-25T23:22:26Z",
+  "observed_at": "2026-07-25T23:22:33.381Z",
+  "stall_sec": 60,
+  "hard_timeout_sec": 0,
+  "stall_policy": "cancel",
+  "cancellation_grace_sec": 0.1,
+  "liveness_state": "tool_running",
+  "termination_reason": "none",
+  "last_protocol_activity_at": "2026-07-25T23:22:33.380Z",
+  "last_meaningful_progress_at": "2026-07-25T23:22:33.380Z",
+  "lease_anchor_at": "2026-07-25T23:22:33.380Z",
+  "meaningful_progress_count": 4,
+  "consecutive_missed_leases": 0,
+  "next_lease_expiry_at": "2026-07-25T23:23:33.380Z",
+  "stall_recoveries": 0,
+  "stall_history": [],
+  "active_tools": [
+    {
+      "tool_call_id": "t1",
+      "title": "long-running tool",
+      "kind": "execute",
+      "status": "in_progress",
+      "content_digest": "sha256:4e658fbab267c951d6fb6df4fd0ee4297b2ca8051f4a3a4db9a3cf362abeb5ba",
+      "output_digest": "sha256:66967c3c8be87735db13483ffcf1634b42ed82f19718e488c07e01322ef6d23b",
+      "locations_digest": "sha256:76e8f5f6f5aa88f1a216e70c476a634bd994bf33bfd9e3a355e4611d00a32921",
+      "updated_at": "2026-07-25T23:22:33.380Z",
+      "update_count": 1
+    }
+  ],
+  "tools": {
+    "t1": {
+      "tool_call_id": "t1",
+      "title": "long-running tool",
+      "kind": "execute",
+      "status": "in_progress",
+      "content_digest": "sha256:4e658fbab267c951d6fb6df4fd0ee4297b2ca8051f4a3a4db9a3cf362abeb5ba",
+      "output_digest": "sha256:66967c3c8be87735db13483ffcf1634b42ed82f19718e488c07e01322ef6d23b",
+      "locations_digest": "sha256:76e8f5f6f5aa88f1a216e70c476a634bd994bf33bfd9e3a355e4611d00a32921",
+      "updated_at": "2026-07-25T23:22:33.380Z",
+      "update_count": 1
+    }
+  },
+  "plan_digest": null,
+  "plan_entry_count": 0,
+  "cancellation_unavailable": false,
+  "requested_model": "gpt-5.6-luna",
+  "requested_reasoning_effort": "ultra",
+  "effective_identity": "gpt-5.6-luna[ultra]",
+  "identity_status": "matched",
+  "agent_id": "root_liveness_implementer"
+}

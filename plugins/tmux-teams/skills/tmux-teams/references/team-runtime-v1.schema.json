@@ -1,0 +1,312 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "team-runtime-v1.schema.json",
+  "title": "tmux-teams Team runtime v1",
+  "description": "Closed, bounded controller evidence for the configurable Team flow. It is advisory and never actuates work.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "schema_version", "trust_level", "comparison_id", "run_id", "mode",
+    "generated_at", "expires_at", "graph_source_digest", "workload_digest",
+    "oracle_digest", "event_log_digest", "execution_profile_digest", "controller",
+    "checkpoint", "agent_runs", "routing_decisions", "attempts", "evaluations",
+    "handoffs", "bottleneck", "metrics"
+  ],
+  "properties": {
+    "schema": { "const": "tmux-teams.team-runtime" },
+    "schema_version": { "const": 1 },
+    "trust_level": { "const": "advisory_same_uid" },
+    "comparison_id": { "$ref": "#/$defs/runtime_id" },
+    "run_id": { "$ref": "#/$defs/runtime_id" },
+    "mode": { "enum": ["legacy", "team_loop"] },
+    "generated_at": { "$ref": "#/$defs/timestamp" },
+    "expires_at": { "$ref": "#/$defs/timestamp" },
+    "graph_source_digest": { "$ref": "#/$defs/digest" },
+    "workload_digest": { "$ref": "#/$defs/digest" },
+    "oracle_digest": { "$ref": "#/$defs/digest" },
+    "event_log_digest": { "$ref": "#/$defs/digest" },
+    "execution_profile_digest": { "$ref": "#/$defs/digest" },
+    "controller": { "$ref": "#/$defs/controller" },
+    "checkpoint": { "$ref": "#/$defs/checkpoint" },
+    "agent_runs": {
+      "type": "array", "maxItems": 128,
+      "items": { "$ref": "#/$defs/agent_run" }
+    },
+    "routing_decisions": {
+      "type": "array", "maxItems": 64,
+      "items": { "$ref": "#/$defs/routing_decision" }
+    },
+    "attempts": {
+      "type": "array", "maxItems": 256,
+      "items": { "$ref": "#/$defs/attempt" }
+    },
+    "evaluations": {
+      "type": "array", "maxItems": 256,
+      "items": { "$ref": "#/$defs/evaluation" }
+    },
+    "handoffs": {
+      "type": "array", "maxItems": 32,
+      "items": { "$ref": "#/$defs/handoff" }
+    },
+    "bottleneck": {
+      "oneOf": [{ "$ref": "#/$defs/bottleneck" }, { "type": "null" }]
+    },
+    "metrics": { "$ref": "#/$defs/metrics" }
+  },
+  "$defs": {
+    "runtime_id": {
+      "type": "string", "minLength": 1, "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "agent_id": {
+      "type": "string", "minLength": 1, "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$"
+    },
+    "team_id": {
+      "type": "string", "minLength": 1, "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "nullable_digest": {
+      "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }]
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "nullable_timestamp": {
+      "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }]
+    },
+    "nullable_runtime_id": {
+      "oneOf": [{ "$ref": "#/$defs/runtime_id" }, { "type": "null" }]
+    },
+    "nullable_agent_id": {
+      "oneOf": [{ "$ref": "#/$defs/agent_id" }, { "type": "null" }]
+    },
+    "nullable_team_id": {
+      "oneOf": [{ "$ref": "#/$defs/team_id" }, { "type": "null" }]
+    },
+    "nullable_uuid": {
+      "oneOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }]
+    },
+    "finite_duration": {
+      "type": "number", "minimum": 0
+    },
+    "nullable_duration": {
+      "oneOf": [{ "$ref": "#/$defs/finite_duration" }, { "type": "null" }]
+    },
+    "controller": {
+      "type": "object", "additionalProperties": false,
+      "required": ["agent_id", "agent_run_id"],
+      "properties": {
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "agent_run_id": { "$ref": "#/$defs/runtime_id" }
+      }
+    },
+    "checkpoint": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "checkpoint_id": { "$ref": "#/$defs/runtime_id" },
+        "state": { "enum": ["fanout", "evaluation", "rework", "handoff", "completion"] },
+        "observed_at": { "$ref": "#/$defs/timestamp" },
+        "active_agent_ids": {
+          "type": "array", "maxItems": 128, "uniqueItems": true,
+          "items": { "$ref": "#/$defs/agent_id" }
+        },
+        "project_complete": { "type": "boolean" },
+        "bottleneck_agent_id": { "$ref": "#/$defs/nullable_agent_id" }
+      }
+    },
+    "agent_run": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "agent_run_id", "agent_id", "agent_role", "team_id", "task_id", "dispatch_id",
+        "session_operation", "requested_session_id", "acp_session_id", "state", "queued_at",
+        "started_at", "completed_at", "queue_wait_ms", "service_ms", "result_digest",
+        "receipt_digest"
+      ],
+      "properties": {
+        "agent_run_id": { "$ref": "#/$defs/runtime_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "agent_role": { "enum": ["outer_controller", "dispatcher", "worker", "evaluator"] },
+        "team_id": { "$ref": "#/$defs/nullable_team_id" },
+        "task_id": { "$ref": "#/$defs/runtime_id" },
+        "dispatch_id": { "$ref": "#/$defs/uuid" },
+        "session_operation": { "enum": ["new", "load"] },
+        "requested_session_id": { "$ref": "#/$defs/nullable_runtime_id" },
+        "acp_session_id": { "$ref": "#/$defs/runtime_id" },
+        "state": { "enum": ["queued", "active", "completed", "failed", "cancelled"] },
+        "queued_at": { "$ref": "#/$defs/timestamp" },
+        "started_at": { "$ref": "#/$defs/nullable_timestamp" },
+        "completed_at": { "$ref": "#/$defs/nullable_timestamp" },
+        "queue_wait_ms": { "$ref": "#/$defs/nullable_duration" },
+        "service_ms": { "$ref": "#/$defs/nullable_duration" },
+        "result_digest": { "$ref": "#/$defs/nullable_digest" },
+        "receipt_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "routing_decision": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "decision_id", "agent_run_id", "actor_id", "actor_role", "scope", "team_id",
+        "work_item_id", "attempt_id", "decision_kind", "target_agent_id", "source_task_id",
+        "source_dispatch_id", "source_result_digest", "observed_at"
+      ],
+      "properties": {
+        "decision_id": { "$ref": "#/$defs/runtime_id" },
+        "agent_run_id": { "$ref": "#/$defs/runtime_id" },
+        "actor_id": { "$ref": "#/$defs/agent_id" },
+        "actor_role": { "enum": ["outer_controller", "dispatcher"] },
+        "scope": { "enum": ["team_internal", "outer"] },
+        "team_id": { "$ref": "#/$defs/nullable_team_id" },
+        "work_item_id": { "$ref": "#/$defs/nullable_runtime_id" },
+        "attempt_id": { "$ref": "#/$defs/nullable_runtime_id" },
+        "decision_kind": { "enum": ["start_team", "enqueue", "assign", "requeue", "accept_handoff", "complete"] },
+        "target_agent_id": { "$ref": "#/$defs/nullable_agent_id" },
+        "source_task_id": { "$ref": "#/$defs/runtime_id" },
+        "source_dispatch_id": { "$ref": "#/$defs/uuid" },
+        "source_result_digest": { "$ref": "#/$defs/nullable_digest" },
+        "observed_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "attempt": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "attempt_id", "parent_attempt_id", "team_id", "work_item_id", "agent_id", "agent_run_id",
+        "task_id", "dispatch_id", "acp_session_id", "resumed_session_id", "state", "queued_at",
+        "started_at", "completed_at", "input_artifact_digest", "output_artifact_digest", "result_digest"
+      ],
+      "properties": {
+        "attempt_id": { "$ref": "#/$defs/runtime_id" },
+        "parent_attempt_id": { "$ref": "#/$defs/nullable_runtime_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "work_item_id": { "$ref": "#/$defs/runtime_id" },
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "agent_run_id": { "$ref": "#/$defs/runtime_id" },
+        "task_id": { "$ref": "#/$defs/runtime_id" },
+        "dispatch_id": { "$ref": "#/$defs/uuid" },
+        "acp_session_id": { "$ref": "#/$defs/nullable_runtime_id" },
+        "resumed_session_id": { "$ref": "#/$defs/nullable_runtime_id" },
+        "state": { "enum": ["queued", "active", "completed", "failed"] },
+        "queued_at": { "$ref": "#/$defs/timestamp" },
+        "started_at": { "$ref": "#/$defs/nullable_timestamp" },
+        "completed_at": { "$ref": "#/$defs/nullable_timestamp" },
+        "input_artifact_digest": { "$ref": "#/$defs/nullable_digest" },
+        "output_artifact_digest": { "$ref": "#/$defs/nullable_digest" },
+        "result_digest": { "$ref": "#/$defs/nullable_digest" }
+      }
+    },
+    "criterion_result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["criterion_id", "outcome", "evidence_digest"],
+      "properties": {
+        "criterion_id": { "$ref": "#/$defs/runtime_id" },
+        "outcome": { "enum": ["pass", "fail", "unknown"] },
+        "evidence_digest": { "$ref": "#/$defs/nullable_digest" }
+      }
+    },
+    "defect": {
+      "type": "object", "additionalProperties": false,
+      "required": ["defect_id", "severity", "evidence_digest"],
+      "properties": {
+        "defect_id": { "$ref": "#/$defs/runtime_id" },
+        "severity": { "enum": ["info", "warning", "error"] },
+        "evidence_digest": { "$ref": "#/$defs/nullable_digest" }
+      }
+    },
+    "evaluation": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "evaluation_id", "agent_run_id", "team_id", "evaluator_agent_id", "evaluator_task_id",
+        "evaluator_dispatch_id", "round", "work_item_id", "attempt_id", "verdict",
+        "criterion_results", "defects", "return_dispatcher_agent_id", "source_result_digest", "observed_at"
+      ],
+      "properties": {
+        "evaluation_id": { "$ref": "#/$defs/runtime_id" },
+        "agent_run_id": { "$ref": "#/$defs/runtime_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "evaluator_agent_id": { "$ref": "#/$defs/agent_id" },
+        "evaluator_task_id": { "$ref": "#/$defs/runtime_id" },
+        "evaluator_dispatch_id": { "$ref": "#/$defs/uuid" },
+        "round": { "type": "integer", "minimum": 1 },
+        "work_item_id": { "$ref": "#/$defs/runtime_id" },
+        "attempt_id": { "$ref": "#/$defs/runtime_id" },
+        "verdict": { "enum": ["accepted", "rejected"] },
+        "criterion_results": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/criterion_result" } },
+        "defects": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/defect" } },
+        "return_dispatcher_agent_id": { "$ref": "#/$defs/nullable_agent_id" },
+        "source_result_digest": { "$ref": "#/$defs/digest" },
+        "observed_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "handoff": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "handoff_id", "producer_agent_run_id", "consumer_agent_run_id", "upstream_team_id",
+        "upstream_evaluator_agent_id", "upstream_evaluator_task_id", "downstream_team_id",
+        "downstream_dispatcher_agent_id", "artifact_digest", "consumed_artifact_digest",
+        "produced_at", "consumed_at", "state"
+      ],
+      "properties": {
+        "handoff_id": { "$ref": "#/$defs/runtime_id" },
+        "producer_agent_run_id": { "$ref": "#/$defs/runtime_id" },
+        "consumer_agent_run_id": { "$ref": "#/$defs/nullable_runtime_id" },
+        "upstream_team_id": { "$ref": "#/$defs/team_id" },
+        "upstream_evaluator_agent_id": { "$ref": "#/$defs/agent_id" },
+        "upstream_evaluator_task_id": { "$ref": "#/$defs/runtime_id" },
+        "downstream_team_id": { "$ref": "#/$defs/nullable_team_id" },
+        "downstream_dispatcher_agent_id": { "$ref": "#/$defs/nullable_agent_id" },
+        "artifact_digest": { "$ref": "#/$defs/digest" },
+        "consumed_artifact_digest": { "$ref": "#/$defs/nullable_digest" },
+        "produced_at": { "$ref": "#/$defs/timestamp" },
+        "consumed_at": { "$ref": "#/$defs/nullable_timestamp" },
+        "state": { "enum": ["produced", "consumed", "completed"] }
+      }
+    },
+    "bottleneck": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "agent_id", "team_id", "work_item_id", "attempt_id", "kind", "detected_at",
+        "queue_wait_ms", "service_ms", "source_dispatch_id", "basis", "incorrect_stall"
+      ],
+      "properties": {
+        "agent_id": { "$ref": "#/$defs/agent_id" },
+        "team_id": { "$ref": "#/$defs/team_id" },
+        "work_item_id": { "$ref": "#/$defs/runtime_id" },
+        "attempt_id": { "$ref": "#/$defs/runtime_id" },
+        "kind": { "const": "active_tool_service" },
+        "detected_at": { "$ref": "#/$defs/timestamp" },
+        "queue_wait_ms": { "$ref": "#/$defs/finite_duration" },
+        "service_ms": { "$ref": "#/$defs/finite_duration" },
+        "source_dispatch_id": { "$ref": "#/$defs/uuid" },
+        "basis": { "const": "active_tool_then_longest_service" },
+        "incorrect_stall": { "const": false }
+      }
+    },
+    "metrics": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "pm_routing_touches", "cycle_time_ms", "gross_cycle_time_ms", "measurement_hold_ms",
+        "fanout_makespan_ms", "summed_worker_service_ms", "rework_items_rerun", "total_items",
+        "unaffected_item_attempt_delta", "bottleneck_detection_ms", "incorrect_stall_count"
+      ],
+      "properties": {
+        "pm_routing_touches": { "type": "integer", "minimum": 0 },
+        "cycle_time_ms": { "$ref": "#/$defs/nullable_duration" },
+        "gross_cycle_time_ms": { "$ref": "#/$defs/nullable_duration" },
+        "measurement_hold_ms": { "$ref": "#/$defs/finite_duration" },
+        "fanout_makespan_ms": { "$ref": "#/$defs/nullable_duration" },
+        "summed_worker_service_ms": { "$ref": "#/$defs/finite_duration" },
+        "rework_items_rerun": { "type": "integer", "minimum": 0 },
+        "total_items": { "type": "integer", "minimum": 0 },
+        "unaffected_item_attempt_delta": { "type": "integer", "minimum": 0 },
+        "bottleneck_detection_ms": { "$ref": "#/$defs/nullable_duration" },
+        "incorrect_stall_count": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

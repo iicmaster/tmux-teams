@@ -110,6 +110,84 @@ export function prepareReviewPacket(packet, {
   })
 }
 
+function runnerOwnedCoverageInstructions(packet) {
+  const contract = packet?.review_gate?.assessment_coverage
+  if (contract === undefined) return []
+  const criteria = packet?.acceptance_criteria
+  const ids = contract?.ordered_criterion_ids
+  const anchors = contract?.evidence_anchors
+  const criterionIds = Array.isArray(criteria)
+    ? criteria.map(item => item?.id)
+    : null
+  const validId = id =>
+    typeof id === 'string' && /^AC-[A-Z0-9-]{1,63}$/.test(id)
+  if (contract?.schema !== 'tmux-teams.review-assessment-coverage.v1' ||
+      contract.required_for_each_accepted_review !== true ||
+      !Array.isArray(ids) || ids.length === 0 || ids.length > 32 ||
+      ids.some(id => !validId(id)) ||
+      new Set(ids).size !== ids.length ||
+      !Array.isArray(criterionIds) ||
+      criterionIds.length !== ids.length ||
+      criterionIds.some((id, index) => id !== ids[index]) ||
+      contract.exact_line_count !== ids.length ||
+      contract.unique_analysis_per_criterion !== true ||
+      contract.pairwise_distinct_accepted_assessments !== true ||
+      !isObject(anchors) ||
+      Object.keys(anchors).length !== ids.length ||
+      ids.some(id =>
+        !Array.isArray(anchors[id]) ||
+        anchors[id].length < 2 ||
+        anchors[id].length > 5 ||
+        anchors[id].some(anchor =>
+          typeof anchor !== 'string' ||
+          anchor.length < 3 ||
+          anchor.length > 80 ||
+          /[\r\n]/.test(anchor))) ||
+      !Number.isSafeInteger(contract.min_analysis_chars) ||
+      !Number.isSafeInteger(contract.max_analysis_chars) ||
+      contract.min_analysis_chars < 20 ||
+      contract.max_analysis_chars < contract.min_analysis_chars ||
+      contract.max_analysis_chars > 500) {
+    throw new ReviewTransportError(
+      'input',
+      'review assessment coverage contract is malformed',
+    )
+  }
+  return [
+    `Runner-enforced PASS assessment contract: exactly ${ids.length} lines, ` +
+      `one per criterion in this exact order: ${ids.join(', ')}.`,
+    `Each line must be "AC-ID: analysis" with ${contract.min_analysis_chars}-` +
+      `${contract.max_analysis_chars} analysis characters; use no heading, ` +
+      'blank line, combined criterion, or additional line.',
+    'Every analysis must differ from the other criterion analyses and include ' +
+      'at least one exact criterion evidence anchor: ' +
+      ids.map(id => `${id}=[${anchors[id].join(' | ')}]`).join('; ') + '.',
+  ]
+}
+
+function runnerOwnedReviewScopeInstructions(packet) {
+  const scope = packet?.review_gate?.review_scope
+  if (scope === undefined) return []
+  if (scope?.schema !== 'tmux-teams.pre-dispatch-plan-review.v1' ||
+      scope.stage !== 'before_worker_dispatch') {
+    throw new ReviewTransportError(
+      'input',
+      'pre-dispatch review scope contract is malformed',
+    )
+  }
+  return [
+    'Runner-enforced scope: this is a PRE-DISPATCH PLAN-QUALITY review, not ' +
+      'post-execution acceptance and not proof that target outcomes already exist.',
+    'PASS means the bounded plan is internally consistent and gives every ' +
+      'target acceptance criterion a concrete implementation, verification, ' +
+      'and evidence path with no unresolved blocker. Do not demand future ' +
+      'receipt, test, or outbox artifacts at this stage.',
+    'Do not attest packet-authored hashes as independently verified. Assess ' +
+      'whether the controller plan mechanically recomputes those identities ' +
+      'before dispatch and independently verifies resulting evidence afterward.',
+  ]
+}
+
 const text = (v) => typeof v === 'string' ? v : ''
 const byteLen = (v) => Buffer.byteLength(text(v))
 const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v)
@@ -438,6 +516,7 @@ export async function runAcpReview({
   tempRoot = tmpdir(),
   spawn = nodeSpawn,
   limits = ACP_REVIEW_LIMITS,
+  onProgress = () => {},
 } = {}) {
   if (!command || typeof command !== 'string' || !Array.isArray(args)) {
     throw new ReviewTransportError('input', 'ACP review command and argv array are required')
@@ -445,7 +524,20 @@ export async function runAcpReview({
   if (profile.reviewMode !== 'plan') {
     throw new ReviewTransportError('input', 'ACP review profiles must declare reviewMode=plan')
   }
+  if (timeoutMs !== null &&
+      (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)) {
+    throw new ReviewTransportError(
+      'input',
+      'ACP review timeoutMs must be a positive safe integer or null',
+    )
+  }
+  if (typeof onProgress !== 'function') {
+    throw new ReviewTransportError('input', 'ACP review onProgress must be a function')
+  }
   const prepared = prepareReviewPacket(packet, { maxBytes: limits.packetBytes })
+  const reviewScopeInstructions =
+    runnerOwnedReviewScopeInstructions(prepared.packet)
+  const coverageInstructions = runnerOwnedCoverageInstructions(prepared.packet)
   const runRoot = await mkdtemp(join(tempRoot, 'tmux-teams-review-'))
   const cwd = join(runRoot, 'workspace')
   const stateRoot = join(runRoot, 'provider-state', profile.id ?? 'reviewer')
@@ -461,6 +553,8 @@ export async function runAcpReview({
   let safeWorkspaceReadsObserved = 0
   let sessionId = ''
   let promptIssued = false
+  let terminalResponseAcknowledged = false
+  let stdinEnded = false
   let activeMessageId
   let timeoutId
   let terminateTimer
@@ -478,6 +572,14 @@ export async function runAcpReview({
   const chunks = []
   const acknowledgements = {}
   const clean = async () => { await rm(runRoot, { recursive: true, force: true }) }
+  const reportProgress = event => {
+    try {
+      onProgress(Object.freeze({
+        at: new Date().toISOString(),
+        ...event,
+      }))
+    } catch {}
+  }
   const kill = signal => {
     if (!agent?.pid || processExited || processClosed) return
     try { process.platform === 'win32' ? agent.kill(signal) : process.kill(-agent.pid, signal) } catch {}
@@ -602,6 +704,7 @@ export async function runAcpReview({
     if (!agent?.pid || !agent.stdin || !agent.stdout || !agent.stderr) {
       throw new ReviewTransportError('spawn', 'could not start ACP review agent')
     }
+    reportProgress({ kind: 'process', method: 'spawn' })
 
     const rejectPending = error => {
       for (const { reject } of pending.values()) reject(error)
@@ -616,9 +719,10 @@ export async function runAcpReview({
       write({ jsonrpc: '2.0', id, method, params })
     })
     const replyDenied = msg => {
-      if (msg.params?.sessionId && msg.params.sessionId !== sessionId) {
+      if (!sessionId || msg.params?.sessionId !== sessionId) {
         return protocolError('ACP permission request belongs to an unexpected session')
       }
+      reportProgress({ kind: 'request', method: msg.method })
       const options = Array.isArray(msg.params?.options) ? msg.params.options : []
       const option = options.find(x => x?.kind === 'reject_always') ?? options.find(x => x?.kind === 'reject_once')
       if (option?.optionId) write({ jsonrpc: '2.0', id: msg.id, result: { outcome: { outcome: 'selected', optionId: option.optionId } } })
@@ -646,8 +750,15 @@ export async function runAcpReview({
         const hasError = Object.prototype.hasOwnProperty.call(msg, 'error')
         if (hasResult === hasError) return protocolError('ACP response must contain exactly one result or error')
         const p = pending.get(msg.id); pending.delete(msg.id)
+        reportProgress({ kind: 'response', method: p.method })
         if (hasError) p.reject(new ReviewTransportError('protocol', `ACP ${p.method} failed with a remote protocol error`))
-        else p.resolve(msg.result)
+        else {
+          if (p.method === 'session/new' &&
+              typeof msg.result?.sessionId === 'string') {
+            sessionId = msg.result.sessionId
+          }
+          p.resolve(msg.result)
+        }
         return
       }
       if (msg.id !== undefined && typeof msg.method === 'string') {
@@ -662,6 +773,10 @@ export async function runAcpReview({
         if (['tool_call', 'tool_call_update'].includes(update?.sessionUpdate)) {
           if (promptIssued && profile.id === 'agy' && isHarmlessAgyThink(update)) {
             reasoningUpdatesObserved++
+            reportProgress({
+              kind: 'notification',
+              method: 'session/update',
+            })
             return
           }
           const agyReadInspection = promptIssued && profile.id === 'agy' &&
@@ -672,6 +787,10 @@ export async function runAcpReview({
               update?.kind === 'read' && agyReadInspection?.scope) {
             if (agyReadInspection.scope === 'runtime') safeRuntimeReadsObserved++
             else safeWorkspaceReadsObserved++
+            reportProgress({
+              kind: 'notification',
+              method: 'session/update',
+            })
             return
           }
           const safeKinds = new Set(['think', 'read', 'search', 'edit', 'execute', 'fetch', 'other'])
@@ -692,6 +811,10 @@ export async function runAcpReview({
           messageBytes += byteLen(chunk)
           if (messageBytes > limits.messageBytes) return protocolError('agent review document exceeds limit')
           chunks.push(chunk)
+          reportProgress({
+            kind: 'notification',
+            method: 'session/update',
+          })
         }
         return
       }
@@ -706,7 +829,12 @@ export async function runAcpReview({
     agent.stderr.on('data', part => { if (stderr.length < limits.stderrBytes) stderr += part.toString().slice(0, limits.stderrBytes - stderr.length) })
     const fatalizeUnexpectedExit = (code, signal) => {
       const expectedRunnerSignal = runnerTerminationSignal && signal === runnerTerminationSignal
-      if (settled || timedOut || expectedRunnerSignal || (code === 0 && !signal)) return null
+      const cleanPostTerminalShutdown =
+        terminalResponseAcknowledged &&
+        stdinEnded &&
+        ((code === 0 && !signal) || signal === 'SIGTERM')
+      if (settled || timedOut || expectedRunnerSignal ||
+          cleanPostTerminalShutdown) return null
       const error = new ReviewTransportError('closed', `ACP agent closed before review completed (${code ?? signal ?? 'unknown'})`)
       if (!fatalError) {
         fatalError = error
@@ -725,9 +853,7 @@ export async function runAcpReview({
       clearTimeout(terminateTimer)
       clearTimeout(killTimer)
       if (!settled && !timedOut) {
-        const error = fatalizeUnexpectedExit(code, signal) ??
-          new ReviewTransportError('closed', `ACP agent closed before review completed (${code ?? signal ?? 'unknown'})`)
-        rejectPending(error)
+        fatalizeUnexpectedExit(code, signal)
       }
       resolve(closeStatus)
     }))
@@ -737,20 +863,33 @@ export async function runAcpReview({
     }
     agent.once('error', e => rejectPending(new ReviewTransportError('spawn', `ACP agent error: ${e.message}`, e)))
 
-    const timeout = new Promise((_, reject) => { timeoutId = setTimeout(() => {
-      if (settled) return
-      timedOut = true
-      // One best-effort cancellation; intentionally never waits for a reply.
-      settled = true
-      if (sessionId) write({ jsonrpc: '2.0', method: 'session/cancel', params: { sessionId } })
-      const error = new ReviewTransportError('timeout', `ACP review timed out after ${timeoutMs}ms`)
-      rejectPending(error)
-      terminateTimer = setTimeout(() => kill('SIGTERM'), 10)
-      terminateTimer.unref()
-      killTimer = setTimeout(() => kill('SIGKILL'), 500)
-      killTimer.unref()
-      reject(error)
-    }, timeoutMs) })
+    const timeout = timeoutMs === null
+      ? new Promise(() => {})
+      : new Promise((_, reject) => {
+          timeoutId = setTimeout(() => {
+            if (settled) return
+            timedOut = true
+            // One best-effort cancellation; intentionally never waits for a reply.
+            settled = true
+            if (sessionId) {
+              write({
+                jsonrpc: '2.0',
+                method: 'session/cancel',
+                params: { sessionId },
+              })
+            }
+            const error = new ReviewTransportError(
+              'timeout',
+              `ACP review timed out after ${timeoutMs}ms`,
+            )
+            rejectPending(error)
+            terminateTimer = setTimeout(() => kill('SIGTERM'), 10)
+            terminateTimer.unref()
+            killTimer = setTimeout(() => kill('SIGKILL'), 500)
+            killTimer.unref()
+            reject(error)
+          }, timeoutMs)
+        })
 
     const work = (async () => {
       const init = await request('initialize', { protocolVersion: 1, clientCapabilities: {} })
@@ -800,6 +939,8 @@ export async function runAcpReview({
         'Use exactly this closed schema (no extra keys):',
         '{"schema_version":1,"verdict":"PASS|OBJECTIONS|BLOCKED","assessment":"20-4000 chars explaining what was checked","findings":[{"criterion_id":"stable acceptance-criterion id","category":"correctness|security|tests|docs|operations","location":"file:line or packet section","summary":"8-1000 chars","evidence":"12-2000 chars tied to the packet","blocking":true}],"residual_risks":["bounded risk text"]}',
         'PASS requires an empty findings array. OBJECTIONS requires at least one finding. BLOCKED requires an empty findings array and an assessment explaining why the static packet could not be reviewed.',
+        ...reviewScopeInstructions,
+        ...coverageInstructions,
         'Do not claim or invent input provenance or hashes; those are supplied by the runner.',
         'The neutral workspace contains no review input. Do not inspect it or any parent path; use only the static packet below.',
         `Runner provenance: ${prepared.provenance}; input_sha256: ${prepared.inputHash}.`,
@@ -811,10 +952,12 @@ export async function runAcpReview({
       promptIssued = true // the immediately following request defines this turn
       const done = await request('session/prompt', { sessionId, prompt: [{ type: 'text', text: prompt }] })
       if (done?.stopReason !== 'end_turn') throw new ReviewTransportError('review', `ACP review stopped without end_turn (${done?.stopReason ?? 'missing'})`)
+      terminalResponseAcknowledged = true
       // End stdin first and require a terminal process state before acceptance.
       // A nonzero exit remains fatal; only a clean EOF exit or a signal that
       // this runner sent after the grace period is accepted.
       agent.stdin.end()
+      stdinEnded = true
       let terminal = await waitForClose(500)
       if (!terminal) {
         runnerTerminationSignal = 'SIGTERM'
@@ -830,7 +973,13 @@ export async function runAcpReview({
       if (terminal.code !== null && terminal.code !== 0) {
         throw new ReviewTransportError('closed', `ACP agent exited nonzero after its terminal response (${terminal.code})`)
       }
-      if (terminal.signal && terminal.signal !== runnerTerminationSignal) {
+      const acceptedPostTerminalSignal =
+        terminalResponseAcknowledged &&
+        stdinEnded &&
+        terminal.signal === 'SIGTERM'
+      if (terminal.signal &&
+          terminal.signal !== runnerTerminationSignal &&
+          !acceptedPostTerminalSignal) {
         throw new ReviewTransportError('closed', `ACP agent received an unexpected terminal signal (${terminal.signal})`)
       }
       if (fatalError) throw fatalError
@@ -862,6 +1011,10 @@ export async function runAcpReview({
         mcpServers: 0,
         builtInToolsRequested: false,
         toolCallsObserved: 0,
+        stdoutBytesObserved: stdoutBytes,
+        stdoutBytesLimit: limits.stdoutBytes,
+        messageBytesObserved: messageBytes,
+        messageBytesLimit: limits.messageBytes,
         reasoningUpdatesObserved,
         safeRuntimeReadsObserved,
         safeWorkspaceReadsObserved,

@@ -21,10 +21,10 @@
 // footprint, no process and no event; until now it simply vanished.
 //
 // usage:
-//   pulse.mjs once  <repo> [--delivery-loop FILE] [--delivery-runtime FILE] [--time-zone ZONE]
-//   pulse.mjs watch <repo> [--interval 20] [--delivery-loop FILE] [--delivery-runtime FILE] [--time-zone ZONE]
-//   pulse.mjs ensure <repo> [--interval 20] [--delivery-loop FILE] [--delivery-runtime FILE] [--time-zone ZONE]
-//   pulse.mjs json <repo> [--delivery-loop FILE] [--delivery-runtime FILE] [--time-zone ZONE]
+//   pulse.mjs once  <repo> [--delivery-loop FILE] [--delivery-runtime FILE] [--team-graph FILE] [--team-runtime FILE] [--time-zone ZONE]
+//   pulse.mjs watch <repo> [--interval 20] [--delivery-loop FILE] [--delivery-runtime FILE] [--team-graph FILE] [--team-runtime FILE] [--time-zone ZONE]
+//   pulse.mjs ensure <repo> [--interval 20] [--delivery-loop FILE] [--delivery-runtime FILE] [--team-graph FILE] [--team-runtime FILE] [--time-zone ZONE]
+//   pulse.mjs json <repo> [--delivery-loop FILE] [--delivery-runtime FILE] [--team-graph FILE] [--team-runtime FILE] [--time-zone ZONE]
 //   pulse.mjs compat-v1 <repo>                                    stdout-only v1 downprojection
 import { execFileSync, spawn } from 'node:child_process'
 import {
@@ -38,20 +38,24 @@ import { fileURLToPath } from 'node:url'
 import { KANIT_FONT_CSS } from '../assets/kanit/kanit-embedded.mjs'
 import { parseLsofCwd, parsePgrep, parsePsCandidates } from './pulse-platform.mjs'
 import {
-  ID_RE, PULSE_SCHEMA, PULSE_SCHEMA_VERSION, PULSE_SCHEMA_VERSION_V2,
+  ACP_LIVENESS_SCHEMA, ID_RE, PULSE_SCHEMA, PULSE_SCHEMA_VERSION, PULSE_SCHEMA_VERSION_V2,
   PULSE_SCHEMA_VERSION_V3, PULSE_SCHEMA_VERSION_V4, UUID_RE, downProjectPulseV1,
-  projectPulseV4,
+  projectLivenessEvidence, projectPulseV4, validateAcpLivenessV1, verifiedLivenessModel,
 } from './pulse-data.mjs'
 import { PHASE_BOUNDARIES, PHASE_EXIT_ARTIFACTS } from './delivery-loop-core.mjs'
-import { renderPulseLoopGraph } from './pulse-loop-graph.mjs'
+import { normalizeTeamGraph, renderPulseLoopGraph } from './pulse-loop-graph.mjs'
+import { renderTeamFlowPage } from './team-flow.mjs'
+import { renderPulseRefreshScript } from './pulse-refresh.mjs'
 
 const [cmd, repoArg, ...flags] = process.argv.slice(2)
-const USAGE = 'usage: pulse.mjs once|json <repo> [--delivery-loop FILE] [--delivery-runtime FILE] [--time-zone ZONE] | pulse.mjs watch|ensure <repo> [--interval SEC] [--delivery-loop FILE] [--delivery-runtime FILE] [--time-zone ZONE] | pulse.mjs compat-v1 <repo>'
+const USAGE = 'usage: pulse.mjs once|json <repo> [--delivery-loop FILE] [--delivery-runtime FILE] [--team-graph FILE] [--team-runtime FILE] [--time-zone ZONE] | pulse.mjs watch|ensure <repo> [--interval SEC] [--delivery-loop FILE] [--delivery-runtime FILE] [--team-graph FILE] [--team-runtime FILE] [--time-zone ZONE] | pulse.mjs compat-v1 <repo>'
 if (!cmd || !repoArg || !['once', 'json', 'watch', 'ensure', 'compat-v1'].includes(cmd)) {
   console.error(USAGE); process.exit(2)
 }
 const deliveryFlagIndexes = flags.flatMap((flag, index) => flag === '--delivery-loop' ? [index] : [])
 const runtimeFlagIndexes = flags.flatMap((flag, index) => flag === '--delivery-runtime' ? [index] : [])
+const teamGraphFlagIndexes = flags.flatMap((flag, index) => flag === '--team-graph' ? [index] : [])
+const teamRuntimeFlagIndexes = flags.flatMap((flag, index) => flag === '--team-runtime' ? [index] : [])
 const timeZoneFlagIndexes = flags.flatMap((flag, index) => flag === '--time-zone' ? [index] : [])
 if (cmd === 'compat-v1' && flags.length > 0 ||
     deliveryFlagIndexes.length > 1 ||
@@ -60,6 +64,12 @@ if (cmd === 'compat-v1' && flags.length > 0 ||
     runtimeFlagIndexes.length > 1 ||
     (runtimeFlagIndexes.length === 1 &&
       (!flags[runtimeFlagIndexes[0] + 1] || flags[runtimeFlagIndexes[0] + 1].startsWith('--'))) ||
+    teamGraphFlagIndexes.length > 1 ||
+    (teamGraphFlagIndexes.length === 1 &&
+      (!flags[teamGraphFlagIndexes[0] + 1] || flags[teamGraphFlagIndexes[0] + 1].startsWith('--'))) ||
+    teamRuntimeFlagIndexes.length > 1 ||
+    (teamRuntimeFlagIndexes.length === 1 &&
+      (!flags[teamRuntimeFlagIndexes[0] + 1] || flags[teamRuntimeFlagIndexes[0] + 1].startsWith('--'))) ||
     timeZoneFlagIndexes.length > 1 ||
     (timeZoneFlagIndexes.length === 1 &&
       (!flags[timeZoneFlagIndexes[0] + 1] || flags[timeZoneFlagIndexes[0] + 1].startsWith('--')))) {
@@ -70,6 +80,12 @@ const DELIVERY_LOOP_PATH = deliveryFlagIndexes.length
   : null
 const DELIVERY_RUNTIME_PATH = runtimeFlagIndexes.length
   ? resolve(flags[runtimeFlagIndexes[0] + 1])
+  : null
+const TEAM_GRAPH_PATH = teamGraphFlagIndexes.length
+  ? resolve(flags[teamGraphFlagIndexes[0] + 1])
+  : null
+const TEAM_RUNTIME_PATH = teamRuntimeFlagIndexes.length
+  ? resolve(flags[teamRuntimeFlagIndexes[0] + 1])
   : null
 const DEFAULT_TIME_ZONE = 'Asia/Bangkok'
 const timeZoneInput = cmd === 'compat-v1'
@@ -95,6 +111,8 @@ try { REPO = realpathSync(repoArg) } catch { console.error(`[pulse] no such repo
 const STORE = join(REPO, '.tmux-teams')
 const OUT = join(STORE, 'pulse.html')
 const LOOP_GRAPH_OUT = join(STORE, 'loop-graph.html')
+const TEAM_FLOW_OUT = join(STORE, 'team-flow.html')
+const WORKFLOW_ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$/
 const JSON_OUT = join(STORE, 'pulse.json')
 const BUNDLE_OUT = join(STORE, 'pulse-current.json')
 const FONT_CSS_NAME = `pulse-fonts-${createHash('sha256').update(KANIT_FONT_CSS).digest('hex')}.css`
@@ -112,8 +130,13 @@ const D3_LICENSE_NAME =
   `pulse-d3-7.9.0-license-${createHash('sha256').update(D3_LICENSE).digest('hex')}.txt`
 const D3_JS_OUT = join(STORE, D3_JS_NAME)
 const D3_LICENSE_OUT = join(STORE, D3_LICENSE_NAME)
+const PULSE_REFRESH_SOURCE = renderPulseRefreshScript()
+const PULSE_REFRESH_HASH = createHash('sha256').update(PULSE_REFRESH_SOURCE).digest('hex')
+const PULSE_REFRESH_NAME = `pulse-refresh-${PULSE_REFRESH_HASH}.js`
+const PULSE_REFRESH_OUT = join(STORE, PULSE_REFRESH_NAME)
 const EVENTS = join(STORE, 'kms', 'events')
 const DISPATCH = join(STORE, 'dispatch')
+const LIVENESS = join(STORE, 'liveness')
 const OUTBOX = join(REPO, '.mailbox-out')
 const CTL = join(homedir(), '.tmux-teams', 'mailbox-run')
 const WATCH_PID = join(STORE, 'pulse-watch.pid')
@@ -136,6 +159,14 @@ const MAX_SOURCE_FILES = 1000
 const MAX_TOTAL_INPUT_BYTES = 32 * 1024 * 1024
 const DELIVERY_PHASE_SET = new Set(Object.keys(PHASE_BOUNDARIES))
 const MAX_FIELD_CHARS = 256
+const LIVENESS_FILE_LIMIT = 1000
+// Producer fixtures and persisted footprints can legitimately be observed
+// across a long operator session. Staleness remains timestamp-based; this is
+// only the bounded evidence lease, not a filesystem-mtime grace period.
+const LIVENESS_STALE_SEC = 6 * 3600
+const LIVENESS_FUTURE_SKEW_MS = 120_000
+const LIVENESS_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/
+const LIVENESS_DIGEST_RE = /^sha256:[0-9a-f]{64}$/
 
 function fieldValue(text, key) {
   const match = text.match(new RegExp(`^${key}:[ \\t]*(.+)$`, 'm'))
@@ -265,8 +296,8 @@ function aliveWorkers(panes) {
   if (PROC_OK) {
     for (const { pid, cmdline } of acpCandidates()) {
       if (cwdOf(pid) !== REPO) continue
-      const m = cmdline.match(/acp-companion\.mjs\s+\S+\s+\S+\s+(\S+)/)
-      if (m) rows.push({ id: m[1], kind: 'acp', detail: `pid ${pid}`, pid })
+      const m = cmdline.match(/acp-companion\.mjs\s+(\S+)\s+\S+\s+(\S+)/)
+      if (m) rows.push({ id: m[2], model: m[1], kind: 'acp', detail: `pid ${pid}`, pid })
     }
   }
   return { rows, notes, diagnostics }
@@ -278,27 +309,63 @@ function aliveWorkers(panes) {
 // repos dispatching "task-1" share that path — so they are collected separately
 // and never raise an alarm on their own. Counting them as ours is how a first
 // render showed three DIED SILENTLY rows that all belonged to another project.
-function footprints(inputBudget) {
+function prioritizedSourceFiles(directory, files, priorityIds = new Set(), correlatedIds = new Set()) {
+  const ranked = files.map((file) => {
+    const id = file.replace(/\.(?:md|json)$/, '')
+    let mtime = 0
+    try { mtime = statSync(join(directory, file)).mtimeMs } catch { /* unreadable below */ }
+    return {
+      file,
+      id,
+      priority: priorityIds.has(id) ? 0 : correlatedIds.has(id) ? 1 : 2,
+      mtime,
+    }
+  })
+  ranked.sort((left, right) =>
+    left.priority - right.priority || right.mtime - left.mtime || left.file.localeCompare(right.file, 'en'))
+  return ranked
+}
+
+function footprints(inputBudget, liveIds = new Set()) {
   const byId = new Map()
   const diagnostics = []
   let invalidPhaseCount = 0
   let dispatchHealth = 'ok', outboxHealth = 'ok'
+  let dispatchSourceTotal = 0
+  let dispatchDiscarded = 0
 
   // The dispatch record is written by the PM the moment it dispatches, so it
   // survives a worker that dies before producing anything. Without it, the
   // truest silent death — dying before the first write — leaves no trace at
   // all, because dispatch DELETES any stale outbox first.
   let dispatches = []
+  let outboxNames = []
   try { dispatches = readdirSync(DISPATCH).filter(f => f.endsWith('.md')) } catch (e) {
     if (e.code !== 'ENOENT') {
       dispatchHealth = 'degraded'
       diagnostics.push({ code: 'DISPATCH_UNREADABLE', severity: 'error', source: 'dispatch' })
     }
   }
+  dispatchSourceTotal = dispatches.filter((file) => ID_RE.test(file.replace(/\.md$/, ''))).length
+  try { outboxNames = readdirSync(OUTBOX) } catch { /* handled by the outbox read below */ }
+  // A live process is the strongest correlation. Terminal outbox names are
+  // intentionally not all promoted to priority: doing so can turn a source
+  // cap into an unbounded read when stale history has many outboxes.
+  const correlatedIds = new Set(liveIds)
   if (dispatches.length > MAX_SOURCE_FILES) {
     dispatchHealth = 'degraded'
-    diagnostics.push({ code: 'SOURCE_TRUNCATED', severity: 'warning', source: 'dispatch', count: dispatches.length - MAX_SOURCE_FILES })
-    dispatches = dispatches.sort().slice(-MAX_SOURCE_FILES)
+    const selected = prioritizedSourceFiles(DISPATCH, dispatches, correlatedIds)
+    dispatches = selected.slice(0, MAX_SOURCE_FILES).map((entry) => entry.file)
+    dispatchDiscarded = Math.max(
+      0,
+      dispatchSourceTotal - dispatches.filter((file) => ID_RE.test(file.replace(/\.md$/, ''))).length,
+    )
+    diagnostics.push({
+      code: 'SOURCE_TRUNCATED', severity: 'warning', source: 'dispatch',
+      count: Math.max(1, selected.length - dispatches.length),
+    })
+  } else {
+    dispatches = prioritizedSourceFiles(DISPATCH, dispatches, correlatedIds).map((entry) => entry.file)
   }
   for (const f of dispatches) {
     const id = f.replace(/\.md$/, '')
@@ -330,9 +397,15 @@ function footprints(inputBudget) {
       id, mtime: st.mtimeMs, marker: '', terminalStatus: 'absent', dispatched: true, dispatchStatus: 'present',
       dispatchId: UUID_RE.test(dispatchId) ? dispatchId : '', startedAt: fieldValue(text, 'started_at'),
       timeoutSec: Number.isFinite(timeout) && timeout >= 0 ? timeout : null,
-      transport: fieldValue(text, 'transport'), worker: fieldValue(text, 'worker'), pane: fieldValue(text, 'pane'),
+      transport: fieldValue(text, 'transport'), worker: fieldValue(text, 'worker'),
+      agentId: ID_RE.test(fieldValue(text, 'agent_id')) ? fieldValue(text, 'agent_id') : '',
+      model: fieldValue(text, 'model'), pane: fieldValue(text, 'pane'),
       phase: dispatchPhase.phase,
       phaseSource: dispatchPhase.phaseSource,
+      // One team serves many workflows, so which route a dispatch runs is not
+      // derivable from the declared graph — the caller records it or it stays
+      // unplaced. Never inferred.
+      workflow: WORKFLOW_ID_RE.test(fieldValue(text, 'workflow')) ? fieldValue(text, 'workflow') : '',
     })
   }
   if (invalidPhaseCount > 0) {
@@ -344,8 +417,8 @@ function footprints(inputBudget) {
     })
   }
 
-  let names = []
-  try { names = readdirSync(OUTBOX) } catch (e) {
+  let names = outboxNames
+  try { if (!outboxNames.length) names = readdirSync(OUTBOX) } catch (e) {
     if (e.code !== 'ENOENT') {
       outboxHealth = 'degraded'
       diagnostics.push({ code: 'OUTBOX_UNREADABLE', severity: 'error', source: 'outbox' })
@@ -353,8 +426,14 @@ function footprints(inputBudget) {
   }
   if (names.length > MAX_SOURCE_FILES) {
     outboxHealth = 'degraded'
-    diagnostics.push({ code: 'SOURCE_TRUNCATED', severity: 'warning', source: 'outbox', count: names.length - MAX_SOURCE_FILES })
-    names = names.sort().slice(-MAX_SOURCE_FILES)
+    const selected = prioritizedSourceFiles(OUTBOX, names, liveIds)
+    names = selected.slice(0, MAX_SOURCE_FILES).map((entry) => entry.file)
+    diagnostics.push({
+      code: 'SOURCE_TRUNCATED', severity: 'warning', source: 'outbox',
+      count: Math.max(1, selected.length - names.length),
+    })
+  } else {
+    names = prioritizedSourceFiles(OUTBOX, names, liveIds).map((entry) => entry.file)
   }
   for (const id of names) {
     if (id.startsWith('.')) continue
@@ -404,7 +483,132 @@ function footprints(inputBudget) {
   return {
     rows: [...byId.values()], diagnostics,
     health: { dispatch: dispatchHealth, outbox: outboxHealth },
+    historySourceTotal: dispatchSourceTotal,
+    historySourceDiscarded: dispatchDiscarded,
   }
+}
+
+function projectedLivenessEvidence(raw) {
+  return projectLivenessEvidence({
+    schema_version: raw.schema_version,
+    task_id: raw.task_id,
+    dispatch_id: raw.dispatch_id,
+    agent_id: raw.agent_id ?? null,
+    observed_at: raw.observed_at,
+    liveness_state: raw.liveness_state,
+    last_protocol_activity_at: raw.last_protocol_activity_at,
+    last_meaningful_progress_at: raw.last_meaningful_progress_at,
+    termination_reason: raw.termination_reason,
+    active_tools: raw.active_tools,
+    tools: raw.tools,
+    stall_history: raw.stall_history,
+  })
+}
+
+function readLivenessEvidence(
+  inputBudget,
+  priorityIds = new Set(),
+  correlatedIds = new Set(),
+  footprintsByTask = new Map(),
+  configuredAgentIds = null,
+  now = Date.now(),
+) {
+  let files = []
+  const diagnostics = []
+  const identityConflicts = new Set()
+  const modelByDispatch = new Map()
+  let health = 'ok'
+  try { files = readdirSync(LIVENESS).filter((file) => file.endsWith('.json')) } catch (error) {
+    if (error.code !== 'ENOENT') {
+      health = 'degraded'
+      diagnostics.push({ code: 'LIVENESS_EVIDENCE_UNREADABLE', severity: 'warning', source: 'liveness' })
+    }
+  }
+  if (files.length > LIVENESS_FILE_LIMIT) {
+    health = 'degraded'
+    const selected = prioritizedSourceFiles(LIVENESS, files, priorityIds, correlatedIds)
+    files = selected.slice(0, LIVENESS_FILE_LIMIT).map((entry) => entry.file)
+    diagnostics.push({
+      code: 'SOURCE_TRUNCATED', severity: 'warning', source: 'liveness',
+      count: Math.max(1, selected.length - files.length),
+    })
+  }
+  const byDispatch = new Map()
+  for (const file of files) {
+    const taskId = file.replace(/\.json$/, '')
+    if (!ID_RE.test(taskId)) {
+      health = 'degraded'
+      diagnostics.push({ code: 'LIVENESS_EVIDENCE_INVALID', severity: 'warning', source: 'liveness', count: 1 })
+      continue
+    }
+    const path = join(LIVENESS, file)
+    let raw = ''
+    let parsed = null
+    let identityConflict = false
+    try {
+      const stats = statSync(path)
+      if (!stats.isFile() || stats.size > MAX_INPUT_BYTES || stats.size > inputBudget.remaining) {
+        throw Object.assign(new Error('liveness evidence unreadable'), { code: 'LIVENESS_EVIDENCE_UNREADABLE' })
+      }
+      inputBudget.remaining -= stats.size
+      raw = readFileSync(path, 'utf8')
+      parsed = JSON.parse(raw)
+      if (parsed?.schema_version !== ACP_LIVENESS_SCHEMA || parsed?.task_id !== taskId) {
+        throw Object.assign(new Error('liveness schema/task provenance mismatch'), {
+          code: 'LIVENESS_EVIDENCE_MISMATCH',
+        })
+      }
+      const validation = validateAcpLivenessV1(parsed)
+      if (!validation.ok) {
+        throw Object.assign(new Error(validation.reason || 'invalid liveness evidence'), {
+          code: validation.code || 'LIVENESS_EVIDENCE_INVALID',
+        })
+      }
+      const expected = footprintsByTask.get(taskId) || []
+      const expectedDispatch = parsed?.dispatch_id
+      const footprint = expected.find((item) => item.dispatchId === expectedDispatch)
+      if (!footprint || !UUID_RE.test(String(expectedDispatch || ''))) {
+        throw Object.assign(new Error('liveness provenance mismatch'), { code: 'LIVENESS_EVIDENCE_MISMATCH' })
+      }
+      identityConflict = Boolean(parsed?.agent_id && parsed.agent_id !== footprint.agentId)
+      if (!identityConflict && configuredAgentIds instanceof Set && configuredAgentIds.size > 0 &&
+          (!footprint.agentId || !configuredAgentIds.has(footprint.agentId))) {
+        identityConflict = true
+        throw Object.assign(new Error('configured graph agent identity mismatch'), {
+          code: 'AGENT_ID_CONFLICT',
+        })
+      }
+      if (identityConflict) {
+        throw Object.assign(new Error('liveness identity mismatch'), { code: 'AGENT_ID_CONFLICT' })
+      }
+      const evidence = projectedLivenessEvidence(parsed)
+      const observedAt = Date.parse(evidence.observed_at)
+      if (!Number.isFinite(observedAt) || observedAt < now - LIVENESS_STALE_SEC * 1000) {
+        throw Object.assign(new Error('stale liveness evidence'), { code: 'LIVENESS_EVIDENCE_MISMATCH' })
+      }
+      if (observedAt > now + LIVENESS_FUTURE_SKEW_MS) {
+        throw Object.assign(new Error('liveness evidence is too far in the future'), {
+          code: 'LIVENESS_EVIDENCE_FUTURE',
+        })
+      }
+      byDispatch.set(`${taskId}\u0000${expectedDispatch}`, evidence)
+      const model = verifiedLivenessModel(parsed)
+      if (model) modelByDispatch.set(`${taskId}\u0000${expectedDispatch}`, model)
+    } catch (error) {
+      health = 'degraded'
+      const code = ['LIVENESS_EVIDENCE_INVALID', 'LIVENESS_EVIDENCE_MISMATCH',
+        'LIVENESS_EVIDENCE_FUTURE', 'AGENT_ID_CONFLICT'].includes(error.code)
+        ? error.code : 'LIVENESS_EVIDENCE_UNREADABLE'
+      if (code === 'AGENT_ID_CONFLICT') {
+        diagnostics.push({ code: 'LIVENESS_EVIDENCE_MISMATCH', severity: 'warning', source: 'liveness', count: 1 })
+      }
+      diagnostics.push({ code, severity: code === 'AGENT_ID_CONFLICT' ? 'error' : 'warning', source: 'liveness', count: 1 })
+      if (identityConflict) {
+        identityConflicts.add(`${taskId}\u0000${String(parsed?.dispatch_id || '')}`)
+      }
+    }
+  }
+  return { byDispatch, diagnostics, health, identityConflicts, modelByDispatch }
 }
 
 /** Control dirs that no live process claims — shown as context, never as alarms. */
@@ -464,13 +668,15 @@ function recorded(inputBudget) {
         continue
       }
       const dispatchId = fieldValue(text, 'dispatch_id')
+      const agentId = fieldValue(text, 'agent_id')
       const eventPhase = phaseBindingFromText(text, 'event')
       if (eventPhase.invalid) {
         invalidPhaseCount += 1
         health = 'degraded'
       }
       rows.push({
-        task_id: task, worker, dispatch_id: UUID_RE.test(dispatchId) ? dispatchId : '',
+        task_id: task, worker, agentId: ID_RE.test(agentId) ? agentId : '',
+        dispatch_id: UUID_RE.test(dispatchId) ? dispatchId : '',
         transport: fieldValue(text, 'transport'), terminal: fieldValue(text, 'terminal'),
         pm_verdict: fieldValue(text, 'pm_verdict'), started_at: fieldValue(text, 'started_at'),
         wait_sec: num('wait_sec'), timeout_sec: num('timeout_sec'),
@@ -498,20 +704,33 @@ const PM_VERDICTS = new Set(['pass', 'reject', 'unresolved'])
 const hasPmVerdict = (r) => PM_VERDICTS.has(r.pm_verdict)
 
 // ── DERIVE ───────────────────────────────────────────────────────────────────
-function derive(now) {
+function derive(now, configuredAgentIds = null) {
   const inputBudget = { remaining: MAX_TOTAL_INPUT_BYTES }
   const panesNow = paneInventory()
   const { rows: live, notes, diagnostics: liveDiagnostics } = aliveWorkers(panesNow)
-  const footResult = footprints(inputBudget)
+  const liveIds = new Set(live.map((worker) => worker.id))
+  const footResult = footprints(inputBudget, liveIds)
   const recordResult = recorded(inputBudget)
   const foot = footResult.rows
   const footprintsByDispatch = new Map()
+  const footprintsByTask = new Map()
   for (const footprint of foot) {
+    const taskMatches = footprintsByTask.get(footprint.id) || []
+    taskMatches.push(footprint)
+    footprintsByTask.set(footprint.id, taskMatches)
     if (!footprint.dispatchId) continue
     const matches = footprintsByDispatch.get(footprint.dispatchId) || []
     matches.push(footprint)
     footprintsByDispatch.set(footprint.dispatchId, matches)
   }
+  const livenessResult = readLivenessEvidence(
+    inputBudget,
+    liveIds,
+    new Set(foot.map((footprint) => footprint.id)),
+    footprintsByTask,
+    configuredAgentIds,
+    now,
+  )
   const conflictingDispatches = new Set()
   for (const [dispatchId, matches] of footprintsByDispatch) {
     const phases = new Set(
@@ -540,7 +759,35 @@ function derive(now) {
       ? { ...row, phase: dispatchPhase, phaseSource: 'dispatch_join' }
       : row
   })
-  const diagnostics = [...liveDiagnostics, ...footResult.diagnostics, ...recordResult.diagnostics]
+  const agentIdsByDispatch = new Map()
+  const addAgentIdentity = (dispatchId, agentId) => {
+    if (!dispatchId || !agentId) return
+    const identities = agentIdsByDispatch.get(dispatchId) || new Set()
+    identities.add(agentId)
+    agentIdsByDispatch.set(dispatchId, identities)
+  }
+  for (const footprint of foot) {
+    addAgentIdentity(footprint.dispatchId, footprint.agentId)
+  }
+  for (const row of rec) {
+    addAgentIdentity(row.dispatch_id, row.agentId)
+  }
+  for (const evidence of livenessResult.byDispatch.values()) {
+    addAgentIdentity(evidence.dispatch_id, evidence.agent_id)
+  }
+  const conflictingAgentDispatches = new Set([...agentIdsByDispatch.entries()]
+    .filter(([, identities]) => identities.size > 1)
+    .map(([dispatchId]) => dispatchId))
+  for (const key of livenessResult.identityConflicts) {
+    const [, dispatchId] = key.split('\u0000')
+    if (dispatchId) conflictingAgentDispatches.add(dispatchId)
+  }
+  const diagnostics = [
+    ...liveDiagnostics,
+    ...footResult.diagnostics,
+    ...recordResult.diagnostics,
+    ...livenessResult.diagnostics,
+  ]
   if (conflictingDispatches.size > 0) {
     diagnostics.push({
       code: 'PHASE_BINDING_CONFLICT',
@@ -549,12 +796,18 @@ function derive(now) {
       count: conflictingDispatches.size,
     })
   }
+  if (conflictingAgentDispatches.size > 0) {
+    diagnostics.push({
+      code: 'AGENT_ID_CONFLICT', severity: 'error', source: 'publisher', count: conflictingAgentDispatches.size,
+    })
+  }
   // Worker ids get reused across runs, so an event only settles the footprint it
   // belongs to. Matching on id alone would let yesterday's record mark today's
   // dispatch "finished" and quietly drop it off the screen.
   const liveById = new Map(live.map(l => [l.id, l]))
 
   const active = []
+  const history = []
   for (const f of foot) {
     const alive = liveById.get(f.id)
     const verdicts = rec.filter(r => {
@@ -569,7 +822,6 @@ function derive(now) {
     const verdictPhaseConflict = conflictingDispatches.has(f.dispatchId) ||
       verdicts.some(verdict => verdict.phaseSource === 'conflict')
     const settled = !!currentVerdict
-    if (settled && !alive) continue                    // finished and recorded: history, not now
     const ageSec = Math.max(0, Math.round((now - f.mtime) / 1000))
     const startedMs = Date.parse(f.startedAt || '')
     const elapsedSec = Number.isFinite(startedMs) ? Math.max(0, Math.round((now - startedMs) / 1000)) : null
@@ -597,15 +849,30 @@ function derive(now) {
       : f.pane && !panesNow.available ? 'unknown'
       : ageSec <= GRACE_SEC ? 'starting'
       : 'died'
-    active.push({
+    const livenessEvidence = livenessResult.byDispatch.get(`${f.id}\u0000${f.dispatchId}`) || null
+    const livenessTerminal = ['completed', 'cancelled', 'failed'].includes(
+      livenessEvidence?.liveness_state,
+    )
+    const livenessCurrent = Boolean(livenessEvidence) && !livenessTerminal
+    const projected = {
       ...f, alive: !!alive, detail: alive ? alive.detail : '',
       kind: (alive && alive.kind) || f.transport || '', ageSec, elapsedSec, state,
-      liveness: working ? 'alive' : PROC_OK ? 'dead' : 'unknown', paneStatus,
+      liveness: working || livenessCurrent ? 'alive' : PROC_OK ? 'dead' : 'unknown', paneStatus,
+      model: livenessResult.modelByDispatch.get(`${f.id}\u0000${f.dispatchId}`) || null,
+      livenessEvidence,
+      identityConflict: Boolean(f.dispatchId && conflictingAgentDispatches.has(f.dispatchId)),
+      agentId: f.dispatchId && conflictingAgentDispatches.has(f.dispatchId)
+        ? ''
+        : f.agentId || livenessResult.byDispatch.get(`${f.id}\u0000${f.dispatchId}`)?.agent_id || '',
       pmVerdict: currentVerdict?.pm_verdict || '',
       idleShell: !!(alive && alive.kind === 'tmux' && alive.hasChild === false),
       phase: verdictPhaseConflict ? '' : f.phase,
       phaseSource: verdictPhaseConflict ? 'conflict' : f.phaseSource,
-    })
+    }
+    const terminalEvidence = settled || Boolean(f.marker) || livenessTerminal
+    const deadAttempt = !working && state === 'died'
+    if (terminalEvidence || deadAttempt || state === 'unrecorded') history.push(projected)
+    else active.push(projected)
   }
   // A live process with no footprint at all still deserves a row — it is real,
   // and hiding it because it does not fit the model is how a dashboard lies.
@@ -619,19 +886,23 @@ function derive(now) {
     active.push({
       id: l.id, marker: '', terminalStatus: 'absent', alive: true, liveness: 'alive',
       dispatched: false, dispatchStatus: 'absent', dispatchId: '', worker: '', transport: l.kind,
-      kind: l.kind, detail: l.detail, ageSec: null, elapsedSec: null, timeoutSec: null,
+      kind: l.kind, detail: l.detail, model: null, ageSec: null, elapsedSec: null, timeoutSec: null,
       paneStatus: l.kind === 'tmux' ? 'held' : 'not_recorded', pmVerdict: '', state: 'orphan_running',
+      livenessEvidence: null,
+      identityConflict: false,
+      agentId: '',
       phase: '', phaseSource: 'unassigned',
     })
   }
-  const unclaimed = unclaimedControlDirs(new Set(live.map(l => l.id)), new Set(foot.map(f => f.id)))
+  const unclaimed = unclaimedControlDirs(liveIds, new Set(foot.map(f => f.id)))
   for (const code of [...new Set(diagnostics.map(d => d.code))]) {
     if (code !== 'LIVENESS_UNAVAILABLE') notes.push(`pulse source degraded: ${code}`)
   }
   return {
-    active, rec, notes, unclaimed, diagnostics,
+    active, history, rec, notes, unclaimed, diagnostics,
+    historyTotal: history.length + footResult.historySourceDiscarded,
     sourceHealth: {
-      liveness: PROC_OK ? 'ok' : 'unavailable',
+      liveness: !PROC_OK ? 'unavailable' : livenessResult.health,
       tmux: panesNow.available ? 'ok' : 'unavailable',
       dispatch: footResult.health.dispatch,
       outbox: footResult.health.outbox,
@@ -1101,7 +1372,7 @@ function renderGraphEquivalent(rows) {
 
 // HTML is a pure view of the published contract. It never receives the raw
 // observations, so pulse.json is the sole source of truth for humans and agents.
-function render(snapshot) {
+function render(snapshot, { refreshScriptName = PULSE_REFRESH_NAME } = {}) {
   const active = snapshot.runs
   const rec = snapshot.recent_verdicts
   const notes = snapshot.diagnostics
@@ -1206,8 +1477,8 @@ function render(snapshot) {
   return `<!doctype html><html lang="th"><head><meta charset="utf-8">
 <title>pulse — ${esc(repoName)}</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="refresh" content="${refreshInterval}">
 <meta name="tmux-teams-snapshot-id" content="${esc(snapshot.snapshot_id)}">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; font-src data:; script-src 'self'; connect-src 'self'; img-src data:; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231f6f5f'/%3E%3Cpath d='M14 35h11l6-19 9 32 7-15h5' fill='none' stroke='%23fff' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="${FONT_CSS_NAME}">
 <style>
@@ -1219,7 +1490,7 @@ function render(snapshot) {
 .eyebrow{display:block;margin:0 0 var(--s1);color:var(--dim);font:500 .75rem/1.4 var(--sans);letter-spacing:.08em;text-transform:uppercase}
 h1{display:flex;min-width:0;align-items:baseline;gap:var(--s3);margin:0;font:600 1.75rem/1.2 var(--sans);letter-spacing:-.02em}h1 .repo{min-width:0;color:var(--dim);font:500 1rem var(--mono);letter-spacing:0;overflow-wrap:anywhere}
 .scope{max-width:62ch;margin:var(--s2) 0 0;color:var(--dim);font-size:.875rem}.loop-graph-link{display:inline-block;margin-top:var(--s2);color:var(--ink);font-size:.78rem;text-decoration:none;border-bottom:1px solid var(--line)}.loop-graph-link:hover{border-color:var(--ink)}.header-status{display:flex;min-width:0;align-items:flex-start;justify-content:flex-end;flex-wrap:wrap;gap:var(--s3);text-align:right}.status-badges{display:flex;min-width:0;flex-wrap:wrap;justify-content:flex-end;gap:var(--s2)}.age{min-width:0;color:var(--dim);font-size:.8rem;line-height:1.5;overflow-wrap:anywhere}.age time,.freshness-note,.time-zone-label{display:block}.time-zone-label{color:var(--ink);font-weight:500}.age time{color:var(--ink);font-family:var(--mono);font-variant-numeric:tabular-nums}
-.quality{display:inline-flex;align-items:center;gap:var(--s2);white-space:nowrap;padding:6px 10px;border:1px solid var(--line);border-radius:999px;font-size:.78rem;font-weight:500}.quality::before{content:"";flex:none;width:7px;height:7px;border-radius:50%;background:currentColor}.quality.complete{color:var(--dim)}.quality.ok{color:var(--ok)}.quality.warn{color:var(--warn)}
+  .quality{display:inline-flex;align-items:center;gap:var(--s2);white-space:nowrap;padding:6px 10px;border:1px solid var(--line);border-radius:999px;font-size:.78rem;font-weight:500}.quality::before{content:"";flex:none;width:7px;height:7px;border-radius:50%;background:currentColor}.quality.complete{color:var(--dim)}.quality.ok{color:var(--ok)}.quality.warn{color:var(--warn)}.age button{min-height:44px;margin-top:var(--s2);padding:var(--s2) var(--s3);border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2);color:var(--ink);font:500 .78rem var(--sans);cursor:pointer}.age button:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 main{display:grid;min-width:0;gap:var(--s7);padding-top:var(--s6)}.summary-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}.metric{min-width:0;padding:var(--s5);border-left:1px solid var(--line)}.metric:first-child{border-left:0}.metric-label,.metric-note{display:block;color:var(--dim);font-size:.82rem}.metric-value{display:block;margin:2px 0;font:600 2rem/1.2 var(--sans);font-variant-numeric:tabular-nums}.metric.bad .metric-value{color:var(--bad)}.metric.ok .metric-value{color:var(--ok)}.metric.warn .metric-value{color:var(--warn)}
 body[data-observation-freshness="stale"] .metric.ok .metric-value{color:var(--dim)}body[data-observation-freshness="stale"] .pill.running{background:color-mix(in srgb,var(--dim) 16%,transparent);color:var(--dim)}body[data-observation-freshness="stale"] .status-dot.running{background:var(--dim)}
 .diagnostics{border:1px solid color-mix(in oklch,var(--warn) 45%,var(--line));border-radius:var(--r-md);background:color-mix(in oklch,var(--warn) 8%,var(--surface));padding:var(--s4) var(--s5)}.diagnostics h2{margin:0 0 var(--s2);font-size:1rem}.diagnostics ul{display:grid;gap:var(--s2);margin:0;padding:0;list-style:none}.diagnostics li{display:flex;justify-content:space-between;gap:var(--s4);color:var(--dim);font-size:.875rem}.diagnostics strong{color:var(--ink);font-weight:500}.diagnostics code{font-size:.75rem}
@@ -1265,6 +1536,7 @@ footer{margin-top:var(--s7);padding-top:var(--s4);border-top:1px solid var(--lin
 @media(max-width:820px){body{padding:var(--s4)}.site-header{display:grid}.header-status,.status-badges{justify-content:flex-start;text-align:left}.summary-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.metric{border-top:1px solid var(--line)}.metric:nth-child(-n+2){border-top:0}.metric:nth-child(odd){border-left:0}.delivery-overview{grid-template-columns:1fr}.runtime-summary{grid-template-columns:repeat(3,minmax(0,1fr))}.runtime-phase-list{grid-template-columns:repeat(2,minmax(0,1fr))}.primary-grid,.run-list-dense{grid-template-columns:1fr}.run-list-dense .run-item{border-left:0}.run-list-dense .run-item:nth-child(2){border-top:1px solid var(--line)}main{gap:var(--s6)}}
 @media(max-width:620px){h1{display:grid;gap:2px;font-size:1.5rem}.header-status,.status-badges{display:grid;justify-items:start}.quality{white-space:normal}.metric{padding:var(--s4)}.metric-value{font-size:1.65rem}.section-head{align-items:start}.delivery-times,.phase-grid,.runtime-phase-list{grid-template-columns:1fr}.runtime-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.runtime-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.runtime-facts div:first-child{grid-column:1/-1}.run-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.run-facts div:last-child{grid-column:1/-1}.warning-list li{grid-template-columns:1fr auto}.warning-list p{grid-column:1/-1}.responsive-table table,.responsive-table tbody,.responsive-table tr,.responsive-table td{display:block;min-width:0}.responsive-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}.responsive-table tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s3);padding:var(--s4);border-top:1px solid var(--line)}.responsive-table tbody tr:first-child{border-top:0}.responsive-table td{padding:0;border:0;overflow-wrap:anywhere}.responsive-table td:first-child{grid-column:1/-1}.responsive-table td::before{content:attr(data-label);display:block;margin-bottom:2px;color:var(--dim);font-size:.7rem}.deep-dive>summary{padding:var(--s4)}.detail-body{padding:var(--s3)}.graph-legend,.diagram-legend{display:grid}}
 @media(max-width:360px){body{padding:var(--s3)}.summary-strip,.runtime-summary{grid-template-columns:1fr}.metric,.metric:nth-child(-n+2){border-top:1px solid var(--line);border-left:0}.metric:first-child{border-top:0}.run-facts{grid-template-columns:1fr}.run-facts div:last-child{grid-column:auto}.responsive-table tr{grid-template-columns:1fr}.responsive-table td:first-child{grid-column:auto}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}}
 @media(forced-colors:active){.df-selected path{stroke:Highlight;stroke-width:4}.df-observed,.df-exception-label,.ds-flow .ds-terminal{color:CanvasText;fill:CanvasText}.df-node rect,.df-pm{stroke:CanvasText}.graph-scroll:focus-visible,.diagram-scroll:focus-visible{outline-color:Highlight}.legend-dot,.legend-line{border-color:CanvasText;background:CanvasText}}
 </style></head><body data-observation-freshness="${initiallyStale ? 'stale' : 'fresh'}"><div class="wrap">
 
@@ -1282,7 +1554,7 @@ footer{margin-top:var(--s7);padding-top:var(--s4);border-top:1px solid var(--lin
       <span class="quality ${qualityClass}" title="ความครบถ้วนของหลักฐานที่ Pulse อ่านได้">${qualityLabel}</span>
       <span id="freshness-status" class="quality ${freshnessClass}" role="status" aria-live="polite">${freshnessLabel}</span>
     </div>
-    <div class="age"><span id="pulse-timezone-label" class="time-zone-label">${esc(TIME_ZONE_LABEL)}</span><span>ข้อมูลที่สังเกต ณ</span>${absoluteTime(snapshot.generated_at)}<span id="freshness-note" class="freshness-note">${!expiryIsValid ? 'ตรวจเวลาหมดอายุไม่ได้' : initiallyStale ? 'ตัวสังเกตการณ์ไม่อัปเดตตามรอบ' : `กำหนดรีเฟรชทุก ${refreshInterval} วิ`}</span></div>
+    <div class="age"><span id="pulse-timezone-label" class="time-zone-label">${esc(TIME_ZONE_LABEL)}</span><span>ข้อมูลที่สังเกต ณ</span>${absoluteTime(snapshot.generated_at)}<span id="freshness-note" data-refresh-note class="freshness-note">${!expiryIsValid ? 'ตรวจเวลาหมดอายุไม่ได้' : initiallyStale ? 'ตัวสังเกตการณ์ไม่อัปเดตตามรอบ' : `กำหนดรีเฟรชทุก ${refreshInterval} วิ`}</span><button type="button" data-refresh-toggle data-refresh-focus-key="refresh-toggle" aria-pressed="false">Pause updates</button></div>
   </div>
 </header>
 
@@ -1325,7 +1597,7 @@ footer{margin-top:var(--s7);padding-top:var(--s4);border-top:1px solid var(--lin
 
   <section aria-labelledby="recent-title">
     <div class="section-head"><div><span class="eyebrow">หลักฐานที่บันทึกไว้</span><h2 id="recent-title">บันทึกผลล่าสุด</h2><p>ผลปลายทาง เวลาเริ่ม และเวลาที่ใช้; verdict มาจากฟิลด์เดิม <code>pm_verdict</code></p></div><span class="count">${recent.length} รายการ</span></div>
-    <div class="surface table-scroll responsive-table" tabindex="0">${recent.length ? `<table><caption>บันทึกผลล่าสุด; คำตัดสินอ่านจากฟิลด์เดิม pm_verdict</caption><thead><tr><th>งาน</th><th>worker</th><th>ผลจาก worker</th><th>คำตัดสินที่บันทึก (pm_verdict)</th><th>เริ่ม</th><th>ใช้เวลา</th><th>dispatch</th></tr></thead><tbody>
+    <div class="surface table-scroll responsive-table" data-refresh-scroll-key="recent-runs" tabindex="0">${recent.length ? `<table><caption>บันทึกผลล่าสุด; คำตัดสินอ่านจากฟิลด์เดิม pm_verdict</caption><thead><tr><th>งาน</th><th>worker</th><th>ผลจาก worker</th><th>คำตัดสินที่บันทึก (pm_verdict)</th><th>เริ่ม</th><th>ใช้เวลา</th><th>dispatch</th></tr></thead><tbody>
 ${recent.map(r => `<tr>
   <td data-label="งาน"><code>${esc(r.task_id)}</code></td><td data-label="worker">${esc(r.worker)}</td>
   <td data-label="ผลจาก worker">${esc(terminalLabel(r.terminal))}</td>
@@ -1341,9 +1613,9 @@ ${recent.map(r => `<tr>
   <section aria-labelledby="details-title">
     <div class="section-head"><div><span class="eyebrow">เปิดเมื่ออยากเจาะลึก</span><h2 id="details-title">รายละเอียดระบบ</h2><p>เส้นทางงาน วิธีติดตาม และสถิติ worker</p></div></div>
     <div class="details-stack">
-      <details class="deep-dive" data-persist-key="progress"><summary>ความคืบหน้าของแต่ละงาน</summary><div class="detail-body">${renderGraphLegend()}<div class="graph-scroll" tabindex="0" role="region" aria-label="กราฟความคืบหน้าของแต่ละงานแบบเลื่อนแนวนอนได้">${renderGraph(graph)}</div>${renderGraphEquivalent(graph)}</div></details>
-      <details class="deep-dive" data-persist-key="system-loop"><summary>ลูปสองชั้น: ทีมตรวจ worker · PM ติดตาม phase</summary><div class="detail-body"><ul class="diagram-legend" aria-label="วิธีอ่านเส้นในโมเดลลูปสองชั้น"><li><span class="legend-line" aria-hidden="true"></span>เส้นทึบ · เส้นทางตามโมเดล ไม่ใช่ event สด</li><li><span class="legend-line dashed" aria-hidden="true"></span>เส้นประ · transition ที่ Pulse ยังไม่วัดว่าเกิดจริง</li><li><span class="legend-line bad" aria-hidden="true"></span>เส้นแดง · ทางยกระดับข้อยกเว้น; ตัวเลขมาจากหลักฐานหยุดผิดปกติ</li></ul><div class="diagram-scroll" tabindex="0" role="region" aria-label="แผนภาพลูปสองชั้นเชิงบรรทัดฐานของการสั่งงาน worker และการส่งมอบแบบเลื่อนแนวนอนได้">${renderLoop(snapshot)}</div><p class="diagram-note"><strong>โมเดลเชิงบรรทัดฐาน ไม่ใช่สถานะสด</strong> ทีมเฟสเป็นเจ้าของ dispatch/verification ตามปกติ ส่วน PM คุมลูปชั้นนอกและรับเฉพาะข้อยกเว้น; ตัวเลขมาจากหลักฐาน dispatch และ verdict เดิมที่ Pulse อ่านได้ แต่เส้นทางของโมเดลไม่ได้ยืนยันว่า transition เกิดขึ้นจริง.</p><section class="diagram-equivalent" aria-labelledby="worker-loop-equivalent-title"><h3 id="worker-loop-equivalent-title">ข้อความเทียบเท่าลูปสองชั้น</h3><ol><li>ตามโมเดล PM กำหนดเป้าหมาย ติดตาม phase, handoff และ bottleneck โดยไม่รับตรวจ worker ทุกงาน</li><li>ตามโมเดลทีมเฟสแตกงานเป็น slice พร้อม validation แล้ว dispatch ให้ worker</li><li>ตามโมเดล worker ส่งหลักฐานกลับให้ผู้ตรวจของทีม; ผ่านจึงนำไปประกอบ exit artifact</li><li>งานที่ไม่ผ่านควรสร้าง dispatch หรือ attempt ใหม่ภายในทีม; Pulse ยังไม่วัดว่าการวนนี้เกิดจริง</li><li>exception, deadlock, policy conflict หรือ bottleneck เท่านั้นที่โมเดลยกระดับให้ PM แก้</li></ol></section></div></details>
-      <details class="deep-dive" data-persist-key="worker-stats"><summary>สถิติ worker</summary><div class="detail-body surface table-scroll responsive-table" tabindex="0">${st.length ? `<table><caption>สถิติ worker</caption><thead><tr><th>worker</th><th>รอบทั้งหมด</th><th>ให้แก้ไข</th><th>เวลากลาง</th></tr></thead><tbody>
+      <details class="deep-dive" data-persist-key="progress"><summary>ความคืบหน้าของแต่ละงาน</summary><div class="detail-body">${renderGraphLegend()}<div class="graph-scroll" data-refresh-scroll-key="progress-graph" tabindex="0" role="region" aria-label="กราฟความคืบหน้าของแต่ละงานแบบเลื่อนแนวนอนได้">${renderGraph(graph)}</div>${renderGraphEquivalent(graph)}</div></details>
+      <details class="deep-dive" data-persist-key="system-loop"><summary>ลูปสองชั้น: ทีมตรวจ worker · PM ติดตาม phase</summary><div class="detail-body"><ul class="diagram-legend" aria-label="วิธีอ่านเส้นในโมเดลลูปสองชั้น"><li><span class="legend-line" aria-hidden="true"></span>เส้นทึบ · เส้นทางตามโมเดล ไม่ใช่ event สด</li><li><span class="legend-line dashed" aria-hidden="true"></span>เส้นประ · transition ที่ Pulse ยังไม่วัดว่าเกิดจริง</li><li><span class="legend-line bad" aria-hidden="true"></span>เส้นแดง · ทางยกระดับข้อยกเว้น; ตัวเลขมาจากหลักฐานหยุดผิดปกติ</li></ul><div class="diagram-scroll" data-refresh-scroll-key="system-loop" tabindex="0" role="region" aria-label="แผนภาพลูปสองชั้นเชิงบรรทัดฐานของการสั่งงาน worker และการส่งมอบแบบเลื่อนแนวนอนได้">${renderLoop(snapshot)}</div><p class="diagram-note"><strong>โมเดลเชิงบรรทัดฐาน ไม่ใช่สถานะสด</strong> ทีมเฟสเป็นเจ้าของ dispatch/verification ตามปกติ ส่วน PM คุมลูปชั้นนอกและรับเฉพาะข้อยกเว้น; ตัวเลขมาจากหลักฐาน dispatch และ verdict เดิมที่ Pulse อ่านได้ แต่เส้นทางของโมเดลไม่ได้ยืนยันว่า transition เกิดขึ้นจริง.</p><section class="diagram-equivalent" aria-labelledby="worker-loop-equivalent-title"><h3 id="worker-loop-equivalent-title">ข้อความเทียบเท่าลูปสองชั้น</h3><ol><li>ตามโมเดล PM กำหนดเป้าหมาย ติดตาม phase, handoff และ bottleneck โดยไม่รับตรวจ worker ทุกงาน</li><li>ตามโมเดลทีมเฟสแตกงานเป็น slice พร้อม validation แล้ว dispatch ให้ worker</li><li>ตามโมเดล worker ส่งหลักฐานกลับให้ผู้ตรวจของทีม; ผ่านจึงนำไปประกอบ exit artifact</li><li>งานที่ไม่ผ่านควรสร้าง dispatch หรือ attempt ใหม่ภายในทีม; Pulse ยังไม่วัดว่าการวนนี้เกิดจริง</li><li>exception, deadlock, policy conflict หรือ bottleneck เท่านั้นที่โมเดลยกระดับให้ PM แก้</li></ol></section></div></details>
+      <details class="deep-dive" data-persist-key="worker-stats"><summary>สถิติ worker</summary><div class="detail-body surface table-scroll responsive-table" data-refresh-scroll-key="worker-stats" tabindex="0">${st.length ? `<table><caption>สถิติ worker</caption><thead><tr><th>worker</th><th>รอบทั้งหมด</th><th>ให้แก้ไข</th><th>เวลากลาง</th></tr></thead><tbody>
 ${st.map(s => `<tr><td data-label="worker">${esc(s.worker)}</td><td data-label="รอบทั้งหมด" class="num">${s.runs}</td>
   <td data-label="ให้แก้ไข" class="num ${s.rejected ? 'verdict-reject' : ''}">${s.rejected}</td>
   <td data-label="เวลากลาง" class="num">${s.median_wait_sec == null ? 'ยังไม่วัด' : dur(s.median_wait_sec)}</td></tr>`).join('')}</tbody></table>`
@@ -1362,48 +1634,7 @@ ${st.map(s => `<tr><td data-label="worker">${esc(s.worker)}</td><td data-label="
     <li>หากป้าย freshness แสดง “ข้อมูลหมดอายุ” ให้ตรวจตัวสังเกตการณ์ก่อนสรุปสถานะงาน</li>
   </ul></details>
 </footer>
-</div>
-<script>
-(() => {
-  for (const detail of document.querySelectorAll('details[data-persist-key]')) {
-    const key = 'tmux-teams:pulse:' + location.pathname + ':' + detail.dataset.persistKey
-    try {
-      const saved = sessionStorage.getItem(key)
-      if (saved !== null) detail.open = saved === 'open'
-      detail.addEventListener('toggle', () => sessionStorage.setItem(key, detail.open ? 'open' : 'closed'))
-    } catch { /* storage may be disabled; native details still work */ }
-  }
-
-  const header = document.querySelector('[data-observation-expires-at]')
-  const status = document.querySelector('#freshness-status')
-  const note = document.querySelector('#freshness-note')
-  let expiryTimer = 0
-  const updateFreshness = () => {
-    if (!header || !status || !note) return
-    if (expiryTimer) clearTimeout(expiryTimer)
-    const expiry = Date.parse(header.dataset.observationExpiresAt || '')
-    const valid = Number.isFinite(expiry)
-    const stale = !valid || Date.now() >= expiry
-    document.body.dataset.observationFreshness = stale ? 'stale' : 'fresh'
-    status.classList.toggle('ok', !stale)
-    status.classList.toggle('warn', stale)
-    status.textContent = !valid ? 'ตรวจเวลาข้อมูลไม่ได้' : stale ? 'ข้อมูลหมดอายุ' : 'ข้อมูลสด'
-    note.textContent = !valid
-      ? 'ตรวจเวลาหมดอายุไม่ได้'
-      : stale
-        ? 'ตัวสังเกตการณ์ไม่อัปเดตตามรอบ'
-        : 'กำหนดรีเฟรชทุก ' + (header.dataset.refreshInterval || '?') + ' วิ'
-    if (!stale) {
-      const delay = Math.min(Math.max(expiry - Date.now() + 25, 25), 2_147_000_000)
-      expiryTimer = setTimeout(updateFreshness, delay)
-    }
-  }
-  updateFreshness()
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') updateFreshness()
-  })
-})()
-</script>
+<script src="${esc(refreshScriptName)}" defer></script>
 </body></html>`
 }
 
@@ -1519,6 +1750,36 @@ function readDeliveryRuntimeInput() {
   )
 }
 
+function readTeamGraphInput() {
+  const input = readProjectionInput(
+    TEAM_GRAPH_PATH,
+    'TEAM_GRAPH_INPUT_UNREADABLE',
+    'TEAM_GRAPH_INPUT_INVALID',
+  )
+  if (!TEAM_GRAPH_PATH) return { ...input, sourceDigest: null }
+  try {
+    const stats = statSync(TEAM_GRAPH_PATH)
+    if (!stats.isFile() || stats.size > MAX_INPUT_BYTES) {
+      return { value: null, issue: 'TEAM_GRAPH_INPUT_INVALID', sourceDigest: null }
+    }
+    const bytes = readFileSync(TEAM_GRAPH_PATH)
+    return {
+      ...input,
+      sourceDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+    }
+  } catch {
+    return { value: null, issue: 'TEAM_GRAPH_INPUT_UNREADABLE', sourceDigest: null }
+  }
+}
+
+function readTeamRuntimeInput() {
+  return readProjectionInput(
+    TEAM_RUNTIME_PATH,
+    'TEAM_RUNTIME_INPUT_UNREADABLE',
+    'TEAM_RUNTIME_INPUT_INVALID',
+  )
+}
+
 function atomicWriteIfChanged(path, content, publishToken = null) {
   try {
     if (readFileSync(path, 'utf8') === content) return
@@ -1529,6 +1790,14 @@ function atomicWriteIfChanged(path, content, publishToken = null) {
 }
 
 const sha256 = (content) => createHash('sha256').update(content).digest('hex')
+const sourceContentIdentity = (path) => {
+  if (!path) return null
+  try {
+    const stats = statSync(path)
+    if (!stats.isFile() || stats.size > MAX_INPUT_BYTES) return null
+    return `sha256:${sha256(readFileSync(path))}`
+  } catch { return null }
+}
 const sourceIdentity = (path) => {
   if (!path) return null
   let canonical = path
@@ -1536,7 +1805,7 @@ const sourceIdentity = (path) => {
   return `sha256:${sha256(canonical)}`
 }
 
-function bundleManifest(snapshot, jsonText, html, loopGraphHtml) {
+function bundleManifest(snapshot, jsonText, html, loopGraphHtml, teamFlowHtml) {
   return `${JSON.stringify({
     schema: 'tmux-teams.pulse-bundle',
     schema_version: 2,
@@ -1545,9 +1814,11 @@ function bundleManifest(snapshot, jsonText, html, loopGraphHtml) {
       data: { path: 'pulse.json', sha256: sha256(jsonText) },
       dashboard: { path: 'pulse.html', sha256: sha256(html) },
       loop_graph: { path: 'loop-graph.html', sha256: sha256(loopGraphHtml) },
+      team_flow: { path: 'team-flow.html', sha256: sha256(teamFlowHtml) },
       font_css: { path: FONT_CSS_NAME, sha256: sha256(KANIT_FONT_CSS) },
       d3_js: { path: D3_JS_NAME, sha256: sha256(D3_JS) },
       d3_license: { path: D3_LICENSE_NAME, sha256: sha256(D3_LICENSE) },
+      refresh_js: { path: PULSE_REFRESH_NAME, sha256: PULSE_REFRESH_HASH },
     },
   }, null, 2)}\n`
 }
@@ -1581,11 +1852,20 @@ function priorStream(view, targetVersion) {
 
 function once() {
   const startedAt = Date.now()
-  const view = derive(startedAt)
-  const finishedAt = Date.now()
-  const targetVersion = PULSE_SCHEMA_VERSION_V4
   const deliveryLoopInput = readDeliveryLoopInput()
   const deliveryRuntimeInput = readDeliveryRuntimeInput()
+  const teamGraphInput = readTeamGraphInput()
+  const teamRuntimeInput = readTeamRuntimeInput()
+  const normalizedTeamGraph = normalizeTeamGraph(teamGraphInput.value)
+  const configuredAgentIds = normalizedTeamGraph
+    ? new Set([
+        ...(normalizedTeamGraph.outer_controller_id ? [normalizedTeamGraph.outer_controller_id] : []),
+        ...normalizedTeamGraph.teams.flatMap((team) => team.agents.map((agent) => agent.agent_id)),
+      ])
+    : null
+  const view = derive(startedAt, configuredAgentIds)
+  const finishedAt = Date.now()
+  const targetVersion = PULSE_SCHEMA_VERSION_V4
   mkdirSync(STORE, { recursive: true })
   const ignore = join(STORE, '.gitignore')
   if (!existsSync(ignore)) writeFileSync(ignore, '*\n')
@@ -1595,6 +1875,7 @@ function once() {
     const meta = {
       ...stream, startedAt, finishedAt, intervalSec: INTERVAL,
       repoName: REPO.split('/').pop(),
+      teamGraphSourceDigest: teamGraphInput.sourceDigest,
     }
     const snapshot = projectPulseV4(
       view,
@@ -1605,19 +1886,29 @@ function once() {
       deliveryRuntimeInput.value,
       deliveryRuntimeInput.issue,
       Boolean(DELIVERY_RUNTIME_PATH),
+      teamGraphInput.value,
+      teamGraphInput.issue,
+      Boolean(TEAM_GRAPH_PATH),
+      teamRuntimeInput.value,
+      teamRuntimeInput.issue,
+      Boolean(TEAM_RUNTIME_PATH),
     )
     const jsonText = JSON.stringify(snapshot, null, 2) + '\n'
     // Render the exact serialized contract, not the internal projection object.
     // This makes pulse.json the literal SSOT and catches serialization drift.
     const publishedSnapshot = JSON.parse(jsonText)
-    const html = render(publishedSnapshot)
+    const html = render(publishedSnapshot, { refreshScriptName: PULSE_REFRESH_NAME })
     const loopGraphHtml = renderPulseLoopGraph(publishedSnapshot, {
       fontCssName: FONT_CSS_NAME,
       d3JsName: D3_JS_NAME,
       timeZone: DISPLAY_TIME_ZONE,
       timeZoneLabel: TIME_ZONE_LABEL,
+      refreshScriptName: PULSE_REFRESH_NAME,
     })
-    const bundleText = bundleManifest(publishedSnapshot, jsonText, html, loopGraphHtml)
+    // Reads the repo's declared Team graph, or falls back to the bundled
+    // four-team template so a fresh install has a page on the first run.
+    const teamFlowHtml = renderTeamFlowPage(REPO, publishedSnapshot, { fontCssName: FONT_CSS_NAME })
+    const bundleText = bundleManifest(publishedSnapshot, jsonText, html, loopGraphHtml, teamFlowHtml)
     assertPublishLock(token)
     atomicWriteIfChanged(FONT_CSS_OUT, KANIT_FONT_CSS, token)
     assertPublishLock(token)
@@ -1625,11 +1916,15 @@ function once() {
     assertPublishLock(token)
     atomicWriteIfChanged(D3_LICENSE_OUT, D3_LICENSE, token)
     assertPublishLock(token)
+    atomicWriteIfChanged(PULSE_REFRESH_OUT, PULSE_REFRESH_SOURCE, token)
+    assertPublishLock(token)
     atomicWrite(JSON_OUT, jsonText, token)
     assertPublishLock(token)
     atomicWrite(OUT, html, token)
     assertPublishLock(token)
     atomicWrite(LOOP_GRAPH_OUT, loopGraphHtml, token)
+    assertPublishLock(token)
+    atomicWrite(TEAM_FLOW_OUT, teamFlowHtml, token)
     // This commit marker is written last. Readers validate its hashes and
     // snapshot id, then re-read it to detect a publication racing their read.
     assertPublishLock(token)
@@ -1637,6 +1932,7 @@ function once() {
     return {
       htmlPath: OUT,
       loopGraphPath: LOOP_GRAPH_OUT,
+      teamFlowPath: TEAM_FLOW_OUT,
       bundlePath: BUNDLE_OUT,
       jsonText,
       snapshot: publishedSnapshot,
@@ -1688,6 +1984,8 @@ function desiredWatcherConfig(pid) {
     schema_version: PULSE_SCHEMA_VERSION_V4,
     delivery_loop_source: sourceIdentity(DELIVERY_LOOP_PATH),
     delivery_runtime_source: sourceIdentity(DELIVERY_RUNTIME_PATH),
+    team_graph_source: sourceContentIdentity(TEAM_GRAPH_PATH),
+    team_runtime_source: sourceContentIdentity(TEAM_RUNTIME_PATH),
     time_zone: DISPLAY_TIME_ZONE,
   }
 }
@@ -1698,11 +1996,13 @@ function readWatcherConfig() {
     if (!stats.isFile() || stats.size > 4096) return null
     const value = JSON.parse(readFileSync(WATCH_CONFIG, 'utf8'))
     if (!value || typeof value !== 'object' || Array.isArray(value) ||
-        Object.keys(value).length !== 5 ||
+        Object.keys(value).length !== 7 ||
         !Object.hasOwn(value, 'pid') ||
         !Object.hasOwn(value, 'schema_version') ||
         !Object.hasOwn(value, 'delivery_loop_source') ||
         !Object.hasOwn(value, 'delivery_runtime_source') ||
+        !Object.hasOwn(value, 'team_graph_source') ||
+        !Object.hasOwn(value, 'team_runtime_source') ||
         !Object.hasOwn(value, 'time_zone') ||
         !Number.isSafeInteger(value.pid) || value.pid < 1 ||
         value.schema_version !== PULSE_SCHEMA_VERSION_V4 ||
@@ -1712,6 +2012,12 @@ function readWatcherConfig() {
         !(value.delivery_runtime_source === null ||
           typeof value.delivery_runtime_source === 'string' &&
             /^sha256:[0-9a-f]{64}$/.test(value.delivery_runtime_source)) ||
+        !(value.team_graph_source === null ||
+          typeof value.team_graph_source === 'string' &&
+            /^sha256:[0-9a-f]{64}$/.test(value.team_graph_source)) ||
+        !(value.team_runtime_source === null ||
+          typeof value.team_runtime_source === 'string' &&
+            /^sha256:[0-9a-f]{64}$/.test(value.team_runtime_source)) ||
         typeof value.time_zone !== 'string' ||
         value.time_zone.length === 0) return null
     return value
@@ -1730,6 +2036,8 @@ function watcherConfigMatches(pid) {
     actual.schema_version === desired.schema_version &&
     actual.delivery_loop_source === desired.delivery_loop_source &&
     actual.delivery_runtime_source === desired.delivery_runtime_source &&
+    actual.team_graph_source === desired.team_graph_source &&
+    actual.team_runtime_source === desired.team_runtime_source &&
     actual.time_zone === desired.time_zone
 }
 
@@ -1777,7 +2085,7 @@ if (cmd === 'ensure') {
     if (!claim.pid) { console.error('[pulse] could not claim watcher pidfile'); process.exit(1) }
     if (!watcherConfigMatches(claim.pid)) {
       console.error(
-        '[pulse] watcher mode/input mismatch; stop the existing watcher before changing --delivery-loop, --delivery-runtime, or --time-zone',
+        '[pulse] watcher mode/input mismatch; stop the existing watcher before changing --delivery-loop, --delivery-runtime, --team-graph, --team-runtime, or --time-zone',
       )
       process.exit(1)
     }
@@ -1800,6 +2108,8 @@ if (cmd === 'ensure') {
   const watchArgs = [THIS_SCRIPT, 'watch', REPO, '--interval', String(INTERVAL), '--managed']
   if (DELIVERY_LOOP_PATH) watchArgs.push('--delivery-loop', DELIVERY_LOOP_PATH)
   if (DELIVERY_RUNTIME_PATH) watchArgs.push('--delivery-runtime', DELIVERY_RUNTIME_PATH)
+  if (TEAM_GRAPH_PATH) watchArgs.push('--team-graph', TEAM_GRAPH_PATH)
+  if (TEAM_RUNTIME_PATH) watchArgs.push('--team-runtime', TEAM_RUNTIME_PATH)
   watchArgs.push('--time-zone', DISPLAY_TIME_ZONE)
   const child = spawn(process.execPath,
     watchArgs, {
@@ -1865,6 +2175,7 @@ if (managedClaimAccepted) {
 
 console.log(`[pulse] watching ${REPO} every ${INTERVAL}s -> ${OUT}`)
 console.log(`[pulse] full-screen ACP graph -> ${LOOP_GRAPH_OUT}`)
+console.log(`[pulse] team delivery flow -> ${TEAM_FLOW_OUT}`)
 console.log('[pulse] open either HTML file in a browser; both refresh themselves')
 const tick = () => {
   if (watcherPid() !== process.pid) {
