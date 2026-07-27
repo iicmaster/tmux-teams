@@ -19,7 +19,7 @@ import { appendFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
-import { readWorkflowGraph } from './team-flow.mjs'
+import { readWorkflowGraph } from './graph-loop.mjs'
 
 export function planPulls(graph, items, now = new Date().toISOString()) {
   const teamOf = new Map()

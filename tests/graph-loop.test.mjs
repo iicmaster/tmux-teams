@@ -1,4 +1,4 @@
-// team-flow.test.mjs — the loop graph page and the pull system behind it.
+// graph-loop.test.mjs — the loop graph page and the pull system behind it.
 //
 // The page can fail in exactly one way that matters: showing something no
 // evidence supports. Every case here pins that line, plus the two layout facts
@@ -10,8 +10,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
-  DEFAULT_WORKFLOW_GRAPH, readWorkflowGraph, renderLoopGraphSvg, renderTeamFlowPage,
-} from '../plugins/tmux-teams/skills/tmux-teams/scripts/team-flow.mjs'
+  DEFAULT_WORKFLOW_GRAPH, readWorkflowGraph, renderGraphLoopPage, renderLoopGraphSvg,
+} from '../plugins/tmux-teams/skills/tmux-teams/scripts/graph-loop.mjs'
 import { validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
 import { planPulls } from '../plugins/tmux-teams/skills/tmux-teams/scripts/pull-controller.mjs'
 
@@ -70,7 +70,7 @@ test('a repo with no declared graph falls back to the bundled template', () => {
 test('an invalid graph fails closed instead of silently using the default', () => {
   const dir = repoWith({ teams: [{ team_id: 'solo' }], workflows: [] })
   assert.equal(readWorkflowGraph(dir).ok, false)
-  const page = renderTeamFlowPage(dir, snapshotWith())
+  const page = renderGraphLoopPage(dir, snapshotWith())
   assert.match(page, /failed the contract/)
   assert.doesNotMatch(page, /<svg/)
 })
@@ -112,10 +112,13 @@ test('a node states status, lane and model separately, and never fakes a model',
     run('b_w2', 'running', { model: 'gpt-5.6-luna' }),
   ]))
   assert.match(svg, /WORKER · codex · tmux/)
-  // The lane is not a model: an unverified run says so rather than borrowing it.
-  assert.match(svg, /model unverified/)
+  // The lane is not a model, and a run nobody pinned a model for is not the same
+  // as one whose model check failed. Both used to print `unverified`, which told
+  // a reader nothing about the thing they were looking for.
+  assert.match(svg, /model not recorded/)
   assert.match(svg, /model gpt-5\.6-luna/)
   assert.doesNotMatch(svg, /model codex/)
+  assert.doesNotMatch(svg, /model unverified/)
 })
 
 test('status is readable without colour: a dot plus a text tooltip', () => {
@@ -199,11 +202,24 @@ test('the outer controller states the same facts as every other agent', () => {
   // reached it. It showed an id and a sentence, which is a label, not evidence.
   const idle = renderLoopGraphSvg(graph, snapshotWith())
   assert.match(idle, /OUTER · — · model —/, 'the controller must state lane and model like anyone else')
-  assert.match(idle, /<title>pm — no dispatch observed<\/title>/)
+
+  // And a state in its own words. For an exception handler, nothing to do is the
+  // correct state and good news; reporting it exactly like an agent that was
+  // never wired up is what made this node read as dead.
+  assert.match(idle, /watching — no exception open/)
+  assert.match(idle, /class="node n-watching"/)
+  assert.doesNotMatch(idle, /<title>pm — no dispatch observed<\/title>/)
+
+  const parked = renderLoopGraphSvg(graph, snapshotWith(), new Map(), undefined, new Map([['tok', {
+    work_item: 'tok', workflow: 'feature',
+    custody: [{ at: '2026-07-27T01:00:00.000Z', event: 'escalated', work_item: 'tok', agent_id: 'pm', to_team: 'build' }],
+  }]]))
+  assert.match(parked, /1 token\(s\) parked — awaiting a decision/)
 
   const ran = renderLoopGraphSvg(graph, snapshotWith([run('pm', 'running', { elapsed_sec: 90 })]))
   assert.match(ran, /OUTER · claude · acp/)
   assert.match(ran, /1m in progress/, 'the controller must state a measured clock')
+  assert.match(ran, /reviewing the board now/)
   assert.match(ran, /class="node n-working"/)
 })
 
@@ -217,7 +233,7 @@ test('the newest dispatch wins when one agent ran more than once', () => {
 })
 
 test('the graph fills the viewport and is never pinned to a pixel size', () => {
-  const page = renderTeamFlowPage(repoWith(TWO_TEAMS), snapshotWith())
+  const page = renderGraphLoopPage(repoWith(TWO_TEAMS), snapshotWith())
   assert.match(page, /<svg viewBox="-?\d+ 0 \d+ \d+" preserveAspectRatio/)
   assert.doesNotMatch(page, /<svg[^>]+\swidth="\d/)
   assert.match(page, /\.chart svg\{[^}]*width:100%/)
@@ -229,7 +245,7 @@ test('hostile names stay escaped and the page declares utf-8', () => {
     teams: [{ team_id: 'only', name: '<script>alert(1)</script>', dispatcher_id: 'a', worker_ids: ['b'], evaluator_id: 'c' }],
     workflows: [{ workflow_id: 'w', name: 'W', route: ['only'] }],
   })
-  const page = renderTeamFlowPage(dir, snapshotWith())
+  const page = renderGraphLoopPage(dir, snapshotWith())
   assert.match(page, /^<meta charset="utf-8">/)
   assert.doesNotMatch(page, /<script>alert/)
   assert.match(page, /&lt;script&gt;alert/)

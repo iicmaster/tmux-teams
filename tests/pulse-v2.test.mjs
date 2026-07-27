@@ -891,6 +891,7 @@ test('publish fencing is checked inside each atomic rename boundary', () => {
     'atomicWrite(JSON_OUT, jsonText, token)',
     'atomicWrite(OUT, html, token)',
     'atomicWrite(LOOP_GRAPH_OUT, loopGraphHtml, token)',
+    'atomicWrite(KANBAN_OUT, kanbanHtml, token)',
     'atomicWrite(BUNDLE_OUT, bundleText, token)',
   ]) {
     assert.ok(source.includes(call), `publisher is missing the lock token: ${call}`)

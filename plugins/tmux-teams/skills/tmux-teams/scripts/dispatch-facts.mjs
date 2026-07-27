@@ -42,6 +42,14 @@ export function readDispatchFacts(repo) {
       agent_id: ID_RE.test(agentId) ? agentId : '',
       workflow: ID_RE.test(workflow) ? workflow : '',
       work_item: ID_RE.test(workItem) ? workItem : '',
+      // Which model this dispatch ASKED for, and what actually answered. Pulse
+      // reports a model only once it has verified one, so without these the page
+      // cannot tell "we pinned a model and it was confirmed" apart from "nobody
+      // ever named one, so the account default answered" — two very different
+      // facts that both used to print as `unverified`.
+      requested_model: field(text, 'requested_model'),
+      effective_identity: field(text, 'effective_identity'),
+      identity_status: field(text, 'identity_status'),
     })
   }
   return byTask

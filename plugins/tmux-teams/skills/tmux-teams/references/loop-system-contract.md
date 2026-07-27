@@ -19,11 +19,11 @@ this file in the same commit.
 | `scripts/pull-controller.mjs` | pull, WIP enforcement, route completion |
 | `scripts/loop-runner.mjs` | the state machine, dispatch, harvest, escalation |
 | `scripts/role-briefs.mjs` | what each role is told, and verdict parsing |
-| `scripts/team-flow.mjs` | the loop graph page |
+| `scripts/graph-loop.mjs` | the loop graph page |
 | `.tmux-teams/team-graph.json` | the declaration artifact |
 | `.tmux-teams/work-items/<token>.jsonl` | the custody ledger |
 | `.tmux-teams/work-items/<token>.md` | the token's own request |
-| `.tmux-teams/team-flow.html` | the published page |
+| `.tmux-teams/graph-loop.html` | the published page |
 
 **Not governed here.** `phase-gate-*` and `delivery-loop-*` implement a
 separate, opt-in four-phase governed runtime; its terms (Phase Team, Delivery
@@ -359,7 +359,7 @@ These are standing requirements. Each one was a defect first.
 ## 14. Acceptance criteria
 
 Every clause below is enforced by a test in `tests/loop-occupancy.test.mjs` or
-`tests/team-flow.test.mjs`. A clause with no test is not enforced and must be
+`tests/graph-loop.test.mjs`. A clause with no test is not enforced and must be
 marked as such here.
 
 | # | Clause | Assertion |

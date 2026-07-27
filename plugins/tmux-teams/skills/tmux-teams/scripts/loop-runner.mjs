@@ -34,7 +34,7 @@ import { fileURLToPath } from 'node:url'
 import { readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
 import { planPulls, applyPulls } from './pull-controller.mjs'
 import { INTAKE_VERDICTS, OUTER_VERDICTS, REVIEW_VERDICTS, readVerdict, roleBrief } from './role-briefs.mjs'
-import { readWorkflowGraph } from './team-flow.mjs'
+import { readWorkflowGraph } from './graph-loop.mjs'
 import { teamRoleOf } from './workflow-graph.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))

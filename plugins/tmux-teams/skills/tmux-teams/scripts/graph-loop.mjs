@@ -1,4 +1,4 @@
-// team-flow.mjs — the loop graph: every team, every agent, and the routes.
+// graph-loop.mjs — the loop graph: every team, every agent, and the routes.
 //
 // Two inputs, kept strictly apart:
 //   DECLARATION  <repo>/.tmux-teams/team-graph.json — the Team pool and the
@@ -141,6 +141,7 @@ const statusOf = (run) => !run ? 'unbound'
       : DEAD.has(run.state) ? 'dead' : 'other'
 
 const STATUS_COPY = Object.freeze({
+  watching: 'watching — no exception open',
   unbound: 'no dispatch observed',
   working: 'working',
   delivered: 'delivered, waiting',
@@ -163,7 +164,36 @@ const timingOf = (run, status) => {
 // carried the dispatch; the model is only reported once Pulse verified that the
 // model asked for is the one that answered. Never substitute one for the other.
 const laneLine = (run) => run ? `${run.worker || 'unknown'} · ${run.transport || 'transport ?'}` : '—'
-const modelLine = (run) => !run ? '—' : run.model ? run.model : 'unverified'
+
+// `unverified` was one word doing two jobs. Pulse reports a model only once it
+// has VERIFIED one, and it can only verify a model that the dispatch asked for.
+// A loop that never names a model therefore printed the same word as a loop
+// whose model check failed — so the page said nothing about the thing it was
+// asked to show. Three distinct facts, three distinct sentences.
+const modelLine = (run, fact) => {
+  if (!run) return '—'
+  if (run.model) return run.model
+  const asked = fact?.requested_model && fact.requested_model !== 'none' ? fact.requested_model : ''
+  if (asked) return `${asked} unconfirmed`
+  // Short on purpose: the node clips at 30 characters including the `model `
+  // prefix, and a truncated sentence is a sentence a reader has to guess at.
+  if (fact?.effective_identity === 'default') return 'default — none pinned'
+  return 'not recorded'
+}
+
+// The outer controller cannot borrow a worker's status vocabulary. For a worker,
+// "no dispatch observed" means it has not done its job yet; for an exception
+// handler, having nothing to do is the correct state and good news. Reporting a
+// healthy controller exactly like an unwired one is what made this node look
+// dead on every screenshot.
+const controllerState = (run, items, occupancy) => {
+  if (run && WORKING.has(run.state)) return { status: 'working', copy: 'reviewing the board now' }
+  const parked = [...items.values()]
+    .filter((item) => item.custody?.[item.custody.length - 1]?.event === 'escalated').length
+  if (parked) return { status: 'delivered', copy: `${parked} token(s) parked — awaiting a decision` }
+  if (occupancy.orphans.length) return { status: 'dead', copy: `${occupancy.orphans.length} token(s) cannot be placed` }
+  return { status: 'watching', copy: 'watching — no exception open' }
+}
 
 // ── LAYOUT (arithmetic only) ─────────────────────────────────────────────────
 const PAD = 28
@@ -259,7 +289,7 @@ function renderRouteStrips(graph, topY) {
   return { svg: parts.join('\n'), nextY: y + 28 }
 }
 
-function renderTeamPool(graph, topY, runs, verdicts, occupancy, activity) {
+function renderTeamPool(graph, topY, runs, verdicts, occupancy, activity, facts) {
   const parts = []
   const laneAnchors = []
   let x = PAD
@@ -285,8 +315,7 @@ function renderTeamPool(graph, topY, runs, verdicts, occupancy, activity) {
   <g class="lane${atLimit ? " lane-full" : ""}">
     <rect x="${x}" y="${top}" width="${colW}" height="${colH}" rx="16"/>
     <text class="lane-title" x="${x + LANE_PAD}" y="${top + 28}">${esc(team.name)}</text>
-    <text class="lane-wip${atLimit ? " wip-full" : ""}" x="${x + colW - LANE_PAD}" y="${top + 28}">WIP ${wip}/${team.wip_limit}${atLimit ? " · at limit" : ""}</text>
-    <text class="lane-holding" x="${x + colW - LANE_PAD}" y="${top + 44}">${esc(holding.length ? holding.map((id) => clip(id, 18)).join(", ") : "no work held")}</text>
+    <text class="lane-wip${atLimit ? " wip-full" : ""}" x="${x + colW - LANE_PAD}" y="${top + 28}">${esc(clip(`WIP ${wip}/${team.wip_limit}${atLimit ? " · full" : ""} · ${holding.length ? holding.join(", ") : "no work held"}`, Math.max(14, Math.floor((colW - LANE_PAD * 2 - 34) / 6.4))))}</text>
   </g>`)
 
     // A verdict is recorded against the leg that was JUDGED, so a team's review
@@ -318,7 +347,7 @@ function renderTeamPool(graph, topY, runs, verdicts, occupancy, activity) {
         ? `${STATUS_COPY[status]} · ${tally.pass} pass ${tally.reject} reject`
         : STATUS_COPY[status]
       parts.push(agentNode(nx, ny, roleLabel, id, status, stateText,
-        timingOf(run, status), laneLine(run), modelLine(run),
+        timingOf(run, status), laneLine(run), modelLine(run, facts.get(run?.task_id)),
         workLine(role, activity.get(id))))
       return run
     }
@@ -356,10 +385,11 @@ export function renderLoopGraphSvg(graph, snapshot, facts = new Map(), occupancy
   const verdicts = verdictsByAgent(snapshot)
   const activity = activityByAgent(items)
   const controller = graph.outer_controller_id ? byAgent.get(graph.outer_controller_id) : null
+  const pm = controllerState(controller, items, occupancy)
 
   // Teams first: the structure is what the page is for. Routes are a summary
   // of how work travels across it, so they read better after it, not through it.
-  const pool = renderTeamPool(graph, TOP_PAD + HEAD_H + 48, byAgent, verdicts, occupancy, activity)
+  const pool = renderTeamPool(graph, TOP_PAD + HEAD_H + 48, byAgent, verdicts, occupancy, activity, facts)
   const routes = renderRouteStrips(graph, TOP_PAD + HEAD_H + 48 + pool.height + 72)
   const stripWidth = PAD + 170 +
     Math.max(...graph.workflows.map((entry) => entry.route.length + 1)) * (STRIP_BOX + STRIP_ARROW) + PAD
@@ -368,16 +398,17 @@ export function renderLoopGraphSvg(graph, snapshot, facts = new Map(), occupancy
 
   const head = `
   <text class="band-title" x="${PAD}" y="${TOP_PAD - 12}">Teams — every declared agent, drawn once</text>
-  <g class="node n-${statusOf(controller)}" transform="translate(${PAD},${TOP_PAD})">
-    <title>${esc(`${graph.outer_controller_id || 'no outer controller declared'} — ${STATUS_COPY[statusOf(controller)]}`)}</title>
+  <g class="node n-${pm.status}" transform="translate(${PAD},${TOP_PAD})">
+    <title>${esc(`${graph.outer_controller_id || 'no outer controller declared'} — ${pm.copy}`)}</title>
     <rect width="${width - PAD * 2}" height="${HEAD_H}" rx="12"/>
     <circle class="dot" cx="${width - PAD * 2 - 15}" cy="15" r="4.5"/>
     <text class="n-role" x="15" y="19">PM OUTER LOOP</text>
     <text class="n-title" x="15" y="36">${esc(graph.outer_controller_id || 'no outer controller declared')}</text>
     <text class="n-sub" x="15" y="52">exceptions, deadlocks and WIP-limit bottlenecks only — never reviews work on a team's behalf</text>
-    <text class="n-sub" x="15" y="66">${esc(`OUTER · ${laneLine(controller)} · model ${modelLine(controller)}`)}</text>
-    <text class="n-work" x="${width - PAD * 2 - 26}" y="40" text-anchor="end">${esc(workLine('outer', activity.get(graph.outer_controller_id)))}</text>
-    <text class="n-time" x="${width - PAD * 2 - 26}" y="56" text-anchor="end">${esc(timingOf(controller, statusOf(controller)))}</text>
+    <text class="n-sub" x="15" y="66">${esc(`OUTER · ${laneLine(controller)} · model ${modelLine(controller, facts.get(controller?.task_id))}`)}</text>
+    <text class="n-state" x="${width - PAD * 2 - 26}" y="26" text-anchor="end">${esc(pm.copy)}</text>
+    <text class="n-work" x="${width - PAD * 2 - 26}" y="44" text-anchor="end">${esc(workLine('outer', activity.get(graph.outer_controller_id)))}</text>
+    <text class="n-time" x="${width - PAD * 2 - 26}" y="62" text-anchor="end">${esc(timingOf(controller, statusOf(controller)))}</text>
   </g>`
 
   // The outer loop is a real relationship, not decoration: the PM watches every
@@ -472,17 +503,21 @@ body{margin:0;background:var(--bg);color:var(--ink);font:400 16px/1.6 var(--sans
 .lane-full rect{stroke:var(--warn);stroke-dasharray:6 4}
 .lane-title{fill:var(--ink);font:600 .9rem var(--sans)}
 .lane-wip{fill:var(--dim);font:500 .74rem var(--mono);text-anchor:end}
-.lane-holding{fill:var(--dim);font:400 .64rem var(--mono);text-anchor:end;opacity:.85}
+.lane-holding{fill:var(--dim);font:400 .64rem var(--mono);opacity:.85}
 .wip-full{fill:var(--warn)}
 .node rect{fill:var(--surface);stroke:var(--line);stroke-width:1.5}
 .node .n-role{fill:var(--dim);font:500 .6rem var(--sans);letter-spacing:.1em}
 .node .n-meta{fill:var(--dim);font:400 .6rem var(--mono)}
 .node .dot{stroke:none;fill:var(--dim)}
 .n-working .dot{fill:var(--ok)}.n-delivered .dot{fill:var(--warn)}.n-dead .dot{fill:var(--bad)}
+.n-watching .dot{fill:var(--accent-oversight,#8a7fd0)}
+.n-watching rect{stroke:var(--accent-oversight,#8a7fd0);stroke-width:2;stroke-dasharray:none;opacity:1}
+.n-watching .n-state{fill:var(--accent-oversight,#8a7fd0)}
 .node{cursor:default}
 .node .n-title{fill:var(--ink);font:600 .72rem var(--mono)}
 .node .n-state{fill:var(--ink);font:500 .7rem var(--sans)}
 .node .n-work{fill:var(--ink);font:500 .6rem var(--mono);font-variant-numeric:tabular-nums}
+.node .n-state{font:600 .64rem var(--mono);letter-spacing:.02em}
 .node .n-time{fill:var(--dim);font:400 .58rem var(--mono);font-variant-numeric:tabular-nums}
 .node .n-sub{fill:var(--dim);font:400 .64rem var(--mono)}
 .n-working rect{stroke:var(--ok);stroke-width:2.5}
@@ -515,7 +550,7 @@ footer{color:var(--dim);font-size:.78rem}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 `
 
-export function renderTeamFlowPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, refreshScriptName = '' } = {}) {
+export function renderGraphLoopPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, refreshScriptName = '' } = {}) {
   const graph = readWorkflowGraph(repo)
   const repoName = snapshot.scope?.repo_name || ''
   // Without an explicit charset a plain file server hands this to the browser
@@ -542,9 +577,19 @@ export function renderTeamFlowPage(repo, snapshot, { fontCssName = FONT_CSS_NAME
   const declared = value.teams.flatMap((entry) => entry.agents.map((agent) => agent.agent_id))
   const bound = declared.filter((agentId) => byAgent.has(agentId))
   const working = bound.filter((agentId) => WORKING.has(byAgent.get(agentId).state)).length
-  const waiting = bound.filter((agentId) => DELIVERED.has(byAgent.get(agentId).state)).length
+  // `awaiting-verdict` is a Pulse state meaning "no verdict recorded in KMS".
+  // This loop records verdicts in the custody ledger, so every finished leg sat
+  // in that state forever and the tile reported ten things waiting for review
+  // when the ledger showed all ten reviewed. Count the real thing: tokens whose
+  // last event is a delivery nobody has judged yet.
+  const waiting = [...items.values()]
+    .filter((item) => item.custody[item.custody.length - 1]?.event === 'delivered').length
   const atLimit = value.teams.filter((entry) => (occupancy.counts.get(entry.team_id) ?? 0) >= entry.wip_limit).length
   const inFlight = [...occupancy.counts.values()].reduce((sum, n) => sum + n, 0)
+  const unroutedDeclared = bound.filter((agentId) => {
+    const run = byAgent.get(agentId)
+    return !(run.workflow || facts.get(run.task_id)?.workflow)
+  }).length
 
   const at = new Date(snapshot.generated_at)
   const observed = Number.isNaN(at.getTime()) ? '—' : `${at.toISOString().replace('T', ' ').slice(0, 19)} UTC`
@@ -568,9 +613,9 @@ ${occupancy.orphans.length || skippedLines ? `<p class="orphans">${occupancy.orp
   ${tile(inFlight, 'work items in a team right now', inFlight ? 'ok' : '')}
   ${tile(`${bound.length}/${declared.length}`, 'declared agents with a dispatch', bound.length ? 'ok' : 'bad')}
   ${tile(working, 'working now', 'ok')}
-  ${tile(waiting, 'delivered, waiting', waiting ? 'warn' : '')}
+  ${tile(waiting, 'delivered, awaiting review', waiting ? 'warn' : '')}
   ${tile(`${atLimit}/${value.teams.length}`, 'teams at their WIP limit', atLimit ? 'warn' : '')}
-  ${tile(unrouted, 'dispatches with no workflow declared', unrouted ? 'bad' : '')}
+  ${tile(unroutedDeclared, 'declared agents whose newest dispatch names no workflow', unroutedDeclared ? 'bad' : '')}
 </section>
 <div class="legend"><b>Arrow colour is the label</b>
 <ul class="keys">
@@ -603,7 +648,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     }
     writeFileSync(target, `${JSON.stringify(DEFAULT_WORKFLOW_GRAPH, null, 2)}\n`)
     console.log(`[loop-graph] wrote the four-team template -> ${target}`)
-    console.log('[loop-graph] rename the teams and agent ids, then run: team-flow.mjs check <repo>')
+    console.log('[loop-graph] rename the teams and agent ids, then run: graph-loop.mjs check <repo>')
   } else if (command === 'check') {
     const graph = readWorkflowGraph(repo)
     if (!graph.ok) {
@@ -616,7 +661,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     }
     console.log('[loop-graph] dispatch with ACP_AGENT_ID=<agent>, TMUX_TEAMS_WORKFLOW=<workflow_id>, TMUX_TEAMS_WORK_ITEM=<token>')
   } else {
-    console.error('usage: node team-flow.mjs <init|check> [repo]')
+    console.error('usage: node graph-loop.mjs <init|check> [repo]')
     process.exit(2)
   }
 }

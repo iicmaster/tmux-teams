@@ -44,7 +44,8 @@ import {
 } from './pulse-data.mjs'
 import { PHASE_BOUNDARIES, PHASE_EXIT_ARTIFACTS } from './delivery-loop-core.mjs'
 import { normalizeTeamGraph, renderPulseLoopGraph } from './pulse-loop-graph.mjs'
-import { renderTeamFlowPage } from './team-flow.mjs'
+import { renderGraphLoopPage } from './graph-loop.mjs'
+import { renderKanbanPage } from './kanban.mjs'
 import { renderPulseRefreshScript } from './pulse-refresh.mjs'
 
 const [cmd, repoArg, ...flags] = process.argv.slice(2)
@@ -111,7 +112,8 @@ try { REPO = realpathSync(repoArg) } catch { console.error(`[pulse] no such repo
 const STORE = join(REPO, '.tmux-teams')
 const OUT = join(STORE, 'pulse.html')
 const LOOP_GRAPH_OUT = join(STORE, 'loop-graph.html')
-const TEAM_FLOW_OUT = join(STORE, 'team-flow.html')
+const GRAPH_LOOP_OUT = join(STORE, 'graph-loop.html')
+const KANBAN_OUT = join(STORE, 'kanban.html')
 const WORKFLOW_ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$/
 const JSON_OUT = join(STORE, 'pulse.json')
 const BUNDLE_OUT = join(STORE, 'pulse-current.json')
@@ -1805,7 +1807,7 @@ const sourceIdentity = (path) => {
   return `sha256:${sha256(canonical)}`
 }
 
-function bundleManifest(snapshot, jsonText, html, loopGraphHtml, teamFlowHtml) {
+function bundleManifest(snapshot, jsonText, html, loopGraphHtml, graphLoopHtml, kanbanHtml) {
   return `${JSON.stringify({
     schema: 'tmux-teams.pulse-bundle',
     schema_version: 2,
@@ -1814,7 +1816,8 @@ function bundleManifest(snapshot, jsonText, html, loopGraphHtml, teamFlowHtml) {
       data: { path: 'pulse.json', sha256: sha256(jsonText) },
       dashboard: { path: 'pulse.html', sha256: sha256(html) },
       loop_graph: { path: 'loop-graph.html', sha256: sha256(loopGraphHtml) },
-      team_flow: { path: 'team-flow.html', sha256: sha256(teamFlowHtml) },
+      graph_loop: { path: 'graph-loop.html', sha256: sha256(graphLoopHtml) },
+      kanban: { path: 'kanban.html', sha256: sha256(kanbanHtml) },
       font_css: { path: FONT_CSS_NAME, sha256: sha256(KANIT_FONT_CSS) },
       d3_js: { path: D3_JS_NAME, sha256: sha256(D3_JS) },
       d3_license: { path: D3_LICENSE_NAME, sha256: sha256(D3_LICENSE) },
@@ -1907,9 +1910,13 @@ function once() {
     })
     // Reads the repo's declared Team graph, or falls back to the bundled
     // four-team template so a fresh install has a page on the first run.
-    const teamFlowHtml = renderTeamFlowPage(REPO, publishedSnapshot,
+    const graphLoopHtml = renderGraphLoopPage(REPO, publishedSnapshot,
       { fontCssName: FONT_CSS_NAME, refreshScriptName: PULSE_REFRESH_NAME })
-    const bundleText = bundleManifest(publishedSnapshot, jsonText, html, loopGraphHtml, teamFlowHtml)
+    // Same two sources as the flow page, asked the other question: where the
+    // work is right now, rather than who exists and how the team is wired.
+    const kanbanHtml = renderKanbanPage(REPO, publishedSnapshot,
+      { fontCssName: FONT_CSS_NAME, refreshScriptName: PULSE_REFRESH_NAME })
+    const bundleText = bundleManifest(publishedSnapshot, jsonText, html, loopGraphHtml, graphLoopHtml, kanbanHtml)
     assertPublishLock(token)
     atomicWriteIfChanged(FONT_CSS_OUT, KANIT_FONT_CSS, token)
     assertPublishLock(token)
@@ -1925,7 +1932,9 @@ function once() {
     assertPublishLock(token)
     atomicWrite(LOOP_GRAPH_OUT, loopGraphHtml, token)
     assertPublishLock(token)
-    atomicWrite(TEAM_FLOW_OUT, teamFlowHtml, token)
+    atomicWrite(GRAPH_LOOP_OUT, graphLoopHtml, token)
+    assertPublishLock(token)
+    atomicWrite(KANBAN_OUT, kanbanHtml, token)
     // This commit marker is written last. Readers validate its hashes and
     // snapshot id, then re-read it to detect a publication racing their read.
     assertPublishLock(token)
@@ -1933,7 +1942,8 @@ function once() {
     return {
       htmlPath: OUT,
       loopGraphPath: LOOP_GRAPH_OUT,
-      teamFlowPath: TEAM_FLOW_OUT,
+      graphLoopPath: GRAPH_LOOP_OUT,
+      kanbanPath: KANBAN_OUT,
       bundlePath: BUNDLE_OUT,
       jsonText,
       snapshot: publishedSnapshot,
@@ -2176,7 +2186,8 @@ if (managedClaimAccepted) {
 
 console.log(`[pulse] watching ${REPO} every ${INTERVAL}s -> ${OUT}`)
 console.log(`[pulse] full-screen ACP graph -> ${LOOP_GRAPH_OUT}`)
-console.log(`[pulse] team delivery flow -> ${TEAM_FLOW_OUT}`)
+console.log(`[pulse] team delivery flow -> ${GRAPH_LOOP_OUT}`)
+console.log(`[pulse] kanban board -> ${KANBAN_OUT}`)
 console.log('[pulse] open either HTML file in a browser; both refresh themselves')
 const tick = () => {
   if (watcherPid() !== process.pid) {
