@@ -506,6 +506,84 @@ test('a team name with a control character is still rejected', () => {
   assert.equal(validateWorkflowGraph(TWO_TEAMS).ok, true)
 })
 
+// ── the ceilings that bound what one loop can spend ─────────────────────────
+
+test('a lost leg is recorded, not left occupying its team forever', () => {
+  const graph = graphOf(TWO_TEAMS)
+  const items = itemsOf(['tok', [
+    { event: 'pulled', agent_id: 't_d', from_team: 'build', to_team: 'test' },
+    { event: 'intake', agent_id: 't_d', verdict: 'accept' },
+    { event: 'assigned', agent_id: 't_w1', task_id: 't-1' },
+  ]])
+
+  // Nothing is running and the assignment is long past the point where a
+  // process could still be starting. Recording that is not the same as
+  // inventing a delivery, and without it the token holds a WIP slot for good.
+  const plan = planDispatches(graph, items, new Set(), { now: Date.parse('2026-07-28T00:00:00Z') })[0]
+  assert.equal(plan.action, 'lost')
+  assert.equal(plan.agent_id, 't_w1')
+
+  // Inside the zombie window it is still simply in flight — a dispatch that
+  // started moments ago must never be declared dead.
+  const fresh = planDispatches(graph, itemsOf(['tok', [
+    { event: 'pulled', agent_id: 't_d', from_team: 'build', to_team: 'test' },
+    { event: 'assigned', agent_id: 't_w1', task_id: 't-1' },
+  ]]), new Set(), { now: Date.parse('2026-07-27T01:00:30Z') })
+  assert.deepEqual(fresh.filter((entry) => entry.action === 'lost'), [])
+})
+
+test('the board as a whole has a dispatch ceiling, not only each team', () => {
+  // Six teams of one, each holding a token ready for a worker. Team WIP limits
+  // are all satisfied; only a board-wide ceiling stops this fanning out to six
+  // concurrent agents.
+  const many = {
+    project_id: 'p', outer_controller_id: 'pm',
+    teams: Array.from({ length: 6 }, (unused, index) => ({
+      team_id: `t${index}`, name: `T${index}`, dispatcher_id: `d${index}`,
+      worker_ids: [`w${index}`], evaluator_id: `e${index}`, wip_limit: 1,
+    })),
+    workflows: [{ workflow_id: 'feature', name: 'F', route: ['t0', 't1', 't2', 't3', 't4', 't5'] }],
+  }
+  const graph = graphOf(many)
+  const items = itemsOf(...Array.from({ length: 6 }, (unused, index) => [`tok${index}`, [
+    { event: 'pulled', agent_id: `d${index}`, to_team: `t${index}` },
+    { event: 'intake', agent_id: `d${index}`, verdict: 'accept' },
+  ]]))
+
+  const dispatches = planDispatches(graph, items, new Set()).filter((plan) => plan.action === 'dispatch')
+  assert.ok(dispatches.length <= 4, `dispatched ${dispatches.length} agents at once across the board`)
+  assert.ok(planDispatches(graph, items, new Set()).some((plan) => /in flight across the board/.test(plan.reason || '')),
+    'the ceiling must say out loud that it stopped something')
+})
+
+test('a token cannot exceed its leg ceiling unless the controller grants more', () => {
+  const graph = graphOf(TWO_TEAMS)
+  const legs = (count, extra = []) => itemsOf(['tok', [
+    { event: 'pulled', agent_id: 't_d', from_team: 'build', to_team: 'test' },
+    ...Array.from({ length: count }, (unused, index) => ([
+      { event: 'assigned', agent_id: 't_w1', task_id: `t-${index}` },
+      { event: 'delivered', agent_id: 't_w1', task_id: `t-${index}`, terminal: 'done' },
+    ])).flat(),
+    ...extra,
+  ]])
+
+  // Fifteen legs on one token is bouncing, not progressing. Per-role caps each
+  // look reasonable and still allow two teams to ping-pong a token forever, so
+  // the ceiling has to be on the journey.
+  const spent = planDispatches(graph, legs(15), new Set())[0]
+  assert.equal(spent.action, 'escalate')
+  assert.match(spent.reason, /ceiling of 15/)
+
+  // The controller can raise it, but only deliberately: each grant cost a PM
+  // dispatch to obtain, and the grant is recorded on the ledger.
+  const granted = planDispatches(graph, legs(15, [
+    { event: 'escalated', agent_id: 'pm', to_team: 'test' },
+    { event: 'resumed', agent_id: 'pm', to_team: 'test', grant: 3 },
+  ]), new Set())[0]
+  assert.equal(granted.action, 'dispatch')
+  assert.equal(granted.role, 'worker')
+})
+
 // ── the page that lands on disk ──────────────────────────────────────────────
 
 const publish = (ledgers = {}) => {
