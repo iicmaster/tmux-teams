@@ -86,3 +86,44 @@ final family/model or match the primary family.
 configured model, isolation controls, provenance, and closed schema all pass
 the gate. Transport success or model self-attestation alone is not a valid
 review.
+
+**Team** — A reusable resource pool: one dispatcher that owns intake, one or
+more workers that run in parallel, and one evaluator that judges the team's own
+output. A team carries no routing; the same team serves as many workflows as
+need it.
+
+**Workflow** — A route composed from existing teams, owning the order in which
+work visits them. A route never revisits a team it has already passed.
+
+**Work Item Token** — The unit of work that travels a route. It carries its own
+request, accumulates its own history, and is what a delivery is finally made
+against.
+
+**Custody Ledger** — The append-only record of one token's journey, one event
+per line. Corrections are appended; nothing is ever rewritten.
+
+**Leg** — One agent's single turn with a token: assigned, then delivered. Legs
+are the unit a token's budget is counted in.
+
+**Intake** — The receiving dispatcher's decision on whether its team can start
+on what it was handed. Accepting nothing is how a route runs while a team
+produces nothing.
+
+**Return** — A refused handoff going back to the team that sent it. It is the
+only way work moves backwards; routing never does.
+
+**Occupancy** — Which team is holding a token right now. A team holds it from
+the moment it pulls it until the route closes, so a worker exiting does not
+empty the queue it was working from.
+
+**Escalation** — Parking a token with the outer controller because the loop
+cannot decide it. The controller answers `resume` (with a fresh, bounded
+attempt budget) or `abandon`; parking it silently is not an available answer.
+
+**Lost Leg** — An assignment whose process is gone and which recorded nothing.
+Recording that is not the same as inventing a delivery.
+
+> Two delivery models coexist in this plugin and must not be conflated. **Phase
+> Team / Project Delivery Loop** above describe the opt-in, four-phase governed
+> runtime (`phase-gate-*`, `delivery-loop-*`). **Team / Workflow** describe the
+> loop graph, where teams are a pool and routes are composed freely.
