@@ -392,6 +392,120 @@ test('the outer controller is dispatched when the runner runs out of moves', () 
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
+// ── the outer loop has a way back in ────────────────────────────────────────
+//
+// Escalation used to be a one-way door: the controller wrote a note nobody
+// read, and the token was parked forever — while the board drew it as
+// unplaceable and freed a WIP slot nobody had released.
+
+const ESCALATED = [
+  { event: 'pulled', agent_id: 't_d', from_team: 'build', to_team: 'test' },
+  { event: 'assigned', agent_id: 't_w1', task_id: 't-1' },
+  { event: 'delivered', agent_id: 't_w1', task_id: 't-1', terminal: 'protocol-error' },
+  { event: 'escalated', agent_id: 'pm', to_team: 'test', task_id: 'board-pm-1', reason: '3 worker attempts all failed' },
+]
+
+const pmRepo = (outbox) => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-outer-'))
+  mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
+  if (outbox !== null) writeFileSync(join(dir, '.mailbox-out', 'board-pm-1'), outbox)
+  return dir
+}
+
+test('a token parked with the controller is still held by its team', () => {
+  const occupancy = teamOccupancy(graphOf(TWO_TEAMS), itemsOf(['parked', ESCALATED]))
+
+  // The controller is not a member of any team, so without naming the team the
+  // board cannot place the token — it would print the red "cannot be placed"
+  // banner over work that is parked exactly as designed, and free a WIP slot
+  // that nobody released.
+  assert.deepEqual(occupancy.orphans, [], 'parked work was reported as unplaceable')
+  assert.equal(occupancy.counts.get('test'), 1)
+  assert.deepEqual(occupancy.held.get('test'), ['parked'])
+})
+
+test('the controller saying resume puts the work back with a fresh budget', () => {
+  const dir = pmRepo('The adapter rejected a relative path; that is fixed.\n\nVERDICT: resume\nREASON: the cause was transport, not the work\n')
+  try {
+    const graph = graphOf(TWO_TEAMS)
+    const items = itemsOf(['parked', ESCALATED])
+    const jobs = planHarvest(graph, items, () => true)
+    const [event] = applyHarvest(dir, graph, jobs, '2026-07-27T09:00:00.000Z')
+
+    assert.equal(event.event, 'resumed')
+    assert.equal(event.to_team, 'test')
+    assert.ok(event.grant > 0, 'a resume without a budget grant is an expensive no-op')
+
+    // And the loop actually moves it: attempts made before the controller
+    // looked at it must not count, or it re-escalates on the very next tick.
+    const resumed = itemsOf(['parked', [...ESCALATED, { event: 'resumed', agent_id: 'pm', to_team: 'test', grant: 3 }]])
+    const plan = planDispatches(graph, resumed, new Set())[0]
+    assert.equal(plan.action, 'dispatch')
+    assert.equal(plan.role, 'worker')
+    assert.equal(plan.team, 'test')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('the controller saying abandon closes it and frees the team', () => {
+  const dir = pmRepo('This token is a diagnostic probe.\n\nVERDICT: abandon\nREASON: nobody will finish it\n')
+  try {
+    const graph = graphOf(TWO_TEAMS)
+    const items = itemsOf(['parked', ESCALATED])
+    const [event] = applyHarvest(dir, graph, planHarvest(graph, items, () => true), '2026-07-27T09:00:00.000Z')
+
+    assert.equal(event.event, 'abandoned')
+    const closed = itemsOf(['parked', [...ESCALATED, { event: 'abandoned', agent_id: 'pm' }]])
+    assert.equal(teamOccupancy(graph, closed).counts.get('test'), 0)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('a controller that answers nothing changes nothing', () => {
+  const dir = pmRepo('I looked at the board and it seems fine overall.\n')
+  try {
+    const graph = graphOf(TWO_TEAMS)
+    const items = itemsOf(['parked', ESCALATED])
+    // Silence is not permission to close someone's work, and appending a no-op
+    // would make the loop re-read the same outbox on every tick forever.
+    assert.deepEqual(applyHarvest(dir, graph, planHarvest(graph, items, () => true), '2026-07-27T09:00:00.000Z'), [])
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('a frozen pulse snapshot stops the runner dispatching', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-stale-'))
+  try {
+    const store = join(dir, '.tmux-teams')
+    mkdirSync(join(store, 'work-items'), { recursive: true })
+    mkdirSync(join(store, 'team-briefs'), { recursive: true })
+    writeFileSync(join(store, 'team-graph.json'), JSON.stringify(TWO_TEAMS))
+    writeFileSync(join(store, 'team-briefs', 'test.md'), '# standing brief\n')
+    writeFileSync(join(store, 'work-items', 'tok.jsonl'), `${JSON.stringify({
+      at: '2026-07-27T01:00:00.000Z', event: 'intake', work_item: 'tok', workflow: 'feature',
+      agent_id: 't_d', verdict: 'accept',
+    })}\n`)
+    // A snapshot that exists but stopped moving can still be asserting that
+    // agents are running, and can no longer say when they stop. Dispatching on
+    // it means paying to run an agent that never exited.
+    writeFileSync(join(store, 'pulse.json'), JSON.stringify({ generated_at: '2020-01-01T00:00:00.000Z', runs: [] }))
+
+    const result = tick(dir, { apply: false, scratchDir: join(dir, 'scratch') })
+    assert.equal(result.ok, true)
+    assert.equal(result.stale, true)
+    assert.deepEqual(result.plans, [], 'the runner dispatched against frozen evidence')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('a team name with a control character is still rejected', () => {
+  // The check lives in a regex whose character class was written as raw control
+  // bytes, which made the whole file read as binary to `file` and invisible to
+  // `grep`. Rewriting it as escapes must not change what it accepts.
+  const withControl = {
+    ...TWO_TEAMS,
+    teams: [{ ...TWO_TEAMS.teams[0], name: `Build${String.fromCharCode(0)}` }, TWO_TEAMS.teams[1]],
+  }
+  assert.equal(validateWorkflowGraph(withControl).ok, false)
+  assert.equal(validateWorkflowGraph(TWO_TEAMS).ok, true)
+})
+
 // ── the page that lands on disk ──────────────────────────────────────────────
 
 const publish = (ledgers = {}) => {

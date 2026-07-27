@@ -22,6 +22,10 @@ export const REASON_RE = /^[ \t]*REASON:[ \t]*(.+)$/m
 
 export const INTAKE_VERDICTS = new Set(['accept', 'reject'])
 export const REVIEW_VERDICTS = new Set(['pass', 'reject', 'unresolved'])
+// The outer controller is the only role whose verdict moves a token it never
+// worked on. Without these two words an escalation is a one-way door: the
+// controller writes a note nobody reads and the token is parked forever.
+export const OUTER_VERDICTS = new Set(['resume', 'abandon'])
 
 // The LAST verdict line wins, not the first. These briefs print the required
 // format as literal text, and an agent restating "I will end with VERDICT: pass
@@ -140,19 +144,37 @@ ${board}
 
 ${SHARED_RULES}
 
+## Your verdict moves the work
+
+You are the only role whose word un-parks a token. The loop has stopped on it
+and will not move it again until you answer:
+
+- **resume** — the cause is something a rerun can get past (a transport
+  failure, a brief that has since been fixed, a team that was starved). The
+  token goes back to its team for another attempt, and you grant it a fresh
+  budget of attempts by saying so.
+- **abandon** — nobody will finish this token: it is a probe, a duplicate, work
+  belonging to a graph that no longer exists, or an ask that turned out to be
+  impossible. It closes and stops occupying its team.
+
+Choose **abandon** only when a rerun genuinely cannot help. Choose **resume**
+when it might. If you truly cannot tell from the evidence, say \`resume\` and
+state in REASON exactly what a human must check — parking it again silently is
+the one option you do not have.
+
 ## What to write
 
 Your outbox, in this order:
 
 1. What is actually stuck, stated as fact with the evidence you read.
-2. The single next action, and who has to take it (a team, or a human).
+2. Why a rerun will or will not get past it.
 3. Anything the loop is measuring wrongly — you are the only role that sees the
    whole board, so a wrong number here is yours to report.
 
-End with exactly one line:
+End with exactly these two lines and nothing after them:
 
-VERDICT: unresolved
-REASON: <one line — the decision, or what a human has to settle>`
+VERDICT: resume
+REASON: <one line — why a rerun can get past this, or why nobody will finish it>`
 
 const BUILDERS = { dispatcher: dispatcherBrief, evaluator: evaluatorBrief, pm: pmBrief }
 

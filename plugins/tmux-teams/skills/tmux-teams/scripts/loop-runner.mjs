@@ -33,7 +33,7 @@ import { fileURLToPath } from 'node:url'
 
 import { readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
 import { planPulls, applyPulls } from './pull-controller.mjs'
-import { INTAKE_VERDICTS, REVIEW_VERDICTS, readVerdict, roleBrief } from './role-briefs.mjs'
+import { INTAKE_VERDICTS, OUTER_VERDICTS, REVIEW_VERDICTS, readVerdict, roleBrief } from './role-briefs.mjs'
 import { readWorkflowGraph } from './team-flow.mjs'
 import { teamRoleOf } from './workflow-graph.mjs'
 
@@ -49,6 +49,18 @@ const MAX_ATTEMPTS = 3   // three failures by one role in one team is a problem 
 const MAX_LEGS = 15
 const ZOMBIE_SEC = 180   // an assignment with no live process and nothing delivered
 const PM_COOLDOWN_SEC = 900
+// Every dispatch is a full agent. Team WIP limits bound each column; nothing
+// bounded the board, so a wide graph could fan out without a ceiling.
+const MAX_IN_FLIGHT = 4
+// Pulse is the only evidence that an agent is still running. If the watcher
+// that writes it has died, that evidence is frozen — and acting on frozen
+// evidence means either stalling forever or re-dispatching an agent that never
+// stopped. Refusing to dispatch is the only safe reading of a stale snapshot.
+const PULSE_STALE_SEC = 120
+// What the outer controller hands back when it says `resume`: enough attempts
+// to get past a transient cause, not an open cheque. Each grant costs one PM
+// dispatch, so the ceiling can only rise deliberately.
+const RESUME_GRANT = 3
 
 const readJson = (path, fallback = null) => {
   try { return JSON.parse(readFileSync(path, 'utf8')) } catch { return fallback }
@@ -64,8 +76,10 @@ const field = (text, key) => {
 // An agent is free when nothing of its own is currently running. Pulse is the
 // authority on that: guessing from file mtimes is how a second dispatch lands
 // on an agent that never stopped.
-function busyAgents(repo) {
+function busyAgents(repo, nowMs = Date.now()) {
   const snapshot = readJson(join(repo, '.tmux-teams', 'pulse.json'), null)
+  const generatedMs = Date.parse(snapshot?.generated_at || '')
+  const ageSec = Number.isFinite(generatedMs) ? Math.round((nowMs - generatedMs) / 1000) : null
   const rows = [...(snapshot?.runs || []), ...(snapshot?.history?.runs || [])]
   const newest = new Map()
   for (const row of rows) {
@@ -73,7 +87,16 @@ function busyAgents(repo) {
     const seen = newest.get(row.agent_id)
     if (!seen || String(row.started_at || '') > String(seen.started_at || '')) newest.set(row.agent_id, row)
   }
-  return new Set([...newest.values()].filter((row) => WORKING.has(row.state)).map((row) => row.agent_id))
+  const busy = new Set([...newest.values()].filter((row) => WORKING.has(row.state)).map((row) => row.agent_id))
+  // No snapshot at all is a repo where nothing has ever run — there is no agent
+  // to collide with, so the first dispatch is safe. A snapshot that EXISTS but
+  // has stopped moving is the dangerous one: it can still be asserting that
+  // agents are running, and it is no longer able to say when they stop.
+  const missing = snapshot === null
+  return {
+    busy, ageSec, missing,
+    stale: !missing && (ageSec === null || ageSec > PULSE_STALE_SEC),
+  }
 }
 
 const outboxText = (repo, taskId) => {
@@ -184,11 +207,19 @@ function composeBrief(repo, graph, plan, item, scratchDir) {
 
 // ── harvest: turn a finished judging leg into a custody event ────────────────
 
-export function planHarvest(graph, items) {
+export function planHarvest(graph, items, hasOutbox = () => false) {
   const jobs = []
   for (const item of items.values()) {
     const last = item.custody[item.custody.length - 1]
-    if (!last || last.event !== 'delivered' || last.terminal !== 'done') continue
+    if (!last) continue
+    // The controller's leg carries no work item, so its answer cannot arrive as
+    // a `delivered` event on this token. The escalation names the task; the
+    // answer is read from that task's outbox once it exists.
+    if (last.event === 'escalated') {
+      if (last.task_id && hasOutbox(last.task_id)) jobs.push({ item, last, role: 'outer' })
+      continue
+    }
+    if (last.event !== 'delivered' || last.terminal !== 'done') continue
     const role = teamRoleOf(graph, last.agent_id)?.role
     if (role === 'dispatcher' || role === 'evaluator') jobs.push({ item, last, role })
   }
@@ -218,6 +249,20 @@ function harvestEvent(repo, graph, { item, last, role }, now) {
     return {
       ...base, event: 'returned', to_team: pulled.from_team, refused_by: last.agent_id,
       reason: stated ? (reason || 'no reason stated') : 'the dispatcher stated no verdict',
+    }
+  }
+
+  if (role === 'outer') {
+    const { verdict, stated, reason } = readVerdict(text, OUTER_VERDICTS)
+    // Silence is not permission to close someone's work. An unreadable answer
+    // leaves the token parked exactly where the controller found it.
+    if (!stated) return null
+    if (verdict === 'abandon') {
+      return { ...base, event: 'abandoned', agent_id: last.agent_id, reason: reason || 'no reason stated' }
+    }
+    return {
+      ...base, event: 'resumed', agent_id: last.agent_id, to_team: last.to_team || null,
+      grant: RESUME_GRANT, reason: reason || 'no reason stated',
     }
   }
 
@@ -262,6 +307,9 @@ export function applyHarvest(repo, graph, jobs, now = new Date().toISOString()) 
   const applied = []
   for (const job of jobs) {
     const event = harvestEvent(repo, graph, job, now)
+    // A controller that answered nothing changes nothing; appending a no-op
+    // would only make the loop re-read the same outbox every tick.
+    if (!event) continue
     appendEvent(repo, event)
     // A verdict that never reaches the snapshot leaves the page reading
     // `0 pass 0 reject` — indistinguishable from no reviewing at all. Say so
@@ -276,14 +324,30 @@ export function applyHarvest(repo, graph, jobs, now = new Date().toISOString()) 
 
 // ── dispatch planning ────────────────────────────────────────────────────────
 
+// A resumed token starts its attempt budget over. Counting attempts made
+// before the controller looked at it would re-escalate on the very next tick,
+// which turns `resume` into an expensive no-op.
+const sinceResume = (item) => {
+  const index = item.custody.map((entry) => entry.event).lastIndexOf('resumed')
+  return index === -1 ? item.custody : item.custody.slice(index + 1)
+}
+
 const attemptsBy = (item, agentIds) =>
-  item.custody.filter((entry) => entry.event === 'assigned' && agentIds.includes(entry.agent_id)).length
+  sinceResume(item).filter((entry) => entry.event === 'assigned' && agentIds.includes(entry.agent_id)).length
+
+// The absolute ceiling on one token's spend. It moves only when the controller
+// deliberately grants more, and each grant cost a PM dispatch to obtain. The
+// clamp is there because this reads a file that is meant to be appended to.
+const legCeiling = (item) => MAX_LEGS + item.custody
+  .filter((entry) => entry.event === 'resumed')
+  .reduce((sum, entry) => sum + (Number.isInteger(entry.grant) ? Math.min(Math.max(entry.grant, 0), RESUME_GRANT) : 0), 0)
 
 function nextStep(graph, team, item, { busy, nowMs, zombieSec }) {
   const last = item.custody[item.custody.length - 1]
   const legs = item.custody.filter((entry) => entry.event === 'assigned').length
-  if (legs >= MAX_LEGS) {
-    return { action: 'escalate', reason: `${legs} legs on one token — it is bouncing, not progressing` }
+  const ceiling = legCeiling(item)
+  if (legs >= ceiling) {
+    return { action: 'escalate', reason: `${legs} legs on one token against a ceiling of ${ceiling} — it is bouncing, not progressing` }
   }
 
   const want = (role) => {
@@ -328,13 +392,17 @@ function nextStep(graph, team, item, { busy, nowMs, zombieSec }) {
   }
 
   if (last.event === 'pulled') return want('dispatcher')
-  if (last.event === 'intake' || last.event === 'returned') return want('worker')
+  if (last.event === 'intake' || last.event === 'returned' || last.event === 'resumed') return want('worker')
   return { action: 'skip', reason: `nothing follows ${last.event}` }
 }
 
-export function planDispatches(graph, items, busy, { now = Date.now(), zombieSec = ZOMBIE_SEC } = {}) {
+export function planDispatches(graph, items, busy, { now = Date.now(), zombieSec = ZOMBIE_SEC, maxInFlight = MAX_IN_FLIGHT } = {}) {
   const { held } = teamOccupancy(graph, items)
   const teamById = new Map(graph.teams.map((team) => [team.team_id, team]))
+  const declared = new Set(graph.teams.flatMap((team) => team.agents.map((agent) => agent.agent_id)))
+  // Team WIP limits bound each column. This bounds the board: without it a wide
+  // graph fans out to as many concurrent agents as it has teams.
+  let inFlight = [...busy].filter((agentId) => declared.has(agentId)).length
   const plans = []
   for (const [teamId, tokens] of held) {
     const team = teamById.get(teamId)
@@ -347,6 +415,13 @@ export function planDispatches(graph, items, busy, { now = Date.now(), zombieSec
       const step = nextStep(graph, team, item, { busy, nowMs: now, zombieSec })
       if (step.action === 'in-flight') { slots -= 1; continue }
       if (step.action === 'dispatch') {
+        if (inFlight >= maxInFlight) {
+          plans.push({
+            action: 'wait', work_item: workItem, team: teamId,
+            reason: `${inFlight} agents already in flight across the board (max ${maxInFlight})`,
+          })
+          continue
+        }
         if (slots <= 0) {
           plans.push({
             action: 'wait', work_item: workItem, team: teamId,
@@ -355,6 +430,7 @@ export function planDispatches(graph, items, busy, { now = Date.now(), zombieSec
           continue
         }
         slots -= 1
+        inFlight += 1
         busy.add(step.agent_id)
         plans.push({
           action: 'dispatch', work_item: workItem, team: teamId, role: step.role,
@@ -459,7 +535,8 @@ export function tick(repoArg, { apply = true, stallSec = 1800, scratchDir } = {}
   // pull controller looking at a stale event — and pulling before the review
   // lands is exactly how the evaluator became decorative.
   const harvested = []
-  const jobs = planHarvest(graph.value, readWorkItems(repo).items)
+  const jobs = planHarvest(graph.value, readWorkItems(repo).items,
+    (taskId) => existsSync(join(repo, '.mailbox-out', taskId)))
   if (jobs.length && apply) harvested.push(...applyHarvest(repo, graph.value, jobs))
   for (const event of harvested) {
     log(`${event.event.padEnd(6)} ${event.work_item}: ${event.verdict || event.to_team || ''} — ${event.reason || ''}`)
@@ -481,7 +558,16 @@ export function tick(repoArg, { apply = true, stallSec = 1800, scratchDir } = {}
 
   // Re-read: the pulls just written are what makes a token dispatchable now.
   const { items } = readWorkItems(repo)
-  const busy = busyAgents(repo)
+  const pulse = busyAgents(repo)
+  const busy = pulse.busy
+  // Frozen evidence is worse than none: it either stalls the loop forever on an
+  // agent that already exited, or — once the zombie window passes — declares a
+  // still-running agent lost and pays to run it again.
+  if (pulse.stale) {
+    log(`STALE  pulse.json is ${pulse.ageSec === null ? 'undated' : `${pulse.ageSec}s old`} — refusing to dispatch. Is \`pulse.mjs watch\` running?`)
+    return { ok: true, harvested, pulls, plans: [], started: [], stale: true }
+  }
+  if (pulse.missing) log('note   no pulse.json yet — dispatching without liveness evidence')
   const plans = planDispatches(graph.value, items, busy)
   const started = []
   for (const plan of plans) {
@@ -544,7 +630,10 @@ export function tick(repoArg, { apply = true, stallSec = 1800, scratchDir } = {}
         appendEvent(repo, {
           at: new Date().toISOString(), event: 'escalated', work_item: plan.work_item,
           workflow: items.get(plan.work_item)?.workflow || null,
-          agent_id: escalation.agent_id, task_id: taskId, reason: plan.reason,
+          // The controller is not a team, so without naming the team that is
+          // still holding this the board cannot place it — it would draw parked
+          // work as unplaceable and free a WIP slot nobody actually released.
+          agent_id: escalation.agent_id, to_team: plan.team, task_id: taskId, reason: plan.reason,
         })
       }
     }
