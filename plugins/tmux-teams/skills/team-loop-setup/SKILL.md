@@ -5,7 +5,7 @@ description: 'Use when setting up or changing the delivery loop a repo runs — 
 
 # team-loop-setup — declare the delivery loop this repo runs
 
-The Team delivery flow page (`.tmux-teams/graph-loop.html`, published by
+The Team delivery flow page (`.tmux-teams/graph.html`, published by
 `pulse.mjs`) draws **declared topology** coloured by **observed evidence**. It
 never guesses. Until this repo declares a loop, the page shows the bundled
 four-team template with every node unbound — correct, and useless.
@@ -33,7 +33,7 @@ broken when it is telling the truth.
 1. **Start from the template or from scratch.**
 
    ```bash
-   node <plugin>/skills/tmux-teams/scripts/graph-loop.mjs init <repo>
+   node <plugin>/skills/tmux-teams/scripts/graph.mjs init <repo>
    ```
 
    writes the four-team template (Requirement → Prototype → Development → QA)
@@ -90,7 +90,7 @@ broken when it is telling the truth.
 4. **Check before dispatching anything.**
 
    ```bash
-   node <plugin>/skills/tmux-teams/scripts/graph-loop.mjs check <repo>
+   node <plugin>/skills/tmux-teams/scripts/graph.mjs check <repo>
    ```
 
    Prints the team/agent count and the exact `ACP_AGENT_ID` values to dispatch
@@ -100,7 +100,7 @@ broken when it is telling the truth.
 
    ```bash
    node <plugin>/skills/tmux-teams/scripts/pulse.mjs once <repo>
-   # then open <repo>/.tmux-teams/graph-loop.html
+   # then open <repo>/.tmux-teams/graph.html
    ```
 
    Opening it is part of the job, not a formality. A page whose nodes are all

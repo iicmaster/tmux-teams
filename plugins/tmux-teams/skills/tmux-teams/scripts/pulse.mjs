@@ -43,8 +43,8 @@ import {
   projectLivenessEvidence, projectPulseV4, validateAcpLivenessV1, verifiedLivenessModel,
 } from './pulse-data.mjs'
 import { PHASE_BOUNDARIES, PHASE_EXIT_ARTIFACTS } from './delivery-loop-core.mjs'
-import { normalizeTeamGraph, renderPulseLoopGraph } from './pulse-loop-graph.mjs'
-import { renderGraphLoopPage } from './graph-loop.mjs'
+import { renderGraphPage } from './graph.mjs'
+import { validateTeamGraph } from './team-graph-contract.mjs'
 import { renderKanbanPage } from './kanban.mjs'
 import { renderPulseRefreshScript } from './pulse-refresh.mjs'
 
@@ -111,8 +111,7 @@ let REPO
 try { REPO = realpathSync(repoArg) } catch { console.error(`[pulse] no such repo: ${repoArg}`); process.exit(2) }
 const STORE = join(REPO, '.tmux-teams')
 const OUT = join(STORE, 'pulse.html')
-const LOOP_GRAPH_OUT = join(STORE, 'loop-graph.html')
-const GRAPH_LOOP_OUT = join(STORE, 'graph-loop.html')
+const GRAPH_OUT = join(STORE, 'graph.html')
 const KANBAN_OUT = join(STORE, 'kanban.html')
 const WORKFLOW_ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$/
 const JSON_OUT = join(STORE, 'pulse.json')
@@ -1549,7 +1548,6 @@ footer{margin-top:var(--s7);padding-top:var(--s4);border-top:1px solid var(--lin
     <span class="eyebrow">tmux teams · live status</span>
     <h1>Pulse <span class="repo">${esc(repoName)}</span></h1>
     <p class="scope">ติดตามเฉพาะ worker ที่ระบบสั่งในโปรเจกต์นี้ · หน้านี้อ่านข้อมูลอย่างเดียว</p>
-    <a class="loop-graph-link" href="loop-graph.html">เปิด ACP Loop Graph เต็มจอ</a>
   </div>
   <div class="header-status" data-observation-expires-at="${esc(expiresAt)}" data-refresh-interval="${refreshInterval}">
     <div class="status-badges">
@@ -1807,7 +1805,7 @@ const sourceIdentity = (path) => {
   return `sha256:${sha256(canonical)}`
 }
 
-function bundleManifest(snapshot, jsonText, html, loopGraphHtml, graphLoopHtml, kanbanHtml) {
+function bundleManifest(snapshot, jsonText, html, graphHtml, kanbanHtml) {
   return `${JSON.stringify({
     schema: 'tmux-teams.pulse-bundle',
     schema_version: 2,
@@ -1815,8 +1813,7 @@ function bundleManifest(snapshot, jsonText, html, loopGraphHtml, graphLoopHtml, 
     files: {
       data: { path: 'pulse.json', sha256: sha256(jsonText) },
       dashboard: { path: 'pulse.html', sha256: sha256(html) },
-      loop_graph: { path: 'loop-graph.html', sha256: sha256(loopGraphHtml) },
-      graph_loop: { path: 'graph-loop.html', sha256: sha256(graphLoopHtml) },
+      graph: { path: 'graph.html', sha256: sha256(graphHtml) },
       kanban: { path: 'kanban.html', sha256: sha256(kanbanHtml) },
       font_css: { path: FONT_CSS_NAME, sha256: sha256(KANIT_FONT_CSS) },
       d3_js: { path: D3_JS_NAME, sha256: sha256(D3_JS) },
@@ -1859,7 +1856,10 @@ function once() {
   const deliveryRuntimeInput = readDeliveryRuntimeInput()
   const teamGraphInput = readTeamGraphInput()
   const teamRuntimeInput = readTeamRuntimeInput()
-  const normalizedTeamGraph = normalizeTeamGraph(teamGraphInput.value)
+  // Same check the legacy graph page ran, taken straight from the contract
+  // module instead of through a renderer this repo no longer ships.
+  const teamGraphCheck = validateTeamGraph(teamGraphInput.value)
+  const normalizedTeamGraph = teamGraphCheck.ok ? teamGraphCheck.value : null
   const configuredAgentIds = normalizedTeamGraph
     ? new Set([
         ...(normalizedTeamGraph.outer_controller_id ? [normalizedTeamGraph.outer_controller_id] : []),
@@ -1901,22 +1901,15 @@ function once() {
     // This makes pulse.json the literal SSOT and catches serialization drift.
     const publishedSnapshot = JSON.parse(jsonText)
     const html = render(publishedSnapshot, { refreshScriptName: PULSE_REFRESH_NAME })
-    const loopGraphHtml = renderPulseLoopGraph(publishedSnapshot, {
-      fontCssName: FONT_CSS_NAME,
-      d3JsName: D3_JS_NAME,
-      timeZone: DISPLAY_TIME_ZONE,
-      timeZoneLabel: TIME_ZONE_LABEL,
-      refreshScriptName: PULSE_REFRESH_NAME,
-    })
     // Reads the repo's declared Team graph, or falls back to the bundled
     // four-team template so a fresh install has a page on the first run.
-    const graphLoopHtml = renderGraphLoopPage(REPO, publishedSnapshot,
+    const graphHtml = renderGraphPage(REPO, publishedSnapshot,
       { fontCssName: FONT_CSS_NAME, refreshScriptName: PULSE_REFRESH_NAME })
     // Same two sources as the flow page, asked the other question: where the
     // work is right now, rather than who exists and how the team is wired.
     const kanbanHtml = renderKanbanPage(REPO, publishedSnapshot,
       { fontCssName: FONT_CSS_NAME, refreshScriptName: PULSE_REFRESH_NAME })
-    const bundleText = bundleManifest(publishedSnapshot, jsonText, html, loopGraphHtml, graphLoopHtml, kanbanHtml)
+    const bundleText = bundleManifest(publishedSnapshot, jsonText, html, graphHtml, kanbanHtml)
     assertPublishLock(token)
     atomicWriteIfChanged(FONT_CSS_OUT, KANIT_FONT_CSS, token)
     assertPublishLock(token)
@@ -1930,9 +1923,8 @@ function once() {
     assertPublishLock(token)
     atomicWrite(OUT, html, token)
     assertPublishLock(token)
-    atomicWrite(LOOP_GRAPH_OUT, loopGraphHtml, token)
     assertPublishLock(token)
-    atomicWrite(GRAPH_LOOP_OUT, graphLoopHtml, token)
+    atomicWrite(GRAPH_OUT, graphHtml, token)
     assertPublishLock(token)
     atomicWrite(KANBAN_OUT, kanbanHtml, token)
     // This commit marker is written last. Readers validate its hashes and
@@ -1941,8 +1933,7 @@ function once() {
     atomicWrite(BUNDLE_OUT, bundleText, token)
     return {
       htmlPath: OUT,
-      loopGraphPath: LOOP_GRAPH_OUT,
-      graphLoopPath: GRAPH_LOOP_OUT,
+      graphPath: GRAPH_OUT,
       kanbanPath: KANBAN_OUT,
       bundlePath: BUNDLE_OUT,
       jsonText,
@@ -2185,8 +2176,7 @@ if (managedClaimAccepted) {
 }
 
 console.log(`[pulse] watching ${REPO} every ${INTERVAL}s -> ${OUT}`)
-console.log(`[pulse] full-screen ACP graph -> ${LOOP_GRAPH_OUT}`)
-console.log(`[pulse] team delivery flow -> ${GRAPH_LOOP_OUT}`)
+console.log(`[pulse] team delivery flow -> ${GRAPH_OUT}`)
 console.log(`[pulse] kanban board -> ${KANBAN_OUT}`)
 console.log('[pulse] open either HTML file in a browser; both refresh themselves')
 const tick = () => {

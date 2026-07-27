@@ -160,11 +160,6 @@ test('dispatch and event phase disagreement becomes a conflict instead of event-
   assert.ok(snapshot.diagnostics.some(diagnostic =>
     diagnostic.code === 'PHASE_BINDING_CONFLICT'))
 
-  const graph = readFileSync(join(dir, '.tmux-teams', 'loop-graph.html'), 'utf8')
-  assert.match(graph, /data-screen-section="history"/)
-  assert.match(graph, /data-history-run="true"[^>]*data-audit-task-id="conflicting-phase"/)
-  assert.match(graph, /PHASE_BINDING_CONFLICT/)
-  assert.doesNotMatch(graph, /data-agent-id="conflicting-phase"/)
 })
 
 test('duplicate dispatch UUID with two phases marks every active projection conflicting', () => {

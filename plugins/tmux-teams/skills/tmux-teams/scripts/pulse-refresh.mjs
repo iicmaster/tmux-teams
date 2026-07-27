@@ -1,4 +1,4 @@
-// CSP-safe browser controller shared by pulse.html and loop-graph.html.
+// CSP-safe browser controller shared by pulse.html and graph.html.
 // Pulse publishes this source as a content-addressed same-origin asset.
 
 export const PULSE_REFRESH_SOURCE = `

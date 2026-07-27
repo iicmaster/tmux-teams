@@ -1,4 +1,4 @@
-// graph-loop.test.mjs — the loop graph page and the pull system behind it.
+// graph.test.mjs — the loop graph page and the pull system behind it.
 //
 // The page can fail in exactly one way that matters: showing something no
 // evidence supports. Every case here pins that line, plus the two layout facts
@@ -10,13 +10,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
-  DEFAULT_WORKFLOW_GRAPH, readWorkflowGraph, renderGraphLoopPage, renderLoopGraphSvg,
-} from '../plugins/tmux-teams/skills/tmux-teams/scripts/graph-loop.mjs'
+  DEFAULT_WORKFLOW_GRAPH, readWorkflowGraph, renderGraphPage, renderLoopGraphSvg,
+} from '../plugins/tmux-teams/skills/tmux-teams/scripts/graph.mjs'
 import { validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
 import { planPulls } from '../plugins/tmux-teams/skills/tmux-teams/scripts/pull-controller.mjs'
 
 const repoWith = (graph) => {
-  const dir = mkdtempSync(join(tmpdir(), 'loop-graph-'))
+  const dir = mkdtempSync(join(tmpdir(), 'graph-'))
   mkdirSync(join(dir, '.tmux-teams'), { recursive: true })
   if (graph !== undefined) writeFileSync(join(dir, '.tmux-teams/team-graph.json'), JSON.stringify(graph))
   return dir
@@ -70,7 +70,7 @@ test('a repo with no declared graph falls back to the bundled template', () => {
 test('an invalid graph fails closed instead of silently using the default', () => {
   const dir = repoWith({ teams: [{ team_id: 'solo' }], workflows: [] })
   assert.equal(readWorkflowGraph(dir).ok, false)
-  const page = renderGraphLoopPage(dir, snapshotWith())
+  const page = renderGraphPage(dir, snapshotWith())
   assert.match(page, /failed the contract/)
   assert.doesNotMatch(page, /<svg/)
 })
@@ -233,7 +233,7 @@ test('the newest dispatch wins when one agent ran more than once', () => {
 })
 
 test('the graph fills the viewport and is never pinned to a pixel size', () => {
-  const page = renderGraphLoopPage(repoWith(TWO_TEAMS), snapshotWith())
+  const page = renderGraphPage(repoWith(TWO_TEAMS), snapshotWith())
   assert.match(page, /<svg viewBox="-?\d+ 0 \d+ \d+" preserveAspectRatio/)
   assert.doesNotMatch(page, /<svg[^>]+\swidth="\d/)
   assert.match(page, /\.chart svg\{[^}]*width:100%/)
@@ -245,7 +245,7 @@ test('hostile names stay escaped and the page declares utf-8', () => {
     teams: [{ team_id: 'only', name: '<script>alert(1)</script>', dispatcher_id: 'a', worker_ids: ['b'], evaluator_id: 'c' }],
     workflows: [{ workflow_id: 'w', name: 'W', route: ['only'] }],
   })
-  const page = renderGraphLoopPage(dir, snapshotWith())
+  const page = renderGraphPage(dir, snapshotWith())
   assert.match(page, /^<meta charset="utf-8">/)
   assert.doesNotMatch(page, /<script>alert/)
   assert.match(page, /&lt;script&gt;alert/)

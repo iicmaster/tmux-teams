@@ -14,7 +14,7 @@ import { Script } from 'node:vm'
 import { readBoard, renderKanbanPage } from '../plugins/tmux-teams/skills/tmux-teams/scripts/kanban.mjs'
 import { readWorkItems, teamOccupancy } from '../plugins/tmux-teams/skills/tmux-teams/scripts/dispatch-facts.mjs'
 import { validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
-import { duration } from '../plugins/tmux-teams/skills/tmux-teams/scripts/graph-loop.mjs'
+import { duration } from '../plugins/tmux-teams/skills/tmux-teams/scripts/graph.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const KANBAN = join(ROOT, 'plugins/tmux-teams/skills/tmux-teams/scripts/kanban.mjs')

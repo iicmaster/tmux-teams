@@ -517,7 +517,6 @@ export async function runPhaseGatePoc({
       expected_path: expectedPath,
       pulse_json_path: join(repoRoot, '.tmux-teams', 'pulse.json'),
       pulse_html_path: join(repoRoot, '.tmux-teams', 'pulse.html'),
-      loop_graph_path: join(repoRoot, '.tmux-teams', 'loop-graph.html'),
       result,
       projection: status.projection,
     }

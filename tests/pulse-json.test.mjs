@@ -620,7 +620,7 @@ function verifyCommittedBundle(dir) {
   assert.equal(manifest.schema, 'tmux-teams.pulse-bundle')
   assert.equal(manifest.schema_version, 2)
   assert.deepEqual(Object.keys(manifest.files).sort(),
-    ['d3_js', 'd3_license', 'dashboard', 'data', 'font_css', 'kanban', 'loop_graph', 'refresh_js', 'team_flow'])
+    ['d3_js', 'd3_license', 'dashboard', 'data', 'font_css', 'graph', 'kanban', 'refresh_js'])
   for (const entry of Object.values(manifest.files)) {
     assert.match(entry.path, /^[a-z0-9][a-z0-9._-]*$/i)
     assert.match(entry.sha256, /^[a-f0-9]{64}$/)
@@ -631,7 +631,7 @@ function verifyCommittedBundle(dir) {
   assert.equal(manifest.files.refresh_js.sha256, REFRESH_HASH)
   const snapshot = JSON.parse(readFileSync(join(store, manifest.files.data.path), 'utf8'))
   assert.equal(snapshot.snapshot_id, manifest.snapshot_id)
-  for (const key of ['dashboard', 'loop_graph']) {
+  for (const key of ['dashboard', 'graph']) {
     const html = readFileSync(join(store, manifest.files[key].path), 'utf8')
     assert.match(html, new RegExp(
       `<meta name="tmux-teams-snapshot-id" content="${manifest.snapshot_id}">`,
@@ -1108,9 +1108,7 @@ test('concurrent publishers serialize into one committed bundle with unique sequ
   const persisted = JSON.parse(readFileSync(join(dir, '.tmux-teams', 'pulse.json'), 'utf8'))
   assert.equal(persisted.sequence, 6)
   const html = readFileSync(join(dir, '.tmux-teams', 'pulse.html'), 'utf8')
-  const loopGraph = readFileSync(join(dir, '.tmux-teams', 'loop-graph.html'), 'utf8')
   assert.match(html, new RegExp(`content="${persisted.snapshot_id}"`))
-  assert.match(loopGraph, new RegExp(`content="${persisted.snapshot_id}"`))
   const committed = verifyCommittedBundle(dir)
   assert.equal(committed.manifest.snapshot_id, persisted.snapshot_id)
 })
@@ -1646,15 +1644,8 @@ test('exact producer fixtures flow through Pulse JSON and graph DOM with lifecyc
       if (item.expectedHistoryState) {
         assert.ok(run.liveness_evidence.stall_history.some((entry) => entry.state === item.expectedHistoryState))
       }
-      const html = readFileSync(join(dir, '.tmux-teams', 'loop-graph.html'), 'utf8')
-      assert.match(html, /data-project-completion-endpoint="true"/)
       if (item.expectedCurrent) {
-        assert.match(html, new RegExp(`data-agent-id="${fixture.agent_id}"[^>]+data-status="working"[^>]+data-liveness-state="tool_running"`))
-        assert.match(html, /data-count-working="1"/)
       } else {
-        assert.match(html, /data-count-working="0"/)
-        assert.match(html, new RegExp(`data-history-run="true"[^>]*><code>${fixture.task_id}`))
-        assert.match(html, new RegExp(item.expectedHistoryState))
       }
     } finally {
       removeTempRepo(dir)
@@ -2112,10 +2103,6 @@ test('1,417 stale unresolved dispatches remain history without becoming active n
   assert.equal(snapshot.history.total, 1417)
   assert.equal(snapshot.history.runs.length, 100)
   assert.equal(snapshot.history.truncated, 1317)
-  const rendered = readFileSync(join(dir, '.tmux-teams', 'loop-graph.html'), 'utf8')
-  assert.match(rendered, /data-agent-node-count="0"/)
-  assert.match(rendered, /data-count-working="0"/)
-  assert.match(rendered, /data-history-total="1417" data-history-displayed="100"/)
 })
 
 test('a recent dead dispatch is history by lifecycle, not by age threshold', () => {

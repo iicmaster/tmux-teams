@@ -1,4 +1,4 @@
-// graph-loop.mjs — the loop graph: every team, every agent, and the routes.
+// graph.mjs — the loop graph: every team, every agent, and the routes.
 //
 // Two inputs, kept strictly apart:
 //   DECLARATION  <repo>/.tmux-teams/team-graph.json — the Team pool and the
@@ -550,7 +550,7 @@ footer{color:var(--dim);font-size:.78rem}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 `
 
-export function renderGraphLoopPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, refreshScriptName = '' } = {}) {
+export function renderGraphPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, refreshScriptName = '' } = {}) {
   const graph = readWorkflowGraph(repo)
   const repoName = snapshot.scope?.repo_name || ''
   // Without an explicit charset a plain file server hands this to the browser
@@ -643,25 +643,25 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
 
   if (command === 'init') {
     if (existsSync(target)) {
-      console.error(`[loop-graph] ${target} already exists — edit it or delete it first`)
+      console.error(`[graph] ${target} already exists — edit it or delete it first`)
       process.exit(2)
     }
     writeFileSync(target, `${JSON.stringify(DEFAULT_WORKFLOW_GRAPH, null, 2)}\n`)
-    console.log(`[loop-graph] wrote the four-team template -> ${target}`)
-    console.log('[loop-graph] rename the teams and agent ids, then run: graph-loop.mjs check <repo>')
+    console.log(`[graph] wrote the four-team template -> ${target}`)
+    console.log('[graph] rename the teams and agent ids, then run: graph.mjs check <repo>')
   } else if (command === 'check') {
     const graph = readWorkflowGraph(repo)
     if (!graph.ok) {
-      console.error(`[loop-graph] invalid (${graph.source}): ${graph.reason}`)
+      console.error(`[graph] invalid (${graph.source}): ${graph.reason}`)
       process.exit(1)
     }
-    console.log(`[loop-graph] ok (${graph.source}) — ${graph.value.teams.length} teams, ${graph.value.workflows.length} workflows`)
+    console.log(`[graph] ok (${graph.source}) — ${graph.value.teams.length} teams, ${graph.value.workflows.length} workflows`)
     for (const workflow of graph.value.workflows) {
-      console.log(`[loop-graph]   ${workflow.workflow_id}: ${workflow.route.join(' → ')}`)
+      console.log(`[graph]   ${workflow.workflow_id}: ${workflow.route.join(' → ')}`)
     }
-    console.log('[loop-graph] dispatch with ACP_AGENT_ID=<agent>, TMUX_TEAMS_WORKFLOW=<workflow_id>, TMUX_TEAMS_WORK_ITEM=<token>')
+    console.log('[graph] dispatch with ACP_AGENT_ID=<agent>, TMUX_TEAMS_WORKFLOW=<workflow_id>, TMUX_TEAMS_WORK_ITEM=<token>')
   } else {
-    console.error('usage: node graph-loop.mjs <init|check> [repo]')
+    console.error('usage: node graph.mjs <init|check> [repo]')
     process.exit(2)
   }
 }

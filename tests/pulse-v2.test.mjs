@@ -890,7 +890,7 @@ test('publish fencing is checked inside each atomic rename boundary', () => {
     'atomicWriteIfChanged(D3_LICENSE_OUT, D3_LICENSE, token)',
     'atomicWrite(JSON_OUT, jsonText, token)',
     'atomicWrite(OUT, html, token)',
-    'atomicWrite(LOOP_GRAPH_OUT, loopGraphHtml, token)',
+    'atomicWrite(GRAPH_OUT, graphHtml, token)',
     'atomicWrite(KANBAN_OUT, kanbanHtml, token)',
     'atomicWrite(BUNDLE_OUT, bundleText, token)',
   ]) {

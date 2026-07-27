@@ -1,6 +1,6 @@
 // kanban.mjs — the kanban board: where every work item actually is.
 //
-// graph-loop.html answers "who exists and how is the team wired". This page
+// graph.html answers "who exists and how is the team wired". This page
 // answers the other question, and only that one: which team is holding what,
 // what is blocked, and how long it has been sitting. Merging the two has been
 // rejected once already; they are different questions.
@@ -33,7 +33,7 @@ import { fileURLToPath } from 'node:url'
 import { KANIT_FONT_CSS } from '../assets/kanit/kanit-embedded.mjs'
 import { RELEASING_EVENTS, readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
 import { planPulls } from './pull-controller.mjs'
-import { clip, duration, esc, readWorkflowGraph } from './graph-loop.mjs'
+import { clip, duration, esc, readWorkflowGraph } from './graph.mjs'
 import { WORKFLOW_GRAPH_FILE, teamRoleOf } from './workflow-graph.mjs'
 
 const FONT_CSS_NAME = `pulse-fonts-${createHash('sha256').update(KANIT_FONT_CSS).digest('hex')}.css`
@@ -420,7 +420,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     if (board.skippedLines) console.log(`[kanban]   ${board.skippedLines} unreadable ledger line(s) skipped`)
   } else {
     // Regenerated output, not a config file a human edits — overwriting is the
-    // point, so unlike graph-loop.mjs init there is nothing to guard here.
+    // point, so unlike graph.mjs init there is nothing to guard here.
     const target = join(repo, '.tmux-teams', 'kanban.html')
     writeFileSync(target, renderKanbanPage(repo, snapshot))
     console.log(`[kanban] wrote ${target}`)

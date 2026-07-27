@@ -23,8 +23,6 @@ const STAGE1_SCRIPTS = [
   'delivery-loop-export.mjs',
 ]
 const PULSE_GRAPH_FILES = [
-  'scripts/pulse-loop-graph.mjs',
-  'scripts/pulse-loop-graph-topology.mjs',
   'assets/d3/d3.v7.9.0.min.js',
   'assets/d3/LICENSE',
 ]
