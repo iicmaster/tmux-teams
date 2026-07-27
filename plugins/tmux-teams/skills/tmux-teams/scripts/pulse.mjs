@@ -118,19 +118,6 @@ const JSON_OUT = join(STORE, 'pulse.json')
 const BUNDLE_OUT = join(STORE, 'pulse-current.json')
 const FONT_CSS_NAME = `pulse-fonts-${createHash('sha256').update(KANIT_FONT_CSS).digest('hex')}.css`
 const FONT_CSS_OUT = join(STORE, FONT_CSS_NAME)
-const D3_JS = readFileSync(
-  fileURLToPath(new URL('../assets/d3/d3.v7.9.0.min.js', import.meta.url)),
-  'utf8',
-)
-const D3_LICENSE = readFileSync(
-  fileURLToPath(new URL('../assets/d3/LICENSE', import.meta.url)),
-  'utf8',
-)
-const D3_JS_NAME = `pulse-d3-7.9.0-${createHash('sha256').update(D3_JS).digest('hex')}.min.js`
-const D3_LICENSE_NAME =
-  `pulse-d3-7.9.0-license-${createHash('sha256').update(D3_LICENSE).digest('hex')}.txt`
-const D3_JS_OUT = join(STORE, D3_JS_NAME)
-const D3_LICENSE_OUT = join(STORE, D3_LICENSE_NAME)
 const PULSE_REFRESH_SOURCE = renderPulseRefreshScript()
 const PULSE_REFRESH_HASH = createHash('sha256').update(PULSE_REFRESH_SOURCE).digest('hex')
 const PULSE_REFRESH_NAME = `pulse-refresh-${PULSE_REFRESH_HASH}.js`
@@ -1816,8 +1803,6 @@ function bundleManifest(snapshot, jsonText, html, graphHtml, kanbanHtml) {
       graph: { path: 'graph.html', sha256: sha256(graphHtml) },
       kanban: { path: 'kanban.html', sha256: sha256(kanbanHtml) },
       font_css: { path: FONT_CSS_NAME, sha256: sha256(KANIT_FONT_CSS) },
-      d3_js: { path: D3_JS_NAME, sha256: sha256(D3_JS) },
-      d3_license: { path: D3_LICENSE_NAME, sha256: sha256(D3_LICENSE) },
       refresh_js: { path: PULSE_REFRESH_NAME, sha256: PULSE_REFRESH_HASH },
     },
   }, null, 2)}\n`
@@ -1913,9 +1898,7 @@ function once() {
     assertPublishLock(token)
     atomicWriteIfChanged(FONT_CSS_OUT, KANIT_FONT_CSS, token)
     assertPublishLock(token)
-    atomicWriteIfChanged(D3_JS_OUT, D3_JS, token)
     assertPublishLock(token)
-    atomicWriteIfChanged(D3_LICENSE_OUT, D3_LICENSE, token)
     assertPublishLock(token)
     atomicWriteIfChanged(PULSE_REFRESH_OUT, PULSE_REFRESH_SOURCE, token)
     assertPublishLock(token)

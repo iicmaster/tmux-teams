@@ -620,7 +620,7 @@ function verifyCommittedBundle(dir) {
   assert.equal(manifest.schema, 'tmux-teams.pulse-bundle')
   assert.equal(manifest.schema_version, 2)
   assert.deepEqual(Object.keys(manifest.files).sort(),
-    ['d3_js', 'd3_license', 'dashboard', 'data', 'font_css', 'graph', 'kanban', 'refresh_js'])
+    ['dashboard', 'data', 'font_css', 'graph', 'kanban', 'refresh_js'])
   for (const entry of Object.values(manifest.files)) {
     assert.match(entry.path, /^[a-z0-9][a-z0-9._-]*$/i)
     assert.match(entry.sha256, /^[a-f0-9]{64}$/)

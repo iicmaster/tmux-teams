@@ -193,8 +193,7 @@ node plugins/tmux-teams/skills/tmux-teams/scripts/phase-gate-poc.mjs \
 Run this from the checkout root; `mktemp` guarantees a new `--out` directory
 and `realpath` keeps the fixture valid after the companion changes into the
 generated repository. A successful run writes
-`poc-result.json`, `delivery-runtime.json`, Pulse v4 JSON/HTML, and the D3
-operational graph. `measurement.status: scenario_signal` means the single
+`poc-result.json`, `delivery-runtime.json`, and the Pulse v4 JSON/HTML. `measurement.status: scenario_signal` means the single
 scenario followed the expected governed path and produced measurement-ready
 evidence; it is not a causal or business verdict. `roi.status:
 ROI_NOT_ESTABLISHED` is the required interpretation: one deterministic run has
@@ -301,17 +300,15 @@ never executed automatically. See `skills/tmux-teams/SKILL.md` §10.
 
 The canonical offline views are `<repo>/.tmux-teams/pulse.html` and
 `<repo>/.tmux-teams/loop-graph.html` together with their sibling
-`pulse-fonts-<sha256>.css`, `pulse-d3-7.9.0-<sha256>.min.js`, and its adjacent
-`pulse-d3-7.9.0-license-<sha256>.txt`. The stylesheet contains the bundled
-Kanit WOFF2 data URLs. The D3 files remain vendored local compatibility assets
-for older consumers; neither current HTML page loads or executes them, and the
-current full-screen Team flow is plain document flow with minimal static SVG
-connectors. All assets are atomically published before both HTML files and are
+`pulse-fonts-<sha256>.css`. The stylesheet contains the bundled Kanit WOFF2
+data URLs. Every page is plain document flow with static SVG — no charting
+library is vendored or loaded. All assets are atomically published before the
+HTML pages and are
 not rewritten when their content is unchanged; neither view makes a network
 request. Keep the sibling assets beside the pages for offline bundle identity.
 `<repo>/.tmux-teams/pulse-current.json` is the bundle commit marker written
-last. It names and hashes the JSON, both HTML files, the font stylesheet, local
-D3 JavaScript, and the D3 license; readers can reject a mixed/partial publish
+last. It names and hashes the JSON, every HTML page and the font stylesheet;
+readers can reject a mixed/partial publish
 by validating those hashes and re-reading the marker after the files.
 
 `team-flow.html` is the Team delivery flowchart and ships ready to use: it draws

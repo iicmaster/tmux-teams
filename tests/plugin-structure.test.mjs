@@ -23,8 +23,6 @@ const STAGE1_SCRIPTS = [
   'delivery-loop-export.mjs',
 ]
 const PULSE_GRAPH_FILES = [
-  'assets/d3/d3.v7.9.0.min.js',
-  'assets/d3/LICENSE',
 ]
 const STAGE1_REFERENCES = [
   'delivery-loop-pilot-manifest-v1.schema.json',
@@ -122,7 +120,6 @@ test('Stage 1 field-evidence files and documentation links are wired', () => {
     assert.match(doc[1], /compat-v1/, `${doc[0]}: v1 compatibility contract missing`)
     assert.match(doc[1], /phase_source/, `${doc[0]}: explicit phase source contract missing`)
     assert.match(doc[1], /unassigned/i, `${doc[0]}: unassigned phase behavior missing`)
-    assert.match(doc[1], /D3 v7\.9\.0/, `${doc[0]}: local D3 version contract missing`)
     assert.match(doc[1], /phase-gate\.json/, `${doc[0]}: governed marker contract missing`)
     assert.match(doc[1], /ROI_NOT_ESTABLISHED/, `${doc[0]}: POC ROI boundary missing`)
     assert.match(doc[1], /scenario_signal/, `${doc[0]}: POC scenario interpretation missing`)

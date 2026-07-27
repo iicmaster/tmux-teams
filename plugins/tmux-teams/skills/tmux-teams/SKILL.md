@@ -166,7 +166,7 @@ Team, and its acceptance is not release, UAT, certification, ROI, or business
 approval.
 
 The reproducible full-loop POC uses the same controller, store, companion,
-projection, Pulse v4 publisher, and vendored D3 operational graph:
+projection, and Pulse v4 publisher:
 
 ```bash
 POC_OUT="$(mktemp -d)/run"
@@ -751,7 +751,7 @@ lineage-incomplete runtime evidence is diagnosed and does not enrich the graph.
 Each file is atomically replaced under one publish lock. The publisher writes
 the JSON, both HTML views, and then `<repo>/.tmux-teams/pulse-current.json`
 last. That commit marker carries their paths and SHA-256 hashes, including the
-content-addressed font CSS, local D3 v7.9.0 JavaScript, and D3 license. A
+content-addressed font CSS. A
 reader can detect a mixed/partial bundle and re-read the marker after validation
 to detect a racing publish. `json` prints the exact persisted JSON document
 rather than another projection.
@@ -862,8 +862,7 @@ so the dashes double as the list of what to instrument next. The dashboard
 diagram and delivery/phase illustrations are fixed-layout legacy or normative
 SVGs; they are not the live Team graph and do not define Team membership. The
 current full-screen Team flow uses normal document layout and a minimal static
-SVG connector layer. Bundled D3 remains only for older local consumers and is
-not loaded by either current page.
+SVG connector layer. No charting library is bundled or loaded.
 
 **The per-run graph is where each run stopped.** Every dispatch walks the same five
 stages — dispatched → alive → outbox → PM verdict → recorded — so the truthful

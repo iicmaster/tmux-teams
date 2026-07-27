@@ -24,12 +24,6 @@ const HAS_PYTHON_JSONSCHEMA = spawnSync('python3', ['-c', 'import jsonschema'], 
   encoding: 'utf8',
 }).status === 0
 const FONT_CSS_NAME = `pulse-fonts-${createHash('sha256').update(KANIT_FONT_CSS).digest('hex')}.css`
-const D3_JS = readFileSync(join(SKILL, 'assets', 'd3', 'd3.v7.9.0.min.js'), 'utf8')
-const D3_LICENSE = readFileSync(join(SKILL, 'assets', 'd3', 'LICENSE'), 'utf8')
-const D3_JS_NAME =
-  `pulse-d3-7.9.0-${createHash('sha256').update(D3_JS).digest('hex')}.min.js`
-const D3_LICENSE_NAME =
-  `pulse-d3-7.9.0-license-${createHash('sha256').update(D3_LICENSE).digest('hex')}.txt`
 
 const digest = (char) => `sha256:${char.repeat(64)}`
 const nowIso = (offsetMs = 0) => new Date(Date.now() + offsetMs).toISOString()
@@ -194,8 +188,6 @@ test.afterEach(() => {
 })
 
 const fontCssPath = (dir) => join(dir, '.tmux-teams', FONT_CSS_NAME)
-const d3JsPath = (dir) => join(dir, '.tmux-teams', D3_JS_NAME)
-const d3LicensePath = (dir) => join(dir, '.tmux-teams', D3_LICENSE_NAME)
 
 function writeProjection(dir, value = projection()) {
   const path = join(dir, 'delivery-loop-projection.json')
@@ -886,8 +878,6 @@ test('publish fencing is checked inside each atomic rename boundary', () => {
     'a reclaimed publisher must be fenced out immediately before rename')
   for (const call of [
     'atomicWriteIfChanged(FONT_CSS_OUT, KANIT_FONT_CSS, token)',
-    'atomicWriteIfChanged(D3_JS_OUT, D3_JS, token)',
-    'atomicWriteIfChanged(D3_LICENSE_OUT, D3_LICENSE, token)',
     'atomicWrite(JSON_OUT, jsonText, token)',
     'atomicWrite(OUT, html, token)',
     'atomicWrite(GRAPH_OUT, graphHtml, token)',
@@ -898,19 +888,15 @@ test('publish fencing is checked inside each atomic rename boundary', () => {
   }
 })
 
-test('corrupted content-addressed font and D3 assets are repaired by a v4 publish', () => {
+test('a corrupted content-addressed font asset is repaired by a v4 publish', () => {
   const dir = repo()
   const projectionPath = writeProjection(dir)
   runJson(dir, projectionPath)
   writeFileSync(fontCssPath(dir), 'corrupt\n')
-  writeFileSync(d3JsPath(dir), 'corrupt\n')
-  writeFileSync(d3LicensePath(dir), 'corrupt\n')
 
   const repaired = runJson(dir, projectionPath).snapshot
   assert.equal(repaired.schema_version, 4)
   assert.equal(readFileSync(fontCssPath(dir), 'utf8'), KANIT_FONT_CSS)
-  assert.equal(readFileSync(d3JsPath(dir), 'utf8'), D3_JS)
-  assert.equal(readFileSync(d3LicensePath(dir), 'utf8'), D3_LICENSE)
 })
 
 test('compat-v1 is a stdout-only downprojection and leaves the sole SSOT untouched', () => {
