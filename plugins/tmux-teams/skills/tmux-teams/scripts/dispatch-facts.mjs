@@ -121,7 +121,10 @@ export function readWorkItems(repo) {
 // probe, or work belonging to a graph that no longer exists. Without it the only
 // ways out are to lie (`completed`) or to leave the token occupying a team it
 // will never leave, which on a WIP-1 team deadlocks that team forever.
-export const RELEASING_EVENTS = new Set(['completed', 'abandoned'])
+// A finished route stays finished while the outer controller reads it. An audit
+// observes a delivery; it never takes custody of one, so it must not put a
+// closed token back into a team's WIP.
+export const RELEASING_EVENTS = new Set(['completed', 'abandoned', 'audit_requested', 'audited'])
 
 export function teamOccupancy(graph, items) {
   const teamOf = new Map()

@@ -44,6 +44,11 @@ const TWO_TEAMS = {
   workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['build', 'test'] }],
 }
 
+// The ledger fixtures are stamped on this date, so a real clock would read every
+// held token as stalled by years.
+const FIXED_NOW = Date.parse('2026-07-27T09:00:00.000Z')
+const FIXED_ISO = '2026-07-27T09:00:00.000Z'
+
 const graphOf = (value) => {
   const result = validateWorkflowGraph(value)
   assert.equal(result.ok, true, result.reason ?? '')
@@ -340,7 +345,7 @@ test('a permanent problem does not re-dispatch the controller every cooldown', (
     const occupancy = teamOccupancy(graph, items)
     const plans = [{ action: 'escalate', work_item: 'tok', team: 'test', reason: 'nothing can place this' }]
 
-    const first = planEscalation(dir, graph, items, plans, occupancy)
+    const first = planEscalation(dir, graph, items, plans, occupancy, { now: FIXED_NOW, stallSec: 1e9 })
     assert.equal(first.action, 'escalate')
     mkdirSync(join(dir, '.tmux-teams', 'pm-notes'), { recursive: true })
     writeFileSync(join(dir, '.tmux-teams', 'pm-notes', 'latest.md'),
@@ -349,12 +354,12 @@ test('a permanent problem does not re-dispatch the controller every cooldown', (
     // A token nobody can place stays in `triggers` forever. Time alone is no
     // brake on that: past the cooldown it would dispatch a full agent to read
     // the same board again, every cooldown, indefinitely.
-    const again = planEscalation(dir, graph, items, plans, occupancy, { now: Date.now() + 86_400_000 })
+    const again = planEscalation(dir, graph, items, plans, occupancy, { now: FIXED_NOW + 86_400_000, stallSec: 1e9 })
     assert.equal(again.action, 'unchanged')
 
     const changed = planEscalation(dir, graph, items,
       [...plans, { action: 'escalate', work_item: 'other', team: 'build', reason: 'new problem' }],
-      occupancy, { now: Date.now() + 86_400_000 })
+      occupancy, { now: FIXED_NOW + 86_400_000, stallSec: 1e9 })
     assert.equal(changed.action, 'escalate', 'a new problem must still reach the controller')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
@@ -378,7 +383,7 @@ test('the outer controller is dispatched when the runner runs out of moves', () 
     const graph = graphOf(TWO_TEAMS)
     const items = itemsOf(['tok', [{ event: 'pulled', agent_id: 't_d', from_team: 'build', to_team: 'test' }]])
     const plans = [{ action: 'escalate', work_item: 'tok', team: 'test', reason: '3 worker attempts all failed' }]
-    const escalation = planEscalation(dir, graph, items, plans, teamOccupancy(graph, items))
+    const escalation = planEscalation(dir, graph, items, plans, teamOccupancy(graph, items), { now: FIXED_NOW, stallSec: 1e9 })
 
     assert.equal(escalation.action, 'escalate')
     assert.equal(escalation.agent_id, 'pm', 'the declared outer controller is the one that gets dispatched')
@@ -388,7 +393,7 @@ test('the outer controller is dispatched when the runner runs out of moves', () 
 
     // Nothing is escalated when nothing is stuck: a controller on a timer bills
     // for looking at a board that has not changed.
-    assert.equal(planEscalation(dir, graph, items, [], teamOccupancy(graph, items)), null)
+    assert.equal(planEscalation(dir, graph, items, [], teamOccupancy(graph, items), { now: FIXED_NOW, stallSec: 1e9 }), null)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -582,6 +587,116 @@ test('a token cannot exceed its leg ceiling unless the controller grants more', 
   ]), new Set())[0]
   assert.equal(granted.action, 'dispatch')
   assert.equal(granted.role, 'worker')
+})
+
+// ── the controller audits, it does not only firefight ──────────────────────
+//
+// Built as an exception handler alone it never ran once: a whole route finished,
+// recovered from four failed legs on the way, and nobody read the delivery or
+// heard about the failures. Master asked for a controller that checks every team
+// and every workflow is still working correctly.
+
+const ROUTE_DONE = [
+  { event: 'pulled', agent_id: 'b_d', to_team: 'build' },
+  { event: 'intake', agent_id: 'b_d', verdict: 'accept' },
+  { event: 'assigned', agent_id: 'b_w1', task_id: 'b-1' },
+  { event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done' },
+  { event: 'reviewed', agent_id: 'b_e', verdict: 'pass' },
+  { event: 'completed', from_team: 'build' },
+]
+
+test('a finished route is read as a whole, not just leg by leg', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-audit-'))
+  try {
+    const graph = graphOf(TWO_TEAMS)
+    const items = itemsOf(['shipped', ROUTE_DONE])
+    const escalation = planEscalation(dir, graph, items, [], teamOccupancy(graph, items),
+      { now: FIXED_NOW, stallSec: 1e9 })
+
+    // Every evaluator checked its own leg. Nobody checked whether what came out
+    // of the end is what was asked for — that is the only question left, and the
+    // controller is the only role that can see it.
+    assert.equal(escalation.action, 'escalate')
+    assert.deepEqual(escalation.audits, ['shipped'])
+    assert.match(escalation.brief, /nobody has read the delivery as a whole/)
+
+    // And it stops asking once it has been answered.
+    const audited = itemsOf(['shipped', [...ROUTE_DONE,
+      { event: 'audit_requested', agent_id: 'pm', task_id: 'pm-1' },
+      { event: 'audited', agent_id: 'pm', verdict: 'accept' }]])
+    assert.equal(planEscalation(dir, graph, audited, [], teamOccupancy(graph, audited),
+      { now: FIXED_NOW, stallSec: 1e9 }), null)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('reading a finished delivery never puts it back in a team', () => {
+  const graph = graphOf(TWO_TEAMS)
+  for (const tail of [['audit_requested'], ['audit_requested', 'audited']]) {
+    const items = itemsOf(['shipped', [...ROUTE_DONE, ...tail.map((event) => ({ event, agent_id: 'pm' }))]])
+    const occupancy = teamOccupancy(graph, items)
+    assert.equal(occupancy.counts.get('build'), 0, `${tail.join('+')} re-occupied a team`)
+    assert.deepEqual(occupancy.orphans, [])
+  }
+})
+
+test('the controller hears about retries that succeeded quietly', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-noise-'))
+  try {
+    const graph = graphOf(TWO_TEAMS)
+    // Three legs died and the fourth worked. Under the old rule the loop simply
+    // carried on and nobody was ever told it had to try four times.
+    const items = itemsOf(['noisy', [
+      { event: 'pulled', agent_id: 'b_d', to_team: 'build' },
+      { event: 'intake', agent_id: 'b_d', verdict: 'accept' },
+      { event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'protocol-error' },
+      { event: 'delivered', agent_id: 'b_w1', task_id: 'b-2', terminal: 'protocol-error' },
+      { event: 'lost', agent_id: 'b_w1', task_id: 'b-3' },
+      { event: 'assigned', agent_id: 'b_w1', task_id: 'b-4' },
+    ]])
+    const escalation = planEscalation(dir, graph, items, [], teamOccupancy(graph, items),
+      { now: FIXED_NOW, stallSec: 1e9 })
+    assert.equal(escalation.action, 'escalate')
+    assert.match(escalation.brief, /survived 3 failed legs and is still going/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('a board holding work with nothing recorded is a stall, not calm', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-stall-'))
+  try {
+    const graph = graphOf(TWO_TEAMS)
+    const items = itemsOf(['parked', [{ event: 'pulled', agent_id: 'b_d', to_team: 'build' }]])
+    const occupancy = teamOccupancy(graph, items)
+
+    const pulledAt = Date.parse('2026-07-27T00:00:00.000Z')
+    assert.equal(planEscalation(dir, graph, items, [], occupancy,
+      { now: pulledAt + 1_800_000, stallSec: 3600 }), null, 'a team simply working is not a stall')
+
+    const stalled = planEscalation(dir, graph, items, [], occupancy,
+      { now: pulledAt + 7_200_000, stallSec: 3600 })
+    assert.equal(stalled.action, 'escalate')
+    assert.match(stalled.brief, /nothing recorded for \d+ minutes/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('an audit answer closes the flag, and silence does not', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-audit-answer-'))
+  try {
+    mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
+    const graph = graphOf(TWO_TEAMS)
+    const flagged = itemsOf(['shipped', [...ROUTE_DONE,
+      { event: 'audit_requested', agent_id: 'pm', task_id: 'pm-1' }]])
+
+    writeFileSync(join(dir, '.mailbox-out', 'pm-1'), 'I had a look around.\n')
+    assert.deepEqual(applyHarvest(dir, graph, planHarvest(graph, flagged, () => true), FIXED_ISO), [],
+      'an unread answer must not close the audit')
+
+    writeFileSync(join(dir, '.mailbox-out', 'pm-1'),
+      'The spec asked for ten acceptance criteria and the delivery covers eight.\n\nVERDICT: concern\nREASON: AC7 and AC9 are not implemented\n')
+    const [event] = applyHarvest(dir, graph, planHarvest(graph, flagged, () => true), FIXED_ISO)
+    assert.equal(event.event, 'audited')
+    assert.equal(event.verdict, 'concern')
+    assert.match(event.reason, /AC7 and AC9/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
 // ── the page that lands on disk ──────────────────────────────────────────────

@@ -33,7 +33,7 @@ import { fileURLToPath } from 'node:url'
 
 import { readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
 import { planPulls, applyPulls } from './pull-controller.mjs'
-import { INTAKE_VERDICTS, OUTER_VERDICTS, REVIEW_VERDICTS, readVerdict, roleBrief } from './role-briefs.mjs'
+import { AUDIT_VERDICTS, INTAKE_VERDICTS, OUTER_VERDICTS, REVIEW_VERDICTS, readVerdict, roleBrief } from './role-briefs.mjs'
 import { readWorkflowGraph } from './graph-loop.mjs'
 import { teamRoleOf } from './workflow-graph.mjs'
 
@@ -61,6 +61,12 @@ const PULSE_STALE_SEC = 120
 // to get past a transient cause, not an open cheque. Each grant costs one PM
 // dispatch, so the ceiling can only rise deliberately.
 const RESUME_GRANT = 3
+// A board holding work that has not moved in this long is not calm, it is stuck.
+const STALL_SEC = 1800
+// Retries that succeed are the loop working. Retries that succeed SILENTLY are
+// the loop hiding how hard it had to work — one route recovered from four failed
+// legs and nobody heard a thing.
+const RETRY_NOISE = 3
 
 const readJson = (path, fallback = null) => {
   try { return JSON.parse(readFileSync(path, 'utf8')) } catch { return fallback }
@@ -135,6 +141,18 @@ function lastWorkerDelivery(graph, item) {
 }
 
 const lastOf = (item, predicate) => [...item.custody].reverse().find(predicate) || null
+
+const failedLegs = (item) => item.custody.filter((entry) =>
+  entry.event === 'lost' || (entry.event === 'delivered' && entry.terminal && entry.terminal !== 'done')).length
+
+// A route that closed and has not been read as a whole. Every evaluator checked
+// its own leg; nobody checked whether what came out of the end is what was
+// asked for.
+const awaitingAudit = (item) => {
+  const events = item.custody.map((entry) => entry.event)
+  const closed = events.lastIndexOf('completed')
+  return closed !== -1 && !events.slice(closed).some((event) => event === 'audit_requested' || event === 'audited')
+}
 
 // ── briefs ───────────────────────────────────────────────────────────────────
 
@@ -219,6 +237,10 @@ export function planHarvest(graph, items, hasOutbox = () => false) {
       if (last.task_id && hasOutbox(last.task_id)) jobs.push({ item, last, role: 'outer' })
       continue
     }
+    if (last.event === 'audit_requested') {
+      if (last.task_id && hasOutbox(last.task_id)) jobs.push({ item, last, role: 'audit' })
+      continue
+    }
     if (last.event !== 'delivered' || last.terminal !== 'done') continue
     const role = teamRoleOf(graph, last.agent_id)?.role
     if (role === 'dispatcher' || role === 'evaluator') jobs.push({ item, last, role })
@@ -250,6 +272,14 @@ function harvestEvent(repo, graph, { item, last, role }, now) {
       ...base, event: 'returned', to_team: pulled.from_team, refused_by: last.agent_id,
       reason: stated ? (reason || 'no reason stated') : 'the dispatcher stated no verdict',
     }
+  }
+
+  if (role === 'audit') {
+    const { verdict, stated, reason } = readVerdict(text, AUDIT_VERDICTS)
+    // Same rule as every other gate: an unread answer changes nothing, and the
+    // token stays flagged so the next tick asks again rather than closing it.
+    if (!stated) return null
+    return { ...base, event: 'audited', agent_id: last.agent_id, verdict, reason: reason || 'no reason stated' }
   }
 
   if (role === 'outer') {
@@ -459,12 +489,47 @@ const boardSummary = (graph, items, occupancy) => graph.teams.map((team) => {
 
 // Anomaly-triggered, never on a heartbeat: a timer that dispatches a full agent
 // every interval bills for looking at a board that has not changed.
-export function planEscalation(repo, graph, items, plans, occupancy, { now = Date.now(), cooldownSec = PM_COOLDOWN_SEC } = {}) {
+export function planEscalation(repo, graph, items, plans, occupancy, { now = Date.now(), cooldownSec = PM_COOLDOWN_SEC, stallSec = STALL_SEC } = {}) {
   const triggers = plans.filter((plan) => plan.action === 'escalate')
     .map((plan) => `- \`${plan.work_item}\` in ${plan.team}: ${plan.reason}`)
   for (const orphan of occupancy.orphans) {
     triggers.push(`- \`${orphan.work_item}\` cannot be placed: last actor \`${orphan.agent_id || 'none'}\`, workflow \`${orphan.workflow || 'none'}\``)
   }
+
+  // Master asked for a controller that checks every team and every workflow is
+  // still working correctly. Built as an exception handler alone it never ran
+  // once: a whole route completed, recovered from four failed legs on the way,
+  // and nobody looked at the delivery or heard about the failures. These are
+  // events, not a timer — the objection to a heartbeat was that it bills for
+  // reading a board that has not changed, and none of these fire unless it has.
+  const audits = [...items.values()].filter(awaitingAudit)
+  for (const item of audits) {
+    const failed = failedLegs(item)
+    triggers.push(`- \`${item.work_item}\` finished ${item.workflow || 'its route'} — nobody has read the delivery as a whole`
+      + (failed ? ` (it recovered from ${failed} failed leg(s) on the way)` : ''))
+  }
+
+  const held = [...occupancy.held.values()].flat()
+  for (const workItem of held) {
+    const item = items.get(workItem)
+    const failed = failedLegs(item)
+    if (failed >= RETRY_NOISE) {
+      triggers.push(`- \`${workItem}\` has survived ${failed} failed legs and is still going — retries are hiding them`)
+    }
+  }
+
+  // Nothing moving while work is held is a stall, not calm.
+  if (held.length) {
+    const newest = held.reduce((latest, workItem) => {
+      const at = Date.parse(items.get(workItem).custody[items.get(workItem).custody.length - 1]?.at || '')
+      return Number.isFinite(at) && at > latest ? at : latest
+    }, 0)
+    const idleSec = newest ? Math.round((now - newest) / 1000) : 0
+    if (newest && idleSec > stallSec) {
+      triggers.push(`- the board has held ${held.length} token(s) with nothing recorded for ${Math.round(idleSec / 60)} minutes`)
+    }
+  }
+
   if (!triggers.length) return null
 
   const notesDir = join(repo, '.tmux-teams', 'pm-notes')
@@ -488,6 +553,7 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
     action: 'escalate',
     agent_id: graph.outer_controller_id,
     triggers,
+    audits: audits.map((item) => item.work_item),
     brief: roleBrief(repo, 'pm', null, {
       projectId: graph.project_id || 'unnamed',
       trigger: triggers.join('\n'),
@@ -626,6 +692,17 @@ export function tick(repoArg, { apply = true, stallSec = 1800, scratchDir } = {}
       started.push({ action: 'dispatch', role: 'pm', agent_id: escalation.agent_id, task_id: taskId })
       // Each escalated token is marked so the loop stops re-triggering on it
       // while the controller is thinking.
+      // A finished route is flagged, not parked: `audit_requested` releases the
+      // token exactly like `completed` does, so reading a delivery never puts it
+      // back into a team's WIP.
+      for (const workItem of escalation.audits || []) {
+        appendEvent(repo, {
+          at: new Date().toISOString(), event: 'audit_requested', work_item: workItem,
+          workflow: items.get(workItem)?.workflow || null,
+          agent_id: escalation.agent_id, task_id: taskId,
+          reason: 'route finished — read the delivery as a whole',
+        })
+      }
       for (const plan of plans.filter((entry) => entry.action === 'escalate')) {
         appendEvent(repo, {
           at: new Date().toISOString(), event: 'escalated', work_item: plan.work_item,

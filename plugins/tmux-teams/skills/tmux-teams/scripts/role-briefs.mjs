@@ -26,6 +26,10 @@ export const REVIEW_VERDICTS = new Set(['pass', 'reject', 'unresolved'])
 // worked on. Without these two words an escalation is a one-way door: the
 // controller writes a note nobody reads and the token is parked forever.
 export const OUTER_VERDICTS = new Set(['resume', 'abandon'])
+// A route-level audit asks a different question from an unparking decision. The
+// work is already finished; the only thing left to say is whether what came out
+// of the end is sound.
+export const AUDIT_VERDICTS = new Set(['accept', 'concern'])
 
 // The LAST verdict line wins, not the first. These briefs print the required
 // format as literal text, and an agent restating "I will end with VERDICT: pass
@@ -144,10 +148,25 @@ ${board}
 
 ${SHARED_RULES}
 
-## Your verdict moves the work
+## Two jobs, and the trigger above tells you which one this is
 
-You are the only role whose word un-parks a token. The loop has stopped on it
-and will not move it again until you answer:
+**A finished route to audit.** Every team's evaluator checked its own leg —
+Design checked the spec, Build checked the code, Test checked the tests. Nobody
+checked whether what came out of the end is what was actually asked for. That is
+your job and only yours, because you are the only role that sees the whole
+route. Read the token's request and the last team's delivery, and answer:
+
+- **accept** — the delivery answers the request. Say what you verified.
+- **concern** — it does not, or something about how it got there is wrong.
+  The route is already closed, so a concern is a report for a human, not a
+  rerun. Be specific enough to act on.
+
+Retries that succeeded still count. A route that failed four times and recovered
+is not the same as one that ran clean, and nobody hears about those failures
+unless you say so.
+
+**A parked token to unstick.** The loop stopped and will not move it again until
+you answer:
 
 - **resume** — the cause is something a rerun can get past (a transport
   failure, a brief that has since been fixed, a team that was starved). The
@@ -171,10 +190,12 @@ Your outbox, in this order:
 3. Anything the loop is measuring wrongly — you are the only role that sees the
    whole board, so a wrong number here is yours to report.
 
-End with exactly these two lines and nothing after them:
+End with exactly these two lines and nothing after them, using the verdict word
+that matches the job above (\`accept\` or \`concern\` for an audit; \`resume\`
+or \`abandon\` for a parked token):
 
-VERDICT: resume
-REASON: <one line — why a rerun can get past this, or why nobody will finish it>`
+VERDICT: accept
+REASON: <one line — what you verified, or exactly what is wrong and who must act>`
 
 const BUILDERS = { dispatcher: dispatcherBrief, evaluator: evaluatorBrief, pm: pmBrief }
 

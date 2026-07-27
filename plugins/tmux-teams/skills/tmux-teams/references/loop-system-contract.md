@@ -113,6 +113,8 @@ Common fields on every event: `at` (ISO 8601 UTC), `event`, `work_item`,
 | `escalated` | runner | `agent_id` = controller, `to_team`, `task_id`, `reason` | parked with the outer controller |
 | `resumed` | runner (harvest) | `agent_id` = controller, `to_team`, `grant`, `reason` | the controller sent it back with a fresh budget |
 | `completed` | pull-controller | `from_team` | the route finished |
+| `audit_requested` | runner | `agent_id` = controller, `task_id`, `reason` | a finished route flagged for a whole-delivery read |
+| `audited` | runner (harvest) | `agent_id` = controller, `verdict`, `reason` | the controller read the delivery |
 | `abandoned` | runner (harvest) or a human | `reason` | nobody will finish this token |
 
 Rules:
@@ -148,7 +150,9 @@ One token, keyed on its last event and the role of the actor.
 | `reviewed` | `unresolved` | escalate |
 | `escalated` | controller outbox exists | harvest → `resumed` or `abandoned` |
 | `escalated` | no answer yet | held; the runner does not move it |
-| `completed`, `abandoned` | — | terminal; the token holds nothing |
+| `completed` | not yet audited | flag `audit_requested` and dispatch the controller |
+| `audit_requested` | controller outbox exists | harvest → `audited` |
+| `completed`, `audited`, `abandoned` | — | terminal; the token holds nothing |
 
 **Ordering within a tick is fixed:** harvest → pulls → dispatch → escalation.
 Harvesting after pulling would let the controller evaluate a stale event, and
@@ -162,7 +166,9 @@ readers computing it separately is how a board came to draw a limit that was not
 being enforced.
 
 - A team holds a token from the moment it pulls it until the route closes.
-- `RELEASING_EVENTS = {completed, abandoned}`. Everything else holds.
+- `RELEASING_EVENTS = {completed, abandoned, audit_requested, audited}`. Everything
+  else holds. An audit *observes* a delivery; it never takes custody of one, so
+  reading a finished route must not put it back into a team's WIP.
 - Placement: `teamOf(last.agent_id)` if the actor is a declared team member,
   otherwise `last.to_team`, otherwise the token is an **orphan** and is surfaced,
   never dropped.
@@ -208,10 +214,21 @@ Parsing rules, non-negotiable:
 
 ## 9. Outer controller
 
-- **Anomaly-triggered only.** Never on a heartbeat: a timer that dispatches a
-  full agent every interval bills for looking at a board that has not changed.
-- Triggers: a spent retry budget, an unresolved review, a leg ceiling reached,
-  or a token that cannot be placed.
+- **Event-triggered, never on a heartbeat.** A timer bills for reading a board
+  that has not changed. Every trigger below is something that *did* change.
+- It has two jobs. **Auditing** is the standing one: no team's evaluator can see
+  past its own leg, so only this role can ask whether what came out of the end is
+  what was asked for. **Unsticking** is the exceptional one.
+- Triggers:
+  1. a route reached `completed` and nobody has read the delivery as a whole
+  2. a held token has survived `RETRY_NOISE` or more failed legs — retries that
+     succeed quietly hide how hard the loop had to work
+  3. the board holds work with nothing recorded for longer than `STALL_SEC`
+  4. a spent retry budget, an unresolved review, or a leg ceiling reached
+  5. a token that cannot be placed
+- Verdict families, chosen by which job the trigger names: `accept` | `concern`
+  for an audit (the route is already closed, so a concern is a report for a
+  human, not a rerun) and `resume` | `abandon` for a parked token.
 - Two brakes, both required: a **time cooldown** (`PM_COOLDOWN_SEC`) and an
   **unchanged-trigger** check against the last note. Time alone is no brake on a
   permanent condition.
@@ -235,6 +252,8 @@ Parsing rules, non-negotiable:
 | `ZOMBIE_SEC` | 180 s | an `assigned` with no live process | append `lost` |
 | `PULSE_STALE_SEC` | 120 s | evidence age | refuse to dispatch |
 | `PM_COOLDOWN_SEC` | 900 s | between controller dispatches | hold |
+| `STALL_SEC` | 1800 s | held work with nothing recorded | escalate |
+| `RETRY_NOISE` | 3 | failed legs survived by one held token | escalate |
 
 Every ceiling must be **visible when it is hit**. A runner that logs only the
 happy path looks identical to one that has silently given up.
@@ -396,6 +415,11 @@ marked as such here.
 | AC30 | §10 | a lost leg is recorded, not left occupying its team forever |
 | AC31 | §10 | the board as a whole has a dispatch ceiling, not only each team |
 | AC32 | §10 | a token cannot exceed its leg ceiling unless the controller grants more |
+| AC33 | §9 | a finished route is read as a whole, not just leg by leg |
+| AC34 | §6 | reading a finished delivery never puts it back in a team |
+| AC35 | §9 | the controller hears about retries that succeeded quietly |
+| AC36 | §9 | a board holding work with nothing recorded is a stall, not calm |
+| AC37 | §8, §9 | an audit answer closes the flag, and silence does not |
 
 ### 14.1 Clauses this contract does NOT yet enforce
 
