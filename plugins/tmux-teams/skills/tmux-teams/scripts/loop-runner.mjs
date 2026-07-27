@@ -119,6 +119,15 @@ function composeBrief(repo, graph, plan, item, scratchDir) {
   const { team, role } = plan
   const parts = []
 
+  // The route carries artifacts forward, but the original ask had nowhere to
+  // live: the first team on a route got a standing brief describing what that
+  // team does and nothing saying what this token is FOR. The token owns its own
+  // request, so every role on every leg reads the same one.
+  const request = join(repo, '.tmux-teams', 'work-items', `${item.work_item}.md`)
+  if (existsSync(request)) {
+    parts.push(`# The request this token carries (\`${item.work_item}\`)\n\n${readFileSync(request, 'utf8')}\n\n---\n\n`)
+  }
+
   if (role === 'worker') {
     const standing = join(repo, '.tmux-teams', 'team-briefs', `${team.team_id}.md`)
     if (!existsSync(standing)) {

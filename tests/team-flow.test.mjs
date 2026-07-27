@@ -165,6 +165,32 @@ test('an edge only hardens once evidence exists for it', () => {
   assert.match(rejected, /0 pass 1 reject/)
 })
 
+test('every role states the work it actually did, from the ledger', () => {
+  const graph = graphOf(TWO_TEAMS)
+  const items = new Map([ledger('tok', [
+    { at: '2026-07-27T01:00:00.000Z', event: 'pulled', work_item: 'tok', agent_id: 'b_d', to_team: 'build' },
+    { at: '2026-07-27T01:05:00.000Z', event: 'intake', work_item: 'tok', agent_id: 'b_d', verdict: 'accept' },
+    { at: '2026-07-27T02:00:00.000Z', event: 'delivered', work_item: 'tok', agent_id: 'b_w1', terminal: 'done' },
+    { at: '2026-07-27T02:30:00.000Z', event: 'delivered', work_item: 'tok', agent_id: 'b_w1', terminal: 'protocol-error' },
+    { at: '2026-07-27T03:00:00.000Z', event: 'reviewed', work_item: 'tok', agent_id: 'b_e', verdict: 'reject' },
+    { at: '2026-07-27T04:00:00.000Z', event: 'returned', work_item: 'tok', to_team: 'build', refused_by: 'v_d' },
+    { at: '2026-07-27T05:00:00.000Z', event: 'escalated', work_item: 'tok', agent_id: 'pm' },
+  ])])
+  const svg = renderLoopGraphSvg(graph, snapshotWith(), new Map(), undefined, items)
+
+  // A node that only says "no dispatch observed" is a box, not evidence. Pulse
+  // knows a process ran; only the ledger knows whether that run accepted a
+  // handoff, produced an artifact, or refused one.
+  assert.match(svg, /1 accepted · 0 returned/, 'the dispatcher that accepted a handoff')
+  assert.match(svg, /0 accepted · 1 returned/, 'the dispatcher that refused one')
+  assert.match(svg, /1 delivered · 1 failed/, 'the worker that delivered once and failed once')
+  assert.match(svg, /0 pass · 1 reject/, 'the evaluator that rejected')
+  assert.match(svg, /1 escalation\(s\) handled/, 'the outer controller')
+  // An agent with nothing recorded must say so rather than print a zero that
+  // reads like a measurement.
+  assert.match(svg, /nothing recorded yet/)
+})
+
 test('the newest dispatch wins when one agent ran more than once', () => {
   const svg = renderLoopGraphSvg(graphOf(TWO_TEAMS), snapshotWith([
     run('v_w1', 'died', { started_at: '2026-07-26T00:00:00.000Z' }),

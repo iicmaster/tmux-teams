@@ -89,6 +89,50 @@ function verdictsByAgent(snapshot) {
   return byAgent
 }
 
+// What each agent has actually DONE, read from the custody ledger the runner
+// writes. Pulse can say a process ran; only the ledger says whether that run
+// accepted a handoff, produced an artifact, or refused one — which is the
+// difference between a node that is merely drawn and a node that means
+// something. Counting from the ledger also keeps these numbers true even if the
+// separate verdict-to-snapshot chain breaks.
+const EMPTY_WORK = Object.freeze({
+  accepted: 0, returned: 0, pass: 0, reject: 0, unresolved: 0,
+  delivered: 0, failed: 0, escalations: 0,
+})
+
+function activityByAgent(items) {
+  const byAgent = new Map()
+  const bump = (agentId, key) => {
+    if (!agentId) return
+    const row = byAgent.get(agentId) || { ...EMPTY_WORK }
+    row[key] += 1
+    byAgent.set(agentId, row)
+  }
+  for (const item of items.values()) {
+    for (const entry of item.custody || []) {
+      if (entry.event === 'intake') bump(entry.agent_id, 'accepted')
+      // A refusal is recorded without an agent_id on purpose — the token moved
+      // back to the sending team — so the dispatcher that refused it is named
+      // in its own field.
+      else if (entry.event === 'returned') bump(entry.refused_by, 'returned')
+      else if (entry.event === 'reviewed') {
+        bump(entry.agent_id, ['pass', 'reject'].includes(entry.verdict) ? entry.verdict : 'unresolved')
+      } else if (entry.event === 'delivered') bump(entry.agent_id, entry.terminal === 'done' ? 'delivered' : 'failed')
+      else if (entry.event === 'lost') bump(entry.agent_id, 'failed')
+      else if (entry.event === 'escalated') bump(entry.agent_id, 'escalations')
+    }
+  }
+  return byAgent
+}
+
+const workLine = (role, work) => {
+  if (!work) return 'nothing recorded yet'
+  if (role === 'dispatcher') return `${work.accepted} accepted · ${work.returned} returned`
+  if (role === 'evaluator') return `${work.pass} pass · ${work.reject} reject`
+  if (role === 'outer') return `${work.escalations} escalation(s) handled`
+  return `${work.delivered} delivered · ${work.failed} failed`
+}
+
 const statusOf = (run) => !run ? 'unbound'
   : WORKING.has(run.state) ? 'working'
     : DELIVERED.has(run.state) ? 'delivered'
@@ -122,7 +166,7 @@ const modelLine = (run) => !run ? '—' : run.model ? run.model : 'unverified'
 // ── LAYOUT (arithmetic only) ─────────────────────────────────────────────────
 const PAD = 28
 const NODE_W = 190
-const NODE_H = 58
+const NODE_H = 68   // five lines: id, role · lane, model, work done, clock
 const NODE_GAP = 16
 const LANE_PAD = 16
 const LANE_HEAD = 38
@@ -146,7 +190,7 @@ const TOP_PAD = 36
 // corner, and the full sentence in a hover tooltip. Colour alone fails anyone
 // printing this in greyscale or reading it colour-blind; the tooltip is where
 // the wording stays honest when the box has no room for it.
-const agentNode = (x, y, role, agentId, status, statusText, timing, lane, model) => `
+const agentNode = (x, y, role, agentId, status, statusText, timing, lane, model, work) => `
   <g class="node n-${status}" transform="translate(${x},${y})">
     <title>${esc(`${agentId} — ${statusText}`)}</title>
     <rect width="${NODE_W}" height="${NODE_H}" rx="8"/>
@@ -154,6 +198,7 @@ const agentNode = (x, y, role, agentId, status, statusText, timing, lane, model)
     <text class="n-title" x="11" y="18">${esc(clip(agentId, 22))}</text>
     <text class="n-meta" x="11" y="32">${esc(clip(`${role} · ${lane}`, 30))}</text>
     <text class="n-meta" x="11" y="43">${esc(clip(`model ${model}`, 30))}</text>
+    <text class="n-work" x="11" y="54">${esc(clip(work, 30))}</text>
     <text class="n-time" x="11" y="${NODE_H - 6}">${esc(clip(timing, 30))}</text>
   </g>`
 
@@ -212,7 +257,7 @@ function renderRouteStrips(graph, topY) {
   return { svg: parts.join('\n'), nextY: y + 28 }
 }
 
-function renderTeamPool(graph, topY, runs, verdicts, occupancy) {
+function renderTeamPool(graph, topY, runs, verdicts, occupancy, activity) {
   const parts = []
   const laneAnchors = []
   let x = PAD
@@ -253,17 +298,26 @@ function renderTeamPool(graph, topY, runs, verdicts, occupancy) {
       }
     }, { pass: 0, reject: 0, unresolved: 0 })
 
-    const place = (id, role, nx, ny) => {
+    // The ledger is authoritative about reviewing once it has anything to say;
+    // the snapshot tally is the fallback for a repo with no ledger yet. Two
+    // sources that can disagree on the same page is the failure this whole page
+    // has been fighting, so one of them has to win outright.
+    const ledgerReview = activity.get(team.evaluator_id)
+    const reviewTally = ledgerReview && (ledgerReview.pass + ledgerReview.reject + ledgerReview.unresolved) > 0
+      ? ledgerReview
+      : teamTally
+
+    const place = (id, roleLabel, nx, ny) => {
       const run = runs.get(id) || null
       const status = statusOf(run)
-      const tally = role.startsWith("EVALUATOR")
-        ? teamTally
-        : verdicts.get(id) || { pass: 0, reject: 0, unresolved: 0 }
-      const stateText = role.startsWith("EVALUATOR")
+      const role = roleLabel.toLowerCase()
+      const tally = role.startsWith("evaluator") ? reviewTally : verdicts.get(id) || { pass: 0, reject: 0, unresolved: 0 }
+      const stateText = role.startsWith("evaluator")
         ? `${STATUS_COPY[status]} · ${tally.pass} pass ${tally.reject} reject`
         : STATUS_COPY[status]
-      parts.push(agentNode(nx, ny, role, id, status, stateText,
-        timingOf(run, status), laneLine(run), modelLine(run)))
+      parts.push(agentNode(nx, ny, roleLabel, id, status, stateText,
+        timingOf(run, status), laneLine(run), modelLine(run),
+        workLine(role, activity.get(id))))
       return run
     }
 
@@ -283,7 +337,7 @@ function renderTeamPool(graph, topY, runs, verdicts, occupancy) {
     })
 
     // Rework returns to this team own dispatcher, around the outside.
-    const rejected = teamTally.reject > 0
+    const rejected = reviewTally.reject > 0
     const side = x + colW - LANE_PAD / 2
     parts.push(`
   <path class="edge k-reject ${rejected ? "e-solid" : "e-dashed"}"
@@ -295,14 +349,15 @@ function renderTeamPool(graph, topY, runs, verdicts, occupancy) {
   }
   return { svg: parts.join("\n"), height, width: x - LANE_GAP + PAD, laneAnchors }
 }
-export function renderLoopGraphSvg(graph, snapshot, facts = new Map(), occupancy = { counts: new Map(), held: new Map(), orphans: [] }) {
+export function renderLoopGraphSvg(graph, snapshot, facts = new Map(), occupancy = { counts: new Map(), held: new Map(), orphans: [] }, items = new Map()) {
   const { byAgent } = evidenceByAgent(snapshot, facts)
   const verdicts = verdictsByAgent(snapshot)
+  const activity = activityByAgent(items)
   const controller = graph.outer_controller_id ? byAgent.get(graph.outer_controller_id) : null
 
   // Teams first: the structure is what the page is for. Routes are a summary
   // of how work travels across it, so they read better after it, not through it.
-  const pool = renderTeamPool(graph, TOP_PAD + HEAD_H + 48, byAgent, verdicts, occupancy)
+  const pool = renderTeamPool(graph, TOP_PAD + HEAD_H + 48, byAgent, verdicts, occupancy, activity)
   const routes = renderRouteStrips(graph, TOP_PAD + HEAD_H + 48 + pool.height + 72)
   const stripWidth = PAD + 170 +
     Math.max(...graph.workflows.map((entry) => entry.route.length + 1)) * (STRIP_BOX + STRIP_ARROW) + PAD
@@ -316,6 +371,7 @@ export function renderLoopGraphSvg(graph, snapshot, facts = new Map(), occupancy
     <text class="n-role" x="15" y="19">PM OUTER LOOP</text>
     <text class="n-title" x="15" y="36">${esc(graph.outer_controller_id || 'no outer controller declared')}</text>
     <text class="n-sub" x="15" y="52">exceptions, deadlocks and WIP-limit bottlenecks only — never reviews work on a team's behalf</text>
+    <text class="n-work" x="${width - PAD * 2 - 15}" y="36" text-anchor="end">${esc(workLine('outer', activity.get(graph.outer_controller_id)))}</text>
   </g>`
 
   // The outer loop is a real relationship, not decoration: the PM watches every
@@ -420,6 +476,7 @@ body{margin:0;background:var(--bg);color:var(--ink);font:400 16px/1.6 var(--sans
 .node{cursor:default}
 .node .n-title{fill:var(--ink);font:600 .72rem var(--mono)}
 .node .n-state{fill:var(--ink);font:500 .7rem var(--sans)}
+.node .n-work{fill:var(--ink);font:500 .6rem var(--mono);font-variant-numeric:tabular-nums}
 .node .n-time{fill:var(--dim);font:400 .58rem var(--mono);font-variant-numeric:tabular-nums}
 .node .n-sub{fill:var(--dim);font:400 .64rem var(--mono)}
 .n-working rect{stroke:var(--ok);stroke-width:2.5}
@@ -499,7 +556,7 @@ export function renderTeamFlowPage(repo, snapshot, { fontCssName = FONT_CSS_NAME
    <span class="note" data-refresh-note>Polling the local snapshot marker</span></p>
 </header>
 ${occupancy.orphans.length || skippedLines ? `<p class="orphans">${occupancy.orphans.length ? `${occupancy.orphans.length} work item(s) cannot be placed — agent or workflow not in this graph: ${esc(occupancy.orphans.map((o) => o.work_item).join(", "))}. ` : ""}${skippedLines ? `${skippedLines} unreadable ledger line(s) skipped.` : ""}</p>` : ""}
-<div class="chart">${renderLoopGraphSvg(value, snapshot, facts, occupancy)}</div>
+<div class="chart">${renderLoopGraphSvg(value, snapshot, facts, occupancy, items)}</div>
 <div class="below">
 <section class="tiles">
   ${tile(inFlight, 'work items in a team right now', inFlight ? 'ok' : '')}
