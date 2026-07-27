@@ -96,3 +96,45 @@ export function readWorkItems(repo) {
   }
   return { items, skippedLines }
 }
+
+// Where the work actually is. A token occupies a team from the moment that team
+// pulls it until it is handed on, so occupancy counts WORK, not processes: a
+// worker exiting does not empty the queue it was working from.
+//
+// This rule lives here, once, because two readers computing it separately is
+// how a board and a controller end up disagreeing about the same team.
+// Listing which events occupy a team was a bug factory: every event added to
+// the protocol had to be remembered here, and the one that got forgotten
+// silently emptied a team that was still holding the work. The rule is
+// inverted instead — a team holds a token from the moment it pulls it until
+// the route closes, so an event nobody taught this function about leaves the
+// work where it is rather than making it disappear.
+export const RELEASING_EVENTS = new Set(['completed'])
+
+export function teamOccupancy(graph, items) {
+  const teamOf = new Map()
+  for (const team of graph.teams) {
+    for (const agent of team.agents) teamOf.set(agent.agent_id, team.team_id)
+  }
+  const counts = new Map(graph.teams.map((team) => [team.team_id, 0]))
+  const held = new Map(graph.teams.map((team) => [team.team_id, []]))
+  const orphans = []
+  for (const item of items.values()) {
+    const last = item.custody[item.custody.length - 1]
+    if (!last) continue
+    // The route is closed, so nobody is holding it. Counting a finished token
+    // as unplaceable is how the page ended up accusing its own completed work
+    // of being an error.
+    if (RELEASING_EVENTS.has(last.event)) continue
+    const teamId = teamOf.get(last.agent_id) ?? last.to_team ?? null
+    if (teamId === null || !counts.has(teamId)) {
+      // A token whose agent or workflow no longer exists in the declared graph
+      // is unplaceable. It is surfaced, never silently dropped.
+      orphans.push({ work_item: item.work_item, event: last.event, agent_id: last.agent_id || '', workflow: item.workflow || '' })
+      continue
+    }
+    counts.set(teamId, counts.get(teamId) + 1)
+    held.get(teamId).push(item.work_item)
+  }
+  return { counts, held, orphans }
+}

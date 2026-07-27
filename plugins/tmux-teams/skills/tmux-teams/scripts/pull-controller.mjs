@@ -18,12 +18,8 @@
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { readWorkItems } from './dispatch-facts.mjs'
+import { readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
 import { readWorkflowGraph } from './team-flow.mjs'
-
-// A token occupies a team from the moment that team pulls it until it is
-// delivered onward. `assigned` is a worker starting on it inside that team.
-const OCCUPYING = new Set(['pulled', 'assigned'])
 
 export function planPulls(graph, items, now = new Date().toISOString()) {
   const teamOf = new Map()
@@ -32,23 +28,35 @@ export function planPulls(graph, items, now = new Date().toISOString()) {
   }
   const workflowById = new Map(graph.workflows.map((entry) => [entry.workflow_id, entry]))
 
-  // Current occupancy is counted before anything is planned, and every accepted
-  // pull increments it, so one pass can never overfill a team.
-  const occupancy = new Map(graph.teams.map((team) => [team.team_id, 0]))
+  // Occupancy is read from the one function that owns the rule, not counted a
+  // second time here. Two readers computing "who is holding this" separately is
+  // exactly how the board came to draw a limit the controller was not enforcing.
+  const occupancy = new Map(teamOccupancy(graph, items).counts)
   const pending = []
+  const decisions = []
   for (const item of items.values()) {
     const last = item.custody[item.custody.length - 1]
     const team = teamOf.get(last.agent_id) ||
       graph.teams.find((entry) => entry.team_id === last.to_team) || null
     if (!team) continue
-    if (OCCUPYING.has(last.event)) {
-      occupancy.set(team.team_id, (occupancy.get(team.team_id) || 0) + 1)
+    // A leg that ended in a protocol error or a timeout produced no artifact.
+    // Pulling it forward would hand the next team a delivery that never was.
+    if (last.event === 'delivered' && last.terminal && last.terminal !== 'done') {
+      decisions.push({
+        work_item: item.work_item, action: 'failed', from_team: team.team_id,
+        reason: `last leg ended ${last.terminal} — needs a rerun, not a handoff`,
+      })
       continue
     }
-    if (last.event === 'delivered') pending.push({ item, last, team })
+    // Only an accepted review releases work. A worker finishing is not the team
+    // finishing: until that team's own evaluator has passed it the artifact has
+    // been typed, not checked. Gating here is what makes the evaluator real
+    // rather than a box on a diagram — pulling on `delivered` moved every token
+    // onward before its evaluator ever ran.
+    if (last.event !== 'reviewed' || last.verdict !== 'pass') continue
+    pending.push({ item, last, team })
   }
 
-  const decisions = []
   // Oldest delivery first: a pull system that served the newest arrival would
   // starve whatever has been waiting longest, which is the opposite of flow.
   pending.sort((a, b) => String(a.last.at || '').localeCompare(String(b.last.at || '')))
@@ -122,7 +130,9 @@ const describe = (decision) => decision.action === 'pull'
     ? `done   ${decision.work_item}: finished ${decision.workflow} at ${decision.from_team}`
     : decision.action === 'blocked'
       ? `BLOCK  ${decision.work_item}: ${decision.from_team} -> ${decision.to_team} — ${decision.reason}`
-      : `skip   ${decision.work_item}: ${decision.reason}`
+      : decision.action === 'failed'
+        ? `FAILED ${decision.work_item}: ${decision.reason}`
+        : `skip   ${decision.work_item}: ${decision.reason}`
 
 if (process.argv[1]?.endsWith('pull-controller.mjs')) {
   const args = process.argv.slice(2)

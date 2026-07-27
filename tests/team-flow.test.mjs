@@ -155,9 +155,14 @@ test('an edge only hardens once evidence exists for it', () => {
   assert.match(live, /class="edge k-assign e-solid"/)
   // Rework stays dashed until a rejection is actually recorded.
   assert.doesNotMatch(live, /class="edge k-reject e-solid"/)
+  // A verdict is recorded against the leg that was JUDGED — the worker's — so
+  // that is what hardens this team's rework edge and fills its evaluator's
+  // counter. Keying either off the evaluator's own id is why the page read
+  // `0 pass 0 reject` no matter how much reviewing had happened.
   const rejected = renderLoopGraphSvg(graph, snapshotWith([run('b_w1', 'running')],
-    [{ agent_id: 'b_e', pm_verdict: 'reject' }]))
+    [{ agent_id: 'b_w1', pm_verdict: 'reject' }]))
   assert.match(rejected, /class="edge k-reject e-solid"/)
+  assert.match(rejected, /0 pass 1 reject/)
 })
 
 test('the newest dispatch wins when one agent ran more than once', () => {
@@ -195,9 +200,16 @@ const ledger = (id, events) => [id, {
   current_agent: events[events.length - 1].agent_id,
 }]
 
+// A worker finishing is not the team finishing. Work sits in its team's done
+// queue only once that team's own evaluator has passed it — so the fixture for
+// "ready to move on" ends in a review, not a delivery.
 const delivered = (id, agentId, hour) => ledger(id, [
   { at: `2026-07-27T0${hour}:00:00.000Z`, event: 'assigned', work_item: id, workflow: 'full', agent_id: agentId },
-  { at: `2026-07-27T0${hour}:30:00.000Z`, event: 'delivered', work_item: id, workflow: 'full', agent_id: agentId },
+  { at: `2026-07-27T0${hour}:20:00.000Z`, event: 'delivered', work_item: id, workflow: 'full', agent_id: agentId, terminal: 'done' },
+  {
+    at: `2026-07-27T0${hour}:30:00.000Z`, event: 'reviewed', work_item: id, workflow: 'full',
+    agent_id: `${agentId.split('_')[0]}_e`, verdict: 'pass',
+  },
 ])
 
 test('a team pulls work only while it is under its WIP limit', () => {

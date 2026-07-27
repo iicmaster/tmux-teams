@@ -25,7 +25,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { KANIT_FONT_CSS } from '../assets/kanit/kanit-embedded.mjs'
-import { readDispatchFacts } from './dispatch-facts.mjs'
+import { readDispatchFacts, readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
 import { DEFAULT_WORKFLOW_GRAPH, WORKFLOW_GRAPH_FILE, validateWorkflowGraph } from './workflow-graph.mjs'
 
 const FONT_CSS_NAME = `pulse-fonts-${createHash('sha256').update(KANIT_FONT_CSS).digest('hex')}.css`
@@ -139,7 +139,7 @@ const STRIP_ARROW = 54
 const HEAD_H = 66
 // The band starts closer to the top bar than the side padding: vertical space
 // is the scarce one on this page.
-const TOP_PAD = 12
+const TOP_PAD = 36
 
 // ── SVG ──────────────────────────────────────────────────────────────────────
 // Status is encoded three ways on purpose: the border colour, a dot in the
@@ -205,15 +205,15 @@ function renderRouteStrips(graph, topY) {
   <g class="strip-box sink" transform="translate(${endX},${y})">
     <rect width="${STRIP_BOX}" height="${STRIP_H}" rx="26"/>
     <text class="sb-name" x="16" y="23">Project Delivery</text>
-    <text class="sb-sub" x="16" y="41">destination, not a team</text>
+    <text class="sb-sub" x="16" y="41">end, not a team</text>
   </g>`)
     y += STRIP_H + 24
   }
   return { svg: parts.join('\n'), nextY: y + 28 }
 }
 
-function renderTeamPool(graph, topY, runs, verdicts) {
-  const parts = [`  <text class="band-title" x="${PAD}" y="${topY}">Teams — every declared agent, drawn once</text>`]
+function renderTeamPool(graph, topY, runs, verdicts, occupancy) {
+  const parts = []
   const laneAnchors = []
   let x = PAD
   let height = 0
@@ -222,11 +222,12 @@ function renderTeamPool(graph, topY, runs, verdicts) {
   // to each other so the whole structure fits one screen instead of scrolling.
   for (const team of graph.teams) {
     const workers = team.worker_ids
-    const wip = workers.filter((id) => WORKING.has(runs.get(id)?.state)).length
+    const wip = occupancy.counts.get(team.team_id) ?? 0
+    const holding = occupancy.held.get(team.team_id) ?? []
     const atLimit = wip >= team.wip_limit
     const rowW = workers.length * NODE_W + (workers.length - 1) * WORKER_GAP
     const colW = LANE_PAD * 2 + ARROW_ROOM + Math.max(rowW, NODE_W)
-    const top = topY + 26
+    const top = topY
     const dispatcherY = top + LANE_HEAD
     const workerY = dispatcherY + NODE_H + ROW_GAP
     const evaluatorY = workerY + NODE_H + ROW_GAP
@@ -238,12 +239,26 @@ function renderTeamPool(graph, topY, runs, verdicts) {
     <rect x="${x}" y="${top}" width="${colW}" height="${colH}" rx="16"/>
     <text class="lane-title" x="${x + LANE_PAD}" y="${top + 28}">${esc(team.name)}</text>
     <text class="lane-wip${atLimit ? " wip-full" : ""}" x="${x + colW - LANE_PAD}" y="${top + 28}">WIP ${wip}/${team.wip_limit}${atLimit ? " · at limit" : ""}</text>
+    <text class="lane-holding" x="${x + colW - LANE_PAD}" y="${top + 44}">${esc(holding.length ? holding.map((id) => clip(id, 18)).join(", ") : "no work held")}</text>
   </g>`)
+
+    // A verdict is recorded against the leg that was JUDGED, so a team's review
+    // history lives on its workers. Reading it off the evaluator's own id leaves
+    // every counter at zero however much reviewing actually happened.
+    const teamTally = workers.reduce((sum, id) => {
+      const seen = verdicts.get(id) || { pass: 0, reject: 0, unresolved: 0 }
+      return {
+        pass: sum.pass + seen.pass, reject: sum.reject + seen.reject,
+        unresolved: sum.unresolved + seen.unresolved,
+      }
+    }, { pass: 0, reject: 0, unresolved: 0 })
 
     const place = (id, role, nx, ny) => {
       const run = runs.get(id) || null
       const status = statusOf(run)
-      const tally = verdicts.get(id) || { pass: 0, reject: 0, unresolved: 0 }
+      const tally = role.startsWith("EVALUATOR")
+        ? teamTally
+        : verdicts.get(id) || { pass: 0, reject: 0, unresolved: 0 }
       const stateText = role.startsWith("EVALUATOR")
         ? `${STATUS_COPY[status]} · ${tally.pass} pass ${tally.reject} reject`
         : STATUS_COPY[status]
@@ -268,7 +283,7 @@ function renderTeamPool(graph, topY, runs, verdicts) {
     })
 
     // Rework returns to this team own dispatcher, around the outside.
-    const rejected = (verdicts.get(team.evaluator_id) || { reject: 0 }).reject > 0
+    const rejected = teamTally.reject > 0
     const side = x + colW - LANE_PAD / 2
     parts.push(`
   <path class="edge k-reject ${rejected ? "e-solid" : "e-dashed"}"
@@ -280,14 +295,14 @@ function renderTeamPool(graph, topY, runs, verdicts) {
   }
   return { svg: parts.join("\n"), height, width: x - LANE_GAP + PAD, laneAnchors }
 }
-export function renderLoopGraphSvg(graph, snapshot, facts = new Map()) {
+export function renderLoopGraphSvg(graph, snapshot, facts = new Map(), occupancy = { counts: new Map(), held: new Map(), orphans: [] }) {
   const { byAgent } = evidenceByAgent(snapshot, facts)
   const verdicts = verdictsByAgent(snapshot)
   const controller = graph.outer_controller_id ? byAgent.get(graph.outer_controller_id) : null
 
   // Teams first: the structure is what the page is for. Routes are a summary
   // of how work travels across it, so they read better after it, not through it.
-  const pool = renderTeamPool(graph, TOP_PAD + HEAD_H + 48, byAgent, verdicts)
+  const pool = renderTeamPool(graph, TOP_PAD + HEAD_H + 48, byAgent, verdicts, occupancy)
   const routes = renderRouteStrips(graph, TOP_PAD + HEAD_H + 48 + pool.height + 72)
   const stripWidth = PAD + 170 +
     Math.max(...graph.workflows.map((entry) => entry.route.length + 1)) * (STRIP_BOX + STRIP_ARROW) + PAD
@@ -295,6 +310,7 @@ export function renderLoopGraphSvg(graph, snapshot, facts = new Map()) {
   const height = routes.nextY + PAD
 
   const head = `
+  <text class="band-title" x="${PAD}" y="${TOP_PAD - 12}">Teams — every declared agent, drawn once</text>
   <g class="node n-${statusOf(controller)}" transform="translate(${PAD},${TOP_PAD})">
     <rect width="${width - PAD * 2}" height="${HEAD_H}" rx="12"/>
     <text class="n-role" x="15" y="19">PM OUTER LOOP</text>
@@ -368,6 +384,13 @@ body{margin:0;background:var(--bg);color:var(--ink);font:400 16px/1.6 var(--sans
 .topbar h1 .repo{color:var(--dim);font-weight:400}
 .meta{margin:0;color:var(--dim);font-size:.8rem}
 .meta code{font-family:var(--mono);font-size:.76rem}
+.refresh{display:flex;align-items:center;gap:var(--s3);margin:0;color:var(--dim);font-size:.78rem}
+.refresh .pause{padding:2px 10px;border:1px solid var(--line);border-radius:999px;background:var(--surface-2);
+ color:var(--ink);font:500 .74rem var(--sans);cursor:pointer}
+.refresh .pause:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.refresh .note{font-size:.72rem}
+.orphans{margin:0;padding:var(--s3) var(--s5);background:var(--surface-2);
+ border-bottom:1px solid var(--bad);color:var(--bad);font-size:.8rem}
 .chart{padding:var(--s4) var(--s2);overflow-x:auto;background:var(--bg)}
 .chart svg{display:block;width:100%;height:auto;min-width:1080px}
 .chart{scrollbar-width:thin}
@@ -387,6 +410,7 @@ body{margin:0;background:var(--bg);color:var(--ink);font:400 16px/1.6 var(--sans
 .lane-full rect{stroke:var(--warn);stroke-dasharray:6 4}
 .lane-title{fill:var(--ink);font:600 .9rem var(--sans)}
 .lane-wip{fill:var(--dim);font:500 .74rem var(--mono);text-anchor:end}
+.lane-holding{fill:var(--dim);font:400 .64rem var(--mono);text-anchor:end;opacity:.85}
 .wip-full{fill:var(--warn)}
 .node rect{fill:var(--surface);stroke:var(--line);stroke-width:1.5}
 .node .n-role{fill:var(--dim);font:500 .6rem var(--sans);letter-spacing:.1em}
@@ -428,16 +452,17 @@ footer{color:var(--dim);font-size:.78rem}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 `
 
-export function renderTeamFlowPage(repo, snapshot, { fontCssName = FONT_CSS_NAME } = {}) {
+export function renderTeamFlowPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, refreshScriptName = '' } = {}) {
   const graph = readWorkflowGraph(repo)
   const repoName = snapshot.scope?.repo_name || ''
   // Without an explicit charset a plain file server hands this to the browser
   // as windows-1252 and every non-ASCII label turns to mojibake.
   const head = `<meta charset="utf-8">
 <title>Loop graph · ${esc(repoName)}</title>
+<meta name="tmux-teams-snapshot-id" content="${esc(snapshot.snapshot_id || '')}">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="${esc(fontCssName)}">
-<style>${STYLE}</style>`
+<style>${STYLE}</style>${refreshScriptName ? `\n<script src="${esc(refreshScriptName)}" defer></script>` : ''}`
 
   if (!graph.ok) {
     return `${head}
@@ -448,13 +473,15 @@ export function renderTeamFlowPage(repo, snapshot, { fontCssName = FONT_CSS_NAME
 
   const value = graph.value
   const facts = readDispatchFacts(repo)
+  const { items, skippedLines } = readWorkItems(repo)
+  const occupancy = teamOccupancy(value, items)
   const { byAgent, unrouted } = evidenceByAgent(snapshot, facts)
   const declared = value.teams.flatMap((entry) => entry.agents.map((agent) => agent.agent_id))
   const bound = declared.filter((agentId) => byAgent.has(agentId))
   const working = bound.filter((agentId) => WORKING.has(byAgent.get(agentId).state)).length
   const waiting = bound.filter((agentId) => DELIVERED.has(byAgent.get(agentId).state)).length
-  const atLimit = value.teams.filter((entry) =>
-    entry.worker_ids.filter((id) => WORKING.has(byAgent.get(id)?.state)).length >= entry.wip_limit).length
+  const atLimit = value.teams.filter((entry) => (occupancy.counts.get(entry.team_id) ?? 0) >= entry.wip_limit).length
+  const inFlight = [...occupancy.counts.values()].reduce((sum, n) => sum + n, 0)
 
   const at = new Date(snapshot.generated_at)
   const observed = Number.isNaN(at.getTime()) ? '—' : `${at.toISOString().replace('T', ' ').slice(0, 19)} UTC`
@@ -462,15 +489,20 @@ export function renderTeamFlowPage(repo, snapshot, { fontCssName = FONT_CSS_NAME
     `<div class="tile${tone ? ` t-${tone}` : ''}"><span class="tile-v">${esc(v)}</span><span class="tile-l">${esc(l)}</span></div>`
 
   return `${head}
-<header class="topbar">
+<header class="topbar" data-observation-expires-at="${esc(snapshot.observation?.expires_at || '')}" data-refresh-interval="${Number(snapshot.observation?.refresh_interval_sec) || 20}">
   <h1>Loop graph <span class="repo">${esc(repoName)}</span></h1>
   <p class="meta">graph: <code>${graph.source === 'default' ? 'bundled four-team template' : `.tmux-teams/${WORKFLOW_GRAPH_FILE}`}</code>
    · ${value.teams.length} teams · ${value.workflows.length} workflows
    · evidence: <code>pulse.json</code> ${esc(snapshot.snapshot_id || '—')} · observed ${esc(observed)}</p>
+  <p class="refresh"><span data-refresh-status role="status" aria-live="polite">Snapshot fresh</span>
+   <button type="button" class="pause" data-refresh-toggle data-refresh-focus-key="refresh-toggle" aria-pressed="false">Pause updates</button>
+   <span class="note" data-refresh-note>Polling the local snapshot marker</span></p>
 </header>
-<div class="chart">${renderLoopGraphSvg(value, snapshot, facts)}</div>
+${occupancy.orphans.length || skippedLines ? `<p class="orphans">${occupancy.orphans.length ? `${occupancy.orphans.length} work item(s) cannot be placed — agent or workflow not in this graph: ${esc(occupancy.orphans.map((o) => o.work_item).join(", "))}. ` : ""}${skippedLines ? `${skippedLines} unreadable ledger line(s) skipped.` : ""}</p>` : ""}
+<div class="chart">${renderLoopGraphSvg(value, snapshot, facts, occupancy)}</div>
 <div class="below">
 <section class="tiles">
+  ${tile(inFlight, 'work items in a team right now', inFlight ? 'ok' : '')}
   ${tile(`${bound.length}/${declared.length}`, 'declared agents with a dispatch', bound.length ? 'ok' : 'bad')}
   ${tile(working, 'working now', 'ok')}
   ${tile(waiting, 'delivered, waiting', waiting ? 'warn' : '')}

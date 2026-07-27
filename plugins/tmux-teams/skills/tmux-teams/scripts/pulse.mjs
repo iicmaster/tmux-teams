@@ -1907,7 +1907,8 @@ function once() {
     })
     // Reads the repo's declared Team graph, or falls back to the bundled
     // four-team template so a fresh install has a page on the first run.
-    const teamFlowHtml = renderTeamFlowPage(REPO, publishedSnapshot, { fontCssName: FONT_CSS_NAME })
+    const teamFlowHtml = renderTeamFlowPage(REPO, publishedSnapshot,
+      { fontCssName: FONT_CSS_NAME, refreshScriptName: PULSE_REFRESH_NAME })
     const bundleText = bundleManifest(publishedSnapshot, jsonText, html, loopGraphHtml, teamFlowHtml)
     assertPublishLock(token)
     atomicWriteIfChanged(FONT_CSS_OUT, KANIT_FONT_CSS, token)
