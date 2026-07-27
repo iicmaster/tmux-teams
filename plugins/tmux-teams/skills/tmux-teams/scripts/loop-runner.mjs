@@ -254,7 +254,12 @@ export function applyHarvest(repo, graph, jobs, now = new Date().toISOString()) 
   for (const job of jobs) {
     const event = harvestEvent(repo, graph, job, now)
     appendEvent(repo, event)
-    if (event.event === 'reviewed') recordVerdict(repo, graph, job.item, event)
+    // A verdict that never reaches the snapshot leaves the page reading
+    // `0 pass 0 reject` — indistinguishable from no reviewing at all. Say so
+    // rather than letting a broken chain look like an idle one.
+    if (event.event === 'reviewed' && !recordVerdict(repo, graph, job.item, event)) {
+      log(`WARN   ${event.work_item}: verdict ${event.verdict} recorded in the ledger but not in kms — the page will not count it`)
+    }
     applied.push(event)
   }
   return applied
@@ -378,10 +383,19 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
   if (!triggers.length) return null
 
   const notesDir = join(repo, '.tmux-teams', 'pm-notes')
+  const latest = join(notesDir, 'latest.md')
   try {
-    const newest = statSync(join(notesDir, 'latest.md')).mtimeMs
+    const newest = statSync(latest).mtimeMs
     if ((now - newest) / 1000 < cooldownSec) {
       return { action: 'cooldown', reason: `outer controller ran ${Math.round((now - newest) / 1000)}s ago`, triggers }
+    }
+    // A time cooldown alone is no brake on a permanent condition. A token the
+    // loop can never place stays in `triggers` on every tick, so an unchanged
+    // trigger set means the controller would be dispatched again to read the
+    // same board — every cooldown, forever.
+    const seen = readFileSync(latest, 'utf8').split('\n').slice(1).filter(Boolean).join('\n')
+    if (seen === triggers.join('\n')) {
+      return { action: 'unchanged', reason: `the same ${triggers.length} problem(s) the controller already read`, triggers }
     }
   } catch { /* never run before */ }
 
@@ -496,7 +510,9 @@ export function tick(repoArg, { apply = true, stallSec = 1800, scratchDir } = {}
   // token.
   const occupancy = teamOccupancy(graph.value, items)
   const escalation = planEscalation(repo, graph.value, items, plans, occupancy)
-  if (escalation?.action === 'cooldown') log(`pm     holding: ${escalation.reason}`)
+  if (escalation?.action === 'cooldown' || escalation?.action === 'unchanged') {
+    log(`pm     holding: ${escalation.reason}`)
+  }
   if (escalation?.action === 'escalate') {
     mkdirSync(briefDir, { recursive: true })
     const briefPath = join(briefDir, 'brief-board-pm.md')

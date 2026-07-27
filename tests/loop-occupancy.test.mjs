@@ -26,6 +26,7 @@ import {
   applyHarvest, planDispatches, planEscalation, planHarvest, tick,
 } from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs'
 import { applyPulls, planPulls } from '../plugins/tmux-teams/skills/tmux-teams/scripts/pull-controller.mjs'
+import { REVIEW_VERDICTS, readVerdict } from '../plugins/tmux-teams/skills/tmux-teams/scripts/role-briefs.mjs'
 import { validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -318,6 +319,57 @@ test('a refused handoff returns the token to the team that sent it', () => {
       { event: 'returned', to_team: 'build', refused_by: 't_d' }]])
     assert.deepEqual(teamOccupancy(graph, back).held.get('build'), ['tok'])
   } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('the verdict is the last one stated, not the first one mentioned', () => {
+  // Every brief prints the required format as literal text, so an agent that
+  // restates it before answering is ordinary. Reading the first match turns
+  // that restatement into the decision — a rejection recorded as a pass.
+  const echoed = 'I will finish with VERDICT: pass or VERDICT: reject.\n\n'
+    + 'The tests do not run.\n\nVERDICT: reject\nREASON: node --check fails on two files\n'
+  assert.equal(readVerdict(echoed, REVIEW_VERDICTS).verdict, 'reject')
+  assert.match(readVerdict(echoed, REVIEW_VERDICTS).reason, /node --check fails/)
+  assert.equal(readVerdict('no verdict anywhere', REVIEW_VERDICTS).stated, false)
+})
+
+test('a permanent problem does not re-dispatch the controller every cooldown', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-pm-repeat-'))
+  try {
+    const graph = graphOf(TWO_TEAMS)
+    const items = itemsOf(['tok', [{ event: 'pulled', agent_id: 't_d', from_team: 'build', to_team: 'test' }]])
+    const occupancy = teamOccupancy(graph, items)
+    const plans = [{ action: 'escalate', work_item: 'tok', team: 'test', reason: 'nothing can place this' }]
+
+    const first = planEscalation(dir, graph, items, plans, occupancy)
+    assert.equal(first.action, 'escalate')
+    mkdirSync(join(dir, '.tmux-teams', 'pm-notes'), { recursive: true })
+    writeFileSync(join(dir, '.tmux-teams', 'pm-notes', 'latest.md'),
+      `2026-07-27T09:00:00.000Z\n${first.triggers.join('\n')}\n`)
+
+    // A token nobody can place stays in `triggers` forever. Time alone is no
+    // brake on that: past the cooldown it would dispatch a full agent to read
+    // the same board again, every cooldown, indefinitely.
+    const again = planEscalation(dir, graph, items, plans, occupancy, { now: Date.now() + 86_400_000 })
+    assert.equal(again.action, 'unchanged')
+
+    const changed = planEscalation(dir, graph, items,
+      [...plans, { action: 'escalate', work_item: 'other', team: 'build', reason: 'new problem' }],
+      occupancy, { now: Date.now() + 86_400_000 })
+    assert.equal(changed.action, 'escalate', 'a new problem must still reach the controller')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('an abandoned token stops occupying the team that can never finish it', () => {
+  const graph = graphOf(TWO_TEAMS)
+  const occupancy = teamOccupancy(graph, itemsOf(['probe', [
+    { event: 'assigned', agent_id: 't_w1', task_id: 't-probe' },
+    { event: 'abandoned', agent_id: 't_w1', reason: 'diagnostic probe, nobody will finish it' },
+  ]]))
+
+  // The alternatives are to lie (`completed`) or to leave it holding a WIP slot
+  // on a team of one, which deadlocks that team for good.
+  assert.equal(occupancy.counts.get('test'), 0)
+  assert.deepEqual(occupancy.orphans, [])
 })
 
 test('the outer controller is dispatched when the runner runs out of moves', () => {

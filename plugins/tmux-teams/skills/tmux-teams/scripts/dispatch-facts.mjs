@@ -109,7 +109,11 @@ export function readWorkItems(repo) {
 // inverted instead — a team holds a token from the moment it pulls it until
 // the route closes, so an event nobody taught this function about leaves the
 // work where it is rather than making it disappear.
-export const RELEASING_EVENTS = new Set(['completed'])
+// `abandoned` is the honest close: a token nobody will finish — a diagnostic
+// probe, or work belonging to a graph that no longer exists. Without it the only
+// ways out are to lie (`completed`) or to leave the token occupying a team it
+// will never leave, which on a WIP-1 team deadlocks that team forever.
+export const RELEASING_EVENTS = new Set(['completed', 'abandoned'])
 
 export function teamOccupancy(graph, items) {
   const teamOf = new Map()

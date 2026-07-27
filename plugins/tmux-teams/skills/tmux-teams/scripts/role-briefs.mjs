@@ -23,13 +23,24 @@ export const REASON_RE = /^[ \t]*REASON:[ \t]*(.+)$/m
 export const INTAKE_VERDICTS = new Set(['accept', 'reject'])
 export const REVIEW_VERDICTS = new Set(['pass', 'reject', 'unresolved'])
 
+// The LAST verdict line wins, not the first. These briefs print the required
+// format as literal text, and an agent restating "I will end with VERDICT: pass
+// or VERDICT: reject" before writing its real answer is ordinary. Reading the
+// first match turns that restatement into the decision — a rejection silently
+// recorded as a pass, which is the rubber stamp this whole role exists to stop.
+// It is also what "end your outbox with this line" already means.
+const lastMatch = (text, pattern) => {
+  const all = [...text.matchAll(new RegExp(pattern.source, 'gm'))]
+  return all.length ? all[all.length - 1] : null
+}
+
 // An outbox with no verdict line is not a pass. It is a role that did not do
 // the job it was dispatched for, and saying so is the difference between a
 // quality gate and a rubber stamp.
 export function readVerdict(text, allowed) {
-  const match = typeof text === 'string' ? text.match(VERDICT_RE) : null
-  const word = match ? match[1].toLowerCase() : ''
-  const reason = (typeof text === 'string' ? text.match(REASON_RE)?.[1] : '') || ''
+  if (typeof text !== 'string') return { verdict: 'unresolved', stated: false, reason: '' }
+  const word = (lastMatch(text, VERDICT_RE)?.[1] || '').toLowerCase()
+  const reason = lastMatch(text, REASON_RE)?.[1] || ''
   return {
     verdict: allowed.has(word) ? word : 'unresolved',
     stated: allowed.has(word),
