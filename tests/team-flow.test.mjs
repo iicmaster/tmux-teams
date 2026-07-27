@@ -191,6 +191,22 @@ test('every role states the work it actually did, from the ledger', () => {
   assert.match(svg, /nothing recorded yet/)
 })
 
+test('the outer controller states the same facts as every other agent', () => {
+  const graph = graphOf(TWO_TEAMS)
+
+  // The PM band was hand-drawn instead of going through the node renderer, so
+  // every fact line added to agents later — lane, model, clock, status — never
+  // reached it. It showed an id and a sentence, which is a label, not evidence.
+  const idle = renderLoopGraphSvg(graph, snapshotWith())
+  assert.match(idle, /OUTER · — · model —/, 'the controller must state lane and model like anyone else')
+  assert.match(idle, /<title>pm — no dispatch observed<\/title>/)
+
+  const ran = renderLoopGraphSvg(graph, snapshotWith([run('pm', 'running', { elapsed_sec: 90 })]))
+  assert.match(ran, /OUTER · claude · acp/)
+  assert.match(ran, /1m in progress/, 'the controller must state a measured clock')
+  assert.match(ran, /class="node n-working"/)
+})
+
 test('the newest dispatch wins when one agent ran more than once', () => {
   const svg = renderLoopGraphSvg(graphOf(TWO_TEAMS), snapshotWith([
     run('v_w1', 'died', { started_at: '2026-07-26T00:00:00.000Z' }),

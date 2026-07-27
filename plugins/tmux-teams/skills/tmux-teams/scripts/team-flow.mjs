@@ -36,17 +36,19 @@ const WORKING = new Set(['running', 'starting', 'orphan_running'])
 const DELIVERED = new Set(['awaiting-verdict', 'unrecorded'])
 const DEAD = new Set(['died', 'unknown'])
 
-const esc = (value) => String(value ?? '').replace(
+export const esc = (value) => String(value ?? '').replace(
   /[&<>"']/g,
   (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]),
 )
 
-const clip = (value, max) => {
+export const clip = (value, max) => {
   const text = String(value ?? '')
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`
 }
 
-const duration = (seconds) => {
+// Exported so the kanban board formats a duration the same way this page does.
+// Two formatters is two truths about time.
+export const duration = (seconds) => {
   if (!Number.isFinite(seconds) || seconds < 0) return null
   if (seconds < 60) return `${Math.round(seconds)}s`
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`
@@ -180,7 +182,7 @@ const ROW_GAP = 40          // vertical room between the three rows of a team
 const STRIP_H = 54
 const STRIP_BOX = 168
 const STRIP_ARROW = 54
-const HEAD_H = 66
+const HEAD_H = 78   // room for the controller's own lane/model line, with padding under it
 // The band starts closer to the top bar than the side padding: vertical space
 // is the scarce one on this page.
 const TOP_PAD = 36
@@ -367,11 +369,15 @@ export function renderLoopGraphSvg(graph, snapshot, facts = new Map(), occupancy
   const head = `
   <text class="band-title" x="${PAD}" y="${TOP_PAD - 12}">Teams — every declared agent, drawn once</text>
   <g class="node n-${statusOf(controller)}" transform="translate(${PAD},${TOP_PAD})">
+    <title>${esc(`${graph.outer_controller_id || 'no outer controller declared'} — ${STATUS_COPY[statusOf(controller)]}`)}</title>
     <rect width="${width - PAD * 2}" height="${HEAD_H}" rx="12"/>
+    <circle class="dot" cx="${width - PAD * 2 - 15}" cy="15" r="4.5"/>
     <text class="n-role" x="15" y="19">PM OUTER LOOP</text>
     <text class="n-title" x="15" y="36">${esc(graph.outer_controller_id || 'no outer controller declared')}</text>
     <text class="n-sub" x="15" y="52">exceptions, deadlocks and WIP-limit bottlenecks only — never reviews work on a team's behalf</text>
-    <text class="n-work" x="${width - PAD * 2 - 15}" y="36" text-anchor="end">${esc(workLine('outer', activity.get(graph.outer_controller_id)))}</text>
+    <text class="n-sub" x="15" y="66">${esc(`OUTER · ${laneLine(controller)} · model ${modelLine(controller)}`)}</text>
+    <text class="n-work" x="${width - PAD * 2 - 26}" y="40" text-anchor="end">${esc(workLine('outer', activity.get(graph.outer_controller_id)))}</text>
+    <text class="n-time" x="${width - PAD * 2 - 26}" y="56" text-anchor="end">${esc(timingOf(controller, statusOf(controller)))}</text>
   </g>`
 
   // The outer loop is a real relationship, not decoration: the PM watches every
