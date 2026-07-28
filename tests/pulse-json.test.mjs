@@ -1925,6 +1925,35 @@ test('each invalid liveness v1 field is rejected without null or empty-array coe
   }
 })
 
+test('many files refused for one reason are one row and a count, not one row each', () => {
+  // The liveness reader judges a file at a time and used to say so a line at a
+  // time: 50 stale files became 50 rows of the same sentence and pushed the
+  // answer this page exists to give — 0 attention, 0 active — off the screen.
+  // `count` was in the schema the whole time and every row said 1.
+  const base = structuredClone(JSON.parse(readFileSync(
+    join(LIVENESS_FIXTURE_DIR, 'acp-liveness-v1.json'), 'utf8')))
+  const dir = repo()
+  mkdirSync(join(dir, '.tmux-teams', 'liveness'), { recursive: true })
+  for (const n of [1, 2, 3]) {
+    const task = `fold-${n}`
+    writeFileSync(join(dir, '.tmux-teams', 'dispatch', `${task}.md`), [
+      `dispatch_id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa${n}`, `task_id: ${task}`,
+      'worker: codex', 'agent_id: graph-worker', 'transport: acp', '',
+    ].join('\n'))
+    // Each names a task it was not written for — the same defect three times,
+    // which is one fact about three files rather than three facts.
+    writeFileSync(join(dir, '.tmux-teams', 'liveness', `${task}.json`), JSON.stringify({
+      ...base, task_id: 'some-other-task', agent_id: 'graph-worker',
+      dispatch_id: `aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa${n}`,
+    }))
+  }
+  const { snapshot } = runJson(dir)
+  const mismatches = snapshot.diagnostics.filter((item) => item.source === 'liveness'
+    && item.code === 'LIVENESS_EVIDENCE_MISMATCH')
+  assert.equal(mismatches.length, 1, JSON.stringify(snapshot.diagnostics))
+  assert.equal(mismatches[0].count, 3)
+})
+
 test('observed_at controls freshness; mtime and a live process cannot waive staleness', { timeout: 30_000 }, async () => {
   const dir = repo()
   const task = 'stale-live-evidence'

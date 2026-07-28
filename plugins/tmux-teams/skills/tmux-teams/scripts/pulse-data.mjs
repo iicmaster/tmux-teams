@@ -1723,6 +1723,35 @@ export function projectPulseV4(
     teamRuntime = sanitized.projection
     if (sanitized.diagnostic) diagnostics.unshift(sanitized.diagnostic)
   }
+  // Fold identical rows into the `count` the schema already carries. The
+  // liveness reader judges one file at a time and says so one line at a time,
+  // so 50 stale evidence files became 50 rows of the same two sentences and
+  // buried the answer this page exists to give — the strip above them read
+  // 0 attention, 0 active, and nobody could see it. The information was always
+  // "N files, two reasons"; this prints that instead of one reason N times.
+  // Rows fold only when every other field matches, so a diagnostic carrying
+  // anything that distinguishes it keeps its own line.
+  const foldedDiagnostics = []
+  const foldedByShape = new Map()
+  for (const entry of diagnostics) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      foldedDiagnostics.push(entry)
+      continue
+    }
+    const { count, ...rest } = entry
+    const shape = JSON.stringify(Object.entries(rest).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+    const times = Number.isFinite(count) && count > 0 ? count : 1
+    const seenRow = foldedByShape.get(shape)
+    if (seenRow) {
+      seenRow.count += times
+      continue
+    }
+    const row = { ...rest, count: times }
+    foldedByShape.set(shape, row)
+    foldedDiagnostics.push(row)
+  }
+  diagnostics.length = 0
+  diagnostics.push(...foldedDiagnostics)
   diagnostics.sort((left, right) => {
     const priority = (code) => code?.startsWith('TEAM_RUNTIME_')
       ? 0

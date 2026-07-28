@@ -978,6 +978,13 @@ const VERDICT_COPY = Object.freeze({
 })
 const DIAGNOSTIC_COPY = Object.freeze({
   LIVENESS_UNAVAILABLE: 'ตรวจสถานะ process ไม่ได้',
+  // These two had no entry, so both fell through to "ข้อมูลบางส่วนอ่านไม่ได้" —
+  // a sentence that names neither the file nor the reason, printed once per
+  // rejected file. What a reader needs is which evidence was refused and why it
+  // was right to refuse it: this is the loop declining to trust a claim, not
+  // the loop failing to read one.
+  LIVENESS_EVIDENCE_MISMATCH: 'หลักฐาน liveness ไม่ตรงกับงานที่สั่ง จึงไม่ถูกนับ',
+  LIVENESS_EVIDENCE_INVALID: 'หลักฐาน liveness ผิดสัญญา จึงไม่ถูกนับ',
   TMUX_UNAVAILABLE: 'เชื่อมต่อ tmux ไม่ได้',
   DISPATCH_UNREADABLE: 'อ่านข้อมูลการสั่งงานไม่ได้',
   OUTBOX_UNREADABLE: 'อ่านผลลัพธ์จาก worker ไม่ได้',
