@@ -22,14 +22,21 @@ const PULSE = join(ROOT, 'plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs
 
 const NOW = '2026-07-27T12:00:00.000Z'
 
+// Every seat names its model because §3 now requires one, and the value is
+// shape-checked only — never matched against a list — so a fixture name is as
+// legal here as a real one. No team declares `wip_limit`: it is derived from the
+// worker count, and a declared number that disagreed is rejected outright.
+const MODELS = { dispatcher: 'test-model', worker: 'test-model', evaluator: 'test-model' }
+
 const FOUR_TEAMS = {
   project_id: 'p',
   outer_controller_id: 'pm',
+  outer_controller_model: 'test-model',
   teams: [
-    { team_id: 'design', name: 'Design', dispatcher_id: 'design_d', worker_ids: ['design_w1'], evaluator_id: 'design_e', wip_limit: 1 },
-    { team_id: 'build', name: 'Build', dispatcher_id: 'build_d', worker_ids: ['build_w1', 'build_w2'], evaluator_id: 'build_e', wip_limit: 2 },
-    { team_id: 'test', name: 'Test', dispatcher_id: 'test_d', worker_ids: ['test_w1'], evaluator_id: 'test_e', wip_limit: 1 },
-    { team_id: 'visual', name: 'Visual', dispatcher_id: 'visual_d', worker_ids: ['visual_w1'], evaluator_id: 'visual_e', wip_limit: 1 },
+    { team_id: 'design', name: 'Design', dispatcher_id: 'design_d', worker_ids: ['design_w1'], evaluator_id: 'design_e', models: MODELS },
+    { team_id: 'build', name: 'Build', dispatcher_id: 'build_d', worker_ids: ['build_w1', 'build_w2'], evaluator_id: 'build_e', models: MODELS },
+    { team_id: 'test', name: 'Test', dispatcher_id: 'test_d', worker_ids: ['test_w1'], evaluator_id: 'test_e', models: MODELS },
+    { team_id: 'visual', name: 'Visual', dispatcher_id: 'visual_d', worker_ids: ['visual_w1'], evaluator_id: 'visual_e', models: MODELS },
   ],
   workflows: [
     { workflow_id: 'feature', name: 'Feature delivery', route: ['design', 'build', 'test', 'visual'] },
@@ -108,7 +115,9 @@ test('AC2 every column count equals teamOccupancy, and WIP prints that same n', 
   const occupancy = teamOccupancy(graph, items)
 
   const columns = columnsOf(pageOf(dir))
-  for (const team of FOUR_TEAMS.teams) {
+  // Read off the VALIDATED graph: `wip_limit` is derived from the worker count
+  // (§3), so the raw declaration no longer carries the number the page prints.
+  for (const team of graph.teams) {
     const column = columns.get(team.name)
     const expected = occupancy.counts.get(team.team_id)
     assert.equal(column.cards, expected, `${team.name} card count`)
@@ -169,7 +178,15 @@ test('AC4 a leg that ended in a protocol error stays put and says so', () => {
 test('AC5 a card blocked by a full team names that team in full', () => {
   const dir = repoWith(FOUR_TEAMS, {
     holding: [{ at: '2026-07-27T09:00:00.000Z', event: 'pulled', agent_id: 'visual_d', from_team: 'test', to_team: 'visual' }],
-    waiting: [{ at: '2026-07-27T09:10:00.000Z', event: 'reviewed', agent_id: 'test_e', verdict: 'pass', reason: 'good' }],
+    // A pass has to have something to pass. Since DECISION 4 the pull controller
+    // validates a token's whole history before handing it on, and a `reviewed`
+    // with nothing delivered is an impossible one — it comes back `invalid`,
+    // not `blocked`, and this test is about the blocked case.
+    waiting: [
+      { at: '2026-07-27T09:05:00.000Z', event: 'assigned', agent_id: 'test_w1', task_id: 't-w', dispatch_id: 't-w-d' },
+      { at: '2026-07-27T09:08:00.000Z', event: 'delivered', agent_id: 'test_w1', task_id: 't-w', terminal: 'done', timed_out: false, evidence_present: true },
+      { at: '2026-07-27T09:10:00.000Z', event: 'reviewed', agent_id: 'test_e', verdict: 'pass', reviewed_task: 't-w', reason: 'good' },
+    ],
   })
   const columns = columnsOf(pageOf(dir))
   assert.equal(columns.get('Visual').cards, 1)

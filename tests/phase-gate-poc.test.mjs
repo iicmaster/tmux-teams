@@ -77,12 +77,20 @@ test('POC runs the actual governed ACP path through four phases and publishes Pu
   assert.match(pulseHtml, /data-boundary="requirement_to_prototype" data-gate-state="rejected" data-attempt-id="poc-attempt-requirement-r1"/)
   assert.match(pulseHtml, /data-boundary="qa_to_project_delivery" data-gate-state="accepted" data-attempt-id="poc-attempt-qa-r1"/)
   assert.match(pulseHtml, /ProjectDelivery เป็นผู้รับปลายทาง/)
-  assert.equal(readFileSync(output.loop_graph_path, 'utf8').includes('ProjectDelivery'), true)
+  // graph.html answers a different question from pulse.html: it draws the Team
+  // pool declared in team-graph.json, and ProjectDelivery is a phase-gate
+  // boundary that pool has no word for — line 79 already witnesses it on the
+  // page that owns it. What matters here is that the graph does not borrow
+  // Pulse's activity to look alive: this POC exercised the phase gate, never
+  // the team loop, so the page has to say so out loud.
+  const graphHtml = readFileSync(output.graph_path, 'utf8')
+  assert.match(graphHtml, /data-loop-health="never"/)
+  assert.equal(graphHtml.includes('ProjectDelivery'), false)
 
   const published = [
     readFileSync(output.pulse_json_path, 'utf8'),
     readFileSync(output.pulse_html_path, 'utf8'),
-    readFileSync(output.loop_graph_path, 'utf8'),
+    readFileSync(output.graph_path, 'utf8'),
   ].join('\n')
   assert.equal(published.includes(output.store_dir), false)
   assert.equal(published.includes(output.repo_root), false)

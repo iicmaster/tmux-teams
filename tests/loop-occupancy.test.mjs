@@ -32,14 +32,22 @@ import { validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/s
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PULSE = join(ROOT, 'plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs')
 
-// One worker per team on purpose: a WIP limit of 1 makes "one too many" a
-// single unambiguous event rather than an arithmetic argument.
+// Every seat names its model because the declaration now requires one (§3), and
+// the value is never checked against a list — only its shape — so a fixture name
+// is as legal here as a real one.
+const MODELS = { dispatcher: 'test-model', worker: 'test-model', evaluator: 'test-model' }
+
+// One worker per team on purpose: the WIP limit IS the worker count (§3), so one
+// worker makes "one too many" a single unambiguous event rather than an
+// arithmetic argument. No team declares `wip_limit` — it is derived, and a
+// declared number that disagreed would be rejected outright.
 const TWO_TEAMS = {
   project_id: 'p',
   outer_controller_id: 'pm',
+  outer_controller_model: 'test-model',
   teams: [
-    { team_id: 'build', name: 'Build', dispatcher_id: 'b_d', worker_ids: ['b_w1'], evaluator_id: 'b_e', wip_limit: 1 },
-    { team_id: 'test', name: 'Test', dispatcher_id: 't_d', worker_ids: ['t_w1'], evaluator_id: 't_e', wip_limit: 1 },
+    { team_id: 'build', name: 'Build', dispatcher_id: 'b_d', worker_ids: ['b_w1'], evaluator_id: 'b_e', models: MODELS },
+    { team_id: 'test', name: 'Test', dispatcher_id: 't_d', worker_ids: ['t_w1'], evaluator_id: 't_e', models: MODELS },
   ],
   workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['build', 'test'] }],
 }
@@ -55,9 +63,62 @@ const graphOf = (value) => {
   return result.value
 }
 
-const ledger = (workItem, events) => events.map((entry, index) => ({
-  at: `2026-07-27T0${index}:00:00.000Z`, work_item: workItem, workflow: 'feature', ...entry,
-}))
+// Contract §4 names fields on some events that these fixtures do not care about
+// — which dispatch started a leg, whether it timed out, which task a review
+// judged. Since DECISION 4 every write goes through `ledger-writer.appendEvent`,
+// which refuses a line that does not satisfy §4 and refuses to append at all to
+// a ledger that does not already validate. A shorthand history is therefore no
+// longer a history this system could have produced, and a fixture written in one
+// tests the loop against evidence it would never see.
+//
+// The uninteresting fields are filled in here rather than restated in thirty
+// fixtures. What a test is ABOUT is still said by the test: anything a fixture
+// states itself wins, because the spread below comes last.
+const complete = (entry, lastDelivered) => {
+  switch (entry.event) {
+    case 'assigned':
+      return { dispatch_id: `${entry.task_id ?? 'task'}-dispatch`, ...entry }
+    case 'delivered':
+      return { timed_out: false, evidence_present: true, ...entry }
+    case 'reviewed':
+      // The leg a review judged is a real relationship, so it is read off the
+      // history rather than invented: the last delivery before this line.
+      return { reviewed_task: lastDelivered ?? 'nothing-delivered', reason: 'the evaluator said so', ...entry }
+    case 'intake':
+    case 'lost':
+    case 'escalated':
+    case 'resumed':
+    case 'audit_requested':
+    case 'audited':
+    case 'abandoned':
+      return { reason: 'stated by the agent that wrote it', ...entry }
+    default:
+      return { ...entry }
+  }
+}
+
+const ledger = (workItem, events) => {
+  let lastDelivered = null
+  return events.map((entry, index) => {
+    const filled = complete(entry, lastDelivered)
+    if (filled.event === 'delivered') lastDelivered = filled.task_id ?? lastDelivered
+    return { at: `2026-07-27T0${index}:00:00.000Z`, work_item: workItem, workflow: 'feature', ...filled }
+  })
+}
+
+// Since DECISION 4 the harvester appends through the sanctioned writer, which
+// reads the ledger it is joining off disk — so a token that exists only in an
+// in-memory items map is a token with no history at all, and every append onto
+// it is refused as impossible. Tests that harvest lay the same history down on
+// disk first.
+const itemsOnDisk = (repo, ...entries) => {
+  mkdirSync(join(repo, '.tmux-teams', 'work-items'), { recursive: true })
+  for (const [workItem, events] of entries) {
+    writeFileSync(join(repo, '.tmux-teams/work-items', `${workItem}.jsonl`),
+      `${ledger(workItem, events).map((entry) => JSON.stringify(entry)).join('\n')}\n`)
+  }
+  return itemsOf(...entries)
+}
 
 const itemsOf = (...entries) => new Map(entries.map(([workItem, events]) => {
   const custody = ledger(workItem, events)
@@ -133,6 +194,35 @@ test('the board and the controller agree about a team holding a failed leg', () 
   assert.equal(decisions.find((entry) => entry.work_item === 'ready')?.action, 'blocked')
 })
 
+test('a token whose ledger cannot be believed is not handed to the next team', () => {
+  const graph = graphOf(TWO_TEAMS)
+  // Contract-legal except for the one thing under test: this `reviewed` names no
+  // task it judged. A review of nothing is not a pass, and a handoff carries no
+  // artifact of its own — what the next team inherits IS this history.
+  const items = itemsOf(['broken', [
+    { event: 'assigned', agent_id: 'b_w1', task_id: 'b-1' },
+    { event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done' },
+    { event: 'reviewed', agent_id: 'b_e', verdict: 'pass', reviewed_task: null },
+  ]])
+  const [decision] = planPulls(graph, items, FIXED_ISO)
+
+  assert.equal(decision.action, 'invalid')
+  assert.equal(decision.from_team, 'build')
+  assert.equal(decision.event, undefined, 'a history that cannot be believed must not produce a custody event')
+  // Named, not merely refused: a silent skip here is indistinguishable from a
+  // team with nothing waiting, and §13 forbids repairing the line in place.
+  assert.match(decision.reason, /reviewed requires reviewed_task/)
+  assert.ok(decision.problems.length >= 1)
+
+  // The same predicate has to hold at apply time, or the loop would print this
+  // handoff every tick while nothing moved.
+  const dir = mkdtempSync(join(tmpdir(), 'pull-invalid-'))
+  try {
+    assert.equal(applyPulls(dir, [decision]), 0)
+    assert.equal(existsSync(join(dir, '.tmux-teams/work-items/broken.jsonl')), false)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('a failed leg is never handed to the next team', () => {
   const graph = graphOf(TWO_TEAMS)
   const items = itemsOf(['stuck', [
@@ -157,22 +247,29 @@ test('a failed leg is never handed to the next team', () => {
 // ── the runner that acts on all of it ────────────────────────────────────────
 
 test('the runner never puts more work in a team than its WIP limit allows', () => {
-  const graph = graphOf({
-    ...TWO_TEAMS,
-    teams: [TWO_TEAMS.teams[0],
-      { ...TWO_TEAMS.teams[1], worker_ids: ['t_w1', 't_w2'], wip_limit: 1 }],
-  })
+  // A limit BELOW the worker count can no longer be declared (§3), so the
+  // pressure is applied the way it happens in production instead: one team of
+  // one worker, holding two tokens whose next legs need two DIFFERENT agents.
+  // `stuck` retries its failed leg on the worker t_w1; `pulled-in` needs the
+  // dispatcher t_d for intake. Neither agent is busy, so agent availability
+  // stops nothing here — only counting units of allowed work does.
+  const graph = graphOf(TWO_TEAMS)
   const items = itemsOf(
     ['stuck', FAILED_IN_TEST],
     ['pulled-in', [{ event: 'pulled', agent_id: 't_d', from_team: 'build', to_team: 'test' }]],
   )
 
-  // Test holds two tokens against a limit of one. The limit is the promise the
-  // board makes to a reader; the runner is the only thing that can keep it, and
-  // right now it dispatches per free worker instead of per unit of allowed work.
-  const dispatches = planDispatches(graph, items, new Set())
-    .filter((plan) => plan.action === 'dispatch' && plan.team === 'test')
-  assert.ok(dispatches.length <= 1, `dispatched ${dispatches.length} workers into a team limited to 1`)
+  // The limit is the promise the board makes to a reader; the runner is the only
+  // thing that can keep it. Dispatching per free agent instead of per unit of
+  // allowed work is how a team limited to one ran two.
+  const plans = planDispatches(graph, items, new Set()).filter((plan) => plan.team === 'test')
+  const dispatches = plans.filter((plan) => plan.action === 'dispatch')
+  assert.equal(dispatches.length, 1, `dispatched ${dispatches.length} agents into a team limited to 1`)
+  // A ceiling that stops something silently looks exactly like a team with
+  // nothing to do (§10), so the held-back token has to say why it waited.
+  const waiting = plans.filter((plan) => plan.action === 'wait')
+  assert.equal(waiting.length, 1)
+  assert.match(waiting[0].reason, /at its WIP limit \(1\)/)
 })
 
 test('a team is handed the newest real deliverable, not the newest failure', () => {
@@ -285,7 +382,7 @@ test('an evaluator that states no verdict is not a pass', () => {
     // how a rubber stamp gets mistaken for a quality gate.
     writeFileSync(join(dir, '.mailbox-out', 'b-review'), 'Looks good to me overall.\n')
     const graph = graphOf(TWO_TEAMS)
-    const items = itemsOf(['tok', [
+    const items = itemsOnDisk(dir, ['tok', [
       { event: 'assigned', agent_id: 'b_w1', task_id: 'b-1' },
       { event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done' },
       { event: 'assigned', agent_id: 'b_e', task_id: 'b-review' },
@@ -542,10 +639,10 @@ test('the board as a whole has a dispatch ceiling, not only each team', () => {
   // are all satisfied; only a board-wide ceiling stops this fanning out to six
   // concurrent agents.
   const many = {
-    project_id: 'p', outer_controller_id: 'pm',
+    project_id: 'p', outer_controller_id: 'pm', outer_controller_model: 'test-model',
     teams: Array.from({ length: 6 }, (unused, index) => ({
       team_id: `t${index}`, name: `T${index}`, dispatcher_id: `d${index}`,
-      worker_ids: [`w${index}`], evaluator_id: `e${index}`, wip_limit: 1,
+      worker_ids: [`w${index}`], evaluator_id: `e${index}`, models: MODELS,
     })),
     workflows: [{ workflow_id: 'feature', name: 'F', route: ['t0', 't1', 't2', 't3', 't4', 't5'] }],
   }
@@ -596,8 +693,12 @@ test('a token cannot exceed its leg ceiling unless the controller grants more', 
 // heard about the failures. Master asked for a controller that checks every team
 // and every workflow is still working correctly.
 
+// This history begins where the first team accepted the work, not at a pull.
+// Contract §4 has no spelling for a route-OPENING `pulled`: it requires
+// `from_team`, and the first pull of a route has no sending team. That gap is
+// recorded as unresolved in contract §14.2 item 1; inventing a sending team here
+// to satisfy the validator would hide it.
 const ROUTE_DONE = [
-  { event: 'pulled', agent_id: 'b_d', to_team: 'build' },
   { event: 'intake', agent_id: 'b_d', verdict: 'accept' },
   { event: 'assigned', agent_id: 'b_w1', task_id: 'b-1' },
   { event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done' },
@@ -683,7 +784,7 @@ test('an audit answer closes the flag, and silence does not', () => {
   try {
     mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
     const graph = graphOf(TWO_TEAMS)
-    const flagged = itemsOf(['shipped', [...ROUTE_DONE,
+    const flagged = itemsOnDisk(dir, ['shipped', [...ROUTE_DONE,
       { event: 'audit_requested', agent_id: 'pm', task_id: 'pm-1' }]])
 
     writeFileSync(join(dir, '.mailbox-out', 'pm-1'), 'I had a look around.\n')
@@ -697,6 +798,34 @@ test('an audit answer closes the flag, and silence does not', () => {
     assert.equal(event.verdict, 'concern')
     assert.match(event.reason, /AC7 and AC9/)
   } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('a dispatch refused for its declared model is not retried', () => {
+  const graph = graphOf(TWO_TEAMS)
+  // The companion refuses before any work happens, and it will refuse the same
+  // way every time. Three identical failures cost three dispatches and teach
+  // nobody anything; worse, the escalation that follows carries the same
+  // unacknowledged model, so the controller fails too and the token is held for
+  // good while the board still reads as dispatching.
+  for (const terminal of ['identity-missing', 'identity-mismatch']) {
+    const plan = planDispatches(graph, itemsOf(['tok', [
+      { event: 'pulled', agent_id: 'b_d', to_team: 'build' },
+      { event: 'intake', agent_id: 'b_d', verdict: 'accept' },
+      { event: 'assigned', agent_id: 'b_w1', task_id: 'b-1' },
+      { event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal },
+    ]]), new Set())[0]
+    assert.equal(plan.action, 'escalate', `${terminal} was retried`)
+    assert.match(plan.reason, /declared model/)
+  }
+
+  // An ordinary transport failure still gets its retries.
+  const transport = planDispatches(graph, itemsOf(['tok', [
+    { event: 'pulled', agent_id: 'b_d', to_team: 'build' },
+    { event: 'intake', agent_id: 'b_d', verdict: 'accept' },
+    { event: 'assigned', agent_id: 'b_w1', task_id: 'b-1' },
+    { event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'protocol-error' },
+  ]]), new Set())[0]
+  assert.equal(transport.action, 'dispatch')
 })
 
 // ── the page that lands on disk ──────────────────────────────────────────────

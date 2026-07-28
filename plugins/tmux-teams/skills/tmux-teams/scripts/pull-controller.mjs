@@ -5,7 +5,9 @@
 // team, it only lets a team TAKE work it has room for.
 //
 // One pass over the token ledgers:
-//   a token whose last event is `delivered` is sitting in its team's done queue
+//   a token whose last event is `reviewed` with verdict `pass` has cleared its
+//   own team's evaluator and is sitting in that team's done queue
+//   → check that the token's own history can be believed at all
 //   → find the next team on its workflow route
 //   → if that team is under its WIP limit, append `pulled` (it took the work)
 //   → if it is at the limit, leave the token where it is and report it blocked
@@ -15,11 +17,24 @@
 // token stays visibly blocked, because a queue backing up is the signal the
 // whole board exists to show — hiding it by pushing anyway is the failure this
 // file prevents.
-import { appendFileSync, mkdirSync } from 'node:fs'
-import { join } from 'node:path'
-
+//
+// The ledger check is the same idea one layer down. A handoff carries no
+// artifact of its own: what the receiving team actually inherits is the token's
+// recorded history, and every later reader — intake, the board, the outer
+// controller's audit — answers from it. Handing on a history that describes
+// something impossible is the same class of mistake as handing on a delivery
+// that never happened, which the failed-leg check below already refuses.
+import { validateLedger } from './ledger-validate.mjs'
+import { appendEvent } from './ledger-writer.mjs'
 import { readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
 import { readWorkflowGraph } from './graph.mjs'
+
+// Every line this file puts in a ledger names the same writer. The pull
+// controller is the thing that decided and recorded it; the receiving
+// dispatcher named in `agent_id` is who the pull was made FOR. Signing the line
+// as the dispatcher would claim a write that agent never performed, and the
+// whole point of an actor is that it stays true forever.
+const PULL_ACTOR = 'agent:pull-controller'
 
 export function planPulls(graph, items, now = new Date().toISOString()) {
   const teamOf = new Map()
@@ -54,6 +69,33 @@ export function planPulls(graph, items, now = new Date().toISOString()) {
     // rather than a box on a diagram — pulling on `delivered` moved every token
     // onward before its evaluator ever ran.
     if (last.event !== 'reviewed' || last.verdict !== 'pass') continue
+
+    // The whole verdict, not a chosen subset of it. `ledger-writer.appendEvent`
+    // refuses outright to append to a ledger that does not validate, so a
+    // planner working from a laxer rule would keep emitting a pull the writer
+    // can never record — the loop would print the same handoff every tick while
+    // nothing moved, which is indistinguishable from a runner that has quietly
+    // given up. Plan and apply have to answer to the same predicate.
+    //
+    // `custody` is what the rest of the loop can actually see: already parsed,
+    // already sorted by `at`, with unparsable lines dropped by readWorkItems.
+    // Judging those bytes is the point — a verdict about lines no reader parses
+    // is not a verdict about this system. The raw file is checked again by the
+    // writer at append time, so a defect only the file shows still stops the
+    // write; it surfaces as a refusal rather than as a plan.
+    const verdict = validateLedger(item.custody.map((entry) => JSON.stringify(entry)))
+    if (!verdict.ok) {
+      const [first] = verdict.problems
+      decisions.push({
+        work_item: item.work_item, action: 'invalid', from_team: team.team_id,
+        reason: `its ledger has ${verdict.problems.length} problem(s) and cannot be handed on — line ${first.line} ${first.code}: ${first.detail}`,
+        // Every problem travels with the decision. The validator reports them
+        // all on purpose, and a repair against one line at a time is a game of
+        // whack-a-mole against a file nobody is allowed to rewrite.
+        problems: verdict.problems,
+      })
+      continue
+    }
     pending.push({ item, last, team })
   }
 
@@ -112,27 +154,48 @@ export function planPulls(graph, items, now = new Date().toISOString()) {
   return decisions
 }
 
-export function applyPulls(repo, decisions) {
-  const dir = join(repo, '.tmux-teams', 'work-items')
-  mkdirSync(dir, { recursive: true, mode: 0o700 })
+// A refusal is the operator's cue to go and repair a ledger, and this is the
+// only place that cue exists — loop-runner calls applyPulls without looking at
+// what came back, so a refusal swallowed here is a token that stops moving with
+// nobody told why.
+const reportRefusal = (decision, result) => {
+  process.stderr.write(`[pull] REFUSED ${decision.work_item}: ${result.code} — ${result.detail}\n`)
+}
+
+export function applyPulls(repo, decisions, onRefusal = reportRefusal) {
   let written = 0
   for (const decision of decisions) {
     if (!decision.event) continue
-    appendFileSync(join(dir, `${decision.work_item}.jsonl`), `${JSON.stringify(decision.event)}\n`, { mode: 0o600 })
+    // Through the writer, never straight to the file: it stamps the actor,
+    // checks the event against contract §4, and refuses to append to a history
+    // that is already broken — which is the same gate planPulls applied, now
+    // re-run against the bytes on disk rather than the parsed projection.
+    const result = appendEvent(repo, decision.event, { actor: PULL_ACTOR })
+    if (!result.ok) {
+      onRefusal(decision, result)
+      continue
+    }
     written += 1
   }
   return written
 }
 
-const describe = (decision) => decision.action === 'pull'
-  ? `pull   ${decision.work_item}: ${decision.from_team} -> ${decision.to_team} (${decision.workflow})`
-  : decision.action === 'complete'
-    ? `done   ${decision.work_item}: finished ${decision.workflow} at ${decision.from_team}`
-    : decision.action === 'blocked'
-      ? `BLOCK  ${decision.work_item}: ${decision.from_team} -> ${decision.to_team} — ${decision.reason}`
-      : decision.action === 'failed'
-        ? `FAILED ${decision.work_item}: ${decision.reason}`
-        : `skip   ${decision.work_item}: ${decision.reason}`
+const describe = (decision) => {
+  switch (decision.action) {
+    case 'pull':
+      return `pull    ${decision.work_item}: ${decision.from_team} -> ${decision.to_team} (${decision.workflow})`
+    case 'complete':
+      return `done    ${decision.work_item}: finished ${decision.workflow} at ${decision.from_team}`
+    case 'blocked':
+      return `BLOCK   ${decision.work_item}: ${decision.from_team} -> ${decision.to_team} — ${decision.reason}`
+    case 'failed':
+      return `FAILED  ${decision.work_item}: ${decision.reason}`
+    case 'invalid':
+      return `INVALID ${decision.work_item}: ${decision.reason}`
+    default:
+      return `skip    ${decision.work_item}: ${decision.reason}`
+  }
+}
 
 if (process.argv[1]?.endsWith('pull-controller.mjs')) {
   const args = process.argv.slice(2)
@@ -148,7 +211,14 @@ if (process.argv[1]?.endsWith('pull-controller.mjs')) {
     console.log('[pull] nothing waiting in a done queue')
     process.exit(0)
   }
-  for (const decision of decisions) console.log(`[pull] ${describe(decision)}`)
+  for (const decision of decisions) {
+    console.log(`[pull] ${describe(decision)}`)
+    // The headline names one problem so the line stays readable; a repair needs
+    // the whole list, so the whole list is printed under it.
+    for (const problem of decision.problems ?? []) {
+      console.log(`[pull]         line ${problem.line}  ${problem.code}  ${problem.detail}`)
+    }
+  }
   if (args.includes('--apply')) {
     console.log(`[pull] appended ${applyPulls(repo, decisions)} custody events`)
   } else {

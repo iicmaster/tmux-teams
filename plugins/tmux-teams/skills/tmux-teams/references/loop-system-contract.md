@@ -14,15 +14,18 @@ this file in the same commit.
 
 | File | Owns |
 | --- | --- |
-| `scripts/workflow-graph.mjs` | the declaration: teams, workflows, validation |
+| `scripts/workflow-graph.mjs` | the declaration: teams, workflows, models, validation |
 | `scripts/dispatch-facts.mjs` | reading the ledger, and the single placement rule |
 | `scripts/pull-controller.mjs` | pull, WIP enforcement, route completion |
-| `scripts/loop-runner.mjs` | the state machine, dispatch, harvest, escalation |
+| `scripts/loop-runner.mjs` | the state machine, dispatch, harvest, escalation, the heartbeat |
+| `scripts/ledger-validate.mjs` | whether a custody ledger can be believed |
+| `scripts/ledger-writer.mjs` | the only sanctioned way a line enters a ledger |
 | `scripts/role-briefs.mjs` | what each role is told, and verdict parsing |
 | `scripts/graph.mjs` | the loop graph page |
 | `.tmux-teams/team-graph.json` | the declaration artifact |
 | `.tmux-teams/work-items/<token>.jsonl` | the custody ledger |
 | `.tmux-teams/work-items/<token>.md` | the token's own request |
+| `.tmux-teams/runner-heartbeat.json` | the runner's statement about itself |
 | `.tmux-teams/graph.html` | the published page |
 
 **Not governed here.** `phase-gate-*` and `delivery-loop-*` implement a
@@ -49,10 +52,20 @@ loop reads it and never adds fields to it.
 | Layer | Artifact | Nature |
 | --- | --- | --- |
 | DECLARATION | `team-graph.json` | assigned by a human, never observed |
-| EVIDENCE | `work-items/*.jsonl`, `pulse.json` | recorded by the system, never assumed |
+| EVIDENCE | `work-items/*.jsonl`, `pulse.json`, `runner-heartbeat.json` | recorded by the system, never assumed |
 
-Team membership, role and WIP limit are declaration. Whether an agent ran, what
-it produced and how long it took are evidence.
+Team membership, role and **the model each seat is meant to run on** are
+declaration. Whether an agent ran, what it produced, how long it took and
+**which model actually answered** are evidence.
+
+**A team's WIP limit is neither.** It is *derived*: it always equals that team's
+worker count, so there is no second number that can disagree with the first.
+See §3.
+
+**Declared model and verified model are two different facts and are never
+substituted for each other.** The declaration says which model a seat was
+*asked* for; only the adapter's own acknowledgement says which model *answered*.
+The page prints the second and never the first (§12.3, §12.7.2).
 
 **The page may draw a declared thing that has no evidence — and must say so.**
 An agent that has never run says so; it never shows a zero that reads like a
@@ -64,10 +77,12 @@ measurement.
 {
   "project_id": "<GRAPH_ID>",
   "outer_controller_id": "<AGENT_ID>",
+  "outer_controller_model": "<MODEL>",
   "teams": [{
     "team_id": "<GRAPH_ID>", "name": "<1..160 chars>",
     "dispatcher_id": "<AGENT_ID>", "worker_ids": ["<AGENT_ID>", "..."],
-    "evaluator_id": "<AGENT_ID>", "wip_limit": 1
+    "evaluator_id": "<AGENT_ID>",
+    "models": { "dispatcher": "<MODEL>", "worker": "<MODEL>", "evaluator": "<MODEL>" }
   }],
   "workflows": [{ "workflow_id": "<GRAPH_ID>", "name": "...", "route": ["<team_id>", "..."] }]
 }
@@ -75,10 +90,47 @@ measurement.
 
 `AGENT_ID` = `^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$` ·
 `GRAPH_ID` = `^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$` ·
-`name` = 1–160 characters, no control characters.
+`name` = 1–160 characters, no control characters ·
+`MODEL` = 1–128 characters, no control characters.
 
-Bounds: 1–100 teams, 1–100 workers per team, 1–50 workflows, `wip_limit` an
-integer 1–100 (defaults to the worker count).
+Bounds: 1–100 teams, 1–100 workers per team, 1–50 workflows.
+
+### 3.1 `wip_limit` is derived, never declared
+
+A team's WIP limit **always equals its worker count**. It is not an input.
+
+A worker may spawn its own sub-agents, so parallelism already happens inside a
+worker; a second number allowed to disagree with the first is a defect waiting
+to happen, and a board that draws a limit nobody is enforcing is worse than a
+board with no limit on it. An older graph that still states the *same* number
+keeps loading and the number is ignored. One that states a *different* number is
+**rejected**, naming both numbers — silently overruling it would make the loop
+enforce a limit nobody wrote down.
+
+Raising a team's WIP limit therefore means giving it another worker, and that is
+the only way to raise it.
+
+### 3.2 Every seat names its model
+
+Each team names a model for its `dispatcher`, its `worker` and its `evaluator`,
+and the graph names one for the outer controller. All four are **required**
+whenever the seat exists; a graph that declares no `outer_controller_id` needs no
+`outer_controller_model`.
+
+Only the **shape** of the name is checked: 1–128 characters, no control
+characters. The **value is never validated against a list of known models,
+anywhere in this system.** The adapter is the only authority on what a model
+name may say, and a hardcoded list here would go stale and start refusing names
+that work. The cost of that choice is stated plainly: an invented name passes
+this checker and fails later, at dispatch, when the adapter is asked to
+acknowledge it.
+
+The declared name is passed to the adapter as a **request the dispatch will be
+held to**: `acp-companion` starts the session's `identity_status` at `missing`
+and rejects the receipt unless the adapter answers with exactly that name. The
+one sentinel value `inherit-account-default` therefore requests **nothing** and
+leaves the account default in place; it is a blank, not an answer, and the
+bundled template uses it precisely because no real model belongs in a template.
 
 **Rejected, with the reason it is rejected:**
 
@@ -88,6 +140,8 @@ integer 1–100 (defaults to the worker count).
 | a route listing the same team twice | work returns by rejection, not by routing |
 | an `agent_id` used twice anywhere | one agent, one seat — a shared id lights two nodes from one dispatch |
 | a route naming an unknown team | a route may only compose declared teams |
+| a `wip_limit` that differs from the worker count | the limit is derived (§3.1); the graph would draw one number and enforce another |
+| a missing or malformed model on any declared seat | a dispatch with no model named runs on whatever the account defaults to — the guess this declaration exists to stop |
 | any missing or malformed field above | the graph fails **closed**; it never silently falls back |
 
 A repo with no `team-graph.json` at all uses the bundled default graph. A repo
@@ -99,7 +153,7 @@ One token, one file, append-only, one JSON object per line. Corrections are
 appended. Nothing is ever rewritten, and no component may edit a prior line.
 
 Common fields on every event: `at` (ISO 8601 UTC), `event`, `work_item`,
-`workflow`.
+`workflow`, and — on every line written since the writer existed — `actor`.
 
 | Event | Written by | Also carries | Means |
 | --- | --- | --- | --- |
@@ -126,8 +180,67 @@ Rules:
    unplaceable while freeing a WIP slot nobody released.
 3. A malformed line is skipped, counted, and the count is surfaced on the page.
    Partial evidence beats none as long as nothing is invented.
-4. Events are ordered by `at`; equal timestamps keep append order.
+4. Events are ordered by `at`; equal timestamps keep append order. A stamp
+   strictly earlier than the line above it is an impossible past and is refused.
 5. At most 1 MiB is read per token and 5000 files per directory.
+
+### 4.1 Every line names who wrote it — `actor`
+
+`actor` is `agent:<id>` or `human:<id>`. The kind is a closed vocabulary,
+because the whole point of recording it is that a hand-typed line stays visibly
+a hand-typed line forever.
+
+This exists because it was missing. Two `abandoned` events in this repository
+were typed into a ledger by an assistant, and they are **structurally and
+sequentially legal** — no validator can tell them apart from lines the runner
+wrote, and the board, the pull controller and the outer controller all read them
+as machine evidence. Only a recorded actor can distinguish them.
+
+The actor is the component that **performed the write**, never the agent the
+line is about. A `pulled` made for a receiving dispatcher is signed
+`agent:pull-controller` and carries that dispatcher in `agent_id`; signing it as
+the dispatcher would claim a write that agent never performed. A harvested
+verdict is signed by the agent whose outbox stated it. An event the runner
+decided by itself — `lost`, a stall — is signed by the runner.
+
+Lines written before this rule existed carry no `actor`. Requiring one of them
+would condemn every legitimately runner-written line in history, so the
+validator **shape-checks `actor` only when it is present** while the writer
+**refuses to write without one**.
+
+### 4.2 The sanctioned writer — `ledger-writer.mjs`
+
+Every line that enters a custody ledger goes through `appendEvent`. It is the
+only sanctioned writer, and it:
+
+- refuses an event with no valid `actor`, before anything else is looked at;
+- checks the event against the per-event field table above;
+- checks it against the ledger it is joining, so an event that would make the
+  token's history impossible is refused rather than recorded;
+- refuses outright to append to a ledger that was **already invalid** —
+  appending to a broken history buries the break instead of surfacing it;
+- validates `work_item` before it is used as a filename, so a token id cannot
+  escape the work-items directory;
+- writes one pre-serialised line per call, at 0600 inside a 0700 directory.
+
+It never rewrites. A refused write **did not happen**, and no caller may report
+it as having happened.
+
+### 4.3 Validated at both boundaries
+
+The ledger is checked on the way **in** and on the way **out**, by the same
+validator, because the two answer different questions:
+
+| Boundary | Who | Refusing means |
+| --- | --- | --- |
+| write | `ledger-writer.appendEvent` | this line would make the history impossible, or the history already is |
+| read, before dispatch | `loop-runner.tick` | do not write fresh evidence on top of evidence that cannot be believed |
+| read, before handoff | `pull-controller.planPulls` | do not hand the next team a history that describes something impossible |
+
+Plan and apply must answer to the **same predicate**. A planner using a laxer
+rule would keep emitting a handoff the writer can never record, and the loop
+would print the same move every tick while nothing moved — indistinguishable
+from a runner that has quietly given up.
 
 ## 5. State machine
 
@@ -158,6 +271,20 @@ One token, keyed on its last event and the role of the actor.
 Harvesting after pulling would let the controller evaluate a stale event, and
 pulling before a review lands is what made the evaluator decorative.
 
+**No leg is dispatched onto a history that cannot be believed.** Before the
+runner acts on a token, that token's ledger is validated (§4.3). If it does not
+validate the runner refuses, names every problem it found, and moves on.
+Occupancy, the pull decision, the board and the audit are all derived from that
+one file, so dispatching a fresh leg onto a broken history writes good evidence
+on top of bad and buries the break. The refusal is **loud** for the same reason
+every ceiling is (§10): a silent skip here looks exactly like a team with
+nothing to do.
+
+The cost is stated rather than hidden: a token whose ledger is invalid **stops
+moving** until a human repairs it, and §13 forbids rewriting a line. See §14.2
+item 1, which records the one shape of history this system produces today and
+cannot then repair.
+
 ## 6. Occupancy — the single placement rule
 
 `dispatch-facts.teamOccupancy()` is the **only** function permitted to answer
@@ -184,8 +311,15 @@ being enforced.
   waited longest.
 - The destination team's occupancy is checked before each pull and incremented
   on each accepted pull, so one pass can never overfill a team.
+- **A handoff carries no artifact of its own — what the receiving team inherits
+  is the token's recorded history.** So a token whose ledger does not validate
+  is not handed on. It is reported as `invalid`, with every problem named, and
+  no custody event is written. This is the same refusal as the failed-leg check
+  one layer down: handing on a history that describes something impossible is
+  the same class of mistake as handing on a delivery that never happened.
 - A blocked token stays visibly blocked. A queue backing up is the signal the
-  board exists to show.
+  board exists to show. **An `invalid` token must stay visibly blocked too** —
+  see §14.2 item 2, where the board's failure to draw it is a live defect.
 - No next team on the route → `completed`.
 
 ## 8. Quality gates
@@ -214,8 +348,11 @@ Parsing rules, non-negotiable:
 
 ## 9. Outer controller
 
-- **Event-triggered, never on a heartbeat.** A timer bills for reading a board
-  that has not changed. Every trigger below is something that *did* change.
+- **Event-triggered, never on a timer.** A timer bills for reading a board that
+  has not changed. Every trigger below is something that *did* change. (This
+  clause predates the runner heartbeat of §11 and is unrelated to it: the
+  heartbeat is a file the runner writes about itself and costs nothing to
+  write. Nothing in §11 may ever become a reason to dispatch the controller.)
 - It has two jobs. **Auditing** is the standing one: no team's evaluator can see
   past its own leg, so only this role can ask whether what came out of the end is
   what was asked for. **Unsticking** is the exceptional one.
@@ -248,7 +385,7 @@ Parsing rules, non-negotiable:
 | `MAX_LEGS` | 15 + granted | the whole token, all roles | escalate |
 | `RESUME_GRANT` | 3 | added per `resumed` event, clamped | raises the leg ceiling |
 | `MAX_IN_FLIGHT` | 4 | declared agents running across the whole board | wait |
-| `wip_limit` | declared | tokens held by one team | wait / block the pull |
+| `wip_limit` | derived: the team's worker count (§3.1) | tokens held by one team | wait / block the pull |
 | `ZOMBIE_SEC` | 180 s | an `assigned` with no live process | append `lost` |
 | `PULSE_STALE_SEC` | 120 s | evidence age | refuse to dispatch |
 | `PM_COOLDOWN_SEC` | 900 s | between controller dispatches | hold |
@@ -260,6 +397,10 @@ happy path looks identical to one that has silently given up.
 
 ## 11. Liveness dependency
 
+Two different things can be dead, and each has its own evidence.
+
+### 11.1 Are the AGENTS running — `pulse.json`
+
 `pulse.json` is the only evidence that an agent is still running.
 
 - **Missing** snapshot = a repo where nothing has ever run. Dispatch is allowed,
@@ -268,6 +409,57 @@ happy path looks identical to one that has silently given up.
   that writes it has stopped. All dispatch is refused, loudly. Frozen evidence
   either stalls the loop forever on an agent that already exited or, past the
   zombie window, declares a running agent lost and pays to run it twice.
+
+### 11.2 Is the LOOP running — `.tmux-teams/runner-heartbeat.json`
+
+Every other artifact this system writes describes the agents. None of them
+describes the runner. **A runner that has stopped leaves a board that looks
+calm** — no agent running, nothing overdue — and a reader concludes there is
+simply no work to do. So the runner states its own condition, on disk, in its
+own words:
+
+```json
+{ "schema": "tmux-teams.runner-heartbeat", "at": "<ISO 8601 UTC>",
+  "tick_sec": <number>, "dispatching": <boolean>,
+  "reason": "<empty when dispatching>", "started": <number>, "held": <number> }
+```
+
+**It is stamped on EVERY tick, including the ticks that refuse to dispatch.** A
+heartbeat that appeared only on healthy ticks would say "alive and dispatching"
+or say nothing — and "nothing" is the same silence a dead process leaves. The
+refusing ticks are exactly the ones a reader has to hear about, so
+`dispatching: false` carries the runner's reason in the runner's own words, and
+the runner never invents one.
+
+Three reader rules, and no others:
+
+| What the reader sees | What it means |
+| --- | --- |
+| no file | the runner has **never run** in this repo |
+| `at` older than `3 × tick_sec` | the runner is **not responding** |
+| `dispatching: false` | the runner is **deliberately holding**, and `reason` must be shown |
+
+Age is judged against the runner's **own declared** `tick_sec`, never a
+hard-coded one, so a slow loop is not read as a dead one. Staleness outranks
+`dispatching`: a stale record is as old as the record, so a stale
+`dispatching: false` is reported as what the runner *last said*, never as a hold
+in progress.
+
+Honesty, same rule as everywhere else (§12.7.1): `started` and `held` are
+printed only when the runner measured them. A count it did not report says so
+instead of printing a zero; a measured `0` still prints. Today the only tick
+that emits `held: null` is the one that found the graph invalid, where occupancy
+is genuinely unmeasurable because there are no declared teams to count against.
+That is a property of the three call sites, not something the writer enforces —
+its `held` parameter defaults to `null`, so a future caller that simply forgets
+to count would land in the same state and be read as "not measured" rather than
+as a bug. Every stamp must pass `held` deliberately.
+
+A **dry run does not stamp.** Letting a simulation overwrite a live runner's
+heartbeat in the same repo would report a loop that is not running.
+
+Failing to stamp never takes a tick down: moving work matters more than
+describing the move.
 
 ## 12. The loop graph page
 
@@ -284,6 +476,10 @@ may not become a board.
    one node, no matter how many workflows use its team.
 2. **Workflows** — a plain horizontal team-level strip per workflow. No agents
    here.
+
+These are the bands **of the diagram**. The loop-health strip of §12.7.7 is not
+one of them: it is page chrome that sits above the diagram entirely, so it
+neither reorders these two nor adds a third.
 
 ### 12.3 Every node states the same five facts
 
@@ -306,6 +502,14 @@ it.
 **Lane and model are two separate facts.** The lane is the adapter that carried
 the dispatch; the model is reported only once verified. Never substitute one for
 the other.
+
+**The declared model is a third fact, and it is not this one.** `team-graph.json`
+now names a model for every seat (§3.2), and that name travels with the team and
+with each agent in the validated graph. It is a DECLARATION: it says which model
+was *asked* for. Line 3 states the model that *answered*. Wiring the declared
+field into line 3 would turn this table's only honesty guarantee into a lie, and
+is forbidden (§12.7.2). A seat whose declared model was never acknowledged still
+reads `unverified`.
 
 ### 12.4 Status
 
@@ -365,21 +569,56 @@ These are standing requirements. Each one was a defect first.
 5. Counters come from the ledger, which is the runner's own record, so a broken
    verdict-to-snapshot chain cannot make reviewing look like it never happened.
 6. Auto-refresh is real and pausable; the page states its own freshness.
+7. **The page states the loop's own health before it states anything else.**
+   A board of declared agents with no evidence beside them is the same picture
+   whether the loop is idle or dead, and this band is the only surface that can
+   tell those apart. It sits directly under the header, reads
+   `runner-heartbeat.json` by the rules of §11.2, and names one of six states —
+   `never`, `stale`, `holding`, `dispatching`, `unreadable`, `unmeasured`. The
+   four a reader must act on each have an honest failure mode behind them:
+   `unreadable` is deliberately **not** collapsed into "never run", because that
+   would be a false claim about the filesystem, and `unmeasured` covers a
+   heartbeat that is present but does not say enough to judge.
+   Reading the heartbeat must never throw. This band has to render even when
+   everything it describes is broken.
+   Like every other status on this page, the state is carried more than one way:
+   a shape that survives greyscale, an uppercase state word, a sentence, and a
+   machine-readable `data-loop-health` attribute — never colour alone (§12.4).
 
 ## 13. Prohibitions
 
 - No component may rewrite a ledger line.
+- **Exactly two components may append to a ledger: `ledger-writer.mjs` and
+  `acp-companion.mjs`.** Nothing else — no shell `>>`, no ad-hoc
+  `appendFileSync`, no third writer. The companion is the only thing that knows
+  a leg started or ended, and routing it through the writer would mean spawning
+  a process inside the dispatch path, so it is a sanctioned writer bound by the
+  same obligations: every line it writes carries `actor`, and it writes only the
+  events §4 names for it (`assigned`, `delivered`). Everything else goes through
+  `ledger-writer.mjs`. A refused write did not happen and may not be reported as
+  having happened.
+  *An earlier draft of this clause named one writer and was contradicted by §4's
+  own event table and by the code on every leg — the contract disagreeing with
+  itself, which is worse than disagreeing with the code, because a reader
+  believes the half that is false.*
 - No component may add a field to `pulse.json`.
 - No second implementation of the occupancy rule.
 - No agent may be dispatched without a brief.
 - No verdict may be inferred from prose.
+- No `wip_limit` is written into a declaration (§3.1).
+- No declared model is printed as a verified one (§12.7.2).
+- No list of known model names lives anywhere in this system (§3.2).
 - The page must never dispatch, pull, or mutate anything.
 
 ## 14. Acceptance criteria
 
-Every clause below is enforced by a test in `tests/loop-occupancy.test.mjs` or
-`tests/graph.test.mjs`. A clause with no test is not enforced and must be
-marked as such here.
+Every clause below is enforced by a test that exists today. A clause with no
+test is not enforced and must be marked as such in §14.1.
+
+AC1–AC37 live in `tests/loop-occupancy.test.mjs` or `tests/graph.test.mjs`.
+AC38 onward name their own file, because the batch of 2026-07-28 added three:
+`tests/workflow-graph.test.mjs`, `tests/ledger.test.mjs` and
+`tests/loop-runner-heartbeat-model.test.mjs`.
 
 | # | Clause | Assertion |
 | --- | --- | --- |
@@ -421,6 +660,50 @@ marked as such here.
 | AC36 | §9 | a board holding work with nothing recorded is a stall, not calm |
 | AC37 | §8, §9 | an audit answer closes the flag, and silence does not |
 
+Added 2026-07-28. Each row names the file holding its test.
+
+| # | Clause | Assertion | Test file |
+| --- | --- | --- | --- |
+| AC38 | §3.1 | the WIP limit is the worker count whatever the graph does or does not say | `workflow-graph.test.mjs` |
+| AC39 | §3.1 | a declared `wip_limit` that differs from the worker count is rejected, naming both numbers | `workflow-graph.test.mjs` |
+| AC40 | §3.2 | a seat with no model is rejected, naming the team and the role | `workflow-graph.test.mjs` |
+| AC41 | §3.2 | a declared outer controller with no model is rejected | `workflow-graph.test.mjs` |
+| AC42 | §3.2 | a model value is never judged against a list of known models | `workflow-graph.test.mjs` |
+| AC43 | §3.2, §12.3 | the declared model travels with the team, the role and the agent, as declaration | `workflow-graph.test.mjs` |
+| AC44 | §4.1 | a write with no actor, or a malformed one, is refused | `ledger.test.mjs` |
+| AC45 | §4.1 | the recorded actor cannot be spoofed by the event body | `ledger.test.mjs` |
+| AC46 | §4.1 | history that predates the actor is not condemned for lacking one | `ledger.test.mjs` |
+| AC47 | §4.2 | an event that would make the history impossible is refused, not written | `ledger.test.mjs` |
+| AC48 | §4.2 | an already-broken ledger is repaired first, never appended to | `ledger.test.mjs` |
+| AC49 | §4.2, §13 | writes append and never rewrite | `ledger.test.mjs` |
+| AC50 | §4.2 | a `work_item` cannot escape the work-items directory | `ledger.test.mjs` |
+| AC51 | §4.1 | the two hand-written `abandoned` events are legal, so only an actor could have caught them | `ledger.test.mjs` |
+| AC52 | §5, §4.3 | a token whose history cannot be believed is not dispatched onto | `loop-runner-heartbeat-model.test.mjs` |
+| AC53 | §5, §4.3 | a valid history still dispatches, so the gate is a gate and not a wall | `loop-runner-heartbeat-model.test.mjs` |
+| AC54 | §4.1, §13 | every line the runner appends names an accountable actor | `loop-runner-heartbeat-model.test.mjs` |
+| AC55 | §4.2 | an append the writer refused is not reported as having happened | `loop-runner-heartbeat-model.test.mjs` |
+| AC56 | §11.2 | a healthy tick stamps a heartbeat the page reads as dispatching | `loop-runner-heartbeat-model.test.mjs` |
+| AC57 | §11.2 | a tick that refuses still stamps, and says why | `loop-runner-heartbeat-model.test.mjs` |
+| AC58 | §11.2, §12.7.1 | a refusal with no graph does not invent an occupancy count | `loop-runner-heartbeat-model.test.mjs` |
+| AC59 | §11.2 | a dry run does not stamp, so a simulation cannot impersonate a live runner | `loop-runner-heartbeat-model.test.mjs` |
+| AC60 | §11.2 | the runner is judged against the tick it declares, not a hard-coded one | `loop-runner-heartbeat-model.test.mjs` |
+| AC61 | §3.2 | the sentinel is never sent as a request, so the account default stands | `loop-runner-heartbeat-model.test.mjs` |
+| AC62 | §3.2 | a real declared name is passed through as the request the adapter is held to | `loop-runner-heartbeat-model.test.mjs` |
+| AC63 | §3.2 | the model comes off the seat the agent actually sits in | `loop-runner-heartbeat-model.test.mjs` |
+| AC64 | §12.7.7 | a repo where the runner has never run says so instead of looking calm | `graph.test.mjs` |
+| AC65 | §11.2, §12.7.7 | a heartbeat older than three of its own ticks reads as not responding | `graph.test.mjs` |
+| AC66 | §11.2 | a stale hold is reported as what the runner last said, not as a hold in progress | `graph.test.mjs` |
+| AC67 | §11.2 | a slow loop is judged by its own tick and is not called dead | `graph.test.mjs` |
+| AC68 | §11.2 | a deliberate hold shows the reason the runner gave, escaped | `graph.test.mjs` |
+| AC69 | §12.7.1 | a count the runner did not report is not printed as a zero | `graph.test.mjs` |
+| AC70 | §12.7.7 | an unreadable heartbeat is not reported as a runner that never ran | `graph.test.mjs` |
+| AC71 | §12.7.7 | a heartbeat that cannot be judged says so rather than guessing | `graph.test.mjs` |
+| AC72 | §12.4, §12.7.7 | loop health is readable without colour: a state word and a shape | `graph.test.mjs` |
+| AC73 | §7, §4.3 | a token whose ledger cannot be believed is not handed to the next team, and the same refusal holds at apply time | `loop-occupancy.test.mjs` |
+| AC74 | §9, §14.2 item 3 | a controller dispatch paid for with nothing recorded is named as stuck, not logged as bookkeeping | `loop-runner-heartbeat-model.test.mjs` |
+| AC75 | §4, §8 | an accepted intake that stated no reason says so rather than leaving a mandatory field blank | `loop-runner-heartbeat-model.test.mjs` |
+| AC76 | §4, rule 2 | an intake refusal with nowhere to send it back still names the team holding the token | `loop-runner-heartbeat-model.test.mjs` |
+
 ### 14.1 Clauses this contract does NOT yet enforce
 
 Declared here rather than left to be discovered. Each is a rule the code follows
@@ -428,11 +711,98 @@ today with nothing stopping it from regressing.
 
 | Clause | Rule with no test |
 | --- | --- |
-| §4.3 | a malformed ledger line is skipped, counted, and the count reaches the page |
-| §4.4 | equal timestamps keep append order |
+| §4, rule 3 | a malformed ledger line is skipped, counted, and the count reaches the page |
+| §4, rule 4 | equal timestamps keep append order |
 | §5 | the tick order is harvest → pulls → dispatch → escalation |
 | §12.7.6 | auto-refresh is pausable and the page states its own freshness — only the asset's existence and parseability are tested |
 | §13 | the prohibitions are review rules, not runtime behaviour; they are enforced by reading a diff |
+
+### 14.2 Known contradictions and live defects, 2026-07-28
+
+Recorded here rather than left to be discovered. Each of these is a place where
+this contract and the code do **not** agree, or where the contract is satisfied
+by nothing. None is fixed by the batch that added §3.1, §3.2, §4.1, §4.2, §4.3
+and §11.2.
+
+1. **§4 has no spelling for a route-opening `pulled`, and the code refuses one.**
+   §5 starts every token at `pulled`; §4 requires `from_team` on `pulled`; the
+   first pull of a route has **no sending team**. There is no `created` or
+   `opened` event. So intake into the graph is unrepresentable through the
+   sanctioned writer without fabricating a sender.
+   **This is live, not theoretical.** `.tmux-teams/work-items/kanban-board.jsonl`
+   line 1 is exactly that event, and it fails validation today.
+   *Corrected 2026-07-28:* an earlier draft of this item claimed that token is
+   "permanently stuck" with a WIP slot never released. It is not. Its last event
+   is `audited`, which §6 lists as releasing, so no team holds it — measured:
+   all four teams count 0, no orphans, and the pull controller reports nothing
+   waiting. The **mechanism** is real and would strand any token still in
+   flight; the named instance is terminal. The evidence was wrong even though
+   the conclusion was right, which is exactly the failure this section exists to
+   catch, so it is corrected in place rather than quietly deleted.
+   The fix is a decision, not an edit: either `from_team` becomes optional on a
+   token's first event, or §4 gains a distinct opening event, or the writer gains
+   an append-only repair event it will accept onto a broken ledger. Writing
+   "optional on the first event" into §4 unilaterally would just put the contract
+   back in disagreement with the code, in the other direction.
+
+2. **§7's "an `invalid` token stays visibly blocked" is not drawn.**
+   `kanban.mjs` treats `blocked`, `failed` and `skip` as blocking and does not
+   know `invalid`, so a gated token renders as an ordinary card while the loop
+   refuses to move it. The board and the loop currently disagree about that
+   token. **The code is the one that is wrong here** (§15.3): §7 says what
+   should happen.
+
+3. **The escalation path is not gated by §5, and cannot be without
+   restructuring the tick.**
+   The ledger check sits after the `action !== 'dispatch'` guard, so an
+   `escalate` plan never passes through it. The consequence is specific: the
+   controller is dispatched and `pm-notes/latest.md` is written **before** the
+   `audit_requested` / `escalated` marks are appended, so a refused mark leaves
+   the token's last event unchanged — the same trigger recurs next tick, the
+   unchanged-trigger brake of §9 then holds it forever, and a controller
+   dispatch was paid for with nothing recorded. The runner now says exactly that
+   (`STUCK <token>`) instead of letting it pass as a bookkeeping complaint, and
+   that refusal is tested. **The ordering hole itself remains.**
+   (An earlier report in this batch claimed these two marks called an
+   undefined `appendEvent` and threw. They do not: both go through `record()`,
+   which is the sanctioned writer. Verified by grep and by the passing test
+   `a token the controller was paid for but nothing was recorded about is called
+   stuck`.)
+
+4. **No real model name has been proven acknowledged by this adapter.**
+   §3.2 says a declared name becomes a request the adapter is held to. That the
+   name is *composed and passed* from the right seat is tested (AC61–AC63);
+   that any real name comes back `matched` from a live agent is **not**, and no
+   test can prove it without one. Until one is proven, every seat in this
+   repository's own declaration reads `inherit-account-default`, which requests
+   nothing. An unacknowledged name fails the whole dispatch.
+
+5. **`appendEvent` has no lock.** It is read-validate-append, so two processes
+   writing the same token (the runner and an acp-companion) are TOCTOU on the
+   *sequence* check. One `appendFileSync` of one pre-serialised line keeps lines
+   from interleaving, so the failure mode is a bad sequence, never a corrupt
+   line. Known and unaddressed.
+
+6. **The pull gate judges the parsed projection, not the raw file.**
+   `planPulls` is handed items, not a repo path, so it validates the `at`-sorted
+   projection `readWorkItems` produces — which has already dropped unparsable
+   lines. A token broken only by an unparsable line is therefore invisible to
+   the planner and surfaces only as a per-tick refusal on stderr from the
+   writer, never as an `invalid` decision on the board. Closing this needs
+   `readWorkItems` to carry a per-token malformed count (§4, rule 3).
+
+7. **`ACTOR_RE` and the bare actor `runner`.** The actor vocabulary is
+   `agent:<id>` | `human:<id>` (§4.1). A bare `runner` is not legal, and the
+   runner signs itself `agent:runner`. Stated here because an earlier brief
+   specified the bare form.
+
+8. **The setup skill over-claims the consequence of skipping it.**
+   `skills/team-loop-setup/SKILL.md` opens by saying nothing dispatches without
+   a `team-graph.json`. §3 says, and `graph.mjs` does, the opposite: a repo with
+   **no** file falls back to the bundled default and `graph.mjs check` on an
+   empty directory exits 0 as `ok (default)`. Only an **invalid** file fails
+   closed. **The skill is the one that is wrong** (§15.3); §3 and the code
+   agree and are left alone.
 
 ## 15. Change control
 
@@ -442,3 +812,26 @@ today with nothing stopping it from regressing.
    either. A contract quietly edited to match unreviewed code is not a contract.
 4. One writer per file per batch. The loop is itself a writer in this repository;
    editing a file while a worker holds it has already cost one overwrite.
+
+### Amendment log
+
+**2026-07-28 — WIP derived, models declared, the sanctioned writer, the runner's
+own pulse.** Behaviour changed in `workflow-graph.mjs`, `loop-runner.mjs`,
+`pull-controller.mjs`, `graph.mjs`, and in two new files `ledger-validate.mjs`
+and `ledger-writer.mjs`. Under §15.3, which document was wrong in each case:
+
+| Change | Which was wrong |
+| --- | --- |
+| `wip_limit` derived from the worker count (§2, §3.1, §10) | **the contract** — it declared `wip_limit` an input; the code now derives it, deliberately |
+| models required per seat (§2, §3.2, §12.3) | **the contract** — it had no model in the declaration at all |
+| `actor` on every written line, one sanctioned writer (§4.1, §4.2, §13) | **the contract** — it named no writer and no actor, which is how two hand-typed events became indistinguishable from machine evidence |
+| validation at write, before dispatch, before handoff (§4.3, §5, §7) | **the contract** — it said a ledger is evidence and never said who checks it |
+| the runner's heartbeat (§0, §2, §11.2, §12.7.7) | **the contract** — nothing described the runner itself, so a dead loop and an idle one drew the same board |
+| "a repo with no `team-graph.json` uses the bundled default" (§3) | **neither** — contract and code agree; the *setup skill* over-claims. See §14.2 item 8 |
+
+`.tmux-teams/team-graph.json` was migrated in the same commit: every seat and
+the outer controller now name `inherit-account-default`, because §14.2 item 4
+says no real name is proven yet, and all four teams' `wip_limit` lines were
+removed even though each happened to match its worker count — leaving a field
+in the canonical artifact that §3.1 says is not an input would contradict this
+document on its own example.

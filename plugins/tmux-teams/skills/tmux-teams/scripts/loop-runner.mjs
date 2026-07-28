@@ -27,11 +27,13 @@
 // The runner dispatches and records; it never judges. Every verdict in the
 // ledger was stated by the agent whose job it was to state it.
 import { spawn, spawnSync } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
+import { validateLedgerFile } from './ledger-validate.mjs'
+import { appendEvent as appendLedgerEvent, ledgerPath } from './ledger-writer.mjs'
 import { planPulls, applyPulls } from './pull-controller.mjs'
 import { AUDIT_VERDICTS, INTAKE_VERDICTS, OUTER_VERDICTS, REVIEW_VERDICTS, readVerdict, roleBrief } from './role-briefs.mjs'
 import { readWorkflowGraph } from './graph.mjs'
@@ -67,6 +69,83 @@ const STALL_SEC = 1800
 // the loop hiding how hard it had to work — one route recovered from four failed
 // legs and nobody heard a thing.
 const RETRY_NOISE = 3
+
+// ── the runner's own pulse (DECISION 2, writer half) ─────────────────────────
+//
+// Every other artifact this loop writes describes the AGENTS. None of them
+// describes the RUNNER. A runner that has stopped leaves a board that looks
+// calm — no agent running, nothing overdue — and a reader concludes there is
+// simply no work to do.
+//
+// The rule that makes this worth writing at all: it is stamped on EVERY tick,
+// including the ticks that refuse to dispatch. A heartbeat that only appears on
+// healthy ticks says "alive and dispatching" or says nothing, and "nothing" is
+// the same silence a dead process leaves. The refusing ticks are precisely the
+// ones a reader has to hear about, so `dispatching: false` carries the reason
+// in the runner's own words.
+export const RUNNER_HEARTBEAT_FILE = 'runner-heartbeat.json'
+const HEARTBEAT_SCHEMA = 'tmux-teams.runner-heartbeat'
+// The reader judges silence against the runner's OWN interval rather than a
+// hard-coded one, so this has to be a real number on every stamp: without it
+// the page cannot tell a slow loop from a dead one and says so.
+const DEFAULT_TICK_SEC = 30
+
+function writeHeartbeat(repo, { tickSec, dispatching, reason = '', started = 0, held = null }) {
+  const record = {
+    schema: HEARTBEAT_SCHEMA,
+    at: new Date().toISOString(),
+    tick_sec: tickSec,
+    dispatching,
+    // Enforced here rather than trusted from the caller: a stale reason left on
+    // a healthy tick would have the runner explaining a hold it is not doing.
+    reason: dispatching ? '' : String(reason || ''),
+    started,
+    held,
+  }
+  try {
+    const dir = join(repo, '.tmux-teams')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, RUNNER_HEARTBEAT_FILE), `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 })
+  } catch (error) {
+    // Failing to stamp must never take the tick down with it: the loop moving
+    // work matters more than the loop describing itself.
+    log(`WARN   could not write ${RUNNER_HEARTBEAT_FILE}: ${error.message}`)
+  }
+  return record
+}
+
+// ── the declared model (DECISION 3, dispatch half) ───────────────────────────
+//
+// The bundled default graph has to be a valid graph, so it names a model on
+// every seat — and naming a real one would silently run every fresh install on
+// somebody else's model choice. It names this instead, and this is the one
+// value that means "do not ask for anything".
+//
+// It is duplicated from workflow-graph.mjs, which defines the same literal but
+// does not export it. Someone should export it there and import it here; until
+// then the two must be changed together.
+export const INHERIT_ACCOUNT_DEFAULT = 'inherit-account-default'
+
+// Read off the agent's own seat rather than re-derived from the team's `models`
+// block, so an agent and a model can never be paired from two different rows.
+// The outer controller belongs to no team and carries its own.
+export function declaredModel(graph, teamId, agentId) {
+  if (agentId && agentId === graph.outer_controller_id) return graph.outer_controller_model || ''
+  const team = graph.teams.find((entry) => entry.team_id === teamId)
+  return team?.agents.find((agent) => agent.agent_id === agentId)?.model || ''
+}
+
+// The safety rule this whole branch exists for. acp-companion treats a REQUESTED
+// model as a promise it must keep: setting ACP_EXPECT_MODEL starts
+// `identity_status` at `missing`, and the session receipt is rejected outright
+// unless the adapter answers with exactly that name. So the sentinel — and an
+// empty name — must set NOTHING, leaving the account default in place. Only a
+// real declared name is ever passed through, because only a real declared name
+// is something the adapter can be held to.
+export function modelEnv(model) {
+  const name = typeof model === 'string' ? model.trim() : ''
+  return name && name !== INHERIT_ACCOUNT_DEFAULT ? { ACP_EXPECT_MODEL: name } : {}
+}
 
 const readJson = (path, fallback = null) => {
   try { return JSON.parse(readFileSync(path, 'utf8')) } catch { return fallback }
@@ -121,10 +200,25 @@ const dispatchRecord = (repo, taskId) => {
   } catch { return {} }
 }
 
-function appendEvent(repo, event) {
-  const dir = join(repo, '.tmux-teams', 'work-items')
-  mkdirSync(dir, { recursive: true, mode: 0o700 })
-  appendFileSync(join(dir, `${event.work_item}.jsonl`), `${JSON.stringify(event)}\n`, { mode: 0o600 })
+// DECISION 4, write half. Every line this runner adds to a custody ledger goes
+// through the one sanctioned writer, which stamps an accountable actor and
+// checks the line both against contract §4 and against the ledger it is
+// joining. Writing straight to the file — which is what this used to do — is
+// exactly the hand-append the writer exists to make impossible to imitate.
+//
+// A refused write returns false and is NOT counted as having happened. A runner
+// that logs an event it failed to record is telling the same lie the ledger is
+// supposed to prevent.
+const RUNNER_ACTOR = 'agent:runner'
+
+function record(repo, event, actor = RUNNER_ACTOR) {
+  const result = appendLedgerEvent(repo, event, { actor })
+  if (result.ok) return true
+  log(`REFUSED ${event.work_item}: ${event.event} was not recorded — ${result.code}: ${result.detail}`)
+  for (const problem of (result.problems || []).slice(0, 5)) {
+    log(`        line ${problem.line}  ${problem.code}  ${problem.detail}`)
+  }
+  return false
 }
 
 // The artifact a route carries forward is the last thing a WORKER actually
@@ -255,12 +349,20 @@ function harvestEvent(repo, graph, { item, last, role }, now) {
   if (role === 'dispatcher') {
     const { verdict, stated, reason } = readVerdict(text, INTAKE_VERDICTS)
     if (verdict === 'accept') {
-      return { ...base, event: 'intake', agent_id: last.agent_id, verdict: 'accept', reason }
+      // §4 requires a reason on `intake`. An accept with nothing said is
+      // common and legal, so the absence is stated rather than left blank —
+      // a blank field is refused by the writer and would stall the token.
+      return { ...base, event: 'intake', agent_id: last.agent_id, verdict: 'accept', reason: reason || 'no reason stated' }
     }
     const pulled = lastOf(item, (entry) => entry.event === 'pulled')
     if (!pulled?.from_team) {
       return {
         ...base, event: 'escalated', agent_id: last.agent_id,
+        // §4.2: `escalated` must name the team still holding the token. There is
+        // no sending team to return to, so the work stays with the team whose
+        // dispatcher refused it — without this the board draws parked work as
+        // unplaceable and frees a WIP slot nobody released.
+        to_team: teamRoleOf(graph, last.agent_id)?.team_id || null,
         reason: stated
           ? `intake refused and there is no sending team to return to: ${reason || 'no reason stated'}`
           : 'the dispatcher stated no verdict and there is no sending team to return to',
@@ -340,7 +442,12 @@ export function applyHarvest(repo, graph, jobs, now = new Date().toISOString()) 
     // A controller that answered nothing changes nothing; appending a no-op
     // would only make the loop re-read the same outbox every tick.
     if (!event) continue
-    appendEvent(repo, event)
+    // The accountable writer is the agent whose outbox stated the verdict this
+    // event carries — the dispatcher that refused, the evaluator that judged,
+    // the controller that answered. It is read from the harvested leg rather
+    // than from the event, because `returned` deliberately carries no
+    // `agent_id` (§4.1) and would otherwise land with no actor at all.
+    if (!record(repo, event, `agent:${job.last.agent_id}`)) continue
     // A verdict that never reaches the snapshot leaves the page reading
     // `0 pass 0 reject` — indistinguishable from no reviewing at all. Say so
     // rather than letting a broken chain look like an idle one.
@@ -415,6 +522,19 @@ function nextStep(graph, team, item, { busy, nowMs, zombieSec }) {
 
   if (last.event === 'delivered' || last.event === 'lost') {
     const role = teamRoleOf(graph, last.agent_id)?.role || 'worker'
+    // A declared model the adapter will not acknowledge fails identically every
+    // time: the companion refuses the dispatch before any work happens. Retrying
+    // it three times cannot succeed, it just buys three identical failures, and
+    // the escalation that follows carries the same unacknowledged model — so the
+    // controller fails too, writes no outbox, and the token is held for good
+    // while the board still reads as dispatching. Stop on the first one.
+    const identityRefused = typeof last.terminal === 'string' && last.terminal.startsWith('identity-')
+    if (identityRefused) {
+      return {
+        action: 'escalate',
+        reason: `${last.agent_id} was refused for its declared model (${last.terminal}) — a rerun cannot change that, a human must fix the declaration`,
+      }
+    }
     const failed = last.event === 'lost' || (last.terminal && last.terminal !== 'done')
     if (failed) return want(role)
     if (role === 'worker') return want('evaluator')
@@ -564,7 +684,7 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
 
 // ── spawning ─────────────────────────────────────────────────────────────────
 
-function dispatch(repo, { workItem, team, role, agentId, workflow }, briefPath, stallSec) {
+function dispatch(repo, { workItem, team, role, agentId, workflow, model }, briefPath, stallSec) {
   const taskId = `${workItem || 'board'}-${team || 'loop'}-${role}-${Date.now().toString(36)}`
     .replace(/[^A-Za-z0-9_-]/g, '-')
   // Keep every dispatch log. Discarding the adapter stderr is how a runner ends
@@ -580,6 +700,11 @@ function dispatch(repo, { workItem, team, role, agentId, workflow }, briefPath, 
     env: {
       ...process.env,
       ACP_AGENT_ID: agentId,
+      // DECISION 3: the dispatch declares the model this seat was assigned, so
+      // the page can finally print a real name instead of "default — none
+      // pinned". `modelEnv` is what keeps the sentinel from becoming a request
+      // the adapter would refuse — see its comment for why that matters.
+      ...modelEnv(model),
       ...(workflow ? { TMUX_TEAMS_WORKFLOW: workflow } : {}),
       ...(workItem ? { TMUX_TEAMS_WORK_ITEM: workItem } : {}),
       ECC_GATEGUARD: 'off',
@@ -589,12 +714,26 @@ function dispatch(repo, { workItem, team, role, agentId, workflow }, briefPath, 
   return taskId
 }
 
-export function tick(repoArg, { apply = true, stallSec = 1800, scratchDir } = {}) {
+const heldCount = (occupancy) => [...occupancy.held.values()].flat().length
+
+export function tick(repoArg, { apply = true, stallSec = 1800, scratchDir, tickSec = DEFAULT_TICK_SEC } = {}) {
   // The ACP adapter rejects a relative cwd outright, and the runner is the last
   // place a relative path can still be sitting — resolve once, here.
   const repo = resolve(repoArg)
+  // Stamped on every exit below, healthy or not. A dry run deliberately does
+  // NOT stamp: it is a simulation, and letting one overwrite a live runner's
+  // heartbeat in the same repo would report a loop that is not running.
+  const beat = (state) => { if (apply) writeHeartbeat(repo, { tickSec, ...state }) }
+
   const graph = readWorkflowGraph(repo)
-  if (!graph.ok) return { ok: false, reason: `team graph invalid (${graph.source}): ${graph.reason}` }
+  if (!graph.ok) {
+    const reason = `team graph invalid (${graph.source}): ${graph.reason}`
+    // `held` is genuinely unmeasurable without a graph — occupancy is a fact
+    // about declared teams, and there are none. A zero here would read as a
+    // board that is empty rather than one that was never counted.
+    beat({ dispatching: false, reason, started: 0, held: null })
+    return { ok: false, reason }
+  }
   const briefDir = scratchDir || join(repo, '.tmux-teams', 'runner-briefs')
 
   // Harvest first. A judging leg that has finished but not been read leaves the
@@ -630,7 +769,12 @@ export function tick(repoArg, { apply = true, stallSec = 1800, scratchDir } = {}
   // agent that already exited, or — once the zombie window passes — declares a
   // still-running agent lost and pays to run it again.
   if (pulse.stale) {
-    log(`STALE  pulse.json is ${pulse.ageSec === null ? 'undated' : `${pulse.ageSec}s old`} — refusing to dispatch. Is \`pulse.mjs watch\` running?`)
+    const reason = `pulse.json is ${pulse.ageSec === null ? 'undated' : `${pulse.ageSec}s old`} — refusing to dispatch. Is \`pulse.mjs watch\` running?`
+    log(`STALE  ${reason}`)
+    // The tick that refuses is the one a reader most needs to see. The graph
+    // and the ledgers are both readable here, so `held` is a real measurement
+    // even though nothing was started.
+    beat({ dispatching: false, reason, started: 0, held: heldCount(teamOccupancy(graph.value, items)) })
     return { ok: true, harvested, pulls, plans: [], started: [], stale: true }
   }
   if (pulse.missing) log('note   no pulse.json yet — dispatching without liveness evidence')
@@ -640,7 +784,9 @@ export function tick(repoArg, { apply = true, stallSec = 1800, scratchDir } = {}
     if (plan.action === 'lost') {
       log(`LOST   ${plan.work_item}: ${plan.reason}`)
       if (apply) {
-        appendEvent(repo, {
+        // The runner decided this one on its own: no agent stated it, so the
+        // runner signs it.
+        record(repo, {
           at: new Date().toISOString(), event: 'lost', work_item: plan.work_item,
           workflow: items.get(plan.work_item).workflow || null,
           agent_id: plan.agent_id, task_id: plan.task_id || null, reason: plan.reason,
@@ -653,17 +799,34 @@ export function tick(repoArg, { apply = true, stallSec = 1800, scratchDir } = {}
       if (plan.reason) log(`${level} ${plan.work_item}: ${plan.reason}`)
       continue
     }
+    // DECISION 4, read half. Occupancy, the pull decision, the board and the
+    // audit are all derived from this one file, so dispatching a fresh leg onto
+    // a history that cannot be believed writes good evidence on top of bad and
+    // buries the break instead of surfacing it. Refuse, and name the defect —
+    // a silent skip here would look exactly like a team with nothing to do.
+    const ledger = validateLedgerFile(ledgerPath(repo, plan.work_item))
+    if (!ledger.ok) {
+      log(`LEDGER ${plan.work_item}: ${ledger.problems.length} problem(s) — refusing to dispatch onto a history that cannot be believed`)
+      for (const problem of ledger.problems.slice(0, 5)) {
+        log(`       line ${problem.line}  ${problem.code}  ${problem.detail}`)
+      }
+      continue
+    }
     const item = items.get(plan.work_item)
     const team = graph.value.teams.find((entry) => entry.team_id === plan.team)
     const brief = composeBrief(repo, graph.value, { team, role: plan.role }, item, briefDir)
     if (!brief.path) { log(`skip   ${plan.work_item}: ${brief.reason}`); continue }
-    if (!apply) { log(`would dispatch ${plan.agent_id} (${plan.role}) for ${plan.work_item}`); continue }
+    const model = declaredModel(graph.value, plan.team, plan.agent_id)
+    // Two different facts, said differently: a name the dispatch will hold the
+    // adapter to, or the account default nobody pinned.
+    const says = modelEnv(model).ACP_EXPECT_MODEL || 'account default (none requested)'
+    if (!apply) { log(`would dispatch ${plan.agent_id} (${plan.role}) for ${plan.work_item} model=${says}`); continue }
     const taskId = dispatch(repo, {
       workItem: plan.work_item, team: plan.team, role: plan.role,
-      agentId: plan.agent_id, workflow: plan.workflow,
+      agentId: plan.agent_id, workflow: plan.workflow, model,
     }, brief.path, stallSec)
-    log(`start  ${plan.agent_id} (${plan.role}) <- ${plan.work_item} task=${taskId}`)
-    started.push({ ...plan, task_id: taskId })
+    log(`start  ${plan.agent_id} (${plan.role}) <- ${plan.work_item} task=${taskId} model=${says}`)
+    started.push({ ...plan, task_id: taskId, model })
   }
 
   // The outer controller runs last, on what the rest of the tick could not
@@ -678,44 +841,62 @@ export function tick(repoArg, { apply = true, stallSec = 1800, scratchDir } = {}
     mkdirSync(briefDir, { recursive: true })
     const briefPath = join(briefDir, 'brief-board-pm.md')
     writeFileSync(briefPath, escalation.brief)
+    // The controller is not a member of any team, so its model comes off the
+    // graph's own seat for it rather than out of any team's `models` block.
+    const pmModel = declaredModel(graph.value, null, escalation.agent_id)
+    const pmSays = modelEnv(pmModel).ACP_EXPECT_MODEL || 'account default (none requested)'
     if (!apply) {
-      log(`would dispatch ${escalation.agent_id} (pm) about ${escalation.triggers.length} problem(s)`)
+      log(`would dispatch ${escalation.agent_id} (pm) about ${escalation.triggers.length} problem(s) model=${pmSays}`)
     } else if (busy.has(escalation.agent_id)) {
       log(`pm     already running on ${escalation.triggers.length} problem(s)`)
     } else {
       const notesDir = join(repo, '.tmux-teams', 'pm-notes')
       mkdirSync(notesDir, { recursive: true })
       writeFileSync(join(notesDir, 'latest.md'), `${new Date().toISOString()}\n${escalation.triggers.join('\n')}\n`)
-      const taskId = dispatch(repo, { workItem: '', team: '', role: 'pm', agentId: escalation.agent_id, workflow: '' },
+      const taskId = dispatch(repo,
+        { workItem: '', team: '', role: 'pm', agentId: escalation.agent_id, workflow: '', model: pmModel },
         briefPath, stallSec)
-      log(`start  ${escalation.agent_id} (pm) <- board task=${taskId}`)
-      started.push({ action: 'dispatch', role: 'pm', agent_id: escalation.agent_id, task_id: taskId })
+      log(`start  ${escalation.agent_id} (pm) <- board task=${taskId} model=${pmSays}`)
+      started.push({ action: 'dispatch', role: 'pm', agent_id: escalation.agent_id, task_id: taskId, model: pmModel })
       // Each escalated token is marked so the loop stops re-triggering on it
       // while the controller is thinking.
       // A finished route is flagged, not parked: `audit_requested` releases the
       // token exactly like `completed` does, so reading a delivery never puts it
       // back into a team's WIP.
+      // A refused mark here is worse than a refused mark anywhere else, and it
+      // has to be said in those terms. The controller has ALREADY been paid for
+      // and `pm-notes/latest.md` has already been written, so the token's last
+      // event does not change: the same trigger recurs next tick and the
+      // unchanged-trigger brake then holds it forever. `REFUSED` alone reads as
+      // a bookkeeping complaint; this is a token that is now stuck.
+      const wedged = (workItem, kind) => log(`STUCK  ${workItem}: the controller was dispatched but the ${kind}`
+        + ' mark was refused — the token is parked with nothing recorded and the loop will not retry it. Repair its ledger.')
+
       for (const workItem of escalation.audits || []) {
-        appendEvent(repo, {
+        // The runner raised the flag; the controller has not answered yet, so
+        // the runner is the one accountable for this line.
+        if (!record(repo, {
           at: new Date().toISOString(), event: 'audit_requested', work_item: workItem,
           workflow: items.get(workItem)?.workflow || null,
           agent_id: escalation.agent_id, task_id: taskId,
           reason: 'route finished — read the delivery as a whole',
-        })
+        })) wedged(workItem, 'audit_requested')
       }
       for (const plan of plans.filter((entry) => entry.action === 'escalate')) {
-        appendEvent(repo, {
+        if (!record(repo, {
           at: new Date().toISOString(), event: 'escalated', work_item: plan.work_item,
           workflow: items.get(plan.work_item)?.workflow || null,
           // The controller is not a team, so without naming the team that is
           // still holding this the board cannot place it — it would draw parked
           // work as unplaceable and free a WIP slot nobody actually released.
           agent_id: escalation.agent_id, to_team: plan.team, task_id: taskId, reason: plan.reason,
-        })
+        })) wedged(plan.work_item, 'escalated')
       }
     }
   }
 
+  // The healthy stamp, last, so `started` includes the controller's own leg.
+  beat({ dispatching: true, started: started.length, held: heldCount(occupancy) })
   return { ok: true, harvested, pulls, plans, started }
 }
 
@@ -725,9 +906,17 @@ if (process.argv[1]?.endsWith('loop-runner.mjs')) {
   const dry = args.includes('--dry-run')
   const watchArg = args.find((value) => value.startsWith('--watch'))
   const intervalSec = watchArg ? Number(watchArg.split('=')[1] || 30) : 0
+  // The page judges the runner's silence against the runner's OWN interval, so
+  // a runner driven one tick at a time by cron has to be able to state what
+  // that interval is; without it every cron-driven loop would read as dead
+  // between runs.
+  const tickArg = args.find((value) => value.startsWith('--tick-sec'))
+  const declared = tickArg ? Number(tickArg.split('=')[1]) : Number.NaN
+  const tickSec = Number.isFinite(declared) && declared > 0 ? declared
+    : intervalSec > 0 ? intervalSec : DEFAULT_TICK_SEC
 
   const once = () => {
-    const result = tick(repo, { apply: !dry })
+    const result = tick(repo, { apply: !dry, tickSec })
     if (!result.ok) {
       console.error(`[loop] ${result.reason}`)
       return false

@@ -1,0 +1,432 @@
+// loop-runner-heartbeat-model.test.mjs — the three decisions the runner half of
+// this change is accountable for.
+//
+// DECISION 2 (heartbeat): the runner stamps its own pulse on EVERY tick,
+// including the ticks it refuses to dispatch on. The failure this prevents is
+// specific: a heartbeat that only appears when things are healthy says either
+// "alive and dispatching" or nothing at all, and "nothing at all" is the same
+// silence a dead process leaves. So every refusing path is tested by name.
+//
+// DECISION 3 (model): a dispatch declares the model its seat was assigned —
+// EXCEPT when the declared model is the sentinel, because acp-companion treats
+// a requested model as a promise and fails the whole dispatch when the adapter
+// does not acknowledge it.
+//
+// DECISION 4 (ledger): a token's history is validated before a new leg is
+// dispatched onto it, and every line this runner writes goes through the one
+// writer that stamps an accountable actor.
+//
+// The heartbeat tests deliberately round-trip through `graph.mjs`'s real reader
+// rather than asserting on the JSON alone. Two halves of one contract that were
+// only ever tested against their own assumptions is how a writer and a reader
+// come to disagree about the same file.
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+import { loopHealth, readRunnerHeartbeat } from '../plugins/tmux-teams/skills/tmux-teams/scripts/graph.mjs'
+import {
+  INHERIT_ACCOUNT_DEFAULT, RUNNER_HEARTBEAT_FILE, applyHarvest,
+  declaredModel, modelEnv, tick,
+} from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs'
+import { validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
+
+// A real declared name, used only to prove a NON-sentinel value is passed
+// through. It is not a claim that any adapter acknowledges it — see the
+// comment on the pass-through test.
+const A_DECLARED_MODEL = 'some-declared-model'
+
+const team = (id, model) => ({
+  team_id: id,
+  name: id.toUpperCase(),
+  dispatcher_id: `${id}_d`,
+  worker_ids: [`${id}_w1`],
+  evaluator_id: `${id}_e`,
+  models: { dispatcher: model, worker: model, evaluator: model },
+})
+
+const graphDecl = ({ model = INHERIT_ACCOUNT_DEFAULT, pmModel = INHERIT_ACCOUNT_DEFAULT } = {}) => ({
+  project_id: 'p',
+  outer_controller_id: 'pm',
+  outer_controller_model: pmModel,
+  teams: [team('build', model), team('test', model)],
+  workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['build', 'test'] }],
+})
+
+const dirs = []
+function repoWith({ graph = graphDecl(), ledgers = {}, pulseAgeSec = 5, rawGraph = null } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-runner-'))
+  dirs.push(dir)
+  mkdirSync(join(dir, '.tmux-teams', 'work-items'), { recursive: true })
+  mkdirSync(join(dir, '.tmux-teams', 'team-briefs'), { recursive: true })
+  writeFileSync(join(dir, '.tmux-teams', 'team-graph.json'),
+    JSON.stringify(rawGraph ?? graph, null, 2))
+  for (const id of ['build', 'test']) {
+    writeFileSync(join(dir, '.tmux-teams', 'team-briefs', `${id}.md`), `# ${id}\n\nDo the work.\n`)
+  }
+  // A snapshot that exists and is fresh: the runner refuses to dispatch on a
+  // frozen one, which is a different test.
+  writeFileSync(join(dir, '.tmux-teams', 'pulse.json'), JSON.stringify({
+    generated_at: new Date(Date.now() - pulseAgeSec * 1000).toISOString(),
+    runs: [],
+  }))
+  for (const [token, lines] of Object.entries(ledgers)) {
+    writeFileSync(join(dir, '.tmux-teams', 'work-items', `${token}.jsonl`),
+      `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`)
+  }
+  return dir
+}
+
+test.after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }) })
+
+const at = (index) => `2026-07-27T0${index}:00:00.000Z`
+
+// A token that ran the whole route and was already read as a whole: terminal,
+// so the tick has nothing to dispatch and nothing to escalate. That is what
+// lets a healthy tick be tested without spawning a real agent.
+const CLOSED = [
+  { at: at(0), event: 'pulled', work_item: 'shipped', workflow: 'feature', agent_id: 'build_d', from_team: 'build', to_team: 'build' },
+  { at: at(1), event: 'assigned', work_item: 'shipped', workflow: 'feature', agent_id: 'build_w1', task_id: 'b-1', dispatch_id: 'd-1' },
+  { at: at(2), event: 'delivered', work_item: 'shipped', workflow: 'feature', agent_id: 'build_w1', task_id: 'b-1', terminal: 'done', timed_out: false, evidence_present: true },
+  { at: at(3), event: 'completed', work_item: 'shipped', workflow: 'feature', from_team: 'build' },
+  { at: at(4), event: 'audit_requested', work_item: 'shipped', workflow: 'feature', agent_id: 'pm', task_id: 'pm-1', reason: 'read it' },
+  { at: at(5), event: 'audited', work_item: 'shipped', workflow: 'feature', agent_id: 'pm', verdict: 'accept', reason: 'fine' },
+]
+
+// A token a team is actually holding: build accepted it and a worker is due.
+const HELD = [
+  { at: at(0), event: 'pulled', work_item: 'wip', workflow: 'feature', agent_id: 'build_d', from_team: 'build', to_team: 'build' },
+  { at: at(1), event: 'assigned', work_item: 'wip', workflow: 'feature', agent_id: 'build_d', task_id: 'b-i', dispatch_id: 'd-i' },
+  { at: at(2), event: 'delivered', work_item: 'wip', workflow: 'feature', agent_id: 'build_d', task_id: 'b-i', terminal: 'done', timed_out: false, evidence_present: true },
+  { at: at(3), event: 'intake', work_item: 'wip', workflow: 'feature', agent_id: 'build_d', verdict: 'accept', reason: 'looks complete' },
+]
+
+// Captures what the runner said. The runner's log IS its report to an operator,
+// so a decision that is not said out loud is a decision nobody can audit.
+function saying(run) {
+  const said = []
+  const real = console.log
+  console.log = (line) => { said.push(String(line)) }
+  try { return { result: run(), said } } finally { console.log = real }
+}
+
+const beatOf = (dir) => JSON.parse(readFileSync(join(dir, '.tmux-teams', RUNNER_HEARTBEAT_FILE), 'utf8'))
+
+// ── DECISION 2: the heartbeat ────────────────────────────────────────────────
+
+test('a healthy tick stamps a heartbeat the page reads as dispatching', () => {
+  const dir = repoWith({ ledgers: { shipped: CLOSED } })
+  saying(() => tick(dir, { tickSec: 20 }))
+
+  const beat = beatOf(dir)
+  assert.equal(beat.schema, 'tmux-teams.runner-heartbeat')
+  assert.equal(beat.dispatching, true)
+  assert.equal(beat.tick_sec, 20)
+  // A hold reason left on a healthy tick would have the runner explaining a
+  // hold it is not doing.
+  assert.equal(beat.reason, '')
+  assert.equal(beat.started, 0, 'nothing was dispatchable, and 0 here is measured')
+  assert.equal(beat.held, 0, 'the only token is closed, so no team is holding it')
+  assert.match(beat.at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
+
+  // The half of this contract that actually matters: the reader agrees.
+  const health = loopHealth(readRunnerHeartbeat(dir), Date.parse(beat.at))
+  assert.equal(health.state, 'dispatching')
+})
+
+test('a tick that refuses on a stale pulse still stamps, and says why', () => {
+  // 600s beats the runner's own PULSE_STALE_SEC of 120.
+  const dir = repoWith({ ledgers: { wip: HELD }, pulseAgeSec: 600 })
+  const { result } = saying(() => tick(dir, { tickSec: 20 }))
+  assert.equal(result.stale, true)
+
+  const beat = beatOf(dir)
+  // This is the whole point of DECISION 2. Without this stamp the worst state
+  // the runner can be in is indistinguishable from the runner being dead.
+  assert.equal(beat.dispatching, false)
+  assert.match(beat.reason, /pulse\.json is \d+s old/)
+  assert.equal(beat.started, 0)
+  // The graph and the ledgers are both readable here, so this is a real count.
+  assert.equal(beat.held, 1, 'build is still holding the token it refused to move')
+
+  const health = loopHealth(readRunnerHeartbeat(dir), Date.parse(beat.at))
+  assert.equal(health.state, 'holding')
+  assert.match(health.detail, /pulse\.json is/)
+})
+
+test('a tick that refuses on an invalid graph still stamps, and does not invent a count', () => {
+  // Valid JSON, invalid graph: no models on any seat. Unparseable JSON would
+  // fall back to the bundled default and dispatch instead of refusing.
+  const broken = graphDecl()
+  delete broken.teams[0].models
+  const dir = repoWith({ rawGraph: broken })
+  const { result } = saying(() => tick(dir, { tickSec: 20 }))
+  assert.equal(result.ok, false)
+
+  const beat = beatOf(dir)
+  assert.equal(beat.dispatching, false)
+  assert.match(beat.reason, /team graph invalid/)
+  // With no declared teams there is no occupancy to count. A zero would read as
+  // an empty board rather than one that was never counted.
+  assert.equal(beat.held, null)
+
+  const health = loopHealth(readRunnerHeartbeat(dir), Date.parse(beat.at))
+  assert.equal(health.state, 'holding')
+  // The reader prints "not measured" rather than a zero it was never given.
+  assert.equal(loopHealth({ present: true, value: { ...beat, dispatching: true }, reason: '' },
+    Date.parse(beat.at)).detail.includes('held: not measured'), true)
+})
+
+test('a dry run does not stamp, so a simulation cannot impersonate a live runner', () => {
+  const dir = repoWith({ ledgers: { shipped: CLOSED } })
+  saying(() => tick(dir, { apply: false, tickSec: 20 }))
+  const read = readRunnerHeartbeat(dir)
+  assert.equal(read.present, false)
+  assert.equal(loopHealth(read, Date.now()).state, 'never')
+})
+
+test('the runner is judged against the tick it declares, not a hard-coded one', () => {
+  const dir = repoWith({ ledgers: { shipped: CLOSED } })
+  saying(() => tick(dir, { tickSec: 600 }))
+  const beat = beatOf(dir)
+  // Five minutes of silence from a ten-minute loop is not a dead loop.
+  const health = loopHealth(readRunnerHeartbeat(dir), Date.parse(beat.at) + 300_000)
+  assert.equal(health.state, 'dispatching')
+  // Past three of its own ticks it is.
+  assert.equal(loopHealth(readRunnerHeartbeat(dir), Date.parse(beat.at) + 1_801_000).state, 'stale')
+})
+
+// ── DECISION 3: the declared model ───────────────────────────────────────────
+
+test('the sentinel is never sent as a request, so the account default stands', () => {
+  // acp-companion starts identity_status at `missing` the moment
+  // ACP_EXPECT_MODEL is set and rejects the session receipt unless the adapter
+  // answers with exactly that name. Sending the sentinel would therefore fail
+  // every dispatch on a fresh install, on a name that was never a request.
+  assert.deepEqual(modelEnv(INHERIT_ACCOUNT_DEFAULT), {})
+  assert.deepEqual(modelEnv(''), {})
+  assert.deepEqual(modelEnv(null), {})
+  assert.deepEqual(modelEnv(undefined), {})
+  assert.deepEqual(modelEnv('   '), {})
+})
+
+test('a real declared name is passed through as the request', () => {
+  assert.deepEqual(modelEnv(A_DECLARED_MODEL), { ACP_EXPECT_MODEL: A_DECLARED_MODEL })
+  // Whitespace is the declarer's, not the adapter's.
+  assert.deepEqual(modelEnv(`  ${A_DECLARED_MODEL}  `), { ACP_EXPECT_MODEL: A_DECLARED_MODEL })
+})
+
+test('the model comes off the seat the agent actually sits in', () => {
+  const graph = validateWorkflowGraph(graphDecl({ model: A_DECLARED_MODEL, pmModel: 'pm-model' }))
+  assert.equal(graph.ok, true, graph.reason ?? '')
+
+  for (const agentId of ['build_d', 'build_w1', 'build_e']) {
+    assert.equal(declaredModel(graph.value, 'build', agentId), A_DECLARED_MODEL)
+  }
+  // The outer controller is in no team, so it must not be looked up in one.
+  assert.equal(declaredModel(graph.value, null, 'pm'), 'pm-model')
+  assert.equal(declaredModel(graph.value, 'build', 'pm'), 'pm-model')
+  // An agent that is not in the team it was asked about yields nothing rather
+  // than another team's model.
+  assert.equal(declaredModel(graph.value, 'test', 'build_w1'), '')
+})
+
+test('the runner says which model each dispatch will ask for', () => {
+  // A dry run, so nothing is spawned. This proves the graph -> plan -> seat
+  // lookup is wired; it does not prove any adapter acknowledges the name.
+  const named = repoWith({ graph: graphDecl({ model: A_DECLARED_MODEL }), ledgers: { wip: HELD } })
+  const { said } = saying(() => tick(named, { apply: false, tickSec: 20 }))
+  const line = said.find((entry) => entry.includes('would dispatch build_w1'))
+  assert.ok(line, `no dispatch was planned: ${said.join(' | ')}`)
+  assert.match(line, new RegExp(`model=${A_DECLARED_MODEL}`))
+
+  const inherited = repoWith({ ledgers: { wip: HELD } })
+  const plain = saying(() => tick(inherited, { apply: false, tickSec: 20 }))
+    .said.find((entry) => entry.includes('would dispatch build_w1'))
+  assert.ok(plain)
+  assert.match(plain, /model=account default \(none requested\)/)
+  assert.doesNotMatch(plain, new RegExp(INHERIT_ACCOUNT_DEFAULT))
+})
+
+// ── DECISION 4: the ledger ───────────────────────────────────────────────────
+
+test('a token whose history cannot be believed is not dispatched onto', () => {
+  // The seed `pulled` carries no `from_team`, which contract §4 requires.
+  const bad = HELD.map((entry, index) => (index === 0 ? { ...entry, from_team: undefined } : entry))
+  const dir = repoWith({ ledgers: { wip: bad } })
+  const { said } = saying(() => tick(dir, { apply: false, tickSec: 20 }))
+
+  // Loudly: a silent skip here looks exactly like a team with nothing to do.
+  const refusal = said.find((entry) => entry.startsWith('[loop] LEDGER wip'))
+  assert.ok(refusal, `the refusal was not said out loud: ${said.join(' | ')}`)
+  assert.match(refusal, /refusing to dispatch/)
+  assert.ok(said.some((entry) => entry.includes('missing_field')), 'the defect itself was not named')
+  assert.equal(said.some((entry) => entry.includes('would dispatch build_w1')), false,
+    'a leg was planned onto a broken history')
+})
+
+test('a valid history still dispatches, so the gate is a gate and not a wall', () => {
+  const dir = repoWith({ ledgers: { wip: HELD } })
+  const { said } = saying(() => tick(dir, { apply: false, tickSec: 20 }))
+  assert.ok(said.some((entry) => entry.includes('would dispatch build_w1')))
+  assert.equal(said.some((entry) => entry.startsWith('[loop] LEDGER')), false)
+})
+
+test('every line the runner appends names an accountable actor', () => {
+  const dir = repoWith({ ledgers: { wip: HELD } })
+  // The evaluator's leg finished and its verdict is waiting in the outbox.
+  mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
+  writeFileSync(join(dir, '.mailbox-out', 'b-r'), 'It builds.\nVERDICT: pass\n')
+  const custody = [...HELD,
+    { at: at(4), event: 'assigned', work_item: 'wip', workflow: 'feature', agent_id: 'build_w1', task_id: 'b-2', dispatch_id: 'd-2' },
+    { at: at(5), event: 'delivered', work_item: 'wip', workflow: 'feature', agent_id: 'build_w1', task_id: 'b-2', terminal: 'done', timed_out: false, evidence_present: true },
+    { at: at(6), event: 'assigned', work_item: 'wip', workflow: 'feature', agent_id: 'build_e', task_id: 'b-r', dispatch_id: 'd-r' },
+    { at: at(7), event: 'delivered', work_item: 'wip', workflow: 'feature', agent_id: 'build_e', task_id: 'b-r', terminal: 'done', timed_out: false, evidence_present: true },
+  ]
+  writeFileSync(join(dir, '.tmux-teams', 'work-items', 'wip.jsonl'),
+    `${custody.map((line) => JSON.stringify(line)).join('\n')}\n`)
+
+  const graph = validateWorkflowGraph(graphDecl())
+  const applied = saying(() => applyHarvest(dir, graph.value,
+    [{ item: { work_item: 'wip', workflow: 'feature', custody }, last: custody[custody.length - 1], role: 'evaluator' }],
+    new Date().toISOString())).result
+
+  assert.equal(applied.length, 1)
+  assert.equal(applied[0].event, 'reviewed')
+  const written = readFileSync(join(dir, '.tmux-teams', 'work-items', 'wip.jsonl'), 'utf8')
+    .trim().split('\n').map((line) => JSON.parse(line))
+  const last = written[written.length - 1]
+  assert.equal(last.event, 'reviewed')
+  assert.equal(last.verdict, 'pass')
+  // The evaluator stated the verdict, so the evaluator is the accountable
+  // writer — not the runner that transcribed it.
+  assert.equal(last.actor, 'agent:build_e')
+})
+
+test('an append the writer refuses is not reported as having happened', () => {
+  const dir = repoWith({})
+  // A history that is already broken: the writer refuses to add to it rather
+  // than burying the break under good evidence.
+  const custody = [
+    { at: at(0), event: 'pulled', work_item: 'wip', workflow: 'feature', agent_id: 'build_d', to_team: 'build' },
+    { at: at(1), event: 'assigned', work_item: 'wip', workflow: 'feature', agent_id: 'build_e', task_id: 'b-r', dispatch_id: 'd-r' },
+    { at: at(2), event: 'delivered', work_item: 'wip', workflow: 'feature', agent_id: 'build_e', task_id: 'b-r', terminal: 'done', timed_out: false, evidence_present: true },
+  ]
+  writeFileSync(join(dir, '.tmux-teams', 'work-items', 'wip.jsonl'),
+    `${custody.map((line) => JSON.stringify(line)).join('\n')}\n`)
+  mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
+  writeFileSync(join(dir, '.mailbox-out', 'b-r'), 'VERDICT: pass\n')
+
+  const graph = validateWorkflowGraph(graphDecl())
+  const { result, said } = saying(() => applyHarvest(dir, graph.value,
+    [{ item: { work_item: 'wip', workflow: 'feature', custody }, last: custody[custody.length - 1], role: 'evaluator' }],
+    new Date().toISOString()))
+
+  assert.deepEqual(result, [], 'the runner claimed an event it never recorded')
+  assert.ok(said.some((entry) => entry.includes('REFUSED') && entry.includes('ledger_already_invalid')),
+    `the refusal was not said out loud: ${said.join(' | ')}`)
+  const lines = readFileSync(join(dir, '.tmux-teams', 'work-items', 'wip.jsonl'), 'utf8').trim().split('\n')
+  assert.equal(lines.length, custody.length, 'a line reached a ledger that had already failed validation')
+})
+
+test('an intake refusal with nowhere to send it back names the team still holding it', () => {
+  // §4.2: without `to_team` the board draws parked work as unplaceable and
+  // frees a WIP slot nobody released — and the writer refuses the line outright.
+  const dir = repoWith({})
+  const custody = [
+    { at: at(0), event: 'pulled', work_item: 'seed', workflow: 'feature', agent_id: 'build_d', from_team: 'build', to_team: 'build' },
+    { at: at(1), event: 'assigned', work_item: 'seed', workflow: 'feature', agent_id: 'build_d', task_id: 'b-i', dispatch_id: 'd-i' },
+    { at: at(2), event: 'delivered', work_item: 'seed', workflow: 'feature', agent_id: 'build_d', task_id: 'b-i', terminal: 'done', timed_out: false, evidence_present: true },
+  ]
+  writeFileSync(join(dir, '.tmux-teams', 'work-items', 'seed.jsonl'),
+    `${custody.map((line) => JSON.stringify(line)).join('\n')}\n`)
+  mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
+  writeFileSync(join(dir, '.mailbox-out', 'b-i'), 'Not enough to start on.\nVERDICT: reject\n')
+
+  const graph = validateWorkflowGraph(graphDecl())
+  // The seed pull names `build` as its own sender, so strip it to reach the
+  // branch where there is genuinely nowhere to return the work to.
+  const orphaned = custody.map((entry, index) => (index === 0 ? { ...entry, from_team: '' } : entry))
+  const applied = saying(() => applyHarvest(dir, graph.value,
+    [{ item: { work_item: 'seed', workflow: 'feature', custody: orphaned }, last: orphaned[2], role: 'dispatcher' }],
+    new Date().toISOString())).result
+
+  assert.equal(applied.length, 1)
+  assert.equal(applied[0].event, 'escalated')
+  assert.equal(applied[0].to_team, 'build', 'the escalation did not name the team still holding the token')
+})
+
+test('a token the controller was paid for but nothing was recorded about is called stuck', () => {
+  // The dangerous shape: the escalation mark is refused AFTER the controller has
+  // been dispatched and `pm-notes/latest.md` written. The token's last event
+  // never changes, so the trigger recurs and the unchanged-trigger brake then
+  // holds it forever — a PM dispatch bought for nothing, permanently.
+  //
+  // `outer_controller_id: null` is a graph the validator accepts, and it makes
+  // `agent_id` absent on every mark, which the writer refuses.
+  const headless = graphDecl()
+  delete headless.outer_controller_id
+  delete headless.outer_controller_model
+
+  // A route that finished: this is what raises the audit trigger.
+  const done = [
+    { at: at(0), event: 'pulled', work_item: 'orphan', workflow: 'feature', agent_id: 'build_d', from_team: 'build', to_team: 'build' },
+    { at: at(1), event: 'assigned', work_item: 'orphan', workflow: 'feature', agent_id: 'build_w1', task_id: 'o-1', dispatch_id: 'd-1' },
+    { at: at(2), event: 'delivered', work_item: 'orphan', workflow: 'feature', agent_id: 'build_w1', task_id: 'o-1', terminal: 'done', timed_out: false, evidence_present: true },
+    { at: at(3), event: 'completed', work_item: 'orphan', workflow: 'feature', from_team: 'test' },
+  ]
+  const dir = repoWith({ graph: headless, ledgers: { orphan: done } })
+  const { said } = saying(() => tick(dir, { apply: false, tickSec: 20 }))
+
+  // Dry run, so nothing was actually dispatched or appended — what this asserts
+  // is that the audit trigger fires at all, which is the precondition for the
+  // wedge. The refusal wording itself is asserted below on the real write path.
+  assert.ok(said.some((entry) => entry.includes('would dispatch')), said.join(' | '))
+
+  // Now the real path: applying it must refuse the mark and say the token is
+  // stuck, not merely that a line was refused.
+  //
+  // Reaching that branch means the controller really is spawned — the marks are
+  // written after the dispatch, which is the whole reason the wedge exists. The
+  // adapter is pointed at a command that exits immediately so this costs one
+  // short-lived process rather than a real agent session. The assertions below
+  // are on the runner's synchronous log, so nothing here waits on that child.
+  const live = repoWith({ graph: headless, ledgers: { orphan: done } })
+  const realAcpCmd = process.env.ACP_CMD
+  process.env.ACP_CMD = 'node -e process.exit(0)'
+  let loud
+  try {
+    loud = saying(() => tick(live, { tickSec: 20 })).said
+  } finally {
+    if (realAcpCmd === undefined) delete process.env.ACP_CMD
+    else process.env.ACP_CMD = realAcpCmd
+  }
+  assert.ok(loud.some((entry) => entry.includes('REFUSED') && entry.includes('orphan')),
+    `the refusal was not reported: ${loud.join(' | ')}`)
+  assert.ok(loud.some((entry) => entry.startsWith('[loop] STUCK  orphan') && entry.includes('nothing recorded')),
+    `the consequence was not reported as a stuck token: ${loud.join(' | ')}`)
+})
+
+test('an accepted intake that stated no reason says so rather than leaving it blank', () => {
+  const dir = repoWith({})
+  const custody = [
+    { at: at(0), event: 'pulled', work_item: 'quiet', workflow: 'feature', agent_id: 'build_d', from_team: 'build', to_team: 'build' },
+    { at: at(1), event: 'assigned', work_item: 'quiet', workflow: 'feature', agent_id: 'build_d', task_id: 'b-i', dispatch_id: 'd-i' },
+    { at: at(2), event: 'delivered', work_item: 'quiet', workflow: 'feature', agent_id: 'build_d', task_id: 'b-i', terminal: 'done', timed_out: false, evidence_present: true },
+  ]
+  writeFileSync(join(dir, '.tmux-teams', 'work-items', 'quiet.jsonl'),
+    `${custody.map((line) => JSON.stringify(line)).join('\n')}\n`)
+  mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
+  writeFileSync(join(dir, '.mailbox-out', 'b-i'), 'VERDICT: accept\n')
+
+  const graph = validateWorkflowGraph(graphDecl())
+  const applied = saying(() => applyHarvest(dir, graph.value,
+    [{ item: { work_item: 'quiet', workflow: 'feature', custody }, last: custody[2], role: 'dispatcher' }],
+    new Date().toISOString())).result
+
+  assert.equal(applied.length, 1, 'a bare accept was refused instead of recorded')
+  assert.equal(applied[0].event, 'intake')
+  assert.equal(applied[0].reason, 'no reason stated')
+})

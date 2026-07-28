@@ -65,6 +65,135 @@ export function readWorkflowGraph(repo) {
   return { ...validateWorkflowGraph(raw), source: WORKFLOW_GRAPH_FILE }
 }
 
+// ── LOOP HEALTH ──────────────────────────────────────────────────────────────
+// Every other input on this page describes the AGENTS. None of them describes
+// the LOOP. A runner that stopped dispatching leaves a board that looks calm:
+// no agent is running, nothing is overdue, and a reader concludes there is
+// simply no work. The runner therefore stamps its own pulse, and the page
+// refuses to draw a calm board without saying whether anything is still driving
+// it.
+export const RUNNER_HEARTBEAT_FILE = 'runner-heartbeat.json'
+const HEARTBEAT_SCHEMA = 'tmux-teams.runner-heartbeat'
+// The runner declares its own tick, so the page never hard-codes how long its
+// silence may run — a slow loop is not a dead one.
+const STALE_TICKS = 3
+
+// Reading this must never throw: this band is the only surface that can tell a
+// reader the loop died, so a broken heartbeat has to render, not crash the page.
+export function readRunnerHeartbeat(repo) {
+  let raw
+  try {
+    raw = readFileSync(join(repo, '.tmux-teams', RUNNER_HEARTBEAT_FILE), 'utf8')
+  } catch (error) {
+    // Absent and unreadable are different claims about the filesystem. Only an
+    // absent file licenses "the runner has never run here".
+    if (error?.code === 'ENOENT') return { present: false, value: null, reason: '' }
+    return { present: true, value: null, reason: 'the file could not be read' }
+  }
+  let parsed
+  try { parsed = JSON.parse(raw) } catch { return { present: true, value: null, reason: 'the file is not valid JSON' } }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { present: true, value: null, reason: 'the file does not hold a JSON object' }
+  }
+  if (parsed.schema !== HEARTBEAT_SCHEMA) {
+    return { present: true, value: null, reason: `the file is not a ${HEARTBEAT_SCHEMA} record` }
+  }
+  return { present: true, value: parsed, reason: '' }
+}
+
+// A zero the runner measured is a fact worth printing; a zero this page invented
+// because a field was absent is the exact lie §12.7 forbids. One helper, so the
+// two can never be confused.
+const measured = (value) => (typeof value === 'number' && Number.isFinite(value) ? String(value) : 'not measured')
+
+// The runner's own words, never this page's. A non-string is no reason at all.
+const heartbeatReason = (value) => (typeof value?.reason === 'string' ? value.reason.trim() : '')
+
+// Six states, because the four a reader must act on each have an honest failure
+// mode behind them. `state` is the machine-readable one; the copy is what a
+// reader acts on.
+export function loopHealth(read, now) {
+  if (!read.present) {
+    return {
+      state: 'never', tone: 'warn', mark: '▲', label: 'NO RUNNER',
+      headline: 'The loop runner has never run in this repo.',
+      detail: `No .tmux-teams/${RUNNER_HEARTBEAT_FILE} exists here. Start the runner, or read the graph below as a declaration with no loop behind it.`,
+    }
+  }
+  const value = read.value
+  if (!value) {
+    return {
+      state: 'unreadable', tone: 'bad', mark: '■', label: 'HEARTBEAT UNREADABLE',
+      headline: 'The loop runner heartbeat cannot be read.',
+      detail: `.tmux-teams/${RUNNER_HEARTBEAT_FILE} exists but ${read.reason}, so whether the loop is running was not measured.`,
+    }
+  }
+
+  const cannotJudge = (why) => ({
+    state: 'unmeasured', tone: 'warn', mark: '▲', label: 'HEARTBEAT INCOMPLETE',
+    headline: 'The loop runner heartbeat does not say enough to judge it.',
+    detail: `${why} Nothing below tells you whether the loop is still dispatching.`,
+  })
+
+  const at = typeof value.at === 'string' ? Date.parse(value.at) : Number.NaN
+  if (!Number.isFinite(at)) return cannotJudge('It carries no usable timestamp, so its age was not measured.')
+  const tick = typeof value.tick_sec === 'number' && Number.isFinite(value.tick_sec) && value.tick_sec > 0
+    ? value.tick_sec
+    : null
+  if (tick === null) return cannotJudge('It did not report its tick interval, so how long its silence may safely run was not measured.')
+  // A caller's broken clock is this page's fault, not the runner's, and must not
+  // be reported as the runner disagreeing about the time.
+  if (!Number.isFinite(now)) return cannotJudge('This page could not read its own clock, so the heartbeat age was not measured.')
+  const ageSec = (now - at) / 1000
+  if (ageSec < 0) return cannotJudge('Its last tick is dated ahead of this page, so the two clocks disagree and its age was not measured.')
+  const age = duration(ageSec)
+  // Rather than print the word `null` where a clock belongs.
+  if (age === null) return cannotJudge('Its age could not be measured against this page\'s own clock.')
+  const stated = heartbeatReason(value)
+
+  if (ageSec > STALE_TICKS * tick) {
+    // Everything else this record says is as old as the record. A stale
+    // `dispatching: false` is not a hold in progress, so it is reported as what
+    // the runner last said, never as what it is doing.
+    const said = stated ? ` At that last tick it said: "${clip(stated, 160)}".` : ''
+    return {
+      state: 'stale', tone: 'bad', mark: '■', label: 'NOT RESPONDING',
+      headline: 'The loop runner is not responding.',
+      detail: `Last tick ${age} ago, past ${STALE_TICKS}× its own ${tick}s interval.${said} Read the board below as the last thing it saw, not as what is happening now.`,
+    }
+  }
+
+  if (typeof value.dispatching !== 'boolean') {
+    return cannotJudge(`Last tick ${age} ago, but it did not say whether it is dispatching.`)
+  }
+
+  if (!value.dispatching) {
+    return {
+      state: 'holding', tone: 'warn', mark: '▲', label: 'HOLDING',
+      headline: 'The loop runner is alive and deliberately not dispatching.',
+      // Never invent a reason for a hold: an unexplained hold is itself the
+      // thing a reader has to chase.
+      detail: `Last tick ${age} ago. Reason it gave: ${stated ? `"${clip(stated, 160)}"` : 'none — it is holding without saying why'}.`,
+    }
+  }
+
+  return {
+    state: 'dispatching', tone: 'ok', mark: '●', label: 'DISPATCHING',
+    headline: 'The loop runner is dispatching normally.',
+    detail: `Last tick ${age} ago · started in that tick: ${measured(value.started)} · held: ${measured(value.held)}.`,
+  }
+}
+
+// State is carried three ways, as everywhere else on this page: the colour, a
+// shape that survives greyscale, and the words themselves.
+const loopHealthBand = (health) => `
+<div class="loop-health lh-${health.tone}" data-loop-health="${health.state}">
+  <span class="lh-mark" aria-hidden="true">${health.mark}</span>
+  <span class="lh-state">${esc(health.label)}</span>
+  <span class="lh-say">${esc(health.headline)}</span>
+  <span class="lh-detail">${esc(health.detail)}</span>
+</div>`
+
 // Keyed by agent alone: the pool is drawn once, so an agent's single node shows
 // its newest dispatch whichever workflow that dispatch was running.
 function evidenceByAgent(snapshot, facts = new Map()) {
@@ -547,10 +676,20 @@ body{margin:0;background:var(--bg);color:var(--ink);font:400 16px/1.6 var(--sans
 .sw-oversight{background:var(--oversight)}
 .warnbox{padding:var(--s4);border:1px solid var(--bad);border-radius:var(--r);font-size:.9rem}
 footer{color:var(--dim);font-size:.78rem}
+.loop-health{display:flex;flex-wrap:wrap;align-items:baseline;gap:var(--s2) var(--s3);
+ margin:0;padding:var(--s3) var(--s5);background:var(--surface-2);
+ border-bottom:1px solid var(--line);font-size:.82rem}
+.loop-health .lh-mark{font-size:.66rem;line-height:1}
+.loop-health .lh-state{font:600 .7rem var(--mono);letter-spacing:.08em}
+.loop-health .lh-say{font-weight:600}
+.loop-health .lh-detail{color:var(--dim)}
+.lh-ok{border-bottom-color:var(--ok)}.lh-ok .lh-mark,.lh-ok .lh-state{color:var(--ok)}
+.lh-warn{border-bottom-color:var(--warn)}.lh-warn .lh-mark,.lh-warn .lh-state{color:var(--warn)}
+.lh-bad{border-bottom-color:var(--bad)}.lh-bad .lh-mark,.lh-bad .lh-state{color:var(--bad)}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 `
 
-export function renderGraphPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, refreshScriptName = '' } = {}) {
+export function renderGraphPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, refreshScriptName = '', now = Date.now() } = {}) {
   const graph = readWorkflowGraph(repo)
   const repoName = snapshot.scope?.repo_name || ''
   // Without an explicit charset a plain file server hands this to the browser
@@ -606,6 +745,7 @@ export function renderGraphPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, r
    <button type="button" class="pause" data-refresh-toggle data-refresh-focus-key="refresh-toggle" aria-pressed="false">Pause updates</button>
    <span class="note" data-refresh-note>Polling the local snapshot marker</span></p>
 </header>
+${loopHealthBand(loopHealth(readRunnerHeartbeat(repo), now))}
 ${occupancy.orphans.length || skippedLines ? `<p class="orphans">${occupancy.orphans.length ? `${occupancy.orphans.length} work item(s) cannot be placed — agent or workflow not in this graph: ${esc(occupancy.orphans.map((o) => o.work_item).join(", "))}. ` : ""}${skippedLines ? `${skippedLines} unreadable ledger line(s) skipped.` : ""}</p>` : ""}
 <div class="chart">${renderLoopGraphSvg(value, snapshot, facts, occupancy, items)}</div>
 <div class="below">

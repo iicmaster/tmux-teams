@@ -1898,7 +1898,14 @@ test('each invalid liveness v1 field is rejected without null or empty-array coe
     ['unknown field', { private_payload: 'must reject' }, 'LIVENESS_EVIDENCE_INVALID'],
     ['empty termination reason', { termination_reason: '' }, 'LIVENESS_EVIDENCE_INVALID'],
     ['active tool', { active_tools: [null] }, 'LIVENESS_EVIDENCE_INVALID'],
-    ['start after observation', { started_at: '2026-07-25T16:03:30Z' }, 'LIVENESS_EVIDENCE_INVALID'],
+    // Derived from the fixture, never a second hardcoded literal: this case
+    // spent its whole life asserting nothing, because 16:03:30Z sat BEFORE the
+    // fixture's 23:22:33Z observation and so the rule it names never fired. A
+    // literal ordered against another file's literal stops testing anything
+    // the moment either one is regenerated, and says nothing when it does.
+    ['start after observation',
+      { started_at: new Date(Date.parse(base.observed_at) + 1000).toISOString() },
+      'LIVENESS_EVIDENCE_INVALID'],
     ['lease derivation', { next_lease_expiry_at: '2026-07-25T16:03:30Z' }, 'LIVENESS_EVIDENCE_INVALID'],
     ['tool status', { active_tools: [{ ...base.active_tools[0], status: 'completed' }] }, 'LIVENESS_EVIDENCE_INVALID'],
     ['history', { stall_history: [{ state: 'active', observed_at: '2026-07-25T11:00:00Z', evidence: 'bad' }] }, 'LIVENESS_EVIDENCE_INVALID'],

@@ -1525,6 +1525,10 @@ function appendWorkItemEvent(event, extra = {}) {
       work_item: workItem,
       workflow: deliveryWorkflow || null,
       agent_id: agentId || null,
+      // Who wrote this line. The contract requires it on every ledger event so a
+      // line a human typed can never be mistaken for one the system recorded —
+      // this file is a sanctioned writer, so it carries its own identity.
+      actor: agentId ? `agent:${agentId}` : 'agent:acp-companion',
       task_id: taskId,
       dispatch_id: dispatchId,
       ...extra,

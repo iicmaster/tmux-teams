@@ -517,6 +517,12 @@ export async function runPhaseGatePoc({
       expected_path: expectedPath,
       pulse_json_path: join(repoRoot, '.tmux-teams', 'pulse.json'),
       pulse_html_path: join(repoRoot, '.tmux-teams', 'pulse.html'),
+      // The page this run publishes alongside Pulse. It was `loop_graph_path`
+      // until the legacy page was deleted and this one became plain `graph`;
+      // the key went with it while two readers kept asking for the old name
+      // and silently received `undefined`. Named for the file pulse.mjs
+      // actually writes (GRAPH_OUT), so the two can only drift together.
+      graph_path: join(repoRoot, '.tmux-teams', 'graph.html'),
       result,
       projection: status.projection,
     }
@@ -554,7 +560,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       measurement_ready: output.result.measurement.measurement_ready,
       runtime_attention_count: output.result.measurement.runtime_attention_count,
       pulse_html_path: output.pulse_html_path,
-      loop_graph_path: output.loop_graph_path,
+      graph_path: output.graph_path,
       result_path: output.result_path,
     })}\n`))
     .catch((cause) => {

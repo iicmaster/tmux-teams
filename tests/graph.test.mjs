@@ -36,12 +36,18 @@ const run = (agentId, state, extra = {}) => ({
   model: null, workflow: 'full', started_at: '2026-07-27T00:00:00.000Z', ...extra,
 })
 
+// No `wip_limit` here on purpose: it is not a declared input any more — a team
+// can hold exactly as many tokens as it has workers. Models are declared and
+// their values are never checked against a list; only the shape is.
+const MODELS = { dispatcher: 'opus-5', worker: 'sonnet-5', evaluator: 'opus-5' }
+
 const TWO_TEAMS = {
   project_id: 'p',
   outer_controller_id: 'pm',
+  outer_controller_model: 'opus-5',
   teams: [
-    { team_id: 'build', name: 'Build', dispatcher_id: 'b_d', worker_ids: ['b_w1', 'b_w2'], evaluator_id: 'b_e', wip_limit: 2 },
-    { team_id: 'verify', name: 'Verify', dispatcher_id: 'v_d', worker_ids: ['v_w1'], evaluator_id: 'v_e', wip_limit: 1 },
+    { team_id: 'build', name: 'Build', dispatcher_id: 'b_d', worker_ids: ['b_w1', 'b_w2'], evaluator_id: 'b_e', models: MODELS },
+    { team_id: 'verify', name: 'Verify', dispatcher_id: 'v_d', worker_ids: ['v_w1'], evaluator_id: 'v_e', models: MODELS },
   ],
   workflows: [
     { workflow_id: 'full', name: 'Full', route: ['build', 'verify'] },
@@ -241,14 +247,155 @@ test('the graph fills the viewport and is never pinned to a pixel size', () => {
 
 test('hostile names stay escaped and the page declares utf-8', () => {
   const dir = repoWith({
-    project_id: 'x', outer_controller_id: 'pm',
-    teams: [{ team_id: 'only', name: '<script>alert(1)</script>', dispatcher_id: 'a', worker_ids: ['b'], evaluator_id: 'c' }],
+    project_id: 'x', outer_controller_id: 'pm', outer_controller_model: 'opus-5',
+    teams: [{
+      team_id: 'only', name: '<script>alert(1)</script>',
+      dispatcher_id: 'a', worker_ids: ['b'], evaluator_id: 'c', models: MODELS,
+    }],
     workflows: [{ workflow_id: 'w', name: 'W', route: ['only'] }],
   })
   const page = renderGraphPage(dir, snapshotWith())
   assert.match(page, /^<meta charset="utf-8">/)
   assert.doesNotMatch(page, /<script>alert/)
   assert.match(page, /&lt;script&gt;alert/)
+})
+
+// ── loop health ──────────────────────────────────────────────────────────────
+//
+// Everything else on this page describes the AGENTS. A runner that stopped
+// dispatching leaves a board that looks calm — nobody running, nothing overdue —
+// and a reader concludes there is simply no work. These cases pin the page
+// saying, in words, whether the loop itself is still alive.
+
+const NOW = Date.parse('2026-07-27T00:00:00.000Z')
+const ago = (seconds) => new Date(NOW - seconds * 1000).toISOString()
+
+// A raw string goes to disk untouched, so a malformed heartbeat can be tested.
+const beat = (dir, body) => {
+  writeFileSync(join(dir, '.tmux-teams/runner-heartbeat.json'),
+    typeof body === 'string' ? body : JSON.stringify(body))
+  return dir
+}
+
+const heartbeat = (over = {}) => ({
+  schema: 'tmux-teams.runner-heartbeat', at: ago(10), tick_sec: 20,
+  dispatching: true, reason: '', started: 2, held: 1, ...over,
+})
+
+// A fixed clock: an age measured against the wall clock would drift the copy.
+const pageOf = (dir) => renderGraphPage(dir, snapshotWith(), { now: NOW })
+
+test('a repo where the runner has never run says so instead of looking calm', () => {
+  const page = pageOf(repoWith(TWO_TEAMS))
+  assert.match(page, /data-loop-health="never"/)
+  assert.match(page, /never run in this repo/)
+  // The dangerous failure is the opposite claim, made by silence.
+  assert.doesNotMatch(page, /dispatching normally/)
+})
+
+test('a heartbeat older than three of its own ticks reads as not responding', () => {
+  const page = pageOf(beat(repoWith(TWO_TEAMS), heartbeat({ at: ago(61) })))
+  assert.match(page, /data-loop-health="stale"/)
+  assert.match(page, /is not responding/)
+  assert.match(page, /Last tick 1m ago/)
+  // `dispatching: true` is what the runner believed one tick before it stopped.
+  // A dead runner claiming to dispatch is exactly the calm-looking lie.
+  assert.doesNotMatch(page, /dispatching normally/)
+})
+
+test('a stale hold is reported as what the runner last said, not as a hold in progress', () => {
+  const page = pageOf(beat(repoWith(TWO_TEAMS),
+    heartbeat({ at: ago(300), dispatching: false, reason: 'pulse.json is stale' })))
+  assert.match(page, /data-loop-health="stale"/)
+  assert.doesNotMatch(page, /data-loop-health="holding"/)
+  assert.match(page, /At that last tick it said: &quot;pulse.json is stale&quot;/)
+})
+
+test('the runner is judged against its own tick, so a slow loop is not a dead one', () => {
+  const edge = pageOf(beat(repoWith(TWO_TEAMS), heartbeat({ at: ago(60), tick_sec: 20 })))
+  assert.match(edge, /data-loop-health="dispatching"/, 'exactly 3x its tick is still alive')
+  const past = pageOf(beat(repoWith(TWO_TEAMS), heartbeat({ at: ago(61), tick_sec: 20 })))
+  assert.match(past, /data-loop-health="stale"/, 'one second past 3x its tick is not')
+  const slow = pageOf(beat(repoWith(TWO_TEAMS), heartbeat({ at: ago(300), tick_sec: 600 })))
+  assert.match(slow, /data-loop-health="dispatching"/, 'a ten-minute tick may be five minutes silent')
+})
+
+test('a runner that is deliberately holding shows the reason it gave, escaped', () => {
+  const page = pageOf(beat(repoWith(TWO_TEAMS),
+    heartbeat({ dispatching: false, reason: '<script>alert(1)</script> pulse.json is stale' })))
+  assert.match(page, /data-loop-health="holding"/)
+  assert.match(page, /deliberately not dispatching/)
+  assert.match(page, /Last tick 10s ago/)
+  assert.match(page, /&lt;script&gt;alert\(1\)&lt;\/script&gt; pulse\.json is stale/)
+  assert.doesNotMatch(page, /<script>alert/)
+
+  // A hold with no reason is itself the thing to chase; the page never writes
+  // one for the runner.
+  const silent = pageOf(beat(repoWith(TWO_TEAMS), heartbeat({ dispatching: false, reason: '' })))
+  assert.match(silent, /holding without saying why/)
+})
+
+test('a dispatching runner states the age of its last tick and what that tick did', () => {
+  const page = pageOf(beat(repoWith(TWO_TEAMS), heartbeat({ started: 3, held: 1 })))
+  assert.match(page, /data-loop-health="dispatching"/)
+  assert.match(page, /dispatching normally/)
+  assert.match(page, /Last tick 10s ago/)
+  assert.match(page, /started in that tick: 3/)
+  assert.match(page, /held: 1/)
+})
+
+test('a count the runner did not report is not printed as a zero', () => {
+  const bare = heartbeat()
+  delete bare.started
+  delete bare.held
+  const page = pageOf(beat(repoWith(TWO_TEAMS), bare))
+  assert.match(page, /started in that tick: not measured/)
+  assert.match(page, /held: not measured/)
+  assert.doesNotMatch(page, /started in that tick: 0/)
+
+  // A zero the runner did measure is a fact, and stays printable.
+  const idle = pageOf(beat(repoWith(TWO_TEAMS), heartbeat({ started: 0, held: 0 })))
+  assert.match(idle, /started in that tick: 0/)
+})
+
+test('an unreadable heartbeat is not reported as a runner that never ran', () => {
+  const broken = pageOf(beat(repoWith(TWO_TEAMS), 'not json'))
+  assert.match(broken, /data-loop-health="unreadable"/)
+  assert.match(broken, /not valid JSON/)
+  assert.doesNotMatch(broken, /never run in this repo/)
+
+  const foreign = pageOf(beat(repoWith(TWO_TEAMS),
+    { schema: 'something.else', at: ago(1), tick_sec: 20, dispatching: true }))
+  assert.match(foreign, /data-loop-health="unreadable"/)
+})
+
+test('a heartbeat that cannot be judged says so rather than guessing', () => {
+  const undated = pageOf(beat(repoWith(TWO_TEAMS), heartbeat({ at: 'whenever' })))
+  assert.match(undated, /data-loop-health="unmeasured"/)
+  assert.match(undated, /no usable timestamp/)
+
+  const noTick = heartbeat()
+  delete noTick.tick_sec
+  assert.match(pageOf(beat(repoWith(TWO_TEAMS), noTick)), /did not report its tick interval/)
+
+  const mute = pageOf(beat(repoWith(TWO_TEAMS), heartbeat({ dispatching: 'yes' })))
+  assert.match(mute, /did not say whether it is dispatching/)
+  assert.doesNotMatch(mute, /data-loop-health="holding"/)
+
+  const ahead = pageOf(beat(repoWith(TWO_TEAMS), heartbeat({ at: ago(-90) })))
+  assert.match(ahead, /the two clocks disagree/)
+
+  // A caller's broken clock is this page's fault, and is never reported as the
+  // runner disagreeing about the time.
+  const noClock = renderGraphPage(beat(repoWith(TWO_TEAMS), heartbeat()), snapshotWith(), { now: null })
+  assert.match(noClock, /data-loop-health="unmeasured"/)
+  assert.match(noClock, /could not read its own clock/)
+})
+
+test('loop health is readable without colour: a state word and a shape, not a hue', () => {
+  const page = pageOf(beat(repoWith(TWO_TEAMS), heartbeat({ at: ago(600) })))
+  assert.match(page, /class="lh-state">NOT RESPONDING</)
+  assert.match(page, /class="lh-mark" aria-hidden="true">■</)
 })
 
 // ── the pull system ──────────────────────────────────────────────────────────
@@ -261,12 +408,25 @@ const ledger = (id, events) => [id, {
 // A worker finishing is not the team finishing. Work sits in its team's done
 // queue only once that team's own evaluator has passed it — so the fixture for
 // "ready to move on" ends in a review, not a delivery.
+//
+// Every field contract §4 names is stated, uninteresting ones included. Since
+// DECISION 4 the pull controller validates a token's whole history before
+// handing it on, so a shorthand history is refused as `invalid` rather than
+// pulled — and this fixture exists to reach the pull decision, not to test the
+// validator.
 const delivered = (id, agentId, hour) => ledger(id, [
-  { at: `2026-07-27T0${hour}:00:00.000Z`, event: 'assigned', work_item: id, workflow: 'full', agent_id: agentId },
-  { at: `2026-07-27T0${hour}:20:00.000Z`, event: 'delivered', work_item: id, workflow: 'full', agent_id: agentId, terminal: 'done' },
+  {
+    at: `2026-07-27T0${hour}:00:00.000Z`, event: 'assigned', work_item: id, workflow: 'full',
+    agent_id: agentId, task_id: `${id}-1`, dispatch_id: `${id}-d1`,
+  },
+  {
+    at: `2026-07-27T0${hour}:20:00.000Z`, event: 'delivered', work_item: id, workflow: 'full',
+    agent_id: agentId, task_id: `${id}-1`, terminal: 'done', timed_out: false, evidence_present: true,
+  },
   {
     at: `2026-07-27T0${hour}:30:00.000Z`, event: 'reviewed', work_item: id, workflow: 'full',
     agent_id: `${agentId.split('_')[0]}_e`, verdict: 'pass',
+    reviewed_task: `${id}-1`, reason: 'it does what the request asked for',
   },
 ])
 

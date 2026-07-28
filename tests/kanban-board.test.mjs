@@ -28,13 +28,22 @@ const PULSE = join(ROOT, 'plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs
 
 const NOW = '2026-07-27T12:00:00.000Z'
 
+// Every seat names its model because §3 now requires one; the value is
+// shape-checked only, never matched against a list, so a fixture name is as
+// legal here as a real one.
+const MODELS = { dispatcher: 'test-model', worker: 'test-model', evaluator: 'test-model' }
+
 const TWO_TEAMS = {
   project_id: 'p',
   outer_controller_id: 'pm',
+  outer_controller_model: 'test-model',
   teams: [
-    { team_id: 'build', name: 'Build', dispatcher_id: 'build_d', worker_ids: ['build_w1'], evaluator_id: 'build_e', wip_limit: 2 },
-    { team_id: 'test', name: 'Test', dispatcher_id: 'test_d', worker_ids: ['test_w1'], evaluator_id: 'test_e', wip_limit: 1 },
-    { team_id: 'visual', name: 'Visual', dispatcher_id: 'visual_d', worker_ids: ['visual_w1'], evaluator_id: 'visual_e', wip_limit: 1 },
+    // Build carries TWO workers so its WIP limit is 2. The limit is no longer a
+    // number of its own (§3) — it is the worker count — so a team that has to be
+    // drawn as `0/2` has to be a team of two.
+    { team_id: 'build', name: 'Build', dispatcher_id: 'build_d', worker_ids: ['build_w1', 'build_w2'], evaluator_id: 'build_e', models: MODELS },
+    { team_id: 'test', name: 'Test', dispatcher_id: 'test_d', worker_ids: ['test_w1'], evaluator_id: 'test_e', models: MODELS },
+    { team_id: 'visual', name: 'Visual', dispatcher_id: 'visual_d', worker_ids: ['visual_w1'], evaluator_id: 'visual_e', models: MODELS },
   ],
   workflows: [{ workflow_id: 'feature', name: 'Feature delivery', route: ['build', 'test', 'visual'] }],
 }
