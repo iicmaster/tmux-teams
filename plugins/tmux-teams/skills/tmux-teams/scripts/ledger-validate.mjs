@@ -41,6 +41,14 @@ export const COMMON_FIELDS = ['at', 'event', 'work_item', 'workflow']
 // `delivered` and rejecting those would fight the writers this file exists to
 // protect.
 export const EVENT_SPEC = {
+  // §4.6: work entering the graph for the first time. `pulled` cannot say this
+  // — a pull is a team TAKING work from another team, and the first team on a
+  // route has nobody to take it from. The alternative considered and rejected
+  // was making `from_team` optional on `pulled`: that would stop the validator
+  // catching a pull that genuinely forgot its sender, forever, to accommodate
+  // one event at the head of each route. A new word costs nothing and leaves
+  // `pulled` exactly as strict as it was.
+  opened: { required: ['agent_id', 'to_team', 'reason'], forbidden: ['from_team'] },
   pulled: { required: ['agent_id', 'from_team', 'to_team'] },
   intake: { required: ['agent_id', 'verdict', 'reason'] },
   // §4.1: the token is held by the team it went back to, not by the dispatcher
@@ -90,6 +98,9 @@ export function validateLedger(lines) {
   // Facts accumulated in FILE order. Sorting by `at` the way readers do would
   // destroy the only thing that makes "never goes backwards" checkable.
   const assignedAgents = new Set()
+  // Counted, not flagged: `opened` earns its strictness only if a second one
+  // later in the file is as illegal as one appended after a `pulled`.
+  let eventsSeen = 0
   let deliveredSeen = false
   let auditRequested = false
   let closedAt = null // { line, event } of the first terminal event
@@ -186,11 +197,18 @@ export function validateLedger(lines) {
     if (name === 'audited' && !auditRequested) {
       add(lineNo, 'audited_without_request', 'audited with no preceding audit_requested')
     }
+    // A token enters the graph once. A second `opened` would describe work
+    // arriving somewhere it already is, and an `opened` after any other event
+    // would claim the history above it happened before the work existed.
+    if (name === 'opened' && eventsSeen > 0) {
+      add(lineNo, 'opened_not_first', 'opened is how a token enters the graph and can only be its first event')
+    }
 
     if (name === 'assigned' && present(entry.agent_id)) assignedAgents.add(String(entry.agent_id))
     if (name === 'delivered') deliveredSeen = true
     if (name === 'audit_requested') auditRequested = true
     if (!closedAt && TERMINAL_EVENTS.has(name)) closedAt = { line: lineNo, event: name }
+    eventsSeen += 1
   }
 
   return { ok: problems.length === 0, problems }

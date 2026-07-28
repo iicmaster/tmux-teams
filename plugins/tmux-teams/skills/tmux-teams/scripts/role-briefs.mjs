@@ -65,7 +65,14 @@ const SHARED_RULES = `## Project rules you inherit
 - Code that ships has to parse. A matching digest is not a passing check.
 - Do not commit, do not push, do not edit \`.tmux-teams/team-graph.json\`, and
   never write inside \`.tmux-teams/work-items/\` — that ledger is append-only and
-  the runner owns it.`
+  the runner owns it.
+- End your outbox with an \`EVIDENCE:\` block listing what you actually checked —
+  the command you ran and its result, the file and line you read, the digest you
+  compared. One fact per line; the block ends at your terminal marker.
+  This is not a formality. The loop records \`evidence_present\` on every leg from
+  whether that block is there, so a leg without one is filed as a claim nobody
+  can check. If you verified nothing, say so inside the block rather than
+  omitting it — "could not measure" is evidence, silence is not.`
 
 const dispatcherBrief = ({ teamName, workItem, fromTeam, route }) => `# You are the dispatcher of the ${teamName} team
 

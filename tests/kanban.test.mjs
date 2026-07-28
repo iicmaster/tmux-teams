@@ -149,11 +149,55 @@ test('AC3 completed and abandoned both land in Done, told apart', () => {
   assert.equal(done.cards, 2)
   assert.match(done.html, /class="card s-completed"[^>]*>[\s\S]*?<b class="tok">fin<\/b>/)
   assert.match(done.html, /class="card s-abandoned"[^>]*>[\s\S]*?<b class="tok">gone<\/b>/)
-  assert.match(done.html, /<span class="st">Completed<\/span>/)
-  assert.match(done.html, /<span class="st">Abandoned<\/span>/)
+  // §5: `completed` is only half closed — the outer controller has still to read
+  // the delivery as a whole. The card says so, because a route calling itself
+  // finished is not the same fact as a route somebody checked.
+  assert.match(done.html, /data-event="completed"/)
+  assert.match(done.html, /data-event="abandoned"/)
   // Closed work is not an error. Accusing it of being unplaceable was a real bug.
   assert.equal(columns.has('Unplaceable'), false)
   for (const team of FOUR_TEAMS.teams) assert.match(columns.get(team.name).html, /WIP 0\//)
+})
+
+// The board had no case for either half of the audit, so a route the outer
+// controller had read and raised concerns about rendered as `Unknown event:
+// audited` — the one thing the board exists to report was the one thing it
+// could not say. `kanban-page` is the live token this was found on.
+test('an audited route reports the controller verdict instead of an unknown event', () => {
+  const dir = repoWith(FOUR_TEAMS, {
+    seen: [
+      { at: '2026-07-27T09:00:00.000Z', event: 'completed', from_team: 'visual' },
+      {
+        at: '2026-07-27T09:10:00.000Z', event: 'audit_requested', agent_id: 'pm',
+        task_id: 'a-1', reason: 'route finished — read the delivery as a whole',
+      },
+      {
+        at: '2026-07-27T09:20:00.000Z', event: 'audited', agent_id: 'pm',
+        verdict: 'concern', reason: 'four findings a human has to settle',
+      },
+    ],
+  })
+  const html = pageOf(dir)
+  // The verdict, not the sentence written about it. Pinning the copy would make
+  // this test charge rent every time the wording improves while catching
+  // nothing — the machine-readable state is the thing that must not regress.
+  assert.match(html, /data-event="audited" data-verdict="concern"/)
+  assert.equal(html.includes('Unknown event'), false)
+})
+
+// §4.6: a route's first team is handed work by nobody, so the arrival cannot be
+// a `pulled`. The card asks the same question either way — what is this waiting
+// on — and until `opened` was a case it answered `Unknown event: opened`.
+test('work that opened a route waits for intake exactly like a pull does', () => {
+  const dir = repoWith(FOUR_TEAMS, {
+    fresh: [{
+      at: '2026-07-27T09:00:00.000Z', event: 'opened', agent_id: 'design_dispatcher',
+      to_team: 'design', reason: 'opened from the quick-spec',
+    }],
+  })
+  const html = pageOf(dir)
+  assert.match(html, /Waiting for intake/)
+  assert.equal(html.includes('Unknown event'), false)
 })
 
 // ── AC4 — a failed leg is visibly stuck ─────────────────────────────────────

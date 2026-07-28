@@ -52,6 +52,10 @@ function stateOf(graph, last) {
   const role = teamRoleOf(graph, last.agent_id || '')?.role ?? null
   const reason = last.reason || null
   switch (last.event) {
+    // Both arrivals leave the work in the same place — with a dispatcher who
+    // has not judged it yet — so the card answers the reader's one question the
+    // same way. Where it came from is the ledger's business, not the card's.
+    case 'opened':
     case 'pulled':
       return { state: 'Waiting for intake', detail: reason }
     case 'intake':
@@ -85,7 +89,24 @@ function stateOf(graph, last) {
     case 'resumed':
       return { state: 'Resumed by the outer controller', detail: reason }
     case 'completed':
-      return { state: 'Completed', detail: last.from_team ? `finished at ${last.from_team}` : null }
+      // Half closed, not finished (§5): the outer controller still has to read
+      // the delivery as a whole, and until it has, "Completed" is the route's
+      // own word for itself rather than a verdict anyone checked.
+      return {
+        state: 'Completed — not yet audited',
+        detail: last.from_team ? `finished at ${last.from_team}` : null,
+      }
+    case 'audit_requested':
+      return { state: 'Waiting for the outer controller to read it', detail: reason }
+    case 'audited':
+      // The audit is the last word on a route and it was going nowhere: with no
+      // case here it fell through to `Unknown event: audited`, so a route the PM
+      // had read and raised concerns about was unreadable on the board that
+      // exists to report exactly that. `concern` is not a failure — it is work
+      // for a human — so it says so instead of borrowing a failure's vocabulary.
+      return last.verdict === 'accept'
+        ? { state: 'Audited — accepted', detail: reason }
+        : { state: `Audited — ${last.verdict || 'no verdict'}: needs a human`, detail: reason }
     case 'abandoned':
       return { state: 'Abandoned', detail: reason }
     default:
@@ -100,7 +121,7 @@ const placingEvent = (item, inTeam) => {
   if (!inTeam) return item.custody[item.custody.length - 1]
   for (let i = item.custody.length - 1; i >= 0; i -= 1) {
     const entry = item.custody[i]
-    if (entry.event === 'pulled' || entry.event === 'returned') return entry
+    if (entry.event === 'opened' || entry.event === 'pulled' || entry.event === 'returned') return entry
   }
   return item.custody[0]
 }
@@ -114,6 +135,11 @@ function cardOf(graph, item, { nowMs, inTeam, blockedReason }) {
     work_item: item.work_item,
     workflow: item.workflow || '',
     event: last.event || '',
+    // The judgement, separate from the sentence written about it. `s-audited`
+    // cannot tell an accepted route from one a human still has to settle, and
+    // reading that difference out of the visible text makes every reader — a
+    // test, a script, a future page — depend on the exact words we chose today.
+    verdict: last.verdict || '',
     state,
     detail: detail === null ? null : clip(detail, 120),
     agent_id: last.agent_id || '',
@@ -295,7 +321,7 @@ const renderCard = (card, unplaceableNote) => {
   const tooltip = `${card.work_item} — ${card.state}${card.detail ? ` — ${card.detail}` : ''}` +
     ` (last event ${card.event || 'none'} at ${card.at || 'unknown'})`
   return `
-    <article class="card s-${slug(card.event)}${card.blocked_reason ? ' is-blocked' : ''}" title="${esc(tooltip)}">
+    <article class="card s-${slug(card.event)}${card.blocked_reason ? ' is-blocked' : ''}" data-event="${esc(card.event || 'none')}"${card.verdict ? ` data-verdict="${esc(card.verdict)}"` : ''} title="${esc(tooltip)}">
       <b class="tok">${esc(clip(card.work_item, 60))}</b>
       <span class="wf">${esc(card.workflow ? clip(card.workflow, 40) : 'no workflow declared')}</span>
       <span class="st">${esc(card.state)}</span>

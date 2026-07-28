@@ -157,6 +157,7 @@ Common fields on every event: `at` (ISO 8601 UTC), `event`, `work_item`,
 
 | Event | Written by | Also carries | Means |
 | --- | --- | --- | --- |
+| `opened` | whoever admits the work (§4.6) | `agent_id` = receiving dispatcher, `to_team`, `reason`; **never** `from_team` | work entered the graph; legal only as a token's first event |
 | `pulled` | pull-controller | `agent_id` = receiving dispatcher, `from_team`, `to_team` | the receiving team took the work |
 | `intake` | runner (harvest) | `agent_id` = dispatcher, `verdict: accept`, `reason` | the team accepted the handoff |
 | `returned` | runner (harvest) | `to_team` = sender, `refused_by`, `reason`, **no `agent_id`** | the handoff was refused and went back |
@@ -242,12 +243,33 @@ rule would keep emitting a handoff the writer can never record, and the loop
 would print the same move every tick while nothing moved — indistinguishable
 from a runner that has quietly given up.
 
+### 4.6 How work enters the graph — `opened`
+
+A `pulled` is a team **taking** work from another team. The first team on a
+route has nobody to take it from, so intake cannot be spelled as a pull without
+either omitting `from_team` — which the validator refuses — or naming a sender
+that does not exist, which it cannot catch. Both forms were on disk before this
+event existed.
+
+`opened` says the true thing instead: work arrived, here is where, here is why.
+It carries `agent_id` (the receiving dispatcher), `to_team` and `reason`, it must
+**not** carry `from_team`, and it is legal only as a token's **first** event — a
+second one would describe work arriving somewhere it already is, and a late one
+would claim the history above it happened before the work existed.
+
+To every reader downstream `opened` and `pulled` mean the same thing: work is
+sitting with a team whose dispatcher has not judged it yet. They differ only in
+whether a team sent it. A reader that knows one and not the other strands the
+token — the runner reports nothing to do while the board draws it waiting
+forever.
+
 ## 5. State machine
 
 One token, keyed on its last event and the role of the actor.
 
 | Last event | Condition | Next |
 | --- | --- | --- |
+| `opened` | — | dispatch the **dispatcher** (intake) |
 | `pulled` | — | dispatch the **dispatcher** (intake) |
 | `intake` | — | dispatch a **worker** |
 | `returned` | — | dispatch a **worker** (rework) |
@@ -739,11 +761,16 @@ and §11.2.
    flight; the named instance is terminal. The evidence was wrong even though
    the conclusion was right, which is exactly the failure this section exists to
    catch, so it is corrected in place rather than quietly deleted.
-   The fix is a decision, not an edit: either `from_team` becomes optional on a
-   token's first event, or §4 gains a distinct opening event, or the writer gains
-   an append-only repair event it will accept onto a broken ledger. Writing
-   "optional on the first event" into §4 unilaterally would just put the contract
-   back in disagreement with the code, in the other direction.
+   *Settled 2026-07-28 (Master):* §4 gains a distinct opening event, `opened`.
+   The two rejected alternatives are recorded because the reasons outlive the
+   choice. Making `from_team` optional on a token's first event would stop the
+   validator catching a real pull that forgot its sender — permanently, for
+   every pull, to accommodate one event per route; the guarantee that would have
+   cost is now pinned by a test so a later convenience cannot quietly spend it.
+   An append-only *repair* event was rejected on a larger principle: a system
+   whose entire claim is that history cannot be rewritten should not ship a word
+   for rewriting history. `opened` adds vocabulary instead of removing
+   strictness. See §4.6.
 
 2. **§7's "an `invalid` token stays visibly blocked" is not drawn.**
    `kanban.mjs` treats `blocked`, `failed` and `skip` as blocking and does not
@@ -803,6 +830,44 @@ and §11.2.
    empty directory exits 0 as `ok (default)`. Only an **invalid** file fails
    closed. **The skill is the one that is wrong** (§15.3); §3 and the code
    agree and are left alone.
+
+### 14.3 Settled 2026-07-28 — the PM audit's findings
+
+The outer controller's first real audit returned `concern` on `kanban-page` with
+four findings. Three were decisions Master settled; the fourth was found while
+settling them. Recorded because the reasoning is the durable part.
+
+1. **`kanban-page`'s hollow `completed`.** The controller proposed closing the
+   token as superseded. **Rejected.** The token is terminal and holds no WIP, so
+   nothing is stuck; and the audit that found the problem is already in its
+   ledger. What was missing was a reader: `kanban.mjs` had no case for either
+   half of the audit, so a route the PM had read and raised concerns about
+   rendered as `Unknown event: audited`. The board that exists to report exactly
+   that could not say it. Superseding the record would have hidden a true
+   history to work around a display bug. `completed` now also reads
+   *"Completed — not yet audited"*, because §5 says it is only half closed.
+
+2. **`evidence_present` was `false` on all 13 legs.** Not a bug in the
+   recording: `role-briefs.mjs` never once said the word `EVIDENCE`, so no agent
+   this plugin dispatches was ever told to write the block that
+   `acp-companion.mjs` looks for. A field that cannot be true is not a
+   measurement. The shared rules now require the block and say why, and a test
+   asserts every shipped brief carries the requirement. Worker briefs remain the
+   repo's own `<team>.md` (§4), so a repo that writes its own worker brief has to
+   carry the requirement into it — that gap is real and is named here.
+
+3. **`pulled` with no sender.** Settled as §4.6 above.
+
+4. **Found while fixing the above: the cooldown mixed two clocks.**
+   `planEscalation` took an injectable `now` and compared it against
+   `statSync(pm-notes/latest.md).mtimeMs`. Let the filesystem's clock run ahead
+   of the caller's and the difference goes negative, every tick reads "the
+   controller ran moments ago", and **the outer controller is never dispatched
+   again** — a permanent silence produced by a clock rather than by a board with
+   nothing on it. It now reads the ISO stamp its own writer puts on line 1, with
+   mtime as a fallback for files written before that stamp existed. The bug
+   announced itself by making a test that had passed all morning start failing
+   in the afternoon, which is the only reason it was found at all.
 
 ## 15. Change control
 

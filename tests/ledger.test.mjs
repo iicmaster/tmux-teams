@@ -566,3 +566,52 @@ test('this repo\'s real ledgers still get a verdict when they are present', () =
     if (verdicts[name]) assert.deepEqual(verdicts[name], [], `${name}: ${JSON.stringify(verdicts[name])}`)
   }
 })
+
+// ── §4.6 `opened` — how work enters the graph ───────────────────────────────
+//
+// Before this event existed, intake had to be written either as a `pulled` with
+// no sender, which the validator refuses, or as a `pulled` naming a team that
+// does not exist, which it cannot catch. Both forms were on disk:
+// `kanban-board.jsonl` line 1 is the first and FULL_ROUTE above is the second.
+
+const opened = (extra = {}) => ({
+  at: '2026-07-27T10:00:00.000Z', event: 'opened', work_item: 'tok', workflow: 'feature',
+  agent_id: 'design_dispatcher', to_team: 'design', reason: 'opened from the quick-spec', ...extra,
+})
+const assignedAt = (at) => ({
+  at, event: 'assigned', work_item: 'tok', workflow: 'feature',
+  agent_id: 'design_w1', task_id: 't1', dispatch_id: 'd1',
+})
+
+test('a route that opens with `opened` validates clean', () => {
+  const result = validateLedger(jsonl(opened(), assignedAt('2026-07-27T10:00:01.000Z')))
+  assert.deepEqual(result.problems, [])
+  assert.equal(result.ok, true)
+})
+
+test('`opened` names where work arrived and why, and must not name a sender', () => {
+  assert.deepEqual(codes(validateLedger(jsonl(opened({ to_team: undefined })))), ['missing_field'])
+  assert.deepEqual(codes(validateLedger(jsonl(opened({ reason: '' })))), ['missing_field'])
+  // The entire reason this event exists is that there is no sending team. One
+  // that names a sender is a `pulled` wearing the wrong word.
+  assert.deepEqual(codes(validateLedger(jsonl(opened({ from_team: 'design' })))), ['forbidden_field'])
+})
+
+test('a token enters the graph once, and only at the top of its history', () => {
+  const late = validateLedger(jsonl(
+    assignedAt('2026-07-27T10:00:00.000Z'), opened({ at: '2026-07-27T10:00:01.000Z' })))
+  assert.deepEqual(codes(late), ['opened_not_first'])
+  const twice = validateLedger(jsonl(opened(), opened({ at: '2026-07-27T10:00:01.000Z' })))
+  assert.deepEqual(codes(twice), ['opened_not_first'])
+})
+
+test('adding `opened` did not soften what `pulled` still has to say', () => {
+  // The alternative to a new event was making `from_team` optional on `pulled`.
+  // This is the guarantee that choice would have cost, pinned here so a later
+  // convenience cannot quietly spend it.
+  const senderless = {
+    at: '2026-07-27T10:00:00.000Z', event: 'pulled', work_item: 'tok', workflow: 'feature',
+    agent_id: 'design_dispatcher', to_team: 'design',
+  }
+  assert.deepEqual(codes(validateLedger(jsonl(senderless))), ['missing_field'])
+})

@@ -279,7 +279,9 @@ function composeBrief(repo, graph, plan, item, scratchDir) {
     }
   } else if (role === 'dispatcher') {
     const workflow = graph.workflows.find((entry) => entry.workflow_id === item.workflow)
-    const pulled = lastOf(item, (entry) => entry.event === 'pulled')
+    // Either arrival carries the context the dispatcher is judging: a `pulled`
+    // names the team that sent it, an `opened` names why the work exists at all.
+    const pulled = lastOf(item, (entry) => entry.event === 'pulled' || entry.event === 'opened')
     parts.push(roleBrief(repo, 'dispatcher', team.team_id, {
       teamName: team.name,
       workItem: item.work_item,
@@ -541,7 +543,12 @@ function nextStep(graph, team, item, { busy, nowMs, zombieSec }) {
     return { action: 'harvest-pending', reason: `the ${role} leg is waiting to be harvested` }
   }
 
-  if (last.event === 'pulled') return want('dispatcher')
+  // `opened` and `pulled` mean the same thing to the state machine: work is
+  // sitting with a team whose dispatcher has not judged it yet. They differ
+  // only in whether a team sent it (§4.6). Leaving `opened` out here would let
+  // a token enter the graph and never be dispatched — the board would draw it
+  // waiting for intake forever while the runner reported nothing to do.
+  if (last.event === 'pulled' || last.event === 'opened') return want('dispatcher')
   if (last.event === 'intake' || last.event === 'returned' || last.event === 'resumed') return want('worker')
   return { action: 'skip', reason: `nothing follows ${last.event}` }
 }
@@ -655,7 +662,17 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
   const notesDir = join(repo, '.tmux-teams', 'pm-notes')
   const latest = join(notesDir, 'latest.md')
   try {
-    const newest = statSync(latest).mtimeMs
+    const text = readFileSync(latest, 'utf8')
+    // Line 1 is the ISO stamp this function's own writer puts there. Reading
+    // the filesystem's mtime instead mixed two clocks in one subtraction: the
+    // caller's `now` and whatever the filesystem believed. When they disagree
+    // by more than the cooldown in the wrong direction the difference goes
+    // negative, every comparison says "ran moments ago", and the outer
+    // controller is never dispatched again — a permanent silence produced by a
+    // clock, not by a board with nothing on it. Falling back to mtime keeps
+    // files written before the stamp existed readable.
+    const stamped = Date.parse(text.split('\n', 1)[0] ?? '')
+    const newest = Number.isFinite(stamped) ? stamped : statSync(latest).mtimeMs
     if ((now - newest) / 1000 < cooldownSec) {
       return { action: 'cooldown', reason: `outer controller ran ${Math.round((now - newest) / 1000)}s ago`, triggers }
     }
@@ -663,7 +680,7 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
     // loop can never place stays in `triggers` on every tick, so an unchanged
     // trigger set means the controller would be dispatched again to read the
     // same board — every cooldown, forever.
-    const seen = readFileSync(latest, 'utf8').split('\n').slice(1).filter(Boolean).join('\n')
+    const seen = text.split('\n').slice(1).filter(Boolean).join('\n')
     if (seen === triggers.join('\n')) {
       return { action: 'unchanged', reason: `the same ${triggers.length} problem(s) the controller already read`, triggers }
     }

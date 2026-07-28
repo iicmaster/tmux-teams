@@ -26,7 +26,7 @@ import {
   applyHarvest, planDispatches, planEscalation, planHarvest, tick,
 } from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs'
 import { applyPulls, planPulls } from '../plugins/tmux-teams/skills/tmux-teams/scripts/pull-controller.mjs'
-import { REVIEW_VERDICTS, readVerdict } from '../plugins/tmux-teams/skills/tmux-teams/scripts/role-briefs.mjs'
+import { REVIEW_VERDICTS, readVerdict, roleBrief } from '../plugins/tmux-teams/skills/tmux-teams/scripts/role-briefs.mjs'
 import { validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -432,6 +432,52 @@ test('the verdict is the last one stated, not the first one mentioned', () => {
   assert.equal(readVerdict(echoed, REVIEW_VERDICTS).verdict, 'reject')
   assert.match(readVerdict(echoed, REVIEW_VERDICTS).reason, /node --check fails/)
   assert.equal(readVerdict('no verdict anywhere', REVIEW_VERDICTS).stated, false)
+})
+
+// The cooldown used to be measured from the note file's mtime while `now` came
+// from the caller. Two clocks in one subtraction: let the filesystem's run ahead
+// and the difference goes negative, every tick reads "ran moments ago", and the
+// outer controller is never dispatched again. Not hypothetical — it is what
+// made the test below start failing partway through 2026-07-28, because its
+// frozen `now` fell behind the real time the note was written at.
+test('a filesystem clock ahead of the runner cannot silence the outer controller', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-pm-clock-'))
+  try {
+    const graph = graphOf(TWO_TEAMS)
+    const items = itemsOf(['tok', [{ event: 'pulled', agent_id: 't_d', from_team: 'build', to_team: 'test' }]])
+    const occupancy = teamOccupancy(graph, items)
+    const plans = [{ action: 'escalate', work_item: 'tok', team: 'test', reason: 'nothing can place this' }]
+
+    mkdirSync(join(dir, '.tmux-teams', 'pm-notes'), { recursive: true })
+    // Written this instant, so its mtime is the real wall clock — well past the
+    // frozen `now` below. Line 1 is the only honest record of when the
+    // controller actually ran, and it says weeks ago.
+    writeFileSync(join(dir, '.tmux-teams', 'pm-notes', 'latest.md'),
+      '2026-07-01T00:00:00.000Z\n- `other` in build: a problem read weeks ago\n')
+
+    const plan = planEscalation(dir, graph, items, plans, occupancy, { now: FIXED_NOW, stallSec: 1e9 })
+    assert.equal(plan.action, 'escalate', 'the stamp says weeks, only the filesystem says moments')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('every shipped brief asks for the EVIDENCE block the ledger records', () => {
+  // `evidence_present` was recorded on all 13 legs of the dogfood run and was
+  // `false` on every one of them, because no brief had ever said the word. A
+  // field that cannot be true is not a measurement.
+  const dir = mkdtempSync(join(tmpdir(), 'loop-briefs-'))
+  try {
+    for (const role of ['dispatcher', 'evaluator', 'pm']) {
+      const brief = roleBrief(dir, role, 'design', {
+        teamName: 'Design', workItem: 'tok', fromTeam: 'intake', route: 'design -> build',
+        workerId: 'design_w1', projectId: 'p', trigger: 't', board: 'b',
+      })
+      assert.match(brief, /^- End your outbox with an `EVIDENCE:` block/m, role)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('a permanent problem does not re-dispatch the controller every cooldown', () => {
