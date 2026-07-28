@@ -715,7 +715,7 @@ deliberately narrow data path:
 ```text
 probes -> <repo>/.tmux-teams/pulse.json (machine-readable SSOT)
        -> <repo>/.tmux-teams/pulse.html (rendered only from serialized JSON)
-       -> <repo>/.tmux-teams/loop-graph.html (full-screen ACP projection)
+       -> <repo>/.tmux-teams/graph.html (full-screen ACP projection)
        -> <repo>/.tmux-teams/pulse-current.json (bundle commit marker, written last)
 ```
 
@@ -763,7 +763,7 @@ between its footprint and KMS events. A footprint carrying that UUID accepts
 only a matching event; Pulse falls back to task-id + recency only when the
 footprint itself is legacy data without `dispatch_id`.
 
-`loop-graph.html` is the graph-only operational view. It renders one semantic
+`graph.html` is the graph-only operational view. It renders one semantic
 node per configured or current ACP agent instance, never one aggregate node per
 provider, phase, Team, queue, or status bucket. A configured Team lane has a
 dispatcher fan-out, separate worker cards, an evaluator convergence, one

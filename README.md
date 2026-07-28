@@ -6,19 +6,47 @@ agy) over **two transports — tmux and ACP** — on one mailbox contract
 dispatch with `sqthink` + task creation, gate completion with `party-mode`
 verification.
 
-## v0.6.1 hardening release
+## The delivery loop
 
-- ACP permission responses check that `options` is an array. Empty or non-array
-  options return the protocol's cancelled outcome instead of dereferencing a
-  missing choice; valid choices retain the existing allow-always,
-  then allow-once, then first-option precedence.
-- The experimental Stage 0 validator returns structured diagnostics for
-  malformed container shapes, enforces proposer/receiver separation even when
-  actor roles overlap, and rejects non-finite aggregate, loaded-cost, or
-  comparison arithmetic instead of emitting an invalid report.
-- Pulse keeps its dynamic HTML small by publishing the bundled Kanit payload
-  once as a local content-addressed stylesheet. The canonical page remains
-  offline and network-free, but it is deliberately no longer a single file.
+The mailbox contract above dispatches one agent and proves what it produced.
+The delivery loop turns that into a system that keeps moving without a human
+pressing continue.
+
+Two layers that must never be conflated:
+
+| Layer | File | Answers |
+|---|---|---|
+| **Declaration** | `.tmux-teams/team-graph.json` | who exists and how they are wired |
+| **Evidence** | `.tmux-teams/work-items/<token>.jsonl`, `pulse.json` | what actually happened |
+
+- A **team** is a reusable pool: one dispatcher, N workers, one evaluator. Every
+  role of every team declares its own model — work of different value deserves
+  brains of different price — and a missing declaration is refused by name.
+- A **workflow** is a route composed over teams. A route never revisits a team.
+- A **work item** carries an **append-only** JSONL custody ledger. A mistaken
+  line is corrected by appending, never by rewriting: what a receiving team
+  inherits is the token's recorded history, and every later reader — intake, the
+  board, the controller's audit — answers from it.
+- Work is **pulled, not pushed**. A team takes work when it has room; the WIP
+  limit is the worker count. A team at its limit leaves the token where it is
+  and says so, because a queue backing up is the signal the board exists to
+  show.
+- **Three quality gates**: intake (the receiving dispatcher), review (the team's
+  own evaluator — a worker finishing is not the team finishing), and an outer
+  audit of every finished route. Verdicts are read from a `VERDICT:` line,
+  **last match wins**, and silence is never approval.
+- `plugins/tmux-teams/skills/tmux-teams/references/loop-system-contract.md` is
+  the SSOT. It carries a standing list of what the contract asserts but nothing
+  enforces: a clause with no test is marked as such rather than left to be
+  discovered.
+
+Three pages are published side by side into `.tmux-teams/`, linked by one nav:
+
+| Page | Answers |
+|---|---|
+| `pulse.html` | what is happening right now |
+| `graph.html` | who exists and how they are wired |
+| `kanban.html` | where each work item is stuck |
 
 ## Skills
 
@@ -30,6 +58,7 @@ verification.
 | `tmux-teams:party-auto` | Execution lane of party-mode |
 | `tmux-teams:party-advise` | Read-only advisory lane of party-mode |
 | `tmux-teams:sqthink` | Sequential-thinking analysis/planning |
+| `tmux-teams:team-loop-setup` | First-run interview: how many teams, and which model sits in each role of each one. Asks until the declaration is complete rather than starting a loop on blanks |
 
 Commands: `/tmux-teams:mailbox-run` — run the mailbox PM workflow end to end.
 
@@ -282,7 +311,7 @@ See `skills/tmux-teams/SKILL.md` §6-§8 for the contract, tmux lane, and ACP la
 Pulse has one data path: probes produce
 `<repo>/.tmux-teams/pulse.json`, the machine-readable SSOT, and
 both `<repo>/.tmux-teams/pulse.html` and the full-screen
-`<repo>/.tmux-teams/loop-graph.html` are rendered only from that serialized
+`<repo>/.tmux-teams/graph.html` are rendered only from that serialized
 JSON. There is no HTML-side interpretation of the probes.
 
 ```bash
@@ -299,7 +328,7 @@ includes snapshot identity/freshness, source diagnostics, run state,
 never executed automatically. See `skills/tmux-teams/SKILL.md` §10.
 
 The canonical offline views are `<repo>/.tmux-teams/pulse.html` and
-`<repo>/.tmux-teams/loop-graph.html` together with their sibling
+`<repo>/.tmux-teams/graph.html` together with their sibling
 `pulse-fonts-<sha256>.css`. The stylesheet contains the bundled Kanit WOFF2
 data URLs. Every page is plain document flow with static SVG — no charting
 library is vendored or loaded. All assets are atomically published before the
@@ -311,39 +340,37 @@ last. It names and hashes the JSON, every HTML page and the font stylesheet;
 readers can reject a mixed/partial publish
 by validating those hashes and re-reading the marker after the files.
 
-`team-flow.html` is the Team delivery flowchart and ships ready to use: it draws
-the declared loop as lanes — dispatcher, workers and the team's own evaluator —
-with a `passed · handoff contract` edge into the next team, a rework edge back
-into the same queue, and Project Delivery as a terminal node rather than a fifth
-team. One node is exactly one agent and carries its status, model and transport
-(`acp` or `tmux`). Topology comes from `<repo>/.tmux-teams/team-graph.json`
-validated by the Team contract, or from the bundled four-team template when that
-file is absent; an invalid file fails the page closed with the reason instead of
-falling back. Nodes bind to evidence by `agent_id` only, so a dispatch must set
-`ACP_AGENT_ID` to a declared id to appear. A solid edge means a record exists for
-it and a dashed edge is the operating model with nothing measured yet. Use the
-bundled `team-loop-setup` skill (`team-flow.mjs init|check <repo>`) to declare a
-repo's own loop. The page is full-bleed: the graph is the page, and its SVG
-carries no fixed pixel size so it scales to the viewport.
+`graph.html` is the loop graph. It draws the **declaration** — every team as a
+pool of dispatcher, workers and that team's own evaluator, the outer controller
+watching all of them, and the workflows as routes composed over those teams.
+One node is exactly one agent and states five facts separately: what it is
+doing, its status, its model, how much work its team holds against its WIP
+limit, and when it was last seen. Status, lane and model are three different
+facts and the page never fakes one from another — an unconfirmed model reads
+`<name> unconfirmed`, an unpinned one reads `default — none pinned`.
 
-`loop-graph.html` is the simple configurable Team flow. A configured dispatcher
-fans out to separate worker nodes, every worker collects into that Team's
-integrator/evaluator, rejection returns to the same dispatcher, and a pass goes
-to the configured downstream dispatcher or one non-agent Project Completion
-endpoint. One `.agent-node` is one configured or currently observed ACP agent;
-configured idle agents remain `not_started`, while unmatched or conflicting
-evidence stays once in `Control / Unassigned` with `unknown` truth. Team names,
-roles, membership, and downstream links come from `--team-graph FILE`, not from
-the legacy phase names. Optional `--team-runtime FILE` evidence can add
-validated queue wait, service duration, attempt, bottleneck, decision, and
-handoff facts; invalid or stale controller evidence is shown as a diagnostic
-and never decorates a node. Completed and superseded attempts remain in one
-collapsed audit area. The old fixed phase/delivery diagrams elsewhere on the
-dashboard are legacy/normative illustrations, not the live Team graph.
+Topology comes from `<repo>/.tmux-teams/team-graph.json` validated by the Team
+contract, or from the bundled four-team template when that file is absent; an
+**invalid** file fails the page closed with the reason rather than falling back.
+Nodes bind to evidence by `agent_id` only, so a dispatch must set
+`ACP_AGENT_ID` to a declared id to appear. A solid edge means a record exists
+for it; a dashed edge is the operating model with nothing measured yet. A repo
+with no runner history says so in a banner instead of drawing zeros as calm.
+Use the bundled `team-loop-setup` skill (`graph.mjs init|check <repo>`) to
+declare a repo's own loop. The page is full-bleed: the graph is the page, and
+its SVG carries no fixed pixel size, so it scales to the viewport.
+
+`kanban.html` is the same run seen per work item — one card per token, in the
+column of the team holding it, saying what it is waiting on. A token the pull
+controller refuses to move (its ledger cannot be believed, its last leg failed,
+its next team is at its WIP limit) is drawn as blocked with the reason, because
+a board that draws a stuck token as an ordinary card is a board disagreeing with
+the loop it reports on.
+
 `TEAM_DONE` remains separate from a recorded verdict.
 A recorded `pass` does not mean business approval or UAT acceptance, and a
 `pass` that conflicts with terminal evidence is highlighted for attention.
-Both pages poll only the same-origin `pulse-current.json` bundle marker while
+All three pages poll only the same-origin `pulse-current.json` bundle marker while
 open. They reload only after `snapshot_id` changes, update expiry visibly even
 without a new snapshot, preserve page/flow scroll, focus, and disclosures, and
 offer a keyboard-operable pause/resume control. Marker failures are shown as

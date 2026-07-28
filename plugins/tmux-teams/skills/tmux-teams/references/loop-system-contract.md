@@ -276,6 +276,7 @@ One token, keyed on its last event and the role of the actor.
 | `resumed` | — | dispatch a **worker** (rework, budget reset) |
 | `assigned` | actor is running | in flight, do nothing |
 | `assigned` | no live process, older than `ZOMBIE_SEC` | append `lost` |
+| `lost` | — | retry the **same role**; the leg produced nothing |
 | `delivered` | terminal is not `done` | retry the **same role** |
 | `delivered` | `done`, actor is a worker | dispatch the **evaluator** |
 | `delivered` | `done`, actor is a dispatcher | harvest → `intake` or `returned` |
@@ -773,11 +774,15 @@ and §11.2.
    strictness. See §4.6.
 
 2. **§7's "an `invalid` token stays visibly blocked" is not drawn.**
-   `kanban.mjs` treats `blocked`, `failed` and `skip` as blocking and does not
-   know `invalid`, so a gated token renders as an ordinary card while the loop
-   refuses to move it. The board and the loop currently disagree about that
-   token. **The code is the one that is wrong here** (§15.3): §7 says what
-   should happen.
+   `kanban.mjs` treated `blocked`, `failed` and `skip` as blocking and did not
+   know `invalid`, so a gated token rendered as an ordinary card while the loop
+   refused to move it. The board and the loop disagreed about that token.
+   **The code was the one that was wrong** (§15.3): §7 said what should happen.
+   *Closed 2026-07-28.* `invalid` joined the blocking set. Fixing it exposed a
+   test fixture that was a `reviewed` with nothing delivered — a history the
+   validator refuses and the loop cannot produce, which had passed all along
+   only because the board ignored the verdict on a token's own history. The
+   fixture is now a whole route, so the test measures what its name claims.
 
 3. **The escalation path is not gated by §5, and cannot be without
    restructuring the tick.**
@@ -868,6 +873,27 @@ settling them. Recorded because the reasoning is the durable part.
    mtime as a fallback for files written before that stamp existed. The bug
    announced itself by making a test that had passed all morning start failing
    in the afternoon, which is the only reason it was found at all.
+
+### 14.4 The recurring shape, and what now stops it
+
+Four defects this session were one defect: **the validator accepts a word and a
+reader downstream has never heard of it.** `opened` stranded a token; `audited`
+rendered a route the controller had raised concerns about as `Unknown event:
+audited`; `invalid` drew a token the loop refuses to move as an ordinary card;
+`lost` was handled by the runner but absent from §5. Every one was found by a
+person looking at a page, one word later than the last.
+
+Fixing them individually cannot converge, because nothing required a reader to
+cover the vocabulary — only somebody noticing. `tests/kanban.test.mjs` now walks
+every entry in `LEDGER_EVENTS`, renders a token whose last event is that word,
+and fails if any of them reaches the board's `default` branch. It also asserts
+the detector fires on a word that is genuinely unknown, because a sweep that has
+never been shown to fail proves nothing.
+
+That closes the family for the board. The same guarantee does **not** exist for
+`loop-runner.mjs` or `graph.mjs`: both were read by hand this session and cover
+the vocabulary today, but nothing fails when the next word is added. Named here
+rather than left to be rediscovered the next time a page says `Unknown`.
 
 ## 15. Change control
 

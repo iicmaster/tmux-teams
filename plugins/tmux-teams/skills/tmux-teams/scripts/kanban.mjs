@@ -42,7 +42,13 @@ const FONT_CSS_NAME = `pulse-fonts-${createHash('sha256').update(KANIT_FONT_CSS)
 // Only these three decisions describe something already recorded. `pull` and
 // `complete` are what the runner *will* do next tick — printing them would put
 // a future on a card that only ever states the past.
-const BLOCKING_ACTIONS = new Set(['blocked', 'failed', 'skip'])
+// `invalid` belongs here for the same reason as the other three and was the one
+// the board did not know (§14.2 item 2): the pull controller refuses to move a
+// token whose own history cannot be believed, and until this line the board drew
+// it as an ordinary card. A token the loop will not touch, rendered as one it is
+// working on, is the exact disagreement between board and loop this file exists
+// to prevent.
+const BLOCKING_ACTIONS = new Set(['blocked', 'failed', 'skip', 'invalid'])
 
 const slug = (value) => String(value ?? '').replace(/[^A-Za-z0-9-]+/g, '-').slice(0, 40) || 'none'
 

@@ -312,6 +312,27 @@ test('the header tiles state exactly what the columns draw', () => {
   assert.equal((html.match(/<article class="card/g) || []).length, 6)
 })
 
+// §14.2 item 2, closed: the pull controller refuses to move a token whose own
+// history cannot be believed, and the board drew it as an ordinary card. The
+// loop would not touch it; the board said it was fine. That disagreement is the
+// one thing this file exists to catch, and it was the board that was wrong.
+test('a token the loop refuses to move for a broken history says so on the board', () => {
+  const dir = repoWith(TWO_TEAMS, {
+    // A review of nothing delivered. It parses, so the board still draws it —
+    // which is exactly why it has to be the card that says it is stuck.
+    doubtful: [
+      { at: '2026-07-27T09:00:00.000Z', event: 'reviewed', agent_id: 'test_e', verdict: 'pass', reviewed_task: 't-1', reason: 'good' },
+    ],
+  })
+  const card = readBoard(dir, NOW).columns.find((column) => column.team_id === 'test').cards[0]
+  assert.equal(card.work_item, 'doubtful')
+  assert.notEqual(card.blocked_reason, null, 'a refused token must not read as an ordinary card')
+  assert.match(card.blocked_reason, /ledger/)
+
+  const column = columnsOf(pageOf(dir)).get('Test')
+  assert.match(column.html, /is-blocked/)
+})
+
 // ── blocked is a claim, and a claim can be wrong in both directions ─────────
 
 // AC5 proves a blocked card says so. This proves the label is earned: with the
@@ -319,7 +340,18 @@ test('the header tiles state exactly what the columns draw', () => {
 // text. A board that marked everything blocked would pass AC5.
 test('a card whose next team has room is not labelled blocked', () => {
   const dir = repoWith(TWO_TEAMS, {
-    ready: [{ at: '2026-07-27T09:00:00.000Z', event: 'reviewed', agent_id: 'test_e', verdict: 'pass', reason: 'good' }],
+    // A whole history, not just its last line. This fixture used to be the
+    // `reviewed` alone — a review of nothing delivered, which the validator
+    // refuses and the real loop can never produce. It passed only because the
+    // board ignored the verdict on a token's own history; the moment `invalid`
+    // became a blocking action the fixture started claiming the opposite of
+    // what this test is named for.
+    ready: [
+      { at: '2026-07-27T08:00:00.000Z', event: 'opened', agent_id: 'test_d', to_team: 'test', reason: 'opened for this test' },
+      { at: '2026-07-27T08:30:00.000Z', event: 'assigned', agent_id: 'test_w1', task_id: 't-1', dispatch_id: 'd-1' },
+      { at: '2026-07-27T08:45:00.000Z', event: 'delivered', agent_id: 'test_w1', task_id: 't-1', terminal: 'done', timed_out: false, evidence_present: true },
+      { at: '2026-07-27T09:00:00.000Z', event: 'reviewed', agent_id: 'test_e', verdict: 'pass', reviewed_task: 't-1', reason: 'good' },
+    ],
   })
   const board = readBoard(dir, NOW)
   const card = board.columns.find((column) => column.team_id === 'test').cards[0]

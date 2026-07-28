@@ -13,6 +13,7 @@ import { Script } from 'node:vm'
 
 import { readBoard, renderKanbanPage } from '../plugins/tmux-teams/skills/tmux-teams/scripts/kanban.mjs'
 import { NAV_PAGES, renderNav } from '../plugins/tmux-teams/skills/tmux-teams/scripts/page-nav.mjs'
+import { EVENT_SPEC, LEDGER_EVENTS } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-validate.mjs'
 import { readWorkItems, teamOccupancy } from '../plugins/tmux-teams/skills/tmux-teams/scripts/dispatch-facts.mjs'
 import { validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
 import { duration } from '../plugins/tmux-teams/skills/tmux-teams/scripts/graph.mjs'
@@ -199,6 +200,46 @@ test('work that opened a route waits for intake exactly like a pull does', () =>
   const html = pageOf(dir)
   assert.match(html, /Waiting for intake/)
   assert.equal(html.includes('Unknown event'), false)
+})
+
+// ── the whole vocabulary, not one word at a time ────────────────────────────
+//
+// Four times now the same shape of bug: the validator accepts a word and a
+// reader downstream has never heard of it. `opened` stranded a token; `audited`
+// rendered a route the PM had raised concerns about as `Unknown event: audited`;
+// `invalid` drew a token the loop refuses to move as an ordinary card. Each was
+// found by a human looking at a page, one word later than the last.
+//
+// Fixing them one at a time cannot converge, because nothing makes a reader
+// cover the vocabulary — only a person noticing. This asserts the whole set at
+// once, so the next word added to §4 fails here the moment the board has no
+// answer for it, rather than after it reaches a screen.
+test('the board has a word for every event the ledger vocabulary allows', () => {
+  const filler = {
+    agent_id: 'design_w1', from_team: 'build', to_team: 'design', refused_by: 'design_dispatcher',
+    task_id: 't-1', dispatch_id: 'd-1', reviewed_task: 't-1', reason: 'a stated reason',
+    terminal: 'done', timed_out: false, evidence_present: true, verdict: 'accept', grant: 3,
+  }
+  const items = {}
+  for (const event of LEDGER_EVENTS) {
+    const entry = { at: '2026-07-27T09:00:00.000Z', event }
+    for (const field of EVENT_SPEC[event].required ?? []) entry[field] = filler[field]
+    items[`tok-${event}`] = [entry]
+  }
+  const html = pageOf(repoWith(FOUR_TEAMS, items))
+  // The default branch prints the event name on purpose — a failure that says
+  // its own name is a failure someone can fix, so report what it named.
+  const unknown = html.match(/Unknown event: [a-z_]+/g) ?? []
+  assert.deepEqual(unknown, [], unknown.join(', '))
+  assert.equal(Object.keys(items).length, LEDGER_EVENTS.length)
+
+  // A green sweep proves nothing until the detector is shown to fire. Without
+  // this, deleting the `default` branch would make the assertion above pass
+  // forever on any vocabulary at all.
+  const bogus = pageOf(repoWith(FOUR_TEAMS, {
+    'tok-bogus': [{ at: '2026-07-27T09:00:00.000Z', event: 'not_an_event', agent_id: 'design_w1' }],
+  }))
+  assert.match(bogus, /Unknown event: not_an_event/)
 })
 
 // ── the nav shared by the three published pages ─────────────────────────────
