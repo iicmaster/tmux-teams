@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url'
 
 import { KANIT_FONT_CSS } from '../assets/kanit/kanit-embedded.mjs'
 import { readDispatchFacts, readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
+import { NAV_CSS, renderNav } from './page-nav.mjs'
 import { DEFAULT_WORKFLOW_GRAPH, WORKFLOW_GRAPH_FILE, validateWorkflowGraph } from './workflow-graph.mjs'
 
 const FONT_CSS_NAME = `pulse-fonts-${createHash('sha256').update(KANIT_FONT_CSS).digest('hex')}.css`
@@ -600,6 +601,7 @@ const STYLE = `
 --assign:oklch(52% .13 235);--artifact:oklch(50% .12 165);--reject:oklch(52% .16 28);--handoff:oklch(48% .14 300);--oversight:oklch(55% .04 270)}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:400 16px/1.6 var(--sans)}
+${NAV_CSS}
 .topbar{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;
  gap:var(--s3);padding:var(--s3) var(--s5);border-bottom:1px solid var(--line);background:var(--surface)}
 .topbar h1{margin:0;font:600 1.1rem/1.3 var(--sans)}
@@ -736,6 +738,7 @@ export function renderGraphPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, r
     `<div class="tile${tone ? ` t-${tone}` : ''}"><span class="tile-v">${esc(v)}</span><span class="tile-l">${esc(l)}</span></div>`
 
   return `${head}
+${renderNav('graph')}
 <header class="topbar" data-observation-expires-at="${esc(snapshot.observation?.expires_at || '')}" data-refresh-interval="${Number(snapshot.observation?.refresh_interval_sec) || 20}">
   <h1>Loop graph <span class="repo">${esc(repoName)}</span></h1>
   <p class="meta">graph: <code>${graph.source === 'default' ? 'bundled four-team template' : `.tmux-teams/${WORKFLOW_GRAPH_FILE}`}</code>

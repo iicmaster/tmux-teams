@@ -34,6 +34,7 @@ import { KANIT_FONT_CSS } from '../assets/kanit/kanit-embedded.mjs'
 import { RELEASING_EVENTS, readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
 import { planPulls } from './pull-controller.mjs'
 import { clip, duration, esc, readWorkflowGraph } from './graph.mjs'
+import { NAV_CSS, renderNav } from './page-nav.mjs'
 import { WORKFLOW_GRAPH_FILE, teamRoleOf } from './workflow-graph.mjs'
 
 const FONT_CSS_NAME = `pulse-fonts-${createHash('sha256').update(KANIT_FONT_CSS).digest('hex')}.css`
@@ -245,6 +246,7 @@ const STYLE = `
 --busy:oklch(78% .12 235);--wait:oklch(74% .14 300)}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:400 16px/1.6 var(--sans);overflow-x:hidden}
+${NAV_CSS}
 .topbar{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;
  gap:var(--s3);padding:var(--s3) var(--s5);border-bottom:1px solid var(--line);background:var(--surface)}
 .topbar h1{margin:0;font:600 1.1rem/1.3 var(--sans)}
@@ -379,6 +381,7 @@ export function renderKanbanPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, 
   </section>` : ''
 
   return `${head}
+${renderNav('kanban')}
 <header class="topbar" data-observation-expires-at="${esc(snapshot.observation?.expires_at || '')}" data-refresh-interval="${Number(snapshot.observation?.refresh_interval_sec) || 20}">
   <h1>Kanban board <span class="repo">${esc(repoName)}</span></h1>
   <p class="meta">graph: <code>${board.graph_source === 'default' ? 'bundled four-team template' : `.tmux-teams/${WORKFLOW_GRAPH_FILE}`}</code>

@@ -285,6 +285,19 @@ const heartbeat = (over = {}) => ({
 // A fixed clock: an age measured against the wall clock would drift the copy.
 const pageOf = (dir) => renderGraphPage(dir, snapshotWith(), { now: NOW })
 
+// The three pages are published side by side and answer three different
+// questions about one run. Reaching the other two used to mean knowing their
+// filenames. Asserted on structure, never on the labels, which are copy.
+test('the graph publishes the nav it shares with pulse and the board', () => {
+  const page = pageOf(repoWith(TWO_TEAMS))
+  assert.match(page, /<nav class="page-nav" aria-label="[^"]+">/)
+  assert.match(page, /href="pulse\.html"/)
+  assert.match(page, /href="kanban\.html"/)
+  // This page is the one you are on, so it is the one entry that is not a link.
+  assert.equal(page.includes('href="graph.html"'), false)
+  assert.match(page, /\.page-nav\{/)
+})
+
 test('a repo where the runner has never run says so instead of looking calm', () => {
   const page = pageOf(repoWith(TWO_TEAMS))
   assert.match(page, /data-loop-health="never"/)

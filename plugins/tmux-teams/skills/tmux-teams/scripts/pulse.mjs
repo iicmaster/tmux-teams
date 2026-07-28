@@ -46,6 +46,7 @@ import { PHASE_BOUNDARIES, PHASE_EXIT_ARTIFACTS } from './delivery-loop-core.mjs
 import { renderGraphPage } from './graph.mjs'
 import { validateTeamGraph } from './team-graph-contract.mjs'
 import { renderKanbanPage } from './kanban.mjs'
+import { NAV_CSS, renderNav } from './page-nav.mjs'
 import { renderPulseRefreshScript } from './pulse-refresh.mjs'
 
 const [cmd, repoArg, ...flags] = process.argv.slice(2)
@@ -1474,6 +1475,7 @@ function render(snapshot, { refreshScriptName = PULSE_REFRESH_NAME } = {}) {
 @media(prefers-color-scheme:light){:root{color-scheme:light;--bg:oklch(97% .008 165);--surface:oklch(99% .004 165);--surface-2:oklch(95% .012 165);--line:oklch(87% .014 165);--ink:oklch(24% .018 165);--dim:oklch(50% .022 165);--ok:oklch(50% .12 165);--warn:oklch(53% .13 72);--bad:oklch(52% .16 28);--focus:oklch(52% .13 235)}}
 *{box-sizing:border-box}html{max-width:100%;font-size:16px}body{max-width:100%;margin:0;padding:var(--s5);background:var(--bg);color:var(--ink);font:400 1rem/1.65 var(--sans);text-rendering:optimizeLegibility}
 .wrap{min-width:0;max-width:1180px;margin:0 auto}.skip-link{position:fixed;top:var(--s3);left:var(--s3);z-index:10;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);opacity:0;white-space:nowrap;background:var(--ink);color:var(--bg);padding:0;border-radius:var(--r-sm)}.skip-link:focus{width:auto;height:auto;overflow:visible;clip-path:none;opacity:1;padding:var(--s2) var(--s4)}
+${NAV_CSS}
 .site-header{display:flex;min-width:0;justify-content:space-between;align-items:flex-start;gap:var(--s5);padding:var(--s2) 0 var(--s5);border-bottom:1px solid var(--line)}.site-header>*,main>*,section,.primary-grid>*{min-width:0}
 .eyebrow{display:block;margin:0 0 var(--s1);color:var(--dim);font:500 .75rem/1.4 var(--sans);letter-spacing:.08em;text-transform:uppercase}
 h1{display:flex;min-width:0;align-items:baseline;gap:var(--s3);margin:0;font:600 1.75rem/1.2 var(--sans);letter-spacing:-.02em}h1 .repo{min-width:0;color:var(--dim);font:500 1rem var(--mono);letter-spacing:0;overflow-wrap:anywhere}
@@ -1530,6 +1532,7 @@ footer{margin-top:var(--s7);padding-top:var(--s4);border-top:1px solid var(--lin
 
 <a class="skip-link" href="#main">ข้ามไปยังสถานะงาน</a>
 
+${renderNav('pulse')}
 <header class="site-header">
   <div>
     <span class="eyebrow">tmux teams · live status</span>

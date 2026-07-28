@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url'
 import { Script } from 'node:vm'
 
 import { readBoard, renderKanbanPage } from '../plugins/tmux-teams/skills/tmux-teams/scripts/kanban.mjs'
+import { NAV_PAGES, renderNav } from '../plugins/tmux-teams/skills/tmux-teams/scripts/page-nav.mjs'
 import { readWorkItems, teamOccupancy } from '../plugins/tmux-teams/skills/tmux-teams/scripts/dispatch-facts.mjs'
 import { validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
 import { duration } from '../plugins/tmux-teams/skills/tmux-teams/scripts/graph.mjs'
@@ -198,6 +199,43 @@ test('work that opened a route waits for intake exactly like a pull does', () =>
   const html = pageOf(dir)
   assert.match(html, /Waiting for intake/)
   assert.equal(html.includes('Unknown event'), false)
+})
+
+// ── the nav shared by the three published pages ─────────────────────────────
+//
+// Asserted through `href` and `aria-current`, never the link text: the labels
+// are copy and will be reworded, but a page that links to a filename nobody
+// publishes is broken, and one that offers no way back is a dead end.
+
+test('every page but the current one is reachable, and the current one is not a link', () => {
+  for (const page of NAV_PAGES) {
+    const nav = renderNav(page.id)
+    const others = NAV_PAGES.filter((entry) => entry.id !== page.id)
+    for (const other of others) assert.match(nav, new RegExp(`href="${other.file}"`))
+    // Clicking the page you are already on is how a nav gets used without ever
+    // telling you where you are.
+    assert.equal(nav.includes(`href="${page.file}"`), false, page.id)
+    assert.match(nav, /aria-current="page"/)
+    assert.equal((nav.match(/href="/g) || []).length, others.length, page.id)
+  }
+})
+
+test('an unrecognised page still gets a usable nav rather than a broken page', () => {
+  // A nav bar is not worth failing a published page over. Every entry stays a
+  // link and nothing is marked current — visibly wrong, still usable.
+  const nav = renderNav('not-a-page')
+  assert.equal((nav.match(/href="/g) || []).length, NAV_PAGES.length)
+  assert.equal(nav.includes('aria-current'), false)
+})
+
+test('the board publishes the nav it shares with pulse and the graph', () => {
+  const dir = repoWith(FOUR_TEAMS, {})
+  const html = pageOf(dir)
+  assert.match(html, /<nav class="page-nav" aria-label="[^"]+">/)
+  assert.match(html, /aria-current="page"/)
+  // The stylesheet has to travel with it, or the bar renders as three naked
+  // links in the corner of a page that otherwise has a design.
+  assert.match(html, /\.page-nav\{/)
 })
 
 // ── AC4 — a failed leg is visibly stuck ─────────────────────────────────────
