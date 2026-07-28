@@ -890,10 +890,34 @@ and fails if any of them reaches the board's `default` branch. It also asserts
 the detector fires on a word that is genuinely unknown, because a sweep that has
 never been shown to fail proves nothing.
 
-That closes the family for the board. The same guarantee does **not** exist for
-`loop-runner.mjs` or `graph.mjs`: both were read by hand this session and cover
-the vocabulary today, but nothing fails when the next word is added. Named here
-rather than left to be rediscovered the next time a page says `Unknown`.
+All three readers now carry it, each in the shape its own failure takes.
+
+- **The board** (`tests/kanban.test.mjs`): no event may reach the `default`
+  branch, and the detector is shown to fire on a word that is genuinely unknown.
+- **The runner** (`tests/loop-occupancy.test.mjs`): every event either produces
+  a dispatch or appears in `NO_DISPATCH_FOLLOWS` with the reason it is a dead
+  end. Four are — `completed` (the controller audits it), `audit_requested`
+  (waiting on an outbox), `audited` and `abandoned` (terminal, §5).
+- **The graph** (`tests/graph.test.mjs`): every event naming an `agent_id`
+  either credits that agent with work, or appears in `NOT_THE_AGENTS_OWN_ACT`
+  with the reason. Four are — `opened` and `pulled` name a dispatcher that has
+  not judged yet, `assigned` is the dispatch rather than its outcome, and
+  `audit_requested` is the runner asking rather than the controller acting.
+
+A word added to §4 now fails all three until somebody decides what it means to
+each. That property is the fix; no individual patch was.
+
+Closing the graph's half exposed a defect of its own. `workLine` for the outer
+controller read `N escalation(s) handled`, but `escalations` is bumped on the
+agent **being** escalated: the runner stamps that event with the dispatcher it
+is escalating, never with the controller reading it. So the seat that audits
+every finished route read `0 escalation(s) handled` however much it had done,
+and its two real outputs — `audited` and `resumed` — were counted nowhere.
+Master reported that node as empty twice; the node was drawn correctly and had
+nothing to draw. It now states `N audited · N resumed`. The fixture that had
+hidden this credited the controller by writing `escalated` with the controller's
+own `agent_id` — a line the loop cannot produce, and the same class of fake
+fixture found in the board's tests an hour earlier.
 
 ## 15. Change control
 

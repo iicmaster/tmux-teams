@@ -230,6 +230,13 @@ function verdictsByAgent(snapshot) {
 const EMPTY_WORK = Object.freeze({
   accepted: 0, returned: 0, pass: 0, reject: 0, unresolved: 0,
   delivered: 0, failed: 0, escalations: 0,
+  // The controller's own two outputs. Without them its node counted
+  // `escalations`, which the runner stamps with the agent BEING escalated
+  // rather than the controller reading it — so the seat that audits every
+  // finished route read `0 escalation(s) handled` however much it had done.
+  // Counting the request as though it were the answer is the exact untruth
+  // this graph exists to make impossible.
+  audits: 0, resumes: 0,
 })
 
 function activityByAgent(items) {
@@ -252,6 +259,11 @@ function activityByAgent(items) {
       } else if (entry.event === 'delivered') bump(entry.agent_id, entry.terminal === 'done' ? 'delivered' : 'failed')
       else if (entry.event === 'lost') bump(entry.agent_id, 'failed')
       else if (entry.event === 'escalated') bump(entry.agent_id, 'escalations')
+      // The controller acting, not being asked to act. `audited` and `resumed`
+      // are the only two events it writes itself, and both name it in
+      // `agent_id`, so this is where its node stops reading empty forever.
+      else if (entry.event === 'audited') bump(entry.agent_id, 'audits')
+      else if (entry.event === 'resumed') bump(entry.agent_id, 'resumes')
     }
   }
   return byAgent
@@ -261,7 +273,9 @@ const workLine = (role, work) => {
   if (!work) return 'nothing recorded yet'
   if (role === 'dispatcher') return `${work.accepted} accepted · ${work.returned} returned`
   if (role === 'evaluator') return `${work.pass} pass · ${work.reject} reject`
-  if (role === 'outer') return `${work.escalations} escalation(s) handled`
+  // What it did, not what was asked of it. The old line said "handled" over a
+  // counter of requests, and read 0 forever besides.
+  if (role === 'outer') return `${work.audits} audited · ${work.resumes} resumed`
   return `${work.delivered} delivered · ${work.failed} failed`
 }
 

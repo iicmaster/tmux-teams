@@ -27,6 +27,7 @@ import {
 } from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs'
 import { applyPulls, planPulls } from '../plugins/tmux-teams/skills/tmux-teams/scripts/pull-controller.mjs'
 import { REVIEW_VERDICTS, readVerdict, roleBrief } from '../plugins/tmux-teams/skills/tmux-teams/scripts/role-briefs.mjs'
+import { EVENT_SPEC, LEDGER_EVENTS } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-validate.mjs'
 import { validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -432,6 +433,44 @@ test('the verdict is the last one stated, not the first one mentioned', () => {
   assert.equal(readVerdict(echoed, REVIEW_VERDICTS).verdict, 'reject')
   assert.match(readVerdict(echoed, REVIEW_VERDICTS).reason, /node --check fails/)
   assert.equal(readVerdict('no verdict anywhere', REVIEW_VERDICTS).stated, false)
+})
+
+// ── §14.4: the runner's half of the family guarantee ────────────────────────
+//
+// The board now fails when a word reaches its `default`. This is the same
+// promise for the state machine: every event either moves the loop or is a dead
+// end somebody wrote down. Four times this session a word was accepted by the
+// validator and unknown to a reader, each found by a person looking at a page.
+// A word added to §4 now has to answer this test instead of going quiet.
+const NO_DISPATCH_FOLLOWS = {
+  completed: 'the outer controller audits it — planEscalation, not a dispatch',
+  audit_requested: 'waiting on the controller outbox; planHarvest turns it into `audited`',
+  audited: 'terminal (§5)',
+  abandoned: 'terminal (§5)',
+}
+
+test('every event either moves the loop or is a dead end somebody wrote down', () => {
+  const graph = graphOf(TWO_TEAMS)
+  const team = graph.teams[0]
+  const filler = {
+    from_team: team.team_id, to_team: team.team_id, refused_by: team.dispatcher_id,
+    task_id: 't-1', dispatch_id: 'd-1', reviewed_task: 't-1', reason: 'a stated reason',
+    terminal: 'done', timed_out: false, evidence_present: true, verdict: 'pass', grant: 3,
+  }
+  for (const event of LEDGER_EVENTS) {
+    const entry = { at: '2026-07-27T09:00:00.000Z', event, agent_id: team.worker_ids[0] }
+    for (const field of EVENT_SPEC[event].required ?? []) {
+      if (!(field in entry)) entry[field] = filler[field]
+    }
+    for (const field of EVENT_SPEC[event].forbidden ?? []) delete entry[field]
+    const [plan] = planDispatches(graph, itemsOf(['tok', [entry]]), new Set(),
+      { now: Date.parse(entry.at) + 1e6 })
+    const moved = Boolean(plan)
+    const stated = event in NO_DISPATCH_FOLLOWS
+    assert.equal(moved, !stated, stated
+      ? `${event} is a stated dead end (${NO_DISPATCH_FOLLOWS[event]}) but the runner planned ${plan?.action}`
+      : `${event} leaves the runner with nothing to do and is not a stated dead end`)
+  }
 })
 
 // The cooldown used to be measured from the note file's mtime while `now` came

@@ -14,6 +14,7 @@ import {
 } from '../plugins/tmux-teams/skills/tmux-teams/scripts/graph.mjs'
 import { validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
 import { planPulls } from '../plugins/tmux-teams/skills/tmux-teams/scripts/pull-controller.mjs'
+import { EVENT_SPEC, LEDGER_EVENTS } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-validate.mjs'
 
 const repoWith = (graph) => {
   const dir = mkdtempSync(join(tmpdir(), 'graph-'))
@@ -183,7 +184,13 @@ test('every role states the work it actually did, from the ledger', () => {
     { at: '2026-07-27T02:30:00.000Z', event: 'delivered', work_item: 'tok', agent_id: 'b_w1', terminal: 'protocol-error' },
     { at: '2026-07-27T03:00:00.000Z', event: 'reviewed', work_item: 'tok', agent_id: 'b_e', verdict: 'reject' },
     { at: '2026-07-27T04:00:00.000Z', event: 'returned', work_item: 'tok', to_team: 'build', refused_by: 'v_d' },
-    { at: '2026-07-27T05:00:00.000Z', event: 'escalated', work_item: 'tok', agent_id: 'pm' },
+    // The runner stamps `escalated` with the agent being escalated, never with
+    // the controller reading it — this fixture used to name `pm` here, a line
+    // the loop cannot produce, and that fake was the only thing putting a
+    // number on the controller's node.
+    { at: '2026-07-27T05:00:00.000Z', event: 'escalated', work_item: 'tok', agent_id: 'b_d', to_team: 'build' },
+    // What the controller actually writes when it answers one.
+    { at: '2026-07-27T05:30:00.000Z', event: 'resumed', work_item: 'tok', agent_id: 'pm', to_team: 'build', grant: 3 },
   ])])
   const svg = renderLoopGraphSvg(graph, snapshotWith(), new Map(), undefined, items)
 
@@ -194,7 +201,7 @@ test('every role states the work it actually did, from the ledger', () => {
   assert.match(svg, /0 accepted · 1 returned/, 'the dispatcher that refused one')
   assert.match(svg, /1 delivered · 1 failed/, 'the worker that delivered once and failed once')
   assert.match(svg, /0 pass · 1 reject/, 'the evaluator that rejected')
-  assert.match(svg, /1 escalation\(s\) handled/, 'the outer controller')
+  assert.match(svg, /0 audited · 1 resumed/, 'the outer controller states its own two outputs')
   // An agent with nothing recorded must say so rather than print a zero that
   // reads like a measurement.
   assert.match(svg, /nothing recorded yet/)
@@ -284,6 +291,69 @@ const heartbeat = (over = {}) => ({
 
 // A fixed clock: an age measured against the wall clock would drift the copy.
 const pageOf = (dir) => renderGraphPage(dir, snapshotWith(), { now: NOW })
+
+// ── the controller counts what it did, not what it was asked ────────────────
+//
+// Its node read `0 escalation(s) handled` however much it had done, because
+// `escalations` is bumped on the agent BEING escalated — the runner stamps that
+// event with the dispatcher it is escalating, never with the controller reading
+// it. Meanwhile the controller's only two outputs, `audited` and `resumed`,
+// were counted nowhere. Master reported this node as empty twice; the node was
+// drawn correctly and had nothing to draw.
+
+const withLedger = (graph, token, entries) => {
+  const dir = repoWith(graph)
+  mkdirSync(join(dir, '.tmux-teams/work-items'), { recursive: true })
+  writeFileSync(join(dir, `.tmux-teams/work-items/${token}.jsonl`),
+    `${entries.map((entry) => JSON.stringify({ work_item: token, workflow: 'full', ...entry })).join('\n')}\n`)
+  return dir
+}
+
+test('the controller node states the audits it gave, not the requests it got', () => {
+  const dir = withLedger(TWO_TEAMS, 'tok', [
+    { at: '2026-07-27T09:00:00.000Z', event: 'completed', from_team: 'verify' },
+    { at: '2026-07-27T09:10:00.000Z', event: 'audit_requested', agent_id: 'pm', task_id: 'a-1', reason: 'route finished' },
+    { at: '2026-07-27T09:20:00.000Z', event: 'audited', agent_id: 'pm', verdict: 'concern', reason: 'four findings' },
+  ])
+  const page = renderGraphPage(dir, snapshotWith(), { now: NOW })
+  assert.match(page, /1 audited · 0 resumed/)
+  // The old line counted requests under the word "handled". Both the wording
+  // and the counter were wrong, so neither may come back.
+  assert.equal(page.includes('escalation(s) handled'), false)
+})
+
+// §14.4: the family guarantee the board already has, now for this page. Every
+// event that names an agent either credits that agent with work, or is listed
+// here with the reason it does not — so a word added to §4 forces the decision
+// instead of silently landing in neither column.
+const NOT_THE_AGENTS_OWN_ACT = {
+  opened: 'agent_id is the receiving dispatcher, which has not judged it yet',
+  pulled: 'same — a pull is the taking team acting, not work finished',
+  assigned: 'the dispatch, not its outcome; `delivered` or `lost` is the work',
+  audit_requested: 'the runner asking the controller, not the controller acting',
+}
+
+test('every event that names an agent either credits it or is a stated exception', () => {
+  const filler = {
+    from_team: 'build', to_team: 'verify', refused_by: 'b_d', task_id: 't-1', dispatch_id: 'd-1',
+    reviewed_task: 't-1', reason: 'a stated reason', terminal: 'done', timed_out: false,
+    evidence_present: true, verdict: 'accept', grant: 3,
+  }
+  for (const event of LEDGER_EVENTS) {
+    const spec = EVENT_SPEC[event]
+    if (!(spec.required ?? []).includes('agent_id')) continue
+    const entry = { at: '2026-07-27T09:00:00.000Z', event, agent_id: 'b_w1' }
+    for (const field of spec.required) if (field !== 'agent_id') entry[field] = filler[field]
+    const page = renderGraphPage(withLedger(TWO_TEAMS, `t-${event}`, [entry]), snapshotWith(), { now: NOW })
+    // `b_w1` is the only agent this token touches, so its work line is the
+    // question: did the graph notice, or does the agent still read blank?
+    const noticed = !/b_w1[\s\S]{0,400}?nothing recorded yet/.test(page)
+    const excused = event in NOT_THE_AGENTS_OWN_ACT
+    assert.equal(noticed, !excused, excused
+      ? `${event} is excused (${NOT_THE_AGENTS_OWN_ACT[event]}) but was counted anyway`
+      : `${event} names an agent and credits it with nothing — count it, or state why not`)
+  }
+})
 
 // The three pages are published side by side and answer three different
 // questions about one run. Reaching the other two used to mean knowing their
