@@ -68,6 +68,18 @@ test('POC runs the actual governed ACP path through four phases and publishes Pu
   assert.ok(pulse.recent_verdicts.every((row) => row.pm_verdict === 'pass'))
   assert.deepEqual(pulse.unclaimed_control, [])
   const pulseHtml = readFileSync(output.pulse_html_path, 'utf8')
+  // Pulse's nav went three rounds with no test: kanban and the graph are
+  // asserted through their renderers, and nothing read Pulse's own bar, so
+  // deleting `renderNav('pulse')` would have left the suite green. This is the
+  // only place that reads a Pulse page the publisher actually wrote, which
+  // makes it the only place the assertion is worth anything. Structure, never
+  // the labels — those are copy and will be reworded.
+  assert.match(pulseHtml, /<nav class="page-nav" aria-label="[^"]+">/)
+  assert.match(pulseHtml, /href="graph\.html"/)
+  assert.match(pulseHtml, /href="kanban\.html"/)
+  // Pulse is the page you are on, so it is the one entry that is not a link.
+  assert.equal(pulseHtml.includes('href="pulse.html"'), false)
+  assert.match(pulseHtml, /\.page-nav\{/)
   assert.equal(pulseHtml.includes('เวลาไทย (UTC+7)'), true)
   assert.match(pulseHtml, /<section class="delivery-runtime" aria-labelledby="delivery-runtime-title">/)
   assert.match(pulseHtml, /data-runtime-attention-count="0"/)
