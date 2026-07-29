@@ -410,6 +410,25 @@ Parsing rules, non-negotiable:
 - Verdict families, chosen by which job the trigger names: `accept` | `concern`
   for an audit (the route is already closed, so a concern is a report for a
   human, not a rerun) and `resume` | `abandon` for a parked token.
+- **One question per dispatch, and the audit goes first.** The controller's
+  outbox ends in a single `VERDICT:` line, so a leg asked both jobs at once can
+  only answer one of them — the two vocabularies are disjoint, and the
+  unanswered token records nothing and is then held by the unchanged-trigger
+  brake forever. The brief still carries every trigger and the whole board; it
+  names the one token the verdict is about, and the rest are asked on later
+  ticks. Answering one changes the trigger set, which is what releases the
+  brake. (Added 2026-07-29 — found by `tests/loop-replay.test.mjs`.)
+- **A token is only `held` if a question is actually outstanding.** An
+  `escalated` written by the controller's dispatch names the controller;
+  `harvestEvent` also writes one, for an intake refusal at the head of a route
+  where there is no sending team, and that one names the *dispatcher*. Treating
+  both as "waiting on the controller" parked the second forever: `held` is not a
+  trigger, so nothing ever dispatched the controller to look at it. The
+  discriminator is `agent_id`. For the same reason the harvest of an
+  `escalated` only reads an outbox when the escalation named the controller —
+  otherwise it read a dispatcher's refusal with the controller's vocabulary and
+  either found nothing (silence forever) or, worse, found `resume`/`abandon` in
+  the refusal prose and closed the token on the dispatcher's words.
 - Two brakes, both required: a **time cooldown** (`PM_COOLDOWN_SEC`) and an
   **unchanged-trigger** check against the last note. Time alone is no brake on a
   permanent condition.

@@ -330,6 +330,19 @@ export function planHarvest(graph, items, hasOutbox = () => false) {
     // a `delivered` event on this token. The escalation names the task; the
     // answer is read from that task's outbox once it exists.
     if (last.event === 'escalated') {
+      // Two different events share this name and only one of them is a question
+      // put to the controller. `tick` writes an escalation that NAMES the
+      // controller and carries the controller's own task; `harvestEvent` writes
+      // one that names the dispatcher whose intake refusal had nowhere to
+      // return to, carrying that dispatcher's task — and that task's outbox
+      // already exists. Harvesting it read a dispatcher's refusal with the
+      // controller's vocabulary: `accept`/`reject` are not `resume`/`abandon`,
+      // so nothing was stated, `harvestEvent` returned null, and the token sat
+      // at `escalated` forever while every tick re-read the same file. The
+      // worse half was silent: a refusal whose prose happened to contain
+      // "resume" or "abandon" would have unparked or CLOSED the token on the
+      // dispatcher's words, recorded as the controller's decision.
+      if (last.agent_id !== graph.outer_controller_id) continue
       if (last.task_id && hasOutbox(last.task_id)) jobs.push({ item, last, role: 'outer' })
       continue
     }
@@ -501,7 +514,20 @@ function nextStep(graph, team, item, { busy, nowMs, zombieSec }) {
     return { action: 'dispatch', role, agent_id: free }
   }
 
-  if (last.event === 'escalated') return { action: 'held', reason: 'waiting on the outer controller' }
+  if (last.event === 'escalated') {
+    // Held means a question is outstanding, and a question is only outstanding
+    // if somebody was actually asked. An escalation the controller wrote names
+    // the controller and carries its task; one written by `harvestEvent` for an
+    // intake refusal at the head of a route names the dispatcher and no
+    // controller has seen it. Reporting that as `held` was a wedge with no exit:
+    // `held` is not in `planEscalation`'s trigger set, so the token waited on a
+    // controller nothing would ever dispatch, and the only rule that mentioned
+    // it at all was the 30-minute board stall.
+    if (last.agent_id === graph.outer_controller_id) {
+      return { action: 'held', reason: 'waiting on the outer controller' }
+    }
+    return { action: 'escalate', reason: last.reason || `escalated by ${last.agent_id} and the controller has not been asked yet` }
+  }
 
   if (last.event === 'assigned') {
     if (busy.has(last.agent_id)) return { action: 'in-flight' }
@@ -686,14 +712,44 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
     }
   } catch { /* never run before */ }
 
+  // ONE question per dispatch, and the audit goes first.
+  //
+  // The controller's outbox ends in a single VERDICT line — that is what
+  // `readVerdict` reads and what the brief asks for. A leg carrying two
+  // questions therefore cannot answer both: `accept`/`concern` for an audit and
+  // `resume`/`abandon` for a parked token are disjoint vocabularies, so
+  // whichever word it says, the other question reads as nothing stated. That
+  // token then parks with no event recorded, and the unchanged-trigger brake
+  // stops the loop from ever asking again — a permanent silence produced by one
+  // outbox being asked two things.
+  //
+  // Every trigger still goes into the brief: the controller decides with the
+  // whole board in view and answers about one token at a time. Answering one is
+  // what changes the trigger set — the token's own last event moves — so the
+  // rest are asked on later ticks instead of being brake-held forever.
+  const auditSubject = audits[0] || null
+  const parkedSubject = auditSubject ? null : plans.find((plan) => plan.action === 'escalate') || null
+  // The brief already said "the trigger above tells you which one this is". With
+  // both kinds of trigger listed that was not true, and an agent that guessed
+  // wrong answered in the wrong vocabulary — indistinguishable from silence.
+  const ask = auditSubject
+    ? `**The token to answer for is \`${auditSubject.work_item}\`.** It finished its route: this is the audit`
+      + ' job below, so end with `accept` or `concern`.'
+    : parkedSubject
+      ? `**The token to answer for is \`${parkedSubject.work_item}\`.** It is parked: this is the unstick job`
+        + ' below, so end with `resume` or `abandon`.'
+      : '**No single token is waiting on your verdict this time.** Report what you see on the board;'
+        + ' the verdict line will not move anything.'
+
   return {
     action: 'escalate',
     agent_id: graph.outer_controller_id,
     triggers,
-    audits: audits.map((item) => item.work_item),
+    audits: auditSubject ? [auditSubject.work_item] : [],
+    parked: parkedSubject ? parkedSubject.work_item : null,
     brief: roleBrief(repo, 'pm', null, {
       projectId: graph.project_id || 'unnamed',
-      trigger: triggers.join('\n'),
+      trigger: `${ask}\n\n${triggers.join('\n')}`,
       board: boardSummary(graph, items, occupancy),
     }),
   }
@@ -733,7 +789,13 @@ function dispatch(repo, { workItem, team, role, agentId, workflow, model }, brie
 
 const heldCount = (occupancy) => [...occupancy.held.values()].flat().length
 
-export function tick(repoArg, { apply = true, stallSec = 1800, scratchDir, tickSec = DEFAULT_TICK_SEC } = {}) {
+// `spawnLeg` is the only seam in this function, and it exists for one reason:
+// every decision below — harvest, pull, WIP, escalation, and the order they run
+// in — is reachable in a test only if starting an agent can be something other
+// than forking a real ACP process. A replay that re-composes the planners by
+// hand tests the composer's memory of this order rather than this order itself.
+// The default is the real spawn, so production has no branch.
+export function tick(repoArg, { apply = true, stallSec = 1800, scratchDir, tickSec = DEFAULT_TICK_SEC, spawnLeg = dispatch } = {}) {
   // The ACP adapter rejects a relative cwd outright, and the runner is the last
   // place a relative path can still be sitting — resolve once, here.
   const repo = resolve(repoArg)
@@ -850,7 +912,7 @@ export function tick(repoArg, { apply = true, stallSec = 1800, scratchDir, tickS
     // adapter to, or the account default nobody pinned.
     const says = modelEnv(model).ACP_EXPECT_MODEL || 'account default (none requested)'
     if (!apply) { log(`would dispatch ${plan.agent_id} (${plan.role}) for ${plan.work_item} model=${says}`); continue }
-    const taskId = dispatch(repo, {
+    const taskId = spawnLeg(repo, {
       workItem: plan.work_item, team: plan.team, role: plan.role,
       agentId: plan.agent_id, workflow: plan.workflow, model,
     }, brief.path, stallSec)
@@ -882,7 +944,7 @@ export function tick(repoArg, { apply = true, stallSec = 1800, scratchDir, tickS
       const notesDir = join(repo, '.tmux-teams', 'pm-notes')
       mkdirSync(notesDir, { recursive: true })
       writeFileSync(join(notesDir, 'latest.md'), `${new Date().toISOString()}\n${escalation.triggers.join('\n')}\n`)
-      const taskId = dispatch(repo,
+      const taskId = spawnLeg(repo,
         { workItem: '', team: '', role: 'pm', agentId: escalation.agent_id, workflow: '', model: pmModel },
         briefPath, stallSec)
       log(`start  ${escalation.agent_id} (pm) <- board task=${taskId} model=${pmSays}`)
@@ -911,7 +973,10 @@ export function tick(repoArg, { apply = true, stallSec = 1800, scratchDir, tickS
           reason: 'route finished — read the delivery as a whole',
         })) wedged(workItem, 'audit_requested')
       }
-      for (const plan of plans.filter((entry) => entry.action === 'escalate')) {
+      // Only the token the brief actually asked about. Marking any other token
+      // `escalated` parks it against an answer this outbox cannot give — see
+      // planEscalation's note on the single verdict line.
+      for (const plan of plans.filter((entry) => entry.action === 'escalate' && entry.work_item === escalation.parked)) {
         if (!record(repo, {
           at: new Date().toISOString(), event: 'escalated', work_item: plan.work_item,
           workflow: items.get(plan.work_item)?.workflow || null,
