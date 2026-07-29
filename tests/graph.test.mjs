@@ -316,6 +316,25 @@ test('a repo still holding the old file name keeps its teams, and says which fil
   assert.equal(current.value.project_id, 'current')
 })
 
+test('a declaration that exists but cannot be parsed fails closed, it does not become the default', () => {
+  // §3: the bundled default is for a repo with NO declaration. One `catch` used
+  // to cover the read and the parse together, so a corrupt file was
+  // indistinguishable from an absent one — the page drew four teams nobody
+  // declared while `graph.mjs check` exited 0. Found by an outside review with
+  // a probe; this is the control proving the branch now fires.
+  const dir = repoWith(undefined)
+  writeFileSync(join(dir, '.tmux-teams/graph.json'), '{ "teams": [ this is not json')
+  const broken = readWorkflowGraph(dir)
+  assert.equal(broken.ok, false)
+  assert.equal(broken.source, 'graph.json')
+  assert.match(broken.reason, /not valid JSON/)
+
+  // A corrupt new file must not be rescued by an intact legacy one either —
+  // that would resurrect the silent substitution through the migration path.
+  writeFileSync(join(dir, '.tmux-teams/team-graph.json'), JSON.stringify(TWO_TEAMS))
+  assert.equal(readWorkflowGraph(dir).ok, false, 'a broken graph.json is not repaired by team-graph.json')
+})
+
 test('a repo with neither file still says it is on the bundled default', () => {
   // The fallback is not the bug. Answering from it without saying so was.
   assert.equal(readWorkflowGraph(repoWith(undefined)).source, 'default')

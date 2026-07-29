@@ -567,6 +567,49 @@ test('this repo\'s real ledgers still get a verdict when they are present', () =
   }
 })
 
+// ── a verdict is a closed vocabulary, not just a non-empty string ───────────
+//
+// The validator used to check that `verdict` was present and stop there, so
+// `intake { verdict: "reject" }` passed the sanctioned writer and then meant
+// three different things at once: the runner dispatched a worker as though it
+// were an accept, the graph counted it accepted, and the board called it
+// "verdict unstated". It was stated, and it was not an accept. Found by an
+// outside review that reached the divergence through the writer, not by hand.
+
+test('each verdict-bearing event refuses a word outside its own vocabulary', () => {
+  const line = (extra) => jsonl({
+    at: '2026-07-27T10:00:00.000Z', work_item: 'tok', workflow: 'feature', reason: 'a stated reason', ...extra,
+  })
+  // Only the verdict rule is asserted here. A one-line ledger also trips the
+  // sequence rules (an `audited` with no `audit_requested` above it), and
+  // folding those into the expectation would make this test fail for reasons
+  // that have nothing to do with what it is named for.
+  const verdictCodes = (result) => codes(result).filter((code) => code === 'bad_verdict')
+
+  // `reject` is a real word a dispatcher may say, and `intake` still cannot
+  // carry it: a refusal is recorded as `returned` or `escalated`, so this event
+  // records only what an acceptance is. Refusing it here is what makes the two
+  // readers that never consult the verdict correct rather than lucky.
+  assert.deepEqual(verdictCodes(validateLedger(line({
+    event: 'intake', agent_id: 'design_dispatcher', verdict: 'reject',
+  }))), ['bad_verdict'])
+  // `pass` belongs to review, not to the outer audit.
+  assert.deepEqual(verdictCodes(validateLedger(line({
+    event: 'audited', agent_id: 'pm', verdict: 'pass',
+  }))), ['bad_verdict'])
+
+  // The legal words still pass, or the rule is a wall rather than a vocabulary.
+  for (const [event, agent, verdict] of [
+    ['intake', 'design_dispatcher', 'accept'],
+    ['audited', 'pm', 'concern'],
+    ['audited', 'pm', 'accept'],
+  ]) {
+    const problems = validateLedger(line({ event, agent_id: agent, verdict }))
+      .problems.filter((problem) => problem.code === 'bad_verdict')
+    assert.deepEqual(problems, [], `${event}/${verdict} is legal and must not be refused`)
+  }
+})
+
 // ── §4.6 `opened` — how work enters the graph ───────────────────────────────
 //
 // Before this event existed, intake had to be written either as a `pulled` with

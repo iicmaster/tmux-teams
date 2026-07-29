@@ -775,7 +775,19 @@ export function tick(repoArg, { apply = true, stallSec = 1800, scratchDir, tickS
     else if (entry.action === 'pull') log(`pull   ${entry.work_item}: ${entry.from_team} -> ${entry.to_team}`)
     else if (entry.action === 'complete') log(`done   ${entry.work_item}: finished ${entry.workflow}`)
     else if (entry.action === 'failed') log(`FAILED ${entry.work_item}: ${entry.reason}`)
-    else log(`skip   ${entry.work_item}: ${entry.reason ?? entry.action}`)
+    // A token the pull controller refuses to move because its own history
+    // cannot be believed. It arrived here as a word this loop had never heard
+    // and came out as `skip` — the mildest line the runner has, for the one
+    // state that needs a human. Same family gap the board had until today, one
+    // reader further down: `planPulls` grew the word and this consumer never
+    // did. Every problem is printed, because repairing one line at a time is
+    // whack-a-mole against a file nobody is allowed to rewrite.
+    else if (entry.action === 'invalid') {
+      log(`INVALID ${entry.work_item}: ${entry.reason}`)
+      for (const problem of entry.problems ?? []) {
+        log(`        line ${problem.line}  ${problem.code}  ${problem.detail}`)
+      }
+    } else log(`skip   ${entry.work_item}: ${entry.reason ?? entry.action}`)
   }
 
   // Re-read: the pulls just written are what makes a token dispatchable now.

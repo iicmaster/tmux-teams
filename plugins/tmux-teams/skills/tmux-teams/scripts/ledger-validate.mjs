@@ -13,6 +13,10 @@
 //
 // It reports EVERY problem it finds. Stopping at the first one turns a repair
 // into a game of whack-a-mole against a file nobody is allowed to rewrite.
+// The verdict vocabularies live with the briefs that ask for them, so the words
+// an agent is told to say and the words a ledger will accept cannot drift into
+// two lists. role-briefs imports only node builtins, so this direction is safe.
+import { AUDIT_VERDICTS, REVIEW_VERDICTS } from './role-briefs.mjs'
 import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { join, resolve } from 'node:path'
@@ -50,14 +54,35 @@ export const EVENT_SPEC = {
   // `pulled` exactly as strict as it was.
   opened: { required: ['agent_id', 'to_team', 'reason'], forbidden: ['from_team'] },
   pulled: { required: ['agent_id', 'from_team', 'to_team'] },
-  intake: { required: ['agent_id', 'verdict', 'reason'] },
+  // `verdicts` closes the value, not just the field. Until it existed the
+  // validator checked that `verdict` was a non-empty string and no more, so
+  // `intake { verdict: "reject" }` passed the sanctioned writer and then meant
+  // three different things: the runner dispatched a worker as though it were an
+  // accept, the graph counted it accepted, and the board called it "verdict
+  // unstated". It was stated, and it was not an accept. An open value inside a
+  // closed event is the same family defect one level down.
+  // `accept` only — narrower than `INTAKE_VERDICTS`, and deliberately so.
+  // Those two words are what a dispatcher may SAY in its outbox; this event
+  // records only what an acceptance IS. The single writer of `intake`
+  // (loop-runner.mjs:357) always stamps `accept`, because a refusal becomes
+  // `returned` or `escalated` instead — so an `intake` carrying anything else
+  // is a line the system cannot produce.
+  //
+  // It could still be written, and then the three readers disagreed at once:
+  // the runner dispatched a worker without consulting the verdict at all
+  // (loop-runner.mjs:552), the graph counted it accepted (graph.mjs:279), and
+  // the board called a stated rejection "verdict unstated" (kanban.mjs:69).
+  // Closing the value here makes that divergence unreachable rather than
+  // teaching three readers the same lesson separately — the two that ignore the
+  // verdict are now correct by construction instead of by luck.
+  intake: { required: ['agent_id', 'verdict', 'reason'], verdicts: new Set(['accept']) },
   // §4.1: the token is held by the team it went back to, not by the dispatcher
   // that refused it, so an `agent_id` here would place the work with the wrong
   // team.
   returned: { required: ['to_team', 'refused_by', 'reason'], forbidden: ['agent_id'] },
   assigned: { required: ['agent_id', 'task_id', 'dispatch_id'] },
   delivered: { required: ['agent_id', 'task_id', 'terminal', 'timed_out', 'evidence_present'] },
-  reviewed: { required: ['agent_id', 'verdict', 'reviewed_task', 'reason'] },
+  reviewed: { required: ['agent_id', 'verdict', 'reviewed_task', 'reason'], verdicts: REVIEW_VERDICTS },
   lost: { required: ['agent_id', 'task_id', 'reason'] },
   // §4.2: the controller is not a team member, so without `to_team` the token
   // cannot be placed at all.
@@ -65,7 +90,7 @@ export const EVENT_SPEC = {
   resumed: { required: ['agent_id', 'to_team', 'grant', 'reason'] },
   completed: { required: ['from_team'] },
   audit_requested: { required: ['agent_id', 'task_id', 'reason'] },
-  audited: { required: ['agent_id', 'verdict', 'reason'] },
+  audited: { required: ['agent_id', 'verdict', 'reason'], verdicts: AUDIT_VERDICTS },
   abandoned: { required: ['reason'] },
 }
 
@@ -174,6 +199,14 @@ export function validateLedger(lines) {
     }
     for (const field of spec.forbidden ?? []) {
       if (present(entry[field])) add(lineNo, 'forbidden_field', `${name} must not carry ${field}`)
+    }
+    // A word outside the event's own vocabulary. Every reader downstream
+    // branches on this value and each one falls back differently when it does
+    // not recognise it, so an unknown verdict does not fail — it means several
+    // contradictory things at once, quietly.
+    if (spec.verdicts && present(entry.verdict) && !spec.verdicts.has(String(entry.verdict))) {
+      add(lineNo, 'bad_verdict',
+        `${name} verdict ${JSON.stringify(entry.verdict)} is not one of ${[...spec.verdicts].sort().join(', ')}`)
     }
 
     // ---- sequence ----------------------------------------------------------

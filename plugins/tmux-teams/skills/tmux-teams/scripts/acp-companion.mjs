@@ -30,6 +30,9 @@ import { homedir } from 'node:os'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { validateCompanionGovernance } from './phase-gate-companion-guard.mjs'
+// §13: this process is a sanctioned ledger writer, so it appends through the
+// same gate the runner does rather than keeping a private copy of the policy.
+import { appendEvent } from './ledger-writer.mjs'
 
 const [agentName, cwd, taskId, briefFile, leaseArg] = process.argv.slice(2)
 if (!agentName || !cwd || !taskId || !briefFile) {
@@ -1519,21 +1522,30 @@ function appendWorkItemEvent(event, extra = {}) {
   if (!workItem) return
   try {
     mkdirSync(workItemsDir, { recursive: true, mode: 0o700 })
-    const line = `${JSON.stringify({
+    // Through the sanctioned writer, never straight to the file. §13 names this
+    // process a writer and binds it to the same obligations as the runner:
+    // validate the event, and refuse to append to a history that is already
+    // broken. It used to `appendFileSync` directly, so a probe could start from
+    // an invalid ledger, watch this companion exit 0 having recorded two more
+    // events, then watch `ledger-validate` exit 1 on the very file it had just
+    // written — the transport reporting custody the control plane rejects.
+    //
+    // A refusal is loud and the leg is NOT recorded, which is the point: a
+    // custody line appended onto a history nobody can believe is worth less
+    // than the absence that makes somebody look.
+    const result = appendEvent(cwd, {
       at: new Date().toISOString(),
       event,
       work_item: workItem,
       workflow: deliveryWorkflow || null,
       agent_id: agentId || null,
-      // Who wrote this line. The contract requires it on every ledger event so a
-      // line a human typed can never be mistaken for one the system recorded —
-      // this file is a sanctioned writer, so it carries its own identity.
-      actor: agentId ? `agent:${agentId}` : 'agent:acp-companion',
       task_id: taskId,
       dispatch_id: dispatchId,
       ...extra,
-    })}\n`
-    appendFileSync(join(workItemsDir, `${workItem}.jsonl`), line, { mode: 0o600 })
+    }, { actor: agentId ? `agent:${agentId}` : 'agent:acp-companion' })
+    if (!result.ok) {
+      console.error(`[warn] custody REFUSED (${result.code}): ${boundedText(result.detail ?? '', 'no detail', MAX_ERROR_TEXT)}`)
+    }
   } catch (cause) {
     console.error(`[warn] could not record work item custody: ${boundedText(cause.message, 'append failed', MAX_ERROR_TEXT)}`)
   }

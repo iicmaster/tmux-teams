@@ -67,11 +67,24 @@ export function readWorkflowGraph(repo) {
   // no error to notice, which is why it is handled here instead of left to
   // whoever eventually wonders why the team names are wrong.
   for (const name of [WORKFLOW_GRAPH_FILE, LEGACY_WORKFLOW_GRAPH_FILE]) {
+    let text
+    try {
+      text = readFileSync(join(repo, '.tmux-teams', name), 'utf8')
+    } catch {
+      // Absent. This is the ONLY condition the bundled default is for (§3).
+      continue
+    }
     let raw
     try {
-      raw = JSON.parse(readFileSync(join(repo, '.tmux-teams', name), 'utf8'))
-    } catch {
-      continue
+      raw = JSON.parse(text)
+    } catch (cause) {
+      // Present and unreadable is not the same fact as absent, and §3 says an
+      // invalid graph fails closed. A single `catch` used to cover the read and
+      // the parse together, so a corrupt declaration fell through to the
+      // four-team template and the page rendered somebody else's project while
+      // `graph.mjs check` exited 0 — the same silent substitution the legacy
+      // read exists to prevent, one line above it.
+      return { ok: false, value: null, reason: `${name} is not valid JSON: ${cause.message}`, source: name }
     }
     // `source` carries the name that actually answered, so a reader can see the
     // page is running off the legacy file rather than assume otherwise.
