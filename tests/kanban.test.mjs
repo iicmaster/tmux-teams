@@ -15,6 +15,7 @@ import { readBoard, renderKanbanPage, stateOf } from '../plugins/tmux-teams/skil
 import { NAV_PAGES, renderNav } from '../plugins/tmux-teams/skills/tmux-teams/scripts/page-nav.mjs'
 import { EVENT_SPEC, LEDGER_EVENTS } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-validate.mjs'
 import { readWorkItems, teamOccupancy } from '../plugins/tmux-teams/skills/tmux-teams/scripts/dispatch-facts.mjs'
+import { gateHistory } from './fixture-gate.mjs'
 import { validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
 import { duration } from '../plugins/tmux-teams/skills/tmux-teams/scripts/graph.mjs'
 
@@ -48,13 +49,45 @@ const FOUR_TEAMS = {
 
 // Ledgers are written as JSONL text so the test exercises the real reader,
 // including the line-skipping it does.
-const repoWith = (graph, ledgers = {}) => {
+// Fields contract §4 requires that no card on this board is ever about. Stated
+// once here rather than in every fixture; anything a fixture says itself wins,
+// because the spread comes last.
+const fill = (entry) => {
+  switch (entry.event) {
+    case 'assigned':
+      return { dispatch_id: `${entry.task_id ?? 'task'}-dispatch`, task_id: 'task', ...entry }
+    case 'delivered':
+      return { task_id: 'task', timed_out: false, evidence_present: true, ...entry }
+    case 'reviewed':
+      return { reviewed_task: 'task', reason: 'the evaluator said so', ...entry }
+    case 'escalated':
+    case 'audit_requested':
+      return { task_id: 'controller-task', reason: 'stated by the agent', ...entry }
+    case 'opened':
+    case 'intake':
+    case 'lost':
+    case 'resumed':
+    case 'returned':
+    case 'audited':
+    case 'abandoned':
+      return { reason: 'stated by the agent', ...entry }
+    default:
+      return { ...entry }
+  }
+}
+
+const repoWith = (graph, ledgers = {}, gates = {}) => {
   const dir = mkdtempSync(join(tmpdir(), 'kanban-'))
   mkdirSync(join(dir, '.tmux-teams', 'work-items'), { recursive: true })
   if (graph !== undefined) writeFileSync(join(dir, '.tmux-teams/graph.json'), JSON.stringify(graph))
   for (const [token, events] of Object.entries(ledgers)) {
-    const lines = events.map((entry) =>
-      JSON.stringify({ work_item: token, workflow: 'feature', ...entry }))
+    // Gated before it reaches disk: a card drawn from a history the loop could
+    // not have written describes a board for a different system. The filler
+    // supplies the fields §4 requires but no card is about — a dispatch id, a
+    // timeout flag — so a fixture still says only what its test is for.
+    const lines = gateHistory(token,
+      events.map((entry) => ({ work_item: token, workflow: 'feature', ...fill(entry) })), gates[token])
+      .map((entry) => JSON.stringify(entry))
     writeFileSync(join(dir, '.tmux-teams/work-items', `${token}.jsonl`), `${lines.join('\n')}\n`)
   }
   return dir
@@ -109,6 +142,10 @@ test('AC2 every column count equals teamOccupancy, and WIP prints that same n', 
     c: [{ at: '2026-07-27T09:20:00.000Z', event: 'pulled', agent_id: 'build_d', from_team: 'design', to_team: 'build' }],
     d: [{ at: '2026-07-27T09:30:00.000Z', event: 'reviewed', agent_id: 'test_e', verdict: 'reject', reason: 'thin' }],
     done1: [{ at: '2026-07-27T09:40:00.000Z', event: 'completed', from_team: 'visual' }],
+  }, {
+    // These fixtures are one line each on purpose: the test counts columns, and
+    // a full route per token would bury the only thing it asserts.
+    d: { expectInvalid: true, why: 'a bare reviewed — this test counts columns, not histories' },
   })
   // Computed here, independently of readBoard — comparing the page against the
   // structure the page itself built would prove nothing.
@@ -131,7 +168,7 @@ test('every token is on the board exactly once', () => {
     held: [{ at: '2026-07-27T09:00:00.000Z', event: 'assigned', agent_id: 'build_w1', task_id: 't-1' }],
     finished: [{ at: '2026-07-27T09:00:00.000Z', event: 'completed', from_team: 'visual' }],
     lostly: [{ at: '2026-07-27T09:00:00.000Z', event: 'delivered', agent_id: 'ghost', terminal: 'done' }],
-  })
+  }, { lostly: { expectInvalid: true, why: 'an agent no graph declares — being unplaceable IS the subject' } })
   const board = readBoard(dir, NOW)
   const total = board.columns.reduce((sum, column) => sum + column.cards.length, 0) + board.unplaceable.length
   assert.equal(total, readWorkItems(dir).items.size)
@@ -300,7 +337,7 @@ test('AC5 a card blocked by a full team names that team in full', () => {
 test('AC6 an agent outside the declared graph puts its token in Unplaceable', () => {
   const dir = repoWith(FOUR_TEAMS, {
     orphan: [{ at: '2026-07-27T09:00:00.000Z', event: 'delivered', agent_id: 'old_worker_1', terminal: 'done' }],
-  })
+  }, { orphan: { expectInvalid: true, why: 'a worker the graph no longer declares — the orphan case is the subject' } })
   const graph = graphOf(FOUR_TEAMS)
   const orphans = teamOccupancy(graph, readWorkItems(dir).items).orphans
   assert.equal(orphans.length, 1)
@@ -328,7 +365,7 @@ test('AC7 lead time is the ledger figure, rendered by the one formatter', () => 
 test('AC7 an unparseable timestamp prints unknown, never zero', () => {
   const dir = repoWith(FOUR_TEAMS, {
     undated: [{ at: 'not-a-date', event: 'assigned', agent_id: 'build_w1', task_id: 't-1' }],
-  })
+  }, { undated: { expectInvalid: true, why: 'an unparsable stamp is the subject — the board must not print it as an age' } })
   const board = readBoard(dir, NOW)
   assert.equal(board.columns.find((column) => column.team_id === 'build').cards[0].lead_sec, null)
   const html = pageOf(dir)

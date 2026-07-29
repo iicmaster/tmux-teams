@@ -28,6 +28,7 @@ import {
 import { applyPulls, planPulls } from '../plugins/tmux-teams/skills/tmux-teams/scripts/pull-controller.mjs'
 import { REVIEW_VERDICTS, readVerdict, roleBrief } from '../plugins/tmux-teams/skills/tmux-teams/scripts/role-briefs.mjs'
 import { EVENT_SPEC, LEDGER_EVENTS } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-validate.mjs'
+import { gateHistory } from './fixture-gate.mjs'
 import { validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -85,12 +86,23 @@ const complete = (entry, lastDelivered) => {
       // The leg a review judged is a real relationship, so it is read off the
       // history rather than invented: the last delivery before this line.
       return { reviewed_task: lastDelivered ?? 'nothing-delivered', reason: 'the evaluator said so', ...entry }
+    // `returned` was missing from this list, and `escalated` /
+    // `audit_requested` name a task §4 requires. The fixture gate found all
+    // three: shorthand that had been quietly producing histories the writer
+    // would refuse.
+    case 'escalated':
+    case 'audit_requested':
+      return { task_id: 'controller-task', reason: 'stated by the agent that wrote it', ...entry }
+    case 'audited':
+      // §4: the audit states a verdict, and `accept` is the one that changes
+      // nothing — a fixture that omitted it was describing an audit that
+      // reached no conclusion, which the controller cannot write.
+      return { verdict: 'accept', reason: 'stated by the agent that wrote it', ...entry }
+    case 'opened':
     case 'intake':
     case 'lost':
-    case 'escalated':
     case 'resumed':
-    case 'audit_requested':
-    case 'audited':
+    case 'returned':
     case 'abandoned':
       return { reason: 'stated by the agent that wrote it', ...entry }
     default:
@@ -98,13 +110,29 @@ const complete = (entry, lastDelivered) => {
   }
 }
 
-const ledger = (workItem, events) => {
+const ledger = (workItem, events, gate = {}) => {
   let lastDelivered = null
-  return events.map((entry, index) => {
+  const history = events.map((entry, index) => {
     const filled = complete(entry, lastDelivered)
     if (filled.event === 'delivered') lastDelivered = filled.task_id ?? lastDelivered
-    return { at: `2026-07-27T0${index}:00:00.000Z`, work_item: workItem, workflow: 'feature', ...filled }
+    // Minutes from a fixed midnight, not `T0${index}`. That template produced
+    // `2026-07-27T010:00:00.000Z` — a three-digit hour — for every history
+    // longer than ten events, so the longest fixtures in this file carried
+    // timestamps that parse to nothing. Nothing complained, because until the
+    // fixture gate nothing looked. Every stamp still lands before FIXED_NOW
+    // (09:00), so ordering against it is unchanged.
+    // Counted BACK from FIXED_NOW so the last event is always "just now" — the
+    // property the old `T0${index}` template gave by accident when a history
+    // happened to be ten events long. Anchoring the newest line instead of the
+    // oldest keeps the zombie clock reading what these tests intend.
+    const at = new Date(FIXED_NOW - (events.length - 1 - index) * 60_000).toISOString()
+    return { at, work_item: workItem, workflow: 'feature', ...filled }
   })
+  // Judged by the runtime's own validator before any test sees it. Everything
+  // in this file — occupancy, dispatch planning, harvest, escalation — answers
+  // from these histories, so a fixture the system could not have written makes
+  // every answer downstream a statement about a different system.
+  return gateHistory(workItem, history, gate)
 }
 
 // Since DECISION 4 the harvester appends through the sanctioned writer, which
@@ -121,8 +149,10 @@ const itemsOnDisk = (repo, ...entries) => {
   return itemsOf(...entries)
 }
 
-const itemsOf = (...entries) => new Map(entries.map(([workItem, events]) => {
-  const custody = ledger(workItem, events)
+// A third element on an entry is the fixture gate's options — the only way a
+// test says "this history is meant to be impossible", and it must say why.
+const itemsOf = (...entries) => new Map(entries.map(([workItem, events, gate]) => {
+  const custody = ledger(workItem, events, gate)
   return [workItem, {
     work_item: workItem, workflow: 'feature', custody,
     current_event: custody[custody.length - 1].event,
@@ -204,7 +234,10 @@ test('a token whose ledger cannot be believed is not handed to the next team', (
     { event: 'assigned', agent_id: 'b_w1', task_id: 'b-1' },
     { event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done' },
     { event: 'reviewed', agent_id: 'b_e', verdict: 'pass', reviewed_task: null },
-  ]])
+    // The gate is told to stand aside here, and told why: this history is the
+    // subject, not the setup. Without the escape a test about unbelievable
+    // ledgers could not build one.
+  ], { expectInvalid: true, why: 'the broken history IS the subject — planPulls must refuse it' }])
   const [decision] = planPulls(graph, items, FIXED_ISO)
 
   assert.equal(decision.action, 'invalid')
@@ -455,12 +488,18 @@ test('every event either moves the loop or is a dead end somebody wrote down', (
   const filler = {
     from_team: team.team_id, to_team: team.team_id, refused_by: team.dispatcher_id,
     task_id: 't-1', dispatch_id: 'd-1', reviewed_task: 't-1', reason: 'a stated reason',
-    terminal: 'done', timed_out: false, evidence_present: true, verdict: 'pass', grant: 3,
+    terminal: 'done', timed_out: false, evidence_present: true, grant: 3,
   }
+  // Each event owns its vocabulary — `intake` records only an acceptance,
+  // review speaks pass/reject/unresolved, the audit speaks accept/concern. One
+  // shared filler word violated the rule closed an hour earlier, and the gate
+  // said so immediately.
+  const verdictFor = (event) => (
+    event === 'intake' ? 'accept' : event === 'audited' ? 'accept' : 'pass')
   for (const event of LEDGER_EVENTS) {
     const entry = { at: '2026-07-27T09:00:00.000Z', event, agent_id: team.worker_ids[0] }
     for (const field of EVENT_SPEC[event].required ?? []) {
-      if (!(field in entry)) entry[field] = filler[field]
+      if (!(field in entry)) entry[field] = field === 'verdict' ? verdictFor(event) : filler[field]
     }
     for (const field of EVENT_SPEC[event].forbidden ?? []) delete entry[field]
     // `skip` is the runner saying it has nothing to do — it is NOT movement.
@@ -468,7 +507,17 @@ test('every event either moves the loop or is a dead end somebody wrote down', (
     // `planDispatches` RETURNS the `nothing follows` skip rather than dropping
     // it, every unknown word came back truthy and the assertion reduced to
     // `true === true`. It could not have failed for the one reason it exists.
-    const [plan] = planDispatches(graph, itemsOf(['tok', [entry]]), new Set(),
+    // `delivered` and `reviewed` need the leg that produced them, or the history
+    // is one the loop cannot write. The question here is only which branch the
+    // runner takes on the LAST event, so the prefix is the minimum that makes
+    // the history real rather than a shape the fixture gate would reject.
+    const assigned = { event: 'assigned', agent_id: entry.agent_id, task_id: 't-1', dispatch_id: 'd-1' }
+    const delivered = { event: 'delivered', agent_id: entry.agent_id, task_id: 't-1', terminal: 'done' }
+    const requested = { event: 'audit_requested', agent_id: 'pm', task_id: 'a-1' }
+    const prefix = event === 'reviewed' ? [assigned, delivered]
+      : event === 'delivered' ? [assigned]
+        : event === 'audited' ? [requested] : []
+    const [plan] = planDispatches(graph, itemsOf(['tok', [...prefix, entry]]), new Set(),
       { now: Date.parse(entry.at) + 1e6 })
     const moved = Boolean(plan) && plan.action !== 'skip'
     const stated = event in NO_DISPATCH_FOLLOWS
@@ -483,7 +532,8 @@ test('every event either moves the loop or is a dead end somebody wrote down', (
   // it has never actually checked.
   const [unknown] = planDispatches(
     graph,
-    itemsOf(['tok', [{ at: '2026-07-27T09:00:00.000Z', event: 'not_an_event', agent_id: team.worker_ids[0] }]]),
+    itemsOf(['tok', [{ at: '2026-07-27T09:00:00.000Z', event: 'not_an_event', agent_id: team.worker_ids[0] }],
+      { expectInvalid: true, why: 'a word outside §4 is the whole point — the control cannot exist without one' }]),
     new Set(), { now: Date.parse('2026-07-27T09:00:00.000Z') + 1e6 },
   )
   assert.equal(Boolean(unknown) && unknown.action !== 'skip', false,
@@ -750,7 +800,7 @@ test('the board as a whole has a dispatch ceiling, not only each team', () => {
   }
   const graph = graphOf(many)
   const items = itemsOf(...Array.from({ length: 6 }, (unused, index) => [`tok${index}`, [
-    { event: 'pulled', agent_id: `d${index}`, to_team: `t${index}` },
+    { event: 'opened', agent_id: `d${index}`, to_team: `t${index}` },
     { event: 'intake', agent_id: `d${index}`, verdict: 'accept' },
   ]]))
 
@@ -848,11 +898,18 @@ test('the controller hears about retries that succeeded quietly', () => {
     const graph = graphOf(TWO_TEAMS)
     // Three legs died and the fourth worked. Under the old rule the loop simply
     // carried on and nobody was ever told it had to try four times.
+    // Each failed leg now carries the `assigned` that started it. The fixture
+    // used to jump straight to `delivered`, which the loop cannot produce — a
+    // worker cannot deliver a task nobody gave it — so the retry story it told
+    // was one the runner would never see.
     const items = itemsOf(['noisy', [
-      { event: 'pulled', agent_id: 'b_d', to_team: 'build' },
+      { event: 'opened', agent_id: 'b_d', to_team: 'build' },
       { event: 'intake', agent_id: 'b_d', verdict: 'accept' },
+      { event: 'assigned', agent_id: 'b_w1', task_id: 'b-1' },
       { event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'protocol-error' },
+      { event: 'assigned', agent_id: 'b_w1', task_id: 'b-2' },
       { event: 'delivered', agent_id: 'b_w1', task_id: 'b-2', terminal: 'protocol-error' },
+      { event: 'assigned', agent_id: 'b_w1', task_id: 'b-3' },
       { event: 'lost', agent_id: 'b_w1', task_id: 'b-3' },
       { event: 'assigned', agent_id: 'b_w1', task_id: 'b-4' },
     ]])
@@ -867,10 +924,13 @@ test('a board holding work with nothing recorded is a stall, not calm', () => {
   const dir = mkdtempSync(join(tmpdir(), 'loop-stall-'))
   try {
     const graph = graphOf(TWO_TEAMS)
-    const items = itemsOf(['parked', [{ event: 'pulled', agent_id: 'b_d', to_team: 'build' }]])
+    const items = itemsOf(['parked', [{ event: 'opened', agent_id: 'b_d', to_team: 'build' }]])
     const occupancy = teamOccupancy(graph, items)
 
-    const pulledAt = Date.parse('2026-07-27T00:00:00.000Z')
+    // Read off the fixture rather than restated. This was hardcoded to the
+    // timestamp the old generator happened to produce for a one-event history,
+    // so it silently stopped describing this fixture the moment stamps changed.
+    const pulledAt = Date.parse(items.get('parked').custody[0].at)
     assert.equal(planEscalation(dir, graph, items, [], occupancy,
       { now: pulledAt + 1_800_000, stallSec: 3600 }), null, 'a team simply working is not a stall')
 
@@ -911,7 +971,7 @@ test('a dispatch refused for its declared model is not retried', () => {
   // good while the board still reads as dispatching.
   for (const terminal of ['identity-missing', 'identity-mismatch']) {
     const plan = planDispatches(graph, itemsOf(['tok', [
-      { event: 'pulled', agent_id: 'b_d', to_team: 'build' },
+      { event: 'opened', agent_id: 'b_d', to_team: 'build' },
       { event: 'intake', agent_id: 'b_d', verdict: 'accept' },
       { event: 'assigned', agent_id: 'b_w1', task_id: 'b-1' },
       { event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal },
@@ -922,7 +982,7 @@ test('a dispatch refused for its declared model is not retried', () => {
 
   // An ordinary transport failure still gets its retries.
   const transport = planDispatches(graph, itemsOf(['tok', [
-    { event: 'pulled', agent_id: 'b_d', to_team: 'build' },
+    { event: 'opened', agent_id: 'b_d', to_team: 'build' },
     { event: 'intake', agent_id: 'b_d', verdict: 'accept' },
     { event: 'assigned', agent_id: 'b_w1', task_id: 'b-1' },
     { event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'protocol-error' },

@@ -21,6 +21,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { readBoard, renderKanbanPage } from '../plugins/tmux-teams/skills/tmux-teams/scripts/kanban.mjs'
+import { gateHistory } from './fixture-gate.mjs'
 import { PULSE_REFRESH_SOURCE } from '../plugins/tmux-teams/skills/tmux-teams/scripts/pulse-refresh.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -51,12 +52,47 @@ const TWO_TEAMS = {
 // Ledgers go down as JSONL text so the real reader runs, including its
 // line-skipping. `extra` writes a file verbatim — that is how a broken line
 // gets in front of the reader without this helper deciding what broken means.
-const repoWith = (graph, ledgers = {}, extra = {}) => {
+// Fields §4 requires that no assertion in this file is about. Stated once;
+// anything a fixture says itself wins, because the spread comes last.
+const fill = (entry) => {
+  switch (entry.event) {
+    case 'assigned':
+      return { dispatch_id: `${entry.task_id ?? 'task'}-dispatch`, task_id: 'task', ...entry }
+    case 'delivered':
+      return { task_id: 'task', timed_out: false, evidence_present: true, ...entry }
+    case 'reviewed':
+      return { reviewed_task: 'task', reason: 'the evaluator said so', ...entry }
+    case 'escalated':
+      // §4.2: the controller is not a team member, so without `to_team` the
+      // token cannot be placed at all.
+      return { task_id: 'controller-task', to_team: 'build', reason: 'stated by the agent', ...entry }
+    case 'audit_requested':
+      return { task_id: 'controller-task', reason: 'stated by the agent', ...entry }
+    case 'opened':
+    case 'intake':
+    case 'lost':
+    case 'resumed':
+    case 'returned':
+    case 'audited':
+    case 'abandoned':
+      return { reason: 'stated by the agent', ...entry }
+    default:
+      return { ...entry }
+  }
+}
+
+const repoWith = (graph, ledgers = {}, extra = {}, gates = {}) => {
   const dir = mkdtempSync(join(tmpdir(), 'kanban-board-'))
   mkdirSync(join(dir, '.tmux-teams', 'work-items'), { recursive: true })
   if (graph !== undefined) writeFileSync(join(dir, '.tmux-teams/graph.json'), JSON.stringify(graph))
   for (const [token, events] of Object.entries(ledgers)) {
-    const lines = events.map((entry) => JSON.stringify({ work_item: token, workflow: 'feature', ...entry }))
+    // Gated before it reaches disk — see tests/fixture-gate.mjs. `extra` writes
+    // raw bytes on purpose and stays ungated: that is how a genuinely broken
+    // line gets in front of the reader without this helper deciding what broken
+    // means.
+    const lines = gateHistory(token,
+      events.map((entry) => ({ work_item: token, workflow: 'feature', ...fill(entry) })), gates[token])
+      .map((entry) => JSON.stringify(entry))
     writeFileSync(join(dir, '.tmux-teams/work-items', `${token}.jsonl`), `${lines.join('\n')}\n`)
   }
   for (const [name, text] of Object.entries(extra)) {
@@ -193,7 +229,11 @@ test('time in column restarts at the pull that placed it; lead time does not', (
   const dir = repoWith(TWO_TEAMS, {
     moved: [
       { at: '2026-07-27T06:00:00.000Z', event: 'pulled', agent_id: 'build_d', from_team: 'design', to_team: 'build' },
-      { at: '2026-07-27T07:00:00.000Z', event: 'reviewed', agent_id: 'build_e', verdict: 'pass', reason: 'ok' },
+      // The leg the review judged. A review of nothing is not a pass, and the
+      // clock this test measures runs over a route the loop could actually walk.
+      { at: '2026-07-27T06:30:00.000Z', event: 'assigned', agent_id: 'build_w1', task_id: 't-1' },
+      { at: '2026-07-27T06:45:00.000Z', event: 'delivered', agent_id: 'build_w1', task_id: 't-1', terminal: 'done' },
+      { at: '2026-07-27T07:00:00.000Z', event: 'reviewed', agent_id: 'build_e', verdict: 'pass', reviewed_task: 't-1', reason: 'ok' },
       { at: '2026-07-27T11:30:00.000Z', event: 'pulled', agent_id: 'test_d', from_team: 'build', to_team: 'test' },
     ],
   })
@@ -248,8 +288,8 @@ test('a token parked with the outer controller keeps its column and its WIP slot
 // unplaceable, and the board says so rather than guessing a column.
 test('an escalation that names no team is unplaceable, and the header says how many', () => {
   const dir = repoWith(TWO_TEAMS, {
-    nowhere: [{ at: '2026-07-27T09:00:00.000Z', event: 'escalated', agent_id: 'pm', reason: 'no team named' }],
-  })
+    nowhere: [{ at: '2026-07-27T09:00:00.000Z', event: 'escalated', agent_id: 'pm', to_team: null, reason: 'no team named' }],
+  }, {}, { nowhere: { expectInvalid: true, why: 'an escalation naming no team IS the subject — the board must call it unplaceable' } })
   const html = pageOf(dir)
   const columns = columnsOf(html)
   assert.deepEqual(columns.get('Unplaceable').tokens, ['nowhere'])
@@ -292,6 +332,8 @@ test('the header tiles state exactly what the columns draw', () => {
     finished: [{ at: '2026-07-27T09:30:00.000Z', event: 'completed', from_team: 'visual' }],
     dropped: [{ at: '2026-07-27T09:40:00.000Z', event: 'abandoned', agent_id: 'pm', reason: 'obsolete' }],
     ghosted: [{ at: '2026-07-27T09:50:00.000Z', event: 'delivered', agent_id: 'agent_from_a_deleted_graph', terminal: 'done' }],
+  }, {}, {
+    ghosted: { expectInvalid: true, why: 'an agent no graph declares — the unplaceable tile is exactly what this test counts' },
   })
   const html = pageOf(dir)
   const tiles = new Map([...html.matchAll(/<span class="tile-v">([^<]*)<\/span><span class="tile-l">([^<]*)</g)]
@@ -320,7 +362,7 @@ test('a token the loop refuses to move for a broken history says so on the board
     doubtful: [
       { at: '2026-07-27T09:00:00.000Z', event: 'reviewed', agent_id: 'test_e', verdict: 'pass', reviewed_task: 't-1', reason: 'good' },
     ],
-  })
+  }, {}, { doubtful: { expectInvalid: true, why: 'the unbelievable history IS the subject — planPulls must refuse it' } })
   const card = readBoard(dir, NOW).columns.find((column) => column.team_id === 'test').cards[0]
   assert.equal(card.work_item, 'doubtful')
   assert.notEqual(card.blocked_reason, null, 'a refused token must not read as an ordinary card')

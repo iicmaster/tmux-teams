@@ -14,6 +14,7 @@ import {
   activityByAgent,
 } from '../plugins/tmux-teams/skills/tmux-teams/scripts/graph.mjs'
 import { readWorkItems } from '../plugins/tmux-teams/skills/tmux-teams/scripts/dispatch-facts.mjs'
+import { gateHistory } from './fixture-gate.mjs'
 import { validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
 import { planPulls } from '../plugins/tmux-teams/skills/tmux-teams/scripts/pull-controller.mjs'
 import { EVENT_SPEC, LEDGER_EVENTS } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-validate.mjs'
@@ -255,11 +256,16 @@ test('a repo with neither file still says it is on the bundled default', () => {
 // were counted nowhere. Master reported this node as empty twice; the node was
 // drawn correctly and had nothing to draw.
 
-const withLedger = (graph, token, entries) => {
+const withLedger = (graph, token, entries, gate = {}) => {
   const dir = repoWith(graph)
   mkdirSync(join(dir, '.tmux-teams/work-items'), { recursive: true })
+  // Gated before it reaches disk: this page answers entirely from custody, so a
+  // history the loop could not have written makes every node on it a claim
+  // about a different system.
+  const history = gateHistory(token,
+    entries.map((entry) => ({ work_item: token, workflow: 'full', ...entry })), gate)
   writeFileSync(join(dir, `.tmux-teams/work-items/${token}.jsonl`),
-    `${entries.map((entry) => JSON.stringify({ work_item: token, workflow: 'full', ...entry })).join('\n')}\n`)
+    `${history.map((entry) => JSON.stringify(entry)).join('\n')}\n`)
   return dir
 }
 
@@ -281,7 +287,11 @@ test('every role is credited with the work the ledger records for it', () => {
   const dir = withLedger(TWO_TEAMS, 'tok', [
     { at: '2026-07-27T01:00:00.000Z', event: 'pulled', agent_id: 'b_d', from_team: 'build', to_team: 'build' },
     { at: '2026-07-27T01:05:00.000Z', event: 'intake', agent_id: 'b_d', verdict: 'accept', reason: 'ok' },
+    // Each delivery carries the assignment that produced it — a worker cannot
+    // deliver a task nobody gave it, and the gate says so.
+    { at: '2026-07-27T01:50:00.000Z', event: 'assigned', agent_id: 'b_w1', task_id: 't-1', dispatch_id: 'd-1' },
     { at: '2026-07-27T02:00:00.000Z', event: 'delivered', agent_id: 'b_w1', task_id: 't-1', terminal: 'done', timed_out: false, evidence_present: true },
+    { at: '2026-07-27T02:20:00.000Z', event: 'assigned', agent_id: 'b_w1', task_id: 't-2', dispatch_id: 'd-2' },
     { at: '2026-07-27T02:30:00.000Z', event: 'delivered', agent_id: 'b_w1', task_id: 't-2', terminal: 'protocol-error', timed_out: false, evidence_present: false },
     { at: '2026-07-27T03:00:00.000Z', event: 'reviewed', agent_id: 'b_e', verdict: 'reject', reviewed_task: 't-1', reason: 'thin' },
     { at: '2026-07-27T04:00:00.000Z', event: 'returned', to_team: 'build', refused_by: 'v_d', reason: 'not ours' },
@@ -329,7 +339,21 @@ test('every event that names an agent either credits it or is a stated exception
     // event credits its agent is a fact about `activityByAgent`; reading it out
     // of markup made the assertion depend on layout and on a 400-character
     // window that could silently stop covering the line it was aimed at.
-    const { items } = readWorkItems(withLedger(TWO_TEAMS, `t-${event}`, [entry]))
+    // `delivered` needs the leg that produced it, or the history is one the
+    // loop cannot write. The sweep asks only what the LAST event credits, so
+    // the prefix is the minimum that makes the history real.
+    const assigned = { at: '2026-07-27T08:58:00.000Z', event: 'assigned', agent_id: 'b_w1', task_id: 't-1', dispatch_id: 'd-1' }
+    const delivered = { at: '2026-07-27T08:59:00.000Z', event: 'delivered', agent_id: 'b_w1', task_id: 't-1', terminal: 'done', timed_out: false, evidence_present: true }
+    const prefix = event === 'reviewed' ? [assigned, delivered]
+      : event === 'delivered' ? [assigned]
+        : event === 'audited' ? [{ at: '2026-07-27T08:59:00.000Z', event: 'audit_requested', agent_id: 'pm', task_id: 'a-1', reason: 'r' }]
+          : []
+    // Each event owns its verdict vocabulary — one shared filler word violates
+    // whichever rule it does not belong to.
+    if ('verdict' in entry) {
+      entry.verdict = event === 'reviewed' ? 'pass' : 'accept'
+    }
+    const { items } = readWorkItems(withLedger(TWO_TEAMS, `t-${event}`, [...prefix, entry]))
     const noticed = activityByAgent(items).has('b_w1')
     const excused = event in NOT_THE_AGENTS_OWN_ACT
     assert.equal(noticed, !excused, excused
