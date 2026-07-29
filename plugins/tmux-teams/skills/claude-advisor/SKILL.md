@@ -23,11 +23,29 @@ two is worth paying for.
 
 ## The pinned identity — not negotiable
 
-| | |
-|---|---|
-| Model | `claude-fable-5` |
-| Reasoning effort | `max` |
-| Lane | `claude` (ACP) |
+| | | |
+|---|---|---|
+| Model | `claude-fable-5` | **verified** — `ACP_EXPECT_MODEL`, `identity_status: matched` |
+| Reasoning effort | `max` | **requested, not verifiable on this lane** — see below |
+| Lane | `claude` (ACP) | |
+
+### Effort cannot be proved here, and the skill says so
+
+Measured 2026-07-29 by dispatching this lane: the Claude ACP adapter reports
+`effective_identity: claude-fable-5` and `requested_reasoning_effort: none`. It
+exposes no reasoning-effort field at all, so `ACP_EXPECT_REASONING_EFFORT` can
+never match and setting it fails every dispatch with
+`identity missing: expected claude-fable-5[max], effective claude-fable-5`.
+
+An earlier draft of this file claimed effort was pinned and verified here. It
+was not, and the claim survived only because nobody had run it — the same
+mistake this whole plugin exists to make impossible, committed inside the skill
+built to prevent it. The model **is** verified; the effort is the session's, and
+this file will not pretend otherwise. If you need max effort from this lane,
+set it on the session before dispatching and know that nothing checks you did.
+
+`codex-advisor` **can** verify its effort, because the Codex adapter reports it.
+That asymmetry is real and is not smoothed over.
 
 Never downgrade for cost, quota or speed. The whole value of this skill is that
 the answer came from the top of the range; a cheaper answer is not a cheaper
@@ -62,13 +80,15 @@ consensus is itself a finding, usually that the question was too narrow.
 2. **Dispatch**, pinning and verifying the identity in one step:
 
    ```bash
-   ACP_CMD="claude" \
    ANTHROPIC_MODEL="claude-fable-5" \
    ACP_EXPECT_MODEL="claude-fable-5" \
-   ACP_EXPECT_REASONING_EFFORT="max" \
    node <plugin-root>/skills/tmux-teams/scripts/acp-companion.mjs \
-     claude <cwd> <task-id> <brief-file>
+     claude <cwd> <task-id> <brief-file> [stall-sec]
    ```
+
+   Do **not** set `ACP_CMD`, and do not set `ACP_EXPECT_REASONING_EFFORT` — the
+   first bypasses the companion's own launch path, the second cannot be
+   satisfied on this lane and fails every dispatch.
 
 3. **Read the outbox.** No outbox file means no advice. A run that printed to
    the terminal and wrote nothing has produced no consultation, however good the

@@ -57,13 +57,35 @@ answer is a failed consultation — say so rather than passing it on.
 
 2. **Dispatch**, pinning and verifying the identity in one step:
 
+   Give Codex a config home of its own that pins the effort, leaving the
+   machine's `~/.codex/config.toml` untouched:
+
    ```bash
-   ACP_CMD='codex -m gpt-5.6-sol -c model_reasoning_effort="ultra"' \
+   H=$(mktemp -d)
+   for f in ~/.codex/*; do ln -s "$f" "$H/$(basename "$f")"; done
+   rm -f "$H/config.toml"
+   sed 's/^model_reasoning_effort.*/model_reasoning_effort = "ultra"/' \
+     ~/.codex/config.toml > "$H/config.toml"
+
+   CODEX_HOME="$H" \
    ACP_EXPECT_MODEL="gpt-5.6-sol" \
    ACP_EXPECT_REASONING_EFFORT="ultra" \
    node <plugin-root>/skills/tmux-teams/scripts/acp-companion.mjs \
-     codex <cwd> <task-id> <brief-file>
+     codex <cwd> <task-id> <brief-file> [stall-sec]
    ```
+
+   **Never set `ACP_CMD` on this lane.** The companion does not run `codex`
+   directly: it launches a pinned `@agentclientprotocol/codex-acp` adapter whose
+   entry point, digest and version it verifies first
+   (`acp-companion.mjs` ~1104). `ACP_CMD` replaces that whole checked path with
+   an unchecked one — and an earlier draft of this file did exactly that, which
+   both discarded the integrity check and failed outright with
+   `Error: stdin is not a terminal`, because bare `codex` opens a TUI rather
+   than speaking ACP.
+
+   Measured 2026-07-29: with `CODEX_HOME` the receipt reads
+   `effective_identity: gpt-5.6-sol[ultra]`, `identity_status: matched`. Without
+   it, the same probe reads `gpt-5.6-sol[low]`.
 
 3. **Read the outbox.** No outbox file means no advice, whatever scrolled past
    in the terminal.
