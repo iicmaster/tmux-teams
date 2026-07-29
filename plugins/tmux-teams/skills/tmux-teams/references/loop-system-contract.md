@@ -928,6 +928,29 @@ All three readers now carry it, each in the shape its own failure takes.
 A word added to §4 now fails all three until somebody decides what it means to
 each. That property is the fix; no individual patch was.
 
+**Corrected 2026-07-29, within the hour, by two outside advisors.** The
+paragraph above was false when written, for the runner and possibly the graph.
+
+- **Runner — the oracle was a tautology.** It read `moved = Boolean(plan)`, but
+  `planDispatches` *returns* the `nothing follows <event>` skip rather than
+  dropping it, so every unknown word came back truthy, `stated` was false, and
+  the assertion reduced to `true === true`. It could not have failed for the one
+  reason it existed. Fixed: `skip` is no longer counted as movement, and a
+  `not_an_event` negative control now proves the detector fires. Measured
+  before the fix: `planDispatches` on `future_word` returned
+  `{action:"skip", reason:"nothing follows future_word"}` — length 1, truthy.
+- **Graph — reported unverified.** An advisor reports `tests/graph.test.mjs`
+  skips any event whose `EVENT_SPEC` does not *require* `agent_id`, which
+  excludes `abandoned` — while the runner writes `abandoned` with an `agent_id`
+  at runtime, and `activityByAgent` does not credit it. Not yet confirmed here;
+  recorded as a claim, not as a fact.
+
+The lesson is narrower and worse than "test the family": **a closure test that
+has never been shown to fail is not a closure test.** The board's version
+carried a negative control from the start and was sound; the runner's did not
+and was worthless. Both were written in the same hour, by the same author, with
+the same confidence.
+
 Closing the graph's half exposed a defect of its own. `workLine` for the outer
 controller read `N escalation(s) handled`, but `escalations` is bumped on the
 agent **being** escalated: the runner stamps that event with the dispatcher it

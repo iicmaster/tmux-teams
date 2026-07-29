@@ -463,14 +463,31 @@ test('every event either moves the loop or is a dead end somebody wrote down', (
       if (!(field in entry)) entry[field] = filler[field]
     }
     for (const field of EVENT_SPEC[event].forbidden ?? []) delete entry[field]
+    // `skip` is the runner saying it has nothing to do — it is NOT movement.
+    // The first version of this oracle read `Boolean(plan)`, and because
+    // `planDispatches` RETURNS the `nothing follows` skip rather than dropping
+    // it, every unknown word came back truthy and the assertion reduced to
+    // `true === true`. It could not have failed for the one reason it exists.
     const [plan] = planDispatches(graph, itemsOf(['tok', [entry]]), new Set(),
       { now: Date.parse(entry.at) + 1e6 })
-    const moved = Boolean(plan)
+    const moved = Boolean(plan) && plan.action !== 'skip'
     const stated = event in NO_DISPATCH_FOLLOWS
     assert.equal(moved, !stated, stated
       ? `${event} is a stated dead end (${NO_DISPATCH_FOLLOWS[event]}) but the runner planned ${plan?.action}`
       : `${event} leaves the runner with nothing to do and is not a stated dead end`)
   }
+
+  // The negative control this test shipped without, caught by an outside
+  // reviewer within the hour. A word the runner has never heard of must read as
+  // no movement; without this line the sweep above can be green on a vocabulary
+  // it has never actually checked.
+  const [unknown] = planDispatches(
+    graph,
+    itemsOf(['tok', [{ at: '2026-07-27T09:00:00.000Z', event: 'not_an_event', agent_id: team.worker_ids[0] }]]),
+    new Set(), { now: Date.parse('2026-07-27T09:00:00.000Z') + 1e6 },
+  )
+  assert.equal(Boolean(unknown) && unknown.action !== 'skip', false,
+    'an unknown event must read as no movement, or this whole test proves nothing')
 })
 
 // The cooldown used to be measured from the note file's mtime while `now` came
