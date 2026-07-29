@@ -15,11 +15,14 @@ const PLUGIN = join(ROOT, 'plugins/tmux-teams')
 const SKILLS = ['tmux-teams', 'party-mode', 'party-auto', 'party-advise', 'sqthink', 'codex-tmux-driver',
   'graph-setup', 'claude-advisor', 'codex-advisor']
 const RELEASE_VERSION = '0.9.0'
+// The Stage 1 CLI entry points were removed on 2026-07-29. What remains is the
+// part the current system actually reaches: `delivery-loop-export` builds the
+// `delivery_loop` section of pulse.json (a frozen v4 schema) and pulls in the
+// two below it. Deleting those broke Pulse's own tests, which under the
+// standing rule — delete it, and if it breaks then it belongs — is the answer.
 const STAGE1_SCRIPTS = [
   'delivery-loop-pilot-core.mjs',
   'delivery-loop-store.mjs',
-  'delivery-loop-pilot.mjs',
-  'delivery-loop-capture.mjs',
   'delivery-loop-export.mjs',
 ]
 const PULSE_GRAPH_FILES = [
@@ -93,15 +96,13 @@ test('Stage 1 field-evidence files and documentation links are wired', () => {
     assert.equal(schema.additionalProperties, false, `${file}: top level must be closed`)
   }
 
+  // Only commands that still exist. The freeze/assign/capture/replay/rehearse
+  // and phase-gate CLIs went with the Stage 1 entry points; docs promising a
+  // command nobody can run is the same class of untruth as a page reporting
+  // work nobody did.
   const commandAnchors = [
-    'delivery-loop-pilot.mjs freeze',
-    'delivery-loop-pilot.mjs assign',
-    'delivery-loop-capture.mjs capture',
-    'delivery-loop-pilot.mjs replay',
-    'delivery-loop-pilot.mjs rehearse',
     'delivery-loop-export.mjs export',
     'delivery-loop-export.mjs verify-pack',
-    'phase-gate-poc.mjs',
     'pulse.mjs compat-v1',
   ]
   for (const anchor of commandAnchors) {

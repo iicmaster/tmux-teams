@@ -266,7 +266,11 @@ const EMPTY_WORK = Object.freeze({
   audits: 0, resumes: 0,
 })
 
-function activityByAgent(items) {
+// Exported for the same reason as `stateOf` in kanban.mjs: whether an event
+// credits the agent that performed it is a fact about this function, not about
+// the page. Asserting it through rendered markup made a behaviour test read as
+// a presentation test and bound it to wording that is free to change.
+export function activityByAgent(items) {
   const byAgent = new Map()
   const bump = (agentId, key) => {
     if (!agentId) return

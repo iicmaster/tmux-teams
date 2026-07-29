@@ -55,7 +55,12 @@ const slug = (value) => String(value ?? '').replace(/[^A-Za-z0-9-]+/g, '-').slic
 // ── the card's state, in the runner's own vocabulary ─────────────────────────
 // One line per event the runner can append. An event nobody taught this
 // function about is printed raw rather than silently rendered as blank.
-function stateOf(graph, last) {
+// Exported so its vocabulary can be checked by calling it, rather than by
+// rendering a page and grepping the markup for `Unknown event`. The question
+// was always "does this function have a case for every word" — routing it
+// through HTML made a behaviour test look like a presentation test, and tied
+// it to copy that is allowed to change.
+export function stateOf(graph, last) {
   const role = teamRoleOf(graph, last.agent_id || '')?.role ?? null
   const reason = last.reason || null
   switch (last.event) {
