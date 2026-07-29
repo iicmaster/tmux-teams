@@ -10,10 +10,17 @@ own `skills/shared/tmux-teams`; the old mirror/sync flow is gone.)
 ## Commands
 
 ```bash
-node --test                        # whole suite — structure, semantics, KMS
-git diff --check                  # repository whitespace gate
+node scripts/run-fast.mjs fast     # explicit in-process inner tier
+node --test                        # whole suite — structure, semantics, KMS; run before commit
+git diff --check                   # repository whitespace gate
 claude plugin validate --strict .  # manifest validation
 ```
+
+`node scripts/run-fast.mjs fast` uses an explicit allowlist and prints every
+full-only test file, so a new `tests/**/*.test.mjs` stays visible and is still
+covered by the full tier. A fast pass does not cover ACP, CLI/subprocess,
+publisher, schema, or other full-only behavior; run bare `node --test` before a
+commit.
 
 `node --test tests/` (a bare directory) fails on Node 24 with MODULE_NOT_FOUND —
 pass no path at all, or a glob like `tests/*.test.mjs`.
@@ -83,8 +90,11 @@ pass no path at all, or a glob like `tests/*.test.mjs`.
 ## Rules
 
 - Only release and plugin files are tracked: `.github/`, `.claude-plugin/`,
-  `.gitignore`, `plugins/`, `tests/`, `README.md`, and `CLAUDE.md`. BMAD
-  scaffold dirs are gitignored — keep it that way.
+  `.gitignore`, `plugins/`, `tests/`, `scripts/`, `README.md`, and `CLAUDE.md`.
+  BMAD scaffold dirs are gitignored — keep it that way. (`scripts/` was added
+  2026-07-29 for `run-fast.mjs`: the Commands section above documents it, so it
+  has to exist for anyone who clones this. Dev tooling only — nothing the
+  plugin ships.)
 - The marketplace on this machine is registered from GitHub
   (`iicmaster/tmux-teams`) — a release is NOT live until pushed; after
   pushing run `claude plugin marketplace update tmux-teams` then

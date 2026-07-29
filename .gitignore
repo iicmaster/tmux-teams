@@ -12,3 +12,6 @@ CLAUDE.local.md
 
 # worker outboxes carry raw command output — never commit them
 .mailbox-out/
+
+# rendered pages from a smoke/verification run
+output/
