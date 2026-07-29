@@ -146,8 +146,18 @@ function writeOutbox(prompt) {
   }
   mkdirSync('.mailbox-out', { recursive: true })
   const evidence = process.env.MOCK_EVIDENCE === '1' ? 'EVIDENCE: node --test — 1/1 pass\n' : ''
+  // The normal companion fixture only proves transport completion. The loop
+  // smoke needs the judgements that the runner actually harvests, keyed by the
+  // declared agent identity rather than mutable prose in a role brief.
+  let configuredVerdicts = {}
+  try { configuredVerdicts = JSON.parse(process.env.MOCK_LOOP_VERDICTS ?? '{}') } catch { /* opt-in fixture input is invalid */ }
+  const configured = configuredVerdicts && typeof configuredVerdicts === 'object' && !Array.isArray(configuredVerdicts)
+    ? configuredVerdicts : {}
+  const candidate = configured[process.env.ACP_AGENT_ID ?? '']
+  const verdict = typeof candidate === 'string' && /^[a-z-]+$/.test(candidate) ? candidate : ''
+  const verdictBlock = verdict ? `VERDICT: ${verdict}\nREASON: deterministic mock loop verdict\n` : ''
   const did = permissionDecision ? `DID: mock work; permission=${permissionDecision}` : 'DID: mock work'
-  writeFileSync(join('.mailbox-out', id), `${did}\n${envelope}${evidence}${marker}\n`, { mode: 0o600 })
+  writeFileSync(join('.mailbox-out', id), `${did}\n${envelope}${evidence}${verdictBlock}${marker}\n`, { mode: 0o600 })
 }
 
 function permissionOptions(scenario) {

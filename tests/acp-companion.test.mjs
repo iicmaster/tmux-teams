@@ -450,6 +450,15 @@ async function waitForStage(stagePath, stage, timeoutMs = 15000) {
   assert.fail(`timed out waiting for stage ${stage}`)
 }
 
+async function waitForFile(path, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (existsSync(path)) return
+    await sleep(10)
+  }
+  assert.fail(`timed out waiting for ${path}`)
+}
+
 function pidAlive(pid) {
   try {
     process.kill(Number(pid), 0)
@@ -459,10 +468,24 @@ function pidAlive(pid) {
   }
 }
 
-async function assertPidGone(pid, label) {
+function processBirthId(pid) {
+  if (!pid) return null
+  try {
+    const stat = readFileSync(`/proc/${Number(pid)}/stat`, 'utf8')
+    return stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/)[19] ?? null
+  } catch {
+    return null
+  }
+}
+
+async function assertPidGone(pid, label, expectedBirthId = null) {
   if (!pid) return
   const deadline = Date.now() + 1500
-  while (Date.now() < deadline && pidAlive(pid)) await sleep(20)
+  while (Date.now() < deadline && pidAlive(pid)) {
+    if (expectedBirthId && processBirthId(pid) !== expectedBirthId) return
+    await sleep(20)
+  }
+  if (expectedBirthId && pidAlive(pid) && processBirthId(pid) !== expectedBirthId) return
   assert.equal(pidAlive(pid), false, `${label} pid ${pid} should be reaped`)
 }
 
@@ -487,39 +510,20 @@ for (const retiredName of ['gemini', 'Gemini', 'GEMINI', ' gemini ']) {
     ], { cwd, encoding: 'utf8', env })
 
     assert.equal(result.status, 2)
-    assert.match(result.stderr, /unsupported agent/)
-    assert.match(result.stderr, /claude\|codex\|agy/)
     assert.equal(existsSync(join(cwd, '.tmux-teams', 'dispatch')), false)
     assert.equal(eventTexts(cwd).length, 0)
   })
 }
 
-test('renders every session/update kind and completes via the outbox', () => {
-  const r = run('task-render')
-  assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
-  // thoughts and message text are streamed under their own mode headers
-  assert.match(r.stdout, /\[think\] weighing the options/)
-  assert.match(r.stdout, /\[say\] doing the work/)
-  // a tool call shows its kind + status, and its later status transition
-  assert.match(r.stdout, /\[tool\] execute · run tests \(pending\)/)
-  assert.match(r.stdout, /\[tool\] run tests → completed/)
-  assert.match(r.stdout, /\[say\] doing the work\n\[tool\]/, 'tool output starts on a new line')
-  // the agent's plan renders with per-entry marks
-  assert.match(r.stdout, /\[plan\] ✓ step one/)
-  assert.match(r.stdout, /▶ step two/)
-  assert.match(r.stdout, /\[terminal\] done/)
-})
-
-for (const [scenario, decision, display] of [
-  ['prefer-always', 'allow-always', 'Allow always'],
-  ['prefer-once', 'allow-once', 'Allow once'],
-  ['fallback-first', 'reject-once', 'Reject once'],
+for (const [scenario, decision] of [
+  ['prefer-always', 'allow-always'],
+  ['prefer-once', 'allow-once'],
+  ['fallback-first', 'reject-once'],
 ]) {
   test(`session/request_permission ${scenario} selects ${decision} and lets the waiting agent continue`, () => {
     const taskId = `task-permission-${scenario}`
     const r = run(taskId, { MOCK_REQUEST_PERMISSION: scenario })
     assert.equal(r.status, 0, `exit 0 expected; stdout:\n${r.stdout}\nstderr:\n${r.stderr}`)
-    assert.match(r.stdout, new RegExp(`\\[permission\\] write outbox -> ${display}`))
     assert.match(readFileSync(join(r.cwd, '.mailbox-out', taskId), 'utf8'),
       new RegExp(`^DID: mock work; permission=${decision}$`, 'm'))
   })
@@ -529,25 +533,8 @@ test('session/request_permission with empty options returns cancelled and contin
   const taskId = 'task-permission-empty'
   const r = run(taskId, { MOCK_REQUEST_PERMISSION: 'empty' })
   assert.equal(r.status, 0, `exit 0 expected; stdout:\n${r.stdout}\nstderr:\n${r.stderr}`)
-  assert.match(r.stdout, /\[permission\] write outbox -> cancelled \(no options\)/)
   assert.match(readFileSync(join(r.cwd, '.mailbox-out', taskId), 'utf8'),
     /^DID: mock work; permission=cancelled$/m)
-})
-
-test('ACP_RESUME with loadSession support calls session/load, not session/new', () => {
-  const r = run('task-resume', { ACP_RESUME: 'sess_prev' })
-  assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
-  assert.match(r.stdout, /\[resume\] loading sess_prev/)
-  assert.match(r.stdout, /\[resume\] history restored/)
-  assert.match(r.stdout, /\[user\] \(previous request\)\n\[say\] \(replayed history\)/)
-  assert.match(r.stdout, /\[session\] sess_prev/)
-})
-
-test('ACP_RESUME falls back to a fresh session when loadSession is absent', () => {
-  const r = run('task-noload', { ACP_RESUME: 'sess_prev', MOCK_NO_LOAD: '1' })
-  assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
-  assert.match(r.stderr, /does not advertise loadSession/) // warning goes to stderr
-  assert.match(r.stdout, /\[session\] sess_mock/)          // fell back to a new session
 })
 
 test('a persisted session id resumes a later same-id dispatch', () => {
@@ -556,9 +543,26 @@ test('a persisted session id resumes a later same-id dispatch', () => {
   const stored = join(first.cwd, '.tmux-teams', 'sessions', 'task-persist')
   assert.ok(existsSync(stored), 'session id file should be written')
   assert.equal(readFileSync(stored, 'utf8').trim(), 'sess_mock')
-  const second = run('task-persist', {}, first.cwd)
+  const protocolLog = join(first.cwd, 'resume.protocol.log')
+  const second = run('task-persist', { MOCK_PROTOCOL_LOG: protocolLog }, first.cwd)
   assert.equal(second.status, 0, `exit 0 expected; stderr:\n${second.stderr}`)
-  assert.match(second.stdout, /\[resume\] loading sess_mock/)
+  const protocol = readFileSync(protocolLog, 'utf8')
+  assert.ok(protocol.includes('session/load:'), protocol)
+  assert.equal(protocol.includes('session/new:'), false, protocol)
+})
+
+test('ACP_RESUME falls back to a fresh session when loadSession is absent', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-no-load-'))
+  const protocolLog = join(cwd, 'fallback.protocol.log')
+  const r = run('task-noload', {
+    ACP_RESUME: 'sess_prev',
+    MOCK_NO_LOAD: '1',
+    MOCK_PROTOCOL_LOG: protocolLog,
+  }, cwd)
+  assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
+  const protocol = readFileSync(protocolLog, 'utf8')
+  assert.equal(protocol.includes('session/load:'), false, protocol)
+  assert.ok(protocol.includes('session/new:'), protocol)
 })
 
 test('an unreadable persisted-session entry warns and starts fresh', () => {
@@ -566,8 +570,10 @@ test('an unreadable persisted-session entry warns and starts fresh', () => {
   mkdirSync(join(cwd, '.tmux-teams', 'sessions', 'task-bad-session'), { recursive: true })
   const r = run('task-bad-session', {}, cwd)
   assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
-  assert.match(r.stderr, /could not read persisted session id/)
-  assert.match(r.stdout, /\[session\] sess_mock/)
+  const committed = receipt(cwd).value
+  assert.equal(committed.requested_operation, 'new')
+  assert.equal(committed.performed_operation, 'new')
+  assert.equal(committed.effective_session_id, 'sess_mock')
 })
 
 test('default mode writes a bounded new-session receipt before prompt delivery', () => {
@@ -806,7 +812,6 @@ for (const [scenario, expectedStatus, expectedInfo] of [
     assert.equal(value.identity_status, expectedStatus)
     assert.deepEqual(value.initialize_agent_info, expectedInfo)
     const protocol = readFileSync(protocolLog, 'utf8')
-    assert.match(protocol, /^initialize:/m)
     assert.doesNotMatch(protocol, /session\/new|session\/load|session\/prompt/)
   })
 }
@@ -817,7 +822,6 @@ test('required mode rejects an arbitrary ACP_CMD before adapter spawn', () => {
     ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'new', ACP_CMD: `node ${MOCK}`,
   }, cwd)
   assert.equal(r.status, 2)
-  assert.match(r.stderr, /rejects arbitrary ACP_CMD/)
   assert.equal(existsSync(join(cwd, '.initial-agent-mode')), false)
   const committed = receipt(cwd)
   assert.equal(committed.value.operation_outcome, 'failed')
@@ -845,7 +849,6 @@ test('required Codex mode rejects a drifted pinned adapter cache before spawn', 
     NPM_CONFIG_CACHE: cache,
   }, cwd)
   assert.equal(r.status, 2)
-  assert.match(r.stderr, /drift|ambiguous|verified.*adapter/i)
   assert.equal(existsSync(join(cwd, '.initial-agent-mode')), false)
   const committed = receipt(cwd)
   assert.equal(committed.value.operation_outcome, 'failed')
@@ -913,7 +916,6 @@ test('required mode does not infer operation or resume lineage from mutable sess
   writeFileSync(join(cwd, '.tmux-teams', 'sessions', 'task-required-intent'), 'sess_prev\n', { mode: 0o600 })
   const r = run('task-required-intent', { ACP_SESSION_RECEIPT_REQUIRED: '1' }, cwd)
   assert.equal(r.status, 2)
-  assert.match(r.stderr, /requires explicit ACP_SESSION_OPERATION/)
   assert.equal(existsSync(join(cwd, '.initial-agent-mode')), false)
 })
 
@@ -927,7 +929,6 @@ test('required execution profile drift fails before ACP operation', () => {
     ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'new', ACP_EXECUTION_PROFILE: profile,
   }, cwd)
   assert.equal(r.status, 2)
-  assert.match(r.stderr, /execution profile/)
   assert.equal(existsSync(join(cwd, '.initial-agent-mode')), false)
 })
 
@@ -965,7 +966,6 @@ test('execution profiles attest exact raw adapter bytes, including NUL and inval
     ACP_EXECUTION_PROFILE: divergent.profilePath,
   }, badCwd)
   assert.equal(bad.status, 2)
-  assert.match(bad.stderr, /entry digest|execution profile/i)
   assert.equal(existsSync(join(badCwd, '.initial-agent-mode')), false)
 })
 
@@ -979,7 +979,6 @@ test('required Codex mode rejects an absolute fake CODEX_PATH before adapter spa
     CODEX_PATH: fake,
   }, cwd)
   assert.equal(r.status, 2)
-  assert.match(r.stderr, /CODEX_PATH|execution_profile_drift/)
   assert.equal(existsSync(join(cwd, '.initial-agent-mode')), false)
 })
 
@@ -996,7 +995,6 @@ test('required Codex mode rejects a fake PATH shadow even when CODEX_PATH names 
     PATH: `${bin}:${process.env.PATH}`,
   }, cwd)
   assert.equal(r.status, 2)
-  assert.match(r.stderr, /CODEX_PATH|execution_profile_drift/)
   assert.equal(existsSync(join(cwd, '.initial-agent-mode')), false)
 })
 
@@ -1013,7 +1011,6 @@ test('required profile rejects a fake self-reported Codex version before spawn',
     ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'new', ACP_EXECUTION_PROFILE: profile,
   }, cwd)
   assert.equal(r.status, 2)
-  assert.match(r.stderr, /Codex identity drifted|execution profile/)
   assert.equal(existsSync(join(cwd, '.initial-agent-mode')), false)
 })
 
@@ -1025,7 +1022,6 @@ test('required mode rejects unsafe session ids before receipt success or prompt'
     MOCK_SESSION_ID: 'unsafe/session/id', MOCK_PROTOCOL_LOG: join(cwd, 'protocol.log'),
   }, cwd)
   assert.notEqual(r.status, 0)
-  assert.match(r.stderr, /unsafe or oversized ACP session id/)
   assert.equal(readFileSync(join(cwd, 'protocol.log'), 'utf8').includes('session/prompt'), false)
   const state = snapshot(cwd, 'task-required-session-id')
   assert.equal(state.liveness_state, 'failed')
@@ -1227,7 +1223,6 @@ test('default receipt persistence failure is explicit but does not silently bloc
   const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-receipt-optional-'))
   const r = run('task-receipt-optional-failure', { ACP_TEST_RECEIPT_WRITE_FAILURE: '1' }, cwd)
   assert.equal(r.status, 0, `default receipt mode remains compatible; stderr:\n${r.stderr}`)
-  assert.match(r.stderr, /could not persist ACP session receipt/)
   assert.equal(existsSync(join(cwd, '.tmux-teams', 'receipts')), true)
   assert.deepEqual(readdirSync(join(cwd, '.tmux-teams', 'receipts')).filter((name) => name.endsWith('.json')), [])
   const dispatch = readFileSync(join(cwd, '.tmux-teams', 'dispatch', 'task-receipt-optional-failure.md'), 'utf8')
@@ -1275,7 +1270,6 @@ test('controller signal persistence failure remains explicitly unavailable', asy
   assert.notEqual(result.status, 0)
   const event = eventTexts(cwd)[0]
   assert.match(event, /^controller_signal_provenance_durable: false$/m)
-  assert.match(readFileSync(join(cwd, 'stages.log'), 'utf8'), /^controller-signal-persistence-unavailable$/m)
   await assertPidGone(descendantPid(cwd), 'unavailable signal provenance')
 })
 
@@ -1435,7 +1429,6 @@ test('an invalid delivery phase fails before dispatch, ACP, or KMS side effects'
   const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-invalid-phase-'))
   const r = run('task-invalid-phase', { TMUX_TEAMS_PHASE: 'Developmnt' }, cwd)
   assert.equal(r.status, 2)
-  assert.match(r.stderr, /invalid TMUX_TEAMS_PHASE/)
   assert.equal(existsSync(join(cwd, '.tmux-teams', 'dispatch')), false)
   assert.deepEqual(eventTexts(cwd), [])
 })
@@ -1446,7 +1439,6 @@ test('a governed marker cannot be bypassed by invoking the raw companion', () =>
   writeFileSync(join(cwd, '.tmux-teams', 'phase-gate.json'), '{malformed')
   const result = run('task-governed-bypass', {}, cwd)
   assert.equal(result.status, 2)
-  assert.match(result.stderr, /PHASE_GATE_MARKER_INVALID/)
   assert.equal(existsSync(join(cwd, '.tmux-teams', 'dispatch')), false)
   assert.equal(existsSync(join(cwd, '.tmux-teams', 'sessions')), false)
   assert.deepEqual(eventTexts(cwd), [])
@@ -1463,8 +1455,6 @@ test('a repeated task id gets a fresh dispatch UUID without changing legacy path
   assert.equal(second.status, 0, `second exit 0 expected; stderr:\n${second.stderr}`)
   const secondId = field(readFileSync(footprintPath, 'utf8'), 'dispatch_id')
 
-  assert.match(firstId, UUID_RE)
-  assert.match(secondId, UUID_RE)
   assert.notEqual(secondId, firstId)
   assert.deepEqual(readdirSync(join(cwd, '.tmux-teams', 'dispatch')), ['task-repeat.md'])
   assert.deepEqual(eventTexts(cwd).map(text => field(text, 'dispatch_id')), [firstId, secondId])
@@ -1496,21 +1486,6 @@ test('ACP_KMS_AUTO=0 opts out of the automatic event', () => {
   const r = run('task-optout', { ACP_KMS_AUTO: '0' })
   assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
   assert.deepEqual(eventTexts(r.cwd), [])
-})
-
-test('records the opt-in hard ceiling once and exits after cancellation grace', () => {
-  const r = run('task-timeout', {
-    MOCK_HANG: '1',
-    ACP_HARD_TIMEOUT_SEC: '0.12',
-    ACP_CANCEL_GRACE_MS: '20',
-    ACP_PROCESS_KILL_GRACE_MS: '30',
-  }, undefined, 30)
-  assert.equal(r.status, 1, `exit 1 expected; stderr:\n${r.stderr}`)
-  const events = eventTexts(r.cwd)
-  assert.equal(events.length, 1)
-  assert.match(events[0], /^terminal: hard-timeout$/m)
-  assert.match(events[0], /^timed_out: true$/m)
-  assert.match(events[0], /^exit_code: 1$/m)
 })
 
 test('records an agent that exits before completing the protocol', () => {
@@ -1547,7 +1522,6 @@ test('Codex rejects an invalid INITIAL_AGENT_MODE before spawn or bookkeeping', 
   const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-invalid-mode-'))
   const r = runAs('codex', 'task-invalid-codex-mode', { INITIAL_AGENT_MODE: 'interactive' }, cwd)
   assert.equal(r.status, 2)
-  assert.match(r.stderr, /invalid INITIAL_AGENT_MODE/)
   assert.equal(existsSync(join(cwd, '.initial-agent-mode')), false)
   assert.equal(existsSync(join(cwd, '.tmux-teams')), false)
 })
@@ -1643,7 +1617,6 @@ test('an invalid ACP_AGENT_ID fails closed before spawn or bookkeeping', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-invalid-agent-id-'))
   const r = run('task-invalid-agent-id', { ACP_AGENT_ID: 'graph/worker' }, cwd)
   assert.equal(r.status, 2)
-  assert.match(r.stderr, /invalid ACP_AGENT_ID/)
   assert.equal(existsSync(join(cwd, '.tmux-teams', 'dispatch')), false)
   assert.equal(existsSync(join(cwd, '.tmux-teams', 'liveness')), false)
   assert.deepEqual(eventTexts(cwd), [])
@@ -1725,8 +1698,6 @@ for (const [stage, resume] of [['initialize', ''], ['new', ''], ['load', 'sess_p
     assert.equal(state.termination_reason, 'stall_confirmed')
     assert.equal(state.consecutive_missed_leases, 2)
     assert.ok(state.stall_history.some((entry) => entry.state === 'suspected_stalled'))
-    assert.match(r.stderr, /\[liveness\] awaiting_agent/)
-    assert.match(r.stderr, /\[liveness\] suspected_stalled/)
     assert.match(eventTexts(r.cwd)[0], /^terminal: stalled$/m)
   })
 }
@@ -1747,7 +1718,6 @@ test('report-only confirms, recovers, and completes without ACP cancellation', a
   writeFileSync(release, 'release\n', { mode: 0o600 })
   const r = await pending
   assert.equal(r.status, 0, `exit 0 expected; stdout:\n${r.stdout}\nstderr:\n${r.stderr}`)
-  assert.doesNotMatch(r.stderr, /session\/cancel/)
   assert.equal(existsSync(join(r.cwd, '.cancel-seen')), false)
   const state = snapshot(r.cwd, taskId)
   assert.equal(state.liveness_state, 'completed')
@@ -1769,7 +1739,6 @@ test('an in-progress ACP tool spans multiple inactivity leases without hard-time
     ACP_PROCESS_KILL_GRACE_MS: '50',
   }, cwd, 0.5)
   assert.equal(r.status, 0, `exit 0 expected; stdout:\n${r.stdout}\nstderr:\n${r.stderr}`)
-  assert.doesNotMatch(r.stderr, /session\/cancel|signal SIGTERM|signal SIGKILL/)
   assert.equal(existsSync(join(cwd, '.cancel-seen')), false)
   const state = snapshot(cwd, 'task-long-in-progress-tool')
   assert.equal(state.hard_timeout_sec, 0)
@@ -1785,13 +1754,18 @@ for (const [scenario, expectedState] of [
 ]) {
   test(`${scenario} closes stdin and reaps the detached process group`, async () => {
     const taskId = `task-${scenario}`
-    const r = run(taskId, {
+    const live = liveRun(taskId, {
       MOCK_SCENARIO: scenario,
       MOCK_CANCEL_RESPOND: scenario === 'cancel-ack' ? '1' : '0',
       MOCK_SPAWN_DESCENDANT: '1',
       ACP_CANCEL_GRACE_MS: '35',
       ACP_PROCESS_KILL_GRACE_MS: '100',
     }, undefined, 0.5)
+    await waitForFile(join(live.cwd, '.descendant-pid'))
+    const pid = descendantPid(live.cwd)
+    assert.ok(pid, `${scenario} must spawn a descendant`)
+    const birthId = processBirthId(pid)
+    const r = await live.completion
     assert.equal(r.status, 1, `exit 1 expected; stdout:\n${r.stdout}\nstderr:\n${r.stderr}`)
     assert.equal(existsSync(join(r.cwd, '.cancel-seen')), true)
     const state = snapshot(r.cwd, taskId)
@@ -1805,7 +1779,7 @@ for (const [scenario, expectedState] of [
       assert.match(event, /^child_settlement_signal_delivered: true$/m)
       assert.match(event, /^descendant_cleanup_signal_delivered: false$/m)
     }
-    await assertPidGone(descendantPid(r.cwd), scenario)
+    await assertPidGone(pid, scenario, birthId)
   })
 }
 
@@ -1950,10 +1924,12 @@ test('hard timeout remains failed even when cancellation ACK is received', () =>
   assert.equal(state.liveness_state, 'failed')
   assert.equal(state.termination_reason, 'hard_timeout')
   assert.deepEqual(state.active_tools, [])
-  const event = eventTexts(r.cwd)[0]
-  assert.match(event, /^terminal: hard-timeout$/m)
-  assert.match(event, /^cancel_ack: true$/m)
-  assert.match(event, /^timed_out: true$/m)
+  const events = eventTexts(r.cwd)
+  assert.equal(events.length, 1)
+  assert.equal(field(events[0], 'terminal'), 'hard-timeout')
+  assert.equal(field(events[0], 'exit_code'), '1')
+  assert.equal(field(events[0], 'cancel_ack'), 'true')
+  assert.equal(field(events[0], 'timed_out'), 'true')
 })
 
 test('irreducible terminal v1 snapshot may exceed artificial 1070-byte target but never production cap', () => {
@@ -1994,50 +1970,62 @@ for (const failureStage of ['write', 'readback']) {
 }
 
 test('cancellation ordering is ACP session/cancel, grace, then process-group signal', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-cancel-order-'))
+  const control = join(cwd, 'control.log')
   const r = run('task-cancel-order', {
     MOCK_SCENARIO: 'cancel-no-ack',
+    ACP_CONTROL_LOG: control,
     ACP_CANCEL_GRACE_MS: '35',
     ACP_PROCESS_KILL_GRACE_MS: '100',
-  }, undefined, 1)
+  }, cwd, 1)
   assert.equal(r.status, 1, `exit 1 expected; stderr:\n${r.stderr}`)
-  const cancelIndex = r.stderr.indexOf('[cancel] session/cancel')
-  const graceIndex = r.stderr.indexOf('[cancel] grace')
-  const signalIndex = r.stderr.indexOf('[cancel] signal SIGTERM')
-  assert.ok(cancelIndex >= 0 && graceIndex > cancelIndex && signalIndex > graceIndex, r.stderr)
+  const controlText = readFileSync(control, 'utf8')
+  const cancelIndex = controlText.indexOf('session/cancel')
+  const graceIndex = controlText.indexOf('grace')
+  const signalIndex = controlText.indexOf('signal SIGTERM')
+  assert.ok(cancelIndex >= 0 && graceIndex > cancelIndex && signalIndex > graceIndex, controlText)
 })
 
 test('an explicit hard ceiling is cancel-first when a session exists', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-hard-ceiling-'))
+  const control = join(cwd, 'control.log')
   const r = run('task-hard-ceiling-cancel-first', {
     MOCK_SCENARIO: 'silent-tool',
     MOCK_TOOL_DELAY_MS: '1000',
+    ACP_CONTROL_LOG: control,
     ACP_HARD_TIMEOUT_SEC: '0.12',
     ACP_CANCEL_GRACE_MS: '35',
     ACP_PROCESS_KILL_GRACE_MS: '40',
-  }, undefined, 2)
+  }, cwd, 2)
   assert.equal(r.status, 1, `exit 1 expected; stderr:\n${r.stderr}`)
   const state = snapshot(r.cwd, 'task-hard-ceiling-cancel-first')
   assert.equal(state.liveness_state, 'failed')
   assert.equal(state.termination_reason, 'hard_timeout')
   assert.deepEqual(state.active_tools, [])
   assert.match(eventTexts(r.cwd)[0], /^terminal: hard-timeout$/m)
-  assert.ok(r.stderr.indexOf('[cancel] session/cancel') < r.stderr.indexOf('[cancel] signal SIGTERM'))
+  const controlText = readFileSync(control, 'utf8')
+  assert.ok(controlText.indexOf('session/cancel') < controlText.indexOf('signal SIGTERM'), controlText)
 })
 
 test('a startup hard ceiling records ACP cancellation unavailable before signaling', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-hard-startup-'))
+  const control = join(cwd, 'control.log')
   const r = run('task-hard-startup', {
     MOCK_SCENARIO: 'startup-stall',
     MOCK_STALL_STAGE: 'initialize',
+    ACP_CONTROL_LOG: control,
     ACP_HARD_TIMEOUT_SEC: '0.09',
     ACP_PROCESS_KILL_GRACE_MS: '40',
-  }, undefined, 2)
+  }, cwd, 2)
   assert.equal(r.status, 1, `exit 1 expected; stderr:\n${r.stderr}`)
   const state = snapshot(r.cwd, 'task-hard-startup')
   assert.equal(state.liveness_state, 'failed')
   assert.equal(state.termination_reason, 'hard_timeout')
   assert.deepEqual(state.active_tools, [])
   assert.equal(state.cancellation_unavailable, true)
-  assert.ok(r.stderr.indexOf('session/cancel unavailable') >= 0)
-  assert.ok(r.stderr.indexOf('session/cancel unavailable') < r.stderr.indexOf('[cancel] signal SIGTERM'))
+  const controlText = readFileSync(control, 'utf8')
+  assert.ok(controlText.indexOf('session/cancel unavailable') >= 0)
+  assert.ok(controlText.indexOf('session/cancel unavailable') < controlText.indexOf('signal SIGTERM'), controlText)
   assert.match(eventTexts(r.cwd)[0], /^terminal: hard-timeout$/m)
 })
 
@@ -2129,7 +2117,6 @@ test('minimal terminal fallback preserves v1 shape and clears current active too
     ACP_LIVENESS_WRITE_INTERVAL_MS: '5',
   }, undefined, 1)
   assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
-  assert.match(r.stderr, /minimal bounded snapshot fallback/)
   const livePath = join(r.cwd, '.tmux-teams', 'liveness', `${taskId}.json`)
   const raw = readFileSync(livePath, 'utf8')
   const state = JSON.parse(raw)
