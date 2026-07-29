@@ -18,7 +18,44 @@ const LIVENESS_FIXTURE = join(HERE, 'fixtures', 'acp-liveness-v1.json')
 const STARTUP_FIXTURE = join(HERE, 'fixtures', 'acp-liveness-v1-startup.json')
 const RECOVERY_FIXTURE = join(HERE, 'fixtures', 'acp-liveness-v1-recovery.json')
 const RECEIPT_SCHEMA_FILE = join(HERE, '..', 'plugins', 'tmux-teams', 'skills', 'tmux-teams', 'references', 'acp-session-receipt-v1.schema.json')
-const CODEX_EXECUTABLE = realpathSync(spawnSync('which', ['codex'], { encoding: 'utf8' }).stdout.trim().split(/\r?\n/).find(Boolean))
+// A machine without `codex` on PATH is a legitimate place to run this suite —
+// CI is one, and it is where this line failed: `which` returned nothing,
+// `.find(Boolean)` returned undefined, and `realpathSync(undefined)` threw
+// during module load, so all 73 tests in this file reported as ONE failure in
+// 76ms. The execution-profile tests genuinely attest the real binary's bytes
+// and cannot run without it; every other test only passes its path through an
+// env var. So resolve it leniently here and let the tests that need it say so
+// by name.
+// 38 of these tests build an execution profile from this file and check the
+// companion's refusals against it — a drifted digest, a shadowed PATH, a
+// self-reported version that does not match. That logic is OURS, and CI is
+// exactly where it should be exercised, so a missing `codex` must not turn it
+// into 38 skips. What the profile actually needs is a real executable file on
+// disk whose bytes and `--version` are stable; when the machine has no codex,
+// a stand-in satisfies that without pretending to be the vendor's binary.
+//
+// Named `stand-in-codex`, not `codex`: a digest attributed to a file that is
+// not the thing it claims to be is the one lie this suite exists to prevent.
+const CODEX_EXECUTABLE = (() => {
+  const found = spawnSync('which', ['codex'], { encoding: 'utf8' }).stdout.trim().split(/\r?\n/).find(Boolean)
+  if (found) return realpathSync(found)
+  const dir = fsMkdtempSync(join(tmpdir(), 'acp-standin-codex-'))
+  const path = join(dir, 'stand-in-codex')
+  writeFileSync(path, '#!/usr/bin/env node\n'
+    + "// Stand-in for the Codex CLI: this suite needs a stable executable to digest,\n"
+    + "// not the vendor's behaviour. Anything that reaches it beyond --version is a\n"
+    + '// test spawning a real session, which is not what these profiles cover.\n'
+    + "if (process.argv[2] === '--version') { process.stdout.write('codex-cli 0.0.0-stand-in\\n'); process.exit(0) }\n"
+    + "process.stderr.write('stand-in-codex was executed; this suite only digests it\\n')\nprocess.exit(1)\n",
+    { mode: 0o755 })
+  return realpathSync(path)
+})()
+const CODEX_IS_REAL = Boolean(spawnSync('which', ['codex'], { encoding: 'utf8' }).stdout.trim())
+// Said out loud on every run. A suite that quietly substitutes a fixture for the
+// thing it names is how a reader comes to believe more was covered than was.
+if (!CODEX_IS_REAL) {
+  console.error('[acp-companion.test] no codex on PATH — execution-profile tests run against a stand-in executable')
+}
 const NODE_EXECUTABLE = realpathSync(process.execPath)
 const TEST_TMP_ROOT = fsMkdtempSync(join(tmpdir(), 'acp-receipt-suite-'))
 const TEST_REPOSITORIES = new Set()
