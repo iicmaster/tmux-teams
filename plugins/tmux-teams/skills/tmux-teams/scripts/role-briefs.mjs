@@ -63,7 +63,7 @@ const SHARED_RULES = `## Project rules you inherit
 - The lane (\`claude\`/\`codex\`) and the model are two separate facts. Never
   substitute one for the other.
 - Code that ships has to parse. A matching digest is not a passing check.
-- Do not commit, do not push, do not edit \`.tmux-teams/team-graph.json\`, and
+- Do not commit, do not push, do not edit \`.tmux-teams/graph.json\`, and
   never write inside \`.tmux-teams/work-items/\` — that ledger is append-only and
   the runner owns it.
 - End your outbox with an \`EVIDENCE:\` block listing what you actually checked —

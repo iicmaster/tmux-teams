@@ -207,7 +207,7 @@ function writeExactLivenessFixture(dir, fixtureName, { graph = false, effectiveN
   writeFileSync(join(dir, '.tmux-teams', 'liveness', `${fixture.task_id}.json`),
     `${JSON.stringify(fixture, null, 2)}\n`)
   if (!graph) return fixture
-  const graphPath = join(dir, 'team-graph.json')
+  const graphPath = join(dir, 'graph.json')
   writeFileSync(graphPath, `${JSON.stringify({
     graph: {
       project_id: 'fixture-project',

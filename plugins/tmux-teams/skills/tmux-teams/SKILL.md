@@ -739,7 +739,7 @@ phase runs, bounded gates, replay head, and deterministic bottleneck facts.
 Pulse sanitizes and observes this file; it never calls the controller, consumes
 an acceptance, retries a dispatch, or changes the store.
 
-Pass `--team-graph <absolute-team-graph.json>` for the configurable Team
+Pass `--team-graph <absolute-graph.json>` for the configurable Team
 flowchart input, accepting either the graph object or the Stage 2 `{ "graph":
 ... }` wrapper. Team and agent membership is validated before publication; ACP
 agent IDs use the same restricted grammar as dispatch. Pass the optional

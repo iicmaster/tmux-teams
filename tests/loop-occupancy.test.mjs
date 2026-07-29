@@ -280,7 +280,7 @@ test('a team is handed the newest real deliverable, not the newest failure', () 
     mkdirSync(join(store, 'work-items'), { recursive: true })
     mkdirSync(join(store, 'team-briefs'), { recursive: true })
     mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
-    writeFileSync(join(store, 'team-graph.json'), JSON.stringify(TWO_TEAMS))
+    writeFileSync(join(store, 'graph.json'), JSON.stringify(TWO_TEAMS))
     writeFileSync(join(store, 'team-briefs', 'test.md'), '# standing brief for Test\n')
     writeFileSync(join(dir, '.mailbox-out', 'build-1'), 'THE DESIGN THE BUILD TEAM DELIVERED\n')
     // Build delivered a real artifact; a later leg died before writing anything.
@@ -663,7 +663,7 @@ test('a frozen pulse snapshot stops the runner dispatching', () => {
     const store = join(dir, '.tmux-teams')
     mkdirSync(join(store, 'work-items'), { recursive: true })
     mkdirSync(join(store, 'team-briefs'), { recursive: true })
-    writeFileSync(join(store, 'team-graph.json'), JSON.stringify(TWO_TEAMS))
+    writeFileSync(join(store, 'graph.json'), JSON.stringify(TWO_TEAMS))
     writeFileSync(join(store, 'team-briefs', 'test.md'), '# standing brief\n')
     writeFileSync(join(store, 'work-items', 'tok.jsonl'), `${JSON.stringify({
       at: '2026-07-27T01:00:00.000Z', event: 'intake', work_item: 'tok', workflow: 'feature',
@@ -919,7 +919,7 @@ const publish = (ledgers = {}) => {
   const dir = mkdtempSync(join(tmpdir(), 'loop-page-'))
   const store = join(dir, '.tmux-teams')
   mkdirSync(join(store, 'work-items'), { recursive: true })
-  writeFileSync(join(store, 'team-graph.json'), JSON.stringify(TWO_TEAMS))
+  writeFileSync(join(store, 'graph.json'), JSON.stringify(TWO_TEAMS))
   for (const [workItem, events] of Object.entries(ledgers)) {
     writeFileSync(join(store, 'work-items', `${workItem}.jsonl`),
       `${ledger(workItem, events).map((entry) => JSON.stringify(entry)).join('\n')}\n`)

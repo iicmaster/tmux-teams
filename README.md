@@ -16,7 +16,7 @@ Two layers that must never be conflated:
 
 | Layer | File | Answers |
 |---|---|---|
-| **Declaration** | `.tmux-teams/team-graph.json` | who exists and how they are wired |
+| **Declaration** | `.tmux-teams/graph.json` | who exists and how they are wired |
 | **Evidence** | `.tmux-teams/work-items/<token>.jsonl`, `pulse.json` | what actually happened |
 
 - A **team** is a reusable pool: one dispatcher, N workers, one evaluator. Every
@@ -58,7 +58,9 @@ Three pages are published side by side into `.tmux-teams/`, linked by one nav:
 | `tmux-teams:party-auto` | Execution lane of party-mode |
 | `tmux-teams:party-advise` | Read-only advisory lane of party-mode |
 | `tmux-teams:sqthink` | Sequential-thinking analysis/planning |
-| `tmux-teams:team-loop-setup` | First-run interview: how many teams, and which model sits in each role of each one. Asks until the declaration is complete rather than starting a loop on blanks |
+| `tmux-teams:graph-setup` | First-run interview: how many teams, and which model sits in each role of each one. Asks until the declaration is complete rather than starting a loop on blanks |
+| `tmux-teams:claude-advisor` | Read-only consultation over ACP, pinned to `claude-fable-5` at `max` and verified with `ACP_EXPECT_MODEL` — the answer comes back as a party, never one voice |
+| `tmux-teams:codex-advisor` | The same from outside the Claude family: `gpt-5.6-sol` at `ultra`. Ask both on a hard call and read the two round-tables side by side — where they disagree is the finding |
 
 Commands: `/tmux-teams:mailbox-run` — run the mailbox PM workflow end to end.
 
@@ -349,14 +351,14 @@ limit, and when it was last seen. Status, lane and model are three different
 facts and the page never fakes one from another — an unconfirmed model reads
 `<name> unconfirmed`, an unpinned one reads `default — none pinned`.
 
-Topology comes from `<repo>/.tmux-teams/team-graph.json` validated by the Team
+Topology comes from `<repo>/.tmux-teams/graph.json` validated by the Team
 contract, or from the bundled four-team template when that file is absent; an
 **invalid** file fails the page closed with the reason rather than falling back.
 Nodes bind to evidence by `agent_id` only, so a dispatch must set
 `ACP_AGENT_ID` to a declared id to appear. A solid edge means a record exists
 for it; a dashed edge is the operating model with nothing measured yet. A repo
 with no runner history says so in a banner instead of drawing zeros as calm.
-Use the bundled `team-loop-setup` skill (`graph.mjs init|check <repo>`) to
+Use the bundled `graph-setup` skill (`graph.mjs init|check <repo>`) to
 declare a repo's own loop. The page is full-bleed: the graph is the page, and
 its SVG carries no fixed pixel size, so it scales to the viewport.
 

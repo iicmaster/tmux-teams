@@ -89,7 +89,15 @@ export const DEFAULT_WORKFLOW_GRAPH = Object.freeze({
   }],
 })
 
-export const WORKFLOW_GRAPH_FILE = 'team-graph.json'
+export const WORKFLOW_GRAPH_FILE = 'graph.json'
+// The name this file carried until 2026-07-29. It is still read, and that is
+// not politeness: a missing declaration falls back to the bundled template, so
+// a bare rename would leave every existing repo drawing a four-team default
+// that looks entirely normal while its real teams silently vanished. A reader
+// cannot tell those two states apart, which is what makes the quiet path the
+// dangerous one. `readWorkflowGraph` reports the legacy name in `source` so the
+// page can say out loud which file it answered from.
+export const LEGACY_WORKFLOW_GRAPH_FILE = 'team-graph.json'
 
 export function deriveWorkflowGraphDigest(graph) {
   return `sha256:${createHash('sha256').update(JSON.stringify(graph)).digest('hex')}`

@@ -1,11 +1,11 @@
 ---
-name: team-loop-setup
-description: 'Use as the mandatory first-run setup for the delivery loop, right after installing this plugin, and whenever the declaration is missing, incomplete or rejected — an interactive wizard that asks until this repo has declared which Teams exist, how many workers each has, which model every seat runs on, and which workflows route over them, then writes and validates team-graph.json. Triggers: "setup loop", "set up the team graph", "ตั้งค่าลูป", "สร้างกราฟทีม", "team-graph.json", the graph page reporting the declaration could not be read, a fresh install that has never declared a loop.'
+name: graph-setup
+description: 'Use as the mandatory first-run setup for the delivery loop, right after installing this plugin, and whenever the declaration is missing, incomplete or rejected — an interactive wizard that asks until this repo has declared which Teams exist, how many workers each has, which model every seat runs on, and which workflows route over them, then writes and validates graph.json. Triggers: "setup loop", "set up the team graph", "ตั้งค่าลูป", "สร้างกราฟทีม", "graph.json", the graph page reporting the declaration could not be read, a fresh install that has never declared a loop.'
 ---
 
-# team-loop-setup — interview until this repo has declared its own loop
+# graph-setup — interview until this repo has declared its own loop
 
-This skill produces exactly one file: `<repo>/.tmux-teams/team-graph.json`. It is
+This skill produces exactly one file: `<repo>/.tmux-teams/graph.json`. It is
 the **declaration** layer — teams, seats, models and routes are assigned by a
 human and never observed. Everything else the loop shows (who ran, what they
 produced, how long it took) is evidence, and evidence can only bind to seats
@@ -19,7 +19,7 @@ that dispatches agents its owner never chose.
 ## If this is skipped, nothing dispatches
 
 A missing declaration is **not** a default any more. There is no bundled shape
-that quietly takes over: with no valid `team-graph.json` the runner refuses to
+that quietly takes over: with no valid `graph.json` the runner refuses to
 dispatch, and it says so rather than idling silently.
 
 The runner states that refusal in `<repo>/.tmux-teams/runner-heartbeat.json`:
@@ -64,7 +64,7 @@ an idle board later.
 ## Step 0 — read what is already there before asking anything
 
 ```bash
-cat <repo>/.tmux-teams/team-graph.json 2>/dev/null
+cat <repo>/.tmux-teams/graph.json 2>/dev/null
 node <plugin>/skills/tmux-teams/scripts/graph.mjs check <repo>
 ```
 
@@ -74,7 +74,7 @@ Three cases, and they are handled differently:
 | --- | --- |
 | no file | full interview, every question below |
 | a file the checker rejects | interview **only for what is missing or invalid**, and repeat the checker's reason to the user as the reason for asking |
-| a file the checker accepts, and `ok (team-graph.json)` | do not overwrite it. Report what it declares and ask whether anything should change |
+| a file the checker accepts, and `ok (graph.json)` | do not overwrite it. Report what it declares and ask whether anything should change |
 
 The second case is the common one on an upgraded install: a graph written before
 models were required, or one still carrying `wip_limit`. Re-asking for a team's
@@ -218,7 +218,7 @@ node <plugin>/skills/tmux-teams/scripts/graph.mjs check <repo>
 Success is **all four** of these, not just the exit code:
 
 1. it exits 0
-2. the ok line names the file — `ok (team-graph.json)`. `ok (default)` means
+2. the ok line names the file — `ok (graph.json)`. `ok (default)` means
    your write did not land where the reader looks (wrong repo root, or
    `.tmux-teams/` missing) and the checker read a bundled shape instead
 3. the printed team and workflow counts match the answers you just collected

@@ -54,7 +54,7 @@ const TWO_TEAMS = {
 const repoWith = (graph, ledgers = {}, extra = {}) => {
   const dir = mkdtempSync(join(tmpdir(), 'kanban-board-'))
   mkdirSync(join(dir, '.tmux-teams', 'work-items'), { recursive: true })
-  if (graph !== undefined) writeFileSync(join(dir, '.tmux-teams/team-graph.json'), JSON.stringify(graph))
+  if (graph !== undefined) writeFileSync(join(dir, '.tmux-teams/graph.json'), JSON.stringify(graph))
   for (const [token, events] of Object.entries(ledgers)) {
     const lines = events.map((entry) => JSON.stringify({ work_item: token, workflow: 'feature', ...entry }))
     writeFileSync(join(dir, '.tmux-teams/work-items', `${token}.jsonl`), `${lines.join('\n')}\n`)
@@ -93,7 +93,7 @@ const pulseRepo = (ledgerLines = []) => {
   mkdirSync(join(dir, '.tmux-teams', 'work-items'), { recursive: true })
   mkdirSync(join(dir, '.tmux-teams', 'dispatch'), { recursive: true })
   mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
-  writeFileSync(join(dir, '.tmux-teams/team-graph.json'), JSON.stringify(TWO_TEAMS))
+  writeFileSync(join(dir, '.tmux-teams/graph.json'), JSON.stringify(TWO_TEAMS))
   writeFileSync(join(dir, '.tmux-teams/work-items/tok.jsonl'),
     ledgerLines.map((entry) => JSON.stringify({ work_item: 'tok', workflow: 'feature', ...entry })).join('\n') + '\n')
   return dir

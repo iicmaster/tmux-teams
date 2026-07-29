@@ -19,7 +19,7 @@ import { EVENT_SPEC, LEDGER_EVENTS } from '../plugins/tmux-teams/skills/tmux-tea
 const repoWith = (graph) => {
   const dir = mkdtempSync(join(tmpdir(), 'graph-'))
   mkdirSync(join(dir, '.tmux-teams'), { recursive: true })
-  if (graph !== undefined) writeFileSync(join(dir, '.tmux-teams/team-graph.json'), JSON.stringify(graph))
+  if (graph !== undefined) writeFileSync(join(dir, '.tmux-teams/graph.json'), JSON.stringify(graph))
   return dir
 }
 
@@ -291,6 +291,35 @@ const heartbeat = (over = {}) => ({
 
 // A fixed clock: an age measured against the wall clock would drift the copy.
 const pageOf = (dir) => renderGraphPage(dir, snapshotWith(), { now: NOW })
+
+// ── the declaration survived being renamed ──────────────────────────────────
+//
+// `team-graph.json` became `graph.json` on 2026-07-29. A missing declaration
+// falls back to the bundled four-team template, so a bare rename would have
+// left every existing repo drawing teams nobody declared — no error, no
+// diagnostic, and a page that looks entirely normal. The legacy name is still
+// read, and `source` states which file answered so nobody has to guess.
+test('a repo still holding the old file name keeps its teams, and says which file answered', () => {
+  const dir = repoWith(undefined)
+  writeFileSync(join(dir, '.tmux-teams/team-graph.json'), JSON.stringify(TWO_TEAMS))
+  const legacy = readWorkflowGraph(dir)
+  assert.equal(legacy.ok, true)
+  assert.equal(legacy.source, 'team-graph.json')
+  assert.deepEqual(legacy.value.teams.map((team) => team.team_id), ['build', 'verify'])
+
+  // The new name wins when both exist — a repo mid-migration must not have its
+  // current declaration shadowed by the file it is migrating away from.
+  writeFileSync(join(dir, '.tmux-teams/graph.json'),
+    JSON.stringify({ ...TWO_TEAMS, project_id: 'current' }))
+  const current = readWorkflowGraph(dir)
+  assert.equal(current.source, 'graph.json')
+  assert.equal(current.value.project_id, 'current')
+})
+
+test('a repo with neither file still says it is on the bundled default', () => {
+  // The fallback is not the bug. Answering from it without saying so was.
+  assert.equal(readWorkflowGraph(repoWith(undefined)).source, 'default')
+})
 
 // ── the controller counts what it did, not what it was asked ────────────────
 //

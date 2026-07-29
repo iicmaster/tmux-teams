@@ -61,7 +61,7 @@ function repoWith({ graph = graphDecl(), ledgers = {}, pulseAgeSec = 5, rawGraph
   dirs.push(dir)
   mkdirSync(join(dir, '.tmux-teams', 'work-items'), { recursive: true })
   mkdirSync(join(dir, '.tmux-teams', 'team-briefs'), { recursive: true })
-  writeFileSync(join(dir, '.tmux-teams', 'team-graph.json'),
+  writeFileSync(join(dir, '.tmux-teams', 'graph.json'),
     JSON.stringify(rawGraph ?? graph, null, 2))
   for (const id of ['build', 'test']) {
     writeFileSync(join(dir, '.tmux-teams', 'team-briefs', `${id}.md`), `# ${id}\n\nDo the work.\n`)

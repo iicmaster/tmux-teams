@@ -27,7 +27,9 @@ import { fileURLToPath } from 'node:url'
 import { KANIT_FONT_CSS } from '../assets/kanit/kanit-embedded.mjs'
 import { readDispatchFacts, readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
 import { NAV_CSS, renderNav } from './page-nav.mjs'
-import { DEFAULT_WORKFLOW_GRAPH, WORKFLOW_GRAPH_FILE, validateWorkflowGraph } from './workflow-graph.mjs'
+import {
+  DEFAULT_WORKFLOW_GRAPH, LEGACY_WORKFLOW_GRAPH_FILE, WORKFLOW_GRAPH_FILE, validateWorkflowGraph,
+} from './workflow-graph.mjs'
 
 const FONT_CSS_NAME = `pulse-fonts-${createHash('sha256').update(KANIT_FONT_CSS).digest('hex')}.css`
 
@@ -57,13 +59,25 @@ export const duration = (seconds) => {
 }
 
 export function readWorkflowGraph(repo) {
-  let raw
-  try {
-    raw = JSON.parse(readFileSync(join(repo, '.tmux-teams', WORKFLOW_GRAPH_FILE), 'utf8'))
-  } catch {
-    return { ...validateWorkflowGraph(DEFAULT_WORKFLOW_GRAPH), source: 'default' }
+  // Tried in order, and the order matters more than it looks. A repo that
+  // declared its teams before the 2026-07-29 rename still holds them under the
+  // old name; without this second attempt it would fall through to the bundled
+  // default and draw four teams nobody declared — a page that looks completely
+  // normal while answering about somebody else's project. That failure raises
+  // no error to notice, which is why it is handled here instead of left to
+  // whoever eventually wonders why the team names are wrong.
+  for (const name of [WORKFLOW_GRAPH_FILE, LEGACY_WORKFLOW_GRAPH_FILE]) {
+    let raw
+    try {
+      raw = JSON.parse(readFileSync(join(repo, '.tmux-teams', name), 'utf8'))
+    } catch {
+      continue
+    }
+    // `source` carries the name that actually answered, so a reader can see the
+    // page is running off the legacy file rather than assume otherwise.
+    return { ...validateWorkflowGraph(raw), source: name }
   }
-  return { ...validateWorkflowGraph(raw), source: WORKFLOW_GRAPH_FILE }
+  return { ...validateWorkflowGraph(DEFAULT_WORKFLOW_GRAPH), source: 'default' }
 }
 
 // ── LOOP HEALTH ──────────────────────────────────────────────────────────────

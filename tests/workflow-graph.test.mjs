@@ -286,7 +286,7 @@ test('the structural rejections all still fire', () => {
 // ── the exports the rest of the loop reads ───────────────────────────────────
 
 test('the exported surface still answers what the loop asks it', () => {
-  assert.equal(WORKFLOW_GRAPH_FILE, 'team-graph.json')
+  assert.equal(WORKFLOW_GRAPH_FILE, 'graph.json')
   assert.equal(AGENT_ID_RE.test('build_w1'), true)
   assert.equal(AGENT_ID_RE.test('build w1'), false)
   assert.equal(GRAPH_ID_RE.test('team.one:a'), true)

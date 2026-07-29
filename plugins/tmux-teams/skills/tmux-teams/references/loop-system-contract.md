@@ -22,7 +22,7 @@ this file in the same commit.
 | `scripts/ledger-writer.mjs` | the only sanctioned way a line enters a ledger |
 | `scripts/role-briefs.mjs` | what each role is told, and verdict parsing |
 | `scripts/graph.mjs` | the loop graph page |
-| `.tmux-teams/team-graph.json` | the declaration artifact |
+| `.tmux-teams/graph.json` | the declaration artifact |
 | `.tmux-teams/work-items/<token>.jsonl` | the custody ledger |
 | `.tmux-teams/work-items/<token>.md` | the token's own request |
 | `.tmux-teams/runner-heartbeat.json` | the runner's statement about itself |
@@ -51,7 +51,7 @@ loop reads it and never adds fields to it.
 
 | Layer | Artifact | Nature |
 | --- | --- | --- |
-| DECLARATION | `team-graph.json` | assigned by a human, never observed |
+| DECLARATION | `graph.json` | assigned by a human, never observed |
 | EVIDENCE | `work-items/*.jsonl`, `pulse.json`, `runner-heartbeat.json` | recorded by the system, never assumed |
 
 Team membership, role and **the model each seat is meant to run on** are
@@ -71,7 +71,7 @@ The page prints the second and never the first (§12.3, §12.7.2).
 An agent that has never run says so; it never shows a zero that reads like a
 measurement.
 
-## 3. Declaration contract — `team-graph.json`
+## 3. Declaration contract — `graph.json`
 
 ```json
 {
@@ -144,8 +144,29 @@ bundled template uses it precisely because no real model belongs in a template.
 | a missing or malformed model on any declared seat | a dispatch with no model named runs on whatever the account defaults to — the guess this declaration exists to stop |
 | any missing or malformed field above | the graph fails **closed**; it never silently falls back |
 
-A repo with no `team-graph.json` at all uses the bundled default graph. A repo
+A repo with no `graph.json` at all uses the bundled default graph. A repo
 with an **invalid** one renders an error and dispatches nothing.
+
+### 3.3 The declaration was renamed, and the old name is still read
+
+`graph.json` was `team-graph.json` until 2026-07-29, renamed alongside the skill
+that writes it (`team-loop-setup` → `graph-setup`) so the declaration, the
+module and the page all carry one word.
+
+`readWorkflowGraph` tries `graph.json`, then `team-graph.json`, then the bundled
+default, and reports **which file answered** in `source`. The legacy read is not
+courtesy. A missing declaration falls back to the bundled four-team template, so
+a bare rename would have left every existing repo drawing teams nobody declared
+— no error, no diagnostic, and a page that looks entirely correct. That is the
+worst failure shape this contract exists to prevent: not a wrong answer that
+announces itself, but a confident one about somebody else's project.
+
+The new name wins when both files exist, so a repo mid-migration is never
+shadowed by the file it is migrating away from.
+
+The `--team-graph` flag on `pulse.mjs` keeps its name. It points at a file by
+path rather than by convention, and renaming a flag breaks callers' scripts for
+no gain.
 
 ## 4. Custody ledger contract
 
@@ -526,7 +547,7 @@ it.
 the dispatch; the model is reported only once verified. Never substitute one for
 the other.
 
-**The declared model is a third fact, and it is not this one.** `team-graph.json`
+**The declared model is a third fact, and it is not this one.** `graph.json`
 now names a model for every seat (§3.2), and that name travels with the team and
 with each agent in the validated graph. It is a DECLARATION: it says which model
 was *asked* for. Line 3 states the model that *answered*. Wiring the declared
@@ -829,8 +850,8 @@ and §11.2.
    specified the bare form.
 
 8. **The setup skill over-claims the consequence of skipping it.**
-   `skills/team-loop-setup/SKILL.md` opens by saying nothing dispatches without
-   a `team-graph.json`. §3 says, and `graph.mjs` does, the opposite: a repo with
+   `skills/graph-setup/SKILL.md` opens by saying nothing dispatches without
+   a `graph.json`. §3 says, and `graph.mjs` does, the opposite: a repo with
    **no** file falls back to the bundled default and `graph.mjs check` on an
    empty directory exits 0 as `ok (default)`. Only an **invalid** file fails
    closed. **The skill is the one that is wrong** (§15.3); §3 and the code
@@ -942,9 +963,9 @@ and `ledger-writer.mjs`. Under §15.3, which document was wrong in each case:
 | `actor` on every written line, one sanctioned writer (§4.1, §4.2, §13) | **the contract** — it named no writer and no actor, which is how two hand-typed events became indistinguishable from machine evidence |
 | validation at write, before dispatch, before handoff (§4.3, §5, §7) | **the contract** — it said a ledger is evidence and never said who checks it |
 | the runner's heartbeat (§0, §2, §11.2, §12.7.7) | **the contract** — nothing described the runner itself, so a dead loop and an idle one drew the same board |
-| "a repo with no `team-graph.json` uses the bundled default" (§3) | **neither** — contract and code agree; the *setup skill* over-claims. See §14.2 item 8 |
+| "a repo with no `graph.json` uses the bundled default" (§3) | **neither** — contract and code agree; the *setup skill* over-claims. See §14.2 item 8 |
 
-`.tmux-teams/team-graph.json` was migrated in the same commit: every seat and
+`.tmux-teams/graph.json` was migrated in the same commit: every seat and
 the outer controller now name `inherit-account-default`, because §14.2 item 4
 says no real name is proven yet, and all four teams' `wip_limit` lines were
 removed even though each happened to match its worker count — leaving a field

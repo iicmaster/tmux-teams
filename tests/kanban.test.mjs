@@ -51,7 +51,7 @@ const FOUR_TEAMS = {
 const repoWith = (graph, ledgers = {}) => {
   const dir = mkdtempSync(join(tmpdir(), 'kanban-'))
   mkdirSync(join(dir, '.tmux-teams', 'work-items'), { recursive: true })
-  if (graph !== undefined) writeFileSync(join(dir, '.tmux-teams/team-graph.json'), JSON.stringify(graph))
+  if (graph !== undefined) writeFileSync(join(dir, '.tmux-teams/graph.json'), JSON.stringify(graph))
   for (const [token, events] of Object.entries(ledgers)) {
     const lines = events.map((entry) =>
       JSON.stringify({ work_item: token, workflow: 'feature', ...entry }))
@@ -454,7 +454,7 @@ test('AC10 pulse publishes kanban.html, and the file on disk is the one recorded
   mkdirSync(join(dir, '.tmux-teams', 'work-items'), { recursive: true })
   mkdirSync(join(dir, '.tmux-teams', 'dispatch'), { recursive: true })
   mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
-  writeFileSync(join(dir, '.tmux-teams/team-graph.json'), JSON.stringify(FOUR_TEAMS))
+  writeFileSync(join(dir, '.tmux-teams/graph.json'), JSON.stringify(FOUR_TEAMS))
   writeFileSync(join(dir, '.tmux-teams/work-items/tok.jsonl'),
     `${JSON.stringify({ at: '2026-07-27T09:00:00.000Z', event: 'assigned', work_item: 'tok', workflow: 'feature', agent_id: 'build_w1', task_id: 't-1' })}\n`)
 

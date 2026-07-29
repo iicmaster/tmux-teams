@@ -178,7 +178,7 @@ test('ensure identity includes the team runtime content digest and forwards its 
 test('ensure identity includes the team graph content digest', async () => {
   const dir = repo()
   const file = pidfile(dir)
-  const graphPath = join(dir, 'team-graph.json')
+  const graphPath = join(dir, 'graph.json')
   writeFileSync(graphPath, JSON.stringify({
     graph: {
       project_id: 'ensure-graph',

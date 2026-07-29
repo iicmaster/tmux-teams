@@ -90,7 +90,7 @@ test('POC runs the actual governed ACP path through four phases and publishes Pu
   assert.match(pulseHtml, /data-boundary="qa_to_project_delivery" data-gate-state="accepted" data-attempt-id="poc-attempt-qa-r1"/)
   assert.match(pulseHtml, /ProjectDelivery เป็นผู้รับปลายทาง/)
   // graph.html answers a different question from pulse.html: it draws the Team
-  // pool declared in team-graph.json, and ProjectDelivery is a phase-gate
+  // pool declared in graph.json, and ProjectDelivery is a phase-gate
   // boundary that pool has no word for — line 79 already witnesses it on the
   // page that owns it. What matters here is that the graph does not borrow
   // Pulse's activity to look alive: this POC exercised the phase gate, never
