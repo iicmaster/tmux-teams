@@ -359,6 +359,8 @@ process.stdin.on('data', (chunk) => {
 process.stdin.on('end', async () => {
   clearInterval(keepAlive)
   if (descendant && !cancelSeen) await stopDescendant()
+  const stdinEndDelayMs = envNumber('MOCK_STDIN_END_DELAY_MS', 0)
+  if (stdinEndDelayMs > 0) await wait(stdinEndDelayMs)
   process.exit(0)
 })
 

@@ -122,6 +122,17 @@ function nonNegativeNumber(value, fallback = 0) {
   return Number.isFinite(number) && number >= 0 ? number : fallback
 }
 
+function strictNonNegativeEnvNumber(name, fallback) {
+  const raw = process.env[name]
+  if (raw === undefined) return fallback
+  const number = Number(raw)
+  if (raw.trim() === '' || !Number.isFinite(number) || number < 0) {
+    console.error(`invalid ${name} — use a finite non-negative number of milliseconds`)
+    process.exit(2)
+  }
+  return number
+}
+
 // Compatibility contract: leaseArg is still the fifth positional argument,
 // but it now governs inactivity windows only.
 const stallSec = positiveNumber(leaseArg, 600)
@@ -136,6 +147,10 @@ const cancelGraceMs = process.env.ACP_CANCEL_GRACE_MS === undefined
 const processKillGraceMs = process.env.ACP_PROCESS_KILL_GRACE_MS === undefined
   ? 5000
   : nonNegativeNumber(process.env.ACP_PROCESS_KILL_GRACE_MS, 5000)
+// Separate orderly-close and final process-group observation waits from the
+// SIGTERM→SIGKILL grace above. Production keeps the historical 1000 ms floor;
+// hermetic tests may shorten both reap waits explicitly.
+const processReapGraceMs = strictNonNegativeEnvNumber('ACP_PROCESS_REAP_GRACE_MS', 1000)
 const livenessTickMs = positiveNumber(
   process.env.ACP_LIVENESS_TICK_MS,
   Math.max(10, Math.min(1000, stallMs / 4)),
@@ -2443,7 +2458,7 @@ async function closeAndReapChild({ signalIfNeeded = true, closeGraceMs = process
   if (closeResult && signalIfNeeded && groupPids(agent?.pid).some((pid) => pid !== agent?.pid)) {
     reapSignal('SIGTERM', '[reap] signal SIGTERM for descendants after child settlement')
   }
-  let groupGone = await waitForGroupGone(Math.max(1000, processKillGraceMs * 2))
+  let groupGone = await waitForGroupGone(Math.max(processReapGraceMs, processKillGraceMs * 2))
   if (!groupGone && signalIfNeeded) {
     reapSignal('SIGTERM', '[reap] signal SIGTERM for remaining process group')
     groupGone = await waitForGroupGone(processKillGraceMs)
@@ -3215,7 +3230,7 @@ async function main() {
     await protocolRun()
     if (protocolFailure) return finishDirectFailure('protocol-error', 'protocol_error', 1)
     if (cancellationActive) return finishCancellation()
-    const reaped = await closeAndReapChild({ closeGraceMs: Math.max(processKillGraceMs, 1000) })
+    const reaped = await closeAndReapChild({ closeGraceMs: Math.max(processKillGraceMs, processReapGraceMs) })
     if (reaped.forced) return finishDirectFailure('child-unsettled', 'child_unsettled', 1, { settlement: reaped })
     const result = readTerminalOutbox()
     console.log(`[outbox] ${result.outboxPath}`)
