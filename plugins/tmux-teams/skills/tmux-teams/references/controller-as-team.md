@@ -84,7 +84,6 @@ handled.
 {
   "project_id": "…",
   "outer_controller_id": "pm_outer_loop",   // unchanged: names the seat
-  "controller_team": "control",             // NEW: names the team it belongs to
   "teams": [
     {
       "team_id": "control",
@@ -97,25 +96,62 @@ handled.
     // … the delivery teams, unchanged
   ],
   "workflows": [
-    { "workflow_id": "default", "route": ["requirement", "prototype", "development", "qa"] }
+    { "workflow_id": "default", "route": ["control", "requirement", "prototype", "development", "qa"] },
+    { "workflow_id": "hotfix",  "route": ["control", "development", "qa"] }
   ]
 }
 ```
 
-Open for decision: whether `route` should be written with `control` at its head,
-or whether the controller is implicitly the head of every route. **Implicit is
-recommended** — a route describes the delivery path, and repeating `control` in
-every workflow invites one route to forget it, which is exactly the class of
-defect this design removes.
+**Every route names the controller at its head, explicitly.** Decided
+2026-07-31, against my own recommendation, and the argument that changed it is
+worth keeping.
+
+I had argued for leaving it implicit — `["requirement", …]`, with the system
+knowing control always comes first — because writing it out "invites one route
+to forget it". Master's answer: *"ถ้าแบบ ข ควบคุมได้ว่าต้องผ่าน control เสมอ แล้วทำไมแบบ ก ถึงจะควบคุม
+ให้เขียน control ก่อนเสมอไม่ได้"* — if the implicit form can be enforced, so can the
+explicit one. That is simply true, and it exposed an inconsistency in my own
+proposal: the implicit design ALSO needed a validation rule (routes must NOT
+contain the controller). Both forms rest on the validator equally, so the
+forgetting argument was never a difference between them.
+
+With that gone, Master's first point decides it: leaving it implicit **moves the
+knowledge out of the declaration and into code or prose**. Someone reading
+`graph.json` would not see the path a token actually takes; they would have to
+know a rule that is not in the file. This project has already made that choice
+once, in the opposite direction — §4.6 exists because a `pulled` at the head of
+a route would have to omit `from_team` or name a sender that does not exist, and
+the fix was to make the FILE say the true thing rather than teach every reader a
+special case.
+
+### 3.1 `controller_team` is derived, never declared
+
+An earlier draft of this design added a `controller_team` field. With the
+controller written at the head of every route, that field would state a fact the
+routes already state — and §3.1 of the contract settled what to do about that
+when it ruled on `wip_limit`: *a second number allowed to disagree with the first
+is a defect waiting to happen*. So there is no field. The controller team is
+`route[0]`, and the graph must contain at least one workflow (§3 bounds
+guarantee it), so the derivation always has a source.
 
 Validation rules the graph checker would gain:
 
-- `controller_team` must name a declared team.
-- That team's `worker_ids` must hold exactly one entry, and it must equal
+- **Every** workflow's `route[0]` names the same team. A graph whose routes
+  disagree about where work enters is refused, naming both heads.
+- That team appears in no route beyond position 0 — the controller is the head
+  of every route, not a stop on any of them (and §1 already forbids revisiting).
+- That team's `worker_ids` holds exactly one entry, and it equals
   `outer_controller_id` — the seat that answers §9's questions is the seat the
   contract already names.
-- No workflow's `route` may contain the controller team: it is the head of all
-  of them, not a stop on any of them.
+
+`graph.mjs check` prints the full path it derived, so the tool shows what the
+file means:
+
+```
+[graph] ok (graph.json) — 5 teams, 2 workflows
+[graph]   default: control → requirement → prototype → development → qa
+[graph]   hotfix: control → development → qa
+```
 
 ---
 
@@ -400,7 +436,7 @@ Nothing below exists yet.
 
 | Change | Where | What proves it |
 | --- | --- | --- |
-| `controller_team` in the declaration + its three validation rules | `workflow-graph.mjs` | a graph naming a controller team with two workers is refused |
+| every route names the controller at `route[0]`, and it is derived from there | `workflow-graph.mjs` | a graph whose two routes start at different teams is refused, naming both heads; one whose head team has two workers is refused |
 | `opened` must target the controller team | `ledger-validate.mjs` | an `opened` at a delivery team is refused |
 | `questioned` / `answered` in the §4 table, with the human-actor rule | `ledger-validate.mjs` | an `answered` written by `agent:*` is refused |
 | the runner never dispatches on `questioned` | `loop-runner.mjs` | a replay whose token is `questioned` records no new `assigned` for it, and the runner says why |
@@ -438,15 +474,6 @@ writing down in advance.
 1. **Who writes the expiry, and what it does to §9 of the contract**, which
    today names the controller as the only mechanised writer of `abandoned`
    (§6.1 — amend-and-reuse recommended).
-2. **Is the controller implicit at the head of every route, or written into
-   each?** (§3 — implicit recommended.) In `graph.json` a workflow lists its
-   route as team ids. Now that every token starts at the controller, the
-   question is only whether that first hop is written down in each route
-   (`["control", "requirement", …]`) or left implicit (`["requirement", …]`,
-   with the system knowing control always comes first). Writing it out makes
-   the file literally true; leaving it implicit makes it impossible for one
-   route to forget — and a route that forgot would admit work straight into a
-   delivery team, which is the exact defect this whole design removes.
-3. **Whether a token should exist before the controller accepts** (§6.1's
+2. **Whether a token should exist before the controller accepts** (§6.1's
    closing note). The design assumes it does, because the grill needs a WIP
    slot to hold.
