@@ -1019,13 +1019,48 @@ closed on 2026-07-29 by discriminating on `agent_id` — exists only because the
 first team on a route has no sender to return work to. If every route begins at
 the controller, every team has a sender and that special case stops existing.
 
-**Not designed yet, and needed before this can be built:** where an admitted
-token sits before the first team pulls it (the controller is not a team, so §6's
-placement rule has no home for it); whether that is a controller-owned pool
-declared in `graph.json`; whether the first leg then becomes an ordinary
-`pulled` whose `from_team` names that pool, which would narrow §4.6's `opened`
-to a single writer; and what the operator's own hand-off looks like as evidence,
-since a human bringing a request is a custody event like any other.
+**Settled the same day — the controller IS a team.** The open question was where
+an admitted token sits before the first team pulls it, since §6 can only place
+work with a team. The answer is that the controller stops being an exception:
+it is declared in `graph.json` as an ordinary team with **one worker, so WIP 1**.
+Every mechanism the board already has then applies to it unchanged — occupancy,
+the pull, the WIP limit, the placement rule.
+
+And its three jobs are not three new mechanisms. They are the three roles this
+model already defines, pointed at the route instead of at one leg:
+
+| Controller's job | Its role on that team | Same rule as every other team |
+| --- | --- | --- |
+| take a request, make it a token, queue it | **dispatcher** | the receiving side decides whether to accept |
+| unstick what the loop cannot decide (§9 triggers) | **worker** | one worker, one leg, WIP 1 |
+| read the finished delivery as a whole | **evaluator** | the gate that can send work back |
+
+An ordinary team's dispatcher admits work to that TEAM and its evaluator judges
+that team's LEG. The controller's dispatcher admits work to the SYSTEM and its
+evaluator judges the whole ROUTE. Same shape, different scope — which is the
+strongest argument that this is the right model and not a special case wearing a
+team's clothes.
+
+**The intake gate is a grill, not a form.** Master's requirement on job 1: the
+controller must interrogate a request until nothing is left to guess. This is
+the one place the system asks a human to be specific, and it is also where an
+unclear ask becomes four teams' worth of wasted legs.
+
+**Still open, and both must be answered before this is built:**
+
+1. **Does an escalated token occupy the controller's WIP?** If it does, one
+   stuck token stops all new admission — which may be exactly right (*stop
+   starting, start finishing*) but has to be a stated choice, not a side effect
+   nobody noticed. If it does not, job 2 is outside the WIP system and calling
+   it a worker is a fiction.
+2. **What counts as evidence that the grill is finished?** "The model judged the
+   request clear" is an attestation, and §2 does not accept attestations from
+   any other role. Without an answer, the strongest gate in the system is the
+   one gate with no evidence behind it.
+
+Also unresolved: what the operator's own hand-off looks like in the ledger. A
+human bringing a request is a custody event like any other, and today it has no
+line.
 
 ## 15. Change control
 
