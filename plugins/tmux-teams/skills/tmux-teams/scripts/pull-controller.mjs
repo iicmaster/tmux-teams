@@ -68,7 +68,17 @@ export function planPulls(graph, items, now = new Date().toISOString()) {
     // been typed, not checked. Gating here is what makes the evaluator real
     // rather than a box on a diagram — pulling on `delivered` moved every token
     // onward before its evaluator ever ran.
-    if (last.event !== 'reviewed' || last.verdict !== 'pass') continue
+    // Two ways a team releases work, and they are different events because they
+    // are different claims.
+    //
+    // A delivery team releases on `reviewed` `pass`: its evaluator checked the
+    // artifact. The controller team releases on `intake` `accept`: there is no
+    // artifact yet — admission is the claim that the request is workable, and
+    // that is exactly what its dispatcher's gate decides. Requiring a review
+    // there would mean reviewing work nobody has done.
+    const admitted = last.event === 'intake' && last.verdict === 'accept'
+      && team.team_id === graph.controller_team
+    if (!admitted && (last.event !== 'reviewed' || last.verdict !== 'pass')) continue
 
     // The whole verdict, not a chosen subset of it. `ledger-writer.appendEvent`
     // refuses outright to append to a ledger that does not validate, so a

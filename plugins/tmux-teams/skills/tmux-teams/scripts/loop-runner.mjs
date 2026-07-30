@@ -575,6 +575,12 @@ function nextStep(graph, team, item, { busy, nowMs, zombieSec }) {
   // a token enter the graph and never be dispatched — the board would draw it
   // waiting for intake forever while the runner reported nothing to do.
   if (last.event === 'pulled' || last.event === 'opened') return want('dispatcher')
+  // Admission is finished when the controller's own gate accepts. Its worker
+  // exists for the OTHER job — unsticking what the loop cannot decide (§9) — so
+  // handing every admitted token to it would pay for a full leg to do nothing,
+  // and would hold the controller's single WIP slot while doing it. `ready`
+  // means the pull controller may move it on, which is what admission is for.
+  if (last.event === 'intake' && team.team_id === graph.controller_team) return { action: 'ready' }
   if (last.event === 'intake' || last.event === 'returned' || last.event === 'resumed') return want('worker')
   return { action: 'skip', reason: `nothing follows ${last.event}` }
 }
