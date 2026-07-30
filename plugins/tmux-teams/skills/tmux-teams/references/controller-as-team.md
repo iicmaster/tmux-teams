@@ -339,16 +339,39 @@ amended to name this second writer explicitly, or the expiry gets its own event.
 deadline, because a reader asking "why did this token stop" wants one word to
 look for, not two.
 
-**The board must show the clock.** A person who submits a request, goes to
-lunch, and comes back to find it gone has been surprised by the system. A
-`questioned` token must display how long is left, and the countdown belongs on
-the same page as the question. Without it the deadline is not a policy, it is a
-trap.
+**Ten minutes.** Master's value, with the reason attached: *"ถ้าไม่สามารถตอบได้ภายในเวลา
+เท่านั้นแสดงว่าเตรียมตัวมาไม่ดี เขียน requirement มาไม่ละเอียด"* — needing longer than ten minutes
+to answer questions about your own request means the request was not thought
+through. The deadline is not a scheduling convenience; it is part of the gate.
 
-**The deadline value is not chosen yet.** It has to be long enough to survive a
-meeting and short enough to be worth having. It should also be declared per
-project rather than hard-coded, since a team of two and a team of forty do not
-share a reasonable answer.
+**No countdown on the board, and the reason matters more than the decision.**
+I argued that a person could submit a request, go to lunch, and come back to
+find it gone. Master rejected the premise: **a request is not admitted until the
+controller confirms it.** Typing an ask and walking away does not put work into
+this system — the person is expected to still be there. *"ต้องได้รับการยืนยันจาก PM ว่า
+รับงานแล้วคำสั่งถึงจะสมบูรณ์ ไม่ใช่ว่ามาพิมพ์ทิ้งไว้แล้วไปได้ อันนั้นเป็นความผิดคนสั่ง."*
+
+That reframes admission from an asynchronous submission into a **conversation
+that has to be completed**, and it removes the whole class of problem the
+countdown existed to solve.
+
+**The deadline is stated as a wall-clock time, in the question itself.** Not
+"you have ten minutes" and not a widget somewhere else — the controller's
+question ends with the actual moment it lapses:
+
+> ต้องตอบกลับมาภายใน 23:30 ไม่งั้นจะยกเลิกคำขอนี้และไม่บันทึกลงคิวงาน
+
+An absolute time needs no page to render it, survives being read late, and
+cannot drift the way "ten minutes from when you read this" does.
+
+**What "ไม่บันทึกลงคิวงาน" means, stated as an assumption to be corrected.** The
+token is created at `opened`, because the grill needs custody and a WIP slot to
+occupy. When the deadline lapses, the token closes and **never enters the
+delivery queue**: no `intake`, no `pulled`, no team ever holds it. Its ledger
+stays on disk — append-only, so what was asked and what went unanswered remain
+readable — but nothing downstream ever sees it as work. If Master meant that no
+token should exist at all until the controller accepts, the WIP rule from §6.1
+needs revisiting, because a grill that holds no token cannot hold a slot either.
 
 ---
 
@@ -402,15 +425,28 @@ writing down in advance.
 | Can a human answer partially? | Yes, by consequence of the above: enough is what the controller can work from without guessing |
 | What happens to a request the grill says should not be built? | It is an objection, not a veto. The person may confirm and it proceeds, with both on the record (§5.3) |
 
+**Settled 2026-07-31, second round:**
+
+| Question | Decision |
+| --- | --- |
+| The deadline | **10 minutes.** Longer means the requirement was not thought through |
+| A countdown on the board | **No.** A request is not admitted until the controller confirms; nobody may type and walk away |
+| How the deadline is communicated | **An absolute wall-clock time inside the question** — "ตอบกลับภายใน 23:30 ไม่งั้นจะยกเลิก" |
+
 **Still open:**
 
-1. **The deadline value**, and that it be declared per project rather than
-   hard-coded (§6.1). A team of two and a team of forty do not share an answer.
-2. **Who writes the expiry, and what it does to §9 of the contract**, which
+1. **Who writes the expiry, and what it does to §9 of the contract**, which
    today names the controller as the only mechanised writer of `abandoned`
    (§6.1 — amend-and-reuse recommended).
-3. **The countdown on the board** (§6.1). Without it the deadline is a trap
-   rather than a policy; with it, this is the first thing the page has ever had
-   to draw about a human's obligation rather than an agent's.
-4. **Is the controller implicit at the head of every route, or written into
-   each?** (§3 — implicit recommended.)
+2. **Is the controller implicit at the head of every route, or written into
+   each?** (§3 — implicit recommended.) In `graph.json` a workflow lists its
+   route as team ids. Now that every token starts at the controller, the
+   question is only whether that first hop is written down in each route
+   (`["control", "requirement", …]`) or left implicit (`["requirement", …]`,
+   with the system knowing control always comes first). Writing it out makes
+   the file literally true; leaving it implicit makes it impossible for one
+   route to forget — and a route that forgot would admit work straight into a
+   delivery team, which is the exact defect this whole design removes.
+3. **Whether a token should exist before the controller accepts** (§6.1's
+   closing note). The design assumes it does, because the grill needs a WIP
+   slot to hold.
