@@ -329,6 +329,7 @@ test('every event that names an agent either credits it or is a stated exception
     from_team: 'build', to_team: 'verify', refused_by: 'b_d', task_id: 't-1', dispatch_id: 'd-1',
     reviewed_task: 't-1', reason: 'a stated reason', terminal: 'done', timed_out: false,
     evidence_present: true, verdict: 'accept', grant: 3,
+    questions: 'who is the target customer?',
   }
   for (const event of LEDGER_EVENTS) {
     const spec = EVENT_SPEC[event]

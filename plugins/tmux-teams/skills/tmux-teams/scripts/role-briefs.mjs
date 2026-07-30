@@ -20,7 +20,12 @@ import { join } from 'node:path'
 export const VERDICT_RE = /^[ \t]*VERDICT:[ \t]*([A-Za-z-]+)[ \t]*$/m
 export const REASON_RE = /^[ \t]*REASON:[ \t]*(.+)$/m
 
-export const INTAKE_VERDICTS = new Set(['accept', 'reject'])
+// `question` joins the two on 2026-07-31. A dispatcher had exactly two things it
+// could say — take it, or send it back — and the grill needs a third: the
+// request is not refused, it is not workable YET. Without a word for that, an
+// unclear ask is either bounced (and the person is told nothing) or accepted
+// (and four teams pay for the guesswork).
+export const INTAKE_VERDICTS = new Set(['accept', 'reject', 'question'])
 export const REVIEW_VERDICTS = new Set(['pass', 'reject', 'unresolved'])
 // The outer controller is the only role whose verdict moves a token it never
 // worked on. Without these two words an escalation is a one-way door: the

@@ -489,6 +489,7 @@ test('every event either moves the loop or is a dead end somebody wrote down', (
     from_team: team.team_id, to_team: team.team_id, refused_by: team.dispatcher_id,
     task_id: 't-1', dispatch_id: 'd-1', reviewed_task: 't-1', reason: 'a stated reason',
     terminal: 'done', timed_out: false, evidence_present: true, grant: 3,
+    questions: 'who is the target customer? what happens on timeout?',
   }
   // Each event owns its vocabulary — `intake` records only an acceptance,
   // review speaks pass/reject/unresolved, the audit speaks accept/concern. One
@@ -514,9 +515,14 @@ test('every event either moves the loop or is a dead end somebody wrote down', (
     const assigned = { event: 'assigned', agent_id: entry.agent_id, task_id: 't-1', dispatch_id: 'd-1' }
     const delivered = { event: 'delivered', agent_id: entry.agent_id, task_id: 't-1', terminal: 'done' }
     const requested = { event: 'audit_requested', agent_id: 'pm', task_id: 'a-1' }
+    const asked = { event: 'questioned', agent_id: team.dispatcher_id, questions: 'q?', reason: 'not enough to start' }
     const prefix = event === 'reviewed' ? [assigned, delivered]
       : event === 'delivered' ? [assigned]
-        : event === 'audited' ? [requested] : []
+        : event === 'audited' ? [requested]
+          : event === 'answered' ? [asked] : []
+    // The one event whose ACTOR KIND is part of its validity: a person answered,
+    // and `human:` is how the ledger records that permanently (§5.1).
+    if (event === 'answered') entry.actor = 'human:someone'
     const [plan] = planDispatches(graph, itemsOf(['tok', [...prefix, entry]]), new Set(),
       { now: Date.parse(entry.at) + 1e6 })
     const moved = Boolean(plan) && plan.action !== 'skip'

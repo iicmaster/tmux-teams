@@ -1892,9 +1892,16 @@ test('cancellation paths close stdin and reap their detached process groups', { 
       MOCK_SCENARIO: scenario,
       MOCK_CANCEL_RESPOND: scenario === 'cancel-ack' ? '1' : '0',
       MOCK_SPAWN_DESCENDANT: '1',
-      ACP_CANCEL_GRACE_MS: '35',
-      ACP_PROCESS_KILL_GRACE_MS: '100',
-    }, undefined, 0.5)
+      // Widened 2026-07-31 after this family failed under full-suite load and
+      // passed 120/120 alone. The windows assert nothing — what this test
+      // asserts is that stdin closes, the group is reaped, and the terminal
+      // state is the right one. At 35ms of cancel grace, whether the child's
+      // exit lands inside the window is decided by the scheduler, and this file
+      // now runs its own cases three-wide while twenty other files run beside
+      // it. A window narrower than the machine's jitter tests the machine.
+      ACP_CANCEL_GRACE_MS: '250',
+      ACP_PROCESS_KILL_GRACE_MS: '300',
+    }, undefined, 1.5)
     await waitForFile(join(live.cwd, '.descendant-pid'))
     const pid = descendantPid(live.cwd)
     assert.ok(pid, `${scenario} must spawn a descendant`)

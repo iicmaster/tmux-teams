@@ -121,6 +121,16 @@ export function stateOf(graph, last) {
         : { state: `Audited — ${last.verdict || 'no verdict'}: needs a human`, detail: reason }
     case 'abandoned':
       return { state: 'Abandoned', detail: reason }
+    // The two states whose next move belongs to a PERSON. Everything else on
+    // this board is waiting on an agent or on the loop, and a reader who cannot
+    // tell those apart does not know whether to go and do something.
+    case 'questioned':
+      return {
+        state: 'Waiting on a person to answer',
+        detail: last.questions ? `asked: ${last.questions}` : reason,
+      }
+    case 'answered':
+      return { state: 'Answered — back through the intake gate', detail: reason }
     default:
       return { state: `Unknown event: ${last.event || 'none'}`, detail: reason }
   }

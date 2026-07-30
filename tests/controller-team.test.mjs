@@ -90,10 +90,12 @@ function driver() {
   }
 }
 
-const quietTick = (dir, spawnLeg) => {
+const quietTick = (dir, spawnLeg, extra = {}) => {
   const real = console.log
   console.log = () => {}
-  try { return tick(dir, { apply: true, scratchDir: join(dir, 'scratch'), spawnLeg }) } finally { console.log = real }
+  try {
+    return tick(dir, { apply: true, scratchDir: join(dir, 'scratch'), spawnLeg, ...extra })
+  } finally { console.log = real }
 }
 
 // The controller's cooldown is 900 real seconds and this test runs in one, so
@@ -184,4 +186,113 @@ test('a graph with no controller team is refused at the door, not silently admit
   const result = admitWorkItem(dir, { work_item: 'x', workflow: 'default', reason: 'r' }, { actor: 'human:someone' })
   assert.equal(result.ok, false)
   assert.equal(result.code, 'no_controller_team')
+})
+
+// ── the grill: a token blocked on a person ───────────────────────────────────
+
+// The same driver, except the controller's gate asks instead of accepting the
+// first time it sees this token. Everything else is the real runtime.
+function grillingDriver(askOnce = new Set(['token-1'])) {
+  const asked = new Set()
+  let legs = 0
+  return (repo, { workItem, role, agentId }) => {
+    const taskId = `${workItem || 'board'}-${role}-${legs += 1}`
+    const say = (event, extra) => {
+      const result = appendEvent(repo, {
+        event, work_item: workItem, workflow: 'default', agent_id: agentId, task_id: taskId, ...extra,
+      }, { actor: `agent:${agentId}` })
+      assert.ok(result.ok, `${event} refused for ${workItem}: ${result.code} ${result.detail}`)
+    }
+    let verdict = role === 'dispatcher' ? 'accept' : role === 'evaluator' ? 'pass' : role === 'pm' ? 'accept' : ''
+    let reason = 'poc'
+    if (role === 'dispatcher' && agentId === 'control_d' && askOnce.has(workItem) && !asked.has(workItem)) {
+      asked.add(workItem)
+      verdict = 'question'
+      reason = 'who is the target customer, and what happens on timeout?'
+    }
+    if (workItem) say('assigned', { dispatch_id: `d-${legs}` })
+    writeFileSync(join(repo, '.mailbox-out', taskId),
+      verdict ? `Did it.\n\nVERDICT: ${verdict}\nREASON: ${reason}\n` : 'Did it.\n\nartifact\n')
+    if (workItem) say('delivered', { terminal: 'done', timed_out: false, evidence_present: true })
+    return taskId
+  }
+}
+
+const answer = (dir, token, text) => appendEvent(dir, {
+  event: 'answered', work_item: token, workflow: 'default',
+  to_team: 'control', reason: text,
+}, { actor: 'human:someone' })
+
+test('a grilled token waits on a person, and the runner will not dispatch it', () => {
+  const dir = makeRepo()
+  const spawnLeg = grillingDriver()
+  assert.ok(admit(dir, 'token-1').ok)
+
+  quietTick(dir, spawnLeg)              // dispatches the grill
+  const afterGrill = quietTick(dir, spawnLeg)  // harvests its question
+  assert.equal(custody(dir, 'token-1').at(-1).event, 'questioned')
+
+  // Parked, not skipped: the runner says who has to act, and dispatches nothing.
+  const parked = quietTick(dir, spawnLeg)
+  assert.equal(parked.started.length, 0, 'the runner paid for a leg while waiting on a person')
+  const plan = parked.plans.find((entry) => entry.work_item === 'token-1')
+  assert.equal(plan.action, 'waiting')
+  assert.match(plan.reason, /target customer/)
+
+  // …and it is still the controller's problem: WIP is held, not freed.
+  const { counts } = teamOccupancy(readWorkflowGraph(dir).value, readWorkItems(dir).items)
+  assert.equal(counts.get('control'), 1)
+  assert.equal(admit(dir, 'token-2').code, 'controller_full')
+  assert.ok(afterGrill.ok)
+})
+
+test('only a person can answer, and answering re-runs the grill', () => {
+  const dir = makeRepo()
+  const spawnLeg = grillingDriver()
+  assert.ok(admit(dir, 'token-1').ok)
+  quietTick(dir, spawnLeg)
+  quietTick(dir, spawnLeg)
+  assert.equal(custody(dir, 'token-1').at(-1).event, 'questioned')
+
+  // A model cannot unblock itself. The actor vocabulary is closed and the
+  // writer stamps it, so this is refused before it reaches the file.
+  const forged = appendEvent(dir, {
+    event: 'answered', work_item: 'token-1', workflow: 'default',
+    to_team: 'control', reason: 'I decided it is clear enough',
+  }, { actor: 'agent:control_d' })
+  assert.equal(forged.ok, false)
+  assert.match(forged.detail, /human actor/)
+
+  assert.ok(answer(dir, 'token-1', 'small businesses; retry twice then fail').ok)
+  for (let round = 0; round < 20 && custody(dir, 'token-1').at(-1)?.event !== 'audited'; round += 1) {
+    quietTick(dir, spawnLeg)
+    stepPastCooldown(dir)
+  }
+  const events = custody(dir, 'token-1').map((entry) => entry.event)
+  assert.deepEqual(events.slice(0, 8),
+    ['opened', 'assigned', 'delivered', 'questioned', 'answered', 'assigned', 'delivered', 'intake'],
+    `the answer did not put the token back through the gate: ${events.join(' -> ')}`)
+  assert.equal(events.at(-1), 'audited')
+})
+
+test('silence expires the request and frees the queue', () => {
+  const dir = makeRepo()
+  const spawnLeg = grillingDriver()
+  assert.ok(admit(dir, 'token-1').ok)
+  quietTick(dir, spawnLeg)
+  quietTick(dir, spawnLeg)
+  assert.equal(custody(dir, 'token-1').at(-1).event, 'questioned')
+
+  // Ten minutes in production; seconds here. The threshold is config precisely
+  // so this rule can be proved without faking a clock — and a test at 0 seconds
+  // proves the RULE fires, never that production ships ten minutes.
+  const expired = quietTick(dir, spawnLeg, { answerDeadlineSec: 0 })
+  assert.equal(custody(dir, 'token-1').at(-1).event, 'abandoned')
+  assert.match(custody(dir, 'token-1').at(-1).reason, /Unanswered: who is the target customer/)
+  assert.equal(expired.started.length, 0)
+
+  // The door is open again, which is the whole point of freeing it.
+  const { counts } = teamOccupancy(readWorkflowGraph(dir).value, readWorkItems(dir).items)
+  assert.equal(counts.get('control'), 0)
+  assert.ok(admit(dir, 'token-2').ok)
 })

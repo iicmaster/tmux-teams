@@ -65,6 +65,13 @@ const PULSE_STALE_SEC = 120
 const RESUME_GRANT = 3
 // A board holding work that has not moved in this long is not calm, it is stuck.
 const STALL_SEC = 1800
+// How long a person has to answer the intake grill before the request is
+// withdrawn and the queue is freed. Ten minutes, and Master's reason is part of
+// the value: needing longer to answer questions about your own request means the
+// request was not thought through. It is an OPTION rather than a constant so a
+// test can set it to seconds — the alternative was injecting a clock everywhere,
+// and shrinking the threshold proves the same rule for a fraction of the work.
+const ANSWER_DEADLINE_SEC = 600
 // Retries that succeed are the loop working. Retries that succeed SILENTLY are
 // the loop hiding how hard it had to work — one route recovered from four failed
 // legs and nobody heard a thing.
@@ -346,6 +353,9 @@ export function planHarvest(graph, items, hasOutbox = () => false) {
       if (last.task_id && hasOutbox(last.task_id)) jobs.push({ item, last, role: 'outer' })
       continue
     }
+    // A person, not an outbox. Nothing to harvest and nothing to wait for here —
+    // `nextStep` parks it and the deadline ends it.
+    if (last.event === 'questioned') continue
     if (last.event === 'audit_requested') {
       if (last.task_id && hasOutbox(last.task_id)) jobs.push({ item, last, role: 'audit' })
       continue
@@ -368,6 +378,15 @@ function harvestEvent(repo, graph, { item, last, role }, now) {
       // common and legal, so the absence is stated rather than left blank —
       // a blank field is refused by the writer and would stall the token.
       return { ...base, event: 'intake', agent_id: last.agent_id, verdict: 'accept', reason: reason || 'no reason stated' }
+    }
+    // Not workable yet, and not refused. The token stays exactly where it is —
+    // still held, still counted against WIP — and only a person can move it.
+    if (verdict === 'question') {
+      return {
+        ...base, event: 'questioned', agent_id: last.agent_id,
+        questions: reason || 'the grill asked for more and stated nothing',
+        reason: 'the request is not workable yet — waiting on the person who asked for it',
+      }
     }
     const pulled = lastOf(item, (entry) => entry.event === 'pulled')
     if (!pulled?.from_team) {
@@ -494,7 +513,7 @@ const legCeiling = (item) => MAX_LEGS + item.custody
   .filter((entry) => entry.event === 'resumed')
   .reduce((sum, entry) => sum + (Number.isInteger(entry.grant) ? Math.min(Math.max(entry.grant, 0), RESUME_GRANT) : 0), 0)
 
-function nextStep(graph, team, item, { busy, nowMs, zombieSec }) {
+function nextStep(graph, team, item, { busy, nowMs, zombieSec, answerDeadlineSec }) {
   const last = item.custody[item.custody.length - 1]
   const legs = item.custody.filter((entry) => entry.event === 'assigned').length
   const ceiling = legCeiling(item)
@@ -580,12 +599,35 @@ function nextStep(graph, team, item, { busy, nowMs, zombieSec }) {
   // handing every admitted token to it would pay for a full leg to do nothing,
   // and would hold the controller's single WIP slot while doing it. `ready`
   // means the pull controller may move it on, which is what admission is for.
+  // Only a person can move this one. Dispatching anything here would pay to ask
+  // a question of someone who has not answered, once per tick, forever — which
+  // is what a state of its own exists to prevent. `waiting` is not `wait`: a
+  // WIP wait clears itself when a slot frees, and this one never does.
+  if (last.event === 'questioned') {
+    const waitedSec = (nowMs - Date.parse(last.at || '')) / 1000
+    if (Number.isFinite(waitedSec) && waitedSec >= answerDeadlineSec) {
+      return {
+        action: 'expired', agent_id: last.agent_id,
+        reason: `no answer in ${Math.round(answerDeadlineSec / 60)} minute(s) — the request is withdrawn and the queue is freed.`
+          + ` Unanswered: ${last.questions}`,
+      }
+    }
+    return { action: 'waiting', reason: `waiting on a person to answer: ${last.questions}` }
+  }
+
+  // The person replied, so the gate that asked runs again on what it now has.
+  // Not a worker: nothing has been built yet, and the question was the
+  // dispatcher's.
+  if (last.event === 'answered') return want('dispatcher')
   if (last.event === 'intake' && team.team_id === graph.controller_team) return { action: 'ready' }
   if (last.event === 'intake' || last.event === 'returned' || last.event === 'resumed') return want('worker')
   return { action: 'skip', reason: `nothing follows ${last.event}` }
 }
 
-export function planDispatches(graph, items, busy, { now = Date.now(), zombieSec = ZOMBIE_SEC, maxInFlight = MAX_IN_FLIGHT } = {}) {
+export function planDispatches(graph, items, busy, {
+  now = Date.now(), zombieSec = ZOMBIE_SEC, maxInFlight = MAX_IN_FLIGHT,
+  answerDeadlineSec = ANSWER_DEADLINE_SEC,
+} = {}) {
   const { held } = teamOccupancy(graph, items)
   const teamById = new Map(graph.teams.map((team) => [team.team_id, team]))
   const declared = new Set(graph.teams.flatMap((team) => team.agents.map((agent) => agent.agent_id)))
@@ -601,7 +643,7 @@ export function planDispatches(graph, items, busy, { now = Date.now(), zombieSec
     let slots = team.wip_limit
     for (const workItem of tokens) {
       const item = items.get(workItem)
-      const step = nextStep(graph, team, item, { busy, nowMs: now, zombieSec })
+      const step = nextStep(graph, team, item, { busy, nowMs: now, zombieSec, answerDeadlineSec })
       if (step.action === 'in-flight') { slots -= 1; continue }
       if (step.action === 'dispatch') {
         if (inFlight >= maxInFlight) {
@@ -801,7 +843,10 @@ const heldCount = (occupancy) => [...occupancy.held.values()].flat().length
 // than forking a real ACP process. A replay that re-composes the planners by
 // hand tests the composer's memory of this order rather than this order itself.
 // The default is the real spawn, so production has no branch.
-export function tick(repoArg, { apply = true, stallSec = 1800, scratchDir, tickSec = DEFAULT_TICK_SEC, spawnLeg = dispatch } = {}) {
+export function tick(repoArg, {
+  apply = true, stallSec = 1800, scratchDir, tickSec = DEFAULT_TICK_SEC,
+  spawnLeg = dispatch, answerDeadlineSec = ANSWER_DEADLINE_SEC,
+} = {}) {
   // The ACP adapter rejects a relative cwd outright, and the runner is the last
   // place a relative path can still be sitting — resolve once, here.
   const repo = resolve(repoArg)
@@ -875,7 +920,7 @@ export function tick(repoArg, { apply = true, stallSec = 1800, scratchDir, tickS
     return { ok: true, harvested, pulls, plans: [], started: [], stale: true }
   }
   if (pulse.missing) log('note   no pulse.json yet — dispatching without liveness evidence')
-  const plans = planDispatches(graph.value, items, busy)
+  const plans = planDispatches(graph.value, items, busy, { answerDeadlineSec })
   const started = []
   for (const plan of plans) {
     if (plan.action === 'lost') {
@@ -891,8 +936,27 @@ export function tick(repoArg, { apply = true, stallSec = 1800, scratchDir, tickS
       }
       continue
     }
+    // The clock withdrew a request nobody answered. The RUNNER writes this one:
+    // §9 names the controller as the only mechanised writer of `abandoned`, and
+    // this is the second — recorded rather than hidden, because `actor` already
+    // tells the two apart and a reader looking for how a token ended wants one
+    // word to search for, not two.
+    if (plan.action === 'expired') {
+      log(`EXPIRED ${plan.work_item}: ${plan.reason}`)
+      if (apply) {
+        record(repo, {
+          at: new Date().toISOString(), event: 'abandoned', work_item: plan.work_item,
+          workflow: items.get(plan.work_item).workflow || null,
+          agent_id: plan.agent_id, reason: plan.reason,
+        })
+      }
+      continue
+    }
     if (plan.action !== 'dispatch') {
-      const level = plan.action === 'escalate' ? 'STUCK ' : plan.action === 'wait' ? 'wait  ' : 'skip  '
+      const level = plan.action === 'escalate' ? 'STUCK '
+        : plan.action === 'wait' ? 'wait  '
+          : plan.action === 'waiting' ? 'PERSON'
+            : 'skip  '
       if (plan.reason) log(`${level} ${plan.work_item}: ${plan.reason}`)
       continue
     }

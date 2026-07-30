@@ -92,6 +92,24 @@ export const EVENT_SPEC = {
   audit_requested: { required: ['agent_id', 'task_id', 'reason'] },
   audited: { required: ['agent_id', 'verdict', 'reason'], verdicts: AUDIT_VERDICTS },
   abandoned: { required: ['reason'] },
+  // The grill asked and nobody has answered yet. This is the first state in
+  // this system that waits on a PERSON rather than on an agent or on the loop,
+  // and it needs a word of its own for one concrete reason: without it the
+  // runner sees a token sitting at a dispatcher and re-dispatches that
+  // dispatcher every tick, paying again and again to ask a question of someone
+  // who has not replied. It does not release the team (§6): the token is still
+  // held, still counted, still occupying WIP.
+  questioned: { required: ['agent_id', 'questions', 'reason'] },
+  // The answer, and the only event whose ACTOR KIND is part of its validity.
+  // §5.1's second evidence is that a person decided; `human:` is the closed
+  // vocabulary that records it. An operator agent may relay the words — see
+  // `references/controller-as-team.md` §6.4.1 — and then names itself in
+  // `relayed_by`, because the actor says who DECIDED and the person decided.
+  // `to_team` is not decoration. Occupancy places a token by its last event's
+  // `agent_id` or `to_team` (§6), and a person is neither an agent nor a team —
+  // so an `answered` carrying only a reason would make the token an orphan the
+  // moment somebody replied to it. It answers TO the team that asked.
+  answered: { required: ['to_team', 'reason'], actor_kind: 'human' },
 }
 
 export const LEDGER_EVENTS = Object.freeze(Object.keys(EVENT_SPEC))
@@ -128,6 +146,7 @@ export function validateLedger(lines) {
   let eventsSeen = 0
   let deliveredSeen = false
   let auditRequested = false
+  let questionAsked = false
   let closedAt = null // { line, event } of the first terminal event
 
   for (let index = 0; index < rows.length; index += 1) {
@@ -230,6 +249,21 @@ export function validateLedger(lines) {
     if (name === 'audited' && !auditRequested) {
       add(lineNo, 'audited_without_request', 'audited with no preceding audit_requested')
     }
+    // An answer to nothing. The pair only means anything together: a lone
+    // `answered` would release a token nobody had parked.
+    if (name === 'answered' && !questionAsked) {
+      add(lineNo, 'answered_without_question', 'answered with no preceding questioned')
+    }
+    // The kind of writer, not merely its shape. A model relaying a person's
+    // words signs `human:` and names itself in `relayed_by`; a model signing as
+    // itself has recorded its own opinion as a person's decision.
+    if (spec.actor_kind === 'human') {
+      const actor = String(entry.actor ?? '')
+      if (!actor.startsWith('human:')) {
+        add(lineNo, 'not_a_human_answer',
+          `${name} must be written by a human actor, got ${JSON.stringify(entry.actor ?? null)}`)
+      }
+    }
     // A token enters the graph once. A second `opened` would describe work
     // arriving somewhere it already is, and an `opened` after any other event
     // would claim the history above it happened before the work existed.
@@ -240,6 +274,7 @@ export function validateLedger(lines) {
     if (name === 'assigned' && present(entry.agent_id)) assignedAgents.add(String(entry.agent_id))
     if (name === 'delivered') deliveredSeen = true
     if (name === 'audit_requested') auditRequested = true
+    if (name === 'questioned') questionAsked = true
     if (!closedAt && TERMINAL_EVENTS.has(name)) closedAt = { line: lineNo, event: name }
     eventsSeen += 1
   }

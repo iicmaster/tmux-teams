@@ -264,6 +264,10 @@ const EMPTY_WORK = Object.freeze({
   // Counting the request as though it were the answer is the exact untruth
   // this graph exists to make impossible.
   audits: 0, resumes: 0,
+  // The grill asking. It is the intake gate's other outcome — `accepted` is one
+  // answer to the same question — so a seat that spends its day sending
+  // requests back for detail would otherwise read as a seat that did nothing.
+  asked: 0,
 })
 
 // Exported for the same reason as `stateOf` in kanban.mjs: whether an event
@@ -295,6 +299,7 @@ export function activityByAgent(items) {
       // `agent_id`, so this is where its node stops reading empty forever.
       else if (entry.event === 'audited') bump(entry.agent_id, 'audits')
       else if (entry.event === 'resumed') bump(entry.agent_id, 'resumes')
+      else if (entry.event === 'questioned') bump(entry.agent_id, 'asked')
     }
   }
   return byAgent
