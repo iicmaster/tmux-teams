@@ -375,7 +375,8 @@ amended to name this second writer explicitly, or the expiry gets its own event.
 deadline, because a reader asking "why did this token stop" wants one word to
 look for, not two.
 
-**Ten minutes.** Master's value, with the reason attached: *"ถ้าไม่สามารถตอบได้ภายในเวลา
+**Ten minutes, and it is a config value, not a constant.** Master's value, with
+the reason attached: *"ถ้าไม่สามารถตอบได้ภายในเวลา
 เท่านั้นแสดงว่าเตรียมตัวมาไม่ดี เขียน requirement มาไม่ละเอียด"* — needing longer than ten minutes
 to answer questions about your own request means the request was not thought
 through. The deadline is not a scheduling convenience; it is part of the gate.
@@ -399,6 +400,49 @@ question ends with the actual moment it lapses:
 
 An absolute time needs no page to render it, survives being read late, and
 cannot drift the way "ten minutes from when you read this" does.
+
+### 6.2 The deadline is declared, so it can be tested
+
+Murat's objection to a clock-driven rule: `tick` reads the wall clock directly,
+so a ten-minute threshold is unreachable by any test that finishes in seconds —
+the same reason `ZOMBIE_SEC` (180s), `PM_COOLDOWN_SEC` (900s) and `STALL_SEC`
+(1800s) sit in §14.1 today as rules with no test.
+
+Master's answer avoids the whole problem: *"ก็แค่ทำเวลารอเป็นตัวแปรใน config เวลาทดสอบก็เปลี่ยน
+เป็นรอ 10 วิแทนก็ได้แล้วนี่"* — do not fake the clock, shrink the threshold. A test sets
+the deadline to seconds and lets real time cross it.
+
+That is smaller than injecting a clock and it generalises: **all four time
+thresholds become declared config**, and the three that have sat untested since
+this contract was written come with it. §14.1 gets shorter by three rows for the
+price of one change.
+
+**The limit, stated so nobody mistakes it for more than it is.** A test that
+runs with the deadline set to ten seconds proves the RULE fires. It does not
+prove the VALUE shipped to production is ten minutes. Those are two different
+claims, and the second one is answered by reading the deployed config, not by
+any test in this repo.
+
+### 6.3 The controller always says the last word
+
+Mary's objection: a conversation that ends in silence is unreadable. The person
+answered two minutes late, and nothing came back — did the request lapse, or is
+the controller still thinking? Master: **PM ต้องพูดปิดท้ายเสมอ** — the controller
+always closes.
+
+So an expiry is not just a ledger line. The controller writes a closing message
+to the person, and Quinn's condition on it holds: **a closing message that is
+only spoken is an attestation.** It is evidence the same way every other gate
+here is — an outbox file, plus the `abandoned` line that names the deadline. Two
+artifacts, neither of which can be produced by claiming.
+
+The message says three things, not one:
+
+1. the request lapsed, and at what time;
+2. **which questions went unanswered** — so the person knows what to prepare;
+3. that it can be sent again whenever they are ready.
+
+"Timed out" alone would satisfy the rule and teach the person nothing.
 
 **What "ไม่บันทึกลงคิวงาน" means, stated as an assumption to be corrected.** The
 token is created at `opened`, because the grill needs custody and a WIP slot to
@@ -468,12 +512,14 @@ writing down in advance.
 | The deadline | **10 minutes.** Longer means the requirement was not thought through |
 | A countdown on the board | **No.** A request is not admitted until the controller confirms; nobody may type and walk away |
 | How the deadline is communicated | **An absolute wall-clock time inside the question** — "ตอบกลับภายใน 23:30 ไม่งั้นจะยกเลิก" |
+| How a clock-driven rule gets tested | **The threshold is config, not a constant** — tests set it to seconds (§6.2) |
+| What happens when it lapses | **The controller always closes the conversation** — outbox message + `abandoned`, naming the unanswered questions (§6.3) |
+| Who writes the expiry | **The runner**, using `abandoned`. `actor` already separates it from a controller's verdict, so §9 is amended to name the second writer rather than minting a second word |
 
 **Still open:**
 
-1. **Who writes the expiry, and what it does to §9 of the contract**, which
-   today names the controller as the only mechanised writer of `abandoned`
-   (§6.1 — amend-and-reuse recommended).
-2. **Whether a token should exist before the controller accepts** (§6.1's
-   closing note). The design assumes it does, because the grill needs a WIP
-   slot to hold.
+1. **Whether a token should exist before the controller accepts** (§6.1's
+   closing note). The design assumes it does — the grill needs a WIP slot to
+   hold, and more importantly the interrogation needs somewhere to record what
+   was asked. A request that dies at the door with no ledger leaves nobody able
+   to say why twenty of them died last month.
