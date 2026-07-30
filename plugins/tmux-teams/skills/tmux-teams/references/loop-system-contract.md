@@ -1046,6 +1046,19 @@ controller must interrogate a request until nothing is left to guess. This is
 the one place the system asks a human to be specific, and it is also where an
 unclear ask becomes four teams' worth of wasted legs.
 
+**The full design is written up in
+[controller-as-team.md](controller-as-team.md)** — declaration, the admission
+sequence event by event, the grill's six question categories verbatim, the new
+`questioned` / `answered` pair for a token blocked on a person, and the list of
+what must be built with the test that would prove each piece. It is marked NOT
+BUILT throughout, for the same reason this section is: the contract describes
+what the runtime does.
+
+**Settled since:** an escalated token DOES consume the controller's WIP — one
+stuck token stops new admission, *stop starting, start finishing*. And the grill
+carries BOTH evidences: the six categories covered, and a human-actored line
+before `intake`.
+
 **Still open, and both must be answered before this is built:**
 
 1. **Does an escalated token occupy the controller's WIP?** If it does, one
