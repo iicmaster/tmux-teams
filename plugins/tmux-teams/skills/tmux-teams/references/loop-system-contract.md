@@ -982,6 +982,51 @@ hidden this credited the controller by writing `escalated` with the controller's
 own `agent_id` — a line the loop cannot produce, and the same class of fake
 fixture found in the board's tests an hour earlier.
 
+### 14.5 Decided 2026-07-31, NOT yet built — work enters through the controller
+
+This section is not a description of the system. It is a decision the code does
+not implement yet, written down at the moment it was made so the reasoning does
+not evaporate. Until it is built, §4.6 above remains what the runtime does.
+
+**Today:** an operator writes `opened` straight at a team — `agent_id` is the
+receiving dispatcher, `to_team` is that team, and the `workflow` is a string the
+operator typed. The controller is never told. Two consequences, both real:
+
+1. **The auditor never saw the request.** §9 makes the controller the only role
+   that can ask whether what came out of the end is what was asked for. It is
+   handed that question at the end of a route it had no part in admitting. Master
+   put it in one line: *"PM เป็นคนตรวจงานคนสุดท้าย แต่จะไม่รู้ว่างานนี้มาจากไหนได้อย่างไร"* — the
+   last reviewer cannot know where the work came from.
+2. **Nobody accountable chose the route.** `hotfix` or the long way round is the
+   most consequential decision made about a token, and today it is made by
+   whoever typed the command, with no evidence of why.
+
+**Decided:** admission goes through the controller. The operator brings a
+request to the controller; the controller admits it, chooses the workflow, and
+states why. The route then runs as it always has.
+
+**The objection, and why it fell.** A controller in the admission path looked
+like a bottleneck and a cost: §9 says event-triggered, never on a timer, and one
+controller leg answers one question with one verdict (§9, added 2026-07-29). N
+tokens would mean N dispatches serialised behind a 15-minute cooldown. Master's
+answer was that this misreads the direction of the loop: *"คอขวดไม่ใช่ปัญหาเพราะเราใช้
+ระบบ pull เมื่อทีมลีดว่างจะมาดึงงานจาก PM ไปเอง"* — the controller does not push work to a
+team. It holds admitted work, and the receiving dispatcher **pulls** when it has
+room, exactly as every other handoff on this board already works (§7).
+
+**What this also fixes, unplanned.** The head-of-route intake refusal — the wedge
+closed on 2026-07-29 by discriminating on `agent_id` — exists only because the
+first team on a route has no sender to return work to. If every route begins at
+the controller, every team has a sender and that special case stops existing.
+
+**Not designed yet, and needed before this can be built:** where an admitted
+token sits before the first team pulls it (the controller is not a team, so §6's
+placement rule has no home for it); whether that is a controller-owned pool
+declared in `graph.json`; whether the first leg then becomes an ordinary
+`pulled` whose `from_team` names that pool, which would narrow §4.6's `opened`
+to a single writer; and what the operator's own hand-off looks like as evidence,
+since a human bringing a request is a custody event like any other.
+
 ## 15. Change control
 
 1. A change to behaviour amends this document **in the same commit**.
