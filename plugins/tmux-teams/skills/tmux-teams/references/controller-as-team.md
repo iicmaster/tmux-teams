@@ -470,37 +470,58 @@ away its failures cannot tell you why it fails.
 
 ---
 
-## 6.4 The human interface does not exist yet
+## 6.4 The operator is an agent, and the channel already exists
 
-Raised by Sally (UX) on 2026-07-31, the first time this design was read by
-someone asking what the PERSON does rather than what the system knows. Four
-rounds of design by four system-side roles had not surfaced any of it.
+Sally read this design and found that its entire human half was missing: no
+channel for the controller's questions, a custody rule reachable only through a
+Node CLI, and a wall-clock deadline with no timezone. All three were real, and
+all three came from one wrong assumption the four system-side roles shared
+without noticing — that `human:operator` meant a person at a keyboard running
+commands.
 
-**1. There is no channel.** The design says the controller "asks questions" and
-"writes a closing message". It never says through what. `.mailbox-out/<task>` is
-a file the runner reads; no human is watching a directory. Every human-facing
-sentence in this document currently ends nowhere.
+Master: **the operator is not a person. It is one of us.**
 
-**2. The strongest gate in the system is gated by a CLI.** `answered` must carry
-a `human:` actor, and the only sanctioned writer is
-`ledger-writer.mjs --repo … --actor human:x --stdin` fed contract-shaped JSON.
-As written, a business stakeholder answers *"who is the target customer?"* by
-opening a terminal, composing a §4-valid event, and piping it into a Node script
-— inside ten minutes, or the request is discarded. That is not a gate, it is a
-moat.
+```
+person ⇄ chat agent (the operator) ⇄ ledger ⇄ controller
+```
 
-The custody rule is right and is not up for negotiation: the answer must land in
-the ledger with a human actor. What is missing is everything between the person
-and that line.
+A person talks in a chat window to the agent they are already working with. That
+agent is the operator: it writes `opened` on their behalf, and when the
+controller asks something back, it carries the question into the conversation and
+the answer back out. Nobody opens a terminal, nobody composes JSON, and the
+deadline is rendered by an agent that knows what time it is where the person is.
 
-**3. A wall-clock deadline with no timezone is a defect.** "ตอบกลับภายใน 23:30"
-read by someone in a different zone from the machine is off by hours, and they
-find out by losing the request. Whatever channel is chosen, the deadline has to
-be stated in the reader's own frame or as a duration from receipt.
+This is not a new component. It is the interface this project already runs on,
+which is why it was invisible to a room designing the machine.
 
-None of this changes a decision already made. It says the design is not
-buildable until the human half of it is designed too, and that half has not been
-started.
+### 6.4.1 What it costs: the forgery guarantee weakens, and must be re-stated
+
+§5.1's Evidence 2 said a model cannot write an `answered` line, because the actor
+vocabulary is closed and `human:` is not a model's to claim. With a relaying
+agent that is no longer structurally true: the operator writes the line, and it
+writes `human:`.
+
+The actor is still correct. `ACTOR_RE` exists so that "who is accountable" is
+permanent, and here the person decided — the agent transcribed. Naming the
+transcriber as the author would put accountability on the wrong party.
+
+So the event carries both:
+
+```jsonc
+{ "event": "answered", "actor": "human:<name>", "relayed_by": "agent:<operator>",
+  "reason": "<the person's own words>" }
+```
+
+And the guarantee is restated honestly rather than left overclaimed:
+
+| | Before | Now |
+| --- | --- | --- |
+| What stops a fabricated answer | structure — no model may write `human:` | **naming** — the relay is on the record and the words are quoted |
+| Strength | absolute | as strong as the relay's own accountability |
+
+That is weaker, and this document says so rather than pretending otherwise. What
+it buys is a gate a person can actually pass in ten minutes. An unfalsifiable
+gate nobody can reach is not a stronger gate.
 
 ---
 
@@ -565,15 +586,17 @@ writing down in advance.
 | What happens when it lapses | **The controller always closes the conversation** — outbox message + `abandoned`, naming the unanswered questions (§6.3) |
 | Who writes the expiry | **The runner**, using `abandoned`. `actor` already separates it from a controller's verdict, so §9 is amended to name the second writer rather than minting a second word |
 
-**Still open — and all of it is the human half (§6.4):**
+**Closed by §6.4:** the channel is the chat the project already runs in, the
+operator is the agent in it, and the deadline is rendered by something that knows
+the reader's timezone. The cost is recorded in §6.4.1: the forgery guarantee
+drops from structural to named.
 
-1. **The channel.** How a person receives the controller's questions and sends
-   answers back. Nothing in this design touches it, and nothing works without
-   it.
-2. **How a human writes a `human:`-actored line without a terminal.** The
-   custody rule stands; the path to it has to be built.
-3. **How the deadline is expressed** so a reader in another timezone cannot
-   misread it.
-4. **What the intake statistics are for.** The data exists the moment tokens are
+**Still open:**
+
+1. **What the intake statistics are for.** The data exists the moment tokens are
    always created; who reads it, how often, and what changes as a result is not
    designed.
+2. **Where this design stops.** Raised by John (PM): every round has closed three
+   questions and opened two, and the system it guards has never admitted a real
+   work item. A design is finished when it is small enough to build once and
+   prove — not when no question remains.
