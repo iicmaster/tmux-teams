@@ -132,6 +132,14 @@ export function validateWorkflowGraph(value) {
     return invalid(`the outer controller has an invalid model — a model is 1 to ${MODEL_MAX} characters with no control characters`)
   }
 
+  // Derived, never declared — the same rule §3.1 applies to `wip_limit`. A
+  // graph that states it in a field would be stating one fact twice, and two
+  // statements of one fact eventually disagree.
+  if (isObject(value) && 'controller_team' in value) {
+    return invalid('controller_team is derived from the head of every route, not declared — remove the field')
+  }
+  let controllerTeamId = null
+
   const seenTeams = new Set()
   const seenAgents = new Set(controller === null ? [] : [controller])
   const teams = []
@@ -175,8 +183,24 @@ export function validateWorkflowGraph(value) {
     }
     // One agent, one seat. A shared id would make two nodes light up from one
     // dispatch, which is exactly the false positive the page must never show.
+    //
+    // The controller is the single exception, and only as a WORKER. Under
+    // `references/controller-as-team.md` the controller stops being outside the
+    // board and becomes an ordinary team whose one worker is the seat
+    // `outer_controller_id` already names — the same seat named twice, not two
+    // seats. As a dispatcher or an evaluator it would be a second seat, so those
+    // stay refused.
     const members = [dispatcher, ...workers, evaluator]
     for (const agentId of members) {
+      const isControllerAsWorker = agentId === controller && workers.includes(agentId)
+        && agentId !== dispatcher && agentId !== evaluator
+      if (isControllerAsWorker) {
+        if (controllerTeamId !== null) {
+          return invalid(`outer_controller_id ${agentId} is a worker on both ${controllerTeamId} and ${teamId} — it is one seat`)
+        }
+        controllerTeamId = teamId
+        continue
+      }
       if (seenAgents.has(agentId)) return invalid(`agent_id ${agentId} is assigned more than once`)
       seenAgents.add(agentId)
     }
@@ -228,10 +252,34 @@ export function validateWorkflowGraph(value) {
     workflows.push({ workflow_id: workflowId, name: name.trim(), route: [...route] })
   }
 
+  // ── the controller as a team (references/controller-as-team.md) ────────────
+  //
+  // Opt-in by construction: a graph where the controller sits in no team is
+  // exactly the graph this system has always accepted, and validates unchanged.
+  // Naming the controller as a team's worker is what turns these rules on, and
+  // then all of them apply — a half-adopted version would be a board that draws
+  // an entry point the runner does not use.
+  if (controllerTeamId !== null) {
+    const controlTeam = teams.find((entry) => entry.team_id === controllerTeamId)
+    if (controlTeam.worker_ids.length !== 1) {
+      return invalid(`the controller team ${controllerTeamId} has ${controlTeam.worker_ids.length} workers — it holds one seat, so WIP 1`)
+    }
+    for (const workflow of workflows) {
+      if (workflow.route[0] !== controllerTeamId) {
+        return invalid(`workflow ${workflow.workflow_id} starts at ${workflow.route[0]} — every route enters through the controller team ${controllerTeamId}`)
+      }
+      // §1 already refuses a repeated team, so a controller appearing later in
+      // a route is caught above. This is the case §1 cannot see: a route that
+      // starts somewhere else while another route starts at the controller,
+      // which would mean the board has two front doors.
+    }
+  }
+
   const normalized = {
     project_id: projectId,
     outer_controller_id: controller,
     outer_controller_model: controllerModel ?? null,
+    controller_team: controllerTeamId,
     teams,
     workflows,
   }

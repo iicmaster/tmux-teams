@@ -239,11 +239,64 @@ test('an agent_id used twice is still rejected', () => {
   assert.match(reason, /more than once/)
 })
 
-test('the outer controller shares its seat with nobody', () => {
-  const reason = rejected(graphWith({
-    teams: [teamOf('build', ['pm']), teamOf('verify', ['v_w1'])],
+// This test used to say "the outer controller shares its seat with nobody" and
+// refused the controller anywhere inside a team. `references/controller-as-team.md`
+// overturns exactly that: the controller becomes an ordinary team whose one
+// worker IS that seat. What survives is the part that was never about the
+// controller — one agent, one seat — so this rewrite keeps every refusal that
+// still holds and adds the one case that is now legal.
+test('the controller may hold one team seat, as that team’s only worker', () => {
+  // Still refused: as a dispatcher it would be a SECOND seat, not the same one.
+  assert.match(rejected(graphWith({
+    teams: [teamOf('control', ['c_w1'], { dispatcher_id: 'pm' }), teamOf('build', ['b_w1'])],
+    workflows: [{ workflow_id: 'full', name: 'Full', route: ['control', 'build'] }],
+  })), /pm/)
+
+  // Still refused: one seat cannot be worked by two teams.
+  assert.match(rejected(graphWith({
+    teams: [teamOf('control', ['pm']), teamOf('other', ['pm'])],
+    workflows: [{ workflow_id: 'full', name: 'Full', route: ['control', 'other'] }],
+  })), /one seat/)
+
+  // Refused: a controller team is WIP 1 by definition — its seat is one seat.
+  assert.match(rejected(graphWith({
+    teams: [teamOf('control', ['pm', 'c_w2']), teamOf('build', ['b_w1'])],
+    workflows: [{ workflow_id: 'full', name: 'Full', route: ['control', 'build'] }],
+  })), /WIP 1/)
+
+  // Refused: work enters through the controller, so every route starts there.
+  assert.match(rejected(graphWith({
+    teams: [teamOf('control', ['pm']), teamOf('build', ['b_w1'])],
+    workflows: [{ workflow_id: 'full', name: 'Full', route: ['build', 'control'] }],
+  })), /every route enters through/)
+
+  // Refused: two routes cannot disagree about where work enters.
+  assert.match(rejected(graphWith({
+    teams: [teamOf('control', ['pm']), teamOf('build', ['b_w1']), teamOf('qa', ['q_w1'])],
+    workflows: [
+      { workflow_id: 'full', name: 'Full', route: ['control', 'build', 'qa'] },
+      { workflow_id: 'fast', name: 'Fast', route: ['build', 'qa'] },
+    ],
+  })), /every route enters through/)
+
+  // Accepted, and the controller team is DERIVED rather than declared.
+  const ok = validateWorkflowGraph(graphWith({
+    teams: [teamOf('control', ['pm']), teamOf('build', ['b_w1'])],
+    workflows: [{ workflow_id: 'full', name: 'Full', route: ['control', 'build'] }],
   }))
-  assert.match(reason, /pm/)
+  assert.ok(ok.ok, ok.reason)
+  assert.equal(ok.value.controller_team, 'control')
+  assert.equal(ok.value.teams.find((entry) => entry.team_id === 'control').wip_limit, 1)
+
+  // A graph that puts the controller in no team is the graph this system has
+  // always accepted, and none of the above may touch it.
+  const legacy = validateWorkflowGraph(graphWith())
+  assert.ok(legacy.ok, legacy.reason)
+  assert.equal(legacy.value.controller_team, null)
+})
+
+test('controller_team is derived, never declared', () => {
+  assert.match(rejected(graphWith({ controller_team: 'build' })), /derived/)
 })
 
 test('a route naming an unknown team is still rejected', () => {

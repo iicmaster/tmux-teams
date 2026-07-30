@@ -114,8 +114,13 @@ function livenessIsCompleted(repo, taskId) {
   }
 }
 
+// 20s, not 5s. What this waits for is that the outbox SETTLES — the deadline
+// itself asserts nothing. At 5s it failed under full-suite load, where this file
+// forks real companion processes while twenty other files run concurrently, and
+// passed alone every time. A deadline shorter than the machine's worst-case
+// scheduling does not test the loop, it tests the scheduler.
 async function waitFor(condition, description, repo) {
-  const deadline = Date.now() + 5000
+  const deadline = Date.now() + 20_000
   while (Date.now() < deadline) {
     if (condition()) return
     await sleep(15)
