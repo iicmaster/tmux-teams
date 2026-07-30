@@ -1059,17 +1059,18 @@ stuck token stops new admission, *stop starting, start finishing*. And the grill
 carries BOTH evidences: the six categories covered, and a human-actored line
 before `intake`.
 
-**Still open, and both must be answered before this is built:**
+**Settled the same day, all of it:** an escalated token occupies the
+controller's WIP, and so does a token waiting on a human — unanswered questions
+expire on a deadline and free the queue rather than holding it forever. The
+grill judges sufficiency rather than counting boxes: every category is faced,
+none is skipped silently. And the grill objects but cannot veto — if a person
+confirms after being warned, the work proceeds, with the warning and the
+decision both on the record.
 
-1. **Does an escalated token occupy the controller's WIP?** If it does, one
-   stuck token stops all new admission — which may be exactly right (*stop
-   starting, start finishing*) but has to be a stated choice, not a side effect
-   nobody noticed. If it does not, job 2 is outside the WIP system and calling
-   it a worker is a fiction.
-2. **What counts as evidence that the grill is finished?** "The model judged the
-   request clear" is an attestation, and §2 does not accept attestations from
-   any other role. Without an answer, the strongest gate in the system is the
-   one gate with no evidence behind it.
+**Still open:** the deadline value, who writes the expiry (today §9 names the
+controller as the only mechanised writer of `abandoned`), and the countdown the
+board will have to draw — the first thing that page has ever had to show about a
+human's obligation rather than an agent's.
 
 Also unresolved: what the operator's own hand-off looks like in the ledger. A
 human bringing a request is a custody event like any other, and today it has no

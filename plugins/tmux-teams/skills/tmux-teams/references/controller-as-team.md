@@ -164,11 +164,20 @@ an **attestation**, and §2 accepts attestations from no other role in this
 system. So the gate carries two independent pieces of evidence, and Master chose
 both rather than either.
 
-**Evidence 1 — the checklist was covered.** Six categories, below. The `intake`
-event records which categories were addressed, and the token's request file holds
-the questions and answers verbatim. A category with no answer is not one the
-controller may quietly decide is irrelevant: it is either answered, or marked
-not-applicable **with a reason**.
+**Evidence 1 — every category was faced.** Six categories, below. The `intake`
+event records what was addressed, and the token's request file holds the
+questions and answers verbatim.
+
+Note the word: **faced**, not *answered*. Master was explicit that completeness
+is a judgement, not a count — *"PM ตัดสินใจได้เลยว่าข้อมูลเพียงพอต่อการทำงานโดยไม่เดารึยัง เพราะบางงานก็ไม่ได้
+มีข้อมูลครบทั้งหกด้านอยู่แล้ว เนื้องานมันไม่ได้กว้างขนาดนั้น"*. A three-line copy fix has no
+Integration story and demanding one would turn the gate into paperwork.
+
+So the controller decides whether it can work without guessing. What it may
+NOT do is skip a category silently: each one is either answered, or recorded
+not-applicable **with the reason it does not apply**. That is the difference
+between a judgement and an omission — a judgement leaves a line someone can
+disagree with later, and an omission leaves nothing at all.
 
 **Evidence 2 — a human confirmed.** The last line before `intake` must be an
 `answered` event whose actor is `human:<name>`. A model cannot write that line —
@@ -239,7 +248,31 @@ matter more than many questions.
 These are categories, not a script. The controller asks what the request actually
 leaves open; the list is what it is not allowed to skip.
 
-### 5.3 Choosing the workflow is part of the grill
+### 5.3 The grill objects; it does not veto
+
+The controller may conclude that a request should not be built at all. **That is
+a recommendation, not a refusal.** Master: *"งานที่ grill ว่าไม่ควรทำและแจ้งไปแล้ว แต่คนยืนยันให้ทำ
+ก็ต้องทำ"* — if the grill says it should not be done, says so, and the person
+confirms anyway, it gets done.
+
+Mechanically this needs no new path. The objection is a `questioned` carrying
+the concern; the human's `answered` either withdraws the request or confirms it;
+`intake` then accepts, recording that it proceeded over a stated objection. The
+audit at the end can read both — what the controller warned about at admission,
+and who decided to proceed anyway.
+
+The principle underneath, and it is worth stating plainly because it decides
+dozens of smaller questions: **the system advises, the person decides, and both
+are on the record.** A gate that could refuse a human would be a system that
+outranks its owner. A human decision with no record of the warning would be a
+system that cannot learn. This is neither.
+
+This also answers a question this design opened earlier: there is no
+reject-at-intake path, because the grill has no power to reject. `abandoned`
+keeps its single meaning — a token that cannot be finished — and never acquires
+a second one about work that should not have started.
+
+### 5.4 Choosing the workflow is part of the grill
 
 The `intake` event records `workflow` and the reason for it. This is the fact
 that has no author today. After the grill the controller knows the shape of the
@@ -277,25 +310,45 @@ So the design adds one event pair and one rule:
   "waiting on an agent" look identical on today's page and mean opposite things
   about who has to act next.
 
-### 6.1 Does a `questioned` token hold the controller's WIP?
+### 6.1 A questioned token holds WIP, and silence expires it
 
-**This is the one question this design does not settle, and it must be settled
-before building.**
+**Decided 2026-07-31.** `questioned` consumes the controller's WIP exactly as
+`escalated` does. An unanswered request is unfinished work, and the same rule
+governs it: *stop starting, start finishing*.
 
-Master decided that an escalated token DOES consume the controller's WIP — *stop
-starting, start finishing*: while something is stuck, the system does not take on
-new work. That is a deliberate choice, recorded as one.
+The obvious objection — one unanswered question halts admission until a human
+comes back, which may be hours — is answered by a deadline rather than by an
+exception. Master: *"ถ้าไม่ตอบภายในเวลาที่กำหนดให้ตัดทิ้งเลย ปล่อยคิวให้ว่าง เมื่อไหร่คนพร้อมค่อยส่งคำขอเข้ามาใหม่"*
+— if the answer does not come in time, drop it, free the queue, and let the
+person send the request again when they are ready.
 
-`questioned` is a different case. If it also holds WIP, one unanswered question
-halts all admission until a human comes back, which may be hours. The argument
-for it: an unanswered request IS unfinished work, and the same principle applies.
-The argument against: the controller is not blocked on itself, it is blocked on
-someone outside the system, and a queue of requests waiting to be interrogated is
-not the same as a queue of work in progress.
+This is the first time in this system that a **clock discards work**. Everything
+that follows from that has to be deliberate:
 
-**Recommendation: `questioned` does NOT hold WIP; `escalated` does.** The
-distinction is who has to act — the loop, or a person. This is a recommendation,
-not a decision, and the design is not complete until Master picks one.
+**What "discard" means, precisely.** The token stops occupying the queue. It
+does not mean the request is destroyed: the ledger is append-only, so the whole
+grill — the questions asked, the silence — stays readable forever, and the
+request file stays on disk. What ends is the token's claim on a WIP slot.
+
+**Who writes it, and the clause it breaks.** §9 says today that `abandon` is the
+controller's verdict and that the controller is *the only mechanised writer of*
+`abandoned`. A deadline expiry is written by the RUNNER, on a timer, with no
+controller leg — the second mechanised writer that clause forbids. Either §9 is
+amended to name this second writer explicitly, or the expiry gets its own event.
+**Recommendation: amend §9 and reuse `abandoned`**, with a reason that names the
+deadline, because a reader asking "why did this token stop" wants one word to
+look for, not two.
+
+**The board must show the clock.** A person who submits a request, goes to
+lunch, and comes back to find it gone has been surprised by the system. A
+`questioned` token must display how long is left, and the countdown belongs on
+the same page as the question. Without it the deadline is not a policy, it is a
+trap.
+
+**The deadline value is not chosen yet.** It has to be long enough to survive a
+meeting and short enough to be worth having. It should also be declared per
+project rather than hard-coded, since a team of two and a team of forty do not
+share a reasonable answer.
 
 ---
 
@@ -338,16 +391,26 @@ writing down in advance.
 
 ---
 
-## 9. Still open
+## 9. Settled, and still open
 
-1. **Does `questioned` hold the controller's WIP?** (§6.1 — recommendation
-   recorded, decision not made.)
-2. **Is the controller implicit at the head of every route, or written into
+**Settled 2026-07-31, after the first draft of this document:**
+
+| Question | Decision |
+| --- | --- |
+| Does `questioned` hold the controller's WIP? | **Yes**, and unanswered questions expire on a deadline (§6.1) |
+| Must all six categories be answered? | **No** — the controller judges sufficiency; every category is faced, none is skipped silently (§5.1) |
+| Can a human answer partially? | Yes, by consequence of the above: enough is what the controller can work from without guessing |
+| What happens to a request the grill says should not be built? | It is an objection, not a veto. The person may confirm and it proceeds, with both on the record (§5.3) |
+
+**Still open:**
+
+1. **The deadline value**, and that it be declared per project rather than
+   hard-coded (§6.1). A team of two and a team of forty do not share an answer.
+2. **Who writes the expiry, and what it does to §9 of the contract**, which
+   today names the controller as the only mechanised writer of `abandoned`
+   (§6.1 — amend-and-reuse recommended).
+3. **The countdown on the board** (§6.1). Without it the deadline is a trap
+   rather than a policy; with it, this is the first thing the page has ever had
+   to draw about a human's obligation rather than an agent's.
+4. **Is the controller implicit at the head of every route, or written into
    each?** (§3 — implicit recommended.)
-3. **Can a human answer partially?** If three of six categories come back and
-   three do not, does the grill re-run and ask again, or does the token stay
-   `questioned` until all are in? Re-running is cheaper for the human and more
-   expensive in dispatches.
-4. **What happens to a request the grill decides should never be built?** There
-   is no reject-at-intake path today, and `abandoned` is the controller's word
-   for a token that cannot be finished, not for one that should not be started.
