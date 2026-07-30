@@ -444,14 +444,63 @@ The message says three things, not one:
 
 "Timed out" alone would satisfy the rule and teach the person nothing.
 
-**What "ไม่บันทึกลงคิวงาน" means, stated as an assumption to be corrected.** The
-token is created at `opened`, because the grill needs custody and a WIP slot to
-occupy. When the deadline lapses, the token closes and **never enters the
-delivery queue**: no `intake`, no `pulled`, no team ever holds it. Its ledger
-stays on disk — append-only, so what was asked and what went unanswered remain
-readable — but nothing downstream ever sees it as work. If Master meant that no
-token should exist at all until the controller accepts, the WIP rule from §6.1
-needs revisiting, because a grill that holds no token cannot hold a slot either.
+**A token is always created, and a dead one is not waste.** The token exists
+from `opened`. When the deadline lapses it closes and **never enters the delivery
+queue** — no `intake`, no `pulled`, no team ever holds it — but its ledger stays
+on disk.
+
+Master's first instinct was not to create it at all, on the grounds that a
+request that dies at the door is garbage. The reframe that changed it is worth
+keeping as a principle rather than a decision: *"ลองมองอีกมุมมันคือสถิติ เปลี่ยนจากขยะเป็นของ
+มีค่าทันที"* — looked at from one side it is litter; from the other it is data,
+and the same file becomes valuable without changing at all.
+
+What that data answers, once there is a month of it:
+
+- **Which of the six categories go unanswered most often.** If most requests die
+  in Integration, the requesters are not careless — the system is asking at the
+  wrong moment, and that answer belongs in front of them before they start.
+- **How long people actually take to answer**, against a ten-minute deadline
+  chosen by judgement. Either the evidence supports the number or it does not.
+- **Who is asked to clarify most**, which is a training signal, not a scolding
+  one.
+
+None of that is reachable if the request leaves no trace. A system that throws
+away its failures cannot tell you why it fails.
+
+---
+
+## 6.4 The human interface does not exist yet
+
+Raised by Sally (UX) on 2026-07-31, the first time this design was read by
+someone asking what the PERSON does rather than what the system knows. Four
+rounds of design by four system-side roles had not surfaced any of it.
+
+**1. There is no channel.** The design says the controller "asks questions" and
+"writes a closing message". It never says through what. `.mailbox-out/<task>` is
+a file the runner reads; no human is watching a directory. Every human-facing
+sentence in this document currently ends nowhere.
+
+**2. The strongest gate in the system is gated by a CLI.** `answered` must carry
+a `human:` actor, and the only sanctioned writer is
+`ledger-writer.mjs --repo … --actor human:x --stdin` fed contract-shaped JSON.
+As written, a business stakeholder answers *"who is the target customer?"* by
+opening a terminal, composing a §4-valid event, and piping it into a Node script
+— inside ten minutes, or the request is discarded. That is not a gate, it is a
+moat.
+
+The custody rule is right and is not up for negotiation: the answer must land in
+the ledger with a human actor. What is missing is everything between the person
+and that line.
+
+**3. A wall-clock deadline with no timezone is a defect.** "ตอบกลับภายใน 23:30"
+read by someone in a different zone from the machine is off by hours, and they
+find out by losing the request. Whatever channel is chosen, the deadline has to
+be stated in the reader's own frame or as a duration from receipt.
+
+None of this changes a decision already made. It says the design is not
+buildable until the human half of it is designed too, and that half has not been
+started.
 
 ---
 
@@ -516,10 +565,15 @@ writing down in advance.
 | What happens when it lapses | **The controller always closes the conversation** — outbox message + `abandoned`, naming the unanswered questions (§6.3) |
 | Who writes the expiry | **The runner**, using `abandoned`. `actor` already separates it from a controller's verdict, so §9 is amended to name the second writer rather than minting a second word |
 
-**Still open:**
+**Still open — and all of it is the human half (§6.4):**
 
-1. **Whether a token should exist before the controller accepts** (§6.1's
-   closing note). The design assumes it does — the grill needs a WIP slot to
-   hold, and more importantly the interrogation needs somewhere to record what
-   was asked. A request that dies at the door with no ledger leaves nobody able
-   to say why twenty of them died last month.
+1. **The channel.** How a person receives the controller's questions and sends
+   answers back. Nothing in this design touches it, and nothing works without
+   it.
+2. **How a human writes a `human:`-actored line without a terminal.** The
+   custody rule stands; the path to it has to be built.
+3. **How the deadline is expressed** so a reader in another timezone cannot
+   misread it.
+4. **What the intake statistics are for.** The data exists the moment tokens are
+   always created; who reads it, how often, and what changes as a result is not
+   designed.
