@@ -15,6 +15,7 @@ const TEST_DIRECTORY = join(REPO_ROOT, 'tests')
 // the two that genuinely do not fit; they appear in the full-only list this
 // runner prints, so their absence is visible rather than assumed.
 const FAST_TEST_FILES = Object.freeze([
+  'tests/docs-paths.test.mjs',
   'tests/graph.test.mjs',
   'tests/loop-occupancy.test.mjs',
   'tests/loop-runner-heartbeat-model.test.mjs',

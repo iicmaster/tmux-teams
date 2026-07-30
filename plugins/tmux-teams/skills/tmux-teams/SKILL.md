@@ -13,14 +13,91 @@ discipline, mailbox pattern). Tool-specific facts live in per-tool driver skills
 and are the source of truth for that tool: **codex → `codex-tmux-driver`**
 (flags, calibrated markers, dialog behavior, notify caveats, slash commands).
 
-## 0. Experimental Stage 0 — two-level delivery-loop measurement PoC
+## 0. Delivery loop — declaration, custody, pull, tick
 
-This is an **opt-in, offline measurement-feasibility PoC**, not an activated
-dispatch hierarchy. Run it only with a named experiment JSON:
+The mailbox pattern dispatches one leg. The delivery loop keeps a token moving
+through declared teams while retaining evidence for every decision. Its law is
+[the loop system contract](references/loop-system-contract.md); when prose and
+code disagree, stop and name which one is wrong before changing either.
+
+Read the system in this order:
+
+| Component | Owns |
+|---|---|
+| `scripts/graph.mjs` + `scripts/workflow-graph.mjs` | `.tmux-teams/graph.json`: teams are reusable pools; workflows own routes |
+| `scripts/ledger-writer.mjs` + `scripts/ledger-validate.mjs` | one append-only custody ledger per token and the predicate that judges it |
+| `scripts/pull-controller.mjs` | receiver-owned pulls, route completion and WIP enforcement |
+| `scripts/loop-runner.mjs` | the ordered tick: harvest → pull → dispatch → escalate |
+| `scripts/acp-companion.mjs` | the ACP leg; its custody-ledger authority is limited to its own `assigned` and `delivered` events |
+| `scripts/pulse.mjs` + `scripts/graph.mjs` + `scripts/kanban.mjs` | live transport, wiring and custody projections from the same evidence |
+| `scripts/kms.mjs` | immutable run memory; never a substitute for verification |
+
+Initialize a declaration, replace the bundled names and model requests, then
+validate it. The initializer writes into an existing state directory:
 
 ```bash
-node plugins/tmux-teams/skills/tmux-teams/scripts/delivery-loop-poc.mjs analyze <experiment.json>
+mkdir -p -- <repo>/.tmux-teams
+node <skill-root>/scripts/graph.mjs init <repo>
+node <skill-root>/scripts/graph.mjs check <repo>
 ```
+
+A missing declaration uses the bundled four-team template. A present but
+invalid declaration fails closed. WIP is always the worker count; it is not a
+second number in the declaration. `inherit-account-default` requests no model
+and must never be displayed as a verified model.
+
+Admit work through the general ledger writer. `opened` is legal only as the
+first event and names the first receiving dispatcher and team. The example
+below uses the bundled declaration unchanged; after editing the graph,
+substitute its workflow, dispatcher and team names:
+
+```bash
+node <skill-root>/scripts/ledger-writer.mjs \
+  --repo <repo> --actor human:operator --stdin <<'JSON'
+{"event":"opened","work_item":"token-001","workflow":"default","agent_id":"requirement_dispatcher","to_team":"requirement","reason":"work admitted by operator"}
+JSON
+node <skill-root>/scripts/ledger-validate.mjs --repo <repo>
+```
+
+Do not write custody with shell redirection. `ledger-writer.mjs` is the only
+general writer. The one narrow exception is `acp-companion.mjs`, which goes
+through the same validator and may append only the transport facts it observes
+for its own leg.
+
+Inspect pull decisions without recording them, then simulate or run the whole
+tick:
+
+```bash
+node <skill-root>/scripts/pull-controller.mjs <repo>
+node <skill-root>/scripts/loop-runner.mjs <repo> --dry-run
+node <skill-root>/scripts/loop-runner.mjs <repo> --watch=20
+```
+
+The direct pull command is an operator dry run. Let the runner apply pulls so
+the fixed tick order remains intact. A dry runner does not stamp
+`runner-heartbeat.json`; a live tick does, including a tick that deliberately
+holds. The outer controller is event-triggered, audits a completed route before
+handling exceptions, and receives one question per dispatch. It is never
+dispatched by a heartbeat timer.
+
+Publish the three views after the runner is available:
+
+```bash
+node <skill-root>/scripts/pulse.mjs once <repo>
+node <skill-root>/scripts/pulse.mjs ensure <repo> --interval 20
+node <skill-root>/scripts/kanban.mjs check <repo>
+```
+
+The graph answers who exists and how they are wired. The kanban answers where a
+token is held. Pulse answers what transport activity is happening now. KMS,
+described in §9, records what a run taught the PM after that run is judged.
+
+## 0.7 Retained measurement semantics — no direct Stage 0 command
+
+The former offline analyzer is not a user-facing entry point in this checkout.
+Its pure core remains because the Stage 1 exporter replays an existing
+observation store through these measurement rules. It is separate from the
+custody loop above and never dispatches or routes work.
 
 It models a PM-coordinated outer loop and four inner Phase Teams with their
 required exit artifacts: Requirement `requirements_baseline`, Prototype
@@ -45,47 +122,29 @@ are `INCONCLUSIVE`.
 The JSON keeps `measurement_readiness`, `scenario_signal`, `guardrail_status`,
 `evidence_eligibility`, `safety_hold_recommended`, and `decision_packet`
 separate. Deterministic, descriptive-only `bottlenecks.by_arm` reports the
-highest coordination phase and cost category per arm. `business_decision` is
-always `EXTERNAL_REQUIRED`: this PoC never asserts causal effect or ROI, or emits
-`GO`/`ITERATE`/`NO_GO`. `READY` means measurement completeness, not accepted
-delivery, delivery success, or business approval. It does not alter tmux/ACP
+highest coordination phase and cost category per arm. `scenario_signal`
+remains descriptive; its ROI interpretation is `ROI_NOT_ESTABLISHED`.
+`business_decision` is always `EXTERNAL_REQUIRED`: this compatibility core
+never asserts causal effect or ROI, or emits `GO`/`ITERATE`/`NO_GO`. `READY`
+means measurement completeness, not accepted delivery, delivery success, or
+business approval. It does not alter tmux/ACP
 dispatch, mailbox or PM verification, Party gates, KMS, Pulse, role loading, cleanup, or transport
-semantics. See [the Stage 0 reference contract](references/two-level-delivery-loop-poc.md)
-for the full authority/measurement contract, Mermaid flowchart, and sequence
-diagram.
+semantics. The schemas and Stage 1 runbook below retain the rules the exporter
+still enforces.
 
-## 0.1 v0.7 Stage 1 — field-evidence toolkit
+## 0.8 v0.7 Stage 1 — export-only evidence compatibility
 
-Stage 1 is an opt-in observational sidecar around the same two-level loop. The
-PM coordinates the outer loop and owns exceptions; sender and receiver phase
-leads own routine handoffs in each inner loop. The toolkit freezes the protocol,
-records prospective assignment and named-source observations, replays them, and
-exports an integrity-bound review pack. It does **not** route or dispatch work,
-turn worker/PM terminal signals into receiver acceptance, authenticate same-UID
-identities, certify evidence, emit a business verdict, or actuate a result.
+The Stage 1 entry point that remains reads an already-populated observation
+store and exports an integrity-bound review pack. This checkout does not create
+the store, freeze a pilot, assign slices, capture sources, or append
+observations. The exporter does **not** route or dispatch work, turn worker/PM
+terminal signals into receiver acceptance, authenticate same-UID identities,
+certify evidence, emit a business verdict, or actuate a result.
 
-Run the implemented CLI from a checkout root (replace `<skill-root>` with this
-skill directory):
+The store must already contain a valid frozen manifest and its event files.
+Run the implemented CLI with absolute store and output paths:
 
 ```bash
-node <skill-root>/scripts/delivery-loop-pilot.mjs freeze \
-  <draft.json> --store <absolute-store> --seed-file <outside-repo-seed-file> \
-  --frozen-at <RFC3339>
-
-node <skill-root>/scripts/delivery-loop-pilot.mjs assign \
-  <candidate.json> --store <absolute-store> --seed-file <outside-repo-seed-file> \
-  --assigned-at <RFC3339> --actor <assignment-custodian-id>
-
-node <skill-root>/scripts/delivery-loop-capture.mjs capture \
-  <mailbox-dispatch|mailbox-outbox|kms-event> <named-source> \
-  --store <absolute-store> --slice <slice-id> --actor <actor-id> --at <RFC3339> \
-  [--role pm|metric_producer] [--correlation <dispatch-id>]
-
-node <skill-root>/scripts/delivery-loop-pilot.mjs replay \
-  --store <absolute-store> --as-of <RFC3339>
-node <skill-root>/scripts/delivery-loop-pilot.mjs rehearse \
-  --store <absolute-store> --as-of <RFC3339> [--runs 3]
-
 node <skill-root>/scripts/delivery-loop-export.mjs export \
   --store <absolute-store> --out <new-absolute-pack-dir> --as-of <RFC3339> \
   --source-revision <40-hex-git-sha>
@@ -93,12 +152,9 @@ node <skill-root>/scripts/delivery-loop-export.mjs verify-pack \
   <absolute-pack-dir>
 ```
 
-`freeze` strips the private seed and persists only its commitment. `assign`
-records the frozen `pm_routed` or `receiver_owned` arm without changing the
-operational route. `capture` emits only a bounded `source_observed` signal;
-`TEAM_DONE` and PM verdict records remain observations, never acceptance,
-outcome, guardrail, certification, or approval. `rehearse` requires at least
-three deterministic builds. `verify-pack` checks local integrity and replay,
+`export` replays the named store, materializes its ITT dataset and analysis, and
+writes a new pack directory outside the store. `verify-pack` checks safe paths,
+file bytes and digests, plus deterministic replay. It checks local integrity,
 not external identity or custody.
 
 The closed contracts are:
@@ -137,62 +193,29 @@ No versioned Pulse file or persisted v1 compatibility file is created. Pulse act
 codes are advisory with `auto_execute: false`; favorable metrics can never
 become `GO`, `ITERATE`, `NO_GO`, certification, or an automatic hold/release.
 
-## 0.2 Governed Phase Gate runtime
+## 0.9 Governed Phase Gate runtime compatibility
 
-This operational path is opt-in and separate from the Stage 1 observational
-pilot. The only supported writer is
-`scripts/phase-gate-controller.mjs`. `init` freezes one manifest/store and
-creates the strict, non-symlink `<repo>/.tmux-teams/phase-gate.json` marker.
-Once present, a raw `acp-companion.mjs` invocation without the exact
-controller-provided reservation environment fails before reading the brief or
-creating random IDs, git probes, directories, footprints, ACP sessions,
-outboxes, or KMS records.
+This operational namespace is opt-in and separate from the custody loop and
+the Stage 1 exporter. `scripts/phase-gate-controller.mjs` and its supporting
+modules are the executable surface in this checkout. An older Phase Gate
+Runtime v1 design note remains under `references/`, but its POC and
+`scenario_signal` passages describe the earlier demonstration, not a command
+or field produced by the current Phase Gate modules; it is not an operational
+guide for this checkout.
 
-The controller serializes one Delivery Slice through Requirement → Prototype →
-Development → QA. It reserves the current ledger head, exact acceptance and
-artifact digest, receiver, task, agent, brief digest, timeout, and dispatch UUID
-before spawning ACP. The companion's first governed mutation is child
-registration; non-bootstrap receiver dispatches then consume the acceptance
-once, followed by footprint, prompt, and terminal observations. An ambiguous
-post-spawn state becomes `indeterminate` and blocks automatic retry until an
-authorized PM appends a manual reconciliation/resolution. These are structural
-`advisory_same_uid` checks, not authenticated identity.
+The controller owns its governed store. When
+`<repo>/.tmux-teams/phase-gate.json` exists, a raw `acp-companion.mjs`
+invocation without the controller's exact reservation environment fails before
+the brief is read or a child starts.
 
-Normal Requirement, Prototype, and Development completion requires receiver
-acceptance plus exact consumption by the next phase's first dispatch.
-`QA -> ProjectDelivery` ends with ProjectDelivery receiver acceptance and no
-ACP Phase 5 dispatch. ProjectDelivery is a terminal receiver, not a fifth Phase
-Team, and its acceptance is not release, UAT, certification, ROI, or business
-approval.
+The governed topology has Requirement → Prototype → Development → QA Phase
+Teams. `QA -> ProjectDelivery` ends at a receiver: ProjectDelivery is not a
+fifth Phase Team, and acceptance is not release, UAT, certification, ROI or a
+business decision.
 
-The reproducible full-loop POC uses the same controller, store, companion,
-projection, and Pulse v4 publisher:
-
-```bash
-POC_OUT="$(mktemp -d)/run"
-POC_MOCK="$(realpath tests/fixtures/mock-acp-agent.mjs)"
-node <skill-root>/scripts/phase-gate-poc.mjs \
-  --out "$POC_OUT" \
-  --acp-cmd "node $POC_MOCK" \
-  --time-zone Asia/Bangkok --timeout 15
-```
-
-For this repository POC, run from the checkout root: `mktemp` supplies a fresh
-output and `realpath` survives the companion changing into the generated repo.
-The output directory must be new or empty. `measurement.status:
-scenario_signal` means the deterministic scenario produced measurement-ready
-evidence along its expected path; it is not a causal or business decision.
-`roi.status: ROI_NOT_ESTABLISHED` is intentional because one POC run has no
-production baseline or counterfactual. Establishing ROI requires matched
-production slices and measured PM routing, queue wait, rework, and escaped
-defect costs.
-
-For graph completeness, the POC writes four inner-loop worker-verification
-records, one per Phase Team. They use `verifier_role: phase_team`. The KMS key
-is still named `pm_verdict` for legacy reader compatibility; in these records
-that field name does not assert PM review, PM participation, PM approval, or a
-business decision. It only lets Pulse resolve the otherwise pending
-`ต้องตรวจ` graph state.
+This checkout has no supported one-command full-loop demonstration. Do not
+teach the controller modules as a POC wrapper, and do not mix Phase Team /
+Delivery Slice vocabulary into the workflow graph's Team / work-item model.
 
 ## 1. Session setup
 
@@ -474,7 +497,7 @@ is rejected by the adapter):
 
 ```bash
 ANTHROPIC_MODEL=claude-opus-4-8 \
-  node <skill-root>/scripts/acp-companion.mjs claude <repo> <task-id> <brief-file> [timeout-sec]
+  node <skill-root>/scripts/acp-companion.mjs claude <repo> <task-id> <brief-file> [stall-sec]
 ```
 
 The claude adapter's endpoint and model are fully environment-driven; it is not
@@ -487,7 +510,7 @@ ANTHROPIC_BASE_URL=https://api.kimi.com/coding/ \
 ANTHROPIC_AUTH_TOKEN="$KIMI_TOKEN" \
 ANTHROPIC_API_KEY= \
 ANTHROPIC_MODEL=k3 \
-  node <skill-root>/scripts/acp-companion.mjs claude <repo> <task-id> <brief-file> [timeout-sec]
+  node <skill-root>/scripts/acp-companion.mjs claude <repo> <task-id> <brief-file> [stall-sec]
 ```
 
 The brief file carries the SAME §6 contract text; the worker writes the same
@@ -706,55 +729,55 @@ when planning, read it as leads, and paste in what you judge worth carrying.
 Recalled output is labelled unverified history and carries a warning not to
 re-run a stored `verify_cmd` blindly — re-derive it from the plan instead.
 
-## 10. Pulse — the live view (added 2026-07-21)
+## 10. Pulse and the three projections
 
 §9 remembers what finished. `scripts/pulse.mjs` shows what is happening now,
-scoped to this repo and to workers this system dispatched. Pulse v4 has one
-deliberately narrow data path:
+scoped to this repo and to workers this system dispatched. A publish separates
+transport evidence, loop wiring and token custody:
 
 ```text
-probes -> <repo>/.tmux-teams/pulse.json (machine-readable SSOT)
-       -> <repo>/.tmux-teams/pulse.html (rendered only from serialized JSON)
-       -> <repo>/.tmux-teams/graph.html (full-screen ACP projection)
-       -> <repo>/.tmux-teams/pulse-current.json (bundle commit marker, written last)
+transport probes -----------------------> .tmux-teams/pulse.json
+graph.json + pulse + custody ledgers ---> .tmux-teams/graph.html
+graph.json + custody ledgers -----------> .tmux-teams/kanban.html
+pulse.json -----------------------------> .tmux-teams/pulse.html
+all published files --------------------> .tmux-teams/pulse-current.json (last)
 ```
 
-The HTML never derives state independently or renders from the probe model. It
-is a view of the same serialized snapshot an agent reads. The default contract
-is `references/pulse-v4.schema.json`. It references the v3 definitions for
-run/verdict/phase compatibility; existing v3 documents remain described by
-`references/pulse-v3.schema.json`. `compat-v1` is a stdout-only down-projection
-for consumers that require the older v1 contract.
+Pulse v4 is the default persisted transport snapshot and its contract is
+`references/pulse-v4.schema.json`. It references the v3 run, verdict and phase
+definitions; existing v3 documents remain described by
+`references/pulse-v3.schema.json`. `phase` and `phase_source` are explicit
+evidence. Missing or untrusted attribution remains unassigned; never infer it
+from a task name, worker, provider or timestamp. `compat-v1` is a stdout-only
+down-projection for consumers that require the older v1 contract.
 
 ```bash
-node <skill-root>/scripts/pulse.mjs once  <repo> [--team-graph FILE] [--team-runtime FILE] [--time-zone Asia/Bangkok]
-node <skill-root>/scripts/pulse.mjs json  <repo> [--team-graph FILE] [--team-runtime FILE] [--time-zone Asia/Bangkok]
-node <skill-root>/scripts/pulse.mjs watch <repo> [--interval 20] [--team-graph FILE] [--team-runtime FILE] [--time-zone Asia/Bangkok]
-node <skill-root>/scripts/pulse.mjs ensure <repo> [--interval 20] [--team-graph FILE] [--team-runtime FILE] [--time-zone Asia/Bangkok]
+node <skill-root>/scripts/pulse.mjs once  <repo> [--delivery-loop FILE] [--delivery-runtime FILE] [--time-zone Asia/Bangkok]
+node <skill-root>/scripts/pulse.mjs json  <repo> [--delivery-loop FILE] [--delivery-runtime FILE] [--time-zone Asia/Bangkok]
+node <skill-root>/scripts/pulse.mjs watch <repo> [--interval 20] [--delivery-loop FILE] [--delivery-runtime FILE] [--time-zone Asia/Bangkok]
+node <skill-root>/scripts/pulse.mjs ensure <repo> [--interval 20] [--delivery-loop FILE] [--delivery-runtime FILE] [--time-zone Asia/Bangkok]
+node <skill-root>/scripts/pulse.mjs compat-v1 <repo>
 ```
 
+Pass `--delivery-loop <absolute-pulse-projection.json>` only for the optional
+Stage 1 projection written inside an exported evidence pack.
 Pass `--delivery-runtime <absolute-delivery-runtime.json>` to include the
 bounded, path/actor/payload-free Phase Gate projection. It exposes exactly four
 phase runs, bounded gates, replay head, and deterministic bottleneck facts.
 Pulse sanitizes and observes this file; it never calls the controller, consumes
 an acceptance, retries a dispatch, or changes the store.
 
-Pass `--team-graph <absolute-graph.json>` for the configurable Team
-flowchart input, accepting either the graph object or the Stage 2 `{ "graph":
-... }` wrapper. Team and agent membership is validated before publication; ACP
-agent IDs use the same restricted grammar as dispatch. Pass the optional
-`--team-runtime <absolute-team-runtime.json>` to add the closed
-`team_runtime.v1` controller projection. It is content-addressed in the watcher
-fingerprint and remains `null` when omitted. Invalid, stale, conflicting, or
-lineage-incomplete runtime evidence is diagnosed and does not enrich the graph.
+Pulse retains `--team-graph` and `--team-runtime` for an older optional Pulse
+projection. Those inputs are not the workflow declaration. The active delivery
+loop always declares its teams and routes in `<repo>/.tmux-teams/graph.json`
+through `graph.mjs` and `workflow-graph.mjs`.
 
 Each file is atomically replaced under one publish lock. The publisher writes
-the JSON, both HTML views, and then `<repo>/.tmux-teams/pulse-current.json`
-last. That commit marker carries their paths and SHA-256 hashes, including the
-content-addressed font CSS. A
-reader can detect a mixed/partial bundle and re-read the marker after validation
-to detect a racing publish. `json` prints the exact persisted JSON document
-rather than another projection.
+the JSON, all three HTML views and their assets, then
+`<repo>/.tmux-teams/pulse-current.json` last. That commit marker carries their
+paths and SHA-256 hashes. A reader can detect a mixed or partial bundle and
+re-read the marker after validation to detect a racing publish. `json` prints
+the exact persisted JSON document rather than another projection.
 The document carries `stream_id` + monotonic `sequence`, a unique `snapshot_id`,
 render/observation timestamps and freshness, per-source health, and bounded
 diagnostics so agents can distinguish stale or partial observation from a
@@ -763,23 +786,25 @@ between its footprint and KMS events. A footprint carrying that UUID accepts
 only a matching event; Pulse falls back to task-id + recency only when the
 footprint itself is legacy data without `dispatch_id`.
 
-`graph.html` is the graph-only operational view. It renders one semantic
-node per configured or current ACP agent instance, never one aggregate node per
-provider, phase, Team, queue, or status bucket. A configured Team lane has a
-dispatcher fan-out, separate worker cards, an evaluator convergence, one
-reject/rework edge back to the same dispatcher, and one pass edge to its
-configured downstream dispatcher or the single non-agent Project Completion
-endpoint. Configured but undispatched agents are `not_started`; evidence with
-missing or conflicting explicit identity appears once in `Control / Unassigned`
-as `unknown`. Team names and links come only from the validated graph input.
-Current evidence is primary; completed/superseded attempts and verdicts are in
-one collapsed history area. Runtime state, queue/service values, bottlenecks,
-decisions, and handoffs are shown only when the serialized `team_runtime.v1`
-projection validates; no task name, provider, model, elapsed browser time, or
-CSS position can create them. `TEAM_DONE` does not mean verified success, and
-recorded `pm_verdict: pass` does not mean business approval or UAT acceptance.
-A `pass` that conflicts with failed, blocked, invalid, or absent terminal
-evidence remains factual but is marked as requiring attention.
+`graph.html` answers who exists and how the loop is wired. It draws each
+declared team once, with a dispatcher, parallel workers and its evaluator, then
+draws workflows as separate team-level routes. The governing contract requires
+every agent node—and the outer controller—to state agent id; role, lane and
+transport; verified model or `unverified`; work recorded in the custody ledger;
+and a measured clock or `not started`. Declared models are requests, not
+verified-model evidence.
+
+The current `graph.mjs` renderer does not yet conform to that model line. When
+no verified model exists it may display `<requested model> unconfirmed`,
+`default — none pinned`, or `not recorded` instead of `unverified`. Treat all
+three as unverified, and never quote them as the model that answered. The
+loop-health strip reads `runner-heartbeat.json` before the diagram so a dead
+runner cannot look idle.
+
+`kanban.html` answers where each token is held. Placement, WIP and blocked
+reasons come from the same `teamOccupancy()` and pull decisions the controller
+uses. A malformed ledger line, invalid history or unplaceable token is surfaced,
+not turned into an ordinary card.
 
 Human timestamps default to `Asia/Bangkok`; the HTML displays the timezone
 once in the header and keeps each semantic timestamp concise. Set an IANA zone
@@ -794,7 +819,7 @@ read-only, and every suggested action code is advisory with auto-execution
 disabled; Pulse never retries, kills, redispatches, or otherwise remediates a
 run. Humans and agents must verify before acting.
 
-Both HTML files refresh themselves — open either and leave it open. Each page
+All three HTML files refresh themselves — open any one and leave it open. Each page
 polls only the same-origin `pulse-current.json` marker and reloads only when its
 `snapshot_id` changes. It visibly marks expiry or marker failure, preserves page
 and flow-region scroll, focused agent/control, and open `<details>` state across
