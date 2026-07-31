@@ -269,3 +269,11 @@ test('strokes do not grow with the camera', () => {
   // patterns with it. Zoomed in, a hairline becomes a bar.
   assert.match(TOUR_CSS, /\.wire\{[^}]*vector-effect:non-scaling-stroke/)
 })
+
+test('the client script contains no backtick', () => {
+  // TOUR_SCRIPT is itself a template literal, so a stray backtick — most easily
+  // written inside a comment, quoting an identifier — closes it early and the
+  // module stops parsing. It happened three times while this file was written;
+  // the failure is a syntax error a long way from its cause.
+  assert.equal(TOUR_SCRIPT.includes('`'), false, 'a backtick inside TOUR_SCRIPT ends the template')
+})

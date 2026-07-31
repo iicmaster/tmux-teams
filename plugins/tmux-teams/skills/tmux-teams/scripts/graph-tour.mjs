@@ -330,13 +330,14 @@ export const TOUR_CSS = `
 .tour.quiet .wire.dry{animation:none}
 @keyframes tourFlow{to{stroke-dashoffset:-20}}
 .w-passed{stroke:var(--ok);stroke-width:2.6;opacity:.85}
-.tour-comet{fill:var(--handoff);filter:drop-shadow(0 0 6px var(--handoff))}
-.tour-trail{fill:var(--handoff)}
-/* The opening board holds still, but ONE comet still runs the primary route:
-   the crawl says "nothing recorded here" and would be noise across the whole
-   board at once, while the comet says "this is the shape of the work" and needs
-   somewhere quiet to be legible. Reduced motion stops both. */
-.tour.quiet .tour-comet,.tour.quiet .tour-trail{visibility:hidden}
+.tour-token{fill:var(--handoff);filter:drop-shadow(0 0 6px var(--handoff))}
+.tour-tail{fill:var(--handoff)}
+/* The travelling dot IS a work item — a token moving down its route, not an
+   ornament. That is why the opening board holds still while one still runs: the
+   dash crawl says "nothing recorded here" and would be noise across the whole
+   board at once, while the token shows what the route DOES, and needs somewhere
+   quiet to be legible. Reduced motion stops both. */
+.tour.quiet .tour-token,.tour.quiet .tour-tail{visibility:hidden}
 .tour-halo{fill:none;stroke:var(--handoff);opacity:0;vector-effect:non-scaling-stroke}
 /* Peak at 40%, not 50%: a quick inhale and a slow exhale reads as alive, while
    a symmetric one reads as a pulse meter. */
@@ -367,7 +368,7 @@ export const TOUR_CSS = `
 .k-dispatcher{border-color:var(--assign)}
 .k-evaluator{border-color:var(--artifact)}
 .k-controller{border-color:var(--oversight);background:var(--surface-2)}
-.k-outside{background:transparent;border-style:dashed}
+.k-outside{background:var(--surface-2);border-style:dashed}
 .s-working{border-color:var(--ok)}.s-working em{color:var(--ok)}
 .s-delivered{border-color:var(--warn)}.s-delivered em{color:var(--warn)}
 .s-dead{border-color:var(--bad)}.s-dead em{color:var(--bad)}
@@ -464,6 +465,11 @@ export const TOUR_SCRIPT = `
   const WIRES = edges.map((e) => {
     const p = document.createElementNS(NS, 'path')
     p.setAttribute('class', 'wire w-' + e.kind + (e.solid ? '' : ' dry'))
+    // Both ends named on the element. A wire is otherwise identified only by a
+    // path string, which makes anything checking the board — a test, a console,
+    // a reader — reverse-engineer geometry to answer "which edge is this".
+    p.setAttribute('data-from', e.from)
+    p.setAttribute('data-to', e.to)
     // A NEGATIVE delay of exactly one period drops each edge into mid-cycle at
     // its own deterministic point. Without it every dash on the board advances
     // in lockstep and the whole thing beats like a metronome.
@@ -473,21 +479,33 @@ export const TOUR_SCRIPT = `
     return { e, p, lane: (seen[key] = (seen[key] ?? -1) + 1) }
   })
 
-  // One comet per route hop, and one halo per team on that route. Both are
-  // built once for every route and shown per scene, so changing scene never
-  // rebuilds the DOM — and the comet is given the wire's OWN d, which is what
-  // makes it impossible for the head to drift off the line it is riding.
+  // One TOKEN per route hop, and one halo per team on that route. The dot is a
+  // work item travelling its route — that is the whole reading of it — and it
+  // is given the wire's OWN d, which is what makes it impossible for a token to
+  // appear anywhere its route does not go. Built once per route and shown per
+  // scene, so changing scene never rebuilds the DOM.
   const haloLayer = document.createElementNS(NS, 'g')
   const cometLayer = document.createElementNS(NS, 'g')
   svg.appendChild(haloLayer)
   svg.appendChild(cometLayer)
-  const wireOf = new Map(WIRES.map((w) => [w.e.from + '>' + w.e.to, w]))
+  // Keyed by kind as well as by endpoints. Two routes can share a hop —
+  // development → qa is on both the full route and the hotfix — so a
+  // from>to key silently kept only whichever wire was built last, and a
+  // comet on one route ended up riding another route's line.
+  const wireOf = new Map(WIRES.map((w) => [w.e.from + '>' + w.e.to + '>' + w.e.kind, w]))
   const MOTION = []
-  for (const scene of scenes) {
-    if (!scene.motion) continue
-    const hops = edges.filter((e) => e.wf === scene.motion)
+  // Built once per ROUTE, not once per scene: the opening board and the full
+  // route both animate the same workflow, and building per scene made two
+  // comets for every hop of it.
+  const animated = [...new Set(scenes.map((scene) => scene.motion).filter(Boolean))]
+  const passedEdge = edges.find((e) => e.kind === 'passed') || null
+  for (const wf of animated) {
+    // The last leg is the one out of the audit into the sink. It belongs to no
+    // workflow — the same fact whichever route produced it — but a token that
+    // stops at the audit shows work that was checked and never handed over.
+    const hops = [...edges.filter((e) => e.wf === wf), ...(passedEdge ? [passedEdge] : [])]
     hops.forEach((hop, i) => {
-      const w = wireOf.get(hop.from + '>' + hop.to)
+      const w = wireOf.get(hop.from + '>' + hop.to + '>' + hop.kind)
       if (!w) return
       const node = world[hop.from]
       if (node) {
@@ -499,7 +517,7 @@ export const TOUR_SCRIPT = `
         // sized by its text, so a fixed rectangle fits nothing.
         halo.style.animationDelay = (i * 0.35) + 's'
         haloLayer.appendChild(halo)
-        MOTION.push({ wf: scene.motion, el: halo, around: hop.from })
+        MOTION.push({ wf, el: halo, around: hop.from })
       }
       const dur = 1.6
       // 'begin' staggers hop i so the route reads as one token travelling it,
@@ -507,7 +525,9 @@ export const TOUR_SCRIPT = `
       const begin = i * dur / Math.max(1, hops.length)
       for (let t = 0; t < 3; t++) {
         const dot = document.createElementNS(NS, 'circle')
-        dot.setAttribute('class', t === 0 ? 'tour-comet' : 'tour-trail')
+        // Head plus two fading tail dots: one token, motion-blurred, rather
+        // than three tokens in a row.
+        dot.setAttribute('class', t === 0 ? 'tour-token' : 'tour-tail')
         dot.setAttribute('r', t === 0 ? 4 : 4 - t)
         if (t) dot.setAttribute('opacity', 0.42 / t)
         const motion = document.createElementNS(NS, 'animateMotion')
@@ -517,7 +537,7 @@ export const TOUR_SCRIPT = `
         motion.setAttribute('calcMode', 'linear')
         dot.appendChild(motion)
         cometLayer.appendChild(dot)
-        MOTION.push({ wf: scene.motion, el: dot, motion, wire: w })
+        MOTION.push({ wf, el: dot, motion, wire: w })
       }
     })
   }
@@ -550,17 +570,8 @@ export const TOUR_SCRIPT = `
       // derivations of the same curve is two curves waiting to disagree.
       if (!on) continue
       if (m.motion) m.motion.setAttribute('path', m.wire.p.getAttribute('d'))
-      if (m.around) {
-        // A card is sized by its own text, so the halo is measured, never
-        // assumed. Anything else is a rectangle that fits no node on the board.
-        const card = NODES[m.around]
-        const n = world[m.around]
-        const w2 = (card?.offsetWidth || 140) / 2 + 7
-        const h2 = (card?.offsetHeight || 46) / 2 + 6
-        m.el.setAttribute('x', n.x - w2); m.el.setAttribute('y', n.y - h2)
-        m.el.setAttribute('width', w2 * 2); m.el.setAttribute('height', h2 * 2)
-      }
     }
+    fitHalos()
   }
 
   // A card carries five lines of evidence, which is four more than the picture
@@ -568,6 +579,27 @@ export const TOUR_SCRIPT = `
   // less than the ledger knows — they are hidden while the board is zoomed out
   // and appear as soon as the reader zooms in far enough to read them.
   const DETAIL_AT = 0.86
+  // A card is sized by its own text, so a halo is MEASURED, never assumed — a
+  // constant rectangle fits no node on the board. It has to run after the zoom
+  // class is settled, not during draw(): 'lean' hides two lines of the control
+  // card, so measuring first left that one halo 27px taller than the card it
+  // was supposed to be ringing while every other one fitted.
+  function fitHalos() {
+    for (const m of MOTION) {
+      if (!m.around || m.el.style.display === 'none') continue
+      const card = NODES[m.around]
+      const n = world[m.around]
+      // offsetWidth/Height are in board units: the camera scale lives on an
+      // ancestor transform, so these are exactly the numbers the rect needs.
+      // A ring of 6 a side — more and it stops reading as "this node" and
+      // starts reading as "this area".
+      const w2 = (card?.offsetWidth || 140) / 2 + 6
+      const h2 = (card?.offsetHeight || 46) / 2 + 6
+      m.el.setAttribute('x', n.x - w2); m.el.setAttribute('y', n.y - h2)
+      m.el.setAttribute('width', w2 * 2); m.el.setAttribute('height', h2 * 2)
+    }
+  }
+
   function apply() {
     const k = fitted.k * user.k
     const w = stage.clientWidth, h = stage.clientHeight
@@ -576,6 +608,8 @@ export const TOUR_SCRIPT = `
     cam.style.transform = t
     svg.style.transform = t
     root.classList.toggle('lean', k < DETAIL_AT)
+    // The class just changed what a card measures, so the halos have to follow.
+    fitHalos()
     const zoom = root.querySelector('[data-tour-zoom]')
     if (zoom) zoom.textContent = Math.round(k * 100) + '%'
   }
