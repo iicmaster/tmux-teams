@@ -35,8 +35,12 @@ import { readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
 import { validateLedgerFile } from './ledger-validate.mjs'
 import { appendEvent as appendLedgerEvent, ledgerPath } from './ledger-writer.mjs'
 import { planPulls, applyPulls } from './pull-controller.mjs'
-import { AUDIT_VERDICTS, INTAKE_VERDICTS, OUTER_VERDICTS, REVIEW_VERDICTS, readVerdict, roleBrief } from './role-briefs.mjs'
+import {
+  AUDIT_VERDICTS, INTAKE_VERDICTS, OUTER_VERDICTS, REVIEW_VERDICTS,
+  readCategories, readVerdict, roleBrief,
+} from './role-briefs.mjs'
 import { readWorkflowGraph } from './graph.mjs'
+import { intakeStats, intakeStatsBrief } from './intake-stats.mjs'
 import { teamRoleOf } from './workflow-graph.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -396,6 +400,9 @@ function harvestEvent(repo, graph, { item, last, role }, now) {
     if (verdict === 'question') {
       return {
         ...base, event: 'questioned', agent_id: last.agent_id,
+        // Which of the six it could not resolve, so the same question can be
+        // asked of a month of requests rather than of one.
+        categories: readCategories(text),
         questions: reason || 'the grill asked for more and stated nothing',
         reason: 'the request is not workable yet — waiting on the person who asked for it',
       }
@@ -722,6 +729,19 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
       + (failed ? ` (it recovered from ${failed} failed leg(s) on the way)` : ''))
   }
 
+  // A request the clock withdrew. Master's rule for reading the intake
+  // statistics: every time one is thrown away, not on a schedule — which keeps
+  // §9's promise that this role is event-triggered and never on a timer. The
+  // unchanged-trigger brake then stops it being re-read while nothing new has
+  // been thrown away.
+  const withdrawals = [...items.values()].filter((item) => {
+    const last = item.custody[item.custody.length - 1]
+    return last?.event === 'abandoned' && String(last.actor || '') === 'agent:runner'
+  })
+  for (const item of withdrawals) {
+    triggers.push(`- \`${item.work_item}\` was withdrawn at the door: nobody answered the intake questions in time`)
+  }
+
   const held = [...occupancy.held.values()].flat()
   for (const workItem of held) {
     const item = items.get(workItem)
@@ -810,7 +830,13 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
     brief: roleBrief(repo, 'pm', null, {
       projectId: graph.project_id || 'unnamed',
       trigger: `${ask}\n\n${triggers.join('\n')}`,
-      board: boardSummary(graph, items, occupancy),
+      // Read by the role that owns the door, on the event that proves the door
+      // turned somebody away. It is a RECOMMENDATION surface, not a control
+      // one: §2 says a declaration is assigned by a human and never observed,
+      // so the controller says what the brief or the deadline should become and
+      // a person changes it.
+      board: `${boardSummary(graph, items, occupancy)}\n\n${
+        withdrawals.length ? intakeStatsBrief(intakeStats(repo), ANSWER_DEADLINE_SEC) : ''}`,
     }),
   }
 }

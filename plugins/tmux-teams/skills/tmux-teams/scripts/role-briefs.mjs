@@ -35,6 +35,21 @@ export const OUTER_VERDICTS = new Set(['resume', 'abandon'])
 // work is already finished; the only thing left to say is whether what came out
 // of the end is sound.
 export const AUDIT_VERDICTS = new Set(['accept', 'concern'])
+// The six the grill must face (controller-as-team.md §5.2). They are an
+// enumeration and not prose because the ONLY reason to name them on the event
+// is to count them later: "which category do requests die in" is unanswerable
+// against free text, and that question is the whole value of keeping a
+// withdrawn request instead of deleting it.
+export const GRILL_CATEGORY_IDS = Object.freeze(
+  ['business', 'validation', 'exception', 'security', 'performance', 'integration'])
+const CATEGORY_RE = /^[ \t]*CATEGORIES:[ \t]*(.*)$/m
+// Only words the enumeration knows. An invented category would be counted as a
+// seventh thing forever and nobody would notice the total was wrong.
+export function readCategories(text) {
+  const raw = (typeof text === 'string' ? text.match(CATEGORY_RE)?.[1] : '') || ''
+  const named = raw.toLowerCase().split(/[\s,]+/).filter(Boolean)
+  return GRILL_CATEGORY_IDS.filter((id) => named.includes(id))
+}
 
 // The LAST verdict line wins, not the first. These briefs print the required
 // format as literal text, and an agent restating "I will end with VERDICT: pass
@@ -181,6 +196,7 @@ Your outbox: what you were given, what you asked or verified per category, and
 the decision. End it with exactly these two lines and nothing after them:
 
 VERDICT: question
+CATEGORIES: <space-separated, from: ${GRILL_CATEGORY_IDS.join(' ')} — the ones you could NOT resolve>
 REASON: <the questions themselves when you are asking; the route and why when you accept>`
 
 const evaluatorBrief = ({ teamName, workItem, workerId }) => `# You are the evaluator of the ${teamName} team

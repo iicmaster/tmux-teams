@@ -19,6 +19,7 @@ import { appendEvent } from '../plugins/tmux-teams/skills/tmux-teams/scripts/led
 import { tick } from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs'
 import { readWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/graph.mjs'
 import { admitWorkItem } from '../plugins/tmux-teams/skills/tmux-teams/scripts/admit.mjs'
+import { intakeStats, intakeStatsBrief } from '../plugins/tmux-teams/skills/tmux-teams/scripts/intake-stats.mjs'
 
 const MODEL = 'inherit-account-default'
 const team = (id, workers) => ({
@@ -205,14 +206,18 @@ function grillingDriver(askOnce = new Set(['token-1'])) {
     }
     let verdict = role === 'dispatcher' ? 'accept' : role === 'evaluator' ? 'pass' : role === 'pm' ? 'accept' : ''
     let reason = 'poc'
+    let categories = ''
     if (role === 'dispatcher' && agentId === 'control_d' && askOnce.has(workItem) && !asked.has(workItem)) {
       asked.add(workItem)
       verdict = 'question'
       reason = 'who is the target customer, and what happens on timeout?'
+      categories = 'business exception'
     }
     if (workItem) say('assigned', { dispatch_id: `d-${legs}` })
     writeFileSync(join(repo, '.mailbox-out', taskId),
-      verdict ? `Did it.\n\nVERDICT: ${verdict}\nREASON: ${reason}\n` : 'Did it.\n\nartifact\n')
+      verdict
+        ? `Did it.\n\nVERDICT: ${verdict}\n${categories ? `CATEGORIES: ${categories}\n` : ''}REASON: ${reason}\n`
+        : 'Did it.\n\nartifact\n')
     if (workItem) say('delivered', { terminal: 'done', timed_out: false, evidence_present: true })
     return taskId
   }
@@ -312,4 +317,51 @@ test('the controller always says the last word, and it says three things', () =>
   assert.match(notice, /send the request whenever/)
   // Not a rejection, and it says so: the person is being told to come back.
   assert.match(notice, /Nothing here is a rejection/)
+})
+
+test('a withdrawn request becomes evidence the controller is handed', () => {
+  const dir = makeRepo()
+  const spawnLeg = grillingDriver(new Set(['token-1']))
+  assert.ok(admit(dir, 'token-1').ok)
+  quietTick(dir, spawnLeg)
+  quietTick(dir, spawnLeg)
+  quietTick(dir, spawnLeg, { answerDeadlineSec: 0 })
+
+  const stats = intakeStats(dir)
+  assert.equal(stats.admitted, 1)
+  assert.equal(stats.questioned, 1)
+  // The runner's close, not a controller verdict. `actor` is the only thing
+  // that separates them and the count depends on reading it right.
+  assert.equal(stats.withdrawn, 1)
+  assert.equal(stats.by_requester['human:someone'], 1)
+
+  // The grill named which of the six it could not resolve, so the question
+  // "where do requests die" is answerable across a month rather than one token.
+  const asked = custody(dir, 'token-1').find((entry) => entry.event === 'questioned')
+  assert.deepEqual(asked.categories, ['business', 'exception'])
+  assert.equal(stats.by_category.business, 1)
+  assert.equal(stats.by_category.exception, 1)
+  assert.equal(stats.by_category.security, 0)
+
+  // Every number arrives with the thing it would change. A figure with no
+  // consequence attached is how a dashboard becomes wallpaper.
+  const brief = intakeStatsBrief(stats, 600)
+  assert.match(brief, /business — 1/)
+  assert.match(brief, /asking about it at the wrong moment/)
+  assert.match(brief, /somebody to help, not somebody to blame/)
+})
+
+test('answer latency is measured, so the ten minutes can be argued with', () => {
+  const dir = makeRepo()
+  const spawnLeg = grillingDriver()
+  assert.ok(admit(dir, 'token-1').ok)
+  quietTick(dir, spawnLeg)
+  quietTick(dir, spawnLeg)
+  assert.ok(answer(dir, 'token-1', 'small businesses; retry twice then fail').ok)
+
+  const stats = intakeStats(dir)
+  assert.equal(stats.answer_seconds.length, 1)
+  assert.ok(stats.median_answer_seconds >= 0)
+  assert.equal(stats.withdrawn, 0, 'an answered request was counted as withdrawn')
+  assert.match(intakeStatsBrief(stats, 600), /only evidence for or against that deadline/)
 })

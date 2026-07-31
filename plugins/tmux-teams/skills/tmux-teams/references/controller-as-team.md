@@ -9,7 +9,9 @@ the controller as a team derived from `route[0]` with WIP 1 (§3), admission
 through it and out as an ordinary pull (§4), the grill's three answers and its
 six categories (§5), `questioned`/`answered` with the human-actor rule (§6), the
 answer deadline as an option rather than a constant, and the withdrawal notice
-(§6.3). Not built: the intake statistics (§9). This document is the design that
+(§6.3), and the intake statistics the controller is handed on every withdrawal
+(§9.1). Nothing in the design is unbuilt now; what remains is a deviation
+recorded in §9.1 and a decision Master may overrule. This document is the design that
 replaces it, written to be complete enough to build from and to be argued with
 before anyone builds it.
 
@@ -598,11 +600,31 @@ operator is the agent in it, and the deadline is rendered by something that know
 the reader's timezone. The cost is recorded in §6.4.1: the forgery guarantee
 drops from structural to named.
 
-**Still open:**
+### 9.1 The intake statistics — decided, built, with one deviation
 
-1. **What the intake statistics are for.** The data exists the moment tokens are
-   always created; who reads it, how often, and what changes as a result is not
-   designed.
+Decided 2026-07-31 by Master: **the controller reads them itself**, **every time
+a request is withdrawn** (event-triggered, never a timer — §9), and three things
+may change as a result: the grill's brief, the deadline value, and telling the
+people who are asked to clarify most.
+
+Built as `intake-stats.mjs`, handed to the controller in its brief on the
+withdrawal trigger. The grill now names WHICH of the six categories it could not
+resolve, because "where do requests die" is unanswerable against free text and
+that question is the entire value of keeping a withdrawn request.
+
+**The deviation, stated rather than slipped in.** Master's answer allows the
+controller to change the grill's brief. It does not do that. §2 says a
+declaration is *assigned by a human, never observed*, and a brief the controller
+rewrites from its own statistics is a declaration nobody signed — the same seat
+reading its own marks and setting its own paper. So the statistics arrive as a
+**recommendation surface**: the controller says what the brief or the deadline
+should become, with the number behind it, and a person applies it.
+
+If Master intends the controller to edit its own brief directly, that is a
+decision to record here and §2 needs amending with it — not a thing to do
+quietly.
+
+**Still open:**
 2. **Where this design stops.** Raised by John (PM): every round has closed three
    questions and opened two, and the system it guards has never admitted a real
    work item. A design is finished when it is small enough to build once and
