@@ -610,12 +610,24 @@ export const TOUR_SCRIPT = `
     })
   }
 
+  // The three that carry a token, and therefore belong to one route at a time.
+  // Everything else — ownership, assignment, review, rework, escalation, the
+  // line out to the sink — is true on every scene.
+  const HANDOVER = new Set(['send', 'pull', 'audit'])
   function draw(visible, motionWf) {
+    const order = motionWf ? new Set(data.orders?.[motionWf] || []) : null
     for (const { e, p, lane } of WIRES) {
-      // No edge belongs to a workflow any more, so a scene shows every wire
-      // between the nodes it kept. That IS the route: hide the teams a route
-      // does not use and what remains is exactly its path.
+      // Structure is shown wherever both ends survive. Handovers are not: a
+      // scene showing ONE route must show only that route's handovers, or a
+      // route that happens to use every team keeps every other route's lines
+      // on screen — the board would say the controller can hand straight to
+      // development while the route being explained never does that.
+      //
+      // The opening board keeps them all on purpose: with no route selected,
+      // "the controller can send work directly to any team" is exactly the
+      // true thing to say.
       const on = visible.has(e.from) && visible.has(e.to)
+        && (!order || !HANDOVER.has(e.kind) || order.has(e.from + '>' + e.to + '>' + e.kind))
       p.classList.toggle('off', !on)
       if (!on) continue
       const a = world[e.from], b = world[e.to]

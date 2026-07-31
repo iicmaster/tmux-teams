@@ -331,3 +331,48 @@ test('the client script contains no backtick', () => {
   // the failure is a syntax error a long way from its cause.
   assert.equal(TOUR_SCRIPT.includes('`'), false, 'a backtick inside TOUR_SCRIPT ends the template')
 })
+
+// ── what a scene may show ────────────────────────────────────────────────────
+
+test('a route scene shows only its own handovers', () => {
+  // The rule "hide the teams a route skips and the rest is its path" goes quiet
+  // when a route uses EVERY team: nothing is hidden, so every other route's
+  // handovers stay on screen and the board says the controller hands straight
+  // to a team this route never touches.
+  const { orders } = buildTour(CONTROLLED)
+  const full = CONTROLLED.workflows.find((w) => w.route.length === 3)
+  assert.ok(full, 'the fixture has a route over every team')
+  const shown = new Set(orders[full.workflow_id])
+  for (const other of CONTROLLED.workflows) {
+    if (other.workflow_id === full.workflow_id) continue
+    const foreign = orders[other.workflow_id].filter((key) => !shown.has(key))
+    assert.ok(foreign.length > 0, 'another route has handovers this one does not')
+  }
+})
+
+test('structure is true on every scene; a handover belongs to one route', () => {
+  // The split the client filters on. Structure — a team owning its dispatcher,
+  // an evaluator sending rework back, a team escalating — does not depend on
+  // which route is being explained. A handover answers "how does THIS work
+  // travel", which is exactly what changes.
+  const { edges, orders } = buildTour(CONTROLLED)
+  const handover = new Set(['send', 'pull', 'audit'])
+  const inSomeOrder = new Set(Object.values(orders).flat())
+  for (const edge of edges) {
+    const key = `${edge.from}>${edge.to}>${edge.kind}`
+    if (handover.has(edge.kind)) {
+      assert.ok(inSomeOrder.has(key), `${key} is a handover, so some route must use it`)
+    } else if (edge.kind !== 'passed') {
+      assert.equal(inSomeOrder.has(key), false, `${key} is structure and must not sit in a route order`)
+    }
+  }
+  // `passed` is the deliberate exception, and the reason it needs stating: a
+  // token DOES travel it, so it is in every order — but there is only one of
+  // them and it means the same thing whichever route produced the work, so it
+  // is never filtered out of a scene.
+  const passed = edges.filter((e) => e.kind === 'passed')
+  assert.equal(passed.length, 1)
+  for (const order of Object.values(orders)) {
+    assert.equal(order[order.length - 1], 'team:control>delivered>passed')
+  }
+})
