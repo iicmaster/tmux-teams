@@ -395,6 +395,23 @@ function harvestEvent(repo, graph, { item, last, role }, now) {
       // a blank field is refused by the writer and would stall the token.
       return { ...base, event: 'intake', agent_id: last.agent_id, verdict: 'accept', reason: reason || 'no reason stated' }
     }
+    // At the front door a refusal is ADVICE, not a veto (controller-as-team.md
+    // §5.3): the gate may believe a request should not be built, and the person
+    // may confirm anyway — warned, confirmed, done. So it parks on the human
+    // exactly like a question does, carrying the objection as the thing to
+    // answer. Anywhere else `reject` still returns the token to its sender.
+    // ponytail: one branch, because "should not be built" and "not workable
+    // yet" need the same machinery — a person, and a record of what they were
+    // told before they decided.
+    if (verdict === 'reject' && teamRoleOf(graph, last.agent_id)?.team_id === graph.controller_team) {
+      return {
+        ...base, event: 'questioned', agent_id: last.agent_id,
+        categories: readCategories(text),
+        questions: `the gate advises against building this: ${reason || 'no reason stated'}.`
+          + ' Confirm to proceed anyway, or withdraw.',
+        reason: 'the intake gate objected — the decision is the requester\'s',
+      }
+    }
     // Not workable yet, and not refused. The token stays exactly where it is —
     // still held, still counted against WIP — and only a person can move it.
     if (verdict === 'question') {

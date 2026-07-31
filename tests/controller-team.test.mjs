@@ -20,6 +20,7 @@ import { tick } from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runne
 import { frontDoorStatus, readWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/graph.mjs'
 import { admitWorkItem } from '../plugins/tmux-teams/skills/tmux-teams/scripts/admit.mjs'
 import { intakeStats, intakeStatsBrief } from '../plugins/tmux-teams/skills/tmux-teams/scripts/intake-stats.mjs'
+import { GRILL_CATEGORY_IDS, roleBrief } from '../plugins/tmux-teams/skills/tmux-teams/scripts/role-briefs.mjs'
 
 const MODEL = 'inherit-account-default'
 const team = (id, workers) => ({
@@ -409,4 +410,61 @@ test('a graph with no controller team reports an open door, not a blocked one', 
   const door = frontDoorStatus(graph, items, teamOccupancy(graph, items))
   assert.equal(door.blocked, false)
   assert.equal(door.kind, 'none')
+})
+
+test('the grill brief names all six categories it must face', () => {
+  const dir = makeRepo()
+  const brief = roleBrief(dir, 'grill', 'control', {
+    workItem: 'token-1', route: 'default (control → build → qa)', deadlineText: '23:30 UTC',
+  })
+  for (const id of GRILL_CATEGORY_IDS) assert.match(brief.toLowerCase(), new RegExp(id))
+  // The rule above them matters as much as the list: the right questions, not
+  // many questions. Without it the gate turns into a form.
+  assert.match(brief, /คำถามที่ "ถูก" สำคัญกว่าคำถามที่ "เยอะ"/)
+  assert.match(brief, /not applicable/)
+  assert.match(brief, /23:30 UTC/)
+})
+
+test('a refusal at the door is advice — warned, confirmed, done', () => {
+  const dir = makeRepo()
+  const asked = new Set()
+  let legs = 0
+  // The gate objects once, then accepts after the person confirms.
+  const spawnLeg = (repo, { workItem, role, agentId }) => {
+    const taskId = `${workItem}-${role}-${legs += 1}`
+    const say = (event, extra) => appendEvent(repo, {
+      event, work_item: workItem, workflow: 'default', agent_id: agentId, task_id: taskId, ...extra,
+    }, { actor: `agent:${agentId}` })
+    let verdict = role === 'dispatcher' ? 'accept' : role === 'evaluator' ? 'pass' : role === 'pm' ? 'accept' : ''
+    if (agentId === 'control_d' && !asked.has(workItem)) { asked.add(workItem); verdict = 'reject' }
+    say('assigned', { dispatch_id: `d-${legs}` })
+    writeFileSync(join(repo, '.mailbox-out', taskId),
+      verdict ? `Did it.\n\nVERDICT: ${verdict}\nREASON: this duplicates work already shipped\n` : 'artifact\n')
+    say('delivered', { terminal: 'done', timed_out: false, evidence_present: true })
+    return taskId
+  }
+
+  assert.ok(admit(dir, 'token-1').ok)
+  quietTick(dir, spawnLeg)
+  quietTick(dir, spawnLeg)
+
+  // Not escalated, not returned: parked on the person, with the objection as
+  // the thing they must answer.
+  const parked = custody(dir, 'token-1').at(-1)
+  assert.equal(parked.event, 'questioned')
+  assert.match(parked.questions, /advises against building this/)
+  assert.match(parked.questions, /duplicates work already shipped/)
+
+  // The person overrules it, and the work proceeds.
+  assert.ok(answer(dir, 'token-1', 'I know — do it anyway, the old one is being retired').ok)
+  for (let round = 0; round < 20 && custody(dir, 'token-1').at(-1)?.event !== 'audited'; round += 1) {
+    quietTick(dir, spawnLeg)
+    stepPastCooldown(dir)
+  }
+  const events = custody(dir, 'token-1').map((entry) => entry.event)
+  assert.equal(events.at(-1), 'audited', `the override did not proceed: ${events.join(' -> ')}`)
+  // Both halves stay on the record for the audit at the end to read.
+  const history = custody(dir, 'token-1')
+  assert.ok(history.some((entry) => entry.event === 'questioned' && /advises against/.test(entry.questions)))
+  assert.ok(history.some((entry) => entry.event === 'answered' && /do it anyway/.test(entry.reason)))
 })
