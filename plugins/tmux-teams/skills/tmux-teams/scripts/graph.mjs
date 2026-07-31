@@ -579,7 +579,12 @@ export function renderGraphPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, r
       })
     }
   }
-  const tour = buildTour(value, cards, occupancy, teamFacts)
+  // What actually landed. `audited` is the only event that means the controller
+  // read the finished delivery and accepted it: `completed` is half closed and
+  // `abandoned` is work that left rather than work that arrived.
+  const delivered = [...items.values()]
+    .filter((item) => item.custody[item.custody.length - 1]?.event === 'audited').length
+  const tour = buildTour(value, cards, occupancy, teamFacts, { delivered })
   const declared = value.teams.flatMap((entry) => entry.agents.map((agent) => agent.agent_id))
   const bound = declared.filter((agentId) => byAgent.has(agentId))
   const working = bound.filter((agentId) => WORKING.has(byAgent.get(agentId).state)).length

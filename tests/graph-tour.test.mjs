@@ -93,6 +93,7 @@ test('layout follows the graph rather than a baked coordinate table', () => {
 
 const find = (tour, from, to, kind) =>
   tour.edges.find((e) => e.from === from && e.to === to && e.kind === kind)
+const edgesOf = (tour, kind) => tour.edges.filter((e) => e.kind === kind)
 
 test('an edge is dashed until evidence hardens it', () => {
   const dry = buildTour(CONTROLLED)
@@ -104,10 +105,22 @@ test('an edge is dashed until evidence hardens it', () => {
     new Map([['build', { rejected: true }]]))
   assert.equal(find(live, 'build_d', 'b1', 'assign').solid, true)
   assert.equal(find(live, 'b1', 'build_e', 'judge').solid, true)
-  assert.equal(find(live, 'build_e', 'b1', 'reject').solid, true)
+  // Rework goes back to the QUEUE, not to the worker who was judged: rejected
+  // work is dispatched again, possibly to someone else, and only once the team
+  // is under its WIP limit. So it is one line per team, not one per worker.
+  assert.equal(find(live, 'build_e', 'build_d', 'reject').solid, true)
+  assert.equal(find(live, 'build_e', 'b1', 'reject'), undefined)
+  assert.equal(edgesOf(live, 'reject').filter((e) => e.from === 'build_e').length, 1)
   // Evidence belongs to the seat that produced it, never to its neighbour.
   assert.equal(find(live, 'build_d', 'b2', 'assign').solid, false)
-  assert.equal(find(live, 'qa_e', 'q1', 'reject').solid, false)
+  assert.equal(find(live, 'qa_e', 'qa_d', 'reject').solid, false)
+})
+
+test('the sink counts audited work, and only audited work', () => {
+  const none = buildTour(CONTROLLED)
+  assert.equal(none.world.delivered.state, '')
+  const some = buildTour(CONTROLLED, new Map(), undefined, new Map(), { delivered: 3 })
+  assert.match(some.world.delivered.state, /3 audited/)
 })
 
 test('oversight runs to control from every team except control', () => {

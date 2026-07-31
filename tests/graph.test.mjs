@@ -177,7 +177,7 @@ test('an edge only hardens once evidence exists for it', () => {
   const live = tourOf(TWO_TEAMS, snapshotWith([run('b_w1', 'running')]))
   assert.equal(wire(live, 'b_d', 'b_w1', 'assign').solid, true)
   assert.equal(wire(live, 'b_w1', 'b_e', 'judge').solid, false)
-  assert.equal(wire(live, 'b_e', 'b_w1', 'reject').solid, false)
+  assert.equal(wire(live, 'b_e', 'b_d', 'reject').solid, false)
 
   // A verdict is recorded against the leg that was JUDGED — the worker's — so
   // that is what hardens this team's rework edge and fills its evaluator's
@@ -185,10 +185,10 @@ test('an edge only hardens once evidence exists for it', () => {
   // `0 pass 0 reject` no matter how much reviewing had happened.
   const rejected = tourOf(TWO_TEAMS,
     snapshotWith([run('b_w1', 'running')], [{ agent_id: 'b_w1', pm_verdict: 'reject' }]))
-  assert.equal(wire(rejected, 'b_e', 'b_w1', 'reject').solid, true)
+  assert.equal(wire(rejected, 'b_e', 'b_d', 'reject').solid, true)
   assert.match(rejected.world.b_e.state, /0 pass 1 reject/)
   // Rework is a team fact, so the other team's edge must not harden with it.
-  assert.equal(wire(rejected, 'v_e', 'v_w1', 'reject').solid, false)
+  assert.equal(wire(rejected, 'v_e', 'v_d', 'reject').solid, false)
 })
 
 test('the outer controller states the same facts as every other agent', () => {

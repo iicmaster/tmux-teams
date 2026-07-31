@@ -51,7 +51,7 @@ const rowWidth = (team) =>
 // Anything it carries travels into the page untouched; this module never
 // invents a status, a model or a time.
 export function buildTour(graph, cards = new Map(), occupancy = { counts: new Map(), held: new Map() },
-  teamFacts = new Map()) {
+  teamFacts = new Map(), board = {}) {
   const world = {}
   const edges = []
   const controlId = graph.controller_team ?? null
@@ -151,7 +151,15 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
       const seenWorker = cards.get(workerId) || {}
       edges.push({ from: team.dispatcher_id, to: workerId, kind: 'assign', solid: Boolean(seenWorker.dispatched) })
       edges.push({ from: workerId, to: team.evaluator_id, kind: 'judge', solid: Boolean(seenWorker.settled) })
-      edges.push({ from: team.evaluator_id, to: workerId, kind: 'reject', solid: Boolean(facts.rejected) })
+    })
+
+    // Rework returns to the team's own DISPATCHER — one line per team, not one
+    // per worker. Drawn back to the worker that was judged, the picture says
+    // rejected work stays with whoever produced it; in this loop it goes back
+    // into the queue and is dispatched again, which may well be to someone
+    // else and only once the team is under its WIP limit.
+    edges.push({
+      from: team.evaluator_id, to: team.dispatcher_id, kind: 'reject', solid: Boolean(facts.rejected),
     })
 
     // Structure, not a claim about the past: this team HAS that dispatcher
@@ -170,9 +178,17 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
   // There is no node for the incoming request. It would carry no evidence, no
   // WIP and no seat — a label, not a fact — and the control team already says
   // everything true about it: work enters there, one at a time.
+  // `audited` and nothing else. `completed` is half closed — the controller
+  // still has to read the delivery as a whole — and `abandoned` is work that
+  // left, not work that landed. A sink that counted either would report a
+  // number nobody could act on.
+  const done = Number.isFinite(board.delivered) ? board.delivered : null
   world.delivered = {
     id: 'delivered', x: boardWidth + OUTSIDE_GAP, y: OUTSIDE_Y, kind: 'outside',
-    title: 'Delivered', lines: ['read as a whole'], role: 'end, not a team',
+    title: 'Delivered',
+    state: done === null ? '' : `${done} audited`,
+    lines: ['read as a whole, then closed'],
+    role: 'end, not a team',
   }
 
   // Route edges carry their workflow id, which is what lets one scene show a
@@ -368,7 +384,18 @@ export const TOUR_CSS = `
 .k-dispatcher{border-color:var(--assign)}
 .k-evaluator{border-color:var(--artifact)}
 .k-controller{border-color:var(--oversight);background:var(--surface-2)}
-.k-outside{background:var(--surface-2);border-style:dashed}
+/* The sink is where work lands, so it is drawn as a destination rather than a
+   footnote: its own surface, room around the text, and a count big enough to
+   read from across the board. It keeps the dashed border because it is still
+   not a team — nothing is dispatched there and it holds no WIP. */
+.k-outside{background:var(--surface-2);border-style:dashed;border-width:2px;
+ padding:14px 26px;border-radius:14px;min-width:150px;text-align:center}
+.k-outside b{font:600 .95rem/1.3 var(--sans)}
+.k-outside em{color:var(--ok);font:700 1.15rem/1.4 var(--sans);
+ font-variant-numeric:tabular-nums;letter-spacing:0}
+.k-outside span{font-size:.68rem}
+/* The count is the one thing on this node worth reading zoomed out. */
+.tour.lean .k-outside span{display:none}
 .s-working{border-color:var(--ok)}.s-working em{color:var(--ok)}
 .s-delivered{border-color:var(--warn)}.s-delivered em{color:var(--warn)}
 .s-dead{border-color:var(--bad)}.s-dead em{color:var(--bad)}
