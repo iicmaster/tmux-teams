@@ -213,6 +213,39 @@ test('the bundled template satisfies the new contract', () => {
   }
 })
 
+// The template is the first graph anybody sees, so it is also the first thing
+// that teaches the shape. Until 2026-07-31 it shipped four teams and one route
+// with no front door at all: the validator enforced controller-as-team while
+// the bundled example quietly demonstrated the opposite, and the whole suite
+// stayed green through the change because nothing asserted this.
+test('the bundled template leads with the controller team', () => {
+  const value = accepted(DEFAULT_WORKFLOW_GRAPH)
+  assert.equal(value.controller_team, 'control')
+  const control = value.teams.find((team) => team.team_id === 'control')
+  assert.deepEqual(control.worker_ids, [DEFAULT_WORKFLOW_GRAPH.outer_controller_id],
+    'the control team holds the controller itself, not a second seat')
+  assert.equal(control.wip_limit, 1, 'the front door holds one request at a time')
+  for (const workflow of value.workflows) {
+    assert.equal(workflow.route[0], 'control',
+      `${workflow.workflow_id} must enter through the front door`)
+  }
+})
+
+// One route cannot show that teams are a pool: with a single workflow, "the
+// route" and "the board" are the same picture, and the difference between them
+// is exactly what a reader has to learn.
+test('the bundled template ships two routes over one pool of teams', () => {
+  const value = accepted(DEFAULT_WORKFLOW_GRAPH)
+  assert.equal(value.workflows.length, 2)
+  const [long, short] = value.workflows.map((workflow) => workflow.route)
+  const skipped = long.filter((teamId) => !short.includes(teamId))
+  assert.ok(skipped.length > 0, 'the second route must skip teams the first uses')
+  for (const teamId of skipped) {
+    assert.ok(value.teams.some((team) => team.team_id === teamId),
+      `${teamId} is skipped by a route but must still exist on the board`)
+  }
+})
+
 // ── every rejection that existed before this change ──────────────────────────
 
 test('downstream_team_id on a team is still rejected as misplaced routing', () => {

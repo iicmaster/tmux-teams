@@ -74,18 +74,45 @@ const team = (id, name) => ({
   models: { dispatcher: TEMPLATE_MODEL, worker: TEMPLATE_MODEL, evaluator: TEMPLATE_MODEL },
 })
 
+// The control team is not a fifth delivery team. Its one worker IS the outer
+// controller — the seat `outer_controller_id` already names — so its WIP is 1
+// and the front door holds exactly one request at a time. Its dispatcher and
+// evaluator are separate seats on purpose, because the controller cannot be its
+// own gate: the dispatcher grills an incoming request until nothing has to be
+// guessed, and the evaluator reads the finished delivery as a whole.
+const controlTeam = (controllerId) => ({
+  team_id: 'control',
+  name: 'Control',
+  dispatcher_id: 'control_dispatcher',
+  worker_ids: [controllerId],
+  evaluator_id: 'control_evaluator',
+  models: { dispatcher: TEMPLATE_MODEL, worker: TEMPLATE_MODEL, evaluator: TEMPLATE_MODEL },
+})
+
 // Shipped so a fresh install has a real shape to edit rather than a blank file.
-// Four teams, one straight route — the shape most repos start from.
+//
+// Two routes, not one. A single route cannot show the thing the board exists to
+// teach — that teams are a POOL and a workflow only decides the order through
+// it. `hotfix` reuses development and qa and never touches requirement or
+// prototype; those teams still exist, this route just does not use them.
+//
+// Both routes start at `control` because every request enters through the front
+// door. That is not a convention the template is free to break: the validator
+// refuses any route whose head is not the controller team.
 export const DEFAULT_WORKFLOW_GRAPH = Object.freeze({
   project_id: 'default_four_team_loop',
   outer_controller_id: 'pm_outer_loop',
   outer_controller_model: TEMPLATE_MODEL,
-  teams: [team('requirement', 'Requirement'), team('prototype', 'Prototype'),
-    team('development', 'Development'), team('qa', 'QA')],
+  teams: [controlTeam('pm_outer_loop'), team('requirement', 'Requirement'),
+    team('prototype', 'Prototype'), team('development', 'Development'), team('qa', 'QA')],
   workflows: [{
     workflow_id: 'default',
     name: 'Default delivery',
-    route: ['requirement', 'prototype', 'development', 'qa'],
+    route: ['control', 'requirement', 'prototype', 'development', 'qa'],
+  }, {
+    workflow_id: 'hotfix',
+    name: 'Hotfix',
+    route: ['control', 'development', 'qa'],
   }],
 })
 
