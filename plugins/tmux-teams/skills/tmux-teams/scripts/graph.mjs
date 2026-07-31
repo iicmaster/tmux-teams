@@ -361,12 +361,61 @@ const modelLine = (run, fact) => {
   return 'not recorded'
 }
 
+// Is the front door open, and if not, who has to act?
+//
+// The controller holds one seat (WIP 1), so a single request waiting on a person
+// stops EVERY new request entering the system. Master, 2026-07-31: *"ตรงจุดนั้นก็
+// กลายเป็นติดบล็อก ... ทำให้ flow เดินต่อไม่ได้ทั้งระบบ ซึ่งมันควรจะเป็นแบบนั้น"* — that block is
+// the design working, not a fault. It is only a fault when it is INVISIBLE: a
+// board that shows a calm graph while nothing can enter is the same silence
+// this project has spent a week removing.
+//
+// Exported for the same reason as `stateOf` and `activityByAgent`: whether the
+// door is blocked is a fact about the evidence, not about the markup.
+export function frontDoorStatus(graph, items, occupancy) {
+  const controlId = graph.controller_team
+  if (!controlId) {
+    return { blocked: false, kind: 'none', copy: 'work enters at a delivery team — no controller gate' }
+  }
+  const team = graph.teams.find((entry) => entry.team_id === controlId)
+  const held = occupancy?.held?.get(controlId) || []
+  const waiting = held
+    .map((workItem) => items.get(workItem))
+    .filter(Boolean)
+    .map((item) => item.custody[item.custody.length - 1])
+    .find((last) => last?.event === 'questioned')
+
+  if (waiting) {
+    return {
+      blocked: true,
+      kind: 'person',
+      work_item: waiting.work_item,
+      since: waiting.at || null,
+      questions: waiting.questions || '',
+      // Says who must act. "Blocked" alone sends a reader looking at the loop,
+      // and the loop is not what is holding this.
+      copy: `blocked — waiting on a person to answer ${waiting.work_item}`,
+    }
+  }
+  if (held.length >= team.wip_limit) {
+    return {
+      blocked: true, kind: 'busy', work_item: held[0] || null, since: null, questions: '',
+      copy: `blocked — the gate is working on ${held[0]}, no new request can enter`,
+    }
+  }
+  return { blocked: false, kind: 'open', copy: `open — ${held.length}/${team.wip_limit} at the gate` }
+}
+
 // The outer controller cannot borrow a worker's status vocabulary. For a worker,
 // "no dispatch observed" means it has not done its job yet; for an exception
 // handler, having nothing to do is the correct state and good news. Reporting a
 // healthy controller exactly like an unwired one is what made this node look
 // dead on every screenshot.
-const controllerState = (run, items, occupancy) => {
+const controllerState = (run, items, occupancy, graph = null) => {
+  // Before anything else: if nothing can enter the system, that is the single
+  // most important thing this node can say, running or not.
+  const door = graph ? frontDoorStatus(graph, items, occupancy) : { blocked: false }
+  if (door.blocked && door.kind === 'person') return { status: 'dead', copy: door.copy }
   if (run && WORKING.has(run.state)) return { status: 'working', copy: 'reviewing the board now' }
   const parked = [...items.values()]
     .filter((item) => item.custody?.[item.custody.length - 1]?.event === 'escalated').length
@@ -565,7 +614,7 @@ export function renderLoopGraphSvg(graph, snapshot, facts = new Map(), occupancy
   const verdicts = verdictsByAgent(snapshot)
   const activity = activityByAgent(items)
   const controller = graph.outer_controller_id ? byAgent.get(graph.outer_controller_id) : null
-  const pm = controllerState(controller, items, occupancy)
+  const pm = controllerState(controller, items, occupancy, graph)
 
   // Teams first: the structure is what the page is for. Routes are a summary
   // of how work travels across it, so they read better after it, not through it.

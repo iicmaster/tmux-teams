@@ -612,17 +612,43 @@ withdrawal trigger. The grill now names WHICH of the six categories it could not
 resolve, because "where do requests die" is unanswerable against free text and
 that question is the entire value of keeping a withdrawn request.
 
-**The deviation, stated rather than slipped in.** Master's answer allows the
-controller to change the grill's brief. It does not do that. §2 says a
-declaration is *assigned by a human, never observed*, and a brief the controller
-rewrites from its own statistics is a declaration nobody signed — the same seat
-reading its own marks and setting its own paper. So the statistics arrive as a
-**recommendation surface**: the controller says what the brief or the deadline
-should become, with the number behind it, and a person applies it.
+The statistics are a **recommendation surface**: the controller says what the
+brief or the deadline should become, with the number behind it, and a person
+applies it. I first recorded this as a deviation from Master's answer, reading
+"แก้ brief ของ grill" as the controller editing its own brief. That was my
+misreading, corrected the same day — and §2 would have refused it anyway, since
+a declaration is *assigned by a human, never observed* and a brief the
+controller rewrites from its own statistics is a declaration nobody signed.
 
-If Master intends the controller to edit its own brief directly, that is a
-decision to record here and §2 needs amending with it — not a thing to do
-quietly.
+### 9.2 What the controller answers, and where it must stop
+
+Master's actual rule: **the controller answers what it can work out for itself,
+and fires back what it cannot.** *"PM สามารถตอบคำถามเบื้องต้นได้ อะไรที่ไม่รู้ก็ต้องยิงคำถามกลับมา
+ที่ operator ให้คนตัดสินใจอยู่ดี"* — a grill that asks a person to confirm what it could
+have derived is a grill nobody will answer twice; one that guesses at what only
+the requester knows is the guessing this gate exists to stop.
+
+And the consequence is the point:
+
+> *"ตรงจุดนั้นก็กลายเป็นติดบล็อก ... เป็นจุดที่ติดบล็อกทำให้ flow เดินต่อไม่ได้ทั้งระบบ ซึ่งมันควรจะเป็นแบบนั้น"*
+
+The controller holds one seat, so a single request waiting on a person stops
+EVERY new request entering. **That is the design working, not a fault** — it is
+*stop starting, start finishing* enforced at the only place that can enforce it.
+
+It becomes a fault only when it is invisible. So `frontDoorStatus` is a fact the
+board reads, not a sentence somebody remembered to write:
+
+| kind | meaning |
+| --- | --- |
+| `person` | blocked, and only a human can clear it — names the token and the questions |
+| `busy` | blocked, but the loop is acting: the gate is grilling something |
+| `open` | requests can enter, with the count at the gate |
+| `none` | this graph has no controller team; work enters at a delivery team |
+
+The controller's node reports `person` above everything else, including its own
+running state. A board that draws a calm graph while nothing can enter is the
+same silence this project spent a week removing.
 
 **Still open:**
 2. **Where this design stops.** Raised by John (PM): every round has closed three

@@ -17,7 +17,7 @@ import { join } from 'node:path'
 import { readWorkItems, teamOccupancy } from '../plugins/tmux-teams/skills/tmux-teams/scripts/dispatch-facts.mjs'
 import { appendEvent } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-writer.mjs'
 import { tick } from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs'
-import { readWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/graph.mjs'
+import { frontDoorStatus, readWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/graph.mjs'
 import { admitWorkItem } from '../plugins/tmux-teams/skills/tmux-teams/scripts/admit.mjs'
 import { intakeStats, intakeStatsBrief } from '../plugins/tmux-teams/skills/tmux-teams/scripts/intake-stats.mjs'
 
@@ -364,4 +364,49 @@ test('answer latency is measured, so the ten minutes can be argued with', () => 
   assert.ok(stats.median_answer_seconds >= 0)
   assert.equal(stats.withdrawn, 0, 'an answered request was counted as withdrawn')
   assert.match(intakeStatsBrief(stats, 600), /only evidence for or against that deadline/)
+})
+
+test('a request waiting on a person blocks the whole system, and the graph says so', () => {
+  const dir = makeRepo()
+  const spawnLeg = grillingDriver()
+  assert.ok(admit(dir, 'token-1').ok)
+  const graph = readWorkflowGraph(dir).value
+
+  const open = frontDoorStatus(graph, readWorkItems(dir).items,
+    teamOccupancy(graph, readWorkItems(dir).items))
+  assert.equal(open.blocked, true)
+  assert.equal(open.kind, 'busy', 'a request being grilled holds the seat, but the loop is what is acting')
+
+  quietTick(dir, spawnLeg)
+  quietTick(dir, spawnLeg)
+  assert.equal(custody(dir, 'token-1').at(-1).event, 'questioned')
+
+  const items = readWorkItems(dir).items
+  const blocked = frontDoorStatus(graph, items, teamOccupancy(graph, items))
+  assert.equal(blocked.blocked, true)
+  // Names WHO must act. "Blocked" alone sends a reader to look at the loop, and
+  // the loop is not what is holding this.
+  assert.equal(blocked.kind, 'person')
+  assert.equal(blocked.work_item, 'token-1')
+  assert.match(blocked.copy, /waiting on a person/)
+  assert.match(blocked.questions, /target customer/)
+
+  // …and it clears the moment the person answers.
+  assert.ok(answer(dir, 'token-1', 'small businesses; retry twice then fail').ok)
+  const after = readWorkItems(dir).items
+  assert.equal(frontDoorStatus(graph, after, teamOccupancy(graph, after)).kind, 'busy')
+})
+
+test('a graph with no controller team reports an open door, not a blocked one', () => {
+  const dir = makeRepo()
+  writeFileSync(join(dir, '.tmux-teams', 'graph.json'), JSON.stringify({
+    ...GRAPH,
+    teams: [team('build', ['build_w1']), team('qa', ['qa_w1'])],
+    workflows: [{ workflow_id: 'default', name: 'Default', route: ['build', 'qa'] }],
+  }, null, 2))
+  const graph = readWorkflowGraph(dir).value
+  const items = readWorkItems(dir).items
+  const door = frontDoorStatus(graph, items, teamOccupancy(graph, items))
+  assert.equal(door.blocked, false)
+  assert.equal(door.kind, 'none')
 })
