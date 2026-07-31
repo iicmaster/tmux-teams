@@ -111,8 +111,15 @@ export const DEFAULT_WORKFLOW_GRAPH = Object.freeze({
     team('prototype', 'Prototype'), team('development', 'Development'), team('qa', 'QA')],
   workflows: [{
     workflow_id: 'default',
-    name: 'Default delivery',
+    name: 'Full delivery',
     route: ['control', 'requirement', 'prototype', 'development', 'qa'],
+  }, {
+    // Stops at prototype on purpose: some work is answered by a thing you can
+    // look at, and shipping it through development and qa would be answering a
+    // question nobody asked yet. A route is allowed to be short.
+    workflow_id: 'prototype',
+    name: 'Prototype only',
+    route: ['control', 'requirement', 'prototype'],
   }, {
     workflow_id: 'hotfix',
     name: 'Hotfix',

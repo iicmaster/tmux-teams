@@ -203,8 +203,11 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
   }
   const everything = Object.keys(world)
 
+  // Scene 0 is deliberately still. It answers "who exists", and a board where
+  // everything is moving cannot also say which parts are moving — motion only
+  // means something once something else is holding still.
   const scenes = [{
-    id: 'all', wf: null, kicker: 'The board',
+    id: 'all', wf: null, kicker: 'The board', still: true,
     title: 'Every team, drawn once',
     caption: `${graph.teams.length} team(s) as a reusable pool · ${graph.workflows.length} route(s) over them`
       + ' · press → for one route at a time.',
@@ -232,16 +235,6 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
       focus: workflow.route.flatMap(agentsOf),
     })
   }
-  // Only worth closing the loop when there was more than one route to compare.
-  if (graph.workflows.length > 1) {
-    scenes.push({
-      id: 'again', wf: null, kicker: 'and around again',
-      title: 'Same teams, different orders',
-      caption: 'One pool of agents, one order per route. Press → to start over.',
-      ids: everything,
-    })
-  }
-
   return { world, edges, scenes, width: boardWidth }
 }
 
@@ -316,6 +309,21 @@ export const TOUR_CSS = `
    an edge told to leave the scene was painted straight back in at .34, and the
    teams a route skips kept their wiring on screen. */
 .wire.off{opacity:0}
+/* Motion carries one meaning and only one: an edge with NOTHING recorded behind
+   it crawls, and goes still the moment a record exists. So a board that has
+   stopped moving is a board where everything on screen is backed by evidence —
+   the opposite of decoration, and the opposite of codegraph, where the flow is
+   ambient. -20 is exactly two dash periods (5+5), so the loop has no seam. */
+.tour:not(.still) .wire.dry{animation:tourFlow 1.1s linear infinite}
+@keyframes tourFlow{to{stroke-dashoffset:-20}}
+.tour-comet{fill:var(--handoff);filter:drop-shadow(0 0 6px var(--handoff))}
+.tour-trail{fill:var(--handoff)}
+.tour.still .tour-comet,.tour.still .tour-trail{visibility:hidden}
+.tour-halo{fill:none;stroke:var(--handoff);opacity:0;vector-effect:non-scaling-stroke}
+/* Peak at 40%, not 50%: a quick inhale and a slow exhale reads as alive, while
+   a symmetric one reads as a pulse meter. */
+.tour:not(.still) .tour-halo{animation:tourHalo 2.6s ease-in-out infinite}
+@keyframes tourHalo{0%,100%{opacity:0;stroke-width:1}40%{opacity:.5;stroke-width:2.4}}
 .w-assign{stroke:var(--assign);opacity:.5}
 .w-judge{stroke:var(--artifact);opacity:.55}
 .w-reject{stroke:var(--reject);stroke-dasharray:4 4;opacity:.5}
@@ -425,14 +433,75 @@ export const TOUR_SCRIPT = `
     reject: -46, judge: 18, assign: 30, owns: 0, admit: 0,
     escalate: -34, route0: 0, route1: 74, route2: -104, route3: 132,
   }
+  const NS = 'http://www.w3.org/2000/svg'
+  // FNV-1a, 0..1. Deterministic on purpose: the same edge desyncs the same way
+  // on every reload, so the board looks like itself rather than like a fresh
+  // roll of dice each time somebody opens it.
+  const hash = (str) => {
+    let h = 2166136261
+    for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619) }
+    return ((h >>> 0) % 1000) / 1000
+  }
   const seen = {}
   const WIRES = edges.map((e) => {
-    const p = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+    const p = document.createElementNS(NS, 'path')
     p.setAttribute('class', 'wire w-' + e.kind + (e.solid ? '' : ' dry'))
+    // A NEGATIVE delay of exactly one period drops each edge into mid-cycle at
+    // its own deterministic point. Without it every dash on the board advances
+    // in lockstep and the whole thing beats like a metronome.
+    if (!e.solid) p.style.animationDelay = (hash(e.from + e.to) * -1.1) + 's'
     svg.appendChild(p)
     const key = e.from + '>' + e.kind
     return { e, p, lane: (seen[key] = (seen[key] ?? -1) + 1) }
   })
+
+  // One comet per route hop, and one halo per team on that route. Both are
+  // built once for every route and shown per scene, so changing scene never
+  // rebuilds the DOM — and the comet is given the wire's OWN d, which is what
+  // makes it impossible for the head to drift off the line it is riding.
+  const haloLayer = document.createElementNS(NS, 'g')
+  const cometLayer = document.createElementNS(NS, 'g')
+  svg.appendChild(haloLayer)
+  svg.appendChild(cometLayer)
+  const wireOf = new Map(WIRES.map((w) => [w.e.from + '>' + w.e.to, w]))
+  const MOTION = []
+  for (const scene of scenes) {
+    if (!scene.wf) continue
+    const hops = edges.filter((e) => e.wf === scene.wf)
+    hops.forEach((hop, i) => {
+      const w = wireOf.get(hop.from + '>' + hop.to)
+      if (!w) return
+      const node = world[hop.from]
+      if (node) {
+        const halo = document.createElementNS(NS, 'rect')
+        halo.setAttribute('class', 'tour-halo')
+        halo.setAttribute('x', node.x - 70); halo.setAttribute('y', node.y - 28)
+        halo.setAttribute('width', 140); halo.setAttribute('height', 56); halo.setAttribute('rx', 12)
+        // Staggered in reading order, so the halos travel the route too.
+        halo.style.animationDelay = (i * 0.35) + 's'
+        haloLayer.appendChild(halo)
+        MOTION.push({ wf: scene.wf, el: halo })
+      }
+      const dur = 1.6
+      // 'begin' staggers hop i so the route reads as one token travelling it,
+      // not as N dots firing at once.
+      const begin = i * dur / Math.max(1, hops.length)
+      for (let t = 0; t < 3; t++) {
+        const dot = document.createElementNS(NS, 'circle')
+        dot.setAttribute('class', t === 0 ? 'tour-comet' : 'tour-trail')
+        dot.setAttribute('r', t === 0 ? 4 : 4 - t)
+        if (t) dot.setAttribute('opacity', 0.42 / t)
+        const motion = document.createElementNS(NS, 'animateMotion')
+        motion.setAttribute('dur', dur + 's')
+        motion.setAttribute('repeatCount', 'indefinite')
+        motion.setAttribute('begin', (begin + t * 0.055).toFixed(3) + 's')
+        motion.setAttribute('calcMode', 'linear')
+        dot.appendChild(motion)
+        cometLayer.appendChild(dot)
+        MOTION.push({ wf: scene.wf, el: dot, motion, wire: w })
+      }
+    })
+  }
 
   function draw(visible, wf) {
     for (const { e, p, lane } of WIRES) {
@@ -454,6 +523,13 @@ export const TOUR_SCRIPT = `
         + ' C ' + (a.x + dx / 3 + px) + ' ' + (a.y + dy / 3 + py)
         + ', ' + (a.x + dx * 2 / 3 + px) + ' ' + (a.y + dy * 2 / 3 + py)
         + ', ' + b.x + ' ' + b.y)
+    }
+    for (const m of MOTION) {
+      const on = m.wf === wf
+      m.el.style.display = on ? '' : 'none'
+      // Copy the finished d rather than recomputing it: two independent
+      // derivations of the same curve is two curves waiting to disagree.
+      if (on && m.motion) m.motion.setAttribute('path', m.wire.p.getAttribute('d'))
     }
   }
 
@@ -515,6 +591,7 @@ export const TOUR_SCRIPT = `
     root.classList.remove('free')
     const sc = scenes[at]
     const visible = new Set(sc.ids)
+    root.classList.toggle('still', Boolean(sc.still))
     for (const [id, el] of Object.entries(NODES)) el.classList.toggle('out', !visible.has(id))
     draw(visible, sc.wf)
 
@@ -573,6 +650,12 @@ export const TOUR_SCRIPT = `
     if (ev.key === '0') { ev.preventDefault(); reset() }
   })
   addEventListener('resize', () => go(at))
+  // A CSS media query cannot reach SMIL, so reduced motion has to stop the
+  // comets explicitly or they keep running for the reader who asked them not to.
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    root.classList.add('still')
+    try { svg.pauseAnimations() } catch (error) { /* older engines: CSS still honours the query */ }
+  }
   go(0)
 })()
 `

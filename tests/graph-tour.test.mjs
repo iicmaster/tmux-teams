@@ -149,15 +149,22 @@ test('a route returns through the audit before anything is delivered', () => {
 
 // ── scenes ───────────────────────────────────────────────────────────────────
 
-test('the tour opens on the whole board, walks one route at a time, and returns', () => {
+test('the tour opens on the whole board, then walks one route at a time', () => {
   const { scenes } = buildTour(CONTROLLED)
-  assert.equal(scenes.length, CONTROLLED.workflows.length + 2)
+  assert.equal(scenes.length, CONTROLLED.workflows.length + 1)
   assert.equal(scenes[0].wf, null)
-  assert.equal(scenes[scenes.length - 1].wf, null)
   assert.deepEqual(
-    scenes.slice(1, -1).map((s) => s.wf),
+    scenes.slice(1).map((s) => s.wf),
     CONTROLLED.workflows.map((w) => w.workflow_id),
   )
+})
+
+test('the opening scene is still, and every route scene moves', () => {
+  const { scenes } = buildTour(CONTROLLED)
+  // A board where everything moves cannot say which parts are moving. Scene 0
+  // answers "who exists", so it holds still and the routes get the motion.
+  assert.equal(scenes[0].still, true)
+  for (const scene of scenes.slice(1)) assert.notEqual(scene.still, true)
 })
 
 test('a route scene hides the teams it skips and says which, by name', () => {
@@ -175,7 +182,7 @@ test('a single-route graph does not close a loop it never opened', () => {
     ...CONTROLLED_RAW,
     workflows: [{ workflow_id: 'full', name: 'Full', route: ['control', 'build', 'qa'] }],
   }))
-  assert.equal(scenes.length, 2, 'the board, then its one route — no "and around again"')
+  assert.equal(scenes.length, 2, 'the board, then its one route')
 })
 
 test('the camera frames the route, not the labels parked outside the board', () => {

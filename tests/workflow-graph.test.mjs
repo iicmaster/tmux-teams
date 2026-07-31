@@ -234,16 +234,22 @@ test('the bundled template leads with the controller team', () => {
 // One route cannot show that teams are a pool: with a single workflow, "the
 // route" and "the board" are the same picture, and the difference between them
 // is exactly what a reader has to learn.
-test('the bundled template ships two routes over one pool of teams', () => {
+test('the bundled template ships several routes over one pool of teams', () => {
   const value = accepted(DEFAULT_WORKFLOW_GRAPH)
-  assert.equal(value.workflows.length, 2)
-  const [long, short] = value.workflows.map((workflow) => workflow.route)
-  const skipped = long.filter((teamId) => !short.includes(teamId))
-  assert.ok(skipped.length > 0, 'the second route must skip teams the first uses')
-  for (const teamId of skipped) {
-    assert.ok(value.teams.some((team) => team.team_id === teamId),
-      `${teamId} is skipped by a route but must still exist on the board`)
+  assert.ok(value.workflows.length >= 3, 'one route cannot show that teams are a pool')
+  const [longest, ...rest] = value.workflows.map((workflow) => workflow.route)
+  for (const route of rest) {
+    const skipped = longest.filter((teamId) => !route.includes(teamId))
+    assert.ok(skipped.length > 0, 'every other route must skip teams the longest one uses')
+    for (const teamId of skipped) {
+      assert.ok(value.teams.some((team) => team.team_id === teamId),
+        `${teamId} is skipped by a route but must still exist on the board`)
+    }
   }
+  // Routes that skip DIFFERENT teams: two routes missing the same teams would
+  // teach the same lesson twice and the pool would still look like a pipeline.
+  const shapes = new Set(rest.map((route) => route.join('>')))
+  assert.equal(shapes.size, rest.length)
 })
 
 // ── every rejection that existed before this change ──────────────────────────
