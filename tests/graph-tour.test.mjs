@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
-  TOUR_SCRIPT, buildTour, jsonBlock, renderTourChart,
+  TOUR_CSS, TOUR_SCRIPT, buildTour, jsonBlock, renderTourChart,
 } from '../plugins/tmux-teams/skills/tmux-teams/scripts/graph-tour.mjs'
 import { validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
 
@@ -126,12 +126,18 @@ test('a graph with no controller team draws no front door and no oversight', () 
   assert.equal(world.pm, undefined)
 })
 
-test('each route is its own family of edges, ending at the sink', () => {
+test('a route returns through the audit before anything is delivered', () => {
   const { edges } = buildTour(CONTROLLED)
   for (const workflow of CONTROLLED.workflows) {
     const hops = edges.filter((e) => e.wf === workflow.workflow_id)
-    assert.equal(hops.length, workflow.route.length, 'one hop per team, plus the one into the sink')
-    assert.equal(hops[0].from, `team:${workflow.route[0]}`)
+    // One hop per team, one back to control for the audit, one into the sink.
+    assert.equal(hops.length, workflow.route.length + 1)
+    assert.equal(hops[0].from, 'team:control', 'work enters through the front door')
+    // The last delivery team hands BACK to control, not to the sink: the
+    // controller's evaluator reads the finished route as a whole, and a route
+    // drawn straight to the sink would say work can leave without that.
+    assert.equal(hops[hops.length - 2].to, 'team:control')
+    assert.equal(hops[hops.length - 1].from, 'team:control')
     assert.equal(hops[hops.length - 1].to, 'delivered')
     assert.equal(new Set(hops.map((e) => e.kind)).size, 1)
   }
@@ -214,4 +220,23 @@ test('every hook the client script reaches for exists in the fragment', () => {
   for (const hook of hooks) {
     assert.ok(html.includes(hook), `${hook} is read by the script but never rendered`)
   }
+})
+
+// ── the cascade ──────────────────────────────────────────────────────────────
+
+test('an edge told to leave the scene cannot be painted back in', () => {
+  // `.wire.off` and `.wire.dry` are both specificity (0,2,0), so the ONLY thing
+  // deciding which opacity wins is which is written last. With `.dry` last, the
+  // teams a route skips kept their wiring on screen at .34 — a bug invisible in
+  // the logic, which was correct, and living entirely in line order.
+  const off = TOUR_CSS.indexOf('.wire.off{')
+  const dry = TOUR_CSS.indexOf('.wire.dry{')
+  assert.ok(off > -1 && dry > -1, 'both rules must exist')
+  assert.ok(off > dry, '.wire.off must come after .wire.dry or hiding an edge does nothing')
+})
+
+test('strokes do not grow with the camera', () => {
+  // The board is scaled by a CSS transform, which scales stroke widths and dash
+  // patterns with it. Zoomed in, a hairline becomes a bar.
+  assert.match(TOUR_CSS, /\.wire\{[^}]*vector-effect:non-scaling-stroke/)
 })

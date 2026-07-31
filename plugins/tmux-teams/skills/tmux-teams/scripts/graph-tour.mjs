@@ -169,21 +169,29 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
     }
   }
 
-  world.request = {
-    id: 'request', x: -OUTSIDE_GAP, y: OUTSIDE_Y, kind: 'outside',
-    title: 'Request', lines: ['a person, through an agent'], role: 'outside the board',
-  }
+  // There is no node for the incoming request. It would carry no evidence, no
+  // WIP and no seat — a label, not a fact — and the control team already says
+  // everything true about it: work enters there, one at a time.
   world.delivered = {
     id: 'delivered', x: boardWidth + OUTSIDE_GAP, y: OUTSIDE_Y, kind: 'outside',
     title: 'Delivered', lines: ['read as a whole'], role: 'end, not a team',
   }
-  if (controlId) edges.push({ from: 'request', to: `team:${controlId}`, kind: 'admit', solid: true })
 
   // Route edges carry their workflow id, which is what lets one scene show a
   // single route without hiding the structure underneath it.
   graph.workflows.forEach((workflow, index) => {
     const lane = index % 4
-    const hops = [...workflow.route.map((teamId) => `team:${teamId}`), 'delivered']
+    // The last delivery team does NOT hand to the sink. It hands back to
+    // control, whose evaluator reads the finished route as a whole, and only
+    // then is the work delivered. A route drawn straight from the last team to
+    // the sink says work can leave without that audit — which the contract
+    // (`controller-as-team.md` §4, job three) refuses.
+    const hops = [
+      ...workflow.route.map((teamId) => `team:${teamId}`),
+      ...(controlId && workflow.route[workflow.route.length - 1] !== controlId
+        ? [`team:${controlId}`] : []),
+      'delivered',
+    ]
     for (let i = 1; i < hops.length; i += 1) {
       edges.push({ from: hops[i - 1], to: hops[i], kind: `route${lane}`, wf: workflow.workflow_id, solid: true })
     }
@@ -299,11 +307,15 @@ export const TOUR_CSS = `
 .tour-cam,.tour-wires{position:absolute;inset:0;width:100%;height:100%;transform-origin:0 0;
  transition:transform .62s cubic-bezier(.22,.61,.36,1)}
 .tour-wires{overflow:visible;pointer-events:none}
-.wire{fill:none;stroke-width:1.8;transition:opacity .4s}
-.wire.off{opacity:0}
+.wire{fill:none;stroke-width:1.8;transition:opacity .4s;vector-effect:non-scaling-stroke}
 /* Solid means a record exists for it. Dashed means the operating model with
    nothing measured yet — the difference the whole page rests on. */
 .wire.dry{stroke-dasharray:5 5;opacity:.34}
+/* AFTER .dry, and the order is the rule rather than a preference: both are
+   specificity (0,2,0), so whichever is written last wins. With .dry below it,
+   an edge told to leave the scene was painted straight back in at .34, and the
+   teams a route skips kept their wiring on screen. */
+.wire.off{opacity:0}
 .w-assign{stroke:var(--assign);opacity:.5}
 .w-judge{stroke:var(--artifact);opacity:.55}
 .w-reject{stroke:var(--reject);stroke-dasharray:4 4;opacity:.5}

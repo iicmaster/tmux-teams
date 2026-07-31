@@ -146,7 +146,14 @@ test('the controller team is the head of every route, and never escalates to its
   const tour = tourOf(DEFAULT_WORKFLOW_GRAPH)
   const control = 'team:control'
   assert.ok(tour.world[control], 'the control team is on the board')
-  assert.ok(wire(tour, 'request', control, 'admit'), 'work enters through the front door')
+  // No node for the incoming request: it would carry no evidence, no WIP and no
+  // seat. Every route starting at control already says work enters there.
+  assert.equal(tour.world.request, undefined)
+  for (const workflow of DEFAULT_WORKFLOW_GRAPH.workflows) {
+    const hops = tour.edges.filter((e) => e.wf === workflow.workflow_id)
+    assert.equal(hops[0].from, control)
+    assert.equal(hops[hops.length - 1].from, control, 'delivery is handed out by the audit')
+  }
 
   const escalations = tour.edges.filter((e) => e.kind === 'escalate')
   assert.equal(escalations.length, DEFAULT_WORKFLOW_GRAPH.teams.length - 1,
