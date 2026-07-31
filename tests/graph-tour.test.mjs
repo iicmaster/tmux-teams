@@ -123,13 +123,40 @@ test('the sink counts audited work, and only audited work', () => {
   assert.match(some.world.delivered.state, /3 audited/)
 })
 
-test('oversight runs to control from every team except control', () => {
+test('the whole board is one send/back pair per team, and nothing between teams', () => {
   const { edges } = buildTour(CONTROLLED)
-  const escalations = edges.filter((e) => e.kind === 'escalate')
-  assert.equal(escalations.length, 2)
-  for (const edge of escalations) {
-    assert.equal(edge.to, 'team:control')
-    assert.notEqual(edge.from, 'team:control')
+  const delivery = CONTROLLED.teams.filter((t) => t.team_id !== 'control')
+  const send = edges.filter((e) => e.kind === 'send')
+  const back = edges.filter((e) => e.kind === 'back')
+  assert.equal(send.length, delivery.length)
+  assert.equal(back.length, delivery.length)
+  for (const edge of send) assert.equal(edge.from, 'team:control')
+  for (const edge of back) assert.equal(edge.to, 'team:control')
+  // Never reflexive: control sending to itself is a line that means nothing.
+  for (const edge of [...send, ...back]) {
+    assert.notEqual(edge.from === 'team:control' && edge.to === 'team:control', true)
+  }
+  // And NOTHING joins two delivery teams. A workflow is an order over this
+  // wiring, not wiring of its own — which is what lets a route scene hide teams
+  // and change nothing else.
+  const teamIds = new Set(delivery.map((t) => `team:${t.team_id}`))
+  const between = edges.filter((e) => teamIds.has(e.from) && teamIds.has(e.to))
+  assert.deepEqual(between, [])
+})
+
+test('a route is an order over existing wires, adding none', () => {
+  const tour = buildTour(CONTROLLED)
+  const wires = new Set(tour.edges.map((e) => `${e.from}>${e.to}>${e.kind}`))
+  for (const workflow of CONTROLLED.workflows) {
+    const order = tour.orders[workflow.workflow_id]
+    assert.ok(order.length > 0, `${workflow.workflow_id} has an order`)
+    for (const key of order) {
+      assert.ok(wires.has(key), `${key} is a wire the board already has`)
+    }
+    // Down and back for every team on the route, then out through the audit.
+    const teams = workflow.route.filter((teamId) => teamId !== 'control')
+    assert.equal(order.length, teams.length * 2 + 1)
+    assert.equal(order[order.length - 1], 'team:control>delivered>passed')
   }
 })
 
@@ -148,30 +175,26 @@ test('a graph with no controller team draws no front door and no oversight', () 
 })
 
 test('a route returns through the audit before anything is delivered', () => {
-  const { edges } = buildTour(CONTROLLED)
+  const { edges, orders } = buildTour(CONTROLLED)
   for (const workflow of CONTROLLED.workflows) {
-    const hops = edges.filter((e) => e.wf === workflow.workflow_id)
-    // One hop per team, plus one back to control for the audit.
-    assert.equal(hops.length, workflow.route.length)
-    assert.equal(hops[0].from, 'team:control', 'work enters through the front door')
-    // The last delivery team hands BACK to control: the controller's evaluator
-    // reads the finished route as a whole, and a route drawn straight to the
-    // sink would say work can leave without that.
-    assert.equal(hops[hops.length - 1].to, 'team:control')
-    assert.equal(new Set(hops.map((e) => e.kind)).size, 1)
+    const order = orders[workflow.workflow_id]
+    // Every visit is a pair: down to the team, back to the controller. Work is
+    // never handed team to team without the controller seeing it.
+    for (let i = 0; i < order.length - 1; i += 2) {
+      assert.match(order[i], /^team:control>/, 'each leg starts at the controller')
+      assert.match(order[i + 1], />team:control>back$/, 'and returns to it')
+    }
+    assert.equal(order[order.length - 1], 'team:control>delivered>passed')
   }
-  // And exactly ONE line leaves the audit for the sink, belonging to no route:
-  // what crosses it is the same fact every time, so one line per route would be
-  // three claims about one thing.
+  // Exactly ONE line leaves the audit for the sink: what crosses it is the same
+  // fact every time, so one per route would be three claims about one thing.
   const passed = edges.filter((e) => e.kind === 'passed')
   assert.equal(passed.length, 1)
   assert.equal(passed[0].from, 'team:control')
   assert.equal(passed[0].to, 'delivered')
-  assert.equal(passed[0].wf, undefined, 'it is not owned by a workflow, so every scene shows it')
-  // Two routes over one pool must be distinguishable, or the board draws one
-  // line and claims it is both.
-  const kinds = new Set(edges.filter((e) => e.wf).map((e) => e.kind))
-  assert.equal(kinds.size, CONTROLLED.workflows.length)
+  // No edge belongs to a workflow at all any more. Two routes are told apart by
+  // which teams are on screen, not by giving one relationship three patterns.
+  assert.deepEqual(edges.filter((e) => e.wf), [])
 })
 
 // ── scenes ───────────────────────────────────────────────────────────────────

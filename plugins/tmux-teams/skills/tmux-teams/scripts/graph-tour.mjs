@@ -170,8 +170,15 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
     // team escalating to itself would be a line that means nothing. The old
     // page drew that line, because it drew oversight before the controller had
     // a team to belong to.
+    // TWO lines between the controller and every team, and that is the whole
+    // wiring of the board: one down, one back. There are no team → team lines
+    // at all, because a workflow is not a different set of connections — it is
+    // the same connections used in a different order. Drawing each route as its
+    // own family of edges stated one relationship three times in three
+    // patterns, and made changing scene look like the wiring had changed.
     if (controlId && !isControl) {
-      edges.push({ from: teamNodeId, to: `team:${controlId}`, kind: 'escalate', solid: true })
+      edges.push({ from: `team:${controlId}`, to: teamNodeId, kind: 'send', solid: true })
+      edges.push({ from: teamNodeId, to: `team:${controlId}`, kind: 'back', solid: true })
     }
   }
 
@@ -191,29 +198,24 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
     role: 'end, not a team',
   }
 
-  // Route edges carry their workflow id, which is what lets one scene show a
-  // single route without hiding the structure underneath it.
-  graph.workflows.forEach((workflow, index) => {
-    const lane = index % 4
-    // The last delivery team does NOT hand to the sink. It hands back to
-    // control, whose evaluator reads the finished route as a whole, and only
-    // then is the work delivered. A route drawn straight from the last team to
-    // the sink says work can leave without that audit — which the contract
-    // (`controller-as-team.md` §4, job three) refuses.
-    const hops = [
-      ...workflow.route.map((teamId) => `team:${teamId}`),
-      ...(controlId && workflow.route[workflow.route.length - 1] !== controlId
-        ? [`team:${controlId}`] : []),
-    ]
-    for (let i = 1; i < hops.length; i += 1) {
-      edges.push({ from: hops[i - 1], to: hops[i], kind: `route${lane}`, wf: workflow.workflow_id, solid: true })
-    }
-  })
-  // ONE line leaves the audit for the sink, not one per route. What crosses it
-  // is the same fact every time — work the controller has read and passed — so
-  // three lines stacked on the same two points would be three claims about one
-  // thing. It belongs to no workflow, so every scene shows it.
+  // ONE line leaves the audit for the sink. What crosses it is the same fact
+  // every time — work the controller has read and passed.
   if (controlId) edges.push({ from: `team:${controlId}`, to: 'delivered', kind: 'passed', solid: true })
+
+  // A route is an ORDER over the wiring above, never wiring of its own. This is
+  // the sequence a token takes — down to a team, back to control, down to the
+  // next — and it exists only to animate. It adds no edge to the board.
+  const orderOf = (workflow) => {
+    const trip = []
+    for (const teamId of workflow.route) {
+      if (teamId === controlId) continue
+      trip.push(`team:${controlId}>team:${teamId}>send`)
+      trip.push(`team:${teamId}>team:${controlId}>back`)
+    }
+    trip.push(`team:${controlId}>delivered>passed`)
+    return trip
+  }
+  const ORDERS = new Map(graph.workflows.map((workflow) => [workflow.workflow_id, orderOf(workflow)]))
 
   // The control team has no seat nodes, so naming its seats here would put ids
   // in a scene that the world has never heard of — and the camera would frame
@@ -259,7 +261,7 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
       focus: workflow.route.flatMap(agentsOf),
     })
   }
-  return { world, edges, scenes, width: boardWidth }
+  return { world, edges, scenes, orders: Object.fromEntries(ORDERS), width: boardWidth }
 }
 
 // ── the page fragment ───────────────────────────────────────────────────────
@@ -363,7 +365,8 @@ export const TOUR_CSS = `
 .w-judge{stroke:var(--artifact);opacity:.55}
 .w-reject{stroke:var(--reject);stroke-dasharray:4 4;opacity:.5}
 .w-owns{stroke:var(--line)}
-.w-escalate{stroke:var(--oversight);stroke-dasharray:6 4;opacity:.8}
+.w-send{stroke:var(--handoff);stroke-width:2.4;opacity:.75}
+.w-back{stroke:var(--oversight);stroke-width:2;stroke-dasharray:7 4;opacity:.7}
 .w-admit{stroke:var(--ink);stroke-width:2.4;opacity:.75}
 .w-route0{stroke:var(--handoff);stroke-width:2.6;opacity:.8}
 .w-route1{stroke:var(--warn);stroke-width:2.6;opacity:.8;stroke-dasharray:9 5}
@@ -477,7 +480,9 @@ export const TOUR_SCRIPT = `
   // that makes two routes distinguishable at all.
   const BOW = {
     reject: -46, judge: 18, assign: 30, owns: 0, admit: 0,
-    escalate: -34, route0: 0, route1: 74, route2: -104, route3: 132,
+    // Down and back share two endpoints, so they must bow apart or they land on
+    // the same pixels and the board looks like it has half the wiring it has.
+    send: -30, back: 30, passed: 0,
   }
   const NS = 'http://www.w3.org/2000/svg'
   // FNV-1a, 0..1. Deterministic on purpose: the same edge desyncs the same way
@@ -525,15 +530,14 @@ export const TOUR_SCRIPT = `
   // route both animate the same workflow, and building per scene made two
   // comets for every hop of it.
   const animated = [...new Set(scenes.map((scene) => scene.motion).filter(Boolean))]
-  const passedEdge = edges.find((e) => e.kind === 'passed') || null
   for (const wf of animated) {
-    // The last leg is the one out of the audit into the sink. It belongs to no
-    // workflow — the same fact whichever route produced it — but a token that
-    // stops at the audit shows work that was checked and never handed over.
-    const hops = [...edges.filter((e) => e.wf === wf), ...(passedEdge ? [passedEdge] : [])]
-    hops.forEach((hop, i) => {
-      const w = wireOf.get(hop.from + '>' + hop.to + '>' + hop.kind)
-      if (!w) return
+    // The order names wires that already exist — control → team, team → control,
+    // and finally control → the sink. A route therefore adds nothing to the
+    // board: it is a path THROUGH it, which is why switching scene only ever
+    // removes teams and never redraws a connection.
+    const hops = (data.orders?.[wf] || []).map((key) => wireOf.get(key)).filter(Boolean)
+    hops.forEach((w, i) => {
+      const hop = w.e
       const node = world[hop.from]
       if (node) {
         const halo = document.createElementNS(NS, 'rect')
@@ -569,9 +573,12 @@ export const TOUR_SCRIPT = `
     })
   }
 
-  function draw(visible, wf, motionWf) {
+  function draw(visible, motionWf) {
     for (const { e, p, lane } of WIRES) {
-      const on = visible.has(e.from) && visible.has(e.to) && (!e.wf || !wf || e.wf === wf)
+      // No edge belongs to a workflow any more, so a scene shows every wire
+      // between the nodes it kept. That IS the route: hide the teams a route
+      // does not use and what remains is exactly its path.
+      const on = visible.has(e.from) && visible.has(e.to)
       p.classList.toggle('off', !on)
       if (!on) continue
       const a = world[e.from], b = world[e.to]
@@ -684,7 +691,7 @@ export const TOUR_SCRIPT = `
     const visible = new Set(sc.ids)
     root.classList.toggle('still', Boolean(sc.still))
     for (const [id, el] of Object.entries(NODES)) el.classList.toggle('out', !visible.has(id))
-    draw(visible, sc.wf, sc.motion)
+    draw(visible, sc.motion)
 
     // Fit the camera to what is in frame — the whole reason a scene is a set of
     // nodes rather than a highlight over one fixed picture.

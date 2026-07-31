@@ -151,21 +151,22 @@ test('the controller team is the head of every route, and never escalates to its
   // seat. Every route starting at control already says work enters there.
   assert.equal(tour.world.request, undefined)
   for (const workflow of DEFAULT_WORKFLOW_GRAPH.workflows) {
-    const hops = tour.edges.filter((e) => e.wf === workflow.workflow_id)
-    assert.equal(hops[0].from, control)
-    assert.equal(hops[hops.length - 1].to, control, 'work returns to the audit')
+    // The route is an order over the board's own wires, not wires of its own.
+    const order = tour.orders[workflow.workflow_id]
+    assert.ok(order.length > 0)
+    assert.match(order[0], /^team:control>/, 'work leaves the front door first')
+    assert.equal(order[order.length - 1], 'team:control>delivered>passed')
   }
   const passed = tour.edges.filter((e) => e.kind === 'passed')
   assert.equal(passed.length, 1, 'one line out of the audit, not one per route')
   assert.equal(passed[0].from, control)
 
-  const escalations = tour.edges.filter((e) => e.kind === 'escalate')
-  assert.equal(escalations.length, DEFAULT_WORKFLOW_GRAPH.teams.length - 1,
-    'every team escalates to control except control')
-  for (const edge of escalations) {
-    assert.equal(edge.to, control)
-    assert.notEqual(edge.from, control, 'oversight of itself is a line that means nothing')
-  }
+  // One pair per delivery team — down and back — and that is the entire wiring.
+  const delivery = DEFAULT_WORKFLOW_GRAPH.teams.length - 1
+  assert.equal(tour.edges.filter((e) => e.kind === 'send').length, delivery)
+  assert.equal(tour.edges.filter((e) => e.kind === 'back').length, delivery)
+  for (const edge of tour.edges.filter((e) => e.kind === 'send')) assert.equal(edge.from, control)
+  for (const edge of tour.edges.filter((e) => e.kind === 'back')) assert.equal(edge.to, control)
 })
 
 test('an edge only hardens once evidence exists for it', () => {
