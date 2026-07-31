@@ -43,9 +43,11 @@ const CONTROLLED = accept(CONTROLLED_RAW)
 
 // ── layout ───────────────────────────────────────────────────────────────────
 
-test('every declared seat gets exactly one node, at its own position', () => {
+test('every delivery seat gets exactly one node, at its own position', () => {
   const { world } = buildTour(CONTROLLED)
-  const seats = CONTROLLED.teams.flatMap((t) => [t.dispatcher_id, ...t.worker_ids, t.evaluator_id])
+  const seats = CONTROLLED.teams
+    .filter((t) => t.team_id !== 'control')
+    .flatMap((t) => [t.dispatcher_id, ...t.worker_ids, t.evaluator_id])
   for (const seat of seats) assert.ok(world[seat], `${seat} is on the board`)
 
   // Two nodes on the same pixel is two agents a reader cannot tell apart.
@@ -57,12 +59,18 @@ test('every declared seat gets exactly one node, at its own position', () => {
   }
 })
 
-test('the controller holds one node, marked as the controller', () => {
+test('the control team is one node — its three seats are jobs, not stations', () => {
   const { world } = buildTour(CONTROLLED)
-  const named = Object.values(world).filter((n) => n.id === 'pm' || n.title === 'pm')
-  assert.equal(named.length, 1)
-  assert.equal(world.pm.kind, 'controller')
   assert.equal(world['team:control'].kind, 'control')
+  // Grill, unstick and audit are three moments, not three stations work moves
+  // through, and as peer cards they made the front door read as a fourth
+  // delivery team.
+  for (const seat of ['pm_in', 'pm', 'pm_out']) {
+    assert.equal(world[seat], undefined, `${seat} must not be drawn as its own card`)
+  }
+  // A delivery team keeps its seats: there work really does move
+  // dispatcher → worker → evaluator.
+  for (const seat of ['build_d', 'b1', 'build_e']) assert.ok(world[seat])
 })
 
 test('layout follows the graph rather than a baked coordinate table', () => {
@@ -130,17 +138,23 @@ test('a route returns through the audit before anything is delivered', () => {
   const { edges } = buildTour(CONTROLLED)
   for (const workflow of CONTROLLED.workflows) {
     const hops = edges.filter((e) => e.wf === workflow.workflow_id)
-    // One hop per team, one back to control for the audit, one into the sink.
-    assert.equal(hops.length, workflow.route.length + 1)
+    // One hop per team, plus one back to control for the audit.
+    assert.equal(hops.length, workflow.route.length)
     assert.equal(hops[0].from, 'team:control', 'work enters through the front door')
-    // The last delivery team hands BACK to control, not to the sink: the
-    // controller's evaluator reads the finished route as a whole, and a route
-    // drawn straight to the sink would say work can leave without that.
-    assert.equal(hops[hops.length - 2].to, 'team:control')
-    assert.equal(hops[hops.length - 1].from, 'team:control')
-    assert.equal(hops[hops.length - 1].to, 'delivered')
+    // The last delivery team hands BACK to control: the controller's evaluator
+    // reads the finished route as a whole, and a route drawn straight to the
+    // sink would say work can leave without that.
+    assert.equal(hops[hops.length - 1].to, 'team:control')
     assert.equal(new Set(hops.map((e) => e.kind)).size, 1)
   }
+  // And exactly ONE line leaves the audit for the sink, belonging to no route:
+  // what crosses it is the same fact every time, so one line per route would be
+  // three claims about one thing.
+  const passed = edges.filter((e) => e.kind === 'passed')
+  assert.equal(passed.length, 1)
+  assert.equal(passed[0].from, 'team:control')
+  assert.equal(passed[0].to, 'delivered')
+  assert.equal(passed[0].wf, undefined, 'it is not owned by a workflow, so every scene shows it')
   // Two routes over one pool must be distinguishable, or the board draws one
   // line and claims it is both.
   const kinds = new Set(edges.filter((e) => e.wf).map((e) => e.kind))
@@ -161,10 +175,15 @@ test('the tour opens on the whole board, then walks one route at a time', () => 
 
 test('the opening scene is still, and every route scene moves', () => {
   const { scenes } = buildTour(CONTROLLED)
-  // A board where everything moves cannot say which parts are moving. Scene 0
-  // answers "who exists", so it holds still and the routes get the motion.
+  // "Still" stops the dash crawl, which would otherwise be noise across the
+  // whole board at once. It does NOT mean nothing moves: the opening scene
+  // still runs one comet down the primary route, which is the shape of the work.
   assert.equal(scenes[0].still, true)
-  for (const scene of scenes.slice(1)) assert.notEqual(scene.still, true)
+  assert.equal(scenes[0].motion, CONTROLLED.workflows[0].workflow_id)
+  for (const scene of scenes.slice(1)) {
+    assert.notEqual(scene.still, true)
+    assert.equal(scene.motion, scene.wf, 'a route scene animates its own route')
+  }
 })
 
 test('a route scene hides the teams it skips and says which, by name', () => {
@@ -189,6 +208,9 @@ test('the camera frames the route, not the labels parked outside the board', () 
   const { scenes, world } = buildTour(CONTROLLED)
   const fast = scenes.find((s) => s.wf === 'fast')
   assert.ok(fast.focus.length > 0)
+  // A scene may not name a node the world has never heard of: the camera would
+  // frame coordinates that do not exist.
+  for (const id of [...fast.ids, ...fast.focus]) assert.ok(world[id], `${id} exists`)
   for (const id of fast.focus) assert.notEqual(world[id].kind, 'outside')
   // Every route starts at control on the far left and ends at the sink on the
   // far right, so framing those two would make every scene exactly as wide as

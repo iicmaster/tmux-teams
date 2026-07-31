@@ -137,9 +137,10 @@ test('a team shared by two workflows is still drawn once, with every agent', () 
 test('the controller is one node — never a node and a band as well', () => {
   const tour = tourOf(DEFAULT_WORKFLOW_GRAPH)
   const seat = DEFAULT_WORKFLOW_GRAPH.outer_controller_id
-  const named = Object.values(tour.world).filter((n) => n.id === seat || n.title === seat)
-  assert.equal(named.length, 1, 'the same seat named twice is still one seat')
-  assert.equal(tour.world[seat].kind, 'controller')
+  assert.equal(tour.world[seat], undefined, 'the controller is not a card of its own')
+  const control = tour.world['team:control']
+  assert.ok(control && control.kind === 'control', 'it IS the control team node')
+  assert.equal(Object.values(tour.world).filter((n) => n.kind === 'control').length, 1)
 })
 
 test('the controller team is the head of every route, and never escalates to itself', () => {
@@ -152,8 +153,11 @@ test('the controller team is the head of every route, and never escalates to its
   for (const workflow of DEFAULT_WORKFLOW_GRAPH.workflows) {
     const hops = tour.edges.filter((e) => e.wf === workflow.workflow_id)
     assert.equal(hops[0].from, control)
-    assert.equal(hops[hops.length - 1].from, control, 'delivery is handed out by the audit')
+    assert.equal(hops[hops.length - 1].to, control, 'work returns to the audit')
   }
+  const passed = tour.edges.filter((e) => e.kind === 'passed')
+  assert.equal(passed.length, 1, 'one line out of the audit, not one per route')
+  assert.equal(passed[0].from, control)
 
   const escalations = tour.edges.filter((e) => e.kind === 'escalate')
   assert.equal(escalations.length, DEFAULT_WORKFLOW_GRAPH.teams.length - 1,
@@ -191,9 +195,11 @@ test('the outer controller states the same facts as every other agent', () => {
   // The PM band was hand-drawn instead of going through the node renderer, so
   // every fact line added to agents later — lane, model, clock, status — never
   // reached it. It showed an id and a sentence, which is a label, not evidence.
+  // The controller has no card of its own any more, so the control team node
+  // carries its evidence. Dropping the card must not drop the facts.
   const seat = DEFAULT_WORKFLOW_GRAPH.outer_controller_id
-  const idle = tourOf(DEFAULT_WORKFLOW_GRAPH).world[seat]
-  assert.ok(idle, 'the controller is a node like anyone else')
+  const idle = tourOf(DEFAULT_WORKFLOW_GRAPH).world['team:control']
+  assert.ok(idle, 'the control team is on the board')
   assert.ok(idle.lines.some((line) => /· —$/.test(line)), 'it states its lane')
   assert.ok(idle.lines.some((line) => line.startsWith('model ')), 'it states its model')
 
@@ -204,7 +210,7 @@ test('the outer controller states the same facts as every other agent', () => {
   assert.equal(idle.status, 'watching')
 
   const ran = tourOf(DEFAULT_WORKFLOW_GRAPH,
-    snapshotWith([run(seat, 'running', { elapsed_sec: 90 })])).world[seat]
+    snapshotWith([run(seat, 'running', { elapsed_sec: 90 })])).world['team:control']
   assert.ok(ran.lines.some((line) => line.includes('claude · acp')), 'it states a measured lane')
   assert.ok(ran.lines.some((line) => line.includes('1m in progress')), 'it states a measured clock')
   assert.equal(ran.state, 'reviewing the board now')

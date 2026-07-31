@@ -40,8 +40,6 @@ const ROW_EVALUATOR = 400
 // escalations has to run backwards across the whole board through the cards in
 // between. Lift it out and they all point straight up at nothing else.
 const ROW_CONTROL = -430
-const CONTROL_SEATS = -296
-const CONTROL_PITCH = 300
 const OUTSIDE_Y = ROW_CONTROL
 const OUTSIDE_GAP = 150
 
@@ -89,15 +87,24 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
     const teamNodeId = `team:${team.team_id}`
     const facts = teamFacts.get(team.team_id) || {}
 
+    // The control team has no seat cards, so its own node carries the
+    // controller's evidence — status, lane, verified model, clock. Dropping the
+    // cards must not drop the facts: the seat still runs on a model and still
+    // has a state, and a node that only names a team would say less than the
+    // ledger knows.
+    const controllerCard = isControl ? cards.get(graph.outer_controller_id) : null
     world[teamNodeId] = {
       id: teamNodeId, x: centre, y: isControlTeam ? ROW_CONTROL : ROW_TEAM,
       kind: isControl ? 'control' : 'team',
       title: team.name,
+      state: controllerCard?.state || '',
+      status: controllerCard?.status || '',
       // A team's whole state in two lines: what it holds out of what it may
       // hold, then the tokens themselves when it holds any.
       lines: [
         `WIP ${wip}/${team.wip_limit}${wip >= team.wip_limit ? ' · full' : ''}`,
         held.length ? held.join(', ') : 'no work held',
+        ...(controllerCard?.lines || []),
       ],
       role: isControl ? 'the front door — every route enters here' : 'team',
     }
@@ -118,23 +125,16 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
       }
     }
 
-    // Control's three seats sit side by side on one row rather than stacked
-    // like a delivery team's, because they are not a pipeline: the grill, the
-    // unsticking seat and the audit are three ways in, used at three different
-    // moments, not three stages of one leg.
-    const seats = isControlTeam ? [team.dispatcher_id, ...team.worker_ids, team.evaluator_id] : []
-    // Wider pitch than a worker row: these cards carry the controller's own
-    // sentence ("watching — no exception open"), which is far longer than a
-    // worker's, and a card is sized by its text.
-    const seatX = (agentId) =>
-      centre + (seats.indexOf(agentId) - (seats.length - 1) / 2) * CONTROL_PITCH
+    // The control team is drawn as ONE node. Its three seats — grill, unstick,
+    // audit — are three jobs the controller does at three different moments,
+    // not three stations work passes through, and drawn as peer cards they made
+    // the front door read as a fourth delivery team. Every other team keeps its
+    // seats, because there work really does move dispatcher → worker →
+    // evaluator and a reader has to see which worker holds what.
+    if (isControlTeam) continue
 
-    seat(team.dispatcher_id, 'dispatcher',
-      isControlTeam ? CONTROL_SEATS : ROW_DISPATCHER,
-      isControlTeam ? seatX(team.dispatcher_id) : centre)
-    seat(team.evaluator_id, 'evaluator',
-      isControlTeam ? CONTROL_SEATS : ROW_EVALUATOR,
-      isControlTeam ? seatX(team.evaluator_id) : centre)
+    seat(team.dispatcher_id, 'dispatcher', ROW_DISPATCHER, centre)
+    seat(team.evaluator_id, 'evaluator', ROW_EVALUATOR, centre)
 
     const left = centre - rowWidth(team) / 2 + CARD_W / 2
     team.worker_ids.forEach((workerId, index) => {
@@ -143,9 +143,7 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
       // two seats — so it is drawn ONCE, here, and never again as a band of
       // its own above the board.
       const kind = workerId === graph.outer_controller_id ? 'controller' : 'worker'
-      seat(workerId, kind,
-        isControlTeam ? CONTROL_SEATS : ROW_WORKER,
-        isControlTeam ? seatX(workerId) : left + index * (CARD_W + WORKER_GAP))
+      seat(workerId, kind, ROW_WORKER, left + index * (CARD_W + WORKER_GAP))
       // An edge hardens only once something recorded happened along it. Drawn
       // solid by default, the picture would claim every declared relationship
       // as an observed one — the exact attestation-over-evidence failure this
@@ -190,24 +188,34 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
       ...workflow.route.map((teamId) => `team:${teamId}`),
       ...(controlId && workflow.route[workflow.route.length - 1] !== controlId
         ? [`team:${controlId}`] : []),
-      'delivered',
     ]
     for (let i = 1; i < hops.length; i += 1) {
       edges.push({ from: hops[i - 1], to: hops[i], kind: `route${lane}`, wf: workflow.workflow_id, solid: true })
     }
   })
+  // ONE line leaves the audit for the sink, not one per route. What crosses it
+  // is the same fact every time — work the controller has read and passed — so
+  // three lines stacked on the same two points would be three claims about one
+  // thing. It belongs to no workflow, so every scene shows it.
+  if (controlId) edges.push({ from: `team:${controlId}`, to: 'delivered', kind: 'passed', solid: true })
 
+  // The control team has no seat nodes, so naming its seats here would put ids
+  // in a scene that the world has never heard of — and the camera would frame
+  // coordinates that do not exist.
   const agentsOf = (teamId) => {
     const team = graph.teams.find((entry) => entry.team_id === teamId)
-    return team ? [`team:${teamId}`, team.dispatcher_id, ...team.worker_ids, team.evaluator_id] : []
+    if (!team) return []
+    if (teamId === controlId) return [`team:${teamId}`]
+    return [`team:${teamId}`, team.dispatcher_id, ...team.worker_ids, team.evaluator_id]
   }
   const everything = Object.keys(world)
 
   // Scene 0 is deliberately still. It answers "who exists", and a board where
   // everything is moving cannot also say which parts are moving — motion only
   // means something once something else is holding still.
+  const primary = graph.workflows[0]?.workflow_id ?? null
   const scenes = [{
-    id: 'all', wf: null, kicker: 'The board', still: true,
+    id: 'all', wf: null, kicker: 'The board', still: true, motion: primary,
     title: 'Every team, drawn once',
     caption: `${graph.teams.length} team(s) as a reusable pool · ${graph.workflows.length} route(s) over them`
       + ' · press → for one route at a time.',
@@ -218,7 +226,7 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
       .filter((team) => !workflow.route.includes(team.team_id))
       .map((team) => team.name)
     scenes.push({
-      id: workflow.workflow_id, wf: workflow.workflow_id,
+      id: workflow.workflow_id, wf: workflow.workflow_id, motion: workflow.workflow_id,
       kicker: `route · ${workflow.workflow_id}`,
       title: workflow.name,
       caption: workflow.route.join(' → ')
@@ -226,7 +234,7 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
           ? ` · never touches ${skipped.join(', ')} — ${skipped.length === 1 ? 'that team is' : 'those teams are'}`
             + ` still on the board, this route just does not use ${skipped.length === 1 ? 'it' : 'them'}.`
           : ' · every team on the board.'),
-      ids: ['request', 'delivered', ...workflow.route.flatMap(agentsOf)],
+      ids: ['delivered', ...workflow.route.flatMap(agentsOf)],
       // The camera frames the TEAMS on the route, not the two labels that sit
       // outside the board. Every route starts at control on the far left and
       // ends at the sink on the far right, so framing those two would make
@@ -297,6 +305,10 @@ export const TOUR_CSS = `
    comes back. A team keeps its WIP line at every scale: how full a team is is
    the one thing worth reading from across the board. */
 .tour.lean .tnode:not(.k-team):not(.k-control) span{display:none}
+/* The control node carries the controller's evidence as well as the team's, so
+   zoomed out it keeps only what is readable from across the board: how full the
+   door is, and what it is holding. */
+.tour.lean .k-control span:nth-of-type(n+3){display:none}
 .tour-cam,.tour-wires{position:absolute;inset:0;width:100%;height:100%;transform-origin:0 0;
  transition:transform .62s cubic-bezier(.22,.61,.36,1)}
 .tour-wires{overflow:visible;pointer-events:none}
@@ -315,14 +327,20 @@ export const TOUR_CSS = `
    the opposite of decoration, and the opposite of codegraph, where the flow is
    ambient. -20 is exactly two dash periods (5+5), so the loop has no seam. */
 .tour:not(.still) .wire.dry{animation:tourFlow 1.1s linear infinite}
+.tour.quiet .wire.dry{animation:none}
 @keyframes tourFlow{to{stroke-dashoffset:-20}}
+.w-passed{stroke:var(--ok);stroke-width:2.6;opacity:.85}
 .tour-comet{fill:var(--handoff);filter:drop-shadow(0 0 6px var(--handoff))}
 .tour-trail{fill:var(--handoff)}
-.tour.still .tour-comet,.tour.still .tour-trail{visibility:hidden}
+/* The opening board holds still, but ONE comet still runs the primary route:
+   the crawl says "nothing recorded here" and would be noise across the whole
+   board at once, while the comet says "this is the shape of the work" and needs
+   somewhere quiet to be legible. Reduced motion stops both. */
+.tour.quiet .tour-comet,.tour.quiet .tour-trail{visibility:hidden}
 .tour-halo{fill:none;stroke:var(--handoff);opacity:0;vector-effect:non-scaling-stroke}
 /* Peak at 40%, not 50%: a quick inhale and a slow exhale reads as alive, while
    a symmetric one reads as a pulse meter. */
-.tour:not(.still) .tour-halo{animation:tourHalo 2.6s ease-in-out infinite}
+.tour:not(.quiet) .tour-halo{animation:tourHalo 2.6s ease-in-out infinite}
 @keyframes tourHalo{0%,100%{opacity:0;stroke-width:1}40%{opacity:.5;stroke-width:2.4}}
 .w-assign{stroke:var(--assign);opacity:.5}
 .w-judge{stroke:var(--artifact);opacity:.55}
@@ -466,8 +484,8 @@ export const TOUR_SCRIPT = `
   const wireOf = new Map(WIRES.map((w) => [w.e.from + '>' + w.e.to, w]))
   const MOTION = []
   for (const scene of scenes) {
-    if (!scene.wf) continue
-    const hops = edges.filter((e) => e.wf === scene.wf)
+    if (!scene.motion) continue
+    const hops = edges.filter((e) => e.wf === scene.motion)
     hops.forEach((hop, i) => {
       const w = wireOf.get(hop.from + '>' + hop.to)
       if (!w) return
@@ -475,12 +493,13 @@ export const TOUR_SCRIPT = `
       if (node) {
         const halo = document.createElementNS(NS, 'rect')
         halo.setAttribute('class', 'tour-halo')
-        halo.setAttribute('x', node.x - 70); halo.setAttribute('y', node.y - 28)
-        halo.setAttribute('width', 140); halo.setAttribute('height', 56); halo.setAttribute('rx', 12)
-        // Staggered in reading order, so the halos travel the route too.
+        halo.setAttribute('rx', 12)
+        // Staggered in reading order, so the halos travel the route too. The
+        // box is measured from the rendered card below — a card is
+        // sized by its text, so a fixed rectangle fits nothing.
         halo.style.animationDelay = (i * 0.35) + 's'
         haloLayer.appendChild(halo)
-        MOTION.push({ wf: scene.wf, el: halo })
+        MOTION.push({ wf: scene.motion, el: halo, around: hop.from })
       }
       const dur = 1.6
       // 'begin' staggers hop i so the route reads as one token travelling it,
@@ -498,12 +517,12 @@ export const TOUR_SCRIPT = `
         motion.setAttribute('calcMode', 'linear')
         dot.appendChild(motion)
         cometLayer.appendChild(dot)
-        MOTION.push({ wf: scene.wf, el: dot, motion, wire: w })
+        MOTION.push({ wf: scene.motion, el: dot, motion, wire: w })
       }
     })
   }
 
-  function draw(visible, wf) {
+  function draw(visible, wf, motionWf) {
     for (const { e, p, lane } of WIRES) {
       const on = visible.has(e.from) && visible.has(e.to) && (!e.wf || !wf || e.wf === wf)
       p.classList.toggle('off', !on)
@@ -525,11 +544,22 @@ export const TOUR_SCRIPT = `
         + ', ' + b.x + ' ' + b.y)
     }
     for (const m of MOTION) {
-      const on = m.wf === wf
+      const on = m.wf === motionWf
       m.el.style.display = on ? '' : 'none'
       // Copy the finished d rather than recomputing it: two independent
       // derivations of the same curve is two curves waiting to disagree.
-      if (on && m.motion) m.motion.setAttribute('path', m.wire.p.getAttribute('d'))
+      if (!on) continue
+      if (m.motion) m.motion.setAttribute('path', m.wire.p.getAttribute('d'))
+      if (m.around) {
+        // A card is sized by its own text, so the halo is measured, never
+        // assumed. Anything else is a rectangle that fits no node on the board.
+        const card = NODES[m.around]
+        const n = world[m.around]
+        const w2 = (card?.offsetWidth || 140) / 2 + 7
+        const h2 = (card?.offsetHeight || 46) / 2 + 6
+        m.el.setAttribute('x', n.x - w2); m.el.setAttribute('y', n.y - h2)
+        m.el.setAttribute('width', w2 * 2); m.el.setAttribute('height', h2 * 2)
+      }
     }
   }
 
@@ -593,7 +623,7 @@ export const TOUR_SCRIPT = `
     const visible = new Set(sc.ids)
     root.classList.toggle('still', Boolean(sc.still))
     for (const [id, el] of Object.entries(NODES)) el.classList.toggle('out', !visible.has(id))
-    draw(visible, sc.wf)
+    draw(visible, sc.wf, sc.motion)
 
     // Fit the camera to what is in frame — the whole reason a scene is a set of
     // nodes rather than a highlight over one fixed picture.
@@ -653,7 +683,7 @@ export const TOUR_SCRIPT = `
   // A CSS media query cannot reach SMIL, so reduced motion has to stop the
   // comets explicitly or they keep running for the reader who asked them not to.
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    root.classList.add('still')
+    root.classList.add('quiet')
     try { svg.pauseAnimations() } catch (error) { /* older engines: CSS still honours the query */ }
   }
   go(0)
