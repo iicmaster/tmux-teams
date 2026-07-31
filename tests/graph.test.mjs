@@ -161,12 +161,13 @@ test('the controller team is the head of every route, and never escalates to its
   assert.equal(passed.length, 1, 'one line out of the audit, not one per route')
   assert.equal(passed[0].from, control)
 
-  // One pair per delivery team — down and back — and that is the entire wiring.
+  // Every delivery team can interrupt the controller, route or no route.
   const delivery = DEFAULT_WORKFLOW_GRAPH.teams.length - 1
-  assert.equal(tour.edges.filter((e) => e.kind === 'send').length, delivery)
-  assert.equal(tour.edges.filter((e) => e.kind === 'back').length, delivery)
+  assert.equal(tour.edges.filter((e) => e.kind === 'escalate').length, delivery)
   for (const edge of tour.edges.filter((e) => e.kind === 'send')) assert.equal(edge.from, control)
-  for (const edge of tour.edges.filter((e) => e.kind === 'back')) assert.equal(edge.to, control)
+  for (const edge of tour.edges.filter((e) => e.kind === 'audit')) assert.equal(edge.to, control)
+  // Work crosses between teams directly, which is what the pull controller does.
+  assert.ok(tour.edges.some((e) => e.kind === 'pull'))
 })
 
 test('an edge only hardens once evidence exists for it', () => {

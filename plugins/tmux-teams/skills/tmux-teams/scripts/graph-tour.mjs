@@ -170,15 +170,12 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
     // team escalating to itself would be a line that means nothing. The old
     // page drew that line, because it drew oversight before the controller had
     // a team to belong to.
-    // TWO lines between the controller and every team, and that is the whole
-    // wiring of the board: one down, one back. There are no team → team lines
-    // at all, because a workflow is not a different set of connections — it is
-    // the same connections used in a different order. Drawing each route as its
-    // own family of edges stated one relationship three times in three
-    // patterns, and made changing scene look like the wiring had changed.
+    // Every team can interrupt the controller at any moment, so this line exists
+    // for all of them whether or not any route ends there. It is the one that
+    // crawls: an escalation is a condition, not a handover, and nothing travels
+    // along it — the token stays where it is stuck while a person is asked.
     if (controlId && !isControl) {
-      edges.push({ from: `team:${controlId}`, to: teamNodeId, kind: 'send', solid: true })
-      edges.push({ from: teamNodeId, to: `team:${controlId}`, kind: 'back', solid: true })
+      edges.push({ from: teamNodeId, to: `team:${controlId}`, kind: 'escalate', solid: true })
     }
   }
 
@@ -202,16 +199,47 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
   // every time — work the controller has read and passed.
   if (controlId) edges.push({ from: `team:${controlId}`, to: 'delivered', kind: 'passed', solid: true })
 
+  // How work actually travels, which is not the same as who has authority over
+  // it. `pull-controller` hands a token from one team to the next directly —
+  // the RECEIVING team pulls it when it has room — so that handover is a line
+  // between two teams, not a trip back through the controller.
+  //
+  // Each of these is derived from the routes and then DEDUPED: two workflows
+  // that both run development → qa share one line, because it is one
+  // relationship. That is what keeps a route an order over the wiring rather
+  // than wiring of its own.
+  const seenEdge = new Set()
+  const addOnce = (from, to, kind) => {
+    const key = `${from}>${to}>${kind}`
+    if (seenEdge.has(key)) return
+    seenEdge.add(key)
+    edges.push({ from, to, kind, solid: true })
+  }
+  for (const workflow of graph.workflows) {
+    const legs = workflow.route.filter((teamId) => teamId !== controlId)
+    if (!legs.length) continue
+    // In: the controller admits work to the first team on the route.
+    if (controlId) addOnce(`team:${controlId}`, `team:${legs[0]}`, 'send')
+    // Across: the next team pulls from the one before it.
+    for (let i = 1; i < legs.length; i += 1) {
+      addOnce(`team:${legs[i - 1]}`, `team:${legs[i]}`, 'pull')
+    }
+    // Out: the finished route goes back for the audit. Separate from escalate
+    // on purpose — one is "this is done, read it", the other is "I am stuck".
+    if (controlId) addOnce(`team:${legs[legs.length - 1]}`, `team:${controlId}`, 'audit')
+  }
+
   // A route is an ORDER over the wiring above, never wiring of its own. This is
   // the sequence a token takes — down to a team, back to control, down to the
   // next — and it exists only to animate. It adds no edge to the board.
   const orderOf = (workflow) => {
-    const trip = []
-    for (const teamId of workflow.route) {
-      if (teamId === controlId) continue
-      trip.push(`team:${controlId}>team:${teamId}>send`)
-      trip.push(`team:${teamId}>team:${controlId}>back`)
+    const legs = workflow.route.filter((teamId) => teamId !== controlId)
+    if (!legs.length) return []
+    const trip = [`team:${controlId}>team:${legs[0]}>send`]
+    for (let i = 1; i < legs.length; i += 1) {
+      trip.push(`team:${legs[i - 1]}>team:${legs[i]}>pull`)
     }
+    trip.push(`team:${legs[legs.length - 1]}>team:${controlId}>audit`)
     trip.push(`team:${controlId}>delivered>passed`)
     return trip
   }
@@ -366,8 +394,14 @@ export const TOUR_CSS = `
 .w-judge{stroke:var(--artifact);opacity:.55}
 .w-reject{stroke:var(--reject);stroke-dasharray:4 4;opacity:.5}
 .w-owns{stroke:var(--line)}
-.w-send{stroke:var(--handoff);stroke-width:2.4;opacity:.75}
-.w-back{stroke:var(--oversight);stroke-width:2;stroke-dasharray:7 4;opacity:.7}
+.w-send{stroke:var(--handoff);stroke-width:2.4;opacity:.8}
+.w-pull{stroke:var(--handoff);stroke-width:2.4;opacity:.8}
+.w-audit{stroke:var(--ok);stroke-width:2.2;opacity:.8}
+/* Escalation is a CONDITION, not a handover: nothing travels it, so it is
+   dashed and crawls exactly like rework inside a team. Both mean the same
+   thing — work that cannot move on its own. */
+.w-escalate{stroke:var(--oversight);stroke-width:1.8;stroke-dasharray:5 5;opacity:.5}
+.tour:not(.still) .w-escalate{animation:tourFlow 1.1s linear infinite}
 .w-admit{stroke:var(--ink);stroke-width:2.4;opacity:.75}
 .w-route0{stroke:var(--handoff);stroke-width:2.6;opacity:.8}
 .w-route1{stroke:var(--warn);stroke-width:2.6;opacity:.8;stroke-dasharray:9 5}
@@ -483,7 +517,9 @@ export const TOUR_SCRIPT = `
     reject: -46, judge: 18, assign: 30, owns: 0, admit: 0,
     // Down and back share two endpoints, so they must bow apart or they land on
     // the same pixels and the board looks like it has half the wiring it has.
-    send: -30, back: 30, passed: 0,
+    // Escalation and audit both run team → controller, so they must bow apart
+    // or the two meanings land on the same pixels.
+    send: 0, pull: 0, audit: 34, escalate: -46, passed: 0,
   }
   const NS = 'http://www.w3.org/2000/svg'
   // FNV-1a, 0..1. Deterministic on purpose: the same edge desyncs the same way

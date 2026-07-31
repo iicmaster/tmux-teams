@@ -123,25 +123,42 @@ test('the sink counts audited work, and only audited work', () => {
   assert.match(some.world.delivered.state, /3 audited/)
 })
 
-test('the whole board is one send/back pair per team, and nothing between teams', () => {
+test('every team can interrupt the controller, whatever any route says', () => {
   const { edges } = buildTour(CONTROLLED)
   const delivery = CONTROLLED.teams.filter((t) => t.team_id !== 'control')
-  const send = edges.filter((e) => e.kind === 'send')
-  const back = edges.filter((e) => e.kind === 'back')
-  assert.equal(send.length, delivery.length)
-  assert.equal(back.length, delivery.length)
-  for (const edge of send) assert.equal(edge.from, 'team:control')
-  for (const edge of back) assert.equal(edge.to, 'team:control')
-  // Never reflexive: control sending to itself is a line that means nothing.
-  for (const edge of [...send, ...back]) {
-    assert.notEqual(edge.from === 'team:control' && edge.to === 'team:control', true)
+  const escalate = edges.filter((e) => e.kind === 'escalate')
+  assert.equal(escalate.length, delivery.length, 'one per team, route or no route')
+  for (const edge of escalate) {
+    assert.equal(edge.to, 'team:control')
+    assert.notEqual(edge.from, 'team:control', 'control escalating to itself means nothing')
   }
-  // And NOTHING joins two delivery teams. A workflow is an order over this
-  // wiring, not wiring of its own — which is what lets a route scene hide teams
-  // and change nothing else.
-  const teamIds = new Set(delivery.map((t) => `team:${t.team_id}`))
-  const between = edges.filter((e) => teamIds.has(e.from) && teamIds.has(e.to))
-  assert.deepEqual(between, [])
+})
+
+test('a handover between teams is one line, however many routes use it', () => {
+  const { edges } = buildTour(CONTROLLED)
+  // `pull-controller` hands a token straight from one team to the next — the
+  // RECEIVING team pulls it when it has room — so that is a line between two
+  // teams, not a trip back through the controller.
+  const pulls = edges.filter((e) => e.kind === 'pull')
+  assert.ok(pulls.length > 0, 'work moves between teams')
+  const keys = pulls.map((e) => `${e.from}>${e.to}`)
+  assert.equal(new Set(keys).size, keys.length, 'two routes sharing a handover share its line')
+  for (const edge of pulls) {
+    assert.notEqual(edge.from, 'team:control')
+    assert.notEqual(edge.to, 'team:control')
+  }
+})
+
+test('finishing a route and being stuck are different lines', () => {
+  const { edges } = buildTour(CONTROLLED)
+  const audit = edges.filter((e) => e.kind === 'audit')
+  const escalate = edges.filter((e) => e.kind === 'escalate')
+  // Both run team → controller, and collapsing them would make "this is done,
+  // read it" indistinguishable from "I cannot move this".
+  for (const edge of audit) assert.equal(edge.to, 'team:control')
+  const ends = new Set(CONTROLLED.workflows.map((w) => `team:${w.route[w.route.length - 1]}`))
+  assert.deepEqual(new Set(audit.map((e) => e.from)), ends, 'only the last team on a route audits')
+  assert.ok(escalate.length > audit.length, 'more teams can be stuck than can finish a route')
 })
 
 test('a route is an order over existing wires, adding none', () => {
@@ -153,9 +170,11 @@ test('a route is an order over existing wires, adding none', () => {
     for (const key of order) {
       assert.ok(wires.has(key), `${key} is a wire the board already has`)
     }
-    // Down and back for every team on the route, then out through the audit.
+    // In, then one pull per further team, then the audit, then the sink.
     const teams = workflow.route.filter((teamId) => teamId !== 'control')
-    assert.equal(order.length, teams.length * 2 + 1)
+    assert.equal(order.length, teams.length + 2)
+    assert.match(order[0], /^team:control>.*>send$/)
+    assert.match(order[order.length - 2], />team:control>audit$/)
     assert.equal(order[order.length - 1], 'team:control>delivered>passed')
   }
 })
@@ -178,12 +197,11 @@ test('a route returns through the audit before anything is delivered', () => {
   const { edges, orders } = buildTour(CONTROLLED)
   for (const workflow of CONTROLLED.workflows) {
     const order = orders[workflow.workflow_id]
-    // Every visit is a pair: down to the team, back to the controller. Work is
-    // never handed team to team without the controller seeing it.
-    for (let i = 0; i < order.length - 1; i += 2) {
-      assert.match(order[i], /^team:control>/, 'each leg starts at the controller')
-      assert.match(order[i + 1], />team:control>back$/, 'and returns to it')
-    }
+    // Admitted by the controller, pulled team to team, then back for the audit
+    // before anything is delivered.
+    assert.match(order[0], /^team:control>.*>send$/)
+    for (const key of order.slice(1, -2)) assert.match(key, />pull$/)
+    assert.match(order[order.length - 2], />team:control>audit$/)
     assert.equal(order[order.length - 1], 'team:control>delivered>passed')
   }
   // Exactly ONE line leaves the audit for the sink: what crosses it is the same
