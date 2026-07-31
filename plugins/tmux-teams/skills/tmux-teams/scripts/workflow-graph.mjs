@@ -80,12 +80,16 @@ const team = (id, name) => ({
 // evaluator are separate seats on purpose, because the controller cannot be its
 // own gate: the dispatcher grills an incoming request until nothing has to be
 // guessed, and the evaluator reads the finished delivery as a whole.
+// The three seat names come from `references/controller-as-team.md` §4 and are
+// not free to drift: `pm_intake` grills, `pm_outer_loop` unsticks, `pm_audit`
+// reads the finished delivery. An ordinary team's dispatcher admits work to
+// that TEAM; this one admits work to the SYSTEM.
 const controlTeam = (controllerId) => ({
   team_id: 'control',
   name: 'Control',
-  dispatcher_id: 'control_dispatcher',
+  dispatcher_id: 'pm_intake',
   worker_ids: [controllerId],
-  evaluator_id: 'control_evaluator',
+  evaluator_id: 'pm_audit',
   models: { dispatcher: TEMPLATE_MODEL, worker: TEMPLATE_MODEL, evaluator: TEMPLATE_MODEL },
 })
 

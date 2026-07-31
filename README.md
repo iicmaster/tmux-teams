@@ -379,8 +379,10 @@ never executed automatically. See
 The canonical offline bundle contains `<repo>/.tmux-teams/pulse.json`,
 `pulse.html`, `graph.html`, `kanban.html`, and their sibling
 `pulse-fonts-<sha256>.css` and `pulse-refresh-<sha256>.js`. The stylesheet
-contains the bundled Kanit WOFF2 data URLs. Every page is plain document flow
-with static SVG — no charting library is vendored or loaded. The shared assets
+contains the bundled Kanit WOFF2 data URLs. `graph.html` draws its board from a
+JSON block in the page with a small inline script — pan, wheel-zoom and one
+scene per workflow; the other pages are plain document flow. No charting library
+is vendored or loaded. The shared assets
 are atomically published before the JSON and HTML pages and are not rewritten
 when their content is unchanged. No view loads a remote asset; while served,
 the refresh script polls only same-origin siblings. Keep every named sibling
@@ -392,7 +394,12 @@ readers can reject a mixed/partial publish
 by validating those hashes and re-reading the marker after the files.
 
 `graph.html` answers who exists and how the loop is wired. Every declared agent
-appears exactly once inside its team; workflows are separate team-level routes.
+appears exactly once inside its team — including the outer controller, which
+holds the single worker seat on its own control team and so is drawn once rather
+than as a band of its own. The board opens whole, then walks one workflow at a
+time: teams a route does not use fade out and keep their place, so a team a
+route SKIPS never reads as a team that is not there. It needs JavaScript; the
+same declaration is in `graph.json` and the same evidence in `pulse.json`.
 The governing contract requires each node to state the same five facts: agent
 id; role, lane and transport; verified model or `unverified`; ledger-recorded
 work; and a measured clock or `not started`. The declared model is the model

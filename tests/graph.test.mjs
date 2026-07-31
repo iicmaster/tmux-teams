@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
-  DEFAULT_WORKFLOW_GRAPH, readWorkflowGraph, renderGraphPage, renderLoopGraphSvg,
+  DEFAULT_WORKFLOW_GRAPH, readWorkflowGraph, renderGraphPage,
   activityByAgent,
 } from '../plugins/tmux-teams/skills/tmux-teams/scripts/graph.mjs'
 import { readWorkItems } from '../plugins/tmux-teams/skills/tmux-teams/scripts/dispatch-facts.mjs'
@@ -102,76 +102,106 @@ test('a route never revisits a team — work goes back by rejection, not routing
 })
 
 // ── the drawing ──────────────────────────────────────────────────────────────
+//
+// The page draws itself from a JSON block, so these read that block rather than
+// grep an SVG string: it is the same data the browser gets, and an assertion
+// against it cannot pass because some unrelated markup happened to match.
+
+const tourOf = (graph, snapshot = snapshotWith()) => {
+  const page = renderGraphPage(repoWith(graph), snapshot)
+  const block = page.match(/<script type="application\/json" data-tour-data>([\s\S]*?)<\/script>/)
+  assert.ok(block, 'the page ships no tour data at all')
+  return JSON.parse(block[1])
+}
+const wire = (tour, from, to, kind) =>
+  tour.edges.find((e) => e.from === from && e.to === to && e.kind === kind)
 
 test('a team shared by two workflows is still drawn once, with every agent', () => {
-  const graph = graphOf(TWO_TEAMS)
-  const svg = renderLoopGraphSvg(graph, snapshotWith())
-  const declared = graph.teams.flatMap((entry) => entry.agents.map((agent) => agent.agent_id))
+  const tour = tourOf(TWO_TEAMS)
+  const declared = graphOf(TWO_TEAMS).teams.flatMap((entry) => entry.agents.map((a) => a.agent_id))
   assert.equal(declared.length, 7)
   for (const agentId of declared) {
-    assert.equal((svg.match(new RegExp(`>${agentId}<`, 'g')) || []).length, 1, `${agentId} drawn once`)
+    assert.ok(tour.world[agentId], `${agentId} is on the board`)
   }
+  // `world` is keyed by agent id, so a duplicate could only appear as a second
+  // node carrying the same title — which is exactly how the controller used to
+  // be drawn twice, once as a band and once as a worker card.
+  // The controller in this fixture holds no team seat, so it is not on the
+  // board at all — and the page has to say that out loud rather than draw a
+  // board that silently has no way in.
+  assert.equal(tour.world.pm, undefined)
+  assert.match(renderGraphPage(repoWith(TWO_TEAMS), snapshotWith()),
+    /The controller <code>pm<\/code> holds no team seat/)
 })
 
-test('the PM outer loop rail spans every team, including the first', () => {
-  const graph = graphOf(TWO_TEAMS)
-  const svg = renderLoopGraphSvg(graph, snapshotWith())
-  const rail = svg.match(/class="edge k-oversight e-dashed" d="M (\d+(?:\.\d+)?) \d+ H (\d+(?:\.\d+)?)"/)
-  assert.ok(rail, 'horizontal oversight rail present')
-  const drops = [...svg.matchAll(/class="edge k-oversight e-dashed" d="M (\d+(?:\.\d+)?) \d+ V/g)]
-    .map(([, at]) => Number(at))
-  assert.equal(drops.length, graph.teams.length + 1, 'one drop per team, plus the stem from the PM band')
-  const [, from, to] = rail.map(Number)
-  for (const at of drops.slice(1)) {
-    assert.ok(at >= from - 1 && at <= to + 1, `${at} sits on the rail`)
+test('the controller is one node — never a node and a band as well', () => {
+  const tour = tourOf(DEFAULT_WORKFLOW_GRAPH)
+  const seat = DEFAULT_WORKFLOW_GRAPH.outer_controller_id
+  const named = Object.values(tour.world).filter((n) => n.id === seat || n.title === seat)
+  assert.equal(named.length, 1, 'the same seat named twice is still one seat')
+  assert.equal(tour.world[seat].kind, 'controller')
+})
+
+test('the controller team is the head of every route, and never escalates to itself', () => {
+  const tour = tourOf(DEFAULT_WORKFLOW_GRAPH)
+  const control = 'team:control'
+  assert.ok(tour.world[control], 'the control team is on the board')
+  assert.ok(wire(tour, 'request', control, 'admit'), 'work enters through the front door')
+
+  const escalations = tour.edges.filter((e) => e.kind === 'escalate')
+  assert.equal(escalations.length, DEFAULT_WORKFLOW_GRAPH.teams.length - 1,
+    'every team escalates to control except control')
+  for (const edge of escalations) {
+    assert.equal(edge.to, control)
+    assert.notEqual(edge.from, control, 'oversight of itself is a line that means nothing')
   }
 })
 
 test('an edge only hardens once evidence exists for it', () => {
-  const graph = graphOf(TWO_TEAMS)
-  const dry = renderLoopGraphSvg(graph, snapshotWith())
-  assert.doesNotMatch(dry, /class="edge k-assign e-solid"/)
-  const live = renderLoopGraphSvg(graph, snapshotWith([run('b_w1', 'running')]))
-  assert.match(live, /class="edge k-assign e-solid"/)
-  // Rework stays dashed until a rejection is actually recorded.
-  assert.doesNotMatch(live, /class="edge k-reject e-solid"/)
+  const dry = tourOf(TWO_TEAMS)
+  assert.equal(wire(dry, 'b_d', 'b_w1', 'assign').solid, false)
+
+  // A dispatch was observed on this worker, so the assignment is now a record.
+  // The handover to the evaluator is not: that leg is still running.
+  const live = tourOf(TWO_TEAMS, snapshotWith([run('b_w1', 'running')]))
+  assert.equal(wire(live, 'b_d', 'b_w1', 'assign').solid, true)
+  assert.equal(wire(live, 'b_w1', 'b_e', 'judge').solid, false)
+  assert.equal(wire(live, 'b_e', 'b_w1', 'reject').solid, false)
+
   // A verdict is recorded against the leg that was JUDGED — the worker's — so
   // that is what hardens this team's rework edge and fills its evaluator's
   // counter. Keying either off the evaluator's own id is why the page read
   // `0 pass 0 reject` no matter how much reviewing had happened.
-  const rejected = renderLoopGraphSvg(graph, snapshotWith([run('b_w1', 'running')],
-    [{ agent_id: 'b_w1', pm_verdict: 'reject' }]))
-  assert.match(rejected, /class="edge k-reject e-solid"/)
-  assert.match(rejected, /0 pass 1 reject/)
+  const rejected = tourOf(TWO_TEAMS,
+    snapshotWith([run('b_w1', 'running')], [{ agent_id: 'b_w1', pm_verdict: 'reject' }]))
+  assert.equal(wire(rejected, 'b_e', 'b_w1', 'reject').solid, true)
+  assert.match(rejected.world.b_e.state, /0 pass 1 reject/)
+  // Rework is a team fact, so the other team's edge must not harden with it.
+  assert.equal(wire(rejected, 'v_e', 'v_w1', 'reject').solid, false)
 })
 
 test('the outer controller states the same facts as every other agent', () => {
-  const graph = graphOf(TWO_TEAMS)
-
   // The PM band was hand-drawn instead of going through the node renderer, so
   // every fact line added to agents later — lane, model, clock, status — never
   // reached it. It showed an id and a sentence, which is a label, not evidence.
-  const idle = renderLoopGraphSvg(graph, snapshotWith())
-  assert.match(idle, /OUTER · — · model —/, 'the controller must state lane and model like anyone else')
+  const seat = DEFAULT_WORKFLOW_GRAPH.outer_controller_id
+  const idle = tourOf(DEFAULT_WORKFLOW_GRAPH).world[seat]
+  assert.ok(idle, 'the controller is a node like anyone else')
+  assert.ok(idle.lines.some((line) => /· —$/.test(line)), 'it states its lane')
+  assert.ok(idle.lines.some((line) => line.startsWith('model ')), 'it states its model')
 
   // And a state in its own words. For an exception handler, nothing to do is the
   // correct state and good news; reporting it exactly like an agent that was
   // never wired up is what made this node read as dead.
-  assert.match(idle, /watching — no exception open/)
-  assert.match(idle, /class="node n-watching"/)
-  assert.doesNotMatch(idle, /<title>pm — no dispatch observed<\/title>/)
+  assert.equal(idle.state, 'watching — no exception open')
+  assert.equal(idle.status, 'watching')
 
-  const parked = renderLoopGraphSvg(graph, snapshotWith(), new Map(), undefined, new Map([['tok', {
-    work_item: 'tok', workflow: 'feature',
-    custody: [{ at: '2026-07-27T01:00:00.000Z', event: 'escalated', work_item: 'tok', agent_id: 'pm', to_team: 'build' }],
-  }]]))
-  assert.match(parked, /1 token\(s\) parked — awaiting a decision/)
-
-  const ran = renderLoopGraphSvg(graph, snapshotWith([run('pm', 'running', { elapsed_sec: 90 })]))
-  assert.match(ran, /OUTER · claude · acp/)
-  assert.match(ran, /1m in progress/, 'the controller must state a measured clock')
-  assert.match(ran, /reviewing the board now/)
-  assert.match(ran, /class="node n-working"/)
+  const ran = tourOf(DEFAULT_WORKFLOW_GRAPH,
+    snapshotWith([run(seat, 'running', { elapsed_sec: 90 })])).world[seat]
+  assert.ok(ran.lines.some((line) => line.includes('claude · acp')), 'it states a measured lane')
+  assert.ok(ran.lines.some((line) => line.includes('1m in progress')), 'it states a measured clock')
+  assert.equal(ran.state, 'reviewing the board now')
+  assert.equal(ran.status, 'working')
 })
 
 // ── loop health ──────────────────────────────────────────────────────────────

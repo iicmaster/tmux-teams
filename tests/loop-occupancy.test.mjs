@@ -1031,9 +1031,11 @@ test('the published loop graph can actually load the refresh script it names', (
     assert.equal(marker.files.refresh_js.sha256, createHash('sha256').update(source).digest('hex'))
 
     // Every hook that script reaches for. A missing one is a control that looks
-    // live and does nothing.
+    // live and does nothing. The loop body was empty until 2026-07-31, so this
+    // list has been iterated and discarded on every run since it was written.
     for (const hook of ['meta name="tmux-teams-snapshot-id"', 'data-observation-expires-at',
       'data-refresh-toggle', 'data-refresh-status']) {
+      assert.ok(html.includes(hook), `the refresh script reaches for ${hook}, which the page never renders`)
     }
   } finally { rmSync(store.replace(/\/\.tmux-teams$/, ''), { recursive: true, force: true }) }
 })
