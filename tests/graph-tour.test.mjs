@@ -211,11 +211,11 @@ test('the tour opens on the whole board, then walks one route at a time', () => 
 
 test('the opening scene is still, and every route scene moves', () => {
   const { scenes } = buildTour(CONTROLLED)
-  // "Still" stops the dash crawl, which would otherwise be noise across the
-  // whole board at once. It does NOT mean nothing moves: the opening scene
-  // still runs one comet down the primary route, which is the shape of the work.
+  // The opening scene has NOTHING moving: no dash crawl, and no route to send
+  // a token down either. Motion means something only once everything else is
+  // holding still, and this is the scene everything else is read against.
   assert.equal(scenes[0].still, true)
-  assert.equal(scenes[0].motion, CONTROLLED.workflows[0].workflow_id)
+  assert.equal(scenes[0].motion, null)
   for (const scene of scenes.slice(1)) {
     assert.notEqual(scene.still, true)
     assert.equal(scene.motion, scene.wf, 'a route scene animates its own route')

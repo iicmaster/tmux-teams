@@ -228,12 +228,13 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
   }
   const everything = Object.keys(world)
 
-  // Scene 0 is deliberately still. It answers "who exists", and a board where
-  // everything is moving cannot also say which parts are moving — motion only
-  // means something once something else is holding still.
-  const primary = graph.workflows[0]?.workflow_id ?? null
+  // Scene 0 does not move at all: no crawl, and no token either. It answers
+  // "who exists", and a board where anything is moving cannot also say which
+  // parts move — motion means something only once everything else holds still.
+  // Carrying one token here was the complicated way to say that; giving the
+  // scene no route to animate is the simple one.
   const scenes = [{
-    id: 'all', wf: null, kicker: 'The board', still: true, motion: primary,
+    id: 'all', wf: null, kicker: 'The board', still: true, motion: null,
     title: 'Every team, drawn once',
     caption: `${graph.teams.length} team(s) as a reusable pool · ${graph.workflows.length} route(s) over them`
       + ' · press → for one route at a time.',
