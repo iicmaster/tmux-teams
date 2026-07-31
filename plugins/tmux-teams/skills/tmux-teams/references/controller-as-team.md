@@ -1,8 +1,15 @@
 # Design — the controller is a team, and work enters through it
 
-**Status: DESIGNED, NOT BUILT (2026-07-31).** No code implements any of this.
-The contract's §4.6 still describes what the runtime does today: an operator
-writes `opened` straight at a delivery team. This document is the design that
+**Status: PARTLY BUILT on branch `poc/controller-as-team` (2026-07-31).** `main`
+is untouched and still ships v0.10.0, where an operator writes `opened` straight
+at a delivery team.
+
+Built and proved by `tests/controller-team.test.mjs` against the real `tick()`:
+the controller as a team derived from `route[0]` with WIP 1 (§3), admission
+through it and out as an ordinary pull (§4), the grill's three answers and its
+six categories (§5), `questioned`/`answered` with the human-actor rule (§6), the
+answer deadline as an option rather than a constant, and the withdrawal notice
+(§6.3). Not built: the intake statistics (§9). This document is the design that
 replaces it, written to be complete enough to build from and to be argued with
 before anyone builds it.
 

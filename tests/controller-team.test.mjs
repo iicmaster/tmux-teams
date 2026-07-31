@@ -296,3 +296,20 @@ test('silence expires the request and frees the queue', () => {
   assert.equal(counts.get('control'), 0)
   assert.ok(admit(dir, 'token-2').ok)
 })
+
+test('the controller always says the last word, and it says three things', () => {
+  const dir = makeRepo()
+  const spawnLeg = grillingDriver()
+  assert.ok(admit(dir, 'token-1').ok)
+  quietTick(dir, spawnLeg)
+  quietTick(dir, spawnLeg)
+  quietTick(dir, spawnLeg, { answerDeadlineSec: 0 })
+
+  const notice = readFileSync(join(dir, '.tmux-teams', 'notices', 'token-1.md'), 'utf8')
+  // 1 · what happened, 2 · which questions went unanswered, 3 · it can come back.
+  assert.match(notice, /withdrawn/)
+  assert.match(notice, /who is the target customer/)
+  assert.match(notice, /send the request whenever/)
+  // Not a rejection, and it says so: the person is being told to come back.
+  assert.match(notice, /Nothing here is a rejection/)
+})

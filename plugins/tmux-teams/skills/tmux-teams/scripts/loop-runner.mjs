@@ -257,7 +257,7 @@ const awaitingAudit = (item) => {
 
 // ── briefs ───────────────────────────────────────────────────────────────────
 
-function composeBrief(repo, graph, plan, item, scratchDir) {
+function composeBrief(repo, graph, plan, item, scratchDir, answerDeadlineSec = ANSWER_DEADLINE_SEC) {
   const { team, role } = plan
   const parts = []
 
@@ -284,6 +284,18 @@ function composeBrief(repo, graph, plan, item, scratchDir) {
         + `${refusal.event === 'returned' ? 'The receiving team refused the handoff' : 'Your team evaluator rejected it'}: `
         + `${refusal.reason || 'no reason was stated'}\n`)
     }
+  } else if (role === 'dispatcher' && team.team_id === graph.controller_team) {
+    // The system's front door, not a team's. It judges a REQUEST rather than a
+    // handoff, it may ask instead of only taking or refusing, and it is the one
+    // brief in this system addressed at a person on the other side of an agent.
+    parts.push(roleBrief(repo, 'grill', team.team_id, {
+      workItem: item.work_item,
+      route: graph.workflows.map((entry) => `${entry.workflow_id} (${entry.route.join(' → ')})`).join(', '),
+      // An absolute time, not "you have ten minutes": it needs no page to
+      // render it and cannot drift the way a duration read late does. The
+      // operator relaying this renders it in the reader's own zone (§6.4).
+      deadlineText: new Date(Date.now() + answerDeadlineSec * 1000).toISOString().slice(11, 16) + ' UTC',
+    }))
   } else if (role === 'dispatcher') {
     const workflow = graph.workflows.find((entry) => entry.workflow_id === item.workflow)
     // Either arrival carries the context the dispatcher is judging: a `pulled`
@@ -607,7 +619,7 @@ function nextStep(graph, team, item, { busy, nowMs, zombieSec, answerDeadlineSec
     const waitedSec = (nowMs - Date.parse(last.at || '')) / 1000
     if (Number.isFinite(waitedSec) && waitedSec >= answerDeadlineSec) {
       return {
-        action: 'expired', agent_id: last.agent_id,
+        action: 'expired', agent_id: last.agent_id, questions: last.questions,
         reason: `no answer in ${Math.round(answerDeadlineSec / 60)} minute(s) — the request is withdrawn and the queue is freed.`
           + ` Unanswered: ${last.questions}`,
       }
@@ -835,6 +847,38 @@ function dispatch(repo, { workItem, team, role, agentId, workflow, model }, brie
   return taskId
 }
 
+// A message for the person, not for the loop. Three things, because "timed out"
+// alone satisfies the rule and teaches them nothing: what happened, WHICH
+// questions went unanswered so they know what to prepare, and that the door is
+// open again whenever they are.
+export const NOTICE_DIR = 'notices'
+function writeNotice(repo, workItem, questions, reason) {
+  try {
+    const dir = join(repo, '.tmux-teams', NOTICE_DIR)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, `${workItem}.md`), [
+      `# Your request \`${workItem}\` was withdrawn`,
+      '',
+      reason,
+      '',
+      '## What went unanswered',
+      '',
+      questions || 'the intake gate recorded no questions, which is itself a defect worth reporting',
+      '',
+      '## Sending it again',
+      '',
+      'Nothing here is a rejection. The queue is free again — send the request whenever you have',
+      'those answers ready, and it will go straight back through the same gate.',
+      '',
+    ].join('\n'), { mode: 0o600 })
+  } catch (error) {
+    // Failing to write the notice must not stop the token being closed: the
+    // ledger line is what frees the queue, and a queue held open by a failed
+    // file write would be a worse outcome than an unsent message.
+    log(`WARN   could not write the withdrawal notice for ${workItem}: ${error.message}`)
+  }
+}
+
 const heldCount = (occupancy) => [...occupancy.held.values()].flat().length
 
 // `spawnLeg` is the only seam in this function, and it exists for one reason:
@@ -944,6 +988,12 @@ export function tick(repoArg, {
     if (plan.action === 'expired') {
       log(`EXPIRED ${plan.work_item}: ${plan.reason}`)
       if (apply) {
+        // The controller always says the last word (§6.3). A conversation that
+        // ends in silence is unreadable from the other side: the person cannot
+        // tell whether their request lapsed or the gate is still thinking. The
+        // ledger line is the durable half; this is the half addressed AT them,
+        // for the operator to relay into the chat they are actually reading.
+        writeNotice(repo, plan.work_item, plan.questions, plan.reason)
         record(repo, {
           at: new Date().toISOString(), event: 'abandoned', work_item: plan.work_item,
           workflow: items.get(plan.work_item).workflow || null,
@@ -975,7 +1025,7 @@ export function tick(repoArg, {
     }
     const item = items.get(plan.work_item)
     const team = graph.value.teams.find((entry) => entry.team_id === plan.team)
-    const brief = composeBrief(repo, graph.value, { team, role: plan.role }, item, briefDir)
+    const brief = composeBrief(repo, graph.value, { team, role: plan.role }, item, briefDir, answerDeadlineSec)
     if (!brief.path) { log(`skip   ${plan.work_item}: ${brief.reason}`); continue }
     const model = declaredModel(graph.value, plan.team, plan.agent_id)
     // Two different facts, said differently: a name the dispatch will hold the

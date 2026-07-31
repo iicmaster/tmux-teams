@@ -284,6 +284,31 @@ whether a team sent it. A reader that knows one and not the other strands the
 token — the runner reports nothing to do while the board draws it waiting
 forever.
 
+### 4.7 A token blocked on a person — `questioned` / `answered`
+
+**Implemented on branch `poc/controller-as-team` 2026-07-31; not on `main`.**
+
+Every other state in this system waits on an agent or on the loop. These two
+wait on a PERSON, and that needed a word of its own for a concrete reason: with
+no state to park in, the runner sees a token sitting at a dispatcher and
+re-dispatches that dispatcher every tick, paying repeatedly to ask a question of
+somebody who has not replied.
+
+- `questioned` carries `agent_id` (who asked), `questions` (what was asked) and
+  `reason`. It does not release the team — the token is still held, still
+  counted against WIP (§6). **The runner never dispatches on it.**
+- `answered` carries `to_team` and `reason`, and is **the only event whose actor
+  KIND is part of its validity**: it must be written by a `human:` actor or the
+  writer refuses the line. §2 accepts attestations from no other role, and this
+  is the gate whose subject is a person. An operator agent may relay the words
+  and then names itself in `relayed_by` — the actor says who DECIDED.
+- `to_team` on `answered` is not decoration. §6 places a token by its last
+  event's `agent_id` or `to_team`, and a person is neither, so an answer without
+  it would orphan the token the moment somebody replied.
+- A `questioned` token that goes unanswered past the answer deadline is closed
+  with `abandoned` by the RUNNER (§9), and the controller writes a withdrawal
+  notice naming the unanswered questions.
+
 ## 5. State machine
 
 One token, keyed on its last event and the role of the actor.
@@ -366,6 +391,25 @@ being enforced.
   see §14.2 item 2, where the board's failure to draw it is a live defect.
 - No next team on the route → `completed`.
 
+### 7.1 The controller team releases on `intake`, not on `reviewed`
+
+**Branch `poc/controller-as-team` only.** A delivery team releases work when its
+evaluator passes an artifact. The controller team has no artifact to review —
+admission is the claim that a REQUEST is workable, and its dispatcher's gate is
+what decides that. So `planPulls` treats `intake` `accept` at the controller
+team as ready-to-pull, and the first delivery leg of every route becomes an
+ordinary `pulled` with a real `from_team`.
+
+The controller's worker is never dispatched during a healthy admission. It
+exists for the other job (§9), and paying a leg to do nothing would also hold
+the controller's single WIP slot while doing it.
+
+**The front door obeys the WIP limit.** `opened` is the one arrival that is not
+a pull, so nothing enforced §6 there until `admit.mjs` existed: two requests
+landed on a WIP-1 controller and occupancy read 2. Admission now counts through
+the same placement rule everything else uses and is refused while the controller
+is full — a queue, not a rejection.
+
 ## 8. Quality gates
 
 Two layers, both mandatory.
@@ -437,8 +481,13 @@ Parsing rules, non-negotiable:
 - `resume` returns the token to its team and grants a fresh attempt budget.
   Attempts made before the controller looked do not count, or resume would
   re-escalate on the very next tick.
-- `abandon` closes the token honestly. It is the only mechanised writer of
-  `abandoned`.
+- `abandon` closes the token honestly. It was the only mechanised writer of
+  `abandoned` until 2026-07-31, when the answer deadline gave it a second: the
+  RUNNER closes a `questioned` token nobody answered in time (§4.7, branch
+  `poc/controller-as-team`). Two writers, one word — `actor` already tells them
+  apart, and a reader asking how a token ended wants one word to search for
+  rather than two. The runner also writes the withdrawal notice, because a
+  conversation that ends in silence is unreadable from the person's side.
 
 ## 10. Budgets and ceilings
 
