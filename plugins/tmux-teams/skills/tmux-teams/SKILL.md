@@ -59,6 +59,39 @@ JSON
 node <skill-root>/scripts/ledger-validate.mjs --repo <repo>
 ```
 
+### When the graph routes work through a controller team
+
+A graph whose `outer_controller_id` is the single worker of a team makes that
+team the front door: every route starts there, and admission goes through it
+rather than at a delivery team. Use `admit.mjs` instead of writing `opened` by
+hand — it is the only writer that enforces the front door's WIP limit, which
+`ledger-writer` cannot see because it judges one event against one ledger and
+never reads the graph.
+
+```bash
+node <skill-root>/scripts/admit.mjs \
+  --repo <repo> --work-item token-001 --workflow default \
+  --actor human:operator --reason 'what the person asked for'
+```
+
+Refused while the controller is holding its one token:
+
+```text
+REFUSED  controller_full: control is holding 1 of 1 — a new request is not
+admitted while the front door is full. The person may send it again once the
+queue moves.
+```
+
+That is a queue, not a rejection, and it is deliberate: one request waiting on a
+person stops every new request entering. See
+[controller-as-team.md](references/controller-as-team.md) for why.
+
+What the door has learned, read by the controller on every withdrawal:
+
+```bash
+node -e "import('<skill-root>/scripts/intake-stats.mjs').then(m => console.log(m.intakeStats('<repo>')))"
+```
+
 Do not write custody with shell redirection. `ledger-writer.mjs` is the only
 general writer. The one narrow exception is `acp-companion.mjs`, which goes
 through the same validator and may append only the transport facts it observes
