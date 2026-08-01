@@ -44,8 +44,11 @@ loop reads it and never adds fields to it.
 - A **work item token** is the unit of work. It carries its own request and
   accumulates its own history.
 - A route **never revisits a team**. Work moves backwards only by rejection.
-- There is exactly one **outer controller** for the whole graph. It is not a
-  member of any team and never does a team's work.
+- There is exactly one **outer controller** for the whole graph. It never does a
+  team's work. Since §14.5 it holds the single worker seat of its own **control
+  team** — the same seat `outer_controller_id` names, not a second one — which
+  is what gives the front door a WIP limit of 1. It is still not a member of any
+  DELIVERY team, and no route may revisit it.
 
 ## 2. Two layers, never mixed
 
@@ -1031,11 +1034,19 @@ hidden this credited the controller by writing `escalated` with the controller's
 own `agent_id` — a line the loop cannot produce, and the same class of fake
 fixture found in the board's tests an hour earlier.
 
-### 14.5 Decided 2026-07-31, NOT yet built — work enters through the controller
+### 14.5 Decided 2026-07-31, BUILT 2026-08-01 — work enters through the controller
 
-This section is not a description of the system. It is a decision the code does
-not implement yet, written down at the moment it was made so the reasoning does
-not evaporate. Until it is built, §4.6 above remains what the runtime does.
+**This is now what the runtime does**, and this section is kept for the
+reasoning rather than as a plan. `validateWorkflowGraph` refuses a graph whose
+routes do not start at the controller team, the bundled template ships one,
+`admit.mjs` is the only writer that enforces the front door's WIP limit, and
+`graph.html` draws the controller as that team's single seat.
+
+It said "NOT yet built" until an outside review on 2026-08-01 pointed out that
+this file and `references/loop-graph-page.md` were two SSOTs an implementer
+could not satisfy at once — this one describing a controller outside the board,
+the other a controller holding a team seat. A stale heading in a contract is not
+a harmless leftover: it is an instruction to build the wrong thing.
 
 **Today:** an operator writes `opened` straight at a team — `agent_id` is the
 receiving dispatcher, `to_team` is that team, and the `workflow` is a string the

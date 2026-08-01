@@ -154,8 +154,10 @@ test('the controller team is the head of every route, and never escalates to its
     // The route is an order over the board's own wires, not wires of its own.
     const order = tour.orders[workflow.workflow_id]
     assert.ok(order.length > 0)
-    assert.match(order[0], /^team:control>/, 'work leaves the front door first')
-    assert.equal(order[order.length - 1], 'team:control>delivered>passed')
+    assert.match(order[0], /^team:control>.*>pull$/, 'work is pulled out of the front door')
+    // Custody ends at the last team: it writes `completed`, and the audit is a
+    // releasing event that never takes the token back.
+    for (const key of order) assert.match(key, />pull$/)
   }
   const passed = tour.edges.filter((e) => e.kind === 'passed')
   assert.equal(passed.length, 1, 'one line out of the audit, not one per route')
@@ -321,6 +323,8 @@ test('the controller node states the audits it gave, not the requests it got', (
     { at: '2026-07-27T09:20:00.000Z', event: 'audited', agent_id: 'pm', verdict: 'concern', reason: 'four findings' },
   ])
   const page = renderGraphPage(dir, snapshotWith(), { now: NOW })
+  assert.match(page, /1 audited/, 'the sink counts the audit that was given')
+  assert.doesNotMatch(page, /1 handled/, 'never the requests it received')
   // The old line counted requests under the word "handled". Both the wording
   // and the counter were wrong, so neither may come back.
 })
@@ -413,23 +417,35 @@ test('every event that names an agent either credits it or is a stated exception
 // filenames. Asserted on structure, never on the labels, which are copy.
 test('the graph publishes the nav it shares with pulse and the board', () => {
   const page = pageOf(repoWith(TWO_TEAMS))
+  for (const sibling of ['pulse.html', 'kanban.html']) {
+    assert.ok(page.includes(`href="${sibling}"`), `${sibling} is reachable without knowing its name`)
+  }
   // This page is the one you are on, so it is the one entry that is not a link.
+  assert.match(page, /<strong aria-current="page"[^>]*>Loop graph</)
+  assert.doesNotMatch(page, /href="graph\.html"/)
 })
 
 test('a repo where the runner has never run says so instead of looking calm', () => {
   const page = pageOf(repoWith(TWO_TEAMS))
+  assert.match(page, /NO RUNNER/)
+  assert.match(page, /has never run in this repo/)
   // The dangerous failure is the opposite claim, made by silence.
+  assert.doesNotMatch(page, /DISPATCHING/)
 })
 
 test('a heartbeat older than three of its own ticks reads as not responding', () => {
   const page = pageOf(beat(repoWith(TWO_TEAMS), heartbeat({ at: ago(61) })))
+  assert.match(page, /NOT RESPONDING/)
   // `dispatching: true` is what the runner believed one tick before it stopped.
   // A dead runner claiming to dispatch is exactly the calm-looking lie.
+  assert.doesNotMatch(page, /class="lh-state">DISPATCHING/)
 })
 
 test('a stale hold is reported as what the runner last said, not as a hold in progress', () => {
   const page = pageOf(beat(repoWith(TWO_TEAMS),
     heartbeat({ at: ago(300), dispatching: false, reason: 'pulse.json is stale' })))
+  assert.match(page, /NOT RESPONDING/, 'five minutes of silence is not a hold in progress')
+  assert.match(page, /pulse\.json is stale/, "and the runner's own last words survive")
 })
 
 test('the runner is judged against its own tick, so a slow loop is not a dead one', () => {
@@ -453,6 +469,12 @@ test('a runner that is deliberately holding shows the reason it gave, escaped', 
 
 test('a dispatching runner states the age of its last tick and what that tick did', () => {
   const page = pageOf(beat(repoWith(TWO_TEAMS), heartbeat({ started: 3, held: 1 })))
+  assert.match(page, /DISPATCHING/)
+  // What that tick DID, in the runner's own measured numbers — a zero it
+  // measured is worth printing; a zero this page invented is the lie §12.7
+  // forbids, which is why the copy says "not measured" rather than 0.
+  assert.match(page, /\b3\b/, 'the count it started')
+  assert.match(page, /\b1\b/, 'and the count it held')
 })
 
 test('a count the runner did not report is not printed as a zero', () => {
@@ -502,6 +524,11 @@ test('a heartbeat that cannot be judged says so rather than guessing', () => {
 
 test('loop health is readable without colour: a state word and a shape, not a hue', () => {
   const page = pageOf(beat(repoWith(TWO_TEAMS), heartbeat({ at: ago(600) })))
+  // Colour alone fails a greyscale print and a colour-blind reader, so the
+  // state has to survive without it: a word and a shape carry it, and the
+  // shape is aria-hidden because the word already says it out loud.
+  assert.match(page, /class="lh-state">NOT RESPONDING</)
+  assert.match(page, /class="lh-mark" aria-hidden="true">■</)
 })
 
 // ── the pull system ──────────────────────────────────────────────────────────

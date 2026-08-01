@@ -229,12 +229,15 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
   }
   // The controller can hand work straight to ANY team — that is what holding
   // the front door means, and a route only decides which one it uses this
-  // time. So the line exists for every team; route scenes filter it down to
-  // the one that route actually uses.
+  // time. It is a `pull` like every other handover, because that is what the
+  // runtime writes: `pull-controller` records `pulled` with a `from_team` for
+  // the FIRST leg too, not only for team-to-team hops. A separate `send` kind
+  // said the first hop was a different kind of event than the rest, which the
+  // ledger does not agree with.
   if (controlId) {
     for (const team of graph.teams) {
       if (team.team_id === controlId) continue
-      addOnce(`team:${controlId}`, `team:${team.team_id}`, 'send')
+      addOnce(`team:${controlId}`, `team:${team.team_id}`, 'pull')
     }
   }
   for (const workflow of graph.workflows) {
@@ -249,18 +252,21 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
   // A route is an ORDER over the wiring above, never wiring of its own. This is
   // the sequence a token takes — down to a team, back to control, down to the
   // next — and it exists only to animate. It adds no edge to the board.
+  // Custody, and only custody. The route ends where the ledger ends it: the
+  // last team writes `completed` (§6) and the controller's audit is a
+  // RELEASING event — it reads the delivery, it never takes the token back.
+  // An earlier version sent a token home to control and on to the sink, which
+  // animated two handovers the ledger has no record of; worse, the "home" hop
+  // reused the outbound wire without reversing it, so the dot ran controller →
+  // team a second time and then jumped back. `passed` stays on the board as a
+  // relationship, with no token on it, because nothing travels it.
   const orderOf = (workflow) => {
     const legs = workflow.route.filter((teamId) => teamId !== controlId)
     if (!legs.length) return []
-    const trip = [`team:${controlId}>team:${legs[0]}>send`]
+    const trip = [`team:${controlId}>team:${legs[0]}>pull`]
     for (let i = 1; i < legs.length; i += 1) {
       trip.push(`team:${legs[i - 1]}>team:${legs[i]}>pull`)
     }
-    // Home along the line it went out on, rather than a second line beside it.
-    // A wire is a channel between two nodes, not a one-way street, and drawing
-    // the return separately doubled the picture to say one thing.
-    trip.push(`team:${controlId}>team:${legs[legs.length - 1]}>send`)
-    trip.push(`team:${controlId}>delivered>passed`)
     return trip
   }
   const ORDERS = new Map(graph.workflows.map((workflow) => [workflow.workflow_id, orderOf(workflow)]))
@@ -387,7 +393,12 @@ export const TOUR_CSS = `
    specificity (0,2,0), so whichever is written last wins. With .dry below it,
    an edge told to leave the scene was painted straight back in at .34, and the
    teams a route skips kept their wiring on screen. */
-.wire.off{opacity:0}
+/* Leaving a scene wins over everything. This rule sat here as an ordinary one
+   and lost to any later rule of equal specificity — first the dry state, then
+   the raised escalation, which restored opacity .9 AND kept animating on wires
+   already told to leave. Weight ends that family of bug instead of re-fixing it
+   every time a state class is written below. */
+.wire.off{opacity:0!important;animation:none!important}
 /* Motion carries one meaning and only one: an edge with NOTHING recorded behind
    it crawls, and goes still the moment a record exists. So a board that has
    stopped moving is a board where everything on screen is backed by evidence —
@@ -430,9 +441,8 @@ export const TOUR_CSS = `
 @keyframes tourHalo{0%,100%{opacity:0;stroke-width:1}40%{opacity:.5;stroke-width:2.4}}
 .w-assign{stroke:var(--assign);opacity:.5}
 .w-judge{stroke:var(--artifact);opacity:.55}
-.w-reject{stroke:var(--reject);stroke-dasharray:4 4;opacity:.5}
+.w-reject{stroke:var(--reject);opacity:.5}
 .w-owns{stroke:var(--line)}
-.w-send{stroke:var(--handoff);stroke-width:2.4;opacity:.8}
 .w-pull{stroke:var(--handoff);stroke-width:2.4;opacity:.8}
 /* Escalation is a CONDITION, not a handover: nothing travels it. It is red
    because it is the same news as a rejection — work that cannot move — and it
@@ -558,7 +568,7 @@ export const TOUR_SCRIPT = `
     // the same pixels and the board looks like it has half the wiring it has.
     // Escalation and audit both run team → controller, so they must bow apart
     // or the two meanings land on the same pixels.
-    send: 0, pull: 0, escalate: -46, passed: 0,
+    pull: 0, escalate: -46, passed: 0,
   }
   const NS = 'http://www.w3.org/2000/svg'
   // FNV-1a, 0..1. Deterministic on purpose: the same edge desyncs the same way
@@ -623,7 +633,6 @@ export const TOUR_SCRIPT = `
     if (!node.cameFrom?.length || node.stuck) continue
     for (const fromTeam of node.cameFrom) {
       const wire = wireOf.get('team:' + fromTeam + '>' + node.id + '>pull')
-        || wireOf.get('team:' + fromTeam + '>' + node.id + '>send')
       if (!wire) continue
       for (let t = 0; t < 3; t += 1) {
         const dot = document.createElementNS(NS, 'circle')
@@ -701,7 +710,7 @@ export const TOUR_SCRIPT = `
   // The three that carry a token, and therefore belong to one route at a time.
   // Everything else — ownership, assignment, review, rework, escalation, the
   // line out to the sink — is true on every scene.
-  const HANDOVER = new Set(['send', 'pull'])
+  const HANDOVER = new Set(['pull'])
   const RUNNING = new Set(Object.values(world).filter((n) => n.status === 'working').map((n) => n.id))
   const STUCK = new Set(Object.values(world).filter((n) => n.stuck).map((n) => n.id))
   function draw(visible, motionWf) {

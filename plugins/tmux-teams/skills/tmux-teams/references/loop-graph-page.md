@@ -61,20 +61,25 @@ THIS work travel", which is exactly what a route changes.
 
 | Edge | Meaning |
 |---|---|
-| `send` | between the controller and a team, used in **both** directions: out to the team, and home again at the end of the route |
-| `pull` | the next team pulls from the one before it — `pull-controller` hands off receiver-to-sender directly |
-| `passed` | the controller has read the finished delivery and passed it |
+| `pull` | a handover. The RECEIVING side takes the token when it has room — including the first leg, where the controller hands to the route's first team |
+| `passed` | the controller has read the finished delivery and accepted it |
 
-`send` exists from the controller to **every** team. Holding the front door
+There is **one kind of handover**, because the ledger records one: `pulled`,
+with a `from_team`, for the first leg exactly as for every later hop. A separate
+`send` kind claimed the door works differently than the runtime does.
+
+`pull` exists from the controller to **every** team. Holding the front door
 means work can go straight to any of them; a route only decides which it uses.
 
-There is **no `audit` edge**. A wire is a channel between two nodes, not a
-one-way street: the token comes home along the line it went out on. A separate
-return line doubled the picture to say one thing.
+There is **no `audit` edge and no return leg**. Custody ends where the ledger
+ends it: the last team writes `completed`, and the controller's audit is a
+RELEASING event — it reads the delivery, it never takes the token back. An
+earlier version ran a token home to the controller and on to the sink, animating
+two handovers no record exists for; worse, the "home" hop reused the outbound
+wire without reversing it, so the dot ran controller → team a second time and
+then jumped back, and the test guarding it only checked the key was reused.
 
-`passed` is the stated exception to the filter: a token does travel it, so it is
-in every route's order, but there is one of them and it means the same thing
-whichever route produced the work — so it is never filtered out.
+`passed` is drawn on every scene and **carries no token**, for the same reason.
 
 **Nothing joins two delivery teams except `pull`.** A workflow is an ORDER over
 this wiring, never wiring of its own. That is what lets a route scene hide teams

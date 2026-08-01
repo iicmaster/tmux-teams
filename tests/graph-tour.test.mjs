@@ -134,31 +134,43 @@ test('every team can interrupt the controller, whatever any route says', () => {
   }
 })
 
-test('a handover between teams is one line, however many routes use it', () => {
+test('every handover is a pull, including the first leg out of the door', () => {
   const { edges } = buildTour(CONTROLLED)
-  // `pull-controller` hands a token straight from one team to the next — the
-  // RECEIVING team pulls it when it has room — so that is a line between two
-  // teams, not a trip back through the controller.
   const pulls = edges.filter((e) => e.kind === 'pull')
   assert.ok(pulls.length > 0, 'work moves between teams')
   const keys = pulls.map((e) => `${e.from}>${e.to}`)
   assert.equal(new Set(keys).size, keys.length, 'two routes sharing a handover share its line')
-  for (const edge of pulls) {
-    assert.notEqual(edge.from, 'team:control')
-    assert.notEqual(edge.to, 'team:control')
-  }
+  // `pull-controller` writes `pulled` with a `from_team` for the FIRST leg as
+  // well as for team-to-team hops, so a separate kind for it claimed the door
+  // works differently than the ledger says it does.
+  assert.equal(edges.some((e) => e.kind === 'send'), false, 'there is no second kind of handover')
+  assert.ok(pulls.some((e) => e.from === 'team:control'), 'the door hands over by pulling too')
+  // Nothing ever pulls INTO control: the audit reads a delivery, it never
+  // takes the token back.
+  assert.equal(pulls.some((e) => e.to === 'team:control'), false)
 })
 
-test('a token comes home along the line it went out on', () => {
+test('a token stops where custody stops — it is never sent home', () => {
   const { edges, orders } = buildTour(CONTROLLED)
-  // A wire is a channel between two nodes, not a one-way street. A separate
-  // return line doubled the picture to say one thing, so there is none.
   assert.deepEqual(edges.filter((e) => e.kind === 'audit'), [])
   for (const workflow of CONTROLLED.workflows) {
     const order = orders[workflow.workflow_id]
-    const last = order[order.length - 2]
-    assert.match(last, /^team:control>.*>send$/, 'the last leg before the sink is the way back in')
-    assert.ok(order.includes(last), 'and it is a wire the board already had')
+    const legs = workflow.route.filter((teamId) => teamId !== 'control')
+    // The last team writes `completed`; the controller's audit is a RELEASING
+    // event, so no token travels back to it and none travels to the sink.
+    assert.equal(order.length, legs.length, 'one pull per leg, and nothing after')
+    assert.equal(order[order.length - 1], `team:${legs[legs.length - 2] ?? 'control'}>team:${legs[legs.length - 1]}>pull`)
+    assert.equal(order.some((key) => key.endsWith('>passed')), false, 'nothing travels the audit line')
+    // Every hop must move FORWARD along the declared route. The previous
+    // version reused the outbound wire for the return leg without reversing
+    // it, so the dot ran controller → team a second time and jumped back —
+    // and the test that guarded it only checked the key was reused.
+    const seen = ['team:control', ...legs.map((teamId) => `team:${teamId}`)]
+    order.forEach((key, i) => {
+      const [from, to] = key.split('>')
+      assert.equal(from, seen[i], `hop ${i} leaves the node the token is actually at`)
+      assert.equal(to, seen[i + 1], `hop ${i} arrives at the next team on the route`)
+    })
   }
 })
 
@@ -171,12 +183,11 @@ test('a route is an order over existing wires, adding none', () => {
     for (const key of order) {
       assert.ok(wires.has(key), `${key} is a wire the board already has`)
     }
-    // In, one pull per further team, back along the way in, then the sink.
+    // One pull per leg, starting at the door. Nothing after the last team.
     const teams = workflow.route.filter((teamId) => teamId !== 'control')
-    assert.equal(order.length, teams.length + 2)
-    assert.match(order[0], /^team:control>.*>send$/)
-    assert.match(order[order.length - 2], /^team:control>.*>send$/)
-    assert.equal(order[order.length - 1], 'team:control>delivered>passed')
+    assert.equal(order.length, teams.length)
+    assert.match(order[0], /^team:control>.*>pull$/)
+    for (const key of order) assert.match(key, />pull$/)
   }
 })
 
@@ -194,16 +205,13 @@ test('a graph with no controller team draws no front door and no oversight', () 
   assert.equal(world.pm, undefined)
 })
 
-test('a route returns through the audit before anything is delivered', () => {
+test('the audit line exists but carries nothing', () => {
   const { edges, orders } = buildTour(CONTROLLED)
   for (const workflow of CONTROLLED.workflows) {
     const order = orders[workflow.workflow_id]
-    // Admitted by the controller, pulled team to team, then home along the
-    // controller's own line before anything is delivered.
-    assert.match(order[0], /^team:control>.*>send$/)
-    for (const key of order.slice(1, -2)) assert.match(key, />pull$/)
-    assert.match(order[order.length - 2], /^team:control>.*>send$/)
-    assert.equal(order[order.length - 1], 'team:control>delivered>passed')
+    // Pulled from the door, then team to team, and that is all custody does.
+    assert.match(order[0], /^team:control>.*>pull$/)
+    for (const key of order) assert.match(key, />pull$/)
   }
   // Exactly ONE line leaves the audit for the sink: what crosses it is the same
   // fact every time, so one per route would be three claims about one thing.
@@ -313,10 +321,26 @@ test('an edge told to leave the scene cannot be painted back in', () => {
   // deciding which opacity wins is which is written last. With `.dry` last, the
   // teams a route skips kept their wiring on screen at .34 — a bug invisible in
   // the logic, which was correct, and living entirely in line order.
-  const off = TOUR_CSS.indexOf('.wire.off{')
-  const dry = TOUR_CSS.indexOf('.wire.dry{')
-  assert.ok(off > -1 && dry > -1, 'both rules must exist')
-  assert.ok(off > dry, '.wire.off must come after .wire.dry or hiding an edge does nothing')
+  // Fixed by weight rather than by order, because order only held until the
+  // next state class was written below it: `.w-escalate.raised` restored
+  // opacity .9 and kept animating on wires that had already left the scene.
+  const off = TOUR_CSS.match(/\.wire\.off\{([^}]*)\}/)
+  assert.ok(off, 'the rule must exist')
+  assert.match(off[1], /opacity:0!important/)
+  assert.match(off[1], /animation:none!important/, 'a hidden wire must not keep animating')
+})
+
+test('a solid edge is solid — the dash lives on the state, never on the colour', () => {
+  // `.w-reject` carried `stroke-dasharray` itself, so a rejection with a
+  // recorded verdict stayed dashed for ever and "solid once evidence exists"
+  // was false however correct the data was.
+  for (const kind of ['assign', 'judge', 'reject']) {
+    const rule = TOUR_CSS.match(new RegExp(`\\.w-${kind}\\{([^}]*)\\}`))
+    assert.ok(rule, `${kind} has a colour rule`)
+    assert.doesNotMatch(rule[1], /stroke-dasharray/,
+      `${kind} must take its dash from .dry, or it can never harden`)
+  }
+  assert.match(TOUR_CSS, /\.wire\.dry\{[^}]*stroke-dasharray/)
 })
 
 test('strokes do not grow with the camera', () => {
@@ -325,12 +349,14 @@ test('strokes do not grow with the camera', () => {
   assert.match(TOUR_CSS, /\.wire\{[^}]*vector-effect:non-scaling-stroke/)
 })
 
-test('the client script contains no backtick', () => {
-  // TOUR_SCRIPT is itself a template literal, so a stray backtick — most easily
-  // written inside a comment, quoting an identifier — closes it early and the
-  // module stops parsing. It happened three times while this file was written;
-  // the failure is a syntax error a long way from its cause.
+test('neither shipped string contains a backtick', () => {
+  // Both are template literals, so a stray backtick — most easily written in a
+  // comment quoting an identifier — closes one early and the module stops
+  // parsing, with a syntax error a long way from its cause. It happened four
+  // times writing this file; the fourth was in TOUR_CSS, which this test only
+  // covered TOUR_SCRIPT for at the time.
   assert.equal(TOUR_SCRIPT.includes('`'), false, 'a backtick inside TOUR_SCRIPT ends the template')
+  assert.equal(TOUR_CSS.includes('`'), false, 'and the same is true of TOUR_CSS')
 })
 
 // ── what a scene may show ────────────────────────────────────────────────────
@@ -349,13 +375,15 @@ test('a route scene shows only handovers that touch its own teams', () => {
       assert.ok(mine.has(from) && mine.has(to),
         `${key} touches a team ${workflow.workflow_id} does not use`)
     }
-    // And every handover the board has, whose ends are BOTH on this route,
-    // must be in its order — otherwise the scene draws a line no token uses.
-    for (const edge of edges) {
-      if (edge.kind !== 'send' && edge.kind !== 'pull') continue
-      if (!mine.has(edge.from) || !mine.has(edge.to)) continue
-      assert.ok(orders[workflow.workflow_id].includes(`${edge.from}>${edge.to}>${edge.kind}`),
-        `${edge.from}→${edge.to} is drawn on ${workflow.workflow_id} but carries nothing`)
+    // The reverse does NOT hold, and that is why the client filters. The board
+    // carries `control → qa` because some route pulls straight there; on a
+    // route that reaches qa through build it must be hidden, not drawn as a
+    // shortcut nobody takes. `draw()` keys that off this same order.
+    const spare = edges.filter((e) => e.kind === 'pull'
+      && mine.has(e.from) && mine.has(e.to)
+      && !orders[workflow.workflow_id].includes(`${e.from}>${e.to}>${e.kind}`))
+    for (const edge of spare) {
+      assert.notEqual(edge.from, edge.to)
     }
   }
 })
@@ -366,7 +394,7 @@ test('structure is true on every scene; a handover belongs to one route', () => 
   // which route is being explained. A handover answers "how does THIS work
   // travel", which is exactly what changes.
   const { edges, orders } = buildTour(CONTROLLED)
-  const handover = new Set(['send', 'pull'])
+  const handover = new Set(['pull'])
   const inSomeOrder = new Set(Object.values(orders).flat())
   for (const edge of edges) {
     const key = `${edge.from}>${edge.to}>${edge.kind}`
@@ -376,13 +404,13 @@ test('structure is true on every scene; a handover belongs to one route', () => 
       assert.equal(inSomeOrder.has(key), false, `${key} is structure and must not sit in a route order`)
     }
   }
-  // `passed` is the deliberate exception, and the reason it needs stating: a
-  // token DOES travel it, so it is in every order — but there is only one of
-  // them and it means the same thing whichever route produced the work, so it
-  // is never filtered out of a scene.
+  // `passed` is the deliberate exception, and the reason it needs stating: it
+  // is a relationship the board shows on every scene — work the controller
+  // read and accepted — but NO token travels it, because the audit releases
+  // the token rather than carrying it anywhere.
   const passed = edges.filter((e) => e.kind === 'passed')
   assert.equal(passed.length, 1)
   for (const order of Object.values(orders)) {
-    assert.equal(order[order.length - 1], 'team:control>delivered>passed')
+    assert.equal(order.some((key) => key.endsWith('>passed')), false)
   }
 })
