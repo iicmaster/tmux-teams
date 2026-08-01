@@ -719,14 +719,22 @@ test('the controller saying abandon closes it and frees the team', () => {
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('a controller that answers nothing changes nothing', () => {
+test('a controller that answers nothing hands the token to a person', () => {
   const dir = pmRepo('I looked at the board and it seems fine overall.\n')
   try {
     const graph = graphOf(TWO_TEAMS)
     const items = itemsOf(['parked', ESCALATED])
-    // Silence is not permission to close someone's work, and appending a no-op
-    // would make the loop re-read the same outbox on every tick forever.
-    assert.deepEqual(applyHarvest(dir, graph, planHarvest(graph, items, () => true), '2026-07-27T09:00:00.000Z'), [])
+    // Silence is still not permission to close someone's work. But leaving the
+    // token exactly where it was made an escalation a place tokens went to die:
+    // every tick re-read the same unusable outbox and nothing ever moved. Every
+    // other gate escalates upward when it cannot answer; the controller IS the
+    // top, so its only remaining reader is a person — and the front door
+    // already runs a deadline for exactly that.
+    const applied = applyHarvest(dir, graph, planHarvest(graph, items, () => true), '2026-07-27T09:00:00.000Z')
+    assert.equal(applied.length, 1)
+    assert.equal(applied[0].event, 'questioned')
+    assert.match(applied[0].questions, /resume|abandon/, 'it names the words that would have worked')
+    assert.match(applied[0].reason, /no verdict this seat can use/)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -956,8 +964,14 @@ test('an audit answer closes the flag, and silence does not', () => {
       { event: 'audit_requested', agent_id: 'pm', task_id: 'pm-1' }]])
 
     writeFileSync(join(dir, '.mailbox-out', 'pm-1'), 'I had a look around.\n')
-    assert.deepEqual(applyHarvest(dir, graph, planHarvest(graph, flagged, () => true), FIXED_ISO), [],
-      'an unread answer must not close the audit')
+    const [unread] = applyHarvest(dir, graph, planHarvest(graph, flagged, () => true), FIXED_ISO)
+    // Still not closed — but no longer a dead end. An audit that cannot answer
+    // hands the token to a person, because the controller is the top gate and
+    // has nowhere left to escalate to. Leaving it flagged for ever meant the
+    // loop re-read the same unusable outbox on every tick and nothing moved.
+    assert.equal(unread.event, 'questioned', 'an unread answer never closes the audit')
+    assert.notEqual(unread.event, 'audited')
+    assert.match(unread.questions, /accept/)
 
     writeFileSync(join(dir, '.mailbox-out', 'pm-1'),
       'The spec asked for ten acceptance criteria and the delivery covers eight.\n\nVERDICT: concern\nREASON: AC7 and AC9 are not implemented\n')
@@ -1063,10 +1077,12 @@ test('a gate answering in the wrong vocabulary is reported, not skipped in silen
   const said = []
   const applied = applyHarvest(dir, TWO_TEAMS, [job], '2026-08-02T00:00:00.000Z', (skip) => said.push(skip))
   try {
-    assert.deepEqual(applied, [], 'an unusable answer still changes nothing')
-    assert.equal(said.length, 1, 'but the loop says which token is wedged')
-    assert.equal(said[0].work_item, 'tok')
-    assert.match(said[0].reason, /accept/, 'and names a word this seat could have used')
-    assert.match(said[0].reason, /concern/)
+    // It no longer dies here: an audit that cannot answer parks the token on a
+    // person, with the words it should have used spelled out in the question.
+    assert.equal(applied.length, 1)
+    assert.equal(applied[0].event, 'questioned')
+    assert.match(applied[0].questions, /accept/)
+    assert.match(applied[0].questions, /concern/)
+    assert.deepEqual(said, [], 'nothing was skipped, so nothing needed reporting')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

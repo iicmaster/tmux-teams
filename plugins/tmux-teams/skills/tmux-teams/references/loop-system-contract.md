@@ -336,7 +336,7 @@ One token, keyed on its last event and the role of the actor.
 | `escalated` | controller outbox exists | harvest → `resumed` or `abandoned` |
 | `escalated` | no answer yet | held; the runner does not move it |
 | `completed` | not yet audited | flag `audit_requested` and dispatch the controller |
-| `audit_requested` | controller outbox exists | harvest → `audited` |
+| `audit_requested` | controller outbox exists | harvest → `audited`, or `questioned` when the answer is not a word this seat reads |
 | `completed`, `audited`, `abandoned` | — | terminal; the token holds nothing |
 
 **Ordering within a tick is fixed:** harvest → pulls → dispatch → escalation.
@@ -365,6 +365,12 @@ readers computing it separately is how a board came to draw a limit that was not
 being enforced.
 
 - A team holds a token from the moment it pulls it until the route closes.
+`questioned` and `answered` may follow `completed` (§5: it is only half
+closed). Every other gate escalates upward when it cannot decide; the
+controller is the top, so its only remaining reader is a person. Without that
+route a finished route meeting an unusable audit answer had nowhere legal to
+go — the runner refused its own repair on every tick, visibly and for ever.
+
 - `RELEASING_EVENTS = {completed, abandoned, audit_requested, audited}`. Everything
   else holds. An audit *observes* a delivery; it never takes custody of one, so
   reading a finished route must not put it back into a team's WIP.

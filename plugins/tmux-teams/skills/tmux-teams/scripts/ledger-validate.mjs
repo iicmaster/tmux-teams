@@ -118,7 +118,15 @@ export const LEDGER_EVENTS = Object.freeze(Object.keys(EVENT_SPEC))
 // closed — the outer controller still has to read the delivery as a whole
 // (§9), and that audit pair is the sole legal continuation.
 const TERMINAL_EVENTS = new Set(['completed', 'audited', 'abandoned'])
-const AFTER_COMPLETED = new Set(['audit_requested', 'audited'])
+// §5: `completed` is only HALF closed — the controller still has to read the
+// delivery. `questioned` joins this set because the audit can fail to answer:
+// every other gate escalates upward when it cannot decide, and the controller
+// is the top, so its only remaining reader is a person. Without it a route that
+// finished and then hit an unusable audit had nowhere legal to go, and the
+// runner refused its own repair every tick — visible, but permanently stuck.
+// `answered` follows the question and puts the token back in front of the
+// audit, which is where it was.
+const AFTER_COMPLETED = new Set(['audit_requested', 'audited', 'questioned', 'answered'])
 
 // `null` is absence, not a value. loop-runner.mjs writes `workflow: … || null`
 // and `to_team: … || null`, so a presence check that only tested `in` would let

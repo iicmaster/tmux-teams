@@ -448,17 +448,35 @@ function harvestEvent(repo, graph, { item, last, role }, now) {
 
   if (role === 'audit') {
     const { verdict, stated, reason } = readVerdict(text, AUDIT_VERDICTS)
-    // Same rule as every other gate: an unread answer changes nothing, and the
-    // token stays flagged so the next tick asks again rather than closing it.
-    if (!stated) return null
+    // Silence is never approval — but it cannot be a dead end either. Every
+    // other gate escalates upward when it cannot answer; the controller IS the
+    // top, so its only remaining reader is a person. Park it on one, with the
+    // deadline the front door already runs, instead of leaving a token flagged
+    // for ever while every tick re-reads the same unusable outbox.
+    if (!stated) {
+      return {
+        ...base, event: 'questioned', agent_id: last.agent_id,
+        questions: `the audit answered with something this seat cannot use.`
+          + ` It reads: ${[...AUDIT_VERDICTS].join(' or ')}. Say which, or withdraw the work.`,
+        reason: 'the audit stated no verdict this seat can use',
+      }
+    }
     return { ...base, event: 'audited', agent_id: last.agent_id, verdict, reason: reason || 'no reason stated' }
   }
 
   if (role === 'outer') {
     const { verdict, stated, reason } = readVerdict(text, OUTER_VERDICTS)
-    // Silence is not permission to close someone's work. An unreadable answer
-    // leaves the token parked exactly where the controller found it.
-    if (!stated) return null
+    // Silence is not permission to close someone's work — and parking it back
+    // where it was is what made an escalation a place tokens went to die. Ask
+    // the person instead: the controller has already failed to answer once.
+    if (!stated) {
+      return {
+        ...base, event: 'questioned', agent_id: last.agent_id,
+        questions: `the controller answered with something this seat cannot use.`
+          + ` It reads: ${[...OUTER_VERDICTS].join(' or ')}. Say which, or withdraw the work.`,
+        reason: 'the controller stated no verdict this seat can use',
+      }
+    }
     if (verdict === 'abandon') {
       return { ...base, event: 'abandoned', agent_id: last.agent_id, reason: reason || 'no reason stated' }
     }
