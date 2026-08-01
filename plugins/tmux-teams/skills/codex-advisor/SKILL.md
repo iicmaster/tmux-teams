@@ -12,10 +12,13 @@ vendor's strongest model, so a disagreement between the two is worth something.
 ## Why it is an ACP lane
 
 Same mechanism as `claude-advisor`, and here it is the only mechanism — Codex is
-not a Claude model, so no agent frontmatter can select it. The model and the
-effort live on the invocation, and `ACP_EXPECT_MODEL` /
-`ACP_EXPECT_REASONING_EFFORT` make the adapter acknowledge both. A mismatch
-fails the dispatch rather than answering from a cheaper seat.
+not a Claude model, so no agent frontmatter can select it. `ACP_MODEL` and
+`ACP_REASONING_EFFORT` set the session for this dispatch through the standard
+ACP `session/set_config_option` calls; `ACP_EXPECT_MODEL` /
+`ACP_EXPECT_REASONING_EFFORT` make the adapter acknowledge the resulting
+identity. When an explicit expectation is omitted, the selected value is also
+the expectation. A missing option, rejected value, or mismatch fails the
+dispatch before prompt delivery rather than answering from a cheaper seat.
 
 ## The pinned identity — not negotiable
 
@@ -25,13 +28,14 @@ fails the dispatch rather than answering from a cheaper seat.
 | Reasoning effort | `ultra` |
 | Lane | `codex` (ACP) |
 
-**Pass the effort explicitly; never inherit it.** On 2026-07-29
+**Pass the model and effort explicitly; never inherit them.** On 2026-07-29
 `~/.codex/config.toml` read `model_reasoning_effort = "low"` while
 `party-mode/SKILL.md` asserted the default was already `ultra`. Every dispatch
 that trusted that sentence ran at the bottom of the range while the document
 promised the top — the model was right in that file and the effort was not,
-which is a discrepancy no reader could see. That is why the expectation here is
-verified rather than assumed.
+which is a discrepancy no reader could see. The adapter now selects both
+values per dispatch and verifies the correlated session response rather than
+assuming a machine default.
 
 Never downgrade for cost or quota. If `gpt-5.6-sol` at `ultra` is unavailable,
 **report that and stop**; an answer from a lesser seat is not this skill.
@@ -55,19 +59,11 @@ answer is a failed consultation — say so rather than passing it on.
    State plainly whatever you could not verify.
    ```
 
-2. **Dispatch**, pinning and verifying the identity in one step:
-
-   Give Codex a config home of its own that pins the effort, leaving the
-   machine's `~/.codex/config.toml` untouched:
+2. **Dispatch**, selecting and verifying the identity in one step:
 
    ```bash
-   H=$(mktemp -d)
-   for f in ~/.codex/*; do ln -s "$f" "$H/$(basename "$f")"; done
-   rm -f "$H/config.toml"
-   sed 's/^model_reasoning_effort.*/model_reasoning_effort = "ultra"/' \
-     ~/.codex/config.toml > "$H/config.toml"
-
-   CODEX_HOME="$H" \
+   ACP_MODEL="gpt-5.6-sol" \
+   ACP_REASONING_EFFORT="ultra" \
    ACP_EXPECT_MODEL="gpt-5.6-sol" \
    ACP_EXPECT_REASONING_EFFORT="ultra" \
    node <plugin-root>/skills/tmux-teams/scripts/acp-companion.mjs \
@@ -83,9 +79,9 @@ answer is a failed consultation — say so rather than passing it on.
    `Error: stdin is not a terminal`, because bare `codex` opens a TUI rather
    than speaking ACP.
 
-   Measured 2026-07-29: with `CODEX_HOME` the receipt reads
-   `effective_identity: gpt-5.6-sol[ultra]`, `identity_status: matched`. Without
-   it, the same probe reads `gpt-5.6-sol[low]`.
+   The receipt should read `effective_identity: gpt-5.6-sol[ultra]`,
+   `identity_status: matched`. If the installed ACP agent does not advertise
+   the requested model/effort, the adapter fails closed before the prompt.
 
 3. **Read the outbox.** No outbox file means no advice, whatever scrolled past
    in the terminal.

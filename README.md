@@ -304,6 +304,14 @@ node plugins/tmux-teams/skills/tmux-teams/scripts/acp-companion.mjs \
   codex <repo> <task-id> <brief-file> [stall-sec]
 ```
 
+Codex model selection is per dispatch: set `ACP_MODEL` and
+`ACP_REASONING_EFFORT` to have the companion call the standard ACP
+`session/set_config_option` method after `session/new` or `session/load`.
+The returned config options are verified before prompt delivery; an
+unadvertised or rejected value fails closed. `ACP_EXPECT_MODEL` and
+`ACP_EXPECT_REASONING_EFFORT` can be supplied as explicit identity witnesses,
+and otherwise the selected values are used as the expectations.
+
 The optional duration is an inactivity/stall lease, not a total task timeout;
 there is no wall-clock ceiling unless `ACP_HARD_TIMEOUT_SEC>0` is set. ACP
 liveness snapshots use the exact `acp-liveness.v1` contract, and Codex defaults
