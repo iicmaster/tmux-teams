@@ -149,16 +149,17 @@ test('a handover between teams is one line, however many routes use it', () => {
   }
 })
 
-test('finishing a route and being stuck are different lines', () => {
-  const { edges } = buildTour(CONTROLLED)
-  const audit = edges.filter((e) => e.kind === 'audit')
-  const escalate = edges.filter((e) => e.kind === 'escalate')
-  // Both run team → controller, and collapsing them would make "this is done,
-  // read it" indistinguishable from "I cannot move this".
-  for (const edge of audit) assert.equal(edge.to, 'team:control')
-  const ends = new Set(CONTROLLED.workflows.map((w) => `team:${w.route[w.route.length - 1]}`))
-  assert.deepEqual(new Set(audit.map((e) => e.from)), ends, 'only the last team on a route audits')
-  assert.ok(escalate.length > audit.length, 'more teams can be stuck than can finish a route')
+test('a token comes home along the line it went out on', () => {
+  const { edges, orders } = buildTour(CONTROLLED)
+  // A wire is a channel between two nodes, not a one-way street. A separate
+  // return line doubled the picture to say one thing, so there is none.
+  assert.deepEqual(edges.filter((e) => e.kind === 'audit'), [])
+  for (const workflow of CONTROLLED.workflows) {
+    const order = orders[workflow.workflow_id]
+    const last = order[order.length - 2]
+    assert.match(last, /^team:control>.*>send$/, 'the last leg before the sink is the way back in')
+    assert.ok(order.includes(last), 'and it is a wire the board already had')
+  }
 })
 
 test('a route is an order over existing wires, adding none', () => {
@@ -170,11 +171,11 @@ test('a route is an order over existing wires, adding none', () => {
     for (const key of order) {
       assert.ok(wires.has(key), `${key} is a wire the board already has`)
     }
-    // In, then one pull per further team, then the audit, then the sink.
+    // In, one pull per further team, back along the way in, then the sink.
     const teams = workflow.route.filter((teamId) => teamId !== 'control')
     assert.equal(order.length, teams.length + 2)
     assert.match(order[0], /^team:control>.*>send$/)
-    assert.match(order[order.length - 2], />team:control>audit$/)
+    assert.match(order[order.length - 2], /^team:control>.*>send$/)
     assert.equal(order[order.length - 1], 'team:control>delivered>passed')
   }
 })
@@ -197,11 +198,11 @@ test('a route returns through the audit before anything is delivered', () => {
   const { edges, orders } = buildTour(CONTROLLED)
   for (const workflow of CONTROLLED.workflows) {
     const order = orders[workflow.workflow_id]
-    // Admitted by the controller, pulled team to team, then back for the audit
-    // before anything is delivered.
+    // Admitted by the controller, pulled team to team, then home along the
+    // controller's own line before anything is delivered.
     assert.match(order[0], /^team:control>.*>send$/)
     for (const key of order.slice(1, -2)) assert.match(key, />pull$/)
-    assert.match(order[order.length - 2], />team:control>audit$/)
+    assert.match(order[order.length - 2], /^team:control>.*>send$/)
     assert.equal(order[order.length - 1], 'team:control>delivered>passed')
   }
   // Exactly ONE line leaves the audit for the sink: what crosses it is the same
@@ -334,19 +335,28 @@ test('the client script contains no backtick', () => {
 
 // ── what a scene may show ────────────────────────────────────────────────────
 
-test('a route scene shows only its own handovers', () => {
+test('a route scene shows only handovers that touch its own teams', () => {
   // The rule "hide the teams a route skips and the rest is its path" goes quiet
-  // when a route uses EVERY team: nothing is hidden, so every other route's
-  // handovers stay on screen and the board says the controller hands straight
-  // to a team this route never touches.
-  const { orders } = buildTour(CONTROLLED)
-  const full = CONTROLLED.workflows.find((w) => w.route.length === 3)
-  assert.ok(full, 'the fixture has a route over every team')
-  const shown = new Set(orders[full.workflow_id])
-  for (const other of CONTROLLED.workflows) {
-    if (other.workflow_id === full.workflow_id) continue
-    const foreign = orders[other.workflow_id].filter((key) => !shown.has(key))
-    assert.ok(foreign.length > 0, 'another route has handovers this one does not')
+  // when a route uses EVERY team: nothing is hidden, so a handover belonging to
+  // another route would stay on screen and the board would say work can be
+  // handed somewhere this route never hands it.
+  const { orders, edges } = buildTour(CONTROLLED)
+  for (const workflow of CONTROLLED.workflows) {
+    const mine = new Set(workflow.route.map((teamId) => `team:${teamId}`))
+    mine.add('delivered')
+    for (const key of orders[workflow.workflow_id]) {
+      const [from, to] = key.split('>')
+      assert.ok(mine.has(from) && mine.has(to),
+        `${key} touches a team ${workflow.workflow_id} does not use`)
+    }
+    // And every handover the board has, whose ends are BOTH on this route,
+    // must be in its order — otherwise the scene draws a line no token uses.
+    for (const edge of edges) {
+      if (edge.kind !== 'send' && edge.kind !== 'pull') continue
+      if (!mine.has(edge.from) || !mine.has(edge.to)) continue
+      assert.ok(orders[workflow.workflow_id].includes(`${edge.from}>${edge.to}>${edge.kind}`),
+        `${edge.from}→${edge.to} is drawn on ${workflow.workflow_id} but carries nothing`)
+    }
   }
 })
 
@@ -356,7 +366,7 @@ test('structure is true on every scene; a handover belongs to one route', () => 
   // which route is being explained. A handover answers "how does THIS work
   // travel", which is exactly what changes.
   const { edges, orders } = buildTour(CONTROLLED)
-  const handover = new Set(['send', 'pull', 'audit'])
+  const handover = new Set(['send', 'pull'])
   const inSomeOrder = new Set(Object.values(orders).flat())
   for (const edge of edges) {
     const key = `${edge.from}>${edge.to}>${edge.kind}`

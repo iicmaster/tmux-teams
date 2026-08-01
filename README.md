@@ -399,7 +399,9 @@ holds the single worker seat on its own control team and so is drawn once rather
 than as a band of its own. The board opens whole, then walks one workflow at a
 time: teams a route does not use fade out and keep their place, so a team a
 route SKIPS never reads as a team that is not there. It needs JavaScript; the
-same declaration is in `graph.json` and the same evidence in `pulse.json`.
+same declaration is in `graph.json` and the same evidence in `pulse.json`. What
+the page may draw, and why, is
+`plugins/tmux-teams/skills/tmux-teams/references/loop-graph-page.md`.
 The governing contract requires each node to state the same five facts: agent
 id; role, lane and transport; verified model or `unverified`; ledger-recorded
 work; and a measured clock or `not started`. The declared model is the model

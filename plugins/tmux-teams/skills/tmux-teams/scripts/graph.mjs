@@ -545,7 +545,15 @@ export function renderGraphPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, r
       : teamTally
     // Rework is a team-level fact: the edge back into the queue hardens once
     // ANY of this team's legs was rejected, not once a particular worker was.
-    teamFacts.set(team.team_id, { rejected: reviewTally.reject > 0 })
+    // Stuck: a token this team holds whose last recorded event stopped it. An
+    // escalation is waiting on the controller; a question is waiting on a
+    // person. Both mean the same thing for the board — this team cannot move
+    // that work on its own — and neither is the same as being busy.
+    const stuck = (occupancy.held.get(team.team_id) || []).some((workItem) => {
+      const last = items.get(workItem)?.custody?.at(-1)
+      return last?.event === 'escalated' || last?.event === 'questioned'
+    })
+    teamFacts.set(team.team_id, { rejected: reviewTally.reject > 0, stuck })
 
     for (const agent of team.agents) {
       const run = byAgent.get(agent.agent_id) || null

@@ -1,5 +1,9 @@
 // graph-tour.mjs — the loop graph as a guided tour rather than one static wall.
 //
+// SSOT for what this page may draw and why:
+// `references/loop-graph-page.md`. Every rule there was written after the
+// picture proved it. If this file and that one disagree, one is a defect.
+//
 // The board answers two different questions and the single-picture SVG this
 // replaces answered them on top of each other: WHO exists (teams as a pool,
 // drawn once) and HOW work travels (a workflow, which is only an order through
@@ -99,6 +103,10 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
       title: team.name,
       state: controllerCard?.state || '',
       status: controllerCard?.status || '',
+      // A token this team is holding has stopped and is waiting on a decision.
+      // It is a different fact from "busy": one is work happening, the other is
+      // work that cannot happen until someone answers.
+      stuck: Boolean(facts.stuck),
       // A team's whole state in two lines: what it holds out of what it may
       // hold, then the tokens themselves when it holds any.
       lines: [
@@ -232,9 +240,6 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
     for (let i = 1; i < legs.length; i += 1) {
       addOnce(`team:${legs[i - 1]}`, `team:${legs[i]}`, 'pull')
     }
-    // Out: the finished route goes back for the audit. Separate from escalate
-    // on purpose — one is "this is done, read it", the other is "I am stuck".
-    if (controlId) addOnce(`team:${legs[legs.length - 1]}`, `team:${controlId}`, 'audit')
   }
 
   // A route is an ORDER over the wiring above, never wiring of its own. This is
@@ -247,7 +252,10 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
     for (let i = 1; i < legs.length; i += 1) {
       trip.push(`team:${legs[i - 1]}>team:${legs[i]}>pull`)
     }
-    trip.push(`team:${legs[legs.length - 1]}>team:${controlId}>audit`)
+    // Home along the line it went out on, rather than a second line beside it.
+    // A wire is a channel between two nodes, not a one-way street, and drawing
+    // the return separately doubled the picture to say one thing.
+    trip.push(`team:${controlId}>team:${legs[legs.length - 1]}>send`)
     trip.push(`team:${controlId}>delivered>passed`)
     return trip
   }
@@ -405,7 +413,10 @@ export const TOUR_CSS = `
    board too — that scene is the live one, and a board that cannot show work in
    progress is not reporting a state, it is drawing a diagram. */
 .tour-live{stroke:var(--ok)}
-.tour.quiet .tour-live{animation:none;opacity:.55}
+/* Stuck is red and it is not the same news as busy: one is work happening,
+   the other is work that has stopped and needs a person. */
+.tour-stuck{stroke:var(--bad)}
+.tour.quiet .tour-live,.tour.quiet .tour-stuck{animation:none;opacity:.55}
 .wire.live{stroke-dasharray:6 4;animation:tourFlow .9s linear infinite}
 .tour.quiet .wire.live{animation:none}
 @keyframes tourHalo{0%,100%{opacity:0;stroke-width:1}40%{opacity:.5;stroke-width:2.4}}
@@ -415,12 +426,13 @@ export const TOUR_CSS = `
 .w-owns{stroke:var(--line)}
 .w-send{stroke:var(--handoff);stroke-width:2.4;opacity:.8}
 .w-pull{stroke:var(--handoff);stroke-width:2.4;opacity:.8}
-.w-audit{stroke:var(--handoff);stroke-width:2.2;opacity:.8}
-/* Escalation is a CONDITION, not a handover: nothing travels it, so it is
-   dashed and crawls exactly like rework inside a team. Both mean the same
-   thing — work that cannot move on its own. */
-.w-escalate{stroke:var(--oversight);stroke-width:1.8;stroke-dasharray:5 5;opacity:.5}
-.tour:not(.still) .w-escalate{animation:tourFlow 1.1s linear infinite}
+/* Escalation is a CONDITION, not a handover: nothing travels it. It is red
+   because it is the same news as a rejection — work that cannot move — and it
+   only crawls when a token is ACTUALLY stuck on it. An escalation line that
+   animates all the time reports an emergency that is not happening. */
+.w-escalate{stroke:var(--bad);stroke-width:1.8;stroke-dasharray:5 5;opacity:.35}
+.w-escalate.raised{opacity:.9;stroke-width:2.4}
+.tour:not(.quiet) .w-escalate.raised{animation:tourFlow 1.1s linear infinite}
 .w-admit{stroke:var(--ink);stroke-width:2.4;opacity:.75}
 .w-route0{stroke:var(--handoff);stroke-width:2.6;opacity:.8}
 .w-route1{stroke:var(--warn);stroke-width:2.6;opacity:.8;stroke-dasharray:9 5}
@@ -538,7 +550,7 @@ export const TOUR_SCRIPT = `
     // the same pixels and the board looks like it has half the wiring it has.
     // Escalation and audit both run team → controller, so they must bow apart
     // or the two meanings land on the same pixels.
-    send: 0, pull: 0, audit: 34, escalate: -46, passed: 0,
+    send: 0, pull: 0, escalate: -46, passed: 0,
   }
   const NS = 'http://www.w3.org/2000/svg'
   // FNV-1a, 0..1. Deterministic on purpose: the same edge desyncs the same way
@@ -581,9 +593,10 @@ export const TOUR_SCRIPT = `
   svg.appendChild(liveLayer)
   const LIVE = []
   for (const node of Object.values(world)) {
-    if (node.status !== 'working') continue
+    const state = node.status === 'working' ? 'live' : (node.stuck ? 'stuck' : null)
+    if (!state) continue
     const ring = document.createElementNS(NS, 'rect')
-    ring.setAttribute('class', 'tour-halo tour-live')
+    ring.setAttribute('class', 'tour-halo tour-' + state)
     ring.setAttribute('rx', 12)
     ring.style.animationDelay = (hash(node.id) * -2.6) + 's'
     liveLayer.appendChild(ring)
@@ -650,8 +663,9 @@ export const TOUR_SCRIPT = `
   // The three that carry a token, and therefore belong to one route at a time.
   // Everything else — ownership, assignment, review, rework, escalation, the
   // line out to the sink — is true on every scene.
-  const HANDOVER = new Set(['send', 'pull', 'audit'])
+  const HANDOVER = new Set(['send', 'pull'])
   const RUNNING = new Set(Object.values(world).filter((n) => n.status === 'working').map((n) => n.id))
+  const STUCK = new Set(Object.values(world).filter((n) => n.stuck).map((n) => n.id))
   function draw(visible, motionWf) {
     const order = motionWf ? new Set(data.orders?.[motionWf] || []) : null
     for (const { e, p, lane } of WIRES) {
@@ -660,6 +674,9 @@ export const TOUR_SCRIPT = `
       // recorded here"; this one means "happening now", so they are separate
       // classes even though both move.
       p.classList.toggle('live', RUNNING.has(e.from) || RUNNING.has(e.to))
+      // Raised only while that team really is stuck, so the red crawl reports
+      // an event rather than decorating the possibility of one.
+      if (e.kind === 'escalate') p.classList.toggle('raised', STUCK.has(e.from))
       // Structure is shown wherever both ends survive. Handovers are not: a
       // scene showing ONE route must show only that route's handovers, or a
       // route that happens to use every team keeps every other route's lines
