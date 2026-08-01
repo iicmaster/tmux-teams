@@ -1,6 +1,6 @@
 {
   "name": "tmux-teams",
-  "version": "0.12.3",
+  "version": "0.13.0",
   "description": "PM orchestration over tmux/ACP with party verification, sqthink planning, and an opt-in Stage 1 field-evidence sidecar.",
   "author": {
     "name": "IIC Master"
