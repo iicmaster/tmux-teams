@@ -79,6 +79,8 @@ const TERMINAL_LIVENESS_STATES = new Set(['completed', 'cancelled', 'failed'])
 const DIGEST_FIELDS = ['content_digest', 'output_digest', 'locations_digest']
 const HERMETIC_ENV_KEYS = [
   'ACP_AGENT_ID',
+  'ACP_MODEL',
+  'ACP_REASONING_EFFORT',
   'ACP_EXPECT_MODEL',
   'ACP_EXPECT_REASONING_EFFORT',
   'ACP_TEST_SNAPSHOT_BUDGET_BYTES',
@@ -688,6 +690,85 @@ concurrentTest('default mode writes a bounded new-session receipt before prompt 
   assert.doesNotMatch(committed.raw, /(?:\/home|\/tmp)\//)
   assert.ok(!committed.raw.includes('do the thing'))
   assert.ok(Buffer.byteLength(committed.raw, 'utf8') <= 32 * 1024)
+})
+
+concurrentTest('per-dispatch ACP model and reasoning overrides are applied before identity and prompt', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-config-override-'))
+  const protocolLog = join(cwd, 'config-override.protocol.log')
+  const r = await asyncRun('task-config-override', {
+    ACP_MODEL: 'gpt-target',
+    ACP_REASONING_EFFORT: 'high',
+    MOCK_CONFIG_IDENTITY: '1',
+    MOCK_MODEL: 'gpt-default',
+    MOCK_REASONING_EFFORT: 'low',
+    MOCK_MODEL_OPTIONS: 'gpt-default,gpt-target',
+    MOCK_REASONING_EFFORT_OPTIONS: 'low,high',
+    MOCK_PROTOCOL_LOG: protocolLog,
+  }, cwd)
+  assert.equal(r.status, 0, `override exit 0 expected; stderr:\n${r.stderr}`)
+  const committed = receipt(cwd).value
+  assert.equal(committed.requested_model, 'gpt-target')
+  assert.equal(committed.requested_reasoning_effort, 'high')
+  assert.equal(committed.effective_identity, 'gpt-target[high]')
+  assert.equal(committed.identity_status, 'matched')
+  assert.deepEqual(
+    readFileSync(protocolLog, 'utf8').trim().split('\n').map((line) => line.split(':')[0]),
+    ['initialize', 'session/new', 'session/set_config_option', 'session/set_config_option', 'session/prompt'],
+  )
+})
+
+concurrentTest('per-dispatch ACP overrides also apply to a loaded session', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-config-load-'))
+  const first = await asyncRun('task-config-load', {
+    MOCK_CONFIG_IDENTITY: '1',
+    MOCK_MODEL: 'gpt-default',
+    MOCK_REASONING_EFFORT: 'low',
+    MOCK_MODEL_OPTIONS: 'gpt-default,gpt-target',
+    MOCK_REASONING_EFFORT_OPTIONS: 'low,high',
+  }, cwd)
+  assert.equal(first.status, 0, `baseline exit 0 expected; stderr:\n${first.stderr}`)
+  const protocolLog = join(cwd, 'config-load.protocol.log')
+  const loaded = await asyncRun('task-config-load', {
+    ACP_RESUME: 'sess_mock',
+    ACP_MODEL: 'gpt-target',
+    ACP_REASONING_EFFORT: 'high',
+    MOCK_CONFIG_IDENTITY: '1',
+    MOCK_MODEL: 'gpt-default',
+    MOCK_REASONING_EFFORT: 'low',
+    MOCK_MODEL_OPTIONS: 'gpt-default,gpt-target',
+    MOCK_REASONING_EFFORT_OPTIONS: 'low,high',
+    MOCK_PROTOCOL_LOG: protocolLog,
+  }, cwd)
+  assert.equal(loaded.status, 0, `loaded override exit 0 expected; stderr:\n${loaded.stderr}`)
+  const state = snapshot(loaded.cwd, 'task-config-load')
+  assert.equal(state.session_id, 'sess_mock')
+  assert.equal(state.requested_model, 'gpt-target')
+  assert.equal(state.requested_reasoning_effort, 'high')
+  assert.equal(state.effective_identity, 'gpt-target[high]')
+  assert.equal(state.identity_status, 'matched')
+  assert.deepEqual(
+    readFileSync(protocolLog, 'utf8').trim().split('\n').map((line) => line.split(':')[0]),
+    ['initialize', 'session/load', 'session/set_config_option', 'session/set_config_option', 'session/prompt'],
+  )
+})
+
+concurrentTest('an unavailable per-dispatch ACP model fails closed before config mutation or prompt', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-config-invalid-'))
+  const protocolLog = join(cwd, 'config-invalid.protocol.log')
+  const r = await asyncRun('task-config-invalid', {
+    ACP_MODEL: 'gpt-missing',
+    MOCK_CONFIG_IDENTITY: '1',
+    MOCK_MODEL: 'gpt-default',
+    MOCK_REASONING_EFFORT: 'low',
+    MOCK_MODEL_OPTIONS: 'gpt-default,gpt-target',
+    MOCK_REASONING_EFFORT_OPTIONS: 'low,high',
+    MOCK_PROTOCOL_LOG: protocolLog,
+  }, cwd)
+  assert.equal(r.status, 1, `invalid override must fail; stderr:\n${r.stderr}`)
+  const protocol = readFileSync(protocolLog, 'utf8')
+  assert.match(protocol, /session\/new/)
+  assert.doesNotMatch(protocol, /session\/set_config_option|session\/prompt/)
+  assert.equal(receipt(cwd).value.identity_status, 'missing')
 })
 
 concurrentTest('required mode records an exact load witness and ignores a response sessionId', async () => {

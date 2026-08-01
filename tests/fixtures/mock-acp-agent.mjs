@@ -10,6 +10,8 @@ const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`)
 const reply = (id, result) => send({ jsonrpc: '2.0', id, result })
 const replyError = (id, message = 'mock operation failed') => send({ jsonrpc: '2.0', id, error: { code: -32000, message } })
 let currentSessionId = process.env.MOCK_SESSION_ID ?? 'sess_mock'
+let configuredModel = process.env.MOCK_MODEL ?? process.env.ACP_EXPECT_MODEL ?? 'gpt-mock'
+let configuredReasoningEffort = process.env.MOCK_REASONING_EFFORT ?? process.env.ACP_EXPECT_REASONING_EFFORT ?? ''
 let promptSeen = false
 let cancelSeen = false
 let descendant = null
@@ -34,13 +36,23 @@ function notify(update, sessionId = currentSessionId) {
 
 function identity() {
   if (process.env.MOCK_NO_IDENTITY === '1') return {}
-  const model = process.env.MOCK_MODEL ?? process.env.ACP_EXPECT_MODEL ?? 'gpt-mock'
-  const effort = process.env.MOCK_REASONING_EFFORT ?? process.env.ACP_EXPECT_REASONING_EFFORT
+  const model = configuredModel
+  const effort = configuredReasoningEffort
   if (process.env.MOCK_CONFIG_IDENTITY === '1') {
+    const modelOptions = (process.env.MOCK_MODEL_OPTIONS?.split(',').map((value) => value.trim()).filter(Boolean) ?? [])
+    const effortOptions = (process.env.MOCK_REASONING_EFFORT_OPTIONS?.split(',').map((value) => value.trim()).filter(Boolean) ?? [])
+    if (!modelOptions.includes(model)) modelOptions.unshift(model)
+    if (effort && !effortOptions.includes(effort)) effortOptions.unshift(effort)
     return {
       configOptions: [
-        { id: 'model', currentValue: model },
-        ...(effort ? [{ id: 'reasoning_effort', currentValue: effort }] : []),
+        {
+          id: 'model', name: 'Model', type: 'select', currentValue: model,
+          options: modelOptions.map((value) => ({ value, name: value })),
+        },
+        ...(effort ? [{
+          id: 'reasoning_effort', name: 'Reasoning effort', type: 'select', currentValue: effort,
+          options: effortOptions.map((value) => ({ value, name: value })),
+        }] : []),
       ],
     }
   }
@@ -408,6 +420,19 @@ async function handleLine(line) {
           : {}),
         ...identity(),
       })
+    case 'session/set_config_option': {
+      if (process.env.MOCK_SET_CONFIG_ERROR === '1') return replyError(message.id, 'mock config update failed')
+      if (process.env.MOCK_CONFIG_IDENTITY !== '1') return replyError(message.id, 'mock config options unavailable')
+      const configId = message.params?.configId
+      const value = message.params?.value
+      const current = identity().configOptions?.find((option) => option.id === configId)
+      if (!current || typeof value !== 'string' || !current.options.some((option) => option.value === value)) {
+        return replyError(message.id, `mock rejected ${configId}`)
+      }
+      if (configId === 'model') configuredModel = value
+      if (configId === 'reasoning_effort') configuredReasoningEffort = value
+      return reply(message.id, identity())
+    }
     case 'session/prompt':
       await waitForMockGate('prompt')
       if (process.env.MOCK_ASSERT_RECEIPT_BEFORE_PROMPT === '1') {

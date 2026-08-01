@@ -1304,11 +1304,29 @@ const progressFingerprints = new Map()
 let planFingerprint = null
 let planEntryCount = 0
 
-const requestedModelExpected = process.env.ACP_EXPECT_MODEL?.trim() || ''
-const requestedReasoningEffortExpected = process.env.ACP_EXPECT_REASONING_EFFORT?.trim() || ''
+function requestedConfigOverride(name, limit) {
+  const raw = process.env[name]
+  if (raw === undefined || raw.trim() === '') return ''
+  const value = raw.trim()
+  if (value.length > limit || /[\u0000-\u001f\u007f]/.test(value)) {
+    console.error(`invalid ${name} — use a bounded value without control characters`)
+    process.exit(2)
+  }
+  return value
+}
+
+// ACP_EXPECT_* remains the explicit identity witness for callers that only
+// want verification. ACP_MODEL/ACP_REASONING_EFFORT additionally request a
+// per-dispatch session configuration; when no separate expectation is given,
+// the requested value becomes the expected value so the adapter cannot claim a
+// successful dispatch after the ACP agent silently ignored the override.
+const requestedModelOverride = requestedConfigOverride('ACP_MODEL', MAX_MODEL)
+const requestedReasoningEffortOverride = requestedConfigOverride('ACP_REASONING_EFFORT', MAX_REASONING_EFFORT)
+const requestedModelExpected = process.env.ACP_EXPECT_MODEL?.trim() || requestedModelOverride
+const requestedReasoningEffortExpected = process.env.ACP_EXPECT_REASONING_EFFORT?.trim() || requestedReasoningEffortOverride
 const requestedModel = boundedText(requestedModelExpected, '', MAX_MODEL)
 const requestedReasoningEffort = boundedText(requestedReasoningEffortExpected, '', MAX_REASONING_EFFORT)
-let identity = { effectiveIdentity: '', status: requestedModelExpected ? 'missing' : 'unverified' }
+let identity = { effectiveIdentity: '', status: requestedModelExpected || requestedReasoningEffortExpected ? 'missing' : 'unverified' }
 
 function noteError(cause) {
   lastErrorText = boundedText(cause?.message ?? cause, 'unknown', MAX_ERROR_TEXT)
@@ -1765,21 +1783,29 @@ function handleUpdate(update) {
 }
 
 function extractIdentity(session) {
-  const currentModelId = typeof session?.models?.currentModelId === 'string'
-    ? session.models.currentModelId.trim() : ''
-  let baseModel = ''
-  let reasoningEffort = ''
-  const currentMatch = currentModelId.match(/^(.+?)\[([^\]]+)\]$/)
-  if (currentMatch) {
-    baseModel = currentMatch[1].trim()
-    reasoningEffort = currentMatch[2].trim()
-  } else if (currentModelId) {
-    baseModel = currentModelId
-  }
   const options = Array.isArray(session?.configOptions) ? session.configOptions : []
   const optionValue = (id) => {
     const option = options.find((item) => item?.id === id)
     return typeof option?.currentValue === 'string' ? option.currentValue.trim() : ''
+  }
+  const currentModelId = typeof session?.models?.currentModelId === 'string'
+    ? session.models.currentModelId.trim() : ''
+  const configuredModel = optionValue('model')
+  const configuredReasoningEffort = optionValue('reasoning_effort')
+  let baseModel = ''
+  let reasoningEffort = ''
+  const currentMatch = currentModelId.match(/^(.+?)\[([^\]]+)\]$/)
+  // A config-options response is the ACP witness returned by
+  // session/set_config_option. Prefer it over the original models field so a
+  // post-session override cannot be masked by stale startup metadata.
+  if (configuredModel) {
+    baseModel = configuredModel
+    reasoningEffort = configuredReasoningEffort
+  } else if (currentMatch) {
+    baseModel = currentMatch[1].trim()
+    reasoningEffort = currentMatch[2].trim()
+  } else if (currentModelId) {
+    baseModel = currentModelId
   }
   if (!baseModel) baseModel = optionValue('model')
   if (!reasoningEffort) reasoningEffort = optionValue('reasoning_effort')
@@ -1788,11 +1814,71 @@ function extractIdentity(session) {
   const effectiveIdentity = normalizedModel
     ? (normalizedReasoningEffort ? `${normalizedModel}[${normalizedReasoningEffort}]` : normalizedModel)
     : ''
-  const status = !requestedModelExpected ? 'unverified' :
+  const identityRequested = requestedModelExpected || requestedReasoningEffortExpected
+  const status = !identityRequested ? 'unverified' :
     (!normalizedModel || (requestedReasoningEffortExpected && !normalizedReasoningEffort) ? 'missing' :
-      (baseModel !== requestedModelExpected ||
-       (requestedReasoningEffortExpected && reasoningEffort !== requestedReasoningEffortExpected) ? 'mismatched' : 'matched'))
+      (requestedModelExpected && baseModel !== requestedModelExpected) ||
+      (requestedReasoningEffortExpected && reasoningEffort !== requestedReasoningEffortExpected)
+        ? 'mismatched' : 'matched')
   return { effectiveIdentity, status }
+}
+
+function configOption(response, id) {
+  const options = Array.isArray(response?.configOptions) ? response.configOptions : []
+  return options.find((option) => option?.id === id) ?? null
+}
+
+function assertConfigOptionValue(response, id, value, phase) {
+  const option = configOption(response, id)
+  if (!option) {
+    throw Object.assign(new Error(`${phase} did not advertise ACP config option ${id}`), {
+      code: 'config-option-unsupported',
+    })
+  }
+  if (Array.isArray(option.options)
+    && !option.options.some((candidate) => candidate?.value === value)) {
+    throw Object.assign(new Error(`${phase} rejected unsupported ${id} value ${value}`), {
+      code: 'config-option-invalid',
+    })
+  }
+  return option
+}
+
+async function applyRequestedSessionConfig(sessionId, response) {
+  const requested = [
+    ['model', requestedModelOverride],
+    ['reasoning_effort', requestedReasoningEffortOverride],
+  ].filter(([, value]) => value)
+  if (!requested.length) return response
+
+  let effectiveResponse = response
+  for (const [configId, value] of requested) {
+    assertConfigOptionValue(effectiveResponse, configId, value, 'ACP session response')
+    const result = await request('session/set_config_option', {
+      sessionId,
+      configId,
+      value,
+    })
+    assertProtocolFence(`session/set_config_option(${configId}) response`)
+    if (!Array.isArray(result?.configOptions)) {
+      throw Object.assign(new Error(`ACP session/set_config_option(${configId}) returned no configOptions`), {
+        code: 'config-option-response-invalid',
+      })
+    }
+    effectiveResponse = { ...effectiveResponse, configOptions: result.configOptions }
+    const applied = assertConfigOptionValue(
+      effectiveResponse,
+      configId,
+      value,
+      `ACP session/set_config_option(${configId}) response`,
+    )
+    if (applied.currentValue !== value) {
+      throw Object.assign(new Error(`ACP agent did not apply ${configId}=${value}`), {
+        code: 'config-option-not-applied',
+      })
+    }
+  }
+  return effectiveResponse
 }
 
 function observedAgentInfo(response) {
@@ -2631,7 +2717,7 @@ rl.on('line', (rawLine) => {
       entry.trace.acknowledged_at = iso(Date.now())
     }
     recordTestStage(`response-${entry.method.replaceAll('/', '-')}-correlated`)
-    if (!message.error && ['initialize', 'session/new', 'session/load'].includes(entry.method)) {
+    if (!message.error && ['initialize', 'session/new', 'session/load', 'session/set_config_option'].includes(entry.method)) {
       meaningfulProgress(`${entry.method.replace('/', '_')}_response`, { label: `${entry.method} response` })
     }
     if (entry.method === 'session/prompt' && !message.error) meaningfulProgress('prompt_response', { label: 'turn response' })
@@ -3174,6 +3260,7 @@ async function protocolRun() {
   } else {
     await startNewSession(false)
   }
+  sessionResponse = await applyRequestedSessionConfig(sessionId, sessionResponse)
   enforceIdentity(sessionResponse)
   activeSessionId = sessionId
   await waitForTestGate('pre-receipt')

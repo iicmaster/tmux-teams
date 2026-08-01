@@ -533,6 +533,15 @@ ANTHROPIC_MODEL=claude-opus-4-8 \
   node <skill-root>/scripts/acp-companion.mjs claude <repo> <task-id> <brief-file> [stall-sec]
 ```
 
+For a per-dispatch Codex choice, set `ACP_MODEL` and
+`ACP_REASONING_EFFORT`. The companion applies them after `session/new` or
+`session/load` with the standard `session/set_config_option` method, in model
+then reasoning-effort order, and verifies the returned `configOptions` before
+the prompt. `ACP_EXPECT_MODEL` and `ACP_EXPECT_REASONING_EFFORT` remain
+available for an explicit identity witness; when omitted, each selector is
+also treated as its expected value. An unavailable option, rejected value, or
+non-applied response fails closed before prompt delivery.
+
 The claude adapter's endpoint and model are fully environment-driven; it is not
 limited to Anthropic-hosted models. A real ACP outbox round-trip was verified
 2026-07-20 against Kimi's Anthropic-compatible endpoint. Keep credentials in the
