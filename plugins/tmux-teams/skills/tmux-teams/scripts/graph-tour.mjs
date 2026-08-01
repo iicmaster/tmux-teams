@@ -535,6 +535,20 @@ export const TOUR_SCRIPT = `
   let fitted = { k: 1, x: 0, y: 0 }
   let user = { k: 1, dx: 0, dy: 0 }
 
+  // This page reloads itself whenever the snapshot changes, which threw the
+  // reader back to scene 1 at the default zoom every few seconds — unusable
+  // for the one thing it is for, which is sitting and watching. Where you were
+  // looking survives the reload; the DATA is always the new data.
+  const SEAT = 'tmux-teams.graph.seat'
+  const remember = () => {
+    try {
+      sessionStorage.setItem(SEAT, JSON.stringify({ at, k: user.k, dx: user.dx, dy: user.dy }))
+    } catch (error) { /* private mode: the board still works, it just forgets */ }
+  }
+  const seated = (() => {
+    try { return JSON.parse(sessionStorage.getItem(SEAT) || 'null') } catch { return null }
+  })()
+
   const NODES = {}
   for (const n of Object.values(world)) {
     const el = document.createElement('div')
@@ -827,6 +841,7 @@ export const TOUR_SCRIPT = `
     root.classList.toggle('lean', k < DETAIL_AT)
     // The class just changed what a card measures, so the halos have to follow.
     fitHalos()
+    remember()
     const zoom = root.querySelector('[data-tour-zoom]')
     if (zoom) zoom.textContent = Math.round(k * 100) + '%'
   }
@@ -867,6 +882,7 @@ export const TOUR_SCRIPT = `
     stage.addEventListener(done, () => { drag = null; stage.style.cursor = '' })
   }
 
+  let restoring = Boolean(seated)
   function go(index) {
     at = (index + scenes.length) % scenes.length
     root.classList.remove('free')
@@ -901,7 +917,10 @@ export const TOUR_SCRIPT = `
     // A new scene means a new frame, so the reader's own zoom starts over —
     // carrying it across would drop them into a corner of a board they have
     // not seen yet.
-    user = { k: 1, dx: 0, dy: 0 }
+    // A scene change resets the reader's zoom — except on the first paint
+    // after a reload, where restoring it is the whole point.
+    user = restoring && seated ? { k: seated.k, dx: seated.dx, dy: seated.dy } : { k: 1, dx: 0, dy: 0 }
+    restoring = false
     apply()
 
     root.querySelector('[data-tour-kicker]').textContent = sc.kicker || ''
@@ -959,6 +978,6 @@ export const TOUR_SCRIPT = `
   // every reader who turned it on afterwards.
   reduced.addEventListener('change', freshness)
   freshness()
-  go(0)
+  go(seated ? seated.at : 0)
 })()
 `

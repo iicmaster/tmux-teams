@@ -6,6 +6,12 @@ export const PULSE_REFRESH_SOURCE = `
   const body = document.body
   const marker = document.querySelector('meta[name="tmux-teams-snapshot-id"]')
   const initialSnapshotId = marker?.content || ''
+  // The hash of the page as it was when this script first saw the marker. Only
+  // a change to THIS file is a reason to reload it.
+  let pageDigest = null
+  // The last marker this page saw. A new one is proof the publisher is alive,
+  // whether or not anything on the board moved.
+  let lastSeen = initialSnapshotId
   const header = document.querySelector('[data-observation-expires-at]')
   const toggle = document.querySelector('[data-refresh-toggle]')
   const status = document.querySelector('[data-refresh-status]')
@@ -138,7 +144,71 @@ export const PULSE_REFRESH_SOURCE = `
       if (!response.ok) throw new Error('marker response')
       const next = await response.json()
       if (!next || typeof next.snapshot_id !== 'string') throw new Error('marker shape')
-      if (next.snapshot_id !== initialSnapshotId) {
+      // Reload when THIS PAGE changed, not when a new snapshot exists. The
+      // publisher stamps a fresh snapshot id every tick — every five seconds
+      // under a running watcher — so keying off it reloaded a board that had not
+      // changed a pixel, throwing the reader out of whatever they were reading
+      // several times a minute. The marker already hashes every published
+      // file; compare the hash of the page we are actually on.
+      // A board is republished every tick because the page carries a clock, so
+      // its file hash changes even when nothing on the board did. Where the
+      // page can tell us what its MEANINGFUL content is, ask that instead:
+      // reloading to advance a timestamp destroys whatever the reader was
+      // doing in order to update the one thing they were not looking at.
+      const own = document.querySelector('[data-tour-data]')
+      if (own) {
+        const pageUrl = new URL(location.pathname, location.href)
+        const fresh = await fetch(pageUrl, { cache: 'no-store', credentials: 'same-origin' })
+        if (fresh.ok) {
+          const text = await fresh.text()
+          // String search, not a regular expression: whatever assembles this
+          // file into the published asset strips backslashes, so a regex
+          // literal arrives with its escapes gone and the script will not
+          // parse. The loop-occupancy suite catches that by parsing the
+          // published bytes, which is the only reason it was noticed.
+          const openTag = '<script type="application/json" data-tour-data>'
+          const start = text.indexOf(openTag)
+          const end = start === -1 ? -1 : text.indexOf('</' + 'script>', start)
+          const block = start === -1 || end === -1 ? null : text.slice(start + openTag.length, end)
+          if (block !== null) {
+            if (block === own.textContent) {
+              // The board did not change, but a NEW marker means the producer
+              // just wrote one — which is exactly what freshness asks. Without
+              // this the page went stale while the loop was still running,
+              // then went quiet, and reported a dead system that was alive.
+              if (next.snapshot_id !== lastSeen) {
+                lastSeen = next.snapshot_id
+                if (header) {
+                  header.dataset.observationExpiresAt =
+                    new Date(Date.now() + intervalMs * 3).toISOString()
+                }
+              }
+              updateFreshness()
+              return
+            }
+            await verifyRefreshAsset(next)
+            capture()
+            location.reload()
+            return
+          }
+        }
+      }
+      const mine = Object.values(next.files || {})
+        .find((file) => file && typeof file.path === 'string'
+          && file.path === location.pathname.split('/').pop())
+      const digest = mine && typeof mine.sha256 === 'string' ? mine.sha256 : null
+      if (digest === null) {
+        // No hash for this page: fall back to the snapshot id rather than
+        // never reloading, because a board frozen forever is the worse failure.
+        if (next.snapshot_id !== initialSnapshotId) {
+          await verifyRefreshAsset(next)
+          capture()
+          location.reload()
+          return
+        }
+      } else if (pageDigest === null) {
+        pageDigest = digest
+      } else if (digest !== pageDigest) {
         await verifyRefreshAsset(next)
         capture()
         location.reload()

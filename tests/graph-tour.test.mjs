@@ -9,6 +9,7 @@ import {
   TOUR_CSS, TOUR_SCRIPT, buildTour, jsonBlock, renderTourChart,
 } from '../plugins/tmux-teams/skills/tmux-teams/scripts/graph-tour.mjs'
 import { validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
+import { renderPulseRefreshScript } from '../plugins/tmux-teams/skills/tmux-teams/scripts/pulse-refresh.mjs'
 
 const MODELS = { dispatcher: 'm', worker: 'm', evaluator: 'm' }
 const team = (id, workers) => ({
@@ -413,4 +414,18 @@ test('structure is true on every scene; a handover belongs to one route', () => 
   for (const order of Object.values(orders)) {
     assert.equal(order.some((key) => key.endsWith('>passed')), false)
   }
+})
+
+test('every shipped client string survives being written to a file', () => {
+  // All three are assembled into a published asset, and the assembly eats
+  // backslashes and ends on a backtick. A regex literal arrives with its
+  // escapes gone; a backtick in a comment closes the template. Seven times
+  // between them during one session, each failing far from its cause.
+  const shipped = { TOUR_SCRIPT, TOUR_CSS, refresh: renderPulseRefreshScript() }
+  for (const [name, source] of Object.entries(shipped)) {
+    assert.equal(source.includes('`'), false, `${name} must contain no backtick`)
+  }
+  // Only the refresh script goes through the escaping layer.
+  assert.doesNotMatch(shipped.refresh, /=\s*\/[^/\n]*\\[sSdDwWbB/]/,
+    'the refresh script must not carry a regex literal — use indexOf')
 })

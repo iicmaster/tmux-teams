@@ -175,6 +175,17 @@ or every scene is as wide as the whole board and the zoom never acts.
 
 - **`.wire.off` must come after `.wire.dry`.** Equal specificity, so line order
   decides: with `dry` last, an edge told to leave the scene is painted back in.
+- **A published board must not reload to advance its own clock.** The
+  publisher stamps a new snapshot id every tick, so keying the reload off it
+  threw the reader out of whatever they were reading several times a minute.
+  Reload when the tour's own JSON changes; a new marker with unchanged data
+  means the producer is alive, so extend freshness in place instead. Scene and
+  camera are kept in `sessionStorage` so a real reload lands where the reader
+  was.
+- **No regex literal in `pulse-refresh.mjs`, and no backtick in any shipped
+  client string.** The assembly into a published asset eats backslashes and
+  ends on a backtick: a regex arrives with its escapes stripped and will not
+  parse, and a backtick in a comment closes the template. Use `indexOf`.
 - **`TOUR_SCRIPT` may contain no backtick.** It is a template literal; one in a
   comment closes it early and the module stops parsing far from the cause.
 - **Strokes need `vector-effect: non-scaling-stroke`.** The camera is a CSS
