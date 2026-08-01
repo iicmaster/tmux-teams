@@ -76,10 +76,18 @@ pass no path at all, or a glob like `tests/*.test.mjs`.
 ## Release flow
 
 1. Edit skills under `plugins/tmux-teams/skills/` (this repo IS canonical).
-2. Bump the version in BOTH `.claude-plugin/marketplace.json` and
-   `plugins/tmux-teams/.claude-plugin/plugin.json` (test asserts they match).
+2. Bump the version in all THREE places — `.claude-plugin/marketplace.json`
+   (twice: `metadata.version` and `plugins[0].version`),
+   `plugins/tmux-teams/.claude-plugin/plugin.json`, and `RELEASE_VERSION` in
+   `tests/plugin-structure.test.mjs`. That test is the only thing checking they
+   agree, so it has to state the number itself. This step said "BOTH" until
+   2026-08-01, and v0.12.0 reached the bump with the third one still on 0.11.1
+   until the test caught it.
 3. Run `node --test`, `git diff --check`, and
-   `claude plugin validate --strict .` locally.
+   `claude plugin validate --strict .` locally. `tests/acp-companion.test.mjs`
+   has a timing flake under a full-suite run — a DIFFERENT test name fails each
+   time. Re-run that file alone (expect 120/120) and the full suite again
+   before treating it as a regression.
 4. Push (confirm with Master first — see Rules), then
    `claude plugin marketplace update tmux-teams` and
    `claude plugin update tmux-teams@tmux-teams` (install cache is version-keyed).
