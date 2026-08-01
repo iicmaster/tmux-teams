@@ -215,11 +215,19 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
     seenEdge.add(key)
     edges.push({ from, to, kind, solid: true })
   }
+  // The controller can hand work straight to ANY team — that is what holding
+  // the front door means, and a route only decides which one it uses this
+  // time. So the line exists for every team; route scenes filter it down to
+  // the one that route actually uses.
+  if (controlId) {
+    for (const team of graph.teams) {
+      if (team.team_id === controlId) continue
+      addOnce(`team:${controlId}`, `team:${team.team_id}`, 'send')
+    }
+  }
   for (const workflow of graph.workflows) {
     const legs = workflow.route.filter((teamId) => teamId !== controlId)
     if (!legs.length) continue
-    // In: the controller admits work to the first team on the route.
-    if (controlId) addOnce(`team:${controlId}`, `team:${legs[0]}`, 'send')
     // Across: the next team pulls from the one before it.
     for (let i = 1; i < legs.length; i += 1) {
       addOnce(`team:${legs[i - 1]}`, `team:${legs[i]}`, 'pull')
@@ -376,7 +384,10 @@ export const TOUR_CSS = `
 .tour:not(.still) .wire.dry{animation:tourFlow 1.1s linear infinite}
 .tour.quiet .wire.dry{animation:none}
 @keyframes tourFlow{to{stroke-dashoffset:-20}}
-.w-passed{stroke:var(--ok);stroke-width:2.6;opacity:.85}
+/* Every handover is one colour. Green made the return leg and the delivery
+   read as a different KIND of relationship, when they are the same one —
+   work changing hands — at a different moment. */
+.w-passed{stroke:var(--handoff);stroke-width:2.6;opacity:.85}
 .tour-token{fill:var(--handoff);filter:drop-shadow(0 0 6px var(--handoff))}
 .tour-tail{fill:var(--handoff)}
 /* The travelling dot IS a work item — a token moving down its route, not an
@@ -389,6 +400,14 @@ export const TOUR_CSS = `
 /* Peak at 40%, not 50%: a quick inhale and a slow exhale reads as alive, while
    a symmetric one reads as a pulse meter. */
 .tour:not(.quiet) .tour-halo{animation:tourHalo 2.6s ease-in-out infinite}
+/* The live ring is green because it reports evidence, not the route colour:
+   this seat has a dispatch running on it right now. It breathes on the opening
+   board too — that scene is the live one, and a board that cannot show work in
+   progress is not reporting a state, it is drawing a diagram. */
+.tour-live{stroke:var(--ok)}
+.tour.quiet .tour-live{animation:none;opacity:.55}
+.wire.live{stroke-dasharray:6 4;animation:tourFlow .9s linear infinite}
+.tour.quiet .wire.live{animation:none}
 @keyframes tourHalo{0%,100%{opacity:0;stroke-width:1}40%{opacity:.5;stroke-width:2.4}}
 .w-assign{stroke:var(--assign);opacity:.5}
 .w-judge{stroke:var(--artifact);opacity:.55}
@@ -396,7 +415,7 @@ export const TOUR_CSS = `
 .w-owns{stroke:var(--line)}
 .w-send{stroke:var(--handoff);stroke-width:2.4;opacity:.8}
 .w-pull{stroke:var(--handoff);stroke-width:2.4;opacity:.8}
-.w-audit{stroke:var(--ok);stroke-width:2.2;opacity:.8}
+.w-audit{stroke:var(--handoff);stroke-width:2.2;opacity:.8}
 /* Escalation is a CONDITION, not a handover: nothing travels it, so it is
    dashed and crawls exactly like rework inside a team. Both mean the same
    thing — work that cannot move on its own. */
@@ -553,6 +572,24 @@ export const TOUR_SCRIPT = `
   // is given the wire's OWN d, which is what makes it impossible for a token to
   // appear anywhere its route does not go. Built once per route and shown per
   // scene, so changing scene never rebuilds the DOM.
+  // A halo on whatever is RUNNING right now. This is the one piece of motion
+  // that belongs on the opening board: that scene reports the live state, so a
+  // seat that is working has to be visible as working. It is keyed off the
+  // status the ledger produced — never off which route is on screen — so it
+  // appears when there is something to see and not otherwise.
+  const liveLayer = document.createElementNS(NS, 'g')
+  svg.appendChild(liveLayer)
+  const LIVE = []
+  for (const node of Object.values(world)) {
+    if (node.status !== 'working') continue
+    const ring = document.createElementNS(NS, 'rect')
+    ring.setAttribute('class', 'tour-halo tour-live')
+    ring.setAttribute('rx', 12)
+    ring.style.animationDelay = (hash(node.id) * -2.6) + 's'
+    liveLayer.appendChild(ring)
+    LIVE.push({ el: ring, around: node.id })
+  }
+
   const haloLayer = document.createElementNS(NS, 'g')
   const cometLayer = document.createElementNS(NS, 'g')
   svg.appendChild(haloLayer)
@@ -614,9 +651,15 @@ export const TOUR_SCRIPT = `
   // Everything else — ownership, assignment, review, rework, escalation, the
   // line out to the sink — is true on every scene.
   const HANDOVER = new Set(['send', 'pull', 'audit'])
+  const RUNNING = new Set(Object.values(world).filter((n) => n.status === 'working').map((n) => n.id))
   function draw(visible, motionWf) {
     const order = motionWf ? new Set(data.orders?.[motionWf] || []) : null
     for (const { e, p, lane } of WIRES) {
+      // A leg with something running on it crawls, whichever scene is up: it is
+      // the live state, not an explanation. The dry crawl means "nothing
+      // recorded here"; this one means "happening now", so they are separate
+      // classes even though both move.
+      p.classList.toggle('live', RUNNING.has(e.from) || RUNNING.has(e.to))
       // Structure is shown wherever both ends survive. Handovers are not: a
       // scene showing ONE route must show only that route's handovers, or a
       // route that happens to use every team keeps every other route's lines
@@ -668,7 +711,7 @@ export const TOUR_SCRIPT = `
   // card, so measuring first left that one halo 27px taller than the card it
   // was supposed to be ringing while every other one fitted.
   function fitHalos() {
-    for (const m of MOTION) {
+    for (const m of [...MOTION, ...LIVE]) {
       if (!m.around || m.el.style.display === 'none') continue
       const card = NODES[m.around]
       const n = world[m.around]

@@ -571,3 +571,19 @@ test('a pull is recorded as an act of the receiving dispatcher', () => {
   assert.equal(decision.event.from_team, 'build')
   assert.equal(decision.event.to_team, 'verify')
 })
+
+// ── the opening board reports a live state ───────────────────────────────────
+
+test('a seat with a dispatch running on it is marked working, on every scene', () => {
+  // Scene 0 is the live one: it answers what is happening now, not what the
+  // routes look like. So "working" has to reach the board as data — the client
+  // rings and crawls off this, and off nothing to do with which route is shown.
+  const idle = tourOf(TWO_TEAMS)
+  assert.equal(idle.world.b_w1.status, 'unbound')
+
+  const live = tourOf(TWO_TEAMS, snapshotWith([run('b_w1', 'running')]))
+  assert.equal(live.world.b_w1.status, 'working')
+  assert.match(live.world.b_w1.state, /work/i)
+  // Its neighbour is not: a running seat is one seat, not a lit-up team.
+  assert.equal(live.world.b_w2.status, 'unbound')
+})
