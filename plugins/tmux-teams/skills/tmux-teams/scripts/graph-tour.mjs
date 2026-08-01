@@ -133,6 +133,7 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
         state: card.state || '',
         lines: card.lines || [],
         status: card.status || 'unbound',
+        running: Boolean(card.running),
         role: card.role || kind,
       }
     }
@@ -462,6 +463,10 @@ export const TOUR_CSS = `
 .tnode b{display:block;font:600 .78rem/1.35 var(--mono)}
 .tnode span{display:block;color:var(--dim);font:400 .64rem/1.4 var(--mono);font-variant-numeric:tabular-nums}
 .tnode em{display:block;font:600 .6rem/1.4 var(--mono);font-style:normal;letter-spacing:.04em}
+/* Never hidden by the zoom-out rule: a stuck team must be readable at any
+   scale, and this is the only place that state exists as text. */
+.tnode .tnode-flag{color:var(--bad)}
+.tnode.s-working .tnode-flag,.k-team .tnode-flag{color:var(--ok)}
 .tnode.out{opacity:0;transform:translate(-50%,-50%) scale(.82);pointer-events:none}
 .k-team{background:var(--ink);border-color:var(--ink)}
 .k-team b{color:var(--bg)}.k-team span{color:var(--surface-2);opacity:.9}
@@ -540,6 +545,15 @@ export const TOUR_SCRIPT = `
     const head = document.createElement('b')
     head.textContent = n.title
     el.appendChild(head)
+    // The rings and the crawl are drawn in an aria-hidden SVG, so without this
+    // the two states that most need acting on reach nobody using a screen
+    // reader. Text, not colour and not motion.
+    if (n.stuck || n.running) {
+      const flag = document.createElement('em')
+      flag.className = 'tnode-flag'
+      flag.textContent = n.stuck ? '! STUCK — waiting on a decision' : '● WORKING NOW'
+      el.appendChild(flag)
+    }
     if (n.state) { const s = document.createElement('em'); s.textContent = n.state; el.appendChild(s) }
     for (const line of n.lines || []) {
       if (!line) continue
@@ -711,7 +725,8 @@ export const TOUR_SCRIPT = `
   // Everything else — ownership, assignment, review, rework, escalation, the
   // line out to the sink — is true on every scene.
   const HANDOVER = new Set(['pull'])
-  const RUNNING = new Set(Object.values(world).filter((n) => n.status === 'working').map((n) => n.id))
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)')
+  const RUNNING = new Set(Object.values(world).filter((n) => n.running).map((n) => n.id))
   const STUCK = new Set(Object.values(world).filter((n) => n.stuck).map((n) => n.id))
   function draw(visible, motionWf) {
     const order = motionWf ? new Set(data.orders?.[motionWf] || []) : null
@@ -720,7 +735,10 @@ export const TOUR_SCRIPT = `
       // the live state, not an explanation. The dry crawl means "nothing
       // recorded here"; this one means "happening now", so they are separate
       // classes even though both move.
-      p.classList.toggle('live', RUNNING.has(e.from) || RUNNING.has(e.to))
+      // A running worker means the ASSIGNMENT is live. The handover to the
+      // evaluator has not happened — that is what "still running" means — so
+      // crawling it too claimed an artifact was in motion that nobody sent.
+      p.classList.toggle('live', e.kind === 'assign' && RUNNING.has(e.to))
       // Raised only while that team really is stuck, so the red crawl reports
       // an event rather than decorating the possibility of one.
       if (e.kind === 'escalate') p.classList.toggle('raised', STUCK.has(e.from))
@@ -855,7 +873,15 @@ export const TOUR_SCRIPT = `
     const sc = scenes[at]
     const visible = new Set(sc.ids)
     root.classList.toggle('still', Boolean(sc.still))
-    for (const [id, el] of Object.entries(NODES)) el.classList.toggle('out', !visible.has(id))
+    for (const [id, el] of Object.entries(NODES)) {
+      const gone = !visible.has(id)
+      el.classList.toggle('out', gone)
+      // Fading to zero opacity hides a node from eyes only: a screen reader still read
+      // every team a route had skipped, so the one audience that cannot see
+      // the fade got the whole board plus a route that made no sense.
+      el.toggleAttribute('inert', gone)
+      el.setAttribute('aria-hidden', String(gone))
+    }
     draw(visible, sc.motion)
 
     // Fit the camera to what is in frame — the whole reason a scene is a set of
@@ -912,13 +938,27 @@ export const TOUR_SCRIPT = `
     if (ev.key === '-') { ev.preventDefault(); nudge(1 / 1.25) }
     if (ev.key === '0') { ev.preventDefault(); reset() }
   })
+  // Motion is a client loop: it keeps running long after the producer stops,
+  // so a stale board went on breathing and reported a system that was not
+  // there. The refresh script stamps freshness on <body>; watch it and go
+  // quiet, because the honest thing for a page with no fresh evidence is to
+  // stop claiming any.
+  const freshness = () => {
+    const stale = document.body.dataset.observationFreshness === 'stale'
+    root.classList.toggle('quiet', stale || reduced.matches)
+    try { stale || reduced.matches ? svg.pauseAnimations() : svg.unpauseAnimations() } catch (error) { /* no SMIL */ }
+  }
+  new MutationObserver(freshness).observe(document.body, {
+    attributes: true, attributeFilter: ['data-observation-freshness'],
+  })
+
   addEventListener('resize', () => go(at))
   // A CSS media query cannot reach SMIL, so reduced motion has to stop the
-  // comets explicitly or they keep running for the reader who asked them not to.
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    root.classList.add('quiet')
-    try { svg.pauseAnimations() } catch (error) { /* older engines: CSS still honours the query */ }
-  }
+  // comets explicitly — and it has to keep listening, because the preference
+  // can change while the page is open and reading it once at load ignored
+  // every reader who turned it on afterwards.
+  reduced.addEventListener('change', freshness)
+  freshness()
   go(0)
 })()
 `

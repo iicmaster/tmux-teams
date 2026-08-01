@@ -71,9 +71,18 @@ export function readWorkflowGraph(repo) {
     let text
     try {
       text = readFileSync(join(repo, '.tmux-teams', name), 'utf8')
-    } catch {
-      // Absent. This is the ONLY condition the bundled default is for (§3).
-      continue
+    } catch (error) {
+      // Absent — and ONLY absent — is what the bundled default is for (§3).
+      if (error?.code === 'ENOENT') continue
+      // Anything else is a declaration that exists and could not be read: a
+      // directory where the file should be, a permission error, a bad mount.
+      // Treating those as "no graph here" silently drew somebody else's
+      // four-team template while `graph.mjs check` exited 0 — the same quiet
+      // substitution the legacy-name read two lines above exists to prevent.
+      return {
+        ok: false, value: null, source: name,
+        reason: `${name} exists but could not be read: ${error?.code || error?.message || 'unknown error'}`,
+      }
     }
     let raw
     try {
@@ -417,6 +426,10 @@ const controllerState = (run, items, occupancy, graph = null) => {
   // most important thing this node can say, running or not.
   const door = graph ? frontDoorStatus(graph, items, occupancy) : { blocked: false }
   if (door.blocked && door.kind === 'person') return { status: 'dead', copy: door.copy }
+  // A door at its limit is blocked too. Reporting `watching — no exception
+  // open` on a node that also reads `WIP 1/1 · full` put two contradicting
+  // facts on one card, and the reassuring one was the larger of the two.
+  if (door.blocked) return { status: 'delivered', copy: door.copy }
   if (run && WORKING.has(run.state)) return { status: 'working', copy: 'reviewing the board now' }
   const parked = [...items.values()]
     .filter((item) => item.custody?.[item.custody.length - 1]?.event === 'escalated').length
@@ -589,6 +602,10 @@ export function renderGraphPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, r
         // can have happened.
         dispatched: Boolean(run),
         settled: Boolean(run) && !WORKING.has(run.state),
+        // Which of this seat's edges is live RIGHT NOW. A running worker means
+        // the assignment is happening; the handover to the evaluator has not,
+        // so crawling both said an artifact was moving that nobody had sent.
+        running: Boolean(run) && WORKING.has(run.state),
         role: isController ? "outer controller, holding this team's one worker seat" : agent.role,
         lines: [
           `${agent.role} · ${laneLine(run)}`,

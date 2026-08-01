@@ -120,6 +120,27 @@ would contradict its own red ring.
 Live rings and live tokens follow their NODE, not the route: they report state,
 so they appear wherever that node is on screen and vanish with it.
 
+**Motion is never the only carrier.** A running seat and a stuck team each print
+their state as TEXT on the card (`● WORKING NOW`, `! STUCK — waiting on a
+decision`), because the rings and the crawl live in an `aria-hidden` SVG and
+would otherwise reach nobody using a screen reader, nobody printing, and nobody
+who cannot separate the colours.
+
+**A stale board goes quiet.** Motion is a client loop and keeps running long
+after the producer stops, so a page whose snapshot has expired stops animating
+rather than reporting a system that is no longer there. The tour watches
+`data-observation-freshness` on `<body>` and adds `quiet`; `prefers-reduced-
+motion` is watched with a `change` listener, not read once at load.
+
+**`live` marks the leg that is happening, not every leg touching the seat.** A
+running worker means the ASSIGNMENT is live; the handover to the evaluator has
+not happened, because still-running is exactly what "not handed over" means.
+Crawling both said the work was in progress AND delivered at the same time.
+
+**A node hidden by a scene leaves the accessibility tree with it** — `inert` and
+`aria-hidden`, not `opacity: 0` alone, or a screen reader still reads every team
+the route skipped.
+
 An edge is **solid once evidence exists** and dashed until then. What is declared
 rather than observed (`owns`, `send`, `pull`, `passed`) is solid always;
 `assign`, `judge` and `reject` wait for a record.
@@ -158,8 +179,19 @@ or every scene is as wide as the whole board and the zoom never acts.
   comment closes it early and the module stops parsing far from the cause.
 - **Strokes need `vector-effect: non-scaling-stroke`.** The camera is a CSS
   transform, so without it every line and dash grows with the zoom.
-- **`prefers-reduced-motion` must also call `pauseAnimations()`.** A CSS media
-  query cannot reach SMIL, so honouring it in CSS alone is a claim, not a fact.
+- **`prefers-reduced-motion` must also call `pauseAnimations()`, and must keep
+  listening.** A CSS media query cannot reach SMIL, so honouring it in CSS alone
+  is a claim rather than a fact — and reading it once at load ignores every
+  reader who turns it on while the page is open.
+- **A dash belongs to the `.dry` state, never to a colour rule.** `.w-reject`
+  carried `stroke-dasharray` itself, so a rejection with a recorded verdict
+  could never render solid however correct the data was.
+- **`.wire.off` is `!important`.** Ordering alone held only until the next state
+  class was written below it — `.w-escalate.raised` restored opacity and kept
+  animating wires already told to leave.
+- **Absent is `ENOENT` and nothing else.** `readWorkflowGraph` treated every
+  read error as "no graph here", so a directory where the file should be drew
+  the bundled template while `check` exited 0.
 - **The data goes out as `application/json`, escaped for `<`, U+2028 and
   U+2029.** HTML-entity escaping does nothing inside a `<script>`; what ends the
   block is a literal `</script>` in free text a human typed.

@@ -614,3 +614,45 @@ test('a seat with a dispatch running on it is marked working, on every scene', (
   // Its neighbour is not: a running seat is one seat, not a lit-up team.
   assert.equal(live.world.b_w2.status, 'unbound')
 })
+
+// ── the page must not claim more than the evidence ───────────────────────────
+
+test('a declaration that exists but cannot be read fails closed', () => {
+  // §3: absent is the ONLY condition the bundled default is for. A directory
+  // where the file should be used to read as "no graph here", so the page drew
+  // somebody else's four-team template and `check` exited 0.
+  const dir = mkdtempSync(join(tmpdir(), 'graph-'))
+  mkdirSync(join(dir, '.tmux-teams/graph.json'), { recursive: true })
+  const read = readWorkflowGraph(dir)
+  assert.equal(read.ok, false, 'unreadable is not absent')
+  assert.match(read.reason, /could not be read/)
+  assert.notEqual(read.source, 'default', 'and it must not fall back to the template')
+})
+
+test('a full front door is reported as blocked, never as watching', () => {
+  // The controller node also carries `WIP 1/1 · full`. Saying "no exception
+  // open" beside it put two contradicting facts on one card, and the
+  // reassuring one was the bigger.
+  const graph = { ...TWO_TEAMS, teams: [
+    { team_id: 'control', name: 'Control', dispatcher_id: 'pm_in', worker_ids: ['pm'], evaluator_id: 'pm_out', models: MODELS },
+    ...TWO_TEAMS.teams,
+  ], workflows: [{ workflow_id: 'full', name: 'Full', route: ['control', 'build', 'verify'] }] }
+  const dir = withLedger(graph, 'tok', [
+    { at: '2026-07-27T09:00:00.000Z', event: 'assigned', agent_id: 'pm', to_team: 'control',
+      task_id: 't-pm', dispatch_id: 'd-pm' },
+  ])
+  const page = renderGraphPage(dir, snapshotWith(), { now: NOW })
+  const block = page.match(/<script type="application\/json" data-tour-data>([\s\S]*?)<\/script>/)
+  const control = JSON.parse(block[1]).world['team:control']
+  assert.match(control.lines.join(' '), /WIP 1\/1/, 'the door is at its limit')
+  assert.doesNotMatch(control.state, /no exception open/, 'so it cannot also be calm')
+})
+
+test('a running worker lights its assignment, not its handover', () => {
+  // "Still running" is exactly what means the artifact has NOT reached the
+  // evaluator yet, so crawling that leg claimed a handover nobody made.
+  const live = tourOf(TWO_TEAMS, snapshotWith([run('b_w1', 'running')]))
+  assert.equal(live.world.b_w1.running, true)
+  const settled = tourOf(TWO_TEAMS, snapshotWith([run('b_w1', 'awaiting-verdict')]))
+  assert.equal(settled.world.b_w1.running, false, 'a finished dispatch is not a live one')
+})

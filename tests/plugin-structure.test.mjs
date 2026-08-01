@@ -14,7 +14,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PLUGIN = join(ROOT, 'plugins/tmux-teams')
 const SKILLS = ['tmux-teams', 'party-mode', 'party-auto', 'party-advise', 'sqthink', 'codex-tmux-driver',
   'graph-setup', 'claude-advisor', 'codex-advisor']
-const RELEASE_VERSION = '0.12.0'
+const RELEASE_VERSION = '0.12.1'
 // The Stage 1 CLI entry points were removed on 2026-07-29. What remains is the
 // part the current system actually reaches: `delivery-loop-export` builds the
 // `delivery_loop` section of pulse.json (a frozen v4 schema) and pulls in the
