@@ -101,6 +101,7 @@ that do not exist.
 | `dry` crawl | **nothing recorded here yet** | any scene except 1 |
 | `live` crawl + green ring | **happening now** — a dispatch is running on that seat | any scene, from the ledger |
 | `raised` red crawl + red ring | **stuck** — the team holds a token whose last event was `escalated` or `questioned` | any scene, from the ledger |
+| green token | **the leg that delivered the work a busy team is holding** — read from the `pulled` event's own `from_team`, never guessed from the route, because a team can sit on several routes and only the record knows which one this token travelled | any scene, from the ledger |
 
 **Scene 1 has no token and no dry crawl.** It answers "who exists", and a board
 where everything moves cannot say which parts move. It DOES show live and stuck,
@@ -108,7 +109,11 @@ because those are evidence, not explanation — a board that cannot show work in
 progress is not reporting a state, it is drawing a diagram.
 
 `escalate` carries **no token**: while work is stuck the token is not travelling,
-it is waiting where it stopped.
+it is waiting where it stopped. A stuck team gets no arriving token either — one
+would contradict its own red ring.
+
+Live rings and live tokens follow their NODE, not the route: they report state,
+so they appear wherever that node is on screen and vanish with it.
 
 An edge is **solid once evidence exists** and dashed until then. What is declared
 rather than observed (`owns`, `send`, `pull`, `passed`) is solid always;

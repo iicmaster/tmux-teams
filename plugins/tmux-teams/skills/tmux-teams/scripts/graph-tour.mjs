@@ -107,6 +107,10 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
       // It is a different fact from "busy": one is work happening, the other is
       // work that cannot happen until someone answers.
       stuck: Boolean(facts.stuck),
+      // The teams the work it is holding was pulled from, straight out of the
+      // ledger. A team can sit on several routes, so only the record knows
+      // which leg this token actually travelled.
+      cameFrom: facts.cameFrom || [],
       // A team's whole state in two lines: what it holds out of what it may
       // hold, then the tokens themselves when it holds any.
       lines: [
@@ -397,6 +401,10 @@ export const TOUR_CSS = `
    work changing hands — at a different moment. */
 .w-passed{stroke:var(--handoff);stroke-width:2.6;opacity:.85}
 .tour-token{fill:var(--handoff);filter:drop-shadow(0 0 6px var(--handoff))}
+/* Green, like the ring on the seat it is feeding: this token is evidence of
+   work in hand, not an explanation of how a route runs. */
+.tour-token-live{fill:var(--ok)}
+.tour-token-live.tour-token{filter:drop-shadow(0 0 6px var(--ok))}
 .tour-tail{fill:var(--handoff)}
 /* The travelling dot IS a work item — a token moving down its route, not an
    ornament. That is why the opening board holds still while one still runs: the
@@ -584,6 +592,8 @@ export const TOUR_SCRIPT = `
   // is given the wire's OWN d, which is what makes it impossible for a token to
   // appear anywhere its route does not go. Built once per route and shown per
   // scene, so changing scene never rebuilds the DOM.
+  const wireOf = new Map(WIRES.map((w) => [w.e.from + '>' + w.e.to + '>' + w.e.kind, w]))
+
   // A halo on whatever is RUNNING right now. This is the one piece of motion
   // that belongs on the opening board: that scene reports the live state, so a
   // seat that is working has to be visible as working. It is keyed off the
@@ -603,6 +613,35 @@ export const TOUR_SCRIPT = `
     LIVE.push({ el: ring, around: node.id })
   }
 
+  // A token on the leg that DELIVERED the work a busy team is holding. The
+  // route tokens explain how work is meant to travel; this one reports where
+  // this particular work came from, so it is on the live board with the rings.
+  const liveTokens = []
+  for (const node of Object.values(world)) {
+    // A stuck team is not receiving work, it is holding work that stopped, so
+    // a token arriving would contradict its own red ring.
+    if (!node.cameFrom?.length || node.stuck) continue
+    for (const fromTeam of node.cameFrom) {
+      const wire = wireOf.get('team:' + fromTeam + '>' + node.id + '>pull')
+        || wireOf.get('team:' + fromTeam + '>' + node.id + '>send')
+      if (!wire) continue
+      for (let t = 0; t < 3; t += 1) {
+        const dot = document.createElementNS(NS, 'circle')
+        dot.setAttribute('class', t === 0 ? 'tour-token tour-token-live' : 'tour-tail tour-token-live')
+        dot.setAttribute('r', t === 0 ? 4 : 4 - t)
+        if (t) dot.setAttribute('opacity', 0.42 / t)
+        const motion = document.createElementNS(NS, 'animateMotion')
+        motion.setAttribute('dur', '1.6s')
+        motion.setAttribute('repeatCount', 'indefinite')
+        motion.setAttribute('begin', (hash(node.id) * 1.6 + t * 0.055).toFixed(3) + 's')
+        motion.setAttribute('calcMode', 'linear')
+        dot.appendChild(motion)
+        liveLayer.appendChild(dot)
+        liveTokens.push({ el: dot, motion, wire })
+      }
+    }
+  }
+
   const haloLayer = document.createElementNS(NS, 'g')
   const cometLayer = document.createElementNS(NS, 'g')
   svg.appendChild(haloLayer)
@@ -611,7 +650,6 @@ export const TOUR_SCRIPT = `
   // development → qa is on both the full route and the hotfix — so a
   // from>to key silently kept only whichever wire was built last, and a
   // comet on one route ended up riding another route's line.
-  const wireOf = new Map(WIRES.map((w) => [w.e.from + '>' + w.e.to + '>' + w.e.kind, w]))
   const MOTION = []
   // Built once per ROUTE, not once per scene: the opening board and the full
   // route both animate the same workflow, and building per scene made two
@@ -713,6 +751,15 @@ export const TOUR_SCRIPT = `
       // derivations of the same curve is two curves waiting to disagree.
       if (!on) continue
       if (m.motion) m.motion.setAttribute('path', m.wire.p.getAttribute('d'))
+    }
+    // Live rings and live tokens follow their own node, not the route: they
+    // report state, so they show wherever that node is on screen and vanish
+    // with it. Without this they stayed lit on scenes their team had left.
+    for (const live of LIVE) live.el.style.display = visible.has(live.around) ? '' : 'none'
+    for (const live of liveTokens) {
+      const on = !live.wire.p.classList.contains('off')
+      live.el.style.display = on ? '' : 'none'
+      if (on) live.motion.setAttribute('path', live.wire.p.getAttribute('d'))
     }
     fitHalos()
   }

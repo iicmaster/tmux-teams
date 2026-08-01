@@ -549,11 +549,23 @@ export function renderGraphPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, r
     // escalation is waiting on the controller; a question is waiting on a
     // person. Both mean the same thing for the board — this team cannot move
     // that work on its own — and neither is the same as being busy.
-    const stuck = (occupancy.held.get(team.team_id) || []).some((workItem) => {
+    const held = occupancy.held.get(team.team_id) || []
+    const stuck = held.some((workItem) => {
       const last = items.get(workItem)?.custody?.at(-1)
       return last?.event === 'escalated' || last?.event === 'questioned'
     })
-    teamFacts.set(team.team_id, { rejected: reviewTally.reject > 0, stuck })
+    // Where the work this team is holding came FROM. `pulled` records its own
+    // origin, so the board can show the leg that actually delivered the token
+    // rather than guessing from the route: a team may sit on several routes,
+    // and only the ledger knows which one this token travelled.
+    const cameFrom = [...new Set(held.map((workItem) => {
+      const custody = items.get(workItem)?.custody || []
+      for (let i = custody.length - 1; i >= 0; i -= 1) {
+        if (custody[i].event === 'pulled') return custody[i].from_team || null
+      }
+      return null
+    }).filter(Boolean))]
+    teamFacts.set(team.team_id, { rejected: reviewTally.reject > 0, stuck, cameFrom })
 
     for (const agent of team.agents) {
       const run = byAgent.get(agent.agent_id) || null
