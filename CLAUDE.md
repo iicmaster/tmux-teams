@@ -25,6 +25,24 @@ commit.
 `node --test tests/` (a bare directory) fails on Node 24 with MODULE_NOT_FOUND —
 pass no path at all, or a glob like `tests/*.test.mjs`.
 
+```bash
+node plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs once <repo>
+```
+
+Republishes `pulse.html`, `graph.html`, `kanban.html` — the repo argument is
+required, and a bare `pulse.mjs once` only prints usage.
+
+## Checking a published page
+
+Never from a screenshot: a still image cannot show whether anything is moving,
+and four "fixed" reports were made against one on 2026-08-01. Serve the store
+over HTTP, then MEASURE — `getComputedStyle(el).animationName`, count
+`animateMotion` nodes and match `path` against each wire's `d`, compare
+`getBoundingClientRect()` of a halo with the card it rings. Every wire carries
+`data-from`/`data-to` so a check never reverse-engineers geometry.
+`plugins/tmux-teams/skills/tmux-teams/references/loop-graph-page.md` §9 is the
+SSOT for this and for everything `graph.html` may draw.
+
 ## Worker dispatch planning gate
 
 - Before **every new delivery-worker dispatch**—including retry, corrective,
@@ -117,3 +135,12 @@ pass no path at all, or a glob like `tests/*.test.mjs`.
 - `acp-companion.mjs` honors `ACP_CMD="node <stub>.mjs"` — point it at a stub
   ACP agent (answers initialize/session/new/session/prompt) for fast,
   model-free tests of the outbox/timeout logic.
+- A demo or study page must IMPORT the shipping module, never paste a copy of
+  it. A pasted copy of the graph engine drifted within an hour, and it was the
+  page being read, so four fixes were reported against stale bytes.
+- Client code shipped as a JS template literal (`TOUR_SCRIPT`) may contain no
+  backtick — one in a comment closes the template and the module stops parsing
+  a long way from the cause. `tests/graph-tour.test.mjs` asserts this.
+- A scripted edit (python `str.replace`) must `assert old in s` before writing.
+  A replace that finds nothing writes the file unchanged and says nothing; two
+  patches silently failed to apply that way on 2026-08-01.
