@@ -103,6 +103,10 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
       title: team.name,
       state: controllerCard?.state || '',
       status: controllerCard?.status || '',
+      // The controller's clock rides with it, outside `lines`, for the same
+      // reason every seat's does: a ticking value inside the compared payload
+      // makes every publish look like a change.
+      time: controllerCard?.time || '',
       // A token this team is holding has stopped and is waiting on a decision.
       // It is a different fact from "busy": one is work happening, the other is
       // work that cannot happen until someone answers.
@@ -132,6 +136,7 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
         title: agentId,
         state: card.state || '',
         lines: card.lines || [],
+        time: card.time || '',
         status: card.status || 'unbound',
         running: Boolean(card.running),
         role: card.role || kind,
@@ -332,8 +337,18 @@ export const jsonBlock = (data) => JSON.stringify(data)
   .replace(/\u2028/g, '\\u2028')
   .replace(/\u2029/g, '\\u2029')
 
+// What the page compares to decide whether it changed. Clocks are stripped:
+// they move every tick on their own, and reloading a board to advance a
+// timestamp throws the reader out of whatever they were reading.
+export function tourDigest(tour) {
+  const stable = JSON.stringify(tour, (key, value) => (key === 'time' ? undefined : value))
+  let h = 2166136261
+  for (let i = 0; i < stable.length; i += 1) { h ^= stable.charCodeAt(i); h = Math.imul(h, 16777619) }
+  return (h >>> 0).toString(16)
+}
+
 export function renderTourChart(tour, { describedBy = 'tour-desc' } = {}) {
-  return `<div class="tour" data-tour>
+  return `<div class="tour" data-tour data-tour-digest="${tourDigest(tour)}">
   <div class="tour-stage" tabindex="0" role="group"
    aria-roledescription="board" aria-describedby="${describedBy}">
     <svg class="tour-wires" aria-hidden="true"></svg>
@@ -569,7 +584,7 @@ export const TOUR_SCRIPT = `
       el.appendChild(flag)
     }
     if (n.state) { const s = document.createElement('em'); s.textContent = n.state; el.appendChild(s) }
-    for (const line of n.lines || []) {
+    for (const line of [...(n.lines || []), n.time]) {
       if (!line) continue
       const s = document.createElement('span')
       s.textContent = line

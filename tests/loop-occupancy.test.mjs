@@ -1039,3 +1039,34 @@ test('the published loop graph can actually load the refresh script it names', (
     }
   } finally { rmSync(store.replace(/\/\.tmux-teams$/, ''), { recursive: true, force: true }) }
 })
+
+// ── a wedged harvest must say so ─────────────────────────────────────────────
+
+test('a gate answering in the wrong vocabulary is reported, not skipped in silence', async () => {
+  // An audit takes `accept` or `concern`. Answer `pass` — the evaluator's word
+  // — and `harvestEvent` returns null. It used to `continue` from there, so the
+  // token sat for ever while the runner printed "nothing to move", which is the
+  // same line it prints when there is genuinely nothing to do. A wedged loop
+  // looked exactly like an idle one.
+  const { applyHarvest } = await import('../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs')
+  const dir = mkdtempSync(join(tmpdir(), 'wedge-'))
+  const store = join(dir, '.tmux-teams')
+  mkdirSync(join(store, 'work-items'), { recursive: true })
+  mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
+  writeFileSync(join(dir, '.mailbox-out', 'audit-task'), 'VERDICT: pass\nTEAM_DONE audit-task\n')
+
+  const job = {
+    item: { work_item: 'tok', workflow: 'feature', custody: [] },
+    last: { event: 'audit_requested', agent_id: 'pm', task_id: 'audit-task' },
+    role: 'audit',
+  }
+  const said = []
+  const applied = applyHarvest(dir, TWO_TEAMS, [job], '2026-08-02T00:00:00.000Z', (skip) => said.push(skip))
+  try {
+    assert.deepEqual(applied, [], 'an unusable answer still changes nothing')
+    assert.equal(said.length, 1, 'but the loop says which token is wedged')
+    assert.equal(said[0].work_item, 'tok')
+    assert.match(said[0].reason, /accept/, 'and names a word this seat could have used')
+    assert.match(said[0].reason, /concern/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})

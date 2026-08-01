@@ -505,13 +505,36 @@ function recordVerdict(repo, graph, item, event) {
   return result.status === 0
 }
 
-export function applyHarvest(repo, graph, jobs, now = new Date().toISOString()) {
+// The vocabulary each seat is allowed to answer in. Naming it here is what
+// lets a refusal say WHICH word it was looking for instead of going quiet.
+const VERDICTS_FOR = {
+  dispatcher: INTAKE_VERDICTS, evaluator: REVIEW_VERDICTS,
+  audit: AUDIT_VERDICTS, outer: OUTER_VERDICTS,
+}
+
+export function applyHarvest(repo, graph, jobs, now = new Date().toISOString(), report = () => {}) {
   const applied = []
   for (const job of jobs) {
     const event = harvestEvent(repo, graph, job, now)
     // A controller that answered nothing changes nothing; appending a no-op
     // would only make the loop re-read the same outbox every tick.
-    if (!event) continue
+    //
+    // But it must SAY so. This returned null and continued in silence, so a
+    // token whose gate answered in the wrong vocabulary — `pass` where an
+    // audit takes `accept` — sat here for ever while the runner printed
+    // "nothing to move" every tick, which is the same line it prints when
+    // there is genuinely nothing to do. One message covering both is how a
+    // wedged loop looks exactly like an idle one.
+    if (!event) {
+      const allowed = VERDICTS_FOR[job.role]
+      report({
+        work_item: job.item.work_item, role: job.role, task_id: job.last.task_id || null,
+        reason: allowed
+          ? `${job.role} outbox states no verdict this seat can use — expected one of: ${[...allowed].join(', ')}`
+          : `${job.role} outbox could not be read as an answer`,
+      })
+      continue
+    }
     // The accountable writer is the agent whose outbox stated the verdict this
     // event carries — the dispatcher that refused, the evaluator that judged,
     // the controller that answered. It is read from the harvested leg rather
@@ -959,7 +982,11 @@ export function tick(repoArg, {
   const harvested = []
   const jobs = planHarvest(graph.value, readWorkItems(repo).items,
     (taskId) => existsSync(join(repo, '.mailbox-out', taskId)))
-  if (jobs.length && apply) harvested.push(...applyHarvest(repo, graph.value, jobs))
+  const refused = []
+  if (jobs.length && apply) harvested.push(...applyHarvest(repo, graph.value, jobs, undefined, (skip) => refused.push(skip)))
+  for (const skip of refused) {
+    log(`WEDGED ${skip.work_item}: ${skip.reason}`)
+  }
   for (const event of harvested) {
     log(`${event.event.padEnd(6)} ${event.work_item}: ${event.verdict || event.to_team || ''} — ${event.reason || ''}`)
   }

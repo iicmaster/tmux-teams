@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
-  TOUR_CSS, TOUR_SCRIPT, buildTour, jsonBlock, renderTourChart,
+  TOUR_CSS, TOUR_SCRIPT, buildTour, jsonBlock, renderTourChart, tourDigest,
 } from '../plugins/tmux-teams/skills/tmux-teams/scripts/graph-tour.mjs'
 import { validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
 import { renderPulseRefreshScript } from '../plugins/tmux-teams/skills/tmux-teams/scripts/pulse-refresh.mjs'
@@ -428,4 +428,22 @@ test('every shipped client string survives being written to a file', () => {
   // Only the refresh script goes through the escaping layer.
   assert.doesNotMatch(shipped.refresh, /=\s*\/[^/\n]*\\[sSdDwWbB/]/,
     'the refresh script must not carry a regex literal — use indexOf')
+})
+
+test('the digest ignores clocks, so a tick that only moves time is not a change', () => {
+  // The page reloads itself by comparing this. A running clock inside it made
+  // every publish look like a change and threw the reader out of the board
+  // several times a minute — the bug Master hit while watching a live POC.
+  const cards = new Map([['b1', { state: 'working', lines: ['worker · claude'], time: '2m in progress' }]])
+  const later = new Map([['b1', { state: 'working', lines: ['worker · claude'], time: '9m in progress' }]])
+  assert.equal(tourDigest(buildTour(CONTROLLED, cards)), tourDigest(buildTour(CONTROLLED, later)))
+
+  // But a real change still changes it.
+  const moved = new Map([['b1', { state: 'delivered', lines: ['worker · claude'], time: '2m in progress' }]])
+  assert.notEqual(tourDigest(buildTour(CONTROLLED, cards)), tourDigest(buildTour(CONTROLLED, moved)))
+})
+
+test('the board publishes its digest where the refresh script can read it', () => {
+  const html = renderTourChart(buildTour(CONTROLLED))
+  assert.match(html, /data-tour-digest="[0-9a-f]+"/)
 })

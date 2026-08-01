@@ -216,7 +216,9 @@ test('the outer controller states the same facts as every other agent', () => {
   const ran = tourOf(DEFAULT_WORKFLOW_GRAPH,
     snapshotWith([run(seat, 'running', { elapsed_sec: 90 })])).world['team:control']
   assert.ok(ran.lines.some((line) => line.includes('claude · acp')), 'it states a measured lane')
-  assert.ok(ran.lines.some((line) => line.includes('1m in progress')), 'it states a measured clock')
+  // The clock lives outside `lines` so a running timestamp cannot make every
+  // publish look like a change to the board.
+  assert.match(ran.time, /1m in progress/, 'it states a measured clock')
   assert.equal(ran.state, 'reviewing the board now')
   assert.equal(ran.status, 'working')
 })
@@ -655,4 +657,25 @@ test('a running worker lights its assignment, not its handover', () => {
   assert.equal(live.world.b_w1.running, true)
   const settled = tourOf(TWO_TEAMS, snapshotWith([run('b_w1', 'awaiting-verdict')]))
   assert.equal(settled.world.b_w1.running, false, 'a finished dispatch is not a live one')
+})
+
+test('a finished run on a seat holding nothing is history, not a waiting state', () => {
+  // A seat's status came only from the newest run in the snapshot, which is
+  // history: a worker that finished hours ago read "delivered, waiting" for
+  // ever. A POC board with every token closed was a wall of amber cards
+  // claiming work was waiting to be reviewed — Master saw it before any test
+  // did, because no test compared a run against the ledger.
+  const settled = snapshotWith([run('b_w1', 'awaiting-verdict')])
+  const idle = tourOf(TWO_TEAMS, settled)
+  assert.equal(idle.world.b_w1.status, 'unbound', 'nothing holds it, so nothing waits on it')
+
+  // Still holding the token: the same run now means what it says.
+  const dir = withLedger(TWO_TEAMS, 'tok', [
+    { at: '2026-07-27T09:00:00.000Z', event: 'assigned', agent_id: 'b_w1', task_id: 't-1', dispatch_id: 'd-1' },
+    { at: '2026-07-27T09:05:00.000Z', event: 'delivered', agent_id: 'b_w1', task_id: 't-1',
+      terminal: 'done', timed_out: false, evidence_present: true },
+  ])
+  const page = renderGraphPage(dir, settled, { now: NOW })
+  const block = page.match(/<script type="application\/json" data-tour-data>([\s\S]*?)<\/script>/)
+  assert.equal(JSON.parse(block[1]).world.b_w1.status, 'delivered')
 })

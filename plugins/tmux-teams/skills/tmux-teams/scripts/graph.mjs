@@ -25,7 +25,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { KANIT_FONT_CSS } from '../assets/kanit/kanit-embedded.mjs'
-import { readDispatchFacts, readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
+import { RELEASING_EVENTS, readDispatchFacts, readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
 import { TOUR_CSS, TOUR_SCRIPT, buildTour, renderTourChart } from './graph-tour.mjs'
 import { NAV_CSS, renderNav } from './page-nav.mjs'
 import {
@@ -540,6 +540,19 @@ export function renderGraphPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, r
   // One card per declared seat, derived here where the evidence lives. The tour
   // module places these and nothing else: it cannot invent a status, a model or
   // a time, which is what keeps the picture unable to say more than the ledger.
+  // Which seats are actually holding a token right now, straight from custody.
+  // A seat's status came only from the newest run in `pulse.json`, which is
+  // HISTORY: a worker that finished hours ago still read "delivered, waiting"
+  // for ever, so a board with nothing on it was a wall of amber cards claiming
+  // work was waiting to be reviewed. The ledger knows better — if no live token
+  // sits on that seat, nothing is waiting for it.
+  const holding = new Set()
+  for (const item of items.values()) {
+    const last = item.custody[item.custody.length - 1]
+    if (!last || RELEASING_EVENTS.has(last.event)) continue
+    if (last.agent_id) holding.add(last.agent_id)
+  }
+
   const cards = new Map()
   const teamFacts = new Map()
   for (const team of value.teams) {
@@ -587,7 +600,13 @@ export function renderGraphPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, r
       // dispatch observed" means it has not done its job, while for an
       // exception handler having nothing to do is the correct state.
       const controller = isController ? controllerState(run, items, occupancy, value) : null
-      const status = controller ? controller.status : statusOf(run)
+      // A finished run on a seat holding nothing is history, not a state. Only
+      // `delivered` is suppressed: `dead` still matters (a process that died
+      // is worth seeing whatever the ledger says), and `working` cannot happen
+      // without a live process anyway.
+      const observed = statusOf(run)
+      const stale = observed === 'delivered' && !holding.has(agent.agent_id)
+      const status = controller ? controller.status : (stale ? 'unbound' : observed)
       const state = controller
         ? controller.copy
         : (agent.role === 'evaluator'
@@ -611,8 +630,13 @@ export function renderGraphPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, r
           `${agent.role} · ${laneLine(run)}`,
           `model ${modelLine(run, facts.get(run?.task_id))}`,
           workLine(isController ? 'outer' : agent.role, activity.get(agent.agent_id)),
-          timingOf(run, statusOf(run)),
         ],
+        // The clock is kept OUT of `lines` on purpose. It changes every tick
+        // even when nothing on the board did, and the page decides whether to
+        // reload by comparing its own data — so a running clock inside that
+        // data made every publish look like a change and reloaded the board
+        // under the reader several times a minute.
+        time: timingOf(run, statusOf(run)),
       })
     }
   }

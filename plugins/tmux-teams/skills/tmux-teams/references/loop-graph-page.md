@@ -175,6 +175,14 @@ or every scene is as wide as the whole board and the zoom never acts.
 
 - **`.wire.off` must come after `.wire.dry`.** Equal specificity, so line order
   decides: with `dry` last, an edge told to leave the scene is painted back in.
+- **A seat's status is checked against custody, not taken from the snapshot
+  alone.** The newest run in `pulse.json` is HISTORY: a worker that finished
+  hours ago read `delivered, waiting` for ever, so a board with every token
+  closed was a wall of amber cards claiming work waited to be reviewed. If no
+  live token sits on that seat, nothing is waiting for it.
+- **The clock lives outside the compared payload.** `card.time` is rendered but
+  excluded from `tourDigest`, so a ticking timestamp cannot make every publish
+  look like a change to the board.
 - **A published board must not reload to advance its own clock.** The
   publisher stamps a new snapshot id every tick, so keying the reload off it
   threw the reader out of whatever they were reading several times a minute.

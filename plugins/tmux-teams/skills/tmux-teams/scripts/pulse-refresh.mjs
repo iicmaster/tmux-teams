@@ -155,7 +155,37 @@ export const PULSE_REFRESH_SOURCE = `
       // page can tell us what its MEANINGFUL content is, ask that instead:
       // reloading to advance a timestamp destroys whatever the reader was
       // doing in order to update the one thing they were not looking at.
+      // Prefer the digest the page publishes: it hashes everything EXCEPT the
+      // clocks, so a tick that only moved a timestamp is not a change.
+      const board = document.querySelector('[data-tour][data-tour-digest]')
       const own = document.querySelector('[data-tour-data]')
+      if (board) {
+        const pageUrl = new URL(location.pathname, location.href)
+        const fresh = await fetch(pageUrl, { cache: 'no-store', credentials: 'same-origin' })
+        if (fresh.ok) {
+          const text = await fresh.text()
+          const attr = 'data-tour-digest="'
+          const at = text.indexOf(attr)
+          const digestNow = at === -1 ? null : text.slice(at + attr.length, text.indexOf('"', at + attr.length))
+          if (digestNow !== null) {
+            if (digestNow === board.dataset.tourDigest) {
+              if (next.snapshot_id !== lastSeen) {
+                lastSeen = next.snapshot_id
+                if (header) {
+                  header.dataset.observationExpiresAt =
+                    new Date(Date.now() + intervalMs * 3).toISOString()
+                }
+              }
+              updateFreshness()
+              return
+            }
+            await verifyRefreshAsset(next)
+            capture()
+            location.reload()
+            return
+          }
+        }
+      }
       if (own) {
         const pageUrl = new URL(location.pathname, location.href)
         const fresh = await fetch(pageUrl, { cache: 'no-store', credentials: 'same-origin' })
