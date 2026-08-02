@@ -152,9 +152,14 @@ one SSOT** and wins if the two ever disagree.
 - A demo or study page must IMPORT the shipping module, never paste a copy of
   it. A pasted copy of the graph engine drifted within an hour, and it was the
   page being read, so four fixes were reported against stale bytes.
-- Client code shipped as a JS template literal (`TOUR_SCRIPT`) may contain no
-  backtick — one in a comment closes the template and the module stops parsing
-  a long way from the cause. `tests/graph-tour.test.mjs` asserts this.
+- Client code shipped as a JS template literal (`TOUR_SCRIPT`, `TOUR_CSS`,
+  `NAV_CSS`, and the stylesheet inside `graph.mjs`) may contain no backtick —
+  one in a comment closes the template and the module stops parsing a long way
+  from the cause. Eleven occurrences so far. `tests/plugin-structure.test.mjs`
+  now walks the whole shipped tree for this rather than naming strings by hand:
+  it `node --check`s every `.mjs` and refuses a backtick in any export whose
+  name ends in `CSS` or `SCRIPT`. Run `node --check` yourself before the suite
+  anyway — it names the file in a second.
 - A scripted edit (python `str.replace`) must `assert old in s` before writing.
   A replace that finds nothing writes the file unchanged and says nothing; two
   patches silently failed to apply that way on 2026-08-01.

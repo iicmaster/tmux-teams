@@ -390,16 +390,6 @@ test('strokes do not grow with the camera', () => {
   assert.match(TOUR_CSS, /\.wire\{[^}]*vector-effect:non-scaling-stroke/)
 })
 
-test('neither shipped string contains a backtick', () => {
-  // Both are template literals, so a stray backtick — most easily written in a
-  // comment quoting an identifier — closes one early and the module stops
-  // parsing, with a syntax error a long way from its cause. It happened four
-  // times writing this file; the fourth was in TOUR_CSS, which this test only
-  // covered TOUR_SCRIPT for at the time.
-  assert.equal(TOUR_SCRIPT.includes('`'), false, 'a backtick inside TOUR_SCRIPT ends the template')
-  assert.equal(TOUR_CSS.includes('`'), false, 'and the same is true of TOUR_CSS')
-})
-
 // ── what a scene may show ────────────────────────────────────────────────────
 
 test('a route scene shows only handovers that touch its own teams', () => {
@@ -456,17 +446,16 @@ test('structure is true on every scene; a handover belongs to one route', () => 
   }
 })
 
-test('every shipped client string survives being written to a file', () => {
-  // All three are assembled into a published asset, and the assembly eats
-  // backslashes and ends on a backtick. A regex literal arrives with its
-  // escapes gone; a backtick in a comment closes the template. Seven times
-  // between them during one session, each failing far from its cause.
-  const shipped = { TOUR_SCRIPT, TOUR_CSS, refresh: renderPulseRefreshScript() }
-  for (const [name, source] of Object.entries(shipped)) {
-    assert.equal(source.includes('`'), false, `${name} must contain no backtick`)
-  }
-  // Only the refresh script goes through the escaping layer.
-  assert.doesNotMatch(shipped.refresh, /=\s*\/[^/\n]*\\[sSdDwWbB/]/,
+test('the refresh script survives the escaping layer it is written through', () => {
+  // The assembly that publishes this eats backslashes, so a regex literal
+  // arrives with its escapes gone and matches something else entirely. Only
+  // the refresh script goes through that layer.
+  //
+  // The backtick half of this test used to name TOUR_SCRIPT, TOUR_CSS and this
+  // string by hand — which is why nothing noticed the two shipped strings it
+  // had never heard of. It lives in `plugin-structure.test.mjs` now and finds
+  // its own subjects by walking the shipped tree.
+  assert.doesNotMatch(renderPulseRefreshScript(), /=\s*\/[^/\n]*\\[sSdDwWbB/]/,
     'the refresh script must not carry a regex literal — use indexOf')
 })
 

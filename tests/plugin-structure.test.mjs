@@ -4,11 +4,11 @@
 // with semantic anchors instead of brittle prose regexes.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, statSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PLUGIN = join(ROOT, 'plugins/tmux-teams')
@@ -348,5 +348,70 @@ test('claude plugin validation uses strict mode when the installed CLI supports 
       assert.match(`${r.stdout}${r.stderr}`, /validat(?:ion|ing).*(?:passed|valid)|\bvalid\b/is,
         'normal fallback must explicitly report successful validation')
     }
+  }
+})
+
+// A backtick written inside a template literal — most easily in a comment
+// quoting an identifier — closes the literal early and the module stops parsing
+// a long way from the cause. Eleven times in this project, the eleventh on
+// 2026-08-03 in `graph.mjs`'s stylesheet while fixing something else. Every one
+// was caught by `node --check`, which CLAUDE.md asks a person to remember to
+// run. This is that check, remembered by the suite instead.
+//
+// The guard it replaces named three strings by hand and so could not see a
+// fourth. This walks the shipped tree.
+const shippedModules = () => {
+  const out = []
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) walk(path)
+      else if (entry.name.endsWith('.mjs')) out.push(path)
+    }
+  }
+  walk(join(PLUGIN, 'skills'))
+  return out.sort()
+}
+
+test('every shipped module parses', () => {
+  const files = shippedModules()
+  // A floor, so a walk that finds nothing cannot pass as a clean sweep.
+  assert.ok(files.length >= 20, `only ${files.length} shipped modules found — the walk is not walking`)
+  for (const file of files) {
+    const checked = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' })
+    assert.equal(checked.status, 0, `${file.slice(PLUGIN.length + 1)} does not parse:\n${checked.stderr}`)
+  }
+})
+
+test('no shipped client string carries a backtick, whoever adds the next one', async () => {
+  const files = shippedModules().filter((file) => {
+    // A CLI entry runs its argument parsing at module load and calls
+    // process.exit, so importing it here would end the test run. Named by what
+    // they do rather than by a list, so a new one is skipped automatically.
+    const source = readFileSync(file, 'utf8')
+    return !source.includes('process.argv.slice(2)')
+  })
+  const found = []
+  for (const file of files) {
+    let module
+    try {
+      module = await import(pathToFileURL(file).href)
+    } catch (error) {
+      // A module that cannot be imported standalone is not a client-string
+      // carrier this test can read; parsing is covered by the test above.
+      if (error?.code === 'ERR_MODULE_NOT_FOUND') continue
+      throw error
+    }
+    for (const [name, value] of Object.entries(module)) {
+      if (typeof value !== 'string' || !/(?:CSS|SCRIPT)$/.test(name)) continue
+      found.push(name)
+      assert.equal(value.includes('`'), false,
+        `${name} in ${file.slice(PLUGIN.length + 1)} contains a backtick — it is assembled into a`
+        + ' template literal and will close it')
+    }
+  }
+  // The three the old hand-written guard knew about, plus the ones it did not.
+  for (const expected of ['TOUR_CSS', 'TOUR_SCRIPT', 'NAV_CSS', 'KANIT_FONT_CSS']) {
+    assert.ok(found.includes(expected), `${expected} was not discovered — the scan is looking in the wrong place`)
   }
 })
