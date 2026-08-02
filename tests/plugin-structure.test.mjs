@@ -15,24 +15,21 @@ const PLUGIN = join(ROOT, 'plugins/tmux-teams')
 const SKILLS = ['tmux-teams', 'party-mode', 'party-auto', 'party-advise', 'sqthink', 'codex-tmux-driver',
   'graph-setup', 'claude-advisor', 'codex-advisor']
 const RELEASE_VERSION = '0.13.1'
-// The Stage 1 CLI entry points were removed on 2026-07-29. What remains is the
-// part the current system actually reaches: `delivery-loop-export` builds the
-// `delivery_loop` section of pulse.json (a frozen v4 schema) and pulls in the
-// two below it. Deleting those broke Pulse's own tests, which under the
-// standing rule — delete it, and if it breaks then it belongs — is the answer.
-const STAGE1_SCRIPTS = [
-  'delivery-loop-pilot-core.mjs',
-  'delivery-loop-store.mjs',
-  'delivery-loop-export.mjs',
-]
+// The Stage 1 CLI entry points went on 2026-07-29 and the rest of the phase
+// subsystem — nine scripts, its gate, its store and its exporter — went on
+// 2026-08-02. The note that used to stand here said deleting the remainder
+// "broke Pulse's own tests, which under the standing rule — delete it, and if
+// it breaks then it belongs — is the answer", and an existence assertion was
+// written to hold them in place.
+//
+// That reading was wrong, and this is the correction. Pulse broke because
+// `pulse.mjs` imported two frozen literals from `delivery-loop-core.mjs` and
+// evaluated them at module load. Thirteen lines relocated first, and the rest
+// deleted cleanly. What "it breaks" meant was one import, not belonging.
 const PULSE_GRAPH_FILES = [
 ]
 const STAGE1_REFERENCES = [
-  'delivery-loop-pilot-manifest-v1.schema.json',
-  'delivery-loop-event-v1.schema.json',
-  'delivery-loop-evidence-pack-v1.schema.json',
   'pulse-v3.schema.json',
-  'stage-1-pilot-runbook.md',
 ]
 const PULSE_RUNTIME_REFERENCES = ['pulse-v4.schema.json']
 const CLAUDE_VERSION = spawnSync('claude', ['--version'], { encoding: 'utf8' })
@@ -60,9 +57,6 @@ test('Stage 1 field-evidence files and documentation links are wired', () => {
   const readme = readText(join(ROOT, 'README.md'))
   const skill = readText(join(skillRoot, 'SKILL.md'))
 
-  for (const file of STAGE1_SCRIPTS) {
-    assert.ok(existsSync(join(skillRoot, 'scripts', file)), `Stage 1 script missing: ${file}`)
-  }
   for (const file of PULSE_GRAPH_FILES) {
     assert.ok(existsSync(join(skillRoot, file)), `Pulse graph asset missing: ${file}`)
   }
@@ -152,31 +146,30 @@ test('Stage 1 field-evidence files and documentation links are wired', () => {
   // command nobody can run is the same class of untruth as a page reporting
   // work nobody did.
   const commandAnchors = [
-    'delivery-loop-export.mjs export',
-    'delivery-loop-export.mjs verify-pack',
     'pulse.mjs compat-v1',
   ]
   for (const anchor of commandAnchors) {
     assert.ok(readme.includes(anchor), `README.md command missing: ${anchor}`)
     assert.ok(skill.includes(anchor), `SKILL.md command missing: ${anchor}`)
   }
+  // Seven anchors went with the phase subsystem on 2026-08-02: the Stage 1
+  // section heading, `EXTERNAL_REQUIRED`, `NOT_CERTIFIED`, the no-routing
+  // boundary, `ROI_NOT_ESTABLISHED`, `scenario_signal`, and the
+  // ProjectDelivery-is-not-a-fifth-phase paragraph. They anchored prose about a
+  // system that no longer exists; an anchor that outlives its subject stops
+  // being a check and becomes a reason to write the paragraph back.
+  //
+  // `phase-gate.json` went too, but differently — the marker still MATTERS, it
+  // is just no longer a contract the docs teach. `acp-companion.mjs` refuses to
+  // run in a repository still carrying one rather than silently downgrading it,
+  // and that refusal is asserted where it lives, in the ACP suite.
   for (const doc of [['README.md', readme], ['SKILL.md', skill]]) {
-    assert.match(doc[1], /v0\.7 Stage 1/, `${doc[0]}: Stage 1 section missing`)
-    assert.match(doc[1], /EXTERNAL_REQUIRED/, `${doc[0]}: external-decision boundary missing`)
-    assert.match(doc[1], /NOT_CERTIFIED/, `${doc[0]}: certification boundary missing`)
-    assert.match(doc[1], /never routes|does \*\*not\*\* route/i,
-      `${doc[0]}: no-routing boundary missing`)
     assert.match(doc[1], /pulse-v3\.schema\.json/, `${doc[0]}: Pulse v3 contract missing`)
     assert.match(doc[1], /pulse-v4\.schema\.json/, `${doc[0]}: Pulse v4 contract missing`)
     assert.match(doc[1], /Pulse v4 is the default/i, `${doc[0]}: Pulse v4 default missing`)
     assert.match(doc[1], /compat-v1/, `${doc[0]}: v1 compatibility contract missing`)
     assert.match(doc[1], /phase_source/, `${doc[0]}: explicit phase source contract missing`)
     assert.match(doc[1], /unassigned/i, `${doc[0]}: unassigned phase behavior missing`)
-    assert.match(doc[1], /phase-gate\.json/, `${doc[0]}: governed marker contract missing`)
-    assert.match(doc[1], /ROI_NOT_ESTABLISHED/, `${doc[0]}: POC ROI boundary missing`)
-    assert.match(doc[1], /scenario_signal/, `${doc[0]}: POC scenario interpretation missing`)
-    assert.match(doc[1], /ProjectDelivery.*(?:not|ไม่ใช่).*(?:Phase 5|fifth)/is,
-      `${doc[0]}: ProjectDelivery terminal boundary missing`)
   }
 })
 

@@ -28,11 +28,11 @@ this file in the same commit.
 | `.tmux-teams/runner-heartbeat.json` | the runner's statement about itself |
 | `.tmux-teams/graph.html` | the published page |
 
-**Not governed here.** `phase-gate-*` and `delivery-loop-*` implement a
-separate, opt-in four-phase governed runtime; its terms (Phase Team, Delivery
-Slice) are a different model and must not be conflated with this one.
-`pulse.json` is a frozen schema owned by `references/pulse-v4.schema.json`; this
-loop reads it and never adds fields to it.
+**Not governed here.** `pulse.json` is a frozen schema owned by
+`references/pulse-v4.schema.json`; this loop reads it and never adds fields to
+it. The separate four-phase governed runtime that used to sit beside this one —
+`phase-gate-*` and `delivery-loop-*` — was removed on 2026-08-02 along with its
+commands and documentation; there is one delivery model now.
 
 ## 1. Model
 

@@ -125,130 +125,9 @@ The graph answers who exists and how they are wired. The kanban answers where a
 token is held. Pulse answers what transport activity is happening now. KMS,
 described in §9, records what a run taught the PM after that run is judged.
 
-## 0.7 Retained measurement semantics — no direct Stage 0 command
-
-The former offline analyzer is not a user-facing entry point in this checkout.
-Its pure core remains because the Stage 1 exporter replays an existing
-observation store through these measurement rules. It is separate from the
-custody loop above and never dispatches or routes work.
-
-It models a PM-coordinated outer loop and four inner Phase Teams with their
-required exit artifacts: Requirement `requirements_baseline`, Prototype
-`prototype_evaluation`, Development `development_delivery`, and QA
-`qa_release_evidence`. Routine handoffs are direct and receiver-owned; the PM
-owns only exceptions, policy conflicts, and cross-team deadlocks. The final
-boundary is a real `QA -> ProjectDelivery` handoff carrying
-`qa_release_evidence`; its ProjectDelivery receiver owns routine acceptance
-while the PM tracks outer-loop coordination and exceptions.
-
-Recorded handoff attempts are actor-authorized, event-replayed terminal
-histories whose events stay within `[slice.assigned_at, analysis_as_of]`; a
-revision proposal is strictly later than its rejected parent's terminal event.
-Canonical JSON and digests sort keys by true Unicode code-point order, not
-JavaScript UTF-16 code-unit order. The primary estimand is the per-slice mean
-by arm; raw arm totals are descriptive only. Every pre-registered guardrail is
-recorded as `PASS`, `BREACH`, or `UNKNOWN`, and any `UNKNOWN` makes `measurement_readiness`
-`INCONCLUSIVE`. Missing measured cost is explicit `null`, never zero: affected
-totals and cost comparisons remain null, while bottleneck status and readiness
-are `INCONCLUSIVE`.
-
-The JSON keeps `measurement_readiness`, `scenario_signal`, `guardrail_status`,
-`evidence_eligibility`, `safety_hold_recommended`, and `decision_packet`
-separate. Deterministic, descriptive-only `bottlenecks.by_arm` reports the
-highest coordination phase and cost category per arm. `scenario_signal`
-remains descriptive; its ROI interpretation is `ROI_NOT_ESTABLISHED`.
-`business_decision` is always `EXTERNAL_REQUIRED`: this compatibility core
-never asserts causal effect or ROI, or emits `GO`/`ITERATE`/`NO_GO`. `READY`
-means measurement completeness, not accepted delivery, delivery success, or
-business approval. It does not alter tmux/ACP
-dispatch, mailbox or PM verification, Party gates, KMS, Pulse, role loading, cleanup, or transport
-semantics. The schemas and Stage 1 runbook below retain the rules the exporter
-still enforces.
-
-## 0.8 v0.7 Stage 1 — export-only evidence compatibility
-
-The Stage 1 entry point that remains reads an already-populated observation
-store and exports an integrity-bound review pack. This checkout does not create
-the store, freeze a pilot, assign slices, capture sources, or append
-observations. The exporter does **not** route or dispatch work, turn worker/PM
-terminal signals into receiver acceptance, authenticate same-UID identities,
-certify evidence, emit a business verdict, or actuate a result.
-
-The store must already contain a valid frozen manifest and its event files.
-Run the implemented CLI with absolute store and output paths:
-
-```bash
-node <skill-root>/scripts/delivery-loop-export.mjs export \
-  --store <absolute-store> --out <new-absolute-pack-dir> --as-of <RFC3339> \
-  --source-revision <40-hex-git-sha>
-node <skill-root>/scripts/delivery-loop-export.mjs verify-pack \
-  <absolute-pack-dir>
-```
-
-`export` replays the named store, materializes its ITT dataset and analysis, and
-writes a new pack directory outside the store. `verify-pack` checks safe paths,
-file bytes and digests, plus deterministic replay. It checks local integrity,
-not external identity or custody.
-
-The closed contracts are:
-
-- [pilot manifest v1](references/delivery-loop-pilot-manifest-v1.schema.json)
-- [append-only event v1](references/delivery-loop-event-v1.schema.json)
-- [exported evidence pack v1](references/delivery-loop-evidence-pack-v1.schema.json)
-- [Pulse data v4](references/pulse-v4.schema.json)
-- [Pulse data v3 compatibility contract](references/pulse-v3.schema.json)
-- [ACP session operation receipt v1](references/acp-session-receipt-v1.schema.json)
-- [Thai-first Stage 1 pilot runbook](references/stage-1-pilot-runbook.md)
-
-Local events and packs remain `advisory_same_uid`; the exported index remains
-`NOT_CERTIFIED`, `EXTERNAL_REQUIRED`, and `actuation: NONE`. External custody,
-independent review, and business-owner ratification occur outside this toolkit.
-
-Pulse v4 is the default single `<repo>/.tmux-teams/pulse.json` SSOT. It
-preserves the bounded Pulse v3 run/verdict definitions, including explicit
-`phase` and `phase_source` evidence, and adds the optional closed
-`delivery_runtime` field. Existing v3 documents remain covered by the published
-v3 schema; the persisted default is v4. Missing or untrusted attribution is
-unassigned; never infer phase or a handoff from task names, workers, timestamps,
-or provider names. The bounded `delivery_loop` and `delivery_runtime` fields
-appear only when their projections are named. Compatibility output is
-stdout-only:
-
-```bash
-node <skill-root>/scripts/pulse.mjs json \
-  <repo> --delivery-loop <absolute-pulse-projection.json>
-node <skill-root>/scripts/pulse.mjs json \
-  <repo> --delivery-runtime <absolute-delivery-runtime.json>
-node <skill-root>/scripts/pulse.mjs compat-v1 <repo>
-```
-
-No versioned Pulse file or persisted v1 compatibility file is created. Pulse action
-codes are advisory with `auto_execute: false`; favorable metrics can never
-become `GO`, `ITERATE`, `NO_GO`, certification, or an automatic hold/release.
-
-## 0.9 Governed Phase Gate runtime compatibility
-
-This operational namespace is opt-in and separate from the custody loop and
-the Stage 1 exporter. `scripts/phase-gate-controller.mjs` and its supporting
-modules are the executable surface in this checkout. An older Phase Gate
-Runtime v1 design note remains under `references/`, but its POC and
-`scenario_signal` passages describe the earlier demonstration, not a command
-or field produced by the current Phase Gate modules; it is not an operational
-guide for this checkout.
-
-The controller owns its governed store. When
-`<repo>/.tmux-teams/phase-gate.json` exists, a raw `acp-companion.mjs`
-invocation without the controller's exact reservation environment fails before
-the brief is read or a child starts.
-
-The governed topology has Requirement → Prototype → Development → QA Phase
-Teams. `QA -> ProjectDelivery` ends at a receiver: ProjectDelivery is not a
-fifth Phase Team, and acceptance is not release, UAT, certification, ROI or a
-business decision.
-
-This checkout has no supported one-command full-loop demonstration. Do not
-teach the controller modules as a POC wrapper, and do not mix Phase Team /
-Delivery Slice vocabulary into the workflow graph's Team / work-item model.
+An earlier four-phase delivery pilot and its governed Phase Gate lived here;
+both were withdrawn on 2026-08-02 together with their commands and their
+documentation. This loop is teams and workflows.
 
 ## 1. Session setup
 
@@ -609,7 +488,7 @@ Failed or interrupted loads write null-operation tombstones and cannot
 cold-start or deliver a prompt. Required-mode receipt, profile, or correlation
 failure exits nonzero before prompt delivery. Receipts contain only bounded
 digests and identity/profile metadata, never prompts, outboxes, tool payloads,
-PIDs, or absolute paths; the receipt digest is joined into dispatch, phase-gate,
+PIDs, or absolute paths; the receipt digest is joined into dispatch,
 KMS, and terminal evidence by `dispatch_id`. In optional/default mode a
 persistence failure is explicitly warned and carries `receipt_digest: none`;
 required mode always fails closed instead of continuing without the receipt.
@@ -786,10 +665,11 @@ all published files --------------------> .tmux-teams/pulse-current.json (last)
 ```
 
 Pulse v4 is the default persisted transport snapshot and its contract is
-`references/pulse-v4.schema.json`. It references the v3 run, verdict and phase
-definitions; existing v3 documents remain described by
-`references/pulse-v3.schema.json`. `phase` and `phase_source` are explicit
-evidence. Missing or untrusted attribution remains unassigned; never infer it
+[Pulse data v4](references/pulse-v4.schema.json). It references the v3 run,
+verdict and phase definitions; existing v3 documents remain described by
+[Pulse data v3 compatibility contract](references/pulse-v3.schema.json).
+`phase` and `phase_source` are explicit evidence.
+Missing or untrusted attribution remains unassigned; never infer it
 from a task name, worker, provider or timestamp. `compat-v1` is a stdout-only
 down-projection for consumers that require the older v1 contract.
 
@@ -801,13 +681,11 @@ node <skill-root>/scripts/pulse.mjs ensure <repo> [--interval 20] [--delivery-lo
 node <skill-root>/scripts/pulse.mjs compat-v1 <repo>
 ```
 
-Pass `--delivery-loop <absolute-pulse-projection.json>` only for the optional
-Stage 1 projection written inside an exported evidence pack.
-Pass `--delivery-runtime <absolute-delivery-runtime.json>` to include the
-bounded, path/actor/payload-free Phase Gate projection. It exposes exactly four
-phase runs, bounded gates, replay head, and deterministic bottleneck facts.
-Pulse sanitizes and observes this file; it never calls the controller, consumes
-an acceptance, retries a dispatch, or changes the store.
+`--delivery-loop` and `--delivery-runtime` still parse and still read whatever
+file you name — Pulse sanitizes and observes it, and never actuates on it. But
+nothing shipped writes either projection any more: the four-phase pilot and its
+governed gate that produced them were removed. Passing one and getting an
+ordinary exit 0 is not a missed step; there is no producer left to name.
 
 Pulse retains `--team-graph` and `--team-runtime` for an older optional Pulse
 projection. Those inputs are not the workflow declaration. The active delivery

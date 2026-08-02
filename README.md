@@ -486,7 +486,7 @@ The receipt is paired with an immutable
 fresh file-fsync, directory-fsync, no-replace publication, joint readback, and
 exact digest check trust the pair. It is committed and read back after the
 correlated `session/new` or `session/load` response, observed adapter identity
-enforcement, and before any prompt byte or prompt phase-gate event. A load is
+enforcement, and before any prompt byte. A load is
 proven only by the exact correlated JSON-RPC response for the requested session;
 a response `sessionId` is not trusted or invented. The receipt records the
 effective verified `INITIAL_AGENT_MODE` alongside the raw-byte execution
@@ -576,6 +576,11 @@ node plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs json \
 node plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs compat-v1 <repo>
 ```
 
+Both projection flags still parse and still read whatever file you name, but
+nothing shipped writes either projection any more. A reader who passes one and
+sees an ordinary exit 0 is not missing a step; there is no producer left to
+name.
+
 `compat-v1` writes a v1 down-projection to stdout only; it does not create a
 second persisted snapshot.
 
@@ -611,100 +616,10 @@ fails with exit 2, and changing the zone of a running watcher requires stopping
 that watcher first. Pulse Data v4 continues to publish machine timestamps as
 RFC 3339 UTC; display timezone configuration never changes the JSON contract.
 
-### Retained measurement semantics — no direct Stage 0 command
-
-The former offline analyzer is not a user-facing entry point in this checkout.
-Its pure validation and analysis core remains because the surviving Stage 1
-exporter replays an existing observation store through those rules. It is
-separate from the custody loop above and never dispatches or routes work.
-
-It models a PM outer loop around four Phase Team inner loops and their exit
-artifacts: Requirement `requirements_baseline`, Prototype
-`prototype_evaluation`, Development `development_delivery`, and QA
-`qa_release_evidence`. Routine handoffs go directly to the receiver-owned
-phase lead; the PM retains the exception, policy-conflict, and deadlock
-boundary. The final boundary is a real `QA -> ProjectDelivery` handoff carrying
-`qa_release_evidence`; its ProjectDelivery receiver owns routine acceptance
-while the PM tracks outer-loop coordination and exceptions.
-
-Recorded handoff attempts are actor-authorized, event-replayed terminal
-histories whose events stay within `[slice.assigned_at, analysis_as_of]`; a
-revision proposal is strictly later than its rejected parent's terminal event.
-Canonical JSON and digests sort keys by true Unicode code-point order, not
-JavaScript UTF-16 code-unit order. The primary estimand is the per-slice mean
-by arm; raw arm totals are descriptive only. Every pre-registered guardrail is
-recorded as `PASS`, `BREACH`, or `UNKNOWN`, and any `UNKNOWN` makes
-`measurement_readiness` `INCONCLUSIVE`. Missing measured cost is explicit
-`null`, never zero: affected totals and cost comparisons remain null, while
-bottleneck status and readiness are `INCONCLUSIVE`.
-
-Its JSON intentionally separates `measurement_readiness`, `scenario_signal`,
-`guardrail_status`, `evidence_eligibility`, `safety_hold_recommended`, and
-`decision_packet`. Deterministic, descriptive-only `bottlenecks.by_arm`
-identifies the highest coordination phase and cost category per arm.
-`scenario_signal` remains descriptive; its ROI interpretation is
-`ROI_NOT_ESTABLISHED`. `business_decision` is always `EXTERNAL_REQUIRED`, so
-the analysis cannot claim causal effect or ROI, or return
-`GO`/`ITERATE`/`NO_GO`. `READY` means measurement completeness, not accepted
-delivery, delivery success, or business approval.
-It changes none of the existing tmux/ACP dispatch, mailbox, PM verification,
-Party gates, KMS, Pulse, role-loading, cleanup, or transport semantics. The
-schemas and the Stage 1 runbook below retain the rules that the exporter still
-enforces.
-
-### v0.7 Stage 1 — export-only evidence compatibility
-
-The Stage 1 entry point that remains reads an already-populated, append-only
-observation store and exports an integrity-bound review pack. This checkout
-does not create the store, freeze a pilot, assign slices, capture sources, or
-append observations. The exporter never routes or dispatches work. Its output
-is not a causal claim, certified result, release approval, ROI claim, or
-business verdict. Same-UID observations remain `advisory_same_uid`; exported
-packs remain `NOT_CERTIFIED`, require `EXTERNAL_REQUIRED`, and declare no
-actuation.
-
-The store must already contain a valid frozen manifest and its event files.
-Export replays that named evidence, materializes the ITT dataset and analysis,
-and writes a new pack directory. Verification checks the pack's paths, bytes,
-digests and deterministic replay; it does not authenticate custody or identity.
-
-From the repository root, the exact CLI is:
-
-```bash
-node plugins/tmux-teams/skills/tmux-teams/scripts/delivery-loop-export.mjs export \
-  --store <absolute-store> --out <new-absolute-pack-dir> --as-of <RFC3339> \
-  --source-revision <40-hex-git-sha>
-node plugins/tmux-teams/skills/tmux-teams/scripts/delivery-loop-export.mjs verify-pack \
-  <absolute-pack-dir>
-```
-
-The normative contracts are the
-[pilot manifest schema](plugins/tmux-teams/skills/tmux-teams/references/delivery-loop-pilot-manifest-v1.schema.json),
-[event schema](plugins/tmux-teams/skills/tmux-teams/references/delivery-loop-event-v1.schema.json),
-[evidence-pack schema](plugins/tmux-teams/skills/tmux-teams/references/delivery-loop-evidence-pack-v1.schema.json),
-and Thai-first
-[Stage 1 pilot runbook](plugins/tmux-teams/skills/tmux-teams/references/stage-1-pilot-runbook.md).
-No Stage 1 command automatically routes work, certifies evidence, emits
-`GO`/`ITERATE`/`NO_GO`, or applies a recommendation.
-
-### Governed four-phase runtime compatibility
-
-The Phase Gate runtime is opt-in and separate from both the custody loop and
-the observe-only Stage 1 exporter. `phase-gate-controller.mjs` and its
-supporting modules are the executable surface in this checkout. An older Phase
-Gate Runtime v1 design note remains under `references/`, but its POC and
-`scenario_signal` passages describe the earlier demonstration, not a command
-or field produced by the current Phase Gate modules; it is not an operational
-guide for this checkout.
-When `<repo>/.tmux-teams/phase-gate.json` exists, `acp-companion.mjs` requires
-the controller's exact reservation environment before it reads the brief or
-starts a child.
-
-The runtime has Requirement → Prototype → Development → QA Phase Teams.
-`QA -> ProjectDelivery` ends at a receiver: ProjectDelivery is not Phase 5 and
-does not imply release, UAT, certification, ROI, or business approval. This
-checkout ships no full-loop demonstration command, so the reference and
-controller modules must not be presented as a one-command POC.
+An earlier four-phase delivery pilot and its governed Phase Gate — the two
+projections' only producers — shipped alongside this loop; both were withdrawn
+on 2026-08-02, together with their commands and their documentation. What ships
+here is teams and workflows.
 
 ### The party-mode review gate
 

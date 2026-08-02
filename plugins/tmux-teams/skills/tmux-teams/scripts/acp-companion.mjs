@@ -31,7 +31,6 @@ import { join, dirname, basename } from 'node:path'
 import { homedir } from 'node:os'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
-import { validateCompanionGovernance } from './phase-gate-companion-guard.mjs'
 // §13: this process is a sanctioned ledger writer, so it appends through the
 // same gate the runner does rather than keeping a private copy of the policy.
 import { appendEvent } from './ledger-writer.mjs'
@@ -159,17 +158,30 @@ const livenessTickMs = positiveNumber(
 )
 const persistenceIntervalMs = positiveNumber(process.env.ACP_LIVENESS_WRITE_INTERVAL_MS, 50)
 
-let phaseGateContext
-try {
-  phaseGateContext = validateCompanionGovernance({
-    repoRoot: cwd,
-    taskId,
-    agentName,
-    briefFile,
-    timeoutSec: stallSec,
-  })
-} catch (cause) {
-  console.error(`[phase-gate] ${cause.code ?? 'PHASE_GATE_GUARD_FAILED'}: ${cause.message}`)
+// The phase subsystem is gone, and with it the controller that issued these
+// reservations. What must NOT go quietly is a repository that was governed by
+// it: an install still carrying the marker was one where a raw companion
+// invocation could not run without the controller's exact reservation, and
+// silently downgrading it to ungoverned on upgrade is the one behaviour change
+// nobody would see. This refuses instead, and says what to do about it.
+const LEGACY_PHASE_GATE_MARKER = join(cwd, '.tmux-teams', 'phase-gate.json')
+const LEGACY_GATE_ENV = [
+  'TMUX_TEAMS_PHASE_GATE', 'TMUX_TEAMS_GATE_STORE', 'TMUX_TEAMS_GATE_DISPATCH_UUID',
+  'TMUX_TEAMS_GATE_RESERVATION_EVENT_ID', 'TMUX_TEAMS_GATE_PHASE', 'TMUX_TEAMS_GATE_TASK_ID',
+  'TMUX_TEAMS_GATE_AGENT_ID', 'TMUX_TEAMS_GATE_BRIEF_DIGEST', 'TMUX_TEAMS_GATE_TIMEOUT_SEC',
+]
+if (existsSync(LEGACY_PHASE_GATE_MARKER)) {
+  console.error('[phase-gate] PHASE_GATE_RETIRED: this repository still carries'
+    + ` ${LEGACY_PHASE_GATE_MARKER}, written by the phase-gate controller, which no longer exists.`
+    + ' Retire it deliberately — archive the marker and .tmux-teams/phase-gate-store, then remove'
+    + ' the marker — rather than letting an upgrade turn a governed repository into an ungoverned one.')
+  process.exit(2)
+}
+const strayGateEnv = LEGACY_GATE_ENV.filter((name) => process.env[name] !== undefined)
+if (strayGateEnv.length > 0) {
+  console.error(`[phase-gate] PHASE_GATE_RETIRED: ${strayGateEnv.join(', ')} names a gate that no`
+    + ' longer exists. Unset it; nothing here reads it, and leaving it set means a caller believes'
+    + ' in an authorization step that is not happening.')
   process.exit(2)
 }
 
@@ -208,7 +220,7 @@ try {
   process.exit(2)
 }
 
-const dispatchId = phaseGateContext?.dispatch_uuid ?? randomUUID()
+const dispatchId = randomUUID()
 const startedMs = Date.now()
 const startedAt = new Date(startedMs).toISOString()
 const KMS = fileURLToPath(new URL('./kms.mjs', import.meta.url))
@@ -2253,15 +2265,11 @@ function hasEvidence(text) {
   return !!evidence && !/^(?:ok|yes|pass(?:ed)?|none|n\/a|✓)$/i.test(evidence)
 }
 
-function recordGovernedTerminalSafely(outcome, evidence) {
-  if (!phaseGateContext) return
-  try {
-    phaseGateContext.recordTerminal(outcome, evidence)
-  } catch (cause) {
-    try { phaseGateContext.markIndeterminate(`terminal observation unavailable: ${cause.code ?? cause.message}`) } catch {}
-    console.error(`[phase-gate] ${cause.code ?? 'PHASE_GATE_TERMINAL_FAILED'}: ${cause.message}`)
-  }
-}
+// Kept as a named no-op call site rather than deleted at every caller: the
+// terminal evidence it forwarded went to the phase-gate store, and nothing
+// consumes that now. The KMS event and the work-item ledger already carry the
+// same facts.
+function recordGovernedTerminalSafely() {}
 
 const preamble =
   `Your task-id is ${taskId}. Write your outbox to .mailbox-out/${taskId} — ` +
@@ -2728,19 +2736,6 @@ agent.on('exit', (code, signal) => {
   }
 })
 
-if (phaseGateContext) {
-  try {
-    phaseGateContext.registerChild(agent.pid)
-    writeDispatchRecord()
-    phaseGateContext.recordFootprint(dispatchRecordText())
-  } catch (cause) {
-    try { phaseGateContext.markIndeterminate(`child registration or footprint failed: ${cause.code ?? cause.message}`) } catch {}
-    signalProcessGroup('SIGTERM')
-    await closeAndReapChild()
-    console.error(`[phase-gate] ${cause.code ?? 'PHASE_GATE_REGISTER_FAILED'}: ${cause.message}`)
-    process.exit(1)
-  }
-}
 
 let mode = null
 let modeChars = 0
@@ -3433,7 +3428,6 @@ async function protocolRun() {
   clearStaleOutbox()
   assertProtocolFence('recordPrompt')
   recordTestStage('pre-prompt')
-  phaseGateContext?.recordPrompt(`receipt_digest:${receiptDigest ?? 'none'}\n${preamble + brief}`)
   assertProtocolFence('markPromptStarted')
   markPromptStarted()
   const promptDelayMs = nonNegativeNumber(process.env.ACP_TEST_PROMPT_DELAY_MS)

@@ -159,6 +159,28 @@ function run(taskId, extraEnv = {}, cwd = mkdtempSync(join(tmpdir(), 'acp-compan
   return runAs('mock', taskId, extraEnv, cwd, timeoutSec)
 }
 
+// The one thing kept when the phase subsystem was deleted. A repository that
+// was governed by it could not run a raw companion without the controller's
+// exact reservation; letting an upgrade quietly turn that into an ungoverned
+// repository is the single behaviour change nobody would have seen. It refuses
+// instead. Goes red if either refusal is dropped.
+test('a repository still carrying a retired phase gate is refused, not silently downgraded', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-retired-gate-'))
+  mkdirSync(join(cwd, '.tmux-teams'), { recursive: true })
+  writeFileSync(join(cwd, '.tmux-teams', 'phase-gate.json'), '{"schema":"tmux-teams.phase-gate-marker"}\n')
+  const marked = run('task-retired-marker', {}, cwd)
+  assert.notEqual(marked.status, 0, `a governed marker must refuse; stdout:\n${marked.stdout}`)
+  assert.match(marked.stderr, /PHASE_GATE_RETIRED/)
+  assert.match(marked.stderr, /phase-gate\.json/)
+
+  // Stale reservation environment says a caller still believes in an
+  // authorization step that is not happening.
+  const stray = run('task-retired-env', { TMUX_TEAMS_GATE_DISPATCH_UUID: 'left-over' })
+  assert.notEqual(stray.status, 0, `stray gate env must refuse; stdout:\n${stray.stdout}`)
+  assert.match(stray.stderr, /PHASE_GATE_RETIRED/)
+  assert.match(stray.stderr, /TMUX_TEAMS_GATE_DISPATCH_UUID/)
+})
+
 // The adapter used to inherit the whole parent environment, so a wrong or taken
 // adapter saw every credential the parent carried — including other lanes'.
 // Goes red if adapterEnv stops filtering, and red the other way if the filter
