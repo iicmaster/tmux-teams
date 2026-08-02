@@ -29,7 +29,7 @@ import { join } from 'node:path'
 import { loopHealth, readRunnerHeartbeat } from '../plugins/tmux-teams/skills/tmux-teams/scripts/graph.mjs'
 import {
   INHERIT_ACCOUNT_DEFAULT, RUNNER_HEARTBEAT_FILE, applyHarvest,
-  childEnv, declaredModel, modelEnv, tick,
+  childEnv, declaredAdapter, declaredModel, modelEnv, tick,
 } from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs'
 import { validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
 
@@ -210,6 +210,64 @@ test('the sentinel is never sent as a request, so the account default stands', (
   assert.deepEqual(modelEnv(null), {})
   assert.deepEqual(modelEnv(undefined), {})
   assert.deepEqual(modelEnv('   '), {})
+})
+
+// Every dispatch spawned the literal string `claude` whatever the graph said,
+// so a seat could declare a model only another lane answers to and still be
+// handed to Claude. These fail if the lane stops travelling from the seat to
+// the spawn, or if an unknown lane stops being refused at validation.
+test('a seat runs on the lane it declares, and an unknown lane is refused', () => {
+  const declared = validateWorkflowGraph({
+    ...graphDecl(),
+    outer_controller_adapter: 'codex',
+    teams: [
+      { ...team('build', A_DECLARED_MODEL), adapters: { dispatcher: 'agy', worker: 'codex', evaluator: 'claude' } },
+      team('test', A_DECLARED_MODEL),
+    ],
+  })
+  assert.equal(declared.ok, true, declared.reason ?? '')
+  assert.equal(declaredAdapter(declared.value, 'build', 'build_d'), 'agy')
+  assert.equal(declaredAdapter(declared.value, 'build', 'build_w1'), 'codex')
+  assert.equal(declaredAdapter(declared.value, 'build', 'build_e'), 'claude')
+  assert.equal(declaredAdapter(declared.value, null, 'pm'), 'codex')
+  // A graph written before seats could name a lane keeps its meaning.
+  const silent = validateWorkflowGraph(graphDecl())
+  assert.equal(silent.ok, true, silent.reason ?? '')
+  assert.equal(declaredAdapter(silent.value, 'build', 'build_w1'), 'claude')
+  assert.equal(declaredAdapter(silent.value, null, 'pm'), 'claude')
+
+  const unknown = validateWorkflowGraph({
+    ...graphDecl(),
+    teams: [{ ...team('build', A_DECLARED_MODEL), adapters: { worker: 'gemini-cli' } }, team('test', A_DECLARED_MODEL)],
+  })
+  assert.equal(unknown.ok, false)
+  assert.match(unknown.reason, /unknown adapter/)
+})
+
+// Reading the lane off the seat is not the same fact as spawning it. The gap
+// between a value that exists and a value that is used is exactly how the
+// declared MODEL went unrequested for as long as it did, so this asserts at the
+// point of use.
+test('the declared lane reaches the dispatch, not just the graph', () => {
+  const dir = repoWith({
+    graph: {
+      ...graphDecl({ model: A_DECLARED_MODEL }),
+      teams: [
+        { ...team('build', A_DECLARED_MODEL), adapters: { dispatcher: 'codex', worker: 'codex', evaluator: 'codex' } },
+        team('test', A_DECLARED_MODEL),
+      ],
+    },
+    ledgers: { wip: HELD },
+  })
+  const seen = []
+  saying(() => tick(dir, {
+    apply: true, tickSec: 20, scratchDir: join(dir, 'scratch'),
+    spawnLeg: (repo, plan) => { seen.push(plan); return `t-${seen.length}` },
+  }))
+  assert.ok(seen.length > 0, 'nothing was dispatched, so nothing was proved')
+  for (const plan of seen) {
+    if (plan.team === 'build') assert.equal(plan.adapter, 'codex', JSON.stringify(plan))
+  }
 })
 
 // The companion prefers an ambient ACP_CMD over the adapter its lane names, so

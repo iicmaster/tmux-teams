@@ -42,7 +42,7 @@ import {
 } from './role-briefs.mjs'
 import { readWorkflowGraph } from './graph.mjs'
 import { intakeStats, intakeStatsBrief } from './intake-stats.mjs'
-import { teamRoleOf } from './workflow-graph.mjs'
+import { DEFAULT_ADAPTER, teamRoleOf } from './workflow-graph.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const COMPANION = join(HERE, 'acp-companion.mjs')
@@ -145,6 +145,18 @@ export function declaredModel(graph, teamId, agentId) {
   if (agentId && agentId === graph.outer_controller_id) return graph.outer_controller_model || ''
   const team = graph.teams.find((entry) => entry.team_id === teamId)
   return team?.agents.find((agent) => agent.agent_id === agentId)?.model || ''
+}
+
+// Which lane the seat runs on. Every dispatch used to spawn the literal string
+// `claude` regardless of what the graph said, so a seat could declare a model
+// only its own lane would ever answer to and still be handed to Claude — the
+// declaration and the dispatch disagreeing with nothing able to notice. The
+// graph defaults every unnamed seat to `claude`, so this changes no existing
+// board; it lets a new one mean what it says.
+export function declaredAdapter(graph, teamId, agentId) {
+  if (agentId && agentId === graph.outer_controller_id) return graph.outer_controller_adapter || DEFAULT_ADAPTER
+  const team = graph.teams.find((entry) => entry.team_id === teamId)
+  return team?.agents.find((agent) => agent.agent_id === agentId)?.adapter || DEFAULT_ADAPTER
 }
 
 // The safety rule this whole branch exists for. acp-companion treats a REQUESTED
@@ -946,7 +958,7 @@ export function childEnv(source = process.env) {
   return injected ? { ...rest, ACP_CMD: injected } : rest
 }
 
-function dispatch(repo, { workItem, team, role, agentId, workflow, model }, briefPath, stallSec) {
+function dispatch(repo, { workItem, team, role, agentId, workflow, model, adapter = DEFAULT_ADAPTER }, briefPath, stallSec) {
   const taskId = `${workItem || 'board'}-${team || 'loop'}-${role}-${Date.now().toString(36)}`
     .replace(/[^A-Za-z0-9_-]/g, '-')
   // Keep every dispatch log. Discarding the adapter stderr is how a runner ends
@@ -955,7 +967,7 @@ function dispatch(repo, { workItem, team, role, agentId, workflow, model }, brie
   const logDir = join(repo, '.tmux-teams', 'runner-logs')
   mkdirSync(logDir, { recursive: true })
   const logFd = openSync(join(logDir, `${taskId}.log`), 'a', 0o600)
-  const child = spawn(process.execPath, [COMPANION, 'claude', repo, taskId, briefPath, String(stallSec)], {
+  const child = spawn(process.execPath, [COMPANION, adapter, repo, taskId, briefPath, String(stallSec)], {
     cwd: repo,
     detached: true,
     stdio: ['ignore', logFd, logFd],
@@ -1164,12 +1176,13 @@ export function tick(repoArg, {
     // Two different facts, said differently: a name the dispatch will hold the
     // adapter to, or the account default nobody pinned.
     const says = modelEnv(model).ACP_EXPECT_MODEL || 'account default (none requested)'
-    if (!apply) { log(`would dispatch ${plan.agent_id} (${plan.role}) for ${plan.work_item} model=${says}`); continue }
+    const adapter = declaredAdapter(graph.value, plan.team, plan.agent_id)
+    if (!apply) { log(`would dispatch ${plan.agent_id} (${plan.role}) for ${plan.work_item} lane=${adapter} model=${says}`); continue }
     const taskId = spawnLeg(repo, {
       workItem: plan.work_item, team: plan.team, role: plan.role,
-      agentId: plan.agent_id, workflow: plan.workflow, model,
+      agentId: plan.agent_id, workflow: plan.workflow, model, adapter,
     }, brief.path, stallSec)
-    log(`start  ${plan.agent_id} (${plan.role}) <- ${plan.work_item} task=${taskId} model=${says}`)
+    log(`start  ${plan.agent_id} (${plan.role}) <- ${plan.work_item} task=${taskId} lane=${adapter} model=${says}`)
     started.push({ ...plan, task_id: taskId, model })
   }
 

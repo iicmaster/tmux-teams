@@ -53,6 +53,14 @@ const MAX_WORKERS = 100
 const MAX_WORKFLOWS = 50
 const TEAM_MODEL_ROLES = ['dispatcher', 'worker', 'evaluator']
 
+// The lanes `acp-companion.mjs` can spawn. A closed list here and an open one
+// for models is not an inconsistency: the adapter is the only authority on what
+// a model name may say, but the companion itself is the authority on which
+// adapters exist, and it exits 2 on a fourth name. `claude` is the default so
+// that graphs written before a seat could name its lane keep their meaning.
+export const DEFAULT_ADAPTER = 'claude'
+export const ADAPTERS = new Set(['claude', 'codex', 'agy'])
+
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
 const invalid = (reason) => ({ ok: false, value: null, reason })
 // Quoted when it is a string, so a declared "2" is visibly not the number 2.
@@ -169,6 +177,11 @@ export function validateWorkflowGraph(value) {
   if (controller !== null && !isModelName(controllerModel)) {
     return invalid(`the outer controller has an invalid model — a model is 1 to ${MODEL_MAX} characters with no control characters`)
   }
+  const controllerAdapter = controller === null ? null
+    : (value.outer_controller_adapter == null || value.outer_controller_adapter === '' ? DEFAULT_ADAPTER : value.outer_controller_adapter)
+  if (controller !== null && !ADAPTERS.has(controllerAdapter)) {
+    return invalid(`the outer controller has an unknown adapter — one of ${[...ADAPTERS].join(', ')}`)
+  }
 
   // Derived, never declared — the same rule §3.1 applies to `wip_limit`. A
   // graph that states it in a field would be stating one fact twice, and two
@@ -219,6 +232,24 @@ export function validateWorkflowGraph(value) {
         return invalid(`team ${teamId} has an invalid model for its ${role} — a model is 1 to ${MODEL_MAX} characters with no control characters`)
       }
     }
+    // The lane a seat runs on. Unlike a model name — where the adapter is the
+    // only authority and no list lives here — the lanes are a closed set,
+    // because `acp-companion.mjs` knows exactly three and exits on a fourth.
+    // Optional and defaulting to `claude`, so every graph written before seats
+    // could name a lane keeps meaning what it meant.
+    const adapters = raw.adapters == null ? {} : raw.adapters
+    if (!isObject(adapters)) {
+      return invalid(`team ${teamId} declares adapters that are not an object — omit the key to run every seat on ${DEFAULT_ADAPTER}`)
+    }
+    const laneOf = (role) => {
+      const declared = adapters[role]
+      return declared == null || declared === '' ? DEFAULT_ADAPTER : declared
+    }
+    for (const role of TEAM_MODEL_ROLES) {
+      if (!ADAPTERS.has(laneOf(role))) {
+        return invalid(`team ${teamId} has an unknown adapter for its ${role} — one of ${[...ADAPTERS].join(', ')}`)
+      }
+    }
     // One agent, one seat. A shared id would make two nodes light up from one
     // dispatch, which is exactly the false positive the page must never show.
     //
@@ -251,14 +282,15 @@ export function validateWorkflowGraph(value) {
       evaluator_id: evaluator,
       wip_limit: wipLimit,
       models: { dispatcher: models.dispatcher, worker: models.worker, evaluator: models.evaluator },
+      adapters: { dispatcher: laneOf('dispatcher'), worker: laneOf('worker'), evaluator: laneOf('evaluator') },
       // The declared model travels with each agent so a reader never has to
       // pair a role back to the team's models block by hand. It stays a
       // DECLARATION: the model a node reports as running is verified evidence
-      // and is a different fact from this one.
+      // and is a different fact from this one. The lane travels the same way.
       agents: [
-        { agent_id: dispatcher, role: 'dispatcher', model: models.dispatcher },
-        ...workers.map((agentId) => ({ agent_id: agentId, role: 'worker', model: models.worker })),
-        { agent_id: evaluator, role: 'evaluator', model: models.evaluator },
+        { agent_id: dispatcher, role: 'dispatcher', model: models.dispatcher, adapter: laneOf('dispatcher') },
+        ...workers.map((agentId) => ({ agent_id: agentId, role: 'worker', model: models.worker, adapter: laneOf('worker') })),
+        { agent_id: evaluator, role: 'evaluator', model: models.evaluator, adapter: laneOf('evaluator') },
       ],
     })
   }
@@ -317,6 +349,7 @@ export function validateWorkflowGraph(value) {
     project_id: projectId,
     outer_controller_id: controller,
     outer_controller_model: controllerModel ?? null,
+    outer_controller_adapter: controllerAdapter ?? null,
     controller_team: controllerTeamId,
     teams,
     workflows,
