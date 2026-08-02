@@ -992,6 +992,14 @@ function validateExecutionProfile(profile, profilePath) {
       || sha256File(profile.adapter.entry_path) !== profile.adapter.entry_digest) {
       throw Object.assign(new Error('execution profile adapter entry digest drifted'), { code: 'execution_profile_drift' })
     }
+    // Hashing the entry proves a file has not changed. It says nothing about
+    // whether that file is the one about to be spawned, and nothing here ever
+    // compared the two: a profile could hash a benign entry and point argv at
+    // another. argv[0] was already bound to the verified Node executable just
+    // below; argv[1] is the script Node then runs, so it is the same fact.
+    if (profile.argv[1] !== profile.adapter.entry_path) {
+      throw Object.assign(new Error('execution profile argv does not run the adapter entry it verified'), { code: 'execution_profile_drift' })
+    }
   }
   for (const [label, value] of [['Node', profile.node], ['Codex', profile.codex]]) {
     if (typeof value.executable_realpath !== 'string' || (value.executable_realpath !== null && !value.executable_realpath.startsWith('/'))
@@ -1177,7 +1185,12 @@ function buildBuiltinProfile(cmd) {
       metadata_path: null,
       metadata_digest: null,
       entry_path: null,
-      entry_digest: sha256Text([cmd[0], ...cmd[1]].join('\u0000')),
+      // A command like `npx -y pkg` names no entry file this process can hash,
+      // so there is no entry digest to record. This used to hold the hash of the
+      // argv TEXT, which made the receipt read as though executed bytes had been
+      // verified when only the words had — and those words are already in
+      // `argv`, which `profile_digest` covers, so the hash proved nothing twice.
+      entry_digest: null,
     },
     codex: { executable_realpath: codexIdentity.realpath, executable_digest: codexIdentity.digest, version: codexIdentity.version },
     node: { executable_realpath: nodeIdentity.realpath, executable_digest: nodeIdentity.digest, version: nodeIdentity.version },

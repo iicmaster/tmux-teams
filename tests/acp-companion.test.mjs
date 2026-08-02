@@ -329,12 +329,15 @@ function fixtureExecutionIdentity() {
   return executionProfileFixtureIdentity
 }
 
-function writeExecutionProfile(cwd) {
+// `argvEntry` lets a profile hash one file and run another. Every fixture here
+// set argv[1] and entry_path to the same path, so the case the binding exists
+// for was the one case never written.
+function writeExecutionProfile(cwd, { argvEntry = MOCK } = {}) {
   const identity = fixtureExecutionIdentity()
   const profile = {
     schema: 'acp-execution-profile',
     schema_version: 'acp-execution-profile.v1',
-    argv: [NODE_EXECUTABLE, MOCK],
+    argv: [NODE_EXECUTABLE, argvEntry],
     agent_info: { name: 'producer-test-client', version: '1' },
     expected_agent_info: { name: 'mock-acp-agent', version: '1' },
     initial_agent_mode: 'agent-full-access',
@@ -363,6 +366,21 @@ function writeExecutionProfile(cwd) {
   writeFileSync(path, `${JSON.stringify(profile, null, 2)}\n`, { mode: 0o600 })
   return path
 }
+
+test('a profile that hashes one entry and runs another is refused', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-argv-entry-'))
+  // A second, perfectly innocent script. The profile still verifies MOCK's
+  // bytes — it just does not run them.
+  const other = join(cwd, 'other-adapter.mjs')
+  writeFileSync(other, readFileSync(MOCK))
+  const profile = writeExecutionProfile(cwd, { argvEntry: other })
+  const result = run('task-argv-entry-mismatch', {
+    ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'new',
+    ACP_EXECUTION_PROFILE: profile, ACP_CMD: `${NODE_EXECUTABLE} ${other}`,
+  }, cwd)
+  assert.notEqual(result.status, 0, `mismatch must fail; stdout:\n${result.stdout}`)
+  assert.match(result.stderr, /does not run the adapter entry it verified/)
+})
 
 function writeBinaryAdapterProfile(cwd, { divergent = false } = {}) {
   const adapterPath = join(cwd, divergent ? 'binary-adapter-divergent.mjs' : 'binary-adapter.mjs')
@@ -1290,7 +1308,11 @@ concurrentTest('receipt schema is closed and all committed receipt strings remai
   assert.ok(Buffer.byteLength(committed.raw, 'utf8') <= 32 * 1024)
   assert.ok(!committed.raw.includes(cwd))
   assert.ok(!committed.raw.includes('do the thing'))
-  assert.match(committed.value.adapter_entry_digest, /^sha256:[0-9a-f]{64}$/)
+  // No entry path means no entry bytes were hashed, so there is nothing this
+  // field may claim. It used to carry the hash of the argv TEXT and this line
+  // asserted the shape of that hash — pinning a receipt that read as though the
+  // executed file had been verified when only the words had.
+  assert.equal(committed.value.adapter_entry_digest, null)
   assert.match(committed.value.execution_profile_digest, /^sha256:[0-9a-f]{64}$/)
 })
 
