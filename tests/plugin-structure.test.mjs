@@ -96,6 +96,57 @@ test('Stage 1 field-evidence files and documentation links are wired', () => {
     assert.equal(schema.additionalProperties, false, `${file}: top level must be closed`)
   }
 
+  // Salvaged from pulse-v2.test.mjs, which dies with the phase subsystem, and
+  // widened while moving. The loops above check only the TOP level of each
+  // schema; nothing in the suite walked `$defs`, so a nested definition could
+  // be open, or declare a property it never required, and no test would say so.
+  // The original ran over v2 alone — this runs over every published version.
+  for (const version of [1, 2, 3, 4]) {
+    const file = `pulse-v${version}.schema.json`
+    const schema = readJson(join(skillRoot, 'references', file))
+    assert.equal(schema.properties.schema_version.const, version, `${file}: wrong version const`)
+    for (const [name, definition] of [['pulse', schema], ...Object.entries(schema.$defs ?? {})]) {
+      if (definition.type !== 'object') continue
+      assert.equal(definition.additionalProperties, false, `${file}: ${name} must be closed`)
+    }
+  }
+
+  // Required-completeness is a property of v2 ALONE, not a general rule, and the
+  // original was right to scope it there. Widening it to every version failed
+  // twice on deliberate design: v3 made `delivery_loop` optional on purpose, and
+  // v4's `liveness_tool` declares `content_digest`/`locations_digest` without
+  // requiring them. A rule that turns a designed choice into a violation is a
+  // rule that gets the schema edited to match it.
+  {
+    const schema = readJson(join(skillRoot, 'references', 'pulse-v2.schema.json'))
+    for (const [name, definition] of [['pulse', schema], ...Object.entries(schema.$defs)]) {
+      if (definition.type !== 'object') continue
+      assert.deepEqual([...definition.required].sort(), Object.keys(definition.properties).sort(),
+        `pulse-v2.schema.json: ${name} must require every declared property`)
+    }
+  }
+
+  // Phase attribution on a run is written by the TEAM loop, not by the phase
+  // subsystem — `tests/pulse-v3-phase.test.mjs` proves the behaviour end to end
+  // and survives the deletion. This is the schema half of that pair, and it
+  // lived in the dying file.
+  // v3 only. v4 defines neither `phase_source` nor `diagnostic_code` in its
+  // `$defs` — it inlines them — so the original was right to scope this to the
+  // version that declares them. Third time widening a salvaged rule broke on a
+  // real difference; the run said so each time.
+  {
+    const schema = readJson(join(skillRoot, 'references', 'pulse-v3.schema.json'))
+    for (const definitionName of ['run', 'recent_verdict']) {
+      assert.ok(schema.$defs[definitionName].required.includes('phase'), `v3 ${definitionName}.phase`)
+      assert.ok(schema.$defs[definitionName].required.includes('phase_source'), `v3 ${definitionName}.phase_source`)
+    }
+    assert.deepEqual(schema.$defs.phase_source.enum,
+      ['dispatch', 'event', 'dispatch_join', 'unassigned', 'conflict'], 'v3 phase_source vocabulary')
+    for (const code of ['PHASE_BINDING_INVALID', 'PHASE_BINDING_CONFLICT']) {
+      assert.ok(schema.$defs.diagnostic_code.enum.includes(code), `v3 diagnostic ${code}`)
+    }
+  }
+
   // Only commands that still exist. The freeze/assign/capture/replay/rehearse
   // and phase-gate CLIs went with the Stage 1 entry points; docs promising a
   // command nobody can run is the same class of untruth as a page reporting
