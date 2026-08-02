@@ -505,7 +505,12 @@ cleanup; descendant cleanup never turns that settlement into `stalled`/forced.
 
 Each dispatch also commits one immutable, no-replace
 `.tmux-teams/receipts/<dispatch_id>.json` operation receipt, described by
-`plugins/tmux-teams/skills/tmux-teams/references/acp-session-receipt-v1.schema.json`.
+`plugins/tmux-teams/skills/tmux-teams/references/acp-session-receipt-v1.schema.json`,
+paired with
+`plugins/tmux-teams/skills/tmux-teams/references/acp-session-receipt-commit-v1.schema.json`
+for the commitment envelope written beside it. Note that the tests assert the
+schema NAME those files declare and never validate a written receipt against the
+documents themselves — the contract is published, not enforced.
 The receipt is paired with an immutable
 `.tmux-teams/receipt-commits/<dispatch_id>.json` commitment envelope; only a
 fresh file-fsync, directory-fsync, no-replace publication, joint readback, and
