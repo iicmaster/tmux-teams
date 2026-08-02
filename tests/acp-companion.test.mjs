@@ -159,6 +159,34 @@ function run(taskId, extraEnv = {}, cwd = mkdtempSync(join(tmpdir(), 'acp-compan
   return runAs('mock', taskId, extraEnv, cwd, timeoutSec)
 }
 
+// The outbox is the one file a worker fully controls. Each of these fails if
+// the corresponding refusal is taken out of readTerminalOutbox — which is the
+// only thing that makes them evidence rather than a record that a test exists.
+test('an outbox that is not a regular file is refused rather than read', () => {
+  for (const kind of ['symlink', 'fifo']) {
+    const result = run(`task-outbox-${kind}`, { MOCK_OUTBOX_KIND: kind }, undefined, 20)
+    assert.notEqual(result.status, 0, `${kind} must fail; stdout:\n${result.stdout}`)
+    assert.match(result.stderr, /symlink|not a regular file/, kind)
+  }
+})
+
+test('an oversize outbox is refused instead of being read into memory', () => {
+  const result = run('task-outbox-oversize', { MOCK_OUTBOX_KIND: 'oversize' }, undefined, 20)
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /exceeds its bounded size/)
+})
+
+test('terminal evidence records the digest of the outbox that was classified', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-outbox-digest-'))
+  const result = run('task-outbox-digest', {}, cwd)
+  assert.equal(result.status, 0, result.stderr)
+  const outbox = readFileSync(join(cwd, '.mailbox-out', 'task-outbox-digest'))
+  assert.equal(
+    field(eventTexts(cwd)[0] ?? '', 'outbox_digest'),
+    `sha256:${createHash('sha256').update(outbox).digest('hex')}`,
+  )
+})
+
 function eventTexts(cwd) {
   const dir = join(cwd, '.tmux-teams', 'kms', 'events')
   if (!existsSync(dir)) return []

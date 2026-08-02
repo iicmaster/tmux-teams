@@ -1,9 +1,9 @@
 // Deterministic ACP agent used by the companion and phase-gate tests.
 // It deliberately exercises startup, long-running tools, duplicate/noise
 // updates, cancellation, identity, and descendant-process cleanup paths.
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { appendFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`)
@@ -169,7 +169,28 @@ function writeOutbox(prompt) {
   const verdict = typeof candidate === 'string' && /^[a-z-]+$/.test(candidate) ? candidate : ''
   const verdictBlock = verdict ? `VERDICT: ${verdict}\nREASON: deterministic mock loop verdict\n` : ''
   const did = permissionDecision ? `DID: mock work; permission=${permissionDecision}` : 'DID: mock work'
-  writeFileSync(join('.mailbox-out', id), `${did}\n${envelope}${evidence}${verdictBlock}${marker}\n`, { mode: 0o600 })
+  const body = `${did}\n${envelope}${evidence}${verdictBlock}${marker}\n`
+  // A worker chooses what kind of file lands at the outbox path, so the fixture
+  // has to be able to choose badly. Without these the companion's file-type and
+  // size checks have no test that goes red when they are removed.
+  const kind = process.env.MOCK_OUTBOX_KIND ?? 'file'
+  const outbox = join('.mailbox-out', id)
+  if (kind === 'symlink') {
+    const target = join(process.cwd(), '.mailbox-out', `${id}.target`)
+    writeFileSync(target, body, { mode: 0o600 })
+    symlinkSync(target, outbox)
+    return
+  }
+  if (kind === 'fifo') {
+    // No writer is ever opened: a blocking reader would wait here for ever.
+    spawnSync('mkfifo', [outbox])
+    return
+  }
+  if (kind === 'oversize') {
+    writeFileSync(outbox, 'x'.repeat(5 * 1024 * 1024), { mode: 0o600 })
+    return
+  }
+  writeFileSync(outbox, body, { mode: 0o600 })
 }
 
 function permissionOptions(scenario) {

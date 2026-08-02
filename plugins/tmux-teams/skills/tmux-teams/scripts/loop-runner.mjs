@@ -27,6 +27,7 @@
 // The runner dispatches and records; it never judges. Every verdict in the
 // ledger was stated by the agent whose job it was to state it.
 import { spawn, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -195,9 +196,16 @@ function busyAgents(repo, nowMs = Date.now()) {
   }
 }
 
-const outboxText = (repo, taskId) => {
-  if (!taskId) return ''
-  try { return readFileSync(join(repo, '.mailbox-out', taskId), 'utf8') } catch { return '' }
+// Read the bytes once and say what they hashed to. The companion records the
+// digest of the outbox it classified on the `delivered` event; this reads the
+// same path a tick or more later. Two independent reads of one mutable path are
+// two facts, and only the digest can tell whether they are the same one.
+const readOutbox = (repo, taskId) => {
+  if (!taskId) return { text: '', digest: null }
+  try {
+    const bytes = readFileSync(join(repo, '.mailbox-out', taskId))
+    return { text: bytes.toString('utf8'), digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}` }
+  } catch { return { text: '', digest: null } }
 }
 
 const dispatchRecord = (repo, taskId) => {
@@ -329,7 +337,7 @@ function composeBrief(repo, graph, plan, item, scratchDir, answerDeadlineSec = A
   // evaluator judges it.
   const previous = lastWorkerDelivery(graph, item)
   if (previous) {
-    const text = outboxText(repo, previous.task_id)
+    const { text } = readOutbox(repo, previous.task_id)
     parts.push(text
       ? `\n\n---\n\n# Delivered by \`${previous.agent_id}\` (task \`${previous.task_id}\`)\n\n${text}`
       : `\n\n---\n\n# Note\n\nTask \`${previous.task_id}\` left no outbox on disk. Work from the brief above and`
@@ -384,8 +392,25 @@ export function planHarvest(graph, items, hasOutbox = () => false) {
 }
 
 function harvestEvent(repo, graph, { item, last, role }, now) {
-  const text = outboxText(repo, last.task_id)
+  const { text, digest } = readOutbox(repo, last.task_id)
   const base = { at: now, work_item: item.work_item, workflow: item.workflow || null, task_id: last.task_id || null }
+
+  // The bytes the companion classified are the only bytes a verdict may be read
+  // from. When they no longer hash to what `delivered` recorded, the honest move
+  // is neither to trust them nor to loop on them silently: park the token on a
+  // person and say exactly what disagrees. Older histories carry no digest, so
+  // an absent one is not a mismatch — it is a history from before this check.
+  if (last.outbox_digest && digest !== last.outbox_digest) {
+    return {
+      ...base,
+      event: 'questioned',
+      agent_id: last.agent_id,
+      questions: `the outbox for task ${last.task_id} changed after the worker finished.`
+        + ` It was recorded as ${last.outbox_digest} and now reads ${digest ?? 'nothing on disk'}.`
+        + ' Restore the recorded bytes, or withdraw the work and dispatch it again.',
+      reason: 'the outbox no longer matches the bytes recorded on delivery',
+    }
+  }
 
   if (role === 'dispatcher') {
     const { verdict, stated, reason } = readVerdict(text, INTAKE_VERDICTS)

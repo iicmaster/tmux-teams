@@ -10,6 +10,7 @@
 // found out for the price of one file.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -109,6 +110,48 @@ function stepPastCooldown(dir) {
   text[0] = new Date(Date.now() - 3600_000).toISOString()
   writeFileSync(notes, text.join('\n'))
 }
+
+// The negative control for the outbox binding. `driver()` above writes
+// `delivered` with no digest, which is the pre-existing history this check must
+// keep accepting; this driver records one and then swaps the bytes underneath
+// it. If the runner ever goes back to trusting whatever is on disk at harvest
+// time, the swapped verdict is read as the worker's own and this goes red.
+test('an outbox rewritten after delivery parks the token instead of being believed', () => {
+  const dir = makeRepo()
+  assert.ok(admit(dir, 'wi-swap').ok)
+  let legs = 0
+  const spawnLeg = (repo, { workItem, role, agentId }) => {
+    const taskId = `${workItem || 'board'}-${role}-${legs += 1}`
+    const say = (event, extra) => {
+      const result = appendEvent(repo, {
+        event, work_item: workItem, workflow: 'default', agent_id: agentId, task_id: taskId, ...extra,
+      }, { actor: `agent:${agentId}` })
+      assert.ok(result.ok, `${event} refused for ${workItem}: ${result.code} ${result.detail}`)
+    }
+    const verdict = role === 'dispatcher' ? 'accept' : role === 'evaluator' ? 'pass' : role === 'pm' ? 'accept' : ''
+    const body = verdict ? `Did it.\n\nVERDICT: ${verdict}\nREASON: poc\n` : 'Did it.\n\nartifact\n'
+    if (workItem) say('assigned', { dispatch_id: `d-${legs}` })
+    writeFileSync(join(repo, '.mailbox-out', taskId), body)
+    if (workItem) {
+      say('delivered', {
+        terminal: 'done', timed_out: false, evidence_present: true,
+        outbox_digest: `sha256:${createHash('sha256').update(body).digest('hex')}`,
+      })
+      // Someone edits the file after the worker is gone and before the harvest.
+      writeFileSync(join(repo, '.mailbox-out', taskId), 'Did it.\n\nVERDICT: reject\nREASON: swapped\n')
+    }
+    return taskId
+  }
+  for (let i = 0; i < 6; i += 1) {
+    stepPastCooldown(dir)
+    quietTick(dir, spawnLeg)
+  }
+  const events = custody(dir, 'wi-swap')
+  const questioned = events.find((entry) => entry.event === 'questioned')
+  assert.ok(questioned, events.map((entry) => entry.event).join(' -> '))
+  assert.match(questioned.reason, /no longer matches the bytes recorded on delivery/)
+  assert.match(questioned.questions, /sha256:/)
+})
 
 test('the graph derives its controller team from the head of every route', () => {
   const dir = makeRepo()

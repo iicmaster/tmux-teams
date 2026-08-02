@@ -11,12 +11,14 @@ import {
   closeSync,
   constants as fsConstants,
   existsSync,
+  fstatSync,
   fsyncSync,
   linkSync,
   lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   readdirSync,
   realpathSync,
   renameSync,
@@ -253,6 +255,10 @@ const MAX_SESSION_ID = 128
 const MAX_MODEL = 128
 const MAX_REASONING_EFFORT = 64
 const MAX_TERMINATION_REASON = 64
+// A worker report, not a payload. The largest real outbox measured on this repo
+// is a 42 KiB cross-vendor round-table; 4 MiB leaves that two orders of room and
+// still refuses a file nothing here should be reading into memory at once.
+const MAX_OUTBOX_BYTES = 4 * 1024 * 1024
 const MAX_ERROR_TEXT = 512
 const MAX_TOOL_CALL_ID = 128
 const MAX_TOOL_TITLE = 128
@@ -2132,12 +2138,23 @@ function recordTerminal(terminal, {
   exitCode = -1,
   settlement = null,
   livenessPersistenceFailed = false,
+  outboxDigest = null,
 } = {}) {
   if (process.env.ACP_KMS_AUTO === '0' || kmsRecorded) return
   kmsRecorded = true
   // The token leaves this agent's hands here. Whether the next team accepts it
   // is their verdict to record, not ours to assume.
-  appendWorkItemEvent('delivered', { terminal, timed_out: timedOut, evidence_present: evidencePresent })
+  //
+  // `outbox_digest` is what makes the verdict this process classified the same
+  // fact the runner harvests. Without it each side opened the path separately,
+  // and bytes that read `reject` here could read `accept` by the next tick with
+  // nothing in the history able to say they had changed.
+  appendWorkItemEvent('delivered', {
+    terminal,
+    timed_out: timedOut,
+    evidence_present: evidencePresent,
+    ...(outboxDigest ? { outbox_digest: outboxDigest } : {}),
+  })
   const facts = settlementFacts(settlement)
   const rev = gitValue(['rev-parse', '--short', 'HEAD']) ?? 'not-a-git-repo'
   const porcelain = gitValue(['status', '--porcelain'])
@@ -2193,6 +2210,7 @@ function recordTerminal(terminal, {
     `error: ${boundedText(lastErrorText || stderrBuf, 'none', MAX_ERROR_TEXT)}`,
     `brief_bytes: ${Buffer.byteLength(brief)}`,
     `evidence_present: ${evidencePresent}`,
+    `outbox_digest: ${outboxDigest ?? 'none'}`,
     `timed_out: ${timedOut}`,
   ].join('\n') + '\n'
   const result = spawnSync(process.execPath, [KMS, 'append', cwd, '-'], {
@@ -2984,23 +3002,65 @@ async function persistInterruptedReceiptIfNeeded() {
 function clearStaleOutbox() {
   const outboxPath = join(cwd, '.mailbox-out', taskId)
   if (!existsSync(outboxPath)) return
-  if (statSync(outboxPath).isDirectory()) {
-    throw Object.assign(new Error(`${outboxPath} is a directory — expected a single flat file`), { code: 'invalid_outbox' })
+  // lstat, not stat: a symlink left here would otherwise be followed, and the
+  // check would report on the target instead of the link that is being removed.
+  if (!lstatSync(outboxPath).isFile()) {
+    throw Object.assign(new Error(`${outboxPath} is not a regular file — expected a single flat file`), { code: 'invalid_outbox' })
   }
   unlinkSync(outboxPath)
 }
 
+// The outbox is written by the worker and read by this process, and the worker
+// chooses what kind of file lands at that path. Rejecting only a directory left
+// two openings: a symlink pointed the terminal verdict at bytes outside the
+// repo, and a FIFO hung the synchronous read for ever — with the event loop
+// blocked, not even the hard-timeout timer could fire. O_NOFOLLOW refuses the
+// link at open() rather than after an lstat that a rename could invalidate, and
+// O_NONBLOCK makes opening a FIFO return instead of waiting for a writer, so
+// fstat can reject it. The digest is returned because a verdict this process
+// verified is not the same fact as the bytes the runner harvests later.
 function readTerminalOutbox() {
   const outboxPath = join(cwd, '.mailbox-out', taskId)
-  if (!existsSync(outboxPath)) throw Object.assign(new Error(`worker finished the turn but wrote no ${outboxPath}`), { code: 'no_outbox' })
-  if (statSync(outboxPath).isDirectory()) throw Object.assign(new Error(`${outboxPath} is a directory — expected a single flat file`), { code: 'invalid_outbox' })
-  const text = readFileSync(outboxPath, 'utf8')
+  let fd
+  try {
+    fd = openSync(outboxPath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0))
+  } catch (cause) {
+    if (cause.code === 'ENOENT') throw Object.assign(new Error(`worker finished the turn but wrote no ${outboxPath}`), { code: 'no_outbox' })
+    if (cause.code === 'ELOOP' || cause.code === 'EMLINK') {
+      throw Object.assign(new Error(`${outboxPath} is a symlink — expected a single flat file`), { code: 'invalid_outbox' })
+    }
+    throw Object.assign(new Error(`${outboxPath} could not be opened: ${cause.code ?? cause.message}`), { code: 'invalid_outbox' })
+  }
+  let bytes
+  try {
+    const stat = fstatSync(fd)
+    if (!stat.isFile()) {
+      throw Object.assign(new Error(`${outboxPath} is not a regular file — expected a single flat file`), { code: 'invalid_outbox' })
+    }
+    if (stat.size > MAX_OUTBOX_BYTES) {
+      throw Object.assign(new Error(`${outboxPath} exceeds its bounded size of ${MAX_OUTBOX_BYTES} bytes`), { code: 'invalid_outbox' })
+    }
+    bytes = Buffer.alloc(stat.size)
+    let offset = 0
+    while (offset < stat.size) {
+      const read = readSync(fd, bytes, offset, stat.size - offset, offset)
+      if (read <= 0) break
+      offset += read
+    }
+    if (offset !== stat.size) {
+      throw Object.assign(new Error(`${outboxPath} changed size while it was being read`), { code: 'invalid_outbox' })
+    }
+  } finally {
+    closeSync(fd)
+  }
+  const text = bytes.toString('utf8')
+  const digest = sha256Bytes(bytes)
   const lines = text.split('\n').map((value) => value.trim()).filter(Boolean)
   const last = lines.at(-1) ?? ''
   const terminal = last === `TEAM_DONE ${taskId}` ? 'done'
     : last === `TEAM_BLOCKED ${taskId}` ? 'blocked'
       : last === `TEAM_FAILED ${taskId}` ? 'failed' : 'invalid'
-  return { outboxPath, text, terminal }
+  return { outboxPath, text, terminal, digest }
 }
 
 function classifyCancellationOutcome(record) {
@@ -3100,6 +3160,7 @@ async function finishTerminal(terminal, exitCode, {
   evidencePresent = false,
   reason,
   settlement = null,
+  outboxDigest = null,
 } = {}) {
   if (terminalRecorded) return exitCode
   const capturedSettlement = captureSettlementRecord(settlement ?? {}, { timedOut })
@@ -3114,9 +3175,9 @@ async function finishTerminal(terminal, exitCode, {
   terminalRecorded = true
   recordGovernedTerminalSafely(terminal === 'done' ? 'success' : 'failure', terminalEvidence(terminal, exitCode, capturedSettlement, {
     evidence_present: evidencePresent,
-    outbox_digest: null,
+    outbox_digest: outboxDigest,
   }))
-  recordTerminal(terminal, { timedOut, evidencePresent, exitCode, settlement: capturedSettlement })
+  recordTerminal(terminal, { timedOut, evidencePresent, exitCode, settlement: capturedSettlement, outboxDigest })
   return exitCode
 }
 
@@ -3334,6 +3395,7 @@ async function main() {
     return finishTerminal(result.terminal, exitCode, {
       evidencePresent: hasEvidence(result.text),
       settlement: reaped,
+      outboxDigest: result.digest,
     })
   } catch (cause) {
     noteError(cause)
