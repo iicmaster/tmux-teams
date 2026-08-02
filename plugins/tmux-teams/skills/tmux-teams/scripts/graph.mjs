@@ -457,10 +457,35 @@ const STYLE = `
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:400 16px/1.6 var(--sans)}
 ${NAV_CSS}
-.topbar{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s2) var(--s3);
+/* position:relative so the facts panel below hangs off the WHOLE bar. Hung off
+   the repo name instead it clears only the row that name sits on, and this bar
+   wraps: measured 2026-08-03, one row at 1400px and three at 400px, where the
+   panel landed on top of the pause button. */
+.topbar{position:relative;display:flex;flex-wrap:wrap;align-items:center;gap:var(--s2) var(--s3);
  padding:2px var(--s4);border-bottom:1px solid var(--line);background:var(--surface);font-size:.78rem}
 .topbar .page-nav{padding:0;margin:0}
-.topbar .repo{color:var(--dim);font-family:var(--mono);font-size:.74rem;cursor:help}
+/* A disclosure, not a tooltip. These facts were demoted into the repo name's
+   title attribute when the three bands became one, which handed them to a
+   mouse and to nobody else — a keyboard or a touch screen never fires hover.
+   The details element is the native control for exactly this and needs no
+   script: Enter or Space opens it, a tap opens it, and a screen reader
+   announces it as expandable. The title stays as the pointer shortcut it
+   always was. (No backticks in here: this CSS is a template literal, and one
+   in a comment closes it — project occurrence 11 was written on this line.) */
+.topbar .repo{color:var(--dim);font-family:var(--mono);font-size:.74rem}
+.topbar .repo>summary{cursor:pointer;list-style:none}
+.topbar .repo>summary::-webkit-details-marker{display:none}
+.topbar .repo>summary::after{content:" \\25BE";opacity:.7}
+.topbar .repo[open]>summary::after{content:" \\25B4"}
+.topbar .repo>summary:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:3px}
+/* width:max-content because an absolutely positioned box shrinks to fit its
+   containing block, and without it this measured 123px wide and 428px tall —
+   one word per line. max-width still clamps it: 374px at 1400, 352px at 400. */
+.topbar .repo-facts{position:absolute;z-index:6;top:calc(100% + 6px);left:var(--s4);margin:0;
+ padding:var(--s2) var(--s3);width:max-content;max-width:min(88vw,54ch);
+ border:1px solid var(--line);border-radius:6px;
+ background:var(--surface-2);color:var(--ink);font-size:.72rem;line-height:1.55;
+ box-shadow:0 6px 18px oklch(0% 0 0/.18)}
 .topbar .lh{display:flex;align-items:center;gap:var(--s2);margin-left:auto}
 .topbar .lh-mark{font-size:.6rem;line-height:1}
 .topbar .lh-state{font:600 .68rem var(--mono);letter-spacing:.08em}
@@ -668,10 +693,11 @@ export function renderGraphPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, r
   // where they are, whether the runner is alive, whether this is current, and
   // how to stop it moving.
   //
-  // Nothing is lost, only demoted: the dropped facts are the repo name's
-  // `title`, and every machine-readable attribute is untouched, because
-  // pulse-refresh reads two of them and `data-loop-health` is what the graph
-  // tests assert against.
+  // Nothing is lost, only demoted: the dropped facts sit behind the repo name
+  // as a `details` disclosure — reachable by keyboard, by touch and by a screen
+  // reader, not only by a hovering mouse — and every machine-readable attribute
+  // is untouched, because pulse-refresh reads two of them and `data-loop-health`
+  // is what the graph tests assert against.
   const health = loopHealth(readRunnerHeartbeat(repo), now)
   const detail = `${value.teams.length} teams · ${value.workflows.length} workflows`
     + ` · graph: ${graph.source === 'default' ? 'bundled template' : `.tmux-teams/${WORKFLOW_GRAPH_FILE}`}`
@@ -682,7 +708,7 @@ export function renderGraphPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, r
  data-observation-expires-at="${esc(snapshot.observation?.expires_at || '')}"
  data-refresh-interval="${Number(snapshot.observation?.refresh_interval_sec) || 20}">
   ${renderNav('graph')}
-  <span class="repo" title="${esc(detail)}">${esc(repoName)}</span>
+  <details class="repo" data-refresh-details-key="topbar-facts"><summary title="${esc(detail)}">${esc(repoName)}</summary><p class="repo-facts">${esc(detail)}</p></details>
   <span class="lh"><span class="lh-mark" aria-hidden="true">${health.mark}</span><span class="lh-state">${esc(health.label)}</span><span class="lh-say">${esc(health.headline)}</span></span>
   <span class="refresh"><span data-refresh-status role="status" aria-live="polite">Snapshot fresh</span><button type="button" class="pause" data-refresh-toggle data-refresh-focus-key="refresh-toggle" aria-pressed="false">Pause</button><span class="note" data-refresh-note>Polling the local snapshot marker</span></span>
 </header>

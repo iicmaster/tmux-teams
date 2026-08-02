@@ -97,6 +97,13 @@ test('a persisted prior-version snapshot upgrades to v4 once, keeping its stream
     assert.equal(next.sequence, upgraded.sequence + 1)
     assert.ok(!next.diagnostics.some((item) => item.code === 'SCHEMA_UPGRADED'),
       `v${priorVersion} must not keep claiming it upgraded`)
+    // The other half of the `degraded` assertion above, and the reason it means
+    // anything: a publish with nothing wrong reads `complete`, so `degraded` is
+    // the upgrade being reported and not the bare repo's normal state. Without
+    // this line a change that degraded EVERY publish would keep this test green
+    // — the failure mode a test-name inventory cannot see.
+    assert.equal(next.observation.quality, 'complete',
+      `v${priorVersion}: a settled publish must read complete, or the degraded assertion above proves nothing`)
   }
 })
 

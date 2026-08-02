@@ -678,3 +678,28 @@ test('a finished run on a seat holding nothing is history, not a waiting state',
   const block = page.match(/<script type="application\/json" data-tour-data>([\s\S]*?)<\/script>/)
   assert.equal(JSON.parse(block[1]).world.b_w1.status, 'delivered')
 })
+
+test('the demoted topbar facts are reachable without a pointer', () => {
+  // When three bands became one, the graph path, the snapshot id and the team
+  // and workflow counts moved into the repo name's title attribute — which is
+  // a hover, and a keyboard or a touch screen never hovers. They live behind a
+  // native disclosure now; the title stays as the mouse shortcut.
+  const page = pageOf(repoWith(TWO_TEAMS))
+  const disclosure = page.match(/<details class="repo"([^>]*)>([\s\S]*?)<\/details>/)
+  assert.ok(disclosure, 'the topbar facts are not behind a details element')
+  const [, attrs, inside] = disclosure
+  assert.match(inside, /<summary[^>]*>/, 'a details with no summary cannot be operated by keyboard')
+  // pulse-refresh remembers every details across a republish, keyed by position
+  // when nothing names it. A positional key hands this element's saved state to
+  // whatever lands at that index next, so it names itself.
+  assert.match(attrs, /data-refresh-details-key="topbar-facts"/)
+
+  // The facts themselves, as TEXT inside the disclosure — not only as an
+  // attribute value. Stripping the tags is what keeps this from passing on a
+  // page that merely repeats them in another title.
+  const facts = inside.replace(/<summary[^>]*>[\s\S]*?<\/summary>/, '').replace(/<[^>]+>/g, ' ')
+  assert.match(facts, /2 teams/)
+  assert.match(facts, /workflows/)
+  assert.match(facts, /graph:/)
+  assert.match(facts, /evidence: pulse\.json/)
+})
