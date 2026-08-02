@@ -65,6 +65,36 @@ const USAGE = 'usage: pulse.mjs once|json <repo> [--team-graph FILE] [--team-run
 if (!cmd || !repoArg || !['once', 'json', 'watch', 'ensure', 'compat-v1'].includes(cmd)) {
   console.error(USAGE); process.exit(2)
 }
+// Every argument has to be one THIS command reads. Until now anything unknown
+// was ignored in silence, which stopped being harmless when v0.14.0 withdrew
+// `--delivery-loop` and `--delivery-runtime`: a caller's script kept passing
+// them, kept getting exit 0, and nothing it asked for happened. `--interval`
+// and `--managed` are rejected on the commands that never look at them for the
+// same reason — accepting a flag you ignore is a lie about what ran.
+const VALUE_FLAGS = new Set(['--team-graph', '--team-runtime', '--time-zone'])
+const BARE_FLAGS = new Set()
+if (cmd === 'watch' || cmd === 'ensure') VALUE_FLAGS.add('--interval')
+if (cmd === 'watch') BARE_FLAGS.add('--managed')
+for (let i = 0; i < flags.length; i++) {
+  const arg = flags[i]
+  if (BARE_FLAGS.has(arg)) continue
+  if (!VALUE_FLAGS.has(arg)) {
+    console.error(`[pulse] unknown argument: ${arg}`)
+    console.error(USAGE); process.exit(2)
+  }
+  const value = flags[i + 1]
+  if (value === undefined || value.startsWith('--')) {
+    console.error(`[pulse] ${arg} needs a value`)
+    console.error(USAGE); process.exit(2)
+  }
+  // A non-numeric interval used to fall through to the default of 20 without a
+  // word, so `--interval abc` and `--interval 20` produced the same run.
+  if (arg === '--interval' && !(Number(value) > 0)) {
+    console.error(`[pulse] --interval needs a positive number of seconds, got "${value}"`)
+    console.error(USAGE); process.exit(2)
+  }
+  i += 1
+}
 const teamGraphFlagIndexes = flags.flatMap((flag, index) => flag === '--team-graph' ? [index] : [])
 const teamRuntimeFlagIndexes = flags.flatMap((flag, index) => flag === '--team-runtime' ? [index] : [])
 const timeZoneFlagIndexes = flags.flatMap((flag, index) => flag === '--time-zone' ? [index] : [])

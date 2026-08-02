@@ -682,10 +682,13 @@ node <skill-root>/scripts/pulse.mjs compat-v1 <repo>
 ```
 
 `--delivery-loop` and `--delivery-runtime` are gone, along with the four-phase
-pilot and its governed gate that produced the projections they read. Note that
-`pulse.mjs` does not reject an unrecognised flag: passing one now exits 0 and
-does nothing at all. That permissiveness predates this removal and is worth
-fixing, but until it is, a stale command in a script will fail silently.
+pilot and its governed gate that produced the projections they read. A script
+still passing them now **exits 2 and names the argument**: as of 2026-08-03
+`pulse.mjs` refuses any argument the command in front of it does not read —
+including `--interval` and `--managed` on `once`/`json`, which never watch — and
+refuses an `--interval` that is not a positive number of seconds rather than
+falling back to 20 in silence. A withdrawn flag that exits 0 is indistinguishable
+from one that still works.
 
 Pulse retains `--team-graph` and `--team-runtime` for an older optional Pulse
 projection. Those inputs are not the workflow declaration. The active delivery

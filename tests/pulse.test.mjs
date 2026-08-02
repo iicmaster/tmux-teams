@@ -436,3 +436,38 @@ test('a recorded pane that tmux no longer lists means dead, not starting', () =>
   assert.equal(snapshot.summary.active, 0)
   assert.ok(snapshot.history.runs.some((run) => run.task_id === 'killed-now'))
 })
+
+test('an argument this command does not read is refused, not ignored', () => {
+  // v0.14.0 withdrew --delivery-loop and --delivery-runtime. A caller's script
+  // still passing them got exit 0 and a publish that quietly ignored the ask,
+  // which is indistinguishable from the flag still working.
+  const dir = repo()
+  for (const [args, needle] of [
+    [['--delivery-loop', 'x.json'], 'unknown argument: --delivery-loop'],
+    [['--delivery-runtime', 'x.json'], 'unknown argument: --delivery-runtime'],
+    [['--interval', '5'], 'unknown argument: --interval'],
+    [['--managed'], 'unknown argument: --managed'],
+    [['g.json'], 'unknown argument: g.json'],
+    [['--team-graph'], '--team-graph needs a value'],
+    [['--time-zone', '--team-graph', 'g.json'], '--time-zone needs a value'],
+  ]) {
+    const result = runOnce(dir, { extraArgs: args })
+    assert.equal(result.status, 2, `"${args.join(' ')}" was accepted: ${result.stderr}`)
+    assert.ok(result.stderr.includes(needle), `expected ${needle} in ${result.stderr}`)
+  }
+})
+
+test('watch refuses an interval that is not a positive number of seconds', () => {
+  // The timeout is the negative control's safety net, not the assertion: with
+  // the guard removed these arguments fall through to the default of 20 and
+  // this command would sit there watching.
+  const dir = repo()
+  for (const value of ['abc', '0', '-5']) {
+    const result = spawnSync('node', [PULSE, 'watch', dir, '--interval', value], {
+      encoding: 'utf8', timeout: 15_000,
+      env: { ...process.env, TZ: 'UTC', PULSE_TIME_ZONE: '' },
+    })
+    assert.equal(result.status, 2, `--interval ${value} was accepted: ${result.stderr}`)
+    assert.ok(result.stderr.includes('--interval needs a positive number'), result.stderr)
+  }
+})
