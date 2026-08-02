@@ -185,12 +185,29 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
     // else and only once the team is under its WIP limit.
     edges.push({
       from: team.evaluator_id, to: team.dispatcher_id, kind: 'reject', solid: false,
+      // Rework runs from the evaluator back up to the dispatcher, and both sit
+      // on the team's centre line — so the straight path is drawn straight
+      // THROUGH every worker between them. A fixed bow cannot clear a row whose
+      // width depends on how many seats the team declared, so the edge carries
+      // its own: half the worker row, plus a card and a margin, which puts it
+      // outside the outermost halo at any legal team size.
+      // A cubic reaches only about three quarters of its control offset, so the
+      // clearance wanted is divided by that rather than used raw — the first
+      // attempt bowed 612 and cleared 459, which is inside a five-seat row's own
+      // 484 half-width, and the curve still crossed the outermost card. The
+      // upper bound is the neighbouring team: its block begins at half this row
+      // plus COL_GAP, so the margin is kept small enough to stay in the gap.
+      bow: -((rowWidth(team) / 2 + CARD_W / 2 + 24) / 0.75),
     })
 
     // Structure, not a claim about the past: this team HAS that dispatcher
     // whether or not anything ever ran. Only the three edges above say
     // something happened, and only those wait for evidence.
-    edges.push({ from: teamNodeId, to: team.dispatcher_id, kind: 'owns', solid: true })
+    // The line from a team to the seat that owns its queue is the same kind of
+    // fact as a seat's line to its evaluator: structure, not a record of
+    // traffic. It is dashed with the rest of them, and moves only while that
+    // dispatcher is actually running.
+    edges.push({ from: teamNodeId, to: team.dispatcher_id, kind: 'owns', solid: false })
     // Oversight is a real relationship but never a reflexive one: the control
     // team escalating to itself would be a line that means nothing. The old
     // page drew that line, because it drew oversight before the controller had
@@ -517,7 +534,7 @@ export const TOUR_CSS = `
    footnote: its own surface, room around the text, and a count big enough to
    read from across the board. It keeps the dashed border because it is still
    not a team — nothing is dispatched there and it holds no WIP. */
-.k-outside{background:var(--surface-2);border-style:dashed;border-width:2px;
+.k-outside{background:var(--surface-2);border-width:2px;
  padding:14px 26px;border-radius:14px;min-width:150px;text-align:center}
 .k-outside b{font:600 .95rem/1.3 var(--sans)}
 .k-outside em{color:var(--ok);font:700 1.15rem/1.4 var(--sans);
@@ -528,7 +545,9 @@ export const TOUR_CSS = `
 .s-working{border-color:var(--ok)}.s-working em{color:var(--ok)}
 .s-delivered{border-color:var(--warn)}.s-delivered em{color:var(--warn)}
 .s-dead{border-color:var(--bad)}.s-dead em{color:var(--bad)}
-.s-unbound{border-style:dashed;opacity:.82}.s-unbound em{color:var(--dim)}
+/* A node is a seat, and a seat exists whether or not it is holding work. The
+   border says what a thing IS; the dimming and the text say what it is doing. */
+.s-unbound{opacity:.82}.s-unbound em{color:var(--dim)}
 .s-watching em{color:var(--oversight)}
 .tour-bar{display:grid;grid-template-columns:1fr auto;gap:var(--s5);align-items:end;
  padding:var(--s3) var(--s5) var(--s4);border-top:1px solid var(--line);background:var(--surface)}
@@ -789,7 +808,7 @@ export const TOUR_SCRIPT = `
       // A running worker means the ASSIGNMENT is live. The handover to the
       // evaluator has not happened — that is what "still running" means — so
       // crawling it too claimed an artifact was in motion that nobody sent.
-      p.classList.toggle('live', e.kind === 'assign' && RUNNING.has(e.to))
+      p.classList.toggle('live', (e.kind === 'assign' || e.kind === 'owns') && RUNNING.has(e.to))
       // Raised only while that team really is stuck, so the red crawl reports
       // an event rather than decorating the possibility of one.
       if (e.kind === 'escalate') p.classList.toggle('raised', STUCK.has(e.from))
@@ -815,7 +834,7 @@ export const TOUR_SCRIPT = `
       // family of edges that most needs to clear the board bows down through
       // every card instead of up over them.
       const back = Math.abs(dx) >= Math.abs(dy) ? (Math.sign(dx) || 1) : 1
-      const bow = (BOW[e.kind] ?? 0) * (1 + lane * 0.9) * back
+      const bow = (typeof e.bow === 'number' ? e.bow : (BOW[e.kind] ?? 0)) * (1 + lane * 0.9) * back
       const px = -dy / len * bow, py = dx / len * bow
       p.setAttribute('d', 'M ' + a.x + ' ' + a.y
         + ' C ' + (a.x + dx / 3 + px) + ' ' + (a.y + dy / 3 + py)

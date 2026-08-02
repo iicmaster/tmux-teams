@@ -121,8 +121,40 @@ test('a seat keeps its structural lines dashed however much work crosses them', 
   // is under its WIP limit. So it is one line per team, not one per worker.
   assert.equal(find(live, 'build_e', 'b1', 'reject'), undefined)
   assert.equal(edgesOf(live, 'reject').filter((e) => e.from === 'build_e').length, 1)
-  // The structural lines that were never evidence-driven keep their solidity.
-  assert.equal(find(live, 'team:build', 'build_d', 'owns').solid, true)
+  // The team's line to the seat that owns its queue is structure too, and joined
+  // the dashed set for the same reason.
+  assert.equal(find(live, 'team:build', 'build_d', 'owns').solid, false)
+  // Solid still means evidence everywhere it did: handover and the sink.
+  assert.equal(find(live, 'team:control', 'team:build', 'pull').solid, true)
+})
+
+// Rework runs from the evaluator back up to the dispatcher, and both sit on the
+// team's centre line — so the straight path is drawn straight THROUGH every
+// worker between them. The bow that clears them is a function of team size, and
+// the first attempt got the arithmetic wrong: a cubic reaches about three
+// quarters of its control offset, so a bow of 612 cleared 459 and still crossed
+// a five-seat row's own 484 half-width. Nothing caught that but a browser.
+//
+// The upper bound matters as much: bow too far and the curve lands on the NEXT
+// team, whose block starts at half this row plus COL_GAP.
+test('the rework line clears its own worker row without reaching the next team', () => {
+  for (const workers of [1, 2, 3, 4, 5]) {
+    const graph = accept({
+      ...CONTROLLED_RAW,
+      teams: CONTROLLED_RAW.teams.map((team) => (team.team_id === 'build'
+        ? { ...team, worker_ids: Array.from({ length: workers }, (_, i) => 'b' + (i + 1)) }
+        : team)),
+    })
+    const edge = find(buildTour(graph), 'build_e', 'build_d', 'reject')
+    assert.equal(typeof edge.bow, 'number', workers + ' workers: rework must carry its own bow')
+    // A cubic whose control points are both offset by that much reaches 0.75 of it.
+    const reach = Math.abs(edge.bow) * 0.75
+    const halfRow = (workers * 176 + (workers - 1) * 22) / 2
+    assert.ok(reach > halfRow + 176 / 2,
+      workers + ' workers: reach ' + Math.round(reach) + ' does not clear half-row ' + halfRow)
+    assert.ok(reach < halfRow + 130,
+      workers + ' workers: reach ' + Math.round(reach) + ' spills past COL_GAP into the next team')
+  }
 })
 
 test('the sink counts audited work, and only audited work', () => {

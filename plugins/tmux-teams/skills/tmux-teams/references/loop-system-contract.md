@@ -43,7 +43,41 @@ commands and documentation; there is one delivery model now.
   appear in as many workflows as need it.
 - A **work item token** is the unit of work. It carries its own request and
   accumulates its own history.
-- A route **never revisits a team**. Work moves backwards only by rejection.
+- A route **never revisits a team**, and as of 2026-08-03 it does not run
+  backwards at all. **Flow is one way.** An evaluator that finds a problem does
+  not hand the work back to the team that produced it: it brings the work to a
+  state it can pass and forwards it, and the token continues to the controller.
+  A controller that is not satisfied does not return the token either — it
+  starts a new flow. Rework is therefore a NEW token on a fresh route, never the
+  same token moving upstream.
+
+  **The rule is about CROSSING TEAMS.** Two things that look like going
+  backwards are not, and neither is affected:
+
+  - **A refusal at the door.** A receiving dispatcher inspecting a token and
+    declining to admit it — `intake` with a `reject` verdict, and the `returned`
+    event that follows — checks the work BEFORE it enters. It never entered, so
+    nothing came back out.
+  - **A team's own loop.** An evaluator may send work back to a worker of its
+    own team as often as the work needs; `reviewed` with a `reject` verdict
+    redispatching inside the team (§7) is that loop, and it is the whole point
+    of a team having its own evaluator. The token has not moved between teams.
+
+  What the rule forbids is a token crossing a team boundary in the direction it
+  came from. Once a team releases work, that team is behind it.
+
+  The worked example, which says it better than the rule does. A QA evaluator
+  reading its own worker's report finds two different things:
+
+  - the worker did not finish the checklist — send it back to that worker and
+    have it done properly. Same team, its own loop, allowed.
+  - the worker found a real bug — QA fixes it, from the report, and carries on.
+    It does NOT go back to the Dev team that produced it. Dev is behind this
+    token now.
+
+
+  **Not yet enforced.** Nothing refuses a cross-team backwards move today; the
+  rule is written here so the gap is visible rather than assumed closed.
 - There is exactly one **outer controller** for the whole graph. It never does a
   team's work. Since §14.5 it holds the single worker seat of its own **control
   team** — the same seat `outer_controller_id` names, not a second one — which

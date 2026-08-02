@@ -122,6 +122,31 @@ A team's **WIP limit is not declarable — it always equals its worker count**
 (`workflow-graph.mjs`). A `graph.json` that declares a `wip_limit` disagreeing
 with its worker count is rejected by name.
 
+**Flow is one way.** Work moves forward along a route and never runs back up
+it. An evaluator that finds a problem does not return the work to the team that
+produced it — it brings the work to a state it can pass and forwards it, and
+the token carries on to the controller. A controller that is not satisfied does
+not send the token back either: it starts a new flow. Rework is a new token on a
+fresh route, never the same token moving upstream.
+
+**The rule is about crossing teams**, and two things that look backwards are
+not. A dispatcher refusing a token at the door checks it BEFORE it enters, so
+nothing came back out. And a team's own evaluator may loop work back to a worker
+of that same team as often as the work needs — that loop is why a team has its
+own evaluator. Neither crosses a boundary.
+
+What the rule forbids is a token crossing a team boundary in the direction it
+came from: once a team releases work, that team is behind it.
+
+The worked example. A QA evaluator reading its own worker's report finds two
+different things. The worker did not finish the checklist — send it back to that
+worker and have it done properly; same team, allowed. The worker found a real
+bug — QA fixes it from the report and carries on; it does not go back to the Dev
+team that produced it, because Dev is behind this token now.
+ That is **not
+enforced yet** — treat a cross-team backwards move you see today as something
+the system has not been taught to refuse.
+
 A **workflow** is a route composed over teams. `controller_team` is likewise
 derived, not declared: it is the head of every route, and a workflow whose
 route starts anywhere else is rejected. That control team's single worker seat
