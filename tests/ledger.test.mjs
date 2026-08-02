@@ -720,3 +720,67 @@ test('the sanctioned writer refuses the backwards line rather than reporting it 
   // Refusing must leave the ledger exactly as it was: five lines, not six.
   assert.equal(readFileSync(ledgerPath(repo, 'tok'), 'utf8').trim().split('\n').length, 4)
 })
+
+test('the door may refuse three times; the fourth has to go to the controller', () => {
+  const refusal = (n) => ({
+    at: `2026-07-27T1${n}:00:00.000Z`, event: 'returned', work_item: 'tok', workflow: 'feature',
+    to_team: 'design', refused_by: 'build_dispatcher', reason: 'the criteria name no interface',
+  })
+  const three = jsonl(refusal(0), refusal(1), refusal(2))
+  assert.equal(validateLedger(three).ok, true, JSON.stringify(validateLedger(three).problems))
+
+  const four = jsonl(refusal(0), refusal(1), refusal(2), refusal(3))
+  const result = validateLedger(four)
+  assert.equal(result.ok, false, 'a door refused the same token four times and it validated clean')
+  assert.deepEqual(codes(result), ['door_refusals_exhausted'])
+  assert.equal(result.problems[0].line, 4)
+
+  // Counted per DOOR, not per token: a different team refusing the same work is
+  // a different check, and its first refusal is still its first.
+  const twoDoors = jsonl(refusal(0), refusal(1), refusal(2),
+    { ...refusal(3), refused_by: 'qa_dispatcher' })
+  assert.equal(validateLedger(twoDoors).ok, true, JSON.stringify(validateLedger(twoDoors).problems))
+})
+
+test('a ledger that predates the one-way rule can still be closed, but not continued', (t) => {
+  const repo = scratch(t)
+  // Written before §1 was enforceable: Design admitted it, Build admitted it,
+  // and then it went back to Design. The writer would refuse this file today.
+  const legacy = [
+    ...leg('intake', 'design', '10:00'),
+    ...leg('design', 'build', '10:10'),
+    ...leg('build', 'design', '10:20'),
+  ]
+  mkdirSync(join(repo, '.tmux-teams', 'work-items'), { recursive: true })
+  writeFileSync(ledgerPath(repo, 'tok'), `${legacy.join('\n')}\n`)
+  const lines = legacy.length
+
+  // Refusing every append would leave this token unclosable — not even
+  // `abandoned` — so a rule about keeping work moving would strand the work it
+  // caught. Master decided a terminal event may still land.
+  const closed = appendEvent(repo, {
+    event: 'abandoned', work_item: 'tok', workflow: 'feature',
+    reason: 'this token predates the one-way rule and cannot be replayed',
+  }, { actor: 'human:master' })
+  assert.equal(closed.ok, true, `${closed.code}: ${closed.detail}`)
+  assert.equal(readFileSync(ledgerPath(repo, 'tok'), 'utf8').trim().split('\n').length, lines + 1)
+
+  // Nothing else. The amnesty is for closing, not for carrying on.
+  writeFileSync(ledgerPath(repo, 'tok'), `${legacy.join('\n')}\n`)
+  const carriedOn = appendEvent(repo, {
+    event: 'pulled', work_item: 'tok', workflow: 'feature',
+    agent_id: 'qa_dispatcher', from_team: 'design', to_team: 'qa',
+  }, { actor: 'agent:qa_dispatcher' })
+  assert.equal(carriedOn.ok, false, 'a legacy ledger accepted a new leg')
+  assert.equal(carriedOn.code, 'ledger_already_invalid')
+
+  // And it is scoped to THIS defect: a ledger invalid for any other reason
+  // still refuses everything, including a terminal event.
+  writeFileSync(ledgerPath(repo, 'tok2'),
+    `${JSON.stringify({ at: '2026-07-27T10:00:00.000Z', event: 'reviewed', work_item: 'tok2', workflow: 'feature', agent_id: 'design_evaluator', verdict: 'pass', reviewed_task: 't1', reason: 'nothing was delivered' })}\n`)
+  const otherDefect = appendEvent(repo, {
+    event: 'abandoned', work_item: 'tok2', workflow: 'feature', reason: 'give up',
+  }, { actor: 'human:master' })
+  assert.equal(otherDefect.ok, false, 'a ledger broken some other way was closed anyway')
+  assert.equal(otherDefect.code, 'ledger_already_invalid')
+})

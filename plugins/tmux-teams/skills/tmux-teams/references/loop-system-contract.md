@@ -83,7 +83,15 @@ commands and documentation; there is one delivery model now.
   - **A refusal at the door.** A receiving dispatcher inspecting a token and
     declining to admit it — `intake` with a `reject` verdict, and the `returned`
     event that follows — checks the work BEFORE it enters. It never entered, so
-    nothing came back out.
+    nothing came back out. **Three refusals per door, and no more** (Master,
+    2026-08-03): a fourth is not a check, it is two seats disagreeing about the
+    same work with nobody deciding, and the token would bounce between them for
+    as long as both keep their opinion. On the fourth the dispatcher writes
+    `escalated` instead and the controller decides. Counted per door, so a
+    different team refusing the same token starts at its own first. Enforced in
+    both places it can go wrong: `loop-runner.mjs` escalates rather than
+    refusing, and `validateLedger` refuses a fourth `returned` from the same
+    `refused_by` with `door_refusals_exhausted`.
   - **A team's own loop.** An evaluator may send work back to a worker of its
     own team as often as the work needs; `reviewed` with a `reject` verdict
     redispatching inside the team (§7) is that loop, and it is the whole point
@@ -113,6 +121,15 @@ commands and documentation; there is one delivery model now.
   Both halves are negative-controlled in `tests/ledger.test.mjs`: remove the
   check and the backwards route validates clean; count arrival instead of
   admission and the door-refusal retry stops being legal.
+
+  **A ledger written before this was enforceable may contain a backwards pull**,
+  and refusing every append to it would leave that token unclosable — not even
+  `abandoned`, since the writer refuses on a file that does not already
+  validate (§4.3). Master decided 2026-08-03 that such a file may still receive
+  a **terminal** event and nothing else: another `pulled` is refused exactly as
+  it is on a clean ledger, and a file invalid for any OTHER reason still has to
+  be repaired before anything at all is appended. The tolerance is one code
+  wide, and widening it makes `tests/ledger.test.mjs` red.
 - There is exactly one **outer controller** for the whole graph. It never does a
   team's work. Since §14.5 it holds the single worker seat of its own **control
   team** — the same seat `outer_controller_id` names, not a second one — which

@@ -33,7 +33,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
-import { validateLedgerFile } from './ledger-validate.mjs'
+import { MAX_DOOR_REFUSALS, validateLedgerFile } from './ledger-validate.mjs'
 import { appendEvent as appendLedgerEvent, ledgerPath } from './ledger-writer.mjs'
 import { planPulls, applyPulls } from './pull-controller.mjs'
 import {
@@ -481,6 +481,24 @@ function harvestEvent(repo, graph, { item, last, role }, now) {
         reason: stated
           ? `intake refused and there is no sending team to return to: ${reason || 'no reason stated'}`
           : 'the dispatcher stated no verdict and there is no sending team to return to',
+      }
+    }
+    // Three refusals is a check; a fourth is two seats disagreeing about the
+    // same work with nobody deciding, and the token would bounce between them
+    // for as long as both keep their opinion. Master set the ceiling at three
+    // and said the next one goes to the controller — so this seat stops
+    // refusing and asks, rather than refusing more emphatically.
+    const refusedBefore = item.custody
+      .filter((entry) => entry.event === 'returned' && entry.refused_by === last.agent_id).length
+    if (refusedBefore >= MAX_DOOR_REFUSALS) {
+      return {
+        ...base, event: 'escalated', agent_id: last.agent_id,
+        // Same placement as the no-sending-team case above: the token is at the
+        // door of the team that refused it, so that team still holds it.
+        to_team: teamRoleOf(graph, last.agent_id)?.team_id || null,
+        reason: `this door has refused the token ${refusedBefore} times`
+          + ` and ${MAX_DOOR_REFUSALS} is the ceiling — the controller decides:`
+          + ` ${stated ? (reason || 'no reason stated') : 'the dispatcher stated no verdict'}`,
       }
     }
     // No agent_id on purpose: the token is now held by the team it went back to,

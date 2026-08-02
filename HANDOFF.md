@@ -46,6 +46,10 @@
    บรรทัดนั้นจึงไม่เคยลง · **นับตอน `intake` ไม่ใช่ตอน `pulled`** — ทีมที่ปฏิเสธที่ประตู
    ไม่เคยรับเข้า จึงยังดึงงานเดิมได้อีกหลังแก้ · `loop-replay.test.mjs` seed 1 เป็นตัวพิสูจน์
    ข้อนี้ตอนที่เขียนผิดรอบแรก · negative control 2 แบบใน `ledger.test.mjs`
+   · **มติ Master 2026-08-03 สองข้อ ทำแล้วทั้งคู่:** (ก) ledger เก่าที่มี backwards pull
+   ยัง**เขียน terminal event ปิดได้** แต่เขียนอย่างอื่นไม่ได้ และข้อยกเว้นกว้างแค่ code เดียว
+   (ข) **ประตูปฏิเสธได้ 3 ครั้งต่อทีม** ครั้งที่ 4 runner เขียน `escalated` แทน และ
+   validator ปฏิเสธด้วย `door_refusals_exhausted` · mutation 4 แบบแดงครบ
    · **ยังเหลือ:** `pull-controller.mjs` ทิ้งค่า refusal ลง stderr — การปฏิเสธของ writer
    จึงมองไม่เห็นจาก plan (นี่คือสิ่งที่ทำให้ token ค้างเงียบตอนดีบัก)
 4. **เทสต์ที่เขียวแต่ไร้ความหมาย** — `pulse-json.test.mjs` เคยตรวจ degraded path ด้วย

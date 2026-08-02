@@ -21,7 +21,14 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from '
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 
-import { ACTOR_RE, EVENT_SPEC, LEDGER_EVENTS, MAX_LEDGER_BYTES, validateLedger } from './ledger-validate.mjs'
+import {
+  ACTOR_RE, EVENT_SPEC, LEDGER_EVENTS, MAX_LEDGER_BYTES, TERMINAL_EVENTS, validateLedger,
+} from './ledger-validate.mjs'
+
+// The only problem a ledger may already carry and still be closed. Every other
+// code still means "repair this before writing anything", which is what keeps
+// this from becoming a general amnesty.
+const LEGACY_TOLERATED = new Set(['route_went_backwards'])
 
 export { ACTOR_RE, LEDGER_EVENTS }
 
@@ -114,7 +121,16 @@ export function appendEvent(repo, event, options = {}) {
   }
 
   const before = validateLedger(existing)
-  if (!before.ok) {
+  // Master, 2026-08-03: §1 became enforceable on a system that had already been
+  // running, so a ledger written before it can contain a backwards pull. If
+  // every append were refused, that token could never be CLOSED either — not
+  // even `abandoned` — and a rule meant to keep work moving would strand the
+  // work it caught. A terminal event may land on such a file. Nothing else may:
+  // another `pulled` is refused exactly as it is on a clean ledger.
+  const closable = !before.ok
+    && TERMINAL_EVENTS.has(name)
+    && before.problems.every((problem) => LEGACY_TOLERATED.has(problem.code))
+  if (!before.ok && !closable) {
     return fail('ledger_already_invalid',
       `${path} has ${before.problems.length} problem(s) and must be repaired before anything is appended`,
       before.problems)
@@ -122,11 +138,16 @@ export function appendEvent(repo, event, options = {}) {
 
   const line = JSON.stringify(record)
   const after = validateLedger([...existing, line])
-  if (!after.ok) {
+  // Only what THIS line introduced. On a clean ledger `inherited` is empty and
+  // this is the same comparison it always was; on a tolerated legacy one it is
+  // what stops the old defect from being re-reported as the new line's fault.
+  const inherited = new Set(before.problems.map((problem) => `${problem.line}:${problem.code}`))
+  const fresh = after.problems.filter((problem) => !inherited.has(`${problem.line}:${problem.code}`))
+  if (fresh.length) {
     // The prior ledger validated clean, so anything reported now is about the
     // candidate line and nothing else.
-    const mine = after.problems.filter((problem) => problem.line === existing.length + 1)
-    const problems = mine.length ? mine : after.problems
+    const mine = fresh.filter((problem) => problem.line === existing.length + 1)
+    const problems = mine.length ? mine : fresh
     const code = problems.some((problem) => problem.code === 'time_went_backwards')
       ? 'timestamp_not_monotonic'
       : 'invalid_event'

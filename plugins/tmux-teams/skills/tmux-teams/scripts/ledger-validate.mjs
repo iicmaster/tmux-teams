@@ -117,7 +117,16 @@ export const LEDGER_EVENTS = Object.freeze(Object.keys(EVENT_SPEC))
 // Contract §5: the three rows with no successor. `completed` is only half
 // closed — the outer controller still has to read the delivery as a whole
 // (§9), and that audit pair is the sole legal continuation.
-const TERMINAL_EVENTS = new Set(['completed', 'audited', 'abandoned'])
+// Exported because the writer needs the same three words to decide whether a
+// ledger that predates a rule may still be CLOSED; two copies of this set is
+// how one of them silently stops matching the other.
+export const TERMINAL_EVENTS = new Set(['completed', 'audited', 'abandoned'])
+// Master, 2026-08-03: a dispatcher may refuse the same token at its door three
+// times. The fourth is not a refusal, it is a loop — two seats disagreeing
+// about the same work with nobody deciding — so it has to go to the controller
+// instead. §1's door exception is what makes the retry legal at all; this is
+// the ceiling on it.
+export const MAX_DOOR_REFUSALS = 3
 // §5: `completed` is only HALF closed — the controller still has to read the
 // delivery. `questioned` joins this set because the audit can fail to answer:
 // every other gate escalates upward when it cannot decide, and the controller
@@ -158,6 +167,8 @@ export function validateLedger(lines) {
   const heldTeams = new Set()
   // The team the token has arrived at and that has not ruled on it yet.
   let atTheDoor = ''
+  // How many times each dispatcher has turned this token away at its door.
+  const doorRefusals = new Map()
   // Counted, not flagged: `opened` earns its strictness only if a second one
   // later in the file is as illegal as one appended after a `pulled`.
   let eventsSeen = 0
@@ -312,7 +323,24 @@ export function validateLedger(lines) {
     // verdict is `accept` — a refusal is written as `returned` or `escalated`
     // instead, and neither of those admits anything.
     if (name === 'intake' && atTheDoor) { heldTeams.add(atTheDoor); atTheDoor = '' }
-    if (name === 'returned') atTheDoor = ''
+    if (name === 'returned') {
+      atTheDoor = ''
+      // The door may say no three times. A fourth refusal by the same seat is
+      // not a check, it is two seats disagreeing with nobody deciding, and the
+      // token would bounce for as long as both keep their opinion. The runner
+      // escalates instead (`loop-runner.mjs`); this refuses the line if it
+      // somehow gets written anyway.
+      const refuser = present(entry.refused_by) ? String(entry.refused_by) : ''
+      if (refuser) {
+        const already = doorRefusals.get(refuser) ?? 0
+        if (already >= MAX_DOOR_REFUSALS) {
+          add(lineNo, 'door_refusals_exhausted',
+            `${refuser} has already refused this token ${already} times at the door;`
+            + ' the next one has to go to the controller')
+        }
+        doorRefusals.set(refuser, already + 1)
+      }
+    }
     if (name === 'assigned' && present(entry.agent_id)) assignedAgents.add(String(entry.agent_id))
     if (name === 'delivered') deliveredSeen = true
     if (name === 'audit_requested') auditRequested = true

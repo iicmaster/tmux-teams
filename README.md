@@ -131,9 +131,12 @@ fresh route, never the same token moving upstream.
 
 **The rule is about crossing teams**, and two things that look backwards are
 not. A dispatcher refusing a token at the door checks it BEFORE it enters, so
-nothing came back out. And a team's own evaluator may loop work back to a worker
-of that same team as often as the work needs — that loop is why a team has its
-own evaluator. Neither crosses a boundary.
+nothing came back out — **three times at most per door**, after which that
+dispatcher escalates to the controller instead of refusing again, because a
+fourth refusal is two seats disagreeing with nobody deciding. And a team's own
+evaluator may loop work back to a worker of that same team as often as the work
+needs — that loop is why a team has its own evaluator. Neither crosses a
+boundary.
 
 What the rule forbids is a token crossing a team boundary in the direction it
 came from: once a team releases work, that team is behind it. Since 2026-08-03

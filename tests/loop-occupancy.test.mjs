@@ -1086,3 +1086,44 @@ test('a gate answering in the wrong vocabulary is reported, not skipped in silen
     assert.deepEqual(said, [], 'nothing was skipped, so nothing needed reporting')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
+
+test('a door that has refused three times escalates instead of refusing again', () => {
+  // Master, 2026-08-03: the door check is legal and stays legal, but three is
+  // the ceiling. A fourth refusal is not a check — it is two seats disagreeing
+  // about the same work with nobody deciding, and the token bounces for as long
+  // as both keep their opinion.
+  const dir = mkdtempSync(join(tmpdir(), 'loop-door-'))
+  try {
+    mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
+    writeFileSync(join(dir, '.mailbox-out', 't-intake'),
+      'Still nothing to build against.\n\nVERDICT: reject\nREASON: no interface named\n')
+    const graph = graphOf(TWO_TEAMS)
+    const refusals = [1, 2, 3].flatMap(() => [
+      { event: 'pulled', agent_id: 't_d', from_team: 'build', to_team: 'test' },
+      { event: 'returned', to_team: 'build', refused_by: 't_d' },
+    ])
+    const atTheDoorAgain = [
+      { event: 'pulled', agent_id: 't_d', from_team: 'build', to_team: 'test' },
+      { event: 'assigned', agent_id: 't_d', task_id: 't-intake' },
+      { event: 'delivered', agent_id: 't_d', task_id: 't-intake', terminal: 'done' },
+    ]
+
+    const [third] = applyHarvest(dir, graph,
+      planHarvest(graph, itemsOf(['tok', [...refusals.slice(0, 4), ...atTheDoorAgain]])),
+      '2026-07-27T09:00:00.000Z')
+    assert.equal(third.event, 'returned', 'the third refusal is still an ordinary door check')
+
+    const [fourth] = applyHarvest(dir, graph,
+      planHarvest(graph, itemsOf(['tok', [...refusals, ...atTheDoorAgain]])),
+      '2026-07-27T09:00:00.000Z')
+    assert.equal(fourth.event, 'escalated', 'the fourth refusal bounced the token again')
+    // §4.2: the token is at this team's door, so this team still holds it —
+    // the same placement the no-sending-team escalation uses.
+    assert.equal(fourth.to_team, 'test')
+    assert.equal(fourth.agent_id, 't_d')
+    assert.match(fourth.reason, /refused the token 3 times/)
+    // The refusal's own words survive: the controller is being asked to decide,
+    // not handed a token with the reasoning stripped off.
+    assert.match(fourth.reason, /no interface named/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
