@@ -224,14 +224,6 @@ export function loopHealth(read, now) {
 
 // State is carried three ways, as everywhere else on this page: the colour, a
 // shape that survives greyscale, and the words themselves.
-const loopHealthBand = (health) => `
-<div class="loop-health lh-${health.tone}" data-loop-health="${health.state}">
-  <span class="lh-mark" aria-hidden="true">${health.mark}</span>
-  <span class="lh-state">${esc(health.label)}</span>
-  <span class="lh-say">${esc(health.headline)}</span>
-  <span class="lh-detail">${esc(health.detail)}</span>
-</div>`
-
 // Keyed by agent alone: the pool is drawn once, so an agent's single node shows
 // its newest dispatch whichever workflow that dispatch was running.
 function evidenceByAgent(snapshot, facts = new Map()) {
@@ -465,17 +457,24 @@ const STYLE = `
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:400 16px/1.6 var(--sans)}
 ${NAV_CSS}
-.topbar{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;
- gap:var(--s3);padding:var(--s3) var(--s5);border-bottom:1px solid var(--line);background:var(--surface)}
-.topbar h1{margin:0;font:600 1.1rem/1.3 var(--sans)}
-.topbar h1 .repo{color:var(--dim);font-weight:400}
-.meta{margin:0;color:var(--dim);font-size:.8rem}
-.meta code{font-family:var(--mono);font-size:.76rem}
-.refresh{display:flex;align-items:center;gap:var(--s3);margin:0;color:var(--dim);font-size:.78rem}
-.refresh .pause{padding:2px 10px;border:1px solid var(--line);border-radius:999px;background:var(--surface-2);
- color:var(--ink);font:500 .74rem var(--sans);cursor:pointer}
+.topbar{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s2) var(--s3);
+ padding:2px var(--s4);border-bottom:1px solid var(--line);background:var(--surface);font-size:.78rem}
+.topbar .page-nav{padding:0;margin:0}
+.topbar .repo{color:var(--dim);font-family:var(--mono);font-size:.74rem;cursor:help}
+.topbar .lh{display:flex;align-items:center;gap:var(--s2);margin-left:auto}
+.topbar .lh-mark{font-size:.6rem;line-height:1}
+.topbar .lh-state{font:600 .68rem var(--mono);letter-spacing:.08em}
+.topbar .lh-say{color:var(--dim)}
+.refresh{display:flex;align-items:center;gap:var(--s2);margin:0;color:var(--dim);font-size:.74rem}
+.refresh .pause{padding:1px 9px;border:1px solid var(--line);border-radius:999px;background:var(--surface-2);
+ color:var(--ink);font:500 .7rem var(--sans);cursor:pointer}
 .refresh .pause:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
-.refresh .note{font-size:.72rem}
+/* The controller writes this on every poll, and on the healthy path it writes
+   "Polling the local snapshot marker" — a sentence that costs a line to say
+   nothing happened. Shown only when the state it explains is worth explaining. */
+.refresh .note{display:none;font-size:.7rem}
+body[data-refresh-state="stale"] .refresh .note,
+body[data-refresh-state="degraded"] .refresh .note{display:inline}
 .orphans{margin:0;padding:var(--s3) var(--s5);background:var(--surface-2);
  border-bottom:1px solid var(--bad);color:var(--bad);font-size:.8rem}
 .below{display:grid;gap:var(--s4);max-width:1280px;margin:0 auto;padding:var(--s5)}
@@ -495,13 +494,6 @@ ${NAV_CSS}
 .sw-oversight{background:var(--oversight)}
 .warnbox{padding:var(--s4);border:1px solid var(--bad);border-radius:var(--r);font-size:.9rem}
 footer{color:var(--dim);font-size:.78rem}
-.loop-health{display:flex;flex-wrap:wrap;align-items:baseline;gap:var(--s2) var(--s3);
- margin:0;padding:var(--s3) var(--s5);background:var(--surface-2);
- border-bottom:1px solid var(--line);font-size:.82rem}
-.loop-health .lh-mark{font-size:.66rem;line-height:1}
-.loop-health .lh-state{font:600 .7rem var(--mono);letter-spacing:.08em}
-.loop-health .lh-say{font-weight:600}
-.loop-health .lh-detail{color:var(--dim)}
 .lh-ok{border-bottom-color:var(--ok)}.lh-ok .lh-mark,.lh-ok .lh-state{color:var(--ok)}
 .lh-warn{border-bottom-color:var(--warn)}.lh-warn .lh-mark,.lh-warn .lh-state{color:var(--warn)}
 .lh-bad{border-bottom-color:var(--bad)}.lh-bad .lh-mark,.lh-bad .lh-state{color:var(--bad)}
@@ -668,18 +660,32 @@ export function renderGraphPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, r
   const tile = (v, l, tone = '') =>
     `<div class="tile${tone ? ` t-${tone}` : ''}"><span class="tile-v">${esc(v)}</span><span class="tile-l">${esc(l)}</span></div>`
 
+  // One bar, not three. The page stacked a nav, a title block and a health band
+  // above the board, and between them they spent most of the first screen on
+  // facts nobody acts on: the graph file's own path, the team and workflow
+  // counts the board itself draws, the snapshot id, the full observed
+  // timestamp. What a reader needs before looking at the board is four things —
+  // where they are, whether the runner is alive, whether this is current, and
+  // how to stop it moving.
+  //
+  // Nothing is lost, only demoted: the dropped facts are the repo name's
+  // `title`, and every machine-readable attribute is untouched, because
+  // pulse-refresh reads two of them and `data-loop-health` is what the graph
+  // tests assert against.
+  const health = loopHealth(readRunnerHeartbeat(repo), now)
+  const detail = `${value.teams.length} teams · ${value.workflows.length} workflows`
+    + ` · graph: ${graph.source === 'default' ? 'bundled template' : `.tmux-teams/${WORKFLOW_GRAPH_FILE}`}`
+    + ` · evidence: pulse.json ${snapshot.snapshot_id || '—'} · observed ${observed}`
+    + (health.detail ? ` · ${health.detail}` : '')
   return `${head}
-${renderNav('graph')}
-<header class="topbar" data-observation-expires-at="${esc(snapshot.observation?.expires_at || '')}" data-refresh-interval="${Number(snapshot.observation?.refresh_interval_sec) || 20}">
-  <h1>Loop graph <span class="repo">${esc(repoName)}</span></h1>
-  <p class="meta">graph: <code>${graph.source === 'default' ? 'bundled template' : `.tmux-teams/${WORKFLOW_GRAPH_FILE}`}</code>
-   · ${value.teams.length} teams · ${value.workflows.length} workflows
-   · evidence: <code>pulse.json</code> ${esc(snapshot.snapshot_id || '—')} · observed ${esc(observed)}</p>
-  <p class="refresh"><span data-refresh-status role="status" aria-live="polite">Snapshot fresh</span>
-   <button type="button" class="pause" data-refresh-toggle data-refresh-focus-key="refresh-toggle" aria-pressed="false">Pause updates</button>
-   <span class="note" data-refresh-note>Polling the local snapshot marker</span></p>
+<header class="topbar lh-${health.tone}" data-loop-health="${health.state}"
+ data-observation-expires-at="${esc(snapshot.observation?.expires_at || '')}"
+ data-refresh-interval="${Number(snapshot.observation?.refresh_interval_sec) || 20}">
+  ${renderNav('graph')}
+  <span class="repo" title="${esc(detail)}">${esc(repoName)}</span>
+  <span class="lh"><span class="lh-mark" aria-hidden="true">${health.mark}</span><span class="lh-state">${esc(health.label)}</span><span class="lh-say">${esc(health.headline)}</span></span>
+  <span class="refresh"><span data-refresh-status role="status" aria-live="polite">Snapshot fresh</span><button type="button" class="pause" data-refresh-toggle data-refresh-focus-key="refresh-toggle" aria-pressed="false">Pause</button><span class="note" data-refresh-note>Polling the local snapshot marker</span></span>
 </header>
-${loopHealthBand(loopHealth(readRunnerHeartbeat(repo), now))}
 ${value.outer_controller_id && !value.controller_team ? `<p class="orphans">The controller <code>${esc(value.outer_controller_id)}</code> holds no team seat, so it is not on the board. This graph predates the front door: give it a team whose one worker is that seat, and start every route there. Until then nothing enforces a way in, and no WIP limit covers requests waiting to be admitted.</p>` : ""}
 ${occupancy.orphans.length || skippedLines ? `<p class="orphans">${occupancy.orphans.length ? `${occupancy.orphans.length} work item(s) cannot be placed — agent or workflow not in this graph: ${esc(occupancy.orphans.map((o) => o.work_item).join(", "))}. ` : ""}${skippedLines ? `${skippedLines} unreadable ledger line(s) skipped.` : ""}</p>` : ""}
 ${renderTourChart(tour)}
