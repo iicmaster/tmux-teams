@@ -492,3 +492,10 @@ async function handleLine(line) {
 }
 
 writeFileSync(join(process.cwd(), '.initial-agent-mode'), `${process.env.INITIAL_AGENT_MODE ?? ''}\n`, { mode: 0o600 })
+// PRESENCE only, never the value: the point of the allowlist is that a lane's
+// adapter cannot see another lane's credential, and a test that wrote the
+// secret out to prove it would be the leak it is checking for.
+writeFileSync(join(process.cwd(), '.adapter-env.json'), JSON.stringify(Object.fromEntries(
+  ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GOOGLE_API_KEY', 'AWS_SECRET_ACCESS_KEY', 'PATH', 'ACP_AGENT_ID']
+    .map((key) => [key, key in process.env]),
+)), { mode: 0o600 })

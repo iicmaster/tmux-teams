@@ -2315,8 +2315,65 @@ try {
   process.exit(2)
 }
 
+// The adapter used to inherit this process's entire environment, so an adapter
+// that was wrong — or taken — saw every credential the parent was carrying,
+// including the ones belonging to other lanes. It now gets what its own lane
+// needs and nothing else.
+//
+// The lists are deliberately generous rather than minimal: the failure mode of
+// a missing variable is a lane that stops working for a reason nobody can see,
+// which is worse than the leak this closes. ACP_ENV_PASSTHROUGH names anything
+// an operator finds missing, so a gap is a one-line fix and never a reason to
+// go back to inheriting everything.
+const RUNTIME_ENV_KEYS = new Set([
+  'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'TERM', 'LANG', 'LC_ALL', 'LC_CTYPE',
+  'TMPDIR', 'TMP', 'TEMP', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'SYSTEMROOT',
+  'WINDIR', 'COMSPEC', 'PATHEXT', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME',
+  'NODE_PATH', 'NODE_OPTIONS', 'NODE_EXTRA_CA_CERTS', 'BUN_INSTALL',
+  // Protocol and harness, not credentials: INITIAL_AGENT_MODE is the ACP mode
+  // this companion negotiates, and ECC_GATEGUARD is how a dispatch stops this
+  // machine's own hooks from firing inside a worker that cannot answer them.
+  'INITIAL_AGENT_MODE', 'ECC_GATEGUARD', 'ECC_DISABLED_HOOKS',
+  'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy',
+])
+// Only the lane being spawned. A Codex adapter has no business seeing an
+// Anthropic key, and the kimi wiring in this repo proves the reverse matters:
+// ANTHROPIC_BASE_URL alone redirects the claude lane at another vendor.
+const LANE_ENV_KEYS = {
+  claude: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL',
+    'ANTHROPIC_CUSTOM_HEADERS', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL',
+    'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CONFIG_DIR'],
+  codex: ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'CODEX_HOME', 'CODEX_PATH'],
+  // UNVERIFIED against a live adapter. `claude` and `codex` were both dispatched
+  // end to end through this allowlist on 2026-08-02 — identity matched, outbox
+  // written, and each worker reported nothing missing. The gemini lane on this
+  // machine has been dead since 2026-07-21, so this row is a best reading of
+  // what antigravity-acp needs and has never been run. Whoever revives that lane
+  // should expect to add to it, and should not read its presence here as proof.
+  agy: ['AGY_API_KEY', 'AGY_BIN', 'AGY_SKIP_DOWNLOAD', 'ANTIGRAVITY_API_KEY',
+    'GOOGLE_API_KEY', 'GEMINI_API_KEY'],
+}
+// `ACP_` and `TMUX_TEAMS_` are this system talking to itself. `MOCK_` belongs to
+// the bundled fixture agent and is named here rather than smuggled in through a
+// wildcard, so it is visible that a test seam exists and exactly how wide it is.
+const ENV_PREFIXES = ['ACP_', 'TMUX_TEAMS_', 'MOCK_', 'npm_config_', 'NPM_CONFIG_']
+
+function adapterEnv(lane, source = process.env) {
+  const extra = new Set((source.ACP_ENV_PASSTHROUGH ?? '').split(',').map((name) => name.trim()).filter(Boolean))
+  const lanes = new Set(LANE_ENV_KEYS[lane] ?? [])
+  const allowed = {}
+  for (const [key, value] of Object.entries(source)) {
+    if (value === undefined) continue
+    if (RUNTIME_ENV_KEYS.has(key) || lanes.has(key) || extra.has(key)
+      || ENV_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+      allowed[key] = value
+    }
+  }
+  return allowed
+}
+
 const spawnEnv = {
-  ...process.env,
+  ...adapterEnv(agentName),
   ...(agentName === 'agy' ? { AGY_SKIP_DOWNLOAD: process.env.AGY_SKIP_DOWNLOAD ?? '1' } : {}),
   ...(agentName === 'codex' ? { INITIAL_AGENT_MODE: effectiveInitialAgentMode } : {}),
 }

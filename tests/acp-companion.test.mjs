@@ -159,6 +159,43 @@ function run(taskId, extraEnv = {}, cwd = mkdtempSync(join(tmpdir(), 'acp-compan
   return runAs('mock', taskId, extraEnv, cwd, timeoutSec)
 }
 
+// The adapter used to inherit the whole parent environment, so a wrong or taken
+// adapter saw every credential the parent carried — including other lanes'.
+// Goes red if adapterEnv stops filtering, and red the other way if the filter
+// is tightened until a lane loses what it needs.
+test('an adapter sees its own lane credentials and nothing else', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-env-allowlist-'))
+  const result = run('task-env-allowlist', {
+    ANTHROPIC_API_KEY: 'anthropic-secret',
+    OPENAI_API_KEY: 'openai-secret',
+    GOOGLE_API_KEY: 'google-secret',
+    AWS_SECRET_ACCESS_KEY: 'nothing-here-needs-this',
+  }, cwd)
+  assert.equal(result.status, 0, result.stderr)
+  const seen = JSON.parse(readFileSync(join(cwd, '.adapter-env.json'), 'utf8'))
+  // `mock` is not a known lane, so it gets no provider keys at all.
+  assert.deepEqual(seen, {
+    OPENAI_API_KEY: false,
+    ANTHROPIC_API_KEY: false,
+    GOOGLE_API_KEY: false,
+    AWS_SECRET_ACCESS_KEY: false,
+    PATH: true,
+    ACP_AGENT_ID: false,
+  }, JSON.stringify(seen))
+})
+
+test('ACP_ENV_PASSTHROUGH names what the allowlist missed, one variable at a time', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-env-passthrough-'))
+  const result = run('task-env-passthrough', {
+    AWS_SECRET_ACCESS_KEY: 'deliberately-named',
+    ACP_ENV_PASSTHROUGH: 'AWS_SECRET_ACCESS_KEY',
+  }, cwd)
+  assert.equal(result.status, 0, result.stderr)
+  const seen = JSON.parse(readFileSync(join(cwd, '.adapter-env.json'), 'utf8'))
+  assert.equal(seen.AWS_SECRET_ACCESS_KEY, true, JSON.stringify(seen))
+  assert.equal(seen.OPENAI_API_KEY, false, JSON.stringify(seen))
+})
+
 // The outbox is the one file a worker fully controls. Each of these fails if
 // the corresponding refusal is taken out of readTerminalOutbox — which is the
 // only thing that makes them evidence rather than a record that a test exists.
