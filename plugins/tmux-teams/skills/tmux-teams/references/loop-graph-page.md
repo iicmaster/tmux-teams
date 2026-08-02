@@ -1,9 +1,16 @@
-# The loop graph page — SSOT
+# The loop graph page
 
 What `.tmux-teams/graph.html` may draw, and why. Decided with Master across
 2026-07-31 / 08-01; every rule here was written after the picture proved it,
 usually by being wrong first. When this file and the code disagree, one of them
 is a defect — say which.
+
+**This file is not a second source of truth.** It expands
+`references/loop-system-contract.md` §12 and inherits its authority. Where the
+two documents conflict, **the contract wins** — and the conflict is itself a
+defect to state in writing before either is edited. Two files that each declared
+themselves SSOT is how an implementer built the wrong controller on 2026-08-01
+(contract §14.5).
 
 Code: `scripts/graph-tour.mjs` (layout, edges, scenes — no I/O) and
 `scripts/graph.mjs` (evidence → one card per seat, then the page shell).
@@ -224,10 +231,8 @@ or every scene is as wide as the whole board and the zoom never acts.
 
 The board draws the controller's **authority** over the order. `pull-controller`
 hands a token from team to team without the controller in the middle of every
-step, which is why `pull` is drawn team-to-team — but `send` used in both
-directions still says more about who decides than about where the token
-physically goes. Stated here rather than left for someone to find from a diagram
-that disagrees with a tick.
+step, which is why `pull` is drawn team-to-team. Stated here rather than left
+for someone to find from a diagram that disagrees with a tick.
 
 ## 9. How to check this page
 

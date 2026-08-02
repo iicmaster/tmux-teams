@@ -1,8 +1,10 @@
 // graph-tour.mjs — the loop graph as a guided tour rather than one static wall.
 //
-// SSOT for what this page may draw and why:
-// `references/loop-graph-page.md`. Every rule there was written after the
-// picture proved it. If this file and that one disagree, one is a defect.
+// What this page may draw and why: `references/loop-graph-page.md`, which
+// expands `references/loop-system-contract.md` §12 — the contract is the one
+// source of truth and wins if the two documents ever disagree. Every rule in
+// the page document was written after the picture proved it. If this file and
+// that one disagree, one is a defect.
 //
 // The board answers two different questions and the single-picture SVG this
 // replaces answered them on top of each other: WHO exists (teams as a pool,

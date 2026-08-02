@@ -8,6 +8,32 @@ writing, before changing either. Do not "fix" the document to match code that
 was never reviewed against it, and do not change behaviour without amending
 this file in the same commit.
 
+**There is one source of truth, and it is this file.** Every other document
+about the loop — `references/loop-graph-page.md`,
+`references/controller-as-team.md`, `references/how-it-works.md`, `README.md`,
+`SKILL.md` — expands a section of it and loses to it on conflict.
+
+## Where to look
+
+| § | Answers |
+| --- | --- |
+| [0](#0-scope) | which files this contract governs, and which it does not |
+| [1](#1-model) | team, workflow, token — and that flow is one way |
+| [2](#2-two-layers-never-mixed) | declared vs. observed: what a human may assign and what only evidence may say |
+| [3](#3-declaration-contract--graphjson) | `graph.json` — seats, models, adapters, worker ceiling, validation |
+| [4](#4-custody-ledger-contract) | every event a ledger may carry, and what each must name |
+| [5](#5-state-machine) | the states a token moves through |
+| [6](#6-occupancy--the-single-placement-rule) | the one rule that decides which team holds a token |
+| [7](#7-pull-system) | who pulls, WIP, and when a route is complete |
+| [8](#8-quality-gates) | verdicts, evidence, and what a pass has to mean |
+| [9](#9-outer-controller) | the controller's three jobs, and the ones only it may do |
+| [10](#10-budgets-and-ceilings) | limits on size, count and spend |
+| [11](#11-liveness-dependency) | how the system knows the runner is alive |
+| [12](#12-the-loop-graph-page) | what `graph.html` may draw — detail in `loop-graph-page.md` |
+| [13](#13-prohibitions) | what nothing in this system is allowed to do |
+| [14](#14-acceptance-criteria) | what is decided, what is built, and what is still open |
+| [15](#15-change-control) | how this document may be amended, and the log |
+
 ## 0. Scope
 
 **Governed by this contract**
@@ -617,6 +643,12 @@ Failing to stamp never takes a tick down: moving work matters more than
 describing the move.
 
 ## 12. The loop graph page
+
+The rules below are the contract's own. The **detail** — every node, edge, scene
+and motion the page may draw, and the method for checking a published one — is
+expanded in `references/loop-graph-page.md`, which is a chapter of this section
+and not a source of truth beside it. Where the two disagree, this file wins and
+the disagreement is a defect.
 
 ### 12.1 Purpose and boundary
 

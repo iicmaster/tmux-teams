@@ -41,7 +41,9 @@ over HTTP, then MEASURE — `getComputedStyle(el).animationName`, count
 `getBoundingClientRect()` of a halo with the card it rings. Every wire carries
 `data-from`/`data-to` so a check never reverse-engineers geometry.
 `plugins/tmux-teams/skills/tmux-teams/references/loop-graph-page.md` §9 is the
-SSOT for this and for everything `graph.html` may draw.
+method for this, and the rest of that file is what `graph.html` may draw. It is
+a chapter of `references/loop-system-contract.md` §12 — **the contract is the
+one SSOT** and wins if the two ever disagree.
 
 ## Worker dispatch planning gate
 
