@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -53,6 +53,110 @@ function runJson(dir, extraArgs = []) {
     'pulse json stdout must be one parseable document')
   return { snapshot, stdout: result.stdout }
 }
+
+function runCli(args) {
+  return spawnSync(process.execPath, [PULSE, ...args], {
+    encoding: 'utf8', timeout: 15_000, env: { ...process.env, PULSE_TIME_ZONE: '' },
+  })
+}
+
+// Salvaged from pulse-v2.test.mjs and pulse-v4-runtime.test.mjs, which both die
+// with the phase subsystem they import. `SCHEMA_UPGRADED` appeared ONLY in
+// those two files: no surviving test wrote a prior-version pulse.json, so
+// stream-identity preservation and the one-shot nature of the upgrade had no
+// coverage anywhere else. Three tests are folded into one here.
+test('a persisted prior-version snapshot upgrades to v4 once, keeping its stream identity', () => {
+  for (const priorVersion of [1, 2, 3]) {
+    const dir = repo()
+    const current = runJson(dir).snapshot
+    // v1 and v3 come from the shipped down-projectors, which is higher fidelity
+    // than a hand-written stub. v2 cannot: downProjectPulseV2 refuses a snapshot
+    // with no `delivery_loop` (pulse-data.mjs:2358), and the ordinary loop does
+    // not emit one — so that seed is a v3 projection wearing a v2 version.
+    const prior = priorVersion === 1 ? downProjectPulseV1(current)
+      : priorVersion === 3 ? downProjectPulseV3(current)
+        : { ...downProjectPulseV3(current), schema_version: 2 }
+    writeFileSync(join(dir, '.tmux-teams', 'pulse.json'), `${JSON.stringify(prior, null, 2)}\n`)
+
+    const upgraded = runJson(dir).snapshot
+    assert.equal(prior.schema_version, priorVersion)
+    assert.equal(upgraded.schema_version, 4, `v${priorVersion} must land on v4`)
+    assert.equal(upgraded.stream_id, prior.stream_id, `v${priorVersion} must keep its stream`)
+    assert.equal(upgraded.sequence, prior.sequence + 1, `v${priorVersion} must advance by one`)
+    assert.ok(upgraded.diagnostics.some((item) => item.code === 'SCHEMA_UPGRADED'),
+      `v${priorVersion} must say it upgraded`)
+    // Upgrading is a one-shot fact about this publish, not a permanent label.
+    const next = runJson(dir).snapshot
+    assert.equal(next.stream_id, upgraded.stream_id)
+    assert.equal(next.sequence, upgraded.sequence + 1)
+    assert.ok(!next.diagnostics.some((item) => item.code === 'SCHEMA_UPGRADED'),
+      `v${priorVersion} must not keep claiming it upgraded`)
+  }
+})
+
+// Salvaged separately, because it is a claim about the PROJECTOR, not about a
+// publish: a view whose every source reads `ok` yields a complete snapshot.
+// Every other `.complete` assertion in the suite asserts `false`, so without
+// this the true case had no coverage at all. Asserted where the original
+// asserted it — on projectPulseV4 directly — rather than through a CLI run,
+// which reports `complete: false` for a repo that has no sources yet.
+test('a view with every source healthy projects a complete v4 snapshot', () => {
+  const now = Date.parse('2026-07-29T00:00:00.000Z')
+  const snapshot = projectPulseV4({
+    active: [], history: [], historyTotal: 0, rec: [], unclaimed: [], diagnostics: [],
+    sourceHealth: { liveness: 'ok', tmux: 'ok', dispatch: 'ok', outbox: 'ok', events: 'ok' },
+  }, {
+    streamId: '22222222-2222-4222-8222-222222222222',
+    sequence: 1,
+    startedAt: now,
+    finishedAt: now,
+    intervalSec: 20,
+    repoName: 'repo',
+    teamGraphSourceDigest: null,
+  })
+  assert.equal(snapshot.schema_version, 4)
+  assert.equal(snapshot.complete, true)
+})
+
+// Also salvaged, and also sole coverage: the compat-v1 CLI was executed at
+// exactly three places, all inside the dying file. plugin-structure.test.mjs
+// only greps the docs for the string.
+test('compat-v1 writes to stdout only, leaves the SSOT untouched, and fails closed', () => {
+  const dir = repo()
+  runJson(dir)
+  const jsonPath = join(dir, '.tmux-teams', 'pulse.json')
+  const htmlPath = join(dir, '.tmux-teams', 'pulse.html')
+  const beforeJson = readFileSync(jsonPath, 'utf8')
+  const beforeHtml = existsSync(htmlPath) ? readFileSync(htmlPath, 'utf8') : null
+  const v4 = JSON.parse(beforeJson)
+
+  const result = runCli(['compat-v1', dir])
+  assert.equal(result.status, 0, result.stderr)
+  const compat = JSON.parse(result.stdout)
+  assert.equal(compat.schema_version, 1)
+  assert.equal(compat.stream_id, v4.stream_id)
+  assert.equal(compat.sequence, v4.sequence, 'a down-projection is a view, not a publish')
+  assert.ok(!compat.diagnostics?.some((item) => item.code === 'SCHEMA_UPGRADED'))
+  assertSchema(compat, SCHEMA_PATHS.v1, 'compat-v1 stdout')
+
+  assert.equal(readFileSync(jsonPath, 'utf8'), beforeJson, 'compat-v1 must not rewrite pulse.json')
+  if (beforeHtml !== null) assert.equal(readFileSync(htmlPath, 'utf8'), beforeHtml)
+  // There is one SSOT. A sidecar would be a second one nobody agreed to.
+  for (const sidecar of ['pulse-v1.json', 'pulse-v2.json', 'pulse-v3.json']) {
+    assert.equal(existsSync(join(dir, '.tmux-teams', sidecar)), false, `${sidecar} must not exist`)
+  }
+
+  for (const [field, value] of [
+    ['stream_id', 42], ['sequence', -1], ['trust_level', 'unearned'], ['runs', 'not-an-array'],
+  ]) {
+    const broken = { ...v4, [field]: value }
+    writeFileSync(jsonPath, `${JSON.stringify(broken, null, 2)}\n`)
+    const refused = runCli(['compat-v1', dir])
+    assert.equal(refused.status, 1, `compat-v1 accepted a broken ${field}`)
+    assert.equal(refused.stdout, '', `compat-v1 leaked stdout for a broken ${field}`)
+    assert.match(refused.stderr, /no compatible persisted Pulse snapshot/)
+  }
+})
 
 function publishedV4WithDeliveryLoop() {
   const dir = repo()
