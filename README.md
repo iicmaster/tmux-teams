@@ -1,70 +1,56 @@
 # tmux-teams — Claude Code plugin
 
-PM orchestration suite in one plugin: dispatch CLI agents (codex, claude,
-agy) over **two transports — tmux and ACP** — on one mailbox contract
-(evidence-not-attestation outbox + typed terminal markers), plan every
-dispatch with `sqthink` + task creation, gate completion with `party-mode`
-verification.
+A multi-team delivery loop for agent work, and a published board that reports
+what actually happened. Teams are declared once by a person; a unit of work
+then moves between them as an append-only custody ledger, and every page is
+drawn from that ledger rather than from what an agent said about itself. The
+founding rule is **evidence over attestation**: a worker that finishes without
+writing its outbox has produced nothing, a team at its WIP limit is left
+visibly blocked instead of being pushed past, and a declaration that cannot be
+read fails the page closed with the reason rather than falling back to a guess.
 
-## The delivery loop
+New here? Read this file top to bottom, then
+[how-it-works.md](plugins/tmux-teams/skills/tmux-teams/references/how-it-works.md)
+for the diagrams.
 
-The mailbox contract above dispatches one agent and proves what it produced.
-The delivery loop turns that into a system that keeps moving without a human
-pressing continue.
+Current release: **0.13.1** (`.claude-plugin/marketplace.json` and
+`plugins/tmux-teams/.claude-plugin/plugin.json`).
 
-Two layers that must never be conflated:
+---
 
-| Layer | File | Answers |
-|---|---|---|
-| **Declaration** | `.tmux-teams/graph.json` | who exists and how they are wired |
-| **Evidence** | `.tmux-teams/work-items/<token>.jsonl`, `pulse.json`, `.tmux-teams/runner-heartbeat.json` | what actually happened, including whether the runner itself is responding |
+## 1. Install
 
-- A **team** is a reusable pool: one dispatcher, N workers, one evaluator. Every
-  role of every team declares its own model — work of different value deserves
-  brains of different price — and a missing declaration is refused by name.
-- A **workflow** is a route composed over teams. A route never revisits a team.
-- A **work item** carries an **append-only** JSONL custody ledger. A mistaken
-  line is corrected by appending, never by rewriting: what a receiving team
-  inherits is the token's recorded history, and every later reader — intake, the
-  board, the controller's audit — answers from it.
-- Work is **pulled, not pushed**. A team takes work when it has room; the WIP
-  limit is the worker count. A team at its limit leaves the token where it is
-  and says so, because a queue backing up is the signal the board exists to
-  show.
-- **Three quality gates**: intake (the receiving dispatcher), review (the team's
-  own evaluator — a worker finishing is not the team finishing), and an outer
-  audit of every finished route. Verdicts are read from a `VERDICT:` line,
-  **last match wins**, and silence is never approval.
-- `plugins/tmux-teams/skills/tmux-teams/references/loop-system-contract.md` is
-  the SSOT. It carries a standing list of what the contract asserts but nothing
-  enforces: a clause with no test is marked as such rather than left to be
-  discovered.
+```bash
+claude plugin marketplace add iicmaster/tmux-teams
+claude plugin install tmux-teams@tmux-teams
+```
 
-Three pages are published side by side into `.tmux-teams/`, linked by one nav:
+After a new release is pushed, update in two steps:
 
-| Page | Answers |
+```bash
+claude plugin marketplace update tmux-teams
+claude plugin update tmux-teams@tmux-teams
+```
+
+Both steps are needed because **the install cache is version-keyed**. Editing a
+checkout, or bumping its manifest, does not update an installed copy; the
+marketplace must be refreshed before the plugin update can see a new version.
+Authenticate `gh`/git first if your GitHub setup requires it.
+
+### Prerequisites
+
+| Need | For |
 |---|---|
-| `pulse.html` | what is happening right now |
-| `graph.html` | who exists and how they are wired |
-| `kanban.html` | where each work item is stuck |
+| Node 20+ with `npx` | the ACP adapters. CI exercises Node 20 and Node 24 |
+| `tmux` and the `codex` CLI | the tmux worker lane |
+| `bun` | the `agy` ACP adapter (`bunx antigravity-acp@1.0.0`) |
+| `/usr/bin/bwrap` (Linux) | party-mode's 3-model review gate — it fails closed without it |
 
-### The components, in operating order
+### First run
 
-| Component | Responsibility |
-|---|---|
-| `graph.mjs` + `workflow-graph.mjs` | create and validate `.tmux-teams/graph.json`: teams are reusable pools; workflows own routes |
-| `ledger-writer.mjs` + `ledger-validate.mjs` | append and judge one custody history per token; invalid history stops movement |
-| `pull-controller.mjs` | plan receiver-owned handoffs and enforce WIP; it pulls only reviewed work |
-| `loop-runner.mjs` | run one ordered tick: harvest → pull → dispatch → escalate, and stamp the runner heartbeat |
-| `acp-companion.mjs` | carry each dispatched leg over ACP; its custody-ledger authority is limited to that leg's `assigned` and `delivered` facts |
-| `pulse.mjs` + `graph.mjs` + `kanban.mjs` | publish three projections from the same declaration and evidence |
-| `kms.mjs` | keep immutable run-memory events; it is an event store, not a verification gate |
-
-Run these commands from this repository's root. In an installed plugin, replace
-`plugins/tmux-teams/skills/tmux-teams` with the installed skill root.
-
-Create a declaration once, edit the generated team and model values, then
-validate it. `graph.mjs init` expects the state directory to exist:
+Nothing dispatches until this repository has declared its own loop. Use the
+bundled `graph-setup` skill, which interviews you until nothing is blank, or run
+the commands directly. `graph.mjs init` expects the state directory to exist:
 
 ```bash
 mkdir -p -- <repo>/.tmux-teams
@@ -72,10 +58,131 @@ node plugins/tmux-teams/skills/tmux-teams/scripts/graph.mjs init <repo>
 node plugins/tmux-teams/skills/tmux-teams/scripts/graph.mjs check <repo>
 ```
 
-Admit a token through the general custody writer, then validate every ledger.
-`opened` is the first event; a route-opening `pulled` would invent a sender.
-This example uses the bundled declaration unchanged; after editing the graph,
-substitute its workflow, dispatcher and team names:
+Edit the generated team and model values, then re-run `check`.
+
+Two different failures, and the difference bites newcomers:
+
+| `.tmux-teams/graph.json` | What happens |
+|---|---|
+| **absent** | a bundled default declaration (5 teams, 3 workflows) is used. `graph.mjs check` prints `ok (default)` and the runner proceeds — measured on an empty repo |
+| **present but invalid or unreadable** | fails closed. The runner refuses to dispatch and states the reason in `<repo>/.tmux-teams/runner-heartbeat.json`; the graph page renders the reason instead of a board |
+
+So the danger is not a crash — it is a board that looks completely normal while
+answering about teams nobody declared. Run `graph.mjs check` and confirm the
+source is your file, not `(default)`, before trusting anything the pages say.
+
+> The `graph-setup` skill states that with no valid `graph.json` the runner
+> refuses to dispatch. That holds for an invalid file, not an absent one. The
+> code's fallback is deliberate and commented (`graph.mjs`: "Absent — and ONLY
+> absent — is what the bundled default is for"); the skill text overstates it.
+
+Run these commands from this repository's root. In an installed plugin, replace
+`plugins/tmux-teams/skills/tmux-teams` with the installed skill root.
+
+Admit one request, run a tick, then publish the pages:
+
+```bash
+node plugins/tmux-teams/skills/tmux-teams/scripts/admit.mjs \
+  --repo <repo> --work-item token-001 --workflow default \
+  --actor human:operator --reason 'what the person asked for'
+node plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs <repo> --dry-run
+node plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs <repo> --watch=20
+node plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs once <repo>
+```
+
+`--dry-run` deliberately does not stamp the heartbeat: it is a simulation, and
+letting one overwrite a live runner's heartbeat would report a loop that is not
+running.
+
+---
+
+## 2. How work moves
+
+### Two layers that must never be conflated
+
+| Layer | File | Answers |
+|---|---|---|
+| **Declaration** | `.tmux-teams/graph.json` | who exists and how they are wired |
+| **Evidence** | `.tmux-teams/work-items/<token>.jsonl`, `pulse.json`, `.tmux-teams/runner-heartbeat.json` | what actually happened, including whether the runner itself is responding |
+
+A declaration is assigned by a human and never observed. Evidence is recorded
+and never assumed. Every page keeps the two apart.
+
+### Seats
+
+A **team** is a reusable pool of three kinds of seat:
+
+| Seat | Owns |
+|---|---|
+| dispatcher (exactly one) | intake — whether the team takes the work at all |
+| worker (one or more) | doing the work |
+| evaluator (exactly one) | judging the team's own output before it is released |
+
+A team's **WIP limit is not declarable — it always equals its worker count**
+(`workflow-graph.mjs`). A `graph.json` that declares a `wip_limit` disagreeing
+with its worker count is rejected by name.
+
+A **workflow** is a route composed over teams. `controller_team` is likewise
+derived, not declared: it is the head of every route, and a workflow whose
+route starts anywhere else is rejected. That control team's single worker seat
+is the `outer_controller_id`, so **the control team's WIP is 1 and every route
+starts there**. One request waiting on a person stops every new request
+entering — a queue, not a rejection, and deliberate. See
+[controller-as-team.md](plugins/tmux-teams/skills/tmux-teams/references/controller-as-team.md).
+
+`admit.mjs` is the only writer that enforces the front door's WIP limit;
+`ledger-writer.mjs` cannot, because it judges one event against one ledger and
+never reads the graph. Refused while the controller is holding its one token:
+
+```text
+REFUSED  controller_full: control is holding 1 of 1 — a new request is not
+admitted while the front door is full. The person may send it again once the
+queue moves.
+```
+
+### Handover is a pull, never a push
+
+`pull-controller.mjs` never hands work to a team. It only lets a team **take**
+work it has room for. One pass over the token ledgers decides, per token:
+
+| Situation | Decision |
+|---|---|
+| last event is `reviewed` `pass` (a delivery team's evaluator accepted it) | eligible to move |
+| last event is `intake` `accept` on the control team | eligible to move — admission is the claim, there is no artifact yet |
+| last leg `delivered` with a non-`done` terminal | `failed` — a rerun, not a handoff |
+| the ledger does not validate | `invalid` — every problem printed, nothing appended |
+| next team is under its WIP limit | `pulled`, signed by the **receiving** dispatcher |
+| next team is at its WIP limit | `blocked`, with the count, and the token stays put |
+| no next team on the route | `completed` |
+
+Oldest delivery first, so nothing that has waited longest is starved. A worker
+finishing is not the team finishing: until that team's evaluator has passed it,
+the artifact has been typed, not checked.
+
+### The tick
+
+`loop-runner.mjs` runs one ordered tick — **harvest → pull → dispatch →
+escalate**. Harvest runs first so the pull controller never reads a stale event.
+Every decision is logged, including the unhappy ones, because a runner that logs
+only the happy path looks identical to one that has silently given up.
+
+Verdicts are read from a `VERDICT:` line, **last match wins** (an agent
+restating the format before writing its real answer is ordinary), and silence is
+never approval.
+
+The direct `pull-controller.mjs` command is an operator dry run. Let the runner
+apply pulls so the tick order stays intact:
+
+```bash
+node plugins/tmux-teams/skills/tmux-teams/scripts/pull-controller.mjs <repo>
+```
+
+### The custody ledger
+
+One append-only JSONL file per token. A mistaken line is corrected by
+appending, never by rewriting: what a receiving team inherits is the token's
+recorded history, and every later reader — intake, the board, the controller's
+audit — answers from it.
 
 ```bash
 node plugins/tmux-teams/skills/tmux-teams/scripts/ledger-writer.mjs \
@@ -85,52 +192,155 @@ JSON
 node plugins/tmux-teams/skills/tmux-teams/scripts/ledger-validate.mjs --repo <repo>
 ```
 
-### When the graph routes work through a controller team
+`opened` is the first event and can only be the first event; a route-opening
+`pulled` would invent a sender.
 
-A graph whose `outer_controller_id` is the single worker of a team makes that
-team the front door: every route starts there, and admission goes through it
-rather than at a delivery team. Use `admit.mjs` instead of writing `opened` by
-hand — it is the only writer that enforces the front door's WIP limit, which
-`ledger-writer` cannot see because it judges one event against one ledger and
-never reads the graph.
+`plugins/tmux-teams/skills/tmux-teams/references/loop-system-contract.md` is the
+SSOT for all of the above. Its §14.1 carries a standing list of clauses the
+contract asserts that **no test enforces** — including the tick order itself —
+declared there rather than left to be discovered.
 
-```bash
-node plugins/tmux-teams/skills/tmux-teams/scripts/admit.mjs \
-  --repo <repo> --work-item token-001 --workflow default \
-  --actor human:operator --reason 'what the person asked for'
-```
+---
 
-Refused while the controller is holding its one token:
+## 3. How you talk to it, and why that goes through ACP
+
+This is the most misunderstood part of the plugin.
+
+### One dispatch is one ACP session and exactly one prompt
+
+`acp-companion.mjs` spawns each worker over ACP. Per dispatch it sends
+`initialize`, then `session/new` (or `session/load` when `ACP_RESUME` names a
+prior session), then **exactly one `session/prompt`**, and then waits for the
+worker's outbox file.
+
+There is **no channel for a person to type into a running worker session**. The
+companion's stdin is the JSON-RPC transport to the adapter, not a human input
+path. If you have seen this described as a live chat you can interject into, it
+is not that. Session continuity exists, but it is resume-by-id (`ACP_RESUME` +
+`session/load`, with prior-receipt lineage checks), not a conversation window.
+
+### So what does ACP actually buy?
+
+**Verified model identity.** A skill cannot pin a model — skill frontmatter is
+`name` and `description`. An agent can (`model:` frontmatter), but nothing then
+verifies the request was honoured, and per-agent reasoning effort is not
+expressible at all. ACP does both:
+
+| Variable | Effect |
+|---|---|
+| `ACP_MODEL`, `ACP_REASONING_EFFORT` | set the session through the standard `session/set_config_option` calls; an unadvertised or rejected value fails closed |
+| `ACP_EXPECT_MODEL`, `ACP_EXPECT_REASONING_EFFORT` | make the adapter **acknowledge** its identity; a mismatch fails the dispatch **before any prompt byte** |
+
+When an explicit expectation is omitted, the selected value is also the
+expectation. This is the evidence-not-attestation rule turned on the worker:
+*asking* for a model is not the same fact as that model answering, and only one
+of the two is worth paying for.
+
+**Protocol liveness instead of screen-scraping.** The tmux lane's measured
+failure modes are recorded in
+`plugins/tmux-teams/skills/tmux-teams/references/teammates-messaging.md` Part 3:
+Enter-swallow fired on 3/3 dispatches, and the notify chain produced zero events
+for an entire session. ACP replaces guessing from pixels — for **liveness and
+progress**, which is what the stall lease and the `acp-liveness.v1` snapshots are
+built from.
+
+Note what it does *not* replace: the **completion verdict is the outbox file on
+both lanes**. The runner harvests a leg only once `.mailbox-out/<task-id>`
+exists, and the terminal state is read from that file's last line — never from
+an ACP event. That is deliberate, and it is why the next section matters.
+
+### The mailbox/outbox contract
+
+Every ACP brief is prefixed with this, verbatim:
 
 ```text
-REFUSED  controller_full: control is holding 1 of 1 — a new request is not
-admitted while the front door is full. The person may send it again once the
-queue moves.
+Your task-id is <task-id>. Write your outbox to .mailbox-out/<task-id> — a
+single flat FILE (do NOT create it as a directory). Its last line must be
+exactly: TEAM_DONE <task-id> (or TEAM_BLOCKED <task-id> / TEAM_FAILED <task-id>).
 ```
 
-That is a queue, not a rejection, and it is deliberate: one request waiting on a
-person stops every new request entering. See
-[controller-as-team.md](plugins/tmux-teams/skills/tmux-teams/references/controller-as-team.md) for why.
+The companion then reads `<repo>/.mailbox-out/<task-id>` and classifies the
+**last non-empty line**, which must match exactly:
 
-What the door has learned, read by the controller on every withdrawal:
+| Last line | Terminal |
+|---|---|
+| `TEAM_DONE <task-id>` | `done` |
+| `TEAM_BLOCKED <task-id>` | `blocked` |
+| `TEAM_FAILED <task-id>` | `failed` |
+| anything else | `invalid` |
 
-```bash
-node -e "import('plugins/tmux-teams/skills/tmux-teams/scripts/intake-stats.mjs').then(m => console.log(m.intakeStats('<repo>')))"
-```
+The file must be a regular file within a bounded size. It is opened with
+`O_NOFOLLOW` and `O_NONBLOCK`, so a symlink, a directory, or a FIFO left at that
+path is rejected rather than followed or waited on.
 
-The pull controller's direct command is an operator dry run. Let the runner
-apply pulls so the contract's tick order stays intact:
+> **A worker that prints its answer to the terminal and writes no outbox has
+> produced nothing.** The companion fails the dispatch with `no_outbox` —
+> *"worker finished the turn but wrote no `<repo>/.mailbox-out/<task-id>`"*. This
+> happens with real models, especially cheaper ones given a thin brief: they
+> answer correctly, print it, and drop the mechanism. The answer is not
+> recoverable by the loop, because the loop deliberately reads artifacts and not
+> screens. If this keeps happening, make the brief more explicit about the
+> outbox; it is not a transport bug.
 
-```bash
-node plugins/tmux-teams/skills/tmux-teams/scripts/pull-controller.mjs <repo>
-node plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs <repo> --dry-run
-node plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs <repo> --watch=20
-```
+The full mailbox PM workflow is available as the command
+`/tmux-teams:mailbox-run`.
 
-The runner supplies the graph identity, workflow, token and model environment
-to `acp-companion.mjs`; the standalone transport form is documented under
-Transports below. Publish one snapshot or keep the observer alive, then inspect
-the custody board:
+### Where a person actually enters the loop
+
+Not inside an ACP session — at the **ledger**. When a gate cannot answer, it
+records `questioned` and the token parks in front of a human; the reply is an
+`answered` event, which the validator requires to be written by a `human:`
+actor and refuses if no `questioned` precedes it. The runner gives that answer a
+deadline (600 s) and the outer controller escalates when it lapses.
+
+**This is a convention, not authentication.** The check is only that the actor
+string starts with `human:`. Nothing verifies that a person wrote it. A model
+relaying a person's words is expected to sign `human:` and name itself in
+`relayed_by`; nothing enforces that either.
+
+---
+
+## 4. The nine skills
+
+**Setting up and running the loop**
+
+| Skill | Reach for it when |
+|---|---|
+| `tmux-teams:graph-setup` | first run, or the declaration is missing/rejected — interviews until `graph.json` is complete, then validates it |
+| `tmux-teams:tmux-teams` | you are the PM: dispatch, completion detection, capture, the mailbox contract, the delivery loop |
+| `tmux-teams:codex-tmux-driver` | driving a live Codex TUI — its flags, calibrated markers, and dialog behavior |
+
+**Getting work done carefully**
+
+| Skill | Reach for it when |
+|---|---|
+| `tmux-teams:party-mode` | the umbrella: routes a request to one of the two lanes below |
+| `tmux-teams:party-auto` | executing multi-file or production-impacting work — planning, critique, file ownership, grill gate, verification, 3-model review |
+| `tmux-teams:party-advise` | advice, plan critique, tradeoff or risk review — read-only, never edits |
+| `tmux-teams:sqthink` | structured step-by-step analysis, comparison, or planning before deciding |
+
+**Getting a second opinion**
+
+| Skill | Reach for it when |
+|---|---|
+| `tmux-teams:claude-advisor` | you want Claude's strongest model — pinned to `claude-fable-5`, model identity verified via `ACP_EXPECT_MODEL` |
+| `tmux-teams:codex-advisor` | you want a read from outside the Claude family — pinned to `gpt-5.6-sol` at `ultra` |
+
+Both advisors return a round-table rather than a single voice, and both are
+read-only. Ask both on a hard call: where they disagree is the finding.
+
+---
+
+## 5. The published pages
+
+One publish writes all three pages side by side into `<repo>/.tmux-teams/`,
+linked by one nav:
+
+| Page | Answers |
+|---|---|
+| `pulse.html` | what is happening right now |
+| `graph.html` | who exists and how the loop is wired |
+| `kanban.html` | where each work item is stuck |
 
 ```bash
 node plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs once <repo>
@@ -138,150 +348,94 @@ node plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs ensure <repo> --inte
 node plugins/tmux-teams/skills/tmux-teams/scripts/kanban.mjs check <repo>
 ```
 
-KMS is separate from custody. Append one event file, or recall prior events as
-unverified leads:
+**`graph.html`** draws every declared agent exactly once inside its team —
+including the outer controller, which holds the single worker seat on its own
+control team and so is drawn once rather than as a band of its own. It shows one
+**scene** at a time:
 
-```bash
-node plugins/tmux-teams/skills/tmux-teams/scripts/kms.mjs append <repo> <event-file|->
-node plugins/tmux-teams/skills/tmux-teams/scripts/kms.mjs recall <repo> [terms...] [--worker W] [--limit N]
-```
+- **Scene 1, "Every team, drawn once"**, is deliberately still: it animates no
+  route at all, because a board where everything is moving cannot also say which
+  parts move.
+- **Each later scene is one declared workflow.** It animates that route's path,
+  and teams the route does not use fade out but keep their place, so a team a
+  route SKIPS never reads as a team that is not there. That animation is the
+  **declaration** — how work is meant to travel — not a live feed.
 
-## Skills
+Live evidence is a separate layer: a halo on any seat whose ledger status is
+`working` or stuck, and a token on the leg that delivered the work a busy team
+is holding. That layer is keyed off ledger status and **not** off which scene is
+showing, so it appears on any scene where the node is visible.
 
-| Skill | Purpose |
-|---|---|
-| `tmux-teams:tmux-teams` | PM protocol over tmux + ACP: dispatch, completion detection, capture, mailbox pattern, run memory (§9) |
-| `tmux-teams:codex-tmux-driver` | Codex TUI calibration (flags, markers, dialogs) for the codex worker lane |
-| `tmux-teams:party-mode` | Multi-agent execution/advisory workflow with an ACP-only exact-three 3-model review gate + grill gate |
-| `tmux-teams:party-auto` | Execution lane of party-mode |
-| `tmux-teams:party-advise` | Read-only advisory lane of party-mode |
-| `tmux-teams:sqthink` | Sequential-thinking analysis/planning |
-| `tmux-teams:graph-setup` | First-run interview: how many teams, and which model sits in each role of each one. Asks until the declaration is complete rather than starting a loop on blanks |
-| `tmux-teams:claude-advisor` | Read-only consultation over ACP, pinned to `claude-fable-5` at `max` and verified with `ACP_EXPECT_MODEL` — the answer comes back as a party, never one voice |
-| `tmux-teams:codex-advisor` | The same from outside the Claude family: `gpt-5.6-sol` at `ultra`. Ask both on a hard call and read the two round-tables side by side — where they disagree is the finding |
+Nodes bind to evidence by `agent_id` only, so a dispatch must set `ACP_AGENT_ID`
+to a declared id to appear. A solid edge means a record exists; a dashed edge is
+declared but unobserved. The loop-health strip reads `runner-heartbeat.json`
+before presenting the diagram, so an idle loop and a dead runner do not look the
+same. A **missing** `graph.json` falls back to the bundled default declaration
+(see §1); an **invalid** one fails the page closed with the reason. What the
+page may draw, and why, is
+`plugins/tmux-teams/skills/tmux-teams/references/loop-graph-page.md`.
 
-Commands: `/tmux-teams:mailbox-run` — run the mailbox PM workflow end to end.
+> Known conformance gap: without a verified model the current `graph.mjs`
+> renderer may print `<requested model> unconfirmed`, `default — none pinned`,
+> or `not recorded` instead of the contract's `unverified`. Those labels are not
+> verified-model evidence and must not be reported as such.
 
-## Retained measurement semantics — no direct Stage 0 command
+**`kanban.html`** draws one card per token, in the column of the team holding
+it, saying what it is waiting on. A token the pull controller refuses to move
+(its ledger cannot be believed, its last leg failed, its next team is at its WIP
+limit) is drawn as blocked with the reason — a board that draws a stuck token as
+an ordinary card is a board disagreeing with the loop it reports on.
 
-The former offline analyzer is not a user-facing entry point in this checkout.
-Its pure validation and analysis core remains because the surviving Stage 1
-exporter replays an existing observation store through those rules. It is
-separate from the custody loop above and never dispatches or routes work.
+All three pages poll only the same-origin `pulse-current.json` bundle marker
+while open. They reload only after `snapshot_id` changes, update expiry visibly
+even without a new snapshot, preserve scroll/focus/disclosures, and offer a
+keyboard-operable pause/resume control. Marker failures are shown as
+unavailable; no external request is made. `TEAM_DONE` remains separate from a
+recorded verdict: a recorded `pass` does not mean business approval or UAT
+acceptance, and a `pass` that conflicts with terminal evidence is highlighted.
 
-It models a PM outer loop around four Phase Team inner loops and their exit
-artifacts: Requirement `requirements_baseline`, Prototype
-`prototype_evaluation`, Development `development_delivery`, and QA
-`qa_release_evidence`. Routine handoffs go directly to the receiver-owned
-phase lead; the PM retains the exception, policy-conflict, and deadlock
-boundary. The final boundary is a real `QA -> ProjectDelivery` handoff carrying
-`qa_release_evidence`; its ProjectDelivery receiver owns routine acceptance
-while the PM tracks outer-loop coordination and exceptions.
+---
 
-Recorded handoff attempts are actor-authorized, event-replayed terminal
-histories whose events stay within `[slice.assigned_at, analysis_as_of]`; a
-revision proposal is strictly later than its rejected parent's terminal event.
-Canonical JSON and digests sort keys by true Unicode code-point order, not
-JavaScript UTF-16 code-unit order. The primary estimand is the per-slice mean
-by arm; raw arm totals are descriptive only. Every pre-registered guardrail is
-recorded as `PASS`, `BREACH`, or `UNKNOWN`, and any `UNKNOWN` makes `measurement_readiness`
-`INCONCLUSIVE`. Missing measured cost is explicit `null`, never zero: affected
-totals and cost comparisons remain null, while bottleneck status and readiness
-are `INCONCLUSIVE`.
+## 6. Troubleshooting
 
-Its JSON intentionally separates `measurement_readiness`, `scenario_signal`,
-`guardrail_status`, `evidence_eligibility`, `safety_hold_recommended`, and
-`decision_packet`. Deterministic, descriptive-only `bottlenecks.by_arm`
-identifies the highest coordination phase and cost category per arm.
-`scenario_signal` remains descriptive; its ROI interpretation is
-`ROI_NOT_ESTABLISHED`. `business_decision` is always `EXTERNAL_REQUIRED`, so
-the analysis cannot claim causal effect or ROI, or return
-`GO`/`ITERATE`/`NO_GO`. `READY` means measurement completeness, not accepted
-delivery, delivery success, or business approval.
-It changes none of the existing tmux/ACP dispatch, mailbox, PM verification,
-Party gates, KMS, Pulse, role-loading, cleanup, or transport semantics. The
-schemas and the Stage 1 runbook below retain the rules that the exporter still
-enforces.
+**The worker answered but the loop says it produced nothing.**
+It wrote no outbox, or wrote a file whose last line is not an exact terminal
+marker. See §3. Check `<repo>/.tmux-teams/runner-logs/<task-id>.log` — every
+dispatch keeps its adapter stderr, on purpose.
 
-## v0.7 Stage 1 — export-only evidence compatibility
+**A seat declares a non-Claude model but the dispatch fails on model mismatch.**
+As of v0.13.1 the automated loop dispatches **every** seat over the `claude` ACP
+lane, and a model declared per seat is passed only as `ACP_EXPECT_MODEL` — an
+expectation that fails the dispatch on mismatch, not a request for that model.
+Per-seat model selection is therefore declared in `graph.json` but not honored
+by the automated loop. Standalone `acp-companion.mjs` dispatches do select the
+lane and the model (see Transports).
 
-The Stage 1 entry point that remains reads an already-populated, append-only
-observation store and exports an integrity-bound review pack. This checkout
-does not create the store, freeze a pilot, assign slices, capture sources, or
-append observations. The exporter never routes or dispatches work. Its output
-is not a causal claim, certified result, release approval, ROI claim, or
-business verdict. Same-UID observations remain `advisory_same_uid`; exported
-packs remain `NOT_CERTIFIED`, require `EXTERNAL_REQUIRED`, and declare no
-actuation.
+**The runner is running but nothing dispatches.** Three refusals, each stated
+rather than silent:
+- an **invalid** `graph.json` — the reason is in `runner-heartbeat.json`. A
+  **missing** one does not refuse; it silently uses the bundled default (§1);
+- stale `pulse.json` — the runner logs `STALE` and refuses, because frozen
+  evidence is worse than none. Is `pulse.mjs watch` running?
+- a receiving team at its WIP limit — logged as `BLOCK`. That is the queue
+  working, not a fault.
 
-The store must already contain a valid frozen manifest and its event files.
-Export replays that named evidence, materializes the ITT dataset and analysis,
-and writes a new pack directory. Verification checks the pack's paths, bytes,
-digests and deterministic replay; it does not authenticate custody or identity.
+**A token stopped moving and the log says `INVALID`.** Its ledger does not
+validate; every problem is printed with its line number. Repair by **appending**
+— the file is not rewritten.
 
-From the repository root, the exact CLI is:
+**An installed copy does not have my changes.** The install cache is
+version-keyed. Bump the version, push, then run both `marketplace update` and
+`plugin update` (§1).
 
-```bash
-node plugins/tmux-teams/skills/tmux-teams/scripts/delivery-loop-export.mjs export \
-  --store <absolute-store> --out <new-absolute-pack-dir> --as-of <RFC3339> \
-  --source-revision <40-hex-git-sha>
-node plugins/tmux-teams/skills/tmux-teams/scripts/delivery-loop-export.mjs verify-pack \
-  <absolute-pack-dir>
-```
+**`node --test tests/` fails with MODULE_NOT_FOUND on Node 24.** Pass no path at
+all, or a glob like `tests/*.test.mjs`.
 
-The normative contracts are the
-[pilot manifest schema](plugins/tmux-teams/skills/tmux-teams/references/delivery-loop-pilot-manifest-v1.schema.json),
-[event schema](plugins/tmux-teams/skills/tmux-teams/references/delivery-loop-event-v1.schema.json),
-[evidence-pack schema](plugins/tmux-teams/skills/tmux-teams/references/delivery-loop-evidence-pack-v1.schema.json),
-[Pulse v4 schema](plugins/tmux-teams/skills/tmux-teams/references/pulse-v4.schema.json),
-[Pulse v3 compatibility schema](plugins/tmux-teams/skills/tmux-teams/references/pulse-v3.schema.json),
-and Thai-first
-[Stage 1 pilot runbook](plugins/tmux-teams/skills/tmux-teams/references/stage-1-pilot-runbook.md).
+---
 
-Pulse v4 is the default and keeps the same single
-`<repo>/.tmux-teams/pulse.json` SSOT. It preserves the bounded Pulse v3
-run/verdict fields and their `phase` and
-`phase_source` attributes are explicit evidence for the phase flowchart; a
-missing or untrusted attribution remains unassigned rather than being inferred
-from a task name, worker, timestamp, or apparent handoff. Existing v3 documents
-remain described by `pulse-v3.schema.json`; v4 adds the optional, closed
-`delivery_runtime` field and otherwise references the v3 definitions. The
-bounded `delivery_loop` and `delivery_runtime` inputs appear only when their
-projections are named:
+## 7. Reference
 
-```bash
-node plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs json \
-  <repo> --delivery-loop <absolute-pulse-projection.json>
-node plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs json \
-  <repo> --delivery-runtime <absolute-delivery-runtime.json>
-node plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs compat-v1 <repo>
-```
-
-`compat-v1` writes a v1 down-projection to stdout only; it does not create a
-second persisted snapshot. Pulse remains read-only and advisory. No Stage 1
-command automatically routes work, certifies evidence, emits
-`GO`/`ITERATE`/`NO_GO`, or applies a recommendation.
-
-## Governed four-phase runtime compatibility
-
-The Phase Gate runtime is opt-in and separate from both the custody loop and
-the observe-only Stage 1 exporter. `phase-gate-controller.mjs` and its
-supporting modules are the executable surface in this checkout. An older Phase
-Gate Runtime v1 design note remains under `references/`, but its POC and
-`scenario_signal` passages describe the earlier demonstration, not a command
-or field produced by the current Phase Gate modules; it is not an operational
-guide for this checkout.
-When `<repo>/.tmux-teams/phase-gate.json` exists, `acp-companion.mjs` requires
-the controller's exact reservation environment before it reads the brief or
-starts a child.
-
-The runtime has Requirement → Prototype → Development → QA Phase Teams.
-`QA -> ProjectDelivery` ends at a receiver: ProjectDelivery is not Phase 5 and
-does not imply release, UAT, certification, ROI, or business approval. This
-checkout ships no full-loop demonstration command, so the reference and
-controller modules must not be presented as a one-command POC.
-
-## Transports
+### Transports
 
 The mailbox contract (brief in → `.mailbox-out/<id>` outbox +
 `TEAM_DONE`/`TEAM_BLOCKED`/`TEAM_FAILED` out → PM adversarial verify) is
@@ -304,14 +458,6 @@ node plugins/tmux-teams/skills/tmux-teams/scripts/acp-companion.mjs \
   codex <repo> <task-id> <brief-file> [stall-sec]
 ```
 
-Codex model selection is per dispatch: set `ACP_MODEL` and
-`ACP_REASONING_EFFORT` to have the companion call the standard ACP
-`session/set_config_option` method after `session/new` or `session/load`.
-The returned config options are verified before prompt delivery; an
-unadvertised or rejected value fails closed. `ACP_EXPECT_MODEL` and
-`ACP_EXPECT_REASONING_EFFORT` can be supplied as explicit identity witnesses,
-and otherwise the selected values are used as the expectations.
-
 The optional duration is an inactivity/stall lease, not a total task timeout;
 there is no wall-clock ceiling unless `ACP_HARD_TIMEOUT_SEC>0` is set. ACP
 liveness snapshots use the exact `acp-liveness.v1` contract, and Codex defaults
@@ -331,6 +477,7 @@ cancel ACK, attempted/delivered TERM/KILL, child exit code/signal, child-settlem
 signal delivery, and descendant-only cleanup delivery separate. A clean child
 exit 0 remains `cancelled` when only the remaining descendant group needed
 cleanup; descendant cleanup never turns that settlement into `stalled`/forced.
+
 Each dispatch also commits one immutable, no-replace
 `.tmux-teams/receipts/<dispatch_id>.json` operation receipt, described by
 `plugins/tmux-teams/skills/tmux-teams/references/acp-session-receipt-v1.schema.json`.
@@ -361,28 +508,76 @@ receipt tombstone when publication is possible.
 See `plugins/tmux-teams/skills/tmux-teams/SKILL.md` §6-§8 for the contract,
 tmux lane, and ACP lane.
 
-## Pulse v4 and the three projections
+### The components, in operating order
 
-Pulse probes transport liveness and writes
-`<repo>/.tmux-teams/pulse.json`, the machine-readable Pulse SSOT. One publish
-also writes `pulse.html`, `graph.html`, `kanban.html`, their local assets, and
-`pulse-current.json` last. The graph additionally reads the validated workflow
-declaration and custody ledgers; the kanban reads those same ledgers through the
-same placement rule as the pull controller.
+| Component | Responsibility |
+|---|---|
+| `graph.mjs` + `workflow-graph.mjs` | create and validate `.tmux-teams/graph.json`: teams are reusable pools; workflows own routes |
+| `ledger-writer.mjs` + `ledger-validate.mjs` | append and judge one custody history per token; invalid history stops movement |
+| `pull-controller.mjs` | plan receiver-owned handoffs and enforce WIP; it pulls only reviewed work |
+| `loop-runner.mjs` | run one ordered tick: harvest → pull → dispatch → escalate, and stamp the runner heartbeat |
+| `acp-companion.mjs` | carry each dispatched leg over ACP; its custody-ledger authority is limited to that leg's `assigned` and `delivered` facts |
+| `pulse.mjs` + `graph.mjs` + `kanban.mjs` | publish three projections from the same declaration and evidence |
+| `kms.mjs` | keep immutable run-memory events; it is an event store, not a verification gate |
+
+What the front door has learned, read by the controller on every withdrawal:
+
+```bash
+node -e "import('plugins/tmux-teams/skills/tmux-teams/scripts/intake-stats.mjs').then(m => console.log(m.intakeStats('<repo>')))"
+```
+
+KMS is separate from custody. Append one event file, or recall prior events as
+unverified leads:
+
+```bash
+node plugins/tmux-teams/skills/tmux-teams/scripts/kms.mjs append <repo> <event-file|->
+node plugins/tmux-teams/skills/tmux-teams/scripts/kms.mjs recall <repo> [terms...] [--worker W] [--limit N]
+```
+
+### Pulse v4 and the offline bundle
+
+Pulse probes transport liveness and writes `<repo>/.tmux-teams/pulse.json`, the
+machine-readable Pulse SSOT. One publish also writes `pulse.html`, `graph.html`,
+`kanban.html`, their local assets, and `pulse-current.json` last. The graph
+additionally reads the validated workflow declaration and custody ledgers; the
+kanban reads those same ledgers through the same placement rule as the pull
+controller.
 
 ```bash
 node plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs json <repo>
 ```
 
-`json` publishes and prints the exact persisted Pulse v4 document. Its contract is
-`plugins/tmux-teams/skills/tmux-teams/references/pulse-v4.schema.json`; its
-run/verdict definitions retain Pulse v3 compatibility through
-`pulse-v3.schema.json`. It
-includes snapshot identity/freshness, source diagnostics, run state,
-`dispatch_id` correlation, and explicit phase attribution. Pulse is read-only and reports
-`trust_level: advisory_same_uid`; suggested action codes are advisory and are
-never executed automatically. See
+`json` publishes and prints the exact persisted Pulse v4 document. Its contract
+is
+[Pulse v4 schema](plugins/tmux-teams/skills/tmux-teams/references/pulse-v4.schema.json);
+its run/verdict definitions retain Pulse v3 compatibility through
+[Pulse v3 compatibility schema](plugins/tmux-teams/skills/tmux-teams/references/pulse-v3.schema.json).
+It includes snapshot identity/freshness, source diagnostics, run state,
+`dispatch_id` correlation, and explicit phase attribution. Pulse is read-only
+and reports `trust_level: advisory_same_uid`; suggested action codes are
+advisory and are never executed automatically. See
 `plugins/tmux-teams/skills/tmux-teams/SKILL.md` §10.
+
+Pulse v4 is the default and keeps the same single
+`<repo>/.tmux-teams/pulse.json` SSOT. It preserves the bounded Pulse v3
+run/verdict fields, and their `phase` and `phase_source` attributes are explicit
+evidence for the phase flowchart; a missing or untrusted attribution remains
+unassigned rather than being inferred from a task name, worker, timestamp, or
+apparent handoff. Existing v3 documents remain described by
+`pulse-v3.schema.json`; v4 adds the optional, closed `delivery_runtime` field
+and otherwise references the v3 definitions. The bounded `delivery_loop` and
+`delivery_runtime` inputs appear only when their projections are named:
+
+```bash
+node plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs json \
+  <repo> --delivery-loop <absolute-pulse-projection.json>
+node plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs json \
+  <repo> --delivery-runtime <absolute-delivery-runtime.json>
+node plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs compat-v1 <repo>
+```
+
+`compat-v1` writes a v1 down-projection to stdout only; it does not create a
+second persisted snapshot.
 
 The canonical offline bundle contains `<repo>/.tmux-teams/pulse.json`,
 `pulse.html`, `graph.html`, `kanban.html`, and their sibling
@@ -390,66 +585,19 @@ The canonical offline bundle contains `<repo>/.tmux-teams/pulse.json`,
 contains the bundled Kanit WOFF2 data URLs. `graph.html` draws its board from a
 JSON block in the page with a small inline script — pan, wheel-zoom and one
 scene per workflow; the other pages are plain document flow. No charting library
-is vendored or loaded. The shared assets
-are atomically published before the JSON and HTML pages and are not rewritten
-when their content is unchanged. No view loads a remote asset; while served,
-the refresh script polls only same-origin siblings. Keep every named sibling
-together for offline bundle identity.
-`<repo>/.tmux-teams/pulse-current.json` is the bundle commit marker written
-last. It names and hashes the JSON, every HTML page, the font stylesheet and
-the refresh script;
-readers can reject a mixed/partial publish
-by validating those hashes and re-reading the marker after the files.
+is vendored or loaded. The shared assets are atomically published before the
+JSON and HTML pages and are not rewritten when their content is unchanged. No
+view loads a remote asset; while served, the refresh script polls only
+same-origin siblings. Keep every named sibling together for offline bundle
+identity. `<repo>/.tmux-teams/pulse-current.json` is the bundle commit marker
+written last. It names and hashes the JSON, every HTML page, the font stylesheet
+and the refresh script; readers can reject a mixed/partial publish by validating
+those hashes and re-reading the marker after the files.
 
-`graph.html` answers who exists and how the loop is wired. Every declared agent
-appears exactly once inside its team — including the outer controller, which
-holds the single worker seat on its own control team and so is drawn once rather
-than as a band of its own. The board opens whole, then walks one workflow at a
-time: teams a route does not use fade out and keep their place, so a team a
-route SKIPS never reads as a team that is not there. It needs JavaScript; the
-same declaration is in `graph.json` and the same evidence in `pulse.json`. What
-the page may draw, and why, is
-`plugins/tmux-teams/skills/tmux-teams/references/loop-graph-page.md`.
-The governing contract requires each node to state the same five facts: agent
-id; role, lane and transport; verified model or `unverified`; ledger-recorded
-work; and a measured clock or `not started`. The declared model is the model
-requested, not evidence of the model that answered.
-
-The current `graph.mjs` renderer has a known conformance gap: without a verified
-model it may print `<requested model> unconfirmed`, `default — none pinned`, or
-`not recorded` instead of the contract's `unverified`. Those labels are not
-verified-model evidence and must not be reported as such.
-
-Topology comes from `<repo>/.tmux-teams/graph.json` validated by the Team
-contract, or from the bundled four-team template when that file is absent; an
-**invalid** file fails the page closed with the reason rather than falling back.
-Nodes bind to evidence by `agent_id` only, so a dispatch must set
-`ACP_AGENT_ID` to a declared id to appear. A solid edge means a record exists;
-a dashed edge is declared but unobserved. The loop-health strip reads
-`runner-heartbeat.json` before presenting the diagram, so an idle loop and a
-dead runner do not look the same. Use the bundled `graph-setup` skill, or the
-exact `graph.mjs init|check <repo>` commands above, to declare a repo's loop.
-
-`kanban.html` answers where the work is now — one card per token, in the
-column of the team holding it, saying what it is waiting on. A token the pull
-controller refuses to move (its ledger cannot be believed, its last leg failed,
-its next team is at its WIP limit) is drawn as blocked with the reason, because
-a board that draws a stuck token as an ordinary card is a board disagreeing with
-the loop it reports on.
-
-`TEAM_DONE` remains separate from a recorded verdict.
-A recorded `pass` does not mean business approval or UAT acceptance, and a
-`pass` that conflicts with terminal evidence is highlighted for attention.
-All three pages poll only the same-origin `pulse-current.json` bundle marker while
-open. They reload only after `snapshot_id` changes, update expiry visibly even
-without a new snapshot, preserve page/flow scroll, focus, and disclosures, and
-offer a keyboard-operable pause/resume control. Marker failures are shown as
-unavailable; no external request is made.
-
-Human-visible absolute timestamps default to `Asia/Bangkok`. The page shows
-the timezone once in its top-right header (`เวลาไทย (UTC+7)` for the default)
-instead of repeating it beside every timestamp. Configure another IANA zone
-for one command or a watcher with `--time-zone`, or set `PULSE_TIME_ZONE`:
+Human-visible absolute timestamps default to `Asia/Bangkok`. The page shows the
+timezone once in its top-right header (`เวลาไทย (UTC+7)` for the default)
+instead of repeating it beside every timestamp. Configure another IANA zone for
+one command or a watcher with `--time-zone`, or set `PULSE_TIME_ZONE`:
 
 ```bash
 PULSE_TIME_ZONE=America/New_York \
@@ -463,35 +611,114 @@ fails with exit 2, and changing the zone of a running watcher requires stopping
 that watcher first. Pulse Data v4 continues to publish machine timestamps as
 RFC 3339 UTC; display timezone configuration never changes the JSON contract.
 
-## Install
+### Retained measurement semantics — no direct Stage 0 command
+
+The former offline analyzer is not a user-facing entry point in this checkout.
+Its pure validation and analysis core remains because the surviving Stage 1
+exporter replays an existing observation store through those rules. It is
+separate from the custody loop above and never dispatches or routes work.
+
+It models a PM outer loop around four Phase Team inner loops and their exit
+artifacts: Requirement `requirements_baseline`, Prototype
+`prototype_evaluation`, Development `development_delivery`, and QA
+`qa_release_evidence`. Routine handoffs go directly to the receiver-owned
+phase lead; the PM retains the exception, policy-conflict, and deadlock
+boundary. The final boundary is a real `QA -> ProjectDelivery` handoff carrying
+`qa_release_evidence`; its ProjectDelivery receiver owns routine acceptance
+while the PM tracks outer-loop coordination and exceptions.
+
+Recorded handoff attempts are actor-authorized, event-replayed terminal
+histories whose events stay within `[slice.assigned_at, analysis_as_of]`; a
+revision proposal is strictly later than its rejected parent's terminal event.
+Canonical JSON and digests sort keys by true Unicode code-point order, not
+JavaScript UTF-16 code-unit order. The primary estimand is the per-slice mean
+by arm; raw arm totals are descriptive only. Every pre-registered guardrail is
+recorded as `PASS`, `BREACH`, or `UNKNOWN`, and any `UNKNOWN` makes
+`measurement_readiness` `INCONCLUSIVE`. Missing measured cost is explicit
+`null`, never zero: affected totals and cost comparisons remain null, while
+bottleneck status and readiness are `INCONCLUSIVE`.
+
+Its JSON intentionally separates `measurement_readiness`, `scenario_signal`,
+`guardrail_status`, `evidence_eligibility`, `safety_hold_recommended`, and
+`decision_packet`. Deterministic, descriptive-only `bottlenecks.by_arm`
+identifies the highest coordination phase and cost category per arm.
+`scenario_signal` remains descriptive; its ROI interpretation is
+`ROI_NOT_ESTABLISHED`. `business_decision` is always `EXTERNAL_REQUIRED`, so
+the analysis cannot claim causal effect or ROI, or return
+`GO`/`ITERATE`/`NO_GO`. `READY` means measurement completeness, not accepted
+delivery, delivery success, or business approval.
+It changes none of the existing tmux/ACP dispatch, mailbox, PM verification,
+Party gates, KMS, Pulse, role-loading, cleanup, or transport semantics. The
+schemas and the Stage 1 runbook below retain the rules that the exporter still
+enforces.
+
+### v0.7 Stage 1 — export-only evidence compatibility
+
+The Stage 1 entry point that remains reads an already-populated, append-only
+observation store and exports an integrity-bound review pack. This checkout
+does not create the store, freeze a pilot, assign slices, capture sources, or
+append observations. The exporter never routes or dispatches work. Its output
+is not a causal claim, certified result, release approval, ROI claim, or
+business verdict. Same-UID observations remain `advisory_same_uid`; exported
+packs remain `NOT_CERTIFIED`, require `EXTERNAL_REQUIRED`, and declare no
+actuation.
+
+The store must already contain a valid frozen manifest and its event files.
+Export replays that named evidence, materializes the ITT dataset and analysis,
+and writes a new pack directory. Verification checks the pack's paths, bytes,
+digests and deterministic replay; it does not authenticate custody or identity.
+
+From the repository root, the exact CLI is:
 
 ```bash
-claude plugin marketplace add iicmaster/tmux-teams
-claude plugin install tmux-teams@tmux-teams
+node plugins/tmux-teams/skills/tmux-teams/scripts/delivery-loop-export.mjs export \
+  --store <absolute-store> --out <new-absolute-pack-dir> --as-of <RFC3339> \
+  --source-revision <40-hex-git-sha>
+node plugins/tmux-teams/skills/tmux-teams/scripts/delivery-loop-export.mjs verify-pack \
+  <absolute-pack-dir>
 ```
 
-Authenticate `gh`/git first if your GitHub setup requires it. Installation uses
-the latest pushed marketplace version; changing a checkout or bumping its
-manifest does not update an installed copy. After a release is pushed, run
-`claude plugin marketplace update tmux-teams` followed by
-`claude plugin update tmux-teams@tmux-teams`.
+The normative contracts are the
+[pilot manifest schema](plugins/tmux-teams/skills/tmux-teams/references/delivery-loop-pilot-manifest-v1.schema.json),
+[event schema](plugins/tmux-teams/skills/tmux-teams/references/delivery-loop-event-v1.schema.json),
+[evidence-pack schema](plugins/tmux-teams/skills/tmux-teams/references/delivery-loop-evidence-pack-v1.schema.json),
+and Thai-first
+[Stage 1 pilot runbook](plugins/tmux-teams/skills/tmux-teams/references/stage-1-pilot-runbook.md).
+No Stage 1 command automatically routes work, certifies evidence, emits
+`GO`/`ITERATE`/`NO_GO`, or applies a recommendation.
 
-## Prerequisites
+### Governed four-phase runtime compatibility
 
-- `tmux`, and the `codex` CLI for the worker lane; Node 20+ with `npx` for
-  the ACP adapters. CI exercises Node 20 and Node 24.
-- party-mode's 3-model review uses its bundled JavaScript ACP gate
-  (`plugins/tmux-teams/skills/party-mode/scripts/review-gate.mjs`), not
-  `oc`/AGY/Codex review
-  plugins or MCP review tools. On Linux it fails closed without
-  `/usr/bin/bwrap`. It also needs the supported ACP reviewer runtimes:
-  `antigravity-acp@1.0.0` + trusted `agy`, native `kimi acp`, and the pinned
-  Claude/Codex ACP adapters. Zai must use the explicit official
-  `https://api.z.ai/api/anthropic` settings route. AGY plus exactly two valid,
-  distinct reviewers are mandatory, and unsupported primary routes fail closed.
-  While the direct Claude provider is limited, the policy never launches it:
-  `claude-zai` resolves to the pinned Zai GLM-5.2 ACP profile and is accepted
-  only when it does not duplicate a reviewer/model or match the primary family.
+The Phase Gate runtime is opt-in and separate from both the custody loop and
+the observe-only Stage 1 exporter. `phase-gate-controller.mjs` and its
+supporting modules are the executable surface in this checkout. An older Phase
+Gate Runtime v1 design note remains under `references/`, but its POC and
+`scenario_signal` passages describe the earlier demonstration, not a command
+or field produced by the current Phase Gate modules; it is not an operational
+guide for this checkout.
+When `<repo>/.tmux-teams/phase-gate.json` exists, `acp-companion.mjs` requires
+the controller's exact reservation environment before it reads the brief or
+starts a child.
+
+The runtime has Requirement → Prototype → Development → QA Phase Teams.
+`QA -> ProjectDelivery` ends at a receiver: ProjectDelivery is not Phase 5 and
+does not imply release, UAT, certification, ROI, or business approval. This
+checkout ships no full-loop demonstration command, so the reference and
+controller modules must not be presented as a one-command POC.
+
+### The party-mode review gate
+
+party-mode's 3-model review uses its bundled JavaScript ACP gate
+(`plugins/tmux-teams/skills/party-mode/scripts/review-gate.mjs`), not `oc`/AGY/
+Codex review plugins or MCP review tools. On Linux it fails closed without
+`/usr/bin/bwrap`. It also needs the supported ACP reviewer runtimes:
+`antigravity-acp@1.0.0` + trusted `agy`, native `kimi acp`, and the pinned
+Claude/Codex ACP adapters. Zai must use the explicit official
+`https://api.z.ai/api/anthropic` settings route. AGY plus exactly two valid,
+distinct reviewers are mandatory, and unsupported primary routes fail closed.
+While the direct Claude provider is limited, the policy never launches it:
+`claude-zai` resolves to the pinned Zai GLM-5.2 ACP profile and is accepted
+only when it does not duplicate a reviewer/model or match the primary family.
 
 Run the gate from a trusted workflow with the target repository as a separate,
 runner-owned absolute argument; never take it from the untrusted packet:
@@ -512,17 +739,22 @@ read only for copied provider-runtime documentation under its isolated
 `builtin/` tree; target, arbitrary, search, fetch, edit, and execute calls
 remain blocked.
 
-## Update lifecycle (this repo IS canonical — flipped 2026-07-21)
+---
+
+## 8. Update lifecycle (this repo IS canonical — flipped 2026-07-21)
 
 Skill content lives here, in `plugins/tmux-teams/skills/` — edit it directly.
 `~/agent-skills` vendors this repo as the submodule `plugins/tmux-teams`, has
-deleted its standalone copies of all six bundled skills, and uses the submodule
-as the source for its OpenClaw bridge. Codex and Claude load their own
+deleted its standalone copies of the bundled skills, and uses the submodule as
+the source for its OpenClaw bridge. Codex and Claude load their own
 version-keyed plugin caches.
 
 1. Edit the skill under `plugins/tmux-teams/skills/` and commit here.
-2. Bump the version in BOTH `plugins/tmux-teams/.claude-plugin/plugin.json`
-   and `.claude-plugin/marketplace.json` (the test asserts they match).
+2. Bump the version in **all three** places:
+   `.claude-plugin/marketplace.json` (twice — `metadata.version` and
+   `plugins[0].version`), `plugins/tmux-teams/.claude-plugin/plugin.json`, and
+   `RELEASE_VERSION` in `tests/plugin-structure.test.mjs`. That test is the only
+   thing checking they agree, so it has to state the number itself.
 3. For the repository-only development tier, run `node scripts/run-fast.mjs fast`.
    The release gate remains bare `node --test`; then run `git diff --check` and
    the local-only `claude plugin validate --strict .` release gate.
@@ -535,6 +767,11 @@ secrets on Node 20 and Node 24. Strict plugin validation remains a local release
 gate because the Claude CLI is not provisioned in CI. Pass no path:
 `node --test tests/` fails on Node 24.
 
-Note: `~/.claude/skills` no longer carries these six skills (they are
+Note: `~/.claude/skills` no longer carries these skills (they are
 plugin-delivered; `agent-skills/scripts/sync.sh` purges them from the tool
 skill roots since the 2026-07-21 flip).
+
+### Tracked files
+
+Only release and plugin files are tracked: `.github/`, `.claude-plugin/`,
+`.gitignore`, `plugins/`, `tests/`, `scripts/`, `README.md`, and `CLAUDE.md`.
