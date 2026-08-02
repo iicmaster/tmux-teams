@@ -4,7 +4,8 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  REVIEW_PROFILES, buildAcpLaunch, buildProfileEnv, loadProfileSettings, normalizePrimaryFamily,
+  REVIEW_PROFILES, assertPermittedModel, buildAcpLaunch, buildProfileEnv, loadProfileSettings,
+  normalizePrimaryFamily,
 } from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
 import {
   ROUTES, UNAVAILABLE_RESERVE_SUBSTITUTES, createReviewPlan, findingFingerprint, planFallback, synthesizeReviews, validateReviewOutput,
@@ -31,6 +32,24 @@ const blocked = {
 }
 const object = (entries) => Object.fromEntries(entries)
 
+// The negative control for the rule, not a restatement of the pin. Asserting
+// that `agy.model` equals the right string is what the suite already did while
+// the string was the forbidden one — a value test cannot tell a pin from a
+// violation. These cases fail if the guard stops rejecting Gemini 3.1.
+test('a Gemini 3.1 reviewer model is refused rather than run', () => {
+  for (const name of [
+    'gemini-3.1-pro-high', 'gemini-3.1-pro', 'Gemini 3.1', 'agy/gemini_3.1-flash',
+  ]) {
+    assert.throws(() => assertPermittedModel(name, 'probe'), /Gemini 3\.1 is prohibited/, name)
+  }
+  for (const name of ['gemini-3.6-flash-high', 'gemini-3.10-pro', 'gpt-5.6-sol', null]) {
+    assert.equal(assertPermittedModel(name, 'probe'), name)
+  }
+  for (const profile of Object.values(REVIEW_PROFILES)) {
+    assert.doesNotThrow(() => assertPermittedModel(profile.config?.model, profile.id))
+  }
+})
+
 test('immutable ACP profiles pin providers, models, argv, and AGY plan mode', () => {
   assert.ok(Object.isFrozen(REVIEW_PROFILES))
   assert.deepEqual(REVIEW_PROFILES.agy.command, ['bunx', 'antigravity-acp@1.0.0'])
@@ -38,7 +57,7 @@ test('immutable ACP profiles pin providers, models, argv, and AGY plan mode', ()
   assert.deepEqual(REVIEW_PROFILES.zai.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
   assert.deepEqual(REVIEW_PROFILES.claude.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
   assert.deepEqual(REVIEW_PROFILES.codex.command, ['npx', '-y', '@agentclientprotocol/codex-acp@1.1.7'])
-  assert.deepEqual(REVIEW_PROFILES.agy.config, { model: 'gemini-3.1-pro-high', mode: 'plan' })
+  assert.deepEqual(REVIEW_PROFILES.agy.config, { model: 'gemini-3.6-flash-high', mode: 'plan' })
   assert.deepEqual(REVIEW_PROFILES.kimi.config, { model: 'kimi-code/k3', mode: 'plan' })
   assert.equal(REVIEW_PROFILES.kimi.displayModel, 'kimi/k3')
   assert.deepEqual(REVIEW_PROFILES.zai.config, { model: 'glm-5.2', mode: 'plan' })
@@ -216,7 +235,7 @@ test('environment is allowlisted, provider-scoped, and launch settings are injec
     agyBinaryResolver: () => '/trusted/agy',
   })
   assert.deepEqual(launch.command, ['bunx', 'antigravity-acp@1.0.0'])
-  assert.deepEqual(launch.settings, { mode: 'plan', transport: 'acp', model: 'gemini-3.1-pro-high' })
+  assert.deepEqual(launch.settings, { mode: 'plan', transport: 'acp', model: 'gemini-3.6-flash-high' })
   assert.equal(launch.env.AGY_BIN, '/trusted/agy')
   assert.equal(launch.env.AGY_SKIP_DOWNLOAD, '1')
   assert.throws(() => loadProfileSettings('agy', () => 'bad'), /must return an object/)

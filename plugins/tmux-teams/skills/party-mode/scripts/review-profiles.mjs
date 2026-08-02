@@ -33,10 +33,10 @@ function freeze(value) {
 
 export const REVIEW_PROFILES = freeze({
   agy: {
-    id: 'agy', provider: 'google-antigravity', family: 'gemini', model: 'gemini-3.1-pro-high',
-    displayModel: 'agy/gemini-3.1-pro-high',
+    id: 'agy', provider: 'google-antigravity', family: 'gemini', model: 'gemini-3.6-flash-high',
+    displayModel: 'agy/gemini-3.6-flash-high',
     reviewMode: 'plan', osSandbox: 'bwrap', command: ['bunx', 'antigravity-acp@1.0.0'],
-    config: { model: 'gemini-3.1-pro-high', mode: 'plan' },
+    config: { model: 'gemini-3.6-flash-high', mode: 'plan' },
   },
   kimi: {
     id: 'kimi', provider: 'kimi', family: 'kimi', model: 'kimi-code/k3', displayModel: 'kimi/k3',
@@ -74,6 +74,27 @@ export const REVIEW_PROFILES = freeze({
     },
   },
 })
+
+// CLAUDE.md forbids Gemini 3.1 on every tmux-teams AGY route and says to fail
+// closed on one. Until now the rule lived only in the pin above, which means it
+// was enforced by whoever edited that line next: v0.13.1 shipped
+// `gemini-3.1-pro-high` here with a test asserting the forbidden value was
+// correct, and nothing compared either against the rule. This throws at import.
+const PROHIBITED_MODEL = /(?:^|[^0-9a-z])gemini[-_ ]?3\.1(?:[^0-9]|$)/i
+
+/** Reject a prohibited reviewer model rather than quietly running it. */
+export function assertPermittedModel(model, where) {
+  if (typeof model === 'string' && PROHIBITED_MODEL.test(model)) {
+    throw new Error(`${where}: Gemini 3.1 is prohibited on tmux-teams review routes, got ${model}`)
+  }
+  return model
+}
+
+for (const profile of Object.values(REVIEW_PROFILES)) {
+  assertPermittedModel(profile.model, `review profile ${profile.id}`)
+  assertPermittedModel(profile.displayModel, `review profile ${profile.id} displayModel`)
+  assertPermittedModel(profile.config?.model, `review profile ${profile.id} config`)
+}
 
 const aliases = new Map([
   ['openai', 'openai'], ['codex', 'openai'], ['gpt', 'openai'],

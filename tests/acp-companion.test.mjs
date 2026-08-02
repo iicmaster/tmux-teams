@@ -13,6 +13,13 @@ import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const COMPANION = join(HERE, '..', 'plugins', 'tmux-teams', 'skills', 'tmux-teams', 'scripts', 'acp-companion.mjs')
+// Cancellation-ladder deliveries only. Descendant cleanup after the child has
+// already settled is a separate fact by contract (README: "keeps … descendant-
+// only cleanup delivery separate"), and it has nothing to wait for — demanding
+// a `grace` step in front of it is a claim the system never made. The old
+// pattern had no `(cancel)` clause, so it caught both and failed on a clean
+// tree at v0.13.1.
+const CANCEL_LADDER_SIGNAL = /signal (SIGTERM|SIGKILL) (?:direct-child|process-group) delivered \(cancel\)/g
 const MOCK = join(HERE, 'fixtures', 'mock-acp-agent.mjs')
 const LIVENESS_FIXTURE = join(HERE, 'fixtures', 'acp-liveness-v1.json')
 const STARTUP_FIXTURE = join(HERE, 'fixtures', 'acp-liveness-v1-startup.json')
@@ -1515,8 +1522,8 @@ test('controller signal after exact load response fences the pre-receipt barrier
   const graceIndex = controlText.indexOf('grace')
   assert.ok(cancelIndex >= 0)
   if (graceIndex >= 0) assert.ok(graceIndex > cancelIndex, controlText)
-  const processSignalMatches = [...controlText.matchAll(/signal (SIGTERM|SIGKILL) (?:direct-child|process-group) delivered/g)]
-  if (processSignalMatches.length > 0) assert.ok(graceIndex >= 0 && processSignalMatches[0].index > graceIndex)
+  const processSignalMatches = [...controlText.matchAll(CANCEL_LADDER_SIGNAL)]
+  if (processSignalMatches.length > 0) assert.ok(graceIndex >= 0 && processSignalMatches[0].index > graceIndex, controlText)
 })
 
 test('controller signal during an in-progress tool is cancel-first and leaves no descendant', async () => {
@@ -1536,9 +1543,9 @@ test('controller signal during an in-progress tool is cancel-first and leaves no
   const controlText = readFileSync(control, 'utf8')
   assert.ok(controlText.indexOf('session/cancel') >= 0)
   assert.ok(controlText.indexOf('grace') > controlText.indexOf('session/cancel'))
-  const processSignalMatches = [...controlText.matchAll(/signal (SIGTERM|SIGKILL) (?:direct-child|process-group) delivered/g)]
+  const processSignalMatches = [...controlText.matchAll(CANCEL_LADDER_SIGNAL)]
   const processSignalIndex = processSignalMatches.length ? processSignalMatches[0].index : -1
-  assert.ok(processSignalIndex > controlText.indexOf('grace'))
+  assert.ok(processSignalIndex > controlText.indexOf('grace'), controlText)
   assert.ok(controlText.includes('controller signal SIGTERM'))
   assert.ok(controlText.includes('controller signal SIGINT'))
   const event = eventTexts(cwd)[0]

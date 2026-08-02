@@ -103,9 +103,17 @@ SSOT for this and for everything `graph.html` may draw.
    until the test caught it.
 3. Run `node --test`, `git diff --check`, and
    `claude plugin validate --strict .` locally. `tests/acp-companion.test.mjs`
-   has a timing flake under a full-suite run — a DIFFERENT test name fails each
-   time. Re-run that file alone (expect 120/120) and the full suite again
-   before treating it as a regression.
+   was long treated as a timing flake — "a different name each time, re-run it
+   alone and expect 120/120". **That clause was false**, and it let a real
+   failure be dismissed for an unknown number of releases: on a clean tree at
+   v0.13.1 `controller signal after exact load response fences the pre-receipt
+   barrier` failed alone, twice in a row. Cause: the cancellation ladder and
+   post-settlement descendant cleanup wrote the SAME control-log line, so a test
+   demanded a `grace` step in front of a sweep that has nothing to wait for.
+   Both now carry `(cancel)` / `(reap)`; the file is 123/123. Treat any failure
+   there as OPEN — never as noise. The clause survived because nothing ever
+   compared it against a run, which is the failure mode this repo exists to
+   make impossible.
 4. Push (confirm with Master first — see Rules), then
    `claude plugin marketplace update tmux-teams` and
    `claude plugin update tmux-teams@tmux-teams` (install cache is version-keyed).

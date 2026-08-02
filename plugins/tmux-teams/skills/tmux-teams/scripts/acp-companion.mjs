@@ -2422,9 +2422,17 @@ async function waitForTestGate(stage) {
   recordTestStage(`${stage}-released`)
 }
 
-function signalProcessGroup(signal) {
+// `phase` names which ladder delivered the signal. The receipt has kept
+// child-settlement and descendant-only cleanup in separate fields all along
+// (README: "keeps … descendant-only cleanup delivery separate"), but the control
+// log wrote one identical line for both, so nothing reading it could tell a
+// cancellation from a post-settlement sweep. A test then required the `grace`
+// step in front of every delivered signal — impossible for a sweep, whose child
+// is already gone — and failed on a clean tree at v0.13.1.
+function signalProcessGroup(signal, phase = 'cancel') {
   const result = { delivered: false, childDelivered: false }
   if (!agent?.pid || agent.pid <= 0) return result
+  const note = (target) => appendControlEvent(`signal ${signal} ${target} delivered (${phase})`)
   // A successful direct child kill is the only positive child-settlement
   // signal fact. A process-group kill can succeed solely because a descendant
   // remains after the child has already exited.
@@ -2432,26 +2440,26 @@ function signalProcessGroup(signal) {
     process.kill(agent.pid, signal)
     result.delivered = true
     result.childDelivered = true
-    appendControlEvent(`signal ${signal} direct-child delivered`)
+    note('direct-child')
   } catch {}
   try {
     process.kill(-agent.pid, signal)
     result.delivered = true
-    appendControlEvent(`signal ${signal} process-group delivered`)
+    note('process-group')
   } catch {
     for (const pid of groupPids(agent.pid)) {
       try {
         process.kill(pid, signal)
         result.delivered = true
         if (pid === agent.pid) result.childDelivered = true
-        appendControlEvent(`signal ${signal} ${pid === agent.pid ? 'direct-child' : 'process-group'} delivered`)
+        note(pid === agent.pid ? 'direct-child' : 'process-group')
       } catch {}
     }
     try {
       if (agent.kill(signal)) {
         result.delivered = true
         result.childDelivered = true
-        appendControlEvent(`signal ${signal} direct-child delivered`)
+        note('direct-child')
       }
     } catch {}
   }
@@ -2517,10 +2525,10 @@ async function closeAndReapChild({ signalIfNeeded = true, closeGraceMs = process
   const reapSignal = (signal, message) => {
     forcedAttempted = true
     forcedReapAttempted = true
-    appendControlEvent(`signal ${signal}`)
+    appendControlEvent(`signal ${signal} (reap)`)
     console.error(message)
     const childSettledBeforeSignal = Boolean(agentClosed || agentExitResult)
-    const signalResult = signalProcessGroup(signal)
+    const signalResult = signalProcessGroup(signal, 'reap')
     if (signalResult.delivered) {
       forcedReapDelivered = true
       if (signalResult.childDelivered && !childSettledBeforeSignal) {
@@ -2820,10 +2828,10 @@ function sendTerminationSignal(signal) {
     if (terminationAttempted) return false
     terminationAttempted = true
   }
-  appendControlEvent(`signal ${signal}`)
+  appendControlEvent(`signal ${signal} (cancel)`)
   console.error(`[cancel] signal ${signal}`)
   const childSettledBeforeSignal = Boolean(agentClosed || agentExitResult)
-  const signalResult = signalProcessGroup(signal)
+  const signalResult = signalProcessGroup(signal, 'cancel')
   if (signalResult.delivered) recordTestStage('process-signal')
   if (signalResult.childDelivered && !childSettledBeforeSignal) {
     childSettlementSignalDelivered = true
