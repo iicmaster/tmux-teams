@@ -167,7 +167,7 @@ function activityTotal(row) {
 test('a real ACP route reaches audit and leaves coherent ledger, snapshot, and projection evidence', async () => {
   const repo = makeRepo()
   const inherited = Object.fromEntries([
-    'ACP_AGENT_ID', 'ACP_CMD', 'ACP_EXPECT_MODEL', 'ACP_EXPECT_REASONING_EFFORT',
+    'ACP_AGENT_ID', 'ACP_CMD', 'ACP_MODEL', 'ACP_EXPECT_MODEL', 'ACP_EXPECT_REASONING_EFFORT', 'TMUX_TEAMS_ACP_CMD',
     'ACP_CANCEL_GRACE_MS', 'ACP_HARD_TIMEOUT_SEC', 'ACP_KMS_AUTO', 'ACP_PROCESS_KILL_GRACE_MS', 'ACP_RESUME', 'ACP_SESSION_OPERATION',
     'ACP_SESSION_RECEIPT_REQUIRED', 'ACP_STALL_POLICY', 'ECC_GATEGUARD', 'INITIAL_AGENT_MODE',
     'MOCK_EVIDENCE', 'MOCK_LOOP_VERDICTS', 'MOCK_SCENARIO', 'MOCK_TERMINAL', 'TMUX_TEAMS_PHASE',
@@ -176,7 +176,11 @@ test('a real ACP route reaches audit and leaves coherent ledger, snapshot, and p
   try {
     for (const key of Object.keys(inherited)) delete process.env[key]
     Object.assign(process.env, {
-      ACP_CMD: `${process.execPath} ${MOCK}`,
+      // Named deliberately, not inherited. The runner refuses to pass an ambient
+      // ACP_CMD to the companion — a stale one in a shell would otherwise
+      // replace the adapter every seat runs on, with nothing able to say which
+      // one answered. TMUX_TEAMS_ACP_CMD is the test's explicit dependency.
+      TMUX_TEAMS_ACP_CMD: `${process.execPath} ${MOCK}`,
       ACP_CANCEL_GRACE_MS: '100',
       ACP_HARD_TIMEOUT_SEC: '2',
       ACP_PROCESS_KILL_GRACE_MS: '100',
@@ -189,7 +193,7 @@ test('a real ACP route reaches audit and leaves coherent ledger, snapshot, and p
     const started = []
     for (let attempt = 0; attempt < 12 && ledger(repo).at(-1)?.event !== 'audited'; attempt += 1) {
       // No spawnLeg override: this calls loop-runner's real detached dispatcher,
-      // which forks acp-companion.mjs. ACP_CMD is the only test seam.
+      // which forks acp-companion.mjs. TMUX_TEAMS_ACP_CMD is the only test seam.
       const result = tick(repo, { apply: true, tickSec: 1, scratchDir: join(repo, 'runner-briefs') })
       assert.ok(result.ok, `tick ${attempt + 1} refused: ${result.reason}`)
       started.push(...result.started)

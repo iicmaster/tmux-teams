@@ -29,7 +29,7 @@ import { join } from 'node:path'
 import { loopHealth, readRunnerHeartbeat } from '../plugins/tmux-teams/skills/tmux-teams/scripts/graph.mjs'
 import {
   INHERIT_ACCOUNT_DEFAULT, RUNNER_HEARTBEAT_FILE, applyHarvest,
-  declaredModel, modelEnv, tick,
+  childEnv, declaredModel, modelEnv, tick,
 } from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs'
 import { validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
 
@@ -212,10 +212,29 @@ test('the sentinel is never sent as a request, so the account default stands', (
   assert.deepEqual(modelEnv('   '), {})
 })
 
+// The companion prefers an ambient ACP_CMD over the adapter its lane names, so
+// one left in a shell silently replaced the adapter every seat in the loop ran
+// on. Production dispatch must not carry it; a test that needs the seam has to
+// name it. Goes red if childEnv stops filtering.
+test('an ambient ACP_CMD never reaches a dispatched worker', () => {
+  const ambient = childEnv({ PATH: '/bin', ACP_CMD: 'node /somebody-elses-adapter.mjs' })
+  assert.equal('ACP_CMD' in ambient, false, JSON.stringify(ambient))
+  assert.equal(ambient.PATH, '/bin')
+
+  const named = childEnv({ PATH: '/bin', ACP_CMD: 'node /stale.mjs', TMUX_TEAMS_ACP_CMD: 'node /mock.mjs' })
+  assert.equal(named.ACP_CMD, 'node /mock.mjs')
+  assert.equal('TMUX_TEAMS_ACP_CMD' in named, false)
+})
+
+// This test was named for the request and asserted only the expectation, so it
+// passed for as long as the loop demanded a model it never asked for. ACP_MODEL
+// is what makes the adapter become the name; ACP_EXPECT_MODEL is what refuses
+// the dispatch if it did not. A declared seat needs both.
 test('a real declared name is passed through as the request', () => {
-  assert.deepEqual(modelEnv(A_DECLARED_MODEL), { ACP_EXPECT_MODEL: A_DECLARED_MODEL })
+  const both = { ACP_MODEL: A_DECLARED_MODEL, ACP_EXPECT_MODEL: A_DECLARED_MODEL }
+  assert.deepEqual(modelEnv(A_DECLARED_MODEL), both)
   // Whitespace is the declarer's, not the adapter's.
-  assert.deepEqual(modelEnv(`  ${A_DECLARED_MODEL}  `), { ACP_EXPECT_MODEL: A_DECLARED_MODEL })
+  assert.deepEqual(modelEnv(`  ${A_DECLARED_MODEL}  `), both)
 })
 
 test('the model comes off the seat the agent actually sits in', () => {

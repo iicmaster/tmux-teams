@@ -154,9 +154,17 @@ export function declaredModel(graph, teamId, agentId) {
 // empty name — must set NOTHING, leaving the account default in place. Only a
 // real declared name is ever passed through, because only a real declared name
 // is something the adapter can be held to.
+// ACP_EXPECT_MODEL is an EXPECTATION: it starts `identity_status` at `missing`
+// and fails the dispatch unless the adapter already answers with that name.
+// ACP_MODEL is the REQUEST — the session/set_config_option that makes the
+// adapter become it. Sending only the expectation meant the loop demanded a
+// model it never asked for: every seat ran on the account default and any seat
+// declaring anything else failed instead of being honored. The declared name in
+// `graph.json` was decoration. Both are sent now, so the request is made and
+// then verified, which is the pair the companion was built for.
 export function modelEnv(model) {
   const name = typeof model === 'string' ? model.trim() : ''
-  return name && name !== INHERIT_ACCOUNT_DEFAULT ? { ACP_EXPECT_MODEL: name } : {}
+  return name && name !== INHERIT_ACCOUNT_DEFAULT ? { ACP_MODEL: name, ACP_EXPECT_MODEL: name } : {}
 }
 
 const readJson = (path, fallback = null) => {
@@ -926,6 +934,18 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
 
 // ── spawning ─────────────────────────────────────────────────────────────────
 
+// `acp-companion` prefers an ambient ACP_CMD over the adapter its lane names,
+// so any ACP_CMD left in a shell — or set globally by a test in this very
+// process — silently replaced the adapter every seat in the loop ran on, and
+// nothing in the receipt could say which one had answered. Production dispatch
+// therefore refuses to pass it on. A test that needs the seam names it
+// deliberately through TMUX_TEAMS_ACP_CMD, which is an explicit dependency
+// rather than whatever the environment happened to be carrying.
+export function childEnv(source = process.env) {
+  const { ACP_CMD: _ambient, TMUX_TEAMS_ACP_CMD: injected, ...rest } = source
+  return injected ? { ...rest, ACP_CMD: injected } : rest
+}
+
 function dispatch(repo, { workItem, team, role, agentId, workflow, model }, briefPath, stallSec) {
   const taskId = `${workItem || 'board'}-${team || 'loop'}-${role}-${Date.now().toString(36)}`
     .replace(/[^A-Za-z0-9_-]/g, '-')
@@ -940,7 +960,7 @@ function dispatch(repo, { workItem, team, role, agentId, workflow, model }, brie
     detached: true,
     stdio: ['ignore', logFd, logFd],
     env: {
-      ...process.env,
+      ...childEnv(),
       ACP_AGENT_ID: agentId,
       // DECISION 3: the dispatch declares the model this seat was assigned, so
       // the page can finally print a real name instead of "default — none
