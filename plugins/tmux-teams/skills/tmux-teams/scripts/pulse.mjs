@@ -21,10 +21,10 @@
 // footprint, no process and no event; until now it simply vanished.
 //
 // usage:
-//   pulse.mjs once  <repo> [--delivery-loop FILE] [--delivery-runtime FILE] [--team-graph FILE] [--team-runtime FILE] [--time-zone ZONE]
-//   pulse.mjs watch <repo> [--interval 20] [--delivery-loop FILE] [--delivery-runtime FILE] [--team-graph FILE] [--team-runtime FILE] [--time-zone ZONE]
-//   pulse.mjs ensure <repo> [--interval 20] [--delivery-loop FILE] [--delivery-runtime FILE] [--team-graph FILE] [--team-runtime FILE] [--time-zone ZONE]
-//   pulse.mjs json <repo> [--delivery-loop FILE] [--delivery-runtime FILE] [--team-graph FILE] [--team-runtime FILE] [--time-zone ZONE]
+//   pulse.mjs once  <repo> [--team-graph FILE] [--team-runtime FILE] [--time-zone ZONE]
+//   pulse.mjs watch <repo> [--interval 20] [--team-graph FILE] [--team-runtime FILE] [--time-zone ZONE]
+//   pulse.mjs ensure <repo> [--interval 20] [--team-graph FILE] [--team-runtime FILE] [--time-zone ZONE]
+//   pulse.mjs json <repo> [--team-graph FILE] [--team-runtime FILE] [--time-zone ZONE]
 //   pulse.mjs compat-v1 <repo>                                    stdout-only v1 downprojection
 import { execFileSync, spawn } from 'node:child_process'
 import {
@@ -42,18 +42,12 @@ import {
   PULSE_SCHEMA_VERSION_V3, PULSE_SCHEMA_VERSION_V4, UUID_RE, downProjectPulseV1,
   projectLivenessEvidence, projectPulseV4, validateAcpLivenessV1, verifiedLivenessModel,
 } from './pulse-data.mjs'
-// Relocated from delivery-loop-core.mjs, unchanged. Two frozen literals were the
-// only thing this file needed from the phase subsystem, and it needed them on
-// the ORDINARY path — `DELIVERY_PHASE_SET` below is evaluated at module load, so
-// deleting that file first would stop pulse.mjs loading at all and take every
-// remaining check down with it. Moving them is the prerequisite for the
-// deletion, not part of it: nothing here changes behaviour.
-const PHASE_EXIT_ARTIFACTS = Object.freeze({
-  Requirement: 'requirements_baseline',
-  Prototype: 'prototype_evaluation',
-  Development: 'development_delivery',
-  QA: 'qa_release_evidence',
-})
+// Relocated from delivery-loop-core.mjs, unchanged. This literal is the only
+// thing this file still needs from the retired phase subsystem, and it needs it
+// on the ORDINARY path — `DELIVERY_PHASE_SET` below is evaluated at module load
+// and gates the `phase:` binding the TEAM loop writes into every dispatch
+// footprint. Its sibling `PHASE_EXIT_ARTIFACTS` went with the delivery-loop
+// projection, whose diagrams were its only readers.
 const PHASE_BOUNDARIES = Object.freeze({
   Requirement: 'Prototype',
   Prototype: 'Development',
@@ -67,22 +61,14 @@ import { NAV_CSS, renderNav } from './page-nav.mjs'
 import { renderPulseRefreshScript } from './pulse-refresh.mjs'
 
 const [cmd, repoArg, ...flags] = process.argv.slice(2)
-const USAGE = 'usage: pulse.mjs once|json <repo> [--delivery-loop FILE] [--delivery-runtime FILE] [--team-graph FILE] [--team-runtime FILE] [--time-zone ZONE] | pulse.mjs watch|ensure <repo> [--interval SEC] [--delivery-loop FILE] [--delivery-runtime FILE] [--team-graph FILE] [--team-runtime FILE] [--time-zone ZONE] | pulse.mjs compat-v1 <repo>'
+const USAGE = 'usage: pulse.mjs once|json <repo> [--team-graph FILE] [--team-runtime FILE] [--time-zone ZONE] | pulse.mjs watch|ensure <repo> [--interval SEC] [--team-graph FILE] [--team-runtime FILE] [--time-zone ZONE] | pulse.mjs compat-v1 <repo>'
 if (!cmd || !repoArg || !['once', 'json', 'watch', 'ensure', 'compat-v1'].includes(cmd)) {
   console.error(USAGE); process.exit(2)
 }
-const deliveryFlagIndexes = flags.flatMap((flag, index) => flag === '--delivery-loop' ? [index] : [])
-const runtimeFlagIndexes = flags.flatMap((flag, index) => flag === '--delivery-runtime' ? [index] : [])
 const teamGraphFlagIndexes = flags.flatMap((flag, index) => flag === '--team-graph' ? [index] : [])
 const teamRuntimeFlagIndexes = flags.flatMap((flag, index) => flag === '--team-runtime' ? [index] : [])
 const timeZoneFlagIndexes = flags.flatMap((flag, index) => flag === '--time-zone' ? [index] : [])
 if (cmd === 'compat-v1' && flags.length > 0 ||
-    deliveryFlagIndexes.length > 1 ||
-    (deliveryFlagIndexes.length === 1 &&
-      (!flags[deliveryFlagIndexes[0] + 1] || flags[deliveryFlagIndexes[0] + 1].startsWith('--'))) ||
-    runtimeFlagIndexes.length > 1 ||
-    (runtimeFlagIndexes.length === 1 &&
-      (!flags[runtimeFlagIndexes[0] + 1] || flags[runtimeFlagIndexes[0] + 1].startsWith('--'))) ||
     teamGraphFlagIndexes.length > 1 ||
     (teamGraphFlagIndexes.length === 1 &&
       (!flags[teamGraphFlagIndexes[0] + 1] || flags[teamGraphFlagIndexes[0] + 1].startsWith('--'))) ||
@@ -94,12 +80,6 @@ if (cmd === 'compat-v1' && flags.length > 0 ||
       (!flags[timeZoneFlagIndexes[0] + 1] || flags[timeZoneFlagIndexes[0] + 1].startsWith('--')))) {
   console.error(USAGE); process.exit(2)
 }
-const DELIVERY_LOOP_PATH = deliveryFlagIndexes.length
-  ? resolve(flags[deliveryFlagIndexes[0] + 1])
-  : null
-const DELIVERY_RUNTIME_PATH = runtimeFlagIndexes.length
-  ? resolve(flags[runtimeFlagIndexes[0] + 1])
-  : null
 const TEAM_GRAPH_PATH = teamGraphFlagIndexes.length
   ? resolve(flags[teamGraphFlagIndexes[0] + 1])
   : null
@@ -1010,106 +990,6 @@ const DIAGNOSTIC_COPY = Object.freeze({
   SOURCE_TRUNCATED: 'ข้อมูลต้นทางถูกจำกัดเพื่อความปลอดภัย',
   SEQUENCE_RESET: 'เริ่มลำดับ snapshot ใหม่',
   SCHEMA_UPGRADED: 'อัปเกรดข้อมูล Pulse เป็นรุ่นใหม่',
-  DELIVERY_LOOP_INPUT_UNREADABLE: 'อ่านข้อมูลวงรอบส่งมอบไม่ได้',
-  DELIVERY_LOOP_INPUT_INVALID: 'ข้อมูลวงรอบส่งมอบไม่ผ่านสัญญา',
-  DELIVERY_LOOP_STALE: 'ข้อมูลวงรอบส่งมอบหมดอายุ',
-})
-const DELIVERY_PHASE_COPY = Object.freeze({
-  Requirement: 'ข้อกำหนด (Requirement)',
-  Prototype: 'ต้นแบบ (Prototype)',
-  Development: 'พัฒนา (Development)',
-  QA: 'ทดสอบ (QA)',
-})
-const DELIVERY_BOUNDARY_COPY = Object.freeze({
-  requirement_to_prototype: 'Requirement → Prototype',
-  prototype_to_development: 'Prototype → Development',
-  development_to_qa: 'Development → QA',
-  qa_to_project_delivery: 'QA → ProjectDelivery',
-})
-const DELIVERY_PHASE_LABEL = Object.freeze({
-  Requirement: 'ข้อกำหนด', Prototype: 'ต้นแบบ', Development: 'พัฒนา', QA: 'ทดสอบ',
-  ProjectDelivery: 'ส่งมอบโครงการ',
-})
-const DELIVERY_ARTIFACT_LABEL = Object.freeze({
-  requirements_baseline: 'ฐานข้อกำหนด',
-  prototype_evaluation: 'ผลประเมินต้นแบบที่คลิกได้',
-  development_delivery: 'ซอฟต์แวร์ที่ใช้งานได้',
-  qa_release_evidence: 'รายงาน E2E / UAT',
-})
-const boundaryKey = (sender, receiver) => `${sender.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase()}_to_${receiver.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase()}`
-// This is the sole diagram model. Contract exports determine every actor,
-// receiver, artifact and stable boundary key; Thai labels remain view-only.
-const DELIVERY_TOPOLOGY = Object.freeze(Object.entries(PHASE_BOUNDARIES).map(([sender, receiver]) => Object.freeze({
-  sender,
-  receiver,
-  artifact: PHASE_EXIT_ARTIFACTS[sender],
-  artifactLabel: DELIVERY_ARTIFACT_LABEL[PHASE_EXIT_ARTIFACTS[sender]],
-  boundary: boundaryKey(sender, receiver),
-})))
-const DELIVERY_STATUS_COPY = Object.freeze({
-  not_configured: 'ยังไม่ได้ตั้งค่า',
-  ready: 'พร้อมเริ่ม',
-  active: 'กำลังเก็บหลักฐาน',
-  paused: 'พักการทดลอง',
-  complete: 'เก็บหลักฐานครบ',
-  degraded: 'ข้อมูลต้องตรวจสอบ',
-})
-const DELIVERY_PHASE_STATE_COPY = Object.freeze({
-  idle: 'ยังไม่มีงาน',
-  active: 'กำลังทำงาน',
-  waiting_receiver: 'รอทีมผู้รับตรวจ',
-  rework: 'กำลังแก้ไข',
-  exception: 'มีข้อยกเว้น',
-  complete: 'ผ่านเฟสแล้ว',
-  unknown: 'ตรวจสถานะไม่ได้',
-})
-const DELIVERY_RUNTIME_PHASE_STATE_COPY = Object.freeze({
-  pending: 'รอเริ่มเฟส',
-  working: 'กำลังทำงาน',
-  handoff_pending: 'รอผู้รับตรวจ handoff',
-  blocked: 'ติดขัด',
-  completed: 'เสร็จสิ้น',
-})
-const DELIVERY_RUNTIME_GATE_STATE_COPY = Object.freeze({
-  proposed: 'เสนอให้ตรวจรับ',
-  accepted: 'ผู้รับตอบรับ',
-  rejected: 'ผู้รับปฏิเสธ',
-  escalated: 'ยกระดับข้อยกเว้น',
-  consumed: 'ผู้รับนำไปใช้แล้ว',
-})
-const DELIVERY_RUNTIME_GATE_NOTE = Object.freeze({
-  proposed: 'รอคำตอบการตรวจรับจากทีมผู้รับ',
-  accepted: 'ผู้รับตอบรับแล้ว; ยังไม่เท่ากับการอนุมัติทางธุรกิจ',
-  rejected: 'ผู้ส่งต้องแก้ไขและสร้าง attempt ใหม่ตามความจำเป็น',
-  escalated: 'ต้องจัดการเป็นข้อยกเว้นโดยไม่สั่ง worker อัตโนมัติ',
-  consumed: 'ผู้รับใช้ artifact นี้ในเฟสถัดไปแล้ว',
-})
-const DELIVERY_RUNTIME_ROLE_COPY = Object.freeze({
-  phase_team: 'ทีมของเฟส',
-  receiver_phase_lead: 'หัวหน้าทีมผู้รับ',
-  project_delivery: 'ผู้รับปลายทาง',
-  pm_exception_owner: 'PM ผู้ดูแลข้อยกเว้น',
-})
-const DELIVERY_RUNTIME_BOTTLENECK_COPY = Object.freeze({
-  work: 'งานในเฟสใช้เวลานาน',
-  handoff_review: 'รอผู้รับตรวจ handoff',
-  rework: 'กำลังแก้ไขงาน',
-  exception: 'มีข้อยกเว้น',
-  dispatch_reconcile: 'ต้องตรวจความสอดคล้องของ dispatch',
-})
-const DELIVERY_ROLE_COPY = Object.freeze({
-  operator: 'ผู้ดูแลระบบ',
-  pm: 'PM',
-  sender_phase_lead: 'ทีมผู้ส่ง',
-  receiver_phase_lead: 'ทีมผู้รับ',
-  experiment_owner: 'เจ้าของการทดลอง',
-  metric_producer: 'ผู้ผลิตข้อมูลวัดผล',
-  qa: 'QA',
-  external_reviewer: 'ผู้ตรวจอิสระ',
-  business_owner: 'เจ้าของธุรกิจ',
-})
-const DELIVERY_DECISION_COPY = Object.freeze({
-  EXTERNAL_REQUIRED: 'ต้องให้ผู้มีอำนาจภายนอกตัดสิน',
 })
 const stateLabel = (state) => STATE_COPY[state] || 'ไม่ทราบสถานะ'
 const actionLabel = (action) => ACTION_COPY[action] || 'ตรวจสอบรายละเอียด'
@@ -1231,101 +1111,6 @@ function renderLoop(snapshot) {
      aria-labelledby="worker-lifecycle-title worker-lifecycle-desc"><title id="worker-lifecycle-title">โมเดลเชิงบรรทัดฐานของลูปสองชั้นสำหรับ worker และการส่งมอบ</title><desc id="worker-lifecycle-desc">แบบจำลองความรับผิดชอบ ไม่ใช่สถานะสด: ลูปชั้นในให้ทีมเฟสวางแผน สั่ง worker และตรวจผลเอง ลูปชั้นนอกให้ PM ติดตาม phase และ handoff โดยรับเฉพาะข้อยกเว้น ตัวเลขมาจากหลักฐาน dispatch และ verdict เดิม ส่วนเส้นย้อนกลับที่ยังไม่ได้วัดแสดงด้วยเส้นประ</desc>${defs}${outer}${inner}</svg>`
 }
 
-function renderDeliveryFlow(delivery) {
-  const selected = delivery.experiment?.boundary
-  const selectedKnown = DELIVERY_TOPOLOGY.some(edge => edge.boundary === selected)
-  const W = 1120, H = 430
-  const x = { Requirement: 20, Prototype: 245, Development: 470, QA: 695, ProjectDelivery: 920 }
-  const y = 150, w = 180, h = 145
-  const artifactText = (artifact, xx, yy, className = 'df-artifact') => {
-    const parts = artifact.split('_')
-    return `<text class="${className}" x="${xx}" y="${yy}" text-anchor="middle">${parts.map((part, index) => `<tspan x="${xx}" dy="${index ? 11 : 0}">${esc(`${part}${index < parts.length - 1 ? '_' : ''}`)}</tspan>`).join('')}</text>`
-  }
-  const node = (phase) => {
-    const isFinal = phase === 'ProjectDelivery'
-    const label = DELIVERY_PHASE_LABEL[phase] || phase
-    const artifact = isFinal ? 'รับหลักฐาน QA' : PHASE_EXIT_ARTIFACTS[phase]
-    const incoming = DELIVERY_TOPOLOGY.find(edge => edge.receiver === phase)
-    return `<g class="df-node${isFinal ? ' df-final' : ''}">
-      <rect x="${x[phase]}" y="${y}" width="${w}" height="${h}" rx="12"/>
-      <text class="df-title" x="${x[phase] + w / 2}" y="${y + 28}" text-anchor="middle">${esc(label)}</text>
-      ${isFinal
-        ? `<text class="df-copy" x="${x[phase] + w / 2}" y="${y + 52}" text-anchor="middle">ผู้รับปลายทาง · ตรวจรับจาก QA</text><text class="df-copy" x="${x[phase] + w / 2}" y="${y + 78}" text-anchor="middle">ไม่ใช่ทีมลูปที่ห้า</text><text class="df-copy" x="${x[phase] + w / 2}" y="${y + 106}" text-anchor="middle">รับ ≠ รับรอง/อนุมัติธุรกิจ</text>`
-        : `<path class="df-loop" d="M ${x[phase] + 42} ${y + 118} C ${x[phase] + 18} ${y + 118}, ${x[phase] + 18} ${y + 72}, ${x[phase] + 42} ${y + 72}" marker-end="url(#df-head)"/><text class="df-copy" x="${x[phase] + 100}" y="${y + 50}" text-anchor="middle">${incoming ? `ผู้รับตรวจรับจาก${esc(DELIVERY_PHASE_LABEL[incoming.sender])}` : 'เริ่มจากข้อกำหนดธุรกิจ'}</text><text class="df-copy" x="${x[phase] + 100}" y="${y + 69}" text-anchor="middle">ทีมภายในตรวจ/แก้</text>${artifactText(artifact, x[phase] + w / 2, y + 87)}<text class="df-copy" x="${x[phase] + w / 2}" y="${y + 136}" text-anchor="middle">สร้างข้อเสนอใหม่เมื่อแก้</text>`}
-    </g>`
-  }
-  const edges = DELIVERY_TOPOLOGY.map(edge => {
-    const left = x[edge.sender] + w, right = x[edge.receiver]
-    const isSelected = selectedKnown && edge.boundary === selected
-    const mid = (left + right) / 2
-    return `<g class="df-edge${isSelected ? ' df-selected' : ''}" data-boundary="${edge.boundary}" data-selected="${isSelected ? 'true' : 'false'}" data-observed="${isSelected ? 'true' : 'false'}">
-      <path d="M ${left} ${y + 49} H ${right - 8}" marker-end="url(#df-head)"/>
-      <text class="df-artifact-label" x="${mid}" y="${y - 55}" text-anchor="middle">${esc(edge.artifactLabel)}</text>
-      ${artifactText(edge.artifact, mid, y - 31)}
-      ${isSelected ? `<text class="df-observed" x="${mid}" y="${y + h + 24}" text-anchor="middle">★ pilot ที่สังเกต: ${esc(edge.boundary)}</text>` : ''}
-    </g>`
-  }).join('')
-  const exceptionEdges = [...Object.keys(PHASE_EXIT_ARTIFACTS), 'ProjectDelivery']
-    .map(phase => `<path class="df-exception" d="M ${x[phase] + w / 2} ${y} V 94" marker-end="url(#df-head)"/>`)
-    .join('')
-  const selectedCopy = selectedKnown
-    ? `เน้นเฉพาะขอบเขต pilot ที่สังเกต: ${selected}`
-    : 'ยังไม่ได้เลือกขอบเขต pilot ที่ยืนยันได้ จึงไม่เน้นเส้นใด'
-  return `<div class="diagram-scroll" tabindex="0" role="region" aria-label="แผนภาพโมเดลการส่งมอบแบบเลื่อนแนวนอนได้"><svg id="delivery-topology-svg" class="delivery-svg" viewBox="0 0 ${W} ${H}" width="100%" height="${H}" role="img" aria-labelledby="delivery-flow-title delivery-flow-desc" data-selected-boundary="${esc(selectedKnown ? selected : '')}">
-    <title id="delivery-flow-title">โมเดลเส้นทางส่งมอบแบบผู้รับเป็นเจ้าของการตรวจรับ</title><desc id="delivery-flow-desc">แบบจำลองเชิงบรรทัดฐาน ไม่ใช่สถานะจริง: ทีม Requirement Prototype Development และ QA มีลูปภายใน ส่งชิ้นงานให้ผู้รับตรวจรับ และ PM ประสานเฉพาะข้อยกเว้น</desc>
-    <defs><marker id="df-head" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z"/></marker></defs>
-    <rect class="df-pm" x="10" y="22" width="1100" height="395" rx="18"/><text class="df-pm-label" x="32" y="50">PM outer loop: ประสาน ติด bottleneck และแก้ข้อยกเว้นเท่านั้น — ไม่ตรวจรับแทนทีมผู้รับ</text>
-    ${exceptionEdges}<text class="df-exception-label" x="560" y="407" text-anchor="middle">exception / deadlock / policy conflict → PM resolve_exception → กลับให้ผู้รับตัดสิน</text>
-    ${edges}${[...Object.keys(PHASE_EXIT_ARTIFACTS), 'ProjectDelivery'].map(node).join('')}
-  </svg></div><p class="diagram-note"><strong>โมเดลเชิงบรรทัดฐานเพื่อการเรียนรู้</strong> ไม่ใช่สถานะงานจริง; ${esc(selectedCopy)}. การตรวจรับเป็นการตัดสินใจของผู้รับ ไม่เท่ากับส่งมอบสำเร็จ การรับรอง หรือการอนุมัติทางธุรกิจ.</p>`
-}
-
-function renderDeliveryFlowEquivalent() {
-  return `<section class="diagram-equivalent" aria-labelledby="delivery-flow-equivalent-title"><h3 id="delivery-flow-equivalent-title">ข้อความเทียบเท่าแผนภาพการส่งมอบ</h3><p>PM ประสาน ติด bottleneck และแก้ข้อยกเว้นเท่านั้น; งานปกติและการตรวจรับอยู่กับทีมผู้รับ.</p><ol>${DELIVERY_TOPOLOGY.map(edge => `<li><strong>${esc(DELIVERY_PHASE_LABEL[edge.sender])}</strong> ส่ง ${esc(edge.artifactLabel)} <code>${esc(edge.artifact)}</code> เป็นข้อเสนอให้ <strong>${esc(DELIVERY_PHASE_LABEL[edge.receiver])}</strong>; ผู้รับเป็นเจ้าของการตรวจรับและการรับ/ปฏิเสธ. ${edge.receiver === 'ProjectDelivery' ? 'ProjectDelivery เป็นผู้รับปลายทาง ไม่ใช่ทีมลูปที่ห้า; การรับไม่ใช่การรับรองหรืออนุมัติธุรกิจ.' : 'ทีมผู้ส่งทำลูปภายในและสร้างข้อเสนอใหม่เมื่อต้องแก้ไข.'}</li>`).join('')}</ol></section>`
-}
-
-// The runtime projection is already a closed, privacy-reviewed Pulse field.
-// Keep this view deliberately small: ids and digests remain available to agents
-// in pulse.json, while the HTML exposes only the requested attempt identity.
-function renderDeliveryRuntime(runtime) {
-  const attentionCount = runtime.bottleneck === null ? 0 : 1
-  const phaseRows = runtime.phase_runs.map(run => `<li class="runtime-phase" data-phase="${esc(run.phase)}" data-state="${esc(run.state)}">
-    <div class="runtime-row-head"><strong>${esc(DELIVERY_PHASE_LABEL[run.phase] || run.phase)}</strong><span class="runtime-state runtime-phase-state-${esc(run.state)}">${esc(DELIVERY_RUNTIME_PHASE_STATE_COPY[run.state] || run.state)}</span></div>
-    <dl class="runtime-facts">
-      <div><dt>เจ้าของ</dt><dd>${esc(DELIVERY_RUNTIME_ROLE_COPY[run.owner_role] || run.owner_role)}</dd></div>
-      <div><dt>ส่งต่อ</dt><dd class="num">${run.handoff_count} ครั้ง</dd></div>
-      <div><dt>แก้ไข</dt><dd class="num">${run.revision_count} รอบ</dd></div>
-    </dl>
-  </li>`).join('')
-  const gateRows = runtime.phase_gates.map(gate => `<li class="runtime-gate" data-boundary="${esc(gate.boundary)}" data-gate-state="${esc(gate.state)}" data-attempt-id="${esc(gate.attempt_id)}">
-    <div class="runtime-row-head"><strong>${esc(DELIVERY_BOUNDARY_COPY[gate.boundary] || `${gate.sender_phase} → ${gate.receiver_phase}`)}</strong><span class="runtime-state runtime-gate-state-${esc(gate.state)}">${esc(DELIVERY_RUNTIME_GATE_STATE_COPY[gate.state] || gate.state)}</span></div>
-    <p>${esc(DELIVERY_RUNTIME_GATE_NOTE[gate.state] || 'อ่านสถานะ gate จากข้อมูล runtime')}</p>
-  </li>`).join('')
-  const attention = runtime.bottleneck === null
-    ? `<div class="runtime-attention runtime-attention-clear" data-runtime-attention-count="0"><strong>รายการที่ต้องดำเนินการจาก runtime: 0</strong><p>ไม่มี bottleneck ที่ runtime ระบุ</p></div>`
-    : `<div class="runtime-attention" data-runtime-attention-count="1"><strong>รายการที่ต้องดำเนินการจาก runtime: 1</strong><p>${esc(DELIVERY_PHASE_LABEL[runtime.bottleneck.phase] || runtime.bottleneck.phase)} · ${esc(DELIVERY_RUNTIME_BOTTLENECK_COPY[runtime.bottleneck.kind] || runtime.bottleneck.kind)} · รับผิดชอบโดย ${esc(DELIVERY_RUNTIME_ROLE_COPY[runtime.bottleneck.owner_role] || runtime.bottleneck.owner_role)}</p></div>`
-
-  return `<section class="delivery-runtime" aria-labelledby="delivery-runtime-title">
-    <div class="section-head"><div><span class="eyebrow">Delivery runtime · observe only</span><h2 id="delivery-runtime-title">สถานะ runtime ของการส่งมอบ</h2><p>สถานะที่ runtime สรุปจาก phase gate; ไม่สั่งงานหรือเปลี่ยนสถานะใด ๆ</p></div><span class="count">${attentionCount} รายการต้องดำเนินการ</span></div>
-    ${attention}
-    <section class="surface runtime-summary-panel" aria-labelledby="delivery-runtime-summary-title"><div class="detail-body"><h3 id="delivery-runtime-summary-title">สรุป phase gate</h3><dl class="runtime-summary" aria-label="สรุปจำนวน phase gate"><div><dt>เสนอ</dt><dd class="num">${runtime.summary.proposed}</dd></div><div><dt>ตอบรับ</dt><dd class="num">${runtime.summary.accepted}</dd></div><div><dt>ปฏิเสธ</dt><dd class="num">${runtime.summary.rejected}</dd></div><div><dt>ยกระดับ</dt><dd class="num">${runtime.summary.escalated}</dd></div><div><dt>นำไปใช้</dt><dd class="num">${runtime.summary.consumed}</dd></div><div><dt>แสดงอยู่</dt><dd class="num">${runtime.summary.shown}</dd></div><div><dt>ตัดจากรายการ</dt><dd class="num">${runtime.summary.truncated}</dd></div></dl></div></section>
-    <section class="surface runtime-phases" aria-labelledby="delivery-runtime-phases-title"><div class="detail-body"><h3 id="delivery-runtime-phases-title">สี่เฟสตามลำดับ</h3><ol class="runtime-phase-list">${phaseRows}</ol></div></section>
-    <section class="surface runtime-gates" aria-labelledby="delivery-runtime-gates-title"><div class="detail-body"><h3 id="delivery-runtime-gates-title">ผลการส่งต่อระหว่างเฟส</h3><ol class="runtime-gate-list">${gateRows || '<li class="empty"><strong>ยังไม่มี phase gate</strong>runtime ยังไม่มีรายการส่งต่อที่แสดงได้</li>'}</ol><p class="runtime-terminal"><strong>ProjectDelivery เป็นผู้รับปลายทาง</strong> หลัง QA ตอบรับแล้วจะไม่มีการ dispatch worker ลำดับที่ห้า.</p></div></section>
-  </section>`
-}
-
-function renderDeliverySequence(delivery) {
-  const selected = DELIVERY_TOPOLOGY.find(edge => edge.boundary === delivery.experiment?.boundary)
-  const boundaryCopy = selected
-    ? `${DELIVERY_PHASE_LABEL[selected.sender]} → ${DELIVERY_PHASE_LABEL[selected.receiver]}`
-    : 'ยังไม่มีขอบเขต pilot ที่ยืนยันได้'
-  return `<div class="diagram-scroll" tabindex="0" role="region" aria-label="แผนภาพลำดับการส่งมอบแบบเลื่อนแนวนอนได้"><svg id="handoff-sequence-svg" class="sequence-svg" viewBox="0 0 980 360" width="100%" height="360" role="img" aria-labelledby="delivery-sequence-title delivery-sequence-desc" data-selected-boundary="${esc(selected?.boundary || '')}"><title id="delivery-sequence-title">ลำดับทั่วไปของการส่งมอบโดยผู้รับเป็นเจ้าของ</title><desc id="delivery-sequence-desc">ผู้ส่งเสนอชิ้นงานถาวรหนึ่งความพยายาม ผู้รับตรวจและเลือกยอมรับหรือปฏิเสธ การปฏิเสธสิ้นสุดความพยายามเดิม ผู้ส่งต้องสร้างความพยายามใหม่ที่อ้าง revision_of_attempt_id; ข้อยกเว้นส่งให้ PM แก้แล้วกลับสู่ข้อเสนอ</desc><defs><marker id="ds-head" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z"/></marker></defs><text class="ds-context" x="490" y="18" text-anchor="middle">ขอบเขต pilot: ${esc(boundaryCopy)} · โปรโตคอลตัวอย่าง ไม่ใช่ event สด</text><g class="ds-lane"><text x="110" y="48">ผู้ส่ง</text><text x="465" y="48">ผู้รับ</text><text x="820" y="48">PM (เฉพาะข้อยกเว้น)</text><path d="M110 62V330M465 62V330M820 62V330"/></g><g class="ds-flow"><path d="M110 88 H465" marker-end="url(#ds-head)"/><text x="287" y="80" text-anchor="middle">เสนอ immutable artifact / attempt</text><path d="M465 118 H545 V142 H465" marker-end="url(#ds-head)"/><text x="620" y="136">ผู้รับตรวจ phase contract</text><path d="M465 176 H110" marker-end="url(#ds-head)"/><text x="287" y="168" text-anchor="middle">ผู้รับเลือก accept หรือ reject</text><text class="ds-terminal" x="110" y="198">reject = attempt เดิมสิ้นสุด</text><path d="M110 214 H190 V238 H110" marker-end="url(#ds-head)"/><text x="300" y="234">ผู้ส่งสร้าง NEW attempt + revision_of_attempt_id</text><path class="ds-exception" d="M465 270 H820" marker-end="url(#ds-head)"/><text x="642" y="262" text-anchor="middle">exception / deadlock / policy conflict</text><path class="ds-exception" d="M820 300 H465" marker-end="url(#ds-head)"/><text x="642" y="322" text-anchor="middle">PM resolve_exception → proposed; ผู้รับยังตัดสินผล</text></g></svg></div><p class="diagram-note"><strong>ลำดับทั่วไปเพื่อการเรียนรู้</strong> ไม่ใช่ event state สด และไม่ยืนยันผลสำเร็จ การรับรอง หรืออนุมัติธุรกิจ.</p>`
-}
-
-function renderDeliverySequenceEquivalent() {
-  return `<section class="diagram-equivalent" aria-labelledby="delivery-sequence-equivalent-title"><h3 id="delivery-sequence-equivalent-title">ข้อความเทียบเท่าลำดับทั่วไป</h3><ol><li>ผู้ส่งเสนอชิ้นงาน immutable และ attempt หนึ่งรายการ</li><li>ผู้รับตรวจและเป็นเจ้าของการยอมรับหรือปฏิเสธตามปกติ</li><li>การปฏิเสธสิ้นสุด attempt เดิม; ผู้ส่งสร้าง attempt ใหม่พร้อม <code>revision_of_attempt_id</code></li><li>ข้อยกเว้น, deadlock หรือ policy conflict ส่งให้ PM แก้ แล้วกลับสู่ proposed; ผู้รับยังเป็นผู้ตัดสินผล</li></ol></section>`
-}
-
 function renderGraph(rows) {
   if (!rows.length) return '<p class="empty">ยังไม่มีงานให้วาด</p>'
   // Keep the visible label authoritative: task IDs must not rely on a hover
@@ -1395,8 +1180,6 @@ function render(snapshot, { refreshScriptName = PULSE_REFRESH_NAME } = {}) {
   const tracked = active.filter(a => ['running', 'starting', 'awaiting-verdict'].includes(a.state))
   const recent = rec
   const st = snapshot.worker_stats
-  const delivery = snapshot.delivery_loop || null
-  const deliveryRuntime = snapshot.delivery_runtime || null
   const byState = snapshot.summary.by_state
   const graph = graphRows(snapshot)
   const attentionTotal = attentionStates.reduce((sum, state) => sum + byState[state], 0)
@@ -1453,40 +1236,6 @@ function render(snapshot, { refreshScriptName = PULSE_REFRESH_NAME } = {}) {
     <code>${esc(`${n.source}:${n.code}`)}</code>
   </li>`).join('')
 
-  const deliverySection = delivery ? (() => {
-    const action = delivery.next_action
-    const bottleneck = delivery.bottleneck
-    const phaseCards = delivery.phase_cards.map(card => `<article class="phase-card">
-      <div class="run-summary"><strong>${esc(DELIVERY_PHASE_COPY[card.phase] || card.phase)}</strong><span class="pill ${card.advisory.attention ? 'unrecorded' : 'running'}">${esc(DELIVERY_PHASE_STATE_COPY[card.state] || card.state)}</span></div>
-      <dl class="run-facts">
-        <div><dt>งานที่กำลังอยู่ในเฟส</dt><dd class="num">${card.active_slices}</dd></div>
-        <div><dt>ค้างนานสุด</dt><dd class="num">${card.oldest_open_age_sec == null ? 'ยังไม่วัด' : dur(card.oldest_open_age_sec)}</dd></div>
-        <div><dt>ขั้นถัดไป</dt><dd class="next-action">${esc(actionLabel(card.advisory.action_code))}</dd></div>
-      </dl>
-    </article>`).join('')
-    const attentionItems = delivery.attention.map(item => `<li>
-      <span><strong>${esc(actionLabel(item.action_code))}</strong> · ${esc(DELIVERY_ROLE_COPY[item.owner_role] || item.owner_role)}</span>
-      <code>${esc(item.attention_id)}</code>
-    </li>`).join('')
-    const bottleneckText = bottleneck.status === 'available'
-      ? `${DELIVERY_BOUNDARY_COPY[bottleneck.boundary] || bottleneck.boundary} · ${dur(bottleneck.age_sec)}`
-      : bottleneck.status === 'none' ? 'ยังไม่พบจุดค้าง' : 'ข้อมูลยังไม่พอสรุป'
-    return `<section class="delivery-loop" aria-labelledby="delivery-loop-title">
-      <div class="section-head"><div><span class="eyebrow">Stage 1 · advisory only</span><h2 id="delivery-loop-title">วงรอบส่งมอบ</h2><p>สังเกตเฉพาะ pilot ที่เลือก · ไม่มีการสั่งงานอัตโนมัติ; แผนภาพเต็มเป็นโมเดลเชิงบรรทัดฐาน ไม่ใช่สถานะจริง</p></div><span class="quality ${delivery.status === 'degraded' ? 'warn' : 'ok'}">${esc(DELIVERY_STATUS_COPY[delivery.status] || delivery.status)}</span></div>
-      <dl class="delivery-times" aria-label="เวลาของข้อมูลวงรอบส่งมอบ"><div><dt>ข้อมูลวงรอบ ณ</dt><dd>${absoluteTime(delivery.generated_at)}</dd></div><div><dt>วิเคราะห์ถึง</dt><dd>${absoluteTime(delivery.experiment.analysis_as_of)}</dd></div><div><dt>เริ่มช่วงทดลอง</dt><dd>${absoluteTime(delivery.experiment.assignment_window.start)}</dd></div><div><dt>สิ้นสุดช่วงทดลอง</dt><dd>${absoluteTime(delivery.experiment.assignment_window.end)}</dd></div></dl>
-      <div class="delivery-overview">
-        <article class="delivery-callout surface"><span class="eyebrow">ทำต่อโดย</span><strong>${esc(DELIVERY_ROLE_COPY[action.owner_role] || action.owner_role)}</strong><p>${esc(actionLabel(action.action_code))}</p><code>${esc(action.reason_codes.join(' · '))}</code></article>
-        <article class="delivery-callout surface"><span class="eyebrow">จุดค้างเชิงพรรณนา</span><strong>${esc(bottleneckText)}</strong><p>ใช้เวลาค้างที่เก่าที่สุด ไม่ใช่ข้อสรุปสาเหตุ</p><code>${esc(bottleneck.reason_codes.join(' · '))}</code></article>
-        <article class="delivery-callout surface"><span class="eyebrow">ภาพรวม pilot</span><strong>${delivery.summary.in_progress} กำลังเดิน · ${delivery.summary.terminal} สิ้นสุด</strong><p>ต้องดำเนินการ ${delivery.summary.operator_action_total} รายการ</p><code>${esc(DELIVERY_DECISION_COPY[delivery.evidence.business_decision] || delivery.evidence.business_decision)}</code></article>
-      </div>
-      <section class="delivery-model surface" aria-labelledby="delivery-model-title"><div class="detail-body"><h3 id="delivery-model-title">โมเดลเส้นทางส่งมอบและเจ้าของการตรวจรับ</h3>${renderDeliveryFlow(delivery)}${renderDeliveryFlowEquivalent()}</div></section>
-      <div class="phase-grid">${phaseCards || '<p class="empty"><strong>ยังไม่มีข้อมูลเฟส</strong>ตรวจแหล่งข้อมูลวงรอบส่งมอบก่อน</p>'}</div>
-      ${attentionItems ? `<div class="surface delivery-attention"><h3>รายการที่ต้องดำเนินการ</h3><ul class="diagnostics-list">${attentionItems}</ul></div>` : ''}
-      <details class="deep-dive" data-persist-key="delivery-sequence"><summary>ลำดับทั่วไปของ handoff ที่ผู้รับเป็นเจ้าของ</summary><div class="detail-body">${renderDeliverySequence(delivery)}${renderDeliverySequenceEquivalent()}</div></details>
-    </section>`
-  })() : ''
-  const deliveryRuntimeSection = deliveryRuntime ? renderDeliveryRuntime(deliveryRuntime) : ''
-
   return `<!doctype html><html lang="th"><head><meta charset="utf-8">
 <title>pulse — ${esc(repoName)}</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1508,8 +1257,7 @@ h1{display:flex;min-width:0;align-items:baseline;gap:var(--s3);margin:0;font:600
 main{display:grid;min-width:0;gap:var(--s7);padding-top:var(--s6)}.summary-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}.metric{min-width:0;padding:var(--s5);border-left:1px solid var(--line)}.metric:first-child{border-left:0}.metric-label,.metric-note{display:block;color:var(--dim);font-size:.82rem}.metric-value{display:block;margin:2px 0;font:600 2rem/1.2 var(--sans);font-variant-numeric:tabular-nums}.metric.bad .metric-value{color:var(--bad)}.metric.ok .metric-value{color:var(--ok)}.metric.warn .metric-value{color:var(--warn)}
 body[data-observation-freshness="stale"] .metric.ok .metric-value{color:var(--dim)}body[data-observation-freshness="stale"] .pill.running{background:color-mix(in srgb,var(--dim) 16%,transparent);color:var(--dim)}body[data-observation-freshness="stale"] .status-dot.running{background:var(--dim)}
 .diagnostics{border:1px solid color-mix(in oklch,var(--warn) 45%,var(--line));border-radius:var(--r-md);background:color-mix(in oklch,var(--warn) 8%,var(--surface));padding:var(--s4) var(--s5)}.diagnostics h2{margin:0 0 var(--s2);font-size:1rem}.diagnostics ul{display:grid;gap:var(--s2);margin:0;padding:0;list-style:none}.diagnostics li{display:flex;justify-content:space-between;gap:var(--s4);color:var(--dim);font-size:.875rem}.diagnostics strong{color:var(--ink);font-weight:500}.diagnostics code{font-size:.75rem}
-.delivery-loop{display:grid;min-width:0;gap:var(--s4)}.delivery-overview{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--s3)}.delivery-callout{min-width:0;padding:var(--s4)}.delivery-callout strong{display:block;font-size:1.05rem;overflow-wrap:anywhere}.delivery-callout p{margin:var(--s2) 0;color:var(--dim);font-size:.85rem}.delivery-callout code{font-size:.72rem;color:var(--dim);overflow-wrap:anywhere}.delivery-times{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--s3);margin:0}.delivery-times div{min-width:0;padding:var(--s3);border-left:3px solid var(--line);background:var(--surface-2)}.delivery-times dt{color:var(--dim);font-size:.75rem}.delivery-times dd{margin:2px 0 0;overflow-wrap:anywhere;font-size:.85rem}.delivery-times time{font-family:var(--mono);font-variant-numeric:tabular-nums}.delivery-model .detail-body>h3,.diagram-equivalent h3{margin:0 0 var(--s3);font-size:1rem}.phase-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s3)}.phase-card{min-width:0;padding:var(--s4);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md)}.delivery-attention{padding:var(--s4)}.delivery-attention h3{margin:0 0 var(--s2);font-size:1rem}.diagnostics-list{display:grid;gap:var(--s2);margin:0;padding:0;list-style:none}.diagnostics-list li{display:flex;min-width:0;justify-content:space-between;gap:var(--s4);color:var(--dim);font-size:.85rem}.diagnostics-list li>*{min-width:0;overflow-wrap:anywhere}.diagnostics-list strong{color:var(--ink);font-weight:500}
-.delivery-runtime{display:grid;min-width:0;gap:var(--s4)}.runtime-attention{min-width:0;padding:var(--s3) var(--s4);border:1px solid color-mix(in oklch,var(--warn) 45%,var(--line));border-radius:var(--r-md);background:color-mix(in oklch,var(--warn) 8%,var(--surface))}.runtime-attention-clear{border-color:var(--line);background:var(--surface-2)}.runtime-attention strong{display:block;font-weight:600}.runtime-attention p,.runtime-gate p,.runtime-terminal{margin:var(--s1) 0 0;color:var(--dim);font-size:.85rem;overflow-wrap:anywhere}.runtime-summary{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:var(--s3);margin:0}.runtime-summary div,.runtime-phase,.runtime-gate{min-width:0}.runtime-summary dt,.runtime-facts dt{color:var(--dim);font-size:.75rem}.runtime-summary dd{margin:2px 0 0;font-size:1.2rem;font-weight:600}.runtime-phase-list,.runtime-gate-list{display:grid;min-width:0;gap:var(--s3);margin:0;padding:0;list-style:none}.runtime-phase-list{grid-template-columns:repeat(4,minmax(0,1fr))}.runtime-phase,.runtime-gate{padding:var(--s3);border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2)}.runtime-row-head{display:flex;min-width:0;align-items:start;justify-content:space-between;flex-wrap:wrap;gap:var(--s2)}.runtime-row-head strong{min-width:0;overflow-wrap:anywhere}.runtime-state{display:inline-flex;flex:none;align-items:center;border:1px solid var(--line);border-radius:999px;padding:2px 7px;font-size:.72rem;line-height:1.4}.runtime-phase-state-blocked,.runtime-gate-state-escalated{color:var(--bad);border-color:color-mix(in oklch,var(--bad) 40%,var(--line))}.runtime-phase-state-handoff_pending,.runtime-gate-state-proposed,.runtime-gate-state-rejected{color:var(--warn);border-color:color-mix(in oklch,var(--warn) 40%,var(--line))}.runtime-phase-state-completed,.runtime-gate-state-accepted,.runtime-gate-state-consumed{color:var(--ok);border-color:color-mix(in oklch,var(--ok) 40%,var(--line))}.runtime-facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--s2);margin:var(--s3) 0 0}.runtime-facts dd{margin:1px 0 0;font-size:.82rem;overflow-wrap:anywhere}.runtime-terminal{padding-top:var(--s3);border-top:1px solid var(--line)}.runtime-terminal strong{color:var(--ink)}
+.diagram-equivalent h3{margin:0 0 var(--s3);font-size:1rem}
 .primary-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s5);align-items:start}.primary-grid-stacked{grid-template-columns:1fr}.section-head{display:flex;min-width:0;justify-content:space-between;align-items:end;gap:var(--s4);margin-bottom:var(--s3)}.section-head h2{margin:0;font:600 1.25rem/1.3 var(--sans);letter-spacing:-.01em}.section-head p{margin:var(--s1) 0 0;color:var(--dim);font-size:.875rem}.count{flex:none;color:var(--dim);font:500 .82rem var(--sans);font-variant-numeric:tabular-nums}.surface{min-width:0;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}.run-list{display:grid;min-width:0}.run-list-dense{grid-template-columns:repeat(2,minmax(0,1fr))}.run-item{min-width:0;padding:var(--s4);border-top:1px solid var(--line)}.run-item:first-child{border-top:0}.run-list-dense .run-item{border-left:1px solid var(--line)}.run-list-dense .run-item:nth-child(-n+2){border-top:0}.run-list-dense .run-item:nth-child(odd){border-left:0}.run-summary{display:flex;min-width:0;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:var(--s3)}.run-name{display:flex;min-width:0;max-width:100%;flex:1 1 12rem;align-items:center;gap:var(--s2)}.run-name code{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink);font:500 .9rem var(--mono)}.status-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--dim)}.status-dot.running{background:var(--ok)}.status-dot.starting,.status-dot.awaiting-verdict,.status-dot.unrecorded,.status-dot.orphan_running{background:var(--warn)}.status-dot.died,.status-dot.unknown{background:var(--bad)}
 .pill{display:inline-flex;align-items:center;white-space:nowrap;font:500 .75rem/1.4 var(--sans);padding:4px 9px;border-radius:999px}
 .pill.running{background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok)}
@@ -1523,7 +1271,6 @@ body[data-observation-freshness="stale"] .metric.ok .metric-value{color:var(--di
 .table-scroll{min-width:0;max-width:100%;overflow-x:auto}.table-scroll:focus-visible{outline:3px solid var(--focus);outline-offset:2px}table{border-collapse:collapse;width:100%;min-width:720px;font-size:.9rem}caption{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}th{text-align:left;color:var(--dim);font:500 .75rem var(--sans);letter-spacing:.04em;padding:var(--s3) var(--s4);border-bottom:1px solid var(--line)}td{min-width:0;padding:var(--s3) var(--s4);border-bottom:1px solid var(--line);vertical-align:top}td code{overflow-wrap:anywhere}tr:last-child td{border-bottom:0}.mono,code{font-family:var(--mono)}.num{font-variant-numeric:tabular-nums}.dim{color:var(--dim)}.warn{color:var(--warn)}
 .verdict-reject{color:var(--bad)}.verdict-pass{color:var(--ok)}.verdict-unresolved{color:var(--warn)}
 .details-stack{display:grid;min-width:0;gap:var(--s3)}.deep-dive{min-width:0;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}.deep-dive>summary{display:flex;min-width:0;align-items:center;justify-content:space-between;gap:var(--s4);cursor:pointer;padding:var(--s4) var(--s5);font-weight:500;list-style:none;overflow-wrap:anywhere}.deep-dive>summary::-webkit-details-marker{display:none}.deep-dive>summary::after{content:"+";flex:none;color:var(--dim);font:400 1.25rem var(--sans)}.deep-dive[open]>summary{border-bottom:1px solid var(--line)}.deep-dive[open]>summary::after{content:"−"}.detail-body{min-width:0;padding:var(--s4)}.graph-scroll,.diagram-scroll{min-width:0;max-width:100%;overflow-x:auto}.diagram-scroll{scrollbar-color:var(--line) transparent}.graph-scroll:focus-visible,.diagram-scroll:focus-visible{outline:3px solid var(--focus);outline-offset:3px}.graph-scroll svg,.diagram-scroll svg{display:block;min-width:720px;height:auto}.graph-legend,.diagram-legend{display:flex;flex-wrap:wrap;gap:var(--s2) var(--s4);margin:0 0 var(--s3);padding:0;list-style:none;color:var(--dim);font-size:.78rem}.graph-legend li,.diagram-legend li{display:flex;align-items:center;gap:var(--s2)}.legend-dot{width:10px;height:10px;border-radius:50%;border:2px solid var(--dim);background:transparent}.legend-dot.reached{background:var(--ink);border-color:var(--ink)}.legend-dot.pending{border-color:var(--dim)}.legend-dot.ok{background:var(--ok);border-color:var(--ok)}.legend-dot.warn{background:var(--warn);border-color:var(--warn)}.legend-dot.bad{background:var(--bad);border-color:var(--bad)}.legend-line{width:26px;border-top:2px solid var(--ink)}.legend-line.dashed{border-top-style:dashed}.legend-line.bad{border-top-color:var(--bad)}.graph-equivalent{margin-top:var(--s4);padding-top:var(--s4);border-top:1px solid var(--line)}.graph-equivalent h3{margin:0;font-size:1rem}.graph-equivalent>p{margin:var(--s2) 0;color:var(--dim);font-size:.82rem}.graph-equivalent ol{display:grid;gap:var(--s3);margin:var(--s3) 0 0;padding-left:1.35rem}.graph-equivalent li{padding-left:var(--s1)}.graph-stage-list{display:flex;flex-wrap:wrap;gap:var(--s1) var(--s2);margin-top:var(--s1);color:var(--dim);font-size:.76rem}.graph-stage-list span{padding:2px 6px;border:1px solid var(--line);border-radius:999px}.graph-stage-list [data-reached="true"]{color:var(--ink);border-color:var(--dim)}.diagram-note{margin:var(--s3) 0 0;color:var(--dim);font-size:.82rem}.diagram-equivalent{margin-top:var(--s4);padding-top:var(--s4);border-top:1px solid var(--line)}.diagram-equivalent p,.diagram-equivalent ol{margin:var(--s2) 0 0;color:var(--dim);font-size:.86rem}.diagram-equivalent ol{padding-left:1.35rem}.diagram-equivalent li+li{margin-top:var(--s2)}
-.delivery-svg{min-width:1120px}.delivery-svg .df-pm{fill:none;stroke:var(--dim);stroke-width:1.5;stroke-dasharray:6 5}.df-pm-label{font:500 14px var(--sans);fill:var(--dim)}.df-node rect{fill:var(--surface-2);stroke:var(--line);stroke-width:1.5}.df-final rect{fill:var(--bg);stroke-width:2}.df-title{font:600 15px var(--sans);fill:var(--ink)}.df-copy,.df-owner{font:11px var(--sans);fill:var(--dim)}.df-artifact{font:500 10px var(--mono);fill:var(--ink)}.df-artifact-label{font:600 11px var(--sans);fill:var(--ink)}.df-loop,.df-edge path{fill:none;stroke:var(--line);stroke-width:1.8}.df-edge marker path,.df-loop marker path,.df-exception marker path,.ds-flow marker path{fill:var(--line)}.df-selected path{stroke:var(--warn);stroke-width:3}.df-observed{font:600 11px var(--sans);fill:var(--warn)}.df-exception{fill:none;stroke:var(--bad);stroke-width:1.8;stroke-dasharray:5 4}.df-exception-label{font:11px var(--sans);fill:var(--bad)}.sequence-svg{min-width:980px}.ds-context{font:500 11px var(--sans);fill:var(--dim)}.ds-lane text{font:600 14px var(--sans);fill:var(--ink)}.ds-lane path{stroke:var(--line);stroke-dasharray:4 4}.ds-flow path{stroke:var(--line);stroke-width:1.8;fill:none}.ds-flow text{font:11px var(--sans);fill:var(--ink)}.ds-flow .ds-terminal{fill:var(--bad);font-weight:500}.ds-flow .ds-exception{stroke:var(--bad);stroke-dasharray:5 4}
 .l-box{fill:var(--surface);stroke:var(--line);stroke-width:1.5}
 .l-store{fill:var(--bg)}
 .l-dia{fill:var(--surface);stroke:var(--line);stroke-width:1.5}
@@ -1547,11 +1294,11 @@ body[data-observation-freshness="stale"] .metric.ok .metric-value{color:var(--di
 .g-warn{stroke:var(--warn)}.g-warn.g-dot,.g-warn.g-tag{fill:var(--warn)}
 .g-bad{stroke:var(--bad)}.g-bad.g-dot,.g-bad.g-tag{fill:var(--bad)}
 footer{margin-top:var(--s7);padding-top:var(--s4);border-top:1px solid var(--line);color:var(--dim);font-size:.82rem}footer details summary{cursor:pointer;width:max-content;color:var(--ink)}footer ul{max-width:78ch;margin:var(--s3) 0 0;padding-left:1.25rem}footer code{font-size:.76rem}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}summary:focus-visible,a:focus-visible{outline:3px solid var(--focus);outline-offset:3px}
-@media(max-width:820px){body{padding:var(--s4)}.site-header{display:grid}.header-status,.status-badges{justify-content:flex-start;text-align:left}.summary-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.metric{border-top:1px solid var(--line)}.metric:nth-child(-n+2){border-top:0}.metric:nth-child(odd){border-left:0}.delivery-overview{grid-template-columns:1fr}.runtime-summary{grid-template-columns:repeat(3,minmax(0,1fr))}.runtime-phase-list{grid-template-columns:repeat(2,minmax(0,1fr))}.primary-grid,.run-list-dense{grid-template-columns:1fr}.run-list-dense .run-item{border-left:0}.run-list-dense .run-item:nth-child(2){border-top:1px solid var(--line)}main{gap:var(--s6)}}
-@media(max-width:620px){h1{display:grid;gap:2px;font-size:1.5rem}.header-status,.status-badges{display:grid;justify-items:start}.quality{white-space:normal}.metric{padding:var(--s4)}.metric-value{font-size:1.65rem}.section-head{align-items:start}.delivery-times,.phase-grid,.runtime-phase-list{grid-template-columns:1fr}.runtime-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.runtime-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.runtime-facts div:first-child{grid-column:1/-1}.run-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.run-facts div:last-child{grid-column:1/-1}.warning-list li{grid-template-columns:1fr auto}.warning-list p{grid-column:1/-1}.responsive-table table,.responsive-table tbody,.responsive-table tr,.responsive-table td{display:block;min-width:0}.responsive-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}.responsive-table tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s3);padding:var(--s4);border-top:1px solid var(--line)}.responsive-table tbody tr:first-child{border-top:0}.responsive-table td{padding:0;border:0;overflow-wrap:anywhere}.responsive-table td:first-child{grid-column:1/-1}.responsive-table td::before{content:attr(data-label);display:block;margin-bottom:2px;color:var(--dim);font-size:.7rem}.deep-dive>summary{padding:var(--s4)}.detail-body{padding:var(--s3)}.graph-legend,.diagram-legend{display:grid}}
+@media(max-width:820px){body{padding:var(--s4)}.site-header{display:grid}.header-status,.status-badges{justify-content:flex-start;text-align:left}.summary-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.metric{border-top:1px solid var(--line)}.metric:nth-child(-n+2){border-top:0}.metric:nth-child(odd){border-left:0}.primary-grid,.run-list-dense{grid-template-columns:1fr}.run-list-dense .run-item{border-left:0}.run-list-dense .run-item:nth-child(2){border-top:1px solid var(--line)}main{gap:var(--s6)}}
+@media(max-width:620px){h1{display:grid;gap:2px;font-size:1.5rem}.header-status,.status-badges{display:grid;justify-items:start}.quality{white-space:normal}.metric{padding:var(--s4)}.metric-value{font-size:1.65rem}.section-head{align-items:start}.run-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.run-facts div:last-child{grid-column:1/-1}.warning-list li{grid-template-columns:1fr auto}.warning-list p{grid-column:1/-1}.responsive-table table,.responsive-table tbody,.responsive-table tr,.responsive-table td{display:block;min-width:0}.responsive-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}.responsive-table tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s3);padding:var(--s4);border-top:1px solid var(--line)}.responsive-table tbody tr:first-child{border-top:0}.responsive-table td{padding:0;border:0;overflow-wrap:anywhere}.responsive-table td:first-child{grid-column:1/-1}.responsive-table td::before{content:attr(data-label);display:block;margin-bottom:2px;color:var(--dim);font-size:.7rem}.deep-dive>summary{padding:var(--s4)}.detail-body{padding:var(--s3)}.graph-legend,.diagram-legend{display:grid}}
 @media(max-width:360px){body{padding:var(--s3)}.summary-strip,.runtime-summary{grid-template-columns:1fr}.metric,.metric:nth-child(-n+2){border-top:1px solid var(--line);border-left:0}.metric:first-child{border-top:0}.run-facts{grid-template-columns:1fr}.run-facts div:last-child{grid-column:auto}.responsive-table tr{grid-template-columns:1fr}.responsive-table td:first-child{grid-column:auto}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}}
-@media(forced-colors:active){.df-selected path{stroke:Highlight;stroke-width:4}.df-observed,.df-exception-label,.ds-flow .ds-terminal{color:CanvasText;fill:CanvasText}.df-node rect,.df-pm{stroke:CanvasText}.graph-scroll:focus-visible,.diagram-scroll:focus-visible{outline-color:Highlight}.legend-dot,.legend-line{border-color:CanvasText;background:CanvasText}}
+@media(forced-colors:active){.graph-scroll:focus-visible,.diagram-scroll:focus-visible{outline-color:Highlight}.legend-dot,.legend-line{border-color:CanvasText;background:CanvasText}}
 </style></head><body data-observation-freshness="${initiallyStale ? 'stale' : 'fresh'}"><div class="wrap">
 
 <a class="skip-link" href="#main">ข้ามไปยังสถานะงาน</a>
@@ -1585,10 +1332,6 @@ ${renderNav('pulse')}
   </section>
 
   ${notes.length ? `<section class="diagnostics" aria-labelledby="diagnostics-title"><h2 id="diagnostics-title">คุณภาพข้อมูลต้องตรวจสอบ</h2><ul>${diagnosticItems}</ul></section>` : ''}
-
-  ${deliverySection}
-
-  ${deliveryRuntimeSection}
 
   <div class="primary-grid${densePrimary ? ' primary-grid-stacked' : ''}" data-layout="${densePrimary ? 'stacked-dense' : 'paired'}">
     <section aria-labelledby="attention-title">
@@ -1748,22 +1491,6 @@ function readProjectionInput(path, unreadableCode, invalidCode) {
   }
 }
 
-function readDeliveryLoopInput() {
-  return readProjectionInput(
-    DELIVERY_LOOP_PATH,
-    'DELIVERY_LOOP_INPUT_UNREADABLE',
-    'DELIVERY_LOOP_INPUT_INVALID',
-  )
-}
-
-function readDeliveryRuntimeInput() {
-  return readProjectionInput(
-    DELIVERY_RUNTIME_PATH,
-    'DELIVERY_RUNTIME_INPUT_UNREADABLE',
-    'DELIVERY_RUNTIME_INPUT_INVALID',
-  )
-}
-
 function readTeamGraphInput() {
   const input = readProjectionInput(
     TEAM_GRAPH_PATH,
@@ -1812,13 +1539,6 @@ const sourceContentIdentity = (path) => {
     return `sha256:${sha256(readFileSync(path))}`
   } catch { return null }
 }
-const sourceIdentity = (path) => {
-  if (!path) return null
-  let canonical = path
-  try { canonical = realpathSync(path) } catch { /* unresolved inputs remain stable and private */ }
-  return `sha256:${sha256(canonical)}`
-}
-
 function bundleManifest(snapshot, jsonText, html, graphHtml, kanbanHtml) {
   return `${JSON.stringify({
     schema: 'tmux-teams.pulse-bundle',
@@ -1864,8 +1584,6 @@ function priorStream(view, targetVersion) {
 
 function once() {
   const startedAt = Date.now()
-  const deliveryLoopInput = readDeliveryLoopInput()
-  const deliveryRuntimeInput = readDeliveryRuntimeInput()
   const teamGraphInput = readTeamGraphInput()
   const teamRuntimeInput = readTeamRuntimeInput()
   // Same check the legacy graph page ran, taken straight from the contract
@@ -1895,12 +1613,6 @@ function once() {
     const snapshot = projectPulseV4(
       view,
       meta,
-      deliveryLoopInput.value,
-      deliveryLoopInput.issue,
-      Boolean(DELIVERY_LOOP_PATH),
-      deliveryRuntimeInput.value,
-      deliveryRuntimeInput.issue,
-      Boolean(DELIVERY_RUNTIME_PATH),
       teamGraphInput.value,
       teamGraphInput.issue,
       Boolean(TEAM_GRAPH_PATH),
@@ -1994,8 +1706,6 @@ function desiredWatcherConfig(pid) {
   return {
     pid,
     schema_version: PULSE_SCHEMA_VERSION_V4,
-    delivery_loop_source: sourceIdentity(DELIVERY_LOOP_PATH),
-    delivery_runtime_source: sourceIdentity(DELIVERY_RUNTIME_PATH),
     team_graph_source: sourceContentIdentity(TEAM_GRAPH_PATH),
     team_runtime_source: sourceContentIdentity(TEAM_RUNTIME_PATH),
     time_zone: DISPLAY_TIME_ZONE,
@@ -2008,22 +1718,14 @@ function readWatcherConfig() {
     if (!stats.isFile() || stats.size > 4096) return null
     const value = JSON.parse(readFileSync(WATCH_CONFIG, 'utf8'))
     if (!value || typeof value !== 'object' || Array.isArray(value) ||
-        Object.keys(value).length !== 7 ||
+        Object.keys(value).length !== 5 ||
         !Object.hasOwn(value, 'pid') ||
         !Object.hasOwn(value, 'schema_version') ||
-        !Object.hasOwn(value, 'delivery_loop_source') ||
-        !Object.hasOwn(value, 'delivery_runtime_source') ||
         !Object.hasOwn(value, 'team_graph_source') ||
         !Object.hasOwn(value, 'team_runtime_source') ||
         !Object.hasOwn(value, 'time_zone') ||
         !Number.isSafeInteger(value.pid) || value.pid < 1 ||
         value.schema_version !== PULSE_SCHEMA_VERSION_V4 ||
-        !(value.delivery_loop_source === null ||
-          typeof value.delivery_loop_source === 'string' &&
-            /^sha256:[0-9a-f]{64}$/.test(value.delivery_loop_source)) ||
-        !(value.delivery_runtime_source === null ||
-          typeof value.delivery_runtime_source === 'string' &&
-            /^sha256:[0-9a-f]{64}$/.test(value.delivery_runtime_source)) ||
         !(value.team_graph_source === null ||
           typeof value.team_graph_source === 'string' &&
             /^sha256:[0-9a-f]{64}$/.test(value.team_graph_source)) ||
@@ -2046,8 +1748,6 @@ function watcherConfigMatches(pid) {
   return actual !== null &&
     actual.pid === desired.pid &&
     actual.schema_version === desired.schema_version &&
-    actual.delivery_loop_source === desired.delivery_loop_source &&
-    actual.delivery_runtime_source === desired.delivery_runtime_source &&
     actual.team_graph_source === desired.team_graph_source &&
     actual.team_runtime_source === desired.team_runtime_source &&
     actual.time_zone === desired.time_zone
@@ -2097,7 +1797,7 @@ if (cmd === 'ensure') {
     if (!claim.pid) { console.error('[pulse] could not claim watcher pidfile'); process.exit(1) }
     if (!watcherConfigMatches(claim.pid)) {
       console.error(
-        '[pulse] watcher mode/input mismatch; stop the existing watcher before changing --delivery-loop, --delivery-runtime, --team-graph, --team-runtime, or --time-zone',
+        '[pulse] watcher mode/input mismatch; stop the existing watcher before changing --team-graph, --team-runtime, or --time-zone',
       )
       process.exit(1)
     }
@@ -2118,8 +1818,6 @@ if (cmd === 'ensure') {
     process.exit(1)
   }
   const watchArgs = [THIS_SCRIPT, 'watch', REPO, '--interval', String(INTERVAL), '--managed']
-  if (DELIVERY_LOOP_PATH) watchArgs.push('--delivery-loop', DELIVERY_LOOP_PATH)
-  if (DELIVERY_RUNTIME_PATH) watchArgs.push('--delivery-runtime', DELIVERY_RUNTIME_PATH)
   if (TEAM_GRAPH_PATH) watchArgs.push('--team-graph', TEAM_GRAPH_PATH)
   if (TEAM_RUNTIME_PATH) watchArgs.push('--team-runtime', TEAM_RUNTIME_PATH)
   watchArgs.push('--time-zone', DISPLAY_TIME_ZONE)

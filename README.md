@@ -565,21 +565,15 @@ evidence for the phase flowchart; a missing or untrusted attribution remains
 unassigned rather than being inferred from a task name, worker, timestamp, or
 apparent handoff. Existing v3 documents remain described by
 `pulse-v3.schema.json`; v4 adds the optional, closed `delivery_runtime` field
-and otherwise references the v3 definitions. The bounded `delivery_loop` and
-`delivery_runtime` inputs appear only when their projections are named:
+and otherwise references the v3 definitions. The `delivery_loop` and `delivery_runtime` fields those schemas declare are no
+longer produced or accepted: the four-phase pilot that wrote them, and the
+`--delivery-loop` / `--delivery-runtime` flags that read them, were removed on
+2026-08-02. The schemas keep the definitions so an on-disk snapshot written
+before that date still validates and still upgrades.
 
 ```bash
-node plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs json \
-  <repo> --delivery-loop <absolute-pulse-projection.json>
-node plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs json \
-  <repo> --delivery-runtime <absolute-delivery-runtime.json>
 node plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs compat-v1 <repo>
 ```
-
-Both projection flags still parse and still read whatever file you name, but
-nothing shipped writes either projection any more. A reader who passes one and
-sees an ordinary exit 0 is not missing a step; there is no producer left to
-name.
 
 `compat-v1` writes a v1 down-projection to stdout only; it does not create a
 second persisted snapshot.

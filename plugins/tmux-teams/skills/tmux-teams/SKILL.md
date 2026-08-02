@@ -674,18 +674,18 @@ from a task name, worker, provider or timestamp. `compat-v1` is a stdout-only
 down-projection for consumers that require the older v1 contract.
 
 ```bash
-node <skill-root>/scripts/pulse.mjs once  <repo> [--delivery-loop FILE] [--delivery-runtime FILE] [--time-zone Asia/Bangkok]
-node <skill-root>/scripts/pulse.mjs json  <repo> [--delivery-loop FILE] [--delivery-runtime FILE] [--time-zone Asia/Bangkok]
-node <skill-root>/scripts/pulse.mjs watch <repo> [--interval 20] [--delivery-loop FILE] [--delivery-runtime FILE] [--time-zone Asia/Bangkok]
-node <skill-root>/scripts/pulse.mjs ensure <repo> [--interval 20] [--delivery-loop FILE] [--delivery-runtime FILE] [--time-zone Asia/Bangkok]
+node <skill-root>/scripts/pulse.mjs once  <repo> [--time-zone Asia/Bangkok]
+node <skill-root>/scripts/pulse.mjs json  <repo> [--time-zone Asia/Bangkok]
+node <skill-root>/scripts/pulse.mjs watch <repo> [--interval 20] [--time-zone Asia/Bangkok]
+node <skill-root>/scripts/pulse.mjs ensure <repo> [--interval 20] [--time-zone Asia/Bangkok]
 node <skill-root>/scripts/pulse.mjs compat-v1 <repo>
 ```
 
-`--delivery-loop` and `--delivery-runtime` still parse and still read whatever
-file you name — Pulse sanitizes and observes it, and never actuates on it. But
-nothing shipped writes either projection any more: the four-phase pilot and its
-governed gate that produced them were removed. Passing one and getting an
-ordinary exit 0 is not a missed step; there is no producer left to name.
+`--delivery-loop` and `--delivery-runtime` are gone, along with the four-phase
+pilot and its governed gate that produced the projections they read. Note that
+`pulse.mjs` does not reject an unrecognised flag: passing one now exits 0 and
+does nothing at all. That permissiveness predates this removal and is worth
+fixing, but until it is, a stale command in a script will fail silently.
 
 Pulse retains `--team-graph` and `--team-runtime` for an older optional Pulse
 projection. Those inputs are not the workflow declaration. The active delivery

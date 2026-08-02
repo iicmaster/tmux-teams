@@ -18,11 +18,9 @@ const repo = () => {
 }
 const pidfile = (dir) => join(dir, '.tmux-teams', 'pulse-watch.pid')
 const configFile = (dir) => join(dir, '.tmux-teams', 'pulse-watch.config.json')
-const sourceId = (path) => `sha256:${createHash('sha256').update(path).digest('hex')}`
-const run = (dir, { timeZone = null, deliveryRuntime = null, teamGraph = null, teamRuntime = null, extraEnv = {} } = {}) => {
+const run = (dir, { timeZone = null, teamGraph = null, teamRuntime = null, extraEnv = {} } = {}) => {
   const args = [PULSE, 'ensure', dir, '--interval', '60']
   if (timeZone) args.push('--time-zone', timeZone)
-  if (deliveryRuntime) args.push('--delivery-runtime', deliveryRuntime)
   if (teamGraph) args.push('--team-graph', teamGraph)
   if (teamRuntime) args.push('--team-runtime', teamRuntime)
   return spawnSync(process.execPath, args, {
@@ -92,8 +90,6 @@ test('ensure reuses only a watcher with the same canonical timezone', async () =
     assert.deepEqual(JSON.parse(readFileSync(configFile(dir), 'utf8')), {
       pid,
       schema_version: 4,
-      delivery_loop_source: null,
-      delivery_runtime_source: null,
       team_graph_source: null,
       team_runtime_source: null,
       time_zone: 'America/New_York',
@@ -117,7 +113,7 @@ test('ensure reuses only a watcher with the same canonical timezone', async () =
     const changed = run(dir, { timeZone: 'UTC' })
     assert.equal(changed.status, 1)
     assert.match(changed.stderr, /watcher mode\/input mismatch/)
-    assert.match(changed.stderr, /--delivery-loop, --delivery-runtime, --team-graph, --team-runtime, or --time-zone/)
+    assert.match(changed.stderr, /--team-graph, --team-runtime, or --time-zone/)
     assert.equal(Number(readFileSync(file, 'utf8').trim()), pid)
     assert.ok(alive(pid), 'mismatch must not replace or stop the existing watcher')
   } finally {
@@ -125,32 +121,12 @@ test('ensure reuses only a watcher with the same canonical timezone', async () =
   }
 })
 
-test('ensure forwards delivery runtime input while watcher config stores only its source identity', async () => {
-  const dir = repo()
-  const file = pidfile(dir)
-  const runtimePath = join(dir, 'private-runtime.json')
-  writeFileSync(runtimePath, '{}\n')
-  let pid
-  try {
-    const first = run(dir, { deliveryRuntime: runtimePath })
-    assert.equal(first.status, 0, first.stderr)
-    pid = Number(readFileSync(file, 'utf8').trim())
-    assert.ok(alive(pid))
-    const configText = readFileSync(configFile(dir), 'utf8')
-    const config = JSON.parse(configText)
-    assert.equal(config.schema_version, 4)
-    assert.equal(config.delivery_runtime_source, sourceId(runtimePath))
-    assert.equal(config.delivery_loop_source, null)
-    assert.equal(configText.includes(runtimePath), false)
-
-    const same = run(dir, { deliveryRuntime: runtimePath })
-    assert.equal(same.status, 0, same.stderr)
-    assert.match(same.stdout, /watcher already running/)
-  } finally {
-    if (pid) await stop(pid, file)
-  }
-})
-
+// The `--delivery-runtime` ensure test lived here. It asserted that an opt-in
+// projection path is forwarded to the detached watcher while the config records
+// only a digest of the path, never the path itself. The flag is gone, and the
+// claim survives unchanged one test down: `--team-runtime` makes the same
+// forwarding-and-privacy assertion, and the timezone test above still proves an
+// unconfigured source is recorded as null.
 test('ensure identity includes the team runtime content digest and forwards its path privately', async () => {
   const dir = repo()
   const file = pidfile(dir)

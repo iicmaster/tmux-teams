@@ -7,7 +7,6 @@ import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   downProjectPulseV1,
-  downProjectPulseV2,
   downProjectPulseV3,
   projectPulseV4,
 } from '../plugins/tmux-teams/skills/tmux-teams/scripts/pulse-data.mjs'
@@ -70,9 +69,11 @@ test('a persisted prior-version snapshot upgrades to v4 once, keeping its stream
     const dir = repo()
     const current = runJson(dir).snapshot
     // v1 and v3 come from the shipped down-projectors, which is higher fidelity
-    // than a hand-written stub. v2 cannot: downProjectPulseV2 refuses a snapshot
-    // with no `delivery_loop` (pulse-data.mjs:2358), and the ordinary loop does
-    // not emit one — so that seed is a v3 projection wearing a v2 version.
+    // than a hand-written stub. v2 has no down-projector at all — the schema
+    // requires a `delivery_loop` projection that nothing can produce since the
+    // phase subsystem went — so that seed is a v3 projection wearing a v2
+    // version number. That is exactly what the upgrade path must cope with:
+    // `priorStream` judges a persisted file by `schema_version` alone.
     const prior = priorVersion === 1 ? downProjectPulseV1(current)
       : priorVersion === 3 ? downProjectPulseV3(current)
         : { ...downProjectPulseV3(current), schema_version: 2 }
@@ -168,10 +169,7 @@ test('compat-v1 writes to stdout only, leaves the SSOT untouched, and fails clos
   }
 })
 
-function publishedV4WithDeliveryLoop() {
-  const dir = repo()
-  return runJson(dir, ['--delivery-loop', join(dir, 'delivery-loop.json')]).snapshot
-}
+const publishedV4 = () => runJson(repo()).snapshot
 
 function producerStates() {
   const now = Date.parse('2026-07-29T00:00:00.000Z')
@@ -394,15 +392,19 @@ test('Pulse v4 output validates against the frozen v4 schema', () => {
 })
 
 test('Pulse v1 compatibility output validates against the frozen v1 schema', () => {
-  assertSchema(downProjectPulseV1(publishedV4WithDeliveryLoop()), SCHEMA_PATHS.v1, 'v1 compatibility output')
+  assertSchema(downProjectPulseV1(publishedV4()), SCHEMA_PATHS.v1, 'v1 compatibility output')
 })
 
-test('Pulse v2 compatibility output validates against the frozen v2 schema', () => {
-  assertSchema(downProjectPulseV2(publishedV4WithDeliveryLoop()), SCHEMA_PATHS.v2, 'v2 compatibility output')
-})
+// There is no v2 case. The v2 schema REQUIRES `delivery_loop`; the projection
+// and its `--delivery-loop` input are gone, so the only snapshot that could
+// satisfy `downProjectPulseV2` would be a stub this file wrote itself — a test
+// asserting that a deleted shape still validates against its own stub. The
+// down-projector was deleted with it. `pulse-v2.schema.json` stays frozen and
+// is still exercised: plugin-structure.test.mjs checks its required-completeness
+// invariant, and the upgrade test above still seeds a v2-versioned file on disk.
 
 test('Pulse v3 compatibility output validates against the frozen v3 schema', () => {
-  assertSchema(downProjectPulseV3(publishedV4WithDeliveryLoop()), SCHEMA_PATHS.v3, 'v3 compatibility output')
+  assertSchema(downProjectPulseV3(publishedV4()), SCHEMA_PATHS.v3, 'v3 compatibility output')
 })
 
 test('golden render agrees with its published Pulse snapshot', () => {
@@ -413,12 +415,13 @@ test('golden render agrees with its published Pulse snapshot', () => {
     'the render must identify the snapshot it read')
 })
 
+// v2 is absent from this list for the same reason it has no down-projector: no
+// producer can emit the `delivery_loop` its schema requires. Every state in the
+// vocabulary is still checked against the three shapes that can be produced.
 test('every producer state survives every versioned Pulse consumer', () => {
   const v4 = vocabularySnapshot()
-  const v2Source = { ...publishedV4WithDeliveryLoop(), runs: v4.runs, summary: v4.summary }
   const consumers = [
     ['v1', downProjectPulseV1(v4), SCHEMA_PATHS.v1],
-    ['v2', downProjectPulseV2(v2Source), SCHEMA_PATHS.v2],
     ['v3', downProjectPulseV3(v4), SCHEMA_PATHS.v3],
     ['v4', v4, SCHEMA_PATHS.v4],
   ]
