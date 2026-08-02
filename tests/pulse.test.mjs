@@ -315,6 +315,53 @@ test('the page is Thai-first and ordered for scanning before deep reading', () =
     'the unfocused skip link must be fully clipped so stitched full-page screenshots cannot expose it')
 })
 
+// Salvaged from pulse-v2.test.mjs before that file goes with the phase
+// subsystem. `assertPublishLock` and `atomicWrite` appear in no other test, so
+// this was the only thing standing between a reclaimed publisher and a
+// half-written page — and it would have been deleted as collateral.
+test('publish fencing is checked inside each atomic rename boundary', () => {
+  const source = readFileSync(PULSE, 'utf8')
+  const atomicWrite = source.slice(
+    source.indexOf('function atomicWrite('),
+    source.indexOf('\nfunction atomicWriteIfChanged('),
+  )
+  assert.match(atomicWrite,
+    /if \(publishToken !== null\) assertPublishLock\(publishToken\)\s+renameSync\(temp, path\)/,
+    'a reclaimed publisher must be fenced out immediately before rename')
+  for (const call of [
+    'atomicWriteIfChanged(FONT_CSS_OUT, KANIT_FONT_CSS, token)',
+    'atomicWrite(JSON_OUT, jsonText, token)',
+    'atomicWrite(OUT, html, token)',
+    'atomicWrite(GRAPH_OUT, graphHtml, token)',
+    'atomicWrite(KANBAN_OUT, kanbanHtml, token)',
+    'atomicWrite(BUNDLE_OUT, bundleText, token)',
+  ]) {
+    assert.ok(source.includes(call), `publisher is missing the lock token: ${call}`)
+  }
+})
+
+// Also salvaged. `dispatchLifecycleSvg` was defined in this file and never
+// called; the only test that rendered the diagram lived in the dying file, and
+// the a11y half of it was `function assertSvgA11y(svg, titleId, descId) {}` —
+// an empty body, so three call sites asserted nothing at all. Written out here
+// against the markup pulse.mjs actually emits rather than carried over blank.
+test('the dispatch lifecycle diagram renders, is labelled, and says it is a model', () => {
+  const html = render(repo())
+  const loop = dispatchLifecycleSvg(html)
+  assert.match(loop, /role="img"/)
+  assert.match(loop, /aria-labelledby="worker-lifecycle-title worker-lifecycle-desc"/)
+  assert.match(loop, /<title id="worker-lifecycle-title">[^<]+<\/title>/)
+  assert.match(loop, /<desc id="worker-lifecycle-desc">[^<]+<\/desc>/)
+  // The caveat is the point of the picture: it is a responsibility model, and a
+  // reader who takes it for live state is reading a claim nobody made.
+  assert.match(loop, /โมเดลเชิงบรรทัดฐาน/)
+  assert.match(loop, /ไม่ใช่สถานะสด/)
+})
+
+test('the published page reaches nothing outside itself', () => {
+  assert.doesNotMatch(readFileSync(PULSE, 'utf8'), /https?:\/\/|\b(?:fetch|XMLHttpRequest)\s*\(/)
+})
+
 test('the Kanit payload is content-addressed, offline, and not rewritten on refresh', () => {
   const dir = repo()
   const cssHash = createHash('sha256').update(KANIT_FONT_CSS).digest('hex')
@@ -336,6 +383,14 @@ test('the Kanit payload is content-addressed, offline, and not rewritten on refr
   assert.equal(readFileSync(cssPath, 'utf8'), KANIT_FONT_CSS)
   assert.equal(statSync(cssPath).mtimeMs, mtimeBefore, 'unchanged static payload must not be rewritten')
   assert.equal(JSON.parse(readFileSync(join(dir, '.tmux-teams', 'pulse.json'), 'utf8')).sequence, 2)
+
+  // Salvaged from pulse-v2.test.mjs. Not-rewritten-when-unchanged and
+  // repaired-when-corrupt are opposite halves of the same rule, and only the
+  // first half was tested here — the half that proves the page cannot be left
+  // pointing at a broken asset lived in the file the phase deletion takes.
+  writeFileSync(cssPath, 'corrupt\n')
+  render(dir)
+  assert.equal(readFileSync(cssPath, 'utf8'), KANIT_FONT_CSS, 'a corrupted font payload must be republished')
 })
 
 test('the grace window covers a slow cold start', () => {
