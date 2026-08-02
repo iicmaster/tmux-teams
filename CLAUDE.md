@@ -124,7 +124,11 @@ SSOT for this and for everything `graph.html` may draw.
 ## Rules
 
 - Only release and plugin files are tracked: `.github/`, `.claude-plugin/`,
-  `.gitignore`, `plugins/`, `tests/`, `scripts/`, `README.md`, and `CLAUDE.md`.
+  `.gitignore`, `plugins/`, `tests/`, `scripts/`, `README.md`, `CLAUDE.md`, and
+  `HANDOFF.md`. The last is the state of play between sessions — what shipped,
+  what is open, what was decided and must not be relitigated, and where the
+  disagreements were left. It is tracked so a fresh clone gets it too; a handoff
+  only one machine can read is a handoff to nobody.
   BMAD scaffold dirs are gitignored — keep it that way. (`scripts/` was added
   2026-07-29 for `run-fast.mjs`: the Commands section above documents it, so it
   has to exist for anyone who clones this. Dev tooling only — nothing the
