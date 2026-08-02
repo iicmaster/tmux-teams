@@ -96,7 +96,16 @@ const find = (tour, from, to, kind) =>
   tour.edges.find((e) => e.from === from && e.to === to && e.kind === kind)
 const edgesOf = (tour, kind) => tour.edges.filter((e) => e.kind === kind)
 
-test('an edge is dashed until evidence hardens it', () => {
+// A seat's lines to its dispatcher and its evaluator are STRUCTURE, and
+// structure does not accumulate. They used to harden from dashed to solid once
+// a leg had crossed them, which made the board a record of where work had BEEN
+// — a different question from the one it answers. They stay dashed no matter
+// how much has run through them; while a worker is actually running, the `live`
+// class moves that one line and nothing else does.
+//
+// Solid still means evidence everywhere else on the board: owns, pull,
+// escalate, passed and the route wires are untouched.
+test('a seat keeps its structural lines dashed however much work crosses them', () => {
   const dry = buildTour(CONTROLLED)
   assert.equal(find(dry, 'build_d', 'b1', 'assign').solid, false)
 
@@ -104,17 +113,16 @@ test('an edge is dashed until evidence hardens it', () => {
     new Map([['b1', { dispatched: true, settled: true }]]),
     undefined,
     new Map([['build', { rejected: true }]]))
-  assert.equal(find(live, 'build_d', 'b1', 'assign').solid, true)
-  assert.equal(find(live, 'b1', 'build_e', 'judge').solid, true)
+  assert.equal(find(live, 'build_d', 'b1', 'assign').solid, false, 'a delivered leg is not a solid line')
+  assert.equal(find(live, 'b1', 'build_e', 'judge').solid, false)
+  assert.equal(find(live, 'build_e', 'build_d', 'reject').solid, false)
   // Rework goes back to the QUEUE, not to the worker who was judged: rejected
   // work is dispatched again, possibly to someone else, and only once the team
   // is under its WIP limit. So it is one line per team, not one per worker.
-  assert.equal(find(live, 'build_e', 'build_d', 'reject').solid, true)
   assert.equal(find(live, 'build_e', 'b1', 'reject'), undefined)
   assert.equal(edgesOf(live, 'reject').filter((e) => e.from === 'build_e').length, 1)
-  // Evidence belongs to the seat that produced it, never to its neighbour.
-  assert.equal(find(live, 'build_d', 'b2', 'assign').solid, false)
-  assert.equal(find(live, 'qa_e', 'qa_d', 'reject').solid, false)
+  // The structural lines that were never evidence-driven keep their solidity.
+  assert.equal(find(live, 'team:build', 'build_d', 'owns').solid, true)
 })
 
 test('the sink counts audited work, and only audited work', () => {

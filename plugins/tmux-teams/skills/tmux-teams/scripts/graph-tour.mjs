@@ -167,8 +167,15 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
       // as an observed one — the exact attestation-over-evidence failure this
       // whole page exists to refuse.
       const seenWorker = cards.get(workerId) || {}
-      edges.push({ from: team.dispatcher_id, to: workerId, kind: 'assign', solid: Boolean(seenWorker.dispatched) })
-      edges.push({ from: workerId, to: team.evaluator_id, kind: 'judge', solid: Boolean(seenWorker.settled) })
+      // A seat's relationship to its dispatcher and its evaluator is STRUCTURE:
+      // it is true before any work arrives and stays true after the work leaves.
+      // These used to harden from dashed to solid once a leg had crossed them,
+      // which turned the board into a record of where work had BEEN — a
+      // different question from the one this page answers. They stay dashed;
+      // the only time one moves is while a worker is actually running on it,
+      // which the `live` class does.
+      edges.push({ from: team.dispatcher_id, to: workerId, kind: 'assign', solid: false })
+      edges.push({ from: workerId, to: team.evaluator_id, kind: 'judge', solid: false })
     })
 
     // Rework returns to the team's own DISPATCHER — one line per team, not one
@@ -177,7 +184,7 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
     // into the queue and is dispatched again, which may well be to someone
     // else and only once the team is under its WIP limit.
     edges.push({
-      from: team.evaluator_id, to: team.dispatcher_id, kind: 'reject', solid: Boolean(facts.rejected),
+      from: team.evaluator_id, to: team.dispatcher_id, kind: 'reject', solid: false,
     })
 
     // Structure, not a claim about the past: this team HAS that dispatcher
@@ -369,6 +376,8 @@ export function renderTourChart(tour, { describedBy = 'tour-desc' } = {}) {
       <span class="tour-stamp" data-tour-stamp aria-live="polite"></span>
       <button type="button" data-tour-prev aria-label="Previous scene">←</button>
       <button type="button" data-tour-next aria-label="Next scene">→</button>
+      <button type="button" data-tour-full aria-label="Show only the board, full screen"
+       aria-pressed="false">full</button>
     </div>
   </div>
   <noscript><p class="tour-noscript">This board is drawn by the page itself, so it needs JavaScript.
@@ -382,8 +391,14 @@ export const TOUR_CSS = `
 /* The board is four rows tall plus headroom for the escalation arc, so the
    stage height — not the page width — is what decides how far the camera has
    to zoom out. Too short and every card is scaled past legibility; too tall
-   and the page scrolls, which costs more than the zoom buys. */
-.tour{display:grid;grid-template-rows:minmax(470px,62vh) auto;border-block:1px solid var(--line);background:var(--bg)}
+   and the page scrolls, which costs more than the zoom buys. Raised once the
+   header above it went from three bars to one: the room that freed belongs to
+   the board, which is the only thing on this page anyone came to look at. */
+.tour{display:grid;grid-template-rows:minmax(560px,78vh) auto;border-block:1px solid var(--line);background:var(--bg)}
+/* Real fullscreen, not a CSS imitation: the browser hides its own chrome, which
+   is the space a CSS overlay cannot reach, and Escape already means exit. */
+.tour:fullscreen{grid-template-rows:1fr auto;height:100vh;background:var(--bg)}
+.tour:fullscreen .tour-stage{height:auto}
 .tour-stage{position:relative;overflow:hidden;cursor:grab;touch-action:none}
 .tour-stage:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
 /* Under a hand the camera must track the cursor exactly; the scene ease is for
@@ -472,9 +487,16 @@ export const TOUR_CSS = `
 .w-route1{stroke:var(--warn);stroke-width:2.6;opacity:.8;stroke-dasharray:9 5}
 .w-route2{stroke:var(--focus);stroke-width:2.6;opacity:.8;stroke-dasharray:2 6}
 .w-route3{stroke:var(--artifact);stroke-width:2.6;opacity:.8;stroke-dasharray:14 6}
-.tnode{position:absolute;transform:translate(-50%,-50%);padding:8px 14px;border-radius:10px;
- background:var(--surface);border:1.5px solid var(--line);white-space:nowrap;
+/* The width is fixed at exactly the pitch the layout reserves. Without it a
+   card grew with its content while the layout kept placing seats every
+   ${CARD_W + WORKER_GAP}px, so a long seat name simply covered its neighbour —
+   measured at 368px against a 198px slot, every adjacent pair overlapping by
+   120px. Nothing is hidden by truncating: the full id is already the card's
+   title attribute. */
+.tnode{position:absolute;transform:translate(-50%,-50%);width:${CARD_W}px;padding:8px 14px;
+ border-radius:10px;background:var(--surface);border:1.5px solid var(--line);white-space:nowrap;
  transition:opacity .45s,transform .55s cubic-bezier(.22,.61,.36,1)}
+.tnode b,.tnode span,.tnode em{overflow:hidden;text-overflow:ellipsis}
 .tnode b{display:block;font:600 .78rem/1.35 var(--mono)}
 .tnode span{display:block;color:var(--dim);font:400 .64rem/1.4 var(--mono);font-variant-numeric:tabular-nums}
 .tnode em{display:block;font:600 .6rem/1.4 var(--mono);font-style:normal;letter-spacing:.04em}
@@ -964,6 +986,19 @@ export const TOUR_SCRIPT = `
   root.querySelector('[data-tour-in]').onclick = () => nudge(1.25)
   root.querySelector('[data-tour-out]').onclick = () => nudge(1 / 1.25)
   root.querySelector('[data-tour-fit]').onclick = reset
+  var fullBtn = root.querySelector('[data-tour-full]')
+  fullBtn.onclick = function () {
+    if (document.fullscreenElement) document.exitFullscreen()
+    else if (root.requestFullscreen) root.requestFullscreen()
+  }
+  // The button reports what the DOCUMENT is doing, not what it last asked for:
+  // Escape and the browser's own controls leave without telling this code.
+  document.addEventListener('fullscreenchange', function () {
+    var on = document.fullscreenElement === root
+    fullBtn.setAttribute('aria-pressed', on ? 'true' : 'false')
+    fullBtn.textContent = on ? 'exit' : 'full'
+    reset()
+  })
   // Arrow keys only while the board itself has focus: the page still scrolls.
   root.addEventListener('keydown', (ev) => {
     if (ev.key === 'ArrowRight') { ev.preventDefault(); go(at + 1) }

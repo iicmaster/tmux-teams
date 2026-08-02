@@ -49,7 +49,17 @@ const isModelName = (value) =>
   typeof value === 'string' && value.length >= 1 && value.length <= MODEL_MAX && !hasControlChar(value)
 
 const MAX_TEAMS = 100
-const MAX_WORKERS = 100
+// Five, and a real ceiling rather than advice: a graph that declares a sixth
+// worker is refused here, not warned about somewhere a reader may not look.
+//
+// The worker count IS the team's WIP limit, so this also caps how much work one
+// dispatcher admits and one evaluator judges — past a handful the evaluator is
+// the queue, and the team is a bottleneck by construction rather than by load.
+// The board agrees: a team is drawn `workers × 198px` wide, and five is the
+// last count that stays readable without zooming out past the seat names.
+// Measured 2026-08-02 with ten workers — every adjacent pair overlapped by
+// 120px at the 0.708 fit scale.
+const MAX_WORKERS = 5
 const MAX_WORKFLOWS = 50
 const TEAM_MODEL_ROLES = ['dispatcher', 'worker', 'evaluator']
 

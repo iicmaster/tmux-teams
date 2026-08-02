@@ -172,27 +172,26 @@ test('the controller team is the head of every route, and never escalates to its
   assert.ok(tour.edges.some((e) => e.kind === 'pull'))
 })
 
-test('an edge only hardens once evidence exists for it', () => {
+test('a team\'s internal lines never harden, but its verdict counter still fills', () => {
   const dry = tourOf(TWO_TEAMS)
   assert.equal(wire(dry, 'b_d', 'b_w1', 'assign').solid, false)
 
-  // A dispatch was observed on this worker, so the assignment is now a record.
-  // The handover to the evaluator is not: that leg is still running.
+  // A dispatch is observed on this worker and the line does not change: the
+  // relationship was true before the dispatch and is true after it.
   const live = tourOf(TWO_TEAMS, snapshotWith([run('b_w1', 'running')]))
-  assert.equal(wire(live, 'b_d', 'b_w1', 'assign').solid, true)
+  assert.equal(wire(live, 'b_d', 'b_w1', 'assign').solid, false)
   assert.equal(wire(live, 'b_w1', 'b_e', 'judge').solid, false)
   assert.equal(wire(live, 'b_e', 'b_d', 'reject').solid, false)
 
-  // A verdict is recorded against the leg that was JUDGED — the worker's — so
-  // that is what hardens this team's rework edge and fills its evaluator's
-  // counter. Keying either off the evaluator's own id is why the page read
-  // `0 pass 0 reject` no matter how much reviewing had happened.
+  // The COUNTER is the part that still has to be right, and it is the half that
+  // was actually broken: a verdict is recorded against the leg that was
+  // JUDGED — the worker's — and keying it off the evaluator's own id is why the
+  // page read `0 pass 0 reject` no matter how much reviewing had happened.
   const rejected = tourOf(TWO_TEAMS,
     snapshotWith([run('b_w1', 'running')], [{ agent_id: 'b_w1', pm_verdict: 'reject' }]))
-  assert.equal(wire(rejected, 'b_e', 'b_d', 'reject').solid, true)
+  assert.equal(wire(rejected, 'b_e', 'b_d', 'reject').solid, false, 'rework is a line, not a tally')
   assert.match(rejected.world.b_e.state, /0 pass 1 reject/)
-  // Rework is a team fact, so the other team's edge must not harden with it.
-  assert.equal(wire(rejected, 'v_e', 'v_d', 'reject').solid, false)
+  assert.match(tourOf(TWO_TEAMS).world.b_e.state, /0 pass 0 reject/)
 })
 
 test('the outer controller states the same facts as every other agent', () => {
