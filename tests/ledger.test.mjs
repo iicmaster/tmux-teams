@@ -658,3 +658,65 @@ test('adding `opened` did not soften what `pulled` still has to say', () => {
   }
   assert.deepEqual(codes(validateLedger(jsonl(senderless))), ['missing_field'])
 })
+
+// ---------------------------------------------------------------------------
+// validateLedger — §1, flow is one way
+// ---------------------------------------------------------------------------
+
+// A leg of a route, the way the runner records one: the receiving team pulls,
+// its dispatcher admits, a worker delivers, the team's evaluator passes.
+const leg = (from, to, at) => jsonl(
+  { at: `2026-07-27T${at}:00.000Z`, event: 'pulled', work_item: 'tok', workflow: 'feature', agent_id: `${to}_dispatcher`, from_team: from, to_team: to },
+  { at: `2026-07-27T${at}:01.000Z`, event: 'intake', work_item: 'tok', workflow: 'feature', agent_id: `${to}_dispatcher`, verdict: 'accept', reason: 'the request is buildable here' },
+  { at: `2026-07-27T${at}:02.000Z`, event: 'assigned', work_item: 'tok', workflow: 'feature', agent_id: `${to}_w1`, task_id: `t-${to}`, dispatch_id: `d-${to}` },
+  { at: `2026-07-27T${at}:03.000Z`, event: 'delivered', work_item: 'tok', workflow: 'feature', agent_id: `${to}_w1`, task_id: `t-${to}`, terminal: 'done', timed_out: false, evidence_present: true },
+  { at: `2026-07-27T${at}:04.000Z`, event: 'reviewed', work_item: 'tok', workflow: 'feature', agent_id: `${to}_evaluator`, verdict: 'pass', reviewed_task: `t-${to}`, reason: 'the claims check out' },
+)
+
+test('a token cannot be pulled back into a team that already admitted it', () => {
+  const backwards = [
+    ...leg('intake', 'design', '10:00'),
+    ...leg('design', 'build', '10:10'),
+    // QA found a problem and sent the work back to Design. §1 forbids exactly
+    // this: the fix is a NEW token on a fresh route, not this one upstream.
+    ...leg('build', 'design', '10:20'),
+  ]
+  const result = validateLedger(backwards)
+  assert.equal(result.ok, false, 'a route ran backwards across teams and validated clean')
+  const backwardsProblems = result.problems.filter((problem) => problem.code === 'route_went_backwards')
+  assert.equal(backwardsProblems.length, 1, JSON.stringify(result.problems))
+  assert.match(backwardsProblems[0].detail, /design already held this token/)
+})
+
+test('a dispatcher refusing at the door leaves that team free to pull the work later', () => {
+  // The door check is not the loop running backwards: Build inspected the token
+  // and never admitted it, so nothing came back out of Build. Design fixes what
+  // was wrong and Build pulls it again — which has to stay legal, or every
+  // refusal at the door would end the route.
+  const refusedThenAdmitted = [
+    ...leg('intake', 'design', '10:00'),
+    { at: '2026-07-27T10:10:00.000Z', event: 'pulled', work_item: 'tok', workflow: 'feature', agent_id: 'build_dispatcher', from_team: 'design', to_team: 'build' },
+    { at: '2026-07-27T10:10:01.000Z', event: 'returned', work_item: 'tok', workflow: 'feature', to_team: 'design', refused_by: 'build_dispatcher', reason: 'the acceptance criteria name no interface to build against' },
+    ...leg('design', 'build', '10:20'),
+  ].map((entry) => (typeof entry === 'string' ? entry : JSON.stringify(entry)))
+  const result = validateLedger(refusedThenAdmitted)
+  assert.equal(result.ok, true, JSON.stringify(result.problems))
+})
+
+test('the sanctioned writer refuses the backwards line rather than reporting it afterwards', (t) => {
+  const repo = scratch(t)
+  const write = (event) => appendEvent(repo, { work_item: 'tok', workflow: 'feature', ...event },
+    { actor: `agent:${event.agent_id ?? 'build_dispatcher'}` })
+
+  assert.equal(write({ event: 'opened', agent_id: 'design_dispatcher', to_team: 'design', reason: 'new request' }).ok, true)
+  assert.equal(write({ event: 'intake', agent_id: 'design_dispatcher', verdict: 'accept', reason: 'buildable' }).ok, true)
+  assert.equal(write({ event: 'pulled', agent_id: 'build_dispatcher', from_team: 'design', to_team: 'build' }).ok, true)
+  assert.equal(write({ event: 'intake', agent_id: 'build_dispatcher', verdict: 'accept', reason: 'clear enough' }).ok, true)
+
+  const refused = write({ event: 'pulled', agent_id: 'design_dispatcher', from_team: 'build', to_team: 'design' })
+  assert.equal(refused.ok, false, 'the writer accepted a token moving upstream')
+  assert.equal(refused.code, 'invalid_event')
+  assert.match(refused.detail, /design already held this token/)
+  // Refusing must leave the ledger exactly as it was: five lines, not six.
+  assert.equal(readFileSync(ledgerPath(repo, 'tok'), 'utf8').trim().split('\n').length, 4)
+})

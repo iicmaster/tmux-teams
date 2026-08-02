@@ -102,8 +102,17 @@ commands and documentation; there is one delivery model now.
     token now.
 
 
-  **Not yet enforced.** Nothing refuses a cross-team backwards move today; the
-  rule is written here so the gap is visible rather than assumed closed.
+  **Enforced 2026-08-03.** `validateLedger` refuses a `pulled` whose `to_team`
+  is a team that already **admitted** this token, with the code
+  `route_went_backwards` — and since the sanctioned writer validates before and
+  after every append (§4.3), the line is refused rather than reported later.
+  Admission, not arrival, is what counts: `pulled` is written before `intake`
+  runs, so a team that refuses at the door never enters the set and may pull
+  the same token again once what was wrong is fixed. `escalated`, `resumed` and
+  `answered` name the team the token already sits at and are not moves at all.
+  Both halves are negative-controlled in `tests/ledger.test.mjs`: remove the
+  check and the backwards route validates clean; count arrival instead of
+  admission and the door-refusal retry stops being legal.
 - There is exactly one **outer controller** for the whole graph. It never does a
   team's work. Since §14.5 it holds the single worker seat of its own **control
   team** — the same seat `outer_controller_id` names, not a second one — which

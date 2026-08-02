@@ -136,7 +136,12 @@ of that same team as often as the work needs — that loop is why a team has its
 own evaluator. Neither crosses a boundary.
 
 What the rule forbids is a token crossing a team boundary in the direction it
-came from: once a team releases work, that team is behind it.
+came from: once a team releases work, that team is behind it. Since 2026-08-03
+that is **refused, not merely written down** — the ledger validator rejects a
+`pulled` naming a team that already admitted the token, and because every
+append is validated through the sanctioned writer, the line never lands. A team
+that refused at the door never admitted anything, so it may still pull the work
+later; that is the difference the check is built around.
 
 The worked example. A QA evaluator reading its own worker's report finds two
 different things. The worker did not finish the checklist — send it back to that

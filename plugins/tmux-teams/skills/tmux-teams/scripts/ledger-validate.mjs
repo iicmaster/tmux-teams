@@ -149,6 +149,15 @@ export function validateLedger(lines) {
   // Facts accumulated in FILE order. Sorting by `at` the way readers do would
   // destroy the only thing that makes "never goes backwards" checkable.
   const assignedAgents = new Set()
+  // Every team this token has actually been INSIDE. §1's one-way rule is a
+  // statement about this set and nothing else. A team is added when its
+  // dispatcher ADMITS the token, not when the token arrives at its door —
+  // `pulled` is written before `intake` runs, so counting the arrival would
+  // make a refused token count as held and turn a legal retry into a
+  // violation. `loop-replay.test.mjs` seed 1 proved that with a real route.
+  const heldTeams = new Set()
+  // The team the token has arrived at and that has not ruled on it yet.
+  let atTheDoor = ''
   // Counted, not flagged: `opened` earns its strictness only if a second one
   // later in the file is as illegal as one appended after a `pulled`.
   let eventsSeen = 0
@@ -278,7 +287,32 @@ export function validateLedger(lines) {
     if (name === 'opened' && eventsSeen > 0) {
       add(lineNo, 'opened_not_first', 'opened is how a token enters the graph and can only be its first event')
     }
+    // §1: flow is one way. A team that has already ADMITTED this token cannot
+    // take it again — rework is a NEW token on a fresh route, never the same
+    // one moving upstream. `pulled` is the only event that can break the rule,
+    // because it is the only one that moves a token BETWEEN teams:
+    //   - `returned` hands the work back to the team that still had it. The
+    //     dispatcher that refused it checked the token at the DOOR and never
+    //     admitted it, so it never held it and may pull it again later — which
+    //     is why admission, not arrival, is what fills `heldTeams`.
+    //   - `escalated`, `resumed` and `answered` all name the team the token is
+    //     already sitting at (`loop-runner.mjs:529` resumes at `last.to_team`),
+    //     so none of them is a move at all.
+    // Enforced through the sanctioned writer, which validates before AND after
+    // every append — so this refuses the line rather than reporting it later.
+    if (name === 'pulled' && present(entry.to_team) && heldTeams.has(String(entry.to_team))) {
+      add(lineNo, 'route_went_backwards',
+        `${entry.to_team} already held this token; flow is one way, and rework is a new token on a fresh route`)
+    }
 
+    if ((name === 'opened' || name === 'pulled') && present(entry.to_team)) {
+      atTheDoor = String(entry.to_team)
+    }
+    // Admitted. `intake` is the dispatcher accepting, and its only legal
+    // verdict is `accept` — a refusal is written as `returned` or `escalated`
+    // instead, and neither of those admits anything.
+    if (name === 'intake' && atTheDoor) { heldTeams.add(atTheDoor); atTheDoor = '' }
+    if (name === 'returned') atTheDoor = ''
     if (name === 'assigned' && present(entry.agent_id)) assignedAgents.add(String(entry.agent_id))
     if (name === 'delivered') deliveredSeen = true
     if (name === 'audit_requested') auditRequested = true
