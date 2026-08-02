@@ -85,6 +85,11 @@ test('a persisted prior-version snapshot upgrades to v4 once, keeping its stream
     assert.equal(upgraded.sequence, prior.sequence + 1, `v${priorVersion} must advance by one`)
     assert.ok(upgraded.diagnostics.some((item) => item.code === 'SCHEMA_UPGRADED'),
       `v${priorVersion} must say it upgraded`)
+    // `observation.quality` had exactly one assertion in the whole suite, in a
+    // dying file, triggered by a delivery-runtime diagnostic — which made it
+    // look phase-owned. It is not: any diagnostic degrades it, and an upgrade
+    // is a diagnostic, so the degraded side is reachable on a surviving path.
+    assert.equal(upgraded.observation.quality, 'degraded', `v${priorVersion} upgrade is not a clean read`)
     // Upgrading is a one-shot fact about this publish, not a permanent label.
     const next = runJson(dir).snapshot
     assert.equal(next.stream_id, upgraded.stream_id)
@@ -116,6 +121,11 @@ test('a view with every source healthy projects a complete v4 snapshot', () => {
   })
   assert.equal(snapshot.schema_version, 4)
   assert.equal(snapshot.complete, true)
+  // `observation.quality` had exactly one assertion in the whole suite, in the
+  // dying file, triggered by a delivery-runtime diagnostic — which made it look
+  // like a phase-owned field. It is not: pulse-data.mjs:2302 derives it from
+  // `complete` alone, so both sides are reachable without the phase system.
+  assert.equal(snapshot.observation.quality, 'complete')
 })
 
 // Also salvaged, and also sole coverage: the compat-v1 CLI was executed at
