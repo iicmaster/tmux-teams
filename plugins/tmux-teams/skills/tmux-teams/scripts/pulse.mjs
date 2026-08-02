@@ -42,7 +42,24 @@ import {
   PULSE_SCHEMA_VERSION_V3, PULSE_SCHEMA_VERSION_V4, UUID_RE, downProjectPulseV1,
   projectLivenessEvidence, projectPulseV4, validateAcpLivenessV1, verifiedLivenessModel,
 } from './pulse-data.mjs'
-import { PHASE_BOUNDARIES, PHASE_EXIT_ARTIFACTS } from './delivery-loop-core.mjs'
+// Relocated from delivery-loop-core.mjs, unchanged. Two frozen literals were the
+// only thing this file needed from the phase subsystem, and it needed them on
+// the ORDINARY path — `DELIVERY_PHASE_SET` below is evaluated at module load, so
+// deleting that file first would stop pulse.mjs loading at all and take every
+// remaining check down with it. Moving them is the prerequisite for the
+// deletion, not part of it: nothing here changes behaviour.
+const PHASE_EXIT_ARTIFACTS = Object.freeze({
+  Requirement: 'requirements_baseline',
+  Prototype: 'prototype_evaluation',
+  Development: 'development_delivery',
+  QA: 'qa_release_evidence',
+})
+const PHASE_BOUNDARIES = Object.freeze({
+  Requirement: 'Prototype',
+  Prototype: 'Development',
+  Development: 'QA',
+  QA: 'ProjectDelivery',
+})
 import { renderGraphPage } from './graph.mjs'
 import { validateTeamGraph } from './team-graph-contract.mjs'
 import { renderKanbanPage } from './kanban.mjs'
