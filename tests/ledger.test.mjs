@@ -742,10 +742,10 @@ test('the door may refuse three times; the fourth has to go to the controller', 
   assert.equal(validateLedger(twoDoors).ok, true, JSON.stringify(validateLedger(twoDoors).problems))
 })
 
-test('a ledger that predates the one-way rule can still be closed, but not continued', (t) => {
+test('a ledger that predates the one-way rule carries on; only a NEW backwards move is refused', (t) => {
   const repo = scratch(t)
   // Written before §1 was enforceable: Design admitted it, Build admitted it,
-  // and then it went back to Design. The writer would refuse this file today.
+  // and then it went back to Design.
   const legacy = [
     ...leg('intake', 'design', '10:00'),
     ...leg('design', 'build', '10:10'),
@@ -753,26 +753,34 @@ test('a ledger that predates the one-way rule can still be closed, but not conti
   ]
   mkdirSync(join(repo, '.tmux-teams', 'work-items'), { recursive: true })
   writeFileSync(ledgerPath(repo, 'tok'), `${legacy.join('\n')}\n`)
-  const lines = legacy.length
 
-  // Refusing every append would leave this token unclosable — not even
-  // `abandoned` — so a rule about keeping work moving would strand the work it
-  // caught. Master decided a terminal event may still land.
-  const closed = appendEvent(repo, {
-    event: 'abandoned', work_item: 'tok', workflow: 'feature',
-    reason: 'this token predates the one-way rule and cannot be replayed',
-  }, { actor: 'human:master' })
-  assert.equal(closed.ok, true, `${closed.code}: ${closed.detail}`)
-  assert.equal(readFileSync(ledgerPath(repo, 'tok'), 'utf8').trim().split('\n').length, lines + 1)
-
-  // Nothing else. The amnesty is for closing, not for carrying on.
-  writeFileSync(ledgerPath(repo, 'tok'), `${legacy.join('\n')}\n`)
+  // The first version of this test asserted the opposite: closable and nothing
+  // else. That met a real ledger the same day — 46 lines, one violation at 36,
+  // a worker mid-leg at 46 — and froze it. A rule written to keep work moving
+  // must not be the thing that stops it, so the rule is enforced on the LINE
+  // BEING WRITTEN and history is not re-punished. Master confirmed §1 stands.
   const carriedOn = appendEvent(repo, {
     event: 'pulled', work_item: 'tok', workflow: 'feature',
     agent_id: 'qa_dispatcher', from_team: 'design', to_team: 'qa',
   }, { actor: 'agent:qa_dispatcher' })
-  assert.equal(carriedOn.ok, false, 'a legacy ledger accepted a new leg')
-  assert.equal(carriedOn.code, 'ledger_already_invalid')
+  assert.equal(carriedOn.ok, true, `a legacy ledger could not move forward: ${carriedOn.code} ${carriedOn.detail}`)
+
+  // And a NEW backwards move is refused on exactly the same file, which is what
+  // makes the sentence above a narrowing rather than an amnesty.
+  const backwards = appendEvent(repo, {
+    event: 'pulled', work_item: 'tok', workflow: 'feature',
+    agent_id: 'build_dispatcher', from_team: 'qa', to_team: 'build',
+  }, { actor: 'agent:build_dispatcher' })
+  assert.equal(backwards.ok, false, 'a legacy ledger accepted a fresh backwards pull')
+  assert.equal(backwards.code, 'invalid_event')
+  assert.match(backwards.detail, /build already held this token/)
+
+  // Closing it still works, which was the whole point of the first version.
+  const closed = appendEvent(repo, {
+    event: 'abandoned', work_item: 'tok', workflow: 'feature',
+    reason: 'this token predates the one-way rule and will not be replayed',
+  }, { actor: 'human:master' })
+  assert.equal(closed.ok, true, `${closed.code}: ${closed.detail}`)
 
   // And it is scoped to THIS defect: a ledger invalid for any other reason
   // still refuses everything, including a terminal event.
@@ -783,4 +791,30 @@ test('a ledger that predates the one-way rule can still be closed, but not conti
   }, { actor: 'human:master' })
   assert.equal(otherDefect.ok, false, 'a ledger broken some other way was closed anyway')
   assert.equal(otherDefect.code, 'ledger_already_invalid')
+})
+
+test('a team that admitted the work cannot send it back — it fixes it and forwards', () => {
+  // Master, 2026-08-03, confirming §1 against a live token: "ยืนยันกฏไม่ส่งกลับ
+  // รีวิวเวอร์ที่เจอปัญหาก็ต้องแก้ต่อเองให้จบเลย". Nothing refused this before,
+  // which is how a hand-written `returned` came to sit in a production ledger —
+  // the operator used the only move the system left open.
+  const sentBack = [
+    ...leg('intake', 'design', '10:00'),
+    ...leg('design', 'review', '10:10'),
+    { at: '2026-07-27T10:20:00.000Z', event: 'returned', work_item: 'tok', workflow: 'feature', to_team: 'design', refused_by: 'review_dispatcher', reason: 'the tests do not run' },
+  ].map((entry) => (typeof entry === 'string' ? entry : JSON.stringify(entry)))
+  const result = validateLedger(sentBack)
+  assert.equal(result.ok, false, 'a team that admitted the token sent it back and it validated clean')
+  const sendBacks = result.problems.filter((problem) => problem.code === 'sent_back_after_admission')
+  assert.equal(sendBacks.length, 1, JSON.stringify(result.problems))
+  assert.match(sendBacks[0].detail, /cannot send it back to design/)
+
+  // The door check is untouched: a refusal BEFORE admission is not a send-back,
+  // and this is the line that keeps the new rule from swallowing it.
+  const atTheDoor = [
+    ...leg('intake', 'design', '10:00'),
+    { at: '2026-07-27T10:10:00.000Z', event: 'pulled', work_item: 'tok', workflow: 'feature', agent_id: 'review_dispatcher', from_team: 'design', to_team: 'review' },
+    { at: '2026-07-27T10:10:01.000Z', event: 'returned', work_item: 'tok', workflow: 'feature', to_team: 'design', refused_by: 'review_dispatcher', reason: 'no interface named' },
+  ].map((entry) => (typeof entry === 'string' ? entry : JSON.stringify(entry)))
+  assert.equal(validateLedger(atTheDoor).ok, true, JSON.stringify(validateLedger(atTheDoor).problems))
 })

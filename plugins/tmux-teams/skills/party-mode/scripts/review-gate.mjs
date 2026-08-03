@@ -17,6 +17,26 @@ export const REVIEW_GATE_EXIT = Object.freeze({ ok: 0, input: 2, transport: 3, r
 const asList = profiles => Array.isArray(profiles) ? profiles : Object.values(profiles ?? {})
 const laneOf = p => String(p.lane ?? p.id ?? '').toLowerCase()
 const isAgy = p => /(^|[-_])agy($|[-_])|antigravity/.test(laneOf(p))
+// A lane's stage is the transport's own error code, clamped to a closed set so
+// an injected runner cannot write arbitrary bytes into an operator report.
+// `acknowledge` and `schema` are the two gate-local stages after transport.
+const LANE_STAGES = new Set(['input', 'config', 'spawn', 'closed', 'protocol', 'timeout', 'review', 'policy', 'transport'])
+const laneStage = code => LANE_STAGES.has(code) ? code : 'transport'
+const boundedReason = value => typeof value === 'string' && value.length <= 200 ? value : null
+const hexDigest = value => /^[a-f0-9]{64}$/.test(value ?? '') ? value : null
+const attemptRecord = attempt => Object.freeze({
+  profile: attempt.profile.id,
+  status: attempt.valid ? 'accepted' : 'failed',
+  fallback: attempt.fallback,
+  ...(attempt.replaces ? { replaces: attempt.replaces } : {}),
+  ...(!attempt.valid ? {
+    failureKind: attempt.failureKind,
+    stage: attempt.stage,
+    failure: attempt.failure,
+    stderrDigest: attempt.stderrDigest,
+    stderrBytes: attempt.stderrBytes,
+  } : {}),
+})
 
 function choosePanel(profiles, packet, planner = planReviewPanel) {
   if (Array.isArray(profiles)) {
@@ -117,20 +137,25 @@ function runnerEvidenceError(profile, value, expectedInputHash) {
 }
 
 async function assessAttempt(attempt, validate, expectedInputHash) {
+  const settled = attempt.result.status === 'rejected' ? attempt.result.reason : attempt.result.value
+  const stderrEvidence = {
+    stderrDigest: hexDigest(settled?.stderrDigest),
+    stderrBytes: Number.isInteger(settled?.stderrBytes) ? settled.stderrBytes : null,
+  }
   if (attempt.result.status === 'rejected') {
-    const code = attempt.result.reason?.code
-    const failureKind = code === 'review' ? 'review' : code === 'policy' ? 'policy' : 'transport'
-    return { ...attempt, valid: false, failureKind, failure: `ACP lane failed (${code ?? 'transport'})` }
+    const stage = laneStage(attempt.result.reason?.code)
+    const failureKind = stage === 'review' ? 'review' : stage === 'policy' ? 'policy' : 'transport'
+    return { ...attempt, valid: false, failureKind, stage, ...stderrEvidence, failure: `ACP lane failed (${stage})` }
   }
   const value = attempt.result.value
   const evidenceError = runnerEvidenceError(attempt.profile, value, expectedInputHash)
-  if (evidenceError) return { ...attempt, valid: false, failureKind: 'review', failure: evidenceError }
+  if (evidenceError) return { ...attempt, valid: false, failureKind: 'review', stage: 'acknowledge', ...stderrEvidence, failure: evidenceError }
   let checked
   try { checked = await validate(value.review, { profile: attempt.profile.id, value }) } catch {
-    return { ...attempt, valid: false, failureKind: 'review', failure: 'review validator threw' }
+    return { ...attempt, valid: false, failureKind: 'review', stage: 'schema', ...stderrEvidence, failure: 'review validator threw' }
   }
   if (checked === false || checked?.valid === false || checked?.ok === false) {
-    return { ...attempt, valid: false, failureKind: 'review', failure: checked?.reason ?? 'review schema is invalid' }
+    return { ...attempt, valid: false, failureKind: 'review', stage: 'schema', ...stderrEvidence, failure: boundedReason(checked?.reason) ?? 'review schema is invalid' }
   }
   return {
     ...attempt,
@@ -176,60 +201,87 @@ export async function runReviewGate(packet, {
     validate,
     expectedInputHash,
   )))
+  const substitution = { used: false, replaced: null, replacement: null, remaining: 1, reason: null }
+  // Every blocker after the lanes launch carries the per-lane record with it.
+  // The reasons were always computed; `report` was built downstream of all ten
+  // throw sites, so it was serialized only on the path where nothing went
+  // wrong — a quota failure and an expired token reached the operator as the
+  // same sentence and a zero-byte file.
+  const fail = (code, message) => {
+    const error = new ReviewTransportError(code, message)
+    error.report = Object.freeze({
+      ok: false,
+      blocked: true,
+      code,
+      inputHash: expectedInputHash,
+      primaryFamily: activePlan?.primaryFamily ?? null,
+      substitution: Object.freeze({ ...substitution }),
+      attempts: Object.freeze(attempts.map(attemptRecord)),
+    })
+    return error
+  }
   const agy = attempts.find(a => isAgy(a.profile))
   if (!agy || !agy.valid) {
     const kind = agy?.failureKind === 'review' ? 'review' : 'transport'
-    throw new ReviewTransportError(kind, `AGY review lane failed (${agy?.failure ?? 'missing'}); external review is blocked`)
+    substitution.remaining = 0
+    substitution.reason = 'AGY is mandatory and cannot be replaced'
+    throw fail(kind, `AGY review lane failed (${agy?.failure ?? 'missing'}); external review is blocked`)
   }
   // Reserves are deliberately sequential and only begin after all primaries
   // settle, which prevents duplicated concurrent reviews of the same packet.
   const originalFailures = attempts.filter(a => !a.valid && !isAgy(a.profile))
   if (originalFailures.length > 1) {
-    throw new ReviewTransportError('transport', 'more than one non-AGY review lane failed; one reserve cannot restore an exact-three panel')
+    substitution.remaining = 0
+    substitution.reason = 'one reserve cannot restore an exact-three panel'
+    throw fail('transport', 'more than one non-AGY review lane failed; one reserve cannot restore an exact-three panel')
   }
   const originalFailure = originalFailures[0]
   if (originalFailure) {
+    substitution.replaced = originalFailure.profile.id ?? originalFailure.profile.lane
+    substitution.remaining = 0
     let reserve
     if (plan && typeof fallbackPlanner === 'function') {
       const replacement = fallbackPlanner(plan, originalFailure.profile.id)
       if (!replacement?.blocked) {
         activePlan = replacement
         reserve = profiles[replacement.replaced?.replacement ?? replacement.reserve]
-      }
+      } else substitution.reason = boundedReason(replacement.reason)
     } else reserve = reserveFor(originalFailure.profile, all)
     if (reserve) {
+      substitution.used = true
+      substitution.replacement = reserve.id ?? reserve.lane
       const [result] = await Promise.allSettled([defaultLaneRunner(reserve, packet, deps)])
       attempts.push(await assessAttempt({
         profile: reserve,
         result,
         fallback: true,
-        replaces: originalFailure.profile.id ?? originalFailure.profile.lane,
+        replaces: substitution.replaced,
       }, validate, expectedInputHash))
-    }
+    } else substitution.reason ??= 'no eligible reserve for this route'
   }
   const accepted = attempts.filter(a => a.valid)
-  if (accepted.length !== 3) throw new ReviewTransportError('transport', `review gate accepted ${accepted.length}; exactly three are required`)
+  if (accepted.length !== 3) throw fail('transport', `review gate accepted ${accepted.length}; exactly three are required`)
   const acceptedByProfile = new Map(accepted.map(attempt => [attempt.profile.id, attempt.item]))
   const reviewOrder = activePlan?.reviewers ?? accepted.map(attempt => attempt.profile.id)
   const reviews = reviewOrder.map(id => acceptedByProfile.get(id)).filter(Boolean)
   if (reviews.length !== 3 || new Set(reviews.map(item => item.profile)).size !== 3) {
-    throw new ReviewTransportError('policy', 'final review profiles are not exactly three distinct identities')
+    throw fail('policy', 'final review profiles are not exactly three distinct identities')
   }
   if (reviews.filter(item => item.profile === 'agy').length !== 1) {
-    throw new ReviewTransportError('policy', 'final review panel must contain exactly one AGY identity')
+    throw fail('policy', 'final review panel must contain exactly one AGY identity')
   }
   const finalFamilies = reviews.map(item => item.family)
   if (new Set(finalFamilies).size !== 3) {
-    throw new ReviewTransportError('policy', 'final review families are not distinct')
+    throw fail('policy', 'final review families are not distinct')
   }
   if (activePlan?.primaryFamily && finalFamilies.includes(activePlan.primaryFamily)) {
-    throw new ReviewTransportError('policy', 'final review family matches the primary family')
+    throw fail('policy', 'final review family matches the primary family')
   }
   if (new Set(reviews.map(item => item.model)).size !== 3) {
-    throw new ReviewTransportError('policy', 'final review models are not distinct')
+    throw fail('policy', 'final review models are not distinct')
   }
   if (new Set(reviews.map(item => item.provenance)).size !== 3) {
-    throw new ReviewTransportError('review', 'review provenance collision detected')
+    throw fail('review', 'review provenance collision detected')
   }
   const synthesis = activePlan
     ? await synthesize(activePlan, Object.fromEntries(reviews.map(item => [item.profile, item.review])))
@@ -240,13 +292,8 @@ export async function runReviewGate(packet, {
     primaryFamily: activePlan?.primaryFamily ?? null,
     route: Object.freeze(reviews.map(item => item.profile)),
     inputHash: expectedInputHash,
-    attempts: Object.freeze(attempts.map(attempt => Object.freeze({
-      profile: attempt.profile.id,
-      status: attempt.valid ? 'accepted' : 'failed',
-      fallback: attempt.fallback,
-      ...(attempt.replaces ? { replaces: attempt.replaces } : {}),
-      ...(!attempt.valid ? { failureKind: attempt.failureKind, failure: attempt.failure } : {}),
-    }))),
+    substitution: Object.freeze({ ...substitution }),
+    attempts: Object.freeze(attempts.map(attemptRecord)),
     reviews: Object.freeze(reviews),
     synthesis,
   })

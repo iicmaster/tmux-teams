@@ -132,8 +132,9 @@ asked two questions could only answer one of them.
 
 A seat declares two separate facts and the dispatch honours both. The **lane**
 is the transport — `claude`, `codex` or `agy` — read from a team's `adapters`
-block or from `outer_controller_adapter`, defaulting to `claude` so an existing
-graph is unchanged. `validateWorkflowGraph` refuses any other name outright. The
+block, from a `seats` entry that overrides it for one agent, or from
+`outer_controller_adapter`, defaulting to `claude` so an existing graph is
+unchanged. `validateWorkflowGraph` refuses any other name outright. The
 **model** is what that lane is asked to run, requested and then verified (see
 §4). The two are never substituted for one another.
 

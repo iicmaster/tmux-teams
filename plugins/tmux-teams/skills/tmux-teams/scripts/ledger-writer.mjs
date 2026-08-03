@@ -22,13 +22,24 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 
 import {
-  ACTOR_RE, EVENT_SPEC, LEDGER_EVENTS, MAX_LEDGER_BYTES, TERMINAL_EVENTS, validateLedger,
+  ACTOR_RE, EVENT_SPEC, LEDGER_EVENTS, MAX_LEDGER_BYTES, validateLedger,
 } from './ledger-validate.mjs'
 
-// The only problem a ledger may already carry and still be closed. Every other
-// code still means "repair this before writing anything", which is what keeps
-// this from becoming a general amnesty.
-const LEGACY_TOLERATED = new Set(['route_went_backwards'])
+// §1 became enforceable on a system that was already running, and the first
+// real ledger it met was `story-1-10` in a live repo: 46 lines, one violation
+// at line 36, a worker mid-leg at line 46. Under the first version of this rule
+// that token could be CLOSED and nothing else — so a rule written to keep work
+// moving became the thing that stopped it, on the one token that needed to move.
+//
+// The rule is enforced where it belongs instead: on the LINE BEING WRITTEN.
+// `fresh` below refuses any append that introduces a NEW problem, so a new
+// backwards pull is refused exactly as it was. What no longer happens is a
+// ledger being punished for history it already carries — that history cannot be
+// un-written, and refusing every future line does not undo it.
+//
+// Every OTHER problem code still means "repair this before writing anything",
+// which is what keeps this from being a general amnesty.
+const LEGACY_TOLERATED = new Set(['route_went_backwards', 'sent_back_after_admission'])
 
 export { ACTOR_RE, LEDGER_EVENTS }
 
@@ -127,10 +138,9 @@ export function appendEvent(repo, event, options = {}) {
   // even `abandoned` — and a rule meant to keep work moving would strand the
   // work it caught. A terminal event may land on such a file. Nothing else may:
   // another `pulled` is refused exactly as it is on a clean ledger.
-  const closable = !before.ok
-    && TERMINAL_EVENTS.has(name)
+  const continuable = !before.ok
     && before.problems.every((problem) => LEGACY_TOLERATED.has(problem.code))
-  if (!before.ok && !closable) {
+  if (!before.ok && !continuable) {
     return fail('ledger_already_invalid',
       `${path} has ${before.problems.length} problem(s) and must be repaired before anything is appended`,
       before.problems)

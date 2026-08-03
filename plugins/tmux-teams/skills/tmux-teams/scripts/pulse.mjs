@@ -1855,7 +1855,6 @@ if (cmd === 'ensure') {
     watchArgs, {
       detached: true,
       stdio: 'ignore',
-      env: { ...process.env, PULSE_WATCH_CLAIM_OWNER: String(process.pid) },
     })
   if (!child.pid) {
     releaseWatcher()
@@ -1884,21 +1883,26 @@ if (cmd === 'ensure') {
 
 let managedClaimAccepted = false
 if (MANAGED_WATCH) {
-  const owner = Number(process.env.PULSE_WATCH_CLAIM_OWNER)
-  // `--managed` is the child half of `ensure`'s handoff, not a command of its
-  // own: the parent claims the pidfile first and names itself here. With no
-  // owner there is no handoff to verify, and the check below could only ever
-  // fail — reporting a DUPLICATE of a watcher nobody started, which sent the
-  // reader hunting a process that does not exist. Say what to run instead.
-  if (!Number.isInteger(owner) || owner < 1) {
-    console.error(`[pulse] managed watch must be started via: pulse.mjs ensure ${REPO} --interval ${INTERVAL}`)
+  // --managed is not a command: it is the second half of the handoff that
+  // `ensure` begins, so the only process entitled to take the claim is the
+  // child of the process already holding it. The kernel answers who that is.
+  // An environment variable could not: the pid it carried was read out of the
+  // world-readable pidfile the operator was already looking at, so handing it
+  // back was accepted, overwrote the pidfile below, and the watcher it named
+  // exited at its next tick for losing a claim nobody was entitled to take.
+  //
+  // This binds the handoff to a DIRECT parent-child spawn. Nothing today puts a
+  // process between `ensure` and its watch child; anything that later does — an
+  // `sh -c` wrapper, a supervisor, an exec shim — breaks here, loudly and
+  // fail-closed, rather than by a watcher that quietly never starts.
+  const owner = process.ppid
+  if (watcherPid() !== owner) {
+    console.error('[pulse] --managed is the pidfile handoff performed by "pulse.mjs ensure";'
+      + ' run "pulse.mjs ensure <repo>" for a background watcher, or drop --managed to watch here')
     process.exit(1)
   }
-  const recorded = watcherPid()
-  if (recorded !== process.pid && recorded !== owner) {
-    console.error(`[pulse] watcher claim belongs to pid ${recorded ?? 'none'}; refusing duplicate`)
-    process.exit(1)
-  }
+  // Reachable only as ensure's own child: the inputs it forwarded no longer
+  // resolve to the identity it recorded.
   if (!watcherConfigMatches(owner)) {
     console.error('[pulse] watcher claim mode/input does not match this process; refusing handoff')
     process.exit(1)

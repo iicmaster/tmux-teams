@@ -260,6 +260,59 @@ export function validateWorkflowGraph(value) {
         return invalid(`team ${teamId} has an unknown adapter for its ${role} — one of ${[...ADAPTERS].join(', ')}`)
       }
     }
+    // A seat that differs from its role. `models` and `adapters` above bind per
+    // ROLE, so every worker on a team ran one model on one lane and a team of
+    // two different models could not be declared at all. `seats` is the
+    // exception list: it names an agent this team already holds and overrides
+    // that one seat's model, its lane, or both. Omitted — or omitted for a
+    // given seat — the role block stands, so every graph written before this
+    // keeps meaning exactly what it meant.
+    //
+    // It is an override, never a second place to state the same fact, and every
+    // way of saying nothing is refused rather than ignored. A key naming no seat
+    // on this team, an empty object, a misspelt `modle` — each would resolve to
+    // the role default while a reader believed the seat had been moved, which is
+    // the quiet wrong answer this declaration exists to stop.
+    const seats = raw.seats == null ? {} : raw.seats
+    if (!isObject(seats)) {
+      return invalid(`team ${teamId} declares seats that are not an object — omit the key to run every seat on its role's model and lane`)
+    }
+    // A Map, not the object: an agent id may legally be `__proto__`, and a
+    // property read would answer from the prototype chain for a key nobody wrote.
+    const seatOverride = new Map(Object.entries(seats))
+    const seatIds = new Set([dispatcher, ...workers, evaluator])
+    for (const [agentId, override] of seatOverride) {
+      if (!seatIds.has(agentId)) {
+        return invalid(`team ${teamId} declares a seat for ${agentId}, which is not a seat on this team`)
+      }
+      // The controller names its model and lane in `outer_controller_model` and
+      // `outer_controller_adapter`, and `declaredModel` / `declaredAdapter` read
+      // those FIRST. A seat entry here would validate, move `source_digest` and
+      // draw on the page, then lose silently at dispatch — a declaration that
+      // renders and does nothing.
+      if (agentId === controller) {
+        return invalid(`team ${teamId} declares a seat for the outer controller ${agentId} — it names its model in outer_controller_model and its lane in outer_controller_adapter, and the dispatch reads those, not this`)
+      }
+      if (!isObject(override)) {
+        return invalid(`team ${teamId} declares a seat for ${agentId} that is not an object`)
+      }
+      const keys = Object.keys(override)
+      const unknown = keys.find((key) => key !== 'model' && key !== 'adapter')
+      if (unknown !== undefined) {
+        return invalid(`team ${teamId} declares an unknown key ${show(unknown)} on the seat ${agentId} — a seat overrides model, adapter, or both`)
+      }
+      if (keys.length === 0) {
+        return invalid(`team ${teamId} declares an empty seat for ${agentId} — name a model, an adapter, or remove it`)
+      }
+      if ('model' in override && !isModelName(override.model)) {
+        return invalid(`team ${teamId} has an invalid model on the seat ${agentId} — a model is 1 to ${MODEL_MAX} characters with no control characters`)
+      }
+      if ('adapter' in override && !ADAPTERS.has(override.adapter)) {
+        return invalid(`team ${teamId} has an unknown adapter on the seat ${agentId} — one of ${[...ADAPTERS].join(', ')}`)
+      }
+    }
+    const seatModel = (agentId, role) => seatOverride.get(agentId)?.model ?? models[role]
+    const seatLane = (agentId, role) => seatOverride.get(agentId)?.adapter ?? laneOf(role)
     // One agent, one seat. A shared id would make two nodes light up from one
     // dispatch, which is exactly the false positive the page must never show.
     //
@@ -293,14 +346,17 @@ export function validateWorkflowGraph(value) {
       wip_limit: wipLimit,
       models: { dispatcher: models.dispatcher, worker: models.worker, evaluator: models.evaluator },
       adapters: { dispatcher: laneOf('dispatcher'), worker: laneOf('worker'), evaluator: laneOf('evaluator') },
-      // The declared model travels with each agent so a reader never has to
-      // pair a role back to the team's models block by hand. It stays a
-      // DECLARATION: the model a node reports as running is verified evidence
-      // and is a different fact from this one. The lane travels the same way.
+      // The RESOLVED model travels with each agent so a reader never has to
+      // pair a role back to the team's models block by hand — and since `seats`
+      // exists, that pairing would be WRONG for an overridden seat. `models` and
+      // `adapters` above are the team's DEFAULTS; this array is the answer, and
+      // it is the only thing `declaredModel` and `declaredAdapter` read. It
+      // stays a DECLARATION: the model a node reports as running is verified
+      // evidence and is a different fact from this one.
       agents: [
-        { agent_id: dispatcher, role: 'dispatcher', model: models.dispatcher, adapter: laneOf('dispatcher') },
-        ...workers.map((agentId) => ({ agent_id: agentId, role: 'worker', model: models.worker, adapter: laneOf('worker') })),
-        { agent_id: evaluator, role: 'evaluator', model: models.evaluator, adapter: laneOf('evaluator') },
+        { agent_id: dispatcher, role: 'dispatcher', model: seatModel(dispatcher, 'dispatcher'), adapter: seatLane(dispatcher, 'dispatcher') },
+        ...workers.map((agentId) => ({ agent_id: agentId, role: 'worker', model: seatModel(agentId, 'worker'), adapter: seatLane(agentId, 'worker') })),
+        { agent_id: evaluator, role: 'evaluator', model: seatModel(evaluator, 'evaluator'), adapter: seatLane(evaluator, 'evaluator') },
       ],
     })
   }
