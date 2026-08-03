@@ -1702,26 +1702,29 @@ concurrentTest('records one mechanical KMS event without inventing a PM judgemen
   assert.doesNotMatch(footprint, /^active_tool_evidence:/m)
 })
 
-concurrentTest('an explicit delivery phase is copied to the dispatch footprint and terminal event', async () => {
-  const r = await asyncRun('task-phase', { TMUX_TEAMS_PHASE: 'Development' })
-  assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
-  const footprint = readFileSync(
-    join(r.cwd, '.tmux-teams', 'dispatch', 'task-phase.md'),
-    'utf8',
-  )
-  const events = eventTexts(r.cwd)
-  assert.equal(events.length, 1)
-  assert.equal(field(footprint, 'phase'), 'Development')
-  assert.equal(field(events[0], 'phase'), 'Development')
-  assert.equal(field(events[0], 'dispatch_id'), field(footprint, 'dispatch_id'))
+test('a retired delivery phase is refused before dispatch, ACP, or KMS side effects', () => {
+  // The four-stage phase system went in v0.14.0; this variable kept checking
+  // names against its vocabulary for a release after it, so an operator running
+  // a companion by hand for a team called `control` was told to use words that
+  // describe nothing. Nothing ever set it — no runner, no script, no skill — so
+  // it is retired the way the phase gate above it was, rather than being widened
+  // into a label pulse would discard as `unassigned`.
+  for (const value of ['Development', 'control', '']) {
+    const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-retired-phase-'))
+    const r = run('task-retired-phase', { TMUX_TEAMS_PHASE: value }, cwd)
+    assert.equal(r.status, 2, `TMUX_TEAMS_PHASE=${JSON.stringify(value)} was accepted`)
+    assert.match(r.stderr, /PHASE_RETIRED/)
+    assert.equal(existsSync(join(cwd, '.tmux-teams', 'dispatch')), false)
+    assert.deepEqual(eventTexts(cwd), [])
+  }
 })
 
-test('an invalid delivery phase fails before dispatch, ACP, or KMS side effects', () => {
-  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-invalid-phase-'))
-  const r = run('task-invalid-phase', { TMUX_TEAMS_PHASE: 'Developmnt' }, cwd)
-  assert.equal(r.status, 2)
-  assert.equal(existsSync(join(cwd, '.tmux-teams', 'dispatch')), false)
-  assert.deepEqual(eventTexts(cwd), [])
+concurrentTest('a dispatch no longer writes a phase line at all', async () => {
+  const r = await asyncRun('task-no-phase', {})
+  assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
+  const footprint = readFileSync(join(r.cwd, '.tmux-teams', 'dispatch', 'task-no-phase.md'), 'utf8')
+  assert.doesNotMatch(footprint, /^phase:/m)
+  assert.doesNotMatch(eventTexts(r.cwd)[0], /^phase:/m)
 })
 
 test('a governed marker cannot be bypassed by invoking the raw companion', () => {

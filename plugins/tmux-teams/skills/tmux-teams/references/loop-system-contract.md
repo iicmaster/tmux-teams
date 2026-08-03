@@ -1352,6 +1352,19 @@ line.
 
 ### Amendment log
 
+**2026-08-03 — `TMUX_TEAMS_PHASE` retired.** Behaviour changed in
+`acp-companion.mjs`: the variable is refused rather than validated, and a
+dispatch footprint no longer carries a `phase:` line. Under §15.3 the code was
+wrong: v0.14.0 deleted the four-stage delivery phases and this check kept
+enforcing their vocabulary for a release afterwards, so an operator running a
+companion by hand for a team named `control` was told to use words describing
+nothing that still exists. Nothing in this repository ever set the variable, and
+its successor map had no reader beyond its own key list. Widening it to accept
+any name was rejected: pulse validates the binding against that same vocabulary
+and would record an unknown one as `unassigned`, which is a declaration that
+says nothing. `pulse.mjs` keeps the binding as a reader of footprints already on
+disk. GitHub #21, third item.
+
 **2026-08-03 — a superseded leg is evidence, not a position.** Behaviour changed
 in `dispatch-facts.mjs` (new `currentEntry`), and in the five readers that
 answer position or state: `pull-controller.planPulls`, `loop-runner.planHarvest`,

@@ -42,12 +42,18 @@ import {
   PULSE_SCHEMA_VERSION_V3, PULSE_SCHEMA_VERSION_V4, UUID_RE, downProjectPulseV1,
   projectLivenessEvidence, projectPulseV4, validateAcpLivenessV1, verifiedLivenessModel,
 } from './pulse-data.mjs'
-// Relocated from delivery-loop-core.mjs, unchanged. This literal is the only
-// thing this file still needs from the retired phase subsystem, and it needs it
-// on the ORDINARY path — `DELIVERY_PHASE_SET` below is evaluated at module load
-// and gates the `phase:` binding the TEAM loop writes into every dispatch
-// footprint. Its sibling `PHASE_EXIT_ARTIFACTS` went with the delivery-loop
-// projection, whose diagrams were its only readers.
+// Relocated from delivery-loop-core.mjs, unchanged. Its sibling
+// `PHASE_EXIT_ARTIFACTS` went with the delivery-loop projection, whose diagrams
+// were its only readers.
+//
+// This is now a READER OF HISTORY only. Nothing writes a `phase:` line any
+// more: `TMUX_TEAMS_PHASE` was retired on 2026-08-03 with the rest of the
+// four-stage system, and no producer ever set it in the first place. Footprints
+// written before that still carry the line and are still on operators' disks,
+// so the binding stays and keeps rendering them exactly as it did. Only the
+// KEYS are read — the successor map here has had no reader since the phase
+// system was deleted, and it is kept because the four names it lists are the
+// vocabulary those old footprints used.
 const PHASE_BOUNDARIES = Object.freeze({
   Requirement: 'Prototype',
   Prototype: 'Development',

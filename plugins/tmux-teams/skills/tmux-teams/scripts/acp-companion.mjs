@@ -185,10 +185,26 @@ if (strayGateEnv.length > 0) {
   process.exit(2)
 }
 
-const DELIVERY_PHASES = new Set(['Requirement', 'Prototype', 'Development', 'QA'])
-const deliveryPhase = process.env.TMUX_TEAMS_PHASE?.trim() || ''
-if (deliveryPhase && !DELIVERY_PHASES.has(deliveryPhase)) {
-  console.error(`invalid TMUX_TEAMS_PHASE "${deliveryPhase}" — use Requirement|Prototype|Development|QA`)
+// The last word of the four-stage system, and it outlived the system by a
+// release. v0.14.0 deleted the phases; this variable kept checking a name
+// against `Requirement|Prototype|Development|QA` and refusing anything else —
+// so an operator driving a companion by hand for a team called `control` or
+// `review` was told to use a vocabulary describing nothing that still exists.
+//
+// Nothing in this repository ever set it: not the runner, not a script, not a
+// skill. It had no producer, its successor map (`PHASE_BOUNDARIES`) had no
+// reader beyond its own key list, and what replaced the concept — teams and
+// routes — is on every board already.
+//
+// Retired the way the gate above it was retired, and for the same reason:
+// accepting any string instead would write a label pulse discards as
+// `unassigned`, which is a declaration that says nothing. Refusing says what
+// happened. Footprints already on disk keep their `phase:` line and pulse still
+// reads them; nothing new writes one.
+if (process.env.TMUX_TEAMS_PHASE !== undefined) {
+  console.error('[phase] PHASE_RETIRED: TMUX_TEAMS_PHASE names the four-stage delivery phase system,'
+    + ' which was removed in v0.14.0. Nothing reads it. Unset it — a token\'s place is its team and'
+    + ' its route, which the board and the ledger already carry.')
   process.exit(2)
 }
 
@@ -1552,7 +1568,6 @@ function dispatchRecordText() {
     `worker: ${boundedText(agentName, 'unknown', MAX_WORKER)}`,
     'transport: acp',
     ...(agentId ? [`agent_id: ${boundedText(agentId, '', MAX_WORKER)}`] : []),
-    ...(deliveryPhase ? [`phase: ${deliveryPhase}`] : []),
     ...(deliveryWorkflow ? [`workflow: ${deliveryWorkflow}`] : []),
     ...(workItem ? [`work_item: ${workItem}`] : []),
     `started_at: ${persistedTimestamp(startedAt)}`,
@@ -2191,7 +2206,6 @@ function recordTerminal(terminal, {
     `worker: ${boundedText(agentName, 'unknown', MAX_WORKER)}`,
     ...(agentId ? [`agent_id: ${boundedText(agentId, '', MAX_WORKER)}`] : []),
     'transport: acp',
-    ...(deliveryPhase ? [`phase: ${deliveryPhase}`] : []),
     `repo_rev: ${boundedText(rev, 'unknown', MAX_TEXT)}`,
     `tree: ${boundedText(tree, 'unknown', MAX_TEXT)}`,
     `terminal: ${boundedText(terminal, 'unknown', MAX_TERMINATION_REASON)}`,
