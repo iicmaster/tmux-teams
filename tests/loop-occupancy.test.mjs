@@ -23,10 +23,12 @@ import { Script } from 'node:vm'
 
 import { currentEntry, teamOccupancy } from '../plugins/tmux-teams/skills/tmux-teams/scripts/dispatch-facts.mjs'
 import {
-  applyHarvest, planDispatches, planEscalation, planHarvest, tick,
+  applyHarvest, declaredEffort, effortEnv, planDispatches, planEscalation, planHarvest, tick,
 } from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs'
 import { applyPulls, planPulls } from '../plugins/tmux-teams/skills/tmux-teams/scripts/pull-controller.mjs'
-import { REVIEW_VERDICTS, readVerdict, roleBrief } from '../plugins/tmux-teams/skills/tmux-teams/scripts/role-briefs.mjs'
+import {
+  REVIEW_VERDICTS, TARGET_VERDICTS, readTargetVerdict, readVerdict, readWorkerHint, roleBrief,
+} from '../plugins/tmux-teams/skills/tmux-teams/scripts/role-briefs.mjs'
 import { EVENT_SPEC, LEDGER_EVENTS, validateLedger } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-validate.mjs'
 import { gateHistory } from './fixture-gate.mjs'
 import { validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
@@ -52,6 +54,16 @@ const TWO_TEAMS = {
     { team_id: 'test', name: 'Test', dispatcher_id: 't_d', worker_ids: ['t_w1'], evaluator_id: 't_e', models: MODELS },
   ],
   workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['build', 'test'] }],
+}
+
+// GitHub #31 stage 2: same shape as TWO_TEAMS, but `test` is a review team —
+// its worker's own output is a verdict on `build`'s delivery, not an artifact.
+// A separate constant rather than mutating TWO_TEAMS, so every existing test
+// against that fixture is unaffected by this one opting in.
+const TWO_TEAMS_WITH_REVIEW = {
+  ...TWO_TEAMS,
+  teams: TWO_TEAMS.teams.map((entry) =>
+    entry.team_id === 'test' ? { ...entry, produces: 'verdict' } : entry),
 }
 
 // The ledger fixtures are stamped on this date, so a real clock would read every
@@ -462,6 +474,94 @@ test('an evaluator that states no verdict is not a pass', () => {
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
+// ── GitHub #31 stage 2: a produces:'verdict' team's confirmed rejection ────
+
+test('a produces:verdict team\'s evaluator confirms what the worker found, in a second field', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-target-verdict-'))
+  try {
+    mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
+    writeFileSync(join(dir, '.mailbox-out', 't-review'),
+      'The worker rejected the build delivery; the reasoning checks out.\n\n'
+      + 'VERDICT: pass\nREASON: the rejection was correctly reasoned\n\n'
+      + 'TARGET_VERDICT: reject\nTARGET_REASON: the auth check is missing\n')
+    const graph = graphOf(TWO_TEAMS_WITH_REVIEW)
+    const items = itemsOnDisk(dir, ['tok', [
+      { event: 'assigned', agent_id: 't_w1', task_id: 't-1' },
+      { event: 'delivered', agent_id: 't_w1', task_id: 't-1', terminal: 'done' },
+      { event: 'assigned', agent_id: 't_e', task_id: 't-review' },
+      { event: 'delivered', agent_id: 't_e', task_id: 't-review', terminal: 'done' },
+    ]])
+
+    const [event] = applyHarvest(dir, graph, planHarvest(graph, items), FIXED_ISO)
+    assert.equal(event.event, 'reviewed')
+    assert.equal(event.verdict, 'pass')
+    assert.equal(event.target_verdict, 'reject')
+    assert.match(event.target_reason, /auth check/)
+    // The write must actually be legal — a target_verdict ledger-validate
+    // cannot accept would jam exactly the team this field exists to help.
+    const result = validateLedger([...items.get('tok').custody, event].map((entry) => JSON.stringify(entry)))
+    assert.deepEqual(result.problems, [])
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('a produces:verdict team\'s evaluator who states no TARGET_VERDICT attaches nothing — silence is not a reopen signal', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-target-verdict-silent-'))
+  try {
+    mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
+    writeFileSync(join(dir, '.mailbox-out', 't-review'), 'Looks right to me.\n\nVERDICT: pass\nREASON: matches the brief\n')
+    const graph = graphOf(TWO_TEAMS_WITH_REVIEW)
+    const items = itemsOnDisk(dir, ['tok', [
+      { event: 'assigned', agent_id: 't_w1', task_id: 't-1' },
+      { event: 'delivered', agent_id: 't_w1', task_id: 't-1', terminal: 'done' },
+      { event: 'assigned', agent_id: 't_e', task_id: 't-review' },
+      { event: 'delivered', agent_id: 't_e', task_id: 't-review', terminal: 'done' },
+    ]])
+
+    const [event] = applyHarvest(dir, graph, planHarvest(graph, items), FIXED_ISO)
+    assert.equal(event.event, 'reviewed')
+    assert.equal('target_verdict' in event, false)
+    assert.equal('target_reason' in event, false)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('a plain artifact team\'s evaluator never gets a target_verdict, even if its prose contains the words', () => {
+  // TWO_TEAMS (not the _WITH_REVIEW variant): `build` still defaults to
+  // produces: 'artifact'. Gating on the declared team, not on outbox text,
+  // is the whole point — a worker's report quoting "TARGET_VERDICT: reject"
+  // from a review team's brief must not be read as this team stating one.
+  const dir = mkdtempSync(join(tmpdir(), 'loop-target-verdict-gated-'))
+  try {
+    mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
+    writeFileSync(join(dir, '.mailbox-out', 'b-review'),
+      'It does what the request asked for.\n\nVERDICT: pass\nREASON: matches the brief\n\n'
+      + 'TARGET_VERDICT: reject\nTARGET_REASON: this text should be ignored here\n')
+    const graph = graphOf(TWO_TEAMS)
+    const items = itemsOnDisk(dir, ['tok', [
+      { event: 'assigned', agent_id: 'b_w1', task_id: 'b-1' },
+      { event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done' },
+      { event: 'assigned', agent_id: 'b_e', task_id: 'b-review' },
+      { event: 'delivered', agent_id: 'b_e', task_id: 'b-review', terminal: 'done' },
+    ]])
+
+    const [event] = applyHarvest(dir, graph, planHarvest(graph, items), FIXED_ISO)
+    assert.equal(event.event, 'reviewed')
+    assert.equal('target_verdict' in event, false)
+    assert.equal('target_reason' in event, false)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// GitHub #31 stage 2: the evaluator brief itself only carries the
+// TARGET_VERDICT instruction when the team opted in.
+test('the evaluator brief names TARGET_VERDICT only for a produces:verdict team', () => {
+  const withTarget = roleBrief('/nonexistent', 'evaluator', 'test',
+    { teamName: 'Test', workItem: 'tok', workerId: 't_w1', producesVerdict: true })
+  assert.match(withTarget, /TARGET_VERDICT:/)
+
+  const withoutTarget = roleBrief('/nonexistent', 'evaluator', 'build',
+    { teamName: 'Build', workItem: 'tok', workerId: 'b_w1', producesVerdict: false })
+  assert.doesNotMatch(withoutTarget, /TARGET_VERDICT:/)
+})
+
 test('a refused handoff returns the token to the team that sent it', () => {
   const dir = mkdtempSync(join(tmpdir(), 'loop-intake-'))
   try {
@@ -498,6 +598,24 @@ test('the verdict is the last one stated, not the first one mentioned', () => {
   assert.equal(readVerdict(echoed, REVIEW_VERDICTS).verdict, 'reject')
   assert.match(readVerdict(echoed, REVIEW_VERDICTS).reason, /node --check fails/)
   assert.equal(readVerdict('no verdict anywhere', REVIEW_VERDICTS).stated, false)
+})
+
+// GitHub #31 stage 2: unlike readVerdict, an unstated line must leave
+// `verdict` as `null` rather than falling back to a word in the vocabulary —
+// the caller (harvestEvent) only attaches target_verdict/target_reason to a
+// `reviewed` event when `stated` is true, and a fabricated 'unresolved' word
+// here (readVerdict's shape) is not in TARGET_VERDICTS and would make
+// ledger-validate reject the write outright.
+test('an unstated TARGET_VERDICT is null, not a fabricated word', () => {
+  const stated = readTargetVerdict('It fails the request.\n\nTARGET_VERDICT: reject\nTARGET_REASON: missing the auth check\n')
+  assert.equal(stated.verdict, 'reject')
+  assert.equal(stated.stated, true)
+  assert.match(stated.reason, /missing the auth check/)
+  assert.ok(TARGET_VERDICTS.has(stated.verdict))
+
+  const silent = readTargetVerdict('Looks fine, VERDICT: pass\nREASON: matches the brief\n')
+  assert.equal(silent.verdict, null)
+  assert.equal(silent.stated, false)
 })
 
 // ── §14.4: the runner's half of the family guarantee ────────────────────────
@@ -1590,4 +1708,194 @@ test('a dispatch_id match is not proof once the ledger contradicts what it was a
     },
   ].map((entry) => JSON.stringify(entry))
   assert.equal(validateLedger(consistent).ok, true, JSON.stringify(validateLedger(consistent).problems))
+})
+
+// ── GitHub #32: per-seat reasoning effort reaches the spawned process ────────
+
+test('declaredEffort reads the resolved seat, and effortEnv requests it the way modelEnv requests a model', () => {
+  const graph = graphOf({
+    ...TWO_TEAMS,
+    outer_controller_effort: 'max',
+    teams: [
+      { ...TWO_TEAMS.teams[0], seats: { b_w1: { effort: 'xhigh' } } },
+      TWO_TEAMS.teams[1],
+    ],
+  })
+  assert.equal(declaredEffort(graph, 'build', 'b_w1'), 'xhigh')
+  // No seat override on this one, and no role-level default exists to fall
+  // back to (unlike model/adapter, effort has no `models`/`adapters`-style
+  // per-role block) — so an unoverridden seat reads as unset.
+  assert.equal(declaredEffort(graph, 'test', 't_w1'), '')
+  // The outer controller reads its own top-level field, exactly like its model.
+  assert.equal(declaredEffort(graph, null, 'pm'), 'max')
+
+  assert.deepEqual(effortEnv('xhigh'), { ACP_REASONING_EFFORT: 'xhigh', ACP_EXPECT_REASONING_EFFORT: 'xhigh' })
+  // Unset requests nothing. There is no sentinel to filter the way modelEnv
+  // filters INHERIT_ACCOUNT_DEFAULT, because omission already means that.
+  assert.deepEqual(effortEnv(''), {})
+  assert.deepEqual(effortEnv(undefined), {})
+})
+
+test('a dispatched worker leg carries its seat effort into the spawned process env — the #32 bug pattern (declared, validated, dropped at dispatch) does not recur', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-effort-'))
+  try {
+    const store = join(dir, '.tmux-teams')
+    mkdirSync(join(store, 'work-items'), { recursive: true })
+    mkdirSync(join(store, 'team-briefs'), { recursive: true })
+    const graph = {
+      ...TWO_TEAMS,
+      teams: [
+        { ...TWO_TEAMS.teams[0], seats: { b_w1: { effort: 'max' } } },
+        TWO_TEAMS.teams[1],
+      ],
+    }
+    writeFileSync(join(store, 'graph.json'), JSON.stringify(graph))
+    writeFileSync(join(store, 'team-briefs', 'build.md'), '# standing brief\n')
+    writeFileSync(join(store, 'work-items', 'tok.jsonl'),
+      `${ledger('tok', [{ event: 'opened', agent_id: 'b_d', to_team: 'build' }])
+        .map((entry) => JSON.stringify(entry)).join('\n')}\n`)
+
+    const spawned = []
+    const stubSpawn = (repo, args) => { spawned.push(args); return 'stub-task' }
+    // `opened` dispatches the dispatcher first (intake); run twice so the
+    // second tick reaches the worker leg this test is actually about, exactly
+    // like the real loop's own next tick would.
+    tick(dir, { apply: true, scratchDir: join(dir, 'scratch'), spawnLeg: stubSpawn })
+    writeFileSync(join(store, 'work-items', 'tok.jsonl'),
+      `${ledger('tok', [
+        { event: 'opened', agent_id: 'b_d', to_team: 'build' },
+        { event: 'intake', agent_id: 'b_d', verdict: 'accept' },
+      ]).map((entry) => JSON.stringify(entry)).join('\n')}\n`)
+    tick(dir, { apply: true, scratchDir: join(dir, 'scratch'), spawnLeg: stubSpawn })
+
+    const workerLeg = spawned.find((args) => args.role === 'worker')
+    assert.ok(workerLeg, `no worker leg was spawned: ${JSON.stringify(spawned)}`)
+    assert.equal(workerLeg.agentId, 'b_w1')
+    assert.equal(workerLeg.effort, 'max', 'the seat\'s declared effort did not reach the dispatch call')
+    // And the value dispatch() itself turns that into on the child env — this
+    // is the exact env pair acp-companion.mjs already reads (ACP_REASONING_EFFORT
+    // the request, ACP_EXPECT_REASONING_EFFORT what the receipt is held to).
+    assert.deepEqual(effortEnv(workerLeg.effort), { ACP_REASONING_EFFORT: 'max', ACP_EXPECT_REASONING_EFFORT: 'max' })
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// ── GitHub #32: a dispatcher's worker hint, and its limits ──────────────────
+//
+// `want()`'s default is "first free seat in declared order" (§3.2.1). A hint
+// is an override of THAT choice, not a new source of truth the loop trusts
+// blindly — naming a worker that does not exist on this team is escalated,
+// and naming one that is real but busy waits for that specific seat rather
+// than silently substituting a different free one.
+
+const TWO_BUILD_WORKERS = {
+  ...TWO_TEAMS,
+  teams: [
+    { ...TWO_TEAMS.teams[0], worker_ids: ['b_w1', 'b_w2'] },
+    TWO_TEAMS.teams[1],
+  ],
+}
+
+const hintedIntake = (hint) => [
+  { event: 'pulled', agent_id: 'b_d', from_team: 'test', to_team: 'build' },
+  { event: 'intake', agent_id: 'b_d', verdict: 'accept', worker_hint: hint },
+]
+
+test('a worker_hint on intake overrides declared order, not just breaks its tie', () => {
+  const graph = graphOf(TWO_BUILD_WORKERS)
+  // Declared order alone would pick b_w1 — see the no-hint case below.
+  const plan = planFor(graph, hintedIntake('b_w2'))
+  assert.equal(plan.action, 'dispatch')
+  assert.equal(plan.agent_id, 'b_w2')
+})
+
+test('no worker_hint keeps the existing first-free-in-declared-order default', () => {
+  const graph = graphOf(TWO_BUILD_WORKERS)
+  const plan = planFor(graph, hintedIntake(null))
+  assert.equal(plan.action, 'dispatch')
+  assert.equal(plan.agent_id, 'b_w1')
+})
+
+test('a worker_hint naming a seat that is not on this team is escalated, not silently ignored', () => {
+  const graph = graphOf(TWO_BUILD_WORKERS)
+  const plan = planFor(graph, hintedIntake('nonexistent_worker'))
+  assert.equal(plan.action, 'escalate')
+  assert.match(plan.reason, /nonexistent_worker/)
+  assert.match(plan.reason, /the hint cannot be honored/)
+})
+
+test('a worker_hint naming a busy seat waits for that seat, and does not fall through to a different free one', () => {
+  const graph = graphOf(TWO_BUILD_WORKERS)
+  // b_w2 is named and busy; b_w1 is free and NOT named.
+  const plan = planFor(graph, hintedIntake('b_w2'), new Set(['b_w2']))
+  assert.equal(plan.action, 'wait')
+  assert.match(plan.reason, /b_w2/)
+  assert.notEqual(plan.agent_id, 'b_w1')
+})
+
+test('rework paths (returned, resumed) never read a worker_hint even if one is present on the line', () => {
+  const graph = graphOf(TWO_BUILD_WORKERS)
+  // Neither event carries `worker_hint` in real ledgers (§4: only `intake`
+  // does) — this proves the CODE ignores it there regardless, rather than
+  // relying on the writer never producing the shape.
+  const returned = planFor(graph, [
+    { event: 'pulled', agent_id: 'b_d', from_team: 'test', to_team: 'build' },
+    { event: 'returned', to_team: 'build', refused_by: 'x_d', worker_hint: 'b_w2' },
+  ])
+  assert.equal(returned.action, 'dispatch')
+  assert.equal(returned.agent_id, 'b_w1', 'a returned token honoured a worker_hint that only intake is allowed to carry')
+
+  const resumed = planFor(graph, [
+    { event: 'escalated', agent_id: 'pm', to_team: 'build', task_id: 'controller-task' },
+    { event: 'resumed', agent_id: 'pm', to_team: 'build', grant: 3, worker_hint: 'b_w2' },
+  ])
+  assert.equal(resumed.action, 'dispatch')
+  assert.equal(resumed.agent_id, 'b_w1', 'a resumed token honoured a worker_hint that only intake is allowed to carry')
+})
+
+test('an accepted intake outbox naming a WORKER line is harvested into worker_hint on the ledger', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-hint-harvest-'))
+  try {
+    mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
+    writeFileSync(join(dir, '.mailbox-out', 'b-intake'),
+      'Checked the handoff — it has what this team needs.\n\nWORKER: b_w2\nVERDICT: accept\nREASON: complete\n')
+    const graph = graphOf(TWO_BUILD_WORKERS)
+    const items = itemsOf(['tok', [
+      { event: 'pulled', agent_id: 'b_d', from_team: 'test', to_team: 'build' },
+      { event: 'assigned', agent_id: 'b_d', task_id: 'b-intake' },
+      { event: 'delivered', agent_id: 'b_d', task_id: 'b-intake', terminal: 'done' },
+    ]])
+    const [event] = applyHarvest(dir, graph, planHarvest(graph, items), '2026-07-27T09:00:00.000Z')
+    assert.equal(event.event, 'intake')
+    assert.equal(event.worker_hint, 'b_w2')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('an accepted intake outbox with no WORKER line harvests worker_hint as null, not undefined', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-hint-harvest-none-'))
+  try {
+    mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
+    writeFileSync(join(dir, '.mailbox-out', 'b-intake'),
+      'Checked the handoff — it has what this team needs.\n\nVERDICT: accept\nREASON: complete\n')
+    const graph = graphOf(TWO_BUILD_WORKERS)
+    const items = itemsOf(['tok', [
+      { event: 'pulled', agent_id: 'b_d', from_team: 'test', to_team: 'build' },
+      { event: 'assigned', agent_id: 'b_d', task_id: 'b-intake' },
+      { event: 'delivered', agent_id: 'b_d', task_id: 'b-intake', terminal: 'done' },
+    ]])
+    const [event] = applyHarvest(dir, graph, planHarvest(graph, items), '2026-07-27T09:00:00.000Z')
+    assert.equal(event.event, 'intake')
+    assert.equal(event.worker_hint, null)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('readWorkerHint reads the last WORKER line and ignores a malformed one', () => {
+  assert.equal(readWorkerHint('WORKER: b_w2\n'), 'b_w2')
+  // Last one wins, matching readVerdict's own restatement tolerance.
+  assert.equal(readWorkerHint('WORKER: b_w1\nsome prose\nWORKER: b_w2\n'), 'b_w2')
+  assert.equal(readWorkerHint('no worker line here\n'), null)
+  // Not shaped like an agent id (a space) — read as no hint, not an error; see
+  // the comment on WORKER_HINT_RE for why that tolerance is deliberate.
+  assert.equal(readWorkerHint('WORKER: not a valid id\n'), null)
+  assert.equal(readWorkerHint(null), null)
+  assert.equal(readWorkerHint(undefined), null)
 })

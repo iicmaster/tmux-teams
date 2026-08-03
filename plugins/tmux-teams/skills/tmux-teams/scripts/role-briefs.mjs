@@ -19,6 +19,14 @@ import { join } from 'node:path'
 
 export const VERDICT_RE = /^[ \t]*VERDICT:[ \t]*([A-Za-z-]+)[ \t]*$/m
 export const REASON_RE = /^[ \t]*REASON:[ \t]*(.+)$/m
+// GitHub #31 stage 2: a SECOND, separate line an evaluator of a `produces:
+// 'verdict'` team writes — see evaluatorBrief below. VERDICT above judges
+// whether the review itself was done correctly; TARGET_VERDICT confirms what
+// the review found about the work it judged. Two different questions, two
+// different lines, so a reader (and ledger-validate) never has to guess which
+// one a bare "VERDICT: reject" answered.
+export const TARGET_VERDICT_RE = /^[ \t]*TARGET_VERDICT:[ \t]*([A-Za-z-]+)[ \t]*$/m
+export const TARGET_REASON_RE = /^[ \t]*TARGET_REASON:[ \t]*(.+)$/m
 
 // `question` joins the two on 2026-07-31. A dispatcher had exactly two things it
 // could say — take it, or send it back — and the grill needs a third: the
@@ -27,6 +35,14 @@ export const REASON_RE = /^[ \t]*REASON:[ \t]*(.+)$/m
 // (and four teams pay for the guesswork).
 export const INTAKE_VERDICTS = new Set(['accept', 'reject', 'question'])
 export const REVIEW_VERDICTS = new Set(['pass', 'reject', 'unresolved'])
+// GitHub #31 stage 2: no `unresolved` member, deliberately — a three-design
+// panel found by execution that adding one here would make `readTargetVerdict`
+// return a word ledger-validate would then have to accept or reject as if it
+// meant something, when "the evaluator did not say" already has an honest
+// representation: `stated: false`, and the caller attaches nothing at all.
+// `unresolved` on REVIEW_VERDICTS above answers a different question (this
+// review leg itself could not be judged) and stays exactly as it was.
+export const TARGET_VERDICTS = new Set(['accept', 'reject'])
 // The outer controller is the only role whose verdict moves a token it never
 // worked on. Without these two words an escalation is a one-way door: the
 // controller writes a note nobody reads and the token is parked forever.
@@ -76,6 +92,38 @@ export function readVerdict(text, allowed) {
   }
 }
 
+// GitHub #31 stage 2. Unlike `readVerdict`, an unstated line does NOT fall
+// back to a word from the vocabulary — `verdict` is `null` and `stated` is
+// `false`. The caller (loop-runner.mjs harvestEvent) must attach
+// `target_verdict`/`target_reason` to a `reviewed` event only when `stated` is
+// true: "absence means no reopen signal", never a rejected write. Attaching a
+// literal `'unresolved'` here — the shape `readVerdict` uses — would hand
+// ledger-validate a value with nothing in `TARGET_VERDICTS` to compare it
+// against, jamming exactly the teams this field exists to help.
+export function readTargetVerdict(text) {
+  if (typeof text !== 'string') return { verdict: null, stated: false, reason: '' }
+  const word = (lastMatch(text, TARGET_VERDICT_RE)?.[1] || '').toLowerCase()
+  const reason = lastMatch(text, TARGET_REASON_RE)?.[1] || ''
+  const stated = TARGET_VERDICTS.has(word)
+  return { verdict: stated ? word : null, stated, reason: reason.trim().slice(0, 400) }
+}
+
+// GitHub #32: which worker the dispatcher wants THIS token to go to, read the
+// same way as VERDICT/REASON — a labelled line, last one wins. The capture
+// group is bounded to exactly `workflow-graph.mjs`'s AGENT_ID_RE shape
+// (`^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$`), so a line that does not look like an
+// agent id simply does not match — it is read as no hint stated, the same
+// tolerance `readVerdict` already gives an unparseable VERDICT line, not an
+// error. A well-formed but WRONG hint (an id that is not on this team, or is
+// busy) is a different case: it reaches the ledger and `nextStep` decides it
+// out loud (loop-runner.mjs `want`), because a hint that names something real
+// and is simply not honourable must never disappear silently.
+export const WORKER_HINT_RE = /^[ \t]*WORKER:[ \t]*([A-Za-z0-9_][A-Za-z0-9_-]{0,63})[ \t]*$/m
+export function readWorkerHint(text) {
+  if (typeof text !== 'string') return null
+  return lastMatch(text, WORKER_HINT_RE)?.[1] || null
+}
+
 const SHARED_RULES = `## Project rules you inherit
 
 - Never state anything you have not verified. If you could not measure it, write
@@ -94,7 +142,7 @@ const SHARED_RULES = `## Project rules you inherit
   can check. If you verified nothing, say so inside the block rather than
   omitting it — "could not measure" is evidence, silence is not.`
 
-const dispatcherBrief = ({ teamName, workItem, fromTeam, route }) => `# You are the dispatcher of the ${teamName} team
+const dispatcherBrief = ({ teamName, workItem, fromTeam, route, workers }) => `# You are the dispatcher of the ${teamName} team
 
 Your job on \`${workItem}\` is **intake**, not the work itself.
 ${fromTeam ? `The ${fromTeam} team has handed this token to you.` : 'This token enters the route here.'}
@@ -113,6 +161,23 @@ handoff that is not there: accepting nothing is how a whole route once ran while
 one team produced no output at all.
 
 ${SHARED_RULES}
+
+## Choosing which worker gets it — optional, only on accept
+
+This team's workers: ${workers && workers.length ? workers.join('; ') : 'one pool; the loop assigns the next free seat in declared order'}.
+
+Say nothing more and the loop assigns the next free worker itself. If this
+token has a reason to go to a SPECIFIC seat — harder work that belongs on the
+stronger tier, or the reverse — name it, on its own line, ANYWHERE before your
+closing VERDICT/REASON lines:
+
+WORKER: <agent_id>
+
+It is a hint, not an instruction the loop will bend rules to honour: naming a
+seat that is not on this team's worker pool, or is currently busy, is never
+silently swapped for a different one on your behalf — the loop says so out
+loud instead of guessing what you meant. Only read on **accept**; a reject
+carries no worker.
 
 ## What to write
 
@@ -199,7 +264,31 @@ VERDICT: question
 CATEGORIES: <space-separated, from: ${GRILL_CATEGORY_IDS.join(' ')} — the ones you could NOT resolve>
 REASON: <the questions themselves when you are asking; the route and why when you accept>`
 
-const evaluatorBrief = ({ teamName, workItem, workerId }) => `# You are the evaluator of the ${teamName} team
+// GitHub #31 stage 2: only a `produces: 'verdict'` team's evaluator sees this
+// block — a team whose worker's own output IS a verdict on someone else's
+// work (a review team), not an artifact to hand onward. Appended, never
+// interpolated into the shared closing lines, so a team that does not opt in
+// (every graph written before `produces` existed) gets back the exact brief
+// it always got.
+const TARGET_VERDICT_BLOCK = `
+
+## This team judges — say what you confirmed, in a second line
+
+Your worker did not build an artifact; it rendered a verdict on someone else's
+work. Your \`VERDICT\` above judges whether the WORKER did that job correctly —
+it does not yet say what the worker's verdict WAS. State that separately:
+
+TARGET_VERDICT: accept
+TARGET_REASON: <one line — the work this confirms, and what about it>
+
+Use \`TARGET_VERDICT: reject\` when you confirm the worker correctly found the
+work under review does not meet the request — it is not done and needs
+another pass, not a handoff onward. Use \`TARGET_VERDICT: accept\` when you
+confirm the worker correctly found it does. Only write this pair when your own
+\`VERDICT\` is \`pass\` — omit it entirely on a rejection of the WORKER's own
+review; an unconfirmed judgement records nothing about the target.`
+
+const evaluatorBrief = ({ teamName, workItem, workerId, producesVerdict }) => `# You are the evaluator of the ${teamName} team
 
 The worker \`${workerId}\` has delivered \`${workItem}\`. **Nothing leaves this team
 until you pass it.** You are the inner quality loop: a rejection goes back to
@@ -221,14 +310,14 @@ ${SHARED_RULES}
 ## What to write
 
 Your outbox: what you checked, what you ran, and what you found — quoting real
-output. End it with exactly these two lines and nothing after them:
+output. End it with exactly these two lines${producesVerdict ? ', optionally followed by the TARGET_VERDICT pair below, and nothing after that' : ' and nothing after them'}:
 
 VERDICT: pass
 REASON: <one line — what you verified, or exactly what fails>
 
 Use \`VERDICT: unresolved\` only when you genuinely could not check (the artifact
 is unreadable, the tooling is broken). It stops the token and escalates to the
-outer controller, so do not use it as a soft no.`
+outer controller, so do not use it as a soft no.${producesVerdict ? TARGET_VERDICT_BLOCK : ''}`
 
 const pmBrief = ({ projectId, trigger, board }) => `# You are the outer controller (PM) of this delivery loop
 

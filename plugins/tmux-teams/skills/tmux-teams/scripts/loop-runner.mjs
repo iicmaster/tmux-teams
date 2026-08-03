@@ -38,7 +38,7 @@ import { appendEvent as appendLedgerEvent, ledgerPath } from './ledger-writer.mj
 import { planPulls, applyPulls } from './pull-controller.mjs'
 import {
   AUDIT_VERDICTS, INTAKE_VERDICTS, OUTER_VERDICTS, REVIEW_VERDICTS,
-  readCategories, readVerdict, roleBrief,
+  readCategories, readTargetVerdict, readVerdict, readWorkerHint, roleBrief,
 } from './role-briefs.mjs'
 import { readWorkflowGraph } from './graph.mjs'
 import { intakeStats, intakeStatsBrief } from './intake-stats.mjs'
@@ -177,6 +177,29 @@ export function declaredAdapter(graph, teamId, agentId) {
 export function modelEnv(model) {
   const name = typeof model === 'string' ? model.trim() : ''
   return name && name !== INHERIT_ACCOUNT_DEFAULT ? { ACP_MODEL: name, ACP_EXPECT_MODEL: name } : {}
+}
+
+// GitHub #32: a seat's declared reasoning effort, read the same way as its
+// model — off the agent's own resolved seat, never re-paired from a role
+// block, and the outer controller off its own top-level field. Unlike model
+// there is no `INHERIT_ACCOUNT_DEFAULT` sentinel to filter: effort has no
+// required declaration at all, so an unset seat already reads as `''` and
+// `effortEnv` below already treats that as "ask for nothing".
+export function declaredEffort(graph, teamId, agentId) {
+  if (agentId && agentId === graph.outer_controller_id) return graph.outer_controller_effort || ''
+  const team = graph.teams.find((entry) => entry.team_id === teamId)
+  return team?.agents.find((agent) => agent.agent_id === agentId)?.effort || ''
+}
+
+// The same request/expectation pair `modelEnv` sends, for the other half of
+// identity `acp-companion.mjs` already verifies: `ACP_REASONING_EFFORT` is the
+// request, `ACP_EXPECT_REASONING_EFFORT` is what holds the receipt to it. This
+// was the gap #32 opened with — the companion supported both env vars and
+// nothing upstream of it ever set them, so a graph declaring an effort per
+// seat had no way to reach the process it was declared for.
+export function effortEnv(effort) {
+  const name = typeof effort === 'string' ? effort.trim() : ''
+  return name ? { ACP_REASONING_EFFORT: name, ACP_EXPECT_REASONING_EFFORT: name } : {}
 }
 
 const readJson = (path, fallback = null) => {
@@ -372,11 +395,17 @@ function composeBrief(repo, graph, plan, item, scratchDir, answerDeadlineSec = A
     // Either arrival carries the context the dispatcher is judging: a `pulled`
     // names the team that sent it, an `opened` names why the work exists at all.
     const pulled = lastOf(item, (entry) => entry.event === 'pulled' || entry.event === 'opened')
+    // What the dispatcher can pick FROM, so a hint names a real seat rather
+    // than being guessed at. Declared order, matching `nextStep`'s own default.
+    const workers = team.agents
+      .filter((agent) => agent.role === 'worker')
+      .map((agent) => `${agent.agent_id} (model=${agent.model}${agent.effort ? `, effort=${agent.effort}` : ''})`)
     parts.push(roleBrief(repo, 'dispatcher', team.team_id, {
       teamName: team.name,
       workItem: item.work_item,
       fromTeam: pulled?.from_team || '',
       route: workflow ? workflow.route.join(' -> ') : 'unknown',
+      workers,
     }))
   } else if (role === 'evaluator') {
     const delivery = lastWorkerDelivery(graph, item)
@@ -384,6 +413,12 @@ function composeBrief(repo, graph, plan, item, scratchDir, answerDeadlineSec = A
       teamName: team.name,
       workItem: item.work_item,
       workerId: delivery?.agent_id || 'a worker of this team',
+      // GitHub #31 stage 2: only a `produces: 'verdict'` team's evaluator gets
+      // the TARGET_VERDICT instruction — see workflow-graph.mjs TEAM_PRODUCES.
+      // `team.produces` is undefined for any graph normalized before that
+      // field existed, and undefined !== 'verdict' is false, so an older
+      // graph gets back the exact brief it always got.
+      producesVerdict: team.produces === 'verdict',
     }))
     const standing = join(repo, '.tmux-teams', 'team-briefs', `${team.team_id}.md`)
     if (existsSync(standing)) {
@@ -489,7 +524,16 @@ function harvestEvent(repo, graph, { item, last, role }, now) {
       // §4 requires a reason on `intake`. An accept with nothing said is
       // common and legal, so the absence is stated rather than left blank —
       // a blank field is refused by the writer and would stall the token.
-      return { ...base, event: 'intake', agent_id: last.agent_id, verdict: 'accept', reason: reason || 'no reason stated' }
+      //
+      // GitHub #32: `worker_hint` is optional and carries whatever the
+      // dispatcher named — `nextStep`'s `want()` is what judges whether it is
+      // a real, free seat; this line just records what was said. `null` when
+      // nothing was said, an EVENT_SPEC-permitted extra field either way (§4:
+      // only the event NAME is a closed vocabulary).
+      return {
+        ...base, event: 'intake', agent_id: last.agent_id, verdict: 'accept',
+        reason: reason || 'no reason stated', worker_hint: readWorkerHint(text),
+      }
     }
     // At the front door a refusal is ADVICE, not a veto (controller-as-team.md
     // §5.3): the gate may believe a request should not be built, and the person
@@ -601,6 +645,20 @@ function harvestEvent(repo, graph, { item, last, role }, now) {
   }
 
   const { verdict, stated, reason } = readVerdict(text, REVIEW_VERDICTS)
+  // GitHub #31 stage 2: only a `produces: 'verdict'` team's evaluator was ever
+  // told to write a TARGET_VERDICT line (composeBrief above), so only that
+  // team's `reviewed` event may carry one. `team?.produces` is undefined for
+  // any graph normalized before that field existed, matching nothing here.
+  const team = graph.teams.find((entry) => entry.team_id === teamRoleOf(graph, last.agent_id)?.team_id)
+  const target = team?.produces === 'verdict' ? readTargetVerdict(text) : { stated: false }
+  // Attached ONLY when stated — a confirmed three-design panel found that
+  // falling back to a literal 'unresolved' here (the shape readVerdict uses)
+  // would hand ledger-validate a value TARGET_VERDICTS does not contain,
+  // rejecting the whole `reviewed` write outright. Absence means "no reopen
+  // signal", never a jammed write.
+  const targetFields = target.stated
+    ? { target_verdict: target.verdict, target_reason: target.reason || 'no reason stated' }
+    : {}
   return {
     // `last` here is the evaluator's OWN `delivered` — this leg's own record —
     // so its dispatch_id is this review's real identity. Naming it is what lets
@@ -609,6 +667,7 @@ function harvestEvent(repo, graph, { item, last, role }, now) {
     ...base, event: 'reviewed', agent_id: last.agent_id, verdict, dispatch_id: last.dispatch_id,
     reviewed_task: lastWorkerDelivery(graph, item)?.task_id || null,
     reason: stated ? (reason || 'no reason stated') : 'the evaluator stated no verdict',
+    ...targetFields,
   }
 }
 
@@ -736,7 +795,17 @@ function nextStep(graph, team, item, { busy, nowMs, zombieSec, answerDeadlineSec
     return { action: 'escalate', reason: `${legs} legs on one token against a ceiling of ${ceiling} — it is bouncing, not progressing` }
   }
 
-  const want = (role) => {
+  // `hint` is GitHub #32's dispatcher choice, honoured for `role === 'worker'`
+  // only, and only by the one caller that reads it off a fresh `intake`
+  // (below). A hint is never an instruction the loop bends other rules for:
+  // naming a seat that does not exist on this team's pool for this role is
+  // escalated rather than silently falling back to the next free seat — a
+  // fallback here would make a stated choice indistinguishable from no choice
+  // at all. Naming a real seat that is currently busy WAITS on that seat
+  // specifically, exactly like the no-hint "every worker busy" wait already
+  // does — it is not a new way to stall forever, because the same zombie
+  // detection that frees any busy seat frees this one too.
+  const want = (role, hint = null) => {
     const pool = role === 'worker' ? team.worker_ids
       : role === 'dispatcher' ? [team.dispatcher_id] : [team.evaluator_id]
     const attempts = attemptsBy(item, pool)
@@ -753,6 +822,23 @@ function nextStep(graph, team, item, { busy, nowMs, zombieSec, answerDeadlineSec
         reason: `${attempts} ${role} attempts in ${team.team_id} spent over ${legs} legs on this token`
           + ` — those legs ended: ${ends.length ? ends.join(', ') : 'nothing recorded'}`,
       }
+    }
+    if (hint) {
+      if (!pool.includes(hint)) {
+        return {
+          action: 'escalate',
+          reason: `the dispatcher named ${hint} as the worker for this token, but ${hint} is not a`
+            + ` ${role} on ${team.team_id} (${pool.join(', ') || 'no seats declared'}) — the hint cannot be honored`,
+        }
+      }
+      if (busy.has(hint)) {
+        return {
+          action: 'wait', role,
+          reason: `the dispatcher named ${hint} for this token and it is busy — waiting for that seat`
+            + ' rather than picking a different free one',
+        }
+      }
+      return { action: 'dispatch', role, agent_id: hint }
     }
     const free = pool.find((agentId) => !busy.has(agentId))
     if (!free) return { action: 'wait', role, reason: `every ${role} on this team is busy` }
@@ -852,7 +938,13 @@ function nextStep(graph, team, item, { busy, nowMs, zombieSec, answerDeadlineSec
   // dispatcher's.
   if (last.event === 'answered') return want('dispatcher')
   if (last.event === 'intake' && team.team_id === graph.controller_team) return { action: 'ready' }
-  if (last.event === 'intake' || last.event === 'returned' || last.event === 'resumed') return want('worker')
+  // Only a FRESH `intake` carries a hint — `returned` and `resumed` are the
+  // rework paths (a refused handoff coming back, a controller-granted retry)
+  // and neither event has a `worker_hint` field (§4), so `last.worker_hint` is
+  // simply undefined for them and this falls through to the default seat.
+  if (last.event === 'intake' || last.event === 'returned' || last.event === 'resumed') {
+    return want('worker', last.event === 'intake' ? (last.worker_hint || null) : null)
+  }
   return { action: 'skip', reason: `nothing follows ${last.event}` }
 }
 
@@ -1091,7 +1183,7 @@ export function childEnv(source = process.env) {
   return injected ? { ...rest, ACP_CMD: injected } : rest
 }
 
-function dispatch(repo, { workItem, team, role, agentId, workflow, model, adapter = DEFAULT_ADAPTER }, briefPath, stallSec) {
+function dispatch(repo, { workItem, team, role, agentId, workflow, model, adapter = DEFAULT_ADAPTER, effort }, briefPath, stallSec) {
   const taskId = `${workItem || 'board'}-${team || 'loop'}-${role}-${Date.now().toString(36)}`
     .replace(/[^A-Za-z0-9_-]/g, '-')
   // Keep every dispatch log. Discarding the adapter stderr is how a runner ends
@@ -1112,6 +1204,7 @@ function dispatch(repo, { workItem, team, role, agentId, workflow, model, adapte
       // pinned". `modelEnv` is what keeps the sentinel from becoming a request
       // the adapter would refuse — see its comment for why that matters.
       ...modelEnv(model),
+      ...effortEnv(effort),
       ...(workflow ? { TMUX_TEAMS_WORKFLOW: workflow } : {}),
       ...(workItem ? { TMUX_TEAMS_WORK_ITEM: workItem } : {}),
       ECC_GATEGUARD: 'off',
@@ -1321,13 +1414,15 @@ export function tick(repoArg, {
     // adapter to, or the account default nobody pinned.
     const says = modelEnv(model).ACP_EXPECT_MODEL || 'account default (none requested)'
     const adapter = declaredAdapter(graph.value, plan.team, plan.agent_id)
-    if (!apply) { log(`would dispatch ${plan.agent_id} (${plan.role}) for ${plan.work_item} lane=${adapter} model=${says}`); continue }
+    const effort = declaredEffort(graph.value, plan.team, plan.agent_id)
+    const effortSays = effortEnv(effort).ACP_EXPECT_REASONING_EFFORT || 'unset (adapter default)'
+    if (!apply) { log(`would dispatch ${plan.agent_id} (${plan.role}) for ${plan.work_item} lane=${adapter} model=${says} effort=${effortSays}`); continue }
     const taskId = spawnLeg(repo, {
       workItem: plan.work_item, team: plan.team, role: plan.role,
-      agentId: plan.agent_id, workflow: plan.workflow, model, adapter,
+      agentId: plan.agent_id, workflow: plan.workflow, model, adapter, effort,
     }, brief.path, stallSec)
-    log(`start  ${plan.agent_id} (${plan.role}) <- ${plan.work_item} task=${taskId} lane=${adapter} model=${says}`)
-    started.push({ ...plan, task_id: taskId, model })
+    log(`start  ${plan.agent_id} (${plan.role}) <- ${plan.work_item} task=${taskId} lane=${adapter} model=${says} effort=${effortSays}`)
+    started.push({ ...plan, task_id: taskId, model, effort })
   }
 
   // The outer controller runs last, on what the rest of the tick could not
@@ -1352,8 +1447,10 @@ export function tick(repoArg, {
     // drew on the page — and spawned `claude`. The dispatch log said `model=`
     // and not `lane=`, so nothing in the record could contradict it either.
     const pmAdapter = declaredAdapter(graph.value, null, escalation.agent_id)
+    const pmEffort = declaredEffort(graph.value, null, escalation.agent_id)
+    const pmEffortSays = effortEnv(pmEffort).ACP_EXPECT_REASONING_EFFORT || 'unset (adapter default)'
     if (!apply) {
-      log(`would dispatch ${escalation.agent_id} (pm) about ${escalation.triggers.length} problem(s) lane=${pmAdapter} model=${pmSays}`)
+      log(`would dispatch ${escalation.agent_id} (pm) about ${escalation.triggers.length} problem(s) lane=${pmAdapter} model=${pmSays} effort=${pmEffortSays}`)
     } else if (busy.has(escalation.agent_id)) {
       log(`pm     already running on ${escalation.triggers.length} problem(s)`)
     } else {
@@ -1361,10 +1458,10 @@ export function tick(repoArg, {
       mkdirSync(notesDir, { recursive: true })
       writeFileSync(join(notesDir, 'latest.md'), `${new Date().toISOString()}\n${escalation.identity}\n`)
       const taskId = spawnLeg(repo,
-        { workItem: '', team: '', role: 'pm', agentId: escalation.agent_id, workflow: '', model: pmModel, adapter: pmAdapter },
+        { workItem: '', team: '', role: 'pm', agentId: escalation.agent_id, workflow: '', model: pmModel, adapter: pmAdapter, effort: pmEffort },
         briefPath, stallSec)
-      log(`start  ${escalation.agent_id} (pm) <- board task=${taskId} lane=${pmAdapter} model=${pmSays}`)
-      started.push({ action: 'dispatch', role: 'pm', agent_id: escalation.agent_id, task_id: taskId, model: pmModel })
+      log(`start  ${escalation.agent_id} (pm) <- board task=${taskId} lane=${pmAdapter} model=${pmSays} effort=${pmEffortSays}`)
+      started.push({ action: 'dispatch', role: 'pm', agent_id: escalation.agent_id, task_id: taskId, model: pmModel, effort: pmEffort })
       // Each escalated token is marked so the loop stops re-triggering on it
       // while the controller is thinking.
       // A finished route is flagged, not parked: `audit_requested` releases the

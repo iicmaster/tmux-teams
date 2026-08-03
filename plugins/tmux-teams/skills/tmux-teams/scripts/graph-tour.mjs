@@ -576,7 +576,21 @@ export const TOUR_CSS = `
 .tour-dots button{width:9px;height:9px;padding:0;border:none;border-radius:99px;background:var(--line);cursor:pointer}
 .tour-dots button[aria-current=true]{background:var(--ink)}
 .tour-dots button:focus-visible,.tour-controls button:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
-.tour-controls{display:flex;align-items:center;gap:var(--s2)}
+/* wrap, not nowrap: nine controls (zoom readout, -, fit, 100%, +, stamp, prev,
+   next, full) in one unbroken flex row measured 488px wide. .tour-bar's
+   second grid track is auto, and an auto track's own floor is its item's
+   MIN-CONTENT contribution — for a nowrap flex row that is the full 488px
+   sum, so the track (and every ancestor up through .tour and body) could not
+   shrink below it: at a 400px viewport documentElement.scrollWidth measured
+   613px, real horizontal scroll, GitHub #33. Wrapping this row makes its
+   min-content the width of its ONE widest child instead of the sum of all
+   nine (Flexbox spec, intrinsic sizes of flex containers), which is what
+   actually let the track shrink to fit — confirmed live in a browser, not
+   guessed: .tiles's auto-fit reflow and .below's max-width, the two suspects
+   checked before, were never the cause. Desktop is unaffected: there is
+   always room for one line there, and wrap only takes effect when there is
+   not. */
+.tour-controls{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s2)}
 .tour-controls button{padding:6px 14px;border:1px solid var(--line);border-radius:8px;
  background:var(--surface);color:var(--ink);font:inherit;cursor:pointer}
 .tour-controls button:hover{border-color:var(--ink)}
@@ -826,7 +840,14 @@ export const TOUR_SCRIPT = `
       // A running worker means the ASSIGNMENT is live. The handover to the
       // evaluator has not happened — that is what "still running" means — so
       // crawling it too claimed an artifact was in motion that nobody sent.
-      p.classList.toggle('live', (e.kind === 'assign' || e.kind === 'owns') && RUNNING.has(e.to))
+      // That is a fact about the WORKER's own running state, not a reason to
+      // leave 'judge' out of this allowlist entirely: RUNNING.has(e.to) for a
+      // judge leg asks whether the EVALUATOR is running, which is a separate
+      // seat and a separate moment — after the worker settled and handed off.
+      // Without 'judge' here an evaluator that is actively reviewing showed no
+      // motion and no lit incoming edge at all, the one working seat on the
+      // whole board that looked idle.
+      p.classList.toggle('live', (e.kind === 'assign' || e.kind === 'owns' || e.kind === 'judge') && RUNNING.has(e.to))
       // Raised only while that team really is stuck, so the red crawl reports
       // an event rather than decorating the possibility of one.
       if (e.kind === 'escalate') p.classList.toggle('raised', STUCK.has(e.from))
@@ -905,13 +926,28 @@ export const TOUR_SCRIPT = `
     }
   }
 
-  function apply() {
+  function apply(instant) {
     const k = fitted.k * user.k
     const w = stage.clientWidth, h = stage.clientHeight
     const t = 'translate(' + (w / 2 + user.dx) + 'px,' + (h / 2 + user.dy) + 'px) scale(' + k
       + ') translate(' + (-fitted.x) + 'px,' + (-fitted.y) + 'px)'
+    // A restored seat must land in one frame, not glide there. The .62s ease
+    // is right for a scene the PAGE changes on its own; on the first paint
+    // after a reload the reader was already looking at this exact view a
+    // moment ago, and animating in from the unstyled default (top-left,
+    // unscaled — wherever the camera sits before this script runs) is the
+    // "jumped like a new page opened" the seat exists to prevent. Every later
+    // apply() — a scene change, a wheel zoom — keeps the normal ease.
+    if (instant) { cam.style.transitionDuration = '0s'; svg.style.transitionDuration = '0s' }
     cam.style.transform = t
     svg.style.transform = t
+    if (instant) {
+      // Commit this frame before handing the duration back to the stylesheet,
+      // or a wheel zoom made in the same tick inherits the zero duration too.
+      void cam.offsetWidth
+      cam.style.transitionDuration = ''
+      svg.style.transitionDuration = ''
+    }
     root.classList.toggle('lean', k < DETAIL_AT)
     // The class just changed what a card measures, so the halos have to follow.
     fitHalos()
@@ -993,9 +1029,10 @@ export const TOUR_SCRIPT = `
     // not seen yet.
     // A scene change resets the reader's zoom — except on the first paint
     // after a reload, where restoring it is the whole point.
+    const wasRestoring = restoring
     user = restoring && seated ? { k: seated.k, dx: seated.dx, dy: seated.dy } : { k: 1, dx: 0, dy: 0 }
     restoring = false
-    apply()
+    apply(wasRestoring)
 
     root.querySelector('[data-tour-kicker]').textContent = sc.kicker || ''
     root.querySelector('[data-tour-title]').textContent = sc.title || ''

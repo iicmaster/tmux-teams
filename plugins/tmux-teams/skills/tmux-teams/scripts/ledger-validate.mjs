@@ -16,7 +16,7 @@
 // The verdict vocabularies live with the briefs that ask for them, so the words
 // an agent is told to say and the words a ledger will accept cannot drift into
 // two lists. role-briefs imports only node builtins, so this direction is safe.
-import { AUDIT_VERDICTS, REVIEW_VERDICTS } from './role-briefs.mjs'
+import { AUDIT_VERDICTS, REVIEW_VERDICTS, TARGET_VERDICTS } from './role-briefs.mjs'
 import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { join, resolve } from 'node:path'
@@ -309,6 +309,26 @@ export function validateLedger(lines) {
     if (spec.verdicts && present(entry.verdict) && !spec.verdicts.has(String(entry.verdict))) {
       add(lineNo, 'bad_verdict',
         `${name} verdict ${JSON.stringify(entry.verdict)} is not one of ${[...spec.verdicts].sort().join(', ')}`)
+    }
+    // GitHub #31 stage 2: a `reviewed` from a `produces: 'verdict'` team's
+    // evaluator may additionally confirm what its worker found — a SEPARATE,
+    // narrower vocabulary from `verdict` above (which judges whether the
+    // review itself was done correctly, not what it found). The check above is
+    // hardcoded to `entry.verdict` via `spec.verdicts`, so this is a small new
+    // block rather than a generalisation of it. Both fields are optional:
+    // absent on every `reviewed` line written before this field existed, and
+    // absent whenever an evaluator's own `readTargetVerdict` found nothing
+    // stated (role-briefs.mjs) — "a declaration that says nothing must be
+    // refused" does not apply here because the field is never written to say
+    // nothing; it is simply not written.
+    if (name === 'reviewed' && present(entry.target_verdict)) {
+      if (!TARGET_VERDICTS.has(String(entry.target_verdict))) {
+        add(lineNo, 'bad_target_verdict',
+          `reviewed target_verdict ${JSON.stringify(entry.target_verdict)} is not one of ${[...TARGET_VERDICTS].sort().join(', ')}`)
+      }
+      if (!present(entry.target_reason)) {
+        add(lineNo, 'missing_field', 'reviewed declares target_verdict without target_reason')
+      }
     }
 
     // ---- sequence ----------------------------------------------------------

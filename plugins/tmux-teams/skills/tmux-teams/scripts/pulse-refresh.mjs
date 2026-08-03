@@ -3,6 +3,12 @@
 
 export const PULSE_REFRESH_SOURCE = `
 (() => {
+  // The browser's own scroll restoration on reload runs on top of the
+  // capture()/restore() below rather than instead of it, so a reload could
+  // apply both and settle a frame later than the manual one, reading as a
+  // second, smaller jump right after the first. This page owns restoring its
+  // own position; the browser's guess is not needed.
+  try { if (history.scrollRestoration) history.scrollRestoration = 'manual' } catch { /* not fatal */ }
   const body = document.body
   const marker = document.querySelector('meta[name="tmux-teams-snapshot-id"]')
   const initialSnapshotId = marker?.content || ''

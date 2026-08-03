@@ -190,6 +190,7 @@ measurement.
     "team_id": "<GRAPH_ID>", "name": "<1..160 chars>",
     "dispatcher_id": "<AGENT_ID>", "worker_ids": ["<AGENT_ID>", "..."],
     "evaluator_id": "<AGENT_ID>",
+    "produces": "artifact | verdict",
     "models": { "dispatcher": "<MODEL>", "worker": "<MODEL>", "evaluator": "<MODEL>" },
     "adapters": { "dispatcher": "claude | codex | agy", "worker": "...", "evaluator": "..." },
     "seats": { "<AGENT_ID>": { "model": "<MODEL>", "adapter": "claude | codex | agy" } }
@@ -201,7 +202,9 @@ measurement.
 `AGENT_ID` = `^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$` ·
 `GRAPH_ID` = `^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$` ·
 `name` = 1–160 characters, no control characters ·
-`MODEL` = 1–128 characters, no control characters.
+`MODEL` = 1–128 characters, no control characters ·
+`EFFORT` = 1–64 characters, no control characters — optional everywhere it
+appears; omitted means no reasoning effort is requested, not a default value.
 
 Bounds: 1–100 teams, 1–100 workers per team, 1–50 workflows.
 
@@ -254,8 +257,9 @@ bundled template uses it precisely because no real model belongs in a template.
 | a missing or malformed model on any declared seat | a dispatch with no model named runs on whatever the account defaults to — the guess this declaration exists to stop |
 | an adapter outside `claude`/`codex`/`agy`, per role or per seat | the lanes are a **closed** set — `acp-companion.mjs` exits 2 on a fourth name |
 | a `seats` key naming no seat on that team | a typo'd agent id would resolve to the role default while a reader believed the seat had moved |
-| a `seats` entry that is empty, or carrying a key other than `model`/`adapter` | the same silence, spelt differently: it renders as a declaration and changes nothing |
+| a `seats` entry that is empty, or carrying a key other than `model`/`adapter`/`effort` | the same silence, spelt differently: it renders as a declaration and changes nothing |
 | a `seats` entry for `outer_controller_id` | the controller declares its lane and model at the top level and the dispatch reads those; a second statement of one fact is the one that would be ignored |
+| a malformed `effort` — empty, over 64 characters, or carrying a control character — on a seat or on the outer controller | an effort is a request the dispatch will hold the adapter to, exactly like a model; a malformed one is refused rather than silently sent as a literal empty request |
 | any missing or malformed field above | the graph fails **closed**; it never silently falls back |
 
 A repo with no `graph.json` at all uses the bundled default graph. A repo
@@ -285,7 +289,51 @@ consumer may pair a role back to the `models` block by hand.
 evaluator pools are singletons, so this mattered only for workers, and it did
 not matter at all while every worker seat was identical. With `seats` it does:
 `worker_ids[0]` is the preferred seat and later entries are overflow. **This is
-not fanout** — one leg is dispatched to one seat.
+not fanout** — one leg is dispatched to one seat. GitHub #32 gives a team's own
+dispatcher a way to override this default per token — see §4.8; declared order
+is still what a token with no stated preference falls back to.
+
+#### 3.2.2 `effort` — a seat may also request a reasoning effort
+
+GitHub #32. `acp-companion.mjs` already honours `ACP_REASONING_EFFORT` as a
+request and `ACP_EXPECT_REASONING_EFFORT` as the expectation it holds the
+receipt to — the identical request/expectation pair §3.2 built for `model` —
+but nothing between the graph and the companion ever set them. `effort` closes
+that gap the same way `seats` closed the one-model-per-role gap: it is a third
+optional key on a `seats` override, alongside `model` and `adapter`.
+
+It is **not** a fourth per-ROLE block alongside `models`/`adapters`. Master's
+concrete case is two workers on ONE team running the SAME model at DIFFERENT
+efforts — an easy/medium tier and a medium/hard tier, with the DISPATCHER
+choosing which token goes to which (§4.8) — so a role-wide default would force
+every worker on a team to share one effort, which is exactly the constraint
+this exists to remove. There is consequently no role-level default for `effort`
+to fall back to: an unoverridden seat's `agents[].effort` is `null`, meaning
+"request nothing," never a team default the way an unoverridden model or lane
+falls back to `models`/`adapters`.
+
+Because there is no default to restate, there is no `effort` analogue of
+§3.2.1's "an entry restating the role's own value keeps loading and changes
+nothing" — every declared `effort` is a real request, full stop. The empty
+string is still refused, for the same reason an empty `model` is: a key
+present with nothing meaningful in it is the "declaration that says nothing"
+rule (`references/loop-system-contract.md` and this repo's `CLAUDE.md` both
+name it), not a way to opt out — omit the key entirely for that.
+
+The outer controller carries the equivalent field at the top level,
+`outer_controller_effort`, exactly mirroring `outer_controller_model` and
+`outer_controller_adapter` — except it is **optional**, because effort itself
+has no required declaration anywhere in this system. Omitted or empty, the
+controller requests nothing; a non-empty value that fails `EFFORT`'s shape
+check is refused. A `seats` entry may not name the outer controller for the
+same reason §3.2.1 already refuses one for model/adapter: `outer_controller_*`
+is what the dispatch reads, and a second statement of the same fact is the one
+that would silently lose.
+
+`acp-companion.mjs`'s own reasoning-effort bound (`MAX_REASONING_EFFORT = 64`)
+is repeated here as `EFFORT_MAX` rather than imported, because the companion
+module also owns process argv parsing and must not be imported by the
+declaration layer for a constant.
 
 **A wrong per-seat model fails loudly and exactly once.** `acp-companion` starts
 `identity_status` at `missing` and refuses the receipt unless the adapter answers
@@ -322,6 +370,25 @@ The `--team-graph` flag on `pulse.mjs` keeps its name. It points at a file by
 path rather than by convention, and renaming a flag breaks callers' scripts for
 no gain.
 
+### 3.4 `produces` — what a team's worker hands onward (GitHub #31)
+
+A team declares `produces: "artifact" | "verdict"`. **Optional, defaulting to
+`artifact`** — every graph written before this field existed validates
+unchanged and means exactly what it meant. Almost every team hands its own
+artifact to the next team on the route; that is the default. A REVIEW team's
+worker instead renders a verdict on someone else's work rather than building
+one of its own, and declaring that is what lets the evaluator brief
+(`role-briefs.mjs`) and the optional `target_verdict` on `reviewed` (§4.8)
+tell the two kinds of team apart without guessing from a team's name or its
+position on a route.
+
+`produces` is inert on its own: nothing downstream reads it except the
+evaluator brief, which gains one additional instruction only for a `produces:
+'verdict'` team's evaluator, and `harvestEvent`, which only reads a
+`TARGET_VERDICT:` line out of that same evaluator's outbox. It does not change
+`pull-controller.mjs`'s gate (§7): the only pullable state remains `reviewed`
+with `verdict: pass`, unconditionally, exactly as before this field existed.
+
 ## 4. Custody ledger contract
 
 One token, one file, append-only, one JSON object per line. Corrections are
@@ -334,11 +401,11 @@ Common fields on every event: `at` (ISO 8601 UTC), `event`, `work_item`,
 | --- | --- | --- | --- |
 | `opened` | whoever admits the work (§4.6) | `agent_id` = receiving dispatcher, `to_team`, `reason`; **never** `from_team`; `actor` must be `human:<id>` (ADR 0002), optional `relayed_by: agent:<id>` | work entered the graph; legal only as a token's first event |
 | `pulled` | pull-controller | `agent_id` = receiving dispatcher, `from_team`, `to_team` | the receiving team took the work |
-| `intake` | runner (harvest) | `agent_id` = dispatcher, `verdict: accept`, `reason` | the team accepted the handoff |
+| `intake` | runner (harvest) | `agent_id` = dispatcher, `verdict: accept`, `reason`, optional `worker_hint` (§4.8) | the team accepted the handoff |
 | `returned` | runner (harvest) | `to_team` = sender, `refused_by`, `reason`, **no `agent_id`** | the handoff was refused and went back |
 | `assigned` | acp-companion | `agent_id`, `task_id`, `dispatch_id` | one leg started |
 | `delivered` | acp-companion | `agent_id`, `task_id`, `terminal`, `timed_out`, `evidence_present` | one leg finished |
-| `reviewed` | runner (harvest) | `agent_id` = evaluator, `verdict`, `reviewed_task`, `reason` | the team judged its own output |
+| `reviewed` | runner (harvest) | `agent_id` = evaluator, `verdict`, `reviewed_task`, `reason`; optional `target_verdict: accept \\| reject`, `target_reason` (§4.8, GitHub #31) | the team judged its own output |
 | `lost` | runner | `agent_id`, `task_id`, `reason` | an assignment whose process is gone and which recorded nothing |
 | `escalated` | runner | `agent_id` = controller, `to_team`, `task_id`, `reason` | parked with the outer controller |
 | `resumed` | runner (harvest) | `agent_id` = controller, `to_team`, `grant`, `reason` | the controller sent it back with a fresh budget |
@@ -503,6 +570,31 @@ somebody who has not replied.
   audited -> audit_requested` validated clean; the second `audit_requested`
   described re-opening an audit that had already closed.
 
+### 4.8 A confirmed finding on someone else's work — `target_verdict` (GitHub #31)
+
+Only a `produces: 'verdict'` (§3.4) team's evaluator ever writes this pair, and
+only when it chose to: `reviewed` may carry an optional `target_verdict:
+accept | reject` with its own `target_reason`. `verdict` on the same line still
+judges whether the REVIEW itself was done correctly; `target_verdict` is a
+separate, narrower answer — what the evaluator confirmed the reviewed worker's
+own finding actually WAS. `TARGET_VERDICTS` (`role-briefs.mjs`) deliberately
+has no `unresolved` member: an evaluator that states nothing here leaves both
+fields absent, never a fabricated word ledger-validate would then have to
+accept or reject as though it meant something — "absence means no reopen
+signal", never a rejected write. `ledger-validate.mjs` checks `target_verdict`
+against this vocabulary and requires `target_reason` whenever it is present, in
+a block separate from the `verdict` check above (that check is hardcoded to
+`entry.verdict`).
+
+This is GitHub #31 stages 1–2 only: the DECLARATION (§3.4) and the RECORDING of
+a confirmed finding. Nothing reads `target_verdict` to move a token yet —
+`pull-controller.mjs`'s gate is unchanged (§7), and a `reviewed pass` with
+`target_verdict: reject` still pulls to the done queue exactly as a `reviewed
+pass` always has. A mechanism that reopens a fresh token on a confirmed
+`target_verdict: reject` is stage 3 of that issue and is explicitly NOT part of
+this amendment; §1's "rework is a new token on a fresh route, opened by a
+person" stands unchanged until that stage ships its own amendment.
+
 ## 5. State machine
 
 One token, keyed on its last event and the role of the actor.
@@ -511,7 +603,7 @@ One token, keyed on its last event and the role of the actor.
 | --- | --- | --- |
 | `opened` | — | dispatch the **dispatcher** (intake) |
 | `pulled` | — | dispatch the **dispatcher** (intake) |
-| `intake` | — | dispatch a **worker** |
+| `intake` | — | dispatch a **worker** — the dispatcher's `worker_hint` (§4.8) if it names a real, free seat; escalate if it names a seat not on this team; wait for that seat if it names one that is busy; declared order (§3.2.1) if no hint was stated |
 | `returned` | — | dispatch a **worker** (rework) |
 | `resumed` | — | dispatch a **worker** (rework, budget reset) |
 | `assigned` | actor is running | in flight, do nothing |
@@ -1068,6 +1160,14 @@ Added 2026-07-28. Each row names the file holding its test.
 | AC79 | §3.2.1 | every way of declaring a seat and saying nothing is refused, naming the team and the seat | `workflow-graph.test.mjs` |
 | AC80 | §3.2.1, §9 | a `seats` entry for the outer controller is refused, because the dispatch reads `outer_controller_*` and would ignore it | `workflow-graph.test.mjs` |
 | AC81 | §3.2, §9 | the outer controller is dispatched on the lane it declares, like every other seat | `loop-runner-heartbeat-model.test.mjs` |
+| AC82 | §3.2.2 | a seat's declared effort resolves into `agents[]`, and an unoverridden seat carries `null`, not a role default | `graph.test.mjs` |
+| AC83 | §3.2.2 | a malformed effort (empty, over 64 characters, a control character) is refused, on a seat or on the outer controller | `graph.test.mjs` |
+| AC84 | §3.2.2, §9 | a seat's declared effort reaches `dispatch`'s spawn call and its child env (`ACP_REASONING_EFFORT`/`ACP_EXPECT_REASONING_EFFORT`) — the §3.2.1 "validated, normalized, dropped at dispatch" bug pattern does not recur for effort | `loop-occupancy.test.mjs` |
+| AC85 | §4.8 | a dispatcher's `WORKER:` line is harvested into `intake.worker_hint`; no line harvests as `null`, not `undefined` | `loop-occupancy.test.mjs` |
+| AC86 | §4.8 | a worker_hint naming a real, free seat overrides declared order, not merely a tie-break among equal seats | `loop-occupancy.test.mjs` |
+| AC87 | §4.8 | a worker_hint naming a seat not on the team's pool is escalated, naming the hint, never silently substituted | `loop-occupancy.test.mjs` |
+| AC88 | §4.8 | a worker_hint naming a real but busy seat waits for that seat and does not fall through to a different free one | `loop-occupancy.test.mjs` |
+| AC89 | §4.8 | `returned`/`resumed` never read a `worker_hint`, even if one were present on the line | `loop-occupancy.test.mjs` |
 | AC44 | §4.1 | a write with no actor, or a malformed one, is refused | `ledger.test.mjs` |
 | AC45 | §4.1 | the recorded actor cannot be spoofed by the event body | `ledger.test.mjs` |
 | AC46 | §4.1 | history that predates the actor is not condemned for lacking one | `ledger.test.mjs` |
@@ -1429,6 +1529,94 @@ line.
    editing a file while a worker holds it has already cost one overwrite.
 
 ### Amendment log
+
+**2026-08-04 — GitHub #32: per-seat reasoning effort, and a dispatcher's
+worker hint.** Behaviour changed in `workflow-graph.mjs` (`seats` gained a
+third optional key, `effort`, validated the same way as `model`; a new
+optional top-level `outer_controller_effort`; `agents[].effort` — `null` when
+unoverridden, since there is no role-level default to fall back to, unlike
+model/adapter), in `loop-runner.mjs` (`declaredEffort`/`effortEnv` mirror
+`declaredModel`/`modelEnv`; `dispatch()` now sends `ACP_REASONING_EFFORT`/
+`ACP_EXPECT_REASONING_EFFORT` alongside the model pair, at both dispatch call
+sites — team legs and the controller/pm escalation leg; `harvestEvent`'s
+dispatcher-accept branch now reads an optional `WORKER:` line via
+`role-briefs.readWorkerHint` and records it as `intake.worker_hint`;
+`nextStep`'s `want()` takes an optional `hint` and, for a fresh `intake` only,
+honours a real free seat, escalates a seat not on the team's pool, and waits
+specifically for a real but busy one), and in `role-briefs.mjs`
+(`WORKER_HINT_RE`/`readWorkerHint`; the dispatcher brief now lists the team's
+workers with their declared model/effort and documents the optional line).
+§3 gained §3.2.2 and the `intake` row/AC table gained §4.8. Under §15.3 the
+document was wrong on both halves: §3.2 declared a model and a lane per seat
+and said nothing about effort, though `acp-companion.mjs` had honoured
+`ACP_REASONING_EFFORT` since before this change; and §5's `intake` row said
+flatly "dispatch a worker" with declared order as the only rule §3.2.1 gave it,
+though the two-tier dev pool this exists for needs the DISPATCHER, not
+declaration order alone, to be able to place harder work on the stronger seat.
+
+Two things were deliberately kept narrow, matching the "judge, do not inherit"
+instruction this work was scoped under rather than the issue's literal
+proposal:
+
+- `effort` is seat-only, with no team-wide default block (no `efforts: {...}`
+  alongside `models`/`adapters`). Master's own case is two workers on ONE team
+  at two DIFFERENT efforts, which a role-wide default cannot express, and
+  nothing in the issue asked for a shared team default beyond that.
+- The hint travels as a line inside the dispatcher's existing outbox
+  (`WORKER: <agent_id>`, parsed like `VERDICT`/`REASON` already are) rather
+  than as a new field on the intake ledger event's SOURCE — the issue's other
+  suggestion, "separate routes chosen at intake" — was not built: this repo
+  already has exactly one place a dispatcher states a decision in prose that
+  the runner turns into a ledger fact, and adding a second channel for one
+  more decision would be two places stating overlapping intent.
+
+A hint that names something unreal or unavailable is never silently absorbed:
+an unknown seat escalates (visible to the outer controller and the board, not
+a guessed substitution), and a busy real seat waits for THAT seat rather than
+picking a different free one — matching the existing "every worker busy" wait,
+not a new stall shape, because the same zombie detection (§11) that frees any
+busy seat frees this one too.
+
+VERIFICATION: `tests/graph.test.mjs` (46/46) and `tests/loop-occupancy.test.mjs`
+(60/60) were run directly, including three add-then-revert mutations proving
+each new guard is load-bearing — `isEffortName` short-circuited true (RED: 4),
+the worker-pool membership check on a hint short-circuited false (RED: 1), and
+`effort` dropped from the spawn call at the dispatch site (RED: 1) — each
+restored by file copy (checksum-verified) and reconfirmed GREEN. The bare
+`node --test` full suite was intentionally NOT run from this worktree, per
+this repo's own standing rule against fanning out concurrent full-suite passes
+(`CLAUDE.md`, "Never fan out subagents that each run this suite"); it is owed
+from whichever session integrates this change, same as the caveat `3d5b75c`
+recorded for the same reason.
+
+**2026-08-04 — GitHub #31 stages 1–2: a team may declare it produces a
+verdict, and its evaluator may confirm one, on the record.** Behaviour changed
+in `workflow-graph.mjs` (a team's declaration gains optional `produces:
+"artifact" | "verdict"`, defaulting to `artifact`; §3.4), `role-briefs.mjs`
+(new `TARGET_VERDICTS = {accept, reject}` — deliberately no `unresolved`
+member — and `readTargetVerdict`, which returns `stated: false` rather than a
+fabricated word when the evaluator said nothing; the evaluator brief gains a
+`TARGET_VERDICT:`/`TARGET_REASON:` instruction only for a `produces: 'verdict'`
+team), `loop-runner.mjs` (`composeBrief` passes `producesVerdict` to the
+evaluator brief; `harvestEvent` attaches `target_verdict`/`target_reason` to a
+`reviewed` event only when the team declares `produces: 'verdict'` AND the
+evaluator stated one), and `ledger-validate.mjs` (`reviewed` may carry the
+optional pair; a new block — not a reuse of the `spec.verdicts` check, which is
+hardcoded to `entry.verdict` — refuses an unknown `target_verdict` and a
+`target_verdict` with no `target_reason`). New §3.4 and §4.8.
+
+This closes no GitHub issue by itself. GitHub #31 ("a confirmed rejection has
+nowhere to go") is a `pull-controller.mjs` gate that reads exactly what §7
+already said, plus a missing automatic writer of `opened` (§1) — a judged
+three-design panel found neither is fixable by loosening the pull gate, which
+this amendment does not touch. This ships the DECLARATION and the RECORDING
+the eventual fix needs — a `reviewed pass` can now say, on the record, that it
+confirms the reviewed work should be rejected — without yet acting on it: a
+`target_verdict: reject` still pulls to the done queue exactly as before.
+Stage 3 (an automatic reopen mechanism) is future work; ADR 0002 explicitly
+forbids a machine-decided `opened` from forging a `human:*` actor, so stage 3
+needs either its own event name or an explicit machine-origin field, neither
+of which exists yet.
 
 **2026-08-04 — `opened.actor` is a human decision (ADR 0002); the
 post-completion question state machine is bound, consumed, and its terminals

@@ -518,6 +518,48 @@ test('a live leg outweighs the dry crawl, so it crawls on every scene', () => {
   assert.match(live.selector, /:not\(\.quiet\)/)
 })
 
+// GitHub #34: an evaluator that is itself running (actively reviewing) must
+// light its incoming leg exactly as a running worker lights its incoming
+// assign — contract §5's 'live' means "a dispatch is running on that seat",
+// and that is role-agnostic. 'judge' (worker -> evaluator) was missing from
+// TOUR_SCRIPT's allowlist entirely, so a working evaluator drew no crawl and
+// no lit edge — the one working seat on the whole board that looked idle.
+test('an evaluator that is running lights its incoming judge edge, not only assign and owns', () => {
+  const rule = TOUR_SCRIPT.match(/p\.classList\.toggle\('live',[^\n]*\)/)
+  assert.ok(rule, 'the live-toggle line must exist in TOUR_SCRIPT')
+  assert.match(rule[0], /e\.kind === 'judge'/,
+    "the live allowlist must include 'judge' or a working evaluator shows no motion")
+  // Still gated on RUNNING.has(e.to): a judge leg goes live off the
+  // EVALUATOR's own running state, not the worker's — the worker-running case
+  // stays dark per the comment above this line, unchanged by this fix.
+  assert.match(rule[0], /RUNNING\.has\(e\.to\)/)
+})
+
+// GitHub #35: a reload restores the reader's seat (scene, zoom, pan — see the
+// `seated`/`remember` mechanism) but used to glide there over the camera's
+// .62s ease from the unstyled default, reading as the page jumping like a
+// fresh open. `apply()` must be able to skip that ease for exactly the first
+// restore, and `go()` must actually ask it to.
+test('a restored seat lands in one frame instead of gliding there from the default', () => {
+  const applyDecl = TOUR_SCRIPT.match(/function apply\(([^)]*)\)\s*\{/)
+  assert.ok(applyDecl, 'apply() must exist')
+  assert.match(applyDecl[1], /instant/, 'apply() must take an instant flag')
+  assert.match(TOUR_SCRIPT, /if \(instant\) \{ cam\.style\.transitionDuration = '0s'; svg\.style\.transitionDuration = '0s' \}/,
+    'apply(instant) must zero both transition durations before setting transform')
+  // go() must pass that flag through, and must read `restoring` BEFORE
+  // clearing it — clearing first and then testing it always passes false.
+  assert.match(TOUR_SCRIPT, /const wasRestoring = restoring[\s\S]{0,200}restoring = false[\s\S]{0,40}apply\(wasRestoring\)/,
+    'go() must capture restoring before resetting it, then hand it to apply()')
+})
+
+// Same issue: the browser's own scroll restoration on reload runs alongside
+// pulse-refresh.mjs's own capture()/restore(), which can settle a frame after
+// the manual one and read as a second, smaller jump right after the first.
+test('the refresh script hands scroll restoration to itself, not the browser', () => {
+  assert.match(renderPulseRefreshScript(), /history\.scrollRestoration\s*=\s*'manual'/,
+    "the refresh script must set history.scrollRestoration = 'manual' before it restores anything itself")
+})
+
 test('the board can be shown at its own size, not only at whatever fits', () => {
   // fit and 100% answer different questions: fit is "show me all of it" at
   // whatever scale the scene needs, 100% is "show it to me at its own size" —

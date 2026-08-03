@@ -101,6 +101,34 @@ test('a route never revisits a team — work goes back by rejection, not routing
   assert.match(result.reason, /visits team build twice/)
 })
 
+// GitHub #31 stage 1: `produces` is optional and defaults to 'artifact' so
+// every graph written before this field existed keeps validating and keeps
+// meaning exactly what it meant.
+test('a team with no declared produces defaults to artifact', () => {
+  const graph = graphOf(TWO_TEAMS)
+  assert.equal(graph.teams.find((entry) => entry.team_id === 'build').produces, 'artifact')
+})
+
+test('a team may declare it produces a verdict rather than an artifact', () => {
+  const graph = graphOf({
+    ...TWO_TEAMS,
+    teams: TWO_TEAMS.teams.map((entry) =>
+      entry.team_id === 'verify' ? { ...entry, produces: 'verdict' } : entry),
+  })
+  assert.equal(graph.teams.find((entry) => entry.team_id === 'build').produces, 'artifact')
+  assert.equal(graph.teams.find((entry) => entry.team_id === 'verify').produces, 'verdict')
+})
+
+test('a team cannot declare a produces word outside the closed vocabulary', () => {
+  const result = validateWorkflowGraph({
+    ...TWO_TEAMS,
+    teams: TWO_TEAMS.teams.map((entry) =>
+      entry.team_id === 'verify' ? { ...entry, produces: 'opinion' } : entry),
+  })
+  assert.equal(result.ok, false)
+  assert.match(result.reason, /declares produces "opinion"/)
+})
+
 // ── the drawing ──────────────────────────────────────────────────────────────
 //
 // The page draws itself from a JSON block, so these read that block rather than
@@ -747,4 +775,120 @@ test('the demoted topbar facts are reachable without a pointer', () => {
   assert.match(facts, /workflows/)
   assert.match(facts, /graph:/)
   assert.match(facts, /evidence: pulse\.json/)
+})
+
+// ── GitHub #32: per-seat reasoning effort ────────────────────────────────────
+//
+// `effort` rides the same `seats` override `3d5b75c` built for `model`/
+// `adapter`, but it has no per-ROLE default block: there is nothing for a
+// seat's effort to "resolve to" and say nothing, so every declared effort is a
+// real request and an unoverridden seat carries `null`, not a role default.
+
+test('a seat may override its effort, and only that seat carries it', () => {
+  const graph = graphOf({
+    ...TWO_TEAMS,
+    teams: [
+      {
+        ...TWO_TEAMS.teams[0],
+        seats: { b_w1: { effort: 'max' } },
+      },
+      TWO_TEAMS.teams[1],
+    ],
+  })
+  const build = graph.teams.find((entry) => entry.team_id === 'build')
+  assert.equal(build.agents.find((agent) => agent.agent_id === 'b_w1').effort, 'max')
+  assert.equal(build.agents.find((agent) => agent.agent_id === 'b_w2').effort, null)
+  // No role-level effort exists to inherit, so every OTHER seat on the graph —
+  // including the ones on a team that declared no `seats` at all — reads null.
+  const verify = graph.teams.find((entry) => entry.team_id === 'verify')
+  assert.ok(verify.agents.every((agent) => agent.effort === null))
+})
+
+test('a seat may combine model, adapter and effort in one override', () => {
+  const graph = graphOf({
+    ...TWO_TEAMS,
+    teams: [
+      {
+        ...TWO_TEAMS.teams[0],
+        seats: { b_w1: { model: 'cheap-model', adapter: 'codex', effort: 'xhigh' } },
+      },
+      TWO_TEAMS.teams[1],
+    ],
+  })
+  const seat = graph.teams.find((entry) => entry.team_id === 'build')
+    .agents.find((agent) => agent.agent_id === 'b_w1')
+  assert.deepEqual(
+    { model: seat.model, adapter: seat.adapter, effort: seat.effort },
+    { model: 'cheap-model', adapter: 'codex', effort: 'xhigh' },
+  )
+})
+
+test('an empty-string effort is refused, like an empty-string model', () => {
+  const result = validateWorkflowGraph({
+    ...TWO_TEAMS,
+    teams: [
+      { ...TWO_TEAMS.teams[0], seats: { b_w1: { effort: '' } } },
+      TWO_TEAMS.teams[1],
+    ],
+  })
+  assert.equal(result.ok, false)
+  assert.match(result.reason, /invalid reasoning effort/)
+})
+
+test('an effort with a control character is refused', () => {
+  const result = validateWorkflowGraph({
+    ...TWO_TEAMS,
+    teams: [
+      { ...TWO_TEAMS.teams[0], seats: { b_w1: { effort: `max${String.fromCharCode(7)}` } } },
+      TWO_TEAMS.teams[1],
+    ],
+  })
+  assert.equal(result.ok, false)
+  assert.match(result.reason, /invalid reasoning effort/)
+})
+
+test('an effort over 64 characters is refused', () => {
+  const result = validateWorkflowGraph({
+    ...TWO_TEAMS,
+    teams: [
+      { ...TWO_TEAMS.teams[0], seats: { b_w1: { effort: 'x'.repeat(65) } } },
+      TWO_TEAMS.teams[1],
+    ],
+  })
+  assert.equal(result.ok, false)
+  assert.match(result.reason, /invalid reasoning effort/)
+})
+
+test('a seat key other than model/adapter/effort is still refused', () => {
+  const result = validateWorkflowGraph({
+    ...TWO_TEAMS,
+    teams: [
+      { ...TWO_TEAMS.teams[0], seats: { b_w1: { reasoning: 'max' } } },
+      TWO_TEAMS.teams[1],
+    ],
+  })
+  assert.equal(result.ok, false)
+  assert.match(result.reason, /unknown key/)
+})
+
+test('the outer controller may declare a reasoning effort, optionally', () => {
+  const withEffort = graphOf({ ...TWO_TEAMS, outer_controller_effort: 'max' })
+  assert.equal(withEffort.outer_controller_effort, 'max')
+  const without = graphOf(TWO_TEAMS)
+  assert.equal(without.outer_controller_effort, null)
+})
+
+test('an invalid outer controller effort is refused', () => {
+  const result = validateWorkflowGraph({ ...TWO_TEAMS, outer_controller_effort: '' })
+  // An empty string is treated as "not declared" for the controller, same as
+  // an empty outer_controller_adapter falling back to the default lane — so
+  // this one is accepted, and only a genuinely malformed value is refused.
+  assert.equal(result.ok, true)
+  assert.equal(result.value.outer_controller_effort, null)
+
+  const badResult = validateWorkflowGraph({
+    ...TWO_TEAMS, outer_controller_effort: 'x'.repeat(65),
+  })
+  assert.equal(badResult.ok, false)
+  assert.match(badResult.reason, /invalid reasoning effort/)
 })

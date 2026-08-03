@@ -234,6 +234,35 @@ test('reviewed with nothing delivered is an impossible history', () => {
   assert.deepEqual(codes(result), ['reviewed_without_delivered'])
 })
 
+// GitHub #31 stage 2: target_verdict/target_reason are optional and, unlike
+// `verdict`, checked in a small dedicated block rather than the generic
+// `spec.verdicts` mechanism (that mechanism is hardcoded to `entry.verdict`).
+const reviewedWith = (extra) => jsonl(
+  { at: '2026-07-27T10:00:00.000Z', event: 'assigned', work_item: 'tok', workflow: 'f', agent_id: 'w1', task_id: 't1', dispatch_id: 'd1' },
+  { at: '2026-07-27T10:00:01.000Z', event: 'delivered', work_item: 'tok', workflow: 'f', agent_id: 'w1', task_id: 't1', terminal: 'done', timed_out: false, evidence_present: true },
+  { at: '2026-07-27T10:00:02.000Z', event: 'reviewed', work_item: 'tok', workflow: 'f', agent_id: 'ev', verdict: 'pass', reviewed_task: 't1', reason: 'the rejection was correctly reasoned', ...extra },
+)
+
+test('a reviewed line may confirm a target_verdict with its own reason', () => {
+  const result = validateLedger(reviewedWith({ target_verdict: 'reject', target_reason: 'the auth check is missing' }))
+  assert.deepEqual(result.problems, [])
+})
+
+test('a target_verdict outside accept/reject is refused', () => {
+  const result = validateLedger(reviewedWith({ target_verdict: 'unresolved', target_reason: 'not sure' }))
+  assert.deepEqual(codes(result), ['bad_target_verdict'])
+})
+
+test('a target_verdict with no target_reason is refused, same as a verdict with no reason', () => {
+  const result = validateLedger(reviewedWith({ target_verdict: 'reject' }))
+  assert.deepEqual(codes(result), ['missing_field'])
+})
+
+test('a reviewed line with no target_verdict at all stays legal — silence is not a reopen signal', () => {
+  const result = validateLedger(reviewedWith({}))
+  assert.deepEqual(result.problems, [])
+})
+
 test('audited requires the request that opened the audit', () => {
   const orphanAudit = validateLedger(jsonl(
     { at: '2026-07-27T10:00:00.000Z', event: 'completed', work_item: 'tok', workflow: 'f', from_team: 'build' },

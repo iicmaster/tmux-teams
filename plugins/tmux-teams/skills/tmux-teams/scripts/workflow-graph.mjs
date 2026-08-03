@@ -48,6 +48,32 @@ const hasControlChar = (value) => {
 const isModelName = (value) =>
   typeof value === 'string' && value.length >= 1 && value.length <= MODEL_MAX && !hasControlChar(value)
 
+// GitHub #31 stage 1: what a team's WORKER hands onward. Almost every team
+// hands its own artifact to the next team on the route — that is `artifact`,
+// the default, and every graph written before this field existed keeps
+// meaning exactly what it meant. A review team's worker instead renders a
+// VERDICT on someone ELSE's work; declaring that is what lets the evaluator
+// brief and a later reopen mechanism tell the two kinds of team apart without
+// guessing from a team's name. Inert on its own: nothing downstream reads it
+// yet outside the evaluator brief and the optional target_verdict this ADDs to
+// a `reviewed` event, never removes from one.
+export const TEAM_PRODUCES = new Set(['artifact', 'verdict'])
+
+// GitHub #32: `acp-companion.mjs` already honours `ACP_REASONING_EFFORT` and
+// verifies it via `ACP_EXPECT_REASONING_EFFORT` — the same request/expectation
+// pair §3.2 already built for `model` — but nothing between the graph and the
+// companion carried a value for it. Unlike model, effort has no per-ROLE
+// block and no required declaration: a team's two workers are meant to be able
+// to run the SAME model at DIFFERENT efforts (Master's two-tier dev pool), so
+// binding it to `models`/`adapters` would force a role-wide default nobody
+// asked for. It exists only as a `seats` override, same bound as a model name
+// (companion's own `MAX_REASONING_EFFORT` is 64; this repeats that here rather
+// than importing acp-companion.mjs, which owns process argv parsing and must
+// not be imported for a constant).
+const EFFORT_MAX = 64
+const isEffortName = (value) =>
+  typeof value === 'string' && value.length >= 1 && value.length <= EFFORT_MAX && !hasControlChar(value)
+
 const MAX_TEAMS = 100
 // Five, and a real ceiling rather than advice: a graph that declares a sixth
 // worker is refused here, not warned about somewhere a reader may not look.
@@ -192,6 +218,15 @@ export function validateWorkflowGraph(value) {
   if (controller !== null && !ADAPTERS.has(controllerAdapter)) {
     return invalid(`the outer controller has an unknown adapter — one of ${[...ADAPTERS].join(', ')}`)
   }
+  // Optional, unlike model and adapter: a controller with no declared effort
+  // requests nothing, exactly like a graph written before this field existed.
+  // There is no sentinel to omit-by-writing here, because omitting the key
+  // already means "ask for nothing" — the same meaning a sentinel would add.
+  const controllerEffort = controller === null ? null
+    : (value.outer_controller_effort == null || value.outer_controller_effort === '' ? null : value.outer_controller_effort)
+  if (controller !== null && controllerEffort !== null && !isEffortName(controllerEffort)) {
+    return invalid(`the outer controller has an invalid reasoning effort — an effort is 1 to ${EFFORT_MAX} characters with no control characters`)
+  }
 
   // Derived, never declared — the same rule §3.1 applies to `wip_limit`. A
   // graph that states it in a field would be stating one fact twice, and two
@@ -297,12 +332,12 @@ export function validateWorkflowGraph(value) {
         return invalid(`team ${teamId} declares a seat for ${agentId} that is not an object`)
       }
       const keys = Object.keys(override)
-      const unknown = keys.find((key) => key !== 'model' && key !== 'adapter')
+      const unknown = keys.find((key) => key !== 'model' && key !== 'adapter' && key !== 'effort')
       if (unknown !== undefined) {
-        return invalid(`team ${teamId} declares an unknown key ${show(unknown)} on the seat ${agentId} — a seat overrides model, adapter, or both`)
+        return invalid(`team ${teamId} declares an unknown key ${show(unknown)} on the seat ${agentId} — a seat overrides model, adapter, effort, or any combination`)
       }
       if (keys.length === 0) {
-        return invalid(`team ${teamId} declares an empty seat for ${agentId} — name a model, an adapter, or remove it`)
+        return invalid(`team ${teamId} declares an empty seat for ${agentId} — name a model, an adapter, an effort, or remove it`)
       }
       if ('model' in override && !isModelName(override.model)) {
         return invalid(`team ${teamId} has an invalid model on the seat ${agentId} — a model is 1 to ${MODEL_MAX} characters with no control characters`)
@@ -310,9 +345,27 @@ export function validateWorkflowGraph(value) {
       if ('adapter' in override && !ADAPTERS.has(override.adapter)) {
         return invalid(`team ${teamId} has an unknown adapter on the seat ${agentId} — one of ${[...ADAPTERS].join(', ')}`)
       }
+      // §32: no role-level default to restate, so — unlike model/adapter — there
+      // is no way to declare an effort that "resolves to the role default" and
+      // say nothing; every declared effort is a real request.
+      if ('effort' in override && !isEffortName(override.effort)) {
+        return invalid(`team ${teamId} has an invalid reasoning effort on the seat ${agentId} — an effort is 1 to ${EFFORT_MAX} characters with no control characters`)
+      }
+    }
+    // GitHub #31 stage 1: declared, optional, defaulting to 'artifact' — see
+    // the constant's own comment above. Checked here, next to `wip_limit` and
+    // `models`, because this is where every other per-team declaration is
+    // validated once and normalized once.
+    const produces = raw.produces == null ? 'artifact' : raw.produces
+    if (!TEAM_PRODUCES.has(produces)) {
+      return invalid(`team ${teamId} declares produces ${show(produces)} — one of ${[...TEAM_PRODUCES].join(', ')}`)
     }
     const seatModel = (agentId, role) => seatOverride.get(agentId)?.model ?? models[role]
     const seatLane = (agentId, role) => seatOverride.get(agentId)?.adapter ?? laneOf(role)
+    // No role default to fall back to (see EFFORT_MAX comment above) — an
+    // unoverridden seat carries `null`, meaning "request nothing", not "carry
+    // the team's effort" the way an unoverridden model or lane does.
+    const seatEffort = (agentId) => seatOverride.get(agentId)?.effort ?? null
     // One agent, one seat. A shared id would make two nodes light up from one
     // dispatch, which is exactly the false positive the page must never show.
     //
@@ -344,6 +397,7 @@ export function validateWorkflowGraph(value) {
       worker_ids: [...workers],
       evaluator_id: evaluator,
       wip_limit: wipLimit,
+      produces,
       models: { dispatcher: models.dispatcher, worker: models.worker, evaluator: models.evaluator },
       adapters: { dispatcher: laneOf('dispatcher'), worker: laneOf('worker'), evaluator: laneOf('evaluator') },
       // The RESOLVED model travels with each agent so a reader never has to
@@ -354,9 +408,9 @@ export function validateWorkflowGraph(value) {
       // stays a DECLARATION: the model a node reports as running is verified
       // evidence and is a different fact from this one.
       agents: [
-        { agent_id: dispatcher, role: 'dispatcher', model: seatModel(dispatcher, 'dispatcher'), adapter: seatLane(dispatcher, 'dispatcher') },
-        ...workers.map((agentId) => ({ agent_id: agentId, role: 'worker', model: seatModel(agentId, 'worker'), adapter: seatLane(agentId, 'worker') })),
-        { agent_id: evaluator, role: 'evaluator', model: seatModel(evaluator, 'evaluator'), adapter: seatLane(evaluator, 'evaluator') },
+        { agent_id: dispatcher, role: 'dispatcher', model: seatModel(dispatcher, 'dispatcher'), adapter: seatLane(dispatcher, 'dispatcher'), effort: seatEffort(dispatcher) },
+        ...workers.map((agentId) => ({ agent_id: agentId, role: 'worker', model: seatModel(agentId, 'worker'), adapter: seatLane(agentId, 'worker'), effort: seatEffort(agentId) })),
+        { agent_id: evaluator, role: 'evaluator', model: seatModel(evaluator, 'evaluator'), adapter: seatLane(evaluator, 'evaluator'), effort: seatEffort(evaluator) },
       ],
     })
   }
@@ -416,6 +470,7 @@ export function validateWorkflowGraph(value) {
     outer_controller_id: controller,
     outer_controller_model: controllerModel ?? null,
     outer_controller_adapter: controllerAdapter ?? null,
+    outer_controller_effort: controllerEffort,
     controller_team: controllerTeamId,
     teams,
     workflows,
