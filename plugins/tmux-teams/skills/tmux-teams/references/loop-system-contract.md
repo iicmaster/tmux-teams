@@ -185,11 +185,14 @@ measurement.
   "project_id": "<GRAPH_ID>",
   "outer_controller_id": "<AGENT_ID>",
   "outer_controller_model": "<MODEL>",
+  "outer_controller_adapter": "claude | codex | agy",
   "teams": [{
     "team_id": "<GRAPH_ID>", "name": "<1..160 chars>",
     "dispatcher_id": "<AGENT_ID>", "worker_ids": ["<AGENT_ID>", "..."],
     "evaluator_id": "<AGENT_ID>",
-    "models": { "dispatcher": "<MODEL>", "worker": "<MODEL>", "evaluator": "<MODEL>" }
+    "models": { "dispatcher": "<MODEL>", "worker": "<MODEL>", "evaluator": "<MODEL>" },
+    "adapters": { "dispatcher": "claude | codex | agy", "worker": "...", "evaluator": "..." },
+    "seats": { "<AGENT_ID>": { "model": "<MODEL>", "adapter": "claude | codex | agy" } }
   }],
   "workflows": [{ "workflow_id": "<GRAPH_ID>", "name": "...", "route": ["<team_id>", "..."] }]
 }
@@ -217,7 +220,7 @@ enforce a limit nobody wrote down.
 Raising a team's WIP limit therefore means giving it another worker, and that is
 the only way to raise it.
 
-### 3.2 Every seat names its model
+### 3.2 Every ROLE names a model and a lane; a seat may override its own
 
 Each team names a model for its `dispatcher`, its `worker` and its `evaluator`,
 and the graph names one for the outer controller. All four are **required**
@@ -249,10 +252,54 @@ bundled template uses it precisely because no real model belongs in a template.
 | a route naming an unknown team | a route may only compose declared teams |
 | a `wip_limit` that differs from the worker count | the limit is derived (§3.1); the graph would draw one number and enforce another |
 | a missing or malformed model on any declared seat | a dispatch with no model named runs on whatever the account defaults to — the guess this declaration exists to stop |
+| an adapter outside `claude`/`codex`/`agy`, per role or per seat | the lanes are a **closed** set — `acp-companion.mjs` exits 2 on a fourth name |
+| a `seats` key naming no seat on that team | a typo'd agent id would resolve to the role default while a reader believed the seat had moved |
+| a `seats` entry that is empty, or carrying a key other than `model`/`adapter` | the same silence, spelt differently: it renders as a declaration and changes nothing |
+| a `seats` entry for `outer_controller_id` | the controller declares its lane and model at the top level and the dispatch reads those; a second statement of one fact is the one that would be ignored |
 | any missing or malformed field above | the graph fails **closed**; it never silently falls back |
 
 A repo with no `graph.json` at all uses the bundled default graph. A repo
 with an **invalid** one renders an error and dispatches nothing.
+
+#### 3.2.1 `seats` — one seat, against its role
+
+`models` and `adapters` bind per **role**, so every worker on a team shares one
+model and one lane. `seats` is the exception list, keyed by `agent_id`: it names
+an agent that team already holds and overrides that one seat's `model`, its
+`adapter`, or both. Omitted — or omitted for a given seat — the role block
+stands, so every graph written before this keeps meaning what it meant.
+
+It is an **override, never a second declaration**, and the rule §3.1 applies to
+`wip_limit` applies here: an entry restating the role's own value keeps loading
+and changes nothing, including `source_digest`. Every way of *saying nothing* is
+refused rather than ignored, because a `seats` entry that resolves to the role
+default is a declaration a reader would believe.
+
+The resolved value lives in `teams[].agents[]`. **That array is the answer;
+`teams[].models` and `teams[].adapters` are the defaults it was computed from.**
+`declaredModel` and `declaredAdapter` read `agents[]` and nothing else, so no
+consumer may pair a role back to the `models` block by hand.
+
+**Declaration order is preference order, for `worker_ids` only.** `nextStep`'s
+`want()` picks the FIRST free seat in declared order. The dispatcher and
+evaluator pools are singletons, so this mattered only for workers, and it did
+not matter at all while every worker seat was identical. With `seats` it does:
+`worker_ids[0]` is the preferred seat and later entries are overflow. **This is
+not fanout** — one leg is dispatched to one seat.
+
+**A wrong per-seat model fails loudly and exactly once.** `acp-companion` starts
+`identity_status` at `missing` and refuses the receipt unless the adapter answers
+with the declared name; the runner escalates rather than retrying. It does not
+fall through to the sibling seat, so a declaration a lane cannot honour is never
+silently answered by a different model. `MAX_ATTEMPTS` is still counted across
+the whole worker pool, not per seat.
+
+**What a lane does NOT say: the endpoint.** The lane chooses which binary is
+spawned; which service that binary talks to comes from ambient environment
+(`ANTHROPIC_BASE_URL` and friends), forwarded whole by `childEnv`, and is
+therefore **process-global for the entire runner**. A per-seat *endpoint* — the
+"one seat on Kimi, one on Claude" case — is not declarable, and this section
+must not be read as offering it.
 
 ### 3.3 The declaration was renamed, and the old name is still read
 
@@ -752,8 +799,10 @@ the dispatch; the model is reported only once verified. Never substitute one for
 the other.
 
 **The declared model is a third fact, and it is not this one.** `graph.json`
-now names a model for every seat (§3.2), and that name travels with the team and
-with each agent in the validated graph. It is a DECLARATION: it says which model
+names a model for every role and lets a seat override its own (§3.2, §3.2.1),
+and the RESOLVED name travels with each agent in the validated graph — so two
+workers on one team may state two different declared models. It is a
+DECLARATION: it says which model
 was *asked* for. Line 3 states the model that *answered*. Wiring the declared
 field into line 3 would turn this table's only honesty guarantee into a lie, and
 is forbidden (§12.7.2). A seat whose declared model was never acknowledged still
@@ -918,6 +967,11 @@ Added 2026-07-28. Each row names the file holding its test.
 | AC41 | §3.2 | a declared outer controller with no model is rejected | `workflow-graph.test.mjs` |
 | AC42 | §3.2 | a model value is never judged against a list of known models | `workflow-graph.test.mjs` |
 | AC43 | §3.2, §12.3 | the declared model travels with the team, the role and the agent, as declaration | `workflow-graph.test.mjs` |
+| AC77 | §3.2.1 | a seat overrides its role's model and lane, and only that seat | `workflow-graph.test.mjs` |
+| AC78 | §3.2.1, §3.1 | a graph with no `seats`, an empty `seats`, and a `seats` entry restating the role default all hash to one `source_digest` | `workflow-graph.test.mjs` |
+| AC79 | §3.2.1 | every way of declaring a seat and saying nothing is refused, naming the team and the seat | `workflow-graph.test.mjs` |
+| AC80 | §3.2.1, §9 | a `seats` entry for the outer controller is refused, because the dispatch reads `outer_controller_*` and would ignore it | `workflow-graph.test.mjs` |
+| AC81 | §3.2, §9 | the outer controller is dispatched on the lane it declares, like every other seat | `loop-runner-heartbeat-model.test.mjs` |
 | AC44 | §4.1 | a write with no actor, or a malformed one, is refused | `ledger.test.mjs` |
 | AC45 | §4.1 | the recorded actor cannot be spoofed by the event body | `ledger.test.mjs` |
 | AC46 | §4.1 | history that predates the actor is not condemned for lacking one | `ledger.test.mjs` |

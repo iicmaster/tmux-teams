@@ -399,3 +399,89 @@ test('the digest follows the declaration, models included', () => {
     'a changed model is a changed declaration')
   assert.equal(deriveWorkflowGraphDigest({ a: 1 }), deriveWorkflowGraphDigest({ a: 1 }))
 })
+
+// ── AC77-AC80: a seat may differ from its role ──────────────────────────────
+//
+// `models` and `adapters` bind per ROLE, so every worker on a team ran one
+// model on one lane and a two-model team could not be declared at all. GitHub
+// #24. `seats` is the exception list; every way of declaring one and saying
+// nothing is refused rather than ignored, because an entry that resolves to the
+// role default is a declaration a reader would believe.
+
+test('a seat overrides its role model and lane, and only that seat', () => {
+  const value = accepted(graphWith({
+    teams: [
+      teamOf('build', ['b_w1', 'b_w2'], {
+        adapters: { dispatcher: 'claude', worker: 'claude', evaluator: 'claude' },
+        seats: { b_w2: { model: 'cheap-model', adapter: 'codex' } },
+      }),
+      teamOf('verify', ['v_w1']),
+    ],
+  }))
+  const build = value.teams.find((team) => team.team_id === 'build')
+  const seat = (id) => build.agents.find((agent) => agent.agent_id === id)
+  assert.equal(seat('b_w2').model, 'cheap-model')
+  assert.equal(seat('b_w2').adapter, 'codex')
+  // Its neighbour on the same role is untouched — an override, not a team-wide
+  // change wearing one seat's name.
+  assert.equal(seat('b_w1').model, build.models.worker)
+  assert.equal(seat('b_w1').adapter, 'claude')
+  // The role block still states the DEFAULT it was computed from; agents[] is
+  // the answer, and nothing may pair a role back to models[] by hand.
+  assert.equal(build.adapters.worker, 'claude')
+})
+
+test('a graph that declares no seat, or restates one, is the graph it already was', () => {
+  const bare = accepted(graphWith())
+  const empty = accepted(graphWith({
+    teams: [teamOf('build', ['b_w1', 'b_w2'], { seats: {} }), teamOf('verify', ['v_w1'])],
+  }))
+  // Restating the role's own value is not a change, which is the rule §3.1
+  // already applies to a `wip_limit` that matches its worker count.
+  const restated = accepted(graphWith({
+    teams: [
+      teamOf('build', ['b_w1', 'b_w2'], { seats: { b_w2: { model: MODELS.worker } } }),
+      teamOf('verify', ['v_w1']),
+    ],
+  }))
+  assert.equal(empty.source_digest, bare.source_digest)
+  assert.equal(restated.source_digest, bare.source_digest)
+})
+
+test('every way of declaring a seat and saying nothing is refused', () => {
+  const withSeats = (seats) => graphWith({
+    teams: [teamOf('build', ['b_w1', 'b_w2'], { seats }), teamOf('verify', ['v_w1'])],
+  })
+  for (const [seats, needle] of [
+    [{ ghost: { model: 'm' } }, /not a seat on this team/],
+    [{ b_w2: {} }, /empty seat/],
+    [{ b_w2: { modle: 'm' } }, /unknown key/],
+    [{ b_w2: { model: '' } }, /invalid model on the seat/],
+    [{ b_w2: { adapter: 'kimi' } }, /unknown adapter on the seat/],
+    [{ b_w2: 'codex' }, /not an object/],
+  ]) {
+    const reason = rejected(withSeats(seats))
+    assert.match(reason, needle)
+    assert.match(reason, /build/, 'a rejection names the team')
+  }
+  assert.match(rejected(graphWith({
+    teams: [teamOf('build', ['b_w1'], { seats: [] }), teamOf('verify', ['v_w1'])],
+  })), /seats that are not an object/)
+})
+
+test('a seat for the outer controller is refused, because the dispatch would ignore it', () => {
+  // It names its model in outer_controller_model and its lane in
+  // outer_controller_adapter, and declaredModel/declaredAdapter read those
+  // first. A seat entry here validates, moves source_digest and draws on the
+  // page — then loses silently at dispatch.
+  const reason = rejected(graphWith({
+    outer_controller_id: 'pm',
+    teams: [
+      teamOf('control', ['pm'], { seats: { pm: { adapter: 'codex' } } }),
+      teamOf('build', ['b_w1']),
+    ],
+    workflows: [{ workflow_id: 'full', name: 'Full', route: ['control', 'build'] }],
+  }))
+  assert.match(reason, /outer controller/)
+  assert.match(reason, /outer_controller_adapter/)
+})

@@ -1271,8 +1271,14 @@ export function tick(repoArg, {
     // graph's own seat for it rather than out of any team's `models` block.
     const pmModel = declaredModel(graph.value, null, escalation.agent_id)
     const pmSays = modelEnv(pmModel).ACP_EXPECT_MODEL || 'account default (none requested)'
+    // The lane the delivery legs above already carry. Omitting it here let
+    // `dispatch`'s `adapter = DEFAULT_ADAPTER` default win, so a graph
+    // declaring `outer_controller_adapter: "codex"` validated, normalized and
+    // drew on the page — and spawned `claude`. The dispatch log said `model=`
+    // and not `lane=`, so nothing in the record could contradict it either.
+    const pmAdapter = declaredAdapter(graph.value, null, escalation.agent_id)
     if (!apply) {
-      log(`would dispatch ${escalation.agent_id} (pm) about ${escalation.triggers.length} problem(s) model=${pmSays}`)
+      log(`would dispatch ${escalation.agent_id} (pm) about ${escalation.triggers.length} problem(s) lane=${pmAdapter} model=${pmSays}`)
     } else if (busy.has(escalation.agent_id)) {
       log(`pm     already running on ${escalation.triggers.length} problem(s)`)
     } else {
@@ -1280,9 +1286,9 @@ export function tick(repoArg, {
       mkdirSync(notesDir, { recursive: true })
       writeFileSync(join(notesDir, 'latest.md'), `${new Date().toISOString()}\n${escalation.identity}\n`)
       const taskId = spawnLeg(repo,
-        { workItem: '', team: '', role: 'pm', agentId: escalation.agent_id, workflow: '', model: pmModel },
+        { workItem: '', team: '', role: 'pm', agentId: escalation.agent_id, workflow: '', model: pmModel, adapter: pmAdapter },
         briefPath, stallSec)
-      log(`start  ${escalation.agent_id} (pm) <- board task=${taskId} model=${pmSays}`)
+      log(`start  ${escalation.agent_id} (pm) <- board task=${taskId} lane=${pmAdapter} model=${pmSays}`)
       started.push({ action: 'dispatch', role: 'pm', agent_id: escalation.agent_id, task_id: taskId, model: pmModel })
       // Each escalated token is marked so the loop stops re-triggering on it
       // while the controller is thinking.

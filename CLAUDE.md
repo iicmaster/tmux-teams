@@ -25,6 +25,15 @@ commit.
 `node --test tests/` (a bare directory) fails on Node 24 with MODULE_NOT_FOUND —
 pass no path at all, or a glob like `tests/*.test.mjs`.
 
+**A grep over the suite output is not a gate.** `node --test | grep -E '✖|fail'`
+exits 0 when it FINDS failures, so chaining a commit after it with `&&` commits
+on red — done twice on 2026-08-03 before anyone noticed. Gate on the count:
+
+```bash
+node --test > /tmp/suite.log 2>&1; grep -E '^ℹ (tests|pass|fail)' /tmp/suite.log
+grep -q '^ℹ fail 0$' /tmp/suite.log || { grep '^✖' /tmp/suite.log | head; false; }
+```
+
 **Never fan out subagents that each run this suite.** It spawns dozens of ACP
 subprocesses per pass — one pass takes about two minutes on an idle dev box, and
 several at once do not share nicely. On 2026-08-03 five agents were each told to
