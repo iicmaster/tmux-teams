@@ -3,7 +3,7 @@
 import { open } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { ACP_REVIEW_LIMITS, prepareReviewPacket, runAcpReview, ReviewTransportError } from './acp-review-client.mjs'
+import { ACP_REVIEW_LIMITS, prepareReviewPacket, runAcpReview, ReviewTransportError, redactString } from './acp-review-client.mjs'
 import { REVIEW_PROFILES, buildProfileEnv } from './review-profiles.mjs'
 import {
   UNAVAILABLE_RESERVE_SUBSTITUTES,
@@ -118,10 +118,10 @@ function runnerEvidenceError(profile, value, expectedInputHash) {
 }
 
 function laneStderrPreview(attempt) {
-  const text = attempt.result.status === 'rejected'
+  const raw = attempt.result.status === 'rejected'
     ? attempt.result.reason?.stderr ?? ''
     : attempt.result.value?.stderr ?? ''
-  return String(text).replace(/\s+/g, ' ').trim().slice(0, 300)
+  return redactString(String(raw).replace(/\s+/g, ' ').trim()).slice(0, 300)
 }
 
 function laneFailureMessage(attempt, detail) {

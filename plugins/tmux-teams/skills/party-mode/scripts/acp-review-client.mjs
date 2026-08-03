@@ -46,7 +46,7 @@ const secretValuePatterns = [
   // Keep the key and delimiter for review context, but never scan past a line.
   [new RegExp(`(^|[^A-Za-z0-9_.?&-])(${sensitiveName}[ \\t]*(?:=|:)[ \\t]*)[^\\r\\n]*`, 'gim'), '$1$2[REDACTED]'],
 ]
-function redactString(value) {
+export function redactString(value) {
   return secretValuePatterns.reduce(
     (textValue, [pattern, replacement]) => textValue.replace(pattern, replacement),
     value,
@@ -1027,7 +1027,7 @@ export async function runAcpReview({
     clearTimeout(terminateTimer)
     clearTimeout(killTimer)
     if (!(error instanceof ReviewTransportError)) throw new ReviewTransportError('transport', error.message, error)
-    error.stderr = stderr
+    error.stderr = redactString(stderr)
     error.stderrDigest = createHash('sha256').update(stderr).digest('hex')
     error.stderrBytes = Buffer.byteLength(stderr)
     error.timedOut = timedOut

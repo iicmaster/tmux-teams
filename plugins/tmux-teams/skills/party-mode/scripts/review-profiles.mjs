@@ -21,7 +21,6 @@ const routedSettingsEnv = new Set([
   'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL',
   'ANTHROPIC_CUSTOM_HEADERS', 'ANTHROPIC_DEFAULT_OPUS_MODEL',
   'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
-  'CLAUDE_CODE_SUBAGENT_MODEL', 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS',
 ])
 
 function freeze(value) {
@@ -42,6 +41,14 @@ export const REVIEW_PROFILES = freeze({
   kimi: {
     id: 'kimi', provider: 'kimi', family: 'kimi', model: 'opus',
     displayModel: 'kimi/opus',
+    // Honest labeling: this lane runs the Claude ACP adapter against the
+    // machine's Claude custom profile (~/.claude/settings-kimi.json), not a
+    // native Kimi client. The requested 'opus' alias resolves server-side via
+    // ANTHROPIC_DEFAULT_OPUS_MODEL in that profile — pinned to Kimi k3[1m]
+    // when the lane was created, but the profile is operator-managed and may
+    // be re-pointed (e.g. while Kimi quota is exhausted). provider/family stay
+    // 'kimi' for panel family-diversity accounting: the label names the lane,
+    // not a guaranteed backend.
     reviewMode: 'plan', osSandbox: 'bwrap',
     command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
     settingsFile: 'settings-kimi.json',

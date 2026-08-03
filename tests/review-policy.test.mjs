@@ -280,3 +280,31 @@ test('Zai routing loads only allowlisted endpoint credentials from its explicit 
     'https://api.z.ai/api/anthropic?redirect=other',
   ]) assert.throws(invalidEndpoint(endpoint), /Zai review endpoint/)
 })
+
+test('Kimi routing loads only allowlisted endpoint credentials from its explicit settings file', () => {
+  const home = mkdtempSync(join(tmpdir(), 'review-profile-'))
+  const settingsDir = join(home, '.claude')
+  mkdirSync(settingsDir)
+  const file = join(settingsDir, 'settings-kimi.json')
+  writeFileSync(file, '{}')
+  const env = buildProfileEnv('kimi', { HOME: home, PATH: '/bin' }, {
+    settingsLoader: () => ({
+      env: {
+        ANTHROPIC_BASE_URL: 'https://api.moonshot.cn/anthropic',
+        ANTHROPIC_DEFAULT_OPUS_MODEL: 'kimi-k3-1m',
+        ANTHROPIC_API_KEY: 'kimi-token',
+        CLAUDE_CODE_SUBAGENT_MODEL: 'must-not-pass',
+        CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: 'must-not-pass',
+        UNRELATED_SECRET: 'must-not-pass',
+      },
+      permissions: { allow: ['*'] },
+    }),
+  })
+  assert.equal(env.ANTHROPIC_BASE_URL, 'https://api.moonshot.cn/anthropic')
+  assert.equal(env.ANTHROPIC_DEFAULT_OPUS_MODEL, 'kimi-k3-1m')
+  assert.equal(env.ANTHROPIC_API_KEY, 'kimi-token')
+  assert.equal(env.CLAUDE_CODE_SUBAGENT_MODEL, undefined)
+  assert.equal(env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS, undefined)
+  assert.equal(env.UNRELATED_SECRET, undefined)
+  assert.equal(env.CLAUDE_MODEL_CONFIG, '{"availableModels":["opus"]}')
+})
