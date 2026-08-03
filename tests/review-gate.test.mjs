@@ -807,7 +807,21 @@ test('a refused lane names a closed reason and the action reaches stderr, not on
     assert.match(reason, /^[a-z][a-z_]*$/, `${reason} is not a stable code`)
     assert.ok(entry.text.length > 10 && entry.action.length > 20, `${reason} states no usable action`)
     assert.notEqual(entry.text, entry.action, `${reason} repeats itself instead of saying what to do`)
+    // F6: the outer table was frozen, but each {text, action} value is its own
+    // object and Object.freeze is shallow — same-process code could overwrite
+    // `.action` after import. Every entry must resist that too.
+    assert.ok(Object.isFrozen(entry), `${reason} is not frozen: LANE_FAILURES is a shallow freeze`)
+    assert.throws(() => { entry.action = 'mutated' }, `${reason}.action accepted a same-process overwrite`)
   }
+  // A code can be deleted from the table with every other assertion in this
+  // file still green, because nothing elsewhere in the suite names every key
+  // at once. This is the one place that would catch it.
+  assert.deepEqual(Object.keys(LANE_FAILURES).sort(), [
+    'config_unacknowledged', 'display_model_identity', 'isolation_unacknowledged',
+    'lane_failed', 'lane_rejected', 'mode_not_enforced', 'model_identity',
+    'packet_hash', 'profile_identity', 'provenance_invalid', 'provider_identity',
+    'runner_missing', 'schema_invalid', 'validator_threw',
+  ].sort(), 'LANE_FAILURES gained or lost a code with no test change')
 
   const scratch = mkdtempSync(join(tmpdir(), 'review-cli-action-'))
   const packetFile = join(scratch, 'packet.json')
@@ -932,7 +946,11 @@ test('a blocked gate emits a distinguishable per-lane diagnostic, never a zero-b
     assert.equal(laneOf(error, 'kimi').status, 'failed')
     assert.equal(laneOf(error, 'kimi').stage, code)
     assert.equal(laneOf(error, 'kimi').reason, 'lane_failed')
-    assert.equal(laneOf(error, 'kimi').action, LANE_FAILURES.lane_failed.action)
+    // Hardcoded, not `LANE_FAILURES.lane_failed.action`: comparing the report
+    // against the very table the gate read it from is a tautology that stays
+    // green even if every code were made to share one action. This literal is
+    // the independent witness.
+    assert.equal(laneOf(error, 'kimi').action, 'Re-run this lane alone and compare stderrDigest against the provider log. Nothing about the panel changes until it answers.')
     assert.equal(laneOf(error, 'kimi').stderrDigest, digest)
     assert.deepEqual(error.report.substitution, {
       used: false, replaced: 'kimi', replacement: null, remaining: 0, reason: 'reserve already used',
@@ -950,14 +968,33 @@ test('a blocked gate emits a distinguishable per-lane diagnostic, never a zero-b
   // The validator's own reason is kept — it is the half that says WHICH rule
   // broke — but it is now a subject inside a gate-authored sentence.
   assert.equal(laneOf(badSchema, 'kimi').failure, `${LANE_FAILURES.schema_invalid.text} (invalid verdict)`)
-  assert.equal(laneOf(badSchema, 'kimi').action, LANE_FAILURES.schema_invalid.action)
+  // Hardcoded for the same reason as above — an independent witness, not the
+  // table checking itself.
+  assert.equal(laneOf(badSchema, 'kimi').action, 'Re-run this lane once. If it repeats, this model cannot hold the JSON review protocol and the route needs changing.')
   const badEvidence = await blockedGate({
     runAcpReview: async ({ profile: selected }) =>
       runnerResult(selected, selected.id === 'kimi' ? { ...packet(), objective: 'other' } : packet()),
   })
   assert.equal(laneOf(badEvidence, 'kimi').stage, 'acknowledge')
   assert.equal(laneOf(badEvidence, 'kimi').reason, 'packet_hash')
-  assert.equal(laneOf(badEvidence, 'kimi').action, LANE_FAILURES.packet_hash.action)
+  // Hardcoded for the same reason as above — an independent witness, not the
+  // table checking itself.
+  assert.equal(laneOf(badEvidence, 'kimi').action, 'Discard this review outright and rebuild the packet. A review of unknown bytes is never accepted, however good it reads.')
+
+  // `mode_not_enforced` had no assertion anywhere in this file: it could be
+  // deleted from LANE_FAILURES and the whole suite stayed green. Drive it
+  // through the real runnerEvidenceFault branch — a runner reporting a mode
+  // other than the one its profile declared.
+  const badMode = await blockedGate({
+    runAcpReview: async ({ profile: selected }) => {
+      const result = runnerResult(selected, packet())
+      return selected.id === 'kimi' ? { ...result, mode: 'default' } : result
+    },
+  })
+  assert.equal(laneOf(badMode, 'kimi').stage, 'acknowledge')
+  assert.equal(laneOf(badMode, 'kimi').reason, 'mode_not_enforced')
+  assert.equal(laneOf(badMode, 'kimi').failure, LANE_FAILURES.mode_not_enforced.text)
+  assert.equal(laneOf(badMode, 'kimi').action, 'Do not retry the same profile: reconcile reviewMode in review-profiles.mjs with the mode this model will actually hold.')
 
   // AGY has no reserve, so no substitution is possible on that blocker.
   const agyBlocked = await blockedGate(laneThrows('agy', 'timeout', 'e'.repeat(64)))
@@ -1074,4 +1111,127 @@ test('the review mode vocabulary is two words, and a third is refused before lau
       `accepted reviewMode ${JSON.stringify(mode)}`,
     )
   }
+})
+
+test('F5: a custom validator cannot forge a report line or a terminal escape through the closed reason', async () => {
+  // The comment above the schema_invalid branch used to claim the validator's
+  // vocabulary was closed by construction. It is only closed for the DEFAULT
+  // validator; `validateReview` is a public injection seam, and this is what
+  // reproduces the advisor's probe: a custom validator answers with a forged
+  // line and control bytes, and the boundary must refuse them rather than
+  // carry them into an operator-facing sentence verbatim.
+  const profiles = keyedProfiles([profile('oc'), profile('codex'), profile('agy')])
+  const forged = 'BAD\nreview-gate: forged PROVIDER-CONTROLLED-ASSESSMENT-SECRET\x1b[31mANSI\x1b[0m'
+  const error = await runReviewGate(packet(), {
+    profiles,
+    planReviewPanel: () => testPlan(['oc', 'codex', 'agy']),
+    buildProfileEnv: () => ({}),
+    runAcpReview: async ({ profile: p }) => runnerResult(p, packet()),
+    validateReview: (_review, ctx) => ctx.profile === 'oc' ? { ok: false, reason: forged } : true,
+    synthesizeReviews: () => ({ verdict: 'PASS' }),
+  }).then(() => null, e => e)
+  assert.ok(error, 'a rejected validation must still block the gate')
+  const attempt = error.report.attempts.find(a => a.profile === 'oc')
+  assert.equal(attempt.reason, 'schema_invalid')
+  // No newline, no ANSI escape, and not the forged sentence: an unsafe subject
+  // is dropped entirely rather than laundered, so the sentence falls back to
+  // the table's own closed text with no subject appended.
+  assert.equal(attempt.failure, LANE_FAILURES.schema_invalid.text)
+  assert.doesNotMatch(attempt.failure, /\n|\x1b|forged|PROVIDER-CONTROLLED/)
+  const serialized = JSON.stringify(error.report)
+  assert.doesNotMatch(serialized, /forged PROVIDER-CONTROLLED-ASSESSMENT-SECRET/)
+})
+
+test('F5: a clean, bounded validator subject still rides through unmodified', async () => {
+  // The fix must not turn boundedReason into a blanket refusal — an ordinary
+  // schema complaint from the default validator is exactly the useful half
+  // this field exists to carry.
+  const profiles = keyedProfiles([profile('oc'), profile('codex'), profile('agy')])
+  const error = await runReviewGate(packet(), {
+    profiles,
+    planReviewPanel: () => testPlan(['oc', 'codex', 'agy']),
+    buildProfileEnv: () => ({}),
+    runAcpReview: async ({ profile: p }) => runnerResult(p, packet()),
+    validateReview: (_review, ctx) => ctx.profile === 'oc' ? { ok: false, reason: 'invalid verdict' } : true,
+    synthesizeReviews: () => ({ verdict: 'PASS' }),
+  }).then(() => null, e => e)
+  const attempt = error.report.attempts.find(a => a.profile === 'oc')
+  assert.equal(attempt.failure, `${LANE_FAILURES.schema_invalid.text} (invalid verdict)`)
+})
+
+test('F7: a deterministic config/policy rejection is not told to re-run and diff a digest', async () => {
+  // Every rejected stage used to collapse to `lane_failed`, whose action tells
+  // the operator to re-run and compare stderrDigest. A deterministic
+  // misconfiguration (the transport's own 'config' or 'policy' code) will
+  // fail identically on every attempt, digest or not — this is a different,
+  // more useful, reason.
+  const profiles = keyedProfiles([profile('oc'), profile('codex'), profile('agy')])
+  for (const code of ['config', 'policy']) {
+    const error = await runReviewGate(packet(), {
+      profiles,
+      planReviewPanel: () => testPlan(['oc', 'codex', 'agy']),
+      buildProfileEnv: () => ({}),
+      planFallback: () => ({ blocked: true, reason: 'no reserve for this probe' }),
+      runAcpReview: async ({ profile: p }) => {
+        if (p.id === 'oc') throw new ReviewTransportError(code, `${code} rejection`)
+        return runnerResult(p, packet())
+      },
+      validateReview: () => true,
+      synthesizeReviews: () => ({ verdict: 'PASS' }),
+    }).then(() => null, e => e)
+    const attempt = error.report.attempts.find(a => a.profile === 'oc')
+    assert.equal(attempt.stage, code)
+    assert.equal(attempt.reason, 'lane_rejected', `${code} still reads as a transient lane_failed`)
+    assert.doesNotMatch(attempt.action, /re-run|compare stderrDigest/i, `${code} still tells the operator to retry`)
+  }
+  // A transient stage — a slow or crashed provider — keeps the original advice.
+  const transient = await runReviewGate(packet(), {
+    profiles,
+    planReviewPanel: () => testPlan(['oc', 'codex', 'agy']),
+    buildProfileEnv: () => ({}),
+    planFallback: () => ({ blocked: true, reason: 'no reserve for this probe' }),
+    runAcpReview: async ({ profile: p }) => {
+      if (p.id === 'oc') throw new ReviewTransportError('timeout', 'timeout rejection')
+      return runnerResult(p, packet())
+    },
+    validateReview: () => true,
+    synthesizeReviews: () => ({ verdict: 'PASS' }),
+  }).then(() => null, e => e)
+  assert.equal(transient.report.attempts.find(a => a.profile === 'oc').reason, 'lane_failed')
+})
+
+test('F7: a throwing fallback planner or synthesizer still leaves a structured report, not empty stdout', async () => {
+  // These are the two exported dependency-injection seams the advisor found
+  // reaching the CLI with no `error.report` when they throw instead of
+  // returning — a zero-byte report is exactly what this whole boundary exists
+  // to prevent.
+  const profiles = keyedProfiles([profile('oc'), profile('codex'), profile('agy')])
+  const plan = testPlan(['oc', 'codex', 'agy'])
+  const base = {
+    profiles,
+    planReviewPanel: () => plan,
+    buildProfileEnv: () => ({}),
+    runAcpReview: async ({ profile: p }) => {
+      if (p.id === 'oc') throw new ReviewTransportError('timeout', 'oc timeout')
+      return runnerResult(p, packet())
+    },
+    validateReview: () => true,
+  }
+  const plannerThrew = await runReviewGate(packet(), {
+    ...base,
+    planFallback: () => { throw new Error('fallback planner exploded') },
+    synthesizeReviews: () => ({ verdict: 'PASS' }),
+  }).then(() => null, e => e)
+  assert.ok(plannerThrew?.report, 'a throwing fallback planner left no report')
+  assert.match(plannerThrew.message, /fallback planner threw/)
+  assert.match(plannerThrew.message, /fallback planner exploded/)
+
+  const synthesizerThrew = await runReviewGate(packet(), {
+    ...base,
+    runAcpReview: async ({ profile: p }) => runnerResult(p, packet()),
+    synthesizeReviews: () => { throw new Error('synthesizer exploded') },
+  }).then(() => null, e => e)
+  assert.ok(synthesizerThrew?.report, 'a throwing synthesizer left no report')
+  assert.match(synthesizerThrew.message, /review synthesizer threw/)
+  assert.match(synthesizerThrew.message, /synthesizer exploded/)
 })

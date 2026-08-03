@@ -302,9 +302,11 @@ ${NAV_CSS}
 .card .tok{font:600 .78rem var(--mono);word-break:break-all}
 .card .wf{color:var(--dim);font:400 .68rem var(--mono)}
 .card .st{font:500 .78rem var(--sans)}
+.card .ev{color:var(--dim);font:400 .68rem var(--mono)}
 .card .who{color:var(--dim);font:400 .68rem var(--mono);word-break:break-all}
 .card .clock{color:var(--dim);font:400 .68rem var(--mono);font-variant-numeric:tabular-nums}
 .card .at{color:var(--dim);font:400 .68rem var(--mono);font-variant-numeric:tabular-nums}
+.card .at-bad{color:var(--bad);font:400 .68rem var(--mono);word-break:break-all}
 .card .detail{color:var(--dim);font-size:.72rem}
 .card .blocked{color:var(--warn);font:500 .72rem var(--sans)}
 .s-assigned{border-left-color:var(--busy)}
@@ -347,28 +349,73 @@ const clock = (card) =>
 // for. The absolute stamp is the one fact a reader needs the moment they leave
 // the board and go looking in a ledger, and it lived only in a `title`: on a
 // touch screen, or for anyone driving this by keyboard, it did not exist at all.
-// `datetime` keeps the precision the ledger recorded; the text keeps the minute
-// a person actually reads.
-const absoluteAt = (at) => {
-  const ms = Date.parse(at || '')
-  return Number.isFinite(ms) ? `${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')} UTC` : null
+//
+// `Date.parse` is not a validator: it silently normalises a calendar-impossible
+// stamp (`2026-02-29` in a year that has no leap day, an hour of `24`) into the
+// next real instant, and it accepts bytes — `"0"`, a bare year — that are not a
+// ledger timestamp at all. A board built on that would turn corrupt evidence
+// into a precise-looking fact with nothing to say it did. This regex fixes the
+// shape the ledger contract requires (ISO 8601, UTC, `Z`), and the component
+// round-trip below refuses anything the shape check would otherwise launder.
+const ISO_UTC_STRICT_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?Z$/
+
+// Returns null for anything that is not a real UTC instant — never a
+// best-effort guess. `ms` is the parsed instant for the relative clock;
+// `htmlDatetime` is a separate value because HTML's `datetime` microsyntax
+// caps at millisecond precision while the ledger may carry up to nanoseconds,
+// and truncating the ledger's own field would be the same laundering this
+// exists to stop.
+const parseUtc = (raw) => {
+  const match = ISO_UTC_STRICT_RE.exec(raw)
+  if (!match) return null
+  const [, y, mo, d, h, mi, s, frac = ''] = match
+  const ms = Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s))
+  if (!Number.isFinite(ms)) return null
+  const rolled = new Date(ms)
+  // `Date.UTC` performs the same silent rollover `Date.parse` does — this reads
+  // the components back off the instant it produced and requires them to match
+  // what was typed. A mismatch means the input described a day that does not
+  // exist, which is exactly the case a shape-only regex cannot catch.
+  if (
+    rolled.getUTCFullYear() !== Number(y) || rolled.getUTCMonth() !== Number(mo) - 1 ||
+    rolled.getUTCDate() !== Number(d) || rolled.getUTCHours() !== Number(h) ||
+    rolled.getUTCMinutes() !== Number(mi) || rolled.getUTCSeconds() !== Number(s)
+  ) return null
+  const millis = frac.padEnd(3, '0').slice(0, 3)
+  return { ms, htmlDatetime: `${y}-${mo}-${d}T${h}:${mi}:${s}.${millis}Z` }
+}
+
+// datetime keeps the precision HTML's microsyntax actually accepts; the text
+// keeps the minute a person reads. A stamp that fails validation is reported,
+// not hidden — the ledger said something happened at a time that cannot exist,
+// and a blank card would erase that a lie was told at all.
+const absoluteAt = (raw) => {
+  if (!raw) return null
+  const parsed = parseUtc(raw)
+  if (!parsed) return { ok: false, raw }
+  const [, y, mo, d, h, mi] = ISO_UTC_STRICT_RE.exec(raw)
+  return { ok: true, htmlDatetime: parsed.htmlDatetime, text: `${y}-${mo}-${d} ${h}:${mi} UTC` }
 }
 
 const renderCard = (card, unplaceableNote) => {
   const stamp = absoluteAt(card.at)
-  // No `title`. Everything it used to carry is on the card now, and a tooltip
-  // that repeats the text beside it is not a second copy for redundancy — it
-  // overrides the accessible name, so a screen reader announces the summary
-  // INSTEAD of the card. The two facts it held that the card did not show were
-  // the full token id and this stamp, which is the whole reason it existed.
+  // No `title`. A tooltip that repeats the text beside it is not a second copy
+  // for redundancy — it overrides the accessible name, so a screen reader
+  // announces the summary INSTEAD of the card. The full token id and the
+  // stamp are printed on the card itself instead; the token's own `id` gives
+  // the article an accessible name, because an article with no authored name
+  // is unreadable in a screen reader's article list without opening each one.
+  const tokId = `tok-${esc(card.work_item)}`
   return `
-    <article class="card s-${slug(card.event)}${card.blocked_reason ? ' is-blocked' : ''}" data-event="${esc(card.event || 'none')}"${card.verdict ? ` data-verdict="${esc(card.verdict)}"` : ''}>
-      <b class="tok">${esc(clip(card.work_item, 128))}</b>
+    <article class="card s-${slug(card.event)}${card.blocked_reason ? ' is-blocked' : ''}" data-event="${esc(card.event || 'none')}"${card.verdict ? ` data-verdict="${esc(card.verdict)}"` : ''} aria-labelledby="${tokId}">
+      <b class="tok" id="${tokId}">${esc(clip(card.work_item, 128))}</b>
       <span class="wf">${esc(card.workflow ? clip(card.workflow, 40) : 'no workflow declared')}</span>
       <span class="st">${esc(card.state)}</span>
+      <span class="ev">last event: ${esc(card.event || 'none')}</span>
       <span class="who">${esc(card.agent_id ? clip(card.agent_id, 40) : 'no agent recorded')} · ${esc(card.role || 'role not declared')}</span>
-      <span class="clock">${esc(clock(card))}</span>${stamp ? `
-      <time class="at" datetime="${esc(card.at)}">${esc(stamp)}</time>` : ''}${card.detail ? `
+      <span class="clock">${esc(clock(card))}</span>${stamp?.ok ? `
+      <time class="at" datetime="${esc(stamp.htmlDatetime)}">${esc(stamp.text)}</time>` : ''}${stamp && !stamp.ok ? `
+      <span class="at-bad">Malformed timestamp: "${esc(clip(stamp.raw, 80))}"</span>` : ''}${card.detail ? `
       <span class="detail">${esc(card.detail)}</span>` : ''}${unplaceableNote ? `
       <span class="blocked">${esc(unplaceableNote)}</span>` : ''}${card.blocked_reason ? `
       <span class="blocked">Blocked — ${esc(clip(card.blocked_reason, 120))}</span>` : ''}

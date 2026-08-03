@@ -149,33 +149,78 @@ export const RELEASING_EVENTS = new Set(['completed', 'abandoned', 'audit_reques
 // encode the pull flow, for a reason worth keeping: an evaluator does not
 // always have an `assigned` of its own when its review lands, so its agent_id
 // is never expected to equal the holder's, and that mismatch is the review
-// protocol rather than staleness. `dispatch_id` has no such false positive
-// because it says nothing at all until BOTH sides recorded one — so `reviewed`
-// joins the set but never falls back to agent_id, and a review carrying no
-// dispatch_id of its own is trusted exactly as it was before this existed.
-// `delivered`/`lost` keep that fallback, because a report from an agent that
-// plainly is not the holder is still real evidence for those two.
+// protocol rather than staleness. `delivered`/`lost` keep the agent_id
+// fallback, because a report from an agent that plainly is not the holder is
+// still real evidence for those two.
 //
-// A branch that cannot tell returns the entry, the same as it always did. It
-// does not get to call an unknown case superseded.
+// That agent_id check was never enough on its own, and `dispatch_id` cannot
+// always fill the gap either: a same-agent retry (the SAME evaluator run
+// twice, a killed worker leg redispatched to the identical worker) reads
+// identical by agent_id on both legs, and if the OUTCOME line was written
+// before dispatch_id existed on it — or by the generic writer without one —
+// there is nothing left to compare against the holder's dispatch_id at all.
+// Fail-open there let a dead leg's late, unlabeled `reviewed pass` clear
+// pull-controller's gate while the live retry was still running
+// (retro-release-review, 2026-08-04, F1).
+//
+// `task_id` closes that gap `dispatch_id` cannot. `assigned` is required to
+// carry one (§4), and every outcome this matters for — `delivered`, `lost`,
+// and a harvester-written `reviewed` — carries the SAME task_id its own leg
+// was opened under (loop-runner.mjs:443 stamps `task_id: last.task_id` on
+// every harvested event, `reviewed` included). So an outcome that names a
+// task_id can be traced back to the exact `assigned` line that started its
+// leg, and compared against the `assigned` line that made the CURRENT holder
+// the holder — same leg, trust it; a different one, a newer leg has started
+// since and this outcome is not evidence about where the token is now. That
+// is the same judgment `dispatch_id` makes, reached from a signal that was
+// already required to exist.
+//
+// A `reviewed` with no task_id either (the shorthand this system still
+// writes when a review rides straight on a worker's delivery, with no
+// `assigned` of the evaluator's own to look up) has no identity signal left
+// at all — house rule: a branch that cannot answer says UNKNOWN, not "stale".
+// It is trusted exactly as before, unconditionally. `delivered`/`lost`
+// without a resolvable task_id fall back to the plain agent-identity check
+// they always used.
 const LEG_OUTCOMES = new Set(['delivered', 'lost', 'reviewed'])
 
 export function currentEntry(custody) {
   let holder = null
   let holderDispatchId = null
+  let holderAssignedIndex = -1
   for (let i = custody.length - 1; i >= 0; i -= 1) {
     if (custody[i].event === 'assigned' && custody[i].agent_id) {
       holder = String(custody[i].agent_id)
       holderDispatchId = custody[i].dispatch_id || null
+      holderAssignedIndex = i
       break
     }
   }
   if (holder === null) return custody[custody.length - 1]
+
+  // Every leg's own starting line, keyed by the task_id it was opened under.
+  // Built once so a long ledger does not re-scan itself for every trailing
+  // outcome that needs to look one up.
+  const assignedIndexByTask = new Map()
+  custody.forEach((entry, index) => {
+    if (entry.event === 'assigned' && entry.task_id !== undefined && entry.task_id !== null) {
+      assignedIndexByTask.set(String(entry.task_id), index)
+    }
+  })
+
   for (let i = custody.length - 1; i >= 0; i -= 1) {
     const entry = custody[i]
     if (!LEG_OUTCOMES.has(entry.event)) return entry
     if (entry.dispatch_id && holderDispatchId) {
       if (String(entry.dispatch_id) === String(holderDispatchId)) return entry
+      continue
+    }
+    const ownIndex = entry.task_id !== undefined && entry.task_id !== null
+      && assignedIndexByTask.has(String(entry.task_id))
+      ? assignedIndexByTask.get(String(entry.task_id))
+      : null
+    if (ownIndex !== null) {
+      if (ownIndex === holderAssignedIndex) return entry
       continue
     }
     const supersededLeg = entry.event !== 'reviewed'

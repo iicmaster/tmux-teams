@@ -24,8 +24,14 @@ const fail = (code, detail) => ({ ok: false, code, detail })
  *
  * @param {string} repo
  * @param {{work_item: string, workflow: string, reason: string}} request
- * @param {{actor: string}} options — `human:<name>` even when an agent relays
- *        it: the actor names who DECIDED, and the person decided (§6.4.1).
+ * @param {{actor: string, relayed_by?: string}} options — `actor` must be
+ *        `human:<name>` even when an agent relays it: the actor names who
+ *        DECIDED, and the person decided (§6.4.1, ADR 0002). Enforced by
+ *        `ledger-validate.mjs`'s `opened.actor_kind`, not merely documented
+ *        here — a non-human actor is refused by `appendEvent` below. An agent
+ *        relaying the words names itself in `relayed_by` instead of the
+ *        person, so the relay's own identity is on record without it being
+ *        mistaken for the decision.
  */
 export function admitWorkItem(repo, request, options = {}) {
   const graph = readWorkflowGraph(repo)
@@ -64,14 +70,20 @@ export function admitWorkItem(repo, request, options = {}) {
     agent_id: control.dispatcher_id,
     to_team: controlId,
     reason: request.reason,
+    // Present only when an agent is relaying, so a person typing this
+    // themselves leaves no relay identity to be mistaken for a second actor.
+    ...(options.relayed_by ? { relayed_by: options.relayed_by } : {}),
   }, { actor: options.actor })
 }
 
 const USAGE = `usage:
   admit.mjs --repo <repo> --work-item <token> --workflow <id> --actor human:<name> --reason <text>
+    [--relayed-by agent:<name>]
 
 Admits one request through the controller team. Refused while that team is at its
-WIP limit — the front door obeys the same rule every other handoff obeys.`
+WIP limit — the front door obeys the same rule every other handoff obeys.
+--actor must be human:<name> (ADR 0002) — an agent relaying the person's words
+names itself with --relayed-by instead of borrowing the person's identity.`
 
 const flag = (args, name) => {
   const index = args.indexOf(name)
@@ -88,7 +100,7 @@ function main(argv) {
     work_item: flag(args, '--work-item') ?? '',
     workflow: flag(args, '--workflow') ?? '',
     reason: flag(args, '--reason') ?? '',
-  }, { actor: flag(args, '--actor') })
+  }, { actor: flag(args, '--actor'), relayed_by: flag(args, '--relayed-by') })
 
   if (!result.ok) {
     process.stderr.write(`REFUSED  ${result.code}: ${result.detail}\n`)

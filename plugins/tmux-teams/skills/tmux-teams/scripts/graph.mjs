@@ -25,7 +25,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { KANIT_FONT_CSS } from '../assets/kanit/kanit-embedded.mjs'
-import { RELEASING_EVENTS, readDispatchFacts, readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
+import { RELEASING_EVENTS, currentEntry, readDispatchFacts, readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
 import { TOUR_CSS, TOUR_SCRIPT, buildTour, renderTourChart } from './graph-tour.mjs'
 import { NAV_CSS, renderNav } from './page-nav.mjs'
 import {
@@ -381,10 +381,16 @@ export function frontDoorStatus(graph, items, occupancy) {
   }
   const team = graph.teams.find((entry) => entry.team_id === controlId)
   const held = occupancy?.held?.get(controlId) || []
+  // §6: a STATE question goes through `currentEntry`, never `custody[length-1]`.
+  // A leg that has been superseded can still write its outcome afterwards — a
+  // companion killed mid-review writes its `delivered` on the way out — and a
+  // raw last-line read let that late, mismatched write stand in for the person
+  // this gate is actually waiting on, reporting the door merely "busy" instead
+  // of blocked on a human.
   const waiting = held
     .map((workItem) => items.get(workItem))
     .filter(Boolean)
-    .map((item) => item.custody[item.custody.length - 1])
+    .map((item) => currentEntry(item.custody))
     .find((last) => last?.event === 'questioned')
 
   if (waiting) {
@@ -423,8 +429,10 @@ const controllerState = (run, items, occupancy, graph = null) => {
   // facts on one card, and the reassuring one was the larger of the two.
   if (door.blocked) return { status: 'delivered', copy: door.copy }
   if (run && WORKING.has(run.state)) return { status: 'working', copy: 'reviewing the board now' }
+  // §6: this counts how many tokens ARE parked right now — a STATE question —
+  // so it goes through `currentEntry`, same reason as `waiting` above.
   const parked = [...items.values()]
-    .filter((item) => item.custody?.[item.custody.length - 1]?.event === 'escalated').length
+    .filter((item) => currentEntry(item.custody)?.event === 'escalated').length
   if (parked) return { status: 'delivered', copy: `${parked} token(s) parked — awaiting a decision` }
   if (occupancy.orphans.length) return { status: 'dead', copy: `${occupancy.orphans.length} token(s) cannot be placed` }
   return { status: 'watching', copy: 'watching — no exception open' }
@@ -565,7 +573,12 @@ export function renderGraphPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, r
   // sits on that seat, nothing is waiting for it.
   const holding = new Set()
   for (const item of items.values()) {
-    const last = item.custody[item.custody.length - 1]
+    // §6: "is a live token sitting on this seat right now" is a STATE question,
+    // and `currentEntry` is the only permitted placement read — the same rule
+    // `teamOccupancy` already follows one file over. A raw last-line read here
+    // was a second, independent implementation of that same placement logic,
+    // which is the exact defect §6 exists to prevent.
+    const last = currentEntry(item.custody)
     if (!last || RELEASING_EVENTS.has(last.event)) continue
     if (last.agent_id) holding.add(last.agent_id)
   }
@@ -593,8 +606,12 @@ export function renderGraphPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, r
     // person. Both mean the same thing for the board — this team cannot move
     // that work on its own — and neither is the same as being busy.
     const held = occupancy.held.get(team.team_id) || []
+    // §6: whether this team is stuck right now is a STATE question about a
+    // token it holds, so it reads the same placement entry `currentEntry`
+    // returns rather than the raw last line.
     const stuck = held.some((workItem) => {
-      const last = items.get(workItem)?.custody?.at(-1)
+      const item = items.get(workItem)
+      const last = item && currentEntry(item.custody)
       return last?.event === 'escalated' || last?.event === 'questioned'
     })
     // Where the work this team is holding came FROM. `pulled` records its own
@@ -660,8 +677,10 @@ export function renderGraphPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, r
   // What actually landed. `audited` is the only event that means the controller
   // read the finished delivery and accepted it: `completed` is half closed and
   // `abandoned` is work that left rather than work that arrived.
+  // §6: "has this token finished" is a STATE question, so it reads the same
+  // placement entry every other position/state reader on this page does.
   const delivered = [...items.values()]
-    .filter((item) => item.custody[item.custody.length - 1]?.event === 'audited').length
+    .filter((item) => currentEntry(item.custody)?.event === 'audited').length
   const tour = buildTour(value, cards, occupancy, teamFacts, { delivered })
   const declared = value.teams.flatMap((entry) => entry.agents.map((agent) => agent.agent_id))
   const bound = declared.filter((agentId) => byAgent.has(agentId))
@@ -671,8 +690,9 @@ export function renderGraphPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, r
   // in that state forever and the tile reported ten things waiting for review
   // when the ledger showed all ten reviewed. Count the real thing: tokens whose
   // last event is a delivery nobody has judged yet.
+  // Same rule: "is this token awaiting review right now" is a STATE question.
   const waiting = [...items.values()]
-    .filter((item) => item.custody[item.custody.length - 1]?.event === 'delivered').length
+    .filter((item) => currentEntry(item.custody)?.event === 'delivered').length
   const atLimit = value.teams.filter((entry) => (occupancy.counts.get(entry.team_id) ?? 0) >= entry.wip_limit).length
   const inFlight = [...occupancy.counts.values()].reduce((sum, n) => sum + n, 0)
   const unroutedDeclared = bound.filter((agentId) => {

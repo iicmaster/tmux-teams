@@ -27,7 +27,7 @@ import {
 } from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs'
 import { applyPulls, planPulls } from '../plugins/tmux-teams/skills/tmux-teams/scripts/pull-controller.mjs'
 import { REVIEW_VERDICTS, readVerdict, roleBrief } from '../plugins/tmux-teams/skills/tmux-teams/scripts/role-briefs.mjs'
-import { EVENT_SPEC, LEDGER_EVENTS } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-validate.mjs'
+import { EVENT_SPEC, LEDGER_EVENTS, validateLedger } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-validate.mjs'
 import { gateHistory } from './fixture-gate.mjs'
 import { validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
 
@@ -98,7 +98,17 @@ const complete = (entry, lastDelivered) => {
       // nothing — a fixture that omitted it was describing an audit that
       // reached no conclusion, which the controller cannot write.
       return { verdict: 'accept', reason: 'stated by the agent that wrote it', ...entry }
+    // ADR 0002: `opened` is the one event whose actor is a PERSON, not the
+    // agent that wrote the rest of this fixture's lines — so it gets its own
+    // default rather than joining the group below.
     case 'opened':
+      return { reason: 'stated by the agent that wrote it', actor: 'human:someone', ...entry }
+    // F4: `question_id` names the question so an answer can bind to it. A
+    // fixture that only cares about occupancy or dispatch shape, not the
+    // question's identity, still needs a legal one — invented per-fixture
+    // would fight the point of `complete()` existing at all.
+    case 'questioned':
+      return { question_id: 'q-fixture-1', reason: 'stated by the agent that wrote it', ...entry }
     case 'intake':
     case 'lost':
     case 'resumed':
@@ -512,6 +522,7 @@ test('every event either moves the loop or is a dead end somebody wrote down', (
     task_id: 't-1', dispatch_id: 'd-1', reviewed_task: 't-1', reason: 'a stated reason',
     terminal: 'done', timed_out: false, evidence_present: true, grant: 3,
     questions: 'who is the target customer? what happens on timeout?',
+    question_id: 'q-1',
   }
   // Each event owns its vocabulary — `intake` records only an acceptance,
   // review speaks pass/reject/unresolved, the audit speaks accept/concern. One
@@ -888,11 +899,23 @@ test('a lost leg reporting in after its own retry does not speak for the retry',
   assert.equal(currentEntry(custody).task_id, 'b-2', 'the stale lost was read as where the token is')
   assert.equal(currentEntry(custody).event, 'assigned', 'the live leg is still assigned, not lost')
 
-  // The fallback is what every ledger written before this change relies on, and
-  // it still answers exactly as it did: no dispatch_id anywhere, same agent, so
-  // the lost line is the token's position and nothing pretends otherwise.
+  // 2026-08-04, retro-release-review F1: this used to assert the OPPOSITE —
+  // that stripping dispatch_id from every line made the stale `lost` read as
+  // current again, and called that "an old ledger reading the way it always
+  // did". That was the same fail-open the late-reviewed-pass defect (F1) used,
+  // just via `lost` instead of `reviewed`: with no dispatch_id anywhere,
+  // agent_id cannot tell b-1's dead leg from b-2's live retry — they are the
+  // SAME agent — so trusting the fallback here let a dead leg's report decide
+  // where a token the live retry still holds actually is. `task_id` is
+  // required on `assigned` even in a ledger this old (§4), and `lost` names
+  // the task_id its own leg was opened under, so it can still be traced back
+  // to b-1's `assigned` and told apart from b-2's — no ID gap left to fall
+  // back through. The migration answer: an unlabeled `lost`/`reviewed` behind
+  // a same-agent retry is no longer trusted as current; it is read as
+  // superseded, the same as a labeled one naming a different leg.
   const unlabeled = custody.map(({ dispatch_id, ...entry }) => entry)
-  assert.equal(currentEntry(unlabeled).event, 'lost', 'an old ledger stopped reading the way it always did')
+  assert.equal(currentEntry(unlabeled).task_id, 'b-2', 'the stale unlabeled lost was read as where the token is')
+  assert.equal(currentEntry(unlabeled).event, 'assigned', 'the live retry is still assigned, not lost')
 })
 
 test('the board as a whole has a dispatch ceiling, not only each team', () => {
@@ -1087,6 +1110,35 @@ test('a finished route is read as a whole, not just leg by leg', () => {
       { event: 'audited', agent_id: 'pm', verdict: 'accept' }]])
     assert.equal(planEscalation(dir, graph, audited, [], teamOccupancy(graph, audited),
       { now: FIXED_NOW, stallSec: 1e9 }), null)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// F4: `audit_requested` used to be enough, on its own, to make `awaitingAudit`
+// stop asking for a route FOREVER — so a person's reply to a post-completion
+// question had nowhere to go. `completed -> audit_requested -> questioned ->
+// answered` contains `audit_requested`, and the old check read only "has
+// audit_requested ever appeared since completed".
+test('a post-completion question, once answered, is escalated again — not silently closed', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-audit-reopen-'))
+  try {
+    const graph = graphOf(TWO_TEAMS)
+    const answered = itemsOf(['reopened', [...ROUTE_DONE,
+      { event: 'audit_requested', agent_id: 'pm', task_id: 'pm-1' },
+      { event: 'questioned', agent_id: 'pm', questions: 'accept or concern?', reason: 'unstated verdict', question_id: 'q-1' },
+      { event: 'answered', to_team: 'control', reason: 'concern — AC7 missing', question_id: 'q-1', actor: 'human:ada' },
+    ]])
+    const escalation = planEscalation(dir, graph, answered, [], teamOccupancy(graph, answered),
+      { now: FIXED_NOW, stallSec: 1e9 })
+    assert.equal(escalation?.action, 'escalate', 'the answer had nowhere to go — the audit was never re-asked')
+    assert.deepEqual(escalation.audits, ['reopened'])
+
+    // Still parked, not re-escalated, while the question is genuinely open.
+    const stillWaiting = itemsOf(['reopened', [...ROUTE_DONE,
+      { event: 'audit_requested', agent_id: 'pm', task_id: 'pm-1' },
+      { event: 'questioned', agent_id: 'pm', questions: 'accept or concern?', reason: 'unstated verdict', question_id: 'q-1' },
+    ]])
+    assert.deepEqual(planEscalation(dir, graph, stillWaiting, [], teamOccupancy(graph, stillWaiting),
+      { now: FIXED_NOW, stallSec: 1e9 })?.audits ?? [], [])
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -1471,4 +1523,71 @@ test('the runner dispatches into the team that holds the token, not the one that
   // that belongs to a team the token has left.
   assert.notEqual(plan.role, 'evaluator', `the runner acted on the superseded leg: ${JSON.stringify(plan)}`)
   assert.equal(plan.agent_id ?? plan.agentId ?? 't_w1', 't_w1')
+})
+
+// ── retro-release-review, 2026-08-04: F1 and F2 ─────────────────────────────
+
+test('an unlabeled stale review does not clear the pull gate for a live retry (F1)', () => {
+  // The exact mixed-version shape from the review: the same evaluator retried
+  // (agent_id cannot tell the legs apart), and the dead leg's `reviewed pass`
+  // arrives with no dispatch_id at all — the shape an old runner wrote before
+  // `reviewed` carried one, or the generic writer produces today. Without the
+  // task_id fallback this read as current and cleared pull-controller's gate
+  // while r-2 was still running.
+  const graph = graphOf(TWO_TEAMS)
+  const custody = [
+    { at: '2026-07-27T09:00:00.000Z', event: 'assigned', agent_id: 'b_w1', task_id: 'b-1', dispatch_id: 'w-1' },
+    { at: '2026-07-27T09:01:00.000Z', event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done', timed_out: false, evidence_present: true, dispatch_id: 'w-1' },
+    { at: '2026-07-27T09:02:00.000Z', event: 'assigned', agent_id: 'b_e', task_id: 'r-1', dispatch_id: 'r-1' },
+    { at: '2026-07-27T09:03:00.000Z', event: 'delivered', agent_id: 'b_e', task_id: 'r-1', terminal: 'done', timed_out: false, evidence_present: true, dispatch_id: 'r-1' },
+    // r-1 was killed and retried before it reported anything.
+    { at: '2026-07-27T09:04:00.000Z', event: 'assigned', agent_id: 'b_e', task_id: 'r-2', dispatch_id: 'r-2' },
+    // r-1's late last word: names the task it opened under (r-1) but carries
+    // no dispatch_id — exactly what an old harvester wrote, or what the
+    // sanctioned generic writer still accepts today.
+    { at: '2026-07-27T09:05:00.000Z', event: 'reviewed', agent_id: 'b_e', task_id: 'r-1', verdict: 'pass', reviewed_task: 'b-1', reason: 'it does what the request asked for' },
+  ]
+  const items = itemsOf(['tok', custody])
+
+  assert.equal(currentEntry(custody).task_id, 'r-2', 'the stale unlabeled pass was read as where the token is')
+  assert.equal(currentEntry(custody).event, 'assigned', 'the live retry is still assigned, not reviewed')
+  assert.deepEqual(teamOccupancy(graph, items).held.get('build'), ['tok'],
+    'the unlabeled stale pass moved the token off the seat still running it')
+  assert.deepEqual(planPulls(graph, items, '2026-07-27T09:06:00.000Z'), [],
+    'an unlabeled stale review pass cleared the pull gate')
+})
+
+test('a dispatch_id match is not proof once the ledger contradicts what it was assigned to (F2)', () => {
+  // The exact fixture from the review: two live assignments, then a
+  // `delivered` that reuses the SECOND leg's dispatch_id while naming the
+  // FIRST leg's agent and task. dispatch_id matching alone (currentEntry)
+  // would read this as w2's own outcome; nothing before this checked that the
+  // ID actually belonged to the (agent_id, task_id) pair claiming it.
+  const lines = [
+    { at: '2026-07-27T09:00:00.000Z', event: 'assigned', work_item: 'tok', workflow: 'feature', agent_id: 'w1', task_id: 't1', dispatch_id: 'd-1' },
+    { at: '2026-07-27T09:01:00.000Z', event: 'assigned', work_item: 'tok', workflow: 'feature', agent_id: 'w2', task_id: 't2', dispatch_id: 'd-2' },
+    {
+      at: '2026-07-27T09:02:00.000Z', event: 'delivered', work_item: 'tok', workflow: 'feature',
+      agent_id: 'w1', task_id: 't1', dispatch_id: 'd-2', terminal: 'done', timed_out: false, evidence_present: true,
+    },
+  ].map((entry) => JSON.stringify(entry))
+
+  const result = validateLedger(lines)
+  assert.equal(result.ok, false, 'a dispatch_id borrowed from a different leg validated clean')
+  assert.ok(result.problems.some((problem) => problem.code === 'dispatch_id_agent_mismatch'),
+    `expected a dispatch_id_agent_mismatch problem, got ${JSON.stringify(result.problems)}`)
+  assert.ok(result.problems.some((problem) => problem.code === 'dispatch_id_task_mismatch'),
+    `expected a dispatch_id_task_mismatch problem, got ${JSON.stringify(result.problems)}`)
+
+  // The binding is per-ID, not blanket suspicion of reuse: an outcome that
+  // correctly reports its OWN leg's dispatch_id still validates.
+  const consistent = [
+    { at: '2026-07-27T09:00:00.000Z', event: 'assigned', work_item: 'tok', workflow: 'feature', agent_id: 'w1', task_id: 't1', dispatch_id: 'd-1' },
+    { at: '2026-07-27T09:01:00.000Z', event: 'assigned', work_item: 'tok', workflow: 'feature', agent_id: 'w2', task_id: 't2', dispatch_id: 'd-2' },
+    {
+      at: '2026-07-27T09:02:00.000Z', event: 'delivered', work_item: 'tok', workflow: 'feature',
+      agent_id: 'w2', task_id: 't2', dispatch_id: 'd-2', terminal: 'done', timed_out: false, evidence_present: true,
+    },
+  ].map((entry) => JSON.stringify(entry))
+  assert.equal(validateLedger(consistent).ok, true, JSON.stringify(validateLedger(consistent).problems))
 })

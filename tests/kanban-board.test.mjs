@@ -68,7 +68,10 @@ const fill = (entry) => {
       return { task_id: 'controller-task', to_team: 'build', reason: 'stated by the agent', ...entry }
     case 'audit_requested':
       return { task_id: 'controller-task', reason: 'stated by the agent', ...entry }
+    // ADR 0002: `opened.actor` is who decided, always a person — its own
+    // default, not the agent-written group below.
     case 'opened':
+      return { reason: 'stated by the agent', actor: 'human:someone', ...entry }
     case 'intake':
     case 'lost':
     case 'resumed':
@@ -115,7 +118,9 @@ const columnsOf = (html) => {
   for (const chunk of html.split('<section class="col').slice(1)) {
     columns.set(chunk.match(/<h2>([^<]*)<\/h2>/)[1], {
       cards: (chunk.match(/<article class="card/g) || []).length,
-      tokens: [...chunk.matchAll(/<b class="tok">([^<]*)<\/b>/g)].map((match) => match[1]),
+      // `[^>]*` tolerates the token element's own `id`, added so the card can
+      // be given an accessible name via `aria-labelledby`.
+      tokens: [...chunk.matchAll(/<b class="tok"[^>]*>([^<]*)<\/b>/g)].map((match) => match[1]),
       html: chunk,
     })
   }

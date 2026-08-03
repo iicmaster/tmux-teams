@@ -53,7 +53,14 @@ export const EVENT_SPEC = {
   // catching a pull that genuinely forgot its sender, forever, to accommodate
   // one event at the head of each route. A new word costs nothing and leaves
   // `pulled` exactly as strict as it was.
-  opened: { required: ['agent_id', 'to_team', 'reason'], forbidden: ['from_team'] },
+  // ADR 0002: `opened` is a person's decision, not a machine's, so it carries
+  // the same actor-kind rule §5.1 already put on `answered` — `actor` must be
+  // `human:<id>`. An agent that types the words on someone's behalf keeps its
+  // own identity in `relayed_by` (see `answered`'s comment below) rather than
+  // borrowing the person's. Machine-decided admission is out of scope for this
+  // event; a future autonomous opener needs its own word, not this actor
+  // forged into looking human.
+  opened: { required: ['agent_id', 'to_team', 'reason'], forbidden: ['from_team'], actor_kind: 'human' },
   pulled: { required: ['agent_id', 'from_team', 'to_team'] },
   // `verdicts` closes the value, not just the field. Until it existed the
   // validator checked that `verdict` was a non-empty string and no more, so
@@ -100,7 +107,14 @@ export const EVENT_SPEC = {
   // dispatcher every tick, paying again and again to ask a question of someone
   // who has not replied. It does not release the team (§6): the token is still
   // held, still counted, still occupying WIP.
-  questioned: { required: ['agent_id', 'questions', 'reason'] },
+  // `question_id` names THIS question, not the token — a token can be asked
+  // more than once in its life, and without an id of its own a stale answer
+  // and a fresh one are indistinguishable once both are on disk. `resume_role`
+  // is optional and names where the answer goes back to (`dispatcher`,
+  // `audit`, `outer`, or the worker/evaluator role the leg was on) — the seat
+  // that asked is the seat that reads the reply, and only the writer that
+  // asked it knows which seat that was.
+  questioned: { required: ['agent_id', 'questions', 'reason', 'question_id'] },
   // The answer, and the only event whose ACTOR KIND is part of its validity.
   // §5.1's second evidence is that a person decided; `human:` is the closed
   // vocabulary that records it. An operator agent may relay the words — see
@@ -135,8 +149,21 @@ export const MAX_DOOR_REFUSALS = 3
 // finished and then hit an unusable audit had nowhere legal to go, and the
 // runner refused its own repair every tick — visible, but permanently stuck.
 // `answered` follows the question and puts the token back in front of the
-// audit, which is where it was.
-const AFTER_COMPLETED = new Set(['audit_requested', 'audited', 'questioned', 'answered'])
+// audit, which is where it was. `abandoned` joins the set for the same reason
+// `questioned` did: a person can fail to answer post-completion exactly as
+// one can fail to answer at the front door, and the clock's withdrawal has to
+// have somewhere legal to land — `loop-runner.mjs` writes it as `abandoned`
+// either way (§9), so the ledger must accept the one word it actually uses.
+const AFTER_COMPLETED = new Set(['audit_requested', 'audited', 'questioned', 'answered', 'abandoned'])
+// `audited` and `abandoned` are not "closed until `completed` says otherwise"
+// the way the rest of `AFTER_COMPLETED` is — they are §5's OTHER two rows with
+// no successor. Tracking them separately from `closedAt` is what makes
+// `completed -> audit_requested -> audited -> audit_requested` illegal: the
+// first `closedAt` a route sees is always `completed` (it is always written
+// before either of these), so a single "first terminal wins" flag can never
+// notice that the SECOND terminal — the one that actually ends the audit —
+// already happened.
+const HARD_TERMINAL_EVENTS = new Set(['audited', 'abandoned'])
 
 // `null` is absence, not a value. loop-runner.mjs writes `workflow: … || null`
 // and `to_team: … || null`, so a presence check that only tested `in` would let
@@ -159,6 +186,15 @@ export function validateLedger(lines) {
   // Facts accumulated in FILE order. Sorting by `at` the way readers do would
   // destroy the only thing that makes "never goes backwards" checkable.
   const assignedAgents = new Set()
+  // What `assigned` actually bound a dispatch_id to. dispatch-facts.mjs's
+  // currentEntry trusts a dispatch_id match on a `delivered`/`lost`/`reviewed`
+  // line as PROOF it belongs to the leg that ID names — that trust is only as
+  // good as the ID being bound to one (agent_id, task_id) pair for its whole
+  // life. Without this, the sanctioned writer would accept a `delivered` that
+  // reuses another leg's live dispatch_id while naming a different agent and
+  // task: the ID matches, currentEntry believes it, and a report that never
+  // happened is read as the current leg's own outcome.
+  const dispatchOwner = new Map()
   // Every team this token has actually been INSIDE. §1's one-way rule is a
   // statement about this set and nothing else. A team is added when its
   // dispatcher ADMITS the token, not when the token arrives at its door —
@@ -181,7 +217,14 @@ export function validateLedger(lines) {
   let deliveredSeen = false
   let auditRequested = false
   let questionAsked = false
+  // The id of the question currently outstanding, or null once it has been
+  // consumed by an `answered`/expiry — or if the `questioned` that raised it
+  // named none, on a history written before this field existed. Kept apart
+  // from `questionAsked`: that flag says WHETHER an answer is legal, this
+  // says which one it has to be about.
+  let openQuestionId = null
   let closedAt = null // { line, event } of the first terminal event
+  let hardClosedAt = null // { line, event } of the first §5 no-successor event
 
   for (let index = 0; index < rows.length; index += 1) {
     const lineNo = index + 1
@@ -244,6 +287,12 @@ export function validateLedger(lines) {
     if (entry.actor !== undefined && !ACTOR_RE.test(String(entry.actor ?? ''))) {
       add(lineNo, 'bad_actor', `actor must be agent:<id> or human:<id>, got ${JSON.stringify(entry.actor)}`)
     }
+    // ADR 0002: the relay's own identity, distinct from the decision `actor`
+    // records. Only ever an agent — a human does not relay another human's
+    // decision through this field, they simply are the `actor`.
+    if (present(entry.relayed_by) && !/^agent:[A-Za-z0-9_][A-Za-z0-9_.:-]{0,63}$/.test(String(entry.relayed_by))) {
+      add(lineNo, 'bad_relayed_by', `relayed_by must be agent:<id>, got ${JSON.stringify(entry.relayed_by)}`)
+    }
 
     if (!spec) continue
 
@@ -263,7 +312,13 @@ export function validateLedger(lines) {
     }
 
     // ---- sequence ----------------------------------------------------------
-    if (closedAt) {
+    // A hard terminal (`audited` or `abandoned`) ends the ledger outright —
+    // checked before the softer `completed` rule so a line that follows BOTH
+    // is reported against the one that actually forbids it.
+    if (hardClosedAt) {
+      add(lineNo, 'event_after_terminal',
+        `${name} follows ${hardClosedAt.event} on line ${hardClosedAt.line}; the token was already closed`)
+    } else if (closedAt) {
       const stillLegal = closedAt.event === 'completed' && AFTER_COMPLETED.has(name)
       if (!stillLegal) {
         add(lineNo, 'event_after_terminal',
@@ -277,6 +332,23 @@ export function validateLedger(lines) {
         add(lineNo, 'delivered_without_assigned', `${agent} delivered without a preceding assigned`)
       }
     }
+    // A dispatch_id that means something contradictory to what it was
+    // assigned to. `reviewed` has no task_id counterpart to bind (its own
+    // task is `reviewed_task`, a different leg entirely), so only the
+    // agent_id half applies there.
+    if ((name === 'delivered' || name === 'lost' || name === 'reviewed') && present(entry.dispatch_id)) {
+      const owner = dispatchOwner.get(String(entry.dispatch_id))
+      if (owner) {
+        if (present(entry.agent_id) && String(entry.agent_id) !== owner.agent_id) {
+          add(lineNo, 'dispatch_id_agent_mismatch',
+            `${name} carries dispatch_id ${entry.dispatch_id}, assigned to ${owner.agent_id}, not ${entry.agent_id}`)
+        }
+        if (name !== 'reviewed' && present(entry.task_id) && String(entry.task_id) !== owner.task_id) {
+          add(lineNo, 'dispatch_id_task_mismatch',
+            `${name} carries dispatch_id ${entry.dispatch_id}, assigned to task ${owner.task_id}, not ${entry.task_id}`)
+        }
+      }
+    }
     if (name === 'reviewed' && !deliveredSeen) {
       add(lineNo, 'reviewed_without_delivered', 'reviewed with nothing delivered to review')
     }
@@ -284,9 +356,21 @@ export function validateLedger(lines) {
       add(lineNo, 'audited_without_request', 'audited with no preceding audit_requested')
     }
     // An answer to nothing. The pair only means anything together: a lone
-    // `answered` would release a token nobody had parked.
+    // `answered` would release a token nobody had parked. Checked before the
+    // event is consumed below, so a SECOND `answered` with no new `questioned`
+    // between them is caught the same way — `questionAsked` is reset the
+    // moment the open question is consumed, so a stale answer to an already-
+    // closed question reads as exactly what it is: an answer to nothing.
     if (name === 'answered' && !questionAsked) {
       add(lineNo, 'answered_without_question', 'answered with no preceding questioned')
+    } else if (name === 'answered' && present(entry.question_id) && openQuestionId
+      && String(entry.question_id) !== openQuestionId) {
+      // Both sides bothered to name a question — so a mismatch is not a
+      // missing field, it is two different questions. The open one is still
+      // open; only the id above closes it, so a stray line naming an unrelated
+      // id must not consume it out from under the real answer.
+      add(lineNo, 'question_id_mismatch',
+        `answered names question ${JSON.stringify(entry.question_id)} but the token is waiting on ${JSON.stringify(openQuestionId)}`)
     }
     // The kind of writer, not merely its shape. A model relaying a person's
     // words signs `human:` and names itself in `relayed_by`; a model signing as
@@ -366,10 +450,33 @@ export function validateLedger(lines) {
       }
     }
     if (name === 'assigned' && present(entry.agent_id)) assignedAgents.add(String(entry.agent_id))
+    // First assignment of an ID wins. A dispatch_id is meant to be minted
+    // once per leg; if a later `assigned` line reuses one, that reuse is
+    // itself the kind of impossible history this file exists to catch
+    // elsewhere, not a reason to let the ID's meaning drift underneath it.
+    if (name === 'assigned' && present(entry.dispatch_id) && !dispatchOwner.has(String(entry.dispatch_id))) {
+      dispatchOwner.set(String(entry.dispatch_id), {
+        agent_id: present(entry.agent_id) ? String(entry.agent_id) : '',
+        task_id: present(entry.task_id) ? String(entry.task_id) : '',
+      })
+    }
     if (name === 'delivered') deliveredSeen = true
     if (name === 'audit_requested') auditRequested = true
-    if (name === 'questioned') questionAsked = true
+    if (name === 'questioned') {
+      questionAsked = true
+      openQuestionId = present(entry.question_id) ? String(entry.question_id) : null
+    }
+    // Consumed on the answer, and on the one other event that closes a live
+    // question without one: the clock's withdrawal (`abandoned`, written by
+    // the runner — §9 — when nobody replied in time). A `questionAsked` left
+    // true after either would let a stray later `answered` bind to a question
+    // that was already resolved.
+    if (name === 'answered' || (name === 'abandoned' && questionAsked)) {
+      questionAsked = false
+      openQuestionId = null
+    }
     if (!closedAt && TERMINAL_EVENTS.has(name)) closedAt = { line: lineNo, event: name }
+    if (!hardClosedAt && HARD_TERMINAL_EVENTS.has(name)) hardClosedAt = { line: lineNo, event: name }
     eventsSeen += 1
   }
 

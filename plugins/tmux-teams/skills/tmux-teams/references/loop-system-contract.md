@@ -332,7 +332,7 @@ Common fields on every event: `at` (ISO 8601 UTC), `event`, `work_item`,
 
 | Event | Written by | Also carries | Means |
 | --- | --- | --- | --- |
-| `opened` | whoever admits the work (§4.6) | `agent_id` = receiving dispatcher, `to_team`, `reason`; **never** `from_team` | work entered the graph; legal only as a token's first event |
+| `opened` | whoever admits the work (§4.6) | `agent_id` = receiving dispatcher, `to_team`, `reason`; **never** `from_team`; `actor` must be `human:<id>` (ADR 0002), optional `relayed_by: agent:<id>` | work entered the graph; legal only as a token's first event |
 | `pulled` | pull-controller | `agent_id` = receiving dispatcher, `from_team`, `to_team` | the receiving team took the work |
 | `intake` | runner (harvest) | `agent_id` = dispatcher, `verdict: accept`, `reason` | the team accepted the handoff |
 | `returned` | runner (harvest) | `to_team` = sender, `refused_by`, `reason`, **no `agent_id`** | the handoff was refused and went back |
@@ -438,6 +438,21 @@ whether a team sent it. A reader that knows one and not the other strands the
 token — the runner reports nothing to do while the board draws it waiting
 forever.
 
+**`opened.actor` names who DECIDED, not who wrote the bytes (ADR 0002,
+2026-08-04).** This is a deliberate exception to §4.1's general rule that
+`actor` is the component that performed the write: `opened` and `answered`
+(§4.7) are the two events whose subject is a person, and their `actor` records
+that person, `human:<id>`, even when an agent relayed the words on their
+behalf. Before this amendment `admit.mjs`'s own doc comment stated the rule and
+nothing enforced it — `EVENT_SPEC.opened` carried no `actor_kind`, so
+`agent:reopen-controller` and an unactored line both validated. An agent that
+relays now names itself in the optional `relayed_by: agent:<id>` field instead
+of borrowing the person's identity; `relayed_by` is shape-checked (must be
+`agent:*`) whenever it is present, on any event. `opened` is unaffected by any
+future MACHINE-decided admission — a system that opens tokens on its own
+authority (a "reopen" mechanism, considered but not built as of this
+amendment) needs its own actor word, not this one forged into looking human.
+
 ### 4.7 A token blocked on a person — `questioned` / `answered`
 
 **Implemented on branch `poc/controller-as-team` 2026-07-31; not on `main`.**
@@ -448,9 +463,22 @@ no state to park in, the runner sees a token sitting at a dispatcher and
 re-dispatches that dispatcher every tick, paying repeatedly to ask a question of
 somebody who has not replied.
 
-- `questioned` carries `agent_id` (who asked), `questions` (what was asked) and
-  `reason`. It does not release the team — the token is still held, still
-  counted against WIP (§6). **The runner never dispatches on it.**
+- `questioned` carries `agent_id` (who asked), `questions` (what was asked),
+  `reason`, and `question_id` — a per-token, per-question identifier
+  (`harvestEvent` writes `q-<work_item>-<n>`, counting the token's own prior
+  `questioned` lines). It does not release the team — the token is still held,
+  still counted against WIP (§6). **The runner never dispatches on it.**
+  `question_id` is what an `answered` binds to: the validator refuses to close
+  a DIFFERENT open question than the one an answer names
+  (`question_id_mismatch`), and the open question is consumed — cleared —
+  the moment an `answered` or a question-closing `abandoned` lands, so a stray
+  second `answered` with nothing new asked is refused as
+  `answered_without_question` rather than silently accepted. `questioned` also
+  carries an optional `resume_role` naming the seat that asked
+  (`dispatcher`, `audit`, `outer`, or the leg's own role) — the seat that asked
+  is the only one that can read the reply. `resume_role` is recorded by every
+  producer as of this amendment; consuming it to route dispatch is not yet
+  wired (see the amendment log entry below).
 - `answered` carries `to_team` and `reason`, and is **the only event whose actor
   KIND is part of its validity**: it must be written by a `human:` actor or the
   writer refuses the line. §2 accepts attestations from no other role, and this
@@ -461,7 +489,19 @@ somebody who has not replied.
   it would orphan the token the moment somebody replied.
 - A `questioned` token that goes unanswered past the answer deadline is closed
   with `abandoned` by the RUNNER (§9), and the controller writes a withdrawal
-  notice naming the unanswered questions.
+  notice naming the unanswered questions. This applies whether the question was
+  asked at the front door or POST-`completed` by the audit — before this
+  amendment the validator refused the post-`completed` case outright
+  (`completed -> audit_requested -> questioned -> abandoned` was
+  `event_after_terminal`), so an unread audit question could never expire and
+  sat occupying the board forever.
+- `audited` and `abandoned` are §5's genuinely hard terminals: nothing may
+  follow either, ever, enforced by the validator rather than by the accident of
+  `completed` always being written first. Before this amendment the validator
+  tracked only the FIRST terminal event on a ledger — always `completed`, for
+  every route that reaches an audit — so `completed -> audit_requested ->
+  audited -> audit_requested` validated clean; the second `audit_requested`
+  described re-opening an audit that had already closed.
 
 ## 5. State machine
 
@@ -488,7 +528,9 @@ One token, keyed on its last event and the role of the actor.
 | `escalated` | no answer yet | held; the runner does not move it |
 | `completed` | not yet audited | flag `audit_requested` and dispatch the controller |
 | `audit_requested` | controller outbox exists | harvest → `audited`, or `questioned` when the answer is not a word this seat reads |
-| `completed`, `audited`, `abandoned` | — | terminal; the token holds nothing |
+| `questioned` (post-`completed`) | past the answer deadline | RUNNER closes it with `abandoned` (§4.7, §9) |
+| `answered` (post-`completed`) | — | re-flag `audit_requested`; the reply is read, not silently absorbed (2026-08-04: `awaitingAudit` used to treat ANY prior `audit_requested` as proof the route was already read, so this reply had nowhere to go — fixed in `loop-runner.mjs`) |
+| `audited`, `abandoned` | — | **hard terminal** (§4.7): nothing may follow either, ever |
 
 **Ordering within a tick is fixed:** harvest → pulls → dispatch → escalation.
 Harvesting after pulling would let the controller evaluate a stale event, and
@@ -544,14 +586,43 @@ go — the runner refused its own repair on every tick, visibly and for ever.
   now, but it never falls back to agent_id: an evaluator does not always have
   an `assigned` of its own when its review lands, so its agent_id is never
   expected to equal the holder's, and treating that mismatch as staleness is
-  what read every ordinary review as superseded — measured, four tests. An
-  unlabeled `reviewed` (no `dispatch_id` on either side, which real ledgers
-  still write) is trusted exactly as before rather than guessed at by agent_id;
-  `delivered`/`lost` keep the agent_id fallback for that same case, because a
-  report from an agent that plainly is not the holder is still real evidence
-  for those two.
+  what read every ordinary review as superseded — measured, four tests.
+
+  When `dispatch_id` cannot settle it (missing on either side — a mixed-version
+  ledger where an old writer, or the generic writer, left it off), `task_id` is
+  the next signal, not agent_id directly: `assigned` is required to carry one
+  (§4), and every outcome this matters for — `delivered`, `lost`, and a
+  harvester-written `reviewed` — carries the SAME task_id its own leg opened
+  under. An outcome that names a task_id is traced back to the exact `assigned`
+  line that started its leg and compared against the `assigned` line that made
+  the current holder the holder: the same leg, trust it; a different one, a
+  newer leg has started since and the outcome is not evidence about where the
+  token is now — reached from a signal `assigned` was already required to
+  carry, not a new guess.
+
+  Only a `reviewed` with NEITHER `dispatch_id` NOR a `task_id` it can look up
+  (the shorthand this system still writes when a review rides straight on a
+  worker's delivery, with no `assigned` of the evaluator's own to trace) has no
+  identity signal left at all. That one case is trusted exactly as before,
+  unconditionally — a branch that cannot answer says UNKNOWN, not "stale", and
+  guessing it stale is what read every ordinary review as superseded, above.
+  `delivered`/`lost` without a resolvable task_id fall back to the plain
+  agent_id check they always used, for the same reason.
+
+  `dispatch_id` matching is not proof on its own if the ledger itself is
+  self-contradictory: `ledger-validate.mjs` now binds every `dispatch_id` to
+  the `(agent_id, task_id)` its `assigned` line actually named, and refuses
+  (`dispatch_id_agent_mismatch`, `dispatch_id_task_mismatch`) a
+  `delivered`/`lost`/`reviewed` that reuses a live dispatch_id while
+  contradicting who or what it was assigned to. `currentEntry` itself still
+  trusts a matching `dispatch_id` outright; the guarantee that the ID means one
+  thing for its whole life is enforced at the point bytes enter the ledger, not
+  re-checked on every read.
   Readers that answer position or state go through it: `teamOccupancy`,
-  `planPulls`, `planHarvest`, `nextStep`, `boardSummary`, and the kanban card.
+  `planPulls`, `planHarvest`, `nextStep`, `boardSummary`, the kanban card, and —
+  on the loop graph page — `frontDoorStatus`, `controllerState`'s parked count,
+  its `holding` set, a team's `stuck` flag, and the `delivered`/`waiting` tile
+  counts in `graph.mjs`.
   Readers that answer *when* something last happened do not, and must not.
 - The rule is a **release list, not a whitelist**: an event nobody taught this
   function about leaves the work where it is rather than making it disappear.
@@ -1359,6 +1430,133 @@ line.
 
 ### Amendment log
 
+**2026-08-04 — `opened.actor` is a human decision (ADR 0002); the
+post-completion question state machine is bound, consumed, and its terminals
+are genuinely final.** Behaviour changed in `ledger-validate.mjs`
+(`EVENT_SPEC.opened` gained `actor_kind: 'human'`; `EVENT_SPEC.questioned`
+gained required `question_id`; a `relayed_by` shape check now applies to any
+event; `AFTER_COMPLETED` gained `abandoned`; a new `HARD_TERMINAL_EVENTS` set
+tracked separately from the existing `closedAt` makes `audited`/`abandoned`
+refuse every later line, not only lines following a `completed` that has not
+yet reached one of them), in `admit.mjs` (doc comment now cites the enforced
+rule and an optional `--relayed-by`/`relayed_by`), and in `loop-runner.mjs`
+(`harvestEvent`'s five `questioned` writers now stamp `question_id` and
+`resume_role`; `awaitingAudit` reads the CURRENT last event —
+`completed`/`answered` due, `audit_requested`/`questioned` already in flight,
+`audited`/`abandoned` closed — instead of scanning history for the first-ever
+`audit_requested`/`audited`).
+
+Under §15.3, the document was wrong twice, both pre-existing: §4 documented
+`opened`'s `agent_id`/`to_team`/`reason` but not that `actor` was ever intended
+to be constrained (ADR 0002 settles this was always the intent —
+`admit.mjs`'s own doc comment said so — never enforced); and §5's state table
+called `completed` a terminal alongside `audited`/`abandoned` while §4.7
+already documented `questioned`/`answered` legally following it, which is the
+same "first terminal wins" confusion the validator's old code had in
+executable form. A retroactive review (`retro-release-review`, F3/F4)
+traced both: `opened.actor` accepted `agent:reopen-controller`,
+`relayed_by:'garbage'`, and an absent actor alike, while rejecting the
+TRUTHFUL relay shape `{actor:'agent:operator', answered_by:'human:alice'}` on
+`answered`'s stricter neighbor — an inconsistency only explainable by `opened`
+never having gained the rule `answered` already enforced. Separately,
+`completed -> audit_requested -> questioned -> abandoned` (the exact shape the
+RUNNER writes for an expired post-completion audit question, §9) was refused
+as `event_after_terminal`, and `completed -> audit_requested -> audited ->
+audit_requested` validated clean despite `audited` being one of §5's two
+no-successor rows.
+
+`resume_role` is recorded on every `questioned` line as of this amendment but
+not yet consumed: an `answered` following a post-`completed` question is
+placed by §6's ordinary rule (`teamOf(agent_id)` or `to_team`, else orphan),
+which has no notion of "resume at the seat that asked" for a seat that is not
+a declared team (the outer controller/audit is not a team member). The data
+this needs is now on disk; the placement/dispatch change to read it is
+deliberately left to a follow-up — see `HANDOFF-PATCH.md` — rather than
+widening this change into `dispatch-facts.mjs`'s occupancy rule under review-
+concurrency with the custody package's own edits to the same files.
+
+**2026-08-04 — the loop graph page's own state readers named in §6.** Behaviour
+changed in `graph.mjs`: `frontDoorStatus`, `controllerState`'s parked count, the
+`holding` set that marks a seat as holding a live token, a team's `stuck` flag,
+and the `delivered`/`waiting` tile counts now read `dispatch-facts.currentEntry`
+instead of `custody[length-1]`. Under §15.3 the code was wrong: §6 already named
+the rule and its five readers, but the graph page carried six more that answer
+the same two questions — is a person blocking the front door, is a seat
+currently holding a token, is a team stuck — through a second, independent
+last-line read of the same custody array, which is exactly the "two readers
+computing it separately" defect §6 opens by naming. A verified fixture: a
+controller `questioned` entry followed by a trailing, mismatched `delivered`
+from a superseded leg (older `dispatch_id`, different `agent_id`) made
+`frontDoorStatus` report the gate merely "busy" instead of blocked on a person —
+`tests/graph.test.mjs`, "a stale mismatched delivered from a superseded leg does
+not hide a person waiting at the front door". `graph.mjs`'s full-history tallies
+(`activityByAgent`, which counts every event a token ever recorded, not its
+current one) and its `cameFrom` search for the most recent `pulled` event are
+unchanged and do not belong on this list: neither answers where a token IS now,
+they answer what has happened or when — the class of read §6 already says must
+NOT go through `currentEntry`.
+
+**2026-08-04 — kanban card evidence: a malformed timestamp is shown, not
+laundered; the card names itself for a screen reader.** Behaviour changed in
+`kanban.mjs`: `absoluteAt` no longer trusts `Date.parse` as a validator — a
+stamp is accepted only if its UTC components, reserialised, match what was
+typed, so a calendar-impossible value (`2026-02-29` in a year with no leap
+day, an hour of `24`, the bare string `"0"`) now renders as `Malformed
+timestamp: "…"` instead of the next real instant `Date.parse` silently rolls
+it into. The `datetime` attribute is now always a value HTML's own
+microsyntax accepts — millisecond precision, truncated from whatever the
+ledger carries, never rounded or invented; the ledger's own `at` field is
+unaffected, this is only the card's machine-readable copy of it. The card's
+`<article>` also carries `aria-labelledby`, pointing at the token element's
+own `id`, and a visible `last event: <name>` line. This closes a gap an
+earlier change left open: dropping the card's `title` was correct (§13 — a
+tooltip overrides the accessible name a screen reader announces), but nothing
+replaced the name it incidentally carried, so the article became unreadable
+in a screen reader's article list without opening each one, and the literal
+last-event word — as opposed to `state`'s paraphrase of it — disappeared from
+the page entirely, on-screen and in the accessibility tree alike. Under
+§15.3: neither the code nor this document disagreed before this change — the
+document named no rule for the kanban card's own timestamp validity or its
+accessible name, so this entry establishes one rather than correcting one.
+Flagged in the 2026-08-03/04 retroactive release review, findings F8 and F9.
+`tests/kanban.test.mjs` gained the F8 and F9 cases, and the pre-existing
+"two facts" test now asserts the token id at the ledger's own maximum length
+(128 characters, §4's `ID_RE`) rather than a 71-character stand-in whose own
+comment claimed 72 — a fixture that short could not have caught a clip
+regression below 128.
+
+**2026-08-04 — the old-ledger compatibility claim was overstated.** No
+behaviour changed; this corrects two entries below (2026-08-04 "the last
+outcome line that could not name its leg" and 2026-08-03 "leg identity
+closes the review half of #30") and the claim in §6 they restate. Both said
+an old ledger — or more precisely, any record where the trailing outcome or
+the holder's `assigned` lacks a `dispatch_id` — "reads exactly as it did
+before," "unchanged, and measured." That is true only for the case they were
+written against: a `dispatch_id` genuinely ABSENT from one or both sides.
+`retro-release-review` F2 reproduces a case the sentence does not cover: a
+sanctioned-writer-accepted ledger where `dispatch_id` IS present on both the
+live holder's `assigned` and a stale `delivered` for a different agent/task,
+but the two are self-contradictory (the id was issued to one assignment, the
+delivery claims a different agent/task under the same id). `currentEntry`'s
+dispatch_id match at §6 returns that stale `delivered` outright — it never
+binds `(dispatch_id, task_id, agent_id)`, so "the id matches" is trusted over
+"the agent matches," and validation does not reject the contradiction either.
+The reader's answer differs from what the pre-dispatch_id (agent_id-only)
+reader would have chosen on the same bytes. So the true-today compatibility
+claim is: unchanged for ledgers that never write a `dispatch_id`; NOT proven
+for a ledger where a validator-accepted `dispatch_id` is present but
+contradicts the agent/task it is attached to. `retro-release-review` F1 is
+a related but distinct gap: a trailing `reviewed` with no `dispatch_id` of
+its own is still returned as current unconditionally, even when a newer
+`assigned` leg for the same task is already live, which the same "unchanged,
+and measured" language does not flag as unresolved. The custody-identity fix
+tracked from F1/F2 (bind `dispatch_id` to exactly one `(agent_id, task_id)`
+assignment tuple at validation, and require `dispatch_id` on every new
+`reviewed`/`delivered`/`lost` outcome) is expected to close both gaps; until
+it ships, treat a validator-accepted but internally contradictory
+`dispatch_id` tuple, and a missing-ID trailing `reviewed`, as unresolved
+rather than as compatible legacy reads.
+
 **2026-08-03 — `TMUX_TEAMS_PHASE` retired.** Behaviour changed in
 `acp-companion.mjs`: the variable is refused rather than validated, and a
 dispatch footprint no longer carries a `phase:` line. Under §15.3 the code was
@@ -1393,7 +1591,11 @@ This retires the closing sentence of the entry below: `lost` is no longer
 written without a leg identity, and two legs by the same agent whose
 superseded one ended in `lost` are now told apart on any ledger written from
 here on. The agent_id fallback stays for `delivered`/`lost` and is what every
-ledger written before this still reads by — unchanged, and measured.
+ledger written before this still reads by — unchanged, and measured, for a
+ledger where no `dispatch_id` is present on the relevant entries. See the
+2026-08-04 correction above (retro-release-review F1/F2): once a
+`dispatch_id` IS present but contradicts the agent/task it is attached to,
+this is not proven unchanged.
 
 **2026-08-03 — leg identity closes the review half of #30.** Behaviour changed
 in `dispatch-facts.mjs` (`currentEntry`, `LEG_OUTCOMES` now includes
@@ -1403,13 +1605,53 @@ limits collapsed to one. Under §15.3, the document was wrong: §6 named "leg
 identity (`dispatch_id`)" as a known limit and said `reviewed` could not join
 `LEG_OUTCOMES` without reproducing the false positive the four tests caught —
 both were true only because nothing yet compared a trailing entry's own
-`dispatch_id` against the holder's. The remaining known limit is unchanged: a
-`delivered`/`lost`/`reviewed` with no `dispatch_id`, or a holder `assigned`
-with none, still falls back to (or, for `reviewed`, forgoes) the agent_id
-check exactly as before — an old ledger reads exactly as it did before this
-change, never guessed into "superseded" for lack of a field it does not carry.
+`dispatch_id` against the holder's. The remaining known limit — a
+`delivered`/`lost`/`reviewed` with no `dispatch_id` falls back to (or, for
+`reviewed`, forgoes) the agent_id check, unchanged from before this change —
+is corrected by the 2026-08-04 entry below: on a same-agent retry that fallback
+was fail-open, not merely imprecise, and the closing sentence of the
+2026-08-04 (`lost`) entry beneath this one is retired for the same reason.
 `lost` is still runner-written without a `dispatch_id`, so two legs by the same
-agent whose superseded one ended in `lost` remain indistinguishable.
+agent whose superseded one ended in `lost` are told apart by `task_id` instead
+(see below), not left indistinguishable.
+
+**2026-08-04 — an unlabeled outcome behind a live retry is not current
+(retro-release-review F1, F2).** Behaviour changed in `dispatch-facts.mjs`
+(`currentEntry`) and `ledger-validate.mjs` (`validateLedger`). §6 gained the
+`task_id` fallback and the dispatch_id-binding paragraph above. Under §15.3,
+BOTH this document and the code were wrong, in the direction of trusting too
+much: §6 said an unlabeled `reviewed`, or a `delivered`/`lost` whose agent_id
+matched the holder, was "trusted exactly as before" — true of the words, false
+of the safety, because "before" already fails open. A same-agent retry (the
+identical evaluator run twice, a killed worker redispatched to the same
+worker) reads identical by agent_id on both legs; when the trailing outcome
+also carries no `dispatch_id`, nothing distinguished the dead leg's late last
+word from the live retry's own report, and a `reviewed pass` in that shape
+cleared `pull-controller.mjs`'s gate and released the token to the next team
+while the live leg was still running. `task_id` closes it: `assigned` already
+required one (§4), and it is required on `assigned` even in a ledger old
+enough to carry no `dispatch_id` at all, so it is never the field the fallback
+has nothing left to check. `tests/loop-occupancy.test.mjs:877-895` previously
+asserted the fail-open reading as correct ("an old ledger stopped reading the
+way it always did"); that assertion encoded this defect and was changed to
+assert the token is read as still held by the live retry, with the same
+comment explaining why the old claim was wrong rather than deleting it
+silently.
+
+Separately, `ledger-validate.mjs` did not bind a `dispatch_id` to the
+`(agent_id, task_id)` its own `assigned` line named, so a `delivered` could
+carry a dispatch_id belonging to a DIFFERENT, live leg while naming an
+entirely different agent and task, and `currentEntry`'s dispatch_id-match
+branch — the one case in §6 that was supposed to be authoritative — trusted it
+outright. `validateLedger` now refuses such a line (`dispatch_id_agent_mismatch`,
+`dispatch_id_task_mismatch`); `dispatch-facts.mjs` still treats a matching
+dispatch_id as proof, unchanged, because a ledger that reaches it now cannot
+carry that contradiction and still validate. A ledger already tolerated as
+legacy through `ledger-writer.mjs`'s `LEGACY_TOLERATED` set is unaffected —
+`dispatch_id_agent_mismatch`/`dispatch_id_task_mismatch` are not in that set,
+so a NEW line making this mistake is refused exactly as any other invalid
+event is, and an old ledger that never had a contradicting dispatch_id in the
+first place validates exactly as it did.
 
 **2026-07-28 — WIP derived, models declared, the sanctioned writer, the runner's
 own pulse.** Behaviour changed in `workflow-graph.mjs`, `loop-runner.mjs`,

@@ -22,7 +22,21 @@ const isAgy = p => /(^|[-_])agy($|[-_])|antigravity/.test(laneOf(p))
 // `acknowledge` and `schema` are the two gate-local stages after transport.
 const LANE_STAGES = new Set(['input', 'config', 'spawn', 'closed', 'protocol', 'timeout', 'review', 'policy', 'transport'])
 const laneStage = code => LANE_STAGES.has(code) ? code : 'transport'
-const boundedReason = value => typeof value === 'string' && value.length <= 200 ? value : null
+// `input`/`config`/`policy` are the transport's own codes for a deterministic
+// misconfiguration — a bad executable, an unacknowledged setting, an
+// unavailable substitute route. None of those repair themselves on a second
+// attempt, so they earn a distinct reason from `lane_failed`'s "re-run and
+// compare the digest" advice below, which only fits a transient stage.
+const DETERMINISTIC_LANE_STAGES = new Set(['input', 'config', 'policy'])
+// Printable ASCII only — no newline, no carriage return, no ANSI/C0 control
+// bytes. `validate` is a public injection seam (`runReviewGate({
+// validateReview })`); a custom validator's `reason` is untrusted text, not
+// the closed vocabulary the default validator returns, so this is what stops
+// it from forging a report line or a terminal escape sequence once it rides
+// in as a subject below, rather than the vocabulary being closed by
+// construction.
+const SAFE_SUBJECT = /^[\x20-\x7e]*$/
+const boundedReason = value => typeof value === 'string' && value.length <= 200 && SAFE_SUBJECT.test(value) ? value : null
 const hexDigest = value => /^[a-f0-9]{64}$/.test(value ?? '') ? value : null
 
 // A lane failure is read by whoever has to unblock the gate, and until now it
@@ -41,7 +55,17 @@ const hexDigest = value => /^[a-f0-9]{64}$/.test(value ?? '') ? value : null
 // DO NOT RETRY, which is the fact a free-form sentence never carried — a
 // mislabelled lane and a slow provider both used to read as "something failed,
 // try again", and only one of those is worth the tokens.
-export const LANE_FAILURES = Object.freeze({
+// Freezing the outer object is not enough: each `{text, action}` value is its
+// own object and Object.freeze is shallow, which let same-process code
+// overwrite `.action` after import — the table read as closed but wasn't.
+// Freezing every entry too is what makes "closed set with one fixed action
+// each" true rather than merely written down.
+function closedLaneFailureTable(table) {
+  for (const entry of Object.values(table)) Object.freeze(entry)
+  return Object.freeze(table)
+}
+
+export const LANE_FAILURES = closedLaneFailureTable({
   lane_failed: {
     text: 'the lane produced no review',
     action: 'Re-run this lane alone and compare stderrDigest against the provider log. Nothing about the panel changes until it answers.',
@@ -93,6 +117,10 @@ export const LANE_FAILURES = Object.freeze({
   schema_invalid: {
     text: 'the model answered outside the review schema',
     action: 'Re-run this lane once. If it repeats, this model cannot hold the JSON review protocol and the route needs changing.',
+  },
+  lane_rejected: {
+    text: 'the lane refused deterministically before it produced a review',
+    action: 'Do not retry: fix the configuration or policy this profile declares in review-profiles.mjs first. This stage rejects on every attempt, digest or not.',
   },
 })
 
@@ -236,8 +264,12 @@ async function assessAttempt(attempt, validate, expectedInputHash) {
     const stage = laneStage(attempt.result.reason?.code)
     const failureKind = stage === 'review' ? 'review' : stage === 'policy' ? 'policy' : 'transport'
     // `stage` already says where the transport stopped, so the sentence does not
-    // repeat it — it says what the operator is left holding: no review.
-    return { ...attempt, valid: false, failureKind, stage, ...stderrEvidence, reason: 'lane_failed', failure: laneFailure('lane_failed') }
+    // repeat it — it says what the operator is left holding: no review. A
+    // deterministic stage (config/policy/input) gets its own reason: collapsing
+    // it into `lane_failed` told the operator to re-run and diff a digest that
+    // may not even exist, when the actual fix is the profile, not another try.
+    const reason = DETERMINISTIC_LANE_STAGES.has(stage) ? 'lane_rejected' : 'lane_failed'
+    return { ...attempt, valid: false, failureKind, stage, ...stderrEvidence, reason, failure: laneFailure(reason) }
   }
   const value = attempt.result.value
   const fault = runnerEvidenceFault(attempt.profile, value, expectedInputHash)
@@ -252,10 +284,15 @@ async function assessAttempt(attempt, validate, expectedInputHash) {
     return { ...attempt, valid: false, failureKind: 'review', stage: 'schema', ...stderrEvidence, reason: 'validator_threw', failure: laneFailure('validator_threw') }
   }
   if (checked === false || checked?.valid === false || checked?.ok === false) {
-    // The validator's own reason is the useful half — WHICH schema rule broke —
-    // and its vocabulary is a closed set of literals this repo writes
-    // (review-policy.mjs validateReviewOutput), never provider text. It rides in
-    // as the subject rather than as the whole sentence.
+    // The validator's own reason is the useful half — WHICH schema rule broke.
+    // For the DEFAULT validator that vocabulary is a closed set of literals
+    // this repo writes (review-policy.mjs validateReviewOutput), never
+    // provider text. But `validate` is a public injection seam — a caller can
+    // pass any function via `runReviewGate({ validateReview })` — so a custom
+    // validator's reason is untrusted text, not a closed vocabulary by itself.
+    // It rides in as the subject rather than as the whole sentence, and
+    // boundedReason above is what refuses it if it carries a control byte or
+    // exceeds length; the vocabulary is closed by that filter, not by trust.
     return {
       ...attempt, valid: false, failureKind: 'review', stage: 'schema', ...stderrEvidence,
       reason: 'schema_invalid', failure: laneFailure('schema_invalid', boundedReason(checked?.reason)),
@@ -345,7 +382,15 @@ export async function runReviewGate(packet, {
     substitution.remaining = 0
     let reserve
     if (plan && typeof fallbackPlanner === 'function') {
-      const replacement = fallbackPlanner(plan, originalFailure.profile.id)
+      let replacement
+      try {
+        replacement = fallbackPlanner(plan, originalFailure.profile.id)
+      } catch (error) {
+        // A throwing planner is a bug in the injected dependency, not a lane
+        // fault — but it must still leave the operator a report to read
+        // instead of empty stdout and a bare stack line on stderr.
+        throw fail('transport', `review fallback planner threw: ${error?.message ?? 'unknown error'}`)
+      }
       if (!replacement?.blocked) {
         activePlan = replacement
         reserve = profiles[replacement.replaced?.replacement ?? replacement.reserve]
@@ -387,9 +432,17 @@ export async function runReviewGate(packet, {
   if (new Set(reviews.map(item => item.provenance)).size !== 3) {
     throw fail('review', 'review provenance collision detected')
   }
-  const synthesis = activePlan
-    ? await synthesize(activePlan, Object.fromEntries(reviews.map(item => [item.profile, item.review])))
-    : await synthesize(reviews)
+  let synthesis
+  try {
+    synthesis = activePlan
+      ? await synthesize(activePlan, Object.fromEntries(reviews.map(item => [item.profile, item.review])))
+      : await synthesize(reviews)
+  } catch (error) {
+    // Same boundary as the fallback planner above: a throwing synthesizer must
+    // not turn a structured report into a raw uncaught message with nothing
+    // for the CLI to print to stdout.
+    throw fail('policy', `review synthesizer threw: ${error?.message ?? 'unknown error'}`)
+  }
   const report = Object.freeze({
     ok: synthesis?.verdict === 'PASS',
     count: reviews.length,

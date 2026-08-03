@@ -11,9 +11,9 @@ import { join } from 'node:path'
 
 import {
   DEFAULT_WORKFLOW_GRAPH, readWorkflowGraph, renderGraphPage,
-  activityByAgent,
+  activityByAgent, frontDoorStatus,
 } from '../plugins/tmux-teams/skills/tmux-teams/scripts/graph.mjs'
-import { readWorkItems } from '../plugins/tmux-teams/skills/tmux-teams/scripts/dispatch-facts.mjs'
+import { readWorkItems, teamOccupancy } from '../plugins/tmux-teams/skills/tmux-teams/scripts/dispatch-facts.mjs'
 import { gateHistory } from './fixture-gate.mjs'
 import { validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
 import { planPulls } from '../plugins/tmux-teams/skills/tmux-teams/scripts/pull-controller.mjs'
@@ -384,13 +384,17 @@ test('every event that names an agent either credits it or is a stated exception
     from_team: 'build', to_team: 'verify', refused_by: 'b_d', task_id: 't-1', dispatch_id: 'd-1',
     reviewed_task: 't-1', reason: 'a stated reason', terminal: 'done', timed_out: false,
     evidence_present: true, verdict: 'accept', grant: 3,
-    questions: 'who is the target customer?',
+    questions: 'who is the target customer?', question_id: 'q-1',
   }
   for (const event of LEDGER_EVENTS) {
     const spec = EVENT_SPEC[event]
     if (!(spec.required ?? []).includes('agent_id')) continue
     const entry = { at: '2026-07-27T09:00:00.000Z', event, agent_id: 'b_w1' }
     for (const field of spec.required) if (field !== 'agent_id') entry[field] = filler[field]
+    // ADR 0002: `opened.actor` is who decided, always a person — not part of
+    // `spec.required` (it is validated, not merely present), so the loop
+    // above never fills it.
+    if (event === 'opened') entry.actor = 'human:someone'
     // Called directly rather than rendered and pattern-matched. Whether an
     // event credits its agent is a fact about `activityByAgent`; reading it out
     // of markup made the assertion depend on layout and on a 400-character
@@ -652,6 +656,42 @@ test('a full front door is reported as blocked, never as watching', () => {
   const control = JSON.parse(block[1]).world['team:control']
   assert.match(control.lines.join(' '), /WIP 1\/1/, 'the door is at its limit')
   assert.doesNotMatch(control.state, /no exception open/, 'so it cannot also be calm')
+})
+
+// §6: "readers that answer position or state go through [currentEntry]." A leg
+// that has already been superseded can still write its outcome afterwards —
+// dispatch-facts.mjs's own example is a companion killed mid-review whose
+// `delivered` lands on disk after the token has moved on. `frontDoorStatus`
+// answers a STATE question (is a person blocking the gate) and used to read
+// `custody[length-1]` directly instead of `currentEntry(custody)`, so this late,
+// mismatched write could hide the person waiting and report the door as merely
+// busy — the exact disagreement §6 exists to make impossible.
+test('a stale mismatched delivered from a superseded leg does not hide a person waiting at the front door', () => {
+  const graph = { ...TWO_TEAMS, teams: [
+    { team_id: 'control', name: 'Control', dispatcher_id: 'pm_in', worker_ids: ['pm'], evaluator_id: 'pm_out', models: MODELS },
+    ...TWO_TEAMS.teams,
+  ], workflows: [{ workflow_id: 'full', name: 'Full', route: ['control', 'build', 'verify'] }] }
+  const value = graphOf(graph)
+  const dir = withLedger(graph, 'tok', [
+    // Leg 1, an older dispatch to a different agent — the one that goes stale.
+    { at: '2026-07-27T09:00:00.000Z', event: 'assigned', agent_id: 'w_old', to_team: 'control', task_id: 't-old', dispatch_id: 'd-old' },
+    // Leg 2, the current holder: `pm` is reassigned and then asks a question.
+    { at: '2026-07-27T09:05:00.000Z', event: 'assigned', agent_id: 'pm', to_team: 'control', task_id: 't-pm', dispatch_id: 'd-pm' },
+    // `question_id` became required while this test was being written in a
+    // parallel worktree — a question now names itself so an answer can be tied
+    // to the one it settles.
+    { at: '2026-07-27T09:10:00.000Z', event: 'questioned', agent_id: 'pm', questions: 'which scope?', reason: 'unclear request', question_id: 'q-pm-1' },
+    // Leg 1's companion reports in late, after leg 2 already asked its question.
+    // `currentEntry` recognises `d-old` does not belong to the current holder's
+    // `d-pm` and skips it; a raw `custody[length-1]` read cannot tell the two
+    // legs apart.
+    { at: '2026-07-27T09:15:00.000Z', event: 'delivered', agent_id: 'w_old', task_id: 't-old', dispatch_id: 'd-old', terminal: 'done', timed_out: false, evidence_present: true },
+  ])
+  const { items } = readWorkItems(dir)
+  const occupancy = teamOccupancy(value, items)
+  const door = frontDoorStatus(value, items, occupancy)
+  assert.equal(door.kind, 'person', 'a person is still being asked — the stale delivered must not stand in for it')
+  assert.match(door.copy, /waiting on a person to answer/)
 })
 
 test('a running worker lights its assignment, not its handover', () => {

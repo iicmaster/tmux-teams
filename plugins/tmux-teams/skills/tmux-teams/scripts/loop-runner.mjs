@@ -308,10 +308,22 @@ const failedLegs = (item) => item.custody.filter((entry) =>
 // A route that closed and has not been read as a whole. Every evaluator checked
 // its own leg; nobody checked whether what came out of the end is what was
 // asked for.
+// F4: this used to ask "has ANY audit_requested/audited appeared since the
+// route closed" — a tripwire that, once it saw the FIRST `audit_requested`,
+// never fired again for that route, even after a `questioned`/`answered`
+// round trip left the delivery genuinely unread. `completed -> audit_requested
+// -> questioned -> answered` contains `audit_requested`, so the old check
+// called that route audited and it was never re-escalated: the person's reply
+// had nowhere to go. Read off the CURRENT state instead: due exactly when
+// nothing has asked yet (`completed`) or when a person just replied
+// (`answered`) — not when a request is already in flight (`audit_requested`,
+// being watched by `planHarvest`) or already parked on a person (`questioned`,
+// not this function's job) or already closed (`audited`/`abandoned`, §5).
 const awaitingAudit = (item) => {
   const events = item.custody.map((entry) => entry.event)
-  const closed = events.lastIndexOf('completed')
-  return closed !== -1 && !events.slice(closed).some((event) => event === 'audit_requested' || event === 'audited')
+  if (events.lastIndexOf('completed') === -1) return false
+  const last = events[events.length - 1]
+  return last === 'completed' || last === 'answered'
 }
 
 // ── briefs ───────────────────────────────────────────────────────────────────
@@ -438,9 +450,20 @@ export function planHarvest(graph, items, hasOutbox = () => false) {
   return jobs
 }
 
+// The id a fresh `questioned` names itself with (contract §4, ledger-validate
+// EVENT_SPEC.questioned). Counted off the token's OWN history rather than a
+// random value, so a question's id is reproducible from the ledger alone —
+// two tokens can both be on their first question and that is not a
+// collision, because §4 keys every ledger by `work_item` already.
+const nextQuestionId = (item) => `q-${item.work_item}-${item.custody.filter((entry) => entry.event === 'questioned').length + 1}`
+
 function harvestEvent(repo, graph, { item, last, role }, now) {
   const { text, digest } = readOutbox(repo, last.task_id)
   const base = { at: now, work_item: item.work_item, workflow: item.workflow || null, task_id: last.task_id || null }
+  // Every `questioned` this function writes carries both: the id an `answered`
+  // binds to (so a stale reply cannot close a fresh question, and vice
+  // versa), and the seat that asked — the only one that can read the reply.
+  const asked = { question_id: nextQuestionId(item), resume_role: role }
 
   // The bytes the companion classified are the only bytes a verdict may be read
   // from. When they no longer hash to what `delivered` recorded, the honest move
@@ -450,6 +473,7 @@ function harvestEvent(repo, graph, { item, last, role }, now) {
   if (last.outbox_digest && digest !== last.outbox_digest) {
     return {
       ...base,
+      ...asked,
       event: 'questioned',
       agent_id: last.agent_id,
       questions: `the outbox for task ${last.task_id} changed after the worker finished.`
@@ -477,7 +501,7 @@ function harvestEvent(repo, graph, { item, last, role }, now) {
     // told before they decided.
     if (verdict === 'reject' && teamRoleOf(graph, last.agent_id)?.team_id === graph.controller_team) {
       return {
-        ...base, event: 'questioned', agent_id: last.agent_id,
+        ...base, ...asked, event: 'questioned', agent_id: last.agent_id,
         categories: readCategories(text),
         questions: `the gate advises against building this: ${reason || 'no reason stated'}.`
           + ' Confirm to proceed anyway, or withdraw.',
@@ -488,7 +512,7 @@ function harvestEvent(repo, graph, { item, last, role }, now) {
     // still held, still counted against WIP — and only a person can move it.
     if (verdict === 'question') {
       return {
-        ...base, event: 'questioned', agent_id: last.agent_id,
+        ...base, ...asked, event: 'questioned', agent_id: last.agent_id,
         // Which of the six it could not resolve, so the same question can be
         // asked of a month of requests rather than of one.
         categories: readCategories(text),
@@ -545,7 +569,7 @@ function harvestEvent(repo, graph, { item, last, role }, now) {
     // for ever while every tick re-reads the same unusable outbox.
     if (!stated) {
       return {
-        ...base, event: 'questioned', agent_id: last.agent_id,
+        ...base, ...asked, event: 'questioned', agent_id: last.agent_id,
         questions: `the audit answered with something this seat cannot use.`
           + ` It reads: ${[...AUDIT_VERDICTS].join(' or ')}. Say which, or withdraw the work.`,
         reason: 'the audit stated no verdict this seat can use',
@@ -561,7 +585,7 @@ function harvestEvent(repo, graph, { item, last, role }, now) {
     // the person instead: the controller has already failed to answer once.
     if (!stated) {
       return {
-        ...base, event: 'questioned', agent_id: last.agent_id,
+        ...base, ...asked, event: 'questioned', agent_id: last.agent_id,
         questions: `the controller answered with something this seat cannot use.`
           + ` It reads: ${[...OUTER_VERDICTS].join(' or ')}. Say which, or withdraw the work.`,
         reason: 'the controller stated no verdict this seat can use',

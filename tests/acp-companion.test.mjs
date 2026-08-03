@@ -2147,8 +2147,24 @@ test('cancellation paths close stdin and reap their detached process groups', { 
 // unexplained item — it was never a flake and never a helper timeout.
 //
 // The tests below that WANT the grace to expire set their own small value and
-// are left alone: their mock never exits on its own, so expiry always wins and
-// no amount of load can invert them.
+// are left alone: their mock never voluntarily settles the ACP protocol
+// before the signal arrives, so the 20ms cancellation-grace premise always
+// wins and no amount of load can invert it.
+//
+// That claim used to continue "...so no amount of load can invert them" for
+// the whole outcome, which was false. Two of those tests exercise the forced
+// SIGTERM path, and forced termination races a SEPARATE 100ms TERM->KILL
+// grace (production: acp-companion.mjs's processKillTimer) against the
+// companion's own event loop noticing the child settled. Under staged CPU
+// pressure that race inverted once for the SIGTERM-handler case: the SIGKILL
+// timer fired before the companion had processed the child's own exit(0),
+// so the recorded evidence read `child_signal: SIGKILL` where the test names
+// `child_signal: none`. The 20ms cancellation grace was never the fragile
+// part; the separate 100ms escalation ceiling was. Widened below for the
+// same "ceiling, not delay" reason as CLEAN_EXIT_CANCEL_GRACE_MS: both mocks
+// settle within single-digit milliseconds of receiving the signal on any
+// machine, so a 5000ms ceiling costs a quiet run nothing and is never reached.
+const FORCED_TERM_KILL_GRACE_MS = '5000'
 const CLEAN_EXIT_CANCEL_GRACE_MS = '5000'
 
 concurrentTest('clean child exit 0 before cancellation grace is cancelled, not forced', async () => {
@@ -2201,7 +2217,7 @@ concurrentTest('default SIGTERM termination is stalled and records delivered for
   const r = await asyncRun(taskId, {
     MOCK_SCENARIO: 'cancel-no-ack',
     ACP_CANCEL_GRACE_MS: '20',
-    ACP_PROCESS_KILL_GRACE_MS: '100',
+    ACP_PROCESS_KILL_GRACE_MS: FORCED_TERM_KILL_GRACE_MS,
   }, undefined, 0.5)
   assert.equal(r.status, 1, `exit 1 expected; stderr:\n${r.stderr}`)
   const state = snapshot(r.cwd, taskId)
@@ -2221,7 +2237,7 @@ concurrentTest('SIGTERM handler exit 0 remains stalled because the companion del
   const r = await asyncRun(taskId, {
     MOCK_SCENARIO: 'cancel-sigterm-exit-zero',
     ACP_CANCEL_GRACE_MS: '20',
-    ACP_PROCESS_KILL_GRACE_MS: '100',
+    ACP_PROCESS_KILL_GRACE_MS: FORCED_TERM_KILL_GRACE_MS,
   }, undefined, 0.5)
   assert.equal(r.status, 1, `exit 1 expected; stderr:\n${r.stderr}`)
   const state = snapshot(r.cwd, taskId)
@@ -2231,6 +2247,33 @@ concurrentTest('SIGTERM handler exit 0 remains stalled because the companion del
   assert.match(event, /^terminal: stalled$/m)
   assert.match(event, /^child_exit_code: 0$/m)
   assert.match(event, /^child_signal: none$/m)
+  assert.match(event, /^termination_delivered: true$/m)
+  assert.match(event, /^child_settlement_signal_delivered: true$/m)
+  assert.match(event, /^descendant_cleanup_signal_delivered: false$/m)
+})
+
+// Regression guard for the reproduced TERM->KILL inversion: stands in for
+// scheduler contention with a bounded, deterministic handler delay instead of
+// staged CPU pressure. 250ms exceeds the OLD 100ms escalation ceiling (would
+// have inverted to SIGKILL) but is well inside FORCED_TERM_KILL_GRACE_MS, so
+// this only proves something if the widened grace is actually in effect.
+concurrentTest('SIGTERM handler that is slow to exit still settles clean under the widened kill grace', async () => {
+  const taskId = 'task-cancel-sigterm-slow-exit'
+  const r = await asyncRun(taskId, {
+    MOCK_SCENARIO: 'cancel-sigterm-exit-zero',
+    MOCK_SIGTERM_EXIT_DELAY_MS: '250',
+    ACP_CANCEL_GRACE_MS: '20',
+    ACP_PROCESS_KILL_GRACE_MS: FORCED_TERM_KILL_GRACE_MS,
+  }, undefined, 0.5)
+  assert.equal(r.status, 1, `exit 1 expected; stderr:\n${r.stderr}`)
+  const state = snapshot(r.cwd, taskId)
+  assert.equal(state.liveness_state, 'stalled')
+  assert.deepEqual(state.active_tools, [])
+  const event = eventTexts(r.cwd)[0]
+  assert.match(event, /^terminal: stalled$/m)
+  assert.match(event, /^child_exit_code: 0$/m)
+  assert.match(event, /^child_signal: none$/m)
+  assert.match(event, /^kill_delivered: false$/m)
   assert.match(event, /^termination_delivered: true$/m)
   assert.match(event, /^child_settlement_signal_delivered: true$/m)
   assert.match(event, /^descendant_cleanup_signal_delivered: false$/m)

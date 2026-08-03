@@ -20,14 +20,18 @@ let permissionDecision = ''
 let pendingPermissionPrompt = null
 const PERMISSION_REQUEST_ID = 'mock-permission-request'
 
-if (process.env.MOCK_SCENARIO === 'cancel-sigterm-exit-zero') {
-  process.on('SIGTERM', () => process.exit(0))
-}
-
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const envNumber = (name, fallback) => {
   const number = Number(process.env[name])
   return Number.isFinite(number) && number >= 0 ? number : fallback
+}
+
+// The delay defaults to 0 (unchanged handler-fires-immediately behavior).
+// A test can widen it to stand in for scheduler contention on the companion
+// side of the TERM->KILL race deterministically, instead of waiting for real
+// load to reproduce it. See acp-companion.test.mjs's FORCED_TERM_KILL_GRACE_MS.
+if (process.env.MOCK_SCENARIO === 'cancel-sigterm-exit-zero') {
+  process.on('SIGTERM', () => setTimeout(() => process.exit(0), envNumber('MOCK_SIGTERM_EXIT_DELAY_MS', 0)))
 }
 
 function notify(update, sessionId = currentSessionId) {

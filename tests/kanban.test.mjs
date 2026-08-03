@@ -17,7 +17,7 @@ import { EVENT_SPEC, LEDGER_EVENTS } from '../plugins/tmux-teams/skills/tmux-tea
 import { readWorkItems, teamOccupancy } from '../plugins/tmux-teams/skills/tmux-teams/scripts/dispatch-facts.mjs'
 import { gateHistory } from './fixture-gate.mjs'
 import { validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
-import { duration } from '../plugins/tmux-teams/skills/tmux-teams/scripts/graph.mjs'
+import { clip, duration } from '../plugins/tmux-teams/skills/tmux-teams/scripts/graph.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const KANBAN = join(ROOT, 'plugins/tmux-teams/skills/tmux-teams/scripts/kanban.mjs')
@@ -63,7 +63,10 @@ const fill = (entry) => {
     case 'escalated':
     case 'audit_requested':
       return { task_id: 'controller-task', reason: 'stated by the agent', ...entry }
+    // ADR 0002: `opened.actor` is who decided, always a person — its own
+    // default, not the agent-written group below.
     case 'opened':
+      return { reason: 'stated by the agent', actor: 'human:someone', ...entry }
     case 'intake':
     case 'lost':
     case 'resumed':
@@ -128,8 +131,11 @@ test('AC1 a token pulled into a team is a card in that column and nowhere else',
   const html = pageOf(dir)
   const columns = columnsOf(html)
   assert.equal(columns.get('Test').cards, 1)
-  assert.match(columns.get('Test').html, /<b class="tok">tok1<\/b>/)
-  assert.equal((html.match(/<b class="tok">tok1<\/b>/g) || []).length, 1, 'tok1 is drawn once')
+  // `[^>]*` tolerates the `id` the token element also carries (it anchors the
+  // card's `aria-labelledby`) without caring what that id is — this test is
+  // about placement, not about the accessible-name plumbing.
+  assert.match(columns.get('Test').html, /<b class="tok"[^>]*>tok1<\/b>/)
+  assert.equal((html.match(/<b class="tok"[^>]*>tok1<\/b>/g) || []).length, 1, 'tok1 is drawn once')
   for (const name of ['Design', 'Build', 'Visual', 'Done']) assert.equal(columns.get(name).cards, 0, name)
 })
 
@@ -176,23 +182,90 @@ test('every token is on the board exactly once', () => {
 })
 
 test('the two facts that used to be hover-only are on the card, and no title hides them again', () => {
-  // 72 characters: legal under the ledger's 128-character id, and past the
-  // 60-character clip the card used to apply to the thing that identifies it.
-  const token = `story-${'x'.repeat(60)}-tail`
-  assert.equal(token.length, 71)
+  // 128 characters: the ledger's own maximum id length (contract §4 ID_RE
+  // allows at most 128, not more). A shorter fixture cannot prove the card
+  // does not clip early — a bug that lowered the clip limit below 128 would
+  // still leave a 71-character fixture untouched and the test green.
+  const token = `story-${'x'.repeat(128 - 'story-'.length - '-tail'.length)}-tail`
+  assert.equal(token.length, 128)
   const dir = repoWith(FOUR_TEAMS, {
     [token]: [{ at: '2026-07-27T09:12:04.000Z', event: 'assigned', agent_id: 'build_w1', task_id: 't-1' }],
   })
   const html = pageOf(dir)
   // The identity first: a truncated token id cannot be pasted into a ledger
-  // lookup, which is the one thing a reader leaves this board to do.
-  assert.match(html, new RegExp(`<b class="tok">${token}</b>`))
-  // Then the stamp, machine-readable at the precision the ledger recorded and
-  // human-readable to the minute.
+  // lookup, which is the one thing a reader leaves this board to do. `[^>]*`
+  // tolerates the token element's own `id` (it anchors the card's
+  // `aria-labelledby`) without caring what that id is.
+  assert.match(html, new RegExp(`<b class="tok"[^>]*>${token}</b>`))
+  // clip() itself: the card's use of it is only correct if the function it
+  // calls truncates past the limit and leaves anything at or under it whole.
+  assert.equal(clip('y'.repeat(200), 128), `${'y'.repeat(127)}…`)
+  assert.equal(clip('y'.repeat(128), 128), 'y'.repeat(128))
+  // Then the stamp, machine-readable at the precision HTML's own microsyntax
+  // accepts and human-readable to the minute.
   assert.match(html, /<time class="at" datetime="2026-07-27T09:12:04\.000Z">2026-07-27 09:12 UTC<\/time>/)
-  // A `title` on the card would override the accessible name, so a screen reader
-  // would announce the summary INSTEAD of the card it summarises.
-  assert.doesNotMatch(html.slice(html.indexOf('<article class="card')), /<article class="card[^>]*title=/)
+  // A `title` anywhere on the article would override its accessible name, so a
+  // screen reader would announce the summary INSTEAD of the card it
+  // summarises. Matched attribute-order-independently — this fixture has
+  // exactly one card, so the first `<article>` tag on the page is the one
+  // under test — because a `title` written before `class` is exactly the
+  // regression the old `/<article class="card[^>]*title=/` regex missed: it
+  // only ever looked for `title=` after `class` had already matched.
+  const articleOpenTag = html.match(/<article\b[^>]*>/)[0]
+  assert.doesNotMatch(articleOpenTag, /\btitle="/)
+})
+
+// F8: `Date.parse` (and therefore the old `absoluteAt`) silently rolls a
+// calendar-impossible stamp into the next real instant instead of refusing
+// it. Each of these is a shape the old regex-plus-Date.parse validator in
+// ledger-validate.mjs also accepts, so the corrupt value reaches the board
+// exactly as written, not caught upstream.
+test('F8 a calendar-impossible timestamp is shown as malformed, not silently rolled forward', () => {
+  for (const bad of [
+    // 2026 is not a leap year — Date.parse silently becomes 2026-03-01.
+    '2026-02-29T09:12:04.000Z',
+    // Hour 24 silently becomes the next day at 00:00.
+    '2026-07-27T24:00:00.000Z',
+    // Not a timestamp at all, but Date.parse accepts short numeric strings.
+    '0',
+  ]) {
+    const dir = repoWith(FOUR_TEAMS, {
+      bad: [{ at: bad, event: 'assigned', agent_id: 'build_w1', task_id: 't-1' }],
+    }, { bad: { expectInvalid: true, why: 'the malformed stamp IS the subject' } })
+    const html = pageOf(dir)
+    assert.match(html, new RegExp(`Malformed timestamp: "${bad}"`), bad)
+    // No plausible-looking rolled-forward instant anywhere on the page.
+    assert.doesNotMatch(html, /<time class="at"/, bad)
+  }
+})
+
+test('F8 a ledger stamp finer than millisecond precision still renders a valid HTML datetime', () => {
+  const dir = repoWith(FOUR_TEAMS, {
+    fine: [{ at: '2026-07-27T09:12:04.123456789Z', event: 'assigned', agent_id: 'build_w1', task_id: 't-1' }],
+  })
+  const html = pageOf(dir)
+  // HTML's global date and time microsyntax accepts at most three fraction
+  // digits. Truncated, not rounded or rejected — the ledger's own field still
+  // carries the full value, this is only the machine-readable copy.
+  assert.match(html, /<time class="at" datetime="2026-07-27T09:12:04\.123Z">2026-07-27 09:12 UTC<\/time>/)
+})
+
+// F9: an article with no authored name is unreadable in a screen reader's
+// article list without opening each one, and the literal last event word —
+// as opposed to `state`'s paraphrase of it — was left nowhere visible.
+test('F9 a card names itself for a screen reader and shows the raw last event', () => {
+  const dir = repoWith(FOUR_TEAMS, {
+    tok1: [{ at: '2026-07-27T09:00:00.000Z', event: 'assigned', agent_id: 'build_w1', task_id: 't-1' }],
+  })
+  const html = pageOf(dir)
+  const article = html.match(/<article\b[^>]*>/)[0]
+  const labelledBy = article.match(/aria-labelledby="([^"]+)"/)
+  assert.ok(labelledBy, 'article has no aria-labelledby')
+  // The id it points at must actually exist, on the element that carries the
+  // token — an aria-labelledby to nothing is worse than none, because it
+  // reads as intentional and is not.
+  assert.match(html, new RegExp(`<b class="tok" id="${labelledBy[1]}"`))
+  assert.match(html, /<span class="ev">last event: assigned<\/span>/)
 })
 
 // ── AC3 — finished work leaves the flow ─────────────────────────────────────
@@ -389,6 +462,14 @@ test('AC7 an unparseable timestamp prints unknown, never zero', () => {
   const board = readBoard(dir, NOW)
   assert.equal(board.columns.find((column) => column.team_id === 'build').cards[0].lead_sec, null)
   const html = pageOf(dir)
+  // The relative clock says so in words — "0s" and "not measured" are
+  // different facts, and a duration computed from an unparseable stamp would
+  // silently be the first when it means the second.
+  assert.match(html, /unknown here · unknown lead/)
+  // The absolute stamp must say the evidence is corrupt, not manufacture a
+  // plausible-looking instant the way a bare `Date.parse` would have.
+  assert.match(html, /Malformed timestamp: "not-a-date"/)
+  assert.doesNotMatch(html, /<time class="at"/)
 })
 
 test('AC7 a snapshot with no usable clock leaves every column time unknown', () => {

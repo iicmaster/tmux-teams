@@ -261,6 +261,73 @@ test('nothing at all may follow abandoned', () => {
   assert.deepEqual(codes(result), ['event_after_terminal'])
 })
 
+// ---------------------------------------------------------------------------
+// F4 — a post-completion human question, bound and consumed
+// ---------------------------------------------------------------------------
+
+// The route from FULL_ROUTE up to `completed`, plus one audit request — the
+// point every case below asks a question from.
+const POST_COMPLETION = jsonl(
+  { at: '2026-07-27T10:30:03.000Z', event: 'completed', work_item: 'tok', workflow: 'feature', from_team: 'build' },
+  { at: '2026-07-27T11:00:00.000Z', event: 'audit_requested', work_item: 'tok', workflow: 'feature', agent_id: 'pm', task_id: 'a1', reason: 'route finished' },
+)
+
+test('an expired post-completion question closes as abandoned, not as an impossible history', () => {
+  // The exact fixture the review found `appendEvent` refusing: the runner's
+  // OWN withdrawal notice for an unread audit question could not be written.
+  const result = validateLedger([...POST_COMPLETION,
+    JSON.stringify({ at: '2026-07-27T11:05:00.000Z', event: 'questioned', work_item: 'tok', workflow: 'feature', agent_id: 'pm', questions: 'accept or concern?', reason: 'the audit stated no verdict this seat can use', question_id: 'q-tok-1' }),
+    JSON.stringify({ at: '2026-07-27T11:20:00.000Z', event: 'abandoned', work_item: 'tok', workflow: 'feature', reason: 'no answer in 15 minutes' }),
+  ])
+  assert.deepEqual(result.problems, [], JSON.stringify(result.problems))
+  assert.equal(result.ok, true)
+})
+
+test('audited and abandoned are genuinely final — nothing reopens the audit after either', () => {
+  const reaudited = validateLedger([...POST_COMPLETION,
+    JSON.stringify({ at: '2026-07-27T11:10:00.000Z', event: 'audited', work_item: 'tok', workflow: 'feature', agent_id: 'pm', verdict: 'accept', reason: 'fine' }),
+    JSON.stringify({ at: '2026-07-27T11:20:00.000Z', event: 'audit_requested', work_item: 'tok', workflow: 'feature', agent_id: 'pm', task_id: 'a2', reason: 'read it again' }),
+  ])
+  assert.deepEqual(codes(reaudited), ['event_after_terminal'])
+
+  const reabandoned = validateLedger([...POST_COMPLETION,
+    JSON.stringify({ at: '2026-07-27T11:10:00.000Z', event: 'abandoned', work_item: 'tok', workflow: 'feature', reason: 'give up' }),
+    JSON.stringify({ at: '2026-07-27T11:20:00.000Z', event: 'audit_requested', work_item: 'tok', workflow: 'feature', agent_id: 'pm', task_id: 'a2', reason: 'read it again' }),
+  ])
+  assert.deepEqual(codes(reabandoned), ['event_after_terminal'])
+})
+
+test('a questioned event names the question it is; an answer must not be silently unbound', () => {
+  const missingId = validateLedger([...POST_COMPLETION,
+    JSON.stringify({ at: '2026-07-27T11:05:00.000Z', event: 'questioned', work_item: 'tok', workflow: 'feature', agent_id: 'pm', questions: 'accept or concern?', reason: 'unstated verdict' }),
+  ])
+  assert.deepEqual(codes(missingId), ['missing_field'])
+})
+
+test('an answer bound to the wrong question_id does not close the one actually open', () => {
+  const mismatched = validateLedger([...POST_COMPLETION,
+    JSON.stringify({ at: '2026-07-27T11:05:00.000Z', event: 'questioned', work_item: 'tok', workflow: 'feature', agent_id: 'pm', questions: 'accept or concern?', reason: 'unstated verdict', question_id: 'q-tok-1' }),
+    JSON.stringify({ at: '2026-07-27T11:10:00.000Z', event: 'answered', work_item: 'tok', workflow: 'feature', to_team: 'control', reason: 'concern — AC7 missing', question_id: 'q-tok-0', actor: 'human:ada' }),
+  ])
+  assert.deepEqual(codes(mismatched), ['question_id_mismatch'])
+
+  // The matching id is legal, or the check is a wall rather than a binding.
+  const matched = validateLedger([...POST_COMPLETION,
+    JSON.stringify({ at: '2026-07-27T11:05:00.000Z', event: 'questioned', work_item: 'tok', workflow: 'feature', agent_id: 'pm', questions: 'accept or concern?', reason: 'unstated verdict', question_id: 'q-tok-1' }),
+    JSON.stringify({ at: '2026-07-27T11:10:00.000Z', event: 'answered', work_item: 'tok', workflow: 'feature', to_team: 'control', reason: 'concern — AC7 missing', question_id: 'q-tok-1', actor: 'human:ada' }),
+  ])
+  assert.deepEqual(matched.problems, [], JSON.stringify(matched.problems))
+})
+
+test('answered consumes the question — a second one with nothing new asked is answering nothing', () => {
+  const doubled = validateLedger([...POST_COMPLETION,
+    JSON.stringify({ at: '2026-07-27T11:05:00.000Z', event: 'questioned', work_item: 'tok', workflow: 'feature', agent_id: 'pm', questions: 'accept or concern?', reason: 'unstated verdict', question_id: 'q-tok-1' }),
+    JSON.stringify({ at: '2026-07-27T11:10:00.000Z', event: 'answered', work_item: 'tok', workflow: 'feature', to_team: 'control', reason: 'concern', question_id: 'q-tok-1', actor: 'human:ada' }),
+    JSON.stringify({ at: '2026-07-27T11:15:00.000Z', event: 'answered', work_item: 'tok', workflow: 'feature', to_team: 'control', reason: 'still concern', question_id: 'q-tok-1', actor: 'human:ada' }),
+  ])
+  assert.deepEqual(codes(doubled), ['answered_without_question'])
+})
+
 test('every problem is reported, not just the first', () => {
   const result = validateLedger(jsonl(
     { at: 'yesterday', event: 'returned', work_item: 'tok', agent_id: 'bd', refused_by: 'bd' },
@@ -619,7 +686,10 @@ test('each verdict-bearing event refuses a word outside its own vocabulary', () 
 
 const opened = (extra = {}) => ({
   at: '2026-07-27T10:00:00.000Z', event: 'opened', work_item: 'tok', workflow: 'feature',
-  agent_id: 'design_dispatcher', to_team: 'design', reason: 'opened from the quick-spec', ...extra,
+  agent_id: 'design_dispatcher', to_team: 'design', reason: 'opened from the quick-spec',
+  // ADR 0002: a person decided, so the default fixture states one. Tests
+  // about the actor rule itself override this explicitly.
+  actor: 'human:someone', ...extra,
 })
 const assignedAt = (at) => ({
   at, event: 'assigned', work_item: 'tok', workflow: 'feature',
@@ -638,6 +708,30 @@ test('`opened` names where work arrived and why, and must not name a sender', ()
   // The entire reason this event exists is that there is no sending team. One
   // that names a sender is a `pulled` wearing the wrong word.
   assert.deepEqual(codes(validateLedger(jsonl(opened({ from_team: 'design' })))), ['forbidden_field'])
+})
+
+// ── ADR 0002 — `opened.actor` is who DECIDED, and that is always a person ──
+
+test('opened must be written by a human actor, even when the caller is an agent', () => {
+  const agentActor = validateLedger(jsonl(opened({ actor: 'agent:reopen-controller' })))
+  assert.deepEqual(codes(agentActor), ['not_a_human_answer'])
+
+  const noActor = validateLedger(jsonl(opened({ actor: undefined })))
+  assert.deepEqual(codes(noActor), ['not_a_human_answer'])
+
+  // The legal shape still passes, or the rule is a wall rather than a check.
+  const humanActor = validateLedger(jsonl(opened({ actor: 'human:ada' })))
+  assert.deepEqual(codes(humanActor), [])
+})
+
+test('opened records the relay separately from the decision, and only an agent may relay', () => {
+  const relayed = validateLedger(jsonl(
+    opened({ actor: 'human:ada', relayed_by: 'agent:operator' })))
+  assert.deepEqual(codes(relayed), [], 'a human decision relayed by a named agent is legal')
+
+  const forgedRelay = validateLedger(jsonl(
+    opened({ actor: 'human:ada', relayed_by: 'human:someone-else' })))
+  assert.deepEqual(codes(forgedRelay), ['bad_relayed_by'], 'relayed_by is always an agent, never a second human')
 })
 
 test('a token enters the graph once, and only at the top of its history', () => {
@@ -705,10 +799,13 @@ test('a dispatcher refusing at the door leaves that team free to pull the work l
 
 test('the sanctioned writer refuses the backwards line rather than reporting it afterwards', (t) => {
   const repo = scratch(t)
-  const write = (event) => appendEvent(repo, { work_item: 'tok', workflow: 'feature', ...event },
-    { actor: `agent:${event.agent_id ?? 'build_dispatcher'}` })
+  const write = (event, actor = `agent:${event.agent_id ?? 'build_dispatcher'}`) =>
+    appendEvent(repo, { work_item: 'tok', workflow: 'feature', ...event }, { actor })
 
-  assert.equal(write({ event: 'opened', agent_id: 'design_dispatcher', to_team: 'design', reason: 'new request' }).ok, true)
+  // ADR 0002: `opened` is a person's decision even though every other line in
+  // this fixture is agent-written — the default actor above is for the
+  // agent-written events that follow it.
+  assert.equal(write({ event: 'opened', agent_id: 'design_dispatcher', to_team: 'design', reason: 'new request' }, 'human:someone').ok, true)
   assert.equal(write({ event: 'intake', agent_id: 'design_dispatcher', verdict: 'accept', reason: 'buildable' }).ok, true)
   assert.equal(write({ event: 'pulled', agent_id: 'build_dispatcher', from_team: 'design', to_team: 'build' }).ok, true)
   assert.equal(write({ event: 'intake', agent_id: 'build_dispatcher', verdict: 'accept', reason: 'clear enough' }).ok, true)
