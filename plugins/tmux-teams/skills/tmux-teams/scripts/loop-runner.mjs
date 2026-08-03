@@ -758,7 +758,13 @@ function nextStep(graph, team, item, { busy, nowMs, zombieSec, answerDeadlineSec
     // starting: the leg is gone. Recording that is not the same as inventing a
     // delivery, and without it the token sits in the team's WIP forever.
     return {
+      // The dead leg's own identity, carried out with the verdict about it.
+      // `last` is the `assigned` that started it and §4 requires a dispatch_id
+      // there, so this is always available — it was simply never picked up, and
+      // a `lost` that cannot name its leg is the one outcome line dispatch-facts
+      // still has to fall back to agent_id for (dispatch-facts.mjs:129).
       action: 'lost', agent_id: last.agent_id, task_id: last.task_id || '',
+      dispatch_id: last.dispatch_id || null,
       reason: `${last.agent_id} has no live process and recorded nothing in ${Math.round(ageSec)}s`,
     }
   }
@@ -1233,7 +1239,8 @@ export function tick(repoArg, {
         record(repo, {
           at: new Date().toISOString(), event: 'lost', work_item: plan.work_item,
           workflow: items.get(plan.work_item).workflow || null,
-          agent_id: plan.agent_id, task_id: plan.task_id || null, reason: plan.reason,
+          agent_id: plan.agent_id, task_id: plan.task_id || null,
+          dispatch_id: plan.dispatch_id || null, reason: plan.reason,
         })
       }
       continue

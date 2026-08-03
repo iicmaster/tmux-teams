@@ -1383,6 +1383,18 @@ still holds the token. GitHub #30, from a real run: a killed review leg wrote it
 runner had assigned a dev worker, so the board drew it back in review and the
 runner dispatched a second review worker into a team the token had left.
 
+**2026-08-04 — the last outcome line that could not name its leg.** Behaviour
+changed in `loop-runner.mjs`: `nextStep`'s `lost` verdict now carries
+`dispatch_id` and the write in `tick` records it. Nothing in
+`dispatch-facts.mjs` changed — §6's rule already compares `dispatch_id`
+whenever both sides recorded one, so the reader took the new field without
+being taught it, which is the test of whether that rule was written properly.
+This retires the closing sentence of the entry below: `lost` is no longer
+written without a leg identity, and two legs by the same agent whose
+superseded one ended in `lost` are now told apart on any ledger written from
+here on. The agent_id fallback stays for `delivered`/`lost` and is what every
+ledger written before this still reads by — unchanged, and measured.
+
 **2026-08-03 — leg identity closes the review half of #30.** Behaviour changed
 in `dispatch-facts.mjs` (`currentEntry`, `LEG_OUTCOMES` now includes
 `reviewed`) and in `loop-runner.mjs` (`harvestEvent` stamps `dispatch_id` on

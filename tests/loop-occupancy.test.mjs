@@ -830,6 +830,10 @@ test('a lost leg is recorded, not left occupying its team forever', () => {
   const plan = planDispatches(graph, items, new Set(), { now: Date.parse('2026-07-28T00:00:00Z') })[0]
   assert.equal(plan.action, 'lost')
   assert.equal(plan.agent_id, 't_w1')
+  // Which leg died, not only who was running it. agent_id cannot answer that
+  // once the same agent has been assigned twice, and this verdict is the only
+  // place the answer is still in scope.
+  assert.equal(plan.dispatch_id, 't-1-dispatch', 'the lost verdict did not name the leg it is about')
 
   // Inside the zombie window it is still simply in flight — a dispatch that
   // started moments ago must never be declared dead.
@@ -838,6 +842,57 @@ test('a lost leg is recorded, not left occupying its team forever', () => {
     { event: 'assigned', agent_id: 't_w1', task_id: 't-1' },
   ]]), new Set(), { now: Date.parse('2026-07-27T01:00:30Z') })
   assert.deepEqual(fresh.filter((entry) => entry.action === 'lost'), [])
+})
+
+test('the lost verdict reaches the ledger carrying the leg it is about', () => {
+  // The plan naming the leg is half of it. This is the half that matters: the
+  // value has to survive into the line on disk, because that line is what every
+  // later reader answers from. Asserting only the plan would leave the write
+  // free to drop it and the suite still green.
+  const dir = mkdtempSync(join(tmpdir(), 'loop-lost-write-'))
+  try {
+    const store = join(dir, '.tmux-teams')
+    mkdirSync(join(store, 'work-items'), { recursive: true })
+    mkdirSync(join(store, 'team-briefs'), { recursive: true })
+    writeFileSync(join(store, 'graph.json'), JSON.stringify(TWO_TEAMS))
+    writeFileSync(join(store, 'team-briefs', 'test.md'), '# standing brief\n')
+    writeFileSync(join(store, 'work-items', 'tok.jsonl'), itemsOf(['tok', [
+      { event: 'pulled', agent_id: 't_d', from_team: 'build', to_team: 'test' },
+      { event: 'intake', agent_id: 't_d', verdict: 'accept' },
+      { event: 'assigned', agent_id: 't_w1', task_id: 't-1', dispatch_id: 'd-1' },
+    ]]).get('tok').custody.map((entry) => JSON.stringify(entry)).join('\n') + '\n')
+    // Fresh enough that the runner trusts it, and empty so nobody reads as busy.
+    writeFileSync(join(store, 'pulse.json'), JSON.stringify({ generated_at: new Date().toISOString(), runs: [] }))
+
+    tick(dir, { apply: true, scratchDir: join(dir, 'scratch') })
+
+    const lines = readFileSync(join(store, 'work-items', 'tok.jsonl'), 'utf8').trim().split('\n')
+    const written = JSON.parse(lines[lines.length - 1])
+    assert.equal(written.event, 'lost')
+    assert.equal(written.agent_id, 't_w1')
+    assert.equal(written.dispatch_id, 'd-1', 'the lost line on disk cannot say which leg died')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('a lost leg reporting in after its own retry does not speak for the retry', () => {
+  // The last outcome line that could not name its leg. `delivered` and
+  // `reviewed` carry a dispatch_id, so a stale one from the same agent is
+  // already skipped; `lost` fell back to agent_id, which reads identical for
+  // both legs, so the dead one decided where the token was.
+  const custody = [
+    { at: '2026-07-27T09:00:00.000Z', event: 'assigned', agent_id: 'b_w1', task_id: 'b-1', dispatch_id: 'd-1' },
+    // Declared dead and handed straight back to the same worker.
+    { at: '2026-07-27T09:01:00.000Z', event: 'assigned', agent_id: 'b_w1', task_id: 'b-2', dispatch_id: 'd-2' },
+    { at: '2026-07-27T09:02:00.000Z', event: 'lost', agent_id: 'b_w1', task_id: 'b-1', dispatch_id: 'd-1', reason: 'no live process and nothing recorded' },
+  ]
+  assert.equal(currentEntry(custody).task_id, 'b-2', 'the stale lost was read as where the token is')
+  assert.equal(currentEntry(custody).event, 'assigned', 'the live leg is still assigned, not lost')
+
+  // The fallback is what every ledger written before this change relies on, and
+  // it still answers exactly as it did: no dispatch_id anywhere, same agent, so
+  // the lost line is the token's position and nothing pretends otherwise.
+  const unlabeled = custody.map(({ dispatch_id, ...entry }) => entry)
+  assert.equal(currentEntry(unlabeled).event, 'lost', 'an old ledger stopped reading the way it always did')
 })
 
 test('the board as a whole has a dispatch ceiling, not only each team', () => {
