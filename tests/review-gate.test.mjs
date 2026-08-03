@@ -239,10 +239,31 @@ test('malformed JSON-RPC, malformed review, and timeout never become accepted re
   await assert.rejects(invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'url-secret-review' }), e => e.code === 'review')
   await assert.rejects(invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'response-then-invalid' }), e => e.code === 'protocol')
   await assert.rejects(invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'response-then-exit-7' }), e => e.code === 'closed')
-  await assert.rejects(runAcpReview({ profile: profile('oc'), lane: 'oc', packet: packet(), timeoutMs: 25, env: { MOCK_REVIEW_BEHAVIOUR: 'late' } }), e => e.code === 'timeout')
+  await assert.rejects(runAcpReview({ profile: profile('oc'), lane: 'oc', packet: packet(), timeoutMs: 25, env: { MOCK_REVIEW_BEHAVIOUR: 'late' } }), e => e.code === 'timeout' && /lane silent for/.test(e.message))
 })
 
-test('null timeout disables elapsed cancellation and emits correlated ACP progress', async () => {
+test('lane timeout is an inactivity lease: chatty lanes survive, silent lanes are killed as silent', async () => {
+  // (a) The chatty lane drips ~45 chunks at 30ms intervals — roughly 1.4s of
+  // wall clock, comfortably past the 1000ms lease — yet every chunk arrives
+  // far inside the lease, so a busy lane must never be killed. The margins
+  // survive heavy parallel test load where child timers stretch.
+  const out = await runAcpReview({
+    profile: profile('oc'),
+    lane: 'oc',
+    packet: packet(),
+    timeoutMs: 1_000,
+    env: { MOCK_REVIEW_BEHAVIOUR: 'chatty', MOCK_REVIEW_MODEL: 'oc-review-model' },
+  })
+  assert.equal(out.review.verdict, 'PASS')
+  // (b) A lane that goes silent past the lease is cancelled, and the failure
+  // is reported as silence rather than an absolute elapsed-time timeout.
+  await assert.rejects(
+    runAcpReview({ profile: profile('oc'), lane: 'oc', packet: packet(), timeoutMs: 100, env: { MOCK_REVIEW_BEHAVIOUR: 'hang' } }),
+    e => e.code === 'timeout' && /lane silent for/.test(e.message),
+  )
+})
+
+test('null timeout disables the inactivity lease and emits correlated ACP progress', async () => {
   const progress = []
   const out = await runAcpReview({
     profile: profile('oc'),
@@ -954,14 +975,16 @@ test('a blocked gate emits a distinguishable per-lane diagnostic, never a zero-b
   assert.equal(laneOf(injected, 'kimi').stage, 'transport')
 })
 
-test('a lane gets minutes, not a ping budget, and the ceiling is raised deliberately', () => {
-  // The client default was 240s, sized for a ping. A real completion packet —
-  // fifteen files — took the kimi lane past it, and a lane killed for being
-  // slow is indistinguishable in the report from a lane that is broken. The
-  // ceiling stays a ceiling: one number, bounded, raised on purpose.
+test('the lane timeout is an inactivity lease, sized deliberately and overridable', () => {
+  // The lease is not a wall-clock cap: any ACP session traffic from the lane
+  // restarts it (see acp-review-client.mjs), so it bounds how long a SILENT
+  // lane may linger, never how long a working review may take. The old 240s
+  // elapsed default was sized for a ping and timed out real fifteen-file
+  // packets; the lease is sized like the worker stall-lease instead. One
+  // number, bounded, raised on purpose.
   assert.equal(laneTimeoutMs({}), LANE_TIMEOUT_DEFAULT_MS)
-  assert.equal(LANE_TIMEOUT_DEFAULT_MS, 900_000)
-  assert.equal(laneTimeoutMs({ REVIEW_GATE_LANE_TIMEOUT_SEC: '1800' }), 1_800_000)
+  assert.equal(LANE_TIMEOUT_DEFAULT_MS, 1_800_000)
+  assert.equal(laneTimeoutMs({ REVIEW_GATE_LANE_TIMEOUT_SEC: '2400' }), 2_400_000)
 
   // Anything that is not a positive whole number of seconds falls back to the
   // default rather than becoming one: `0` would mean no time at all, and NaN

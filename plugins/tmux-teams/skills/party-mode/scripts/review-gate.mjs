@@ -310,13 +310,16 @@ export async function runReviewGate(packet, {
   return report
 }
 
-// A ping fits in four minutes; a real completion packet does not. The client's
-// 240s default timed out substantive reviews — a fifteen-file packet took the
-// kimi lane past it — and a lane killed for being slow is indistinguishable in
-// the report from a lane that is broken. The ceiling is still a ceiling: it is
-// bounded, it is one number, and an operator with a slower provider raises it
-// deliberately rather than discovering it.
-export const LANE_TIMEOUT_DEFAULT_MS = 900_000
+// REVIEW_GATE_LANE_TIMEOUT_SEC is an inactivity lease in seconds — how long a
+// review lane may stay silent before it is cancelled. It is NOT a wall-clock
+// limit: any ACP session traffic from the lane (message chunks, tool updates,
+// any response or notification) restarts the lease in acp-review-client.mjs,
+// so a lane that keeps working is never killed no matter how long the review
+// takes — the old 240s elapsed default timed out real fifteen-file packets —
+// and only a lane that stays silent for the whole lease is cancelled. Sized
+// like the worker stall-lease (1800s); an operator with a slower provider
+// raises it deliberately rather than discovering it.
+export const LANE_TIMEOUT_DEFAULT_MS = 1_800_000
 export function laneTimeoutMs(source = process.env) {
   const sec = Number(source.REVIEW_GATE_LANE_TIMEOUT_SEC)
   return Number.isSafeInteger(sec) && sec > 0 ? sec * 1000 : LANE_TIMEOUT_DEFAULT_MS

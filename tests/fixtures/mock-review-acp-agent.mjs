@@ -263,6 +263,23 @@ rl.on('line', raw => {
         send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'other-session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '{"wrong":true}' } } } })
         return
       }
+      if (behaviour === 'chatty') {
+        // Steady session traffic that outlasts any short absolute wall-clock
+        // timeout: the review text drips out in small chunks before the turn
+        // completes, so an inactivity lease keeps restarting while a plain
+        // elapsed timer would have killed the lane mid-review.
+        const pieces = review().match(/[\s\S]{1,8}/g) ?? ['']
+        let index = 0
+        const timer = setInterval(() => {
+          if (index < pieces.length) {
+            update({ sessionUpdate: 'agent_message_chunk', messageId: 'only-current-turn', content: { type: 'text', text: pieces[index++] } })
+            return
+          }
+          clearInterval(timer)
+          reply(m.id, { stopReason: 'end_turn' })
+        }, 30)
+        return
+      }
       if (behaviour === 'hang' || behaviour === 'late') {
         if (behaviour === 'late') setTimeout(() => finish(m.id), 120)
         return

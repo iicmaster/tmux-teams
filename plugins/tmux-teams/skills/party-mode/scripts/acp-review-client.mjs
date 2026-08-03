@@ -492,6 +492,13 @@ async function prepareSandboxResolver(stateRoot) {
  * Execute exactly one ACP review turn. `command` and `args` must already be an
  * argv split; no shell is ever involved.  The returned provenance is generated
  * here and is never accepted from model output.
+ *
+ * `timeoutMs` is an inactivity lease, not a wall-clock limit: the lease
+ * restarts whenever the lane sends any ACP session traffic (message chunks,
+ * tool updates, responses — anything handled from the child), so a lane that
+ * keeps working is never killed no matter how long the review takes. Only a
+ * lane that stays silent for the whole lease is cancelled. `timeoutMs = null`
+ * disables the lease entirely.
  */
 export async function runAcpReview({
   lane,
@@ -554,6 +561,8 @@ export async function runAcpReview({
   let timeoutId
   let terminateTimer
   let killTimer
+  // Re-armed by the inactivity lease below whenever the lane sends ACP traffic.
+  let bumpActivity = () => {}
   let processClosed = false
   let processExited = false
   let closeStatus
@@ -735,6 +744,10 @@ export async function runAcpReview({
     }
     const handle = raw => {
       if (settled || !raw.trim()) return
+      // Every ACP message from the lane — responses, permission requests, or
+      // session/update notifications — is proof of life: restart the
+      // inactivity lease so only genuinely silent lanes are ever cancelled.
+      bumpActivity()
       if (byteLen(raw) > limits.lineBytes) return protocolError('ACP stdout line exceeds limit')
       let msg
       try { msg = JSON.parse(raw) } catch { return protocolError('malformed ACP JSON-RPC message') }
@@ -858,10 +871,14 @@ export async function runAcpReview({
     }
     agent.once('error', e => rejectPending(new ReviewTransportError('spawn', `ACP agent error: ${e.message}`, e)))
 
+    // Inactivity lease, not a wall-clock cap: bumpActivity() (called from
+    // handle() on every ACP message the lane sends) reschedules this timer,
+    // so the lane is cancelled only when it produces no session traffic for
+    // a full timeoutMs window. A busy lane can run indefinitely.
     const timeout = timeoutMs === null
       ? new Promise(() => {})
       : new Promise((_, reject) => {
-          timeoutId = setTimeout(() => {
+          const fireSilenceTimeout = () => {
             if (settled) return
             timedOut = true
             // One best-effort cancellation; intentionally never waits for a reply.
@@ -875,7 +892,7 @@ export async function runAcpReview({
             }
             const error = new ReviewTransportError(
               'timeout',
-              `ACP review timed out after ${timeoutMs}ms`,
+              `ACP review lane silent for ${Math.round(timeoutMs / 1000)}s (no ACP session traffic for ${timeoutMs}ms)`,
             )
             rejectPending(error)
             terminateTimer = setTimeout(() => kill('SIGTERM'), 10)
@@ -883,7 +900,13 @@ export async function runAcpReview({
             killTimer = setTimeout(() => kill('SIGKILL'), 500)
             killTimer.unref()
             reject(error)
-          }, timeoutMs)
+          }
+          timeoutId = setTimeout(fireSilenceTimeout, timeoutMs)
+          bumpActivity = () => {
+            if (settled || timedOut) return
+            clearTimeout(timeoutId)
+            timeoutId = setTimeout(fireSilenceTimeout, timeoutMs)
+          }
         })
 
     const work = (async () => {
