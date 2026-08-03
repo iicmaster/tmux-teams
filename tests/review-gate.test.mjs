@@ -846,3 +846,109 @@ test('profile environment is explicit, not inherited into the review agent', asy
   if (previous === undefined) delete process.env.SUPER_SECRET
   else process.env.SUPER_SECRET = previous
 })
+
+test('a blocked gate emits a distinguishable per-lane diagnostic, never a zero-byte report', async () => {
+  const profiles = keyedProfiles([
+    gateProfile('kimi', 'kimi'), gateProfile('zai', 'zai'),
+    gateProfile('agy', 'gemini'), gateProfile('codex', 'openai'),
+  ])
+  const plan = testPlan(['kimi', 'zai', 'agy'], 'codex')
+  const blockedGate = options => runReviewGate(packet(), {
+    profiles,
+    buildProfileEnv: () => ({}),
+    planReviewPanel: () => plan,
+    planFallback: () => ({ blocked: true, reason: 'reserve already used' }),
+    runAcpReview: async ({ profile: selected }) => runnerResult(selected, packet()),
+    validateReview: () => true,
+    synthesizeReviews: () => ({ verdict: 'PASS' }),
+    ...options,
+  }).then(() => null, error => error)
+  const laneThrows = (lane, code, digest) => ({
+    runAcpReview: async ({ profile: selected }) => {
+      if (selected.id !== lane) return runnerResult(selected, packet())
+      const error = new ReviewTransportError(code, `${lane} ${code}`)
+      error.stderrDigest = digest
+      error.stderrBytes = 128
+      throw error
+    },
+  })
+  const laneOf = (error, id) => error.report.attempts.find(item => item.profile === id)
+
+  // The operator symptom, reproduced: four structurally different kimi failures
+  // reached stderr as one sentence and left a zero-byte report file.
+  const serialized = []
+  for (const [code, digest] of [
+    ['closed', 'a'.repeat(64)], ['closed', 'b'.repeat(64)],
+    ['timeout', 'c'.repeat(64)], ['spawn', 'd'.repeat(64)],
+  ]) {
+    const error = await blockedGate(laneThrows('kimi', code, digest))
+    assert.match(error.message, /accepted 2/)
+    assert.ok(error.report, `${code} blocked the gate with no report`)
+    assert.equal(laneOf(error, 'kimi').status, 'failed')
+    assert.equal(laneOf(error, 'kimi').stage, code)
+    assert.equal(laneOf(error, 'kimi').stderrDigest, digest)
+    assert.deepEqual(error.report.substitution, {
+      used: false, replaced: 'kimi', replacement: null, remaining: 0, reason: 'reserve already used',
+    })
+    serialized.push(JSON.stringify(error.report))
+  }
+  assert.equal(new Set(serialized).size, 4, 'structurally different lane failures must not serialize identically')
+
+  // The two gate-local stages downstream of transport.
+  const badSchema = await blockedGate({
+    validateReview: (_review, context) => context.profile !== 'kimi' || { ok: false, reason: 'invalid verdict' },
+  })
+  assert.equal(laneOf(badSchema, 'kimi').stage, 'schema')
+  assert.equal(laneOf(badSchema, 'kimi').failure, 'invalid verdict')
+  const badEvidence = await blockedGate({
+    runAcpReview: async ({ profile: selected }) =>
+      runnerResult(selected, selected.id === 'kimi' ? { ...packet(), objective: 'other' } : packet()),
+  })
+  assert.equal(laneOf(badEvidence, 'kimi').stage, 'acknowledge')
+
+  // AGY has no reserve, so no substitution is possible on that blocker.
+  const agyBlocked = await blockedGate(laneThrows('agy', 'timeout', 'e'.repeat(64)))
+  assert.match(agyBlocked.message, /AGY review lane failed/)
+  assert.ok(agyBlocked.report, 'the AGY blocker emitted no report')
+  assert.equal(laneOf(agyBlocked, 'agy').stage, 'timeout')
+  assert.deepEqual(agyBlocked.report.substitution, {
+    used: false, replaced: null, replacement: null, remaining: 0, reason: 'AGY is mandatory and cannot be replaced',
+  })
+
+  // A reserve that launched and also failed: four lanes, two stages, none left.
+  const bothFailed = await blockedGate({
+    planFallback: () => ({ ...plan, reviewers: ['codex', 'zai', 'agy'], replaced: { failed: 'kimi', replacement: 'codex' }, usedReserve: true }),
+    runAcpReview: async ({ profile: selected }) => {
+      if (selected.id === 'kimi') throw new ReviewTransportError('timeout', 'kimi timeout')
+      if (selected.id === 'codex') throw new ReviewTransportError('spawn', 'codex spawn')
+      return runnerResult(selected, packet())
+    },
+  })
+  assert.deepEqual(bothFailed.report.attempts.map(item => [item.profile, item.status, item.stage]), [
+    ['kimi', 'failed', 'timeout'], ['zai', 'accepted', undefined],
+    ['agy', 'accepted', undefined], ['codex', 'failed', 'spawn'],
+  ])
+  assert.equal(laneOf(bothFailed, 'codex').replaces, 'kimi')
+  assert.deepEqual(bothFailed.report.substitution, {
+    used: true, replaced: 'kimi', replacement: 'codex', remaining: 0, reason: null,
+  })
+
+  // Nothing a runner or planner supplies reaches the report unbounded. This is
+  // the boundary SKILL.md states: the digest and the byte count cross it, the
+  // provider's own bytes never do.
+  const injected = await blockedGate({
+    planFallback: () => ({ blocked: true, reason: 'q'.repeat(4096) }),
+    runAcpReview: async ({ profile: selected }) => {
+      if (selected.id !== 'kimi') return runnerResult(selected, packet())
+      const error = new Error('down')
+      error.code = 'Z'.repeat(4096)
+      error.stderrDigest = 'provider said: sk-live-not-a-digest'
+      throw error
+    },
+  })
+  const text = JSON.stringify(injected.report)
+  assert.equal(text.includes('Z'.repeat(64)), false, 'an injected error code reached the report verbatim')
+  assert.equal(text.includes('q'.repeat(64)), false, 'an injected fallback reason reached the report verbatim')
+  assert.equal(text.includes('sk-live'), false, 'unbounded provider text reached the report')
+  assert.equal(laneOf(injected, 'kimi').stage, 'transport')
+})
