@@ -517,3 +517,24 @@ test('a live leg outweighs the dry crawl, so it crawls on every scene', () => {
   // by a second rule that nothing reaches.
   assert.match(live.selector, /:not\(\.quiet\)/)
 })
+
+test('the board can be shown at its own size, not only at whatever fits', () => {
+  // fit and 100% answer different questions: fit is "show me all of it" at
+  // whatever scale the scene needs, 100% is "show it to me at its own size" —
+  // the same scale on every scene and every board. Measured on a published
+  // page: fit gave a transform scale of 0.386 and this button gives exactly 1.
+  const html = renderTourChart(buildTour(CONTROLLED))
+  assert.match(html, /data-tour-actual[^>]*aria-label="Zoom to actual size"/)
+  assert.match(html, />100%</, 'the control has to say what it does')
+
+  // The label already renders fitted.k * user.k, so the reciprocal is what
+  // makes it read 100 — asserting the arithmetic, because a button wired to
+  // reset() would look identical in the markup and be a second fit.
+  // The BUTTON, not just the arithmetic. Wiring this control to reset() leaves
+  // the markup and the reciprocal both present and makes it a second fit —
+  // measured: that mutation kept an earlier version of this test green.
+  assert.match(TOUR_SCRIPT, /\[data-tour-actual\]'\)\.onclick = actual/)
+  assert.match(TOUR_SCRIPT, /user\.k = Math\.min\(6, Math\.max\(0\.4, 1 \/ fitted\.k\)\)/)
+  // Reachable without a pointer, the way fit is reachable with 0.
+  assert.match(TOUR_SCRIPT, /ev\.key === '1'[^\n]*actual\(\)/)
+})

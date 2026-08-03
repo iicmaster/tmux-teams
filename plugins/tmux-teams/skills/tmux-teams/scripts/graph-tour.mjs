@@ -391,6 +391,7 @@ export function renderTourChart(tour, { describedBy = 'tour-desc' } = {}) {
       <span class="tour-zoom" data-tour-zoom aria-live="off"></span>
       <button type="button" data-tour-out aria-label="Zoom out">−</button>
       <button type="button" data-tour-fit aria-label="Fit this scene">fit</button>
+      <button type="button" data-tour-actual aria-label="Zoom to actual size">100%</button>
       <button type="button" data-tour-in aria-label="Zoom in">+</button>
       <span class="tour-stamp" data-tour-stamp aria-live="polite"></span>
       <button type="button" data-tour-prev aria-label="Previous scene">←</button>
@@ -1019,9 +1020,25 @@ export const TOUR_SCRIPT = `
   // and a board only a mouse can read is a board some readers cannot.
   const nudge = (factor) => { root.classList.add('free'); user.k = Math.min(6, Math.max(0.4, user.k * factor)); apply() }
   const reset = () => { root.classList.remove('free'); user = { k: 1, dx: 0, dy: 0 }; apply() }
+  // fit and 100% are different questions. fit answers "show me all of it",
+  // which is whatever scale the scene happens to need; 100% answers "show it
+  // to me at its own size" — one board pixel to one screen pixel, the same
+  // scale on every scene and on every board. The label already reports
+  // fitted.k * user.k, so setting user.k to its reciprocal is what makes that
+  // label read 100. The pan is left alone: a reader who moved to a corner and
+  // then asked for actual size wants that corner, not the middle again. The
+  // clamp is the same one the +/- buttons use, so a board too large to show at
+  // its own size lands at the edge of the range and the label says so rather
+  // than claiming a scale the page is not at.
+  const actual = () => {
+    root.classList.add('free')
+    user.k = Math.min(6, Math.max(0.4, 1 / fitted.k))
+    apply()
+  }
   root.querySelector('[data-tour-in]').onclick = () => nudge(1.25)
   root.querySelector('[data-tour-out]').onclick = () => nudge(1 / 1.25)
   root.querySelector('[data-tour-fit]').onclick = reset
+  root.querySelector('[data-tour-actual]').onclick = actual
   var fullBtn = root.querySelector('[data-tour-full]')
   fullBtn.onclick = function () {
     if (document.fullscreenElement) document.exitFullscreen()
@@ -1042,6 +1059,7 @@ export const TOUR_SCRIPT = `
     if (ev.key === '+' || ev.key === '=') { ev.preventDefault(); nudge(1.25) }
     if (ev.key === '-') { ev.preventDefault(); nudge(1 / 1.25) }
     if (ev.key === '0') { ev.preventDefault(); reset() }
+    if (ev.key === '1') { ev.preventDefault(); actual() }
   })
   // Motion is a client loop: it keeps running long after the producer stops,
   // so a stale board went on breathing and reported a system that was not
