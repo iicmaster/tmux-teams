@@ -2,8 +2,11 @@
 
 This repo is a **Claude Code directory marketplace** delivering one plugin
 (`tmux-teams`, see `plugins/tmux-teams/`) — and it is the **canonical source**
-of the six bundled skills. Edit them directly under
-`plugins/tmux-teams/skills/`. (Flipped 2026-07-21: agent-skills commit
+of its bundled skills. Edit them directly under
+`plugins/tmux-teams/skills/`. `SKILLS` in `tests/plugin-structure.test.mjs` is
+the list of record and the only thing that checks a skill is really there — a
+count written in prose here rots the first time one is added, and said "six"
+while nine were shipping. (Flipped 2026-07-21: agent-skills commit
 `dd43dc1` vendored this repo as the authoritative submodule and deleted its
 own `skills/shared/tmux-teams`; the old mirror/sync flow is gone.)
 
@@ -193,10 +196,13 @@ one SSOT** and wins if the two ever disagree.
   push printed a hash. Never bump the submodule pin in `~/agent-skills` to a
   sha that is only on the fork — that URL is `iicmaster`, and the pin would be
   unresolvable for everyone else while looking fine locally.
-- `~/agent-skills` no longer carries standalone copies of these six skills.
+- `~/agent-skills` no longer carries standalone copies of the six it used to:
+  `tmux-teams`, `party-mode`, `party-auto`, `party-advise`, `sqthink`,
+  `codex-tmux-driver` — its `PLUGIN_DELIVERED` names exactly those, and the
+  plugin has bundled more since.
   Treat THIS repo as authoritative; its submodule pin feeds the OpenClaw
   bridge, and must never be copied back from installed targets.
-- `~/.claude/skills` must NOT contain the six bundled skills (they were
+- `~/.claude/skills` must NOT contain those same six (they were
   deduplicated 2026-07-19; `agent-skills/scripts/sync.sh` purges them for the
   tool roots). Restoring them by hand recreates double-triggering.
 - `acp-companion.mjs` honors `ACP_CMD="node <stub>.mjs"` — point it at a stub
