@@ -282,6 +282,15 @@ function exitCodeFor(error) {
       : error?.code === 'policy' ? REVIEW_GATE_EXIT.policy : REVIEW_GATE_EXIT.transport
 }
 
+// Real completion packets (full diffs, many files) need review minutes per
+// lane; the 240s client default was sized for pings and times out substantive
+// reviews (observed: kimi lane timeout on a 15-file packet). Overridable for
+// slower providers.
+function laneTimeoutMs() {
+  const sec = Number(process.env.REVIEW_GATE_LANE_TIMEOUT_SEC)
+  return Number.isSafeInteger(sec) && sec > 0 ? sec * 1000 : 900_000
+}
+
 export async function runReviewGateCli([packetPath, targetRepository] = [], {
   gate = runReviewGate,
   stdout = process.stdout,
@@ -305,7 +314,7 @@ export async function runReviewGateCli([packetPath, targetRepository] = [], {
     } finally {
       await handle?.close()
     }
-    const result = await gate(packet, { targetRepository })
+    const result = await gate(packet, { targetRepository, timeoutMs: laneTimeoutMs() })
     stdout.write(JSON.stringify(result) + '\n')
     return REVIEW_GATE_EXIT.ok
   } catch (error) {
