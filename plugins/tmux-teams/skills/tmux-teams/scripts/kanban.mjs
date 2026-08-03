@@ -304,6 +304,7 @@ ${NAV_CSS}
 .card .st{font:500 .78rem var(--sans)}
 .card .who{color:var(--dim);font:400 .68rem var(--mono);word-break:break-all}
 .card .clock{color:var(--dim);font:400 .68rem var(--mono);font-variant-numeric:tabular-nums}
+.card .at{color:var(--dim);font:400 .68rem var(--mono);font-variant-numeric:tabular-nums}
 .card .detail{color:var(--dim);font-size:.72rem}
 .card .blocked{color:var(--warn);font:500 .72rem var(--sans)}
 .s-assigned{border-left-color:var(--busy)}
@@ -342,16 +343,32 @@ const LEGEND = [
 const clock = (card) =>
   `${duration(card.column_sec) ?? 'unknown'} here · ${duration(card.lead_sec) ?? 'unknown'} lead · ${card.legs} legs`
 
+// The board's own clock is relative — "4m here" — which is what a board is read
+// for. The absolute stamp is the one fact a reader needs the moment they leave
+// the board and go looking in a ledger, and it lived only in a `title`: on a
+// touch screen, or for anyone driving this by keyboard, it did not exist at all.
+// `datetime` keeps the precision the ledger recorded; the text keeps the minute
+// a person actually reads.
+const absoluteAt = (at) => {
+  const ms = Date.parse(at || '')
+  return Number.isFinite(ms) ? `${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')} UTC` : null
+}
+
 const renderCard = (card, unplaceableNote) => {
-  const tooltip = `${card.work_item} — ${card.state}${card.detail ? ` — ${card.detail}` : ''}` +
-    ` (last event ${card.event || 'none'} at ${card.at || 'unknown'})`
+  const stamp = absoluteAt(card.at)
+  // No `title`. Everything it used to carry is on the card now, and a tooltip
+  // that repeats the text beside it is not a second copy for redundancy — it
+  // overrides the accessible name, so a screen reader announces the summary
+  // INSTEAD of the card. The two facts it held that the card did not show were
+  // the full token id and this stamp, which is the whole reason it existed.
   return `
-    <article class="card s-${slug(card.event)}${card.blocked_reason ? ' is-blocked' : ''}" data-event="${esc(card.event || 'none')}"${card.verdict ? ` data-verdict="${esc(card.verdict)}"` : ''} title="${esc(tooltip)}">
-      <b class="tok">${esc(clip(card.work_item, 60))}</b>
+    <article class="card s-${slug(card.event)}${card.blocked_reason ? ' is-blocked' : ''}" data-event="${esc(card.event || 'none')}"${card.verdict ? ` data-verdict="${esc(card.verdict)}"` : ''}>
+      <b class="tok">${esc(clip(card.work_item, 128))}</b>
       <span class="wf">${esc(card.workflow ? clip(card.workflow, 40) : 'no workflow declared')}</span>
       <span class="st">${esc(card.state)}</span>
       <span class="who">${esc(card.agent_id ? clip(card.agent_id, 40) : 'no agent recorded')} · ${esc(card.role || 'role not declared')}</span>
-      <span class="clock">${esc(clock(card))}</span>${card.detail ? `
+      <span class="clock">${esc(clock(card))}</span>${stamp ? `
+      <time class="at" datetime="${esc(card.at)}">${esc(stamp)}</time>` : ''}${card.detail ? `
       <span class="detail">${esc(card.detail)}</span>` : ''}${unplaceableNote ? `
       <span class="blocked">${esc(unplaceableNote)}</span>` : ''}${card.blocked_reason ? `
       <span class="blocked">Blocked — ${esc(clip(card.blocked_reason, 120))}</span>` : ''}

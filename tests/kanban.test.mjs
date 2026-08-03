@@ -175,6 +175,26 @@ test('every token is on the board exactly once', () => {
   assert.equal((pageOf(dir).match(/<article class="card/g) || []).length, total)
 })
 
+test('the two facts that used to be hover-only are on the card, and no title hides them again', () => {
+  // 72 characters: legal under the ledger's 128-character id, and past the
+  // 60-character clip the card used to apply to the thing that identifies it.
+  const token = `story-${'x'.repeat(60)}-tail`
+  assert.equal(token.length, 71)
+  const dir = repoWith(FOUR_TEAMS, {
+    [token]: [{ at: '2026-07-27T09:12:04.000Z', event: 'assigned', agent_id: 'build_w1', task_id: 't-1' }],
+  })
+  const html = pageOf(dir)
+  // The identity first: a truncated token id cannot be pasted into a ledger
+  // lookup, which is the one thing a reader leaves this board to do.
+  assert.match(html, new RegExp(`<b class="tok">${token}</b>`))
+  // Then the stamp, machine-readable at the precision the ledger recorded and
+  // human-readable to the minute.
+  assert.match(html, /<time class="at" datetime="2026-07-27T09:12:04\.000Z">2026-07-27 09:12 UTC<\/time>/)
+  // A `title` on the card would override the accessible name, so a screen reader
+  // would announce the summary INSTEAD of the card it summarises.
+  assert.doesNotMatch(html.slice(html.indexOf('<article class="card')), /<article class="card[^>]*title=/)
+})
+
 // ── AC3 — finished work leaves the flow ─────────────────────────────────────
 
 test('AC3 completed and abandoned both land in Done, told apart', () => {
