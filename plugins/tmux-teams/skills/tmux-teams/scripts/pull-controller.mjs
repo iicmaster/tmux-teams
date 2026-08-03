@@ -182,6 +182,11 @@ export function applyPulls(repo, decisions, onRefusal = reportRefusal) {
     // re-run against the bytes on disk rather than the parsed projection.
     const result = appendEvent(repo, decision.event, { actor: PULL_ACTOR })
     if (!result.ok) {
+      // The outcome rides home on the decision itself. A count cannot say WHICH
+      // handoff was refused, and the caller narrates this same array one loop
+      // later — so without this the runner reports a refused pull in the words
+      // it uses for a written one, which §4.2 forbids outright.
+      decision.write_result = result
       onRefusal(decision, result)
       continue
     }

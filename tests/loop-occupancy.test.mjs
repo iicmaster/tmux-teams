@@ -1127,3 +1127,41 @@ test('a door that has refused three times escalates instead of refusing again', 
     assert.match(fourth.reason, /no interface named/)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
+
+// ── a refused pull must reach the caller that narrates it ────────────────────
+
+test('a pull the writer refuses comes back on the decision, not only on stderr', () => {
+  // §14.2 item 6, built on purpose: `readWorkItems` drops a line no reader can
+  // parse, so `planPulls` judges a clean four-event history and plans the pull.
+  // The writer reads the FILE, sees the sixth line, and refuses. That gap is
+  // the only way a pull can be planned and then refused, and it was reported
+  // nowhere the caller could see — `applyPulls` returned a count, so the runner
+  // one loop later narrated the refused pull as one that happened.
+  const dir = mkdtempSync(join(tmpdir(), 'pull-refused-'))
+  try {
+    mkdirSync(join(dir, '.tmux-teams', 'work-items'), { recursive: true })
+    writeFileSync(join(dir, '.tmux-teams', 'work-items', 'tok.jsonl'),
+      `${JSON.stringify({
+        at: FIXED_ISO, event: 'opened', work_item: 'tok', workflow: 'feature',
+        agent_id: 'b_d', to_team: 'build', reason: 'start',
+      })}\n{ this line is not JSON\n`)
+
+    const decision = {
+      work_item: 'tok', action: 'pull', workflow: 'feature',
+      from_team: 'build', to_team: 'test',
+      event: {
+        at: FIXED_ISO, event: 'pulled', work_item: 'tok', workflow: 'feature',
+        agent_id: 't_d', from_team: 'build', to_team: 'test',
+      },
+    }
+    const said = []
+    assert.equal(applyPulls(dir, [decision], (d, result) => said.push(`${d.work_item} ${result.code}`)), 0)
+
+    assert.equal(decision.write_result?.ok, false,
+      'the refusal never reached the decision object the runner narrates')
+    assert.equal(decision.write_result.code, 'ledger_already_invalid')
+    assert.deepEqual(said, ['tok ledger_already_invalid'], 'the injected reporter was not called')
+    assert.equal(readFileSync(join(dir, '.tmux-teams/work-items/tok.jsonl'), 'utf8')
+      .trim().split('\n').length, 2, 'a line reached a ledger that had already failed validation')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})

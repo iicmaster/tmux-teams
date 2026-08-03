@@ -1086,11 +1086,21 @@ export function tick(repoArg, {
 
   const before = readWorkItems(repo)
   const pulls = planPulls(graph.value, before.items)
-  if (apply && pulls.some((entry) => entry.event)) applyPulls(repo, pulls)
+  // Through this loop's own voice, not stderr. Everything else the tick decides
+  // is said on stdout with a `[loop]` prefix, and a refusal reported on a
+  // different stream is one an operator reading the loop's log never sees.
+  if (apply && pulls.some((entry) => entry.event)) {
+    applyPulls(repo, pulls, (decision, result) =>
+      log(`REFUSED ${decision.work_item}: ${result.code} — ${result.detail}`))
+  }
   // Say every decision out loud. A runner that logs only the happy path looks
   // identical to one that has silently given up — which is what this one did
   // for 65 ticks before anyone noticed.
   for (const entry of pulls) {
+    // The write was refused, and the REFUSED line above already said so. Saying
+    // `pull` here as well would be this runner reporting a handoff the ledger
+    // never took — §4.2 — and the planner is right to plan it again next tick.
+    if (entry.write_result && !entry.write_result.ok) continue
     if (entry.action === 'blocked') log(`BLOCK  ${entry.work_item}: ${entry.reason}`)
     else if (entry.action === 'pull') log(`pull   ${entry.work_item}: ${entry.from_team} -> ${entry.to_team}`)
     else if (entry.action === 'complete') log(`done   ${entry.work_item}: finished ${entry.workflow}`)

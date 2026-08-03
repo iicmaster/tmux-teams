@@ -507,3 +507,32 @@ test('an accepted intake that stated no reason says so rather than leaving it bl
   assert.equal(applied[0].event, 'intake')
   assert.equal(applied[0].reason, 'no reason stated')
 })
+
+test('a pull the writer refuses is not narrated as a pull that happened', () => {
+  // §4.2: "a refused write did not happen, and no caller may report it as
+  // having happened." The runner logged every decision by the action it was
+  // PLANNED with, so a refused handoff printed the same `pull` line a written
+  // one does — and the loop planned it again the next tick, forever, while an
+  // operator read a board that said the token had moved on.
+  const custody = [
+    { at: at(0), event: 'pulled', work_item: 'wip', workflow: 'feature', agent_id: 'build_d', from_team: 'build', to_team: 'build' },
+    { at: at(1), event: 'assigned', work_item: 'wip', workflow: 'feature', agent_id: 'build_w1', task_id: 'b-9', dispatch_id: 'd-9' },
+    { at: at(2), event: 'delivered', work_item: 'wip', workflow: 'feature', agent_id: 'build_w1', task_id: 'b-9', terminal: 'done', timed_out: false, evidence_present: true },
+    { at: at(3), event: 'reviewed', work_item: 'wip', workflow: 'feature', agent_id: 'build_e', verdict: 'pass', reviewed_task: 'b-9', reason: 'it works' },
+  ]
+  const dir = repoWith({ ledgers: { wip: custody } })
+  const file = join(dir, '.tmux-teams', 'work-items', 'wip.jsonl')
+  // Parsed readers drop this line; the writer, which reads the file, does not.
+  writeFileSync(file, `${readFileSync(file, 'utf8')}{ this line is not JSON\n`)
+
+  const { result, said } = saying(() => tick(dir, { tickSec: 20, spawnLeg: () => 'stub-task' }))
+
+  const pull = result.pulls.find((entry) => entry.work_item === 'wip')
+  assert.equal(pull.action, 'pull', 'the planner is meant to plan it — the writer is what refuses')
+  assert.ok(said.some((line) => line.includes('REFUSED') && line.includes('wip') && line.includes('ledger_already_invalid')),
+    `the refusal was not said out loud: ${said.join(' | ')}`)
+  assert.equal(said.some((line) => /^\[loop\] pull\s+wip:/.test(line)), false,
+    'the runner reported a handoff the ledger never took')
+  assert.equal(readFileSync(file, 'utf8').trim().split('\n').length, custody.length + 1,
+    'a line reached a ledger that had already failed validation')
+})
