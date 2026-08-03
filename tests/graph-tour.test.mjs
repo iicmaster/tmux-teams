@@ -476,3 +476,44 @@ test('the board publishes its digest where the refresh script can read it', () =
   const html = renderTourChart(buildTour(CONTROLLED))
   assert.match(html, /data-tour-digest="[0-9a-f]+"/)
 })
+
+test('the team-to-dispatcher wire is the same colour as that dispatcher\'s own line out', () => {
+  // One relationship read top to bottom: the team owns the seat, the seat
+  // assigns the worker. In var(--line) the first leg was the page's border
+  // colour and read as a divider rather than a wire.
+  const owns = TOUR_CSS.match(/\.w-owns\{([^}]*)\}/)
+  const assign = TOUR_CSS.match(/\.w-assign\{([^}]*)\}/)
+  assert.ok(owns && assign, 'both rules must exist')
+  const strokeOf = (body) => body.match(/stroke:(var\(--[a-z0-9-]+\))/)?.[1]
+  assert.equal(strokeOf(owns[1]), strokeOf(assign[1]),
+    `owns draws ${strokeOf(owns[1])} and assign draws ${strokeOf(assign[1])}`)
+  // Opacity is left to .dry, which sets it on both. A rule of its own here
+  // would be a second answer to a question already answered.
+  assert.doesNotMatch(owns[1], /opacity/)
+})
+
+test('a live leg outweighs the dry crawl, so it crawls on every scene', () => {
+  // These selectors are class-only, so counting dots IS the specificity — and
+  // `:not(.quiet)` contributes its own class, which is the whole point.
+  const weight = (selector) => (selector.match(/\./g) || []).length
+  const rule = (pattern) => {
+    const at = TOUR_CSS.search(pattern)
+    assert.notEqual(at, -1, `${pattern} is not in the stylesheet`)
+    return { at, selector: TOUR_CSS.slice(at).match(pattern)[0].split('{')[0] }
+  }
+  const dry = rule(/[^\n}]*\.wire\.dry\{animation:tourFlow[^}]*\}/)
+  const live = rule(/[^\n}]*\.wire\.live\{animation:tourFlow[^}]*\}/)
+  // Written at (0,2,0) against the dry crawl's (0,4,0), the live rule lost
+  // outright on every scene but the first: a wire with a dispatch running on it
+  // animated at 1.1s, exactly like one with nothing recorded behind it, and the
+  // only difference left was a dash pattern nobody can see. Measured on a
+  // published page 2026-08-03.
+  assert.ok(weight(live.selector) >= weight(dry.selector),
+    `live is ${weight(live.selector)} and dry is ${weight(dry.selector)}: the dry crawl wins again`)
+  if (weight(live.selector) === weight(dry.selector)) {
+    assert.ok(live.at > dry.at, 'equal weight, so the live rule has to be written last')
+  }
+  // Reduced motion still stands it down, and by the same selector rather than
+  // by a second rule that nothing reaches.
+  assert.match(live.selector, /:not\(\.quiet\)/)
+})

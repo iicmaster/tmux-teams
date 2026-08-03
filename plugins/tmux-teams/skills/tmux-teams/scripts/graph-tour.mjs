@@ -486,13 +486,28 @@ export const TOUR_CSS = `
    the other is work that has stopped and needs a person. */
 .tour-stuck{stroke:var(--bad)}
 .tour.quiet .tour-live,.tour.quiet .tour-stuck{animation:none;opacity:.55}
-.wire.live{stroke-dasharray:6 4;animation:tourFlow .9s linear infinite}
-.tour.quiet .wire.live{animation:none}
+.wire.live{stroke-dasharray:6 4}
+/* Weight, not order — the same lesson .wire.off is written above. The live
+   crawl was (0,2,0) and the dry crawl is (0,4,0), so on every scene except the
+   first the dry rule won outright: a wire with a dispatch running on it moved
+   at 1.1s, exactly like a wire with nothing recorded behind it, and the only
+   surviving difference was a dash pattern of 6 4 against 5 5. Measured on a
+   published page 2026-08-03, both at 1.1s, while the comment in draw() claimed
+   a live leg crawls "whichever scene is up". It does now.
+   :not(.quiet) is what stands the reduced-motion state down, which is why the
+   separate .tour.quiet .wire.live rule that used to sit here is gone rather
+   than left to be reached by nothing. */
+.tour:not(.quiet) .wire.live{animation:tourFlow .9s linear infinite}
 @keyframes tourHalo{0%,100%{opacity:0;stroke-width:1}40%{opacity:.5;stroke-width:2.4}}
 .w-assign{stroke:var(--assign);opacity:.5}
 .w-judge{stroke:var(--artifact);opacity:.55}
 .w-reject{stroke:var(--reject);opacity:.5}
-.w-owns{stroke:var(--line)}
+/* The same colour as the line out of that dispatcher, because it is the same
+   dispatcher: the team owns the seat, the seat assigns the worker, one
+   relationship read top to bottom. In var(--line) it was the page's border
+   colour and read as a divider rather than a wire. Opacity needs no matching —
+   .dry sets .34 on both, measured, so the stroke was the only difference. */
+.w-owns{stroke:var(--assign)}
 .w-pull{stroke:var(--handoff);stroke-width:2.4;opacity:.8}
 /* Escalation is a CONDITION, not a handover: nothing travels it. It is red
    because it is the same news as a rejection — work that cannot move — and it
