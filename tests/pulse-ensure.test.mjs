@@ -18,8 +18,8 @@ const repo = () => {
 }
 const pidfile = (dir) => join(dir, '.tmux-teams', 'pulse-watch.pid')
 const configFile = (dir) => join(dir, '.tmux-teams', 'pulse-watch.config.json')
-const run = (dir, { timeZone = null, teamGraph = null, teamRuntime = null, extraEnv = {} } = {}) => {
-  const args = [PULSE, 'ensure', dir, '--interval', '60']
+const run = (dir, { interval = 60, timeZone = null, teamGraph = null, teamRuntime = null, extraEnv = {} } = {}) => {
+  const args = [PULSE, 'ensure', dir, '--interval', String(interval)]
   if (timeZone) args.push('--time-zone', timeZone)
   if (teamGraph) args.push('--team-graph', teamGraph)
   if (teamRuntime) args.push('--team-runtime', teamRuntime)
@@ -183,6 +183,63 @@ test('ensure identity includes the team graph content digest', async () => {
   } finally {
     if (pid) await stop(pid, file)
   }
+})
+
+// ISSUE #25. A pid is not a credential. The pidfile is world-readable and the
+// operator is already looking at it, so handing the live pid back in
+// PULSE_WATCH_CLAIM_OWNER was accepted as proof of a handoff: the impostor
+// overwrote the pidfile and the watcher it named exited at its next tick. The
+// claim may now pass only from a parent to the child it spawned, which the
+// kernel attests and a reader of the pidfile cannot forge.
+test('watch --managed refuses a claim it was not handed', async () => {
+  const dir = repo()
+  const file = pidfile(dir)
+  const claimant = () => {
+    try { return Number(readFileSync(file, 'utf8').trim()) } catch { return null }
+  }
+  let pid
+  try {
+    const started = run(dir, { interval: 1 })
+    assert.equal(started.status, 0, started.stderr)
+    pid = claimant()
+    assert.ok(alive(pid), `watcher ${pid} is not alive`)
+
+    // The pre-fix exploit input, verbatim, and it has to be inert. The config
+    // inputs must match run()'s or the mode/input branch would refuse this for
+    // an unrelated reason and the test would prove nothing.
+    const impostor = spawnSync(process.execPath,
+      [PULSE, 'watch', dir, '--interval', '60', '--managed'], {
+        encoding: 'utf8', timeout: 3000,
+        env: { ...process.env, PULSE_TIME_ZONE: '', PULSE_WATCH_CLAIM_OWNER: String(pid) },
+      })
+    assert.equal(claimant(), pid, 'a process that only READ the pid took the claim')
+    assert.equal(impostor.status, 1, impostor.stdout)
+    assert.match(impostor.stderr, /pulse\.mjs ensure/)
+
+    // The reported harm, not just its cause: the named watcher exits on the
+    // next tick that finds the pidfile no longer its own. --interval 1 puts
+    // that tick inside this wait.
+    await delay(2500)
+    assert.ok(alive(pid), `watcher ${pid} was evicted by a bystander`)
+    assert.equal(claimant(), pid)
+  } finally {
+    if (pid) { try { process.kill(pid, 'SIGTERM') } catch { /* already stopped */ } }
+  }
+})
+
+// ISSUE #25 as filed. The refusal was true and useless: "watcher claim belongs
+// to pid none; refusing duplicate" names no way forward. --managed is not a
+// command an operator runs.
+test('watch --managed run by hand names the command that performs the handoff', () => {
+  const dir = repo()
+  const result = spawnSync(process.execPath,
+    [PULSE, 'watch', dir, '--interval', '60', '--managed'], {
+      encoding: 'utf8', timeout: 3000,
+      env: { ...process.env, PULSE_TIME_ZONE: '' },
+    })
+  assert.equal(result.status, 1, result.stdout)
+  assert.match(result.stderr, /pulse\.mjs ensure/)
+  assert.equal(existsSync(pidfile(dir)), false, 'a refused handoff must not leave a claim')
 })
 
 test('ensure reclaims a stale watcher pidfile', async () => {
