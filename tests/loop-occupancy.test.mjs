@@ -523,8 +523,12 @@ test('every event either moves the loop or is a dead end somebody wrote down', (
     // The one event whose ACTOR KIND is part of its validity: a person answered,
     // and `human:` is how the ledger records that permanently (§5.1).
     if (event === 'answered') entry.actor = 'human:someone'
+    // The clock must sit past every wall-clock window the runner reads: the
+    // answer deadline (600s) and, above all, the zombie window — an `assigned`
+    // still inside ZOMBIE_SEC (1500s) reads as in flight, not as movement, and
+    // this sweep would mistake that for a dead end. 2000s clears it.
     const [plan] = planDispatches(graph, itemsOf(['tok', [...prefix, entry]]), new Set(),
-      { now: Date.parse(entry.at) + 1e6 })
+      { now: Date.parse(entry.at) + 2e6 })
     const moved = Boolean(plan) && plan.action !== 'skip'
     const stated = event in NO_DISPATCH_FOLLOWS
     assert.equal(moved, !stated, stated

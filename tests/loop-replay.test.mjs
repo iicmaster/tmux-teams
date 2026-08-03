@@ -25,7 +25,7 @@
 //     replaces forking an ACP process with running the fake agent inline.
 //
 // Ceiling, stated rather than worked around: `tick` reads the wall clock
-// directly, so ZOMBIE_SEC (180s), PM_COOLDOWN_SEC (900s) and STALL_SEC (1800s)
+// directly, so ZOMBIE_SEC (1500s), PM_COOLDOWN_SEC (900s) and STALL_SEC (1800s)
 // are unreachable in a test that finishes in seconds. Consequence: the fake
 // agent must deliver in the tick it was assigned (a leg left in flight would
 // stay in flight forever), and the controller's cooldown is stepped past by
@@ -246,7 +246,7 @@ test('a route replays to a decision, or the runner says which token it could not
   // a path this test never reached and therefore never checked.
   // Thirteen of the fourteen §4 events. `lost` is the one absentee and it is
   // absent by construction, not by luck: it needs an assignment older than
-  // ZOMBIE_SEC and this test cannot reach 180 seconds — see the clock ceiling
+  // ZOMBIE_SEC and this test cannot reach 1500 seconds — see the clock ceiling
   // at the top of the file. Anything else dropping out of this list means a
   // path the replay stopped covering.
   for (const event of ['opened', 'pulled', 'intake', 'returned', 'assigned', 'delivered', 'reviewed',

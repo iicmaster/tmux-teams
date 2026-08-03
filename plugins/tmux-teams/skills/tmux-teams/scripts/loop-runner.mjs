@@ -54,7 +54,12 @@ const MAX_ATTEMPTS = 3   // three failures by one role in one team is a problem 
 // together still let an intake rejection and a review rejection bounce a token
 // between two teams indefinitely — the ceiling has to be on the journey.
 const MAX_LEGS = 15
-const ZOMBIE_SEC = 180   // an assignment with no live process and nothing delivered
+// Long quiet tool executions (a real 3-model gate run, docker test suites)
+// make a LIVE agent look absent to pulse; 180s substituted workers that were
+// still working (observed: duplicate review AND dev legs editing one repo at
+// once). Truly dead legs are still reaped by the companion's own stall-cancel
+// lease (1800s), so a higher zombie threshold loses little.
+const ZOMBIE_SEC = 1500   // an assignment with no live process and nothing delivered
 const PM_COOLDOWN_SEC = 900
 // Every dispatch is a full agent. Team WIP limits bound each column; nothing
 // bounded the board, so a wide graph could fan out without a ceiling.
