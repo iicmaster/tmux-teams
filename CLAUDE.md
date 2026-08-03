@@ -119,14 +119,23 @@ one SSOT** and wins if the two ever disagree.
 ## Release flow
 
 1. Edit skills under `plugins/tmux-teams/skills/` (this repo IS canonical).
-2. Bump the version in all THREE places — `.claude-plugin/marketplace.json`
+2. **Send the release to `codex-advisor` for review BEFORE marking the version.**
+   Master's rule, 2026-08-04, and it is unconditional: no version number is
+   stamped on work a second model family has not read. Review the actual diff
+   that would ship — `git log --oneline <last-tag-or-release-sha>..HEAD` plus
+   `git diff <that sha>..HEAD` — not a summary of it, and not the plan that
+   produced it. A blocking finding stops the bump; resolve it and send the new
+   bytes. This exists because every release before it was marked on one model's
+   reading, and the three corrections that mattered most on 2026-08-03 all came
+   from the advisor rather than from this room.
+3. Bump the version in all THREE places — `.claude-plugin/marketplace.json`
    (twice: `metadata.version` and `plugins[0].version`),
    `plugins/tmux-teams/.claude-plugin/plugin.json`, and `RELEASE_VERSION` in
    `tests/plugin-structure.test.mjs`. That test is the only thing checking they
    agree, so it has to state the number itself. This step said "BOTH" until
    2026-08-01, and v0.12.0 reached the bump with the third one still on 0.11.1
    until the test caught it.
-3. Run `node --test`, `git diff --check`, and
+4. Run `node --test`, `git diff --check`, and
    `claude plugin validate --strict .` locally. `tests/acp-companion.test.mjs`
    was long treated as a timing flake — "a different name each time, re-run it
    alone and expect 120/120". **That clause was false**, and it let a real
@@ -149,10 +158,10 @@ one SSOT** and wins if the two ever disagree.
    are fixed; the file is 130/130 and the suite 494/494 on this machine. Rules:
    a test states the outcome before the words about it, and a platform branch
    that cannot answer must say UNKNOWN, never "no".
-4. Push (confirm with Master first — see Rules), then
+5. Push (confirm with Master first — see Rules), then
    `claude plugin marketplace update tmux-teams` and
    `claude plugin update tmux-teams@tmux-teams` (install cache is version-keyed).
-5. Bump the `plugins/tmux-teams` submodule pointer in `~/agent-skills` to the
+6. Bump the `plugins/tmux-teams` submodule pointer in `~/agent-skills` to the
    new sha and push it. `agent-skills` uses that pin as the source for its
    OpenClaw bridge; Codex and Claude plugin runtimes use version-keyed caches.
 
