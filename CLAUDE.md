@@ -25,6 +25,20 @@ commit.
 `node --test tests/` (a bare directory) fails on Node 24 with MODULE_NOT_FOUND —
 pass no path at all, or a glob like `tests/*.test.mjs`.
 
+**Never fan out subagents that each run this suite.** It spawns dozens of ACP
+subprocesses per pass — one pass takes about two minutes on an idle dev box, and
+several at once do not share nicely. On 2026-08-03 five agents were each told to
+apply a fix, run `node --test`, revert and run it again: fifteen concurrent
+passes drove the load average to 28 on 8 cores, and after 42 minutes not one
+agent had finished. The wasted time is not the point — the numbers are. Earlier
+that same day `tests/acp-companion.test.mjs` went RED at 79s with only a
+headless browser and one `python3 -m http.server` competing for CPU, and passed
+at 35s on a quiet machine. A verification phase run under contention measures
+the contention. **Parallelise the reading and the design; serialise every
+measurement through one caller.** Say it in the agent's prompt: do not copy the
+repo, do not run `node --test` at all, return a diff that applies by string
+match plus the exact commands the caller runs once.
+
 ```bash
 node plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs once <repo>
 ```
