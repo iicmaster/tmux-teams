@@ -150,6 +150,17 @@ one SSOT** and wins if the two ever disagree.
   pushing run `claude plugin marketplace update tmux-teams` then
   `claude plugin update tmux-teams@tmux-teams`. Confirm with Master before
   the push that ships a release.
+- **Push as `iicmaster`.** This machine has three GitHub accounts in `gh`
+  (`ngs-th`, `iicmaster`, `warawut-grit`) and the active one is often `ngs-th`,
+  which has READ access here — `git pull` works, `git push origin` returns 403.
+  `gh auth switch --user iicmaster` first. A second remote, `fork`
+  (`ngs-th/tmux-teams`), accepts a push from the wrong account, so an
+  unattended session can believe it shipped while `origin/main` never moved:
+  on 2026-08-03 three fixes sat in that fork until someone looked. Check
+  `git status -sb` says `main...origin/main` with no `ahead`, not just that a
+  push printed a hash. Never bump the submodule pin in `~/agent-skills` to a
+  sha that is only on the fork — that URL is `iicmaster`, and the pin would be
+  unresolvable for everyone else while looking fine locally.
 - `~/agent-skills` no longer carries standalone copies of these six skills.
   Treat THIS repo as authoritative; its submodule pin feeds the OpenClaw
   bridge, and must never be copied back from installed targets.
