@@ -578,7 +578,11 @@ function harvestEvent(repo, graph, { item, last, role }, now) {
 
   const { verdict, stated, reason } = readVerdict(text, REVIEW_VERDICTS)
   return {
-    ...base, event: 'reviewed', agent_id: last.agent_id, verdict,
+    // `last` here is the evaluator's OWN `delivered` — this leg's own record —
+    // so its dispatch_id is this review's real identity. Naming it is what lets
+    // dispatch-facts.mjs tell an ordinary review apart from one a killed and
+    // retried evaluator leg writes on its way out (dispatch-facts.mjs:129).
+    ...base, event: 'reviewed', agent_id: last.agent_id, verdict, dispatch_id: last.dispatch_id,
     reviewed_task: lastWorkerDelivery(graph, item)?.task_id || null,
     reason: stated ? (reason || 'no reason stated') : 'the evaluator stated no verdict',
   }

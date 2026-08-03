@@ -135,35 +135,50 @@ export const RELEASING_EVENTS = new Set(['completed', 'abandoned', 'audit_reques
 // "when the work finished" as opposed to "when this was written".
 //
 // So placement asks who holds the token now — the agent named on the newest
-// `assigned` — and skips a trailing `delivered`/`lost` from anyone else. It is
-// still evidence about that leg; it is not where the token IS. Everything else
-// stays last-wins, unchanged.
+// `assigned` — and skips a trailing `delivered`/`lost`/`reviewed` that belongs
+// to an older leg. It is still evidence about that leg; it is not where the
+// token IS. Everything else stays last-wins, unchanged.
 //
-// Known limit: two legs run by the SAME agent are indistinguishable here, so a
-// stale report from an agent that was later re-assigned is not caught. Telling
-// those apart needs leg identity (`dispatch_id`), which nothing reads yet.
-// What a worker's leg says on its way out, and nothing else. `reviewed` was
-// tried here too — a superseded `reviewed pass` is the one stale outcome that
-// clears the pull controller's gate, so it can append a `pulled` rather than
-// merely misdraw a card — and it broke four tests that encode the pull flow,
-// for a reason worth keeping: an evaluator does not always have an `assigned`
-// of its own in the history, so "the agent named on the newest assigned" is not
-// the evaluator when its review lands, and every ordinary review would read as
-// superseded. Closing that one needs leg identity, not a wider event set.
-const LEG_OUTCOMES = new Set(['delivered', 'lost'])
+// "Belongs to an older leg" is decided by `dispatch_id` whenever both the
+// trailing entry and the holder's `assigned` recorded one. That is the leg's
+// real identity, and it is the only thing that can tell two legs run by the
+// SAME agent apart — agent_id reads identical for both, which is why that case
+// stood open here as a known limit until now.
+//
+// `reviewed` was tried in this set once by agent_id and broke four tests that
+// encode the pull flow, for a reason worth keeping: an evaluator does not
+// always have an `assigned` of its own when its review lands, so its agent_id
+// is never expected to equal the holder's, and that mismatch is the review
+// protocol rather than staleness. `dispatch_id` has no such false positive
+// because it says nothing at all until BOTH sides recorded one — so `reviewed`
+// joins the set but never falls back to agent_id, and a review carrying no
+// dispatch_id of its own is trusted exactly as it was before this existed.
+// `delivered`/`lost` keep that fallback, because a report from an agent that
+// plainly is not the holder is still real evidence for those two.
+//
+// A branch that cannot tell returns the entry, the same as it always did. It
+// does not get to call an unknown case superseded.
+const LEG_OUTCOMES = new Set(['delivered', 'lost', 'reviewed'])
 
 export function currentEntry(custody) {
   let holder = null
+  let holderDispatchId = null
   for (let i = custody.length - 1; i >= 0; i -= 1) {
     if (custody[i].event === 'assigned' && custody[i].agent_id) {
       holder = String(custody[i].agent_id)
+      holderDispatchId = custody[i].dispatch_id || null
       break
     }
   }
   if (holder === null) return custody[custody.length - 1]
   for (let i = custody.length - 1; i >= 0; i -= 1) {
     const entry = custody[i]
-    const supersededLeg = LEG_OUTCOMES.has(entry.event)
+    if (!LEG_OUTCOMES.has(entry.event)) return entry
+    if (entry.dispatch_id && holderDispatchId) {
+      if (String(entry.dispatch_id) === String(holderDispatchId)) return entry
+      continue
+    }
+    const supersededLeg = entry.event !== 'reviewed'
       && entry.agent_id && String(entry.agent_id) !== holder
     if (!supersededLeg) return entry
   }

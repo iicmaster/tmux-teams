@@ -21,7 +21,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Script } from 'node:vm'
 
-import { teamOccupancy } from '../plugins/tmux-teams/skills/tmux-teams/scripts/dispatch-facts.mjs'
+import { currentEntry, teamOccupancy } from '../plugins/tmux-teams/skills/tmux-teams/scripts/dispatch-facts.mjs'
 import {
   applyHarvest, planDispatches, planEscalation, planHarvest, tick,
 } from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs'
@@ -406,6 +406,28 @@ test('a rejected review goes back to this team, not to the next one', () => {
   assert.equal(plan.team, 'build', 'a rejection is the inner loop — it stays inside the team')
   assert.deepEqual(planPulls(graph, items, '2026-07-27T09:00:00.000Z')
     .filter((entry) => entry.action === 'pull'), [])
+})
+
+test('a review names its own leg, so a later reassignment can tell it apart from a live one', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-review-leg-'))
+  try {
+    mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
+    writeFileSync(join(dir, '.mailbox-out', 'b-review'), 'It does what the request asked for.\n\nVERDICT: pass\nREASON: matches the brief\n')
+    const graph = graphOf(TWO_TEAMS)
+    const items = itemsOnDisk(dir, ['tok', [
+      { event: 'assigned', agent_id: 'b_w1', task_id: 'b-1' },
+      { event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done' },
+      { event: 'assigned', agent_id: 'b_e', task_id: 'b-review', dispatch_id: 'rev-1' },
+      { event: 'delivered', agent_id: 'b_e', task_id: 'b-review', terminal: 'done', dispatch_id: 'rev-1' },
+    ]])
+
+    const [event] = applyHarvest(dir, graph, planHarvest(graph, items), '2026-07-27T09:00:00.000Z')
+    assert.equal(event.event, 'reviewed')
+    assert.equal(event.verdict, 'pass')
+    // Without this the review is indistinguishable from a stale one a killed and
+    // retried evaluator leg writes on its way out (dispatch-facts.mjs:129).
+    assert.equal(event.dispatch_id, 'rev-1', 'the review did not name its own leg')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
 test('an evaluator that states no verdict is not a pass', () => {
@@ -1284,6 +1306,57 @@ test('a pull the writer refuses comes back on the decision, not only on stderr',
 })
 
 // ── a leg that no longer holds the token cannot say where it is ──────────────
+
+test('a superseded review pass does not clear the pull gate for a leg that is still running', () => {
+  // The other half of GitHub #30 (dispatch-facts.mjs:129): a review leg can be
+  // killed and retried exactly like a worker leg can, and unlike a trailing
+  // delivered/lost this one does not merely misdraw a card — a superseded
+  // `reviewed pass` clears pull-controller.mjs's gate and hands the token to the
+  // next team while the retried leg is still running. Same evaluator both times,
+  // so agent_id cannot tell the legs apart; dispatch_id can.
+  const graph = graphOf(TWO_TEAMS)
+  const custody = [
+    { at: '2026-07-27T09:00:00.000Z', event: 'assigned', agent_id: 'b_w1', task_id: 'b-1', dispatch_id: 'd-1' },
+    { at: '2026-07-27T09:01:00.000Z', event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done', timed_out: false, evidence_present: true },
+    { at: '2026-07-27T09:02:00.000Z', event: 'assigned', agent_id: 'b_e', task_id: 'b-1-review', dispatch_id: 'r-1' },
+    { at: '2026-07-27T09:03:00.000Z', event: 'assigned', agent_id: 'b_e', task_id: 'b-1-review-2', dispatch_id: 'r-2' },
+    // The dead review leg (r-1), telling the truth about itself after the retry
+    // (r-2) had already replaced it.
+    { at: '2026-07-27T09:04:00.000Z', event: 'reviewed', agent_id: 'b_e', verdict: 'pass', reviewed_task: 'b-1', reason: 'it does what the request asked for', dispatch_id: 'r-1' },
+  ]
+  const items = itemsOf(['tok', custody])
+
+  assert.equal(currentEntry(custody).task_id, 'b-1-review-2', 'the stale pass was read as where the token is')
+  assert.deepEqual(teamOccupancy(graph, items).held.get('build'), ['tok'], 'the stale pass moved the token off the seat still running it')
+  assert.deepEqual(planPulls(graph, items, '2026-07-27T09:05:00.000Z'), [], 'a superseded review pass still cleared the pull gate')
+})
+
+test('two legs by the same agent are told apart by which one a trailing delivered reports on', () => {
+  // Hole (b) at dispatch-facts.mjs:129: two legs run by the SAME agent used to
+  // be indistinguishable, because the only signal was agent_id and it reads the
+  // same for both. `delivered` already carries dispatch_id for free — every
+  // companion stamps its own on every line it writes (acp-companion.mjs:1622) —
+  // so this one needed no writer change at all.
+  const graph = graphOf(TWO_TEAMS)
+  const custody = [
+    { at: '2026-07-27T09:00:00.000Z', event: 'assigned', agent_id: 'b_w1', task_id: 'b-1', dispatch_id: 'd-1' },
+    // Reassigned to the SAME agent before the first leg reported anything.
+    { at: '2026-07-27T09:01:00.000Z', event: 'assigned', agent_id: 'b_w1', task_id: 'b-2', dispatch_id: 'd-2' },
+    // The first leg (d-1), reporting in late on a task nobody is waiting on.
+    { at: '2026-07-27T09:02:00.000Z', event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done', timed_out: false, evidence_present: true, dispatch_id: 'd-1' },
+  ]
+  const items = itemsOf(['tok', custody])
+
+  // Occupancy alone cannot answer this and it is worth saying why: both legs
+  // belong to the same agent, so both map to the same team, and a team-granular
+  // count reads identical whichever leg is picked. The assertion has to name the
+  // leg, or it looks like coverage while testing nothing.
+  assert.equal(currentEntry(custody).task_id, 'b-2', 'the stale delivered for b-1 was read as current')
+  assert.equal(currentEntry(custody).event, 'assigned', 'the live leg is still assigned, not delivered')
+  const occupancy = teamOccupancy(graph, items)
+  assert.deepEqual(occupancy.held.get('build'), ['tok'], 'the token still belongs to build — it never left')
+  assert.equal(occupancy.counts.get('build'), 1)
+})
 
 test('a killed leg reporting in late does not drag the token back to its team', () => {
   // GitHub #30, from the real run: a review leg was killed, a human sent the

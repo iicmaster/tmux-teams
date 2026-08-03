@@ -535,14 +535,21 @@ go — the runner refused its own repair on every tick, visibly and for ever.
   that write is honestly the newest and no sort can separate it from a real
   move — there is no recorded field for *when the work finished* as opposed to
   *when this was written*. `currentEntry` takes the agent named on the newest
-  `assigned` as the holder and skips a trailing `delivered`/`lost` from anyone
-  else. It is still evidence about that leg; it is not where the token IS.
-  Everything else stays last-wins.
-  Two limits, both deliberate: two legs run by the same agent are
-  indistinguishable without leg identity (`dispatch_id`), and `reviewed` is not
-  in the set because an evaluator does not always have an `assigned` of its own,
-  so treating it as a leg outcome would read every ordinary review as
-  superseded — measured, four tests.
+  `assigned` as the holder and skips a trailing `delivered`/`lost`/`reviewed`
+  that belongs to an older leg. It is still evidence about that leg; it is not
+  where the token IS. Everything else stays last-wins.
+  "Belongs to an older leg" is decided by `dispatch_id` when both the trailing
+  entry and the holder's `assigned` recorded one — that tells two legs run by
+  the SAME agent apart, which agent_id alone cannot. `reviewed` is in the set
+  now, but it never falls back to agent_id: an evaluator does not always have
+  an `assigned` of its own when its review lands, so its agent_id is never
+  expected to equal the holder's, and treating that mismatch as staleness is
+  what read every ordinary review as superseded — measured, four tests. An
+  unlabeled `reviewed` (no `dispatch_id` on either side, which real ledgers
+  still write) is trusted exactly as before rather than guessed at by agent_id;
+  `delivered`/`lost` keep the agent_id fallback for that same case, because a
+  report from an agent that plainly is not the holder is still real evidence
+  for those two.
   Readers that answer position or state go through it: `teamOccupancy`,
   `planPulls`, `planHarvest`, `nextStep`, `boardSummary`, and the kanban card.
   Readers that answer *when* something last happened do not, and must not.
@@ -1375,6 +1382,22 @@ still holds the token. GitHub #30, from a real run: a killed review leg wrote it
 `delivered` after a human had already returned the token to development and the
 runner had assigned a dev worker, so the board drew it back in review and the
 runner dispatched a second review worker into a team the token had left.
+
+**2026-08-03 — leg identity closes the review half of #30.** Behaviour changed
+in `dispatch-facts.mjs` (`currentEntry`, `LEG_OUTCOMES` now includes
+`reviewed`) and in `loop-runner.mjs` (`harvestEvent` stamps `dispatch_id` on
+the `reviewed` line it writes). §6 gained the `dispatch_id` rule and its two
+limits collapsed to one. Under §15.3, the document was wrong: §6 named "leg
+identity (`dispatch_id`)" as a known limit and said `reviewed` could not join
+`LEG_OUTCOMES` without reproducing the false positive the four tests caught —
+both were true only because nothing yet compared a trailing entry's own
+`dispatch_id` against the holder's. The remaining known limit is unchanged: a
+`delivered`/`lost`/`reviewed` with no `dispatch_id`, or a holder `assigned`
+with none, still falls back to (or, for `reviewed`, forgoes) the agent_id
+check exactly as before — an old ledger reads exactly as it did before this
+change, never guessed into "superseded" for lack of a field it does not carry.
+`lost` is still runner-written without a `dispatch_id`, so two legs by the same
+agent whose superseded one ended in `lost` remain indistinguishable.
 
 **2026-07-28 — WIP derived, models declared, the sanctioned writer, the runner's
 own pulse.** Behaviour changed in `workflow-graph.mjs`, `loop-runner.mjs`,

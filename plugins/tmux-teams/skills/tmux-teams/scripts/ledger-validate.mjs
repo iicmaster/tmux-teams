@@ -41,9 +41,10 @@ export const COMMON_FIELDS = ['at', 'event', 'work_item', 'workflow']
 // Contract §4, one row per event. `required` is what the table's "Also carries"
 // column names; `forbidden` is the field the table names as deliberately absent.
 // Only the event NAME is a closed vocabulary — extra fields are allowed, because
-// real lines legitimately carry `reason` on a `pulled` or `dispatch_id` on a
-// `delivered` and rejecting those would fight the writers this file exists to
-// protect.
+// real lines legitimately carry `reason` on a `pulled`, or `dispatch_id` on a
+// `delivered` or a `reviewed` — dispatch-facts.mjs:currentEntry reads the latter
+// to tell a stale review from the leg still running it — and rejecting those
+// would fight the writers this file exists to protect.
 export const EVENT_SPEC = {
   // §4.6: work entering the graph for the first time. `pulled` cannot say this
   // — a pull is a team TAKING work from another team, and the first team on a
