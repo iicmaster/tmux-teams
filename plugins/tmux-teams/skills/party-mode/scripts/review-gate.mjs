@@ -59,9 +59,10 @@ async function defaultLaneRunner(profile, packet, deps) {
   }
   const env = typeof deps.buildProfileEnv === 'function' ? deps.buildProfileEnv(profile.id ?? profile) : {}
   const argv = Array.isArray(profile.command) ? profile.command : [profile.command]
-  // Review ACP is always a plan/read-only lane; a provider-specific profile
-  // cannot silently downgrade this safety mode.
-  const configured = { ...profile, reviewMode: 'plan' }
+  // Review ACP uses the profile's declared mode; plan is the default, but a
+  // lane may declare reviewMode='default' for models that cannot enter plan
+  // mode while the runner still enforces the zero-tool isolation contract.
+  const configured = { ...profile }
   return deps.runAcpReview({
     lane: profile.lane ?? profile.id,
     profile: configured,
@@ -80,7 +81,7 @@ function runnerEvidenceError(profile, value, expectedInputHash) {
   if (value.provider !== profile.provider) return 'runner/provider identity mismatch'
   if (value.model !== profile.model) return 'runner/model identity mismatch'
   if (value.displayModel !== (profile.displayModel ?? `${profile.provider}/${profile.model}`)) return 'runner/display-model identity mismatch'
-  if (value.mode !== 'plan') return 'runner did not enforce plan mode'
+  if (value.mode !== profile.reviewMode) return 'runner did not enforce declared review mode'
   if (value.inputHash !== expectedInputHash) return 'static packet hash mismatch'
   if (typeof value.provenance !== 'string' || !value.provenance.startsWith('review-runner:')) return 'invalid runner provenance'
   for (const [configId, wanted] of Object.entries(profile.config ?? {})) {
@@ -116,21 +117,34 @@ function runnerEvidenceError(profile, value, expectedInputHash) {
   return null
 }
 
+function laneStderrPreview(attempt) {
+  const text = attempt.result.status === 'rejected'
+    ? attempt.result.reason?.stderr ?? ''
+    : attempt.result.value?.stderr ?? ''
+  return String(text).replace(/\s+/g, ' ').trim().slice(0, 300)
+}
+
+function laneFailureMessage(attempt, detail) {
+  const lane = attempt.profile.lane ?? attempt.profile.id
+  const preview = laneStderrPreview(attempt)
+  return preview ? `${lane}: ${detail}; stderr: ${preview}` : `${lane}: ${detail}`
+}
+
 async function assessAttempt(attempt, validate, expectedInputHash) {
   if (attempt.result.status === 'rejected') {
     const code = attempt.result.reason?.code
     const failureKind = code === 'review' ? 'review' : code === 'policy' ? 'policy' : 'transport'
-    return { ...attempt, valid: false, failureKind, failure: `ACP lane failed (${code ?? 'transport'})` }
+    return { ...attempt, valid: false, failureKind, failure: laneFailureMessage(attempt, `ACP lane failed (${code ?? 'transport'})`) }
   }
   const value = attempt.result.value
   const evidenceError = runnerEvidenceError(attempt.profile, value, expectedInputHash)
-  if (evidenceError) return { ...attempt, valid: false, failureKind: 'review', failure: evidenceError }
+  if (evidenceError) return { ...attempt, valid: false, failureKind: 'review', failure: laneFailureMessage(attempt, evidenceError) }
   let checked
   try { checked = await validate(value.review, { profile: attempt.profile.id, value }) } catch {
-    return { ...attempt, valid: false, failureKind: 'review', failure: 'review validator threw' }
+    return { ...attempt, valid: false, failureKind: 'review', failure: laneFailureMessage(attempt, 'review validator threw') }
   }
   if (checked === false || checked?.valid === false || checked?.ok === false) {
-    return { ...attempt, valid: false, failureKind: 'review', failure: checked?.reason ?? 'review schema is invalid' }
+    return { ...attempt, valid: false, failureKind: 'review', failure: laneFailureMessage(attempt, checked?.reason ?? 'review schema is invalid') }
   }
   return {
     ...attempt,
@@ -153,6 +167,10 @@ async function assessAttempt(attempt, validate, expectedInputHash) {
       ...(attempt.replaces ? { replaces: attempt.replaces } : {}),
     }),
   }
+}
+
+function failedLaneMessages(attempts) {
+  return attempts.filter(a => !a.valid).map(a => a.failure).join('\n')
 }
 
 export async function runReviewGate(packet, {
@@ -185,7 +203,7 @@ export async function runReviewGate(packet, {
   // settle, which prevents duplicated concurrent reviews of the same packet.
   const originalFailures = attempts.filter(a => !a.valid && !isAgy(a.profile))
   if (originalFailures.length > 1) {
-    throw new ReviewTransportError('transport', 'more than one non-AGY review lane failed; one reserve cannot restore an exact-three panel')
+    throw new ReviewTransportError('transport', `more than one non-AGY review lane failed; one reserve cannot restore an exact-three panel\n${failedLaneMessages(attempts)}`)
   }
   const originalFailure = originalFailures[0]
   if (originalFailure) {
@@ -208,7 +226,7 @@ export async function runReviewGate(packet, {
     }
   }
   const accepted = attempts.filter(a => a.valid)
-  if (accepted.length !== 3) throw new ReviewTransportError('transport', `review gate accepted ${accepted.length}; exactly three are required`)
+  if (accepted.length !== 3) throw new ReviewTransportError('transport', `review gate accepted ${accepted.length}; exactly three are required\n${failedLaneMessages(attempts)}`)
   const acceptedByProfile = new Map(accepted.map(attempt => [attempt.profile.id, attempt.item]))
   const reviewOrder = activePlan?.reviewers ?? accepted.map(attempt => attempt.profile.id)
   const reviews = reviewOrder.map(id => acceptedByProfile.get(id)).filter(Boolean)

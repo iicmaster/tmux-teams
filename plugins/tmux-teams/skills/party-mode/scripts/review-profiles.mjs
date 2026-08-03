@@ -21,6 +21,7 @@ const routedSettingsEnv = new Set([
   'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL',
   'ANTHROPIC_CUSTOM_HEADERS', 'ANTHROPIC_DEFAULT_OPUS_MODEL',
   'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'CLAUDE_CODE_SUBAGENT_MODEL', 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS',
 ])
 
 function freeze(value) {
@@ -39,19 +40,26 @@ export const REVIEW_PROFILES = freeze({
     config: { model: 'gemini-3.6-flash-high', mode: 'plan' },
   },
   kimi: {
-    id: 'kimi', provider: 'kimi', family: 'kimi', model: 'kimi-code/k3', displayModel: 'kimi/k3',
-    command: ['kimi', 'acp'], reviewMode: 'plan', osSandbox: 'bwrap',
-    config: { model: 'kimi-code/k3', mode: 'plan' },
+    id: 'kimi', provider: 'kimi', family: 'kimi', model: 'opus',
+    displayModel: 'kimi/opus',
+    reviewMode: 'plan', osSandbox: 'bwrap',
+    command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
+    settingsFile: 'settings-kimi.json',
+    sessionSettings: { availableModels: ['opus'] },
+    config: { model: 'opus', mode: 'plan' },
   },
   zai: {
     id: 'zai', provider: 'zai', family: 'zai', model: 'glm-5.2',
     displayModel: 'zai/glm-5.2',
     thinkingBudgetTokens: 4096,
-    reviewMode: 'plan', osSandbox: 'bwrap',
+    // glm-5.2 cannot reconcile plan-mode + JSON-only review protocol, so this
+    // lane runs in default mode while keeping the same zero-tool isolation
+    // contract that makes plan mode read-only.
+    reviewMode: 'default', osSandbox: 'bwrap',
     command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
     settingsFile: 'settings-zai.json',
     sessionSettings: { availableModels: ['glm-5.2'] },
-    config: { model: 'glm-5.2', mode: 'plan' },
+    config: { model: 'glm-5.2', mode: 'default' },
   },
   claude: {
     id: 'claude', provider: 'anthropic', family: 'claude', model: 'claude-opus-4-8',
@@ -232,7 +240,7 @@ export function buildProfileEnv(profileId, source = process.env, {
   }
   const path = executablePath(source)
   if (path) env.PATH = path
-  if (profile.id === 'zai') Object.assign(env, loadRoutedEnvironment(profile, source, settingsLoader))
+  if (profile.id === 'zai' || profile.id === 'kimi') Object.assign(env, loadRoutedEnvironment(profile, source, settingsLoader))
   for (const key of providerSecrets[profile.id]) {
     if (source?.[key] !== undefined && source[key] !== null) env[key] = String(source[key])
   }
@@ -242,7 +250,7 @@ export function buildProfileEnv(profileId, source = process.env, {
     env.AGY_BIN = agyBinary
     env.AGY_SKIP_DOWNLOAD = '1'
   }
-  if (profile.id === 'zai' || profile.id === 'claude') {
+  if (profile.id === 'zai' || profile.id === 'claude' || profile.id === 'kimi') {
     env.CLAUDE_MODEL_CONFIG = JSON.stringify({ availableModels: [profile.model] })
   }
   if (Number.isSafeInteger(profile.thinkingBudgetTokens) && profile.thinkingBudgetTokens >= 0) {

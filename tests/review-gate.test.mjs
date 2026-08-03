@@ -47,7 +47,7 @@ const runnerResult = (p, staticPacket, review = validReview) => ({
   provider: p.provider,
   model: p.model,
   displayModel: p.displayModel ?? `${p.provider}/${p.model}`,
-  mode: 'plan',
+  mode: p.reviewMode ?? 'plan',
   acknowledgements: Object.fromEntries(Object.entries(p.config ?? {}).map(([id, value]) => [
     id,
     { value, source: 'session_config' },
@@ -80,12 +80,13 @@ const runnerResult = (p, staticPacket, review = validReview) => ({
   packetBytes: 100,
 })
 const keyedProfiles = entries => Object.fromEntries(entries.map(entry => [entry.id, entry]))
-const gateProfile = (id, family) => profile(id, {
+const gateProfile = (id, family, extra = {}) => profile(id, {
   command: [process.execPath, MOCK],
   args: undefined,
   provider: `${id}-provider`,
   family,
   displayModel: `${id}/${id}-review-model`,
+  ...extra,
 })
 const testPlan = (reviewers, reserve = null) => ({
   blocked: false,
@@ -482,7 +483,7 @@ test('gate starts three primaries in parallel and reports exactly three accepted
 test('real gate, transport, schema validator, and synthesis accept exactly three mock ACP reviews', async () => {
   const profiles = keyedProfiles([
     gateProfile('kimi', 'kimi'),
-    gateProfile('zai', 'zai'),
+    gateProfile('zai', 'zai', { reviewMode: 'default', config: { model: 'zai-review-model', mode: 'default' } }),
     gateProfile('agy', 'gemini'),
   ])
   const out = await runReviewGate(packet(), {
@@ -578,7 +579,7 @@ test('final gate rejects a fallback that introduces duplicate or primary-matchin
 test('real transport/schema failure uses one non-Claude reserve and still synthesizes an exact-three panel', async () => {
   const profiles = keyedProfiles([
     gateProfile('kimi', 'kimi'),
-    gateProfile('zai', 'zai'),
+    gateProfile('zai', 'zai', { reviewMode: 'default', config: { model: 'zai-review-model', mode: 'default' } }),
     gateProfile('agy', 'gemini'),
     gateProfile('codex', 'openai'),
   ])
@@ -635,7 +636,7 @@ test('a non-AGY failure gets one reserve only after originals settle; AGY failur
 test('provider-limited direct Claude is never launched when claude-zai would violate the final panel', async () => {
   const calls = []
   const profiles = keyedProfiles([
-    gateProfile('kimi', 'kimi'), gateProfile('zai', 'zai'), gateProfile('agy', 'gemini'), gateProfile('claude', 'claude'),
+    gateProfile('kimi', 'kimi'), gateProfile('zai', 'zai', { reviewMode: 'default', config: { model: 'zai-review-model', mode: 'default' } }), gateProfile('agy', 'gemini'), gateProfile('claude', 'claude'),
   ])
   await assert.rejects(runReviewGate(packet(), {
     profiles,
@@ -654,7 +655,7 @@ test('provider-limited Claude lane falls back to claude-zai before any direct Cl
   const calls = []
   const profiles = keyedProfiles([
     gateProfile('claude', 'claude'), gateProfile('kimi', 'kimi'),
-    gateProfile('agy', 'gemini'), gateProfile('zai', 'zai'),
+    gateProfile('agy', 'gemini'), gateProfile('zai', 'zai', { reviewMode: 'default', config: { model: 'zai-review-model', mode: 'default' } }),
   ])
   const out = await runReviewGate(packet(), {
     profiles,
@@ -683,7 +684,7 @@ test('canonical availability matrix never launches or prepares direct Claude', a
   const makeProfiles = () => keyedProfiles([
     gateProfile('agy', 'gemini'),
     gateProfile('kimi', 'kimi'),
-    gateProfile('zai', 'zai'),
+    gateProfile('zai', 'zai', { reviewMode: 'default', config: { model: 'zai-review-model', mode: 'default' } }),
     gateProfile('codex', 'openai'),
     gateProfile('claude', 'claude'),
   ])
@@ -771,6 +772,26 @@ test('fallback synthesis receives the replacement plan and non-PASS verdicts blo
     validateReview: () => true,
     synthesizeReviews: () => ({ verdict: 'OBJECTIONS' }),
   }), e => e.code === 'policy' && e.report?.ok === false && e.report?.synthesis?.verdict === 'OBJECTIONS')
+})
+
+test('gate failure surfaces lane id and captured stderr diagnostics', async () => {
+  const profiles = keyedProfiles([profile('oc'), profile('codex'), profile('agy')])
+  const stderr = 'model refused plan mode and emitted prose instead of JSON'
+  await assert.rejects(runReviewGate(packet(), {
+    profiles,
+    runAcpReview: async ({ profile }) => {
+      if (profile.id === 'oc') {
+        const err = new Error('boom')
+        err.stderr = stderr
+        throw err
+      }
+      return runnerResult(profile, packet())
+    },
+    buildProfileEnv: () => ({}),
+    planReviewPanel: () => testPlan(['oc', 'codex', 'agy']),
+    validateReview: () => true,
+    synthesizeReviews: () => ({ verdict: 'PASS' }),
+  }), error => error.message.includes('oc:') && error.message.includes(stderr))
 })
 
 test('CLI preserves a structured objection report on stdout while returning policy exit 5', async () => {

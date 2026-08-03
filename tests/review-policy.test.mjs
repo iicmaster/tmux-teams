@@ -53,14 +53,17 @@ test('a Gemini 3.1 reviewer model is refused rather than run', () => {
 test('immutable ACP profiles pin providers, models, argv, and AGY plan mode', () => {
   assert.ok(Object.isFrozen(REVIEW_PROFILES))
   assert.deepEqual(REVIEW_PROFILES.agy.command, ['bunx', 'antigravity-acp@1.0.0'])
-  assert.deepEqual(REVIEW_PROFILES.kimi.command, ['kimi', 'acp'])
+  assert.deepEqual(REVIEW_PROFILES.kimi.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
+  assert.equal(REVIEW_PROFILES.kimi.settingsFile, 'settings-kimi.json')
+  assert.deepEqual(REVIEW_PROFILES.kimi.sessionSettings, { availableModels: ['opus'] })
+  assert.equal(REVIEW_PROFILES.kimi.model, 'opus')
+  assert.equal(REVIEW_PROFILES.kimi.displayModel, 'kimi/opus')
+  assert.deepEqual(REVIEW_PROFILES.kimi.config, { model: 'opus', mode: 'plan' })
   assert.deepEqual(REVIEW_PROFILES.zai.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
   assert.deepEqual(REVIEW_PROFILES.claude.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
   assert.deepEqual(REVIEW_PROFILES.codex.command, ['npx', '-y', '@agentclientprotocol/codex-acp@1.1.7'])
   assert.deepEqual(REVIEW_PROFILES.agy.config, { model: 'gemini-3.6-flash-high', mode: 'plan' })
-  assert.deepEqual(REVIEW_PROFILES.kimi.config, { model: 'kimi-code/k3', mode: 'plan' })
-  assert.equal(REVIEW_PROFILES.kimi.displayModel, 'kimi/k3')
-  assert.deepEqual(REVIEW_PROFILES.zai.config, { model: 'glm-5.2', mode: 'plan' })
+  assert.deepEqual(REVIEW_PROFILES.zai.config, { model: 'glm-5.2', mode: 'default' })
   assert.equal(REVIEW_PROFILES.zai.thinkingBudgetTokens, 4096)
   assert.deepEqual(REVIEW_PROFILES.codex.config, {
     model: 'gpt-5.6-sol',
@@ -68,7 +71,9 @@ test('immutable ACP profiles pin providers, models, argv, and AGY plan mode', ()
     mode: 'read-only',
     collaboration_mode: 'plan',
   })
-  assert.ok(Object.values(REVIEW_PROFILES).every(profile => profile.reviewMode === 'plan'))
+  assert.equal(REVIEW_PROFILES.zai.reviewMode, 'default')
+  assert.ok(Object.values(REVIEW_PROFILES).every(profile => profile.reviewMode === 'plan' || profile.reviewMode === 'default'))
+  assert.ok(REVIEW_PROFILES.agy.reviewMode === 'plan')
 })
 
 test('primary normalization is robust and blocks Gemini/unknown primaries', () => {
@@ -228,6 +233,7 @@ test('environment is allowlisted, provider-scoped, and launch settings are injec
     PATH: '/bin',
     LANG: 'C',
     KIMI_API_KEY: 'kimi',
+    CLAUDE_MODEL_CONFIG: '{"availableModels":["opus"]}',
   })
   const launch = buildAcpLaunch('agy', {
     env: { ...source, AGY_BIN: '/evil/agy' },

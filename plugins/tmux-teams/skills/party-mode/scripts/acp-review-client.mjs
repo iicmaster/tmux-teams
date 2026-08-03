@@ -363,19 +363,6 @@ async function prepareProviderState(profile, stateRoot, sourceEnv) {
     await writeFile(statePath(relative), contents, { encoding: 'utf8', mode: 0o600 })
   }
 
-  if (profile.id === 'kimi') {
-    if (!home) throw new ReviewTransportError('config', 'Kimi ACP review requires an explicit HOME')
-    await copyHomeTree(join('.kimi-code', 'credentials'))
-    await copyHomeTree(join('.kimi-code', 'oauth'))
-    for (const name of ['config.toml', 'device_id', 'migrations-effort.json', 'tui.toml']) {
-      await copyHomeFile(join('.kimi-code', name))
-    }
-    for (const name of ['sessions', 'logs', 'telemetry', 'updates', 'user-history']) {
-      await emptyDirectory(join('.kimi-code', name))
-    }
-    await emptyFile(join('.kimi-code', 'session_index.jsonl'))
-    await emptyFile(join('.kimi-code', 'workspaces.json'), '{}')
-  }
   if (profile.id === 'agy') {
     if (!home) throw new ReviewTransportError('config', 'AGY ACP review requires an explicit HOME')
     await copyHomeFile(join('.agy-acp', 'models.json'))
@@ -387,7 +374,7 @@ async function prepareProviderState(profile, stateRoot, sourceEnv) {
     }
     await emptyFile(join('.gemini', 'antigravity-cli', 'history.jsonl'))
   }
-  if (profile.id === 'zai' || profile.id === 'claude') {
+  if (profile.id === 'zai' || profile.id === 'claude' || profile.id === 'kimi') {
     const configDir = statePath('.claude')
     await mkdir(configDir, { recursive: true })
     await writeFile(join(configDir, 'settings.json'), '{}', { encoding: 'utf8', mode: 0o600 })
@@ -427,7 +414,7 @@ function isWithin(candidate, parent) {
 
 const expectedProfileExecutable = Object.freeze({
   agy: 'bunx',
-  kimi: 'kimi',
+  kimi: 'npx',
   zai: 'npx',
   claude: 'npx',
   codex: 'npx',
@@ -521,8 +508,9 @@ export async function runAcpReview({
   if (!command || typeof command !== 'string' || !Array.isArray(args)) {
     throw new ReviewTransportError('input', 'ACP review command and argv array are required')
   }
-  if (profile.reviewMode !== 'plan') {
-    throw new ReviewTransportError('input', 'ACP review profiles must declare reviewMode=plan')
+  const allowedReviewModes = new Set(['plan', 'default'])
+  if (!allowedReviewModes.has(profile.reviewMode)) {
+    throw new ReviewTransportError('input', 'ACP review profiles must declare reviewMode=plan or reviewMode=default')
   }
   if (timeoutMs !== null &&
       (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)) {
@@ -1039,6 +1027,7 @@ export async function runAcpReview({
     clearTimeout(terminateTimer)
     clearTimeout(killTimer)
     if (!(error instanceof ReviewTransportError)) throw new ReviewTransportError('transport', error.message, error)
+    error.stderr = stderr
     error.stderrDigest = createHash('sha256').update(stderr).digest('hex')
     error.stderrBytes = Buffer.byteLength(stderr)
     error.timedOut = timedOut
