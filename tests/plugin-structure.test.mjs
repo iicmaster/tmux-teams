@@ -14,7 +14,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PLUGIN = join(ROOT, 'plugins/tmux-teams')
 const SKILLS = ['tmux-teams', 'party-mode', 'party-auto', 'party-advise', 'sqthink', 'codex-tmux-driver',
   'graph-setup', 'claude-advisor', 'codex-advisor']
-const RELEASE_VERSION = '0.14.4'
+const RELEASE_VERSION = '0.14.5'
 // The Stage 1 CLI entry points went on 2026-07-29 and the rest of the phase
 // subsystem — nine scripts, its gate, its store and its exporter — went on
 // 2026-08-02. The note that used to stand here said deleting the remainder
