@@ -32,7 +32,7 @@ import { existsSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync 
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
+import { currentEntry, readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
 import { MAX_DOOR_REFUSALS, validateLedgerFile } from './ledger-validate.mjs'
 import { appendEvent as appendLedgerEvent, ledgerPath } from './ledger-writer.mjs'
 import { planPulls, applyPulls } from './pull-controller.mjs'
@@ -402,7 +402,7 @@ function composeBrief(repo, graph, plan, item, scratchDir, answerDeadlineSec = A
 export function planHarvest(graph, items, hasOutbox = () => false) {
   const jobs = []
   for (const item of items.values()) {
-    const last = item.custody[item.custody.length - 1]
+    const last = currentEntry(item.custody)
     if (!last) continue
     // The controller's leg carries no work item, so its answer cannot arrive as
     // a `delivered` event on this token. The escalation names the task; the
@@ -698,7 +698,10 @@ const legCeiling = (item) => MAX_LEGS + item.custody
   .reduce((sum, entry) => sum + (Number.isInteger(entry.grant) ? Math.min(Math.max(entry.grant, 0), RESUME_GRANT) : 0), 0)
 
 function nextStep(graph, team, item, { busy, nowMs, zombieSec, answerDeadlineSec }) {
-  const last = item.custody[item.custody.length - 1]
+  // A superseded leg reporting in late must not decide the next step: it would
+  // read `delivered` on a token a newer `assigned` already moved, and dispatch
+  // against a team that is not holding it.
+  const last = currentEntry(item.custody)
   const legs = item.custody.filter((entry) => entry.event === 'assigned').length
   const ceiling = legCeiling(item)
   if (legs >= ceiling) {
@@ -875,7 +878,7 @@ export function planDispatches(graph, items, busy, {
 const boardSummary = (graph, items, occupancy) => graph.teams.map((team) => {
   const held = occupancy.held.get(team.team_id) || []
   const detail = held.map((workItem) => {
-    const last = items.get(workItem).custody[items.get(workItem).custody.length - 1]
+    const last = currentEntry(items.get(workItem).custody)
     const extra = [last.verdict, last.terminal && last.terminal !== 'done' ? last.terminal : '']
       .filter(Boolean).join(' ')
     return `${workItem} (${last.event}${extra ? ` ${extra}` : ''})`

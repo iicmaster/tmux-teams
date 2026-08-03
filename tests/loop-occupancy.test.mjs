@@ -1282,3 +1282,65 @@ test('a pull the writer refuses comes back on the decision, not only on stderr',
       .trim().split('\n').length, 2, 'a line reached a ledger that had already failed validation')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
+
+// ── a leg that no longer holds the token cannot say where it is ──────────────
+
+test('a killed leg reporting in late does not drag the token back to its team', () => {
+  // GitHub #30, from the real run: a review leg was killed, a human sent the
+  // token back to development, the runner dispatched a dev worker — and THEN
+  // the dead review companion wrote its `delivered` on the way out. `at` is
+  // stamped when a line is written, so that write is honestly the newest, and
+  // sorting cannot tell it apart from a real move. Every reader that took the
+  // newest event as the current position followed it back to review: the board
+  // drew it there and the runner dispatched a second review worker into it.
+  const graph = graphOf(TWO_TEAMS)
+  const custody = [
+    { at: '2026-07-27T09:00:00.000Z', event: 'pulled', agent_id: 'b_d', from_team: 'build', to_team: 'build' },
+    { at: '2026-07-27T09:01:00.000Z', event: 'assigned', agent_id: 'b_w1', task_id: 'b-1', dispatch_id: 'd-1' },
+    { at: '2026-07-27T09:02:00.000Z', event: 'returned', to_team: 'test', refused_by: 'b_d', reason: 'sent back by hand' },
+    { at: '2026-07-27T09:03:00.000Z', event: 'assigned', agent_id: 't_w1', task_id: 't-1', dispatch_id: 'd-2' },
+    // The dead leg, arriving last and telling the truth about itself.
+    { at: '2026-07-27T09:04:00.000Z', event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done', timed_out: false, evidence_present: true },
+  ]
+  const items = itemsOf(['tok', custody, { expectInvalid: true, why: 'the out-of-order history IS the subject' }])
+
+  const occupancy = teamOccupancy(graph, items)
+  assert.deepEqual(occupancy.held.get('test'), ['tok'], 'the token left the team that reported late')
+  assert.deepEqual(occupancy.held.get('build'), [], 'a superseded leg pulled the token back')
+  assert.equal(occupancy.counts.get('build'), 0)
+
+  // And the ordinary case still reads last-wins: the same agent finishing its
+  // own live leg is not superseded by anything.
+  const live = itemsOf(['ok', custody.slice(0, 2).concat([
+    { at: '2026-07-27T09:05:00.000Z', event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done', timed_out: false, evidence_present: true },
+  ])])
+  assert.deepEqual(teamOccupancy(graph, live).held.get('build'), ['ok'])
+})
+
+test('the runner dispatches into the team that holds the token, not the one that reported late', () => {
+  // `nextStep` re-derives its own `last`, so a fix confined to `teamOccupancy`
+  // would move the card and still send a worker to the wrong team.
+  const graph = graphOf(TWO_TEAMS)
+  const items = itemsOf(['tok', [
+    { at: '2026-07-27T09:00:00.000Z', event: 'pulled', agent_id: 'b_d', from_team: 'build', to_team: 'build' },
+    { at: '2026-07-27T09:01:00.000Z', event: 'assigned', agent_id: 'b_w1', task_id: 'b-1', dispatch_id: 'd-1' },
+    { at: '2026-07-27T09:02:00.000Z', event: 'returned', to_team: 'test', refused_by: 'b_d', reason: 'sent back by hand' },
+    // The new leg. It is what makes the old one superseded: without a newer
+    // `assigned` the previous worker still holds the token, and its `delivered`
+    // is its own live leg finishing — which is why this line is here and not a
+    // detail of the fixture.
+    { at: '2026-07-27T09:03:00.000Z', event: 'assigned', agent_id: 't_w1', task_id: 't-1', dispatch_id: 'd-2' },
+    { at: '2026-07-27T09:04:00.000Z', event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done', timed_out: false, evidence_present: true },
+  ], { expectInvalid: true, why: 'the out-of-order history IS the subject' }])
+
+  const plans = planDispatches(graph, items, new Set())
+  const plan = plans.find((entry) => entry.work_item === 'tok')
+  assert.ok(plan, `the token fell out of planning entirely: ${JSON.stringify(plans)}`)
+  assert.equal(plan.team, 'test', 'the runner followed the leg that had already been superseded')
+  // And it is looking at the NEW leg, not the old one's outcome. `nextStep`
+  // picks its own entry, so a fix confined to occupancy would place the card in
+  // `test` and still act on `delivered` — dispatching an evaluator for a leg
+  // that belongs to a team the token has left.
+  assert.notEqual(plan.role, 'evaluator', `the runner acted on the superseded leg: ${JSON.stringify(plan)}`)
+  assert.equal(plan.agent_id ?? plan.agentId ?? 't_w1', 't_w1')
+})

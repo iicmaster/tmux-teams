@@ -398,3 +398,27 @@ test('a card whose next team has room is not labelled blocked', () => {
 
   const column = columnsOf(pageOf(dir)).get('Test')
 })
+
+// GitHub #30 on the board. A killed leg writes its `delivered` on the way out,
+// after a newer assignment already moved the token — and `at` is stamped when
+// the line is written, so that write is honestly the newest. A card that reads
+// its own state off the newest event shows a token working in a team it left.
+test('a card reads the leg that holds the token, not the one that reported late', () => {
+  const dir = repoWith(TWO_TEAMS, {
+    late: [
+      { at: '2026-07-27T06:00:00.000Z', event: 'pulled', agent_id: 'build_d', from_team: 'design', to_team: 'build' },
+      { at: '2026-07-27T06:30:00.000Z', event: 'assigned', agent_id: 'build_w1', task_id: 't-1' },
+      { at: '2026-07-27T07:00:00.000Z', event: 'pulled', agent_id: 'test_d', from_team: 'build', to_team: 'test' },
+      { at: '2026-07-27T07:10:00.000Z', event: 'assigned', agent_id: 'test_w1', task_id: 't-2' },
+      // The dead leg, arriving last and telling the truth about itself.
+      { at: '2026-07-27T07:20:00.000Z', event: 'delivered', agent_id: 'build_w1', task_id: 't-1', terminal: 'done' },
+    ],
+  })
+  const board = readBoard(dir, NOW)
+  const column = (id) => board.columns.find((entry) => entry.team_id === id)
+  assert.deepEqual(column('build').cards.map((card) => card.work_item), [],
+    'the card was dragged back by a leg that no longer holds it')
+  assert.deepEqual(column('test').cards.map((card) => card.work_item), ['late'])
+  // And the state on the card is the live leg's, not the dead one's outcome.
+  assert.doesNotMatch(String(column('test').cards[0].state), /done|delivered/i)
+})

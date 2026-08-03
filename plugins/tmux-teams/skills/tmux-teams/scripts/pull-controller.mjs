@@ -26,7 +26,7 @@
 // that never happened, which the failed-leg check below already refuses.
 import { validateLedger } from './ledger-validate.mjs'
 import { appendEvent } from './ledger-writer.mjs'
-import { readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
+import { currentEntry, readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
 import { readWorkflowGraph } from './graph.mjs'
 
 // Every line this file puts in a ledger names the same writer. The pull
@@ -50,7 +50,10 @@ export function planPulls(graph, items, now = new Date().toISOString()) {
   const pending = []
   const decisions = []
   for (const item of items.values()) {
-    const last = item.custody[item.custody.length - 1]
+    // The same entry `teamOccupancy` places by. This loop can append `pulled`,
+    // so reading a superseded leg here does not merely draw the token in the
+    // wrong column — it writes a handoff naming a team that is not holding it.
+    const last = currentEntry(item.custody)
     const team = teamOf.get(last.agent_id) ||
       graph.teams.find((entry) => entry.team_id === last.to_team) || null
     if (!team) continue

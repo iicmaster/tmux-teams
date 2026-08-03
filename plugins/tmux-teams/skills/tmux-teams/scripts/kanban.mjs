@@ -31,7 +31,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { KANIT_FONT_CSS } from '../assets/kanit/kanit-embedded.mjs'
-import { RELEASING_EVENTS, readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
+import { RELEASING_EVENTS, currentEntry, readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
 import { planPulls } from './pull-controller.mjs'
 import { clip, duration, esc, readWorkflowGraph } from './graph.mjs'
 import { NAV_CSS, renderNav } from './page-nav.mjs'
@@ -139,8 +139,8 @@ export function stateOf(graph, last) {
 // "How long has it been sitting HERE" needs the event that put it here. A token
 // that started in the first team of its route was never pulled into it, so the
 // fallback to the first recorded event is a real case, not a theoretical one.
-const placingEvent = (item, inTeam) => {
-  if (!inTeam) return item.custody[item.custody.length - 1]
+const placingEvent = (item, inTeam, last) => {
+  if (!inTeam) return last
   for (let i = item.custody.length - 1; i >= 0; i -= 1) {
     const entry = item.custody[i]
     if (entry.event === 'opened' || entry.event === 'pulled' || entry.event === 'returned') return entry
@@ -149,8 +149,10 @@ const placingEvent = (item, inTeam) => {
 }
 
 function cardOf(graph, item, { nowMs, inTeam, blockedReason }) {
-  const last = item.custody[item.custody.length - 1]
-  const placed = placingEvent(item, inTeam)
+  // Same entry the placement answers by: a card that reads its own state off a
+  // superseded leg's late `delivered` shows a token working somewhere it left.
+  const last = currentEntry(item.custody)
+  const placed = placingEvent(item, inTeam, last)
   const placedMs = Date.parse(placed.at || '')
   const { state, detail } = stateOf(graph, last)
   return {

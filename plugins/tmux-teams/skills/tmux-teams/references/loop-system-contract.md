@@ -528,6 +528,24 @@ go — the runner refused its own repair on every tick, visibly and for ever.
 - Placement: `teamOf(last.agent_id)` if the actor is a declared team member,
   otherwise `last.to_team`, otherwise the token is an **orphan** and is surfaced,
   never dropped.
+- `last` is `dispatch-facts.currentEntry(custody)`, **not** `custody[length-1]`.
+  They differ in one case and it is a real one: a leg that has been superseded
+  can still write its outcome afterwards. A companion killed mid-review writes
+  its `delivered` on the way out, `at` is stamped when the line is written, so
+  that write is honestly the newest and no sort can separate it from a real
+  move — there is no recorded field for *when the work finished* as opposed to
+  *when this was written*. `currentEntry` takes the agent named on the newest
+  `assigned` as the holder and skips a trailing `delivered`/`lost` from anyone
+  else. It is still evidence about that leg; it is not where the token IS.
+  Everything else stays last-wins.
+  Two limits, both deliberate: two legs run by the same agent are
+  indistinguishable without leg identity (`dispatch_id`), and `reviewed` is not
+  in the set because an evaluator does not always have an `assigned` of its own,
+  so treating it as a leg outcome would read every ordinary review as
+  superseded — measured, four tests.
+  Readers that answer position or state go through it: `teamOccupancy`,
+  `planPulls`, `planHarvest`, `nextStep`, `boardSummary`, and the kanban card.
+  Readers that answer *when* something last happened do not, and must not.
 - The rule is a **release list, not a whitelist**: an event nobody taught this
   function about leaves the work where it is rather than making it disappear.
 
@@ -1333,6 +1351,17 @@ line.
    editing a file while a worker holds it has already cost one overwrite.
 
 ### Amendment log
+
+**2026-08-03 — a superseded leg is evidence, not a position.** Behaviour changed
+in `dispatch-facts.mjs` (new `currentEntry`), and in the five readers that
+answer position or state: `pull-controller.planPulls`, `loop-runner.planHarvest`,
+`nextStep`, `boardSummary`, and `kanban.cardOf`. §6 gained the rule and §5 the
+cross-reference. Under §15.3, the document was wrong: it said a token's state is
+the name of its LAST event, and that is true only while the leg that wrote it
+still holds the token. GitHub #30, from a real run: a killed review leg wrote its
+`delivered` after a human had already returned the token to development and the
+runner had assigned a dev worker, so the board drew it back in review and the
+runner dispatched a second review worker into a team the token had left.
 
 **2026-07-28 — WIP derived, models declared, the sanctioned writer, the runner's
 own pulse.** Behaviour changed in `workflow-graph.mjs`, `loop-runner.mjs`,

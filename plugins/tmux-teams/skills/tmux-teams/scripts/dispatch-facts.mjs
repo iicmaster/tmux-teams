@@ -126,6 +126,50 @@ export function readWorkItems(repo) {
 // closed token back into a team's WIP.
 export const RELEASING_EVENTS = new Set(['completed', 'abandoned', 'audit_requested', 'audited'])
 
+// A leg is one `assigned` and everything that follows it until the next one.
+// The token's position is the newest event EXCEPT when that event is a leg
+// reporting in after it stopped holding the work: a companion killed mid-review
+// still writes its `delivered` on the way out, and `at` is stamped when the
+// line is written, so a dead leg's last word genuinely arrives after the token
+// moved on. Sorting cannot separate those — there is no recorded field for
+// "when the work finished" as opposed to "when this was written".
+//
+// So placement asks who holds the token now — the agent named on the newest
+// `assigned` — and skips a trailing `delivered`/`lost` from anyone else. It is
+// still evidence about that leg; it is not where the token IS. Everything else
+// stays last-wins, unchanged.
+//
+// Known limit: two legs run by the SAME agent are indistinguishable here, so a
+// stale report from an agent that was later re-assigned is not caught. Telling
+// those apart needs leg identity (`dispatch_id`), which nothing reads yet.
+// What a worker's leg says on its way out, and nothing else. `reviewed` was
+// tried here too — a superseded `reviewed pass` is the one stale outcome that
+// clears the pull controller's gate, so it can append a `pulled` rather than
+// merely misdraw a card — and it broke four tests that encode the pull flow,
+// for a reason worth keeping: an evaluator does not always have an `assigned`
+// of its own in the history, so "the agent named on the newest assigned" is not
+// the evaluator when its review lands, and every ordinary review would read as
+// superseded. Closing that one needs leg identity, not a wider event set.
+const LEG_OUTCOMES = new Set(['delivered', 'lost'])
+
+export function currentEntry(custody) {
+  let holder = null
+  for (let i = custody.length - 1; i >= 0; i -= 1) {
+    if (custody[i].event === 'assigned' && custody[i].agent_id) {
+      holder = String(custody[i].agent_id)
+      break
+    }
+  }
+  if (holder === null) return custody[custody.length - 1]
+  for (let i = custody.length - 1; i >= 0; i -= 1) {
+    const entry = custody[i]
+    const supersededLeg = LEG_OUTCOMES.has(entry.event)
+      && entry.agent_id && String(entry.agent_id) !== holder
+    if (!supersededLeg) return entry
+  }
+  return custody[custody.length - 1]
+}
+
 export function teamOccupancy(graph, items) {
   const teamOf = new Map()
   for (const team of graph.teams) {
@@ -135,7 +179,7 @@ export function teamOccupancy(graph, items) {
   const held = new Map(graph.teams.map((team) => [team.team_id, []]))
   const orphans = []
   for (const item of items.values()) {
-    const last = item.custody[item.custody.length - 1]
+    const last = currentEntry(item.custody)
     if (!last) continue
     // The route is closed, so nobody is holding it. Counting a finished token
     // as unplaceable is how the page ended up accusing its own completed work
