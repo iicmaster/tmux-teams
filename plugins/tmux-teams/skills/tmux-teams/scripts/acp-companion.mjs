@@ -2562,8 +2562,28 @@ function signalProcessGroup(signal, phase = 'cancel') {
   return result
 }
 
+// One `ps` line per process, `pid pgid`. macOS and the BSDs have no /proc, and
+// answering "who else is in this group" with an empty list there is not an
+// unknown — it reads as NOBODY, which is what silently turned both descendant
+// sweeps below into no-ops and left an orphan behind every cancellation.
+// pulse.mjs already answers its own liveness questions this way.
+function parseGroupPids(text, groupId) {
+  const members = []
+  for (const line of String(text).split('\n')) {
+    const [pid, pgid] = line.trim().split(/\s+/)
+    if (Number(pgid) === Number(groupId) && /^\d+$/.test(pid)) members.push(Number(pid))
+  }
+  return members
+}
+
 function groupPids(groupId) {
-  if (!groupId || process.platform !== 'linux') return []
+  if (!groupId) return []
+  if (process.platform !== 'linux') {
+    const result = spawnSync('ps', ['-Ao', 'pid=,pgid='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    return result.status === 0 && typeof result.stdout === 'string'
+      ? parseGroupPids(result.stdout, groupId)
+      : []
+  }
   let entries
   try { entries = readdirSync('/proc') } catch { return [] }
   const members = []
@@ -2593,8 +2613,11 @@ async function waitForChildClose(timeoutMs) {
   return result
 }
 
+// `kill(-pgid, 0)` is POSIX and answers this everywhere: it fails only when no
+// process in the group is left. Returning true unplaced on anything but Linux
+// declared the group reaped without looking, so the escalation below — the last
+// thing that would have signalled a surviving descendant — never ran once.
 async function waitForGroupGone(timeoutMs = 1000) {
-  if (process.platform !== 'linux') return true
   const deadline = Date.now() + Math.max(0, timeoutMs)
   while (Date.now() <= deadline) {
     const groupId = agent?.pid

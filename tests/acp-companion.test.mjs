@@ -2109,6 +2109,12 @@ test('cancellation paths close stdin and reap their detached process groups', { 
     const state = snapshot(r.cwd, taskId)
     assert.equal(state.liveness_state, expectedState)
     assert.deepEqual(state.active_tools, [], `${scenario} terminal snapshot must clear active tools`)
+    // The live process first, the words about it second. Held the other way
+    // round for a week: on a host with no /proc both descendant sweeps were
+    // no-ops, the orphan outlived every cancellation, and the only thing anyone
+    // ever saw was a receipt line that did not match a regex. A surviving
+    // process must never be reported as a formatting complaint.
+    await assertPidGone(pid, scenario, birthId)
     const event = eventTexts(r.cwd)[0]
     if (expectedState === 'cancelled') {
       assert.match(event, /^child_settlement_signal_delivered: false$/m)
@@ -2117,7 +2123,6 @@ test('cancellation paths close stdin and reap their detached process groups', { 
       assert.match(event, /^child_settlement_signal_delivered: true$/m)
       assert.match(event, /^descendant_cleanup_signal_delivered: false$/m)
     }
-    await assertPidGone(pid, scenario, birthId)
     })
   )))
   const failure = settled.find((result) => result.status === 'rejected')

@@ -112,10 +112,20 @@ one SSOT** and wins if the two ever disagree.
    barrier` failed alone, twice in a row. Cause: the cancellation ladder and
    post-settlement descendant cleanup wrote the SAME control-log line, so a test
    demanded a `grace` step in front of a sweep that has nothing to wait for.
-   Both now carry `(cancel)` / `(reap)`; the file is 123/123. Treat any failure
-   there as OPEN — never as noise. The clause survived because nothing ever
-   compared it against a run, which is the failure mode this repo exists to
-   make impossible.
+   Both now carry `(cancel)` / `(reap)`. Treat any failure there as OPEN —
+   never as noise. The clause survived because nothing ever compared it against
+   a run, which is the failure mode this repo exists to make impossible.
+   **It happened again, and worse.** From `f528168` (2026-07-27) to 2026-08-03
+   this file was 125/130 on macOS across three shipped releases, while HANDOFF
+   recorded a clean suite. `groupPids()` and `waitForGroupGone()` both began
+   `process.platform !== 'linux'` and answered "nobody else in the group" /
+   "the group is gone" WITHOUT LOOKING, so every descendant sweep was a no-op
+   here and a detached process outlived every cancellation. Two things hid it:
+   the suite is green on Linux, and the test asserted the receipt's wording
+   BEFORE `assertPidGone`, so a live orphan surfaced as a regex mismatch. Both
+   are fixed; the file is 130/130 and the suite 494/494 on this machine. Rules:
+   a test states the outcome before the words about it, and a platform branch
+   that cannot answer must say UNKNOWN, never "no".
 4. Push (confirm with Master first — see Rules), then
    `claude plugin marketplace update tmux-teams` and
    `claude plugin update tmux-teams@tmux-teams` (install cache is version-keyed).
