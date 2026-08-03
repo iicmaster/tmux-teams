@@ -202,3 +202,36 @@ test('ensure reclaims a stale watcher pidfile', async () => {
     if (pid) await stop(pid, file)
   }
 })
+
+// `--managed` is the child half of `ensure`'s handoff, never a command of its
+// own: the parent claims the pidfile and names itself in the environment. Run
+// it by hand and the identity check could only ever fail — and it reported that
+// failure as a DUPLICATE of a watcher that does not exist, sending the reader
+// to hunt a process nobody started. Issue #25.
+const runManaged = (dir) => spawnSync(process.execPath,
+  [PULSE, 'watch', dir, '--interval', '20', '--managed'],
+  { encoding: 'utf8', timeout: 10000, env: { ...process.env, PULSE_TIME_ZONE: '' } })
+
+test('a direct --managed watch names the command that starts it, not a phantom duplicate', () => {
+  const result = runManaged(repo())
+  assert.equal(result.status, 1, result.stderr)
+  assert.match(result.stderr, /managed watch must be started via: pulse\.mjs ensure/)
+  assert.doesNotMatch(result.stderr, /refusing duplicate/,
+    'no other watcher exists, so there is no duplicate to refuse')
+})
+
+test('an empty pidfile does not turn a direct --managed watch into a duplicate report', () => {
+  // The variant the issue found second: killing a watcher can leave the pidfile
+  // behind with nothing in it. `watcherPid()` reads null for both "no file" and
+  // "empty file", so this landed in the same misleading branch — and a watcher
+  // this process was never handed must not be claimed on the way out either.
+  const dir = repo()
+  const file = pidfile(dir)
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(file, '')
+
+  const result = runManaged(dir)
+  assert.equal(result.status, 1, result.stderr)
+  assert.match(result.stderr, /managed watch must be started via: pulse\.mjs ensure/)
+  assert.equal(readFileSync(file, 'utf8'), '', 'a refused watch claimed the pidfile anyway')
+})

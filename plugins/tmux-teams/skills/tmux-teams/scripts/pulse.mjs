@@ -1885,6 +1885,15 @@ if (cmd === 'ensure') {
 let managedClaimAccepted = false
 if (MANAGED_WATCH) {
   const owner = Number(process.env.PULSE_WATCH_CLAIM_OWNER)
+  // `--managed` is the child half of `ensure`'s handoff, not a command of its
+  // own: the parent claims the pidfile first and names itself here. With no
+  // owner there is no handoff to verify, and the check below could only ever
+  // fail — reporting a DUPLICATE of a watcher nobody started, which sent the
+  // reader hunting a process that does not exist. Say what to run instead.
+  if (!Number.isInteger(owner) || owner < 1) {
+    console.error(`[pulse] managed watch must be started via: pulse.mjs ensure ${REPO} --interval ${INTERVAL}`)
+    process.exit(1)
+  }
   const recorded = watcherPid()
   if (recorded !== process.pid && recorded !== owner) {
     console.error(`[pulse] watcher claim belongs to pid ${recorded ?? 'none'}; refusing duplicate`)
