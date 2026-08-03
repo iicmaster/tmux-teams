@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   REVIEW_PROFILES, assertPermittedModel, buildAcpLaunch, buildProfileEnv, loadProfileSettings,
-  normalizePrimaryFamily,
+  normalizePrimaryFamily, validateRoutedEndpoint,
 } from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
 import {
   ROUTES, UNAVAILABLE_RESERVE_SUBSTITUTES, createReviewPlan, findingFingerprint, planFallback, synthesizeReviews, validateReviewOutput,
@@ -53,14 +53,19 @@ test('a Gemini 3.1 reviewer model is refused rather than run', () => {
 test('immutable ACP profiles pin providers, models, argv, and AGY plan mode', () => {
   assert.ok(Object.isFrozen(REVIEW_PROFILES))
   assert.deepEqual(REVIEW_PROFILES.agy.command, ['bunx', 'antigravity-acp@1.0.0'])
-  assert.deepEqual(REVIEW_PROFILES.kimi.command, ['kimi', 'acp'])
+  assert.deepEqual(REVIEW_PROFILES.kimi.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
   assert.deepEqual(REVIEW_PROFILES.zai.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
   assert.deepEqual(REVIEW_PROFILES.claude.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
   assert.deepEqual(REVIEW_PROFILES.codex.command, ['npx', '-y', '@agentclientprotocol/codex-acp@1.1.7'])
   assert.deepEqual(REVIEW_PROFILES.agy.config, { model: 'gemini-3.6-flash-high', mode: 'plan' })
-  assert.deepEqual(REVIEW_PROFILES.kimi.config, { model: 'kimi-code/k3', mode: 'plan' })
-  assert.equal(REVIEW_PROFILES.kimi.displayModel, 'kimi/k3')
-  assert.deepEqual(REVIEW_PROFILES.zai.config, { model: 'glm-5.2', mode: 'plan' })
+  assert.deepEqual(REVIEW_PROFILES.kimi.config, { model: 'opus', mode: 'plan' })
+  assert.equal(REVIEW_PROFILES.kimi.displayModel, 'kimi/opus')
+  // A lane's family label is only worth what pins it: zai pins a host it must
+  // reach, kimi pins the binary it must run.
+  assert.equal(REVIEW_PROFILES.zai.endpoint.host, 'api.z.ai')
+  assert.equal(REVIEW_PROFILES.kimi.claudeExecutable, 'claude-kimi')
+  assert.equal(REVIEW_PROFILES.claude.claudeExecutable, undefined)
+  assert.deepEqual(REVIEW_PROFILES.zai.config, { model: 'glm-5.2', mode: 'default' })
   assert.equal(REVIEW_PROFILES.zai.thinkingBudgetTokens, 4096)
   assert.deepEqual(REVIEW_PROFILES.codex.config, {
     model: 'gpt-5.6-sol',
@@ -68,7 +73,15 @@ test('immutable ACP profiles pin providers, models, argv, and AGY plan mode', ()
     mode: 'read-only',
     collaboration_mode: 'plan',
   })
-  assert.ok(Object.values(REVIEW_PROFILES).every(profile => profile.reviewMode === 'plan'))
+  // Plan mode everywhere EXCEPT one named lane. glm-5.2 cannot hold plan mode
+  // and the JSON-only protocol at once, so zai declares `default` — and that
+  // exception is written here, by name, because a blanket `every()` would have
+  // gone green the day a second lane quietly downgraded itself. What kept plan
+  // mode safe is enforced separately and still applies to zai: no MCP servers,
+  // every permission request denied, a run that observed a tool call refused.
+  for (const [id, profile] of Object.entries(REVIEW_PROFILES)) {
+    assert.equal(profile.reviewMode, id === 'zai' ? 'default' : 'plan', `${id} review mode`)
+  }
 })
 
 test('primary normalization is robust and blocks Gemini/unknown primaries', () => {
@@ -223,11 +236,14 @@ test('environment is allowlisted, provider-scoped, and launch settings are injec
     PATH: '/bin', LANG: 'C', ACP_CMD: 'evil', AGY_EXTRA_ARGS: '--evil', NODE_OPTIONS: '--require evil',
     LD_PRELOAD: 'evil.so', OPENAI_API_KEY: 'openai', ANTHROPIC_API_KEY: 'claude', KIMI_API_KEY: 'kimi', ZAI_API_KEY: 'zai',
   }
-  const env = buildProfileEnv('kimi', source)
+  // A lane that does not route: its whole env is the allowlist plus its own
+  // provider secret. kimi used to stand here and now routes through a settings
+  // file, which is a different contract — see the routing tests below.
+  const env = buildProfileEnv('codex', source)
   assert.deepEqual(env, {
     PATH: '/bin',
     LANG: 'C',
-    KIMI_API_KEY: 'kimi',
+    OPENAI_API_KEY: 'openai',
   })
   const launch = buildAcpLaunch('agy', {
     env: { ...source, AGY_BIN: '/evil/agy' },
@@ -272,5 +288,32 @@ test('Zai routing loads only allowlisted endpoint credentials from its explicit 
     'https://example.invalid/api/anthropic',
     'https://user:password@api.z.ai/api/anthropic',
     'https://api.z.ai/api/anthropic?redirect=other',
-  ]) assert.throws(invalidEndpoint(endpoint), /Zai review endpoint/)
+  ]) assert.throws(invalidEndpoint(endpoint), /zai review endpoint/)
+})
+
+test('a kimi lane that is not running the kimi binary cannot pass as a distinct family', () => {
+  // The panel proves three DISTINCT families reviewed the work, and it counts
+  // them from `profile.family` — a constant. This lane and the `claude` lane
+  // run the same ACP adapter, so what makes them different seats is which
+  // Claude binary the adapter execs: `claude-kimi` carries Kimi's base URL and
+  // key, plain `claude` does not. The gate sets that name from the profile.
+  const source = { PATH: '/bin', KIMI_API_KEY: 'kimi', CLAUDE_CODE_EXECUTABLE: '/tmp/evil-claude' }
+  const env = buildProfileEnv('kimi', source)
+  assert.equal(env.CLAUDE_CODE_EXECUTABLE, 'claude-kimi', 'the caller re-pointed the lane')
+  assert.equal(env.CLAUDE_MODEL_CONFIG, '{"availableModels":["opus"]}')
+
+  // The lane it must not be able to become: same adapter, no pinned binary.
+  assert.equal(buildProfileEnv('claude', { PATH: '/bin' }).CLAUDE_CODE_EXECUTABLE, undefined)
+})
+
+test('a routed lane that pins no endpoint is refused rather than trusted', () => {
+  // The failure mode this closes is a future one: someone adds a third routed
+  // lane, copies the settings-file plumbing, forgets the pin, and the panel
+  // starts counting a family nobody verified. Refusing beats defaulting.
+  const unpinned = { ...REVIEW_PROFILES.zai }
+  delete unpinned.endpoint
+  assert.throws(
+    () => validateRoutedEndpoint(unpinned, { ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic' }),
+    /zai review routes its provider but pins no endpoint/,
+  )
 })

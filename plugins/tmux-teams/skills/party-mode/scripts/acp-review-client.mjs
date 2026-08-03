@@ -31,6 +31,8 @@ export class ReviewTransportError extends Error {
   }
 }
 
+export const REVIEW_MODES = new Set(['plan', 'default'])
+
 const secretKey = /(?:api[_-]?key|authorization|(?:^|[_-])auth(?:$|[_-])|oauth|cookie|credential|password|secret|token|private[_-]?key)/i
 const sensitiveName = String.raw`[A-Za-z0-9_.-]{0,64}(?:api[_-]?key|authorization|(?<![A-Za-z0-9])auth(?![A-Za-z0-9])|oauth|cookie|credential|password|secret|token|private[_-]?key)[A-Za-z0-9_.-]{0,64}`
 const secretValuePatterns = [
@@ -363,19 +365,6 @@ async function prepareProviderState(profile, stateRoot, sourceEnv) {
     await writeFile(statePath(relative), contents, { encoding: 'utf8', mode: 0o600 })
   }
 
-  if (profile.id === 'kimi') {
-    if (!home) throw new ReviewTransportError('config', 'Kimi ACP review requires an explicit HOME')
-    await copyHomeTree(join('.kimi-code', 'credentials'))
-    await copyHomeTree(join('.kimi-code', 'oauth'))
-    for (const name of ['config.toml', 'device_id', 'migrations-effort.json', 'tui.toml']) {
-      await copyHomeFile(join('.kimi-code', name))
-    }
-    for (const name of ['sessions', 'logs', 'telemetry', 'updates', 'user-history']) {
-      await emptyDirectory(join('.kimi-code', name))
-    }
-    await emptyFile(join('.kimi-code', 'session_index.jsonl'))
-    await emptyFile(join('.kimi-code', 'workspaces.json'), '{}')
-  }
   if (profile.id === 'agy') {
     if (!home) throw new ReviewTransportError('config', 'AGY ACP review requires an explicit HOME')
     await copyHomeFile(join('.agy-acp', 'models.json'))
@@ -387,7 +376,7 @@ async function prepareProviderState(profile, stateRoot, sourceEnv) {
     }
     await emptyFile(join('.gemini', 'antigravity-cli', 'history.jsonl'))
   }
-  if (profile.id === 'zai' || profile.id === 'claude') {
+  if (profile.id === 'zai' || profile.id === 'claude' || profile.id === 'kimi') {
     const configDir = statePath('.claude')
     await mkdir(configDir, { recursive: true })
     await writeFile(join(configDir, 'settings.json'), '{}', { encoding: 'utf8', mode: 0o600 })
@@ -427,7 +416,7 @@ function isWithin(candidate, parent) {
 
 const expectedProfileExecutable = Object.freeze({
   agy: 'bunx',
-  kimi: 'kimi',
+  kimi: 'npx',
   zai: 'npx',
   claude: 'npx',
   codex: 'npx',
@@ -521,8 +510,14 @@ export async function runAcpReview({
   if (!command || typeof command !== 'string' || !Array.isArray(args)) {
     throw new ReviewTransportError('input', 'ACP review command and argv array are required')
   }
-  if (profile.reviewMode !== 'plan') {
-    throw new ReviewTransportError('input', 'ACP review profiles must declare reviewMode=plan')
+  // Two words, and only two. `plan` is what every lane used until a model
+  // turned up that cannot hold plan mode and the JSON-only protocol at the same
+  // time; `default` is that exception, and it is still bounded by the same
+  // zero-tool isolation below — no MCP servers, every permission request
+  // denied, and a run that observed a tool call is refused outright. A third
+  // word would have to argue with those checks first.
+  if (!REVIEW_MODES.has(profile.reviewMode)) {
+    throw new ReviewTransportError('input', "ACP review profiles must declare reviewMode 'plan' or 'default'")
   }
   if (timeoutMs !== null &&
       (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)) {

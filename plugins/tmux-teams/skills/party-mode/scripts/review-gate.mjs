@@ -79,9 +79,14 @@ async function defaultLaneRunner(profile, packet, deps) {
   }
   const env = typeof deps.buildProfileEnv === 'function' ? deps.buildProfileEnv(profile.id ?? profile) : {}
   const argv = Array.isArray(profile.command) ? profile.command : [profile.command]
-  // Review ACP is always a plan/read-only lane; a provider-specific profile
-  // cannot silently downgrade this safety mode.
-  const configured = { ...profile, reviewMode: 'plan' }
+  // A lane runs the mode its profile declares. `plan` is the default and what
+  // every lane used until glm-5.2, which cannot hold plan mode and the
+  // JSON-only review protocol at once and answers prose instead — so that lane
+  // declares `default` and the gate stops overwriting it. What made plan mode
+  // safe is not the word: it is the zero-tool isolation the runner enforces
+  // either way, and the acknowledgement check below now verifies the mode the
+  // profile ASKED for rather than a constant, so a lane cannot drift silently.
+  const configured = { ...profile }
   return deps.runAcpReview({
     lane: profile.lane ?? profile.id,
     profile: configured,
@@ -100,7 +105,7 @@ function runnerEvidenceError(profile, value, expectedInputHash) {
   if (value.provider !== profile.provider) return 'runner/provider identity mismatch'
   if (value.model !== profile.model) return 'runner/model identity mismatch'
   if (value.displayModel !== (profile.displayModel ?? `${profile.provider}/${profile.model}`)) return 'runner/display-model identity mismatch'
-  if (value.mode !== 'plan') return 'runner did not enforce plan mode'
+  if (value.mode !== profile.reviewMode) return 'runner did not enforce declared review mode'
   if (value.inputHash !== expectedInputHash) return 'static packet hash mismatch'
   if (typeof value.provenance !== 'string' || !value.provenance.startsWith('review-runner:')) return 'invalid runner provenance'
   for (const [configId, wanted] of Object.entries(profile.config ?? {})) {
@@ -305,6 +310,18 @@ export async function runReviewGate(packet, {
   return report
 }
 
+// A ping fits in four minutes; a real completion packet does not. The client's
+// 240s default timed out substantive reviews — a fifteen-file packet took the
+// kimi lane past it — and a lane killed for being slow is indistinguishable in
+// the report from a lane that is broken. The ceiling is still a ceiling: it is
+// bounded, it is one number, and an operator with a slower provider raises it
+// deliberately rather than discovering it.
+export const LANE_TIMEOUT_DEFAULT_MS = 900_000
+export function laneTimeoutMs(source = process.env) {
+  const sec = Number(source.REVIEW_GATE_LANE_TIMEOUT_SEC)
+  return Number.isSafeInteger(sec) && sec > 0 ? sec * 1000 : LANE_TIMEOUT_DEFAULT_MS
+}
+
 function exitCodeFor(error) {
   return error?.code === 'input' ? REVIEW_GATE_EXIT.input
     : error?.code === 'review' ? REVIEW_GATE_EXIT.review
@@ -334,7 +351,7 @@ export async function runReviewGateCli([packetPath, targetRepository] = [], {
     } finally {
       await handle?.close()
     }
-    const result = await gate(packet, { targetRepository })
+    const result = await gate(packet, { targetRepository, timeoutMs: laneTimeoutMs() })
     stdout.write(JSON.stringify(result) + '\n')
     return REVIEW_GATE_EXIT.ok
   } catch (error) {

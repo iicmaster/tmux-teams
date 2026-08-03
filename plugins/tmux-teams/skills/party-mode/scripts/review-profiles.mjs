@@ -31,6 +31,12 @@ function freeze(value) {
   return value
 }
 
+// A routed lane reaches its provider through a machine-local settings file the
+// operator owns. Pinning the host here is what keeps `family` honest — see the
+// kimi entry.
+export const ROUTED_PROFILES = new Set(['zai'])
+const ZAI_ENDPOINT = freeze({ host: 'api.z.ai', path: '/api/anthropic' })
+
 export const REVIEW_PROFILES = freeze({
   agy: {
     id: 'agy', provider: 'google-antigravity', family: 'gemini', model: 'gemini-3.6-flash-high',
@@ -39,19 +45,46 @@ export const REVIEW_PROFILES = freeze({
     config: { model: 'gemini-3.6-flash-high', mode: 'plan' },
   },
   kimi: {
-    id: 'kimi', provider: 'kimi', family: 'kimi', model: 'kimi-code/k3', displayModel: 'kimi/k3',
-    command: ['kimi', 'acp'], reviewMode: 'plan', osSandbox: 'bwrap',
-    config: { model: 'kimi-code/k3', mode: 'plan' },
+    id: 'kimi', provider: 'kimi', family: 'kimi', model: 'opus',
+    displayModel: 'kimi/opus',
+    // The native `kimi acp` client needed a login this machine never had, so
+    // every panel it sat on failed at `Authentication required`. The lane now
+    // speaks Claude's ACP adapter against a routed profile instead, and the
+    // `opus` alias resolves server-side from that profile.
+    //
+    // Which makes the label a claim about a machine-local file. `family` is
+    // what the panel counts to prove three DISTINCT model families reviewed
+    // this work — so an operator who re-points that profile at Anthropic while
+    // the label still reads `kimi` would satisfy the exactly-three rule with
+    // two seats from one family, and nothing in the receipt would disagree.
+    // `claudeExecutable` is what stops that. The adapter resolves its Claude
+    // binary from CLAUDE_CODE_EXECUTABLE, and this lane names a DIFFERENT
+    // binary — the operator's `claude-kimi`, which carries Kimi's base URL,
+    // key and config dir and then execs claude. The label is pinned to an
+    // executable name the gate sets itself and a caller cannot supply, so
+    // `kimi` and `claude` cannot silently become the same seat.
+    reviewMode: 'plan', osSandbox: 'bwrap',
+    command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
+    claudeExecutable: 'claude-kimi',
+    sessionSettings: { availableModels: ['opus'] },
+    config: { model: 'opus', mode: 'plan' },
   },
   zai: {
     id: 'zai', provider: 'zai', family: 'zai', model: 'glm-5.2',
     displayModel: 'zai/glm-5.2',
     thinkingBudgetTokens: 4096,
-    reviewMode: 'plan', osSandbox: 'bwrap',
+    // glm-5.2 cannot hold plan mode and the JSON-only review protocol at once —
+    // asked for both it answers prose and the parse fails, which is how this
+    // lane failed every panel it sat on. It runs in default mode instead. What
+    // made plan mode safe is not the word: the runner denies every permission
+    // request, mounts no MCP server, and refuses a run that observed a tool
+    // call. Those hold here unchanged.
+    reviewMode: 'default', osSandbox: 'bwrap',
     command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
     settingsFile: 'settings-zai.json',
+    endpoint: ZAI_ENDPOINT,
     sessionSettings: { availableModels: ['glm-5.2'] },
-    config: { model: 'glm-5.2', mode: 'plan' },
+    config: { model: 'glm-5.2', mode: 'default' },
   },
   claude: {
     id: 'claude', provider: 'anthropic', family: 'claude', model: 'claude-opus-4-8',
@@ -177,18 +210,32 @@ function loadRoutedEnvironment(profile, source, loader = file => JSON.parse(read
     .map(([key, value]) => [key, String(value)]))
 }
 
-function validateZaiEndpoint(env) {
+// One check for every routed lane, driven by the `endpoint` the profile pins.
+// It was written for zai alone and hard-coded that one host; kimi now reaches
+// its provider the same way, and a per-lane copy of this is how two lanes come
+// to disagree about what counts as its own provider.
+//
+// A lane that routes but pins nothing is refused rather than trusted: the panel
+// counts `family` to prove three distinct families reviewed the work, and a
+// family label backed by an unchecked, operator-editable base URL is a claim
+// the receipt cannot support.
+export function validateRoutedEndpoint(profile, env) {
+  const pinned = profile.endpoint
+  if (!pinned || typeof pinned.host !== 'string' || typeof pinned.path !== 'string') {
+    throw new TypeError(`${profile.id} review routes its provider but pins no endpoint`)
+  }
+  const expected = `https://${pinned.host}${pinned.path}`
   const raw = env.ANTHROPIC_BASE_URL
-  if (typeof raw !== 'string' || !raw) throw new TypeError('Zai review requires ANTHROPIC_BASE_URL')
+  if (typeof raw !== 'string' || !raw) throw new TypeError(`${profile.id} review requires ANTHROPIC_BASE_URL`)
   let url
-  try { url = new URL(raw) } catch { throw new TypeError('Zai review endpoint must be a valid URL') }
-  if (url.protocol !== 'https:' || url.hostname !== 'api.z.ai' ||
+  try { url = new URL(raw) } catch { throw new TypeError(`${profile.id} review endpoint must be a valid URL`) }
+  if (url.protocol !== 'https:' || url.hostname !== pinned.host ||
       (url.port && url.port !== '443') || url.username || url.password ||
-      url.search || url.hash || url.pathname.replace(/\/$/, '') !== '/api/anthropic') {
-    throw new TypeError('Zai review endpoint must be https://api.z.ai/api/anthropic')
+      url.search || url.hash || url.pathname.replace(/\/$/, '') !== pinned.path) {
+    throw new TypeError(`${profile.id} review endpoint must be ${expected}`)
   }
   if (!env.ANTHROPIC_AUTH_TOKEN && !env.ANTHROPIC_API_KEY && !env.ZAI_API_KEY) {
-    throw new TypeError('Zai review endpoint requires an explicit provider credential')
+    throw new TypeError(`${profile.id} review endpoint requires an explicit provider credential`)
   }
 }
 
@@ -232,7 +279,7 @@ export function buildProfileEnv(profileId, source = process.env, {
   }
   const path = executablePath(source)
   if (path) env.PATH = path
-  if (profile.id === 'zai') Object.assign(env, loadRoutedEnvironment(profile, source, settingsLoader))
+  if (ROUTED_PROFILES.has(profile.id)) Object.assign(env, loadRoutedEnvironment(profile, source, settingsLoader))
   for (const key of providerSecrets[profile.id]) {
     if (source?.[key] !== undefined && source[key] !== null) env[key] = String(source[key])
   }
@@ -242,13 +289,18 @@ export function buildProfileEnv(profileId, source = process.env, {
     env.AGY_BIN = agyBinary
     env.AGY_SKIP_DOWNLOAD = '1'
   }
-  if (profile.id === 'zai' || profile.id === 'claude') {
+  if (ROUTED_PROFILES.has(profile.id) || profile.claudeExecutable || profile.id === 'claude') {
     env.CLAUDE_MODEL_CONFIG = JSON.stringify({ availableModels: [profile.model] })
   }
+  // Set from the profile, never from the caller: `runtimeKeys` does not carry
+  // this name, so the only way a lane can point the adapter at another Claude
+  // binary is by declaring it here — which is what keeps a lane's family label
+  // attached to something the gate chose.
+  if (profile.claudeExecutable) env.CLAUDE_CODE_EXECUTABLE = profile.claudeExecutable
   if (Number.isSafeInteger(profile.thinkingBudgetTokens) && profile.thinkingBudgetTokens >= 0) {
     env.MAX_THINKING_TOKENS = String(profile.thinkingBudgetTokens)
   }
-  if (profile.id === 'zai') validateZaiEndpoint(env)
+  if (ROUTED_PROFILES.has(profile.id)) validateRoutedEndpoint(profile, env)
   return Object.freeze(env)
 }
 

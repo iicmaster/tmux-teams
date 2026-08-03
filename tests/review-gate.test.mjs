@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runAcpReview, prepareReviewPacket, ReviewTransportError } from '../plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs'
-import { runReviewGate, runReviewGateCli } from '../plugins/tmux-teams/skills/party-mode/scripts/review-gate.mjs'
+import { runReviewGate, runReviewGateCli, LANE_TIMEOUT_DEFAULT_MS, laneTimeoutMs,
+} from '../plugins/tmux-teams/skills/party-mode/scripts/review-gate.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const MOCK = join(HERE, 'fixtures', 'mock-review-acp-agent.mjs')
@@ -951,4 +952,74 @@ test('a blocked gate emits a distinguishable per-lane diagnostic, never a zero-b
   assert.equal(text.includes('q'.repeat(64)), false, 'an injected fallback reason reached the report verbatim')
   assert.equal(text.includes('sk-live'), false, 'unbounded provider text reached the report')
   assert.equal(laneOf(injected, 'kimi').stage, 'transport')
+})
+
+test('a lane gets minutes, not a ping budget, and the ceiling is raised deliberately', () => {
+  // The client default was 240s, sized for a ping. A real completion packet —
+  // fifteen files — took the kimi lane past it, and a lane killed for being
+  // slow is indistinguishable in the report from a lane that is broken. The
+  // ceiling stays a ceiling: one number, bounded, raised on purpose.
+  assert.equal(laneTimeoutMs({}), LANE_TIMEOUT_DEFAULT_MS)
+  assert.equal(LANE_TIMEOUT_DEFAULT_MS, 900_000)
+  assert.equal(laneTimeoutMs({ REVIEW_GATE_LANE_TIMEOUT_SEC: '1800' }), 1_800_000)
+
+  // Anything that is not a positive whole number of seconds falls back to the
+  // default rather than becoming one: `0` would mean no time at all, and NaN
+  // would reach the client as an invalid timeout and fail the whole gate for a
+  // typo in an environment variable.
+  for (const bad of ['0', '-5', 'abc', '1.5', '', undefined]) {
+    assert.equal(laneTimeoutMs({ REVIEW_GATE_LANE_TIMEOUT_SEC: bad }), LANE_TIMEOUT_DEFAULT_MS, `bad value ${bad}`)
+  }
+})
+
+test('a lane runs the mode it declares, and a runner that ran another one is refused', async () => {
+  // The gate used to overwrite every profile with reviewMode 'plan' before
+  // launch, so a lane declaring anything else got plan mode anyway — which is
+  // how the zai lane kept answering prose to a JSON-only protocol it could not
+  // hold. Two halves, and both must hold: the declared mode reaches the runner,
+  // and the acknowledgement is checked against what THIS lane asked for rather
+  // than against the word 'plan'.
+  const seen = []
+  const gateWith = (declared, reported) => runReviewGate(packet(), {
+    profiles: keyedProfiles([
+      profile('oc', { reviewMode: declared, config: { model: 'oc-review-model', mode: declared } }),
+      profile('codex'), profile('agy'),
+    ]),
+    runAcpReview: async ({ profile: selected }) => {
+      seen.push(`${selected.id}:${selected.reviewMode}`)
+      const result = runnerResult(selected, packet())
+      return selected.id === 'oc' ? { ...result, mode: reported } : result
+    },
+    buildProfileEnv: () => ({}),
+    planReviewPanel: () => testPlan(['oc', 'codex', 'agy']),
+    validateReview: () => true,
+    synthesizeReviews: (_plan, reviews) => ({ verdict: 'PASS', count: Object.keys(reviews).length }),
+  })
+
+  const out = await gateWith('default', 'default')
+  assert.ok(seen.includes('oc:default'), `the gate overwrote the declared mode: ${seen.join(', ')}`)
+  assert.equal(out.count, 3)
+
+  // Declared one mode, ran another: that is the isolation claim failing, and it
+  // must block rather than be counted as a review.
+  await assert.rejects(gateWith('default', 'plan'), /accepted 2; exactly three are required/)
+})
+
+test('the review mode vocabulary is two words, and a third is refused before launch', async () => {
+  // `default` was added for one model that cannot hold plan mode. That is an
+  // exception, not an opening: a lane declaring anything else must fail at the
+  // door rather than reach a provider and be judged by what it happens to
+  // answer. Without this the set is decoration and the next profile can invent
+  // its own mode silently.
+  for (const mode of ['plan', 'default']) {
+    const out = await invoke(profile('oc', { reviewMode: mode, config: { model: 'oc-review-model', mode } }))
+    assert.equal(out.mode, mode)
+  }
+  for (const mode of ['yolo', 'read-only', '', 'PLAN', undefined]) {
+    await assert.rejects(
+      invoke(profile('oc', { reviewMode: mode })),
+      /must declare reviewMode 'plan' or 'default'/,
+      `accepted reviewMode ${JSON.stringify(mode)}`,
+    )
+  }
 })
