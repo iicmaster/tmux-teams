@@ -268,6 +268,11 @@ test('Zai routing loads only allowlisted endpoint credentials from its explicit 
       env: {
         ANTHROPIC_AUTH_TOKEN: 'zai-token',
         ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic',
+        // An earlier revision of PR #28 carried these two experimental
+        // agent-team keys in the routed-settings allowlist and then dropped
+        // them; the assertions below pin the drop for the one routed lane.
+        CLAUDE_CODE_SUBAGENT_MODEL: 'must-not-pass',
+        CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: 'must-not-pass',
         UNRELATED_SECRET: 'must-not-pass',
       },
       permissions: { allow: ['*'] },
@@ -276,6 +281,8 @@ test('Zai routing loads only allowlisted endpoint credentials from its explicit 
   assert.equal(env.ANTHROPIC_AUTH_TOKEN, 'zai-token')
   assert.equal(env.ANTHROPIC_BASE_URL, 'https://api.z.ai/api/anthropic')
   assert.equal(env.UNRELATED_SECRET, undefined)
+  assert.equal(env.CLAUDE_CODE_SUBAGENT_MODEL, undefined)
+  assert.equal(env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS, undefined)
   assert.equal(env.CLAUDE_MODEL_CONFIG, '{"availableModels":["glm-5.2"]}')
   assert.equal(env.MAX_THINKING_TOKENS, '4096')
   const invalidEndpoint = ANTHROPIC_BASE_URL => () => buildProfileEnv('zai', { HOME: home, PATH: '/bin' }, {
