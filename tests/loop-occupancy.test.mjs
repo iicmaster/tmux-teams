@@ -655,12 +655,12 @@ test('the outer controller is dispatched when the runner runs out of moves', () 
   try {
     const graph = graphOf(TWO_TEAMS)
     const items = itemsOf(['tok', [{ event: 'pulled', agent_id: 't_d', from_team: 'build', to_team: 'test' }]])
-    const plans = [{ action: 'escalate', work_item: 'tok', team: 'test', reason: '3 worker attempts all failed' }]
+    const plans = [{ action: 'escalate', work_item: 'tok', team: 'test', reason: '3 worker attempts in test spent over 3 legs on this token — those legs ended: blocked' }]
     const escalation = planEscalation(dir, graph, items, plans, teamOccupancy(graph, items), { now: FIXED_NOW, stallSec: 1e9 })
 
     assert.equal(escalation.action, 'escalate')
     assert.equal(escalation.agent_id, 'pm', 'the declared outer controller is the one that gets dispatched')
-    assert.match(escalation.brief, /3 worker attempts all failed/)
+    assert.match(escalation.brief, /those legs ended: blocked/)
     // It is dispatched about the board, so the board is what it is handed.
     assert.match(escalation.brief, /\*\*Test\*\* — WIP 1\/1/)
 
@@ -680,7 +680,7 @@ const ESCALATED = [
   { event: 'pulled', agent_id: 't_d', from_team: 'build', to_team: 'test' },
   { event: 'assigned', agent_id: 't_w1', task_id: 't-1' },
   { event: 'delivered', agent_id: 't_w1', task_id: 't-1', terminal: 'protocol-error' },
-  { event: 'escalated', agent_id: 'pm', to_team: 'test', task_id: 'board-pm-1', reason: '3 worker attempts all failed' },
+  { event: 'escalated', agent_id: 'pm', to_team: 'test', task_id: 'board-pm-1', reason: '3 worker attempts in test spent over 3 legs on this token — those legs ended: blocked' },
 ]
 
 const pmRepo = (outbox) => {
@@ -868,6 +868,105 @@ test('a token cannot exceed its leg ceiling unless the controller grants more', 
   ]), new Set())[0]
   assert.equal(granted.action, 'dispatch')
   assert.equal(granted.role, 'worker')
+})
+
+// ── a spent budget has to say what it was spent ON ──────────────────────────
+//
+// Measured on this file's own fixtures: three quality rejections and three legs
+// killed by a review gate that was down BOTH produced
+// `3 worker attempts in <team> all failed`. Nothing failed in the first case,
+// and the second never said the cause — so the controller, whose only two words
+// are `resume` and `abandon`, granted three more legs against the same wall.
+
+// One turn of a team's own quality loop. §1 blesses this and only this as
+// same-token rework: the worker delivers, the team's own evaluator runs its leg,
+// and rejects.
+const REWORK = (n) => ([
+  { event: 'assigned', agent_id: 'b_w1', task_id: `b-${n}` },
+  { event: 'delivered', agent_id: 'b_w1', task_id: `b-${n}`, terminal: 'done' },
+  { event: 'assigned', agent_id: 'b_e', task_id: `e-${n}` },
+  { event: 'delivered', agent_id: 'b_e', task_id: `e-${n}`, terminal: 'done' },
+  { event: 'reviewed', agent_id: 'b_e', verdict: 'reject' },
+])
+const ADMITTED = [
+  { event: 'opened', agent_id: 'b_d', to_team: 'build' },
+  { event: 'intake', agent_id: 'b_d', verdict: 'accept' },
+]
+const BUDGET_SPENT_ON_QUALITY = [...ADMITTED, ...REWORK(1), ...REWORK(2), ...REWORK(3)]
+
+test('a spent attempt budget says what the attempts ended as', () => {
+  const graph = graphOf(TWO_TEAMS)
+
+  // Three rejections. Every leg delivered; the old sentence called all three
+  // failures, to the one reader that decides whether to pay for three more.
+  const quality = planDispatches(graph, itemsOf(['tok', BUDGET_SPENT_ON_QUALITY]),
+    new Set(), { now: FIXED_NOW })[0]
+  assert.equal(quality.action, 'escalate')
+  assert.match(quality.reason, /ended: done/)
+  assert.doesNotMatch(quality.reason, /all failed/)
+
+  // Three legs blocked by a gate that was down. Same budget, opposite cause.
+  const blocked = planDispatches(graph, itemsOf(['tok', [
+    { event: 'pulled', agent_id: 't_d', from_team: 'build', to_team: 'test' },
+    { event: 'intake', agent_id: 't_d', verdict: 'accept' },
+    ...[1, 2, 3].flatMap((n) => ([
+      { event: 'assigned', agent_id: 't_w1', task_id: `t-${n}` },
+      { event: 'delivered', agent_id: 't_w1', task_id: `t-${n}`, terminal: 'blocked', evidence_present: false },
+    ])),
+  ]]), new Set(), { now: FIXED_NOW })[0]
+  assert.equal(blocked.action, 'escalate')
+  assert.match(blocked.reason, /ended: blocked/)
+
+  // A leg the runner declared lost delivered nothing at all, and says so rather
+  // than borrowing the vocabulary of one that did.
+  const lost = planDispatches(graph, itemsOf(['tok', [
+    { event: 'pulled', agent_id: 't_d', from_team: 'build', to_team: 'test' },
+    { event: 'intake', agent_id: 't_d', verdict: 'accept' },
+    ...[1, 2].flatMap((n) => ([
+      { event: 'assigned', agent_id: 't_w1', task_id: `t-${n}` },
+      { event: 'delivered', agent_id: 't_w1', task_id: `t-${n}`, terminal: 'hard-timeout', evidence_present: false },
+    ])),
+    { event: 'assigned', agent_id: 't_w1', task_id: 't-3' },
+    { event: 'lost', agent_id: 't_w1', task_id: 't-3' },
+  ]]), new Set(), { now: FIXED_NOW })[0]
+  assert.equal(lost.action, 'escalate')
+  assert.match(lost.reason, /hard-timeout, lost/)
+})
+
+test('a second spent budget still reaches the controller', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-budget-again-'))
+  try {
+    const graph = graphOf(TWO_TEAMS)
+    const first = itemsOf(['tok', BUDGET_SPENT_ON_QUALITY])
+    const round1 = planEscalation(dir, graph, first,
+      planDispatches(graph, first, new Set(), { now: FIXED_NOW }), teamOccupancy(graph, first),
+      { now: FIXED_NOW, cooldownSec: 0, stallSec: 1e9 })
+    assert.equal(round1.action, 'escalate')
+    // Pinned deliberately: every leg delivered, so `failedLegs` is 0 and the
+    // RETRY_NOISE trigger never fires. If it ever did, its own growing count
+    // would make the two rounds differ and this test would go green without the
+    // fix — which is exactly why the transport case cannot be used here.
+    assert.equal(round1.triggers.length, 1)
+
+    // What the controller was told, written the way `tick` writes it.
+    mkdirSync(join(dir, '.tmux-teams', 'pm-notes'), { recursive: true })
+    writeFileSync(join(dir, '.tmux-teams', 'pm-notes', 'latest.md'),
+      `${new Date(FIXED_NOW - 3_600_000).toISOString()}\n${round1.identity}\n`)
+
+    // It said `resume`; the token spent the fresh budget the same way. The brake
+    // compares trigger lines byte-for-byte, so a reason that cannot tell round
+    // two from round one parks the token until the 30-minute stall trigger,
+    // while the runner logs "the same 1 problem(s) the controller already read".
+    const second = itemsOf(['tok', [...BUDGET_SPENT_ON_QUALITY,
+      { event: 'escalated', agent_id: 'pm', to_team: 'build', task_id: 'board-pm-1' },
+      { event: 'resumed', agent_id: 'pm', to_team: 'build', grant: 3 },
+      ...REWORK(4), ...REWORK(5), ...REWORK(6)]])
+    const round2 = planEscalation(dir, graph, second,
+      planDispatches(graph, second, new Set(), { now: FIXED_NOW }), teamOccupancy(graph, second),
+      { now: FIXED_NOW, cooldownSec: 0, stallSec: 1e9 })
+    assert.equal(round2.action, 'escalate',
+      'the second spent budget was brake-held as a problem the controller had already read')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
 // ── the controller audits, it does not only firefight ──────────────────────

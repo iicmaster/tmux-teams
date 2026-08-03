@@ -646,6 +646,23 @@ const sinceResume = (item) => {
 const attemptsBy = (item, agentIds) =>
   sinceResume(item).filter((entry) => entry.event === 'assigned' && agentIds.includes(entry.agent_id)).length
 
+// What the budget was actually spent ON. `all failed` was printed whatever
+// happened: three quality rejections — every leg `done`, the team's own loop
+// running exactly as §1 allows — and three legs killed by a gate that was down
+// produced the same sentence. That sentence is the whole of the evidence the
+// outer controller has when it chooses `resume` over `abandon`, and it is
+// copied verbatim into the brief, into `pm-notes/latest.md`, and into the
+// `escalated` line on the ledger. The runner does not interpret it — it lists
+// the terminals the legs ended on and lets the controller read them.
+//
+// `returned` carries no `agent_id` (§4.2 forbids it), so it can never match a
+// pool and needs no guard here.
+const outcomesBy = (item, agentIds) => [...new Set(sinceResume(item)
+  .filter((entry) => agentIds.includes(entry.agent_id))
+  .map((entry) => (entry.event === 'lost' ? 'lost'
+    : entry.event === 'delivered' ? String(entry.terminal || 'unstated') : null))
+  .filter(Boolean))]
+
 // The absolute ceiling on one token's spend. It moves only when the controller
 // deliberately grants more, and each grant cost a PM dispatch to obtain. The
 // clamp is there because this reads a file that is meant to be appended to.
@@ -666,7 +683,18 @@ function nextStep(graph, team, item, { busy, nowMs, zombieSec, answerDeadlineSec
       : role === 'dispatcher' ? [team.dispatcher_id] : [team.evaluator_id]
     const attempts = attemptsBy(item, pool)
     if (attempts >= MAX_ATTEMPTS) {
-      return { action: 'escalate', reason: `${attempts} ${role} attempts in ${team.team_id} all failed` }
+      // `legs` is in the message because planEscalation's unchanged-trigger
+      // brake compares trigger lines byte-for-byte. Without something that grew,
+      // a budget spent a second time after a `resume` reads exactly like the
+      // first, the brake answers "the same problem(s) the controller already
+      // read" about a problem it has never been shown, and the token is held
+      // until STALL_SEC reports it as a stall rather than as a spent budget.
+      const ends = outcomesBy(item, pool)
+      return {
+        action: 'escalate',
+        reason: `${attempts} ${role} attempts in ${team.team_id} spent over ${legs} legs on this token`
+          + ` — those legs ended: ${ends.length ? ends.join(', ') : 'nothing recorded'}`,
+      }
     }
     const free = pool.find((agentId) => !busy.has(agentId))
     if (!free) return { action: 'wait', role, reason: `every ${role} on this team is busy` }
