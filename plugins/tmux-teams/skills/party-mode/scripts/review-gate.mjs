@@ -24,6 +24,84 @@ const LANE_STAGES = new Set(['input', 'config', 'spawn', 'closed', 'protocol', '
 const laneStage = code => LANE_STAGES.has(code) ? code : 'transport'
 const boundedReason = value => typeof value === 'string' && value.length <= 200 ? value : null
 const hexDigest = value => /^[a-f0-9]{64}$/.test(value ?? '') ? value : null
+
+// A lane failure is read by whoever has to unblock the gate, and until now it
+// read like a note the gate wrote to itself: "runner/model identity mismatch"
+// states what was NOTICED and never what to do about it, so every operator
+// re-derived the same next step from the same eleven sentences.
+//
+// Reasons are a closed set with one fixed action each, and closed does two jobs.
+// An operator can learn the whole list, which is what makes printing an action
+// worth anything — an action attached to an open-ended sentence is a guess. And
+// no bytes authored by a provider can reach an operator report through this
+// field: the same rule that keeps raw stderr out of it, applied to the sentence
+// rather than to the tail.
+//
+// `text` says what happened. `action` says what to do, and several of them say
+// DO NOT RETRY, which is the fact a free-form sentence never carried — a
+// mislabelled lane and a slow provider both used to read as "something failed,
+// try again", and only one of those is worth the tokens.
+export const LANE_FAILURES = Object.freeze({
+  lane_failed: {
+    text: 'the lane produced no review',
+    action: 'Re-run this lane alone and compare stderrDigest against the provider log. Nothing about the panel changes until it answers.',
+  },
+  runner_missing: {
+    text: 'the runner returned nothing at all',
+    action: 'A wiring fault, not a provider one: check the command this profile declares in review-profiles.mjs before retrying.',
+  },
+  profile_identity: {
+    text: 'the answer came back under a different profile than the lane was launched as',
+    action: 'Do not retry — a retry cannot fix a mislabelled lane. Reconcile the profile in review-profiles.mjs with what the runner reports.',
+  },
+  provider_identity: {
+    text: 'the answer came back from a different provider than the profile declares',
+    action: 'Do not retry — a retry cannot fix a mislabelled lane. Reconcile the profile in review-profiles.mjs with what the runner reports.',
+  },
+  model_identity: {
+    text: 'the answer came back from a different model than the profile declares',
+    action: 'Do not retry — a retry cannot fix a mislabelled lane. Reconcile the profile in review-profiles.mjs with what the runner reports.',
+  },
+  display_model_identity: {
+    text: 'the runner named a display model the profile does not declare',
+    action: 'Do not retry — a retry cannot fix a mislabelled lane. Reconcile the profile in review-profiles.mjs with what the runner reports.',
+  },
+  mode_not_enforced: {
+    text: 'the lane did not run the review mode its profile declares',
+    action: 'Do not retry the same profile: reconcile reviewMode in review-profiles.mjs with the mode this model will actually hold.',
+  },
+  packet_hash: {
+    text: 'the lane reviewed different bytes than the gate hashed',
+    action: 'Discard this review outright and rebuild the packet. A review of unknown bytes is never accepted, however good it reads.',
+  },
+  provenance_invalid: {
+    text: 'the result did not come from a review runner',
+    action: 'Discard it and re-run the lane. If it repeats, something other than the runner is answering on this lane.',
+  },
+  config_unacknowledged: {
+    text: 'the provider did not acknowledge a setting the gate requires',
+    action: 'Do not retry the same profile: either this model cannot hold that setting, or the route in review-profiles.mjs is wrong.',
+  },
+  isolation_unacknowledged: {
+    text: 'the lane did not confirm the review isolation contract',
+    action: 'Do not retry until the sandbox for this profile is fixed. A review that read the target repository is not an external review.',
+  },
+  validator_threw: {
+    text: 'the review validator threw on what this lane returned',
+    action: 'A gate bug, not a lane one: capture the packet and report it. Retrying will produce the same throw.',
+  },
+  schema_invalid: {
+    text: 'the model answered outside the review schema',
+    action: 'Re-run this lane once. If it repeats, this model cannot hold the JSON review protocol and the route needs changing.',
+  },
+})
+
+// The sentence is assembled from the table, never from the lane. `subject` is
+// the only variable part, and every caller passes either a key of our own frozen
+// profile config or the validator's own closed vocabulary, so the whole string
+// stays gate-authored.
+const laneFailure = (reason, subject = null) =>
+  `${LANE_FAILURES[reason]?.text ?? 'unclassified lane failure'}${subject ? ` (${subject})` : ''}`
 const attemptRecord = attempt => Object.freeze({
   profile: attempt.profile.id,
   status: attempt.valid ? 'accepted' : 'failed',
@@ -32,6 +110,10 @@ const attemptRecord = attempt => Object.freeze({
   ...(!attempt.valid ? {
     failureKind: attempt.failureKind,
     stage: attempt.stage,
+    // The code is what a reader greps for and what a future gate may branch on;
+    // the action is derived from it here so the two can never disagree.
+    reason: attempt.reason ?? null,
+    action: LANE_FAILURES[attempt.reason]?.action ?? null,
     failure: attempt.failure,
     stderrDigest: attempt.stderrDigest,
     stderrBytes: attempt.stderrBytes,
@@ -99,17 +181,20 @@ async function defaultLaneRunner(profile, packet, deps) {
   })
 }
 
-function runnerEvidenceError(profile, value, expectedInputHash) {
-  if (!value || typeof value !== 'object') return 'missing runner result'
-  if (value.profile !== profile.id) return 'runner/profile identity mismatch'
-  if (value.provider !== profile.provider) return 'runner/provider identity mismatch'
-  if (value.model !== profile.model) return 'runner/model identity mismatch'
-  if (value.displayModel !== (profile.displayModel ?? `${profile.provider}/${profile.model}`)) return 'runner/display-model identity mismatch'
-  if (value.mode !== profile.reviewMode) return 'runner did not enforce declared review mode'
-  if (value.inputHash !== expectedInputHash) return 'static packet hash mismatch'
-  if (typeof value.provenance !== 'string' || !value.provenance.startsWith('review-runner:')) return 'invalid runner provenance'
+// Returns a fault from the closed table above, or null. `subject` names the one
+// thing worth naming — which setting went unacknowledged — and it is a key of
+// our own profile config, so it can never carry provider bytes.
+function runnerEvidenceFault(profile, value, expectedInputHash) {
+  if (!value || typeof value !== 'object') return { reason: 'runner_missing' }
+  if (value.profile !== profile.id) return { reason: 'profile_identity' }
+  if (value.provider !== profile.provider) return { reason: 'provider_identity' }
+  if (value.model !== profile.model) return { reason: 'model_identity' }
+  if (value.displayModel !== (profile.displayModel ?? `${profile.provider}/${profile.model}`)) return { reason: 'display_model_identity' }
+  if (value.mode !== profile.reviewMode) return { reason: 'mode_not_enforced' }
+  if (value.inputHash !== expectedInputHash) return { reason: 'packet_hash' }
+  if (typeof value.provenance !== 'string' || !value.provenance.startsWith('review-runner:')) return { reason: 'provenance_invalid' }
   for (const [configId, wanted] of Object.entries(profile.config ?? {})) {
-    if (value.acknowledgements?.[configId]?.value !== wanted) return `${configId} was not acknowledged`
+    if (value.acknowledgements?.[configId]?.value !== wanted) return { reason: 'config_unacknowledged', subject: configId }
   }
   const isolation = value.isolation
   if (isolation?.workspace !== 'temporary' || isolation?.targetRepositoryCwd !== false ||
@@ -136,7 +221,7 @@ function runnerEvidenceError(profile, value, expectedInputHash) {
       isolation?.providerMayPersistRemoteState !== true ||
       isolation?.networkSharedWithHost !== (profile.osSandbox === 'bwrap') ||
       isolation?.acpPermissionRequests !== 'deny') {
-    return 'review isolation contract was not acknowledged'
+    return { reason: 'isolation_unacknowledged' }
   }
   return null
 }
@@ -150,17 +235,31 @@ async function assessAttempt(attempt, validate, expectedInputHash) {
   if (attempt.result.status === 'rejected') {
     const stage = laneStage(attempt.result.reason?.code)
     const failureKind = stage === 'review' ? 'review' : stage === 'policy' ? 'policy' : 'transport'
-    return { ...attempt, valid: false, failureKind, stage, ...stderrEvidence, failure: `ACP lane failed (${stage})` }
+    // `stage` already says where the transport stopped, so the sentence does not
+    // repeat it — it says what the operator is left holding: no review.
+    return { ...attempt, valid: false, failureKind, stage, ...stderrEvidence, reason: 'lane_failed', failure: laneFailure('lane_failed') }
   }
   const value = attempt.result.value
-  const evidenceError = runnerEvidenceError(attempt.profile, value, expectedInputHash)
-  if (evidenceError) return { ...attempt, valid: false, failureKind: 'review', stage: 'acknowledge', ...stderrEvidence, failure: evidenceError }
+  const fault = runnerEvidenceFault(attempt.profile, value, expectedInputHash)
+  if (fault) {
+    return {
+      ...attempt, valid: false, failureKind: 'review', stage: 'acknowledge', ...stderrEvidence,
+      reason: fault.reason, failure: laneFailure(fault.reason, fault.subject),
+    }
+  }
   let checked
   try { checked = await validate(value.review, { profile: attempt.profile.id, value }) } catch {
-    return { ...attempt, valid: false, failureKind: 'review', stage: 'schema', ...stderrEvidence, failure: 'review validator threw' }
+    return { ...attempt, valid: false, failureKind: 'review', stage: 'schema', ...stderrEvidence, reason: 'validator_threw', failure: laneFailure('validator_threw') }
   }
   if (checked === false || checked?.valid === false || checked?.ok === false) {
-    return { ...attempt, valid: false, failureKind: 'review', stage: 'schema', ...stderrEvidence, failure: boundedReason(checked?.reason) ?? 'review schema is invalid' }
+    // The validator's own reason is the useful half — WHICH schema rule broke —
+    // and its vocabulary is a closed set of literals this repo writes
+    // (review-policy.mjs validateReviewOutput), never provider text. It rides in
+    // as the subject rather than as the whole sentence.
+    return {
+      ...attempt, valid: false, failureKind: 'review', stage: 'schema', ...stderrEvidence,
+      reason: 'schema_invalid', failure: laneFailure('schema_invalid', boundedReason(checked?.reason)),
+    }
   }
   return {
     ...attempt,
@@ -357,6 +456,13 @@ export async function runReviewGateCli([packetPath, targetRepository] = [], {
   } catch (error) {
     if (error?.report) stdout.write(JSON.stringify(error.report) + '\n')
     stderr.write(`review-gate: ${error.message}\n`)
+    // stdout is the machine's copy and gets redirected; stderr is what a person
+    // is actually looking at when the gate refuses. An action that only ever
+    // reaches a JSON field nobody opens is not an action.
+    for (const record of error?.report?.attempts ?? []) {
+      if (record.status !== 'failed' || !record.action) continue
+      stderr.write(`review-gate: ${record.profile} ${record.stage}/${record.reason} — ${record.action}\n`)
+    }
     return exitCodeFor(error)
   }
 }

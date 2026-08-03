@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runAcpReview, prepareReviewPacket, ReviewTransportError } from '../plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs'
-import { runReviewGate, runReviewGateCli, LANE_TIMEOUT_DEFAULT_MS, laneTimeoutMs,
+import { runReviewGate, runReviewGateCli, LANE_TIMEOUT_DEFAULT_MS, laneTimeoutMs, LANE_FAILURES,
 } from '../plugins/tmux-teams/skills/party-mode/scripts/review-gate.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -800,6 +800,50 @@ test('CLI preserves a structured objection report on stdout while returning poli
   assert.match(stderr, /review synthesis is not PASS/)
 })
 
+test('a refused lane names a closed reason and the action reaches stderr, not only the JSON', async () => {
+  // Every entry earns its place: a reason nobody can act on is a sentence with
+  // a code bolted to it, which is what this replaced.
+  for (const [reason, entry] of Object.entries(LANE_FAILURES)) {
+    assert.match(reason, /^[a-z][a-z_]*$/, `${reason} is not a stable code`)
+    assert.ok(entry.text.length > 10 && entry.action.length > 20, `${reason} states no usable action`)
+    assert.notEqual(entry.text, entry.action, `${reason} repeats itself instead of saying what to do`)
+  }
+
+  const scratch = mkdtempSync(join(tmpdir(), 'review-cli-action-'))
+  const packetFile = join(scratch, 'packet.json')
+  writeFileSync(packetFile, JSON.stringify(packet()))
+  const error = new ReviewTransportError('transport', 'review gate accepted 2; exactly three are required')
+  error.report = {
+    ok: false,
+    blocked: true,
+    attempts: [
+      { profile: 'zai', status: 'accepted' },
+      {
+        profile: 'kimi', status: 'failed', stage: 'timeout', reason: 'lane_failed',
+        action: LANE_FAILURES.lane_failed.action, failure: LANE_FAILURES.lane_failed.text,
+      },
+      // A failed lane whose reason is not in the table has no action, and a line
+      // that trails off into `— undefined` is worse than no line: it reads as an
+      // instruction the operator failed to understand.
+      { profile: 'codex', status: 'failed', stage: 'transport', reason: 'not_in_table', action: null },
+    ],
+  }
+  let stdout = ''
+  let stderr = ''
+  const code = await runReviewGateCli([packetFile, '/tmp'], {
+    gate: async () => { throw error },
+    stdout: { write: value => { stdout += value } },
+    stderr: { write: value => { stderr += value } },
+  })
+  assert.equal(code, 3)
+  assert.deepEqual(JSON.parse(stdout), error.report)
+  assert.match(stderr, /kimi timeout\/lane_failed — Re-run this lane alone/)
+  // An accepted lane has nothing to act on and must not print a line saying so.
+  assert.doesNotMatch(stderr, /zai/)
+  assert.doesNotMatch(stderr, /codex/, 'a lane with no action printed an empty instruction')
+  assert.doesNotMatch(stderr, /undefined|null/)
+})
+
 test('arbitrary profile arrays cannot bypass deterministic policy routing', async () => {
   await assert.rejects(runReviewGate(packet(), {
     profiles: [profile('one'), profile('two'), profile('three')],
@@ -887,6 +931,8 @@ test('a blocked gate emits a distinguishable per-lane diagnostic, never a zero-b
     assert.ok(error.report, `${code} blocked the gate with no report`)
     assert.equal(laneOf(error, 'kimi').status, 'failed')
     assert.equal(laneOf(error, 'kimi').stage, code)
+    assert.equal(laneOf(error, 'kimi').reason, 'lane_failed')
+    assert.equal(laneOf(error, 'kimi').action, LANE_FAILURES.lane_failed.action)
     assert.equal(laneOf(error, 'kimi').stderrDigest, digest)
     assert.deepEqual(error.report.substitution, {
       used: false, replaced: 'kimi', replacement: null, remaining: 0, reason: 'reserve already used',
@@ -900,12 +946,18 @@ test('a blocked gate emits a distinguishable per-lane diagnostic, never a zero-b
     validateReview: (_review, context) => context.profile !== 'kimi' || { ok: false, reason: 'invalid verdict' },
   })
   assert.equal(laneOf(badSchema, 'kimi').stage, 'schema')
-  assert.equal(laneOf(badSchema, 'kimi').failure, 'invalid verdict')
+  assert.equal(laneOf(badSchema, 'kimi').reason, 'schema_invalid')
+  // The validator's own reason is kept — it is the half that says WHICH rule
+  // broke — but it is now a subject inside a gate-authored sentence.
+  assert.equal(laneOf(badSchema, 'kimi').failure, `${LANE_FAILURES.schema_invalid.text} (invalid verdict)`)
+  assert.equal(laneOf(badSchema, 'kimi').action, LANE_FAILURES.schema_invalid.action)
   const badEvidence = await blockedGate({
     runAcpReview: async ({ profile: selected }) =>
       runnerResult(selected, selected.id === 'kimi' ? { ...packet(), objective: 'other' } : packet()),
   })
   assert.equal(laneOf(badEvidence, 'kimi').stage, 'acknowledge')
+  assert.equal(laneOf(badEvidence, 'kimi').reason, 'packet_hash')
+  assert.equal(laneOf(badEvidence, 'kimi').action, LANE_FAILURES.packet_hash.action)
 
   // AGY has no reserve, so no substitution is possible on that blocker.
   const agyBlocked = await blockedGate(laneThrows('agy', 'timeout', 'e'.repeat(64)))
