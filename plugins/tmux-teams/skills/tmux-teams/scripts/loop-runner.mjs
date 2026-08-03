@@ -193,7 +193,32 @@ const field = (text, key) => {
 // An agent is free when nothing of its own is currently running. Pulse is the
 // authority on that: guessing from file mtimes is how a second dispatch lands
 // on an agent that never stopped.
-function busyAgents(repo, nowMs = Date.now()) {
+//
+// `state` is pulse's OS-level probe, and it can read a live companion as gone
+// for a single tick — a ps or lsof scan that misses once. `nextStep` has no
+// debounce, so one such tick after ZOMBIE_SEC is the whole story: a review
+// running the three-model gate for twenty minutes was declared lost and
+// replaced twice on one token, burning legs against a ceiling.
+//
+// The worker was never silent. `acp-companion` writes its own heartbeat under
+// `.tmux-teams/liveness/` faster than once a second and says `tool_running`
+// while a tool is in flight; pulse validates its provenance and republishes it
+// on the row as `liveness_evidence`. Nothing read it. A second, independent
+// witness that the leg is alive was being published and thrown away.
+//
+// Freshness is re-checked here rather than trusting that the row carries it:
+// pulse accepts a liveness file for hours, which is the right window for a page
+// and far too long for a zombie check. A companion that died without writing a
+// terminal state must still time out.
+const LIVENESS_TERMINAL = new Set(['completed', 'cancelled', 'failed'])
+const liveEvidence = (row, nowMs) => {
+  const evidence = row.liveness_evidence
+  if (!evidence || LIVENESS_TERMINAL.has(evidence.liveness_state)) return false
+  const observedMs = Date.parse(evidence.observed_at || '')
+  return Number.isFinite(observedMs) && (nowMs - observedMs) / 1000 < ZOMBIE_SEC
+}
+
+export function busyAgents(repo, nowMs = Date.now()) {
   const snapshot = readJson(join(repo, '.tmux-teams', 'pulse.json'), null)
   const generatedMs = Date.parse(snapshot?.generated_at || '')
   const ageSec = Number.isFinite(generatedMs) ? Math.round((nowMs - generatedMs) / 1000) : null
@@ -204,7 +229,9 @@ function busyAgents(repo, nowMs = Date.now()) {
     const seen = newest.get(row.agent_id)
     if (!seen || String(row.started_at || '') > String(seen.started_at || '')) newest.set(row.agent_id, row)
   }
-  const busy = new Set([...newest.values()].filter((row) => WORKING.has(row.state)).map((row) => row.agent_id))
+  const busy = new Set([...newest.values()]
+    .filter((row) => WORKING.has(row.state) || liveEvidence(row, nowMs))
+    .map((row) => row.agent_id))
   // No snapshot at all is a repo where nothing has ever run — there is no agent
   // to collide with, so the first dispatch is safe. A snapshot that EXISTS but
   // has stopped moving is the dangerous one: it can still be asserting that
