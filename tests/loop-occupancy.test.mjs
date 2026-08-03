@@ -600,21 +600,39 @@ test('a permanent problem does not re-dispatch the controller every cooldown', (
     const occupancy = teamOccupancy(graph, items)
     const plans = [{ action: 'escalate', work_item: 'tok', team: 'test', reason: 'nothing can place this' }]
 
-    const first = planEscalation(dir, graph, items, plans, occupancy, { now: FIXED_NOW, stallSec: 1e9 })
+    // No `stallSec` override. This test used to pass `1e9`, which switched OFF
+    // the one trigger whose text changes on every tick — so the only guard on
+    // the brake had never once run the configuration the runner ships
+    // (`planEscalation` is called with no options at all, loop-runner.mjs:1211).
+    // Issue #22: the stall trigger renders a minute count, the brake compared it
+    // as text, it was never twice the same, and the controller was re-dispatched
+    // every PM_COOLDOWN_SEC for as long as the board stayed still. Both calls
+    // below are a day past the last recorded event, so the stall is in both sets.
+    const DAY = 86_400_000
+    const first = planEscalation(dir, graph, items, plans, occupancy, { now: FIXED_NOW + DAY })
     assert.equal(first.action, 'escalate')
     mkdirSync(join(dir, '.tmux-teams', 'pm-notes'), { recursive: true })
+    // The runner writes the IDENTITY, not the brief's text. Writing anything
+    // else here would test a file this system does not produce.
     writeFileSync(join(dir, '.tmux-teams', 'pm-notes', 'latest.md'),
-      `2026-07-27T09:00:00.000Z\n${first.triggers.join('\n')}\n`)
+      `${new Date(FIXED_NOW + DAY).toISOString()}\n${first.identity}\n`)
 
-    // A token nobody can place stays in `triggers` forever. Time alone is no
-    // brake on that: past the cooldown it would dispatch a full agent to read
-    // the same board again, every cooldown, indefinitely.
-    const again = planEscalation(dir, graph, items, plans, occupancy, { now: FIXED_NOW + 86_400_000, stallSec: 1e9 })
+    // An hour later: past the cooldown, same board, nothing recorded. A token
+    // nobody can place stays in the set forever. Time alone is no brake on
+    // that: past the cooldown it would dispatch a full agent to read the same
+    // board again, every cooldown, indefinitely.
+    const again = planEscalation(dir, graph, items, plans, occupancy, { now: FIXED_NOW + DAY + 3_600_000 })
     assert.equal(again.action, 'unchanged')
+
+    // A guard on the guard, not the guard itself. The stall trigger renders
+    // 1440 minutes in one call and 1500 in the other; if it ever stops being
+    // volatile, the assertion above still passes while checking nothing.
+    assert.notDeepEqual(first.triggers, again.triggers,
+      'both calls rendered the same trigger text — this no longer exercises a trigger the clock moves')
 
     const changed = planEscalation(dir, graph, items,
       [...plans, { action: 'escalate', work_item: 'other', team: 'build', reason: 'new problem' }],
-      occupancy, { now: FIXED_NOW + 86_400_000, stallSec: 1e9 })
+      occupancy, { now: FIXED_NOW + DAY + 3_600_000 })
     assert.equal(changed.action, 'escalate', 'a new problem must still reach the controller')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

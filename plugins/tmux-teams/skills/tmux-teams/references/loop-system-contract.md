@@ -589,6 +589,23 @@ Parsing rules, non-negotiable:
 - Two brakes, both required: a **time cooldown** (`PM_COOLDOWN_SEC`) and an
   **unchanged-trigger** check against the last note. Time alone is no brake on a
   permanent condition.
+- **The brake compares a trigger's IDENTITY, not the text the controller reads.**
+  A trigger may render elapsed time — *"nothing recorded for 47 minutes"* is
+  what an agent can act on — but elapsed time is measured against the clock, so
+  it is a different string on every tick. The stall trigger was compared as
+  text: its minute count incremented forever while a board sat still, the brake
+  could never match a second time, and the controller was re-dispatched every
+  `PM_COOLDOWN_SEC` for as long as nothing happened (issue #22, 2026-08-03). A
+  trigger's identity must be a function of what is RECORDED and of nothing else,
+  so the stall's identity names the timestamp of the last recorded event rather
+  than its age: the same stall stays the same problem, and a stall that returns
+  after something IS recorded is a new one. `pm-notes/latest.md` holds
+  identities — that is what makes it comparable between ticks — and it stays
+  readable, because an identity is the same fact rendered against a fixed point
+  instead of against now. AC14 is the guard, and it must run the shipping
+  `STALL_SEC`: it passed `stallSec: 1e9`, which switched off the only trigger
+  that could defeat the brake, so the guard had never once run the
+  configuration the runner ships.
 - It is dispatched **about the board**, not about a token: its brief carries the
   trigger list and the whole board, and its dispatch carries no work item.
 - `resume` returns the token to its team and grants a fresh attempt budget.

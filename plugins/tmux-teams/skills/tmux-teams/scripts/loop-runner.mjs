@@ -831,10 +831,18 @@ const boardSummary = (graph, items, occupancy) => graph.teams.map((team) => {
 // Anomaly-triggered, never on a heartbeat: a timer that dispatches a full agent
 // every interval bills for looking at a board that has not changed.
 export function planEscalation(repo, graph, items, plans, occupancy, { now = Date.now(), cooldownSec = PM_COOLDOWN_SEC, stallSec = STALL_SEC } = {}) {
+  // `text` is what the controller READS; `id` is what the unchanged-trigger
+  // brake COMPARES. They are the same string for every trigger but one. A
+  // trigger may render elapsed time — "for 47 minutes" is what an agent can act
+  // on — but elapsed time is measured against `now`, so it is a different
+  // string on every tick, and a brake comparing it can never match twice. An
+  // identity must therefore be a function of what is RECORDED and of nothing
+  // else. See the stall below, which is where this went wrong.
+  const trigger = (text, id = text) => ({ id, text })
   const triggers = plans.filter((plan) => plan.action === 'escalate')
-    .map((plan) => `- \`${plan.work_item}\` in ${plan.team}: ${plan.reason}`)
+    .map((plan) => trigger(`- \`${plan.work_item}\` in ${plan.team}: ${plan.reason}`))
   for (const orphan of occupancy.orphans) {
-    triggers.push(`- \`${orphan.work_item}\` cannot be placed: last actor \`${orphan.agent_id || 'none'}\`, workflow \`${orphan.workflow || 'none'}\``)
+    triggers.push(trigger(`- \`${orphan.work_item}\` cannot be placed: last actor \`${orphan.agent_id || 'none'}\`, workflow \`${orphan.workflow || 'none'}\``))
   }
 
   // Master asked for a controller that checks every team and every workflow is
@@ -846,8 +854,8 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
   const audits = [...items.values()].filter(awaitingAudit)
   for (const item of audits) {
     const failed = failedLegs(item)
-    triggers.push(`- \`${item.work_item}\` finished ${item.workflow || 'its route'} — nobody has read the delivery as a whole`
-      + (failed ? ` (it recovered from ${failed} failed leg(s) on the way)` : ''))
+    triggers.push(trigger(`- \`${item.work_item}\` finished ${item.workflow || 'its route'} — nobody has read the delivery as a whole`
+      + (failed ? ` (it recovered from ${failed} failed leg(s) on the way)` : '')))
   }
 
   // A request the clock withdrew. Master's rule for reading the intake
@@ -860,7 +868,7 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
     return last?.event === 'abandoned' && String(last.actor || '') === 'agent:runner'
   })
   for (const item of withdrawals) {
-    triggers.push(`- \`${item.work_item}\` was withdrawn at the door: nobody answered the intake questions in time`)
+    triggers.push(trigger(`- \`${item.work_item}\` was withdrawn at the door: nobody answered the intake questions in time`))
   }
 
   const held = [...occupancy.held.values()].flat()
@@ -868,7 +876,7 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
     const item = items.get(workItem)
     const failed = failedLegs(item)
     if (failed >= RETRY_NOISE) {
-      triggers.push(`- \`${workItem}\` has survived ${failed} failed legs and is still going — retries are hiding them`)
+      triggers.push(trigger(`- \`${workItem}\` has survived ${failed} failed legs and is still going — retries are hiding them`))
     }
   }
 
@@ -880,11 +888,23 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
     }, 0)
     const idleSec = newest ? Math.round((now - newest) / 1000) : 0
     if (newest && idleSec > stallSec) {
-      triggers.push(`- the board has held ${held.length} token(s) with nothing recorded for ${Math.round(idleSec / 60)} minutes`)
+      triggers.push(trigger(
+        `- the board has held ${held.length} token(s) with nothing recorded for ${Math.round(idleSec / 60)} minutes`,
+        // The identity of a stall is the last thing that WAS recorded, not how
+        // long ago it was. The minute count above increments on every tick
+        // while a board sits still, so compared as text it was never twice the
+        // same: the brake could never match and the controller was
+        // re-dispatched every PM_COOLDOWN_SEC for as long as the board stayed
+        // still (issue #22). Anchored here, the same stall is the same problem,
+        // and a stall that returns after something is recorded is a new one.
+        `- the board has held ${held.length} token(s) with nothing recorded since ${new Date(newest).toISOString()}`,
+      ))
     }
   }
 
   if (!triggers.length) return null
+  const lines = triggers.map((entry) => entry.text)
+  const identity = triggers.map((entry) => entry.id).join('\n')
 
   const notesDir = join(repo, '.tmux-teams', 'pm-notes')
   const latest = join(notesDir, 'latest.md')
@@ -901,15 +921,15 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
     const stamped = Date.parse(text.split('\n', 1)[0] ?? '')
     const newest = Number.isFinite(stamped) ? stamped : statSync(latest).mtimeMs
     if ((now - newest) / 1000 < cooldownSec) {
-      return { action: 'cooldown', reason: `outer controller ran ${Math.round((now - newest) / 1000)}s ago`, triggers }
+      return { action: 'cooldown', reason: `outer controller ran ${Math.round((now - newest) / 1000)}s ago`, triggers: lines }
     }
     // A time cooldown alone is no brake on a permanent condition. A token the
     // loop can never place stays in `triggers` on every tick, so an unchanged
     // trigger set means the controller would be dispatched again to read the
     // same board — every cooldown, forever.
     const seen = text.split('\n').slice(1).filter(Boolean).join('\n')
-    if (seen === triggers.join('\n')) {
-      return { action: 'unchanged', reason: `the same ${triggers.length} problem(s) the controller already read`, triggers }
+    if (seen === identity) {
+      return { action: 'unchanged', reason: `the same ${triggers.length} problem(s) the controller already read`, triggers: lines }
     }
   } catch { /* never run before */ }
 
@@ -945,12 +965,15 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
   return {
     action: 'escalate',
     agent_id: graph.outer_controller_id,
-    triggers,
+    triggers: lines,
+    // What the runner writes to `pm-notes/latest.md` and what the brake reads
+    // back off it next tick. Never the brief's own text — see `trigger` above.
+    identity,
     audits: auditSubject ? [auditSubject.work_item] : [],
     parked: parkedSubject ? parkedSubject.work_item : null,
     brief: roleBrief(repo, 'pm', null, {
       projectId: graph.project_id || 'unnamed',
-      trigger: `${ask}\n\n${triggers.join('\n')}`,
+      trigger: `${ask}\n\n${lines.join('\n')}`,
       // Read by the role that owns the door, on the event that proves the door
       // turned somebody away. It is a RECOMMENDATION surface, not a control
       // one: §2 says a declaration is assigned by a human and never observed,
@@ -1227,7 +1250,7 @@ export function tick(repoArg, {
     } else {
       const notesDir = join(repo, '.tmux-teams', 'pm-notes')
       mkdirSync(notesDir, { recursive: true })
-      writeFileSync(join(notesDir, 'latest.md'), `${new Date().toISOString()}\n${escalation.triggers.join('\n')}\n`)
+      writeFileSync(join(notesDir, 'latest.md'), `${new Date().toISOString()}\n${escalation.identity}\n`)
       const taskId = spawnLeg(repo,
         { workItem: '', team: '', role: 'pm', agentId: escalation.agent_id, workflow: '', model: pmModel },
         briefPath, stallSec)
