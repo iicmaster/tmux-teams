@@ -2132,12 +2132,31 @@ test('cancellation paths close stdin and reap their detached process groups', { 
   if (failure) throw failure.reason
 })
 
+// A grace is a CEILING, not a delay. The child in these three scenarios exits
+// 5ms after cancellation and the companion settles the moment it does, so a
+// large ceiling costs a quiet machine nothing at all — it is never reached.
+//
+// It was 80ms, which is below the scheduler's noise floor on a busy machine, and
+// these three tests state "the child exited BEFORE the grace" as their PREMISE:
+// it is in two of their names. When the machine inverted that premise the test
+// measured the forced path instead and reported the difference as a value
+// mismatch, which reads exactly like a code regression. Reproduced deliberately
+// on 2026-08-03 at load 60 (two copies of this file plus ten spinners):
+// `liveness_state` came back `stalled` where the test names `cancelled`. That is
+// the whole of the "load fragility" this file was carrying as an open,
+// unexplained item — it was never a flake and never a helper timeout.
+//
+// The tests below that WANT the grace to expire set their own small value and
+// are left alone: their mock never exits on its own, so expiry always wins and
+// no amount of load can invert them.
+const CLEAN_EXIT_CANCEL_GRACE_MS = '5000'
+
 concurrentTest('clean child exit 0 before cancellation grace is cancelled, not forced', async () => {
   const taskId = 'task-cancel-clean-exit'
   const r = await asyncRun(taskId, {
     MOCK_SCENARIO: 'cancel-clean-exit',
     MOCK_EXIT_DELAY_MS: '5',
-    ACP_CANCEL_GRACE_MS: '80',
+    ACP_CANCEL_GRACE_MS: CLEAN_EXIT_CANCEL_GRACE_MS,
     ACP_PROCESS_KILL_GRACE_MS: '100',
   }, undefined, 0.5)
   assert.equal(r.status, 1, `exit 1 expected; stderr:\n${r.stderr}`)
@@ -2159,7 +2178,7 @@ concurrentTest('nonzero child exit before cancellation grace is failed and prese
   const r = await asyncRun(taskId, {
     MOCK_SCENARIO: 'cancel-exit-7',
     MOCK_EXIT_DELAY_MS: '5',
-    ACP_CANCEL_GRACE_MS: '80',
+    ACP_CANCEL_GRACE_MS: CLEAN_EXIT_CANCEL_GRACE_MS,
     ACP_PROCESS_KILL_GRACE_MS: '100',
   }, undefined, 0.5)
   assert.equal(r.status, 1, `exit 1 expected; stderr:\n${r.stderr}`)
@@ -2242,7 +2261,7 @@ concurrentTest('captured settlement facts cannot be rewritten by later mutable b
   const r = await asyncRun(taskId, {
     MOCK_SCENARIO: 'cancel-clean-exit',
     MOCK_EXIT_DELAY_MS: '5',
-    ACP_CANCEL_GRACE_MS: '80',
+    ACP_CANCEL_GRACE_MS: CLEAN_EXIT_CANCEL_GRACE_MS,
     ACP_PROCESS_KILL_GRACE_MS: '100',
     ACP_TEST_MUTATE_SETTLEMENT_AFTER_CAPTURE: '1',
   }, undefined, 0.5)
