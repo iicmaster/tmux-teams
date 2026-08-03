@@ -122,14 +122,32 @@ commands and documentation; there is one delivery model now.
   check and the backwards route validates clean; count arrival instead of
   admission and the door-refusal retry stops being legal.
 
-  **A ledger written before this was enforceable may contain a backwards pull**,
-  and refusing every append to it would leave that token unclosable — not even
-  `abandoned`, since the writer refuses on a file that does not already
-  validate (§4.3). Master decided 2026-08-03 that such a file may still receive
-  a **terminal** event and nothing else: another `pulled` is refused exactly as
-  it is on a clean ledger, and a file invalid for any OTHER reason still has to
-  be repaired before anything at all is appended. The tolerance is one code
-  wide, and widening it makes `tests/ledger.test.mjs` red.
+  **A team that has ADMITTED the work does not send it back.** `returned` is
+  the door saying no BEFORE admission; after `intake` has run, the same word is
+  the loop running backwards, and `validateLedger` refuses it with
+  `sent_back_after_admission`. A reviewer that finds a problem brings the work
+  to a state it can pass and forwards it — Master, 2026-08-03: *"ยืนยันกฏไม่ส่งกลับ
+  รีวิวเวอร์ที่เจอปัญหาก็ต้องแก้ต่อเองให้จบเลย"*. Nothing refused this until then, which
+  is how a hand-written `returned` came to sit in a live ledger: the operator
+  used the only move the system had left open.
+
+  **The rule is enforced on the line being written, not on the file's history.**
+  A ledger written before §1 was enforceable can contain a backwards move, and
+  the first version of this refused every further append to such a file — which
+  met a real 46-line ledger with a worker mid-leg and froze it. A rule meant to
+  keep work moving must not be the thing that stops it. The writer now refuses
+  an append that introduces a NEW problem and nothing else, so a fresh backwards
+  pull is refused exactly as before while history the token already carries no
+  longer blocks its next legal step. Only `route_went_backwards` and
+  `sent_back_after_admission` are tolerated that way; a file invalid for any
+  OTHER reason still has to be repaired before anything at all is appended, and
+  `tests/ledger.test.mjs` goes red if that list is widened.
+
+  **What §1 still does not provide is the rework path it names.** It says rework
+  is a NEW token on a fresh route; nothing in this system creates one. The only
+  writer of `opened` is `admit.mjs`, which a person runs. Until that gap is
+  closed, an operator who obeys §1 opens the successor by hand, and an operator
+  who does not obey it writes the move this section now refuses.
 - There is exactly one **outer controller** for the whole graph. It never does a
   team's work. Since §14.5 it holds the single worker seat of its own **control
   team** — the same seat `outer_controller_id` names, not a second one — which

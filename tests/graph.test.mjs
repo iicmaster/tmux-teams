@@ -344,6 +344,11 @@ test('every role is credited with the work the ledger records for it', () => {
     { at: '2026-07-27T02:20:00.000Z', event: 'assigned', agent_id: 'b_w1', task_id: 't-2', dispatch_id: 'd-2' },
     { at: '2026-07-27T02:30:00.000Z', event: 'delivered', agent_id: 'b_w1', task_id: 't-2', terminal: 'protocol-error', timed_out: false, evidence_present: false },
     { at: '2026-07-27T03:00:00.000Z', event: 'reviewed', agent_id: 'b_e', verdict: 'reject', reviewed_task: 't-1', reason: 'thin' },
+    // The handoff this refusal refuses. Without it the fixture said Build
+    // admitted the token and then something sent it back across a boundary,
+    // which §1 forbids — a refusal is a door check, and a door needs an arrival
+    // standing in front of it.
+    { at: '2026-07-27T03:30:00.000Z', event: 'pulled', agent_id: 'v_d', from_team: 'build', to_team: 'verify' },
     { at: '2026-07-27T04:00:00.000Z', event: 'returned', to_team: 'build', refused_by: 'v_d', reason: 'not ours' },
     { at: '2026-07-27T05:30:00.000Z', event: 'resumed', agent_id: 'pm', to_team: 'build', grant: 3, reason: 'carry on' },
   ])

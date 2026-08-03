@@ -167,6 +167,11 @@ export function validateLedger(lines) {
   const heldTeams = new Set()
   // The team the token has arrived at and that has not ruled on it yet.
   let atTheDoor = ''
+  // Whether the team currently holding the token let it IN. Distinct from
+  // `atTheDoor` being empty, which is also true of a ledger that never recorded
+  // an arrival at all — every fixture that starts mid-story is in that state,
+  // and reading those as admitted flagged seven of them.
+  let admittedHere = false
   // How many times each dispatcher has turned this token away at its door.
   const doorRefusals = new Map()
   // Counted, not flagged: `opened` earns its strictness only if a second one
@@ -318,13 +323,31 @@ export function validateLedger(lines) {
 
     if ((name === 'opened' || name === 'pulled') && present(entry.to_team)) {
       atTheDoor = String(entry.to_team)
+      admittedHere = false
     }
     // Admitted. `intake` is the dispatcher accepting, and its only legal
     // verdict is `accept` — a refusal is written as `returned` or `escalated`
     // instead, and neither of those admits anything.
-    if (name === 'intake' && atTheDoor) { heldTeams.add(atTheDoor); atTheDoor = '' }
+    if (name === 'intake') {
+      admittedHere = true
+      if (atTheDoor) { heldTeams.add(atTheDoor); atTheDoor = '' }
+    }
+    // Master, 2026-08-03, confirming §1 after a live token bounced: a team that
+    // has ADMITTED the work does not send it back. It brings the work to a
+    // state it can pass and forwards it — a reviewer that finds a problem fixes
+    // it through. `returned` is the door saying no BEFORE admission; once
+    // `intake` has run, the same word is the loop running backwards.
+    // Nothing refused this until now, which is exactly how a hand-written
+    // `returned` came to sit at line 30 of a real `story-1-10` ledger: the
+    // operator used the only move the system left open.
+    if (name === 'returned' && admittedHere && present(entry.to_team)) {
+      add(lineNo, 'sent_back_after_admission',
+        `this team admitted the token, so it cannot send it back to ${entry.to_team};`
+        + ' bring the work to a state it can pass and forward it')
+    }
     if (name === 'returned') {
       atTheDoor = ''
+      admittedHere = false
       // The door may say no three times. A fourth refusal by the same seat is
       // not a check, it is two seats disagreeing with nobody deciding, and the
       // token would bounce for as long as both keep their opinion. The runner
