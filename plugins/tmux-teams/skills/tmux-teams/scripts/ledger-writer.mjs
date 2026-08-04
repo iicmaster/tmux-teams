@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 
 import {
-  ACTOR_RE, EVENT_SPEC, LEDGER_EVENTS, MAX_LEDGER_BYTES, validateLedger,
+  ACTOR_RE, EVENT_SPEC, isLegacyTolerated, LEDGER_EVENTS, MAX_LEDGER_BYTES, validateLedger,
 } from './ledger-validate.mjs'
 
 // §1 became enforceable on a system that was already running, and the first
@@ -37,9 +37,21 @@ import {
 // ledger being punished for history it already carries — that history cannot be
 // un-written, and refusing every future line does not undo it.
 //
-// Every OTHER problem code still means "repair this before writing anything",
+// Every OTHER problem still means "repair this before writing anything",
 // which is what keeps this from being a general amnesty.
-const LEGACY_TOLERATED = new Set(['route_went_backwards', 'sent_back_after_admission'])
+//
+// B5 (2026-08-04): two later amendments — `question_id` required on
+// `questioned`, `actor_kind: 'human'` required on `opened` — hit the exact
+// same shape of trouble on ledgers that validated clean before them, and for
+// the same reason: the rule changed under a system already running. The list
+// this used to be lived here as a flat `Set` of codes; it now lives in
+// `ledger-validate.mjs` as `LEGACY_TOLERATED_PROBLEMS`, scoped to
+// (code, event[, field]) rather than code alone, because `missing_field`
+// alone would tolerate a brand-new event missing any required field, not
+// just an old `questioned` missing `question_id`. See that file for the full
+// account, including why a ledger-format marker was considered and rejected.
+// `pull-controller.mjs` reads the identical list — see the comment there for
+// why importing it, rather than keeping this file's own copy, is the fix.
 
 export { ACTOR_RE, LEDGER_EVENTS }
 
@@ -139,7 +151,7 @@ export function appendEvent(repo, event, options = {}) {
   // work it caught. A terminal event may land on such a file. Nothing else may:
   // another `pulled` is refused exactly as it is on a clean ledger.
   const continuable = !before.ok
-    && before.problems.every((problem) => LEGACY_TOLERATED.has(problem.code))
+    && before.problems.every((problem) => isLegacyTolerated(problem))
   if (!before.ok && !continuable) {
     return fail('ledger_already_invalid',
       `${path} has ${before.problems.length} problem(s) and must be repaired before anything is appended`,

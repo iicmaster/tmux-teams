@@ -15,7 +15,8 @@ import { readWorkflowGraph } from './graph.mjs'
 import { readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
 import { appendEvent } from './ledger-writer.mjs'
 import { fileURLToPath } from 'node:url'
-import { resolve } from 'node:path'
+import { resolve, join, dirname } from 'node:path'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 
 const fail = (code, detail) => ({ ok: false, code, detail })
 
@@ -61,7 +62,7 @@ export function admitWorkItem(repo, request, options = {}) {
       + ' The person may send it again once the queue moves.')
   }
 
-  return appendEvent(repo, {
+  const result = appendEvent(repo, {
     event: 'opened',
     work_item: request.work_item,
     workflow: workflow.workflow_id,
@@ -74,6 +75,27 @@ export function admitWorkItem(repo, request, options = {}) {
     // themselves leaves no relay identity to be mistaken for a second actor.
     ...(options.relayed_by ? { relayed_by: options.relayed_by } : {}),
   }, { actor: options.actor })
+
+  // H2 (retro-release-review, 2026-08-04): `composeBrief` (loop-runner.mjs)
+  // reads the token's request from `.tmux-teams/work-items/<token>.md` — "the
+  // token's own request" per the contract — but nothing ever created that
+  // file. Admission stored `request.reason` in the ledger and stopped there,
+  // so following the documented admit path alone sent every later seat a
+  // token with no request to judge, unless someone independently authored the
+  // same file by hand. Write it here, from the one thing every successful
+  // admission already has, only after the ledger accepted the token — a
+  // refused admission must not leave an orphaned request file behind. Only
+  // when the file is not already there: an operator who authored a richer
+  // request by hand before calling this keeps it — this is a floor, not an
+  // override.
+  if (result.ok) {
+    const requestPath = join(repo, '.tmux-teams', 'work-items', `${request.work_item}.md`)
+    if (!existsSync(requestPath)) {
+      mkdirSync(dirname(requestPath), { recursive: true })
+      writeFileSync(requestPath, `${request.reason || ''}\n`)
+    }
+  }
+  return result
 }
 
 const USAGE = `usage:

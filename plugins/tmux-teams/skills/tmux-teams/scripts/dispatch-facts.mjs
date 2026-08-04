@@ -178,10 +178,18 @@ export const RELEASING_EVENTS = new Set(['completed', 'abandoned', 'audit_reques
 // A `reviewed` with no task_id either (the shorthand this system still
 // writes when a review rides straight on a worker's delivery, with no
 // `assigned` of the evaluator's own to look up) has no identity signal left
-// at all — house rule: a branch that cannot answer says UNKNOWN, not "stale".
-// It is trusted exactly as before, unconditionally. `delivered`/`lost`
-// without a resolvable task_id fall back to the plain agent-identity check
-// they always used.
+// at all. Trusting it unconditionally was itself a hole (retro-release-
+// review, 2026-08-04, B4): the same evaluator retried also reads identical by
+// agent_id on both legs, so an identityless `reviewed` from the DEAD leg is
+// indistinguishable from one on the LIVE leg by anything this function can
+// read off the entry itself. The one thing it CAN read is whether that agent
+// was ever assigned more than once in this ledger at all — assigned exactly
+// once, there is no other leg for it to be stale against, so it is trusted
+// exactly as before; assigned more than once, it cannot say which leg it
+// belongs to and that is UNKNOWN, which must not be counted as a passing
+// review (house rule: a branch that cannot answer says UNKNOWN, not "stale",
+// but UNKNOWN is not "yes" either). `delivered`/`lost` without a resolvable
+// task_id fall back to the plain agent-identity check they always used.
 const LEG_OUTCOMES = new Set(['delivered', 'lost', 'reviewed'])
 
 export function currentEntry(custody) {
@@ -220,11 +228,64 @@ export function currentEntry(custody) {
       ? assignedIndexByTask.get(String(entry.task_id))
       : null
     if (ownIndex !== null) {
-      if (ownIndex === holderAssignedIndex) return entry
+      // task_id resolving to the holder's own leg is necessary, not
+      // sufficient (retro-release-review, 2026-08-04, B3): nothing bound
+      // task_id to an agent the way dispatch_id is bound at write time, so a
+      // `delivered` naming a DIFFERENT agent than the one that leg was
+      // assigned to would otherwise be trusted here — strictly worse than the
+      // agent_id fallback this branch sits in front of, which refused exactly
+      // that impersonation. Requiring the entry's own agent_id to match the
+      // holder keeps the gain task_id was added for (telling apart two legs
+      // run by the SAME agent, where agent_id alone cannot) without opening
+      // this new hole for a DIFFERENT agent borrowing the holder's task_id.
+      if (ownIndex === holderAssignedIndex && String(entry.agent_id || '') === holder) return entry
       continue
     }
-    const supersededLeg = entry.event !== 'reviewed'
-      && entry.agent_id && String(entry.agent_id) !== holder
+    // Neither dispatch_id nor task_id resolves. For `delivered`/`lost` the
+    // agent_id fallback still answers. For `reviewed` it does not — an
+    // evaluator's `reviewed` is legitimately allowed to differ from the
+    // holder's agent_id even when current (it may have no `assigned` leg of
+    // its own to be judged against, see the comment above this function), so
+    // agent_id cannot tell current from stale either way. That leaves only
+    // one more signal: whether the entry's own agent was ever assigned MORE
+    // THAN ONCE in this ledger. If it was assigned exactly once (or never),
+    // there is no other leg it could be stale against, and it is trusted
+    // exactly as before. If it was assigned more than once, a `reviewed` that
+    // carries no identity at all cannot say which of those legs it belongs
+    // to — house rule: a branch that cannot answer says UNKNOWN, never "no" —
+    // and UNKNOWN must not be counted as a passing review (retro-release-
+    // review, 2026-08-04, B4: a dead evaluator leg's late, identityless
+    // `reviewed pass` cleared pull-controller's gate while its retry ran).
+    // `continue` treats it the same way an out-of-scope task_id already
+    // does: not evidence about where the token is now, so the search keeps
+    // looking at older lines, which lands on the holder's own `assigned`.
+    if (entry.event === 'reviewed') {
+      // A retry looks like the SAME agent being assigned twice in a row, with
+      // no OTHER agent's `assigned` between them — that is what a kill and
+      // redispatch of the identical evaluator writes, and it is the one shape
+      // that makes an identityless `reviewed` ambiguous (see above). Two
+      // independent review rounds for two different deliveries (one team's
+      // own quality loop, contract §1) always have a different agent's
+      // `assigned` — the next worker leg — between the evaluator's legs, so
+      // that shape reads as a run of 1 and stays trusted. Scanning only up to
+      // this entry's own position (not the whole ledger) is what keeps a
+      // later, unrelated re-assignment of the same agent from retroactively
+      // recolouring an outcome that was already unambiguous when it was
+      // written.
+      const targetAgent = String(entry.agent_id || '')
+      let lastAssignedAgent = null
+      let sameAgentRun = 0
+      for (let j = 0; j <= i; j += 1) {
+        const line = custody[j]
+        if (line.event !== 'assigned') continue
+        const lineAgent = String(line.agent_id || '')
+        sameAgentRun = (lineAgent === targetAgent && lastAssignedAgent === targetAgent) ? sameAgentRun + 1 : (lineAgent === targetAgent ? 1 : 0)
+        lastAssignedAgent = lineAgent
+      }
+      if (sameAgentRun > 1) continue
+      return entry
+    }
+    const supersededLeg = entry.agent_id && String(entry.agent_id) !== holder
     if (!supersededLeg) return entry
   }
   return custody[custody.length - 1]

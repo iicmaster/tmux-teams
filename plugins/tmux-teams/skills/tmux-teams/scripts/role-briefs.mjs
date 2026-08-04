@@ -229,7 +229,11 @@ const grillBrief = ({ workItem, route, deadlineText }) => `# You are the intake 
 
 \`${workItem}\` is a request a person just brought in. Nothing has been built and
 no team has seen it. **You decide whether this is workable without guessing.**
-If it is, you also choose the route it takes: ${route}.
+It was admitted onto this route: ${route}. That choice was made by the person
+who admitted it, not by you, and nothing in this system reads a route decision
+out of your reply — say so in your reason if you believe a different route
+fits better, and a person can re-admit the token there; you cannot change the
+route yourself.
 
 ## Face all six, skip none silently
 
@@ -248,7 +252,8 @@ with later; an omission leaves nothing at all.
   missing, in the person's language, and nothing else. The token stops here
   until a HUMAN answers${deadlineText ? `, and it is withdrawn if nobody does by ${deadlineText}` : ''}.
 - **accept** — you could hand this to the first team and they would not have to
-  guess. Name the workflow you chose and why.
+  guess. Confirm the route it was admitted onto fits, or note why a different
+  one would serve it better.
 - **reject** — you believe this should not be built at all. **This is advice,
   not a veto.** Say why, plainly. If the person confirms after reading it, the
   work proceeds and both your warning and their decision stay on the record.

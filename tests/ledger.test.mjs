@@ -788,12 +788,19 @@ test('adding `opened` did not soften what `pulled` still has to say', () => {
 
 // A leg of a route, the way the runner records one: the receiving team pulls,
 // its dispatcher admits, a worker delivers, the team's evaluator passes.
+// `at` is folded into task_id/dispatch_id (not just `to`) because §1 tests
+// deliberately route the SAME team twice in one ledger (a token that bounces
+// back to `design`, say) — every call here is already at a distinct `at`, so
+// this is the id space that is actually unique, and reusing `to` alone would
+// silently mint the same task_id twice on those fixtures (retro-release-
+// review, 2026-08-04, B2: reused ids are what let a stale leg's outcome be
+// read as the current leg's).
 const leg = (from, to, at) => jsonl(
   { at: `2026-07-27T${at}:00.000Z`, event: 'pulled', work_item: 'tok', workflow: 'feature', agent_id: `${to}_dispatcher`, from_team: from, to_team: to },
   { at: `2026-07-27T${at}:01.000Z`, event: 'intake', work_item: 'tok', workflow: 'feature', agent_id: `${to}_dispatcher`, verdict: 'accept', reason: 'the request is buildable here' },
-  { at: `2026-07-27T${at}:02.000Z`, event: 'assigned', work_item: 'tok', workflow: 'feature', agent_id: `${to}_w1`, task_id: `t-${to}`, dispatch_id: `d-${to}` },
-  { at: `2026-07-27T${at}:03.000Z`, event: 'delivered', work_item: 'tok', workflow: 'feature', agent_id: `${to}_w1`, task_id: `t-${to}`, terminal: 'done', timed_out: false, evidence_present: true },
-  { at: `2026-07-27T${at}:04.000Z`, event: 'reviewed', work_item: 'tok', workflow: 'feature', agent_id: `${to}_evaluator`, verdict: 'pass', reviewed_task: `t-${to}`, reason: 'the claims check out' },
+  { at: `2026-07-27T${at}:02.000Z`, event: 'assigned', work_item: 'tok', workflow: 'feature', agent_id: `${to}_w1`, task_id: `t-${to}-${at}`, dispatch_id: `d-${to}-${at}` },
+  { at: `2026-07-27T${at}:03.000Z`, event: 'delivered', work_item: 'tok', workflow: 'feature', agent_id: `${to}_w1`, task_id: `t-${to}-${at}`, terminal: 'done', timed_out: false, evidence_present: true },
+  { at: `2026-07-27T${at}:04.000Z`, event: 'reviewed', work_item: 'tok', workflow: 'feature', agent_id: `${to}_evaluator`, verdict: 'pass', reviewed_task: `t-${to}-${at}`, reason: 'the claims check out' },
 )
 
 test('a token cannot be pulled back into a team that already admitted it', () => {
@@ -917,6 +924,104 @@ test('a ledger that predates the one-way rule carries on; only a NEW backwards m
   }, { actor: 'human:master' })
   assert.equal(otherDefect.ok, false, 'a ledger broken some other way was closed anyway')
   assert.equal(otherDefect.code, 'ledger_already_invalid')
+})
+
+// B5, 2026-08-04: three independent reviews each rebuilt a hand-crafted
+// ledger that validated clean at 88bd851 and showed it permanently frozen by
+// two rules this amendment added. These are those exact two shapes, built the
+// same way the §1 legacy test above is — direct `writeFileSync`, because
+// `appendEvent` (and the fixture gate other tests route through) both judge
+// by the CURRENT rules, and the whole point here is a history that predates
+// them.
+// Parameterized by work_item, not string-substituted after the fact: this
+// repo's own rule is that a scripted rewrite of already-built text must be
+// verified, and a `.replace` on a JSON blob has no unique anchor once two
+// fixtures share every field but one.
+const questionedLegacy = (workItem) => jsonl(
+  { at: '2026-07-27T10:00:00.000Z', event: 'opened', work_item: workItem, workflow: 'feature', agent_id: 'build_dispatcher', to_team: 'build', reason: 'requested before question_id existed', actor: 'human:ada' },
+  { at: '2026-07-27T10:00:01.000Z', event: 'intake', work_item: workItem, workflow: 'feature', agent_id: 'build_dispatcher', verdict: 'accept', reason: 'buildable here' },
+  { at: '2026-07-27T10:00:02.000Z', event: 'assigned', work_item: workItem, workflow: 'feature', agent_id: 'build_w1', task_id: 't-build', dispatch_id: 'd-build' },
+  { at: '2026-07-27T10:00:03.000Z', event: 'delivered', work_item: workItem, workflow: 'feature', agent_id: 'build_w1', task_id: 't-build', terminal: 'done', timed_out: false, evidence_present: true },
+  // The defect under test: no `question_id`, exactly as every producer wrote
+  // this event before it was required.
+  { at: '2026-07-27T10:00:04.000Z', event: 'questioned', work_item: workItem, workflow: 'feature', agent_id: 'build_dispatcher', questions: ['is this scope right?'], reason: 'ambiguous request' },
+)
+
+test('a pre-amendment questioned without question_id can still be answered and abandoned (B5)', (t) => {
+  const repo = scratch(t)
+  const legacy = questionedLegacy('tok')
+  mkdirSync(join(repo, '.tmux-teams', 'work-items'), { recursive: true })
+  writeFileSync(ledgerPath(repo, 'tok'), `${legacy.join('\n')}\n`)
+
+  // Sanity: confirm the shape under test is exactly the one B5 named, not
+  // some other defect riding along by accident.
+  const raw = validateLedger(legacy)
+  assert.equal(raw.ok, false)
+  assert.deepEqual(codes(raw), ['missing_field'])
+  assert.equal(raw.problems[0].event, 'questioned')
+  assert.equal(raw.problems[0].field, 'question_id')
+
+  const answered = appendEvent(repo, {
+    event: 'answered', work_item: 'tok', workflow: 'feature',
+    to_team: 'build', reason: 'yes, scope is right',
+  }, { actor: 'human:ada' })
+  assert.equal(answered.ok, true,
+    `a legacy questioned line permanently froze the ledger: ${answered.code} ${answered.detail}`)
+
+  // Scoped, not a blanket amnesty for `missing_field`: a FRESH questioned on
+  // the very same (now-appendable) ledger still needs its own question_id.
+  // Only HISTORY is excused.
+  const freshQuestion = appendEvent(repo, {
+    event: 'questioned', work_item: 'tok', workflow: 'feature',
+    agent_id: 'build_dispatcher', questions: ['anything else?'], reason: 'still unclear',
+  }, { actor: 'agent:build_dispatcher' })
+  assert.equal(freshQuestion.ok, false, 'a legacy ledger let a NEW questioned skip question_id too')
+  assert.equal(freshQuestion.code, 'invalid_event')
+  assert.match(freshQuestion.detail, /question_id/)
+
+  // The other withdrawal path — the clock's, not a person's — also still
+  // works: build a second, otherwise-identical ledger and abandon it instead.
+  writeFileSync(ledgerPath(repo, 'tok2'), `${questionedLegacy('tok2').join('\n')}\n`)
+  const abandoned = appendEvent(repo, {
+    event: 'abandoned', work_item: 'tok2', workflow: 'feature',
+    reason: 'nobody answered before the deadline',
+  }, { actor: 'agent:loop-runner' })
+  assert.equal(abandoned.ok, true,
+    `a legacy questioned line stopped the clock's own withdrawal: ${abandoned.code} ${abandoned.detail}`)
+})
+
+test('a pre-amendment opened written by an agent actor can still be appended to (B5)', (t) => {
+  const repo = scratch(t)
+  const legacy = jsonl(
+    // The defect under test: `opened` signed by an agent, legal before ADR
+    // 0002 made `opened` a human decision the way `answered` already was.
+    { at: '2026-07-27T10:00:00.000Z', event: 'opened', work_item: 'tok', workflow: 'feature', agent_id: 'build_dispatcher', to_team: 'build', reason: 'requested before ADR 0002', actor: 'agent:build_dispatcher' },
+  )
+  mkdirSync(join(repo, '.tmux-teams', 'work-items'), { recursive: true })
+  writeFileSync(ledgerPath(repo, 'tok'), `${legacy.join('\n')}\n`)
+
+  const raw = validateLedger(legacy)
+  assert.equal(raw.ok, false)
+  assert.deepEqual(codes(raw), ['not_a_human_answer'])
+  assert.equal(raw.problems[0].event, 'opened')
+
+  const intake = appendEvent(repo, {
+    event: 'intake', work_item: 'tok', workflow: 'feature',
+    agent_id: 'build_dispatcher', verdict: 'accept', reason: 'buildable here',
+  }, { actor: 'agent:build_dispatcher' })
+  assert.equal(intake.ok, true,
+    `a legacy agent-authored opened permanently froze the ledger: ${intake.code} ${intake.detail}`)
+
+  // Scoped, not a blanket amnesty: a FRESH opened by an agent — a different
+  // token entering the graph for the first time, since `opened` can only ever
+  // be line one — is still refused after ADR 0002.
+  const freshOpened = appendEvent(repo, {
+    event: 'opened', work_item: 'tok2', workflow: 'feature',
+    agent_id: 'build_dispatcher', to_team: 'build', reason: 'a fresh request',
+  }, { actor: 'agent:build_dispatcher' })
+  assert.equal(freshOpened.ok, false, 'a fresh agent-authored opened was accepted after ADR 0002')
+  assert.equal(freshOpened.code, 'invalid_event')
+  assert.match(freshOpened.detail, /human actor/)
 })
 
 test('a team that admitted the work cannot send it back — it fixes it and forwards', () => {

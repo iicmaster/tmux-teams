@@ -179,7 +179,12 @@ export function validateLedger(lines) {
     ? lines
     : String(lines ?? '').split('\n')
   const problems = []
-  const add = (line, code, detail) => { problems.push({ line, code, detail }) }
+  // `meta` carries structured facts about the violation — today just `event`
+  // and/or `field` — beyond the prose in `detail`. `isLegacyTolerated` below
+  // needs to match a problem's exact (code, event, field) shape without
+  // parsing English out of `detail`, which would break the moment the wording
+  // changes.
+  const add = (line, code, detail, meta = {}) => { problems.push({ line, code, detail, ...meta }) }
 
   let token = ''
   let prevMs = null
@@ -195,6 +200,21 @@ export function validateLedger(lines) {
   // task: the ID matches, currentEntry believes it, and a report that never
   // happened is read as the current leg's own outcome.
   const dispatchOwner = new Map()
+  // Every `task_id` and `dispatch_id` an `assigned` line has already claimed
+  // (retro-release-review, 2026-08-04, B2). Neither `dispatchOwner` above nor
+  // dispatch-facts.mjs's `assignedIndexByTask` enforce that an id opens only
+  // ONE leg: `dispatchOwner` silently keeps the first owner and says nothing
+  // about a later line reusing the id, and `assignedIndexByTask` is last-wins,
+  // so a repeated id quietly hands an OLDER leg's outcome to whichever
+  // `assigned` line happens to be newest. `task_id` is minted at millisecond
+  // resolution (loop-runner.mjs), so two dispatches of the same
+  // (token, team, role) inside one millisecond collide with nothing to stop
+  // it, and a hand-written or replayed ledger has no clock at all. Reporting
+  // the reuse here — rather than only in the first-owner bookkeeping the two
+  // readers already keep — is what makes it a validation failure instead of a
+  // silent one.
+  const assignedTaskIds = new Set()
+  const assignedDispatchIds = new Set()
   // Every team this token has actually been INSIDE. §1's one-way rule is a
   // statement about this set and nothing else. A team is added when its
   // dispatcher ADMITS the token, not when the token arrives at its door —
@@ -297,7 +317,9 @@ export function validateLedger(lines) {
     if (!spec) continue
 
     for (const field of spec.required) {
-      if (!present(entry[field])) add(lineNo, 'missing_field', `${name} requires ${field}`)
+      if (!present(entry[field])) {
+        add(lineNo, 'missing_field', `${name} requires ${field}`, { event: name, field })
+      }
     }
     for (const field of spec.forbidden ?? []) {
       if (present(entry[field])) add(lineNo, 'forbidden_field', `${name} must not carry ${field}`)
@@ -399,7 +421,8 @@ export function validateLedger(lines) {
       const actor = String(entry.actor ?? '')
       if (!actor.startsWith('human:')) {
         add(lineNo, 'not_a_human_answer',
-          `${name} must be written by a human actor, got ${JSON.stringify(entry.actor ?? null)}`)
+          `${name} must be written by a human actor, got ${JSON.stringify(entry.actor ?? null)}`,
+          { event: name })
       }
     }
     // A token enters the graph once. A second `opened` would describe work
@@ -470,6 +493,26 @@ export function validateLedger(lines) {
       }
     }
     if (name === 'assigned' && present(entry.agent_id)) assignedAgents.add(String(entry.agent_id))
+    // Each id opens exactly one leg (B2). Reported before the first-owner
+    // bookkeeping below runs, so the SAME line that reuses an id is both the
+    // one that gets refused here and the one `dispatchOwner`/`assignedIndexByTask`
+    // would otherwise have silently let win.
+    if (name === 'assigned' && present(entry.task_id)) {
+      const taskId = String(entry.task_id)
+      if (assignedTaskIds.has(taskId)) {
+        add(lineNo, 'duplicate_task_id',
+          `assigned reuses task_id ${taskId}; each leg's task_id must be unique within this ledger`)
+      }
+      assignedTaskIds.add(taskId)
+    }
+    if (name === 'assigned' && present(entry.dispatch_id)) {
+      const dispatchId = String(entry.dispatch_id)
+      if (assignedDispatchIds.has(dispatchId)) {
+        add(lineNo, 'duplicate_dispatch_id',
+          `assigned reuses dispatch_id ${dispatchId}; each leg's dispatch_id must be unique within this ledger`)
+      }
+      assignedDispatchIds.add(dispatchId)
+    }
     // First assignment of an ID wins. A dispatch_id is meant to be minted
     // once per leg; if a later `assigned` line reuses one, that reuse is
     // itself the kind of impossible history this file exists to catch
@@ -503,6 +546,65 @@ export function validateLedger(lines) {
   return { ok: problems.length === 0, problems }
 }
 
+// B5 (2026-08-04): three independent reviews (qwen, agy, codex) each rebuilt a
+// hand-crafted ledger that validated clean under the 88bd851 rules and showed
+// it permanently frozen by two rules this amendment added — `question_id` on
+// `questioned` and `actor_kind: 'human'` on `opened`. The prior fix for the
+// SAME shape of problem (a rule tightened under a system already running —
+// §1's `route_went_backwards`/`sent_back_after_admission`, see
+// `ledger-writer.mjs`) tolerated by RAW CODE alone. That is too blunt for
+// these two: `missing_field` fires for every required field on every event —
+// tolerating it by code alone would silently wave through a brand-new
+// `delivered` missing `agent_id` — and `not_a_human_answer` fires for
+// `answered` too, whose human-actor rule is NOT new and was never legal to
+// violate, even at 88bd851.
+//
+// So tolerance here is SCOPED: (code, event[, field]), matched against the
+// metadata `validateLedger` now attaches to the two problems that need it.
+// Only a ledger-format marker was the other shape offered, and it was
+// rejected: this system's ledgers are meant to be readable by grep and never
+// rewritten (§4, §13); a marker would mean every reader either understands
+// versioning or treats "no marker" as "assume legacy", which is the same
+// scoped-by-shape reasoning below with an extra field to keep in sync
+// forever. A half-migrated ledger — an old `questioned` with no
+// `question_id` followed, after this fix ships, by a fresh one that DOES
+// carry one — needs no special case: each violation is judged at its own
+// line, so the old line is excused and the new one is held to the rule that
+// was in force when it was written.
+//
+// Exported so every consumer that must decide "can this existing history be
+// believed" — the writer deciding whether an append may proceed, the pull
+// controller deciding whether a token may move to the next team — reads the
+// same list. Two independent copies of this judgment already drifted once:
+// codex's B5 finding is that `ledger-writer.mjs`'s tolerance was writer-only,
+// so a token that regained the ability to be APPENDED to still could not be
+// PULLED forward, because `pull-controller.mjs` called `validateLedger`
+// straight and required `ok` with no tolerance concept at all.
+export const LEGACY_TOLERATED_PROBLEMS = [
+  { code: 'route_went_backwards' },
+  { code: 'sent_back_after_admission' },
+  { code: 'missing_field', event: 'questioned', field: 'question_id' },
+  { code: 'not_a_human_answer', event: 'opened' },
+]
+
+export function isLegacyTolerated(problem) {
+  return LEGACY_TOLERATED_PROBLEMS.some((rule) => rule.code === problem.code
+    && (rule.event === undefined || rule.event === problem.event)
+    && (rule.field === undefined || rule.field === problem.field))
+}
+
+// A ledger's-worth of `validateLedger` output, re-scored with the legacy
+// tolerance above applied. `problems` is still EVERY problem the ledger has —
+// nothing here hides history from a reader who wants to see it all — but
+// `ok`/`blocking` answer "does anything here actually stop this ledger from
+// being trusted", which is the question both `appendEvent` and `planPulls`
+// are really asking.
+export function validateLedgerTolerant(lines) {
+  const result = validateLedger(lines)
+  const blocking = result.problems.filter((problem) => !isLegacyTolerated(problem))
+  return { ok: blocking.length === 0, problems: result.problems, blocking }
+}
+
 // Reads one ledger file under the contract's byte ceiling. A file larger than
 // the ceiling is validated on the bytes the loop would actually read, because a
 // verdict about bytes nobody parses is not a verdict about this system.
@@ -514,6 +616,19 @@ export function validateLedgerFile(path) {
     return { ok: false, problems: [{ line: 0, code: 'unreadable', detail: error.message }] }
   }
   return validateLedger(text.split('\n'))
+}
+
+// The file-reading twin of `validateLedgerTolerant`, for the one other place
+// (`loop-runner.mjs`'s tick) that decides "can this on-disk history be
+// believed" straight from a path rather than from lines already in memory.
+// Before B5 that place called `validateLedgerFile` and required raw `ok`,
+// which meant a token whose only problems were legacy-tolerated could be
+// appended to and pulled forward but never dispatched onto again — stuck a
+// third way after the first two were fixed.
+export function validateLedgerFileTolerant(path) {
+  const result = validateLedgerFile(path)
+  const blocking = result.problems.filter((problem) => !isLegacyTolerated(problem))
+  return { ok: blocking.length === 0, problems: result.problems, blocking }
 }
 
 export function validateWorkItems(repo) {

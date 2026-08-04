@@ -4,8 +4,9 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  REVIEW_PROFILES, assertPermittedModel, buildAcpLaunch, buildProfileEnv, loadProfileSettings,
-  normalizePrimaryFamily, provenFamilyCollision, provenFamilyKey, validateRoutedEndpoint,
+  REVIEW_PROFILES, ROUTED_PROFILES, assertAdapterPackageBoundToCommand, assertPermittedModel, buildAcpLaunch,
+  buildProfileEnv, loadProfileSettings, normalizePrimaryFamily, provenFamilyCollision, provenFamilyKey,
+  validateRoutedEndpoint,
 } from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
 import {
   ROUTES, UNAVAILABLE_RESERVE_SUBSTITUTES, createReviewPlan, findingFingerprint, planFallback, synthesizeReviews, validateReviewOutput,
@@ -327,9 +328,18 @@ test('provenFamilyKey honestly buckets kimi with bare claude, and the gate refus
   // Today's real, legitimate `openai` route (kimi + zai + agy) is NOT flagged:
   // zai's parent-verified endpoint pin is a different, distinguishable key.
   assert.equal(provenFamilyCollision([REVIEW_PROFILES.kimi, REVIEW_PROFILES.zai, REVIEW_PROFILES.agy]), false)
-  // A profile with no resolvable key contributes no evidence and cannot, by
-  // itself, manufacture a collision.
-  assert.equal(provenFamilyCollision([{ id: 'x' }, { id: 'y' }, REVIEW_PROFILES.agy]), false)
+  // Two profiles that BOTH resolve to no key at all (no `adapterPackage`)
+  // are no longer given a free pass. The pre-fix code filtered every unresolved
+  // key out before checking uniqueness, so "declares nothing" and "declares
+  // nothing" read as two pieces of *distinct* evidence rather than none at
+  // all — the second bypass from issue #38's follow-up review (omit or
+  // misspell the identifying field on two lanes and the panel passed with no
+  // identity evidence whatsoever). Nothing can prove two unidentifiable lanes
+  // are different upstreams, so this is now a collision, not a shrug.
+  assert.equal(provenFamilyCollision([{ id: 'x' }, { id: 'y' }, REVIEW_PROFILES.agy]), true)
+  // A single unresolved profile beside two DISTINCT, resolved ones is still
+  // fine: one unknown has nothing else unknown to compare itself against.
+  assert.equal(provenFamilyCollision([{ id: 'x' }, REVIEW_PROFILES.kimi, REVIEW_PROFILES.zai]), false)
 
   // Every real ROUTES panel used today must still clear the new check -- this
   // is the regression guard: the fix must not have narrowed today's actual,
@@ -338,6 +348,60 @@ test('provenFamilyKey honestly buckets kimi with bare claude, and the gate refus
     const plan = createReviewPlan(primary)
     assert.equal(plan.blocked, false, `${primary} route was blocked by the new check`)
   }
+})
+
+test('provenFamilyKey never reports pinned for endpoint-shaped metadata that was never registered or validated (issue #38 follow-up)', () => {
+  // r2-codex2's bypass 4: the pre-fix key read `profile.endpoint`'s shape
+  // alone, so a profile could claim "pinned" without ever having been
+  // through `validateRoutedEndpoint` -- either because it declares
+  // endpoint-shaped metadata while never being registered in
+  // `ROUTED_PROFILES`, or because `ROUTED_PROFILES` was mutated after import
+  // to drop a lane that WAS registered (it is an ordinary Set, and
+  // `Object.freeze` does not stop `.add`/`.delete` on one).
+  const unregisteredButEndpointShaped = {
+    id: 'shadow-zai', adapterPackage: REVIEW_PROFILES.zai.adapterPackage,
+    endpoint: REVIEW_PROFILES.zai.endpoint,
+  }
+  assert.notEqual(provenFamilyKey(unregisteredButEndpointShaped), null,
+    'a profile with a declared adapterPackage still resolves to *a* key')
+  assert.doesNotMatch(provenFamilyKey(unregisteredButEndpointShaped), /pinned:/,
+    'declaring endpoint shape alone, without ROUTED_PROFILES registration, must not read as verified')
+
+  // The other half: mutating the real `ROUTED_PROFILES` after import to drop
+  // a registered lane, exercised against the live Set `provenFamilyKey`
+  // actually reads, then restored immediately so no other test in this file
+  // observes the mutation.
+  assert.equal(ROUTED_PROFILES.has('zai'), true, 'zai starts registered')
+  assert.match(provenFamilyKey(REVIEW_PROFILES.zai), /pinned:/, 'and its key reads pinned while it is')
+  ROUTED_PROFILES.delete('zai')
+  try {
+    assert.doesNotMatch(provenFamilyKey(REVIEW_PROFILES.zai), /pinned:/,
+      'deregistering the lane must drop the pinned claim too, not just skip the env-building side')
+  } finally {
+    ROUTED_PROFILES.add('zai')
+  }
+})
+
+test('adapterPackage is bound to command for every shipped profile, and the binder catches drift (issue #38 follow-up, bypass 3)', () => {
+  // r2-qwen's LOW finding 10 and r2-codex2's bypass 3, same root cause:
+  // `adapterPackage` is a separate, hand-maintained copy of what `command`
+  // actually launches, and nothing bound the two together. Every shipped
+  // profile must satisfy the binder today...
+  for (const p of Object.values(REVIEW_PROFILES)) {
+    assert.doesNotThrow(() => assertAdapterPackageBoundToCommand(p), `${p.id} adapterPackage must appear in its own command`)
+  }
+  // ...and the binder is not a tautology: it actually rejects a profile
+  // whose `adapterPackage` no longer appears in its `command` (the "bump the
+  // pinned version, forget the label" and "declare a different label over
+  // the same command" drift both reviews described).
+  assert.throws(
+    () => assertAdapterPackageBoundToCommand({ id: 'drifted', command: [...REVIEW_PROFILES.kimi.command], adapterPackage: 'not-the-real-package-name' }),
+    /adapterPackage "not-the-real-package-name" does not appear in its own command/,
+  )
+  assert.throws(
+    () => assertAdapterPackageBoundToCommand({ id: 'stale-bump', command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.62.0'], adapterPackage: REVIEW_PROFILES.kimi.adapterPackage }),
+    /does not appear in its own command/,
+  )
 })
 
 test('a routed lane that pins no endpoint is refused rather than trusted', () => {

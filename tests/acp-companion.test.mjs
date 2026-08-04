@@ -4,7 +4,7 @@
 import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { spawn, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import { mkdtempSync as fsMkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, realpathSync, rmSync, chmodSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -663,19 +663,49 @@ function pidAlive(pid) {
   }
 }
 
+// Issue #39: this used to read only /proc/<pid>/stat, which does not exist on
+// darwin — every call here returned null on this platform, permanently, so
+// assertPidGone's PID-reuse defence below was dead code and every failure it
+// was built to explain instead surfaced as a plain reap timeout. `ps -o
+// lstart=` is the darwin-and-friends equivalent: a per-process start-time
+// string that is stable for the life of the process and changes the instant a
+// reused pid belongs to a different one. A branch that genuinely cannot
+// answer (pid already gone, `ps` unavailable) still returns null — the SAME
+// contract the /proc branch already had — which the caller below treats as
+// UNKNOWN, never as "definitely still the same process".
 function processBirthId(pid) {
   if (!pid) return null
+  if (process.platform === 'linux') {
+    try {
+      const stat = readFileSync(`/proc/${Number(pid)}/stat`, 'utf8')
+      return stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/)[19] ?? null
+    } catch {
+      return null
+    }
+  }
   try {
-    const stat = readFileSync(`/proc/${Number(pid)}/stat`, 'utf8')
-    return stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/)[19] ?? null
+    const lstart = execFileSync('ps', ['-p', String(Number(pid)), '-o', 'lstart='], { encoding: 'utf8' }).trim()
+    return lstart || null
   } catch {
     return null
   }
 }
 
+// Issue #39, second half: three independent outside reviews traced the report
+// to this deadline. 1500ms is not a grace, it is a hard wall — the same shape
+// the "ceiling, not a delay" comment further down this file already fixed
+// twice (FORCED_TERM_KILL_GRACE_MS, CLEAN_EXIT_CANCEL_GRACE_MS) but never
+// reached here. On a quiet machine the descendant is reaped well inside the
+// configured ACP_PROCESS_KILL_GRACE_MS (20-300ms at every call site below),
+// so this ceiling costs a clean run nothing and is never approached; under
+// concurrent full-suite process-teardown pressure — the reported failure mode
+// — the wait needs headroom the process-teardown queue can actually clear
+// inside, not a number tuned to a quiet machine's own timing.
+const PID_REAP_DEADLINE_MS = 5000
+
 async function assertPidGone(pid, label, expectedBirthId = null) {
   if (!pid) return
-  const deadline = Date.now() + 1500
+  const deadline = Date.now() + PID_REAP_DEADLINE_MS
   while (Date.now() < deadline && pidAlive(pid)) {
     if (expectedBirthId && processBirthId(pid) !== expectedBirthId) return
     await sleep(20)
@@ -2149,6 +2179,12 @@ test('cancellation paths close stdin and reap their detached process groups', { 
     // process must never be reported as a formatting complaint.
     await assertPidGone(pid, scenario, birthId)
     const event = eventTexts(r.cwd)[0]
+    // H4: closeAndReapChild computed groupGone and then dropped it from its
+    // return value, so a caller could persist a terminal receipt with no way
+    // to tell a truly reaped process group from one that outlived every
+    // TERM/KILL sweep. assertPidGone just proved the group IS gone by this
+    // point, so the receipt must say so in words, not merely by omission.
+    assert.match(event, /^descendant_group_gone: true$/m)
     if (expectedState === 'cancelled') {
       assert.match(event, /^child_settlement_signal_delivered: false$/m)
       assert.match(event, /^descendant_cleanup_signal_delivered: true$/m)

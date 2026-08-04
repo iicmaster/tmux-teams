@@ -141,6 +141,29 @@ for (const profile of Object.values(REVIEW_PROFILES)) {
   assertPermittedModel(profile.config?.model, `review profile ${profile.id} config`)
 }
 
+// `provenFamilyKey` below used to say `adapterPackage` was "taken from
+// `command`" while actually reading a second, hand-copied field nothing
+// bound to the first (GitHub #38 follow-up review — both r2-qwen and
+// r2-codex2 independently named this: bump `command`'s pinned version and
+// forget the string beside it, or declare two different `adapterPackage`
+// labels over the byte-identical `command`, and the stale/mismatched copy
+// launders a collision either way). This makes the claim true instead of
+// describing what it wishes were true: every declared `adapterPackage` must
+// appear verbatim inside its own `command`, checked here for every shipped
+// profile, so the two can never drift apart silently again. Exported (rather
+// than an inline loop) so the rule itself — not just its one-time result at
+// import — has a name a test can call against a profile that is not part of
+// the frozen table, without needing to construct a whole second module.
+export function assertAdapterPackageBoundToCommand(profile, where = `review profile ${profile?.id}`) {
+  if (typeof profile?.adapterPackage === 'string' && Array.isArray(profile.command) &&
+      !profile.command.includes(profile.adapterPackage)) {
+    throw new Error(`${where}: adapterPackage "${profile.adapterPackage}" does not appear in its own command`)
+  }
+  return profile
+}
+
+for (const profile of Object.values(REVIEW_PROFILES)) assertAdapterPackageBoundToCommand(profile)
+
 const aliases = new Map([
   ['openai', 'openai'], ['codex', 'openai'], ['gpt', 'openai'],
   ['claude', 'claude'], ['anthropic', 'claude'],
@@ -195,30 +218,67 @@ export function normalizePrimaryFamily(input) {
 // one would report "proven" from a value the same config supplied. This is
 // the strongest claim that CAN be made before spawn, from data this table
 // already pins and an operator cannot override at call time:
-//   - which adapter PACKAGE will run (`adapterPackage`, taken from `command`,
-//     which buildProfileEnv()/runAcpReview() never let a caller substitute), and
-//   - for a routed lane, the exact endpoint validateRoutedEndpoint() verifies
-//     in the PARENT process before the child starts (`endpoint`).
-// A profile that declares neither pins nothing here, and `provenFamilyKey`
-// says so by returning null rather than a label -- an "unknown" is honest;
-// a fabricated "proven" is not.
+//   - which adapter PACKAGE will run (`adapterPackage`, bound to `command` by
+//     the assertion above for every shipped profile — bumping one and not
+//     the other now throws at import instead of silently laundering a
+//     collision), and
+//   - for a lane BOTH declaring an `endpoint` pin AND actually registered in
+//     `ROUTED_PROFILES` (the set `buildProfileEnv` consults to decide whether
+//     `validateRoutedEndpoint` ever runs before spawn), the exact endpoint
+//     that parent-side check verifies (`endpoint`). See the inline comment
+//     on the `endpoint` line below for why the registration check, not just
+//     the shape of `endpoint`, is required.
+//
+// What this still cannot prove, and does not claim to: that an UNROUTED lane
+// (no `endpoint` pin at all — `kimi`, reached instead through the
+// operator-owned `claude-kimi` executable named at `buildProfileEnv`) is
+// reaching a genuinely different upstream than a routed one beside it in the
+// same panel. Nothing observable before spawn settles that; `kimi` and `zai`
+// are accepted today as the two ways this table can currently prove distinct
+// identity — a distinct `adapterPackage`, or a parent-verified endpoint pin —
+// and a lane with neither is `unrouted`, a bucket that says only "not
+// provably pinned," never "provably distinct from a lane that is." Widening
+// that bucket into a real proof needs `kimi` to carry its own verified
+// endpoint pin the way `zai` does; this patch does not invent one. See
+// HANDOFF / CONTRACT-PATCH for the residual.
 export function provenFamilyKey(profile) {
   if (!profile || typeof profile.adapterPackage !== 'string' || !profile.adapterPackage) return null
-  const endpoint = profile.endpoint && typeof profile.endpoint.host === 'string' && typeof profile.endpoint.path === 'string'
+  const validEndpointShape = profile.endpoint &&
+    typeof profile.endpoint.host === 'string' && typeof profile.endpoint.path === 'string'
+  // Registration in `ROUTED_PROFILES` is required too, not just the shape of
+  // `endpoint` on the profile object: a profile can declare endpoint-shaped
+  // metadata without ever being wired into the set `buildProfileEnv` checks
+  // before calling `validateRoutedEndpoint`, or that Set can be mutated
+  // after import (`Object.freeze` does not stop `.add`/`.delete` on a Set)
+  // -- and without this second check the key would still say "pinned" even
+  // though nothing in the parent process ran the endpoint check for this
+  // launch (r2-codex2 bypass #4).
+  const endpoint = validEndpointShape && ROUTED_PROFILES.has(profile.id)
     ? `pinned:${profile.endpoint.host}${profile.endpoint.path}`
     : 'unrouted'
   return `${profile.adapterPackage}::${endpoint}`
 }
 
-// True when two or more of the given profiles resolve to the identical
-// adapter-package-plus-endpoint identity while their declared `family` may
-// still differ. A profile with no resolvable key (provenFamilyKey === null,
-// e.g. a test double that never declared `adapterPackage`) contributes no
-// evidence either way and cannot trigger this -- it only refuses a collision
-// it can actually see.
+// True when two or more of the given profiles cannot be PROVEN to be
+// distinct identities. Two forms of that:
+//   - two resolvable keys (see provenFamilyKey) are identical, or
+//   - two or more profiles resolve to no key at all (no `adapterPackage`).
+// The second clause used to be the opposite: a profile with no resolvable
+// key was said to "contribute no evidence either way" and was filtered out
+// before the uniqueness check, so two lanes that both omitted or misspelled
+// `adapterPackage` (the field this used to key off) sailed through as "no
+// evidence, therefore no collision" — r2-codex2's exact bypass #2, and the
+// shipped test at the time asserted that as correct rather than as a defect.
+// A single unresolved profile beside two resolved, distinct ones still
+// passes — one unknown has nothing else unknown to compare against. It is
+// specifically two or more unidentifiable lanes together, with nothing to
+// tell them apart, that this now refuses to certify as diverse.
 export function provenFamilyCollision(profiles) {
-  const keys = (profiles ?? []).map(provenFamilyKey).filter(key => key !== null)
-  return new Set(keys).size !== keys.length
+  const keys = (profiles ?? []).map(provenFamilyKey)
+  const unresolved = keys.filter(key => key === null).length
+  if (unresolved >= 2) return true
+  const known = keys.filter(key => key !== null)
+  return new Set(known).size !== known.length
 }
 
 export function getReviewProfile(id) {

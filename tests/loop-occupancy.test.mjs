@@ -32,6 +32,7 @@ import {
 import { EVENT_SPEC, LEDGER_EVENTS, validateLedger } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-validate.mjs'
 import { gateHistory } from './fixture-gate.mjs'
 import { validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
+import { admitWorkItem } from '../plugins/tmux-teams/skills/tmux-teams/scripts/admit.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PULSE = join(ROOT, 'plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs')
@@ -277,6 +278,41 @@ test('a token whose ledger cannot be believed is not handed to the next team', (
     assert.equal(applyPulls(dir, [decision]), 0)
     assert.equal(existsSync(join(dir, '.tmux-teams/work-items/broken.jsonl')), false)
   } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('a legacy ledger with only a tolerated defect is still handed to the next team (B5)', () => {
+  const graph = graphOf(TWO_TEAMS)
+  // Written before ADR 0002 required a human actor on `opened` — the shape a
+  // real pre-amendment ledger is in. Built directly, not through
+  // `itemsOf`/`gateHistory`: that gate exists to catch a history the system
+  // could never have produced, and this one is real and dated before the
+  // rule that would now flag it existed. `ledger-writer.mjs`'s own tolerance
+  // test for this exact shape lives in `tests/ledger.test.mjs`; this is the
+  // same defect one layer up, where B5's second freeze was found — a token
+  // that regained the ability to be APPENDED to still could not be PULLED
+  // forward.
+  const custody = [
+    { at: '2026-07-27T08:00:00.000Z', event: 'opened', work_item: 'legacy', workflow: 'feature', agent_id: 'b_d', to_team: 'build', reason: 'requested before ADR 0002', actor: 'agent:b_d' },
+    { at: '2026-07-27T08:00:01.000Z', event: 'intake', work_item: 'legacy', workflow: 'feature', agent_id: 'b_d', verdict: 'accept', reason: 'buildable' },
+    { at: '2026-07-27T08:00:02.000Z', event: 'assigned', work_item: 'legacy', workflow: 'feature', agent_id: 'b_w1', task_id: 'b-9', dispatch_id: 'b-9-dispatch' },
+    { at: '2026-07-27T08:00:03.000Z', event: 'delivered', work_item: 'legacy', workflow: 'feature', agent_id: 'b_w1', task_id: 'b-9', terminal: 'done', timed_out: false, evidence_present: true },
+    { at: '2026-07-27T08:00:04.000Z', event: 'reviewed', work_item: 'legacy', workflow: 'feature', agent_id: 'b_e', verdict: 'pass', reviewed_task: 'b-9', reason: 'checks out' },
+  ]
+  // Sanity: confirm the raw ledger really is invalid, and for exactly the
+  // legacy-tolerated reason — otherwise a pull here would prove nothing.
+  const raw = validateLedger(custody.map((entry) => JSON.stringify(entry)))
+  assert.equal(raw.ok, false)
+  assert.deepEqual(raw.problems.map((problem) => problem.code), ['not_a_human_answer'])
+
+  const items = new Map([['legacy', {
+    work_item: 'legacy', workflow: 'feature', custody,
+    current_event: 'reviewed', terminal: '', legs: 1,
+  }]])
+  const decisions = planPulls(graph, items, '2026-07-27T09:00:00.000Z')
+  const decision = decisions.find((entry) => entry.work_item === 'legacy')
+  assert.equal(decision?.action, 'pull',
+    `expected a pull despite a tolerated legacy defect, got ${JSON.stringify(decision)}`)
+  assert.equal(decision.to_team, 'test')
 })
 
 test('a failed leg is never handed to the next team', () => {
@@ -1260,6 +1296,37 @@ test('a post-completion question, once answered, is escalated again — not sile
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
+// M3 (retro-release-review, 2026-08-04): `awaitingAudit` used to read the raw
+// last event name. A mixed-version or manually accepted ledger — invalid
+// under today's writer, exactly the shape the finding names — can carry a
+// stale trailing leg outcome from an agent `currentEntry` recognizes as
+// superseded (a different agent than whoever is currently `assigned`). The
+// raw tail read that stray entry's own event name instead of `answered`,
+// silently suppressing the re-escalation this function exists to guarantee.
+test('M3 a stray leg outcome trailing an answered reply does not hide it from re-escalation', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-audit-stray-'))
+  try {
+    const graph = graphOf(TWO_TEAMS)
+    const items = itemsOf(['shipped', [...ROUTE_DONE,
+      { event: 'audit_requested', agent_id: 'pm', task_id: 'pm-1' },
+      { event: 'assigned', agent_id: 'b_w1', task_id: 'b-2', dispatch_id: 'b-2-d' },
+      { event: 'questioned', agent_id: 'pm', questions: 'accept?', reason: 'unstated verdict', question_id: 'q-1', resume_role: 'audit' },
+      { event: 'answered', to_team: 'build', reason: 'accepted', question_id: 'q-1', actor: 'human:ada' },
+      // The stray: `b_e` (the evaluator's leg, superseded by the later
+      // `b_w1` assignment above) finally reports in, naming a task no
+      // `assigned` opened. `currentEntry` has nothing to trace it to, the
+      // agent differs from the current holder, so it is skipped.
+      { event: 'delivered', agent_id: 'b_e', task_id: 'ghost-task', terminal: 'done', timed_out: false, evidence_present: true },
+    ], { expectInvalid: true, why: 'assigned/delivered after completed — the mixed-version shape the finding names, not a history the current writer would produce' }])
+    assert.equal(currentEntry(items.get('shipped').custody).event, 'answered',
+      'currentEntry itself no longer skips the stray leg outcome')
+    const escalation = planEscalation(dir, graph, items, [], teamOccupancy(graph, items),
+      { now: FIXED_NOW, stallSec: 1e9 })
+    assert.equal(escalation?.action, 'escalate', 'the reply had nowhere to go — the stray outcome hid it from re-escalation')
+    assert.deepEqual(escalation.audits, ['shipped'])
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('reading a finished delivery never puts it back in a team', () => {
   const graph = graphOf(TWO_TEAMS)
   for (const tail of [['audit_requested'], ['audit_requested', 'audited']]) {
@@ -1710,6 +1777,168 @@ test('a dispatch_id match is not proof once the ledger contradicts what it was a
   assert.equal(validateLedger(consistent).ok, true, JSON.stringify(validateLedger(consistent).problems))
 })
 
+// B5, 2026-08-04: the third of three places this froze — the writer
+// (`tests/ledger.test.mjs`), the pull controller (above), and here, the
+// runner's own dispatch gate at `loop-runner.mjs`'s `tick`. Before this fix
+// `tick` read `validateLedgerFile` raw and refused to dispatch onto ANY
+// problem, tolerated or not — so a token could be answered and pulled
+// forward but never get a fresh leg spawned onto it again.
+test('the runner still dispatches onto a legacy ledger with only a tolerated defect (B5)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-legacy-'))
+  try {
+    const store = join(dir, '.tmux-teams')
+    mkdirSync(join(store, 'work-items'), { recursive: true })
+    mkdirSync(join(store, 'team-briefs'), { recursive: true })
+    writeFileSync(join(store, 'graph.json'), JSON.stringify(TWO_TEAMS))
+    writeFileSync(join(store, 'team-briefs', 'build.md'), '# standing brief\n')
+
+    // Same legacy shape as the ledger-writer and pull-controller B5 tests: an
+    // `opened` written by an agent actor, from before ADR 0002 required a
+    // human one. Direct `writeFileSync`, not the `ledger()` fixture helper —
+    // that helper's gate would (correctly) refuse this under CURRENT rules;
+    // it is exactly what the system produced under the old ones.
+    const legacy = [
+      { at: '2026-07-27T08:00:00.000Z', event: 'opened', work_item: 'tok', workflow: 'feature', agent_id: 'b_d', to_team: 'build', reason: 'requested before ADR 0002', actor: 'agent:b_d' },
+      { at: '2026-07-27T08:00:01.000Z', event: 'intake', work_item: 'tok', workflow: 'feature', agent_id: 'b_d', verdict: 'accept', reason: 'buildable' },
+    ]
+    writeFileSync(join(store, 'work-items', 'tok.jsonl'),
+      `${legacy.map((entry) => JSON.stringify(entry)).join('\n')}\n`)
+
+    const spawned = []
+    const stubSpawn = (repo, args) => { spawned.push(args); return 'stub-task' }
+    tick(dir, { apply: true, scratchDir: join(dir, 'scratch'), spawnLeg: stubSpawn })
+
+    const workerLeg = spawned.find((args) => args.role === 'worker')
+    assert.ok(workerLeg, `the runner refused to dispatch onto a legacy ledger: ${JSON.stringify(spawned)}`)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// ── H2 — admission writes the token's own request, not just a ledger reason ─
+// (retro-release-review, 2026-08-04): `composeBrief` (loop-runner.mjs) reads
+// `.tmux-teams/work-items/<token>.md` as "the token's own request", but
+// `admitWorkItem` stored `request.reason` in the ledger and stopped there.
+// Following the documented admit path alone sent every later seat a token
+// with no request to judge unless someone independently authored the file.
+//
+// `controller_team` is derived from the head of every route (workflow-
+// graph.mjs) — the team whose only worker IS `outer_controller_id` — so
+// admission needs a graph that actually declares one; TWO_TEAMS does not.
+const WITH_CONTROLLER = {
+  ...TWO_TEAMS,
+  teams: [
+    { team_id: 'control', name: 'Control', dispatcher_id: 'control_d', worker_ids: ['pm'], evaluator_id: 'control_e', models: MODELS },
+    ...TWO_TEAMS.teams,
+  ],
+  workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['control', 'build', 'test'] }],
+}
+
+test('H2 admission writes the token\'s own request file from its reason', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'admit-request-'))
+  try {
+    const store = join(dir, '.tmux-teams')
+    mkdirSync(store, { recursive: true })
+    writeFileSync(join(store, 'graph.json'), JSON.stringify(WITH_CONTROLLER))
+    const result = admitWorkItem(dir, {
+      work_item: 'tok', workflow: 'feature', reason: 'a customer asked for CSV export',
+    }, { actor: 'human:ada' })
+    assert.equal(result.ok, true, result.detail)
+    const requestPath = join(store, 'work-items', 'tok.md')
+    assert.equal(existsSync(requestPath), true, 'admission recorded a reason but wrote no request file')
+    assert.match(readFileSync(requestPath, 'utf8'), /a customer asked for CSV export/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('H2 admission does not overwrite a request file an operator already authored', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'admit-request-existing-'))
+  try {
+    const store = join(dir, '.tmux-teams')
+    mkdirSync(join(store, 'work-items'), { recursive: true })
+    writeFileSync(join(store, 'graph.json'), JSON.stringify(WITH_CONTROLLER))
+    writeFileSync(join(store, 'work-items', 'tok.md'), '# The real request\n\nMuch more detail than the ledger reason line.\n')
+    const result = admitWorkItem(dir, {
+      work_item: 'tok', workflow: 'feature', reason: 'short version',
+    }, { actor: 'human:ada' })
+    assert.equal(result.ok, true, result.detail)
+    assert.match(readFileSync(join(store, 'work-items', 'tok.md'), 'utf8'), /Much more detail/)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('H2 a refused admission (controller at WIP) leaves no orphaned request file behind', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'admit-request-refused-'))
+  try {
+    const store = join(dir, '.tmux-teams')
+    mkdirSync(join(store, 'work-items'), { recursive: true })
+    writeFileSync(join(store, 'graph.json'), JSON.stringify(TWO_TEAMS))
+    // TWO_TEAMS declares no controller_team, so admitWorkItem fails before it
+    // ever reaches the ledger write — exactly the early-refusal path the fix
+    // must not write a request file behind.
+    const result = admitWorkItem(dir, {
+      work_item: 'tok', workflow: 'feature', reason: 'irrelevant — this must not land on disk',
+    }, { actor: 'human:ada' })
+    assert.equal(result.ok, false)
+    assert.equal(existsSync(join(store, 'work-items', 'tok.md')), false,
+      'a refused admission left a request file for a token that was never opened')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// ── H1 — an answered question routes back to the seat that asked ────────────
+// (retro-release-review, 2026-08-04): `nextStep` used to hardcode
+// `want('dispatcher')` for every `answered` on the false assumption that only
+// a dispatcher ever asks. `harvestEvent` stamps `resume_role` with the actual
+// asking seat (dispatcher, evaluator, audit, outer) — an evaluator's question,
+// once answered, was routed to this team's dispatcher instead of back to the
+// evaluator that asked it, paying for a leg with nothing to act on.
+
+test('H1 an answered question asked by the evaluator dispatches the evaluator, not the dispatcher', () => {
+  const graph = graphOf(TWO_TEAMS)
+  const items = itemsOf(['tok', [
+    { event: 'assigned', agent_id: 'b_w1', task_id: 'b-1', dispatch_id: 'b-1-d' },
+    { event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done', timed_out: false, evidence_present: true },
+    { event: 'assigned', agent_id: 'b_e', task_id: 'r-1', dispatch_id: 'r-1-d' },
+    {
+      event: 'questioned', agent_id: 'b_e', questions: 'pass or fail?', reason: 'unstated verdict',
+      question_id: 'q-1', resume_role: 'evaluator',
+    },
+    { event: 'answered', to_team: 'build', reason: 'pass — it does what was asked', question_id: 'q-1', actor: 'human:ada' },
+  ]])
+  const plan = planDispatches(graph, items, new Set(), { now: FIXED_NOW })
+    .find((entry) => entry.work_item === 'tok')
+  assert.equal(plan.action, 'dispatch')
+  assert.equal(plan.role, 'evaluator', `the reply went to ${plan.role || plan.action}, not the evaluator that asked`)
+  assert.equal(plan.agent_id, 'b_e')
+})
+
+test('H1 an answered question with no resume_role (a legacy questioned line) keeps routing to the dispatcher', () => {
+  const graph = graphOf(TWO_TEAMS)
+  const items = itemsOf(['tok', [
+    {
+      event: 'questioned', agent_id: 'b_d', questions: 'which workflow?', reason: 'ambiguous request',
+      question_id: 'q-1',
+    },
+    { event: 'answered', to_team: 'build', reason: 'use the feature workflow', question_id: 'q-1', actor: 'human:ada' },
+  ]])
+  const plan = planDispatches(graph, items, new Set(), { now: FIXED_NOW })
+    .find((entry) => entry.work_item === 'tok')
+  assert.equal(plan.action, 'dispatch')
+  assert.equal(plan.role, 'dispatcher')
+  assert.equal(plan.agent_id, 'b_d')
+})
+
+test('H1 an answered question asked by the outer controller does not also dispatch this team\'s own seat', () => {
+  const graph = graphOf(TWO_TEAMS)
+  const items = itemsOf(['tok', [
+    {
+      event: 'questioned', agent_id: 'pm', questions: 'accept the finding?', reason: 'unstated verdict',
+      question_id: 'q-1', resume_role: 'outer',
+    },
+    { event: 'answered', to_team: 'build', reason: 'accepted', question_id: 'q-1', actor: 'human:ada' },
+  ]])
+  const plan = planDispatches(graph, items, new Set(), { now: FIXED_NOW })
+    .find((entry) => entry.work_item === 'tok')
+  assert.notEqual(plan.action, 'dispatch', 'this team dispatched a seat for a reply that was never asked as its own')
+  assert.match(plan.reason, /outer controller/)
+})
+
 // ── GitHub #32: per-seat reasoning effort reaches the spawned process ────────
 
 test('declaredEffort reads the resolved seat, and effortEnv requests it the way modelEnv requests a model', () => {
@@ -1755,27 +1984,38 @@ test('a dispatched worker leg carries its seat effort into the spawned process e
       `${ledger('tok', [{ event: 'opened', agent_id: 'b_d', to_team: 'build' }])
         .map((entry) => JSON.stringify(entry)).join('\n')}\n`)
 
-    const spawned = []
-    const stubSpawn = (repo, args) => { spawned.push(args); return 'stub-task' }
+    // Deliberately do NOT stub `spawnLeg` — leaving it at its default
+    // (`dispatch`) is the whole point. `spawnLeg: stubSpawn` replaces
+    // `dispatch` wholesale, so `dispatch`'s own env object (where
+    // `...effortEnv(effort)` actually lives, loop-runner.mjs) never runs and
+    // this test cannot see it get dropped. `spawnFn` is the narrower seam:
+    // it only replaces the OS-level `child_process.spawn` call inside the
+    // real `dispatch`, so every line of `dispatch`'s env construction runs
+    // for real and lands in `captured`.
+    const captured = []
+    const spawnFn = (cmd, args, options) => {
+      captured.push({ cmd, args, env: options.env })
+      return { unref() {} }
+    }
     // `opened` dispatches the dispatcher first (intake); run twice so the
     // second tick reaches the worker leg this test is actually about, exactly
     // like the real loop's own next tick would.
-    tick(dir, { apply: true, scratchDir: join(dir, 'scratch'), spawnLeg: stubSpawn })
+    tick(dir, { apply: true, scratchDir: join(dir, 'scratch'), spawnFn })
     writeFileSync(join(store, 'work-items', 'tok.jsonl'),
       `${ledger('tok', [
         { event: 'opened', agent_id: 'b_d', to_team: 'build' },
         { event: 'intake', agent_id: 'b_d', verdict: 'accept' },
       ]).map((entry) => JSON.stringify(entry)).join('\n')}\n`)
-    tick(dir, { apply: true, scratchDir: join(dir, 'scratch'), spawnLeg: stubSpawn })
+    tick(dir, { apply: true, scratchDir: join(dir, 'scratch'), spawnFn })
 
-    const workerLeg = spawned.find((args) => args.role === 'worker')
-    assert.ok(workerLeg, `no worker leg was spawned: ${JSON.stringify(spawned)}`)
-    assert.equal(workerLeg.agentId, 'b_w1')
-    assert.equal(workerLeg.effort, 'max', 'the seat\'s declared effort did not reach the dispatch call')
-    // And the value dispatch() itself turns that into on the child env — this
-    // is the exact env pair acp-companion.mjs already reads (ACP_REASONING_EFFORT
-    // the request, ACP_EXPECT_REASONING_EFFORT what the receipt is held to).
-    assert.deepEqual(effortEnv(workerLeg.effort), { ACP_REASONING_EFFORT: 'max', ACP_EXPECT_REASONING_EFFORT: 'max' })
+    const workerLeg = captured.find((call) => call.env.ACP_AGENT_ID === 'b_w1')
+    assert.ok(workerLeg, `no worker leg was spawned: ${JSON.stringify(captured.map((c) => c.env.ACP_AGENT_ID))}`)
+    // This is the actual child env `dispatch` built and would have handed to
+    // `spawn()` for a real ACP process — not a call to `effortEnv` from the
+    // test itself. Deleting `...effortEnv(effort)` from `dispatch`'s env
+    // object turns this red; calling `effortEnv` a second time here would not.
+    assert.equal(workerLeg.env.ACP_REASONING_EFFORT, 'max', 'the seat\'s declared effort did not reach the real child env')
+    assert.equal(workerLeg.env.ACP_EXPECT_REASONING_EFFORT, 'max', 'the receipt-holding pair did not reach the real child env')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -1899,3 +2139,122 @@ test('readWorkerHint reads the last WORKER line and ignores a malformed one', ()
   assert.equal(readWorkerHint(null), null)
   assert.equal(readWorkerHint(undefined), null)
 })
+
+// ── retro-release-review, 2026-08-04: B4, B3, B2 ────────────────────────────
+
+test('a truly identityless reviewed pass — no task_id, no dispatch_id — still does not clear the pull gate for a live retry (B4)', () => {
+  // The exact shape the F1 test above does NOT cover, despite its title: F1's
+  // `reviewed` carries `task_id: 'r-1'`, which routes it through the task_id
+  // branch. This one carries neither field at all — the shorthand the
+  // contract §6 says the system still writes — and the SAME evaluator was
+  // retried, so agent_id reads identical on both legs too. Nothing here can
+  // name which leg the review belongs to.
+  const graph = graphOf(TWO_TEAMS)
+  const custody = [
+    { at: '2026-07-27T09:00:00.000Z', event: 'assigned', agent_id: 'b_w1', task_id: 'b-1', dispatch_id: 'w-1' },
+    { at: '2026-07-27T09:01:00.000Z', event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done', timed_out: false, evidence_present: true, dispatch_id: 'w-1' },
+    { at: '2026-07-27T09:02:00.000Z', event: 'assigned', agent_id: 'b_e', task_id: 'r-1', dispatch_id: 'r-1' },
+    { at: '2026-07-27T09:03:00.000Z', event: 'delivered', agent_id: 'b_e', task_id: 'r-1', terminal: 'done', timed_out: false, evidence_present: true, dispatch_id: 'r-1' },
+    // r-1 killed and retried, same evaluator, before it reported anything.
+    { at: '2026-07-27T09:04:00.000Z', event: 'assigned', agent_id: 'b_e', task_id: 'r-2', dispatch_id: 'r-2' },
+    // r-1's late last word: no task_id, no dispatch_id — nothing to trace it
+    // back to its own leg with at all.
+    { at: '2026-07-27T09:05:00.000Z', event: 'reviewed', agent_id: 'b_e', verdict: 'pass', reviewed_task: 'b-1', reason: 'it does what the request asked for' },
+  ]
+  const items = itemsOf(['tok', custody])
+
+  assert.equal(currentEntry(custody).task_id, 'r-2', 'the identityless stale pass was read as where the token is')
+  assert.equal(currentEntry(custody).event, 'assigned', 'the live retry is still assigned, not reviewed')
+  assert.deepEqual(teamOccupancy(graph, items).held.get('build'), ['tok'],
+    'the identityless stale pass moved the token off the seat still running it')
+  assert.deepEqual(planPulls(graph, items, '2026-07-27T09:06:00.000Z'), [],
+    'a truly identityless reviewed pass cleared the pull gate')
+
+  // And the legitimate case this must not regress: an evaluator assigned
+  // exactly ONCE, whose `reviewed` never carried an identity field at all —
+  // "the shorthand this system still writes when a review rides straight on
+  // a worker's delivery, with no `assigned` of the evaluator's own to look
+  // up" (dispatch-facts.mjs). Nothing retried it, so it is the only leg it
+  // could possibly be evidence about, and it still clears the gate.
+  const singleLeg = [
+    { at: '2026-07-27T09:00:00.000Z', event: 'assigned', agent_id: 'b_w1', task_id: 'b-1', dispatch_id: 'w-1' },
+    { at: '2026-07-27T09:01:00.000Z', event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done', timed_out: false, evidence_present: true, dispatch_id: 'w-1' },
+    { at: '2026-07-27T09:02:00.000Z', event: 'reviewed', agent_id: 'b_e', verdict: 'pass', reviewed_task: 'b-1', reason: 'it does what the request asked for' },
+  ]
+  const singleItems = itemsOf(['ok', singleLeg])
+  assert.equal(currentEntry(singleLeg).event, 'reviewed', 'a never-retried identityless review was wrongly treated as UNKNOWN')
+  assert.deepEqual(planPulls(graph, singleItems, '2026-07-27T09:06:00.000Z').map((d) => d.action), ['pull'],
+    'a never-retried identityless review did not clear the pull gate')
+})
+
+test('a delivered from an IMPOSTER agent is not trusted merely for naming the holder\'s task_id (B3)', () => {
+  // The exact fixture from the review: two live assignments, then a
+  // `delivered` that names the SECOND leg's task_id (so it resolves to the
+  // holder's own assigned line) but reports the FIRST leg's agent. task_id
+  // matching the holder's leg is necessary but was not sufficient — nothing
+  // bound task_id to an agent the way dispatch_id is bound at write time, so
+  // this used to be trusted, and the old agent_id-only fallback it replaced
+  // would have correctly refused it.
+  const graph = graphOf(TWO_TEAMS)
+  const custody = [
+    { at: '2026-07-27T09:00:00.000Z', event: 'assigned', agent_id: 'b_w1', task_id: 't-1' },
+    { at: '2026-07-27T09:01:00.000Z', event: 'assigned', agent_id: 'b_w2', task_id: 't-2' },
+    // w1, the FIRST leg's agent, reporting a delivery under t-2 — the SECOND
+    // leg's task_id, and the one that resolves to the current holder (w2).
+    { at: '2026-07-27T09:02:00.000Z', event: 'delivered', agent_id: 'b_w1', task_id: 't-2', terminal: 'done', timed_out: false, evidence_present: true },
+  ]
+
+  assert.equal(currentEntry(custody).event, 'assigned', 'an impersonating delivered was trusted for matching the holder\'s task_id')
+  assert.equal(currentEntry(custody).agent_id, 'b_w2', 'the real holder was not read as still holding the token')
+
+  // And the case task_id was added FOR must not regress: the SAME agent,
+  // correctly reporting its own current leg's task_id, is still trusted.
+  const legitimate = custody.slice(0, 2).concat([
+    { at: '2026-07-27T09:02:00.000Z', event: 'delivered', agent_id: 'b_w2', task_id: 't-2', terminal: 'done', timed_out: false, evidence_present: true },
+  ])
+  assert.equal(currentEntry(legitimate).event, 'delivered', 'a truthful same-leg delivered was refused')
+  assert.equal(currentEntry(legitimate).agent_id, 'b_w2')
+})
+
+test('a duplicate assigned.task_id (or dispatch_id) invalidates the ledger instead of silently letting the newer leg win (B2)', () => {
+  // task_id is minted at millisecond resolution (loop-runner.mjs), so two
+  // dispatches of the same (token, team, role) can collide, and a
+  // hand-written or replayed ledger has no clock constraint on it at all.
+  // `assignedIndexByTask` (dispatch-facts.mjs) is last-wins and
+  // `dispatchOwner` (ledger-validate.mjs) keeps only the first owner — reused
+  // ids never told the OPERATOR that the assumption both readers depend on
+  // (one id, one leg, for its whole life) had already been broken.
+  const dupeTask = [
+    { at: '2026-07-27T09:00:00.000Z', event: 'assigned', work_item: 'tok', workflow: 'f', agent_id: 'w1', task_id: 't-dup', dispatch_id: 'd-1' },
+    { at: '2026-07-27T09:01:00.000Z', event: 'delivered', work_item: 'tok', workflow: 'f', agent_id: 'w1', task_id: 't-dup', terminal: 'done', timed_out: false, evidence_present: true },
+    { at: '2026-07-27T09:02:00.000Z', event: 'assigned', work_item: 'tok', workflow: 'f', agent_id: 'w1', task_id: 't-dup', dispatch_id: 'd-2' },
+    { at: '2026-07-27T09:03:00.000Z', event: 'lost', work_item: 'tok', workflow: 'f', agent_id: 'w1', task_id: 't-dup', reason: 'timed out' },
+  ].map((entry) => JSON.stringify(entry))
+  const taskResult = validateLedger(dupeTask)
+  assert.equal(taskResult.ok, false, 'a ledger reusing task_id across two assigned lines validated clean')
+  assert.ok(taskResult.problems.some((problem) => problem.code === 'duplicate_task_id'),
+    `expected a duplicate_task_id problem, got ${JSON.stringify(taskResult.problems)}`)
+
+  const dupeDispatch = [
+    { at: '2026-07-27T09:00:00.000Z', event: 'assigned', work_item: 'tok', workflow: 'f', agent_id: 'w1', task_id: 't-1', dispatch_id: 'd-dup' },
+    { at: '2026-07-27T09:01:00.000Z', event: 'delivered', work_item: 'tok', workflow: 'f', agent_id: 'w1', task_id: 't-1', terminal: 'done', timed_out: false, evidence_present: true },
+    { at: '2026-07-27T09:02:00.000Z', event: 'assigned', work_item: 'tok', workflow: 'f', agent_id: 'w1', task_id: 't-2', dispatch_id: 'd-dup' },
+    { at: '2026-07-27T09:03:00.000Z', event: 'lost', work_item: 'tok', workflow: 'f', agent_id: 'w1', task_id: 't-2', reason: 'timed out' },
+  ].map((entry) => JSON.stringify(entry))
+  const dispatchResult = validateLedger(dupeDispatch)
+  assert.equal(dispatchResult.ok, false, 'a ledger reusing dispatch_id across two assigned lines validated clean')
+  assert.ok(dispatchResult.problems.some((problem) => problem.code === 'duplicate_dispatch_id'),
+    `expected a duplicate_dispatch_id problem, got ${JSON.stringify(dispatchResult.problems)}`)
+
+  // Unique ids on an otherwise-identical shape still validate clean — this is
+  // about reuse, not about redispatching the same agent per se.
+  const unique = [
+    { at: '2026-07-27T09:00:00.000Z', event: 'assigned', work_item: 'tok', workflow: 'f', agent_id: 'w1', task_id: 't-1', dispatch_id: 'd-1' },
+    { at: '2026-07-27T09:01:00.000Z', event: 'delivered', work_item: 'tok', workflow: 'f', agent_id: 'w1', task_id: 't-1', terminal: 'done', timed_out: false, evidence_present: true },
+    { at: '2026-07-27T09:02:00.000Z', event: 'assigned', work_item: 'tok', workflow: 'f', agent_id: 'w1', task_id: 't-2', dispatch_id: 'd-2' },
+    { at: '2026-07-27T09:03:00.000Z', event: 'lost', work_item: 'tok', workflow: 'f', agent_id: 'w1', task_id: 't-2', reason: 'timed out' },
+  ].map((entry) => JSON.stringify(entry))
+  assert.equal(validateLedger(unique).ok, true, JSON.stringify(validateLedger(unique).problems))
+})
+
+// ── GitHub #32: per-seat reasoning effort reaches the spawned process ────────

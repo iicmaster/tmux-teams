@@ -33,7 +33,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { currentEntry, readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
-import { MAX_DOOR_REFUSALS, validateLedgerFile } from './ledger-validate.mjs'
+import { MAX_DOOR_REFUSALS, validateLedgerFileTolerant } from './ledger-validate.mjs'
 import { appendEvent as appendLedgerEvent, ledgerPath } from './ledger-writer.mjs'
 import { planPulls, applyPulls } from './pull-controller.mjs'
 import {
@@ -342,11 +342,17 @@ const failedLegs = (item) => item.custody.filter((entry) =>
 // (`answered`) — not when a request is already in flight (`audit_requested`,
 // being watched by `planHarvest`) or already parked on a person (`questioned`,
 // not this function's job) or already closed (`audited`/`abandoned`, §5).
+// M3 (retro-release-review, 2026-08-04): this used to read the raw last
+// event name instead of `currentEntry`. A mixed-version or manually accepted
+// ledger can carry `completed -> audit_requested -> questioned -> answered`
+// followed by a superseded late outcome from a dead leg; `currentEntry` skips
+// that stale trailing entry and exposes `answered` as current, but the raw
+// tail read it as whatever the stale entry's event was and silently
+// suppressed the re-escalation this function exists to guarantee.
 const awaitingAudit = (item) => {
-  const events = item.custody.map((entry) => entry.event)
-  if (events.lastIndexOf('completed') === -1) return false
-  const last = events[events.length - 1]
-  return last === 'completed' || last === 'answered'
+  if (!item.custody.some((entry) => entry.event === 'completed')) return false
+  const current = currentEntry(item.custody).event
+  return current === 'completed' || current === 'answered'
 }
 
 // ── briefs ───────────────────────────────────────────────────────────────────
@@ -382,9 +388,20 @@ function composeBrief(repo, graph, plan, item, scratchDir, answerDeadlineSec = A
     // The system's front door, not a team's. It judges a REQUEST rather than a
     // handoff, it may ask instead of only taking or refusing, and it is the one
     // brief in this system addressed at a person on the other side of an agent.
+    // H2 (retro-release-review, 2026-08-04): this used to list EVERY declared
+    // workflow, worded as a menu the grill picks from — but `intake`'s accept
+    // event (below) has no field for a route decision and nothing downstream
+    // ever reads one out of the grill's reply. The route was fixed at
+    // admission (item.workflow); naming only that one route matches the brief
+    // text above, which now says the same thing honestly. Falls back to the
+    // full list only if the admitted workflow is not declared — an orphaned
+    // token still deserves to see what routes exist at all.
+    const admittedWorkflow = graph.workflows.find((entry) => entry.workflow_id === item.workflow)
     parts.push(roleBrief(repo, 'grill', team.team_id, {
       workItem: item.work_item,
-      route: graph.workflows.map((entry) => `${entry.workflow_id} (${entry.route.join(' → ')})`).join(', '),
+      route: admittedWorkflow
+        ? `${admittedWorkflow.workflow_id} (${admittedWorkflow.route.join(' → ')})`
+        : graph.workflows.map((entry) => `${entry.workflow_id} (${entry.route.join(' → ')})`).join(', '),
       // An absolute time, not "you have ten minutes": it needs no page to
       // render it and cannot drift the way a duration read late does. The
       // operator relaying this renders it in the reader's own zone (§6.4).
@@ -934,9 +951,30 @@ function nextStep(graph, team, item, { busy, nowMs, zombieSec, answerDeadlineSec
   }
 
   // The person replied, so the gate that asked runs again on what it now has.
-  // Not a worker: nothing has been built yet, and the question was the
-  // dispatcher's.
-  if (last.event === 'answered') return want('dispatcher')
+  // H1 (retro-release-review, 2026-08-04): this used to hardcode
+  // `want('dispatcher')` on the (false) assumption that only a dispatcher
+  // ever asks — `harvestEvent`'s `asked.resume_role` names the seat that
+  // actually asked (dispatcher, evaluator, audit, or outer; loop-runner.mjs
+  // `nextQuestionId`/`harvestEvent` above), and only that seat can read the
+  // reply. Read it off the `questioned` line this answers, not off `last`
+  // itself — `answered` does not carry it.
+  if (last.event === 'answered') {
+    const askedBy = lastOf(item, (entry) => entry.event === 'questioned')
+    const resumeRole = askedBy?.resume_role || null
+    if (resumeRole === 'evaluator') return want('evaluator')
+    if (resumeRole === 'worker') return want('worker')
+    // 'dispatcher' (including unset, for legacy questions written before
+    // resume_role existed) keeps the original behavior exactly. 'audit' and
+    // 'outer' are the outer controller's own seats, not this team's — a
+    // question asked there is answered there (`planEscalation`'s
+    // `awaitingAudit`, above). Dispatching this team's own dispatcher for a
+    // reply it never asked for pays for a leg with nothing to act on, and
+    // risks two seats independently reading the same reply.
+    if (resumeRole && resumeRole !== 'dispatcher') {
+      return { action: 'held', reason: `waiting on the outer controller to read a reply asked as ${resumeRole}` }
+    }
+    return want('dispatcher')
+  }
   if (last.event === 'intake' && team.team_id === graph.controller_team) return { action: 'ready' }
   // Only a FRESH `intake` carries a hint — `returned` and `resumed` are the
   // rework paths (a refused handoff coming back, a controller-granted retry)
@@ -1183,7 +1221,7 @@ export function childEnv(source = process.env) {
   return injected ? { ...rest, ACP_CMD: injected } : rest
 }
 
-function dispatch(repo, { workItem, team, role, agentId, workflow, model, adapter = DEFAULT_ADAPTER, effort }, briefPath, stallSec) {
+function dispatch(repo, { workItem, team, role, agentId, workflow, model, adapter = DEFAULT_ADAPTER, effort }, briefPath, stallSec, { spawnFn = spawn } = {}) {
   const taskId = `${workItem || 'board'}-${team || 'loop'}-${role}-${Date.now().toString(36)}`
     .replace(/[^A-Za-z0-9_-]/g, '-')
   // Keep every dispatch log. Discarding the adapter stderr is how a runner ends
@@ -1192,7 +1230,12 @@ function dispatch(repo, { workItem, team, role, agentId, workflow, model, adapte
   const logDir = join(repo, '.tmux-teams', 'runner-logs')
   mkdirSync(logDir, { recursive: true })
   const logFd = openSync(join(logDir, `${taskId}.log`), 'a', 0o600)
-  const child = spawn(process.execPath, [COMPANION, adapter, repo, taskId, briefPath, String(stallSec)], {
+  // `spawnFn` is the narrower seam (below `spawnLeg`): it replaces only the OS
+  // process creation, so a test can exercise this function's REAL env-building
+  // — including the effortEnv/modelEnv spread the #32 regression lived in —
+  // without forking a real ACP process. Production supplies no spawnFn, so it
+  // has no branch: `spawn` from node:child_process runs exactly as before.
+  const child = spawnFn(process.execPath, [COMPANION, adapter, repo, taskId, briefPath, String(stallSec)], {
     cwd: repo,
     detached: true,
     stdio: ['ignore', logFd, logFd],
@@ -1248,15 +1291,22 @@ function writeNotice(repo, workItem, questions, reason) {
 
 const heldCount = (occupancy) => [...occupancy.held.values()].flat().length
 
-// `spawnLeg` is the only seam in this function, and it exists for one reason:
+// `spawnLeg` is the outer seam in this function, and it exists for one reason:
 // every decision below — harvest, pull, WIP, escalation, and the order they run
 // in — is reachable in a test only if starting an agent can be something other
 // than forking a real ACP process. A replay that re-composes the planners by
 // hand tests the composer's memory of this order rather than this order itself.
-// The default is the real spawn, so production has no branch.
+// The default is the real `dispatch`, so production has no branch.
+//
+// `spawnFn`, threaded through to `dispatch` below, is the inner seam: it lets
+// a test keep the default `spawnLeg = dispatch` — so `dispatch`'s own env
+// construction genuinely runs — while still replacing only the OS-level
+// process creation inside it. A test that stubs `spawnLeg` instead never runs
+// `dispatch` at all, which is how the #32 pattern (effort declared, validated,
+// dropped at dispatch) shipped a regression test that could not have caught it.
 export function tick(repoArg, {
   apply = true, stallSec = 1800, scratchDir, tickSec = DEFAULT_TICK_SEC,
-  spawnLeg = dispatch, answerDeadlineSec = ANSWER_DEADLINE_SEC,
+  spawnLeg = dispatch, spawnFn, answerDeadlineSec = ANSWER_DEADLINE_SEC,
 } = {}) {
   // The ACP adapter rejects a relative cwd outright, and the runner is the last
   // place a relative path can still be sitting — resolve once, here.
@@ -1397,10 +1447,15 @@ export function tick(repoArg, {
     // a history that cannot be believed writes good evidence on top of bad and
     // buries the break instead of surfacing it. Refuse, and name the defect —
     // a silent skip here would look exactly like a team with nothing to do.
-    const ledger = validateLedgerFile(ledgerPath(repo, plan.work_item))
+    //
+    // Tolerant: B5 (2026-08-04) found this was the third place, after the
+    // writer and the pull controller, that judged an on-disk ledger by raw
+    // `ok` — so a token whose only problems were legacy-tolerated ones could
+    // be appended to and pulled forward but never dispatched onto again.
+    const ledger = validateLedgerFileTolerant(ledgerPath(repo, plan.work_item))
     if (!ledger.ok) {
-      log(`LEDGER ${plan.work_item}: ${ledger.problems.length} problem(s) — refusing to dispatch onto a history that cannot be believed`)
-      for (const problem of ledger.problems.slice(0, 5)) {
+      log(`LEDGER ${plan.work_item}: ${ledger.blocking.length} problem(s) — refusing to dispatch onto a history that cannot be believed`)
+      for (const problem of ledger.blocking.slice(0, 5)) {
         log(`       line ${problem.line}  ${problem.code}  ${problem.detail}`)
       }
       continue
@@ -1420,7 +1475,7 @@ export function tick(repoArg, {
     const taskId = spawnLeg(repo, {
       workItem: plan.work_item, team: plan.team, role: plan.role,
       agentId: plan.agent_id, workflow: plan.workflow, model, adapter, effort,
-    }, brief.path, stallSec)
+    }, brief.path, stallSec, { spawnFn })
     log(`start  ${plan.agent_id} (${plan.role}) <- ${plan.work_item} task=${taskId} lane=${adapter} model=${says} effort=${effortSays}`)
     started.push({ ...plan, task_id: taskId, model, effort })
   }
@@ -1459,7 +1514,7 @@ export function tick(repoArg, {
       writeFileSync(join(notesDir, 'latest.md'), `${new Date().toISOString()}\n${escalation.identity}\n`)
       const taskId = spawnLeg(repo,
         { workItem: '', team: '', role: 'pm', agentId: escalation.agent_id, workflow: '', model: pmModel, adapter: pmAdapter, effort: pmEffort },
-        briefPath, stallSec)
+        briefPath, stallSec, { spawnFn })
       log(`start  ${escalation.agent_id} (pm) <- board task=${taskId} lane=${pmAdapter} model=${pmSays} effort=${pmEffortSays}`)
       started.push({ action: 'dispatch', role: 'pm', agent_id: escalation.agent_id, task_id: taskId, model: pmModel, effort: pmEffort })
       // Each escalated token is marked so the loop stops re-triggering on it

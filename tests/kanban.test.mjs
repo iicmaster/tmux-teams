@@ -425,6 +425,112 @@ test('AC5 a card blocked by a full team names that team in full', () => {
   assert.match(columns.get('Visual').html, /WIP 1\/1 · at limit/)
 })
 
+// ── H3 — TARGET_VERDICT: reject holds a card instead of reading like a pass ──
+// (retro-release-review, 2026-08-04): role-briefs.mjs's TARGET_VERDICT_BLOCK
+// tells a `produces: verdict` team's evaluator that a rejection "is not done
+// and needs another pass, not a handoff onward" — but until this fix
+// pull-controller.mjs pulled a `reviewed pass` onward regardless, and the
+// board drew it exactly like an ordinary passed review. The card must say
+// something different, and pull-controller must not treat it as pull-ready.
+
+const FOUR_TEAMS_WITH_REVIEW = {
+  ...FOUR_TEAMS,
+  teams: FOUR_TEAMS.teams.map((entry) =>
+    entry.team_id === 'test' ? { ...entry, produces: 'verdict' } : entry),
+}
+
+test('H3 a reviewed pass with TARGET_VERDICT: reject is drawn as held, not as an ordinary pass', () => {
+  const dir = repoWith(FOUR_TEAMS_WITH_REVIEW, {
+    tok: [
+      { at: '2026-07-27T09:05:00.000Z', event: 'assigned', agent_id: 'test_w1', task_id: 't-w', dispatch_id: 't-w-d' },
+      { at: '2026-07-27T09:08:00.000Z', event: 'delivered', agent_id: 'test_w1', task_id: 't-w', terminal: 'done', timed_out: false, evidence_present: true },
+      {
+        at: '2026-07-27T09:10:00.000Z', event: 'reviewed', agent_id: 'test_e', verdict: 'pass',
+        reviewed_task: 't-w', reason: 'the evaluator did its own job correctly',
+        target_verdict: 'reject', target_reason: 'AC7 is missing from the delivery',
+      },
+    ],
+  })
+  const board = readBoard(dir, NOW)
+  const testColumn = board.columns.find((column) => column.team_id === 'test')
+  const visualColumn = board.columns.find((column) => column.team_id === 'visual')
+  assert.equal(visualColumn.cards.length, 0, 'a target-rejected review was pulled onward anyway')
+  assert.equal(testColumn.cards.length, 1)
+  const [card] = testColumn.cards
+  assert.match(card.state, /Target rejected/)
+  assert.equal(card.blocked_reason, 'AC7 is missing from the delivery')
+})
+
+test('stateOf reads TARGET_VERDICT: reject as held, and an ordinary pass is unaffected', () => {
+  const graph = graphOf(FOUR_TEAMS_WITH_REVIEW)
+  const rejected = stateOf(graph, {
+    event: 'reviewed', agent_id: 'test_e', verdict: 'pass',
+    target_verdict: 'reject', target_reason: 'not done',
+  })
+  assert.match(rejected.state, /Target rejected/)
+  assert.equal(rejected.detail, 'not done')
+
+  const passed = stateOf(graph, { event: 'reviewed', agent_id: 'test_e', verdict: 'pass', reason: 'fine' })
+  assert.equal(passed.state, 'Passed review — waiting to be pulled onward')
+})
+
+// ── H5 — an invalid ledger must stay visibly blocked, not read as ordinary ──
+// (retro-release-review, 2026-08-04): `planPulls` only validates a token's
+// ledger once that token reaches its OWN pull-readiness check — a token
+// sitting on `opened` with a line the current validator refuses never reaches
+// that check, so the board drew it as an ordinary "Waiting for intake" card
+// while `loop-runner.mjs` would refuse to dispatch it forever.
+
+test('H5 an invalid ledger sitting on opened is drawn as blocked, not as ordinary queued work', () => {
+  const dir = repoWith(FOUR_TEAMS, {})
+  // `opened` with no `reason` — a required field (§4) — refused by today's
+  // validator. Written directly rather than through `gateHistory`, so the
+  // fixture stays exactly the impossible line it claims to be.
+  writeFileSync(join(dir, '.tmux-teams/work-items/tok.jsonl'), `${JSON.stringify({
+    at: '2026-07-27T09:00:00.000Z', event: 'opened', work_item: 'tok', workflow: 'feature',
+    agent_id: 'build_d', to_team: 'build', actor: 'human:someone',
+  })}\n`)
+  const board = readBoard(dir, NOW)
+  const buildColumn = board.columns.find((column) => column.team_id === 'build')
+  assert.equal(buildColumn.cards.length, 1)
+  const [card] = buildColumn.cards
+  assert.equal(card.event, 'opened')
+  assert.equal(card.state, 'Waiting for intake', 'the card still reads its ordinary state')
+  assert.match(card.blocked_reason || '', /missing_field|reason/,
+    'an invalid ledger drew no blocker at all')
+})
+
+// ── M3 — Done/team/unplaceable classification must agree with the card ──────
+
+test('M3 a stray late outcome after audit_requested is filed under Done, not Unplaceable', () => {
+  // Validator-legal: `build_w1` reports again after `audit_requested`, naming
+  // a task_id no `assigned` ever opened. `currentEntry` (dispatch-facts.mjs)
+  // has no owning leg to trace it to, the agent differs from the holder
+  // (`build_w2`, the last `assigned`), so it is superseded and skipped —
+  // exposing `audit_requested` as current. `teamOccupancy` already reads it
+  // this way and does not hold the token in any team. This loop used to read
+  // the RAW last line for its own Done/Team/Unplaceable choice instead of
+  // `currentEntry` — disagreeing with `teamOccupancy` about the same token and
+  // filing it under Unplaceable instead of Done.
+  const dir = repoWith(FOUR_TEAMS, {
+    tok: [
+      { at: '2026-07-27T09:02:00.000Z', event: 'assigned', agent_id: 'build_w1', task_id: 't1', dispatch_id: 'd1' },
+      { at: '2026-07-27T09:03:00.000Z', event: 'delivered', agent_id: 'build_w1', task_id: 't1', dispatch_id: 'd1', terminal: 'done', timed_out: false, evidence_present: true },
+      { at: '2026-07-27T09:04:00.000Z', event: 'assigned', agent_id: 'build_w2', task_id: 'r1', dispatch_id: 'dr1' },
+      { at: '2026-07-27T09:05:00.000Z', event: 'delivered', agent_id: 'build_w2', task_id: 'r1', dispatch_id: 'dr1', terminal: 'done', timed_out: false, evidence_present: true },
+      { at: '2026-07-27T09:06:00.000Z', event: 'audit_requested', agent_id: 'pm', task_id: 'pm-1', reason: 'read the whole delivery' },
+      { at: '2026-07-27T09:07:00.000Z', event: 'delivered', agent_id: 'build_w1', task_id: 'ghost-task', terminal: 'done', timed_out: false, evidence_present: true },
+    ],
+  })
+  const board = readBoard(dir, NOW)
+  const buildColumn = board.columns.find((column) => column.team_id === 'build')
+  const done = board.columns.find((column) => column.kind === 'done')
+  assert.equal(buildColumn.cards.length, 0, 'the stray late outcome kept the token in a team currentEntry says it left')
+  assert.equal(board.unplaceable.length, 0, 'a token awaiting audit was drawn as unplaceable')
+  assert.equal(done.cards.length, 1, 'the token awaiting audit was not filed under Done')
+  assert.equal(done.cards[0].event, 'audit_requested')
+})
+
 // ── AC6 — a token that cannot be placed is shown, not hidden ────────────────
 
 test('AC6 an agent outside the declared graph puts its token in Unplaceable', () => {

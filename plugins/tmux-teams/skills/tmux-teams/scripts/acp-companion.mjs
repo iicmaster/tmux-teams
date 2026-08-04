@@ -2135,6 +2135,12 @@ function captureSettlementRecord(reaped = {}, { timedOut = false, reason = cance
     descendant_cleanup_signal_delivered: Boolean(
       reaped.descendantCleanupSignalDelivered ?? descendantCleanupSignalDelivered,
     ),
+    // Tri-state, not a boolean defaulting to false: a caller that never ran
+    // `closeAndReapChild` (or an older shape of its return value) genuinely
+    // does not know whether the group is gone, and reporting that as `false`
+    // would read as a confirmed survivor rather than as unmeasured — the
+    // house rule is that a branch that cannot answer says UNKNOWN, not "no".
+    descendant_group_gone: reaped.groupGone === undefined ? null : Boolean(reaped.groupGone),
     child_exit_code: Number.isInteger(closeResult.code) ? closeResult.code : null,
     child_signal: closeResult.signal ? boundedText(closeResult.signal, 'unknown', MAX_TEXT) : null,
     forced_reap_attempted: Boolean(reaped.forcedReapAttempted ?? forcedReapAttempted),
@@ -2160,6 +2166,7 @@ function settlementFacts(settlement) {
     kill_delivered: settlement.kill_delivered,
     child_settlement_signal_delivered: settlement.child_settlement_signal_delivered,
     descendant_cleanup_signal_delivered: settlement.descendant_cleanup_signal_delivered,
+    descendant_group_gone: settlement.descendant_group_gone,
     child_exit_code: settlement.child_exit_code,
     child_signal: settlement.child_signal,
     forced_reap_attempted: settlement.forced_reap_attempted,
@@ -2220,6 +2227,7 @@ function recordTerminal(terminal, {
     `kill_delivered: ${facts.kill_delivered}`,
     `child_settlement_signal_delivered: ${facts.child_settlement_signal_delivered}`,
     `descendant_cleanup_signal_delivered: ${facts.descendant_cleanup_signal_delivered}`,
+    `descendant_group_gone: ${facts.descendant_group_gone === null ? 'unknown' : facts.descendant_group_gone}`,
     `forced_reap_attempted: ${facts.forced_reap_attempted}`,
     `forced_reap_delivered: ${facts.forced_reap_delivered}`,
     `forced_reap: ${facts.forced_reap}`,
@@ -2701,6 +2709,13 @@ async function closeAndReapChild({ signalIfNeeded = true, closeGraceMs = process
     forcedReapDelivered,
     descendantCleanupSignalDelivered: descendantCleanupDelivered || descendantCleanupSignalDelivered,
     childSettlementSignalDelivered: childSettlementSignalDelivered,
+    // This function computes `groupGone` above and, until now, threw the fact
+    // away here: every caller persisted a terminal state with no way to tell
+    // a truly reaped process group from one that outlived every TERM/KILL
+    // sweep. "The caller cannot distinguish a reaped group from a surviving
+    // one" was the exact defect — the receipt now carries the computed value
+    // instead of silently discarding it.
+    groupGone,
   }
 }
 

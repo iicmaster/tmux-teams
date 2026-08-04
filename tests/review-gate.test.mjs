@@ -35,6 +35,13 @@ const profile = (id = 'oc', extra = {}) => ({
   model: `${id}-review-model`,
   reviewMode: 'plan',
   config: { model: `${id}-review-model`, mode: 'plan' },
+  // Distinct per id by default -- real profiles always declare one, and
+  // provenFamilyCollision (review-profiles.mjs) now treats two lanes that
+  // both omit it as an unresolved, refused collision rather than "no
+  // evidence, therefore fine" (issue #38 follow-up, bypass 2). Tests that
+  // deliberately want two synthetic lanes to collide pass a matching
+  // `adapterPackage` through `extra`, same as before.
+  adapterPackage: `mock-adapter-${id}`,
   ...extra,
 })
 const invoke = (p = profile(), extra = {}) => runAcpReview({

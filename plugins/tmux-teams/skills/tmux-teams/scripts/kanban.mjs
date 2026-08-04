@@ -33,6 +33,7 @@ import { fileURLToPath } from 'node:url'
 import { KANIT_FONT_CSS } from '../assets/kanit/kanit-embedded.mjs'
 import { RELEASING_EVENTS, currentEntry, readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
 import { planPulls } from './pull-controller.mjs'
+import { validateLedger } from './ledger-validate.mjs'
 import { clip, duration, esc, readWorkflowGraph } from './graph.mjs'
 import { NAV_CSS, renderNav } from './page-nav.mjs'
 import { WORKFLOW_GRAPH_FILE, teamRoleOf } from './workflow-graph.mjs'
@@ -48,7 +49,11 @@ const FONT_CSS_NAME = `pulse-fonts-${createHash('sha256').update(KANIT_FONT_CSS)
 // it as an ordinary card. A token the loop will not touch, rendered as one it is
 // working on, is the exact disagreement between board and loop this file exists
 // to prevent.
-const BLOCKING_ACTIONS = new Set(['blocked', 'failed', 'skip', 'invalid'])
+// `target_rejected` joins the set for the same reason (retro-release-review,
+// 2026-08-04, H3): pull-controller.mjs now holds a `reviewed pass` whose
+// TARGET_VERDICT says the target is not done instead of pulling it, and the
+// board must draw that hold rather than an ordinary "waiting to be pulled".
+const BLOCKING_ACTIONS = new Set(['blocked', 'failed', 'skip', 'invalid', 'target_rejected'])
 
 const slug = (value) => String(value ?? '').replace(/[^A-Za-z0-9-]+/g, '-').slice(0, 40) || 'none'
 
@@ -86,7 +91,17 @@ export function stateOf(graph, last) {
         ? { state: 'Leg finished — waiting to be harvested', detail: reason }
         : { state: 'Delivered — waiting for review', detail: reason }
     case 'reviewed':
-      if (last.verdict === 'pass') return { state: 'Passed review — waiting to be pulled onward', detail: reason }
+      if (last.verdict === 'pass') {
+        // GitHub #31 stage 2: the evaluator's own VERDICT passed (the worker
+        // judged the target correctly) but TARGET_VERDICT: reject says the
+        // target itself is not done. pull-controller.mjs holds it rather than
+        // pulling it onward (retro-release-review, 2026-08-04, H3) — the card
+        // must say so, not read the same as an ordinary pass.
+        if (last.target_verdict === 'reject') {
+          return { state: 'Target rejected — held, not handed onward', detail: last.target_reason || reason }
+        }
+        return { state: 'Passed review — waiting to be pulled onward', detail: reason }
+      }
       if (last.verdict === 'reject') return { state: 'Rejected — rework in this team', detail: reason }
       return { state: 'Review verdict unstated', detail: reason }
     case 'returned':
@@ -200,6 +215,24 @@ export function readBoard(repo, now) {
   for (const decision of planPulls(value, items, now || '')) {
     if (BLOCKING_ACTIONS.has(decision.action)) blocked.set(decision.work_item, decision.reason)
   }
+  // H5 (retro-release-review, 2026-08-04): `planPulls` only validates a
+  // token's ledger once that token reaches its own "is this ready to move"
+  // check — an `opened` token sitting on an invalid line (a missing required
+  // field, say) never reaches that check, so it never got an `invalid`
+  // decision and the board drew it as ordinary "Waiting for intake" while
+  // `loop-runner.mjs` would refuse to dispatch it forever. Every item's ledger
+  // is checked here too, independently of what state it is in, so an invalid
+  // ledger is visibly blocked the moment it exists rather than only once it
+  // happens to reach the pull gate.
+  for (const item of items.values()) {
+    if (blocked.has(item.work_item)) continue
+    const verdict = validateLedger(item.custody.map((entry) => JSON.stringify(entry)))
+    if (!verdict.ok) {
+      const [first] = verdict.problems
+      blocked.set(item.work_item,
+        `its ledger has ${verdict.problems.length} problem(s) and needs repair — line ${first.line} ${first.code}: ${first.detail}`)
+    }
+  }
 
   const columns = value.teams.map((team) => {
     const wip = occupancy.counts.get(team.team_id) ?? 0
@@ -220,7 +253,16 @@ export function readBoard(repo, now) {
   }
 
   for (const item of items.values()) {
-    const last = item.custody[item.custody.length - 1]
+    // M3 (retro-release-review, 2026-08-04): this used to read the raw last
+    // line (`item.custody[item.custody.length - 1]`) while `teamOccupancy`
+    // (which built `placedIn` above) and `cardOf` below both read
+    // `currentEntry`. A stale leg outcome trailing a genuinely current
+    // `completed`/`answered`/etc. made this loop's own Done/unplaceable
+    // classification disagree with the card describing the very same token —
+    // "Completed" on a card filed under Unplaceable. §6 exists precisely so a
+    // superseded leg's late outcome does not get read as current; reading it
+    // here defeated that everywhere it mattered for this loop.
+    const last = currentEntry(item.custody)
     const teamId = placedIn.get(item.work_item) ?? null
     const inTeam = !RELEASING_EVENTS.has(last.event) && teamId !== null
     const card = cardOf(graph.value, item, {

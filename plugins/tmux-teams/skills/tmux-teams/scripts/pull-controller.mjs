@@ -24,7 +24,7 @@
 // controller's audit — answers from it. Handing on a history that describes
 // something impossible is the same class of mistake as handing on a delivery
 // that never happened, which the failed-leg check below already refuses.
-import { validateLedger } from './ledger-validate.mjs'
+import { validateLedgerTolerant } from './ledger-validate.mjs'
 import { appendEvent } from './ledger-writer.mjs'
 import { currentEntry, readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
 import { readWorkflowGraph } from './graph.mjs'
@@ -83,6 +83,23 @@ export function planPulls(graph, items, now = new Date().toISOString()) {
       && team.team_id === graph.controller_team
     if (!admitted && (last.event !== 'reviewed' || last.verdict !== 'pass')) continue
 
+    // GitHub #31 stage 2: a `produces: verdict` team's evaluator can pass its
+    // OWN verdict (the worker judged the target correctly) while stating
+    // `target_verdict: reject` (the target itself is not done). role-
+    // briefs.mjs tells that seat the rejection "must not hand onward" — pulling
+    // it forward exactly like an ordinary `reviewed pass` would make that
+    // instruction a declaration that says nothing, which house rule forbids.
+    // It stays visibly held, the same way an invalid ledger stays visibly
+    // blocked instead of being handed on quietly (retro-release-review,
+    // 2026-08-04, H3).
+    if (!admitted && last.target_verdict === 'reject') {
+      decisions.push({
+        work_item: item.work_item, action: 'target_rejected', from_team: team.team_id,
+        reason: last.target_reason || 'the evaluator confirmed the work under review is not done',
+      })
+      continue
+    }
+
     // The whole verdict, not a chosen subset of it. `ledger-writer.appendEvent`
     // refuses outright to append to a ledger that does not validate, so a
     // planner working from a laxer rule would keep emitting a pull the writer
@@ -96,16 +113,28 @@ export function planPulls(graph, items, now = new Date().toISOString()) {
     // is not a verdict about this system. The raw file is checked again by the
     // writer at append time, so a defect only the file shows still stops the
     // write; it surfaces as a refusal rather than as a plan.
-    const verdict = validateLedger(item.custody.map((entry) => JSON.stringify(entry)))
+    //
+    // Tolerant, not raw: B5 (2026-08-04) found that a ledger which
+    // `ledger-writer.mjs` had regained the ability to APPEND to — because its
+    // only problems were the two the amendment made legacy-tolerated — still
+    // could not be PULLED here, because this file called `validateLedger`
+    // straight and required `ok` with no concept of tolerance at all. A token
+    // could be answered or abandoned but never handed to the next team.
+    // `validateLedgerTolerant` is the one place that judgment is made, shared
+    // with the writer, so the two can no longer drift apart on the same
+    // question the way they just did.
+    const verdict = validateLedgerTolerant(item.custody.map((entry) => JSON.stringify(entry)))
     if (!verdict.ok) {
-      const [first] = verdict.problems
+      const [first] = verdict.blocking
       decisions.push({
         work_item: item.work_item, action: 'invalid', from_team: team.team_id,
-        reason: `its ledger has ${verdict.problems.length} problem(s) and cannot be handed on — line ${first.line} ${first.code}: ${first.detail}`,
-        // Every problem travels with the decision. The validator reports them
-        // all on purpose, and a repair against one line at a time is a game of
-        // whack-a-mole against a file nobody is allowed to rewrite.
-        problems: verdict.problems,
+        reason: `its ledger has ${verdict.blocking.length} problem(s) and cannot be handed on — line ${first.line} ${first.code}: ${first.detail}`,
+        // Every BLOCKING problem travels with the decision — legacy-tolerated
+        // ones are excluded because they are not what an operator needs to
+        // repair. The validator reports them all on purpose, and a repair
+        // against one line at a time is a game of whack-a-mole against a file
+        // nobody is allowed to rewrite.
+        problems: verdict.blocking,
       })
       continue
     }
