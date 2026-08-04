@@ -267,7 +267,17 @@ if (process.argv[1]?.endsWith('pull-controller.mjs')) {
     }
   }
   if (args.includes('--apply')) {
-    console.log(`[pull] appended ${applyPulls(repo, decisions)} custody events`)
+    // r6-codex: this printed "appended 0 custody events" and exited 0 when
+    // every pull was refused — a `locked` ledger, a history that cannot be
+    // believed, any of it — so a script driving this could not tell a quiet
+    // success from a total failure. A count is not a status.
+    const planned = decisions.filter((decision) => decision.action === 'pull').length
+    const written = applyPulls(repo, decisions)
+    console.log(`[pull] appended ${written} custody events`)
+    if (written < planned) {
+      console.error(`[pull] ${planned - written} of ${planned} planned pull(s) were REFUSED and not recorded`)
+      process.exit(1)
+    }
   } else {
     console.log('[pull] dry run — pass --apply to record these pulls')
   }

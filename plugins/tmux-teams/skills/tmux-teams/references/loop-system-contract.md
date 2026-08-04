@@ -1948,6 +1948,18 @@ line.
 
 ### Amendment log
 
+**2026-08-04 — r6-codex/Winston, the last caller that advanced past a
+refusal.** Behaviour changed in `pull-controller.mjs`: the standalone
+`--apply` CLI printed `appended N custody events` and exited 0 whatever N was,
+so a run in which every planned pull was refused looked exactly like a run with
+nothing to do. It now compares written against planned and exits 1 with the
+count on stderr when they differ. The disagreement between the two is real and
+expected rather than a bug being papered over — §14.5 rule 6 says `planPulls`
+judges the parsed projection, which has already dropped unparsable lines, while
+the writer judges the bytes, so a token broken only by an unparsable line is
+planned as a pull and then refused. Making that visible is the point.
+No section text changed: §7 already says a refused pull is not a pull.
+
 **2026-08-04 — r6-codex: five holes, of which two were opened by the round
 that was closing them.** Behaviour changed in party-mode's
 `plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs`, and in

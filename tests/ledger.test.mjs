@@ -1545,3 +1545,44 @@ test('audited closes a duplicate-tainted ledger, and it is not abandoned (r6-cod
   assert.deepEqual(tolerant.blocking.map((problem) => problem.code), ['duplicate_task_id'],
     'closing the ledger must not have added a problem of its own')
 })
+
+// A count is not a status. `pull-controller.mjs --apply` printed "appended 0
+// custody events" and exited 0 when every planned pull was refused, so a script
+// driving it could not tell a quiet success from a total failure (r6-codex).
+// The disagreement is real and expected: §14.5 says `planPulls` judges the
+// parsed projection, which has already dropped unparsable lines, while the
+// writer judges the bytes — so a token broken only by an unparsable line is
+// planned as a pull and then refused.
+test('pull --apply exits non-zero when the pulls it planned were refused', (t) => {
+  const dir = scratch(t)
+  const store = join(dir, '.tmux-teams')
+  mkdirSync(join(store, 'work-items'), { recursive: true })
+  writeFileSync(join(store, 'graph.json'), JSON.stringify({
+    project_id: 'p', outer_controller_id: 'pm', outer_controller_model: 'test-model',
+    teams: [
+      { team_id: 'build', name: 'Build', dispatcher_id: 'b_d', worker_ids: ['b_w1'], evaluator_id: 'b_e', models: { dispatcher: 'm', worker: 'm', evaluator: 'm' } },
+      { team_id: 'test', name: 'Test', dispatcher_id: 't_d', worker_ids: ['t_w1'], evaluator_id: 't_e', models: { dispatcher: 'm', worker: 'm', evaluator: 'm' } },
+    ],
+    workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['build', 'test'] }],
+  }))
+  const at = (n) => new Date(Date.UTC(2026, 7, 4, 10, n)).toISOString()
+  const custody = [
+    { at: at(0), event: 'opened', work_item: 'tok', workflow: 'feature', agent_id: 'pm', to_team: 'control', reason: 'r', actor: 'human:ngs' },
+    { at: at(1), event: 'pulled', work_item: 'tok', workflow: 'feature', agent_id: 'b_d', from_team: 'control', to_team: 'build', actor: 'agent:runner' },
+    { at: at(2), event: 'intake', work_item: 'tok', workflow: 'feature', agent_id: 'b_d', verdict: 'accept', reason: 'fits the team', actor: 'agent:b_d' },
+    { at: at(3), event: 'assigned', work_item: 'tok', workflow: 'feature', agent_id: 'b_w1', task_id: 'b-1', dispatch_id: 'd-1', actor: 'agent:runner' },
+    { at: at(4), event: 'delivered', work_item: 'tok', workflow: 'feature', agent_id: 'b_w1', task_id: 'b-1', dispatch_id: 'd-1', terminal: 'done', timed_out: false, evidence_present: true, actor: 'agent:b_w1' },
+    { at: at(5), event: 'assigned', work_item: 'tok', workflow: 'feature', agent_id: 'b_e', task_id: 'r-1', dispatch_id: 'e-1', actor: 'agent:runner' },
+    { at: at(6), event: 'reviewed', work_item: 'tok', workflow: 'feature', agent_id: 'b_e', verdict: 'pass', reviewed_task: 'b-1', dispatch_id: 'e-1', reason: 'does what was asked', actor: 'agent:b_e' },
+  ]
+  writeFileSync(join(store, 'work-items', 'tok.jsonl'),
+    `${custody.map((entry) => JSON.stringify(entry)).join('\n')}\nthis line is not json at all\n`)
+
+  const cli = join(dirname(fileURLToPath(import.meta.url)), '..',
+    'plugins/tmux-teams/skills/tmux-teams/scripts/pull-controller.mjs')
+  const r = spawnSync(process.execPath, [cli, dir, '--apply'], { encoding: 'utf8' })
+  assert.match(r.stdout, /pull\s+tok/, 'the fixture must actually plan a pull, or this proves nothing')
+  assert.match(r.stdout, /appended 0 custody events/)
+  assert.equal(r.status, 1, `a run that recorded none of its planned pulls exited ${r.status}`)
+  assert.match(r.stderr, /1 of 1 planned pull\(s\) were REFUSED/)
+})
