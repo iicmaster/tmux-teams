@@ -1949,7 +1949,8 @@ line.
 ### Amendment log
 
 **2026-08-04 — r6-codex: five holes, of which two were opened by the round
-that was closing them.** Behaviour changed in `review-profiles.mjs`,
+that was closing them.** Behaviour changed in party-mode's
+`plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs`, and in
 `dispatch-facts.mjs` and `loop-runner.mjs`.
 `assertAdapterPackageBoundToCommand` bound `adapterPackage` to the command's
 FINAL token, tightened from `.includes()` the same day. `npm exec -- <pkg>

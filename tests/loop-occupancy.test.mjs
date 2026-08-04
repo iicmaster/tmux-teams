@@ -3212,3 +3212,27 @@ test('a controller that is still running is not a controller that failed to answ
   assert.equal(dead.filter((plan) => plan.action === 'expired').length, 1,
     'a controller with no live process must still be withdrawn from, or the token wedges forever')
 })
+
+test('two dispatches of the same work item, team and role do not reuse one task id (r6-codex/Quinn)', () => {
+  // Quinn's mutant: delete `${nowMs}` from the digest input and every task-id
+  // test stayed green — so nothing asserted that a retry of the same tuple gets
+  // a new id. It has to: the id keys the log, the dispatch record, the liveness
+  // file and the outbox, and a retry that reuses one writes over its own dead
+  // leg's evidence and produces the `duplicate_task_id` the ledger then refuses
+  // to continue.
+  const first = buildTaskId('tok', 'build', 'worker', 1_770_000_000_000)
+  const later = buildTaskId('tok', 'build', 'worker', 1_770_000_000_001)
+  assert.notEqual(first, later, 'a retry one millisecond later reused the dead leg\'s id')
+  assert.equal(first.length, later.length)
+  assert.ok(first.length <= 64, `task id must fit acp-companion's cap, got ${first.length}`)
+
+  // Same millisecond, same tuple: still identical, and the comment says so
+  // rather than claiming uniqueness the digest cannot give.
+  assert.equal(buildTaskId('tok', 'build', 'worker', 1_770_000_000_000), first)
+
+  // The sanitizer collision this was built to remove: two work items that
+  // flatten to one prefix are separated by the digest over the RAW tuple.
+  const dotted = buildTaskId('a.b', 'build', 'worker', 1_770_000_000_000)
+  const coloned = buildTaskId('a:b', 'build', 'worker', 1_770_000_000_000)
+  assert.notEqual(dotted, coloned, 'two different work items shared one task id')
+})

@@ -1509,3 +1509,39 @@ test("a second stealer acting on what it saw does not unlink the fresh lock the 
 
   releaseLock(lockPath, bToken)
 })
+
+// Quinn's mutant, round 6: narrow the tolerant close to accept only
+// `abandoned` and every duplicate-close test stayed green — the set has two
+// members and only one was ever exercised. `audited` is the ordinary end of a
+// route that finished and was read as a whole; a tolerant gate that silently
+// dropped it would wedge an audited token at its last step, which is the exact
+// failure the closing tolerance exists to prevent.
+test('audited closes a duplicate-tainted ledger, and it is not abandoned (r6-codex/Quinn)', (t) => {
+  const dir = scratch(t)
+  mkdirSync(join(dir, '.tmux-teams', 'work-items'), { recursive: true })
+  const tok = 'aud-tok'
+  const at = (n) => new Date(Date.UTC(2026, 7, 4, 10, n)).toISOString()
+  const custody = [
+    { at: at(0), event: 'opened', work_item: tok, workflow: 'feature', agent_id: 'ctl', to_team: 'control', reason: 'r', actor: 'human:ngs' },
+    { at: at(1), event: 'pulled', work_item: tok, workflow: 'feature', agent_id: 'runner', from_team: 'control', to_team: 'dev', actor: 'agent:runner' },
+    { at: at(2), event: 'assigned', work_item: tok, workflow: 'feature', agent_id: 'w1', task_id: 'dup', dispatch_id: 'd1', actor: 'agent:runner' },
+    { at: at(3), event: 'lost', work_item: tok, workflow: 'feature', agent_id: 'w1', task_id: 'dup', dispatch_id: 'd1', reason: 'first leg died', actor: 'agent:runner' },
+    // The pre-existing duplicate: closing-tolerated, and nothing else is wrong.
+    { at: at(4), event: 'assigned', work_item: tok, workflow: 'feature', agent_id: 'w1', task_id: 'dup', dispatch_id: 'd2', actor: 'agent:runner' },
+    { at: at(5), event: 'delivered', work_item: tok, workflow: 'feature', agent_id: 'w1', task_id: 'dup', dispatch_id: 'd2', terminal: 'done', timed_out: false, evidence_present: true, actor: 'agent:w1' },
+    { at: at(6), event: 'completed', work_item: tok, workflow: 'feature', agent_id: 'w1', from_team: 'dev', actor: 'agent:runner' },
+    { at: at(7), event: 'audit_requested', work_item: tok, workflow: 'feature', agent_id: 'ctl', task_id: 'ctl-1', reason: 'read it whole', actor: 'agent:runner' },
+  ]
+  writeFileSync(ledgerPath(dir, tok), `${custody.map((entry) => JSON.stringify(entry)).join('\n')}\n`)
+
+  const audited = appendEvent(dir, {
+    at: at(8), event: 'audited', work_item: tok, workflow: 'feature',
+    agent_id: 'ctl', verdict: 'accept', reason: 'read whole, accepted',
+  }, { actor: 'agent:controller' })
+  assert.equal(audited.ok, true,
+    `a route that finished could not be audited closed on a tolerated ledger: ${audited.code} ${audited.detail}`)
+
+  const tolerant = validateLedgerTolerant(readFileSync(ledgerPath(dir, tok), 'utf8').trim().split('\n'))
+  assert.deepEqual(tolerant.blocking.map((problem) => problem.code), ['duplicate_task_id'],
+    'closing the ledger must not have added a problem of its own')
+})
