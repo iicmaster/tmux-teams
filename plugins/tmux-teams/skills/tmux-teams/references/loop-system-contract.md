@@ -865,10 +865,19 @@ go — the runner refused its own repair on every tick, visibly and for ever.
   genuine current report by anything left to read off the entry (the
   guarantee that an id means one thing for its whole life is enforced at the
   point bytes enter the ledger, not re-derivable here). The one case this is
-  wrong for is a genuine round-2+ report from a reviewer who reviewed the SAME
+  wrong for is a genuine round-2 report from a reviewer who reviewed the SAME
   delivery once before (reject, rework, re-review by the SAME evaluator — the
   ordinary shape §1 describes) and writes its later verdict in the same
-  identity-free shorthand a never-assigned reviewer is allowed to use. The
+  identity-free shorthand a never-assigned reviewer is allowed to use.
+  **Round 2 and no further**, and this said "round-2+" until 2026-08-04, which
+  the code has never done (r6-qwen). A reviewer already assigned twice writing
+  an identityless report is discarded by the ambiguity rule further down —
+  nothing in such a line says which of its own legs wrote it — however
+  correctly its `reviewed_task` names the current delivery. The cost is a
+  re-dispatch, not a lost token: the runner assigns the evaluator again, and
+  the sanctioned writer stamps a `dispatch_id` on every `reviewed` it authors,
+  so the next report is not a shorthand at all. Paying for a re-review is the
+  cheaper error than trusting a dead leg's verdict. The
   shorthand's own field, `reviewed_task` — REQUIRED on every `reviewed` line
   (§4) and always stamped by the sanctioned producer from the delivery
   actually being judged, at the moment of judging — settles it: a leg that
@@ -1956,6 +1965,24 @@ line.
    editing a file while a worker holds it has already cost one overwrite.
 
 ### Amendment log
+
+**2026-08-04 — r6-qwen, the rest: two quantifiers nothing pinned and one
+ceiling nobody stated.** No behaviour change beyond `ledger-writer.mjs`'s and
+`loop-runner.mjs`'s already-amended fixes; this records what the words were
+saying wrongly. §5 said the identity-free shorthand covers a "round-2+" report
+and the code comment described an unbounded reject/rework/re-review pass. The
+code has never done that: an identityless outcome from an agent assigned more
+than once is discarded by the ambiguity rule, because nothing in such a line
+says which of its own legs wrote it. Round 2 and no further; the cost is a
+re-dispatch, not a lost token, since the sanctioned writer stamps a
+`dispatch_id` on every `reviewed` it authors and the next report is therefore
+not a shorthand at all. Paying for a re-review is the cheaper error than
+trusting a dead leg's verdict, and both are now stated instead of one being
+implied. The nine one-line mutants qwen walked past the suite with are closed
+in tests; the two that mattered were the closing gate's quantifier
+(`every` -> `some` let a ledger close over an untolerated defect) and the task-id
+digest delimiter (a space is forbidden inside a work item or team by ID_RE, a
+dash is not, so a dash makes the tuple boundary forgeable).
 
 **2026-08-04 — r6-qwen: the diversity gate could not read the shape the
 client executes.** Behaviour changed in

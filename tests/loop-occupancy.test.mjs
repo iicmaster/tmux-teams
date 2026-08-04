@@ -3279,3 +3279,30 @@ test('the answer deadline defaults to 600s and its boundary is inclusive (r6-qwe
     .filter((plan) => plan.action === 'expired').length, 0,
   'the injected value must still win over the default, or this test pins the wrong thing')
 })
+
+test('the shorthand pass is round 2 and no further, and the ceiling is a re-dispatch not a lost token (r6-qwen)', () => {
+  // The contract said "round-2+" and the code comment described an unbounded
+  // "reject, rework, re-review" pass. Neither was true: the ambiguity rule
+  // discards an identityless outcome from an agent assigned more than once,
+  // because nothing in such a line says which of its own legs wrote it. Stating
+  // the ceiling is the fix; loosening it would trust a dead leg's verdict.
+  const leg = (agent, task, dispatch) => [
+    { event: 'assigned', agent_id: agent, task_id: task, dispatch_id: dispatch },
+    { event: 'delivered', agent_id: agent, task_id: task, dispatch_id: dispatch, terminal: 'done', timed_out: false, evidence_present: true },
+  ]
+  const round3 = [
+    ...leg('b_w1', 'b-1', 'w-1'),
+    { event: 'assigned', agent_id: 'b_e', task_id: 'r-1', dispatch_id: 'e-1' },
+    { event: 'reviewed', agent_id: 'b_e', verdict: 'reject', reviewed_task: 'b-1', dispatch_id: 'e-1', reason: 'no test' },
+    ...leg('b_w1', 'b-2', 'w-2'),
+    { event: 'assigned', agent_id: 'b_e', task_id: 'r-2', dispatch_id: 'e-2' },
+    { event: 'reviewed', agent_id: 'b_e', verdict: 'reject', reviewed_task: 'b-2', dispatch_id: 'e-2', reason: 'still no test' },
+    ...leg('b_w1', 'b-3', 'w-3'),
+    // Round 3, in the identity-free shorthand, naming the current delivery.
+    { event: 'reviewed', agent_id: 'b_e', verdict: 'pass', reviewed_task: 'b-3', reason: 'the fix does what was asked' },
+  ]
+  const entry = currentEntry(itemsOf(['tok', round3]).get('tok').custody)
+  assert.equal(entry.event, 'delivered',
+    'an identityless report from a reviewer with two prior legs cannot say which leg wrote it')
+  assert.equal(entry.task_id, 'b-3', 'the token is still where the worker left it — a re-review, not a loss')
+})

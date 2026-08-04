@@ -385,6 +385,19 @@ export function currentEntry(custody) {
       // — is still what keeps a LATER, unrelated re-assignment of the same
       // agent from retroactively recolouring an outcome that was already
       // unambiguous when it was written.
+      //
+      // This is also the ceiling on the `reviewsCurrentHolder` pass above, and
+      // saying so is the point (r6-qwen): that pass rescues a shorthand review
+      // from a reviewer on its FIRST leg and no further. A reviewer already
+      // assigned twice writing an identityless round-3 report is discarded
+      // here however correctly its `reviewed_task` names the current delivery,
+      // because nothing in the line says which of its own legs wrote it. The
+      // cost is real and is a re-dispatch, not a lost token: the runner assigns
+      // the evaluator again and the next report carries a dispatch_id, which
+      // the sanctioned writer stamps on every `reviewed` it authors. Paying
+      // for a re-review is the cheaper error than trusting a dead leg's
+      // verdict, and the comment above used to describe an unbounded
+      // "reject, rework, re-review" pass this code has never given.
       const targetAgent = String(entry.agent_id || '')
       if (assignedCountFor(targetAgent, i) > 1) continue
       return entry
