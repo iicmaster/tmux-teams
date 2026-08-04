@@ -179,6 +179,19 @@ test('a seat with display_model shows the real model name, not the dispatch alia
   assert.equal(modelLine('b_w2'), 'model —')
 })
 
+test('a died run shows process not found only while the death is recent', () => {
+  // The node's run state is the pulse's own measurement; a run that died long
+  // ago is a seat that is idle again, not a seat that is broken. The page
+  // must stop labelling a ready seat red forever.
+  const stale = run('b_w1', 'died', { elapsed_sec: 10000, timeout_sec: 1800 })
+  const tour = tourOf(TWO_TEAMS, snapshotWith([stale]))
+  assert.equal(tour.world['b_w1'].status, 'other')
+  // A recent death is still worth seeing.
+  const recent = run('b_w1', 'died', { elapsed_sec: 100, timeout_sec: 1800 })
+  const tour2 = tourOf(TWO_TEAMS, snapshotWith([recent]))
+  assert.equal(tour2.world['b_w1'].status, 'dead')
+})
+
 test('the controller is one node — never a node and a band as well', () => {
   const tour = tourOf(DEFAULT_WORKFLOW_GRAPH)
   const seat = DEFAULT_WORKFLOW_GRAPH.outer_controller_id
