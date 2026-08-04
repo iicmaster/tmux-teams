@@ -1720,11 +1720,26 @@ and §11.2.
    mode remains a bad sequence, never a corrupt line. What is NOT closed: a
    marker older than `LOCK_STALE_MS` is stolen on its mtime, so a live-but-slow
    holder can be stolen from, and for as long as it stays inside its section
-   two writers overlap. The steal is serialised through its own marker and
-   refuses to remove a lock whose token is not the one it judged — that stops a
-   second stealer from freeing a section a first one is inside — but it does
-   not make takeover safe. Fencing tokens would, and are not implemented.
-   Bounded and stated, not closed.
+   two writers overlap. The steal is serialised through its own marker, refuses
+   to remove a lock whose token is not the one it judged, and re-checks that it
+   still owns that marker immediately before the only destructive step and
+   again before clearing it.
+   That last check exists because the marker's own staleness bound cannot tell
+   a corpse from a process that is merely STOPPED — SIGTSTP, an IO stall, a
+   starved scheduler, all ordinary under tmux (r7-qwen). A stealer suspended
+   past `STEAL_STALE_MS` has its marker cleared and a replacement takes both
+   the section and the lock; without the re-check the sleeper resumed into a
+   decision it made before it slept and deleted the replacement's fresh lock.
+   What remains, and is NOT closed: between that final check and the `unlink`
+   beside it there is still a window of a few syscalls. A process stopped
+   exactly there reopens the same overlap. This cannot be closed with file
+   primitives — stale takeover trades exclusion for liveness by construction,
+   and a lock nobody may ever steal wedges a token behind a dead holder
+   forever. Fencing tokens are the real answer and are not implemented.
+   The guard itself is not covered by a test: reaching it needs two real
+   processes and a stop signal delivered inside that window, and a test that
+   looked like it covered this passed with the guard removed. Bounded, stated,
+   and uncovered — not closed.
 
 6. **The pull gate judges the parsed projection, not the raw file.**
    `planPulls` is handed items, not a repo path, so it validates the `at`-sorted
@@ -1965,6 +1980,21 @@ line.
    editing a file while a worker holds it has already cost one overwrite.
 
 ### Amendment log
+
+**2026-08-05 — r7-qwen: the steal marker could not tell a corpse from a
+suspended process.** Behaviour changed in `ledger-writer.mjs`. `stealStaleLock`
+cleared a marker older than `STEAL_STALE_MS` on mtime alone, which is right for
+a process that died holding it and wrong for one that is merely stopped —
+SIGTSTP, an IO stall, a starved scheduler, none of them exotic under tmux. The
+displaced stealer then resumed inside its own section, acting on bytes it had
+read before it slept, and unlinked the replacement's fresh lock and marker:
+exactly the two-writers-one-section overlap the marker was added to close, and
+§14.5 claimed closed. The section now carries a per-acquisition claim, and the
+holder re-reads it immediately before the destructive step and again before
+clearing the marker; a stealer that was displaced destroys nothing on its way
+out. §14.5 states the residual window — a few syscalls wide, uncloseable with
+file primitives — and states that the guard is not covered by a test, because a
+test that appeared to cover it passed with the guard removed.
 
 **2026-08-05 — r7-codex: four, of which three were opened by round six.**
 Behaviour changed in `pull-controller.mjs`, `loop-runner.mjs` and party-mode's

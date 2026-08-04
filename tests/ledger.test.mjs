@@ -1670,3 +1670,18 @@ test('the stale bound is 30 seconds, and a lock younger than it is not stolen (r
   assert.equal(stealStaleLock(lockPath, 'holder'), true, 'a 35s-old lock was not recoverable')
   assert.equal(existsSync(lockPath), false)
 })
+
+// r7-qwen's finding is guarded in `stealStaleLock` and is NOT covered here, and
+// the attempt is worth recording rather than hiding. A test was written that
+// pre-planted a foreign steal marker and asserted nothing was destroyed — it
+// passed with the guard REMOVED, because the marker it planted was fresh, so
+// the function never reached the guard at all. It proved the mtime branch, not
+// the claim check.
+//
+// The guard defends a process that was SUSPENDED between deciding to unlink and
+// unlinking. `stealStaleLock` runs synchronously, so nothing single-process can
+// enter its critical section and be displaced there; reaching it needs two real
+// processes and a stop signal delivered inside a microsecond window. Left
+// uncovered deliberately, said out loud, rather than covered by a test that is
+// green for the wrong reason — this project has shipped three of those and
+// found each one late.

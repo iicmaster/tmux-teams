@@ -156,9 +156,21 @@ const STEAL_STALE_MS = 1_000
 // `acquireLock` re-reads its way out of, so it has to be called directly.
 export function stealStaleLock(lockPath, observedToken) {
   const stealPath = `${lockPath}${STEAL_SUFFIX}`
+  // Our claim on the steal section, so we can tell OUR section from the one
+  // that replaced it. Without this, a stealer suspended past `STEAL_STALE_MS`
+  // — SIGTSTP, an IO stall, a starved scheduler, all ordinary under tmux — has
+  // its marker cleared, a replacement takes the section and the lock, and the
+  // sleeper then resumes into a destructive step it decided on before it slept.
+  // r6/r7-qwen demonstrated exactly that; the mtime bound alone cannot see the
+  // difference between a corpse and a process that is merely stopped.
+  const claim = `${process.pid}:${process.hrtime.bigint()}`
+  const stillOurs = () => {
+    try { return readFileSync(stealPath, 'utf8') === claim } catch { return false }
+  }
   let fd
   try {
     fd = openSync(stealPath, 'wx', 0o600)
+    writeSync(fd, claim)
   } catch (error) {
     if (error.code !== 'EEXIST') throw error
     try {
@@ -171,13 +183,18 @@ export function stealStaleLock(lockPath, observedToken) {
     try { current = readFileSync(lockPath, 'utf8') } catch { return true } // already gone
     if (current !== observedToken) return false // a live lock somebody else just took
     if (Date.now() - statSync(lockPath).mtimeMs <= LOCK_STALE_MS) return false // no longer stale
+    // Last thing before the only destructive step: are we still the stealer?
+    // Everything above was decided from bytes that may now be arbitrarily old.
+    if (!stillOurs()) return false
     try { unlinkSync(lockPath) } catch { /* raced to it */ }
     return true
   } catch {
     return false
   } finally {
     closeSync(fd)
-    try { unlinkSync(stealPath) } catch { /* nothing to clean up */ }
+    // Only our own marker. Clearing a replacement's would hand a third stealer
+    // the section while the second is inside it — the same shape one level up.
+    if (stillOurs()) { try { unlinkSync(stealPath) } catch { /* nothing to clean up */ } }
   }
 }
 
