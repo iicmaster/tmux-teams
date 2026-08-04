@@ -359,9 +359,29 @@ export function provenFamilyKey(profile) {
 // lane's still passes, exactly as before -- see the accompanying test for a
 // genuinely diverse panel with one unresolved lane.
 export function provenLaunchSignature(profile) {
-  if (!profile || !Array.isArray(profile.command) ||
-      profile.command.some(part => typeof part !== 'string')) return null
-  return JSON.stringify([profile.command, resolvedExecutable(profile.claudeExecutable) ?? null])
+  const argv = launchArgv(profile)
+  if (argv === null) return null
+  return JSON.stringify([argv, resolvedExecutable(profile.claudeExecutable) ?? null])
+}
+
+// The argv a lane would actually run, in EITHER shape the system uses.
+//
+// The shipped profiles declare `command` as a whole array. The execution layer
+// does not: `runAcpReview` (acp-review-client.mjs) requires `command` to be a
+// STRING and takes `args` beside it. Reading only the array shape meant the
+// diversity gate was blind to the shape the client executes — it returned null
+// and the comparison was skipped, which is how r6-qwen got two exec-identical
+// lanes certified. Normalising both here is the fix; failing closed on two
+// unreadable launches (below) is the backstop.
+function launchArgv(profile) {
+  if (!profile) return null
+  if (Array.isArray(profile.command)) {
+    return profile.command.every(part => typeof part === 'string') ? [...profile.command] : null
+  }
+  if (typeof profile.command !== 'string' || profile.command === '') return null
+  const args = profile.args ?? []
+  if (!Array.isArray(args) || args.some(part => typeof part !== 'string')) return null
+  return [profile.command, ...args]
 }
 
 // The executable a lane runs, resolved through PATH to a real path when this
@@ -456,6 +476,16 @@ export function provenFamilyKeysCollide(keys, launchSignatures = null, routings 
   // signature is compared for EVERY lane, and a key that claims otherwise does
   // not get to overrule what is actually executed.
   if (Array.isArray(launchSignatures) && launchSignatures.length === list.length) {
+    // Two lanes whose launch cannot be read AT ALL are the same failure the
+    // null-KEY rule above fails closed on, and this loop used to `continue`
+    // past them — an asymmetry r6-qwen executed end to end: two profiles
+    // carrying `command: [node, MOCK, 123]` produce null signatures because a
+    // part is not a string, node coerces the number so the exec'd argv is
+    // byte-identical, and different `adapterPackage` values keep the KEYS
+    // distinct. Keys differ, signatures skipped, panel certified. "Absence is
+    // not evidence" has to cut the same way for both fields or it is not a
+    // principle, it is a place one of them happens to be checked.
+    if (launchSignatures.filter((signature) => signature === null || signature === undefined).length >= 2) return true
     const seen = new Map()
     for (let i = 0; i < list.length; i += 1) {
       const signature = launchSignatures[i]

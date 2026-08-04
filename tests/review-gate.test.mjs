@@ -31,7 +31,12 @@ const profile = (id = 'oc', extra = {}) => ({
   provider: id,
   family: id === 'agy' ? 'gemini' : id,
   command: process.execPath,
-  args: [MOCK],
+  // `id` in the argv on purpose, same reason `gateProfile` below does it: the
+  // execution layer runs `command` as a STRING with `args` beside it, and since
+  // r6-qwen the diversity gate reads that shape too. Every lane sharing
+  // `[node, MOCK]` made these fixtures exec-identical — the r5-qwen attack
+  // shape — so a panel built from them is one the gate is right to refuse.
+  args: [MOCK, id],
   model: `${id}-review-model`,
   reviewMode: 'plan',
   config: { model: `${id}-review-model`, mode: 'plan' },

@@ -613,3 +613,46 @@ test('r6-codex: two names for one wrapper are one lane, and a name this machine 
     )
   } finally { process.env.PATH = withPath }
 })
+
+test('r6-qwen: two lanes whose launch cannot be read at all fail closed, exactly as two unreadable keys do', () => {
+  // The asymmetry qwen executed end to end. `provenLaunchSignature` returns
+  // null when any command part is not a string, and the signature loop used to
+  // `continue` past a null — while two null KEYS have always failed closed by
+  // explicit philosophy ("absence is not evidence"). Two profiles carrying
+  // `[node, MOCK, 123]` therefore certified as diverse: node coerces the number
+  // so the exec'd argv is byte-identical, and a different `adapterPackage`
+  // keeps the keys apart, so nothing in the gate ever compared what runs.
+  const argv = ['node', '/tmp/mock-acp.mjs', 123]
+  const a = { id: 'lane-a', family: 'alpha', command: [...argv], adapterPackage: 'pkg-a' }
+  const b = { id: 'lane-b', family: 'beta', command: [...argv] }
+  assert.equal(provenLaunchSignature(a), null, 'a non-string part must make the launch unreadable, or this proves nothing')
+  assert.equal(provenLaunchSignature(b), null)
+  assert.equal(provenFamilyCollision([a, b, REVIEW_PROFILES.agy]), true,
+    'two unreadable launches certified a panel as diverse')
+
+  // The shape the EXECUTION layer uses: `runAcpReview` requires `command` to be
+  // a string and takes `args` beside it. Reading only the array shape meant the
+  // gate was blind to what the client actually runs.
+  const asArray = { id: 'x', family: 'x', command: ['node', '/tmp/m.mjs', 'x'] }
+  const asPair = { id: 'y', family: 'y', command: 'node', args: ['/tmp/m.mjs', 'x'] }
+  assert.equal(provenLaunchSignature(asPair), provenLaunchSignature(asArray),
+    'the same argv declared two ways must read as one launch')
+  assert.equal(provenFamilyCollision([asArray, asPair, REVIEW_PROFILES.agy]), true,
+    'two lanes running the same argv in different declaration shapes certified as diverse')
+
+  // ONE unreadable launch beside two readable, distinct ones is not fatal —
+  // the same latitude the null-key rule gives a single unknown.
+  const single = { id: 'lane-c', family: 'gamma', command: [...argv], adapterPackage: 'pkg-c' }
+  assert.equal(provenFamilyCollision([single, REVIEW_PROFILES.qwen, REVIEW_PROFILES.agy]), false,
+    'a single unreadable launch beside two distinct lanes must still pass')
+
+  // And every shipped panel is unaffected.
+  for (const panel of [
+    [REVIEW_PROFILES.codex, REVIEW_PROFILES.agy, REVIEW_PROFILES.qwen],
+    [REVIEW_PROFILES.codex, REVIEW_PROFILES.agy, REVIEW_PROFILES.kimi],
+    [REVIEW_PROFILES.qwen, REVIEW_PROFILES.zai, REVIEW_PROFILES.agy],
+  ]) {
+    assert.equal(provenFamilyCollision(panel), false,
+      `a shipped panel was refused: ${panel.map((profile) => profile.id).join('+')}`)
+  }
+})

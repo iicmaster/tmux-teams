@@ -1038,10 +1038,19 @@ go — the runner refused its own repair on every tick, visibly and for ever.
   case it warns about. `appendEvent` can now also return
   `{ok: false, code: 'locked', ...}` if contention on one ledger file is not
   resolved within 5 seconds; a lock older than 30 seconds is treated as
-  abandoned by a dead holder and is stolen by the next acquirer. Both
-  callers (`acp-companion.mjs`'s `appendWorkItemEvent`, and
-  `ledger-writer.mjs`'s own CLI) already treat every `!result.ok` refusal
-  uniformly regardless of `code`, so this needed no caller change.
+  abandoned by a dead holder and is stolen by the next acquirer.
+  This paragraph said "Both callers ... already treat every `!result.ok`
+  refusal uniformly regardless of `code`, so this needed no caller change".
+  Both halves were false and r6-qwen and r6-agy both said so. There are FIVE
+  call sites, not two — `admit.mjs`, `acp-companion.mjs`'s
+  `appendWorkItemEvent`, `pull-controller.mjs`, `loop-runner.mjs`'s `record`
+  (itself five writes), and this module's own CLI — and treating every code
+  uniformly is exactly what was wrong: `locked` is the one refusal that says
+  nothing about the event, so a caller that files it beside a verdict drops a
+  custody line for contention. The companion's append and the runner's
+  `record` now retry `locked` and nothing else; `pull-controller` carries its
+  refusal home on the decision and its CLI exits non-zero when it recorded
+  none of the pulls it planned.
   `tests/loop-occupancy.test.mjs` gained the BLOCKER 4 cases (probed against
   the real `acp-companion.mjs` process, not a copied regex);
   `tests/ledger.test.mjs` gained the BLOCKER 8 cases (a release-gated,
@@ -1947,6 +1956,43 @@ line.
    editing a file while a worker holds it has already cost one overwrite.
 
 ### Amendment log
+
+**2026-08-04 — r6-qwen: the diversity gate could not read the shape the
+client executes.** Behaviour changed in
+`plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs`.
+`provenLaunchSignature` read only a whole-array `command`, but `runAcpReview`
+(`plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs`) requires
+`command` to be a STRING and takes `args`
+beside it — so for the shape the execution layer actually runs, the signature
+returned null and the comparison was skipped entirely. It now normalises both
+shapes to one argv.
+Separately, two null signatures used to `continue` past the comparison while
+two null KEYS have always failed closed by explicit philosophy. qwen executed
+the asymmetry end to end: two profiles carrying `[node, MOCK, 123]` produce
+null signatures because a part is not a string, node coerces the number so the
+exec'd argv is byte-identical, and different `adapterPackage` values keep the
+keys apart — keys differ, signatures skipped, panel certified. Two unreadable
+launches now fail closed, one beside two readable distinct lanes still passes,
+and every shipped panel is unaffected (verified for all six routes).
+`tests/review-gate.test.mjs`'s base fixture gave every lane the identical
+`[node, MOCK]` argv, which is the r5-qwen attack shape and a panel the gate is
+right to refuse; it now varies by lane, as `gateProfile` beside it already did.
+
+**2026-08-04 — r5-codex BLOCKER 9: `completed` is only HALF closed, and the
+tolerance gate treated it as an ending.** Recorded late; r6-qwen was right that
+the change shipped in `6d560db` with no amendment of its own, which §15.1
+forbids. Behaviour changed in `ledger-writer.mjs`: `appendEvent`'s
+closing-tolerance branch accepted any `TERMINAL_EVENTS` member onto a ledger
+whose only defects are closing-tolerated, and that set holds `completed` — which
+§5 calls half closed, its only continuation an `audit_requested`/`audited` pair
+that is not terminal and so is refused there in turn. Accepting it did not close
+the ledger, it stranded the token: the runner's next write came back
+`ledger_already_invalid` into the STUCK path while the board read the
+`completed` line as a releasing event and filed the card under Done with no
+blocked reason — invisible on the one screen a human would check.
+`HARD_TERMINAL_EVENTS` (`audited`, `abandoned`) is the set with no legal
+successor, and only those two may land there. §5's state machine is unchanged;
+this makes the writer agree with it.
 
 **2026-08-04 — r6-codex/Winston, the last caller that advanced past a
 refusal.** Behaviour changed in `pull-controller.mjs`: the standalone
