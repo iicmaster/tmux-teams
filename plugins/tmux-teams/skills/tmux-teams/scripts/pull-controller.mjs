@@ -271,11 +271,21 @@ if (process.argv[1]?.endsWith('pull-controller.mjs')) {
     // every pull was refused — a `locked` ledger, a history that cannot be
     // believed, any of it — so a script driving this could not tell a quiet
     // success from a total failure. A count is not a status.
-    const planned = decisions.filter((decision) => decision.action === 'pull').length
-    const written = applyPulls(repo, decisions)
-    console.log(`[pull] appended ${written} custody events`)
-    if (written < planned) {
-      console.error(`[pull] ${planned - written} of ${planned} planned pull(s) were REFUSED and not recorded`)
+    // Per decision, not per count. r7-codex: comparing `planned` against
+    // `applyPulls`'s total compared two different things — that total counts
+    // EVERY decision carrying an event, so one unrelated write landing while
+    // the only planned pull was refused made the numbers agree and the exit
+    // code lie. `applyPulls` stamps `write_result` on the decision it refused,
+    // so ask each planned pull whether IT was recorded.
+    const plannedPulls = decisions.filter((decision) => decision.action === 'pull')
+    console.log(`[pull] appended ${applyPulls(repo, decisions)} custody events`)
+    const unrecorded = plannedPulls.filter((decision) =>
+      !decision.event || (decision.write_result && !decision.write_result.ok))
+    if (unrecorded.length > 0) {
+      console.error(`[pull] ${unrecorded.length} of ${plannedPulls.length} planned pull(s) were REFUSED and not recorded`)
+      for (const decision of unrecorded) {
+        console.error(`[pull]         ${decision.work_item}: ${decision.write_result?.code ?? 'no event to write'}`)
+      }
       process.exit(1)
     }
   } else {

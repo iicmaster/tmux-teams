@@ -3204,9 +3204,19 @@ test('a controller that is still running is not a controller that failed to answ
   // Well past the deadline either way.
   const now = Date.parse('2026-07-27T09:30:00.000Z')
 
-  const live = planDispatches(graph, items, new Set([graph.outer_controller_id]), { now, answerDeadlineSec: 600 })
+  const live = planDispatches(graph, items, new Set([graph.outer_controller_id]),
+    { now, answerDeadlineSec: 600, busyTasks: new Set(['ctl-1']) })
   assert.equal(live.filter((plan) => plan.action === 'expired').length, 0,
     'a controller with a live process was withdrawn from on the clock alone')
+
+  // r7-codex: `busy` answers about an AGENT, and the outer controller is busy
+  // almost always. Asking it here suppressed the withdrawal forever on work
+  // that had nothing to do with this token — the leg parked here is `ctl-1`,
+  // and the controller running `ctl-9` says nothing about it.
+  const elsewhere = planDispatches(graph, items, new Set([graph.outer_controller_id]),
+    { now, answerDeadlineSec: 600, busyTasks: new Set(['ctl-9']) })
+  assert.equal(elsewhere.filter((plan) => plan.action === 'expired').length, 1,
+    'unrelated live work on the same agent held this token open forever')
 
   const dead = planDispatches(graph, items, new Set(), { now, answerDeadlineSec: 600 })
   assert.equal(dead.filter((plan) => plan.action === 'expired').length, 1,

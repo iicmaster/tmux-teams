@@ -1966,6 +1966,33 @@ line.
 
 ### Amendment log
 
+**2026-08-05 — r7-codex: four, of which three were opened by round six.**
+Behaviour changed in `pull-controller.mjs`, `loop-runner.mjs` and party-mode's
+`plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs`.
+The `--apply` exit status compared `plannedPulls.length` against `applyPulls`'s
+return, and those count different things — that return counts EVERY decision
+carrying an event, so one unrelated write landing while the only planned pull
+was refused made the numbers agree and the exit code lie. It now asks each
+planned pull whether it was recorded, using the `write_result` `applyPulls`
+already stamps on a refusal.
+The expiry guards asked `busy.has(agentId)`, which is true for as long as that
+agent runs ANYTHING — and the outer controller is busy almost always, so
+unrelated work could hold a token open forever. `busyAgents` now also returns
+`busyTasks` from the pulse rows' own `task_id`, and `legIsLive` asks about the
+leg the token is parked on, falling back to the agent when a leg has no task to
+name.
+`provenLaunchSignature` dropped `profile.args` whenever `command` was an array,
+so two lanes differing only there read as one launch; `runAcpReview` appends
+`args` in both declaration shapes, and so does this now. It also resolved the
+executable against this process's PATH rather than the one `buildProfileEnv`
+hands the child, which is a proof about a binary nobody runs.
+And one unreadable launch still slipped past the comparison — one is all the
+attack needs, since node coerces a non-string argv part and the process that
+runs is identical to a lane already seated. A lane that DECLARES a launch this
+code cannot read is now refused outright. The latitude AGY asked for is kept
+for a lane that declares nothing at all: silence cannot run, a malformed
+declaration can.
+
 **2026-08-04 — r6-qwen, the rest: two quantifiers nothing pinned and one
 ceiling nobody stated.** No behaviour change beyond `ledger-writer.mjs`'s and
 `loop-runner.mjs`'s already-amended fixes; this records what the words were

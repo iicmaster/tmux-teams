@@ -640,11 +640,16 @@ test('r6-qwen: two lanes whose launch cannot be read at all fail closed, exactly
   assert.equal(provenFamilyCollision([asArray, asPair, REVIEW_PROFILES.agy]), true,
     'two lanes running the same argv in different declaration shapes certified as diverse')
 
-  // ONE unreadable launch beside two readable, distinct ones is not fatal —
-  // the same latitude the null-key rule gives a single unknown.
+  // r7-codex: ONE unreadable launch is fatal too, and one is all the attack
+  // needs — node coerces the number, so the argv that runs is identical to a
+  // lane already seated and the comparison never looked. The latitude AGY asked
+  // for belongs to a lane that declares NOTHING: silence cannot run, a
+  // malformed declaration can.
   const single = { id: 'lane-c', family: 'gamma', command: [...argv], adapterPackage: 'pkg-c' }
-  assert.equal(provenFamilyCollision([single, REVIEW_PROFILES.qwen, REVIEW_PROFILES.agy]), false,
-    'a single unreadable launch beside two distinct lanes must still pass')
+  assert.equal(provenFamilyCollision([single, REVIEW_PROFILES.qwen, REVIEW_PROFILES.agy]), true,
+    'one lane whose declared launch cannot be read certified a panel')
+  assert.equal(provenFamilyCollision([{ id: 'lane-d', family: 'delta', adapterPackage: 'pkg-d' }, REVIEW_PROFILES.qwen, REVIEW_PROFILES.agy]), false,
+    'a lane that declares no launch at all is the single unknown AGY asked be allowed')
 
   // And every shipped panel is unaffected.
   for (const panel of [

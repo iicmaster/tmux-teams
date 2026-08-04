@@ -4,7 +4,7 @@ import { open } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { ACP_REVIEW_LIMITS, prepareReviewPacket, runAcpReview, ReviewTransportError } from './acp-review-client.mjs'
-import { REVIEW_PROFILES, buildProfileEnv, provenFamilyKey, provenFamilyCollision, provenFamilyKeysCollide, provenLaunchSignature, routingDeclaration } from './review-profiles.mjs'
+import { REVIEW_PROFILES, buildProfileEnv, provenFamilyKey, provenFamilyCollision, provenFamilyKeysCollide, provenLaunchSignature, launchDeclaredButUnreadable, routingDeclaration } from './review-profiles.mjs'
 import {
   UNAVAILABLE_RESERVE_SUBSTITUTES,
   planReviewPanel,
@@ -331,6 +331,7 @@ async function assessAttempt(attempt, validate, expectedInputHash) {
       // but never from the caller-overridable claim.
       commandProvenSignature: provenLaunchSignature(attempt.profile),
       routingProvenDeclaration: routingDeclaration(attempt.profile),
+      launchUnreadable: launchDeclaredButUnreadable(attempt.profile),
       model: value.model,
       displayModel: value.displayModel,
       mode: value.mode,
@@ -463,6 +464,11 @@ export async function runReviewGate(packet, {
   // its own `.filter(key => key !== null)` and let a panel of two unresolved
   // lanes through to ok:true, which is what two copies of one rule always
   // eventually do (r3-codex probed it).
+  // A lane that declared a launch nobody could read never reaches the
+  // comparison below, so it is refused before it (r7-codex).
+  if (reviews.some(item => item.launchUnreadable)) {
+    throw fail('policy', 'a final review lane declared a launch that cannot be read')
+  }
   if (provenFamilyKeysCollide(
     reviews.map(item => item.familyProvenKey ?? null),
     reviews.map(item => item.commandProvenSignature ?? null),

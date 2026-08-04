@@ -252,16 +252,22 @@ export function busyAgents(repo, nowMs = Date.now()) {
     const seen = newest.get(row.agent_id)
     if (!seen || String(row.started_at || '') > String(seen.started_at || '')) newest.set(row.agent_id, row)
   }
-  const busy = new Set([...newest.values()]
-    .filter((row) => WORKING.has(row.state) || liveEvidence(row, nowMs))
-    .map((row) => row.agent_id))
+  const liveRows = [...newest.values()].filter((row) => WORKING.has(row.state) || liveEvidence(row, nowMs))
+  const busy = new Set(liveRows.map((row) => row.agent_id))
+  // WHICH leg is live, not merely which agent. r7-codex: an expiry guard that
+  // asks `busy.has(agentId)` suppresses a withdrawal for as long as that agent
+  // is running ANYTHING — and the outer controller is always running something,
+  // so a token parked on a controller leg that died could be held open forever
+  // by unrelated work. The pulse row carries the task, so the question can be
+  // asked about the leg the token is actually parked on.
+  const busyTasks = new Set(liveRows.map((row) => row.task_id).filter(Boolean))
   // No snapshot at all is a repo where nothing has ever run — there is no agent
   // to collide with, so the first dispatch is safe. A snapshot that EXISTS but
   // has stopped moving is the dangerous one: it can still be asserting that
   // agents are running, and it is no longer able to say when they stop.
   const missing = snapshot === null
   return {
-    busy, ageSec, missing,
+    busy, busyTasks, ageSec, missing,
     stale: !missing && (ageSec === null || ageSec > PULSE_STALE_SEC),
   }
 }
@@ -901,7 +907,21 @@ const legCeiling = (item) => MAX_LEGS + item.custody
   .filter((entry) => entry.event === 'resumed')
   .reduce((sum, entry) => sum + (Number.isInteger(entry.grant) ? Math.min(Math.max(entry.grant, 0), RESUME_GRANT) : 0), 0)
 
-function nextStep(graph, team, item, { busy, nowMs, zombieSec, answerDeadlineSec }) {
+// Is the leg this token is parked on actually running?
+//
+// `busy` answers about an AGENT. That is the right question when the runner is
+// choosing a free seat, and the wrong one when it is deciding whether a
+// specific parked leg is still alive: the outer controller is busy almost
+// always, so an expiry guard built on it never fires. `busyTasks` answers about
+// the leg. A row with no task to name falls back to the agent — the older,
+// wider answer, which errs toward waiting rather than toward withdrawing.
+function legIsLive(entry, busy, busyTasks) {
+  const task = entry?.task_id ? String(entry.task_id) : ''
+  if (task && busyTasks instanceof Set) return busyTasks.has(task)
+  return busy.has(entry?.agent_id)
+}
+
+function nextStep(graph, team, item, { busy, busyTasks, nowMs, zombieSec, answerDeadlineSec }) {
   // A superseded leg reporting in late must not decide the next step: it would
   // read `delivered` on a token a newer `assigned` already moved, and dispatch
   // against a team that is not holding it.
@@ -996,7 +1016,13 @@ function nextStep(graph, team, item, { busy, nowMs, zombieSec, answerDeadlineSec
       // `busy` for exactly this reason since the branch below it was written;
       // this state is a leg like any other. Elapsed time is not proof that a
       // process is dead — this repo's own dispatch rule says so.
-      if (busy.has(last.agent_id)) return { action: 'in-flight' }
+      // The LEG, not the agent (r7-codex). `busy.has(agentId)` is true for as
+      // long as that agent runs anything at all, and the outer controller
+      // always runs something — so asking it here suppressed the withdrawal
+      // forever on work that had nothing to do with this token. A leg with no
+      // task_id to ask about falls back to the agent, which is the old, wider
+      // answer rather than no answer.
+      if (legIsLive(last, busy, busyTasks)) return { action: 'in-flight' }
       const heldSec = (nowMs - Date.parse(last.at || '')) / 1000
       if (Number.isFinite(heldSec) && heldSec >= answerDeadlineSec) {
         return {
@@ -1151,6 +1177,9 @@ function nextStep(graph, team, item, { busy, nowMs, zombieSec, answerDeadlineSec
 export function planDispatches(graph, items, busy, {
   now = Date.now(), zombieSec = ZOMBIE_SEC, maxInFlight = MAX_IN_FLIGHT,
   answerDeadlineSec = ANSWER_DEADLINE_SEC,
+  // Optional and back-compatible: a caller that knows only which AGENTS are
+  // busy still gets the old, wider answer out of `legIsLive`.
+  busyTasks = null,
 } = {}) {
   const { held } = teamOccupancy(graph, items)
   const teamById = new Map(graph.teams.map((team) => [team.team_id, team]))
@@ -1167,7 +1196,7 @@ export function planDispatches(graph, items, busy, {
     let slots = team.wip_limit
     for (const workItem of tokens) {
       const item = items.get(workItem)
-      const step = nextStep(graph, team, item, { busy, nowMs: now, zombieSec, answerDeadlineSec })
+      const step = nextStep(graph, team, item, { busy, busyTasks, nowMs: now, zombieSec, answerDeadlineSec })
       if (step.action === 'in-flight') { slots -= 1; continue }
       if (step.action === 'dispatch') {
         if (inFlight >= maxInFlight) {
@@ -1213,8 +1242,8 @@ export function planDispatches(graph, items, busy, {
     const last = currentEntry(item.custody)
     if (!last || last.event !== 'audit_requested' || last.agent_id !== graph.outer_controller_id) continue
     // Same rule as the `escalated` branch in `nextStep`: a controller still
-    // running is not a controller that failed to answer (r6-codex/John).
-    if (busy.has(last.agent_id)) continue
+    // running THIS leg is not a controller that failed to answer.
+    if (legIsLive(last, busy, busyTasks)) continue
     const heldSec = (now - Date.parse(last.at || '')) / 1000
     if (!Number.isFinite(heldSec) || heldSec < answerDeadlineSec) continue
     plans.push({
@@ -1675,7 +1704,7 @@ export function tick(repoArg, {
     return { ok: true, harvested, pulls, plans: [], started: [], stale: true }
   }
   if (pulse.missing) log('note   no pulse.json yet — dispatching without liveness evidence')
-  const plans = planDispatches(graph.value, items, busy, { answerDeadlineSec })
+  const plans = planDispatches(graph.value, items, busy, { answerDeadlineSec, busyTasks: pulse.busyTasks })
   const started = []
   for (const plan of plans) {
     if (plan.action === 'lost') {

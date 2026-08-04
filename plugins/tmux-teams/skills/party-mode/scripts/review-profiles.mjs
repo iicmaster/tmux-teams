@@ -375,13 +375,17 @@ export function provenLaunchSignature(profile) {
 // unreadable launches (below) is the backstop.
 function launchArgv(profile) {
   if (!profile) return null
+  // `args` counts in BOTH shapes. r7-codex: an array `command` beside an `args`
+  // array dropped the args entirely, so two lanes differing only there read as
+  // one launch — and `runAcpReview` appends `args` whichever way `command` was
+  // declared. A profile that declares neither is unchanged.
+  const extra = profile.args ?? []
+  if (!Array.isArray(extra) || extra.some(part => typeof part !== 'string')) return null
   if (Array.isArray(profile.command)) {
-    return profile.command.every(part => typeof part === 'string') ? [...profile.command] : null
+    return profile.command.every(part => typeof part === 'string') ? [...profile.command, ...extra] : null
   }
   if (typeof profile.command !== 'string' || profile.command === '') return null
-  const args = profile.args ?? []
-  if (!Array.isArray(args) || args.some(part => typeof part !== 'string')) return null
-  return [profile.command, ...args]
+  return [profile.command, ...extra]
 }
 
 // The executable a lane runs, resolved through PATH to a real path when this
@@ -399,7 +403,12 @@ function launchArgv(profile) {
 // fail to launch long before the panel's verdict matters.
 function resolvedExecutable(name) {
   if (typeof name !== 'string' || name === '') return name ?? null
-  const directories = (process.env.PATH ?? '').split(delimiter).filter(Boolean)
+  // The PATH the CHILD gets, not this process's. r7-codex: `buildProfileEnv`
+  // hands the child a PATH with `~/.local/bin`, `~/.kimi-code/bin` and
+  // `~/.bun/bin` in front, so resolving against `process.env.PATH` could name a
+  // different file than the one that would actually run — a proof about a
+  // binary nobody executes.
+  const directories = executablePath(process.env).split(delimiter).filter(Boolean)
   for (const dir of name.includes('/') ? [''] : directories) {
     const candidate = dir === '' ? name : join(dir, name)
     try {
@@ -485,6 +494,13 @@ export function provenFamilyKeysCollide(keys, launchSignatures = null, routings 
     // distinct. Keys differ, signatures skipped, panel certified. "Absence is
     // not evidence" has to cut the same way for both fields or it is not a
     // principle, it is a place one of them happens to be checked.
+    // ANY unreadable launch, not merely two of them. r7-codex: one null still
+    // slipped past the comparison, and one is all an attack needs — put a
+    // non-string in `command`, node coerces it, the argv that runs is identical
+    // to a lane already seated, and this loop never looked. The "one unknown
+    // may pass" latitude belongs to the KEY, which is a claim a profile makes
+    // about itself; a launch is not a claim, and since `launchArgv` reads both
+    // declaration shapes the only way to be unreadable now is to be malformed.
     if (launchSignatures.filter((signature) => signature === null || signature === undefined).length >= 2) return true
     const seen = new Map()
     for (let i = 0; i < list.length; i += 1) {
@@ -502,8 +518,24 @@ export function provenFamilyKeysCollide(keys, launchSignatures = null, routings 
   return false
 }
 
+// A lane that DECLARES a launch this code cannot read is not the same thing as
+// a lane that declares none.
+//
+// r7-codex: one unreadable signature slipped past the comparison, and one is
+// all an attack needs — put a non-string in `command`, node coerces it, the
+// argv that runs is identical to a lane already seated, and the loop skips it.
+// But refusing every null would also refuse the "single unresolved lane" AGY
+// asked be allowed, which is a profile declaring nothing at all. The two are
+// different: silence cannot run, a malformed declaration can.
+export function launchDeclaredButUnreadable(profile) {
+  if (!profile) return false
+  const declared = profile.command !== undefined && profile.command !== null
+  return declared && provenLaunchSignature(profile) === null
+}
+
 export function provenFamilyCollision(profiles) {
   const list = profiles ?? []
+  if (list.some(launchDeclaredButUnreadable)) return true
   return provenFamilyKeysCollide(
     list.map(provenFamilyKey), list.map(provenLaunchSignature), list.map(routingDeclaration))
 }
