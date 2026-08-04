@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { declaredPrimaryFamilies, getReviewProfile, normalizePrimaryFamily } from './review-profiles.mjs'
+import { declaredPrimaryFamilies, getReviewProfile, normalizePrimaryFamily, provenFamilyCollision } from './review-profiles.mjs'
 
 const ROUTES = Object.freeze({
   openai: Object.freeze({ reviewers: Object.freeze(['agy', 'kimi', 'zai']), reserve: 'claude' }),
@@ -86,7 +86,13 @@ function validReviewerSet(primaryFamily, ids) {
   const profiles = ids.map(getReviewProfile)
   const families = profiles.map(profile => profile.family)
   const models = profiles.map(profile => profile.model)
+  // `family` alone is a label this table asserts about itself (issue #38): two
+  // profiles can declare different families while resolving to the identical,
+  // unpinned adapter identity (see provenFamilyKey in review-profiles.mjs).
+  // This is the second, independent axis -- distinct declared families is
+  // necessary but not sufficient.
   return new Set(families).size === 3 && new Set(models).size === 3 &&
+    !provenFamilyCollision(profiles) &&
     families.every(family => family !== primaryFamily)
 }
 

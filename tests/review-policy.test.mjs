@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   REVIEW_PROFILES, assertPermittedModel, buildAcpLaunch, buildProfileEnv, loadProfileSettings,
-  normalizePrimaryFamily, validateRoutedEndpoint,
+  normalizePrimaryFamily, provenFamilyCollision, provenFamilyKey, validateRoutedEndpoint,
 } from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
 import {
   ROUTES, UNAVAILABLE_RESERVE_SUBSTITUTES, createReviewPlan, findingFingerprint, planFallback, synthesizeReviews, validateReviewOutput,
@@ -291,19 +291,53 @@ test('Zai routing loads only allowlisted endpoint credentials from its explicit 
   ]) assert.throws(invalidEndpoint(endpoint), /zai review endpoint/)
 })
 
-test('a kimi lane that is not running the kimi binary cannot pass as a distinct family', () => {
-  // The panel proves three DISTINCT families reviewed the work, and it counts
-  // them from `profile.family` — a constant. This lane and the `claude` lane
-  // run the same ACP adapter, so what makes them different seats is which
-  // Claude binary the adapter execs: `claude-kimi` carries Kimi's base URL and
-  // key, plain `claude` does not. The gate sets that name from the profile.
+test('CLAUDE_CODE_EXECUTABLE is gate-owned, but that alone does not prove the family (issue #38)', () => {
+  // This test used to claim (in its own title) that pinning the env VAR NAME
+  // stops kimi from becoming the same seat as claude. It never actually
+  // checked that -- it only checked the name survives a caller override,
+  // which is real but proves nothing about what `claude-kimi` resolves to on
+  // PATH or what that binary does once exec'd. Nothing in review-profiles.mjs
+  // or acp-review-client.mjs reads its realpath, hashes it, or observes the
+  // endpoint it reaches. The corrected claim is below: provenFamilyKey
+  // honestly buckets kimi with bare claude rather than asserting a
+  // distinction this layer cannot back up.
   const source = { PATH: '/bin', KIMI_API_KEY: 'kimi', CLAUDE_CODE_EXECUTABLE: '/tmp/evil-claude' }
   const env = buildProfileEnv('kimi', source)
   assert.equal(env.CLAUDE_CODE_EXECUTABLE, 'claude-kimi', 'the caller re-pointed the lane')
   assert.equal(env.CLAUDE_MODEL_CONFIG, '{"availableModels":["opus"]}')
-
-  // The lane it must not be able to become: same adapter, no pinned binary.
   assert.equal(buildProfileEnv('claude', { PATH: '/bin' }).CLAUDE_CODE_EXECUTABLE, undefined)
+})
+
+test('provenFamilyKey honestly buckets kimi with bare claude, and the gate refuses that panel (issue #38)', () => {
+  // Real, shipped production profiles -- not synthetic test doubles -- so this
+  // is not a tautology against a table invented to match the code under test.
+  assert.equal(provenFamilyKey(REVIEW_PROFILES.claude), provenFamilyKey(REVIEW_PROFILES.kimi),
+    'kimi and bare claude share the identical unrouted adapter identity')
+  assert.notEqual(provenFamilyKey(REVIEW_PROFILES.zai), provenFamilyKey(REVIEW_PROFILES.kimi),
+    'zai is additionally pinned by an endpoint the parent verifies; kimi is not')
+  assert.notEqual(provenFamilyKey(REVIEW_PROFILES.agy), provenFamilyKey(REVIEW_PROFILES.kimi),
+    'agy runs a wholly different adapter package')
+  assert.equal(provenFamilyKey({ id: 'no-adapter-declared' }), null,
+    'a profile that declares nothing is reported unknown, never proven')
+
+  // The literal attack from issue #38: a panel that would seat both kimi and
+  // claude, satisfying declared-family diversity while sharing one unproven
+  // identity, is refused as a collision rather than accepted as three voices.
+  assert.equal(provenFamilyCollision([REVIEW_PROFILES.kimi, REVIEW_PROFILES.claude, REVIEW_PROFILES.agy]), true)
+  // Today's real, legitimate `openai` route (kimi + zai + agy) is NOT flagged:
+  // zai's parent-verified endpoint pin is a different, distinguishable key.
+  assert.equal(provenFamilyCollision([REVIEW_PROFILES.kimi, REVIEW_PROFILES.zai, REVIEW_PROFILES.agy]), false)
+  // A profile with no resolvable key contributes no evidence and cannot, by
+  // itself, manufacture a collision.
+  assert.equal(provenFamilyCollision([{ id: 'x' }, { id: 'y' }, REVIEW_PROFILES.agy]), false)
+
+  // Every real ROUTES panel used today must still clear the new check -- this
+  // is the regression guard: the fix must not have narrowed today's actual,
+  // legitimate routing.
+  for (const primary of Object.keys(ROUTES)) {
+    const plan = createReviewPlan(primary)
+    assert.equal(plan.blocked, false, `${primary} route was blocked by the new check`)
+  }
 })
 
 test('a routed lane that pins no endpoint is refused rather than trusted', () => {

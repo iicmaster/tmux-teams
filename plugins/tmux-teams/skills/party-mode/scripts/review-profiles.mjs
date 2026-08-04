@@ -42,6 +42,7 @@ export const REVIEW_PROFILES = freeze({
     id: 'agy', provider: 'google-antigravity', family: 'gemini', model: 'gemini-3.6-flash-high',
     displayModel: 'agy/gemini-3.6-flash-high',
     reviewMode: 'plan', osSandbox: 'bwrap', command: ['bunx', 'antigravity-acp@1.0.0'],
+    adapterPackage: 'antigravity-acp@1.0.0',
     config: { model: 'gemini-3.6-flash-high', mode: 'plan' },
   },
   kimi: {
@@ -57,14 +58,22 @@ export const REVIEW_PROFILES = freeze({
     // this work — so an operator who re-points that profile at Anthropic while
     // the label still reads `kimi` would satisfy the exactly-three rule with
     // two seats from one family, and nothing in the receipt would disagree.
-    // `claudeExecutable` is what stops that. The adapter resolves its Claude
-    // binary from CLAUDE_CODE_EXECUTABLE, and this lane names a DIFFERENT
-    // binary — the operator's `claude-kimi`, which carries Kimi's base URL,
-    // key and config dir and then execs claude. The label is pinned to an
-    // executable name the gate sets itself and a caller cannot supply, so
-    // `kimi` and `claude` cannot silently become the same seat.
+    // `claudeExecutable` does NOT stop that, and the paragraph that used to
+    // stand here claiming it did was wrong (issue #38): it pins the ENV VAR
+    // NAME the gate hands the adapter, never what `claude-kimi` resolves to
+    // on the operator's PATH or what that binary does once exec'd — nothing
+    // in this file or acp-review-client.mjs reads its realpath, hashes it, or
+    // observes the endpoint it reaches. Compare `zai` below, which speaks the
+    // identical adapter package but is additionally pinned by `endpoint` +
+    // `validateRoutedEndpoint()`, verified by the PARENT process before the
+    // child ever starts. `kimi` carries no equivalent pin, so `provenFamilyKey()`
+    // (review-profiles.mjs) resolves it to the same unrouted bucket as the bare
+    // `claude` profile below — on purpose: nothing here can tell them apart,
+    // and the gate now refuses any panel that would seat both rather than
+    // asserting a distinction it cannot back up.
     reviewMode: 'plan', osSandbox: 'bwrap',
     command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
+    adapterPackage: '@agentclientprotocol/claude-agent-acp@0.61.0',
     claudeExecutable: 'claude-kimi',
     sessionSettings: { availableModels: ['opus'] },
     config: { model: 'opus', mode: 'plan' },
@@ -81,6 +90,7 @@ export const REVIEW_PROFILES = freeze({
     // call. Those hold here unchanged.
     reviewMode: 'default', osSandbox: 'bwrap',
     command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
+    adapterPackage: '@agentclientprotocol/claude-agent-acp@0.61.0',
     settingsFile: 'settings-zai.json',
     endpoint: ZAI_ENDPOINT,
     sessionSettings: { availableModels: ['glm-5.2'] },
@@ -91,6 +101,7 @@ export const REVIEW_PROFILES = freeze({
     displayModel: 'claude/opus-4.8',
     reviewMode: 'plan', osSandbox: 'bwrap',
     command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
+    adapterPackage: '@agentclientprotocol/claude-agent-acp@0.61.0',
     sessionSettings: { availableModels: ['claude-opus-4-8'] },
     config: { model: 'claude-opus-4-8', mode: 'plan' },
   },
@@ -99,6 +110,7 @@ export const REVIEW_PROFILES = freeze({
     displayModel: 'openai/gpt-5.6-sol',
     reviewMode: 'plan', osSandbox: 'bwrap',
     command: ['npx', '-y', '@agentclientprotocol/codex-acp@1.1.7'],
+    adapterPackage: '@agentclientprotocol/codex-acp@1.1.7',
     config: {
       model: 'gpt-5.6-sol',
       reasoning_effort: 'ultra',
@@ -170,6 +182,43 @@ export function declaredPrimaryFamilies(input) {
 export function normalizePrimaryFamily(input) {
   const families = declaredPrimaryFamilies(input)
   return families.length === 1 ? families[0] : 'unknown'
+}
+
+// `family` (above) is asserted straight from this table with no cross-check
+// against anything the ACP wire reports — acp-review-client.mjs's return
+// object has no `family` field at all, and `provider`/`model`/`displayModel`
+// are echoed from the very `profile` object passed in, never observed (see
+// runAcpReview's return statement). The ACP surface this repo speaks
+// (initialize/session-new/session-set_config_option/session-prompt) exposes
+// no "which upstream account or endpoint answered" fact, so an endpoint
+// observed from the handshake is NOT implementable honestly today — inventing
+// one would report "proven" from a value the same config supplied. This is
+// the strongest claim that CAN be made before spawn, from data this table
+// already pins and an operator cannot override at call time:
+//   - which adapter PACKAGE will run (`adapterPackage`, taken from `command`,
+//     which buildProfileEnv()/runAcpReview() never let a caller substitute), and
+//   - for a routed lane, the exact endpoint validateRoutedEndpoint() verifies
+//     in the PARENT process before the child starts (`endpoint`).
+// A profile that declares neither pins nothing here, and `provenFamilyKey`
+// says so by returning null rather than a label -- an "unknown" is honest;
+// a fabricated "proven" is not.
+export function provenFamilyKey(profile) {
+  if (!profile || typeof profile.adapterPackage !== 'string' || !profile.adapterPackage) return null
+  const endpoint = profile.endpoint && typeof profile.endpoint.host === 'string' && typeof profile.endpoint.path === 'string'
+    ? `pinned:${profile.endpoint.host}${profile.endpoint.path}`
+    : 'unrouted'
+  return `${profile.adapterPackage}::${endpoint}`
+}
+
+// True when two or more of the given profiles resolve to the identical
+// adapter-package-plus-endpoint identity while their declared `family` may
+// still differ. A profile with no resolvable key (provenFamilyKey === null,
+// e.g. a test double that never declared `adapterPackage`) contributes no
+// evidence either way and cannot trigger this -- it only refuses a collision
+// it can actually see.
+export function provenFamilyCollision(profiles) {
+  const keys = (profiles ?? []).map(provenFamilyKey).filter(key => key !== null)
+  return new Set(keys).size !== keys.length
 }
 
 export function getReviewProfile(id) {

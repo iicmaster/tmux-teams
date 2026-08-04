@@ -4,7 +4,7 @@ import { open } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { ACP_REVIEW_LIMITS, prepareReviewPacket, runAcpReview, ReviewTransportError } from './acp-review-client.mjs'
-import { REVIEW_PROFILES, buildProfileEnv } from './review-profiles.mjs'
+import { REVIEW_PROFILES, buildProfileEnv, provenFamilyKey, provenFamilyCollision } from './review-profiles.mjs'
 import {
   UNAVAILABLE_RESERVE_SUBSTITUTES,
   planReviewPanel,
@@ -175,6 +175,14 @@ function choosePanel(profiles, packet, planner = planReviewPanel) {
   if (new Set(primary.map(profile => profile.model)).size !== 3) {
     throw new ReviewTransportError('policy', 'policy panel violates reviewer-model diversity')
   }
+  // Declared family diversity (checked above) is necessary but not sufficient
+  // (issue #38): two profiles can name different families while resolving to
+  // the identical, unpinned adapter identity — see provenFamilyKey in
+  // review-profiles.mjs. A planner that ignores this (the default one does
+  // not; an injected one might) is caught here before any lane spawns.
+  if (provenFamilyCollision(primary)) {
+    throw new ReviewTransportError('policy', 'policy panel violates reviewer proven-identity diversity: two reviewer lanes resolve to the same unpinned adapter identity even though their declared families differ')
+  }
   return { primary, all, plan }
 }
 
@@ -306,6 +314,14 @@ async function assessAttempt(attempt, validate, expectedInputHash) {
       profile: attempt.profile.id,
       provider: value.provider,
       family: attempt.profile.family,
+      // `declared` is always attempt.profile.family above. `provenKey` is
+      // null unless this profile pins something an operator's env cannot
+      // override (adapter package + a parent-verified endpoint) — see
+      // provenFamilyKey in review-profiles.mjs. It is not a stronger claim
+      // than that; in particular it never asserts an observed network
+      // endpoint, because the ACP surface this runner speaks does not expose
+      // one.
+      familyProvenKey: provenFamilyKey(attempt.profile),
       model: value.model,
       displayModel: value.displayModel,
       mode: value.mode,
@@ -428,6 +444,17 @@ export async function runReviewGate(packet, {
   }
   if (new Set(reviews.map(item => item.model)).size !== 3) {
     throw fail('policy', 'final review models are not distinct')
+  }
+  // Same defense as choosePanel's preflight, run again on the FINAL panel: a
+  // fallback substitution runs after preflight and could reintroduce a
+  // proven-identity collision that preflight never saw (issue #38). `reviews`
+  // holds accepted-item shapes, not raw profiles, so this reads the
+  // already-computed familyProvenKey field rather than calling
+  // provenFamilyCollision (which expects a profile's own adapterPackage/
+  // endpoint fields and would silently no-op on an item shape).
+  const finalProvenKeys = reviews.map(item => item.familyProvenKey).filter(key => key !== null)
+  if (new Set(finalProvenKeys).size !== finalProvenKeys.length) {
+    throw fail('policy', 'final review proven identities are not distinct')
   }
   if (new Set(reviews.map(item => item.provenance)).size !== 3) {
     throw fail('review', 'review provenance collision detected')

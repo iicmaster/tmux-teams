@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { runAcpReview, prepareReviewPacket, ReviewTransportError } from '../plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs'
 import { runReviewGate, runReviewGateCli, LANE_TIMEOUT_DEFAULT_MS, laneTimeoutMs, LANE_FAILURES,
 } from '../plugins/tmux-teams/skills/party-mode/scripts/review-gate.mjs'
+import { REVIEW_PROFILES } from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const MOCK = join(HERE, 'fixtures', 'mock-review-acp-agent.mjs')
@@ -1059,6 +1060,71 @@ test('a lane gets minutes, not a ping budget, and the ceiling is raised delibera
   for (const bad of ['0', '-5', 'abc', '1.5', '', undefined]) {
     assert.equal(laneTimeoutMs({ REVIEW_GATE_LANE_TIMEOUT_SEC: bad }), LANE_TIMEOUT_DEFAULT_MS, `bad value ${bad}`)
   }
+})
+
+test('the gate refuses a real kimi+claude panel sharing one unproven adapter identity (issue #38)', async () => {
+  // Real, shipped REVIEW_PROFILES -- not synthetic doubles -- reproducing the
+  // literal attack from issue #38: kimi and claude declare different families
+  // and satisfy the OLD exact-three-distinct-family rule (kimi, claude, agy
+  // are three distinct labels), yet both run the identical adapter package
+  // with no endpoint pin distinguishing them, which is exactly what an
+  // operator re-pointing claude-kimi at Anthropic would exploit.
+  const forcedPlan = { blocked: false, primaryFamily: 'test-primary-outside-panel', reviewers: ['kimi', 'claude', 'agy'], reserve: null }
+  const runner = async ({ profile: selected }) => ({ ...runnerResult(selected, packet()), mode: selected.reviewMode })
+  await assert.rejects(runReviewGate(packet(), {
+    profiles: REVIEW_PROFILES,
+    runAcpReview: runner,
+    buildProfileEnv: () => ({}),
+    planReviewPanel: () => forcedPlan,
+    validateReview: () => ({ ok: true }),
+    synthesizeReviews: () => ({ verdict: 'PASS' }),
+  }), e => e.code === 'policy' && /proven-identity diversity/.test(e.message))
+
+  // Today's real, legitimate `openai` route -- kimi seated alongside zai, not
+  // claude -- is unaffected: zai's parent-verified endpoint pin is a
+  // different, distinguishable proven identity from kimi's unrouted one.
+  const legitimatePlan = { blocked: false, primaryFamily: 'openai', reviewers: ['kimi', 'zai', 'agy'], reserve: 'claude' }
+  const out = await runReviewGate(packet(), {
+    profiles: REVIEW_PROFILES,
+    runAcpReview: runner,
+    buildProfileEnv: () => ({}),
+    planReviewPanel: () => legitimatePlan,
+    validateReview: () => ({ ok: true }),
+    synthesizeReviews: () => ({ verdict: 'PASS' }),
+  })
+  assert.equal(out.ok, true)
+  assert.deepEqual(out.route, ['kimi', 'zai', 'agy'])
+  assert.equal(out.reviews.find(item => item.profile === 'kimi').familyProvenKey,
+    '@agentclientprotocol/claude-agent-acp@0.61.0::unrouted')
+  assert.equal(out.reviews.find(item => item.profile === 'zai').familyProvenKey,
+    '@agentclientprotocol/claude-agent-acp@0.61.0::pinned:api.z.ai/api/anthropic')
+})
+
+test('a fallback substitution that reintroduces a proven-identity collision is caught after the original panel already cleared preflight', async () => {
+  // choosePanel's preflight only sees the ORIGINAL primary panel. A fallback
+  // substitution runs later and can reintroduce exactly the collision
+  // preflight was built to catch -- this is what the final-panel check
+  // (mirroring the existing declared-family final check) exists for. Real
+  // `claude` cannot be used here: defaultLaneRunner refuses it unconditionally
+  // regardless of policy, so this uses two synthetic profiles that share one
+  // declared `adapterPackage`, the same way the collision is expressed for
+  // real kimi/claude.
+  const collideA = profile('collide-a', { family: 'family-a', adapterPackage: 'shared-adapter@1.0.0' })
+  const collideB = profile('collide-b', { family: 'family-b', adapterPackage: 'shared-adapter@1.0.0' })
+  const profiles = keyedProfiles([collideA, profile('second'), profile('agy'), collideB])
+  const plan = { blocked: false, primaryFamily: 'test-primary', reviewers: ['collide-a', 'second', 'agy'], reserve: 'collide-b' }
+  await assert.rejects(runReviewGate(packet(), {
+    profiles,
+    runAcpReview: async ({ profile: selected }) => {
+      if (selected.id === 'second') throw new Error('down')
+      return runnerResult(selected, packet())
+    },
+    buildProfileEnv: () => ({}),
+    planReviewPanel: () => plan,
+    planFallback: () => ({ ...plan, reviewers: ['collide-b', 'collide-a', 'agy'], replaced: { failed: 'second', replacement: 'collide-b' }, usedReserve: true }),
+    validateReview: () => ({ ok: true }),
+    synthesizeReviews: () => ({ verdict: 'PASS' }),
+  }), e => e.code === 'policy' && /final review proven identities are not distinct/.test(e.message))
 })
 
 test('a lane runs the mode it declares, and a runner that ran another one is refused', async () => {
