@@ -376,7 +376,19 @@ async function prepareProviderState(profile, stateRoot, sourceEnv) {
     }
     await emptyFile(join('.gemini', 'antigravity-cli', 'history.jsonl'))
   }
-  if (profile.providerConfigDir) await copyHomeTree(profile.providerConfigDir)
+  // The `claude-<provider>` wrapper points CLAUDE_CONFIG_DIR at this directory,
+  // so the child needs the settings file inside it — and nothing else. Copying
+  // the TREE put the operator's whole provider profile into a networked
+  // adapter's HOME: measured on this machine, kimi 657 MiB / 10,267 files, zai
+  // 569 MiB / 20,865, qwen 106 MiB / 11,006, and the default OpenAI panel takes
+  // two of them at once. Those trees hold `projects/`, `history.jsonl`,
+  // `file-history/`, `session-env/`, `shell-snapshots/`, `tasks/`, `teams/` —
+  // unrelated work a static-packet reviewer has no business reading, and
+  // SKILL.md §28 promises the opposite ("ephemeral HOME with minimum copied
+  // auth and masked host user-data roots"). Nobody observed a provider sending
+  // those bytes; the exposure and the false contract are the defect
+  // (r4-codex, BLOCKER 1).
+  if (profile.providerConfigDir) await copyHomeFile(join(profile.providerConfigDir, 'settings.json'))
   if (profile.id === 'zai' || profile.id === 'qwen' || profile.id === 'claude' || profile.id === 'kimi') {
     const configDir = statePath('.claude')
     await mkdir(configDir, { recursive: true })
@@ -612,15 +624,20 @@ export async function runAcpReview({
         availableModels: [profile.model],
       }), { encoding: 'utf8', mode: 0o600 })
     }
+    // Refuse before preparing anything. `prepareProviderState` copies provider
+    // auth and settings into a child-visible home, and on a host without
+    // bubblewrap that work was done and then thrown away by the very next
+    // check — writing provider state to disk for a sandbox that could never
+    // start (r4-codex, BLOCKER 1). The cheapest check goes first.
+    if (profile.osSandbox === 'bwrap' && (process.platform !== 'linux' || !existsSync('/usr/bin/bwrap'))) {
+      throw new ReviewTransportError('config', 'bubblewrap is required for the ACP review sandbox')
+    }
     const providerState = await prepareProviderState(profile, stateRoot, env)
     let childEnv = providerState.env
     let spawnCommand = command
     let spawnArgs = args
     let canonicalTargetRepository
     if (profile.osSandbox === 'bwrap') {
-      if (process.platform !== 'linux' || !existsSync('/usr/bin/bwrap')) {
-        throw new ReviewTransportError('config', 'bubblewrap is required for the ACP review sandbox')
-      }
       if (typeof targetRepository !== 'string' || !isAbsolute(targetRepository)) {
         throw new ReviewTransportError('input', 'runner-owned targetRepository must be an absolute path')
       }
