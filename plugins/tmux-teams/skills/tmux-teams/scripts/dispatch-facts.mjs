@@ -241,26 +241,49 @@ export function currentEntry(custody) {
     // that same agent has its OWN `assigned` leg recorded somewhere earlier
     // in this ledger, is never trusted as evidence about the holder's leg —
     // no matter what dispatch_id/task_id it carries (F1, agy+codex round 4,
-    // 2026-08-04). By construction that agent's leg is now superseded (a
-    // DIFFERENT agent holds), so a straggling report from it is evidence
-    // about ITS OWN old leg, not the holder's. If it also happens to carry
-    // the holder's real dispatch_id and/or task_id — a generic writer
-    // stamping "last" onto whatever lands, or forged/replayed bytes — those
-    // fields cannot be told apart from a genuine current report by anything
-    // left to read off the entry: dispatch_id is supposed to be unique per
-    // leg, but that guarantee is enforced at the point bytes enter the
-    // ledger, not re-derivable here. House rule: a branch that cannot answer
-    // says UNKNOWN, never "yes". An agent that was NEVER assigned a leg of
-    // its own (assignedCountFor === 0) is unaffected: that is the ordinary
-    // "evaluator with no leg to be stale against" shorthand, and it remains
-    // the only interpretation available for whichever leg is current — the
-    // same-agent case (this agent IS the holder, possibly retried) is left
-    // entirely to the existing dispatch_id/task_id/retry checks below, which
-    // an established positive-case test (Shape 1) requires to keep trusting
-    // a same-agent round-2 report that names only its own task_id.
+    // 2026-08-04) — UNLESS `reviewed_task` names exactly the delivery the
+    // CURRENT holder itself produced (F1/B6, round 5, 2026-08-04). By
+    // construction that agent's leg is now superseded (a DIFFERENT agent
+    // holds), so a straggling report from it is USUALLY evidence about ITS
+    // OWN old leg, not the holder's — dispatch_id/task_id cannot tell a
+    // genuine current report apart from one forged/replayed to carry the
+    // holder's real ids, because the guarantee that those ids mean one thing
+    // is enforced at the point bytes enter the ledger, not re-derivable here
+    // (house rule: a branch that cannot answer says UNKNOWN, never "yes").
+    // `reviewed_task` is different: it is REQUIRED on every `reviewed` line
+    // (contract §4) and the only sanctioned producer of one — the harvester
+    // at loop-runner.mjs:703 — always stamps it from the delivery actually
+    // being judged, at the moment of judging. A leg that died BEFORE the
+    // holder's own delivery existed structurally cannot name that delivery's
+    // task_id in `reviewed_task` — it never saw it. So `reviewed_task`
+    // matching the holder's OWN task_id is producer-bound proof that this
+    // review is ABOUT the work currently held, regardless of who holds it:
+    // the contract never requires a reviewer's agent_id to equal the
+    // holder's (loop-system-contract.md:843-847), and a reviewer that
+    // happens to have an older leg elsewhere in this ledger (reject, rework,
+    // re-review by the SAME evaluator — the ordinary shape §1 describes) is
+    // otherwise indistinguishable from one that never had a leg at all,
+    // which this guard already trusts unconditionally two lines below. This
+    // does not weaken the DIFFERENT-agent forgery defence above: it only
+    // recognises a review of what the current holder is holding right now,
+    // never a review of anything the holder held in the past — a forged
+    // `reviewed_task` still requires exactly the same unauthenticated-write
+    // access every other field on this line already assumes away (see
+    // CONTRACT-PATCH.md for the producer-bound identity change that closes
+    // that remaining gap; it is not implemented here). An agent that was
+    // NEVER assigned a leg of its own (assignedCountFor === 0) is unaffected
+    // either way: that is the ordinary "evaluator with no leg to be stale
+    // against" shorthand, and it remains the only interpretation available
+    // for whichever leg is current — the same-agent case (this agent IS the
+    // holder, possibly retried) is left entirely to the existing
+    // dispatch_id/task_id/retry checks below, which an established
+    // positive-case test (Shape 1) requires to keep trusting a same-agent
+    // round-2 report that names only its own task_id.
     if (entry.event === 'reviewed' && entry.agent_id) {
       const reviewer = String(entry.agent_id)
-      if (reviewer !== holder && assignedCountFor(reviewer, i) > 0) continue
+      const reviewsCurrentHolder = entry.reviewed_task !== undefined && entry.reviewed_task !== null
+        && holderTaskId !== null && String(entry.reviewed_task) === holderTaskId
+      if (reviewer !== holder && assignedCountFor(reviewer, i) > 0 && !reviewsCurrentHolder) continue
     }
 
     if (entry.dispatch_id && holderDispatchId) {

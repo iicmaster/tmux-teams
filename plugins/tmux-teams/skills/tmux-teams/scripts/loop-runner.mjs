@@ -314,13 +314,48 @@ function record(repo, event, actor = RUNNER_ACTOR) {
 // delivered. Taking the newest `delivered` of any kind hands the next team a
 // review memo — or, as happened here, tells it there is no evidence while the
 // design spec it needed sat unread in `.mailbox-out/`.
+//
+// BLOCKER 2 (retro-release-review round 5, 2026-08-04): "newest" used to mean
+// newest by ARRIVAL — the position in `custody`, which is sorted by `at`
+// (readWorkItems, dispatch-facts.mjs). A late report from a leg already
+// declared `lost` is stamped with an `at` from whenever it finally landed, not
+// from when its leg was live, so it can sort AFTER a newer leg's own
+// `assigned`/`delivered` pair and still read as "the newest delivered" by a
+// raw backwards scan. Scenario: w1 assigned, w1 lost, w2 assigned (retry), w2
+// delivers (the artifact actually in play), the evaluator is assigned and
+// starts working — and only THEN does w1's late, superseded success arrive.
+// Custody order is now [...w1 assigned, w1 lost, w2 assigned, w2 delivered,
+// evaluator assigned, w1 delivered], and the old scan returned w1's stale
+// delivery: the evaluator's brief and outbox, and the `reviewed_task`/verdict
+// storage that key off this function, all pointed at the wrong leg's bytes.
+//
+// The fix ranks by when the delivering leg was OPENED (its own `assigned`
+// entry's position in the ledger, which is authored in dispatch order and
+// never arrives late — §4 requires every `assigned` to carry the `task_id`
+// the delivery's `task_id` is matched back to it by), not by when the
+// delivery HAPPENED TO ARRIVE. The newest-opened leg with a genuine worker
+// delivery wins, however late its own report shows up. A `delivered` whose
+// `task_id` does not resolve to any `assigned` in this ledger cannot be
+// placed in that order at all — house rule: a branch that cannot answer says
+// UNKNOWN, never "newest" — so it is not considered.
 function lastWorkerDelivery(graph, item) {
-  for (let index = item.custody.length - 1; index >= 0; index -= 1) {
-    const entry = item.custody[index]
+  const assignedIndexByTask = new Map()
+  item.custody.forEach((entry, index) => {
+    if (entry.event === 'assigned' && entry.task_id !== undefined && entry.task_id !== null) {
+      assignedIndexByTask.set(String(entry.task_id), index)
+    }
+  })
+  let best = null
+  let bestAssignedIndex = -1
+  for (const entry of item.custody) {
     if (entry.event !== 'delivered' || entry.terminal !== 'done' || !entry.task_id) continue
-    if (teamRoleOf(graph, entry.agent_id)?.role === 'worker') return entry
+    if (teamRoleOf(graph, entry.agent_id)?.role !== 'worker') continue
+    const assignedIndex = assignedIndexByTask.get(String(entry.task_id))
+    if (assignedIndex === undefined || assignedIndex <= bestAssignedIndex) continue
+    bestAssignedIndex = assignedIndex
+    best = entry
   }
-  return null
+  return best
 }
 
 const lastOf = (item, predicate) => [...item.custody].reverse().find(predicate) || null
@@ -890,10 +925,42 @@ function nextStep(graph, team, item, { busy, nowMs, zombieSec, answerDeadlineSec
     // controller nothing would ever dispatch, and the only rule that mentioned
     // it at all was the 30-minute board stall.
     if (last.agent_id === graph.outer_controller_id) {
+      // BLOCKER 3 (retro-release-review round 5, 2026-08-04): the outer
+      // controller's own leg is spawned with `workItem: ''` (tick, below), so
+      // the companion's `appendWorkItemEvent` is a deliberate no-op for it —
+      // there is no work-item ledger for the controller's OWN dispatch to
+      // write a `lost` into. If that leg dies without ever writing
+      // `.mailbox-out/<taskId>`, `planHarvest` can never see an outbox for
+      // `last.task_id` (loop-runner.mjs `planHarvest`'s `escalated` branch),
+      // so nothing downstream of THIS token ever changes again — `held` was a
+      // wedge with no exit of its own, same shape as the wedge the comment
+      // above already fixed one level up, one layer deeper. `questioned`
+      // already answers to exactly this deadline for exactly this reason: a
+      // party that has not answered by the deadline is treated as having not
+      // answered, not as still thinking forever. Reusing it here closes the
+      // one remaining custody state a runner can write that had no path to a
+      // terminal at all.
+      const heldSec = (nowMs - Date.parse(last.at || '')) / 1000
+      if (Number.isFinite(heldSec) && heldSec >= answerDeadlineSec) {
+        return {
+          action: 'expired', agent_id: last.agent_id,
+          reason: `no outer-controller answer in ${Math.round(answerDeadlineSec / 60)} minute(s)`
+            + ` for the token parked on ${last.agent_id} (task ${last.task_id || 'unknown'}) —`
+            + ' withdrawing rather than holding it forever',
+        }
+      }
       return { action: 'held', reason: 'waiting on the outer controller' }
     }
     return { action: 'escalate', reason: last.reason || `escalated by ${last.agent_id} and the controller has not been asked yet` }
   }
+
+  // `audit_requested` is handled OUTSIDE this function entirely — see the note
+  // in `planDispatches` below. `audit_requested` is a RELEASING_EVENT
+  // (`teamOccupancy`, dispatch-facts.mjs): a finished route audits without
+  // occupying a team's WIP, so it is never a member of `held` and `nextStep`
+  // is never invoked for it by `planDispatches`'s own loop. A deadline branch
+  // written here would be correct-looking, dead code — the fixture that would
+  // exercise it can never reach this function.
 
   if (last.event === 'assigned') {
     if (busy.has(last.agent_id)) return { action: 'in-flight' }
@@ -1071,6 +1138,30 @@ export function planDispatches(graph, items, busy, {
       }
       plans.push({ ...step, work_item: workItem, team: teamId })
     }
+  }
+
+  // BLOCKER 3 (retro-release-review round 5, 2026-08-04): `audit_requested`
+  // is a RELEASING_EVENT (dispatch-facts.mjs `teamOccupancy`) — a finished
+  // route audits without occupying a team's WIP — so it is never a member of
+  // `held` and the loop above never visits it. That is correct for
+  // PLACEMENT; it left the token with no reader at all once its controller
+  // leg died before ever writing an outbox: `planHarvest` needs one to
+  // harvest anything (loop-runner.mjs `planHarvest`'s `audit_requested`
+  // branch) and nothing else revisits a token in this state. Scanned
+  // directly here, because `held` will never carry it, on the same deadline
+  // `questioned` and a dead-`escalated` controller leg (`nextStep`, above)
+  // already answer to: a controller that has not answered by the deadline is
+  // treated as having not answered, not as still thinking forever.
+  for (const [workItem, item] of items) {
+    const last = currentEntry(item.custody)
+    if (!last || last.event !== 'audit_requested' || last.agent_id !== graph.outer_controller_id) continue
+    const heldSec = (now - Date.parse(last.at || '')) / 1000
+    if (!Number.isFinite(heldSec) || heldSec < answerDeadlineSec) continue
+    plans.push({
+      action: 'expired', work_item: workItem, agent_id: last.agent_id,
+      reason: `no outer-controller audit answer in ${Math.round(answerDeadlineSec / 60)} minute(s)`
+        + ` for task ${last.task_id || 'unknown'} — withdrawing rather than holding the audit open forever`,
+    })
   }
   return plans
 }
@@ -1307,9 +1398,43 @@ export function childEnv(source = process.env) {
   return injected ? { ...rest, ACP_CMD: injected } : rest
 }
 
+// codex BLOCKER 4 (retro-release-review round 5, 2026-08-04): a work item the
+// sanctioned ledger writer accepts (`ledger-writer.mjs`'s own ID_RE allows up
+// to 128 chars, plus `.` and `:`) could make the OLD naive concatenation
+// overflow acp-companion's 64-char task-id cap (`acp-companion.mjs:44-49`).
+// The child then exits on its own ID_RE check BEFORE writing `assigned` —
+// and the retry budget below (`attemptsBy`) counts only `assigned` lines, so
+// the runner respawned the same doomed id forever, paying for a new process
+// every tick. Separately, the old char-substitution sanitize was not
+// injective: '.' and ':' both became '-', so two DIFFERENT work items
+// (`a.b`, `a:b`) dispatched in the same millisecond produced the identical
+// task id and would have shared every task-keyed file (log, dispatch
+// record, liveness, outbox).
+//
+// The fix gives every input a fixed-length, content-derived suffix instead
+// of trusting the timestamp to disambiguate: a 16-hex-char slice of a
+// sha256 digest over the RAW (pre-sanitize) workItem/team/role/timestamp
+// tuple, joined by plain spaces — safe as a delimiter because the ledger
+// writer's own ID_RE (`[A-Za-z0-9_][A-Za-z0-9_.:-]*`) forbids a space in
+// workItem or team, and `role` is always one of this file's own literal
+// role names, so no legal input can forge a delimiter collision. The
+// human-readable prefix is truncated to 47 chars so
+// `47 + 1 (dash) + 16 (digest) = 64` can never exceed acp-companion's cap,
+// no matter how long a sanctioned work item is. Both
+// workItem and team are guaranteed (by the SAME ledger-writer ID_RE) to
+// start with an alnum/`_` character, and the literal fallbacks ('board',
+// 'loop') and every `role` this file passes in do too, so the prefix always
+// starts with a character acp-companion's ID_RE accepts.
+export function buildTaskId(workItem, team, role, nowMs = Date.now()) {
+  const w = workItem || 'board'
+  const t = team || 'loop'
+  const digest = createHash('sha256').update(`${w} ${t} ${role} ${nowMs}`).digest('hex').slice(0, 16)
+  const prefix = `${w}-${t}-${role}`.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 47)
+  return `${prefix}-${digest}`
+}
+
 function dispatch(repo, { workItem, team, role, agentId, workflow, model, adapter = DEFAULT_ADAPTER, effort }, briefPath, stallSec, { spawnFn = spawn } = {}) {
-  const taskId = `${workItem || 'board'}-${team || 'loop'}-${role}-${Date.now().toString(36)}`
-    .replace(/[^A-Za-z0-9_-]/g, '-')
+  const taskId = buildTaskId(workItem, team, role)
   // Keep every dispatch log. Discarding the adapter stderr is how a runner ends
   // up unable to explain its own failures — which is exactly what happened the
   // first time this ran.

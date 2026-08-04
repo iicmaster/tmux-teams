@@ -652,13 +652,20 @@ somebody who has not replied.
   carries an optional `resume_role` naming the seat that asked
   (`dispatcher`, `audit`, `outer`, or the leg's own role) — the seat that asked
   is the only one that can read the reply, in principle. `resume_role` is
-  recorded by every producer as of this amendment; consuming it BY VALUE to
-  route dispatch is not yet wired (see the amendment log entry below), and
-  that is not the same as no dispatch happening. §5's `answered`
-  (pre-`completed`) row is what actually runs today: every `answered`,
-  regardless of its `resume_role`, resumes the **dispatcher** — so a question
-  asked under `resume_role: worker`, `evaluator`, `audit`, or `outer` is
-  answered and then handed to a seat that did not ask it.
+  recorded by every producer as of this amendment and IS read to route
+  dispatch, as of `loop-runner.mjs`'s H1 fix (retro-release-review,
+  2026-08-04): `resume_role: worker` dispatches the **worker**,
+  `resume_role: evaluator` dispatches the **evaluator**, `resume_role: audit`
+  holds — the outer controller reads the reply through the
+  `completed`-driven `audit_requested` path instead, which `awaitingAudit`
+  already guarantees fires again, so nothing is lost by not dispatching here
+  — and `resume_role: outer` re-escalates, so the outer controller, the seat
+  that actually asked, is the one that reads the reply. Only when
+  `resume_role` is absent (a legacy question written before the field
+  existed) or literally `dispatcher` does §5's old `answered`
+  (pre-`completed`) behavior still apply: resume the **dispatcher**.
+  `loop-runner.mjs` is the file of record for this routing; a change to it
+  must amend this paragraph in the same commit (§15.1).
 - `answered` carries `to_team` and `reason`, and its actor KIND is part of its
   validity: it must be written by a `human:` actor or the writer refuses the
   line — the same rule §4.6 gives `opened` (ADR 0002). Those two, not
@@ -775,7 +782,11 @@ One token, keyed on its last event and the role of the actor.
 | `audit_requested` | controller outbox exists | harvest → `audited`, or `questioned` when the answer is not a word this seat reads |
 | `questioned` (pre-`completed`) | before the answer deadline | held; the runner does not dispatch while a person has not replied (§4.7) |
 | `questioned` (pre-`completed`) | past the answer deadline | RUNNER closes it with `abandoned` (§4.7, §9) |
-| `answered` (pre-`completed`) | — | dispatch the **dispatcher**; `resume_role` is recorded on the `questioned` line (§4.7) but not yet read — every `answered` before `completed` resumes the dispatcher regardless of which seat asked |
+| `answered` (pre-`completed`) | `resume_role: worker` | dispatch the **worker** (§4.7) |
+| `answered` (pre-`completed`) | `resume_role: evaluator` | dispatch the **evaluator** (§4.7) |
+| `answered` (pre-`completed`) | `resume_role: audit` | held — the outer controller reads it via the `completed`-driven `audit_requested` path instead (§4.7) |
+| `answered` (pre-`completed`) | `resume_role: outer` | escalate — re-asks the outer controller, the seat that actually asked (§4.7) |
+| `answered` (pre-`completed`) | `resume_role` absent, or `dispatcher` | dispatch the **dispatcher** (§4.7) |
 | `questioned` (post-`completed`) | past the answer deadline | RUNNER closes it with `abandoned` (§4.7, §9) |
 | `answered` (post-`completed`) | — | re-flag `audit_requested`; the reply is read, not silently absorbed (2026-08-04: `awaitingAudit` used to treat ANY prior `audit_requested` as proof the route was already read, so this reply had nowhere to go — fixed in `loop-runner.mjs`) |
 | `audited`, `abandoned` | — | **hard terminal** (§4.7): nothing may follow either, ever |
@@ -846,6 +857,30 @@ go — the runner refused its own repair on every tick, visibly and for ever.
   staleness is what read every ordinary review as superseded — measured, four
   tests.
 
+  A DIFFERENT agent that DOES have an older `assigned` leg somewhere earlier
+  in this ledger (round 5, 2026-08-04, F1/B6) is a harder case than either of
+  those: by construction that leg is superseded, so its straggler is USUALLY
+  evidence about ITS OWN old leg, not the holder's — no matter what
+  dispatch_id/task_id it also carries, those cannot be told apart from a
+  genuine current report by anything left to read off the entry (the
+  guarantee that an id means one thing for its whole life is enforced at the
+  point bytes enter the ledger, not re-derivable here). The one case this is
+  wrong for is a genuine round-2+ report from a reviewer who reviewed the SAME
+  delivery once before (reject, rework, re-review by the SAME evaluator — the
+  ordinary shape §1 describes) and writes its later verdict in the same
+  identity-free shorthand a never-assigned reviewer is allowed to use. The
+  shorthand's own field, `reviewed_task` — REQUIRED on every `reviewed` line
+  (§4) and always stamped by the sanctioned producer from the delivery
+  actually being judged, at the moment of judging — settles it: a leg that
+  died before the holder's own delivery existed cannot name that delivery's
+  task_id, because it never saw it. So `reviewed_task` matching the CURRENT
+  holder's own task_id is producer-bound proof the review is about what is
+  held right now, and is trusted even though the reviewer is a different
+  agent with an older leg elsewhere in this ledger. A `reviewed_task` that
+  does not match the holder's own task_id (or the holder has none — the
+  holder is itself an evaluator/dispatcher/etc. leg, not a worker delivery)
+  gets no such pass and is discarded exactly as before.
+
   When `dispatch_id` cannot settle it (missing on either side — a mixed-version
   ledger where an old writer, or the generic writer, left it off), `task_id` is
   the next signal, not agent_id alone: `assigned` is required to carry one
@@ -868,19 +903,59 @@ go — the runner refused its own repair on every tick, visibly and for ever.
   (the shorthand this system still writes when a review rides straight on a
   worker's delivery, with no `assigned` of the evaluator's own to trace) has no
   identity signal left at all — and unconditional trust there was itself a hole
+
+  PROPOSED, NOT YET IMPLEMENTED (round 5, 2026-08-04, F1 "fail-open"): for the
+  SAME agent retried (the identical evaluator killed and redispatched), a
+  `reviewed` that carries the LIVE leg's own dispatch_id and/or task_id is
+  byte-for-byte indistinguishable from a genuine round-2 report by that same
+  agent — codex (round 5) conceded this directly and this document agrees: no
+  field on the entry can tell a forged/replayed line, stamped at write time
+  with whichever ids currently read as "live" while carrying content actually
+  produced under an OLDER leg, apart from a genuine live report. This is not a
+  gap in the heuristic; it is a property of an append-only, unauthenticated
+  ledger where dispatch_id/task_id are plaintext values anyone with write
+  access can copy. Closing it needs a producer-bound identity that is bound
+  at CONTENT-GENERATION time, not at write time — for example: the writer
+  mints an opaque, single-use leg token when it records an `assigned` line,
+  delivers it to the dispatched process out of band (never re-derivable by
+  reading the ledger, e.g. written only into that leg's own scratch/task
+  directory), and REQUIRES `delivered`/`lost`/`reviewed` from that leg to
+  echo it back; a stale/dead process's buffered content, generated before a
+  retry, never received the RETRY's token and so cannot echo it, however
+  current the dispatch_id/task_id it separately copies from the ledger might
+  be. This needs changes to `ledger-writer.mjs` (mint + verify the token),
+  the harvester in `loop-runner.mjs` (thread it through spawn -> outbox ->
+  harvest), and `dispatch-facts.mjs` (trust the token, not dispatch_id/
+  task_id, for the same-agent case) — larger than one guard clause, and
+  deliberately not attempted in this round. Until it lands, the three
+  same-agent cells this document already calls TRUST two paragraphs below
+  remain a documented, deliberate gap, not a heuristic anyone should try to
+  patch further; see CONTRACT-PATCH.md in the round-5 "BLOCKER 1 + 5 + 7"
+  worktree for the full reasoning this amendment summarizes.
   (retro-release-review, 2026-08-04, B4): the SAME evaluator retried also
   reads identical by agent_id on both legs, so an identityless `reviewed` from
   the DEAD leg is indistinguishable from one on the LIVE leg by anything on the
   entry itself. The one remaining signal is structural, not on the entry: was
-  the entry's own agent assigned more than once IN A ROW, with no OTHER
-  agent's `assigned` between the two — the shape a kill-and-redispatch of the
-  identical evaluator writes, as opposed to two independent review rounds for
-  two different deliveries (one team's own quality loop, §1), which always has
-  a different agent's `assigned` — the next worker leg — between the
-  evaluator's legs. Assigned once (or in an unbroken run of one), there is no
-  other leg it could be stale against, and it is trusted exactly as before. In
-  an unbroken run of two or more, it cannot say which leg it belongs to and
-  that is UNKNOWN — a branch that cannot answer says UNKNOWN, not "stale", but
+  the entry's own agent assigned more than once ANYWHERE in the ledger, up
+  to and including the position of the entry being judged — not merely in an
+  unbroken consecutive run. The consecutive-only version of this check was
+  itself the bug, found and fixed at retro-release-review round 2 (F1,
+  2026-08-04): a same-evaluator reject → rework → re-review — one team's own
+  ordinary quality loop, not a kill-and-redispatch — always has a DIFFERENT
+  agent's `assigned` (the rework worker) sitting between the evaluator's two
+  legs, so counting only a consecutive run reset to 1 across that gap and
+  read as unambiguous, letting a dead round-1 evaluator leg's late,
+  identityless `reviewed pass` clear the pull gate while round 2 was still
+  running. `dispatch-facts.mjs`'s `assignedCountFor`, called from inside
+  `currentEntry`, is the file of record: it scans every line up to the judged
+  entry's own index and counts an `assigned` naming that agent wherever it
+  falls, consecutive or not — an intervening OTHER agent's leg changes
+  nothing about whether TWO of the target agent's own legs exist for this one
+  to be ambiguous between. Assigned once (or never) anywhere in that span,
+  there is no other leg it could be stale against, and it is trusted exactly
+  as before. Assigned more than once anywhere in that span, it cannot say
+  which leg it belongs to and that is UNKNOWN — a branch that cannot answer
+  says UNKNOWN, not "stale", but
   UNKNOWN must not be counted as a passing review either. Guessing "stale"
   outright is still what read every ordinary review as superseded, above.
   `delivered`/`lost` without a resolvable task_id fall back to the plain
@@ -891,10 +966,20 @@ go — the runner refused its own repair on every tick, visibly and for ever.
   the `(agent_id, task_id)` its `assigned` line actually named, and refuses
   (`dispatch_id_agent_mismatch`, `dispatch_id_task_mismatch`) a
   `delivered`/`lost`/`reviewed` that reuses a live dispatch_id while
-  contradicting who or what it was assigned to. `currentEntry` itself still
-  trusts a matching `dispatch_id` outright; the guarantee that the ID means one
-  thing for its whole life is enforced at the point bytes enter the ledger, not
-  re-checked on every read.
+  contradicting who or what it was assigned to. `currentEntry` itself does
+  NOT trust a matching `dispatch_id` alone — retro-release-review round 2
+  (Shape 2, F1, 2026-08-04) found a `dispatch_id` match necessary but not
+  sufficient: nothing stopped an entry from also naming a `task_id` that
+  resolves to a DIFFERENT `assigned` line than the holder's, which is stale
+  evidence wearing the live leg's badge. `dispatch-facts.mjs`'s `currentEntry`
+  refuses that entry — treats it as not current, and keeps searching older
+  lines — whenever its `task_id` is present and resolves to an `assigned`
+  other than the holder's own; an entry that omits `task_id`, or that names
+  the holder's own, still passes on the `dispatch_id` match alone. The
+  write-time guarantee above (the ID means one thing for its whole life) is
+  still enforced at the point bytes enter the ledger, not re-derived here —
+  this paragraph is about what `currentEntry` additionally checks on READ,
+  which is now a second, independent gate rather than none.
 
   Both the `task_id`-tracing and the `dispatch_id` binding above assume each id
   opens exactly ONE leg for its whole life; nothing enforced that until now
@@ -910,11 +995,75 @@ go — the runner refused its own repair on every tick, visibly and for ever.
   line in the same ledger already claimed (`duplicate_task_id`,
   `duplicate_dispatch_id`) — reported at the line that reused the id, alongside
   every other problem the ledger has.
+
+  Two amendments from retro-release-review round 5 (2026-08-04, codex
+  BLOCKER 4 and BLOCKER 8) touch this paragraph without weakening its claim.
+  First, `loop-runner.mjs`'s `buildTaskId` no longer builds the string
+  `dispatch()` passes to `acp-companion.mjs` by raw concatenation: it is a
+  16-hex-char slice of a sha256 digest over the same
+  (workItem, team, role, millisecond) tuple, joined to a truncated
+  human-readable prefix. This is still deterministic per exact tuple — two
+  dispatches of the same (token, team, role) in the same millisecond still
+  mint the identical id, exactly as this paragraph already says — but it
+  fixes two things the old concatenation got wrong that this paragraph never
+  claimed to cover: a `workItem` long enough to overflow
+  `acp-companion.mjs`'s 64-character task-id cap (§4's `ID_RE` allows
+  `work_item` up to 128 characters) used to make the companion exit before
+  writing `assigned` at all — invisible to the retry budget, which counts
+  only `assigned` lines — and the old char-substitution sanitize was not
+  injective (`.` and `:` both became `-`), so two DIFFERENT work items could
+  collide onto one task-keyed file. Second, this paragraph's own stated
+  defense — `ledger-writer.mjs` refusing a duplicate `task_id`/`dispatch_id`
+  at append time — used to be a read-validate-append with no atomicity
+  across those three steps, so N callers racing the SAME append could each
+  read the same pre-append snapshot and each pass its own validation,
+  landing several duplicate rows before anything noticed. `appendEvent` now
+  holds an exclusive per-ledger-file lock
+  (`<work-item>.jsonl.lock`, `O_CREAT|O_EXCL`) across the whole
+  read-validate-append critical section, so at most one concurrent writer to
+  the same token can ever land a line; every other concurrent caller sees
+  the FIRST writer's committed line before it validates its own and is
+  refused with the same `duplicate_task_id`/`duplicate_dispatch_id` this
+  paragraph already names — the corruption this paragraph describes
+  preventing can no longer happen even when several writers race the exact
+  case it warns about. `appendEvent` can now also return
+  `{ok: false, code: 'locked', ...}` if contention on one ledger file is not
+  resolved within 5 seconds; a lock older than 30 seconds is treated as
+  abandoned by a dead holder and is stolen by the next acquirer. Both
+  callers (`acp-companion.mjs`'s `appendWorkItemEvent`, and
+  `ledger-writer.mjs`'s own CLI) already treat every `!result.ok` refusal
+  uniformly regardless of `code`, so this needed no caller change.
+  `tests/loop-occupancy.test.mjs` gained the BLOCKER 4 cases (probed against
+  the real `acp-companion.mjs` process, not a copied regex);
+  `tests/ledger.test.mjs` gained the BLOCKER 8 cases (a release-gated,
+  genuinely-simultaneous multi-process race, and stale-lock recovery).
   Readers that answer position or state go through it: `teamOccupancy`,
   `planPulls`, `planHarvest`, `nextStep`, `boardSummary`, the kanban card, and —
   on the loop graph page — `frontDoorStatus`, `controllerState`'s parked count,
   its `holding` set, a team's `stuck` flag, and the `delivered`/`waiting` tile
   counts in `graph.mjs`.
+
+  `loop-runner.lastWorkerDelivery` answers a related but DIFFERENT question —
+  not "where is the token now" but "which WORKER leg's delivery is the
+  artifact currently in play" — and it cannot simply call `currentEntry`,
+  because the current position is often not a worker `delivered` at all (an
+  evaluator has since been `assigned`, and possibly reviewed, on top of it —
+  `currentEntry` would return that `assigned` line, not any delivery). It
+  still owes the same non-staleness guarantee position does: a worker leg
+  already superseded by a newer worker leg must never win merely for
+  reporting in later (retro-release-review r5, 2026-08-04, BLOCKER 2 — a leg
+  already `lost`, retried, and superseded by the retry's own `delivered`, can
+  still write a late success stamped with whenever it actually landed,
+  sorting AFTER the retry's delivery in `custody`; a scan by ARRIVAL order
+  picked the late straggler). It satisfies that guarantee its own way: every
+  candidate `delivered` is ranked by the array position of the `assigned`
+  line that OPENED its leg — a fact authored in dispatch order, and so never
+  late, exactly the fact §6's own `task_id`-tracing paragraph above already
+  relies on — rather than by the `delivered` line's own position, which can
+  be late. The candidate whose leg opened most recently wins, however late
+  its own report shows up. A `delivered` whose `task_id` does not resolve to
+  any `assigned` in the ledger is not ranked at all: house rule, a branch
+  that cannot answer says UNKNOWN, never "newest".
   Readers that answer *when* something last happened do not, and must not.
 - The rule is a **release list, not a whitelist**: an event nobody taught this
   function about leaves the work where it is rather than making it disappear.
@@ -1074,6 +1223,24 @@ Parsing rules, non-negotiable:
   apart, and a reader asking how a token ended wants one word to search for
   rather than two. The runner also writes the withdrawal notice, because a
   conversation that ends in silence is unreadable from the person's side.
+  A third and fourth case joined 2026-08-04 (retro-release-review r5, BLOCKER
+  3). The controller's OWN leg carries no work item — `tick` deliberately
+  spawns it with `workItem: ''`, so the companion's per-token custody write is
+  a no-op for that leg specifically; there is no ledger for it to write a
+  `lost` into. A controller leg that dies (crashes, is killed, or simply never
+  writes `.mailbox-out/<taskId>`) before producing anything therefore left a
+  token parked in `escalated` (naming the controller) or in `audit_requested`
+  with NOTHING that could ever revisit it: `planHarvest` needs an outbox to
+  harvest anything at all, and `audit_requested` is additionally never a
+  member of `held` (§6: it is a `RELEASING_EVENT`), so `planDispatches`'s
+  ordinary per-team loop never even visits it. The runner now applies the
+  SAME `answerDeadlineSec` clock `questioned` already answers to, to both: a
+  controller leg with no outbox past the deadline is treated as dead, and the
+  runner writes `abandoned` exactly as it does for an unanswered `questioned`.
+  `escalated` reaches this inside `nextStep` (already visited via `held`,
+  since `escalated` — unlike `audit_requested` — is not a `RELEASING_EVENT`);
+  `audit_requested` is scanned for directly inside `planDispatches`, since
+  `held` will never carry it.
 
 ## 10. Budgets and ceilings
 
@@ -1761,6 +1928,113 @@ line.
    editing a file while a worker holds it has already cost one overwrite.
 
 ### Amendment log
+
+**2026-08-04 — retro-release-review r4-codex BLOCKER 4:'''
+
+new = '''### Amendment log
+
+**2026-08-04 — retro-release-review r5: the evaluator read the wrong
+artifact, and a runner-written custody state had no path to a terminal
+(BLOCKER 2, BLOCKER 3).** Behaviour changed in `loop-runner.mjs`:
+`lastWorkerDelivery` no longer ranks candidate worker deliveries by their own
+arrival position in `custody` (BLOCKER 2 — a leg already declared `lost` can
+still write a late success stamped with whenever it actually landed, sorting
+after a live retry's own delivery; the evaluator's brief, its outbox section,
+and the `reviewed_task`/verdict storage that key off this function all read
+the stale leg's bytes). It now ranks by the array position of the `assigned`
+line that opened each candidate's leg — authored in dispatch order, and so
+never late — and a `delivered` whose `task_id` does not resolve to any
+`assigned` is not ranked at all. §6 gained the paragraph distinguishing this
+reader from a `currentEntry` call site above.
+Separately (BLOCKER 3), `nextStep`'s `escalated` branch and a new direct scan
+inside `planDispatches` each apply `answerDeadlineSec` — the same clock
+`questioned` already answers to — to a token parked on the outer
+controller's own leg (`escalated` naming the controller, or
+`audit_requested`) once that leg's task has produced no outbox past the
+deadline: the runner now writes `abandoned`, the same way it already does for
+an unanswered `questioned`. Before this, a controller leg that died before
+writing an outbox left the token with NO automatic path to a terminal at
+all — its own dispatch record carries no work item (§9), so the companion's
+custody write for it is a no-op, and `audit_requested` additionally sits
+outside `held` (§6: `RELEASING_EVENT`) where `planDispatches`'s ordinary loop
+never reaches it either. §9's `abandon` bullet gained the third/fourth-writer
+paragraph above. Under §15.3: neither defect was a contract/code
+disagreement — both are cases the contract was silent about and the code
+under-implemented; §6 and §9 are amended to state what the fix now does,
+not to correct a prior claim.
+Reproduced and proven in `tests/loop-occupancy.test.mjs`: `BLOCKER 2` builds
+the exact declared-lost/retry/late-straggler custody through `tick`'s own
+brief-writing path and asserts the evaluator's brief carries the retry's
+outbox, not the stale leg's; `BLOCKER 3a`/`BLOCKER 3a (tick)` and `BLOCKER
+3b`/`BLOCKER 3b (tick)` each assert the pre-deadline state is unchanged
+(`held`, or no plan at all for `audit_requested`) and the post-deadline state
+reaches `abandoned` through a real `tick()` run against a ledger with no
+`.mailbox-out` entry for the controller's task. Each guard was proven against
+the ORIGINAL code by reverting the fix, confirming the new test failed, and
+restoring the fix from a file copy verified by SHA-256 before and after.
+
+**2026-08-04 — retro-release-review r5-codex BLOCKER 4 and BLOCKER 8: a task
+id domain mismatch caused unbounded respawn, and the ledger writer had no
+lock across its own read-validate-append.** Behaviour changed in two files.
+`loop-runner.mjs`: `dispatch()`'s task-id construction is now the exported
+`buildTaskId(workItem, team, role, nowMs)` — a 47-char truncated,
+char-sanitized human-readable prefix plus a 16-hex-char sha256 digest slice
+over the raw (pre-sanitize) tuple, capped at 64 characters total so it can
+never overflow `acp-companion.mjs`'s own `ID_RE` (§4's `ID_RE` allows
+`work_item` up to 128 characters and additionally `.`/`:`, neither of which
+`acp-companion.mjs`'s task-id gate accepts) — where the prior raw
+concatenation both could overflow that 64-char cap (making the child exit
+before writing `assigned`, which the retry budget in `attemptsBy` cannot see
+because it counts only `assigned` lines, so the runner respawned the same
+doomed dispatch forever) and was not injective (`.` and `:` both sanitized
+to `-`, so two different work items dispatched in the same millisecond
+could collide onto one task-keyed log/dispatch-record/liveness/outbox file).
+`ledger-writer.mjs`: `appendEvent` now acquires an exclusive
+`O_CREAT|O_EXCL` lock file (`<work-item>.jsonl.lock`) for its whole
+read-validate-append critical section, closing a TOCTOU race where N
+concurrent callers could each read the same pre-append ledger snapshot,
+each validate a legal-looking single line against it, and each append —
+landing several structurally duplicate `assigned` rows that
+`ledger-validate.mjs` only caught on a LATER read (`duplicate_task_id`,
+`duplicate_dispatch_id`). A lock held past 30 seconds is treated as
+abandoned by a dead holder and stolen by the next acquirer; a caller unable
+to acquire within 5 seconds gets `{ok: false, code: 'locked'}`, which both
+existing callers already handle the same as any other refusal. §9's
+task_id-minting paragraph gained the two paragraphs in Patch 1 above.
+`tests/loop-occupancy.test.mjs` gained BLOCKER 4's cases, run against the
+real `acp-companion.mjs` process rather than a copied regex, since the
+defect is specifically about what a SEPARATE process's own gate accepts;
+`tests/ledger.test.mjs` gained BLOCKER 8's cases, a release-gated
+(genuinely simultaneous, not merely `Promise.all`-launched — process-startup
+jitter alone was measured to hide the race under a naive launch) 24-process
+race against a clean ledger, and a stale-lock-recovery case. Neither change
+alters any ledger event's recorded fields, so no §4 event-table row changed.
+
+**2026-08-04 — retro-release-review round 5, package "BLOCKER 1 + 5 + 7": F1
+failed open one way and closed the other.** `dispatch-facts.mjs`'s
+`currentEntry` gained a `reviewed_task`-based exception (B6): a `reviewed`
+from a DIFFERENT agent that has an older `assigned` leg elsewhere in this
+ledger is now trusted, even with no dispatch_id/task_id of its own, when its
+REQUIRED `reviewed_task` field names exactly the delivery the CURRENT holder
+made — producer-bound proof (the sanctioned harvester always stamps this
+field from the delivery it is actually judging, and a dead leg cannot name a
+delivery it never saw) that this is a genuine review of what is held now, not
+a stale echo of an older leg wearing a different-agent's badge. This closes
+the false-negative the round-4 fix (BLOCKER 5, "unconditional discard of
+every non-holder `reviewed` whose agent has any earlier `assigned`")
+introduced against the ordinary reject/rework/re-review shape. It does NOT
+touch the SAME-agent forged/replayed-current-ids case (BLOCKER 1): three
+independent reviewers (codex round 5, qwen's own rebuilt matrix, and this
+document's own pre-existing Shape 1/Shape 2 positive tests) agree those bytes
+are genuinely indistinguishable from a live round-2 report by the construction
+of this schema, and Patch 2 above proposes — but does not implement — the
+producer-bound identity change that would actually close it. The 36-cell
+identity matrix (`tests/loop-occupancy.test.mjs`) was also rebuilt to run
+every cell through the same `validateLedger` the sanctioned writer calls
+(labeling which of the 36 shapes production can actually write — 24 of 36 —
+rather than silently asserting over the other 12) and to check H cells by
+object identity against the stale entry, not by verdict string alone
+(BLOCKER 7).
 
 **2026-08-04 — retro-release-review r4-codex BLOCKER 4: a resumed reply could
 still wedge behind the unchanged-trigger brake, and no resumed seat was ever

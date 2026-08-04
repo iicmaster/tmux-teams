@@ -163,7 +163,19 @@ const AFTER_COMPLETED = new Set(['audit_requested', 'audited', 'questioned', 'an
 // before either of these), so a single "first terminal wins" flag can never
 // notice that the SECOND terminal — the one that actually ends the audit —
 // already happened.
-const HARD_TERMINAL_EVENTS = new Set(['audited', 'abandoned'])
+// Exported (round 5, codex BLOCKER 9, 2026-08-04): `ledger-writer.mjs`'s
+// closing-tolerance gate used to test membership in `TERMINAL_EVENTS`, which
+// still contains `completed` — but `completed` is only HALF closed (the
+// comment on `TERMINAL_EVENTS` above says so in the same breath it defines
+// the set). Letting `completed` land on a duplicate-tainted ledger does not
+// close it: the very next line the runner needs to write, `audit_requested`,
+// is not terminal at all, so `continuable` refuses it and the token is
+// STUCK — parked with `completed` on top, read as Done by the board, its
+// blocker invisible (`kanban.mjs`'s `blockedReason` is only carried for a
+// token `inTeam`, and a `completed`/`RELEASING_EVENTS` token is not). Only a
+// row with NO legal successor actually closes a broken history; `HARD_TERMINAL_EVENTS`
+// is that set, and it is what the writer's closing gate must test instead.
+export const HARD_TERMINAL_EVENTS = new Set(['audited', 'abandoned'])
 
 // `null` is absence, not a value. loop-runner.mjs writes `workflow: … || null`
 // and `to_team: … || null`, so a presence check that only tested `in` would let

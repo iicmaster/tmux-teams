@@ -11,8 +11,10 @@
 // very thing this change exists to stop.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import {
+  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -1113,6 +1115,44 @@ test('a pre-existing duplicate task_id can still be closed, but nothing else may
     `tok2's duplicate task_id blocked even its own terminal close: ${abandonedToo.code} ${abandonedToo.detail}`)
 })
 
+// codex BLOCKER 9, retro-release-review round 5, 2026-08-04: `completed` is a
+// member of `TERMINAL_EVENTS` but §5 calls it only HALF closed — its sole
+// legal continuation is `audit_requested` -> `audited`, neither of which is
+// terminal. The pre-fix `continuableToClose` tested `TERMINAL_EVENTS`, so a
+// duplicate-tainted ledger accepted `completed` (it needs only `from_team`)
+// and then refused the very `audit_requested` the runner writes next with
+// `ledger_already_invalid` — the token lands in loop-runner.mjs's STUCK path,
+// while kanban.mjs has already filed the card under Done with no
+// `blockedReason` because `completed` is a `RELEASING_EVENTS` member. Only
+// `HARD_TERMINAL_EVENTS` (`audited`, `abandoned` — the rows with no
+// successor at all) may close a ledger this gate is tolerating.
+test('completed cannot close a duplicate-tainted ledger — only a truly terminal event may (codex BLOCKER 9)', (t) => {
+  const repo = scratch(t)
+  mkdirSync(join(repo, '.tmux-teams', 'work-items'), { recursive: true })
+  writeFileSync(ledgerPath(repo, 'tok'), `${dupTaskLegacy.join('\n')}\n`)
+
+  const raw = validateLedger(dupTaskLegacy)
+  assert.equal(raw.ok, false)
+  assert.deepEqual(codes(raw), ['duplicate_task_id'])
+
+  // The half-closed event is refused outright — it would strand the token
+  // worse than leaving the tainted ledger alone, not close it.
+  const completed = appendEvent(repo, {
+    event: 'completed', work_item: 'tok', workflow: 'feature', from_team: 'build',
+  }, { actor: 'agent:build_dispatcher' })
+  assert.equal(completed.ok, false,
+    'a duplicate-tainted ledger accepted completed, which needs an audit pair it can never legally receive')
+  assert.equal(completed.code, 'ledger_already_invalid')
+
+  // The genuinely terminal events are still open, exactly as before.
+  const abandoned = appendEvent(repo, {
+    event: 'abandoned', work_item: 'tok', workflow: 'feature',
+    reason: 'closing by hand instead of the half-closed completed',
+  }, { actor: 'human:master' })
+  assert.equal(abandoned.ok, true,
+    `abandoned should still close a duplicate-tainted ledger: ${abandoned.code} ${abandoned.detail}`)
+})
+
 // codex BLOCKER 3, retro-release-review round 4, 2026-08-04: the OTHER
 // direction of the same finding. A realistic pre-existing dispatch_id
 // collision — two different legs minted the same dispatch_id, each with its
@@ -1249,4 +1289,127 @@ test('a reviewed borrowing a live dispatch_id while naming an older task_id is r
     { at: '2026-07-27T10:01:00.000Z', event: 'reviewed', work_item: 'tok', workflow: 'feature', agent_id: 'design_evaluator', verdict: 'pass', dispatch_id: 'd-1', reviewed_task: 't-1', reason: 'shorthand' },
   )
   assert.equal(validateLedger(noTaskId).ok, true, JSON.stringify(validateLedger(noTaskId).problems))
+})
+
+// ---------------------------------------------------------------------------
+// codex BLOCKER 8 (retro-release-review round 5, 2026-08-04): appendEvent is
+// read-validate-append with no atomicity across those three steps by itself.
+// `appendFileSync` makes ONE line's bytes atomic; it says nothing about
+// whether that line was still the right thing to write given what another
+// writer just committed. codex's probe ran 24 synchronized writers against a
+// clean ledger: 8 returned ok and wrote 8 identical rows, and the validator
+// then reported duplicate_task_id / duplicate_dispatch_id on the next read.
+//
+// This spawns REAL, separate OS processes through the sanctioned CLI
+// (`ledger-writer.mjs`, the same binary any hand-run dispatch would call) —
+// not async callbacks racing inside one event loop — because the defect is
+// specifically about MULTIPLE PROCESSES sharing one filesystem, and a
+// same-process simulation cannot prove a cross-process lock does anything.
+// ---------------------------------------------------------------------------
+
+// A plain `Promise.all` over `spawn` calls issued back-to-back is NOT enough
+// to reproduce the race codex found: real Node process startup (module load,
+// `ledger-validate.mjs` parsing, etc.) takes single-digit-to-tens of
+// milliseconds and dwarfs the actual read-validate-append critical section,
+// so N freshly-spawned processes rarely land in that section at the same
+// instant — they naturally stagger themselves apart. Proven empirically
+// against the unlocked (pre-fix) code: a bare `Promise.all(spawn(...))`
+// race, run repeatedly, produced exactly 1 winner every time — a FALSE
+// negative that would have shipped this test believing it caught blocker 8
+// when it was actually just measuring process-startup jitter.
+//
+// This gates every worker on a `go` file: all N are spawned first, so every
+// one of them pays its startup cost and reaches a tight `existsSync` spin
+// BEFORE anything can proceed, then the file is written once, releasing
+// them together. That is what makes the overlap in the critical section
+// real instead of accidental.
+function raceWorkerSource() {
+  return [
+    `import { appendEvent } from ${JSON.stringify(WRITER)}`,
+    "import { existsSync } from 'node:fs'",
+    'const [, , repo, gate, eventJson, actor] = process.argv',
+    'const deadline = Date.now() + 5000',
+    'while (!existsSync(gate)) {',
+    '  if (Date.now() > deadline) { process.stderr.write("gate timeout"); process.exit(3) }',
+    '}',
+    'const result = appendEvent(repo, JSON.parse(eventJson), { actor })',
+    'process.stdout.write(JSON.stringify(result))',
+    'process.exit(result.ok ? 0 : 1)',
+    '',
+  ].join('\n')
+}
+
+test('BLOCKER 8: N release-gated (genuinely simultaneous) processes appending the identical assigned event to a clean ledger produce exactly one committed line, never duplicate rows', async (t) => {
+  const dir = scratch(t)
+  const N = 24
+  const gate = join(dir, 'go')
+  const workerPath = join(dir, 'race-worker.mjs')
+  writeFileSync(workerPath, raceWorkerSource())
+  const event = JSON.stringify({
+    event: 'assigned', work_item: 'race-tok', workflow: 'feature',
+    agent_id: 'runner', task_id: 'race-task', dispatch_id: 'race-dispatch',
+  })
+
+  const pending = Array.from({ length: N }, () => {
+    const child = spawn(process.execPath, [workerPath, dir, gate, event, 'agent:runner'])
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => { stdout += chunk })
+    child.stderr.on('data', (chunk) => { stderr += chunk })
+    return new Promise((resolvePromise) => {
+      child.on('close', (code) => resolvePromise({ code, stdout, stderr }))
+      child.on('error', (error) => resolvePromise({ code: -1, stdout, stderr: String(error) }))
+    })
+  })
+  // Every worker must have finished Node startup and reached its spin loop
+  // before the gate opens, or "simultaneous" is not actually being tested.
+  await new Promise((resolvePromise) => { setTimeout(resolvePromise, 400) })
+  writeFileSync(gate, '')
+
+  const results = await Promise.all(pending)
+  const timedOut = results.filter((r) => r.code === 3)
+  assert.equal(timedOut.length, 0, `${timedOut.length} worker(s) never saw the gate open — the 400ms warm-up was not enough: ${JSON.stringify(timedOut)}`)
+
+  const succeeded = results.filter((r) => r.code === 0)
+  const refused = results.filter((r) => r.code === 1)
+  assert.equal(succeeded.length, 1,
+    `expected exactly 1 of ${N} simultaneous identical writers to win the append, got ${succeeded.length}: ${JSON.stringify(results)}`)
+  assert.equal(refused.length, N - 1)
+  for (const r of refused) {
+    const parsed = JSON.parse(r.stdout)
+    const namesDuplicate = (parsed.problems || []).some(
+      (problem) => problem.code === 'duplicate_task_id' || problem.code === 'duplicate_dispatch_id')
+    assert.ok(namesDuplicate,
+      `a refused writer's result should name the duplicate it lost to, got: ${JSON.stringify(parsed)}`)
+  }
+
+  const path = ledgerPath(dir, 'race-tok')
+  const lines = readFileSync(path, 'utf8').trim().split('\n')
+  assert.equal(lines.length, 1,
+    `the ledger must hold exactly one line after ${N} simultaneous identical appends — holds ${lines.length}`)
+  const verdict = validateLedger(lines)
+  assert.equal(verdict.ok, true, `the resulting ledger must validate clean: ${JSON.stringify(verdict.problems)}`)
+
+  // No lock file left behind to be mistaken for a ledger by a directory
+  // listing (both readers in this codebase filter on the `.jsonl` suffix,
+  // but a leaked `.lock` file is still a leaked file).
+  assert.equal(existsSync(`${path}.lock`), false, 'a stale .lock file was left behind after every writer finished')
+})
+
+test('BLOCKER 8: a lock left by a process that died mid-hold is recovered after it goes stale, not held forever', (t) => {
+  const dir = scratch(t)
+  const path = ledgerPath(dir, 'stuck-tok')
+  mkdirSync(dirname(path), { recursive: true })
+  const lockPath = `${path}.lock`
+  // Simulate a writer that was SIGKILLed while holding the lock: the file
+  // exists, but backdated well past the staleness window so the next
+  // acquirer does not have to wait out the real 30s in a test that must run
+  // in well under a second.
+  writeFileSync(lockPath, '99999')
+  const past = new Date(Date.now() - 60_000)
+  utimesSync(lockPath, past, past)
+
+  const result = appendEvent(dir, { event: 'abandoned', work_item: 'stuck-tok', workflow: 'feature', reason: 'recovered after a dead holder' }, { actor: 'agent:runner' })
+  assert.equal(result.ok, true, `a stale lock from a dead holder should be recovered, not wedge the token forever: ${JSON.stringify(result)}`)
+  assert.equal(existsSync(lockPath), false, 'the recovered lock should be released again after the write that stole it')
 })

@@ -17,12 +17,15 @@
 //     to a broken history buries the break instead of surfacing it.
 //
 // It never rewrites. Corrections are appended (§4, §13).
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
+import {
+  appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync,
+  statSync, unlinkSync, writeSync,
+} from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 
 import {
-  ACTOR_RE, EVENT_SPEC, isClosingTolerated, isLegacyTolerated, LEDGER_EVENTS, MAX_LEDGER_BYTES,
+  ACTOR_RE, EVENT_SPEC, HARD_TERMINAL_EVENTS, isClosingTolerated, isLegacyTolerated, LEDGER_EVENTS, MAX_LEDGER_BYTES,
   TERMINAL_EVENTS, validateLedger,
 } from './ledger-validate.mjs'
 
@@ -81,6 +84,87 @@ function ensureDir(dir) {
   chmodSync(dir, DIR_MODE)
 }
 
+// codex BLOCKER 8 (retro-release-review round 5, 2026-08-04): `appendEvent`
+// below is read-validate-append with no atomicity ACROSS those three steps.
+// `appendFileSync` makes ONE line's bytes atomic — two writers' lines can
+// never interleave into a corrupt byte stream — but it says nothing about
+// whether the line being written was still the right thing to write given
+// what another writer just committed. Run N callers concurrently against a
+// clean ledger and several can all read the same empty `existing`, each
+// validate a `line` that is individually legal against that snapshot, and
+// each append: N legal-looking single writes, one semantically duplicate
+// ledger.
+//
+// The guarantee chosen here: total mutual exclusion per ledger file, via an
+// `O_CREAT|O_EXCL` lock file (`<workItem>.jsonl.lock`) held for the whole
+// read-validate-append critical section. Rejected alternatives and why:
+//   - O_APPEND + post-write re-validation cannot un-write a byte that is
+//     already on disk without becoming a rewriter, which this module's own
+//     header says it refuses to be (`It never rewrites`).
+//   - Compare-and-swap on file size needs an atomic "write only if size
+//     still matches" primitive, which POSIX does not give a single process
+//     without exactly the kind of lock this is.
+// This assumes one local filesystem, which every caller here already does
+// — `ledgerPath` is a plain local path; no networked mount is supported.
+//
+// Cost: a writer that is hard-killed (SIGKILL, OOM) while holding the lock
+// blocks every OTHER writer to the SAME token for up to `LOCK_STALE_MS`,
+// after which the lock is stolen based on the lock file's mtime, not on
+// whether the original holder's pid is still alive — pid liveness is not
+// reliable to check across platforms, and a reused pid would be a worse
+// signal than the clock. A writer whose own read-validate-append cycle
+// legitimately takes longer than `LOCK_STALE_MS` (30s — file I/O and JSON
+// validation, not real work) can have its lock stolen and then race the
+// stealer, reintroducing the exact defect this exists to close — but only
+// in that narrow, bounded, and now-documented case, against the
+// alternative of a token wedged forever behind a lock nobody will ever
+// release.
+const LOCK_SUFFIX = '.lock'
+const LOCK_STALE_MS = 30_000
+const LOCK_RETRY_MS = 10
+const LOCK_MAX_WAIT_MS = 5_000
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+function acquireLock(lockPath) {
+  const deadline = Date.now() + LOCK_MAX_WAIT_MS
+  for (;;) {
+    try {
+      const fd = openSync(lockPath, 'wx', 0o600)
+      writeSync(fd, String(process.pid))
+      closeSync(fd)
+      return
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error
+      try {
+        const age = Date.now() - statSync(lockPath).mtimeMs
+        if (age > LOCK_STALE_MS) {
+          // Steal: unlink, then loop back to a fresh `wx` attempt. Only one
+          // racer can ever win that `wx`, so a steal can produce at most one
+          // new holder — never two processes both believing they hold it.
+          try { unlinkSync(lockPath) } catch { /* another racer already stole it */ }
+          continue
+        }
+      } catch {
+        continue // the lock vanished between EEXIST and stat — retry now
+      }
+      if (Date.now() >= deadline) {
+        throw Object.assign(
+          new Error(`timed out waiting for ${lockPath} (held longer than ${LOCK_MAX_WAIT_MS}ms)`),
+          { code: 'LOCK_TIMEOUT' },
+        )
+      }
+      sleepSync(LOCK_RETRY_MS)
+    }
+  }
+}
+
+function releaseLock(lockPath) {
+  try { unlinkSync(lockPath) } catch { /* already gone — nothing to clean up */ }
+}
+
 function readLines(path) {
   if (!existsSync(path)) return []
   const text = readFileSync(path).subarray(0, MAX_LEDGER_BYTES).toString('utf8')
@@ -137,81 +221,119 @@ export function appendEvent(repo, event, options = {}) {
   const record = { at, ...rest, actor: String(actor) }
 
   const path = ledgerPath(repo, workItem)
-  let existing
+  // The lock file lives beside the ledger it guards, so it must exist first —
+  // `acquireLock` below opens it with `wx`, which needs its parent directory.
+  ensureDir(dirname(path))
+  const lockPath = `${path}${LOCK_SUFFIX}`
+  let holdingLock = false
   try {
-    existing = readLines(path)
+    acquireLock(lockPath)
+    holdingLock = true
   } catch (error) {
-    return fail('unreadable', `cannot read ${path}: ${error.message}`)
+    if (error.code === 'LOCK_TIMEOUT') return fail('locked', error.message)
+    throw error
   }
-
-  const before = validateLedger(existing)
-  // Master, 2026-08-03: §1 became enforceable on a system that had already been
-  // running, so a ledger written before it can contain a backwards pull. If
-  // every append were refused, that token could never be CLOSED either — not
-  // even `abandoned` — and a rule meant to keep work moving would strand the
-  // work it caught. A terminal event may land on such a file. Nothing else may:
-  // another `pulled` is refused exactly as it is on a clean ledger.
-  //
-  // codex BLOCKER 3 (retro-release-review round 4, 2026-08-04): that "nothing
-  // else may" was previously enforced only by accident — by the appended
-  // line usually introducing its own fresh problem — not by checking the
-  // event's own kind. `continuable` now has two tiers instead of one, because
-  // duplicate ids need a NARROWER allowance than the four original legacy
-  // shapes: `route_went_backwards`/`sent_back_after_admission`/an old
-  // `questioned`/an old agent-authored `opened` do not change what a
-  // dispatch_id or task_id MEANS, so a ledger carrying only those may still
-  // be continued normally (matches `isLegacyTolerated`, used by every
-  // reader). A duplicate id — or the `dispatch_id_agent_mismatch`/
-  // `dispatch_id_task_mismatch` it produces on later lines — does change what
-  // the id means, so a ledger that needs `isClosingTolerated` to be
-  // considered continuable at all may only receive a TERMINAL event: enough
-  // to close it, never enough to be trusted for another leg.
-  const continuableAsUsual = !before.ok
-    && before.problems.every((problem) => isLegacyTolerated(problem))
-  const continuableToClose = !before.ok
-    && before.problems.every((problem) => isClosingTolerated(problem))
-    && TERMINAL_EVENTS.has(name)
-  const continuable = continuableAsUsual || continuableToClose
-  if (!before.ok && !continuable) {
-    return fail('ledger_already_invalid',
-      `${path} has ${before.problems.length} problem(s) and must be repaired before anything is appended`,
-      before.problems)
-  }
-
-  const line = JSON.stringify(record)
-  const after = validateLedger([...existing, line])
-  // Only what THIS line introduced. On a clean ledger `inherited` is empty and
-  // this is the same comparison it always was; on a tolerated legacy one it is
-  // what stops the old defect from being re-reported as the new line's fault.
-  const inherited = new Set(before.problems.map((problem) => `${problem.line}:${problem.code}`))
-  const fresh = after.problems.filter((problem) => !inherited.has(`${problem.line}:${problem.code}`))
-  if (fresh.length) {
-    // The prior ledger validated clean, so anything reported now is about the
-    // candidate line and nothing else.
-    const mine = fresh.filter((problem) => problem.line === existing.length + 1)
-    const problems = mine.length ? mine : fresh
-    const code = problems.some((problem) => problem.code === 'time_went_backwards')
-      ? 'timestamp_not_monotonic'
-      : 'invalid_event'
-    const detail = code === 'timestamp_not_monotonic'
-      ? `at ${at} is earlier than the last line already in ${path}`
-      : `${name} does not satisfy contract §4: ${problems.map((problem) => problem.detail).join('; ')}`
-    return fail(code, detail, problems)
-  }
-
   try {
-    ensureDir(dirname(path))
-    const created = !existsSync(path)
-    // One `appendFileSync` of one already-newline-terminated line: JSON.stringify
-    // escapes every control character, so a record can never split into two
-    // lines or interleave with a concurrent writer's line.
-    appendFileSync(path, `${line}\n`, { mode: FILE_MODE })
-    if (created) chmodSync(path, FILE_MODE)
-  } catch (error) {
-    return fail('write_failed', `cannot append to ${path}: ${error.message}`)
+    return appendLocked()
+  } finally {
+    if (holdingLock) releaseLock(lockPath)
   }
 
-  return { ok: true, path, line: existing.length + 1, record }
+  // Everything that reads or writes the ledger's bytes must run AFTER the
+  // lock above is held and BEFORE it is released — that is the whole of the
+  // guarantee BLOCKER 8 asks for, so it is one function so nothing between
+  // `acquireLock` and `releaseLock` can accidentally read/write outside it.
+  function appendLocked() {
+    let existing
+    try {
+      existing = readLines(path)
+    } catch (error) {
+      return fail('unreadable', `cannot read ${path}: ${error.message}`)
+    }
+
+    const before = validateLedger(existing)
+    // Master, 2026-08-03: §1 became enforceable on a system that had already been
+    // running, so a ledger written before it can contain a backwards pull. If
+    // every append were refused, that token could never be CLOSED either — not
+    // even `abandoned` — and a rule meant to keep work moving would strand the
+    // work it caught. A terminal event may land on such a file. Nothing else may:
+    // another `pulled` is refused exactly as it is on a clean ledger.
+    //
+    // codex BLOCKER 3 (retro-release-review round 4, 2026-08-04): that "nothing
+    // else may" was previously enforced only by accident — by the appended
+    // line usually introducing its own fresh problem — not by checking the
+    // event's own kind. `continuable` now has two tiers instead of one, because
+    // duplicate ids need a NARROWER allowance than the four original legacy
+    // shapes: `route_went_backwards`/`sent_back_after_admission`/an old
+    // `questioned`/an old agent-authored `opened` do not change what a
+    // dispatch_id or task_id MEANS, so a ledger carrying only those may still
+    // be continued normally (matches `isLegacyTolerated`, used by every
+    // reader). A duplicate id — or the `dispatch_id_agent_mismatch`/
+    // `dispatch_id_task_mismatch` it produces on later lines — does change what
+    // the id means, so a ledger that needs `isClosingTolerated` to be
+    // considered continuable at all may only receive an event with NO legal
+    // successor: enough to close it, never enough to be trusted for another leg.
+    //
+    // codex BLOCKER 9 (round 5): that used to read TERMINAL_EVENTS, which also
+    // holds `completed` — and §5 calls `completed` only HALF closed, its sole
+    // continuation an `audit_requested`/`audited` pair that is not terminal and
+    // so is refused here in turn. Accepting it did not close the ledger, it
+    // stranded the token: the runner's next write is refused with
+    // `ledger_already_invalid` into the STUCK path, while the board reads the
+    // `completed` line as a releasing event and files the card under Done with
+    // no blocked reason — the wedge invisible on the one screen a human checks.
+    // `HARD_TERMINAL_EVENTS` (`audited`, `abandoned`) is the set that really
+    // has no successor.
+    const continuableAsUsual = !before.ok
+      && before.problems.every((problem) => isLegacyTolerated(problem))
+    const continuableToClose = !before.ok
+      && before.problems.every((problem) => isClosingTolerated(problem))
+      && HARD_TERMINAL_EVENTS.has(name)
+    const continuable = continuableAsUsual || continuableToClose
+    if (!before.ok && !continuable) {
+      return fail('ledger_already_invalid',
+        `${path} has ${before.problems.length} problem(s) and must be repaired before anything is appended`,
+        before.problems)
+    }
+
+    const line = JSON.stringify(record)
+    const after = validateLedger([...existing, line])
+    // Only what THIS line introduced. On a clean ledger `inherited` is empty and
+    // this is the same comparison it always was; on a tolerated legacy one it is
+    // what stops the old defect from being re-reported as the new line's fault.
+    const inherited = new Set(before.problems.map((problem) => `${problem.line}:${problem.code}`))
+    const fresh = after.problems.filter((problem) => !inherited.has(`${problem.line}:${problem.code}`))
+    if (fresh.length) {
+      // The prior ledger validated clean, so anything reported now is about the
+      // candidate line and nothing else.
+      const mine = fresh.filter((problem) => problem.line === existing.length + 1)
+      const problems = mine.length ? mine : fresh
+      const code = problems.some((problem) => problem.code === 'time_went_backwards')
+        ? 'timestamp_not_monotonic'
+        : 'invalid_event'
+      const detail = code === 'timestamp_not_monotonic'
+        ? `at ${at} is earlier than the last line already in ${path}`
+        : `${name} does not satisfy contract §4: ${problems.map((problem) => problem.detail).join('; ')}`
+      return fail(code, detail, problems)
+    }
+
+    try {
+      // `ensureDir` already ran, above the lock, before `acquireLock` needed
+      // this same directory to exist for the lock file itself.
+      const created = !existsSync(path)
+      // One `appendFileSync` of one already-newline-terminated line: JSON.stringify
+      // escapes every control character, so a record can never split into two
+      // lines or interleave with a concurrent writer's line. The lock held for
+      // the whole of `appendLocked` is what makes this THE next line rather
+      // than a line racing an unseen sibling for that position.
+      appendFileSync(path, `${line}\n`, { mode: FILE_MODE })
+      if (created) chmodSync(path, FILE_MODE)
+    } catch (error) {
+      return fail('write_failed', `cannot append to ${path}: ${error.message}`)
+    }
+
+    return { ok: true, path, line: existing.length + 1, record }
+  }
 }
 
 const USAGE = `usage:

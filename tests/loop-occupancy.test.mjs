@@ -23,7 +23,7 @@ import { Script } from 'node:vm'
 
 import { currentEntry, teamOccupancy } from '../plugins/tmux-teams/skills/tmux-teams/scripts/dispatch-facts.mjs'
 import {
-  applyHarvest, declaredEffort, effortEnv, planDispatches, planEscalation, planHarvest, tick,
+  applyHarvest, buildTaskId, declaredEffort, effortEnv, planDispatches, planEscalation, planHarvest, tick,
 } from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs'
 import { applyPulls, planPulls } from '../plugins/tmux-teams/skills/tmux-teams/scripts/pull-controller.mjs'
 import {
@@ -2598,6 +2598,77 @@ test('a reviewed that borrows the live holder\'s dispatch_id while naming an OLD
   assert.equal(currentEntry(noTaskId).verdict, 'pass')
 })
 
+// ── retro-release-review round 5, 2026-08-04: B6 — a genuine different-agent
+// shorthand round-2 review must not be discarded as a stale straggler ───────
+// (r5-codex BLOCKER 5, "John"; r5-qwen "Priya"). The 36-cell matrix below
+// always builds a STALE straggler by its own stated ground truth, so it has
+// no cell for the opposite defect the round-4 fix (discard EVERY non-holder
+// `reviewed` whose agent has any earlier `assigned`, unconditionally)
+// introduced: a reviewer that had an OLDER leg somewhere in this ledger
+// (reject, rework, re-review — the ordinary shape §1 describes) is legally
+// allowed to report round 2 with the SAME shorthand a never-assigned
+// reviewer writes — no new `assigned` of its own, no dispatch_id, no
+// task_id (loop-system-contract.md:843-847,867-870: reviewer identity is
+// never required to equal the holder's, and this shorthand is not scoped to
+// "never assigned before"). The unconditional discard could not tell that
+// apart from a stale echo and threw the genuine verdict away, silently
+// re-dispatching and re-paying an evaluator that had already reported.
+//
+// `reviewed_task` is the fix: it is REQUIRED on every `reviewed` line
+// (contract §4) and the sanctioned producer (loop-runner.mjs harvestEvent)
+// always stamps it from the delivery actually being judged, at the moment of
+// judging — a leg that died BEFORE the holder's current delivery existed
+// cannot name that delivery's task_id, because it never saw it. Matching the
+// holder's own task_id is therefore producer-bound proof this review is
+// about what is CURRENTLY held, independent of who holds it.
+
+test('a genuine different-agent shorthand round-2 review is trusted when it reviews what the holder actually delivered (B6, positive)', () => {
+  const graph = graphOf(TWO_TEAMS)
+  const items = itemsOf(['tok', [
+    { event: 'assigned', agent_id: 'b_w1', task_id: 'b-1', dispatch_id: 'w-1' },
+    { event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done', timed_out: false, evidence_present: true },
+    { event: 'assigned', agent_id: 'b_e', task_id: 'r-1', dispatch_id: 'r-1' },
+    { event: 'reviewed', agent_id: 'b_e', verdict: 'reject', reviewed_task: 'b-1', reason: 'missing a test' },
+    { event: 'assigned', agent_id: 'b_w1', task_id: 'b-2', dispatch_id: 'w-2' },
+    { event: 'delivered', agent_id: 'b_w1', task_id: 'b-2', terminal: 'done', timed_out: false, evidence_present: true },
+    // Round 2's genuine shorthand: no new `assigned` for b_e, no dispatch_id,
+    // no task_id — but `reviewed_task` correctly names the delivery it
+    // actually reviewed, which is the CURRENT holder's own leg (b_w1/b-2).
+    { event: 'reviewed', agent_id: 'b_e', verdict: 'pass', reviewed_task: 'b-2', reason: 'the fix does what was asked' },
+  ]])
+  const entry = currentEntry(items.get('tok').custody)
+  assert.equal(entry.event, 'reviewed', 'a genuine round-2 shorthand review was discarded as though it were stale')
+  assert.equal(entry.verdict, 'pass')
+  assert.equal(entry.agent_id, 'b_e')
+  assert.deepEqual(planPulls(graph, items, '2026-07-27T09:10:00.000Z').map((d) => d.action), ['pull'],
+    'a genuine different-agent shorthand pass did not clear the pull gate')
+})
+
+test('a different-agent shorthand naming an OLDER delivery than the one the holder made is still discarded (B6, negative)', () => {
+  // Identical to the positive fixture except the trailing line's
+  // `reviewed_task` still names b-1 — the delivery b_e actually reviewed
+  // before being superseded — instead of the holder's fresh b-2. Proves the
+  // B6 exception is bound to reviewing the CURRENT delivery, not a blanket
+  // "reviewer had a leg once" pass.
+  const graph = graphOf(TWO_TEAMS)
+  const items = itemsOf(['tok', [
+    { event: 'assigned', agent_id: 'b_w1', task_id: 'b-1', dispatch_id: 'w-1' },
+    { event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done', timed_out: false, evidence_present: true },
+    { event: 'assigned', agent_id: 'b_e', task_id: 'r-1', dispatch_id: 'r-1' },
+    { event: 'reviewed', agent_id: 'b_e', verdict: 'reject', reviewed_task: 'b-1', reason: 'missing a test' },
+    { event: 'assigned', agent_id: 'b_w1', task_id: 'b-2', dispatch_id: 'w-2' },
+    { event: 'delivered', agent_id: 'b_w1', task_id: 'b-2', terminal: 'done', timed_out: false, evidence_present: true },
+    // A second late line from b_e, but still naming b-1 — not the holder's
+    // fresh b-2.
+    { event: 'reviewed', agent_id: 'b_e', verdict: 'pass', reviewed_task: 'b-1', reason: 'stale — about the wrong delivery' },
+  ]])
+  const entry = currentEntry(items.get('tok').custody)
+  assert.notEqual(entry.event, 'reviewed', 'a stale review naming an older delivery was trusted as the holder\'s own')
+  assert.equal(entry.agent_id, 'b_w1', 'the real holder (the reworked delivery) was not retained')
+  assert.deepEqual(planPulls(graph, items, '2026-07-27T09:10:00.000Z'), [],
+    'a stale different-agent review naming an older delivery cleared the pull gate')
+})
+
 // ── retro-release-review round 4, 2026-08-04: the full F1 identity matrix ───
 // Three independent review families (codex, agy, qwen) each rebuilt a piece
 // of this matrix and did not agree with each other. This test builds the
@@ -2687,28 +2758,35 @@ for (const dispatchShape of ['own', 'absent', 'borrowed']) {
 }
 assert.equal(F1_MATRIX.length, 36, 'the identity matrix must cover all 36 cells')
 
+// r5-codex BLOCKER 7 ("Murat"): every line needs `work_item`/`workflow` — the
+// two `COMMON_FIELDS` `validateLedger` requires on every event — or the
+// sanctioned-writer check below rejects all 36 cells for a reason that has
+// nothing to do with the identity shape under test.
+const F1_WORK_ITEM = 'tok'
+const F1_COMMON = { work_item: F1_WORK_ITEM, workflow: 'feature' }
+
 function buildF1Cell({ dispatchShape, taskShape, agentShape, interleave }) {
   const OLD_AGENT = 'b_e'
   const NEW_AGENT = agentShape === 'same' ? 'b_e' : 'b_e2'
   const custody = [
-    { at: '2026-08-04T09:00:00.000Z', event: 'assigned', agent_id: 'b_w1', task_id: 'b-1', dispatch_id: 'w-1' },
-    { at: '2026-08-04T09:01:00.000Z', event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done', timed_out: false, evidence_present: true, dispatch_id: 'w-1' },
+    { ...F1_COMMON, at: '2026-08-04T09:00:00.000Z', event: 'assigned', agent_id: 'b_w1', task_id: 'b-1', dispatch_id: 'w-1' },
+    { ...F1_COMMON, at: '2026-08-04T09:01:00.000Z', event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done', timed_out: false, evidence_present: true, dispatch_id: 'w-1' },
     // The OLD evaluator's leg — timed out / failed, never itself reported.
-    { at: '2026-08-04T09:02:00.000Z', event: 'assigned', agent_id: OLD_AGENT, task_id: 'r-1', dispatch_id: 'd-1' },
+    { ...F1_COMMON, at: '2026-08-04T09:02:00.000Z', event: 'assigned', agent_id: OLD_AGENT, task_id: 'r-1', dispatch_id: 'd-1' },
   ]
   let t = 3
   if (interleave === 'interleaved') {
     custody.push(
-      { at: `2026-08-04T09:0${t}:00.000Z`, event: 'assigned', agent_id: 'b_w1', task_id: 'b-2', dispatch_id: 'w-2' },
-      { at: `2026-08-04T09:0${t + 1}:00.000Z`, event: 'delivered', agent_id: 'b_w1', task_id: 'b-2', terminal: 'done', timed_out: false, evidence_present: true, dispatch_id: 'w-2' },
+      { ...F1_COMMON, at: `2026-08-04T09:0${t}:00.000Z`, event: 'assigned', agent_id: 'b_w1', task_id: 'b-2', dispatch_id: 'w-2' },
+      { ...F1_COMMON, at: `2026-08-04T09:0${t + 1}:00.000Z`, event: 'delivered', agent_id: 'b_w1', task_id: 'b-2', terminal: 'done', timed_out: false, evidence_present: true, dispatch_id: 'w-2' },
     )
     t += 2
   }
   // The LIVE retry — this is the holder.
-  custody.push({ at: `2026-08-04T09:0${t}:00.000Z`, event: 'assigned', agent_id: NEW_AGENT, task_id: 'r-2', dispatch_id: 'd-2' })
+  custody.push({ ...F1_COMMON, at: `2026-08-04T09:0${t}:00.000Z`, event: 'assigned', agent_id: NEW_AGENT, task_id: 'r-2', dispatch_id: 'd-2' })
   t += 1
   const stale = {
-    at: `2026-08-04T09:0${t}:00.000Z`, event: 'reviewed', agent_id: OLD_AGENT, verdict: 'pass',
+    ...F1_COMMON, at: `2026-08-04T09:0${t}:00.000Z`, event: 'reviewed', agent_id: OLD_AGENT, verdict: 'pass',
     reviewed_task: 'b-1', reason: 'stale round-1 straggler',
   }
   if (dispatchShape === 'own') stale.dispatch_id = 'd-1'
@@ -2716,30 +2794,333 @@ function buildF1Cell({ dispatchShape, taskShape, agentShape, interleave }) {
   if (taskShape === 'own') stale.task_id = 'r-1'
   else if (taskShape === 'borrowed') stale.task_id = 'r-2'
   custody.push(stale)
-  return { custody, holder: NEW_AGENT }
+  return { custody, holder: NEW_AGENT, stale }
 }
 
-test('F1 identity matrix — all 36 cells, printed and asserted (round 4)', () => {
+// r5-codex BLOCKER 7 ("Murat"): the matrix above bypasses `ledger-writer.mjs`
+// entirely — no `work_item`/`workflow`, never routed through `validateLedger`
+// — so it silently asserts over shapes the sanctioned writer would REFUSE
+// (`dispatch_id_agent_mismatch`/`dispatch_id_task_mismatch`), and a mutation
+// returning the stale entry's own bytes in an H cell could still read
+// "correct" if it happened to also flip `verdict` away from `'pass'`. Two
+// independent fixes, not a cosmetic label:
+//   1. Every cell is now run through the SAME `validateLedger` the sanctioned
+//      writer calls, and whether the writer would have accepted that exact
+//      ledger is printed and asserted against a fixed expectation (24
+//      accepted / 12 refused — executed and confirmed against
+//      `ledger-writer.mjs:appendEvent` directly, not just `validateLedger`,
+//      before this file was written). A cell the writer refuses still has its
+//      `currentEntry` behaviour checked below — that is legitimate defense in
+//      depth against a hand-edited or pre-rule legacy ledger — but the table
+//      no longer lets a reader mistake "36 shapes" for "36 shapes production
+//      can create".
+//   2. An H cell is now checked by IDENTITY, not just by verdict string:
+//      `result !== stale` fails if `currentEntry` ever returns the exact
+//      stale object, however its fields are mutated, whenever a different
+//      object (the live holder's own `assigned`) is required instead.
+const F1_WRITER_ACCEPTS = ({ dispatchShape, taskShape, agentShape }) => {
+  if (dispatchShape === 'own' && taskShape === 'borrowed') return false
+  if (dispatchShape === 'borrowed' && taskShape === 'own') return false
+  if (dispatchShape === 'borrowed' && taskShape === 'absent' && agentShape === 'different') return false
+  if (dispatchShape === 'borrowed' && taskShape === 'borrowed' && agentShape === 'different') return false
+  return true
+}
+
+test('F1 identity matrix — all 36 cells, printed and asserted, against what the sanctioned writer actually accepts (round 5)', () => {
   const rows = []
   let failures = 0
+  let acceptedCount = 0
   for (const cell of F1_MATRIX) {
-    const { custody, holder } = buildF1Cell(cell)
+    const { custody, holder, stale } = buildF1Cell(cell)
+    const writerVerdict = validateLedger(custody.map((entry) => JSON.stringify(entry)))
+    const writerAccepted = writerVerdict.ok
+    if (writerAccepted !== F1_WRITER_ACCEPTS(cell)) {
+      failures += 1
+      rows.push({
+        dispatch: cell.dispatchShape, task: cell.taskShape, agent: cell.agentShape, order: cell.interleave,
+        required: cell.required, actual: 'n/a', writerAccepted, pass: 'FAIL (writer-acceptance mismatch)',
+      })
+      continue
+    }
+    if (writerAccepted) acceptedCount += 1
+
     const result = currentEntry(custody)
     const actual = result.event === 'reviewed' && result.verdict === 'pass' ? 'TRUST' : 'H'
-    const heldCorrectly = actual !== 'H' || result.agent_id === holder
+    // For H, the returned entry must be a DIFFERENT object than the stale
+    // straggler — not merely one that happens to print a different verdict —
+    // and it must be held by the real live holder.
+    const heldCorrectly = actual !== 'H' || (result !== stale && result.agent_id === holder)
     const pass = actual === cell.required && heldCorrectly
     if (!pass) failures += 1
     rows.push({
       dispatch: cell.dispatchShape, task: cell.taskShape, agent: cell.agentShape,
-      order: cell.interleave, required: cell.required, actual, pass: pass ? 'ok' : 'FAIL',
+      order: cell.interleave, required: cell.required, actual, writerAccepted, pass: pass ? 'ok' : 'FAIL',
     })
   }
-  console.log('\nF1 identity matrix (36 cells):')
+  console.log('\nF1 identity matrix (36 cells, writer-acceptance labeled):')
   console.table(rows)
+  assert.equal(acceptedCount, 24,
+    'the sanctioned writer\'s acceptance of these 36 shapes drifted from the executed baseline (24/36) — re-verify against ledger-writer.mjs directly')
   if (failures > 0) {
-    assert.fail(`${failures}/36 F1 identity cells did not match their required verdict — see table above`)
+    assert.fail(`${failures}/36 F1 identity cells did not match their required verdict or writer-acceptance — see table above`)
   }
   assert.equal(failures, 0)
 })
 
+// ── codex BLOCKER 4 (retro-release-review round 5, 2026-08-04): task id
+// domain mismatch caused unbounded respawn ───────────────────────────────────
+//
+// `dispatch()` (loop-runner.mjs) used to build a task id by concatenating
+// workItem-team-role-Date.now() and lossily replacing every disallowed
+// character with '-'. `acp-companion.mjs`'s own ID_RE caps a task id at 64
+// chars and rejects it BEFORE the child ever writes `assigned` — and the
+// retry budget (`attemptsBy`, loop-runner.mjs) counts only `assigned` lines,
+// so a work item long enough to overflow 64 chars respawned forever. These
+// tests probe the REAL acp-companion.mjs process — not a copy of its
+// regex — because the whole defect is "what a SEPARATE process's own gate
+// accepts", which a same-process regex copy cannot prove.
+const REAL_COMPANION = join(ROOT, 'plugins/tmux-teams/skills/tmux-teams/scripts/acp-companion.mjs')
+
+// Runs the real companion binary just far enough to clear (or trip) its own
+// task-id gate: a nonexistent brief file makes it fail immediately AFTER
+// that gate with a distinct, unmistakable message, so "rejected here" can
+// never be confused with "rejected for some other, later reason".
+function realCompanionTaskIdVerdict(taskId) {
+  const dir = mkdtempSync(join(tmpdir(), 'companion-id-probe-'))
+  try {
+    const result = spawnSync(process.execPath, [
+      REAL_COMPANION, 'claude', dir, taskId, join(dir, 'does-not-exist.md'),
+    ], { encoding: 'utf8' })
+    const stderr = result.stderr || ''
+    if (/invalid task id/.test(stderr)) return 'rejected-at-id-gate'
+    if (/\[fatal\] cannot read brief/.test(stderr)) return 'passed-id-gate'
+    return `unexpected: code=${result.status} stderr=${stderr}`
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+test('buildTaskId: a work item at the sanctioned ledger writer\'s own length ceiling never overflows the REAL acp-companion\'s 64-char task-id gate', () => {
+  // ledger-writer.mjs's own ID_RE — the "REAL writer" this task-id must stay
+  // inside the domain of — allows up to 128 chars, '.' and ':' included.
+  // 128 is the worst case for length; use it, not a convenient smaller one.
+  const workItem = `w${'x'.repeat(126)}y` // 128 chars, starts alnum as the ledger writer requires
+  assert.equal(workItem.length, 128)
+  const taskId = buildTaskId(workItem, 'build', 'dispatcher', 1_999_999_999_999)
+  assert.ok(taskId.length <= 64, `taskId is ${taskId.length} chars, over acp-companion's 64-char cap: ${taskId}`)
+  assert.equal(realCompanionTaskIdVerdict(taskId), 'passed-id-gate',
+    `the REAL acp-companion process rejected a taskId built from a work item the REAL ledger writer accepts: ${taskId}`)
+})
+
+test('buildTaskId: the OLD formula is proven broken against the REAL acp-companion process on the same input (baseline for the fix above)', () => {
+  // This reconstructs the exact pre-fix formula (loop-runner.mjs, before
+  // this change) to prove the failure this fix closes was real, not
+  // hypothetical — run against the actual companion binary, the same way
+  // the fixed `buildTaskId` is proven above.
+  const workItem = `w${'x'.repeat(126)}y`
+  const oldTaskId = `${workItem}-build-dispatcher-${(1_999_999_999_999).toString(36)}`
+    .replace(/[^A-Za-z0-9_-]/g, '-')
+  assert.ok(oldTaskId.length > 64, 'the old formula must overflow 64 chars for this to be the failure it claims to be')
+  assert.equal(realCompanionTaskIdVerdict(oldTaskId), 'rejected-at-id-gate',
+    'the old formula was expected to be rejected by the real companion\'s own ID_RE')
+})
+
+test('buildTaskId: two work items that collide under naive char-substitution ("a.b", "a:b") no longer collide', () => {
+  // Both are legal per the ledger writer's own ID_RE (which allows '.' and
+  // ':'); the OLD sanitize turned both into "a-b", so two DIFFERENT tokens
+  // dispatched in the same millisecond would have shared one task-keyed log,
+  // dispatch record, liveness file and mailbox outbox. Pin `nowMs` so the
+  // property under test is the id-building function's own injectivity, not
+  // luck about which millisecond the clock read.
+  const now = 1_700_000_000_000
+  const a = buildTaskId('a.b', 'build', 'dispatcher', now)
+  const b = buildTaskId('a:b', 'build', 'dispatcher', now)
+  assert.notEqual(a, b, `"a.b" and "a:b" collided onto the same taskId at the same instant: ${a}`)
+  // And the old formula DID collide, for the same reason blocker 4 states —
+  // proves this is a real regression fix, not a property that always held.
+  const oldSanitize = (workItem) => `${workItem}-build-dispatcher-${now.toString(36)}`.replace(/[^A-Za-z0-9_-]/g, '-')
+  assert.equal(oldSanitize('a.b'), oldSanitize('a:b'), 'the old formula was expected to collide on these two inputs')
+})
+
+test('a dispatched leg for a valid-but-long work item is accepted by the REAL acp-companion process end to end (integration, not a copied regex)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-taskid-'))
+  try {
+    const store = join(dir, '.tmux-teams')
+    mkdirSync(join(store, 'work-items'), { recursive: true })
+    mkdirSync(join(store, 'team-briefs'), { recursive: true })
+    const graph = TWO_TEAMS
+    writeFileSync(join(store, 'graph.json'), JSON.stringify(graph))
+    writeFileSync(join(store, 'team-briefs', 'build.md'), '# standing brief\n')
+    // 100 chars — well inside the ledger writer's 128-char ceiling, and long
+    // enough on its own (before team/role/hash are even added) to have
+    // overflowed the OLD formula's 64-char budget.
+    const longWorkItem = `tok${'z'.repeat(97)}`
+    assert.equal(longWorkItem.length, 100)
+    writeFileSync(join(store, 'work-items', `${longWorkItem}.jsonl`),
+      `${ledger(longWorkItem, [{ event: 'opened', agent_id: 'b_d', to_team: 'build' }])
+        .map((entry) => JSON.stringify(entry)).join('\n')}\n`)
+
+    const captured = []
+    const spawnFn = (cmd, args, options) => {
+      captured.push({ cmd, args, env: options.env })
+      return { unref() {} }
+    }
+    tick(dir, { apply: true, scratchDir: join(dir, 'scratch'), spawnFn })
+
+    assert.ok(captured.length >= 1, `expected at least one dispatched leg, got ${captured.length}`)
+    for (const call of captured) {
+      const taskId = call.args[3]
+      assert.ok(taskId.length <= 64, `runner-generated taskId is ${taskId.length} chars: ${taskId}`)
+      assert.equal(realCompanionTaskIdVerdict(taskId), 'passed-id-gate',
+        `the REAL acp-companion rejected the taskId the REAL runner generated for a valid long work item: ${taskId}`)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 // ── GitHub #32: per-seat reasoning effort reaches the spawned process ────────
+// (trailing header retained as-is; no test body followed it before this change)
+
+// ── retro-release-review round 5 (2026-08-04): BLOCKER 2 + BLOCKER 3 ────────
+
+// BLOCKER 2: `lastWorkerDelivery` (loop-runner.mjs) used to walk `custody`
+// backwards and take the newest `delivered`/worker/terminal:'done' line by
+// ARRIVAL order — the position `readWorkItems` sorts it into by `at`
+// (dispatch-facts.mjs). A leg already declared `lost` can still report a late
+// success stamped with whatever `at` it actually landed at, which can sort
+// AFTER a newer leg's own delivery. This reproduces the exact scenario in the
+// review: w1 is declared lost, the retry (w2, same agent b_w1, a fresh
+// task_id) delivers the artifact actually in play, and only THEN does w1's
+// late, superseded success arrive and get appended last.
+test('BLOCKER 2: the evaluator is handed the live retry\'s delivery, not a late straggler from a leg already declared lost', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-blocker2-'))
+  try {
+    const store = join(dir, '.tmux-teams')
+    mkdirSync(join(store, 'work-items'), { recursive: true })
+    mkdirSync(join(store, 'team-briefs'), { recursive: true })
+    mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
+    writeFileSync(join(store, 'graph.json'), JSON.stringify(TWO_TEAMS))
+    writeFileSync(join(store, 'team-briefs', 'build.md'), '# standing brief for Build\n')
+    writeFileSync(join(dir, '.mailbox-out', 'w1-task'), 'STALE ARTIFACT FROM THE DECLARED-LOST LEG\n')
+    writeFileSync(join(dir, '.mailbox-out', 'w2-task'), 'THE REAL CURRENT ARTIFACT FROM THE RETRY\n')
+    writeFileSync(join(store, 'work-items', 'token2.jsonl'), `${ledger('token2', [
+      { event: 'assigned', agent_id: 'b_w1', task_id: 'w1-task' },
+      { event: 'lost', agent_id: 'b_w1', task_id: 'w1-task' },
+      { event: 'assigned', agent_id: 'b_w1', task_id: 'w2-task' },
+      { event: 'delivered', agent_id: 'b_w1', task_id: 'w2-task', terminal: 'done' },
+      // Appended LAST, so a raw backwards scan meets this before w2's own
+      // delivery — even though w2's leg opened (was `assigned`) later.
+      { event: 'delivered', agent_id: 'b_w1', task_id: 'w1-task', terminal: 'done' },
+    ]).map((entry) => JSON.stringify(entry)).join('\n')}\n`)
+
+    const scratch = join(dir, 'scratch')
+    const result = tick(dir, { apply: false, scratchDir: scratch })
+    assert.equal(result.ok, true, result.reason)
+    const brief = readFileSync(join(scratch, 'brief-token2-build-evaluator.md'), 'utf8')
+
+    assert.match(brief, /THE REAL CURRENT ARTIFACT FROM THE RETRY/,
+      'the evaluator brief did not carry the live retry\'s own delivery')
+    assert.match(brief, /task `w2-task`/, 'the evaluator brief did not name the live retry\'s task')
+    assert.doesNotMatch(brief, /STALE ARTIFACT FROM THE DECLARED-LOST LEG/,
+      'the evaluator was handed the declared-lost leg\'s late straggler instead of the live retry\'s delivery')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// BLOCKER 3a: the outer controller's own leg is spawned with `workItem: ''`
+// (`tick`, above), so a dead controller leg — killed, crashed, or simply one
+// that never wrote `.mailbox-out/<taskId>` — leaves `planHarvest` nothing to
+// harvest for a token parked in `escalated` on it. Before this fix `held` had
+// no exit at all for that case; `answerDeadlineSec` (the same clock
+// `questioned` already answers to) now gives it one.
+test('BLOCKER 3a: a token parked on a dead outer-controller leg is held inside the deadline and expires past it', () => {
+  const graph = graphOf(TWO_TEAMS)
+  const items = itemsOf(['parked', ESCALATED])
+  const lastAt = Date.parse([...items.values()][0].custody.slice(-1)[0].at)
+
+  const inside = planDispatches(graph, items, new Set(), { now: lastAt + 60_000, answerDeadlineSec: 600 })
+    .find((entry) => entry.work_item === 'parked')
+  assert.equal(inside?.action, 'held', 'a controller leg still inside its deadline must not be treated as dead')
+
+  const past = planDispatches(graph, items, new Set(), { now: lastAt + 601_000, answerDeadlineSec: 600 })
+    .find((entry) => entry.work_item === 'parked')
+  assert.equal(past?.action, 'expired',
+    'a controller leg with no outbox past the deadline left the token held with no path to a terminal')
+  assert.equal(past.agent_id, 'pm')
+})
+
+// BLOCKER 3a, end to end: the `expired` action tick() applies actually reaches
+// the ledger as `abandoned` — the terminal `AFTER_COMPLETED`'s own comment in
+// `ledger-validate.mjs` names as the legal landing spot for exactly this.
+test('BLOCKER 3a (tick): a parked token behind a dead outer-controller leg is abandoned instead of held forever', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-blocker3a-'))
+  try {
+    const store = join(dir, '.tmux-teams')
+    mkdirSync(join(store, 'work-items'), { recursive: true })
+    mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
+    writeFileSync(join(store, 'graph.json'), JSON.stringify(TWO_TEAMS))
+    // No .mailbox-out/board-pm-1 — the controller leg never wrote an outbox.
+    const ledgerFile = join(store, 'work-items', 'parked.jsonl')
+    writeFileSync(ledgerFile, `${ledger('parked', ESCALATED).map((entry) => JSON.stringify(entry)).join('\n')}\n`)
+
+    const result = tick(dir, { apply: true, scratchDir: join(dir, 'scratch') })
+    assert.equal(result.ok, true, result.reason)
+
+    const lines = readFileSync(ledgerFile, 'utf8').trim().split('\n')
+    const lastEvent = JSON.parse(lines[lines.length - 1])
+    assert.equal(lastEvent.event, 'abandoned',
+      'a controller leg that never wrote an outbox left the token parked forever instead of reaching a terminal')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// BLOCKER 3b: `audit_requested` is a RELEASING_EVENT (dispatch-facts.mjs
+// `teamOccupancy`), so a token in that state is never a member of `held` and
+// `nextStep`'s per-team loop in `planDispatches` never visits it at all — a
+// dead controller leg here had NO reader whatsoever, not even a `held` one.
+// `planDispatches` now scans every item directly for exactly this shape.
+test('BLOCKER 3b: a finished route behind a dead outer-controller audit leg expires past the deadline', () => {
+  const graph = graphOf(TWO_TEAMS)
+  const at = (minutes) => new Date(FIXED_NOW + minutes * 60_000).toISOString()
+  const stuckAudit = itemsOf(['tok', [
+    ...FINISHED,
+    { event: 'audit_requested', agent_id: 'pm', task_id: 'pm-dead-1', reason: 'route finished — read the delivery as a whole', at: at(1) },
+  ]])
+  const lastAt = Date.parse(at(1))
+
+  const inside = planDispatches(graph, stuckAudit, new Set(), { now: lastAt + 60_000, answerDeadlineSec: 600 })
+    .find((entry) => entry.work_item === 'tok')
+  assert.equal(inside, undefined,
+    'an audit still inside its deadline must not be reported as expired (and RELEASING_EVENTS keeps it out of `held`, so no plan at all is the correct shape)')
+
+  const past = planDispatches(graph, stuckAudit, new Set(), { now: lastAt + 601_000, answerDeadlineSec: 600 })
+    .find((entry) => entry.work_item === 'tok')
+  assert.equal(past?.action, 'expired',
+    'a finished route whose audit controller leg never wrote an outbox was held with no automatic path to a terminal')
+  assert.equal(past.agent_id, 'pm')
+})
+
+// BLOCKER 3b, end to end.
+test('BLOCKER 3b (tick): a finished route behind a dead outer-controller audit leg is abandoned instead of held forever', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-blocker3b-'))
+  try {
+    const store = join(dir, '.tmux-teams')
+    mkdirSync(join(store, 'work-items'), { recursive: true })
+    mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
+    writeFileSync(join(store, 'graph.json'), JSON.stringify(TWO_TEAMS))
+    const ledgerFile = join(store, 'work-items', 'tok.jsonl')
+    // `at` stamped far in the past — well past `ANSWER_DEADLINE_SEC` relative
+    // to the real clock `tick()` reads — and no .mailbox-out/pm-dead-1.
+    writeFileSync(ledgerFile, `${ledger('tok', [
+      ...FINISHED,
+      { event: 'audit_requested', agent_id: 'pm', task_id: 'pm-dead-1', reason: 'route finished — read the delivery as a whole' },
+    ]).map((entry) => JSON.stringify(entry)).join('\n')}\n`)
+
+    const result = tick(dir, { apply: true, scratchDir: join(dir, 'scratch') })
+    assert.equal(result.ok, true, result.reason)
+
+    const lines = readFileSync(ledgerFile, 'utf8').trim().split('\n')
+    const lastEvent = JSON.parse(lines[lines.length - 1])
+    assert.equal(lastEvent.event, 'abandoned',
+      'a finished route whose audit controller leg never wrote an outbox stayed audit_requested forever instead of reaching a terminal')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
