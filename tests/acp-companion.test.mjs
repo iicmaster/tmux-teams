@@ -2523,12 +2523,21 @@ test('a startup hard ceiling records ACP cancellation unavailable before signali
 })
 
 test('duplicate, session-mismatched, and noise updates do not renew the lease', () => {
+  // The stall budget has to outlast process STARTUP, not just the mock's own
+  // 22ms delay. At 0.2s this test asserted a progress count of 5 against a run
+  // whose whole life was shorter than spawning node and completing the ACP
+  // handshake while this file's concurrent cases spawn beside it — and it
+  // failed with `actual: 0`, having counted events that never had time to
+  // happen. It is green 8/8 alone at load 21 and red inside the file, which is
+  // the signature of a budget measuring the harness rather than the behaviour.
+  // What the test is about — WHICH updates renew a lease — is unchanged: the
+  // mock stops emitting after its script either way, so the run still stalls.
   const r = run('task-noop-noise', {
     MOCK_SCENARIO: 'duplicates-noise',
     MOCK_DUPLICATE_DELAY_MS: '22',
-    ACP_CANCEL_GRACE_MS: '20',
-    ACP_PROCESS_KILL_GRACE_MS: '100',
-  }, undefined, 0.2)
+    ACP_CANCEL_GRACE_MS: '250',
+    ACP_PROCESS_KILL_GRACE_MS: '300',
+  }, undefined, 2)
   assert.equal(r.status, 1, `exit 1 expected; stderr:\n${r.stderr}`)
   const state = snapshot(r.cwd, 'task-noop-noise')
   assert.equal(state.liveness_state, 'stalled')
