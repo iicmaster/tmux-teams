@@ -344,14 +344,30 @@ export function provenFamilyKeysCollide(keys, launchSignatures = null) {
   if (list.filter(key => key === null).length >= 2) return true
   const known = list.filter(key => key !== null)
   if (new Set(known).size !== known.length) return true
+  // Two lanes that EXEC THE SAME BYTES are one lane, whatever their keys say.
+  // This used to run only where a key was null, on the theory that an attacker
+  // hides by omitting `adapterPackage` — the shape r4-codex found. r5-qwen
+  // showed the easier attack needs no hiding at all: copy the qwen profile,
+  // change `id`, drop `endpoint` (or simply leave it out of ROUTED_PROFILES),
+  // and keep `adapterPackage` honest. The keys then differ — `::unrouted`
+  // against `::pinned:token-plan...` — so the uniqueness test above passes, the
+  // null gate never opens, and two lanes running
+  // `npx -y @agentclientprotocol/claude-agent-acp@0.61.0` with
+  // `claudeExecutable: 'claude-qwen'` are certified as two families. Same
+  // upstream, same account, same model, byte-identical argv.
+  //
+  // An endpoint pin distinguishes lanes that reach different providers; it
+  // cannot distinguish two lanes that reach the same one, and a pin is a
+  // declaration on a profile rather than a property of the launch. So the
+  // signature is compared for EVERY lane, and a key that claims otherwise does
+  // not get to overrule what is actually executed.
   if (Array.isArray(launchSignatures) && launchSignatures.length === list.length) {
+    const seen = new Map()
     for (let i = 0; i < list.length; i += 1) {
-      if (list[i] !== null) continue
       const signature = launchSignatures[i]
       if (signature === null || signature === undefined) continue
-      for (let j = 0; j < list.length; j += 1) {
-        if (j !== i && launchSignatures[j] === signature) return true
-      }
+      if (seen.has(signature)) return true
+      seen.set(signature, i)
     }
   }
   return false

@@ -90,7 +90,14 @@ const runnerResult = (p, staticPacket, review = validReview) => ({
 })
 const keyedProfiles = entries => Object.fromEntries(entries.map(entry => [entry.id, entry]))
 const gateProfile = (id, family) => profile(id, {
-  command: [process.execPath, MOCK],
+  // `id` is in the argv on purpose. Two lanes that exec byte-identical bytes are
+  // one lane — that is the rule these fixtures exist to exercise — so a double
+  // claiming to be a distinct reviewer has to launch distinctly, exactly as the
+  // shipped profiles do (they differ by `claudeExecutable`: claude-qwen vs
+  // claude-zai vs claude-kimi over one adapter package). A shared
+  // `[node, MOCK]` made every double indistinguishable and would have made the
+  // guard look like a false-positive machine when it was reading them correctly.
+  command: [process.execPath, MOCK, id],
   args: undefined,
   provider: `${id}-provider`,
   family,
