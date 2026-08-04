@@ -500,6 +500,30 @@ test('H5 an invalid ledger sitting on opened is drawn as blocked, not as ordinar
     'an invalid ledger drew no blocker at all')
 })
 
+test('H5 a legacy-tolerated ledger is drawn as ordinary queued work, agreeing with the loop (qwen #4)', () => {
+  // `opened` signed by an agent, not a human — legal before ADR 0002, and
+  // `LEGACY_TOLERATED_PROBLEMS` (ledger-validate.mjs) is what lets the
+  // writer, the pull controller, and the runner all still trust this ledger.
+  // Before this fix, this file alone judged it with raw `validateLedger` and
+  // drew it "blocked — needs repair", disagreeing with the rest of the loop
+  // about the exact same token — the disagreement `kanban.mjs:49-52` states
+  // this file exists to prevent.
+  const dir = repoWith(FOUR_TEAMS, {
+    tok: [
+      { at: '2026-07-27T09:00:00.000Z', event: 'opened', agent_id: 'design_d', to_team: 'design', reason: 'requested before ADR 0002', actor: 'agent:design_d' },
+    ],
+  }, {
+    tok: { expectInvalid: true, why: 'a pre-ADR-0002 opened signed by an agent — legacy-tolerated, not a fresh violation' },
+  })
+  const board = readBoard(dir, NOW)
+  const designColumn = board.columns.find((column) => column.team_id === 'design')
+  assert.equal(designColumn.cards.length, 1)
+  const [card] = designColumn.cards
+  assert.equal(card.state, 'Waiting for intake', 'the card still reads its ordinary state')
+  assert.equal(card.blocked_reason, null,
+    'a legacy-tolerated ledger was drawn as blocked, disagreeing with the writer and the pull controller')
+})
+
 // ── M3 — Done/team/unplaceable classification must agree with the card ──────
 
 test('M3 a stray late outcome after audit_requested is filed under Done, not Unplaceable', () => {

@@ -216,11 +216,30 @@ export function currentEntry(custody) {
     }
   })
 
+  const holderTaskId = holderAssignedIndex >= 0
+    && custody[holderAssignedIndex].task_id !== undefined && custody[holderAssignedIndex].task_id !== null
+    ? String(custody[holderAssignedIndex].task_id)
+    : null
+
   for (let i = custody.length - 1; i >= 0; i -= 1) {
     const entry = custody[i]
     if (!LEG_OUTCOMES.has(entry.event)) return entry
     if (entry.dispatch_id && holderDispatchId) {
-      if (String(entry.dispatch_id) === String(holderDispatchId)) return entry
+      if (String(entry.dispatch_id) === String(holderDispatchId)) {
+        // dispatch_id matching the holder's own is necessary, not sufficient
+        // (Shape 2, retro-release-review round 2, 2026-08-04, F1): nothing
+        // stops a line from also naming a task_id that resolves to a
+        // DIFFERENT leg — validation checks the dispatch owner's agent_id but
+        // historically waved through its task_id for `reviewed`. A `reviewed`
+        // that borrows the live dispatch_id while still naming an old task_id
+        // is not this leg's own outcome; it is stale evidence wearing the
+        // live leg's badge. Only refuse when the entry's task_id actually
+        // resolves to some OTHER `assigned` line than the holder's — an entry
+        // that omits task_id, or that names the holder's own, still passes.
+        const entryTaskId = entry.task_id !== undefined && entry.task_id !== null ? String(entry.task_id) : null
+        if (entryTaskId !== null && holderTaskId !== null && entryTaskId !== holderTaskId) continue
+        return entry
+      }
       continue
     }
     const ownIndex = entry.task_id !== undefined && entry.task_id !== null
@@ -260,29 +279,34 @@ export function currentEntry(custody) {
     // does: not evidence about where the token is now, so the search keeps
     // looking at older lines, which lands on the holder's own `assigned`.
     if (entry.event === 'reviewed') {
-      // A retry looks like the SAME agent being assigned twice in a row, with
-      // no OTHER agent's `assigned` between them — that is what a kill and
-      // redispatch of the identical evaluator writes, and it is the one shape
-      // that makes an identityless `reviewed` ambiguous (see above). Two
-      // independent review rounds for two different deliveries (one team's
-      // own quality loop, contract §1) always have a different agent's
-      // `assigned` — the next worker leg — between the evaluator's legs, so
-      // that shape reads as a run of 1 and stays trusted. Scanning only up to
-      // this entry's own position (not the whole ledger) is what keeps a
-      // later, unrelated re-assignment of the same agent from retroactively
-      // recolouring an outcome that was already unambiguous when it was
-      // written.
+      // A retry is the SAME agent assigned twice in this ledger. The previous
+      // shape of this check only counted a CONSECUTIVE run of that agent's
+      // `assigned` lines, on the theory that two independent review rounds
+      // (reject, rework, re-review — one team's own quality loop, contract
+      // §1) always have a different agent's `assigned` — the next worker leg
+      // — between the evaluator's two legs, so that shape would read as a run
+      // of 1 and stay trusted. That theory was backwards: the rework leg
+      // sitting between them is exactly what resets a "consecutive run"
+      // count, so a same-evaluator reject/rework/re-review — the most
+      // ordinary custody in the system — read as unambiguous and let the
+      // dead round-1 leg's late, identityless `reviewed pass` clear the pull
+      // gate while round 2 was still running (Shape 1, retro-release-review
+      // round 2, 2026-08-04, F1). Nothing about an intervening OTHER agent's
+      // leg tells this identityless line which of the target agent's legs it
+      // belongs to — only whether the target agent was ever assigned more
+      // than once at all, counted over the WHOLE ledger up to this entry's
+      // own position (not merely the immediately adjacent lines). Scanning
+      // only up to this entry's own position — not the whole ledger past it
+      // — is still what keeps a LATER, unrelated re-assignment of the same
+      // agent from retroactively recolouring an outcome that was already
+      // unambiguous when it was written.
       const targetAgent = String(entry.agent_id || '')
-      let lastAssignedAgent = null
-      let sameAgentRun = 0
+      let assignedCount = 0
       for (let j = 0; j <= i; j += 1) {
         const line = custody[j]
-        if (line.event !== 'assigned') continue
-        const lineAgent = String(line.agent_id || '')
-        sameAgentRun = (lineAgent === targetAgent && lastAssignedAgent === targetAgent) ? sameAgentRun + 1 : (lineAgent === targetAgent ? 1 : 0)
-        lastAssignedAgent = lineAgent
+        if (line.event === 'assigned' && String(line.agent_id || '') === targetAgent) assignedCount += 1
       }
-      if (sameAgentRun > 1) continue
+      if (assignedCount > 1) continue
       return entry
     }
     const supersededLeg = entry.agent_id && String(entry.agent_id) !== holder

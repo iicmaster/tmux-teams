@@ -965,13 +965,33 @@ function nextStep(graph, team, item, { busy, nowMs, zombieSec, answerDeadlineSec
     if (resumeRole === 'worker') return want('worker')
     // 'dispatcher' (including unset, for legacy questions written before
     // resume_role existed) keeps the original behavior exactly. 'audit' and
-    // 'outer' are the outer controller's own seats, not this team's — a
-    // question asked there is answered there (`planEscalation`'s
-    // `awaitingAudit`, above). Dispatching this team's own dispatcher for a
-    // reply it never asked for pays for a leg with nothing to act on, and
-    // risks two seats independently reading the same reply.
-    if (resumeRole && resumeRole !== 'dispatcher') {
-      return { action: 'held', reason: `waiting on the outer controller to read a reply asked as ${resumeRole}` }
+    // 'outer' are the outer controller's own seats, not this team's —
+    // dispatching this team's own dispatcher for a reply it never asked for
+    // pays for a leg with nothing to act on, and risks two seats
+    // independently reading the same reply.
+    if (resumeRole === 'audit') {
+      // Rescued elsewhere, not stuck: `planEscalation`'s `awaitingAudit`
+      // (above) keys off `completed` being in the ledger, not off this plan
+      // action — and `audit_requested` is only ever written for an item
+      // `awaitingAudit` already found true (`tick`'s `escalation.audits`
+      // loop), so a `completed` this item already carries guarantees a fresh
+      // `audit_requested` next tick regardless of what is returned here.
+      return { action: 'held', reason: 'waiting on the outer controller to read a reply asked as audit' }
+    }
+    if (resumeRole === 'outer') {
+      // qwen r3 #3 (retro-release-review, 2026-08-04): NOT rescued the way
+      // `audit` is. A pre-`completed` `escalated` (MAX_ATTEMPTS exhausted,
+      // or the door-refusal ceiling in `harvestEvent`'s dispatcher branch)
+      // can reach the outer controller before any leg has ever completed, so
+      // `awaitingAudit` — which requires `completed` — never fires for it.
+      // `held` here had no exit: it is not in `planEscalation`'s trigger set
+      // (`plans.filter(action === 'escalate')`) and nothing else re-reads it,
+      // wedging the token for ever — the exact class of bug the comment on
+      // `escalated` above already explains. Re-escalating instead reuses that
+      // same, already-proven path: the token becomes `escalation.parked`
+      // again, the outer controller is asked again, and this time the
+      // person's reply is on the ledger for it to read.
+      return { action: 'escalate', reason: 'a person answered a question the outer controller asked — asking the outer controller to read the reply' }
     }
     return want('dispatcher')
   }

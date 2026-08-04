@@ -56,15 +56,19 @@ test('immutable ACP profiles pin providers, models, argv, and AGY plan mode', ()
   assert.deepEqual(REVIEW_PROFILES.agy.command, ['bunx', 'antigravity-acp@1.0.0'])
   assert.deepEqual(REVIEW_PROFILES.kimi.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
   assert.deepEqual(REVIEW_PROFILES.zai.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
+  assert.deepEqual(REVIEW_PROFILES.qwen.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
   assert.deepEqual(REVIEW_PROFILES.claude.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
   assert.deepEqual(REVIEW_PROFILES.codex.command, ['npx', '-y', '@agentclientprotocol/codex-acp@1.1.7'])
   assert.deepEqual(REVIEW_PROFILES.agy.config, { model: 'gemini-3.6-flash-high', mode: 'plan' })
   assert.deepEqual(REVIEW_PROFILES.kimi.config, { model: 'opus', mode: 'plan' })
   assert.equal(REVIEW_PROFILES.kimi.displayModel, 'kimi/opus')
-  // A lane's family label is only worth what pins it: zai pins a host it must
-  // reach, kimi pins the binary it must run.
+  assert.deepEqual(REVIEW_PROFILES.qwen.config, { model: 'qwen3.8-max-preview', mode: 'plan' })
+  assert.equal(REVIEW_PROFILES.qwen.displayModel, 'qwen/qwen3.8-max-preview')
+  // A routed lane's family label is backed by a parent-verified endpoint pin.
   assert.equal(REVIEW_PROFILES.zai.endpoint.host, 'api.z.ai')
-  assert.equal(REVIEW_PROFILES.kimi.claudeExecutable, 'claude-kimi')
+  assert.equal(REVIEW_PROFILES.qwen.endpoint.host, 'token-plan.ap-southeast-1.maas.aliyuncs.com')
+  assert.equal(REVIEW_PROFILES.zai.claudeExecutable, 'claude-zai')
+  assert.equal(REVIEW_PROFILES.qwen.claudeExecutable, 'claude-qwen')
   assert.equal(REVIEW_PROFILES.claude.claudeExecutable, undefined)
   assert.deepEqual(REVIEW_PROFILES.zai.config, { model: 'glm-5.2', mode: 'default' })
   assert.equal(REVIEW_PROFILES.zai.thinkingBudgetTokens, 4096)
@@ -88,7 +92,8 @@ test('immutable ACP profiles pin providers, models, argv, and AGY plan mode', ()
 test('primary normalization is robust and blocks Gemini/unknown primaries', () => {
   const cases = [
     [' GPT-5.6-sol ', 'openai'], [{ provider: 'Anthropic', model: 'x' }, 'claude'],
-    ['kimi-k3', 'kimi'], ['claude-kimi', 'kimi'], ['claude-zai', 'zai'],
+    ['kimi-k3', 'kimi'], ['claude-kimi', 'kimi'], ['claude-qwen', 'qwen'], ['claude-zai', 'zai'],
+    ['qwen3.8-max-preview', 'qwen'],
     ['GLM-5.2', 'zai'], ['google-antigravity', 'gemini'], ['?', 'unknown'],
   ]
   for (const [input, expected] of cases) assert.equal(normalizePrimaryFamily(input), expected)
@@ -108,6 +113,7 @@ test('mixed-family text in one primary field fails closed instead of selecting t
     assert.equal(createReviewPlan({ primary }).blocked, true)
   }
   assert.equal(normalizePrimaryFamily('claude-kimi acp'), 'kimi')
+  assert.equal(normalizePrimaryFamily('claude-qwen acp'), 'qwen')
   assert.equal(normalizePrimaryFamily('claude-zai-acp'), 'zai')
 })
 
@@ -127,7 +133,7 @@ test('each deterministic route yields exactly three distinct non-primary familie
 test('fallback routes unavailable direct Claude through claude-zai only when all panel invariants hold', () => {
   assert.deepEqual(UNAVAILABLE_RESERVE_SUBSTITUTES, { claude: 'zai' })
   const openai = createReviewPlan('openai')
-  assert.match(planFallback(openai, 'kimi').reason, /duplicate/)
+  assert.match(planFallback(openai, 'qwen').reason, /duplicate/)
   assert.match(planFallback(openai, 'zai').reason, /retry/)
 
   const kimi = createReviewPlan('kimi')
@@ -136,10 +142,10 @@ test('fallback routes unavailable direct Claude through claude-zai only when all
 
   const zai = createReviewPlan('zai')
   assert.match(planFallback(zai, 'codex').reason, /diversity/)
-  assert.match(planFallback(zai, 'kimi').reason, /diversity/)
+  assert.match(planFallback(zai, 'qwen').reason, /diversity/)
 
   const claude = createReviewPlan('claude')
-  for (const failed of ['codex', 'kimi']) {
+  for (const failed of ['codex', 'qwen']) {
     const redirected = planFallback(claude, failed)
     assert.equal(redirected.blocked, false)
     assert.deepEqual(redirected.reviewers, claude.reviewers.map(id => id === failed ? 'zai' : id))
@@ -167,8 +173,8 @@ test('closed bounded schema rejects metadata, malformed findings, and invalid ve
 
 test('synthesis requires exactly three planned reviews and ignores model-returned metadata', () => {
   const plan = createReviewPlan('openai')
-  assert.equal(synthesizeReviews(plan, { agy: pass, kimi: pass }).verdict, 'BLOCKED')
-  const results = synthesizeReviews(plan, { agy: pass, kimi: pass, zai: { ...pass, reviewer: 'forged' } })
+  assert.equal(synthesizeReviews(plan, { agy: pass, qwen: pass }).verdict, 'BLOCKED')
+  const results = synthesizeReviews(plan, { agy: pass, qwen: pass, zai: { ...pass, reviewer: 'forged' } })
   assert.equal(results.verdict, 'BLOCKED')
 })
 
@@ -178,7 +184,7 @@ test('two matching fingerprints are must-fix; unique objections remain residual'
   assert.equal(findingFingerprint(shared), findingFingerprint({ ...shared, summary: 'different prose' }))
   const result = synthesizeReviews(plan, {
     agy: { ...pass, verdict: 'OBJECTIONS', findings: [shared] },
-    kimi: { ...pass, verdict: 'OBJECTIONS', findings: [{ ...shared, evidence: 'Independent trace confirms it.' }, finding({ criterion_id: 'AC-2', location: 'b:1' })] },
+    qwen: { ...pass, verdict: 'OBJECTIONS', findings: [{ ...shared, evidence: 'Independent trace confirms it.' }, finding({ criterion_id: 'AC-2', location: 'b:1' })] },
     zai: pass,
   })
   assert.equal(result.verdict, 'OBJECTIONS')
@@ -190,11 +196,11 @@ test('two matching fingerprints are must-fix; unique objections remain residual'
 test('two PASS reviews can pass with a unique objection, while a BLOCKED lane blocks the panel', () => {
   const plan = createReviewPlan('claude')
   const result = synthesizeReviews(plan, {
-    agy: { ...pass, verdict: 'OBJECTIONS', findings: [finding()] }, codex: pass, kimi: pass,
+    agy: { ...pass, verdict: 'OBJECTIONS', findings: [finding()] }, codex: pass, qwen: pass,
   })
   assert.equal(result.verdict, 'PASS')
   assert.equal(result.residualObjections.length, 1)
-  assert.equal(synthesizeReviews(plan, { agy: pass, codex: blocked, kimi: pass }).verdict, 'BLOCKED')
+  assert.equal(synthesizeReviews(plan, { agy: pass, codex: blocked, qwen: pass }).verdict, 'BLOCKED')
 })
 
 test('two unrelated objections remain residual PM judgments rather than becoming consensus blockers', () => {
@@ -205,7 +211,7 @@ test('two unrelated objections remain residual PM judgments rather than becoming
       verdict: 'OBJECTIONS',
       findings: [finding({ criterion_id: 'AC-A', location: 'packet:a' })],
     },
-    kimi: {
+    qwen: {
       ...pass,
       verdict: 'OBJECTIONS',
       findings: [finding({ criterion_id: 'AC-B', location: 'packet:b' })],
@@ -224,7 +230,7 @@ test('duplicate copies of one reviewer finding never count as two independent vo
   const duplicate = finding()
   const result = synthesizeReviews(plan, {
     agy: { ...pass, verdict: 'OBJECTIONS', findings: [duplicate, { ...duplicate }] },
-    kimi: pass,
+    qwen: pass,
     zai: pass,
   })
   assert.equal(result.verdict, 'PASS')
@@ -238,8 +244,8 @@ test('environment is allowlisted, provider-scoped, and launch settings are injec
     LD_PRELOAD: 'evil.so', OPENAI_API_KEY: 'openai', ANTHROPIC_API_KEY: 'claude', KIMI_API_KEY: 'kimi', ZAI_API_KEY: 'zai',
   }
   // A lane that does not route: its whole env is the allowlist plus its own
-  // provider secret. kimi used to stand here and now routes through a settings
-  // file, which is a different contract — see the routing tests below.
+  // provider secret. Qwen and Zai route through settings files, which is a
+  // different contract — see the routing tests below.
   const env = buildProfileEnv('codex', source)
   assert.deepEqual(env, {
     PATH: '/bin',
@@ -260,9 +266,9 @@ test('environment is allowlisted, provider-scoped, and launch settings are injec
 
 test('Zai routing loads only allowlisted endpoint credentials from its explicit settings file', () => {
   const home = mkdtempSync(join(tmpdir(), 'review-profile-'))
-  const settingsDir = join(home, '.claude')
-  mkdirSync(settingsDir)
-  const file = join(settingsDir, 'settings-zai.json')
+  const settingsDir = join(home, '.config', 'claude-profiles', 'zai')
+  mkdirSync(settingsDir, { recursive: true })
+  const file = join(settingsDir, 'settings.json')
   writeFileSync(file, '{}')
   const env = buildProfileEnv('zai', { HOME: home, PATH: '/bin' }, {
     settingsLoader: () => ({
@@ -292,6 +298,41 @@ test('Zai routing loads only allowlisted endpoint credentials from its explicit 
   ]) assert.throws(invalidEndpoint(endpoint), /zai review endpoint/)
 })
 
+test('Qwen routing uses Claude ACP with its local profile settings and pinned endpoint', () => {
+  const home = mkdtempSync(join(tmpdir(), 'review-profile-qwen-'))
+  const settingsDir = join(home, '.config', 'claude-profiles', 'qwen')
+  mkdirSync(settingsDir, { recursive: true })
+  writeFileSync(join(settingsDir, 'settings.json'), '{}')
+  const env = buildProfileEnv('qwen', { HOME: home, PATH: '/bin' }, {
+    settingsLoader: () => ({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: 'qwen-token',
+        ANTHROPIC_BASE_URL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic',
+        UNRELATED_SECRET: 'must-not-pass',
+      },
+    }),
+  })
+  assert.equal(env.ANTHROPIC_AUTH_TOKEN, 'qwen-token')
+  assert.equal(env.ANTHROPIC_BASE_URL, 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic')
+  assert.equal(env.UNRELATED_SECRET, undefined)
+  assert.equal(env.CLAUDE_CODE_EXECUTABLE, 'claude-qwen')
+  assert.equal(env.CLAUDE_MODEL_CONFIG, '{"availableModels":["qwen3.8-max-preview"]}')
+  for (const endpoint of [
+    'http://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic',
+    'https://example.invalid/apps/anthropic',
+    'https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic?redirect=other',
+  ]) {
+    assert.throws(
+      () => buildProfileEnv('qwen', { HOME: home, PATH: '/bin' }, {
+        settingsLoader: () => ({ env: {
+          ANTHROPIC_AUTH_TOKEN: 'qwen-token', ANTHROPIC_BASE_URL: endpoint,
+        } }),
+      }),
+      /qwen review endpoint/,
+    )
+  }
+})
+
 test('CLAUDE_CODE_EXECUTABLE is gate-owned, but that alone does not prove the family (issue #38)', () => {
   // This test used to claim (in its own title) that pinning the env VAR NAME
   // stops kimi from becoming the same seat as claude. It never actually
@@ -302,7 +343,9 @@ test('CLAUDE_CODE_EXECUTABLE is gate-owned, but that alone does not prove the fa
   // endpoint it reaches. The corrected claim is below: provenFamilyKey
   // honestly buckets kimi with bare claude rather than asserting a
   // distinction this layer cannot back up.
-  const source = { PATH: '/bin', KIMI_API_KEY: 'kimi', CLAUDE_CODE_EXECUTABLE: '/tmp/evil-claude' }
+  // kimi is a routed lane now, so its env comes from the machine-local settings
+  // file — the source needs a HOME for that to resolve at all.
+  const source = { PATH: '/bin', HOME: process.env.HOME, KIMI_API_KEY: 'kimi', CLAUDE_CODE_EXECUTABLE: '/tmp/evil-claude' }
   const env = buildProfileEnv('kimi', source)
   assert.equal(env.CLAUDE_CODE_EXECUTABLE, 'claude-kimi', 'the caller re-pointed the lane')
   assert.equal(env.CLAUDE_MODEL_CONFIG, '{"availableModels":["opus"]}')
@@ -312,10 +355,16 @@ test('CLAUDE_CODE_EXECUTABLE is gate-owned, but that alone does not prove the fa
 test('provenFamilyKey honestly buckets kimi with bare claude, and the gate refuses that panel (issue #38)', () => {
   // Real, shipped production profiles -- not synthetic test doubles -- so this
   // is not a tautology against a table invented to match the code under test.
-  assert.equal(provenFamilyKey(REVIEW_PROFILES.claude), provenFamilyKey(REVIEW_PROFILES.kimi),
-    'kimi and bare claude share the identical unrouted adapter identity')
+  // Master, 2026-08-04: `claude-kimi` reaches K3 and bare `claude` reaches opus,
+  // so they ARE different families — the defect was that nothing proved it. Kimi
+  // is pinned now (api.kimi.com/coding, verified by the parent before spawn), so
+  // the honest answer changed from "indistinguishable" to "distinct, and here is
+  // why". Bare claude stays unrouted because nothing pins IT.
+  assert.notEqual(provenFamilyKey(REVIEW_PROFILES.claude), provenFamilyKey(REVIEW_PROFILES.kimi),
+    'kimi is endpoint-pinned; bare claude is not, so they no longer share one key')
+  assert.match(provenFamilyKey(REVIEW_PROFILES.kimi), /::pinned:api\.kimi\.com\/coding$/)
   assert.notEqual(provenFamilyKey(REVIEW_PROFILES.zai), provenFamilyKey(REVIEW_PROFILES.kimi),
-    'zai is additionally pinned by an endpoint the parent verifies; kimi is not')
+    'two pinned lanes on one adapter are told apart by their endpoints')
   assert.notEqual(provenFamilyKey(REVIEW_PROFILES.agy), provenFamilyKey(REVIEW_PROFILES.kimi),
     'agy runs a wholly different adapter package')
   assert.equal(provenFamilyKey({ id: 'no-adapter-declared' }), null,
@@ -324,10 +373,13 @@ test('provenFamilyKey honestly buckets kimi with bare claude, and the gate refus
   // The literal attack from issue #38: a panel that would seat both kimi and
   // claude, satisfying declared-family diversity while sharing one unproven
   // identity, is refused as a collision rather than accepted as three voices.
-  assert.equal(provenFamilyCollision([REVIEW_PROFILES.kimi, REVIEW_PROFILES.claude, REVIEW_PROFILES.agy]), true)
-  // Today's real, legitimate `openai` route (kimi + zai + agy) is NOT flagged:
-  // zai's parent-verified endpoint pin is a different, distinguishable key.
-  assert.equal(provenFamilyCollision([REVIEW_PROFILES.kimi, REVIEW_PROFILES.zai, REVIEW_PROFILES.agy]), false)
+  // Was `true` while kimi was unpinned. Now they are provably different lanes,
+  // so refusing this panel would be the OTHER failure — a gate that blocks a
+  // genuinely diverse panel (AGY raised exactly that risk).
+  assert.equal(provenFamilyCollision([REVIEW_PROFILES.kimi, REVIEW_PROFILES.claude, REVIEW_PROFILES.agy]), false)
+  // Today's real, legitimate `openai` route (qwen + zai + agy) is NOT flagged:
+  // both routed profiles have different parent-verified endpoint pins.
+  assert.equal(provenFamilyCollision([REVIEW_PROFILES.qwen, REVIEW_PROFILES.zai, REVIEW_PROFILES.agy]), false)
   // Two profiles that BOTH resolve to no key at all (no `adapterPackage`)
   // are no longer given a free pass. The pre-fix code filtered every unresolved
   // key out before checking uniqueness, so "declares nothing" and "declares
@@ -396,11 +448,11 @@ test('adapterPackage is bound to command for every shipped profile, and the bind
   // the same command" drift both reviews described).
   assert.throws(
     () => assertAdapterPackageBoundToCommand({ id: 'drifted', command: [...REVIEW_PROFILES.kimi.command], adapterPackage: 'not-the-real-package-name' }),
-    /adapterPackage "not-the-real-package-name" does not appear in its own command/,
+    /adapterPackage "not-the-real-package-name" is not the command's final argument/,
   )
   assert.throws(
     () => assertAdapterPackageBoundToCommand({ id: 'stale-bump', command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.62.0'], adapterPackage: REVIEW_PROFILES.kimi.adapterPackage }),
-    /does not appear in its own command/,
+    /is not the command's final argument/,
   )
 })
 

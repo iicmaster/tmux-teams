@@ -2,10 +2,11 @@ import { createHash } from 'node:crypto'
 import { declaredPrimaryFamilies, getReviewProfile, normalizePrimaryFamily, provenFamilyCollision } from './review-profiles.mjs'
 
 const ROUTES = Object.freeze({
-  openai: Object.freeze({ reviewers: Object.freeze(['agy', 'kimi', 'zai']), reserve: 'claude' }),
-  claude: Object.freeze({ reviewers: Object.freeze(['agy', 'codex', 'kimi']), reserve: 'zai' }),
+  openai: Object.freeze({ reviewers: Object.freeze(['agy', 'qwen', 'zai']), reserve: 'claude' }),
+  claude: Object.freeze({ reviewers: Object.freeze(['agy', 'codex', 'qwen']), reserve: 'zai' }),
   kimi: Object.freeze({ reviewers: Object.freeze(['agy', 'codex', 'zai']), reserve: 'claude' }),
-  zai: Object.freeze({ reviewers: Object.freeze(['agy', 'codex', 'kimi']), reserve: 'claude' }),
+  zai: Object.freeze({ reviewers: Object.freeze(['agy', 'codex', 'qwen']), reserve: 'claude' }),
+  qwen: Object.freeze({ reviewers: Object.freeze(['agy', 'codex', 'zai']), reserve: 'claude' }),
 })
 
 // Master has declared the direct Claude provider unavailable.  `claude-zai`

@@ -375,9 +375,17 @@ export function validateLedger(lines) {
       }
     }
     // A dispatch_id that means something contradictory to what it was
-    // assigned to. `reviewed` has no task_id counterpart to bind (its own
-    // task is `reviewed_task`, a different leg entirely), so only the
-    // agent_id half applies there.
+    // assigned to. `reviewed`'s OWN review target is `reviewed_task` (a
+    // different leg entirely — the worker's delivery) and that field is
+    // deliberately not checked here. But `reviewed` can also carry a plain
+    // `task_id` naming the leg it was written FROM, and production stamps
+    // that `task_id` from the very same leg as `dispatch_id` (both read off
+    // one `last` — loop-runner.mjs's harvest). A `reviewed` was exempted from
+    // this check entirely on the mistaken belief that `task_id` never means
+    // that for `reviewed`; in fact a line could borrow a live dispatch_id
+    // while still naming an old task_id, and validation waved it through —
+    // currentEntry's dispatch_id fast path then trusted it as the live leg's
+    // own outcome (Shape 2, retro-release-review round 2, 2026-08-04, F1).
     if ((name === 'delivered' || name === 'lost' || name === 'reviewed') && present(entry.dispatch_id)) {
       const owner = dispatchOwner.get(String(entry.dispatch_id))
       if (owner) {
@@ -385,7 +393,7 @@ export function validateLedger(lines) {
           add(lineNo, 'dispatch_id_agent_mismatch',
             `${name} carries dispatch_id ${entry.dispatch_id}, assigned to ${owner.agent_id}, not ${entry.agent_id}`)
         }
-        if (name !== 'reviewed' && present(entry.task_id) && String(entry.task_id) !== owner.task_id) {
+        if (present(entry.task_id) && String(entry.task_id) !== owner.task_id) {
           add(lineNo, 'dispatch_id_task_mismatch',
             `${name} carries dispatch_id ${entry.dispatch_id}, assigned to task ${owner.task_id}, not ${entry.task_id}`)
         }
@@ -580,11 +588,30 @@ export function validateLedger(lines) {
 // so a token that regained the ability to be APPENDED to still could not be
 // PULLED forward, because `pull-controller.mjs` called `validateLedger`
 // straight and required `ok` with no tolerance concept at all.
+// qwen #2, retro-release-review 2026-08-04: B2's `duplicate_task_id` /
+// `duplicate_dispatch_id` are the same shape of trouble as every entry above —
+// a rule that only started existing under a system already running — and B2
+// shipped without joining this list. Left out, `appendEvent`'s `continuable`
+// check (ledger-writer.mjs) treats a PRE-EXISTING collision as `before.ok ===
+// false` with an untolerated problem, so `continuable` is false and even a
+// terminal `abandoned` is refused with `ledger_already_invalid` — on a ledger
+// whose only defect is a duplicate id minted before B2 could ever have
+// refused it. The token has no legal way to reach a terminal state, which is
+// worse than the ambiguity B2 closed.
+// Tolerating it here does not reopen B2: `appendEvent`'s `fresh` comparison
+// (keyed by `line:code`) only excuses problems already present on the line
+// they were first reported at. A NEW `assigned` that reuses an id — one
+// `dispatchOwner`/`assignedTaskIds` had not already seen at that line — is
+// reported at the NEW line, which is not in `inherited`, so it still lands in
+// `fresh` and is still refused exactly as B2 intended. Only the OLD collision,
+// sitting on the line history already carries, is excused.
 export const LEGACY_TOLERATED_PROBLEMS = [
   { code: 'route_went_backwards' },
   { code: 'sent_back_after_admission' },
   { code: 'missing_field', event: 'questioned', field: 'question_id' },
   { code: 'not_a_human_answer', event: 'opened' },
+  { code: 'duplicate_task_id' },
+  { code: 'duplicate_dispatch_id' },
 ]
 
 export function isLegacyTolerated(problem) {

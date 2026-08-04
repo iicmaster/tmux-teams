@@ -376,7 +376,8 @@ async function prepareProviderState(profile, stateRoot, sourceEnv) {
     }
     await emptyFile(join('.gemini', 'antigravity-cli', 'history.jsonl'))
   }
-  if (profile.id === 'zai' || profile.id === 'claude' || profile.id === 'kimi') {
+  if (profile.providerConfigDir) await copyHomeTree(profile.providerConfigDir)
+  if (profile.id === 'zai' || profile.id === 'qwen' || profile.id === 'claude' || profile.id === 'kimi') {
     const configDir = statePath('.claude')
     await mkdir(configDir, { recursive: true })
     await writeFile(join(configDir, 'settings.json'), '{}', { encoding: 'utf8', mode: 0o600 })
@@ -417,6 +418,7 @@ function isWithin(candidate, parent) {
 const expectedProfileExecutable = Object.freeze({
   agy: 'bunx',
   kimi: 'npx',
+  qwen: 'npx',
   zai: 'npx',
   claude: 'npx',
   codex: 'npx',

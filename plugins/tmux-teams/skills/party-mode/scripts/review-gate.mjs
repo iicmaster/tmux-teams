@@ -4,7 +4,7 @@ import { open } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { ACP_REVIEW_LIMITS, prepareReviewPacket, runAcpReview, ReviewTransportError } from './acp-review-client.mjs'
-import { REVIEW_PROFILES, buildProfileEnv, provenFamilyKey, provenFamilyCollision } from './review-profiles.mjs'
+import { REVIEW_PROFILES, buildProfileEnv, provenFamilyKey, provenFamilyCollision, provenFamilyKeysCollide } from './review-profiles.mjs'
 import {
   UNAVAILABLE_RESERVE_SUBSTITUTES,
   planReviewPanel,
@@ -449,11 +449,12 @@ export async function runReviewGate(packet, {
   // fallback substitution runs after preflight and could reintroduce a
   // proven-identity collision that preflight never saw (issue #38). `reviews`
   // holds accepted-item shapes, not raw profiles, so this reads the
-  // already-computed familyProvenKey field rather than calling
-  // provenFamilyCollision (which expects a profile's own adapterPackage/
-  // endpoint fields and would silently no-op on an item shape).
-  const finalProvenKeys = reviews.map(item => item.familyProvenKey).filter(key => key !== null)
-  if (new Set(finalProvenKeys).size !== finalProvenKeys.length) {
+  // already-computed familyProvenKey field. It calls the SAME rule the preflight
+  // uses, in its key-taking form, rather than reimplementing it — this copy had
+  // its own `.filter(key => key !== null)` and let a panel of two unresolved
+  // lanes through to ok:true, which is what two copies of one rule always
+  // eventually do (r3-codex probed it).
+  if (provenFamilyKeysCollide(reviews.map(item => item.familyProvenKey ?? null))) {
     throw fail('policy', 'final review proven identities are not distinct')
   }
   if (new Set(reviews.map(item => item.provenance)).size !== 3) {
@@ -491,7 +492,7 @@ export async function runReviewGate(packet, {
 
 // A ping fits in four minutes; a real completion packet does not. The client's
 // 240s default timed out substantive reviews — a fifteen-file packet took the
-// kimi lane past it — and a lane killed for being slow is indistinguishable in
+// qwen lane past it — and a lane killed for being slow is indistinguishable in
 // the report from a lane that is broken. The ceiling is still a ceiling: it is
 // bounded, it is one number, and an operator with a slower provider raises it
 // deliberately rather than discovering it.

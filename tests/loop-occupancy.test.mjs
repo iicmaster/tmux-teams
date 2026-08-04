@@ -1138,9 +1138,16 @@ test('a token cannot exceed its leg ceiling unless the controller grants more', 
 const REWORK = (n) => ([
   { event: 'assigned', agent_id: 'b_w1', task_id: `b-${n}` },
   { event: 'delivered', agent_id: 'b_w1', task_id: `b-${n}`, terminal: 'done' },
-  { event: 'assigned', agent_id: 'b_e', task_id: `e-${n}` },
+  { event: 'assigned', agent_id: 'b_e', task_id: `e-${n}`, dispatch_id: `ed-${n}` },
   { event: 'delivered', agent_id: 'b_e', task_id: `e-${n}`, terminal: 'done' },
-  { event: 'reviewed', agent_id: 'b_e', verdict: 'reject' },
+  // task_id/dispatch_id here match this round's own `assigned` line, exactly
+  // as production stamps it (loop-runner.mjs harvests both from the same
+  // `last` leg) — not identityless. Three rounds by the SAME evaluator with
+  // no leg identity at all is the Shape 1 ghost-review shape (dispatch-
+  // facts.mjs `currentEntry`, retro-release-review round 2, 2026-08-04, F1),
+  // not this test's budget-counting concern; giving each round its own
+  // task_id keeps that ambiguity out of a fixture that is not about it.
+  { event: 'reviewed', agent_id: 'b_e', verdict: 'reject', task_id: `e-${n}`, dispatch_id: `ed-${n}` },
 ])
 const ADMITTED = [
   { event: 'opened', agent_id: 'b_d', to_team: 'build' },
@@ -1939,6 +1946,42 @@ test('H1 an answered question asked by the outer controller does not also dispat
   assert.match(plan.reason, /outer controller/)
 })
 
+// qwen r3 #3 (retro-release-review, 2026-08-04): a pre-`completed` `escalated`
+// (MAX_ATTEMPTS or the door-refusal ceiling) that reaches the outer controller
+// and comes back `questioned(resume_role:'outer')` -> `answered` used to return
+// `{action:'held'}` here — and `held` is not in `planEscalation`'s trigger set
+// (`plans.filter(action === 'escalate')`), so the token was parked for ever.
+// `awaitingAudit`, the mechanism that rescues the sibling `resume_role:'audit'`
+// case, requires a `completed` this item never has. The fix must produce a
+// plan `planEscalation` actually re-reads — proven end to end below, not just
+// "not dispatch" (the pre-fix `held` also satisfied that weaker assertion).
+test('H1 an answered outer-controller reply re-escalates instead of wedging the token for ever', () => {
+  const graph = graphOf(TWO_TEAMS)
+  const items = itemsOf(['tok', [
+    {
+      event: 'questioned', agent_id: 'pm', questions: 'accept the finding?', reason: 'unstated verdict',
+      question_id: 'q-1', resume_role: 'outer',
+    },
+    { event: 'answered', to_team: 'build', reason: 'accepted', question_id: 'q-1', actor: 'human:ada' },
+  ]])
+  const plan = planDispatches(graph, items, new Set(), { now: FIXED_NOW })
+    .find((entry) => entry.work_item === 'tok')
+  assert.equal(plan.action, 'escalate', 'a `held` plan has no exit — planEscalation never reads it again')
+
+  // The real proof: run the plan through `planEscalation` and confirm the
+  // outer controller is actually asked again about THIS token, the way a
+  // fresh `escalated` line already is.
+  const dir = mkdtempSync(join(tmpdir(), 'loop-pm-outer-resume-'))
+  try {
+    const occupancy = teamOccupancy(graph, items)
+    const escalation = planEscalation(dir, graph, items, [plan], occupancy, { now: FIXED_NOW, stallSec: 1e9 })
+    assert.equal(escalation.action, 'escalate', 'the wedged plan never reached planEscalation\'s trigger set')
+    assert.equal(escalation.parked, 'tok', 'the outer controller must be asked about this token again')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 // ── GitHub #32: per-seat reasoning effort reaches the spawned process ────────
 
 test('declaredEffort reads the resolved seat, and effortEnv requests it the way modelEnv requests a model', () => {
@@ -2255,6 +2298,122 @@ test('a duplicate assigned.task_id (or dispatch_id) invalidates the ledger inste
     { at: '2026-07-27T09:03:00.000Z', event: 'lost', work_item: 'tok', workflow: 'f', agent_id: 'w1', task_id: 't-2', reason: 'timed out' },
   ].map((entry) => JSON.stringify(entry))
   assert.equal(validateLedger(unique).ok, true, JSON.stringify(validateLedger(unique).problems))
+})
+
+// ── retro-release-review round 2, 2026-08-04: F1 survives in two shapes ─────
+// the B4 heuristic (a CONSECUTIVE run of the same evaluator's `assigned`
+// lines) did not cover: an intervening assignment — the ordinary rework leg
+// between review rounds — reset the run and reopened the hole (Shape 1); and
+// a `reviewed` that borrows the LIVE holder's dispatch_id while still naming
+// an OLDER task_id took the dispatch_id fast path before task_id was ever
+// consulted (Shape 2).
+
+test('a same-evaluator reject-rework-re-review still does not clear the pull gate for a live retry (Shape 1)', () => {
+  // The B4 fixture retries the SAME delivery — the evaluator's two `assigned`
+  // lines are back to back, nothing else in between. This is the shape the
+  // system actually produces instead: round 1's evaluator rejects, the
+  // worker reworks (a DIFFERENT agent's `assigned` sits between the
+  // evaluator's two legs), round 2's evaluator is assigned and still running
+  // — and round 1's dead leg writes its late, identityless `reviewed pass`
+  // after round 2 has already started. The old heuristic counted only a
+  // consecutive run, saw the worker's `assigned` reset it to 1, and trusted
+  // the ghost.
+  const graph = graphOf(TWO_TEAMS)
+  const custody = [
+    { at: '2026-07-27T09:00:00.000Z', event: 'assigned', agent_id: 'b_w1', task_id: 'b-1', dispatch_id: 'w-1' },
+    { at: '2026-07-27T09:01:00.000Z', event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done', timed_out: false, evidence_present: true, dispatch_id: 'w-1' },
+    { at: '2026-07-27T09:02:00.000Z', event: 'assigned', agent_id: 'b_e', task_id: 'r-1', dispatch_id: 'r-1' },
+    // Round 1's own (real, in-order) verdict.
+    { at: '2026-07-27T09:03:00.000Z', event: 'reviewed', agent_id: 'b_e', verdict: 'reject', reviewed_task: 'b-1', reason: 'missing a test' },
+    // The rework leg — a DIFFERENT agent's `assigned` between the evaluator's
+    // two legs, which is exactly what reset the old "consecutive run" count.
+    { at: '2026-07-27T09:04:00.000Z', event: 'assigned', agent_id: 'b_w1', task_id: 'b-2', dispatch_id: 'w-2' },
+    { at: '2026-07-27T09:05:00.000Z', event: 'delivered', agent_id: 'b_w1', task_id: 'b-2', terminal: 'done', timed_out: false, evidence_present: true, dispatch_id: 'w-2' },
+    // Round 2's evaluator — the live holder, still running.
+    { at: '2026-07-27T09:06:00.000Z', event: 'assigned', agent_id: 'b_e', task_id: 'r-2', dispatch_id: 'r-2' },
+    // Round 1's dead leg, late: identityless, so nothing on the line itself
+    // says which of b_e's two legs it belongs to.
+    { at: '2026-07-27T09:07:00.000Z', event: 'reviewed', agent_id: 'b_e', verdict: 'pass', reviewed_task: 'b-1', reason: 'a stale duplicate from the dead round-1 leg' },
+  ]
+  const items = itemsOf(['tok', custody])
+
+  assert.equal(currentEntry(custody).task_id, 'r-2', 'the interleaved stale pass was read as where the token is')
+  assert.equal(currentEntry(custody).event, 'assigned', 'the live round-2 retry is still assigned, not reviewed')
+  assert.deepEqual(teamOccupancy(graph, items).held.get('build'), ['tok'],
+    'the interleaved stale pass moved the token off the seat still running it')
+  assert.deepEqual(planPulls(graph, items, '2026-07-27T09:08:00.000Z'), [],
+    'a reject-rework-re-review interleaving cleared the pull gate for a live retry')
+})
+
+test('a same-evaluator reject-rework-re-review DOES clear the gate once round 2 actually reports (Shape 1, positive case)', () => {
+  // The fix must not turn every multi-round review into a permanent hold —
+  // once round 2's OWN outcome lands (naming its own task_id), it is not
+  // ambiguous at all: it resolves through the task_id branch, not the
+  // identityless fallback this fix changed.
+  const graph = graphOf(TWO_TEAMS)
+  const custody = [
+    { at: '2026-07-27T09:00:00.000Z', event: 'assigned', agent_id: 'b_w1', task_id: 'b-1', dispatch_id: 'w-1' },
+    { at: '2026-07-27T09:01:00.000Z', event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done', timed_out: false, evidence_present: true, dispatch_id: 'w-1' },
+    { at: '2026-07-27T09:02:00.000Z', event: 'assigned', agent_id: 'b_e', task_id: 'r-1', dispatch_id: 'r-1' },
+    { at: '2026-07-27T09:03:00.000Z', event: 'reviewed', agent_id: 'b_e', verdict: 'reject', reviewed_task: 'b-1', reason: 'missing a test' },
+    { at: '2026-07-27T09:04:00.000Z', event: 'assigned', agent_id: 'b_w1', task_id: 'b-2', dispatch_id: 'w-2' },
+    { at: '2026-07-27T09:05:00.000Z', event: 'delivered', agent_id: 'b_w1', task_id: 'b-2', terminal: 'done', timed_out: false, evidence_present: true, dispatch_id: 'w-2' },
+    { at: '2026-07-27T09:06:00.000Z', event: 'assigned', agent_id: 'b_e', task_id: 'r-2', dispatch_id: 'r-2' },
+    // Round 2's OWN report — names its own task_id, so it is not ambiguous.
+    { at: '2026-07-27T09:07:00.000Z', event: 'reviewed', agent_id: 'b_e', verdict: 'pass', task_id: 'r-2', reviewed_task: 'b-2', reason: 'the fix does what was asked' },
+  ]
+  const items = itemsOf(['tok', custody])
+  assert.equal(currentEntry(custody).event, 'reviewed')
+  assert.equal(currentEntry(custody).verdict, 'pass')
+  assert.deepEqual(planPulls(graph, items, '2026-07-27T09:08:00.000Z').map((d) => d.action), ['pull'],
+    'round 2\'s own labeled outcome did not clear the pull gate')
+})
+
+test('a reviewed that borrows the live holder\'s dispatch_id while naming an OLDER task_id is not trusted (Shape 2)', () => {
+  // assigned e/r1/d1 -> assigned e/r2/d2 (live) -> reviewed(pass, agent=e,
+  // task_id=r1, dispatch_id=d2). The dispatch_id fast path in `currentEntry`
+  // used to return on a dispatch_id match alone, before task_id was ever
+  // consulted — so a line naming the LIVE dispatch_id but an OLD task_id read
+  // as round 2's own outcome.
+  const graph = graphOf(TWO_TEAMS)
+  const custody = [
+    { at: '2026-07-27T09:00:00.000Z', event: 'assigned', agent_id: 'b_w1', task_id: 'b-1', dispatch_id: 'w-1' },
+    { at: '2026-07-27T09:01:00.000Z', event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done', timed_out: false, evidence_present: true, dispatch_id: 'w-1' },
+    { at: '2026-07-27T09:02:00.000Z', event: 'assigned', agent_id: 'b_e', task_id: 'r-1', dispatch_id: 'd-1' },
+    { at: '2026-07-27T09:03:00.000Z', event: 'assigned', agent_id: 'b_e', task_id: 'r-2', dispatch_id: 'd-2' },
+    // Borrows the live dispatch_id (d-2) but still names round 1's task (r-1).
+    { at: '2026-07-27T09:04:00.000Z', event: 'reviewed', agent_id: 'b_e', verdict: 'pass', task_id: 'r-1', dispatch_id: 'd-2', reviewed_task: 'b-1', reason: 'borrowed identity' },
+  ]
+  const items = itemsOf(['tok', custody, {
+    expectInvalid: true,
+    why: 'the sanctioned writer now refuses this shape too (dispatch_id_task_mismatch); '
+      + 'this fixture is the raw, already-on-disk shape currentEntry must still defend against',
+  }])
+
+  assert.equal(currentEntry(custody).task_id, 'r-2', 'the borrowed-dispatch_id review was read as where the token is')
+  assert.equal(currentEntry(custody).event, 'assigned', 'the live leg is still assigned, not reviewed')
+  assert.deepEqual(planPulls(graph, items, '2026-07-27T09:05:00.000Z'), [],
+    'a reviewed borrowing the live dispatch_id while naming an older task_id cleared the pull gate')
+
+  // The consistent case must still work: dispatch_id AND task_id both name
+  // round 2's own leg.
+  const consistent = custody.map((entry) => (entry.event === 'reviewed'
+    ? { ...entry, task_id: 'r-2', reviewed_task: 'b-1', reason: 'its own leg' }
+    : entry))
+  assert.equal(currentEntry(consistent).event, 'reviewed')
+  assert.equal(currentEntry(consistent).verdict, 'pass')
+
+  // And a reviewed that matches dispatch_id and simply omits task_id
+  // altogether (the ordinary shorthand) must still be trusted — this fix
+  // only refuses a task_id that resolves to a DIFFERENT leg, not an absent
+  // one.
+  const noTaskId = custody.map((entry) => {
+    if (entry.event !== 'reviewed') return entry
+    const { task_id, ...rest } = entry
+    return rest
+  })
+  assert.equal(currentEntry(noTaskId).event, 'reviewed')
+  assert.equal(currentEntry(noTaskId).verdict, 'pass')
 })
 
 // ── GitHub #32: per-seat reasoning effort reaches the spawned process ────────

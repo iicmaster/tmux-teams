@@ -1024,6 +1024,53 @@ test('a pre-amendment opened written by an agent actor can still be appended to 
   assert.match(freshOpened.detail, /human actor/)
 })
 
+// qwen #2, retro-release-review 2026-08-04: B2's `duplicate_task_id` /
+// `duplicate_dispatch_id` shipped without joining `LEGACY_TOLERATED_PROBLEMS`,
+// so a ledger that already carried a collision when B2 landed — reachable
+// with no hand editing, since `task_id` is minted at millisecond resolution —
+// froze solid: `continuable` in `ledger-writer.mjs` requires EVERY existing
+// problem to be tolerated, and this one was not, so `appendEvent` refused
+// even a terminal `abandoned`. Same shape as the two B5 tests above; same
+// fix.
+const dupTaskLegacy = jsonl(
+  { at: '2026-07-27T10:00:00.000Z', event: 'assigned', work_item: 'tok', workflow: 'feature', agent_id: 'w1', task_id: 't-dup', dispatch_id: 'd-1' },
+  { at: '2026-07-27T10:00:01.000Z', event: 'delivered', work_item: 'tok', workflow: 'feature', agent_id: 'w1', task_id: 't-dup', terminal: 'done', timed_out: false, evidence_present: true },
+  // The defect under test: a SECOND `assigned` reusing the same task_id.
+  { at: '2026-07-27T10:00:02.000Z', event: 'assigned', work_item: 'tok', workflow: 'feature', agent_id: 'w1', task_id: 't-dup', dispatch_id: 'd-2' },
+  { at: '2026-07-27T10:00:03.000Z', event: 'lost', work_item: 'tok', workflow: 'feature', agent_id: 'w1', task_id: 't-dup', reason: 'timed out' },
+)
+
+test('a pre-existing duplicate task_id can still be closed, but a fresh reuse is still refused (qwen #2)', (t) => {
+  const repo = scratch(t)
+  mkdirSync(join(repo, '.tmux-teams', 'work-items'), { recursive: true })
+  writeFileSync(ledgerPath(repo, 'tok'), `${dupTaskLegacy.join('\n')}\n`)
+
+  // Sanity: confirm the shape under test is exactly the one B2 named.
+  const raw = validateLedger(dupTaskLegacy)
+  assert.equal(raw.ok, false)
+  assert.deepEqual(codes(raw), ['duplicate_task_id'])
+
+  const abandoned = appendEvent(repo, {
+    event: 'abandoned', work_item: 'tok', workflow: 'feature',
+    reason: 'this token predates B2 and will not be replayed',
+  }, { actor: 'human:master' })
+  assert.equal(abandoned.ok, true,
+    `a pre-existing duplicate task_id permanently froze the ledger: ${abandoned.code} ${abandoned.detail}`)
+
+  // Scoped, not a blanket amnesty: a FRESH duplicate on a second, otherwise-
+  // identical ledger is still refused — the new `assigned` reuses an id the
+  // ledger already claimed, and that reuse is reported at the NEW line, which
+  // is never in `inherited`.
+  writeFileSync(ledgerPath(repo, 'tok2'), `${dupTaskLegacy.map((line) => line.replace(/"tok"/g, '"tok2"')).join('\n')}\n`)
+  const freshDupe = appendEvent(repo, {
+    event: 'assigned', work_item: 'tok2', workflow: 'feature',
+    agent_id: 'w2', task_id: 't-dup', dispatch_id: 'd-3',
+  }, { actor: 'agent:runner' })
+  assert.equal(freshDupe.ok, false, 'a legacy ledger let a NEW assigned reuse a task_id too')
+  assert.equal(freshDupe.code, 'invalid_event')
+  assert.match(freshDupe.detail, /task_id/)
+})
+
 test('a team that admitted the work cannot send it back — it fixes it and forwards', () => {
   // Master, 2026-08-03, confirming §1 against a live token: "ยืนยันกฏไม่ส่งกลับ
   // รีวิวเวอร์ที่เจอปัญหาก็ต้องแก้ต่อเองให้จบเลย". Nothing refused this before,
@@ -1048,4 +1095,67 @@ test('a team that admitted the work cannot send it back — it fixes it and forw
     { at: '2026-07-27T10:10:01.000Z', event: 'returned', work_item: 'tok', workflow: 'feature', to_team: 'design', refused_by: 'review_dispatcher', reason: 'no interface named' },
   ].map((entry) => (typeof entry === 'string' ? entry : JSON.stringify(entry)))
   assert.equal(validateLedger(atTheDoor).ok, true, JSON.stringify(validateLedger(atTheDoor).problems))
+})
+
+// ── retro-release-review round 2, 2026-08-04: F1 Shape 2 — a `reviewed` that
+// borrows a live dispatch_id while naming an older task_id ─────────────────
+//
+// `dispatch_id_task_mismatch` used to exempt `reviewed` entirely, on the
+// belief that `reviewed`'s only task-shaped field is `reviewed_task` (the
+// WORKER's delivery, a different leg entirely — correctly still unchecked).
+// But `reviewed` can also carry a plain `task_id` naming the leg it was
+// itself written from, and production stamps that from the SAME leg as its
+// `dispatch_id` (loop-runner.mjs harvests both off one `last`). A line that
+// names a live dispatch_id but an OLD task_id is not a shape the sanctioned
+// writer can produce — validating it clean is what let dispatch-facts.mjs's
+// `currentEntry` trust it as the live leg's own outcome.
+test('a reviewed borrowing a live dispatch_id while naming an older task_id is refused (F1 Shape 2)', () => {
+  // `reviewed` requires a preceding `delivered` to review at all (§4.6) — the
+  // worker's leg, unrelated to the evaluator legs this test is about.
+  const workerDelivered = [
+    { at: '2026-07-27T09:59:00.000Z', event: 'assigned', work_item: 'tok', workflow: 'feature', agent_id: 'design_w1', task_id: 't-1', dispatch_id: 'wd-1' },
+    { at: '2026-07-27T09:59:30.000Z', event: 'delivered', work_item: 'tok', workflow: 'feature', agent_id: 'design_w1', task_id: 't-1', terminal: 'done', timed_out: false, evidence_present: true },
+  ]
+  const borrowed = jsonl(
+    ...workerDelivered,
+    { at: '2026-07-27T10:00:00.000Z', event: 'assigned', work_item: 'tok', workflow: 'feature', agent_id: 'design_evaluator', task_id: 'r-1', dispatch_id: 'd-1' },
+    { at: '2026-07-27T10:01:00.000Z', event: 'assigned', work_item: 'tok', workflow: 'feature', agent_id: 'design_evaluator', task_id: 'r-2', dispatch_id: 'd-2' },
+    // Names the LIVE dispatch_id (d-2, round 2's own) but the OLDER task_id
+    // (r-1, round 1's).
+    { at: '2026-07-27T10:02:00.000Z', event: 'reviewed', work_item: 'tok', workflow: 'feature', agent_id: 'design_evaluator', verdict: 'pass', task_id: 'r-1', dispatch_id: 'd-2', reviewed_task: 't-1', reason: 'borrowed identity' },
+  )
+  const result = validateLedger(borrowed)
+  assert.equal(result.ok, false, 'a reviewed naming a live dispatch_id but an older task_id validated clean')
+  assert.ok(codes(result).includes('dispatch_id_task_mismatch'),
+    `expected dispatch_id_task_mismatch, got ${JSON.stringify(result.problems)}`)
+
+  // The two fields naming the SAME leg still validates — the check is about a
+  // contradiction, not about a reviewed carrying task_id at all.
+  const consistent = jsonl(
+    ...workerDelivered,
+    { at: '2026-07-27T10:00:00.000Z', event: 'assigned', work_item: 'tok', workflow: 'feature', agent_id: 'design_evaluator', task_id: 'r-1', dispatch_id: 'd-1' },
+    { at: '2026-07-27T10:01:00.000Z', event: 'reviewed', work_item: 'tok', workflow: 'feature', agent_id: 'design_evaluator', verdict: 'pass', task_id: 'r-1', dispatch_id: 'd-1', reviewed_task: 't-1', reason: 'its own leg' },
+  )
+  assert.equal(validateLedger(consistent).ok, true, JSON.stringify(validateLedger(consistent).problems))
+
+  // reviewed_task is still never checked against the dispatch owner's task —
+  // it names the WORKER's delivery, a different leg on purpose.
+  const reviewedTaskUnrelated = jsonl(
+    ...workerDelivered,
+    { at: '2026-07-27T10:00:00.000Z', event: 'assigned', work_item: 'tok', workflow: 'feature', agent_id: 'design_evaluator', task_id: 'r-1', dispatch_id: 'd-1' },
+    {
+      at: '2026-07-27T10:01:00.000Z', event: 'reviewed', work_item: 'tok', workflow: 'feature', agent_id: 'design_evaluator',
+      verdict: 'pass', task_id: 'r-1', dispatch_id: 'd-1', reviewed_task: 'a-completely-different-worker-task', reason: 'unrelated on purpose',
+    },
+  )
+  assert.equal(validateLedger(reviewedTaskUnrelated).ok, true, JSON.stringify(validateLedger(reviewedTaskUnrelated).problems))
+
+  // Omitting task_id altogether (the ordinary shorthand) is still legal —
+  // this only refuses a task_id that resolves to a DIFFERENT leg.
+  const noTaskId = jsonl(
+    ...workerDelivered,
+    { at: '2026-07-27T10:00:00.000Z', event: 'assigned', work_item: 'tok', workflow: 'feature', agent_id: 'design_evaluator', task_id: 'r-1', dispatch_id: 'd-1' },
+    { at: '2026-07-27T10:01:00.000Z', event: 'reviewed', work_item: 'tok', workflow: 'feature', agent_id: 'design_evaluator', verdict: 'pass', dispatch_id: 'd-1', reviewed_task: 't-1', reason: 'shorthand' },
+  )
+  assert.equal(validateLedger(noTaskId).ok, true, JSON.stringify(validateLedger(noTaskId).problems))
 })

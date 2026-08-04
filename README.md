@@ -659,8 +659,10 @@ party-mode's 3-model review uses its bundled JavaScript ACP gate
 (`plugins/tmux-teams/skills/party-mode/scripts/review-gate.mjs`), not `oc`/AGY/
 Codex review plugins or MCP review tools. On Linux it fails closed without
 `/usr/bin/bwrap`. It also needs the supported ACP reviewer runtimes:
-`antigravity-acp@1.0.0` + trusted `agy`, native `kimi acp`, and the pinned
-Claude/Codex ACP adapters. Zai must use the explicit official
+`antigravity-acp@1.0.0` + trusted `agy`, Qwen/Zai through the pinned
+Claude ACP adapter, and the Codex ACP adapter. `claude-zai` and `claude-qwen` must both use the
+pinned `@agentclientprotocol/claude-agent-acp` adapter with their machine-local
+profile settings. Zai must use the explicit official
 `https://api.z.ai/api/anthropic` settings route. AGY plus exactly two valid,
 distinct reviewers are mandatory, and unsupported primary routes fail closed.
 While the direct Claude provider is limited, the policy never launches it:

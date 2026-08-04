@@ -12,6 +12,7 @@ const runtimeKeys = new Set([
 const providerSecrets = {
   agy: ['AGY_API_KEY', 'ANTIGRAVITY_API_KEY', 'GOOGLE_API_KEY'],
   kimi: ['KIMI_API_KEY', 'MOONSHOT_API_KEY'],
+  qwen: [],
   zai: ['ZAI_API_KEY'],
   claude: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
   codex: ['OPENAI_API_KEY'],
@@ -33,9 +34,21 @@ function freeze(value) {
 
 // A routed lane reaches its provider through a machine-local settings file the
 // operator owns. Pinning the host here is what keeps `family` honest — see the
-// kimi entry.
-export const ROUTED_PROFILES = new Set(['zai'])
+// qwen and zai entries.
+export const ROUTED_PROFILES = new Set(['kimi', 'qwen', 'zai'])
 const ZAI_ENDPOINT = freeze({ host: 'api.z.ai', path: '/api/anthropic' })
+const QWEN_ENDPOINT = freeze({ host: 'token-plan.ap-southeast-1.maas.aliyuncs.com', path: '/apps/anthropic' })
+// Master, 2026-08-04: `claude-kimi` reaches a K3 model, `claude` reaches opus —
+// two genuinely different families down one adapter. That was always true and
+// nothing proved it, so `provenFamilyKey` gave both lanes the identical
+// `::unrouted` key and a panel seating them together counted two families as
+// three. The settings file this lane already loads pins
+// `ANTHROPIC_BASE_URL: https://api.kimi.com/coding/` and
+// `ANTHROPIC_DEFAULT_OPUS_MODEL: k3`; registering the host makes the parent
+// verify it before the child starts, exactly as it does for zai and qwen. The
+// trailing slash is dropped because `validateRoutedEndpoint` compares
+// `pathname.replace(/\/$/, '')`.
+const KIMI_ENDPOINT = freeze({ host: 'api.kimi.com', path: '/coding' })
 
 export const REVIEW_PROFILES = freeze({
   agy: {
@@ -48,30 +61,21 @@ export const REVIEW_PROFILES = freeze({
   kimi: {
     id: 'kimi', provider: 'kimi', family: 'kimi', model: 'opus',
     displayModel: 'kimi/opus',
-    // The native `kimi acp` client needed a login this machine never had, so
-    // every panel it sat on failed at `Authentication required`. The lane now
-    // speaks Claude's ACP adapter against a routed profile instead, and the
-    // `opus` alias resolves server-side from that profile.
-    //
-    // Which makes the label a claim about a machine-local file. `family` is
-    // what the panel counts to prove three DISTINCT model families reviewed
-    // this work — so an operator who re-points that profile at Anthropic while
-    // the label still reads `kimi` would satisfy the exactly-three rule with
-    // two seats from one family, and nothing in the receipt would disagree.
-    // `claudeExecutable` does NOT stop that, and the paragraph that used to
-    // stand here claiming it did was wrong (issue #38): it pins the ENV VAR
-    // NAME the gate hands the adapter, never what `claude-kimi` resolves to
-    // on the operator's PATH or what that binary does once exec'd — nothing
-    // in this file or acp-review-client.mjs reads its realpath, hashes it, or
-    // observes the endpoint it reaches. Compare `zai` below, which speaks the
-    // identical adapter package but is additionally pinned by `endpoint` +
-    // `validateRoutedEndpoint()`, verified by the PARENT process before the
-    // child ever starts. `kimi` carries no equivalent pin, so `provenFamilyKey()`
-    // (review-profiles.mjs) resolves it to the same unrouted bucket as the bare
-    // `claude` profile below — on purpose: nothing here can tell them apart,
-    // and the gate now refuses any panel that would seat both rather than
-    // asserting a distinction it cannot back up.
+    // Not seated by the current reviewer routes — qwen took that seat after the
+    // Kimi provider quota failure — but pinned all the same. An unpinned lane
+    // is not merely unused, it is indistinguishable from bare `claude`
+    // (identical adapter package, both `::unrouted`), so leaving it unpinned
+    // meant any future route that seated both would count two families as
+    // three, and the gate would say PASS. Pinned, its key names api.kimi.com
+    // and the parent refuses a settings file that redirects it.
     reviewMode: 'plan', osSandbox: 'bwrap',
+    endpoint: KIMI_ENDPOINT,
+    // A routed lane reads its base URL and credential from this file; without
+    // the path, `loadRoutedEnvironment` finds nothing and `validateRoutedEndpoint`
+    // refuses the lane outright — pinning without pointing at the settings is
+    // how a pin turns a working lane into a dead one.
+    settingsRelativePath: '.config/claude-profiles/kimi/settings.json',
+    providerConfigDir: '.config/claude-profiles/kimi',
     command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
     adapterPackage: '@agentclientprotocol/claude-agent-acp@0.61.0',
     claudeExecutable: 'claude-kimi',
@@ -91,10 +95,26 @@ export const REVIEW_PROFILES = freeze({
     reviewMode: 'default', osSandbox: 'bwrap',
     command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
     adapterPackage: '@agentclientprotocol/claude-agent-acp@0.61.0',
+    claudeExecutable: 'claude-zai',
     settingsFile: 'settings-zai.json',
+    settingsRelativePath: '.config/claude-profiles/zai/settings.json',
+    providerConfigDir: '.config/claude-profiles/zai',
     endpoint: ZAI_ENDPOINT,
     sessionSettings: { availableModels: ['glm-5.2'] },
     config: { model: 'glm-5.2', mode: 'default' },
+  },
+  qwen: {
+    id: 'qwen', provider: 'qwen', family: 'qwen', model: 'qwen3.8-max-preview',
+    displayModel: 'qwen/qwen3.8-max-preview',
+    reviewMode: 'plan', osSandbox: 'bwrap',
+    command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
+    adapterPackage: '@agentclientprotocol/claude-agent-acp@0.61.0',
+    claudeExecutable: 'claude-qwen',
+    settingsRelativePath: '.config/claude-profiles/qwen/settings.json',
+    providerConfigDir: '.config/claude-profiles/qwen',
+    endpoint: QWEN_ENDPOINT,
+    sessionSettings: { availableModels: ['qwen3.8-max-preview'] },
+    config: { model: 'qwen3.8-max-preview', mode: 'plan' },
   },
   claude: {
     id: 'claude', provider: 'anthropic', family: 'claude', model: 'claude-opus-4-8',
@@ -154,10 +174,17 @@ for (const profile of Object.values(REVIEW_PROFILES)) {
 // than an inline loop) so the rule itself — not just its one-time result at
 // import — has a name a test can call against a profile that is not part of
 // the frozen table, without needing to construct a whole second module.
+// Strengthened after r3-codex: `.includes()` was not enough. A command carrying
+// a second, inert package-shaped token lets two profiles each declare a
+// DIFFERENT `adapterPackage` while both "appear somewhere" in one byte-identical
+// command — two provable identities over one binary, which is the collision this
+// exists to stop. A profile's real identity is the final token `npx`/`bunx`
+// resolves and execs, so that is the one position this binds against.
 export function assertAdapterPackageBoundToCommand(profile, where = `review profile ${profile?.id}`) {
-  if (typeof profile?.adapterPackage === 'string' && Array.isArray(profile.command) &&
-      !profile.command.includes(profile.adapterPackage)) {
-    throw new Error(`${where}: adapterPackage "${profile.adapterPackage}" does not appear in its own command`)
+  if (typeof profile?.adapterPackage !== 'string' || !Array.isArray(profile.command)) return profile
+  const last = profile.command[profile.command.length - 1]
+  if (last !== profile.adapterPackage) {
+    throw new Error(`${where}: adapterPackage "${profile.adapterPackage}" is not the command's final argument (found "${last}")`)
   }
   return profile
 }
@@ -168,6 +195,7 @@ const aliases = new Map([
   ['openai', 'openai'], ['codex', 'openai'], ['gpt', 'openai'],
   ['claude', 'claude'], ['anthropic', 'claude'],
   ['kimi', 'kimi'], ['moonshot', 'kimi'],
+  ['qwen', 'qwen'],
   ['zai', 'zai'], ['z.ai', 'zai'], ['glm', 'zai'],
   ['gemini', 'gemini'], ['google', 'gemini'], ['google-antigravity', 'gemini'],
   ['antigravity', 'gemini'], ['agy', 'gemini'],
@@ -179,10 +207,12 @@ function normalizeFamilyValues(raw) {
   if (!value) return []
   if (aliases.has(value)) return [aliases.get(value)]
   if (/^claude[-_]kimi(?:[-_ ]?acp)?$/.test(value)) return ['kimi']
+  if (/^claude[-_]qwen(?:[-_ ]?acp)?$/.test(value)) return ['qwen']
   if (/^claude[-_](?:zai|glm)(?:[-_ ]?acp)?$/.test(value)) return ['zai']
   const families = []
   if (/(?:^|[^a-z0-9])(?:antigravity|gemini|agy|google)(?:[^a-z0-9]|$)/.test(value)) families.push('gemini')
   if (/(?:^|[^a-z0-9])(?:kimi|moonshot)(?:[^a-z0-9]|$)/.test(value)) families.push('kimi')
+  if (/(?:^|[^a-z0-9])qwen(?:[0-9]|[^a-z0-9]|$)/.test(value)) families.push('qwen')
   if (/(?:^|[^a-z0-9])(?:zai|z\.ai|glm)(?:[^a-z0-9]|$)/.test(value)) families.push('zai')
   if (/(?:^|[^a-z0-9])(?:claude|anthropic)(?:[^a-z0-9]|$)/.test(value)) families.push('claude')
   if (/(?:^|[^a-z0-9])(?:gpt|openai|codex)(?:[^a-z0-9]|$)/.test(value)) families.push('openai')
@@ -229,18 +259,13 @@ export function normalizePrimaryFamily(input) {
 //     on the `endpoint` line below for why the registration check, not just
 //     the shape of `endpoint`, is required.
 //
-// What this still cannot prove, and does not claim to: that an UNROUTED lane
-// (no `endpoint` pin at all — `kimi`, reached instead through the
-// operator-owned `claude-kimi` executable named at `buildProfileEnv`) is
-// reaching a genuinely different upstream than a routed one beside it in the
-// same panel. Nothing observable before spawn settles that; `kimi` and `zai`
-// are accepted today as the two ways this table can currently prove distinct
-// identity — a distinct `adapterPackage`, or a parent-verified endpoint pin —
-// and a lane with neither is `unrouted`, a bucket that says only "not
-// provably pinned," never "provably distinct from a lane that is." Widening
-// that bucket into a real proof needs `kimi` to carry its own verified
-// endpoint pin the way `zai` does; this patch does not invent one. See
-// HANDOFF / CONTRACT-PATCH for the residual.
+// What this still cannot prove, and does not claim to: that the legacy
+// UNROUTED Kimi lane (no `endpoint` pin, reached through the operator-owned
+// `claude-kimi` executable) reaches a genuinely different upstream than a
+// routed lane beside it. Current default routes use the endpoint-pinned qwen
+// and zai profiles instead. A lane with neither an adapter distinction nor a
+// parent-verified endpoint is `unrouted`, a bucket that says only "not
+// provably pinned," never "provably distinct from a lane that is."
 export function provenFamilyKey(profile) {
   if (!profile || typeof profile.adapterPackage !== 'string' || !profile.adapterPackage) return null
   const validEndpointShape = profile.endpoint &&
@@ -273,13 +298,31 @@ export function provenFamilyKey(profile) {
 // passes — one unknown has nothing else unknown to compare against. It is
 // specifically two or more unidentifiable lanes together, with nothing to
 // tell them apart, that this now refuses to certify as diverse.
-export function provenFamilyCollision(profiles) {
-  const keys = (profiles ?? []).map(provenFamilyKey)
-  const unresolved = keys.filter(key => key === null).length
-  if (unresolved >= 2) return true
-  const known = keys.filter(key => key !== null)
+// True when two or more of the given keys cannot be PROVEN distinct: either two
+// resolvable keys are identical, or two-or-more lanes resolve to no key at all.
+// That second clause used to be a free pass — a `null` was filtered out before
+// the uniqueness check, so two lanes that both omitted or misspelled
+// `adapterPackage` read as "no evidence, therefore no collision" rather than
+// what it actually is: nothing tells them apart either, and a fail-closed gate
+// must not certify that as diverse. One unresolved lane beside two DISTINCT
+// resolved ones still passes — a single unknown has nothing to be confused with.
+//
+// It takes keys rather than profiles because `review-gate.mjs` re-checks the
+// FINAL panel from the `familyProvenKey` already recorded on each accepted
+// review, and that second reader had its own copy of this rule with the old
+// filter still in it (r3-codex probed `[null-reserve, null-a, agy]` through to
+// `ok:true`). Two copies of one rule is how they drift; there is one now.
+export function provenFamilyKeysCollide(keys) {
+  const list = keys ?? []
+  if (list.filter(key => key === null).length >= 2) return true
+  const known = list.filter(key => key !== null)
   return new Set(known).size !== known.length
 }
+
+export function provenFamilyCollision(profiles) {
+  return provenFamilyKeysCollide((profiles ?? []).map(provenFamilyKey))
+}
+
 
 export function getReviewProfile(id) {
   const profile = REVIEW_PROFILES[id]
@@ -299,10 +342,11 @@ export function loadProfileSettings(profileId, settingsLoader = () => ({})) {
 }
 
 function settingsPath(profile, source) {
-  if (!profile.settingsFile) return null
+  const relativePath = profile.settingsRelativePath ?? (profile.settingsFile ? join('.claude', profile.settingsFile) : null)
+  if (!relativePath) return null
   const override = source?.[`TMUX_TEAMS_REVIEW_${profile.id.toUpperCase()}_SETTINGS`]
   const home = source?.HOME ?? source?.USERPROFILE
-  return override || (home ? join(home, '.claude', profile.settingsFile) : null)
+  return override || (home ? join(home, relativePath) : null)
 }
 
 function loadRoutedEnvironment(profile, source, loader = file => JSON.parse(readFileSync(file, 'utf8'))) {
@@ -320,9 +364,8 @@ function loadRoutedEnvironment(profile, source, loader = file => JSON.parse(read
 }
 
 // One check for every routed lane, driven by the `endpoint` the profile pins.
-// It was written for zai alone and hard-coded that one host; kimi now reaches
-// its provider the same way, and a per-lane copy of this is how two lanes come
-// to disagree about what counts as its own provider.
+// Qwen and Zai each have their own host pin, so the parent process can reject a
+// settings file that silently redirects either Claude ACP alias elsewhere.
 //
 // A lane that routes but pins nothing is refused rather than trusted: the panel
 // counts `family` to prove three distinct families reviewed the work, and a

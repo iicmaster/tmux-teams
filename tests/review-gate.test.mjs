@@ -644,25 +644,25 @@ test('a non-AGY failure gets one reserve only after originals settle; AGY failur
 test('provider-limited direct Claude is never launched when claude-zai would violate the final panel', async () => {
   const calls = []
   const profiles = keyedProfiles([
-    gateProfile('kimi', 'kimi'), gateProfile('zai', 'zai'), gateProfile('agy', 'gemini'), gateProfile('claude', 'claude'),
+    gateProfile('qwen', 'qwen'), gateProfile('zai', 'zai'), gateProfile('agy', 'gemini'), gateProfile('claude', 'claude'),
   ])
   await assert.rejects(runReviewGate(packet(), {
     profiles,
     runAcpReview: async ({ profile: selected }) => {
       calls.push(selected.id)
-      if (selected.id === 'kimi') throw new Error('down')
+      if (selected.id === 'qwen') throw new Error('down')
       return runnerResult(selected, packet())
     },
     buildProfileEnv: () => ({}),
     validateReview: () => ({ ok: true }),
   }), e => e.code === 'transport' && /accepted 2/.test(e.message))
-  assert.deepEqual(calls.sort(), ['agy', 'kimi', 'zai'])
+  assert.deepEqual(calls.sort(), ['agy', 'qwen', 'zai'])
 })
 
 test('provider-limited Claude lane falls back to claude-zai before any direct Claude launch', async () => {
   const calls = []
   const profiles = keyedProfiles([
-    gateProfile('claude', 'claude'), gateProfile('kimi', 'kimi'),
+    gateProfile('claude', 'claude'), gateProfile('qwen', 'qwen'),
     gateProfile('agy', 'gemini'), gateProfile('zai', 'zai'),
   ])
   const out = await runReviewGate(packet(), {
@@ -675,16 +675,16 @@ test('provider-limited Claude lane falls back to claude-zai before any direct Cl
     planReviewPanel: () => ({
       blocked: false,
       primaryFamily: 'openai',
-      reviewers: ['claude', 'kimi', 'agy'],
+      reviewers: ['claude', 'qwen', 'agy'],
       reserve: 'zai',
     }),
     validateReview: () => ({ ok: true }),
     synthesizeReviews: () => ({ verdict: 'PASS' }),
   })
-  assert.deepEqual(calls.sort(), ['agy', 'kimi', 'zai'])
-  assert.deepEqual(out.route, ['zai', 'kimi', 'agy'])
+  assert.deepEqual(calls.sort(), ['agy', 'qwen', 'zai'])
+  assert.deepEqual(out.route, ['zai', 'qwen', 'agy'])
   assert.deepEqual(out.attempts.map(item => [item.profile, item.status]), [
-    ['claude', 'failed'], ['kimi', 'accepted'], ['agy', 'accepted'], ['zai', 'accepted'],
+    ['claude', 'failed'], ['qwen', 'accepted'], ['agy', 'accepted'], ['zai', 'accepted'],
   ])
 })
 
@@ -692,14 +692,16 @@ test('canonical availability matrix never launches or prepares direct Claude', a
   const makeProfiles = () => keyedProfiles([
     gateProfile('agy', 'gemini'),
     gateProfile('kimi', 'kimi'),
+    gateProfile('qwen', 'qwen'),
     gateProfile('zai', 'zai'),
     gateProfile('codex', 'openai'),
     gateProfile('claude', 'claude'),
   ])
   const blockedCases = [
-    ['openai', 'kimi'], ['openai', 'zai'],
+    ['openai', 'qwen'], ['openai', 'zai'],
     ['kimi', 'codex'], ['kimi', 'zai'],
-    ['zai', 'codex'], ['zai', 'kimi'],
+    ['zai', 'codex'], ['zai', 'qwen'],
+    ['qwen', 'codex'], ['qwen', 'zai'],
   ]
   for (const [primary, failed] of blockedCases) {
     const calls = []
@@ -718,7 +720,7 @@ test('canonical availability matrix never launches or prepares direct Claude', a
     assert.equal(envCalls.includes('claude'), false, `${primary}/${failed} prepared direct Claude env`)
   }
 
-  for (const failed of ['codex', 'kimi']) {
+  for (const failed of ['codex', 'qwen']) {
     const calls = []
     const envCalls = []
     const profiles = makeProfiles()
@@ -741,7 +743,7 @@ test('canonical availability matrix never launches or prepares direct Claude', a
     assert.equal(new Set(out.reviews.map(review => review.model)).size, 3)
   }
 
-  for (const primary of ['openai', 'claude', 'kimi', 'zai']) {
+  for (const primary of ['openai', 'claude', 'kimi', 'zai', 'qwen']) {
     const calls = []
     const envCalls = []
     const profiles = makeProfiles()
@@ -1069,17 +1071,23 @@ test('a lane gets minutes, not a ping budget, and the ceiling is raised delibera
   }
 })
 
-test('the gate refuses a real kimi+claude panel sharing one unproven adapter identity (issue #38)', async () => {
-  // Real, shipped REVIEW_PROFILES -- not synthetic doubles -- reproducing the
-  // literal attack from issue #38: kimi and claude declare different families
-  // and satisfy the OLD exact-three-distinct-family rule (kimi, claude, agy
-  // are three distinct labels), yet both run the identical adapter package
-  // with no endpoint pin distinguishing them, which is exactly what an
-  // operator re-pointing claude-kimi at Anthropic would exploit.
-  const forcedPlan = { blocked: false, primaryFamily: 'test-primary-outside-panel', reviewers: ['kimi', 'claude', 'agy'], reserve: null }
+test('the gate refuses a panel whose lanes share one unproven adapter identity (issue #38)', async () => {
+  // Real, shipped REVIEW_PROFILES -- not synthetic doubles. The attack in issue
+  // #38 was kimi beside claude: different declared families, satisfying the old
+  // exact-three rule, over one adapter package with nothing telling them apart.
+  //
+  // Kimi is endpoint-pinned as of 2026-08-04, so THAT pair is now genuinely
+  // distinct and refusing it would be the opposite failure. The attack itself
+  // has not gone anywhere: bare `claude` is still unrouted, so any second
+  // unrouted lane on the same package reproduces it exactly. `claudeUnpinnedTwin`
+  // is that lane, built from the shipped claude profile so it cannot drift away
+  // from what the gate really sees.
+  const claudeUnpinnedTwin = { ...REVIEW_PROFILES.claude, id: 'claude-twin', family: 'twin-family', model: 'twin-model', displayModel: 'twin/model' }
+  const profilesWithTwin = { ...REVIEW_PROFILES, 'claude-twin': claudeUnpinnedTwin }
+  const forcedPlan = { blocked: false, primaryFamily: 'test-primary-outside-panel', reviewers: ['claude-twin', 'claude', 'agy'], reserve: null }
   const runner = async ({ profile: selected }) => ({ ...runnerResult(selected, packet()), mode: selected.reviewMode })
   await assert.rejects(runReviewGate(packet(), {
-    profiles: REVIEW_PROFILES,
+    profiles: profilesWithTwin,
     runAcpReview: runner,
     buildProfileEnv: () => ({}),
     planReviewPanel: () => forcedPlan,
@@ -1087,10 +1095,10 @@ test('the gate refuses a real kimi+claude panel sharing one unproven adapter ide
     synthesizeReviews: () => ({ verdict: 'PASS' }),
   }), e => e.code === 'policy' && /proven-identity diversity/.test(e.message))
 
-  // Today's real, legitimate `openai` route -- kimi seated alongside zai, not
-  // claude -- is unaffected: zai's parent-verified endpoint pin is a
-  // different, distinguishable proven identity from kimi's unrouted one.
-  const legitimatePlan = { blocked: false, primaryFamily: 'openai', reviewers: ['kimi', 'zai', 'agy'], reserve: 'claude' }
+  // Today's real, legitimate `openai` route -- qwen seated alongside zai, not
+  // claude -- is unaffected: both routed profiles have different parent-
+  // verified endpoint pins.
+  const legitimatePlan = { blocked: false, primaryFamily: 'openai', reviewers: ['qwen', 'zai', 'agy'], reserve: 'claude' }
   const out = await runReviewGate(packet(), {
     profiles: REVIEW_PROFILES,
     runAcpReview: runner,
@@ -1100,9 +1108,9 @@ test('the gate refuses a real kimi+claude panel sharing one unproven adapter ide
     synthesizeReviews: () => ({ verdict: 'PASS' }),
   })
   assert.equal(out.ok, true)
-  assert.deepEqual(out.route, ['kimi', 'zai', 'agy'])
-  assert.equal(out.reviews.find(item => item.profile === 'kimi').familyProvenKey,
-    '@agentclientprotocol/claude-agent-acp@0.61.0::unrouted')
+  assert.deepEqual(out.route, ['qwen', 'zai', 'agy'])
+  assert.equal(out.reviews.find(item => item.profile === 'qwen').familyProvenKey,
+    '@agentclientprotocol/claude-agent-acp@0.61.0::pinned:token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic')
   assert.equal(out.reviews.find(item => item.profile === 'zai').familyProvenKey,
     '@agentclientprotocol/claude-agent-acp@0.61.0::pinned:api.z.ai/api/anthropic')
 })
