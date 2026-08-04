@@ -3,7 +3,7 @@
 // updates, cancellation, identity, and descendant-process cleanup paths.
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { appendFileSync, existsSync, mkdirSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readdirSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`)
@@ -77,7 +77,15 @@ function writeDescendant() {
     cwd: process.cwd(),
     stdio: 'ignore',
   })
-  writeFileSync(join(process.cwd(), '.descendant-pid'), `${descendant.pid}\n`, { mode: 0o600 })
+  // Atomically. `writeFileSync` opens with O_CREAT|O_TRUNC and writes second,
+  // so a reader polling `existsSync` can see the path appear while it is still
+  // empty — `Number('')` is 0, and the test that read it asserted on a pid of
+  // 0. That is issue #39: six green runs then a red one, blamed on load for a
+  // week. A rename is atomic on one filesystem, so the path either is not there
+  // or holds the whole pid.
+  const pidPath = join(process.cwd(), '.descendant-pid')
+  writeFileSync(`${pidPath}.tmp`, `${descendant.pid}\n`, { mode: 0o600 })
+  renameSync(`${pidPath}.tmp`, pidPath)
 }
 
 function writeMockStage(stage) {

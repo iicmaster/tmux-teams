@@ -2622,26 +2622,51 @@ test('a reviewed that borrows the live holder\'s dispatch_id while naming an OLD
 // holder's own task_id is therefore producer-bound proof this review is
 // about what is CURRENTLY held, independent of who holds it.
 
-test('a genuine different-agent shorthand round-2 review is trusted when it reviews what the holder actually delivered (B6, positive)', () => {
+test('a second identityless review from a leg that already spoke is not the holder\'s evidence (B6, narrowed by r6-codex)', () => {
+  // This test asserted the OPPOSITE until 2026-08-04, and the shape it called
+  // "round 2's genuine shorthand" is one this system does not produce. The
+  // sanctioned writer stamps `dispatch_id: last.dispatch_id` on every
+  // `reviewed` it authors (loop-runner.mjs:784) and writes one per harvested
+  // outbox — so an identityless second review from an evaluator whose leg has
+  // already spoken has no dispatch standing behind it. Trusting it put
+  // `Passed review` on the board, released the pull, and moved the card, on a
+  // line the runner could not have written.
+  //
+  // r5 added the carve-out to stop over-discarding; r6 kept the carve-out and
+  // bound it to a leg that has not yet reported. The direction of the residual
+  // error matters: refusing re-reviews the delivery, trusting ships it.
   const graph = graphOf(TWO_TEAMS)
-  const items = itemsOf(['tok', [
+  const spent = [
     { event: 'assigned', agent_id: 'b_w1', task_id: 'b-1', dispatch_id: 'w-1' },
     { event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done', timed_out: false, evidence_present: true },
     { event: 'assigned', agent_id: 'b_e', task_id: 'r-1', dispatch_id: 'r-1' },
     { event: 'reviewed', agent_id: 'b_e', verdict: 'reject', reviewed_task: 'b-1', reason: 'missing a test' },
     { event: 'assigned', agent_id: 'b_w1', task_id: 'b-2', dispatch_id: 'w-2' },
     { event: 'delivered', agent_id: 'b_w1', task_id: 'b-2', terminal: 'done', timed_out: false, evidence_present: true },
-    // Round 2's genuine shorthand: no new `assigned` for b_e, no dispatch_id,
-    // no task_id — but `reviewed_task` correctly names the delivery it
-    // actually reviewed, which is the CURRENT holder's own leg (b_w1/b-2).
+    // b_e's leg r-1 already reported at index 3. This is a second word from it.
     { event: 'reviewed', agent_id: 'b_e', verdict: 'pass', reviewed_task: 'b-2', reason: 'the fix does what was asked' },
-  ]])
-  const entry = currentEntry(items.get('tok').custody)
-  assert.equal(entry.event, 'reviewed', 'a genuine round-2 shorthand review was discarded as though it were stale')
-  assert.equal(entry.verdict, 'pass')
-  assert.equal(entry.agent_id, 'b_e')
-  assert.deepEqual(planPulls(graph, items, '2026-07-27T09:10:00.000Z').map((d) => d.action), ['pull'],
-    'a genuine different-agent shorthand pass did not clear the pull gate')
+  ]
+  const entry = currentEntry(itemsOf(['tok', spent]).get('tok').custody)
+  assert.equal(entry.event, 'delivered', 'a second review from a spent leg was read as the holder\'s own evidence')
+  assert.equal(entry.task_id, 'b-2', 'the token is still where the worker left it')
+  assert.deepEqual(planPulls(graph, itemsOf(['tok', spent]), '2026-07-27T09:10:00.000Z').map((d) => d.action), [],
+    'an unbacked pass cleared the pull gate')
+
+  // The carve-out it replaced is still there for the case it was written for:
+  // a reviewer whose CURRENT leg has not yet spoken, naming the holder's own
+  // delivery. Here b_e's leg r-1 reports for the first time.
+  const fresh = [
+    { event: 'assigned', agent_id: 'b_w1', task_id: 'b-1', dispatch_id: 'w-1' },
+    { event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done', timed_out: false, evidence_present: true },
+    { event: 'assigned', agent_id: 'b_e', task_id: 'r-1', dispatch_id: 'r-1' },
+    { event: 'lost', agent_id: 'b_e', task_id: 'r-1', dispatch_id: 'r-1', reason: 'the evaluator leg died' },
+    { event: 'assigned', agent_id: 'b_w1', task_id: 'b-2', dispatch_id: 'w-2' },
+    { event: 'delivered', agent_id: 'b_w1', task_id: 'b-2', terminal: 'done', timed_out: false, evidence_present: true },
+    { event: 'reviewed', agent_id: 'b_e', verdict: 'pass', reviewed_task: 'b-2', reason: 'the fix does what was asked' },
+  ]
+  const good = currentEntry(itemsOf(['tok', fresh]).get('tok').custody)
+  assert.equal(good.event, 'reviewed', 'a first report from the reviewer\'s own leg, naming the holder\'s delivery, is still trusted')
+  assert.equal(good.verdict, 'pass')
 })
 
 test('a different-agent shorthand naming an OLDER delivery than the one the holder made is still discarded (B6, negative)', () => {
@@ -3161,4 +3186,29 @@ test('a token whose history stopped being believable is closed by the runner, no
     assert.match(written.reason, /duplicate_task_id/,
       'the close must name what made the history unbelievable, or nobody can repair it')
   } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('a controller that is still running is not a controller that failed to answer (r6-codex/John)', () => {
+  // `nextStep` took `busy` and never read it on this branch. A live outer
+  // controller past `answerDeadlineSec` — a shorter clock than the 1800s stall
+  // budget it actually runs under — had its token `abandoned` underneath it,
+  // and `abandoned` is a HARD terminal, so the answer could not be harvested
+  // when it arrived. Elapsed time is not proof that a process is dead.
+  const graph = graphOf(TWO_TEAMS)
+  const custody = [
+    { at: '2026-07-27T09:00:00.000Z', event: 'assigned', agent_id: 'b_w1', task_id: 'b-1', dispatch_id: 'w-1' },
+    { at: '2026-07-27T09:01:00.000Z', event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done', timed_out: false, evidence_present: true },
+    { at: '2026-07-27T09:02:00.000Z', event: 'escalated', agent_id: graph.outer_controller_id, to_team: 'build', task_id: 'ctl-1', reason: 'needs a decision' },
+  ]
+  const items = itemsOf(['tok', custody, { expectInvalid: true, why: 'the escalation shape is the subject; the fixture only has to reach the escalated branch' }])
+  // Well past the deadline either way.
+  const now = Date.parse('2026-07-27T09:30:00.000Z')
+
+  const live = planDispatches(graph, items, new Set([graph.outer_controller_id]), { now, answerDeadlineSec: 600 })
+  assert.equal(live.filter((plan) => plan.action === 'expired').length, 0,
+    'a controller with a live process was withdrawn from on the clock alone')
+
+  const dead = planDispatches(graph, items, new Set(), { now, answerDeadlineSec: 600 })
+  assert.equal(dead.filter((plan) => plan.action === 'expired').length, 1,
+    'a controller with no live process must still be withdrawn from, or the token wedges forever')
 })

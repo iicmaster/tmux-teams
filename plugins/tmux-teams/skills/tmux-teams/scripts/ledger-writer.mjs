@@ -128,6 +128,59 @@ function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 }
 
+// A steal used to be a bare `unlinkSync`, and the comment claimed "only one
+// racer can ever win that `wx`, so a steal can produce at most one new holder".
+// r6-codex showed that is false, and the reason is that `wx` guards only the
+// CREATE: B and C both stat the same stale marker, B unlinks it and creates its
+// own, and C — still acting on what it saw a moment ago — unlinks B's FRESH
+// lock and creates its own beside a holder that is still inside.
+//
+// `wx` on a separate steal marker puts at most one process in the steal section
+// at a time, and inside it the decision is re-made against the bytes on disk:
+// a marker whose token is no longer the one observed as stale is somebody's
+// live lock and is never touched. C now either finds nothing (B took it and has
+// not yet re-created) and races B fairly on `wx`, or reads B's token and leaves
+// it alone.
+//
+// What this does NOT fix, and cannot with file primitives alone: a live-but-slow
+// holder past `LOCK_STALE_MS` is still stolen from, and for as long as it stays
+// inside its section two writers overlap. That is the trade the stale bound
+// exists to make — a wedged token forever is worse — and it is stated here
+// rather than claimed away.
+const STEAL_SUFFIX = '.steal'
+// A steal section is a read, a stat and an unlink. Anything older than this is
+// a process that died holding it.
+const STEAL_STALE_MS = 1_000
+
+// Exported as a test seam: the guard below only matters on an interleaving
+// `acquireLock` re-reads its way out of, so it has to be called directly.
+export function stealStaleLock(lockPath, observedToken) {
+  const stealPath = `${lockPath}${STEAL_SUFFIX}`
+  let fd
+  try {
+    fd = openSync(stealPath, 'wx', 0o600)
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error
+    try {
+      if (Date.now() - statSync(stealPath).mtimeMs > STEAL_STALE_MS) unlinkSync(stealPath)
+    } catch { /* another racer cleared it first */ }
+    return false
+  }
+  try {
+    let current
+    try { current = readFileSync(lockPath, 'utf8') } catch { return true } // already gone
+    if (current !== observedToken) return false // a live lock somebody else just took
+    if (Date.now() - statSync(lockPath).mtimeMs <= LOCK_STALE_MS) return false // no longer stale
+    try { unlinkSync(lockPath) } catch { /* raced to it */ }
+    return true
+  } catch {
+    return false
+  } finally {
+    closeSync(fd)
+    try { unlinkSync(stealPath) } catch { /* nothing to clean up */ }
+  }
+}
+
 // Exported as a named test seam. The ownership invariant below is a property
 // of two file operations, not of scheduling, and it cannot be observed through
 // `appendEvent` without parking a real process inside its critical section for
@@ -146,17 +199,13 @@ export function acquireLock(lockPath) {
       return token
     } catch (error) {
       if (error.code !== 'EEXIST') throw error
-      try {
-        const age = Date.now() - statSync(lockPath).mtimeMs
-        if (age > LOCK_STALE_MS) {
-          // Steal: unlink, then loop back to a fresh `wx` attempt. Only one
-          // racer can ever win that `wx`, so a steal can produce at most one
-          // new holder — never two processes both believing they hold it.
-          try { unlinkSync(lockPath) } catch { /* another racer already stole it */ }
-          continue
-        }
-      } catch {
-        continue // the lock vanished between EEXIST and stat — retry now
+      let observed
+      try { observed = readFileSync(lockPath, 'utf8') } catch { continue } // vanished — retry now
+      let age
+      try { age = Date.now() - statSync(lockPath).mtimeMs } catch { continue }
+      if (age > LOCK_STALE_MS) {
+        stealStaleLock(lockPath, observed)
+        continue
       }
       if (Date.now() >= deadline) {
         throw Object.assign(

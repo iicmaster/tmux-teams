@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import {
   REVIEW_PROFILES, ROUTED_PROFILES, assertAdapterPackageBoundToCommand, assertPermittedModel, buildAcpLaunch,
   buildProfileEnv, loadProfileSettings, normalizePrimaryFamily, provenFamilyCollision, provenFamilyKey,
-  validateRoutedEndpoint,
+  provenLaunchSignature, validateRoutedEndpoint,
 } from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
 import {
   ROUTES, UNAVAILABLE_RESERVE_SUBSTITUTES, createReviewPlan, findingFingerprint, planFallback, synthesizeReviews, validateReviewOutput,
@@ -496,11 +496,11 @@ test('adapterPackage is bound to command for every shipped profile, and the bind
   // the same command" drift both reviews described).
   assert.throws(
     () => assertAdapterPackageBoundToCommand({ id: 'drifted', command: [...REVIEW_PROFILES.kimi.command], adapterPackage: 'not-the-real-package-name' }),
-    /adapterPackage "not-the-real-package-name" is not the command's final argument/,
+    /adapterPackage "not-the-real-package-name" is not the package this command runs/,
   )
   assert.throws(
     () => assertAdapterPackageBoundToCommand({ id: 'stale-bump', command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.62.0'], adapterPackage: REVIEW_PROFILES.kimi.adapterPackage }),
-    /is not the command's final argument/,
+    /is not the package this command runs/,
   )
   // BLOCKER 7 (r4-codex): the pre-strengthening check was
   // `command.includes(adapterPackage)`, and both fixtures above still pass
@@ -515,14 +515,28 @@ test('adapterPackage is bound to command for every shipped profile, and the bind
   // codex's and agy's — to prove the check is about POSITION, not merely
   // "which package".
   const twoPackageCommand = ['npx', REVIEW_PROFILES.codex.adapterPackage, '-y', REVIEW_PROFILES.agy.adapterPackage]
-  assert.throws(
-    () => assertAdapterPackageBoundToCommand({ id: 'inert-earlier-token', command: twoPackageCommand, adapterPackage: REVIEW_PROFILES.codex.adapterPackage }),
-    /is not the command's final argument/,
-    'a declared package present but not as the FINAL token must still be refused -- `.includes()` would have passed this',
-  )
+  // r6-codex, 2026-08-04: these two assertions used to be the other way round,
+  // and the wrong one was the point of the change. `npx <pkgA> -y <pkgB>` runs
+  // pkgA and hands the rest to it — `npm exec -- <pkg> [args...]` and
+  // `bunx <package> [arguments...]` both say so — so binding to the FINAL token
+  // certified a command as agy's while npx ran codex's. Two profiles could then
+  // declare different packages, execute one, and show the panel two distinct
+  // family keys and two distinct launch signatures.
   assert.doesNotThrow(
-    () => assertAdapterPackageBoundToCommand({ id: 'final-token-ok', command: twoPackageCommand, adapterPackage: REVIEW_PROFILES.agy.adapterPackage }),
-    'the same command legitimately binds the package that actually IS its final token',
+    () => assertAdapterPackageBoundToCommand({ id: 'first-positional', command: twoPackageCommand, adapterPackage: REVIEW_PROFILES.codex.adapterPackage }),
+    'the package a runner executes is its first positional argument',
+  )
+  assert.throws(
+    () => assertAdapterPackageBoundToCommand({ id: 'inert-trailing-token', command: twoPackageCommand, adapterPackage: REVIEW_PROFILES.agy.adapterPackage }),
+    /is not the package this command runs/,
+    'a package sitting in the trailing arguments is an argument to the one being run, not the one being run',
+  )
+  // `-p`/`--package` name something to install rather than something to run, so
+  // the binder refuses to guess instead of certifying the wrong token.
+  assert.throws(
+    () => assertAdapterPackageBoundToCommand({ id: 'install-flag', adapterPackage: REVIEW_PROFILES.agy.adapterPackage, command: ['npx', '--package', REVIEW_PROFILES.agy.adapterPackage, 'sh'] }),
+    /no package at all/,
+    'a command whose package is an install target must be refused, not guessed',
   )
 })
 
@@ -565,4 +579,37 @@ test('AGY round six: two exec-identical lanes pinned to different verified endpo
   // must still collide with the one it actually duplicates.
   assert.equal(provenFamilyCollision([alpha, beta, { ...alpha, family: 'alpha2' }]), true,
     'a third lane duplicating alpha must collide even though alpha and beta are pinned apart')
+})
+
+test('r6-codex: two names for one wrapper are one lane, and a name this machine cannot see is still compared', (t) => {
+  // Amelia's false pass: `provenLaunchSignature` compared STRINGS while its
+  // comment called them bytes. An alias symlinked to the real wrapper is the
+  // same file, the same settings dir and the same upstream account, and the
+  // panel counted it as a second family.
+  const dir = mkdtempSync(join(tmpdir(), 'exec-alias-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const real = join(dir, 'claude-real')
+  writeFileSync(real, '#!/bin/sh\nexec claude "$@"\n', { mode: 0o755 })
+  symlinkSync(real, join(dir, 'claude-alias'))
+
+  const command = [...REVIEW_PROFILES.qwen.command]
+  const withPath = process.env.PATH
+  process.env.PATH = `${dir}${delimiter}${withPath}`
+  try {
+    assert.equal(
+      provenLaunchSignature({ command, claudeExecutable: 'claude-real' }),
+      provenLaunchSignature({ command, claudeExecutable: 'claude-alias' }),
+      'an alias symlinked to the wrapper is the same lane, whatever it is called',
+    )
+    // Two lanes neither of which resolves still compare by name — weaker than a
+    // path, and the same as before this change rather than newly blind.
+    assert.notEqual(
+      provenLaunchSignature({ command, claudeExecutable: 'claude-not-here-a' }),
+      provenLaunchSignature({ command, claudeExecutable: 'claude-not-here-b' }),
+    )
+    assert.equal(
+      provenLaunchSignature({ command, claudeExecutable: 'claude-not-here-a' }),
+      provenLaunchSignature({ command, claudeExecutable: 'claude-not-here-a' }),
+    )
+  } finally { process.env.PATH = withPath }
 })

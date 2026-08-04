@@ -987,6 +987,16 @@ function nextStep(graph, team, item, { busy, nowMs, zombieSec, answerDeadlineSec
       // answered, not as still thinking forever. Reusing it here closes the
       // one remaining custody state a runner can write that had no path to a
       // terminal at all.
+      // r6-codex/John, 2026-08-04: the deadline alone used to decide this, and
+      // `busy` was taken as a parameter and never read here. A controller that
+      // is alive and working past `answerDeadlineSec` — a shorter clock than
+      // the 1800s controller stall budget — had its token hard-`abandoned`
+      // underneath it, and `abandoned` is a HARD terminal, so its answer could
+      // no longer be harvested when it arrived. `assigned` has consulted
+      // `busy` for exactly this reason since the branch below it was written;
+      // this state is a leg like any other. Elapsed time is not proof that a
+      // process is dead — this repo's own dispatch rule says so.
+      if (busy.has(last.agent_id)) return { action: 'in-flight' }
       const heldSec = (nowMs - Date.parse(last.at || '')) / 1000
       if (Number.isFinite(heldSec) && heldSec >= answerDeadlineSec) {
         return {
@@ -1202,6 +1212,9 @@ export function planDispatches(graph, items, busy, {
   for (const [workItem, item] of items) {
     const last = currentEntry(item.custody)
     if (!last || last.event !== 'audit_requested' || last.agent_id !== graph.outer_controller_id) continue
+    // Same rule as the `escalated` branch in `nextStep`: a controller still
+    // running is not a controller that failed to answer (r6-codex/John).
+    if (busy.has(last.agent_id)) continue
     const heldSec = (now - Date.parse(last.at || '')) / 1000
     if (!Number.isFinite(heldSec) || heldSec < answerDeadlineSec) continue
     plans.push({
@@ -1472,6 +1485,15 @@ export function childEnv(source = process.env) {
 // start with an alnum/`_` character, and the literal fallbacks ('board',
 // 'loop') and every `role` this file passes in do too, so the prefix always
 // starts with a character acp-companion's ID_RE accepts.
+//
+// What this is NOT (r6-codex, round 6): collision-free. 16 hex is 64 bits, and
+// the tuple's only varying field between two dispatches of the same
+// work item, team and role is the millisecond — so the identical tuple in the
+// identical millisecond still yields the identical id. What it removes is the
+// SANITIZER collision above, where two genuinely different work items mapped
+// to one string; the digest is taken over the raw tuple, before truncation and
+// before sanitizing, so those two now differ. Bounded collision-resistance,
+// not uniqueness.
 export function buildTaskId(workItem, team, role, nowMs = Date.now()) {
   const w = workItem || 'board'
   const t = team || 'loop'

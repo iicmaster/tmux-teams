@@ -233,6 +233,28 @@ export function currentEntry(custody) {
     return count
   }
 
+  // Has this reviewer already spoken for the leg it is currently on?
+  //
+  // r6-codex/Sally: `reviewsCurrentHolder` rescues a review that names the
+  // holder's own task_id, on the argument that a leg which died before that
+  // delivery existed could never have seen its task_id. True, and not enough —
+  // the leg does not have to be dead. An evaluator dispatched to judge b-1,
+  // which judged it and then kept running, can see b-2 land and write a SECOND
+  // `reviewed` naming it, with no new `assigned` of its own. The sanctioned
+  // producer writes one `reviewed` per harvested outbox (loop-runner.mjs:703),
+  // so a second one from the same leg did not come from it.
+  const legAlreadyReviewed = (agentId, uptoIndex) => {
+    let latestAssigned = -1
+    for (let j = 0; j < uptoIndex; j += 1) {
+      if (custody[j].event === 'assigned' && String(custody[j].agent_id || '') === agentId) latestAssigned = j
+    }
+    if (latestAssigned < 0) return false
+    for (let j = latestAssigned + 1; j < uptoIndex; j += 1) {
+      if (custody[j].event === 'reviewed' && String(custody[j].agent_id || '') === agentId) return true
+    }
+    return false
+  }
+
   for (let i = custody.length - 1; i >= 0; i -= 1) {
     const entry = custody[i]
     if (!LEG_OUTCOMES.has(entry.event)) return entry
@@ -283,6 +305,7 @@ export function currentEntry(custody) {
       const reviewer = String(entry.agent_id)
       const reviewsCurrentHolder = entry.reviewed_task !== undefined && entry.reviewed_task !== null
         && holderTaskId !== null && String(entry.reviewed_task) === holderTaskId
+        && !legAlreadyReviewed(reviewer, i)
       if (reviewer !== holder && assignedCountFor(reviewer, i) > 0 && !reviewsCurrentHolder) continue
     }
 

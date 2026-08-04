@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { acquireLock, appendEvent, ledgerPath, releaseLock } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-writer.mjs'
+import { acquireLock, appendEvent, ledgerPath, releaseLock, stealStaleLock } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-writer.mjs'
 import { validateLedger, validateLedgerFile, validateLedgerTolerant } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-validate.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -1446,4 +1446,66 @@ test('a holder whose lock was stolen releases nothing, so the stealer keeps the 
   // And B's own release still works.
   releaseLock(lockPath, bToken)
   assert.equal(existsSync(lockPath), false, 'the true holder can always release')
+})
+
+test('a steal removes only the marker it judged, never the one that replaced it', (t) => {
+  // r6-codex: `wx` guards the CREATE, not the decision in front of it. Two
+  // racers judge the same stale marker; the first steals it and takes the lock;
+  // the second, still acting on what it read, unlinks the FRESH lock and
+  // creates its own beside a holder still inside its critical section. `wx`
+  // never saw a conflict because by then there was nothing to conflict with.
+  //
+  // Reproduced at the seam because `acquireLock` re-reads the marker on every
+  // retry, so a single call cannot be made to act on a stale observation — the
+  // interleaving needs two processes, and the guard is what makes the second
+  // one harmless.
+  const dir = scratch(t)
+  const lockPath = join(dir, 'w.jsonl.lock')
+
+  // B holds. Its own section has run long enough that the marker reads stale —
+  // stealing it is legitimate, but only for a racer that judged THIS marker.
+  writeFileSync(lockPath, 'B-token')
+  const old = new Date(Date.now() - 120_000)
+  utimesSync(lockPath, old, old)
+
+  // C judged A's marker, which B already replaced.
+  assert.equal(stealStaleLock(lockPath, 'A-token'), false,
+    'C stole a marker it never judged')
+  assert.equal(readFileSync(lockPath, 'utf8'), 'B-token',
+    "C removed B's lock: two writers are now inside one critical section")
+
+  // A racer that judged the marker actually there may still steal it — the
+  // guard narrows the rule to "what you judged", it does not repeal it.
+  assert.equal(stealStaleLock(lockPath, 'B-token'), true)
+  assert.equal(existsSync(lockPath), false)
+})
+
+test("a second stealer acting on what it saw does not unlink the fresh lock the first one just took", (t) => {
+  // r6-codex: `wx` guards the CREATE, not the decision in front of it. B and C
+  // both read the same stale marker; B steals and enters; C, still acting on
+  // what it read, unlinks B's FRESH lock and creates its own beside a holder
+  // that is still inside. `wx` never saw a conflict because by then there was
+  // nothing to conflict with.
+  const dir = scratch(t)
+  const lockPath = join(dir, 'w.jsonl.lock')
+
+  // A holds, and its lock has gone stale.
+  writeFileSync(lockPath, 'A-token')
+  const old = new Date(Date.now() - 120_000)
+  utimesSync(lockPath, old, old)
+  const observedByBoth = readFileSync(lockPath, 'utf8')
+
+  // B gets there first and takes it. `acquireLock` steals, then creates.
+  const bToken = acquireLock(lockPath)
+  assert.equal(readFileSync(lockPath, 'utf8'), bToken, 'B holds after the steal')
+
+  // C now acts on the token it read BEFORE B moved. Its own acquire must not
+  // remove B's lock; with a 5s wait bound it can only time out.
+  assert.throws(() => acquireLock(lockPath), /timed out waiting/,
+    'C stole a lock that was no longer the one it had judged stale')
+  assert.equal(readFileSync(lockPath, 'utf8'), bToken,
+    "C removed B's fresh lock: two writers are now inside one critical section")
+  assert.equal(observedByBoth, 'A-token', 'both racers judged the same marker')
+
+  releaseLock(lockPath, bToken)
 })

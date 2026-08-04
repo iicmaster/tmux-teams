@@ -714,6 +714,24 @@ async function assertPidGone(pid, label, expectedBirthId = null) {
   assert.equal(pidAlive(pid), false, `${label} pid ${pid} should be reaped`)
 }
 
+// Wait for the VALUE, not the path. `waitForFile` returned the moment
+// `.descendant-pid` appeared, and the mock's `writeFileSync` opens with
+// O_CREAT|O_TRUNC and writes second — so the poll could catch the file empty,
+// `Number('')` gave 0, and `assert.ok(pid)` failed with `actual: 0`. That is
+// issue #39, red once in six runs and called a load flake for a week; the
+// message names a precondition, never the reap or the terminal state this test
+// is actually about. The mock now renames into place, and this waits for a pid
+// it can use, so neither half depends on the other having been fixed.
+async function waitForDescendantPid(cwd, scenario, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const pid = descendantPid(cwd)
+    if (Number.isInteger(pid) && pid > 0) return pid
+    await sleep(10)
+  }
+  assert.fail(`${scenario}: timed out waiting for a usable descendant pid in ${cwd}`)
+}
+
 function descendantPid(cwd) {
   const path = join(cwd, '.descendant-pid')
   return existsSync(path) ? Number(readFileSync(path, 'utf8').trim()) : null
@@ -2162,9 +2180,7 @@ test('cancellation paths close stdin and reap their detached process groups', { 
       ACP_CANCEL_GRACE_MS: '250',
       ACP_PROCESS_KILL_GRACE_MS: '300',
     }, undefined, 1.5)
-    await waitForFile(join(live.cwd, '.descendant-pid'))
-    const pid = descendantPid(live.cwd)
-    assert.ok(pid, `${scenario} must spawn a descendant`)
+    const pid = await waitForDescendantPid(live.cwd, scenario)
     const birthId = processBirthId(pid)
     const r = await live.completion
     assert.equal(r.status, 1, `exit 1 expected; stdout:\n${r.stdout}\nstderr:\n${r.stderr}`)

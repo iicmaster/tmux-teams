@@ -182,11 +182,40 @@ for (const profile of Object.values(REVIEW_PROFILES)) {
 // resolves and execs, so that is the one position this binds against.
 export function assertAdapterPackageBoundToCommand(profile, where = `review profile ${profile?.id}`) {
   if (typeof profile?.adapterPackage !== 'string' || !Array.isArray(profile.command)) return profile
-  const last = profile.command[profile.command.length - 1]
-  if (last !== profile.adapterPackage) {
-    throw new Error(`${where}: adapterPackage "${profile.adapterPackage}" is not the command's final argument (found "${last}")`)
+  const executed = executedPackage(profile.command)
+  if (executed !== profile.adapterPackage) {
+    throw new Error(`${where}: adapterPackage "${profile.adapterPackage}" is not the package this command runs (found ${
+      executed === null ? 'no package at all' : `"${executed}"`})`)
   }
   return profile
+}
+
+// The package a runner actually EXECUTES is its first positional argument, not
+// its last token. `npm exec -- <pkg> [args...]` and `bunx <package> [args...]`
+// both say so in their own help.
+//
+// This read `.includes()` until 2026-08-04 and then, briefly, `.at(-1)` — and
+// the second was worse than the first. r6-codex probed it: with
+// `['npx', '@agentclientprotocol/codex-acp@1.1.7', '-y', 'antigravity-acp@1.0.0']`
+// npx runs codex-acp and treats the rest as ITS arguments, while the binder
+// certified the command as bound to the agy package because that string sat
+// last. Two profiles could then declare different packages, execute the same
+// one, and present different family keys AND different launch signatures to the
+// panel. The accompanying test asserted that acceptance was correct, so the
+// gate and its test agreed with each other and not with npx.
+function executedPackage(command) {
+  for (let i = 1; i < command.length; i += 1) {
+    const token = command[i]
+    if (typeof token !== 'string') return null
+    if (token === '--') continue
+    // `-p`/`--package` name a package to INSTALL and take a value; anything
+    // after them is still not the thing being run, so a command using them is
+    // refused rather than guessed at.
+    if (token === '-p' || token === '--package') return null
+    if (token.startsWith('-')) continue
+    return token
+  }
+  return null
 }
 
 for (const profile of Object.values(REVIEW_PROFILES)) assertAdapterPackageBoundToCommand(profile)
@@ -332,7 +361,32 @@ export function provenFamilyKey(profile) {
 export function provenLaunchSignature(profile) {
   if (!profile || !Array.isArray(profile.command) ||
       profile.command.some(part => typeof part !== 'string')) return null
-  return JSON.stringify([profile.command, profile.claudeExecutable ?? null])
+  return JSON.stringify([profile.command, resolvedExecutable(profile.claudeExecutable) ?? null])
+}
+
+// The executable a lane runs, resolved through PATH to a real path when this
+// machine can see it, and otherwise the name as declared.
+//
+// r6-codex/Amelia: the signature compared STRINGS and called them bytes.
+// `claude-qwen` and an alias symlinked to it are the same wrapper, the same
+// settings dir and the same upstream account — two different strings, so the
+// panel counted two families. Resolving closes it in the direction that
+// matters: two names for one file now collapse to one path.
+//
+// A name this machine cannot resolve falls back to itself. That is weaker than
+// a path and deliberately so — two lanes that BOTH fail to resolve compare by
+// name exactly as before, and a lane whose executable does not exist here will
+// fail to launch long before the panel's verdict matters.
+function resolvedExecutable(name) {
+  if (typeof name !== 'string' || name === '') return name ?? null
+  const directories = (process.env.PATH ?? '').split(delimiter).filter(Boolean)
+  for (const dir of name.includes('/') ? [''] : directories) {
+    const candidate = dir === '' ? name : join(dir, name)
+    try {
+      if (existsSync(candidate)) return realpathSync(candidate)
+    } catch { /* unreadable — try the next one */ }
+  }
+  return name
 }
 
 // The endpoint a lane is PINNED to, or null. This is the one routing fact the

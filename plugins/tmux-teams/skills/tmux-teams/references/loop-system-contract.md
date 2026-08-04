@@ -874,9 +874,18 @@ go — the runner refused its own repair on every tick, visibly and for ever.
   actually being judged, at the moment of judging — settles it: a leg that
   died before the holder's own delivery existed cannot name that delivery's
   task_id, because it never saw it. So `reviewed_task` matching the CURRENT
-  holder's own task_id is producer-bound proof the review is about what is
-  held right now, and is trusted even though the reviewer is a different
-  agent with an older leg elsewhere in this ledger. A `reviewed_task` that
+  holder's own task_id is evidence — not proof, and the word was wrong here
+  until 2026-08-04 — that the review is about what is held right now, and is
+  trusted even though the reviewer is a different agent with an older leg
+  elsewhere in this ledger. It is bounded twice over. The field is not bound to
+  its producer: the sanctioned harvester is the only thing that stamps one, but
+  nothing in the ledger says so, and a forged value needs exactly the write
+  access every other field already assumes away. And the argument above covers
+  only a leg that DIED before the delivery existed — a leg still running can
+  see a later delivery land and name it, so the pass additionally requires that
+  the reviewer's current leg has not already reported. The harvester writes one
+  `reviewed` per outbox; a second word from the same leg did not come from it
+  (r6-codex, round 6). A `reviewed_task` that
   does not match the holder's own task_id (or the holder has none — the
   holder is itself an evaluator/dispatcher/etc. leg, not a worker delivery)
   gets no such pass and is discarded exactly as before.
@@ -1683,11 +1692,21 @@ and §11.2.
    repository's own declaration reads `inherit-account-default`, which requests
    nothing. An unacknowledged name fails the whole dispatch.
 
-5. **`appendEvent` has no lock.** It is read-validate-append, so two processes
-   writing the same token (the runner and an acp-companion) are TOCTOU on the
-   *sequence* check. One `appendFileSync` of one pre-serialised line keeps lines
-   from interleaving, so the failure mode is a bad sequence, never a corrupt
-   line. Known and unaddressed.
+5. **`appendEvent`'s lock does not survive a stale takeover.** Since
+   2026-08-04 an append holds an `O_CREAT|O_EXCL` marker beside the ledger, so
+   the runner and an acp-companion writing the same token no longer race the
+   *sequence* check in the ordinary case; a loser waits `LOCK_MAX_WAIT_MS` and
+   is refused with `code: 'locked'`, which both the runner's `record` and the
+   companion's custody append retry rather than drop. One `appendFileSync` of
+   one pre-serialised line still keeps lines from interleaving, so the failure
+   mode remains a bad sequence, never a corrupt line. What is NOT closed: a
+   marker older than `LOCK_STALE_MS` is stolen on its mtime, so a live-but-slow
+   holder can be stolen from, and for as long as it stays inside its section
+   two writers overlap. The steal is serialised through its own marker and
+   refuses to remove a lock whose token is not the one it judged — that stops a
+   second stealer from freeing a section a first one is inside — but it does
+   not make takeover safe. Fencing tokens would, and are not implemented.
+   Bounded and stated, not closed.
 
 6. **The pull gate judges the parsed projection, not the raw file.**
    `planPulls` is handed items, not a repo path, so it validates the `at`-sorted
@@ -1928,6 +1947,45 @@ line.
    editing a file while a worker holds it has already cost one overwrite.
 
 ### Amendment log
+
+**2026-08-04 — r6-codex: five holes, of which two were opened by the round
+that was closing them.** Behaviour changed in `review-profiles.mjs`,
+`dispatch-facts.mjs` and `loop-runner.mjs`.
+`assertAdapterPackageBoundToCommand` bound `adapterPackage` to the command's
+FINAL token, tightened from `.includes()` the same day. `npm exec -- <pkg>
+[args...]` and `bunx <package> [arguments...]` both run the FIRST positional and
+hand it the rest, so `['npx', codexPackage, '-y', agyPackage]` was certified as
+bound to agy while npx ran codex — and the accompanying test asserted that
+acceptance was correct, so the gate and its test agreed with each other and not
+with npx. It now binds the first positional, and refuses rather than guesses
+when `-p`/`--package` name an install target.
+`provenLaunchSignature` compared executable STRINGS while its comment called
+them bytes: an alias symlinked to the real wrapper is the same file, the same
+settings dir and the same account, and the panel counted two families. It now
+resolves through PATH to a real path, falling back to the declared name when
+this machine cannot see it.
+The stale-lock steal was a bare `unlinkSync` under a comment claiming "at most
+one new holder": `wx` guards the create, not the decision in front of it, so a
+second stealer acting on what it read could unlink the FRESH lock a first one
+had just taken and walk into the section it was inside. The steal is now
+serialised through its own `wx` marker and removes only a lock whose token is
+still the one it judged. §14.5 records what remains open.
+`currentEntry`'s `reviewed_task` pass covered only a leg that DIED before the
+delivery existed; a leg still running can see a later delivery land and name
+it, with no new `assigned` of its own. The pass now also requires that the
+reviewer's current leg has not already reported — the harvester writes one
+`reviewed` per outbox. §5's paragraph on the shorthand is corrected, including
+its use of the word "proof".
+`nextStep`'s `escalated` branch and `planEscalation`'s `audit_requested` scan
+took `busy` and never read it, so a controller alive and working past
+`answerDeadlineSec` — a shorter clock than the 1800s stall budget it runs
+under — had its token hard-`abandoned` underneath it, and `abandoned` admits no
+successor, so its answer could not be harvested when it arrived. Both now treat
+a live process as in flight. Elapsed time is not proof that a process is dead.
+Also corrected without behaviour change: §14.5's claim that `appendEvent` has no
+lock, and `buildTaskId`'s claim to remove collisions — 16 hex is 64 bits, and
+the identical tuple in the identical millisecond still yields the identical id.
+What it removed was the sanitizer collision.
 
 **2026-08-04 — r6-agy, narrowed: the escape hatch had no automated caller.**
 Behaviour changed in `loop-runner.mjs`. §5's closing tolerance promises that a
