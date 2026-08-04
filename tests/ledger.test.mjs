@@ -1615,3 +1615,58 @@ test('a steal blocked by another stealer waits out that marker rather than spinn
 
   releaseLock(lockPath, token)
 })
+
+test('the closing pass needs EVERY problem tolerated, not merely one (r6-qwen M2)', (t) => {
+  // `.every` -> `.some` survived the whole suite. It is the most dangerous
+  // single character in this file: with `.some`, a ledger carrying one
+  // closing-tolerated defect beside a genuinely unreadable one is closed as
+  // though the second were not there, and closing a ledger is the one act that
+  // says the token is done being trusted.
+  const dir = scratch(t)
+  mkdirSync(join(dir, '.tmux-teams', 'work-items'), { recursive: true })
+  const tok = 'mixed-tok'
+  const at = (n) => new Date(Date.UTC(2026, 7, 4, 10, n)).toISOString()
+  const custody = [
+    { at: at(0), event: 'opened', work_item: tok, workflow: 'feature', agent_id: 'ctl', to_team: 'control', reason: 'r', actor: 'human:ngs' },
+    // NOT tolerated: `pulled` without `from_team` is a hole in the route.
+    { at: at(1), event: 'pulled', work_item: tok, workflow: 'feature', agent_id: 'runner', to_team: 'dev', actor: 'agent:runner' },
+    { at: at(2), event: 'assigned', work_item: tok, workflow: 'feature', agent_id: 'w1', task_id: 'dup', dispatch_id: 'd1', actor: 'agent:runner' },
+    { at: at(3), event: 'lost', work_item: tok, workflow: 'feature', agent_id: 'w1', task_id: 'dup', dispatch_id: 'd1', reason: 'died', actor: 'agent:runner' },
+    // Tolerated: the pre-existing duplicate.
+    { at: at(4), event: 'assigned', work_item: tok, workflow: 'feature', agent_id: 'w1', task_id: 'dup', dispatch_id: 'd2', actor: 'agent:runner' },
+  ]
+  writeFileSync(ledgerPath(dir, tok), `${custody.map((entry) => JSON.stringify(entry)).join('\n')}\n`)
+
+  const closed = appendEvent(dir, {
+    at: at(5), event: 'abandoned', work_item: tok, workflow: 'feature',
+    agent_id: 'w1', reason: 'operator closing it',
+  }, { actor: 'agent:runner' })
+  assert.equal(closed.ok, false,
+    'a ledger with an untolerated problem beside a tolerated one was closed anyway')
+  assert.equal(closed.code, 'ledger_already_invalid')
+  assert.ok(closed.problems.some((problem) => problem.code === 'missing_field'),
+    `the refusal must name the problem that is NOT tolerated: ${JSON.stringify(closed.problems)}`)
+})
+
+test('the stale bound is 30 seconds, and a lock younger than it is not stolen (r6-qwen M7)', (t) => {
+  // `LOCK_STALE_MS` 30s -> 59s survived: every fixture backdated 60s, so any
+  // value under a minute passed. The bound is a promise about how long a token
+  // can be wedged behind a dead holder, and a number nothing pins is a number
+  // that drifts.
+  const dir = scratch(t)
+  const lockPath = join(dir, 'w.jsonl.lock')
+  const age = (ms) => { const when = new Date(Date.now() - ms); utimesSync(lockPath, when, when) }
+
+  // Just inside the bound: still somebody's lock, and stealing it would be
+  // stealing from a holder the rule says is alive.
+  writeFileSync(lockPath, 'holder')
+  age(25_000)
+  assert.equal(stealStaleLock(lockPath, 'holder'), false, 'a 25s-old lock was treated as abandoned')
+  assert.equal(readFileSync(lockPath, 'utf8'), 'holder')
+
+  // Just outside it: abandoned, and a token must not wait on a dead holder
+  // forever.
+  age(35_000)
+  assert.equal(stealStaleLock(lockPath, 'holder'), true, 'a 35s-old lock was not recoverable')
+  assert.equal(existsSync(lockPath), false)
+})

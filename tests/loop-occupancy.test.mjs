@@ -3235,4 +3235,47 @@ test('two dispatches of the same work item, team and role do not reuse one task 
   const dotted = buildTaskId('a.b', 'build', 'worker', 1_770_000_000_000)
   const coloned = buildTaskId('a:b', 'build', 'worker', 1_770_000_000_000)
   assert.notEqual(dotted, coloned, 'two different work items shared one task id')
+
+  // r6-qwen M6: `slice(0, 16)` -> `slice(0, 15)` survived, because "16 hex
+  // chars" was a comment rather than an assertion. The width is load-bearing —
+  // it is what makes `47 + 1 + 16 = 64` fit acp-companion's cap exactly.
+  assert.match(first, /-[0-9a-f]{16}$/, 'the digest suffix must be exactly 16 hex chars')
+
+  // r6-qwen M3: the digest delimiter ' ' -> '-' survived, and it reintroduces
+  // real collisions — the ledger writer's ID_RE forbids a space in a work item
+  // or team but allows `-`, so with a dash the tuple boundaries can be forged.
+  // `a-b` + team `c` and `a` + team `b-c` flatten to the same joined string.
+  assert.notEqual(
+    buildTaskId('a-b', 'c', 'worker', 1_770_000_000_000),
+    buildTaskId('a', 'b-c', 'worker', 1_770_000_000_000),
+    'the digest delimiter can appear inside a work item or team, so the tuple boundary is forgeable',
+  )
+})
+
+test('the answer deadline defaults to 600s and its boundary is inclusive (r6-qwen M8, M9)', () => {
+  // M8: `ANSWER_DEADLINE_SEC` 600 -> 60000 survived, because every fixture
+  // injects the value it expects — so the DEFAULT, which is what production
+  // runs on, was pinned by nothing at all.
+  // M9: `heldSec >=` -> `>` survived, because no fixture sits exactly on the
+  // line. A token parked for precisely the deadline has waited it out.
+  const graph = graphOf(TWO_TEAMS)
+  const parkedAt = '2026-07-27T09:02:00.000Z'
+  const custody = [
+    { at: '2026-07-27T09:00:00.000Z', event: 'assigned', agent_id: 'b_w1', task_id: 'b-1', dispatch_id: 'w-1' },
+    { at: '2026-07-27T09:01:00.000Z', event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done', timed_out: false, evidence_present: true },
+    { at: parkedAt, event: 'escalated', agent_id: graph.outer_controller_id, to_team: 'build', task_id: 'ctl-1', reason: 'needs a decision' },
+  ]
+  const items = itemsOf(['tok', custody, { expectInvalid: true, why: 'the escalation shape is the subject; the fixture only has to reach the escalated branch' }])
+  const expiredAt = (now) => planDispatches(graph, items, new Set(), { now })
+    .filter((plan) => plan.action === 'expired').length
+
+  const parked = Date.parse(parkedAt)
+  assert.equal(expiredAt(parked + 599_000), 0, 'withdrew a second early')
+  assert.equal(expiredAt(parked + 600_000), 1, 'a token parked for exactly the deadline has waited it out')
+  assert.equal(expiredAt(parked + 601_000), 1)
+  // And the default really is 600, not merely whatever a fixture injects.
+  assert.equal(expiredAt(parked + 1_000_000), 1)
+  assert.equal(planDispatches(graph, items, new Set(), { now: parked + 700_000, answerDeadlineSec: 6_000 })
+    .filter((plan) => plan.action === 'expired').length, 0,
+  'the injected value must still win over the default, or this test pins the wrong thing')
 })
