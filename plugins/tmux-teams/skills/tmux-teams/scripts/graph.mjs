@@ -352,7 +352,13 @@ const laneLine = (run) => run ? `${run.worker || 'unknown'} · ${run.transport |
 // A loop that never names a model therefore printed the same word as a loop
 // whose model check failed — so the page said nothing about the thing it was
 // asked to show. Three distinct facts, three distinct sentences.
-const modelLine = (run, fact) => {
+const modelLine = (run, fact, displayModel) => {
+  // Display layer: the real model name the operator declared for this seat
+  // (e.g. qwen3.8-max-preview behind a dispatch alias like `opus`). The
+  // dispatch layer sends the alias; the page shows the real model. This is a
+  // declaration, not measured evidence — the lane line still carries the
+  // verified transport.
+  if (displayModel) return displayModel
   if (!run) return '—'
   if (run.model) return run.model
   const asked = fact?.requested_model && fact.requested_model !== 'none' ? fact.requested_model : ''
@@ -662,7 +668,7 @@ export function renderGraphPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, r
         role: isController ? "outer controller, holding this team's one worker seat" : agent.role,
         lines: [
           `${agent.role} · ${laneLine(run)}`,
-          `model ${modelLine(run, facts.get(run?.task_id))}`,
+          `model ${modelLine(run, facts.get(run?.task_id), agent.display_model)}`,
           workLine(isController ? 'outer' : agent.role, activity.get(agent.agent_id)),
         ],
         // The clock is kept OUT of `lines` on purpose. It changes every tick

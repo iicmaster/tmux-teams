@@ -332,15 +332,23 @@ export function validateWorkflowGraph(value) {
         return invalid(`team ${teamId} declares a seat for ${agentId} that is not an object`)
       }
       const keys = Object.keys(override)
-      const unknown = keys.find((key) => key !== 'model' && key !== 'adapter' && key !== 'effort')
+      const unknown = keys.find((key) => key !== 'model' && key !== 'adapter' && key !== 'effort' && key !== 'display_model')
       if (unknown !== undefined) {
-        return invalid(`team ${teamId} declares an unknown key ${show(unknown)} on the seat ${agentId} — a seat overrides model, adapter, effort, or any combination`)
+        return invalid(`team ${teamId} declares an unknown key ${show(unknown)} on the seat ${agentId} — a seat overrides model, adapter, effort, display_model, or any combination`)
       }
       if (keys.length === 0) {
         return invalid(`team ${teamId} declares an empty seat for ${agentId} — name a model, an adapter, an effort, or remove it`)
       }
       if ('model' in override && !isModelName(override.model)) {
         return invalid(`team ${teamId} has an invalid model on the seat ${agentId} — a model is 1 to ${MODEL_MAX} characters with no control characters`)
+      }
+      // Display layer: the model a reader should SEE for this seat, distinct
+      // from `model` (which the dispatch layer sends, and may be an alias the
+      // adapter accepts). The board renders this when present; the dispatch
+      // never reads it, so an alias can stay in `model` while the real model
+      // name shows on the page.
+      if ('display_model' in override && !isModelName(override.display_model)) {
+        return invalid(`team ${teamId} has an invalid display_model on the seat ${agentId} — a model is 1 to ${MODEL_MAX} characters with no control characters`)
       }
       if ('adapter' in override && !ADAPTERS.has(override.adapter)) {
         return invalid(`team ${teamId} has an unknown adapter on the seat ${agentId} — one of ${[...ADAPTERS].join(', ')}`)
@@ -366,6 +374,9 @@ export function validateWorkflowGraph(value) {
     // unoverridden seat carries `null`, meaning "request nothing", not "carry
     // the team's effort" the way an unoverridden model or lane does.
     const seatEffort = (agentId) => seatOverride.get(agentId)?.effort ?? null
+    // Display layer only — the dispatch never reads this. Falls back to the
+    // declared `model` downstream (the renderer shows display_model ?? model).
+    const seatDisplayModel = (agentId) => seatOverride.get(agentId)?.display_model ?? null
     // One agent, one seat. A shared id would make two nodes light up from one
     // dispatch, which is exactly the false positive the page must never show.
     //
@@ -408,9 +419,9 @@ export function validateWorkflowGraph(value) {
       // stays a DECLARATION: the model a node reports as running is verified
       // evidence and is a different fact from this one.
       agents: [
-        { agent_id: dispatcher, role: 'dispatcher', model: seatModel(dispatcher, 'dispatcher'), adapter: seatLane(dispatcher, 'dispatcher'), effort: seatEffort(dispatcher) },
-        ...workers.map((agentId) => ({ agent_id: agentId, role: 'worker', model: seatModel(agentId, 'worker'), adapter: seatLane(agentId, 'worker'), effort: seatEffort(agentId) })),
-        { agent_id: evaluator, role: 'evaluator', model: seatModel(evaluator, 'evaluator'), adapter: seatLane(evaluator, 'evaluator'), effort: seatEffort(evaluator) },
+        { agent_id: dispatcher, role: 'dispatcher', model: seatModel(dispatcher, 'dispatcher'), adapter: seatLane(dispatcher, 'dispatcher'), effort: seatEffort(dispatcher), display_model: seatDisplayModel(dispatcher) },
+        ...workers.map((agentId) => ({ agent_id: agentId, role: 'worker', model: seatModel(agentId, 'worker'), adapter: seatLane(agentId, 'worker'), effort: seatEffort(agentId), display_model: seatDisplayModel(agentId) })),
+        { agent_id: evaluator, role: 'evaluator', model: seatModel(evaluator, 'evaluator'), adapter: seatLane(evaluator, 'evaluator'), effort: seatEffort(evaluator), display_model: seatDisplayModel(evaluator) },
       ],
     })
   }
