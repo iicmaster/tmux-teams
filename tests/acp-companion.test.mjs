@@ -2078,6 +2078,36 @@ test('an in-progress ACP tool spans multiple inactivity leases without hard-time
   assert.equal(state.tools.t1.update_count, 2)
 })
 
+test('a tool that goes quiet for two whole leases stops vouching for the run', async () => {
+  // The sibling test above proves a long tool is not cancelled for being slow.
+  // This one proves it cannot be immortal: `in_progress` used to renew the lease
+  // unconditionally, so one hung tool call — a request that never returned, a
+  // command waiting on input nobody will type — kept a dead run alive for ever,
+  // while the message path next door fingerprints its text precisely so an agent
+  // repeating itself cannot do the same thing.
+  //
+  // A tool now renews only while it is itself fresh by the operator's own
+  // `stallSec`, and then the ORDINARY two-miss path decides. So the tolerance is
+  // unchanged in kind — suspected first, confirmed only on the second miss — and
+  // 3000ms of silence against a 500ms lease is past both.
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-hung-tool-'))
+  const r = run('task-hung-tool', {
+    MOCK_SCENARIO: 'silent-tool',
+    MOCK_TOOL_DELAY_MS: '3000',
+    ACP_HARD_TIMEOUT_SEC: '0',
+    ACP_LIVENESS_TICK_MS: '10',
+    ACP_CANCEL_GRACE_MS: '20',
+    ACP_PROCESS_KILL_GRACE_MS: '50',
+  }, cwd, 0.5)
+  const state = snapshot(cwd, 'task-hung-tool')
+  // The outcome before the words about it: the run did not sit there.
+  assert.equal(state.liveness_state, 'stalled')
+  assert.equal(r.status, 1, `exit 1 expected; stdout:\n${r.stdout}\nstderr:\n${r.stderr}`)
+  assert.equal(existsSync(join(cwd, '.cancel-seen')), true, 'a confirmed stall cancels the session')
+  assert.equal(state.hard_timeout_sec, 0, 'nothing here came from a hard ceiling')
+  assert.equal(state.tools.t1.status, 'in_progress', 'the tool never reported again — that is the point')
+})
+
 const DETACHED_REAP_CASES = [
   ['cancel-ack', 'cancelled'],
   ['cancel-no-ack', 'stalled'],

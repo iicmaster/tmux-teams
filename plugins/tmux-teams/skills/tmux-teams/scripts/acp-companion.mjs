@@ -2905,11 +2905,33 @@ function setTerminalState(next, reason, { terminal = false } = {}) {
 function livenessTick() {
   if (isLivenessTerminal() || cancellationActive) return
   const now = Date.now()
+  // A tool vouches for the run only while it is itself fresh. `in_progress` used
+  // to renew the lease unconditionally, so ONE tool call that never reported
+  // again — a request that hung, a command waiting on input that will not come —
+  // kept a dead run alive for ever. That is the same trick the message path
+  // refuses next door: `updateTextProgress` fingerprints its text precisely so an
+  // agent repeating itself cannot renew, and then this branch handed the identical
+  // exemption to anything that had opened a tool.
+  //
+  // Freshness is measured with `stallMs`, the operator's own number, so no new
+  // knob appears: a tool silent for longer than they said they would wait stops
+  // counting, and the ordinary two-miss stall path decides from there — the same
+  // ceiling everything else in this file answers to.
+  //
+  // An `updated_at` that cannot be parsed RENEWS. Failing to prove a tool is
+  // stale is not proof that it is dead, and the direction of that unknown is the
+  // difference between letting a slow run finish and killing a working one.
   if (activeToolIds.size > 0) {
-    nextLeaseExpiryMs = now + stallMs
-    if (promptStarted && livenessState !== 'tool_running') setLivenessState('tool_running')
-    schedulePersistence()
-    return
+    const allStale = [...activeToolIds.values()].every((tool) => {
+      const updatedMs = Date.parse(tool?.updated_at ?? '')
+      return Number.isFinite(updatedMs) && now - updatedMs >= stallMs
+    })
+    if (!allStale) {
+      nextLeaseExpiryMs = now + stallMs
+      if (promptStarted && livenessState !== 'tool_running') setLivenessState('tool_running')
+      schedulePersistence()
+      return
+    }
   }
   if (livenessState === 'stalled') return
   if (now < nextLeaseExpiryMs) return
