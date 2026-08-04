@@ -65,6 +65,23 @@ commands and documentation; there is one delivery model now.
 - A **Team** is a reusable resource pool: one **dispatcher** that owns intake,
   one or more **workers** that run in parallel, one **evaluator** that judges
   the team's own output. A team carries no routing.
+
+  **What the dispatcher is actually for** (corrected 2026-08-05, from the
+  owner's use rather than from this document's own theory). This section led
+  with admission control — inspecting a token and declining it — for as long as
+  it has existed. In practice **a refusal at the door has never been observed**
+  on the owner's deployments, and the ledgers on the development machine have
+  never reached an `intake` at all. The job the seat actually does is
+  **choosing which model runs the work**: this token is simple, give it the
+  cheap seat; this one is hard, give it the strong one; this one carries no
+  images, a text-only model will do; this one needs a multimodal seat; that
+  model is rate-limited right now, use another. §4.9 is the mechanism, and it
+  is described there in the wrong words — as picking a *seat*, when the seat is
+  only how a model is named.
+  Admission control remains real and remains specified (the refusal ceiling
+  below is enforced in two places), but it is the seat's **secondary** duty and
+  should be read that way. A team whose door has never refused anything is not
+  running a broken dispatcher; it is running a router.
 - A **Workflow** is a route composed from existing teams. The same team may
   appear in as many workflows as need it.
 - A **work item token** is the unit of work. It carries its own request and
@@ -731,6 +748,31 @@ this amendment; §1's "rework is a new token on a fresh route, opened by a
 person" stands unchanged until that stage ships its own amendment.
 
 ### 4.9 A dispatcher's worker hint — `worker_hint` (GitHub #32)
+
+**This is model selection, and calling it a seat hint has hidden that.** A seat
+carries its own `model`, `adapter` and `effort` (§3.2's `seats` override, read
+by `declaredModel`/`declaredAdapter` and by nothing else), so naming a seat IS
+naming a model, an adapter and a reasoning effort. That is the use this
+mechanism actually gets: cheap model for simple work, strong model for hard
+work, text-only where there is no media, multimodal where there is, a different
+seat when the first model is rate-limited. Read every "seat" below as "the
+capability a seat stands for" — the field is named for the thing it points at
+rather than the thing it selects, and renaming it is not worth breaking a
+shipped event field over.
+
+Two consequences follow from that reading, and neither is fixed here:
+
+- **A model palette costs WIP.** §3.1 derives `wip_limit` from the worker-seat
+  count, so declaring four seats to have four models also tells the system this
+  team may hold four tokens at once. An operator who wants "one token, four
+  possible models" cannot say so. The two numbers are the same number and
+  should not be.
+- **The choice is made blind to availability.** `want()` knows only whether a
+  seat is BUSY — whether a process is running on it. It does not know whether
+  that seat's provider will accept a request. So a dispatcher routing away from
+  a rate-limited model is guessing, and when it guesses wrong the leg dies at
+  the transport and still spends a worker attempt (GitHub #45, part 2). The two
+  halves of that issue are one problem: the router has no availability signal.
 
 A team's dispatcher may name which worker seat should take a token it is
 admitting, by writing a `WORKER: <agent_id>` line in its outbox alongside
@@ -1995,6 +2037,34 @@ line.
    editing a file while a worker holds it has already cost one overwrite.
 
 ### Amendment log
+
+**2026-08-05 — the dispatcher was described by what it was designed for, not by
+what it does.** No behaviour change; §1 and §4.9 are corrected to match observed
+use, and two consequences are recorded as open.
+This document has led the seat's definition with admission control since it was
+written. Master, asked directly: a refusal at the door has never been seen on
+his deployments — and the development machine's ledgers have never reached an
+`intake` at all, so nothing here had ever tested the claim either. The duty the
+seat actually performs is choosing which MODEL runs a token: cheap for simple
+work, strong for hard, text-only where there is no media, multimodal where
+there is, another seat when a model is rate-limited.
+The mechanism was already there and was described in the wrong words. A seat
+carries its own `model`, `adapter` and `effort` (§3.2's `seats` override, which
+`declaredModel`/`declaredAdapter` are the only readers of), so §4.9's "name a
+worker seat" has always meant "name a model". A team with one worker looked
+pointless to reason about only because the question was being asked as "how
+many workers" when it is "how many models".
+Two defects fall out of the confusion and are stated rather than fixed. §3.1
+derives `wip_limit` from the worker-seat count, so a model palette and a
+concurrency limit are the same number — an operator wanting one token and four
+candidate models cannot express it. And `want()` knows only whether a seat is
+busy, never whether its provider will answer, so routing away from a
+rate-limited model is a guess, and a wrong guess spends a worker attempt on a
+leg that dies at the transport. That is GitHub #45 part 2, and it is the same
+problem as the first half rather than a neighbour of it: the router has no
+availability signal.
+Admission control is unchanged and still enforced in both places; it is the
+seat's secondary duty and now reads that way.
 
 **2026-08-05 — GitHub #42/#44: the planner proposed a pull the writer always
 refuses.** Behaviour changed in `pull-controller.mjs` and `ledger-validate.mjs`.
