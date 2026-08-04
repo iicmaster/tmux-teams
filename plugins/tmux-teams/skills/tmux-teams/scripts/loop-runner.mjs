@@ -361,6 +361,24 @@ function composeBrief(repo, graph, plan, item, scratchDir, answerDeadlineSec = A
   const { team, role } = plan
   const parts = []
 
+  // r4-codex (retro-release-review, 2026-08-04): a dispatch that exists
+  // BECAUSE a person just answered a question carried that exchange nowhere
+  // on this page. Every branch below reads the standing brief and the
+  // previous delivery; neither says what was asked or what the person said.
+  // The reproduction was literal: a front-door dispatcher re-run with the
+  // original ambiguous request and no memory of the human's reply — free to
+  // ask the same question again. `currentEntry` is the authority on whether
+  // THIS dispatch is the answered-triggered one (nextStep only reaches
+  // `want()` for an `answered` last entry); `lastOf` finds the question it
+  // closed the same way `nextStep`'s own resume_role read does.
+  const current = currentEntry(item.custody)
+  if (current?.event === 'answered') {
+    const askedBy = lastOf(item, (entry) => entry.event === 'questioned')
+    parts.push(`# A person just answered a question about this token\n\n`
+      + `**Asked:** ${askedBy?.questions || 'no question text recorded'}\n\n`
+      + `**Answered:** ${current.reason || 'no reason stated'}\n\n---\n\n`)
+  }
+
   // The route carries artifacts forward, but the original ask had nowhere to
   // live: the first team on a route got a standing brief describing what that
   // team does and nothing saying what this token is FOR. The token owns its own
@@ -1062,9 +1080,19 @@ export function planDispatches(graph, items, busy, {
 const boardSummary = (graph, items, occupancy) => graph.teams.map((team) => {
   const held = occupancy.held.get(team.team_id) || []
   const detail = held.map((workItem) => {
-    const last = currentEntry(items.get(workItem).custody)
-    const extra = [last.verdict, last.terminal && last.terminal !== 'done' ? last.terminal : '']
-      .filter(Boolean).join(' ')
+    const item = items.get(workItem)
+    const last = currentEntry(item.custody)
+    // r4-codex (retro-release-review, 2026-08-04): the board used to say only
+    // `(answered)` — the reader could see a person had replied and not what
+    // they said, on the one page whose whole job is deciding what to do next.
+    const asked = last.event === 'answered'
+      ? [...item.custody].reverse().find((entry) => entry.event === 'questioned')
+      : null
+    const extra = [
+      last.verdict,
+      last.terminal && last.terminal !== 'done' ? last.terminal : '',
+      asked ? `asked: ${asked.questions} — reply: ${last.reason || 'no reason stated'}` : '',
+    ].filter(Boolean).join(' ')
     return `${workItem} (${last.event}${extra ? ` ${extra}` : ''})`
   })
   return `- **${team.name}** — WIP ${held.length}/${team.wip_limit}: ${detail.length ? detail.join(', ') : 'nothing held'}`
@@ -1081,8 +1109,24 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
   // identity must therefore be a function of what is RECORDED and of nothing
   // else. See the stall below, which is where this went wrong.
   const trigger = (text, id = text) => ({ id, text })
+  // r4-codex (retro-release-review, 2026-08-04): a person answering a
+  // pre-`completed` question asked as `resume_role: 'outer'` re-escalates the
+  // token with a FIXED reason string ("a person answered a question the outer
+  // controller asked ..."), identical on every occurrence for the same
+  // work_item. A second questioned(outer) -> answered cycle on the same token
+  // therefore rendered the exact identity already stored in `pm-notes/latest.md`
+  // and the brake below read it as `unchanged` — a reply that genuinely moved
+  // the ledger forward, permanently unread. `plan.reason` is text an agent
+  // reads; it does not have to be, and here must not be, a function only of
+  // the token's identity — the anchor below is the last thing RECORDED for
+  // this item, which is different every time a new event (like this very
+  // `answered`) lands, and identical when nothing has.
   const triggers = plans.filter((plan) => plan.action === 'escalate')
-    .map((plan) => trigger(`- \`${plan.work_item}\` in ${plan.team}: ${plan.reason}`))
+    .map((plan) => {
+      const recorded = items.get(plan.work_item)?.custody.slice(-1)[0]?.at
+      const text = `- \`${plan.work_item}\` in ${plan.team}: ${plan.reason}`
+      return trigger(text, recorded ? `${text}\n  (recorded ${recorded})` : text)
+    })
   for (const orphan of occupancy.orphans) {
     triggers.push(trigger(`- \`${orphan.work_item}\` cannot be placed: last actor \`${orphan.agent_id || 'none'}\`, workflow \`${orphan.workflow || 'none'}\``))
   }
@@ -1096,8 +1140,17 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
   const audits = [...items.values()].filter(awaitingAudit)
   for (const item of audits) {
     const failed = failedLegs(item)
-    triggers.push(trigger(`- \`${item.work_item}\` finished ${item.workflow || 'its route'} — nobody has read the delivery as a whole`
-      + (failed ? ` (it recovered from ${failed} failed leg(s) on the way)` : '')))
+    // Same wedge as above, one seat over: `awaitingAudit` re-surfaces an item
+    // whose state is `answered` (a post-`completed` audit question just got a
+    // reply — §5), and its rendered text depends only on work_item/workflow/
+    // failed-leg-count, none of which changes across a completed->answered
+    // cycle. Without the anchor a second audit-question reply on the same
+    // item collided with the identity already stored from the first
+    // `completed` trigger and was suppressed forever.
+    const recorded = item.custody.slice(-1)[0]?.at
+    const text = `- \`${item.work_item}\` finished ${item.workflow || 'its route'} — nobody has read the delivery as a whole`
+      + (failed ? ` (it recovered from ${failed} failed leg(s) on the way)` : '')
+    triggers.push(trigger(text, recorded ? `${text}\n  (recorded ${recorded})` : text))
   }
 
   // A request the clock withdrew. Master's rule for reading the intake
@@ -1192,15 +1245,28 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
   // rest are asked on later ticks instead of being brake-held forever.
   const auditSubject = audits[0] || null
   const parkedSubject = auditSubject ? null : plans.find((plan) => plan.action === 'escalate') || null
+  // r4-codex (retro-release-review, 2026-08-04): "the PM brief ... omits the
+  // question and answer" — the controller was dispatched to READ a reply with
+  // no reply on the page. `awaitingAudit` re-surfaces this item once its state
+  // is `answered`, and `nextStep`'s outer branch re-escalates it for the same
+  // reason; either way the exchange lives on the item's own custody.
+  const exchangeText = (item) => {
+    const last = item && currentEntry(item.custody)
+    if (!last || last.event !== 'answered') return ''
+    const askedBy = lastOf(item, (entry) => entry.event === 'questioned')
+    return `\n\nA person already answered a question about it.`
+      + ` Asked: ${askedBy?.questions || 'no question text recorded'}`
+      + ` — replied: ${last.reason || 'no reason stated'}.`
+  }
   // The brief already said "the trigger above tells you which one this is". With
   // both kinds of trigger listed that was not true, and an agent that guessed
   // wrong answered in the wrong vocabulary — indistinguishable from silence.
   const ask = auditSubject
     ? `**The token to answer for is \`${auditSubject.work_item}\`.** It finished its route: this is the audit`
-      + ' job below, so end with `accept` or `concern`.'
+      + ' job below, so end with `accept` or `concern`.' + exchangeText(auditSubject)
     : parkedSubject
       ? `**The token to answer for is \`${parkedSubject.work_item}\`.** It is parked: this is the unstick job`
-        + ' below, so end with `resume` or `abandon`.'
+        + ' below, so end with `resume` or `abandon`.' + exchangeText(items.get(parkedSubject.work_item))
       : '**No single token is waiting on your verdict this time.** Report what you see on the board;'
         + ' the verdict line will not move anything.'
 

@@ -524,6 +524,31 @@ test('H5 a legacy-tolerated ledger is drawn as ordinary queued work, agreeing wi
     'a legacy-tolerated ledger was drawn as blocked, disagreeing with the writer and the pull controller')
 })
 
+test('HIGH6 a token whose ledger FILE has an unparsable line is drawn as blocked, not as ordinary queued work (codex r4)', () => {
+  // readWorkItems drops an unparsable line and only tallies it into the
+  // global `skippedLines` counter -- it never appears in `item.custody`. The
+  // per-card blocking check must still see it: it has to read the file the
+  // way `loop-runner.mjs`'s tick does, not the already-sanitized survivors.
+  const dir = repoWith(FOUR_TEAMS, {})
+  writeFileSync(join(dir, '.tmux-teams/work-items/tok.jsonl'), [
+    JSON.stringify({
+      at: '2026-07-27T09:00:00.000Z', event: 'opened', work_item: 'tok', workflow: 'feature',
+      agent_id: 'build_d', to_team: 'build', actor: 'human:someone', reason: 'stated by the agent',
+    }),
+    '{not json}',
+  ].join('\n') + '\n')
+  const board = readBoard(dir, NOW)
+  assert.equal(board.skippedLines, 1, 'the malformed line is still counted globally')
+  const buildColumn = board.columns.find((column) => column.team_id === 'build')
+  assert.equal(buildColumn.cards.length, 1)
+  const [card] = buildColumn.cards
+  assert.equal(card.state, 'Waiting for intake', 'the card still reads its ordinary state')
+  assert.notEqual(card.blocked_reason, null,
+    'a token whose ledger file has an unparsable line was drawn as ordinary, disagreeing with the loop')
+  assert.match(card.blocked_reason, /unparsable/,
+    'the blocker should name the actual line the file cannot parse')
+})
+
 // ── M3 — Done/team/unplaceable classification must agree with the card ──────
 
 test('M3 a stray late outcome after audit_requested is filed under Done, not Unplaceable', () => {

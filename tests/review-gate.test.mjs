@@ -1142,6 +1142,36 @@ test('a fallback substitution that reintroduces a proven-identity collision is c
   }), e => e.code === 'policy' && /final review proven identities are not distinct/.test(e.message))
 })
 
+test('a fallback substitution that reintroduces TWO unresolved (null-key) proven identities is caught (BLOCKER5/BLOCKER7, r4-codex)', async () => {
+  // r3-codex's original probe was [null-reserve, null-a, agy] reaching
+  // ok:true, because the final-panel check kept its own
+  // `.filter(key => key !== null)` copy instead of calling the shared, fixed
+  // rule. The existing regression test above (:1118) only exercises TWO
+  // EQUAL, NON-null known keys -- reverting the shared call and restoring the
+  // filter-based copy leaves THAT test green, because two matching known keys
+  // still collide under `.filter().Set` too. Two profiles that resolve to
+  // null (no `adapterPackage` declared at all) is the one shape that
+  // actually tells the fixed rule apart from the reverted one: the old copy
+  // filtered nulls out before comparing, so [null, null, agy] read as
+  // [agy] -- no duplicates, ok:true.
+  const nullA = profile('null-a', { family: 'family-a', adapterPackage: undefined })
+  const nullB = profile('null-b', { family: 'family-b', adapterPackage: undefined })
+  const profiles = keyedProfiles([nullA, profile('second'), profile('agy'), nullB])
+  const plan = { blocked: false, primaryFamily: 'test-primary', reviewers: ['null-a', 'second', 'agy'], reserve: 'null-b' }
+  await assert.rejects(runReviewGate(packet(), {
+    profiles,
+    runAcpReview: async ({ profile: selected }) => {
+      if (selected.id === 'second') throw new Error('down')
+      return runnerResult(selected, packet())
+    },
+    buildProfileEnv: () => ({}),
+    planReviewPanel: () => plan,
+    planFallback: () => ({ ...plan, reviewers: ['null-b', 'null-a', 'agy'], replaced: { failed: 'second', replacement: 'null-b' }, usedReserve: true }),
+    validateReview: () => ({ ok: true }),
+    synthesizeReviews: () => ({ verdict: 'PASS' }),
+  }), e => e.code === 'policy' && /final review proven identities are not distinct/.test(e.message))
+})
+
 test('a lane runs the mode it declares, and a runner that ran another one is refused', async () => {
   // The gate used to overwrite every profile with reviewMode 'plan' before
   // launch, so a lane declaring anything else got plan mode anyway — which is

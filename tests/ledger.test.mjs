@@ -18,7 +18,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { appendEvent, ledgerPath } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-writer.mjs'
-import { validateLedger, validateLedgerFile } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-validate.mjs'
+import { validateLedger, validateLedgerFile, validateLedgerTolerant } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-validate.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const WRITER = join(ROOT, 'plugins/tmux-teams/skills/tmux-teams/scripts/ledger-writer.mjs')
@@ -1025,13 +1025,27 @@ test('a pre-amendment opened written by an agent actor can still be appended to 
 })
 
 // qwen #2, retro-release-review 2026-08-04: B2's `duplicate_task_id` /
-// `duplicate_dispatch_id` shipped without joining `LEGACY_TOLERATED_PROBLEMS`,
-// so a ledger that already carried a collision when B2 landed — reachable
-// with no hand editing, since `task_id` is minted at millisecond resolution —
-// froze solid: `continuable` in `ledger-writer.mjs` requires EVERY existing
-// problem to be tolerated, and this one was not, so `appendEvent` refused
-// even a terminal `abandoned`. Same shape as the two B5 tests above; same
-// fix.
+// `duplicate_dispatch_id` shipped without joining any tolerance list, so a
+// ledger that already carried a collision when B2 landed — reachable with no
+// hand editing, since `task_id` is minted at millisecond resolution — froze
+// solid: `continuable` in `ledger-writer.mjs` requires EVERY existing problem
+// to be tolerated, and this one was not, so `appendEvent` refused even a
+// terminal `abandoned`.
+//
+// qwen F-1 / codex BLOCKER 3, retro-release-review ROUND 4, 2026-08-04: the
+// first fix for that (joining `duplicate_task_id`/`duplicate_dispatch_id` to
+// `LEGACY_TOLERATED_PROBLEMS`, bare, no event/field) was wrong in the other
+// direction — `isLegacyTolerated` has no notion of WHEN a problem was
+// written, so it tolerated a duplicate minted TODAY exactly as readily as one
+// from before B2 existed, for every reader (`pull-controller.mjs`,
+// `kanban.mjs`, `loop-runner.mjs`'s tick), not just the writer's closing
+// check. `currentEntry` (dispatch-facts.mjs) depends on an id resolving to
+// ONE leg for its whole life; a duplicate is a claim that promise is broken,
+// and no reader may believe otherwise regardless of the collision's age.
+// `isLegacyTolerated`/`validateLedgerTolerant`/`validateLedgerFileTolerant`
+// now never tolerate a duplicate id or the `dispatch_id_agent_mismatch`/
+// `dispatch_id_task_mismatch` it produces; a wider, writer-only
+// `isClosingTolerated` exists so the ledger can still be CLOSED.
 const dupTaskLegacy = jsonl(
   { at: '2026-07-27T10:00:00.000Z', event: 'assigned', work_item: 'tok', workflow: 'feature', agent_id: 'w1', task_id: 't-dup', dispatch_id: 'd-1' },
   { at: '2026-07-27T10:00:01.000Z', event: 'delivered', work_item: 'tok', workflow: 'feature', agent_id: 'w1', task_id: 't-dup', terminal: 'done', timed_out: false, evidence_present: true },
@@ -1040,7 +1054,7 @@ const dupTaskLegacy = jsonl(
   { at: '2026-07-27T10:00:03.000Z', event: 'lost', work_item: 'tok', workflow: 'feature', agent_id: 'w1', task_id: 't-dup', reason: 'timed out' },
 )
 
-test('a pre-existing duplicate task_id can still be closed, but a fresh reuse is still refused (qwen #2)', (t) => {
+test('a pre-existing duplicate task_id can still be closed, but nothing else may land on it (qwen #2, tightened round 4)', (t) => {
   const repo = scratch(t)
   mkdirSync(join(repo, '.tmux-teams', 'work-items'), { recursive: true })
   writeFileSync(ledgerPath(repo, 'tok'), `${dupTaskLegacy.join('\n')}\n`)
@@ -1050,6 +1064,15 @@ test('a pre-existing duplicate task_id can still be closed, but a fresh reuse is
   assert.equal(raw.ok, false)
   assert.deepEqual(codes(raw), ['duplicate_task_id'])
 
+  // Round 4: no reader — not the pull controller, not the board, not the
+  // runner's tick — trusts this ledger enough to move the token, no matter
+  // how old the collision is. It is blocking, not legacy-tolerated.
+  const tolerant = validateLedgerTolerant(dupTaskLegacy)
+  assert.equal(tolerant.ok, false,
+    'a duplicate task_id was blanket-tolerated for reading, letting a reader trust an ambiguous id')
+  assert.deepEqual(tolerant.blocking.map((problem) => problem.code), ['duplicate_task_id'])
+
+  // It can still be CLOSED — a token must always be able to reach abandoned.
   const abandoned = appendEvent(repo, {
     event: 'abandoned', work_item: 'tok', workflow: 'feature',
     reason: 'this token predates B2 and will not be replayed',
@@ -1057,18 +1080,86 @@ test('a pre-existing duplicate task_id can still be closed, but a fresh reuse is
   assert.equal(abandoned.ok, true,
     `a pre-existing duplicate task_id permanently froze the ledger: ${abandoned.code} ${abandoned.detail}`)
 
-  // Scoped, not a blanket amnesty: a FRESH duplicate on a second, otherwise-
-  // identical ledger is still refused — the new `assigned` reuses an id the
-  // ledger already claimed, and that reuse is reported at the NEW line, which
-  // is never in `inherited`.
+  // Round 4 tightening: a duplicate-tainted ledger may receive a TERMINAL
+  // event and nothing else — not even a brand-new `assigned` naming ids the
+  // ledger has never seen before, which the pre-round-4 code accepted
+  // (codex BLOCKER 3's "comment/code disagreement": the comment always said
+  // "nothing else may", the code only checked whether the appended line
+  // introduced its own fresh problem). `ledger_already_invalid` fires before
+  // the candidate line is even considered.
   writeFileSync(ledgerPath(repo, 'tok2'), `${dupTaskLegacy.map((line) => line.replace(/"tok"/g, '"tok2"')).join('\n')}\n`)
+  const freshAssign = appendEvent(repo, {
+    event: 'assigned', work_item: 'tok2', workflow: 'feature',
+    agent_id: 'w2', task_id: 't-brand-new', dispatch_id: 'd-brand-new',
+  }, { actor: 'agent:runner' })
+  assert.equal(freshAssign.ok, false,
+    'a duplicate-tainted ledger accepted a non-terminal continuation instead of demanding repair or closure')
+  assert.equal(freshAssign.code, 'ledger_already_invalid')
+
+  // And a NEW assigned that reuses the SAME id is refused for the same
+  // reason (never reaches the fresh/inherited check at all any more).
   const freshDupe = appendEvent(repo, {
     event: 'assigned', work_item: 'tok2', workflow: 'feature',
     agent_id: 'w2', task_id: 't-dup', dispatch_id: 'd-3',
   }, { actor: 'agent:runner' })
   assert.equal(freshDupe.ok, false, 'a legacy ledger let a NEW assigned reuse a task_id too')
-  assert.equal(freshDupe.code, 'invalid_event')
-  assert.match(freshDupe.detail, /task_id/)
+  assert.equal(freshDupe.code, 'ledger_already_invalid')
+
+  // The terminal path is still open on tok2 as well.
+  const abandonedToo = appendEvent(repo, {
+    event: 'abandoned', work_item: 'tok2', workflow: 'feature', reason: 'closing this one too',
+  }, { actor: 'human:master' })
+  assert.equal(abandonedToo.ok, true,
+    `tok2's duplicate task_id blocked even its own terminal close: ${abandonedToo.code} ${abandonedToo.detail}`)
+})
+
+// codex BLOCKER 3, retro-release-review round 4, 2026-08-04: the OTHER
+// direction of the same finding. A realistic pre-existing dispatch_id
+// collision — two different legs minted the same dispatch_id, each with its
+// own agent_id/task_id — produces THREE problems on the second leg's lines,
+// not one: `duplicate_dispatch_id` on the second `assigned`, plus
+// `dispatch_id_agent_mismatch` and `dispatch_id_task_mismatch` on its
+// `delivered`, because `dispatchOwner` (ledger-validate.mjs) keeps only the
+// FIRST leg as the id's owner. Tolerating only `duplicate_dispatch_id` for
+// closing — and not the mismatch fallout it causes on every later line
+// naming the id — left this exact, realistic shape with no legal terminal:
+// `abandoned` was refused with `ledger_already_invalid` because two of its
+// three problems were untolerated. `isClosingTolerated` now covers all four
+// codes together.
+const dupDispatchCollision = jsonl(
+  { at: '2026-07-27T10:00:00.000Z', event: 'assigned', work_item: 'tok', workflow: 'feature', agent_id: 'w1', task_id: 't1', dispatch_id: 'd-dup' },
+  { at: '2026-07-27T10:00:01.000Z', event: 'delivered', work_item: 'tok', workflow: 'feature', agent_id: 'w1', task_id: 't1', dispatch_id: 'd-dup', terminal: 'done', timed_out: false, evidence_present: true },
+  { at: '2026-07-27T10:00:02.000Z', event: 'assigned', work_item: 'tok', workflow: 'feature', agent_id: 'w2', task_id: 't2', dispatch_id: 'd-dup' },
+  { at: '2026-07-27T10:00:03.000Z', event: 'delivered', work_item: 'tok', workflow: 'feature', agent_id: 'w2', task_id: 't2', dispatch_id: 'd-dup', terminal: 'done', timed_out: false, evidence_present: true },
+)
+
+test('a pre-existing dispatch_id collision followed by its normal second-leg delivery can still be closed (codex BLOCKER 3)', (t) => {
+  const repo = scratch(t)
+  mkdirSync(join(repo, '.tmux-teams', 'work-items'), { recursive: true })
+  writeFileSync(ledgerPath(repo, 'tok'), `${dupDispatchCollision.join('\n')}\n`)
+
+  const raw = validateLedger(dupDispatchCollision)
+  assert.equal(raw.ok, false)
+  assert.deepEqual(codes(raw).sort(),
+    ['dispatch_id_agent_mismatch', 'dispatch_id_task_mismatch', 'duplicate_dispatch_id'].sort())
+
+  // Round 4: still not trusted for reading — pull-controller/kanban/the
+  // runner's tick refuse to move this token, exactly as they refuse the
+  // single-code case above.
+  const tolerant = validateLedgerTolerant(dupDispatchCollision)
+  assert.equal(tolerant.ok, false,
+    'a genuine second-leg dispatch_id collision was blanket-tolerated for reading')
+  assert.deepEqual(tolerant.blocking.map((problem) => problem.code).sort(),
+    ['dispatch_id_agent_mismatch', 'dispatch_id_task_mismatch', 'duplicate_dispatch_id'].sort())
+
+  // But it must still be CLOSEABLE — this is the realistic collision-then-
+  // normal-outcome shape codex found trapped with no legal terminal.
+  const abandoned = appendEvent(repo, {
+    event: 'abandoned', work_item: 'tok', workflow: 'feature',
+    reason: 'both legs delivered under the same collided dispatch_id; closing by hand',
+  }, { actor: 'human:master' })
+  assert.equal(abandoned.ok, true,
+    `a collision followed by its own second leg's normal delivery had no legal terminal: ${abandoned.code} ${abandoned.detail}`)
 })
 
 test('a team that admitted the work cannot send it back — it fixes it and forwards', () => {

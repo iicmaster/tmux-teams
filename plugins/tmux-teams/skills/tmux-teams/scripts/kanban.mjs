@@ -33,7 +33,8 @@ import { fileURLToPath } from 'node:url'
 import { KANIT_FONT_CSS } from '../assets/kanit/kanit-embedded.mjs'
 import { RELEASING_EVENTS, currentEntry, readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
 import { planPulls } from './pull-controller.mjs'
-import { validateLedgerTolerant } from './ledger-validate.mjs'
+import { validateLedgerFileTolerant } from './ledger-validate.mjs'
+import { ledgerPath } from './ledger-writer.mjs'
 import { clip, duration, esc, readWorkflowGraph } from './graph.mjs'
 import { NAV_CSS, renderNav } from './page-nav.mjs'
 import { WORKFLOW_GRAPH_FILE, teamRoleOf } from './workflow-graph.mjs'
@@ -231,15 +232,28 @@ export function readBoard(repo, now) {
   // `LEGACY_TOLERATED_PROBLEMS`) — still drew a "needs repair" blocker here.
   // An `opened` signed `agent:` from before ADR 0002 disagreed with the loop
   // in exactly the way this file exists to prevent (`kanban.mjs:49-52`
-  // above). `validateLedgerTolerant` is the same shared judgment
-  // `pull-controller.mjs` reads (see its comment), so this board can no
+  // above). `validateLedgerFileTolerant` is the same shared judgment
+  // `loop-runner.mjs`'s tick reads (see its comment), so this board can no
   // longer flag as broken a ledger the rest of the system has agreed to
   // trust. `blocking`, not `problems`, is what actually stops the ledger from
   // being believed — `problems` still carries every legacy-tolerated defect,
   // which is not what an operator needs to repair.
+  //
+  // codex, retro-release-review round 4 (HIGH 6): this used to validate
+  // `item.custody` — the object `readWorkItems` already parsed AND SANITIZED,
+  // silently dropping any unparsable line into the global `skippedLines`
+  // counter before this loop ever ran. Re-serializing those SURVIVORS and
+  // validating that reconstruction answers "are the lines that parsed OK
+  // consistent with each other", never "is this ledger file OK" — a token
+  // whose only problem is one garbage line answered clean here while
+  // `loop-runner.mjs`'s tick, which validates the FILE `validateLedgerFile`
+  // reads, refused to dispatch it. Reading the same path `ledger-writer.mjs`
+  // wrote and every other blocking-judgment reader validates is what makes
+  // this board judge the same bytes the loop does, rather than a cleaned-up
+  // copy of them.
   for (const item of items.values()) {
     if (blocked.has(item.work_item)) continue
-    const verdict = validateLedgerTolerant(item.custody.map((entry) => JSON.stringify(entry)))
+    const verdict = validateLedgerFileTolerant(ledgerPath(repo, item.work_item))
     if (!verdict.ok) {
       const [first] = verdict.blocking
       blocked.set(item.work_item,

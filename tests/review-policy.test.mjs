@@ -352,7 +352,15 @@ test('CLAUDE_CODE_EXECUTABLE is gate-owned, but that alone does not prove the fa
   assert.equal(buildProfileEnv('claude', { PATH: '/bin' }).CLAUDE_CODE_EXECUTABLE, undefined)
 })
 
-test('provenFamilyKey honestly buckets kimi with bare claude, and the gate refuses that panel (issue #38)', () => {
+test('provenFamilyKey now proves kimi distinct from bare claude via its endpoint pin, so the gate ACCEPTS that panel (issue #38, kimi pinned 2026-08-04; BLOCKER7 r4-codex title fix)', () => {
+  // BLOCKER 7 (r4-codex): this test's title used to say "the gate refuses
+  // that panel" and describe kimi as bucketed with claude. That was true
+  // before kimi was endpoint-pinned; it has not been true since, and the
+  // assertions below have always proven the OPPOSITE -- kimi and claude are
+  // now told apart, and the panel that seats both is accepted, not refused.
+  // A title that names a removed behavior while the body tests its replacement
+  // is a test nobody can trust by reading its name; the title is corrected to
+  // state what the body actually proves.
   // Real, shipped production profiles -- not synthetic test doubles -- so this
   // is not a tautology against a table invented to match the code under test.
   // Master, 2026-08-04: `claude-kimi` reaches K3 and bare `claude` reaches opus,
@@ -400,6 +408,46 @@ test('provenFamilyKey honestly buckets kimi with bare claude, and the gate refus
     const plan = createReviewPlan(primary)
     assert.equal(plan.blocked, false, `${primary} route was blocked by the new check`)
   }
+})
+
+test('BLOCKER5 (r4-codex): a null-key lane cannot certify a panel when its launch command is byte-identical to an accepted lane', () => {
+  // qwen-shadow: the real, shipped qwen `command` array and `claudeExecutable`
+  // but no `adapterPackage` at all, so its proven key is null -- exactly like
+  // any OTHER profile that simply omits the field. Before this fix,
+  // `provenFamilyCollision` read a single null key beside two distinct
+  // resolved ones as "one unknown, nothing to compare it against" and passed:
+  // sameCommand:true, preflightCollision:false, gateOk:true. What the lane
+  // would actually EXEC is provably identical to the real qwen lane sitting
+  // beside it in the very same panel; the declared identity was unproven, but
+  // the launch identity was not unknown at all.
+  const qwenShadow = {
+    id: 'qwen-shadow', family: 'shadow-family',
+    command: [...REVIEW_PROFILES.qwen.command],
+    claudeExecutable: REVIEW_PROFILES.qwen.claudeExecutable,
+    // adapterPackage deliberately omitted -- this is the whole attack.
+  }
+  assert.equal(provenFamilyKey(qwenShadow), null,
+    'qwen-shadow declares no adapterPackage, so its proven key reads exactly like any other unknown')
+  assert.equal(
+    provenFamilyCollision([qwenShadow, REVIEW_PROFILES.qwen, REVIEW_PROFILES.agy]),
+    true,
+    'a null-key lane whose command matches an accepted lane byte-for-byte must collide, not pass as "one harmless unknown"',
+  )
+
+  // AGY's standing objection, held rather than overridden: refusing a
+  // GENUINELY diverse panel is the opposite failure. An unresolved lane whose
+  // command actually differs from every other lane's still passes -- neither
+  // its executable nor its arguments match anything else in the panel, so
+  // there is truly nothing to compare it against.
+  const trulyDistinctUnknown = {
+    id: 'unknown-but-distinct', family: 'shadow-family-2',
+    command: [...REVIEW_PROFILES.qwen.command], claudeExecutable: 'claude-something-else',
+  }
+  assert.equal(
+    provenFamilyCollision([trulyDistinctUnknown, REVIEW_PROFILES.kimi, REVIEW_PROFILES.zai]),
+    false,
+    'a genuinely distinct unresolved lane must still pass -- making every unknown fatal would be the opposite failure',
+  )
 })
 
 test('provenFamilyKey never reports pinned for endpoint-shaped metadata that was never registered or validated (issue #38 follow-up)', () => {
@@ -453,6 +501,28 @@ test('adapterPackage is bound to command for every shipped profile, and the bind
   assert.throws(
     () => assertAdapterPackageBoundToCommand({ id: 'stale-bump', command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.62.0'], adapterPackage: REVIEW_PROFILES.kimi.adapterPackage }),
     /is not the command's final argument/,
+  )
+  // BLOCKER 7 (r4-codex): the pre-strengthening check was
+  // `command.includes(adapterPackage)`, and both fixtures above still pass
+  // under that rule -- the declared package is WHOLLY ABSENT from the
+  // command in each, which `.includes()` also refuses. Neither proves the
+  // final-token binder does anything `.includes()` did not already do.
+  // r3-codex's actual attack needs the declared package present SOMEWHERE in
+  // the command, just not at the end: one byte-identical command, two
+  // different declared packages, each genuinely appearing in it.
+  // Kimi, zai, qwen and claude all share ONE adapterPackage string, so a
+  // fixture needs two lanes with genuinely DIFFERENT declared packages —
+  // codex's and agy's — to prove the check is about POSITION, not merely
+  // "which package".
+  const twoPackageCommand = ['npx', REVIEW_PROFILES.codex.adapterPackage, '-y', REVIEW_PROFILES.agy.adapterPackage]
+  assert.throws(
+    () => assertAdapterPackageBoundToCommand({ id: 'inert-earlier-token', command: twoPackageCommand, adapterPackage: REVIEW_PROFILES.codex.adapterPackage }),
+    /is not the command's final argument/,
+    'a declared package present but not as the FINAL token must still be refused -- `.includes()` would have passed this',
+  )
+  assert.doesNotThrow(
+    () => assertAdapterPackageBoundToCommand({ id: 'final-token-ok', command: twoPackageCommand, adapterPackage: REVIEW_PROFILES.agy.adapterPackage }),
+    'the same command legitimately binds the package that actually IS its final token',
   )
 })
 

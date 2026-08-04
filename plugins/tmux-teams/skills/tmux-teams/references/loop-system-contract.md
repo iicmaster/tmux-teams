@@ -182,6 +182,52 @@ commands and documentation; there is one delivery model now.
   red if it reverts to a raw, non-tolerant read, and `tests/ledger.test.mjs`
   goes red if `LEGACY_TOLERATED_PROBLEMS` is widened past these four shapes.
 
+  **retro-release-review round 4, 2026-08-04 (qwen F-1 / codex BLOCKER 3):
+  B2's `duplicate_task_id` and `duplicate_dispatch_id` (§6) must NEVER be
+  among those four shapes, and a prior attempt at this fix briefly put them
+  there.** `LEGACY_TOLERATED_PROBLEMS` feeds `isLegacyTolerated`, which
+  `validateLedgerTolerant`/`validateLedgerFileTolerant` use — the shared
+  judgment `pull-controller.mjs`, `kanban.mjs`, and `loop-runner.mjs`'s tick
+  all read for "can this ledger be trusted enough to move the token, be
+  dispatched onto, or be shown as on-track". `route_went_backwards`,
+  `sent_back_after_admission`, an old `questioned` missing `question_id`, and
+  an old agent-authored `opened` do not change what a `dispatch_id` or
+  `task_id` MEANS — trusting the rest of such a ledger is trusting a fact
+  that is still true. A duplicate id is different in kind: `currentEntry`
+  (dispatch-facts.mjs) and `dispatchOwner` (ledger-validate.mjs) both depend
+  on an id resolving to exactly one leg for its whole life, and reusing one
+  breaks that for every later line, forever. `isLegacyTolerated` has no
+  notion of *when* a problem was written, so tolerating the bare code there
+  tolerated a duplicate minted today exactly as readily as one that predates
+  B2 — for every reader, not only the writer's closing decision. That is
+  qwen F-1's reproduction: a freshly duplicated `dispatch_id` let a dead
+  leg's late review read as the live leg's own outcome, through the
+  tolerance meant only to let an OLD collision be closed. So
+  `duplicate_task_id`, `duplicate_dispatch_id`, and the
+  `dispatch_id_agent_mismatch`/`dispatch_id_task_mismatch` a reused
+  `dispatch_id` produces on every later line naming it (since `dispatchOwner`
+  keeps only the first owner) are never in `LEGACY_TOLERATED_PROBLEMS`. No
+  reader that decides whether a token may move, be dispatched onto, or be
+  read as on-track ever treats a duplicated id as anything but blocking, no
+  matter how old it is.
+
+  A ledger whose only defect is a duplicate id must still be CLOSEABLE —
+  B2's original point stands, and a rule that traps a token with no legal
+  terminal is worse than the ambiguity it closes; a token must always be
+  able to reach `abandoned`. `ledger-validate.mjs` exports a second, wider
+  list for exactly this — `CLOSING_TOLERATED_PROBLEMS` / `isClosingTolerated`
+  — with exactly one caller: `ledger-writer.mjs`'s `appendEvent`, and only
+  when the event being appended is itself a TERMINAL event (§5). A
+  duplicate-tainted ledger may receive a terminal event and nothing else —
+  not even a brand-new `assigned` naming ids the ledger has never seen
+  before — closing it without ever being trusted enough to continue as
+  though the id still meant one thing. `tests/ledger.test.mjs` carries the
+  negative controls for both directions: it goes red if a duplicate code (or
+  its mismatch fallout) is added back to `LEGACY_TOLERATED_PROBLEMS`, and it
+  goes red if `isClosingTolerated`/the terminal-only restriction stops
+  covering a realistic pre-existing `dispatch_id` collision followed by its
+  own second leg's normal `delivered`.
+
   **What §1 still does not provide is the rework path it names.** It says rework
   is a NEW token on a fresh route; nothing in this system creates one. The only
   writer of `opened` is `admit.mjs`, which a person runs. Until that gap is
@@ -637,6 +683,20 @@ somebody who has not replied.
   every route that reaches an audit — so `completed -> audit_requested ->
   audited -> audit_requested` validated clean; the second `audit_requested`
   described re-opening an audit that had already closed.
+- **A dispatch produced because a person just answered now carries that
+  exchange** (retro-release-review r4-codex BLOCKER 4, 2026-08-04). Resuming
+  the right seat (§5) is not the same as that seat being able to READ the
+  reply: `composeBrief` used to hand every resumed role — worker, evaluator,
+  the front-door dispatcher — only the standing brief and the previous
+  delivery, and the outer controller's own brief (built by `planEscalation`,
+  §9) carried a generic instruction to "read the reply" with no reply on the
+  page. The exact reproduction: a front-door dispatcher resumed after
+  `answered` reran with the original ambiguous request and no memory of the
+  human's words, free to ask the same question again. `composeBrief` now
+  opens with the last `questioned`'s `questions` and the current `answered`'s
+  `reason` whenever the item it is briefing for is currently at `answered`;
+  `planEscalation`'s `ask` text carries the same pair for whichever token it
+  names as the one to answer for.
 
 ### 4.8 A confirmed finding on someone else's work — `target_verdict` (GitHub #31)
 
@@ -983,6 +1043,25 @@ Parsing rules, non-negotiable:
   `STALL_SEC`: it passed `stallSec: 1e9`, which switched off the only trigger
   that could defeat the brake, so the guard had never once run the
   configuration the runner ships.
+- **The same anchor discipline applies to a re-escalated `answered` reply**
+  (retro-release-review r4-codex BLOCKER 4, 2026-08-04). Two triggers render
+  text that is a pure function of the token's identity and NOT of which cycle
+  produced it: the outer-controller re-escalation (`nextStep`'s `answered` +
+  `resume_role: 'outer'` branch always states the same reason,
+  "a person answered a question the outer controller asked...") and the
+  `awaitingAudit` completion trigger (a function of `work_item`/`workflow`/
+  failed-leg-count alone). A token that cycles through a SECOND
+  `questioned(outer|audit)` -> `answered` round trip renders byte-identical
+  text to the first, and the brake — comparing only rendered text before this
+  amendment — read the second, genuinely new reply as the same already-read
+  problem and suppressed it forever: a reply that moved the ledger, never
+  read. Both triggers' `id` (not their `text` — the controller still reads the
+  same clear prose) now also carries the timestamp of the item's own last
+  recorded custody entry, which changes exactly when a new event — such as
+  this very `answered` — is appended, and stays constant when nothing has
+  changed. This is the identical anchor the stall trigger already uses one
+  bullet above, applied to the two triggers that render per-item text without
+  it.
 - It is dispatched **about the board**, not about a token: its brief carries the
   trigger list and the whole board, and its dispatch carries no work item.
 - `resume` returns the token to its team and grants a fresh attempt budget.
@@ -1682,6 +1761,31 @@ line.
    editing a file while a worker holds it has already cost one overwrite.
 
 ### Amendment log
+
+**2026-08-04 — retro-release-review r4-codex BLOCKER 4: a resumed reply could
+still wedge behind the unchanged-trigger brake, and no resumed seat was ever
+told what was asked or answered.** Behaviour changed in `loop-runner.mjs`:
+`planEscalation`'s trigger builder for `plans.filter(action === 'escalate')`
+and for its `awaitingAudit` list now anchor each trigger's `id` on the
+triggering item's own last recorded custody timestamp, not on rendered text
+alone; `composeBrief` now opens with the exchange (`questioned.questions` +
+`answered.reason`) whenever it is briefing an item currently at `answered`;
+`planEscalation`'s `ask` text does the same for whichever token (audit or
+parked) it names as the one to answer for; `boardSummary` now renders that
+reply inline instead of the bare `(answered)` state name. §9 gained the
+identity-anchor paragraph above; §4.7 gained the exchange-delivery paragraph.
+Under §15.3, the code was wrong on both counts: §9 already stated the
+identity-anchor principle for the stall trigger specifically, and the two
+`answered`-recurring triggers had silently not followed it; nothing in the
+contract or the code ever claimed the resumed seat's brief carried the
+exchange, so this is new behaviour rather than a contradiction resolved.
+Reproduced and proven in `tests/loop-occupancy.test.mjs` (new tests prefixed
+`H4`): a second `questioned(outer) -> answered` cycle and a second
+post-`completed` audit `questioned -> answered` cycle, each checked against a
+`pm-notes/latest.md` written from the first cycle's own identity, previously
+read `unchanged` and now re-escalate; a companion pair of tests asserts the
+outer controller's own brief and a resumed front-door dispatcher's brief each
+literally contain the question text and the human's answer text.
 
 **2026-08-04 — B5: legacy tolerance for ADR 0002's new required fields, made
 shared across every ledger-trust reader (retro-release-review B5; qwen, agy,

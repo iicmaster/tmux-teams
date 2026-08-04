@@ -221,9 +221,48 @@ export function currentEntry(custody) {
     ? String(custody[holderAssignedIndex].task_id)
     : null
 
+  // How many times `agentId` was itself the subject of an `assigned` line,
+  // scanning only up to and including `uptoIndex` — never past it, so a
+  // LATER re-assignment of that agent cannot retroactively recolour an
+  // outcome that was already unambiguous when it was written.
+  const assignedCountFor = (agentId, uptoIndex) => {
+    let count = 0
+    for (let j = 0; j <= uptoIndex; j += 1) {
+      if (custody[j].event === 'assigned' && String(custody[j].agent_id || '') === agentId) count += 1
+    }
+    return count
+  }
+
   for (let i = custody.length - 1; i >= 0; i -= 1) {
     const entry = custody[i]
     if (!LEG_OUTCOMES.has(entry.event)) return entry
+
+    // A `reviewed` written by an agent that is NOT the current holder, where
+    // that same agent has its OWN `assigned` leg recorded somewhere earlier
+    // in this ledger, is never trusted as evidence about the holder's leg —
+    // no matter what dispatch_id/task_id it carries (F1, agy+codex round 4,
+    // 2026-08-04). By construction that agent's leg is now superseded (a
+    // DIFFERENT agent holds), so a straggling report from it is evidence
+    // about ITS OWN old leg, not the holder's. If it also happens to carry
+    // the holder's real dispatch_id and/or task_id — a generic writer
+    // stamping "last" onto whatever lands, or forged/replayed bytes — those
+    // fields cannot be told apart from a genuine current report by anything
+    // left to read off the entry: dispatch_id is supposed to be unique per
+    // leg, but that guarantee is enforced at the point bytes enter the
+    // ledger, not re-derivable here. House rule: a branch that cannot answer
+    // says UNKNOWN, never "yes". An agent that was NEVER assigned a leg of
+    // its own (assignedCountFor === 0) is unaffected: that is the ordinary
+    // "evaluator with no leg to be stale against" shorthand, and it remains
+    // the only interpretation available for whichever leg is current — the
+    // same-agent case (this agent IS the holder, possibly retried) is left
+    // entirely to the existing dispatch_id/task_id/retry checks below, which
+    // an established positive-case test (Shape 1) requires to keep trusting
+    // a same-agent round-2 report that names only its own task_id.
+    if (entry.event === 'reviewed' && entry.agent_id) {
+      const reviewer = String(entry.agent_id)
+      if (reviewer !== holder && assignedCountFor(reviewer, i) > 0) continue
+    }
+
     if (entry.dispatch_id && holderDispatchId) {
       if (String(entry.dispatch_id) === String(holderDispatchId)) {
         // dispatch_id matching the holder's own is necessary, not sufficient
@@ -301,12 +340,7 @@ export function currentEntry(custody) {
       // agent from retroactively recolouring an outcome that was already
       // unambiguous when it was written.
       const targetAgent = String(entry.agent_id || '')
-      let assignedCount = 0
-      for (let j = 0; j <= i; j += 1) {
-        const line = custody[j]
-        if (line.event === 'assigned' && String(line.agent_id || '') === targetAgent) assignedCount += 1
-      }
-      if (assignedCount > 1) continue
+      if (assignedCountFor(targetAgent, i) > 1) continue
       return entry
     }
     const supersededLeg = entry.agent_id && String(entry.agent_id) !== holder

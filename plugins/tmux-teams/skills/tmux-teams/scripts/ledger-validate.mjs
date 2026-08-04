@@ -590,32 +590,76 @@ export function validateLedger(lines) {
 // straight and required `ok` with no tolerance concept at all.
 // qwen #2, retro-release-review 2026-08-04: B2's `duplicate_task_id` /
 // `duplicate_dispatch_id` are the same shape of trouble as every entry above —
-// a rule that only started existing under a system already running — and B2
-// shipped without joining this list. Left out, `appendEvent`'s `continuable`
-// check (ledger-writer.mjs) treats a PRE-EXISTING collision as `before.ok ===
-// false` with an untolerated problem, so `continuable` is false and even a
-// terminal `abandoned` is refused with `ledger_already_invalid` — on a ledger
-// whose only defect is a duplicate id minted before B2 could ever have
-// refused it. The token has no legal way to reach a terminal state, which is
-// worse than the ambiguity B2 closed.
-// Tolerating it here does not reopen B2: `appendEvent`'s `fresh` comparison
-// (keyed by `line:code`) only excuses problems already present on the line
-// they were first reported at. A NEW `assigned` that reuses an id — one
-// `dispatchOwner`/`assignedTaskIds` had not already seen at that line — is
-// reported at the NEW line, which is not in `inherited`, so it still lands in
-// `fresh` and is still refused exactly as B2 intended. Only the OLD collision,
-// sitting on the line history already carries, is excused.
+// a rule that only started existing under a system already running. The FIRST
+// attempt at fixing this joined them to this very list, bare, and that was
+// wrong in a way three more reviews (qwen F-1, codex BLOCKER 3) needed a
+// second round to name precisely.
+//
+// Every rule above this comment is matched by `isLegacyTolerated`, which
+// `validateLedgerTolerant`/`validateLedgerFileTolerant` use — the judgment
+// `pull-controller.mjs`, `kanban.mjs`, and `loop-runner.mjs`'s tick all share
+// for "can this ledger be TRUSTED", including for moving a token FORWARD.
+// `route_went_backwards`, `sent_back_after_admission`, an old `questioned`
+// missing `question_id`, an old agent-authored `opened` — none of those four
+// change what a `dispatch_id` or `task_id` MEANS. A reader that trusts the
+// rest of the ledger around one of them is trusting a fact that is still
+// true. A duplicate id is different in kind, not degree: `currentEntry`
+// (dispatch-facts.mjs) and `dispatchOwner` (above) both depend on an id
+// resolving to exactly ONE leg for its whole life, and a ledger that reuses
+// one has broken that for every line after the reuse, forever — trusting it
+// enough to move the token is trusting a coin flip about which leg a stale
+// reviewed/delivered line actually belongs to. Tolerating the CODE, with no
+// event or field to narrow it, tolerated every ledger that will ever carry
+// that code — one written before this fix existed and one a concurrent
+// writer race, a replay, or a hand edit produces tomorrow look identical to
+// `isLegacyTolerated`, which has no notion of "when" at all. That is
+// precisely qwen F-1's reproduction: a fresh duplicate dispatch_id let a dead
+// leg's late review read as the live leg's own outcome, through the exact
+// tolerance meant only to let an OLD collision be closed. So
+// `duplicate_task_id` and `duplicate_dispatch_id` — and the
+// `dispatch_id_agent_mismatch`/`dispatch_id_task_mismatch` a reused
+// dispatch_id produces on every later line naming it, since `dispatchOwner`
+// keeps only the first owner — are never in this list. No reader that decides
+// whether a token may move, be dispatched onto, or be read as on-track ever
+// treats a duplicated id as anything but blocking, no matter how old it is.
 export const LEGACY_TOLERATED_PROBLEMS = [
   { code: 'route_went_backwards' },
   { code: 'sent_back_after_admission' },
   { code: 'missing_field', event: 'questioned', field: 'question_id' },
   { code: 'not_a_human_answer', event: 'opened' },
-  { code: 'duplicate_task_id' },
-  { code: 'duplicate_dispatch_id' },
 ]
 
 export function isLegacyTolerated(problem) {
   return LEGACY_TOLERATED_PROBLEMS.some((rule) => rule.code === problem.code
+    && (rule.event === undefined || rule.event === problem.event)
+    && (rule.field === undefined || rule.field === problem.field))
+}
+
+// codex BLOCKER 3 (retro-release-review round 4, 2026-08-04) is the other
+// half of the same finding: a ledger whose ONLY defect is a genuinely
+// pre-existing duplicate id must still be CLOSEABLE, or the fix trades one
+// bug (a rule that traps every duplicate forever, B2's original complaint)
+// for a worse one — a rule that can trap a token with no legal terminal at
+// all. A token must always be able to reach `abandoned`.
+//
+// This is a SEPARATE, wider list from `LEGACY_TOLERATED_PROBLEMS` above, and
+// it has exactly one caller: `appendEvent`'s `continuable` check in
+// ledger-writer.mjs, and there only when the line being appended is itself a
+// TERMINAL event (contract §5) — never for a `pulled`, an `assigned`, or any
+// other continuation, and never for `isLegacyTolerated`,
+// `validateLedgerTolerant`, or `validateLedgerFileTolerant`. Closing a
+// ledger records that the token is done being trusted; it is not the same
+// claim as trusting it enough to move.
+export const CLOSING_TOLERATED_PROBLEMS = [
+  ...LEGACY_TOLERATED_PROBLEMS,
+  { code: 'duplicate_task_id' },
+  { code: 'duplicate_dispatch_id' },
+  { code: 'dispatch_id_agent_mismatch' },
+  { code: 'dispatch_id_task_mismatch' },
+]
+
+export function isClosingTolerated(problem) {
+  return CLOSING_TOLERATED_PROBLEMS.some((rule) => rule.code === problem.code
     && (rule.event === undefined || rule.event === problem.event)
     && (rule.field === undefined || rule.field === problem.field))
 }

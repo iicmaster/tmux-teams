@@ -22,7 +22,8 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 
 import {
-  ACTOR_RE, EVENT_SPEC, isLegacyTolerated, LEDGER_EVENTS, MAX_LEDGER_BYTES, validateLedger,
+  ACTOR_RE, EVENT_SPEC, isClosingTolerated, isLegacyTolerated, LEDGER_EVENTS, MAX_LEDGER_BYTES,
+  TERMINAL_EVENTS, validateLedger,
 } from './ledger-validate.mjs'
 
 // §1 became enforceable on a system that was already running, and the first
@@ -150,8 +151,27 @@ export function appendEvent(repo, event, options = {}) {
   // even `abandoned` — and a rule meant to keep work moving would strand the
   // work it caught. A terminal event may land on such a file. Nothing else may:
   // another `pulled` is refused exactly as it is on a clean ledger.
-  const continuable = !before.ok
+  //
+  // codex BLOCKER 3 (retro-release-review round 4, 2026-08-04): that "nothing
+  // else may" was previously enforced only by accident — by the appended
+  // line usually introducing its own fresh problem — not by checking the
+  // event's own kind. `continuable` now has two tiers instead of one, because
+  // duplicate ids need a NARROWER allowance than the four original legacy
+  // shapes: `route_went_backwards`/`sent_back_after_admission`/an old
+  // `questioned`/an old agent-authored `opened` do not change what a
+  // dispatch_id or task_id MEANS, so a ledger carrying only those may still
+  // be continued normally (matches `isLegacyTolerated`, used by every
+  // reader). A duplicate id — or the `dispatch_id_agent_mismatch`/
+  // `dispatch_id_task_mismatch` it produces on later lines — does change what
+  // the id means, so a ledger that needs `isClosingTolerated` to be
+  // considered continuable at all may only receive a TERMINAL event: enough
+  // to close it, never enough to be trusted for another leg.
+  const continuableAsUsual = !before.ok
     && before.problems.every((problem) => isLegacyTolerated(problem))
+  const continuableToClose = !before.ok
+    && before.problems.every((problem) => isClosingTolerated(problem))
+    && TERMINAL_EVENTS.has(name)
+  const continuable = continuableAsUsual || continuableToClose
   if (!before.ok && !continuable) {
     return fail('ledger_already_invalid',
       `${path} has ${before.problems.length} problem(s) and must be repaired before anything is appended`,

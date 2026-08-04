@@ -312,15 +312,54 @@ export function provenFamilyKey(profile) {
 // review, and that second reader had its own copy of this rule with the old
 // filter still in it (r3-codex probed `[null-reserve, null-a, agy]` through to
 // `ok:true`). Two copies of one rule is how they drift; there is one now.
-export function provenFamilyKeysCollide(keys) {
+// round four, BLOCKER 5 (r4-codex, confirmed by r4-qwen's F-4 and the
+// standing AGY objection this responds to rather than overriding): a single
+// unresolved key beside two DISTINCT resolved ones is not automatically a
+// pass. "One unknown has nothing else unknown to compare against" was true
+// only when the unknown carries no other evidence at all. `qwen-shadow`
+// proved otherwise -- it shipped the real, byte-identical qwen `command`
+// array and `claudeExecutable`, declared no `adapterPackage` (so its key was
+// null), and sat beside the real qwen lane: sameCommand:true,
+// preflightCollision:false, gateOk:true. Its declared IDENTITY was unproven,
+// but what it would actually EXEC was provably identical to a lane already in
+// the panel -- that is not "no evidence", it is evidence of collision the key
+// alone cannot see. `provenLaunchSignature` reads what would run instead of
+// what the profile claims about itself, so it cannot be spoofed by the same
+// omission that produces the null key. This does NOT make every unknown
+// fatal (AGY's objection): an unknown whose command differs from every other
+// lane's still passes, exactly as before -- see the accompanying test for a
+// genuinely diverse panel with one unresolved lane.
+export function provenLaunchSignature(profile) {
+  if (!profile || !Array.isArray(profile.command) ||
+      profile.command.some(part => typeof part !== 'string')) return null
+  return JSON.stringify([profile.command, profile.claudeExecutable ?? null])
+}
+
+// `launchSignatures`, when supplied, must be parallel to `keys` (same index
+// meaning the same lane) and hold each lane's `provenLaunchSignature` (or
+// null if unknown). Optional and back-compatible: every existing caller that
+// passes only `keys` gets exactly the old behavior.
+export function provenFamilyKeysCollide(keys, launchSignatures = null) {
   const list = keys ?? []
   if (list.filter(key => key === null).length >= 2) return true
   const known = list.filter(key => key !== null)
-  return new Set(known).size !== known.length
+  if (new Set(known).size !== known.length) return true
+  if (Array.isArray(launchSignatures) && launchSignatures.length === list.length) {
+    for (let i = 0; i < list.length; i += 1) {
+      if (list[i] !== null) continue
+      const signature = launchSignatures[i]
+      if (signature === null || signature === undefined) continue
+      for (let j = 0; j < list.length; j += 1) {
+        if (j !== i && launchSignatures[j] === signature) return true
+      }
+    }
+  }
+  return false
 }
 
 export function provenFamilyCollision(profiles) {
-  return provenFamilyKeysCollide((profiles ?? []).map(provenFamilyKey))
+  const list = profiles ?? []
+  return provenFamilyKeysCollide(list.map(provenFamilyKey), list.map(provenLaunchSignature))
 }
 
 

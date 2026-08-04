@@ -4,7 +4,7 @@ import { open } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { ACP_REVIEW_LIMITS, prepareReviewPacket, runAcpReview, ReviewTransportError } from './acp-review-client.mjs'
-import { REVIEW_PROFILES, buildProfileEnv, provenFamilyKey, provenFamilyCollision, provenFamilyKeysCollide } from './review-profiles.mjs'
+import { REVIEW_PROFILES, buildProfileEnv, provenFamilyKey, provenFamilyCollision, provenFamilyKeysCollide, provenLaunchSignature } from './review-profiles.mjs'
 import {
   UNAVAILABLE_RESERVE_SUBSTITUTES,
   planReviewPanel,
@@ -322,6 +322,14 @@ async function assessAttempt(attempt, validate, expectedInputHash) {
       // endpoint, because the ACP surface this runner speaks does not expose
       // one.
       familyProvenKey: provenFamilyKey(attempt.profile),
+      // Carried alongside `familyProvenKey` so the final-panel recheck below
+      // can catch BLOCKER 5 (round four, r4-codex): a lane whose key is null
+      // (no `adapterPackage`) but whose actual launch command is
+      // byte-identical to another accepted lane's. `familyProvenKey` alone
+      // cannot see that — it is a declared-identity fact, and this is a
+      // what-will-actually-exec fact, computed from the same profile object
+      // but never from the caller-overridable claim.
+      commandProvenSignature: provenLaunchSignature(attempt.profile),
       model: value.model,
       displayModel: value.displayModel,
       mode: value.mode,
@@ -454,7 +462,10 @@ export async function runReviewGate(packet, {
   // its own `.filter(key => key !== null)` and let a panel of two unresolved
   // lanes through to ok:true, which is what two copies of one rule always
   // eventually do (r3-codex probed it).
-  if (provenFamilyKeysCollide(reviews.map(item => item.familyProvenKey ?? null))) {
+  if (provenFamilyKeysCollide(
+    reviews.map(item => item.familyProvenKey ?? null),
+    reviews.map(item => item.commandProvenSignature ?? null),
+  )) {
     throw fail('policy', 'final review proven identities are not distinct')
   }
   if (new Set(reviews.map(item => item.provenance)).size !== 3) {

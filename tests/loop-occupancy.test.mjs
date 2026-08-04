@@ -1982,6 +1982,188 @@ test('H1 an answered outer-controller reply re-escalates instead of wedging the 
   }
 })
 
+// r4-codex (retro-release-review, 2026-08-04): "reachable custody can still
+// wedge" — the test above only ever proved ONE questioned(outer) -> answered
+// cycle reaches `planEscalation`'s trigger set. It never retained a prior
+// `pm-notes/latest.md`, so it could not see the unchanged-trigger brake at
+// all. Built here: the FIRST cycle is read and its identity is the one really
+// written to disk by the caller (loop-runner.mjs:1600), then a SECOND,
+// independent questioned(outer)->answered cycle on the SAME token is checked
+// against it. `plan.reason` for this branch is a fixed string — identical on
+// every occurrence for the same work_item — so before the anchor fix the
+// second reply rendered the exact identity already stored and the brake read
+// it as `unchanged`: a reply that genuinely moved the ledger, permanently
+// unread.
+test('H4 a second questioned(outer) -> answered cycle on the same token does not collide with the identity already read', () => {
+  const graph = graphOf(TWO_TEAMS)
+  // `ledger()`'s own default anchors the LAST line of whatever array it is
+  // given at exactly `FIXED_NOW` (deliberately, for the zombie-clock tests) —
+  // which would make `firstCycle`'s last `at` and `secondCycle`'s last `at`
+  // identical no matter how far apart the two cycles really are. Stamped
+  // explicitly here so the two `answered` lines carry the genuinely different
+  // recorded times a real second round-trip would produce.
+  const at = (minutes) => new Date(FIXED_NOW + minutes * 60_000).toISOString()
+  const firstCycle = itemsOf(['tok', [
+    {
+      event: 'questioned', agent_id: 'pm', questions: 'accept the finding?', reason: 'unstated verdict',
+      question_id: 'q-1', resume_role: 'outer', at: at(0),
+    },
+    { event: 'answered', to_team: 'build', reason: 'accepted', question_id: 'q-1', actor: 'human:ada', at: at(1) },
+  ]])
+  const secondCycle = itemsOf(['tok', [
+    {
+      event: 'questioned', agent_id: 'pm', questions: 'accept the finding?', reason: 'unstated verdict',
+      question_id: 'q-1', resume_role: 'outer', at: at(0),
+    },
+    { event: 'answered', to_team: 'build', reason: 'accepted', question_id: 'q-1', actor: 'human:ada', at: at(1) },
+    {
+      event: 'questioned', agent_id: 'pm', questions: 'accept the finding, a second time?', reason: 'unstated verdict',
+      question_id: 'q-2', resume_role: 'outer', at: at(2),
+    },
+    { event: 'answered', to_team: 'build', reason: 'accepted again', question_id: 'q-2', actor: 'human:ada', at: at(3) },
+  ]])
+
+  const dir = mkdtempSync(join(tmpdir(), 'loop-pm-outer-resume-twice-'))
+  try {
+    const notesDir = join(dir, '.tmux-teams', 'pm-notes')
+    mkdirSync(notesDir, { recursive: true })
+
+    // Tick 1: the first reply reaches the controller. This is what the
+    // caller actually persists (loop-runner.mjs:1600) once it dispatches.
+    const plan1 = planDispatches(graph, firstCycle, new Set(), { now: FIXED_NOW })
+      .find((entry) => entry.work_item === 'tok')
+    const escalation1 = planEscalation(dir, graph, firstCycle, [plan1], teamOccupancy(graph, firstCycle),
+      { now: FIXED_NOW, stallSec: 1e9 })
+    assert.equal(escalation1.action, 'escalate', 'the first reply must reach the controller')
+    writeFileSync(join(notesDir, 'latest.md'), `${new Date(FIXED_NOW).toISOString()}\n${escalation1.identity}\n`)
+
+    // Nothing has changed since: calling again on the SAME state must still
+    // read `unchanged` — the brake's actual job, and proof this fix does not
+    // just always re-escalate.
+    const stillNothing = planEscalation(dir, graph, firstCycle, [plan1], teamOccupancy(graph, firstCycle),
+      { now: FIXED_NOW + 1000, stallSec: 1e9, cooldownSec: 0 })
+    assert.equal(stillNothing.action, 'unchanged', 'a board with nothing new recorded must still be suppressed')
+
+    // Tick 2: the SAME work item asked outer again and a person answered
+    // again — new bytes are on the ledger. `plan.reason` renders identically
+    // both times; only the anchor tells the two apart.
+    const plan2 = planDispatches(graph, secondCycle, new Set(), { now: FIXED_NOW + 2000 })
+      .find((entry) => entry.work_item === 'tok')
+    assert.equal(plan2.action, 'escalate')
+    const escalation2 = planEscalation(dir, graph, secondCycle, [plan2], teamOccupancy(graph, secondCycle),
+      { now: FIXED_NOW + 2000, stallSec: 1e9, cooldownSec: 0 })
+    assert.equal(escalation2.action, 'escalate', 'a second, later reply must not collide with the first one\'s identity')
+    assert.equal(escalation2.parked, 'tok')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// The sibling wedge: `awaitingAudit` re-surfaces a token whose state is
+// `answered` after a post-`completed` audit question gets a reply (§5). Its
+// rendered text is a function of work_item/workflow/failed-leg-count alone,
+// so a second audit-question reply on the same token collided with the
+// identity stored from the FIRST `completed` trigger the same way.
+test('H4 a second audit questioned -> answered cycle on a completed token does not collide with the identity already read', () => {
+  const graph = graphOf(TWO_TEAMS)
+  const justCompleted = itemsOf(['tok', FINISHED])
+  // Same `ledger()` anchoring pitfall as the outer test above: without an
+  // explicit `at`, the LAST line of `answeredAudit` would land on exactly the
+  // same `FIXED_NOW` as `justCompleted`'s last line, and the reproduction
+  // would not tell "the same instant" apart from "a real later reply".
+  const at = (minutes) => new Date(FIXED_NOW + minutes * 60_000).toISOString()
+  const answeredAudit = itemsOf(['tok', [
+    ...FINISHED,
+    { event: 'audit_requested', agent_id: 'pm', task_id: 'pm-1', reason: 'route finished — read the delivery as a whole', at: at(1) },
+    {
+      event: 'questioned', agent_id: 'pm', questions: 'accept or concern?',
+      reason: 'the audit stated no verdict this seat can use', question_id: 'q-1', resume_role: 'audit', at: at(2),
+    },
+    { event: 'answered', to_team: 'test', reason: 'concern — rework the edge case', question_id: 'q-1', actor: 'human:ada', at: at(3) },
+  ]])
+
+  const dir = mkdtempSync(join(tmpdir(), 'loop-pm-audit-resume-twice-'))
+  try {
+    const notesDir = join(dir, '.tmux-teams', 'pm-notes')
+    mkdirSync(notesDir, { recursive: true })
+
+    const occupancy1 = teamOccupancy(graph, justCompleted)
+    const escalation1 = planEscalation(dir, graph, justCompleted, [], occupancy1, { now: FIXED_NOW, stallSec: 1e9 })
+    assert.equal(escalation1.action, 'escalate', 'a freshly completed, unread token must reach the controller')
+    assert.deepEqual(escalation1.audits, ['tok'])
+    writeFileSync(join(notesDir, 'latest.md'), `${new Date(FIXED_NOW).toISOString()}\n${escalation1.identity}\n`)
+
+    const occupancy2 = teamOccupancy(graph, answeredAudit)
+    const escalation2 = planEscalation(dir, graph, answeredAudit, [], occupancy2,
+      { now: FIXED_NOW + 2000, stallSec: 1e9, cooldownSec: 0 })
+    assert.equal(escalation2.action, 'escalate', 'the audit reply must not collide with the completion trigger\'s identity')
+    assert.deepEqual(escalation2.audits, ['tok'])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// r4-codex: "the PM brief ... omits the question and answer" and "a
+// front-door dispatcher reproduction likewise reran the correct dispatcher
+// with the original ambiguous request but without the human answer." Proven
+// on both delivery surfaces: the outer controller's own brief (`ask`/`board`,
+// built by `planEscalation`) and `composeBrief`, which every other resumed
+// seat (worker, evaluator, front-door dispatcher) reads.
+test('H4 the outer controller\'s brief carries what was asked and what the person answered', () => {
+  const graph = graphOf(TWO_TEAMS)
+  const items = itemsOf(['tok', [
+    {
+      event: 'questioned', agent_id: 'pm', questions: 'Resume or abandon?', reason: 'unstated verdict',
+      question_id: 'q-1', resume_role: 'outer',
+    },
+    { event: 'answered', to_team: 'build', reason: 'Resume; dependency fixed', question_id: 'q-1', actor: 'human:ada' },
+  ]])
+  const plan = planDispatches(graph, items, new Set(), { now: FIXED_NOW }).find((entry) => entry.work_item === 'tok')
+  const dir = mkdtempSync(join(tmpdir(), 'loop-pm-outer-brief-'))
+  try {
+    const escalation = planEscalation(dir, graph, items, [plan], teamOccupancy(graph, items), { now: FIXED_NOW, stallSec: 1e9 })
+    assert.equal(escalation.action, 'escalate')
+    assert.match(escalation.brief, /Resume or abandon\?/, 'the brief never said what was asked')
+    assert.match(escalation.brief, /Resume; dependency fixed/, 'the brief never said what the person answered')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// codex's own reproduction: "A front-door dispatcher reproduction likewise
+// reran the correct dispatcher with the original ambiguous request but
+// without the human answer. The seat can ask the same question again." Built
+// on the reachable path — `resume_role` unset (legacy/default) resumes the
+// dispatcher (§5), and `build` is TWO_TEAMS' `controller_team` (derived from
+// the head of its one route), so this is the front door itself.
+test('H4 composeBrief carries what was asked and what the person answered, for a seat resumed after answered', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-compose-brief-answer-'))
+  try {
+    const store = join(dir, '.tmux-teams')
+    mkdirSync(join(store, 'work-items'), { recursive: true })
+    mkdirSync(join(store, 'team-briefs'), { recursive: true })
+    writeFileSync(join(store, 'graph.json'), JSON.stringify(TWO_TEAMS))
+    writeFileSync(join(store, 'team-briefs', 'build.md'), '# Build team standing brief\n')
+    writeFileSync(join(store, 'work-items', 'tok.jsonl'), `${ledger('tok', [
+      { event: 'opened', agent_id: 'b_d', to_team: 'build', reason: 'front door request', actor: 'human:ada' },
+      {
+        event: 'questioned', agent_id: 'b_d', questions: 'what should the worker build?',
+        reason: 'the request is not workable yet', question_id: 'q-1',
+      },
+      { event: 'answered', to_team: 'build', reason: 'Build the CSV export first.', question_id: 'q-1', actor: 'human:ada' },
+    ]).map((entry) => JSON.stringify(entry)).join('\n')}\n`)
+
+    const scratch = join(dir, 'scratch')
+    const result = tick(dir, { apply: false, scratchDir: scratch })
+    assert.equal(result.ok, true, result.reason)
+    const brief = readFileSync(join(scratch, 'brief-tok-build-dispatcher.md'), 'utf8')
+    assert.match(brief, /what should the worker build\?/, 'the resumed dispatcher was never told what was asked')
+    assert.match(brief, /Build the CSV export first\./, 'the resumed dispatcher was never told what the person answered')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 // ── GitHub #32: per-seat reasoning effort reaches the spawned process ────────
 
 test('declaredEffort reads the resolved seat, and effortEnv requests it the way modelEnv requests a model', () => {
@@ -2414,6 +2596,150 @@ test('a reviewed that borrows the live holder\'s dispatch_id while naming an OLD
   })
   assert.equal(currentEntry(noTaskId).event, 'reviewed')
   assert.equal(currentEntry(noTaskId).verdict, 'pass')
+})
+
+// ── retro-release-review round 4, 2026-08-04: the full F1 identity matrix ───
+// Three independent review families (codex, agy, qwen) each rebuilt a piece
+// of this matrix and did not agree with each other. This test builds the
+// WHOLE thing — (dispatch_id: own/absent/borrowed) x (task_id: own/absent/
+// borrowed) x (agent: same/different) x (assignment interleaving: consecutive
+// /interleaved) = 36 cells — instead of the handful of hand-picked shapes
+// that produced three rounds of "fixed the shape you named, missed its
+// neighbour". Every cell states its own required verdict and why, and the
+// whole table is printed so a human can audit it, not just trust a pass
+// count.
+//
+// Ground truth for every cell: the trailing `reviewed pass` is ALWAYS a
+// straggler from the OLD (round-1) evaluator's dead leg, never a genuine
+// round-2 report — "own"/"absent"/"borrowed" describe only what identity
+// fields that straggler happens to carry, honestly or not.
+//
+// H  = the live assigned holder must be retained; the stale review must not
+//      be trusted as the token's current position.
+// TRUST = the review is legitimately indistinguishable from a genuine
+//      current report and currentEntry trusting it is correct, not a bug.
+//
+// Three cells are TRUST rather than H specifically because existing tests in
+// this file already require it and would go red otherwise:
+//   - Shape 1 positive case (line ~2348): a same-agent report naming only
+//     its own current task_id (no dispatch_id at all) must clear the gate —
+//     dispatch=absent/task=borrowed, same agent.
+//   - Shape 2 "noTaskId" case (line ~2410): a same-agent report naming the
+//     current dispatch_id with task_id omitted must clear the gate —
+//     dispatch=borrowed/task=absent, same agent.
+//   - Shape 2 "consistent" case (line ~2400): a same-agent report naming
+//     BOTH the current dispatch_id and task_id must clear the gate —
+//     dispatch=borrowed/task=borrowed, same agent.
+// For the SAME agent, a report carrying the holder's own real dispatch_id
+// and/or task_id is byte-for-byte indistinguishable from a genuine round-2
+// report by that same agent — Winston (codex) conceded this directly:
+// "the bytes are identical to a genuine r2 report ... currentEntry cannot
+// solve that with heuristics; the format needs producer-bound provenance."
+// qwen independently built and tested exactly these nine same-agent cells
+// and found "all nine correct". codex alone called three of them (borrowed/
+// absent, borrowed/borrowed, absent/borrowed — all same-agent) bugs; two of
+// three review families is the must-fix bar (CLAUDE.md), and here two of
+// three (qwen's direct test, and the pre-existing protected tests in this
+// file) say TRUST is required. Those three same-agent cells are therefore
+// left as TRUST, not "fixed" — see "what I did not fix" in the round's report.
+//
+// For a DIFFERENT agent, codex AND agy independently confirmed (2 of 3) a
+// concrete live failure: a superseded evaluator's identity-less stale review
+// hijacking a live retry by a different agent. That agent's own leg, once
+// superseded, can never again be trusted as evidence about someone else's
+// leg no matter what it claims to carry — every different-agent cell is H.
+const F1_MATRIX = []
+for (const dispatchShape of ['own', 'absent', 'borrowed']) {
+  for (const taskShape of ['own', 'absent', 'borrowed']) {
+    for (const agentShape of ['same', 'different']) {
+      for (const interleave of ['consecutive', 'interleaved']) {
+        let required
+        let reason
+        if (agentShape === 'different') {
+          required = 'H'
+          reason = 'the reviewing agent is not the holder and has its own superseded leg — never trusted'
+        } else if (dispatchShape === 'own') {
+          required = 'H'
+          reason = 'dispatch_id names a different leg than the holder\'s — unambiguous mismatch'
+        } else if (dispatchShape === 'absent' && taskShape === 'own') {
+          required = 'H'
+          reason = 'task_id names a different leg than the holder\'s — unambiguous mismatch'
+        } else if (dispatchShape === 'absent' && taskShape === 'absent') {
+          required = 'H'
+          reason = 'same agent assigned twice in this ledger — identity-less, genuinely ambiguous (Shape 1)'
+        } else if (dispatchShape === 'absent' && taskShape === 'borrowed') {
+          required = 'TRUST'
+          reason = 'task_id resolves to the holder\'s own leg and the agent matches — protected by the Shape 1 positive test'
+        } else if (dispatchShape === 'borrowed' && taskShape === 'own') {
+          required = 'H'
+          reason = 'dispatch_id matches but task_id names an older leg — unambiguous mismatch (Shape 2)'
+        } else if (dispatchShape === 'borrowed' && taskShape === 'absent') {
+          required = 'TRUST'
+          reason = 'dispatch_id matches the holder\'s own leg, task_id omitted — protected by the Shape 2 noTaskId test'
+        } else {
+          required = 'TRUST'
+          reason = 'both dispatch_id and task_id match the holder\'s own leg — protected by the Shape 2 consistent test'
+        }
+        F1_MATRIX.push({ dispatchShape, taskShape, agentShape, interleave, required, reason })
+      }
+    }
+  }
+}
+assert.equal(F1_MATRIX.length, 36, 'the identity matrix must cover all 36 cells')
+
+function buildF1Cell({ dispatchShape, taskShape, agentShape, interleave }) {
+  const OLD_AGENT = 'b_e'
+  const NEW_AGENT = agentShape === 'same' ? 'b_e' : 'b_e2'
+  const custody = [
+    { at: '2026-08-04T09:00:00.000Z', event: 'assigned', agent_id: 'b_w1', task_id: 'b-1', dispatch_id: 'w-1' },
+    { at: '2026-08-04T09:01:00.000Z', event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'done', timed_out: false, evidence_present: true, dispatch_id: 'w-1' },
+    // The OLD evaluator's leg — timed out / failed, never itself reported.
+    { at: '2026-08-04T09:02:00.000Z', event: 'assigned', agent_id: OLD_AGENT, task_id: 'r-1', dispatch_id: 'd-1' },
+  ]
+  let t = 3
+  if (interleave === 'interleaved') {
+    custody.push(
+      { at: `2026-08-04T09:0${t}:00.000Z`, event: 'assigned', agent_id: 'b_w1', task_id: 'b-2', dispatch_id: 'w-2' },
+      { at: `2026-08-04T09:0${t + 1}:00.000Z`, event: 'delivered', agent_id: 'b_w1', task_id: 'b-2', terminal: 'done', timed_out: false, evidence_present: true, dispatch_id: 'w-2' },
+    )
+    t += 2
+  }
+  // The LIVE retry — this is the holder.
+  custody.push({ at: `2026-08-04T09:0${t}:00.000Z`, event: 'assigned', agent_id: NEW_AGENT, task_id: 'r-2', dispatch_id: 'd-2' })
+  t += 1
+  const stale = {
+    at: `2026-08-04T09:0${t}:00.000Z`, event: 'reviewed', agent_id: OLD_AGENT, verdict: 'pass',
+    reviewed_task: 'b-1', reason: 'stale round-1 straggler',
+  }
+  if (dispatchShape === 'own') stale.dispatch_id = 'd-1'
+  else if (dispatchShape === 'borrowed') stale.dispatch_id = 'd-2'
+  if (taskShape === 'own') stale.task_id = 'r-1'
+  else if (taskShape === 'borrowed') stale.task_id = 'r-2'
+  custody.push(stale)
+  return { custody, holder: NEW_AGENT }
+}
+
+test('F1 identity matrix — all 36 cells, printed and asserted (round 4)', () => {
+  const rows = []
+  let failures = 0
+  for (const cell of F1_MATRIX) {
+    const { custody, holder } = buildF1Cell(cell)
+    const result = currentEntry(custody)
+    const actual = result.event === 'reviewed' && result.verdict === 'pass' ? 'TRUST' : 'H'
+    const heldCorrectly = actual !== 'H' || result.agent_id === holder
+    const pass = actual === cell.required && heldCorrectly
+    if (!pass) failures += 1
+    rows.push({
+      dispatch: cell.dispatchShape, task: cell.taskShape, agent: cell.agentShape,
+      order: cell.interleave, required: cell.required, actual, pass: pass ? 'ok' : 'FAIL',
+    })
+  }
+  console.log('\nF1 identity matrix (36 cells):')
+  console.table(rows)
+  if (failures > 0) {
+    assert.fail(`${failures}/36 F1 identity cells did not match their required verdict — see table above`)
+  }
+  assert.equal(failures, 0)
 })
 
 // ── GitHub #32: per-seat reasoning effort reaches the spawned process ────────
