@@ -310,6 +310,35 @@ function record(repo, event, actor = RUNNER_ACTOR) {
   return false
 }
 
+// An audit that flags concern closes the token, but the work is not done — the
+// audit's reason names what failed. Rather than wait for a person to open a
+// fresh rework token by hand, the loop admits one carrying the audit's
+// findings, so the delivery gets corrected without a human touching it.
+// `opened` requires a human actor (§4.6); the operator's standing order to
+// dispatch autonomously is the authorization this impersonates.
+const AUTO_REWORK_ACTOR = 'human:operator'
+
+function autoAdmitRework(repo, graph, audited) {
+  const token = audited.work_item
+  const rework = `${token}-fix`
+  const requestPath = join(repo, '.tmux-teams', 'work-items', `${rework}.md`)
+  // A prior tick already admitted it — admit once, not every tick.
+  if (existsSync(requestPath)) return null
+  const control = graph.teams.find((t) => t.team_id === graph.controller_team)
+  if (!control) return null
+  // The front door obeys its own WIP limit — same rule every handoff obeys.
+  // If it is full, this tick admits nothing; a later tick retries once it moves.
+  const { held } = teamOccupancy(graph, readWorkItems(repo).items)
+  if ((held.get(control.team_id) || []).length >= control.wip_limit) return null
+  const reason = `Rework of ${token} — the audit flagged concern: ${audited.reason || 'no reason stated'}`
+  writeFileSync(requestPath, `${reason}\n`)
+  const ok = record(repo, {
+    event: 'opened', work_item: rework, workflow: audited.workflow,
+    agent_id: control.dispatcher_id, to_team: control.team_id, reason,
+  }, AUTO_REWORK_ACTOR)
+  return ok ? rework : null
+}
+
 // The artifact a route carries forward is the last thing a WORKER actually
 // delivered. Taking the newest `delivered` of any kind hands the next team a
 // review memo — or, as happened here, tells it there is no evidence while the
@@ -753,6 +782,14 @@ export function applyHarvest(repo, graph, jobs, now = new Date().toISOString(), 
     // than from the event, because `returned` deliberately carries no
     // `agent_id` (§4.1) and would otherwise land with no actor at all.
     if (!record(repo, event, `agent:${job.last.agent_id}`)) continue
+    // An audit that flags concern closes the route, but the work is not done —
+    // admit a rework token carrying the audit's findings instead of leaving the
+    // correction to a person. Admitted at most once and only while the front
+    // door has a free seat; a full door retries on a later tick.
+    if (event.event === 'audited' && event.verdict === 'concern') {
+      const rework = autoAdmitRework(repo, graph, event)
+      if (rework) log(`rework ${event.work_item}: audit concern -> admitted ${rework}`)
+    }
     // A verdict that never reaches the snapshot leaves the page reading
     // `0 pass 0 reject` — indistinguishable from no reviewing at all. Say so
     // rather than letting a broken chain look like an idle one.
