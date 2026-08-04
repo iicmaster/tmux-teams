@@ -563,7 +563,14 @@ export function validateLedger(lines) {
     eventsSeen += 1
   }
 
-  return { ok: problems.length === 0, problems }
+  // GitHub #42/#44: `heldTeams` is computed here and nowhere else — the only
+  // rule for "which teams has this token been ADMITTED by" already lives in
+  // this loop (see the set's own declaration above). `planPulls`
+  // (pull-controller.mjs) needs that exact answer to pick a token's next hop
+  // without writing a second copy of the same scan, so it is returned rather
+  // than kept internal. Additive only: every existing reader of `ok`/
+  // `problems` is unaffected by a field it never asked for.
+  return { ok: problems.length === 0, problems, heldTeams: [...heldTeams] }
 }
 
 // B5 (2026-08-04): three independent reviews (qwen, agy, codex) each rebuilt a
@@ -685,7 +692,10 @@ export function isClosingTolerated(problem) {
 export function validateLedgerTolerant(lines) {
   const result = validateLedger(lines)
   const blocking = result.problems.filter((problem) => !isLegacyTolerated(problem))
-  return { ok: blocking.length === 0, problems: result.problems, blocking }
+  // `heldTeams` rides along unchanged by tolerance: which teams admitted this
+  // token is a fact about the history, not a defect in it, so no problem
+  // being legacy-tolerated ever changes the answer.
+  return { ok: blocking.length === 0, problems: result.problems, blocking, heldTeams: result.heldTeams }
 }
 
 // Reads one ledger file under the contract's byte ceiling. A file larger than

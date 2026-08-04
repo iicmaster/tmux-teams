@@ -1114,6 +1114,21 @@ go — the runner refused its own repair on every tick, visibly and for ever.
   board exists to show. **An `invalid` token must stay visibly blocked too** —
   see §14.2 item 2, where the board's failure to draw it is a live defect.
 - No next team on the route → `completed`.
+- **The next hop is the first team on the route the token has not been
+  ADMITTED by (§1); a team already in its held set is skipped, and a route
+  with none left is finished → `completed`.** (GitHub #42/#44, 2026-08-05.)
+  `route[index + 1]` alone answers only "what is declared next", never "has
+  this token been here already" — and on an escalation exit (parked at a
+  later team, resumed, and released there) those two answers can disagree:
+  the declared route points back at a team the token was already ADMITTED by.
+  The validator's `route_went_backwards` refusal (§4.2) remains the backstop —
+  it is what stopped the wrong pull from ever being written — but a planner
+  that keeps proposing what the writer is guaranteed to refuse recomputes the
+  identical decision every tick with no exit in code, which is indistinguishable
+  from a runner that has quietly given up. `heldTeams` is computed once, in
+  `ledger-validate.mjs`'s own admission tracking (§1), and returned on
+  `validateLedgerTolerant`'s verdict — the planner consumes it rather than
+  scanning the ledger for the same fact a second time.
 
 ### 7.1 The controller team releases on `intake`, not on `reviewed`
 
@@ -1980,6 +1995,23 @@ line.
    editing a file while a worker holds it has already cost one overwrite.
 
 ### Amendment log
+
+**2026-08-05 — GitHub #42/#44: the planner proposed a pull the writer always
+refuses.** Behaviour changed in `pull-controller.mjs` and `ledger-validate.mjs`.
+`planPulls` picked the next hop from route position alone
+(`workflow.route[index + 1]`) and never consulted `heldTeams` — the set
+`ledger-validate.mjs` already tracks, filled at `intake` (admission, not
+arrival, per §1). On an escalation exit the declared route can point back at a
+team the token already holds a place in, and the validator's own
+`route_went_backwards` refusal (§4.2) then refuses every such `pulled` the
+planner proposes, forever: `tick()` recomputed the identical decision every
+loop with no exit in code. `validateLedger`/`validateLedgerTolerant` now
+return `heldTeams` on the verdict (additive; no existing field's meaning
+changed), and `planPulls` consumes it — the next hop is the first team on the
+rest of the route not already in that set, and a route with none left is
+`completed`. Not a new scan: the definition of "held" stays the one place §1
+already put it. This fixes the planner root only; it does not address GitHub
+#46's mid-flight-restart hypothesis for the same symptom.
 
 **2026-08-05 — r7-qwen: the steal marker could not tell a corpse from a
 suspended process.** Behaviour changed in `ledger-writer.mjs`. `stealStaleLock`

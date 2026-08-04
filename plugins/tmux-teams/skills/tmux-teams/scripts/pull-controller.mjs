@@ -8,7 +8,8 @@
 //   a token whose last event is `reviewed` with verdict `pass` has cleared its
 //   own team's evaluator and is sitting in that team's done queue
 //   → check that the token's own history can be believed at all
-//   → find the next team on its workflow route
+//   → find the next team on its workflow route that has not already ADMITTED
+//     this token (GitHub #42/#44) — a team already in its held set is skipped
 //   → if that team is under its WIP limit, append `pulled` (it took the work)
 //   → if it is at the limit, leave the token where it is and report it blocked
 //   → if there is no next team, the route is finished: append `completed`
@@ -138,14 +139,18 @@ export function planPulls(graph, items, now = new Date().toISOString()) {
       })
       continue
     }
-    pending.push({ item, last, team })
+    // `verdict.heldTeams` travels with the item into the second loop below —
+    // GitHub #42/#44's fix reads it there to pick a next hop the token has not
+    // already been admitted by, rather than re-scanning the ledger a second
+    // time for a fact `validateLedgerTolerant` already computed.
+    pending.push({ item, last, team, heldTeams: verdict.heldTeams })
   }
 
   // Oldest delivery first: a pull system that served the newest arrival would
   // starve whatever has been waiting longest, which is the opposite of flow.
   pending.sort((a, b) => String(a.last.at || '').localeCompare(String(b.last.at || '')))
 
-  for (const { item, last, team } of pending) {
+  for (const { item, last, team, heldTeams } of pending) {
     const workflow = workflowById.get(item.workflow || last.workflow)
     if (!workflow) {
       decisions.push({ work_item: item.work_item, action: 'skip', reason: 'no declared workflow' })
@@ -159,7 +164,21 @@ export function planPulls(graph, items, now = new Date().toISOString()) {
       })
       continue
     }
-    const nextId = workflow.route[index + 1]
+    // GitHub #42/#44: `route[index + 1]` alone ignores who the token has
+    // already been ADMITTED by. On an escalation exit — parked at a later
+    // team, resumed, and released there — the declared route can point back
+    // at a team this token passed through earlier. The validator refuses that
+    // `pulled` outright as `route_went_backwards` (contract §1, ledger-
+    // validate.mjs), so proposing it here is not a plan, it is the same
+    // refused decision recomputed every tick with no way out. The next hop is
+    // instead the first team on the rest of the route the token has NOT been
+    // admitted by; a held team is skipped, and a route with none left is
+    // exactly the "no next team" case below — finished, not stuck.
+    const held = new Set(heldTeams)
+    let nextId = null
+    for (let i = index + 1; i < workflow.route.length; i += 1) {
+      if (!held.has(workflow.route[i])) { nextId = workflow.route[i]; break }
+    }
     if (!nextId) {
       decisions.push({
         work_item: item.work_item, action: 'complete', workflow: workflow.workflow_id,
