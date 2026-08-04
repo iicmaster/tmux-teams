@@ -320,7 +320,19 @@ const workLine = (role, work) => {
 const statusOf = (run) => !run ? 'unbound'
   : WORKING.has(run.state) ? 'working'
     : DELIVERED.has(run.state) ? 'delivered'
-      : DEAD.has(run.state) ? 'dead' : 'other'
+      : DEAD.has(run.state) ? (deadIsStale(run) ? 'other' : 'dead')
+        : 'other'
+
+// A run that died is only "process not found" while the death is recent —
+// past its own stall budget (3× timeout, minimum 15 minutes) the seat is
+// idle again, and a forever-red node misreads a ready seat as broken. The
+// elapsed comes from the pulse's own measurement, so the page never has to
+// guess a clock.
+const deadIsStale = (run) => {
+  const elapsed = run?.elapsed_sec ?? 0
+  const window = Math.max((run?.timeout_sec ?? 0) * 3, 900)
+  return elapsed > window
+}
 
 const STATUS_COPY = Object.freeze({
   watching: 'watching — no exception open',
