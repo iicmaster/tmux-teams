@@ -1586,3 +1586,32 @@ test('pull --apply exits non-zero when the pulls it planned were refused', (t) =
   assert.equal(r.status, 1, `a run that recorded none of its planned pulls exited ${r.status}`)
   assert.match(r.stderr, /1 of 1 planned pull\(s\) were REFUSED/)
 })
+
+test('a steal blocked by another stealer waits out that marker rather than spinning on it', (t) => {
+  // Self-review, 2026-08-04: the steal path arrived with its own `continue` and
+  // no deadline check in front of it. When the only way back to the top of
+  // `acquireLock` was a failed `wx`, checking the deadline last was equivalent;
+  // with three ways back it is not, and a steal that keeps losing had nothing
+  // bounding it. Two bounds now do: the acquire deadline, and the steal
+  // marker's own staleness — a steal section is a read, a stat and an unlink,
+  // so a marker outliving `STEAL_STALE_MS` is a corpse and is cleared.
+  const dir = scratch(t)
+  const lockPath = join(dir, 'w.jsonl.lock')
+
+  writeFileSync(lockPath, 'A-token')
+  const old = new Date(Date.now() - 120_000)
+  utimesSync(lockPath, old, old)
+  // Another racer is mid-steal and never finishes.
+  writeFileSync(`${lockPath}.steal`, 'someone else is stealing')
+
+  const started = Date.now()
+  const token = acquireLock(lockPath)
+  const spent = Date.now() - started
+
+  assert.equal(readFileSync(lockPath, 'utf8'), token, 'the caller does not hold what it was handed')
+  assert.ok(spent >= 900, `acquired in ${spent}ms — it cannot have waited out the abandoned steal marker`)
+  assert.ok(spent < 5_000, `spent ${spent}ms: nothing is bounding the contended steal path`)
+  assert.equal(existsSync(`${lockPath}.steal`), false, 'the abandoned steal marker was left behind')
+
+  releaseLock(lockPath, token)
+})

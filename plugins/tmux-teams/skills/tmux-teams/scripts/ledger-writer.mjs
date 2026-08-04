@@ -199,20 +199,24 @@ export function acquireLock(lockPath) {
       return token
     } catch (error) {
       if (error.code !== 'EEXIST') throw error
-      let observed
-      try { observed = readFileSync(lockPath, 'utf8') } catch { continue } // vanished — retry now
-      let age
-      try { age = Date.now() - statSync(lockPath).mtimeMs } catch { continue }
-      if (age > LOCK_STALE_MS) {
-        stealStaleLock(lockPath, observed)
-        continue
-      }
+      // The deadline is checked FIRST because every path below loops. When the
+      // only way back to the top was a failed `wx` on a lock somebody clearly
+      // held, checking it last was equivalent; it is not now. A marker that
+      // keeps vanishing and reappearing, or a steal another racer keeps
+      // winning, would otherwise spin here against no bound at all.
       if (Date.now() >= deadline) {
         throw Object.assign(
           new Error(`timed out waiting for ${lockPath} (held longer than ${LOCK_MAX_WAIT_MS}ms)`),
           { code: 'LOCK_TIMEOUT' },
         )
       }
+      let observed
+      try { observed = readFileSync(lockPath, 'utf8') } catch { continue } // vanished — retry at once
+      let age
+      try { age = Date.now() - statSync(lockPath).mtimeMs } catch { continue }
+      // A steal that succeeded leaves nothing to wait for; one that lost to
+      // another stealer waits like any other loser rather than spinning.
+      if (age > LOCK_STALE_MS && stealStaleLock(lockPath, observed)) continue
       sleepSync(LOCK_RETRY_MS)
     }
   }
