@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { appendEvent, ledgerPath } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-writer.mjs'
+import { acquireLock, appendEvent, ledgerPath, releaseLock } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-writer.mjs'
 import { validateLedger, validateLedgerFile, validateLedgerTolerant } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-validate.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -1412,4 +1412,38 @@ test('BLOCKER 8: a lock left by a process that died mid-hold is recovered after 
   const result = appendEvent(dir, { event: 'abandoned', work_item: 'stuck-tok', workflow: 'feature', reason: 'recovered after a dead holder' }, { actor: 'agent:runner' })
   assert.equal(result.ok, true, `a stale lock from a dead holder should be recovered, not wedge the token forever: ${JSON.stringify(result)}`)
   assert.equal(existsSync(lockPath), false, 'the recovered lock should be released again after the write that stole it')
+})
+
+// ---------------------------------------------------------------------------
+// A stolen lock must not be released by the holder it was stolen FROM.
+//
+// The steal itself is a bounded, documented race: A stalls past LOCK_STALE_MS,
+// B takes the lock, and for as long as A is still inside its critical section
+// the two overlap. What is NOT bounded is what an unconditional
+// `unlinkSync(lockPath)` does next — A finishes, deletes the lock file B is
+// holding, and C then acquires cleanly while B is still writing. One stolen
+// lock becomes an open critical section that outlives the steal by however
+// long B still needs, and nothing on disk records that it happened.
+// ---------------------------------------------------------------------------
+test('a holder whose lock was stolen releases nothing, so the stealer keeps the critical section', (t) => {
+  const dir = scratch(t)
+  const lockPath = join(dir, 'w.jsonl.lock')
+
+  const aToken = acquireLock(lockPath)
+  assert.equal(readFileSync(lockPath, 'utf8'), aToken, 'the lock file records the acquisition that holds it')
+
+  // B steals exactly as `acquireLock` does once the lock reads stale.
+  rmSync(lockPath)
+  const bToken = acquireLock(lockPath)
+  assert.notEqual(bToken, aToken, 'two acquisitions in one process must still be distinguishable')
+
+  // A wakes up and releases. Its lock is gone; B's must survive untouched.
+  releaseLock(lockPath, aToken)
+  assert.equal(existsSync(lockPath), true,
+    "A released B's lock: the next writer walks into the section B is still inside")
+  assert.equal(readFileSync(lockPath, 'utf8'), bToken, "the surviving lock is still B's")
+
+  // And B's own release still works.
+  releaseLock(lockPath, bToken)
+  assert.equal(existsSync(lockPath), false, 'the true holder can always release')
 })

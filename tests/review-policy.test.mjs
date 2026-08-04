@@ -537,3 +537,32 @@ test('a routed lane that pins no endpoint is refused rather than trusted', () =>
     /zai review routes its provider but pins no endpoint/,
   )
 })
+
+test('AGY round six: two exec-identical lanes pinned to different verified endpoints are two vendors, not one lane refused twice', () => {
+  // The shape AGY named: a provider added WITHOUT its own wrapper binary. It
+  // shares the adapter command with every other claude-adapter lane, and only
+  // its endpoint pin says where it goes. Refusing that panel would be a shipped
+  // outage — the gate blocking the release it exists to guard.
+  const base = {
+    command: [...REVIEW_PROFILES.qwen.command],
+    adapterPackage: REVIEW_PROFILES.qwen.adapterPackage,
+  }
+  // Pinning is what makes a routing fact verifiable, and `routingDeclaration`
+  // only reads a pin from a lane the gate actually routes.
+  const alpha = { ...base, id: 'qwen', family: 'alpha', endpoint: { host: 'alpha.example', path: '/anthropic' } }
+  const beta = { ...base, id: 'zai', family: 'beta', endpoint: { host: 'beta.example', path: '/anthropic' } }
+  assert.equal(provenFamilyCollision([alpha, beta, REVIEW_PROFILES.agy]), false,
+    'two lanes pinned to different verified endpoints are two vendors — refusing them blocks a legitimate panel')
+
+  // The exemption reads a DIFFERENCE, never a silence.
+  assert.equal(provenFamilyCollision([alpha, { ...beta, endpoint: alpha.endpoint }, REVIEW_PROFILES.agy]), true,
+    'the same pinned endpoint means the same vendor however the ids differ')
+  // r5-qwen's attack, entered through the new door: drop the pin and keep
+  // everything else. An unpinned lane declares nothing the parent verifies.
+  assert.equal(provenFamilyCollision([alpha, { ...beta, id: 'kimi', endpoint: undefined }, REVIEW_PROFILES.agy]), true,
+    'dropping the pin is not a distinction: absence of evidence cannot certify a lane')
+  // Three exec-identical lanes where only ONE pair is pinned apart: the third
+  // must still collide with the one it actually duplicates.
+  assert.equal(provenFamilyCollision([alpha, beta, { ...alpha, family: 'alpha2' }]), true,
+    'a third lane duplicating alpha must collide even though alpha and beta are pinned apart')
+})

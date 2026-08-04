@@ -4,7 +4,7 @@ import { open } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { ACP_REVIEW_LIMITS, prepareReviewPacket, runAcpReview, ReviewTransportError } from './acp-review-client.mjs'
-import { REVIEW_PROFILES, buildProfileEnv, provenFamilyKey, provenFamilyCollision, provenFamilyKeysCollide, provenLaunchSignature } from './review-profiles.mjs'
+import { REVIEW_PROFILES, buildProfileEnv, provenFamilyKey, provenFamilyCollision, provenFamilyKeysCollide, provenLaunchSignature, routingDeclaration } from './review-profiles.mjs'
 import {
   UNAVAILABLE_RESERVE_SUBSTITUTES,
   planReviewPanel,
@@ -330,6 +330,7 @@ async function assessAttempt(attempt, validate, expectedInputHash) {
       // what-will-actually-exec fact, computed from the same profile object
       // but never from the caller-overridable claim.
       commandProvenSignature: provenLaunchSignature(attempt.profile),
+      routingProvenDeclaration: routingDeclaration(attempt.profile),
       model: value.model,
       displayModel: value.displayModel,
       mode: value.mode,
@@ -465,6 +466,7 @@ export async function runReviewGate(packet, {
   if (provenFamilyKeysCollide(
     reviews.map(item => item.familyProvenKey ?? null),
     reviews.map(item => item.commandProvenSignature ?? null),
+    reviews.map(item => item.routingProvenDeclaration ?? null),
   )) {
     throw fail('policy', 'final review proven identities are not distinct')
   }

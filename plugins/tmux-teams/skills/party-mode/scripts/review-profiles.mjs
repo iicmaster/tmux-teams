@@ -335,11 +335,51 @@ export function provenLaunchSignature(profile) {
   return JSON.stringify([profile.command, profile.claudeExecutable ?? null])
 }
 
+// The endpoint a lane is PINNED to, or null. This is the one routing fact the
+// parent verifies before the child starts: `validateRoutedEndpoint` reads the
+// lane's settings file and refuses it if the base URL is not this host and
+// path. A declared settings path is not a substitute — an unpinned lane can
+// name any file it likes, which is exactly the r5-qwen attack.
+//
+// Deliberately not folded into `provenLaunchSignature`. Appending a settings
+// path to that tuple was tried first and reopened `qwen-shadow` in one line:
+// the shadow copies the real command and executable and declares nothing else,
+// so a flat tuple read the ABSENCE as a difference and passed it. Absence is
+// not evidence — the same principle the null-key rule is built on — so a
+// routing fact can only ever distinguish two lanes when BOTH carry one.
+export function routingDeclaration(profile) {
+  if (!profile || !ROUTED_PROFILES.has(profile.id)) return null
+  const endpoint = profile.endpoint
+  if (!endpoint || typeof endpoint.host !== 'string' || endpoint.host === '') return null
+  return JSON.stringify([endpoint.host, endpoint.path ?? null])
+}
+
 // `launchSignatures`, when supplied, must be parallel to `keys` (same index
 // meaning the same lane) and hold each lane's `provenLaunchSignature` (or
 // null if unknown). Optional and back-compatible: every existing caller that
 // passes only `keys` gets exactly the old behavior.
-export function provenFamilyKeysCollide(keys, launchSignatures = null) {
+// Same bytes, different vendor: two lanes exec-identical on argv and executable
+// are still two lanes when each is PINNED to a different verified endpoint.
+// AGY raised this in round six — a provider added without its own wrapper
+// binary shares the adapter command with every other claude-adapter lane, and
+// refusing that panel is a shipped outage, the gate blocking the very release
+// it exists to guard. The pin is not a claim the profile makes about itself:
+// `validateRoutedEndpoint` reads the lane's settings file and refuses it if
+// the base URL is not that host, before the child starts.
+//
+// Both sides must be pinned. A lane carrying no pin is not distinguished by
+// its silence: that is `qwen-shadow`, which copies the real command and
+// executable and simply omits the rest, and it is r5-qwen's attack too — drop
+// `endpoint`, keep everything else. Reading absence as a difference is
+// precisely the pass this whole rule exists to refuse.
+function routesApart(routings, i, j) {
+  if (!Array.isArray(routings)) return false
+  const a = routings[i] ?? null
+  const b = routings[j] ?? null
+  return a !== null && b !== null && a !== b
+}
+
+export function provenFamilyKeysCollide(keys, launchSignatures = null, routings = null) {
   const list = keys ?? []
   if (list.filter(key => key === null).length >= 2) return true
   const known = list.filter(key => key !== null)
@@ -366,8 +406,13 @@ export function provenFamilyKeysCollide(keys, launchSignatures = null) {
     for (let i = 0; i < list.length; i += 1) {
       const signature = launchSignatures[i]
       if (signature === null || signature === undefined) continue
-      if (seen.has(signature)) return true
-      seen.set(signature, i)
+      // Every earlier lane on this signature, not just the first: with three
+      // exec-identical lanes where only one pair routes apart, comparing
+      // against a single remembered index lets the third slip past the pair it
+      // actually duplicates.
+      const earlier = seen.get(signature) ?? []
+      if (earlier.some((j) => !routesApart(routings, j, i))) return true
+      seen.set(signature, [...earlier, i])
     }
   }
   return false
@@ -375,7 +420,8 @@ export function provenFamilyKeysCollide(keys, launchSignatures = null) {
 
 export function provenFamilyCollision(profiles) {
   const list = profiles ?? []
-  return provenFamilyKeysCollide(list.map(provenFamilyKey), list.map(provenLaunchSignature))
+  return provenFamilyKeysCollide(
+    list.map(provenFamilyKey), list.map(provenLaunchSignature), list.map(routingDeclaration))
 }
 
 

@@ -128,14 +128,22 @@ function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 }
 
-function acquireLock(lockPath) {
+// Exported as a named test seam. The ownership invariant below is a property
+// of two file operations, not of scheduling, and it cannot be observed through
+// `appendEvent` without parking a real process inside its critical section for
+// `LOCK_STALE_MS` — a 30-second test that would prove less than six lines do.
+export function acquireLock(lockPath) {
   const deadline = Date.now() + LOCK_MAX_WAIT_MS
   for (;;) {
     try {
       const fd = openSync(lockPath, 'wx', 0o600)
-      writeSync(fd, String(process.pid))
+      // Unique per ACQUISITION, not per process: a pid alone cannot tell this
+      // acquisition from the one a steal replaced, which is exactly what
+      // `releaseLock` has to distinguish.
+      const token = `${process.pid}:${process.hrtime.bigint()}`
+      writeSync(fd, token)
       closeSync(fd)
-      return
+      return token
     } catch (error) {
       if (error.code !== 'EEXIST') throw error
       try {
@@ -161,7 +169,16 @@ function acquireLock(lockPath) {
   }
 }
 
-function releaseLock(lockPath) {
+// A release must unlink OUR lock and no other. An unconditional unlink turns
+// one stolen lock into two live writers: A stalls past `LOCK_STALE_MS`, B
+// steals and enters, A finally finishes and deletes B's lock file, and C walks
+// straight into the critical section B is still inside. The steal is a bounded,
+// documented race between A and B; that amplification is not, and it outlives
+// the steal by however long B still needs.
+export function releaseLock(lockPath, token) {
+  try {
+    if (readFileSync(lockPath, 'utf8') !== token) return // stolen — not ours to remove
+  } catch { return } // already gone, or unreadable: unlinking blind is the risk above
   try { unlinkSync(lockPath) } catch { /* already gone — nothing to clean up */ }
 }
 
@@ -225,10 +242,9 @@ export function appendEvent(repo, event, options = {}) {
   // `acquireLock` below opens it with `wx`, which needs its parent directory.
   ensureDir(dirname(path))
   const lockPath = `${path}${LOCK_SUFFIX}`
-  let holdingLock = false
+  let lockToken = null
   try {
-    acquireLock(lockPath)
-    holdingLock = true
+    lockToken = acquireLock(lockPath)
   } catch (error) {
     if (error.code === 'LOCK_TIMEOUT') return fail('locked', error.message)
     throw error
@@ -236,7 +252,7 @@ export function appendEvent(repo, event, options = {}) {
   try {
     return appendLocked()
   } finally {
-    if (holdingLock) releaseLock(lockPath)
+    if (lockToken !== null) releaseLock(lockPath, lockToken)
   }
 
   // Everything that reads or writes the ledger's bytes must run AFTER the

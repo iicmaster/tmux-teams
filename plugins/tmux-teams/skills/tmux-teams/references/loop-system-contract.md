@@ -1929,9 +1929,53 @@ line.
 
 ### Amendment log
 
-**2026-08-04 — retro-release-review r4-codex BLOCKER 4:'''
+**2026-08-04 — retro-release-review r6-agy: the round-five lock released
+what it no longer held, and no caller could tell contention from a verdict.**
+Behaviour changed in `ledger-writer.mjs` and `acp-companion.mjs`. `acquireLock`
+now returns a token unique per ACQUISITION (`pid:hrtime`) rather than writing a
+bare pid, and `releaseLock` unlinks only a lock file still holding that token.
+Without it the documented steal amplified into something undocumented: A stalls
+past `LOCK_STALE_MS`, B steals and enters, A finishes and deletes B's lock file,
+and C then acquires cleanly while B is still inside the critical section — one
+bounded A/B overlap becoming an open section for as long as B needs, with
+nothing on disk recording it. The steal itself is unchanged and still costed in
+the comment above `LOCK_SUFFIX`.
+Separately, `appendEvent`'s `locked` refusal is the ONE code that says nothing
+about the event — another process held the lock, and the next attempt may
+write. Every other code is a verdict on the bytes. The companion's custody
+append treated all refusals alike and dropped the line with a warning, which is
+right for a verdict and wrong for contention: a lost custody line is precisely
+what §13 makes this process a writer to prevent. It now retries `locked`
+`LOCKED_APPEND_RETRIES` times (whole `appendEvent` calls, each waiting out
+`LOCK_MAX_WAIT_MS` on its own) before refusing loudly. `pull-controller.mjs`
+already carries its refusal home on the decision and is unchanged.
+No section text changed: §13 already binds this process to the writer's
+obligations, and both fixes make it meet them rather than restating them.
 
-new = '''### Amendment log
+**2026-08-04 — retro-release-review r5-codex BLOCKER 6: §4.7, §5, and §6
+described behaviour two round-2 fixes had already replaced (no behaviour
+changed by this entry).** No code changed. §4.7 and §5's `answered`
+(pre-`completed`) row said `resume_role` is "recorded... but not yet wired"
+and that every `answered` resumes the dispatcher regardless of which seat
+asked; `loop-runner.mjs`'s H1 fix (also 2026-08-04, earlier in this log)
+already routes `resume_role: worker`/`evaluator` to that seat directly and
+`audit`/`outer` to a held/escalate path instead — the H1 log entry named
+§4.7 as corrected, but the paragraph was never actually edited, and a later
+same-day entry ("the contract stopped contradicting itself") independently
+rewrote the same section for an unrelated reason and, reading from a copy
+that still said "not yet wired," preserved that sentence as if it were the
+reconciled truth. §6 separately still described the `reviewed`-ambiguity
+check as counting only a CONSECUTIVE run of an agent's own `assigned` lines,
+and described a matching `dispatch_id` as trusted outright — both were
+already replaced at retro-release-review round 2 (F1, Shape 2, same date):
+`dispatch-facts.mjs`'s `assignedCountFor` counts across the whole ledger up
+to the judged entry's position (the consecutive version is what let a dead
+round-1 evaluator leg's stale `reviewed pass` survive an intervening rework
+leg), and `currentEntry` additionally requires a `dispatch_id`-matched
+entry's `task_id`, when present, to resolve to the holder's own leg. Under
+§15.3: the code was right in both packages; this document was not amended in
+the same commit as either fix, in violation of §15.1. Text corrected per
+CONTRACT-PATCH.md, retro-release-review round 5 (codex BLOCKER 6).
 
 **2026-08-04 — retro-release-review r5: the evaluator read the wrong
 artifact, and a runner-written custody state had no path to a terminal

@@ -164,7 +164,17 @@ one SSOT** and wins if the two ever disagree.
 5. Push (confirm with Master first — see Rules), then
    `claude plugin marketplace update tmux-teams` and
    `claude plugin update tmux-teams@tmux-teams` (install cache is version-keyed).
-6. Bump the `plugins/tmux-teams` submodule pointer in `~/agent-skills` to the
+6. **Tag it and publish the GitHub release** — `git tag vX.Y.Z && git push
+   origin vX.Y.Z`, then `gh release create vX.Y.Z --title vX.Y.Z --notes ...`
+   with notes written from the real `git log <prev-tag>..vX.Y.Z`. A version
+   number in three JSON files is not a release: this step was missing from the
+   flow until 2026-08-04, and by then THIRTY versions between v0.1.1 and
+   v0.14.4 had been "released" with no tag and no release page — the whole
+   history had to be backfilled from git in one sitting. Anyone installing from
+   the marketplace resolves a version-keyed cache, so an untagged release is a
+   number nobody else can fetch. Write the notes with a heredoc or `--notes-file`,
+   never `printf` — the backfill put a literal `%ad` into all 30 notes.
+7. Bump the `plugins/tmux-teams` submodule pointer in `~/agent-skills` to the
    new sha and push it. `agent-skills` uses that pin as the source for its
    OpenClaw bridge; Codex and Claude plugin runtimes use version-keyed caches.
 

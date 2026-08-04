@@ -267,6 +267,10 @@ let operationContext = {
   initializeTrace: null,
 }
 
+// Whole extra `appendEvent` calls, each of which waits out the ledger lock on
+// its own before giving up. Two is a bound, not a spin: past it the holder is
+// not slow, it is wedged, and a louder refusal is more use than a longer wait.
+const LOCKED_APPEND_RETRIES = 2
 const MAX_TEXT = 256
 const MAX_DISPLAY_TEXT = 2048
 const MAX_STDERR = 64 * 1024
@@ -1612,7 +1616,30 @@ function appendWorkItemEvent(event, extra = {}) {
     // A refusal is loud and the leg is NOT recorded, which is the point: a
     // custody line appended onto a history nobody can believe is worth less
     // than the absence that makes somebody look.
-    const result = appendEvent(cwd, {
+    // `locked` is the ONE refusal that says nothing about the event: another
+    // process held the ledger's lock, and the very next attempt may write it.
+    // Every other code is a verdict on the bytes and must not be retried. This
+    // matters because the branch below treats a refusal as evidence worth
+    // leaving absent — correct for a verdict, wrong for contention, and a lost
+    // custody line is the one thing this ledger exists to prevent. AGY raised
+    // it in round six: the lock landed with no caller taught to tell the two
+    // apart. `appendEvent` already waits `LOCK_MAX_WAIT_MS` inside each call,
+    // so these are whole extra waits, not a spin.
+    let result
+    for (let attempt = 0; ; attempt += 1) {
+      result = appendEvent(cwd, buildCustodyEvent(), { actor: agentId ? `agent:${agentId}` : 'agent:acp-companion' })
+      if (result.ok || result.code !== 'locked' || attempt >= LOCKED_APPEND_RETRIES) break
+      console.error(`[warn] ledger busy, retrying custody append (${attempt + 1}/${LOCKED_APPEND_RETRIES})`)
+    }
+    if (!result.ok) {
+      console.error(`[warn] custody REFUSED (${result.code}): ${boundedText(result.detail ?? '', 'no detail', MAX_ERROR_TEXT)}`)
+    }
+  } catch (cause) {
+    console.error(`[warn] could not record work item custody: ${boundedText(cause.message, 'append failed', MAX_ERROR_TEXT)}`)
+  }
+
+  function buildCustodyEvent() {
+    return {
       at: new Date().toISOString(),
       event,
       work_item: workItem,
@@ -1621,12 +1648,7 @@ function appendWorkItemEvent(event, extra = {}) {
       task_id: taskId,
       dispatch_id: dispatchId,
       ...extra,
-    }, { actor: agentId ? `agent:${agentId}` : 'agent:acp-companion' })
-    if (!result.ok) {
-      console.error(`[warn] custody REFUSED (${result.code}): ${boundedText(result.detail ?? '', 'no detail', MAX_ERROR_TEXT)}`)
     }
-  } catch (cause) {
-    console.error(`[warn] could not record work item custody: ${boundedText(cause.message, 'append failed', MAX_ERROR_TEXT)}`)
   }
 }
 
@@ -2374,12 +2396,13 @@ const LANE_ENV_KEYS = {
     'ANTHROPIC_CUSTOM_HEADERS', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL',
     'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CONFIG_DIR'],
   codex: ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'CODEX_HOME', 'CODEX_PATH'],
-  // UNVERIFIED against a live adapter. `claude` and `codex` were both dispatched
-  // end to end through this allowlist on 2026-08-02 — identity matched, outbox
-  // written, and each worker reported nothing missing. The gemini lane on this
-  // machine has been dead since 2026-07-21, so this row is a best reading of
-  // what antigravity-acp needs and has never been run. Whoever revives that lane
-  // should expect to add to it, and should not read its presence here as proof.
+  // VERIFIED 2026-08-04, and the clause that stood here before that date was
+  // false: it said the gemini lane "has been dead since 2026-07-21" and "has
+  // never been run", which nothing had compared against a run. It ran — twice,
+  // through this exact allowlist, returning full reviews in the retro-release
+  // rounds. `claude` and `codex` were dispatched end to end on 2026-08-02.
+  // The row is still the narrow one antigravity-acp happened to need; whoever
+  // adds a variable should expect to add here too.
   agy: ['AGY_API_KEY', 'AGY_BIN', 'AGY_SKIP_DOWNLOAD', 'ANTIGRAVITY_API_KEY',
     'GOOGLE_API_KEY', 'GEMINI_API_KEY'],
 }
