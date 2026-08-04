@@ -162,6 +162,23 @@ test('a team shared by two workflows is still drawn once, with every agent', () 
     /The controller <code>pm<\/code> holds no team seat/)
 })
 
+test('a seat with display_model shows the real model name, not the dispatch alias', () => {
+  // The dispatch layer sends an alias the adapter accepts; the page must show
+  // the real model the operator declared for that seat — never the alias a
+  // reader would have to reverse-engineer.
+  const graph = {
+    ...TWO_TEAMS,
+    teams: TWO_TEAMS.teams.map((entry) => entry.team_id === 'build'
+      ? { ...entry, seats: { b_w1: { model: 'opus', display_model: 'qwen3.8-max-preview' } } }
+      : entry),
+  }
+  const tour = tourOf(graph, snapshotWith([run('b_w1', 'delivered', { model: 'opus' })]))
+  const modelLine = (id) => tour.world[id].lines.find((l) => l.startsWith('model '))
+  assert.equal(modelLine('b_w1'), 'model qwen3.8-max-preview')
+  // A neighbour without display_model keeps the verified model as-is.
+  assert.equal(modelLine('b_w2'), 'model —')
+})
+
 test('the controller is one node — never a node and a band as well', () => {
   const tour = tourOf(DEFAULT_WORKFLOW_GRAPH)
   const seat = DEFAULT_WORKFLOW_GRAPH.outer_controller_id

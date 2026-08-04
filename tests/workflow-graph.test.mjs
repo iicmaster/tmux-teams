@@ -431,6 +431,49 @@ test('a seat overrides its role model and lane, and only that seat', () => {
   assert.equal(build.adapters.worker, 'claude')
 })
 
+test('a seat can declare a display_model that travels with the agent, separately from the dispatch model', () => {
+  // The dispatch layer sends `model` (often an alias the adapter accepts); the
+  // display layer shows `display_model` (the real model name). Two facts, one
+  // seat — they must not swap, and a neighbour must stay untouched.
+  const value = accepted(graphWith({
+    teams: [
+      teamOf('build', ['b_w1', 'b_w2'], {
+        seats: { b_w2: { model: 'opus', display_model: 'qwen3.8-max-preview' } },
+      }),
+      teamOf('verify', ['v_w1']),
+    ],
+  }))
+  const build = value.teams.find((team) => team.team_id === 'build')
+  const seat = (id) => build.agents.find((agent) => agent.agent_id === id)
+  assert.equal(seat('b_w2').model, 'opus')
+  assert.equal(seat('b_w2').display_model, 'qwen3.8-max-preview')
+  assert.equal(seat('b_w1').model, build.models.worker)
+  assert.equal(seat('b_w1').display_model, null)
+})
+
+test('an invalid display_model is rejected, naming the team and the seat', () => {
+  // A control character in the display model is an escape sequence that could
+  // reach the page — rejected exactly like the dispatch model is.
+  const reason = rejected(graphWith({
+    teams: [teamOf('build', ['b_w1'], { seats: { b_w1: { display_model: `deepseek${ESC}[31m` } } }), teamOf('verify', ['v_w1'])],
+  }))
+  assert.match(reason, /display_model/)
+  assert.match(reason, /invalid/)
+  assert.match(reason, /build/)
+})
+
+test('display_model is optional — a seat without it normalizes to null, not a role default', () => {
+  const value = accepted(graphWith({
+    teams: [
+      teamOf('build', ['b_w1'], { seats: { b_w1: { model: 'opus' } } }),
+      teamOf('verify', ['v_w1']),
+    ],
+  }))
+  const build = value.teams.find((team) => team.team_id === 'build')
+  const seat = build.agents.find((agent) => agent.agent_id === 'b_w1')
+  assert.equal(seat.display_model, null)
+})
+
 test('a graph that declares no seat, or restates one, is the graph it already was', () => {
   const bare = accepted(graphWith())
   const empty = accepted(graphWith({
