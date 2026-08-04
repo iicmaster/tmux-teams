@@ -3124,3 +3124,41 @@ test('BLOCKER 3b (tick): a finished route behind a dead outer-controller audit l
       'a finished route whose audit controller leg never wrote an outbox stayed audit_requested forever instead of reaching a terminal')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
+
+test('a token whose history stopped being believable is closed by the runner, not wedged forever', () => {
+  // AGY, round six. On a ledger whose only defect is closing-tolerated, the
+  // writer accepts `audited` and `abandoned` and refuses everything else — so
+  // the `lost` the runner would write for a dead worker is refused, and with it
+  // every route to the `expired` branch that writes the automatic `abandoned`.
+  // The escape hatch CLOSING_TOLERATED_PROBLEMS promises existed with no
+  // automated caller able to reach it, and the token sat held forever with the
+  // board showing it in flight.
+  const dir = mkdtempSync(join(tmpdir(), 'loop-unbelievable-'))
+  try {
+    const store = join(dir, '.tmux-teams')
+    mkdirSync(join(store, 'work-items'), { recursive: true })
+    mkdirSync(join(store, 'team-briefs'), { recursive: true })
+    writeFileSync(join(store, 'graph.json'), JSON.stringify(TWO_TEAMS))
+    writeFileSync(join(store, 'team-briefs', 'test.md'), '# standing brief\n')
+    // Two legs sharing one task_id: a genuinely pre-existing duplicate, which
+    // is closing-tolerated and nothing else.
+    writeFileSync(join(store, 'work-items', 'tok.jsonl'), itemsOf(['tok', [
+      { event: 'pulled', agent_id: 't_d', from_team: 'build', to_team: 'test' },
+      { event: 'intake', agent_id: 't_d', verdict: 'accept' },
+      { event: 'assigned', agent_id: 't_w1', task_id: 'dup', dispatch_id: 'd-1' },
+      { event: 'lost', agent_id: 't_w1', task_id: 'dup', dispatch_id: 'd-1', reason: 'first leg died' },
+      { event: 'assigned', agent_id: 't_w1', task_id: 'dup', dispatch_id: 'd-2' },
+    ], { expectInvalid: true, why: 'a pre-existing duplicate task_id IS the subject — the runner must be able to close a ledger it can no longer continue' }]).get('tok').custody.map((entry) => JSON.stringify(entry)).join('\n') + '\n')
+    writeFileSync(join(store, 'pulse.json'), JSON.stringify({ generated_at: new Date().toISOString(), runs: [] }))
+
+    tick(dir, { apply: true, scratchDir: join(dir, 'scratch') })
+
+    const lines = readFileSync(join(store, 'work-items', 'tok.jsonl'), 'utf8').trim().split('\n')
+    const written = JSON.parse(lines[lines.length - 1])
+    assert.equal(written.event, 'abandoned',
+      `the runner left the token held on a ledger it can never continue: last line was ${written.event}`)
+    assert.equal(written.actor, 'agent:runner', 'the runner signs the close it decided on its own')
+    assert.match(written.reason, /duplicate_task_id/,
+      'the close must name what made the history unbelievable, or nobody can repair it')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})

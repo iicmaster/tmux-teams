@@ -33,7 +33,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { currentEntry, readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
-import { MAX_DOOR_REFUSALS, validateLedgerFileTolerant } from './ledger-validate.mjs'
+import { isClosingTolerated, MAX_DOOR_REFUSALS, validateLedgerFileTolerant } from './ledger-validate.mjs'
 import { appendEvent as appendLedgerEvent, ledgerPath } from './ledger-writer.mjs'
 import { planPulls, applyPulls } from './pull-controller.mjs'
 import {
@@ -299,6 +299,40 @@ const dispatchRecord = (repo, taskId) => {
 // that logs an event it failed to record is telling the same lie the ledger is
 // supposed to prevent.
 const RUNNER_ACTOR = 'agent:runner'
+
+// The last resort for a token whose history stopped being believable while a
+// worker still held it.
+//
+// AGY raised the shape in round six and it survives narrowed: on a ledger whose
+// only defects are closing-tolerated (a genuinely pre-existing duplicate id),
+// the writer accepts `audited` and `abandoned` and nothing else. Every event an
+// automated writer would otherwise reach for — `delivered`, `completed`,
+// `escalated`, and `lost` itself — is refused, so the token can never arrive at
+// the `expired` branch below that writes the runner's automatic `abandoned`.
+// Reproduced: five events offered to such a ledger, four refused, `abandoned`
+// accepted. The escape hatch `CLOSING_TOLERATED_PROBLEMS` promises ("a token
+// must always be able to reach `abandoned`") existed with no automated caller
+// able to walk through it.
+//
+// This is deliberately narrow. It fires only after a `lost` was already
+// refused, only when EVERY blocking problem is closing-tolerated, and it writes
+// the one event that closes the token rather than any event that continues it.
+// A ledger broken in any other way is still left alone for a human, which is
+// the whole point of refusing to write onto bytes nobody can believe.
+function closeUnbelievableHistory(repo, plan, items) {
+  const ledger = validateLedgerFileTolerant(ledgerPath(repo, plan.work_item))
+  if (ledger.ok || ledger.blocking.length === 0) return false
+  if (!ledger.blocking.every((problem) => isClosingTolerated(problem))) return false
+  const codes = [...new Set(ledger.blocking.map((problem) => problem.code))].join(', ')
+  log(`CLOSE  ${plan.work_item}: history cannot be believed (${codes}) and `
+    + 'no continuation may be written onto it — abandoning rather than wedging the token')
+  return record(repo, {
+    at: new Date().toISOString(), event: 'abandoned', work_item: plan.work_item,
+    workflow: items.get(plan.work_item)?.workflow || null,
+    agent_id: plan.agent_id,
+    reason: `${plan.reason} — and the ledger cannot be continued (${codes}); closed by the runner so the token is not stranded`,
+  })
+}
 
 function record(repo, event, actor = RUNNER_ACTOR) {
   const result = appendLedgerEvent(repo, event, { actor })
@@ -1619,7 +1653,7 @@ export function tick(repoArg, {
           workflow: items.get(plan.work_item).workflow || null,
           agent_id: plan.agent_id, task_id: plan.task_id || null,
           dispatch_id: plan.dispatch_id || null, reason: plan.reason,
-        })
+        }) || closeUnbelievableHistory(repo, plan, items)
       }
       continue
     }

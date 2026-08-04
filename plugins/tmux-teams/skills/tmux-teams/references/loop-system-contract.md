@@ -1929,6 +1929,26 @@ line.
 
 ### Amendment log
 
+**2026-08-04 — r6-agy, narrowed: the escape hatch had no automated caller.**
+Behaviour changed in `loop-runner.mjs`. §5's closing tolerance promises that a
+token whose only defects are pre-existing duplicate ids "must always be able to
+reach `abandoned`", and the writer keeps that promise — offered five events, a
+duplicate-tainted ledger refuses `delivered`, `escalated`, `lost` and
+`completed` and accepts `abandoned`. Nothing automated could walk through it.
+The runner's own `abandoned` is written by the `expired` branch, which a token
+only reaches from `questioned`, `escalated` or `audit_requested` — and
+`escalated` is itself refused on such a ledger. So a token whose history became
+unbelievable while a worker still held it stayed held forever, with the board
+showing it in flight and no line on disk saying why.
+`closeUnbelievableHistory` fires only after a `lost` was already refused, only
+when EVERY blocking problem is closing-tolerated, and writes the one event that
+closes the token rather than any event that continues it. A ledger broken any
+other way is still left for a human, which is the point of refusing to write
+onto bytes nobody can believe. AGY named the shape; the reported form was
+wider — it claimed no automated `abandoned` exists at all, and §9's `expired`
+writer had been there since the clock got its own withdrawal.
+§5 and §9 are unchanged: this adds a caller for a rule both already state.
+
 **2026-08-04 — retro-release-review r6-agy: the round-five lock released
 what it no longer held, and no caller could tell contention from a verdict.**
 Behaviour changed in `ledger-writer.mjs` and `acp-companion.mjs`. `acquireLock`
