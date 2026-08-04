@@ -334,8 +334,21 @@ function closeUnbelievableHistory(repo, plan, items) {
   })
 }
 
+// `locked` is the ONE refusal that says nothing about the event: the companion
+// held the ledger's lock, and the next attempt may write. Every other code is a
+// verdict on the bytes, and retrying a verdict is how a runner argues with its
+// own validator. Retried here rather than at the five call sites below, because
+// the sites that DO handle a refusal (`wedged`, `closeUnbelievableHistory`) all
+// treat it as a statement about the history — which contention is not.
+const LOCKED_RECORD_RETRIES = 2
+
 function record(repo, event, actor = RUNNER_ACTOR) {
-  const result = appendLedgerEvent(repo, event, { actor })
+  let result
+  for (let attempt = 0; ; attempt += 1) {
+    result = appendLedgerEvent(repo, event, { actor })
+    if (result.ok || result.code !== 'locked' || attempt >= LOCKED_RECORD_RETRIES) break
+    log(`busy   ${event.work_item}: ledger locked, retrying ${event.event} (${attempt + 1}/${LOCKED_RECORD_RETRIES})`)
+  }
   if (result.ok) return true
   log(`REFUSED ${event.work_item}: ${event.event} was not recorded — ${result.code}: ${result.detail}`)
   for (const problem of (result.problems || []).slice(0, 5)) {
