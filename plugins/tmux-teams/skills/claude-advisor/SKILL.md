@@ -112,7 +112,25 @@ changes state. If the consultation ends in work to be done, hand that to
   from whatever seat was free is the exact failure this skill was built against.
 - **Single voice returned.** Not a consultation. Say so rather than presenting
   one opinion as a room.
-- **Empty outbox.** No advice was produced. Do not reconstruct it from terminal
-  output; that is attestation, and this plugin does not accept attestation.
+- **Empty outbox (`no_outbox`). TRY RESUME first, and never reconstruct.**
+  Reconstructing from terminal output is attestation and this plugin does not
+  accept attestation. Resume is cheap and is the only path that could still hold
+  the analysis, but it is unproven here: the one attempt on 2026-08-04 loaded
+  without its prior lineage and answered `I have nothing`. Send a short prompt
+  to the same session —
+  `ACP_RESUME=<session-id>`, "you already read it, write what you have to
+  `<path>`, do not redo the analysis" — which costs a few hundred tokens instead
+  of the whole consultation. Ask it to answer "I have nothing" plainly if the
+  context really is gone; a short honest refusal is worth more than a
+  reconstruction.
+
+  The id lives in the run cwd's `.tmux-teams/` (the companion's persisted
+  session file), so **never `rm -rf` the run directory before recording it** —
+  on 2026-08-04 three fresh runs were paid for on the sibling codex lane while
+  a session holding the finished analysis sat on disk.
+- **What produces an empty outbox is unexplained on the sibling codex lane**,
+  where it recurred across 203KB, 203KB and 7KB briefs on one afternoon after a
+  52KB brief had worked that morning. Size is not the variable. Putting large
+  diffs on disk is worth doing anyway; do not expect it to prevent this.
 - **Frictionless consensus.** Report it as a finding about the question, not as
   a strong answer.

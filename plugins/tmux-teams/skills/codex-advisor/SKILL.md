@@ -108,11 +108,46 @@ changes state. Work that comes out of a consultation goes to `party-auto`.
 
 ## Failure modes
 
+- **`no_outbox` — the turn finished and wrote nothing. TRY RESUME before
+  re-dispatching.** It is cheap and it is the only path that could still hold
+  the analysis, but it is not guaranteed: tried once here on 2026-08-04, the
+  load warned `load receipt lacks requested prior lineage` and the agent
+  answered `I have nothing`. Take the session id and send a short prompt —
+  "you already read it, write what you have to `<path>`, do not redo the
+  analysis" — which costs a few hundred tokens instead of the whole review:
+
+  ```bash
+  ACP_RESUME="<session-id>" ACP_MODEL="gpt-5.6-sol" ACP_REASONING_EFFORT="ultra" \
+  ACP_EXPECT_MODEL="gpt-5.6-sol" ACP_EXPECT_REASONING_EFFORT="ultra" \
+  node <plugin-root>/skills/tmux-teams/scripts/acp-companion.mjs \
+    codex <cwd> <task-id> <recovery-prompt> [stall-sec]
+  ```
+
+  Two places the id lives: the run cwd's `.tmux-teams/` (the companion's own
+  persisted session file), and
+  `~/.codex/sessions/<yyyy>/<mm>/<dd>/rollout-*-<session-id>.jsonl`. Grep those
+  for a phrase from your brief to tell attempts apart.
+
+  **So never `rm -rf` the run directory before recording the id.** On
+  2026-08-04 this lane finished and wrote nothing four times and the directory
+  was wiped between retries, so the companion's own session file was gone every
+  time and the ids had to be recovered from `~/.codex/sessions` instead.
+  **Always ask the recovery prompt to say "I have nothing" plainly if the
+  context is gone.** That clause is what turned the one attempt into a legible
+  failure — a 456KB session existed, the load warned about missing lineage, and
+  the agent said it had nothing rather than rebuilding a review from the
+  recovery prompt it had just been handed.
+- **What causes `no_outbox` on this lane is unexplained.** Brief size was the
+  obvious suspect and it is wrong: 203KB failed twice, then a 7KB brief failed
+  identically, while 52KB had succeeded that morning. Putting a large diff on
+  disk and giving the agent paths is still worth doing for its own sake, but do
+  not expect it to fix this. Try resume, then re-dispatch — do not theorise.
 - **Identity refused.** The adapter did not acknowledge `gpt-5.6-sol` at
   `ultra`. Report and stop.
 - **Effort inherited rather than set.** If the invocation did not name the
   effort, the answer may have come from `low` — see above. Treat an unverified
   effort as a refused identity, not as a minor omission.
 - **Single voice returned.** Not a consultation.
-- **Empty outbox.** No advice was produced. Do not reconstruct it from terminal
-  output; that is attestation, and this plugin does not accept attestation.
+- **Never reconstruct an outbox from terminal output.** That is attestation, and
+  this plugin does not accept attestation. Resume the session (above) or report
+  that there is no advice — those are the only two honest outcomes.

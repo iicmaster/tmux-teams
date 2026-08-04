@@ -205,6 +205,28 @@ one SSOT** and wins if the two ever disagree.
 - `~/.claude/skills` must NOT contain those same six (they were
   deduplicated 2026-07-19; `agent-skills/scripts/sync.sh` purges them for the
   tool roots). Restoring them by hand recreates double-triggering.
+- **An ACP dispatch that ends `no_outbox` may be recoverable — try resume
+  before re-dispatching.** `ACP_RESUME=<session-id>` plus a short "write what you
+  already have, do not redo the analysis" prompt costs a few hundred tokens
+  against a whole re-run, so it is worth trying first even though it is not
+  guaranteed: the one time it was tried here (2026-08-04) the load warned
+  `load receipt lacks requested prior lineage` and the agent answered
+  `I have nothing`. **Always include the "say I have nothing plainly if the
+  context is gone" clause** — that honest refusal is what made the failure
+  legible instead of producing a review reconstructed from the prompt. The id lives in the run cwd's `.tmux-teams/` (the
+  companion's persisted session file) and, for the codex lane, in
+  `~/.codex/sessions/<yyyy>/<mm>/<dd>/rollout-*-<session-id>.jsonl` — grep those
+  for a phrase from the brief to tell attempts apart.
+  **Never `rm -rf` an ACP run directory before recording the session id.** On
+  2026-08-04 a 200KB brief made the codex lane finish its turn and write nothing
+  twice; the directory was wiped before each retry, so three fresh runs were
+  paid for while a 456KB session holding the finished analysis sat on disk. It
+  took Master asking "we're on ACP, can't we resume?" to notice.
+  Brief size was the first suspect and it is **not** the cause: 203KB failed
+  twice and a 7KB brief failed the same way an hour later, while 52KB had
+  succeeded that morning. Whatever produces `no_outbox` on this lane is
+  unexplained — do not write a size rule into a skill on the strength of two
+  data points, which is what this paragraph said until the third arrived.
 - `acp-companion.mjs` honors `ACP_CMD="node <stub>.mjs"` — point it at a stub
   ACP agent (answers initialize/session/new/session/prompt) for fast,
   model-free tests of the outbox/timeout logic.
