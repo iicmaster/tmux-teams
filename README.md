@@ -13,8 +13,11 @@ New here? Read this file top to bottom, then
 [how-it-works.md](plugins/tmux-teams/skills/tmux-teams/references/how-it-works.md)
 for the diagrams.
 
-Current release: **0.13.1** (`.claude-plugin/marketplace.json` and
-`plugins/tmux-teams/.claude-plugin/plugin.json`).
+Current release: **0.14.6** (`.claude-plugin/marketplace.json` and
+`plugins/tmux-teams/.claude-plugin/plugin.json`). Upgrading from an earlier
+0.14.x release needs no change to an existing `graph.json` — the seat fields
+in §2 (`adapter`, `effort`, `display_model`) and the files in §6 are all
+optional and additive.
 
 ---
 
@@ -117,6 +120,24 @@ A **team** is a reusable pool of three kinds of seat:
 | dispatcher (exactly one) | intake — whether the team takes the work at all |
 | worker (one or more) | doing the work |
 | evaluator (exactly one) | judging the team's own output before it is released |
+
+**What the dispatcher is actually for.** The seat's job has always been
+described as admission control — inspecting a token at the door and declining
+it. In practice a door refusal is rare; the job an operator actually reaches
+for a dispatcher to do is **choosing which model runs the work** — this token
+is simple, give it the cheap seat; this one needs a multimodal seat; that
+model is rate-limited right now, use another. Admission control is still real
+and still enforced — §1 of the contract keeps the refusal ceiling — it is
+just the seat's secondary duty now.
+
+That routing is expressed per seat, not just per team. Any dispatcher,
+worker, or evaluator entry in `graph.json` may override its team's default
+`model`, `adapter` (which ACP lane — `claude`, `codex`, or `agy` — carries the
+dispatch) and `effort`, in any combination. A seat may also declare
+`display_model`: a name shown on `graph.html`'s board, which can differ from
+the alias actually sent over the wire — the board can say `opus` while the
+dispatch sends whatever model string the adapter accepts. See §3 below for
+how a requested model is verified, not just asked for.
 
 A team's **WIP limit is not declarable — it always equals its worker count**
 (`workflow-graph.mjs`). A `graph.json` that declares a `wip_limit` disagreeing
@@ -333,7 +354,7 @@ relaying a person's words is expected to sign `human:` and name itself in
 
 ---
 
-## 4. The nine skills
+## 4. The ten skills
 
 **Setting up and running the loop**
 
@@ -361,6 +382,12 @@ relaying a person's words is expected to sign `human:` and name itself in
 
 Both advisors return a round-table rather than a single voice, and both are
 read-only. Ask both on a hard call: where they disagree is the finding.
+
+**Closing out a session**
+
+| Skill | Reach for it when |
+|---|---|
+| `tmux-teams:handoff` | ending a session and the next reader is another AI agent, not a person — writes `HANDOFF.md` at the project root through a `party-mode` round-table. Run it with `/tmux-teams:handoff`. |
 
 ---
 
@@ -436,22 +463,38 @@ It wrote no outbox, or wrote a file whose last line is not an exact terminal
 marker. See §3. Check `<repo>/.tmux-teams/runner-logs/<task-id>.log` — every
 dispatch keeps its adapter stderr, on purpose.
 
-**A seat declares a non-Claude model but the dispatch fails on model mismatch.**
-As of v0.13.1 the automated loop dispatches **every** seat over the `claude` ACP
-lane, and a model declared per seat is passed only as `ACP_EXPECT_MODEL` — an
-expectation that fails the dispatch on mismatch, not a request for that model.
-Per-seat model selection is therefore declared in `graph.json` but not honored
-by the automated loop. Standalone `acp-companion.mjs` dispatches do select the
-lane and the model (see Transports).
+**A seat declares a non-Claude model or lane and I'm not sure it's honored.**
+It is. The automated loop reads each seat's declared `adapter` for which ACP
+lane carries the dispatch (`claude`, `codex`, or `agy` — §2 above), and reads
+its declared `model` for both a request (`ACP_MODEL`) and a verification
+(`ACP_EXPECT_MODEL`) that the dispatch fails closed on before any prompt byte
+if the adapter doesn't answer with that exact name (§3). A seat naming
+neither inherits its team's default, and a team naming neither dispatches on
+`claude` at the account's default model — never a hardcoded pin. Standalone
+`acp-companion.mjs` dispatches select the lane and model the same way (see
+Transports).
 
-**The runner is running but nothing dispatches.** Three refusals, each stated
-rather than silent:
+**The runner is running but nothing dispatches, or a token isn't moving and I
+don't know why.** Three refusals at the tick level, each stated rather than
+silent:
 - an **invalid** `graph.json` — the reason is in `runner-heartbeat.json`. A
   **missing** one does not refuse; it silently uses the bundled default (§1);
 - stale `pulse.json` — the runner logs `STALE` and refuses, because frozen
   evidence is worse than none. Is `pulse.mjs watch` running?
 - a receiving team at its WIP limit — logged as `BLOCK`. That is the queue
   working, not a fault.
+
+For a **specific token** that seems stuck, `.tmux-teams/decisions/latest.json`
+names why the most recent tick passed over it — `escalate`, `wait` (every
+seat it could use is busy), `waiting` (parked on a person), `skip` (nothing
+follows its last event), `unreliable-history` (its ledger has a blocking
+problem, with the exact line and code), `no-brief`, or `wedged`. It answers
+"why is it not moving right now", not "how long has it been stuck" — the file
+is overwritten whole every tick, never appended. A tick that never reached
+the point of evaluating tokens (an invalid graph, stale `pulse.json`) leaves
+it exactly as the last full tick left it, so check `tick_at` before trusting
+an empty `decisions` array. A `--dry-run` never writes this file, so a
+simulation can't be mistaken for a live tick's refusal.
 
 **A token stopped moving and the log says `INVALID`.** Its ledger does not
 validate; every problem is printed with its line number. Repair by **appending**
