@@ -3,6 +3,7 @@
   "scanDir": "plugins/tmux-teams/skills/tmux-teams/scripts",
   "readers": [
     "admit.mjs",
+    "agent-seat-reads.mjs",
     "dispatch-facts.mjs",
     "graph.mjs",
     "intake-stats.mjs",

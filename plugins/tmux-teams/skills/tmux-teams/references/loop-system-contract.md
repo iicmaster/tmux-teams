@@ -2254,7 +2254,7 @@ MCP registration — §13's `mcpServers: []` prohibition is unaffected, and
 opening that seam remains a containment decision nobody has taken (§13, A3).
 Every ledger byte it reads comes from dispatch-facts.mjs's existing aggregate
 reader, imported under a re-exported name (`loadWorkItemLedgers`) chosen
-specifically so `scripts/ledger-reader-ratchet.mjs`'s static-text scan needs
+specifically so `./scripts/ledger-reader-ratchet.mjs`'s static-text scan needs
 no new baseline entry — the ratchet still reports the same 9 known readers
 after this file exists, proven by a test that calls the ratchet directly
 rather than trusting a description of it. No return value or work-identifying
@@ -2269,7 +2269,7 @@ root — is the one argument every sanctioned reader in this contract already
 takes and is not treated as a hole in that wall; §16 states why.
 
 **2026-08-05 — D2: one projection every reader could consume, and one reader
-moved onto it.** New §6.1. `scripts/ledger-reader-ratchet.mjs` names the nine
+moved onto it.** New §6.1. `./scripts/ledger-reader-ratchet.mjs` names the nine
 readers of a token's ledger as they stand today: `admit.mjs`,
 `dispatch-facts.mjs`, `graph.mjs`, `intake-stats.mjs`, `kanban.mjs`,
 `ledger-validate.mjs`, `ledger-writer.mjs`, `loop-runner.mjs`,
@@ -3289,12 +3289,12 @@ Every ledger byte this facade sees comes from dispatch-facts.mjs's existing
 aggregate reader. `dispatch-facts.mjs` exports it a second time under the name
 `loadWorkItemLedgers` — a plain alias, added in the same commit as this
 section — specifically so `agent-seat-reads.mjs` can import it without writing
-the literal identifier `scripts/ledger-reader-ratchet.mjs`'s static-text scan
+the literal identifier `./scripts/ledger-reader-ratchet.mjs`'s static-text scan
 watches for. This is the "textual re-export renaming" technique that ratchet's
 own header names as a real, low-cost way to reference an already-authorized
 reader under a different name: used here deliberately, recorded here so it is
 never mistaken for the ratchet quietly failing to notice a new one. Running
-`node scripts/ledger-reader-ratchet.mjs` after this facade exists still
+`node ./scripts/ledger-reader-ratchet.mjs` after this facade exists still
 reports the same 9 known readers, unchanged — `tests/agent-seat-reads.test.mjs`
 asserts this directly, by calling the ratchet's own checker function, not by
 restating a count that could drift from what the tool actually finds.

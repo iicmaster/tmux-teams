@@ -34,7 +34,14 @@ test('sees the real readers in the shipped tree, not zero', () => {
   // not hand-counted separately. A regex that silently stops matching drops
   // this to 0 and fails LOUDLY here, rather than the ratchet quietly passing
   // with nothing left to guard.
-  assert.equal(readers.length, 9, `expected 9 known ledger readers, found ${readers.length}: ${names.join(', ')}`)
+  // Ten since 2026-08-05, not nine. `agent-seat-reads.mjs` reaches the ledger
+  // through `dispatch-facts.mjs`'s sanctioned reader under an alias, and the
+  // check followed the alias only after being taught to — before that it
+  // reported nine while ten files read. Consuming the sanctioned reader is the
+  // shape this ratchet WANTS; being invisible to it is not.
+  assert.equal(readers.length, 10, `expected 10 known ledger readers, found ${readers.length}: ${names.join(', ')}`)
+  assert.ok(names.includes('agent-seat-reads.mjs'),
+    'the facade reads through an aliased re-export; a check that cannot see it counts nothing')
 
   // The two sanctioned readers named in the task must always be among them —
   // proves the detector isn't merely finding *some* nine files, but the ones
@@ -45,8 +52,9 @@ test('sees the real readers in the shipped tree, not zero', () => {
   assert.ok(names.includes('dispatch-facts.mjs'), 'dispatch-facts.mjs defines readWorkItems and must be detected')
 
   assert.deepEqual(names, [
-    'admit.mjs', 'dispatch-facts.mjs', 'graph.mjs', 'intake-stats.mjs', 'kanban.mjs',
-    'ledger-validate.mjs', 'ledger-writer.mjs', 'loop-runner.mjs', 'pull-controller.mjs',
+    'admit.mjs', 'agent-seat-reads.mjs', 'dispatch-facts.mjs', 'graph.mjs', 'intake-stats.mjs',
+    'kanban.mjs', 'ledger-validate.mjs', 'ledger-writer.mjs', 'loop-runner.mjs',
+    'pull-controller.mjs',
   ])
 })
 

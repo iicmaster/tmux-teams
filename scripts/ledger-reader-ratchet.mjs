@@ -92,9 +92,35 @@ const SIGNALS = [
   },
 ]
 
-function detectSignals(text) {
+// An alias for a signal, exported by a file that already reads. The header
+// below names "textual re-export renaming" as the cheapest bypass, and on the
+// day this check shipped a new module used it: `dispatch-facts.mjs` gained
+// `export const loadWorkItemLedgers = readWorkItems` for the express purpose
+// of letting `agent-seat-reads.mjs` import a reader without the identifier
+// appearing in its own source. That module is not re-deriving anything — it
+// consumes the sanctioned reader, which is the shape this check WANTS — but
+// it read a ledger and this file reported nine, unchanged, as though nothing
+// had. A count that cannot see the file it is counting is worse than a count
+// nobody trusts.
+//
+// So an alias is discovered rather than assumed: any `export const X = <sig>`
+// found while scanning becomes a signal itself for the rest of the scan. It
+// does not make the file that consumes it a violation — it makes it VISIBLE,
+// which is all this check was ever for.
+const ALIAS_RE = /export\s+(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*$/gm
+
+function aliasSignals(text) {
+  const found = []
+  for (const [, alias, target] of text.matchAll(ALIAS_RE)) {
+    const signal = SIGNALS.find((entry) => entry.re.test(target))
+    if (signal) found.push({ name: `${signal.name}-as-${alias}`, re: new RegExp(`\\b${alias}\\b`) })
+  }
+  return found
+}
+
+function detectSignals(text, extra = []) {
   const hits = []
-  for (const signal of SIGNALS) {
+  for (const signal of [...SIGNALS, ...extra]) {
     if (signal.re.test(text)) hits.push(signal.name)
   }
   return hits
@@ -107,10 +133,13 @@ function detectSignals(text) {
 // warns against. Kept flat deliberately rather than silently "handled".
 export function findLedgerReaders(scanDir) {
   const names = readdirSync(scanDir).filter((name) => name.endsWith('.mjs')).sort()
+  const sources = new Map(names.map((name) => [name, readFileSync(join(scanDir, name), 'utf8')]))
+  // Two passes: an alias exported by one file is a signal for every file,
+  // including files scanned before it.
+  const aliases = [...sources.values()].flatMap(aliasSignals)
   const readers = []
   for (const name of names) {
-    const text = readFileSync(join(scanDir, name), 'utf8')
-    const signals = detectSignals(text)
+    const signals = detectSignals(sources.get(name), aliases)
     if (signals.length) readers.push({ file: name, signals })
   }
   return readers
