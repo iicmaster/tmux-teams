@@ -598,7 +598,13 @@ export const TOUR_CSS = `
  font-variant-numeric:tabular-nums;text-align:right}
 .tour-zoom{min-width:5ch;color:var(--dim);font:400 .74rem var(--mono);
  font-variant-numeric:tabular-nums;text-align:right}
-.tour-controls [data-tour-fit]{font:400 .74rem var(--mono);padding:6px 10px}
+/* The fit control had its own font and padding and so stood 28px tall beside
+   39.6px siblings — measured, not guessed. The font SHORTHAND was the real
+   damage: it silently resets line-height to normal, costing 25.6px of line box
+   on top of the smaller size and tighter padding. One control in a row of seven
+   that is visibly shorter reads as a different kind of thing. It uses the same
+   rule as every other button now; widths still differ, because the labels do,
+   and that was always true of this row. */
 .tour-noscript{margin:0;padding:var(--s4) var(--s5);color:var(--dim);font-size:.86rem}
 @media (prefers-reduced-motion:reduce){.tour-cam,.tour-wires,.tnode,.wire{transition:none!important}}
 `

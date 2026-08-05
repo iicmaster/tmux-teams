@@ -533,6 +533,15 @@ test('an edge told to leave the scene cannot be painted back in', () => {
   // across 81% of a cycle. Pinned together so a future change to either has to
   // notice the other. (Doubled in speed 2026-08-05 at Master's request: 2.6s →
   // 1.3s, stagger 0.35s → 0.175s.)
+  // Every camera control is one instrument: no button may override the shared
+  // box. `fit` carried its own `font:` shorthand and padding and rendered 28px
+  // tall beside 39.6px siblings — measured on the served page, not guessed.
+  // The shorthand was the trap: it silently resets line-height.
+  const perButtonOverrides = [...TOUR_CSS.matchAll(/\.tour-controls \[data-tour-[a-z]+\]\{([^}]*)\}/g)]
+    .filter(([, body]) => /(^|;)\s*(font|padding|line-height|height)\s*:/.test(body))
+  assert.deepEqual(perButtonOverrides.map((m) => m[0]), [],
+    'a camera control that sizes itself differently breaks the row into a pile of parts')
+
   const halo = TOUR_CSS.match(/\.tour-halo\{animation:tourHalo ([\d.]+)s/)
   assert.ok(halo, 'the halo must declare its own animation')
   const period = Number(halo[1])
