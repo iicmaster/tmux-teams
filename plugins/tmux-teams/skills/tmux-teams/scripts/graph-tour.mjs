@@ -49,7 +49,7 @@ const ROW_CONTROL = -430
 const OUTSIDE_Y = ROW_CONTROL
 // Halved 2026-08-05 (owner). The sink is the only thing out here and the run
 // to it was reading as empty board rather than as distance.
-const OUTSIDE_GAP = 75
+const OUTSIDE_GAP = 38
 
 const rowWidth = (team) =>
   team.worker_ids.length * CARD_W + (team.worker_ids.length - 1) * WORKER_GAP
@@ -235,6 +235,18 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
     }
   }
 
+  // The control node and the sink share a row, so the run between them is the
+  // longest empty stretch a reader sees. Half of it, measured from the control
+  // node rather than from the board edge — which is why shrinking OUTSIDE_GAP
+  // never worked: the sink sat past the entire board, boardWidth dominated the
+  // distance, and three reductions of that constant moved the rendered gap by
+  // nine pixels. Falls back to the old placement if there is no control node.
+  const sinkX = () => {
+    const control = controlId ? world[`team:${controlId}`] : null
+    const far = boardWidth + OUTSIDE_GAP
+    return control ? control.x + (far - control.x) / 2 : far
+  }
+
   // There is no node for the incoming request. It would carry no evidence, no
   // WIP and no seat — a label, not a fact — and the control team already says
   // everything true about it: work enters there, one at a time.
@@ -244,7 +256,14 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
   // number nobody could act on.
   const done = Number.isFinite(board.delivered) ? board.delivered : null
   world.delivered = {
-    id: 'delivered', x: boardWidth + OUTSIDE_GAP, y: OUTSIDE_Y, kind: 'outside',
+    // Halved against the CONTROL node, which is what a reader actually measures
+    // — both sit on the same row and the run between them is the longest empty
+    // stretch on the board. Shrinking OUTSIDE_GAP alone could never do it: the
+    // sink used to sit past the whole board, so the distance was dominated by
+    // boardWidth and three reductions of that constant moved the rendered gap
+    // by nine pixels. The sink is on its own row, so landing above a team
+    // column costs nothing.
+    id: 'delivered', x: sinkX(), y: OUTSIDE_Y, kind: 'outside',
     title: 'Delivered',
     state: done === null ? '' : `${done} audited`,
     lines: ['read as a whole, then closed'],
@@ -898,7 +917,41 @@ export const TOUR_SCRIPT = `
         && (!order || !HANDOVER.has(e.kind) || order.has(e.from + '>' + e.to + '>' + e.kind))
       p.classList.toggle('off', !on)
       if (!on) continue
-      const a = world[e.from], b = world[e.to]
+      // Wires used to run centre-to-centre and hide their ends under the cards,
+      // so what a reader SAW was wherever the curve happened to escape the card
+      // box — measured on the served page: an assign reached worker 1 at +2px
+      // from centre and worker 2 at -27px, on a card only 36px wide either side.
+      // Two identical relationships looked like two different attachments.
+      //
+      // They attach to a PORT now: the middle of the edge the relationship
+      // actually uses. The port is where the reader's eye lands, so the port is
+      // what has to be centred — and it is, by construction, whatever the curve
+      // does in between.
+      // Measured from the rendered card, not from a constant: a card is sized by
+      // its own text, and offsetWidth/Height are already in board units because
+      // the camera scale lives on an ancestor.
+      const port = (node, side) => {
+        const el = NODES[node.id]
+        const halfW = (el ? el.offsetWidth : CARD_W) / 2
+        const halfH = (el ? el.offsetHeight : 96) / 2
+        if (side === 'left') return { x: node.x - halfW, y: node.y }
+        if (side === 'right') return { x: node.x + halfW, y: node.y }
+        if (side === 'top') return { x: node.x, y: node.y - halfH }
+        if (side === 'bottom') return { x: node.x, y: node.y + halfH }
+        return { x: node.x, y: node.y }
+      }
+      const PORTS = {
+        // Down the team: out of the dispatcher's underside, into the worker's top.
+        assign: ['bottom', 'top'],
+        // And back up: out of the worker's underside, into the evaluator's top.
+        judge: ['bottom', 'top'],
+        // Rework leaves and arrives on the LEFT, which is the side its arc bows
+        // to — an arc that bows left and attaches underneath reads as two
+        // different lines meeting by accident.
+        reject: ['left', 'left'],
+      }
+      const [fromSide, toSide] = PORTS[e.kind] || [null, null]
+      const a = port(world[e.from], fromSide), b = port(world[e.to], toSide)
       const dx = b.x - a.x, dy = b.y - a.y
       const len = Math.hypot(dx, dy) || 1
       // The offset is perpendicular to the LINE, so its screen direction flips

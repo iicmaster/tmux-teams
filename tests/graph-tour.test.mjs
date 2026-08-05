@@ -583,6 +583,22 @@ test('an edge told to leave the scene cannot be painted back in', () => {
     assert.deepEqual([...solidness[kind]], [true], `${kind} carries a token between teams and must be solid`)
   }
 
+  // The sink shares the control node's row, so the run between them is the
+  // longest empty stretch on the board. Halving it means measuring from the
+  // CONTROL node — shrinking OUTSIDE_GAP could never do it, because the sink
+  // sat past the whole board and boardWidth dominated the distance. Three
+  // reductions of that constant moved the rendered gap by nine pixels.
+  const tour = buildTour(CONTROLLED)
+  const sinkNode = tour.world.delivered
+  const controlNode = Object.values(tour.world).find((n) => n.id !== 'delivered' && n.id.startsWith('team:') && n.y === sinkNode.y)
+  assert.ok(controlNode, 'the control node shares the sink row')
+  // Stated as the relationship, not as a ratio that a far-edge sink can also
+  // satisfy: the first version of this assertion passed with the mutant.
+  const far = tour.width + 38
+  const halfway = controlNode.x + (far - controlNode.x) / 2
+  assert.ok(Math.abs(sinkNode.x - halfway) < 2,
+    `the sink is at ${Math.round(sinkNode.x)}; halfway from control (${Math.round(controlNode.x)}) to the far edge (${Math.round(far)}) is ${Math.round(halfway)}`)
+
   const halo = TOUR_CSS.match(/\.tour-halo\{animation:tourHalo ([\d.]+)s/)
   assert.ok(halo, 'the halo must declare its own animation')
   const period = Number(halo[1])
