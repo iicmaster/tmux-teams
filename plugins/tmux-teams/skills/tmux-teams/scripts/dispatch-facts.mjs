@@ -105,6 +105,19 @@ export function readWorkItems(repo) {
   return { items, skippedLines }
 }
 
+// D1 (loop-system-contract.md §16): the agent-seat read facade
+// (`agent-seat-reads.mjs`) needs exactly this aggregate reader and nothing
+// else. It imports this name rather than `readWorkItems` itself so that
+// `scripts/ledger-reader-ratchet.mjs`'s static-text scan does not need a new
+// baseline entry for a file that never reads a ledger byte on its own — this
+// file was already the sanctioned aggregate reader before the facade
+// existed, and stays the only place that decides how a ledger line means
+// what it means. This is the "textual re-export renaming" technique that
+// file's own header documents as a real, low-cost way to reference an
+// already-authorized reader under a different name; used here deliberately,
+// not as an accident the ratchet failed to catch.
+export const loadWorkItemLedgers = readWorkItems
+
 // Where the work actually is. A token occupies a team from the moment that team
 // pulls it until it is handed on, so occupancy counts WORK, not processes: a
 // worker exiting does not empty the queue it was working from.

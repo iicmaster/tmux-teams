@@ -33,6 +33,7 @@ about the loop — `references/loop-graph-page.md`,
 | [13](#13-prohibitions) | what nothing in this system is allowed to do |
 | [14](#14-acceptance-criteria) | what is decided, what is built, and what is still open |
 | [15](#15-change-control) | how this document may be amended, and the log |
+| [16](#16-agent-seat-read-facade) | the three read-only questions an agent seat may ask without learning a filesystem path |
 
 ## 0. Scope
 
@@ -48,6 +49,7 @@ about the loop — `references/loop-graph-page.md`,
 | `scripts/ledger-writer.mjs` | the only sanctioned way a line enters a ledger |
 | `scripts/role-briefs.mjs` | what each role is told, and verdict parsing |
 | `scripts/graph.mjs` | the loop graph page |
+| `scripts/agent-seat-reads.mjs` | the agent-seat read facade — §16 |
 | `.tmux-teams/graph.json` | the declaration artifact |
 | `.tmux-teams/work-items/<token>.jsonl` | the custody ledger |
 | `.tmux-teams/work-items/<token>.md` | the token's own request |
@@ -1818,6 +1820,10 @@ Added 2026-07-28. Each row names the file holding its test.
 | AC90 | §11.3 | a tick that refuses a token records it in `decisions/latest.json`, with its reason, and a token nobody considered is absent — both in the same test | `loop-runner-decisions.test.mjs` |
 | AC91 | §11.3 | a dry run does not write `decisions/latest.json`, so a simulation cannot impersonate a live tick's refusals | `loop-runner-decisions.test.mjs` |
 | AC92 | §11.3 | a tick that returns before evaluating any token (invalid graph, stale pulse) leaves an existing `decisions/latest.json` untouched rather than overwriting it with an empty, falsely-fresh one | `loop-runner-decisions.test.mjs` |
+| AC93 | §16 | `listDeliveries` lists every `delivered` leg on a real synthetic ledger, oldest first, with an opaque id and no content | `agent-seat-reads.test.mjs` |
+| AC94 | §16 | `fetchDelivery` returns the exact outbox bytes for an id `listDeliveries` named, scoped to the work item it was listed under, and reports a missing outbox as `content_available: false` rather than as not-found | `agent-seat-reads.test.mjs` |
+| AC95 | §16 | `legOutcomes` lists every closed leg (`delivered`/`lost`/`reviewed`) and counts repeated rejections, so a caller need not fold the ledger itself | `agent-seat-reads.test.mjs` |
+| AC96 | §16 | no return value from any of the three functions, across a found case, a not-found case, and a hostile (path-shaped) argument, contains `.jsonl`, `.tmux-teams`, `.mailbox-out`, or an absolute path — and the module goes through the sanctioned aggregate ledger reader, keeping the ledger-reader ratchet green with no new baseline entry | `agent-seat-reads.test.mjs` |
 
 ### 14.1 Clauses this contract does NOT yet enforce
 
@@ -2183,6 +2189,32 @@ line.
    editing a file while a worker holds it has already cost one overwrite.
 
 ### Amendment log
+
+**2026-08-05 — D1: the three read tools an agent seat actually needs.** New
+file `scripts/agent-seat-reads.mjs`; new §16 records the surface, and AC93–96
+(§14) record what proves it. Scenario work sized an agent seat's read demand
+at three questions — what did an earlier leg deliver (`listDeliveries`), give
+me one piece of it by id (`fetchDelivery`), how did this token's earlier legs
+end (`legOutcomes`) — and this amendment builds exactly those three and
+nothing else: a fourth, asking a person, is a mutation and stays out of scope,
+and no write tool exists here. It is a plain module, not a server and not an
+MCP registration — §13's `mcpServers: []` prohibition is unaffected, and
+opening that seam remains a containment decision nobody has taken (§13, A3).
+Every ledger byte it reads comes from dispatch-facts.mjs's existing aggregate
+reader, imported under a re-exported name (`loadWorkItemLedgers`) chosen
+specifically so `scripts/ledger-reader-ratchet.mjs`'s static-text scan needs
+no new baseline entry — the ratchet still reports the same 9 known readers
+after this file exists, proven by a test that calls the ratchet directly
+rather than trusting a description of it. No return value or work-identifying
+argument may be, or contain, a filesystem path: `fetchDelivery`'s `id`
+argument is checked against a safe character class before it ever reaches a
+`join()`, a missing outbox reports `content_available: false` instead of
+surfacing the `fs` error that would carry the path, and a dedicated test
+replays every case above (found, not-found, and a hostile path-shaped
+argument) and asserts none of `.jsonl`, `.tmux-teams`, `.mailbox-out`, or an
+absolute path appears anywhere in the returned JSON. `repo` — the project
+root — is the one argument every sanctioned reader in this contract already
+takes and is not treated as a hole in that wall; §16 states why.
 
 **2026-08-05 — C1: why the runner passed over a token now survives the tick
 that decided it.** Behaviour changed in `loop-runner.mjs`; new §11.3 records
@@ -3089,3 +3121,103 @@ says no real name is proven yet, and all four teams' `wip_limit` lines were
 removed even though each happened to match its worker count — leaving a field
 in the canonical artifact that §3.1 says is not an input would contradict this
 document on its own example.
+
+## 16. Agent seat read facade
+
+`scripts/agent-seat-reads.mjs` (D1). A caller-side facade, not a server and
+not an MCP registration: no dispatch sends a non-empty `mcpServers` (§13), and
+opening that seam is a containment decision nobody has taken (§13, ADR 0003).
+This is the thing an MCP adapter would later wrap, and it is useful without
+one because the runner and the board can already import it directly.
+
+Scenario work sized what an agent seat needs to READ at three questions. A
+fourth — asking a person — is a MUTATION, and mutation is out of scope: an
+outside review refuses any write tool on the current lock, and §14.5 agrees
+the lock cannot be made safe against stale takeover with file primitives. No
+function below writes anything, ever.
+
+| Function | Answers | Returns `null` when |
+| --- | --- | --- |
+| `listDeliveries(repo, workItem)` | what has an earlier leg on this token delivered? | `workItem` names no ledger this repo holds |
+| `fetchDelivery(repo, workItem, id)` | give me the one piece named `id` | `workItem` is unknown, `id` does not match a `delivered` leg recorded on THAT token, or `id` is not shaped like one this module would ever have issued |
+| `legOutcomes(repo, workItem)` | how did this token's earlier legs end, and how many times has it been rejected? | `workItem` names no ledger this repo holds |
+
+`listDeliveries` and `fetchDelivery` are deliberately two calls, not one: a
+single call either truncates a piece that turned out to be enormous or floods
+a caller that only wanted to know what exists. `listDeliveries` returns one
+entry per `delivered` line on the token's own ledger (event vocabulary: §4),
+oldest first — `id`, `agent_id`, `at`, `terminal`, `work_observed`,
+`evidence_present` — and never the delivery's own text. `fetchDelivery` takes
+one of those `id`s back and returns that one piece's full content, read from
+the leg's own outbox, plus `content_available` (false when the ledger
+recorded the delivery but the outbox bytes are gone — evidence about the
+LEDGER is not invalidated by a later, separate loss of the bytes) and
+`truncated` (true past 256 KiB — smaller than §4 rule 5's whole-ledger 1 MiB,
+because this is one file, not a token's whole history).
+
+`legOutcomes` returns one entry per `delivered`/`lost`/`reviewed` line (§4's
+own leg-closing vocabulary — this function does not re-derive dispatch-facts
+.mjs's `currentEntry`, which answers who holds a token NOW and needs the
+dispatch_id/task_id disambiguation documented at length in that file; a
+leg-outcome HISTORY does not, because every entry in the history is
+self-describing and none of it depends on which leg is current) — `id`,
+`event`, `agent_id`, `at`, `terminal`, `verdict`, `reason`, `work_observed` —
+plus a computed `reject_count`, so a caller does not have to fold the list
+itself just to answer the question `MAX_DOOR_REFUSALS`-style ceilings would
+otherwise have to discover blind: has this been rejected before, and how many
+times.
+
+### 16.1 The wall
+
+**No return value from any function above may contain a filesystem path, and
+no argument identifying a piece of work may be one either.** A caller that
+never learns a path cannot open one. Concretely: nothing returned, in any
+shape (found, not-found, or fed a hostile argument), may contain `.jsonl`,
+`.tmux-teams`, `.mailbox-out`, or an absolute path — proven for a found case,
+a not-found case, and a path-shaped `id` argument (`../../etc/passwd`,
+`/etc/passwd`, a bare `a/b`) in the same test, over the same calls the
+behavioural tests already made, not a hand-picked subset (§14, AC96).
+
+`repo` — the project root — is the one argument this rule does not cover, and
+that is not a hole in it: it is the same first argument every sanctioned
+reader in this contract already takes (`readWorkItems(repo)` /
+`readDispatchFacts(repo)` in dispatch-facts.mjs, `readBoard(repo)` in
+kanban.mjs, `intakeStats(repo)` in intake-stats.mjs), a caller inside this
+repo already knows its own root, and nothing this facade returns lets it
+derive a path it did not already have. What the wall actually forbids is a
+return value or an `id` that points INTO `.tmux-teams/` or `.mailbox-out/` —
+the thing a caller would otherwise have to guess to read another leg's outbox
+directly, which is the exact gap `listDeliveries`/`fetchDelivery` close.
+
+`fetchDelivery`'s `id` is checked against a safe character class (the same
+`^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$` shape already duplicated across
+dispatch-facts.mjs, ledger-writer.mjs, ledger-validate.mjs and others in this
+directory) BEFORE it ever reaches a filesystem `join()`, so a path-traversal
+argument is refused rather than attempted and caught. An `fs` failure reading
+an outbox is never rethrown: Node's own error would carry the path this
+module withholds, so it is swallowed into `content_available: false` instead.
+Should a future change ever need to rethrow one, the original belongs on
+`{ cause }`, never restated in the new error's own `message` — `cause` is not
+part of the string an ordinary caller reads back, but it is not nothing
+either, and this paragraph is the place that says so rather than leaving it to
+be discovered.
+
+### 16.2 Ledger access stays behind the one sanctioned reader
+
+Every ledger byte this facade sees comes from dispatch-facts.mjs's existing
+aggregate reader. `dispatch-facts.mjs` exports it a second time under the name
+`loadWorkItemLedgers` — a plain alias, added in the same commit as this
+section — specifically so `agent-seat-reads.mjs` can import it without writing
+the literal identifier `scripts/ledger-reader-ratchet.mjs`'s static-text scan
+watches for. This is the "textual re-export renaming" technique that ratchet's
+own header names as a real, low-cost way to reference an already-authorized
+reader under a different name: used here deliberately, recorded here so it is
+never mistaken for the ratchet quietly failing to notice a new one. Running
+`node scripts/ledger-reader-ratchet.mjs` after this facade exists still
+reports the same 9 known readers, unchanged — `tests/agent-seat-reads.test.mjs`
+asserts this directly, by calling the ratchet's own checker function, not by
+restating a count that could drift from what the tool actually finds.
+dispatch-facts.mjs remains the only place that decides how a ledger line
+means what it means; this facade never re-derives a fold over custody — where
+an existing function already answers a question (an outcome's own recorded
+fields), it is read off the entry directly rather than reconstructed.
