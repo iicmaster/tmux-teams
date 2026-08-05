@@ -617,6 +617,36 @@ test('an edge told to leave the scene cannot be painted back in', () => {
   assert.ok(num(crawl[1], 'stroke-width') > 1.8,
     'a crawling wire must be thicker than the base wire')
 
+  // Every route closes. Its own kind on purpose: a `pull` is a handover, every
+  // handover must be used by a route, and a route hop carries a comet — which
+  // asserts a token is travelling. None travels here; the last team writes
+  // `completed`, which releases custody. Structure, like `owns`.
+  const wireKeys = new Set(tour.edges.map((e) => `${e.from}>${e.to}>${e.kind}`))
+  for (const workflow of CONTROLLED.workflows) {
+    const legs = workflow.route.filter((teamId) => teamId !== 'control')
+    if (!legs.length) continue
+    const closing = `team:${legs[legs.length - 1]}>${controlNode.id}>closes`
+    assert.ok(wireKeys.has(closing), `${workflow.workflow_id} has no closing wire home: ${closing}`)
+    const order = tour.orders[workflow.workflow_id] || []
+    assert.equal(order.some((k) => k.endsWith('>closes')), false, 'the closing wire carries no comet')
+  }
+
+  // Murat's rule, argued into existence 2026-08-06 when four "done" reports in
+  // a row missed a shape that every number said was fine: a wire that bows more
+  // than 60% of the straight run between its endpoints has stopped reading as a
+  // connection and reads as a loop floating near two cards. Edge ports made
+  // exactly that happen to every within-team wire while the attachment point
+  // measured a perfect dx 0.
+  for (const e of tour.edges) {
+    const a = tour.world[e.from], b = tour.world[e.to]
+    if (!a || !b) continue
+    const run = Math.hypot(b.x - a.x, b.y - a.y)
+    if (!run) continue
+    const reach = Math.abs(typeof e.bow === 'number' ? e.bow : 0) * 0.75
+    assert.ok(reach <= run * 0.6,
+      `${e.kind} ${e.from}->${e.to} bows ${Math.round(reach)} across a run of ${Math.round(run)} — that is a loop, not a connection`)
+  }
+
   const halo = TOUR_CSS.match(/\.tour-halo\{animation:tourHalo ([\d.]+)s/)
   assert.ok(halo, 'the halo must declare its own animation')
   const period = Number(halo[1])

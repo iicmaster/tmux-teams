@@ -81,7 +81,27 @@ required, and a bare `pulse.mjs once` only prints usage.
 
 ## Checking a published page
 
-Never from a screenshot: a still image cannot show whether anything is moving,
+**Measure AND look. Neither one alone is a check.** This section said only the
+first half for a long time, and on 2026-08-06 that cost four "done" reports in
+a row on the same page — a gap reported as halved that had moved nine pixels, a
+wire attachment measured at a perfect `dx 0` while the wire rendered as a loop
+floating between two cards, and a bow that went wide again. Every number was
+right. Nobody had opened the picture. Master caught all four.
+
+- A **measurement** proves a quantity and a logic. It cannot prove a shape.
+- A **screenshot** proves a shape. It cannot prove motion, or that the number
+  behind the shape is right.
+- So: any change a reader can SEE gets a screenshot after it is finished, and
+  the screenshot gets looked at before the word "done" is used. Report the
+  measured OUTCOME, never the constant you edited — `OUTSIDE_GAP 150 -> 75` is
+  not a result, `the gap went 347px -> 338px` is, and it is the sentence that
+  would have caught this on the first round instead of the fourth.
+- Ask what the check you just ran is capable of proving. Running the full
+  ritual and passing is not the same as having verified the thing that changed:
+  the mutation checks, the checksummed restores and the 748 green tests were
+  all present for every one of those four misses.
+
+Never from a screenshot alone: a still image cannot show whether anything is moving,
 and four "fixed" reports were made against one on 2026-08-01. Serve the store
 over HTTP, then MEASURE — `getComputedStyle(el).animationName`, count
 `animateMotion` nodes and match `path` against each wire's `d`, compare
