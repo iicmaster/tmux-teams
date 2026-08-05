@@ -313,55 +313,56 @@ export function provenFamilyKey(profile) {
   return `${profile.adapterPackage}::${endpoint}`
 }
 
-// True when two or more of the given profiles cannot be PROVEN to be
-// distinct identities. Two forms of that:
-//   - two resolvable keys (see provenFamilyKey) are identical, or
-//   - two or more profiles resolve to no key at all (no `adapterPackage`).
-// The second clause used to be the opposite: a profile with no resolvable
-// key was said to "contribute no evidence either way" and was filtered out
-// before the uniqueness check, so two lanes that both omitted or misspelled
-// `adapterPackage` (the field this used to key off) sailed through as "no
-// evidence, therefore no collision" — r2-codex2's exact bypass #2, and the
-// shipped test at the time asserted that as correct rather than as a defect.
-// A single unresolved profile beside two resolved, distinct ones still
-// passes — one unknown has nothing else unknown to compare against. It is
-// specifically two or more unidentifiable lanes together, with nothing to
-// tell them apart, that this now refuses to certify as diverse.
-// True when two or more of the given keys cannot be PROVEN distinct: either two
-// resolvable keys are identical, or two-or-more lanes resolve to no key at all.
-// That second clause used to be a free pass — a `null` was filtered out before
-// the uniqueness check, so two lanes that both omitted or misspelled
-// `adapterPackage` read as "no evidence, therefore no collision" rather than
-// what it actually is: nothing tells them apart either, and a fail-closed gate
-// must not certify that as diverse. One unresolved lane beside two DISTINCT
-// resolved ones still passes — a single unknown has nothing to be confused with.
+// GitHub #43: nine functions used to answer "would these two lanes run the
+// same thing?" (provenFamilyKey, provenLaunchSignature, launchArgv,
+// resolvedExecutable, routingDeclaration, routesApart,
+// launchDeclaredButUnreadable, provenFamilyKeysCollide,
+// provenFamilyCollision). `laneIdentity` is the one lookup that replaces the
+// four a caller had to make together and keep in sync across two files
+// (`provenFamilyKey` + `provenLaunchSignature` + `routingDeclaration` +
+// `launchDeclaredButUnreadable`). It never returns a bare null standing in
+// for "nothing to say" -- a null erases exactly the distinction r7-codex
+// needed:
 //
-// It takes keys rather than profiles because `review-gate.mjs` re-checks the
-// FINAL panel from the `familyProvenKey` already recorded on each accepted
-// review, and that second reader had its own copy of this rule with the old
-// filter still in it (r3-codex probed `[null-reserve, null-a, agy]` through to
-// `ok:true`). Two copies of one rule is how they drift; there is one now.
-// round four, BLOCKER 5 (r4-codex, confirmed by r4-qwen's F-4 and the
-// standing AGY objection this responds to rather than overriding): a single
-// unresolved key beside two DISTINCT resolved ones is not automatically a
-// pass. "One unknown has nothing else unknown to compare against" was true
-// only when the unknown carries no other evidence at all. `qwen-shadow`
-// proved otherwise -- it shipped the real, byte-identical qwen `command`
-// array and `claudeExecutable`, declared no `adapterPackage` (so its key was
-// null), and sat beside the real qwen lane: sameCommand:true,
-// preflightCollision:false, gateOk:true. Its declared IDENTITY was unproven,
-// but what it would actually EXEC was provably identical to a lane already in
-// the panel -- that is not "no evidence", it is evidence of collision the key
-// alone cannot see. `provenLaunchSignature` reads what would run instead of
-// what the profile claims about itself, so it cannot be spoofed by the same
-// omission that produces the null key. This does NOT make every unknown
-// fatal (AGY's objection): an unknown whose command differs from every other
-// lane's still passes, exactly as before -- see the accompanying test for a
-// genuinely diverse panel with one unresolved lane.
-export function provenLaunchSignature(profile) {
+//   - `{ undeclared: true }` -- the profile names no launch at all. Silence
+//     cannot run, so ONE such lane may still sit beside two identified,
+//     distinct ones with nothing to compare it against (AGY's standing
+//     objection, honored since round four's BLOCKER 5).
+//   - `{ unreadable: true, reason }` -- the profile names a launch, but
+//     `launchArgv` cannot read it (a non-string command/arg part). A
+//     malformed declaration CAN still run -- node coerces the value -- so
+//     this refuses outright rather than taking the "one unknown is fine"
+//     latitude above. Collapsing this into `undeclared` is precisely the
+//     regression the mutation test on this function exists to catch
+//     (r7-codex: `[node, MOCK, 123]` beside a real lane, certified because
+//     the loop `continue`d past a null it should have failed closed on).
+//   - `{ signature, family, routing }` -- everything this file can prove
+//     about a launch that DID read cleanly. `family` is `provenFamilyKey`
+//     again (kept, not reinvented -- see the export below); `signature` is
+//     what the launch actually resolves to, unchanged from the pre-#43
+//     `provenLaunchSignature` body; `routing` is the parent-verified
+//     endpoint pin, unchanged from the pre-#43 `routingDeclaration` body.
+export function laneIdentity(profile) {
+  if (!profile) return Object.freeze({ undeclared: true })
+  const declared = profile.command !== undefined && profile.command !== null
+  if (!declared) return Object.freeze({ undeclared: true })
   const argv = launchArgv(profile)
-  if (argv === null) return null
-  return JSON.stringify([argv, resolvedExecutable(profile.claudeExecutable) ?? null])
+  if (argv === null) {
+    return Object.freeze({ unreadable: true, reason: 'declared command/args could not be read as argv' })
+  }
+  return Object.freeze({
+    signature: JSON.stringify([argv, resolvedExecutable(profile.claudeExecutable) ?? null]),
+    family: provenFamilyKey(profile),
+    routing: routingDeclaration(profile),
+  })
+}
+
+// Kept as its own export -- review-policy.test.mjs and the collision check
+// below compare a launch signature on its own, and "what would actually run"
+// reads better as one value than as a field a caller has to know to pull off
+// `laneIdentity`. Same computation as before #43, sourced from one place now.
+export function provenLaunchSignature(profile) {
+  return laneIdentity(profile).signature ?? null
 }
 
 // The argv a lane would actually run, in EITHER shape the system uses.
@@ -430,17 +431,17 @@ function resolvedExecutable(name) {
 // so a flat tuple read the ABSENCE as a difference and passed it. Absence is
 // not evidence — the same principle the null-key rule is built on — so a
 // routing fact can only ever distinguish two lanes when BOTH carry one.
-export function routingDeclaration(profile) {
+//
+// No longer exported (#43): the only caller outside this file went through
+// `review-gate.mjs`, which now reads this off `laneIdentity(profile).routing`
+// instead of importing the function directly.
+function routingDeclaration(profile) {
   if (!profile || !ROUTED_PROFILES.has(profile.id)) return null
   const endpoint = profile.endpoint
   if (!endpoint || typeof endpoint.host !== 'string' || endpoint.host === '') return null
   return JSON.stringify([endpoint.host, endpoint.path ?? null])
 }
 
-// `launchSignatures`, when supplied, must be parallel to `keys` (same index
-// meaning the same lane) and hold each lane's `provenLaunchSignature` (or
-// null if unknown). Optional and back-compatible: every existing caller that
-// passes only `keys` gets exactly the old behavior.
 // Same bytes, different vendor: two lanes exec-identical on argv and executable
 // are still two lanes when each is PINNED to a different verified endpoint.
 // AGY raised this in round six — a provider added without its own wrapper
@@ -462,82 +463,61 @@ function routesApart(routings, i, j) {
   return a !== null && b !== null && a !== b
 }
 
-export function provenFamilyKeysCollide(keys, launchSignatures = null, routings = null) {
-  const list = keys ?? []
-  if (list.filter(key => key === null).length >= 2) return true
-  const known = list.filter(key => key !== null)
-  if (new Set(known).size !== known.length) return true
-  // Two lanes that EXEC THE SAME BYTES are one lane, whatever their keys say.
-  // This used to run only where a key was null, on the theory that an attacker
-  // hides by omitting `adapterPackage` — the shape r4-codex found. r5-qwen
-  // showed the easier attack needs no hiding at all: copy the qwen profile,
-  // change `id`, drop `endpoint` (or simply leave it out of ROUTED_PROFILES),
-  // and keep `adapterPackage` honest. The keys then differ — `::unrouted`
-  // against `::pinned:token-plan...` — so the uniqueness test above passes, the
-  // null gate never opens, and two lanes running
-  // `npx -y @agentclientprotocol/claude-agent-acp@0.61.0` with
-  // `claudeExecutable: 'claude-qwen'` are certified as two families. Same
-  // upstream, same account, same model, byte-identical argv.
-  //
-  // An endpoint pin distinguishes lanes that reach different providers; it
-  // cannot distinguish two lanes that reach the same one, and a pin is a
-  // declaration on a profile rather than a property of the launch. So the
-  // signature is compared for EVERY lane, and a key that claims otherwise does
-  // not get to overrule what is actually executed.
-  if (Array.isArray(launchSignatures) && launchSignatures.length === list.length) {
-    // Two lanes whose launch cannot be read AT ALL are the same failure the
-    // null-KEY rule above fails closed on, and this loop used to `continue`
-    // past them — an asymmetry r6-qwen executed end to end: two profiles
-    // carrying `command: [node, MOCK, 123]` produce null signatures because a
-    // part is not a string, node coerces the number so the exec'd argv is
-    // byte-identical, and different `adapterPackage` values keep the KEYS
-    // distinct. Keys differ, signatures skipped, panel certified. "Absence is
-    // not evidence" has to cut the same way for both fields or it is not a
-    // principle, it is a place one of them happens to be checked.
-    // ANY unreadable launch, not merely two of them. r7-codex: one null still
-    // slipped past the comparison, and one is all an attack needs — put a
-    // non-string in `command`, node coerces it, the argv that runs is identical
-    // to a lane already seated, and this loop never looked. The "one unknown
-    // may pass" latitude belongs to the KEY, which is a claim a profile makes
-    // about itself; a launch is not a claim, and since `launchArgv` reads both
-    // declaration shapes the only way to be unreadable now is to be malformed.
-    if (launchSignatures.filter((signature) => signature === null || signature === undefined).length >= 2) return true
-    const seen = new Map()
-    for (let i = 0; i < list.length; i += 1) {
-      const signature = launchSignatures[i]
-      if (signature === null || signature === undefined) continue
-      // Every earlier lane on this signature, not just the first: with three
-      // exec-identical lanes where only one pair routes apart, comparing
-      // against a single remembered index lets the third slip past the pair it
-      // actually duplicates.
-      const earlier = seen.get(signature) ?? []
-      if (earlier.some((j) => !routesApart(routings, j, i))) return true
-      seen.set(signature, [...earlier, i])
-    }
-  }
-  return false
-}
-
-// A lane that DECLARES a launch this code cannot read is not the same thing as
-// a lane that declares none.
+// Two or more lanes collide when nothing here can tell them apart. Folded
+// from the old `provenFamilyKeysCollide` + `launchDeclaredButUnreadable` pair
+// (#43) into the one function every caller actually wants; the decision
+// itself is UNCHANGED, not simplified, because two genuinely independent
+// kinds of evidence still feed it and dropping either reopens a shipped
+// bypass:
 //
-// r7-codex: one unreadable signature slipped past the comparison, and one is
-// all an attack needs — put a non-string in `command`, node coerces it, the
-// argv that runs is identical to a lane already seated, and the loop skips it.
-// But refusing every null would also refuse the "single unresolved lane" AGY
-// asked be allowed, which is a profile declaring nothing at all. The two are
-// different: silence cannot run, a malformed declaration can.
-export function launchDeclaredButUnreadable(profile) {
-  if (!profile) return false
-  const declared = profile.command !== undefined && profile.command !== null
-  return declared && provenLaunchSignature(profile) === null
-}
-
+//   - UNREADABLE overrides everything. `laneIdentity` says so directly now
+//     instead of a separate `launchDeclaredButUnreadable` pass — r7-codex.
+//   - FAMILY: `provenFamilyKey`, checked directly rather than through
+//     `laneIdentity` because it is not gated on the launch being readable —
+//     a profile can declare a real `adapterPackage` and still be
+//     `undeclared` or `unreadable` on its launch, and two lanes that BOTH
+//     omit or misspell `adapterPackage` (both null) are exactly as
+//     unprovable as two that share one value (r2-codex2 bypass #2). This is
+//     also the axis that still matters when two lanes share one declared
+//     package but differ only in incidental trailing args: an identical
+//     declared identity is not made diverse by an argument neither the
+//     vendor pin nor the package name explains.
+//   - LAUNCH: `signature` + `routing` from `laneIdentity`. Two lanes whose
+//     launch cannot be compared at all (two `undeclared`) fail closed the
+//     same way two null keys do; two IDENTIFIED lanes with the same
+//     signature collide unless BOTH are pinned to different verified
+//     endpoints (AGY round six) — a pin distinguishes same-bytes lanes
+//     reaching different providers, it does not manufacture a difference
+//     neither side declares (r5-qwen: dropping the pin is not a distinction).
 export function provenFamilyCollision(profiles) {
   const list = profiles ?? []
-  if (list.some(launchDeclaredButUnreadable)) return true
-  return provenFamilyKeysCollide(
-    list.map(provenFamilyKey), list.map(provenLaunchSignature), list.map(routingDeclaration))
+  if (list.some(profile => laneIdentity(profile).unreadable === true)) return true
+
+  const keys = list.map(provenFamilyKey)
+  if (keys.filter(key => key === null).length >= 2) return true
+  const knownKeys = keys.filter(key => key !== null)
+  if (new Set(knownKeys).size !== knownKeys.length) return true
+
+  // Two lanes that EXEC THE SAME BYTES are one lane, whatever their keys say
+  // (r4-codex's `qwen-shadow`: real command, no `adapterPackage`, null key,
+  // byte-identical launch). So the signature is compared for EVERY lane
+  // regardless of what the key check above already found.
+  const signatures = list.map(provenLaunchSignature)
+  const routings = list.map(routingDeclaration)
+  if (signatures.filter(signature => signature === null).length >= 2) return true
+  const seen = new Map()
+  for (let i = 0; i < list.length; i += 1) {
+    const signature = signatures[i]
+    if (signature === null) continue
+    // Every earlier lane on this signature, not just the first: with three
+    // exec-identical lanes where only one pair routes apart, comparing
+    // against a single remembered index lets the third slip past the pair it
+    // actually duplicates.
+    const earlier = seen.get(signature) ?? []
+    if (earlier.some(j => !routesApart(routings, j, i))) return true
+    seen.set(signature, [...earlier, i])
+  }
+  return false
 }
 
 
