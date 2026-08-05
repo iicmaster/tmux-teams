@@ -103,17 +103,50 @@ const SIGNALS = [
 // had. A count that cannot see the file it is counting is worse than a count
 // nobody trusts.
 //
-// So an alias is discovered rather than assumed: any `export const X = <sig>`
-// found while scanning becomes a signal itself for the rest of the scan. It
-// does not make the file that consumes it a violation — it makes it VISIBLE,
-// which is all this check was ever for.
+// So an alias is discovered rather than assumed: a name bound to a signal
+// anywhere in the scan becomes a signal itself, everywhere. It does not make
+// the file that consumes it a violation — it makes it VISIBLE, which is all
+// this check was ever for.
+//
+// Two spellings, because an alias is a fact about MEANING and this file can
+// only see SYNTAX. The `const` form was the one that actually shipped; the
+// `export { X as Y }` form is what an ordinary tidying refactor turns it into,
+// and it was invisible here until an outside review proved it with a probe on
+// 2026-08-05. That second hole mattered more than the first: with the rename
+// spelled this way the check did not merely miss a reader, it PASSED and then
+// reported the still-reading file as stale — advising a maintainer to delete
+// the one baseline entry that was telling the truth.
 const ALIAS_RE = /export\s+(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*$/gm
+const REEXPORT_RE = /export\s*\{([^}]*)\}/g
+const RENAME_RE = /([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)/g
 
-function aliasSignals(text) {
+// `export { X }` with no rename needs nothing here: an importer of it writes
+// the signal's own name, which the base check already sees.
+function aliasPairs(text) {
+  const pairs = []
+  for (const [, alias, target] of text.matchAll(ALIAS_RE)) pairs.push({ alias, target })
+  for (const [, body] of text.matchAll(REEXPORT_RE)) {
+    for (const [, target, alias] of body.matchAll(RENAME_RE)) pairs.push({ alias, target })
+  }
+  return pairs
+}
+
+// To a FIXPOINT, not one pass: an alias of an alias is still an alias, and a
+// single pass stops at the first hop — which is a bypass anyone can build by
+// renaming twice. Bounded by the pair count because each round must add at
+// least one new name to continue.
+function resolveAliasSignals(pairs) {
   const found = []
-  for (const [, alias, target] of text.matchAll(ALIAS_RE)) {
-    const signal = SIGNALS.find((entry) => entry.re.test(target))
-    if (signal) found.push({ name: `${signal.name}-as-${alias}`, re: new RegExp(`\\b${alias}\\b`) })
+  const named = (name) => SIGNALS.find((entry) => entry.re.test(name))
+    ?? found.find((entry) => entry.re.test(name))
+  for (let round = 0; round <= pairs.length; round += 1) {
+    const before = found.length
+    for (const { alias, target } of pairs) {
+      if (found.some((entry) => entry.alias === alias)) continue
+      const signal = named(target)
+      if (signal) found.push({ alias, name: `${signal.name}-as-${alias}`, re: new RegExp(`\\b${alias}\\b`) })
+    }
+    if (found.length === before) break
   }
   return found
 }
@@ -136,7 +169,7 @@ export function findLedgerReaders(scanDir) {
   const sources = new Map(names.map((name) => [name, readFileSync(join(scanDir, name), 'utf8')]))
   // Two passes: an alias exported by one file is a signal for every file,
   // including files scanned before it.
-  const aliases = [...sources.values()].flatMap(aliasSignals)
+  const aliases = resolveAliasSignals([...sources.values()].flatMap(aliasPairs))
   const readers = []
   for (const name of names) {
     const signals = detectSignals(sources.get(name), aliases)
@@ -227,7 +260,10 @@ function main(argv) {
   }
 
   if (result.stale.length) {
-    process.stdout.write(`note: ${result.stale.length} baseline entr${result.stale.length === 1 ? 'y is' : 'ies are'} stale (no longer detected as reading) — safe to remove, tightens the ratchet:\n`)
+    // NOT "safe to remove". This check cannot tell "stopped reading" from "still
+    // reads, through a spelling I cannot see" — and it got that exact pair wrong
+    // once already. A file that cannot answer must say UNKNOWN, never "no".
+    process.stdout.write(`note: ${result.stale.length} baseline entr${result.stale.length === 1 ? 'y is' : 'ies are'} no longer DETECTED as reading — which means either it stopped, or it now reads through a spelling this check cannot see. Confirm by reading the file before removing either one:\n`)
     for (const name of result.stale) process.stdout.write(`  - ${name}\n`)
   }
 

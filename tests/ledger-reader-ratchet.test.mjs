@@ -216,3 +216,54 @@ test('the CLI exits 0 on a clean tree and NON-ZERO when a new reader appears', (
   assert.match(dirty.stderr, /sneaky\.mjs/,
     'the failure must name the file, or nobody can act on it')
 })
+
+// ---------------------------------------------------------------------------
+// GitHub #47-era review finding (claude-zai / glm-5.2, 2026-08-05). The alias
+// follow shipped one day earlier caught exactly ONE spelling of a rename, and
+// an outside room proved two more with a probe. The second one is the reason
+// these are tests rather than a note: with the rename written as an ordinary
+// `export { X as Y }` the check did not merely miss a reader — it PASSED and
+// then reported the still-reading file as stale, which advised deleting the
+// one baseline entry that was correct.
+
+test('a rename spelled `export { X as Y }` does not hide a reader', () => {
+  const scanDir = sandbox()
+  try {
+    writeFileSync(join(scanDir, 'dispatch-facts.mjs'),
+      "import { readWorkItems } from './ledger.mjs'\nexport { readWorkItems as loadWorkItemLedgers }\n")
+    writeFileSync(join(scanDir, 'agent-seat-reads.mjs'),
+      "import { loadWorkItemLedgers } from './dispatch-facts.mjs'\nexport const listDeliveries = () => loadWorkItemLedgers()\n")
+
+    const readers = findLedgerReaders(scanDir).map((entry) => entry.file)
+    assert.ok(readers.includes('agent-seat-reads.mjs'),
+      'a file reading through an `as`-renamed re-export must still be visible')
+
+    // The consequence, stated separately from the cause: with the reader
+    // visible, a baseline naming it is CURRENT, not stale. The failure this
+    // guards is the tool telling a maintainer to remove a true entry.
+    const baselinePath = writeBaseline(scanDir, ['agent-seat-reads.mjs', 'dispatch-facts.mjs'])
+    const result = checkLedgerReaderRatchet({ scanDir, baselinePath })
+    assert.deepEqual(result.stale, [], 'a still-reading file is never reported stale')
+  } finally {
+    rmSync(scanDir, { recursive: true, force: true })
+  }
+})
+
+test('an alias of an alias is still an alias — the follow runs to a fixpoint', () => {
+  const scanDir = sandbox()
+  try {
+    // Renaming twice was a one-line bypass while the follow made a single pass.
+    writeFileSync(join(scanDir, 'dispatch-facts.mjs'),
+      "import { readWorkItems } from './ledger.mjs'\n"
+      + 'export const loadWorkItemLedgers = readWorkItems\n'
+      + 'export const peekLedger = loadWorkItemLedgers\n')
+    writeFileSync(join(scanDir, 'agent-seat-reads.mjs'),
+      "import { peekLedger } from './dispatch-facts.mjs'\nexport const listDeliveries = () => peekLedger()\n")
+
+    const readers = findLedgerReaders(scanDir).map((entry) => entry.file)
+    assert.ok(readers.includes('agent-seat-reads.mjs'),
+      'a second-level alias must resolve back to the signal it renames')
+  } finally {
+    rmSync(scanDir, { recursive: true, force: true })
+  }
+})
