@@ -5,29 +5,23 @@
 
 ## อ่านก่อนอื่น
 
-- **branch `main` = `origin/main` = `f75597f`** — push ครบแล้ว (`git status -sb`
-  ว่าง ไม่มี ahead/behind) · ต้นไม้สะอาด ไม่มีอะไรค้าง
-- **v0.14.6 ออกครบทุกช่องทาง**: tag `v0.14.6` → `e0f96a9`, GitHub release
-  publish แล้ว (`gh release view v0.14.6` คืน `publishedAt`), push ไป
-  `origin` (`iicmaster/tmux-teams`) แล้ว, และ **ติดตั้งจริงบนเครื่องนี้** —
-  `claude plugin list` ตอบ `tmux-teams@tmux-teams … Version: 0.14.6 …
-  enabled` (แปลว่า marketplace update + plugin update ทำแล้ว) · ส่วนการ bump
-  submodule pin ใน `~/agent-skills` **ไม่ได้ตรวจ** — คนละโปรเจกต์ ห้ามแตะ
-  (ดู UNPROVEN)
-- **`main` เดินหน้าเกิน v0.14.6 แล้ว 17 commit (12 ไม่นับ merge)** — ยังไม่
-  bump เลขเวอร์ชันที่สามที่ ยังไม่ tag ยังไม่ release นี่คือ **v0.15.0 ที่
-  กำลังทำ** ไม่ใช่ v0.14.6
-- **หกอิชชูปิดวันนี้**: #39 #42 #43 #44 #45 #46 · **PR #41 ปิดแบบเอาแค่ 2 ใน 3
-  commit** — commit ที่สามถูกปฏิเสธเพราะปลอม `human:operator` ซึ่ง §4.6
-  ปฏิเสธไว้โดยชื่อ (ดู DECIDED)
-- **สองอิชชูเปิดอยู่**: #40 (**BLOCKED** — รอ Master ตอบสองคำถาม, ห้ามเดาเอง)
-  และ #47 (เปิดแล้ว ยังไม่มีใครเริ่ม)
-- **ไม่มีอะไร "กำลังไฟไหม้" ตอนนี้** — `gh auth status` บัญชี active คือ
-  `iicmaster` (ถูกต้องสำหรับ push) · ไม่มีการเปลี่ยนแปลงที่ breaking เท่าที่
-  ตรวจแล้ว (ดู STATE ท้ายตาราง)
-- **release gate เดิมยังบังคับอยู่ ไม่เปลี่ยน**: ต้องส่ง diff จริงให้
-  `codex-advisor` อ่านก่อน bump เลขเวอร์ชันเสมอ ไม่มีข้อยกเว้น (CLAUDE.md
-  §Release flow ข้อ 2)
+- **branch `main` = `origin/main` = `12f5c54`** — push ครบ ต้นไม้สะอาด
+- **v0.14.6 ออกครบทุกช่องทาง** (tag, GitHub release, marketplace, plugin cache
+  0.14.6 ติดตั้งบนเครื่องนี้แล้ว) · การ bump submodule pin ใน `~/agent-skills`
+  **ยังไม่ได้ทำและห้ามทำเอง** — คนละโปรเจกต์ ต้องขอ Master ก่อน
+- **`main` เดินหน้าเกิน v0.14.6 แล้ว** — ยังไม่ bump เลขสามที่ ยังไม่ tag
+  ยังไม่ release · **นี่คือ v0.15.0 ที่กำลังทำ**
+- **suite ที่วัดจริงล่าสุดที่ `12f5c54`: 705 tests, fail 0** ·
+  `git diff --check` สะอาด · `claude plugin validate --strict .` ผ่าน
+- **เจ็ดอิชชูปิดแล้ว**: #39 #40 #42 #43 #44 #45 #46 · **PR ปิดหมด (0 open)**
+- **เหลืออิชชูเดียว: #47** — เฟส 1 (รูปทรงการประกาศ palette) กำลังวิ่งอยู่ใน
+  worktree `wf_815da76e-24e-1` ตอนเขียนนี้ · เฟส 2 (dispatch เลือกจาก palette,
+  `assigned` พกโมเดล) **ยังไม่เริ่ม**
+- **ขอบเขต v0.15.0 ตัดสินแล้วโดย Master: จบ #47 ทั้งสองเฟสก่อนปล่อย**
+- **จังหวะรีวิวตัดสินแล้วโดย Master: ตรวจทีเดียวตอนจบ** ไม่ส่งทีละโมดูล ·
+  ห้องเถียงกันเรื่องนี้ไว้ (ดู OPEN TENSIONS) แต่คำตัดสินคือรอ
+- **release gate เดิมยังบังคับ ไม่เปลี่ยน** — สามตระกูลอ่าน diff จริงก่อน
+  stamp เลขเวอร์ชัน ไม่มีข้อยกเว้น (CLAUDE.md §Release flow ข้อ 2)
 
 ## วิธีตรวจสอบ
 
@@ -104,6 +98,37 @@ optional/additive (`heldTeams`, `work_observed`, `display_model`),
 (`04abaf3`, auto-admit rework token ตอน audit concern) **ไม่ถูกเอา** — ดู
 เหตุผลใน DECIDED
 
+## สิ่งที่ Wave D เพิ่ม — facade มีตัวตนแล้ว
+
+| โมดูล | ให้อะไร | หมายเหตุ |
+|---|---|---|
+| `scripts/agent-seat-reads.mjs` | `listDeliveries` · `fetchDelivery` · `legOutcomes` | สาม read tool ที่ agent seat ต้องการจริง · **ไม่มี write tool และห้ามเพิ่ม** — mutation ต้องรอ serialization authority ข้าม process (§14.2 ข้อ 5) · contract §16 |
+| `scripts/token-projection.mjs` | `projectToken` | projection เดียวที่คนอ่านควรใช้ · ย้าย `kanban.mjs` มาใช้แล้วหนึ่งราย เทสเดิมของมันผ่าน**โดยไม่ถูกแก้** · contract §6.1 |
+
+**ไม่ใช่ MCP server และไม่ได้ลงทะเบียนเป็น MCP** — `mcpServers: []` ยังเป็น
+literal และ §13 ห้ามส่งค่าอื่น · นี่คือของที่ MCP adapter จะห่อทีหลัง
+
+### เรื่อง ratchet ที่ต้องรู้ ไม่งั้นจะงงกับเลข
+
+`agent-seat-reads.mjs` เข้าถึง ledger ผ่าน alias
+`export const loadWorkItemLedgers = readWorkItems` ที่ถูกเพิ่มใน
+`dispatch-facts.mjs` **โดยเจตนาเพื่อให้ ratchet มองไม่เห็นตัวมัน** — ซึ่งเป็น
+ช่องที่หัวไฟล์ ratchet เขียนเตือนไว้เองตั้งแต่เช้าวันเดียวกัน
+
+ตอนนี้ ratchet **ตามหา alias เอง** (`export const X = <signal>` กลายเป็น
+signal ต่อ) จึงเห็น **10 ไฟล์** ไม่ใช่ 9 · `agent-seat-reads.mjs` อยู่ใน
+baseline แล้วพร้อมเหตุผล · การใช้ reader ที่รับรองแล้วคือรูปทรงที่ ratchet
+**ต้องการ** — สิ่งที่ผิดคือการมองไม่เห็นมัน ไม่ใช่การที่มันมีอยู่
+
+## OPEN TENSIONS — ห้องเถียงค้างไว้ ไม่ได้สรุป
+
+- **จังหวะรีวิว** — ฝ่ายหนึ่ง: ส่งโมดูลใหม่ทีละชิ้น ประตูควรเป็นที่*ยืนยัน*
+  ไม่ใช่ที่*ค้นพบ* ถ้ามันเจอของทุกครั้งแปลว่าเราส่งของยังไม่พร้อมเข้าไปเจ็ดครั้ง ·
+  อีกฝ่าย: รูที่แพงที่สุดของรอบ 6–7 คือ**ปฏิสัมพันธ์ระหว่างไฟล์** ซึ่งเห็นได้
+  เมื่ออ่านทั้งก้อนเท่านั้น · **Master ตัดสินว่ารอตรวจทีเดียว**
+- **"ปิดทุก issue" หมายถึงอะไร** — ห้าในเจ็ดปิดโดยหักล้างหรือปฏิเสธ ไม่ใช่แก้ ·
+  ฝ่ายหนึ่งว่าการปฏิเสธที่มีหลักฐานคือผลงาน อีกฝ่ายว่ามันไม่ใช่สิ่งที่ผู้ขอคาดหวัง
+
 ## DO NOT — ทำไปแล้วผิด อย่าทำซ้ำ
 
 ### 1. อย่าเชื่อ `grep -l` ว่า "อ่าน" = "พูดถึง"
@@ -168,38 +193,82 @@ positional ตัว**แรก** ไม่ใช่ตัวสุดท้า�
   containment ไม่ใช่เพิ่ม feature เปิดได้เฉพาะ human maintainer แก้ §13
   ตรงๆ เท่านั้น ห้าม `graph.json` field หรือ env var มาเปิดแทน
 
-## #40 — BLOCKED, ห้าม derive คำตอบเอง
+## #40 — ปิดแล้ว (wontfix) โดยคำตัดสินของ Master · ห้ามรื้อ
 
-รอ Master ตอบสองคำถามที่บันทึกไว้บน issue comment (2026-08-05T04:49:16Z)
-ตรงๆ แล้ว:
+`REVIEW_PROFILES` **คงเป็นตารางที่ freeze ใน source** · operator ประกาศ review
+seat เองไม่ได้ และ seat ที่ประกาศเองเข้าคณะสามโต๊ะไม่ได้
 
-1. **`review-profiles.mjs` ควรเลิก immutable เพื่อให้ operator ประกาศ seat
-   เองได้ไหม** — ถ้าใช่ มันคือการเปลี่ยนสถาปัตยกรรมจาก "immutable-by-
-   construction" เป็น "immutable-after-runtime-validated-load" ของไฟล์ที่
-   ความปลอดภัยทั้งหมดตั้งอยู่บนสมมติฐานว่า "ไม่มีอะไรมาแตะจากนอกไฟล์นี้ได้"
-2. **seat ที่ operator ประกาศเองเข้า exact-three gate ได้ไหม** — checks
-   เชิงกล (`laneIdentity`/`provenFamilyKey`/`provenFamilyCollision`/
-   `validateRoutedEndpoint`) เป็น pure function ไม่สนใจว่าใครเขียน profile
-   แต่หก pin ที่ shipped ทุกตัวผ่านรีวิวมนุษย์มาก่อน ไม่มีอะไรใน checks
-   พิสูจน์ได้ว่า host สองชื่อเป็นคนละ vendor จริง proof นั้นมาจากรีวิวมนุษย์
-   เสมอ ไม่ใช่จากฟังก์ชัน
+เหตุผลที่บันทึกไว้ (ข้อสองสำคัญกว่าข้อแรก):
 
-Agent รอบก่อนตั้งใจ**ไม่**เขียน override knob บน `claudeExecutable` หรือ
-mutable path ใดๆ ทั้งที่ถูกขอให้ "แก้" เพราะนั่นคือ bypass เดิมที่ #40 เอง
-ปฏิเสธไปแล้วรอบหนึ่ง (comment แรกของ issue) — เป็น trap ที่ตั้งชื่อไว้แล้ว
-อย่าทำซ้ำ
+1. ข้อโต้แย้งด้านความปลอดภัยทุกข้อใน `review-profiles.mjs` ตั้งอยู่บนการที่ไม่มี
+   อะไรเข้าถึงได้นอกจาก literal ที่ freeze — loader ของ operator ไม่ได้เพิ่ม
+   ฟีเจอร์ มันถอนสมมติฐานที่ดีไซน์ทั้งอันยืนอยู่
+2. profile ทุกใบที่ ship ผ่าน**สองอย่าง**: การตรวจเชิงกลไก **และคำยืนยันของ
+   มนุษย์**ที่ผ่านรีวิวสามโมเดลก่อน merge · seat ที่ประกาศในเครื่องได้แค่อย่างแรก
+   และเจ็ดรอบรีวิว (r2–r7) มีอยู่เพราะ "ต่างกันเชิงกลไก" กลายเป็นไม่พอซ้ำๆ
 
-## #47 — เปิดอยู่ ยังไม่มีใครเริ่ม
+ทางออกสำหรับคนที่เจอ backend ติดลิมิต: **ส่ง PR เพิ่ม seat** ช้ากว่า config ไฟล์
+และนั่นคือสิ่งที่แลกมาโดยตั้งใจ
 
-ข้อเสนอ (Master, 2026-08-05): เปลี่ยน `model` ของ role จาก string เดี่ยวเป็น
-**ordered array** — dispatcher เลือกโมเดลตัวแรกที่ว่าง ถ้าโดน rate-limit
-ไล่ไปตัวถัดไป แก้ข้อบกพร่องสองข้อที่ §4.9 amendment (`b5377c3`) บันทึกไว้:
-`wip_limit` ผูกกับจำนวน worker seat (`§3.1`) ทำให้ประกาศโมเดลหลายตัวแปลว่า
-ประกาศ WIP หลายด้วย และ fallback เป็นความรู้ในหัวคนไม่ใช่ property ของกราฟ ·
-comment บน #40 เคยอ้างว่า #47 "blocked behind #45 part 2" — **#45 part 2
-ชิปแล้ว** (`work_observed`/§4.10) ความบล็อกนั้นหมดอายุแล้ว แต่ #47 เอง
-**ยังไม่มีใครเริ่มเขียนโค้ด** (0 comment บน issue) ต้องมีคนตัดสินก่อนว่า
-`assigned` จะบันทึกโมเดลที่ถูกเลือกยังไง (ประเด็นที่ 1 ในตัว issue เอง)
+**#47 ไม่ใช่บรรทัดฐานของเรื่องนี้** — คนละ bounded context คนละ trust model
+
+## #47 — อิชชูเดียวที่เหลือ · แบ่งสองเฟสเพราะไฟล์ชนกัน
+
+**เฟส 1 (กำลังวิ่งตอนเขียน handoff นี้)** — worktree `wf_815da76e-24e-1`
+แตกจาก `12f5c54` · ทำเฉพาะ**รูปทรงการประกาศ**: role ประกาศ palette ที่เป็น
+array ของ seat spec ทั้งดุ้น (ไม่ใช่ชื่อโมเดล) + `bucket` ที่แยกจาก `lane` ·
+แตะ `workflow-graph.mjs` + contract §3 + เทสใหม่เท่านั้น · graph ที่ประกาศ
+palette ต้องโหลดผ่าน แต่**ยังไม่มีใครใช้มัน** — นั่นคือขอบเขต ไม่ใช่งานค้าง
+
+**เฟส 2 (ยังไม่เริ่ม)** — dispatch เลือกจาก palette และ `assigned` **ต้องพก
+โมเดลที่เลือกจริง** · แตะ `loop-runner.mjs` + `ledger-validate.mjs` + contract §4
+· แยกเฟสเพราะทั้งสองเขียน `loop-runner.mjs` และ contract ทับกัน
+
+### สามข้อที่เฟสไหนก็ห้ามลืม
+
+1. **โมเดลไม่ใช่ค่าเดียว** — `(executable, alias) → ชื่อจริง` · `opus` บน
+   `claude-qwen` = qwen3.8-max · `opus` บน `claude-kimi` = k3 · `sonnet` บน
+   `claude-qwen` = **DeepSeek** คนละเจ้าเลย · array ของ alias ไร้ความหมาย
+2. **`assigned` ต้องบันทึกโมเดล** — วันนี้สมุดตอบได้ว่าขาไหนรันอะไรเพราะ
+   หนึ่งที่นั่ง = หนึ่งโมเดล · palette ทำให้ตอบไม่ได้ ถ้าไม่บันทึก
+3. **`bucket` ไม่ใช่ `lane`** — lane เป็นเซตปิดสามค่าเพราะ `acp-companion.mjs`
+   ออกเมื่อเจอค่าที่สี่ · bucket เป็นชื่ออิสระ ตรวจแค่รูปทรงตาม §3.2 ระบบไม่
+   ต้องรู้ความหมาย รู้แค่ว่าสองอันเท่ากันไหม · **สองสมาชิกติดกันใน bucket
+   เดียวกันไม่ใช่ fallback** — ถังเดียวกัน เผา leg ไปเรียนรู้ศูนย์
+
+### ที่ #45 ส่วนสองแก้ให้แล้ว และที่ยังไม่แก้
+
+transport ที่ตายไม่กิน **worker attempt** แล้ว (`work_observed`) · แต่
+`legCeiling`/`MAX_LEGS` (§10) ยังนับทุก `assigned` ไม่มีเงื่อนไข — **palette ที่
+ไล่ที่นั่งตายยังเผา leg ceiling เท่าเดิม** · §4.10 เขียนไว้ตรงๆ อย่าคิดว่าครอบแล้ว
+
+## ถัดไป ตามลำดับ
+
+1. **รอเฟส 1 ของ #47 จบ** → ตรวจกับ git ไม่ใช่กับรายงาน → merge → รัน suite เต็ม
+   **ครั้งเดียว** → push
+2. **เฟส 2 ของ #47** — dispatch + `assigned` พกโมเดล (แยก wave เพราะไฟล์ชน)
+3. **ประตูรีวิวสามตระกูล** บน diff จริง `git diff v0.14.6..HEAD` — ตอนนี้ 30
+   ไฟล์ +3318/-306 · เทียบ: v0.14.6 คือ +8590 และใช้ **เจ็ดรอบ** กว่าจะผ่าน ·
+   **สามโมดูลใหม่ยังไม่มีโมเดลนอกคนไหนอ่านเลย**
+4. ถ้าผ่าน: bump `0.15.0` **สามที่** (`.claude-plugin/marketplace.json` สองจุด,
+   `plugins/tmux-teams/.claude-plugin/plugin.json`, `RELEASE_VERSION` ใน
+   `tests/plugin-structure.test.mjs`) → gate เต็มบน bytes ที่จะ commit →
+   `gh auth switch --user iicmaster` → push → tag → `gh release create` →
+   `claude plugin marketplace update` + `plugin update`
+5. bump submodule pin ใน `~/agent-skills` — **โปรเจกต์อื่น ต้องขอ Master ก่อน**
+
+## หนี้ที่รู้ตัว ไม่ได้ทำ
+
+- **29 worktree ค้าง** จากเวฟเก่าใน `.claude/worktrees/` ทุกตัว `commits=0`
+  แต่ยังมีไฟล์ค้าง · ไม่ลบเพราะเป็นหนี้พื้นที่ ไม่ใช่หนี้ความถูกต้อง และการลบ
+  ของ dirty กลางรีลีสไม่คุ้มเสี่ยง · `git worktree prune` ไม่พอ ต้องลบไดเรกทอรี
+- **`/handoff` — ยังไม่รู้สาเหตุจริง** · skill อยู่ใน cache 0.14.6 แล้ว และ
+  `commands/handoff.md` เพิ่มแล้ว · แต่ยังแยกไม่ออกว่าปัญหาเดิมคือ session ถือ
+  index 0.14.5 หรือว่า plugin skill ไม่กลายเป็น slash เองโดยไม่มีไฟล์ command ·
+  **การทดลองที่แยกสองข้อนี้ได้ฟรี: ให้ Master พิมพ์ `/sqthink`** (skill ที่ไม่มี
+  ไฟล์ command เหมือนกัน มีมาตั้งแต่ 0.2.4) · เจอ = ปัญหาคือ cache · ไม่เจอ =
+  ต้องมีไฟล์ command
+- **`legCeiling` ยังนับ transport leg** (§4.10 บอกไว้) — เกี่ยวกับ #47 โดยตรง
 
 ## UNPROVEN — ทุกอย่างที่รู้จากการอ่าน ไม่ใช่จากการรัน
 
