@@ -5,19 +5,23 @@
 
 ## อ่านก่อนอื่น
 
-- **branch `main` = `origin/main` = `85232d6`** — push ครบ ต้นไม้สะอาด
+- **branch `main` = `origin/main` = `068b149`** — push ครบ ต้นไม้สะอาด
 - **v0.14.6 ออกครบทุกช่องทาง** (tag, GitHub release, marketplace, plugin cache
   0.14.6 ติดตั้งบนเครื่องนี้แล้ว) · การ bump submodule pin ใน `~/agent-skills`
   **ยังไม่ได้ทำและห้ามทำเอง** — คนละโปรเจกต์ ต้องขอ Master ก่อน
-- **`main` เดินหน้าเกิน v0.14.6 แล้ว** — ยังไม่ bump เลขสามที่ ยังไม่ tag
+- **`main` เดินหน้าเกิน v0.14.6 แล้ว** — ยังไม่ bump เลขสี่ที่ ยังไม่ tag
   ยังไม่ release · **นี่คือ v0.15.0 ที่กำลังทำ**
-- **suite ที่วัดจริงล่าสุดที่ `85232d6`: 737 tests, fail 0** ·
+- **suite ที่วัดจริงล่าสุดที่ `068b149`+: 745 tests, fail 0** ·
   `git diff --check` สะอาด · `claude plugin validate --strict .` ผ่าน
 - **ทุกอิชชูปิดหมด · 0 PR เปิด** — #39 #40 #42 #43 #44 #45 #46 #47 ·
   **โค้ดของ v0.15.0 เสร็จแล้ว เหลือแค่ gate กับการ bump**
 - **#47 ลงครบสามส่วน**: เฟส 1 `6301f4d` (รูปทรงประกาศ) → แก้ `afc1f89` ·
   เฟส 2 `a822de7` (dispatch อ่านจริง) · เฟส 2b `85232d6` (`assigned` พกโมเดล)
-- **release gate กำลังวิ่งอยู่ตอนเขียนนี้** — ดูหัวข้อ "รีวิวรอบปล่อย" ข้างล่าง
+- **release gate จบครบห้ารอบแล้ว** — r1–r4 บน diff ถึง `85232d6` และ r5 บน
+  ส่วนที่ landed หลังจากนั้น · เจอ defect จริงรวม **13 ข้อ แก้หมดแล้ว** ·
+  ดูหัวข้อ "รีวิวรอบปล่อย" ข้างล่าง
+- **ยิ่งแก้ตามรีวิว ยิ่งมี bytes ใหม่ที่ยังไม่ถูกรีวิว** — นั่นคือรูปร่างของ
+  กระบวนการ ไม่ใช่ข้อบกพร่อง · หยุดเมื่อ Master บอกหยุด ไม่ใช่เมื่อคิวว่าง
 
 ### คำตัดสินของ Master ที่บังคับอยู่ ห้ามรื้อ
 
@@ -289,7 +293,7 @@ session id
 1. **อ่านผลรีวิวสี่รอบ** — finding ที่ผูกกับความล้มเหลวรูปธรรมได้เท่านั้นถึงนับ
    · ห้องนี้**ไม่ลงมติ** ตาม scene ของมัน คนตัดสินคือ Master
 2. **แก้ทุก finding ที่บล็อก** แล้ววนกลับไปรีวิวเฉพาะ bytes ใหม่
-3. ถ้าผ่าน: bump `0.15.0` **สามที่** (`.claude-plugin/marketplace.json` สองจุด,
+3. ถ้าผ่าน: bump `0.15.0` **สี่ที่** (`.claude-plugin/marketplace.json` สองจุด,
    `plugins/tmux-teams/.claude-plugin/plugin.json`, `RELEASE_VERSION` ใน
    `tests/plugin-structure.test.mjs`) → gate เต็มบน bytes ที่จะ commit →
    `gh auth switch --user iicmaster` → push → tag → `gh release create` →

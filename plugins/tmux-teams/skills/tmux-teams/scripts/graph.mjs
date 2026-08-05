@@ -364,6 +364,24 @@ const laneLine = (run) => run ? `${run.worker || 'unknown'} · ${run.transport |
 // A loop that never names a model therefore printed the same word as a loop
 // whose model check failed — so the page said nothing about the thing it was
 // asked to show. Three distinct facts, three distinct sentences.
+// A declaration may only translate the model it NAMES. A seat's resolved
+// `display_model` comes from its palette's FIRST entry (workflow-graph.mjs,
+// `paletteFirst`), while dispatch may have chosen any entry — so passing it
+// blindly let entry 0's declared name replace a verified model that a
+// different candidate actually ran. That is the same §12.7 honesty-law-2 leak
+// this file closed one commit earlier, arriving through the palette instead of
+// through "no run at all"; the release review found it by rendering a probe.
+//
+// So: match the run's verified model against the palette and translate with
+// THAT entry's name. A palette seat whose run matches no entry gets no
+// translation, and neither does a plain seat whose declared model is not what
+// ran — in both cases the declaration is describing something else.
+const displayFor = (agent, run) => {
+  if (!run?.model) return null
+  if (agent?.palette) return agent.palette.find((entry) => entry.model === run.model)?.display_model || null
+  return agent?.model === run.model ? agent.display_model : null
+}
+
 const modelLine = (run, fact, displayModel) => {
   if (!run) return '—'
   // Display layer: the real model name the operator declared for this seat
@@ -685,7 +703,7 @@ export function renderGraphPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, r
         role: isController ? "outer controller, holding this team's one worker seat" : agent.role,
         lines: [
           `${agent.role} · ${laneLine(run)}`,
-          `model ${modelLine(run, facts.get(run?.task_id), agent.display_model)}`,
+          `model ${modelLine(run, facts.get(run?.task_id), displayFor(agent, run))}`,
           workLine(isController ? 'outer' : agent.role, activity.get(agent.agent_id)),
         ],
         // The clock is kept OUT of `lines` on purpose. It changes every tick

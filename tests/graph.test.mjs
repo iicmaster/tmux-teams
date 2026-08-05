@@ -199,6 +199,30 @@ test('a declared display_model on a seat that never ran is not printed as a mode
     'an operator declaration must never render in the shape a verified model uses')
 })
 
+test('a palette seat shows the entry that RAN, not the one declared first', () => {
+  // The third leak path, found by the release review of the fix that closed the
+  // first two: a seat's resolved `display_model` comes from the palette's FIRST
+  // entry, while dispatch may pick any entry. Entry 0's declared name was
+  // rendered over a verified model that a different candidate actually ran.
+  const graph = {
+    ...TWO_TEAMS,
+    teams: TWO_TEAMS.teams.map((entry) => entry.team_id === 'build'
+      ? { ...entry, seats: { b_w1: { palette: [
+        { model: 'model-a', adapter: 'claude', display_model: 'display-A' },
+        { model: 'model-b', adapter: 'codex', display_model: 'display-B' },
+      ] } } }
+      : entry),
+  }
+  const line = (snapshot) => tourOf(graph, snapshot).world['b_w1'].lines.find((l) => l.startsWith('model '))
+
+  // The fallback candidate ran and was verified: the page must name IT.
+  assert.equal(line(snapshotWith([run('b_w1', 'delivered', { model: 'model-b' })])), 'model display-B')
+  // The starting candidate ran: its own declaration is the right translation.
+  assert.equal(line(snapshotWith([run('b_w1', 'delivered', { model: 'model-a' })])), 'model display-A')
+  // A model no entry names gets no translation at all — never entry 0's.
+  assert.equal(line(snapshotWith([run('b_w1', 'delivered', { model: 'surprise' })])), 'model surprise')
+})
+
 test('a run with no verified model does not borrow the declared one', () => {
   const graph = {
     ...TWO_TEAMS,

@@ -1062,9 +1062,13 @@ function nextStep(graph, team, item, { busy, busyTasks, nowMs, zombieSec, answer
     const palette = declaredPalette(graph, team.team_id, agentId)
     if (!palette) return { action: 'dispatch', role, agent_id: agentId }
     const misses = missesBy(item, agentId)
-    // "reaching the entry the dispatcher started from again, having gotten no
-    // answer from any of them" (§3.5) — every entry has now been tried once,
-    // in declared order, and NONE of them ever reached the model. Escalating
+    // As many misses as the palette has entries. NOT "every entry was tried
+    // and none reached the model" — this comment said that until 2026-08-05
+    // and the sentence six lines down already explained why it is false: a
+    // genuine failure retries the SAME entry without advancing, so an entry can
+    // reach the model between two misses. The runtime reason was corrected in
+    // the same commit that left this paragraph behind, which is how a source
+    // file ends up arguing with itself. Escalating
     // HERE, instead of dispatching entry 0 a second time, is what stops a
     // palette walk from being able to spend legs forever on candidates that
     // all refuse the same way; it is a tighter, palette-scoped bound that
