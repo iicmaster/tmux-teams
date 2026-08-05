@@ -828,6 +828,7 @@ Common fields on every event: `at` (ISO 8601 UTC), `event`, `work_item`,
 | `resumed` | runner (harvest) | `agent_id` = controller, `to_team`, `grant`, `reason` | the controller sent it back with a fresh budget |
 | `completed` | pull-controller | `from_team` | the route finished |
 | `audit_requested` | runner | `agent_id` = controller, `task_id`, `reason` | a finished route flagged for a whole-delivery read |
+| `audit_lost` | runner | `agent_id` = controller, `task_id`, `reason` | the flagged read never happened: that leg died at the transport before the model took a turn (§9) |
 | `audited` | runner (harvest) | `agent_id` = controller, `verdict`, `reason` | the controller read the delivery |
 | `abandoned` | runner (harvest) or a human | `reason` | nobody will finish this token |
 | `questioned` | runner (harvest) | `agent_id` = who asked, `questions`, `reason`, `question_id`; optional `resume_role` (§4.7) | the token is parked on a person; still held, still counted against WIP |
@@ -1117,6 +1118,14 @@ only:
 
 ### 4.10 A leg that never got a turn — `work_observed` (GitHub #45 part 2)
 
+> Read with §9. This fact is written on TWO channels for one reason: the
+> `delivered` line below is per-token, and the outer controller's own leg
+> carries no token (`workItem: ''`), so for that leg the ledger can never
+> answer this question. The liveness snapshot answers it there instead
+> (GitHub #52, 2026-08-06). A third consumer that needs it on a third kind of
+> leg should check which channel that leg actually writes before assuming
+> this one reaches it.
+
 §4.9's own text used to end here: a dispatcher routing away from a
 rate-limited model is guessing, and a wrong guess used to spend a worker
 attempt on a leg that died at the transport — `attemptsBy` (`loop-runner.mjs`)
@@ -1213,6 +1222,8 @@ One token, keyed on its last event and the role of the actor.
 | `escalated` | no answer yet | held; the runner does not move it |
 | `completed` | not yet audited | flag `audit_requested` and dispatch the controller |
 | `audit_requested` | controller outbox exists | harvest → `audited`, or `questioned` when the answer is not a word this seat reads |
+| `audit_requested` | leg dead past the deadline, liveness says `work_observed: false`, budget remains | `audit_lost`, and the controller is dispatched again (§9) |
+| `audit_lost` | — | re-arms `awaitingAudit` exactly as `completed` does; NOT terminal, and it releases the team like every other audit state (§6) |
 | `questioned` (pre-`completed`) | before the answer deadline | held; the runner does not dispatch while a person has not replied (§4.7) |
 | `questioned` (pre-`completed`) | past the answer deadline | RUNNER closes it with `abandoned` (§4.7, §9) |
 | `answered` (pre-`completed`) | `resume_role: worker` | dispatch the **worker** (§4.7) |
@@ -1256,7 +1267,7 @@ controller is the top, so its only remaining reader is a person. Without that
 route a finished route meeting an unusable audit answer had nowhere legal to
 go — the runner refused its own repair on every tick, visibly and for ever.
 
-- `RELEASING_EVENTS = {completed, abandoned, audit_requested, audited}`. Everything
+- `RELEASING_EVENTS = {completed, abandoned, audit_requested, audit_lost, audited}`. Everything
   else holds. An audit *observes* a delivery; it never takes custody of one, so
   reading a finished route must not put it back into a team's WIP.
   A post-`completed` `questioned`/`answered` is the case this pair of sentences
@@ -1763,7 +1774,21 @@ Parsing rules, non-negotiable:
   ordinary per-team loop never even visits it. The runner now applies the
   SAME `answerDeadlineSec` clock `questioned` already answers to, to both: a
   controller leg with no outbox past the deadline is treated as dead, and the
-  runner writes `abandoned` exactly as it does for an unanswered `questioned`.
+  runner writes `abandoned` exactly as it does for an unanswered `questioned`
+  — EXCEPT where that dead leg's own liveness snapshot states
+  `work_observed: false`. That is §4.10's fact carried on the one channel a
+  `workItem: ''` leg does write, and it says the model never took a turn:
+  nobody failed to answer, because nobody was ever asked, and the reason
+  recorded for years said otherwise. The runner writes the non-terminal
+  `audit_lost` instead and dispatches the controller again, at most
+  `MAX_AUDIT_TRANSPORT_RETRIES` times for one token, before `abandoned` is
+  reachable at all. Two things bound it. The budget is checked FIRST and
+  unconditionally, so a lane that dies on every single retry still ends the
+  token. And only POSITIVE evidence narrows the rule: a missing, unreadable,
+  or work-bearing snapshot closes exactly as fast as it did before. That
+  second default fails OPEN — toward the irreversible terminal — on ambiguity,
+  which is deliberate and is the price of this paragraph's other guarantee,
+  that an audit cannot hang forever.
   `escalated` reaches this inside `nextStep` (already visited via `held`,
   since `escalated` — unlike `audit_requested` — is not a `RELEASING_EVENT`);
   `audit_requested` is scanned for directly inside `planDispatches`, since
@@ -2225,6 +2250,8 @@ ordering semantics phase 1 wrote down and left unenforced).
 | AC109 | §3.5.1 | a seat with no palette dispatches with no `candidate` field at all, unchanged by every pre-existing test in `loop-occupancy.test.mjs`, `loop-runner-heartbeat-model.test.mjs`, `loop-runner-decisions.test.mjs`, `loop-runner-busy.test.mjs`, `loop-replay.test.mjs` and `loop-smoke.test.mjs`, none of which needed a line changed | `loop-runner-palette-dispatch.test.mjs` (+ the six files named, unedited) |
 | AC110 | §3.5.1, §4 | a real `acp-companion.mjs` run writes `assigned` carrying `requested_model` and `adapter`, and the line still satisfies §4's own required fields | `assigned-carries-model.test.mjs` |
 | AC111 | §3.5.1 | a leg that pinned no model records `requested_model: null` — the request, absent, never the adapter's later answer, which at write time has not been given | `assigned-carries-model.test.mjs` |
+| AC112 | §4, §5, §9 | a dead audit leg whose liveness says `work_observed: false` is retried as `audit_lost`, bounded by `MAX_AUDIT_TRANSPORT_RETRIES`; one that says `true`, or says nothing at all, is still `abandoned` on the same deadline as before | `audit-transport-death.test.mjs` |
+| AC113 | §9 | the recorded reason quotes that leg's own `liveness_state`/`termination_reason` rather than a fixed phrase, so two different causes cannot report the same one | `audit-transport-death.test.mjs` |
 
 ### 14.1 Clauses this contract does NOT yet enforce
 
@@ -2591,6 +2618,52 @@ line.
    editing a file while a worker holds it has already cost one overwrite.
 
 ### Amendment log
+
+**2026-08-06 — GitHub #52: a leg the transport killed is not a controller that
+chose silence.** The audit answer-deadline (`loop-runner.mjs`'s
+`audit_requested` scan) could see exactly one thing — whether the controller's
+leg was still alive — so a controller that read a delivery and said nothing for
+ten minutes, and a leg a provider's rate limit killed sixteen seconds in before
+the model ever got a turn, produced the same hard terminal and the same
+recorded reason. For the second case that reason was FALSE: nobody failed to
+answer, because nobody was ever asked. Three finished tokens were destroyed
+that way on one quota-exhausted morning, one per `ANSWER_DEADLINE_SEC`, each
+recoverable only by a fresh `admit` that re-runs the whole route.
+
+§4.10 had already invented the fact that settles it — `work_observed` — but
+wired it to the custody ledger, and `tick` spawns the controller's own leg with
+`workItem: ''`, which makes the companion's per-token write a no-op for
+precisely the leg that needed it. That is why this was not simply a missing
+`if`: the primitive existed and could not reach here. It now rides the one
+channel that leg does write unconditionally, its liveness snapshot
+(`acp-companion.mjs`'s `snapshotData`), and the scan reads that one file for
+the dead leg's own task id.
+
+Behaviour changed in `acp-companion.mjs` (the snapshot carries `work_observed`;
+never `minimal`-gated, because it is one boolean that decides whether a token is
+retried or destroyed), `loop-runner.mjs` (`MAX_AUDIT_TRANSPORT_RETRIES`; the
+scan takes an injected `livenessFor` reader and emits the new non-terminal
+`audit_lost`; `awaitingAudit` re-arms on it, which is the entire re-dispatch
+mechanism — no new spawn path was added), `ledger-validate.mjs` and
+`dispatch-facts.mjs` (the new word, and it releases the team like every other
+audit state), and `kanban.mjs` (it says so on the board rather than falling
+through to `Unknown event`, which is how `audited` was once unreadable there).
+
+Two bounds, both deliberate. The retry budget is checked FIRST and
+unconditionally, off the ledger's own `audit_lost` lines, so a restart cannot
+forget it and a lane that dies on every retry still ends the token. And only
+POSITIVE evidence narrows the rule — missing, unreadable, or work-bearing
+snapshots close exactly as fast as they did before. That default fails OPEN,
+toward the irreversible terminal, and that is the accepted price of keeping §9's
+other guarantee that an audit cannot hang forever.
+
+One assumption is pinned rather than trusted: the budget counts a whole token
+because a token is `completed` exactly once. This was first written scoped to
+the newest delivery — for a "reworked" token — and the fixture gate refused the
+history outright, since §5 gives a closed route no successor that reopens it.
+Whoever adds a reopen event must scope the count, or a reworked token is born
+with its predecessor's retries already spent; `audit-transport-death.test.mjs`
+goes red when they do.
 
 **2026-08-05 — GitHub #48: an undeclared repository does not run a loop.**
 `readWorkflowGraph` answers with `DEFAULT_WORKFLOW_GRAPH` and `source:

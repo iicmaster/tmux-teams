@@ -1543,6 +1543,15 @@ function snapshotData({ toolLimit = MAX_PUBLIC_TOOL_RECORDS, historyLimit = MAX_
     requested_reasoning_effort: minimal ? null : (requestedReasoningEffort || null),
     effective_identity: minimal ? null : (identity.effectiveIdentity || null),
     identity_status: minimal ? 'unverified' : identity.status,
+    // The same fact §4.10 defines, carried on the channel that works for EVERY
+    // leg. The custody write below is a no-op when `workItem` is empty, which
+    // is exactly how the outer controller's own leg is spawned — so for that
+    // leg the ledger can never answer "did the model ever get a turn", and
+    // GitHub #52 destroyed finished tokens because the only reader had to
+    // guess. This snapshot is written unconditionally, so it can answer.
+    // Never `minimal`-gated: it is one boolean and it decides whether a token
+    // is retried or hard-abandoned.
+    work_observed: workObserved,
   }
   if (agentId) snapshot.agent_id = boundedText(agentId, '', MAX_WORKER)
   return snapshot

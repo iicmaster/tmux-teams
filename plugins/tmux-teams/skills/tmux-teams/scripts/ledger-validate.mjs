@@ -98,6 +98,11 @@ export const EVENT_SPEC = {
   resumed: { required: ['agent_id', 'to_team', 'grant', 'reason'] },
   completed: { required: ['from_team'] },
   audit_requested: { required: ['agent_id', 'task_id', 'reason'] },
+  // §9, GitHub #52. The controller's audit leg died at the transport before the
+  // model took a turn — the leg is gone, the verdict is still owed. It carries
+  // the same three fields `audit_requested` does because it is about the same
+  // leg, and it is NOT terminal: `awaitingAudit` re-arms on it.
+  audit_lost: { required: ['agent_id', 'task_id', 'reason'] },
   audited: { required: ['agent_id', 'verdict', 'reason'], verdicts: AUDIT_VERDICTS },
   abandoned: { required: ['reason'] },
   // The grill asked and nobody has answered yet. This is the first state in
@@ -154,7 +159,11 @@ export const MAX_DOOR_REFUSALS = 3
 // one can fail to answer at the front door, and the clock's withdrawal has to
 // have somewhere legal to land — `loop-runner.mjs` writes it as `abandoned`
 // either way (§9), so the ledger must accept the one word it actually uses.
-const AFTER_COMPLETED = new Set(['audit_requested', 'audited', 'questioned', 'answered', 'abandoned'])
+// `audit_lost` joins for the same reason `abandoned` did: the runner writes it
+// after `completed`, so the ledger has to accept the word it actually uses.
+const AFTER_COMPLETED = new Set([
+  'audit_requested', 'audited', 'questioned', 'answered', 'abandoned', 'audit_lost',
+])
 // `audited` and `abandoned` are not "closed until `completed` says otherwise"
 // the way the rest of `AFTER_COMPLETED` is — they are §5's OTHER two rows with
 // no successor. Tracking them separately from `closedAt` is what makes

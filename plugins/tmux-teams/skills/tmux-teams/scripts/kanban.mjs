@@ -127,6 +127,12 @@ export function stateOf(graph, last) {
       }
     case 'audit_requested':
       return { state: 'Waiting for the outer controller to read it', detail: reason }
+    // §9, GitHub #52. Not a failure of the route and not a verdict: the leg
+    // that was going to read it died at the transport, and another one is
+    // owed. Said in the board's own words rather than left to fall through to
+    // `Unknown event`, which is how `audited` was unreadable here before.
+    case 'audit_lost':
+      return { state: 'Waiting for the outer controller — its last leg died before reading', detail: reason }
     case 'audited':
       // The audit is the last word on a route and it was going nowhere: with no
       // case here it fell through to `Unknown event: audited`, so a route the PM

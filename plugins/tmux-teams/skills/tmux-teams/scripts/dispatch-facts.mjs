@@ -137,7 +137,12 @@ export const loadWorkItemLedgers = readWorkItems
 // A finished route stays finished while the outer controller reads it. An audit
 // observes a delivery; it never takes custody of one, so it must not put a
 // closed token back into a team's WIP.
-export const RELEASING_EVENTS = new Set(['completed', 'abandoned', 'audit_requested', 'audited'])
+export const RELEASING_EVENTS = new Set([
+  'completed', 'abandoned', 'audit_requested', 'audited',
+  // A token waiting for its next controller leg is still an audit, not work in
+  // progress. It releases for the same reason `audit_requested` does.
+  'audit_lost',
+])
 
 // A leg is one `assigned` and everything that follows it until the next one.
 // The token's position is the newest event EXCEPT when that event is a leg

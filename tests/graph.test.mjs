@@ -494,6 +494,7 @@ const NOT_THE_AGENTS_OWN_ACT = {
   pulled: 'same — a pull is the taking team acting, not work finished',
   assigned: 'the dispatch, not its outcome; `delivered` or `lost` is the work',
   audit_requested: 'the runner asking the controller, not the controller acting',
+  audit_lost: 'the runner recording that the controller never got a turn — the opposite of the controller acting',
 }
 
 test('every event that names an agent either credits it or is a stated exception', () => {

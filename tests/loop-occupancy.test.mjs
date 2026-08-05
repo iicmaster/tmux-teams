@@ -664,6 +664,7 @@ test('an unstated TARGET_VERDICT is null, not a fabricated word', () => {
 const NO_DISPATCH_FOLLOWS = {
   completed: 'the outer controller audits it — planEscalation, not a dispatch',
   audit_requested: 'waiting on the controller outbox; planHarvest turns it into `audited`',
+  audit_lost: 'the controller is owed another leg — planEscalation re-arms it via awaitingAudit, not a dispatch',
   audited: 'terminal (§5)',
   abandoned: 'terminal (§5)',
 }

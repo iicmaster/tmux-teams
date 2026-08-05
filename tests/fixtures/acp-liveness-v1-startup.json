@@ -37,5 +37,6 @@
   "requested_reasoning_effort": "ultra",
   "effective_identity": null,
   "identity_status": "missing",
+  "work_observed": false,
   "agent_id": "root_liveness_implementer"
 }

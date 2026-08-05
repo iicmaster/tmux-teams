@@ -54,6 +54,12 @@ const MAX_ATTEMPTS = 3   // three failures by one role in one team is a problem 
 // together still let an intake rejection and a review rejection bounce a token
 // between two teams indefinitely — the ceiling has to be on the journey.
 const MAX_LEGS = 15
+// Deliberately NOT `MAX_ATTEMPTS`: that one bounds a role's worker legs inside
+// one team's journey (§10). This bounds how many times the board re-dispatches
+// the outer controller for ONE token whose audit leg keeps dying at the
+// transport before the model gets a turn. Counted off the ledger's own
+// `audit_lost` entries, so a runner restart cannot forget it.
+const MAX_AUDIT_TRANSPORT_RETRIES = 3
 const ZOMBIE_SEC = 180   // an assignment with no live process and nothing delivered
 const PM_COOLDOWN_SEC = 900
 // Every dispatch is a full agent. Team WIP limits bound each column; nothing
@@ -487,7 +493,11 @@ const failedLegs = (item) => item.custody.filter((entry) =>
 const awaitingAudit = (item) => {
   if (!item.custody.some((entry) => entry.event === 'completed')) return false
   const current = currentEntry(item.custody).event
-  return current === 'completed' || current === 'answered'
+  // `audit_lost` re-arms exactly the way `answered` does: the controller owes
+  // this token a verdict and has not given one. It is NOT a terminal, and this
+  // is the whole re-dispatch mechanism for GitHub #52 — no new spawn path was
+  // added, only membership in the set this function already decides.
+  return current === 'completed' || current === 'answered' || current === 'audit_lost'
 }
 
 // ── briefs ───────────────────────────────────────────────────────────────────
@@ -1335,6 +1345,12 @@ export function planDispatches(graph, items, busy, {
   // Optional and back-compatible: a caller that knows only which AGENTS are
   // busy still gets the old, wider answer out of `legIsLive`.
   busyTasks = null,
+  // `(taskId) -> parsed liveness snapshot | null`. Optional and back-compatible
+  // for the same reason `busyTasks` is: a caller that supplies nothing gets
+  // exactly today's answer, which is `abandoned`. Injected rather than read
+  // here so this stays a pure function of its inputs, and lazy rather than a
+  // prebuilt map so only the legs actually dead-and-late cost a file read.
+  livenessFor = null,
 } = {}) {
   const { held } = teamOccupancy(graph, items)
   const teamById = new Map(graph.teams.map((team) => [team.team_id, team]))
@@ -1407,10 +1423,42 @@ export function planDispatches(graph, items, busy, {
     if (legIsLive(last, busy, busyTasks)) continue
     const heldSec = (now - Date.parse(last.at || '')) / 1000
     if (!Number.isFinite(heldSec) || heldSec < answerDeadlineSec) continue
+    // GitHub #52: a leg killed by a provider's rate limit before the model ever
+    // ran is not a controller that chose silence, and writing the same hard
+    // terminal for both destroyed finished tokens while recording a reason that
+    // was false. The ceiling is checked FIRST and unconditionally, so a leg
+    // that reports `work_observed: false` on every single retry still ends.
+    // The whole custody, because a token is `completed` exactly once: §5 has no
+    // successor that reopens a closed route, and `ledger-validate` refuses a
+    // second `completed` outright. Anyone adding a reopen event has to scope
+    // this count to the newest delivery, or a reworked token is born with its
+    // predecessor's retries already spent.
+    const priorRetries = item.custody.filter((entry) => entry.event === 'audit_lost').length
+    const snapshot = priorRetries < MAX_AUDIT_TRANSPORT_RETRIES && livenessFor && last.task_id
+      ? livenessFor(last.task_id)
+      : null
+    // Positive evidence only. A missing, unreadable or work-bearing snapshot
+    // falls through to exactly today's write — this narrows when `abandoned`
+    // fires, it never widens it.
+    if (snapshot && snapshot.work_observed === false) {
+      plans.push({
+        action: 'audit-lost', work_item: workItem, agent_id: last.agent_id, task_id: last.task_id,
+        reason: `outer-controller leg for task ${last.task_id} died without the model taking a turn`
+          + ` (${snapshot.liveness_state || 'state unknown'}/${snapshot.termination_reason || 'reason unrecorded'})`
+          + ` — retry ${priorRetries + 1} of ${MAX_AUDIT_TRANSPORT_RETRIES}, not a controller that failed to answer`,
+      })
+      continue
+    }
+    const cause = snapshot
+      ? ` — leg status ${snapshot.liveness_state || 'unknown'}/${snapshot.termination_reason || 'unrecorded'}`
+      : priorRetries >= MAX_AUDIT_TRANSPORT_RETRIES
+        ? ` — ${priorRetries} transport retr${priorRetries === 1 ? 'y' : 'ies'} already spent`
+        : ''
     plans.push({
       action: 'expired', work_item: workItem, agent_id: last.agent_id,
       reason: `no outer-controller audit answer in ${Math.round(answerDeadlineSec / 60)} minute(s)`
-        + ` for task ${last.task_id || 'unknown'} — withdrawing rather than holding the audit open forever`,
+        + ` for task ${last.task_id || 'unknown'}${cause}`
+        + ` — withdrawing rather than holding the audit open forever`,
     })
   }
   return plans
@@ -1887,7 +1935,13 @@ export function tick(repoArg, {
     return { ok: true, harvested, pulls, plans: [], started: [], stale: true }
   }
   if (pulse.missing) log('note   no pulse.json yet — dispatching without liveness evidence')
-  const plans = planDispatches(graph.value, items, busy, { answerDeadlineSec, busyTasks: pulse.busyTasks })
+  const plans = planDispatches(graph.value, items, busy, {
+    answerDeadlineSec, busyTasks: pulse.busyTasks,
+    // The companion names this file after the task id and nothing else
+    // (`acp-companion.mjs`'s `livenessPath`), so a dead leg's own record is
+    // addressable from the custody entry that dispatched it.
+    livenessFor: (taskId) => readJson(join(repo, '.tmux-teams', 'liveness', `${taskId}.json`)),
+  })
   const started = []
   for (const plan of plans) {
     if (plan.action === 'lost') {
@@ -1901,6 +1955,20 @@ export function tick(repoArg, {
           agent_id: plan.agent_id, task_id: plan.task_id || null,
           dispatch_id: plan.dispatch_id || null, reason: plan.reason,
         }) || closeUnbelievableHistory(repo, plan, items)
+      }
+      continue
+    }
+    // The transport took the leg before the model ever ran. Same "runner
+    // decided, so the runner signs it" pattern as `lost` above — and the same
+    // shape too: non-terminal, the token is owed another controller.
+    if (plan.action === 'audit-lost') {
+      log(`RETRY  ${plan.work_item}: ${plan.reason}`)
+      if (apply) {
+        record(repo, {
+          at: new Date().toISOString(), event: 'audit_lost', work_item: plan.work_item,
+          workflow: items.get(plan.work_item).workflow || null,
+          agent_id: plan.agent_id, task_id: plan.task_id || null, reason: plan.reason,
+        })
       }
       continue
     }

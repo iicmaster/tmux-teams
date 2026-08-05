@@ -54,5 +54,6 @@
   "requested_reasoning_effort": "ultra",
   "effective_identity": "gpt-5.6-luna[ultra]",
   "identity_status": "matched",
+  "work_observed": true,
   "agent_id": "root_liveness_implementer"
 }
