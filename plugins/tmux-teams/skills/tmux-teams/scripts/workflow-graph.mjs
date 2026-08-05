@@ -74,6 +74,24 @@ const EFFORT_MAX = 64
 const isEffortName = (value) =>
   typeof value === 'string' && value.length >= 1 && value.length <= EFFORT_MAX && !hasControlChar(value)
 
+// GitHub #47 phase 1 (contract §3.5): a seat's model, singular, may become an
+// ORDERED PALETTE — candidate seat specs for that ONE seat, not a second
+// worker seat. Declaring four candidates must not cost four seats of WIP, so
+// this lives on `seats[agentId]`, not on a role: it names candidates for one
+// seat, and every other seat on the same role keeps its own single model or
+// its own independent palette. Eight is a generous ceiling for how many real
+// candidates an operator would ever queue behind one seat — an unbounded
+// array is still a footgun wearing a declaration's clothes.
+const PALETTE_MAX = 8
+
+// Rate limits are per model-family within a provider, not per provider — codex
+// counts gpt separately from codex-spark, agy counts gemini separately from
+// non-gemini, claude counts fable separately from opus/sonnet/haiku. A bucket
+// names that family. It is shape-checked only, exactly like a model name
+// (§3.2): this layer never learns what a bucket MEANS, only whether two are
+// equal, so it reuses the model check rather than inventing a second one.
+const isBucketName = isModelName
+
 const MAX_TEAMS = 100
 // Five, and a real ceiling rather than advice: a graph that declares a sixth
 // worker is refused here, not warned about somewhere a reader may not look.
@@ -316,6 +334,10 @@ export function validateWorkflowGraph(value) {
     // property read would answer from the prototype chain for a key nobody wrote.
     const seatOverride = new Map(Object.entries(seats))
     const seatIds = new Set([dispatcher, ...workers, evaluator])
+    // Which of the three roles a seat fills — needed to resolve a palette
+    // entry's default lane and default bucket (§3.5) the same way an
+    // unoverridden seat already resolves its role's default lane.
+    const roleOf = (agentId) => (agentId === dispatcher ? 'dispatcher' : agentId === evaluator ? 'evaluator' : 'worker')
     for (const [agentId, override] of seatOverride) {
       if (!seatIds.has(agentId)) {
         return invalid(`team ${teamId} declares a seat for ${agentId}, which is not a seat on this team`)
@@ -332,32 +354,93 @@ export function validateWorkflowGraph(value) {
         return invalid(`team ${teamId} declares a seat for ${agentId} that is not an object`)
       }
       const keys = Object.keys(override)
-      const unknown = keys.find((key) => key !== 'model' && key !== 'adapter' && key !== 'effort' && key !== 'display_model')
+      const unknown = keys.find((key) => key !== 'model' && key !== 'adapter' && key !== 'effort' && key !== 'display_model' && key !== 'palette')
       if (unknown !== undefined) {
-        return invalid(`team ${teamId} declares an unknown key ${show(unknown)} on the seat ${agentId} — a seat overrides model, adapter, effort, display_model, or any combination`)
+        return invalid(`team ${teamId} declares an unknown key ${show(unknown)} on the seat ${agentId} — a seat overrides model, adapter, effort, display_model, palette, or any combination`)
       }
       if (keys.length === 0) {
-        return invalid(`team ${teamId} declares an empty seat for ${agentId} — name a model, an adapter, an effort, or remove it`)
+        return invalid(`team ${teamId} declares an empty seat for ${agentId} — name a model, an adapter, an effort, a palette, or remove it`)
       }
-      if ('model' in override && !isModelName(override.model)) {
-        return invalid(`team ${teamId} has an invalid model on the seat ${agentId} — a model is 1 to ${MODEL_MAX} characters with no control characters`)
+      // GitHub #47 phase 1 (§3.5): `palette` REPLACES the single-value fields
+      // for this seat, it does not sit alongside them. A `model`/`adapter`/
+      // `effort`/`display_model` next to a `palette` would read as a default
+      // the palette falls back to and would in fact be silently ignored — the
+      // same "declaration that changes nothing" shape §3.2.1 already refuses.
+      if ('palette' in override && keys.length > 1) {
+        return invalid(`team ${teamId} declares a palette on the seat ${agentId} alongside ${keys.filter((key) => key !== 'palette').join(', ')} — a palette entry already carries model, adapter, effort and display_model, so those keys next to it would be silently ignored`)
       }
-      // Display layer: the model a reader should SEE for this seat, distinct
-      // from `model` (which the dispatch layer sends, and may be an alias the
-      // adapter accepts). The board renders this when present; the dispatch
-      // never reads it, so an alias can stay in `model` while the real model
-      // name shows on the page.
-      if ('display_model' in override && !isModelName(override.display_model)) {
-        return invalid(`team ${teamId} has an invalid display_model on the seat ${agentId} — a model is 1 to ${MODEL_MAX} characters with no control characters`)
-      }
-      if ('adapter' in override && !ADAPTERS.has(override.adapter)) {
-        return invalid(`team ${teamId} has an unknown adapter on the seat ${agentId} — one of ${[...ADAPTERS].join(', ')}`)
-      }
-      // §32: no role-level default to restate, so — unlike model/adapter — there
-      // is no way to declare an effort that "resolves to the role default" and
-      // say nothing; every declared effort is a real request.
-      if ('effort' in override && !isEffortName(override.effort)) {
-        return invalid(`team ${teamId} has an invalid reasoning effort on the seat ${agentId} — an effort is 1 to ${EFFORT_MAX} characters with no control characters`)
+      if ('palette' in override) {
+        const palette = override.palette
+        if (!Array.isArray(palette) || palette.length < 1 || palette.length > PALETTE_MAX) {
+          return invalid(`team ${teamId} declares an invalid palette on the seat ${agentId} — a palette is an array of 1 to ${PALETTE_MAX} model entries`)
+        }
+        const role = roleOf(agentId)
+        let previousBucket = null
+        for (let index = 0; index < palette.length; index += 1) {
+          const entry = palette[index]
+          if (!isObject(entry)) {
+            return invalid(`team ${teamId} has an invalid palette entry at index ${index} on the seat ${agentId} — each entry is an object naming a model`)
+          }
+          const entryKeys = Object.keys(entry)
+          const unknownEntryKey = entryKeys.find((key) => key !== 'model' && key !== 'adapter' && key !== 'effort' && key !== 'display_model' && key !== 'bucket')
+          if (unknownEntryKey !== undefined) {
+            return invalid(`team ${teamId} declares an unknown key ${show(unknownEntryKey)} on palette entry ${index} of the seat ${agentId} — a palette entry names model, adapter, effort, display_model, bucket, or any combination`)
+          }
+          // A palette entry is a whole seat spec, and `model` has no role
+          // default to fall back to the way a plain seat override's `model`
+          // does — an entry naming no model names nothing at all.
+          if (!isModelName(entry.model)) {
+            return invalid(`team ${teamId} has a missing or invalid model on palette entry ${index} of the seat ${agentId} — a model is 1 to ${MODEL_MAX} characters with no control characters`)
+          }
+          if ('display_model' in entry && !isModelName(entry.display_model)) {
+            return invalid(`team ${teamId} has an invalid display_model on palette entry ${index} of the seat ${agentId} — a model is 1 to ${MODEL_MAX} characters with no control characters`)
+          }
+          if ('adapter' in entry && !ADAPTERS.has(entry.adapter)) {
+            return invalid(`team ${teamId} has an unknown adapter on palette entry ${index} of the seat ${agentId} — one of ${[...ADAPTERS].join(', ')}`)
+          }
+          if ('effort' in entry && !isEffortName(entry.effort)) {
+            return invalid(`team ${teamId} has an invalid reasoning effort on palette entry ${index} of the seat ${agentId} — an effort is 1 to ${EFFORT_MAX} characters with no control characters`)
+          }
+          // Shape only (§3.2, §3.5) — never checked against a list of known
+          // buckets. Present-but-empty is refused, exactly like an empty
+          // model; ABSENT defaults to this entry's own resolved lane below.
+          if ('bucket' in entry && !isBucketName(entry.bucket)) {
+            return invalid(`team ${teamId} has an invalid bucket on palette entry ${index} of the seat ${agentId} — a bucket is 1 to ${MODEL_MAX} characters with no control characters`)
+          }
+          const entryAdapter = entry.adapter == null || entry.adapter === '' ? laneOf(role) : entry.adapter
+          const entryBucket = 'bucket' in entry ? entry.bucket : entryAdapter
+          // The rule the whole design turns on (§3.5): two CONSECUTIVE entries
+          // in one bucket draw on the same rate limit, so trying the second
+          // right after the first spends a leg to learn nothing. Refused, not
+          // warned — this validator has no "accepted with a warning" channel
+          // anywhere else in this file, and building one for a single rule
+          // would be new machinery, not a shape check.
+          if (previousBucket !== null && entryBucket === previousBucket) {
+            return invalid(`team ${teamId} declares two consecutive palette entries in bucket ${show(entryBucket)} on the seat ${agentId} — entries ${index - 1} and ${index} draw on the same rate limit, so falling back from one to the other spends a leg to learn nothing`)
+          }
+          previousBucket = entryBucket
+        }
+      } else {
+        if ('model' in override && !isModelName(override.model)) {
+          return invalid(`team ${teamId} has an invalid model on the seat ${agentId} — a model is 1 to ${MODEL_MAX} characters with no control characters`)
+        }
+        // Display layer: the model a reader should SEE for this seat, distinct
+        // from `model` (which the dispatch layer sends, and may be an alias the
+        // adapter accepts). The board renders this when present; the dispatch
+        // never reads it, so an alias can stay in `model` while the real model
+        // name shows on the page.
+        if ('display_model' in override && !isModelName(override.display_model)) {
+          return invalid(`team ${teamId} has an invalid display_model on the seat ${agentId} — a model is 1 to ${MODEL_MAX} characters with no control characters`)
+        }
+        if ('adapter' in override && !ADAPTERS.has(override.adapter)) {
+          return invalid(`team ${teamId} has an unknown adapter on the seat ${agentId} — one of ${[...ADAPTERS].join(', ')}`)
+        }
+        // §32: no role-level default to restate, so — unlike model/adapter — there
+        // is no way to declare an effort that "resolves to the role default" and
+        // say nothing; every declared effort is a real request.
+        if ('effort' in override && !isEffortName(override.effort)) {
+          return invalid(`team ${teamId} has an invalid reasoning effort on the seat ${agentId} — an effort is 1 to ${EFFORT_MAX} characters with no control characters`)
+        }
       }
     }
     // GitHub #31 stage 1: declared, optional, defaulting to 'artifact' — see
@@ -368,15 +451,41 @@ export function validateWorkflowGraph(value) {
     if (!TEAM_PRODUCES.has(produces)) {
       return invalid(`team ${teamId} declares produces ${show(produces)} — one of ${[...TEAM_PRODUCES].join(', ')}`)
     }
-    const seatModel = (agentId, role) => seatOverride.get(agentId)?.model ?? models[role]
-    const seatLane = (agentId, role) => seatOverride.get(agentId)?.adapter ?? laneOf(role)
+    // GitHub #47 phase 1 (§3.5): a resolved palette entry, in the same shape
+    // `agents[]` has always reported for an unoverridden seat — adapter falls
+    // back to the seat's own role, bucket falls back to the resolved adapter,
+    // effort and display_model fall back to "nothing requested".
+    const resolvePaletteEntry = (entry, role) => {
+      const adapter = entry.adapter == null || entry.adapter === '' ? laneOf(role) : entry.adapter
+      return {
+        model: entry.model,
+        adapter,
+        effort: entry.effort == null || entry.effort === '' ? null : entry.effort,
+        display_model: entry.display_model == null || entry.display_model === '' ? null : entry.display_model,
+        bucket: 'bucket' in entry ? entry.bucket : adapter,
+      }
+    }
+    // The full resolved palette for a seat, or `null` for a seat that declared
+    // none — this is the only thing a reader outside this file may consume
+    // (§3.5); nothing here makes anything USE it yet.
+    const seatPalette = (agentId) => {
+      const raw = seatOverride.get(agentId)?.palette
+      return raw ? raw.map((entry) => resolvePaletteEntry(entry, roleOf(agentId))) : null
+    }
+    // A palette's FIRST entry is what an unmodified reader sees today for the
+    // single-value fields below — "the dispatcher's choice is the starting
+    // point" (§3.5) is exactly this fallback in a system with no choice
+    // mechanism built yet; phase 2 is what makes the choice real.
+    const paletteFirst = (agentId) => seatPalette(agentId)?.[0] ?? null
+    const seatModel = (agentId, role) => paletteFirst(agentId)?.model ?? seatOverride.get(agentId)?.model ?? models[role]
+    const seatLane = (agentId, role) => paletteFirst(agentId)?.adapter ?? seatOverride.get(agentId)?.adapter ?? laneOf(role)
     // No role default to fall back to (see EFFORT_MAX comment above) — an
     // unoverridden seat carries `null`, meaning "request nothing", not "carry
     // the team's effort" the way an unoverridden model or lane does.
-    const seatEffort = (agentId) => seatOverride.get(agentId)?.effort ?? null
+    const seatEffort = (agentId) => paletteFirst(agentId)?.effort ?? seatOverride.get(agentId)?.effort ?? null
     // Display layer only — the dispatch never reads this. Falls back to the
     // declared `model` downstream (the renderer shows display_model ?? model).
-    const seatDisplayModel = (agentId) => seatOverride.get(agentId)?.display_model ?? null
+    const seatDisplayModel = (agentId) => paletteFirst(agentId)?.display_model ?? seatOverride.get(agentId)?.display_model ?? null
     // One agent, one seat. A shared id would make two nodes light up from one
     // dispatch, which is exactly the false positive the page must never show.
     //
@@ -419,9 +528,9 @@ export function validateWorkflowGraph(value) {
       // stays a DECLARATION: the model a node reports as running is verified
       // evidence and is a different fact from this one.
       agents: [
-        { agent_id: dispatcher, role: 'dispatcher', model: seatModel(dispatcher, 'dispatcher'), adapter: seatLane(dispatcher, 'dispatcher'), effort: seatEffort(dispatcher), display_model: seatDisplayModel(dispatcher) },
-        ...workers.map((agentId) => ({ agent_id: agentId, role: 'worker', model: seatModel(agentId, 'worker'), adapter: seatLane(agentId, 'worker'), effort: seatEffort(agentId), display_model: seatDisplayModel(agentId) })),
-        { agent_id: evaluator, role: 'evaluator', model: seatModel(evaluator, 'evaluator'), adapter: seatLane(evaluator, 'evaluator'), effort: seatEffort(evaluator), display_model: seatDisplayModel(evaluator) },
+        { agent_id: dispatcher, role: 'dispatcher', model: seatModel(dispatcher, 'dispatcher'), adapter: seatLane(dispatcher, 'dispatcher'), effort: seatEffort(dispatcher), display_model: seatDisplayModel(dispatcher), palette: seatPalette(dispatcher) },
+        ...workers.map((agentId) => ({ agent_id: agentId, role: 'worker', model: seatModel(agentId, 'worker'), adapter: seatLane(agentId, 'worker'), effort: seatEffort(agentId), display_model: seatDisplayModel(agentId), palette: seatPalette(agentId) })),
+        { agent_id: evaluator, role: 'evaluator', model: seatModel(evaluator, 'evaluator'), adapter: seatLane(evaluator, 'evaluator'), effort: seatEffort(evaluator), display_model: seatDisplayModel(evaluator), palette: seatPalette(evaluator) },
       ],
     })
   }
