@@ -500,18 +500,24 @@ evaluator brief, which gains one additional instruction only for a `produces:
 `pull-controller.mjs`'s gate (§7): the only pullable state remains `reviewed`
 with `verdict: pass`, unconditionally, exactly as before this field existed.
 
-### 3.5 A seat's model palette — declaration only (GitHub #47 phase 1)
+### 3.5 A seat's model palette — declared (phase 1) and dispatched (phase 2)
 
-**This section declares a SHAPE and what it will mean. It does not make
-anything read it.** `loop-runner.mjs`, `ledger-validate.mjs`,
-`ledger-writer.mjs`, `acp-companion.mjs` and `dispatch-facts.mjs` are
-unchanged by this amendment. A graph that declares a palette validates,
-normalizes, and exposes it on `teams[].agents[]`; the runner dispatches
-exactly as it did before this section existed, reading the same single-value
+**Phase 1 (2026-08-05) declared a SHAPE and made nothing read it.** A graph
+that declares a palette validates, normalizes, and exposes it on
+`teams[].agents[]`; `loop-runner.mjs`, `ledger-validate.mjs`,
+`ledger-writer.mjs`, `acp-companion.mjs` and `dispatch-facts.mjs` were
+unchanged by that amendment, and the runner dispatched exactly as it did
+before this section existed, reading the same single-value
 `model`/`adapter`/`effort`/`display_model` fields it always has. GitHub #47's
-own text names this split on purpose: dispatch, `assigned` carrying the chosen
+own text named this split on purpose: dispatch, `assigned` carrying the chosen
 model, and the fallback machinery are a second phase, so that the two phases
 do not both edit `loop-runner.mjs` and this contract at once.
+
+**Phase 2 (2026-08-05, this amendment) is the dispatch half — see §3.5.1
+below.** It reaches two of those three: dispatch and the fallback machinery.
+The third — `assigned` carrying the chosen model — is NOT built by this
+amendment, and §3.5.1 states why in the same terms as everything else here:
+argued, not silently dropped.
 
 **Not a role, and not a model name.** GitHub #47 asked for "a role's model" to
 become an array; this amendment answers differently, and says why. A model is
@@ -633,24 +639,141 @@ lie. It costs nothing here because no module compares a *workflow* graph's
 What survives from the original claim is the §3.2.1 property, which is
 genuinely unaffected: declarations that say the same thing still hash alike.
 
-**Ordering semantics — written down now, enforced later.** GitHub #47's own
-text says both "the dispatcher picks" and "fall back in order", and read
-together those need one more sentence or two plausible rules exist and code
-would silently pick one. The reading this contract commits to: **the
-dispatcher's choice is the starting point, the array is the order after it,
-and a full cycle with nothing answering is an escalation rather than another
-retry.** Concretely — once phase 2 exists — a dispatcher may still name a
-starting seat/entry the way `worker_hint` already does (§4.9); from there,
-a rate-limited or refused attempt advances to the NEXT entry in declared
-order, wrapping past the end back to the first; and reaching the entry the
-dispatcher started from again, having gotten no answer from any of them, is
-the same shape §11.3's `escalate` decision already reads a token's own next
-step as — a case for the outer controller, not a ninth attempt at models that
-already refused eight times. This is **not enforced by any code today** and
-carries no test; §14.1 lists it as an unenforced clause. It is written here
-because §15's own change-control rule already burned this project once on an
-undocumented ordering choice, and this amendment exists specifically so
-phase 2 does not have to invent one under time pressure.
+**Ordering semantics — written down 2026-08-05 (phase 1), enforced the same
+day (phase 2).** GitHub #47's own text says both "the dispatcher picks" and
+"fall back in order", and read together those need one more sentence or two
+plausible rules exist and code would silently pick one. The reading this
+contract committed to: **the dispatcher's choice is the starting point, the
+array is the order after it, and a full cycle with nothing answering is an
+escalation rather than another retry.** §3.5.1 (below) is where phase 2 built
+exactly this, and resolved the one thing phase 1's own wording left open —
+whether a dispatcher can name a specific PALETTE ENTRY, not merely a seat.
+This paragraph is kept, unedited past this note, as the record of what was
+decided in advance and why; §3.5.1 is where it became enforced. Formerly
+**not enforced by any code**, listed in §14.1 as an unenforced clause — that
+row is gone; §14 AC104–AC109 (`tests/loop-runner-palette-dispatch.test.mjs`)
+are what replaced it.
+
+### 3.5.1 Dispatch and fallback — built (GitHub #47 phase 2, 2026-08-05)
+
+**The starting point needs no ledger read.** `loop-runner.mjs`'s
+`declaredModel`/`declaredAdapter`/`declaredEffort` already resolve a palette
+seat's single-value fields to the palette's first entry (§3.5, phase 1); a
+fresh leg on a palette seat reaches the model exactly the way it always has,
+through the same `dispatch()` env-building this file has never needed to
+change for a plain seat. `dispatchOn` (`loop-runner.mjs`, inside `nextStep`)
+is consulted only for a SECOND or later leg on the same seat, where the
+starting point alone is no longer enough.
+
+**`worker_hint` (§4.9) still names a SEAT, not a palette entry.** GitHub #47's
+own wording said "starting seat/entry" as if a dispatcher might name either;
+phase 1 already resolved this for the FIRST leg (the starting point is always
+entry 0, stated in §3.5 above), and phase 2 resolves it for every leg after:
+nothing exists to name a specific entry, on a fresh admission or a retry, and
+this amendment does not add one. A `WORKER: <agent_id>` line still only picks
+which seat gets the token; which of THAT seat's candidates a given leg runs is
+computed from the seat's own ledger history, described next.
+
+**What triggers a fallback: `work_observed: false` on the failed leg's
+`delivered` line, stated precisely in those words because the runner cannot
+see anything narrower.** §4.10 already established this is the ONE fact the
+ledger carries for "the leg never reached the model" — not a terminal string,
+not an inference from a missing line. This amendment reuses it rather than
+inventing a second signal: a leg whose `delivered` states `work_observed:
+false` advances the NEXT leg on this seat to the next palette entry in
+declared order (wrapping past the end back to the first); a leg that reached
+the model — `work_observed: true`, or a `delivered` written before this fact
+existed and so carries neither — retries the SAME entry, exactly as a
+no-palette seat's worker retries its one seat today. A `lost` leg (§4: "an
+assignment whose process is gone and which recorded nothing" — never
+distinguishable from a killed worker that did real work) is likewise never
+read as a miss, and also retries the same entry. **This is deliberately not
+"on rate limit."** The runner has no signal for a rate limit specifically —
+only `work_observed` and `terminal` — so this rule is stated as what it
+actually keys on, not as the friendlier name that motivated it: transport-level
+failure, the class `work_observed: false` was built to name. A rule stated as
+"on rate limit" and implemented as "on any failure" would be indistinguishable
+from this one in its passing tests and different in what it does the first
+time a genuine worker failure is mistaken for a dead model.
+
+**Each fallback candidate is a NEW leg, with its own `task_id` and
+`dispatch_id`, minted the same way any retry's always has been.** `dispatch()`
+already calls `buildTaskId` fresh on every call; this amendment adds no second
+identity-minting path, so `ledger-validate.mjs`'s existing
+`duplicate_task_id`/`duplicate_dispatch_id` rules (§4.2) are never in tension
+with a palette — a fallback attempt was already, before this amendment,
+indistinguishable from a plain retry as far as leg identity goes, and stays so.
+
+**A full cycle escalates instead of retrying entry 0 a second time.** Once
+every entry has been tried once since the token's last resume (or its
+admission, if never resumed) with none of them ever reaching the model —
+`misses >= palette.length`, where `misses` counts exactly the
+`work_observed: false` legs on this one seat — the next leg on this seat
+escalates rather than dispatching, naming the seat, the palette size and the
+miss count. This is the same shape §11.3's `escalate` decision already reads
+a token's own next step as: a case for the outer controller, not a ninth
+attempt at candidates that already refused eight times.
+
+**`legCeiling` (§4.10, §10) is unaffected — every `assigned` still counts
+toward it unconditionally, transport-failed or not, exactly as §4.10 requires
+by name.** A palette is not made free against it: this amendment does not
+special-case a palette leg out of `legs = custody.filter(assigned).length`
+anywhere. What bounds a palette walk from being able to spend legs toward
+that ceiling forever is the full-cycle rule above — a strictly TIGHTER,
+palette-scoped bound (at most `palette.length`, 1 to 8, misses before
+escalating) that fires long before a 15-leg (or controller-granted higher)
+ceiling ever could. Both checks run: `legCeiling`'s guard sits at the top of
+`nextStep`, unmoved by this amendment, and would still catch a token that
+somehow accumulated enough legs by other means — the palette's own bound does
+not replace it, it adds a narrower one in front of it.
+
+**A seat that declares no palette is unaffected — proven, not merely
+argued.** `dispatchOn` returns the exact `{ action: 'dispatch', role,
+agent_id }` shape `want` always returned, with no `candidate` key at all, for
+any seat whose resolved `palette` is `null` (§3.5). The tick loop's dispatch
+call only reads `plan.candidate` when it is present, so a no-palette seat's
+model/adapter/effort resolve through the same `declaredModel`/
+`declaredAdapter`/`declaredEffort` calls, byte-for-byte, that ran before this
+amendment. Every pre-existing test in `tests/loop-occupancy.test.mjs` (103
+tests), `tests/loop-runner-heartbeat-model.test.mjs`,
+`tests/loop-runner-decisions.test.mjs`, `tests/loop-runner-busy.test.mjs`,
+`tests/loop-replay.test.mjs` and `tests/loop-smoke.test.mjs` passed unedited
+against this change — none needed a line changed, which is the property
+itself, not a claim about it.
+
+**What this amendment does NOT build: `assigned` carrying the chosen
+model.** GitHub #47's own text and this contract's own §3.5 intro both name
+it as part of the same feature; it is not here, and the reason is structural,
+not a scoping choice made for convenience. `assigned` is written by
+`acp-companion.mjs` alone (§13: it is one of exactly two components that may
+append to a ledger, and the only one of the two that may write `assigned` or
+`delivered`), and the required field on `assigned` that matters here —
+`dispatch_id` (`ledger-validate.mjs`'s `EVENT_SPEC`) — is minted by
+`randomUUID()` INSIDE `acp-companion.mjs`, at process start, with no
+environment variable or argument through which anything upstream could
+supply or predict it. `loop-runner.mjs` cannot write a valid `assigned` line
+for a leg `acp-companion.mjs` will also process: any `dispatch_id` it invented
+would not be the one `acp-companion.mjs` mints and later carries on
+`delivered`, and `ledger-validate.mjs`'s own dispatch-id/task-id ownership
+check (§4.2) would then read the two events as disagreeing — turning a
+cosmetic gap into a ledger the runner itself would refuse to dispatch onto
+next tick. Recording the model is therefore reachable only by
+`acp-companion.mjs` itself adding it to its own existing, unconditional
+`appendWorkItemEvent('assigned')` call — a small change (it already computes
+`requestedModel` at that point, for its own dispatch-record text) but a change
+to a file this amendment's own scope excludes. Until that lands, a reader can
+answer "what model ran leg X" for a palette seat only by cross-referencing
+`task_id` against the runner's own dispatch log
+(`.tmux-teams/runner-logs/<taskId>.log`, which already states `model=`), not
+from the ledger — the exact limitation §3.5's intro already named as what
+phase 2 was supposed to close. `ledger-validate.mjs` is unedited by this
+amendment for the same reason stated in the phase-1 text it inherits: only
+the event NAME is a closed vocabulary, so a future `model` field on
+`assigned` needs no validator change to be accepted — and, following the
+precedent already set by `work_observed` and `worker_hint`, neither field
+shape-checked in `ledger-validate.mjs` today, this amendment does not add
+shape-checking for a field nothing yet writes. §14.1 records this as a
+genuinely unbuilt clause, not merely an untested one.
 
 ## 4. Custody ledger contract
 
@@ -2049,6 +2172,18 @@ a palette yet).
 | AC102 | §3.5 | a seat's resolved `palette` on `agents[]` is `null` when none was declared, and the seat's single-value `model`/`adapter`/`effort`/`display_model` resolve to the palette's first entry when one was | `workflow-graph-palette.test.mjs` |
 | AC103 | §3.5 | a palette for a seat not on the team, or for the outer controller, is refused by the same checks §3.2.1 already runs for a plain seat override | `workflow-graph-palette.test.mjs` |
 
+Added 2026-08-05, GitHub #47 phase 2 (§3.5.1: dispatch and fallback — the
+ordering semantics phase 1 wrote down and left unenforced).
+
+| # | Clause | Assertion | Test file |
+| --- | --- | --- | --- |
+| AC104 | §3.5.1 | a fresh admission on a palette seat dispatches its first declared entry — "the starting point" — with no ledger read needed | `loop-runner-palette-dispatch.test.mjs` |
+| AC105 | §3.5.1, §4.10 | a leg whose `delivered` states `work_observed: false` advances the seat's NEXT leg to the next palette entry in declared order, wrapping past the end; a leg that reached the model (`work_observed: true`, absent, or `lost`) retries the same entry | `loop-runner-palette-dispatch.test.mjs` |
+| AC106 | §3.5.1 | a full cycle — every entry tried once since the last resume, none ever reaching the model — escalates instead of dispatching the first entry a second time, naming the seat, the palette size and the miss count | `loop-runner-palette-dispatch.test.mjs` |
+| AC107 | §3.5.1, §4.10, §10 | a palette leg still counts toward `legCeiling` unconditionally, transport-failed or not; the palette's own per-seat cycle bound escalates with legs to spare against that ceiling, not by weakening it | `loop-runner-palette-dispatch.test.mjs` |
+| AC108 | §3.5.1, §4.9 | `worker_hint` still names a seat only; a hinted palette seat resolves its own candidate exactly like a freely-picked one, and its no-palette sibling is unaffected | `loop-runner-palette-dispatch.test.mjs` |
+| AC109 | §3.5.1 | a seat with no palette dispatches with no `candidate` field at all, unchanged by every pre-existing test in `loop-occupancy.test.mjs`, `loop-runner-heartbeat-model.test.mjs`, `loop-runner-decisions.test.mjs`, `loop-runner-busy.test.mjs`, `loop-replay.test.mjs` and `loop-smoke.test.mjs`, none of which needed a line changed | `loop-runner-palette-dispatch.test.mjs` (+ the six files named, unedited) |
+
 ### 14.1 Clauses this contract does NOT yet enforce
 
 Declared here rather than left to be discovered. Each is a rule the code follows
@@ -2062,7 +2197,7 @@ today with nothing stopping it from regressing.
 | §12.7.6 | auto-refresh is pausable and the page states its own freshness — only the asset's existence and parseability are tested |
 | §13 | the prohibitions are review rules, not runtime behaviour; they are enforced by reading a diff |
 | §13, `mcpServers` | no test asserts `session/new` and `session/load` still send `mcpServers: []`; the closure is a code-review fact about `acp-companion.mjs`, not a running guard |
-| §3.5 | the palette ordering rule ("the dispatcher's choice is the starting point, the array is the order after it, a full cycle unanswered is an escalation") — no code reads a palette for dispatch yet, so nothing enforces or could yet regress this; it is decided in advance for GitHub #47 phase 2 to build against, not a behaviour phase 1 ships |
+| §3.5, §3.5.1 | `assigned` carrying the chosen model — not merely untested, genuinely UNBUILT: `acp-companion.mjs` is the only component that can write a valid `assigned` line (§13; `dispatch_id` is required and minted inside it with no injection seam) and is out of scope for GitHub #47 phase 2. A reader can answer "what model ran leg X" for a palette seat only from the runner's own dispatch log, not from the ledger, until a future phase adds the field to `acp-companion.mjs`'s own existing `appendWorkItemEvent('assigned')` call |
 
 ### 14.2 Known contradictions and live defects, 2026-07-28
 
@@ -2468,6 +2603,66 @@ deleting the consecutive-bucket refusal — was run by file copy with a SHA-256
 checksum verifying the restore, never by reversing a `str.replace`; removing
 the check turns the two consecutive-bucket tests and the dedicated mutation
 test RED, on `result.ok`, not on any wording.
+
+**2026-08-05 — GitHub #47 phase 2: a palette seat dispatches from it, in
+declared order, with a bound on the walk.** New §3.5.1; new AC104–109 (§14),
+replacing the §14.1 palette-ordering row with a narrower one (below).
+`loop-runner.mjs` gains `declaredPalette` (reads a seat's resolved `palette`,
+mirroring `declaredModel`/`declaredAdapter`/`declaredEffort`), `missesBy`
+(counts, since the token's last resume, how many of ONE seat's legs carried
+`delivered.work_observed: false` — the same fact §4.10 defined, summed rather
+than excluded), and `dispatchOn` (chosen from both branches of `want` that
+used to return a bare `{ action: 'dispatch', role, agent_id }` — the hint
+branch and the free-pick branch — so a hinted palette seat and a freely-picked
+one resolve a candidate the same way). A seat with no palette gets the exact
+prior shape back, unedited: `dispatchOn`'s first line is `if (!palette) return
+{ action: 'dispatch', role, agent_id: agentId }`. What triggers a fallback is
+stated as what it structurally is, not by name: `work_observed: false`, never
+a terminal string and never "on rate limit" — the runner has no narrower
+signal than the one §4.10 already put in the ledger. Each fallback candidate
+is a new leg with its own `task_id`/`dispatch_id`, minted by the same
+`buildTaskId` call every retry already used; nothing about leg identity
+changes. A full cycle — `misses >= palette.length` — escalates instead of
+retrying entry 0 a second time, matching the ordering semantics §3.5 wrote
+down in advance. `legCeiling` (§10) is untouched: every `assigned` still
+counts toward it unconditionally, exactly as §4.10 requires by name; the new
+per-seat cycle bound is a TIGHTER, additional gate in front of it (at most 8
+misses before escalating, against a 15-leg default ceiling), not a
+replacement — GitHub #45's own defect (a palette destroying the leg-ceiling
+accounting) does not recur, by construction rather than by a special case.
+
+**Not built: `assigned` carrying the chosen model.** This is the one piece of
+GitHub #47's own text this amendment does not close, and the reason is
+structural. `assigned` is written by exactly one component (§13:
+`acp-companion.mjs`, one of only two things that may append to a ledger, and
+the only one of the two permitted to write `assigned` or `delivered`), and
+the field `EVENT_SPEC` requires on it that matters here — `dispatch_id` — is
+minted by `randomUUID()` inside `acp-companion.mjs` at process start, with no
+env var or argument through which `loop-runner.mjs` could supply or predict
+it. A dispatch_id `loop-runner.mjs` invented itself would not be the one
+`acp-companion.mjs` later carries on `delivered`, and `ledger-validate.mjs`'s
+own dispatch-id/task-id ownership check (§4.2) would read the two events as
+disagreeing — the ledger the runner itself refuses to dispatch onto, next
+tick. `acp-companion.mjs` is out of scope for this phase (Files, above); the
+model reaches the spawned process (unchanged — the same `modelEnv`/
+`ACP_MODEL`/`ACP_EXPECT_MODEL` plumbing every seat has always used) but not
+the ledger line. `ledger-validate.mjs` is unedited: only the event NAME is a
+closed vocabulary (§4), so a future `model` field on `assigned` needs no
+validator change to be accepted, and — following the precedent already set by
+`work_observed` and `worker_hint`, neither of which is shape-checked in
+`ledger-validate.mjs` today — this amendment does not add shape-checking for a
+field nothing yet writes. §14.1 now names this a genuinely UNBUILT clause,
+replacing the ordering-semantics row this amendment closed. Proven in
+`tests/loop-runner-palette-dispatch.test.mjs`: AC104–109, plus an unedited
+pass of every pre-existing loop-runner test file
+(`loop-occupancy.test.mjs`: 103/103, `loop-runner-heartbeat-model.test.mjs`,
+`loop-runner-decisions.test.mjs`, `loop-runner-busy.test.mjs`,
+`loop-replay.test.mjs`, `loop-smoke.test.mjs`), which is what stands in for
+AC3's "prove it" — a non-palette seat needed no test rewritten. A mutation
+check — deleting the full-cycle escalation guard in `dispatchOn` — was run by
+file copy with a SHA-256 checksum verifying the restore, never by reversing a
+`str.replace`; removing the guard turns exactly one test RED, on
+`plan.action` ('escalate' expected, 'dispatch' observed), not on any wording.
 
 **2026-08-05 — D1: the three read tools an agent seat actually needs.** New
 file `scripts/agent-seat-reads.mjs`; new §16 records the surface, and AC93–96
