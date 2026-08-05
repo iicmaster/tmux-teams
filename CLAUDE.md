@@ -51,6 +51,27 @@ measurement through one caller.** Say it in the agent's prompt: do not copy the
 repo, do not run `node --test` at all, return a diff that applies by string
 match plus the exact commands the caller runs once.
 
+**Every subagent that WRITES gets its own git worktree.** The rule above is about
+CPU; this one is about the working tree, and it cost a wave on 2026-08-05. Five
+agents were fanned out into this one checkout with no isolation. They raced each
+other on `git checkout -b`: one agent's cherry-pick landed on a branch another
+agent had just created, a third was mid-edit on the contract when HEAD moved
+under it, and the agent that noticed force-reset the polluted branch — a reset
+that **did not hold**, because the directory it reset was still being checked out
+by somebody else. Nothing was lost, and that was luck plus `origin/main` being
+ahead of the damage, not care.
+
+Two things follow. Pass `isolation: 'worktree'` for any agent that commits, and
+say in its prompt that the primary checkout is off limits — a capable agent will
+`cd` there to "check something" and take HEAD with it. And treat a git write
+performed in a shared directory as unverified until it is read back: a
+force-reset, a branch delete, a checkout can all be undone by a concurrent
+process between the command and the next one, silently and with a zero exit code.
+
+A read-only agent needs no worktree, but give it one anyway when it sits beside
+writers — `gh` and `grep` work the same there, and it removes the one way it
+could still move HEAD.
+
 ```bash
 node plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs once <repo>
 ```
