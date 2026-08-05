@@ -59,15 +59,28 @@ to break on an upgrade were each traced by hand:
   `legNeverStarted`/`attemptsBy`). Nothing about old history is
   reinterpreted; the new field only ever narrows what counts when it is
   explicitly present and `false`.
-- **An existing `graph.json` still loads.** The only schema change is a new
-  *optional* `display_model` key on a seat override
-  (`validateWorkflowGraph`). A declaration that has never heard of it hits no
-  new required field, no new key check that rejects it, and every board node
+- **An existing `graph.json` still loads.** Two new keys on a seat override
+  (`validateWorkflowGraph`), both *optional*: `display_model`, and `palette`
+  (contract §3.5). A declaration that has never heard of either hits no new
+  required field and no new key check that rejects it, and every board node
   falls back to the model it already showed
   (`plugins/tmux-teams/skills/tmux-teams/scripts/graph.mjs`, `modelLine`).
   Nothing in `pulse.json` changed shape either — the graph page's new
   stale-death logic (below) reads `elapsed_sec`/`timeout_sec`, fields that
   were already part of a run record.
+- **One thing genuinely does change for every graph: `source_digest`.** The
+  resolved `teams[].agents[]` entry gained a `palette` field, reported as
+  `null` for the seats — today, all of them — that declare none, so the hash
+  over the resolved graph moves even for a `graph.json` you have not touched.
+  Measured, not reasoned: the bundled default graph resolves to `ffe8ebe7…`
+  on v0.14.6 and `16e7d87c…` here. This is safe because nothing joins on a
+  *workflow* graph's `source_digest` across versions — the digest
+  `team-runtime.mjs` matches against is `team-graph-contract.mjs`'s, a
+  different derivation over a different object — and because declarations
+  that say the same thing still hash alike, which is the property §3.2.1
+  actually depends on. If you have built something outside this plugin that
+  pins a workflow graph's digest, that is the one thing here that will notice
+  the upgrade.
 
 If you find a case where one of those three claims is wrong, that is a bug in
 this release, not a documentation gap — say so loudly rather than working
