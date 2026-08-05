@@ -5,23 +5,30 @@
 
 ## อ่านก่อนอื่น
 
-- **branch `main` = `origin/main` = `12f5c54`** — push ครบ ต้นไม้สะอาด
+- **branch `main` = `origin/main` = `85232d6`** — push ครบ ต้นไม้สะอาด
 - **v0.14.6 ออกครบทุกช่องทาง** (tag, GitHub release, marketplace, plugin cache
   0.14.6 ติดตั้งบนเครื่องนี้แล้ว) · การ bump submodule pin ใน `~/agent-skills`
   **ยังไม่ได้ทำและห้ามทำเอง** — คนละโปรเจกต์ ต้องขอ Master ก่อน
 - **`main` เดินหน้าเกิน v0.14.6 แล้ว** — ยังไม่ bump เลขสามที่ ยังไม่ tag
   ยังไม่ release · **นี่คือ v0.15.0 ที่กำลังทำ**
-- **suite ที่วัดจริงล่าสุดที่ `12f5c54`: 705 tests, fail 0** ·
+- **suite ที่วัดจริงล่าสุดที่ `85232d6`: 737 tests, fail 0** ·
   `git diff --check` สะอาด · `claude plugin validate --strict .` ผ่าน
-- **เจ็ดอิชชูปิดแล้ว**: #39 #40 #42 #43 #44 #45 #46 · **PR ปิดหมด (0 open)**
-- **เหลืออิชชูเดียว: #47** — เฟส 1 (รูปทรงการประกาศ palette) กำลังวิ่งอยู่ใน
-  worktree `wf_815da76e-24e-1` ตอนเขียนนี้ · เฟส 2 (dispatch เลือกจาก palette,
-  `assigned` พกโมเดล) **ยังไม่เริ่ม**
-- **ขอบเขต v0.15.0 ตัดสินแล้วโดย Master: จบ #47 ทั้งสองเฟสก่อนปล่อย**
-- **จังหวะรีวิวตัดสินแล้วโดย Master: ตรวจทีเดียวตอนจบ** ไม่ส่งทีละโมดูล ·
-  ห้องเถียงกันเรื่องนี้ไว้ (ดู OPEN TENSIONS) แต่คำตัดสินคือรอ
-- **release gate เดิมยังบังคับ ไม่เปลี่ยน** — สามตระกูลอ่าน diff จริงก่อน
-  stamp เลขเวอร์ชัน ไม่มีข้อยกเว้น (CLAUDE.md §Release flow ข้อ 2)
+- **ทุกอิชชูปิดหมด · 0 PR เปิด** — #39 #40 #42 #43 #44 #45 #46 #47 ·
+  **โค้ดของ v0.15.0 เสร็จแล้ว เหลือแค่ gate กับการ bump**
+- **#47 ลงครบสามส่วน**: เฟส 1 `6301f4d` (รูปทรงประกาศ) → แก้ `afc1f89` ·
+  เฟส 2 `a822de7` (dispatch อ่านจริง) · เฟส 2b `85232d6` (`assigned` พกโมเดล)
+- **release gate กำลังวิ่งอยู่ตอนเขียนนี้** — ดูหัวข้อ "รีวิวรอบปล่อย" ข้างล่าง
+
+### คำตัดสินของ Master ที่บังคับอยู่ ห้ามรื้อ
+
+- **ขอบเขต v0.15.0: จบ #47 ทั้งสองเฟสก่อนปล่อย** — ทำครบแล้ว
+- **จังหวะรีวิว: ตรวจทีเดียวตอนจบ** ไม่ส่งทีละโมดูล
+- **รูปแบบรีวิว (ตัดสิน 2026-08-05): 4 รอบแยกตามเรื่อง · reviewer เดียวคือ
+  `claude-zai` · ใช้กรอบ bmad-party-mode `anti-consensus-club`**
+  ไม่ใช่ panel สามโมเดล — และนั่น**ตรงกับกฎ release ที่เขียนไว้จริง**:
+  CLAUDE.md §Release flow ข้อ 2 ระบุ reviewer เดียว (`codex-advisor`)
+  ส่วน panel สามโมเดลคือกฎของ **worker dispatch** คนละเรื่องกัน
+  อย่าสับสนสองกฎนี้เข้าด้วยกันเหมือนที่ HANDOFF ฉบับก่อนทำ
 
 ## วิธีตรวจสอบ
 
@@ -242,20 +249,52 @@ transport ที่ตายไม่กิน **worker attempt** แล้ว (
 `legCeiling`/`MAX_LEGS` (§10) ยังนับทุก `assigned` ไม่มีเงื่อนไข — **palette ที่
 ไล่ที่นั่งตายยังเผา leg ceiling เท่าเดิม** · §4.10 เขียนไว้ตรงๆ อย่าคิดว่าครอบแล้ว
 
+## รีวิวรอบปล่อย — กำลังวิ่ง ตอนเขียนนี้
+
+diff ที่ต้องตรวจคือ **312 KB** (33 ไฟล์ +4785/-310 เหนือ v0.14.6, ไม่นับ
+`HANDOFF.md` ซึ่งไม่ใช่ของที่ปล่อย) · **ลงซองเดียวไม่ได้**: `review-gate.mjs`
+มี `packetBytes: 128 * 1024` เป็นค่าคงที่ เปลี่ยนด้วย env ไม่ได้ (ต่างจาก
+lane timeout) จึงแบ่งเป็นสี่รอบตามเรื่อง **ครบ 312/312 KB ไม่มีไบต์ไหนหลุด**
+
+| รอบ | task id | เรื่อง | ขนาด |
+|---|---|---|---|
+| r1 | `v015-contract` | contract amendment ล้วน — AC ล้มได้จริงไหม | 85 KB |
+| r2 | `v015-palette` | #47 ทั้งสามเฟส + เทส | 80 KB |
+| r3 | `v015-custody` | facade, projection, ratchet, pull-route | 102 KB |
+| r4 | `v015-gate` | #43 laneIdentity, graph, เอกสาร | 68 KB |
+
+รันที่ `<scratch>/reviews/<rN>/` · outbox = `.mailbox-out/<task-id>`
+
+**กลไกที่ต้องรู้ ไม่งั้นเสียรอบฟรี**
+
+- **ไฟล์ outbox ต้องชื่อเดียวกับ task id เป๊ะๆ** ไม่ใช่ชื่ออิสระ · probe แรก
+  เขียน `.mailbox-out/probe` แล้ว companion บอก `wrote no .../zprobe1`
+- **lane นี้คือ**
+  `CLAUDE_CONFIG_DIR=$HOME/.config/claude-profiles/zai ANTHROPIC_MODEL=opus
+  ACP_EXPECT_MODEL=opus node acp-companion.mjs claude <cwd> <task> <brief>` ·
+  **ห้ามตั้ง `ACP_CMD`** · `opus` บนโปรไฟล์นี้ = `glm-5.2[1m]` (ยืนยันด้วย
+  probe จริง ไม่ใช่เดาจากไฟล์ settings)
+- **ต้องรันแบบ detached (`nohup ... &`)** · รอบแรกยิงแบบ foreground แล้ว Bash
+  tool หมดเวลา 10 นาที ฆ่าทั้ง process group → `[liveness] cancelling` →
+  ทั้งสี่เหลือแต่ `started, not finished` 22 ไบต์ · **ไม่ใช่ lane เสีย**
+  session id ที่เสียไปเก็บไว้ที่ `<scratch>/session-ids.txt` เผื่อ resume
+
+**ถ้ารอบไหนได้แต่ placeholder** — ลอง `ACP_RESUME=<session-id>` พร้อมคำสั่งสั้นๆ
+"เขียนสิ่งที่มีอยู่แล้วออกมา อย่าวิเคราะห์ใหม่" **และต้องมีประโยค "ถ้าไม่เหลือ
+อะไรให้บอกตรงๆ ว่าไม่มี"** ก่อนจะยิงรอบใหม่ · ห้าม `rm -rf` ไดเรกทอรีก่อนจด
+session id
+
 ## ถัดไป ตามลำดับ
 
-1. **รอเฟส 1 ของ #47 จบ** → ตรวจกับ git ไม่ใช่กับรายงาน → merge → รัน suite เต็ม
-   **ครั้งเดียว** → push
-2. **เฟส 2 ของ #47** — dispatch + `assigned` พกโมเดล (แยก wave เพราะไฟล์ชน)
-3. **ประตูรีวิวสามตระกูล** บน diff จริง `git diff v0.14.6..HEAD` — ตอนนี้ 30
-   ไฟล์ +3318/-306 · เทียบ: v0.14.6 คือ +8590 และใช้ **เจ็ดรอบ** กว่าจะผ่าน ·
-   **สามโมดูลใหม่ยังไม่มีโมเดลนอกคนไหนอ่านเลย**
-4. ถ้าผ่าน: bump `0.15.0` **สามที่** (`.claude-plugin/marketplace.json` สองจุด,
+1. **อ่านผลรีวิวสี่รอบ** — finding ที่ผูกกับความล้มเหลวรูปธรรมได้เท่านั้นถึงนับ
+   · ห้องนี้**ไม่ลงมติ** ตาม scene ของมัน คนตัดสินคือ Master
+2. **แก้ทุก finding ที่บล็อก** แล้ววนกลับไปรีวิวเฉพาะ bytes ใหม่
+3. ถ้าผ่าน: bump `0.15.0` **สามที่** (`.claude-plugin/marketplace.json` สองจุด,
    `plugins/tmux-teams/.claude-plugin/plugin.json`, `RELEASE_VERSION` ใน
    `tests/plugin-structure.test.mjs`) → gate เต็มบน bytes ที่จะ commit →
    `gh auth switch --user iicmaster` → push → tag → `gh release create` →
    `claude plugin marketplace update` + `plugin update`
-5. bump submodule pin ใน `~/agent-skills` — **โปรเจกต์อื่น ต้องขอ Master ก่อน**
+4. bump submodule pin ใน `~/agent-skills` — **โปรเจกต์อื่น ต้องขอ Master ก่อน**
 
 ## หนี้ที่รู้ตัว ไม่ได้ทำ
 
