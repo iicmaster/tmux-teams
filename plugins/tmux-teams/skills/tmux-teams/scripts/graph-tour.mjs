@@ -36,9 +36,13 @@ const CARD_W = 176
 const WORKER_GAP = 22
 const COL_GAP = 130
 const ROW_TEAM = 0
-const ROW_DISPATCHER = 122
-const ROW_WORKER = 258
-const ROW_EVALUATOR = 400
+// Half again as much air between the rows of a team (owner, 2026-08-06). The
+// gaps were 122 / 136 / 142; they are 183 / 204 / 213 now, and the cards grew
+// taller in the same round when the seat card lost its short form — so the
+// vertical run a wire has to cross grew with the text it has to clear.
+const ROW_DISPATCHER = 183
+const ROW_WORKER = 387
+const ROW_EVALUATOR = 600
 // The control team sits ABOVE the delivery row, not inside it. It is a team by
 // every rule that matters — one worker, WIP 1, its own gate — but it is not the
 // same KIND of thing as a team that does a leg of the work: it is the door, and
@@ -773,7 +777,13 @@ export const TOUR_SCRIPT = `
   // card in between. Bowing them apart is not decoration — it is the only thing
   // that makes two routes distinguishable at all.
   const BOW = {
-    reject: -46, judge: 18, assign: 30, owns: 0, admit: 0,
+    // assign and judge bow ZERO. The bow existed to keep two wires between the
+    // same rows from landing on each other's pixels back when every wire ran
+    // centre-to-centre; the ports separate them now, and a bow on a
+    // port-attached wire only makes it leave the edge at an angle — which is
+    // exactly the "still not right" a reader sees when a line attaches to a
+    // bottom edge and immediately swings sideways. Straight from port to port.
+    reject: -46, judge: 0, assign: 0, owns: 0, admit: 0,
     // Down and back share two endpoints, so they must bow apart or they land on
     // the same pixels and the board looks like it has half the wiring it has.
     // Escalation and audit both run team → controller, so they must bow apart
