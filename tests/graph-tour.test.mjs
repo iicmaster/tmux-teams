@@ -542,6 +542,25 @@ test('an edge told to leave the scene cannot be painted back in', () => {
   assert.deepEqual(perButtonOverrides.map((m) => m[0]), [],
     'a camera control that sizes itself differently breaks the row into a pile of parts')
 
+  // §2: the sink keeps a DASHED border because it is still not a team. The
+  // comment above the rule said exactly that while the rule never set
+  // border-style, so it inherited `solid` from .tnode and the page drew a team.
+  // Found by the UX review, measured on the served page.
+  const sink = TOUR_CSS.match(/\.k-outside\{([^}]*)\}/)
+  assert.ok(sink, '.k-outside must exist')
+  assert.match(sink[1], /border-style:dashed/, 'the sink is not a team and must not be drawn as one')
+
+  // Every camera control offers the mouse the same disclosure the keyboard and
+  // screen reader already get. They all carried aria-label and an empty title.
+  const controls = [...renderTourChart(buildTour(CONTROLLED)).matchAll(/<button type="button" data-tour-[a-z]+([^>]*)>/g)]
+  assert.ok(controls.length >= 7, `expected the camera row, found ${controls.length} controls`)
+  for (const [, attrs] of controls) {
+    const aria = (attrs.match(/aria-label="([^"]+)"/) || [])[1]
+    const title = (attrs.match(/title="([^"]+)"/) || [])[1]
+    assert.ok(aria, `a camera control without an aria-label: ${attrs}`)
+    assert.equal(title, aria, 'a control must say the same thing on hover as it does to a screen reader')
+  }
+
   const halo = TOUR_CSS.match(/\.tour-halo\{animation:tourHalo ([\d.]+)s/)
   assert.ok(halo, 'the halo must declare its own animation')
   const period = Number(halo[1])

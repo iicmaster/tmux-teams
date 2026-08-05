@@ -389,14 +389,14 @@ export function renderTourChart(tour, { describedBy = 'tour-desc' } = {}) {
     </div>
     <div class="tour-controls">
       <span class="tour-zoom" data-tour-zoom aria-live="off"></span>
-      <button type="button" data-tour-out aria-label="Zoom out">−</button>
-      <button type="button" data-tour-fit aria-label="Fit this scene">fit</button>
-      <button type="button" data-tour-actual aria-label="Zoom to actual size">100%</button>
-      <button type="button" data-tour-in aria-label="Zoom in">+</button>
+      <button type="button" data-tour-out title="Zoom out" aria-label="Zoom out">−</button>
+      <button type="button" data-tour-fit title="Fit this scene" aria-label="Fit this scene">fit</button>
+      <button type="button" data-tour-actual title="Zoom to actual size" aria-label="Zoom to actual size">100%</button>
+      <button type="button" data-tour-in title="Zoom in" aria-label="Zoom in">+</button>
       <span class="tour-stamp" data-tour-stamp aria-live="polite"></span>
-      <button type="button" data-tour-prev aria-label="Previous scene">←</button>
-      <button type="button" data-tour-next aria-label="Next scene">→</button>
-      <button type="button" data-tour-full aria-label="Show only the board, full screen"
+      <button type="button" data-tour-prev title="Previous scene" aria-label="Previous scene">←</button>
+      <button type="button" data-tour-next title="Next scene" aria-label="Next scene">→</button>
+      <button type="button" data-tour-full title="Show only the board, full screen" aria-label="Show only the board, full screen"
        aria-pressed="false">full</button>
     </div>
   </div>
@@ -552,7 +552,7 @@ export const TOUR_CSS = `
    footnote: its own surface, room around the text, and a count big enough to
    read from across the board. It keeps the dashed border because it is still
    not a team — nothing is dispatched there and it holds no WIP. */
-.k-outside{background:var(--surface-2);border-width:2px;
+.k-outside{background:var(--surface-2);border-width:2px;border-style:dashed;
  padding:14px 26px;border-radius:14px;min-width:150px;text-align:center}
 .k-outside b{font:600 .95rem/1.3 var(--sans)}
 .k-outside em{color:var(--ok);font:700 1.15rem/1.4 var(--sans);
