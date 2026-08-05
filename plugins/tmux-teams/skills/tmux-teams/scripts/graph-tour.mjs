@@ -321,13 +321,18 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
     // line out of control to the sink implied a token that had somehow got back
     // there. Owner asked for the closing line.
     //
-    // Its own kind, and that is the whole care. It is NOT a `pull`: a pull is a
-    // handover, every handover must be used by some route, and a route hop
-    // carries a comet — which asserts a token is travelling. None is. The last
-    // team writes `completed`, which RELEASES custody; the controller's audit
-    // is not a leg the token rides to. So this is structure, like `owns`:
-    // drawn, never travelled.
-    if (controlId) addOnce(`team:${legs[legs.length - 1]}`, `team:${controlId}`, 'closes')
+    // A `pull` with a comet, like the hop that opens the route — owner's
+    // decision, 2026-08-06, made after the objection below was put twice.
+    //
+    // The objection, kept because it is the thing to re-open if this ever
+    // reads wrong: the last team writes `completed`, which RELEASES custody,
+    // so no token literally rides this wire the way it rides control -> team.
+    // The board previously drew nothing here for exactly that reason. What
+    // that reasoning missed is what a READER takes from a route that stops
+    // dead at its last team while a line out of control to the sink implies
+    // the work got back somehow. A journey drawn four-fifths of the way is its
+    // own kind of untrue.
+    if (controlId) addOnce(`team:${legs[legs.length - 1]}`, `team:${controlId}`, 'pull')
   }
 
   // A route is an ORDER over the wiring above, never wiring of its own. This is
@@ -348,6 +353,8 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
     for (let i = 1; i < legs.length; i += 1) {
       trip.push(`team:${legs[i - 1]}>team:${legs[i]}>pull`)
     }
+    // Home, carrying a comet like every other hop (owner, 2026-08-06).
+    trip.push(`team:${legs[legs.length - 1]}>team:${controlId}>pull`)
     return trip
   }
   const ORDERS = new Map(graph.workflows.map((workflow) => [workflow.workflow_id, orderOf(workflow)]))
@@ -566,10 +573,6 @@ export const TOUR_CSS = `
    .dry sets .34 on both, measured, so the stroke was the only difference. */
 .w-owns{stroke:var(--assign)}
 .w-pull{stroke:var(--handoff);stroke-width:2.4;opacity:.8}
-/* The route's closing relationship: the last team hands custody back and the
-   controller audits. Solid, because it is the between-teams family, but
-   quieter than a pull and carrying no comet — nothing travels it. */
-.w-closes{stroke:var(--handoff);stroke-width:1.6;opacity:.42}
 /* Escalation is a CONDITION, not a handover: nothing travels it. It is red
    because it is the same news as a rejection — work that cannot move — and it
    only crawls when a token is ACTUALLY stuck on it. An escalation line that
@@ -760,7 +763,7 @@ export const TOUR_SCRIPT = `
     // the same pixels and the board looks like it has half the wiring it has.
     // Escalation and audit both run team → controller, so they must bow apart
     // or the two meanings land on the same pixels.
-    pull: 0, escalate: -46, passed: 0, closes: 64,
+    pull: 0, escalate: -46, passed: 0,
   }
   const NS = 'http://www.w3.org/2000/svg'
   // FNV-1a, 0..1. Deterministic on purpose: the same edge desyncs the same way

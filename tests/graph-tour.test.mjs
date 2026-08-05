@@ -360,12 +360,28 @@ test('every handover is a pull, including the first leg out of the door', () => 
   // works differently than the ledger says it does.
   assert.equal(edges.some((e) => e.kind === 'send'), false, 'there is no second kind of handover')
   assert.ok(pulls.some((e) => e.from === 'team:control'), 'the door hands over by pulling too')
-  // Nothing ever pulls INTO control: the audit reads a delivery, it never
-  // takes the token back.
-  assert.equal(pulls.some((e) => e.to === 'team:control'), false)
+  // REVERSED 2026-08-06 by owner decision. This asserted that nothing ever
+  // pulls INTO control — "the audit reads a delivery, it never takes the token
+  // back" — which is true of custody: the last team writes `completed`, which
+  // RELEASES. The objection was put twice and the owner chose the closing hop
+  // anyway, on the ground that a route drawn four-fifths of the way is its own
+  // kind of untrue when a line out of control to the sink already implies the
+  // work got home. Exactly ONE pull arrives at control per route: the way home.
+  const home = pulls.filter((e) => e.to === 'team:control')
+  assert.ok(home.length > 0, 'a route is drawn all the way home')
+  assert.equal(home.every((e) => e.from !== 'team:control'), true, 'control does not pull from itself')
 })
 
-test('a token stops where custody stops — it is never sent home', () => {
+// RENAMED AND REVERSED 2026-08-06 by owner decision. It read "a token stops
+// where custody stops — it is never sent home", and the reasoning was sound:
+// the last team writes `completed`, which RELEASES custody, so nothing
+// literally rides a wire back to the controller. What it missed is what a
+// READER takes from a route drawn four-fifths of the way — stopping dead at
+// the last team while a line out of control to the sink implies the work got
+// back somehow. The owner chose the closing hop, twice, after the objection
+// was put. The old reasoning is kept above rather than deleted: it is what to
+// re-open if this ever reads wrong.
+test('a route is drawn all the way home, and every hop moves forward', () => {
   const { edges, orders } = buildTour(CONTROLLED)
   assert.deepEqual(edges.filter((e) => e.kind === 'audit'), [])
   for (const workflow of CONTROLLED.workflows) {
@@ -373,14 +389,16 @@ test('a token stops where custody stops — it is never sent home', () => {
     const legs = workflow.route.filter((teamId) => teamId !== 'control')
     // The last team writes `completed`; the controller's audit is a RELEASING
     // event, so no token travels back to it and none travels to the sink.
-    assert.equal(order.length, legs.length, 'one pull per leg, and nothing after')
-    assert.equal(order[order.length - 1], `team:${legs[legs.length - 2] ?? 'control'}>team:${legs[legs.length - 1]}>pull`)
+    assert.equal(order.length, legs.length + 1, 'one pull per leg, plus the way home')
+    assert.equal(order[order.length - 1], `team:${legs[legs.length - 1]}>team:control>pull`)
     assert.equal(order.some((key) => key.endsWith('>passed')), false, 'nothing travels the audit line')
     // Every hop must move FORWARD along the declared route. The previous
     // version reused the outbound wire for the return leg without reversing
     // it, so the dot ran controller → team a second time and jumped back —
     // and the test that guarded it only checked the key was reused.
-    const seen = ['team:control', ...legs.map((teamId) => `team:${teamId}`)]
+    // control -> each leg in order -> and home to control again. The journey
+    // ends where it started, which is what the closing hop means.
+    const seen = ['team:control', ...legs.map((teamId) => `team:${teamId}`), 'team:control']
     order.forEach((key, i) => {
       const [from, to] = key.split('>')
       assert.equal(from, seen[i], `hop ${i} leaves the node the token is actually at`)
@@ -400,7 +418,8 @@ test('a route is an order over existing wires, adding none', () => {
     }
     // One pull per leg, starting at the door. Nothing after the last team.
     const teams = workflow.route.filter((teamId) => teamId !== 'control')
-    assert.equal(order.length, teams.length)
+    // legs + the way home (owner, 2026-08-06)
+    assert.equal(order.length, teams.length + 1)
     assert.match(order[0], /^team:control>.*>pull$/)
     for (const key of order) assert.match(key, />pull$/)
   }
@@ -625,10 +644,10 @@ test('an edge told to leave the scene cannot be painted back in', () => {
   for (const workflow of CONTROLLED.workflows) {
     const legs = workflow.route.filter((teamId) => teamId !== 'control')
     if (!legs.length) continue
-    const closing = `team:${legs[legs.length - 1]}>${controlNode.id}>closes`
+    const closing = `team:${legs[legs.length - 1]}>${controlNode.id}>pull`
     assert.ok(wireKeys.has(closing), `${workflow.workflow_id} has no closing wire home: ${closing}`)
     const order = tour.orders[workflow.workflow_id] || []
-    assert.equal(order.some((k) => k.endsWith('>closes')), false, 'the closing wire carries no comet')
+    assert.equal(order[order.length - 1], closing, 'the route must finish on the way home, carrying a comet')
   }
 
   // Murat's rule, argued into existence 2026-08-06 when four "done" reports in
