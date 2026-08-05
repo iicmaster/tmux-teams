@@ -224,6 +224,20 @@ export function declaredEffort(graph, teamId, agentId) {
   return team?.agents.find((agent) => agent.agent_id === agentId)?.effort || ''
 }
 
+// GitHub #47 phase 2 (§3.5): a seat's declared palette, read the same way as
+// its model/adapter/effort above — off the agent's own resolved seat, never
+// re-paired from a role block. `null` for a seat that declared none, or the
+// fully-resolved array workflow-graph.mjs already computed (every entry's
+// adapter/effort/display_model/bucket default already applied — nothing here
+// re-derives a default). The outer controller can never declare one (§3.2.1,
+// AC103 refuses it at load) so it reads null here unconditionally rather than
+// reaching for a field that does not exist on it.
+export function declaredPalette(graph, teamId, agentId) {
+  if (agentId && agentId === graph.outer_controller_id) return null
+  const team = graph.teams.find((entry) => entry.team_id === teamId)
+  return team?.agents.find((agent) => agent.agent_id === agentId)?.palette ?? null
+}
+
 // The same request/expectation pair `modelEnv` sends, for the other half of
 // identity `acp-companion.mjs` already verifies: `ACP_REASONING_EFFORT` is the
 // request, `ACP_EXPECT_REASONING_EFFORT` is what holds the receipt to it. This
@@ -956,6 +970,20 @@ const attemptsBy = (item, agentIds) =>
   sinceResume(item).filter((entry) => entry.event === 'assigned' && agentIds.includes(entry.agent_id)
     && !legNeverStarted(item, entry.task_id)).length
 
+// GitHub #47 phase 2 (§3.5): how many legs on ONE seat, since the last resume,
+// never reached the model — the same `work_observed: false` fact §4.10
+// already defined, summed instead of excluded. Scoped to a single `agentId`,
+// not a role's whole pool, because a palette is declared PER SEAT (§3.5), not
+// per role — cycling through it is a fact about the seat a token is parked
+// on, not about every seat sharing its role. This is what `dispatchOn` (below)
+// keys a palette's next candidate, and its exhaustion, on: the runner cannot
+// tell a rate limit from any other transport failure, so it keys on the one
+// fact the ledger actually carries, exactly as `attemptsBy`'s own exclusion
+// does — never on a terminal string, never on "any failure".
+const missesBy = (item, agentId) =>
+  sinceResume(item).filter((entry) => entry.event === 'assigned' && entry.agent_id === agentId
+    && legNeverStarted(item, entry.task_id)).length
+
 // What the budget was actually spent ON. `all failed` was printed whatever
 // happened: three quality rejections — every leg `done`, the team's own loop
 // running exactly as §1 allows — and three legs killed by a gate that was down
@@ -1015,6 +1043,50 @@ function nextStep(graph, team, item, { busy, busyTasks, nowMs, zombieSec, answer
   // specifically, exactly like the no-hint "every worker busy" wait already
   // does — it is not a new way to stall forever, because the same zombie
   // detection that frees any busy seat frees this one too.
+  // GitHub #47 phase 2 (§3.5): once a seat is chosen — by hint or by the free
+  // pick below, exactly as today — a seat that declared a palette resolves
+  // WHICH entry from its OWN ledger history rather than always the first.
+  // `dispatch()`'s `declaredModel`/`declaredAdapter`/`declaredEffort` already
+  // fall back to a palette's first entry (workflow-graph.mjs's `paletteFirst`)
+  // for a seat that has never run, so this is only ever consulted for a
+  // SECOND or later leg on that seat — "the starting point" (§3.5) already
+  // covers the first one via the resolved graph itself, with no ledger read
+  // needed.
+  //
+  // A seat with no palette returns the exact `{ action: 'dispatch', role,
+  // agent_id }` shape `want` always returned — no `candidate` key at all —
+  // which is what keeps a no-palette seat's dispatch byte-for-byte unchanged
+  // (§3.5 AC3): the tick loop below only reaches for `plan.candidate` when it
+  // is present.
+  const dispatchOn = (role, agentId) => {
+    const palette = declaredPalette(graph, team.team_id, agentId)
+    if (!palette) return { action: 'dispatch', role, agent_id: agentId }
+    const misses = missesBy(item, agentId)
+    // "reaching the entry the dispatcher started from again, having gotten no
+    // answer from any of them" (§3.5) — every entry has now been tried once,
+    // in declared order, and NONE of them ever reached the model. Escalating
+    // HERE, instead of dispatching entry 0 a second time, is what stops a
+    // palette walk from being able to spend legs forever on candidates that
+    // all refuse the same way; it is a tighter, palette-scoped bound that
+    // fires long before `legCeiling` (checked above, unconditionally, on
+    // every `assigned` this seat's legs still add to) ever could.
+    if (misses >= palette.length) {
+      return {
+        action: 'escalate',
+        reason: `${agentId}'s ${palette.length}-entry palette cycled once since the last resume with no candidate`
+          + ` ever reaching the model (${misses} transport failure(s)) — a human must fix the declaration or`
+          + ' the outage, not spend another leg guessing',
+      }
+    }
+    // Declared order, wrapping past the end back to the first (§3.5). Entry 0
+    // is "the starting point"; each `work_observed: false` since is read as
+    // the fact the ordering semantics call a rate-limited or refused attempt
+    // — never a genuine worker failure, which retries this same candidate
+    // exactly as a no-palette seat already does, via `attemptsBy`/MAX_ATTEMPTS
+    // above.
+    return { action: 'dispatch', role, agent_id: agentId, candidate: palette[misses % palette.length] }
+  }
+
   const want = (role, hint = null) => {
     const pool = role === 'worker' ? team.worker_ids
       : role === 'dispatcher' ? [team.dispatcher_id] : [team.evaluator_id]
@@ -1048,11 +1120,11 @@ function nextStep(graph, team, item, { busy, busyTasks, nowMs, zombieSec, answer
             + ' rather than picking a different free one',
         }
       }
-      return { action: 'dispatch', role, agent_id: hint }
+      return dispatchOn(role, hint)
     }
     const free = pool.find((agentId) => !busy.has(agentId))
     if (!free) return { action: 'wait', role, reason: `every ${role} on this team is busy` }
-    return { action: 'dispatch', role, agent_id: free }
+    return dispatchOn(role, free)
   }
 
   if (last.event === 'escalated') {
@@ -1292,6 +1364,12 @@ export function planDispatches(graph, items, busy, {
         plans.push({
           action: 'dispatch', work_item: workItem, team: teamId, role: step.role,
           agent_id: step.agent_id, workflow: item.workflow,
+          // GitHub #47 phase 2 (§3.5): the palette entry `dispatchOn` chose for
+          // THIS leg, carried through so the tick loop below can dispatch it
+          // instead of the seat's declared default. Absent for a no-palette
+          // seat's plan (`step.candidate` is undefined there), so the spread
+          // adds nothing and this object is byte-for-byte what it always was.
+          ...(step.candidate ? { candidate: step.candidate } : {}),
         })
         continue
       }
@@ -1868,19 +1946,27 @@ export function tick(repoArg, {
       decisions.push({ work_item: plan.work_item, action: 'no-brief', reason: brief.reason })
       continue
     }
-    const model = declaredModel(graph.value, plan.team, plan.agent_id)
+    // GitHub #47 phase 2 (§3.5): `plan.candidate` is the entry `dispatchOn`
+    // (loop-runner.mjs, `nextStep`) chose for THIS leg of a palette seat — set
+    // only from a second or later leg on that seat, and already the fully
+    // resolved shape workflow-graph.mjs produces (`model`/`adapter`/`effort`
+    // with every default applied), so it needs no further resolution here. A
+    // seat with no palette, or a palette seat's very first leg, carries no
+    // `candidate` and resolves exactly as it always has.
+    const model = plan.candidate ? plan.candidate.model : declaredModel(graph.value, plan.team, plan.agent_id)
     // Two different facts, said differently: a name the dispatch will hold the
     // adapter to, or the account default nobody pinned.
     const says = modelEnv(model).ACP_EXPECT_MODEL || 'account default (none requested)'
-    const adapter = declaredAdapter(graph.value, plan.team, plan.agent_id)
-    const effort = declaredEffort(graph.value, plan.team, plan.agent_id)
+    const adapter = plan.candidate ? plan.candidate.adapter : declaredAdapter(graph.value, plan.team, plan.agent_id)
+    const effort = plan.candidate ? plan.candidate.effort : declaredEffort(graph.value, plan.team, plan.agent_id)
     const effortSays = effortEnv(effort).ACP_EXPECT_REASONING_EFFORT || 'unset (adapter default)'
-    if (!apply) { log(`would dispatch ${plan.agent_id} (${plan.role}) for ${plan.work_item} lane=${adapter} model=${says} effort=${effortSays}`); continue }
+    const paletteSays = plan.candidate ? ` bucket=${plan.candidate.bucket}` : ''
+    if (!apply) { log(`would dispatch ${plan.agent_id} (${plan.role}) for ${plan.work_item} lane=${adapter} model=${says} effort=${effortSays}${paletteSays}`); continue }
     const taskId = spawnLeg(repo, {
       workItem: plan.work_item, team: plan.team, role: plan.role,
       agentId: plan.agent_id, workflow: plan.workflow, model, adapter, effort,
     }, brief.path, stallSec, { spawnFn })
-    log(`start  ${plan.agent_id} (${plan.role}) <- ${plan.work_item} task=${taskId} lane=${adapter} model=${says} effort=${effortSays}`)
+    log(`start  ${plan.agent_id} (${plan.role}) <- ${plan.work_item} task=${taskId} lane=${adapter} model=${says} effort=${effortSays}${paletteSays}`)
     started.push({ ...plan, task_id: taskId, model, effort })
   }
 
