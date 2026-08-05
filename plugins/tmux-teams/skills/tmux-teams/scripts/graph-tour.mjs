@@ -529,7 +529,12 @@ export const TOUR_CSS = `
 /* Every handover is one colour. Green made the return leg and the delivery
    read as a different KIND of relationship, when they are the same one —
    work changing hands — at a different moment. */
-.w-passed{stroke:var(--handoff);stroke-width:2.6;opacity:.85}
+/* The sink line follows the same rule as every other solid wire: quiet until
+   something is travelling it. It was left bright when the rule was written for
+   pulls, so on the opening scene nine wires were pale and this one was not —
+   same colour, different weight, and nothing to explain the difference. */
+.w-passed{stroke:var(--handoff);stroke-width:1.8;opacity:.38}
+.wire.w-passed.carrying{stroke-width:2.6;opacity:.9}
 .tour-token{fill:var(--handoff);filter:drop-shadow(0 0 6px var(--handoff))}
 /* Green, like the ring on the seat it is feeding: this token is evidence of
    work in hand, not an explanation of how a route runs. */
