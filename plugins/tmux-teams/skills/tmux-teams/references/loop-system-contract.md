@@ -303,14 +303,21 @@ measurement.
 }
 ```
 
+A `seats` entry may instead carry `palette` — `{ "<AGENT_ID>": { "palette": [{ "model": "<MODEL>", "adapter": "...", "effort": "<EFFORT>", "display_model": "<MODEL>", "bucket": "<BUCKET>" }, "..."] } }`
+— an ordered list of candidate seat specs for that ONE seat, in place of
+`model`/`adapter`/`effort`/`display_model`, never alongside them. See §3.5.
+
 `AGENT_ID` = `^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$` ·
 `GRAPH_ID` = `^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$` ·
 `name` = 1–160 characters, no control characters ·
 `MODEL` = 1–128 characters, no control characters ·
 `EFFORT` = 1–64 characters, no control characters — optional everywhere it
-appears; omitted means no reasoning effort is requested, not a default value.
+appears; omitted means no reasoning effort is requested, not a default value ·
+`BUCKET` = same shape as `MODEL` (1–128 characters, no control characters),
+compared for equality only — this layer never learns what a bucket MEANS (§3.5).
 
-Bounds: 1–100 teams, 1–100 workers per team, 1–50 workflows.
+Bounds: 1–100 teams, 1–100 workers per team, 1–50 workflows, 1–8 entries per
+declared palette.
 
 ### 3.1 `wip_limit` is derived, never declared
 
@@ -492,6 +499,144 @@ evaluator brief, which gains one additional instruction only for a `produces:
 `TARGET_VERDICT:` line out of that same evaluator's outbox. It does not change
 `pull-controller.mjs`'s gate (§7): the only pullable state remains `reviewed`
 with `verdict: pass`, unconditionally, exactly as before this field existed.
+
+### 3.5 A seat's model palette — declaration only (GitHub #47 phase 1)
+
+**This section declares a SHAPE and what it will mean. It does not make
+anything read it.** `loop-runner.mjs`, `ledger-validate.mjs`,
+`ledger-writer.mjs`, `acp-companion.mjs` and `dispatch-facts.mjs` are
+unchanged by this amendment. A graph that declares a palette validates,
+normalizes, and exposes it on `teams[].agents[]`; the runner dispatches
+exactly as it did before this section existed, reading the same single-value
+`model`/`adapter`/`effort`/`display_model` fields it always has. GitHub #47's
+own text names this split on purpose: dispatch, `assigned` carrying the chosen
+model, and the fallback machinery are a second phase, so that the two phases
+do not both edit `loop-runner.mjs` and this contract at once.
+
+**Not a role, and not a model name.** GitHub #47 asked for "a role's model" to
+become an array; this amendment answers differently, and says why. A model is
+`(executable, alias) → real name` — `opus` on one lane is a different vendor
+entirely from `opus` on another — so an array of alias strings would be
+meaningless on its own: what an alias resolves to is fixed by the adapter
+already named for it. A palette entry is therefore a **whole seat spec**,
+reusing the same fields a `seats` override already carries (§3.2.1): `model`,
+`adapter`, `effort`, `display_model`, plus `bucket` (below).
+
+It is declared per **seat**, not per role. "One token, four candidate models"
+is a fact about ONE worker seat, not about the `worker` role as a whole — a
+team may still have several worker seats, each running its own single model
+or its own independent palette. Binding this to `models[role]` instead would
+force every seat on a role to share one palette, which is not the shape GitHub
+#47 asked for and is not what any concrete case in it needs. So:
+
+```json
+"seats": { "<AGENT_ID>": { "palette": [
+  { "model": "<MODEL>", "adapter": "claude | codex | agy", "effort": "<EFFORT>", "display_model": "<MODEL>", "bucket": "<BUCKET>" },
+  "..."
+] } }
+```
+
+**`palette` replaces the single-value fields on that seat; it never sits
+beside them.** A `seats` entry may declare `model`/`adapter`/`effort`/
+`display_model`, OR `palette`, never both — a single-value field next to a
+`palette` would read as a default the palette falls back to and would in fact
+be silently ignored, which is the exact "declaration that changes nothing"
+shape §3.2.1 already refuses for an empty or restating seat entry. The
+controller may not declare a seat at all (§3.2.1, unchanged) and so may not
+declare a palette either.
+
+**A palette entry's `model` is required — it has no role default to fall back
+to.** A plain seat override's `model` may be omitted (the role's `models[role]`
+stands in); one entry in an array has nothing else to mean if it names no
+model. Every other field on an entry is optional with the same resolution a
+plain seat override already has: `adapter` defaults to the seat's role's lane,
+`effort` defaults to "nothing requested", `display_model` defaults to `null`.
+Every field is validated by the exact §3.2 / §3.2.1 / §3.2.2 checks a plain
+seat override already runs — `isModelName`, `ADAPTERS.has`, `isEffortName` —
+applied per entry rather than once; this amendment does not invent a second
+validator.
+
+**Bounds: 1 to 8 entries.** Zero says nothing, which is the same "empty
+declaration" shape every other optional block in this file already refuses
+rather than silently accepting. Eight is a real ceiling, not advice, for the
+same reason `MAX_WORKERS` is one (§3): a palette longer than that is far more
+likely to be a mistake — enumerating every model a provider has ever shipped —
+than a real fallback roster an operator would actually maintain.
+
+**Bucket — the field that makes fallback checkable.** Rate limits are per
+model-family within a provider, not per provider: codex counts its `gpt`
+family separately from `codex-spark`, agy counts `gemini` separately from
+non-`gemini`, claude counts `fable` separately from `opus`/`sonnet`/`haiku`.
+`bucket` names that family. It is **free-form and shape-checked only**,
+exactly like a model name under §3.2 — the system never needs to know what a
+bucket MEANS, only whether two of them are equal, so it reuses `isModelName`'s
+shape check (non-empty, ≤128 characters, no control characters) rather than
+building a second one or holding a list of known buckets, which §3.2's own
+model rule already forbids for exactly this kind of field.
+
+`bucket` defaults to the entry's own **resolved adapter** when unspecified —
+not to the seat's role, to the one LANE this specific entry actually runs
+on — so two entries on the same lane are the same bucket by default unless a
+finer name is given, and every graph that predates this field (none can
+declare a palette yet) keeps meaning what it meant.
+
+**Two consecutive entries in the same bucket are refused, not merely
+warned.** This is the rule the whole design turns on: two adjacent entries
+drawing on the same rate limit are not a fallback — trying the second right
+after the first spends a leg (§4.10) to learn nothing a wrong guess on the
+first entry hadn't already established. Refusing was chosen over warning for
+two reasons. First, consistency: every other malformed declaration in this
+file fails **closed** (§3.2's own table says so in as many words), and this
+validator has no "accepted, with a warning" channel anywhere else — building
+one for this single rule would be new machinery bolted onto a shape checker,
+not a shape check. Second, cost: the failure this rule prevents is silent and
+expensive — a graph that looks like it declares four-deep fallback but
+actually wastes its first retry attempt on nothing, discovered only once
+GitHub #45 part 2's leg-attempt accounting is watched closely enough to
+notice the wasted leg. A graph author gets the same signal §3.1 already gives
+for a mismatched `wip_limit`: told immediately, at load, naming the team, the
+seat and the bucket, rather than made to discover it from a runtime symptom
+much later. The check compares only **adjacent** entries in declared order —
+a repeated bucket separated by a different one (A, B, A) is accepted, because
+at least one other candidate was tried in between and the repeat is not
+spending a leg to learn nothing it hadn't already risked learning.
+
+**`wip_limit` does not change when a palette grows.** This is the whole point
+of the item (§3.1) and follows from where the palette lives: it is declared on
+`seats[agentId]`, which never touches `worker_ids`, and `wip_limit` is derived
+from `worker_ids.length` alone. A seat with an eight-entry palette is still
+one seat; a team with one worker seat and an eight-entry palette on it is
+still WIP 1.
+
+**Resolved shape.** Every `teams[].agents[]` entry gains a `palette` field:
+`null` for a seat that declared none, or the fully-resolved array (every
+entry's `adapter`/`effort`/`display_model`/`bucket` default applied) for a
+seat that did. The existing single-value `model`/`adapter`/`effort`/
+`display_model` on that same `agents[]` entry resolve to the palette's
+**first** entry — the one reading this contract before phase 2 exists sees
+exactly what it has always seen, a single seat spec, and it is the one at the
+front of declared order. This is not a dispatch decision; it is what "the
+starting point" (below) already has to mean in a system where nothing yet
+chooses anything else.
+
+**Ordering semantics — written down now, enforced later.** GitHub #47's own
+text says both "the dispatcher picks" and "fall back in order", and read
+together those need one more sentence or two plausible rules exist and code
+would silently pick one. The reading this contract commits to: **the
+dispatcher's choice is the starting point, the array is the order after it,
+and a full cycle with nothing answering is an escalation rather than another
+retry.** Concretely — once phase 2 exists — a dispatcher may still name a
+starting seat/entry the way `worker_hint` already does (§4.9); from there,
+a rate-limited or refused attempt advances to the NEXT entry in declared
+order, wrapping past the end back to the first; and reaching the entry the
+dispatcher started from again, having gotten no answer from any of them, is
+the same shape §11.3's `escalate` decision already reads a token's own next
+step as — a case for the outer controller, not a ninth attempt at models that
+already refused eight times. This is **not enforced by any code today** and
+carries no test; §14.1 lists it as an unenforced clause. It is written here
+because §15's own change-control rule already burned this project once on an
+undocumented ordering choice, and this amendment exists specifically so
+phase 2 does not have to invent one under time pressure.
 
 ## 4. Custody ledger contract
 
@@ -1877,6 +2022,19 @@ Added 2026-07-28. Each row names the file holding its test.
 | AC95 | §16 | `legOutcomes` lists every closed leg (`delivered`/`lost`/`reviewed`) and counts repeated rejections, so a caller need not fold the ledger itself | `agent-seat-reads.test.mjs` |
 | AC96 | §16 | no return value from any of the three functions, across a found case, a not-found case, and a hostile (path-shaped) argument, contains `.jsonl`, `.tmux-teams`, `.mailbox-out`, or an absolute path — and the module goes through the sanctioned aggregate ledger reader, keeping the ledger-reader ratchet green with no new baseline entry | `agent-seat-reads.test.mjs` |
 
+Added 2026-08-05, GitHub #47 phase 1 (declaration only — no runtime code reads
+a palette yet).
+
+| # | Clause | Assertion | Test file |
+| --- | --- | --- | --- |
+| AC97 | §3.5 | a seat declaring a valid palette loads and validates; a graph declaring none is byte-for-byte the graph it already was (`source_digest` unchanged) | `workflow-graph-palette.test.mjs` |
+| AC98 | §3.5 | a malformed palette entry — bad model, adapter, effort, display_model, bucket, an unknown key, a non-object entry, or a palette of the wrong length — is refused, naming the team and the seat | `workflow-graph-palette.test.mjs` |
+| AC99 | §3.5 | `palette` alongside `model`/`adapter`/`effort`/`display_model` on the same seat is refused, not silently ignored | `workflow-graph-palette.test.mjs` |
+| AC100 | §3.5 | two consecutive palette entries in the same bucket are refused — explicitly declared, and defaulted from an unstated bucket to a shared lane — while a repeat separated by a different bucket is accepted | `workflow-graph-palette.test.mjs` |
+| AC101 | §3.1, §3.5 | `wip_limit` is unchanged by a palette of any length, on a team with exactly one worker seat | `workflow-graph-palette.test.mjs` |
+| AC102 | §3.5 | a seat's resolved `palette` on `agents[]` is `null` when none was declared, and the seat's single-value `model`/`adapter`/`effort`/`display_model` resolve to the palette's first entry when one was | `workflow-graph-palette.test.mjs` |
+| AC103 | §3.5 | a palette for a seat not on the team, or for the outer controller, is refused by the same checks §3.2.1 already runs for a plain seat override | `workflow-graph-palette.test.mjs` |
+
 ### 14.1 Clauses this contract does NOT yet enforce
 
 Declared here rather than left to be discovered. Each is a rule the code follows
@@ -1890,6 +2048,7 @@ today with nothing stopping it from regressing.
 | §12.7.6 | auto-refresh is pausable and the page states its own freshness — only the asset's existence and parseability are tested |
 | §13 | the prohibitions are review rules, not runtime behaviour; they are enforced by reading a diff |
 | §13, `mcpServers` | no test asserts `session/new` and `session/load` still send `mcpServers: []`; the closure is a code-review fact about `acp-companion.mjs`, not a running guard |
+| §3.5 | the palette ordering rule ("the dispatcher's choice is the starting point, the array is the order after it, a full cycle unanswered is an escalation") — no code reads a palette for dispatch yet, so nothing enforces or could yet regress this; it is decided in advance for GitHub #47 phase 2 to build against, not a behaviour phase 1 ships |
 
 ### 14.2 Known contradictions and live defects, 2026-07-28
 
@@ -2241,6 +2400,50 @@ line.
    editing a file while a worker holds it has already cost one overwrite.
 
 ### Amendment log
+
+**2026-08-05 — GitHub #47 phase 1: a seat may declare an ordered palette of
+candidate models, declaration only.** New §3.5; new AC97–103 (§14) and the
+palette-ordering row in §14.1. `workflow-graph.mjs`'s `seats[agentId]` gains
+an optional `palette` key — an array of 1 to 8 whole seat specs (`model`
+required, `adapter`/`effort`/`display_model`/`bucket` optional, the same
+fields and the same validators §3.2.1's plain seat override already uses) —
+mutually exclusive with `model`/`adapter`/`effort`/`display_model` on that
+same seat, refused if declared alongside them. `wip_limit` (§3.1) is
+unaffected by construction: the palette lives on a SEAT, never on
+`worker_ids`, so a one-worker team with an eight-entry palette is still WIP 1
+— GitHub #45's own defect, that a model palette used to cost a worker seat
+per candidate, is closed by where this lives, not by a special case. `bucket`
+names the rate-limit family a candidate draws on (per model-family within a
+provider, not per provider — codex's `gpt` vs `codex-spark`, agy's `gemini`
+vs non-`gemini`, claude's `fable` vs `opus`/`sonnet`/`haiku`); it is
+shape-checked only, exactly like a model name (§3.2), reusing `isModelName`
+rather than a second checker, and defaults to the entry's own resolved
+adapter when unspecified. Two CONSECUTIVE entries sharing a bucket are
+refused rather than warned — this validator fails closed everywhere else in
+this file and has no "accepted with a warning" channel to reuse, and the
+failure a silent accept would produce is expensive (a leg spent, per §4.10,
+learning nothing a first refusal hadn't already shown) and would surface only
+much later, as a runtime symptom, instead of at load — a non-consecutive
+repeat (A, B, A) is accepted, because something else was tried in between.
+`teams[].agents[]` gains a `palette` field, `null` unless declared; the
+existing single-value `model`/`adapter`/`effort`/`display_model` on that same
+entry resolve to the palette's FIRST entry, so a reader that predates this
+amendment sees exactly the seat spec it always has. The ordering semantics
+GitHub #47's own text raises — the dispatcher's choice as the starting point,
+the declared array as the order after it, a full unanswered cycle as an
+escalation rather than a ninth retry — are written into §3.5 and marked
+**unenforced** (§14.1): no code reads a palette for dispatch yet.
+`loop-runner.mjs`, `ledger-validate.mjs`, `ledger-writer.mjs`,
+`acp-companion.mjs`, `dispatch-facts.mjs` and `skills/party-mode/` are
+untouched, on purpose — GitHub #47 part 2 (`assigned` carrying the chosen
+model, and the fallback/escalation machinery itself) is deliberately a
+separate phase, so the two do not both edit `loop-runner.mjs` and this
+contract in one pass. Proven in
+`tests/workflow-graph-palette.test.mjs`: AC97–103. A mutation check —
+deleting the consecutive-bucket refusal — was run by file copy with a SHA-256
+checksum verifying the restore, never by reversing a `str.replace`; removing
+the check turns the two consecutive-bucket tests and the dedicated mutation
+test RED, on `result.ok`, not on any wording.
 
 **2026-08-05 — D1: the three read tools an agent seat actually needs.** New
 file `scripts/agent-seat-reads.mjs`; new §16 records the surface, and AC93–96
