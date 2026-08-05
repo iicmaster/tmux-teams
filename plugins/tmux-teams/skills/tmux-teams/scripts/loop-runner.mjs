@@ -880,8 +880,48 @@ const sinceResume = (item) => {
   return index === -1 ? item.custody : item.custody.slice(index + 1)
 }
 
+// GitHub #45 part 2: a leg that died at the transport — the adapter refused to
+// start, the declared model was rejected, the provider was rate-limited before
+// a single prompt round-tripped — used to count exactly like a leg the worker
+// actually ran and failed, because this filter consulted nothing but the
+// presence of `assigned`. A seat whose provider is down could burn all of
+// MAX_ATTEMPTS on legs that never began, and `attemptsBy` would still say the
+// pool was spent.
+//
+// The fix does NOT stop writing `assigned` for a leg that never started (§4.10
+// decision 1): it stays a leg — it occupies the team, it still counts against
+// `legCeiling` a few lines below, and a reader can still see it happened — it
+// is simply excluded from the ATTEMPT count specifically. Deferring the
+// `assigned` write until the transport proves itself was the other option on
+// the table and was rejected: `acp-companion.mjs` writes it before spawning
+// the adapter on purpose (its own comment: "create the initial immutable-ish
+// footprint before spawn"), and losing that footprint would resurrect the
+// exact unbounded-respawn shape `attemptsBy`'s own history comment records
+// (BLOCKER 4, 2026-08-04) for a token whose task id could never be assigned.
+//
+// `legOutcome` reads the fact from the LEDGER, not from absence. `lost` is
+// deliberately never treated as "never started": §4 defines it as "an
+// assignment whose process is gone and which recorded nothing" — that is as
+// true of a leg killed after real, meaningful work as it is of one that never
+// began, and the ledger alone cannot tell those two apart (a killed process
+// looks exactly like a process that was never given a turn). Only
+// `acp-companion.mjs`, the sole writer of `delivered`, is present at the
+// moment a leg fails and can say which one happened — so only an explicit
+// `work_observed: false` on `delivered` excludes a leg, never the absence of
+// a line. A `delivered` with `work_observed` missing (every line written
+// before this fix existed) or `true` counts exactly as before: the exclusion
+// only ever narrows what counts when the evidence explicitly says so, which
+// is what keeps a genuine worker failure — three quality rejections, three
+// legs a review gate killed after real evidence, three legs the runner itself
+// declared `lost` — spending its attempt exactly as before.
+const legOutcome = (item, taskId) =>
+  item.custody.find((entry) => entry.event === 'delivered' && String(entry.task_id) === String(taskId)) ?? null
+
+const legNeverStarted = (item, taskId) => legOutcome(item, taskId)?.work_observed === false
+
 const attemptsBy = (item, agentIds) =>
-  sinceResume(item).filter((entry) => entry.event === 'assigned' && agentIds.includes(entry.agent_id)).length
+  sinceResume(item).filter((entry) => entry.event === 'assigned' && agentIds.includes(entry.agent_id)
+    && !legNeverStarted(item, entry.task_id)).length
 
 // What the budget was actually spent ON. `all failed` was printed whatever
 // happened: three quality rejections — every leg `done`, the team's own loop

@@ -1298,6 +1298,27 @@ let terminationReason = 'none'
 let lastProtocolActivityMs = startedMs
 let lastMeaningfulProgressMs = startedMs
 let meaningfulProgressCount = 0
+// GitHub #45 part 2: whether this leg ever got a turn, as opposed to dying at
+// the transport (spawn refused, adapter rejected the declared model, provider
+// rate-limited before a prompt round-tripped). `meaningfulProgress` already
+// fires for a strictly wider set of signals — including the bare protocol
+// handshake (`initialize`/`session/new`/`session/load`/
+// `session/set_config_option` responses) succeeding, which proves the
+// transport works but not that the model was ever asked to do anything.
+// `workObserved` narrows that to kinds that are themselves evidence of real
+// agent activity: a tool call, a message/thought chunk, a plan update, a
+// completed prompt turn, or the final receipt commit. Read at the point of
+// failure (`recordTerminal`, below) and written onto the `delivered` custody
+// line as `work_observed` — the ONE fact the ledger did not have before this,
+// and the only channel between this process and the runner that decides
+// whether the leg's `assigned` line should draw against the worker's attempt
+// budget. A new call site defaults to counting as work (it is excluded here
+// explicitly, not included), so an unclassified future kind fails toward a
+// spent attempt, never toward a free one.
+const HANDSHAKE_ONLY_PROGRESS_KINDS = new Set([
+  'initialize_response', 'session_new_response', 'session_load_response', 'session_set_config_option_response',
+])
+let workObserved = false
 let consecutiveMisses = 0
 let leaseAnchorMs = startedMs
 let nextLeaseExpiryMs = startedMs + stallMs
@@ -1746,6 +1767,7 @@ function meaningfulProgress(kind, details = {}) {
   lastMeaningfulProgressMs = now
   leaseAnchorMs = now
   meaningfulProgressCount = Math.min(Number.MAX_SAFE_INTEGER, meaningfulProgressCount + 1)
+  if (!HANDSHAKE_ONLY_PROGRESS_KINDS.has(kind)) workObserved = true
   consecutiveMisses = 0
   nextLeaseExpiryMs = now + stallMs
   if (wasSuspected || wasReportedStall) {
@@ -2222,6 +2244,11 @@ function recordTerminal(terminal, {
     terminal,
     timed_out: timedOut,
     evidence_present: evidencePresent,
+    // GitHub #45 part 2 (§4.10): the one positive fact that lets a reader with
+    // only the ledger tell "the model was never asked to do anything" from "the
+    // worker tried and failed" — see `workObserved`'s own comment above for what
+    // sets it and why the classification defaults toward counting.
+    work_observed: workObserved,
     ...(outboxDigest ? { outbox_digest: outboxDigest } : {}),
   })
   const facts = settlementFacts(settlement)
