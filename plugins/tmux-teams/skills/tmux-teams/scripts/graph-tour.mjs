@@ -477,7 +477,7 @@ export const TOUR_CSS = `
 .tour-halo{fill:none;stroke:var(--handoff);opacity:0;vector-effect:non-scaling-stroke}
 /* Peak at 40%, not 50%: a quick inhale and a slow exhale reads as alive, while
    a symmetric one reads as a pulse meter. */
-.tour:not(.quiet) .tour-halo{animation:tourHalo 2.6s ease-in-out infinite}
+.tour:not(.quiet) .tour-halo{animation:tourHalo 1.3s ease-in-out infinite}
 /* The live ring is green because it reports evidence, not the route colour:
    this seat has a dispatch running on it right now. It breathes on the opening
    board too — that scene is the live one, and a board that cannot show work in
@@ -796,7 +796,13 @@ export const TOUR_SCRIPT = `
         // Staggered in reading order, so the halos travel the route too. The
         // box is measured from the rendered card below — a card is
         // sized by its text, so a fixed rectangle fits nothing.
-        halo.style.animationDelay = (i * 0.35) + 's'
+        //
+        // The stagger is a FRACTION OF THE PERIOD, not a fixed wait: it was
+        // 0.35s against a 2.6s cycle, and when the cycle halved to 1.3s a fixed
+        // 0.35s would have spread four halos across 81% of it — a chase, not a
+        // pulse travelling the route. Halved with it to keep the phase
+        // relationship the stagger was chosen for.
+        halo.style.animationDelay = (i * 0.175) + 's'
         haloLayer.appendChild(halo)
         MOTION.push({ wf, el: halo, around: hop.from })
       }

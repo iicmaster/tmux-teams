@@ -527,6 +527,20 @@ test('an edge told to leave the scene cannot be painted back in', () => {
   // Fixed by weight rather than by order, because order only held until the
   // next state class was written below it: `.w-escalate.raised` restored
   // opacity .9 and kept animating on wires that had already left the scene.
+  // The halo period and its stagger are ONE decision, not two: the stagger is a
+  // fraction of the period, chosen so the halos read as a pulse travelling the
+  // route rather than a chase. Halving the period alone would spread four halos
+  // across 81% of a cycle. Pinned together so a future change to either has to
+  // notice the other. (Doubled in speed 2026-08-05 at Master's request: 2.6s →
+  // 1.3s, stagger 0.35s → 0.175s.)
+  const halo = TOUR_CSS.match(/\.tour-halo\{animation:tourHalo ([\d.]+)s/)
+  assert.ok(halo, 'the halo must declare its own animation')
+  const period = Number(halo[1])
+  const stagger = Number((TOUR_SCRIPT.match(/animationDelay = \(i \* ([\d.]+)\)/) || [])[1])
+  assert.ok(stagger > 0, 'the halo stagger must be a real number')
+  assert.equal(Number((stagger / period).toFixed(4)), 0.1346,
+    `the stagger must stay ${(0.1346 * 100).toFixed(1)}% of the period — got ${stagger}s against ${period}s`)
+
   const off = TOUR_CSS.match(/\.wire\.off\{([^}]*)\}/)
   assert.ok(off, 'the rule must exist')
   assert.match(off[1], /opacity:0!important/)
