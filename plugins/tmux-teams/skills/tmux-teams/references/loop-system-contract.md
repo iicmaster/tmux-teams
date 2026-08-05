@@ -1477,6 +1477,72 @@ heartbeat in the same repo would report a loop that is not running.
 Failing to stamp never takes a tick down: moving work matters more than
 describing the move.
 
+### 11.3 Why a token was passed over — `.tmux-teams/decisions/latest.json`
+
+Every refusal the tick decides is spoken once, to the runner's own log, and
+nowhere else: a seat the runner would not wait on, a history it would not
+dispatch onto, a brief it could not compose, an escalation whose own mark it
+could not write. None of it survives the process that decided it — a token
+nobody looked at this tick and a token the runner considered and declined are,
+the instant the tick ends, indistinguishable. This file is the fix.
+
+```json
+{ "tick_at": "<ISO 8601 UTC>",
+  "decisions": [
+    { "work_item": "<id>", "action": "<one of the set below>",
+      "reason": "<the runner's own words, unchanged from the log line>",
+      "problems": [ { "line": 12, "code": "<code>", "detail": "<text>" } ] }
+  ] }
+```
+
+`problems` is present only on a decision that has one — today, only
+`unreliable-history` — and is the exact array `validateLedgerFileTolerant`
+already returned; nothing here recomputes it.
+
+`action` is a small closed set. Every value is read off an object the tick
+already held for an unrelated reason (the log line, or the plan itself) —
+nothing here is a taxonomy invented for this file:
+
+| `action` | Read off | Meaning |
+| --- | --- | --- |
+| `escalate` | `plan.action` (`nextStep`, §5) | the token's own next step is escalation |
+| `wait` | `plan.action` | every seat this token could use right now is busy |
+| `waiting` | `plan.action` | held on a person who has not answered yet |
+| `skip` | `plan.action` | nothing follows the token's last custody event |
+| `unreliable-history` | `validateLedgerFileTolerant(...).ok === false` | the ledger has a blocking problem, so no fresh leg may be dispatched onto it (§4.3) |
+| `no-brief` | `composeBrief(...).path === null` | no standing brief exists for the team this token would be dispatched to |
+| `wedged` | a `record(...)` call after an escalation returned `false` | the controller was dispatched and the ledger refused to record what it decided about this token; nothing will retry it on its own (§9, §14.2 item 3, AC74) |
+
+**Overwritten whole, every tick — never appended.** A file that grew forever
+beside the ledger would be a second event store, which is exactly what §13
+exists to prevent; that is why the two advisors who wanted an append-only log
+(`decisions/<date>.jsonl`) lost the argument. The cost of that choice is
+stated rather than hidden: **this file answers "why is it not moving right
+now" and cannot answer "how long has it been stuck."** A token skipped for the
+same reason forty ticks running reads identically to one skipped for the
+first time. Anyone who needs that history still has to read the log this file
+was built to stand in for — it narrows the question, it does not replace the
+log.
+
+**Only a tick that actually reached the point of evaluating tokens writes
+it.** A tick that returns before `planDispatches` ever runs — an invalid
+graph, a stale `pulse.json` — has no decisions to report, and writing
+`decisions: []` with a fresh `tick_at` would claim the board was checked and
+nothing was refused, which is false: it was never checked. Those ticks leave
+this file exactly as the last full tick left it. A full tick that genuinely
+refused nothing still writes `decisions: []` with the new `tick_at` — that
+*is* real information, and is distinguishable from "never checked" only
+because `tick_at` moved; a reader must check `tick_at`, not just whether the
+array is empty.
+
+**A dry run does not write this file**, for the same reason §11.2's heartbeat
+does not stamp on one: a simulation overwriting what a live tick actually
+decided would report decisions nobody made.
+
+Written atomically — temp file, then rename — in `.tmux-teams/decisions/`,
+for the same reason `acp-companion.mjs`'s own outbox writes are: a reader
+polling this path can otherwise open it between create and write.
+
 ## 12. The loop graph page
 
 The rules below are the contract's own. The **detail** — every node, edge, scene
@@ -1749,6 +1815,9 @@ Added 2026-07-28. Each row names the file holding its test.
 | AC74 | §9, §14.2 item 3 | a controller dispatch paid for with nothing recorded is named as stuck, not logged as bookkeeping | `loop-runner-heartbeat-model.test.mjs` |
 | AC75 | §4, §8 | an accepted intake that stated no reason says so rather than leaving a mandatory field blank | `loop-runner-heartbeat-model.test.mjs` |
 | AC76 | §4, rule 2 | an intake refusal with nowhere to send it back still names the team holding the token | `loop-runner-heartbeat-model.test.mjs` |
+| AC90 | §11.3 | a tick that refuses a token records it in `decisions/latest.json`, with its reason, and a token nobody considered is absent — both in the same test | `loop-runner-decisions.test.mjs` |
+| AC91 | §11.3 | a dry run does not write `decisions/latest.json`, so a simulation cannot impersonate a live tick's refusals | `loop-runner-decisions.test.mjs` |
+| AC92 | §11.3 | a tick that returns before evaluating any token (invalid graph, stale pulse) leaves an existing `decisions/latest.json` untouched rather than overwriting it with an empty, falsely-fresh one | `loop-runner-decisions.test.mjs` |
 
 ### 14.1 Clauses this contract does NOT yet enforce
 
@@ -2114,6 +2183,38 @@ line.
    editing a file while a worker holds it has already cost one overwrite.
 
 ### Amendment log
+
+**2026-08-05 — C1: why the runner passed over a token now survives the tick
+that decided it.** Behaviour changed in `loop-runner.mjs`; new §11.3 records
+it. Four `log()` sites decided, on the tick's own evidence, that a token would
+not be dispatched onto this tick — every seat busy (`wait`), a person still
+being waited on (`waiting`), nothing following the token's last event
+(`skip`), the token's own next step already being escalation (`escalate`), a
+ledger too broken to trust (`unreliable-history`), no standing brief for the
+team (`no-brief`), and an escalation whose own `audit_requested`/`escalated`
+mark the ledger refused to record (`wedged`, already named `STUCK` in the
+log, §14.2 item 3, AC74). All seven reached only `console.log`; nothing else
+in the system could read them back, so a token nobody had looked at and a
+token refused for cause were indistinguishable once the tick ended.
+`.tmux-teams/decisions/latest.json` now carries the same seven, unchanged from
+the object the tick already held for each — `plan.action`/`plan.reason`
+verbatim for the first four, `ledger.blocking` verbatim as `problems` for the
+fifth, `brief.reason` verbatim for the sixth, and the `wedged` closure's own
+constructed message for the seventh. Two advisors disagreed on shape: one
+wanted `decisions/<date>.jsonl`, appended, so a token stuck on the same reason
+for 40 ticks would be visible as a pattern; two wanted overwrite, because an
+append-only file beside the ledger is a second event store, which is the
+disease §13 exists to prevent. Overwrite was built; §11.3 states the ceiling
+this creates — the file answers "why is it not moving right now" and cannot
+answer "how long has it been stuck" — rather than letting it be discovered.
+Written only by a tick that reaches the point of evaluating tokens (an
+invalid-graph or stale-pulse tick returns earlier and leaves the file as the
+last full tick left it, so an empty `decisions: []` on disk always means
+"checked, nothing refused" and never "never checked"), and only when
+`apply` is true, matching §11.2's heartbeat: a dry run must not impersonate a
+live tick's refusals any more than it may impersonate its heartbeat. Written
+atomically (temp file, then rename) for the same reason `acp-companion.mjs`'s
+outbox writes are. Proven in `tests/loop-runner-decisions.test.mjs`: AC90–AC92.
 
 **2026-08-05 — B1/GitHub #45 part 2: a leg that never got a turn no longer
 spends the worker's attempt budget.** Behaviour changed in `loop-runner.mjs`

@@ -27,8 +27,8 @@
 // The runner dispatches and records; it never judges. Every verdict in the
 // ledger was stated by the agent whose job it was to state it.
 import { spawn, spawnSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
+import { existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -122,6 +122,39 @@ function writeHeartbeat(repo, { tickSec, dispatching, reason = '', started = 0, 
     // Failing to stamp must never take the tick down with it: the loop moving
     // work matters more than the loop describing itself.
     log(`WARN   could not write ${RUNNER_HEARTBEAT_FILE}: ${error.message}`)
+  }
+  return record
+}
+
+// ── why a token was passed over (C1, contract §11.3) ─────────────────────────
+//
+// Every refusal the tick decides below is said once, to `log()`, and nowhere
+// else — a token nobody looked at and a token refused for cause become the
+// same thing the moment the tick ends, because neither survives the process
+// that decided it. This file is the fix: it is overwritten whole every tick,
+// never appended, so it can answer "why is this not moving right now" and
+// deliberately cannot answer "how long has it been stuck" (§11.3).
+export const DECISIONS_DIR = 'decisions'
+export const DECISIONS_FILE = 'latest.json'
+
+function writeDecisions(repo, decisions) {
+  const record = { tick_at: new Date().toISOString(), decisions }
+  const dir = join(repo, '.tmux-teams', DECISIONS_DIR)
+  const path = join(dir, DECISIONS_FILE)
+  const temp = join(dir, `.${DECISIONS_FILE}.${process.pid}.${randomUUID()}.tmp`)
+  try {
+    mkdirSync(dir, { recursive: true })
+    // Temp file plus rename, same reason `acp-companion.mjs`'s outbox writes
+    // are: a reader polling this path can otherwise open it between create and
+    // write, mid-JSON.
+    writeFileSync(temp, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 })
+    renameSync(temp, path)
+  } catch (error) {
+    try { unlinkSync(temp) } catch { /* best effort */ }
+    // Same rule as the heartbeat: failing to describe a tick must never take
+    // the tick down. Moving work matters more than explaining why some of it
+    // did not move.
+    log(`WARN   could not write ${DECISIONS_DIR}/${DECISIONS_FILE}: ${error.message}`)
   }
   return record
 }
@@ -1675,6 +1708,10 @@ export function tick(repoArg, {
     return { ok: false, reason }
   }
   const briefDir = scratchDir || join(repo, '.tmux-teams', 'runner-briefs')
+  // C1: every token this tick passes over, with the reason it had at the
+  // time. Written once, atomically, at the end of a tick that actually
+  // reaches this point — see `writeDecisions` and contract §11.3.
+  const decisions = []
 
   // Harvest first. A judging leg that has finished but not been read leaves the
   // pull controller looking at a stale event — and pulling before the review
@@ -1788,7 +1825,13 @@ export function tick(repoArg, {
         : plan.action === 'wait' ? 'wait  '
           : plan.action === 'waiting' ? 'PERSON'
             : 'skip  '
-      if (plan.reason) log(`${level} ${plan.work_item}: ${plan.reason}`)
+      if (plan.reason) {
+        log(`${level} ${plan.work_item}: ${plan.reason}`)
+        // `plan.action` is already one of `nextStep`'s own small set
+        // ('escalate' | 'wait' | 'waiting' | 'skip') — reused verbatim, not
+        // re-derived from the log line's own wording.
+        decisions.push({ work_item: plan.work_item, action: plan.action, reason: plan.reason })
+      }
       continue
     }
     // DECISION 4, read half. Occupancy, the pull decision, the board and the
@@ -1807,12 +1850,24 @@ export function tick(repoArg, {
       for (const problem of ledger.blocking.slice(0, 5)) {
         log(`       line ${problem.line}  ${problem.code}  ${problem.detail}`)
       }
+      // `ledger.blocking` is the exact array `validateLedgerFileTolerant`
+      // already computed — not sliced to 5 here, unlike the printed lines
+      // above, because this is the object the tick holds, not a rendering of it.
+      decisions.push({
+        work_item: plan.work_item, action: 'unreliable-history',
+        reason: `${ledger.blocking.length} problem(s) — refusing to dispatch onto a history that cannot be believed`,
+        problems: ledger.blocking,
+      })
       continue
     }
     const item = items.get(plan.work_item)
     const team = graph.value.teams.find((entry) => entry.team_id === plan.team)
     const brief = composeBrief(repo, graph.value, { team, role: plan.role }, item, briefDir, answerDeadlineSec)
-    if (!brief.path) { log(`skip   ${plan.work_item}: ${brief.reason}`); continue }
+    if (!brief.path) {
+      log(`skip   ${plan.work_item}: ${brief.reason}`)
+      decisions.push({ work_item: plan.work_item, action: 'no-brief', reason: brief.reason })
+      continue
+    }
     const model = declaredModel(graph.value, plan.team, plan.agent_id)
     // Two different facts, said differently: a name the dispatch will hold the
     // adapter to, or the account default nobody pinned.
@@ -1877,8 +1932,12 @@ export function tick(repoArg, {
       // event does not change: the same trigger recurs next tick and the
       // unchanged-trigger brake then holds it forever. `REFUSED` alone reads as
       // a bookkeeping complaint; this is a token that is now stuck.
-      const wedged = (workItem, kind) => log(`STUCK  ${workItem}: the controller was dispatched but the ${kind}`
-        + ' mark was refused — the token is parked with nothing recorded and the loop will not retry it. Repair its ledger.')
+      const wedged = (workItem, kind) => {
+        const reason = `the controller was dispatched but the ${kind} mark was refused — the token is parked`
+          + ' with nothing recorded and the loop will not retry it. Repair its ledger.'
+        log(`STUCK  ${workItem}: ${reason}`)
+        decisions.push({ work_item: workItem, action: 'wedged', reason })
+      }
 
       for (const workItem of escalation.audits || []) {
         // The runner raised the flag; the controller has not answered yet, so
@@ -1908,6 +1967,11 @@ export function tick(repoArg, {
 
   // The healthy stamp, last, so `started` includes the controller's own leg.
   beat({ dispatching: true, started: started.length, held: heldCount(occupancy) })
+  // C1: the tick's own refusals, in one file a human can still open after the
+  // log has scrolled past. A dry run does not stamp this any more than it
+  // stamps the heartbeat above — a simulation must never impersonate what a
+  // live tick actually decided (§11.3).
+  if (apply) writeDecisions(repo, decisions)
   return { ok: true, harvested, pulls, plans, started }
 }
 
