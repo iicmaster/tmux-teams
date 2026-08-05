@@ -1566,6 +1566,15 @@ These are standing requirements. Each one was a defect first.
 - No declared model is printed as a verified one (§12.7.2).
 - No list of known model names lives anywhere in this system (§3.2).
 - The page must never dispatch, pull, or mutate anything.
+- **No dispatch may pass a non-empty `mcpServers`.** Every ACP call that
+  starts or resumes an agent's session sends the literal `mcpServers: []` —
+  no option, environment variable, `graph.json` field, or profile key may
+  make it configurable. This is the Execution seam's containment boundary: an
+  agent this system dispatches can do exactly what its brief permits and
+  nothing more, and an MCP server grants reach that nothing in §3–§9 mediates
+  or attributes. Opening it is a containment REDUCTION, not an added capability,
+  and it opens only by amending this clause — see ADR 0003. **Unenforced
+  (§15.2)** — nothing tests the literal today; see §14.1.
 
 ## 14. Acceptance criteria
 
@@ -1686,6 +1695,7 @@ today with nothing stopping it from regressing.
 | §5 | the tick order is harvest → pulls → dispatch → escalation |
 | §12.7.6 | auto-refresh is pausable and the page states its own freshness — only the asset's existence and parseability are tested |
 | §13 | the prohibitions are review rules, not runtime behaviour; they are enforced by reading a diff |
+| §13, `mcpServers` | no test asserts `session/new` and `session/load` still send `mcpServers: []`; the closure is a code-review fact about `acp-companion.mjs`, not a running guard |
 
 ### 14.2 Known contradictions and live defects, 2026-07-28
 
@@ -2037,6 +2047,22 @@ line.
    editing a file while a worker holds it has already cost one overwrite.
 
 ### Amendment log
+
+**2026-08-05 — A3: the `mcpServers: []` containment seam is now a documented
+decision, not an accident.** No behaviour change; §13 gains a prohibition
+against a non-empty `mcpServers` on dispatch, marked unenforced (§15.2)
+because nothing tests the literal sent at `session/new`
+(`acp-companion.mjs:3462`) and `session/load` (`:3478`) today — both entries
+recorded in §14.1. Per §15.3: the code was already right — every dispatch has
+sent the empty array since the seam existed — and this entry brings the
+contract into agreement with the code, not the reverse; nothing in
+`acp-companion.mjs` or any other `.mjs` file changed. ADR 0003
+(`docs/adr/0003-mcp-server-containment-seam.md`) records what the seam is, why
+it is closed, that opening it is a containment reduction rather than an added
+capability, and that only a human maintainer of this repository — not a
+`graph.json` field, not an environment variable — may authorise opening it. A
+per-seat allowlist is noted there as a future option once something concrete
+exists for an allowlist to point at; it is not built.
 
 **2026-08-05 — the dispatcher was described by what it was designed for, not by
 what it does.** No behaviour change; §1 and §4.9 are corrected to match observed
