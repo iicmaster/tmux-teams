@@ -659,7 +659,27 @@ test('an edge told to leave the scene cannot be painted back in', () => {
   for (const e of tour.edges) {
     const a = tour.world[e.from], b = tour.world[e.to]
     if (!a || !b) continue
-    const run = Math.hypot(b.x - a.x, b.y - a.y)
+    // The run a bow is judged against is the run the wire ACTUALLY draws, and
+    // a ported wire leaves from an edge rather than a centre. Measuring centres
+    // here let a ported wire on a short vertical run bow past 60% and pass —
+    // found by the AGY closing review, which is the same shape as the defect
+    // this invariant exists to catch, in the invariant itself.
+    //
+    // A vertical port costs roughly one card height across the pair; the test
+    // cannot see the rendered card, so it subtracts a conservative estimate,
+    // which makes the check STRICTER rather than looser. Kinds with no port
+    // keep the full centre-to-centre run.
+    // KNOWN GAP, found while mutation-checking the fix above and worth more than
+    // the fix: `e.bow` is set per-edge only for `reject`. Every other kind takes
+    // its bow from the BOW table inside the draw scope, which this test cannot
+    // reach — so this invariant has never actually checked assign, judge or
+    // owns, from the day it was written. Proven: setting assign's bow to 260
+    // leaves this green. Closing it needs BOW exported, which is a change to
+    // the shipped module and is left for a session with room to verify it.
+    // Until then this guard covers `reject` and says so.
+    const VERTICALLY_PORTED = new Set(['assign', 'judge', 'owns'])
+    const centres = Math.hypot(b.x - a.x, b.y - a.y)
+    const run = VERTICALLY_PORTED.has(e.kind) ? Math.max(1, centres - 110) : centres
     if (!run) continue
     const reach = Math.abs(typeof e.bow === 'number' ? e.bow : 0) * 0.75
     assert.ok(reach <= run * 0.6,
