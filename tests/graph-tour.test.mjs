@@ -318,8 +318,13 @@ test('the rework line clears its own worker row without reaching the next team',
     // beyond the edge and spent that allowance twice; the arc was measurably
     // wider than the board needed (owner, 2026-08-05). What must still hold is
     // the edge plus room for the halo that rings the outermost card.
+    // Measured from the LEFT-EDGE port the reject wire now attaches to, which
+    // already sits CARD_W / 2 outside the node centre — so the bow only covers
+    // the rest. Leaving the centre-based figure made the arc over-reach the row
+    // by exactly that half card: the same allowance spent twice, in a second
+    // place, created by the port move itself.
     const HALO_MARGIN = 20
-    assert.ok(reach > halfRow + HALO_MARGIN,
+    assert.ok(reach + 176 / 2 > halfRow + HALO_MARGIN,
       workers + ' workers: reach ' + Math.round(reach) + ' does not clear half-row ' + halfRow + ' plus its halo')
     assert.ok(reach < halfRow + 130,
       workers + ' workers: reach ' + Math.round(reach) + ' spills past COL_GAP into the next team')
@@ -598,6 +603,19 @@ test('an edge told to leave the scene cannot be painted back in', () => {
   const halfway = controlNode.x + (far - controlNode.x) / 2
   assert.ok(Math.abs(sinkNode.x - halfway) < 2,
     `the sink is at ${Math.round(sinkNode.x)}; halfway from control (${Math.round(controlNode.x)}) to the far edge (${Math.round(far)}) is ${Math.round(halfway)}`)
+
+  // A crawling dashed wire is carrying a meaning right now, so it reads heavier
+  // than one sitting still. The weight rides the SAME rule that starts the
+  // crawl, so a wire cannot be bold and motionless or moving and faint.
+  const crawl = TOUR_CSS.match(/\.tour:not\(\.still\) \.wire\.dry\{([^}]*)\}/)
+  const rest = TOUR_CSS.match(/\.wire\.dry\{([^}]*)\}/)
+  assert.ok(crawl && rest, 'both dashed-wire rules must exist')
+  assert.match(crawl[1], /animation:tourFlow/, 'the crawl rule is the one that carries the weight')
+  const num = (body, prop) => Number((body.match(new RegExp(prop + ':([\\d.]+)')) || [])[1])
+  assert.ok(num(crawl[1], 'opacity') > num(rest[1], 'opacity'),
+    'a crawling wire must be darker than a still one')
+  assert.ok(num(crawl[1], 'stroke-width') > 1.8,
+    'a crawling wire must be thicker than the base wire')
 
   const halo = TOUR_CSS.match(/\.tour-halo\{animation:tourHalo ([\d.]+)s/)
   assert.ok(halo, 'the halo must declare its own animation')

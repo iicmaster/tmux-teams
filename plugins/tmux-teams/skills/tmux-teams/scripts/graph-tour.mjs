@@ -207,7 +207,13 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
       // card's outer EDGE, so half a card of the allowance was being spent
       // twice. What remains is the row plus a margin wide enough for the halo
       // that rings the outermost card.
-      bow: -((rowWidth(team) / 2 + 24) / 0.75),
+      // Measured from the LEFT-EDGE port, not from the node centre. Reject
+      // attaches on the left of both ends (owner, 2026-08-05), so the arc
+      // already starts CARD_W / 2 out — the bow only has to cover the rest of
+      // the way past the row. Left at the centre-based figure it over-reached
+      // by exactly that half card, which is the same allowance being spent
+      // twice as before, in a second place: the port move created it again.
+      bow: -((rowWidth(team) / 2 - CARD_W / 2 + 24) / 0.75),
     })
 
     // Structure, not a claim about the past: this team HAS that dispatcher
@@ -486,8 +492,15 @@ export const TOUR_CSS = `
    stopped moving is a board where everything on screen is backed by evidence —
    the opposite of decoration, and the opposite of codegraph, where the flow is
    ambient. -20 is exactly two dash periods (5+5), so the loop has no seam. */
-.tour:not(.still) .wire.dry{animation:tourFlow 1.1s linear infinite}
-.tour.quiet .wire.dry{animation:none}
+/* A dashed wire that is CRAWLING is carrying a meaning right now, so it reads
+   heavier than one sitting still: darker and thicker while tourFlow runs, back
+   to the quiet weight the moment it stops. The look rides the same selector
+   that turns the animation on, so the two can never disagree — a wire cannot
+   be bold and motionless, or moving and faint. It beats the per-kind rules
+   below on specificity, which is what lets escalate join in without a second
+   copy of these numbers. */
+.tour:not(.still) .wire.dry{animation:tourFlow 1.1s linear infinite;opacity:.62;stroke-width:2.6}
+.tour.quiet .wire.dry{animation:none;opacity:.34;stroke-width:1.8}
 @keyframes tourFlow{to{stroke-dashoffset:-20}}
 /* Every handover is one colour. Green made the return leg and the delivery
    read as a different KIND of relationship, when they are the same one —
@@ -941,10 +954,15 @@ export const TOUR_SCRIPT = `
         return { x: node.x, y: node.y }
       }
       const PORTS = {
-        // Down the team: out of the dispatcher's underside, into the worker's top.
-        assign: ['bottom', 'top'],
-        // And back up: out of the worker's underside, into the evaluator's top.
-        judge: ['bottom', 'top'],
+        // assign and judge stay CENTRE-to-centre. Edge ports were tried on
+        // 2026-08-05 to make the visible attachment predictable, and they made
+        // the wire unreadable instead: the run between two edges is far shorter
+        // than between two centres, so the same bow swallowed the whole line
+        // and the within-team wires rendered as arcs floating between the
+        // worker cards, attached to nothing a reader could see. The attachment
+        // point measured perfectly (dx 0) the entire time — the shape was what
+        // broke, and only a screenshot showed it.
+        //
         // Rework leaves and arrives on the LEFT, which is the side its arc bows
         // to — an arc that bows left and attaches underneath reads as two
         // different lines meeting by accident.
