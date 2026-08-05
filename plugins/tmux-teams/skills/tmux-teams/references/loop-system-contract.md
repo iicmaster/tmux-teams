@@ -761,19 +761,37 @@ next tick. Recording the model is therefore reachable only by
 `acp-companion.mjs` itself adding it to its own existing, unconditional
 `appendWorkItemEvent('assigned')` call — a small change (it already computes
 `requestedModel` at that point, for its own dispatch-record text) but a change
-to a file this amendment's own scope excludes. Until that lands, a reader can
-answer "what model ran leg X" for a palette seat only by cross-referencing
-`task_id` against the runner's own dispatch log
-(`.tmux-teams/runner-logs/<taskId>.log`, which already states `model=`), not
-from the ledger — the exact limitation §3.5's intro already named as what
-phase 2 was supposed to close. `ledger-validate.mjs` is unedited by this
-amendment for the same reason stated in the phase-1 text it inherits: only
-the event NAME is a closed vocabulary, so a future `model` field on
-`assigned` needs no validator change to be accepted — and, following the
-precedent already set by `work_observed` and `worker_hint`, neither field
-shape-checked in `ledger-validate.mjs` today, this amendment does not add
-shape-checking for a field nothing yet writes. §14.1 records this as a
-genuinely unbuilt clause, not merely an untested one.
+to a file this amendment's own scope excludes.
+
+**Phase 2b did exactly that, and it is built.** `assigned` now carries
+`requested_model` and `adapter`. Both halves are needed, not one: a palette
+may hold the same model on two lanes — different buckets, so legal even as
+adjacent entries — and an alias names different vendors on different lanes
+(`opus` is one vendor's model on one lane and another's on the next), so
+neither field identifies a leg alone. What the pair CANNOT distinguish is two
+executables on one lane (`claude-qwen` from `claude-kimi`), because a palette
+entry cannot express an executable either; that is GitHub #40's subject, and
+#40 was closed deliberately unbuilt. The ledger therefore answers exactly as
+much as the palette can declare, which is the honest bound rather than an
+accidental one.
+
+It is written **before spawn**, so it is the REQUEST and never the verified
+identity — no adapter has answered at that moment. `effective_identity` and
+`identity_status` on the dispatch record are the verified facts and arrive
+later. A reader must not read one as the other: a leg whose `assigned` says
+`requested_model: opus` and which never reached a model at all (§4.10,
+`work_observed: false`) is precisely the case a palette exists to walk past.
+
+`ledger-validate.mjs` stays unedited through both phases, and now that the
+fields are actually written that is a decision rather than a deferral: only
+the event NAME is a closed vocabulary (`ledger-validate.mjs`'s own line 43),
+so `requested_model` and `adapter` are accepted with no validator change, and
+the precedent for leaving them unchecked is already set by `work_observed`
+and `worker_hint` — neither shape-checked there either. Shape-checking them
+would also refuse every ledger written before this version, since a
+pre-0.15.0 `assigned` carries neither, and `loadWorkItemLedgers` reads
+historical files. They are therefore **optional by construction, forever**:
+absence means "written before this existed", never "the model was unknown".
 
 ## 4. Custody ledger contract
 
@@ -789,7 +807,7 @@ Common fields on every event: `at` (ISO 8601 UTC), `event`, `work_item`,
 | `pulled` | pull-controller | `agent_id` = receiving dispatcher, `from_team`, `to_team` | the receiving team took the work |
 | `intake` | runner (harvest) | `agent_id` = dispatcher, `verdict: accept`, `reason`, optional `worker_hint` (§4.9) | the team accepted the handoff |
 | `returned` | runner (harvest) | `to_team` = sender, `refused_by`, `reason`, **no `agent_id`** | the handoff was refused and went back |
-| `assigned` | acp-companion | `agent_id`, `task_id`, `dispatch_id` | one leg started |
+| `assigned` | acp-companion | `agent_id`, `task_id`, `dispatch_id`; optional `requested_model`, `adapter` (§3.5.1, GitHub #47 phase 2b) — the model this leg was dispatched ON, and the lane it was dispatched to; the REQUEST, not the verified identity, which is not known until after spawn | one leg started |
 | `delivered` | acp-companion | `agent_id`, `task_id`, `terminal`, `timed_out`, `evidence_present`; optional `work_observed` (§4.10, GitHub #45 part 2) | one leg finished |
 | `reviewed` | runner (harvest) | `agent_id` = evaluator, `verdict`, `reviewed_task`, `reason`; optional `target_verdict: accept \\| reject`, `target_reason` (§4.8, GitHub #31) | the team judged its own output |
 | `lost` | runner | `agent_id`, `task_id`, `reason` | an assignment whose process is gone and which recorded nothing |
@@ -2183,6 +2201,8 @@ ordering semantics phase 1 wrote down and left unenforced).
 | AC107 | §3.5.1, §4.10, §10 | a palette leg still counts toward `legCeiling` unconditionally, transport-failed or not; the palette's own per-seat cycle bound escalates with legs to spare against that ceiling, not by weakening it | `loop-runner-palette-dispatch.test.mjs` |
 | AC108 | §3.5.1, §4.9 | `worker_hint` still names a seat only; a hinted palette seat resolves its own candidate exactly like a freely-picked one, and its no-palette sibling is unaffected | `loop-runner-palette-dispatch.test.mjs` |
 | AC109 | §3.5.1 | a seat with no palette dispatches with no `candidate` field at all, unchanged by every pre-existing test in `loop-occupancy.test.mjs`, `loop-runner-heartbeat-model.test.mjs`, `loop-runner-decisions.test.mjs`, `loop-runner-busy.test.mjs`, `loop-replay.test.mjs` and `loop-smoke.test.mjs`, none of which needed a line changed | `loop-runner-palette-dispatch.test.mjs` (+ the six files named, unedited) |
+| AC110 | §3.5.1, §4 | a real `acp-companion.mjs` run writes `assigned` carrying `requested_model` and `adapter`, and the line still satisfies §4's own required fields | `assigned-carries-model.test.mjs` |
+| AC111 | §3.5.1 | a leg that pinned no model records `requested_model: null` — the request, absent, never the adapter's later answer, which at write time has not been given | `assigned-carries-model.test.mjs` |
 
 ### 14.1 Clauses this contract does NOT yet enforce
 
@@ -2197,7 +2217,7 @@ today with nothing stopping it from regressing.
 | §12.7.6 | auto-refresh is pausable and the page states its own freshness — only the asset's existence and parseability are tested |
 | §13 | the prohibitions are review rules, not runtime behaviour; they are enforced by reading a diff |
 | §13, `mcpServers` | no test asserts `session/new` and `session/load` still send `mcpServers: []`; the closure is a code-review fact about `acp-companion.mjs`, not a running guard |
-| §3.5, §3.5.1 | `assigned` carrying the chosen model — not merely untested, genuinely UNBUILT: `acp-companion.mjs` is the only component that can write a valid `assigned` line (§13; `dispatch_id` is required and minted inside it with no injection seam) and is out of scope for GitHub #47 phase 2. A reader can answer "what model ran leg X" for a palette seat only from the runner's own dispatch log, not from the ledger, until a future phase adds the field to `acp-companion.mjs`'s own existing `appendWorkItemEvent('assigned')` call |
+| §3.5.1 | that a palette entry's model is the one an adapter actually SERVED. `assigned` records the request (phase 2b), and `identity_status: matched` on the receipt verifies the answer, but nothing joins the two — a leg dispatched on entry 2 and answered by some other model would be visible in two places and contradicted in neither |
 
 ### 14.2 Known contradictions and live defects, 2026-07-28
 
@@ -2549,6 +2569,36 @@ line.
    editing a file while a worker holds it has already cost one overwrite.
 
 ### Amendment log
+
+**2026-08-05 — GitHub #47 phase 2b: `assigned` says which model the leg was
+dispatched on.** New AC110–111 (§14); §4's `assigned` row and §3.5.1 updated;
+§14.1's "genuinely unbuilt" row retired and replaced with the narrower gap
+that remains. Phase 2 stopped at this line and said so plainly rather than
+widening its scope, which was the right call and is why the follow-up is one
+argument long instead of an archaeology exercise: `acp-companion.mjs` is the
+sole writer of `assigned` (§13) because `dispatch_id` is minted inside it
+with no injection seam, so no other component can produce a line
+`ledger-validate.mjs`'s ownership check (§4.2) would accept.
+
+Both `requested_model` and `adapter` are recorded, not one: a palette may
+hold the same model on two lanes — different buckets, so legal even as
+adjacent entries (§3.5) — and an alias names different vendors on different
+lanes, so neither field identifies a leg alone. The pair still cannot
+separate two executables on one lane (`claude-qwen` from `claude-kimi`);
+neither can a palette entry, so the ledger answers exactly as much as the
+declaration can express. That bound is GitHub #40's subject and #40 was
+closed deliberately unbuilt.
+
+Written **before spawn**, so it is the REQUEST and never the verified
+identity — `effective_identity`/`identity_status` are separate, later facts,
+and §14.1 now records that nothing joins the two. Both fields are optional
+forever: shape-checking them in `ledger-validate.mjs` would refuse every
+pre-0.15.0 ledger, which `loadWorkItemLedgers` still reads, so absence means
+"written before this existed" and never "the model was unknown". Proven in
+`tests/assigned-carries-model.test.mjs` by running the real companion against
+the stub ACP agent — a runner-side `spawnFn` test proves the env was built,
+never that the ledger recorded it. Mutation-checked by file copy with a
+SHA-256 verified restore: dropping the two fields turns both tests RED.
 
 **2026-08-05 — GitHub #47 phase 1: a seat may declare an ordered palette of
 candidate models, declaration only.** New §3.5; new AC97–103 (§14) and the

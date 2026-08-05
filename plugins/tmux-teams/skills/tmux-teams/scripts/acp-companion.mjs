@@ -1685,7 +1685,19 @@ function writeDispatchRecord({ required = false } = {}) {
     // refresh of the record — one leg of the journey is one assignment.
     if (!workItemAssigned) {
       workItemAssigned = true
-      appendWorkItemEvent('assigned')
+      // GitHub #47 phase 2b (§3.5.1, §4): which model this leg was dispatched
+      // ON. Until a seat could declare a palette, the ledger answered this by
+      // inference — one seat, one model, look it up in the graph — and a
+      // palette destroys that inference for exactly the legs where the answer
+      // matters most. Both halves are needed: a palette may hold the same
+      // model on two lanes (different buckets, so legal even adjacent), and
+      // `opus` names different vendors on different lanes.
+      //
+      // This is the REQUEST, written before spawn, not the verified identity:
+      // at this point no adapter has answered. `effective_identity` on the
+      // dispatch record is the verified fact and arrives later — these two are
+      // different facts and the ledger says which one it is holding.
+      appendWorkItemEvent('assigned', { requested_model: requestedModel || null, adapter: agentName })
     }
     return text
   } catch (cause) {
