@@ -4,6 +4,7 @@
 // reader is removed. Fast, in-process, no subprocess spawn needed.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
@@ -175,4 +176,35 @@ test('a malformed baseline file fails closed with a clear error, not a false pas
 test('default paths point inside this repo', () => {
   assert.ok(DEFAULT_SCAN_DIR.startsWith(ROOT))
   assert.ok(DEFAULT_BASELINE_PATH.startsWith(ROOT))
+})
+
+// ---------------------------------------------------------------------------
+// Everything above tests the analysis function. NOTHING above tests the CLI,
+// and that gap is not theoretical: disabling the whole `if (!result.ok)` branch
+// in the CLI — the one that prints FAIL and returns 1 — leaves all seven of
+// those tests green. A ratchet wired into CI that can never exit non-zero is a
+// check that forbids nothing, which is the exact failure this file's own
+// opening comment says it exists to avoid, one layer up from where it looked.
+// ---------------------------------------------------------------------------
+const runCli = (args) => spawnSync(process.execPath,
+  [join(ROOT, 'scripts/ledger-reader-ratchet.mjs'), ...args], { encoding: 'utf8' })
+
+test('the CLI exits 0 on a clean tree and NON-ZERO when a new reader appears', (t) => {
+  const clean = runCli([])
+  assert.equal(clean.status, 0, `a clean tree must exit 0; stderr:\n${clean.stderr}`)
+  assert.match(clean.stdout, /PASS/)
+
+  // A scan directory holding one reader, and a baseline that does not know it.
+  const dir = mkdtempSync(join(tmpdir(), 'ratchet-cli-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  writeFileSync(join(dir, 'sneaky.mjs'),
+    "import { readWorkItems } from './x.mjs'\nexport const go = (repo) => readWorkItems(repo)\n")
+  const baseline = join(dir, 'baseline.json')
+  writeFileSync(baseline, JSON.stringify({ readers: [] }, null, 2))
+
+  const dirty = runCli(['--scan-dir', dir, '--baseline', baseline])
+  assert.notEqual(dirty.status, 0,
+    `a new reader must make the CLI exit non-zero, or CI can never go red; stdout:\n${dirty.stdout}`)
+  assert.match(dirty.stderr, /sneaky\.mjs/,
+    'the failure must name the file, or nobody can act on it')
 })
