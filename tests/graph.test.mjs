@@ -179,6 +179,41 @@ test('a seat with display_model shows the real model name, not the dispatch alia
   assert.equal(modelLine('b_w2'), 'model —')
 })
 
+// v0.15.0 release review (gpt-5.6-luna), CONFIRMED under re-verification. The
+// test above passes whether `display_model` translates a VERIFIED model or
+// replaces one — its seat has a verified run either way. These two pin the
+// difference, which is §12.7 honesty law 2: never show a model that was not
+// verified.
+
+test('a declared display_model on a seat that never ran is not printed as a model', () => {
+  const graph = {
+    ...TWO_TEAMS,
+    teams: TWO_TEAMS.teams.map((entry) => entry.team_id === 'build'
+      ? { ...entry, seats: { b_w1: { model: 'opus', display_model: 'claimed-without-proof' } } }
+      : entry),
+  }
+  // No run for b_w1 at all — nothing was measured, so there is nothing to show.
+  const tour = tourOf(graph, snapshotWith([]))
+  const line = tour.world['b_w1'].lines.find((l) => l.startsWith('model '))
+  assert.equal(line, 'model —',
+    'an operator declaration must never render in the shape a verified model uses')
+})
+
+test('a run with no verified model does not borrow the declared one', () => {
+  const graph = {
+    ...TWO_TEAMS,
+    teams: TWO_TEAMS.teams.map((entry) => entry.team_id === 'build'
+      ? { ...entry, seats: { b_w1: { model: 'opus', display_model: 'claimed-without-proof' } } }
+      : entry),
+  }
+  // The run happened; the model was never confirmed. The page must say that,
+  // not fill the gap with the declaration.
+  const tour = tourOf(graph, snapshotWith([run('b_w1', 'delivered', {})]))
+  const line = tour.world['b_w1'].lines.find((l) => l.startsWith('model '))
+  assert.notEqual(line, 'model claimed-without-proof',
+    'an unverified run must not be labelled with the declared model')
+})
+
 test('a died run shows process not found only while the death is recent', () => {
   // The node's run state is the pulse's own measurement; a run that died long
   // ago is a seat that is idle again, not a seat that is broken. The page

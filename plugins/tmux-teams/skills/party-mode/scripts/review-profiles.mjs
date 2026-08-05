@@ -374,7 +374,7 @@ export function provenLaunchSignature(profile) {
 // and the comparison was skipped, which is how r6-qwen got two exec-identical
 // lanes certified. Normalising both here is the fix; failing closed on two
 // unreadable launches (below) is the backstop.
-function launchArgv(profile) {
+export function launchArgv(profile) {
   if (!profile) return null
   // `args` counts in BOTH shapes. r7-codex: an array `command` beside an `args`
   // array dropped the args entirely, so two lanes differing only there read as

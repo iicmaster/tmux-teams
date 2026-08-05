@@ -1306,8 +1306,20 @@ let meaningfulProgressCount = 0
 // `session/set_config_option` responses) succeeding, which proves the
 // transport works but not that the model was ever asked to do anything.
 // `workObserved` narrows that to kinds that are themselves evidence of real
-// agent activity: a tool call, a message/thought chunk, a plan update, a
-// completed prompt turn, or the final receipt commit. Read at the point of
+// agent activity: a tool call, a message/thought chunk, a plan update, or a
+// completed prompt turn.
+//
+// `receipt_commit` was on that list and did not belong there. It is not a late
+// event: every `tryPersistOperationReceipt` call site (~3192, ~3479, ~3545)
+// runs during session setup, and the last of them fires immediately BEFORE
+// `session/prompt` is sent (~3573). So it proved the receipt was durable and
+// nothing whatever about the model — while making `work_observed` true for a
+// leg that then hung, rate-limited, or dropped without a single byte coming
+// back. That defeated both things this flag exists for at once: the leg still
+// spent a worker attempt (GitHub #45 part 2) AND a palette seat never rotated
+// off a dead candidate (GitHub #47, `missesBy`). Found by the v0.15.0 release
+// review and reproduced against a hanging mock adapter before this changed.
+// Read at the point of
 // failure (`recordTerminal`, below) and written onto the `delivered` custody
 // line as `work_observed` — the ONE fact the ledger did not have before this,
 // and the only channel between this process and the runner that decides
@@ -1317,6 +1329,8 @@ let meaningfulProgressCount = 0
 // spent attempt, never toward a free one.
 const HANDSHAKE_ONLY_PROGRESS_KINDS = new Set([
   'initialize_response', 'session_new_response', 'session_load_response', 'session_set_config_option_response',
+  // Setup, not work — see above. It still refreshes liveness and the lease.
+  'receipt_commit',
 ])
 let workObserved = false
 let consecutiveMisses = 0

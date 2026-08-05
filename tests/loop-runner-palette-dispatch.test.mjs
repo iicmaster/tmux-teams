@@ -140,7 +140,7 @@ test('a full cycle with nothing answering escalates instead of retrying candidat
   const events = [...ADMITTED, ...failedLeg(1, false), ...failedLeg(2, false), ...failedLeg(3, false)]
   const plan = planFor(PALETTE_GRAPH, events)
   assert.equal(plan.action, 'escalate', `expected escalate, got ${plan.action}: ${plan.reason}`)
-  assert.match(plan.reason, /3-entry palette cycled once/)
+  assert.match(plan.reason, /3-entry palette has taken 3 transport failure/)
   assert.match(plan.reason, /3 transport failure/)
   // The tighter, palette-scoped bound fires with only 3 of the legCeiling's 15
   // still spent — legCeiling (§4.10: every `assigned` counts, unconditionally)
@@ -151,13 +151,26 @@ test('a full cycle with nothing answering escalates instead of retrying candidat
 })
 
 test('legCeiling still counts every palette leg unconditionally — a palette is not free against it', () => {
-  // Same three transport-failed legs, read the way `legCeiling`'s own
-  // `nextStep` guard reads them: `custody.filter(assigned).length` against a
-  // ceiling of MAX_LEGS(15) + grants. Nothing about a palette leg is excluded
-  // from this count — §4.10's own rule, left unconditional on purpose.
-  const events = [...ADMITTED, ...failedLeg(1, false), ...failedLeg(2, false), ...failedLeg(3, false)]
-  const legs = itemsOf('tok', events).get('tok').legs
-  assert.equal(legs, 3, 'a transport-failed palette leg must still count toward the leg ceiling')
+  // This test used to compute `itemsOf(...).legs` and assert it equalled the
+  // number of `assigned` events in its own fixture — true of the FIXTURE
+  // whatever `nextStep` does with it, and therefore no proof at all that a
+  // palette leg counts. The v0.15.0 release review named it a fixture
+  // tautology at confidence 1.00 and was right. It now goes through the real
+  // dispatch path instead.
+  //
+  // MAX_LEGS is 15. Fifteen transport-failed legs on a PALETTE seat: if the
+  // ceiling guard counted palette legs at a discount — or skipped them the way
+  // `attemptsBy` skips them for the ATTEMPT budget — this token would still be
+  // dispatchable. It is not.
+  const events = [...ADMITTED]
+  for (let n = 1; n <= 15; n += 1) events.push(...failedLeg(n, false))
+  const plan = planFor(PALETTE_GRAPH, events)
+
+  assert.equal(plan.action, 'escalate')
+  // The CEILING reason, not the palette-cycle one — which also pins the order
+  // `nextStep` asks these two questions in. A palette walk cannot outrun the
+  // ceiling by escalating on its own tighter bound first.
+  assert.match(plan.reason, /15 legs on one token against a ceiling of 15/)
 })
 
 // ── a genuine failure retries the SAME candidate, never advances ────────────
@@ -300,4 +313,27 @@ test('a palette seat\'s second leg spawns the process with the SECOND candidate\
     // duplicate_task_id rule (line ~522) is never in tension with a palette.
     assert.notEqual(workerLeg.args[3], 't-1', 'the fallback leg reused the failed leg\'s own task_id')
   } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// ---------------------------------------------------------------------------
+// v0.15.0 release review (gpt-5.6-luna), CONFIRMED. `misses` is a scalar and a
+// genuine failure retries the SAME entry, so an entry CAN reach the model
+// between two misses while the counter still reaches palette.length. The
+// escalation reason used to say "no candidate ever reaching the model", which
+// this exact sequence disproves. Nothing pinned that clause, which is how
+// AC106 stayed green describing a stronger property than the code has.
+
+test('the escalation reason claims only what was counted, never that no entry reached the model', () => {
+  const events = [
+    ...ADMITTED,
+    ...failedLeg(1, false), // miss on candidate 0
+    ...failedLeg(2, true),  // candidate 1 REACHED the model, then failed for real
+    ...failedLeg(3, false), // miss on candidate 1 (a genuine failure did not advance)
+    ...failedLeg(4, false), // miss on candidate 2 — misses now 3 on a 3-entry palette
+  ]
+  const plan = planFor(PALETTE_GRAPH, events)
+  assert.equal(plan.action, 'escalate')
+  assert.doesNotMatch(plan.reason, /ever reaching the model/,
+    'the reason must not assert something this ledger contradicts — leg 2 reached the model')
+  assert.match(plan.reason, /3 transport failure/)
 })

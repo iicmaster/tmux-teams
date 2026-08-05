@@ -365,14 +365,19 @@ const laneLine = (run) => run ? `${run.worker || 'unknown'} · ${run.transport |
 // whose model check failed — so the page said nothing about the thing it was
 // asked to show. Three distinct facts, three distinct sentences.
 const modelLine = (run, fact, displayModel) => {
-  // Display layer: the real model name the operator declared for this seat
-  // (e.g. qwen3.8-max-preview behind a dispatch alias like `opus`). The
-  // dispatch layer sends the alias; the page shows the real model. This is a
-  // declaration, not measured evidence — the lane line still carries the
-  // verified transport.
-  if (displayModel) return displayModel
   if (!run) return '—'
-  if (run.model) return run.model
+  // Display layer: the real model name the operator declared for this seat
+  // (e.g. qwen3.8-max-preview behind a dispatch alias like `opus`). It
+  // TRANSLATES a model that was verified; it never stands in for one.
+  //
+  // It used to be the first branch, above `if (!run)`, and that broke §12.7
+  // honesty law 2 in both directions: a seat that had never been dispatched
+  // printed `model <declared>` in the identical shape a verified model uses,
+  // and a seat whose run WAS verified had that verified name silently replaced
+  // by whatever the graph declared. A reader had no way to tell a claim from a
+  // measurement. Found by the v0.15.0 release review; §12.7.2 already said
+  // this, and the code did not.
+  if (run.model) return displayModel || run.model
   const asked = fact?.requested_model && fact.requested_model !== 'none' ? fact.requested_model : ''
   if (asked) return `${asked} unconfirmed`
   // Short on purpose: the node clips at 30 characters including the `model `

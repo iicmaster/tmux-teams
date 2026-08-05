@@ -1358,3 +1358,46 @@ test('F7: a throwing fallback planner or synthesizer still leaves a structured r
   assert.match(synthesizerThrew.message, /review synthesizer threw/)
   assert.match(synthesizerThrew.message, /synthesizer exploded/)
 })
+
+// ---------------------------------------------------------------------------
+// v0.15.0 release review (gpt-5.6-luna, anti-consensus club), CONFIRMED under
+// adversarial re-verification. `provenLaunchSignature` reads `profile.args`;
+// `defaultLaneRunner` used to rebuild the argv itself and never read it. Two
+// lanes declaring one `command` and different `args` therefore had different
+// SIGNATURES and identical LAUNCHES — the panel gate's whole job, inverted.
+//
+// The pre-existing lane-identity tests could not catch this: they assert
+// `identity.signature === provenLaunchSignature(profile)`, which is true by
+// construction because both come from one call. This one asserts what the
+// runner was actually handed.
+test('what a lane LAUNCHES includes its declared args, not just what its signature claims', async () => {
+  const launched = []
+  const withArgs = (id, family) => profile(id, {
+    command: [process.execPath, MOCK],
+    args: [`--profile=${id}`],
+    provider: `${id}-provider`,
+    family,
+    displayModel: `${id}/${id}-review-model`,
+  })
+  const profiles = keyedProfiles([withArgs('oc', 'oc-family'), withArgs('codex', 'codex-family'), withArgs('agy', 'gemini')])
+  const runner = async (call) => {
+    launched.push({ lane: call.lane, command: call.command, args: call.args })
+    return runnerResult(call.profile, { ...packet(), primary: 'test' })
+  }
+  const out = await runReviewGate({ ...packet(), primary: 'test' }, {
+    profiles, runAcpReview: runner, buildProfileEnv: () => ({}),
+    planReviewPanel: () => testPlan(['oc', 'codex', 'agy']),
+    validateReview: () => ({ ok: true }), synthesizeReviews: () => ({ verdict: 'PASS' }),
+  })
+  assert.equal(out.ok, true, 'the fixture must pass the gate, or it proves nothing about a passing panel')
+  assert.equal(launched.length, 3)
+  // The point: three DISTINCT launches, matching the three distinct claims.
+  // With the argv rebuilt without `args`, all three collapse to the same
+  // {command, args} while the gate still returns ok:true.
+  for (const call of launched) {
+    assert.ok(call.args.includes(`--profile=${call.lane}`),
+      `lane ${call.lane} launched without its declared args: ${JSON.stringify(call.args)}`)
+  }
+  assert.equal(new Set(launched.map((call) => JSON.stringify([call.command, call.args]))).size, 3,
+    'three lanes certified distinct must not execute byte-identical commands')
+})

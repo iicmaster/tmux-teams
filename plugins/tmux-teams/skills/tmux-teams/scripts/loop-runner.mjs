@@ -1073,8 +1073,14 @@ function nextStep(graph, team, item, { busy, busyTasks, nowMs, zombieSec, answer
     if (misses >= palette.length) {
       return {
         action: 'escalate',
-        reason: `${agentId}'s ${palette.length}-entry palette cycled once since the last resume with no candidate`
-          + ` ever reaching the model (${misses} transport failure(s)) — a human must fix the declaration or`
+        // Says what the counter actually counted. The first wording claimed
+        // "no candidate ever reaching the model", which the ledger can
+        // contradict: a genuine failure retries the same entry and does not
+        // advance, so an entry CAN reach the model between two misses and this
+        // still fires. The release review proved that sequence — an
+        // operator-facing sentence must not assert what the evidence denies.
+        reason: `${agentId}'s ${palette.length}-entry palette has taken ${misses} transport failure(s)`
+          + ' since the last resume, as many as it has candidates — a human must fix the declaration or'
           + ' the outage, not spend another leg guessing',
       }
     }

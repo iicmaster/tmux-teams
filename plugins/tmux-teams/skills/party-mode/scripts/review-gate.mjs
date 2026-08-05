@@ -13,7 +13,7 @@ import { ACP_REVIEW_LIMITS, prepareReviewPacket, runAcpReview, ReviewTransportEr
 // it); `provenFamilyKey` stays a direct import because the receipt still
 // names a family by it, and `provenFamilyCollision` still does the actual
 // collision decision on raw profiles.
-import { REVIEW_PROFILES, buildProfileEnv, provenFamilyKey, provenFamilyCollision, laneIdentity } from './review-profiles.mjs'
+import { REVIEW_PROFILES, buildProfileEnv, provenFamilyKey, provenFamilyCollision, laneIdentity, launchArgv } from './review-profiles.mjs'
 import {
   UNAVAILABLE_RESERVE_SUBSTITUTES,
   planReviewPanel,
@@ -205,7 +205,17 @@ async function defaultLaneRunner(profile, packet, deps) {
     throw new ReviewTransportError('policy', 'direct Claude provider is unavailable; only policy-eligible claude-zai may be used')
   }
   const env = typeof deps.buildProfileEnv === 'function' ? deps.buildProfileEnv(profile.id ?? profile) : {}
-  const argv = Array.isArray(profile.command) ? profile.command : [profile.command]
+  // ONE computation of "what does this profile actually run", shared with the
+  // collision check. This line used to spell it out again — and differently:
+  // it never read `profile.args`, while `provenLaunchSignature` (the only
+  // thing standing between a panel and `ok: true`) does. Two lanes declaring
+  // one `command` and different `args` therefore had DIFFERENT signatures and
+  // IDENTICAL launches: a panel of one process wearing three names, certified
+  // distinct. Found by the v0.15.0 release review and reproduced end-to-end
+  // through the exported `runReviewGate` seam before this changed. Inert
+  // against the ten frozen profiles (none declares `args`) — live for any
+  // caller that injects one, which the module's own comment invites.
+  const argv = launchArgv(profile)
   // A lane runs the mode its profile declares. `plan` is the default and what
   // every lane used until glm-5.2, which cannot hold plan mode and the
   // JSON-only review protocol at once and answers prose instead — so that lane

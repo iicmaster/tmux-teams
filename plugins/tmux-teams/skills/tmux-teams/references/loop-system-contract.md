@@ -704,13 +704,22 @@ identity-minting path, so `ledger-validate.mjs`'s existing
 with a palette — a fallback attempt was already, before this amendment,
 indistinguishable from a plain retry as far as leg identity goes, and stays so.
 
-**A full cycle escalates instead of retrying entry 0 a second time.** Once
-every entry has been tried once since the token's last resume (or its
-admission, if never resumed) with none of them ever reaching the model —
-`misses >= palette.length`, where `misses` counts exactly the
-`work_observed: false` legs on this one seat — the next leg on this seat
-escalates rather than dispatching, naming the seat, the palette size and the
-miss count. This is the same shape §11.3's `escalate` decision already reads
+**As many misses as there are entries escalates instead of retrying entry 0 a
+second time.** Once `misses >= palette.length` — where `misses` counts exactly
+the `work_observed: false` legs on this ONE seat since the token's last resume
+(or its admission, if never resumed) — the next leg on this seat escalates
+rather than dispatching, naming the seat, the palette size and the miss count.
+
+**That is not the same statement as "every entry was tried and none reached
+the model", and this paragraph used to say it was.** A genuine failure retries
+the SAME entry without advancing (above), so a sequence like miss on A, a real
+answer from B, a miss on B, a miss on C reaches `misses === 3` on a 3-entry
+palette while B demonstrably reached the model. The counter is a scalar, on
+purpose — it is the cheap bound that stops a seat spending legs on an outage,
+not an exhaustive proof about each candidate. The release review for v0.15.0
+constructed that sequence and showed the escalation reason asserting something
+the ledger denied; the reason now claims only what was counted. Keep the two
+sentences apart: what fires, and what it proves. This is the same shape §11.3's `escalate` decision already reads
 a token's own next step as: a case for the outer controller, not a ninth
 attempt at candidates that already refused eight times.
 
@@ -1132,10 +1141,19 @@ Three decisions, in the order this contract requires them to be made:
    the only event it writes, so the ledger is the only channel it has to say
    what happened. `work_observed` is `true` the instant the companion sees
    real agent activity — a tool call, a message or thought chunk, a plan
-   update, a completed prompt round trip, the final receipt commit — and stays
+   update, a completed prompt round trip — and stays
    `false` when nothing but bare protocol handshaking (`initialize`,
-   `session/new`, `session/load`, `session/set_config_option` responses)
-   happened before the leg died. A NEW kind of progress the companion learns to
+   `session/new`, `session/load`, `session/set_config_option` responses, and
+   the operation receipt commit) happened before the leg died. **The receipt
+   commit moved to that second list in v0.15.0 and this sentence used to name
+   it as work.** It is not: every receipt commit fires during session setup,
+   the last of them immediately before `session/prompt` is sent, so it proves
+   durability and nothing about the model. While it counted, a leg that hung
+   or was rate-limited without one byte coming back reported
+   `work_observed: true`, which spent a worker attempt (this section) and, once
+   §3.5.1 shipped, also kept a palette seat from ever rotating off a dead
+   candidate. Found by the v0.15.0 release review and reproduced against a
+   hanging adapter before it was believed. A NEW kind of progress the companion learns to
    report defaults to counting as work unless explicitly classified otherwise,
    so an unclassified signal fails toward a spent attempt, never toward a free
    one. `lost` **never** carries this fact and is never read as "never
@@ -2197,7 +2215,7 @@ ordering semantics phase 1 wrote down and left unenforced).
 | --- | --- | --- | --- |
 | AC104 | §3.5.1 | a fresh admission on a palette seat dispatches its first declared entry — "the starting point" — with no ledger read needed | `loop-runner-palette-dispatch.test.mjs` |
 | AC105 | §3.5.1, §4.10 | a leg whose `delivered` states `work_observed: false` advances the seat's NEXT leg to the next palette entry in declared order, wrapping past the end; a leg that reached the model (`work_observed: true`, absent, or `lost`) retries the same entry | `loop-runner-palette-dispatch.test.mjs` |
-| AC106 | §3.5.1 | a full cycle — every entry tried once since the last resume, none ever reaching the model — escalates instead of dispatching the first entry a second time, naming the seat, the palette size and the miss count | `loop-runner-palette-dispatch.test.mjs` |
+| AC106 | §3.5.1 | once as many `work_observed: false` legs have accumulated on the seat since the last resume as the palette has entries, the runner escalates instead of dispatching the first entry a second time, naming the seat, the palette size and the miss count — and its stated reason claims only that, never that no entry ever reached the model (an intervening genuine failure retries the same entry, so one CAN have) | `loop-runner-palette-dispatch.test.mjs` |
 | AC107 | §3.5.1, §4.10, §10 | a palette leg still counts toward `legCeiling` unconditionally, transport-failed or not; the palette's own per-seat cycle bound escalates with legs to spare against that ceiling, not by weakening it | `loop-runner-palette-dispatch.test.mjs` |
 | AC108 | §3.5.1, §4.9 | `worker_hint` still names a seat only; a hinted palette seat resolves its own candidate exactly like a freely-picked one, and its no-palette sibling is unaffected | `loop-runner-palette-dispatch.test.mjs` |
 | AC109 | §3.5.1 | a seat with no palette dispatches with no `candidate` field at all, unchanged by every pre-existing test in `loop-occupancy.test.mjs`, `loop-runner-heartbeat-model.test.mjs`, `loop-runner-decisions.test.mjs`, `loop-runner-busy.test.mjs`, `loop-replay.test.mjs` and `loop-smoke.test.mjs`, none of which needed a line changed | `loop-runner-palette-dispatch.test.mjs` (+ the six files named, unedited) |
@@ -2570,6 +2588,54 @@ line.
 
 ### Amendment log
 
+**2026-08-05 — what the v0.15.0 release review found, and what it cost to
+ignore that it was still unread.** Four halves of the release diff were read by
+two outside families (`glm-5.2` on the custody axis, `gpt-5.6-luna[max]` on the
+contract, the palette and the review gate) as the bmad-party-mode
+anti-consensus club. Every finding below was then handed to a skeptic told to
+REFUTE it; all survived. None was a style note.
+
+1. **`receipt_commit` counted as work.** §4.10's list of "real agent activity"
+   named the receipt commit, and so did `acp-companion.mjs`. It is not late
+   evidence: every receipt commit fires during session setup, the last
+   immediately before `session/prompt` is sent. A leg that then hung or was
+   rate-limited without one byte returning reported `work_observed: true`,
+   which spent a worker attempt (§4.10) *and* stopped a palette seat rotating
+   off a dead candidate (§3.5.1) — defeating both features this release
+   shipped, in the one case they exist for. Now classified as handshake-only.
+   `tests/work-observed-needs-a-turn.test.mjs` runs the real companion against
+   a hanging adapter and reads the ledger, because every prior `work_observed`
+   test built its fixture by hand and so could never catch a producer that sets
+   the flag at the wrong moment.
+2. **AC107's proof was a fixture tautology.** The test computed the leg count
+   from its own fixture and asserted it equalled the number of `assigned`
+   events in that fixture — true whatever `nextStep` does. It now drives 15
+   legs through the real dispatch path and asserts the ceiling reason fires,
+   which also pins the ORDER the two bounds are asked in.
+3. **AC106 and §3.5.1 claimed more than the code guarantees.** "Every entry
+   tried, none ever reaching the model" is not `misses >= palette.length`: a
+   genuine failure retries the same entry without advancing, so an entry can
+   reach the model between two misses. The operator-facing escalation reason
+   asserted it too. Both now state only what was counted, and a test pins the
+   miss→hit→miss→miss sequence that disproves the stronger claim.
+4. **The panel gate compared one argv and launched another.** §12.7's diversity
+   rule is enforced by `provenLaunchSignature`, which reads `profile.args`;
+   `defaultLaneRunner` rebuilt the argv itself and never did. Two lanes
+   declaring one `command` and different `args` had different signatures and
+   identical launches — one process wearing three names, certified distinct.
+   Reproduced end-to-end through the exported `runReviewGate` seam. Both paths
+   now share `launchArgv`. Inert against the ten frozen profiles, live for any
+   injected one, which that module's own comment invites.
+5. **§12.7 honesty law 2 was broken by the page.** `display_model` was the
+   FIRST branch of `modelLine`, so a seat that never ran printed its declared
+   model in the exact shape a verified one uses, and a verified model was
+   silently replaced by the declaration. It now only ever translates a model
+   that was verified.
+
+The lesson worth keeping is not any single defect: it is that the suite was
+green for every one of them, and four of the five were pinned by tests that
+asserted something weaker than their own names claimed.
+
 **2026-08-05 — GitHub #47 phase 2b: `assigned` says which model the leg was
 dispatched on.** New AC110–111 (§14); §4's `assigned` row and §3.5.1 updated;
 §14.1's "genuinely unbuilt" row retired and replaced with the narrower gap
@@ -2811,8 +2877,8 @@ process ever started — a seat whose provider was rate-limited could burn all
 three attempts on legs that never began. `acp-companion.mjs` (the sole writer
 of `delivered`, and the only process present when a leg dies at the transport)
 now tracks whether it ever observed real agent activity — a tool call, a
-message/thought chunk, a plan update, a completed prompt turn, the final
-receipt commit — as opposed to bare protocol handshaking, and writes
+message/thought chunk, a plan update, a completed prompt turn — as opposed to
+bare protocol handshaking or the pre-prompt receipt commit (§4.10), and writes
 `work_observed: false` on `delivered` when it saw none of that before the leg
 failed. `attemptsBy` excludes an `assigned` leg from the count only when its
 matching `delivered` states `work_observed: false` explicitly; a `lost` line
