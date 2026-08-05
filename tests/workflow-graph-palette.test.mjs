@@ -52,7 +52,14 @@ const paletteEntry = (model, extra = {}) => ({ model, ...extra })
 
 // ── a palette declares and validates, every existing graph unaffected ───────
 
-test('a graph with no palette anywhere is exactly the graph it already was', () => {
+// The digest property this proves is §3.2.1's — two declarations that SAY the
+// same thing hash alike — and not "the digest a previous version produced".
+// Nothing here can prove the latter: both sides are resolved by the code in
+// this tree, so the comparison holds whatever `agents[]` became. `palette`
+// itself is the proof, since emitting it moved every graph's digest (§3.5).
+// A cross-version claim would have to pin the old hex, and no reader of a
+// *workflow* graph's `source_digest` joins on it across versions.
+test('declarations that say the same thing still hash alike, and an undeclared palette resolves to null', () => {
   const withoutSeats = accepted(graphWith())
   const withEmptySeats = accepted(graphWith({
     teams: [teamOf('build', ['b_w1', 'b_w2'], { seats: {} }), teamOf('verify', ['v_w1'])],
@@ -61,6 +68,12 @@ test('a graph with no palette anywhere is exactly the graph it already was', () 
   for (const team of withoutSeats.teams) {
     for (const agent of team.agents) assert.equal(agent.palette, null)
   }
+  // The resolved seat shape, stated key by key. This is what actually moves
+  // the digest, so a future field arriving unannounced fails HERE — naming
+  // itself — rather than as a hash mismatch somewhere with no clue in it.
+  assert.deepEqual(Object.keys(withoutSeats.teams[0].agents[0]).sort(), [
+    'adapter', 'agent_id', 'display_model', 'effort', 'model', 'palette', 'role',
+  ])
 })
 
 test('a seat with a valid two-entry palette loads and validates', () => {

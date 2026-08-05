@@ -619,6 +619,20 @@ front of declared order. This is not a dispatch decision; it is what "the
 starting point" (below) already has to mean in a system where nothing yet
 chooses anything else.
 
+**And that field is emitted as `null`, not omitted — so `source_digest`
+changes for every graph at this version, including graphs that declare no
+palette.** Say it out loud, because the first draft of AC97 claimed the
+opposite and the test written for it compared two graphs resolved by the SAME
+code, which is true whatever the shape became. Emitting `null` follows this
+file's own convention — `effort` and `display_model` are already reported as
+`null` rather than dropped — and the digest is a statement about the resolved
+graph, so reporting the old digest for a newly-shaped one would be the actual
+lie. It costs nothing here because no module compares a *workflow* graph's
+`source_digest` across versions: the digest `team-runtime.mjs` joins on is
+`team-graph-contract.mjs`'s, a different derivation over a different object.
+What survives from the original claim is the §3.2.1 property, which is
+genuinely unaffected: declarations that say the same thing still hash alike.
+
 **Ordering semantics — written down now, enforced later.** GitHub #47's own
 text says both "the dispatcher picks" and "fall back in order", and read
 together those need one more sentence or two plausible rules exist and code
@@ -2027,7 +2041,7 @@ a palette yet).
 
 | # | Clause | Assertion | Test file |
 | --- | --- | --- | --- |
-| AC97 | §3.5 | a seat declaring a valid palette loads and validates; a graph declaring none is byte-for-byte the graph it already was (`source_digest` unchanged) | `workflow-graph-palette.test.mjs` |
+| AC97 | §3.5 | a seat declaring a valid palette loads and validates; a graph declaring none resolves every seat's `palette` to `null`, and declarations that say the same thing still hash alike (§3.2.1) | `workflow-graph-palette.test.mjs` |
 | AC98 | §3.5 | a malformed palette entry — bad model, adapter, effort, display_model, bucket, an unknown key, a non-object entry, or a palette of the wrong length — is refused, naming the team and the seat | `workflow-graph-palette.test.mjs` |
 | AC99 | §3.5 | `palette` alongside `model`/`adapter`/`effort`/`display_model` on the same seat is refused, not silently ignored | `workflow-graph-palette.test.mjs` |
 | AC100 | §3.5 | two consecutive palette entries in the same bucket are refused — explicitly declared, and defaulted from an unstated bucket to a shared lane — while a repeat separated by a different bucket is accepted | `workflow-graph-palette.test.mjs` |
@@ -2428,7 +2442,17 @@ repeat (A, B, A) is accepted, because something else was tried in between.
 `teams[].agents[]` gains a `palette` field, `null` unless declared; the
 existing single-value `model`/`adapter`/`effort`/`display_model` on that same
 entry resolve to the palette's FIRST entry, so a reader that predates this
-amendment sees exactly the seat spec it always has. The ordering semantics
+amendment sees exactly the seat spec it always has. That new key is **emitted
+as `null` rather than omitted, so every graph's `source_digest` moves at this
+version** — AC97 said the opposite when this amendment first landed, and its
+test compared two graphs resolved by the same code, a comparison that holds
+whatever the shape became. Corrected in the merge: AC97 now claims only
+§3.2.1's equivalence property, which is genuinely unaffected, and the test
+pins the resolved seat's keys so the next field to arrive fails by name
+instead of as an unexplained hash. Nothing joins on a *workflow* graph's
+digest across versions — `team-runtime.mjs` joins on
+`team-graph-contract.mjs`'s, a different derivation over a different object.
+The ordering semantics
 GitHub #47's own text raises — the dispatcher's choice as the starting point,
 the declared array as the order after it, a full unanswered cycle as an
 escalation rather than a ninth retry — are written into §3.5 and marked
