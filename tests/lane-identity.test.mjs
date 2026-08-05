@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
-  REVIEW_PROFILES, laneIdentity, provenFamilyKey, provenFamilyCollision, provenLaunchSignature,
+  REVIEW_PROFILES, laneIdentity, provenFamilyKey, provenFamilyCollision, provenLaunchSignature, launchArgv,
 } from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
 
 test('a profile that names no launch at all is undeclared, never null', () => {
@@ -48,9 +48,17 @@ test('a readable launch is identified with signature, family, and routing', () =
     assert.equal(identity.undeclared, undefined, `${id} must not be undeclared`)
     assert.equal(identity.unreadable, undefined, `${id} must not be unreadable`)
     assert.equal(typeof identity.signature, 'string', `${id} signature`)
-    // `signature` is exactly what `provenLaunchSignature` already returned --
-    // laneIdentity did not change what that computation IS, only where it lives.
-    assert.equal(identity.signature, provenLaunchSignature(profile), `${id} signature must match provenLaunchSignature`)
+    // NOT `=== provenLaunchSignature(profile)`. That function IS
+    // `laneIdentity(profile).signature`, so the equality was f(x) === f(x) and
+    // proved only determinism: replacing the whole signature computation with a
+    // constant string left this test GREEN. Proven by mutation 2026-08-05.
+    //
+    // What it must prove instead: the signature CARRIES the launch it claims to
+    // identify. This is the panel gate's only defence against two lanes that
+    // execute the same bytes while claiming different families.
+    const parsed = JSON.parse(identity.signature)
+    assert.equal(parsed.length, 2, `${id} signature is [argv, executable]`)
+    assert.deepEqual(parsed[0], launchArgv(profile), `${id} signature must carry the argv this lane actually launches`)
     // `family` is exactly `provenFamilyKey` -- kept, not reinvented, and still
     // what the receipt names a reader recognises.
     assert.equal(identity.family, provenFamilyKey(profile), `${id} family must match provenFamilyKey`)

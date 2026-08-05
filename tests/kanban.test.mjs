@@ -659,7 +659,13 @@ test('AC9 a graph that violates the contract renders a reason and no board', () 
   assert.equal(board.ok, false)
   assert.match(board.reason, /workflows must be an array/)
 
+  // `html` was built and discarded here too, so "renders a reason and no board"
+  // — half of this test's own name — was never checked. Proven by mutation
+  // 2026-08-05: deleting renderKanbanPage's `if (!board.ok)` branch left this
+  // test green.
   const html = pageOf(dir)
+  assert.match(html, /workflows must be an array/, 'the page must state the reason it cannot draw')
+  assert.doesNotMatch(html, /class="col"/, 'a graph that fails the contract renders no board columns')
 
   const result = spawnSync(process.execPath, [KANBAN, 'check', dir], { encoding: 'utf8' })
   assert.equal(result.status, 1)
@@ -675,8 +681,13 @@ test('the CLI writes the page, and takes its clock from the snapshot', () => {
   assert.equal(result.status, 0, result.stderr)
 
   const html = readFileSync(join(dir, '.tmux-teams/kanban.html'), 'utf8')
-  // The only proof that `init` read pulse.json rather than the wall clock: this
-  // number is fixed by the fixture and would drift with every run otherwise.
+  // That comment stood alone for a release with NO assertion under it — `html`
+  // was read and discarded, so the claim in this test's name went unchecked.
+  // Proven by mutation 2026-08-05: swapping the snapshot clock for `new Date()`
+  // left this test green. The fixture's timestamp is the whole proof, so it has
+  // to be asserted.
+  assert.match(html, /2026-07-27 12:00:00 UTC/,
+    'init must render the snapshot clock, not the wall clock')
 })
 
 test('the CLI refuses to invent a clock when there is no snapshot', () => {

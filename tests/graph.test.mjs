@@ -586,6 +586,15 @@ test('a count the runner did not report is not printed as a zero', () => {
   delete bare.held
   const page = pageOf(beat(repoWith(TWO_TEAMS), bare))
 
+  // `page` was built and then never asserted on — the whole claim in this
+  // test's name went unchecked while the assertion below tested the OPPOSITE
+  // case. Proven by mutation 2026-08-05: deleting `measured()`'s guard in
+  // graph.mjs left this test green.
+  assert.match(page, /started in that tick: not measured/,
+    'an absent count must say so, never render as a zero this page invented')
+  assert.doesNotMatch(page, /started in that tick: 0/,
+    'a field the runner never reported must not appear as a measured zero')
+
   // A zero the runner did measure is a fact, and stays printable.
   const idle = pageOf(beat(repoWith(TWO_TEAMS), heartbeat({ started: 0, held: 0 })))
   assert.match(idle, /started in that tick: 0/)
