@@ -506,7 +506,7 @@ Common fields on every event: `at` (ISO 8601 UTC), `event`, `work_item`,
 | `intake` | runner (harvest) | `agent_id` = dispatcher, `verdict: accept`, `reason`, optional `worker_hint` (§4.9) | the team accepted the handoff |
 | `returned` | runner (harvest) | `to_team` = sender, `refused_by`, `reason`, **no `agent_id`** | the handoff was refused and went back |
 | `assigned` | acp-companion | `agent_id`, `task_id`, `dispatch_id` | one leg started |
-| `delivered` | acp-companion | `agent_id`, `task_id`, `terminal`, `timed_out`, `evidence_present` | one leg finished |
+| `delivered` | acp-companion | `agent_id`, `task_id`, `terminal`, `timed_out`, `evidence_present`; optional `work_observed` (§4.10, GitHub #45 part 2) | one leg finished |
 | `reviewed` | runner (harvest) | `agent_id` = evaluator, `verdict`, `reviewed_task`, `reason`; optional `target_verdict: accept \\| reject`, `target_reason` (§4.8, GitHub #31) | the team judged its own output |
 | `lost` | runner | `agent_id`, `task_id`, `reason` | an assignment whose process is gone and which recorded nothing |
 | `escalated` | runner | `agent_id` = controller, `to_team`, `task_id`, `reason` | parked with the outer controller |
@@ -760,7 +760,7 @@ capability a seat stands for" — the field is named for the thing it points at
 rather than the thing it selects, and renaming it is not worth breaking a
 shipped event field over.
 
-Two consequences follow from that reading, and neither is fixed here:
+Two consequences follow from that reading. The first is not fixed here:
 
 - **A model palette costs WIP.** §3.1 derives `wip_limit` from the worker-seat
   count, so declaring four seats to have four models also tells the system this
@@ -769,10 +769,13 @@ Two consequences follow from that reading, and neither is fixed here:
   should not be.
 - **The choice is made blind to availability.** `want()` knows only whether a
   seat is BUSY — whether a process is running on it. It does not know whether
-  that seat's provider will accept a request. So a dispatcher routing away from
-  a rate-limited model is guessing, and when it guesses wrong the leg dies at
-  the transport and still spends a worker attempt (GitHub #45, part 2). The two
-  halves of that issue are one problem: the router has no availability signal.
+  that seat's provider will accept a request, so a dispatcher routing away from
+  a rate-limited model is still guessing (unfixed). What no longer follows from
+  a wrong guess (GitHub #45, part 2, fixed 2026-08-05 — §4.10) is that the leg
+  dying at the transport spends a worker attempt: `work_observed: false` on
+  `delivered` now excludes exactly that leg from `MAX_ATTEMPTS`, and only that
+  leg. The router still has no availability signal; a wrong guess is merely
+  cheap now instead of also being counted.
 
 A team's dispatcher may name which worker seat should take a token it is
 admitting, by writing a `WORKER: <agent_id>` line in its outbox alongside
@@ -796,6 +799,70 @@ only:
   specifically** — the same "every worker busy" wait §3.2.1 already has, not a
   new way to stall forever, because the zombie detection that frees any busy
   seat (§11) frees this one too.
+
+### 4.10 A leg that never got a turn — `work_observed` (GitHub #45 part 2)
+
+§4.9's own text used to end here: a dispatcher routing away from a
+rate-limited model is guessing, and a wrong guess used to spend a worker
+attempt on a leg that died at the transport — `attemptsBy` (`loop-runner.mjs`)
+counted every `assigned` line against `MAX_ATTEMPTS` (§10) whether the process
+ever started, whether the adapter accepted the declared model, or whether a
+single token of work happened. A seat whose provider was down could burn all
+three attempts on legs that never began, and the pool read as exhausted.
+**The router's blindness to availability is unchanged by this fix** — `want()`
+still knows only whether a seat is BUSY, never whether its provider will
+answer, so a dispatch can still land on a dead model. What changes is the
+COST of landing there.
+
+Three decisions, in the order this contract requires them to be made:
+
+1. **A transport failure is still a leg.** It still gets `assigned`, still
+   occupies its team, still counts toward `legCeiling` (§10's `MAX_LEGS`). The
+   alternative — never writing `assigned` for a leg that dies before doing
+   anything — was rejected: `acp-companion.mjs` writes it before spawning the
+   adapter on purpose, to leave a footprint if the process is killed before it
+   can write anything else, and a task id that never reaches `assigned` is the
+   exact unbounded-respawn shape a prior fix (BLOCKER 4, 2026-08-04, §14.2)
+   closed. Only the ATTEMPT count changes.
+2. **The distinguishing fact is written by `acp-companion.mjs`, at the point
+   the transport fails, onto its own `delivered` line — `work_observed:
+   false`.** It is the only process present at that moment, and `delivered` is
+   the only event it writes, so the ledger is the only channel it has to say
+   what happened. `work_observed` is `true` the instant the companion sees
+   real agent activity — a tool call, a message or thought chunk, a plan
+   update, a completed prompt round trip, the final receipt commit — and stays
+   `false` when nothing but bare protocol handshaking (`initialize`,
+   `session/new`, `session/load`, `session/set_config_option` responses)
+   happened before the leg died. A NEW kind of progress the companion learns to
+   report defaults to counting as work unless explicitly classified otherwise,
+   so an unclassified signal fails toward a spent attempt, never toward a free
+   one. `lost` **never** carries this fact and is never read as "never
+   started": §4 already defines it as "an assignment whose process is gone and
+   which recorded nothing", and that sentence is exactly as true of a leg
+   killed after real, meaningful work as of one that never began — the ledger
+   alone cannot tell a killed worker from a worker that never started, so
+   guessing from the absence of a `delivered` line is refused. Only an
+   EXPLICIT `work_observed: false`, written by the one process that was there,
+   excludes a leg.
+3. **A genuine worker failure still spends an attempt.** `attemptsBy` excludes
+   an `assigned` leg from the count only when its matching `delivered` states
+   `work_observed: false` — never by `terminal` name. A `protocol-error` (or
+   any other non-`done` terminal) with `work_observed: true` counts exactly
+   like `blocked` or `hard-timeout` always have; only the explicit fact
+   narrows the budget, and a `delivered` with no `work_observed` field at all
+   (every line written before this amendment) counts exactly as before. Keying
+   the exclusion off the terminal string instead was tried and rejected during
+   review: it reads a leg that failed for a genuine reason but happened to
+   share a wire-error terminal as "never started" too, which is precisely the
+   widening §15's own history warns against.
+
+What this does NOT change: `legCeiling` (`MAX_LEGS`, §10) counts every
+`assigned` unconditionally, transport-failed or not — a palette that keeps
+landing on dead seats no longer burns `MAX_ATTEMPTS` faster, but it still
+burns the token's total leg ceiling at the same rate it always did. GitHub #47
+(an ordered model palette) is unblocked with respect to the attempt-budget
+mechanism this amendment fixes; the leg ceiling is a separate, wider budget
+that #47's own work should still account for.
 
 ## 5. State machine
 
@@ -2047,6 +2114,40 @@ line.
    editing a file while a worker holds it has already cost one overwrite.
 
 ### Amendment log
+
+**2026-08-05 — B1/GitHub #45 part 2: a leg that never got a turn no longer
+spends the worker's attempt budget.** Behaviour changed in `loop-runner.mjs`
+and `acp-companion.mjs`. §4's `delivered` row and new §4.10 record the fix;
+§4.9's availability paragraph is corrected to say the router's blindness is
+still open while the attempt-spend consequence is not. `attemptsBy` used to
+count every `assigned` line against `MAX_ATTEMPTS` regardless of whether the
+process ever started — a seat whose provider was rate-limited could burn all
+three attempts on legs that never began. `acp-companion.mjs` (the sole writer
+of `delivered`, and the only process present when a leg dies at the transport)
+now tracks whether it ever observed real agent activity — a tool call, a
+message/thought chunk, a plan update, a completed prompt turn, the final
+receipt commit — as opposed to bare protocol handshaking, and writes
+`work_observed: false` on `delivered` when it saw none of that before the leg
+failed. `attemptsBy` excludes an `assigned` leg from the count only when its
+matching `delivered` states `work_observed: false` explicitly; a `lost` line
+(the runner's own "the process is gone and recorded nothing", §4) is never
+read this way, because that sentence is equally true of a leg killed after
+real work and one that never started, and the ledger alone cannot tell them
+apart — guessing from absence was considered and rejected (§4.10 decision 2).
+The exclusion keys off `work_observed`, never off `terminal`: a
+`protocol-error` (or any other non-`done` terminal) marked `work_observed:
+true` still spends an attempt exactly like `blocked` or `hard-timeout` always
+have, and every `delivered` line written before this amendment (no
+`work_observed` field at all) counts exactly as before. Proven in
+`tests/loop-occupancy.test.mjs` with two fixtures in one test: three
+transport-failed legs (`work_observed: false`) still read `dispatch`, and
+three legs that genuinely ran and failed (`work_observed: true`, same
+`protocol-error` terminal, so the guard cannot be keying off the terminal
+string) still reach `escalate` at `MAX_ATTEMPTS`. `legCeiling` (`MAX_LEGS`,
+§10) is unchanged — it still counts every `assigned` unconditionally, so a
+model palette (GitHub #47) no longer burns `MAX_ATTEMPTS` faster than a single
+seat would, but still burns the token's total leg ceiling at the same rate;
+that ordering is otherwise unblocked by this fix.
 
 **2026-08-05 — A3: the `mcpServers: []` containment seam is now a documented
 decision, not an accident.** No behaviour change; §13 gains a prohibition

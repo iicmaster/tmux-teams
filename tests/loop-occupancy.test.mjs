@@ -1448,6 +1448,54 @@ test('a dispatch refused for its declared model is not retried', () => {
   assert.equal(transport.action, 'dispatch')
 })
 
+// GitHub #45 part 2 (§4.10): a leg that died at the transport must not spend
+// the worker's attempt budget, and a leg the worker genuinely ran and failed
+// must still spend it — in the same file, so the distinction cannot rot in
+// one direction. `acp-companion.mjs` is the only writer of `delivered` and the
+// only process present at the moment a leg fails, so the fact has to come from
+// it: `work_observed: false` when nothing — no tool call, no message, no
+// completed prompt turn — was ever seen before the leg died.
+const NEVER_STARTED = (n) => ([
+  { event: 'assigned', agent_id: 't_w1', task_id: `never-${n}` },
+  // Same terminal a genuine transport failure uses today (`FAILED_IN_TEST`
+  // above) — the distinguishing fact is `work_observed`, not the terminal
+  // string, on purpose: a fix keyed off `terminal` would also exempt a leg
+  // that failed AFTER real work happened to end on the same wire error.
+  { event: 'delivered', agent_id: 't_w1', task_id: `never-${n}`, terminal: 'protocol-error', work_observed: false },
+])
+const RAN_AND_FAILED = (n) => ([
+  { event: 'assigned', agent_id: 't_w1', task_id: `ran-${n}` },
+  // Explicitly `true`, not merely omitted: this leg is the guard against
+  // widening the exclusion by TERMINAL rather than by the explicit fact — a
+  // `protocol-error` that the companion itself says carried real progress
+  // must count exactly like `blocked` or `hard-timeout` already do.
+  { event: 'delivered', agent_id: 't_w1', task_id: `ran-${n}`, terminal: 'protocol-error', work_observed: true },
+])
+
+test('three transport-failed legs do not spend the attempt budget; three real failures still do', () => {
+  const graph = graphOf(TWO_TEAMS)
+  const prefix = [
+    { event: 'pulled', agent_id: 't_d', from_team: 'build', to_team: 'test' },
+    { event: 'intake', agent_id: 't_d', verdict: 'accept' },
+  ]
+
+  // Three legs that never got a turn: still dispatching, not escalated — the
+  // pool's attempt budget was never touched.
+  const neverStarted = planDispatches(graph, itemsOf(['tok',
+    [...prefix, ...NEVER_STARTED(1), ...NEVER_STARTED(2), ...NEVER_STARTED(3)]]),
+  new Set())[0]
+  assert.equal(neverStarted.action, 'dispatch', 'a leg that never began exhausted the attempt budget anyway')
+  assert.equal(neverStarted.agent_id, 't_w1')
+
+  // Three legs the worker actually ran and lost: MAX_ATTEMPTS is spent, same
+  // as before this fix — the exclusion above must not have swallowed these too.
+  const ranAndFailed = planDispatches(graph, itemsOf(['tok',
+    [...prefix, ...RAN_AND_FAILED(1), ...RAN_AND_FAILED(2), ...RAN_AND_FAILED(3)]]),
+  new Set())[0]
+  assert.equal(ranAndFailed.action, 'escalate', 'three genuine worker failures stopped spending the attempt budget')
+  assert.match(ranAndFailed.reason, /3 worker attempts/)
+})
+
 // ── the page that lands on disk ──────────────────────────────────────────────
 
 const publish = (ledgers = {}) => {
