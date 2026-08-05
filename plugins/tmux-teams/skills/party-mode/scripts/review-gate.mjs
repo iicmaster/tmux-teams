@@ -4,7 +4,16 @@ import { open } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { ACP_REVIEW_LIMITS, prepareReviewPacket, runAcpReview, ReviewTransportError } from './acp-review-client.mjs'
-import { REVIEW_PROFILES, buildProfileEnv, provenFamilyKey, provenFamilyCollision, provenFamilyKeysCollide, provenLaunchSignature, launchDeclaredButUnreadable, routingDeclaration } from './review-profiles.mjs'
+// GitHub #43: this file used to need five separate collision-evidence
+// imports (provenFamilyKeysCollide, provenLaunchSignature,
+// launchDeclaredButUnreadable, routingDeclaration, alongside
+// provenFamilyKey) kept in sync by hand across two files. `laneIdentity` is
+// the one lookup that replaces the three that were review-gate-only
+// (routingProvenDeclaration and launchUnreadable below now read straight off
+// it); `provenFamilyKey` stays a direct import because the receipt still
+// names a family by it, and `provenFamilyCollision` still does the actual
+// collision decision on raw profiles.
+import { REVIEW_PROFILES, buildProfileEnv, provenFamilyKey, provenFamilyCollision, laneIdentity } from './review-profiles.mjs'
 import {
   UNAVAILABLE_RESERVE_SUBSTITUTES,
   planReviewPanel,
@@ -306,6 +315,11 @@ async function assessAttempt(attempt, validate, expectedInputHash) {
       reason: 'schema_invalid', failure: laneFailure('schema_invalid', boundedReason(checked?.reason)),
     }
   }
+  // One lookup instead of three (#43): `commandProvenSignature`,
+  // `routingProvenDeclaration` and `launchUnreadable` below all used to be
+  // separate imported functions called on `attempt.profile`; they are now
+  // three views of this one `laneIdentity` result.
+  const identity = laneIdentity(attempt.profile)
   return {
     ...attempt,
     valid: true,
@@ -329,9 +343,9 @@ async function assessAttempt(attempt, validate, expectedInputHash) {
       // cannot see that — it is a declared-identity fact, and this is a
       // what-will-actually-exec fact, computed from the same profile object
       // but never from the caller-overridable claim.
-      commandProvenSignature: provenLaunchSignature(attempt.profile),
-      routingProvenDeclaration: routingDeclaration(attempt.profile),
-      launchUnreadable: launchDeclaredButUnreadable(attempt.profile),
+      commandProvenSignature: identity.signature ?? null,
+      routingProvenDeclaration: identity.routing ?? null,
+      launchUnreadable: identity.unreadable === true,
       model: value.model,
       displayModel: value.displayModel,
       mode: value.mode,
@@ -436,9 +450,13 @@ export async function runReviewGate(packet, {
   }
   const accepted = attempts.filter(a => a.valid)
   if (accepted.length !== 3) throw fail('transport', `review gate accepted ${accepted.length}; exactly three are required`)
-  const acceptedByProfile = new Map(accepted.map(attempt => [attempt.profile.id, attempt.item]))
+  // Keeps the whole attempt, not just `.item`: the final collision recheck
+  // below needs the raw profile back (#43), not only the scalar fields
+  // already copied onto the receipt.
+  const acceptedByProfile = new Map(accepted.map(attempt => [attempt.profile.id, attempt]))
   const reviewOrder = activePlan?.reviewers ?? accepted.map(attempt => attempt.profile.id)
-  const reviews = reviewOrder.map(id => acceptedByProfile.get(id)).filter(Boolean)
+  const reviewAttempts = reviewOrder.map(id => acceptedByProfile.get(id)).filter(Boolean)
+  const reviews = reviewAttempts.map(attempt => attempt.item)
   if (reviews.length !== 3 || new Set(reviews.map(item => item.profile)).size !== 3) {
     throw fail('policy', 'final review profiles are not exactly three distinct identities')
   }
@@ -457,23 +475,20 @@ export async function runReviewGate(packet, {
   }
   // Same defense as choosePanel's preflight, run again on the FINAL panel: a
   // fallback substitution runs after preflight and could reintroduce a
-  // proven-identity collision that preflight never saw (issue #38). `reviews`
-  // holds accepted-item shapes, not raw profiles, so this reads the
-  // already-computed familyProvenKey field. It calls the SAME rule the preflight
-  // uses, in its key-taking form, rather than reimplementing it — this copy had
-  // its own `.filter(key => key !== null)` and let a panel of two unresolved
-  // lanes through to ok:true, which is what two copies of one rule always
-  // eventually do (r3-codex probed it).
-  // A lane that declared a launch nobody could read never reaches the
-  // comparison below, so it is refused before it (r7-codex).
+  // proven-identity collision that preflight never saw (issue #38). This used
+  // to be its own copy of the preflight rule, reading three arrays pulled off
+  // the already-computed receipt fields -- and a stale copy is how a panel of
+  // two unresolved lanes once slipped through to ok:true (r3-codex). #43
+  // deletes the second copy: this calls the exact SAME `provenFamilyCollision`
+  // choosePanel used above, on the raw profiles the final substitution
+  // actually seated, so there is one rule instead of two that can drift.
+  // A lane that declared a launch nobody could read is still called out with
+  // its own message before the general one, purely so an operator reads which
+  // failure they are holding (r7-codex).
   if (reviews.some(item => item.launchUnreadable)) {
     throw fail('policy', 'a final review lane declared a launch that cannot be read')
   }
-  if (provenFamilyKeysCollide(
-    reviews.map(item => item.familyProvenKey ?? null),
-    reviews.map(item => item.commandProvenSignature ?? null),
-    reviews.map(item => item.routingProvenDeclaration ?? null),
-  )) {
+  if (provenFamilyCollision(reviewAttempts.map(attempt => attempt.profile))) {
     throw fail('policy', 'final review proven identities are not distinct')
   }
   if (new Set(reviews.map(item => item.provenance)).size !== 3) {
