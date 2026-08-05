@@ -484,7 +484,12 @@ export const TOUR_CSS = `
    unreadable at that scale and only makes the board denser. Zoom in and it
    comes back. A team keeps its WIP line at every scale: how full a team is is
    the one thing worth reading from across the board. */
-.tour.lean .tnode:not(.k-team):not(.k-control) span{display:none}
+/* Owner, 2026-08-06: a seat card has ONE form. Hiding its lines when zoomed out
+   meant the same node said two different things depending on the camera, and a
+   reader comparing two cards had to know which mode each was in. The rule that
+   replaced it is simpler and does not depend on scale: a card always shows what
+   it knows. (The control and team nodes were already exempt from this hiding;
+   now everything is.) */
 /* The control node carries the controller's evidence as well as the team's, so
    zoomed out it keeps only what is readable from across the board: how full the
    door is, and what it is holding. */
@@ -572,7 +577,12 @@ export const TOUR_CSS = `
    colour and read as a divider rather than a wire. Opacity needs no matching —
    .dry sets .34 on both, measured, so the stroke was the only difference. */
 .w-owns{stroke:var(--assign)}
-.w-pull{stroke:var(--handoff);stroke-width:2.4;opacity:.8}
+/* A solid between-teams wire at rest: visible as structure, quiet because
+   nothing is travelling it. The carrying class is added only while a comet
+   actually rides it, so the two can never disagree — the same coupling the
+   crawling dashed wires use. */
+.w-pull{stroke:var(--handoff);stroke-width:1.8;opacity:.38}
+.wire.w-pull.carrying{stroke-width:2.6;opacity:.9}
 /* Escalation is a CONDITION, not a handover: nothing travels it. It is red
    because it is the same news as a rejection — work that cannot move — and it
    only crawls when a token is ACTUALLY stuck on it. An escalation line that
@@ -948,6 +958,12 @@ export const TOUR_SCRIPT = `
       const on = visible.has(e.from) && visible.has(e.to)
         && (!order || !HANDOVER.has(e.kind) || order.has(e.from + '>' + e.to + '>' + e.kind))
       p.classList.toggle('off', !on)
+      // Is a comet actually riding this wire right now? Same principle the
+      // dashed family already follows: a wire reads heavier when something is
+      // moving on it. On the opening scene no route is animating, so every
+      // solid wire is structure the reader can see but nothing is travelling —
+      // and it says so by being paler. Owner, 2026-08-06.
+      p.classList.toggle('carrying', Boolean(order && order.has(e.from + '>' + e.to + '>' + e.kind)))
       if (!on) continue
       // Wires used to run centre-to-centre and hide their ends under the cards,
       // so what a reader SAW was wherever the curve happened to escape the card
@@ -972,15 +988,22 @@ export const TOUR_SCRIPT = `
         if (side === 'bottom') return { x: node.x, y: node.y + halfH }
         return { x: node.x, y: node.y }
       }
+      // Owner, 2026-08-06: within-team wires attach to the node's EDGE.
+      //
+      // This was tried once and broke the board, and the reason is recorded
+      // because the fix depends on it: the run between two edges is far shorter
+      // than between two centres, and the bow was left at its centre-sized
+      // value, so the curve swallowed the whole line and the wires rendered as
+      // arcs floating between the worker cards. The attachment point measured a
+      // perfect dx 0 the entire time — the SHAPE broke, and only a screenshot
+      // showed it. So the bow is scaled by how much shorter the run became,
+      // below, and it is the scaling that makes the port safe rather than the
+      // port that was wrong.
       const PORTS = {
-        // assign and judge stay CENTRE-to-centre. Edge ports were tried on
-        // 2026-08-05 to make the visible attachment predictable, and they made
-        // the wire unreadable instead: the run between two edges is far shorter
-        // than between two centres, so the same bow swallowed the whole line
-        // and the within-team wires rendered as arcs floating between the
-        // worker cards, attached to nothing a reader could see. The attachment
-        // point measured perfectly (dx 0) the entire time — the shape was what
-        // broke, and only a screenshot showed it.
+        // Down the team, and back up: out of one card's underside, into the
+        // next card's top.
+        assign: ['bottom', 'top'],
+        judge: ['bottom', 'top'],
         //
         // Rework leaves and arrives on the LEFT, which is the side its arc bows
         // to — an arc that bows left and attaches underneath reads as two
@@ -997,7 +1020,15 @@ export const TOUR_SCRIPT = `
       // family of edges that most needs to clear the board bows down through
       // every card instead of up over them.
       const back = Math.abs(dx) >= Math.abs(dy) ? (Math.sign(dx) || 1) : 1
-      const bow = (typeof e.bow === 'number' ? e.bow : (BOW[e.kind] ?? 0)) * (1 + lane * 0.9) * back
+      // The bow was sized for a centre-to-centre run. A port shortens the run
+      // without changing the bow, and a curve that bows most of its own length
+      // stops reading as a connection — that is exactly what broke the
+      // within-team wires when ports were first tried. Scale it by how much
+      // shorter this run actually is, so the shape a reader sees is the same
+      // one the number was chosen for.
+      const centreRun = Math.hypot(world[e.to].x - world[e.from].x, world[e.to].y - world[e.from].y) || 1
+      const shrink = Math.min(1, len / centreRun)
+      const bow = (typeof e.bow === 'number' ? e.bow : (BOW[e.kind] ?? 0)) * (1 + lane * 0.9) * back * shrink
       const px = -dy / len * bow, py = dx / len * bow
       p.setAttribute('d', 'M ' + a.x + ' ' + a.y
         + ' C ' + (a.x + dx / 3 + px) + ' ' + (a.y + dy / 3 + py)
