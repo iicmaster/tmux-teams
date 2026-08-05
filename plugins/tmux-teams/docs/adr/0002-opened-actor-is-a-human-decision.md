@@ -102,7 +102,11 @@ the three options.
   and `tests/graph.test.mjs` in addition to this package's own
   `tests/ledger.test.mjs` and `tests/loop-occupancy.test.mjs` — all five were
   patched in this change; the first three were not executed as part of this
-  package (see `HANDOFF-PATCH.md`).
+  package. *(This line cited `HANDOFF-PATCH.md` until 2026-08-05. No such file
+  has ever been committed to this repository — the reference was dead from the
+  day it was written, which is worth stating rather than deleting: a reader who
+  went looking for it lost time to a citation that never existed. All five
+  files run in the suite today.)*
 - **`actor: 'human:<id>'` proves syntax, not authority** — this ADR does not
   add authentication. A generic caller of `ledger-writer.appendEvent` (or the
   `ledger-writer.mjs` CLI) can still supply any shape-valid `human:*` string

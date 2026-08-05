@@ -327,12 +327,29 @@ but wrote no outbox* — and the leg's `terminal` is `no-outbox`. A `delivered`
 whose terminal is anything but `done` is never pulled forward: the pull
 controller refuses it as a leg that produced no artifact.
 
-Two more facts travel on the `delivered` event. `evidence_present` records
+Three more facts travel on the `delivered` event. `evidence_present` records
 whether the outbox carried a real `EVIDENCE:` block — a bare "ok" or "pass"
 does not count. `outbox_digest` records the sha256 of the exact bytes the
 companion classified. A tick later the runner reads the same path; if the digest
 disagrees, it does not trust the new bytes and does not loop on them. It parks
 the token on a person and names what changed.
+
+`work_observed` is the third, and it answers one narrow question: **did this
+leg ever reach the model at all?** The companion is the only process present
+when a leg dies at the transport — a spawn refused, an adapter that rejected
+the declared model, a provider that rate-limited before a single prompt
+round-tripped — and a leg that died that way is not a worker who tried and
+failed. So `work_observed: false` says "nothing was asked of any model here",
+and the runner excludes that leg from the worker's attempt budget. Only real
+agent activity sets it true: a tool call, a message or thought chunk, a plan
+update, a completed prompt turn. Notably **not** the operation receipt commit,
+which happens during session setup before the prompt is even sent — it counted
+until v0.15.0, which made every rate-limited leg look like a worker failure.
+
+The leg still occupies the team while it runs and still counts against the
+token's absolute leg ceiling. Only the ATTEMPT count changes. That distinction
+is the whole of it: a token bouncing fifteen times is still bouncing, however
+few of those legs reached a model.
 
 ### Why a session and not a one-shot command
 
@@ -381,6 +398,35 @@ install from failing every dispatch against a model nobody chose.
 An identity refusal is not retried. `nextStep` escalates the token on the first
 one, because a declared model the adapter will not acknowledge fails identically
 every time and three more attempts only buy three more identical failures.
+
+### A seat may name more than one model — the palette
+
+A seat normally names one model. Since v0.15.0 it may instead declare an
+ordered **palette**: up to eight whole seat specs, each with its own model,
+lane, effort and display name. It is declared on the SEAT
+(`teams[].seats.<agent_id>.palette`), never on a role — so declaring four
+candidates costs no extra worker seats and does not move `wip_limit`.
+
+Two things make it a fallback rather than a list. Each entry carries a
+**`bucket`**, naming the rate-limit family it draws on (defaulting to its own
+lane), and two CONSECUTIVE entries may not share one: neighbours in the same
+bucket are not alternatives, since the limit that refused the first refuses the
+second. And the walk is driven by `work_observed`, above — a leg that never
+reached the model advances to the next candidate, while a leg that reached the
+model and failed for real **retries the same one**. That is the distinction the
+whole feature turns on: a model that answered and did badly is not a model that
+is unavailable.
+
+Once as many misses have accumulated on that seat as the palette has entries,
+the runner escalates rather than starting the list again. That is a cheap
+bound, not a proof about each candidate — a genuine failure in the middle
+retries in place, so an entry can have reached the model while the counter
+still fills. The escalation says only what it counted.
+
+What a palette does **not** do: it is not a load balancer, it does not make a
+leg free against the token's leg ceiling, and it cannot distinguish two
+executables on one lane — `claude-qwen` and `claude-kimi` are the same
+`adapter` here, so a palette cannot swap between them.
 
 ---
 

@@ -50,6 +50,14 @@ test('marketplace and plugin manifests agree', () => {
   assert.equal(plugin.version, RELEASE_VERSION)
   assert.match(plugin.version, /^\d+\.\d+\.\d+$/, 'plugin version must be semver')
   assert.ok(existsSync(join(ROOT, mkt.plugins[0].source)), 'plugins[0].source must exist')
+  // The FOURTH place the version is written, and the one no test guarded until
+  // the v0.15.0 documentation review found it. README.md states the release in
+  // prose; the release flow named three files and this was not among them, so
+  // it would have shipped saying 0.14.6 forever. The same shape as the third
+  // place, which reached the v0.12.0 bump still on 0.11.1 until a test caught it.
+  const readmeVersion = readText(join(ROOT, 'README.md')).match(/Current release: \*\*([^*]+)\*\*/)
+  assert.ok(readmeVersion, 'README.md must state "Current release: **<version>**"')
+  assert.equal(readmeVersion[1], RELEASE_VERSION, 'README.md states a different release than the manifests')
 })
 
 test('Stage 1 field-evidence files and documentation links are wired', () => {

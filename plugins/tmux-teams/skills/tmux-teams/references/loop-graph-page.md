@@ -180,6 +180,18 @@ or every scene is as wide as the whole board and the zoom never acts.
 
 ## 7. Rules that are easy to break silently
 
+- **A card only ever shows a model that was VERIFIED.** `display_model` is a
+  DECLARATION from `graph.json`; `run.model` is what the adapter acknowledged.
+  `modelLine` may use the declaration to TRANSLATE a verified model into the
+  real vendor name, and for nothing else — not for a seat that has never run,
+  not for a run whose model was never confirmed. It was the first branch of
+  that function until v0.15.0, so a seat that had never been dispatched printed
+  its declared model in the identical shape a measured one uses, and a verified
+  model was silently replaced by whatever the graph claimed. A reader had no
+  way to tell a claim from a measurement, which is §12.7 honesty law 2 and the
+  whole reason this page exists. `—` is the honest answer for a seat with no
+  run; `<asked> unconfirmed` is the honest answer for a run with no verified
+  model. Neither may be filled in from a declaration.
 - **`.wire.off` must come after `.wire.dry`.** Equal specificity, so line order
   decides: with `dry` last, an edge told to leave the scene is painted back in.
 - **A seat's status is checked against custody, not taken from the snapshot

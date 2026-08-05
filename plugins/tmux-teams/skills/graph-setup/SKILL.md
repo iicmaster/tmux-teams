@@ -16,13 +16,33 @@ runtime's question tool and keep asking until nothing is blank. A declaration
 that is half filled in is not a smaller version of a declaration; it is a repo
 that dispatches agents its owner never chose.
 
-## If this is skipped, nothing dispatches
+## If this is skipped, the wrong thing happens quietly
 
-A missing declaration is **not** a default any more. There is no bundled shape
-that quietly takes over: with no valid `graph.json` the runner refuses to
-dispatch, and it says so rather than idling silently.
+**Corrected 2026-08-05.** This section used to say a missing declaration is
+refused — "there is no bundled shape that quietly takes over". That was never
+true of the shipped code, from the day the sentence was written. What actually
+happens with **no `graph.json` at all**: `readWorkflowGraph`
+(`plugins/tmux-teams/skills/tmux-teams/scripts/graph.mjs`) falls back to
+`DEFAULT_WORKFLOW_GRAPH`, returns
+`ok: true` with `source: 'default'`, and the runner dispatches against a
+bundled four-team template whose every seat asks for the placeholder model
+`inherit-account-default`. Nothing consults `source`, so **no refusal is
+recorded anywhere** — the failures arrive later, at the adapter, one dispatch
+at a time. The sibling `tmux-teams/SKILL.md` said this correctly all along;
+these two documents contradicted each other.
 
-The runner states that refusal in `<repo>/.tmux-teams/runner-heartbeat.json`:
+So the reason to run this interview is not that the loop stops without it. It
+is worse than that: without it the loop runs, against teams the user never
+declared, and the board looks entirely normal. Say that to the user in one
+sentence before the first question.
+
+`graph.mjs check` is the signal that actually distinguishes the two states —
+it reports the bundled template by name. `runner-heartbeat.json` does **not**:
+`dispatching: false` never appears for a missing graph, only for an
+*invalid* one.
+
+The runner states a real refusal — an invalid declaration, not a missing
+one — in `<repo>/.tmux-teams/runner-heartbeat.json`:
 
 ```json
 { "schema": "tmux-teams.runner-heartbeat", "at": "<ISO 8601 UTC>", "tick_sec": 30,
@@ -194,10 +214,49 @@ shape:
 }
 ```
 
+### Optional: per-seat overrides and a model palette
+
+`models` sets one model per ROLE. A `seats` block overrides ONE named seat, and
+it is the only place a model palette can be declared — a feature that shipped
+in v0.15.0 and that this interview does not ask about, so only add it when the
+user's own answers call for it.
+
+```json
+"seats": {
+  "build_worker_1": { "model": "<model>", "adapter": "claude | codex | agy",
+                      "effort": "<effort>", "display_model": "<real model name>" },
+  "build_worker_2": { "palette": [
+    { "model": "<model>", "adapter": "claude", "bucket": "vendor-a" },
+    { "model": "<model>", "adapter": "codex",  "bucket": "vendor-b" }
+  ] }
+}
+```
+
+Ask for a palette only if the user describes a seat that should keep working
+when its first model is **rate-limited or refuses** — that is the whole
+purpose. Then collect an ordered list of 1–8 candidates, and obey three rules
+the validator enforces at load:
+
+- **`palette` REPLACES that seat's `model`/`adapter`/`effort`/`display_model`.**
+  It never sits beside them; a seat declaring both is refused.
+- **Each entry is a whole seat spec**, not a model name. A model means nothing
+  without its lane — the same alias reaches a different vendor on a different
+  adapter — so `model` is required on every entry.
+- **Two CONSECUTIVE entries may not share a `bucket`.** A bucket names the
+  rate-limit family (it defaults to the entry's lane). Two neighbours in one
+  bucket are not a fallback: they draw on the same limit, so trying the second
+  right after the first spends an attempt to learn nothing. `A, B, A` is fine.
+
+A palette does **not** cost extra worker seats — `wip_limit` counts
+`worker_ids`, never candidates. An eight-entry palette on a one-worker team is
+still WIP 1.
+
 `AGENT_ID` = `^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$` ·
 `GRAPH_ID` = `^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$` · `name` = 1–160 characters,
-no control characters. Bounds: 1–100 teams, 1–100 workers per team, 1–50
-workflows. Every `agent_id` is unique across the whole graph, the outer
+no control characters. Bounds: 1–100 teams, **1–5 workers per team**, 1–50
+workflows, 1–8 entries per declared palette. Five is a hard refusal, not
+advice — never recommend a sixth worker seat, however many parallel reviewers
+the user describes; give the team fewer seats and let the route carry the rest. Every `agent_id` is unique across the whole graph, the outer
 controller included — one agent, one seat, or a single dispatch lights two nodes.
 
 **Never write these:**

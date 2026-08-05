@@ -18,8 +18,14 @@ target repository or normal host state.
 External plan and completion review use one bundled JavaScript ACP Review Gate.
 It selects exactly three distinct model families from a fixed route matrix,
 requires AGY in every accepted panel, and permits at most one policy-selected
-non-AGY reserve. OpenAI/Codex/`gpt-*` primaries use AGY, Kimi `kimi/k3`, and
-Zai `zai/glm-5.2`; Codex cannot review that primary family. Gemini, AGY,
+non-AGY reserve. OpenAI/Codex/`gpt-*` primaries use AGY, Qwen
+`qwen/qwen3.8-max-preview`, and Zai `zai/glm-5.2`; Codex cannot review that
+primary family. *(This line named Kimi `kimi/k3` until 2026-08-05. The route
+moved to Qwen when the Kimi lane became compatibility-only, and this Decision
+text was not updated with it — `scripts/review-policy.mjs` is the authority,
+and `party-mode/SKILL.md`'s matrix has been correct throughout. The later
+sections of this ADR that mention `kimi/k3` are describing what ran at the
+time and are left as written.)* Gemini, AGY,
 unknown, conflicting, and mixed-family primaries fail closed.
 
 Direct Claude is currently marked unavailable by runner-owned policy. The gate

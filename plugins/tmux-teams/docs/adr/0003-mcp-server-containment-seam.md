@@ -7,10 +7,19 @@ Accepted
 ## Context
 
 `acp-companion.mjs` sends the literal `mcpServers: []` at both ACP calls that
-start or resume an agent's session — `session/new` (`:3462`) and
-`session/load` (`:3478`). There is no option, environment variable,
-`graph.json` field, or profile key that can make it anything else: every
-agent this system dispatches receives zero MCP servers, unconditionally.
+start or resume an agent's session — `session/new` and `session/load`. There is
+no option, environment variable, `graph.json` field, or profile key that can
+make it anything else: every agent **dispatched through this companion**
+receives zero MCP servers, unconditionally.
+
+Two precisions this paragraph lacked until 2026-08-05. First, it cited line
+numbers (`:3462`, `:3478`) that ordinary edits have since moved; a line number
+is not a durable citation in a file under change, so this ADR names the two
+calls and leaves finding them to `grep -n mcpServers`. Second, the guarantee is
+about the **automated loop**, not about every agent a human might start: a
+person running an interactive session in the same repository is outside this
+seam entirely, and nothing here constrains what that session loads. The scope
+that matters for §13 is the dispatched leg, and for that the claim holds.
 
 This was never decided in the open. It happened to be true because nothing
 ever asked the companion to send anything else, and §13's list of

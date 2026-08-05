@@ -152,13 +152,18 @@ one SSOT** and wins if the two ever disagree.
    bytes. This exists because every release before it was marked on one model's
    reading, and the three corrections that mattered most on 2026-08-03 all came
    from the advisor rather than from this room.
-3. Bump the version in all THREE places — `.claude-plugin/marketplace.json`
+3. Bump the version in all FOUR places — `.claude-plugin/marketplace.json`
    (twice: `metadata.version` and `plugins[0].version`),
-   `plugins/tmux-teams/.claude-plugin/plugin.json`, and `RELEASE_VERSION` in
-   `tests/plugin-structure.test.mjs`. That test is the only thing checking they
-   agree, so it has to state the number itself. This step said "BOTH" until
-   2026-08-01, and v0.12.0 reached the bump with the third one still on 0.11.1
-   until the test caught it.
+   `plugins/tmux-teams/.claude-plugin/plugin.json`, `RELEASE_VERSION` in
+   `tests/plugin-structure.test.mjs`, and the `Current release: **X.Y.Z**` line
+   in `README.md`. That test is the only thing checking they agree, so it has
+   to state the number itself. This step said "BOTH" until 2026-08-01, and
+   v0.12.0 reached the bump with the third one still on 0.11.1 until the test
+   caught it — then said "THREE" until 2026-08-05, when the v0.15.0
+   documentation review found README.md carrying the version in prose with no
+   test guarding it at all. It has one now. **The pattern is the lesson: each
+   time a place was added, it was found by a reader rather than by the flow, so
+   assume there is a fifth and grep for the old number after every bump.**
 4. Run `node --test`, `git diff --check`, and
    `claude plugin validate --strict .` locally. `tests/acp-companion.test.mjs`
    was long treated as a timing flake — "a different name each time, re-run it

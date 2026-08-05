@@ -21,7 +21,7 @@ the ADRs, or from the release notes.
   ["Does anything break?"](#does-anything-break) first if that's the only
   question you have.
 - **Arriving fresh, nothing installed yet** — this file assumes you already
-  know the system. Start with `README.md` (install, the nine skills, the
+  know the system. Start with `README.md` (install, the ten skills, the
   published pages) and
   [`skills/tmux-teams/references/loop-system-contract.md`](../skills/tmux-teams/references/loop-system-contract.md)
   (§0–§9 for the model itself). Come back here once you're running something
@@ -72,8 +72,13 @@ to break on an upgrade were each traced by hand:
   resolved `teams[].agents[]` entry gained a `palette` field, reported as
   `null` for the seats — today, all of them — that declare none, so the hash
   over the resolved graph moves even for a `graph.json` you have not touched.
-  Measured, not reasoned: the bundled default graph resolves to `ffe8ebe7…`
-  on v0.14.6 and `16e7d87c…` here. This is safe because nothing joins on a
+  Measured against the tags, not reasoned — and corrected once: the bundled
+  default graph resolves to `b8803e6a…` on v0.14.6 and `16e7d87c…` here. The
+  first draft of this line said `ffe8ebe7…`, which was the digest of `main`
+  mid-release rather than of the tag, caught by the v0.15.0 documentation
+  review. A number offered as a measurement has to name what was measured.
+
+  This is safe because nothing joins on a
   *workflow* graph's `source_digest` across versions — the digest
   `team-runtime.mjs` matches against is `team-graph-contract.mjs`'s, a
   different derivation over a different object — and because declarations

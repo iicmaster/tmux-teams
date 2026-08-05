@@ -139,6 +139,41 @@ the alias actually sent over the wire — the board can say `opus` while the
 dispatch sends whatever model string the adapter accepts. See §3 below for
 how a requested model is verified, not just asked for.
 
+**A seat may name several models, in order — the palette (new in 0.15.0).**
+Instead of a single `model`/`adapter`/`effort`/`display_model`, a seat may
+declare `palette`: an ordered array of up to eight whole seat specs. It is the
+answer to "this model is rate-limited right now" happening at 3am with nobody
+watching — the loop walks to the next candidate itself instead of parking the
+token.
+
+```json
+"seats": { "build_worker_1": { "palette": [
+  { "model": "<model>", "adapter": "claude", "bucket": "vendor-a" },
+  { "model": "<model>", "adapter": "codex",  "bucket": "vendor-b" }
+] } }
+```
+
+Four things make it a fallback and not a wish list:
+
+- It is declared on a **seat**, so an eight-entry palette still costs one WIP
+  slot. It never touches `worker_ids`.
+- Each entry is a **whole seat spec**, never a bare model name — the same alias
+  reaches a different vendor on a different lane, so a model without its lane
+  means nothing.
+- `bucket` names the **rate-limit family** an entry draws on (defaulting to its
+  lane), and two CONSECUTIVE entries may not share one. Neighbours in a single
+  bucket are not alternatives: the limit that refused the first refuses the
+  second, so trying it spends a leg to learn nothing.
+- The walk is driven by whether a leg ever **reached the model**. A leg that
+  died at the transport advances to the next candidate; a leg that reached the
+  model and failed on the merits **retries the same one**. Being unavailable
+  and being wrong are different problems.
+
+It replaces the single-value fields on that seat rather than sitting beside
+them, and a graph declaring both is refused at load. What it cannot do: swap
+between two executables on one lane — `claude-qwen` and `claude-kimi` are both
+`adapter: claude` here.
+
 A team's **WIP limit is not declarable — it always equals its worker count**
 (`workflow-graph.mjs`). A `graph.json` that declares a `wip_limit` disagreeing
 with its worker count is rejected by name.

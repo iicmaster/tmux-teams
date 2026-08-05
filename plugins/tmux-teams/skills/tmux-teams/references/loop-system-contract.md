@@ -316,8 +316,12 @@ appears; omitted means no reasoning effort is requested, not a default value ·
 `BUCKET` = same shape as `MODEL` (1–128 characters, no control characters),
 compared for equality only — this layer never learns what a bucket MEANS (§3.5).
 
-Bounds: 1–100 teams, 1–100 workers per team, 1–50 workflows, 1–8 entries per
-declared palette.
+Bounds: 1–100 teams, **1–5 workers per team**, 1–50 workflows, 1–8 entries per
+declared palette. The worker bound said 100 here until 2026-08-05 while
+`workflow-graph.mjs` had enforced 5 since well before v0.14.6 — the SSOT
+overstated a limit the code refuses, so a graph written from this line alone
+would be rejected at load. `MAX_WORKERS` is the authority; §3 states the reason
+five is a ceiling rather than advice.
 
 ### 3.1 `wip_limit` is derived, never declared
 
