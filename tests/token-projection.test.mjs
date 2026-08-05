@@ -29,6 +29,29 @@ test('current delegates to currentEntry — never a second "which leg is current
   assert.deepEqual(projected.current, currentEntry(custody),
     'the projection must hand back exactly what the sanctioned placement read returns, byte for byte')
   assert.equal(projected.current.event, 'assigned')
+
+  // The fixture above cannot tell delegation from a naive reimplementation: its
+  // newest line IS the answer, so `custody[custody.length - 1]` and
+  // `currentEntry(custody)` agree by accident. Proven by mutation 2026-08-05 —
+  // replacing the delegation with that one-liner left this test green.
+  //
+  // This is the case where they diverge, and it is the case the whole helper
+  // exists for: a SUPERSEDED leg reporting in after the token already moved on.
+  // A trailing outcome alone is not enough — when it closes the newest leg,
+  // `currentEntry` returns it and a naive read agrees. It has to be an outcome
+  // for an OLDER leg, arriving after a newer `assigned`. Then the holder is the
+  // newer assignment and the newest LINE is a dead leg's late paperwork.
+  const superseded = [
+    ...custody,
+    { at: '2026-08-01T09:20:00.000Z', event: 'assigned', work_item: 'tok-1', agent_id: 'build_w2', task_id: 't-2', dispatch_id: 't-2-dispatch' },
+    { at: '2026-08-01T09:25:00.000Z', event: 'delivered', work_item: 'tok-1', agent_id: 'build_w1', task_id: 't-1', terminal: 'done', timed_out: false, evidence_present: true },
+  ]
+  const late = projectToken(itemOf(superseded, { legs: 2 })).current
+  assert.deepEqual(late, currentEntry(superseded))
+  assert.equal(late.event, 'assigned', 'the holder is the newer leg, not the dead one that just reported')
+  assert.equal(late.agent_id, 'build_w2')
+  assert.notDeepEqual(late, superseded[superseded.length - 1],
+    'a naive last-element read returns the superseded leg\'s delivered line and must not pass here')
 })
 
 test('releasing is true exactly on the contract §6 RELEASING_EVENTS set, false otherwise', () => {

@@ -174,12 +174,29 @@ test('the published page answers every selector the published refresh script ask
     { at: '2026-07-27T09:00:00.000Z', event: 'assigned', agent_id: 'build_w1', task_id: 't-1' },
   ]))
 
+  // This loop's body was EMPTY — a `continue` and an unused local, so the
+  // derivation ran and then nothing was checked. Proven by mutation
+  // 2026-08-05: deleting `data-refresh-note` from the shipped header, a hook
+  // the script really queries, left this test green. The guard above only ever
+  // proved the regex still matched something.
+  // One script serves TWO published pages, so "every selector" was the wrong
+  // question. `[data-tour-data]` is emitted by graph-tour.mjs and read only
+  // inside the script's `if (board)` branch, which a kanban page never enters —
+  // asserting kanban carries it would be asserting a bug. Each page is checked
+  // against the hooks it is actually responsible for, and the graph-only ones
+  // are checked on the graph page rather than waved past.
+  const GRAPH_ONLY = new Set(['[data-tour-data]'])
+  const graphHtml = readFileSync(join(store, 'graph.html'), 'utf8')
+
   for (const selector of required) {
+    const page = GRAPH_ONLY.has(selector) ? graphHtml : html
+    const where = GRAPH_ONLY.has(selector) ? 'graph.html' : 'kanban.html'
     if (selector.startsWith('meta')) {
       const name = selector.match(/name="([^"]+)"/)[1]
+      assert.ok(page.includes(`name="${name}"`), `${where} is missing ${selector}`)
       continue
     }
-    const attribute = selector.slice(1, -1)
+    assert.ok(page.includes(selector.slice(1, -1)), `${where} is missing ${selector}`)
   }
 
   // The script computes its poll interval as Number(...) * 1000. A non-numeric
