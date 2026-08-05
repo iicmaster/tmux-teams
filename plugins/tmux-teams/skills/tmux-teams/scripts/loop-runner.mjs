@@ -1795,6 +1795,24 @@ export function tick(repoArg, {
     beat({ dispatching: false, reason, started: 0, held: null })
     return { ok: false, reason }
   }
+  // GitHub #48. A repository that has not declared its own loop does not get to
+  // run one. `readWorkflowGraph` answers with the bundled template when no
+  // declaration exists — deliberately, so the pages can still render something
+  // and explain what is missing — and it says so in `source`. Nothing read that
+  // field, so the runner dispatched agents against four teams the owner never
+  // chose, every seat asking for the placeholder model
+  // `inherit-account-default`, and the failures arrived one at a time at the
+  // adapter rather than once, here, in the operator's face.
+  //
+  // `workflow-graph.mjs`'s own comment had already named this the dangerous
+  // shape — "a reader cannot tell those two states apart" — and
+  // `graph-setup/SKILL.md` promised for its whole life that it was refused.
+  // Nothing enforced the promise until now.
+  if (graph.source === 'default') {
+    const reason = 'no team graph declared — .tmux-teams/graph.json is missing, and the bundled template is a shape to read, not a loop to run: declare one with the graph-setup skill'
+    beat({ dispatching: false, reason, started: 0, held: null })
+    return { ok: false, reason }
+  }
   const briefDir = scratchDir || join(repo, '.tmux-teams', 'runner-briefs')
   // C1: every token this tick passes over, with the reason it had at the
   // time. Written once, atomically, at the end of a tick that actually

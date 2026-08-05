@@ -542,7 +542,8 @@ ${renderNav('kanban')}
   <p class="refresh"><span data-refresh-status role="status" aria-live="polite">Snapshot fresh</span>
    <button type="button" class="pause" data-refresh-toggle data-refresh-focus-key="refresh-toggle" aria-pressed="false">Pause updates</button>
    <span class="note" data-refresh-note>Polling the local snapshot marker</span></p>
-</header>${board.skippedLines ? `
+</header>${board.graph_source === 'default' ? `
+<p class="orphans" data-graph-undeclared="1"><strong>This repository has not declared its own loop.</strong> There is no <code>.tmux-teams/${WORKFLOW_GRAPH_FILE}</code>, so these columns are the bundled template, not this project's teams. The runner will not dispatch until a declaration exists (GitHub #48). Run the <code>graph-setup</code> skill to write one.</p>` : ''}${board.skippedLines ? `
 <p class="orphans">${board.skippedLines} unreadable ledger line(s) skipped — this board is incomplete.</p>` : ''}
 <section class="tiles">
   ${tile(board.counts.in_flight, 'work items in a team right now', board.counts.in_flight ? 'ok' : '')}

@@ -2592,6 +2592,36 @@ line.
 
 ### Amendment log
 
+**2026-08-05 — GitHub #48: an undeclared repository does not run a loop.**
+`readWorkflowGraph` answers with `DEFAULT_WORKFLOW_GRAPH` and `source:
+'default'` when no `.tmux-teams/graph.json` exists. Nothing read that field, so
+`loop-runner.mjs`'s only gate was `!graph.ok` and a repository that had never
+declared anything dispatched normally — against four teams its owner never
+chose, every seat requesting the placeholder model `inherit-account-default`,
+with the failures arriving one at a time at the adapter instead of once, at
+load, where an operator would see them.
+
+The template still LOADS, deliberately: `graph.html` and `kanban.html` need
+something to draw while they explain what is missing, and it is a useful shape
+to read during setup. What changed is that it is a shape to read and never a
+loop to run — `tick()` now refuses when `graph.source === 'default'`, writes
+`dispatching: false` to the heartbeat with a reason naming the missing file and
+the `graph-setup` skill, and both pages carry a banner
+(`data-graph-undeclared="1"`) saying the repository has not declared its own
+loop. The banner is a banner and not a metadata label on purpose: the only
+prior surfacing was `graph: bundled template` inside the graph page's collapsed
+`details` disclosure and beside the team count on the kanban page, which read
+as configuration trivia rather than as a system that is not ready.
+
+Two things make this a correction rather than a feature. `workflow-graph.mjs`
+had already named this shape the dangerous one in its own comment — "a reader
+cannot tell those two states apart, which is what makes the quiet path the
+dangerous one" — and `graph-setup/SKILL.md` promised the refusal existed from
+the day it was written. Nothing enforced the promise for the whole life of the
+document. `tests/undeclared-graph.test.mjs` enforces it now, and separately
+pins that the template still loads, so a future "fix" that refuses to READ it
+would leave both pages blank and fail there instead.
+
 **2026-08-05 — what the v0.15.0 release review found, and what it cost to
 ignore that it was still unread.** Four halves of the release diff were read by
 two outside families (`glm-5.2` on the custody axis, `gpt-5.6-luna[max]` on the

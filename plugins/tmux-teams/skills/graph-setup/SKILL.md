@@ -16,33 +16,24 @@ runtime's question tool and keep asking until nothing is blank. A declaration
 that is half filled in is not a smaller version of a declaration; it is a repo
 that dispatches agents its owner never chose.
 
-## If this is skipped, the wrong thing happens quietly
+## If this is skipped, nothing dispatches
 
-**Corrected 2026-08-05.** This section used to say a missing declaration is
-refused — "there is no bundled shape that quietly takes over". That was never
-true of the shipped code, from the day the sentence was written. What actually
-happens with **no `graph.json` at all**: `readWorkflowGraph`
-(`plugins/tmux-teams/skills/tmux-teams/scripts/graph.mjs`) falls back to
-`DEFAULT_WORKFLOW_GRAPH`, returns
-`ok: true` with `source: 'default'`, and the runner dispatches against a
-bundled four-team template whose every seat asks for the placeholder model
-`inherit-account-default`. Nothing consults `source`, so **no refusal is
-recorded anywhere** — the failures arrive later, at the adapter, one dispatch
-at a time. The sibling `tmux-teams/SKILL.md` said this correctly all along;
-these two documents contradicted each other.
+A missing declaration is **not** a default. The bundled template still loads —
+the pages need something to draw while they explain what is missing — but the
+runner refuses to dispatch against it, and says so rather than idling silently.
 
-So the reason to run this interview is not that the loop stops without it. It
-is worse than that: without it the loop runs, against teams the user never
-declared, and the board looks entirely normal. Say that to the user in one
-sentence before the first question.
+*This paragraph has a history worth keeping. It claimed exactly this from the
+day it was written and it was FALSE for that whole time: `readWorkflowGraph`
+fell back to the template, the runner dispatched against four teams the user
+never declared, every seat asking for the placeholder model
+`inherit-account-default`, and the failures arrived one at a time at the
+adapter. The v0.15.0 documentation review caught the lie, the documentation was
+corrected to describe the defect (GitHub #48), and then the defect was fixed —
+so the sentence is true now for the first time. `tmux-teams/SKILL.md` described
+the old behaviour correctly throughout; the two documents disagreed, and the
+one making the safety promise was the wrong one.*
 
-`graph.mjs check` is the signal that actually distinguishes the two states —
-it reports the bundled template by name. `runner-heartbeat.json` does **not**:
-`dispatching: false` never appears for a missing graph, only for an
-*invalid* one.
-
-The runner states a real refusal — an invalid declaration, not a missing
-one — in `<repo>/.tmux-teams/runner-heartbeat.json`:
+The runner states that refusal in `<repo>/.tmux-teams/runner-heartbeat.json`:
 
 ```json
 { "schema": "tmux-teams.runner-heartbeat", "at": "<ISO 8601 UTC>", "tick_sec": 30,
