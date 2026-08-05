@@ -160,10 +160,14 @@ function detectSignals(text, extra = []) {
 }
 
 // Scans one directory, non-recursively — the shipped tree this guards is a
-// flat `scripts/` folder (see DEFAULT_SCAN_DIR); a future nested layout would
-// need this extended, and would fail closed today (files it cannot see are
-// files it cannot flag), which is exactly the trap this file's own header
-// warns against. Kept flat deliberately rather than silently "handled".
+// flat `scripts/` folder (see DEFAULT_SCAN_DIR). A future nested layout would
+// need this extended, and until then it fails **OPEN**, not closed: a reader in
+// a subdirectory is a file this scan never sees, so the check PASSES and says
+// zero new readers. This comment said "fail closed" until an outside review
+// caught it on 2026-08-05 — the words were backwards about which way a guard
+// breaks, which is worse in a safety comment than in any other kind, because
+// the next maintainer trusts it instead of measuring. Kept flat deliberately
+// rather than silently "handled", with the direction stated correctly.
 export function findLedgerReaders(scanDir) {
   const names = readdirSync(scanDir).filter((name) => name.endsWith('.mjs')).sort()
   const sources = new Map(names.map((name) => [name, readFileSync(join(scanDir, name), 'utf8')]))
