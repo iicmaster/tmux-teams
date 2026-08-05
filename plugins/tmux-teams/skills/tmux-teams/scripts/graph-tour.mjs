@@ -1009,6 +1009,10 @@ export const TOUR_SCRIPT = `
         // next card's top.
         assign: ['bottom', 'top'],
         judge: ['bottom', 'top'],
+        // The team node down to its own dispatcher is a within-team wire too,
+        // and it was the one left on centres when the others got ports — so it
+        // was still the counter-example a reader could point at.
+        owns: ['bottom', 'top'],
         //
         // Rework leaves and arrives on the LEFT, which is the side its arc bows
         // to — an arc that bows left and attaches underneath reads as two
