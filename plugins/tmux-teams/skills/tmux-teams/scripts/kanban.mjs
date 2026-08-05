@@ -31,7 +31,8 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { KANIT_FONT_CSS } from '../assets/kanit/kanit-embedded.mjs'
-import { RELEASING_EVENTS, currentEntry, readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
+import { RELEASING_EVENTS, readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
+import { projectToken } from './token-projection.mjs'
 import { planPulls } from './pull-controller.mjs'
 import { validateLedgerFileTolerant } from './ledger-validate.mjs'
 import { ledgerPath } from './ledger-writer.mjs'
@@ -155,20 +156,15 @@ export function stateOf(graph, last) {
 // "How long has it been sitting HERE" needs the event that put it here. A token
 // that started in the first team of its route was never pulled into it, so the
 // fallback to the first recorded event is a real case, not a theoretical one.
-const placingEvent = (item, inTeam, last) => {
-  if (!inTeam) return last
-  for (let i = item.custody.length - 1; i >= 0; i -= 1) {
-    const entry = item.custody[i]
-    if (entry.event === 'opened' || entry.event === 'pulled' || entry.event === 'returned') return entry
-  }
-  return item.custody[0]
-}
-
+// D2: that fold now lives once, in token-projection.mjs's `placed_at` — this
+// file only decides whether it applies (a token not currently IN a team has
+// no "here" to measure, so it reads its own current entry instead).
 function cardOf(graph, item, { nowMs, inTeam, blockedReason }) {
   // Same entry the placement answers by: a card that reads its own state off a
   // superseded leg's late `delivered` shows a token working somewhere it left.
-  const last = currentEntry(item.custody)
-  const placed = placingEvent(item, inTeam, last)
+  const projected = projectToken(item)
+  const last = projected.current
+  const placed = inTeam ? projected.placed_at : last
   const placedMs = Date.parse(placed.at || '')
   const { state, detail } = stateOf(graph, last)
   return {
@@ -289,7 +285,7 @@ export function readBoard(repo, now) {
     // "Completed" on a card filed under Unplaceable. §6 exists precisely so a
     // superseded leg's late outcome does not get read as current; reading it
     // here defeated that everywhere it mattered for this loop.
-    const last = currentEntry(item.custody)
+    const last = projectToken(item).current
     const teamId = placedIn.get(item.work_item) ?? null
     const inTeam = !RELEASING_EVENTS.has(last.event) && teamId !== null
     const card = cardOf(graph.value, item, {

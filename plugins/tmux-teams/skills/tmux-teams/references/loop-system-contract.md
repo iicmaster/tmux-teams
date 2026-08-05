@@ -1206,6 +1206,58 @@ go — the runner refused its own repair on every tick, visibly and for ever.
 - The rule is a **release list, not a whitelist**: an event nobody taught this
   function about leaves the work where it is rather than making it disappear.
 
+### 6.1 Per-token projection — the shape every OTHER reader should consume
+
+§6 above centralised the one question "which team holds this token" into
+`teamOccupancy`/`currentEntry`. It did not centralise everything past that:
+when a token entered its PRESENT placement, where that placement was pulled
+from, and what its own intake history says each still lived inside whichever
+reader needed it first — `kanban.mjs` folded the first two inline, and
+`intake-stats.mjs` folded the third, independently, before either could see
+the other was answering the same kind of question about the same evidence.
+
+`token-projection.mjs`'s `projectToken(item)` is the single fold for exactly
+those questions, over ONE token's own custody, and no other input — no graph
+declaration, no wall clock, no other token's state:
+
+| Field | Answers | Folded from |
+| --- | --- | --- |
+| `current` | who holds this token now, and with what event/verdict | `dispatch-facts.currentEntry` — reused, never re-derived |
+| `releasing` | is the route still open or already closed | `RELEASING_EVENTS.has(current.event)` |
+| `placed_at` | when did the token enter its CURRENT placement | newest `opened`/`pulled`/`returned` line, else the first line ever recorded (kanban.mjs's own fold before this) |
+| `pulled_from` | which team the current placement was pulled from, if any | newest `pulled` line's `from_team` (graph.mjs's own fold before this) |
+| `lead_sec`, `legs` | the token's whole-journey timing and leg count | pass through from `dispatch-facts.readWorkItems`'s own item — never recomputed |
+| `requester` | who opened this token | the `opened` line's `actor` |
+| `questions[]` | every time the token was sent back for detail — category and answer time, per asking | each `questioned`/`answered` pair (intake-stats.mjs's own fold before this) |
+| `withdrawn_by_runner` | did the runner's own deadline lapse it, as opposed to a controller `abandon` verdict | an `abandoned` line whose `actor` is `agent:runner` specifically — the same disambiguation §9 already requires |
+
+**Deliberately excluded, and why:**
+
+- Per-team occupancy (`teamOccupancy`'s cross-token aggregate) stays where it
+  is. This projection answers about ONE token; a team's occupancy is built by
+  folding MANY tokens together, which is a different, later step.
+- `.tmux-teams/decisions/latest.json` (§11.3) stays separate. It is a
+  different file on a different write cadence — overwritten whole once per
+  tick, never appended — answering why the RUNNER passed over a token on ONE
+  tick. No reader of a custody ledger asks that question of the ledger, and
+  it is not evidence a token carries about itself; it is evidence about a
+  tick that read the token and moved on.
+- Ledger structural validity (`ledger-validate.mjs`) stays separate: a
+  byte-level judgment over raw lines, not a fact about a believed-valid
+  token's history.
+- A human-readable state sentence, "how long has it been sitting here"
+  against the wall clock, and whether a team is at its WIP limit all need the
+  graph declaration and/or the clock, which this projection deliberately does
+  not take — they stay in the reader that already has both.
+
+**Adoption is per-reader, not automatic.** As of this amendment only
+`kanban.mjs`'s `cardOf`/`readBoard` consume it, replacing their own inline
+placement-and-placing fold with the shared one, with no change to either
+function's observable output (`tests/kanban.test.mjs`,
+`tests/kanban-board.test.mjs` pass unmodified). The other eight readers named
+in the D2 amendment log entry below are unchanged; moving them is future
+work, one at a time, each proving it changes nothing before it lands.
+
 ## 7. Pull system
 
 - Work is **pulled, never pushed**. A team takes work only when it has room.
@@ -2215,6 +2267,35 @@ argument) and asserts none of `.jsonl`, `.tmux-teams`, `.mailbox-out`, or an
 absolute path appears anywhere in the returned JSON. `repo` — the project
 root — is the one argument every sanctioned reader in this contract already
 takes and is not treated as a hole in that wall; §16 states why.
+
+**2026-08-05 — D2: one projection every reader could consume, and one reader
+moved onto it.** New §6.1. `scripts/ledger-reader-ratchet.mjs` names the nine
+readers of a token's ledger as they stand today: `admit.mjs`,
+`dispatch-facts.mjs`, `graph.mjs`, `intake-stats.mjs`, `kanban.mjs`,
+`ledger-validate.mjs`, `ledger-writer.mjs`, `loop-runner.mjs`,
+`pull-controller.mjs`. §6's `teamOccupancy`/`currentEntry` already
+centralised "which team holds this token"; what was still folded
+independently, one reader at a time, was everything past that — when a
+token entered its CURRENT placement (`kanban.mjs`'s own `placingEvent`),
+where that placement was pulled from (`graph.mjs`'s inline scan for the
+newest `pulled` line), and the token's own intake history — every
+`questioned`/`answered` pairing, who asked, whether the runner's own
+deadline (not a controller `abandon`) lapsed it (`intake-stats.mjs`'s own
+fold). New `token-projection.mjs`'s `projectToken(item)` is the union of
+those questions over ONE token's own custody, with §6.1 stating exactly what
+it deliberately excludes and why (per-team occupancy, `.tmux-teams/decisions/
+latest.json` from §11.3, ledger structural validity, and anything needing
+the graph declaration or the wall clock). One reader — `kanban.mjs`, chosen
+because its fold is small and self-contained (a single `cardOf` function)
+and its tests are strong and dedicated (`tests/kanban.test.mjs`,
+`tests/kanban-board.test.mjs`, 41 tests) — was moved onto it; the other
+eight are unchanged, deliberately: moving all nine at once would be a
+rewrite with no way to tell which move broke what, and `dispatch-facts.mjs`
+in particular — the reader everyone else already depends on — is named here
+as the worst NEXT candidate, not a good first one, for the same reason.
+`kanban.mjs`'s own tests pass with no edit to either test file; a reader
+whose tests needed changing would have meant its behaviour changed, which
+this amendment does not claim.
 
 **2026-08-05 — C1: why the runner passed over a token now survives the tick
 that decided it.** Behaviour changed in `loop-runner.mjs`; new §11.3 records
