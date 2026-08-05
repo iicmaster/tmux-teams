@@ -312,8 +312,15 @@ test('the rework line clears its own worker row without reaching the next team',
     // A cubic whose control points are both offset by that much reaches 0.75 of it.
     const reach = Math.abs(edge.bow) * 0.75
     const halfRow = (workers * 176 + (workers - 1) * 22) / 2
-    assert.ok(reach > halfRow + 176 / 2,
-      workers + ' workers: reach ' + Math.round(reach) + ' does not clear half-row ' + halfRow)
+    // `halfRow` already reaches the outermost card's OUTER EDGE — a single
+    // 176-wide card centred puts its edge at 88, and halfRow for one worker is
+    // 88. So the old bound of `halfRow + CARD_W / 2` cleared a further half-card
+    // beyond the edge and spent that allowance twice; the arc was measurably
+    // wider than the board needed (owner, 2026-08-05). What must still hold is
+    // the edge plus room for the halo that rings the outermost card.
+    const HALO_MARGIN = 20
+    assert.ok(reach > halfRow + HALO_MARGIN,
+      workers + ' workers: reach ' + Math.round(reach) + ' does not clear half-row ' + halfRow + ' plus its halo')
     assert.ok(reach < halfRow + 130,
       workers + ' workers: reach ' + Math.round(reach) + ' spills past COL_GAP into the next team')
   }
@@ -559,6 +566,21 @@ test('an edge told to leave the scene cannot be painted back in', () => {
     const title = (attrs.match(/title="([^"]+)"/) || [])[1]
     assert.ok(aria, `a camera control without an aria-label: ${attrs}`)
     assert.equal(title, aria, 'a control must say the same thing on hover as it does to a screen reader')
+  }
+
+  // Owner's line language, 2026-08-05: dashed carries movement WITHIN a team
+  // (and escalation); solid carries a token BETWEEN teams. `escalate` was solid,
+  // which put a between-teams line on a within-team meaning.
+  const { edges } = buildTour(CONTROLLED)
+  const solidness = {}
+  for (const e of edges) (solidness[e.kind] ??= new Set()).add(Boolean(e.solid))
+  for (const kind of ['assign', 'judge', 'reject', 'owns', 'escalate']) {
+    if (!solidness[kind]) continue
+    assert.deepEqual([...solidness[kind]], [false], `${kind} moves inside a team and must be dashed`)
+  }
+  for (const kind of ['pull', 'passed']) {
+    if (!solidness[kind]) continue
+    assert.deepEqual([...solidness[kind]], [true], `${kind} carries a token between teams and must be solid`)
   }
 
   const halo = TOUR_CSS.match(/\.tour-halo\{animation:tourHalo ([\d.]+)s/)

@@ -148,9 +148,24 @@ Crawling both said the work was in progress AND delivered at the same time.
 `aria-hidden`, not `opacity: 0` alone, or a screen reader still reads every team
 the route skipped.
 
-An edge is **solid once evidence exists** and dashed until then. What is declared
-rather than observed (`owns`, `send`, `pull`, `passed`) is solid always;
-`assign`, `judge` and `reject` wait for a record.
+**The line language is about what MOVES on a wire, not about
+declared-versus-observed.** Owner's rule, 2026-08-05, and it replaces the one
+this section carried before:
+
+| Line | Carries | Means |
+| --- | --- | --- |
+| **dashed**, with a **dashflow** crawl | `assign`, `judge`, `reject`, `owns` — movement INSIDE one team — and `escalate` | work circulating within a team, or an exception being raised |
+| **solid**, with a **comet** | `pull` between teams, and `passed` to the sink | one token travelling BETWEEN teams |
+
+`escalate` is dashed for the reason the table gives rather than the one the old
+rule gave: raising an exception is not a token being handed on, so it crawls
+with the within-team family instead of carrying a comet. It was solid until this
+amendment, which put a between-teams line on a within-team meaning.
+
+The previous rule — "declared rather than observed is solid always" — is gone.
+It made `owns` a contradiction the UX review of 2026-08-05 reported as a defect:
+the contract said solid, the code said dashed, and the code was right for a
+reason the contract had no way to express.
 
 Techniques taken from `SylphAI-Inc/skills` codegraph (MIT asserted in prose, but
 that repo carries no LICENSE file, so these were reimplemented, not copied):

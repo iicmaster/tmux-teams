@@ -468,7 +468,14 @@ const controllerState = (run, items, occupancy, graph = null) => {
   // A door at its limit is blocked too. Reporting `watching — no exception
   // open` on a node that also reads `WIP 1/1 · full` put two contradicting
   // facts on one card, and the reassuring one was the larger of the two.
-  if (door.blocked) return { status: 'delivered', copy: door.copy }
+  //
+  // It reported `delivered` until 2026-08-05, which fixed that contradiction by
+  // making a different one: the legend says amber means "delivered and waiting"
+  // while the card's own text said "blocked". The UX review measured both and
+  // called it what it was. `blocked` is its own status now — the same amber,
+  // because a full door is attention rather than failure and a fourth colour
+  // would be a fourth thing to learn, but the class and the legend both name it.
+  if (door.blocked) return { status: 'blocked', copy: door.copy }
   if (run && WORKING.has(run.state)) return { status: 'working', copy: 'reviewing the board now' }
   // §6: this counts how many tokens ARE parked right now — a STATE question —
   // so it goes through `currentEntry`, same reason as `waiting` above.
@@ -483,7 +490,7 @@ const STYLE = `
 :root{color-scheme:light dark;
 --bg:oklch(97% .008 165);--surface:oklch(99% .004 165);--surface-2:oklch(95% .012 165);
 --line:oklch(87% .014 165);--ink:oklch(24% .018 165);--dim:oklch(50% .022 165);
---ok:oklch(50% .12 165);--warn:oklch(53% .13 72);--bad:oklch(52% .16 28);--focus:oklch(52% .13 235);
+--ok:oklch(50% .12 165);--warn:oklch(53% .13 72);--bad:oklch(52% .16 28);--focus:oklch(52% .13 235);--ok-on-ink:oklch(74% .13 165);--warn-on-ink:oklch(78% .13 78);--bad-on-ink:oklch(72% .16 28);
 --assign:oklch(52% .13 235);--artifact:oklch(50% .12 165);--reject:oklch(52% .16 28);--handoff:oklch(48% .14 300);--oversight:oklch(55% .04 270);
 --sans:"Kanit","Noto Sans Thai","Leelawadee UI",Tahoma,sans-serif;
 --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
@@ -491,17 +498,17 @@ const STYLE = `
 @media (prefers-color-scheme:dark){:root{
 --bg:oklch(17% .012 165);--surface:oklch(21% .014 165);--surface-2:oklch(24% .015 165);
 --line:oklch(34% .014 165);--ink:oklch(93% .012 165);--dim:oklch(71% .018 165);
---ok:oklch(74% .13 165);--warn:oklch(78% .13 78);--bad:oklch(72% .16 28);--focus:oklch(78% .12 235);
+--ok:oklch(74% .13 165);--warn:oklch(78% .13 78);--bad:oklch(72% .16 28);--focus:oklch(78% .12 235);--ok-on-ink:oklch(50% .12 165);--warn-on-ink:oklch(53% .13 72);--bad-on-ink:oklch(52% .16 28);
 --assign:oklch(78% .12 235);--artifact:oklch(74% .13 165);--reject:oklch(72% .16 28);--handoff:oklch(74% .14 300);--oversight:oklch(72% .04 270)}}
 :root[data-theme=dark]{
 --bg:oklch(17% .012 165);--surface:oklch(21% .014 165);--surface-2:oklch(24% .015 165);
 --line:oklch(34% .014 165);--ink:oklch(93% .012 165);--dim:oklch(71% .018 165);
---ok:oklch(74% .13 165);--warn:oklch(78% .13 78);--bad:oklch(72% .16 28);--focus:oklch(78% .12 235);
+--ok:oklch(74% .13 165);--warn:oklch(78% .13 78);--bad:oklch(72% .16 28);--focus:oklch(78% .12 235);--ok-on-ink:oklch(50% .12 165);--warn-on-ink:oklch(53% .13 72);--bad-on-ink:oklch(52% .16 28);
 --assign:oklch(78% .12 235);--artifact:oklch(74% .13 165);--reject:oklch(72% .16 28);--handoff:oklch(74% .14 300);--oversight:oklch(72% .04 270)}
 :root[data-theme=light]{
 --bg:oklch(97% .008 165);--surface:oklch(99% .004 165);--surface-2:oklch(95% .012 165);
 --line:oklch(87% .014 165);--ink:oklch(24% .018 165);--dim:oklch(50% .022 165);
---ok:oklch(50% .12 165);--warn:oklch(53% .13 72);--bad:oklch(52% .16 28);--focus:oklch(52% .13 235);
+--ok:oklch(50% .12 165);--warn:oklch(53% .13 72);--bad:oklch(52% .16 28);--focus:oklch(52% .13 235);--ok-on-ink:oklch(74% .13 165);--warn-on-ink:oklch(78% .13 78);--bad-on-ink:oklch(72% .16 28);
 --assign:oklch(52% .13 235);--artifact:oklch(50% .12 165);--reject:oklch(52% .16 28);--handoff:oklch(48% .14 300);--oversight:oklch(55% .04 270)}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:400 16px/1.6 var(--sans)}
@@ -801,7 +808,7 @@ ${renderTourChart(tour)}
   <li><span class="swatch sw-oversight"></span>PM outer loop — watches every team in every workflow</li>
 </ul>
  <span>Solid = a record exists for it · dashed = the operating model, nothing measured yet.</span>
- <span>Node border: green working · amber delivered and waiting · red process not found · dashed declared but never dispatched.</span>
+ <span>Node border: green working · amber waiting, or a door that is full · red process not found · dashed declared but never dispatched.</span>
  <span>Every node is one agent, drawn once no matter how many workflows use its team, and states its status, time in state, adapter <b>lane</b> and separately its <b>model</b>. <code>unverified</code> means the dispatch never declared which model it asked for.</span>
  <span>Where a given piece of work is right now is the kanban board's question, not this page's.</span></div>
 <footer>Teams, roles, routes and WIP limits come from the declared graph; status, timing, lane and model come from observed evidence. No role is inferred from a name.</footer>

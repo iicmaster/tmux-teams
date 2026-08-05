@@ -47,7 +47,9 @@ const ROW_EVALUATOR = 400
 // between. Lift it out and they all point straight up at nothing else.
 const ROW_CONTROL = -430
 const OUTSIDE_Y = ROW_CONTROL
-const OUTSIDE_GAP = 150
+// Halved 2026-08-05 (owner). The sink is the only thing out here and the run
+// to it was reading as empty board rather than as distance.
+const OUTSIDE_GAP = 75
 
 const rowWidth = (team) =>
   team.worker_ids.length * CARD_W + (team.worker_ids.length - 1) * WORKER_GAP
@@ -199,7 +201,13 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
       // 484 half-width, and the curve still crossed the outermost card. The
       // upper bound is the neighbouring team: its block begins at half this row
       // plus COL_GAP, so the margin is kept small enough to stay in the gap.
-      bow: -((rowWidth(team) / 2 + CARD_W / 2 + 24) / 0.75),
+      // Narrowed 2026-08-05 (owner: the arc was eating display width). The
+      // `+ CARD_W / 2` was measuring to the outermost card's CENTRE and then
+      // clearing a further half-card — but `rowWidth` already reaches that
+      // card's outer EDGE, so half a card of the allowance was being spent
+      // twice. What remains is the row plus a margin wide enough for the halo
+      // that rings the outermost card.
+      bow: -((rowWidth(team) / 2 + 24) / 0.75),
     })
 
     // Structure, not a claim about the past: this team HAS that dispatcher
@@ -219,7 +227,11 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
     // crawls: an escalation is a condition, not a handover, and nothing travels
     // along it — the token stays where it is stuck while a person is asked.
     if (controlId && !isControl) {
-      edges.push({ from: teamNodeId, to: `team:${controlId}`, kind: 'escalate', solid: true })
+      // Dashed, with the rest of the dash family: the line language is about
+      // what MOVES on a wire, not about declared-versus-observed. Escalation is
+      // an exception being raised, not a token being handed between teams, so
+      // it crawls like the within-team wires instead of carrying a comet.
+      edges.push({ from: teamNodeId, to: `team:${controlId}`, kind: 'escalate', solid: false })
     }
   }
 
@@ -561,7 +573,17 @@ export const TOUR_CSS = `
 /* The count is the one thing on this node worth reading zoomed out. */
 .tour.lean .k-outside span{display:none}
 .s-working{border-color:var(--ok)}.s-working em{color:var(--ok)}
-.s-delivered{border-color:var(--warn)}.s-delivered em{color:var(--warn)}
+.s-delivered,.s-blocked{border-color:var(--warn)}
+.s-delivered em,.s-blocked em{color:var(--warn)}
+/* .k-team and .k-control invert: their background is --ink, which is LIGHT in
+   the dark theme and dark in the light one. The card already flips b and span
+   for that; em was left on the page-chrome status colour and measured 1.67:1
+   against the card it sits on — WCAG AA wants 4.5:1, and this is the sentence
+   that says why a loop is stuck. The on-ink trio is each theme's opposite. */
+.k-team.s-working em,.k-control.s-working em{color:var(--ok-on-ink)}
+.k-team.s-delivered em,.k-control.s-delivered em,
+.k-team.s-blocked em,.k-control.s-blocked em{color:var(--warn-on-ink)}
+.k-team.s-dead em,.k-control.s-dead em{color:var(--bad-on-ink)}
 .s-dead{border-color:var(--bad)}.s-dead em{color:var(--bad)}
 /* A node is a seat, and a seat exists whether or not it is holding work. The
    border says what a thing IS; the dimming and the text say what it is doing. */
