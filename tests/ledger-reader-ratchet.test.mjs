@@ -44,7 +44,12 @@ test('sees the real readers in the shipped tree, not zero', () => {
   // to resume into both come off the question itself, so that a person cannot
   // supply a mismatched one by hand. The ratchet caught it on the first full run
   // after the file appeared, which is the whole point of the ratchet.
-  assert.equal(readers.length, 11, `expected 11 known ledger readers, found ${readers.length}: ${names.join(', ')}`)
+  // Twelve since 2026-08-08: `withdraw.mjs`, the CLI a person uses to close a
+  // token. It reads to find what state the token is actually in — a hard
+  // terminal cannot be closed again, and the replacement command it prints
+  // carries the token's own workflow. Third operator door, third ratchet catch;
+  // each one was refused until authorized by hand, which is the point.
+  assert.equal(readers.length, 12, `expected 12 known ledger readers, found ${readers.length}: ${names.join(', ')}`)
   assert.ok(names.includes('agent-seat-reads.mjs'),
     'the facade reads through an aliased re-export; a check that cannot see it counts nothing')
 
@@ -59,7 +64,7 @@ test('sees the real readers in the shipped tree, not zero', () => {
   assert.deepEqual(names, [
     'admit.mjs', 'agent-seat-reads.mjs', 'answer.mjs', 'dispatch-facts.mjs', 'graph.mjs', 'intake-stats.mjs',
     'kanban.mjs', 'ledger-validate.mjs', 'ledger-writer.mjs', 'loop-runner.mjs',
-    'pull-controller.mjs',
+    'pull-controller.mjs', 'withdraw.mjs',
   ])
 })
 

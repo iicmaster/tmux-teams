@@ -1015,7 +1015,7 @@ somebody who has not replied.
   event's `agent_id` or `to_team`, and a person is neither, so an answer without
   it would orphan the token the moment somebody replied.
 - **The writer is `answer.mjs`, and a person runs it** — what `admit.mjs` is to
-  `opened` (§4.6), added 2026-08-07. Until then this section specified every
+  `opened` (§4.6) and `withdraw.mjs` is to `abandoned` (§9), added 2026-08-07. Until then this section specified every
   field of an event **no code in this system produced**: `questioned` was written
   in five places, the board rendered "Waiting on a person to answer", the
   validator accepted the word and the routing above was live, but the only way to
@@ -2289,6 +2289,7 @@ ordering semantics phase 1 wrote down and left unenforced).
 | AC114 | §6, §9 | a parked question holds the control team's one slot, which is what closes the front door — `admit.mjs` refuses admission at the limit | `audit-transport-death.test.mjs` |
 | AC115 | §1, §6 | a graph whose outer controller is a worker on no team is REFUSED at load, and so is a graph naming no controller at all; both refusals say how to fix the declaration | `workflow-graph.test.mjs`, `graph-tour.test.mjs`, `controller-team.test.mjs`, `loop-runner-heartbeat-model.test.mjs` |
 | AC116 | §4.2, §6 | an escalated token occupies the CONTROL team's WIP, not the delivery team's; a `resumed` still returns to the team its `to_team` names | `loop-occupancy.test.mjs`, `kanban-board.test.mjs` |
+| AC117 | §4.1, §9 | a person can CLOSE a token (`withdraw.mjs` → `abandoned`, `human:` actor enforced by the door because the validator cannot: the runner writes the same event and signs as itself). A hard terminal, an unknown token and an empty reason are refused; success prints the `admit.mjs` line for a replacement | `withdraw-the-token.test.mjs` |
 | AC113 | §9 | the recorded reason quotes that leg's own `liveness_state`/`termination_reason` rather than a fixed phrase, so two different causes cannot report the same one | `audit-transport-death.test.mjs` |
 
 ### 14.1 Clauses this contract does NOT yet enforce
@@ -2656,6 +2657,34 @@ line.
    editing a file while a worker holds it has already cost one overwrite.
 
 ### Amendment log
+
+**2026-08-08 — the third operator door: a person can close a token
+(`withdraw.mjs`), and the route stays one-way.** `abandoned` was written by the
+runner's clock and by the outer controller, and by nobody else. A person could
+open a token and, since the day before, answer a question about one — but could
+not STOP one. §4 forbids hand-editing a ledger, so the documented workaround was
+invoking `ledger-writer.mjs` with a JSON literal and this document's field spec
+open alongside it. Somebody really did that.
+
+It is also the exit for a token bouncing between two teams. The open
+resume-routing defect asks for a route override — a `resumed` naming any team —
+and that was REJECTED by owner decision, because flow through a route is one
+way. The rule is enforced for `pulled` (`route_went_backwards`) and enforced for
+`resumed` by nothing at all, so an override would have quietly reopened every
+team a token had already passed through, and the hand-written line that started
+this did exactly that and validated. §6.3's own words are the alternative:
+"rework is a new token on a fresh route". So the exit is two honest steps rather
+than one dishonest one, and the withdrawal prints the `admit.mjs` line for the
+replacement with the token's workflow already filled in — an exit a person has
+to reconstruct is not an exit, and that is pinned by a test rather than left to
+courtesy.
+
+One asymmetry worth stating, because it looks like an oversight and is not:
+`answered` carries `actor_kind: human` in the validator and `abandoned` does
+not, so `withdraw.mjs` checks the actor itself. The validator cannot: the RUNNER
+writes `abandoned` too (§9's deadline) and signs as itself, so a rule there
+would refuse the clock. Without the door's own check a model could close
+somebody's work while wearing the clock's identity. AC117.
 
 **2026-08-08 — D6: the control team is mandatory, and the stop mechanism is
 real for the first time.** Owner decision, taken with the cost measured first:

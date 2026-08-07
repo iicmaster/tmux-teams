@@ -12,6 +12,7 @@
   "ledger-validate.mjs",
   "ledger-writer.mjs",
   "loop-runner.mjs",
-  "pull-controller.mjs"
+  "pull-controller.mjs",
+  "withdraw.mjs"
  ]
 }
