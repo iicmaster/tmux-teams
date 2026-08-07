@@ -1801,10 +1801,17 @@ Parsing rules, non-negotiable:
   code could write `answered`, so parking on a question was a wedge rather than
   a pause. `answer.mjs` (§4.7) removed that constraint, and D1 governs: a leg
   the transport killed is held, nothing retries by itself, a person unblocks
-  it. Two things bound the hold. The scan reads `currentEntry` and visits only
+  it. Three things bound the hold. The scan reads `currentEntry` and visits only
   `audit_requested`, so writing the question is itself what stops the asking —
-  a person is never handed a question that is replaced every tick. And only
-  POSITIVE evidence narrows the rule: a missing, unreadable,
+  a person is never handed a question that is replaced every tick. The question
+  is written only where it can BE somewhere: §6 places a token by its last
+  event's `agent_id`, so on a graph where the controller is a member of no team
+  (still valid — most of this system's history is written against that shape)
+  the token would orphan, hold nobody's WIP and stop nothing, and the old
+  withdrawal happens instead. Where a control team does exist the parked
+  question holds its one slot, and `admit.mjs` refuses admission at the limit:
+  that is the whole stop mechanism, and it is Kanban rather than an invention.
+  And only POSITIVE evidence narrows the rule: a missing, unreadable,
   or work-bearing snapshot closes exactly as fast as it did before. That
   second default fails OPEN — toward the irreversible terminal — on ambiguity,
   which is deliberate and is the price of this paragraph's other guarantee,
@@ -2272,6 +2279,7 @@ ordering semantics phase 1 wrote down and left unenforced).
 | AC111 | §3.5.1 | a leg that pinned no model records `requested_model: null` — the request, absent, never the adapter's later answer, which at write time has not been given | `assigned-carries-model.test.mjs` |
 | AC112 | §4, §5, §9 | a dead audit leg whose liveness says `work_observed: false` asks a person (`questioned`, `resume_role: audit`) and holds; one that says `true`, or says nothing at all, is still `abandoned` on the same deadline as before | `audit-transport-death.test.mjs` |
 | AC113 | §4.7, §9 | the question that path writes carries everything `answer.mjs` needs to close it — a `question_id`, an `agent_id` that resolves to a team, and `resume_role: audit` — and a token already parked on one is not asked again | `audit-transport-death.test.mjs` |
+| AC114 | §6, §9 | on a graph where the outer controller belongs to no team the question is NOT written — it would place nowhere, count against no WIP and stop nothing — and the old withdrawal happens instead, saying so in its reason. Where a control team exists, the parked question holds that team's one slot, which is what closes the front door | `audit-transport-death.test.mjs` |
 | AC113 | §9 | the recorded reason quotes that leg's own `liveness_state`/`termination_reason` rather than a fixed phrase, so two different causes cannot report the same one | `audit-transport-death.test.mjs` |
 
 ### 14.1 Clauses this contract does NOT yet enforce

@@ -50,11 +50,25 @@ const TWO_TEAMS = {
   workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['build', 'test'] }],
 }
 
+// The same two delivery teams, with the controller sitting in a team of its own
+// — the shape that gives a question somewhere to be. `worker_ids` is exactly
+// one seat (the loader refuses more: one seat, so WIP 1) and every route enters
+// through it. Without this graph the question path cannot be exercised at all,
+// which is the point of the guard tested below.
+const WITH_CONTROL = {
+  ...TWO_TEAMS,
+  teams: [
+    { team_id: 'control', name: 'Control', dispatcher_id: 'pm_intake', worker_ids: ['pm'], evaluator_id: 'pm_audit', models: MODELS },
+    ...TWO_TEAMS.teams,
+  ],
+  workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['control', 'build', 'test'] }],
+}
+
 const FIXED_NOW = Date.parse('2026-08-06T09:00:00.000Z')
 const PAST_DEADLINE = FIXED_NOW + 1_000_000
 
-const graphOf = () => {
-  const result = validateWorkflowGraph(TWO_TEAMS)
+const graphOf = (declaration = TWO_TEAMS) => {
+  const result = validateWorkflowGraph(declaration)
   assert.equal(result.ok, true, result.reason ?? '')
   return result.value
 }
@@ -95,14 +109,14 @@ const deadAtTransport = (over = {}) => (
   { liveness_state: 'failed', termination_reason: 'protocol_error', work_observed: false, ...over })
 
 // Exactly one plan, or the assertion below is reading a different token's.
-const planFor = (custody, livenessFor) => {
-  const plans = planDispatches(graphOf(), itemsOf(custody), new Set(), { now: PAST_DEADLINE, livenessFor })
+const planFor = (custody, livenessFor, declaration = TWO_TEAMS) => {
+  const plans = planDispatches(graphOf(declaration), itemsOf(custody), new Set(), { now: PAST_DEADLINE, livenessFor })
   assert.equal(plans.length, 1, `expected one plan, got [${plans.map((plan) => plan.action).join(', ')}]`)
   return plans[0]
 }
 
 test('a controller leg the transport killed asks a person, and abandons nothing', () => {
-  const plan = planFor([...DELIVERED, requested()], () => deadAtTransport())
+  const plan = planFor([...DELIVERED, requested()], () => deadAtTransport(), WITH_CONTROL)
 
   assert.equal(plan.action, 'audit-question', 'the leg never got a turn; nobody failed to answer')
   assert.equal(plan.task_id, 'pm-1', 'the question names the leg that died')
@@ -148,6 +162,24 @@ test('a caller that supplies no liveness reader gets exactly the old answer', ()
   assert.equal(plan.action, 'expired')
 })
 
+test('a question with nowhere to sit is not written at all', () => {
+  // `TWO_TEAMS` puts the outer controller in no team, which is still a valid
+  // graph — most of this system's history is written against that shape. §6
+  // places a token by its last event's `agent_id`, so a `questioned` written by
+  // a controller that belongs to nowhere is an ORPHAN: it counts against no
+  // team's WIP, so it stops nothing and waits for a person nobody tells.
+  // Measured rather than reasoned — `teamOccupancy` returns it in `orphans`
+  // with every team's count at 0. So this graph keeps the old withdrawal, and
+  // says why in the reason rather than blaming a controller that never got a
+  // turn. A graph WITH a control team takes the question path; the test above
+  // is that case, and D6 is what would make it the only case.
+  const plan = planFor([...DELIVERED, requested()], () => deadAtTransport())
+
+  assert.equal(plan.action, 'expired', 'nowhere to park it — withdrawing beats orphaning it')
+  assert.match(plan.reason, /died at the transport/, 'the reason must not blame the controller')
+  assert.match(plan.reason, /no team for pm to hold a question in/)
+})
+
 test('a token already parked on the question is not asked again', () => {
   // What replaces the retry ceiling. The old risk was a lane dying every time
   // and burning three legs; the new one is a scan that asks once per tick for
@@ -167,6 +199,27 @@ test('a token already parked on the question is not asked again', () => {
     'the question was already asked; asking again replaces it with an identical one')
 })
 
+test('the parked question occupies the control team, which is what stops the board', () => {
+  // Master's rule, and the reason any of this is worth building: a token stuck
+  // with a team keeps that team's WIP; escalate it to the PM and the PM's WIP is
+  // held until it is done. `admit.mjs` refuses admission while the control team
+  // is at its limit, so a question nobody has answered closes the front door —
+  // the system STOPS rather than starting more work on top of a problem.
+  const asked = itemsOf([...DELIVERED, requested('pm-1'),
+    { event: 'questioned', agent_id: 'pm', task_id: 'pm-1', question_id: 'q-tok-1',
+      resume_role: 'audit', questions: 'read it again?', reason: 'leg died at the transport' }])
+
+  const held = teamOccupancy(graphOf(WITH_CONTROL), asked)
+  assert.equal(held.counts.get('control'), 1, 'the person owes an answer, and the slot is held')
+  assert.equal(held.orphans.length, 0)
+
+  // The same history on a graph where the controller is in no team: nobody's
+  // WIP, nothing stopped. This is what the guard above exists to avoid writing.
+  const loose = teamOccupancy(graphOf(TWO_TEAMS), asked)
+  assert.equal([...loose.counts.values()].reduce((sum, n) => sum + n, 0), 0)
+  assert.equal(loose.orphans.length, 1, 'unplaceable, and surfaced rather than silently dropped')
+})
+
 test('the question it writes is one answer.mjs can actually close', () => {
   // The two halves were built a day apart, and each is useless alone: a question
   // nothing can answer is the wedge this replaced, and a door with nothing to
@@ -174,7 +227,7 @@ test('the question it writes is one answer.mjs can actually close', () => {
   // `questioned` AND it carries a `question_id`, and derives `to_team` from the
   // asking seat — here the outer controller, which is a member of the control
   // team. So this asserts the plan carries what that door requires, by name.
-  const plan = planFor([...DELIVERED, requested()], () => deadAtTransport())
+  const plan = planFor([...DELIVERED, requested()], () => deadAtTransport(), WITH_CONTROL)
 
   assert.match(plan.question_id, /^q-/, 'an answer binds to this id; without it answer.mjs refuses')
   assert.equal(plan.agent_id, 'pm', 'the asking seat is what answer.mjs resolves the team from')

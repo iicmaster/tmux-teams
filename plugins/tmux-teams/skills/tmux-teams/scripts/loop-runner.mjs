@@ -1445,7 +1445,20 @@ export function planDispatches(graph, items, busy, {
     // Positive evidence only. A missing, unreadable or work-bearing snapshot
     // falls through to exactly today's write — this narrows when `abandoned`
     // fires, it never widens it.
-    if (snapshot && snapshot.work_observed === false) {
+    // A question needs somewhere to sit. §6 places a token by its last event's
+    // `agent_id`, and on a graph where the controller is a member of no team
+    // — still valid, still the shape most of this system's history was written
+    // against — `teamOf(controller)` is undefined and `questioned` carries no
+    // `to_team`, so the token becomes an ORPHAN: counted against nobody's WIP,
+    // stopping nothing, waiting for a person who is never told. Measured, not
+    // reasoned: `teamOccupancy` puts it in `orphans` and every team's count
+    // stays 0. Falling back to the old withdrawal is worse for the token and
+    // honest about the system it is running on; D6 (a graph with no control
+    // team refused at load) is what would remove this branch, and it is not a
+    // gap to fill but a reversal — 212 tests across 17 files pin the opt-in.
+    const canPark = graph.teams.some((team) =>
+      team.agents.some((agent) => agent.agent_id === graph.outer_controller_id))
+    if (snapshot && snapshot.work_observed === false && canPark) {
       const how = `${snapshot.liveness_state || 'state unknown'}/${snapshot.termination_reason || 'reason unrecorded'}`
       plans.push({
         action: 'audit-question', work_item: workItem, agent_id: last.agent_id, task_id: last.task_id,
@@ -1464,9 +1477,12 @@ export function planDispatches(graph, items, busy, {
       })
       continue
     }
-    const cause = snapshot
-      ? ` — leg status ${snapshot.liveness_state || 'unknown'}/${snapshot.termination_reason || 'unrecorded'}`
-      : ''
+    const cause = snapshot && snapshot.work_observed === false
+      ? ` — the leg died at the transport (${snapshot.liveness_state || 'unknown'}/${snapshot.termination_reason || 'unrecorded'}),`
+        + ` and this graph has no team for ${graph.outer_controller_id} to hold a question in`
+      : snapshot
+        ? ` — leg status ${snapshot.liveness_state || 'unknown'}/${snapshot.termination_reason || 'unrecorded'}`
+        : ''
     plans.push({
       action: 'expired', work_item: workItem, agent_id: last.agent_id,
       reason: `no outer-controller audit answer in ${Math.round(answerDeadlineSec / 60)} minute(s)`
