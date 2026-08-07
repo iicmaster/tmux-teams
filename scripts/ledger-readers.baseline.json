@@ -1,16 +1,17 @@
 {
-  "$comment": "A5 ratchet baseline. This is the CURRENT recorded set of files under plugins/tmux-teams/skills/tmux-teams/scripts/ that read a token's ledger straight off disk, per the definition documented at the top of scripts/ledger-reader-ratchet.mjs. Removing an entry (because a file stopped reading) is always allowed and tightens the ratchet. Adding an entry by hand is how a genuinely new reader gets authorized after review -- do it only after confirming the file actually needs to read a ledger directly, not to make a failing check pass.",
-  "scanDir": "plugins/tmux-teams/skills/tmux-teams/scripts",
-  "readers": [
-    "admit.mjs",
-    "agent-seat-reads.mjs",
-    "dispatch-facts.mjs",
-    "graph.mjs",
-    "intake-stats.mjs",
-    "kanban.mjs",
-    "ledger-validate.mjs",
-    "ledger-writer.mjs",
-    "loop-runner.mjs",
-    "pull-controller.mjs"
-  ]
+ "$comment": "A5 ratchet baseline. This is the CURRENT recorded set of files under plugins/tmux-teams/skills/tmux-teams/scripts/ that read a token's ledger straight off disk, per the definition documented at the top of scripts/ledger-reader-ratchet.mjs. Removing an entry (because a file stopped reading) is always allowed and tightens the ratchet. Adding an entry by hand is how a genuinely new reader gets authorized after review -- do it only after confirming the file actually needs to read a ledger directly, not to make a failing check pass.",
+ "scanDir": "plugins/tmux-teams/skills/tmux-teams/scripts",
+ "readers": [
+  "admit.mjs",
+  "agent-seat-reads.mjs",
+  "answer.mjs",
+  "dispatch-facts.mjs",
+  "graph.mjs",
+  "intake-stats.mjs",
+  "kanban.mjs",
+  "ledger-validate.mjs",
+  "ledger-writer.mjs",
+  "loop-runner.mjs",
+  "pull-controller.mjs"
+ ]
 }

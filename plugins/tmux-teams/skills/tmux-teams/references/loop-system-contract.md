@@ -1008,6 +1008,21 @@ somebody who has not replied.
 - `to_team` on `answered` is not decoration. §6 places a token by its last
   event's `agent_id` or `to_team`, and a person is neither, so an answer without
   it would orphan the token the moment somebody replied.
+- **The writer is `answer.mjs`, and a person runs it** — what `admit.mjs` is to
+  `opened` (§4.6), added 2026-08-07. Until then this section specified every
+  field of an event **no code in this system produced**: `questioned` was written
+  in five places, the board rendered "Waiting on a person to answer", the
+  validator accepted the word and the routing above was live, but the only way to
+  reply was to hand-write the line — which §4 forbids. A person supplies the
+  answer and nothing else: `question_id` and `to_team` are DERIVED from the open
+  question (the asking seat's team, resolved through the declaration), because
+  asking a person to restate what the system already knows is how a
+  `question_id_mismatch` gets written by hand. It refuses rather than writes when
+  the token is not at `questioned` (a second answer is caught here, not by the
+  validator afterwards), when the question carries no id, and when the asking
+  seat belongs to no declared team and the token has never been pulled — that
+  last one is the outer controller on a graph with no control team, and it is a
+  refusal rather than a blank field.
 - A `questioned` token that goes unanswered past the answer deadline is closed
   with `abandoned` by the RUNNER (§9), and the controller writes a withdrawal
   notice naming the unanswered questions. This applies whether the question was
@@ -2619,6 +2634,38 @@ line.
 
 ### Amendment log
 
+**2026-08-07 — the half of the exchange nobody could speak: `answer.mjs`.**
+§4.7 has specified `answered` down to the field since it was written, and
+`loop-runner.mjs` has routed on it — `resume_role: worker` wakes the worker,
+`evaluator` the evaluator — but **no code in this system ever wrote the
+event.** Every writer of `questioned` had a reader waiting for a reply that
+could only arrive by hand-editing a ledger, which §4 forbids. So a token parked
+on a question was parked for good, and the mechanism that closed it was the
+answer deadline: `ANSWER_DEADLINE_SEC` reads like a guard against slow people
+and was in fact standing in for people who could not reply at all.
+
+`answer.mjs` is the door, shaped after `admit.mjs` so the two operator entries
+read and refuse alike. A person supplies the answer; `question_id` and
+`to_team` are derived from the open question, since a hand-supplied
+`question_id` is exactly what the validator refuses as `question_id_mismatch`
+after the line is already on disk. It refuses four ways before writing —
+not-waiting (which is also how a second answer to one question is caught, ahead
+of the validator rather than behind it), unknown token, a question with no id,
+and an asking seat that belongs to no declared team on a token never pulled.
+`openQuestions()` lists what is owed, because an operator cannot answer a
+question the board never showed them.
+
+Deliberately NOT in this amendment: no new event word, no state-machine change,
+no change to the routing above. `answered` already meant this. What it lacked
+was a writer. This also makes the deadline honest for the first time — an
+expiry can now mean "nobody replied" rather than "nobody could."
+
+Found by the A5 ratchet on its first full run after the file appeared: a new
+reader of a token's ledger is refused until it is authorized by hand, and this
+one was, taking the recorded set to eleven. §16.2's closing paragraph was
+corrected in the same commit for carrying "9" in prose while the tool had said
+ten for two days.
+
 **2026-08-06 — GitHub #52: a leg the transport killed is not a controller that
 chose silence.** The audit answer-deadline (`loop-runner.mjs`'s
 `audit_requested` scan) could see exactly one thing — whether the controller's
@@ -3939,10 +3986,16 @@ watches for. This is the "textual re-export renaming" technique that ratchet's
 own header names as a real, low-cost way to reference an already-authorized
 reader under a different name: used here deliberately, recorded here so it is
 never mistaken for the ratchet quietly failing to notice a new one. Running
-`node ./scripts/ledger-reader-ratchet.mjs` after this facade exists still
-reports the same 9 known readers, unchanged — `tests/agent-seat-reads.test.mjs`
-asserts this directly, by calling the ratchet's own checker function, not by
-restating a count that could drift from what the tool actually finds.
+`node ./scripts/ledger-reader-ratchet.mjs` after this facade exists reports the
+same readers as before it — the facade added no new one, which is the claim that
+matters. `tests/agent-seat-reads.test.mjs` asserts this directly, by calling the
+ratchet's own checker function, not by restating a count that could drift from
+what the tool actually finds. This paragraph used to say "the same 9 known
+readers" and was carrying a stale number for two days: the ratchet's own test
+had recorded ten since 2026-08-05 and eleven since 2026-08-07, and nothing ever
+compared the prose against a run. The sentence praising the test for not
+restating a count was itself restating one; the count now lives only where the
+tool can contradict it.
 dispatch-facts.mjs remains the only place that decides how a ledger line
 means what it means; this facade never re-derives a fold over custody — where
 an existing function already answers a question (an outcome's own recorded
