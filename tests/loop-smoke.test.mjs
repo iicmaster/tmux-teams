@@ -28,11 +28,13 @@ const PULSE = join(ROOT, 'plugins', 'tmux-teams', 'skills', 'tmux-teams', 'scrip
 const dirs = []
 after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }) })
 
-const team = (id) => ({
+// `workers` overridable so the control team D6 requires can name the outer
+// controller as its one seat.
+const team = (id, workers = null) => ({
   team_id: id,
-  name: id === 'build' ? 'Build' : 'Verify',
+  name: id === 'build' ? 'Build' : id === 'verify' ? 'Verify' : 'Control',
   dispatcher_id: `${id}_dispatcher`,
-  worker_ids: [`${id}_worker`],
+  worker_ids: workers ?? [`${id}_worker`],
   evaluator_id: `${id}_evaluator`,
   models: {
     dispatcher: 'inherit-account-default',
@@ -45,8 +47,9 @@ const GRAPH = {
   project_id: 'loop-smoke',
   outer_controller_id: 'smoke_pm',
   outer_controller_model: 'inherit-account-default',
-  teams: [team('build'), team('verify')],
-  workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['build', 'verify'] }],
+  // D6 (2026-08-08): every graph declares a control team, entered by every route.
+  teams: [team('build'), team('verify'), team('control', ['smoke_pm'])],
+  workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['control', 'build', 'verify'] }],
 }
 
 const LOOP_VERDICTS = JSON.stringify({

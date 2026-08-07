@@ -46,8 +46,12 @@ const TWO_TEAMS = {
   teams: [
     { team_id: 'build', name: 'Build', dispatcher_id: 'b_d', worker_ids: ['b_w1'], evaluator_id: 'b_e', models: MODELS },
     { team_id: 'test', name: 'Test', dispatcher_id: 't_d', worker_ids: ['t_w1'], evaluator_id: 't_e', models: MODELS },
+    // D6 (2026-08-08): every graph declares one, and here it is load-bearing
+    // rather than ceremonial — the controller's question needs a WIP slot to
+    // hold, and this is the team that owns it.
+    { team_id: 'control', name: 'Control', dispatcher_id: 'pm_intake', worker_ids: ['pm'], evaluator_id: 'pm_audit', models: MODELS },
   ],
-  workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['build', 'test'] }],
+  workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['control', 'build', 'test'] }],
 }
 
 // The same two delivery teams, with the controller sitting in a team of its own
@@ -55,14 +59,7 @@ const TWO_TEAMS = {
 // one seat (the loader refuses more: one seat, so WIP 1) and every route enters
 // through it. Without this graph the question path cannot be exercised at all,
 // which is the point of the guard tested below.
-const WITH_CONTROL = {
-  ...TWO_TEAMS,
-  teams: [
-    { team_id: 'control', name: 'Control', dispatcher_id: 'pm_intake', worker_ids: ['pm'], evaluator_id: 'pm_audit', models: MODELS },
-    ...TWO_TEAMS.teams,
-  ],
-  workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['control', 'build', 'test'] }],
-}
+const WITH_CONTROL = TWO_TEAMS
 
 const FIXED_NOW = Date.parse('2026-08-06T09:00:00.000Z')
 const PAST_DEADLINE = FIXED_NOW + 1_000_000
@@ -162,24 +159,6 @@ test('a caller that supplies no liveness reader gets exactly the old answer', ()
   assert.equal(plan.action, 'expired')
 })
 
-test('a question with nowhere to sit is not written at all', () => {
-  // `TWO_TEAMS` puts the outer controller in no team, which is still a valid
-  // graph — most of this system's history is written against that shape. §6
-  // places a token by its last event's `agent_id`, so a `questioned` written by
-  // a controller that belongs to nowhere is an ORPHAN: it counts against no
-  // team's WIP, so it stops nothing and waits for a person nobody tells.
-  // Measured rather than reasoned — `teamOccupancy` returns it in `orphans`
-  // with every team's count at 0. So this graph keeps the old withdrawal, and
-  // says why in the reason rather than blaming a controller that never got a
-  // turn. A graph WITH a control team takes the question path; the test above
-  // is that case, and D6 is what would make it the only case.
-  const plan = planFor([...DELIVERED, requested()], () => deadAtTransport())
-
-  assert.equal(plan.action, 'expired', 'nowhere to park it — withdrawing beats orphaning it')
-  assert.match(plan.reason, /died at the transport/, 'the reason must not blame the controller')
-  assert.match(plan.reason, /no team for pm to hold a question in/)
-})
-
 test('a token already parked on the question is not asked again', () => {
   // What replaces the retry ceiling. The old risk was a lane dying every time
   // and burning three legs; the new one is a scan that asks once per tick for
@@ -212,12 +191,23 @@ test('the parked question occupies the control team, which is what stops the boa
   const held = teamOccupancy(graphOf(WITH_CONTROL), asked)
   assert.equal(held.counts.get('control'), 1, 'the person owes an answer, and the slot is held')
   assert.equal(held.orphans.length, 0)
+  // Not the delivery team: the route is finished and the question is the
+  // controller's, so `build` and `test` are free to pull other work.
+  assert.equal(held.counts.get('test'), 0)
 
-  // The same history on a graph where the controller is in no team: nobody's
-  // WIP, nothing stopped. This is what the guard above exists to avoid writing.
-  const loose = teamOccupancy(graphOf(TWO_TEAMS), asked)
-  assert.equal([...loose.counts.values()].reduce((sum, n) => sum + n, 0), 0)
-  assert.equal(loose.orphans.length, 1, 'unplaceable, and surfaced rather than silently dropped')
+  // The other half of the same rule — the counterpart used to be a graph with
+  // no control team, where this token orphaned and stopped nothing. D6 removed
+  // that shape at load, so the comparison that remains is the one that still
+  // exists: answer the question and the slot is released.
+  const answered = itemsOf([...DELIVERED, requested('pm-1'),
+    { event: 'questioned', agent_id: 'pm', task_id: 'pm-1', question_id: 'q-tok-1',
+      resume_role: 'audit', questions: 'read it again?', reason: 'leg died at the transport' },
+    { event: 'answered', to_team: 'control', question_id: 'q-tok-1',
+      actor: 'human:someone', reason: 'yes, read it again' }])
+  const freed = teamOccupancy(graphOf(WITH_CONTROL), answered)
+  assert.equal(freed.counts.get('control'), 1,
+    'still held — the controller now owes the verdict it was going to give')
+  assert.equal(freed.orphans.length, 0)
 })
 
 test('the question it writes is one answer.mjs can actually close', () => {

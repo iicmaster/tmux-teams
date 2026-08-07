@@ -38,11 +38,13 @@ import { validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/s
 // comment on the pass-through test.
 const A_DECLARED_MODEL = 'some-declared-model'
 
-const team = (id, model) => ({
+// `workers` overridable so the control team can name the outer controller as
+// its one seat — D6 (2026-08-08) requires every graph to declare one.
+const team = (id, model, workers = null) => ({
   team_id: id,
   name: id.toUpperCase(),
   dispatcher_id: `${id}_d`,
-  worker_ids: [`${id}_w1`],
+  worker_ids: workers ?? [`${id}_w1`],
   evaluator_id: `${id}_e`,
   models: { dispatcher: model, worker: model, evaluator: model },
 })
@@ -51,8 +53,8 @@ const graphDecl = ({ model = INHERIT_ACCOUNT_DEFAULT, pmModel = INHERIT_ACCOUNT_
   project_id: 'p',
   outer_controller_id: 'pm',
   outer_controller_model: pmModel,
-  teams: [team('build', model), team('test', model)],
-  workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['build', 'test'] }],
+  teams: [team('build', model), team('test', model), team('control', model, ['pm'])],
+  workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['control', 'build', 'test'] }],
 })
 
 const dirs = []
@@ -223,6 +225,7 @@ test('a seat runs on the lane it declares, and an unknown lane is refused', () =
     teams: [
       { ...team('build', A_DECLARED_MODEL), adapters: { dispatcher: 'agy', worker: 'codex', evaluator: 'claude' } },
       team('test', A_DECLARED_MODEL),
+      team('control', A_DECLARED_MODEL, ['pm']),
     ],
   })
   assert.equal(declared.ok, true, declared.reason ?? '')
@@ -238,7 +241,8 @@ test('a seat runs on the lane it declares, and an unknown lane is refused', () =
 
   const unknown = validateWorkflowGraph({
     ...graphDecl(),
-    teams: [{ ...team('build', A_DECLARED_MODEL), adapters: { worker: 'gemini-cli' } }, team('test', A_DECLARED_MODEL)],
+    teams: [{ ...team('build', A_DECLARED_MODEL), adapters: { worker: 'gemini-cli' } }, team('test', A_DECLARED_MODEL),
+      team('control', A_DECLARED_MODEL, ['pm'])],
   })
   assert.equal(unknown.ok, false)
   assert.match(unknown.reason, /unknown adapter/)
@@ -255,6 +259,7 @@ test('the declared lane reaches the dispatch, not just the graph', () => {
       teams: [
         { ...team('build', A_DECLARED_MODEL), adapters: { dispatcher: 'codex', worker: 'codex', evaluator: 'codex' } },
         team('test', A_DECLARED_MODEL),
+        team('control', A_DECLARED_MODEL, ['pm']),
       ],
     },
     ledgers: { wip: HELD },
@@ -435,55 +440,30 @@ test('an intake refusal with nowhere to send it back names the team still holdin
   assert.equal(applied[0].to_team, 'build', 'the escalation did not name the team still holding the token')
 })
 
-test('a token the controller was paid for but nothing was recorded about is called stuck', () => {
-  // The dangerous shape: the escalation mark is refused AFTER the controller has
-  // been dispatched and `pm-notes/latest.md` written. The token's last event
-  // never changes, so the trigger recurs and the unchanged-trigger brake then
-  // holds it forever — a PM dispatch bought for nothing, permanently.
+test('a headless graph is refused at load, so the wedge it caused cannot happen', () => {
+  // This test used to BUILD that wedge and assert its symptoms. The shape: a
+  // graph with no `outer_controller_id` was accepted, the finished route raised
+  // an audit trigger, the controller leg was dispatched and `pm-notes/latest.md`
+  // written — and only THEN was the escalation mark refused, for want of an
+  // `agent_id` the graph never had. The token's last event never changed, so the
+  // trigger recurred and the unchanged-trigger brake held it for ever: a PM
+  // dispatch bought for nothing, permanently.
   //
-  // `outer_controller_id: null` is a graph the validator accepts, and it makes
-  // `agent_id` absent on every mark, which the writer refuses.
+  // D6 (2026-08-08) refuses the configuration instead of documenting its
+  // consequence. A graph naming no controller has no front door, no audit and
+  // no seat to escalate to; it is not a supported way to run this system, and
+  // the failure it produced arrived a whole dispatch too late to be legible.
   const headless = graphDecl()
   delete headless.outer_controller_id
   delete headless.outer_controller_model
 
-  // A route that finished: this is what raises the audit trigger.
-  const done = [
-    { at: at(0), event: 'pulled', work_item: 'orphan', workflow: 'feature', agent_id: 'build_d', from_team: 'build', to_team: 'build' },
-    { at: at(1), event: 'assigned', work_item: 'orphan', workflow: 'feature', agent_id: 'build_w1', task_id: 'o-1', dispatch_id: 'd-1' },
-    { at: at(2), event: 'delivered', work_item: 'orphan', workflow: 'feature', agent_id: 'build_w1', task_id: 'o-1', terminal: 'done', timed_out: false, evidence_present: true },
-    { at: at(3), event: 'completed', work_item: 'orphan', workflow: 'feature', from_team: 'test' },
-  ]
-  const dir = repoWith({ graph: headless, ledgers: { orphan: done } })
-  const { said } = saying(() => tick(dir, { apply: false, tickSec: 20 }))
-
-  // Dry run, so nothing was actually dispatched or appended — what this asserts
-  // is that the audit trigger fires at all, which is the precondition for the
-  // wedge. The refusal wording itself is asserted below on the real write path.
-  assert.ok(said.some((entry) => entry.includes('would dispatch')), said.join(' | '))
-
-  // Now the real path: applying it must refuse the mark and say the token is
-  // stuck, not merely that a line was refused.
-  //
-  // Reaching that branch means the controller really is spawned — the marks are
-  // written after the dispatch, which is the whole reason the wedge exists. The
-  // adapter is pointed at a command that exits immediately so this costs one
-  // short-lived process rather than a real agent session. The assertions below
-  // are on the runner's synchronous log, so nothing here waits on that child.
-  const live = repoWith({ graph: headless, ledgers: { orphan: done } })
-  const realAcpCmd = process.env.ACP_CMD
-  process.env.ACP_CMD = 'node -e process.exit(0)'
-  let loud
-  try {
-    loud = saying(() => tick(live, { tickSec: 20 })).said
-  } finally {
-    if (realAcpCmd === undefined) delete process.env.ACP_CMD
-    else process.env.ACP_CMD = realAcpCmd
-  }
-  assert.ok(loud.some((entry) => entry.includes('REFUSED') && entry.includes('orphan')),
-    `the refusal was not reported: ${loud.join(' | ')}`)
-  assert.ok(loud.some((entry) => entry.startsWith('[loop] STUCK  orphan') && entry.includes('nothing recorded')),
-    `the consequence was not reported as a stuck token: ${loud.join(' | ')}`)
+  const refused = validateWorkflowGraph(headless)
+  assert.equal(refused.ok, false, 'a graph with no controller is refused before anything is paid for')
+  assert.match(refused.reason, /names nobody/)
+  // The refusal has to name the consequence, not just the missing field: the
+  // field being absent was survivable-looking for as long as this was accepted.
+  assert.match(refused.reason, /no front door/)
+  assert.match(refused.reason, /already been paid for/)
 })
 
 test('an accepted intake that stated no reason says so rather than leaving it blank', () => {

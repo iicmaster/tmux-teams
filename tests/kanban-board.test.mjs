@@ -45,8 +45,11 @@ const TWO_TEAMS = {
     { team_id: 'build', name: 'Build', dispatcher_id: 'build_d', worker_ids: ['build_w1', 'build_w2'], evaluator_id: 'build_e', models: MODELS },
     { team_id: 'test', name: 'Test', dispatcher_id: 'test_d', worker_ids: ['test_w1'], evaluator_id: 'test_e', models: MODELS },
     { team_id: 'visual', name: 'Visual', dispatcher_id: 'visual_d', worker_ids: ['visual_w1'], evaluator_id: 'visual_e', models: MODELS },
+    // D6 (2026-08-08): every graph declares one. One worker, so it draws as
+    // `0/1` — the front door, and the narrowest column on the board.
+    { team_id: 'control', name: 'Control', dispatcher_id: 'pm_intake', worker_ids: ['pm'], evaluator_id: 'pm_audit', models: MODELS },
   ],
-  workflows: [{ workflow_id: 'feature', name: 'Feature delivery', route: ['build', 'test', 'visual'] }],
+  workflows: [{ workflow_id: 'feature', name: 'Feature delivery', route: ['control', 'build', 'test', 'visual'] }],
 }
 
 // Ledgers go down as JSONL text so the real reader runs, including its
@@ -298,24 +301,39 @@ test('a token parked with the outer controller keeps its column and its WIP slot
     ],
   })
   const columns = columnsOf(pageOf(dir))
-  assert.deepEqual(columns.get('Test').tokens, ['parked'])
-  assert.match(columns.get('Test').html, /WIP 1\/1 · at limit/)
-  assert.match(columns.get('Test').html, /Escalated to the outer controller/)
+  // Reversed by D6 (2026-08-08). This asserted the escalated token stayed in
+  // `Test` — it had to, because the controller was a member of no team and the
+  // board had no column to put it in. Now it has one, and Master's rule applies:
+  // work escalated to the PM holds the PM's slot until the PM is done with it.
+  // The board draws that as a full front door, which is the visible half of the
+  // system stopping rather than starting more work on top of a problem.
+  assert.deepEqual(columns.get('Control').tokens, ['parked'])
+  assert.match(columns.get('Control').html, /WIP 1\/1 · at limit/)
+  assert.match(columns.get('Control').html, /Escalated to the outer controller/)
+  assert.deepEqual(columns.get('Test').tokens, [], 'the delivery team is free to pull again')
+
+  // `resumed` is the one event whose destination outranks the seat that signed
+  // it: the controller writes it, and the work goes BACK to a delivery team.
+  // Reading it the other way would park every resume on the PM for ever.
   assert.deepEqual(columns.get('Build').tokens, ['sent_back'])
   assert.match(columns.get('Build').html, /Resumed by the outer controller/)
   assert.equal(columns.has('Unplaceable'), false, 'parked work is not an error')
 })
 
-// The other half of the same rule: parked with no team named is genuinely
-// unplaceable, and the board says so rather than guessing a column.
-test('an escalation that names no team is unplaceable, and the header says how many', () => {
+// The other half of the same rule: a token the graph cannot place is said out
+// loud rather than guessed into a column. The subject used to be an escalation
+// by the controller naming no team, which WAS unplaceable while the controller
+// belonged to nowhere; since D6 that seat always resolves, so the case that
+// remains is a seat the declaration does not contain at all — a renamed team, a
+// ledger from another project, a hand-written line.
+test('a token whose seat is not in the graph is unplaceable, and the header says how many', () => {
   const dir = repoWith(TWO_TEAMS, {
-    nowhere: [{ at: '2026-07-27T09:00:00.000Z', event: 'escalated', agent_id: 'pm', to_team: null, reason: 'no team named' }],
-  }, {}, { nowhere: { expectInvalid: true, why: 'an escalation naming no team IS the subject — the board must call it unplaceable' } })
+    nowhere: [{ at: '2026-07-27T09:00:00.000Z', event: 'escalated', agent_id: 'ghost', to_team: null, reason: 'no team named' }],
+  }, {}, { nowhere: { expectInvalid: true, why: 'a line naming a seat the graph does not declare IS the subject — the board must call it unplaceable' } })
   const html = pageOf(dir)
   const columns = columnsOf(html)
   assert.deepEqual(columns.get('Unplaceable').tokens, ['nowhere'])
-  assert.match(columns.get('Unplaceable').html, /Last event escalated · agent pm is not placeable/)
+  assert.match(columns.get('Unplaceable').html, /Last event escalated · agent ghost is not placeable/)
   for (const team of TWO_TEAMS.teams) assert.match(columns.get(team.name).html, /WIP 0\//)
 })
 

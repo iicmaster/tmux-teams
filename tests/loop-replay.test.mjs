@@ -38,6 +38,7 @@ import { join } from 'node:path'
 
 import { appendEvent } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-writer.mjs'
 import { tick } from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs'
+import { answerQuestion, openQuestions } from '../plugins/tmux-teams/skills/tmux-teams/scripts/answer.mjs'
 
 // Seeded so a failure is replayable. `Math.random` would report a different
 // wedge every run and none of them twice.
@@ -48,11 +49,13 @@ const mulberry32 = (seed) => () => {
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296
 }
 
-const team = (id) => ({
+// `workers` overridable so the control team D6 requires can name the outer
+// controller as its one seat.
+const team = (id, workers = null) => ({
   team_id: id,
   name: id.toUpperCase(),
   dispatcher_id: `${id}_d`,
-  worker_ids: [`${id}_w1`],
+  worker_ids: workers ?? [`${id}_w1`],
   evaluator_id: `${id}_e`,
   models: { dispatcher: 'inherit-account-default', worker: 'inherit-account-default', evaluator: 'inherit-account-default' },
 })
@@ -61,8 +64,9 @@ const GRAPH = {
   project_id: 'replay',
   outer_controller_id: 'pm',
   outer_controller_model: 'inherit-account-default',
-  teams: [team('build'), team('test')],
-  workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['build', 'test'] }],
+  // D6 (2026-08-08): every graph declares a control team, entered by every route.
+  teams: [team('build'), team('test'), team('control', ['pm'])],
+  workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['control', 'build', 'test'] }],
 }
 
 const dirs = []
@@ -188,6 +192,22 @@ test('a route replays to a decision, or the runner says which token it could not
         result = tick(dir, { apply: true, scratchDir: join(dir, 'scratch'), spawnLeg })
       } finally { console.log = real }
       assert.ok(result.ok, `seed ${seed}: tick refused to run — ${result.reason}`)
+
+      // The person. This replay had none, and did not need one until the front
+      // door existed: the intake gate can OBJECT, and an objection parks the
+      // token on a question that only a human can close. Without somebody to
+      // answer, the loop stops — correctly, that is the whole stop mechanism —
+      // and the wedge check below reads a working stop as a wedge. So the
+      // simulation grew the half it was missing rather than the check growing
+      // an exception. It also means every seed now exercises the real
+      // `answer.mjs` path end to end: ask, hold, answer, resume.
+      for (const owed of openQuestions(dir)) {
+        const answered = answerQuestion(dir, {
+          work_item: owed.work_item,
+          reason: rand() < 0.8 ? 'go ahead' : 'proceed, and note the objection',
+        }, { actor: 'human:replay' })
+        assert.ok(answered.ok, `seed ${seed}: a question nobody could answer — ${answered.code}: ${answered.detail}`)
+      }
 
       // A token queued behind a WIP limit is not wedged — the limit is the whole
       // point, and the token ahead of it is moving. Only a board where NOTHING

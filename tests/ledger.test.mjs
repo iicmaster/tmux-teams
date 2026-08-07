@@ -1562,8 +1562,9 @@ test('pull --apply exits non-zero when the pulls it planned were refused', (t) =
     teams: [
       { team_id: 'build', name: 'Build', dispatcher_id: 'b_d', worker_ids: ['b_w1'], evaluator_id: 'b_e', models: { dispatcher: 'm', worker: 'm', evaluator: 'm' } },
       { team_id: 'test', name: 'Test', dispatcher_id: 't_d', worker_ids: ['t_w1'], evaluator_id: 't_e', models: { dispatcher: 'm', worker: 'm', evaluator: 'm' } },
+      { team_id: 'control', name: 'Control', dispatcher_id: 'pm_intake', worker_ids: ['pm'], evaluator_id: 'pm_audit', models: { dispatcher: 'm', worker: 'm', evaluator: 'm' } },
     ],
-    workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['build', 'test'] }],
+    workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['control', 'build', 'test'] }],
   }))
   const at = (n) => new Date(Date.UTC(2026, 7, 4, 10, n)).toISOString()
   const custody = [

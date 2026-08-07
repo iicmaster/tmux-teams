@@ -137,6 +137,11 @@ export const loadWorkItemLedgers = readWorkItems
 // A finished route stays finished while the outer controller reads it. An audit
 // observes a delivery; it never takes custody of one, so it must not put a
 // closed token back into a team's WIP.
+// Events whose destination outranks the seat that signed them — see the note at
+// the placement itself. One member, and it earns the set by being a rule rather
+// than a special case: any future event that MOVES a token belongs here.
+export const PLACES_BY_DESTINATION = new Set(['resumed'])
+
 export const RELEASING_EVENTS = new Set([
   'completed', 'abandoned', 'audit_requested', 'audited',
   // A token waiting for its next controller leg is still an audit, not work in
@@ -441,7 +446,21 @@ export function teamOccupancy(graph, items) {
     // as unplaceable is how the page ended up accusing its own completed work
     // of being an error.
     if (RELEASING_EVENTS.has(last.event)) continue
-    const teamId = teamOf.get(last.agent_id) ?? last.to_team ?? null
+    // A token is with the seat that acted, EXCEPT when the event's whole purpose
+    // was to move it somewhere — then the destination wins. `resumed` is the one
+    // event where the two disagree: the outer controller signs it and the work
+    // goes back to a delivery team. This was invisible until D6 made the
+    // controller a team member; before that `teamOf('pm')` was undefined and the
+    // destination won by accident, so the same rule held for the wrong reason.
+    // Get it wrong and a resume parks the work on the PM for ever instead of
+    // sending it back — which is the shape of the resume-routing defect already
+    // open against this system.
+    //
+    // `escalated` is deliberately NOT here even though it also carries both: an
+    // escalation IS the PM's work, and Kanban says the PM's slot is held until
+    // it is done. That is the stop mechanism, not a routing accident.
+    const teamId = (PLACES_BY_DESTINATION.has(last.event) ? last.to_team : null)
+      ?? teamOf.get(last.agent_id) ?? last.to_team ?? null
     if (teamId === null || !counts.has(teamId)) {
       // A token whose agent or workflow no longer exists in the declared graph
       // is unplaceable. It is surfaced, never silently dropped.

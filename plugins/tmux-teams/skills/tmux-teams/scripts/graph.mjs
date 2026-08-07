@@ -781,7 +781,7 @@ export function renderGraphPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, r
   <span class="refresh"><span data-refresh-status role="status" aria-live="polite">Snapshot fresh</span><button type="button" class="pause" data-refresh-toggle data-refresh-focus-key="refresh-toggle" aria-pressed="false">Pause</button><span class="note" data-refresh-note>Polling the local snapshot marker</span></span>
 </header>
 ${graph.source === 'default' ? `<p class="orphans" data-graph-undeclared="1"><strong>This repository has not declared its own loop.</strong> There is no <code>.tmux-teams/${WORKFLOW_GRAPH_FILE}</code>, so the board below is the bundled template — a shape to read, not this project's teams. The runner will not dispatch until a declaration exists (GitHub #48). Run the <code>graph-setup</code> skill to write one.</p>` : ''}
-${value.outer_controller_id && !value.controller_team ? `<p class="orphans">The controller <code>${esc(value.outer_controller_id)}</code> holds no team seat, so it is not on the board. This graph predates the front door: give it a team whose one worker is that seat, and start every route there. Until then nothing enforces a way in, and no WIP limit covers requests waiting to be admitted.</p>` : ""}
+
 ${occupancy.orphans.length || skippedLines ? `<p class="orphans">${occupancy.orphans.length ? `${occupancy.orphans.length} work item(s) cannot be placed — agent or workflow not in this graph: ${esc(occupancy.orphans.map((o) => o.work_item).join(", "))}. ` : ""}${skippedLines ? `${skippedLines} unreadable ledger line(s) skipped.` : ""}</p>` : ""}
 ${renderTourChart(tour)}
 <p class="sr-only" id="tour-desc">The board is shown one scene at a time. The first scene has every declared

@@ -425,18 +425,19 @@ test('a route is an order over existing wires, adding none', () => {
   }
 })
 
-test('a graph with no controller team draws no front door and no oversight', () => {
-  const plain = accept({
+test('a graph with no controller team cannot be drawn, because it cannot be loaded', () => {
+  // This used to build such a graph and assert the picture it produced: no
+  // admit edge, no escalate edge, the controller nowhere — "the honest picture
+  // of a graph that declares one and gives it no seat". The picture was honest;
+  // the graph should never have existed. D6 (2026-08-08) refuses it at load, so
+  // the tour has nothing to draw and this asserts the refusal instead.
+  const plain = validateWorkflowGraph({
     project_id: 'p', outer_controller_id: 'pm', outer_controller_model: 'm',
     teams: [team('build', ['b1']), team('qa', ['q1'])],
     workflows: [{ workflow_id: 'full', name: 'Full', route: ['build', 'qa'] }],
   })
-  const { edges, world } = buildTour(plain)
-  assert.equal(edges.some((e) => e.kind === 'admit'), false)
-  assert.equal(edges.some((e) => e.kind === 'escalate'), false)
-  // And the controller is nowhere, which is the honest picture of a graph that
-  // declares one and gives it no seat. The page says so in words.
-  assert.equal(world.pm, undefined)
+  assert.equal(plain.ok, false)
+  assert.match(plain.reason, /worker on no team/)
 })
 
 test('the audit line exists but carries nothing', () => {

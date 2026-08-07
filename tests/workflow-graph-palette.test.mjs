@@ -24,14 +24,31 @@ const teamOf = (id, workers, extra = {}) => ({
   ...extra,
 })
 
-const graphWith = (overrides = {}) => ({
-  project_id: 'p',
-  outer_controller_id: 'pm',
-  outer_controller_model: 'model-pm',
-  teams: [teamOf('build', ['b_w1', 'b_w2']), teamOf('verify', ['v_w1'])],
-  workflows: [{ workflow_id: 'full', name: 'Full', route: ['build', 'verify'] }],
-  ...overrides,
-})
+const graphWith = (overrides = {}) => {
+  const graph = {
+    project_id: 'p',
+    outer_controller_id: 'pm',
+    outer_controller_model: 'model-pm',
+    teams: [teamOf('build', ['b_w1', 'b_w2']), teamOf('verify', ['v_w1'])],
+    workflows: [{ workflow_id: 'full', name: 'Full', route: ['build', 'verify'] }],
+    ...overrides,
+  }
+  // D6 (2026-08-08): every graph declares a control team. Injected rather than
+  // written into the literal, because most tests here override `teams` to say
+  // something about a palette and would otherwise drop it — and then every one
+  // of them would fail on the front door instead of on the thing it is about.
+  // Skipped when the caller declared one itself.
+  const controller = graph.outer_controller_id
+  const placed = Array.isArray(graph.teams)
+    && graph.teams.some((team) => Array.isArray(team?.worker_ids) && team.worker_ids.includes(controller))
+  if (!placed && Array.isArray(graph.teams) && graph.teams.length > 0) {
+    graph.teams = [...graph.teams, teamOf('control', [controller])]
+    graph.workflows = (graph.workflows || []).map((flow) => (Array.isArray(flow?.route)
+      ? { ...flow, route: ['control', ...flow.route] }
+      : flow))
+  }
+  return graph
+}
 
 const accepted = (value) => {
   const result = validateWorkflowGraph(value)

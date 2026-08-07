@@ -30,16 +30,44 @@ const teamOf = (id, workers, extra = {}) => ({
   ...extra,
 })
 
-// Two teams, two workers in the first: enough shape that a WIP derived from the
-// worker count is visibly not the constant 1.
-const graphWith = (overrides = {}) => ({
-  project_id: 'p',
-  outer_controller_id: 'pm',
-  outer_controller_model: 'model-pm',
-  teams: [teamOf('build', ['b_w1', 'b_w2']), teamOf('verify', ['v_w1'])],
-  workflows: [{ workflow_id: 'full', name: 'Full', route: ['build', 'verify'] }],
-  ...overrides,
-})
+// Two delivery teams, two workers in the first: enough shape that a WIP derived
+// from the worker count is visibly not the constant 1. The control team is
+// APPENDED rather than prepended so the index-addressed assertions below still
+// read the team they were written about; the route, which is what the loader
+// checks, still enters through it. Mandatory since D6 (2026-08-08) — before
+// that a graph naming the controller in no team was accepted, and that is now
+// the refusal tested at the bottom of this file.
+const graphWith = (overrides = {}) => {
+  const graph = {
+    project_id: 'p',
+    outer_controller_id: 'pm',
+    outer_controller_model: 'model-pm',
+    teams: [teamOf('build', ['b_w1', 'b_w2']), teamOf('verify', ['v_w1'])],
+    workflows: [{ workflow_id: 'full', name: 'Full', route: ['build', 'verify'] }],
+    ...overrides,
+  }
+  // Injected rather than written into the literal above, because most tests
+  // here override `teams` to say something about a delivery team and would
+  // otherwise drop the control team along with it — and then every one of them
+  // would fail on D6 instead of on the thing it is about. Appended, so the
+  // index-addressed assertions still read the team they were written for.
+  // Skipped when the caller supplied a control team, and when the controller id
+  // is deliberately malformed: those tests are about the id, and a bad worker
+  // id would answer them with the wrong error.
+  const controller = graph.outer_controller_id
+  const placed = Array.isArray(graph.teams)
+    && graph.teams.some((team) => Array.isArray(team?.worker_ids) && team.worker_ids.includes(controller))
+  // ...and skipped for an EMPTY teams array, which is its own rejection tested
+  // below: injecting into it would answer that test with a route error instead.
+  if (!placed && Array.isArray(graph.teams) && graph.teams.length > 0
+    && typeof controller === 'string' && AGENT_ID_RE.test(controller)) {
+    graph.teams = [...graph.teams, teamOf('control', [controller])]
+    graph.workflows = (graph.workflows || []).map((flow) => (Array.isArray(flow?.route)
+      ? { ...flow, route: ['control', ...flow.route] }
+      : flow))
+  }
+  return graph
+}
 
 const accepted = (value) => {
   const result = validateWorkflowGraph(value)
@@ -327,11 +355,27 @@ test('the controller may hold one team seat, as that team’s only worker', () =
   assert.equal(ok.value.controller_team, 'control')
   assert.equal(ok.value.teams.find((entry) => entry.team_id === 'control').wip_limit, 1)
 
-  // A graph that puts the controller in no team is the graph this system has
-  // always accepted, and none of the above may touch it.
-  const legacy = validateWorkflowGraph(graphWith())
-  assert.ok(legacy.ok, legacy.reason)
-  assert.equal(legacy.value.controller_team, null)
+  // The other half, reversed by D6 on 2026-08-08. This test used to assert that
+  // a graph putting the controller in no team "is the graph this system has
+  // always accepted" — and it was, which is exactly what was wrong with it. §6
+  // places a token by its last event's `agent_id`, so on such a graph anything
+  // the outer controller writes belongs to no team: a token parked on a
+  // question orphans, holds nobody's WIP and stops nothing. The stop mechanism
+  // is the whole point of the system, and it silently did not apply.
+  const controllerless = {
+    project_id: 'p',
+    outer_controller_id: 'pm',
+    outer_controller_model: 'model-pm',
+    teams: [teamOf('build', ['b_w1']), teamOf('verify', ['v_w1'])],
+    workflows: [{ workflow_id: 'full', name: 'Full', route: ['build', 'verify'] }],
+  }
+  const refused = validateWorkflowGraph(controllerless)
+  assert.equal(refused.ok, false, 'a graph with no control team is refused at load')
+  assert.match(refused.reason, /worker on no team/)
+  // The refusal has to say how to fix it. A loader that only says no turns a
+  // one-line declaration change into a reading exercise in this file.
+  assert.match(refused.reason, /worker_ids/)
+  assert.match(refused.reason, /start every route there/)
 })
 
 test('controller_team is derived, never declared', () => {
@@ -385,10 +429,15 @@ test('the exported surface still answers what the loop asks it', () => {
   assert.equal(GRAPH_ID_RE.test('team one'), false)
 
   const value = accepted(graphWith())
-  assert.deepEqual(workflowAgentIds(value), ['build_d', 'b_w1', 'b_w2', 'build_e', 'verify_d', 'v_w1', 'verify_e'])
+  assert.deepEqual(workflowAgentIds(value),
+    ['build_d', 'b_w1', 'b_w2', 'build_e', 'verify_d', 'v_w1', 'verify_e', 'control_d', 'pm', 'control_e'])
   assert.deepEqual(teamRoleOf(value, 'b_w2'), { team_id: 'build', team_name: 'BUILD', role: 'worker' })
   assert.deepEqual(teamRoleOf(value, 'verify_e'), { team_id: 'verify', team_name: 'VERIFY', role: 'evaluator' })
-  assert.equal(teamRoleOf(value, 'pm'), null, 'the controller is not a team member')
+  // Reversed by D6: this asserted `null` and said "the controller is not a team
+  // member", which was true and was the defect — a seat in no team places
+  // nowhere, so everything it wrote orphaned. It is now a team's only worker,
+  // and that is what gives a parked question a WIP slot to hold.
+  assert.deepEqual(teamRoleOf(value, 'pm'), { team_id: 'control', team_name: 'CONTROL', role: 'worker' })
   assert.match(value.source_digest, /^sha256:[0-9a-f]{64}$/)
 })
 

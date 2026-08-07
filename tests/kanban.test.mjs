@@ -40,10 +40,13 @@ const FOUR_TEAMS = {
     { team_id: 'build', name: 'Build', dispatcher_id: 'build_d', worker_ids: ['build_w1', 'build_w2'], evaluator_id: 'build_e', models: MODELS },
     { team_id: 'test', name: 'Test', dispatcher_id: 'test_d', worker_ids: ['test_w1'], evaluator_id: 'test_e', models: MODELS },
     { team_id: 'visual', name: 'Visual', dispatcher_id: 'visual_d', worker_ids: ['visual_w1'], evaluator_id: 'visual_e', models: MODELS },
+    // D6 (2026-08-08): every graph declares a control team, and every route
+    // enters through it — the front door where the PM's WIP is held.
+    { team_id: 'control', name: 'Control', dispatcher_id: 'pm_intake', worker_ids: ['pm'], evaluator_id: 'pm_audit', models: MODELS },
   ],
   workflows: [
-    { workflow_id: 'feature', name: 'Feature delivery', route: ['design', 'build', 'test', 'visual'] },
-    { workflow_id: 'fix', name: 'Fix', route: ['build', 'test', 'visual'] },
+    { workflow_id: 'feature', name: 'Feature delivery', route: ['control', 'design', 'build', 'test', 'visual'] },
+    { workflow_id: 'fix', name: 'Fix', route: ['control', 'build', 'test', 'visual'] },
   ],
 }
 

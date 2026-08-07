@@ -230,7 +230,13 @@ test('a graph with no controller team is refused at the door, not silently admit
   }, null, 2))
   const result = admitWorkItem(dir, { work_item: 'x', workflow: 'default', reason: 'r' }, { actor: 'human:someone' })
   assert.equal(result.ok, false)
-  assert.equal(result.code, 'no_controller_team')
+  // `graph_invalid`, not `no_controller_team`: since D6 (2026-08-08) the
+  // declaration never loads at all, so admission refuses one step earlier than
+  // it used to and for a better reason — the whole repo is misdeclared, not
+  // just this one request. `admit.mjs` keeps its own `no_controller_team` code
+  // for a graph object handed to it directly, but nothing on disk reaches it.
+  assert.equal(result.code, 'graph_invalid')
+  assert.match(result.detail, /worker on no team/)
 })
 
 // ── the grill: a token blocked on a person ───────────────────────────────────
@@ -441,18 +447,19 @@ test('a request waiting on a person blocks the whole system, and the graph says 
   assert.equal(frontDoorStatus(graph, after, teamOccupancy(graph, after)).kind, 'busy')
 })
 
-test('a graph with no controller team reports an open door, not a blocked one', () => {
+test('a graph with no controller team does not load, so no door is reported at all', () => {
+  // This asserted the front door read as open-and-absent on such a graph, which
+  // was the right answer to the wrong question: a board with no way in reported
+  // nothing blocking. D6 removed the shape, so the reader never sees it.
   const dir = makeRepo()
   writeFileSync(join(dir, '.tmux-teams', 'graph.json'), JSON.stringify({
     ...GRAPH,
     teams: [team('build', ['build_w1']), team('qa', ['qa_w1'])],
     workflows: [{ workflow_id: 'default', name: 'Default', route: ['build', 'qa'] }],
   }, null, 2))
-  const graph = readWorkflowGraph(dir).value
-  const items = readWorkItems(dir).items
-  const door = frontDoorStatus(graph, items, teamOccupancy(graph, items))
-  assert.equal(door.blocked, false)
-  assert.equal(door.kind, 'none')
+  const loaded = readWorkflowGraph(dir)
+  assert.equal(loaded.ok, false, 'the declaration is refused before any page or gate reads it')
+  assert.match(loaded.reason, /worker on no team/)
 })
 
 test('the grill brief names all six categories it must face', () => {

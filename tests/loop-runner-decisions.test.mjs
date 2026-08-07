@@ -17,11 +17,13 @@ import {
   DECISIONS_DIR, DECISIONS_FILE, INHERIT_ACCOUNT_DEFAULT, tick,
 } from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs'
 
-const team = (id, model) => ({
+// `workers` overridable so the control team D6 (2026-08-08) requires can name
+// the outer controller as its one seat.
+const team = (id, model, workers = null) => ({
   team_id: id,
   name: id.toUpperCase(),
   dispatcher_id: `${id}_d`,
-  worker_ids: [`${id}_w1`],
+  worker_ids: workers ?? [`${id}_w1`],
   evaluator_id: `${id}_e`,
   models: { dispatcher: model, worker: model, evaluator: model },
 })
@@ -30,8 +32,8 @@ const graphDecl = () => ({
   project_id: 'p',
   outer_controller_id: 'pm',
   outer_controller_model: INHERIT_ACCOUNT_DEFAULT,
-  teams: [team('build', INHERIT_ACCOUNT_DEFAULT)],
-  workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['build'] }],
+  teams: [team('build', INHERIT_ACCOUNT_DEFAULT), team('control', INHERIT_ACCOUNT_DEFAULT, ['pm'])],
+  workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['control', 'build'] }],
 })
 
 const at = (index) => `2026-07-27T0${index}:00:00.000Z`

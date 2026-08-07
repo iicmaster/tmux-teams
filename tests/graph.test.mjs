@@ -52,10 +52,14 @@ const TWO_TEAMS = {
   teams: [
     { team_id: 'build', name: 'Build', dispatcher_id: 'b_d', worker_ids: ['b_w1', 'b_w2'], evaluator_id: 'b_e', models: MODELS },
     { team_id: 'verify', name: 'Verify', dispatcher_id: 'v_d', worker_ids: ['v_w1'], evaluator_id: 'v_e', models: MODELS },
+    // D6 (2026-08-08): every graph declares a control team and every route
+    // enters through it. Appended, so the index-addressed reads below still
+    // find the delivery team they were written about.
+    { team_id: 'control', name: 'Control', dispatcher_id: 'pm_intake', worker_ids: ['pm'], evaluator_id: 'pm_audit', models: MODELS },
   ],
   workflows: [
-    { workflow_id: 'full', name: 'Full', route: ['build', 'verify'] },
-    { workflow_id: 'quick', name: 'Quick', route: ['build'] },
+    { workflow_id: 'full', name: 'Full', route: ['control', 'build', 'verify'] },
+    { workflow_id: 'quick', name: 'Quick', route: ['control', 'build'] },
   ],
 }
 
@@ -146,7 +150,14 @@ const wire = (tour, from, to, kind) =>
 
 test('a team shared by two workflows is still drawn once, with every agent', () => {
   const tour = tourOf(TWO_TEAMS)
-  const declared = graphOf(TWO_TEAMS).teams.flatMap((entry) => entry.agents.map((a) => a.agent_id))
+  // Delivery teams only. The control team D6 requires brings three seats, and
+  // the page deliberately draws none of them as cards — `the controller is one
+  // node` above is the test for that, and asserting them here would contradict
+  // it. Seven is still the number that matters: a team on two routes is drawn
+  // once, with every one of its agents.
+  const declared = graphOf(TWO_TEAMS).teams
+    .filter((entry) => entry.team_id !== 'control')
+    .flatMap((entry) => entry.agents.map((a) => a.agent_id))
   assert.equal(declared.length, 7)
   for (const agentId of declared) {
     assert.ok(tour.world[agentId], `${agentId} is on the board`)
@@ -154,12 +165,16 @@ test('a team shared by two workflows is still drawn once, with every agent', () 
   // `world` is keyed by agent id, so a duplicate could only appear as a second
   // node carrying the same title — which is exactly how the controller used to
   // be drawn twice, once as a band and once as a worker card.
-  // The controller in this fixture holds no team seat, so it is not on the
-  // board at all — and the page has to say that out loud rather than draw a
-  // board that silently has no way in.
-  assert.equal(tour.world.pm, undefined)
-  assert.match(renderGraphPage(repoWith(TWO_TEAMS), snapshotWith()),
-    /The controller <code>pm<\/code> holds no team seat/)
+  // The controller holds a team seat and is still not a CARD — it is drawn as
+  // the control team's band, which `the controller is one node` below pins.
+  // This used to assert the opposite: that `pm` was on no board at all, and
+  // that the page printed a banner saying so. D6 (2026-08-08) refuses that
+  // graph at load, so the banner became unreachable and was deleted with it —
+  // a page cannot warn about a declaration the loader will not accept.
+  assert.equal(tour.world.pm, undefined, 'a seat, but never a card of its own')
+  assert.ok(tour.world['team:control'], 'the control team is drawn as a band')
+  assert.doesNotMatch(renderGraphPage(repoWith(TWO_TEAMS), snapshotWith()),
+    /holds no team seat/, 'the warning outlived the case it warned about')
 })
 
 test('a seat with display_model shows the real model name, not the dispatch alias', () => {
@@ -377,7 +392,7 @@ test('a repo still holding the old file name keeps its teams, and says which fil
   const legacy = readWorkflowGraph(dir)
   assert.equal(legacy.ok, true)
   assert.equal(legacy.source, 'team-graph.json')
-  assert.deepEqual(legacy.value.teams.map((team) => team.team_id), ['build', 'verify'])
+  assert.deepEqual(legacy.value.teams.map((team) => team.team_id), ['build', 'verify', 'control'])
 
   // The new name wins when both exist — a repo mid-migration must not have its
   // current declaration shadowed by the file it is migrating away from.
@@ -770,10 +785,8 @@ test('a full front door is reported as blocked, never as watching', () => {
   // The controller node also carries `WIP 1/1 · full`. Saying "no exception
   // open" beside it put two contradicting facts on one card, and the
   // reassuring one was the bigger.
-  const graph = { ...TWO_TEAMS, teams: [
-    { team_id: 'control', name: 'Control', dispatcher_id: 'pm_in', worker_ids: ['pm'], evaluator_id: 'pm_out', models: MODELS },
-    ...TWO_TEAMS.teams,
-  ], workflows: [{ workflow_id: 'full', name: 'Full', route: ['control', 'build', 'verify'] }] }
+  const graph = { ...TWO_TEAMS,
+    workflows: [{ workflow_id: 'full', name: 'Full', route: ['control', 'build', 'verify'] }] }
   const dir = withLedger(graph, 'tok', [
     { at: '2026-07-27T09:00:00.000Z', event: 'assigned', agent_id: 'pm', to_team: 'control',
       task_id: 't-pm', dispatch_id: 'd-pm' },
@@ -794,10 +807,8 @@ test('a full front door is reported as blocked, never as watching', () => {
 // mismatched write could hide the person waiting and report the door as merely
 // busy — the exact disagreement §6 exists to make impossible.
 test('a stale mismatched delivered from a superseded leg does not hide a person waiting at the front door', () => {
-  const graph = { ...TWO_TEAMS, teams: [
-    { team_id: 'control', name: 'Control', dispatcher_id: 'pm_in', worker_ids: ['pm'], evaluator_id: 'pm_out', models: MODELS },
-    ...TWO_TEAMS.teams,
-  ], workflows: [{ workflow_id: 'full', name: 'Full', route: ['control', 'build', 'verify'] }] }
+  const graph = { ...TWO_TEAMS,
+    workflows: [{ workflow_id: 'full', name: 'Full', route: ['control', 'build', 'verify'] }] }
   const value = graphOf(graph)
   const dir = withLedger(graph, 'tok', [
     // Leg 1, an older dispatch to a different agent — the one that goes stale.
@@ -870,7 +881,9 @@ test('the demoted topbar facts are reachable without a pointer', () => {
   // attribute value. Stripping the tags is what keeps this from passing on a
   // page that merely repeats them in another title.
   const facts = inside.replace(/<summary[^>]*>[\s\S]*?<\/summary>/, '').replace(/<[^>]+>/g, ' ')
-  assert.match(facts, /2 teams/)
+  // Three teams, not two — the control team counts on the board like any other,
+  // which is the point of drawing it as a team rather than a floating seat.
+  assert.match(facts, /3 teams/)
   assert.match(facts, /workflows/)
   assert.match(facts, /graph:/)
   assert.match(facts, /evidence: pulse\.json/)
@@ -891,7 +904,7 @@ test('a seat may override its effort, and only that seat carries it', () => {
         ...TWO_TEAMS.teams[0],
         seats: { b_w1: { effort: 'max' } },
       },
-      TWO_TEAMS.teams[1],
+      ...TWO_TEAMS.teams.slice(1),
     ],
   })
   const build = graph.teams.find((entry) => entry.team_id === 'build')
@@ -911,7 +924,7 @@ test('a seat may combine model, adapter and effort in one override', () => {
         ...TWO_TEAMS.teams[0],
         seats: { b_w1: { model: 'cheap-model', adapter: 'codex', effort: 'xhigh' } },
       },
-      TWO_TEAMS.teams[1],
+      ...TWO_TEAMS.teams.slice(1),
     ],
   })
   const seat = graph.teams.find((entry) => entry.team_id === 'build')
@@ -927,7 +940,7 @@ test('an empty-string effort is refused, like an empty-string model', () => {
     ...TWO_TEAMS,
     teams: [
       { ...TWO_TEAMS.teams[0], seats: { b_w1: { effort: '' } } },
-      TWO_TEAMS.teams[1],
+      ...TWO_TEAMS.teams.slice(1),
     ],
   })
   assert.equal(result.ok, false)
@@ -939,7 +952,7 @@ test('an effort with a control character is refused', () => {
     ...TWO_TEAMS,
     teams: [
       { ...TWO_TEAMS.teams[0], seats: { b_w1: { effort: `max${String.fromCharCode(7)}` } } },
-      TWO_TEAMS.teams[1],
+      ...TWO_TEAMS.teams.slice(1),
     ],
   })
   assert.equal(result.ok, false)
@@ -951,7 +964,7 @@ test('an effort over 64 characters is refused', () => {
     ...TWO_TEAMS,
     teams: [
       { ...TWO_TEAMS.teams[0], seats: { b_w1: { effort: 'x'.repeat(65) } } },
-      TWO_TEAMS.teams[1],
+      ...TWO_TEAMS.teams.slice(1),
     ],
   })
   assert.equal(result.ok, false)
@@ -963,7 +976,7 @@ test('a seat key other than model/adapter/effort is still refused', () => {
     ...TWO_TEAMS,
     teams: [
       { ...TWO_TEAMS.teams[0], seats: { b_w1: { reasoning: 'max' } } },
-      TWO_TEAMS.teams[1],
+      ...TWO_TEAMS.teams.slice(1),
     ],
   })
   assert.equal(result.ok, false)

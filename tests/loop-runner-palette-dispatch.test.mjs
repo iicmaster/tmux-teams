@@ -34,7 +34,15 @@ const BASE = {
   project_id: 'p',
   outer_controller_id: 'pm',
   outer_controller_model: 'model-pm',
-  workflows: [{ workflow_id: 'solo', name: 'Solo', route: ['build'] }],
+  // D6 (2026-08-08): every graph declares a control team and every route enters
+  // through it. Callers supply the `build` team this file is about; the front
+  // door is spread in here so none of them has to restate it.
+  workflows: [{ workflow_id: 'solo', name: 'Solo', route: ['control', 'build'] }],
+}
+
+const CONTROL_TEAM = {
+  team_id: 'control', name: 'Control', dispatcher_id: 'pm_intake',
+  worker_ids: ['pm'], evaluator_id: 'pm_audit', models: { ...MODELS },
 }
 
 const graphOf = (value) => {
@@ -54,8 +62,8 @@ const PALETTE_DECLARED = [
 ]
 const PALETTE = PALETTE_DECLARED.map((entry) => ({ effort: null, display_model: null, ...entry }))
 
-const NO_PALETTE_GRAPH = graphOf({ ...BASE, teams: [teamOf()] })
-const PALETTE_GRAPH = graphOf({ ...BASE, teams: [teamOf({ seats: { b_w1: { palette: PALETTE_DECLARED } } })] })
+const NO_PALETTE_GRAPH = graphOf({ ...BASE, teams: [teamOf(), CONTROL_TEAM] })
+const PALETTE_GRAPH = graphOf({ ...BASE, teams: [teamOf({ seats: { b_w1: { palette: PALETTE_DECLARED } } }), CONTROL_TEAM] })
 
 // ── ledger fixtures — trimmed from loop-occupancy.test.mjs's own `complete`/
 // `ledger`/`itemsOf` to the event kinds this file actually uses, and routed
@@ -222,7 +230,7 @@ test('a controller resume restarts the palette at candidate 0, like attemptsBy a
 
 const TWO_WORKER_PALETTE_GRAPH = graphOf({
   ...BASE,
-  teams: [teamOf({ worker_ids: ['b_w1', 'b_w2'], seats: { b_w1: { palette: PALETTE_DECLARED } } })],
+  teams: [teamOf({ worker_ids: ['b_w1', 'b_w2'], seats: { b_w1: { palette: PALETTE_DECLARED } } }), CONTROL_TEAM],
 })
 
 const hintedAdmitted = (hint) => [
@@ -285,7 +293,7 @@ test('a palette seat\'s second leg spawns the process with the SECOND candidate\
       { model: 'model-a', adapter: 'claude', effort: 'low', bucket: 'bucket-a' },
       { model: 'model-b', adapter: 'codex', effort: 'high', bucket: 'bucket-b' },
     ]
-    const graph = { ...BASE, teams: [teamOf({ seats: { b_w1: { palette } } })] }
+    const graph = { ...BASE, teams: [teamOf({ seats: { b_w1: { palette } } }), CONTROL_TEAM] }
     writeFileSync(join(store, 'graph.json'), JSON.stringify(graph))
     writeFileSync(join(store, 'work-items', 'tok.jsonl'),
       `${ledger('tok', [...ADMITTED, ...failedLeg(1, false)]).map((entry) => JSON.stringify(entry)).join('\n')}\n`)

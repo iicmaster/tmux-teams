@@ -838,9 +838,15 @@ Rules:
 
 1. `returned` carries **no `agent_id`** on purpose. The token is held by the
    team it went back to, not by the dispatcher that refused it.
-2. `escalated` **must** carry `to_team`. The controller is not a team member, so
-   without it the token cannot be placed and the board would draw parked work as
-   unplaceable while freeing a WIP slot nobody released.
+2. `escalated` **must** carry `to_team` — but since D6 (2026-08-08) it is not
+   what PLACES the token. The controller is now a team member, so an escalated
+   token occupies the CONTROL team's slot: Master's rule, and plain Kanban —
+   work stuck with a team keeps that team's WIP, and work escalated to the PM
+   holds the PM's until the PM is done with it. `to_team` remains required
+   because a later `resumed` reads it to send the work back. That one event is
+   the whole of §6's `PLACES_BY_DESTINATION`: a `resumed` is signed by the
+   controller and MOVES the token, so its destination outranks its signer.
+   Read the other way, every resume would park the work on the PM for ever.
 3. A malformed line is skipped, counted, and the count is surfaced on the page.
    Partial evidence beats none as long as nothing is invented.
 4. Events are ordered by `at`; equal timestamps keep append order. A stamp
@@ -1021,8 +1027,9 @@ somebody who has not replied.
   the token is not at `questioned` (a second answer is caught here, not by the
   validator afterwards), when the question carries no id, and when the asking
   seat belongs to no declared team and the token has never been pulled — that
-  last one is the outer controller on a graph with no control team, and it is a
-  refusal rather than a blank field.
+  last one was the outer controller on a graph with no control team, which D6
+  (2026-08-08) removed from existence; the refusal is kept because `answer.mjs`
+  is also called with graphs handed to it directly.
 - A `questioned` token that goes unanswered past the answer deadline is closed
   with `abandoned` by the RUNNER (§9), and the controller writes a withdrawal
   notice naming the unanswered questions. This applies whether the question was
@@ -2279,7 +2286,9 @@ ordering semantics phase 1 wrote down and left unenforced).
 | AC111 | §3.5.1 | a leg that pinned no model records `requested_model: null` — the request, absent, never the adapter's later answer, which at write time has not been given | `assigned-carries-model.test.mjs` |
 | AC112 | §4, §5, §9 | a dead audit leg whose liveness says `work_observed: false` asks a person (`questioned`, `resume_role: audit`) and holds; one that says `true`, or says nothing at all, is still `abandoned` on the same deadline as before | `audit-transport-death.test.mjs` |
 | AC113 | §4.7, §9 | the question that path writes carries everything `answer.mjs` needs to close it — a `question_id`, an `agent_id` that resolves to a team, and `resume_role: audit` — and a token already parked on one is not asked again | `audit-transport-death.test.mjs` |
-| AC114 | §6, §9 | on a graph where the outer controller belongs to no team the question is NOT written — it would place nowhere, count against no WIP and stop nothing — and the old withdrawal happens instead, saying so in its reason. Where a control team exists, the parked question holds that team's one slot, which is what closes the front door | `audit-transport-death.test.mjs` |
+| AC114 | §6, §9 | a parked question holds the control team's one slot, which is what closes the front door — `admit.mjs` refuses admission at the limit | `audit-transport-death.test.mjs` |
+| AC115 | §1, §6 | a graph whose outer controller is a worker on no team is REFUSED at load, and so is a graph naming no controller at all; both refusals say how to fix the declaration | `workflow-graph.test.mjs`, `graph-tour.test.mjs`, `controller-team.test.mjs`, `loop-runner-heartbeat-model.test.mjs` |
+| AC116 | §4.2, §6 | an escalated token occupies the CONTROL team's WIP, not the delivery team's; a `resumed` still returns to the team its `to_team` names | `loop-occupancy.test.mjs`, `kanban-board.test.mjs` |
 | AC113 | §9 | the recorded reason quotes that leg's own `liveness_state`/`termination_reason` rather than a fixed phrase, so two different causes cannot report the same one | `audit-transport-death.test.mjs` |
 
 ### 14.1 Clauses this contract does NOT yet enforce
@@ -2647,6 +2656,56 @@ line.
    editing a file while a worker holds it has already cost one overwrite.
 
 ### Amendment log
+
+**2026-08-08 — D6: the control team is mandatory, and the stop mechanism is
+real for the first time.** Owner decision, taken with the cost measured first:
+212 tests across 17 files were built on graphs that declared no control team,
+and some of them existed to pin that as supported. It was supported. That was
+the defect.
+
+§6 places a token by its last event's `agent_id`. On a graph where the outer
+controller was a member of no team, everything that seat wrote resolved to no
+team at all — an escalation, a question at the front door, an audit's question —
+so the token ORPHANED: counted against nobody's WIP, stopping nothing, waiting
+for a person nobody was told about. The system's central guarantee is Kanban's
+one rule, that work stuck with a team keeps that team's WIP and work escalated
+to the PM holds the PM's, and on half the graphs the loader accepted it silently
+did not apply. A shape where the central guarantee does not hold is not an
+option to support; it is a way to run this system and not get it.
+
+Refused at load, both halves: a controller who is a worker on no team, and a
+graph naming no controller at all. The second was found on the way — one test
+BUILT that configuration and pinned its consequence as a permanent wedge (the
+audit trigger fires, the controller leg is paid for, and only then is the
+escalation mark refused for want of an `agent_id` the graph never had, so the
+unchanged-trigger brake holds the token for ever). D6 refuses the configuration
+instead of documenting its symptom.
+
+One thing had to change with it. §6's placement was `teamOf(agent_id) ?? to_team`
+— the signer always won, and `to_team` was a fallback that only ever fired
+because the controller resolved to nothing. Make the controller a team member
+and every `resumed` the controller signs parks the work on the PM instead of
+sending it back to the team the resume names: the shape of the resume-routing
+defect already open against this system, made total. §6 now names one set,
+`PLACES_BY_DESTINATION = {resumed}` — an event whose purpose is to MOVE a token
+is placed by its destination, an event that records a seat acting is placed by
+that seat. `escalated` is deliberately not in it: an escalation IS the PM's
+work.
+
+Two pieces of code were deleted rather than kept "to be safe", because D6
+removes the case rather than the symptom: the audit path's unplaceable-question
+guard, written two commits earlier when such a graph could still be loaded, and
+`graph.mjs`'s banner telling a reader their controller holds no team seat. A
+page cannot warn about a declaration the loader will not accept. There is
+exactly one load path and it validates.
+
+And the replay simulation grew the half it never had. Once every route enters
+through the front door, the intake gate can OBJECT, and an objection parks the
+token on a question only a person can close — so the loop stops, correctly, and
+the wedge check read a working stop as a wedge. The check did not grow an
+exception; the simulation grew a person, calling the real `answer.mjs`. Every
+seed now walks the whole exchange: ask, hold, answer, resume. AC114 rewritten,
+AC115 and AC116 added.
 
 **2026-08-07 — the retry that only existed because nobody could answer.**
 Supersedes the transport-death half of the 2026-08-06 entry below; that entry

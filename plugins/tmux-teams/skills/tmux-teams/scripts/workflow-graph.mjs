@@ -564,12 +564,40 @@ export function validateWorkflowGraph(value) {
 
   // ── the controller as a team (references/controller-as-team.md) ────────────
   //
-  // Opt-in by construction: a graph where the controller sits in no team is
-  // exactly the graph this system has always accepted, and validates unchanged.
-  // Naming the controller as a team's worker is what turns these rules on, and
-  // then all of them apply — a half-adopted version would be a board that draws
-  // an entry point the runner does not use.
-  if (controllerTeamId !== null) {
+  // MANDATORY since 2026-08-08 (D6). This was opt-in by construction: a graph
+  // where the controller sat in no team was the graph this system had always
+  // accepted, and validated unchanged. What that left, measured rather than
+  // argued: §6 places a token by its last event's `agent_id`, so anything the
+  // outer controller writes on such a graph resolves to no team at all — a
+  // token parked on a question orphans, counts against nobody's WIP, and stops
+  // nothing. The stop mechanism this whole system is built around is Kanban's
+  // one rule — a token stuck with a team keeps that team's WIP, and PM work
+  // holds the PM's — and it simply did not exist on half the graphs the loader
+  // accepted. A shape where the central guarantee silently does not apply is
+  // not a supported option; it is a way to run this system and not get it.
+  //
+  // The cost was paid rather than dodged: 212 tests across 17 files were built
+  // on control-less graphs, and the tests that existed to pin the opt-in were
+  // rewritten to pin this refusal instead. Anyone tempted to loosen it back
+  // should read `teamOccupancy`'s orphan list first — that is where the tokens
+  // went.
+  if (controller === null) {
+    // A graph naming no controller at all was accepted, and it is the same hole
+    // seen from the other side: no front door, no audit (the deadline scan
+    // compares `agent_id` against a null id and never matches), and every
+    // escalation mark refused for want of an `agent_id` — AFTER the controller
+    // leg has been paid for. `loop-runner-heartbeat-model.test.mjs` documented
+    // that as a permanent wedge; D6 refuses the configuration instead.
+    return invalid('outer_controller_id names nobody — a graph with no controller has no front door,'
+      + ' no audit and no seat to escalate to, and every mark written for it is refused after the'
+      + ' leg has already been paid for')
+  }
+  if (controllerTeamId === null) {
+    return invalid(`the outer controller ${controller} is a worker on no team — every graph declares a control team`
+      + ' (name it in one team\'s worker_ids, alone, and start every route there)'
+      + ' or the token it parks on a question belongs to nobody and stops nothing')
+  }
+  {
     const controlTeam = teams.find((entry) => entry.team_id === controllerTeamId)
     if (controlTeam.worker_ids.length !== 1) {
       return invalid(`the controller team ${controllerTeamId} has ${controlTeam.worker_ids.length} workers — it holds one seat, so WIP 1`)

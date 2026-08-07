@@ -29,8 +29,13 @@ const GRAPH = {
   teams: [
     { team_id: 'build', name: 'Build', dispatcher_id: 'b_d', worker_ids: ['b_w1'], evaluator_id: 'b_e', models: MODELS },
     { team_id: 'test', name: 'Test', dispatcher_id: 't_d', worker_ids: ['t_w1'], evaluator_id: 't_e', models: MODELS },
+    // D6 (2026-08-08): every graph declares one. `answer.mjs` resolves the team
+    // to resume into from the asking seat, so a controller's own question
+    // depends on this team existing — before D6 it fell through to the last
+    // `pulled`, which is a guess.
+    { team_id: 'control', name: 'Control', dispatcher_id: 'pm_intake', worker_ids: ['pm'], evaluator_id: 'pm_audit', models: MODELS },
   ],
-  workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['build', 'test'] }],
+  workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['control', 'build', 'test'] }],
 }
 
 const AT = Date.parse('2026-08-07T09:00:00.000Z')

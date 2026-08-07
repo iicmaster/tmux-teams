@@ -31,10 +31,12 @@ import { gateHistory } from './fixture-gate.mjs'
 
 const MODELS = { dispatcher: 'test-model', worker: 'test-model', evaluator: 'test-model' }
 
-// Three real teams. `outer_controller_id` ('pm') is not a worker on any of
-// them, so `controller_team` stays null (references/controller-as-team.md is
-// opt-in) — this fixture is about an ordinary escalation exit, not the
-// controller-as-team admission path, and staying opted out keeps it that way.
+// Three real delivery teams plus the control team D6 (2026-08-08) requires.
+// This fixture used to leave the controller in no team on purpose — the
+// controller-as-team design was opt-in and this file is about an ordinary
+// escalation exit, not admission. Opting out is no longer possible, and it
+// changes nothing here: `control` heads both routes and holds no token in any
+// case below.
 const graphResult = validateWorkflowGraph({
   project_id: 'p',
   outer_controller_id: 'pm',
@@ -43,14 +45,15 @@ const graphResult = validateWorkflowGraph({
     { team_id: 'A', name: 'Alpha', dispatcher_id: 'a_d', worker_ids: ['a_w'], evaluator_id: 'a_e', models: MODELS },
     { team_id: 'B', name: 'Beta', dispatcher_id: 'b_d', worker_ids: ['b_w'], evaluator_id: 'b_e', models: MODELS },
     { team_id: 'C', name: 'Gamma', dispatcher_id: 'c_d', worker_ids: ['c_w'], evaluator_id: 'c_e', models: MODELS },
+    { team_id: 'control', name: 'Control', dispatcher_id: 'pm_intake', worker_ids: ['pm'], evaluator_id: 'pm_audit', models: MODELS },
   ],
   // Two workflows over the same teams, so one fixture ledger can be judged
   // against either declared route: the two-team route exercises "nothing
   // left after skipping the held team" (`completed`), and the three-team
   // route exercises "skip the held team, pull the one never held" (`C`).
   workflows: [
-    { workflow_id: 'two_leg', name: 'Two Leg', route: ['A', 'B'] },
-    { workflow_id: 'three_leg', name: 'Three Leg', route: ['A', 'B', 'C'] },
+    { workflow_id: 'two_leg', name: 'Two Leg', route: ['control', 'A', 'B'] },
+    { workflow_id: 'three_leg', name: 'Three Leg', route: ['control', 'A', 'B', 'C'] },
   ],
 })
 if (!graphResult.ok) throw new Error(`test graph fixture is invalid: ${graphResult.reason}`)

@@ -53,8 +53,11 @@ const TWO_TEAMS = {
   teams: [
     { team_id: 'build', name: 'Build', dispatcher_id: 'b_d', worker_ids: ['b_w1'], evaluator_id: 'b_e', models: MODELS },
     { team_id: 'test', name: 'Test', dispatcher_id: 't_d', worker_ids: ['t_w1'], evaluator_id: 't_e', models: MODELS },
+    // Mandatory since D6 (2026-08-08). Appended so the two delivery teams keep
+    // their positions, and named in every route because that is the front door.
+    { team_id: 'control', name: 'Control', dispatcher_id: 'pm_intake', worker_ids: ['pm'], evaluator_id: 'pm_audit', models: MODELS },
   ],
-  workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['build', 'test'] }],
+  workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['control', 'build', 'test'] }],
 }
 
 // GitHub #31 stage 2: same shape as TWO_TEAMS, but `test` is a review team —
@@ -878,16 +881,25 @@ const pmRepo = (outbox) => {
   return dir
 }
 
-test('a token parked with the controller is still held by its team', () => {
+test('a token escalated to the controller occupies the CONTROL team', () => {
   const occupancy = teamOccupancy(graphOf(TWO_TEAMS), itemsOf(['parked', ESCALATED]))
 
-  // The controller is not a member of any team, so without naming the team the
-  // board cannot place the token — it would print the red "cannot be placed"
-  // banner over work that is parked exactly as designed, and free a WIP slot
-  // that nobody released.
+  // Reversed by D6 (2026-08-08). This asserted the token stayed with `test`,
+  // because the controller was a member of no team and naming one was the only
+  // way to place it at all — otherwise the board printed its red "cannot be
+  // placed" banner over work parked exactly as designed. That worked, and it
+  // meant an escalation cost the PM nothing: the token sat against a delivery
+  // team's WIP while the PM was the one who owed the decision.
+  //
+  // Master's rule is plain Kanban and this is it: work stuck with a team keeps
+  // that team's WIP, and work escalated to the PM holds the PM's until it is
+  // done. `escalated` still carries `to_team` and it is still not decoration —
+  // it is what a `resumed` reads to send the work back — but the token is with
+  // the seat that owes the next move, and that seat is the controller.
   assert.deepEqual(occupancy.orphans, [], 'parked work was reported as unplaceable')
-  assert.equal(occupancy.counts.get('test'), 1)
-  assert.deepEqual(occupancy.held.get('test'), ['parked'])
+  assert.equal(occupancy.counts.get('control'), 1, 'the PM owes a decision, so the PM holds a slot')
+  assert.deepEqual(occupancy.held.get('control'), ['parked'])
+  assert.equal(occupancy.counts.get('test'), 0, 'and the delivery team is free to pull again')
 })
 
 test('the controller saying resume puts the work back with a fresh budget', () => {
@@ -1079,11 +1091,17 @@ test('the board as a whole has a dispatch ceiling, not only each team', () => {
   // concurrent agents.
   const many = {
     project_id: 'p', outer_controller_id: 'pm', outer_controller_model: 'test-model',
-    teams: Array.from({ length: 6 }, (unused, index) => ({
-      team_id: `t${index}`, name: `T${index}`, dispatcher_id: `d${index}`,
-      worker_ids: [`w${index}`], evaluator_id: `e${index}`, models: MODELS,
-    })),
-    workflows: [{ workflow_id: 'feature', name: 'F', route: ['t0', 't1', 't2', 't3', 't4', 't5'] }],
+    teams: [
+      ...Array.from({ length: 6 }, (unused, index) => ({
+        team_id: `t${index}`, name: `T${index}`, dispatcher_id: `d${index}`,
+        worker_ids: [`w${index}`], evaluator_id: `e${index}`, models: MODELS,
+      })),
+      // D6: every graph declares one. It holds no token here — the six delivery
+      // teams are what this test is about — but the graph will not load without
+      // it, and every route enters through it.
+      { team_id: 'control', name: 'Control', dispatcher_id: 'pm_intake', worker_ids: ['pm'], evaluator_id: 'pm_audit', models: MODELS },
+    ],
+    workflows: [{ workflow_id: 'feature', name: 'F', route: ['control', 't0', 't1', 't2', 't3', 't4', 't5'] }],
   }
   const graph = graphOf(many)
   const items = itemsOf(...Array.from({ length: 6 }, (unused, index) => [`tok${index}`, [
@@ -1877,16 +1895,11 @@ test('the runner still dispatches onto a legacy ledger with only a tolerated def
 // with no request to judge unless someone independently authored the file.
 //
 // `controller_team` is derived from the head of every route (workflow-
-// graph.mjs) — the team whose only worker IS `outer_controller_id` — so
-// admission needs a graph that actually declares one; TWO_TEAMS does not.
-const WITH_CONTROLLER = {
-  ...TWO_TEAMS,
-  teams: [
-    { team_id: 'control', name: 'Control', dispatcher_id: 'control_d', worker_ids: ['pm'], evaluator_id: 'control_e', models: MODELS },
-    ...TWO_TEAMS.teams,
-  ],
-  workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['control', 'build', 'test'] }],
-}
+// graph.mjs) — the team whose only worker IS `outer_controller_id`. This used
+// to build its own graph because TWO_TEAMS declared no control team; since D6
+// (2026-08-08) no graph can, so it IS TWO_TEAMS and the alias stays only to
+// keep the tests below reading the way they were written.
+const WITH_CONTROLLER = TWO_TEAMS
 
 test('H2 admission writes the token\'s own request file from its reason', () => {
   const dir = mkdtempSync(join(tmpdir(), 'admit-request-'))
@@ -1925,9 +1938,15 @@ test('H2 a refused admission (controller at WIP) leaves no orphaned request file
     const store = join(dir, '.tmux-teams')
     mkdirSync(join(store, 'work-items'), { recursive: true })
     writeFileSync(join(store, 'graph.json'), JSON.stringify(TWO_TEAMS))
-    // TWO_TEAMS declares no controller_team, so admitWorkItem fails before it
-    // ever reaches the ledger write — exactly the early-refusal path the fix
-    // must not write a request file behind.
+    // This used to get its refusal for free, because TWO_TEAMS declared no
+    // control team and admission failed before reaching the ledger write. Since
+    // D6 no graph can be built that way, so the refusal is now the one this
+    // test was always named for: the control team is WIP 1 and already holds a
+    // token, so the front door is shut. Better anyway — the early-exit path it
+    // used to take is not the path an operator ever hits.
+    writeFileSync(join(store, 'work-items', 'held.jsonl'),
+      `${ledger('held', [{ event: 'opened', agent_id: 'pm_intake', to_team: 'control', reason: 'already at the door' }])
+        .map((entry) => JSON.stringify(entry)).join('\n')}\n`)
     const result = admitWorkItem(dir, {
       work_item: 'tok', workflow: 'feature', reason: 'irrelevant — this must not land on disk',
     }, { actor: 'human:ada' })
@@ -2221,7 +2240,7 @@ test('declaredEffort reads the resolved seat, and effortEnv requests it the way 
     outer_controller_effort: 'max',
     teams: [
       { ...TWO_TEAMS.teams[0], seats: { b_w1: { effort: 'xhigh' } } },
-      TWO_TEAMS.teams[1],
+      ...TWO_TEAMS.teams.slice(1),
     ],
   })
   assert.equal(declaredEffort(graph, 'build', 'b_w1'), 'xhigh')
@@ -2249,7 +2268,7 @@ test('a dispatched worker leg carries its seat effort into the spawned process e
       ...TWO_TEAMS,
       teams: [
         { ...TWO_TEAMS.teams[0], seats: { b_w1: { effort: 'max' } } },
-        TWO_TEAMS.teams[1],
+        ...TWO_TEAMS.teams.slice(1),
       ],
     }
     writeFileSync(join(store, 'graph.json'), JSON.stringify(graph))
@@ -2305,7 +2324,7 @@ const TWO_BUILD_WORKERS = {
   ...TWO_TEAMS,
   teams: [
     { ...TWO_TEAMS.teams[0], worker_ids: ['b_w1', 'b_w2'] },
-    TWO_TEAMS.teams[1],
+    ...TWO_TEAMS.teams.slice(1),
   ],
 }
 
