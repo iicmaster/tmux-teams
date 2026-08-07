@@ -119,6 +119,34 @@ test('a token that is already closed cannot be closed again', () => {
   assert.match(result.detail, /hard terminal/)
 })
 
+test('a human actor has to name a human', () => {
+  // `human:` with nothing after it passes `startsWith` and names nobody. The
+  // record then says a person decided this, with no person attached — the same
+  // unattributed close the hand-written-JSON workaround produced, which is what
+  // this door exists to replace. Found by an outside reviewer reading the diff.
+  for (const actor of ['human:', 'human: ']) {
+    const result = withdrawWorkItem(repoWith(BOUNCING), { work_item: 'tok', reason: 'stop' }, { actor })
+    assert.equal(result.ok, false, `${JSON.stringify(actor)} named nobody and was accepted`)
+    assert.equal(result.code, 'not_a_human')
+  }
+  // And the refusal has to say what is missing, not just that something is.
+  const refused = withdrawWorkItem(repoWith(BOUNCING), { work_item: 'tok', reason: 'stop' },
+    { actor: 'human:' })
+  assert.match(refused.detail, /whose/)
+})
+
+test('the replacement command names the repo it was run against', () => {
+  // It printed the literal placeholder `--repo <repo>` while the repo was the
+  // door's own first argument — an exit the operator still had to finish
+  // assembling. It also carries the token id, which the earlier assertions did
+  // not pin at all, so a regression there would have shipped silently.
+  const repo = repoWith(BOUNCING)
+  const result = withdrawWorkItem(repo, { work_item: 'tok', reason: 'wrong team' }, { actor: 'human:ada' })
+  assert.equal(result.readmit.includes('<repo>'), false, 'the door knows the repo; it must not ask for it')
+  assert.ok(result.readmit.includes(`--repo ${repo}`), result.readmit)
+  assert.ok(result.readmit.includes('--work-item tok-2'), result.readmit)
+})
+
 test('a withdrawal with no reason is refused, because nobody can ask later', () => {
   const result = withdrawWorkItem(repoWith(BOUNCING), { work_item: 'tok', reason: '' }, { actor: 'human:ada' })
   assert.equal(result.ok, false)

@@ -61,7 +61,8 @@ const MAX_LEGS = 15
 // asks a person and holds — which is only an exit because `answer.mjs` exists;
 // before it, a question was a place tokens went to die and the retry was the
 // least-bad option available. `audit_lost` is still READ everywhere it was
-// (`awaitingAudit` below, `kanban.mjs`, `ledger-validate.mjs`); nothing writes
+// (`awaitingAudit` below, `kanban.mjs`, `ledger-validate.mjs` and
+// `dispatch-facts.mjs`'s RELEASING_EVENTS); nothing writes
 // it any more. Removing the word would make every ledger that already carries
 // one permanently unclosable — `unknown_event` is not tolerated.
 const ZOMBIE_SEC = 180   // an assignment with no live process and nothing delivered

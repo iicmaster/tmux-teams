@@ -191,6 +191,14 @@ shape:
   "outer_controller_model": "<model>",
   "teams": [
     {
+      "team_id": "control",
+      "name": "Control",
+      "dispatcher_id": "pm_intake",
+      "worker_ids": ["pm_acme_api"],
+      "evaluator_id": "pm_audit",
+      "models": { "dispatcher": "<model>", "worker": "<model>", "evaluator": "<model>" }
+    },
+    {
       "team_id": "build",
       "name": "Build",
       "dispatcher_id": "build_dispatcher",
@@ -200,10 +208,26 @@ shape:
     }
   ],
   "workflows": [
-    { "workflow_id": "default", "name": "Default delivery", "route": ["build"] }
+    { "workflow_id": "default", "name": "Default delivery", "route": ["control", "build"] }
   ]
 }
 ```
+
+**The control team is not optional and not decoration.** Its ONE worker is the
+seat `outer_controller_id` names — the same seat, written twice — and the
+loader refuses a graph without it (`the outer controller ... is a worker on no
+team`). That refusal exists because a controller belonging to no team places
+nowhere: everything it writes — an escalation, a question at the front door —
+would count against no team's WIP and stop nothing, which is the whole
+mechanism this system runs on. One worker means WIP 1, so the front door holds
+exactly one request at a time and shuts while a person owes an answer.
+
+Every route starts at `control` for the same reason: work enters through the
+front door or it does not enter.
+
+This example declared no control team until 2026-08-08 and would now be
+refused at load — an outside reviewer caught it in the release that made the
+team mandatory, before any operator ran the wizard into a wall.
 
 ### Optional: per-seat overrides and a model palette
 

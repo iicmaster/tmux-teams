@@ -112,64 +112,105 @@ method for this, and the rest of that file is what `graph.html` may draw. It is
 a chapter of `references/loop-system-contract.md` §12 — **the contract is the
 one SSOT** and wins if the two ever disagree.
 
-## Worker dispatch planning gate
+## Model policy for every ACP route
 
-- Before **every new delivery-worker dispatch**—including retry, corrective,
-  implementation, QA, and dogfood work—freeze the final bounded plan after
-  critique/grill/decomposition. The reviewed plan must bind the objective and
-  acceptance-criteria hashes and preselect each step's task ID, dispatch ID,
-  agent ID, model profile, dependency, and unchanged worker-brief hash. Review
-  those exact plan bytes with `party-advise` through the bundled ACP-only
-  three-model gate.
-- Dispatch requires three schema-valid, substantive reviews from three
-  distinct, acknowledged non-primary model families, with AGY mandatory, and a
-  final synthesis of `PASS`. Three reports are required; “2/3” means that the
-  same objection raised by at least two of the three is must-fix, not that two
-  reports are enough.
 - Every tmux-teams AGY route defaults to `gemini-3.6-flash-high`. Gemini 3.1
   variants are prohibited for ACP planning, review, and delivery work; fail
   closed if a configured or acknowledged AGY model is Gemini 3.1, and never
   fall back to it.
-- Any single blocking finding, any must-fix objection, or any mutation of the
-  plan invalidates the review. Resolve it and rerun all three reviewers on the
-  new bytes; never retry a model objection away.
-- Bind the accepted plan input hash, review-receipt digest, plan step ID, and
-  every worker-brief hash into a separate dispatch-ledger record before ACP
-  spawn. Never modify the reviewed brief to add receipt metadata. Fail closed
-  on objective, acceptance-criteria, dependency, worker identity, model
-  profile, plan, or brief drift; missing evidence; replay; model mismatch; or
-  provider unavailability. One accepted plan may authorize multiple workers
-  only when every unchanged brief is listed and hashed in its frozen manifest.
-- A transport or protocol failure may receive one fresh-session retry against
-  the same plan hash. Fewer than three accepted reviews remains visibly
-  blocked; no silent substitution or two-reviewer degradation is allowed.
-- Reviewer and read-only planning lanes are exempt from the delivery-worker
-  gate so the rule cannot recurse into itself; they remain read-only and cannot
-  launch delivery work.
 - Determine agent progress from ACP/protocol/process state. Elapsed time alone
   is never proof that a delivery worker or reviewer is stalled.
-- The sole grandfathered process lineage is task
-  `acp-session-receipt-r3-model-r1`, dispatch
-  `26029f55-12f9-4fc3-9f3e-c6b91add2f52`, ACP session
-  `019f9981-d62b-73b0-9c3d-f91dabc3e310`, and agent
-  `root_liveness_implementer`. Its next retry, correction, resume under a new
-  dispatch ID, or successor must pass this gate.
-- This is a procedural rule for the trusted Project Control agent. Mechanical
-  dispatch enforcement and closed receipt schemas remain separate future work
-  and must not be claimed complete. No implicit environment-variable bypass is
-  permitted; only a later explicit instruction from Master may change this
-  rule before a dispatch.
+- A reviewer or read-only planning lane is read-only and cannot launch delivery
+  work. (Kept from the retired dispatch gate below, because it was never a rule
+  about dispatch.)
+
+## Worker dispatch — the three-model gate is RETIRED (Master, 2026-08-06)
+
+Dispatching a delivery worker no longer requires a frozen bounded plan, bound
+objective/acceptance/brief hashes, a dispatch-ledger record, or three accepted
+reviews. It is gone by owner decision, not by drift.
+
+Read why, because the shape repeats: the gate charged its full price at every
+retry and every corrective dispatch, while the failures worth stopping kept
+arriving at RELEASE time — which is where the weight moves to. See Release flow
+step 2.
+
+Plan review before a dispatch is now a judgement call. Worth it when a change
+crosses domain boundaries or amends the contract; skipped for ordinary work.
+Nothing about this licenses a silent bypass elsewhere: the release gate below is
+not optional, and only a later explicit instruction from Master changes either.
 
 ## Release flow
 
 1. Edit skills under `plugins/tmux-teams/skills/` (this repo IS canonical).
-2. **Send the release to `codex-advisor` for review BEFORE marking the version.**
-   Master's rule, 2026-08-04, and it is unconditional: no version number is
-   stamped on work a second model family has not read. Review the actual diff
+2. **Three model families read the release diff BEFORE the version is marked.**
+   Master's rule, 2026-08-06. It replaces the single-`codex-advisor` rule of
+   2026-08-04 and inherits its reason — no version number is stamped on work a
+   second model family has not read — but one reader was not enough, and the
+   heavier gate that did exist was being spent at dispatch time instead of here.
+   Three substantive reviews from three distinct model families, AGY mandatory.
+   "2/3" means an objection that two of the three raise is must-fix, NOT that
+   two reports are enough. Any blocking finding stops the bump — resolve it and
+   rerun all three on the new bytes; never retry an objection away. Fewer than
+   three accepted reviews leaves the release visibly blocked: no silent
+   substitution, no two-reviewer degradation.
+
+   **HOW you run the panel depends on the machine, and this rule named a tool
+   that cannot run on half of them** (found 2026-08-08, the first time anyone
+   tried it here). `party-advise`'s ACP-only gate —
+   `node <party-mode>/scripts/review-gate.mjs <packet> <abs-target>` — is the
+   preferred path and the stronger one: it sandboxes each lane, hides the target
+   repository, and pins the endpoint every profile routes to. **It is
+   Linux-only.** Every profile declares `osSandbox: 'bwrap'` and
+   `plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs` refuses at
+   the `config` stage unless the platform is
+   Linux AND `/usr/bin/bwrap` exists; README already listed that as a
+   fail-closed requirement, and nothing ever compared the rule against a run.
+   All three lanes refuse together, at `stage: config` with `stderrBytes: 0`,
+   which is exactly the undiagnosable shape the open review-gate issue describes
+   — so read this paragraph before believing your lanes are broken.
+
+   Two further limits worth knowing before you build the packet: the gate caps a
+   prepared packet at **128 KiB** (256 KiB raw), and a release diff will exceed
+   that. Split by MEANING — shipped source in one packet, the tests that guard
+   it in another — and require every part to pass. Do not raise the cap.
+
+   **On macOS, run the same three families through direct ACP**
+   (`plugins/tmux-teams/skills/tmux-teams/scripts/acp-companion.mjs`, one run
+   directory per lane — receipts are not
+   namespaced by lane, so a shared directory makes the second lane try to resume
+   the first one's session). Owner decision, 2026-08-08. The family requirement
+   does not move; the isolation does. Direct ACP gives no sandbox and no
+   endpoint pin, so **record `effective_identity` for EVERY lane, not just AGY**
+   — it is read from that lane's `.tmux-teams/liveness/<task-id>.json`, and on
+   this path it is the only evidence of who actually read the diff. Write the
+   brief to a file and point the lane at it; never paste a long brief.
+
+   **The AGY lane is exempt from `identity_status: matched`, and from nothing
+   else** (Master, 2026-08-07). Measured that day: the `antigravity-acp` adapter
+   rejects EVERY model config value — both `gemini-3.6-flash-high` and the
+   `"gemini-3.6-flash-high Gemini 3.6 Flash (High)"` string it reports for itself
+   — and runs only its own default, which IS `gemini-3.6-flash-high`. Since a
+   model cannot be requested there, it can never be matched. So for AGY only:
+   record the `effective_identity` the run actually reported and accept
+   `unverified`. **We can check afterwards what ran; we cannot bind beforehand
+   what should.** That is weaker than an attestation and it is the reason this
+   exemption names one lane, one field, and one adapter. If a review is accepted
+   from AGY without its reported identity written down, the release is not
+   gated — it is unrecorded.
+
+   The exemption is about MATCHING, not about recording, and the direct-ACP path
+   above widens the recording obligation to every lane for a different reason:
+   there, nothing pins where a lane routed, so its own reported identity is all
+   there is. Two lanes can also share one gateway — `claude-qwen` reaches
+   qwen3.8-max on `--model opus` and deepseek-v4 on `--model sonnet` — so a
+   recorded identity is what tells two families apart on a path that cannot
+   prove them apart.
+
+   Review the actual diff
    that would ship — `git log --oneline <last-tag-or-release-sha>..HEAD` plus
    `git diff <that sha>..HEAD` — not a summary of it, and not the plan that
-   produced it. A blocking finding stops the bump; resolve it and send the new
-   bytes. This exists because every release before it was marked on one model's
+   produced it. This exists because every release before it was marked on one model's
    reading, and the three corrections that mattered most on 2026-08-03 all came
    from the advisor rather than from this room.
 3. Bump the version in all FOUR places — `.claude-plugin/marketplace.json`

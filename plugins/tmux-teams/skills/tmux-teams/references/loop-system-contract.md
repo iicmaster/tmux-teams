@@ -1028,8 +1028,11 @@ somebody who has not replied.
   validator afterwards), when the question carries no id, and when the asking
   seat belongs to no declared team and the token has never been pulled — that
   last one was the outer controller on a graph with no control team, which D6
-  (2026-08-08) removed from existence; the refusal is kept because `answer.mjs`
-  is also called with graphs handed to it directly.
+  (2026-08-08) removed from existence. The refusal is kept anyway, and the
+  honest reason is NOT that some caller hands this function a graph object —
+  it takes a repo path and loads the declaration itself. It is kept because a
+  door that refuses what it cannot place stays correct if D6 is ever relaxed,
+  and because refusing costs one branch while a blank `to_team` costs a token.
 - A `questioned` token that goes unanswered past the answer deadline is closed
   with `abandoned` by the RUNNER (§9), and the controller writes a withdrawal
   notice naming the unanswered questions. This applies whether the question was
@@ -1808,16 +1811,27 @@ Parsing rules, non-negotiable:
   code could write `answered`, so parking on a question was a wedge rather than
   a pause. `answer.mjs` (§4.7) removed that constraint, and D1 governs: a leg
   the transport killed is held, nothing retries by itself, a person unblocks
-  it. Three things bound the hold. The scan reads `currentEntry` and visits only
-  `audit_requested`, so writing the question is itself what stops the asking —
-  a person is never handed a question that is replaced every tick. The question
-  is written only where it can BE somewhere: §6 places a token by its last
-  event's `agent_id`, so on a graph where the controller is a member of no team
-  (still valid — most of this system's history is written against that shape)
-  the token would orphan, hold nobody's WIP and stop nothing, and the old
-  withdrawal happens instead. Where a control team does exist the parked
-  question holds its one slot, and `admit.mjs` refuses admission at the limit:
-  that is the whole stop mechanism, and it is Kanban rather than an invention.
+  it. Two things bound the hold, and a third bound it for one day. The scan
+  reads `currentEntry` and visits only `audit_requested`, so writing the
+  question is itself what stops the asking — a person is never handed a question
+  that is replaced every tick. And the question always has somewhere to BE: §6
+  places a token by its last event's `agent_id`, D6 (§1, 2026-08-08) refuses at
+  LOAD any graph whose controller is a worker on no team, so `teamOf(controller)`
+  always resolves. The parked question holds the control team's one slot and
+  `admit.mjs` refuses admission at the limit: that is the whole stop mechanism,
+  and it is Kanban rather than an invention.
+
+  **Corrected 2026-08-08, and the correction is the lesson.** For one day this
+  paragraph named a THIRD bound — a runtime guard that declined to write a
+  question a control-less graph could not place, and fell back to the old
+  withdrawal — and called that graph "still valid". D6 landed the next day,
+  refused the graph at load, and the guard was deleted as unreachable; §4.2,
+  §4.7 and the AC table were rewritten with it and THIS paragraph was not.
+  Both changes ship in one release, so the contract contradicted itself and its
+  own code in a section labelled non-negotiable. Found by an outside reviewer
+  reading the release diff, not by anyone here. The rule it breaks is §15.1's,
+  and the shape is the one this document keeps paying for: prose that was true
+  when written and never compared against the code again.
   And only POSITIVE evidence narrows the rule: a missing, unreadable,
   or work-bearing snapshot closes exactly as fast as it did before. That
   second default fails OPEN — toward the irreversible terminal — on ambiguity,
@@ -2281,7 +2295,7 @@ ordering semantics phase 1 wrote down and left unenforced).
 | AC106 | §3.5.1 | once as many `work_observed: false` legs have accumulated on the seat since the last resume as the palette has entries, the runner escalates instead of dispatching the first entry a second time, naming the seat, the palette size and the miss count — and its stated reason claims only that, never that no entry ever reached the model (an intervening genuine failure retries the same entry, so one CAN have) | `loop-runner-palette-dispatch.test.mjs` |
 | AC107 | §3.5.1, §4.10, §10 | a palette leg still counts toward `legCeiling` unconditionally, transport-failed or not; the palette's own per-seat cycle bound escalates with legs to spare against that ceiling, not by weakening it | `loop-runner-palette-dispatch.test.mjs` |
 | AC108 | §3.5.1, §4.9 | `worker_hint` still names a seat only; a hinted palette seat resolves its own candidate exactly like a freely-picked one, and its no-palette sibling is unaffected | `loop-runner-palette-dispatch.test.mjs` |
-| AC109 | §3.5.1 | a seat with no palette dispatches with no `candidate` field at all, unchanged by every pre-existing test in `loop-occupancy.test.mjs`, `loop-runner-heartbeat-model.test.mjs`, `loop-runner-decisions.test.mjs`, `loop-runner-busy.test.mjs`, `loop-replay.test.mjs` and `loop-smoke.test.mjs`, none of which needed a line changed | `loop-runner-palette-dispatch.test.mjs` (+ the six files named, unedited) |
+| AC109 | §3.5.1 | a seat with no palette dispatches with no `candidate` field at all. The six files named here (`loop-occupancy`, `loop-runner-heartbeat-model`, `loop-runner-decisions`, `loop-runner-busy`, `loop-replay`, `loop-smoke`) needed no line changed WHEN THIS CLAUSE WAS WRITTEN; D6 has since edited five of them for the mandatory control team, so read that as history rather than as a standing claim about the tree | `loop-runner-palette-dispatch.test.mjs` |
 | AC110 | §3.5.1, §4 | a real `acp-companion.mjs` run writes `assigned` carrying `requested_model` and `adapter`, and the line still satisfies §4's own required fields | `assigned-carries-model.test.mjs` |
 | AC111 | §3.5.1 | a leg that pinned no model records `requested_model: null` — the request, absent, never the adapter's later answer, which at write time has not been given | `assigned-carries-model.test.mjs` |
 | AC112 | §4, §5, §9 | a dead audit leg whose liveness says `work_observed: false` asks a person (`questioned`, `resume_role: audit`) and holds; one that says `true`, or says nothing at all, is still `abandoned` on the same deadline as before | `audit-transport-death.test.mjs` |
@@ -2290,7 +2304,7 @@ ordering semantics phase 1 wrote down and left unenforced).
 | AC115 | §1, §6 | a graph whose outer controller is a worker on no team is REFUSED at load, and so is a graph naming no controller at all; both refusals say how to fix the declaration | `workflow-graph.test.mjs`, `graph-tour.test.mjs`, `controller-team.test.mjs`, `loop-runner-heartbeat-model.test.mjs` |
 | AC116 | §4.2, §6 | an escalated token occupies the CONTROL team's WIP, not the delivery team's; a `resumed` still returns to the team its `to_team` names | `loop-occupancy.test.mjs`, `kanban-board.test.mjs` |
 | AC117 | §4.1, §9 | a person can CLOSE a token (`withdraw.mjs` → `abandoned`, `human:` actor enforced by the door because the validator cannot: the runner writes the same event and signs as itself). A hard terminal, an unknown token and an empty reason are refused; success prints the `admit.mjs` line for a replacement | `withdraw-the-token.test.mjs` |
-| AC113 | §9 | the recorded reason quotes that leg's own `liveness_state`/`termination_reason` rather than a fixed phrase, so two different causes cannot report the same one | `audit-transport-death.test.mjs` |
+| AC118 | §9 | the recorded reason quotes that leg's own `liveness_state`/`termination_reason` rather than a fixed phrase, so two different causes cannot report the same one | `audit-transport-death.test.mjs` |
 
 ### 14.1 Clauses this contract does NOT yet enforce
 
@@ -2684,7 +2698,7 @@ One asymmetry worth stating, because it looks like an oversight and is not:
 not, so `withdraw.mjs` checks the actor itself. The validator cannot: the RUNNER
 writes `abandoned` too (§9's deadline) and signs as itself, so a rule there
 would refuse the clock. Without the door's own check a model could close
-somebody's work while wearing the clock's identity. AC117.
+somebody's work while wearing the clock's identity. AC117 added.
 
 **2026-08-08 — D6: the control team is mandatory, and the stop mechanism is
 real for the first time.** Owner decision, taken with the cost measured first:
@@ -2733,8 +2747,10 @@ through the front door, the intake gate can OBJECT, and an objection parks the
 token on a question only a person can close — so the loop stops, correctly, and
 the wedge check read a working stop as a wedge. The check did not grow an
 exception; the simulation grew a person, calling the real `answer.mjs`. Every
-seed now walks the whole exchange: ask, hold, answer, resume. AC114 rewritten,
-AC115 and AC116 added.
+seed now walks the whole exchange: ask, hold, answer, resume. AC114, AC115
+and AC116 all ADDED — an earlier draft of this line said AC114 was rewritten,
+and the pre-existing AC113 it was inserted above kept its number until an
+outside reviewer found two rows sharing it; that row is now AC118.
 
 **2026-08-07 — the retry that only existed because nobody could answer.**
 Supersedes the transport-death half of the 2026-08-06 entry below; that entry

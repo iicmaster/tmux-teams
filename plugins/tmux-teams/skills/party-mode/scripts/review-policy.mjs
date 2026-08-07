@@ -9,9 +9,11 @@ const ROUTES = Object.freeze({
   // substitution and any second lane failure blocked the release outright. The
   // panel now seats the three lanes that actually answer on this machine, and
   // `deepseek` is the reserve: a different vendor down the same gateway as
-  // `qwen`, which is why it can never REPLACE qwen — `planFallback` re-validates
-  // and the shared endpoint key refuses that swap on its own. Put codex back
-  // when its quota returns.
+  // `qwen`. It CAN replace a failed qwen — that swap leaves [zai, deepseek, agy]
+  // and validates. What it can never do is sit ALONGSIDE qwen, which is why a
+  // failed zai has no cover: whichever of the pair is not seated collides with
+  // the one that is. `planFallback` re-validates and refuses that on its own.
+  // Put codex back when its quota returns.
   claude: Object.freeze({ reviewers: Object.freeze(['agy', 'zai', 'qwen']), reserve: 'deepseek' }),
   kimi: Object.freeze({ reviewers: Object.freeze(['agy', 'codex', 'zai']), reserve: 'claude' }),
   zai: Object.freeze({ reviewers: Object.freeze(['agy', 'codex', 'qwen']), reserve: 'claude' }),

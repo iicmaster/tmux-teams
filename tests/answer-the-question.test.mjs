@@ -131,6 +131,19 @@ test('a model may relay, and may not sign as the person', () => {
   assert.equal(forged.ok, false, 'a model may not answer as itself')
 })
 
+test('an answer with no words is refused, because that text IS the answer', () => {
+  // `reason` is not metadata here: `composeBrief` puts it in front of the seat
+  // that asked, verbatim, as the whole of what the person said. An empty one
+  // resumes the leg with a blank where the decision should be — which is how a
+  // dispatcher gets to ask the same question again on the next tick.
+  // `withdraw.mjs` refused an empty reason from its first commit; this door did
+  // not, and an outside reviewer named the asymmetry.
+  const result = answerQuestion(repoWith(PARKED), { work_item: 'tok', reason: '' },
+    { actor: 'human:ada' })
+  assert.equal(result.ok, false)
+  assert.equal(result.code, 'no_reason')
+})
+
 test('an unknown token is refused rather than created', () => {
   const result = answerQuestion(repoWith(PARKED), { work_item: 'no-such-token', reason: 'x' },
     { actor: 'human:ada' })

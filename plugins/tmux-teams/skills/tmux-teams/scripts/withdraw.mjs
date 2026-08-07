@@ -46,10 +46,14 @@ const fail = (code, detail) => ({ ok: false, code, detail })
  */
 export function withdrawWorkItem(repo, request, options = {}) {
   const actor = String(options.actor || '')
-  if (!actor.startsWith('human:')) {
+  // The name after the colon is checked too: a bare `human:` passes
+  // `startsWith` while naming nobody, and "a person decided this" with no
+  // person attached is the same unattributed close this door replaced.
+  if (!/^human:\S/.test(actor)) {
     return fail('not_a_human',
-      `--actor must be human:<name>, not ${actor || 'unset'} — closing work is a person's decision.`
-      + ' A model relaying what a person said signs human: and names itself with --relayed-by.')
+      `--actor must be human:<name>, not ${actor || 'unset'} — closing work is a person's decision,`
+      + ' and the record has to say whose.'
+      + ' A model relaying what a person said signs human:<that person> and names itself with --relayed-by.')
   }
 
   const graph = readWorkflowGraph(repo)
@@ -86,10 +90,10 @@ export function withdrawWorkItem(repo, request, options = {}) {
   // and a workflow it can: this one's own, which is right for a rework and wrong
   // only when the route itself was the problem — so it is printed as a
   // suggestion to edit, not run for them.
-  return result.ok ? { ...result, readmit: readmitCommand(item) } : result
+  return result.ok ? { ...result, readmit: readmitCommand(item, repo) } : result
 }
 
-const readmitCommand = (item) => 'admit.mjs --repo <repo>'
+const readmitCommand = (item, repo) => `admit.mjs --repo ${repo}`
   + ` --work-item ${item.work_item}-2`
   + ` --workflow ${item.workflow || '<workflow>'}`
   + ' --actor human:<name> --reason "<what the rework has to do differently>"'

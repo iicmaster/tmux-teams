@@ -134,7 +134,9 @@ export const REVIEW_PROFILES = freeze({
     // where a lane routes, not which model answered, and one self-reported
     // identifier is not the evidence a release gate should count a family on.
     // Nothing here needs a new rule — `planFallback` re-runs `validReviewerSet`
-    // after every substitution, so a qwen-for-deepseek swap refuses itself.
+    // after every substitution, so a panel that would seat both refuses itself.
+    // Precisely: deepseek CAN replace a failed qwen (the swap leaves
+    // [zai, deepseek, agy] and validates); what it cannot do is sit beside it.
     reviewMode: 'plan', osSandbox: 'bwrap',
     command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
     adapterPackage: '@agentclientprotocol/claude-agent-acp@0.61.0',

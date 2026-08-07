@@ -43,7 +43,10 @@
 // already the sanctioned aggregate reader before this file existed and
 // remains the only place that decides how a ledger line means what it means;
 // nothing here re-derives that fold. `node scripts/ledger-reader-ratchet.mjs`
-// should report the same 9 known readers, unchanged, after this file exists.
+// should report the same readers after this file exists as before it — this
+// facade adds none. It said "the same 9 known readers" until 2026-08-08 and had
+// been wrong since the day the ratchet reached ten; the count belongs to the
+// tool, which can contradict it, and never to a comment, which cannot.
 //
 // OUTBOX ACCESS: a delivered leg's own text lives at
 // `.mailbox-out/<task_id>` — a convention already read directly by

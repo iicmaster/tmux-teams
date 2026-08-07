@@ -68,6 +68,12 @@ export function answerQuestion(repo, reply, options = {}) {
   // supply them by hand would be asking them to restate what the system knows,
   // and a wrong `question_id` is refused by the validator anyway — so deriving
   // is not a convenience, it is the only way this cannot be got wrong.
+  if (!reply.reason) {
+    return fail('no_reason',
+      'an answer with no words is not an answer — this text reaches the seat that asked,'
+      + ' verbatim, as the whole of what the person said')
+  }
+
   const questionId = current.question_id
   if (!questionId) {
     return fail('question_has_no_id',
