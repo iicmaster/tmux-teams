@@ -144,14 +144,27 @@ test('fallback routes unavailable direct Claude through claude-zai only when all
   assert.match(planFallback(zai, 'codex').reason, /diversity/)
   assert.match(planFallback(zai, 'qwen').reason, /diversity/)
 
+  // The claude route seats [agy, zai, qwen] with `deepseek` in reserve since
+  // 2026-08-08: codex's quota is gone until September, and while it sat on the
+  // panel every release spent the reserve on the very first substitution and had
+  // nothing left for a second failure.
   const claude = createReviewPlan('claude')
-  for (const failed of ['codex', 'qwen']) {
-    const redirected = planFallback(claude, failed)
-    assert.equal(redirected.blocked, false)
-    assert.deepEqual(redirected.reviewers, claude.reviewers.map(id => id === failed ? 'zai' : id))
-    assert.deepEqual(redirected.replaced, { failed, replacement: 'zai' })
-    assert.equal(redirected.reviewers.includes('claude'), false)
-  }
+  const redirected = planFallback(claude, 'qwen')
+  assert.equal(redirected.blocked, false)
+  assert.deepEqual(redirected.reviewers, claude.reviewers.map(id => id === 'qwen' ? 'deepseek' : id))
+  assert.deepEqual(redirected.replaced, { failed: 'qwen', replacement: 'deepseek' })
+  assert.equal(redirected.reviewers.includes('claude'), false)
+
+  // And the seat the reserve CANNOT cover, which is a structural limit worth
+  // pinning rather than discovering during a release. `deepseek` and `qwen` are
+  // two vendors down ONE endpoint through one adapter, so `provenFamilyKey`
+  // gives them the same key and they can never sit together. A zai replacement
+  // therefore has nowhere to come from: whichever of the pair is not already
+  // seated is the only candidate, and it collides with the one that is. So this
+  // route covers a qwen failure and does not cover a zai failure — better than
+  // the codex arrangement it replaced, which covered neither because a dead
+  // lane spent the reserve before any real failure could use it.
+  assert.match(planFallback(claude, 'zai').reason, /diversity/)
   assert.equal(planFallback(openai, 'agy').blocked, true)
   assert.equal(planFallback(openai, 'nope').blocked, true)
 })
@@ -196,11 +209,11 @@ test('two matching fingerprints are must-fix; unique objections remain residual'
 test('two PASS reviews can pass with a unique objection, while a BLOCKED lane blocks the panel', () => {
   const plan = createReviewPlan('claude')
   const result = synthesizeReviews(plan, {
-    agy: { ...pass, verdict: 'OBJECTIONS', findings: [finding()] }, codex: pass, qwen: pass,
+    agy: { ...pass, verdict: 'OBJECTIONS', findings: [finding()] }, zai: pass, qwen: pass,
   })
   assert.equal(result.verdict, 'PASS')
   assert.equal(result.residualObjections.length, 1)
-  assert.equal(synthesizeReviews(plan, { agy: pass, codex: blocked, qwen: pass }).verdict, 'BLOCKED')
+  assert.equal(synthesizeReviews(plan, { agy: pass, zai: blocked, qwen: pass }).verdict, 'BLOCKED')
 })
 
 test('two unrelated objections remain residual PM judgments rather than becoming consensus blockers', () => {

@@ -35,7 +35,7 @@ function freeze(value) {
 // A routed lane reaches its provider through a machine-local settings file the
 // operator owns. Pinning the host here is what keeps `family` honest — see the
 // qwen and zai entries.
-export const ROUTED_PROFILES = new Set(['kimi', 'qwen', 'zai'])
+export const ROUTED_PROFILES = new Set(['deepseek', 'kimi', 'qwen', 'zai'])
 const ZAI_ENDPOINT = freeze({ host: 'api.z.ai', path: '/api/anthropic' })
 const QWEN_ENDPOINT = freeze({ host: 'token-plan.ap-southeast-1.maas.aliyuncs.com', path: '/apps/anthropic' })
 // Master, 2026-08-04: `claude-kimi` reaches a K3 model, `claude` reaches opus —
@@ -115,6 +115,35 @@ export const REVIEW_PROFILES = freeze({
     endpoint: QWEN_ENDPOINT,
     sessionSettings: { availableModels: ['qwen3.8-max-preview'] },
     config: { model: 'qwen3.8-max-preview', mode: 'plan' },
+  },
+  deepseek: {
+    id: 'deepseek', provider: 'qwen', family: 'deepseek', model: 'deepseek-v4-flash-0731',
+    displayModel: 'deepseek/v4-flash-0731',
+    // Same binary and same gateway as the `qwen` lane above — `claude-qwen`
+    // reaches BOTH, because the profile it loads maps the model a caller asks
+    // for onto a vendor: `ANTHROPIC_DEFAULT_OPUS_MODEL: qwen3.8-max`,
+    // `ANTHROPIC_DEFAULT_SONNET_MODEL: deepseek-v4-flash-0731`. Measured rather
+    // than read off the settings file, because the AGY adapter taught this repo
+    // that a configured model can be silently ignored: asked for its identifier,
+    // `--model opus` answered `qwen3.8-max-preview` and `--model sonnet`
+    // answered `deepseek-v4-flash-0731` (2026-08-08).
+    //
+    // It shares `QWEN_ENDPOINT` and the adapter package with `qwen`, so
+    // `provenFamilyKey` gives the two lanes an IDENTICAL key and they can never
+    // sit on one panel. That is deliberate and is left alone: the key proves
+    // where a lane routes, not which model answered, and one self-reported
+    // identifier is not the evidence a release gate should count a family on.
+    // Nothing here needs a new rule — `planFallback` re-runs `validReviewerSet`
+    // after every substitution, so a qwen-for-deepseek swap refuses itself.
+    reviewMode: 'plan', osSandbox: 'bwrap',
+    command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
+    adapterPackage: '@agentclientprotocol/claude-agent-acp@0.61.0',
+    claudeExecutable: 'claude-qwen',
+    settingsRelativePath: '.config/claude-profiles/qwen/settings.json',
+    providerConfigDir: '.config/claude-profiles/qwen',
+    endpoint: QWEN_ENDPOINT,
+    sessionSettings: { availableModels: ['sonnet'] },
+    config: { model: 'sonnet', mode: 'plan' },
   },
   claude: {
     id: 'claude', provider: 'anthropic', family: 'claude', model: 'claude-opus-4-8',

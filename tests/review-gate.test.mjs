@@ -708,6 +708,7 @@ test('canonical availability matrix never launches or prepares direct Claude', a
     gateProfile('zai', 'zai'),
     gateProfile('codex', 'openai'),
     gateProfile('claude', 'claude'),
+    gateProfile('deepseek', 'deepseek'),
   ])
   const blockedCases = [
     ['openai', 'qwen'], ['openai', 'zai'],
@@ -732,7 +733,14 @@ test('canonical availability matrix never launches or prepares direct Claude', a
     assert.equal(envCalls.includes('claude'), false, `${primary}/${failed} prepared direct Claude env`)
   }
 
-  for (const failed of ['codex', 'qwen']) {
+  // The claude route seats [agy, zai, qwen] and reserves `deepseek` (2026-08-08).
+  // Only the qwen seat is coverable: `deepseek` shares one gateway and one
+  // adapter with `qwen`, so a panel seating both counts one proven family as
+  // two, and a zai replacement has nowhere to come from — whichever of that pair
+  // is not already seated collides with the one that is. That limit is asserted
+  // in `review-policy.test.mjs`; what this proves is that the covered case still
+  // never reaches direct Claude.
+  for (const failed of ['qwen']) {
     const calls = []
     const envCalls = []
     const profiles = makeProfiles()
