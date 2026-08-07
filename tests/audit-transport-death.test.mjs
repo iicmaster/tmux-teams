@@ -18,9 +18,15 @@
 //
 // What must stay true is the reason the deadline exists at all. An audit that
 // cannot be abandoned is an audit that can hang forever, which is the failure
-// this branch was built to prevent — so the retry budget is checked FIRST and
-// unconditionally, and every case that is not POSITIVE evidence of a dead
-// transport still closes exactly as fast as it did before.
+// this branch was built to prevent — so every case that is not POSITIVE
+// evidence of a dead transport still closes exactly as fast as it did before.
+//
+// 2026-08-07: the first fix RETRIED such a leg three times and then abandoned
+// it anyway. That was the least-bad option at the time, because the alternative
+// — park it on a question — had no exit: nothing in this system could write
+// `answered`. `answer.mjs` now can, so the retry is gone (D1: a leg the
+// transport killed is held, nothing retries by itself, a person unblocks it).
+// The word `audit_lost` is still read everywhere; nothing writes it.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -95,15 +101,20 @@ const planFor = (custody, livenessFor) => {
   return plans[0]
 }
 
-test('a controller leg the transport killed is retried, not abandoned', () => {
+test('a controller leg the transport killed asks a person, and abandons nothing', () => {
   const plan = planFor([...DELIVERED, requested()], () => deadAtTransport())
 
-  assert.equal(plan.action, 'audit-lost', 'the leg never got a turn; nobody failed to answer')
-  assert.equal(plan.task_id, 'pm-1', 'the retry names the leg it is replacing')
+  assert.equal(plan.action, 'audit-question', 'the leg never got a turn; nobody failed to answer')
+  assert.equal(plan.task_id, 'pm-1', 'the question names the leg that died')
   // The old reason said the controller did not answer. It has to stop saying
   // that, or the ledger keeps blaming a seat that was never asked.
   assert.doesNotMatch(plan.reason, /no outer-controller audit answer/)
-  assert.match(plan.reason, /retry 1 of 3/)
+  // And it must not blame a retry budget either — there is none any more.
+  assert.doesNotMatch(plan.reason, /retry/)
+  // What the person is actually being asked. A question with no question text
+  // reaches the operator as an empty prompt they cannot act on.
+  assert.match(plan.questions, /died at the.*transport/s)
+  assert.match(plan.questions, /still waiting for a verdict/)
 })
 
 test('a controller that got its turn and said nothing is still abandoned', () => {
@@ -137,39 +148,50 @@ test('a caller that supplies no liveness reader gets exactly the old answer', ()
   assert.equal(plan.action, 'expired')
 })
 
-test('the retry budget is a ceiling, not a reprieve', () => {
-  // The whole risk of this change in one test: a lane that dies in sixteen
-  // seconds every single time still ends the token. The count is read off the
-  // ledger, so a runner restart cannot forget it.
-  const spent = [...DELIVERED, requested('pm-1'), lost('pm-1'), requested('pm-2'), lost('pm-2'),
-    requested('pm-3'), lost('pm-3'), requested('pm-4')]
-  const plan = planFor(spent, () => deadAtTransport())
+test('a token already parked on the question is not asked again', () => {
+  // What replaces the retry ceiling. The old risk was a lane dying every time
+  // and burning three legs; the new one is a scan that asks once per tick for
+  // ever, which would be worse — a person cannot answer a question that is
+  // replaced every sixty seconds. Nothing guards this explicitly: the scan
+  // reads `currentEntry` and skips anything that is not `audit_requested`, so
+  // writing the question is itself what stops the asking. Pinned here because
+  // that is a property of a `continue` two hundred lines away.
+  const asked = [...DELIVERED, requested('pm-1'),
+    { event: 'questioned', agent_id: 'pm', task_id: 'pm-1', question_id: 'q-tok-1',
+      resume_role: 'audit', questions: 'the leg died at the transport — read it again?',
+      reason: 'outer-controller leg for task pm-1 died without the model taking a turn' }]
+  const plans = planDispatches(graphOf(), itemsOf(asked), new Set(),
+    { now: PAST_DEADLINE, livenessFor: () => deadAtTransport() })
 
-  assert.equal(plan.action, 'expired', 'three retries spent, and the transport is still dying')
-  assert.match(plan.reason, /3 transport retries already spent/)
+  assert.equal(plans.filter((plan) => plan.action === 'audit-question').length, 0,
+    'the question was already asked; asking again replaces it with an identical one')
 })
 
-test('the last retry inside the budget is still a retry', () => {
-  // The off-by-one that would make the ceiling two: with two spent, the third
-  // is owed. Fails if `>=` and `>` are swapped, which the ceiling test above
-  // cannot see on its own.
-  const plan = planFor([...DELIVERED, requested('pm-1'), lost('pm-1'), requested('pm-2'), lost('pm-2'),
-    requested('pm-3')], () => deadAtTransport())
+test('the question it writes is one answer.mjs can actually close', () => {
+  // The two halves were built a day apart, and each is useless alone: a question
+  // nothing can answer is the wedge this replaced, and a door with nothing to
+  // open is furniture. `answer.mjs` refuses unless the current event is
+  // `questioned` AND it carries a `question_id`, and derives `to_team` from the
+  // asking seat — here the outer controller, which is a member of the control
+  // team. So this asserts the plan carries what that door requires, by name.
+  const plan = planFor([...DELIVERED, requested()], () => deadAtTransport())
 
-  assert.equal(plan.action, 'audit-lost')
-  assert.match(plan.reason, /retry 3 of 3/)
+  assert.match(plan.question_id, /^q-/, 'an answer binds to this id; without it answer.mjs refuses')
+  assert.equal(plan.agent_id, 'pm', 'the asking seat is what answer.mjs resolves the team from')
+  // `resume_role` is not decoration either: `nextStep` returns `held` for
+  // 'audit' and lets `awaitingAudit` re-arm on the `answered`. Any other value
+  // dispatches a team seat for a reply it never asked for.
+  assert.equal(plan.resume_role, 'audit')
 })
 
-test('the budget counts a whole token because a token completes exactly once', () => {
-  // The assumption the counter rests on, pinned rather than assumed. This was
-  // written the other way first — scoped to the newest `completed`, so a
-  // "reworked" token would audit on a fresh budget — and the fixture gate
-  // refused the history outright: §5 gives a closed route no successor that
-  // reopens it. An unscoped count is therefore exact, not sloppy.
-  //
-  // If a reopen event is ever added, this goes red and the counter above is
-  // where to look: an unscoped count would hand a reworked token its
-  // predecessor's spent retries.
+test('a token completes exactly once, which is why one question is enough', () => {
+  // Written for the retry counter this file no longer has — it pinned the
+  // assumption that made an unscoped count exact — and kept because the new
+  // design leans on the same fact harder. Asking once and holding is only safe
+  // while a closed route has no successor that reopens it; a reopen event
+  // would give a token a second delivery and a stale question still current
+  // over it. If one is ever added, this goes red first, and the audit-question
+  // path above is what has to learn about it.
   assert.throws(() => itemsOf([...DELIVERED, { event: 'completed', from_team: 'test' }]),
     /event_after_terminal/, 'a second completed is not a history this system can produce')
 })
@@ -211,11 +233,25 @@ const escalationFor = (custody) => {
 
 test('a token whose audit leg died is put back in front of the controller', () => {
   const fresh = escalationFor([...DELIVERED])
-  const retried = escalationFor([...DELIVERED, requested('pm-1'), lost('pm-1')])
+  // `audit_lost` is no longer WRITTEN, and this is why it is still read: ledgers
+  // written while it was must keep re-arming. Delete it from `awaitingAudit` and
+  // every one of those tokens sits with no reader at all — the exact failure
+  // this whole file exists to prevent, reintroduced by a cleanup.
+  const legacy = escalationFor([...DELIVERED, requested('pm-1'), lost('pm-1')])
+  // The path that replaced it: a person answered, so the controller is owed a
+  // verdict again. Same action, because no new spawn path was added — the whole
+  // mechanism is membership in the set `awaitingAudit` already decides.
+  const answered = escalationFor([...DELIVERED, requested('pm-1'),
+    { event: 'questioned', agent_id: 'pm', task_id: 'pm-1', question_id: 'q-tok-1',
+      resume_role: 'audit', questions: 'read it again?', reason: 'leg died at the transport' },
+    { event: 'answered', to_team: 'control', question_id: 'q-tok-1',
+      actor: 'human:someone', reason: 'yes, read it again' }])
 
   assert.ok(fresh, 'a finished route is read by the controller — the baseline this compares against')
-  assert.ok(retried, 'a token owed a verdict must not sit with no reader at all')
-  assert.equal(retried.action, fresh.action, 'the retry uses the existing path, not a new one')
+  assert.ok(legacy, 'a token owed a verdict must not sit with no reader at all')
+  assert.equal(legacy.action, fresh.action, 'the legacy word uses the existing path, not a new one')
+  assert.ok(answered, 'an answer re-arms the audit — otherwise the question is a wedge')
+  assert.equal(answered.action, fresh.action, 'and it re-arms down the same path')
 })
 
 test('a token the controller already audited is not re-armed', () => {

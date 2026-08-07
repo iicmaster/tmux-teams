@@ -828,7 +828,7 @@ Common fields on every event: `at` (ISO 8601 UTC), `event`, `work_item`,
 | `resumed` | runner (harvest) | `agent_id` = controller, `to_team`, `grant`, `reason` | the controller sent it back with a fresh budget |
 | `completed` | pull-controller | `from_team` | the route finished |
 | `audit_requested` | runner | `agent_id` = controller, `task_id`, `reason` | a finished route flagged for a whole-delivery read |
-| `audit_lost` | runner | `agent_id` = controller, `task_id`, `reason` | the flagged read never happened: that leg died at the transport before the model took a turn (§9) |
+| `audit_lost` | NOTHING since 2026-08-07 | `agent_id` = controller, `task_id`, `reason` | the flagged read never happened: that leg died at the transport before the model took a turn (§9). Still READ everywhere — removing the word makes every ledger already carrying one unclosable |
 | `audited` | runner (harvest) | `agent_id` = controller, `verdict`, `reason` | the controller read the delivery |
 | `abandoned` | runner (harvest) or a human | `reason` | nobody will finish this token |
 | `questioned` | runner (harvest) | `agent_id` = who asked, `questions`, `reason`, `question_id`; optional `resume_role` (§4.7) | the token is parked on a person; still held, still counted against WIP |
@@ -1237,8 +1237,8 @@ One token, keyed on its last event and the role of the actor.
 | `escalated` | no answer yet | held; the runner does not move it |
 | `completed` | not yet audited | flag `audit_requested` and dispatch the controller |
 | `audit_requested` | controller outbox exists | harvest → `audited`, or `questioned` when the answer is not a word this seat reads |
-| `audit_requested` | leg dead past the deadline, liveness says `work_observed: false`, budget remains | `audit_lost`, and the controller is dispatched again (§9) |
-| `audit_lost` | — | re-arms `awaitingAudit` exactly as `completed` does; NOT terminal, and it releases the team like every other audit state (§6) |
+| `audit_requested` | leg dead past the deadline, liveness says `work_observed: false` | `questioned` with `resume_role: audit` — a person is asked and the token holds (§9) |
+| `audit_lost` | — | re-arms `awaitingAudit` exactly as `completed` does; NOT terminal, and it releases the team like every other audit state (§6). Legacy only — `answered` carries this now |
 | `questioned` (pre-`completed`) | before the answer deadline | held; the runner does not dispatch while a person has not replied (§4.7) |
 | `questioned` (pre-`completed`) | past the answer deadline | RUNNER closes it with `abandoned` (§4.7, §9) |
 | `answered` (pre-`completed`) | `resume_role: worker` | dispatch the **worker** (§4.7) |
@@ -1795,11 +1795,16 @@ Parsing rules, non-negotiable:
   `workItem: ''` leg does write, and it says the model never took a turn:
   nobody failed to answer, because nobody was ever asked, and the reason
   recorded for years said otherwise. The runner writes the non-terminal
-  `audit_lost` instead and dispatches the controller again, at most
-  `MAX_AUDIT_TRANSPORT_RETRIES` times for one token, before `abandoned` is
-  reachable at all. Two things bound it. The budget is checked FIRST and
-  unconditionally, so a lane that dies on every single retry still ends the
-  token. And only POSITIVE evidence narrows the rule: a missing, unreadable,
+  `questioned` instead, with `resume_role: audit`, and the token HOLDS: nothing
+  is retried and nothing is withdrawn. Amended 2026-08-07 — this said
+  `audit_lost` and a bounded retry, which was the least-bad option while no
+  code could write `answered`, so parking on a question was a wedge rather than
+  a pause. `answer.mjs` (§4.7) removed that constraint, and D1 governs: a leg
+  the transport killed is held, nothing retries by itself, a person unblocks
+  it. Two things bound the hold. The scan reads `currentEntry` and visits only
+  `audit_requested`, so writing the question is itself what stops the asking —
+  a person is never handed a question that is replaced every tick. And only
+  POSITIVE evidence narrows the rule: a missing, unreadable,
   or work-bearing snapshot closes exactly as fast as it did before. That
   second default fails OPEN — toward the irreversible terminal — on ambiguity,
   which is deliberate and is the price of this paragraph's other guarantee,
@@ -2265,7 +2270,8 @@ ordering semantics phase 1 wrote down and left unenforced).
 | AC109 | §3.5.1 | a seat with no palette dispatches with no `candidate` field at all, unchanged by every pre-existing test in `loop-occupancy.test.mjs`, `loop-runner-heartbeat-model.test.mjs`, `loop-runner-decisions.test.mjs`, `loop-runner-busy.test.mjs`, `loop-replay.test.mjs` and `loop-smoke.test.mjs`, none of which needed a line changed | `loop-runner-palette-dispatch.test.mjs` (+ the six files named, unedited) |
 | AC110 | §3.5.1, §4 | a real `acp-companion.mjs` run writes `assigned` carrying `requested_model` and `adapter`, and the line still satisfies §4's own required fields | `assigned-carries-model.test.mjs` |
 | AC111 | §3.5.1 | a leg that pinned no model records `requested_model: null` — the request, absent, never the adapter's later answer, which at write time has not been given | `assigned-carries-model.test.mjs` |
-| AC112 | §4, §5, §9 | a dead audit leg whose liveness says `work_observed: false` is retried as `audit_lost`, bounded by `MAX_AUDIT_TRANSPORT_RETRIES`; one that says `true`, or says nothing at all, is still `abandoned` on the same deadline as before | `audit-transport-death.test.mjs` |
+| AC112 | §4, §5, §9 | a dead audit leg whose liveness says `work_observed: false` asks a person (`questioned`, `resume_role: audit`) and holds; one that says `true`, or says nothing at all, is still `abandoned` on the same deadline as before | `audit-transport-death.test.mjs` |
+| AC113 | §4.7, §9 | the question that path writes carries everything `answer.mjs` needs to close it — a `question_id`, an `agent_id` that resolves to a team, and `resume_role: audit` — and a token already parked on one is not asked again | `audit-transport-death.test.mjs` |
 | AC113 | §9 | the recorded reason quotes that leg's own `liveness_state`/`termination_reason` rather than a fixed phrase, so two different causes cannot report the same one | `audit-transport-death.test.mjs` |
 
 ### 14.1 Clauses this contract does NOT yet enforce
@@ -2633,6 +2639,46 @@ line.
    editing a file while a worker holds it has already cost one overwrite.
 
 ### Amendment log
+
+**2026-08-07 — the retry that only existed because nobody could answer.**
+Supersedes the transport-death half of the 2026-08-06 entry below; that entry
+stays as the record of what was decided with the options available that day.
+A leg the transport killed was retried up to `MAX_AUDIT_TRANSPORT_RETRIES = 3`
+and then abandoned anyway. The alternative — park it on a question and wait for
+a person — was rejected then for a reason that was true at the time: **no code
+in this system could write `answered`**, so a question was somewhere tokens went
+to die, and a bounded retry destroyed fewer of them than a permanent wedge.
+`answer.mjs` removed that constraint the same week, and D1 governs the design:
+a leg the transport killed is HELD, nothing retries by itself, a person unblocks
+it. The retry, its ceiling and its counter are gone.
+
+The replacement adds no mechanism. The scan writes `questioned` with
+`resume_role: audit`; `nextStep` already returns `held` for that role, and
+`awaitingAudit` already re-arms on `answered` — so a person's reply puts the
+token back in front of the controller down the path a `completed` uses, with no
+new spawn path, exactly as the retry did. Asking is self-limiting for the same
+kind of reason: the scan visits only tokens whose `currentEntry` is
+`audit_requested`, so writing the question is what stops the asking, and nobody
+is handed a question replaced every tick. `resume_role` is carried on the PLAN
+rather than hardcoded at the write, so the plan states what it will record.
+
+`audit_lost` is now written by NOTHING and read by everything that read it
+before — `awaitingAudit`, `ledger-validate.mjs`, `dispatch-facts.mjs`,
+`kanban.mjs`. Deleting the word would turn every ledger written while it was
+produced into `unknown_event`, which is not in `LEGACY_TOLERATED_PROBLEMS`:
+those tokens could never be closed or written to again. The word costs a set
+membership; removing it costs somebody's work.
+
+What did NOT change, and is the reason the deadline exists: a controller that
+GOT its turn and said nothing is still `abandoned` on the same deadline, and
+ambiguity still fails open toward that terminal. Only positive evidence of a
+dead transport takes the new path. AC112 rewritten, AC113 added.
+
+Still open, and it belongs to the WIP work rather than here: the question this
+writes is subject to the ordinary answer deadline, so an unanswered one still
+ends in `abandoned`. The token is no longer destroyed on a FALSE reason, and a
+person now has a window they can actually act in — but "held until a person
+comes" is not yet literally true, and saying so would overclaim.
 
 **2026-08-07 — the half of the exchange nobody could speak: `answer.mjs`.**
 §4.7 has specified `answered` down to the field since it was written, and

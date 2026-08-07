@@ -54,12 +54,16 @@ const MAX_ATTEMPTS = 3   // three failures by one role in one team is a problem 
 // together still let an intake rejection and a review rejection bounce a token
 // between two teams indefinitely — the ceiling has to be on the journey.
 const MAX_LEGS = 15
-// Deliberately NOT `MAX_ATTEMPTS`: that one bounds a role's worker legs inside
-// one team's journey (§10). This bounds how many times the board re-dispatches
-// the outer controller for ONE token whose audit leg keeps dying at the
-// transport before the model gets a turn. Counted off the ledger's own
-// `audit_lost` entries, so a runner restart cannot forget it.
-const MAX_AUDIT_TRANSPORT_RETRIES = 3
+// A transport-killed audit leg used to be retried here, up to
+// `MAX_AUDIT_TRANSPORT_RETRIES = 3`, then abandoned anyway. The retry is gone
+// (2026-08-07, D1): a leg that died before the model took a turn is a problem
+// the system should STOP on, not spend three more legs guessing about. It now
+// asks a person and holds — which is only an exit because `answer.mjs` exists;
+// before it, a question was a place tokens went to die and the retry was the
+// least-bad option available. `audit_lost` is still READ everywhere it was
+// (`awaitingAudit` below, `kanban.mjs`, `ledger-validate.mjs`); nothing writes
+// it any more. Removing the word would make every ledger that already carries
+// one permanently unclosable — `unknown_event` is not tolerated.
 const ZOMBIE_SEC = 180   // an assignment with no live process and nothing delivered
 const PM_COOLDOWN_SEC = 900
 // Every dispatch is a full agent. Team WIP limits bound each column; nothing
@@ -495,8 +499,12 @@ const awaitingAudit = (item) => {
   const current = currentEntry(item.custody).event
   // `audit_lost` re-arms exactly the way `answered` does: the controller owes
   // this token a verdict and has not given one. It is NOT a terminal, and this
-  // is the whole re-dispatch mechanism for GitHub #52 — no new spawn path was
+  // was the whole re-dispatch mechanism for GitHub #52 — no new spawn path was
   // added, only membership in the set this function already decides.
+  // Nothing WRITES `audit_lost` since 2026-08-07 (the transport-death path asks
+  // a person instead), and it stays in this set for the ledgers written while it
+  // did: dropping it would leave those tokens re-arming for nobody. `answered`
+  // is what carries the new path — a person replies, the audit fires again.
   return current === 'completed' || current === 'answered' || current === 'audit_lost'
 }
 
@@ -1433,27 +1441,32 @@ export function planDispatches(graph, items, busy, {
     // second `completed` outright. Anyone adding a reopen event has to scope
     // this count to the newest delivery, or a reworked token is born with its
     // predecessor's retries already spent.
-    const priorRetries = item.custody.filter((entry) => entry.event === 'audit_lost').length
-    const snapshot = priorRetries < MAX_AUDIT_TRANSPORT_RETRIES && livenessFor && last.task_id
-      ? livenessFor(last.task_id)
-      : null
+    const snapshot = livenessFor && last.task_id ? livenessFor(last.task_id) : null
     // Positive evidence only. A missing, unreadable or work-bearing snapshot
     // falls through to exactly today's write — this narrows when `abandoned`
     // fires, it never widens it.
     if (snapshot && snapshot.work_observed === false) {
+      const how = `${snapshot.liveness_state || 'state unknown'}/${snapshot.termination_reason || 'reason unrecorded'}`
       plans.push({
-        action: 'audit-lost', work_item: workItem, agent_id: last.agent_id, task_id: last.task_id,
+        action: 'audit-question', work_item: workItem, agent_id: last.agent_id, task_id: last.task_id,
+        question_id: nextQuestionId(item),
+        // On the plan rather than hardcoded at the write, so the plan states
+        // what it will record and a test can read it without driving a tick.
+        // 'audit' is the only value that holds instead of dispatching a team
+        // seat for a reply that seat never asked for (`nextStep`).
+        resume_role: 'audit',
+        questions: `The outer-controller leg that was to read this finished delivery died at the`
+          + ` transport before the model ever took a turn (${how}). Nothing was retried and nothing`
+          + ` was withdrawn: the delivery is intact and still waiting for a verdict.`
+          + ` Say whether to read it again now, or why not.`,
         reason: `outer-controller leg for task ${last.task_id} died without the model taking a turn`
-          + ` (${snapshot.liveness_state || 'state unknown'}/${snapshot.termination_reason || 'reason unrecorded'})`
-          + ` — retry ${priorRetries + 1} of ${MAX_AUDIT_TRANSPORT_RETRIES}, not a controller that failed to answer`,
+          + ` (${how}) — asking a person rather than withdrawing finished work on a false reason`,
       })
       continue
     }
     const cause = snapshot
       ? ` — leg status ${snapshot.liveness_state || 'unknown'}/${snapshot.termination_reason || 'unrecorded'}`
-      : priorRetries >= MAX_AUDIT_TRANSPORT_RETRIES
-        ? ` — ${priorRetries} transport retr${priorRetries === 1 ? 'y' : 'ies'} already spent`
-        : ''
+      : ''
     plans.push({
       action: 'expired', work_item: workItem, agent_id: last.agent_id,
       reason: `no outer-controller audit answer in ${Math.round(answerDeadlineSec / 60)} minute(s)`
@@ -1961,13 +1974,24 @@ export function tick(repoArg, {
     // The transport took the leg before the model ever ran. Same "runner
     // decided, so the runner signs it" pattern as `lost` above — and the same
     // shape too: non-terminal, the token is owed another controller.
-    if (plan.action === 'audit-lost') {
-      log(`RETRY  ${plan.work_item}: ${plan.reason}`)
+    // The audit leg died at the transport, so nobody has read a delivery that is
+    // sitting there finished. This asked three more times and then withdrew the
+    // work anyway; it now asks a PERSON and holds. `resume_role: 'audit'` is what
+    // makes holding safe rather than a wedge: `nextStep` returns `held` for it,
+    // and the re-arm comes from `awaitingAudit` the moment an `answered` lands —
+    // no new dispatch path, and the notice is written for the same reason
+    // `expired` writes one, since a conversation that ends in silence is
+    // unreadable from the other side.
+    if (plan.action === 'audit-question') {
+      log(`PERSON ${plan.work_item}: ${plan.reason}`)
       if (apply) {
+        writeNotice(repo, plan.work_item, plan.questions, plan.reason)
         record(repo, {
-          at: new Date().toISOString(), event: 'audit_lost', work_item: plan.work_item,
+          at: new Date().toISOString(), event: 'questioned', work_item: plan.work_item,
           workflow: items.get(plan.work_item).workflow || null,
-          agent_id: plan.agent_id, task_id: plan.task_id || null, reason: plan.reason,
+          agent_id: plan.agent_id, task_id: plan.task_id || null,
+          questions: plan.questions, reason: plan.reason,
+          question_id: plan.question_id, resume_role: plan.resume_role,
         })
       }
       continue
