@@ -2876,8 +2876,25 @@ agent.on('exit', (code, signal) => {
 
 let mode = null
 let modeChars = 0
+// A worker can TYPE a terminal marker into its chat, and this function echoes
+// chat verbatim. The companion itself is never fooled — `readTerminalOutbox`
+// reads the FILE and a missing one exits 3 — but its log was, by anyone
+// grepping it. GitHub #59: a worker emitted `TEAM_DONE <id>` in a message with
+// zero tool calls and no outbox file, and a supervising loop grepping this
+// stream reported success. The contract is the file; a stream that can be
+// mistaken for the contract is a lie the contract cannot prevent.
+//
+// So the literal token is broken where it appears in AGENT-authored text. Not
+// hidden — the reader still sees that a marker was typed and that it counted
+// for nothing. `[terminal]` remains the only line stating a verdict, and it is
+// written by this process from the file it read.
+const QUOTED_MARKER = /\bTEAM_(DONE|BLOCKED|FAILED)\b/g
+const quoteMarkers = (text) => text.replace(QUOTED_MARKER,
+  (_, word) => `TEAM~${word} (typed in chat — only the outbox file counts)`)
+
 function say(kind, value, messageId) {
-  const text = redact(value).slice(0, MAX_DISPLAY_TEXT)
+  const spoken = redact(value)
+  const text = (kind === 'say' || kind === 'think' ? quoteMarkers(spoken) : spoken).slice(0, MAX_DISPLAY_TEXT)
   const nextMode = `${kind}:${messageId ?? ''}`
   if (mode !== nextMode) {
     if (mode !== null) process.stdout.write('\n')
