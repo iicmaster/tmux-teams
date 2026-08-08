@@ -482,6 +482,44 @@ async function resolveExecutable(command, env, {
   return source
 }
 
+// #60: no claude-routed lane could run in the sandbox, because
+// `CLAUDE_CODE_EXECUTABLE` was never staged. The sandbox replaces /home with a
+// tmpfs and strips every $HOME entry from PATH, so a `claude-zai` wrapper and
+// the `claude` it execs both vanish and every such lane dies at `session/new`
+// with an empty stderr. On Linux that left AGY as the only survivor, which is
+// the release flow's three-family requirement failing on the one platform where
+// the sandboxed gate is allowed to run at all.
+//
+// The DECISION of what a lane must carry in is separated from the act of
+// carrying it, and exported, because the staging itself sits behind a
+// `platform === 'linux' && /usr/bin/bwrap` gate that no test on this machine can
+// reach. A guard that cannot go red is not a guard — so what is testable here is
+// tested here, and what is not says so.
+//
+// LIMITS, unverified and stated rather than discovered: the wrapper is copied,
+// not bind-mounted, so a wrapper that hard-codes an ABSOLUTE path to the CLI
+// still fails and would need a mount instead. The CLI is staged under the plain
+// name `claude` on the runtime directory that leads PATH, which is what a
+// wrapper resolving it by name will find. Both need a Linux host with bwrap to
+// confirm; this one has neither.
+export function sandboxStagedExecutables(env = {}) {
+  const staged = []
+  if (typeof env.AGY_BIN === 'string') {
+    staged.push({ command: env.AGY_BIN, outputName: 'agy', assignTo: 'AGY_BIN', required: true })
+  }
+  if (typeof env.CLAUDE_CODE_EXECUTABLE === 'string') {
+    staged.push({
+      command: env.CLAUDE_CODE_EXECUTABLE,
+      outputName: basename(env.CLAUDE_CODE_EXECUTABLE),
+      assignTo: 'CLAUDE_CODE_EXECUTABLE',
+      required: true,
+    })
+    // The wrapper execs this; without it the wrapper is staged and still broken.
+    staged.push({ command: 'claude', outputName: 'claude', assignTo: null, required: false })
+  }
+  return staged
+}
+
 async function stageHomeExecutable(command, env, runtimeDirectory, outputName = basename(command), options = {}) {
   const source = await resolveExecutable(command, env, options)
   if (!source) throw new ReviewTransportError('config', `ACP review executable not found: ${basename(command)}`)
@@ -662,11 +700,20 @@ export async function runAcpReview({
         await chmod(stagedBun, 0o700)
       }
       const resolverMount = await prepareSandboxResolver(stateRoot)
-      if (typeof childEnv.AGY_BIN === 'string') {
-        childEnv.AGY_BIN = await stageHomeExecutable(childEnv.AGY_BIN, childEnv, runtimeDirectory, 'agy', {
-          targetRepository: canonicalTargetRepository,
-          expectedName: 'agy',
-        })
+      for (const entry of sandboxStagedExecutables(childEnv)) {
+        try {
+          const destination = await stageHomeExecutable(entry.command, childEnv, runtimeDirectory, entry.outputName, {
+            targetRepository: canonicalTargetRepository,
+            expectedName: entry.outputName,
+          })
+          if (entry.assignTo) childEnv[entry.assignTo] = destination
+        } catch (error) {
+          // A required entry keeps the old behaviour: the lane refuses, loudly.
+          // The optional one is the CLI a wrapper execs, and a profile that does
+          // not route through a wrapper has no CLI to find — refusing there
+          // would break the lanes this change exists to unbreak.
+          if (entry.required) throw error
+        }
       }
       if (providerState.home) {
         const systemPath = String(childEnv.PATH ?? '').split(delimiter)

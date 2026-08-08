@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, writeFileSync, existsSync, readFileSync, symlin
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { runAcpReview, prepareReviewPacket, ReviewTransportError } from '../plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs'
+import { runAcpReview, prepareReviewPacket, ReviewTransportError, sandboxStagedExecutables } from '../plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs'
 import { runReviewGate, runReviewGateCli, LANE_TIMEOUT_DEFAULT_MS, laneTimeoutMs, LANE_FAILURES,
 } from '../plugins/tmux-teams/skills/party-mode/scripts/review-gate.mjs'
 import { REVIEW_PROFILES } from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
@@ -1356,6 +1356,37 @@ test('F7: a deterministic config/policy rejection is not told to re-run and diff
     synthesizeReviews: () => ({ verdict: 'PASS' }),
   }).then(() => null, e => e)
   assert.equal(transient.report.attempts.find(a => a.profile === 'oc').reason, 'lane_failed')
+})
+
+test('a sandboxed lane carries in its claude wrapper AND the CLI that wrapper execs', () => {
+  // #60. The sandbox replaces /home with a tmpfs and strips every $HOME entry
+  // from PATH; `CLAUDE_CODE_EXECUTABLE` was never staged, so every claude-routed
+  // lane died at `session/new` with zero stderr and AGY was the only survivor —
+  // the three-family requirement failing on the only platform where the
+  // sandboxed gate runs.
+  //
+  // This tests the DECISION, not the act. The staging itself sits behind
+  // `platform === 'linux' && /usr/bin/bwrap`, so nothing on this machine can
+  // reach it, and a test written against it would be a guard that cannot go
+  // red. End-to-end confirmation is owed on a Linux host and the issue stays
+  // open until it is given.
+  const claudeLane = sandboxStagedExecutables({ CLAUDE_CODE_EXECUTABLE: '/home/x/.local/bin/claude-zai' })
+  assert.deepEqual(claudeLane.map(e => e.outputName), ['claude-zai', 'claude'],
+    'a wrapper staged without the CLI it execs is still a broken lane')
+  assert.equal(claudeLane[0].assignTo, 'CLAUDE_CODE_EXECUTABLE',
+    'the staged wrapper must be what the adapter is told to run')
+  assert.equal(claudeLane[0].required, true, 'a missing wrapper must refuse the lane, not run the host one')
+  assert.equal(claudeLane[1].required, false,
+    'a profile with no wrapper has no CLI to find, and refusing there breaks the lanes this fixes')
+
+  // AGY still behaves exactly as before — it is the lane that already worked.
+  const agyLane = sandboxStagedExecutables({ AGY_BIN: '/home/x/.local/bin/agy' })
+  assert.deepEqual(agyLane, [{ command: '/home/x/.local/bin/agy', outputName: 'agy', assignTo: 'AGY_BIN', required: true }])
+
+  // A lane declaring both carries both, and nothing is staged for a lane that
+  // declares neither — the ACP command itself is staged separately.
+  assert.equal(sandboxStagedExecutables({}).length, 0)
+  assert.equal(sandboxStagedExecutables({ AGY_BIN: 'a', CLAUDE_CODE_EXECUTABLE: 'b' }).length, 3)
 })
 
 test('lanes that stop at one stage for different reasons are not announced as one shared precondition', async () => {

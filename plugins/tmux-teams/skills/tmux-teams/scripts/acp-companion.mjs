@@ -3092,6 +3092,29 @@ function line(value) {
   console.log(redact(String(value)).slice(0, MAX_DISPLAY_TEXT))
 }
 
+// #62. The same rule as chat, applied to the unit that actually bounds these
+// strings. A tool title, a plan entry and a permission title are chosen by the
+// AGENT and reach the log through `line()`, which composes them into
+// `[tool] …` — so a marker inside one is never alone on a line, and an
+// anchored reader cannot be fooled by it. Measured before it was touched,
+// because the issue said otherwise: `boundedText` already flattens control
+// characters, so even a title carrying newlines came out as
+// `[plan] ✓ a TEAM_DONE probe-task b`.
+//
+// What survives is a PERSON skimming the log and reading a completion marker in
+// a plan tick. So the same distinction chat draws, on the field instead of the
+// line: a field whose whole visible content is a marker is a costume and gets
+// quoted; a field that merely mentions one is documentation and is left alone.
+// Bounded FIRST, then judged — bounding is what collapses a multi-line title to
+// one line, and quoting before it would rewrite a marker that was never going
+// to stand alone.
+const quoteAgentField = (value, fallback = '') => {
+  const text = boundedText(value, fallback)
+  const forgeable = new RegExp(`^[ \\t]*TEAM_(DONE|BLOCKED|FAILED)[ \\t]+${escapeForRegExp(taskId)}[ \\t]*$`)
+  const match = forgeable.exec(visibleForm(text))
+  return match === null ? text : `TEAM~${match[1]} ${taskId} (a label, not a verdict — only the outbox file counts)`
+}
+
 const planMark = { completed: '✓', in_progress: '▶', pending: '◯' }
 function render(update) {
   switch (update?.sessionUpdate) {
@@ -3105,13 +3128,13 @@ function render(update) {
       if (update.content?.type === 'text') say('think', update.content.text, update.messageId)
       break
     case 'tool_call':
-      line(`[tool] ${update.kind ? `${boundedText(update.kind)} · ` : ''}${boundedText(update.title ?? update.toolCallId)}${update.status ? ` (${boundedText(update.status)})` : ''}`)
+      line(`[tool] ${update.kind ? `${boundedText(update.kind)} · ` : ''}${quoteAgentField(update.title ?? update.toolCallId)}${update.status ? ` (${boundedText(update.status)})` : ''}`)
       break
     case 'tool_call_update':
-      if (update.status) line(`[tool] ${boundedText(update.title ?? update.toolCallId)} → ${boundedText(update.status)}`)
+      if (update.status) line(`[tool] ${quoteAgentField(update.title ?? update.toolCallId)} → ${boundedText(update.status)}`)
       break
     case 'plan':
-      line(`[plan] ${(update.entries ?? []).slice(0, MAX_PLAN_ENTRIES).map((entry) => `${planMark[entry.status] ?? '◯'} ${boundedText(entry.content)}`).join('  ')}`)
+      line(`[plan] ${(update.entries ?? []).slice(0, MAX_PLAN_ENTRIES).map((entry) => `${planMark[entry.status] ?? '◯'} ${quoteAgentField(entry.content)}`).join('  ')}`)
       break
     default:
       break
@@ -3167,10 +3190,10 @@ rl.on('line', (rawLine) => {
         ?? options.find((option) => option.kind === 'allow_once')
         ?? options[0]
       if (pick) {
-        line(`[permission] ${boundedText(message.params?.toolCall?.title, '?')} -> ${boundedText(pick.name ?? pick.optionId)}`)
+        line(`[permission] ${quoteAgentField(message.params?.toolCall?.title, '?')} -> ${boundedText(pick.name ?? pick.optionId)}`)
         respond(message.id, { outcome: { outcome: 'selected', optionId: pick.optionId } })
       } else {
-        line(`[permission] ${boundedText(message.params?.toolCall?.title, '?')} -> cancelled (no options)`)
+        line(`[permission] ${quoteAgentField(message.params?.toolCall?.title, '?')} -> cancelled (no options)`)
         respond(message.id, { outcome: { outcome: 'cancelled' } })
       }
     } else {
