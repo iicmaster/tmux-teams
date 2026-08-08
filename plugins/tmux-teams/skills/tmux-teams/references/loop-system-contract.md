@@ -2304,6 +2304,7 @@ ordering semantics phase 1 wrote down and left unenforced).
 | AC115 | §1, §6 | a graph whose outer controller is a worker on no team is REFUSED at load, and so is a graph naming no controller at all; both refusals say how to fix the declaration | `workflow-graph.test.mjs`, `graph-tour.test.mjs`, `controller-team.test.mjs`, `loop-runner-heartbeat-model.test.mjs` |
 | AC116 | §4.2, §6 | an escalated token occupies the CONTROL team's WIP, not the delivery team's; a `resumed` still returns to the team its `to_team` names | `loop-occupancy.test.mjs`, `kanban-board.test.mjs` |
 | AC117 | §4.1, §9 | a person can CLOSE a token (`withdraw.mjs` → `abandoned`, `human:` actor enforced by the door because the validator cannot: the runner writes the same event and signs as itself). A hard terminal, an unknown token and an empty reason are refused; success prints the `admit.mjs` line for a replacement | `withdraw-the-token.test.mjs` |
+| AC120 | §10, §11 | the runner wakes on a change under `.mailbox-out/` or `work-items/` as well as on its interval; a directory it cannot watch degrades to a note and the interval alone; a burst wakes it once; watching decides nothing | `watch-for-work.test.mjs` |
 | AC119 | §1 | a workflow or a team declaring a key the loader does not read is REFUSED, naming the key and listing what may be declared — it is not accepted and silently dropped | `workflow-graph.test.mjs` |
 | AC118 | §9 | the recorded reason quotes that leg's own `liveness_state`/`termination_reason` rather than a fixed phrase, so two different causes cannot report the same one | `audit-transport-death.test.mjs` |
 
@@ -2672,6 +2673,35 @@ line.
    editing a file while a worker holds it has already cost one overwrite.
 
 ### Amendment log
+
+**2026-08-08 — the loop wakes on a change, and the interval stays.** Measured
+first: one `tick` calls `readWorkItems(repo)` THREE times, every interval,
+whether or not anything moved, and the only thing that differs between two quiet
+ticks is whether an outbox file appeared. A finished worker then waited up to a
+full interval to be noticed.
+
+Work arrives exactly three ways, and it is a closed set: a worker writes
+`.mailbox-out/<task>`; a person runs one of the three operator doors, which
+appends to `work-items/`; or a clock fires — the deadlines in §10. The first two
+are a file changing under one of two directories. **The third is why the
+interval stays.** No watcher can see time pass, so the sweep is not an optimisation
+to be removed later; it is the only reader those five deadlines have.
+
+`watchForWork` is therefore additive by construction. It takes an `onChange` and
+returns a closer; it reads no ledger, no graph, and cannot reach a dispatch
+decision — a test asserts that by handing it a repo whose ledger is corrupt and
+watching it succeed anyway. A missed event costs LATENCY, never correctness,
+because the sweep still re-derives everything. A directory that cannot be
+watched — `.mailbox-out` does not exist before the first dispatch — logs a note
+naming the directory and the error code and says the interval still sweeps.
+
+What was NOT done, deliberately: no message queue, no broker, no at-least-once
+delivery. A scratchpad POC proved at-most-once loses work silently about 1 in 60
+and that do-then-acknowledge fixes it — true, and not this system's problem. The
+queue here is an append-only ledger that every tick re-derives from scratch, so
+nothing can be lost; what polling costs is repetition, and repetition is what a
+watcher removes. Reaching for a broker would have added a second source of truth
+about work in flight next to the one §4 already names. AC120.
 
 **2026-08-08 — a declaration the loader does not read is refused, not
 dropped.** A workflow could declare `when`, `on_reject`, `sla_hours` — anything —

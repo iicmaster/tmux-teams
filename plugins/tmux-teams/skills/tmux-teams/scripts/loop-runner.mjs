@@ -28,7 +28,7 @@
 // ledger was stated by the agent whose job it was to state it.
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, watch as fsWatch, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -1348,6 +1348,54 @@ function nextStep(graph, team, item, { busy, busyTasks, nowMs, zombieSec, answer
   return { action: 'skip', reason: `nothing follows ${last.event}` }
 }
 
+// ── waking up ────────────────────────────────────────────────────────────────
+//
+// A tick re-derives everything from the ledger, so polling can never LOSE work
+// — the cost is that three full ledger reads happen every interval whether or
+// not anything moved, and a finished worker waits up to that interval to be
+// noticed. Measured: `tick` calls `readWorkItems(repo)` three times, and the
+// only thing that actually changes between quiet ticks is whether an outbox
+// file appeared.
+//
+// There are exactly three ways work arrives, and two of them are a file
+// changing under one of two directories: a worker writing `.mailbox-out/<task>`
+// and a person running one of the three operator doors, which appends to
+// `work-items/`. The third is a clock — the deadlines in §10 — and no watcher
+// can see that one, which is the reason the interval STAYS.
+//
+// So this is additive and cannot regress: the interval still sweeps, a missed
+// event costs latency rather than correctness, and a directory that cannot be
+// watched (it does not exist yet, or the platform refuses) logs a note and
+// leaves the sweep to do the work alone. No decision logic is touched — what
+// changed is what wakes the loop, never who decides.
+export function watchForWork(repo, { onChange, debounceMs = 250, watch = fsWatch, log: say = () => {} } = {}) {
+  const dirs = [join(repo, '.mailbox-out'), join(repo, '.tmux-teams', 'work-items')]
+  const watchers = []
+  let timer = null
+  // Debounced: a worker writing its outbox, the companion recording liveness
+  // and a ledger append can land within milliseconds of each other, and three
+  // ticks would re-derive the same board three times.
+  const bump = () => {
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(() => { timer = null; onChange() }, debounceMs)
+  }
+  for (const dir of dirs) {
+    try {
+      // `persistent: false` on purpose: the interval is what holds the process
+      // open. A watcher that kept it alive on its own would turn a finished
+      // one-shot run into a process that never exits.
+      watchers.push(watch(dir, { persistent: false }, bump))
+    } catch (error) {
+      say(`note   not watching ${dir} (${error.code || error.message}) — the interval still sweeps`)
+    }
+  }
+  return () => {
+    if (timer) clearTimeout(timer)
+    timer = null
+    for (const watcher of watchers) { try { watcher.close() } catch { /* already gone */ } }
+  }
+}
+
 export function planDispatches(graph, items, busy, {
   now = Date.now(), zombieSec = ZOMBIE_SEC, maxInFlight = MAX_IN_FLIGHT,
   answerDeadlineSec = ANSWER_DEADLINE_SEC,
@@ -2218,6 +2266,19 @@ if (process.argv[1]?.endsWith('loop-runner.mjs')) {
   if (!once()) process.exit(1)
   if (intervalSec > 0) {
     log(`watching ${repo} every ${intervalSec}s — ctrl-c to stop`)
-    setInterval(once, intervalSec * 1000)
+    // The interval is the backstop and the clock-driven deadlines' only reader;
+    // the watcher is what removes the wait between a worker finishing and the
+    // board noticing. Restarting the timer after a woken tick keeps the sweep
+    // measured from the last RUN rather than from process start — otherwise a
+    // busy repo would still sweep on the old cadence, doing the work twice.
+    let timer = setInterval(once, intervalSec * 1000)
+    watchForWork(repo, {
+      log,
+      onChange: () => {
+        clearInterval(timer)
+        once()
+        timer = setInterval(once, intervalSec * 1000)
+      },
+    })
   }
 }
