@@ -105,6 +105,39 @@ test('stopping closes every watcher and cancels a pending wake', async () => {
   for (const entry of fake.opened) assert.equal(entry.closed, true, `${entry.dir} was left open`)
 })
 
+test('the two REAL write patterns this system uses both wake it', async () => {
+  // The stub above proves the debounce and the degradation; it cannot prove
+  // that `fs.watch` fires for the writes this system actually performs. Two
+  // patterns matter and neither is a plain overwrite: `ledger-writer.mjs:415`
+  // appends in place with `appendFileSync`, and the same module writes some
+  // files by rename. A watcher that missed either would leave one of the three
+  // event sources silently dead — the interval would still sweep, so nothing
+  // would break, and nobody would ever notice the latency had not improved.
+  const repo = repoWith()
+  const items = join(repo, '.tmux-teams', 'work-items')
+  writeFileSync(join(items, 'tok.jsonl'), '{"event":"opened"}\n')
+
+  const woke = []
+  const stop = watchForWork(repo, { onChange: () => woke.push(Date.now()), debounceMs: 30 })
+  try {
+    const { appendFileSync, renameSync } = await import('node:fs')
+    appendFileSync(join(items, 'tok.jsonl'), '{"event":"answered"}\n')
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    assert.ok(woke.length > 0, 'an in-place ledger append did not wake the loop')
+
+    const before = woke.length
+    writeFileSync(join(items, '.next.tmp'), '{"event":"withdrawn"}\n')
+    renameSync(join(items, '.next.tmp'), join(items, 'next.jsonl'))
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    assert.ok(woke.length > before, 'an atomic rename into the ledger directory did not wake the loop')
+
+    const beforeOutbox = woke.length
+    writeFileSync(join(repo, '.mailbox-out', 'task-1'), 'TEAM_DONE\n')
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    assert.ok(woke.length > beforeOutbox, 'a worker writing its outbox did not wake the loop')
+  } finally { stop() }
+})
+
 test('watching is additive — it decides nothing', () => {
   // The whole safety argument in one assertion. `watchForWork` is handed an
   // `onChange` and hands back a closer; it never reads the ledger, never reads
