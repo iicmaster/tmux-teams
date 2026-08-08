@@ -2932,7 +2932,11 @@ let modeChars = 0
 // `references/teammates-messaging.md` in the same tree, and was the only thing
 // that made forging this stream worth anything: six review rounds were spent
 // defending a witness we had appointed ourselves. Do not restore it, and do not
-// add a machine reader — `tests/plugin-structure.test.mjs` refuses one.
+// add a machine reader. `tests/plugin-structure.test.mjs` refuses the two
+// TEXTUAL SHAPES one needs — the token as a regex, or as a quoted string to
+// search for — which is a tripwire across the shipped tree, not a proof of
+// absence: `line.endsWith('] done')` would walk past it. What holds is this
+// paragraph plus AC130; the test is what makes forgetting them expensive.
 // Only a line that could be MISTAKEN for the contract is quoted — a marker plus
 // this run's own task id, alone on its line. An agent explaining the rule, or
 // reviewing this very file, writes `TEAM_DONE` constantly and none of that can
