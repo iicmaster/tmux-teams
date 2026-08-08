@@ -59,7 +59,10 @@ test('marketplace and plugin manifests agree', () => {
   assert.ok(readmeVersion, 'README.md must state "Current release: **<version>**"')
   assert.equal(readmeVersion[1], RELEASE_VERSION, 'README.md states a different release than the manifests')
 
-  // The FIFTH place, added 2026-08-08 with the vendor-neutral manifest. Every
+  // The FIFTH FILE and the SIXTH version occurrence — the counts differ because
+  // marketplace.json carries it twice, and this comment said "the FIFTH place"
+  // while the release instructions were being corrected for that exact
+  // conflation. Added 2026-08-08 with the vendor-neutral manifest. Every
   // time a place was added it was found by a reader rather than by the flow,
   // so this one arrives WITH its guard instead of waiting for the next release
   // to notice. The Agent Plugins spec sets `additionalProperties: false` and
@@ -83,18 +86,31 @@ test('marketplace and plugin manifests agree', () => {
   for (const key of ['description', 'homepage', 'repository', 'license']) {
     if (key in portable) assert.equal(typeof portable[key], 'string', `${key} must be a string`)
   }
+  // Read off the published schema on 2026-08-08, after a release reviewer said
+  // this accepted `author: "IIC Master"` while the spec does not: `author` is an
+  // OBJECT — never a string — with `additionalProperties: false` over exactly
+  // name, email and url. The looser check here was written from memory of how
+  // npm spells it, and a manifest this gate passes and a schema-validating
+  // client rejects is the same silent wrongness the guard exists to stop.
   if ('author' in portable) {
-    assert.ok(typeof portable.author === 'string' || isPlainObject(portable.author),
-      'author must be a string or an object, never an array')
-    if (isPlainObject(portable.author)) {
-      assert.equal(typeof portable.author.name, 'string', 'an author object states a name')
+    assert.ok(isPlainObject(portable.author), 'author must be an object — the schema does not accept a string')
+    for (const key of Object.keys(portable.author)) {
+      assert.ok(['name', 'email', 'url'].includes(key), `author.${key} is not in the schema, which closes its keys`)
+      assert.equal(typeof portable.author[key], 'string', `author.${key} must be a string`)
     }
   }
   if ('keywords' in portable) {
     assert.ok(Array.isArray(portable.keywords), 'keywords must be an array')
     for (const keyword of portable.keywords) assert.equal(typeof keyword, 'string', 'every keyword is a string')
   }
-  if ('extensions' in portable) assert.ok(isPlainObject(portable.extensions), 'extensions must be an object')
+  // `additionalProperties: {type: 'object'}` — the container AND every value.
+  // Checking only the container let `extensions: { 'org.example': [] }` pass.
+  if ('extensions' in portable) {
+    assert.ok(isPlainObject(portable.extensions), 'extensions must be an object')
+    for (const [namespace, value] of Object.entries(portable.extensions)) {
+      assert.ok(isPlainObject(value), `extensions["${namespace}"] must be an object`)
+    }
+  }
 })
 
 test('Stage 1 field-evidence files and documentation links are wired', () => {
@@ -465,9 +481,29 @@ test('every shipped module parses', () => {
 // is half the fix; this is the half that holds. A writer emits the token inside
 // a template literal, so a reader is what these two patterns describe: the
 // token as a regex, or as a quoted string to search for.
+// A guard about CODE must not read PROSE. Every comment in the companion
+// naming the log line writes it as `` `[terminal]` `` in markdown, which is a
+// template literal to a regex and nothing at all to a runtime — the third
+// pattern below went red on the very comments that explain why it exists.
+// Blunt on purpose: block comments go, and a `//` that is not part of `://`
+// takes the rest of its line. It can therefore drop code that shares a line
+// with a trailing comment, which loses a reader rather than inventing one —
+// the safe direction for a tripwire, and stated here rather than discovered.
+const withoutComments = (source) => source
+  .replace(/\/\*[\s\S]*?\*\//g, ' ')
+  .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+
 const TERMINAL_LINE_READER = [
   { pattern: /\\\[terminal\\\]/, shape: 'a regex matching the log line' },
   { pattern: /['"]\[terminal\]/, shape: 'the log line as a quoted string' },
+  // The third shape, and the most ordinary JS of the three: a template literal.
+  // Two of three release lanes blocked on its absence, and one of them had said
+  // so a round earlier as a non-blocking note that went unactioned. It cannot
+  // simply add a backtick to the class above, because the companion WRITES the
+  // line with `` `[terminal] ${result.terminal}` `` — so this matches only a
+  // template whose whole content is the token and any literal text, with no
+  // interpolation: a reader's `` `[terminal]` ``, never the writer's.
+  { pattern: /`\[terminal\][^`$]*`/, shape: 'the log line as a template literal' },
 ]
 
 test('nothing in the shipped tree reads the companion log for a verdict', () => {
@@ -475,7 +511,7 @@ test('nothing in the shipped tree reads the companion log for a verdict', () => 
   assert.ok(files.length >= 20, `only ${files.length} shipped modules found — the walk is not walking`)
   const found = []
   for (const file of files) {
-    const source = readFileSync(file, 'utf8')
+    const source = withoutComments(readFileSync(file, 'utf8'))
     for (const { pattern, shape } of TERMINAL_LINE_READER) {
       if (pattern.test(source)) found.push(`${file.slice(PLUGIN.length + 1)}: ${shape}`)
     }

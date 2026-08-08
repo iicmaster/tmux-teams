@@ -12,10 +12,26 @@
 // that a marker was typed and that it counted for nothing.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+// Every ambient `ACP_*` is dropped, whatever it is. A stub agent answers
+// initialize, session/new and session/prompt and nothing else, so an inherited
+// `ACP_MODEL` — set on any machine that runs the ACP review lanes — makes the
+// companion demand a config option the stub cannot advertise and the run dies
+// with `[fatal] ACP session response did not advertise ACP config option
+// model`. Measured by a release reviewer: `ACP_MODEL=opus node --test` was
+// pass 789 / fail 12 while a clean env was 801 / 0. Same class as the test that
+// read the author's dotfiles and kept CI red for two releases; naming one
+// variable would have left `ACP_REASONING_EFFORT` for next time.
+const hermeticEnv = (extra) => {
+  const env = { ...process.env, ...extra }
+  for (const key of Object.keys(env)) if (key.startsWith('ACP_') && !(key in extra)) delete env[key]
+  return env
+}
 
 const COMPANION = new URL('../plugins/tmux-teams/skills/tmux-teams/scripts/acp-companion.mjs', import.meta.url).pathname
 
@@ -73,7 +89,7 @@ const runWithOutbox = (body) => {
   mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
   writeFileSync(join(dir, 'stub.mjs'), OUTBOX_STUB(body))
   writeFileSync(join(dir, 'brief.md'), 'do the thing\n')
-  const env = { ...process.env, MOCK_REPO: dir, ACP_CMD: `${process.execPath} ${join(dir, 'stub.mjs')}` }
+  const env = hermeticEnv({ MOCK_REPO: dir, ACP_CMD: `${process.execPath} ${join(dir, 'stub.mjs')}` })
   try {
     return { status: 0, out: execFileSync(process.execPath,
       [COMPANION, 'claude', dir, 'stub-task', join(dir, 'brief.md'), '30'], { env, encoding: 'utf8' }) }
@@ -143,7 +159,7 @@ const runWithChunks = (pieces, kind = 'agent_message_chunk') => {
   mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
   writeFileSync(join(dir, 'stub.mjs'), CHUNK_STUB(pieces, kind))
   writeFileSync(join(dir, 'brief.md'), 'do the thing\n')
-  const env = { ...process.env, ACP_CMD: `${process.execPath} ${join(dir, 'stub.mjs')}` }
+  const env = hermeticEnv({ ACP_CMD: `${process.execPath} ${join(dir, 'stub.mjs')}` })
   try {
     return { status: 0, out: execFileSync(process.execPath,
       [COMPANION, 'claude', dir, 'stub-task', join(dir, 'brief.md'), '30'], { env, encoding: 'utf8' }) }
@@ -158,7 +174,7 @@ const runWithChat = (chatText) => {
   writeFileSync(join(dir, 'stub.mjs'), STUB.replace(
     "'Everything is finished. TEAM_DONE stub-task'", JSON.stringify(chatText)))
   writeFileSync(join(dir, 'brief.md'), 'do the thing\n')
-  const env = { ...process.env, ACP_CMD: `${process.execPath} ${join(dir, 'stub.mjs')}` }
+  const env = hermeticEnv({ ACP_CMD: `${process.execPath} ${join(dir, 'stub.mjs')}` })
   try {
     return { status: 0, out: execFileSync(process.execPath,
       [COMPANION, 'claude', dir, 'stub-task', join(dir, 'brief.md'), '30'], { env, encoding: 'utf8' }) }
@@ -174,7 +190,7 @@ const runStub = () => {
   writeFileSync(join(dir, 'brief.md'), 'do the thing\n')
   try {
     const out = execFileSync(process.execPath, [COMPANION, 'claude', dir, 'stub-task', join(dir, 'brief.md'), '30'],
-      { env: { ...process.env, ACP_CMD: `${process.execPath} ${join(dir, 'stub.mjs')}` }, encoding: 'utf8' })
+      { env: hermeticEnv({ ACP_CMD: `${process.execPath} ${join(dir, 'stub.mjs')}` }), encoding: 'utf8' })
     return { status: 0, out }
   } catch (error) {
     return { status: error.status, out: `${error.stdout ?? ''}${error.stderr ?? ''}` }
@@ -295,6 +311,18 @@ test('a marker wearing control sequences or invisible characters is still not fo
     'a colon-delimited SGR': `All finished.\n${ESC}[38:2::255:0:0mTEAM_DONE stub-task\n`,
     'a combining grapheme joiner': 'All finished.\nTEAM_DONE stub-task\u034f\n',
     'a variation selector': 'All finished.\nTEAM_DONE stub-task\ufe0f\n',
+    // Round 8, codex. Every costume above is CSI, and so was the fix: `ESC ]`
+    // fell through to the one-character fallback, which ate the introducer and
+    // left `0;titleTEAM_DONE stub-task` — junk to the matcher, while a terminal
+    // swallowed the whole title sequence and drew a clean marker. Both
+    // terminators, because a family named by one of them is half a family.
+    'an OSC title terminated by BEL': `All finished.\n${ESC}]0;window title\u0007TEAM_DONE stub-task\n`,
+    'an OSC title terminated by ST': `All finished.\n${ESC}]0;window title${ESC}\\TEAM_DONE stub-task\n`,
+    // The rest of the string-sequence family, so the next one is not a discovery.
+    'a DCS string': `All finished.\n${ESC}Pq#0;2;0;0;0\u0007TEAM_DONE stub-task\n`,
+    'an APC string': `All finished.\n${ESC}_Gf=100\u0007TEAM_DONE stub-task\n`,
+    'a PM string': `All finished.\n${ESC}^private\u0007TEAM_DONE stub-task\n`,
+    'an SOS string': `All finished.\n${ESC}Xstart of string\u0007TEAM_DONE stub-task\n`,
   }
   for (const [what, text] of Object.entries(cases)) {
     const { out } = runWithChunks([text])

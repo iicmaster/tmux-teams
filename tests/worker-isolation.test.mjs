@@ -16,10 +16,26 @@
 // did not fire with the variable set.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+// Every ambient `ACP_*` is dropped, whatever it is. A stub agent answers
+// initialize, session/new and session/prompt and nothing else, so an inherited
+// `ACP_MODEL` — set on any machine that runs the ACP review lanes — makes the
+// companion demand a config option the stub cannot advertise and the run dies
+// with `[fatal] ACP session response did not advertise ACP config option
+// model`. Measured by a release reviewer: `ACP_MODEL=opus node --test` was
+// pass 789 / fail 12 while a clean env was 801 / 0. Same class as the test that
+// read the author's dotfiles and kept CI red for two releases; naming one
+// variable would have left `ACP_REASONING_EFFORT` for next time.
+const hermeticEnv = (extra) => {
+  const env = { ...process.env, ...extra }
+  for (const key of Object.keys(env)) if (key.startsWith('ACP_') && !(key in extra)) delete env[key]
+  return env
+}
 
 const COMPANION = new URL('../plugins/tmux-teams/skills/tmux-teams/scripts/acp-companion.mjs', import.meta.url).pathname
 
@@ -59,7 +75,7 @@ const runLane = (extraEnv = {}) => {
   mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
   writeFileSync(join(dir, 'stub.mjs'), STUB)
   writeFileSync(join(dir, 'brief.md'), 'build the thing\n')
-  const env = { ...process.env, MOCK_REPO: dir, ACP_CMD: `${process.execPath} ${join(dir, 'stub.mjs')}`, ...extraEnv }
+  const env = hermeticEnv({ MOCK_REPO: dir, ACP_CMD: `${process.execPath} ${join(dir, 'stub.mjs')}`, ...extraEnv })
   delete env.CLAUDE_CODE_SIMPLE
   Object.assign(env, extraEnv)
   const out = execFileSync(process.execPath, [COMPANION, 'claude', dir, 'iso-task', join(dir, 'brief.md'), '30'],

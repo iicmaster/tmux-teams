@@ -1358,6 +1358,55 @@ test('F7: a deterministic config/policy rejection is not told to re-run and diff
   assert.equal(transient.report.attempts.find(a => a.profile === 'oc').reason, 'lane_failed')
 })
 
+test('lanes that stop at one stage for different reasons are not announced as one shared precondition', async () => {
+  // Round 8, codex. #51 taught the gate to say "one missing thing" when every
+  // lane died at the same deterministic stage — and it said it whether or not
+  // the lanes agreed. A missing review executable, an absent bwrap and an
+  // unacknowledged ACP setting all stop at `config`; the operator was told to
+  // look for one precondition behind three unrelated faults.
+  //
+  // `detail` is what discriminates, not `reason`: `reason` is derived from the
+  // stage, so every deterministic-stage failure is `lane_rejected` and it can
+  // never disagree when the stage agrees. A guard written on `reason` here
+  // could not have gone red.
+  // A REAL packet file, because the CLI opens it before it ever calls `gate` —
+  // the first version of this test passed a bare name, died at ENOENT, and
+  // asserted against a sentence the code under test never produced.
+  const packetPath = join(mkdtempSync(join(tmpdir(), 'gate-cause-')), 'packet.json')
+  writeFileSync(packetPath, JSON.stringify({ objective: 'x', acceptance: ['y'], brief: 'z' }))
+  const stderrFor = async (attempts) => {
+    const lines = []
+    await runReviewGateCli([packetPath, '/abs/target'], {
+      gate: async () => { throw Object.assign(new Error('blocked'), { report: { attempts } }) },
+      stdout: { write: () => {} },
+      stderr: { write: (line) => lines.push(line) },
+    })
+    return lines.join('')
+  }
+  const lane = (profile, detail) => ({ status: 'failed', profile, stage: 'config', reason: 'lane_rejected', detail })
+
+  const differing = await stderrFor([
+    lane('kimi', 'no review executable on PATH'),
+    lane('zai', 'bubblewrap is required for the ACP review sandbox'),
+    lane('agy', 'the configured model was never acknowledged'),
+  ])
+  assert.match(differing, /3 different reasons/, `three unrelated faults were not called out as such:\n${differing}`)
+  assert.doesNotMatch(differing, /one shared precondition, not one fault/,
+    `the gate still claimed one shared precondition over three causes:\n${differing}`)
+  // The per-lane sentences are what the operator acts on, so they must survive.
+  for (const cause of ['no review executable on PATH', 'bubblewrap is required', 'never acknowledged']) {
+    assert.ok(differing.includes(cause), `${cause} never reached the operator:\n${differing}`)
+  }
+
+  const shared = await stderrFor([
+    lane('kimi', 'bubblewrap is required for the ACP review sandbox'),
+    lane('zai', 'bubblewrap is required for the ACP review sandbox'),
+    lane('agy', 'bubblewrap is required for the ACP review sandbox'),
+  ])
+  assert.match(shared, /one shared precondition, not one fault per profile/,
+    `the #51 sentence stopped being said when it was true:\n${shared}`)
+})
+
 test('F7: a throwing fallback planner or synthesizer still leaves a structured report, not empty stdout', async () => {
   // These are the two exported dependency-injection seams the advisor found
   // reaching the CLI with no `error.report` when they throw instead of

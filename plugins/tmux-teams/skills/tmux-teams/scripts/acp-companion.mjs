@@ -2969,7 +2969,19 @@ let modeChars = 0
 // only `ESC[` and left `38:2::255:0:0m` sitting in front of the marker, so the
 // matcher saw junk while a terminal and every real CSI stripper saw a clean
 // coloured marker. Reproduced against the real companion by a reviewer.
-const ANSI_OR_CONTROL = /\u001b\[[0-9:;<=>?]*[ -/]*[@-~]|\u001b[@-Z\\-_]|\u001b.|[\u0000-\u0008\u000b-\u001f\u007f]/g
+// STRING sequences FIRST, and the order is the fix. `ESC ]` matched the
+// single-character fallback further down, which ate the introducer and left the
+// payload: `ESC ]0;title BEL TEAM_DONE <id>` became `0;titleTEAM_DONE <id>`,
+// missed the anchor and went out raw — while a terminal swallowed the whole
+// title sequence and drew a clean standalone marker. The round-5 CSI bypass
+// again, in the one family of sequences nobody had counted. AC127 said "control
+// sequences"; it covered CSI.
+//
+// OSC (`]`), DCS (`P`), SOS (`X`), PM (`^`) and APC (`_`) all carry a payload
+// and all end at BEL or ST (`ESC \`) — named as the whole family so the next
+// one is not a fresh discovery. An unterminated one runs to end of line, which
+// is what a terminal does with it too.
+const ANSI_OR_CONTROL = /\u001b[\]PX^_][\s\S]*?(?:\u0007|\u001b\\|$)|\u001b\[[0-9:;<=>?]*[ -/]*[@-~]|\u001b[@-Z\\-_]|\u001b.|[\u0000-\u0008\u000b-\u001f\u007f]/g
 
 // Characters that occupy no width — asked of UNICODE, not of a list we wrote.
 //

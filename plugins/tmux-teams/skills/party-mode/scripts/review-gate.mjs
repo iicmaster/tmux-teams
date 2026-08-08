@@ -613,11 +613,26 @@ export async function runReviewGateCli([packetPath, targetRepository] = [], {
     // profile bugs — it is one precondition. Saying so once, before repeating
     // per-lane advice three times, is what turns "three broken profiles" back
     // into "one missing thing" (GitHub #51).
+    // The STAGE alone does not establish a shared cause, and saying it did was
+    // its own kind of lie: a missing review executable, an absent bwrap and an
+    // unacknowledged ACP setting all stop at `config`, and the gate announced
+    // one precondition over three unrelated faults.
+    //
+    // `reason` cannot settle it either, and that is worth writing down because
+    // it was the obvious fix and it is a no-op: above, `reason` is DERIVED from
+    // the stage — every deterministic stage is `lane_rejected` — so it can never
+    // disagree when the stage agrees. `detail` is the thrown error's own
+    // sentence and the only field that actually varies with the cause, which is
+    // the same reason #51 made it a report line in the first place.
     const failed = (error?.report?.attempts ?? []).filter((record) => record.status === 'failed')
     const stages = new Set(failed.map((record) => record.stage))
+    const causes = new Set(failed.map((record) => record.detail ?? record.reason))
     if (failed.length > 1 && stages.size === 1 && DETERMINISTIC_LANE_STAGES.has([...stages][0])) {
-      stderr.write(`review-gate: all ${failed.length} lanes stopped at the same ${[...stages][0]} stage —`
-        + ' that is one shared precondition, not one fault per profile\n')
+      stderr.write(causes.size === 1
+        ? `review-gate: all ${failed.length} lanes stopped at the same ${[...stages][0]} stage saying the same`
+          + ' thing — that is one shared precondition, not one fault per profile\n'
+        : `review-gate: all ${failed.length} lanes stopped at the ${[...stages][0]} stage, but for`
+          + ` ${causes.size} different reasons — read every line below, this is NOT one shared precondition\n`)
     }
     for (const record of failed) {
       // `detail` is the thrown error's own sentence and the only line that ever

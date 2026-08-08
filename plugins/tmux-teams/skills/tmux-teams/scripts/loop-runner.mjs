@@ -28,7 +28,7 @@
 // ledger was stated by the agent whose job it was to state it.
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, watch as fsWatch, writeFileSync } from 'node:fs'
+import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, watch as fsWatch, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -1941,13 +1941,25 @@ function noticeWasRead(repo, workItem) {
   } catch { return false }
 }
 
+// O_NOFOLLOW, because `noticeWasRead` above refuses a symlink with `lstatSync`
+// and this used to follow one. The write succeeded through the link, the mark
+// returned true, the receipt was never readable, and the unchanged-trigger
+// brake suppressed that withdrawal FOR EVER — the exact permanent-loss path
+// AC124 says is fixed. A writer and a reader disagreeing about what counts as
+// a file is the whole bug. An `lstat` before the write would leave the race
+// open between the two calls; the kernel refusing the open does not.
 function markNoticeRead(repo, workItem) {
+  let fd = null
   try {
     mkdirSync(join(repo, '.tmux-teams', RECEIPTS_DIR), { recursive: true })
-    writeFileSync(receiptPath(repo, workItem),
+    fd = openSync(receiptPath(repo, workItem),
+      constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600)
+    writeFileSync(fd,
       `${JSON.stringify({ work_item: workItem, read_at: new Date().toISOString(), by: RUNNER_ACTOR })}\n`)
     return true
-  } catch { return false }
+  } catch { return false } finally {
+    if (fd !== null) { try { closeSync(fd) } catch { /* the receipt is already written or already failed */ } }
+  }
 }
 function writeNotice(repo, workItem, questions, reason) {
   try {

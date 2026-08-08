@@ -15,7 +15,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -861,6 +861,49 @@ test('a malformed or foreign receipt does not retire a withdrawal', () => {
     writeFileSync(join(receipts, 'tok.json'), JSON.stringify({ work_item: 'tok', by: 'agent:runner' }))
     assert.ok(!planEscalation(dir, graph, items, [], occupancy)?.withdrawals?.includes('tok'),
       'a well-formed receipt from this runner did not retire the withdrawal')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('a receipt path that is a symlink is refused by the WRITER, not just the reader', () => {
+  // Round 8, codex. `noticeWasRead` refuses a symlink with `lstatSync`;
+  // `markNoticeRead` used `writeFileSync`, which FOLLOWS one. The write landed
+  // on the link target, the mark answered true, the reader never accepted the
+  // receipt, and the unchanged-trigger brake suppressed that withdrawal for
+  // ever — the exact permanent-loss path AC124 says is fixed, reachable again
+  // through a writer and a reader disagreeing about what counts as a file.
+  const dir = mkdtempSync(join(tmpdir(), 'loop-receipt-symlink-'))
+  try {
+    const store = join(dir, '.tmux-teams')
+    mkdirSync(join(store, 'work-items'), { recursive: true })
+    mkdirSync(join(store, 'team-briefs'), { recursive: true })
+    mkdirSync(join(store, 'notice-receipts'), { recursive: true })
+    writeFileSync(join(store, 'graph.json'), JSON.stringify(TWO_TEAMS))
+    const custody = [
+      { event: 'opened', agent_id: 'pm_intake', to_team: 'control', reason: 'r', actor: 'human:ada' },
+      { event: 'abandoned', reason: 'nobody answered the intake questions in time', actor: 'agent:runner' },
+    ]
+    writeFileSync(join(store, 'work-items', 'tok.jsonl'),
+      `${ledger('tok', custody).map((entry) => JSON.stringify(entry)).join('\n')}\n`)
+
+    // The receipt path IS a link, pointing somewhere the reader will never look.
+    const decoy = join(store, 'decoy.json')
+    writeFileSync(decoy, 'not a receipt\n')
+    symlinkSync(decoy, join(store, 'notice-receipts', 'tok.json'))
+
+    tick(dir, { apply: true, scratchDir: join(dir, 'scratch'), spawnFn: () => ({ unref() {} }) })
+
+    assert.equal(readFileSync(decoy, 'utf8'), 'not a receipt\n',
+      'the receipt was written THROUGH the symlink — the writer still follows links')
+    const notes = readFileSync(join(store, 'pm-notes', 'latest.md'), 'utf8')
+    assert.ok(!notes.includes('withdrawn at the door'),
+      `the stored identity claimed a withdrawal the reader can never confirm:\n${notes}`)
+
+    const graph = graphOf(TWO_TEAMS)
+    const items = itemsOf(['tok', custody])
+    const again = planEscalation(dir, graph, items, [], teamOccupancy(graph, items),
+      { now: Date.now() + 2 * 900 * 1000 })
+    assert.equal(again?.action, 'escalate',
+      `a withdrawal whose receipt path was a symlink was braked away as ${again?.action}: ${again?.reason}`)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
