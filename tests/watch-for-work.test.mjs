@@ -169,7 +169,36 @@ test('stopping closes every watcher and cancels a pending wake', async () => {
   for (const entry of fake.opened) assert.equal(entry.closed, true, `${entry.dir} was left open`)
 })
 
-test('the two REAL write patterns this system uses both wake it', async () => {
+// Does `fs.watch` deliver at all here? On this repository's CI it does not —
+// a container filesystem, 200 writes over five seconds, no event. That is not a
+// defect in `watchForWork` and not something it can promise: the interval
+// backstop exists precisely because delivery is a platform property, and a
+// missed event costs latency rather than correctness.
+//
+// So the delivery test is skipped LOUDLY where delivery is impossible, instead
+// of being deleted (it is the only proof the real patterns work) or left to
+// fail (which is how a suite teaches people to ignore it). The probe is a
+// measurement, not an assumption about the platform name.
+const deliversFsEvents = async () => {
+  const probe = mkdtempSync(join(tmpdir(), 'probe-'))
+  let fired = false
+  const { watch } = await import('node:fs')
+  let watcher
+  try { watcher = watch(probe, { persistent: false }, () => { fired = true }) } catch { return false }
+  try {
+    for (let attempt = 0; attempt < 40 && !fired; attempt += 1) {
+      writeFileSync(join(probe, `p-${attempt}`), 'x')
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+  } finally { try { watcher.close() } catch { /* already gone */ } }
+  return fired
+}
+
+test('the two REAL write patterns this system uses both wake it', async (t) => {
+  if (!await deliversFsEvents()) {
+    t.skip('fs.watch delivers no events in this environment — the interval backstop is what covers it here')
+    return
+  }
   // The stub above proves the debounce and the degradation; it cannot prove
   // that `fs.watch` fires for the writes this system actually performs. Two
   // patterns matter and neither is a plain overwrite: `ledger-writer.mjs:415`
