@@ -436,7 +436,36 @@ const expectedProfileExecutable = Object.freeze({
   codex: 'npx',
 })
 
-async function trustedExecutableRoots(env) {
+/**
+ * The toolchain running THIS process is trusted to exactly the degree this
+ * process is — it is already executing our code, so refusing the `npx` that
+ * sits beside our own `node` protects nothing and breaks every version manager
+ * whose layout was not guessed in advance.
+ *
+ * Measured on Ubuntu 26.04, 2026-08-09, on the first Linux run of the gate:
+ * the hand-written list below knew `~/.nvm/versions/node` and not mise, so the
+ * zai lane refused with `executable is outside trusted runtime roots` while AGY
+ * passed — purely because mise happens to install bun into `~/.bun/bin`, which
+ * WAS on the list. One lane worked by coincidence and the other did not, which
+ * is the worst possible way for a security boundary to behave.
+ *
+ * Two levels are returned, not one: `dirname(dirname(execPath))` is this exact
+ * version's prefix (`.../installs/node/24.19.0`) and its parent is the family
+ * (`.../installs/node`), which is where managers keep the alias directory a
+ * shim actually resolves through (`.../node/24/bin/npx`).
+ *
+ * Both are dropped unless they sit INSIDE $HOME and are not $HOME itself. A
+ * system interpreter at `/usr/bin/node` would otherwise contribute `/usr` (a
+ * root already present, harmlessly) and `/` (which would trust everything).
+ */
+export function interpreterRoots(canonicalHome) {
+  const prefix = dirname(dirname(process.execPath))
+  const family = dirname(prefix)
+  return [prefix, family].filter(root =>
+    isWithin(root, canonicalHome) && resolve(root) !== resolve(canonicalHome))
+}
+
+export async function trustedExecutableRoots(env) {
   const roots = ['/usr', '/bin']
   const home = env.HOME ?? env.USERPROFILE
   if (!home || !isAbsolute(home) || !existsSync(home)) return roots
@@ -447,6 +476,7 @@ async function trustedExecutableRoots(env) {
     join(canonicalHome, '.bun', 'bin'),
     join(canonicalHome, '.kimi-code', 'bin'),
     join(canonicalHome, '.nvm', 'versions', 'node'),
+    ...interpreterRoots(canonicalHome),
   ]
 }
 

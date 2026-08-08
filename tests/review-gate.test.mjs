@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runAcpReview, prepareReviewPacket, ReviewTransportError, sandboxStagedExecutables,
-  needsSandboxStaging, SANDBOX_MASKED_ROOTS } from '../plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs'
+  needsSandboxStaging, SANDBOX_MASKED_ROOTS, interpreterRoots, trustedExecutableRoots } from '../plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs'
 import { runReviewGate, runReviewGateCli, LANE_TIMEOUT_DEFAULT_MS, laneTimeoutMs, LANE_FAILURES,
 } from '../plugins/tmux-teams/skills/party-mode/scripts/review-gate.mjs'
 import { REVIEW_PROFILES } from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
@@ -1586,4 +1586,88 @@ test('the masked-root list is the one bwrap is actually handed', () => {
     'the bwrap argv must build its tmpfs list FROM the exported constant')
   assert.equal(/'--tmpfs', '\/home'/.test(source), false,
     'a hand-written --tmpfs literal is a second list waiting to drift')
+})
+
+// ---------------------------------------------------------------------------
+// Which runtimes a lane is allowed to launch. Measured on Ubuntu 26.04 on the
+// first Linux run of the gate: the hand-written root list knew ~/.nvm and not
+// mise, so the zai lane refused while AGY passed — and AGY passed only because
+// mise happens to put bun in ~/.bun/bin, which WAS on the list. A security
+// boundary where one lane works by coincidence and its neighbour does not is
+// worse than one that refuses both.
+
+test('the interpreter running this process contributes its own roots', () => {
+  // Two levels, and the second is not decoration: a shim resolves through the
+  // manager's version-ALIAS directory (.../installs/node/24/bin/npx) while the
+  // binary itself lives under the exact version (.../installs/node/24.19.0).
+  // Only the family root covers both, and dropping it is what left zai refused.
+  const home = '/home/someone'
+  const execPath = `${home}/.local/share/mise/installs/node/24.19.0/bin/node`
+  assert.deepEqual(rootsFor(execPath, home), [
+    `${home}/.local/share/mise/installs/node/24.19.0`,
+    `${home}/.local/share/mise/installs/node`,
+  ])
+})
+
+test('a system interpreter contributes nothing, and never the filesystem root', () => {
+  // /usr/bin/node would otherwise offer up `/usr` (already trusted, harmless)
+  // and `/` (which would trust the entire machine). Both must be dropped by
+  // being outside $HOME, not by luck.
+  assert.deepEqual(rootsFor('/usr/bin/node', '/home/someone'), [])
+  assert.deepEqual(rootsFor('/usr/local/bin/node', '/home/someone'), [])
+})
+
+test('$HOME itself is never a trusted root, so a bare ~/bin interpreter adds nothing', () => {
+  // An interpreter sitting directly at ~/bin/node has $HOME as its own prefix,
+  // and trusting that would trust every file the user owns. It contributes
+  // NOTHING rather than contributing ~/bin — which is already on the static
+  // list anyway, so nothing is lost by the stricter answer.
+  //
+  // This assertion was written the other way round first and went red. The
+  // expectation was wrong and the code was right; it is kept because the wrong
+  // version is the one a reader would naturally assume.
+  assert.deepEqual(rootsFor('/home/someone/bin/node', '/home/someone'), [])
+})
+
+// interpreterRoots reads process.execPath, so the cases above are expressed by
+// swapping it for the duration of one call. Restored in a finally: a leaked
+// execPath would corrupt every later test in this file rather than fail here.
+function rootsFor(execPath, home) {
+  const original = process.execPath
+  try {
+    Object.defineProperty(process, 'execPath', { value: execPath, configurable: true })
+    return interpreterRoots(home)
+  } finally {
+    Object.defineProperty(process, 'execPath', { value: original, configurable: true })
+  }
+}
+
+test('the derived roots reach the list the launcher actually consults', async () => {
+  // Testing interpreterRoots alone proves a function, not a wiring. Deleting
+  // its spread from trustedExecutableRoots was injected as a mutation and went
+  // GREEN until this test existed — the same miss, twice in one day.
+  //
+  // The real $HOME is used because trustedExecutableRoots stats it; the
+  // interpreter path is a fiction placed inside that home, which is the only
+  // way to observe the wiring on a machine whose node lives in /opt.
+  const home = process.env.HOME
+  assert.ok(home, 'this test needs a HOME to exist')
+  const fakeExec = join(home, '.local', 'share', 'mise', 'installs', 'node', '24.19.0', 'bin', 'node')
+  const original = process.execPath
+  let list
+  try {
+    Object.defineProperty(process, 'execPath', { value: fakeExec, configurable: true })
+    // AWAITED INSIDE the try. trustedExecutableRoots awaits realpath() before it
+    // ever reads process.execPath, so restoring in a finally that runs at the
+    // first await hands the function back the real interpreter — which is how
+    // this test failed on a clean tree before it was written this way.
+    list = await trustedExecutableRoots({ HOME: home })
+  } finally {
+    Object.defineProperty(process, 'execPath', { value: original, configurable: true })
+  }
+  assert.ok(list.includes(join(home, '.local', 'share', 'mise', 'installs', 'node', '24.19.0')),
+    `the version prefix never reached the trusted list: ${JSON.stringify(list)}`)
+  assert.ok(list.includes(join(home, '.local', 'share', 'mise', 'installs', 'node')),
+    `the family root never reached the trusted list: ${JSON.stringify(list)}`)
+  assert.ok(list.includes('/usr'), 'the static roots must survive alongside the derived ones')
 })
