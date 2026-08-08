@@ -398,6 +398,12 @@ REASON: <one line — what you verified, or exactly what is wrong and who must a
 const BUILDERS = { dispatcher: dispatcherBrief, grill: grillBrief, evaluator: evaluatorBrief, pm: pmBrief }
 
 // A repo can EXTEND any role brief; the bundled text is the floor, not the law.
+// EVERY role — `pm`, `dispatcher`, `grill`, `evaluator` — and that is a change
+// for all four, not just the one the issue was filed about. An operator whose
+// `<team>.<role>.md` used to REPLACE the bundled text will now find the bundled
+// text underneath it; `<!-- tmux-teams: replace -->` restores the old
+// behaviour. Said here plainly because a release reviewer read the change as
+// PM-only, which is how the commit message told it.
 //
 // It used to REPLACE, and for the PM that was a footgun with no warning
 // (GitHub #54). Every other role's brief is assembled by `composeBrief`, which

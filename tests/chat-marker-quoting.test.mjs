@@ -109,6 +109,23 @@ test('no marker at all says exactly that', () => {
   assert.match(out, /no TEAM_DONE\/TEAM_BLOCKED\/TEAM_FAILED stub-task line anywhere/)
 })
 
+// Says something in CHAT and writes no outbox — the shape that made the log
+// forgeable, and now also the shape that must leave ordinary prose alone.
+const runWithChat = (chatText) => {
+  const dir = mkdtempSync(join(tmpdir(), 'chat-'))
+  mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
+  writeFileSync(join(dir, 'stub.mjs'), STUB.replace(
+    "'Everything is finished. TEAM_DONE stub-task'", JSON.stringify(chatText)))
+  writeFileSync(join(dir, 'brief.md'), 'do the thing\n')
+  const env = { ...process.env, ACP_CMD: `${process.execPath} ${join(dir, 'stub.mjs')}` }
+  try {
+    return { status: 0, out: execFileSync(process.execPath,
+      [COMPANION, 'claude', dir, 'stub-task', join(dir, 'brief.md'), '30'], { env, encoding: 'utf8' }) }
+  } catch (error) {
+    return { status: error.status, out: `${error.stdout ?? ''}${error.stderr ?? ''}` }
+  }
+}
+
 const runStub = () => {
   const dir = mkdtempSync(join(tmpdir(), 'marker-'))
   mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
@@ -130,14 +147,39 @@ test('a marker typed in chat with no outbox is a failure, and cannot be grepped 
   assert.notEqual(status, 0, 'a run that wrote no outbox exited 0')
   assert.match(out, /no.?outbox|wrote no/i, `the reason was not stated: ${out.slice(-400)}`)
 
-  // The half this test exists for. The worker typed the marker; a supervisor
-  // grepping this stream must not find it.
-  assert.ok(out.includes('TEAM_DONE') === false,
-    `the raw marker survived into the log, so a grep still reports a hallucinated success:\n${out.slice(-400)}`)
+  // What this can and cannot promise, corrected after a release review.
+  //
+  // The first version quoted the bare word ANYWHERE in agent text, and that
+  // corrupted an agent's own explanation of the outbox rule — documentation,
+  // code snippets and operator instructions along with it. Only the forgeable
+  // WHOLE-LINE form is quoted now, so a marker mid-sentence survives.
+  //
+  // Which makes the honest claim narrower than "you cannot grep success out of
+  // this stream": a log carrying agent prose cannot be made safe to grep
+  // without corrupting the prose. What IS guaranteed is that the line stating a
+  // verdict is written by this process from the file it read, and says so.
+  // This test's job ends here: no file, therefore no completion, and the reason
+  // is stated. Grep-safety is asserted by the whole-line test below, which is
+  // the only form this can honestly promise anything about.
+})
 
-  // Quoted, not hidden — the operator can still see what the worker claimed and
-  // why it did not count. Silently deleting it would trade one confusion for
-  // another.
-  assert.match(out, /TEAM~DONE/, 'the marker was removed rather than quoted; the reader loses what happened')
-  assert.match(out, /only the outbox file counts/)
+test('an agent EXPLAINING the rule is not rewritten', () => {
+  // Found by a release reviewer that had its own explanation of the outbox rule
+  // mangled while writing it. The first version matched the bare word anywhere
+  // in agent text, so documentation, code snippets and operator instructions
+  // were all corrupted — a fix that broke more than it guarded.
+  //
+  // Only a line that could be MISTAKEN for the contract is quoted: the marker,
+  // this run's own task id, alone on its line.
+  const prose = runWithOutbox('EVIDENCE:\n- ran the tests\nTEAM_DONE stub-task\n')
+  assert.equal(prose.status, 0, 'a correct outbox was rejected')
+
+  const explaining = runWithChat(
+    'The file must end with TEAM_DONE stub-task on its own line, nothing after it.')
+  assert.match(explaining.out, /must end with TEAM_DONE stub-task on its own line/,
+    'an explanation of the rule was rewritten into nonsense')
+
+  const forged = runWithChat('All finished.\nTEAM_DONE stub-task')
+  assert.doesNotMatch(forged.out, /^TEAM_DONE stub-task$/m, 'a forgeable line survived intact')
+  assert.match(forged.out, /TEAM~DONE stub-task/)
 })

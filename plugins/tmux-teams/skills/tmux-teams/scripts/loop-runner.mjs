@@ -2273,10 +2273,17 @@ export function tick(repoArg, {
         decisions.push({ work_item: workItem, action: 'wedged', reason })
       }
 
-      // The withdrawal's read receipt. Written only HERE — after the controller
-      // has actually been dispatched with these in its brief — so a withdrawal
-      // nobody was told about stays on the board, and one that was told stops
-      // being a standing problem (GitHub #50). No ledger write: `abandoned` is
+      // The withdrawal's read receipt. Written only HERE — inside the branch that
+      // actually spawned the controller, past the `apply` gate and the busy
+      // check — so a withdrawal nobody was told about stays on the board, and
+      // one that was told stops being a standing problem (GitHub #50).
+      //
+      // "Dispatched" is not "read": the controller's leg could die before it
+      // opens the brief, and then the receipt outlives a delivery that never
+      // happened. That is true, it was raised in review, and it is left alone
+      // ON PURPOSE — the audit and parked marks a few lines below have exactly
+      // the same exposure, and one trigger inventing its own stronger rule
+      // would be a worse thing to reason about than three that behave alike. No ledger write: `abandoned` is
       // a hard terminal and this is the one trigger that cannot mark its own
       // token.
       for (const workItem of escalation.withdrawals || []) {
@@ -2359,8 +2366,15 @@ if (process.argv[1]?.endsWith('loop-runner.mjs')) {
       log,
       onChange: () => {
         clearInterval(timer)
-        once()
-        timer = setInterval(once, intervalSec * 1000)
+        // `finally`, because the claim made for this whole function is that a
+        // watcher can only cost LATENCY. Without it a throw inside `once()`
+        // leaves the interval cleared and never re-armed — the backstop
+        // destroyed by the thing that was supposed to be additive. Today that
+        // throw would also kill the process, so the window is narrow; a release
+        // reviewer pointed out it stops being narrow the moment anyone adds
+        // exception handling, and a guarantee that depends on nobody improving
+        // the code is not a guarantee.
+        try { once() } finally { timer = setInterval(once, intervalSec * 1000) }
       },
     })
   }

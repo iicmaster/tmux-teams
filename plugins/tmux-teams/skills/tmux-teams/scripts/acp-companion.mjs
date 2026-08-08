@@ -2505,6 +2505,14 @@ function adapterEnv(lane, source = process.env) {
 //
 // It is a DEFAULT, not a lock: `ACP_INHERIT_PROJECT_CONFIG=1` restores the old
 // behaviour for anyone who genuinely wants a worker to see the repo's hooks.
+//
+// And it turns off MORE than hooks, which a release reviewer named and the
+// first version of this comment did not: bare mode also drops the project's MCP
+// servers, its `.claude/commands/`, and its `.claude/settings.json` permissions.
+// For a delivery worker that is the point — those are the operator's tools, not
+// the build's — but a repo whose workers genuinely need a project MCP server has
+// to set `ACP_INHERIT_PROJECT_CONFIG=1` and take the hooks back with it. That is
+// a real trade and it belongs here rather than in a surprise.
 // The plan-mode half is not fixed here — that lives in the operator's user
 // settings, and the way out is an isolated `CLAUDE_CONFIG_DIR` for the worker
 // profile, which several already use.
@@ -2911,13 +2919,29 @@ let modeChars = 0
 // hidden — the reader still sees that a marker was typed and that it counted
 // for nothing. `[terminal]` remains the only line stating a verdict, and it is
 // written by this process from the file it read.
-const QUOTED_MARKER = /\bTEAM_(DONE|BLOCKED|FAILED)\b/g
-const quoteMarkers = (text) => text.replace(QUOTED_MARKER,
-  (_, word) => `TEAM~${word} (typed in chat — only the outbox file counts)`)
+// Only a line that could be MISTAKEN for the contract is quoted — a marker plus
+// this run's own task id, alone on its line. An agent explaining the rule, or
+// reviewing this very file, writes `TEAM_DONE` constantly and none of that can
+// be misread as a verdict; rewriting it corrupts documentation, code snippets
+// and operator instructions. Caught by a release reviewer that had its OWN
+// explanation of the outbox rule mangled while writing it, which is about as
+// direct as evidence gets.
+const quoteMarkers = (text, taskId) => text.replace(
+  new RegExp(`^([ \\t]*)TEAM_(DONE|BLOCKED|FAILED)[ \\t]+${escapeForRegExp(taskId)}[ \\t]*$`, 'gm'),
+  (_, indent, word) => `${indent}TEAM~${word} ${taskId} (typed in chat — only the outbox file counts)`)
+
+const escapeForRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 function say(kind, value, messageId) {
   const spoken = redact(value)
-  const text = (kind === 'say' || kind === 'think' ? quoteMarkers(spoken) : spoken).slice(0, MAX_DISPLAY_TEXT)
+  // Sliced FIRST, then quoted. The annotation is longer than the token it
+  // replaces, so quoting first spends the agent's display budget on our own
+  // words and cuts the tail of their message — where a worker's conclusion
+  // usually sits. Raised by a release reviewer. A marker cut in half by the
+  // slice is no longer a whole line and is not quoted, which is correct: a
+  // truncated fragment cannot be mistaken for the contract either.
+  const text = spoken.slice(0, MAX_DISPLAY_TEXT)
+  const shown = kind === 'say' || kind === 'think' ? quoteMarkers(text, taskId) : text
   const nextMode = `${kind}:${messageId ?? ''}`
   if (mode !== nextMode) {
     if (mode !== null) process.stdout.write('\n')
@@ -2927,7 +2951,9 @@ function say(kind, value, messageId) {
   }
   if (modeChars >= MAX_DISPLAY_TEXT) return
   const remaining = MAX_DISPLAY_TEXT - modeChars
-  process.stdout.write(text.slice(0, remaining))
+  process.stdout.write(shown.slice(0, remaining))
+  // Counted against the AGENT's text, not against ours: the annotation is this
+  // process talking and must not shrink what the worker is allowed to say.
   modeChars += Math.min(remaining, text.length)
 }
 
@@ -3672,6 +3698,12 @@ async function main() {
     if (reaped.forced) return finishDirectFailure('child-unsettled', 'child_unsettled', 1, { settlement: reaped })
     const result = readTerminalOutbox()
     console.log(`[outbox] ${result.outboxPath}`)
+    // The ONLY line in this stream that states a verdict, and it is written by
+    // this process from the file it read. Everything else here is the agent
+    // talking. A supervisor greps THIS — never the marker, which the agent can
+    // type and which cannot be made safe without corrupting ordinary prose
+    // (GitHub #59, narrowed after a release review showed the broad form
+    // rewriting an agent's own explanation of the rule).
     console.log(`[terminal] ${result.terminal}${result.terminal === 'invalid' ? ` (last line: "${result.text.split(/\r?\n/).map((value) => value.trim()).filter(Boolean).at(-1) ?? ''}")` : ''}`)
     // The rule, not just the symptom. A worker reading only the quoted last line
     // cannot learn that the marker must come last, which is how one delivery was
