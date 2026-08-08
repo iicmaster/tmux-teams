@@ -2304,6 +2304,7 @@ ordering semantics phase 1 wrote down and left unenforced).
 | AC115 | §1, §6 | a graph whose outer controller is a worker on no team is REFUSED at load, and so is a graph naming no controller at all; both refusals say how to fix the declaration | `workflow-graph.test.mjs`, `graph-tour.test.mjs`, `controller-team.test.mjs`, `loop-runner-heartbeat-model.test.mjs` |
 | AC116 | §4.2, §6 | an escalated token occupies the CONTROL team's WIP, not the delivery team's; a `resumed` still returns to the team its `to_team` names | `loop-occupancy.test.mjs`, `kanban-board.test.mjs` |
 | AC117 | §4.1, §9 | a person can CLOSE a token (`withdraw.mjs` → `abandoned`, `human:` actor enforced by the door because the validator cannot: the runner writes the same event and signs as itself). A hard terminal, an unknown token and an empty reason are refused; success prints the `admit.mjs` line for a replacement | `withdraw-the-token.test.mjs` |
+| AC119 | §1 | a workflow or a team declaring a key the loader does not read is REFUSED, naming the key and listing what may be declared — it is not accepted and silently dropped | `workflow-graph.test.mjs` |
 | AC118 | §9 | the recorded reason quotes that leg's own `liveness_state`/`termination_reason` rather than a fixed phrase, so two different causes cannot report the same one | `audit-transport-death.test.mjs` |
 
 ### 14.1 Clauses this contract does NOT yet enforce
@@ -2671,6 +2672,30 @@ line.
    editing a file while a worker holds it has already cost one overwrite.
 
 ### Amendment log
+
+**2026-08-08 — a declaration the loader does not read is refused, not
+dropped.** A workflow could declare `when`, `on_reject`, `sla_hours` — anything —
+and `validateWorkflowGraph` answered `ok: true` while the field vanished at
+`workflows.push`. A team entry behaved the same way. GitHub #47 phase 1 gave
+exactly this treatment to a seat override and to a palette entry and stopped
+there; the two containers ABOVE those were left open, so the strictest checks in
+the file sat inside the most permissive ones.
+
+The defect is not that the fields did nothing. It is that the operator was never
+told. This document's own worst failures share that shape — a wizard template
+that could not load, a comment claiming nine ledger readers while the tool
+counted twelve, a §9 paragraph describing a guard the release had deleted. Each
+was true-looking and silent. A declaration is a statement to the system; a
+statement the system discards without answering is the one thing this contract
+exists to prevent.
+
+Both refusals name the offending key and list what may be declared. Measured
+before landing: no test, no bundled default, no documented example and no caller
+in the tree passes a key outside the allowed sets, so nothing legitimate breaks.
+`downstream_team_id` keeps its older, more specific redirect ("routing belongs to
+a workflow route, not to a team") rather than being swallowed by the generic
+message — a field operators actually reached for deserves the better sentence.
+AC119.
 
 **2026-08-08 — the third operator door: a person can close a token
 (`withdraw.mjs`), and the route stays one-way.** `abandoned` was written by the

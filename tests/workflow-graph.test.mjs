@@ -378,6 +378,33 @@ test('the controller may hold one team seat, as that team’s only worker', () =
   assert.match(refused.reason, /start every route there/)
 })
 
+test('a key the loader does not read is refused, not silently dropped', () => {
+  // The oldest defect shape in this system: not a wrong answer, an unasked
+  // question. A workflow could declare `when`, `sla_hours`, anything at all, and
+  // the loader answered ok while the field vanished at `workflows.push`. GitHub
+  // #47 phase 1 gave this treatment to a seat override and a palette entry and
+  // stopped there — so the strictest checks in the file sat INSIDE the most
+  // permissive ones.
+  const flow = rejected(graphWith({
+    workflows: [{ workflow_id: 'full', name: 'Full', route: ['build', 'verify'], sla_hours: 4 }],
+  }))
+  assert.match(flow, /sla_hours/, 'the refusal names the key the operator wrote')
+  assert.match(flow, /workflow_id, name and route/, 'and says what may be declared instead')
+
+  const team = rejected(graphWith({
+    teams: [teamOf('build', ['b_w1'], { on_call: 'someone' }), teamOf('verify', ['v_w1'])],
+  }))
+  assert.match(team, /on_call/)
+  assert.match(team, /a team declares/)
+
+  // `downstream_team_id` keeps its older, more specific redirect — a field
+  // operators actually reached for deserves the better sentence, and the generic
+  // message must not swallow it.
+  assert.match(rejected(graphWith({
+    teams: [teamOf('build', ['b_w1'], { downstream_team_id: 'verify' }), teamOf('verify', ['v_w1'])],
+  })), /routing into workflows/)
+})
+
 test('controller_team is derived, never declared', () => {
   assert.match(rejected(graphWith({ controller_team: 'build' })), /derived/)
 })

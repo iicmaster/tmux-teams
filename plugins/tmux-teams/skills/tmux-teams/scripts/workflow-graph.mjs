@@ -261,6 +261,19 @@ export function validateWorkflowGraph(value) {
     if (!isObject(raw)) return invalid('team entry is not an object')
     const { team_id: teamId, dispatcher_id: dispatcher, evaluator_id: evaluator, worker_ids: workers } = raw
     const name = raw.name ?? teamId
+    // Same refusal as a workflow's, one level up. The nested `seats` and
+    // palette checks were added and the team object itself was left open, so a
+    // team could declare anything and have it dropped at the `teams.push`
+    // below. `downstream_team_id` already had a bespoke redirect here (routing
+    // belongs to a workflow) — that field was worth naming because operators
+    // reached for it; every other invented key was silent.
+    const unknownTeamKey = Object.keys(raw).find((key) => ![
+      'team_id', 'name', 'dispatcher_id', 'evaluator_id', 'worker_ids',
+      'wip_limit', 'models', 'adapters', 'seats', 'produces',
+    ].includes(key))
+    if (unknownTeamKey !== undefined && unknownTeamKey !== 'downstream_team_id') {
+      return invalid(`team ${String(teamId)} declares an unknown key ${show(unknownTeamKey)} — a team declares team_id, name, dispatcher_id, evaluator_id, worker_ids, models, adapters, seats and produces`)
+    }
     if (typeof teamId !== 'string' || !GRAPH_ID_RE.test(teamId) || seenTeams.has(teamId)) {
       return invalid(`team_id ${String(teamId)} is invalid or duplicated`)
     }
@@ -545,6 +558,16 @@ export function validateWorkflowGraph(value) {
       return invalid(`workflow_id ${String(workflowId)} is invalid or duplicated`)
     }
     if (typeof name !== 'string' || !NAME_RE.test(name)) return invalid(`workflow ${workflowId} has an invalid name`)
+    // Refused, not dropped. GitHub #47 phase 1 gave this treatment to a seat
+    // override and to a palette entry and stopped there, so a workflow could
+    // declare `when`, `on_reject`, `sla_hours` — anything — and validate
+    // `ok: true` while the field vanished at the `workflows.push` below. The
+    // operator got no signal at all, which is this system's oldest defect
+    // shape: not a wrong answer, an unasked question.
+    const unknownWorkflowKey = Object.keys(raw).find((key) => key !== 'workflow_id' && key !== 'name' && key !== 'route')
+    if (unknownWorkflowKey !== undefined) {
+      return invalid(`workflow ${workflowId} declares an unknown key ${show(unknownWorkflowKey)} — a workflow declares workflow_id, name and route, and nothing else yet`)
+    }
     if (!Array.isArray(route) || route.length < 1 || route.length > MAX_TEAMS) {
       return invalid(`workflow ${workflowId} needs a route of 1 to ${MAX_TEAMS} teams`)
     }
