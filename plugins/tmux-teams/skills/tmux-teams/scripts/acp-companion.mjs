@@ -2456,7 +2456,8 @@ const RUNTIME_ENV_KEYS = new Set([
 const LANE_ENV_KEYS = {
   claude: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL',
     'ANTHROPIC_CUSTOM_HEADERS', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL',
-    'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CONFIG_DIR'],
+    'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CONFIG_DIR',
+    'CLAUDE_CODE_SIMPLE'],
   codex: ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'CODEX_HOME', 'CODEX_PATH'],
   // VERIFIED 2026-08-04, and the clause that stood here before that date was
   // false: it said the gemini lane "has been dead since 2026-07-21" and "has
@@ -2487,8 +2488,30 @@ function adapterEnv(lane, source = process.env) {
   return allowed
 }
 
+// GitHub #58: a worker spawned here is a BUILD AGENT, not a continuation of
+// whoever's terminal started the loop — and it was inheriting both halves of
+// that terminal. The target repo's `.claude/settings.json` fired its
+// `UserPromptSubmit` hooks inside the worker (in this very repo that hook
+// injects a party-mode persona, so a worker spent minutes playing character
+// voices and made zero tool calls), and the operator's own
+// `~/.claude/settings.json` `defaultMode: plan` started it in plan mode, where
+// it thought 442 times and executed nothing.
+//
+// `CLAUDE_CODE_SIMPLE=1` is what `claude --bare` sets, and it is the lever this
+// process can actually reach: the ACP adapter spawns the CLI itself, so its
+// argv is not ours, but the child environment is. Measured rather than read off
+// the help text — a project hook writing a marker file fired on a plain run and
+// did not fire with this set.
+//
+// It is a DEFAULT, not a lock: `ACP_INHERIT_PROJECT_CONFIG=1` restores the old
+// behaviour for anyone who genuinely wants a worker to see the repo's hooks.
+// The plan-mode half is not fixed here — that lives in the operator's user
+// settings, and the way out is an isolated `CLAUDE_CONFIG_DIR` for the worker
+// profile, which several already use.
 const spawnEnv = {
   ...adapterEnv(agentName),
+  ...(agentName === 'claude' && process.env.ACP_INHERIT_PROJECT_CONFIG !== '1'
+    ? { CLAUDE_CODE_SIMPLE: process.env.CLAUDE_CODE_SIMPLE ?? '1' } : {}),
   ...(agentName === 'agy' ? { AGY_SKIP_DOWNLOAD: process.env.AGY_SKIP_DOWNLOAD ?? '1' } : {}),
   ...(agentName === 'codex' ? { INITIAL_AGENT_MODE: effectiveInitialAgentMode } : {}),
 }
