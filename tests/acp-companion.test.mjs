@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdtempSync as fsMkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, realpathSync, rmSync, chmodSync, symlinkSync } from 'node:fs'
+import { mkdtempSync as fsMkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, realpathSync, rmSync, chmodSync, symlinkSync, lstatSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -223,7 +223,23 @@ test('ACP_ENV_PASSTHROUGH names what the allowlist missed, one variable at a tim
 // only thing that makes them evidence rather than a record that a test exists.
 test('an outbox that is not a regular file is refused rather than read', () => {
   for (const kind of ['symlink', 'fifo']) {
-    const result = run(`task-outbox-${kind}`, { MOCK_OUTBOX_KIND: kind }, undefined, 20)
+    // The FIFO is made HERE, before the run, and its creation is asserted on
+    // its own terms. Setup used to happen inside the agent with its result
+    // ignored, so a failed `mkfifo` produced no file at all and this assertion
+    // fired on the wording of a "no outbox" error instead — a setup failure
+    // wearing the costume of a classification failure. Now a setup failure says
+    // so and this assertion can only fire for the reason it was written.
+    let cwd
+    if (kind === 'fifo') {
+      cwd = mkdtempSync(join(tmpdir(), 'acp-companion-'))
+      mkdirSync(join(cwd, '.mailbox-out'), { recursive: true })
+      const path = join(cwd, '.mailbox-out', `task-outbox-${kind}`)
+      const made = spawnSync('mkfifo', [path])
+      assert.ok(!made.error && made.status === 0,
+        `SETUP: mkfifo failed, so this test never ran: ${made.error?.message ?? `exit ${made.status} ${made.stderr}`}`)
+      assert.ok(lstatSync(path).isFIFO(), 'SETUP: mkfifo made something that is not a FIFO')
+    }
+    const result = run(`task-outbox-${kind}`, { MOCK_OUTBOX_KIND: kind }, cwd, 20)
     assert.notEqual(result.status, 0, `${kind} must fail; stdout:\n${result.stdout}`)
     // The message carries the stderr it is matching against. It carried only
     // the word `fifo`, and when this went red once inside a full-suite run on

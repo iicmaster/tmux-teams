@@ -820,6 +820,107 @@ test('a standing instruction is added to the PM brief, not swapped for it', () =
   }
 })
 
+// Drives a REAL applied tick with the receipt write made to fail, then asks the
+// REAL `planEscalation` — reading the REAL `pm-notes/latest.md` that tick wrote
+// — whether the token comes back. Nothing about the production path is
+// re-stated here; re-stating it is how a test comes to agree with a bug.
+// What the sidecar can and cannot promise. The comment above it once claimed a
+// worker could not reach the file; a worker runs in the target repository and
+// can. These assertions pin the property that IS real — accidents do not retire
+// a withdrawal — and stop a bare `existsSync` from creeping back.
+test('a malformed or foreign receipt does not retire a withdrawal', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-receipt-shape-'))
+  try {
+    const graph = graphOf(TWO_TEAMS)
+    const items = itemsOf(['tok', [
+      { event: 'opened', agent_id: 'pm_intake', to_team: 'control', reason: 'r', actor: 'human:ada' },
+      { event: 'abandoned', reason: 'nobody answered the intake questions in time', actor: 'agent:runner' },
+    ]])
+    const occupancy = teamOccupancy(graph, items)
+    const receipts = join(dir, '.tmux-teams', 'notice-receipts')
+    mkdirSync(receipts, { recursive: true })
+    const stillOpen = (what) => assert.ok(
+      planEscalation(dir, graph, items, [], occupancy)?.withdrawals?.includes('tok'),
+      `${what} retired the withdrawal`)
+
+    // A stray `touch` — the shape a bare existence check accepted.
+    writeFileSync(join(receipts, 'tok.json'), '')
+    stillOpen('an empty file')
+
+    // A truncated write: valid prefix, unparseable.
+    writeFileSync(join(receipts, 'tok.json'), '{"work_item":"tok","by":"age')
+    stillOpen('a truncated receipt')
+
+    // Well-formed JSON that is not this runner's, and not this token's.
+    writeFileSync(join(receipts, 'tok.json'), JSON.stringify({ work_item: 'tok', by: 'agent:someone-else' }))
+    stillOpen('a receipt written by somebody else')
+    writeFileSync(join(receipts, 'tok.json'), JSON.stringify({ work_item: 'other', by: 'agent:runner' }))
+    stillOpen('a receipt for a different token')
+
+    // And the real one still works, or everything above proves nothing.
+    writeFileSync(join(receipts, 'tok.json'), JSON.stringify({ work_item: 'tok', by: 'agent:runner' }))
+    assert.ok(!planEscalation(dir, graph, items, [], occupancy)?.withdrawals?.includes('tok'),
+      'a well-formed receipt from this runner did not retire the withdrawal')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('a withdrawal whose receipt could not be written comes back, instead of being braked away', () => {
+  // Found by a release reviewer reading two sites together. `markNoticeRead`
+  // fails, the log says the withdrawal "will be reported again" — and it never
+  // is. The receipt stays absent so the SAME trigger is computed next tick, and
+  // `pm-notes/latest.md` had already been written with that exact identity, so
+  // the unchanged-trigger brake answers `unchanged` for ever. The token is
+  // suppressed by the brake, silently, and the log line is a lie.
+  const withFailure = (fail) => {
+    const dir = mkdtempSync(join(tmpdir(), 'loop-receipt-fail-'))
+    const store = join(dir, '.tmux-teams')
+    mkdirSync(join(store, 'work-items'), { recursive: true })
+    mkdirSync(join(store, 'team-briefs'), { recursive: true })
+    writeFileSync(join(store, 'graph.json'), JSON.stringify(TWO_TEAMS))
+    const custody = [
+      { event: 'opened', agent_id: 'pm_intake', to_team: 'control', reason: 'r', actor: 'human:ada' },
+      { event: 'abandoned', reason: 'nobody answered the intake questions in time', actor: 'agent:runner' },
+    ]
+    writeFileSync(join(store, 'work-items', 'tok.jsonl'),
+      `${ledger('tok', custody).map((entry) => JSON.stringify(entry)).join('\n')}\n`)
+    // A FILE where the receipt directory has to go. `mkdirSync` throws ENOTDIR,
+    // `markNoticeRead` catches and answers false — the same answer a full disk
+    // gives, reached without filling one.
+    if (fail) writeFileSync(join(store, 'notice-receipts'), 'not a directory\n')
+    tick(dir, { apply: true, scratchDir: join(dir, 'scratch'), spawnFn: () => ({ unref() {} }) })
+    return { dir, custody }
+  }
+
+  // Past the cooldown, which is the only brake that should still be able to
+  // speak here. `now` is the seam `planEscalation` already exposes.
+  const laterThanCooldown = { now: Date.now() + 2 * 900 * 1000 }
+  const ask = ({ dir, custody }) => {
+    const graph = graphOf(TWO_TEAMS)
+    const items = itemsOf(['tok', custody])
+    return planEscalation(dir, graph, items, [], teamOccupancy(graph, items), laterThanCooldown)
+  }
+
+  const failed = withFailure(true)
+  try {
+    const notes = readFileSync(join(failed.dir, '.tmux-teams', 'pm-notes', 'latest.md'), 'utf8')
+    assert.ok(!notes.includes('withdrawn at the door'),
+      `the stored identity claimed a withdrawal that was never marked read:\n${notes}`)
+    const again = ask(failed)
+    assert.equal(again?.action, 'escalate',
+      `a withdrawal whose receipt failed was braked away as ${again?.action}: ${again?.reason}`)
+  } finally { rmSync(failed.dir, { recursive: true, force: true }) }
+
+  // The control. Without it this test passes on a build where the brake never
+  // fires at all, and would be proving nothing about the failure path.
+  const marked = withFailure(false)
+  try {
+    const settled = ask(marked)
+    assert.notEqual(settled?.action, 'escalate',
+      'the receipt was written and the withdrawal came back anyway — the brake is not working at all,'
+      + ' so the assertion above proves nothing')
+  } finally { rmSync(marked.dir, { recursive: true, force: true }) }
+})
+
 test('a withdrawal is news once, not a standing problem for ever', () => {
   // GitHub #50. The audit and the parked escalation each record a mark on the
   // token when the controller is dispatched, which changes its last event and

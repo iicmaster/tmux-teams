@@ -15,7 +15,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 
 import { watchForWork } from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs'
 
@@ -184,12 +184,28 @@ const deliversFsEvents = async (pattern) => {
   const target = join(probe, 'existing.jsonl')
   writeFileSync(target, 'first\n')
   let fired = false
-  const { watch, appendFileSync } = await import('node:fs')
+  const { watch, appendFileSync, renameSync } = await import('node:fs')
   let watcher
   try { watcher = watch(probe, { persistent: false }, () => { fired = true }) } catch { return false }
+  // THREE probes for three assertion families, because a rename is not a
+  // creation. The rename probe stages its temp file in a SIBLING directory —
+  // same device, so no EXDEV — and renames INTO the watched one. Staging it
+  // inside would mean the temp file's own creation woke the watcher, and the
+  // rename assertion would pass on a filesystem that reports nothing for
+  // renames at all. That confound was in the first per-pattern version: it
+  // advertised gating each assertion on its own probe while running two probes
+  // for three patterns, and the one it could not see was the one it claimed to
+  // have fixed. Found by a release reviewer.
+  const staging = mkdtempSync(join(dirname(probe), 'staging-'))
   const perform = pattern === 'append'
     ? (n) => appendFileSync(target, `line-${n}\n`)
-    : (n) => writeFileSync(join(probe, `new-${n}.jsonl`), 'x\n')
+    : pattern === 'rename'
+      ? (n) => {
+        const tmp = join(staging, `next-${n}.tmp`)
+        writeFileSync(tmp, 'x\n')
+        renameSync(tmp, join(probe, `renamed-${n}.jsonl`))
+      }
+      : (n) => writeFileSync(join(probe, `new-${n}.jsonl`), 'x\n')
   try {
     // An IN-PLACE APPEND to a file that already exists — the weakest of the
     // three patterns and the one the ledger actually uses
@@ -220,8 +236,9 @@ test('the REAL write patterns this system uses wake it', async (t) => {
   // platform.
   const canAppend = await deliversFsEvents('append')
   const canCreate = await deliversFsEvents('create')
-  if (!canAppend && !canCreate) {
-    t.skip('fs.watch delivered nothing for either an append or a new file here'
+  const canRename = await deliversFsEvents('rename')
+  if (!canAppend && !canCreate && !canRename) {
+    t.skip('fs.watch delivered nothing for an append, a new file or a rename here'
       + ' — the interval backstop is what covers this environment')
     return
   }
@@ -284,15 +301,19 @@ test('the REAL write patterns this system uses wake it', async (t) => {
         () => appendFileSync(join(items, 'tok.jsonl'), '{"event":"answered"}\n'))
     }
 
-    // Rename and new-file both count as creation in a watched directory, so
-    // they stand or fall with `canCreate` — and they are NOT skipped just
-    // because appends are unreported, which was the defect in the first probe.
-    if (canCreate) {
+    // The atomic rename — staged OUTSIDE the watched directory, exactly as the
+    // probe does it, so what is being asserted is the rename and not the
+    // incidental creation of a temp file next to it.
+    if (canRename) {
+      const staging = mkdtempSync(join(tmpdir(), 'staging-'))
       await wokeAgain(woke.length, 'an atomic rename into the ledger directory', (n) => {
-        writeFileSync(join(items, `.next-${n}.tmp`), '{"event":"withdrawn"}\n')
-        renameSync(join(items, `.next-${n}.tmp`), join(items, `next-${n}.jsonl`))
+        const tmp = join(staging, `next-${n}.tmp`)
+        writeFileSync(tmp, '{"event":"withdrawn"}\n')
+        renameSync(tmp, join(items, `next-${n}.jsonl`))
       })
+    }
 
+    if (canCreate) {
       await wokeAgain(woke.length, 'a worker writing its outbox',
         (n) => writeFileSync(join(repo, '.mailbox-out', `task-${n}`), 'TEAM_DONE\n'))
     }

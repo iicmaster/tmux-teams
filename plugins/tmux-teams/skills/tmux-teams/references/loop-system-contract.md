@@ -323,14 +323,32 @@ overstated a limit the code refuses, so a graph written from this line alone
 would be rejected at load. `MAX_WORKERS` is the authority; §3 states the reason
 five is a ceiling rather than advice.
 
-**The key set above is CLOSED at every level.** A workflow, a team and a seat
-each refuse a key they do not define, naming the offending key and listing what
-the object may declare. The nested `seats` and palette objects were closed first
-and the enclosing objects were left open, so for several releases a team could
-declare anything at all and have it dropped at the point the validated object
-was assembled — a graph that loaded clean while a line the operator wrote did
-nothing. A key that is silently ignored is worse than one that is refused,
-because the operator has no way to find out.
+**The key set above is CLOSED at every level**: the root object, each workflow,
+each team, each team's `models` and `adapters` role maps, each seat, and each
+palette entry. Every one of them refuses a key it does not define, naming the
+offending key and listing what that object may declare.
+
+That sentence was written before it was true. The nested `seats` and palette
+objects were closed first; the team object was closed next and the sentence went
+in with it — while the ROOT and the two role maps still dropped an invented key
+in silence, which a release reviewer measured within the hour:
+`outer_controller_adpater: "codex"` validated clean and ran the DEFAULT adapter,
+so one transposed letter moved the controller to another lane with no error
+anywhere. `models: { workr: ... }` fell through to "missing a model for its
+worker" — a true sentence pointing at the wrong line. Both are refused now, and
+the general rule is worth more than either fix: **a sentence stating that
+something holds everywhere is a claim to be checked at every level, not a
+summary of the level you just finished.**
+
+A key that is silently ignored is worse than one that is refused, because the
+operator has no way to find out.
+
+**Ordering matters as much as coverage.** A field with its own specific refusal
+— `controller_team` and `wip_limit` are derived (§3.1), `downstream_team_id`
+belongs to a route — must be refused by ITS sentence, not by the generic
+unknown-key one. The closed-key check therefore runs after the specific
+refusals at every level. Getting this backwards replaces the sentence that
+teaches the operator what to do with the sentence that only stops them.
 
 `downstream_team_id` is refused by a **whole-graph scan that runs before any
 team is walked**, and it gets a sentence of its own — routing belongs to a
@@ -1772,6 +1790,18 @@ Parsing rules, non-negotiable:
   `STALL_SEC`: it passed `stallSec: 1e9`, which switched off the only trigger
   that could defeat the brake, so the guard had never once run the
   configuration the runner ships.
+- **An identity may only claim what was actually recorded.** `pm-notes/latest.md`
+  is written AFTER the dispatch's marks are attempted, and it leaves out every
+  trigger whose mark failed. A withdrawal's read receipt can fail to write — a
+  full disk, a file where the receipt directory belongs — and the runner logs
+  that it "will be reported again". It would not have been: the receipt stays
+  absent, so the same trigger set is computed next tick, and the note had
+  already been written with that exact identity, so this brake answered
+  `unchanged` and suppressed the token permanently. The brake, not the failure,
+  is what lost it. Found in the v0.18.0 release review.
+  Deleting the note instead would have been worse — the cooldown reads the same
+  file, so both brakes would go off together and a real controller session would
+  be dispatched every tick under exactly the disk-full condition that caused it.
 - **The same anchor discipline applies to a re-escalated `answered` reply**
   (retro-release-review r4-codex BLOCKER 4, 2026-08-04). Two triggers render
   text that is a pure function of the token's identity and NOT of which cycle
@@ -2295,7 +2325,11 @@ a palette yet).
 | # | Clause | Assertion | Test file |
 | --- | --- | --- | --- |
 | AC97 | §3.5 | a seat declaring a valid palette loads and validates; a graph declaring none resolves every seat's `palette` to `null`, and declarations that say the same thing still hash alike (§3.2.1) | `workflow-graph-palette.test.mjs` |
-| AC121 | §3 | a team declaring a key the contract does not define is refused at load, naming the key and listing what a team may declare | `workflow-graph.test.mjs` |
+| AC121 | §3 | a key the contract does not define is refused at load — at the root, on a team, and in a team's `models` or `adapters` role map — naming the key and listing what that object may declare | `workflow-graph.test.mjs` |
+| AC123 | §3 | a field with its own specific refusal (`controller_team`, `wip_limit`, `downstream_team_id`) is refused by that sentence, never by the generic unknown-key message | `workflow-graph.test.mjs` |
+| AC124 | §9 | a withdrawal whose read receipt could not be written is escalated again on a later tick instead of being held by the unchanged-trigger brake, and the stored identity omits it | `loop-occupancy.test.mjs` |
+| AC125 | §5 | a notice receipt that is empty, truncated, written by another actor, or names a different token does not retire a withdrawal | `loop-occupancy.test.mjs` |
+| AC126 | §12 | a terminal marker split across two stream chunks of one message is quoted, not reassembled into a forgeable line | `chat-marker-quoting.test.mjs` |
 | AC122 | §3 | `downstream_team_id` on a team is refused by the whole-graph scan with its own routing sentence, never by the generic unknown-key message | `workflow-graph.test.mjs` |
 | AC98 | §3.5 | a malformed palette entry — bad model, adapter, effort, display_model, bucket, an unknown key, a non-object entry, or a palette of the wrong length — is refused, naming the team and the seat | `workflow-graph-palette.test.mjs` |
 | AC99 | §3.5 | `palette` alongside `model`/`adapter`/`effort`/`display_model` on the same seat is refused, not silently ignored | `workflow-graph-palette.test.mjs` |

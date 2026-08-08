@@ -28,7 +28,7 @@
 // ledger was stated by the agent whose job it was to state it.
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, watch as fsWatch, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, watch as fsWatch, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -1579,6 +1579,13 @@ const boardSummary = (graph, items, occupancy) => graph.teams.map((team) => {
 
 // Anomaly-triggered, never on a heartbeat: a timer that dispatches a full agent
 // every interval bills for looking at a board that has not changed.
+// The one place a withdrawal's trigger line is written. `tick` has to subtract
+// exactly these lines from the identity it stores when a receipt write fails,
+// and a second copy of the sentence would drift into a subtraction that removes
+// nothing — which is precisely the failure it is there to prevent.
+const withdrawalTriggerId = (workItem) =>
+  `- \`${workItem}\` was withdrawn at the door: nobody answered the intake questions in time`
+
 export function planEscalation(repo, graph, items, plans, occupancy, { now = Date.now(), cooldownSec = PM_COOLDOWN_SEC, stallSec = STALL_SEC } = {}) {
   // `text` is what the controller READS; `id` is what the unchanged-trigger
   // brake COMPARES. They are the same string for every trigger but one. A
@@ -1655,7 +1662,7 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
     return !noticeWasRead(repo, item.work_item)
   })
   for (const item of withdrawals) {
-    triggers.push(trigger(`- \`${item.work_item}\` was withdrawn at the door: nobody answered the intake questions in time`))
+    triggers.push(trigger(withdrawalTriggerId(item.work_item)))
   }
 
   const held = [...occupancy.held.values()].flat()
@@ -1901,15 +1908,37 @@ export const NOTICE_DIR = 'notices'
 // bug being fixed, reintroduced through the fix. A release reviewer measured it
 // — `withdrawals: ["tok"]` before the text, `null` after.
 //
-// This file is written by the runner and read by the runner. Nothing a worker
-// or a person types can reach it, which is the property a receipt needs and a
-// substring search cannot have.
+// What this does and does not promise, because the first version of this
+// comment claimed more than a filesystem can give. It said "nothing a worker or
+// a person types can reach it". A worker runs IN the target repository with
+// write access to it, so a worker that decides to create this file can. A
+// release reviewer said so plainly and was right.
+//
+// The real property is narrower and is the one that was broken: the receipt is
+// no longer a substring of a file whose CONTENTS are worker-authored, so a
+// worker quoting the mechanism — in a question, in documentation about this
+// very paragraph — cannot retire a withdrawal by ACCIDENT. Nothing here defends
+// against a deliberate one, and nothing else in `.tmux-teams/` does either: the
+// ledger, the notices and the outboxes are all writable by the same process.
+// The trust boundary in this system is the process we launched, not the
+// directory it works in. Claiming otherwise in a comment does not create it,
+// and would leave the next reader believing in a guard that is not there.
+//
+// The shape checks below stop the accidents a bare `existsSync` did not: a
+// directory or a symlink at the path, a truncated write, a stray `touch`. They
+// are hygiene, not a boundary.
 const RECEIPTS_DIR = 'notice-receipts'
 
 const receiptPath = (repo, workItem) => join(repo, '.tmux-teams', RECEIPTS_DIR, `${workItem}.json`)
 
 function noticeWasRead(repo, workItem) {
-  return existsSync(receiptPath(repo, workItem))
+  const path = receiptPath(repo, workItem)
+  try {
+    const stat = lstatSync(path)
+    if (!stat.isFile()) return false
+    const receipt = JSON.parse(readFileSync(path, 'utf8'))
+    return receipt?.work_item === workItem && receipt?.by === RUNNER_ACTOR
+  } catch { return false }
 }
 
 function markNoticeRead(repo, workItem) {
@@ -2246,9 +2275,6 @@ export function tick(repoArg, {
     } else if (busy.has(escalation.agent_id)) {
       log(`pm     already running on ${escalation.triggers.length} problem(s)`)
     } else {
-      const notesDir = join(repo, '.tmux-teams', 'pm-notes')
-      mkdirSync(notesDir, { recursive: true })
-      writeFileSync(join(notesDir, 'latest.md'), `${new Date().toISOString()}\n${escalation.identity}\n`)
       const taskId = spawnLeg(repo,
         { workItem: '', team: '', role: 'pm', agentId: escalation.agent_id, workflow: '', model: pmModel, adapter: pmAdapter, effort: pmEffort },
         briefPath, stallSec, { spawnFn })
@@ -2285,8 +2311,25 @@ export function tick(repoArg, {
       // would be a worse thing to reason about than three that behave alike. No ledger write: `abandoned` is
       // a hard terminal and this is the one trigger that cannot mark its own
       // token.
+      // A failed mark used to leave a promise the code could not keep. The log
+      // said the withdrawal "will be reported again"; it would not be. The
+      // receipt stays absent, so the SAME trigger set is computed next tick,
+      // and `pm-notes/latest.md` had already been written with that exact
+      // identity — so the unchanged-trigger brake answered `unchanged` and the
+      // token was suppressed for good, by the brake, silently. Found by a
+      // release reviewer reading the two sites together.
+      //
+      // The identity written below therefore leaves OUT every withdrawal whose
+      // receipt could not be written. Next tick computes a different identity,
+      // the brake does not fire, and the sentence in the log becomes true. The
+      // cooldown still bounds how often that happens — deleting the notes file
+      // instead would have disabled BOTH brakes and re-dispatched a real ACP
+      // session every tick under a disk-full condition, which is the worst
+      // moment to start paying for one.
+      const unmarked = new Set()
       for (const workItem of escalation.withdrawals || []) {
         if (!markNoticeRead(repo, workItem)) {
+          unmarked.add(withdrawalTriggerId(workItem))
           log(`note   ${workItem}: the withdrawal notice could not be marked read — it will be reported again`)
         }
       }
@@ -2314,6 +2357,20 @@ export function tick(repoArg, {
           agent_id: escalation.agent_id, to_team: plan.team, task_id: taskId, reason: plan.reason,
         })) wedged(plan.work_item, 'escalated')
       }
+
+      // Written LAST, and only for what was actually recorded. It is the input
+      // to the unchanged-trigger brake, so a line here is a promise that the
+      // corresponding problem has been dealt with; a line for a receipt that
+      // failed to write is a promise nothing kept.
+      //
+      // Written after the dispatch, not before, on purpose: if this process
+      // dies in between, the file is missing and the controller is dispatched
+      // again next tick. Re-reading a board costs a session; suppressing a
+      // token costs the token.
+      const notesDir = join(repo, '.tmux-teams', 'pm-notes')
+      mkdirSync(notesDir, { recursive: true })
+      const recorded = escalation.identity.split('\n').filter((id) => !unmarked.has(id)).join('\n')
+      writeFileSync(join(notesDir, 'latest.md'), `${new Date().toISOString()}\n${recorded}\n`)
     }
   }
 

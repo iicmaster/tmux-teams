@@ -252,6 +252,25 @@ export function validateWorkflowGraph(value) {
   if (isObject(value) && 'controller_team' in value) {
     return invalid('controller_team is derived from the head of every route, not declared — remove the field')
   }
+  // The ROOT object, closed like the objects inside it (#61 round 2). Every
+  // level below this one refused an invented key while the root itself dropped
+  // them silently, so `outer_controller_adpater: "codex"` validated clean and
+  // ran the default adapter — a misspelling with no error and a wrong lane.
+  // Measured, not supposed.
+  //
+  // It comes AFTER the specific refusals above, not before. `controller_team`
+  // is not in this list, and if this check ran first it would answer "unknown
+  // key" to a field whose real problem is that it is derived — replacing the
+  // sentence that teaches with the sentence that merely stops. That ordering is
+  // the same one the removed `downstream_team_id` carve-out got wrong.
+  const unknownRootKey = Object.keys(value).find((key) => ![
+    'project_id', 'teams', 'workflows',
+    'outer_controller_id', 'outer_controller_model', 'outer_controller_adapter', 'outer_controller_effort',
+  ].includes(key))
+  if (unknownRootKey !== undefined) {
+    return invalid(`the graph declares an unknown key ${show(unknownRootKey)} — a graph declares project_id, teams, workflows, outer_controller_id, outer_controller_model, outer_controller_adapter and outer_controller_effort`)
+  }
+
   let controllerTeamId = null
 
   const seenTeams = new Set()
@@ -305,6 +324,14 @@ export function validateWorkflowGraph(value) {
     if (!isObject(models)) {
       return invalid(`team ${teamId} declares no models — its dispatcher, worker and evaluator each name their own model`)
     }
+    // Closed, like every other object here. `models: { workr: "x" }` used to
+    // validate: the misspelt key was dropped and the `worker` role fell through
+    // to the missing-model refusal — or, for `adapters`, silently ran the
+    // default lane. A role map has exactly three roles and nothing else.
+    const unknownModelRole = Object.keys(models).find((role) => !TEAM_MODEL_ROLES.includes(role))
+    if (unknownModelRole !== undefined) {
+      return invalid(`team ${teamId} declares a model for an unknown role ${show(unknownModelRole)} — a team has a ${TEAM_MODEL_ROLES.join(', a ')} and nothing else`)
+    }
     for (const role of TEAM_MODEL_ROLES) {
       const model = models[role]
       if (model == null || model === '') return invalid(`team ${teamId} is missing a model for its ${role}`)
@@ -320,6 +347,10 @@ export function validateWorkflowGraph(value) {
     const adapters = raw.adapters == null ? {} : raw.adapters
     if (!isObject(adapters)) {
       return invalid(`team ${teamId} declares adapters that are not an object — omit the key to run every seat on ${DEFAULT_ADAPTER}`)
+    }
+    const unknownAdapterRole = Object.keys(adapters).find((role) => !TEAM_MODEL_ROLES.includes(role))
+    if (unknownAdapterRole !== undefined) {
+      return invalid(`team ${teamId} declares an adapter for an unknown role ${show(unknownAdapterRole)} — a team has a ${TEAM_MODEL_ROLES.join(', a ')} and nothing else`)
     }
     const laneOf = (role) => {
       const declared = adapters[role]

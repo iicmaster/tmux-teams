@@ -2932,6 +2932,24 @@ const quoteMarkers = (text, taskId) => text.replace(
 
 const escapeForRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
+// A partial trailing line, held back so it can be quoted as a LINE.
+//
+// `quoteMarkers` matches whole lines, and an ACP agent streams one message in
+// as many chunks as it likes. Quoting each chunk on arrival meant a marker split
+// across a chunk boundary — `...\nTEAM_DONE rev18c-` then `codex` — matched
+// nothing in either half and reassembled on stdout as a raw, standalone marker
+// line. The forgeable stream was back, through the ordinary streaming path
+// rather than an exotic one. Found by a release reviewer; the test that shipped
+// with the first fix sent a single chunk and could not have seen it.
+let partialLine = ''
+const flushPending = () => {
+  if (partialLine === '') return
+  // At flush time the partial line IS the whole line — nothing more is coming —
+  // so it is quoted before it is written, never after.
+  process.stdout.write(quoteMarkers(partialLine, taskId))
+  partialLine = ''
+}
+
 function say(kind, value, messageId) {
   const spoken = redact(value)
   // Sliced FIRST, then quoted. The annotation is longer than the token it
@@ -2941,9 +2959,10 @@ function say(kind, value, messageId) {
   // slice is no longer a whole line and is not quoted, which is correct: a
   // truncated fragment cannot be mistaken for the contract either.
   const text = spoken.slice(0, MAX_DISPLAY_TEXT)
-  const shown = kind === 'say' || kind === 'think' ? quoteMarkers(text, taskId) : text
+  const quotable = kind === 'say' || kind === 'think'
   const nextMode = `${kind}:${messageId ?? ''}`
   if (mode !== nextMode) {
+    flushPending()
     if (mode !== null) process.stdout.write('\n')
     process.stdout.write(`[${kind}] `)
     mode = nextMode
@@ -2951,13 +2970,23 @@ function say(kind, value, messageId) {
   }
   if (modeChars >= MAX_DISPLAY_TEXT) return
   const remaining = MAX_DISPLAY_TEXT - modeChars
-  process.stdout.write(shown.slice(0, remaining))
+  const piece = text.slice(0, remaining)
   // Counted against the AGENT's text, not against ours: the annotation is this
   // process talking and must not shrink what the worker is allowed to say.
-  modeChars += Math.min(remaining, text.length)
+  modeChars += piece.length
+  if (!quotable) {
+    process.stdout.write(piece)
+    return
+  }
+  partialLine += piece
+  const lastBreak = partialLine.lastIndexOf('\n')
+  if (lastBreak === -1) return
+  process.stdout.write(quoteMarkers(partialLine.slice(0, lastBreak + 1), taskId))
+  partialLine = partialLine.slice(lastBreak + 1)
 }
 
 function line(value) {
+  flushPending()
   if (mode !== null) process.stdout.write('\n')
   mode = null
   modeChars = 0

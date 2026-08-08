@@ -417,6 +417,44 @@ test('a key the loader does not read is refused, not silently dropped', () => {
     'the generic unknown-key sentence swallowed the specific redirect')
 })
 
+test('the ROOT object and the role maps are closed too, not just the objects between them', () => {
+  // Round 2 of the same review. The team object had just been closed and the
+  // contract said "closed at every level" — while the root and the nested role
+  // maps still dropped an invented key in silence. Measured: a graph declaring
+  // `outer_controller_adpater` validated clean and ran the DEFAULT adapter, so a
+  // single transposed letter silently moved the controller to another lane.
+  const root = rejected(graphWith({ outer_controller_adpater: 'codex' }))
+  assert.match(root, /outer_controller_adpater/)
+  assert.match(root, /a graph declares/)
+
+  // A misspelt role inside `models` fell through to "missing a model for its
+  // worker" — a true sentence pointing at the wrong line. Inside `adapters` it
+  // said nothing at all and ran the default lane.
+  const model = rejected(graphWith({
+    teams: [
+      { ...teamOf('build', ['b_w1']), models: { dispatcher: 'm', workr: 'm', evaluator: 'm' } },
+      teamOf('verify', ['v_w1']),
+    ],
+  }))
+  assert.match(model, /workr/)
+  assert.match(model, /unknown role/)
+
+  const adapter = rejected(graphWith({
+    teams: [
+      { ...teamOf('build', ['b_w1']), adapters: { dispatchr: 'codex', worker: 'claude', evaluator: 'claude' } },
+      teamOf('verify', ['v_w1']),
+    ],
+  }))
+  assert.match(adapter, /dispatchr/)
+  assert.match(adapter, /unknown role/)
+
+  // Ordering, which is the part that goes wrong. `controller_team` is not on
+  // the root allowlist, so a root check placed before its own refusal would
+  // answer "unknown key" — replacing the sentence that teaches with the one
+  // that merely stops. Exactly the mistake the removed carve-out made.
+  assert.match(rejected(graphWith({ controller_team: 'build' })), /derived/)
+})
+
 test('controller_team is derived, never declared', () => {
   assert.match(rejected(graphWith({ controller_team: 'build' })), /derived/)
 })

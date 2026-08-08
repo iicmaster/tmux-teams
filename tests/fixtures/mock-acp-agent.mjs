@@ -194,17 +194,20 @@ function writeOutbox(prompt) {
     return
   }
   if (kind === 'fifo') {
-    // No writer is ever opened: a blocking reader would wait here for ever.
+    // Nothing happens here, deliberately. The FIFO is created by the TEST
+    // before this process is launched, and the test asserts it exists and is a
+    // FIFO before going anywhere near the companion.
     //
-    // The result is checked. It was ignored, and a `mkfifo` that failed for any
-    // reason — the binary missing, a fork refused under load — left NO file at
-    // the outbox path at all, so the companion answered "no outbox" and the
-    // test that meant to prove the file-type refusal failed on the wording of a
-    // different error. A fixture that cannot set up its own case must say so.
-    const made = spawnSync('mkfifo', [outbox])
-    if (made.error || made.status !== 0) {
-      throw new Error(`fixture could not create the fifo: ${made.error?.message ?? `mkfifo exited ${made.status}: ${made.stderr}`}`)
-    }
+    // It used to be `spawnSync('mkfifo')` right here, with its result ignored.
+    // When that fork failed there was no file at the outbox path at all, so the
+    // companion answered "no outbox" and a test about file-type refusal failed
+    // on the wording of an unrelated error — which is how it read the one time
+    // it went red: `AssertionError: fifo`. Making the fixture throw was the
+    // first repair and it was not enough: a setup failure still surfaced inside
+    // the run, as agent stderr, where the assertion could not tell it apart
+    // from a misclassification. Setup now happens where a setup failure can be
+    // reported AS a setup failure. No writer is ever opened either way — a
+    // blocking reader would wait here for ever.
     return
   }
   if (kind === 'oversize') {
