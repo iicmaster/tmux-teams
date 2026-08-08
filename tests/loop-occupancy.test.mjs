@@ -27,7 +27,7 @@ import {
 } from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs'
 import { applyPulls, planPulls } from '../plugins/tmux-teams/skills/tmux-teams/scripts/pull-controller.mjs'
 import {
-  REVIEW_VERDICTS, TARGET_VERDICTS, readTargetVerdict, readVerdict, readWorkerHint, roleBrief,
+  REPLACE_MARKER, REVIEW_VERDICTS, TARGET_VERDICTS, readTargetVerdict, readVerdict, readWorkerHint, roleBrief,
 } from '../plugins/tmux-teams/skills/tmux-teams/scripts/role-briefs.mjs'
 import { EVENT_SPEC, LEDGER_EVENTS, validateLedger } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-validate.mjs'
 import { gateHistory } from './fixture-gate.mjs'
@@ -778,6 +778,43 @@ test('every shipped brief asks for the EVIDENCE block the ledger records', () =>
       })
       assert.match(brief, /^- End your outbox with an `EVIDENCE:` block/m, role)
     }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a standing instruction is added to the PM brief, not swapped for it', () => {
+  // GitHub #54. A `pm.md` REPLACED the whole brief, and the PM's entire brief is
+  // this function's output — the trigger naming which token to audit, the board,
+  // and the verdict vocabulary the runner parses the reply against. Every other
+  // role survives an override because `composeBrief` appends the token request
+  // and previous delivery beside it; the PM had nothing left. An operator adding
+  // one standing line made every PM dispatch blind, and nothing warned them.
+  const dir = mkdtempSync(join(tmpdir(), 'pm-brief-'))
+  try {
+    mkdirSync(join(dir, '.tmux-teams', 'team-briefs'), { recursive: true })
+    const context = { projectId: 'p', trigger: 'TOKEN-42 has no verdict', board: 'BOARD-TEXT' }
+
+    const plain = roleBrief(dir, 'pm', null, context)
+    assert.match(plain, /TOKEN-42/, 'the bundled brief lost its own trigger')
+
+    writeFileSync(join(dir, '.tmux-teams', 'team-briefs', 'pm.md'), 'Always commit before replying.\n')
+    const extended = roleBrief(dir, 'pm', null, context)
+    assert.match(extended, /Always commit before replying/, 'the standing instruction was dropped')
+    assert.match(extended, /TOKEN-42/, 'the per-dispatch trigger was dropped — the PM is blind again')
+    assert.match(extended, /BOARD-TEXT/, 'the board was dropped')
+    assert.ok(extended.indexOf('Always commit') < extended.indexOf('TOKEN-42'),
+      'a policy printed after the facts reads as an afterthought')
+
+    // The escape hatch stays for anyone who genuinely means total replacement —
+    // it just stops being the default nobody asked for. And the marker itself
+    // must not survive into the brief a model reads.
+    writeFileSync(join(dir, '.tmux-teams', 'team-briefs', 'pm.md'),
+      `ONLY THIS\n${REPLACE_MARKER}\n`)
+    const replaced = roleBrief(dir, 'pm', null, context)
+    assert.doesNotMatch(replaced, /TOKEN-42/, 'the explicit replace marker did not replace')
+    assert.doesNotMatch(replaced, /replace -->/, 'the marker leaked into the brief')
+    assert.match(replaced, /ONLY THIS/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

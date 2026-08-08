@@ -397,13 +397,40 @@ REASON: <one line — what you verified, or exactly what is wrong and who must a
 
 const BUILDERS = { dispatcher: dispatcherBrief, grill: grillBrief, evaluator: evaluatorBrief, pm: pmBrief }
 
-// A repo can replace any role brief; the bundled text is the floor, not the law.
+// A repo can EXTEND any role brief; the bundled text is the floor, not the law.
+//
+// It used to REPLACE, and for the PM that was a footgun with no warning
+// (GitHub #54). Every other role's brief is assembled by `composeBrief`, which
+// appends the token's own request and the previous delivery beside the role
+// text — so an override there loses shape but not the per-dispatch facts. The
+// PM's entire brief IS this function's output: the trigger naming which token to
+// audit or unstick, the board, the project id, and the verdict vocabulary the
+// runner then parses the reply against. Dropping a `pm.md` in to add one
+// standing instruction made every PM dispatch blind, and nothing said so.
+//
+// So a standing instruction is now what it reads like: standing. It is placed
+// ABOVE the built brief, because an operator writing it is stating a policy the
+// dispatch should be read under, and a policy after the facts reads as an
+// afterthought. `${REPLACE_MARKER}` on its own line restores the old total
+// replacement for anyone who genuinely means it — the escape hatch stays, it
+// just stops being the default nobody asked for.
+export const REPLACE_MARKER = '<!-- tmux-teams: replace -->'
+
 export function roleBrief(repo, role, teamId, context) {
   const override = join(repo, '.tmux-teams', 'team-briefs',
     role === 'pm' ? 'pm.md' : `${teamId}.${role}.md`)
-  if (existsSync(override)) {
-    try { return readFileSync(override, 'utf8') } catch { /* fall through to the bundled text */ }
-  }
   const build = BUILDERS[role]
-  return build ? build(context) : ''
+  const built = build ? build(context) : ''
+  if (existsSync(override)) {
+    try {
+      const standing = readFileSync(override, 'utf8')
+      if (standing.split(/\r?\n/).some((line) => line.trim() === REPLACE_MARKER)) {
+        return standing.split(/\r?\n/).filter((line) => line.trim() !== REPLACE_MARKER).join('\n')
+      }
+      // No built text to extend (an unknown role) means the override IS the
+      // brief, which is the old behaviour and the only sensible one here.
+      return built ? `${standing.trimEnd()}\n\n---\n\n${built}` : standing
+    } catch { /* fall through to the bundled text */ }
+  }
+  return built
 }

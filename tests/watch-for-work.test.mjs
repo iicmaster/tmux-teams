@@ -191,27 +191,34 @@ test('the two REAL write patterns this system uses both wake it', async () => {
   // long enough to be safe under load is a slow test; a sleep short enough to
   // be quick is a flake, and this repository has already lost real failures to
   // one dismissed as "a timing thing".
-  const wokeAgain = async (from, what) => {
-    for (let waited = 0; waited < 5000; waited += 25) {
-      if (woke.length > from) return
+  // Retries the WRITE, not just the wait. `fs.watch` is armed asynchronously —
+  // FSEvents on macOS — so under full-suite load a write can land before the
+  // watcher is listening, and polling alone then waits five seconds for an event
+  // that was never going to come. Both this and the cold-start test above learned
+  // that the same way: green alone, red inside the suite.
+  const wokeAgain = async (from, what, write) => {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      write(attempt)
       await new Promise((resolve) => setTimeout(resolve, 25))
+      if (woke.length > from) return
     }
-    assert.fail(`${what} did not wake the loop within 5s`)
+    assert.fail(`${what} never woke the loop`)
   }
 
   try {
     const { appendFileSync, renameSync } = await import('node:fs')
-    appendFileSync(join(items, 'tok.jsonl'), '{"event":"answered"}\n')
-    await wokeAgain(0, 'an in-place ledger append')
+    await wokeAgain(0, 'an in-place ledger append',
+      () => appendFileSync(join(items, 'tok.jsonl'), '{"event":"answered"}\n'))
 
     const before = woke.length
-    writeFileSync(join(items, '.next.tmp'), '{"event":"withdrawn"}\n')
-    renameSync(join(items, '.next.tmp'), join(items, 'next.jsonl'))
-    await wokeAgain(before, 'an atomic rename into the ledger directory')
+    await wokeAgain(before, 'an atomic rename into the ledger directory', (n) => {
+      writeFileSync(join(items, `.next-${n}.tmp`), '{"event":"withdrawn"}\n')
+      renameSync(join(items, `.next-${n}.tmp`), join(items, `next-${n}.jsonl`))
+    })
 
     const beforeOutbox = woke.length
-    writeFileSync(join(repo, '.mailbox-out', 'task-1'), 'TEAM_DONE\n')
-    await wokeAgain(beforeOutbox, 'a worker writing its outbox')
+    await wokeAgain(beforeOutbox, 'a worker writing its outbox',
+      (n) => writeFileSync(join(repo, '.mailbox-out', `task-${n}`), 'TEAM_DONE\n'))
   } finally { stop() }
 })
 
