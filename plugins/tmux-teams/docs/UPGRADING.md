@@ -171,8 +171,11 @@ flag, no migration step.
 
 - **There is no MCP server, and no dispatched agent receives one.** Every ACP
   call this system makes sends the literal `mcpServers: []` — not an
-  omission, a closed seam. `loop-system-contract.md` §13 prohibits a
-  non-empty `mcpServers` outright, and
+  omission, a closed seam. Since 2026-08-09 that is a RUNNING guard and not
+  only a stated rule: AC135 drives the real companion against a recording
+  agent and reads back what both session-opening calls carried.
+  `loop-system-contract.md` §13 prohibits a non-empty `mcpServers` outright,
+  and
   [`docs/adr/0003-mcp-server-containment-seam.md`](adr/0003-mcp-server-containment-seam.md)
   records why: an MCP server is a channel this system's own ledger, pull, and
   review machinery cannot mediate, attribute, or gate — opening it is a

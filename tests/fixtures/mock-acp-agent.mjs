@@ -438,6 +438,14 @@ async function handleLine(line) {
   if (process.env.MOCK_PROTOCOL_LOG) {
     appendFileSync(process.env.MOCK_PROTOCOL_LOG, `${message.method ?? 'response'}:${message.id ?? ''}\n`, { mode: 0o600 })
   }
+  // MOCK_REQUEST_LOG records the PARAMS the companion actually sent, which
+  // MOCK_PROTOCOL_LOG (method:id only) cannot show. Kept as a separate file
+  // rather than widening the protocol log, because a dozen existing tests read
+  // that one by string match and a format change would move all of them.
+  if (process.env.MOCK_REQUEST_LOG && message.method) {
+    appendFileSync(process.env.MOCK_REQUEST_LOG,
+      `${JSON.stringify({ method: message.method, params: message.params ?? null })}\n`, { mode: 0o600 })
+  }
   if (pendingPermissionPrompt && message.id === PERMISSION_REQUEST_ID && !message.method) {
     const outcome = message.result?.outcome
     if (outcome?.outcome === 'selected') permissionDecision = outcome.optionId

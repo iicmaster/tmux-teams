@@ -40,10 +40,15 @@ on the record, not a default nobody chose.
 ## Decision
 
 **The seam stays closed.** `loop-system-contract.md` §13 gains a prohibition:
-no dispatch may pass a non-empty `mcpServers`. It is marked unenforced per
-§15.2 — nothing tests the literal today — so the clause states what it
-actually is (a stated rule, backed by two call sites read in review) rather
-than implying a running protection that does not exist.
+no dispatch may pass a non-empty `mcpServers`.
+
+**When this ADR was written the clause was unenforced**, and it said so rather
+than implying a running protection that did not exist: a stated rule backed by
+two call sites read in review. That is no longer the state. On 2026-08-09 the
+clause became **AC135**, proven at runtime by `mcp-servers-closed.test.mjs`
+against the params the agent actually received. The paragraphs below are kept
+as written because the REASONING for keeping the seam closed is unchanged; only
+the enforcement sentence moved.
 
 Opening the seam is a **containment reduction**, not an added capability. An
 MCP server is a channel the loop's dispatch/ledger/pull/review machinery
@@ -80,10 +85,14 @@ allowlist file.
 - `loop-system-contract.md` §13 carries the prohibition. A dispatch that ever
   sends a non-empty `mcpServers` is a contract violation by definition,
   whether or not a test catches it on the day it happens.
-- §14.1 records the specific gap this ADR does not close: nothing asserts the
-  two call sites in `acp-companion.mjs` still send `mcpServers: []`. A
-  regression here has no test to fail today — only a diff review, per §15's
-  existing amendment-log discipline.
+- ~~§14.1 records the specific gap this ADR does not close: nothing asserts the
+  two call sites in `acp-companion.mjs` still send `mcpServers: []`.~~
+  **Closed 2026-08-09 (AC135).** The gap was real for as long as it stood, and
+  it is recorded struck through rather than deleted because the interval —
+  a prohibition living on diff review alone — is the thing worth remembering.
+  `mcp-servers-closed.test.mjs` now fails on four separate regressions: either
+  call site dropping the key, sending `{}` instead of `[]`, or registering a
+  server. All four were injected and confirmed red before this line was written.
 - No code changed as part of this decision. `acp-companion.mjs`'s two
   literals are exactly what they were before this ADR; what changed is that
   the contract now says why they must stay that way and names who may change
