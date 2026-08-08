@@ -356,9 +356,21 @@ test('CLAUDE_CODE_EXECUTABLE is gate-owned, but that alone does not prove the fa
   // endpoint it reaches. The corrected claim is below: provenFamilyKey
   // honestly buckets kimi with bare claude rather than asserting a
   // distinction this layer cannot back up.
-  // kimi is a routed lane now, so its env comes from the machine-local settings
-  // file — the source needs a HOME for that to resolve at all.
-  const source = { PATH: '/bin', HOME: process.env.HOME, KIMI_API_KEY: 'kimi', CLAUDE_CODE_EXECUTABLE: '/tmp/evil-claude' }
+  // kimi is a routed lane, so its env comes from a settings file under HOME —
+  // and pointing at the AUTHOR'S home is what made this test machine-local.
+  // It passed here and failed on CI from the day kimi was pinned, red through
+  // two shipped releases, because `~/.config/claude-profiles/kimi/settings.json`
+  // exists on one laptop and nowhere else. A test that reads the developer's
+  // dotfiles is not testing the repository.
+  //
+  // A HOME is built for it instead, holding the minimum the routed lane needs.
+  // What is being proven has not changed: a caller cannot re-point the lane's
+  // executable, and the model config is the profile's own.
+  const home = mkdtempSync(join(tmpdir(), 'kimi-home-'))
+  mkdirSync(join(home, '.config', 'claude-profiles', 'kimi'), { recursive: true })
+  writeFileSync(join(home, '.config', 'claude-profiles', 'kimi', 'settings.json'),
+    JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'https://api.kimi.com/coding/', ANTHROPIC_AUTH_TOKEN: 'test-token' } }))
+  const source = { PATH: '/bin', HOME: home, KIMI_API_KEY: 'kimi', CLAUDE_CODE_EXECUTABLE: '/tmp/evil-claude' }
   const env = buildProfileEnv('kimi', source)
   assert.equal(env.CLAUDE_CODE_EXECUTABLE, 'claude-kimi', 'the caller re-pointed the lane')
   assert.equal(env.CLAUDE_MODEL_CONFIG, '{"availableModels":["opus"]}')
