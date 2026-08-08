@@ -1,0 +1,173 @@
+// gate-required.mjs — decides whether a release must run the three-model
+// review panel, from the release diff alone. See CLAUDE.md "Release flow"
+// step 2. Master's decision, 2026-08-09: the gate is scoped, not retired.
+//
+// Why this script exists rather than a sentence: the rule it replaces said
+// three model families must read every release diff, and v0.18.1 and v0.18.2
+// shipped without a single lane. Nobody cheated — the gate charged its full
+// price for a version bump and a documentation edit, so it got skipped, and a
+// rule skipped twice in a row is not a rule. The scoped rule only stays true
+// if "does this release need the panel" is answered by `git diff` instead of
+// by whoever is holding the release.
+//
+// THE CLASSIFIER FAILS CLOSED. Every changed file requires the panel unless
+// it can be PROVEN harmless, and there are exactly two proofs:
+//
+//   1. The file is one of the repo's own documentation files (DOC_ONLY), none
+//      of which reach an installed plugin.
+//   2. Every changed line in it is identical to its counterpart once semver
+//      numbers are blanked — i.e. the diff changes the version and nothing
+//      else. This is what lets a version bump touch a real test file
+//      (`tests/plugin-structure.test.mjs` carries RELEASE_VERSION) without
+//      dragging the whole panel along, while a semantic edit smuggled onto a
+//      line that happens to mention a version still trips it.
+//
+// Anything the parser cannot read as +/- content lines — a binary file, a
+// pure rename, an empty diff — produces NO proof and therefore REQUIRES the
+// panel. That is deliberate: an unrecognized change shape is the one case
+// where guessing is worst.
+import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+import { dirname, resolve } from 'node:path'
+
+const HERE = dirname(fileURLToPath(import.meta.url))
+export const REPO_ROOT = resolve(HERE, '..')
+
+// Repository documentation. None of these are inside `plugins/`, so none of
+// them reach an installed plugin — a reader of the release is the only thing
+// they can change. `docs/` is deliberately absent: it is untracked in this
+// repo (see CLAUDE.md Rules), so it can never appear in a release diff, and
+// listing it would be a guard against something that cannot happen.
+export const DOC_ONLY = new Set(['HANDOFF.md', 'README.md', 'CLAUDE.md'])
+
+const SEMVER = /\d+\.\d+\.\d+/g
+
+// Blank every semver, then compare the added and removed lines as MULTISETS —
+// sorted, length-checked. A multiset and not a Set: two identical lines both
+// changing is a different diff from one changing, and a Set would call them
+// equal.
+const blankVersions = (lines) => lines.map((line) => line.replace(SEMVER, '<version>')).sort()
+
+const sameLines = (a, b) => a.length === b.length && a.every((line, i) => line === b[i])
+
+/**
+ * Why this one file forces the panel, or null when it is provably harmless.
+ * Pure: takes parsed lines, reads nothing, spawns nothing.
+ */
+export function whyGated(file) {
+  if (DOC_ONLY.has(file.path)) return null
+
+  const added = blankVersions(file.addedLines)
+  const removed = blankVersions(file.removedLines)
+
+  if (added.length === 0 && removed.length === 0) {
+    return 'fail-closed: unrecognized change shape (binary, rename, or empty diff)'
+  }
+  if (!sameLines(added, removed)) return 'changes more than the version string'
+  return null
+}
+
+/**
+ * The whole verdict. `files` is [{path, addedLines, removedLines}].
+ */
+export function classifyRelease(files) {
+  const deciding = []
+  for (const file of files) {
+    const reason = whyGated(file)
+    if (reason !== null) deciding.push({ path: file.path, reason })
+  }
+  return {
+    required: deciding.length > 0,
+    deciding,
+    exempt: files.filter((file) => whyGated(file) === null).map((file) => file.path),
+  }
+}
+
+/**
+ * Parse `git diff --unified=0` output into the shape classifyRelease wants.
+ * `--unified=0` so no context line is ever mistaken for a change.
+ */
+export function parseDiff(text) {
+  const files = []
+  let current = null
+  for (const line of text.split('\n')) {
+    if (line.startsWith('diff --git ')) {
+      const match = /^diff --git a\/(.*) b\/(.*)$/.exec(line)
+      current = { path: match ? match[2] : line, addedLines: [], removedLines: [] }
+      files.push(current)
+      continue
+    }
+    if (current === null) continue
+    // The +++/--- header checks MUST come before the +/- content checks.
+    if (line.startsWith('+++ ')) {
+      const path = line.slice(4)
+      if (path !== '/dev/null') current.path = path.replace(/^b\//, '')
+    } else if (line.startsWith('--- ')) {
+      continue
+    } else if (line.startsWith('+')) {
+      current.addedLines.push(line.slice(1))
+    } else if (line.startsWith('-')) {
+      current.removedLines.push(line.slice(1))
+    }
+  }
+  return files
+}
+
+const git = (args) => execFileSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+
+export function releaseRange() {
+  return `${git(['describe', '--tags', '--abbrev=0']).trim()}..HEAD`
+}
+
+// Exit codes are DISTINCT on purpose, and 1 is not one of the verdicts. This
+// repo has already been burned once by a check whose exit code meant the
+// opposite of what a `&&` chain assumed (`node --test | grep '✖'` exits 0 when
+// it FINDS failures, and two commits landed on red because of it).
+//   0 = exempt · 2 = panel required · 1 = the script itself failed
+const EXIT_EXEMPT = 0
+const EXIT_REQUIRED = 2
+const EXIT_ERROR = 1
+
+function main(argv) {
+  let range
+  try {
+    range = argv[2] ?? releaseRange()
+  } catch (error) {
+    console.error(`gate-required: could not resolve the release range — ${error.message}`)
+    return EXIT_ERROR
+  }
+
+  let files
+  try {
+    files = parseDiff(git(['diff', '--unified=0', range]))
+  } catch (error) {
+    console.error(`gate-required: could not read the diff for ${range} — ${error.message}`)
+    return EXIT_ERROR
+  }
+
+  const verdict = classifyRelease(files)
+  console.log(`range: ${range}  ·  files changed: ${files.length}`)
+
+  if (!verdict.required) {
+    console.log('')
+    console.log('GATE EXEMPT — documentation and version numbers only.')
+    console.log('Put this line in the GitHub release notes, verbatim:')
+    console.log('')
+    console.log(`    Gate: exempt (docs/version-only) — ${verdict.exempt.join(', ') || 'no files changed'}`)
+    return EXIT_EXEMPT
+  }
+
+  console.log('')
+  console.log(`GATE REQUIRED — ${verdict.deciding.length} file(s) decide it:`)
+  for (const { path, reason } of verdict.deciding) console.log(`    ${path} — ${reason}`)
+  console.log('')
+  console.log('Run the three-model panel on this diff before the version is marked')
+  console.log('(CLAUDE.md "Release flow" step 2), then record:')
+  console.log('')
+  console.log('    Gate: 3/3 — <lane>:<effective_identity> for every lane')
+  return EXIT_REQUIRED
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  process.exitCode = main(process.argv)
+}

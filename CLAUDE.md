@@ -17,6 +17,7 @@ node scripts/run-fast.mjs fast     # explicit in-process inner tier
 node --test                        # whole suite — structure, semantics, KMS; run before commit
 git diff --check                   # repository whitespace gate
 claude plugin validate --strict .  # manifest validation
+node scripts/gate-required.mjs     # does this release owe the three-model panel? 0=exempt 2=required
 ```
 
 `node scripts/run-fast.mjs fast` uses an explicit allowlist and prints every
@@ -154,6 +155,34 @@ not optional, and only a later explicit instruction from Master changes either.
    rerun all three on the new bytes; never retry an objection away. Fewer than
    three accepted reviews leaves the release visibly blocked: no silent
    substitution, no two-reviewer degradation.
+
+   **WHEN the panel is owed is decided by `git diff`, never by whoever is
+   holding the release** (Master, 2026-08-09). The rule above stood unscoped
+   until v0.18.1 and v0.18.2 shipped with ZERO lanes. Nobody bypassed it on
+   purpose: it charged the same price for a documentation edit as for a rewrite
+   of the companion, so it got skipped — and a rule skipped twice running is not
+   a rule, it is a wish. **Scoped, not retired:**
+
+   ```bash
+   node scripts/gate-required.mjs   # 0 = exempt · 2 = panel required · 1 = the script itself failed
+   ```
+
+   It exempts a file only on PROOF, and there are two: the file is `HANDOFF.md`,
+   `README.md` or `CLAUDE.md`, or every changed line in it is identical once
+   semver numbers are blanked (which is what lets a version bump touch
+   `tests/plugin-structure.test.mjs` alone). Everything else requires the panel,
+   including a change shape the parser cannot read — binary, rename, empty diff.
+   **Never widen that allowlist to a path under `plugins/`**: those bytes reach
+   an installed plugin, and they are the entire thing the panel is for.
+
+   **An exemption that is not RECORDED is just the old silent skip.** An exempt
+   release carries `Gate: exempt (docs/version-only) — <files>` in its GitHub
+   release notes; a gated release carries `Gate: 3/3` with every lane's
+   `effective_identity`. A release with neither line is in exactly the state
+   v0.18.1 was left in — ungated and unrecorded. And note what the decider says
+   about the past: run it over `v0.17.0..v0.18.0`, `v0.18.0..v0.18.1` and
+   `v0.18.1..v0.18.2` and it answers REQUIRED for all three. **The new scope
+   excuses none of them, and it was not built to.**
 
    **HOW you run the panel depends on the machine, and this rule named a tool
    that cannot run on half of them** (found 2026-08-08, the first time anyone
