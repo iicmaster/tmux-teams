@@ -492,16 +492,63 @@ async function resolveExecutable(command, env, {
 //
 // The DECISION of what a lane must carry in is separated from the act of
 // carrying it, and exported, because the staging itself sits behind a
-// `platform === 'linux' && /usr/bin/bwrap` gate that no test on this machine can
-// reach. A guard that cannot go red is not a guard — so what is testable here is
-// tested here, and what is not says so.
+// `platform === 'linux' && /usr/bin/bwrap` gate. A guard that cannot go red is
+// not a guard — so what is testable without that host is tested without it.
 //
-// LIMITS, unverified and stated rather than discovered: the wrapper is copied,
-// not bind-mounted, so a wrapper that hard-codes an ABSOLUTE path to the CLI
-// still fails and would need a mount instead. The CLI is staged under the plain
-// name `claude` on the runtime directory that leads PATH, which is what a
-// wrapper resolving it by name will find. Both need a Linux host with bwrap to
-// confirm; this one has neither.
+// **This paragraph used to end "this one has neither", and that was the whole
+// problem.** On 2026-08-09 the suite ran for the first time on a Linux host
+// with bwrap (Ubuntu 26.04) and all three sandbox tests failed identically —
+// they had been SKIPPED on every machine that ever ran them, so the code they
+// covered had never executed anywhere. See `needsSandboxStaging` for what they
+// found. The suite is now 841/841 with nothing skipped on that host.
+//
+// LIMITS, still unverified and stated rather than discovered: the wrapper is
+// copied, not bind-mounted, so a wrapper that hard-codes an ABSOLUTE path to
+// the CLI still fails and would need a mount instead. The CLI is staged under
+// the plain name `claude` on the runtime directory that leads PATH, which is
+// what a wrapper resolving it by name will find. A staged CLI is one FILE — a
+// node script whose own `node_modules` live under a masked root would resolve
+// nothing. None of those three have been exercised against a real routed lane
+// yet, and saying so is the only thing that stopped the last one being a
+// surprise.
+// The roots the sandbox replaces with an empty tmpfs. Exported and consumed BY
+// THE ARGV BUILDER ITSELF (below) so that the list bwrap is actually told and
+// the list the staging decision consults can never be two different truths —
+// which is exactly what they were until 2026-08-09.
+export const SANDBOX_MASKED_ROOTS = Object.freeze([
+  '/home', '/root', '/mnt', '/media', '/opt', '/srv', '/var', '/run', '/tmp',
+])
+
+/**
+ * Will this path still exist once the sandbox is built? That is the only
+ * question staging ever needed to answer, and for a long time it asked a proxy
+ * instead — "is it under $HOME" — which is a different question with a
+ * different answer.
+ *
+ * Measured on Ubuntu 26.04, 2026-08-09, the first time these tests ever ran:
+ * the lane's own interpreter was `/home/.../mise/installs/node/24.19.0/bin/node`
+ * and the proxy answered NO STAGING NEEDED twice, for two unrelated reasons.
+ * `HOME` was `undefined`, because a review lane's environment is explicit and
+ * not inherited — a rule this file enforces elsewhere and had not reconciled
+ * with here. And on the AGY lanes `HOME` was the sandbox's own ephemeral home,
+ * so the host's interpreter was correctly judged "not under it". Both paths led
+ * to bwrap being handed a path it had just masked, and all three sandbox tests
+ * died identically: `bwrap: execvp ...: No such file or directory`, 103 bytes
+ * of stderr the transport digests away.
+ *
+ * This generalises well past node: mise, nvm, fnm, volta and asdf all install
+ * under $HOME, and anything under /opt or /var is equally invisible.
+ */
+export function needsSandboxStaging(source, env = {}, runtimeDirectory = null) {
+  if (!source) return false
+  // Already inside a directory the sandbox re-binds after masking — copying it
+  // into itself would be a no-op at best.
+  if (runtimeDirectory && isWithin(source, runtimeDirectory)) return false
+  if (SANDBOX_MASKED_ROOTS.some(root => isWithin(source, root))) return true
+  const home = env.HOME ?? env.USERPROFILE
+  return Boolean(home && isWithin(source, home))
+}
+
 export function sandboxStagedExecutables(env = {}) {
   const staged = []
   if (typeof env.AGY_BIN === 'string') {
@@ -523,8 +570,7 @@ export function sandboxStagedExecutables(env = {}) {
 async function stageHomeExecutable(command, env, runtimeDirectory, outputName = basename(command), options = {}) {
   const source = await resolveExecutable(command, env, options)
   if (!source) throw new ReviewTransportError('config', `ACP review executable not found: ${basename(command)}`)
-  const home = env.HOME ?? env.USERPROFILE
-  if (!home || !isWithin(source, await realpath(home))) return source
+  if (!needsSandboxStaging(source, env, runtimeDirectory)) return source
   const destination = join(runtimeDirectory, outputName)
   await copyFile(source, destination)
   await chmod(destination, 0o700)
@@ -731,15 +777,7 @@ export async function runAcpReview({
         '--unshare-pid',
         '--cap-drop', 'ALL',
         '--ro-bind', '/', '/',
-        '--tmpfs', '/home',
-        '--tmpfs', '/root',
-        '--tmpfs', '/mnt',
-        '--tmpfs', '/media',
-        '--tmpfs', '/opt',
-        '--tmpfs', '/srv',
-        '--tmpfs', '/var',
-        '--tmpfs', '/run',
-        '--tmpfs', '/tmp',
+        ...SANDBOX_MASKED_ROOTS.flatMap(root => ['--tmpfs', root]),
         '--dev', '/dev',
         '--proc', '/proc',
         ...resolverMount,

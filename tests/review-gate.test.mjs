@@ -4,7 +4,8 @@ import { mkdirSync, mkdtempSync, writeFileSync, existsSync, readFileSync, symlin
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { runAcpReview, prepareReviewPacket, ReviewTransportError, sandboxStagedExecutables } from '../plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs'
+import { runAcpReview, prepareReviewPacket, ReviewTransportError, sandboxStagedExecutables,
+  needsSandboxStaging, SANDBOX_MASKED_ROOTS } from '../plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs'
 import { runReviewGate, runReviewGateCli, LANE_TIMEOUT_DEFAULT_MS, laneTimeoutMs, LANE_FAILURES,
 } from '../plugins/tmux-teams/skills/party-mode/scripts/review-gate.mjs'
 import { REVIEW_PROFILES } from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
@@ -1515,4 +1516,74 @@ test('what a lane LAUNCHES includes its declared args, not just what its signatu
   }
   assert.equal(new Set(launched.map((call) => JSON.stringify([call.command, call.args]))).size, 3,
     'three lanes certified distinct must not execute byte-identical commands')
+})
+
+// ---------------------------------------------------------------------------
+// The staging DECISION, which until 2026-08-09 could only be wrong on a machine
+// nobody had. These run everywhere, including the macOS host where the sandbox
+// itself cannot start — which is the point. This file's own comment said "a
+// guard that cannot go red is not a guard", and then left the decision itself
+// behind exactly such a gate.
+
+test('staging is decided by what the sandbox masks, never by $HOME', () => {
+  // The measured failure, in one assertion. The lane's interpreter lived under
+  // a mise install inside $HOME, the review environment carries no HOME at all
+  // (this file asserts elsewhere that a profile environment is explicit and not
+  // inherited), and the old question — "is it under $HOME" — answered "no
+  // staging needed" about a path bwrap had just replaced with an empty tmpfs.
+  const miseNode = '/home/server/.local/share/mise/installs/node/24.19.0/bin/node'
+  assert.equal(needsSandboxStaging(miseNode, {}), true)
+  assert.equal(needsSandboxStaging(miseNode, { HOME: undefined }), true)
+  // The second measured shape: HOME is set, but to the sandbox's own ephemeral
+  // home, so the HOST interpreter is correctly "not under it" and was skipped.
+  assert.equal(needsSandboxStaging(miseNode, { HOME: '/tmp/review-agy-home-oGnLL0' }), true)
+})
+
+test('every masked root is covered, not just the one that was measured', () => {
+  // nvm, fnm, volta and asdf all install under $HOME; /opt and /var hold plenty
+  // of vendor toolchains. Naming the family rather than the member is the fix
+  // this repo keeps having to make a second time.
+  //
+  // PINNED EXPLICITLY, and deliberately not derived from the constant. The loop
+  // below alone is vacuous — drop a root and it simply stops testing that root.
+  // That is not hypothetical: removing `/opt` was injected as a mutation here
+  // and went GREEN until this assertion was added.
+  assert.deepEqual([...SANDBOX_MASKED_ROOTS],
+    ['/home', '/root', '/mnt', '/media', '/opt', '/srv', '/var', '/run', '/tmp'],
+    'the sandbox mask list is a security boundary — a change here is a decision, not a tidy-up')
+  for (const root of SANDBOX_MASKED_ROOTS) {
+    assert.equal(needsSandboxStaging(`${root}/vendor/bin/node`, {}), true, root)
+  }
+})
+
+test('a system path the sandbox keeps is not copied for no reason', () => {
+  assert.equal(needsSandboxStaging('/usr/bin/node', {}), false)
+  assert.equal(needsSandboxStaging('/usr/local/bin/claude', {}), false)
+  assert.equal(needsSandboxStaging('/bin/sh', {}), false)
+})
+
+test('something already inside the re-bound runtime directory is left alone', () => {
+  // The runtime directory lives under /tmp, which IS masked — and then bound
+  // back in. Reading the mask list alone would copy it into itself.
+  const runtime = '/tmp/tmux-teams-review-abc123/runtime'
+  assert.equal(needsSandboxStaging(`${runtime}/node`, {}, runtime), false)
+  assert.equal(needsSandboxStaging('/tmp/somewhere-else/node', {}, runtime), true)
+})
+
+test('a HOME outside every masked root still forces staging', () => {
+  // Kept because the sandbox is Linux-only today and this is what stops the
+  // predicate quietly regressing to "masked roots only" if that ever changes.
+  assert.equal(needsSandboxStaging('/data/me/.nvm/bin/node', { HOME: '/data/me' }), true)
+  assert.equal(needsSandboxStaging('/data/other/bin/node', { HOME: '/data/me' }), false)
+})
+
+test('the masked-root list is the one bwrap is actually handed', () => {
+  // The whole defect was two lists that were meant to agree and had no reason
+  // to. This asserts the argv builder reads the exported constant rather than
+  // repeating it — mutate either and the other moves with it.
+  const source = readFileSync(join(HERE, '..', 'plugins', 'tmux-teams', 'skills', 'party-mode', 'scripts', 'acp-review-client.mjs'), 'utf8')
+  assert.match(source, /SANDBOX_MASKED_ROOTS\.flatMap\(root => \['--tmpfs', root\]\)/,
+    'the bwrap argv must build its tmpfs list FROM the exported constant')
+  assert.equal(/'--tmpfs', '\/home'/.test(source), false,
+    'a hand-written --tmpfs literal is a second list waiting to drift')
 })
