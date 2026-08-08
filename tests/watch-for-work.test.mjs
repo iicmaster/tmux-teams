@@ -194,9 +194,14 @@ const deliversFsEvents = async () => {
     // and answered "yes" on a CI where creation is reported and appending is
     // not, so the probe passed and the test it guards still failed. A probe
     // that does not perform the operation it is vouching for proves nothing.
-    for (let attempt = 0; attempt < 40 && !fired; attempt += 1) {
-      appendFileSync(target, `line-${attempt}\n`)
-      await new Promise((resolve) => setTimeout(resolve, 25))
+    // Same shape as `wokeAgain` below: write a few, then let it settle. There is
+    // no debounce in this probe, but a probe whose timing differs from the test
+    // it guards can answer a question the test is not asking.
+    for (let round = 0; round < 8 && !fired; round += 1) {
+      for (let attempt = 0; attempt < 3; attempt += 1) appendFileSync(target, `line-${round}-${attempt}\n`)
+      for (let waited = 0; waited < 250 && !fired; waited += 25) {
+        await new Promise((resolve) => setTimeout(resolve, 25))
+      }
     }
   } finally { try { watcher.close() } catch { /* already gone */ } }
   return fired
@@ -232,11 +237,24 @@ test('the two REAL write patterns this system uses both wake it', async (t) => {
   // watcher is listening, and polling alone then waits five seconds for an event
   // that was never going to come. Both this and the cold-start test above learned
   // that the same way: green alone, red inside the suite.
+  // Writes a few times, then STOPS and lets the debounce settle. Both halves are
+  // load-bearing and each was learned from a red run:
+  //
+  // - retrying the write covers `fs.watch` being armed asynchronously, which is
+  //   why a single write can land before anyone is listening;
+  // - stopping covers the debounce. The first version wrote every 25ms against a
+  //   30ms debounce, so every write RESET the timer and it could never fire —
+  //   a test that starved the thing it was measuring. It passed on macOS, where
+  //   FSEvents batches with gaps wide enough to slip through, and failed on
+  //   Linux CI. Two commits blamed the CI filesystem before the arithmetic was
+  //   read.
   const wokeAgain = async (from, what, write) => {
-    for (let attempt = 0; attempt < 200; attempt += 1) {
-      write(attempt)
-      await new Promise((resolve) => setTimeout(resolve, 25))
-      if (woke.length > from) return
+    for (let round = 0; round < 20; round += 1) {
+      for (let attempt = 0; attempt < 3; attempt += 1) write(round * 3 + attempt)
+      for (let waited = 0; waited < 250; waited += 25) {
+        await new Promise((resolve) => setTimeout(resolve, 25))
+        if (woke.length > from) return
+      }
     }
     assert.fail(`${what} never woke the loop`)
   }
