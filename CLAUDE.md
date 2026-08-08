@@ -253,7 +253,17 @@ not optional, and only a later explicit instruction from Master changes either.
 5. Push (confirm with Master first — see Rules), then
    `claude plugin marketplace update tmux-teams` and
    `claude plugin update tmux-teams@tmux-teams` (install cache is version-keyed).
-6. **Tag it and publish the GitHub release** — `git tag vX.Y.Z && git push
+6. **Watch the CI run that push triggers, and do not tag a red one.**
+   `gh run list --limit 3` then `gh run view <id> --log-failed`. Added
+   2026-08-08 because it was missing and it cost two releases: CI had been
+   failing since before v0.16.0 and v0.17.0 shipped on it, while the local
+   suite read 793 pass / 0 fail against CI's 785 / 2. **The same command on the
+   same commit does not see the same thing** — CI runs Linux and a clean HOME,
+   and both failures lived in that gap (a test reading the author's
+   `~/.config/claude-profiles/`, and an `fs.watch` delivery assertion that holds
+   on macOS FSEvents and not on CI's filesystem). Local green is necessary and
+   is not sufficient.
+7. **Tag it and publish the GitHub release** — `git tag vX.Y.Z && git push
    origin vX.Y.Z`, then `gh release create vX.Y.Z --title vX.Y.Z --notes ...`
    with notes written from the real `git log <prev-tag>..vX.Y.Z`. A version
    number in three JSON files is not a release: this step was missing from the
@@ -263,7 +273,7 @@ not optional, and only a later explicit instruction from Master changes either.
    the marketplace resolves a version-keyed cache, so an untagged release is a
    number nobody else can fetch. Write the notes with a heredoc or `--notes-file`,
    never `printf` — the backfill put a literal `%ad` into all 30 notes.
-7. Bump the `plugins/tmux-teams` submodule pointer in `~/agent-skills` to the
+8. Bump the `plugins/tmux-teams` submodule pointer in `~/agent-skills` to the
    new sha and push it. `agent-skills` uses that pin as the source for its
    OpenClaw bridge; Codex and Claude plugin runtimes use version-keyed caches.
 
