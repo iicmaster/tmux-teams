@@ -88,11 +88,20 @@ test('a fresh repo works — the first outbox is exactly what this exists to cat
   const stop = watchForWork(repo, { onChange: () => woke.push(1), debounceMs: 30, log: (line) => said.push(line) })
   try {
     assert.deepEqual(said, [], `a fresh repo should need no excuses: ${said.join(' | ')}`)
-    writeFileSync(join(repo, '.mailbox-out', 'task-1'), 'TEAM_DONE\n')
-    for (let waited = 0; waited < 5000 && !woke.length; waited += 25) {
+
+    // Written repeatedly, not once. `fs.watch` is armed ASYNCHRONOUSLY — on
+    // macOS through FSEvents — so a write landing microseconds after the call
+    // can be missed, and under full-suite load it was: this test passed alone
+    // and went red inside the suite until the retry was added. The property
+    // being pinned is that a FRESH repo's outbox directory is watched at all,
+    // not that the very first byte is caught. Missing an early event is
+    // precisely what the interval backstop exists to cover, so demanding it
+    // here would assert something the design does not promise.
+    for (let attempt = 0; attempt < 200 && !woke.length; attempt += 1) {
+      writeFileSync(join(repo, '.mailbox-out', `task-${attempt}`), 'TEAM_DONE\n')
       await new Promise((resolve) => setTimeout(resolve, 25))
     }
-    assert.ok(woke.length, "the first worker's outbox did not wake the loop on a fresh repo")
+    assert.ok(woke.length, "a fresh repo's outbox directory was never watched")
   } finally { stop() }
 })
 

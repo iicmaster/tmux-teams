@@ -1,0 +1,20 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "tmux-teams",
+  "version": "0.17.0",
+  "description": "PM orchestration over tmux/ACP with party verification, sqthink planning, and an opt-in Stage 1 field-evidence sidecar.",
+  "author": {
+    "name": "IIC Master"
+  },
+  "homepage": "https://github.com/iicmaster/tmux-teams",
+  "repository": "https://github.com/iicmaster/tmux-teams",
+  "license": "MIT",
+  "keywords": [
+    "orchestration",
+    "tmux",
+    "acp",
+    "code-review",
+    "kanban",
+    "agent-teams"
+  ]
+}

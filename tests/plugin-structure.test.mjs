@@ -58,6 +58,24 @@ test('marketplace and plugin manifests agree', () => {
   const readmeVersion = readText(join(ROOT, 'README.md')).match(/Current release: \*\*([^*]+)\*\*/)
   assert.ok(readmeVersion, 'README.md must state "Current release: **<version>**"')
   assert.equal(readmeVersion[1], RELEASE_VERSION, 'README.md states a different release than the manifests')
+
+  // The FIFTH place, added 2026-08-08 with the vendor-neutral manifest. Every
+  // time a place was added it was found by a reader rather than by the flow,
+  // so this one arrives WITH its guard instead of waiting for the next release
+  // to notice. The Agent Plugins spec sets `additionalProperties: false` and
+  // requires `$schema` and `name`, so this checks the shape too — a manifest
+  // that quietly stops validating is the same silent wrongness as a stale
+  // version number.
+  const portable = readJson(join(PLUGIN, 'plugin.json'))
+  assert.equal(portable.$schema, 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json')
+  assert.equal(portable.name, plugin.name, 'the two manifests disagree about the plugin name')
+  assert.equal(portable.version, RELEASE_VERSION, 'plugins/tmux-teams/plugin.json states a different release')
+  const allowed = new Set(['$schema', 'name', 'version', 'description', 'author',
+    'homepage', 'repository', 'license', 'keywords', 'extensions'])
+  for (const key of Object.keys(portable)) {
+    assert.ok(allowed.has(key), `${key} is not in the agent-plugins 1.0.0 schema, which forbids extras`)
+  }
+  assert.match(portable.name, /^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/, 'name fails the spec pattern')
 })
 
 test('Stage 1 field-evidence files and documentation links are wired', () => {

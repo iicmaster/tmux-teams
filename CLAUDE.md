@@ -213,11 +213,13 @@ not optional, and only a later explicit instruction from Master changes either.
    produced it. This exists because every release before it was marked on one model's
    reading, and the three corrections that mattered most on 2026-08-03 all came
    from the advisor rather than from this room.
-3. Bump the version in all FOUR places — `.claude-plugin/marketplace.json`
+3. Bump the version in all FIVE places — `.claude-plugin/marketplace.json`
    (twice: `metadata.version` and `plugins[0].version`),
    `plugins/tmux-teams/.claude-plugin/plugin.json`, `RELEASE_VERSION` in
    `tests/plugin-structure.test.mjs`, and the `Current release: **X.Y.Z**` line
-   in `README.md`. That test is the only thing checking they agree, so it has
+   in `README.md`, and `plugins/tmux-teams/plugin.json` (the vendor-neutral
+   Agent Plugins manifest, added 2026-08-08 — it arrived WITH its guard rather
+   than waiting for a release to notice, which is the first time that happened). That test is the only thing checking they agree, so it has
    to state the number itself. This step said "BOTH" until 2026-08-01, and
    v0.12.0 reached the bump with the third one still on 0.11.1 until the test
    caught it — then said "THREE" until 2026-08-05, when the v0.15.0
