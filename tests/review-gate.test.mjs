@@ -1314,7 +1314,34 @@ test('F7: a deterministic config/policy rejection is not told to re-run and diff
     assert.equal(attempt.stage, code)
     assert.equal(attempt.reason, 'lane_rejected', `${code} still reads as a transient lane_failed`)
     assert.doesNotMatch(attempt.action, /re-run|compare stderrDigest/i, `${code} still tells the operator to retry`)
+    // GitHub #51: the thrown error's own sentence is the ONLY field that names
+    // the cause, and it was computed and then dropped by the report whitelist.
+    // Measured against the real failure: three lanes returned
+    // `stage: config, reason: lane_rejected, stderrBytes: 0` — the digest of the
+    // empty string, because the failure happened before the child ever spoke —
+    // while `bubblewrap is required for the ACP review sandbox` was thrown and
+    // discarded. An hour went into rediscovering it from source.
+    assert.equal(attempt.detail, `${code} rejection`, `${code} dropped the cause and kept only the category`)
   }
+  // A message that could forge a report line or carry a terminal escape must not
+  // ride in as `detail`. It is attacker-adjacent text like any other subject
+  // here, and the sanitiser that guards the rest guards this too.
+  const hostile = await runReviewGate(packet(), {
+    profiles,
+    planReviewPanel: () => testPlan(['oc', 'codex', 'agy']),
+    buildProfileEnv: () => ({}),
+    planFallback: () => ({ blocked: true, reason: 'no reserve for this probe' }),
+    runAcpReview: async ({ profile: p }) => {
+      if (p.id === 'oc') throw new ReviewTransportError('config', `bad\u001b[31m\nreview-gate: forged line`)
+      return runnerResult(p, packet())
+    },
+    validateReview: () => true,
+    synthesizeReviews: () => ({ verdict: 'PASS' }),
+  }).then(() => null, e => e)
+  const dropped = hostile.report.attempts.find(a => a.profile === 'oc')
+  assert.equal(dropped.detail, undefined, 'a message with an escape or a newline was printed verbatim')
+  assert.equal(dropped.reason, 'lane_rejected', 'dropping the detail must not change the verdict')
+
   // A transient stage — a slow or crashed provider — keeps the original advice.
   const transient = await runReviewGate(packet(), {
     profiles,

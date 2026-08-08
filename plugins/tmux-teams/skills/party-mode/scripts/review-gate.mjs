@@ -152,6 +152,12 @@ const attemptRecord = attempt => Object.freeze({
     reason: attempt.reason ?? null,
     action: LANE_FAILURES[attempt.reason]?.action ?? null,
     failure: attempt.failure,
+    // The thrown error's own sentence, and the only field that ever names the
+    // CAUSE. GitHub #51: it was computed and then dropped by this whitelist, so
+    // an operator got `stage/reason/stderrBytes: 0` for a failure whose message
+    // said exactly what was missing. Sanitised at the source, so what lands
+    // here is already safe to print.
+    ...(attempt.detail ? { detail: attempt.detail } : {}),
     stderrDigest: attempt.stderrDigest,
     stderrBytes: attempt.stderrBytes,
   } : {}),
@@ -296,7 +302,26 @@ async function assessAttempt(attempt, validate, expectedInputHash) {
     // it into `lane_failed` told the operator to re-run and diff a digest that
     // may not even exist, when the actual fix is the profile, not another try.
     const reason = DETERMINISTIC_LANE_STAGES.has(stage) ? 'lane_rejected' : 'lane_failed'
-    return { ...attempt, valid: false, failureKind, stage, ...stderrEvidence, reason, failure: laneFailure(reason) }
+    // GitHub #51: the thrown error's own sentence was dropped here, and it is
+    // the only thing that ever names the actual cause. A `ReviewTransportError`
+    // carries a message written for exactly this moment — "bubblewrap is
+    // required for the ACP review sandbox" — and the operator was handed
+    // `stage: config, reason: lane_rejected, stderrBytes: 0` instead, three
+    // times over, pointing at three profiles when the fault was one missing
+    // precondition. `stderrDigest` was the SHA-256 of the empty string on all
+    // three lanes; the digest is the right shape for stderr BYTES and there
+    // were none, because the failure happened before the child ever spoke.
+    //
+    // Sanitised through `boundedReason` like every other subject that reaches a
+    // report line: a message is attacker-adjacent text, and one that could
+    // forge a line or carry a terminal escape would be a worse problem than the
+    // one being fixed.
+    const detail = boundedReason(attempt.result.reason?.message ?? null)
+    return {
+      ...attempt, valid: false, failureKind, stage, ...stderrEvidence, reason,
+      failure: laneFailure(reason),
+      ...(detail ? { detail } : {}),
+    }
   }
   const value = attempt.result.value
   const fault = runnerEvidenceFault(attempt.profile, value, expectedInputHash)
@@ -584,8 +609,23 @@ export async function runReviewGateCli([packetPath, targetRepository] = [], {
     // stdout is the machine's copy and gets redirected; stderr is what a person
     // is actually looking at when the gate refuses. An action that only ever
     // reaches a JSON field nobody opens is not an action.
-    for (const record of error?.report?.attempts ?? []) {
-      if (record.status !== 'failed' || !record.action) continue
+    // Every lane failing at the SAME deterministic stage is almost never three
+    // profile bugs — it is one precondition. Saying so once, before repeating
+    // per-lane advice three times, is what turns "three broken profiles" back
+    // into "one missing thing" (GitHub #51).
+    const failed = (error?.report?.attempts ?? []).filter((record) => record.status === 'failed')
+    const stages = new Set(failed.map((record) => record.stage))
+    if (failed.length > 1 && stages.size === 1 && DETERMINISTIC_LANE_STAGES.has([...stages][0])) {
+      stderr.write(`review-gate: all ${failed.length} lanes stopped at the same ${[...stages][0]} stage —`
+        + ' that is one shared precondition, not one fault per profile\n')
+    }
+    for (const record of failed) {
+      // `detail` is the thrown error's own sentence and the only line that ever
+      // names the cause; `action` is what to do about it. Printing the cause
+      // even when there is no action is the whole point — a lane that refuses
+      // with neither leaves the operator grepping source.
+      if (record.detail) stderr.write(`review-gate: ${record.profile} ${record.stage}/${record.reason}: ${record.detail}\n`)
+      if (!record.action) continue
       stderr.write(`review-gate: ${record.profile} ${record.stage}/${record.reason} — ${record.action}\n`)
     }
     return exitCodeFor(error)
