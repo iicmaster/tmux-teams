@@ -32,7 +32,7 @@ import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readF
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { currentEntry, readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
+import { currentEntry, joinDispatchIdentity, readDispatchFacts, readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
 import { isClosingTolerated, MAX_DOOR_REFUSALS, validateLedgerFileTolerant } from './ledger-validate.mjs'
 import { appendEvent as appendLedgerEvent, ledgerPath } from './ledger-writer.mjs'
 import { planPulls, applyPulls } from './pull-controller.mjs'
@@ -2392,6 +2392,28 @@ export function tick(repoArg, {
   // log has scrolled past. A dry run does not stamp this any more than it
   // stamps the heartbeat above — a simulation must never impersonate what a
   // live tick actually decided (§11.3).
+  // §3.5.1 / AC136. What a leg ASKED for lives in the token's ledger, what
+  // ANSWERED it lives in the dispatch receipt, and until 2026-08-09 nothing
+  // compared them: a leg dispatched on one palette entry and answered by some
+  // other model was visible in two places and contradicted in neither.
+  //
+  // Only `contradicted` is recorded. A `refused` leg already failed its dispatch
+  // loudly and its ledger says so, and repeating that every tick would bury the
+  // one verdict nothing else can produce — two files that were written by the
+  // same dispatch and do not agree about it.
+  //
+  // This RECORDS; it does not act. A tick that changed behaviour on a receipt
+  // would be a second dispatch authority, and this system has exactly one.
+  const identityFacts = readDispatchFacts(repo)
+  for (const [workItem, token] of readWorkItems(repo).items) {
+    for (const entry of token.custody) {
+      if (entry.event !== 'assigned' || !entry.task_id) continue
+      const identity = joinDispatchIdentity(entry, identityFacts.get(String(entry.task_id)))
+      if (identity.verdict !== 'contradicted') continue
+      decisions.push({ work_item: workItem, action: 'identity-contradicted', reason: identity.reason })
+    }
+  }
+
   if (apply) writeDecisions(repo, decisions)
   return { ok: true, harvested, pulls, plans, started }
 }

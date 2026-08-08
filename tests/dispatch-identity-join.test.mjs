@@ -1,0 +1,294 @@
+// dispatch-identity-join.test.mjs — contract §3.5.1 / AC136: what a leg ASKED
+// for and what ANSWERED it are joined, and can now contradict each other.
+//
+// §14.1 stated the gap in its own words: "`assigned` records the request (phase
+// 2b), and `identity_status: matched` on the receipt verifies the answer, but
+// nothing joins the two — a leg dispatched on entry 2 and answered by some other
+// model would be visible in two places and contradicted in neither".
+//
+// The fixtures below are not invented. Every field combination is one that was
+// MEASURED reaching disk on 2026-08-09 by driving the real companion through the
+// mock agent across four scenarios (unpinned · pinned-and-matched ·
+// pinned-and-refused · adapter with no identity). The single most important
+// result of that run is asserted end to end at the bottom of this file: the
+// ledger's `assigned` line is written EVEN ON A REFUSAL, which is precisely how
+// a contradiction comes to sit on disk with nothing naming it.
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+import { joinDispatchIdentity } from '../plugins/tmux-teams/skills/tmux-teams/scripts/dispatch-facts.mjs'
+
+const HERE = dirname(fileURLToPath(import.meta.url))
+const SCRIPTS = join(HERE, '..', 'plugins', 'tmux-teams', 'skills', 'tmux-teams', 'scripts')
+const COMPANION = join(SCRIPTS, 'acp-companion.mjs')
+const MOCK = join(HERE, 'fixtures', 'mock-acp-agent.mjs')
+const WORK_ITEM = 'palette-token'
+
+const assigned = (requestedModel) => ({ event: 'assigned', task_id: 't1', requested_model: requestedModel })
+const receipt = (requested, effective, status) => ({
+  task_id: 't1', requested_model: requested, effective_identity: effective, identity_status: status,
+})
+
+// ---------------------------------------------------------------------------
+// The four shapes measured off disk
+
+test('pinned and acknowledged is alias_agreed — and says an alias is not a family', () => {
+  const join_ = joinDispatchIdentity(assigned('entry-2-model'), receipt('entry-2-model', 'entry-2-model', 'matched'))
+  assert.equal(join_.verdict, 'alias_agreed')
+  assert.equal(join_.asked, 'entry-2-model')
+  assert.equal(join_.answered, 'entry-2-model')
+  // The reason has a job: `opus` reaches three vendors across three gateways in
+  // this project's own routing table, so a verdict that read as "model verified"
+  // would be a sentence broader than what string equality proves.
+  assert.match(join_.reason, /ALIAS is not a family/)
+})
+
+test('a refused identity is refused, and both names survive in the verdict', () => {
+  const join_ = joinDispatchIdentity(assigned('entry-2-model'), receipt('entry-2-model', 'somebody-else', 'mismatched'))
+  assert.equal(join_.verdict, 'refused')
+  assert.equal(join_.asked, 'entry-2-model')
+  assert.equal(join_.answered, 'somebody-else')
+  assert.match(join_.reason, /identity_status: mismatched/)
+})
+
+test('an unpinned leg is unverified, never a conflict — the AGY shape', () => {
+  // AGY is permanently unverified by documented exemption: its adapter rejects
+  // every model config value and runs only its own default. A join that called
+  // this a conflict would alarm on every AGY leg and be ignored within a week.
+  const join_ = joinDispatchIdentity(assigned(null), receipt('none', 'gpt-mock', 'unverified'))
+  assert.equal(join_.verdict, 'unverified')
+  assert.equal(join_.asked, null)
+  assert.equal(join_.answered, 'gpt-mock')
+  assert.match(join_.reason, /nothing to contradict/)
+})
+
+test('none and missing are receipt WORDS, not model names', () => {
+  // Measured: an adapter advertising no identity writes the literal string
+  // `missing`. Reporting a leg as having run on a model called "missing" is the
+  // failure this normalisation exists to prevent.
+  const join_ = joinDispatchIdentity(assigned(null), receipt('none', 'missing', 'unverified'))
+  assert.equal(join_.verdict, 'unverified')
+  assert.equal(join_.answered, null)
+  assert.equal(join_.reason, 'nothing was asked and nothing answered')
+})
+
+// ---------------------------------------------------------------------------
+// The contradictions — the whole reason this function exists
+
+test('the ledger and its own receipt disagreeing about the REQUEST is a contradiction', () => {
+  const join_ = joinDispatchIdentity(assigned('entry-2-model'), receipt('entry-7-model', 'entry-7-model', 'matched'))
+  assert.equal(join_.verdict, 'contradicted')
+  assert.match(join_.reason, /ledger says this leg asked for "entry-2-model".*receipt says "entry-7-model"/)
+})
+
+test('a receipt claiming matched while naming a different model is a contradiction', () => {
+  // `matched` is a claim the receipt makes about itself. This is the one place
+  // that claim is checked against the two names it sits beside.
+  const join_ = joinDispatchIdentity(assigned('entry-2-model'), receipt('entry-2-model', 'somebody-else', 'matched'))
+  assert.equal(join_.verdict, 'contradicted')
+  assert.match(join_.reason, /claims matched while naming "somebody-else"/)
+})
+
+test('a receipt claiming matched for a leg that asked nothing is a contradiction', () => {
+  const join_ = joinDispatchIdentity(assigned(null), receipt('none', 'gpt-mock', 'matched'))
+  assert.equal(join_.verdict, 'contradicted')
+  assert.match(join_.reason, /match against nothing is not a match/)
+})
+
+test('a pinned leg whose receipt is silent is unverified and SAYS it is not agreement', () => {
+  const join_ = joinDispatchIdentity(assigned('entry-2-model'), receipt('entry-2-model', 'entry-2-model', 'unverified'))
+  assert.equal(join_.verdict, 'unverified')
+  assert.match(join_.reason, /unverified is not the same fact as agreed/)
+})
+
+test('an assignment with no receipt at all is named, not skipped', () => {
+  const join_ = joinDispatchIdentity(assigned('entry-2-model'), undefined)
+  assert.equal(join_.verdict, 'no_receipt')
+  assert.equal(join_.answered, null)
+})
+
+// ---------------------------------------------------------------------------
+// End to end: the measured fact the whole join rests on
+
+const seedLedger = (cwd) => {
+  const dir = join(cwd, '.tmux-teams', 'work-items')
+  mkdirSync(dir, { recursive: true })
+  const path = join(dir, `${WORK_ITEM}.jsonl`)
+  // Stamped in the past on purpose: the writer refuses a non-monotonic append,
+  // so a seed stamped "today at 09:00" fails every run before 09:00 UTC.
+  writeFileSync(path, `${JSON.stringify({
+    at: '2026-01-01T09:00:00.000Z', event: 'opened', work_item: WORK_ITEM, workflow: 'feature',
+    agent_id: 'build_dispatcher', to_team: 'build', reason: 'entered', actor: 'human:master',
+  })}\n`)
+  return path
+}
+
+const receiptField = (text, key) => {
+  const match = text.match(new RegExp(`^${key}:[ \\t]*(.*)$`, 'm'))
+  return match ? match[1].trim() : ''
+}
+
+test('a real refused dispatch leaves an assigned line and a contradicting receipt on disk', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'identity-join-'))
+  const ledger = seedLedger(cwd)
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+
+  const env = {
+    ...process.env,
+    ACP_CMD: `${process.execPath} ${MOCK}`,
+    ACP_STALL_POLICY: 'cancel', ACP_HARD_TIMEOUT_SEC: '0', ACP_CANCEL_GRACE_MS: '100', ACP_RESUME: '',
+    TMUX_TEAMS_WORK_ITEM: WORK_ITEM, TMUX_TEAMS_WORKFLOW: 'feature', ACP_AGENT_ID: 'build_w1',
+    ACP_EXPECT_MODEL: 'entry-2-model', MOCK_MODEL: 'somebody-else',
+  }
+  const run = spawnSync('node', [COMPANION, 'mock', cwd, 'task-refused', brief, '30'], { cwd, encoding: 'utf8', env })
+
+  // The companion refuses — that half already worked and is not what is new.
+  assert.notEqual(run.status, 0, `a mismatched identity must fail the dispatch; stdout:\n${run.stdout}`)
+
+  // What IS new: both records exist afterwards, so the contradiction is on disk.
+  const events = readFileSync(ledger, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+  const assignedLine = events.find((entry) => entry.event === 'assigned')
+  assert.ok(assignedLine, `no assigned line was written, so this test proved nothing: ${events.map((e) => e.event).join(' -> ')}`)
+
+  const dispatchDir = join(cwd, '.tmux-teams', 'dispatch')
+  const names = existsSync(dispatchDir) ? readdirSync(dispatchDir).filter((n) => n.endsWith('.md')) : []
+  assert.equal(names.length, 1, `expected exactly one dispatch receipt, saw ${names.length}`)
+  const text = readFileSync(join(dispatchDir, names[0]), 'utf8')
+  const fact = {
+    requested_model: receiptField(text, 'requested_model'),
+    effective_identity: receiptField(text, 'effective_identity'),
+    identity_status: receiptField(text, 'identity_status'),
+  }
+
+  const verdict = joinDispatchIdentity(assignedLine, fact)
+  assert.equal(verdict.verdict, 'refused', JSON.stringify({ assignedLine, fact, verdict }))
+  assert.equal(verdict.asked, 'entry-2-model')
+  assert.equal(verdict.answered, 'somebody-else')
+})
+
+test('a real clean dispatch joins to alias_agreed off the same two files', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'identity-join-ok-'))
+  const ledger = seedLedger(cwd)
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+
+  const env = {
+    ...process.env,
+    ACP_CMD: `${process.execPath} ${MOCK}`,
+    ACP_STALL_POLICY: 'cancel', ACP_HARD_TIMEOUT_SEC: '0', ACP_CANCEL_GRACE_MS: '100', ACP_RESUME: '',
+    TMUX_TEAMS_WORK_ITEM: WORK_ITEM, TMUX_TEAMS_WORKFLOW: 'feature', ACP_AGENT_ID: 'build_w1',
+    ACP_EXPECT_MODEL: 'entry-2-model', MOCK_MODEL: 'entry-2-model',
+  }
+  const run = spawnSync('node', [COMPANION, 'mock', cwd, 'task-ok', brief, '30'], { cwd, encoding: 'utf8', env })
+  assert.equal(run.status, 0, `expected a clean dispatch; stderr:\n${run.stderr}`)
+
+  const events = readFileSync(ledger, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+  const assignedLine = events.find((entry) => entry.event === 'assigned')
+  const dispatchDir = join(cwd, '.tmux-teams', 'dispatch')
+  const names = readdirSync(dispatchDir).filter((n) => n.endsWith('.md'))
+  const text = readFileSync(join(dispatchDir, names[0]), 'utf8')
+
+  const verdict = joinDispatchIdentity(assignedLine, {
+    requested_model: receiptField(text, 'requested_model'),
+    effective_identity: receiptField(text, 'effective_identity'),
+    identity_status: receiptField(text, 'identity_status'),
+  })
+  assert.equal(verdict.verdict, 'alias_agreed', JSON.stringify(verdict))
+})
+
+// ---------------------------------------------------------------------------
+// The WIRING. Everything above proves the function; none of it proves the tick
+// calls it. A consumer nobody exercises is the same class as the unreachable
+// carve-out closed the day before this was written — code that reads as alive
+// and never runs.
+
+const GRAPH = {
+  project_id: 'identity-join',
+  outer_controller_id: 'join_pm',
+  outer_controller_model: 'inherit-account-default',
+  teams: ['control', 'build', 'verify'].map((id) => ({
+    team_id: id,
+    name: id,
+    dispatcher_id: `${id}_dispatcher`,
+    worker_ids: id === 'control' ? ['join_pm'] : [`${id}_w1`],
+    evaluator_id: `${id}_evaluator`,
+    models: { dispatcher: 'inherit-account-default', worker: 'inherit-account-default', evaluator: 'inherit-account-default' },
+  })),
+  workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['control', 'build', 'verify'] }],
+}
+
+test('the tick RECORDS a contradiction it finds, in the decisions file a human opens', async () => {
+  const { tick } = await import('../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs')
+
+  const repo = mkdtempSync(join(tmpdir(), 'identity-join-tick-'))
+  mkdirSync(join(repo, '.tmux-teams', 'team-briefs'), { recursive: true })
+  mkdirSync(join(repo, '.mailbox-out'), { recursive: true })
+  writeFileSync(join(repo, '.tmux-teams', 'graph.json'), `${JSON.stringify(GRAPH, null, 2)}\n`)
+  for (const entry of GRAPH.teams) {
+    writeFileSync(join(repo, '.tmux-teams', 'team-briefs', `${entry.team_id}.md`), `# ${entry.name}\n\nwork.\n`)
+  }
+  const ledgerPath = join(repo, '.tmux-teams', 'work-items', `${WORK_ITEM}.jsonl`)
+  mkdirSync(dirname(ledgerPath), { recursive: true })
+  writeFileSync(ledgerPath, `${JSON.stringify({
+    at: '2026-01-01T09:00:00.000Z', event: 'opened', work_item: WORK_ITEM, workflow: 'feature',
+    agent_id: 'build_dispatcher', to_team: 'build', reason: 'entered', actor: 'human:master',
+  })}\n`)
+  writeFileSync(join(repo, '.tmux-teams', 'work-items', `${WORK_ITEM}.md`), 'carry this.\n')
+  writeFileSync(join(repo, 'brief.md'), 'do the thing\n')
+
+  // A REAL leg, so the assigned line and the receipt are both written by the
+  // code that owns them rather than hand-forged into agreement.
+  const run = spawnSync('node', [COMPANION, 'mock', repo, 'task-drift', join(repo, 'brief.md'), '30'], {
+    cwd: repo,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      ACP_CMD: `${process.execPath} ${MOCK}`,
+      ACP_STALL_POLICY: 'cancel', ACP_HARD_TIMEOUT_SEC: '0', ACP_CANCEL_GRACE_MS: '100', ACP_RESUME: '',
+      TMUX_TEAMS_WORK_ITEM: WORK_ITEM, TMUX_TEAMS_WORKFLOW: 'feature', ACP_AGENT_ID: 'build_w1',
+      ACP_EXPECT_MODEL: 'entry-2-model', MOCK_MODEL: 'entry-2-model',
+    },
+  })
+  assert.equal(run.status, 0, `seed leg failed; stderr:\n${run.stderr}`)
+
+  // Now make the two files disagree, which is the whole scenario: the receipt
+  // says this dispatch asked for something the token's ledger never recorded.
+  const dispatchDir = join(repo, '.tmux-teams', 'dispatch')
+  const receiptName = readdirSync(dispatchDir).find((n) => n.endsWith('.md'))
+  const receiptPath = join(dispatchDir, receiptName)
+  const before = readFileSync(receiptPath, 'utf8')
+  assert.ok(before.includes('requested_model: entry-2-model'), `the seed receipt is not the shape this test tampers:\n${before}`)
+  writeFileSync(receiptPath, before.replace('requested_model: entry-2-model', 'requested_model: somebody-elses-entry'))
+
+  const inherited = Object.fromEntries(['ACP_CMD', 'ACP_EXPECT_MODEL', 'MOCK_MODEL', 'TMUX_TEAMS_ACP_CMD',
+    'TMUX_TEAMS_WORK_ITEM', 'TMUX_TEAMS_WORKFLOW', 'ACP_AGENT_ID', 'ACP_STALL_POLICY', 'ECC_GATEGUARD',
+  ].map((key) => [key, process.env[key]]))
+  try {
+    for (const key of Object.keys(inherited)) delete process.env[key]
+    Object.assign(process.env, {
+      TMUX_TEAMS_ACP_CMD: `${process.execPath} ${MOCK}`,
+      ACP_STALL_POLICY: 'cancel', ECC_GATEGUARD: 'off',
+    })
+    const result = tick(repo, { apply: true, tickSec: 1, scratchDir: join(repo, 'runner-briefs') })
+    assert.ok(result.ok, `tick refused: ${result.reason}`)
+  } finally {
+    for (const [key, value] of Object.entries(inherited)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+
+  const decisionsPath = join(repo, '.tmux-teams', 'decisions', 'latest.json')
+  assert.ok(existsSync(decisionsPath), 'the tick wrote no decisions file at all')
+  const record = JSON.parse(readFileSync(decisionsPath, 'utf8'))
+  const flagged = record.decisions.filter((entry) => entry.action === 'identity-contradicted')
+  assert.equal(flagged.length, 1, `expected exactly one recorded contradiction, saw: ${JSON.stringify(record.decisions)}`)
+  assert.equal(flagged[0].work_item, WORK_ITEM)
+  assert.match(flagged[0].reason, /somebody-elses-entry/)
+})

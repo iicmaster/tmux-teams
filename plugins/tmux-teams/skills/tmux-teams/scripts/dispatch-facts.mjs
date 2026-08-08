@@ -55,6 +55,102 @@ export function readDispatchFacts(repo) {
   return byTask
 }
 
+// `none` and `missing` are WORDS the receipt writes, not absences. Measured off
+// real receipts rather than read off the writer: an unpinned dispatch records
+// `requested_model: none`, and an adapter that advertised no identity at all
+// records `effective_identity: missing`. Treating either as a model name is how
+// a board ends up reporting that a leg ran on a model called "missing".
+const RECEIPT_SENTINELS = new Set(['none', 'missing'])
+
+const receiptValue = (value) => {
+  const text = typeof value === 'string' ? value.trim() : ''
+  return text === '' || RECEIPT_SENTINELS.has(text) ? null : text
+}
+
+/**
+ * Join what a leg ASKED for (the ledger's `assigned` line, written before the
+ * process spawned) against what ANSWERED (the dispatch receipt). Contract
+ * §3.5.1 recorded the absence of this join in §14.1: the two facts were
+ * "visible in two places and contradicted in neither".
+ *
+ * Pure — takes the two records, reads no disk. Any module already holding both
+ * readers can call it, and its tests are literal fixtures.
+ *
+ * The verdicts are enumerated from what actually reaches disk, measured by
+ * driving the real companion through the mock (2026-08-09), NOT imagined:
+ * an unpinned leg, a pinned leg that matched, a pinned leg the adapter refused,
+ * and an adapter advertising no identity. `assigned` is written in ALL four,
+ * including the refusal — which is exactly why the contradiction can sit on
+ * disk with nothing naming it.
+ *
+ * `unverified` is NOT a conflict. The AGY lane is permanently unverified by a
+ * documented exemption (its adapter rejects every model config value and runs
+ * only its own default), so a join that alarmed on it would alarm on every AGY
+ * leg and be ignored within a week.
+ */
+export function joinDispatchIdentity(assignedEntry, dispatchFact) {
+  const asked = typeof assignedEntry?.requested_model === 'string' && assignedEntry.requested_model !== ''
+    ? assignedEntry.requested_model
+    : null
+
+  if (!dispatchFact) {
+    return {
+      verdict: 'no_receipt', asked, answered: null,
+      reason: 'the ledger recorded an assignment and no dispatch receipt names its task',
+    }
+  }
+
+  const receiptAsked = receiptValue(dispatchFact.requested_model)
+  const answered = receiptValue(dispatchFact.effective_identity)
+  const status = receiptValue(dispatchFact.identity_status) ?? 'unverified'
+
+  if (asked !== receiptAsked) {
+    return {
+      verdict: 'contradicted', asked, answered,
+      reason: `the ledger says this leg asked for ${JSON.stringify(asked)} and its own receipt says ${JSON.stringify(receiptAsked)}`,
+    }
+  }
+
+  if (status === 'mismatched' || status === 'missing') {
+    return {
+      verdict: 'refused', asked, answered,
+      reason: `identity_status: ${status} — the adapter answered as ${JSON.stringify(answered)} against a request for ${JSON.stringify(asked)}, and the dispatch was refused`,
+    }
+  }
+
+  if (status === 'matched') {
+    if (asked === null) {
+      return {
+        verdict: 'contradicted', asked, answered,
+        reason: 'the receipt claims a matched identity for a leg that asked for no model — a match against nothing is not a match',
+      }
+    }
+    if (answered !== asked) {
+      return {
+        verdict: 'contradicted', asked, answered,
+        reason: `the receipt claims matched while naming ${JSON.stringify(answered)} for a request of ${JSON.stringify(asked)}`,
+      }
+    }
+    return {
+      verdict: 'alias_agreed', asked, answered,
+      reason: `the adapter acknowledged the alias ${JSON.stringify(asked)}. An ALIAS is not a family: the same alias reaches different vendors on different gateways, so which vendor served this is the endpoint's fact and not this join's`,
+    }
+  }
+
+  if (asked !== null) {
+    return {
+      verdict: 'unverified', asked, answered,
+      reason: `the receipt records neither a match nor a refusal for a request of ${JSON.stringify(asked)} — unverified is not the same fact as agreed`,
+    }
+  }
+  return {
+    verdict: 'unverified', asked, answered,
+    reason: answered === null
+      ? 'nothing was asked and nothing answered'
+      : `${JSON.stringify(answered)} answered a leg that pinned no model, so there is nothing to contradict`,
+  }
+}
+
 // One token, one append-only ledger. A malformed line is skipped rather than
 // discarding the token's whole history — the ledger is evidence, and partial
 // evidence still beats none as long as it is never invented.
