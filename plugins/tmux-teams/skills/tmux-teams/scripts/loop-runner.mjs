@@ -1637,9 +1637,22 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
   // §9's promise that this role is event-triggered and never on a timer. The
   // unchanged-trigger brake then stops it being re-read while nothing new has
   // been thrown away.
+  // GitHub #50: these were never retired. The audit and the parked escalation
+  // each record a mark on the token when the controller is dispatched, which
+  // changes its last event and drops it out of the trigger set. A withdrawal
+  // CANNOT do that: `abandoned` is a hard terminal (§5) and nothing may follow
+  // it, ever. So the trigger stood for good — `pm-notes/latest.md` listed dead
+  // tokens as standing problems, `pm holding:` printed every 60s indefinitely,
+  // and every later dispatch re-read them. Observed on one board nine hours and
+  // twenty-seven repetitions after the fact.
+  //
+  // The mark therefore goes where the durable artifact already is: the notice
+  // written for the requester when the clock withdrew their work. A withdrawal
+  // is news once; the notice records that it has been delivered.
   const withdrawals = [...items.values()].filter((item) => {
     const last = item.custody[item.custody.length - 1]
-    return last?.event === 'abandoned' && String(last.actor || '') === 'agent:runner'
+    if (last?.event !== 'abandoned' || String(last.actor || '') !== RUNNER_ACTOR) return false
+    return !noticeWasRead(repo, item.work_item)
   })
   for (const item of withdrawals) {
     triggers.push(trigger(`- \`${item.work_item}\` was withdrawn at the door: nobody answered the intake questions in time`))
@@ -1758,6 +1771,9 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
     identity,
     audits: auditSubject ? [auditSubject.work_item] : [],
     parked: parkedSubject ? parkedSubject.work_item : null,
+    // Carried so the dispatch site can mark them delivered — the one thing that
+    // retires this trigger, since the ledger cannot.
+    withdrawals: withdrawals.map((item) => item.work_item),
     brief: roleBrief(repo, 'pm', null, {
       projectId: graph.project_id || 'unnamed',
       trigger: `${ask}\n\n${lines.join('\n')}`,
@@ -1870,6 +1886,41 @@ function dispatch(repo, { workItem, team, role, agentId, workflow, model, adapte
 // questions went unanswered so they know what to prepare, and that the door is
 // open again whenever they are.
 export const NOTICE_DIR = 'notices'
+
+// A withdrawal notice carries its own read receipt, because the token's ledger
+// cannot: `abandoned` is a hard terminal. This line is appended when the
+// controller has actually been dispatched with the withdrawal in its brief —
+// not when the notice is written — so a withdrawal nobody was told about stays
+// on the board (GitHub #50).
+const NOTICE_READ_MARK = '<!-- tmux-teams: read by the controller -->'
+
+function noticeWasRead(repo, workItem) {
+  try {
+    return readFileSync(join(repo, '.tmux-teams', NOTICE_DIR, `${workItem}.md`), 'utf8').includes(NOTICE_READ_MARK)
+  } catch { return false }
+}
+
+function markNoticeRead(repo, workItem) {
+  const path = join(repo, '.tmux-teams', NOTICE_DIR, `${workItem}.md`)
+  try {
+    const text = readFileSync(path, 'utf8')
+    if (text.includes(NOTICE_READ_MARK)) return true
+    writeFileSync(path, `${text.trimEnd()}\n\n${NOTICE_READ_MARK}\n`)
+    return true
+  } catch {
+    // No notice to mark. The withdrawal would then be re-reported for ever,
+    // which is the bug this fixes — so the notice is written now, carrying the
+    // mark, rather than leaving the trigger standing.
+    try {
+      mkdirSync(join(repo, '.tmux-teams', NOTICE_DIR), { recursive: true })
+      writeFileSync(path, `# Your request \`${workItem}\` was withdrawn\n\n`
+        + 'The notice itself was missing when the controller read this, so only the'
+        + ' fact of the withdrawal survives.\n\n'
+        + `${NOTICE_READ_MARK}\n`)
+      return true
+    } catch { return false }
+  }
+}
 function writeNotice(repo, workItem, questions, reason) {
   try {
     const dir = join(repo, '.tmux-teams', NOTICE_DIR)
@@ -2220,6 +2271,18 @@ export function tick(repoArg, {
           + ' with nothing recorded and the loop will not retry it. Repair its ledger.'
         log(`STUCK  ${workItem}: ${reason}`)
         decisions.push({ work_item: workItem, action: 'wedged', reason })
+      }
+
+      // The withdrawal's read receipt. Written only HERE — after the controller
+      // has actually been dispatched with these in its brief — so a withdrawal
+      // nobody was told about stays on the board, and one that was told stops
+      // being a standing problem (GitHub #50). No ledger write: `abandoned` is
+      // a hard terminal and this is the one trigger that cannot mark its own
+      // token.
+      for (const workItem of escalation.withdrawals || []) {
+        if (!markNoticeRead(repo, workItem)) {
+          log(`note   ${workItem}: the withdrawal notice could not be marked read — it will be reported again`)
+        }
       }
 
       for (const workItem of escalation.audits || []) {

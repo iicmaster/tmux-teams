@@ -820,6 +820,49 @@ test('a standing instruction is added to the PM brief, not swapped for it', () =
   }
 })
 
+test('a withdrawal is news once, not a standing problem for ever', () => {
+  // GitHub #50. The audit and the parked escalation each record a mark on the
+  // token when the controller is dispatched, which changes its last event and
+  // drops it out of the trigger set. A withdrawal CANNOT: `abandoned` is a hard
+  // terminal and nothing may follow it. So the trigger stood for good — one
+  // board listed three dead tokens as standing problems nine hours later, and
+  // `pm holding:` printed 27 times an hour, indefinitely.
+  const dir = mkdtempSync(join(tmpdir(), 'loop-withdraw-'))
+  try {
+    const graph = graphOf(TWO_TEAMS)
+    const items = itemsOf(['tok', [
+      { event: 'opened', agent_id: 'pm_intake', to_team: 'control', reason: 'r', actor: 'human:ada' },
+      { event: 'abandoned', reason: 'nobody answered the intake questions in time', actor: 'agent:runner' },
+    ]])
+    const occupancy = teamOccupancy(graph, items)
+
+    const first = planEscalation(dir, graph, items, [], occupancy)
+    assert.ok(first, 'a withdrawal nobody has been told about must reach the controller')
+    assert.ok(first.triggers.some((line) => line.includes('withdrawn at the door')), first.triggers.join(' | '))
+    assert.deepEqual(first.withdrawals, ['tok'], 'the dispatch site cannot mark what it is not handed')
+
+    // Nothing has been dispatched yet, so nothing has been read. A trigger that
+    // retired itself at PLANNING time would drop withdrawals the controller
+    // never saw — worse than repeating them.
+    const stillPending = planEscalation(dir, graph, items, [], occupancy)
+    assert.ok(stillPending.triggers.some((line) => line.includes('withdrawn at the door')),
+      'planning alone retired the trigger; a withdrawal nobody read would vanish')
+
+    // The receipt the dispatch site writes. It goes on the notice because the
+    // ledger cannot carry it.
+    mkdirSync(join(dir, '.tmux-teams', 'notices'), { recursive: true })
+    writeFileSync(join(dir, '.tmux-teams', 'notices', 'tok.md'),
+      '# Your request `tok` was withdrawn\n\n<!-- tmux-teams: read by the controller -->\n')
+
+    const after = planEscalation(dir, graph, items, [], occupancy)
+    const lines = after ? after.triggers.join(' | ') : ''
+    assert.ok(!lines.includes('withdrawn at the door'),
+      `a withdrawal the controller has already read is still a standing problem: ${lines}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('a permanent problem does not re-dispatch the controller every cooldown', () => {
   const dir = mkdtempSync(join(tmpdir(), 'loop-pm-repeat-'))
   try {
