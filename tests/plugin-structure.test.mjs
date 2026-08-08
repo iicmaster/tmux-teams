@@ -428,6 +428,34 @@ test('every shipped module parses', () => {
   }
 })
 
+// The companion prints `[terminal] <verdict>` to stdout, and the runner spawns
+// it with `stdio: ['ignore', logFd, logFd]` — that stream is a log file under
+// `.tmux-teams/runner-logs/`, read by people. The verdict a machine acts on is
+// the outbox FILE, hash-checked against the `outbox_digest` recorded at
+// `delivered`. A comment in the companion once appointed the log line "the only
+// line stating a verdict". It was false, and six release-review rounds were
+// spent hardening a stream against forgery because of it. Deleting the sentence
+// is half the fix; this is the half that holds. A writer emits the token inside
+// a template literal, so a reader is what these two patterns describe: the
+// token as a regex, or as a quoted string to search for.
+const TERMINAL_LINE_READER = [
+  { pattern: /\\\[terminal\\\]/, shape: 'a regex matching the log line' },
+  { pattern: /['"]\[terminal\]/, shape: 'the log line as a quoted string' },
+]
+
+test('nothing in the shipped tree reads the companion log for a verdict', () => {
+  const files = shippedModules()
+  assert.ok(files.length >= 20, `only ${files.length} shipped modules found — the walk is not walking`)
+  const found = []
+  for (const file of files) {
+    const source = readFileSync(file, 'utf8')
+    for (const { pattern, shape } of TERMINAL_LINE_READER) {
+      if (pattern.test(source)) found.push(`${file.slice(PLUGIN.length + 1)}: ${shape}`)
+    }
+  }
+  assert.deepEqual(found, [], `the verdict is the outbox file, not the log:\n${found.join('\n')}`)
+})
+
 test('no shipped client string carries a backtick, whoever adds the next one', async () => {
   const files = shippedModules().filter((file) => {
     // A CLI entry runs its argument parsing at module load and calls

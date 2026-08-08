@@ -2915,10 +2915,24 @@ let modeChars = 0
 // stream reported success. The contract is the file; a stream that can be
 // mistaken for the contract is a lie the contract cannot prevent.
 //
-// So the literal token is broken where it appears in AGENT-authored text. Not
-// hidden — the reader still sees that a marker was typed and that it counted
-// for nothing. `[terminal]` remains the only line stating a verdict, and it is
-// written by this process from the file it read.
+// So the literal token is broken where it appears in text this process did not
+// author. Not hidden — the reader still sees that a marker was typed and that
+// it counted for nothing.
+//
+// What this defends, stated exactly: a HUMAN reading the log. NOTHING machine
+// reads this stream for a verdict. The runner spawns this process with
+// `stdio: ['ignore', logFd, logFd]`, so stdout is a file under
+// `.tmux-teams/runner-logs/`, and it reads its verdict from the outbox FILE,
+// hash-checked against the `outbox_digest` recorded at `delivered`
+// (`loop-runner.mjs`). `[terminal]` is a diagnostic line, not an authority — an
+// agent can type one into chat and this process will echo it, which is a
+// misleading picture and not a false completion. An earlier version of this
+// comment appointed `[terminal]` "the only line stating a verdict". That
+// sentence was false when it was written, contradicted `kms.mjs` and
+// `references/teammates-messaging.md` in the same tree, and was the only thing
+// that made forging this stream worth anything: six review rounds were spent
+// defending a witness we had appointed ourselves. Do not restore it, and do not
+// add a machine reader — `tests/plugin-structure.test.mjs` refuses one.
 // Only a line that could be MISTAKEN for the contract is quoted — a marker plus
 // this run's own task id, alone on its line. An agent explaining the rule, or
 // reviewing this very file, writes `TEAM_DONE` constantly and none of that can
@@ -2942,9 +2956,9 @@ let modeChars = 0
 // which is what a terminal draws, though a partial overwrite could still leave
 // characters from an earlier segment on screen. Cursor-positioning sequences
 // that paint a marker from somewhere else on the screen are not modelled and
-// cannot be, by anything short of a terminal emulator. This defends the line;
-// `[terminal]` remains the only line stating a verdict, and it is written by
-// this process from the file it read.
+// cannot be, by anything short of a terminal emulator. This defends the line as
+// far as a line can be defended, and what makes that enough is written above:
+// no machine reads this stream for a verdict.
 // The FULL CSI parameter grammar, `[0-9:;<=>?]`, not the `[0-9;?]` subset this
 // started with. A colon-delimited SGR — `ESC[38:2::255:0:0m`, an ordinary
 // truecolour sequence — fell through to the one-character fallback, which ate
@@ -3023,7 +3037,12 @@ function say(kind, value, messageId) {
   // slice is no longer a whole line and is not quoted, which is correct: a
   // truncated fragment cannot be mistaken for the contract either.
   const text = spoken.slice(0, MAX_DISPLAY_TEXT)
-  const quotable = kind === 'say' || kind === 'think'
+  // Every kind `say()` renders is text this process did not author — an agent
+  // message, its thinking, or a user turn replayed on resume — and all three
+  // reach the same human reader. Provenance is not an authority boundary here:
+  // `user` was excluded with no reason recorded, so a replayed history carrying
+  // a marker went through untouched. Raised by a release reviewer.
+  const quotable = kind === 'say' || kind === 'think' || kind === 'user'
   const nextMode = `${kind}:${messageId ?? ''}`
   if (mode !== nextMode) {
     flushPending()
