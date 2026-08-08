@@ -2947,7 +2947,24 @@ let modeChars = 0
 // this process from the file it read.
 const ANSI_OR_CONTROL = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b[@-Z\\-_]|\u001b.|[\u0000-\u0008\u000b-\u001f\u007f]/g
 
-const visibleForm = (line) => line.slice(line.lastIndexOf('\r') + 1).replace(ANSI_OR_CONTROL, '')
+// Characters that occupy no width. Found by hunting the class the ANSI fix had
+// just opened, before a reviewer had to: with only C0 and escape sequences
+// removed, a zero-width space, a joiner, a BOM, a bidi override, a word joiner
+// and a soft hyphen ALL slipped a marker past the anchor — nine probes, nine
+// holes. Each renders as nothing and leaves a marker looking exactly like a
+// marker.
+const INVISIBLE = /[\u00ad\u180e\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\ufeff]|\p{Cf}/gu
+
+// Width-occupying spaces that are not ASCII space or tab. A non-breaking space
+// indenting a marker is indentation to every reader on earth and was not to the
+// anchor.
+const UNICODE_SPACE = /[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]/gu
+
+const visibleForm = (line) => line
+  .slice(line.lastIndexOf('\r') + 1)
+  .replace(ANSI_OR_CONTROL, '')
+  .replace(INVISIBLE, '')
+  .replace(UNICODE_SPACE, ' ')
 
 const quoteMarkers = (text, taskId) => {
   const forgeable = new RegExp(`^[ \\t]*TEAM_(DONE|BLOCKED|FAILED)[ \\t]+${escapeForRegExp(taskId)}[ \\t]*$`)
