@@ -25,9 +25,12 @@ import { watchForWork } from '../plugins/tmux-teams/skills/tmux-teams/scripts/lo
 const fakeWatch = () => {
   const opened = []
   const watch = (dir, options, handler) => {
-    const entry = { dir, options, handler, closed: false }
+    const entry = { dir, options, handler, closed: false, handlers: {} }
     opened.push(entry)
-    return { close: () => { entry.closed = true } }
+    // `on` is part of the contract now, not decoration: the real FSWatcher is
+    // an EventEmitter and the code attaches an `error` listener to it. A fake
+    // without it would pass while the shipped path threw.
+    return { on: (name, fn) => { entry.handlers[name] = fn }, close: () => { entry.closed = true } }
   }
   return { watch, opened, fire: (index = 0) => opened[index].handler('change', 'x') }
 }
@@ -72,22 +75,75 @@ test('a burst of writes wakes the loop once, not once per file', async () => {
   stop()
 })
 
+test('a fresh repo works — the first outbox is exactly what this exists to catch', async () => {
+  // The failure an adversarial reviewer found after this shipped, and the one
+  // the author had already PROVEN and misread as success. `.mailbox-out` does
+  // not exist until the first worker writes an outbox, and this runner is what
+  // dispatches that worker — so on every fresh repo the attach failed with
+  // ENOENT, was never retried, and the single event source this function exists
+  // for was dead for the life of the process. The note made it look handled.
+  const repo = mkdtempSync(join(tmpdir(), 'cold-'))   // neither directory exists
+  const said = []
+  const woke = []
+  const stop = watchForWork(repo, { onChange: () => woke.push(1), debounceMs: 30, log: (line) => said.push(line) })
+  try {
+    assert.deepEqual(said, [], `a fresh repo should need no excuses: ${said.join(' | ')}`)
+    writeFileSync(join(repo, '.mailbox-out', 'task-1'), 'TEAM_DONE\n')
+    for (let waited = 0; waited < 5000 && !woke.length; waited += 25) {
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+    assert.ok(woke.length, "the first worker's outbox did not wake the loop on a fresh repo")
+  } finally { stop() }
+})
+
+test('a watcher that fails mid-run must not take the process with it', () => {
+  // An FSWatcher is an EventEmitter, and an `error` event with NO listener
+  // throws — killing the runner and the interval backstop together. That makes
+  // a watcher failure worse than having no watcher, which inverts this
+  // function's whole safety argument. The try/catch covers only the attach.
+  const said = []
+  const emitters = []
+  const watch = () => {
+    const handlers = {}
+    const watcher = { on: (name, fn) => { handlers[name] = fn }, close: () => {}, handlers }
+    emitters.push(watcher)
+    return watcher
+  }
+  const stop = watchForWork(mkdtempSync(join(tmpdir(), 'err-')), {
+    onChange: () => {}, watch, log: (line) => said.push(line),
+  })
+
+  assert.equal(emitters.length, 2)
+  for (const watcher of emitters) {
+    assert.equal(typeof watcher.handlers.error, 'function', 'a watcher shipped with no error listener')
+  }
+  const error = new Error('gone'); error.code = 'EPERM'
+  emitters[0].handlers.error(error)   // would throw and kill the process if unhandled
+  assert.equal(said.length, 1, said.join(' | '))
+  assert.match(said[0], /stopped watching/)
+  assert.match(said[0], /EPERM/)
+  assert.match(said[0], /interval still sweeps/)
+  stop()
+})
+
 test('a directory it cannot watch is a note, never a crash', () => {
-  // `.mailbox-out` does not exist in a fresh repo until the first dispatch, and
-  // some platforms refuse a watch outright. Either way the interval still
-  // sweeps, so the honest outcome is a degraded wake-up, not a dead runner.
+  // The reason this test survives the cold-start fix above: creating the
+  // directory removes ENOENT, it does not remove every refusal. A platform can
+  // still say no — EPERM on a mount that forbids watches, EMFILE when the
+  // descriptor table is full. Either way the interval still sweeps, so the
+  // honest outcome is a degraded wake-up rather than a dead runner.
   const said = []
   const half = {
     watch: (dir, options, handler) => {
-      if (dir.endsWith('.mailbox-out')) { const error = new Error('nope'); error.code = 'ENOENT'; throw error }
-      return { close: () => {}, dir, options, handler }
+      if (dir.endsWith('.mailbox-out')) { const error = new Error('nope'); error.code = 'EPERM'; throw error }
+      return { on: () => {}, close: () => {}, dir, options, handler }
     },
   }
   const stop = watchForWork(repoWith(), { onChange: () => {}, watch: half.watch, log: (line) => said.push(line) })
 
   assert.equal(said.length, 1, said.join(' | '))
   assert.match(said[0], /not watching/)
-  assert.match(said[0], /ENOENT/, 'the note has to say WHY, or nobody can fix it')
+  assert.match(said[0], /EPERM/, 'the note has to say WHY, or nobody can fix it')
   assert.match(said[0], /interval still sweeps/, 'and that the loop is degraded, not broken')
   stop()
 })

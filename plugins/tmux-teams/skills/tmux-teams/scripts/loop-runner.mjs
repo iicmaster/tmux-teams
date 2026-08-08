@@ -1381,10 +1381,30 @@ export function watchForWork(repo, { onChange, debounceMs = 250, watch = fsWatch
   }
   for (const dir of dirs) {
     try {
+      // Created, not merely watched. `.mailbox-out` does not exist until the
+      // FIRST worker writes an outbox — and this runner is what dispatches that
+      // worker, so on every fresh repo the attach would fail with ENOENT and
+      // never be retried, for the whole life of the process. The one event
+      // source this exists for would have been dead exactly where it was needed
+      // most, while the note made it look handled. Both directories belong to
+      // the runner, so creating them is not a side effect, it is setup.
+      mkdirSync(dir, { recursive: true })
       // `persistent: false` on purpose: the interval is what holds the process
       // open. A watcher that kept it alive on its own would turn a finished
       // one-shot run into a process that never exits.
-      watchers.push(watch(dir, { persistent: false }, bump))
+      const watcher = watch(dir, { persistent: false }, bump)
+      // An FSWatcher is an EventEmitter, and an `error` event with no listener
+      // THROWS — killing the process and taking the interval backstop with it.
+      // That would make a watcher failure worse than no watcher at all, which
+      // is the opposite of every claim made for this function. The try/catch
+      // above only covers the synchronous attach; this covers the rest of the
+      // run (a watched directory deleted underneath us, EMFILE, a platform
+      // watcher giving up).
+      watcher.on('error', (error) => {
+        say(`note   stopped watching ${dir} (${error.code || error.message}) — the interval still sweeps`)
+        try { watcher.close() } catch { /* already gone */ }
+      })
+      watchers.push(watcher)
     } catch (error) {
       say(`note   not watching ${dir} (${error.code || error.message}) — the interval still sweeps`)
     }

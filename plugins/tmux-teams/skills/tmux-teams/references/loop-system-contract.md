@@ -2692,8 +2692,21 @@ returns a closer; it reads no ledger, no graph, and cannot reach a dispatch
 decision — a test asserts that by handing it a repo whose ledger is corrupt and
 watching it succeed anyway. A missed event costs LATENCY, never correctness,
 because the sweep still re-derives everything. A directory that cannot be
-watched — `.mailbox-out` does not exist before the first dispatch — logs a note
-naming the directory and the error code and says the interval still sweeps.
+watched logs a note naming the directory, the error code, and the fact that the
+interval still sweeps.
+
+**Two corrections the same day, both from an adversarial review of the shipped
+commit, and both worse than the bug they looked like.** The first: `.mailbox-out`
+does not exist until a worker writes an outbox, and the RUNNER is what dispatches
+that worker — so on every fresh repo the attach failed with `ENOENT`, was never
+retried, and the one event source this exists for was dead for the life of the
+process. The note made it look handled; the author had produced that exact
+`ENOENT` output by hand and read it as clean degradation. Both directories belong
+to the runner, so they are now CREATED before being watched. The second: an
+`FSWatcher` is an `EventEmitter`, and an `error` event with no listener THROWS —
+killing the runner and the interval with it, which would make a watcher failure
+strictly worse than having no watcher. The `try/catch` covered only the
+synchronous attach. Both are pinned by tests that fail without them.
 
 What was NOT done, deliberately: no message queue, no broker, no at-least-once
 delivery. A scratchpad POC proved at-most-once loses work silently about 1 in 60
