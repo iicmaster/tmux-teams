@@ -324,13 +324,25 @@ const statusOf = (run) => !run ? 'unbound'
         : 'other'
 
 // A run that died is only "process not found" while the death is recent —
-// past its own stall budget (3× timeout, minimum 15 minutes) the seat is
-// idle again, and a forever-red node misreads a ready seat as broken. The
-// elapsed comes from the pulse's own measurement, so the page never has to
-// guess a clock.
+// after that the seat is idle again, and a forever-red node misreads a ready
+// seat as broken. The elapsed comes from the pulse's own measurement, so the
+// page never has to guess a clock.
+//
+// GitHub #49: the window was `3 × timeout_sec`, and the standard stall timeout
+// is 1800s — so a seat that finished eleven minutes ago was still drawn red for
+// NINETY MINUTES. That is the exact failure the comment above says this
+// function exists to prevent, produced by the function itself. Three times a
+// stall budget was never justified anywhere; one is, because a run cannot still
+// be dying after its own timeout has elapsed.
+//
+// A recorded terminal would be the stronger signal — a run that ENDED is idle
+// immediately, whatever the clock says — but the pulse does not carry
+// `termination_reason` into `run.state` here, so this stays a time window. That
+// is issue #49's option 2, deliberately not taken: it needs a pulse field, and
+// widening the contract to shorten a red banner is the wrong trade.
 const deadIsStale = (run) => {
   const elapsed = run?.elapsed_sec ?? 0
-  const window = Math.max((run?.timeout_sec ?? 0) * 3, 900)
+  const window = Math.max(run?.timeout_sec ?? 0, 900)
   return elapsed > window
 }
 

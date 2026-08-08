@@ -264,6 +264,23 @@ test('a died run shows process not found only while the death is recent', () => 
   const recent = run('b_w1', 'died', { elapsed_sec: 100, timeout_sec: 1800 })
   const tour2 = tourOf(TWO_TEAMS, snapshotWith([recent]))
   assert.equal(tour2.world['b_w1'].status, 'dead')
+
+  // GitHub #49, and the reason "only while recent" needed a NUMBER. The window
+  // was 3 × timeout, and the standard stall timeout is 1800s — so a seat that
+  // finished eleven minutes ago stayed red for NINETY, which is the exact
+  // failure this test's own comment says the page must stop doing. Pinned at
+  // both edges, because a window nobody measured is how it drifted to 5400s
+  // with nothing to notice.
+  const anHourAgo = run('b_w1', 'died', { elapsed_sec: 3600, timeout_sec: 1800 })
+  assert.equal(tourOf(TWO_TEAMS, snapshotWith([anHourAgo])).world['b_w1'].status, 'other',
+    'an hour-old death still drew a ready seat as broken')
+  const justInside = run('b_w1', 'died', { elapsed_sec: 1700, timeout_sec: 1800 })
+  assert.equal(tourOf(TWO_TEAMS, snapshotWith([justInside])).world['b_w1'].status, 'dead',
+    'a death younger than its own timeout is still worth showing')
+  // The floor holds for short runs: 900s, not 3 × a small timeout.
+  const shortRun = run('b_w1', 'died', { elapsed_sec: 800, timeout_sec: 120 })
+  assert.equal(tourOf(TWO_TEAMS, snapshotWith([shortRun])).world['b_w1'].status, 'dead',
+    'the 15-minute floor stops a fast run flickering green the moment it dies')
 })
 
 test('the controller is one node — never a node and a band as well', () => {
