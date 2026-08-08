@@ -2926,9 +2926,36 @@ let modeChars = 0
 // and operator instructions. Caught by a release reviewer that had its OWN
 // explanation of the outbox rule mangled while writing it, which is about as
 // direct as evidence gets.
-const quoteMarkers = (text, taskId) => text.replace(
-  new RegExp(`^([ \\t]*)TEAM_(DONE|BLOCKED|FAILED)[ \\t]+${escapeForRegExp(taskId)}[ \\t]*$`, 'gm'),
-  (_, indent, word) => `${indent}TEAM~${word} ${taskId} (typed in chat — only the outbox file counts)`)
+// What a TERMINAL would show, which is the only thing a marker can be mistaken
+// for. Matching the raw bytes was not enough: `\x1b[2K` in front of a marker
+// left the regex unmatched — the anchor allowed only spaces and tabs — while
+// CSI 2K erases the line it is on, so the reader saw a clean standalone marker
+// and an ANSI-stripping supervisor read one too. Reproduced against the real
+// companion by a release reviewer.
+//
+// So the decision is made on the visible form and the WHOLE original line is
+// replaced when it is a marker. A line that was wearing a costume does not get
+// to keep it.
+//
+// The limits, stated rather than implied: CR is treated as a return to the
+// start of the line, so only the segment after the last one is considered —
+// which is what a terminal draws, though a partial overwrite could still leave
+// characters from an earlier segment on screen. Cursor-positioning sequences
+// that paint a marker from somewhere else on the screen are not modelled and
+// cannot be, by anything short of a terminal emulator. This defends the line;
+// `[terminal]` remains the only line stating a verdict, and it is written by
+// this process from the file it read.
+const ANSI_OR_CONTROL = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b[@-Z\\-_]|\u001b.|[\u0000-\u0008\u000b-\u001f\u007f]/g
+
+const visibleForm = (line) => line.slice(line.lastIndexOf('\r') + 1).replace(ANSI_OR_CONTROL, '')
+
+const quoteMarkers = (text, taskId) => {
+  const forgeable = new RegExp(`^[ \\t]*TEAM_(DONE|BLOCKED|FAILED)[ \\t]+${escapeForRegExp(taskId)}[ \\t]*$`)
+  return text.split('\n').map((line) => {
+    const match = forgeable.exec(visibleForm(line))
+    return match === null ? line : `TEAM~${match[1]} ${taskId} (typed in chat — only the outbox file counts)`
+  }).join('\n')
+}
 
 const escapeForRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 

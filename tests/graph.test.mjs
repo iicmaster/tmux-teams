@@ -284,6 +284,14 @@ test('a died run shows process not found only while the death is recent', () => 
 })
 
 test('the legend says what a crawling edge does and does not mean', () => {
+  // Narrowed after a release reviewer traced it: the sentence said "one crawl
+  // per running seat" and the outer controller IS a running seat, but nothing
+  // points an assign/owns/judge edge at it, so a working controller draws zero
+  // crawl. A legend that promises a wire the renderer cannot draw sends a
+  // reader looking for a fault that is not there. The assertions below check
+  // both halves — the rule, and the exception that would otherwise read as a
+  // bug — because a test that only checks a sentence exists cannot notice it
+  // has become false.
   // GitHub #55. Live-crawl is keyed by SEAT — an edge crawls when the seat it
   // points at is running. Two workflows interleaving on one team therefore light
   // two edges around a single node: the incoming assign because that worker
@@ -299,6 +307,15 @@ test('the legend says what a crawling edge does and does not mean', () => {
   assert.match(page, /crawling edge means the seat it points AT is running/)
   assert.match(page, /two tokens in flight/, 'the legend does not say what two crawls actually mean')
   assert.match(page, /task id, never a work item/, 'the legend does not say WHY the page cannot tell them apart')
+
+  // The exception, asserted rather than assumed. Every crawlable edge is an
+  // assign, owns or judge aimed at a team seat; the controller has none aimed
+  // at it, so "one crawl per running seat" was a promise the renderer could not
+  // keep for the one seat a reader watches most.
+  assert.match(page, /running <i>team<\/i> seat/,
+    'the legend still promises a crawl for every running seat')
+  assert.match(page, /controller draws no crawl at all/,
+    'the legend does not say the controller is the exception, so its stillness reads as a fault')
 })
 
 test('the controller is one node — never a node and a band as well', () => {

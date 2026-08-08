@@ -72,10 +72,20 @@ const runLane = (extraEnv = {}) => {
   return { out, seen: /saw CLAUDE_CODE_SIMPLE=(\S+)/.exec(outbox)?.[1] }
 }
 
-test('a claude worker does not inherit the project it is building', () => {
-  // The default. Without this the worker reads the target repo's hooks — and a
-  // repo whose hook injects an instruction turns a build agent into something
-  // else entirely, which is exactly what was observed.
+test('a claude worker is handed the bare-mode flag by default', () => {
+  // The name says what this proves and no more, after a reviewer pointed out
+  // that it claimed the outcome and measured the input. What is asserted here
+  // is that the child is HANDED `CLAUDE_CODE_SIMPLE=1` — the lever this process
+  // can actually reach, since the ACP adapter spawns the CLI itself and its
+  // argv is not ours.
+  //
+  // That the flag SUPPRESSES a project hook was measured separately, by hand,
+  // with a hook that wrote a marker file: it fired on a plain run and did not
+  // fire with the variable set (see the file header). That measurement is not
+  // re-run here — it needs a real Claude CLI — so if a future release keeps
+  // accepting the variable and stops honouring it, this test stays green and
+  // says nothing about it. Written down because a test whose name promised the
+  // behaviour would have hidden exactly that.
   const { seen } = runLane()
   assert.equal(seen, '1', `the worker was handed CLAUDE_CODE_SIMPLE=${seen}`)
 })

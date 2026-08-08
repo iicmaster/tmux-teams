@@ -2330,6 +2330,7 @@ a palette yet).
 | AC124 | §9 | a withdrawal whose read receipt could not be written is escalated again on a later tick instead of being held by the unchanged-trigger brake, and the stored identity omits it | `loop-occupancy.test.mjs` |
 | AC125 | §5 | a notice receipt that is empty, truncated, written by another actor, or names a different token does not retire a withdrawal | `loop-occupancy.test.mjs` |
 | AC126 | §12 | a terminal marker split across two stream chunks of one message is quoted, not reassembled into a forgeable line | `chat-marker-quoting.test.mjs` |
+| AC127 | §12 | a marker preceded or followed by control sequences — a CSI erase, a colour code, a carriage-return overwrite — is quoted on its VISIBLE form, so a costume of controls cannot smuggle a forgeable line past the anchor | `chat-marker-quoting.test.mjs` |
 | AC122 | §3 | `downstream_team_id` on a team is refused by the whole-graph scan with its own routing sentence, never by the generic unknown-key message | `workflow-graph.test.mjs` |
 | AC98 | §3.5 | a malformed palette entry — bad model, adapter, effort, display_model, bucket, an unknown key, a non-object entry, or a palette of the wrong length — is refused, naming the team and the seat | `workflow-graph-palette.test.mjs` |
 | AC99 | §3.5 | `palette` alongside `model`/`adapter`/`effort`/`display_model` on the same seat is refused, not silently ignored | `workflow-graph-palette.test.mjs` |
