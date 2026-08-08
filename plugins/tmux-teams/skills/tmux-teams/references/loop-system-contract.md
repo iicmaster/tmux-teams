@@ -2886,6 +2886,15 @@ no change to the routing above. `answered` already meant this. What it lacked
 was a writer. This also makes the deadline honest for the first time — an
 expiry can now mean "nobody replied" rather than "nobody could."
 
+**An operational fact worth knowing before relying on the wake-up.** Event
+delivery is a filesystem property, not a promise this system can make. Measured
+on this repository's CI, 2026-08-08: creating a NEW file in a watched directory
+is reported, and an IN-PLACE APPEND to an existing one is not — which is exactly
+the pattern `ledger-writer.mjs` uses for every operator door. On such a
+filesystem a person's answer is noticed by the interval, not by the watcher, and
+nothing else changes. That is the difference between latency and correctness,
+and it is why the interval is not an optimisation to be removed later.
+
 Found by the A5 ratchet on its first full run after the file appeared: a new
 reader of a token's ledger is refused until it is authorized by hand, and this
 one was, taking the recorded set to eleven. §16.2's closing paragraph was

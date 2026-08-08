@@ -181,13 +181,21 @@ test('stopping closes every watcher and cancels a pending wake', async () => {
 // measurement, not an assumption about the platform name.
 const deliversFsEvents = async () => {
   const probe = mkdtempSync(join(tmpdir(), 'probe-'))
+  const target = join(probe, 'existing.jsonl')
+  writeFileSync(target, 'first\n')
   let fired = false
-  const { watch } = await import('node:fs')
+  const { watch, appendFileSync } = await import('node:fs')
   let watcher
   try { watcher = watch(probe, { persistent: false }, () => { fired = true }) } catch { return false }
   try {
+    // An IN-PLACE APPEND to a file that already exists — the weakest of the
+    // three patterns and the one the ledger actually uses
+    // (`ledger-writer.mjs`). The first version of this probe created NEW files
+    // and answered "yes" on a CI where creation is reported and appending is
+    // not, so the probe passed and the test it guards still failed. A probe
+    // that does not perform the operation it is vouching for proves nothing.
     for (let attempt = 0; attempt < 40 && !fired; attempt += 1) {
-      writeFileSync(join(probe, `p-${attempt}`), 'x')
+      appendFileSync(target, `line-${attempt}\n`)
       await new Promise((resolve) => setTimeout(resolve, 25))
     }
   } finally { try { watcher.close() } catch { /* already gone */ } }
