@@ -26,7 +26,7 @@
 | 4 | APPROVED | APPROVED | **BLOCKED** 1+3 ข้อ | แก้ |
 | 5 | APPROVED | APPROVED | **BLOCKED** 1+2 ข้อ | แก้ + ล่าคลาสถัดไปเอง |
 | 6 | **BLOCKED** | **BLOCKED** | **BLOCKED** 4+3 ข้อ | แก้ครบ (`fba7da7` + `d18fbbb`) |
-| 7 | — | — | — | **ยังไม่รัน** — ขั้นถัดไป |
+| 7 | APPROVED | APPROVED | **BLOCKED** 4 ข้อ | แก้ครบแล้ว → **รอบ 8** |
 
 **รอบ 6 คือจุดเปลี่ยน — บล็อกทั้งสามเลนพร้อมกัน** หลังจาก AGY กับ zai ผ่านติดกันสามรอบ
 และตัวที่ **AGY กับ zai เจอตรงกันโดยอิสระ** คือ **regression ที่การแก้ของเราเองสร้าง**
@@ -107,6 +107,11 @@ zero-width space · ZWJ · BOM · bidi override · word joiner · soft hyphen ·
 | agy | `antigravity-acp@1.0.0` | `gemini-3.6-flash-high Gemini 3.6 Flash (High)` | `identity_status: unverified` — **ข้อยกเว้นที่อนุญาตเฉพาะเลนนี้** |
 | zai | `claude-agent-acp` 0.66.0 | `opus` | **`opus` ไม่พิสูจน์ตระกูล** — โปรไฟล์ map `opus` → `glm-5.2[1m]` ที่ `api.z.ai` |
 | codex | `codex-acp@1.1.7` | `gpt-5.6-terra[max]` | หมุด 1.1.7 อย่าเลื่อน |
+
+**รอบ 7 (8 ส.ค.)** — `<scratchpad>/r18g/{agy,zai,codex}/` · จดครบทั้งสามเลนก่อนทำอะไรต่อ:
+`agy 44b16fbf-68b0-4e90-9efd-7ac1b260280e` (unverified) ·
+`zai 4603d50c-8731-4839-9576-fb1faace912f` (**`matched` รอบนี้** ต่างจากรอบ 6) ·
+`codex 019fe0a9-7cf9-7381-951a-01febe414736` (unverified)
 
 **บทเรียน:** บนเกตเวย์ร่วม ชื่อ alias ที่ receipt บันทึกไม่ได้บอกว่าใครอ่าน ต้องอ่าน
 `ANTHROPIC_DEFAULT_OPUS_MODEL` + `ANTHROPIC_BASE_URL` ของโปรไฟล์ประกอบ
@@ -216,7 +221,10 @@ zero-width space · ZWJ · BOM · bidi override · word joiner · soft hyphen ·
 - **ทางออกงานตีปิงปอง = ทาง B** (Master 8 ส.ค.) · **ไม่ทำ `override.mjs`** เพราะย้อนทางไหล
   · `withdraw.mjs` แล้วเปิดใบใหม่ ตรงกับที่ §6.3 เขียนไว้เอง
 - **`PLACES_BY_DESTINATION = {resumed}` เท่านั้น** · `escalated` ไม่อยู่โดยตั้งใจ — escalate คืองาน PM
-- **log ทำให้ grep ปลอดภัยไม่ได้** โดยไม่ทำลายข้อความ · `[terminal]` คือบรรทัดเดียวที่บอกคำตัดสิน
+- **log ทำให้ grep ปลอดภัยไม่ได้** โดยไม่ทำลายข้อความ — **และไม่ต้องทำ** เพราะ log ไม่ใช่พยาน
+  · `[terminal]` เป็นบรรทัด **diagnostic** · คำตัดสินคือไฟล์ outbox ที่ผูก `outbox_digest`
+  · บรรทัดนี้เคยเขียนว่า "คือบรรทัดเดียวที่บอกคำตัดสิน" — **ผิด และถูกลบออกจากโค้ดแล้ว
+  (`d18fbbb`) แต่รอดอยู่ในไฟล์นี้จนผู้รีวิวจับได้** ดูหัวข้อ ✅ ทาง C
 
 ## DO NOT — พลาดมาแล้ว อย่าทำซ้ำ
 
@@ -264,6 +272,15 @@ zero-width space · ZWJ · BOM · bidi override · word joiner · soft hyphen ·
 2. **เทสนี้แตะสิ่งที่มันตั้งชื่อจริงไหม** — เขียวไม่ได้แปลว่าถูกเรียก · วิธีเดียวที่ตัดสินได้
    คือ **mutation**: ลบเช็คที่มันควรจับ แล้วดูว่าแดงไหม
 3. **การแก้นี้เพิ่งเปิดคลาสอะไร** — ถามทันทีหลังแก้ ไม่ใช่รอรีวิวบอก (ครั้งนี้ได้ 9 รูรั่วฟรี)
+4. **การวัดที่เพิ่งรัน ตอบได้แค่สิ่งที่มันไปแตะ** — เพิ่ม 8 ส.ค. รอบ 7 · เจ็บสองครั้งในวันเดียว:
+   - `grep 'only line stating a verdict'` เจอจุดเดียว **ผมสรุปว่า "ไม่มีที่อื่น"** ของจริงเขียนว่า
+     `The ONLY line in this stream that states a verdict` + `A supervisor greps THIS` —
+     **คนละถ้อยคำ เจตนาเดียวกัน สองในสามเลนเจอ ผมไม่เจอ**
+   - mutation ฉีดแต่ `.mjs` · guard เดินแต่ `.mjs` · มี `workflows/mailbox-run.js` ship อยู่
+     **เขียวทั้งคู่ และทั้งคู่พิสูจน์คนละเรื่องกับที่คอมเมนต์อ้าง**
+
+   **วิธีเดียวที่ใช้ได้: ค้นด้วยเจตนา ไม่ใช่ถ้อยคำ** (`grep -i 'supervisor\|only.*verdict\|grep'`)
+   และ **นับสิ่งที่ walker ข้ามไป** ก่อนเขียนคำว่า "ทั้งต้นไม้"
 
 ## ถัดไป ตามลำดับ
 

@@ -3814,12 +3814,14 @@ async function main() {
     if (reaped.forced) return finishDirectFailure('child-unsettled', 'child_unsettled', 1, { settlement: reaped })
     const result = readTerminalOutbox()
     console.log(`[outbox] ${result.outboxPath}`)
-    // The ONLY line in this stream that states a verdict, and it is written by
-    // this process from the file it read. Everything else here is the agent
-    // talking. A supervisor greps THIS — never the marker, which the agent can
-    // type and which cannot be made safe without corrupting ordinary prose
-    // (GitHub #59, narrowed after a release review showed the broad form
-    // rewriting an agent's own explanation of the rule).
+    // A DIAGNOSTIC line, written by this process from the file it read, for a
+    // person reading the log. It is not an authority and nothing greps it —
+    // see the note above `quoteMarkers` for why, and AC130 for the guard. This
+    // comment used to say "the ONLY line in this stream that states a verdict"
+    // and "a supervisor greps THIS", which is an instruction to build the one
+    // reader the contract forbids. Two release lanes found it independently
+    // after the same claim had been deleted from the block above; a claim can
+    // survive a search for the sentence that expressed it elsewhere.
     console.log(`[terminal] ${result.terminal}${result.terminal === 'invalid' ? ` (last line: "${result.text.split(/\r?\n/).map((value) => value.trim()).filter(Boolean).at(-1) ?? ''}")` : ''}`)
     // The rule, not just the symptom. A worker reading only the quoted last line
     // cannot learn that the marker must come last, which is how one delivery was

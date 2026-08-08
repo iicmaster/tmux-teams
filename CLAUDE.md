@@ -213,7 +213,11 @@ not optional, and only a later explicit instruction from Master changes either.
    produced it. This exists because every release before it was marked on one model's
    reading, and the three corrections that mattered most on 2026-08-03 all came
    from the advisor rather than from this room.
-3. Bump the version in all FIVE places — `.claude-plugin/marketplace.json`
+3. Bump the version in FIVE files, SIX places — the counts differ because one
+   file carries it twice, and saying only the smaller one is how a marketplace
+   half-bump gets past a checklist. `README.md` said it correctly while this
+   line said "all FIVE places" and then listed six; a release reviewer caught
+   the contradiction. The files: `.claude-plugin/marketplace.json`
    (twice: `metadata.version` and `plugins[0].version`),
    `plugins/tmux-teams/.claude-plugin/plugin.json`, `RELEASE_VERSION` in
    `tests/plugin-structure.test.mjs`, and the `Current release: **X.Y.Z**` line

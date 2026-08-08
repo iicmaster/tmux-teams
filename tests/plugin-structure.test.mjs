@@ -418,8 +418,35 @@ const shippedModules = () => {
   return out.sort()
 }
 
+// `shippedModules()` is for the checks that IMPORT a file, and it stops at
+// `.mjs` because the one shipped `.js` — `workflows/mailbox-run.js` — is a
+// runnable driver with no `process.argv` guard, so importing it would run it.
+// Everything that only READS bytes must see the whole shipped tree instead: a
+// walk that names one extension and a claim that says "the shipped tree" was
+// the round-7 blocker, and the same test file already knew that file existed.
+const shippedExecutables = () => {
+  const out = []
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) walk(path)
+      else if (entry.name.endsWith('.mjs') || entry.name.endsWith('.js')) out.push(path)
+    }
+  }
+  walk(join(PLUGIN, 'skills'))
+  return out.sort()
+}
+
+test('the byte-reading walk sees more than the importing one', () => {
+  // The gap itself, pinned: if `mailbox-run.js` is renamed or the extension
+  // list drifts back, this says so instead of a guard quietly narrowing.
+  const extra = shippedExecutables().filter((file) => !shippedModules().includes(file))
+  assert.ok(extra.some((file) => file.endsWith('mailbox-run.js')),
+    `the .js walk lost the shipped driver it exists for:\n${extra.join('\n')}`)
+})
+
 test('every shipped module parses', () => {
-  const files = shippedModules()
+  const files = shippedExecutables()
   // A floor, so a walk that finds nothing cannot pass as a clean sweep.
   assert.ok(files.length >= 20, `only ${files.length} shipped modules found — the walk is not walking`)
   for (const file of files) {
@@ -444,7 +471,7 @@ const TERMINAL_LINE_READER = [
 ]
 
 test('nothing in the shipped tree reads the companion log for a verdict', () => {
-  const files = shippedModules()
+  const files = shippedExecutables()
   assert.ok(files.length >= 20, `only ${files.length} shipped modules found — the walk is not walking`)
   const found = []
   for (const file of files) {
