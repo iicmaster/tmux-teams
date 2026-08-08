@@ -2945,23 +2945,43 @@ let modeChars = 0
 // cannot be, by anything short of a terminal emulator. This defends the line;
 // `[terminal]` remains the only line stating a verdict, and it is written by
 // this process from the file it read.
-const ANSI_OR_CONTROL = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b[@-Z\\-_]|\u001b.|[\u0000-\u0008\u000b-\u001f\u007f]/g
+// The FULL CSI parameter grammar, `[0-9:;<=>?]`, not the `[0-9;?]` subset this
+// started with. A colon-delimited SGR — `ESC[38:2::255:0:0m`, an ordinary
+// truecolour sequence — fell through to the one-character fallback, which ate
+// only `ESC[` and left `38:2::255:0:0m` sitting in front of the marker, so the
+// matcher saw junk while a terminal and every real CSI stripper saw a clean
+// coloured marker. Reproduced against the real companion by a reviewer.
+const ANSI_OR_CONTROL = /\u001b\[[0-9:;<=>?]*[ -/]*[@-~]|\u001b[@-Z\\-_]|\u001b.|[\u0000-\u0008\u000b-\u001f\u007f]/g
 
-// Characters that occupy no width. Found by hunting the class the ANSI fix had
-// just opened, before a reviewer had to: with only C0 and escape sequences
-// removed, a zero-width space, a joiner, a BOM, a bidi override, a word joiner
-// and a soft hyphen ALL slipped a marker past the anchor — nine probes, nine
-// holes. Each renders as nothing and leaves a marker looking exactly like a
-// marker.
-const INVISIBLE = /[\u00ad\u180e\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\ufeff]|\p{Cf}/gu
+// Characters that occupy no width — asked of UNICODE, not of a list we wrote.
+//
+// The list came first, from hunting the class the ANSI fix had just opened:
+// nine probes, nine holes, all closed. A reviewer then produced a tenth,
+// U+034F COMBINING GRAPHEME JOINER, which is `Mn` rather than `Cf` and was in
+// no enumeration — the same shape as every other round of this, one more
+// costume nobody had thought of.
+//
+// `Default_Ignorable_Code_Point` is the property that actually names this set:
+// Unicode maintains it, it covers the joiners, the BOM, the bidi controls, the
+// variation selectors and CGJ, and it grows without us. Enumerating a class
+// that someone else already curates is how the tenth hole existed.
+const INVISIBLE = /\p{Default_Ignorable_Code_Point}|[\u2028\u2029]|\p{Cf}/gu
 
 // Width-occupying spaces that are not ASCII space or tab. A non-breaking space
 // indenting a marker is indentation to every reader on earth and was not to the
 // anchor.
 const UNICODE_SPACE = /[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]/gu
 
+// A carriage return at the END of a line is a LINE TERMINATOR — CRLF, which is
+// entirely ordinary — and it is stripped before anything else. Treating it as
+// an overwrite made `slice(lastIndexOf('\r') + 1)` return the empty string, so
+// `TEAM_DONE <id>\r\n` matched nothing and went out raw. That was a regression
+// introduced by the carriage-return handling itself, and TWO independent
+// reviewers reproduced it in the same round. A CR in the MIDDLE is still an
+// overwrite; only the terminator is not.
 const visibleForm = (line) => line
-  .slice(line.lastIndexOf('\r') + 1)
+  .replace(/\r+$/, '')
+  .slice(line.replace(/\r+$/, '').lastIndexOf('\r') + 1)
   .replace(ANSI_OR_CONTROL, '')
   .replace(INVISIBLE, '')
   .replace(UNICODE_SPACE, ' ')

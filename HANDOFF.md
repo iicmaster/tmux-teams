@@ -71,7 +71,7 @@ zero-width space · ZWJ · BOM · bidi override · word joiner · soft hyphen ·
 **กับดัก codex:** `execution_profile_drift` = adapter หายจากแคช (จาก `npm cache clean --force`)
 แก้: `npx -y @agentclientprotocol/codex-acp@1.1.7 --version`
 
-## v0.18.0 — 21 คอมมิตตั้งแต่ v0.17.0
+## v0.18.0 — 28 คอมมิตตั้งแต่ v0.17.0 (นับด้วย `git rev-list --count v0.17.0..HEAD`)
 
 **เลข 0.18.0 ไม่ใช่ 0.17.1 เพราะมี breaking สองข้อ:**
 - กราฟที่ประกาศคีย์เกิน **เคยโหลดผ่าน ตอนนี้ถูกปฏิเสธ**

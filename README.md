@@ -777,11 +777,17 @@ the source for its OpenClaw bridge. Codex and Claude load their own
 version-keyed plugin caches.
 
 1. Edit the skill under `plugins/tmux-teams/skills/` and commit here.
-2. Bump the version in **all three** places:
+2. Bump the version in **five files, six places**:
    `.claude-plugin/marketplace.json` (twice — `metadata.version` and
-   `plugins[0].version`), `plugins/tmux-teams/.claude-plugin/plugin.json`, and
-   `RELEASE_VERSION` in `tests/plugin-structure.test.mjs`. That test is the only
-   thing checking they agree, so it has to state the number itself.
+   `plugins[0].version`), `plugins/tmux-teams/.claude-plugin/plugin.json`,
+   `plugins/tmux-teams/plugin.json` (the vendor-neutral Agent Plugins manifest),
+   `RELEASE_VERSION` in `tests/plugin-structure.test.mjs`, and the
+   `Current release:` line above. That test is the only thing checking they
+   agree, so it has to state the number itself — and this list has been wrong at
+   every count so far, so **grep for the old number after every bump**.
+   This paragraph said "all three" while CLAUDE.md said five; a release reviewer
+   found the contradiction, which is the fourth time a version location was
+   found by a reader rather than by the process.
 3. For the repository-only development tier, run `node scripts/run-fast.mjs fast`.
    The release gate remains bare `node --test`; then run `git diff --check` and
    the local-only `claude plugin validate --strict .` release gate.

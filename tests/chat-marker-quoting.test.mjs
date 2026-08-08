@@ -250,7 +250,11 @@ test('a marker wearing control sequences or invisible characters is still not fo
   // marker and an ANSI-stripping supervisor read one too. The costume was the
   // whole attack: the bytes were not a marker line, the picture was.
   const ESC = String.fromCharCode(27)
-  const stripAnsi = (text) => text.replace(new RegExp(`${ESC}\\[[0-9;?]*[ -/]*[@-~]`, 'g'), '')
+  // The SAME CSI grammar production uses. It repeated the restricted `[0-9;?]`
+  // subset, so a colon-delimited SGR was invisible to the assertion as well as
+  // to the code — a test blind to exactly the class it was guarding. Pointed
+  // out by the reviewer who found that bypass.
+  const stripAnsi = (text) => text.replace(new RegExp(`${ESC}\\[[0-9:;<=>?]*[ -/]*[@-~]`, 'g'), '')
   const cases = {
     'a CSI erase-line prefix': `All finished.\n${ESC}[2KTEAM_DONE stub-task\n`,
     'a CSI colour prefix': `All finished.\n${ESC}[32mTEAM_DONE stub-task\n`,
@@ -267,6 +271,17 @@ test('a marker wearing control sequences or invisible characters is still not fo
     'a soft hyphen': 'All finished.\n\u00adTEAM_DONE stub-task\n',
     'a non-breaking space indent': 'All finished.\n\u00a0TEAM_DONE stub-task\n',
     'a trailing zero-width space': 'All finished.\nTEAM_DONE stub-task\u200b\n',
+    // Round 6. Two reviewers found the first independently and it was a
+    // REGRESSION from the carriage-return handling itself: a CR at the end of a
+    // line is CRLF, a terminator, and slicing past it left the empty string.
+    // The other two are costumes no enumeration had reached — a colon-delimited
+    // truecolour SGR, and a combining grapheme joiner, which is `Mn` and so sat
+    // outside a `Cf` list.
+    'a CRLF line ending': 'All finished.\nTEAM_DONE stub-task\r\n',
+    'a bare trailing CR': 'All finished.\nTEAM_DONE stub-task\r',
+    'a colon-delimited SGR': `All finished.\n${ESC}[38:2::255:0:0mTEAM_DONE stub-task\n`,
+    'a combining grapheme joiner': 'All finished.\nTEAM_DONE stub-task\u034f\n',
+    'a variation selector': 'All finished.\nTEAM_DONE stub-task\ufe0f\n',
   }
   for (const [what, text] of Object.entries(cases)) {
     const { out } = runWithChunks([text])

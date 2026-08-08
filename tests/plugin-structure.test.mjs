@@ -76,6 +76,25 @@ test('marketplace and plugin manifests agree', () => {
     assert.ok(allowed.has(key), `${key} is not in the agent-plugins 1.0.0 schema, which forbids extras`)
   }
   assert.match(portable.name, /^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/, 'name fails the spec pattern')
+
+  // Types, not just names. This file is the only gate that reads this manifest
+  // at all, so a field of the wrong shape ships unless it is checked here.
+  const isPlainObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value)
+  for (const key of ['description', 'homepage', 'repository', 'license']) {
+    if (key in portable) assert.equal(typeof portable[key], 'string', `${key} must be a string`)
+  }
+  if ('author' in portable) {
+    assert.ok(typeof portable.author === 'string' || isPlainObject(portable.author),
+      'author must be a string or an object, never an array')
+    if (isPlainObject(portable.author)) {
+      assert.equal(typeof portable.author.name, 'string', 'an author object states a name')
+    }
+  }
+  if ('keywords' in portable) {
+    assert.ok(Array.isArray(portable.keywords), 'keywords must be an array')
+    for (const keyword of portable.keywords) assert.equal(typeof keyword, 'string', 'every keyword is a string')
+  }
+  if ('extensions' in portable) assert.ok(isPlainObject(portable.extensions), 'extensions must be an object')
 })
 
 test('Stage 1 field-evidence files and documentation links are wired', () => {
