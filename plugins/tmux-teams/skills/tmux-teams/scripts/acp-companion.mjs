@@ -3324,7 +3324,26 @@ function readTerminalOutbox() {
   const terminal = last === `TEAM_DONE ${taskId}` ? 'done'
     : last === `TEAM_BLOCKED ${taskId}` ? 'blocked'
       : last === `TEAM_FAILED ${taskId}` ? 'failed' : 'invalid'
-  return { outboxPath, text, terminal, digest }
+  // GitHub #53: `invalid` said only what the last line WAS, never what the rule
+  // is, and could not tell a misplaced marker from a missing one. A worker that
+  // wrote `TEAM_DONE <id>` at line 61 and an EVIDENCE block after it got back
+  // the quoted tail of its evidence — so it could not learn the rule, and the
+  // same delivery was retried twice before a human diagnosed it by reading the
+  // file. The contract states the rule in the brief; only the failure message
+  // did not.
+  const misplaced = terminal !== 'invalid' ? null
+    : lines.findIndex((value) => value === `TEAM_DONE ${taskId}`
+      || value === `TEAM_BLOCKED ${taskId}` || value === `TEAM_FAILED ${taskId}`)
+  const wrongId = terminal !== 'invalid' && misplaced !== -1 ? null
+    : lines.findIndex((value) => /^TEAM_(DONE|BLOCKED|FAILED)\b/.test(value))
+  const diagnosis = terminal !== 'invalid' ? null
+    : misplaced !== null && misplaced !== -1
+      ? `the marker is on line ${misplaced + 1} of ${lines.length}, and it must be the LAST non-empty line`
+        + ' — EVIDENCE and every other section belongs BEFORE it'
+      : wrongId !== null && wrongId !== -1
+        ? `line ${wrongId + 1} carries a marker for a different task (${lines[wrongId]}); this run is ${taskId}`
+        : `no TEAM_DONE/TEAM_BLOCKED/TEAM_FAILED ${taskId} line anywhere in the file`
+  return { outboxPath, text, terminal, digest, diagnosis }
 }
 
 function classifyCancellationOutcome(record) {
@@ -3654,6 +3673,10 @@ async function main() {
     const result = readTerminalOutbox()
     console.log(`[outbox] ${result.outboxPath}`)
     console.log(`[terminal] ${result.terminal}${result.terminal === 'invalid' ? ` (last line: "${result.text.split(/\r?\n/).map((value) => value.trim()).filter(Boolean).at(-1) ?? ''}")` : ''}`)
+    // The rule, not just the symptom. A worker reading only the quoted last line
+    // cannot learn that the marker must come last, which is how one delivery was
+    // retried twice with the same defect (GitHub #53).
+    if (result.diagnosis) console.log(`[terminal] ${result.diagnosis}`)
     const exitCode = result.terminal === 'invalid' ? 3 : 0
     return finishTerminal(result.terminal, exitCode, {
       evidencePresent: hasEvidence(result.text),
