@@ -820,6 +820,7 @@ ${renderTourChart(tour)}
   <li><span class="swatch sw-oversight"></span>PM outer loop — watches every team in every workflow</li>
 </ul>
  <span>Solid = a record exists for it · dashed = the operating model, nothing measured yet.</span>
+ <span><b>A crawling edge means the seat it points AT is running</b> — one crawl per running seat, keyed by seat and not by token. Two teams interleaving on one team therefore light two edges around a single node: the incoming <i>assign</i> because that worker is running, and the outgoing <i>artifact</i> because that evaluator is running on a different token. That is <b>two tokens in flight</b>, not one artifact mid-handover. The runs this page reads carry a task id, never a work item, so it cannot say which token is which without being told.</span>
  <span>Node border: green working · amber waiting, or a door that is full · red process not found · dashed declared but never dispatched.</span>
  <span>Every node is one agent, drawn once no matter how many workflows use its team, and states its status, time in state, adapter <b>lane</b> and separately its <b>model</b>. <code>unverified</code> means the dispatch never declared which model it asked for.</span>
  <span>Where a given piece of work is right now is the kanban board's question, not this page's.</span></div>

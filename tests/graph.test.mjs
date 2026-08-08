@@ -283,6 +283,24 @@ test('a died run shows process not found only while the death is recent', () => 
     'the 15-minute floor stops a fast run flickering green the moment it dies')
 })
 
+test('the legend says what a crawling edge does and does not mean', () => {
+  // GitHub #55. Live-crawl is keyed by SEAT — an edge crawls when the seat it
+  // points at is running. Two workflows interleaving on one team therefore light
+  // two edges around a single node: the incoming assign because that worker
+  // runs, and the outgoing artifact because that evaluator runs on a DIFFERENT
+  // token. It reads as one artifact in motion that nobody sent.
+  //
+  // Scoping the crawl to one token is the better fix and is not taken: a pulse
+  // run carries `task_id` and `dispatch_id` and NO `work_item`, so it would mean
+  // widening a published contract for a visual nicety — the same trade refused
+  // for the dead-seat window. What can be fixed for free is the reader's model,
+  // so the page says it.
+  const page = renderGraphPage(repoWith(TWO_TEAMS), snapshotWith())
+  assert.match(page, /crawling edge means the seat it points AT is running/)
+  assert.match(page, /two tokens in flight/, 'the legend does not say what two crawls actually mean')
+  assert.match(page, /task id, never a work item/, 'the legend does not say WHY the page cannot tell them apart')
+})
+
 test('the controller is one node — never a node and a band as well', () => {
   const tour = tourOf(DEFAULT_WORKFLOW_GRAPH)
   const seat = DEFAULT_WORKFLOW_GRAPH.outer_controller_id
