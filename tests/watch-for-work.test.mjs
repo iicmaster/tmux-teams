@@ -119,22 +119,34 @@ test('the two REAL write patterns this system uses both wake it', async () => {
 
   const woke = []
   const stop = watchForWork(repo, { onChange: () => woke.push(Date.now()), debounceMs: 30 })
+
+  // Waits for the CONDITION, never for a duration. A fixed sleep passed alone
+  // and went red inside the full suite the first time this was written — the
+  // machine is loaded there and `fs.watch` delivery is not on a clock. A sleep
+  // long enough to be safe under load is a slow test; a sleep short enough to
+  // be quick is a flake, and this repository has already lost real failures to
+  // one dismissed as "a timing thing".
+  const wokeAgain = async (from, what) => {
+    for (let waited = 0; waited < 5000; waited += 25) {
+      if (woke.length > from) return
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+    assert.fail(`${what} did not wake the loop within 5s`)
+  }
+
   try {
     const { appendFileSync, renameSync } = await import('node:fs')
     appendFileSync(join(items, 'tok.jsonl'), '{"event":"answered"}\n')
-    await new Promise((resolve) => setTimeout(resolve, 200))
-    assert.ok(woke.length > 0, 'an in-place ledger append did not wake the loop')
+    await wokeAgain(0, 'an in-place ledger append')
 
     const before = woke.length
     writeFileSync(join(items, '.next.tmp'), '{"event":"withdrawn"}\n')
     renameSync(join(items, '.next.tmp'), join(items, 'next.jsonl'))
-    await new Promise((resolve) => setTimeout(resolve, 200))
-    assert.ok(woke.length > before, 'an atomic rename into the ledger directory did not wake the loop')
+    await wokeAgain(before, 'an atomic rename into the ledger directory')
 
     const beforeOutbox = woke.length
     writeFileSync(join(repo, '.mailbox-out', 'task-1'), 'TEAM_DONE\n')
-    await new Promise((resolve) => setTimeout(resolve, 200))
-    assert.ok(woke.length > beforeOutbox, 'a worker writing its outbox did not wake the loop')
+    await wokeAgain(beforeOutbox, 'a worker writing its outbox')
   } finally { stop() }
 })
 
