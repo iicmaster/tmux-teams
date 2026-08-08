@@ -194,9 +194,19 @@ function writeOutbox(prompt) {
     return
   }
   if (kind === 'fifo') {
-    // Nothing happens here, deliberately. The FIFO is created by the TEST
-    // before this process is launched, and the test asserts it exists and is a
-    // FIFO before going anywhere near the companion.
+    // The FIFO is created by the TEST, OUTSIDE `.mailbox-out`, and moved into
+    // place HERE — during the turn, which is the only moment a worker outbox
+    // can arrive. Staging it at the outbox path before the run made
+    // `clearStaleOutbox()` refuse it before `session/prompt`, so the run died
+    // there and `readTerminalOutbox` — the reader this test exists to prove —
+    // was never reached. The two refusals share a sentence, so the assertion
+    // matched and the test stayed green while testing something else. Measured
+    // by the reviewer who found it: deleting the reader's own file-type check
+    // left this test passing.
+    //
+    // A rename, not a `mkfifo`: renaming needs no fork, so the one operation
+    // that could fail under load stays in the test, where a setup failure is
+    // reported as a setup failure.
     //
     // It used to be `spawnSync('mkfifo')` right here, with its result ignored.
     // When that fork failed there was no file at the outbox path at all, so the
@@ -208,6 +218,7 @@ function writeOutbox(prompt) {
     // from a misclassification. Setup now happens where a setup failure can be
     // reported AS a setup failure. No writer is ever opened either way — a
     // blocking reader would wait here for ever.
+    renameSync(process.env.MOCK_FIFO_SOURCE, outbox)
     return
   }
   if (kind === 'oversize') {

@@ -910,14 +910,22 @@ test('a withdrawal whose receipt could not be written comes back, instead of bei
       `a withdrawal whose receipt failed was braked away as ${again?.action}: ${again?.reason}`)
   } finally { rmSync(failed.dir, { recursive: true, force: true }) }
 
-  // The control. Without it this test passes on a build where the brake never
-  // fires at all, and would be proving nothing about the failure path.
+  // The control, and precisely what it is worth. It shows the two arms are
+  // distinguishable — that the assertion above is not passing on a build where
+  // every board escalates unconditionally.
+  //
+  // It is NOT a control on the brake, which is what it claimed to be until a
+  // reviewer measured it: with `if (seen === identity)` disabled, this arm
+  // still does not escalate, because a written receipt removes the trigger
+  // outright and there is nothing left to brake. The brake's own behaviour is
+  // covered where the brake is the subject; a control that names a mechanism it
+  // cannot exercise is the same overstatement this release keeps finding.
   const marked = withFailure(false)
   try {
     const settled = ask(marked)
     assert.notEqual(settled?.action, 'escalate',
-      'the receipt was written and the withdrawal came back anyway — the brake is not working at all,'
-      + ' so the assertion above proves nothing')
+      'a written receipt did not retire the withdrawal either, so the two arms are indistinguishable'
+      + ' and the assertion above proves nothing')
   } finally { rmSync(marked.dir, { recursive: true, force: true }) }
 })
 
@@ -963,8 +971,14 @@ test('a withdrawal is news once, not a standing problem for ever', () => {
     assert.ok(notFooled.triggers.some((line) => line.includes('withdrawn at the door')),
       'notice TEXT retired the withdrawal; a worker can write that text')
 
-    // The real receipt is a sidecar the runner owns. Nothing a worker or a
-    // person types can reach it.
+    // The real receipt is a sidecar. Note what this does and does not show: the
+    // very next lines write that file from a TEST, which is the proof that a
+    // process with repo write access can — and a worker has repo write access.
+    // The property is that a worker quoting the mechanism, as the notice above
+    // does, cannot retire a withdrawal by ACCIDENT. This comment claimed a
+    // trust boundary the filesystem does not provide; the production comment
+    // was corrected and this copy was left standing, which a reviewer caught by
+    // reading the two together.
     mkdirSync(join(dir, '.tmux-teams', 'notice-receipts'), { recursive: true })
     writeFileSync(join(dir, '.tmux-teams', 'notice-receipts', 'tok.json'),
       JSON.stringify({ work_item: 'tok', read_at: '2026-08-08T05:00:00.000Z', by: 'agent:runner' }))

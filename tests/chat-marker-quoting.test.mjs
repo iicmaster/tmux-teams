@@ -181,7 +181,7 @@ const runStub = () => {
   }
 }
 
-test('a marker typed in chat with no outbox is a failure, and cannot be grepped as success', () => {
+test('a marker typed in chat with no outbox is a failure, and the reason is stated', () => {
   const { status, out } = runStub()
 
   // The half that already held: the file decides, and there is no file.
@@ -197,7 +197,10 @@ test('a marker typed in chat with no outbox is a failure, and cannot be grepped 
   //
   // Which makes the honest claim narrower than "you cannot grep success out of
   // this stream": a log carrying agent prose cannot be made safe to grep
-  // without corrupting the prose. What IS guaranteed is that the line stating a
+  // without corrupting the prose. The test's NAME said the wide thing for one
+  // release after its body said the narrow one — `grep -F 'TEAM_DONE
+  // stub-task'` matches the stub's own sentence on line 40 to this day. A
+  // reviewer read the name against the body and the name was wrong. What IS guaranteed is that the line stating a
   // verdict is written by this process from the file it read, and says so.
   // This test's job ends here: no file, therefore no completion, and the reason
   // is stated. Grep-safety is asserted by the whole-line test below, which is

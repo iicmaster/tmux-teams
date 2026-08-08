@@ -230,16 +230,24 @@ test('an outbox that is not a regular file is refused rather than read', () => {
     // wearing the costume of a classification failure. Now a setup failure says
     // so and this assertion can only fire for the reason it was written.
     let cwd
+    const extra = { MOCK_OUTBOX_KIND: kind }
     if (kind === 'fifo') {
       cwd = mkdtempSync(join(tmpdir(), 'acp-companion-'))
       mkdirSync(join(cwd, '.mailbox-out'), { recursive: true })
-      const path = join(cwd, '.mailbox-out', `task-outbox-${kind}`)
-      const made = spawnSync('mkfifo', [path])
+      // Staged OUTSIDE `.mailbox-out`, and moved in by the agent during its
+      // turn. Staging it AT the outbox path made `clearStaleOutbox()` refuse it
+      // before the prompt was ever sent, so this assertion was matching that
+      // refusal's message — the same sentence — while `readTerminalOutbox`, the
+      // thing under test, never ran at all. Found by a reviewer who deleted the
+      // reader's file-type check and watched this test stay green.
+      const staged = join(cwd, 'staged-fifo')
+      const made = spawnSync('mkfifo', [staged])
       assert.ok(!made.error && made.status === 0,
         `SETUP: mkfifo failed, so this test never ran: ${made.error?.message ?? `exit ${made.status} ${made.stderr}`}`)
-      assert.ok(lstatSync(path).isFIFO(), 'SETUP: mkfifo made something that is not a FIFO')
+      assert.ok(lstatSync(staged).isFIFO(), 'SETUP: mkfifo made something that is not a FIFO')
+      extra.MOCK_FIFO_SOURCE = staged
     }
-    const result = run(`task-outbox-${kind}`, { MOCK_OUTBOX_KIND: kind }, cwd, 20)
+    const result = run(`task-outbox-${kind}`, extra, cwd, 20)
     assert.notEqual(result.status, 0, `${kind} must fail; stdout:\n${result.stdout}`)
     // The message carries the stderr it is matching against. It carried only
     // the word `fifo`, and when this went red once inside a full-suite run on
