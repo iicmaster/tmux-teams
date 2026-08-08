@@ -323,6 +323,23 @@ overstated a limit the code refuses, so a graph written from this line alone
 would be rejected at load. `MAX_WORKERS` is the authority; §3 states the reason
 five is a ceiling rather than advice.
 
+**The key set above is CLOSED at every level.** A workflow, a team and a seat
+each refuse a key they do not define, naming the offending key and listing what
+the object may declare. The nested `seats` and palette objects were closed first
+and the enclosing objects were left open, so for several releases a team could
+declare anything at all and have it dropped at the point the validated object
+was assembled — a graph that loaded clean while a line the operator wrote did
+nothing. A key that is silently ignored is worse than one that is refused,
+because the operator has no way to find out.
+
+`downstream_team_id` is refused by a **whole-graph scan that runs before any
+team is walked**, and it gets a sentence of its own — routing belongs to a
+workflow's `route`, not to a team — because operators actually reached for it.
+That scan is the sole owner of the key. The per-team check carried an exception
+for it until 2026-08-08 (GitHub #61), which was unreachable code that read as
+live policy: anyone moving the scan must carry its sentence along, not restore
+a carve-out downstream of it.
+
 ### 3.1 `wip_limit` is derived, never declared
 
 A team's WIP limit **always equals its worker count**. It is not an input.
@@ -2278,6 +2295,8 @@ a palette yet).
 | # | Clause | Assertion | Test file |
 | --- | --- | --- | --- |
 | AC97 | §3.5 | a seat declaring a valid palette loads and validates; a graph declaring none resolves every seat's `palette` to `null`, and declarations that say the same thing still hash alike (§3.2.1) | `workflow-graph-palette.test.mjs` |
+| AC121 | §3 | a team declaring a key the contract does not define is refused at load, naming the key and listing what a team may declare | `workflow-graph.test.mjs` |
+| AC122 | §3 | `downstream_team_id` on a team is refused by the whole-graph scan with its own routing sentence, never by the generic unknown-key message | `workflow-graph.test.mjs` |
 | AC98 | §3.5 | a malformed palette entry — bad model, adapter, effort, display_model, bucket, an unknown key, a non-object entry, or a palette of the wrong length — is refused, naming the team and the seat | `workflow-graph-palette.test.mjs` |
 | AC99 | §3.5 | `palette` alongside `model`/`adapter`/`effort`/`display_model` on the same seat is refused, not silently ignored | `workflow-graph-palette.test.mjs` |
 | AC100 | §3.5 | two consecutive palette entries in the same bucket are refused — explicitly declared, and defaulted from an unstated bucket to a shared lane — while a repeat separated by a different bucket is accepted | `workflow-graph-palette.test.mjs` |

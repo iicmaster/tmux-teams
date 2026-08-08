@@ -1887,39 +1887,38 @@ function dispatch(repo, { workItem, team, role, agentId, workflow, model, adapte
 // open again whenever they are.
 export const NOTICE_DIR = 'notices'
 
-// A withdrawal notice carries its own read receipt, because the token's ledger
-// cannot: `abandoned` is a hard terminal. This line is appended when the
-// controller has actually been dispatched with the withdrawal in its brief —
-// not when the notice is written — so a withdrawal nobody was told about stays
-// on the board (GitHub #50).
-const NOTICE_READ_MARK = '<!-- tmux-teams: read by the controller -->'
+// A withdrawal needs a read receipt the token's ledger cannot carry —
+// `abandoned` is a hard terminal (§5). It is written when the controller has
+// actually been dispatched with the withdrawal in its brief, not when the
+// notice is written, so a withdrawal nobody was told about stays on the board
+// (GitHub #50).
+//
+// A SIDECAR, not a marker inside the notice. The first version appended an HTML
+// comment to `notices/<token>.md` and searched for that substring — and the
+// notice renders the intake QUESTIONS verbatim, which is text a worker wrote.
+// A question quoting that comment (an HTML snippet, a doc about this very
+// mechanism) retired its own withdrawal before any controller saw it: the exact
+// bug being fixed, reintroduced through the fix. A release reviewer measured it
+// — `withdrawals: ["tok"]` before the text, `null` after.
+//
+// This file is written by the runner and read by the runner. Nothing a worker
+// or a person types can reach it, which is the property a receipt needs and a
+// substring search cannot have.
+const RECEIPTS_DIR = 'notice-receipts'
+
+const receiptPath = (repo, workItem) => join(repo, '.tmux-teams', RECEIPTS_DIR, `${workItem}.json`)
 
 function noticeWasRead(repo, workItem) {
-  try {
-    return readFileSync(join(repo, '.tmux-teams', NOTICE_DIR, `${workItem}.md`), 'utf8').includes(NOTICE_READ_MARK)
-  } catch { return false }
+  return existsSync(receiptPath(repo, workItem))
 }
 
 function markNoticeRead(repo, workItem) {
-  const path = join(repo, '.tmux-teams', NOTICE_DIR, `${workItem}.md`)
   try {
-    const text = readFileSync(path, 'utf8')
-    if (text.includes(NOTICE_READ_MARK)) return true
-    writeFileSync(path, `${text.trimEnd()}\n\n${NOTICE_READ_MARK}\n`)
+    mkdirSync(join(repo, '.tmux-teams', RECEIPTS_DIR), { recursive: true })
+    writeFileSync(receiptPath(repo, workItem),
+      `${JSON.stringify({ work_item: workItem, read_at: new Date().toISOString(), by: RUNNER_ACTOR })}\n`)
     return true
-  } catch {
-    // No notice to mark. The withdrawal would then be re-reported for ever,
-    // which is the bug this fixes — so the notice is written now, carrying the
-    // mark, rather than leaving the trigger standing.
-    try {
-      mkdirSync(join(repo, '.tmux-teams', NOTICE_DIR), { recursive: true })
-      writeFileSync(path, `# Your request \`${workItem}\` was withdrawn\n\n`
-        + 'The notice itself was missing when the controller read this, so only the'
-        + ' fact of the withdrawal survives.\n\n'
-        + `${NOTICE_READ_MARK}\n`)
-      return true
-    } catch { return false }
-  }
+  } catch { return false }
 }
 function writeNotice(repo, workItem, questions, reason) {
   try {

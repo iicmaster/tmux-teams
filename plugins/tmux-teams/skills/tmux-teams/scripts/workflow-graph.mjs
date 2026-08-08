@@ -264,15 +264,19 @@ export function validateWorkflowGraph(value) {
     // Same refusal as a workflow's, one level up. The nested `seats` and
     // palette checks were added and the team object itself was left open, so a
     // team could declare anything and have it dropped at the `teams.push`
-    // below. `downstream_team_id` already had a bespoke redirect here (routing
-    // belongs to a workflow) — that field was worth naming because operators
-    // reached for it; every other invented key was silent.
+    // below.
+    //
+    // `downstream_team_id` is NOT excepted here (#61). It is owned by the
+    // whole-graph scan above, which returns its own redirect before any team is
+    // walked, so this loop never sees that key and an exception for it was dead
+    // code that read as live policy. Anyone moving that scan must move the
+    // sentence with it, not restore a carve-out here.
     const unknownTeamKey = Object.keys(raw).find((key) => ![
       'team_id', 'name', 'dispatcher_id', 'evaluator_id', 'worker_ids',
       'wip_limit', 'models', 'adapters', 'seats', 'produces',
     ].includes(key))
-    if (unknownTeamKey !== undefined && unknownTeamKey !== 'downstream_team_id') {
-      return invalid(`team ${String(teamId)} declares an unknown key ${show(unknownTeamKey)} — a team declares team_id, name, dispatcher_id, evaluator_id, worker_ids, models, adapters, seats and produces`)
+    if (unknownTeamKey !== undefined) {
+      return invalid(`team ${String(teamId)} declares an unknown key ${show(unknownTeamKey)} — a team declares team_id, name, dispatcher_id, evaluator_id, worker_ids, wip_limit, models, adapters, seats and produces`)
     }
     if (typeof teamId !== 'string' || !GRAPH_ID_RE.test(teamId) || seenTeams.has(teamId)) {
       return invalid(`team_id ${String(teamId)} is invalid or duplicated`)

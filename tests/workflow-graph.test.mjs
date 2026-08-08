@@ -400,9 +400,21 @@ test('a key the loader does not read is refused, not silently dropped', () => {
   // `downstream_team_id` keeps its older, more specific redirect — a field
   // operators actually reached for deserves the better sentence, and the generic
   // message must not swallow it.
-  assert.match(rejected(graphWith({
+  //
+  // #61: that redirect is owned by the whole-graph scan, which returns before
+  // the per-team loop runs — so the loop carried an exception for a key it
+  // could never see. The exception is gone and this assertion is unchanged,
+  // which is the whole evidence that it was dead. Both halves are asserted:
+  // the specific sentence arrives AND the generic one does not, so a future
+  // edit that drops the scan fails here instead of silently degrading the
+  // message operators are meant to learn from.
+  const misplaced = rejected(graphWith({
     teams: [teamOf('build', ['b_w1'], { downstream_team_id: 'verify' }), teamOf('verify', ['v_w1'])],
-  })), /routing into workflows/)
+  })
+  )
+  assert.match(misplaced, /routing into workflows/)
+  assert.doesNotMatch(misplaced, /a team declares/,
+    'the generic unknown-key sentence swallowed the specific redirect')
 })
 
 test('controller_team is derived, never declared', () => {

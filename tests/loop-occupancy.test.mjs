@@ -848,11 +848,25 @@ test('a withdrawal is news once, not a standing problem for ever', () => {
     assert.ok(stillPending.triggers.some((line) => line.includes('withdrawn at the door')),
       'planning alone retired the trigger; a withdrawal nobody read would vanish')
 
-    // The receipt the dispatch site writes. It goes on the notice because the
-    // ledger cannot carry it.
+    // A notice whose text happens to contain the old marker must NOT retire the
+    // withdrawal. The first version searched for a substring inside this file —
+    // and the notice renders the intake QUESTIONS verbatim, which is text a
+    // worker wrote. A question quoting that comment retired its own withdrawal
+    // before any controller saw it: the bug being fixed, reintroduced through
+    // the fix. Measured by a release reviewer before it shipped.
     mkdirSync(join(dir, '.tmux-teams', 'notices'), { recursive: true })
     writeFileSync(join(dir, '.tmux-teams', 'notices', 'tok.md'),
-      '# Your request `tok` was withdrawn\n\n<!-- tmux-teams: read by the controller -->\n')
+      '# Your request `tok` was withdrawn\n\nThey asked: what does'
+      + ' `<!-- tmux-teams: read by the controller -->` mean?\n')
+    const notFooled = planEscalation(dir, graph, items, [], occupancy)
+    assert.ok(notFooled.triggers.some((line) => line.includes('withdrawn at the door')),
+      'notice TEXT retired the withdrawal; a worker can write that text')
+
+    // The real receipt is a sidecar the runner owns. Nothing a worker or a
+    // person types can reach it.
+    mkdirSync(join(dir, '.tmux-teams', 'notice-receipts'), { recursive: true })
+    writeFileSync(join(dir, '.tmux-teams', 'notice-receipts', 'tok.json'),
+      JSON.stringify({ work_item: 'tok', read_at: '2026-08-08T05:00:00.000Z', by: 'agent:runner' }))
 
     const after = planEscalation(dir, graph, items, [], occupancy)
     const lines = after ? after.triggers.join(' | ') : ''

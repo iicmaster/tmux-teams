@@ -153,13 +153,32 @@ npm มีถึง 1.1.14 แล้ว — **หมุดคือ 1.1.7 อย
 8. **อย่า `npm cache clean --force`** ถ้ายังต้องใช้เลนรีวิว — ลบ adapter ที่ยืนยันแล้ว
 9. **เทสที่รอเวลาตายตัวคือ flake** — รอ**เงื่อนไข** และถ้ามี debounce **อย่าเขียนถี่กว่า debounce**
 
+## 🟡 OPEN — `acp-companion` แดงหนึ่งครั้ง 8 ส.ค. ยังไม่รู้สาเหตุ
+
+**`an outbox that is not a regular file is refused rather than read` (เคส `fifo`)**
+แดงหนึ่งครั้งในรอบ suite เต็ม (791/1) · **ไม่ใช่ timeout** — ล้มที่ 2.2 วิ จาก 20
+
+- รันเดี่ยว **132/132** · repro ตรง **168 รอบ** (12 × 6-8 ขนาน ทั้งแบบ env เต็มและ env
+  ของ suite เป๊ะ ๆ) — **ไม่ติดสักครั้ง**
+- ที่ล้มคือ `assert.match(stderr, /symlink|not a regular file/)` — **status ไม่ใช่ 0
+  อยู่แล้ว** แปลว่าโปรแกรมปฏิเสธ แต่ปฏิเสธด้วย**ข้อความอื่น**
+- **สมมติฐาน ยังไม่พิสูจน์:** `spawnSync('mkfifo')` ใน fixture ล้ม (fork ถูกปฏิเสธใต้โหลด
+  ของ suite) → ไม่มีไฟล์ที่ปลายทางเลย → companion ตอบ "no outbox" ซึ่งเป็นคนละประโยค
+- **แก้ไปแล้วสองอย่าง ถูกต้องไม่ว่าสาเหตุจริงคืออะไร:** fixture **โยน** เมื่อ `mkfifo`
+  ล้ม (เดิมกลืนเงียบ) · assertion พิมพ์ `stderr` จริงออกมา (เดิมพิมพ์แค่คำว่า `fifo`
+  รายงานจึงอ่านว่า `AssertionError: fifo` และไม่บอกอะไรเลย)
+- **กฎของเรพ: ห้ามนับว่าเป็น noise** ถ้าแดงอีก รายงานรอบใหม่จะมีสาเหตุมาให้เอง
+
 ## ถัดไป ตามลำดับ
 
 1. **เช็คผล zai + codex รอบสอง** → ครบสามใบไหม
 2. **แก้ `#61`** (carve-out ที่ไปไม่ถึง — ยืนยันแล้ว) · ไบต์เปลี่ยน = **รีวิวใหม่ทั้งสาม**
-3. **บัมพ์ 5 ที่** — `marketplace.json` (×2) · `plugin.json` · `plugins/tmux-teams/plugin.json`
-   · `RELEASE_VERSION` ใน `tests/plugin-structure.test.mjs` · `README.md`
-   **แล้ว grep หาเลขเก่า** — ทุกครั้งที่เพิ่มที่ใหม่ คนเจอก่อนระบบเจอ
+3. **บัมพ์ 5 ไฟล์ · 6 จุด** — นับผิดในฉบับแรก คนรีวิวจับได้ · ยืนยันด้วย
+   `grep -c` แล้ว: `marketplace.json` **2 จุด** · `plugins/tmux-teams/.claude-plugin/plugin.json` 1
+   · `plugins/tmux-teams/plugin.json` 1 · `tests/plugin-structure.test.mjs` 1 · `README.md` 1
+   **แล้ว grep หาเลขเก่าเสมอ** — จำนวนที่เพิ่มขึ้นมาแล้ว **สามครั้ง** (นับจาก
+   CLAUDE.md release flow ข้อ 3): ที่สามเจอตอน v0.12.0 · ที่สี่ `README.md` เจอ 5 ส.ค.
+   · ที่ห้า `plugins/tmux-teams/plugin.json` เจอเซสชันนี้ · **สองในสามคนเจอก่อนระบบ**
 4. `node --test` + `git diff --check` + `claude plugin validate --strict .`
 5. **push (`gh auth switch --user iicmaster` ก่อน)** แล้วเช็ค `git status -sb` ว่าไม่มี ahead
 6. **ดู CI ที่ push นั้นจุดชนวน — ห้าม tag ตัวแดง**

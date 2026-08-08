@@ -195,7 +195,16 @@ function writeOutbox(prompt) {
   }
   if (kind === 'fifo') {
     // No writer is ever opened: a blocking reader would wait here for ever.
-    spawnSync('mkfifo', [outbox])
+    //
+    // The result is checked. It was ignored, and a `mkfifo` that failed for any
+    // reason — the binary missing, a fork refused under load — left NO file at
+    // the outbox path at all, so the companion answered "no outbox" and the
+    // test that meant to prove the file-type refusal failed on the wording of a
+    // different error. A fixture that cannot set up its own case must say so.
+    const made = spawnSync('mkfifo', [outbox])
+    if (made.error || made.status !== 0) {
+      throw new Error(`fixture could not create the fifo: ${made.error?.message ?? `mkfifo exited ${made.status}: ${made.stderr}`}`)
+    }
     return
   }
   if (kind === 'oversize') {

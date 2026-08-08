@@ -225,7 +225,13 @@ test('an outbox that is not a regular file is refused rather than read', () => {
   for (const kind of ['symlink', 'fifo']) {
     const result = run(`task-outbox-${kind}`, { MOCK_OUTBOX_KIND: kind }, undefined, 20)
     assert.notEqual(result.status, 0, `${kind} must fail; stdout:\n${result.stdout}`)
-    assert.match(result.stderr, /symlink|not a regular file/, kind)
+    // The message carries the stderr it is matching against. It carried only
+    // the word `fifo`, and when this went red once inside a full-suite run on
+    // 2026-08-08 the report said `AssertionError: fifo` — which names the case
+    // and nothing about why. A diagnostic that omits the thing being asserted
+    // costs a reproduction attempt every time it fires.
+    assert.match(result.stderr, /symlink|not a regular file/,
+      `${kind}: stderr did not name the file-type refusal:\n${result.stderr.slice(-800)}`)
   }
 })
 
