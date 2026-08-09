@@ -77,6 +77,64 @@ test('none and missing are receipt WORDS, not model names', () => {
   assert.equal(join_.reason, 'nothing was asked and nothing answered')
 })
 
+test('identity_status: missing is a REFUSAL, not a shrug', () => {
+  // The twin of the case above, and the bug it hid. `missing` is a receipt WORD
+  // in a model field and a real STATUS in the status field, and the same
+  // normaliser was applied to both — so a pinned dispatch whose adapter
+  // advertised no identity was reported `unverified` and the `missing` refusal
+  // branch was unreachable code. Found by the release panel (codex lane,
+  // 2026-08-10).
+  const join_ = joinDispatchIdentity(assigned('entry-2-model'), receipt('entry-2-model', 'none', 'missing'))
+  assert.equal(join_.verdict, 'refused', 'a pinned leg whose adapter named no identity was REFUSED, not merely unverified')
+  assert.match(join_.reason, /identity_status: missing/)
+})
+
+test('identity_status: mismatched is a refusal too — the branch missing never reached', () => {
+  const join_ = joinDispatchIdentity(assigned('entry-2-model'), receipt('entry-2-model', 'some-other-model', 'mismatched'))
+  assert.equal(join_.verdict, 'refused')
+  assert.match(join_.reason, /identity_status: mismatched/)
+})
+
+test('a matched receipt carrying its requested reasoning effort agrees, it does not contradict', () => {
+  // The companion writes `${model}[${effort}]` as the effective identity when an
+  // effort was requested (acp-companion.mjs) and still calls it `matched`,
+  // because both halves matched. Byte-comparing that against the ledger's
+  // model-only `requested_model` reported every successful pinned leg with an
+  // effort as a contradiction — a false alarm on the HAPPY path, which is how a
+  // new signal gets ignored. Found by the release panel (codex lane, 2026-08-10).
+  const withEffort = {
+    ...receipt('gpt-5.6-terra', 'gpt-5.6-terra[max]', 'matched'),
+    requested_reasoning_effort: 'max',
+  }
+  const join_ = joinDispatchIdentity(assigned('gpt-5.6-terra'), withEffort)
+  assert.equal(join_.verdict, 'alias_agreed')
+  assert.equal(join_.answered, 'gpt-5.6-terra[max]')
+})
+
+test('widening for effort does not blind the join to a genuinely different model', () => {
+  // The guard on the guard: accepting `model[effort]` must not accept
+  // `something-else[effort]`.
+  const wrongModel = {
+    ...receipt('gpt-5.6-terra', 'glm-5.2[max]', 'matched'),
+    requested_reasoning_effort: 'max',
+  }
+  assert.equal(joinDispatchIdentity(assigned('gpt-5.6-terra'), wrongModel).verdict, 'contradicted')
+
+  // ...nor `model[some-other-effort]`.
+  const wrongEffort = {
+    ...receipt('gpt-5.6-terra', 'gpt-5.6-terra[low]', 'matched'),
+    requested_reasoning_effort: 'max',
+  }
+  assert.equal(joinDispatchIdentity(assigned('gpt-5.6-terra'), wrongEffort).verdict, 'contradicted')
+
+  // ...nor a bare model when an effort WAS requested.
+  const noSuffix = {
+    ...receipt('gpt-5.6-terra', 'gpt-5.6-terra', 'matched'),
+    requested_reasoning_effort: 'max',
+  }
+  assert.equal(joinDispatchIdentity(assigned('gpt-5.6-terra'), noSuffix).verdict, 'contradicted')
+})
+
 // ---------------------------------------------------------------------------
 // The contradictions — the whole reason this function exists
 

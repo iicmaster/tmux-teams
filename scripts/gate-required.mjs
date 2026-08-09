@@ -40,6 +40,12 @@ export const REPO_ROOT = resolve(HERE, '..')
 // listing it would be a guard against something that cannot happen.
 export const DOC_ONLY = new Set(['HANDOFF.md', 'README.md', 'CLAUDE.md'])
 
+// Release semver only — no pre-release suffix. A `-rc1` therefore does NOT
+// blank to the same text as the release it replaces, `sameLines` disagrees, and
+// the panel is required. That is the safe direction of being wrong, and it is
+// deliberate rather than overlooked (raised as non-blocking by the release
+// panel, AGY lane, 2026-08-10). Widen it only alongside a case that proves the
+// widened pattern still cannot swallow a semantic change.
 const SEMVER = /\d+\.\d+\.\d+/g
 
 // Blank every semver, then compare the added and removed lines as MULTISETS —
@@ -71,6 +77,19 @@ export function whyGated(file) {
  * The whole verdict. `files` is [{path, addedLines, removedLines}].
  */
 export function classifyRelease(files) {
+  // No files at all is not "nothing to review" — it is a range that resolved to
+  // nothing, a parser that understood nothing, or a diff shape this script
+  // cannot read. Per-file that shape is already fail-closed (`whyGated`); the
+  // whole-release case answered EXEMPT and exited 0, which is a gate bypass at
+  // the one place the decision is made. Found by the release panel (codex lane,
+  // 2026-08-10).
+  if (files.length === 0) {
+    return {
+      required: true,
+      deciding: [{ path: '(whole release)', reason: 'fail-closed: the diff for this range parsed to no files at all' }],
+      exempt: [],
+    }
+  }
   const deciding = []
   for (const file of files) {
     const reason = whyGated(file)
@@ -90,19 +109,29 @@ export function classifyRelease(files) {
 export function parseDiff(text) {
   const files = []
   let current = null
+  // A `+++ `/`--- ` line is a HEADER only before the first `@@` of a file.
+  // Inside a hunk the same bytes are an added line whose own content starts
+  // with `++ ` — and reading that as a header both renamed the file and DROPPED
+  // the line, so a real source change under `plugins/` classified as
+  // version-only and the gate exempted it. Found by the release panel
+  // (codex lane, 2026-08-10) and reproduced before this was written.
+  let inHunk = false
   for (const line of text.split('\n')) {
     if (line.startsWith('diff --git ')) {
       const match = /^diff --git a\/(.*) b\/(.*)$/.exec(line)
       current = { path: match ? match[2] : line, addedLines: [], removedLines: [] }
       files.push(current)
+      inHunk = false
       continue
     }
     if (current === null) continue
-    // The +++/--- header checks MUST come before the +/- content checks.
-    if (line.startsWith('+++ ')) {
+    if (line.startsWith('@@')) { inHunk = true; continue }
+    // The +++/--- header checks MUST come before the +/- content checks, and
+    // only outside a hunk.
+    if (!inHunk && line.startsWith('+++ ')) {
       const path = line.slice(4)
       if (path !== '/dev/null') current.path = path.replace(/^b\//, '')
-    } else if (line.startsWith('--- ')) {
+    } else if (!inHunk && line.startsWith('--- ')) {
       continue
     } else if (line.startsWith('+')) {
       current.addedLines.push(line.slice(1))

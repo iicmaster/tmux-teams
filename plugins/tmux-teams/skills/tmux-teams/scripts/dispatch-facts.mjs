@@ -102,7 +102,16 @@ export function joinDispatchIdentity(assignedEntry, dispatchFact) {
 
   const receiptAsked = receiptValue(dispatchFact.requested_model)
   const answered = receiptValue(dispatchFact.effective_identity)
-  const status = receiptValue(dispatchFact.identity_status) ?? 'unverified'
+  // `identity_status` is NOT a model value and must not go through
+  // `receiptValue`: that helper reads `none`/`missing` as "the adapter named no
+  // model", which is right for a model field and WRONG for this one. `missing`
+  // is one of the four statuses the companion actually writes
+  // (RECEIPT_IDENTITY_STATUSES in acp-companion.mjs), so normalising it to
+  // `unverified` made the refusal branch below unreachable and turned a real
+  // failure state — a pinned dispatch whose adapter advertised no identity —
+  // into a shrug. Found by the release panel (codex lane, 2026-08-10).
+  const rawStatus = typeof dispatchFact.identity_status === 'string' ? dispatchFact.identity_status.trim() : ''
+  const status = rawStatus === '' ? 'unverified' : rawStatus
 
   if (asked !== receiptAsked) {
     return {
@@ -125,10 +134,22 @@ export function joinDispatchIdentity(assignedEntry, dispatchFact) {
         reason: 'the receipt claims a matched identity for a leg that asked for no model — a match against nothing is not a match',
       }
     }
-    if (answered !== asked) {
+    // The companion does NOT write the model alias back verbatim: when a
+    // reasoning effort was also requested it writes `${model}[${effort}]`
+    // (acp-companion.mjs, `effectiveIdentity`), and still calls that `matched`
+    // because both halves matched. Comparing that byte-for-byte against the
+    // ledger's model-only `requested_model` reported EVERY successful pinned
+    // leg carrying an effort as a contradiction — a false alarm on the happy
+    // path, which is the way to get a new signal ignored within a week. Found
+    // by the release panel (codex lane, 2026-08-10). The effort comes from the
+    // receipt's own `requested_reasoning_effort`, the same field the companion
+    // built the identity from.
+    const askedEffort = receiptValue(dispatchFact.requested_reasoning_effort)
+    const expected = askedEffort === null ? asked : `${asked}[${askedEffort}]`
+    if (answered !== expected) {
       return {
         verdict: 'contradicted', asked, answered,
-        reason: `the receipt claims matched while naming ${JSON.stringify(answered)} for a request of ${JSON.stringify(asked)}`,
+        reason: `the receipt claims matched while naming ${JSON.stringify(answered)} for a request of ${JSON.stringify(expected)}`,
       }
     }
     return {

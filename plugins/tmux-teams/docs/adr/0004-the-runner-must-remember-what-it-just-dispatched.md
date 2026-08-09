@@ -94,10 +94,28 @@ are computed.**
   `tick()` is a plain synchronous function with no `await` anywhere in it
   (verified 2026-08-09), and the watcher calls it directly, so ticks in one
   process are strictly serialised and a claim needs no lock to be correct.
-- A claim is released **on evidence, never on elapsed time** — and **never on
-  `assigned`**. `delivered`, a matching pulse row, a fresh liveness file for that
-  task, or pid-death. A claim whose `pid` is gone with no evidence is the
-  existing `lost` class and is not a new terminal state.
+- A claim is released **on evidence, never on `assigned`**. `delivered`, `lost`,
+  a matching pulse row, a fresh liveness file for that task, or pid-death. A
+  claim whose `pid` is gone with no evidence is the existing `lost` class and is
+  not a new terminal state.
+
+  **This bullet read "on evidence, never on elapsed time" until 2026-08-10,**
+  and that was absolutist in a way the code never was: `CLAIM_GRACE_SEC` (30 s)
+  is in `loop-runner.mjs` and in contract §11.1, so a reader of the ADR ALONE
+  would conclude it must not exist. Read the code's own defence rather than
+  deleting either: releasing after total silence *does not declare the leg
+  dead* — it hands the question back to the evidence-based paths that own it,
+  which is the opposite of using elapsed time as proof of death. The absolute
+  rule that does hold, and the one this whole document exists for, is the
+  `assigned` one. Found by the release panel (zai lane).
+
+  **`pid-death` was itself a claim with no code behind it until the same
+  panel.** The only production call site recorded `pid: null`, and
+  `pidAlive(null)` answers "nothing to disprove" — so this list advertised a
+  mechanism that could never fire. `dispatch` now returns the child's pid and
+  the claim carries it; `loop-replay.test.mjs` drives a reaped pid through
+  `tick` and asks `busyAgents`, because a unit test of `pidAlive` proves
+  nothing about whether anything calls it.
 
   **Corrected 2026-08-09 after this ADR's first reader.** The rule first written
   here released on `assigned`, and that would have moved the defect rather than

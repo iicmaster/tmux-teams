@@ -471,6 +471,13 @@ const expectedProfileExecutable = Object.freeze({
  * system interpreter at `/usr/bin/node` would otherwise contribute `/usr` (a
  * root already present, harmlessly) and `/` (which would trust everything).
  */
+// `process.execPath` is NOT realpath'd here, and on the one platform this gate
+// runs on it does not need to be: the sandbox is Linux-only and libuv reads the
+// executable path from `/proc/self/exe`, which the kernel has already resolved.
+// Raised as non-blocking by the release panel (AGY lane, 2026-08-10). If a home
+// directory that is itself a symlink ever did desynchronise the two, this fails
+// CLOSED — a root is dropped and the lane refuses, never a root trusted that
+// should not be.
 export function interpreterRoots(canonicalHome) {
   const prefix = dirname(dirname(process.execPath))
   const family = dirname(prefix)

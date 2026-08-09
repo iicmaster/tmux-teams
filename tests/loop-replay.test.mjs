@@ -37,7 +37,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { appendEvent } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-writer.mjs'
-import { tick } from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs'
+import { spawnSync } from 'node:child_process'
+import { busyAgents, tick } from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs'
 import { answerQuestion, openQuestions } from '../plugins/tmux-teams/skills/tmux-teams/scripts/answer.mjs'
 
 // Seeded so a failure is replayable. `Math.random` would report a different
@@ -311,6 +312,128 @@ test('a route replays to a decision, or the runner says which token it could not
 // `pool.find(agentId => !busy.has(agentId))` still hands BOTH of them
 // `build_w1` — the first name in `worker_ids` — because nothing about the
 // pick is randomised and `busy` never remembers who is holding it.
+// The AC137 walk, lifted out of the driver below so the `lost` arm can be
+// driven directly. A seat's leg is open from its `assigned` until that SAME
+// task closes, and two events close it: `delivered` and `lost`. The runner
+// releases the claim on either (`releaseClaimsSettledInLedger`), so a leg that
+// ended `lost` is legitimately reassigned — asserting on `delivered` alone
+// builds a false positive into the guard. The driver below cannot reach that
+// arm: its fake agent always delivers in the tick it was assigned, so nothing
+// there ever emits `lost`. That is why the arm gets its own test rather than
+// a wider condition and a hope.
+function firstDoubleAssignedSeat(events) {
+  // agent_id -> the `assigned` entry still waiting on its own close.
+  const openLeg = new Map()
+  for (const event of events) {
+    if (event.event === 'assigned') {
+      const holding = openLeg.get(event.agent_id)
+      if (holding) return { violated: true, agent_id: event.agent_id, first: holding, second: event }
+      openLeg.set(event.agent_id, event)
+    } else if ((event.event === 'delivered' || event.event === 'lost')
+      && openLeg.get(event.agent_id)?.task_id === event.task_id) {
+      openLeg.delete(event.agent_id)
+    }
+  }
+  return { violated: false }
+}
+
+test('ADR 0004 AC137: a leg that ended lost is legitimately reassigned, and the guard says so', () => {
+  const seat = 'build_w1'
+
+  // The arm the driver below cannot reach. `lost` closes the leg, so the
+  // second `assigned` is a legal reassignment and not a double-dispatch.
+  assert.equal(firstDoubleAssignedSeat([
+    { event: 'assigned', agent_id: seat, task_id: 't1' },
+    { event: 'lost', agent_id: seat, task_id: 't1' },
+    { event: 'assigned', agent_id: seat, task_id: 't2' },
+  ]).violated, false,
+  'a seat reassigned after its own leg was declared lost is not a double-dispatch — '
+  + 'asserting on `delivered` alone builds a false positive into the guard (ADR 0004, contract AC137)')
+
+  // Without this half the case above also passes on a guard that answers
+  // `violated: false` unconditionally.
+  assert.equal(firstDoubleAssignedSeat([
+    { event: 'assigned', agent_id: seat, task_id: 't1' },
+    { event: 'assigned', agent_id: seat, task_id: 't2' },
+  ]).violated, true, 'two `assigned` with nothing closing the first IS the violation AC137 names')
+
+  // And widening the close must not widen it past the task: a close for some
+  // other task leaves this seat's own leg open.
+  assert.equal(firstDoubleAssignedSeat([
+    { event: 'assigned', agent_id: seat, task_id: 't1' },
+    { event: 'lost', agent_id: seat, task_id: 'a-different-task' },
+    { event: 'assigned', agent_id: seat, task_id: 't2' },
+  ]).violated, true, '`lost` for a different task does not free this seat')
+
+  assert.equal(firstDoubleAssignedSeat([
+    { event: 'assigned', agent_id: seat, task_id: 't1' },
+    { event: 'delivered', agent_id: seat, task_id: 't1' },
+    { event: 'assigned', agent_id: seat, task_id: 't2' },
+  ]).violated, false, '`delivered` still closes a leg — the arm that already worked')
+})
+
+test('tick is a synchronous function — ADR 0004 argues claims need no lock BECAUSE of it', () => {
+  // The ADR states this as a dated observation ("verified 2026-08-09") with
+  // nothing holding it: add one `await` to `tick` and its whole
+  // no-lock-required argument silently becomes false while every test stays
+  // green, because a single-threaded test never interleaves two ticks anyway.
+  // Found by the release panel (zai lane, 2026-08-10) — a claim with no guard.
+  assert.equal(tick.constructor.name, 'Function',
+    'tick became async. ADR 0004: "ticks in one process are strictly serialised and a claim needs '
+    + 'no lock to be correct" — that holds only while tick cannot yield. Either restore it, or '
+    + 'amend the ADR and give DISPATCH_CLAIMS a lock.')
+})
+
+// A WIRING test, and it has to be: `pidAlive` was correct, the release branch
+// that calls it was correct, the contract and the ADR both advertised release
+// "on a dead pid" — and the single production call site passed `pid: null`, so
+// nothing ever reached any of it. Unit-testing `pidAlive` proves nothing about
+// that; only driving `tick` and asking `busyAgents` does. Found by the release
+// panel (zai and codex lanes, 2026-08-10).
+test('ADR 0004: a dispatched leg carries its child pid, and a dead one frees the seat', () => {
+  const graph = {
+    project_id: 'claim-pid-wiring',
+    outer_controller_id: 'pm',
+    outer_controller_model: 'inherit-account-default',
+    teams: [team('build', ['build_w1']), team('control', ['pm'])],
+    workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['control', 'build'] }],
+  }
+
+  // A pid that is certainly gone: a process this test started and reaped.
+  const reaped = spawnSync(process.execPath, ['-e', ''])
+  assert.ok(Number.isInteger(reaped.pid), 'could not obtain a reaped pid to test with')
+
+  const drive = (pid) => {
+    const dir = makeRepo(graph)
+    const seeded = appendEvent(dir, {
+      event: 'opened', work_item: 'tok', workflow: 'feature',
+      agent_id: 'pm', to_team: 'control', reason: 'claim pid wiring',
+    }, { actor: 'human:replay' })
+    assert.ok(seeded.ok, `could not open the token: ${seeded.detail}`)
+
+    // `spawnFn`, not `spawnLeg`: the inner seam, so the REAL `dispatch` runs and
+    // is the thing that reads `child.pid`. Stubbing `spawnLeg` would skip the
+    // code under test entirely — which is how this defect survived in the first
+    // place.
+    let spawns = 0
+    const spawnFn = () => { spawns += 1; return { pid, unref() {} } }
+    for (let i = 0; i < 3; i += 1) {
+      tick(dir, { apply: true, scratchDir: join(dir, 'scratch'), spawnFn })
+    }
+    assert.ok(spawns > 0, 'no leg was dispatched at all — the assertion below would pass vacuously')
+    // Nothing publishes a pulse row or a liveness file here, so the claim is
+    // the only thing that can make a seat busy. That is the point.
+    return busyAgents(dir).busy
+  }
+
+  assert.equal(drive(reaped.pid).size, 0,
+    'a claim whose child pid is already gone must be released — the contract and ADR 0004 both '
+    + 'advertise release on a dead pid, and it held the seat for the full CLAIM_GRACE_SEC instead')
+  assert.ok(drive(process.pid).size > 0,
+    'a claim whose child is alive must hold its seat — if this is empty the release is firing on '
+    + 'everything and the dead-pid case above proves nothing')
+})
+
 test('ADR 0004 AC1: a seat holding an undelivered task never receives a second assigned', () => {
   // A minimal graph, not the replay GRAPH above: this needs `build` to have
   // two workers (see the comment above), and reusing the shared GRAPH would
@@ -408,18 +531,7 @@ test('ADR 0004 AC1: a seat holding an undelivered task never receives a second a
     // reading silence as safety.
     assert.ok(assignedEvents.length > 0, `no assigned event was ever recorded across ${files.length} ledger file(s) — the invariant would pass vacuously; the driver above must actually dispatch a worker (events seen: ${events.map((event) => event.event).join(', ') || 'none'})`)
 
-    // agent_id -> the `assigned` entry still waiting on its own `delivered`.
-    const openLeg = new Map()
-    for (const event of events) {
-      if (event.event === 'assigned') {
-        const holding = openLeg.get(event.agent_id)
-        if (holding) return { violated: true, agent_id: event.agent_id, first: holding, second: event }
-        openLeg.set(event.agent_id, event)
-      } else if (event.event === 'delivered' && openLeg.get(event.agent_id)?.task_id === event.task_id) {
-        openLeg.delete(event.agent_id)
-      }
-    }
-    return { violated: false }
+    return firstDoubleAssignedSeat(events)
   }
 
   // Eight ticks is generous headroom, not a measured requirement — running

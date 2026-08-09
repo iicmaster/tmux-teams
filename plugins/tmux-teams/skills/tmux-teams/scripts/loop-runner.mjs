@@ -398,6 +398,13 @@ function livenessOnDisk(repo, nowMs) {
   return { seen, live }
 }
 
+// Reads like a query and IS NOT one: it sweeps settled claims out of
+// DISPATCH_CLAIMS before answering, so calling it changes state. That is
+// deliberate — an occupancy answer computed from claims nobody has expired yet
+// is wrong — but it is genuinely surprising, and a second "just to look" call
+// is not free. Named here rather than renamed, because every caller wants
+// exactly this. Raised as non-blocking by the release panel (zai lane,
+// 2026-08-10).
 export function busyAgents(repo, nowMs = Date.now()) {
   const snapshot = readJson(join(repo, '.tmux-teams', 'pulse.json'), null)
   const generatedMs = Date.parse(snapshot?.generated_at || '')
@@ -2021,8 +2028,23 @@ function dispatch(repo, { workItem, team, role, agentId, workflow, model, adapte
     },
   })
   child.unref()
-  return taskId
+  // `{ taskId, pid }`, not a bare id, because the claim this dispatch is about
+  // to record advertises release "on a dead pid" (contract §11.1, ADR 0004) and
+  // the child's pid is the only place that fact exists. It used to be recorded
+  // as `pid: null`, which `pidAlive` reads as "nothing to disprove" — so the
+  // promised mechanism was implemented, documented, and unreachable from its
+  // only caller. Found by the release panel (zai and codex lanes, 2026-08-10).
+  return { taskId, pid: Number.isInteger(child.pid) ? child.pid : null }
 }
+
+// `spawnLeg` is a seam, and a test that stands in for it does not fork a
+// process — so it answers with the bare task id it has always answered with,
+// and `pid: null` is then the TRUTH about that leg rather than a placeholder
+// standing in for one. Normalising here rather than changing 13 stubs keeps
+// the seam's contract where it was.
+const legOf = (spawned) => (typeof spawned === 'string'
+  ? { taskId: spawned, pid: null }
+  : { taskId: spawned.taskId, pid: Number.isInteger(spawned.pid) ? spawned.pid : null })
 
 // A message for the person, not for the loop. Three things, because "timed out"
 // alone satisfies the rule and teaches them nothing: what happened, WHICH
@@ -2389,15 +2411,15 @@ export function tick(repoArg, {
     const effortSays = effortEnv(effort).ACP_EXPECT_REASONING_EFFORT || 'unset (adapter default)'
     const paletteSays = plan.candidate ? ` bucket=${plan.candidate.bucket}` : ''
     if (!apply) { log(`would dispatch ${plan.agent_id} (${plan.role}) for ${plan.work_item} lane=${adapter} model=${says} effort=${effortSays}${paletteSays}`); continue }
-    const taskId = spawnLeg(repo, {
+    const { taskId, pid } = legOf(spawnLeg(repo, {
       workItem: plan.work_item, team: plan.team, role: plan.role,
       agentId: plan.agent_id, workflow: plan.workflow, model, adapter, effort,
-    }, brief.path, stallSec, { spawnFn })
+    }, brief.path, stallSec, { spawnFn }))
     // Before anything else can observe this leg. The companion writes the
     // ledger line and the first liveness file, both of them after we return;
     // until one of those lands this claim is the only record that the seat is
     // taken (ADR 0004).
-    recordDispatchClaim(repo, { agentId: plan.agent_id, taskId, pid: null })
+    recordDispatchClaim(repo, { agentId: plan.agent_id, taskId, pid })
     log(`start  ${plan.agent_id} (${plan.role}) <- ${plan.work_item} task=${taskId} lane=${adapter} model=${says} effort=${effortSays}${paletteSays}`)
     started.push({ ...plan, task_id: taskId, model, effort })
   }
@@ -2431,9 +2453,9 @@ export function tick(repoArg, {
     } else if (busy.has(escalation.agent_id)) {
       log(`pm     already running on ${escalation.triggers.length} problem(s)`)
     } else {
-      const taskId = spawnLeg(repo,
+      const { taskId } = legOf(spawnLeg(repo,
         { workItem: '', team: '', role: 'pm', agentId: escalation.agent_id, workflow: '', model: pmModel, adapter: pmAdapter, effort: pmEffort },
-        briefPath, stallSec, { spawnFn })
+        briefPath, stallSec, { spawnFn }))
       log(`start  ${escalation.agent_id} (pm) <- board task=${taskId} lane=${pmAdapter} model=${pmSays} effort=${pmEffortSays}`)
       started.push({ action: 'dispatch', role: 'pm', agent_id: escalation.agent_id, task_id: taskId, model: pmModel, effort: pmEffort })
       // Each escalated token is marked so the loop stops re-triggering on it

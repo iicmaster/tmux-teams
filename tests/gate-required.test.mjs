@@ -50,15 +50,30 @@ test('a changed shipped source file always requires the panel', () => {
   assert.equal(whyGated(shipped), 'changes more than the version string')
 })
 
+// The list stated HERE, not read from the module. Both tests below used to
+// iterate `DOC_ONLY` itself, which proves nothing: adding an entry makes the
+// loop test the new entry and pass, so `scripts/gate-required.mjs` could have
+// been added to its own allowlist — it is not under `plugins/` — and every
+// assertion would still be green while semantic edits to the decider became
+// exempt. Found by the release panel (codex lane, 2026-08-10); it is the trap
+// CLAUDE.md already names, written again by the author who wrote the warning.
+const ALLOWLIST = ['HANDOFF.md', 'README.md', 'CLAUDE.md']
+
+test('the documentation allowlist is exactly these three files', () => {
+  assert.deepEqual([...DOC_ONLY].sort(), [...ALLOWLIST].sort(),
+    'the shipped allowlist drifted from the list this file pins — if the change is intended, change it HERE too and say why')
+})
+
 test('the documentation allowlist is exempt whatever it says', () => {
-  for (const path of DOC_ONLY) {
+  for (const path of ALLOWLIST) {
     assert.equal(whyGated(file(path, ['anything at all'], [])), null, path)
   }
 })
 
 test('nothing inside plugins/ is on the documentation allowlist', () => {
   // A guard on the guard: the exemption is only defensible because none of
-  // these files reach an installed plugin.
+  // these files reach an installed plugin. Walks the SHIPPED set, because the
+  // thing being guarded against is a path getting into that set.
   for (const path of DOC_ONLY) {
     assert.ok(!path.startsWith('plugins/'), `${path} ships — it cannot be doc-only`)
   }
@@ -118,10 +133,17 @@ test('a docs-and-version-only release is exempt as a whole', () => {
   assert.deepEqual(verdict.deciding, [])
 })
 
-test('an empty release is exempt and says so without crashing', () => {
+test('an empty release REQUIRES the panel rather than exempting itself', () => {
+  // This test used to assert `required: false` and so locked the bypass in:
+  // a range that resolves to nothing, or a diff this parser cannot read at
+  // all, exited 0 and printed `Gate: exempt`. Per-file that shape was already
+  // fail-closed; the whole-release case was not. Found by the release panel
+  // (codex lane, 2026-08-10).
   const verdict = classifyRelease([])
-  assert.equal(verdict.required, false)
+  assert.equal(verdict.required, true)
   assert.deepEqual(verdict.exempt, [])
+  assert.equal(verdict.deciding.length, 1)
+  assert.match(verdict.deciding[0].reason, /fail-closed/)
 })
 
 // ---------------------------------------------------------------------------
@@ -152,6 +174,49 @@ test('parseDiff reads paths and content lines, and never counts a header', () =>
   // up a phantom line here and the version-only proof would never hold.
   assert.deepEqual(files[0].addedLines, ['Current release: **0.18.3**'])
   assert.deepEqual(files[0].removedLines, ['Current release: **0.18.2**'])
+})
+
+test('an added line whose own content starts with ++ is content, not a header', () => {
+  // The twin of the test above, and the bypass it hid. Inside a hunk, an added
+  // line carrying `++ counter` arrives as `+++ counter` — byte-identical to a
+  // file header. Reading it as a header renamed the file to `counter` AND
+  // dropped the line, leaving only the version movement, so a real source
+  // change under `plugins/` classified as version-only and the gate exempted
+  // it. Found by the release panel (codex lane, 2026-08-10) and reproduced
+  // before the fix was written.
+  const [only] = parseDiff([
+    'diff --git a/plugins/tmux-teams/skills/x.mjs b/plugins/tmux-teams/skills/x.mjs',
+    '--- a/plugins/tmux-teams/skills/x.mjs',
+    '+++ b/plugins/tmux-teams/skills/x.mjs',
+    '@@ -4 +4 @@',
+    '-const V = "0.18.2"',
+    '+const V = "0.19.0"',
+    '@@ -9,0 +10 @@',
+    '+++ counter',
+    '',
+  ].join('\n'))
+
+  assert.equal(only.path, 'plugins/tmux-teams/skills/x.mjs', 'a hunk line must never rename the file')
+  assert.deepEqual(only.addedLines, ['const V = "0.19.0"', '++ counter'])
+  assert.equal(whyGated(only), 'changes more than the version string')
+  assert.equal(classifyRelease([only]).required, true)
+})
+
+test('a removed line whose own content starts with -- is content, not a header', () => {
+  const [only] = parseDiff([
+    'diff --git a/plugins/tmux-teams/skills/x.mjs b/plugins/tmux-teams/skills/x.mjs',
+    '--- a/plugins/tmux-teams/skills/x.mjs',
+    '+++ b/plugins/tmux-teams/skills/x.mjs',
+    '@@ -4 +4 @@',
+    '-const V = "0.18.2"',
+    '+const V = "0.19.0"',
+    '@@ -9 +9,0 @@',
+    '--- counter',
+    '',
+  ].join('\n'))
+
+  assert.deepEqual(only.removedLines, ['const V = "0.18.2"', '-- counter'])
+  assert.equal(whyGated(only), 'changes more than the version string')
 })
 
 test('parseDiff keeps the path of a deleted file, whose +++ is /dev/null', () => {
