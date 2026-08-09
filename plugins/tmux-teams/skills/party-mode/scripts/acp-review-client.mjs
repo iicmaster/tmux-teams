@@ -15,7 +15,20 @@ export const ACP_REVIEW_LIMITS = Object.freeze({
   rawPacketBytes: 256 * 1024,
   packetBytes: 128 * 1024,
   packetNodes: 10_000,
-  stdoutBytes: 2 * 1024 * 1024,
+  // 16 MiB, not 2, and the number comes from a measurement rather than a guess.
+  // This ceiling counts TRANSPORT bytes, not model output: an ACP adapter emits
+  // one JSON-RPC envelope per streamed token, so a two-character
+  // `agent_thought_chunk` costs about 230 bytes on the wire. Measured on the zai
+  // lane 2026-08-09, the first time it ever reached the protocol stage: 8,531
+  // envelopes carrying roughly 20 KB of actual thinking totalled 2,097,253
+  // bytes — a ~100x amplification that made the old ceiling fire on an ordinary
+  // answer from a model that thinks out loud.
+  //
+  // What still bounds a hostile agent is unchanged and is where the real guard
+  // lives: `lineBytes` caps any single line and `messageBytes` any single
+  // message. This value only stops an unbounded STREAM, and 2 MiB was stopping
+  // a normal one.
+  stdoutBytes: 16 * 1024 * 1024,
   stderrBytes: 64 * 1024,
   lineBytes: 512 * 1024,
   messageBytes: 64 * 1024,
@@ -906,10 +919,16 @@ export async function runAcpReview({
         '--ro-bind', hiddenTarget, canonicalTargetRepository,
         '--bind', cwd, cwd,
         ...(workspaceGuide ? ['--ro-bind', workspaceGuide, workspaceGuide] : []),
-        ...sandboxRebindRoots().flatMap(root => ['--ro-bind', root, root]),
         '--ro-bind', runtimeDirectory, runtimeDirectory,
         '--bind', scratch, scratch,
         ...providerState.mounts,
+        // AFTER providerState.mounts, and the order is the whole fix. That last
+        // mount puts an ephemeral home over $HOME itself, so a toolchain bind
+        // placed earlier — and the interpreter lives under $HOME on every machine
+        // that uses a version manager — is buried by it. Measured 2026-08-09 by
+        // printing the real argv: the bind was present, correct, and invisible,
+        // and PATH pointed at a path that no longer existed inside the sandbox.
+        ...sandboxRebindRoots().flatMap(root => ['--ro-bind', root, root]),
         '--chdir', cwd,
         '--setenv', 'TMPDIR', scratch,
         '--',
@@ -932,7 +951,22 @@ export async function runAcpReview({
       for (const { reject } of pending.values()) reject(error)
       pending.clear()
     }
-    const write = message => { if (agent.stdin.writable) agent.stdin.write(JSON.stringify(message) + '\n') }
+    // A child that exits BETWEEN the `writable` check and the write leaves an
+    // EPIPE on stdin. With no listener Node promotes that to an unhandled
+    // 'error' event and the WHOLE GATE dies — every lane's result lost, and the
+    // crash names a socket rather than the lane that died. Measured 2026-08-09:
+    // one lane exiting immediately after spawn took the entire run down in 2.6s
+    // and hid its own cause behind a stack trace.
+    //
+    // Swallowing is correct here and is not a shortcut: the child's exit is
+    // already handled by `fatalizeUnexpectedExit`, which knows the code, the
+    // signal and the lane. The stdin error carries nothing that path lacks —
+    // what it carries is the power to kill the process.
+    agent.stdin.on('error', () => {})
+    const write = message => {
+      if (!agent.stdin.writable) return
+      try { agent.stdin.write(JSON.stringify(message) + '\n') } catch { /* see above: the exit path owns this */ }
+    }
     const request = (method, params) => new Promise((resolve, reject) => {
       if (settled) return reject(new ReviewTransportError('closed', 'review transport already settled'))
       if (pending.size >= limits.pending) return reject(new ReviewTransportError('protocol', 'too many outstanding ACP requests'))

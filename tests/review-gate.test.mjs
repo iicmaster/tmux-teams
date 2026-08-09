@@ -278,7 +278,15 @@ test('null timeout disables elapsed cancellation and emits correlated ACP progre
     onProgress: event => progress.push(event),
   })
   assert.equal(out.review.verdict, 'PASS')
-  assert.equal(out.isolation.stdoutBytesLimit, 2 * 1024 * 1024)
+  // 16 MiB since 2026-08-09, raised from 2 with the measurement written into
+  // ACP_REVIEW_LIMITS. This ceiling counts TRANSPORT bytes: an ACP adapter
+  // emits one JSON-RPC envelope per streamed token, so 8,531 envelopes carrying
+  // roughly 20 KB of thinking measured 2,097,253 bytes on the zai lane and blew
+  // the old ceiling on an ordinary answer. Pinned here on purpose — this number
+  // is a boundary, and moving it must be a decision someone makes rather than a
+  // quiet edit. `messageBytesLimit` below is the guard that actually bounds a
+  // hostile agent, and it has not moved.
+  assert.equal(out.isolation.stdoutBytesLimit, 16 * 1024 * 1024)
   assert.equal(out.isolation.messageBytesLimit, 64 * 1024)
   assert.ok(out.isolation.stdoutBytesObserved > 0)
   assert.ok(
