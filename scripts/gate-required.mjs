@@ -144,6 +144,12 @@ export function classifyRelease(files) {
  * Parse `git diff --unified=0` output into the shape classifyRelease wants.
  * `--unified=0` so no context line is ever mistaken for a change.
  */
+// `deleted file mode` and `new file mode` are deliberately absent: a creation
+// or a deletion carries the WHOLE file as `+`/`-` lines, so the content
+// comparison already gates it and neither shape can hide beside a version hunk
+// as version-only. The six here are the ones that can. Written down because a
+// release reviewer read the omission and had to reason it out (zai lane,
+// 2026-08-10, round 3).
 const STRUCTURAL = ['old mode ', 'new mode ', 'rename from ', 'rename to ', 'copy from ', 'copy to ']
 
 export function parseDiff(text) {

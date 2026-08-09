@@ -97,6 +97,17 @@ const receiptValue = (value) => {
  * leg and be ignored within a week.
  */
 export function joinDispatchIdentity(assignedEntry, dispatchFact) {
+  // `asked` deliberately does NOT go through `receiptValue`, and the asymmetry
+  // with `receiptAsked` below is the design rather than an oversight. The two
+  // sides are different formats: the ledger is JSON and `acp-companion.mjs`
+  // writes `requested_model: requestedModel || null` into its `assigned` event,
+  // so an unpinned leg is JavaScript `null` there and never the STRING `none`.
+  // The receipt is a text file and renders the same absence as the word `none`,
+  // which is why only that side needs the sentinels. A release reviewer read
+  // this as a possible false `contradicted` on every unpinned leg and said
+  // plainly it could not tell from the diff which format the ledger used
+  // (zai lane, 2026-08-10, round 3); it is measured here so the next reader
+  // does not have to.
   const asked = typeof assignedEntry?.requested_model === 'string' && assignedEntry.requested_model !== ''
     ? assignedEntry.requested_model
     : null
