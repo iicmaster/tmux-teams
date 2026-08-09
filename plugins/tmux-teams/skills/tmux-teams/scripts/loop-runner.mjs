@@ -28,7 +28,7 @@
 // ledger was stated by the agent whose job it was to state it.
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, watch as fsWatch, writeFileSync } from 'node:fs'
+import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, watch as fsWatch, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -299,6 +299,105 @@ const liveEvidence = (row, nowMs) => {
   return Number.isFinite(observedMs) && (nowMs - observedMs) / 1000 < ZOMBIE_SEC
 }
 
+// ADR 0004. What THIS process has dispatched and has not yet seen any evidence
+// for. Occupancy used to come from `pulse.json` alone, so a repo where nothing
+// publishes one — the documented-normal shape — read every in-flight leg as
+// dead and dispatched the same seat again. Measured: ten legs where six were
+// needed.
+//
+// Keyed by repo, not global: one process calls `busyAgents` for more than one
+// repository and a global store would leak a claim across them.
+const DISPATCH_CLAIMS = new Map()
+
+const claimsFor = (repo) => {
+  let store = DISPATCH_CLAIMS.get(repo)
+  if (!store) { store = new Map(); DISPATCH_CLAIMS.set(repo, store) }
+  return store
+}
+
+// How long a claim that has produced NO evidence at all is believed. Well under
+// ZOMBIE_SEC on purpose.
+//
+// This is not elapsed time used as proof of death — that rule stands. A claim
+// is not evidence that a leg is alive; it is this process's memory that it
+// spawned one. A memory that has produced no ledger line, no liveness file and
+// no pulse row within this window must not outrank the zombie check, or a
+// companion that died before its first heartbeat would hold its seat — and,
+// through the board-wide in-flight cap, every other team's seats — for ever.
+// Releasing here does not declare the leg dead; it returns the question to the
+// evidence-based paths that own it.
+const CLAIM_GRACE_SEC = 30
+
+/** Record what this tick just spawned, before anything else can observe it. */
+export function recordDispatchClaim(repo, { agentId, taskId, pid }) {
+  if (!agentId || !taskId) return
+  claimsFor(repo).set(String(taskId), { agent_id: agentId, task_id: String(taskId), pid: pid ?? null, at: Date.now() })
+}
+
+const pidAlive = (pid) => {
+  if (!Number.isInteger(pid) || pid <= 0) return true // nothing to disprove
+  try { process.kill(pid, 0); return true } catch (error) { return error?.code === 'EPERM' }
+}
+
+// A claim's whole job is to cover spawn until the companion's first liveness
+// write. Once that file exists the directory below is the better witness — it
+// is on disk, so it survives a cron-mode process boundary that memory cannot.
+// A claim whose pid is gone before any file appeared is released too: that is
+// the existing `lost` class, not a new terminal state.
+const releaseSettledClaims = (repo, livenessTasks, nowMs) => {
+  const store = claimsFor(repo)
+  for (const [taskId, claim] of store) {
+    const silentFor = (nowMs - (claim.at ?? nowMs)) / 1000
+    if (livenessTasks.has(taskId) || !pidAlive(claim.pid) || silentFor >= CLAIM_GRACE_SEC) store.delete(taskId)
+  }
+  return store
+}
+
+/**
+ * The other release path: the ledger settled this leg. `tick` reads the work
+ * items immediately before it asks for occupancy, so this costs no extra read.
+ * A `delivered` or a `lost` both end the claim — `lost` deliberately included,
+ * because a leg correctly declared lost is legitimately reassigned and a claim
+ * that outlived it would block the reassignment it exists to make safe.
+ */
+export function releaseClaimsSettledInLedger(repo, items) {
+  const store = claimsFor(repo)
+  if (store.size === 0) return
+  for (const item of items.values()) {
+    for (const entry of item.custody) {
+      if (entry.event !== 'delivered' && entry.event !== 'lost') continue
+      if (entry.task_id) store.delete(String(entry.task_id))
+    }
+  }
+}
+
+// The second witness, read straight from disk. `acp-companion` writes one file
+// per leg faster than once a second; until 2026-08-09 the runner saw it only
+// where pulse had republished it onto a row, so with no pulse.json a live leg
+// was invisible while its own heartbeat sat in this directory.
+//
+// Same rules the pulse row is judged by: a terminal state is not alive, and an
+// observation older than the zombie window is not evidence.
+function livenessOnDisk(repo, nowMs) {
+  const dir = join(repo, '.tmux-teams', 'liveness')
+  const seen = new Set()
+  const live = []
+  let names = []
+  try { names = readdirSync(dir) } catch { return { seen, live } }
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue
+    const row = readJson(join(dir, name), null)
+    const taskId = row?.task_id ? String(row.task_id) : ''
+    if (!taskId) continue
+    seen.add(taskId)
+    if (LIVENESS_TERMINAL.has(row.liveness_state)) continue
+    const observedMs = Date.parse(row.observed_at || '')
+    if (!Number.isFinite(observedMs) || (nowMs - observedMs) / 1000 >= ZOMBIE_SEC) continue
+    live.push({ agent_id: row.agent_id || '', task_id: taskId })
+  }
+  return { seen, live }
+}
+
 export function busyAgents(repo, nowMs = Date.now()) {
   const snapshot = readJson(join(repo, '.tmux-teams', 'pulse.json'), null)
   const generatedMs = Date.parse(snapshot?.generated_at || '')
@@ -324,6 +423,20 @@ export function busyAgents(repo, nowMs = Date.now()) {
   // has stopped moving is the dangerous one: it can still be asserting that
   // agents are running, and it is no longer able to say when they stop.
   const missing = snapshot === null
+  // ADR 0004: three witnesses, merged HERE and nowhere else, so that no
+  // dispatch path — worker, dispatcher, evaluator, outer controller, palette
+  // fallback — can forget to ask. `missing` and `stale` are untouched on
+  // purpose: `stale` still refuses all dispatch before occupancy is consulted,
+  // and `missing` describes the snapshot's existence, not what we know.
+  const disk = livenessOnDisk(repo, nowMs)
+  for (const row of disk.live) {
+    if (row.agent_id) busy.add(row.agent_id)
+    busyTasks.add(row.task_id)
+  }
+  for (const claim of releaseSettledClaims(repo, disk.seen, nowMs).values()) {
+    busy.add(claim.agent_id)
+    busyTasks.add(claim.task_id)
+  }
   return {
     busy, busyTasks, ageSec, missing,
     stale: !missing && (ageSec === null || ageSec > PULSE_STALE_SEC),
@@ -1196,7 +1309,7 @@ function nextStep(graph, team, item, { busy, busyTasks, nowMs, zombieSec, answer
       // forever on work that had nothing to do with this token. A leg with no
       // task_id to ask about falls back to the agent, which is the old, wider
       // answer rather than no answer.
-      if (legIsLive(last, busy, busyTasks)) return { action: 'in-flight' }
+      if (legIsLive(last, busy, busyTasks)) return { action: 'in-flight', agent_id: last.agent_id }
       const heldSec = (nowMs - Date.parse(last.at || '')) / 1000
       if (Number.isFinite(heldSec) && heldSec >= answerDeadlineSec) {
         return {
@@ -1220,9 +1333,9 @@ function nextStep(graph, team, item, { busy, busyTasks, nowMs, zombieSec, answer
   // exercise it can never reach this function.
 
   if (last.event === 'assigned') {
-    if (busy.has(last.agent_id)) return { action: 'in-flight' }
+    if (busy.has(last.agent_id)) return { action: 'in-flight', agent_id: last.agent_id }
     const ageSec = (nowMs - Date.parse(last.at || '')) / 1000
-    if (!Number.isFinite(ageSec) || ageSec < zombieSec) return { action: 'in-flight' }
+    if (!Number.isFinite(ageSec) || ageSec < zombieSec) return { action: 'in-flight', agent_id: last.agent_id }
     // No process, no delivery, and long past the point where one could still be
     // starting: the leg is gone. Recording that is not the same as inventing a
     // delivery, and without it the token sits in the team's WIP forever.
@@ -1445,7 +1558,18 @@ export function planDispatches(graph, items, busy, {
     for (const workItem of tokens) {
       const item = items.get(workItem)
       const step = nextStep(graph, team, item, { busy, busyTasks, nowMs: now, zombieSec, answerDeadlineSec })
-      if (step.action === 'in-flight') { slots -= 1; continue }
+      if (step.action === 'in-flight') {
+        // Spend the slot AND remember the seat. It used to do only the first,
+        // so a second token reaching this team later in the same tick read the
+        // seat as free and was handed it — a duplicate dispatch that no amount
+        // of cross-tick memory could have prevented, because it happens inside
+        // one tick. `nextStep` now names the seat it is waiting on; before ADR
+        // 0004 the verdict carried no agent_id and the caller could not have
+        // marked it even if it had tried.
+        slots -= 1
+        if (step.agent_id) busy.add(step.agent_id)
+        continue
+      }
       if (step.action === 'dispatch') {
         if (inFlight >= maxInFlight) {
           plans.push({
@@ -2101,6 +2225,9 @@ export function tick(repoArg, {
 
   // Re-read: the pulls just written are what makes a token dispatchable now.
   const { items } = readWorkItems(repo)
+  // Before occupancy is computed: a claim whose leg the ledger has already
+  // settled must not be in the sets planDispatches is about to read.
+  releaseClaimsSettledInLedger(repo, items)
   const pulse = busyAgents(repo)
   const busy = pulse.busy
   // Frozen evidence is worse than none: it either stalls the loop forever on an
@@ -2254,6 +2381,11 @@ export function tick(repoArg, {
       workItem: plan.work_item, team: plan.team, role: plan.role,
       agentId: plan.agent_id, workflow: plan.workflow, model, adapter, effort,
     }, brief.path, stallSec, { spawnFn })
+    // Before anything else can observe this leg. The companion writes the
+    // ledger line and the first liveness file, both of them after we return;
+    // until one of those lands this claim is the only record that the seat is
+    // taken (ADR 0004).
+    recordDispatchClaim(repo, { agentId: plan.agent_id, taskId, pid: null })
     log(`start  ${plan.agent_id} (${plan.role}) <- ${plan.work_item} task=${taskId} lane=${adapter} model=${says} effort=${effortSays}${paletteSays}`)
     started.push({ ...plan, task_id: taskId, model, effort })
   }
