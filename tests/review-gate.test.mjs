@@ -1,11 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, writeFileSync, existsSync, readFileSync, symlinkSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync, existsSync, readFileSync, symlinkSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runAcpReview, prepareReviewPacket, ReviewTransportError, sandboxStagedExecutables,
-  needsSandboxStaging, SANDBOX_MASKED_ROOTS, interpreterRoots, trustedExecutableRoots } from '../plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs'
+  needsSandboxStaging, SANDBOX_MASKED_ROOTS, interpreterRoots, trustedExecutableRoots,
+  resolveExecutable, sandboxRebindRoots, swallowsStagingFailure } from '../plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs'
 import { runReviewGate, runReviewGateCli, LANE_TIMEOUT_DEFAULT_MS, laneTimeoutMs, LANE_FAILURES,
 } from '../plugins/tmux-teams/skills/party-mode/scripts/review-gate.mjs'
 import { REVIEW_PROFILES } from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
@@ -1670,4 +1671,174 @@ test('the derived roots reach the list the launcher actually consults', async ()
   assert.ok(list.includes(join(home, '.local', 'share', 'mise', 'installs', 'node')),
     `the family root never reached the trusted list: ${JSON.stringify(list)}`)
   assert.ok(list.includes('/usr'), 'the static roots must survive alongside the derived ones')
+})
+
+// ---------------------------------------------------------------------------
+// Layer 3/4/5, applied 2026-08-09 on top of the two commits directly above
+// this line (layer 1/2: interpreterRoots, and SANDBOX_MASKED_ROOTS plus the
+// $HOME-vs-masked-root fix to needsSandboxStaging). Measured on the same
+// Ubuntu 26.04 host, each fix uncovering the next: with layer 1/2 alone the
+// zai lane still refused with "outside trusted runtime roots", because the
+// trust check demanded BOTH the launcher path and its real file be trusted --
+// and a version manager's whole point is a trusted path pointing outside its
+// own directory (layer 3, below). Staged past that, the lane died with
+// "Cannot find module '../lib/cli.js'", because staging copies one file and
+// npx's relative require needs its neighbours (layer 4, below). And a
+// present-but-refused optional CLI died at exit 127 with nothing said about
+// why, because every staging failure for an optional entry was swallowed, not
+// only absence (layer 5, below). None of the three has been read by a full
+// three-family panel yet -- see CLAUDE.md's Release flow step 2, which calls
+// this path "stronger in design, unproven in practice."
+//
+// `resolveExecutable` and `swallowsStagingFailure` are exported, past tense
+// were not, for the same reason `sandboxStagedExecutables` already was and
+// says so at its own definition: every call site below the `platform ===
+// 'linux' && /usr/bin/bwrap' gate in runAcpReview is unreachable on this
+// machine, and a guard that cannot go red is not a guard.
+
+test('resolveExecutable accepts EITHER a trusted launcher path or a trusted real file, not only both', async () => {
+  // The measured failure, in both directions on one machine: `npx` resolved
+  // from an untrusted shim directory to a trusted real file, and `claude`
+  // resolves from a trusted `~/.local/bin` to an untrusted versioned install.
+  // The OLD check ORed two negations together (`!trusted(requested) ||
+  // !trusted(source)`), which is AND overall -- both had to be trusted -- and
+  // refused each lane by the half the other satisfied.
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'review-trust-home-')))
+  // `.local/bin` is one of trustedExecutableRoots' static per-HOME roots.
+  const trustedDir = join(home, '.local', 'bin')
+  // An ordinary $HOME subdirectory that is on no trusted-roots list at all.
+  const untrustedDir = join(home, 'untrusted-shim')
+  mkdirSync(trustedDir, { recursive: true })
+  mkdirSync(untrustedDir, { recursive: true })
+
+  // Case A: trusted LAUNCHER PATH, untrusted REAL FILE.
+  const untrustedReal = join(untrustedDir, 'npx-real')
+  writeFileSync(untrustedReal, '#!/bin/sh\necho untrusted-real\n', { mode: 0o755 })
+  symlinkSync(untrustedReal, join(trustedDir, 'npx'))
+  const resolvedA = await resolveExecutable('npx', { HOME: home, PATH: trustedDir })
+  assert.equal(resolvedA, realpathSync(untrustedReal),
+    'a trusted launcher pointing at an untrusted real file must resolve, not refuse')
+
+  // Case B: untrusted LAUNCHER PATH, trusted REAL FILE.
+  const trustedReal = join(trustedDir, 'npx-actual')
+  writeFileSync(trustedReal, '#!/bin/sh\necho trusted-real\n', { mode: 0o755 })
+  symlinkSync(trustedReal, join(untrustedDir, 'npx'))
+  const resolvedB = await resolveExecutable('npx', { HOME: home, PATH: untrustedDir })
+  assert.equal(resolvedB, realpathSync(trustedReal),
+    'an untrusted launcher pointing at a trusted real file must resolve, not refuse')
+})
+
+test('resolveExecutable still refuses when NEITHER the launcher nor its real file is trusted', async () => {
+  // The boundary the EITHER/OR change must not erase: accepting either half
+  // is not the same as accepting everything. Kept next to the pass cases
+  // above because a change that always resolves would pass those alone.
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'review-trust-home-')))
+  const untrustedDir = join(home, 'untrusted-shim')
+  mkdirSync(untrustedDir, { recursive: true })
+  const untrustedReal = join(untrustedDir, 'npx-real')
+  writeFileSync(untrustedReal, '#!/bin/sh\necho untrusted\n', { mode: 0o755 })
+  symlinkSync(untrustedReal, join(untrustedDir, 'npx'))
+  await assert.rejects(
+    resolveExecutable('npx', { HOME: home, PATH: untrustedDir }),
+    error => error.code === 'config' && /outside trusted runtime roots/.test(error.message),
+  )
+})
+
+test('sandboxRebindRoots names the interpreter prefix only when it sits under a masked root', () => {
+  // Pure-function shape, same pattern as the interpreterRoots tests above --
+  // and, same lesson as those, not sufficient alone. See the wiring test below
+  // for why testing this function in isolation says nothing about its callers.
+  const original = process.execPath
+  try {
+    Object.defineProperty(process, 'execPath', {
+      value: '/home/server/.local/share/mise/installs/node/24.19.0/bin/node',
+      configurable: true,
+    })
+    assert.deepEqual(sandboxRebindRoots(), ['/home/server/.local/share/mise/installs/node/24.19.0'])
+    Object.defineProperty(process, 'execPath', { value: '/usr/local/bin/node', configurable: true })
+    assert.deepEqual(sandboxRebindRoots(), [],
+      'a system interpreter is already visible under the read-only "/" bind and needs no re-bind')
+  } finally {
+    Object.defineProperty(process, 'execPath', { value: original, configurable: true })
+  }
+})
+
+test('needsSandboxStaging skips exactly the rebound interpreter prefix, not the whole masked root it sits under', () => {
+  // The consumer, not the pure function. Deleting the sandboxRebindRoots()
+  // check from needsSandboxStaging was tried as a mutation while writing this
+  // test and went GREEN until this assertion existed -- the same "pure
+  // function tested alone says nothing about its consumer" miss this file's
+  // own comments describe for interpreterRoots/trustedExecutableRoots, twice
+  // in one day now.
+  const prefix = '/home/server/.local/share/mise/installs/node/24.19.0'
+  const original = process.execPath
+  try {
+    Object.defineProperty(process, 'execPath', { value: `${prefix}/bin/node`, configurable: true })
+    assert.equal(needsSandboxStaging(`${prefix}/lib/node_modules/npm/bin/npx-cli.js`, {}), false,
+      'a file inside the rebound interpreter prefix must not be staged -- it is bind-mounted whole')
+    // NEGATIVE CASE: a SIBLING version directory, still under the same masked
+    // root (/home) but OUTSIDE the rebind prefix, must still be staged --
+    // otherwise a mutation that widened the exemption to the whole masked root
+    // would pass the assertion above and go undetected.
+    assert.equal(
+      needsSandboxStaging('/home/server/.local/share/mise/installs/node/22.10.0/bin/node', {}),
+      true,
+      'a sibling interpreter version outside the rebound prefix must still be staged',
+    )
+  } finally {
+    Object.defineProperty(process, 'execPath', { value: original, configurable: true })
+  }
+})
+
+test('sandboxRebindRoots also reaches the bwrap argv and the sandbox PATH, not only needsSandboxStaging', () => {
+  // TRIPWIRE, not a behavioural check -- labelled per this file's own rule
+  // (see "the masked-root list is the one bwrap is actually handed" above,
+  // which does the same thing for the same reason). Both call sites live
+  // inside `profile.osSandbox === 'bwrap'` in runAcpReview, past the
+  // `platform === 'linux' && /usr/bin/bwrap` gate no machine without both can
+  // pass, so a behavioural check here would be a guard that cannot go red.
+  // End-to-end confirmation of these two wirings on a Linux+bwrap host is
+  // still owed, same as the rest of this file's sandbox argv construction.
+  const source = readFileSync(join(HERE, '..', 'plugins', 'tmux-teams', 'skills', 'party-mode', 'scripts', 'acp-review-client.mjs'), 'utf8')
+  assert.match(source, /sandboxRebindRoots\(\)\.flatMap\(root => \['--ro-bind', root, root\]\)/,
+    'the bwrap argv must re-bind the roots sandboxRebindRoots() names, not repeat a second hand-written list')
+  assert.match(source, /const toolchainBin = sandboxRebindRoots\(\)\.length \? \[dirname\(process\.execPath\)\] : \[\]/,
+    'the sandbox PATH must gain the toolchain bin sandboxRebindRoots() implies, or a re-bound interpreter is invisible to its own shebang')
+})
+
+test('swallowsStagingFailure swallows only a genuine absence, and only for an optional entry', () => {
+  // The exact message strings a real ACP review-client throw would carry, not
+  // paraphrases -- `stageHomeExecutable` throws the "not found" text verbatim
+  // (see its own `ACP review executable not found: ${basename(command)}`),
+  // and resolveExecutable throws the "refused" text verbatim. A test built on
+  // paraphrases would not notice if either wording drifted out of sync with
+  // the regex this predicate matches against.
+  const notFound = new ReviewTransportError('config', 'ACP review executable not found: claude')
+  const refused = new ReviewTransportError('config', 'ACP review executable is outside trusted runtime roots')
+  const optional = { required: false }
+  const required = { required: true }
+
+  assert.equal(swallowsStagingFailure(optional, notFound), true,
+    'a genuinely absent optional CLI must still be swallowed -- a profile with no wrapper has no CLI to find')
+  assert.equal(swallowsStagingFailure(optional, refused), false,
+    'a present-but-refused optional CLI must throw, not vanish into a silent exit 127')
+  assert.equal(swallowsStagingFailure(required, notFound), false,
+    'a required entry refuses loudly regardless of reason -- absence included')
+  assert.equal(swallowsStagingFailure(required, refused), false)
+  // No usable message (a rejection with no `.message`) must not be misread as
+  // "not found" by an unguarded regex test against undefined.
+  assert.equal(swallowsStagingFailure(optional, new Error()), false)
+  assert.equal(swallowsStagingFailure(optional, undefined), false)
+})
+
+test('the optional-staging catch block in runAcpReview defers to swallowsStagingFailure, not a re-inlined check', () => {
+  // TRIPWIRE, same reasoning and same label as the sandboxRebindRoots wiring
+  // test above: this catch block lives behind the identical Linux+bwrap-only
+  // gate, so a behavioural check that could observe "the call site was
+  // deleted, or reverted to swallow every reason again" is not reachable on
+  // this machine. The unit test above proves the function; this proves the
+  // call site still exists and still governs the throw.
+  const source = readFileSync(join(HERE, '..', 'plugins', 'tmux-teams', 'skills', 'party-mode', 'scripts', 'acp-review-client.mjs'), 'utf8')
+  assert.match(source, /if \(!swallowsStagingFailure\(entry, error\)\) throw error/,
+    'the optional-staging catch block must gate its throw on swallowsStagingFailure')
 })

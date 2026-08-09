@@ -480,7 +480,13 @@ export async function trustedExecutableRoots(env) {
   ]
 }
 
-async function resolveExecutable(command, env, {
+// Exported for the same reason `sandboxStagedExecutables` below already is: the
+// EITHER/OR trust check this function makes is only ever reached through the
+// `platform === 'linux' && /usr/bin/bwrap` gate in `runAcpReview`, which no
+// non-Linux, no-bwrap machine can pass. A guard that cannot go red is not a
+// guard, so it is exercised directly here rather than only through a codepath
+// this repo cannot run.
+export async function resolveExecutable(command, env, {
   profileId,
   targetRepository,
   expectedName = expectedProfileExecutable[profileId],
@@ -503,9 +509,25 @@ async function resolveExecutable(command, env, {
   }
   if (!isAbsolute(command)) {
     const roots = await trustedExecutableRoots(env)
-    const requested = resolve(found)
-    if (!roots.some(root => isWithin(requested, root)) ||
-        !roots.some(root => isWithin(source, root))) {
+    const trusted = candidate => roots.some(root => isWithin(candidate, root))
+    // EITHER, not BOTH. The two clauses guard different things and each is
+    // sufficient alone: a trusted REAL FILE means the bytes come from somewhere
+    // sanctioned, and a trusted LAUNCHER PATH means the name resolved through
+    // somewhere sanctioned. Requiring both forbids exactly what a version
+    // manager IS — a trusted path pointing outside its own directory.
+    //
+    // Both halves were measured failing on one machine, in opposite directions:
+    // `npx` resolved from an untrusted shim directory to a trusted real file,
+    // and `claude` resolves from a trusted `~/.local/bin` to an untrusted
+    // versioned install. Each was refused by the half the other satisfied.
+    //
+    // WHAT THIS GIVES UP, stated rather than glossed: a symlink INSIDE a trusted
+    // root that points at an untrusted file is now accepted. Creating it needs
+    // write access to a trusted root, and anyone holding that can simply place
+    // the binary there instead — which this check has always allowed. No new
+    // capability is granted; a layout that was never a threat stops being
+    // treated as one.
+    if (!trusted(resolve(found)) && !trusted(source)) {
       throw new ReviewTransportError('config', 'ACP review executable is outside trusted runtime roots')
     }
   }
@@ -569,11 +591,37 @@ export const SANDBOX_MASKED_ROOTS = Object.freeze([
  * This generalises well past node: mise, nvm, fnm, volta and asdf all install
  * under $HOME, and anything under /opt or /var is equally invisible.
  */
+/**
+ * The interpreter's own install prefix, re-bound read-only at its real path so
+ * the sandbox can still run it. Empty when the interpreter is a system one,
+ * which the read-only bind of `/` already covers.
+ *
+ * Copying a single file is not enough and this is why: `npx` is
+ * `.../npm/bin/npx-cli.js` and its first statement requires `../lib/cli.js`.
+ * Staged alone it reached the sandbox and died with `Cannot find module`, which
+ * is the third distinct way one lane failed while AGY sailed past on a native
+ * `bunx`. The file's own LIMITS paragraph predicted exactly this and said a
+ * mount would be needed.
+ *
+ * SCOPE, because widening a sandbox is not a detail: one directory, read-only,
+ * containing a language runtime and its bundled package manager. It holds no
+ * user data, no credentials and no part of the target repository — the three
+ * things this sandbox exists to hide, all of which stay hidden. A sandbox that
+ * hides the interpreter does not isolate the lane, it just stops it running.
+ */
+export function sandboxRebindRoots() {
+  const prefix = dirname(dirname(process.execPath))
+  return SANDBOX_MASKED_ROOTS.some(root => isWithin(prefix, root)) ? [prefix] : []
+}
+
 export function needsSandboxStaging(source, env = {}, runtimeDirectory = null) {
   if (!source) return false
   // Already inside a directory the sandbox re-binds after masking — copying it
   // into itself would be a no-op at best.
   if (runtimeDirectory && isWithin(source, runtimeDirectory)) return false
+  // Inside the toolchain the sandbox re-binds at its real path — copying it out
+  // is what broke `npx`, whose relative require needs its neighbours.
+  if (sandboxRebindRoots().some(root => isWithin(source, root))) return false
   if (SANDBOX_MASKED_ROOTS.some(root => isWithin(source, root))) return true
   const home = env.HOME ?? env.USERPROFILE
   return Boolean(home && isWithin(source, home))
@@ -581,6 +629,26 @@ export function needsSandboxStaging(source, env = {}, runtimeDirectory = null) {
 
 export function sandboxStagedExecutables(env = {}) {
   const staged = []
+  // The INTERPRETER, first, because every other entry may depend on it. `npx`
+  // is a node script with a `#!/usr/bin/env node` shebang: staged on its own it
+  // reaches the sandbox and dies with `env: 'node': No such file or directory`
+  // and exit 127 — measured on the zai lane, 2026-08-09, after two earlier
+  // fixes had already got it this far. AGY was immune the whole time only
+  // because `bunx` is a native binary, which is the second coincidence in one
+  // day to make one lane look healthy while its neighbour was not.
+  //
+  // `process.execPath`, NEVER `node` resolved off PATH. On a mise machine
+  // `node` is a shim whose realpath is the 109MB `mise` binary, which is not an
+  // interpreter at all — it dispatches on argv[0], so staged under the name
+  // `node` it would be a different program wearing the name.
+  //
+  // Harmless where it is unnecessary: needsSandboxStaging leaves a system
+  // interpreter at /usr/bin/node alone, because the sandbox binds / read-only
+  // and it is already visible inside.
+  // NOT the interpreter: `sandboxRebindRoots` mounts its whole prefix instead.
+  // Copying node alone was tried first and moved the failure from `env: 'node':
+  // No such file` to `Cannot find module '../lib/cli.js'` — one file cannot
+  // carry a package.
   if (typeof env.AGY_BIN === 'string') {
     staged.push({ command: env.AGY_BIN, outputName: 'agy', assignTo: 'AGY_BIN', required: true })
   }
@@ -595,6 +663,23 @@ export function sandboxStagedExecutables(env = {}) {
     staged.push({ command: 'claude', outputName: 'claude', assignTo: null, required: false })
   }
   return staged
+}
+
+// Extracted for the same reason `resolveExecutable` above now is: the catch
+// block that calls this lives inside the `profile.osSandbox === 'bwrap'`
+// branch of `runAcpReview`, reachable only past the `platform === 'linux' &&
+// /usr/bin/bwrap` gate — no machine without both can ever execute it, so the
+// DECISION is pulled out and tested directly, same move as `sandboxStagedExecutables`.
+//
+// ABSENCE is the only reason that may be swallowed. Until 2026-08-09 every
+// reason was, so a CLI that existed and was REFUSED left the lane to walk into
+// the sandbox and die at exit 127 with nothing said about why — measured on
+// the zai lane, and undiagnosable from the outside. A refusal is a
+// configuration fact and must be loud; only "not found" may be quiet, and only
+// for an optional entry.
+export function swallowsStagingFailure(entry, error) {
+  if (entry.required) return false
+  return /executable not found/.test(error?.message ?? '')
 }
 
 async function stageHomeExecutable(command, env, runtimeDirectory, outputName = basename(command), options = {}) {
@@ -787,15 +872,22 @@ export async function runAcpReview({
           // A required entry keeps the old behaviour: the lane refuses, loudly.
           // The optional one is the CLI a wrapper execs, and a profile that does
           // not route through a wrapper has no CLI to find — refusing there
-          // would break the lanes this change exists to unbreak.
-          if (entry.required) throw error
+          // would break the lanes this change exists to unbreak. See
+          // `swallowsStagingFailure` above for the ABSENCE-only rule and why.
+          if (!swallowsStagingFailure(entry, error)) throw error
         }
       }
       if (providerState.home) {
         const systemPath = String(childEnv.PATH ?? '').split(delimiter)
           .filter(Boolean)
           .filter(entry => !isWithin(entry, providerState.home))
-        childEnv.PATH = [runtimeDirectory, ...systemPath].join(delimiter)
+        // The re-bound toolchain's own bin joins PATH, after the runtime
+        // directory and before the system. Binding the interpreter without
+        // putting it on PATH left `npx` failing with ENOENT *on itself* — the
+        // classic shebang trap, where a missing `#!/usr/bin/env node` is
+        // reported as the SCRIPT not existing. It exists; `node` did not.
+        const toolchainBin = sandboxRebindRoots().length ? [dirname(process.execPath)] : []
+        childEnv.PATH = [runtimeDirectory, ...toolchainBin, ...systemPath].join(delimiter)
       }
       childEnv.TMPDIR = scratch
       childEnv.TMP = scratch
@@ -814,6 +906,7 @@ export async function runAcpReview({
         '--ro-bind', hiddenTarget, canonicalTargetRepository,
         '--bind', cwd, cwd,
         ...(workspaceGuide ? ['--ro-bind', workspaceGuide, workspaceGuide] : []),
+        ...sandboxRebindRoots().flatMap(root => ['--ro-bind', root, root]),
         '--ro-bind', runtimeDirectory, runtimeDirectory,
         '--bind', scratch, scratch,
         ...providerState.mounts,
