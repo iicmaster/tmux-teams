@@ -81,7 +81,22 @@ const SEMVER = /\d+\.\d+\.\d+/g
 // sorted, length-checked. A multiset and not a Set: two identical lines both
 // changing is a different diff from one changing, and a Set would call them
 // equal.
-const blankVersions = (lines) => lines.map((line) => line.replace(SEMVER, '<version>')).sort()
+// A line only gets its semver blanked when it is DECLARING a version, and a URL
+// never is. `plugins/tmux-teams/plugin.json` carries
+// `"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"`, so
+// blanking every semver in every VERSION_FILES member exempted a changed
+// manifest schema — a shipped contract — as a plain version bump. Measured:
+// `whyGated` answered null. Found by the release panel (codex lane, 2026-08-10,
+// round 3), one round after the same lane caught the wider version of this.
+// All six real places name themselves: `"version": "x.y.z"`,
+// `const RELEASE_VERSION = 'x.y.z'`, `Current release: **x.y.z**`.
+const DECLARES_A_VERSION = /version|release/i
+const CARRIES_A_URL = /:\/\//
+const blankVersions = (lines) => lines
+  .map((line) => (DECLARES_A_VERSION.test(line) && !CARRIES_A_URL.test(line)
+    ? line.replace(SEMVER, '<version>')
+    : line))
+  .sort()
 
 const sameLines = (a, b) => a.length === b.length && a.every((line, i) => line === b[i])
 

@@ -628,10 +628,41 @@ export const SANDBOX_MASKED_ROOTS = Object.freeze([
  * user data, no credentials and no part of the target repository — the three
  * things this sandbox exists to hide, all of which stay hidden. A sandbox that
  * hides the interpreter does not isolate the lane, it just stops it running.
+ *
+ * That paragraph was TRUE OF THE INTENT AND FALSE OF THE CODE, which is the
+ * worst way for a security comment to be wrong. It bound
+ * `dirname(dirname(execPath))` — two levels up — and on a version-managed
+ * toolchain that is the install prefix it describes, but on a plain
+ * `~/.local/bin/node` it is `~/.local` (so `~/.local/share` and everything else
+ * under it) and on `~/bin/node` it is the ENTIRE HOME DIRECTORY the mask had
+ * just removed. Found by the release panel (codex lane, 2026-08-10, round 3).
+ *
+ * Still two levels, because one is not enough — `npx` is
+ * `<prefix>/lib/node_modules/npm/bin/npx-cli.js` and binding only `<prefix>/bin`
+ * puts it back outside the sandbox, which is the failure this function exists
+ * to prevent. What is new is that the prefix must LOOK LIKE a toolchain install
+ * before it is bound at all, and the two shapes measured to be dangerous are
+ * refused by name:
+ *
+ *   ~/.local/bin/node  ->  prefix ~/.local        (a user data directory)
+ *   ~/bin/node         ->  prefix ~               (the whole home directory)
+ *
+ * The test is a HEURISTIC and is written down as one: a real install prefix
+ * holds both `bin/` and `lib/`, and is never the home directory nor one of its
+ * direct children. `~/.local` is a direct child and is refused even though it
+ * often has both. It fails CLOSED — a refused prefix means the lane cannot find
+ * its interpreter and says so, which is loud, recoverable, and infinitely
+ * preferable to handing a sandboxed reviewer the tree the mask just removed.
  */
 export function sandboxRebindRoots() {
   const prefix = dirname(dirname(process.execPath))
-  return SANDBOX_MASKED_ROOTS.some(root => isWithin(prefix, root)) ? [prefix] : []
+  if (!SANDBOX_MASKED_ROOTS.some(root => isWithin(prefix, root))) return []
+  const resolved = resolve(prefix)
+  if (SANDBOX_MASKED_ROOTS.some(root => resolved === resolve(root))) return []
+  const home = process.env.HOME ?? ''
+  if (home && (resolved === resolve(home) || dirname(resolved) === resolve(home))) return []
+  if (!existsSync(join(prefix, 'bin')) || !existsSync(join(prefix, 'lib'))) return []
+  return [prefix]
 }
 
 export function needsSandboxStaging(source, env = {}, runtimeDirectory = null) {

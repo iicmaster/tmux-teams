@@ -311,3 +311,38 @@ test('a seat held in-flight counts against the BOARD-WIDE cap, not just its team
   assert.ok(roomy.some((plan) => plan.work_item === 'beta' && plan.action === 'dispatch'),
     'beta is not dispatchable even with a roomy cap, so the cap assertion above proves nothing')
 })
+
+test('a liveness file whose name does not match the task it claims is ignored', () => {
+  // `livenessOnDisk` took `task_id` from any parseable `.json` in the liveness
+  // directory without looking at the filename, so a stray or foreign file could
+  // name a task it had no relationship to. That id reached `seen`,
+  // `releaseSettledClaims` deleted the real claim, and the seat was dispatchable
+  // again before its companion had produced any evidence at all. Found by the
+  // release panel (codex lane, 2026-08-10, round 3).
+  //
+  // Not a trust boundary — this repo is explicit that a worker can write here —
+  // but the difference between a stray file being ignored and it silently
+  // freeing somebody else's seat.
+  const repo = mkdtempSync(join(tmpdir(), 'loop-liveness-'))
+  dirs.push(repo)
+  mkdirSync(join(repo, '.tmux-teams', 'liveness'), { recursive: true })
+  recordDispatchClaim(repo, { agentId: 'build_w1', taskId: 'real-task', pid: process.pid })
+
+  const row = (taskId) => JSON.stringify({
+    schema_version: 'acp-liveness.v1',
+    task_id: taskId,
+    agent_id: 'build_w1',
+    observed_at: new Date().toISOString(),
+    liveness_state: 'completed',
+  })
+
+  // A file named after something else, claiming the real task.
+  writeFileSync(join(repo, '.tmux-teams', 'liveness', 'foreign.json'), row('real-task'))
+  assert.equal(busyAgents(repo).busy.has('build_w1'), true,
+    'a mis-named liveness file released a live claim — the seat is now dispatchable with no evidence behind it')
+
+  // The control: the companion writes `<task-id>.json`, and THAT one is read.
+  writeFileSync(join(repo, '.tmux-teams', 'liveness', 'real-task.json'), row('real-task'))
+  assert.equal(busyAgents(repo).busy.has('build_w1'), false,
+    'a correctly named liveness file must still release the claim, or the check refuses everything')
+})

@@ -389,6 +389,17 @@ function livenessOnDisk(repo, nowMs) {
     const row = readJson(join(dir, name), null)
     const taskId = row?.task_id ? String(row.task_id) : ''
     if (!taskId) continue
+    // The FILENAME has to agree with the task the file claims to be about.
+    // `acp-companion` writes `<task-id>.json` and nothing else does, so this
+    // costs nothing legitimate — and without it any parseable `.json` dropped
+    // in this directory could name a task it has no relationship to. That id
+    // reaches `seen`, `releaseSettledClaims` deletes the real claim, and the
+    // seat is dispatchable again before its companion has produced any
+    // evidence at all. Found by the release panel (codex lane, 2026-08-10,
+    // round 3). It is not a trust boundary — the repo comments are explicit
+    // that a worker can write here — it is the difference between a stray file
+    // being ignored and it silently freeing somebody else's seat.
+    if (name !== `${taskId}.json`) continue
     seen.add(taskId)
     if (LIVENESS_TERMINAL.has(row.liveness_state)) continue
     const observedMs = Date.parse(row.observed_at || '')

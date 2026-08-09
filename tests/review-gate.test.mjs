@@ -1752,23 +1752,86 @@ test('resolveExecutable still refuses when NEITHER the launcher nor its real fil
   )
 })
 
+// A prefix that LOOKS like a toolchain install, built on disk because
+// sandboxRebindRoots now checks for `bin/` and `lib/` rather than trusting the
+// shape of the string. `mkdtemp` puts it under a masked root on both platforms
+// (/var on macOS, /tmp on Linux), which is the case that matters.
+const installPrefix = (...extra) => {
+  const root = mkdtempSync(join(tmpdir(), 'toolchain-'))
+  const prefix = join(root, 'installs', 'node', '24.19.0')
+  for (const part of ['bin', 'lib', ...extra]) mkdirSync(join(prefix, part), { recursive: true })
+  return prefix
+}
+
+const withExecPath = (value, body) => {
+  const original = process.execPath
+  try {
+    Object.defineProperty(process, 'execPath', { value, configurable: true })
+    return body()
+  } finally {
+    Object.defineProperty(process, 'execPath', { value: original, configurable: true })
+  }
+}
+
 test('sandboxRebindRoots names the interpreter prefix only when it sits under a masked root', () => {
   // Pure-function shape, same pattern as the interpreterRoots tests above --
   // and, same lesson as those, not sufficient alone. See the wiring test below
   // for why testing this function in isolation says nothing about its callers.
-  const original = process.execPath
-  try {
-    Object.defineProperty(process, 'execPath', {
-      value: '/home/server/.local/share/mise/installs/node/24.19.0/bin/node',
-      configurable: true,
-    })
-    assert.deepEqual(sandboxRebindRoots(), ['/home/server/.local/share/mise/installs/node/24.19.0'])
-    Object.defineProperty(process, 'execPath', { value: '/usr/local/bin/node', configurable: true })
+  const prefix = installPrefix()
+  withExecPath(join(prefix, 'bin', 'node'), () => {
+    assert.deepEqual(sandboxRebindRoots(), [prefix])
+  })
+  withExecPath('/usr/local/bin/node', () => {
     assert.deepEqual(sandboxRebindRoots(), [],
       'a system interpreter is already visible under the read-only "/" bind and needs no re-bind')
-  } finally {
-    Object.defineProperty(process, 'execPath', { value: original, configurable: true })
+  })
+})
+
+test('sandboxRebindRoots refuses a prefix that is a home directory or one of its direct children', () => {
+  // The two shapes a release reviewer measured (codex lane, 2026-08-10, round
+  // 3). This function's own comment claimed the bound directory "holds no user
+  // data, no credentials and no part of the target repository". That was true
+  // of a version-managed prefix and false of these two, and binding either one
+  // hands the sandboxed reviewer back the tree the mask had just removed --
+  // the single thing the sandbox exists to prevent.
+  const home = mkdtempSync(join(tmpdir(), 'fakehome-'))
+  for (const part of ['bin', 'lib', join('.local', 'bin'), join('.local', 'lib')]) {
+    mkdirSync(join(home, part), { recursive: true })
   }
+  const originalHome = process.env.HOME
+  try {
+    process.env.HOME = home
+    // ~/bin/node -> the prefix is HOME itself.
+    withExecPath(join(home, 'bin', 'node'), () => {
+      assert.deepEqual(sandboxRebindRoots(), [],
+        'binding HOME back into the sandbox undoes the mask entirely')
+    })
+    // ~/.local/bin/node -> the prefix is a direct child of HOME holding user data.
+    withExecPath(join(home, '.local', 'bin', 'node'), () => {
+      assert.deepEqual(sandboxRebindRoots(), [],
+        '~/.local carries share/ and state/ — it is user data, not a toolchain prefix')
+    })
+    // The control: a real-looking install prefix under the same masked root is
+    // still bound, so the two refusals above are not a function that refuses
+    // everything.
+    const prefix = installPrefix()
+    withExecPath(join(prefix, 'bin', 'node'), () => {
+      assert.deepEqual(sandboxRebindRoots(), [prefix],
+        'a version-managed install prefix must still be bound, or no claude-routed lane can run at all')
+    })
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME
+    else process.env.HOME = originalHome
+  }
+})
+
+test('sandboxRebindRoots refuses a prefix with no bin/ and lib/ beneath it', () => {
+  const bare = mkdtempSync(join(tmpdir(), 'notatoolchain-'))
+  mkdirSync(join(bare, 'installs', 'node', '24.19.0', 'bin'), { recursive: true })
+  withExecPath(join(bare, 'installs', 'node', '24.19.0', 'bin', 'node'), () => {
+    assert.deepEqual(sandboxRebindRoots(), [],
+      'a directory with bin/ but no lib/ is not an install prefix — refuse rather than guess')
+  })
 })
 
 test('needsSandboxStaging skips exactly the rebound interpreter prefix, not the whole masked root it sits under', () => {
@@ -1778,7 +1841,7 @@ test('needsSandboxStaging skips exactly the rebound interpreter prefix, not the 
   // function tested alone says nothing about its consumer" miss this file's
   // own comments describe for interpreterRoots/trustedExecutableRoots, twice
   // in one day now.
-  const prefix = '/home/server/.local/share/mise/installs/node/24.19.0'
+  const prefix = installPrefix()
   const original = process.execPath
   try {
     Object.defineProperty(process, 'execPath', { value: `${prefix}/bin/node`, configurable: true })

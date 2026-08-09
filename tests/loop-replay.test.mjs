@@ -579,6 +579,36 @@ test('ADR 0004 AC1: a seat holding an undelivered task never receives a second a
   // `.mailbox-out/<task>` exists, so a leg with no outbox is correctly left
   // alone by every tick that follows, exactly as a live one would be.
   let seatHeldOpen = false
+  // NOTHING the companion does happens before `spawnLeg` returns, and that is
+  // the whole point of this test. This fake used to write `assigned` inline and
+  // return — closing, inside the dispatching tick, the exact window the claim
+  // exists to cover. The cost was not theoretical: deleting
+  // `recordDispatchClaim` from the worker branch — the central fix of ADR 0004,
+  // the reason this release exists — left this test and the entire occupancy
+  // suite GREEN. Found by the release panel (codex lane, 2026-08-10, round 3),
+  // by reading the ORDERING rather than by running anything.
+  //
+  // So the fake now queues every write a real companion makes — `assigned`,
+  // the outbox, `delivered` — and the queue is flushed at the START of the next
+  // tick. Between the dispatch and that flush the claim is the only record that
+  // the seat is taken, which is exactly the state production is in for the
+  // second or so before the companion's first write lands.
+  // TWO ticks of delay, not one, and the number comes off the measurements in
+  // this repo rather than out of the air: the watcher fires ~0.27 s after a
+  // change and a companion's first ledger write lands one to three seconds
+  // after it is spawned, so several ticks pass with the claim as the only
+  // record. A single tick of delay is NOT enough to make this test meaningful —
+  // measured: with one tick, deleting `recordDispatchClaim` still left it
+  // green, because the flush landed exactly in time for `nextStep`'s age check
+  // to cover the seat instead.
+  const pending = []
+  let inFlightWrites = []
+  const flushCompanionWrites = () => {
+    const landing = inFlightWrites
+    inFlightWrites = pending.splice(0, pending.length)
+    for (const write of landing) write()
+  }
+  const drainCompanionWrites = () => { flushCompanionWrites(); flushCompanionWrites() }
   const spawnLeg = (repo, { workItem, role, agentId }) => {
     const taskId = `${workItem || 'board'}-${role}-${legs += 1}`
     const say = (event, extra) => {
@@ -591,15 +621,17 @@ test('ADR 0004 AC1: a seat holding an undelivered task never receives a second a
     // the outer controller's own leg is dispatched with `workItem: ''`
     // (tick, `escalation.action === 'escalate'` branch) and has no work-item
     // ledger of its own to write into.
-    if (workItem) say('assigned', { dispatch_id: `d-${taskId}` })
+    if (workItem) pending.push(() => say('assigned', { dispatch_id: `d-${taskId}` }))
     if (role === 'worker' && !seatHeldOpen) {
       seatHeldOpen = true
       return taskId
     }
-    writeFileSync(join(repo, '.mailbox-out', taskId), role === 'dispatcher'
-      ? 'Checked the handoff.\n\nVERDICT: accept\nREASON: AC1 reproduction\n'
-      : 'Did the work.\n\nThe artifact is here.\n')
-    if (workItem) say('delivered', { terminal: 'done', timed_out: false, evidence_present: true })
+    pending.push(() => {
+      writeFileSync(join(repo, '.mailbox-out', taskId), role === 'dispatcher'
+        ? 'Checked the handoff.\n\nVERDICT: accept\nREASON: AC1 reproduction\n'
+        : 'Did the work.\n\nThe artifact is here.\n')
+      if (workItem) say('delivered', { terminal: 'done', timed_out: false, evidence_present: true })
+    })
     return taskId
   }
 
@@ -628,14 +660,16 @@ test('ADR 0004 AC1: a seat holding an undelivered task never receives a second a
     // it in (`alpha` was opened before `beta`, so it sorts first on a tie).
     events.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1
       : a.work_item < b.work_item ? -1 : a.work_item > b.work_item ? 1 : a.line - b.line))
-    const assignedEvents = events.filter((event) => event.event === 'assigned')
     // Same discipline: a runtime that stopped dispatching entirely — a
     // stale-pulse rule, a graph reader failing closed — would leave this
     // invariant trivially true for the wrong reason. Fail loudly instead of
     // reading silence as safety.
-    assert.ok(assignedEvents.length > 0, `no assigned event was ever recorded across ${files.length} ledger file(s) — the invariant would pass vacuously; the driver above must actually dispatch a worker (events seen: ${events.map((event) => event.event).join(', ') || 'none'})`)
-
-    return firstDoubleAssignedSeat(events)
+    //
+    // Asserted AFTER the loop rather than inside it, because a companion's
+    // writes now land on the tick after its dispatch: the first tick legally
+    // ends with zero `assigned` on disk, which is the state the claim exists to
+    // cover and not an absence of dispatching.
+    return { ...firstDoubleAssignedSeat(events), assignedCount: events.filter((event) => event.event === 'assigned').length }
   }
 
   // Eight ticks is generous headroom, not a measured requirement — running
@@ -650,11 +684,19 @@ test('ADR 0004 AC1: a seat holding an undelivered task never receives a second a
   let outcome = { violated: false }
   let ticks = 0
   for (; ticks < 8 && !outcome.violated; ticks += 1) {
+    // The previous tick's companions land now, not when they were spawned.
+    flushCompanionWrites()
     const result = tick(dir, { apply: true, scratchDir: join(dir, 'scratch'), spawnLeg })
     assert.ok(result.ok, `tick refused to run — ${result.reason}`)
     outcome = assignedWithoutDelivered()
   }
+  // Everything still queued lands, so the count below sees the whole run.
+  drainCompanionWrites()
+  const settled = assignedWithoutDelivered()
 
+  assert.ok(settled.assignedCount > 0,
+    `no assigned event was ever recorded after ${ticks} tick(s) — the invariant would pass `
+    + 'vacuously; the driver above must actually dispatch a worker')
   assert.ok(!outcome.violated,
     `ADR 0004 AC1 violated after ${ticks} tick(s): ${outcome.agent_id} received a new assigned `
     + `(task ${outcome.second?.task_id} for ${outcome.second?.work_item}, at ${outcome.second?.at}) `

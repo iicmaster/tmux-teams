@@ -289,6 +289,31 @@ test('a rename or a mode flip beside a version hunk still requires the panel', (
   assert.equal(whyGated(withHunk([])), null)
 })
 
+test('a semver inside a URL is not a version bump, even in a version-carrying file', () => {
+  // `plugins/tmux-teams/plugin.json` is on VERSION_FILES because it declares the
+  // release version — and it ALSO carries
+  // `"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"`.
+  // Blanking every semver in that file therefore exempted a changed manifest
+  // schema, a shipped contract, as a plain version bump. Measured: `whyGated`
+  // answered null. Found by the release panel (codex lane, 2026-08-10, round 3),
+  // one round after the same lane caught the file-wide version of this.
+  const schemaBump = file(
+    'plugins/tmux-teams/plugin.json',
+    ['  "$schema": "https://agent-plugins.org/schemas/9.99.0/plugin.schema.json",'],
+    ['  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",'],
+  )
+  assert.equal(whyGated(schemaBump), 'changes more than the version string')
+
+  // The three real shapes must all still be exempt, or the narrowing has eaten
+  // the exemption it was meant to keep.
+  assert.equal(whyGated(file('plugins/tmux-teams/plugin.json',
+    ['  "version": "0.19.0",'], ['  "version": "0.18.2",'])), null)
+  assert.equal(whyGated(file('tests/plugin-structure.test.mjs',
+    ["const RELEASE_VERSION = '0.19.0'"], ["const RELEASE_VERSION = '0.18.2'"])), null)
+  assert.equal(whyGated(file('.claude-plugin/marketplace.json',
+    ['    "version": "0.19.0"'], ['    "version": "0.18.2"'])), null)
+})
+
 test('a semver that is not THIS release version does not buy an exemption', () => {
   // `blankVersions` used to blank every `x.y.z` in every file, so a shipped
   // dependency pin moving two major versions read as a plain version bump and
