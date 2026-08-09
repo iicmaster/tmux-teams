@@ -675,7 +675,7 @@ const canonicalSync = (path) => {
 // from the passwd database when the environment does not.
 export const rebindHomeSource = () => process.env.HOME || homedir() || ''
 
-export function sandboxRebindRoots(homeSource = rebindHomeSource()) {
+export function sandboxRebindRoots(homeSource = rebindHomeSource(), targetRepository = null) {
   const prefix = dirname(dirname(process.execPath))
   if (!SANDBOX_MASKED_ROOTS.some(root => isWithin(prefix, root))) return []
   const resolved = canonicalSync(prefix)
@@ -701,6 +701,17 @@ export function sandboxRebindRoots(homeSource = rebindHomeSource()) {
   if (!home) return []
   if (resolved === home || dirname(resolved) === home) return []
   if (!existsSync(join(prefix, 'bin')) || !existsSync(join(prefix, 'lib'))) return []
+  // NEVER the target repository, and never anything containing it. The bwrap
+  // argv mounts a hidden target over the canonical path and THEN re-binds every
+  // root this returns, so a prefix that overlaps the target overwrites the
+  // masking mount and hands the reviewer the repository the gate certifies as
+  // hidden. Reachable with an interpreter inside the checkout —
+  // `<target>/bin/node` with a sibling `lib/` is all it takes. Found by the
+  // release panel (codex lane, 2026-08-10, round 5).
+  if (targetRepository) {
+    const target = canonicalSync(targetRepository)
+    if (target && (resolved === target || isWithin(resolved, target) || isWithin(target, resolved))) return []
+  }
   return [prefix]
 }
 
@@ -976,7 +987,7 @@ export async function runAcpReview({
         // putting it on PATH left `npx` failing with ENOENT *on itself* — the
         // classic shebang trap, where a missing `#!/usr/bin/env node` is
         // reported as the SCRIPT not existing. It exists; `node` did not.
-        const toolchainBin = sandboxRebindRoots().length ? [dirname(process.execPath)] : []
+        const toolchainBin = sandboxRebindRoots(rebindHomeSource(), canonicalTargetRepository).length ? [dirname(process.execPath)] : []
         childEnv.PATH = [runtimeDirectory, ...toolchainBin, ...systemPath].join(delimiter)
       }
       childEnv.TMPDIR = scratch
@@ -1005,7 +1016,7 @@ export async function runAcpReview({
         // that uses a version manager — is buried by it. Measured 2026-08-09 by
         // printing the real argv: the bind was present, correct, and invisible,
         // and PATH pointed at a path that no longer existed inside the sandbox.
-        ...sandboxRebindRoots().flatMap(root => ['--ro-bind', root, root]),
+        ...sandboxRebindRoots(rebindHomeSource(), canonicalTargetRepository).flatMap(root => ['--ro-bind', root, root]),
         '--chdir', cwd,
         '--setenv', 'TMPDIR', scratch,
         '--',

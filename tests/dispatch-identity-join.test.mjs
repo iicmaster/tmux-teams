@@ -29,6 +29,34 @@ const COMPANION = join(SCRIPTS, 'acp-companion.mjs')
 const MOCK = join(HERE, 'fixtures', 'mock-acp-agent.mjs')
 const WORK_ITEM = 'palette-token'
 
+// Every ACP_* key the companion reads, deleted before this file builds a child
+// env. Copied from `mcp-servers-closed.test.mjs`, which had it right in this
+// same release while these three end-to-end tests spread `...process.env` and
+// kept whatever the shell was carrying.
+//
+// It is not hypothetical and it is not new: the machine that runs the ACP
+// review lanes always has `ACP_MODEL` set, and with it set these tests read
+// 14 pass / 3 fail while `env -u ACP_MODEL` reads 17 / 0 — measured, both ways.
+// The companion takes `ACP_MODEL` as a REQUESTED model, enters
+// `applyRequestedSessionConfig`, demands the mock advertise a `model` config
+// option it was never told to advertise, and exits before any of the
+// identity-join logic under test runs. Overriding `ACP_EXPECT_MODEL` does not
+// help: it is the fallback, and `ACP_MODEL` is what triggers the request path.
+// CLAUDE.md already names this class from the last time it shipped. Found by
+// the release panel (zai lane, 2026-08-10, round 5).
+const HERMETIC_ENV_KEYS = [
+  'ACP_CMD', 'ACP_MODEL', 'ACP_REASONING_EFFORT', 'ACP_EXPECT_MODEL',
+  'ACP_EXPECT_REASONING_EFFORT', 'ACP_RESUME', 'ACP_AGENT_ID', 'ACP_STALL_POLICY',
+  'ACP_HARD_TIMEOUT_SEC', 'ACP_EXECUTION_PROFILE', 'ACP_SESSION_RECEIPT_REQUIRED',
+  'ACP_SESSION_OPERATION', 'ACP_PRIOR_DISPATCH_ID', 'ACP_PRIOR_RECEIPT_DIGEST',
+  'ACP_CONTROL_LOG', 'INITIAL_AGENT_MODE', 'TMUX_TEAMS_PHASE',
+]
+const hermeticEnv = () => {
+  const env = { ...process.env }
+  for (const key of HERMETIC_ENV_KEYS) delete env[key]
+  return env
+}
+
 const assigned = (requestedModel) => ({ event: 'assigned', task_id: 't1', requested_model: requestedModel })
 const receipt = (requested, effective, status) => ({
   task_id: 't1', requested_model: requested, effective_identity: effective, identity_status: status,
@@ -230,7 +258,7 @@ test('a real refused dispatch leaves an assigned line and a contradicting receip
   writeFileSync(brief, 'do the thing\n')
 
   const env = {
-    ...process.env,
+    ...hermeticEnv(),
     ACP_CMD: `${process.execPath} ${MOCK}`,
     ACP_STALL_POLICY: 'cancel', ACP_HARD_TIMEOUT_SEC: '0', ACP_CANCEL_GRACE_MS: '100', ACP_RESUME: '',
     TMUX_TEAMS_WORK_ITEM: WORK_ITEM, TMUX_TEAMS_WORKFLOW: 'feature', ACP_AGENT_ID: 'build_w1',
@@ -269,7 +297,7 @@ test('a real clean dispatch joins to alias_agreed off the same two files', () =>
   writeFileSync(brief, 'do the thing\n')
 
   const env = {
-    ...process.env,
+    ...hermeticEnv(),
     ACP_CMD: `${process.execPath} ${MOCK}`,
     ACP_STALL_POLICY: 'cancel', ACP_HARD_TIMEOUT_SEC: '0', ACP_CANCEL_GRACE_MS: '100', ACP_RESUME: '',
     TMUX_TEAMS_WORK_ITEM: WORK_ITEM, TMUX_TEAMS_WORKFLOW: 'feature', ACP_AGENT_ID: 'build_w1',
@@ -338,7 +366,7 @@ test('the tick RECORDS a contradiction it finds, in the decisions file a human o
     cwd: repo,
     encoding: 'utf8',
     env: {
-      ...process.env,
+      ...hermeticEnv(),
       ACP_CMD: `${process.execPath} ${MOCK}`,
       ACP_STALL_POLICY: 'cancel', ACP_HARD_TIMEOUT_SEC: '0', ACP_CANCEL_GRACE_MS: '100', ACP_RESUME: '',
       TMUX_TEAMS_WORK_ITEM: WORK_ITEM, TMUX_TEAMS_WORKFLOW: 'feature', ACP_AGENT_ID: 'build_w1',

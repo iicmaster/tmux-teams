@@ -346,3 +346,29 @@ test('a liveness file whose name does not match the task it claims is ignored', 
   assert.equal(busyAgents(repo).busy.has('build_w1'), false,
     'a correctly named liveness file must still release the claim, or the check refuses everything')
 })
+
+test('a running liveness file refreshes a claim rather than deleting it', () => {
+  // A liveness row says a leg is alive; it carries no work item. Deleting the
+  // claim on it therefore threw away the TOKEN reservation while keeping the
+  // seat busy — so the same token could be dispatched onto another free worker
+  // the moment the companion's first heartbeat landed, which is a second or so
+  // after the dispatch. Reproduced by the release panel (codex lane,
+  // 2026-08-10, round 5).
+  const repo = bareRepo()
+  recordDispatchClaim(repo, { agentId: 'build_w1', taskId: 'live-1', pid: process.pid, workItem: 'alpha' })
+  livenessFile(repo, { taskId: 'live-1', agentId: 'build_w1', state: 'running', observedSecAgo: 1 })
+
+  const running = busyAgents(repo, NOW)
+  assert.equal(running.busy.has('build_w1'), true, 'the seat is busy either way — that was never the gap')
+  assert.equal(running.busyItems.has('alpha'), true,
+    'the token lost its reservation the moment its own heartbeat arrived')
+
+  // And a FINISHED leg still releases both: `completed` is the companion's last
+  // word and the claim must not outlive it.
+  const done = bareRepo()
+  recordDispatchClaim(done, { agentId: 'build_w1', taskId: 'done-1', pid: process.pid, workItem: 'beta' })
+  livenessFile(done, { taskId: 'done-1', agentId: 'build_w1', state: 'completed', observedSecAgo: 1 })
+  const settled = busyAgents(done, NOW)
+  assert.equal(settled.busy.has('build_w1'), false, 'a finished leg holds no seat')
+  assert.equal(settled.busyItems.has('beta'), false, 'a finished leg holds no token')
+})

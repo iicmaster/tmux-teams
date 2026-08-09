@@ -289,6 +289,33 @@ test('a rename or a mode flip beside a version hunk still requires the panel', (
   assert.equal(whyGated(withHunk([])), null)
 })
 
+test('renaming a shipped script onto a documentation path requires the panel', () => {
+  // One `git mv` was the whole exploit. `DOC_ONLY` was consulted before the
+  // structural check, so a diff that renames `loop-runner.mjs` to `README.md`
+  // and edits it on the way parses as `path: README.md` plus a rename, and the
+  // allowlist exempted a behavioural release outright. Found by the release
+  // panel (codex lane, 2026-08-10, round 5).
+  const [smuggled] = parseDiff([
+    'diff --git a/plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs b/README.md',
+    'similarity index 60%',
+    'rename from plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs',
+    'rename to README.md',
+    '--- a/plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs',
+    '+++ b/README.md',
+    '@@ -1 +1 @@',
+    '-const a = 1',
+    '+const a = 2',
+    '',
+  ].join('\n'))
+  assert.match(whyGated(smuggled), /^fail-closed: rename to/)
+  assert.equal(classifyRelease([smuggled]).required, true)
+
+  // The control: an ordinary documentation edit, no metadata, is still exempt —
+  // otherwise the reordering above has simply broken the allowlist.
+  assert.equal(whyGated(file('README.md', ['a new paragraph'], [])), null)
+  assert.equal(whyGated(file('HANDOFF.md', ['a new line'], ['an old one'])), null)
+})
+
 test('reordering lines in a shipped script requires the panel', () => {
   // The comparison sorts both sides before comparing them, so a pure REORDER
   // used to produce identical multisets and exempt itself. The example is not

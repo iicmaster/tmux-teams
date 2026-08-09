@@ -1835,7 +1835,14 @@ test('sandboxRebindRoots refuses ~/.local even when HOME is reached through a sy
   // Raised as non-blocking by the release panel (zai lane, 2026-08-10, round 4)
   // and closed rather than noted, because a security guard that fails open is
   // not a guard.
-  const realHome = realpathSync(mkdtempSync(join(tmpdir(), 'realhome-')))
+  // NOT realpath'd, deliberately. On macOS `mkdtemp` returns `/var/folders/...`
+  // whose realpath is `/private/var/...`, and only the first is under a masked
+  // root — realpath it here and `sandboxRebindRoots` returns `[]` at its very
+  // first guard, so the canonicalisation this test exists to check is never
+  // reached and the test passes on a build that does not do it. That is exactly
+  // what the first version of this test did, and the release panel measured it
+  // (zai lane, 2026-08-10, round 5). Fourth vacuous test in one day.
+  const realHome = mkdtempSync(join(tmpdir(), 'realhome-'))
   for (const part of [join('.local', 'bin'), join('.local', 'lib')]) {
     mkdirSync(join(realHome, part), { recursive: true })
   }
@@ -1899,6 +1906,44 @@ test('sandboxRebindRoots refuses a .local prefix under the home it was given', (
   withExecPath(join(prefix, 'bin', 'node'), () => {
     assert.deepEqual(sandboxRebindRoots(rawHome), [prefix])
   })
+
+  // And the DEFAULT is wired to the ambient home, not only to an argument a
+  // caller remembered to pass. Every assertion above hands `homeSource` in
+  // explicitly, so replacing the default parameter with anything at all left
+  // them green. Raised as non-blocking by the release panel (zai lane,
+  // 2026-08-10, round 5).
+  const originalHome = process.env.HOME
+  try {
+    process.env.HOME = rawHome
+    withExecPath(join(rawHome, '.local', 'bin', 'node'), () => {
+      assert.deepEqual(sandboxRebindRoots(), [],
+        'called with no argument the guard did not consult the ambient home at all')
+    })
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME
+    else process.env.HOME = originalHome
+  }
+})
+
+test('sandboxRebindRoots never names the target repository, nor anything containing it', () => {
+  // The bwrap argv mounts a hidden target OVER the canonical target path and
+  // then re-binds every root this returns, so a prefix that overlaps the target
+  // overwrites the masking mount and hands the reviewer the repository the gate
+  // certifies as hidden. An interpreter inside the checkout is all it takes.
+  // Found by the release panel (codex lane, 2026-08-10, round 5).
+  const home = mkdtempSync(join(tmpdir(), 'targethome-'))
+  const target = join(home, 'src', 'secret')
+  for (const part of ['bin', 'lib']) mkdirSync(join(target, part), { recursive: true })
+
+  withExecPath(join(target, 'bin', 'node'), () => {
+    assert.deepEqual(sandboxRebindRoots(home, target), [],
+      'the prefix IS the target repository and binding it undoes the hidden-target mount')
+    assert.deepEqual(sandboxRebindRoots(home, join(target, 'lib')), [],
+      'a target INSIDE the prefix is just as bad — the bind still exposes it')
+    // The control: the same prefix with an unrelated target IS bound, so the
+    // two refusals are the target check and not the guards above it.
+    assert.deepEqual(sandboxRebindRoots(home, join(home, 'somewhere', 'else')), [target])
+  })
 })
 
 test('sandboxRebindRoots refuses a prefix with no bin/ and lib/ beneath it', () => {
@@ -1947,9 +1992,9 @@ test('sandboxRebindRoots also reaches the bwrap argv and the sandbox PATH, not o
   // End-to-end confirmation of these two wirings on a Linux+bwrap host is
   // still owed, same as the rest of this file's sandbox argv construction.
   const source = readFileSync(join(HERE, '..', 'plugins', 'tmux-teams', 'skills', 'party-mode', 'scripts', 'acp-review-client.mjs'), 'utf8')
-  assert.match(source, /sandboxRebindRoots\(\)\.flatMap\(root => \['--ro-bind', root, root\]\)/,
+  assert.match(source, /sandboxRebindRoots\(rebindHomeSource\(\), canonicalTargetRepository\)\.flatMap\(root => \['--ro-bind', root, root\]\)/,
     'the bwrap argv must re-bind the roots sandboxRebindRoots() names, not repeat a second hand-written list')
-  assert.match(source, /const toolchainBin = sandboxRebindRoots\(\)\.length \? \[dirname\(process\.execPath\)\] : \[\]/,
+  assert.match(source, /const toolchainBin = sandboxRebindRoots\(rebindHomeSource\(\), canonicalTargetRepository\)\.length \? \[dirname\(process\.execPath\)\] : \[\]/,
     'the sandbox PATH must gain the toolchain bin sandboxRebindRoots() implies, or a re-bound interpreter is invisible to its own shebang')
 })
 

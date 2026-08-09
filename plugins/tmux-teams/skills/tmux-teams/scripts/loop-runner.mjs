@@ -360,11 +360,29 @@ const pidAlive = (pid) => {
 // is on disk, so it survives a cron-mode process boundary that memory cannot.
 // A claim whose pid is gone before any file appeared is released too: that is
 // the existing `lost` class, not a new terminal state.
-const releaseSettledClaims = (repo, livenessTasks, nowMs) => {
+// `liveTasks` are the tasks whose liveness file says the leg is RUNNING;
+// `seenTasks` are every task with a liveness file at all, running or finished.
+// The distinction is the whole correction: a running leg's file used to DELETE
+// its claim, on the reasoning that a file on disk is the better witness. It is
+// a better witness about the SEAT — `disk.live` marks that busy either way —
+// and no witness at all about the TOKEN, because a liveness row carries no work
+// item. So the moment the companion's first heartbeat landed, the token
+// reservation added last round evaporated and the same token could be dispatched
+// onto another free worker while the first leg was still running. Reproduced by
+// the release panel (codex lane, 2026-08-10, round 5) with a fresh liveness file
+// and no `assigned`: the planner picked `build_w2` for a token `build_w1` was
+// holding.
+//
+// A running leg REFRESHES the claim instead. Grace then measures silence rather
+// than age, which is what it always claimed to measure, and the claim ends where
+// it always should have: the ledger settles it, its pid dies, its liveness file
+// goes terminal, or nothing speaks for it for CLAIM_GRACE_SEC.
+const releaseSettledClaims = (repo, liveTasks, seenTasks, nowMs) => {
   const store = claimsFor(repo)
   for (const [taskId, claim] of store) {
+    if (liveTasks.has(taskId)) { claim.at = nowMs; continue }
     const silentFor = (nowMs - (claim.at ?? nowMs)) / 1000
-    if (livenessTasks.has(taskId) || !pidAlive(claim.pid) || silentFor >= CLAIM_GRACE_SEC) store.delete(taskId)
+    if (seenTasks.has(taskId) || !pidAlive(claim.pid) || silentFor >= CLAIM_GRACE_SEC) store.delete(taskId)
   }
   return store
 }
@@ -480,7 +498,8 @@ export function busyAgents(repo, nowMs = Date.now()) {
     busyTasks.add(row.task_id)
   }
   const busyItems = new Set()
-  for (const claim of releaseSettledClaims(repo, disk.seen, nowMs).values()) {
+  const liveTasks = new Set(disk.live.map((row) => row.task_id))
+  for (const claim of releaseSettledClaims(repo, liveTasks, disk.seen, nowMs).values()) {
     busy.add(claim.agent_id)
     busyTasks.add(claim.task_id)
     // The token, not only the seat. Until this leg's `assigned` reaches the

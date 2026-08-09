@@ -127,13 +127,21 @@ const sameLines = (a, b) => a.length === b.length && a.every((line, i) => line =
  * Pure: takes parsed lines, reads nothing, spawns nothing.
  */
 export function whyGated(file) {
-  if (DOC_ONLY.has(file.path)) return null
-
   // A mode flip, a rename or a copy is a structural change the hunks do not
   // show. Paired with a version hunk in the same file it used to read as a
   // plain version bump — a renamed shipped executable, or `100644` to `100755`,
   // exempted. Found by the release panel (codex lane, 2026-08-10, round 2).
+  //
+  // Checked BEFORE the documentation allowlist, and the order is the guard.
+  // With `DOC_ONLY` first, a diff that RENAMES a shipped script to `README.md`
+  // and edits it on the way parses as `path: README.md` plus a rename, and the
+  // allowlist exempted the whole thing — a behavioural release with no review,
+  // reachable from one `git mv`. Found by the release panel (codex lane,
+  // 2026-08-10, round 5). Nothing on the allowlist is ever legitimately
+  // renamed or chmod'd during a release, so the reordering costs nothing real.
   if (file.structural) return `fail-closed: ${file.structural}`
+
+  if (DOC_ONLY.has(file.path)) return null
 
   if (file.addedLines.length === 0 && file.removedLines.length === 0) {
     return 'fail-closed: unrecognized change shape (binary, rename, or empty diff)'
