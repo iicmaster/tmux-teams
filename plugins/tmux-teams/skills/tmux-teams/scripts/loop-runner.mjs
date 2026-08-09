@@ -1585,8 +1585,21 @@ export function planDispatches(graph, items, busy, {
         // one tick. `nextStep` now names the seat it is waiting on; before ADR
         // 0004 the verdict carried no agent_id and the caller could not have
         // marked it even if it had tried.
+        //
+        // It spent the TEAM's slot and not the BOARD's. `inFlight` is seeded
+        // from `busy` before this loop, so a seat that reaches here without
+        // being in `busy` — which is exactly the case this branch exists for,
+        // a leg `nextStep` recognised by age — was never in that number, and
+        // `maxInFlight` could then be exceeded by however many such seats a
+        // tick walks past. Counted here, and only when the seat was not
+        // already counted, because adding a seat already in `busy` would
+        // double-count it. Found by the release panel (codex lane,
+        // 2026-08-10, round 2).
         slots -= 1
-        if (step.agent_id) busy.add(step.agent_id)
+        if (step.agent_id) {
+          if (!busy.has(step.agent_id) && declared.has(step.agent_id)) inFlight += 1
+          busy.add(step.agent_id)
+        }
         continue
       }
       if (step.action === 'dispatch') {
@@ -2453,9 +2466,22 @@ export function tick(repoArg, {
     } else if (busy.has(escalation.agent_id)) {
       log(`pm     already running on ${escalation.triggers.length} problem(s)`)
     } else {
-      const { taskId } = legOf(spawnLeg(repo,
+      const { taskId, pid } = legOf(spawnLeg(repo,
         { workItem: '', team: '', role: 'pm', agentId: escalation.agent_id, workflow: '', model: pmModel, adapter: pmAdapter, effort: pmEffort },
         briefPath, stallSec, { spawnFn }))
+      // This seat needs the claim MORE than a worker does, not less. A worker's
+      // `assigned` lands seconds later and is a second witness; the controller's
+      // ledger append is a deliberate no-op, so no `assigned` or `delivered`
+      // ever carries this task id and the only witnesses it will ever have are
+      // a pulse row, a liveness file, pid-death or CLAIM_GRACE_SEC — which is
+      // exactly what ADR 0004 already says about this leg and what contract
+      // AC137 means by "claims and liveness files cover it". Both sentences
+      // presuppose a claim that was never recorded: escalate token A, and 250 ms
+      // later token B reaches an outer controller whose liveness file does not
+      // exist yet, so `busy` reads the seat as free and dispatches a second one
+      // on top of the first. Found by the release panel (AGY lane, 2026-08-10),
+      // round 2, in the fix for the worker-side version of this same defect.
+      recordDispatchClaim(repo, { agentId: escalation.agent_id, taskId, pid })
       log(`start  ${escalation.agent_id} (pm) <- board task=${taskId} lane=${pmAdapter} model=${pmSays} effort=${pmEffortSays}`)
       started.push({ action: 'dispatch', role: 'pm', agent_id: escalation.agent_id, task_id: taskId, model: pmModel, effort: pmEffort })
       // Each escalated token is marked so the loop stops re-triggering on it

@@ -163,6 +163,35 @@ test('a route replays to a decision, or the runner says which token it could not
       }
       if (workItem) say('assigned', { dispatch_id: `d-${legs}` })
       writeFileSync(join(repo, ".mailbox-out", taskId), agentOutbox(role, rand, brief))
+      if (!workItem) {
+        // The outer controller's board leg, and the ONE thing this fake used to
+        // leave out. The companion writes `.tmux-teams/liveness/<task>.json` for
+        // every leg it runs — no role condition — and for this leg that file is
+        // the only witness there will ever be: its ledger append is a deliberate
+        // no-op, so no `assigned` or `delivered` ever carries this task id. A
+        // fake that skipped it left the runner's dispatch claim with nothing
+        // that could release it, and the loop wedged on a seat that in
+        // production frees itself within a second. Written `completed` because
+        // this fake answers in the same tick it is spawned: the file is SEEN
+        // (which releases the claim) and is not LIVE (which is true — it is
+        // done). Shape copied from the liveness fixture in
+        // loop-runner-busy.test.mjs rather than invented here.
+        mkdirSync(join(repo, '.tmux-teams', 'liveness'), { recursive: true })
+        writeFileSync(join(repo, '.tmux-teams', 'liveness', `${taskId}.json`), JSON.stringify({
+          schema_version: 'acp-liveness.v1',
+          task_id: taskId,
+          dispatch_id: `d-${legs}`,
+          agent_id: agentId,
+          observed_at: new Date().toISOString(),
+          liveness_state: 'completed',
+          last_protocol_activity_at: new Date().toISOString(),
+          last_meaningful_progress_at: new Date().toISOString(),
+          termination_reason: 'done',
+          active_tools: [],
+          tools: {},
+          stall_history: [],
+        }))
+      }
       if (workItem) {
         // A worker that fails is legal and common; the runner is supposed to
         // retry it. Judging roles are dispatched to state a verdict, and a
@@ -372,6 +401,71 @@ test('ADR 0004 AC137: a leg that ended lost is legitimately reassigned, and the 
   ]).violated, false, '`delivered` still closes a leg — the arm that already worked')
 })
 
+test('the outer controller board leg claims its seat, so busyAgents stops calling it idle', () => {
+  // ADR 0004 says of this leg "only a pulse row, a liveness file or pid-death
+  // can release it", and contract AC137 says "claims and liveness files cover
+  // it". Both sentences presuppose a claim, and the controller branch recorded
+  // none — so the instant after dispatching the outer controller, `busyAgents`
+  // reported its seat as FREE. Found by the release panel (AGY lane,
+  // 2026-08-10), round 2, inside the fix for the worker-side version.
+  //
+  // Three separate claims, kept apart on purpose, because two of the three
+  // review lanes stated the third as fact and it is not:
+  //
+  //   1. The seat reads idle while its own leg runs. MEASURED — `busy` was
+  //      empty the instant after the board leg was dispatched. This is what
+  //      the assertion below covers.
+  //   2. A SECOND BOARD leg on top of the first. Did NOT reproduce, and cannot:
+  //      `PM_COOLDOWN_SEC` (900 s) answers `pm holding: outer controller ran 0s
+  //      ago` on the next tick. Both the AGY and zai lanes read the missing
+  //      claim as this, and neither accounted for the cooldown.
+  //   3. A TEAM leg landing on the same seat inside the pre-liveness window —
+  //      `pm` is a member of `control`, the cooldown does not guard that path,
+  //      and a watcher tick at +0.27 s beats the companion's first liveness
+  //      write. Structurally open and closed by this claim; NOT reproduced
+  //      here, because a token has to clear intake before it can reach a worker
+  //      seat and every probe written for it stalled at the dispatcher first.
+  //
+  // Only 1 is asserted. 3 is why the fix is worth having anyway, and it is
+  // written as an open question rather than as a result.
+  const graph = {
+    project_id: 'board-claim',
+    outer_controller_id: 'pm',
+    outer_controller_model: 'inherit-account-default',
+    teams: [team('build', ['build_w1']), team('control', ['pm'])],
+    workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['control', 'build'] }],
+  }
+  const dir = makeRepo(graph)
+
+  const opened = appendEvent(dir, {
+    event: 'opened', work_item: 'stuck', workflow: 'feature',
+    agent_id: 'pm', to_team: 'control', reason: 'board claim',
+  }, { actor: 'human:replay' })
+  assert.ok(opened.ok, `could not open the token: ${opened.detail}`)
+  // An `escalated` event is what makes `nextStep` answer `escalate`, which is
+  // what puts a trigger on the board and dispatches the outer controller.
+  const escalated = appendEvent(dir, {
+    event: 'escalated', work_item: 'stuck', workflow: 'feature',
+    agent_id: 'control_d', task_id: 'seed-task', to_team: 'control',
+    reason: 'the team cannot proceed',
+  }, { actor: 'agent:control_d' })
+  assert.ok(escalated.ok, `could not escalate: ${escalated.detail}`)
+
+  const result = tick(dir, {
+    apply: true, scratchDir: join(dir, 'scratch'),
+    spawnFn: () => ({ pid: process.pid, unref() {} }),
+  })
+  const board = (result?.started ?? []).filter((entry) => entry.role === 'pm')
+  assert.equal(board.length, 1,
+    `no outer-controller board leg was dispatched, so the assertion below would pass vacuously: ${JSON.stringify(result?.started)}`)
+
+  // Nothing publishes a pulse row and the companion never ran, so no liveness
+  // file exists either. The claim is the only thing that can answer this.
+  assert.ok(busyAgents(dir).busy.has('pm'),
+    'the outer controller was dispatched and its own seat reads as idle — ADR 0004 and contract '
+    + 'AC137 both describe a claim covering this leg, and there was none')
+})
+
 test('tick is a synchronous function — ADR 0004 argues claims need no lock BECAUSE of it', () => {
   // The ADR states this as a dated observation ("verified 2026-08-09") with
   // nothing holding it: add one `await` to `tick` and its whole
@@ -382,6 +476,16 @@ test('tick is a synchronous function — ADR 0004 argues claims need no lock BEC
     'tick became async. ADR 0004: "ticks in one process are strictly serialised and a claim needs '
     + 'no lock to be correct" — that holds only while tick cannot yield. Either restore it, or '
     + 'amend the ADR and give DISPATCH_CLAIMS a lock.')
+
+  // The line above is a SYNTACTIC proxy: it catches `async function tick`, and
+  // not a plain function that returns a promise from an async helper. Raised as
+  // non-blocking by the release panel (zai lane, 2026-08-10, round 2). Closing
+  // it costs one real call, so it is closed rather than noted.
+  const dir = makeRepo()
+  const returned = tick(dir, { apply: false, scratchDir: join(dir, 'scratch') })
+  assert.equal(typeof returned?.then, 'undefined',
+    'tick returned a thenable. It is still declared synchronous, so the guard above passed while '
+    + "ADR 0004's serialisation argument became false.")
 })
 
 // A WIRING test, and it has to be: `pidAlive` was correct, the release branch

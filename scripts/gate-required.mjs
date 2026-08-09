@@ -46,6 +46,35 @@ export const DOC_ONLY = new Set(['HANDOFF.md', 'README.md', 'CLAUDE.md'])
 // deliberate rather than overlooked (raised as non-blocking by the release
 // panel, AGY lane, 2026-08-10). Widen it only alongside a case that proves the
 // widened pattern still cannot swallow a semantic change.
+// The SIX places the release flow bumps, and the ONLY files where a changed
+// semver may be read as "just the version". Everything else with an `x.y.z` in
+// it goes to the panel.
+//
+// Blanking every `x.y.z` in every file was a bypass, not a convenience: a
+// shipped dependency pin moving from `@agentclientprotocol/claude-agent-acp@0.61.0`
+// to `@9.99.0` blanked to the same line as its predecessor and classified as
+// version-only — a behavioural change to what the plugin LAUNCHES, exempted by
+// the thing that exists to catch it. Measured, not argued (`whyGated` answered
+// `null`). Found by the release panel (codex lane, 2026-08-10, round 2).
+//
+// A seventh place will appear — five have already, each found by a reader
+// rather than by the flow — and until it is added here its bump requires the
+// panel. That is the safe direction, and it is the direction this list is
+// wrong in on purpose.
+export const VERSION_FILES = new Set([
+  '.claude-plugin/marketplace.json',
+  'plugins/tmux-teams/.claude-plugin/plugin.json',
+  'plugins/tmux-teams/plugin.json',
+  'tests/plugin-structure.test.mjs',
+  'README.md',
+])
+
+// Release semver only — no pre-release suffix. A `-rc1` therefore does NOT
+// blank to the same text as the release it replaces, `sameLines` disagrees, and
+// the panel is required. That is the safe direction of being wrong, and it is
+// deliberate rather than overlooked (raised as non-blocking by the release
+// panel, AGY lane, 2026-08-10). Widen it only alongside a case that proves the
+// widened pattern still cannot swallow a semantic change.
 const SEMVER = /\d+\.\d+\.\d+/g
 
 // Blank every semver, then compare the added and removed lines as MULTISETS —
@@ -63,8 +92,17 @@ const sameLines = (a, b) => a.length === b.length && a.every((line, i) => line =
 export function whyGated(file) {
   if (DOC_ONLY.has(file.path)) return null
 
-  const added = blankVersions(file.addedLines)
-  const removed = blankVersions(file.removedLines)
+  // A mode flip, a rename or a copy is a structural change the hunks do not
+  // show. Paired with a version hunk in the same file it used to read as a
+  // plain version bump — a renamed shipped executable, or `100644` to `100755`,
+  // exempted. Found by the release panel (codex lane, 2026-08-10, round 2).
+  if (file.structural) return `fail-closed: ${file.structural}`
+
+  const blank = VERSION_FILES.has(file.path)
+    ? blankVersions
+    : (lines) => [...lines].sort()
+  const added = blank(file.addedLines)
+  const removed = blank(file.removedLines)
 
   if (added.length === 0 && removed.length === 0) {
     return 'fail-closed: unrecognized change shape (binary, rename, or empty diff)'
@@ -106,6 +144,8 @@ export function classifyRelease(files) {
  * Parse `git diff --unified=0` output into the shape classifyRelease wants.
  * `--unified=0` so no context line is ever mistaken for a change.
  */
+const STRUCTURAL = ['old mode ', 'new mode ', 'rename from ', 'rename to ', 'copy from ', 'copy to ']
+
 export function parseDiff(text) {
   const files = []
   let current = null
@@ -119,13 +159,20 @@ export function parseDiff(text) {
   for (const line of text.split('\n')) {
     if (line.startsWith('diff --git ')) {
       const match = /^diff --git a\/(.*) b\/(.*)$/.exec(line)
-      current = { path: match ? match[2] : line, addedLines: [], removedLines: [] }
+      current = { path: match ? match[2] : line, addedLines: [], removedLines: [], structural: null }
       files.push(current)
       inHunk = false
       continue
     }
     if (current === null) continue
     if (line.startsWith('@@')) { inHunk = true; continue }
+    if (!inHunk) {
+      // Extended headers git writes before the first hunk. They describe a
+      // change the +/- lines cannot show, so they are recorded rather than
+      // skipped past.
+      const structural = STRUCTURAL.find((prefix) => line.startsWith(prefix))
+      if (structural) { current.structural = `${structural.trim()} (a change the hunks do not show)`; continue }
+    }
     // The +++/--- header checks MUST come before the +/- content checks, and
     // only outside a hunk.
     if (!inHunk && line.startsWith('+++ ')) {

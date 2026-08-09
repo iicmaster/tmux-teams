@@ -254,5 +254,57 @@ test('a pure rename carries no content lines and requires the panel', () => {
   ].join('\n'))
 
   assert.equal(only.path, 'plugins/tmux-teams/skills/new.mjs')
-  assert.equal(whyGated(only), 'fail-closed: unrecognized change shape (binary, rename, or empty diff)')
+  // Named as a rename now, not as "no content lines". It used to reach the same
+  // verdict by accident — a pure rename happens to carry no `+`/`-` lines, so
+  // the empty-shape rule caught it — and a rename WITH a version hunk therefore
+  // slipped through as version-only. Found by the release panel (codex lane,
+  // 2026-08-10, round 2); the case is below.
+  assert.equal(whyGated(only), 'fail-closed: rename to (a change the hunks do not show)')
+})
+
+test('a rename or a mode flip beside a version hunk still requires the panel', () => {
+  // The twin the case above was missing. Each of these carries content lines
+  // that blank to the same text, so the version-only rule answered EXEMPT while
+  // a shipped file was renamed or made executable.
+  const withHunk = (metadata) => parseDiff([
+    'diff --git a/plugins/tmux-teams/plugin.json b/plugins/tmux-teams/plugin.json',
+    ...metadata,
+    '--- a/plugins/tmux-teams/plugin.json',
+    '+++ b/plugins/tmux-teams/plugin.json',
+    '@@ -4 +4 @@',
+    '-  "version": "0.18.2",',
+    '+  "version": "0.19.0",',
+    '',
+  ].join('\n'))[0]
+
+  assert.match(whyGated(withHunk(['old mode 100644', 'new mode 100755'])), /^fail-closed: new mode/)
+  assert.match(whyGated(withHunk([
+    'similarity index 98%',
+    'rename from plugins/tmux-teams/old.json',
+    'rename to plugins/tmux-teams/plugin.json',
+  ])), /^fail-closed: rename to/)
+
+  // The control: the same file, the same version movement, no metadata. This
+  // one IS exempt, which is what makes the two above meaningful.
+  assert.equal(whyGated(withHunk([])), null)
+})
+
+test('a semver that is not THIS release version does not buy an exemption', () => {
+  // `blankVersions` used to blank every `x.y.z` in every file, so a shipped
+  // dependency pin moving two major versions read as a plain version bump and
+  // the gate exempted it. Measured before the fix: `whyGated` answered null.
+  // Found by the release panel (codex lane, 2026-08-10, round 2); the zai lane
+  // raised the same class for dot-dates and IP literals.
+  const pin = file(
+    'plugins/tmux-teams/skills/tmux-teams/scripts/acp-companion.mjs',
+    ["const ADAPTER = '@agentclientprotocol/claude-agent-acp@9.99.0'"],
+    ["const ADAPTER = '@agentclientprotocol/claude-agent-acp@0.61.0'"],
+  )
+  assert.equal(whyGated(pin), 'changes more than the version string')
+
+  // And the exemption still works where it is meant to: the files that carry
+  // the RELEASE version, which are the only ones the bump touches.
+  for (const path of ['tests/plugin-structure.test.mjs', '.claude-plugin/marketplace.json']) {
+    assert.equal(whyGated(file(path, [`  "version": "0.19.0",`], [`  "version": "0.18.2",`])), null, path)
+  }
 })

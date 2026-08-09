@@ -48,6 +48,14 @@ export function readDispatchFacts(repo) {
       // ever named one, so the account default answered" — two very different
       // facts that both used to print as `unverified`.
       requested_model: field(text, 'requested_model'),
+      // The companion writes the effort as its OWN field and folds it into
+      // `effective_identity` as `${model}[${effort}]`. Without it here,
+      // `joinDispatchIdentity` cannot rebuild the identity the companion built
+      // and reports every effort-pinned leg as a contradiction — the exact
+      // false alarm the join's effort branch exists to stop, restored silently
+      // by a reader that dropped the field. Found by the release panel (codex
+      // lane, 2026-08-10, round 2) in the fix for the first version of it.
+      requested_reasoning_effort: field(text, 'requested_reasoning_effort'),
       effective_identity: field(text, 'effective_identity'),
       identity_status: field(text, 'identity_status'),
     })

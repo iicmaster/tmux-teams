@@ -278,3 +278,36 @@ test('a seat held in-flight is not handed to another token later in the SAME tic
   // the tick reads when it asks whether the outer controller is already running.
   assert.equal(busy.has('build_w1'), true, 'the held seat must be marked busy for the rest of the tick')
 })
+
+test('a seat held in-flight counts against the BOARD-WIDE cap, not just its team slot', () => {
+  // The half the test above does not cover, and the panel said so in those
+  // words. `inFlight` is seeded from `busy` before the loop, so a seat that
+  // reaches the in-flight branch WITHOUT being in `busy` — which is the whole
+  // reason that branch exists, a leg recognised by age — was never in the
+  // number. It spent the team's WIP slot and left the board's cap untouched, so
+  // `maxInFlight` could be exceeded by however many such seats one tick walks
+  // past. Found by the release panel (codex lane, 2026-08-10, round 2).
+  const now = Date.now()
+  const busy = new Set()
+  const plans = planDispatches(twoWorkerGraph, heldAndWaiting(now), busy, {
+    now, busyTasks: new Set(), maxInFlight: 1,
+  })
+
+  const dispatched = plans.filter((plan) => plan.action === 'dispatch')
+  assert.deepEqual(dispatched, [],
+    'alpha already holds one leg and the board cap is 1 — beta must wait, not be paid for: '
+    + JSON.stringify(plans))
+  const waiting = plans.find((plan) => plan.work_item === 'beta' && plan.action === 'wait')
+  assert.ok(waiting, `beta was neither dispatched nor named as waiting: ${JSON.stringify(plans)}`)
+  assert.match(waiting.reason, /in flight across the board/,
+    `beta waited for the wrong reason — the board cap is the one being tested: ${waiting.reason}`)
+
+  // The control, and what it is worth: with room on the board the same fixture
+  // DOES dispatch beta, so the assertion above is not passing on a build where
+  // nothing is ever dispatched.
+  const roomy = planDispatches(twoWorkerGraph, heldAndWaiting(now), new Set(), {
+    now, busyTasks: new Set(), maxInFlight: 4,
+  })
+  assert.ok(roomy.some((plan) => plan.work_item === 'beta' && plan.action === 'dispatch'),
+    'beta is not dispatchable even with a roomy cap, so the cap assertion above proves nothing')
+})

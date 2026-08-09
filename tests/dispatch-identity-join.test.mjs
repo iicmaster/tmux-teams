@@ -21,7 +21,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { joinDispatchIdentity } from '../plugins/tmux-teams/skills/tmux-teams/scripts/dispatch-facts.mjs'
+import { joinDispatchIdentity, readDispatchFacts } from '../plugins/tmux-teams/skills/tmux-teams/scripts/dispatch-facts.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SCRIPTS = join(HERE, '..', 'plugins', 'tmux-teams', 'skills', 'tmux-teams', 'scripts')
@@ -109,6 +109,38 @@ test('a matched receipt carrying its requested reasoning effort agrees, it does 
   const join_ = joinDispatchIdentity(assigned('gpt-5.6-terra'), withEffort)
   assert.equal(join_.verdict, 'alias_agreed')
   assert.equal(join_.answered, 'gpt-5.6-terra[max]')
+})
+
+test('the READER carries the effort through to the join, not just the fixture', () => {
+  // The trap this repo names and I walked into anyway: the tests above hand
+  // `joinDispatchIdentity` a receipt object built by hand, so they prove the
+  // join's arithmetic and NOTHING about whether the field ever arrives.
+  // `readDispatchFacts` did not emit `requested_reasoning_effort`, so in the
+  // real pipeline `askedEffort` was always null and the false contradiction the
+  // branch above removes was still being written on every tick. Found by the
+  // release panel (codex lane, 2026-08-10, round 2). This test starts at the
+  // receipt on disk, which is where the fact starts.
+  const repo = mkdtempSync(join(tmpdir(), 'dispatch-facts-'))
+  mkdirSync(join(repo, '.tmux-teams', 'dispatch'), { recursive: true })
+  writeFileSync(join(repo, '.tmux-teams', 'dispatch', 'leg.md'), [
+    'task_id: t1',
+    'dispatch_id: d1',
+    'agent_id: build_w1',
+    'workflow: feature',
+    'work_item: tok',
+    'requested_model: gpt-5.6-terra',
+    'requested_reasoning_effort: max',
+    'effective_identity: gpt-5.6-terra[max]',
+    'identity_status: matched',
+    '',
+  ].join('\n'))
+
+  const fact = readDispatchFacts(repo).get('t1')
+  assert.ok(fact, 'the receipt on disk was not read at all')
+  assert.equal(fact.requested_reasoning_effort, 'max',
+    'the reader dropped the effort, so the join below can only ever see null')
+  assert.equal(joinDispatchIdentity(assigned('gpt-5.6-terra'), fact).verdict, 'alias_agreed',
+    'a clean effort-pinned leg read off its own receipt is still reported as a contradiction')
 })
 
 test('widening for effort does not blind the join to a genuinely different model', () => {
