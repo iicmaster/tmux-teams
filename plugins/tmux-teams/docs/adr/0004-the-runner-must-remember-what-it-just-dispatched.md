@@ -48,6 +48,24 @@ running*. The runner therefore believed a leg it had itself dispatched 236 ms
 earlier was gone, and dispatched the seat again. The ledger already held that
 leg's `assigned` line with no `delivered`; nothing consulted it.
 
+**4. And a second, independent defect inside a single tick** — found by the
+author of the AC1 test, not by this document. `nextStep` protects a token's own
+still-open leg with an AGE check, not with `busy`
+(`if (ageSec < zombieSec) return { action: 'in-flight' }`). `planDispatches`
+then does `if (step.action === 'in-flight') { slots -= 1; continue }` — it spends
+the WIP slot and **never calls `busy.add`**, which only happens on the dispatch
+path. So a seat held by an in-flight leg stays invisible to every other token
+processed later in the same tick.
+
+The root of that one is smaller than it looks: **`nextStep` returns a bare
+`{ action: 'in-flight' }` and never names the seat it is waiting on**, so the
+caller could not mark it even if it wanted to. The verdict has to carry its
+`agent_id`.
+
+These two compose. Defect 1 loses the memory between ticks; defect 4 loses it
+between two tokens inside one tick. A fix for either alone leaves the measured
+run still able to double-dispatch.
+
 The escape hatch is justified in the code by a sentence that is true exactly
 once:
 
@@ -175,8 +193,21 @@ issue or ADR if it is worth doing.
 ## Acceptance criteria
 
 1. **`loop-replay` carries a permanent invariant**: for every `agent_id`, a new
-   `assigned` never lands while that seat's previous task has no `delivered`.
-   Checkable from the ledger alone. **This test must go RED against the code as
+   `assigned` never lands while that seat's previous task is still open.
+   Checkable from the ledger alone — but **across the whole work-items corpus,
+   not from one token's file**: `nextStep` never re-dispatches a token onto its
+   own open leg, so a single ledger structurally cannot show this. It appears
+   only when one `agent_id` turns up in two different tokens' files.
+
+   **"Still open" means no `delivered` AND no `lost`.** The first wording said
+   `delivered` alone, which would have failed a legitimate reassignment after a
+   leg was correctly declared `lost` — a false positive built into the guard.
+   Corrected after the test author read it.
+
+   **Known blind spot, stated rather than discovered:** the outer controller's
+   board leg is dispatched with an empty work item and never writes into any
+   token's ledger, so a ledger-only invariant cannot see that seat at all. It is
+   covered by claims and by liveness files, not by this test. **This test must go RED against the code as
    it stands before the fix** — by mutation or by a stashed revert — and that
    red run must be recorded. It is the only artifact proving the next
    re-entrancy defect cannot ship in silence.
