@@ -32,7 +32,8 @@
 
 ## 🗺️ Roadmap — เผยแพร่แล้ว อ่านอันนี้ก่อนวางแผนใหม่
 
-**https://artifacts.ngs.bz/claude/private/tmux-teams-next-plan/** (v5, 9 ส.ค.)
+**https://artifacts.ngs.bz/claude/private/tmux-teams-next-plan/** (v6 เขียนแล้วในเครื่อง —
+**ยังไม่ได้เผยแพร่** · สกิล `artifact-sftp` ไม่ได้ติดตั้งใน plugin cache ของเครื่องนี้)
 
 ห้าเฟส เรียงตามหลักการของโปรเจกต์เอง · สำเนาอยู่ที่
 `docs/artifacts/claude/private/tmux-teams-next-plan/index.html` (ไม่ถูก commit — ตั้งใจ)
