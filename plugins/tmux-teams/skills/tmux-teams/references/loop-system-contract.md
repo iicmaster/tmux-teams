@@ -1913,10 +1913,31 @@ Two different things can be dead, and each has its own evidence.
 
 ### 11.1 Are the AGENTS running — `pulse.json`
 
-`pulse.json` is the only evidence that an agent is still running.
+**Three witnesses answer "is this agent still running", and the runner merges
+them at one point.** Amended 2026-08-09 (ADR 0004); until then this section said
+`pulse.json` was the ONLY evidence, and that sentence was the defect.
 
-- **Missing** snapshot = a repo where nothing has ever run. Dispatch is allowed,
-  with a note.
+1. **`pulse.json`** — the published snapshot. Still the broadest witness: it is
+   the only one that survives across machines and the only one a page can read.
+2. **`.tmux-teams/liveness/<task-id>.json`** — written by the companion faster
+   than once a second, judged by the same rules as a pulse row (not terminal,
+   observed within the zombie window). It was always there and nothing read it
+   unless pulse had republished it. Being files, it survives a cron-mode process
+   boundary.
+3. **The runner's own claim** — what THIS process spawned and has not yet seen
+   any evidence for. It covers spawn until the companion's first liveness write,
+   which nothing else can see. Released on a liveness file, a ledger `delivered`
+   or `lost`, a dead pid, or `CLAIM_GRACE_SEC` of total silence — **never on
+   `assigned`**, which lands seconds after dispatch and would reopen the gap.
+
+- **Missing** snapshot = the snapshot does not exist. It is **not** a licence to
+  dispatch blind. The old rule said "a repo where nothing has ever run — there
+  is no agent to collide with, so the first dispatch is safe", which was true
+  exactly once: after the first dispatch there is one, and nothing ever made the
+  sentence false. Measured on a watcher-driven loop with no publisher: the same
+  seat dispatched two and three times, `no pulse.json yet` logged thirty-three
+  times, dispatching every time. Witnesses 2 and 3 answer the question without
+  the snapshot.
 - **Present but stale** (older than `PULSE_STALE_SEC`, or undated) = the watcher
   that writes it has stopped. All dispatch is refused, loudly. Frozen evidence
   either stalls the loop forever on an agent that already exited or, past the
@@ -2339,6 +2360,7 @@ a palette yet).
 | AC130 | §12 | the companion's stdout is a diagnostic log, never a verdict source. The runner spawns it onto a file under `.tmux-teams/runner-logs/` and reads its verdict from the outbox FILE, hash-checked against the `outbox_digest` recorded at `delivered`. No shipped module reads the `[terminal]` line, and none may be added. The guard walks every shipped executable (`.mjs` and `.js`) for the THREE textual shapes a reader is written in — the token as a regex, as a quoted string, or as a template literal — over source with comments stripped, because a comment naming the line in markdown is prose and not a reader. It is a tripwire, not a proof of absence: `line.endsWith('] done')` would pass it, and so would a reader sharing a line with a trailing comment. Quoting defends a human reader, and that is the whole of what it claims | `plugin-structure.test.mjs` |
 | AC131 | §12 | quoting follows AUTHORSHIP, not provenance: an agent message, its thinking, and a user turn replayed on resume are all text this process did not author, all reach the same reader, and are all quoted alike | `chat-marker-quoting.test.mjs` |
 | AC135 | §13 | `mcpServers` is closed at RUNTIME, not by reading a diff. The real companion is driven against a mock ACP agent that records the params it RECEIVED, and both session-opening calls — `session/new`, and `session/load` on the resume path — must carry the literal empty ARRAY. `{}` fails and a populated list fails: an object is the other spelling an ACP agent accepts, and it is the shape a server registration would actually arrive in. Every assertion proves the call HAPPENED before it proves what the call carried, because "every `session/new` we saw" is vacuously true when none was seen — the exact failure that let a `readTerminalOutbox` test stay green while a refusal upstream meant it never ran | `mcp-servers-closed.test.mjs` |
+| AC137 | §11.1, §5 | a seat that is already holding an undelivered leg never receives a second `assigned`. Two defects had to close together and either alone leaves the measured run able to double-dispatch: across ticks nothing remembered a dispatch until pulse republished it, and inside ONE tick `planDispatches` spent the WIP slot on the in-flight branch without marking the seat — `nextStep` returned a bare `in-flight` that never named the seat, so the caller could not have marked it. Checkable from the ledger but only across the WHOLE work-items corpus: a token is never re-dispatched onto its own open leg, so one token's file structurally cannot show this. A leg that ended `lost` is legitimately reassigned and closes the claim — asserting on `delivered` alone builds a false positive into the guard. The outer controller's board leg writes into no token's ledger and is a structural blind spot for any ledger-only check; claims and liveness files cover it | `loop-replay.test.mjs` |
 | AC136 | §3.5.1 | what a leg ASKED for (the ledger's `assigned` line, written before the process spawned) and what ANSWERED it (the dispatch receipt) are joined on `task_id`, and can now contradict each other. The verdicts are enumerated from what MEASURABLY reaches disk, not imagined: driving the real companion through the mock produced unpinned, pinned-and-matched, pinned-and-refused, and adapter-with-no-identity — and `assigned` is written in ALL FOUR, including the refusal, which is exactly how a contradiction comes to sit on disk with nothing naming it. `unverified` is NOT a conflict: the AGY lane is permanently unverified by documented exemption, so a join that alarmed on it would alarm on every AGY leg and be ignored inside a week. The agreeing verdict is named `alias_agreed` and never "verified" — string equality proves the alias was honoured and says nothing about which vendor served it. The tick RECORDS a contradiction into `decisions/latest.json` (§11.3) and never acts on one: a tick that changed behaviour on a receipt would be a second dispatch authority | `dispatch-identity-join.test.mjs` |
 | AC122 | §3 | `downstream_team_id` on a team is refused by the whole-graph scan with its own routing sentence, never by the generic unknown-key message | `workflow-graph.test.mjs` |
 | AC98 | §3.5 | a malformed palette entry — bad model, adapter, effort, display_model, bucket, an unknown key, a non-object entry, or a palette of the wrong length — is refused, naming the team and the seat | `workflow-graph-palette.test.mjs` |

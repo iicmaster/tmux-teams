@@ -15,7 +15,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { busyAgents } from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs'
+import { busyAgents, planDispatches, recordDispatchClaim, releaseClaimsSettledInLedger }
+  from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs'
 
 const NOW = Date.parse('2026-08-03T12:00:00.000Z')
 const ZOMBIE_SEC = 180
@@ -90,4 +91,190 @@ test('a row with no liveness evidence still answers from the process scan alone'
   assert.equal(busyAgents(running, NOW).busy.has('review_w1'), true)
   const died = repoWith({ state: 'died', livenessState: null, observedSecAgo: 0 })
   assert.equal(busyAgents(died, NOW).busy.has('review_w1'), false)
+})
+
+// ---------------------------------------------------------------------------
+// ADR 0004 — the third and second witnesses. Everything above answers from a
+// pulse row; a repo with no publisher has none, and until 2026-08-09 that meant
+// every in-flight leg read as dead and the same seat was dispatched again.
+
+// A repo with NOTHING published — the shape the defect was measured in.
+function bareRepo() {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-claim-'))
+  dirs.push(dir)
+  mkdirSync(join(dir, '.tmux-teams', 'liveness'), { recursive: true })
+  return dir
+}
+
+const livenessFile = (dir, { taskId, agentId, state, observedSecAgo }) =>
+  writeFileSync(join(dir, '.tmux-teams', 'liveness', `${taskId}.json`), JSON.stringify({
+    schema_version: 'acp-liveness.v1',
+    task_id: taskId,
+    agent_id: agentId,
+    observed_at: new Date(NOW - observedSecAgo * 1000).toISOString(),
+    liveness_state: state,
+  }))
+
+test('a seat this process just dispatched is busy before any file exists', () => {
+  // The whole window the claim exists for. No pulse.json, no liveness file yet
+  // — the companion has not had time to write one. Without this the next tick,
+  // a quarter second later, hands the same seat out again.
+  const repo = bareRepo()
+  const before = busyAgents(repo, NOW)
+  assert.equal(before.busy.has('build_w1'), false, 'nothing dispatched yet')
+
+  recordDispatchClaim(repo, { agentId: 'build_w1', taskId: 'task-1', pid: null })
+  const after = busyAgents(repo, NOW)
+  assert.equal(after.busy.has('build_w1'), true)
+  assert.equal(after.busyTasks.has('task-1'), true)
+  // `missing` describes the snapshot, not what we know. Conflating the two
+  // makes the log line that reports it false.
+  assert.equal(after.missing, true)
+})
+
+test('the liveness file answers when there is no pulse.json at all', () => {
+  // The witness that was always on disk and unread. This is what covers the
+  // whole leg, not just the spawn window — and being a file it survives the
+  // process boundary a cron-driven tick crosses.
+  const repo = bareRepo()
+  livenessFile(repo, { taskId: 'task-2', agentId: 'verify_w1', state: 'running', observedSecAgo: 2 })
+  const seen = busyAgents(repo, NOW)
+  assert.equal(seen.busy.has('verify_w1'), true)
+  assert.equal(seen.busyTasks.has('task-2'), true)
+})
+
+test('a liveness file that is terminal or stale holds nothing open', () => {
+  const ended = bareRepo()
+  livenessFile(ended, { taskId: 'task-3', agentId: 'verify_w1', state: 'completed', observedSecAgo: 2 })
+  assert.equal(busyAgents(ended, NOW).busy.has('verify_w1'), false, 'a finished leg is not busy')
+
+  const old = bareRepo()
+  livenessFile(old, { taskId: 'task-4', agentId: 'verify_w1', state: 'running', observedSecAgo: ZOMBIE_SEC + 5 })
+  assert.equal(busyAgents(old, NOW).busy.has('verify_w1'), false, 'an observation past the zombie window is not evidence')
+})
+
+test('the ledger releases a claim on delivered or lost, and never on assigned', () => {
+  // `assigned` lands seconds after dispatch and is written by the companion.
+  // Releasing on it would hand the seat back while the leg is still running —
+  // the same defect moved from 250ms to ZOMBIE_SEC, which is how the first
+  // draft of ADR 0004 was written and why it was corrected.
+  const repo = bareRepo()
+  const ledger = (event, taskId) => new Map([['w', { custody: [{ event, task_id: taskId }] }]])
+
+  recordDispatchClaim(repo, { agentId: 'build_w1', taskId: 'task-5', pid: null })
+  releaseClaimsSettledInLedger(repo, ledger('assigned', 'task-5'))
+  assert.equal(busyAgents(repo, NOW).busy.has('build_w1'), true, 'assigned must NOT release the claim')
+
+  releaseClaimsSettledInLedger(repo, ledger('delivered', 'task-5'))
+  assert.equal(busyAgents(repo, NOW).busy.has('build_w1'), false, 'delivered releases it')
+
+  // `lost` too: a leg correctly declared lost is legitimately reassigned, and a
+  // claim outliving it would block the reassignment it exists to make safe.
+  const second = bareRepo()
+  recordDispatchClaim(second, { agentId: 'build_w1', taskId: 'task-6', pid: null })
+  releaseClaimsSettledInLedger(second, ledger('lost', 'task-6'))
+  assert.equal(busyAgents(second, NOW).busy.has('build_w1'), false, 'lost releases it')
+})
+
+test('a claim with no evidence of any kind does not outlive the grace window', () => {
+  // Not elapsed time used as proof of death — a claim is not evidence a leg is
+  // alive, it is this process's memory that it spawned one. A companion that
+  // died before its first heartbeat would otherwise hold its seat, and through
+  // the board-wide in-flight cap every other team's seats, for ever.
+  const repo = bareRepo()
+  recordDispatchClaim(repo, { agentId: 'build_w1', taskId: 'task-7', pid: null })
+  assert.equal(busyAgents(repo, Date.now()).busy.has('build_w1'), true, 'held while fresh')
+  assert.equal(busyAgents(repo, Date.now() + 31_000).busy.has('build_w1'), false, 'released after the grace window')
+})
+
+test('the claim store is keyed by repo, not shared across them', () => {
+  // One process calls busyAgents for more than one repository; a global store
+  // would report the second repo busy because the first one dispatched.
+  const a = bareRepo()
+  const b = bareRepo()
+  recordDispatchClaim(a, { agentId: 'build_w1', taskId: 'task-8', pid: null })
+  assert.equal(busyAgents(a, NOW).busy.has('build_w1'), true)
+  assert.equal(busyAgents(b, NOW).busy.has('build_w1'), false)
+})
+
+test('busyAgents hands back a fresh mutable Set every call', () => {
+  // planDispatches adds to this Set in place and tick reads that mutation back
+  // when it decides whether the outer controller is already running. A cached
+  // or frozen Set would either break that read or let an in-tick decision write
+  // itself into the claim store as if it had been confirmed.
+  const repo = bareRepo()
+  recordDispatchClaim(repo, { agentId: 'build_w1', taskId: 'task-9', pid: null })
+  const first = busyAgents(repo, NOW)
+  first.busy.add('scratch_seat')
+  const second = busyAgents(repo, NOW)
+  assert.equal(second.busy.has('scratch_seat'), false, 'the mutation must not survive into the next call')
+  assert.equal(second.busy.has('build_w1'), true, 'the claim itself still does')
+})
+
+// ---------------------------------------------------------------------------
+// ADR 0004, the SECOND defect — inside one tick, not across two.
+//
+// `planDispatches` is called with `busy` as a parameter, so this drives it with
+// an EMPTY set: no pulse row, no liveness file, no claim. That is not a
+// contrived state — it is a runner process that has just started on a repo a
+// previous process was dispatching in, which is exactly cron mode, and it is
+// the only state where the in-tick marking is load-bearing. Every other path
+// has already put the seat in `busy` before this function is reached, which is
+// why a mutation removing this fix stayed GREEN until this test existed.
+
+const twoWorkerGraph = {
+  project_id: 'in-tick',
+  outer_controller_id: 'pm',
+  teams: [
+    {
+      team_id: 'build', name: 'Build', dispatcher_id: 'build_d', evaluator_id: 'build_e',
+      worker_ids: ['build_w1', 'build_w2'], wip_limit: 2,
+      agents: [
+        { agent_id: 'build_d', role: 'dispatcher' }, { agent_id: 'build_w1', role: 'worker' },
+        { agent_id: 'build_w2', role: 'worker' }, { agent_id: 'build_e', role: 'evaluator' },
+      ],
+    },
+  ],
+  workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['build'] }],
+}
+
+// One token already holding `build_w1` with an open, RECENT `assigned` — young
+// enough that `nextStep` answers `in-flight` from its age check rather than
+// from `busy`, which is the branch that used to spend the WIP slot and forget
+// the seat.
+const heldAndWaiting = (now) => new Map([
+  ['alpha', { work_item: 'alpha', workflow: 'feature', custody: [
+    { at: new Date(now - 60_000).toISOString(), event: 'opened', work_item: 'alpha', workflow: 'feature', agent_id: 'build_d', to_team: 'build' },
+    { at: new Date(now - 50_000).toISOString(), event: 'intake', work_item: 'alpha', workflow: 'feature', agent_id: 'build_d', team_id: 'build' },
+    { at: new Date(now - 10_000).toISOString(), event: 'assigned', work_item: 'alpha', workflow: 'feature', agent_id: 'build_w1', task_id: 'alpha-w-1', dispatch_id: 'd-a1', team_id: 'build' },
+  ] }],
+  ['beta', { work_item: 'beta', workflow: 'feature', custody: [
+    { at: new Date(now - 40_000).toISOString(), event: 'opened', work_item: 'beta', workflow: 'feature', agent_id: 'build_d', to_team: 'build' },
+    { at: new Date(now - 30_000).toISOString(), event: 'intake', work_item: 'beta', workflow: 'feature', agent_id: 'build_d', team_id: 'build' },
+  ] }],
+])
+
+test('a seat held in-flight is not handed to another token later in the SAME tick', () => {
+  const now = Date.now()
+  const busy = new Set()
+  const plans = planDispatches(twoWorkerGraph, heldAndWaiting(now), busy, { now, busyTasks: new Set() })
+
+  // `planDispatches` pushes no plan for an in-flight leg — it spends the slot
+  // and continues — so alpha is deliberately absent from `plans`. What it does
+  // leave behind is the mark on `busy`, asserted at the bottom, and that mark
+  // is only possible because the verdict now names its seat: before ADR 0004
+  // `nextStep` returned a bare `{ action: 'in-flight' }` and the caller had no
+  // agent_id to add.
+  assert.equal(plans.some((plan) => plan.work_item === 'alpha' && plan.action === 'dispatch'), false,
+    `alpha is holding an open leg and must not be dispatched again: ${JSON.stringify(plans)}`)
+
+  const beta = plans.find((plan) => plan.work_item === 'beta' && plan.action === 'dispatch')
+  assert.ok(beta, `beta was never dispatched, so this test proved nothing: ${JSON.stringify(plans)}`)
+  assert.notEqual(beta.agent_id, 'build_w1',
+    'build_w1 is already holding alpha — handing it to beta in the same tick is the duplicate dispatch this closes')
+  assert.equal(beta.agent_id, 'build_w2', 'the free seat is the one it should get')
+
+  // And the caller's own Set carries the mark onward, which is what the rest of
+  // the tick reads when it asks whether the outer controller is already running.
+  assert.equal(busy.has('build_w1'), true, 'the held seat must be marked busy for the rest of the tick')
 })

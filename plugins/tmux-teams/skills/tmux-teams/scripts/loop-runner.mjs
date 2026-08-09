@@ -418,10 +418,22 @@ export function busyAgents(repo, nowMs = Date.now()) {
   // by unrelated work. The pulse row carries the task, so the question can be
   // asked about the leg the token is actually parked on.
   const busyTasks = new Set(liveRows.map((row) => row.task_id).filter(Boolean))
-  // No snapshot at all is a repo where nothing has ever run — there is no agent
-  // to collide with, so the first dispatch is safe. A snapshot that EXISTS but
-  // has stopped moving is the dangerous one: it can still be asserting that
-  // agents are running, and it is no longer able to say when they stop.
+  // A snapshot that EXISTS but has stopped moving is dangerous in its own way:
+  // it can still be asserting that agents are running, and it is no longer able
+  // to say when they stop. That half was always right and `stale` still refuses
+  // every dispatch.
+  //
+  // The other half used to read "no snapshot at all is a repo where nothing has
+  // ever run — there is no agent to collide with, so the first dispatch is
+  // safe", and it was **true exactly once**. After the first dispatch there IS
+  // an agent to collide with, and nothing ever made that sentence false — so a
+  // watcher-driven loop with no publisher dispatched the same seat two and
+  // three times while logging that it had no liveness evidence, thirty-three
+  // times, and dispatching anyway (ADR 0004, measured 2026-08-09).
+  //
+  // `missing` now describes only what it says: whether the snapshot exists. It
+  // is no longer a licence to dispatch blind, because the two witnesses merged
+  // below answer the occupancy question without it.
   const missing = snapshot === null
   // ADR 0004: three witnesses, merged HERE and nowhere else, so that no
   // dispatch path — worker, dispatcher, evaluator, outer controller, palette
