@@ -7,7 +7,7 @@ import { spawn as nodeSpawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, realpathSync } from 'node:fs'
 import { chmod, copyFile, cp, mkdir, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 
@@ -654,13 +654,52 @@ export const SANDBOX_MASKED_ROOTS = Object.freeze([
  * its interpreter and says so, which is loud, recoverable, and infinitely
  * preferable to handing a sandboxed reviewer the tree the mask just removed.
  */
-export function sandboxRebindRoots() {
+// `realpath` and fall back to `resolve` when the path does not exist. A path
+// that cannot be resolved must still be compared, not skipped: skipping it is
+// the fail-open this helper exists to prevent.
+//
+// BOTH sides go through it, which is the whole point. Canonicalising one side
+// and not the other is the same desynchronisation in a new place — and it is
+// not hypothetical: doing exactly that turned the HOME guard's own test red on
+// macOS, where `mkdtemp` hands back `/var/...` and its realpath is
+// `/private/var/...`.
+const canonicalSync = (path) => {
+  if (!path) return ''
+  try { return realpathSync(path) } catch { return resolve(path) }
+}
+
+// Where the home directory comes from, as its own exported function so both
+// halves of the guard can be checked. `process.env.HOME ?? ''` used to be read
+// inline, which made the direct-child refusal CONDITIONAL on an environment
+// variable: unset it and the guard did not run at all. `os.homedir()` answers
+// from the passwd database when the environment does not.
+export const rebindHomeSource = () => process.env.HOME || homedir() || ''
+
+export function sandboxRebindRoots(homeSource = rebindHomeSource()) {
   const prefix = dirname(dirname(process.execPath))
   if (!SANDBOX_MASKED_ROOTS.some(root => isWithin(prefix, root))) return []
-  const resolved = resolve(prefix)
-  if (SANDBOX_MASKED_ROOTS.some(root => resolved === resolve(root))) return []
-  const home = process.env.HOME ?? ''
-  if (home && (resolved === resolve(home) || dirname(resolved) === resolve(home))) return []
+  const resolved = canonicalSync(prefix)
+  if (SANDBOX_MASKED_ROOTS.some(root => resolved === canonicalSync(root))) return []
+  // CANONICAL home, not the raw variable. `process.execPath` on Linux comes
+  // from `/proc/self/exe` and the kernel has already resolved it, so comparing
+  // it against a symlinked `$HOME` desynchronises the two and this guard fails
+  // OPEN — `~/.local` passes the direct-child test, passes the bin/lib test,
+  // and gets bound. That is the opposite direction from `interpreterRoots`,
+  // which fails closed, and an asymmetry worth naming: a guard that fails open
+  // is not a guard. Raised as non-blocking by the release panel (zai lane,
+  // 2026-08-10, round 4) and fixed anyway, because it is three lines.
+  // An UNKNOWN home is not an absent one. `const home = process.env.HOME ?? ''`
+  // made the whole guard conditional: unset the variable and the direct-child
+  // refusal simply did not run, so `~/.local` was bound. `os.homedir()` answers
+  // from the passwd database when the environment does not, and if even that
+  // cannot say, this refuses to bind at all rather than binding unchecked.
+  // A platform branch that cannot answer must say UNKNOWN, never "no" — the
+  // repo's own rule, from the day `groupPids()` answered "nobody else in the
+  // group" without looking. Found by the release panel (codex lane, 2026-08-10,
+  // round 4).
+  const home = canonicalSync(homeSource)
+  if (!home) return []
+  if (resolved === home || dirname(resolved) === home) return []
   if (!existsSync(join(prefix, 'bin')) || !existsSync(join(prefix, 'lib'))) return []
   return [prefix]
 }

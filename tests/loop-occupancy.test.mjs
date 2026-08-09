@@ -2546,9 +2546,20 @@ test('a dispatched worker leg carries its seat effort into the spawned process e
     // second tick reaches the worker leg this test is actually about, exactly
     // like the real loop's own next tick would.
     tick(dir, { apply: true, scratchDir: join(dir, 'scratch'), spawnFn })
+    // The dispatcher leg this tick just paid for, named by its own task id —
+    // read out of the argv `dispatch` built rather than guessed. Writing the
+    // ledger forward without it leaves the token reserved by the dispatch claim
+    // (ADR 0004: a claim reserves the SEAT and the TOKEN, because until a leg is
+    // in the ledger nothing else records that the token already has one), and
+    // the second tick correctly refuses to pay for the same token twice.
+    // Companion argv: [COMPANION, adapter, repo, taskId, briefPath, stallSec].
+    const dispatcherTask = captured[0]?.args[3]
+    assert.ok(dispatcherTask, `the first tick spawned nothing: ${JSON.stringify(captured)}`)
     writeFileSync(join(store, 'work-items', 'tok.jsonl'),
       `${ledger('tok', [
         { event: 'opened', agent_id: 'b_d', to_team: 'build' },
+        { event: 'assigned', agent_id: 'b_d', task_id: dispatcherTask, dispatch_id: 'd-1' },
+        { event: 'delivered', agent_id: 'b_d', task_id: dispatcherTask, terminal: 'done', evidence_present: true },
         { event: 'intake', agent_id: 'b_d', verdict: 'accept' },
       ]).map((entry) => JSON.stringify(entry)).join('\n')}\n`)
     tick(dir, { apply: true, scratchDir: join(dir, 'scratch'), spawnFn })

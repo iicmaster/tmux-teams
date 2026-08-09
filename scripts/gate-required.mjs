@@ -66,7 +66,12 @@ export const VERSION_FILES = new Set([
   'plugins/tmux-teams/.claude-plugin/plugin.json',
   'plugins/tmux-teams/plugin.json',
   'tests/plugin-structure.test.mjs',
-  'README.md',
+  // README.md is deliberately NOT here. It carries the version in prose, but it
+  // is already in DOC_ONLY and that check runs first, so an entry here would be
+  // unreachable — a line a reader would maintain believing it decided
+  // something. Raised as non-blocking by the release panel (zai lane,
+  // 2026-08-10, round 4). The "six places" the release flow bumps is a count of
+  // string positions, not of files: `marketplace.json` carries two.
 ])
 
 // Release semver only — no pre-release suffix. A `-rc1` therefore does NOT
@@ -90,12 +95,29 @@ const SEMVER = /\d+\.\d+\.\d+/g
 // round 3), one round after the same lane caught the wider version of this.
 // All six real places name themselves: `"version": "x.y.z"`,
 // `const RELEASE_VERSION = 'x.y.z'`, `Current release: **x.y.z**`.
-const DECLARES_A_VERSION = /version|release/i
-const CARRIES_A_URL = /:\/\//
+// The EXACT shapes the release flow bumps, anchored end to end. Nothing else in
+// a version file gets its semver blanked.
+//
+// This was `/version|release/i` plus a "no URL on the line" guard, and both
+// halves were wrong. The loose pattern matched `"protocol_version": "1.0.0"` —
+// a shipped manifest field — and exempted a change to it. The URL guard was
+// never exercised at all: the `$schema` fixture written to test it contains
+// neither `version` nor `release`, so the first half rejected the line before
+// the second half was consulted, and deleting the URL guard entirely left every
+// test in this file green. A guard nothing runs and a pattern that matches too
+// much, shipped together, found by the release panel (codex lane, 2026-08-10,
+// round 4) in the fix for the round-3 version of the same defect.
+//
+// Anchored patterns need no URL guard: a URL cannot match either of them.
+// A seventh bump site will appear — five have already — and until its shape is
+// listed here its bump requires the panel. That is the safe direction.
+const VERSION_DECLARATIONS = [
+  /^\s*"version"\s*:\s*"\d+\.\d+\.\d+"\s*,?\s*$/,
+  /^\s*const RELEASE_VERSION = '\d+\.\d+\.\d+'\s*$/,
+]
+const declaresAVersion = (line) => VERSION_DECLARATIONS.some((shape) => shape.test(line))
 const blankVersions = (lines) => lines
-  .map((line) => (DECLARES_A_VERSION.test(line) && !CARRIES_A_URL.test(line)
-    ? line.replace(SEMVER, '<version>')
-    : line))
+  .map((line) => (declaresAVersion(line) ? line.replace(SEMVER, '<version>') : line))
   .sort()
 
 const sameLines = (a, b) => a.length === b.length && a.every((line, i) => line === b[i])
@@ -113,15 +135,31 @@ export function whyGated(file) {
   // exempted. Found by the release panel (codex lane, 2026-08-10, round 2).
   if (file.structural) return `fail-closed: ${file.structural}`
 
-  const blank = VERSION_FILES.has(file.path)
-    ? blankVersions
-    : (lines) => [...lines].sort()
-  const added = blank(file.addedLines)
-  const removed = blank(file.removedLines)
-
-  if (added.length === 0 && removed.length === 0) {
+  if (file.addedLines.length === 0 && file.removedLines.length === 0) {
     return 'fail-closed: unrecognized change shape (binary, rename, or empty diff)'
   }
+
+  // Only a file that CARRIES the release version can ever be exempt. Everything
+  // else that changed at all goes to the panel, with no comparison of any kind.
+  //
+  // The comparison used to run on every file, and because it sorts both sides
+  // before comparing them, a pure REORDER was exempt: same lines added as
+  // removed, so the multisets matched. Swap `releaseClaimsSettledInLedger(repo,
+  // items)` with `const pulse = busyAgents(repo)` in `loop-runner.mjs` — which
+  // is precisely how the defect this release exists to fix comes back — and the
+  // gate answered EXEMPT. Measured before this was written. Found by the release
+  // panel (AGY lane, 2026-08-10, round 4); it had been there since the script
+  // was written and survived three earlier rounds.
+  //
+  // Sorting is kept for the version files, where it is the point: two identical
+  // lines both moving is a different diff from one moving, which a Set would
+  // miss. A reorder inside those five files still exempts, and that is bounded
+  // and acceptable — they are two JSON manifests, a test constant and a README
+  // line, none of which have execution order.
+  if (!VERSION_FILES.has(file.path)) return 'changes more than the version string'
+
+  const added = blankVersions(file.addedLines)
+  const removed = blankVersions(file.removedLines)
   if (!sameLines(added, removed)) return 'changes more than the version string'
   return null
 }

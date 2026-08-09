@@ -289,6 +289,32 @@ test('a rename or a mode flip beside a version hunk still requires the panel', (
   assert.equal(whyGated(withHunk([])), null)
 })
 
+test('reordering lines in a shipped script requires the panel', () => {
+  // The comparison sorts both sides before comparing them, so a pure REORDER
+  // used to produce identical multisets and exempt itself. The example is not
+  // invented: swapping these two lines in `loop-runner.mjs` is precisely how the
+  // defect this release exists to fix comes back, and the gate answered EXEMPT.
+  // Found by the release panel (AGY lane, 2026-08-10, round 4) — present since
+  // the script was written and past three earlier rounds.
+  const swapped = file(
+    'plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs',
+    ['  releaseClaimsSettledInLedger(repo, items)', '  const pulse = busyAgents(repo)'],
+    ['  const pulse = busyAgents(repo)', '  releaseClaimsSettledInLedger(repo, items)'],
+  )
+  assert.equal(whyGated(swapped), 'changes more than the version string')
+  assert.equal(classifyRelease([swapped]).required, true)
+
+  // And nothing outside the two allowlists is exempt for any reason at all —
+  // not a comment, not whitespace, not a line that happens to mention a version.
+  for (const lines of [[['// a note'], []], [['const V = "1.2.3"'], ['const V = "1.2.3"']]]) {
+    assert.equal(
+      whyGated(file('plugins/tmux-teams/skills/tmux-teams/scripts/x.mjs', lines[0], lines[1])),
+      'changes more than the version string',
+      JSON.stringify(lines),
+    )
+  }
+})
+
 test('a semver inside a URL is not a version bump, even in a version-carrying file', () => {
   // `plugins/tmux-teams/plugin.json` is on VERSION_FILES because it declares the
   // release version — and it ALSO carries
@@ -303,6 +329,30 @@ test('a semver inside a URL is not a version bump, even in a version-carrying fi
     ['  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",'],
   )
   assert.equal(whyGated(schemaBump), 'changes more than the version string')
+
+  // The case the `$schema` fixture alone could NOT catch, and this test claimed
+  // to. The first version of the fix was `/version|release/i` plus a "no URL on
+  // the line" guard; the `$schema` line contains neither word, so it was
+  // rejected by the first half and the second half never ran — deleting the URL
+  // guard entirely left every test in this file green. A field that DOES carry
+  // the word is what exercises the difference. Found by the release panel
+  // (codex lane, 2026-08-10, round 4).
+  const protocolBump = file(
+    'plugins/tmux-teams/plugin.json',
+    ['  "protocol_version": "9.99.0",'],
+    ['  "protocol_version": "1.0.0",'],
+  )
+  assert.equal(whyGated(protocolBump), 'changes more than the version string',
+    'a shipped manifest field that merely contains the word "version" is not the release version')
+
+  // ...and neither is a version mentioned in prose or a comment inside a
+  // version-carrying file.
+  const mention = file(
+    'tests/plugin-structure.test.mjs',
+    ["// bumped from 0.18.2 to 0.19.0 by hand"],
+    ["// bumped from 0.17.0 to 0.18.2 by hand"],
+  )
+  assert.equal(whyGated(mention), 'changes more than the version string')
 
   // The three real shapes must all still be exempt, or the narrowing has eaten
   // the exemption it was meant to keep.

@@ -350,19 +350,37 @@ test('a route replays to a decision, or the runner says which token it could not
 // arm: its fake agent always delivers in the tick it was assigned, so nothing
 // there ever emits `lost`. That is why the arm gets its own test rather than
 // a wider condition and a hope.
-function firstDoubleAssignedSeat(events) {
-  // agent_id -> the `assigned` entry still waiting on its own close.
+// TWO keys, and the second one took four review rounds to arrive. Keyed only by
+// `agent_id` this proves AC1 as written — no SEAT receives a second `assigned`
+// while holding one — and says nothing about the harm AC1 exists to prevent:
+// with two free workers the same TOKEN was dispatched twice, on two different
+// seats, because until its companion writes `assigned` nothing else records
+// that it already has a leg. Re-keying this walk by `work_item` and re-running
+// the replay below produced `alpha-worker-4` then `alpha-worker-6`, both for
+// `alpha`, with no delivery between. Found by the release panel (codex lane,
+// 2026-08-10, round 4), which named the probe as well as the defect.
+const firstDoubleAssigned = (events, keyOf) => {
   const openLeg = new Map()
   for (const event of events) {
+    const key = keyOf(event)
+    if (!key) continue
     if (event.event === 'assigned') {
-      const holding = openLeg.get(event.agent_id)
+      const holding = openLeg.get(key)
       if (holding) return { violated: true, agent_id: event.agent_id, first: holding, second: event }
-      openLeg.set(event.agent_id, event)
+      openLeg.set(key, event)
     } else if ((event.event === 'delivered' || event.event === 'lost')
-      && openLeg.get(event.agent_id)?.task_id === event.task_id) {
-      openLeg.delete(event.agent_id)
+      && openLeg.get(key)?.task_id === event.task_id) {
+      openLeg.delete(key)
     }
   }
+  return { violated: false }
+}
+
+function firstDoubleAssignedSeat(events) {
+  const bySeat = firstDoubleAssigned(events, (event) => event.agent_id)
+  if (bySeat.violated) return { ...bySeat, keyed: 'seat' }
+  const byToken = firstDoubleAssigned(events, (event) => event.work_item)
+  if (byToken.violated) return { ...byToken, keyed: 'token' }
   return { violated: false }
 }
 
@@ -399,6 +417,24 @@ test('ADR 0004 AC137: a leg that ended lost is legitimately reassigned, and the 
     { event: 'delivered', agent_id: seat, task_id: 't1' },
     { event: 'assigned', agent_id: seat, task_id: 't2' },
   ]).violated, false, '`delivered` still closes a leg — the arm that already worked')
+
+  // The TOKEN key. Two different seats, one token, no delivery between: every
+  // seat-keyed assertion above passes on this history and it is still two paid
+  // legs for one piece of work. Found by the release panel (codex lane,
+  // 2026-08-10, round 4).
+  const doubleToken = firstDoubleAssignedSeat([
+    { event: 'assigned', agent_id: 'build_w1', work_item: 'alpha', task_id: 'a1' },
+    { event: 'assigned', agent_id: 'build_w2', work_item: 'alpha', task_id: 'a2' },
+  ])
+  assert.equal(doubleToken.violated, true, 'one token, two seats, two open legs — that is a double dispatch')
+  assert.equal(doubleToken.keyed, 'token', 'it must be reported as the token-keyed violation it is')
+
+  // ...and the same token on a second seat AFTER its first leg closed is legal.
+  assert.equal(firstDoubleAssignedSeat([
+    { event: 'assigned', agent_id: 'build_w1', work_item: 'alpha', task_id: 'a1' },
+    { event: 'delivered', agent_id: 'build_w1', work_item: 'alpha', task_id: 'a1' },
+    { event: 'assigned', agent_id: 'build_w2', work_item: 'alpha', task_id: 'a2' },
+  ]).violated, false, 'a token moving to the next seat after delivery is the normal route')
 })
 
 test('the outer controller board leg claims its seat, so busyAgents stops calling it idle', () => {

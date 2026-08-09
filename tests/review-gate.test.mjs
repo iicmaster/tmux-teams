@@ -6,7 +6,8 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runAcpReview, prepareReviewPacket, ReviewTransportError, sandboxStagedExecutables,
   needsSandboxStaging, SANDBOX_MASKED_ROOTS, interpreterRoots, trustedExecutableRoots,
-  resolveExecutable, sandboxRebindRoots, swallowsStagingFailure } from '../plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs'
+  resolveExecutable, sandboxRebindRoots, rebindHomeSource,
+  swallowsStagingFailure } from '../plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs'
 import { runReviewGate, runReviewGateCli, LANE_TIMEOUT_DEFAULT_MS, laneTimeoutMs, LANE_FAILURES,
 } from '../plugins/tmux-teams/skills/party-mode/scripts/review-gate.mjs'
 import { REVIEW_PROFILES } from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
@@ -1823,6 +1824,81 @@ test('sandboxRebindRoots refuses a prefix that is a home directory or one of its
     if (originalHome === undefined) delete process.env.HOME
     else process.env.HOME = originalHome
   }
+})
+
+test('sandboxRebindRoots refuses ~/.local even when HOME is reached through a symlink', () => {
+  // The desynchronisation, which is the only way this guard can fail OPEN.
+  // `process.execPath` on Linux comes from `/proc/self/exe` and is already
+  // resolved by the kernel; `$HOME` is whatever the environment says. Point
+  // HOME at a symlink and compare the two raw and they never match, so
+  // `~/.local` passes the direct-child test, passes bin/lib, and is bound.
+  // Raised as non-blocking by the release panel (zai lane, 2026-08-10, round 4)
+  // and closed rather than noted, because a security guard that fails open is
+  // not a guard.
+  const realHome = realpathSync(mkdtempSync(join(tmpdir(), 'realhome-')))
+  for (const part of [join('.local', 'bin'), join('.local', 'lib')]) {
+    mkdirSync(join(realHome, part), { recursive: true })
+  }
+  const linkedHome = join(mkdtempSync(join(tmpdir(), 'linkhome-')), 'home')
+  symlinkSync(realHome, linkedHome)
+
+  const originalHome = process.env.HOME
+  try {
+    // HOME is the SYMLINK; the interpreter sits at the REAL path.
+    process.env.HOME = linkedHome
+    withExecPath(join(realHome, '.local', 'bin', 'node'), () => {
+      assert.deepEqual(sandboxRebindRoots(), [],
+        '~/.local was bound because HOME and execPath were compared in different forms')
+    })
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME
+    else process.env.HOME = originalHome
+  }
+})
+
+test('the home the rebind guard uses does not depend on an environment variable', () => {
+  // `process.env.HOME ?? ''` made the direct-child refusal CONDITIONAL: unset
+  // the variable and the guard did not run, so a `.local` prefix was bound
+  // unchecked. Found by the release panel (codex lane, 2026-08-10, round 4).
+  // The source is its own function now so this can be checked without a test
+  // that has to create directories inside the real home.
+  const originalHome = process.env.HOME
+  try {
+    process.env.HOME = '/somewhere/explicit'
+    assert.equal(rebindHomeSource(), '/somewhere/explicit', 'an explicit HOME still wins')
+    delete process.env.HOME
+    assert.ok(rebindHomeSource().length > 0,
+      'with HOME unset the guard had no home to compare against and stopped guarding')
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME
+    else process.env.HOME = originalHome
+  }
+})
+
+test('sandboxRebindRoots refuses a .local prefix under the home it was given', () => {
+  // The guard itself, driven with an injected home so it is exercised rather
+  // than skipped. The prefix is the RAW temp path (under /var on macOS, /tmp on
+  // Linux — both masked) while the home is compared canonically, which is the
+  // desynchronisation the round-4 review described.
+  const rawHome = mkdtempSync(join(tmpdir(), 'guardhome-'))
+  for (const part of [join('.local', 'bin'), join('.local', 'lib'), 'bin', 'lib']) {
+    mkdirSync(join(rawHome, part), { recursive: true })
+  }
+  withExecPath(join(rawHome, '.local', 'bin', 'node'), () => {
+    assert.deepEqual(sandboxRebindRoots(rawHome), [],
+      '~/.local is a direct child of the home it was given and must never be bound')
+  })
+  withExecPath(join(rawHome, 'bin', 'node'), () => {
+    assert.deepEqual(sandboxRebindRoots(rawHome), [],
+      'the home directory itself must never be bound')
+  })
+  // The control: an install prefix under the same masked root, with the same
+  // home, IS bound — so the two refusals are the guard working and not a
+  // function that refuses everything.
+  const prefix = installPrefix()
+  withExecPath(join(prefix, 'bin', 'node'), () => {
+    assert.deepEqual(sandboxRebindRoots(rawHome), [prefix])
+  })
 })
 
 test('sandboxRebindRoots refuses a prefix with no bin/ and lib/ beneath it', () => {

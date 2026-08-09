@@ -329,9 +329,25 @@ const claimsFor = (repo) => {
 const CLAIM_GRACE_SEC = 30
 
 /** Record what this tick just spawned, before anything else can observe it. */
-export function recordDispatchClaim(repo, { agentId, taskId, pid }) {
+// A claim reserves the SEAT and the TOKEN, and it took a fourth review round to
+// learn it needs both. Reserving only the seat closes AC1 as written — no seat
+// receives a second `assigned` while holding one — while leaving the harm AC1
+// was written about wide open: with two free workers, a token dispatched to
+// `build_w1` has no ledger `assigned` yet, so `nextStep` sees nothing holding
+// it and the next tick pays for the SAME token again on `build_w2`. Measured by
+// re-keying the AC1 invariant from `agent_id` to `work_item` and re-running the
+// shipped replay, which then failed on `alpha-worker-4` followed by
+// `alpha-worker-6` with no delivery between. Found by the release panel (codex
+// lane, 2026-08-10, round 4), which named that exact probe.
+export function recordDispatchClaim(repo, { agentId, taskId, pid, workItem = '' }) {
   if (!agentId || !taskId) return
-  claimsFor(repo).set(String(taskId), { agent_id: agentId, task_id: String(taskId), pid: pid ?? null, at: Date.now() })
+  claimsFor(repo).set(String(taskId), {
+    agent_id: agentId,
+    task_id: String(taskId),
+    work_item: workItem ? String(workItem) : '',
+    pid: pid ?? null,
+    at: Date.now(),
+  })
 }
 
 const pidAlive = (pid) => {
@@ -463,12 +479,16 @@ export function busyAgents(repo, nowMs = Date.now()) {
     if (row.agent_id) busy.add(row.agent_id)
     busyTasks.add(row.task_id)
   }
+  const busyItems = new Set()
   for (const claim of releaseSettledClaims(repo, disk.seen, nowMs).values()) {
     busy.add(claim.agent_id)
     busyTasks.add(claim.task_id)
+    // The token, not only the seat. Until this leg's `assigned` reaches the
+    // ledger nothing else records that THIS token already has one in flight.
+    if (claim.work_item) busyItems.add(claim.work_item)
   }
   return {
-    busy, busyTasks, ageSec, missing,
+    busy, busyTasks, busyItems, ageSec, missing,
     stale: !missing && (ageSec === null || ageSec > PULSE_STALE_SEC),
   }
 }
@@ -1565,6 +1585,10 @@ export function planDispatches(graph, items, busy, {
   // Optional and back-compatible: a caller that knows only which AGENTS are
   // busy still gets the old, wider answer out of `legIsLive`.
   busyTasks = null,
+  // Work items with a dispatch claim still in flight. Optional and
+  // back-compatible for the same reason as `busyTasks`: a caller that supplies
+  // nothing gets exactly today's answer.
+  busyItems = null,
   // `(taskId) -> parsed liveness snapshot | null`. Optional and back-compatible
   // for the same reason `busyTasks` is: a caller that supplies nothing gets
   // exactly today's answer, which is `abandoned`. Injected rather than read
@@ -1587,6 +1611,21 @@ export function planDispatches(graph, items, busy, {
     let slots = team.wip_limit
     for (const workItem of tokens) {
       const item = items.get(workItem)
+      // This token already has a leg in flight that nothing else can see yet:
+      // it was dispatched by a previous tick and its companion has not written
+      // `assigned` into the ledger, so `nextStep` — which reads the token's
+      // last event — has nothing to recognise. Without this the same token is
+      // paid for again on whichever seat happens to be free. Treated exactly
+      // like `in-flight` because it IS in flight; the claim is simply the only
+      // witness that says so.
+      if (busyItems instanceof Set && busyItems.has(workItem)) {
+        slots -= 1
+        plans.push({
+          action: 'wait', work_item: workItem, team: teamId,
+          reason: 'a leg for this token was dispatched and has not reported yet',
+        })
+        continue
+      }
       const step = nextStep(graph, team, item, { busy, busyTasks, nowMs: now, zombieSec, answerDeadlineSec })
       if (step.action === 'in-flight') {
         // Spend the slot AND remember the seat. It used to do only the first,
@@ -2302,7 +2341,7 @@ export function tick(repoArg, {
   }
   if (pulse.missing) log('note   no pulse.json yet — dispatching without liveness evidence')
   const plans = planDispatches(graph.value, items, busy, {
-    answerDeadlineSec, busyTasks: pulse.busyTasks,
+    answerDeadlineSec, busyTasks: pulse.busyTasks, busyItems: pulse.busyItems,
     // The companion names this file after the task id and nothing else
     // (`acp-companion.mjs`'s `livenessPath`), so a dead leg's own record is
     // addressable from the custody entry that dispatched it.
@@ -2443,7 +2482,7 @@ export function tick(repoArg, {
     // ledger line and the first liveness file, both of them after we return;
     // until one of those lands this claim is the only record that the seat is
     // taken (ADR 0004).
-    recordDispatchClaim(repo, { agentId: plan.agent_id, taskId, pid })
+    recordDispatchClaim(repo, { agentId: plan.agent_id, taskId, pid, workItem: plan.work_item })
     log(`start  ${plan.agent_id} (${plan.role}) <- ${plan.work_item} task=${taskId} lane=${adapter} model=${says} effort=${effortSays}${paletteSays}`)
     started.push({ ...plan, task_id: taskId, model, effort })
   }
