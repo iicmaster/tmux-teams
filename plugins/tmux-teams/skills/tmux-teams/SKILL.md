@@ -125,6 +125,17 @@ The graph answers who exists and how they are wired. The kanban answers where a
 token is held. Pulse answers what transport activity is happening now. KMS,
 described in §9, records what a run taught the PM after that run is judged.
 
+Until 2026-08-09 that framing hid a dependency: the runner's entire occupancy
+answer — `busy` and `busyTasks` — was built from `pulse.json` alone, so a
+missing snapshot read every in-flight leg as dead. A watcher-driven loop
+logged `no pulse.json yet — dispatching without liveness evidence` 33 times
+that day and dispatched the same seat two and three times. ADR 0004 closed
+it: the runner now records an in-memory claim for each dispatch inside the
+same tick that decides to spawn it, and unions those claims into
+`busy`/`busyTasks` at the one place both are built — the runner remembers
+what it just dispatched. Pulse is again exactly what this section says it
+is: a view, no longer load-bearing for the occupancy decision.
+
 An earlier four-phase delivery pilot and its governed Phase Gate lived here;
 both were withdrawn on 2026-08-02 together with their commands and their
 documentation. This loop is teams and workflows.
