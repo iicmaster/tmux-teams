@@ -144,7 +144,24 @@ issue or ADR if it is worth doing.
    and **dispatched legs equal required legs** with wall clock still around
    3.6 minutes. Anything faster than 600 s proves the watcher drove it.
 6. Contract amended in the same commits as the behaviour: the claim concept and
-   a new AC row naming the test.
+   a new AC row naming the test. **§11.1 specifically, named here because this
+   criterion was written without it and it would otherwise have fallen between
+   owners** — found by a reader of this ADR, not by its author. That section
+   states the defect as design:
+
+   > "`pulse.json` is the only evidence that an agent is still running.
+   > **Missing** snapshot = a repo where nothing has ever run. Dispatch is
+   > allowed, with a note. **Present but stale** … All dispatch is refused,
+   > loudly."
+
+   Two things must change there. The opening sentence stops being true the
+   moment the runner remembers its own in-flight dispatches — that is a second
+   evidence source, narrower than pulse and authoritative only for the window
+   pulse cannot see. And the asymmetry is backwards and must be named as such:
+   **old evidence refuses all dispatch, no evidence permits it.** The
+   justification — "a repo where nothing has ever run" — becomes false the
+   instant the first dispatch leaves, and nothing in the system ever tells the
+   contract it went false.
 7. The liveness comment in `loop-runner.mjs` is **corrected, not deleted**, and
    `SKILL.md`'s "publish the views after the runner is available" framing stops
    implying the runner's safety ever depended on running one.
