@@ -76,10 +76,59 @@ are computed.**
   `tick()` is a plain synchronous function with no `await` anywhere in it
   (verified 2026-08-09), and the watcher calls it directly, so ticks in one
   process are strictly serialised and a claim needs no lock to be correct.
-- A claim is released **on evidence, never on elapsed time**: the ledger shows
-  `assigned` or `delivered` for that `task_id`, or a pulse row names it. A claim
-  whose `pid` is gone with no evidence is the existing `lost` class and is
-  handled as `lost` — it is not a new terminal state.
+- A claim is released **on evidence, never on elapsed time** — and **never on
+  `assigned`**. `delivered`, a matching pulse row, a fresh liveness file for that
+  task, or pid-death. A claim whose `pid` is gone with no evidence is the
+  existing `lost` class and is not a new terminal state.
+
+  **Corrected 2026-08-09 after this ADR's first reader.** The rule first written
+  here released on `assigned`, and that would have moved the defect rather than
+  closed it. `assigned` is written by the COMPANION seconds after dispatch; once
+  the claim is gone the only remaining witness is `pulse.json`, which this very
+  document records as routinely absent. `nextStep` then falls through to
+  `ageSec < ZOMBIE_SEC` (180 s) and declares a live leg `lost`. That incident is
+  already in the code: *"a review running the three-model gate for twenty minutes
+  was declared lost and replaced twice on one token."* Releasing on `assigned`
+  would have shrunk the duplicate-dispatch window from 250 ms to 180 s and called
+  it a fix.
+
+- **The second witness already exists on disk and nothing reads it without
+  pulse.** `acp-companion` writes `.tmux-teams/liveness/<task-id>.json` faster
+  than once a second, and `busyAgents` sees it only where pulse has republished
+  it onto a row. Verified on the failing run: the liveness files were all
+  present while `pulse.json` never existed. So the runner also reads that
+  directory directly when the snapshot is missing. This covers the WHOLE leg
+  rather than the spawn window, and because it is files rather than memory it
+  covers cron mode too — which retires the cross-process residual this ADR
+  accepted above, rather than living with it.
+
+  The claim still earns its place: it covers spawn until the companion's first
+  liveness write, which nothing else can see.
+
+### Implementation constraints, from reading every consumer
+
+These are not style notes. Each one breaks a specific consumer if ignored.
+
+- **`busyAgents()` must keep returning a FRESH, mutable `Set` per call.**
+  `planDispatches` mutates the set in place (`busy.add(step.agent_id)`) and
+  `tick` reads that mutation back when it decides whether the outer controller
+  is already running. Returning a cached reference to the claim store would let
+  an in-tick decision write itself into the store as if it were confirmed.
+- **The claim store is keyed by repo, not global.** One process calls
+  `busyAgents()` for different repositories.
+- **The outer controller's board leg has a narrower release path than everyone
+  else.** Its ledger append is a deliberate no-op, so no `assigned` or
+  `delivered` ever carries its `task_id`; only a pulse row, a liveness file or
+  pid-death can release it. Stated here because the general rule reads as though
+  the ledger always applies.
+- **Claims must not touch `pulse.stale` or `pulse.missing`.** A stale-but-present
+  snapshot still refuses all dispatch before occupancy is even consulted, and
+  `missing` describes the snapshot's existence — conflating it with "claims
+  exist" makes the log line that reports it false.
+- **`graph.mjs` reads `pulse.json` independently for display** and will keep
+  drawing a claimed seat as idle for the publication lag. Not a second dispatch
+  authority and not a blocker; recorded so the page's staleness is a known
+  consequence rather than a new bug report.
 - The union happens where `busy` and `busyTasks` are built, not at each dispatch
   site. One merge point means no dispatch path — worker, dispatcher, evaluator,
   outer controller, palette fallback — can forget to ask.
