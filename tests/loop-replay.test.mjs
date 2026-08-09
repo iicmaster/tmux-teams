@@ -32,7 +32,7 @@
 // backdating its own note — simulating time passing, never a decision.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -72,14 +72,18 @@ const GRAPH = {
 const dirs = []
 test.after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }) })
 
-function makeRepo() {
+// `graph` defaults to the module-level replay GRAPH so every existing caller
+// is untouched; the AC1 reproduction below passes its own, because it needs a
+// two-worker team and the replay GRAPH's `build` team declares one on purpose
+// (see that test for why one worker cannot show the defect at all).
+function makeRepo(graph = GRAPH) {
   const dir = mkdtempSync(join(tmpdir(), 'loop-replay-'))
   dirs.push(dir)
   mkdirSync(join(dir, '.tmux-teams', 'work-items'), { recursive: true })
   mkdirSync(join(dir, '.tmux-teams', 'team-briefs'), { recursive: true })
   mkdirSync(join(dir, '.mailbox-out'), { recursive: true })
-  writeFileSync(join(dir, '.tmux-teams', 'graph.json'), JSON.stringify(GRAPH, null, 2))
-  for (const entry of GRAPH.teams) {
+  writeFileSync(join(dir, '.tmux-teams', 'graph.json'), JSON.stringify(graph, null, 2))
+  for (const entry of graph.teams) {
     writeFileSync(join(dir, '.tmux-teams', 'team-briefs', `${entry.team_id}.md`), `# ${entry.name}\n\nDo the work.\n`)
   }
   // No pulse.json on purpose. A snapshot with a fixed stamp goes stale within
@@ -273,4 +277,175 @@ test('a route replays to a decision, or the runner says which token it could not
     'escalated', 'resumed', 'completed', 'audit_requested', 'audited', 'abandoned']) {
     assert.ok(seen.includes(event), `no replay ever produced a ${event} event — that path went unexercised (reached: ${[...new Set(seen)].sort().join(', ')})`)
   }
+})
+
+// ADR 0004 AC1 — "loop-replay carries a permanent invariant: for every
+// agent_id, a new `assigned` never lands while that seat's previous task has
+// no `delivered`. Checkable from the ledger alone." This is that test, and it
+// states the invariant positively so the SAME assertion is the permanent
+// guard once the fix lands: red today because the defect is real, green once
+// a claim survives across ticks.
+//
+// Why the real runner can be made to reproduce this without a watcher, without
+// real elapsed time, and without touching `loop-runner.mjs`:
+//
+// `busyAgents` (loop-runner.mjs ~299) reads occupancy from `pulse.json` alone,
+// and `makeRepo` above never publishes one on purpose — so `busy`/`busyTasks`
+// are an empty Set on every single tick, forever, in this harness. `nextStep`
+// still protects a token's OWN parked leg from being re-dispatched, but it
+// does that with an AGE check (`ageSec < zombieSec`), not with `busy` — and
+// `planDispatches` only folds a seat into the shared `busy` it hands to LATER
+// items in the same tick when it actually CHOOSES to dispatch
+// (`busy.add(step.agent_id)`, ~1466). A token `nextStep` recognises as
+// `in-flight` via the age check never reaches that line. So the seat's claim
+// is real to the token that holds it and invisible to every other token —
+// which is exactly the shape measured on 2026-08-09: a second token reaching
+// the same team, one tick later, reads the seat as free.
+//
+// Two workers, not one, is what lets the real runner show this rather than
+// hiding it behind a correct WIP block: `wip_limit` is derived from worker
+// count (workflow-graph.mjs), so a one-worker team holds only one token at a
+// time and the second token would wait on ITS OWN team's WIP long before the
+// seat question is ever asked — proving nothing about seat reuse. With two
+// workers both tokens are legally held by the team at once, and `want`'s
+// `pool.find(agentId => !busy.has(agentId))` still hands BOTH of them
+// `build_w1` — the first name in `worker_ids` — because nothing about the
+// pick is randomised and `busy` never remembers who is holding it.
+test('ADR 0004 AC1: a seat holding an undelivered task never receives a second assigned', () => {
+  // A minimal graph, not the replay GRAPH above: this needs `build` to have
+  // two workers (see the comment above), and reusing the shared GRAPH would
+  // have meant carrying that change into the randomised replay test too,
+  // which does not need it and should not have its shape altered by this one.
+  const graph = {
+    project_id: 'ac1-seat-claim',
+    outer_controller_id: 'pm',
+    outer_controller_model: 'inherit-account-default',
+    teams: [team('build', ['build_w1', 'build_w2']), team('control', ['pm'])],
+    workflows: [{ workflow_id: 'feature', name: 'Feature', route: ['control', 'build'] }],
+  }
+  const dir = makeRepo(graph)
+
+  // `to_team: 'control'`, not `'build'`: `agent_id: 'pm'` is a member of the
+  // control team (it is the outer controller's own seat, D6), and
+  // `teamOccupancy`/`planPulls` place a token by `teamOf(agent_id)` first —
+  // `to_team` is only the fallback for an agent that belongs to no team.
+  // Naming `'build'` here while `pm` resolves to `control` desynchronises
+  // `ledger-validate.mjs`'s `atTheDoor`/`heldTeams` tracking (it stamps
+  // whatever `to_team` said on `opened`, not the team that actually
+  // admitted), and `planPulls` then reads `build` as already held and skips
+  // straight to `completed` without ever reaching a worker — caught by
+  // running this repro and watching `build_w1` never get dispatched at all.
+  // `control` is where the token actually lands, so this is the correct
+  // value, not a workaround.
+  for (const token of ['alpha', 'beta']) {
+    const seeded = appendEvent(dir, {
+      event: 'opened', work_item: token, workflow: 'feature',
+      agent_id: 'pm', to_team: 'control', reason: 'AC1 reproduction',
+    }, { actor: 'human:replay' })
+    assert.ok(seeded.ok, `could not open ${token}: ${seeded.detail}`)
+  }
+
+  let legs = 0
+  // The FIRST worker leg this drives is left holding the seat on purpose —
+  // no outbox, no `delivered` — which is the real shape of an agent still
+  // running, not a shortcut around it: `planHarvest` only harvests a leg once
+  // `.mailbox-out/<task>` exists, so a leg with no outbox is correctly left
+  // alone by every tick that follows, exactly as a live one would be.
+  let seatHeldOpen = false
+  const spawnLeg = (repo, { workItem, role, agentId }) => {
+    const taskId = `${workItem || 'board'}-${role}-${legs += 1}`
+    const say = (event, extra) => {
+      const result = appendEvent(repo, {
+        event, work_item: workItem, workflow: 'feature', agent_id: agentId, task_id: taskId, ...extra,
+      }, { actor: `agent:${agentId}` })
+      assert.ok(result.ok, `the writer refused ${event} for ${workItem}: ${result.code} ${result.detail}`)
+    }
+    // Guarded on `workItem` the same way the replay harness's `spawnLeg` is:
+    // the outer controller's own leg is dispatched with `workItem: ''`
+    // (tick, `escalation.action === 'escalate'` branch) and has no work-item
+    // ledger of its own to write into.
+    if (workItem) say('assigned', { dispatch_id: `d-${taskId}` })
+    if (role === 'worker' && !seatHeldOpen) {
+      seatHeldOpen = true
+      return taskId
+    }
+    writeFileSync(join(repo, '.mailbox-out', taskId), role === 'dispatcher'
+      ? 'Checked the handoff.\n\nVERDICT: accept\nREASON: AC1 reproduction\n'
+      : 'Did the work.\n\nThe artifact is here.\n')
+    if (workItem) say('delivered', { terminal: 'done', timed_out: false, evidence_present: true })
+    return taskId
+  }
+
+  // Walks every work-item ledger in the repo — not just `alpha`/`beta`'s own
+  // files read in isolation — because the defect this catches is cross-file:
+  // a single item's own ledger can never carry two consecutive `assigned`
+  // lines with no `delivered` between them (`nextStep` never re-dispatches a
+  // token onto its own still-`assigned` leg), so the only place this
+  // invariant can be violated is one AGENT's history spread across two
+  // different tokens' ledgers.
+  const assignedWithoutDelivered = () => {
+    const itemsDir = join(dir, '.tmux-teams', 'work-items')
+    const files = existsSync(itemsDir) ? readdirSync(itemsDir).filter((name) => name.endsWith('.jsonl')) : []
+    // Prove the list is non-empty before trusting a clean walk over it — an
+    // invariant checked against nothing has been satisfied by nothing.
+    assert.ok(files.length > 0, 'no work-item ledger exists yet — the invariant below would pass vacuously; the driver above must open at least one token before this runs')
+    const events = []
+    for (const file of files) {
+      const workItem = file.slice(0, -'.jsonl'.length)
+      const lines = readFileSync(join(itemsDir, file), 'utf8').split('\n').filter(Boolean)
+      lines.forEach((line, index) => events.push({ ...JSON.parse(line), work_item: workItem, line: index + 1 }))
+    }
+    // Chronological across files by `at`. Two ticks in this driver can land
+    // in the same millisecond; `work_item` then `line` is a stable tiebreak
+    // so a tie never reorders relative to the order this test itself wrote
+    // it in (`alpha` was opened before `beta`, so it sorts first on a tie).
+    events.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1
+      : a.work_item < b.work_item ? -1 : a.work_item > b.work_item ? 1 : a.line - b.line))
+    const assignedEvents = events.filter((event) => event.event === 'assigned')
+    // Same discipline: a runtime that stopped dispatching entirely — a
+    // stale-pulse rule, a graph reader failing closed — would leave this
+    // invariant trivially true for the wrong reason. Fail loudly instead of
+    // reading silence as safety.
+    assert.ok(assignedEvents.length > 0, `no assigned event was ever recorded across ${files.length} ledger file(s) — the invariant would pass vacuously; the driver above must actually dispatch a worker (events seen: ${events.map((event) => event.event).join(', ') || 'none'})`)
+
+    // agent_id -> the `assigned` entry still waiting on its own `delivered`.
+    const openLeg = new Map()
+    for (const event of events) {
+      if (event.event === 'assigned') {
+        const holding = openLeg.get(event.agent_id)
+        if (holding) return { violated: true, agent_id: event.agent_id, first: holding, second: event }
+        openLeg.set(event.agent_id, event)
+      } else if (event.event === 'delivered' && openLeg.get(event.agent_id)?.task_id === event.task_id) {
+        openLeg.delete(event.agent_id)
+      }
+    }
+    return { violated: false }
+  }
+
+  // Eight ticks is generous headroom, not a measured requirement — running
+  // this measured exactly four: each token needs its OWN dispatcher accepted
+  // twice, once at `control`'s door and once at `build`'s (every team gates
+  // on its own dispatcher, this graph has two teams on the route), before
+  // either can reach a worker at all, and only then does `alpha`'s open
+  // `build_w1` leg get handed to `beta` too. The exact count is not the point
+  // of this test, catching the violation is, so the loop keeps ticking until
+  // it finds one or gives the ceiling a chance to say plainly that it never
+  // reproduced.
+  let outcome = { violated: false }
+  let ticks = 0
+  for (; ticks < 8 && !outcome.violated; ticks += 1) {
+    const result = tick(dir, { apply: true, scratchDir: join(dir, 'scratch'), spawnLeg })
+    assert.ok(result.ok, `tick refused to run — ${result.reason}`)
+    outcome = assignedWithoutDelivered()
+  }
+
+  assert.ok(!outcome.violated,
+    `ADR 0004 AC1 violated after ${ticks} tick(s): ${outcome.agent_id} received a new assigned `
+    + `(task ${outcome.second?.task_id} for ${outcome.second?.work_item}, at ${outcome.second?.at}) `
+    + `while its previous task (${outcome.first?.task_id} for ${outcome.first?.work_item}, `
+    + `assigned at ${outcome.first?.at}) still had no delivered. Measured on Ubuntu 26.04, `
+    + '2026-08-09: `busy`/`busyTasks` come only from `pulse.json` (loop-runner.mjs `busyAgents`), '
+    + 'nothing publishes one here on purpose, and a seat `nextStep` itself is holding via the age '
+    + 'check is never folded into the `busy` Set other tokens in the same tick read — so a second '
+    + 'token reaching this team reads the seat as free.')
 })
