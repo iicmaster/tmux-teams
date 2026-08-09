@@ -189,8 +189,24 @@ not optional, and only a later explicit instruction from Master changes either.
    tried it here). `party-advise`'s ACP-only gate —
    `node <party-mode>/scripts/review-gate.mjs <packet> <abs-target>` — is the
    preferred path and the stronger one: it sandboxes each lane, hides the target
-   repository, and pins the endpoint every profile routes to. **It is
-   Linux-only.** Every profile declares `osSandbox: 'bwrap'` and
+   repository, and pins the endpoint every profile routes to.
+
+   **STRONGER IN DESIGN, UNPROVEN IN PRACTICE — it has never yet assembled a
+   three-family panel.** Measured 2026-08-09 on Ubuntu 26.04 with `/usr/bin/bwrap`
+   present, the first time anyone ran it on a host that could. AGY reached
+   `status: accepted`; every claude-routed lane died, five distinct layers deep,
+   and each fix only revealed the next: staging asked "is it under `$HOME`"
+   instead of "does the sandbox mask it"; the trusted-roots list knew `~/.nvm`
+   and not mise; no interpreter was staged at all; `npx` is a node script whose
+   relative `require` a single-file copy cannot satisfy; and the shebang then
+   found no `node` on the sandbox PATH. **AGY survived all five only because
+   `bunx` is a native binary** — one lane healthy by coincidence while its
+   neighbour was not. Two layers are fixed and committed; three are diagnosed
+   and open. Until someone runs three families through green, treat this as the
+   path with the better design and the worse evidence, and budget a night for it
+   rather than a release slot.
+
+   **It is Linux-only.** Every profile declares `osSandbox: 'bwrap'` and
    `plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs` refuses at
    the `config` stage unless the platform is
    Linux AND `/usr/bin/bwrap` exists; README already listed that as a
@@ -261,7 +277,13 @@ not optional, and only a later explicit instruction from Master changes either.
    time a place was added, it was found by a reader rather than by the flow, so
    assume there is a fifth and grep for the old number after every bump.**
 4. Run `node --test`, `git diff --check`, and
-   `claude plugin validate --strict .` locally. `tests/acp-companion.test.mjs`
+   `claude plugin validate --strict .` locally.
+   **Read the SKIP count, not only the fail count.** Four tests skip themselves
+   on macOS (`process.platform !== 'linux' || !existsSync('/usr/bin/bwrap')`),
+   so the suite reads `847 pass / 0 fail / 4 skipped` here and `847/0/0` on a
+   Linux host. A skipped test is an UNEXECUTED GUARD, not a passing one: those
+   four had never run on any machine until 2026-08-09, and three of them failed
+   the first time they did. `tests/acp-companion.test.mjs`
    was long treated as a timing flake — "a different name each time, re-run it
    alone and expect 120/120". **That clause was false**, and it let a real
    failure be dismissed for an unknown number of releases: on a clean tree at
@@ -386,3 +408,22 @@ not optional, and only a later explicit instruction from Master changes either.
 - A scripted edit (python `str.replace`) must `assert old in s` before writing.
   A replace that finds nothing writes the file unchanged and says nothing; two
   patches silently failed to apply that way on 2026-08-01.
+- **Two ways a mutation survives that are the TEST's fault, both hit within an
+  hour on 2026-08-09.** A test that ITERATES the constant it is validating
+  proves nothing — delete an entry and the loop simply stops testing it, so pin
+  the list literally as well. And a pure function tested in isolation says
+  nothing about its CONSUMER — delete the call site and every test still passes.
+  Check the wiring behaviourally; a source grep for the call is a tripwire, not
+  a test. Both misses were found by mutation and by nothing else.
+- **`ssh host 'cmd'` runs a NON-login shell, so `~/.local/bin` is absent from
+  PATH** and `command -v claude` answers MISSING for tools that are installed —
+  a whole survey was reported wrong that way. Use `ssh host 'bash -lc "…"'`, and
+  write anything with nested quotes to a file and `scp` it instead of escaping
+  it through zsh and bash in turn.
+- **`git bundle create /tmp/x.bundle main` then `scp` moves unpushed commits to
+  another machine without touching any remote** — the way to try work on a test
+  box while `origin` stays untouched.
+- **An ENOENT that names a SCRIPT means its shebang interpreter is missing**,
+  not the script. And on a mise/asdf machine `realpath $(command -v node)` is
+  the version-manager binary itself — it dispatches on `argv[0]`, so it is not
+  an interpreter. Use `process.execPath` whenever the real one is meant.
