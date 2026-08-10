@@ -170,17 +170,22 @@ export function joinDispatchIdentity(assignedEntry, dispatchFact) {
       // (codex lane, 2026-08-10, round 8). The model half cannot be checked
       // because nothing asked for one; the effort half can, and is.
       if (askedEffortEarly !== null) {
-        if (answered !== null && answered.endsWith(`[${askedEffortEarly}]`)) {
-          return {
-            verdict: 'alias_agreed', asked, answered,
-            reason: `no model was pinned and the effort ${JSON.stringify(askedEffortEarly)} was acknowledged`
-              + ` on the account default. The model half is unverifiable because nothing asked for one`,
-          }
-        }
+        // UNVERIFIED, and the first version of this branch got it wrong in the
+        // most dangerous way available: it read the requested effort out of the
+        // RECEIPT and then checked the receipt against it, so a leg that asked
+        // for `low` and came back claiming `high` was certified `alias_agreed`.
+        // A receipt cannot be its own witness — the class this entire function
+        // exists to close. The ledger's `assigned` line carries
+        // `{ requested_model, adapter }` and NO effort at all
+        // (acp-companion.mjs `appendWorkItemEvent`), so there is nothing to
+        // join against and the honest verdict is that nobody can say. Found by
+        // the release panel (codex lane, 2026-08-10, round 9), one round after
+        // the same lane asked for this branch to exist.
         return {
-          verdict: 'contradicted', asked, answered,
-          reason: `the receipt claims matched for a leg that pinned only the effort ${JSON.stringify(askedEffortEarly)},`
-            + ` and names ${JSON.stringify(answered)}, which does not carry it`,
+          verdict: 'unverified', asked, answered,
+          reason: `this leg pinned no model, and the receipt names the effort ${JSON.stringify(askedEffortEarly)}`
+            + ' — which the ledger never recorded, so the two cannot be joined. A receipt is not evidence'
+            + ' about itself',
         }
       }
       return {
