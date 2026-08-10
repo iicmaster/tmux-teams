@@ -1734,8 +1734,17 @@ function flushPersistence() {
   if (persistenceTimer) clearTimeout(persistenceTimer)
   persistenceTimer = null
   persistenceScheduled = false
-  writeLivenessSnapshot()
+  // Dispatch record FIRST, liveness second, and the order is load-bearing. The
+  // runner reads the liveness file to learn a leg is alive and the paired
+  // dispatch record to learn WHICH TOKEN it holds. Writing liveness first left
+  // a window where a restarted runner saw a live seat with no token — a release
+  // reviewer probed exactly that intermediate state and got `busyItems=[]` with
+  // the same token dispatched onto a second seat (codex lane, 2026-08-11).
+  // Reversed, a reader that can see the liveness file can always see the record
+  // behind it, and the worst intermediate state is a record with no liveness
+  // yet — which reserves nothing and blocks nothing.
   writeDispatchRecord()
+  writeLivenessSnapshot()
 }
 
 function schedulePersistence(immediate = false) {
@@ -1748,8 +1757,9 @@ function schedulePersistence(immediate = false) {
   persistenceTimer = setTimeout(() => {
     persistenceTimer = null
     persistenceScheduled = false
-    writeLivenessSnapshot()
+    // Same order as `flushPersistence`, for the same reason.
     writeDispatchRecord()
+    writeLivenessSnapshot()
   }, persistenceIntervalMs)
 }
 

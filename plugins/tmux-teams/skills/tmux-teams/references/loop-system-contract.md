@@ -1933,10 +1933,15 @@ them at one point.** Amended 2026-08-09 (ADR 0004); until then this section said
    The runner now also reads the PAIRED `.tmux-teams/dispatch/<task-id>.md`,
    which the companion writes beside the liveness file and which has always
    carried `work_item:`. No new file, no liveness schema change — a field that
-   was already on disk is consulted. A reader landing between the two writes
-   sees the liveness file without its record and degrades to the pre-fix
-   answer for that instant, which is the same residual `CLAIM_GRACE_SEC`
-   already carries.
+   was already on disk is consulted. The companion writes the dispatch record
+   BEFORE the liveness file, and that order is the guard rather than a detail:
+   written the other way round there is a window in which a restarted runner
+   sees a live seat with no token, and a release reviewer probed exactly that
+   state and got the same token dispatched onto a second seat. Reversed, a
+   reader that can see the liveness file can always see the record behind it,
+   and the only intermediate state left is a record with no liveness yet —
+   which reserves nothing and blocks nothing. This paragraph previously called
+   the gap an accepted residual; it was not accepted, it was unmeasured.
 
    The claim reserves the SEAT and the TOKEN, and it covers the leg
    from spawn until that leg settles — not until the companion's first liveness
