@@ -89,7 +89,11 @@ it reachable.
 and unions those claims into `busy`/`busyTasks` at the single point where both
 are computed.**
 
-- A claim is `{ agent_id, task_id, pid, at }`.
+- A claim is `{ agent_id, task_id, work_item, pid, at }`. It reserves the SEAT
+  and the TOKEN, and this line listed only the seat's fields for two
+  release-panel rounds after `work_item` was added — long enough for a reviewer
+  to warn that a future refactor would read the shape here, drop the field, and
+  reopen the same-token/different-seat dispatch it exists to stop.
 - It is recorded **before** the spawn returns, inside the same synchronous tick.
   `tick()` is a plain synchronous function with no `await` anywhere in it
   (verified 2026-08-09), and the watcher calls it directly, so ticks in one
@@ -216,8 +220,18 @@ issue or ADR if it is worth doing.
 
 ## Acceptance criteria
 
-1. **`loop-replay` carries a permanent invariant**: for every `agent_id`, a new
-   `assigned` never lands while that seat's previous task is still open.
+1. **`loop-replay` carries a permanent invariant**, and it is keyed TWO ways:
+   for every `agent_id`, and for every `work_item`, a new `assigned` never lands
+   while that seat's — or that token's — previous task is still open.
+
+   **The token key was added on 2026-08-10 and it is the one that mattered.**
+   Keyed only by `agent_id` this criterion was satisfied while the same TOKEN was
+   dispatched onto two different free seats: until a companion writes `assigned`,
+   nothing else records that a token already has a leg. Re-keying the shipped
+   walk by `work_item` and re-running this very replay produced `alpha-worker-4`
+   then `alpha-worker-6`, both for `alpha`, with no delivery between. The seat
+   half was true, stayed true, and said nothing about the harm this criterion
+   exists to prevent.
    Checkable from the ledger alone — but **across the whole work-items corpus,
    not from one token's file**: `nextStep` never re-dispatches a token onto its
    own open leg, so a single ledger structurally cannot show this. It appears

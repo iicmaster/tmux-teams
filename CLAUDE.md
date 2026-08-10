@@ -201,10 +201,17 @@ not optional, and only a later explicit instruction from Master changes either.
    relative `require` a single-file copy cannot satisfy; and the shebang then
    found no `node` on the sandbox PATH. **AGY survived all five only because
    `bunx` is a native binary** — one lane healthy by coincidence while its
-   neighbour was not. Two layers are fixed and committed; three are diagnosed
-   and open. Until someone runs three families through green, treat this as the
-   path with the better design and the worse evidence, and budget a night for it
-   rather than a release slot.
+   neighbour was not. **All five are fixed and committed** (2026-08-10, during
+   the v0.19.0 release panel): staging asks whether the sandbox MASKS a path
+   rather than whether it is under `$HOME`; trusted roots are derived from
+   `process.execPath`; the interpreter prefix is re-bound — and refused when it
+   is a home directory, one of its direct children, or overlapping the target
+   repository; `npx` resolves because the whole prefix is mounted rather than one
+   file copied; and the sandbox PATH carries the toolchain bin. This line said
+   "two fixed, three open" for a full release-panel round after that stopped
+   being true, and a reviewer caught it. Until someone runs three families
+   through green on a Linux host, this is still the path with the better design
+   and the thinner evidence — but the open items are now the RUN, not the code.
 
    **It is Linux-only.** Every profile declares `osSandbox: 'bwrap'` and
    `plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs` refuses at
