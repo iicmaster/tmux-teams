@@ -18,8 +18,13 @@ const field = (text, key) => {
   return match ? match[1].trim() : ''
 }
 
+// SORTED, so which file wins is a fact and not a filesystem accident. The
+// filename guard below makes a decoy lose, but a test for it could only be
+// written against readdir order — which nothing promises. Raised as
+// non-blocking by the release panel (codex lane, 2026-08-10, round 8) against
+// the test; fixed in the reader, where the determinism belongs.
 const listing = (dir) => {
-  try { return readdirSync(dir).slice(0, MAX_FILES) } catch { return [] }
+  try { return readdirSync(dir).sort().slice(0, MAX_FILES) } catch { return [] }
 }
 
 // Keyed by task id: that is what both the dispatch record and Pulse's run rows
@@ -155,7 +160,29 @@ export function joinDispatchIdentity(assignedEntry, dispatchFact) {
   }
 
   if (status === 'matched') {
+    const askedEffortEarly = receiptValue(dispatchFact.requested_reasoning_effort)
     if (asked === null) {
+      // A seat may inherit the account model and pin only the EFFORT. Its
+      // `assigned` line then carries no model at all while the receipt carries
+      // `requested_reasoning_effort` and an effective identity of
+      // `<whatever answered>[effort]` — a supported, successful shape that this
+      // branch called a contradiction on every tick. Found by the release panel
+      // (codex lane, 2026-08-10, round 8). The model half cannot be checked
+      // because nothing asked for one; the effort half can, and is.
+      if (askedEffortEarly !== null) {
+        if (answered !== null && answered.endsWith(`[${askedEffortEarly}]`)) {
+          return {
+            verdict: 'alias_agreed', asked, answered,
+            reason: `no model was pinned and the effort ${JSON.stringify(askedEffortEarly)} was acknowledged`
+              + ` on the account default. The model half is unverifiable because nothing asked for one`,
+          }
+        }
+        return {
+          verdict: 'contradicted', asked, answered,
+          reason: `the receipt claims matched for a leg that pinned only the effort ${JSON.stringify(askedEffortEarly)},`
+            + ` and names ${JSON.stringify(answered)}, which does not carry it`,
+        }
+      }
       return {
         verdict: 'contradicted', asked, answered,
         reason: 'the receipt claims a matched identity for a leg that asked for no model — a match against nothing is not a match',

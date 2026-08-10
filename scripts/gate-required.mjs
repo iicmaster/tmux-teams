@@ -118,11 +118,22 @@ const SEMVER = /\d+\.\d+\.\d+/g
 // that exempt answer. Found by the release panel (codex lane, 2026-08-10,
 // round 7). Each file declares its version in exactly one shape; anything else
 // in it, in any shape, is a change and goes to the panel.
+// EXACT lines, indentation included, because `^\s*"version"...$` accepted any
+// nested `"version"` field anywhere in a manifest — so a semantic version on a
+// dependency or a sub-object could change and exempt the release. Found by the
+// release panel (codex lane, 2026-08-10, round 8), one round after the shapes
+// were bound per file and two after they stopped being a single loose regex.
+// Each entry is the literal line that file carries, and a bump that does not
+// match one of them requires the panel: the safe direction, and the one every
+// narrowing of this list has moved in.
 const VERSION_DECLARATIONS = new Map([
-  ['.claude-plugin/marketplace.json', [/^\s*"version"\s*:\s*"\d+\.\d+\.\d+"\s*,?\s*$/]],
-  ['plugins/tmux-teams/.claude-plugin/plugin.json', [/^\s*"version"\s*:\s*"\d+\.\d+\.\d+"\s*,?\s*$/]],
-  ['plugins/tmux-teams/plugin.json', [/^\s*"version"\s*:\s*"\d+\.\d+\.\d+"\s*,?\s*$/]],
-  ['tests/plugin-structure.test.mjs', [/^\s*const RELEASE_VERSION = '\d+\.\d+\.\d+'\s*$/]],
+  ['.claude-plugin/marketplace.json', [
+    /^ {4}"version": "\d+\.\d+\.\d+"$/,
+    /^ {6}"version": "\d+\.\d+\.\d+",$/,
+  ]],
+  ['plugins/tmux-teams/.claude-plugin/plugin.json', [/^ {2}"version": "\d+\.\d+\.\d+",$/]],
+  ['plugins/tmux-teams/plugin.json', [/^ {2}"version": "\d+\.\d+\.\d+",$/]],
+  ['tests/plugin-structure.test.mjs', [/^const RELEASE_VERSION = '\d+\.\d+\.\d+'$/]],
 ])
 const declaresAVersion = (path, line) =>
   (VERSION_DECLARATIONS.get(path) ?? []).some((shape) => shape.test(line))

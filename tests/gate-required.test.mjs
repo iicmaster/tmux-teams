@@ -126,7 +126,7 @@ test('a docs-and-version-only release is exempt as a whole', () => {
   const verdict = classifyRelease([
     file('HANDOFF.md', ['new prose'], ['old prose']),
     file('README.md', ['Current release: **0.18.3**'], ['Current release: **0.18.2**']),
-    file('plugins/tmux-teams/plugin.json', ['  "version": "0.18.3"'], ['  "version": "0.18.2"']),
+    file('plugins/tmux-teams/plugin.json', ['  "version": "0.18.3",'], ['  "version": "0.18.2",']),
     file('.claude-plugin/marketplace.json', ['    "version": "0.18.3"'], ['    "version": "0.18.2"']),
   ])
   assert.equal(verdict.required, false)
@@ -390,6 +390,21 @@ test('a version file may change NOTHING but its version declarations', () => {
   )
 })
 
+test('a nested version field in a manifest is not the release declaration', () => {
+  // `^\\s*"version"...$` accepted any indented `"version"` line anywhere in a
+  // manifest, so a semantic version on a sub-object could change and exempt the
+  // release. The patterns are the literal lines those files carry now. Found by
+  // the release panel (codex lane, 2026-08-10, round 8).
+  assert.equal(
+    whyGated(file('plugins/tmux-teams/plugin.json',
+      ['      "version": "9.99.0",'], ['      "version": "1.0.0",'])),
+    'changes more than the version string',
+  )
+  // The control: the real declaration, at its real indentation, is exempt.
+  assert.equal(whyGated(file('plugins/tmux-teams/plugin.json',
+    ['  "version": "0.19.0",'], ['  "version": "0.18.2",'])), null)
+})
+
 test('a semver inside a URL is not a version bump, even in a version-carrying file', () => {
   // `plugins/tmux-teams/plugin.json` is on VERSION_FILES because it declares the
   // release version — and it ALSO carries
@@ -457,7 +472,7 @@ test('a semver that is not THIS release version does not buy an exemption', () =
   // file including the executable test file, which is precisely the hole the
   // round-7 review found: the assertion encoded it as correct.
   assert.equal(whyGated(file('.claude-plugin/marketplace.json',
-    ['  "version": "0.19.0",'], ['  "version": "0.18.2",'])), null)
+    ['    "version": "0.19.0"'], ['    "version": "0.18.2"'])), null)
   assert.equal(whyGated(file('tests/plugin-structure.test.mjs',
     ["const RELEASE_VERSION = '0.19.0'"], ["const RELEASE_VERSION = '0.18.2'"])), null)
 })

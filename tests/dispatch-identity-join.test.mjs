@@ -166,8 +166,15 @@ test('the READER carries the effort through to the join, not just the fixture', 
   // A stray file naming this task must not become its receipt — same rule the
   // liveness reader gained two rounds earlier, raised for this one by the
   // release panel (zai lane, 2026-08-10, round 7).
-  writeFileSync(join(repo, '.tmux-teams', 'dispatch', 'zz-stray.md'),
-    'task_id: t1\nrequested_model: someone-elses-model\neffective_identity: someone-else\nidentity_status: matched\n')
+  // TWO decoys, one sorting before the real receipt and one after, so this
+  // proves the filename guard rather than the enumeration order — nothing
+  // promises that order, and a test that depends on it passes on one machine
+  // and not the next. Raised by the release panel (codex lane, 2026-08-10,
+  // round 8) against the single-decoy version.
+  for (const decoy of ['aa-stray.md', 'zz-stray.md']) {
+    writeFileSync(join(repo, '.tmux-teams', 'dispatch', decoy),
+      'task_id: t1\nrequested_model: someone-elses-model\neffective_identity: someone-else\nidentity_status: matched\n')
+  }
 
   const fact = readDispatchFacts(repo).get('t1')
   assert.ok(fact, 'the receipt on disk was not read at all')
@@ -177,6 +184,32 @@ test('the READER carries the effort through to the join, not just the fixture', 
     'the reader dropped the effort, so the join below can only ever see null')
   assert.equal(joinDispatchIdentity(assigned('gpt-5.6-terra'), fact).verdict, 'alias_agreed',
     'a clean effort-pinned leg read off its own receipt is still reported as a contradiction')
+})
+
+test('a leg that pinned only the EFFORT is not a contradiction', () => {
+  // A seat can inherit the account model and pin only the effort. Its
+  // `assigned` line carries no model, so `asked` is null, and the branch that
+  // guards "matched against nothing" called every such leg a contradiction —
+  // on every tick, on a supported and successful shape. Found by the release
+  // panel (codex lane, 2026-08-10, round 8).
+  const effortOnly = {
+    task_id: 't1', requested_model: 'none', requested_reasoning_effort: 'high',
+    effective_identity: 'account-default[high]', identity_status: 'matched',
+  }
+  const agreed = joinDispatchIdentity(assigned(null), effortOnly)
+  assert.equal(agreed.verdict, 'alias_agreed')
+  assert.match(agreed.reason, /unverifiable because nothing asked for one/)
+
+  // And the effort half is still CHECKED: an answer without it contradicts.
+  const wrong = { ...effortOnly, effective_identity: 'account-default[low]' }
+  assert.equal(joinDispatchIdentity(assigned(null), wrong).verdict, 'contradicted')
+  const bare = { ...effortOnly, effective_identity: 'account-default' }
+  assert.equal(joinDispatchIdentity(assigned(null), bare).verdict, 'contradicted')
+
+  // A leg that pinned NOTHING and claims matched is still a contradiction —
+  // the case the original branch was written for.
+  const nothing = { task_id: 't1', requested_model: 'none', effective_identity: 'whatever', identity_status: 'matched' }
+  assert.equal(joinDispatchIdentity(assigned(null), nothing).verdict, 'contradicted')
 })
 
 test('widening for effort does not blind the join to a genuinely different model', () => {
