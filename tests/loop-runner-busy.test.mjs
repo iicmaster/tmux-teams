@@ -390,11 +390,29 @@ test('a dead pid ends a claim even while its last heartbeat still looks fresh', 
     'a fresh heartbeat from a process that is gone kept the token reserved')
 })
 
-test('a liveness observation dated in the future is not fresh evidence', () => {
+test('a liveness observation dated in the future is no evidence — it neither refreshes nor releases', () => {
+  // The first version of this test asserted the seat was NOT busy, and passed
+  // for the wrong reason: the unreadable row had already been added to `seen`,
+  // so the release path DELETED a claim whose child was still running. That is
+  // worse than the "renews for ever" bug it replaced. A row the runner cannot
+  // read is not evidence in EITHER direction — the claim must simply stand on
+  // its own until pid death or grace. Found by the release panel (codex lane,
+  // 2026-08-10, round 7).
   const repo = bareRepo()
   recordDispatchClaim(repo, { agentId: 'build_w1', taskId: 'future-1', pid: process.pid, workItem: 'alpha' })
   // An hour ahead: clock skew or a malformed write, never a fact.
   livenessFile(repo, { taskId: 'future-1', agentId: 'build_w1', state: 'running', observedSecAgo: -3600 })
-  assert.equal(busyAgents(repo, NOW).busy.has('build_w1'), false,
-    'a row stamped in the future was read as a live leg')
+
+  const seen = busyAgents(repo, NOW)
+  assert.equal(seen.busy.has('build_w1'), true,
+    'the claim was dropped on the strength of a row the runner refused to read — the leg is still running')
+  assert.equal(seen.busyItems.has('alpha'), true, 'and the token went with it')
+
+  // ...and it did not RENEW the claim either: with the pid gone, the claim ends.
+  const reaped = spawnSync(process.execPath, ['-e', ''])
+  const dead = bareRepo()
+  recordDispatchClaim(dead, { agentId: 'build_w1', taskId: 'future-2', pid: reaped.pid, workItem: 'alpha' })
+  livenessFile(dead, { taskId: 'future-2', agentId: 'build_w1', state: 'running', observedSecAgo: -3600 })
+  assert.equal(busyAgents(dead, NOW).busy.has('build_w1'), false,
+    'a future-dated row must not keep a dead leg alive')
 })

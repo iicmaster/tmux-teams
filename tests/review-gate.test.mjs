@@ -6,7 +6,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runAcpReview, prepareReviewPacket, ReviewTransportError, sandboxStagedExecutables,
   needsSandboxStaging, SANDBOX_MASKED_ROOTS, interpreterRoots, trustedExecutableRoots,
-  resolveExecutable, sandboxRebindRoots, rebindHomeSource,
+  resolveExecutable, sandboxRebindRoots, rebindHomeSource, stageHomeExecutable,
   swallowsStagingFailure } from '../plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs'
 import { runReviewGate, runReviewGateCli, LANE_TIMEOUT_DEFAULT_MS, laneTimeoutMs, LANE_FAILURES,
 } from '../plugins/tmux-teams/skills/party-mode/scripts/review-gate.mjs'
@@ -2034,3 +2034,40 @@ test('the optional-staging catch block in runAcpReview defers to swallowsStaging
   assert.match(source, /if \(!swallowsStagingFailure\(entry, error\)\) throw error/,
     'the optional-staging catch block must gate its throw on swallowsStagingFailure')
 })
+
+test('needsSandboxStaging and the bwrap argv ask sandboxRebindRoots the SAME question', () => {
+  // They did not. Staging called it with no target and got `[prefix]`, so it
+  // skipped copying the executable in; the argv called it WITH the target, got
+  // `[]`, and refused to bind it. Neither staged nor mounted, the lane dies at
+  // ENOENT/127 — a failure caused entirely by two callers disagreeing about one
+  // question. Found by the release panel (AGY lane, 2026-08-10, round 7), in
+  // the round-5 fix that gave the parameter to one caller and not the other.
+  const home = mkdtempSync(join(tmpdir(), 'stagehome-'))
+  const target = join(home, 'src', 'checkout')
+  for (const part of ['bin', 'lib']) mkdirSync(join(target, part), { recursive: true })
+  const interpreter = join(target, 'bin', 'node')
+  writeFileSync(interpreter, '#!/bin/sh\n')
+
+  withExecPath(interpreter, () => {
+    // The argv refuses to bind a prefix overlapping the target...
+    assert.deepEqual(sandboxRebindRoots(home, target), [])
+    // ...so staging must NOT skip it. Told the same target, it agrees.
+    assert.equal(needsSandboxStaging(interpreter, {}, null, target), true,
+      'staging skipped an executable the sandbox will refuse to bind — it reaches the sandbox by neither route')
+    // The control: with no target overlap the prefix IS bound, and staging
+    // correctly skips because bwrap will mount it whole.
+    assert.deepEqual(sandboxRebindRoots(home, join(home, 'elsewhere')), [target])
+    assert.equal(needsSandboxStaging(interpreter, {}, null, join(home, 'elsewhere')), false)
+  })
+})
+
+// NOT a behavioural test of `stageHomeExecutable`, and the reason is worth more
+// than the test would have been. The scenario the round-7 review described — an
+// executable staged from inside the target repository — cannot be reached
+// through it: `resolveExecutable` throws "ACP review executable resolves inside
+// the target repository" one layer earlier, measured while writing this. So the
+// two-callers-disagree defect is REAL and its exploit path is closed by a
+// different guard, which makes the fix correct and this consumer unreachable to
+// drive. The forwarding in `stageHomeExecutable` is therefore held by the
+// direct predicate test above plus that earlier refusal, and by nothing else —
+// said plainly rather than covered by a test that passes for the wrong reason.

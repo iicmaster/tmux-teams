@@ -370,6 +370,24 @@ test('a version file may change NOTHING but its version declarations', () => {
   assert.equal(whyGated(file('.claude-plugin/marketplace.json',
     ['    "version": "0.19.0"', '      "version": "0.19.0",'],
     ['    "version": "0.18.2"', '      "version": "0.18.2",'])), null)
+
+  // And the shapes are bound PER FILE. A generic pool accepted the JSON shape
+  // inside the executable test file, so changing a fixture's `"version"` field
+  // classified as a release bump — and the assertion that used to sit here
+  // asserted exactly that wrong answer. Found by the release panel (codex lane,
+  // 2026-08-10, round 7).
+  assert.equal(
+    whyGated(file('tests/plugin-structure.test.mjs',
+      ['  "version": "9.99.0",'], ['  "version": "1.0.0",'])),
+    'changes more than the version string',
+    'a JSON fixture field is not this file\'s release declaration',
+  )
+  assert.equal(
+    whyGated(file('plugins/tmux-teams/plugin.json',
+      ["const RELEASE_VERSION = '0.19.0'"], ["const RELEASE_VERSION = '0.18.2'"])),
+    'changes more than the version string',
+    'and a JavaScript constant is not a JSON manifest\'s declaration either',
+  )
 })
 
 test('a semver inside a URL is not a version bump, even in a version-carrying file', () => {
@@ -434,9 +452,12 @@ test('a semver that is not THIS release version does not buy an exemption', () =
   )
   assert.equal(whyGated(pin), 'changes more than the version string')
 
-  // And the exemption still works where it is meant to: the files that carry
-  // the RELEASE version, which are the only ones the bump touches.
-  for (const path of ['tests/plugin-structure.test.mjs', '.claude-plugin/marketplace.json']) {
-    assert.equal(whyGated(file(path, [`  "version": "0.19.0",`], [`  "version": "0.18.2",`])), null, path)
-  }
+  // And the exemption still works where it is meant to — in each file's OWN
+  // declaration shape. This loop used to apply the JSON shape to every version
+  // file including the executable test file, which is precisely the hole the
+  // round-7 review found: the assertion encoded it as correct.
+  assert.equal(whyGated(file('.claude-plugin/marketplace.json',
+    ['  "version": "0.19.0",'], ['  "version": "0.18.2",'])), null)
+  assert.equal(whyGated(file('tests/plugin-structure.test.mjs',
+    ["const RELEASE_VERSION = '0.19.0'"], ["const RELEASE_VERSION = '0.18.2'"])), null)
 })

@@ -449,15 +449,19 @@ function livenessOnDisk(repo, nowMs) {
     // that a worker can write here — it is the difference between a stray file
     // being ignored and it silently freeing somebody else's seat.
     if (name !== `${taskId}.json`) continue
+    // `seen` means "this leg has a liveness file the runner could READ", and a
+    // row it cannot read is not evidence of anything — it must neither refresh
+    // a claim nor release one. Adding the id before validating the row made a
+    // future-dated one absent from `live` and present in `seen`, so the release
+    // path DELETED a claim whose child was still running: the round-6 fix for
+    // "renews for ever" turned into "drops a live leg", which is worse. Found
+    // by the release panel (codex lane, 2026-08-10, round 7).
+    const observedMs = Date.parse(row.observed_at || '')
+    if (!Number.isFinite(observedMs) || observedMs > nowMs + 1000) continue
     seen.add(taskId)
     if (LIVENESS_TERMINAL.has(row.liveness_state)) continue
-    const observedMs = Date.parse(row.observed_at || '')
-    // A future-dated observation is not evidence of anything. It only ever
-    // arrives from clock skew or a malformed write, and treating it as fresh
-    // made a claim renewable for ever — the shape the release panel found in
-    // the refresh path (codex lane, 2026-08-10, round 6). One second of slack
-    // absorbs ordinary skew between a companion and the runner on one host.
-    if (!Number.isFinite(observedMs) || observedMs > nowMs + 1000) continue
+    // A future-dated observation is not evidence of anything — refused above,
+    // BEFORE `seen`, so it neither refreshes a claim nor releases one.
     if ((nowMs - observedMs) / 1000 >= ZOMBIE_SEC) continue
     live.push({ agent_id: row.agent_id || '', task_id: taskId })
   }

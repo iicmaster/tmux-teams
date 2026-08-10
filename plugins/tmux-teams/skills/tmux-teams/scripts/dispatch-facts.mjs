@@ -33,6 +33,14 @@ export function readDispatchFacts(repo) {
     try { text = readFileSync(join(dir, name), 'utf8') } catch { continue }
     const taskId = field(text, 'task_id')
     if (!taskId) continue
+    // The filename has to agree with the task the receipt claims to be about.
+    // `acp-companion` writes `<task-id>.md` here and nothing else does — the
+    // same rule `livenessOnDisk` gained two rounds ago, and the same reason: a
+    // stray file naming somebody else's task becomes that task's receipt, and
+    // the identity join then reports on a leg it has no relationship to.
+    // Raised as non-blocking by the release panel (zai lane, 2026-08-10,
+    // round 7) as the surviving half of a class already closed next door.
+    if (name !== `${taskId}.md`) continue
     const workflow = field(text, 'workflow')
     const workItem = field(text, 'work_item')
     const agentId = field(text, 'agent_id')

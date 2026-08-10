@@ -715,14 +715,22 @@ export function sandboxRebindRoots(homeSource = rebindHomeSource(), targetReposi
   return [prefix]
 }
 
-export function needsSandboxStaging(source, env = {}, runtimeDirectory = null) {
+// `targetRepository` is threaded in rather than defaulted, because this
+// function and the bwrap argv must ask `sandboxRebindRoots` the SAME question.
+// They did not: this one called it with no target and got `[prefix]`, so it
+// skipped staging, while the argv called it WITH the target, got `[]`, and
+// refused the bind — leaving the executable neither copied in nor mounted, and
+// the lane dying at ENOENT/127. Two callers, one question, two answers. Found
+// by the release panel (AGY lane, 2026-08-10, round 7), in the round-5 fix that
+// added the parameter to one caller and not the other.
+export function needsSandboxStaging(source, env = {}, runtimeDirectory = null, targetRepository = null) {
   if (!source) return false
   // Already inside a directory the sandbox re-binds after masking — copying it
   // into itself would be a no-op at best.
   if (runtimeDirectory && isWithin(source, runtimeDirectory)) return false
   // Inside the toolchain the sandbox re-binds at its real path — copying it out
   // is what broke `npx`, whose relative require needs its neighbours.
-  if (sandboxRebindRoots().some(root => isWithin(source, root))) return false
+  if (sandboxRebindRoots(rebindHomeSource(), targetRepository).some(root => isWithin(source, root))) return false
   if (SANDBOX_MASKED_ROOTS.some(root => isWithin(source, root))) return true
   const home = env.HOME ?? env.USERPROFILE
   return Boolean(home && isWithin(source, home))
@@ -783,10 +791,11 @@ export function swallowsStagingFailure(entry, error) {
   return /executable not found/.test(error?.message ?? '')
 }
 
-async function stageHomeExecutable(command, env, runtimeDirectory, outputName = basename(command), options = {}) {
+export async function stageHomeExecutable(command, env, runtimeDirectory, outputName = basename(command), options = {}) {
+  const { targetRepository = null } = options
   const source = await resolveExecutable(command, env, options)
   if (!source) throw new ReviewTransportError('config', `ACP review executable not found: ${basename(command)}`)
-  if (!needsSandboxStaging(source, env, runtimeDirectory)) return source
+  if (!needsSandboxStaging(source, env, runtimeDirectory, targetRepository)) return source
   const destination = join(runtimeDirectory, outputName)
   await copyFile(source, destination)
   await chmod(destination, 0o700)

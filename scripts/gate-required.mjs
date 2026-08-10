@@ -111,13 +111,23 @@ const SEMVER = /\d+\.\d+\.\d+/g
 // Anchored patterns need no URL guard: a URL cannot match either of them.
 // A seventh bump site will appear — five have already — and until its shape is
 // listed here its bump requires the panel. That is the safe direction.
-const VERSION_DECLARATIONS = [
-  /^\s*"version"\s*:\s*"\d+\.\d+\.\d+"\s*,?\s*$/,
-  /^\s*const RELEASE_VERSION = '\d+\.\d+\.\d+'\s*$/,
-]
-const declaresAVersion = (line) => VERSION_DECLARATIONS.some((shape) => shape.test(line))
-const blankVersions = (lines) => lines
-  .map((line) => (declaresAVersion(line) ? line.replace(SEMVER, '<version>') : line))
+// PER FILE, not one pool. A generic pool let the JSON shape be accepted inside
+// `tests/plugin-structure.test.mjs`, which is executable and full of fixture
+// lines — so changing a fixture's `"version": "1.0.0"` to `"9.99.0"` classified
+// as a release bump and was exempt, and the test written for this file asserted
+// that exempt answer. Found by the release panel (codex lane, 2026-08-10,
+// round 7). Each file declares its version in exactly one shape; anything else
+// in it, in any shape, is a change and goes to the panel.
+const VERSION_DECLARATIONS = new Map([
+  ['.claude-plugin/marketplace.json', [/^\s*"version"\s*:\s*"\d+\.\d+\.\d+"\s*,?\s*$/]],
+  ['plugins/tmux-teams/.claude-plugin/plugin.json', [/^\s*"version"\s*:\s*"\d+\.\d+\.\d+"\s*,?\s*$/]],
+  ['plugins/tmux-teams/plugin.json', [/^\s*"version"\s*:\s*"\d+\.\d+\.\d+"\s*,?\s*$/]],
+  ['tests/plugin-structure.test.mjs', [/^\s*const RELEASE_VERSION = '\d+\.\d+\.\d+'\s*$/]],
+])
+const declaresAVersion = (path, line) =>
+  (VERSION_DECLARATIONS.get(path) ?? []).some((shape) => shape.test(line))
+const blankVersions = (path, lines) => lines
+  .map((line) => (declaresAVersion(path, line) ? line.replace(SEMVER, '<version>') : line))
   .sort()
 
 const sameLines = (a, b) => a.length === b.length && a.every((line, i) => line === b[i])
@@ -174,10 +184,10 @@ export function whyGated(file) {
   // release panel (codex lane, 2026-08-10, round 6), one round after the same
   // sort-and-compare was closed for every OTHER file.
   const everyLine = [...file.addedLines, ...file.removedLines]
-  if (!everyLine.every(declaresAVersion)) return 'changes more than the version string'
+  if (!everyLine.every((line) => declaresAVersion(file.path, line))) return 'changes more than the version string'
 
-  const added = blankVersions(file.addedLines)
-  const removed = blankVersions(file.removedLines)
+  const added = blankVersions(file.path, file.addedLines)
+  const removed = blankVersions(file.path, file.removedLines)
   if (!sameLines(added, removed)) return 'changes more than the version string'
   return null
 }

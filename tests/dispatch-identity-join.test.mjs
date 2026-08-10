@@ -150,7 +150,7 @@ test('the READER carries the effort through to the join, not just the fixture', 
   // receipt on disk, which is where the fact starts.
   const repo = mkdtempSync(join(tmpdir(), 'dispatch-facts-'))
   mkdirSync(join(repo, '.tmux-teams', 'dispatch'), { recursive: true })
-  writeFileSync(join(repo, '.tmux-teams', 'dispatch', 'leg.md'), [
+  writeFileSync(join(repo, '.tmux-teams', 'dispatch', 't1.md'), [
     'task_id: t1',
     'dispatch_id: d1',
     'agent_id: build_w1',
@@ -163,8 +163,16 @@ test('the READER carries the effort through to the join, not just the fixture', 
     '',
   ].join('\n'))
 
+  // A stray file naming this task must not become its receipt — same rule the
+  // liveness reader gained two rounds earlier, raised for this one by the
+  // release panel (zai lane, 2026-08-10, round 7).
+  writeFileSync(join(repo, '.tmux-teams', 'dispatch', 'zz-stray.md'),
+    'task_id: t1\nrequested_model: someone-elses-model\neffective_identity: someone-else\nidentity_status: matched\n')
+
   const fact = readDispatchFacts(repo).get('t1')
   assert.ok(fact, 'the receipt on disk was not read at all')
+  assert.equal(fact.requested_model, 'gpt-5.6-terra',
+    'a mis-named file overwrote the real receipt for this task')
   assert.equal(fact.requested_reasoning_effort, 'max',
     'the reader dropped the effort, so the join below can only ever see null')
   assert.equal(joinDispatchIdentity(assigned('gpt-5.6-terra'), fact).verdict, 'alias_agreed',
