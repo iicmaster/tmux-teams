@@ -730,9 +730,21 @@ test('ADR 0004 AC1: a seat holding an undelivered task never receives a second a
   drainCompanionWrites()
   const settled = assignedWithoutDelivered()
 
+  // The DRAINED state, not just the state mid-loop. `settled` was computed and
+  // then only `outcome` was asserted, so a duplicate landing in the final flush
+  // was invisible. And counting `assigned` events was not enough either: a
+  // mutation that made `nextStep` wait instead of dispatching workers left the
+  // dispatcher assignments in place, `assignedCount > 0`, and this test —
+  // whose entire subject is the pre-liveness WORKER window — green. Found by
+  // the release panel (codex lane, 2026-08-10, round 6).
+  assert.ok(seatHeldOpen,
+    'no WORKER leg was ever dispatched, so the pre-liveness window this test is about never opened')
   assert.ok(settled.assignedCount > 0,
     `no assigned event was ever recorded after ${ticks} tick(s) — the invariant would pass `
     + 'vacuously; the driver above must actually dispatch a worker')
+  assert.ok(!settled.violated,
+    `ADR 0004 AC1 violated once every queued companion write had landed: ${settled.keyed} key, `
+    + `${settled.agent_id} — ${JSON.stringify(settled.second)}`)
   assert.ok(!outcome.violated,
     `ADR 0004 AC1 violated after ${ticks} tick(s): ${outcome.agent_id} received a new assigned `
     + `(task ${outcome.second?.task_id} for ${outcome.second?.work_item}, at ${outcome.second?.at}) `

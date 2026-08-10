@@ -95,7 +95,13 @@ are computed.**
   (verified 2026-08-09), and the watcher calls it directly, so ticks in one
   process are strictly serialised and a claim needs no lock to be correct.
 - A claim is released **on evidence, never on `assigned`**. `delivered`, `lost`,
-  a matching pulse row, a fresh liveness file for that task, or pid-death. A
+  a matching pulse row, a TERMINAL or stale liveness file for that task, or
+  pid-death. A **fresh** liveness file does the opposite: it REFRESHES the
+  claim, because a liveness row carries no work item and releasing on it would
+  drop the token reservation about a second after dispatch while the leg runs
+  on. This bullet said "a fresh liveness file" for one release-panel round after
+  the code stopped doing that — the third correction to the same sentence, and
+  the first one a reader had to catch twice. A
   claim whose `pid` is gone with no evidence is the existing `lost` class and is
   not a new terminal state.
 

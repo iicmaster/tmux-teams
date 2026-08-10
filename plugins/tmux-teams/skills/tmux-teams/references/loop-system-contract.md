@@ -1925,10 +1925,17 @@ them at one point.** Amended 2026-08-09 (ADR 0004); until then this section said
    unless pulse had republished it. Being files, it survives a cron-mode process
    boundary.
 3. **The runner's own claim** — what THIS process spawned and has not yet seen
-   any evidence for. It covers spawn until the companion's first liveness write,
-   which nothing else can see. Released on a liveness file, a ledger `delivered`
-   or `lost`, a dead pid, or `CLAIM_GRACE_SEC` of total silence — **never on
-   `assigned`**, which lands seconds after dispatch and would reopen the gap.
+   any evidence for. It reserves the SEAT and the TOKEN, and it covers the leg
+   from spawn until that leg settles — not until the companion's first liveness
+   write, which is what this rule said for one release-panel round after the
+   code stopped doing it. A liveness row carries no work item, so releasing on a
+   FRESH one drops the token reservation about a second after dispatch and lets
+   the same token be dispatched onto another free seat. A fresh row therefore
+   REFRESHES the claim. Released on a ledger `delivered` or `lost`, a TERMINAL
+   or stale liveness file, a dead pid, or `CLAIM_GRACE_SEC` of total silence —
+   **never on `assigned`**, which lands seconds after dispatch and would reopen
+   the gap. Pid death is checked BEFORE the refresh: a companion that wrote one
+   heartbeat and died must not hold its seat until that heartbeat ages out.
 
 - **Missing** snapshot = the snapshot does not exist. It is **not** a licence to
   dispatch blind. The old rule said "a repo where nothing has ever run — there

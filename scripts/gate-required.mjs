@@ -166,6 +166,16 @@ export function whyGated(file) {
   // line, none of which have execution order.
   if (!VERSION_FILES.has(file.path)) return 'changes more than the version string'
 
+  // EVERY changed line in a version file has to BE a version declaration. The
+  // comparison sorts before comparing, so without this a file on the list could
+  // have its lines reordered and still classify as version-only — and one of
+  // the five is `tests/plugin-structure.test.mjs`, which is executable, so a
+  // semantic reorder plus a version bump would ship unreviewed. Found by the
+  // release panel (codex lane, 2026-08-10, round 6), one round after the same
+  // sort-and-compare was closed for every OTHER file.
+  const everyLine = [...file.addedLines, ...file.removedLines]
+  if (!everyLine.every(declaresAVersion)) return 'changes more than the version string'
+
   const added = blankVersions(file.addedLines)
   const removed = blankVersions(file.removedLines)
   if (!sameLines(added, removed)) return 'changes more than the version string'

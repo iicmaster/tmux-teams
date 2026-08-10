@@ -355,9 +355,14 @@ const pidAlive = (pid) => {
   try { process.kill(pid, 0); return true } catch (error) { return error?.code === 'EPERM' }
 }
 
-// A claim's whole job is to cover spawn until the companion's first liveness
-// write. Once that file exists the directory below is the better witness — it
-// is on disk, so it survives a cron-mode process boundary that memory cannot.
+// A claim covers a leg from spawn until it settles, and it does NOT end at the
+// companion's first liveness write. This paragraph said it did — correct when
+// a claim reserved only the seat, and false since it began reserving the token
+// too, because a liveness row carries no work item and so releases a fact it
+// cannot replace. Left stale through one release-panel round, where three
+// separate readers (this comment, ADR 0004, contract §11.1) all still described
+// the pre-round-5 behaviour beside code doing the opposite. Found by the
+// release panel (zai and codex lanes, 2026-08-10, round 6).
 // A claim whose pid is gone before any file appeared is released too: that is
 // the existing `lost` class, not a new terminal state.
 // `liveTasks` are the tasks whose liveness file says the leg is RUNNING;
@@ -380,9 +385,19 @@ const pidAlive = (pid) => {
 const releaseSettledClaims = (repo, liveTasks, seenTasks, nowMs) => {
   const store = claimsFor(repo)
   for (const [taskId, claim] of store) {
+    // Pid death is checked BEFORE the refresh, and the order is the guard. With
+    // the refresh first, a companion that wrote one heartbeat and then died
+    // without a terminal record kept its seat and its token until the heartbeat
+    // aged out — and a row stamped in the future never ages out at all, so each
+    // occupancy read renewed the claim forever and the pid-death and grace
+    // recoveries this file advertises could not fire. Found by the release
+    // panel (codex lane, 2026-08-10, round 6), in the round-5 fix for the
+    // round-4 hole. `livenessOnDisk` now also refuses an observation later than
+    // now, so "fresh" cannot mean "dated tomorrow".
+    if (!pidAlive(claim.pid)) { store.delete(taskId); continue }
     if (liveTasks.has(taskId)) { claim.at = nowMs; continue }
     const silentFor = (nowMs - (claim.at ?? nowMs)) / 1000
-    if (seenTasks.has(taskId) || !pidAlive(claim.pid) || silentFor >= CLAIM_GRACE_SEC) store.delete(taskId)
+    if (seenTasks.has(taskId) || silentFor >= CLAIM_GRACE_SEC) store.delete(taskId)
   }
   return store
 }
@@ -437,7 +452,13 @@ function livenessOnDisk(repo, nowMs) {
     seen.add(taskId)
     if (LIVENESS_TERMINAL.has(row.liveness_state)) continue
     const observedMs = Date.parse(row.observed_at || '')
-    if (!Number.isFinite(observedMs) || (nowMs - observedMs) / 1000 >= ZOMBIE_SEC) continue
+    // A future-dated observation is not evidence of anything. It only ever
+    // arrives from clock skew or a malformed write, and treating it as fresh
+    // made a claim renewable for ever — the shape the release panel found in
+    // the refresh path (codex lane, 2026-08-10, round 6). One second of slack
+    // absorbs ordinary skew between a companion and the runner on one host.
+    if (!Number.isFinite(observedMs) || observedMs > nowMs + 1000) continue
+    if ((nowMs - observedMs) / 1000 >= ZOMBIE_SEC) continue
     live.push({ agent_id: row.agent_id || '', task_id: taskId })
   }
   return { seen, live }

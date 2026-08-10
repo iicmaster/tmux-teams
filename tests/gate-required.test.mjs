@@ -342,6 +342,36 @@ test('reordering lines in a shipped script requires the panel', () => {
   }
 })
 
+test('a version file may change NOTHING but its version declarations', () => {
+  // The sort-and-compare was closed for every file EXCEPT the five that carry
+  // the release version, and one of those five —
+  // `tests/plugin-structure.test.mjs` — is executable. So a semantic reorder
+  // riding along with a version bump was still exempt there. Found by the
+  // release panel (codex lane, 2026-08-10, round 6), one round after the same
+  // defect was closed everywhere else.
+  const rideAlong = file(
+    'tests/plugin-structure.test.mjs',
+    ["const RELEASE_VERSION = '0.19.0'", '  a()', '  b()'],
+    ['  b()', '  a()', "const RELEASE_VERSION = '0.18.2'"],
+  )
+  assert.equal(whyGated(rideAlong), 'changes more than the version string')
+
+  // Even a comment is a change: nothing rides along.
+  assert.equal(
+    whyGated(file('tests/plugin-structure.test.mjs',
+      ["const RELEASE_VERSION = '0.19.0'", '// and a note'],
+      ["const RELEASE_VERSION = '0.18.2'"])),
+    'changes more than the version string',
+  )
+
+  // The control: the bump alone, in each of the two real shapes, is exempt.
+  assert.equal(whyGated(file('tests/plugin-structure.test.mjs',
+    ["const RELEASE_VERSION = '0.19.0'"], ["const RELEASE_VERSION = '0.18.2'"])), null)
+  assert.equal(whyGated(file('.claude-plugin/marketplace.json',
+    ['    "version": "0.19.0"', '      "version": "0.19.0",'],
+    ['    "version": "0.18.2"', '      "version": "0.18.2",'])), null)
+})
+
 test('a semver inside a URL is not a version bump, even in a version-carrying file', () => {
   // `plugins/tmux-teams/plugin.json` is on VERSION_FILES because it declares the
   // release version — and it ALSO carries

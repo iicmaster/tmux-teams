@@ -11,6 +11,7 @@
 // leg ended, must not hold a token open forever.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -371,4 +372,29 @@ test('a running liveness file refreshes a claim rather than deleting it', () => 
   const settled = busyAgents(done, NOW)
   assert.equal(settled.busy.has('build_w1'), false, 'a finished leg holds no seat')
   assert.equal(settled.busyItems.has('beta'), false, 'a finished leg holds no token')
+})
+
+test('a dead pid ends a claim even while its last heartbeat still looks fresh', () => {
+  // The refresh added last round ran BEFORE the pid check, so a companion that
+  // wrote one heartbeat and then died held its seat and its token until that
+  // heartbeat aged out — and a row stamped in the future never ages out, so the
+  // claim renewed itself for ever and both advertised recoveries were
+  // unreachable. Found by the release panel (codex lane, 2026-08-10, round 6).
+  const reaped = spawnSync(process.execPath, ['-e', ''])
+  const repo = bareRepo()
+  recordDispatchClaim(repo, { agentId: 'build_w1', taskId: 'gone-1', pid: reaped.pid, workItem: 'alpha' })
+  livenessFile(repo, { taskId: 'gone-1', agentId: 'build_w1', state: 'running', observedSecAgo: 1 })
+
+  const seen = busyAgents(repo, NOW)
+  assert.equal(seen.busyItems.has('alpha'), false,
+    'a fresh heartbeat from a process that is gone kept the token reserved')
+})
+
+test('a liveness observation dated in the future is not fresh evidence', () => {
+  const repo = bareRepo()
+  recordDispatchClaim(repo, { agentId: 'build_w1', taskId: 'future-1', pid: process.pid, workItem: 'alpha' })
+  // An hour ahead: clock skew or a malformed write, never a fact.
+  livenessFile(repo, { taskId: 'future-1', agentId: 'build_w1', state: 'running', observedSecAgo: -3600 })
+  assert.equal(busyAgents(repo, NOW).busy.has('build_w1'), false,
+    'a row stamped in the future was read as a live leg')
 })
