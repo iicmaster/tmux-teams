@@ -416,3 +416,23 @@ test('a liveness observation dated in the future is no evidence — it neither r
   assert.equal(busyAgents(dead, NOW).busy.has('build_w1'), false,
     'a future-dated row must not keep a dead leg alive')
 })
+
+test('a token dispatched by a PRIOR process is still held after this process restarts', () => {
+  // Deliberately no `recordDispatchClaim`: that is what a cron-mode restart
+  // looks like from inside the new process. `busy`/`busyTasks` already crossed
+  // the boundary on the liveness row; `busyItems` came only from the in-memory
+  // claim store, so the seat read busy and the token read free and the same
+  // token went to a second seat. Reproduced by the release panel (codex lane,
+  // 2026-08-10, round 9). The work item is read from the dispatch record the
+  // companion writes beside the liveness file — no new file, no schema change.
+  const repo = bareRepo()
+  livenessFile(repo, { taskId: 'restart-1', agentId: 'build_w1', state: 'running', observedSecAgo: 2 })
+  mkdirSync(join(repo, '.tmux-teams', 'dispatch'), { recursive: true })
+  writeFileSync(join(repo, '.tmux-teams', 'dispatch', 'restart-1.md'),
+    'task_id: restart-1\nagent_id: build_w1\nwork_item: gamma\n')
+
+  const after = busyAgents(repo, NOW)
+  assert.equal(after.busy.has('build_w1'), true, 'the seat already crossed the boundary — the control')
+  assert.equal(after.busyItems.has('gamma'), true,
+    'the token did not, so a restarted runner would pay for this work item twice')
+})

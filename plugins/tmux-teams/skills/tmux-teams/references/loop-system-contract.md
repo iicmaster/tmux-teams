@@ -1925,7 +1925,20 @@ them at one point.** Amended 2026-08-09 (ADR 0004); until then this section said
    unless pulse had republished it. Being files, it survives a cron-mode process
    boundary.
 3. **The runner's own claim** — what THIS process spawned and has not yet seen
-   any evidence for. It reserves the SEAT and the TOKEN, and it covers the leg
+   any evidence for — and the liveness file above names the SEAT but not the
+   TOKEN, because its schema carries no work item. Until 2026-08-10 that meant
+   the token reservation lived ONLY here, in memory, and vanished the instant a
+   cron-mode runner restarted: the seat read busy off the liveness file and the
+   token read free, so the same work item was dispatched onto a second seat.
+   The runner now also reads the PAIRED `.tmux-teams/dispatch/<task-id>.md`,
+   which the companion writes beside the liveness file and which has always
+   carried `work_item:`. No new file, no liveness schema change — a field that
+   was already on disk is consulted. A reader landing between the two writes
+   sees the liveness file without its record and degrades to the pre-fix
+   answer for that instant, which is the same residual `CLAIM_GRACE_SEC`
+   already carries.
+
+   The claim reserves the SEAT and the TOKEN, and it covers the leg
    from spawn until that leg settles — not until the companion's first liveness
    write, which is what this rule said for one release-panel round after the
    code stopped doing it. A liveness row carries no work item, so releasing on a

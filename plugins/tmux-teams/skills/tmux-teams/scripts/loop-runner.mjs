@@ -420,6 +420,21 @@ export function releaseClaimsSettledInLedger(repo, items) {
   }
 }
 
+// The liveness file names the SEAT and not the TOKEN — its schema carries no
+// `work_item`, deliberately. The PAIRED dispatch record does:
+// `acp-companion`'s `flushPersistence` writes both files back to back, and
+// `dispatchRecordText` has always emitted `work_item: <id>` for a leg that has
+// one (acp-companion.mjs:1620, measured). So nothing new is written here — this
+// reads a field that was already on disk, and the liveness schema is untouched.
+// Found by the release panel (codex lane, 2026-08-10, round 9): after a restart
+// the in-memory claim is gone, the seat read busy and the token read free, and
+// the same token went to a second seat.
+const workItemOnDisk = (repo, taskId) => {
+  try {
+    return field(readFileSync(join(repo, '.tmux-teams', 'dispatch', `${taskId}.md`), 'utf8'), 'work_item')
+  } catch { return '' }
+}
+
 // The second witness, read straight from disk. `acp-companion` writes one file
 // per leg faster than once a second; until 2026-08-09 the runner saw it only
 // where pulse had republished it onto a row, so with no pulse.json a live leg
@@ -463,7 +478,7 @@ function livenessOnDisk(repo, nowMs) {
     // A future-dated observation is not evidence of anything — refused above,
     // BEFORE `seen`, so it neither refreshes a claim nor releases one.
     if ((nowMs - observedMs) / 1000 >= ZOMBIE_SEC) continue
-    live.push({ agent_id: row.agent_id || '', task_id: taskId })
+    live.push({ agent_id: row.agent_id || '', task_id: taskId, work_item: workItemOnDisk(repo, taskId) })
   }
   return { seen, live }
 }
@@ -518,11 +533,18 @@ export function busyAgents(repo, nowMs = Date.now()) {
   // purpose: `stale` still refuses all dispatch before occupancy is consulted,
   // and `missing` describes the snapshot's existence, not what we know.
   const disk = livenessOnDisk(repo, nowMs)
+  const busyItems = new Set()
   for (const row of disk.live) {
     if (row.agent_id) busy.add(row.agent_id)
     busyTasks.add(row.task_id)
+    // The restart witness for the TOKEN. `busy`/`busyTasks` already crossed a
+    // process boundary on this row; `busyItems` came ONLY from the in-memory
+    // claim store below, which is empty the instant a cron-mode runner starts.
+    // So a fresh process read the seat busy and the token free and dispatched
+    // that token onto a second seat — ADR 0004's defect, reopened across the
+    // restart between two ticks rather than inside one.
+    if (row.work_item) busyItems.add(row.work_item)
   }
-  const busyItems = new Set()
   const liveTasks = new Set(disk.live.map((row) => row.task_id))
   for (const claim of releaseSettledClaims(repo, liveTasks, disk.seen, nowMs).values()) {
     busy.add(claim.agent_id)
