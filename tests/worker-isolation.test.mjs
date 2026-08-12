@@ -63,7 +63,9 @@ process.stdin.on('data', (chunk) => {
     else if (msg.method === 'session/new') send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: 's-1' } })
     else if (msg.method === 'session/prompt') {
       writeFileSync(join(process.env.MOCK_REPO, '.mailbox-out', 'iso-task'),
-        'saw CLAUDE_CODE_SIMPLE=' + (process.env.CLAUDE_CODE_SIMPLE ?? '<unset>') + '\\nTEAM_DONE iso-task\\n')
+        'saw CLAUDE_CODE_SIMPLE=' + (process.env.CLAUDE_CODE_SIMPLE ?? '<unset>')
+        + '\\nsaw CLAUDE_CODE_MAX_OUTPUT_TOKENS=' + (process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS ?? '<unset>')
+        + '\\nTEAM_DONE iso-task\\n')
       send({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } })
     }
   }
@@ -85,7 +87,11 @@ const runLane = (extraEnv = {}) => {
   // grepping the stream for content it does not carry is how a test ends up
   // asserting `undefined !== '1'` and telling you nothing about the code.
   const outbox = readFileSync(join(dir, '.mailbox-out', 'iso-task'), 'utf8')
-  return { out, seen: /saw CLAUDE_CODE_SIMPLE=(\S+)/.exec(outbox)?.[1] }
+  return {
+    out,
+    seen: /saw CLAUDE_CODE_SIMPLE=(\S+)/.exec(outbox)?.[1],
+    seenMaxOutput: /saw CLAUDE_CODE_MAX_OUTPUT_TOKENS=(\S+)/.exec(outbox)?.[1],
+  }
 }
 
 test('a claude worker is handed the bare-mode flag by default', () => {
@@ -112,6 +118,30 @@ test('an operator can put the project config back, deliberately', () => {
   // the other direction.
   const { seen } = runLane({ ACP_INHERIT_PROJECT_CONFIG: '1' })
   assert.equal(seen, '<unset>', `opting back in still forced isolation (${seen})`)
+})
+
+test('the output-token ceiling an operator sets reaches the worker', () => {
+  // Added 2026-08-13. A review lane thought for 21 minutes, emitted 16,500
+  // thought chunks, and died on `Claude's response exceeded the 32000 output
+  // token maximum` — an error whose own text names CLAUDE_CODE_MAX_OUTPUT_TOKENS
+  // as the remedy. The variable was not on the claude lane allowlist, so the
+  // companion stripped it and the remedy was unreachable through this path.
+  //
+  // This asserts the WIRING, not the ceiling: what is proven is that a value an
+  // operator sets survives into the child. Whether the CLI then honours it is
+  // the CLI's business and is not measured here — the same honest limit the
+  // CLAUDE_CODE_SIMPLE test above states about itself.
+  const { seenMaxOutput } = runLane({ CLAUDE_CODE_MAX_OUTPUT_TOKENS: '64000' })
+  assert.equal(seenMaxOutput, '64000',
+    `the worker was handed CLAUDE_CODE_MAX_OUTPUT_TOKENS=${seenMaxOutput}`)
+})
+
+test('the output-token ceiling is absent unless an operator sets it', () => {
+  // The other half, and the half that would catch a future default sneaking in:
+  // adding a name to an allowlist must not start SUPPLYING a value.
+  const { seenMaxOutput } = runLane()
+  assert.equal(seenMaxOutput, '<unset>',
+    `an unset ceiling arrived as ${seenMaxOutput}`)
 })
 
 test('an explicit value wins over the default', () => {

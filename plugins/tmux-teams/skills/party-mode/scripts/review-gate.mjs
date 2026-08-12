@@ -223,9 +223,15 @@ async function defaultLaneRunner(profile, packet, deps) {
   // caller that injects one, which the module's own comment invites.
   const argv = launchArgv(profile)
   // A lane runs the mode its profile declares. `plan` is the default and what
-  // every lane used until glm-5.2, which cannot hold plan mode and the
-  // JSON-only review protocol at once and answers prose instead — so that lane
-  // declares `default` and the gate stops overwriting it. What made plan mode
+  // every lane used until glm-5.2 was BELIEVED unable to hold plan mode and the
+  // JSON-only review protocol at once — so that lane declares `default` and the
+  // gate stops overwriting it. **Measured 2026-08-13, that belief is wrong:**
+  // the lane returned one strict JSON document in plan mode in 87s, faster and
+  // cleaner than the 204s it took in default. The declaration stands because a
+  // profile change is a decision, not a tidy-up, and because nothing has yet
+  // explained the 2026-08-09 prose answer — see the note beside the zai profile
+  // in review-profiles.mjs. Do not repeat the old sentence as fact.
+  // What made plan mode
   // safe is not the word: it is the zero-tool isolation the runner enforces
   // either way, and the acknowledgement check below now verifies the mode the
   // profile ASKED for rather than a constant, so a lane cannot drift silently.

@@ -2467,6 +2467,14 @@ const LANE_ENV_KEYS = {
   claude: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL',
     'ANTHROPIC_CUSTOM_HEADERS', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL',
     'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CONFIG_DIR',
+    // Added 2026-08-13 after a review lane died on
+    // `Claude's response exceeded the 32000 output token maximum`, whose own
+    // error text names this variable as the fix. It was not on this list, so
+    // the companion stripped it: the documented remedy could not be reached
+    // through the documented dispatch path. Setting it changes nothing on its
+    // own — an operator who does not set it sees exactly the behaviour they saw
+    // before.
+    'CLAUDE_CODE_MAX_OUTPUT_TOKENS',
     'CLAUDE_CODE_SIMPLE'],
   codex: ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'CODEX_HOME', 'CODEX_PATH'],
   // VERIFIED 2026-08-04, and the clause that stood here before that date was

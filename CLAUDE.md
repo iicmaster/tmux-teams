@@ -256,9 +256,13 @@ not optional, and only a later explicit instruction from Master changes either.
    after that stopped being true, and a reviewer caught it — the same rot, twice,
    in the same paragraph. Until someone runs three families through green on a
    Linux host, this is still the path with the better design and the thinner
-   evidence — but what is open is no longer the sandbox. It is a lane that
-   answers prose, a `qwen` that was never provisioned on the test host, and a
-   three-lane run nobody has attempted.
+   evidence — but what is open is no longer the sandbox, and as of 2026-08-13 it
+   is no longer the lane either. Measured that day on macOS through direct ACP,
+   the zai lane returned one strict JSON document in BOTH modes (plan 87s,
+   default 204s) and a three-family panel completed 3/3 — the first time this
+   project has ever assembled one. **What is left is one thing: nobody has run
+   three families through bwrap on a Linux host.** A `qwen` provisioned on that
+   host is a prerequisite of that run, not a separate item.
 
    **It is Linux-only.** Every profile declares `osSandbox: 'bwrap'` and
    `plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs` refuses at

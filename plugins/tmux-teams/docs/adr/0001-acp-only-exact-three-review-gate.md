@@ -92,9 +92,16 @@ Every lane started in ACP plan mode, and the gate enforced that by overwriting
 each profile before launch. Two consequences showed up in production at once,
 and the panel failed on every run:
 
-- `glm-5.2` cannot hold plan mode and the JSON-only review protocol at the same
+- ~~`glm-5.2` cannot hold plan mode and the JSON-only review protocol at the same
   time. Asked for both it answers prose, the parse fails, and the lane is
-  counted as broken. That lane now declares `reviewMode: 'default'` and the gate
+  counted as broken.~~ **Disproven 2026-08-13** — struck through rather than
+  deleted, because what this ADR recorded is what was believed at the time and
+  that belief steered a profile. Measured on macOS through direct ACP: the lane
+  returned one strict JSON document in plan mode in 87s AND in default mode in
+  204s. Plan mode was the faster of the two. The `reviewMode: 'default'`
+  declaration below still stands — nothing has explained the 2026-08-09 prose
+  answer, and changing a profile on one contrary measurement would only swap one
+  unexamined belief for another. That lane declares `reviewMode: 'default'` and the gate
   runs what the profile declares. **Plan mode was never what made a lane
   read-only** — the zero-tool contract is: no MCP servers, every ACP permission
   request denied, and a run that observed a tool call refused outright. Those

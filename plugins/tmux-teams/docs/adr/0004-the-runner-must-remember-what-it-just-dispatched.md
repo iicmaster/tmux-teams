@@ -210,7 +210,12 @@ issue or ADR if it is worth doing.
 - **No cross-process lock.** See the residual above.
 - **No change to cron-mode behaviour.**
 - **The sandboxed review gate.** `qwen` is unprovisioned on the test host and
-  `zai` answers prose instead of strict JSON. Both are gate problems, not loop
+  ~~`zai` answers prose instead of strict JSON.~~ **Half of this was resolved
+  2026-08-13**: the zai lane returned one strict JSON document in BOTH modes on
+  macOS (plan 87s, default 204s), so the model is not the cause — see ADR 0005
+  and the note beside the zai profile. `qwen` being unprovisioned on the Linux
+  test host is still true, and the host itself is gone. Both remain gate
+  problems, not loop
   problems. Note for whoever picks that up: `review-profiles.mjs` says default
   mode is what stops glm-5.2 answering prose, and on 2026-08-09 it answered
   prose **in default mode** — that contradiction needs recording where a reader
