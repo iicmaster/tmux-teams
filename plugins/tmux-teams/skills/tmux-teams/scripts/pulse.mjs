@@ -866,14 +866,18 @@ function derive(now, configuredAgentIds = null) {
     const livenessTerminal = ['completed', 'cancelled', 'failed'].includes(
       livenessEvidence?.liveness_state,
     )
-    // The companion's last word outranks every probe on this page. A terminal
-    // liveness state is a settled statement written by the process that ran
-    // the leg; the OS scan and the grace window only guess at what that
-    // process already reported. Without this first branch a leg that failed
-    // with a held pane or inside GRACE_SEC kept reading 'starting'/'running'
-    // - WORKING in every consumer of this row, busyAgents included, for up
-    // to five minutes per corpse (measured on eventbox, 2026-08-12).
-    const state = livenessTerminal ? 'died'
+    // A 'failed' liveness state is the companion's own death certificate,
+    // and it outranks probes that only guess: without this first branch a
+    // failed leg with a held pane or inside GRACE_SEC kept reading
+    // 'starting'/'running' - WORKING in every consumer of this row,
+    // busyAgents included, for up to five minutes per corpse (measured on
+    // eventbox, 2026-08-12). Only 'failed' dies here. 'completed' and
+    // 'cancelled' are harvests, not deaths: collapsing them into 'died'
+    // made every successful delivery read PROCESS_MISSING_AFTER_DISPATCH
+    // for the full evidence lease and put 'awaiting-verdict'/'unrecorded'
+    // out of reach (adversarial review, reproduced pre/post) - so they
+    // keep flowing into the marker and pane branches below.
+    const state = livenessEvidence?.liveness_state === 'failed' ? 'died'
       : working ? 'running'
       : !PROC_OK ? 'unknown'
       : f.terminalStatus === 'unreadable' ? 'unknown'

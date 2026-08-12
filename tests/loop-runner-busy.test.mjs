@@ -98,6 +98,14 @@ test('a WORKING pulse row whose own liveness says terminal does not hold the sea
   }
 })
 
+test('a WORKING row whose liveness says completed is a harvest, not a held seat', () => {
+  // The runner-side guard releases the seat for ANY terminal liveness — a
+  // finished leg freed the seat even when the page still aged its row.
+  const dir = repoWith({ state: 'starting', livenessState: 'completed', observedSecAgo: 1 })
+  assert.equal(busyAgents(dir, NOW).busy.has('review_w1'), false,
+    'a completed leg kept the seat busy on the runner side')
+})
+
 test('a WORKING pulse row with live liveness evidence still holds the seat', () => {
   const dir = repoWith({ state: 'running', livenessState: 'tool_running', observedSecAgo: 1 })
   assert.equal(busyAgents(dir, NOW).busy.has('review_w1'), true,
