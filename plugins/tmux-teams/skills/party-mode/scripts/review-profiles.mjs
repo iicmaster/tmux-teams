@@ -97,12 +97,27 @@ export const REVIEW_PROFILES = freeze({
     // 2026-08-09 on Ubuntu 26.04: the lane reached review, ran 4m8s, glm-5.2
     // read the diff and answered -- and the answer was prose. It failed on
     // "agent output is not one strict JSON document" while running the mode
-    // above. So the paragraph above describes what mode was CHOSEN and why,
-    // not a problem that is solved: this lane has still never returned a
-    // parseable review. ADR 0004 ordered the contradiction recorded where a
-    // reader of this file would find it; that is this note. Whoever picks it
-    // up is choosing between a different model, a different mode, and a
-    // tolerant parse -- do not assume the mode field already handled it.
+    // above. ADR 0004 ordered that contradiction recorded where a reader of
+    // this file would find it; that is this note.
+    //
+    // THEN THE MODEL WAS MEASURED, AND IT IS NOT THE CAUSE. On 2026-08-13,
+    // macOS, direct ACP with the profile selected by CLAUDE_CONFIG_DIR, this
+    // lane returned ONE STRICT JSON DOCUMENT IN BOTH MODES on the same packet:
+    // plan mode 4027 bytes in 87s, default mode 4170 bytes in 204s. Plan mode
+    // was the faster and the cleaner of the two. So the paragraph at the top of
+    // this comment is the record of a decision, not of a limitation -- glm-5.2
+    // can hold plan mode and the JSON-only protocol at once, and the mode field
+    // is not what stands between this lane and a parseable review.
+    //
+    // What differed on the day it answered prose is the shape of session/new.
+    // plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs sends
+    // settingSources: [], and measured on that same 2026-08-13 host the model
+    // list then collapses to ['default'] and authentication fails outright,
+    // while the companion's bare { cwd, mcpServers: [] } authenticates and
+    // answers. That is one remaining difference and it is NOT proof of cause:
+    // the 2026-08-09 lane authenticated fine and still answered prose. Whoever
+    // picks this up is choosing between the session shape, a tolerant parse,
+    // and a different model -- and should stop suspecting the mode.
     reviewMode: 'default', osSandbox: 'bwrap',
     command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
     adapterPackage: '@agentclientprotocol/claude-agent-acp@0.61.0',
