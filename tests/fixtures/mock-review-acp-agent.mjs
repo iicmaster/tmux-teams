@@ -142,6 +142,7 @@ rl.on('line', raw => {
           error: {
             code: -32603,
             message: 'upstream refused\nDB_PASSWORD=hunter2 ' + 'x'.repeat(400),
+            data: { details: 'Invalid value for config option model: glm-5.2', secret: 'AKIA' + 'Z'.repeat(16) },
           },
         })
       }

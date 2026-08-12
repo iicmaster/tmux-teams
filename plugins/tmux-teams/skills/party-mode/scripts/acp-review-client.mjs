@@ -220,19 +220,33 @@ const byteLen = (v) => Buffer.byteLength(text(v))
 // issue's own advice and running the lane alone learned exactly nothing new.
 //
 // Provider bytes are untrusted, so this is the narrow shape they are allowed
-// through in: a numeric code, and a single line of message, redacted and capped.
-// Nothing nested, nothing multi-line, no `data` blob — a provider cannot use an
-// error string to smuggle a payload into our logs.
+// through in: a numeric code, and two named STRING fields, each redacted with
+// the packet's own patterns, collapsed to one line and capped. Nothing else of
+// `data` is read — a provider cannot use an error object to smuggle a payload
+// into an operator's log.
+//
+// `data.details` is here because leaving it out cost the answer once. This
+// function shipped without it for exactly one run: the zai lane then reported
+// `-32603: Internal error` and nothing more, while the SAME adapter measured
+// four hours earlier on macOS had put the whole diagnosis in `data.details`
+// ("Invalid value for config option model: glm-5.2"). A field that carries the
+// only useful sentence is not a blob, and refusing it was caution spent in the
+// wrong place.
 const MAX_REMOTE_ERROR_MESSAGE = 200
+const cleanRemoteText = (value) => {
+  const raw = redactString(text(value)).replace(/[\r\n\t]+/g, ' ').trim()
+  return raw ? raw.slice(0, MAX_REMOTE_ERROR_MESSAGE) : ''
+}
 function remoteErrorDetail(error) {
   if (!isObject(error)) return ''
   const code = Number.isInteger(error.code) ? String(error.code) : null
-  const raw = redactString(text(error.message)).replace(/[\r\n\t]+/g, ' ').trim()
-  const message = raw ? raw.slice(0, MAX_REMOTE_ERROR_MESSAGE) : ''
-  if (!code && !message) return ''
-  if (!message) return ` (remote code ${code})`
-  if (!code) return ` (remote: ${message})`
-  return ` (remote code ${code}: ${message})`
+  const message = cleanRemoteText(error.message)
+  const details = isObject(error.data) ? cleanRemoteText(error.data.details) : ''
+  const said = [message, details && details !== message ? details : ''].filter(Boolean).join(' — ')
+  if (!code && !said) return ''
+  if (!said) return ` (remote code ${code})`
+  if (!code) return ` (remote: ${said})`
+  return ` (remote code ${code}: ${said})`
 }
 const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v)
 const configList = result => Array.isArray(result?.configOptions) ? result.configOptions : []

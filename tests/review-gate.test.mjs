@@ -270,6 +270,10 @@ test('a remote protocol error says what the remote said, redacted and on one lin
       assert.equal(error.code, 'protocol')
       assert.match(error.message, /remote code -32603/)
       assert.match(error.message, /upstream refused/)
+      assert.match(error.message, /Invalid value for config option model/,
+        'data.details carries the only useful sentence some adapters send')
+      assert.equal(error.message.includes('AKIA'), false,
+        'only named string fields may be read out of the remote error object')
       assert.equal(error.message.includes('hunter2'), false, 'the remote error leaked a credential')
       assert.equal(/[\r\n]/.test(error.message), false, 'the remote error spanned more than one line')
       assert.ok(error.message.length < 400, `remote detail was not bounded (${error.message.length} chars)`)
