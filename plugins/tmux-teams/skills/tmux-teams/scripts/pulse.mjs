@@ -862,7 +862,19 @@ function derive(now, configuredAgentIds = null) {
     // the window kept reporting "starting" about a pane already destroyed.
     const paneHeld = f.pane && panesNow.available ? panesNow.ids.has(f.pane) : null
     const paneStatus = !f.pane ? 'not_recorded' : !panesNow.available ? 'probe_unavailable' : paneHeld ? 'held' : 'gone'
-    const state = working ? 'running'
+    const livenessEvidence = livenessResult.byDispatch.get(`${f.id}\u0000${f.dispatchId}`) || null
+    const livenessTerminal = ['completed', 'cancelled', 'failed'].includes(
+      livenessEvidence?.liveness_state,
+    )
+    // The companion's last word outranks every probe on this page. A terminal
+    // liveness state is a settled statement written by the process that ran
+    // the leg; the OS scan and the grace window only guess at what that
+    // process already reported. Without this first branch a leg that failed
+    // with a held pane or inside GRACE_SEC kept reading 'starting'/'running'
+    // - WORKING in every consumer of this row, busyAgents included, for up
+    // to five minutes per corpse (measured on eventbox, 2026-08-12).
+    const state = livenessTerminal ? 'died'
+      : working ? 'running'
       : !PROC_OK ? 'unknown'
       : f.terminalStatus === 'unreadable' ? 'unknown'
       : f.marker ? (ageSec > UNRECORDED_SEC ? 'unrecorded' : 'awaiting-verdict')
@@ -871,10 +883,6 @@ function derive(now, configuredAgentIds = null) {
       : f.pane && !panesNow.available ? 'unknown'
       : ageSec <= GRACE_SEC ? 'starting'
       : 'died'
-    const livenessEvidence = livenessResult.byDispatch.get(`${f.id}\u0000${f.dispatchId}`) || null
-    const livenessTerminal = ['completed', 'cancelled', 'failed'].includes(
-      livenessEvidence?.liveness_state,
-    )
     const livenessCurrent = Boolean(livenessEvidence) && !livenessTerminal
     const projected = {
       ...f, alive: !!alive, detail: alive ? alive.detail : '',
