@@ -167,6 +167,15 @@ not optional, and only a later explicit instruction from Master changes either.
    node scripts/gate-required.mjs   # 0 = exempt · 2 = panel required · 1 = the script itself failed
    ```
 
+   **Run it AFTER committing, never on a dirty tree.** It reads
+   `<last-tag>..HEAD` and nothing else — uncommitted work is invisible to it, so
+   a finished-but-unstaged change to a shipped file reads back as EXEMPT and
+   says so with the same confidence it says REQUIRED. Caught 2026-08-12 by an
+   operator who ran it on a working tree holding a `plugins/` edit; committing
+   the same bytes flipped it to REQUIRED. The failure shape is edit → run gate →
+   see EXEMPT → commit → release, which is a panel skipped by somebody who
+   checked.
+
    It exempts a file only on PROOF, and there are two: the file is `HANDOFF.md`,
    `README.md` or `CLAUDE.md`, or every changed line in it is identical once
    semver numbers are blanked (which is what lets a version bump touch
