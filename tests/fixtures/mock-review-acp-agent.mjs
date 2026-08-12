@@ -131,6 +131,20 @@ rl.on('line', raw => {
         { id: 'mode', currentValue: 'plan' },
       ] })
     case 'session/new':
+      // A remote error on session/new — the exact shape the zai lane produced
+      // on the bwrap host, where the adapter answered and nothing died. The
+      // message deliberately carries a credential and a newline so the test can
+      // prove the detail is redacted and kept to one line before it reaches a log.
+      if (behaviour === 'session-new-remote-error') {
+        return send({
+          jsonrpc: '2.0',
+          id: m.id,
+          error: {
+            code: -32603,
+            message: 'upstream refused\nDB_PASSWORD=hunter2 ' + 'x'.repeat(400),
+          },
+        })
+      }
       toolsDisabled = m.params?._meta?.disableBuiltInTools === true &&
         Array.isArray(m.params?._meta?.claudeCode?.options?.tools) &&
         m.params._meta.claudeCode.options.tools.length === 0 &&

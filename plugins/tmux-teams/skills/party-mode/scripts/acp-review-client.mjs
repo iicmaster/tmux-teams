@@ -211,6 +211,29 @@ function runnerOwnedReviewScopeInstructions(packet) {
 
 const text = (v) => typeof v === 'string' ? v : ''
 const byteLen = (v) => Buffer.byteLength(text(v))
+
+// The remote error was thrown away until 2026-08-13, and that is why the zai
+// lane's `session/new` failure had been undiagnosable for five days: the adapter
+// was ANSWERING, the message just never reached anyone. Measured that day on the
+// bwrap host — spawn, initialize, then an immediate error reply, `stderrBytes: 0`
+// because nothing died. `error.cause` was empty too, so an operator following the
+// issue's own advice and running the lane alone learned exactly nothing new.
+//
+// Provider bytes are untrusted, so this is the narrow shape they are allowed
+// through in: a numeric code, and a single line of message, redacted and capped.
+// Nothing nested, nothing multi-line, no `data` blob — a provider cannot use an
+// error string to smuggle a payload into our logs.
+const MAX_REMOTE_ERROR_MESSAGE = 200
+function remoteErrorDetail(error) {
+  if (!isObject(error)) return ''
+  const code = Number.isInteger(error.code) ? String(error.code) : null
+  const raw = redactString(text(error.message)).replace(/[\r\n\t]+/g, ' ').trim()
+  const message = raw ? raw.slice(0, MAX_REMOTE_ERROR_MESSAGE) : ''
+  if (!code && !message) return ''
+  if (!message) return ` (remote code ${code})`
+  if (!code) return ` (remote: ${message})`
+  return ` (remote code ${code}: ${message})`
+}
 const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v)
 const configList = result => Array.isArray(result?.configOptions) ? result.configOptions : []
 const currentValue = option => option?.currentValue ?? option?.value
@@ -1131,7 +1154,7 @@ export async function runAcpReview({
         if (hasResult === hasError) return protocolError('ACP response must contain exactly one result or error')
         const p = pending.get(msg.id); pending.delete(msg.id)
         reportProgress({ kind: 'response', method: p.method })
-        if (hasError) p.reject(new ReviewTransportError('protocol', `ACP ${p.method} failed with a remote protocol error`))
+        if (hasError) p.reject(new ReviewTransportError('protocol', `ACP ${p.method} failed with a remote protocol error${remoteErrorDetail(msg.error)}`))
         else {
           if (p.method === 'session/new' &&
               typeof msg.result?.sessionId === 'string') {

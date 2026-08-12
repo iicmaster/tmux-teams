@@ -254,6 +254,30 @@ test('permission requests are always denied and a missing model acknowledgement 
   await assert.rejects(invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'ack-mismatch' }), e => e instanceof ReviewTransportError && e.code === 'config')
 })
 
+test('a remote protocol error says what the remote said, redacted and on one line', async () => {
+  // Added 2026-08-13. The zai lane's `session/new` failure had been
+  // undiagnosable for five days — "ACP session/new failed with a remote protocol
+  // error", `stderrBytes: 0`, and an empty `error.cause`. Measured on the bwrap
+  // host that day: the adapter WAS answering. The reject threw `msg.error` away,
+  // so an operator following the issue's own advice and running the lane alone
+  // learned nothing the panel had not already told them.
+  //
+  // Provider bytes are untrusted, so this asserts both halves at once: the
+  // detail arrives, AND it cannot be used to smuggle a secret or a second line.
+  await assert.rejects(
+    invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'session-new-remote-error' }),
+    (error) => {
+      assert.equal(error.code, 'protocol')
+      assert.match(error.message, /remote code -32603/)
+      assert.match(error.message, /upstream refused/)
+      assert.equal(error.message.includes('hunter2'), false, 'the remote error leaked a credential')
+      assert.equal(/[\r\n]/.test(error.message), false, 'the remote error spanned more than one line')
+      assert.ok(error.message.length < 400, `remote detail was not bounded (${error.message.length} chars)`)
+      return true
+    },
+  )
+})
+
 test('a review carrying credential-shaped text is redacted and kept, not discarded', async () => {
   // These three used to be `assert.rejects(..., code === 'review')`. They were
   // changed on 2026-08-13 after a real run on a bwrap host threw away a COMPLETE
