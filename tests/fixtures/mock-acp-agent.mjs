@@ -45,7 +45,12 @@ function identity() {
   if (process.env.MOCK_CONFIG_IDENTITY === '1') {
     const modelOptions = (process.env.MOCK_MODEL_OPTIONS?.split(',').map((value) => value.trim()).filter(Boolean) ?? [])
     const effortOptions = (process.env.MOCK_REASONING_EFFORT_OPTIONS?.split(',').map((value) => value.trim()).filter(Boolean) ?? [])
-    if (!modelOptions.includes(model)) modelOptions.unshift(model)
+    // With MOCK_MODEL_OPTIONS_STRICT the advertised list is exactly what the
+    // operator wrote — the shape antigravity-acp 1.0.0 presents, whose model
+    // values carry a "\t<display label>" suffix and never include the bare id
+    // a client requests. Without it the mock keeps its old courtesy of
+    // adding the current model so older tests stay meaningful.
+    if (process.env.MOCK_MODEL_OPTIONS_STRICT !== '1' && !modelOptions.includes(model)) modelOptions.unshift(model)
     if (effort && !effortOptions.includes(effort)) effortOptions.unshift(effort)
     return {
       configOptions: [
@@ -490,7 +495,13 @@ async function handleLine(line) {
       const configId = message.params?.configId
       const value = message.params?.value
       const current = identity().configOptions?.find((option) => option.id === configId)
-      if (!current || typeof value !== 'string' || !current.options.some((option) => option.value === value)) {
+      // In strict mode the mock behaves like antigravity-acp 1.0.0: it
+      // advertises label-suffixed values but session/set_config_option
+      // accepts the bare id and reports it back bare.
+      const advertised = (option) => option.value === value
+        || (process.env.MOCK_MODEL_OPTIONS_STRICT === '1'
+          && typeof option.value === 'string' && option.value.split('\t')[0] === value)
+      if (!current || typeof value !== 'string' || !current.options.some(advertised)) {
         return replyError(message.id, `mock rejected ${configId}`)
       }
       if (configId === 'model') configuredModel = value
