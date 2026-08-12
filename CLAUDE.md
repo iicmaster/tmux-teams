@@ -194,24 +194,58 @@ not optional, and only a later explicit instruction from Master changes either.
    **STRONGER IN DESIGN, UNPROVEN IN PRACTICE — it has never yet assembled a
    three-family panel.** Measured 2026-08-09 on Ubuntu 26.04 with `/usr/bin/bwrap`
    present, the first time anyone ran it on a host that could. AGY reached
-   `status: accepted`; every claude-routed lane died, five distinct layers deep,
-   and each fix only revealed the next: staging asked "is it under `$HOME`"
-   instead of "does the sandbox mask it"; the trusted-roots list knew `~/.nvm`
+   `status: accepted`; every claude-routed lane died, EIGHT distinct layers deep
+   — five that stopped a lane before it could start, then three more that only a
+   running gate could ever have shown. This paragraph said "five" for a full
+   release and a half, because the last three landed in a commit nobody came
+   back to fold in. The first five, each fix revealing the next: staging asked
+   "is it under `$HOME`" instead of "does the sandbox mask it"; the
+   trusted-roots list knew `~/.nvm`
    and not mise; no interpreter was staged at all; `npx` is a node script whose
    relative `require` a single-file copy cannot satisfy; and the shebang then
    found no `node` on the sandbox PATH. **AGY survived all five only because
    `bunx` is a native binary** — one lane healthy by coincidence while its
-   neighbour was not. **All five are fixed and committed** (2026-08-10, during
-   the v0.19.0 release panel): staging asks whether the sandbox MASKS a path
+   neighbour was not. **Those five are fixed and committed** (`fe42d4a`,
+   `2a1868e`, `a3a7d60` — all 2026-08-09, not the 08-10 this line claimed until
+   somebody checked `git log`): staging asks whether the sandbox MASKS a path
    rather than whether it is under `$HOME`; trusted roots are derived from
    `process.execPath`; the interpreter prefix is re-bound — and refused when it
    is a home directory, one of its direct children, or overlapping the target
    repository; `npx` resolves because the whole prefix is mounted rather than one
-   file copied; and the sandbox PATH carries the toolchain bin. This line said
-   "two fixed, three open" for a full release-panel round after that stopped
-   being true, and a reviewer caught it. Until someone runs three families
-   through green on a Linux host, this is still the path with the better design
-   and the thinner evidence — but the open items are now the RUN, not the code.
+   file copied; and the sandbox PATH carries the toolchain bin.
+
+   **The other three (`0228f6b`, same day) are the ones worth reading, because
+   no unit test could have reached any of them.** A dying lane took the WHOLE
+   gate down: `write` checked `stdin.writable` and then wrote, and a child
+   exiting between those two steps leaves an EPIPE with no listener, which Node
+   promotes to an unhandled error and kills the process — the run died in 2.6s
+   with a stack trace naming a socket, losing every lane's result and hiding its
+   own cause. The toolchain bind was correct, present, and BURIED: printing the
+   real bwrap argv showed `--ro-bind <node prefix>` sitting before the
+   `--bind <ephemeral home>` that lands on the host home directory, which mounts
+   over `$HOME` itself, and
+   on any version-manager machine the interpreter lives under `$HOME` — two
+   correct instructions in the wrong order, so nothing but a run could catch it.
+   And the stdout ceiling counted ENVELOPES, not output: an ACP adapter emits one
+   JSON-RPC envelope per streamed token, so 8,531 envelopes carrying roughly 20 KB
+   of thinking totalled 2,097,253 bytes — ~100x amplification, and the 2 MiB
+   ceiling fired on an ordinary answer. Raised to 16 MiB; `lineBytes` and
+   `messageBytes` are what bound a hostile agent and neither moved.
+
+   **What all eight bought, and it is more than this file used to admit:** the
+   zai lane went `config -> closed(127) -> closed(1) -> closed(1) -> protocol ->
+   review`, ran 4m8s, and glm-5.2 read the diff and answered. **The transport
+   works end to end.** It failed on `agent output is not one strict JSON
+   document` — prose instead of JSON, in the very mode
+   `plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs` claimed
+   prevents that (see the note now standing beside the zai profile).
+   This line also said "two fixed, three open" for a full release-panel round
+   after that stopped being true, and a reviewer caught it — the same rot, twice,
+   in the same paragraph. Until someone runs three families through green on a
+   Linux host, this is still the path with the better design and the thinner
+   evidence — but what is open is no longer the sandbox. It is a lane that
+   answers prose, a `qwen` that was never provisioned on the test host, and a
+   three-lane run nobody has attempted.
 
    **It is Linux-only.** Every profile declares `osSandbox: 'bwrap'` and
    `plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs` refuses at

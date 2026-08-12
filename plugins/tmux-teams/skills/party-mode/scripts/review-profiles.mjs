@@ -92,6 +92,17 @@ export const REVIEW_PROFILES = freeze({
     // made plan mode safe is not the word: the runner denies every permission
     // request, mounts no MCP server, and refuses a run that observed a tool
     // call. Those hold here unchanged.
+    //
+    // DEFAULT MODE IS NOT A CURE, AND THIS COMMENT SAID IT WAS. Measured
+    // 2026-08-09 on Ubuntu 26.04: the lane reached review, ran 4m8s, glm-5.2
+    // read the diff and answered -- and the answer was prose. It failed on
+    // "agent output is not one strict JSON document" while running the mode
+    // above. So the paragraph above describes what mode was CHOSEN and why,
+    // not a problem that is solved: this lane has still never returned a
+    // parseable review. ADR 0004 ordered the contradiction recorded where a
+    // reader of this file would find it; that is this note. Whoever picks it
+    // up is choosing between a different model, a different mode, and a
+    // tolerant parse -- do not assume the mode field already handled it.
     reviewMode: 'default', osSandbox: 'bwrap',
     command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
     adapterPackage: '@agentclientprotocol/claude-agent-acp@0.61.0',
