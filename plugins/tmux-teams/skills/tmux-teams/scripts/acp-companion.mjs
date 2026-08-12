@@ -3184,6 +3184,26 @@ rl.on('line', (rawLine) => {
       meaningfulProgress(`${entry.method.replace('/', '_')}_response`, { label: `${entry.method} response` })
     }
     if (entry.method === 'session/prompt' && !message.error) meaningfulProgress('prompt_response', { label: 'turn response' })
+    // The ack ACP actually promises. `session/cancel` is a NOTIFICATION in the
+    // spec's own wire example — an agent owes no response to it, and until
+    // 2026-08-13 this file waited `cancelGraceMs` on exactly that unpromised
+    // reply while the documented confirmation went past unused. ACP v1: "the
+    // Agent MUST respond to the original `session/prompt` request with the
+    // `cancelled` stop reason ... so that Clients can reliably confirm the
+    // cancellation." Additive on purpose: whichever arrives first settles, so a
+    // spec-conforming agent stops costing us a timeout and one that answers
+    // neither still meets the SIGTERM/SIGKILL ladder unchanged.
+    if (entry.method === 'session/prompt' && !message.error && cancellationActive &&
+        !cancellationResponseSettled && message.result?.stopReason === 'cancelled') {
+      cancellationResponseSettled = true
+      cancellationAck = true
+      if (cancelAckTimer) clearTimeout(cancelAckTimer)
+      recordTestStage('cancel-ack')
+      console.error('[cancel] turn resolved with stopReason=cancelled; treating as the acknowledgement')
+      appendControlEvent('cancel confirmed by prompt stopReason')
+      try { agent.stdin.end() } catch {}
+      startCancellationGrace('prompt-cancelled')
+    }
     if (entry.method === 'session/cancel') {
       cancellationResponseSettled = true
       if (cancelAckTimer) clearTimeout(cancelAckTimer)
@@ -3203,6 +3223,18 @@ rl.on('line', (rawLine) => {
   }
   if (hasId && message.method) {
     if (message.method === 'session/request_permission') {
+      // ACP v1 prompt-turn, Cancellation: "The Client MUST respond to all
+      // pending `session/request_permission` requests with the `cancelled`
+      // outcome." This branch did not exist until 2026-08-13, so a permission
+      // request arriving after cancellation had begun was still auto-approved —
+      // the runner told an agent it was being torn down and then handed it
+      // another tool call. A MUST, and the one place in this file where
+      // answering the question at all is the wrong answer.
+      if (cancellationActive) {
+        line(`[permission] ${quoteAgentField(message.params?.toolCall?.title, '?')} -> cancelled (turn is cancelling)`)
+        respond(message.id, { outcome: { outcome: 'cancelled' } })
+        return
+      }
       const options = Array.isArray(message.params?.options) ? message.params.options : []
       const pick = options.find((option) => option.kind === 'allow_always')
         ?? options.find((option) => option.kind === 'allow_once')
@@ -3331,6 +3363,29 @@ function beginCancellation(reason, targetState, { timedOut = false } = {}) {
   cancellationTimedOut = timedOut
   setTerminationReason(reason)
   setLivenessState('cancelling')
+  // ACP v1 prompt-turn: "The Client SHOULD preemptively mark all non-finished
+  // tool calls pertaining to the current turn as `cancelled` as soon as it
+  // sends the `session/cancel` notification."
+  //
+  // We cannot write that word. ACP v1 defines exactly four tool-call statuses —
+  // pending, in_progress, completed, failed — and `cancelled` is not among
+  // them, so the spec asks for a value its own schema has no room for.
+  // `VALID_TOOL_STATUSES` matches those four exactly and `pulse-v4.schema.json`
+  // pins the same enum, so inventing a fifth here would be a contract
+  // amendment made to satisfy a word rather than a reader.
+  //
+  // What the SHOULD is actually preventing is achievable and is done here: a
+  // cancelled turn's unfinished tool calls stop being reported as RUNNING.
+  // Without this the liveness snapshot keeps them in `active_tools` and the
+  // state keeps reading `tool_running` for work that was torn down. Records in
+  // `toolsById` are left untouched, and updates arriving after this point are
+  // still accepted — also a SHOULD, in the same paragraph.
+  if (activeToolIds.size > 0) {
+    const dropped = activeToolIds.size
+    activeToolIds.clear()
+    console.error(`[cancel] ${dropped} unfinished tool call(s) no longer reported as running`)
+    appendControlEvent(`cancel cleared ${dropped} active tool call(s)`)
+  }
   flushPersistence()
   if (activeSessionId) {
     cancellationAttempted = true

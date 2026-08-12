@@ -2186,6 +2186,54 @@ test('a tool that goes quiet for two whole leases stops vouching for the run', a
   assert.equal(state.tools.t1.status, 'in_progress', 'the tool never reported again — that is the point')
 })
 
+test('a permission request raised after cancellation is answered cancelled, not approved', () => {
+  // ACP v1 prompt-turn, Cancellation: "The Client MUST respond to all pending
+  // `session/request_permission` requests with the `cancelled` outcome."
+  //
+  // Until 2026-08-13 this file's subject auto-approved every permission request
+  // regardless of state, so a run that had already sent `session/cancel` would
+  // still hand the agent another tool call. The mock raises one deliberately on
+  // receiving the cancel and writes back whatever outcome it was given, so this
+  // asserts the ANSWER the agent received rather than a branch being present.
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-perm-after-cancel-'))
+  const r = run('task-perm-after-cancel', {
+    MOCK_SCENARIO: 'silent-tool',
+    MOCK_TOOL_DELAY_MS: '3000',
+    MOCK_PERMISSION_AFTER_CANCEL: '1',
+    ACP_HARD_TIMEOUT_SEC: '0',
+    ACP_LIVENESS_TICK_MS: '10',
+    ACP_CANCEL_GRACE_MS: '200',
+    ACP_PROCESS_KILL_GRACE_MS: '200',
+  }, cwd, 0.5)
+  assert.equal(existsSync(join(cwd, '.cancel-seen')), true,
+    `the run must reach cancellation for this test to mean anything; stderr:\n${r.stderr}`)
+  const answerPath = join(cwd, '.permission-after-cancel')
+  assert.equal(existsSync(answerPath), true,
+    `the agent never received an answer to its post-cancel permission request; stderr:\n${r.stderr}`)
+  assert.match(readFileSync(answerPath, 'utf8').trim(), /^cancelled:/,
+    'a permission request raised after cancellation was answered with something other than cancelled')
+})
+
+// NOT TESTED, DELIBERATELY, AND HERE IS WHY — the SHOULD in the same ACP
+// paragraph: "The Client SHOULD preemptively mark all non-finished tool calls
+// pertaining to the current turn as `cancelled`." `beginCancellation` clears
+// `activeToolIds` for it (2026-08-13), and that change has NO behavioural test.
+//
+// A test was written and then deleted, because a mutation proved it vacuous:
+// `currentActiveToolEvidence()` returns `[]` whenever the liveness state is
+// terminal, so the FINAL snapshot every test reads is empty whether the clear
+// happens or not. Removing the production change left 134/134 green. The effect
+// is real but lives only in the transient `cancelling` window, and reading the
+// liveness file mid-run is a race, not an assertion.
+//
+// Two things a future author should know rather than rediscover. ACP v1 defines
+// no `cancelled` tool status at all — pending, in_progress, completed, failed is
+// the whole set — so the literal word cannot be written without amending a
+// frozen schema, which would be a decision and not a fix. And the first probe
+// run against this looked like proof the code never executed, because it
+// checked a control log that is only written when `ACP_CONTROL_LOG` is set;
+// absence of a log nobody enabled is not absence of behaviour.
+
 const DETACHED_REAP_CASES = [
   ['cancel-ack', 'cancelled'],
   ['cancel-no-ack', 'stalled'],

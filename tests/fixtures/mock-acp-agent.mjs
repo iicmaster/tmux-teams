@@ -19,6 +19,7 @@ let raceHolder = null
 let permissionDecision = ''
 let pendingPermissionPrompt = null
 const PERMISSION_REQUEST_ID = 'mock-permission-request'
+const CANCEL_PERMISSION_REQUEST_ID = 'mock-permission-after-cancel'
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const envNumber = (name, fallback) => {
@@ -446,6 +447,16 @@ async function handleLine(line) {
     appendFileSync(process.env.MOCK_REQUEST_LOG,
       `${JSON.stringify({ method: message.method, params: message.params ?? null })}\n`, { mode: 0o600 })
   }
+  // A permission request the mock deliberately raises AFTER `session/cancel`.
+  // ACP v1 obliges the CLIENT to answer it with the `cancelled` outcome; the
+  // whole point of this path is to record what it actually answered, so the
+  // test can tell a MUST being met from a MUST being skipped.
+  if (message.id === CANCEL_PERMISSION_REQUEST_ID && !message.method) {
+    const outcome = message.result?.outcome
+    writeFileSync(join(process.cwd(), '.permission-after-cancel'),
+      `${outcome?.outcome ?? 'none'}:${outcome?.optionId ?? ''}\n`, { mode: 0o600 })
+    return undefined
+  }
   if (pendingPermissionPrompt && message.id === PERMISSION_REQUEST_ID && !message.method) {
     const outcome = message.result?.outcome
     if (outcome?.outcome === 'selected') permissionDecision = outcome.optionId
@@ -508,6 +519,21 @@ async function handleLine(line) {
     case 'session/cancel':
       cancelSeen = true
       writeFileSync(join(process.cwd(), '.cancel-seen'), `${Date.now()}\n`, { mode: 0o600 })
+      if (process.env.MOCK_PERMISSION_AFTER_CANCEL === '1') {
+        send({
+          jsonrpc: '2.0',
+          id: CANCEL_PERMISSION_REQUEST_ID,
+          method: 'session/request_permission',
+          params: {
+            sessionId: currentSessionId,
+            toolCall: { title: 'tool raised after cancel' },
+            options: [
+              { optionId: 'allow-always', kind: 'allow_always', name: 'Allow always' },
+              { optionId: 'allow-once', kind: 'allow_once', name: 'Allow once' },
+            ],
+          },
+        })
+      }
       if (process.env.MOCK_SCENARIO === 'exit-during-cancel') return process.exit(0)
       if (process.env.MOCK_SCENARIO === 'cancel-clean-exit') {
         return setTimeout(() => process.exit(0), envNumber('MOCK_EXIT_DELAY_MS', 5))

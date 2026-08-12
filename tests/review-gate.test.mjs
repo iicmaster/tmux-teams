@@ -1541,12 +1541,47 @@ test('staging is decided by what the sandbox masks, never by $HOME', () => {
   // (this file asserts elsewhere that a profile environment is explicit and not
   // inherited), and the old question — "is it under $HOME" — answered "no
   // staging needed" about a path bwrap had just replaced with an empty tmpfs.
-  const miseNode = '/home/server/.local/share/mise/installs/node/24.19.0/bin/node'
+  // The path below is the SHAPE that was measured, deliberately under a home
+  // that is nobody's. It used to be the literal measured path,
+  // `/home/server/.local/share/mise/...`, and that made this test RED on
+  // exactly one machine in the world — the machine that path is real on, which
+  // is the Ubuntu 26.04 host the original failure was measured on and the only
+  // host where the sandbox can start at all. Found 2026-08-13, the first time
+  // the suite was run there since the rebind landed.
+  //
+  // Why it went red is the thing worth keeping: `sandboxRebindRoots()` mounts
+  // the RUNNING interpreter's own prefix read-only into the sandbox (layer 4,
+  // `a3a7d60`). On that host the running interpreter IS that mise install, so
+  // the path survives into the sandbox and correctly needs no staging. The code
+  // was right and the fixture had aged into a machine-dependent assertion.
+  const miseNode = '/home/nobody/.local/share/mise/installs/node/24.19.0/bin/node'
   assert.equal(needsSandboxStaging(miseNode, {}), true)
   assert.equal(needsSandboxStaging(miseNode, { HOME: undefined }), true)
   // The second measured shape: HOME is set, but to the sandbox's own ephemeral
   // home, so the HOST interpreter is correctly "not under it" and was skipped.
   assert.equal(needsSandboxStaging(miseNode, { HOME: '/tmp/review-agy-home-oGnLL0' }), true)
+})
+
+test('the running interpreter is not staged, because its prefix is rebound instead', () => {
+  // The other half of the decision, and the half nothing asserted until a real
+  // bwrap host made its absence visible. Staging and rebinding are two answers
+  // to one question — "will this path exist inside the sandbox" — and a path
+  // the rebind already carries must NOT also be staged, or the two mechanisms
+  // fight over the same file.
+  //
+  // Asserted through `process.execPath` rather than a literal, so it states the
+  // rule on every machine instead of one machine's layout. On a host whose
+  // interpreter sits outside every masked root there is nothing to rebind and
+  // nothing to stage, which is the same answer for a different reason — so the
+  // assertion is conditional on there BEING a rebind, and says so.
+  const roots = sandboxRebindRoots()
+  if (roots.length === 0) {
+    assert.equal(needsSandboxStaging(process.execPath, {}), false,
+      'an interpreter outside every masked root needs no staging')
+    return
+  }
+  assert.equal(needsSandboxStaging(process.execPath, {}), false,
+    'the running interpreter is carried by the rebind and must not be staged too')
 })
 
 test('every masked root is covered, not just the one that was measured', () => {
