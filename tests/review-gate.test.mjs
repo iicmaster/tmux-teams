@@ -254,12 +254,42 @@ test('permission requests are always denied and a missing model acknowledgement 
   await assert.rejects(invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'ack-mismatch' }), e => e instanceof ReviewTransportError && e.code === 'config')
 })
 
+test('a review carrying credential-shaped text is redacted and kept, not discarded', async () => {
+  // These three used to be `assert.rejects(..., code === 'review')`. They were
+  // changed on 2026-08-13 after a real run on a bwrap host threw away a COMPLETE
+  // AGY review of a diff about an environment-variable allowlist: `sensitiveName`
+  // matches any identifier containing token/auth/secret, one pattern fires on
+  // `NAME:`, and a reviewer writing `CLAUDE_CODE_MAX_OUTPUT_TOKENS: raise this`
+  // lost its whole document. The inbound packet was always redacted rather than
+  // refused; the outbound review now matches.
+  //
+  // The security property is what these assertions are for, and it is unchanged:
+  // the secret must be GONE. The change is only that the review survives beside
+  // it, and that the caller is told the document was touched.
+  for (const [behaviour, secret] of [
+    ['escaped-secret-review', 'abcdefghijklmnopqrstuvwxyz123456'],
+    ['plain-secret-review', 'hunter2'],
+    ['url-secret-review', 'supersecret'],
+  ]) {
+    const out = await invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: behaviour })
+    assert.equal(out.reviewRedacted, true, `${behaviour}: the caller was not told the review was redacted`)
+    const serialized = JSON.stringify(out.review)
+    assert.equal(serialized.includes(secret), false, `${behaviour}: the secret survived into the accepted review`)
+    assert.match(serialized, /\[REDACTED\]/, `${behaviour}: nothing was marked as redacted`)
+    assert.equal(out.review.verdict, 'PASS', `${behaviour}: the review itself was lost`)
+  }
+})
+
+test('a clean review is not reported as redacted', () =>
+  invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'schema-only' }).then((out) => {
+    // The other half. Without this, a change that marked EVERY review redacted
+    // would satisfy the test above and tell the operator nothing.
+    assert.equal(out.reviewRedacted, false, 'a review with no credential-shaped text was reported as redacted')
+  }))
+
 test('malformed JSON-RPC, malformed review, and timeout never become accepted reviews', async () => {
   await assert.rejects(invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'malformed' }), e => e.code === 'protocol')
   await assert.rejects(invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'bad-review' }), e => e.code === 'review')
-  await assert.rejects(invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'escaped-secret-review' }), e => e.code === 'review')
-  await assert.rejects(invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'plain-secret-review' }), e => e.code === 'review')
-  await assert.rejects(invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'url-secret-review' }), e => e.code === 'review')
   await assert.rejects(invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'response-then-invalid' }), e => e.code === 'protocol')
   await assert.rejects(invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'response-then-exit-7' }), e => e.code === 'closed')
   await assert.rejects(runAcpReview({ profile: profile('oc'), lane: 'oc', packet: packet(), timeoutMs: 25, env: { MOCK_REVIEW_BEHAVIOUR: 'late' } }), e => e.code === 'timeout')

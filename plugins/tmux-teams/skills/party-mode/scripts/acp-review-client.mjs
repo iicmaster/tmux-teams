@@ -79,7 +79,13 @@ function redact(value, key = '', seen = new WeakSet(), depth = 0, budget = {
   if (budget.nodes > budget.maxNodes) throw new ReviewTransportError('input', 'review packet node count exceeds limit')
   if (budget.bytes > budget.maxBytes) throw new ReviewTransportError('input', 'raw review packet exceeds limit')
   if (depth > 32) throw new ReviewTransportError('input', 'review packet nesting exceeds limit')
-  if (secretKey.test(key)) return '[REDACTED]'
+  // Key-NAME redaction is right for an inbound packet, which can legitimately
+  // carry a config object where `api_key` holds the real thing. It is wrong for
+  // an outbound REVIEW, which is prose: measured 2026-08-13, it turned a field
+  // called `sawRawSecret` from `false` into `[REDACTED]`, and it would erase any
+  // finding whose own field name mentions the subject it is reporting on.
+  // Callers that pass `keyNames: false` still get every string VALUE scrubbed.
+  if (budget.keyNames !== false && secretKey.test(key)) return '[REDACTED]'
   if (typeof value === 'string') return redactString(value)
   if (Array.isArray(value)) {
     if (seen.has(value)) throw new ReviewTransportError('input', 'review packet must not be cyclic')
@@ -229,11 +235,32 @@ function parseStrictReview(chunks) {
     throw new ReviewTransportError('review', 'agent output is not one strict JSON document', e)
   }
   if (!isObject(review)) throw new ReviewTransportError('review', 'review document must be a JSON object')
-  const decoded = JSON.stringify(review)
-  if (redactString(decoded) !== decoded) {
-    throw new ReviewTransportError('review', 'review document contains credential-like material')
-  }
-  return review
+  // REDACT, DO NOT DISCARD. This threw until 2026-08-13, and measured on a real
+  // bwrap host that day it cost an entire completed review: the AGY lane read
+  // the diff, wrote its verdict, and was refused for "credential-like material"
+  // because the diff under review is about an ENVIRONMENT VARIABLE ALLOWLIST.
+  // `sensitiveName` matches any identifier containing token/auth/secret, and one
+  // pattern fires on `NAME:` — so a reviewer that so much as writes
+  // `CLAUDE_CODE_MAX_OUTPUT_TOKENS: raise this` loses its whole document. On the
+  // diffs this repository actually produces, that made an accepted review from
+  // that lane close to unreachable.
+  //
+  // The inbound packet has always been redacted rather than rejected. Doing the
+  // same on the way out is the symmetric answer and strictly safer than the old
+  // behaviour: nothing credential-shaped survives either way, and the review
+  // survives too. `redact` is reused deliberately — it walks fields and rewrites
+  // each string. Running `redactString` over `JSON.stringify(review)` would NOT
+  // work and is the trap to avoid: its last pattern replaces to end-of-line, and
+  // a stringified review is one line, so a single match eats the whole document.
+  const cleaned = redact(review, '', new WeakSet(), 0, {
+    nodes: 0,
+    bytes: 0,
+    maxNodes: ACP_REVIEW_LIMITS.packetNodes,
+    maxBytes: ACP_REVIEW_LIMITS.rawPacketBytes,
+    keyNames: false,
+  })
+  if (!isObject(cleaned)) throw new ReviewTransportError('review', 'review document must be a JSON object')
+  return { review: cleaned, redacted: JSON.stringify(cleaned) !== JSON.stringify(review) }
 }
 
 function isHarmlessAgyThink(update) {
@@ -1336,7 +1363,8 @@ export async function runAcpReview({
         throw new ReviewTransportError('closed', `ACP agent received an unexpected terminal signal (${terminal.signal})`)
       }
       if (fatalError) throw fatalError
-      return { stopReason: done?.stopReason, review: parseStrictReview(chunks) }
+      const parsed = parseStrictReview(chunks)
+      return { stopReason: done?.stopReason, review: parsed.review, reviewRedacted: parsed.redacted }
     })()
     const result = await Promise.race([work, timeout, fatal])
     settled = true

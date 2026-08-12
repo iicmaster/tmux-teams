@@ -603,18 +603,56 @@ function settingsPath(profile, source) {
   return override || (home ? join(home, relativePath) : null)
 }
 
-function loadRoutedEnvironment(profile, source, loader = file => JSON.parse(readFileSync(file, 'utf8'))) {
-  const file = settingsPath(profile, source)
+// A profile whose credential is NOT in its settings JSON. Measured 2026-08-13 on
+// the Ubuntu 26.04 review host: its `claude-zai` wrapper keeps
+// `ANTHROPIC_BASE_URL` in `~/.claude/profiles/zai.json` and the token in a
+// sibling `zai.env`, deliberately, so the secret never sits in a JSON file. That
+// is better hygiene than assuming both live together, and it made every routed
+// lane refuse there with "requires an explicit provider credential" — the gate
+// could only read the JSON.
+//
+// The operator names the file; this module keeps knowing nothing about where a
+// profile lives. Values pass the SAME `routedSettingsEnv` allowlist as the JSON
+// ones, so pointing at a stray file cannot smuggle arbitrary environment into a
+// lane, and the settings JSON wins on any key present in both — a credential
+// file may ADD a secret, never redirect an endpoint.
+function loadRoutedCredentialFile(profile, source, reader = file => readFileSync(file, 'utf8')) {
+  const file = source?.[`TMUX_TEAMS_REVIEW_${profile.id.toUpperCase()}_ENV_FILE`]
   if (!file || !existsSync(file)) return {}
+  const out = {}
+  for (const rawLine of String(reader(file)).split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#')) continue
+    const eq = line.indexOf('=')
+    if (eq <= 0) continue
+    const key = line.slice(0, eq).replace(/^export\s+/, '').trim()
+    if (!routedSettingsEnv.has(key)) continue
+    let value = line.slice(eq + 1).trim()
+    if (value.length >= 2 && ((value[0] === '"' && value.at(-1) === '"') ||
+        (value[0] === "'" && value.at(-1) === "'"))) value = value.slice(1, -1)
+    if (value) out[key] = value
+  }
+  return out
+}
+
+function loadRoutedEnvironment(profile, source, loader = file => JSON.parse(readFileSync(file, 'utf8'))) {
+  const credentials = loadRoutedCredentialFile(profile, source)
+  const file = settingsPath(profile, source)
+  if (!file || !existsSync(file)) return credentials
   const parsed = loader(file, profile)
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new TypeError(`${profile.id} review settings must be a JSON object`)
   }
   const values = parsed.env
-  if (!values || typeof values !== 'object' || Array.isArray(values)) return {}
-  return Object.fromEntries(Object.entries(values)
-    .filter(([key, value]) => routedSettingsEnv.has(key) && value !== null && value !== undefined)
-    .map(([key, value]) => [key, String(value)]))
+  if (!values || typeof values !== 'object' || Array.isArray(values)) return credentials
+  // Settings JSON last: it wins every key it declares, so a credential file can
+  // only supply what the profile did not.
+  return {
+    ...credentials,
+    ...Object.fromEntries(Object.entries(values)
+      .filter(([key, value]) => routedSettingsEnv.has(key) && value !== null && value !== undefined)
+      .map(([key, value]) => [key, String(value)])),
+  }
 }
 
 // One check for every routed lane, driven by the `endpoint` the profile pins.
