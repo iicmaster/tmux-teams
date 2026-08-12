@@ -205,9 +205,13 @@ not optional, and only a later explicit instruction from Master changes either.
    present, the first time anyone ran it on a host that could. AGY reached
    `status: accepted`; every claude-routed lane died, EIGHT distinct layers deep
    — five that stopped a lane before it could start, then three more that only a
-   running gate could ever have shown. This paragraph said "five" for a full
-   release and a half, because the last three landed in a commit nobody came
-   back to fold in. The first five, each fix revealing the next: staging asked
+   running gate could ever have shown. This paragraph said "five" from
+   `daeaa54` (2026-08-09 12:15) to `dfef37c` (2026-08-12 23:44) — three days,
+   across one shipped release, v0.19.0. Read those timestamps before repeating
+   the easy explanation: the paragraph was not left stale by neglect, it was
+   written at 12:15 and the layers it does not mention landed at 12:34 and
+   13:56 THE SAME AFTERNOON. Nobody re-read a paragraph they had finished an
+   hour earlier. The first five, each fix revealing the next: staging asked
    "is it under `$HOME`" instead of "does the sandbox mask it"; the
    trusted-roots list knew `~/.nvm`
    and not mise; no interpreter was staged at all; `npx` is a node script whose
