@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: "Write or refresh HANDOFF.md at the project root — the state of play between sessions, composed for an AI agent to act on rather than for a person to skim. Use when the user invokes /handoff, says hand off, write the handoff, save state before compaction, or asks what the next session needs to know. ใช้เมื่อ Master สั่ง /handoff, ส่งงานต่อ, เขียน HANDOFF, หรือถามว่าเซสชันถัดไปต้องรู้อะไร. Runs through party-mode so the room argues about what belongs before anything is written. Do not use to write release notes, a changelog, a commit message, or documentation for humans."
+description: "Write or refresh HANDOFF.md at the project root — the state of play between sessions, composed for an AI agent to act on rather than for a person to skim. Use when the user invokes /handoff, says hand off, write the handoff, save state before compaction, or asks what the next session needs to know. ใช้เมื่อ Master สั่ง /handoff, ส่งงานต่อ, เขียน HANDOFF, หรือถามว่าเซสชันถัดไปต้องรู้อะไร. Runs through bmad-party-mode when installed, else party-mode, so a room argues about what belongs before anything is written. Do not use to write release notes, a changelog, a commit message, or documentation for humans."
 ---
 
 # Handoff
@@ -13,13 +13,22 @@ Its reader is the next AI agent, which changes what belongs in it.
 
 ## Run it through the room
 
-Invoke `party-mode` first and compose the handoff there. A handoff written by
-one voice inherits that voice's blind spots, and the blind spot is always the
-same one: the author knows why a line matters, so the line does not say why.
-Let the room fight about what earns its place before a byte is written.
+Compose the handoff in a room, never alone. A handoff written by one voice
+inherits that voice's blind spots, and the blind spot is always the same one:
+the author knows why a line matters, so the line does not say why. Let the room
+fight about what earns its place before a byte is written.
 
-If `party-mode` is unavailable, say so and write it solo rather than stalling —
-a handoff that exists beats a handoff that was going to be excellent.
+**Invoke `bmad-party-mode` if it is installed** (owner's instruction,
+2026-08-13) — its roster carries a product manager, a designer and an adversary,
+and the adversary is what makes a handoff argue with itself. This plugin does
+NOT ship that skill: it is a separate install, so a bare instruction to use it
+would be an instruction nobody else can follow. Hence the ladder, and hence the
+naming — say which room you used, because "ran it through the room" reads the
+same whichever one answered.
+
+Fall back to this plugin's own `party-mode`, and if neither is installed say so
+and write it solo rather than stalling — a handoff that exists beats a handoff
+that was going to be excellent.
 
 ## What changes when the reader is an agent
 
