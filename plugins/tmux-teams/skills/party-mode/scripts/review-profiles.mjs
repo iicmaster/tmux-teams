@@ -54,7 +54,7 @@ export const REVIEW_PROFILES = freeze({
   agy: {
     id: 'agy', provider: 'google-antigravity', family: 'gemini', model: 'gemini-3.6-flash-high',
     displayModel: 'agy/gemini-3.6-flash-high',
-    reviewMode: 'plan', osSandbox: 'bwrap', command: ['bunx', 'antigravity-acp@1.0.0'],
+    reviewMode: 'plan', command: ['bunx', 'antigravity-acp@1.0.0'],
     adapterPackage: 'antigravity-acp@1.0.0',
     config: { model: 'gemini-3.6-flash-high', mode: 'plan' },
   },
@@ -68,7 +68,7 @@ export const REVIEW_PROFILES = freeze({
     // meant any future route that seated both would count two families as
     // three, and the gate would say PASS. Pinned, its key names api.kimi.com
     // and the parent refuses a settings file that redirects it.
-    reviewMode: 'plan', osSandbox: 'bwrap',
+    reviewMode: 'plan',
     endpoint: KIMI_ENDPOINT,
     // A routed lane reads its base URL and credential from this file; without
     // the path, `loadRoutedEnvironment` finds nothing and `validateRoutedEndpoint`
@@ -118,7 +118,7 @@ export const REVIEW_PROFILES = freeze({
     // the 2026-08-09 lane authenticated fine and still answered prose. Whoever
     // picks this up is choosing between the session shape, a tolerant parse,
     // and a different model -- and should stop suspecting the mode.
-    reviewMode: 'default', osSandbox: 'bwrap',
+    reviewMode: 'default',
     command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
     adapterPackage: '@agentclientprotocol/claude-agent-acp@0.61.0',
     claudeExecutable: 'claude-zai',
@@ -132,7 +132,7 @@ export const REVIEW_PROFILES = freeze({
   qwen: {
     id: 'qwen', provider: 'qwen', family: 'qwen', model: 'qwen3.8-max-preview',
     displayModel: 'qwen/qwen3.8-max-preview',
-    reviewMode: 'plan', osSandbox: 'bwrap',
+    reviewMode: 'plan',
     command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
     adapterPackage: '@agentclientprotocol/claude-agent-acp@0.61.0',
     claudeExecutable: 'claude-qwen',
@@ -163,7 +163,7 @@ export const REVIEW_PROFILES = freeze({
     // after every substitution, so a panel that would seat both refuses itself.
     // Precisely: deepseek CAN replace a failed qwen (the swap leaves
     // [zai, deepseek, agy] and validates); what it cannot do is sit beside it.
-    reviewMode: 'plan', osSandbox: 'bwrap',
+    reviewMode: 'plan',
     command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
     adapterPackage: '@agentclientprotocol/claude-agent-acp@0.61.0',
     claudeExecutable: 'claude-qwen',
@@ -176,7 +176,7 @@ export const REVIEW_PROFILES = freeze({
   claude: {
     id: 'claude', provider: 'anthropic', family: 'claude', model: 'claude-opus-4-8',
     displayModel: 'claude/opus-4.8',
-    reviewMode: 'plan', osSandbox: 'bwrap',
+    reviewMode: 'plan',
     command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
     adapterPackage: '@agentclientprotocol/claude-agent-acp@0.61.0',
     sessionSettings: { availableModels: ['claude-opus-4-8'] },
@@ -185,7 +185,7 @@ export const REVIEW_PROFILES = freeze({
   codex: {
     id: 'codex', provider: 'openai', family: 'openai', model: 'gpt-5.6-sol',
     displayModel: 'openai/gpt-5.6-sol',
-    reviewMode: 'plan', osSandbox: 'bwrap',
+    reviewMode: 'plan',
     command: ['npx', '-y', '@agentclientprotocol/codex-acp@1.1.7'],
     adapterPackage: '@agentclientprotocol/codex-acp@1.1.7',
     config: {

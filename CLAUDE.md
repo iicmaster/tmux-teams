@@ -264,14 +264,20 @@ not optional, and only a later explicit instruction from Master changes either.
    three families through bwrap on a Linux host.** A `qwen` provisioned on that
    host is a prerequisite of that run, not a separate item.
 
-   **It is Linux-only.** Every profile declares `osSandbox: 'bwrap'` and
-   `plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs` refuses at
-   the `config` stage unless the platform is
-   Linux AND `/usr/bin/bwrap` exists; README already listed that as a
-   fail-closed requirement, and nothing ever compared the rule against a run.
-   All three lanes refuse together, at `stage: config` with `stderrBytes: 0`,
-   which is exactly the undiagnosable shape the open review-gate issue describes
-   — so read this paragraph before believing your lanes are broken.
+   **It was Linux-only, and as of 2026-08-13 it is not — see ADR 0006.** No
+   shipped profile declares `osSandbox: 'bwrap'` any more, so the gate runs on
+   macOS too. The bwrap machinery is retained and still tested; a profile that
+   declares the field gets the full sandbox, and turning it back on is one word.
+   What was given up is filesystem confinement at the OS level, and the ADR
+   states that plainly along with the argument against the decision.
+   Everything else the gate checks is unchanged and never came from bwrap: a
+   temporary workspace, `toolCallsObserved: 0`, no built-in tools, no MCP
+   servers, every permission denied, the endpoint pinned and verified in the
+   PARENT before the child starts, and the packet redacted both ways.
+
+   The old shape is still worth recognising if you re-enable it: on a non-Linux
+   host all three lanes refuse together at `stage: config` with `stderrBytes: 0`,
+   which reads like three broken profiles and is one precondition.
 
    Two further limits worth knowing before you build the packet: the gate caps a
    prepared packet at **128 KiB** (256 KiB raw), and a release diff will exceed
