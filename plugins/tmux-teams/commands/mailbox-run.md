@@ -12,7 +12,7 @@ Raw slash-command arguments:
 Core rules:
 
 - Workers are **codex-only** today (`mailbox-run.js` launches `codex` in each tmux window).
-- MANDATORY before any dispatch (tmux-teams SKILL.md §7, Master directive 2026-07-19): (1) plan with the `tmux-teams:sqthink` skill — worker split, per-worker brief + `verify_cmd`, dependency order, stakes; (2) create one task per worker with TaskCreate (brief summary, verify_cmd, `addBlockedBy` for dependency order). Do NOT invoke the Workflow until both the sqthink plan and the tasks exist; update each task's status as its outbox lands.
+- MANDATORY before any dispatch (tmux-teams SKILL.md ข้อ 7, Master directive 2026-07-19): (1) plan with the `tmux-teams:sqthink` skill — worker split, per-worker brief + `verify_cmd`, dependency order, stakes; (2) create one task per worker with TaskCreate (brief summary, verify_cmd, `addBlockedBy` for dependency order). Do NOT invoke the Workflow until both the sqthink plan and the tasks exist; update each task's status as its outbox lands.
 - Always invoke the workflow with explicit plugin paths — never rely on `~/.claude/skills` copies (they may not exist):
 
 ```
@@ -29,5 +29,5 @@ Workflow({
 ```
 
 - Derive `repo` and `workers` from the arguments; use AskUserQuestion only when the target repo is genuinely ambiguous.
-- Gate completion per tmux-teams SKILL.md §7: PM adversarial verify for normal runs; for high stakes hand the evidence to party-mode's bundled ACP-only gate, `node <party-mode>/scripts/review-gate.mjs <packet> <runner-owned-absolute-target>`. It requires AGY and exactly three valid, distinct acknowledged reviewers; do not substitute review plugins, MCP review tools, tmux workers, raw review CLIs, or a two-reviewer fallback.
+- Gate completion per tmux-teams SKILL.md ข้อ 7: PM adversarial verify for normal runs; for high stakes hand the evidence to party-mode's bundled ACP-only gate, `node <party-mode>/scripts/review-gate.mjs <packet> <runner-owned-absolute-target>`. It requires AGY and exactly three valid, distinct acknowledged reviewers; do not substitute review plugins, MCP review tools, tmux workers, raw review CLIs, or a two-reviewer fallback.
 - Report with quoted worker outboxes, not paraphrase.

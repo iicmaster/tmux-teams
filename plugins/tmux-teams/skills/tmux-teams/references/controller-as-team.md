@@ -5,13 +5,13 @@ is untouched and still ships v0.10.0, where an operator writes `opened` straight
 at a delivery team.
 
 Built and proved by `tests/controller-team.test.mjs` against the real `tick()`:
-the controller as a team derived from `route[0]` with WIP 1 (§3), admission
-through it and out as an ordinary pull (§4), the grill's three answers and its
-six categories (§5), `questioned`/`answered` with the human-actor rule (§6), the
+the controller as a team derived from `route[0]` with WIP 1 (ข้อ 3), admission
+through it and out as an ordinary pull (ข้อ 4), the grill's three answers and its
+six categories (ข้อ 5), `questioned`/`answered` with the human-actor rule (ข้อ 6), the
 answer deadline as an option rather than a constant, and the withdrawal notice
-(§6.3), and the intake statistics the controller is handed on every withdrawal
-(§9.1). Nothing in the design is unbuilt now; what remains is a deviation
-recorded in §9.1 and a decision Master may overrule. This document is the design that
+(ข้อ 6.3), and the intake statistics the controller is handed on every withdrawal
+(ข้อ 9.1). Nothing in the design is unbuilt now; what remains is a deviation
+recorded in ข้อ 9.1 and a decision Master may overrule. This document is the design that
 replaces it, written to be complete enough to build from and to be argued with
 before anyone builds it.
 
@@ -33,7 +33,7 @@ An operator admits work with one command:
 
 Two defects, both structural:
 
-**The auditor never saw the request.** §9 makes the outer controller the only
+**The auditor never saw the request.** ข้อ 9 makes the outer controller the only
 role that can ask whether what came out of the end is what was asked for. It is
 handed that question at the end of a route it had no part in admitting. In
 Master's words: *"PM เป็นคนตรวจงานคนสุดท้าย แต่จะไม่รู้ว่างานนี้มาจากไหนได้อย่างไร"* — the last
@@ -54,7 +54,7 @@ The controller stops being an exception and becomes **an ordinary team**,
 declared in `graph.json` like any other, with **one worker, so WIP 1**.
 
 Everything the board already has then applies to it with no new mechanism:
-occupancy (§6), the pull (§7), the WIP limit (§3.1), the placement rule. The
+occupancy (ข้อ 6), the pull (ข้อ 7), the WIP limit (ข้อ 3.1), the placement rule. The
 question "where does an admitted token sit before the first team takes it?" —
 which had no answer while the controller was not a team — answers itself: it
 sits with the controller, exactly as work sits with any team.
@@ -68,7 +68,7 @@ route instead of at one leg.
 | Job | Role on the controller team | The same rule as every other team |
 | --- | --- | --- |
 | take a request, interrogate it, make it a token, queue it | **dispatcher** | the receiving side decides whether to accept |
-| unstick what the loop cannot decide (§9's triggers) | **worker** | one worker, one leg, WIP 1 |
+| unstick what the loop cannot decide (ข้อ 9's triggers) | **worker** | one worker, one leg, WIP 1 |
 | read the finished delivery as a whole | **evaluator** | the gate that can send work back |
 
 An ordinary team's dispatcher admits work to that TEAM; the controller's admits
@@ -128,7 +128,7 @@ With that gone, Master's first point decides it: leaving it implicit **moves the
 knowledge out of the declaration and into code or prose**. Someone reading
 `graph.json` would not see the path a token actually takes; they would have to
 know a rule that is not in the file. This project has already made that choice
-once, in the opposite direction — §4.6 exists because a `pulled` at the head of
+once, in the opposite direction — ข้อ 4.6 exists because a `pulled` at the head of
 a route would have to omit `from_team` or name a sender that does not exist, and
 the fix was to make the FILE say the true thing rather than teach every reader a
 special case.
@@ -137,10 +137,10 @@ special case.
 
 An earlier draft of this design added a `controller_team` field. With the
 controller written at the head of every route, that field would state a fact the
-routes already state — and §3.1 of the contract settled what to do about that
+routes already state — and ข้อ 3.1 of the contract settled what to do about that
 when it ruled on `wip_limit`: *a second number allowed to disagree with the first
 is a defect waiting to happen*. So there is no field. The controller team is
-`route[0]`, and the graph must contain at least one workflow (§3 bounds
+`route[0]`, and the graph must contain at least one workflow (ข้อ 3 bounds
 guarantee it), so the derivation always has a source.
 
 Validation rules the graph checker would gain:
@@ -148,9 +148,9 @@ Validation rules the graph checker would gain:
 - **Every** workflow's `route[0]` names the same team. A graph whose routes
   disagree about where work enters is refused, naming both heads.
 - That team appears in no route beyond position 0 — the controller is the head
-  of every route, not a stop on any of them (and §1 already forbids revisiting).
+  of every route, not a stop on any of them (and ข้อ 1 already forbids revisiting).
 - That team's `worker_ids` holds exactly one entry, and it equals
-  `outer_controller_id` — the seat that answers §9's questions is the seat the
+  `outer_controller_id` — the seat that answers ข้อ 9's questions is the seat the
   contract already names.
 
 `graph.mjs check` prints the full path it derived, so the tool shows what the
@@ -178,9 +178,9 @@ human ──opened──▶ [control] ──grill──▶ ⟨waiting on the hum
 | 4a | `questioned` (NEW) | `agent:pm_intake` | the grill is not satisfied; the token is parked ON A HUMAN |
 | 4b | `answered` (NEW) | `human:<operator>` | the human answered; the token is live again and the grill re-runs |
 | 5 | `intake` `accept` | `agent:pm_intake` | the request is clear, the workflow is chosen, both are on the record |
-| 6 | `pulled` | the receiving team | the first delivery team takes it when it has room (§7, unchanged) |
+| 6 | `pulled` | the receiving team | the first delivery team takes it when it has room (ข้อ 7, unchanged) |
 
-What step 1 does to §4.6: `opened` keeps its shape but narrows to a single legal
+What step 1 does to ข้อ 4.6: `opened` keeps its shape but narrows to a single legal
 destination. That is checkable, and it turns `opened` from a general-purpose door
 into one specific fact.
 
@@ -205,7 +205,7 @@ interrogate until nothing is left to guess.
 ### 5.1 The two evidences
 
 The danger with a gate like this is that "the model judged the request clear" is
-an **attestation**, and §2 accepts attestations from no other role in this
+an **attestation**, and ข้อ 2 accepts attestations from no other role in this
 system. So the gate carries two independent pieces of evidence, and Master chose
 both rather than either.
 
@@ -340,7 +340,7 @@ repeatedly, to ask a question of someone who has not answered yet.
 So the design adds one event pair and one rule:
 
 ```jsonc
-// §4 table addition
+// ข้อ 4 table addition
 "questioned": { "required": ["agent_id", "questions", "reason"] }
 "answered":   { "required": ["reason"], "actor_kind": "human" }
 ```
@@ -349,7 +349,7 @@ So the design adds one event pair and one rule:
   the first state in this system whose only legal continuation is a human
   writing a line.
 - `answered` releases it. Its actor must be a `human:` — this is Evidence 2 from
-  §5.1, and making the writer's KIND part of the event's validity is what stops a
+  ข้อ 5.1, and making the writer's KIND part of the event's validity is what stops a
   model from unblocking itself.
 - The board must draw a `questioned` token distinctly. "Waiting on a person" and
   "waiting on an agent" look identical on today's page and mean opposite things
@@ -375,12 +375,12 @@ does not mean the request is destroyed: the ledger is append-only, so the whole
 grill — the questions asked, the silence — stays readable forever, and the
 request file stays on disk. What ends is the token's claim on a WIP slot.
 
-**Who writes it, and the clause it breaks.** §9 says today that `abandon` is the
+**Who writes it, and the clause it breaks.** ข้อ 9 says today that `abandon` is the
 controller's verdict and that the controller is *the only mechanised writer of*
 `abandoned`. A deadline expiry is written by the RUNNER, on a timer, with no
-controller leg — the second mechanised writer that clause forbids. Either §9 is
+controller leg — the second mechanised writer that clause forbids. Either ข้อ 9 is
 amended to name this second writer explicitly, or the expiry gets its own event.
-**Recommendation: amend §9 and reuse `abandoned`**, with a reason that names the
+**Recommendation: amend ข้อ 9 and reuse `abandoned`**, with a reason that names the
 deadline, because a reader asking "why did this token stop" wants one word to
 look for, not two.
 
@@ -415,7 +415,7 @@ cannot drift the way "ten minutes from when you read this" does.
 Murat's objection to a clock-driven rule: `tick` reads the wall clock directly,
 so a ten-minute threshold is unreachable by any test that finishes in seconds —
 the same reason `ZOMBIE_SEC` (180s), `PM_COOLDOWN_SEC` (900s) and `STALL_SEC`
-(1800s) sit in §14.1 today as rules with no test.
+(1800s) sit in ข้อ 14.1 today as rules with no test.
 
 Master's answer avoids the whole problem: *"ก็แค่ทำเวลารอเป็นตัวแปรใน config เวลาทดสอบก็เปลี่ยน
 เป็นรอ 10 วิแทนก็ได้แล้วนี่"* — do not fake the clock, shrink the threshold. A test sets
@@ -423,7 +423,7 @@ the deadline to seconds and lets real time cross it.
 
 That is smaller than injecting a clock and it generalises: **all four time
 thresholds become declared config**, and the three that have sat untested since
-this contract was written come with it. §14.1 gets shorter by three rows for the
+this contract was written come with it. ข้อ 14.1 gets shorter by three rows for the
 price of one change.
 
 **The limit, stated so nobody mistakes it for more than it is.** A test that
@@ -505,7 +505,7 @@ which is why it was invisible to a room designing the machine.
 
 ### 6.4.1 What it costs: the forgery guarantee weakens, and must be re-stated
 
-§5.1's Evidence 2 said a model cannot write an `answered` line, because the actor
+ข้อ 5.1's Evidence 2 said a model cannot write an `answered` line, because the actor
 vocabulary is closed and `human:` is not a model's to claim. With a relaying
 agent that is no longer structurally true: the operator writes the line, and it
 writes `human:`.
@@ -544,7 +544,7 @@ gate nobody can reach is not a stronger gate.
    admission never blocks a delivery team, and the dispatch is paid once per
    token rather than per tick.
 3. **`opened` narrows.** One legal destination, one class of writer. Every reader
-   that treats `opened` and `pulled` alike (§5) keeps working, because the first
+   that treats `opened` and `pulled` alike (ข้อ 5) keeps working, because the first
    delivery leg becomes an ordinary `pulled`.
 4. **The audit gains a referent.** The controller's evaluator at the end can read
    the grill's own record from the beginning. "Is this what was asked for?"
@@ -561,12 +561,12 @@ Nothing below exists yet.
 | --- | --- | --- |
 | every route names the controller at `route[0]`, and it is derived from there | `workflow-graph.mjs` | a graph whose two routes start at different teams is refused, naming both heads; one whose head team has two workers is refused |
 | `opened` must target the controller team | `ledger-validate.mjs` | an `opened` at a delivery team is refused |
-| `questioned` / `answered` in the §4 table, with the human-actor rule | `ledger-validate.mjs` | an `answered` written by `agent:*` is refused |
+| `questioned` / `answered` in the ข้อ 4 table, with the human-actor rule | `ledger-validate.mjs` | an `answered` written by `agent:*` is refused |
 | the runner never dispatches on `questioned` | `loop-runner.mjs` | a replay whose token is `questioned` records no new `assigned` for it, and the runner says why |
 | the grill brief and its six categories | `role-briefs.mjs` | an `intake` whose categories are incomplete is refused |
 | the first delivery leg is a `pulled` from the controller team | `pull-controller.mjs` | a route's first event after `intake` is `pulled` with `from_team` = the controller team |
 | the board distinguishes waiting-on-human | `kanban.mjs`, `graph.mjs` | `stateOf` returns a distinct state for `questioned` |
-| §4.6, §6, §7, §9 amended | the contract | the amendment lands in the same commit as the behaviour (§15) |
+| ข้อ 4.6, ข้อ 6, ข้อ 7, ข้อ 9 amended | the contract | the amendment lands in the same commit as the behaviour (ข้อ 15) |
 
 Every one of those is a test that fails today, which is the only kind worth
 writing down in advance.
@@ -579,10 +579,10 @@ writing down in advance.
 
 | Question | Decision |
 | --- | --- |
-| Does `questioned` hold the controller's WIP? | **Yes**, and unanswered questions expire on a deadline (§6.1) |
-| Must all six categories be answered? | **No** — the controller judges sufficiency; every category is faced, none is skipped silently (§5.1) |
+| Does `questioned` hold the controller's WIP? | **Yes**, and unanswered questions expire on a deadline (ข้อ 6.1) |
+| Must all six categories be answered? | **No** — the controller judges sufficiency; every category is faced, none is skipped silently (ข้อ 5.1) |
 | Can a human answer partially? | Yes, by consequence of the above: enough is what the controller can work from without guessing |
-| What happens to a request the grill says should not be built? | It is an objection, not a veto. The person may confirm and it proceeds, with both on the record (§5.3) |
+| What happens to a request the grill says should not be built? | It is an objection, not a veto. The person may confirm and it proceeds, with both on the record (ข้อ 5.3) |
 
 **Settled 2026-07-31, second round:**
 
@@ -591,19 +591,19 @@ writing down in advance.
 | The deadline | **10 minutes.** Longer means the requirement was not thought through |
 | A countdown on the board | **No.** A request is not admitted until the controller confirms; nobody may type and walk away |
 | How the deadline is communicated | **An absolute wall-clock time inside the question** — "ตอบกลับภายใน 23:30 ไม่งั้นจะยกเลิก" |
-| How a clock-driven rule gets tested | **The threshold is config, not a constant** — tests set it to seconds (§6.2) |
-| What happens when it lapses | **The controller always closes the conversation** — outbox message + `abandoned`, naming the unanswered questions (§6.3) |
-| Who writes the expiry | **The runner**, using `abandoned`. `actor` already separates it from a controller's verdict, so §9 is amended to name the second writer rather than minting a second word |
+| How a clock-driven rule gets tested | **The threshold is config, not a constant** — tests set it to seconds (ข้อ 6.2) |
+| What happens when it lapses | **The controller always closes the conversation** — outbox message + `abandoned`, naming the unanswered questions (ข้อ 6.3) |
+| Who writes the expiry | **The runner**, using `abandoned`. `actor` already separates it from a controller's verdict, so ข้อ 9 is amended to name the second writer rather than minting a second word |
 
-**Closed by §6.4:** the channel is the chat the project already runs in, the
+**Closed by ข้อ 6.4:** the channel is the chat the project already runs in, the
 operator is the agent in it, and the deadline is rendered by something that knows
-the reader's timezone. The cost is recorded in §6.4.1: the forgery guarantee
+the reader's timezone. The cost is recorded in ข้อ 6.4.1: the forgery guarantee
 drops from structural to named.
 
 ### 9.1 The intake statistics — decided, built, with one deviation
 
 Decided 2026-07-31 by Master: **the controller reads them itself**, **every time
-a request is withdrawn** (event-triggered, never a timer — §9), and three things
+a request is withdrawn** (event-triggered, never a timer — ข้อ 9), and three things
 may change as a result: the grill's brief, the deadline value, and telling the
 people who are asked to clarify most.
 
@@ -616,7 +616,7 @@ The statistics are a **recommendation surface**: the controller says what the
 brief or the deadline should become, with the number behind it, and a person
 applies it. I first recorded this as a deviation from Master's answer, reading
 "แก้ brief ของ grill" as the controller editing its own brief. That was my
-misreading, corrected the same day — and §2 would have refused it anyway, since
+misreading, corrected the same day — and ข้อ 2 would have refused it anyway, since
 a declaration is *assigned by a human, never observed* and a brief the
 controller rewrites from its own statistics is a declaration nobody signed.
 

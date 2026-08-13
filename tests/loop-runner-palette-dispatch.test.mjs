@@ -1,8 +1,8 @@
-// loop-runner-palette-dispatch.test.mjs — GitHub #47 phase 2 (§3.5): a seat
+// loop-runner-palette-dispatch.test.mjs — GitHub #47 phase 2 (ข้อ 3.5): a seat
 // that declares a palette actually dispatches from it, in declared order, and
 // a seat that declares none is byte-for-byte unaffected.
 //
-// Phase 1 (`6301f4d`, contract §3.5) shipped the SHAPE and left it unread:
+// Phase 1 (`6301f4d`, contract ข้อ 3.5) shipped the SHAPE and left it unread:
 // `teams[].agents[].palette` resolves and validates, but nothing chooses an
 // entry or writes a second one. This file proves the choosing: the starting
 // entry, the walk forward on a transport failure, the retry-in-place on a
@@ -52,7 +52,7 @@ const graphOf = (value) => {
 }
 
 // Declared shape on the left of each entry passed to `graphOf`; the RESOLVED
-// shape workflow-graph.mjs actually produces on `agents[].palette` (§3.5:
+// shape workflow-graph.mjs actually produces on `agents[].palette` (ข้อ 3.5:
 // effort/display_model default to null, never omitted) is what `dispatchOn`
 // reads and what every assertion below compares against.
 const PALETTE_DECLARED = [
@@ -123,7 +123,7 @@ const planFor = (graph, events) =>
 
 // ── AC1: a palette dispatches from it, starting point first ─────────────────
 
-test('a fresh admission on a palette seat dispatches candidate 0 — "the starting point" (§3.5)', () => {
+test('a fresh admission on a palette seat dispatches candidate 0 — "the starting point" (ข้อ 3.5)', () => {
   const plan = planFor(PALETTE_GRAPH, ADMITTED)
   assert.equal(plan.action, 'dispatch')
   assert.equal(plan.agent_id, 'b_w1')
@@ -144,14 +144,14 @@ test('two transport failures advance to candidate 2', () => {
 
 // ── the full-cycle escalation, and that it is a TIGHTER bound than legCeiling ─
 
-test('a full cycle with nothing answering escalates instead of retrying candidate 0 (§3.5)', () => {
+test('a full cycle with nothing answering escalates instead of retrying candidate 0 (ข้อ 3.5)', () => {
   const events = [...ADMITTED, ...failedLeg(1, false), ...failedLeg(2, false), ...failedLeg(3, false)]
   const plan = planFor(PALETTE_GRAPH, events)
   assert.equal(plan.action, 'escalate', `expected escalate, got ${plan.action}: ${plan.reason}`)
   assert.match(plan.reason, /3-entry palette has taken 3 transport failure/)
   assert.match(plan.reason, /3 transport failure/)
   // The tighter, palette-scoped bound fires with only 3 of the legCeiling's 15
-  // still spent — legCeiling (§4.10: every `assigned` counts, unconditionally)
+  // still spent — legCeiling (ข้อ 4.10: every `assigned` counts, unconditionally)
   // is nowhere near exhausted, so this escalation is NOT the pre-existing
   // `legs >= ceiling` guard firing under a different name.
   const legs = itemsOf('tok', events).get('tok').legs
@@ -192,7 +192,7 @@ test('a genuine worker failure (work_observed: true) retries candidate 0 rather 
   assert.deepEqual(plan.candidate, PALETTE[0], 'a genuine failure moved to the next candidate instead of retrying this one')
 })
 
-test('a lost leg (§4.10: never read as "never started") retries candidate 0 rather than advancing', () => {
+test('a lost leg (ข้อ 4.10: never read as "never started") retries candidate 0 rather than advancing', () => {
   const plan = planFor(PALETTE_GRAPH, [
     ...ADMITTED,
     { event: 'assigned', agent_id: 'b_w1', task_id: 't-1' },
@@ -224,7 +224,7 @@ test('a controller resume restarts the palette at candidate 0, like attemptsBy a
   assert.deepEqual(plan.candidate, PALETTE[0])
 })
 
-// ── a worker_hint names a SEAT (§4.9, unchanged); the palette is that seat's
+// ── a worker_hint names a SEAT (ข้อ 4.9, unchanged); the palette is that seat's
 // own concern either way — `dispatchOn` is reached identically from the hint
 // branch and the free-pick branch of `want` ─────────────────────────────────
 

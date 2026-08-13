@@ -4,7 +4,7 @@
 // C1: every reason the runner passed over a token used to go to `log()` and
 // nowhere else — a token nobody looked at this tick and a token the runner
 // considered and declined were, the instant the tick ended, indistinguishable.
-// `.tmux-teams/decisions/latest.json` is the fix (contract §11.3):
+// `.tmux-teams/decisions/latest.json` is the fix (contract ข้อ 11.3):
 // overwritten whole every tick, so it answers "why is it not moving right
 // now" and nothing longer-lived than that.
 import { test } from 'node:test'
@@ -129,7 +129,7 @@ test('a tick that returns before evaluating any token leaves an existing decisio
   assert.match(before, /"wip"/, 'the setup tick did not actually record anything to compare against')
 
   // A pulse older than PULSE_STALE_SEC (120s) makes the tick refuse before it
-  // ever reaches `planDispatches` — the early-return path §11.3 says must not
+  // ever reaches `planDispatches` — the early-return path ข้อ 11.3 says must not
   // overwrite what the last full tick left.
   writeFileSync(join(dir, '.tmux-teams', 'pulse.json'), JSON.stringify({
     generated_at: new Date(Date.now() - 600 * 1000).toISOString(),

@@ -1,8 +1,8 @@
-// mcp-servers-closed.test.mjs — contract §13: no dispatch may pass a non-empty
+// mcp-servers-closed.test.mjs — contract ข้อ 13: no dispatch may pass a non-empty
 // `mcpServers`, and both ACP calls that start or resume a session send the
 // literal `mcpServers: []`.
 //
-// Until this file existed that closure was a CODE-REVIEW fact. §14.1 said so in
+// Until this file existed that closure was a CODE-REVIEW fact. ข้อ 14.1 said so in
 // its own words — "no test asserts `session/new` and `session/load` still send
 // `mcpServers: []`; the closure is a code-review fact about `acp-companion.mjs`,
 // not a running guard" — and a rule the code merely happens to follow is one
@@ -87,7 +87,7 @@ function assertSentMcpServersEmpty(run, method) {
     // other spelling an ACP agent accepts, and an object is where a server
     // registration would actually be smuggled in.
     assert.deepEqual(call.params.mcpServers, [],
-      `${method} must send the literal empty ARRAY (contract §13): ${JSON.stringify(call.params.mcpServers)}`)
+      `${method} must send the literal empty ARRAY (contract ข้อ 13): ${JSON.stringify(call.params.mcpServers)}`)
   }
   return calls
 }
@@ -111,7 +111,7 @@ test('session/load sends the literal mcpServers: [] on the resume path', () => {
 })
 
 test('every session-opening call in one dispatch is covered, not just the first', () => {
-  // §13 says "every ACP call that starts or resumes an agent's session". If a
+  // ข้อ 13 says "every ACP call that starts or resumes an agent's session". If a
   // future companion opens a second session mid-dispatch, the per-call loop in
   // assertSentMcpServersEmpty catches it — this test states that intent so the
   // loop is not simplified away as redundant.

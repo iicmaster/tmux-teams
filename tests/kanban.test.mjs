@@ -25,7 +25,7 @@ const PULSE = join(ROOT, 'plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs
 
 const NOW = '2026-07-27T12:00:00.000Z'
 
-// Every seat names its model because §3 now requires one, and the value is
+// Every seat names its model because ข้อ 3 now requires one, and the value is
 // shape-checked only — never matched against a list — so a fixture name is as
 // legal here as a real one. No team declares `wip_limit`: it is derived from the
 // worker count, and a declared number that disagreed is rejected outright.
@@ -52,7 +52,7 @@ const FOUR_TEAMS = {
 
 // Ledgers are written as JSONL text so the test exercises the real reader,
 // including the line-skipping it does.
-// Fields contract §4 requires that no card on this board is ever about. Stated
+// Fields contract ข้อ 4 requires that no card on this board is ever about. Stated
 // once here rather than in every fixture; anything a fixture says itself wins,
 // because the spread comes last.
 const fill = (entry) => {
@@ -89,7 +89,7 @@ const repoWith = (graph, ledgers = {}, gates = {}) => {
   for (const [token, events] of Object.entries(ledgers)) {
     // Gated before it reaches disk: a card drawn from a history the loop could
     // not have written describes a board for a different system. The filler
-    // supplies the fields §4 requires but no card is about — a dispatch id, a
+    // supplies the fields ข้อ 4 requires but no card is about — a dispatch id, a
     // timeout flag — so a fixture still says only what its test is for.
     const lines = gateHistory(token,
       events.map((entry) => ({ work_item: token, workflow: 'feature', ...fill(entry) })), gates[token])
@@ -164,7 +164,7 @@ test('AC2 every column count equals teamOccupancy, and WIP prints that same n', 
 
   const columns = columnsOf(pageOf(dir))
   // Read off the VALIDATED graph: `wip_limit` is derived from the worker count
-  // (§3), so the raw declaration no longer carries the number the page prints.
+  // (ข้อ 3), so the raw declaration no longer carries the number the page prints.
   for (const team of graph.teams) {
     const column = columns.get(team.name)
     const expected = occupancy.counts.get(team.team_id)
@@ -185,7 +185,7 @@ test('every token is on the board exactly once', () => {
 })
 
 test('the two facts that used to be hover-only are on the card, and no title hides them again', () => {
-  // 128 characters: the ledger's own maximum id length (contract §4 ID_RE
+  // 128 characters: the ledger's own maximum id length (contract ข้อ 4 ID_RE
   // allows at most 128, not more). A shorter fixture cannot prove the card
   // does not clip early — a bug that lowered the clip limit below 128 would
   // still leave a 71-character fixture untouched and the test green.
@@ -281,7 +281,7 @@ test('AC3 completed and abandoned both land in Done, told apart', () => {
   const columns = columnsOf(pageOf(dir))
   const done = columns.get('Done')
   assert.equal(done.cards, 2)
-  // §5: `completed` is only half closed — the outer controller has still to read
+  // ข้อ 5: `completed` is only half closed — the outer controller has still to read
   // the delivery as a whole. The card says so, because a route calling itself
   // finished is not the same fact as a route somebody checked.
   // Closed work is not an error. Accusing it of being unplaceable was a real bug.
@@ -318,7 +318,7 @@ test('work that opened a route waits for intake exactly like a pull does', () =>
     at: '2026-07-27T09:00:00.000Z', event: 'pulled', agent_id: 'design_d',
     from_team: 'build', to_team: 'design',
   })
-  // §4.6: they differ only in whether a team sent it, and the board's question
+  // ข้อ 4.6: they differ only in whether a team sent it, and the board's question
   // — what is this waiting on — has the same answer either way.
   assert.equal(opened.state, pulled.state)
   assert.equal(/^Unknown event/.test(opened.state), false)
@@ -334,7 +334,7 @@ test('work that opened a route waits for intake exactly like a pull does', () =>
 //
 // Fixing them one at a time cannot converge, because nothing makes a reader
 // cover the vocabulary — only a person noticing. This asserts the whole set at
-// once, so the next word added to §4 fails here the moment the board has no
+// once, so the next word added to ข้อ 4 fails here the moment the board has no
 // answer for it, rather than after it reaches a screen.
 test('the board has a word for every event the ledger vocabulary allows', () => {
   const filler = {
@@ -486,7 +486,7 @@ test('stateOf reads TARGET_VERDICT: reject as held, and an ordinary pass is unaf
 
 test('H5 an invalid ledger sitting on opened is drawn as blocked, not as ordinary queued work', () => {
   const dir = repoWith(FOUR_TEAMS, {})
-  // `opened` with no `reason` — a required field (§4) — refused by today's
+  // `opened` with no `reason` — a required field (ข้อ 4) — refused by today's
   // validator. Written directly rather than through `gateHistory`, so the
   // fixture stays exactly the impossible line it claims to be.
   writeFileSync(join(dir, '.tmux-teams/work-items/tok.jsonl'), `${JSON.stringify({

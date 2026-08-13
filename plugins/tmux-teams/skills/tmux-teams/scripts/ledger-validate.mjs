@@ -1,7 +1,7 @@
 // ledger-validate.mjs — read a custody ledger and say whether it can be believed.
 //
 // `.tmux-teams/work-items/<token>.jsonl` is the evidence layer of the loop
-// (contract §2). Everything downstream — occupancy, the pull decision, the
+// (contract ข้อ 2). Everything downstream — occupancy, the pull decision, the
 // board, the outer controller's audit — is derived from it, so a ledger that
 // describes an impossible history poisons every one of those answers at once.
 //
@@ -21,7 +21,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { join, resolve } from 'node:path'
 
-// Contract §4.5: at most 1 MiB per token, 5000 files per directory. The same
+// Contract ข้อ 4.5: at most 1 MiB per token, 5000 files per directory. The same
 // bounds dispatch-facts.mjs reads under, so the validator's verdict covers
 // exactly the bytes the rest of the loop will actually see.
 export const MAX_LEDGER_BYTES = 1 << 20
@@ -38,7 +38,7 @@ export const ACTOR_RE = /^(?:agent|human):[A-Za-z0-9_][A-Za-z0-9_.:-]{0,63}$/
 
 export const COMMON_FIELDS = ['at', 'event', 'work_item', 'workflow']
 
-// Contract §4, one row per event. `required` is what the table's "Also carries"
+// Contract ข้อ 4, one row per event. `required` is what the table's "Also carries"
 // column names; `forbidden` is the field the table names as deliberately absent.
 // Only the event NAME is a closed vocabulary — extra fields are allowed, because
 // real lines legitimately carry `reason` on a `pulled`, or `dispatch_id` on a
@@ -46,7 +46,7 @@ export const COMMON_FIELDS = ['at', 'event', 'work_item', 'workflow']
 // to tell a stale review from the leg still running it — and rejecting those
 // would fight the writers this file exists to protect.
 export const EVENT_SPEC = {
-  // §4.6: work entering the graph for the first time. `pulled` cannot say this
+  // ข้อ 4.6: work entering the graph for the first time. `pulled` cannot say this
   // — a pull is a team TAKING work from another team, and the first team on a
   // route has nobody to take it from. The alternative considered and rejected
   // was making `from_team` optional on `pulled`: that would stop the validator
@@ -54,7 +54,7 @@ export const EVENT_SPEC = {
   // one event at the head of each route. A new word costs nothing and leaves
   // `pulled` exactly as strict as it was.
   // ADR 0002: `opened` is a person's decision, not a machine's, so it carries
-  // the same actor-kind rule §5.1 already put on `answered` — `actor` must be
+  // the same actor-kind rule ข้อ 5.1 already put on `answered` — `actor` must be
   // `human:<id>`. An agent that types the words on someone's behalf keeps its
   // own identity in `relayed_by` (see `answered`'s comment below) rather than
   // borrowing the person's. Machine-decided admission is out of scope for this
@@ -84,7 +84,7 @@ export const EVENT_SPEC = {
   // teaching three readers the same lesson separately — the two that ignore the
   // verdict are now correct by construction instead of by luck.
   intake: { required: ['agent_id', 'verdict', 'reason'], verdicts: new Set(['accept']) },
-  // §4.1: the token is held by the team it went back to, not by the dispatcher
+  // ข้อ 4.1: the token is held by the team it went back to, not by the dispatcher
   // that refused it, so an `agent_id` here would place the work with the wrong
   // team.
   returned: { required: ['to_team', 'refused_by', 'reason'], forbidden: ['agent_id'] },
@@ -92,13 +92,13 @@ export const EVENT_SPEC = {
   delivered: { required: ['agent_id', 'task_id', 'terminal', 'timed_out', 'evidence_present'] },
   reviewed: { required: ['agent_id', 'verdict', 'reviewed_task', 'reason'], verdicts: REVIEW_VERDICTS },
   lost: { required: ['agent_id', 'task_id', 'reason'] },
-  // §4.2: the controller is not a team member, so without `to_team` the token
+  // ข้อ 4.2: the controller is not a team member, so without `to_team` the token
   // cannot be placed at all.
   escalated: { required: ['agent_id', 'to_team', 'task_id', 'reason'] },
   resumed: { required: ['agent_id', 'to_team', 'grant', 'reason'] },
   completed: { required: ['from_team'] },
   audit_requested: { required: ['agent_id', 'task_id', 'reason'] },
-  // §9, GitHub #52. The controller's audit leg died at the transport before the
+  // ข้อ 9, GitHub #52. The controller's audit leg died at the transport before the
   // model took a turn — the leg is gone, the verdict is still owed. It carries
   // the same three fields `audit_requested` does because it is about the same
   // leg, and it is NOT terminal: `awaitingAudit` re-arms on it.
@@ -110,7 +110,7 @@ export const EVENT_SPEC = {
   // and it needs a word of its own for one concrete reason: without it the
   // runner sees a token sitting at a dispatcher and re-dispatches that
   // dispatcher every tick, paying again and again to ask a question of someone
-  // who has not replied. It does not release the team (§6): the token is still
+  // who has not replied. It does not release the team (ข้อ 6): the token is still
   // held, still counted, still occupying WIP.
   // `question_id` names THIS question, not the token — a token can be asked
   // more than once in its life, and without an id of its own a stale answer
@@ -121,12 +121,12 @@ export const EVENT_SPEC = {
   // asked it knows which seat that was.
   questioned: { required: ['agent_id', 'questions', 'reason', 'question_id'] },
   // The answer, and the only event whose ACTOR KIND is part of its validity.
-  // §5.1's second evidence is that a person decided; `human:` is the closed
+  // ข้อ 5.1's second evidence is that a person decided; `human:` is the closed
   // vocabulary that records it. An operator agent may relay the words — see
-  // `references/controller-as-team.md` §6.4.1 — and then names itself in
+  // `references/controller-as-team.md` ข้อ 6.4.1 — and then names itself in
   // `relayed_by`, because the actor says who DECIDED and the person decided.
   // `to_team` is not decoration. Occupancy places a token by its last event's
-  // `agent_id` or `to_team` (§6), and a person is neither an agent nor a team —
+  // `agent_id` or `to_team` (ข้อ 6), and a person is neither an agent nor a team —
   // so an `answered` carrying only a reason would make the token an orphan the
   // moment somebody replied to it. It answers TO the team that asked.
   answered: { required: ['to_team', 'reason'], actor_kind: 'human' },
@@ -134,9 +134,9 @@ export const EVENT_SPEC = {
 
 export const LEDGER_EVENTS = Object.freeze(Object.keys(EVENT_SPEC))
 
-// Contract §5: the three rows with no successor. `completed` is only half
+// Contract ข้อ 5: the three rows with no successor. `completed` is only half
 // closed — the outer controller still has to read the delivery as a whole
-// (§9), and that audit pair is the sole legal continuation.
+// (ข้อ 9), and that audit pair is the sole legal continuation.
 // Exported because the writer needs the same three words to decide whether a
 // ledger that predates a rule may still be CLOSED; two copies of this set is
 // how one of them silently stops matching the other.
@@ -144,10 +144,10 @@ export const TERMINAL_EVENTS = new Set(['completed', 'audited', 'abandoned'])
 // Master, 2026-08-03: a dispatcher may refuse the same token at its door three
 // times. The fourth is not a refusal, it is a loop — two seats disagreeing
 // about the same work with nobody deciding — so it has to go to the controller
-// instead. §1's door exception is what makes the retry legal at all; this is
+// instead. ข้อ 1's door exception is what makes the retry legal at all; this is
 // the ceiling on it.
 export const MAX_DOOR_REFUSALS = 3
-// §5: `completed` is only HALF closed — the controller still has to read the
+// ข้อ 5: `completed` is only HALF closed — the controller still has to read the
 // delivery. `questioned` joins this set because the audit can fail to answer:
 // every other gate escalates upward when it cannot decide, and the controller
 // is the top, so its only remaining reader is a person. Without it a route that
@@ -158,14 +158,14 @@ export const MAX_DOOR_REFUSALS = 3
 // `questioned` did: a person can fail to answer post-completion exactly as
 // one can fail to answer at the front door, and the clock's withdrawal has to
 // have somewhere legal to land — `loop-runner.mjs` writes it as `abandoned`
-// either way (§9), so the ledger must accept the one word it actually uses.
+// either way (ข้อ 9), so the ledger must accept the one word it actually uses.
 // `audit_lost` joins for the same reason `abandoned` did: the runner writes it
 // after `completed`, so the ledger has to accept the word it actually uses.
 const AFTER_COMPLETED = new Set([
   'audit_requested', 'audited', 'questioned', 'answered', 'abandoned', 'audit_lost',
 ])
 // `audited` and `abandoned` are not "closed until `completed` says otherwise"
-// the way the rest of `AFTER_COMPLETED` is — they are §5's OTHER two rows with
+// the way the rest of `AFTER_COMPLETED` is — they are ข้อ 5's OTHER two rows with
 // no successor. Tracking them separately from `closedAt` is what makes
 // `completed -> audit_requested -> audited -> audit_requested` illegal: the
 // first `closedAt` a route sees is always `completed` (it is always written
@@ -236,7 +236,7 @@ export function validateLedger(lines) {
   // silent one.
   const assignedTaskIds = new Set()
   const assignedDispatchIds = new Set()
-  // Every team this token has actually been INSIDE. §1's one-way rule is a
+  // Every team this token has actually been INSIDE. ข้อ 1's one-way rule is a
   // statement about this set and nothing else. A team is added when its
   // dispatcher ADMITS the token, not when the token arrives at its door —
   // `pulled` is written before `intake` runs, so counting the arrival would
@@ -265,7 +265,7 @@ export function validateLedger(lines) {
   // says which one it has to be about.
   let openQuestionId = null
   let closedAt = null // { line, event } of the first terminal event
-  let hardClosedAt = null // { line, event } of the first §5 no-successor event
+  let hardClosedAt = null // { line, event } of the first ข้อ 5 no-successor event
 
   for (let index = 0; index < rows.length; index += 1) {
     const lineNo = index + 1
@@ -291,7 +291,7 @@ export function validateLedger(lines) {
     const name = typeof entry.event === 'string' ? entry.event : ''
     const spec = EVENT_SPEC[name]
     if (name && !spec) {
-      add(lineNo, 'unknown_event', `${name} is not an event in contract §4`)
+      add(lineNo, 'unknown_event', `${name} is not an event in contract ข้อ 4`)
     }
 
     if (present(entry.at)) {
@@ -300,7 +300,7 @@ export function validateLedger(lines) {
         add(lineNo, 'bad_timestamp', `at must be ISO 8601 UTC, got ${at}`)
       } else {
         const ms = Date.parse(at)
-        // §4.4: equal timestamps keep append order and are legal. Only a stamp
+        // ข้อ 4.4: equal timestamps keep append order and are legal. Only a stamp
         // strictly earlier than the line above it describes an impossible past.
         if (prevMs !== null && ms < prevMs) {
           add(lineNo, 'time_went_backwards', `at ${at} is earlier than the previous line`)
@@ -316,7 +316,7 @@ export function validateLedger(lines) {
       } else if (!token) {
         token = workItem
       } else if (workItem !== token) {
-        // One token, one file (§4). Two tokens in one ledger means two
+        // One token, one file (ข้อ 4). Two tokens in one ledger means two
         // histories interleaved and neither can be trusted.
         add(lineNo, 'work_item_mismatch', `work_item ${workItem} does not match ${token}`)
       }
@@ -460,7 +460,7 @@ export function validateLedger(lines) {
     if (name === 'opened' && eventsSeen > 0) {
       add(lineNo, 'opened_not_first', 'opened is how a token enters the graph and can only be its first event')
     }
-    // §1: flow is one way. A team that has already ADMITTED this token cannot
+    // ข้อ 1: flow is one way. A team that has already ADMITTED this token cannot
     // take it again — rework is a NEW token on a fresh route, never the same
     // one moving upstream. `pulled` is the only event that can break the rule,
     // because it is the only one that moves a token BETWEEN teams:
@@ -489,7 +489,7 @@ export function validateLedger(lines) {
       admittedHere = true
       if (atTheDoor) { heldTeams.add(atTheDoor); atTheDoor = '' }
     }
-    // Master, 2026-08-03, confirming §1 after a live token bounced: a team that
+    // Master, 2026-08-03, confirming ข้อ 1 after a live token bounced: a team that
     // has ADMITTED the work does not send it back. It brings the work to a
     // state it can pass and forwards it — a reviewer that finds a problem fixes
     // it through. `returned` is the door saying no BEFORE admission; once
@@ -560,7 +560,7 @@ export function validateLedger(lines) {
     }
     // Consumed on the answer, and on the one other event that closes a live
     // question without one: the clock's withdrawal (`abandoned`, written by
-    // the runner — §9 — when nobody replied in time). A `questionAsked` left
+    // the runner — ข้อ 9 — when nobody replied in time). A `questionAsked` left
     // true after either would let a stray later `answered` bind to a question
     // that was already resolved.
     if (name === 'answered' || (name === 'abandoned' && questionAsked)) {
@@ -587,7 +587,7 @@ export function validateLedger(lines) {
 // it permanently frozen by two rules this amendment added — `question_id` on
 // `questioned` and `actor_kind: 'human'` on `opened`. The prior fix for the
 // SAME shape of problem (a rule tightened under a system already running —
-// §1's `route_went_backwards`/`sent_back_after_admission`, see
+// ข้อ 1's `route_went_backwards`/`sent_back_after_admission`, see
 // `ledger-writer.mjs`) tolerated by RAW CODE alone. That is too blunt for
 // these two: `missing_field` fires for every required field on every event —
 // tolerating it by code alone would silently wave through a brand-new
@@ -599,7 +599,7 @@ export function validateLedger(lines) {
 // metadata `validateLedger` now attaches to the two problems that need it.
 // Only a ledger-format marker was the other shape offered, and it was
 // rejected: this system's ledgers are meant to be readable by grep and never
-// rewritten (§4, §13); a marker would mean every reader either understands
+// rewritten (ข้อ 4, ข้อ 13); a marker would mean every reader either understands
 // versioning or treats "no marker" as "assume legacy", which is the same
 // scoped-by-shape reasoning below with an extra field to keep in sync
 // forever. A half-migrated ledger — an old `questioned` with no
@@ -673,7 +673,7 @@ export function isLegacyTolerated(problem) {
 // This is a SEPARATE, wider list from `LEGACY_TOLERATED_PROBLEMS` above, and
 // it has exactly one caller: `appendEvent`'s `continuable` check in
 // ledger-writer.mjs, and there only when the line being appended is itself a
-// TERMINAL event (contract §5) — never for a `pulled`, an `assigned`, or any
+// TERMINAL event (contract ข้อ 5) — never for a `pulled`, an `assigned`, or any
 // other continuation, and never for `isLegacyTolerated`,
 // `validateLedgerTolerant`, or `validateLedgerFileTolerant`. Closing a
 // ledger records that the token is done being trusted; it is not the same

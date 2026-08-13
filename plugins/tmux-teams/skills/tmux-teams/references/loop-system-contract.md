@@ -15,7 +15,7 @@ about the loop — `references/loop-graph-page.md`,
 
 ## Where to look
 
-| § | Answers |
+| ข้อ | Answers |
 | --- | --- |
 | [0](#0-scope) | which files this contract governs, and which it does not |
 | [1](#1-model) | team, workflow, token — and that flow is one way |
@@ -49,7 +49,7 @@ about the loop — `references/loop-graph-page.md`,
 | `scripts/ledger-writer.mjs` | the only sanctioned way a line enters a ledger |
 | `scripts/role-briefs.mjs` | what each role is told, and verdict parsing |
 | `scripts/graph.mjs` | the loop graph page |
-| `scripts/agent-seat-reads.mjs` | the agent-seat read facade — §16 |
+| `scripts/agent-seat-reads.mjs` | the agent-seat read facade — ข้อ 16 |
 | `.tmux-teams/graph.json` | the declaration artifact |
 | `.tmux-teams/work-items/<token>.jsonl` | the custody ledger |
 | `.tmux-teams/work-items/<token>.md` | the token's own request |
@@ -77,7 +77,7 @@ commands and documentation; there is one delivery model now.
   **choosing which model runs the work**: this token is simple, give it the
   cheap seat; this one is hard, give it the strong one; this one carries no
   images, a text-only model will do; this one needs a multimodal seat; that
-  model is rate-limited right now, use another. §4.9 is the mechanism, and it
+  model is rate-limited right now, use another. ข้อ 4.9 is the mechanism, and it
   is described there in the wrong words — as picking a *seat*, when the seat is
   only how a model is named.
   Admission control remains real and remains specified (the refusal ceiling
@@ -113,7 +113,7 @@ commands and documentation; there is one delivery model now.
     `refused_by` with `door_refusals_exhausted`.
   - **A team's own loop.** An evaluator may send work back to a worker of its
     own team as often as the work needs; `reviewed` with a `reject` verdict
-    redispatching inside the team (§7) is that loop, and it is the whole point
+    redispatching inside the team (ข้อ 7) is that loop, and it is the whole point
     of a team having its own evaluator. The token has not moved between teams.
 
   What the rule forbids is a token crossing a team boundary in the direction it
@@ -132,7 +132,7 @@ commands and documentation; there is one delivery model now.
   **Enforced 2026-08-03.** `validateLedger` refuses a `pulled` whose `to_team`
   is a team that already **admitted** this token, with the code
   `route_went_backwards` — and since the sanctioned writer validates before and
-  after every append (§4.3), the line is refused rather than reported later.
+  after every append (ข้อ 4.3), the line is refused rather than reported later.
   Admission, not arrival, is what counts: `pulled` is written before `intake`
   runs, so a team that refuses at the door never enters the set and may pull
   the same token again once what was wrong is fixed. `escalated`, `resumed` and
@@ -151,7 +151,7 @@ commands and documentation; there is one delivery model now.
   used the only move the system had left open.
 
   **The rule is enforced on the line being written, not on the file's history.**
-  A ledger written before §1 was enforceable can contain a backwards move, and
+  A ledger written before ข้อ 1 was enforceable can contain a backwards move, and
   the first version of this refused every further append to such a file — which
   met a real 46-line ledger with a worker mid-leg and froze it. A rule meant to
   keep work moving must not be the thing that stops it. The writer now refuses
@@ -165,10 +165,10 @@ commands and documentation; there is one delivery model now.
   **B5 (2026-08-04): two later amendments hit the exact same trouble.**
   `question_id` became required on `questioned` and `actor_kind: 'human'`
   became required on `opened` (ADR 0002) — both tightened `EVENT_SPEC` on a
-  system already running, exactly as §1's own backwards-pull rule was. A
+  system already running, exactly as ข้อ 1's own backwards-pull rule was. A
   ledger clean before either amendment now reports `missing_field` (an old
   `questioned` with no `question_id`) or `not_a_human_answer` (an old `opened`
-  with a non-human actor). By-code tolerance — the shape §1's own fix used —
+  with a non-human actor). By-code tolerance — the shape ข้อ 1's own fix used —
   is too blunt for these two: `missing_field` fires for every required field
   on every event, so tolerating it by code alone would silently excuse a
   BRAND-NEW `delivered` missing `agent_id`; `not_a_human_answer` also fires on
@@ -178,7 +178,7 @@ commands and documentation; there is one delivery model now.
   `event`/`field` metadata `validateLedger` now attaches to each problem it
   reports, not on prose parsed out of `detail`. A ledger-format marker was
   considered and rejected: this system's ledgers are read by grep and never
-  rewritten (§4, §13), and a marker would mean every reader either
+  rewritten (ข้อ 4, ข้อ 13), and a marker would mean every reader either
   understands versioning or treats "no marker" as "assume legacy" — the same
   scoped-by-shape reasoning with an extra field to keep in sync forever. Only
   HISTORY is excused: each violation is judged at its own line, so a
@@ -202,7 +202,7 @@ commands and documentation; there is one delivery model now.
   goes red if `LEGACY_TOLERATED_PROBLEMS` is widened past these four shapes.
 
   **retro-release-review round 4, 2026-08-04 (qwen F-1 / codex BLOCKER 3):
-  B2's `duplicate_task_id` and `duplicate_dispatch_id` (§6) must NEVER be
+  B2's `duplicate_task_id` and `duplicate_dispatch_id` (ข้อ 6) must NEVER be
   among those four shapes, and a prior attempt at this fix briefly put them
   there.** `LEGACY_TOLERATED_PROBLEMS` feeds `isLegacyTolerated`, which
   `validateLedgerTolerant`/`validateLedgerFileTolerant` use — the shared
@@ -236,7 +236,7 @@ commands and documentation; there is one delivery model now.
   able to reach `abandoned`. `ledger-validate.mjs` exports a second, wider
   list for exactly this — `CLOSING_TOLERATED_PROBLEMS` / `isClosingTolerated`
   — with exactly one caller: `ledger-writer.mjs`'s `appendEvent`, and only
-  when the event being appended is itself a TERMINAL event (§5). A
+  when the event being appended is itself a TERMINAL event (ข้อ 5). A
   duplicate-tainted ledger may receive a terminal event and nothing else —
   not even a brand-new `assigned` naming ids the ledger has never seen
   before — closing it without ever being trusted enough to continue as
@@ -247,13 +247,13 @@ commands and documentation; there is one delivery model now.
   covering a realistic pre-existing `dispatch_id` collision followed by its
   own second leg's normal `delivered`.
 
-  **What §1 still does not provide is the rework path it names.** It says rework
+  **What ข้อ 1 still does not provide is the rework path it names.** It says rework
   is a NEW token on a fresh route; nothing in this system creates one. The only
   writer of `opened` is `admit.mjs`, which a person runs. Until that gap is
-  closed, an operator who obeys §1 opens the successor by hand, and an operator
+  closed, an operator who obeys ข้อ 1 opens the successor by hand, and an operator
   who does not obey it writes the move this section now refuses.
 - There is exactly one **outer controller** for the whole graph. It never does a
-  team's work. Since §14.5 it holds the single worker seat of its own **control
+  team's work. Since ข้อ 14.5 it holds the single worker seat of its own **control
   team** — the same seat `outer_controller_id` names, not a second one — which
   is what gives the front door a WIP limit of 1. It is still not a member of any
   DELIVERY team, and no route may revisit it.
@@ -271,12 +271,12 @@ declaration. Whether an agent ran, what it produced, how long it took and
 
 **A team's WIP limit is neither.** It is *derived*: it always equals that team's
 worker count, so there is no second number that can disagree with the first.
-See §3.
+See ข้อ 3.
 
 **Declared model and verified model are two different facts and are never
 substituted for each other.** The declaration says which model a seat was
 *asked* for; only the adapter's own acknowledgement says which model *answered*.
-The page prints the second and never the first (§12.3, §12.7.2).
+The page prints the second and never the first (ข้อ 12.3, ข้อ 12.7.2).
 
 **The page may draw a declared thing that has no evidence — and must say so.**
 An agent that has never run says so; it never shows a zero that reads like a
@@ -305,7 +305,7 @@ measurement.
 
 A `seats` entry may instead carry `palette` — `{ "<AGENT_ID>": { "palette": [{ "model": "<MODEL>", "adapter": "...", "effort": "<EFFORT>", "display_model": "<MODEL>", "bucket": "<BUCKET>" }, "..."] } }`
 — an ordered list of candidate seat specs for that ONE seat, in place of
-`model`/`adapter`/`effort`/`display_model`, never alongside them. See §3.5.
+`model`/`adapter`/`effort`/`display_model`, never alongside them. See ข้อ 3.5.
 
 `AGENT_ID` = `^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$` ·
 `GRAPH_ID` = `^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$` ·
@@ -314,13 +314,13 @@ A `seats` entry may instead carry `palette` — `{ "<AGENT_ID>": { "palette": [{
 `EFFORT` = 1–64 characters, no control characters — optional everywhere it
 appears; omitted means no reasoning effort is requested, not a default value ·
 `BUCKET` = same shape as `MODEL` (1–128 characters, no control characters),
-compared for equality only — this layer never learns what a bucket MEANS (§3.5).
+compared for equality only — this layer never learns what a bucket MEANS (ข้อ 3.5).
 
 Bounds: 1–100 teams, **1–5 workers per team**, 1–50 workflows, 1–8 entries per
 declared palette. The worker bound said 100 here until 2026-08-05 while
 `workflow-graph.mjs` had enforced 5 since well before v0.14.6 — the SSOT
 overstated a limit the code refuses, so a graph written from this line alone
-would be rejected at load. `MAX_WORKERS` is the authority; §3 states the reason
+would be rejected at load. `MAX_WORKERS` is the authority; ข้อ 3 states the reason
 five is a ceiling rather than advice.
 
 **The key set above is CLOSED at every level**: the root object, each workflow,
@@ -344,7 +344,7 @@ A key that is silently ignored is worse than one that is refused, because the
 operator has no way to find out.
 
 **Ordering matters as much as coverage.** A field with its own specific refusal
-— `controller_team` and `wip_limit` are derived (§3.1), `downstream_team_id`
+— `controller_team` and `wip_limit` are derived (ข้อ 3.1), `downstream_team_id`
 belongs to a route — must be refused by ITS sentence, not by the generic
 unknown-key one. The closed-key check therefore runs after the specific
 refusals at every level. Getting this backwards replaces the sentence that
@@ -403,7 +403,7 @@ bundled template uses it precisely because no real model belongs in a template.
 | a route listing the same team twice | work returns by rejection, not by routing |
 | an `agent_id` used twice anywhere | one agent, one seat — a shared id lights two nodes from one dispatch |
 | a route naming an unknown team | a route may only compose declared teams |
-| a `wip_limit` that differs from the worker count | the limit is derived (§3.1); the graph would draw one number and enforce another |
+| a `wip_limit` that differs from the worker count | the limit is derived (ข้อ 3.1); the graph would draw one number and enforce another |
 | a missing or malformed model on any declared seat | a dispatch with no model named runs on whatever the account defaults to — the guess this declaration exists to stop |
 | an adapter outside `claude`/`codex`/`agy`, per role or per seat | the lanes are a **closed** set — `acp-companion.mjs` exits 2 on a fourth name |
 | a `seats` key naming no seat on that team | a typo'd agent id would resolve to the role default while a reader believed the seat had moved |
@@ -423,7 +423,7 @@ an agent that team already holds and overrides that one seat's `model`, its
 `adapter`, or both. Omitted — or omitted for a given seat — the role block
 stands, so every graph written before this keeps meaning what it meant.
 
-It is an **override, never a second declaration**, and the rule §3.1 applies to
+It is an **override, never a second declaration**, and the rule ข้อ 3.1 applies to
 `wip_limit` applies here: an entry restating the role's own value keeps loading
 and changes nothing, including `source_digest`. Every way of *saying nothing* is
 refused rather than ignored, because a `seats` entry that resolves to the role
@@ -440,14 +440,14 @@ evaluator pools are singletons, so this mattered only for workers, and it did
 not matter at all while every worker seat was identical. With `seats` it does:
 `worker_ids[0]` is the preferred seat and later entries are overflow. **This is
 not fanout** — one leg is dispatched to one seat. GitHub #32 gives a team's own
-dispatcher a way to override this default per token — see §4.9; declared order
+dispatcher a way to override this default per token — see ข้อ 4.9; declared order
 is still what a token with no stated preference falls back to.
 
 #### 3.2.2 `effort` — a seat may also request a reasoning effort
 
 GitHub #32. `acp-companion.mjs` already honours `ACP_REASONING_EFFORT` as a
 request and `ACP_EXPECT_REASONING_EFFORT` as the expectation it holds the
-receipt to — the identical request/expectation pair §3.2 built for `model` —
+receipt to — the identical request/expectation pair ข้อ 3.2 built for `model` —
 but nothing between the graph and the companion ever set them. `effort` closes
 that gap the same way `seats` closed the one-model-per-role gap: it is a third
 optional key on a `seats` override, alongside `model` and `adapter`.
@@ -455,7 +455,7 @@ optional key on a `seats` override, alongside `model` and `adapter`.
 It is **not** a fourth per-ROLE block alongside `models`/`adapters`. Master's
 concrete case is two workers on ONE team running the SAME model at DIFFERENT
 efforts — an easy/medium tier and a medium/hard tier, with the DISPATCHER
-choosing which token goes to which (§4.9) — so a role-wide default would force
+choosing which token goes to which (ข้อ 4.9) — so a role-wide default would force
 every worker on a team to share one effort, which is exactly the constraint
 this exists to remove. There is consequently no role-level default for `effort`
 to fall back to: an unoverridden seat's `agents[].effort` is `null`, meaning
@@ -463,7 +463,7 @@ to fall back to: an unoverridden seat's `agents[].effort` is `null`, meaning
 falls back to `models`/`adapters`.
 
 Because there is no default to restate, there is no `effort` analogue of
-§3.2.1's "an entry restating the role's own value keeps loading and changes
+ข้อ 3.2.1's "an entry restating the role's own value keeps loading and changes
 nothing" — every declared `effort` is a real request, full stop. The empty
 string is still refused, for the same reason an empty `model` is: a key
 present with nothing meaningful in it is the "declaration that says nothing"
@@ -476,7 +476,7 @@ The outer controller carries the equivalent field at the top level,
 has no required declaration anywhere in this system. Omitted or empty, the
 controller requests nothing; a non-empty value that fails `EFFORT`'s shape
 check is refused. A `seats` entry may not name the outer controller for the
-same reason §3.2.1 already refuses one for model/adapter: `outer_controller_*`
+same reason ข้อ 3.2.1 already refuses one for model/adapter: `outer_controller_*`
 is what the dispatch reads, and a second statement of the same fact is the one
 that would silently lose.
 
@@ -528,7 +528,7 @@ unchanged and means exactly what it meant. Almost every team hands its own
 artifact to the next team on the route; that is the default. A REVIEW team's
 worker instead renders a verdict on someone else's work rather than building
 one of its own, and declaring that is what lets the evaluator brief
-(`role-briefs.mjs`) and the optional `target_verdict` on `reviewed` (§4.8)
+(`role-briefs.mjs`) and the optional `target_verdict` on `reviewed` (ข้อ 4.8)
 tell the two kinds of team apart without guessing from a team's name or its
 position on a route.
 
@@ -536,7 +536,7 @@ position on a route.
 evaluator brief, which gains one additional instruction only for a `produces:
 'verdict'` team's evaluator, and `harvestEvent`, which only reads a
 `TARGET_VERDICT:` line out of that same evaluator's outbox. It does not change
-`pull-controller.mjs`'s gate (§7): the only pullable state remains `reviewed`
+`pull-controller.mjs`'s gate (ข้อ 7): the only pullable state remains `reviewed`
 with `verdict: pass`, unconditionally, exactly as before this field existed.
 
 ### 3.5 A seat's model palette — declared (phase 1) and dispatched (phase 2)
@@ -552,10 +552,10 @@ own text named this split on purpose: dispatch, `assigned` carrying the chosen
 model, and the fallback machinery are a second phase, so that the two phases
 do not both edit `loop-runner.mjs` and this contract at once.
 
-**Phase 2 (2026-08-05, this amendment) is the dispatch half — see §3.5.1
+**Phase 2 (2026-08-05, this amendment) is the dispatch half — see ข้อ 3.5.1
 below.** It reaches two of those three: dispatch and the fallback machinery.
 The third — `assigned` carrying the chosen model — is NOT built by this
-amendment, and §3.5.1 states why in the same terms as everything else here:
+amendment, and ข้อ 3.5.1 states why in the same terms as everything else here:
 argued, not silently dropped.
 
 **Not a role, and not a model name.** GitHub #47 asked for "a role's model" to
@@ -564,7 +564,7 @@ become an array; this amendment answers differently, and says why. A model is
 entirely from `opus` on another — so an array of alias strings would be
 meaningless on its own: what an alias resolves to is fixed by the adapter
 already named for it. A palette entry is therefore a **whole seat spec**,
-reusing the same fields a `seats` override already carries (§3.2.1): `model`,
+reusing the same fields a `seats` override already carries (ข้อ 3.2.1): `model`,
 `adapter`, `effort`, `display_model`, plus `bucket` (below).
 
 It is declared per **seat**, not per role. "One token, four candidate models"
@@ -586,8 +586,8 @@ beside them.** A `seats` entry may declare `model`/`adapter`/`effort`/
 `display_model`, OR `palette`, never both — a single-value field next to a
 `palette` would read as a default the palette falls back to and would in fact
 be silently ignored, which is the exact "declaration that changes nothing"
-shape §3.2.1 already refuses for an empty or restating seat entry. The
-controller may not declare a seat at all (§3.2.1, unchanged) and so may not
+shape ข้อ 3.2.1 already refuses for an empty or restating seat entry. The
+controller may not declare a seat at all (ข้อ 3.2.1, unchanged) and so may not
 declare a palette either.
 
 **A palette entry's `model` is required — it has no role default to fall back
@@ -596,7 +596,7 @@ stands in); one entry in an array has nothing else to mean if it names no
 model. Every other field on an entry is optional with the same resolution a
 plain seat override already has: `adapter` defaults to the seat's role's lane,
 `effort` defaults to "nothing requested", `display_model` defaults to `null`.
-Every field is validated by the exact §3.2 / §3.2.1 / §3.2.2 checks a plain
+Every field is validated by the exact ข้อ 3.2 / ข้อ 3.2.1 / ข้อ 3.2.2 checks a plain
 seat override already runs — `isModelName`, `ADAPTERS.has`, `isEffortName` —
 applied per entry rather than once; this amendment does not invent a second
 validator.
@@ -604,7 +604,7 @@ validator.
 **Bounds: 1 to 8 entries.** Zero says nothing, which is the same "empty
 declaration" shape every other optional block in this file already refuses
 rather than silently accepting. Eight is a real ceiling, not advice, for the
-same reason `MAX_WORKERS` is one (§3): a palette longer than that is far more
+same reason `MAX_WORKERS` is one (ข้อ 3): a palette longer than that is far more
 likely to be a mistake — enumerating every model a provider has ever shipped —
 than a real fallback roster an operator would actually maintain.
 
@@ -613,10 +613,10 @@ model-family within a provider, not per provider: codex counts its `gpt`
 family separately from `codex-spark`, agy counts `gemini` separately from
 non-`gemini`, claude counts `fable` separately from `opus`/`sonnet`/`haiku`.
 `bucket` names that family. It is **free-form and shape-checked only**,
-exactly like a model name under §3.2 — the system never needs to know what a
+exactly like a model name under ข้อ 3.2 — the system never needs to know what a
 bucket MEANS, only whether two of them are equal, so it reuses `isModelName`'s
 shape check (non-empty, ≤128 characters, no control characters) rather than
-building a second one or holding a list of known buckets, which §3.2's own
+building a second one or holding a list of known buckets, which ข้อ 3.2's own
 model rule already forbids for exactly this kind of field.
 
 `bucket` defaults to the entry's own **resolved adapter** when unspecified —
@@ -628,17 +628,17 @@ declare a palette yet) keeps meaning what it meant.
 **Two consecutive entries in the same bucket are refused, not merely
 warned.** This is the rule the whole design turns on: two adjacent entries
 drawing on the same rate limit are not a fallback — trying the second right
-after the first spends a leg (§4.10) to learn nothing a wrong guess on the
+after the first spends a leg (ข้อ 4.10) to learn nothing a wrong guess on the
 first entry hadn't already established. Refusing was chosen over warning for
 two reasons. First, consistency: every other malformed declaration in this
-file fails **closed** (§3.2's own table says so in as many words), and this
+file fails **closed** (ข้อ 3.2's own table says so in as many words), and this
 validator has no "accepted, with a warning" channel anywhere else — building
 one for this single rule would be new machinery bolted onto a shape checker,
 not a shape check. Second, cost: the failure this rule prevents is silent and
 expensive — a graph that looks like it declares four-deep fallback but
 actually wastes its first retry attempt on nothing, discovered only once
 GitHub #45 part 2's leg-attempt accounting is watched closely enough to
-notice the wasted leg. A graph author gets the same signal §3.1 already gives
+notice the wasted leg. A graph author gets the same signal ข้อ 3.1 already gives
 for a mismatched `wip_limit`: told immediately, at load, naming the team, the
 seat and the bucket, rather than made to discover it from a runtime symptom
 much later. The check compares only **adjacent** entries in declared order —
@@ -647,7 +647,7 @@ at least one other candidate was tried in between and the repeat is not
 spending a leg to learn nothing it hadn't already risked learning.
 
 **`wip_limit` does not change when a palette grows.** This is the whole point
-of the item (§3.1) and follows from where the palette lives: it is declared on
+of the item (ข้อ 3.1) and follows from where the palette lives: it is declared on
 `seats[agentId]`, which never touches `worker_ids`, and `wip_limit` is derived
 from `worker_ids.length` alone. A seat with an eight-entry palette is still
 one seat; a team with one worker seat and an eight-entry palette on it is
@@ -675,7 +675,7 @@ graph, so reporting the old digest for a newly-shaped one would be the actual
 lie. It costs nothing here because no module compares a *workflow* graph's
 `source_digest` across versions: the digest `team-runtime.mjs` joins on is
 `team-graph-contract.mjs`'s, a different derivation over a different object.
-What survives from the original claim is the §3.2.1 property, which is
+What survives from the original claim is the ข้อ 3.2.1 property, which is
 genuinely unaffected: declarations that say the same thing still hash alike.
 
 **Ordering semantics — written down 2026-08-05 (phase 1), enforced the same
@@ -684,30 +684,30 @@ day (phase 2).** GitHub #47's own text says both "the dispatcher picks" and
 plausible rules exist and code would silently pick one. The reading this
 contract committed to: **the dispatcher's choice is the starting point, the
 array is the order after it, and a full cycle with nothing answering is an
-escalation rather than another retry.** §3.5.1 (below) is where phase 2 built
+escalation rather than another retry.** ข้อ 3.5.1 (below) is where phase 2 built
 exactly this, and resolved the one thing phase 1's own wording left open —
 whether a dispatcher can name a specific PALETTE ENTRY, not merely a seat.
 This paragraph is kept, unedited past this note, as the record of what was
-decided in advance and why; §3.5.1 is where it became enforced. Formerly
-**not enforced by any code**, listed in §14.1 as an unenforced clause — that
-row is gone; §14 AC104–AC109 (`tests/loop-runner-palette-dispatch.test.mjs`)
+decided in advance and why; ข้อ 3.5.1 is where it became enforced. Formerly
+**not enforced by any code**, listed in ข้อ 14.1 as an unenforced clause — that
+row is gone; ข้อ 14 AC104–AC109 (`tests/loop-runner-palette-dispatch.test.mjs`)
 are what replaced it.
 
 ### 3.5.1 Dispatch and fallback — built (GitHub #47 phase 2, 2026-08-05)
 
 **The starting point needs no ledger read.** `loop-runner.mjs`'s
 `declaredModel`/`declaredAdapter`/`declaredEffort` already resolve a palette
-seat's single-value fields to the palette's first entry (§3.5, phase 1); a
+seat's single-value fields to the palette's first entry (ข้อ 3.5, phase 1); a
 fresh leg on a palette seat reaches the model exactly the way it always has,
 through the same `dispatch()` env-building this file has never needed to
 change for a plain seat. `dispatchOn` (`loop-runner.mjs`, inside `nextStep`)
 is consulted only for a SECOND or later leg on the same seat, where the
 starting point alone is no longer enough.
 
-**`worker_hint` (§4.9) still names a SEAT, not a palette entry.** GitHub #47's
+**`worker_hint` (ข้อ 4.9) still names a SEAT, not a palette entry.** GitHub #47's
 own wording said "starting seat/entry" as if a dispatcher might name either;
 phase 1 already resolved this for the FIRST leg (the starting point is always
-entry 0, stated in §3.5 above), and phase 2 resolves it for every leg after:
+entry 0, stated in ข้อ 3.5 above), and phase 2 resolves it for every leg after:
 nothing exists to name a specific entry, on a fresh admission or a retry, and
 this amendment does not add one. A `WORKER: <agent_id>` line still only picks
 which seat gets the token; which of THAT seat's candidates a given leg runs is
@@ -715,7 +715,7 @@ computed from the seat's own ledger history, described next.
 
 **What triggers a fallback: `work_observed: false` on the failed leg's
 `delivered` line, stated precisely in those words because the runner cannot
-see anything narrower.** §4.10 already established this is the ONE fact the
+see anything narrower.** ข้อ 4.10 already established this is the ONE fact the
 ledger carries for "the leg never reached the model" — not a terminal string,
 not an inference from a missing line. This amendment reuses it rather than
 inventing a second signal: a leg whose `delivered` states `work_observed:
@@ -723,7 +723,7 @@ false` advances the NEXT leg on this seat to the next palette entry in
 declared order (wrapping past the end back to the first); a leg that reached
 the model — `work_observed: true`, or a `delivered` written before this fact
 existed and so carries neither — retries the SAME entry, exactly as a
-no-palette seat's worker retries its one seat today. A `lost` leg (§4: "an
+no-palette seat's worker retries its one seat today. A `lost` leg (ข้อ 4: "an
 assignment whose process is gone and which recorded nothing" — never
 distinguishable from a killed worker that did real work) is likewise never
 read as a miss, and also retries the same entry. **This is deliberately not
@@ -739,7 +739,7 @@ time a genuine worker failure is mistaken for a dead model.
 `dispatch_id`, minted the same way any retry's always has been.** `dispatch()`
 already calls `buildTaskId` fresh on every call; this amendment adds no second
 identity-minting path, so `ledger-validate.mjs`'s existing
-`duplicate_task_id`/`duplicate_dispatch_id` rules (§4.2) are never in tension
+`duplicate_task_id`/`duplicate_dispatch_id` rules (ข้อ 4.2) are never in tension
 with a palette — a fallback attempt was already, before this amendment,
 indistinguishable from a plain retry as far as leg identity goes, and stays so.
 
@@ -758,12 +758,12 @@ purpose — it is the cheap bound that stops a seat spending legs on an outage,
 not an exhaustive proof about each candidate. The release review for v0.15.0
 constructed that sequence and showed the escalation reason asserting something
 the ledger denied; the reason now claims only what was counted. Keep the two
-sentences apart: what fires, and what it proves. This is the same shape §11.3's `escalate` decision already reads
+sentences apart: what fires, and what it proves. This is the same shape ข้อ 11.3's `escalate` decision already reads
 a token's own next step as: a case for the outer controller, not a ninth
 attempt at candidates that already refused eight times.
 
-**`legCeiling` (§4.10, §10) is unaffected — every `assigned` still counts
-toward it unconditionally, transport-failed or not, exactly as §4.10 requires
+**`legCeiling` (ข้อ 4.10, ข้อ 10) is unaffected — every `assigned` still counts
+toward it unconditionally, transport-failed or not, exactly as ข้อ 4.10 requires
 by name.** A palette is not made free against it: this amendment does not
 special-case a palette leg out of `legs = custody.filter(assigned).length`
 anywhere. What bounds a palette walk from being able to spend legs toward
@@ -778,7 +778,7 @@ not replace it, it adds a narrower one in front of it.
 **A seat that declares no palette is unaffected — proven, not merely
 argued.** `dispatchOn` returns the exact `{ action: 'dispatch', role,
 agent_id }` shape `want` always returned, with no `candidate` key at all, for
-any seat whose resolved `palette` is `null` (§3.5). The tick loop's dispatch
+any seat whose resolved `palette` is `null` (ข้อ 3.5). The tick loop's dispatch
 call only reads `plan.candidate` when it is present, so a no-palette seat's
 model/adapter/effort resolve through the same `declaredModel`/
 `declaredAdapter`/`declaredEffort` calls, byte-for-byte, that ran before this
@@ -790,10 +790,10 @@ against this change — none needed a line changed, which is the property
 itself, not a claim about it.
 
 **What this amendment does NOT build: `assigned` carrying the chosen
-model.** GitHub #47's own text and this contract's own §3.5 intro both name
+model.** GitHub #47's own text and this contract's own ข้อ 3.5 intro both name
 it as part of the same feature; it is not here, and the reason is structural,
 not a scoping choice made for convenience. `assigned` is written by
-`acp-companion.mjs` alone (§13: it is one of exactly two components that may
+`acp-companion.mjs` alone (ข้อ 13: it is one of exactly two components that may
 append to a ledger, and the only one of the two that may write `assigned` or
 `delivered`), and the required field on `assigned` that matters here —
 `dispatch_id` (`ledger-validate.mjs`'s `EVENT_SPEC`) — is minted by
@@ -803,7 +803,7 @@ supply or predict it. `loop-runner.mjs` cannot write a valid `assigned` line
 for a leg `acp-companion.mjs` will also process: any `dispatch_id` it invented
 would not be the one `acp-companion.mjs` mints and later carries on
 `delivered`, and `ledger-validate.mjs`'s own dispatch-id/task-id ownership
-check (§4.2) would then read the two events as disagreeing — turning a
+check (ข้อ 4.2) would then read the two events as disagreeing — turning a
 cosmetic gap into a ledger the runner itself would refuse to dispatch onto
 next tick. Recording the model is therefore reachable only by
 `acp-companion.mjs` itself adding it to its own existing, unconditional
@@ -827,7 +827,7 @@ It is written **before spawn**, so it is the REQUEST and never the verified
 identity — no adapter has answered at that moment. `effective_identity` and
 `identity_status` on the dispatch record are the verified facts and arrive
 later. A reader must not read one as the other: a leg whose `assigned` says
-`requested_model: opus` and which never reached a model at all (§4.10,
+`requested_model: opus` and which never reached a model at all (ข้อ 4.10,
 `work_observed: false`) is precisely the case a palette exists to walk past.
 
 `ledger-validate.mjs` stays unedited through both phases, and now that the
@@ -851,23 +851,23 @@ Common fields on every event: `at` (ISO 8601 UTC), `event`, `work_item`,
 
 | Event | Written by | Also carries | Means |
 | --- | --- | --- | --- |
-| `opened` | whoever admits the work (§4.6) | `agent_id` = receiving dispatcher, `to_team`, `reason`; **never** `from_team`; `actor` must be `human:<id>` (ADR 0002), optional `relayed_by: agent:<id>` | work entered the graph; legal only as a token's first event |
+| `opened` | whoever admits the work (ข้อ 4.6) | `agent_id` = receiving dispatcher, `to_team`, `reason`; **never** `from_team`; `actor` must be `human:<id>` (ADR 0002), optional `relayed_by: agent:<id>` | work entered the graph; legal only as a token's first event |
 | `pulled` | pull-controller | `agent_id` = receiving dispatcher, `from_team`, `to_team` | the receiving team took the work |
-| `intake` | runner (harvest) | `agent_id` = dispatcher, `verdict: accept`, `reason`, optional `worker_hint` (§4.9) | the team accepted the handoff |
+| `intake` | runner (harvest) | `agent_id` = dispatcher, `verdict: accept`, `reason`, optional `worker_hint` (ข้อ 4.9) | the team accepted the handoff |
 | `returned` | runner (harvest) | `to_team` = sender, `refused_by`, `reason`, **no `agent_id`** | the handoff was refused and went back |
-| `assigned` | acp-companion | `agent_id`, `task_id`, `dispatch_id`; optional `requested_model`, `adapter` (§3.5.1, GitHub #47 phase 2b) — the model this leg was dispatched ON, and the lane it was dispatched to; the REQUEST, not the verified identity, which is not known until after spawn | one leg started |
-| `delivered` | acp-companion | `agent_id`, `task_id`, `terminal`, `timed_out`, `evidence_present`; optional `work_observed` (§4.10, GitHub #45 part 2) | one leg finished |
-| `reviewed` | runner (harvest) | `agent_id` = evaluator, `verdict`, `reviewed_task`, `reason`; optional `target_verdict: accept \\| reject`, `target_reason` (§4.8, GitHub #31) | the team judged its own output |
+| `assigned` | acp-companion | `agent_id`, `task_id`, `dispatch_id`; optional `requested_model`, `adapter` (ข้อ 3.5.1, GitHub #47 phase 2b) — the model this leg was dispatched ON, and the lane it was dispatched to; the REQUEST, not the verified identity, which is not known until after spawn | one leg started |
+| `delivered` | acp-companion | `agent_id`, `task_id`, `terminal`, `timed_out`, `evidence_present`; optional `work_observed` (ข้อ 4.10, GitHub #45 part 2) | one leg finished |
+| `reviewed` | runner (harvest) | `agent_id` = evaluator, `verdict`, `reviewed_task`, `reason`; optional `target_verdict: accept \\| reject`, `target_reason` (ข้อ 4.8, GitHub #31) | the team judged its own output |
 | `lost` | runner | `agent_id`, `task_id`, `reason` | an assignment whose process is gone and which recorded nothing |
 | `escalated` | runner | `agent_id` = controller, `to_team`, `task_id`, `reason` | parked with the outer controller |
 | `resumed` | runner (harvest) | `agent_id` = controller, `to_team`, `grant`, `reason` | the controller sent it back with a fresh budget |
 | `completed` | pull-controller | `from_team` | the route finished |
 | `audit_requested` | runner | `agent_id` = controller, `task_id`, `reason` | a finished route flagged for a whole-delivery read |
-| `audit_lost` | NOTHING since 2026-08-07 | `agent_id` = controller, `task_id`, `reason` | the flagged read never happened: that leg died at the transport before the model took a turn (§9). Still READ everywhere — removing the word makes every ledger already carrying one unclosable |
+| `audit_lost` | NOTHING since 2026-08-07 | `agent_id` = controller, `task_id`, `reason` | the flagged read never happened: that leg died at the transport before the model took a turn (ข้อ 9). Still READ everywhere — removing the word makes every ledger already carrying one unclosable |
 | `audited` | runner (harvest) | `agent_id` = controller, `verdict`, `reason` | the controller read the delivery |
 | `abandoned` | runner (harvest) or a human | `reason` | nobody will finish this token |
-| `questioned` | runner (harvest) | `agent_id` = who asked, `questions`, `reason`, `question_id`; optional `resume_role` (§4.7) | the token is parked on a person; still held, still counted against WIP |
-| `answered` | a human, optionally relayed by an agent (§4.7) | `to_team`, `reason`; `actor` must be `human:<id>`, optional `relayed_by: agent:<id>` | the person replied; the open question is consumed |
+| `questioned` | runner (harvest) | `agent_id` = who asked, `questions`, `reason`, `question_id`; optional `resume_role` (ข้อ 4.7) | the token is parked on a person; still held, still counted against WIP |
+| `answered` | a human, optionally relayed by an agent (ข้อ 4.7) | `to_team`, `reason`; `actor` must be `human:<id>`, optional `relayed_by: agent:<id>` | the person replied; the open question is consumed |
 
 Rules:
 
@@ -879,7 +879,7 @@ Rules:
    work stuck with a team keeps that team's WIP, and work escalated to the PM
    holds the PM's until the PM is done with it. `to_team` remains required
    because a later `resumed` reads it to send the work back. That one event is
-   the whole of §6's `PLACES_BY_DESTINATION`: a `resumed` is signed by the
+   the whole of ข้อ 6's `PLACES_BY_DESTINATION`: a `resumed` is signed by the
    controller and MOVES the token, so its destination outranks its signer.
    Read the other way, every resume would park the work on the PM for ever.
 3. A malformed line is skipped, counted, and the count is surfaced on the page.
@@ -907,7 +907,7 @@ the dispatcher would claim a write that agent never performed. A harvested
 verdict is signed by the agent whose outbox stated it. An event the runner
 decided by itself — `lost`, a stall — is signed by the runner.
 
-**Two events are the named exception to this rule (§4.6, §4.7; ADR 0002,
+**Two events are the named exception to this rule (ข้อ 4.6, ข้อ 4.7; ADR 0002,
 2026-08-04):** `opened` and `answered` are the two events whose subject is a
 PERSON, so their `actor` records who DECIDED — `human:<id>` — even when an
 agent relayed the bytes on that person's behalf. Every other event keeps this
@@ -917,12 +917,12 @@ Lines written before this rule existed carry no `actor`. Requiring one of them
 would condemn every legitimately runner-written line in history, so the
 validator **shape-checks `actor` only when it is present** while the writer
 **refuses to write without one** — with one carve-out this tolerance does not
-cover. For `opened` and `answered` specifically, the human-actor check (§4.6,
-§4.7) reads a missing `actor` as the empty string, and the empty string does
+cover. For `opened` and `answered` specifically, the human-actor check (ข้อ 4.6,
+ข้อ 4.7) reads a missing `actor` as the empty string, and the empty string does
 not start with `human:` either, so an `opened` or `answered` line with NO
 `actor` at all is refused exactly like one signed `agent:*` would be. This
 paragraph's actor-less-history tolerance therefore does NOT extend to those two
-events; only `ledger-writer.mjs`'s `LEGACY_TOLERATED` set (§4.2) — which does
+events; only `ledger-writer.mjs`'s `LEGACY_TOLERATED` set (ข้อ 4.2) — which does
 not yet include `not_a_human_answer` — can excuse one already on disk.
 
 ### 4.2 The sanctioned writer — `ledger-writer.mjs`
@@ -936,7 +936,7 @@ only sanctioned writer, and it:
   token's history impossible is refused rather than recorded;
 - refuses outright to append to a ledger that was **already invalid** —
   appending to a broken history buries the break instead of surfacing it,
-  **except for the narrow, named set of problems §1 already calls tolerated**
+  **except for the narrow, named set of problems ข้อ 1 already calls tolerated**
   (`ledger-writer.mjs`'s `LEGACY_TOLERATED`: `route_went_backwards` and
   `sent_back_after_admission` only, as of this amendment) — a ledger invalid
   for any OTHER reason still must be repaired before anything is appended;
@@ -984,9 +984,9 @@ token — the runner reports nothing to do while the board draws it waiting
 forever.
 
 **`opened.actor` names who DECIDED, not who wrote the bytes (ADR 0002,
-2026-08-04).** This is a deliberate exception to §4.1's general rule that
+2026-08-04).** This is a deliberate exception to ข้อ 4.1's general rule that
 `actor` is the component that performed the write: `opened` and `answered`
-(§4.7) are the two events whose subject is a person, and their `actor` records
+(ข้อ 4.7) are the two events whose subject is a person, and their `actor` records
 that person, `human:<id>`, even when an agent relayed the words on their
 behalf. Before this amendment `admit.mjs`'s own doc comment stated the rule and
 nothing enforced it — `EVENT_SPEC.opened` carried no `actor_kind`, so
@@ -1016,7 +1016,7 @@ somebody who has not replied.
   `reason`, and `question_id` — a per-token, per-question identifier
   (`harvestEvent` writes `q-<work_item>-<n>`, counting the token's own prior
   `questioned` lines). It does not release the team — the token is still held,
-  still counted against WIP (§6). **The runner never dispatches on it.**
+  still counted against WIP (ข้อ 6). **The runner never dispatches on it.**
   `question_id` is what an `answered` binds to: the validator refuses to close
   a DIFFERENT open question than the one an answer names
   (`question_id_mismatch`), and the open question is consumed — cleared —
@@ -1036,25 +1036,25 @@ somebody who has not replied.
   — and `resume_role: outer` re-escalates, so the outer controller, the seat
   that actually asked, is the one that reads the reply. Only when
   `resume_role` is absent (a legacy question written before the field
-  existed) or literally `dispatcher` does §5's old `answered`
+  existed) or literally `dispatcher` does ข้อ 5's old `answered`
   (pre-`completed`) behavior still apply: resume the **dispatcher**.
   `loop-runner.mjs` is the file of record for this routing; a change to it
-  must amend this paragraph in the same commit (§15.1).
+  must amend this paragraph in the same commit (ข้อ 15.1).
 - `answered` carries `to_team` and `reason`, and its actor KIND is part of its
   validity: it must be written by a `human:` actor or the writer refuses the
-  line — the same rule §4.6 gives `opened` (ADR 0002). Those two, not
-  `answered` alone, are the events whose subject is a person, and §2 accepts
+  line — the same rule ข้อ 4.6 gives `opened` (ADR 0002). Those two, not
+  `answered` alone, are the events whose subject is a person, and ข้อ 2 accepts
   attestations from no other role for either. An operator agent may relay the
   words and then names itself in `relayed_by` — the actor says who DECIDED.
-- `to_team` on `answered` is not decoration. §6 places a token by its last
+- `to_team` on `answered` is not decoration. ข้อ 6 places a token by its last
   event's `agent_id` or `to_team`, and a person is neither, so an answer without
   it would orphan the token the moment somebody replied.
 - **The writer is `answer.mjs`, and a person runs it** — what `admit.mjs` is to
-  `opened` (§4.6) and `withdraw.mjs` is to `abandoned` (§9), added 2026-08-07. Until then this section specified every
+  `opened` (ข้อ 4.6) and `withdraw.mjs` is to `abandoned` (ข้อ 9), added 2026-08-07. Until then this section specified every
   field of an event **no code in this system produced**: `questioned` was written
   in five places, the board rendered "Waiting on a person to answer", the
   validator accepted the word and the routing above was live, but the only way to
-  reply was to hand-write the line — which §4 forbids. A person supplies the
+  reply was to hand-write the line — which ข้อ 4 forbids. A person supplies the
   answer and nothing else: `question_id` and `to_team` are DERIVED from the open
   question (the asking seat's team, resolved through the declaration), because
   asking a person to restate what the system already knows is how a
@@ -1069,14 +1069,14 @@ somebody who has not replied.
   door that refuses what it cannot place stays correct if D6 is ever relaxed,
   and because refusing costs one branch while a blank `to_team` costs a token.
 - A `questioned` token that goes unanswered past the answer deadline is closed
-  with `abandoned` by the RUNNER (§9), and the controller writes a withdrawal
+  with `abandoned` by the RUNNER (ข้อ 9), and the controller writes a withdrawal
   notice naming the unanswered questions. This applies whether the question was
   asked at the front door or POST-`completed` by the audit — before this
   amendment the validator refused the post-`completed` case outright
   (`completed -> audit_requested -> questioned -> abandoned` was
   `event_after_terminal`), so an unread audit question could never expire and
   sat occupying the board forever.
-- `audited` and `abandoned` are §5's genuinely hard terminals: nothing may
+- `audited` and `abandoned` are ข้อ 5's genuinely hard terminals: nothing may
   follow either, ever, enforced by the validator rather than by the accident of
   `completed` always being written first. Before this amendment the validator
   tracked only the FIRST terminal event on a ledger — always `completed`, for
@@ -1085,11 +1085,11 @@ somebody who has not replied.
   described re-opening an audit that had already closed.
 - **A dispatch produced because a person just answered now carries that
   exchange** (retro-release-review r4-codex BLOCKER 4, 2026-08-04). Resuming
-  the right seat (§5) is not the same as that seat being able to READ the
+  the right seat (ข้อ 5) is not the same as that seat being able to READ the
   reply: `composeBrief` used to hand every resumed role — worker, evaluator,
   the front-door dispatcher — only the standing brief and the previous
   delivery, and the outer controller's own brief (built by `planEscalation`,
-  §9) carried a generic instruction to "read the reply" with no reply on the
+  ข้อ 9) carried a generic instruction to "read the reply" with no reply on the
   page. The exact reproduction: a front-door dispatcher resumed after
   `answered` reran with the original ambiguous request and no memory of the
   human's words, free to ask the same question again. `composeBrief` now
@@ -1100,7 +1100,7 @@ somebody who has not replied.
 
 ### 4.8 A confirmed finding on someone else's work — `target_verdict` (GitHub #31)
 
-Only a `produces: 'verdict'` (§3.4) team's evaluator ever writes this pair, and
+Only a `produces: 'verdict'` (ข้อ 3.4) team's evaluator ever writes this pair, and
 only when it chose to: `reviewed` may carry an optional `target_verdict:
 accept | reject` with its own `target_reason`. `verdict` on the same line still
 judges whether the REVIEW itself was done correctly; `target_verdict` is a
@@ -1114,19 +1114,19 @@ against this vocabulary and requires `target_reason` whenever it is present, in
 a block separate from the `verdict` check above (that check is hardcoded to
 `entry.verdict`).
 
-This is GitHub #31 stages 1–2 only: the DECLARATION (§3.4) and the RECORDING of
+This is GitHub #31 stages 1–2 only: the DECLARATION (ข้อ 3.4) and the RECORDING of
 a confirmed finding. Nothing reads `target_verdict` to move a token yet —
-`pull-controller.mjs`'s gate is unchanged (§7), and a `reviewed pass` with
+`pull-controller.mjs`'s gate is unchanged (ข้อ 7), and a `reviewed pass` with
 `target_verdict: reject` still pulls to the done queue exactly as a `reviewed
 pass` always has. A mechanism that reopens a fresh token on a confirmed
 `target_verdict: reject` is stage 3 of that issue and is explicitly NOT part of
-this amendment; §1's "rework is a new token on a fresh route, opened by a
+this amendment; ข้อ 1's "rework is a new token on a fresh route, opened by a
 person" stands unchanged until that stage ships its own amendment.
 
 ### 4.9 A dispatcher's worker hint — `worker_hint` (GitHub #32)
 
 **This is model selection, and calling it a seat hint has hidden that.** A seat
-carries its own `model`, `adapter` and `effort` (§3.2's `seats` override, read
+carries its own `model`, `adapter` and `effort` (ข้อ 3.2's `seats` override, read
 by `declaredModel`/`declaredAdapter` and by nothing else), so naming a seat IS
 naming a model, an adapter and a reasoning effort. That is the use this
 mechanism actually gets: cheap model for simple work, strong model for hard
@@ -1138,7 +1138,7 @@ shipped event field over.
 
 Two consequences follow from that reading. The first is not fixed here:
 
-- **A model palette costs WIP.** §3.1 derives `wip_limit` from the worker-seat
+- **A model palette costs WIP.** ข้อ 3.1 derives `wip_limit` from the worker-seat
   count, so declaring four seats to have four models also tells the system this
   team may hold four tokens at once. An operator who wants "one token, four
   possible models" cannot say so. The two numbers are the same number and
@@ -1147,7 +1147,7 @@ Two consequences follow from that reading. The first is not fixed here:
   seat is BUSY — whether a process is running on it. It does not know whether
   that seat's provider will accept a request, so a dispatcher routing away from
   a rate-limited model is still guessing (unfixed). What no longer follows from
-  a wrong guess (GitHub #45, part 2, fixed 2026-08-05 — §4.10) is that the leg
+  a wrong guess (GitHub #45, part 2, fixed 2026-08-05 — ข้อ 4.10) is that the leg
   dying at the transport spends a worker attempt: `work_observed: false` on
   `delivered` now excludes exactly that leg from `MAX_ATTEMPTS`, and only that
   leg. The router still has no availability signal; a wrong guess is merely
@@ -1157,7 +1157,7 @@ A team's dispatcher may name which worker seat should take a token it is
 admitting, by writing a `WORKER: <agent_id>` line in its outbox alongside
 `VERDICT`/`REASON`. `harvestEvent` reads it with `role-briefs.readWorkerHint`
 and records it as `intake.worker_hint` — `null` when nothing was said, an
-EVENT_SPEC-permitted extra field either way (§4: only the event NAME is a
+EVENT_SPEC-permitted extra field either way (ข้อ 4: only the event NAME is a
 closed vocabulary).
 
 Only a FRESH `intake` carries a hint. `returned` and `resumed` are the rework
@@ -1167,18 +1167,18 @@ neither is judged by a hint the dispatcher wrote for the ORIGINAL admission.
 `nextStep`'s `want()` is what judges a stated hint, for `role === 'worker'`
 only:
 
-- naming a real, free seat overrides declared order (§3.2.1) — not merely a
+- naming a real, free seat overrides declared order (ข้อ 3.2.1) — not merely a
   tie-break among equal seats;
 - naming a seat not on this team's pool is **escalated**, naming the hint,
   never silently substituted for a seat that exists;
 - naming a real seat that is currently busy **waits for that seat
-  specifically** — the same "every worker busy" wait §3.2.1 already has, not a
+  specifically** — the same "every worker busy" wait ข้อ 3.2.1 already has, not a
   new way to stall forever, because the zombie detection that frees any busy
-  seat (§11) frees this one too.
+  seat (ข้อ 11) frees this one too.
 
 ### 4.10 A leg that never got a turn — `work_observed` (GitHub #45 part 2)
 
-> Read with §9. This fact is written on TWO channels for one reason: the
+> Read with ข้อ 9. This fact is written on TWO channels for one reason: the
 > `delivered` line below is per-token, and the outer controller's own leg
 > carries no token (`workItem: ''`), so for that leg the ledger can never
 > answer this question. The liveness snapshot answers it there instead
@@ -1186,10 +1186,10 @@ only:
 > leg should check which channel that leg actually writes before assuming
 > this one reaches it.
 
-§4.9's own text used to end here: a dispatcher routing away from a
+ข้อ 4.9's own text used to end here: a dispatcher routing away from a
 rate-limited model is guessing, and a wrong guess used to spend a worker
 attempt on a leg that died at the transport — `attemptsBy` (`loop-runner.mjs`)
-counted every `assigned` line against `MAX_ATTEMPTS` (§10) whether the process
+counted every `assigned` line against `MAX_ATTEMPTS` (ข้อ 10) whether the process
 ever started, whether the adapter accepted the declared model, or whether a
 single token of work happened. A seat whose provider was down could burn all
 three attempts on legs that never began, and the pool read as exhausted.
@@ -1201,12 +1201,12 @@ COST of landing there.
 Three decisions, in the order this contract requires them to be made:
 
 1. **A transport failure is still a leg.** It still gets `assigned`, still
-   occupies its team, still counts toward `legCeiling` (§10's `MAX_LEGS`). The
+   occupies its team, still counts toward `legCeiling` (ข้อ 10's `MAX_LEGS`). The
    alternative — never writing `assigned` for a leg that dies before doing
    anything — was rejected: `acp-companion.mjs` writes it before spawning the
    adapter on purpose, to leave a footprint if the process is killed before it
    can write anything else, and a task id that never reaches `assigned` is the
-   exact unbounded-respawn shape a prior fix (BLOCKER 4, 2026-08-04, §14.2)
+   exact unbounded-respawn shape a prior fix (BLOCKER 4, 2026-08-04, ข้อ 14.2)
    closed. Only the ATTEMPT count changes.
 2. **The distinguishing fact is written by `acp-companion.mjs`, at the point
    the transport fails, onto its own `delivered` line — `work_observed:
@@ -1224,13 +1224,13 @@ Three decisions, in the order this contract requires them to be made:
    durability and nothing about the model. While it counted, a leg that hung
    or was rate-limited without one byte coming back reported
    `work_observed: true`, which spent a worker attempt (this section) and, once
-   §3.5.1 shipped, also kept a palette seat from ever rotating off a dead
+   ข้อ 3.5.1 shipped, also kept a palette seat from ever rotating off a dead
    candidate. Found by the v0.15.0 release review and reproduced against a
    hanging adapter before it was believed. A NEW kind of progress the companion learns to
    report defaults to counting as work unless explicitly classified otherwise,
    so an unclassified signal fails toward a spent attempt, never toward a free
    one. `lost` **never** carries this fact and is never read as "never
-   started": §4 already defines it as "an assignment whose process is gone and
+   started": ข้อ 4 already defines it as "an assignment whose process is gone and
    which recorded nothing", and that sentence is exactly as true of a leg
    killed after real, meaningful work as of one that never began — the ledger
    alone cannot tell a killed worker from a worker that never started, so
@@ -1247,9 +1247,9 @@ Three decisions, in the order this contract requires them to be made:
    the exclusion off the terminal string instead was tried and rejected during
    review: it reads a leg that failed for a genuine reason but happened to
    share a wire-error terminal as "never started" too, which is precisely the
-   widening §15's own history warns against.
+   widening ข้อ 15's own history warns against.
 
-What this does NOT change: `legCeiling` (`MAX_LEGS`, §10) counts every
+What this does NOT change: `legCeiling` (`MAX_LEGS`, ข้อ 10) counts every
 `assigned` unconditionally, transport-failed or not — a palette that keeps
 landing on dead seats no longer burns `MAX_ATTEMPTS` faster, but it still
 burns the token's total leg ceiling at the same rate it always did. GitHub #47
@@ -1265,7 +1265,7 @@ One token, keyed on its last event and the role of the actor.
 | --- | --- | --- |
 | `opened` | — | dispatch the **dispatcher** (intake) |
 | `pulled` | — | dispatch the **dispatcher** (intake) |
-| `intake` | — | dispatch a **worker** — the dispatcher's `worker_hint` (§4.9) if it names a real, free seat; escalate if it names a seat not on this team; wait for that seat if it names one that is busy; declared order (§3.2.1) if no hint was stated |
+| `intake` | — | dispatch a **worker** — the dispatcher's `worker_hint` (ข้อ 4.9) if it names a real, free seat; escalate if it names a seat not on this team; wait for that seat if it names one that is busy; declared order (ข้อ 3.2.1) if no hint was stated |
 | `returned` | — | dispatch a **worker** (rework) |
 | `resumed` | — | dispatch a **worker** (rework, budget reset) |
 | `assigned` | actor is running | in flight, do nothing |
@@ -1282,34 +1282,34 @@ One token, keyed on its last event and the role of the actor.
 | `escalated` | no answer yet | held; the runner does not move it |
 | `completed` | not yet audited | flag `audit_requested` and dispatch the controller |
 | `audit_requested` | controller outbox exists | harvest → `audited`, or `questioned` when the answer is not a word this seat reads |
-| `audit_requested` | leg dead past the deadline, liveness says `work_observed: false` | `questioned` with `resume_role: audit` — a person is asked and the token holds (§9) |
-| `audit_lost` | — | re-arms `awaitingAudit` exactly as `completed` does; NOT terminal, and it releases the team like every other audit state (§6). Legacy only — `answered` carries this now |
-| `questioned` (pre-`completed`) | before the answer deadline | held; the runner does not dispatch while a person has not replied (§4.7) |
-| `questioned` (pre-`completed`) | past the answer deadline | RUNNER closes it with `abandoned` (§4.7, §9) |
-| `answered` (pre-`completed`) | `resume_role: worker` | dispatch the **worker** (§4.7) |
-| `answered` (pre-`completed`) | `resume_role: evaluator` | dispatch the **evaluator** (§4.7) |
-| `answered` (pre-`completed`) | `resume_role: audit` | held — the outer controller reads it via the `completed`-driven `audit_requested` path instead (§4.7) |
-| `answered` (pre-`completed`) | `resume_role: outer` | escalate — re-asks the outer controller, the seat that actually asked (§4.7) |
-| `answered` (pre-`completed`) | `resume_role` absent, or `dispatcher` | dispatch the **dispatcher** (§4.7) |
-| `questioned` (post-`completed`) | past the answer deadline | RUNNER closes it with `abandoned` (§4.7, §9) |
+| `audit_requested` | leg dead past the deadline, liveness says `work_observed: false` | `questioned` with `resume_role: audit` — a person is asked and the token holds (ข้อ 9) |
+| `audit_lost` | — | re-arms `awaitingAudit` exactly as `completed` does; NOT terminal, and it releases the team like every other audit state (ข้อ 6). Legacy only — `answered` carries this now |
+| `questioned` (pre-`completed`) | before the answer deadline | held; the runner does not dispatch while a person has not replied (ข้อ 4.7) |
+| `questioned` (pre-`completed`) | past the answer deadline | RUNNER closes it with `abandoned` (ข้อ 4.7, ข้อ 9) |
+| `answered` (pre-`completed`) | `resume_role: worker` | dispatch the **worker** (ข้อ 4.7) |
+| `answered` (pre-`completed`) | `resume_role: evaluator` | dispatch the **evaluator** (ข้อ 4.7) |
+| `answered` (pre-`completed`) | `resume_role: audit` | held — the outer controller reads it via the `completed`-driven `audit_requested` path instead (ข้อ 4.7) |
+| `answered` (pre-`completed`) | `resume_role: outer` | escalate — re-asks the outer controller, the seat that actually asked (ข้อ 4.7) |
+| `answered` (pre-`completed`) | `resume_role` absent, or `dispatcher` | dispatch the **dispatcher** (ข้อ 4.7) |
+| `questioned` (post-`completed`) | past the answer deadline | RUNNER closes it with `abandoned` (ข้อ 4.7, ข้อ 9) |
 | `answered` (post-`completed`) | — | re-flag `audit_requested`; the reply is read, not silently absorbed (2026-08-04: `awaitingAudit` used to treat ANY prior `audit_requested` as proof the route was already read, so this reply had nowhere to go — fixed in `loop-runner.mjs`) |
-| `audited`, `abandoned` | — | **hard terminal** (§4.7): nothing may follow either, ever |
+| `audited`, `abandoned` | — | **hard terminal** (ข้อ 4.7): nothing may follow either, ever |
 
 **Ordering within a tick is fixed:** harvest → pulls → dispatch → escalation.
 Harvesting after pulling would let the controller evaluate a stale event, and
 pulling before a review lands is what made the evaluator decorative.
 
 **No leg is dispatched onto a history that cannot be believed.** Before the
-runner acts on a token, that token's ledger is validated (§4.3). If it does not
+runner acts on a token, that token's ledger is validated (ข้อ 4.3). If it does not
 validate the runner refuses, names every problem it found, and moves on.
 Occupancy, the pull decision, the board and the audit are all derived from that
 one file, so dispatching a fresh leg onto a broken history writes good evidence
 on top of bad and buries the break. The refusal is **loud** for the same reason
-every ceiling is (§10): a silent skip here looks exactly like a team with
+every ceiling is (ข้อ 10): a silent skip here looks exactly like a team with
 nothing to do.
 
 The cost is stated rather than hidden: a token whose ledger is invalid **stops
-moving** until a human repairs it, and §13 forbids rewriting a line. See §14.2
+moving** until a human repairs it, and ข้อ 13 forbids rewriting a line. See ข้อ 14.2
 item 1, which records the one shape of history this system produces today and
 cannot then repair.
 
@@ -1321,7 +1321,7 @@ readers computing it separately is how a board came to draw a limit that was not
 being enforced.
 
 - A team holds a token from the moment it pulls it until the route closes.
-`questioned` and `answered` may follow `completed` (§5: it is only half
+`questioned` and `answered` may follow `completed` (ข้อ 5: it is only half
 closed). Every other gate escalates upward when it cannot decide; the
 controller is the top, so its only remaining reader is a person. Without that
 route a finished route meeting an unusable audit answer had nowhere legal to
@@ -1371,7 +1371,7 @@ go — the runner refused its own repair on every tick, visibly and for ever.
   point bytes enter the ledger, not re-derivable here). The one case this is
   wrong for is a genuine round-2 report from a reviewer who reviewed the SAME
   delivery once before (reject, rework, re-review by the SAME evaluator — the
-  ordinary shape §1 describes) and writes its later verdict in the same
+  ordinary shape ข้อ 1 describes) and writes its later verdict in the same
   identity-free shorthand a never-assigned reviewer is allowed to use.
   **Round 2 and no further**, and this said "round-2+" until 2026-08-04, which
   the code has never done (r6-qwen). A reviewer already assigned twice writing
@@ -1383,7 +1383,7 @@ go — the runner refused its own repair on every tick, visibly and for ever.
   so the next report is not a shorthand at all. Paying for a re-review is the
   cheaper error than trusting a dead leg's verdict. The
   shorthand's own field, `reviewed_task` — REQUIRED on every `reviewed` line
-  (§4) and always stamped by the sanctioned producer from the delivery
+  (ข้อ 4) and always stamped by the sanctioned producer from the delivery
   actually being judged, at the moment of judging — settles it: a leg that
   died before the holder's own delivery existed cannot name that delivery's
   task_id, because it never saw it. So `reviewed_task` matching the CURRENT
@@ -1406,7 +1406,7 @@ go — the runner refused its own repair on every tick, visibly and for ever.
   When `dispatch_id` cannot settle it (missing on either side — a mixed-version
   ledger where an old writer, or the generic writer, left it off), `task_id` is
   the next signal, not agent_id alone: `assigned` is required to carry one
-  (§4), and every outcome this matters for — `delivered`, `lost`, and a
+  (ข้อ 4), and every outcome this matters for — `delivered`, `lost`, and a
   harvester-written `reviewed` — carries the SAME task_id its own leg opened
   under. An outcome that names a task_id is traced back to the exact `assigned`
   line that started its leg and compared against the `assigned` line that made
@@ -1529,7 +1529,7 @@ go — the runner refused its own repair on every tick, visibly and for ever.
   mint the identical id, exactly as this paragraph already says — but it
   fixes two things the old concatenation got wrong that this paragraph never
   claimed to cover: a `workItem` long enough to overflow
-  `acp-companion.mjs`'s 64-character task-id cap (§4's `ID_RE` allows
+  `acp-companion.mjs`'s 64-character task-id cap (ข้อ 4's `ID_RE` allows
   `work_item` up to 128 characters) used to make the companion exit before
   writing `assigned` at all — invisible to the retry budget, which counts
   only `assigned` lines — and the old char-substitution sanitize was not
@@ -1589,7 +1589,7 @@ go — the runner refused its own repair on every tick, visibly and for ever.
   picked the late straggler). It satisfies that guarantee its own way: every
   candidate `delivered` is ranked by the array position of the `assigned`
   line that OPENED its leg — a fact authored in dispatch order, and so never
-  late, exactly the fact §6's own `task_id`-tracing paragraph above already
+  late, exactly the fact ข้อ 6's own `task_id`-tracing paragraph above already
   relies on — rather than by the `delivered` line's own position, which can
   be late. The candidate whose leg opened most recently wins, however late
   its own report shows up. A `delivered` whose `task_id` does not resolve to
@@ -1601,7 +1601,7 @@ go — the runner refused its own repair on every tick, visibly and for ever.
 
 ### 6.1 Per-token projection — the shape every OTHER reader should consume
 
-§6 above centralised the one question "which team holds this token" into
+ข้อ 6 above centralised the one question "which team holds this token" into
 `teamOccupancy`/`currentEntry`. It did not centralise everything past that:
 when a token entered its PRESENT placement, where that placement was pulled
 from, and what its own intake history says each still lived inside whichever
@@ -1622,14 +1622,14 @@ declaration, no wall clock, no other token's state:
 | `lead_sec`, `legs` | the token's whole-journey timing and leg count | pass through from `dispatch-facts.readWorkItems`'s own item — never recomputed |
 | `requester` | who opened this token | the `opened` line's `actor` |
 | `questions[]` | every time the token was sent back for detail — category and answer time, per asking | each `questioned`/`answered` pair (intake-stats.mjs's own fold before this) |
-| `withdrawn_by_runner` | did the runner's own deadline lapse it, as opposed to a controller `abandon` verdict | an `abandoned` line whose `actor` is `agent:runner` specifically — the same disambiguation §9 already requires |
+| `withdrawn_by_runner` | did the runner's own deadline lapse it, as opposed to a controller `abandon` verdict | an `abandoned` line whose `actor` is `agent:runner` specifically — the same disambiguation ข้อ 9 already requires |
 
 **Deliberately excluded, and why:**
 
 - Per-team occupancy (`teamOccupancy`'s cross-token aggregate) stays where it
   is. This projection answers about ONE token; a team's occupancy is built by
   folding MANY tokens together, which is a different, later step.
-- `.tmux-teams/decisions/latest.json` (§11.3) stays separate. It is a
+- `.tmux-teams/decisions/latest.json` (ข้อ 11.3) stays separate. It is a
   different file on a different write cadence — overwritten whole once per
   tick, never appended — answering why the RUNNER passed over a token on ONE
   tick. No reader of a custody ledger asks that question of the ledger, and
@@ -1668,21 +1668,21 @@ work, one at a time, each proving it changes nothing before it lands.
   the same class of mistake as handing on a delivery that never happened.
 - A blocked token stays visibly blocked. A queue backing up is the signal the
   board exists to show. **An `invalid` token must stay visibly blocked too** —
-  see §14.2 item 2, where the board's failure to draw it is a live defect.
+  see ข้อ 14.2 item 2, where the board's failure to draw it is a live defect.
 - No next team on the route → `completed`.
 - **The next hop is the first team on the route the token has not been
-  ADMITTED by (§1); a team already in its held set is skipped, and a route
+  ADMITTED by (ข้อ 1); a team already in its held set is skipped, and a route
   with none left is finished → `completed`.** (GitHub #42/#44, 2026-08-05.)
   `route[index + 1]` alone answers only "what is declared next", never "has
   this token been here already" — and on an escalation exit (parked at a
   later team, resumed, and released there) those two answers can disagree:
   the declared route points back at a team the token was already ADMITTED by.
-  The validator's `route_went_backwards` refusal (§4.2) remains the backstop —
+  The validator's `route_went_backwards` refusal (ข้อ 4.2) remains the backstop —
   it is what stopped the wrong pull from ever being written — but a planner
   that keeps proposing what the writer is guaranteed to refuse recomputes the
   identical decision every tick with no exit in code, which is indistinguishable
   from a runner that has quietly given up. `heldTeams` is computed once, in
-  `ledger-validate.mjs`'s own admission tracking (§1), and returned on
+  `ledger-validate.mjs`'s own admission tracking (ข้อ 1), and returned on
   `validateLedgerTolerant`'s verdict — the planner consumes it rather than
   scanning the ledger for the same fact a second time.
 
@@ -1698,11 +1698,11 @@ team as ready-to-pull, and the first delivery leg of every route becomes an
 ordinary `pulled` with a real `from_team`.
 
 The controller's worker is never dispatched during a healthy admission. It
-exists for the other job (§9), and paying a leg to do nothing would also hold
+exists for the other job (ข้อ 9), and paying a leg to do nothing would also hold
 the controller's single WIP slot while doing it.
 
 **The front door obeys the WIP limit.** `opened` is the one arrival that is not
-a pull, so nothing enforced §6 there until `admit.mjs` existed: two requests
+a pull, so nothing enforced ข้อ 6 there until `admit.mjs` existed: two requests
 landed on a WIP-1 controller and occupancy read 2. Admission now counts through
 the same placement rule everything else uses and is refused while the controller
 is full — a queue, not a rejection.
@@ -1735,9 +1735,9 @@ Parsing rules, non-negotiable:
 
 - **Event-triggered, never on a timer.** A timer bills for reading a board that
   has not changed. Every trigger below is something that *did* change. (This
-  clause predates the runner heartbeat of §11 and is unrelated to it: the
+  clause predates the runner heartbeat of ข้อ 11 and is unrelated to it: the
   heartbeat is a file the runner writes about itself and costs nothing to
-  write. Nothing in §11 may ever become a reason to dispatch the controller.)
+  write. Nothing in ข้อ 11 may ever become a reason to dispatch the controller.)
 - It has two jobs. **Auditing** is the standing one: no team's evaluator can see
   past its own leg, so only this role can ask whether what came out of the end is
   what was asked for. **Unsticking** is the exceptional one.
@@ -1828,7 +1828,7 @@ Parsing rules, non-negotiable:
   re-escalate on the very next tick.
 - `abandon` closes the token honestly. It was the only mechanised writer of
   `abandoned` until 2026-07-31, when the answer deadline gave it a second: the
-  RUNNER closes a `questioned` token nobody answered in time (§4.7, branch
+  RUNNER closes a `questioned` token nobody answered in time (ข้อ 4.7, branch
   `poc/controller-as-team`). Two writers, one word — `actor` already tells them
   apart, and a reader asking how a token ended wants one word to search for
   rather than two. The runner also writes the withdrawal notice, because a
@@ -1842,13 +1842,13 @@ Parsing rules, non-negotiable:
   token parked in `escalated` (naming the controller) or in `audit_requested`
   with NOTHING that could ever revisit it: `planHarvest` needs an outbox to
   harvest anything at all, and `audit_requested` is additionally never a
-  member of `held` (§6: it is a `RELEASING_EVENT`), so `planDispatches`'s
+  member of `held` (ข้อ 6: it is a `RELEASING_EVENT`), so `planDispatches`'s
   ordinary per-team loop never even visits it. The runner now applies the
   SAME `answerDeadlineSec` clock `questioned` already answers to, to both: a
   controller leg with no outbox past the deadline is treated as dead, and the
   runner writes `abandoned` exactly as it does for an unanswered `questioned`
   — EXCEPT where that dead leg's own liveness snapshot states
-  `work_observed: false`. That is §4.10's fact carried on the one channel a
+  `work_observed: false`. That is ข้อ 4.10's fact carried on the one channel a
   `workItem: ''` leg does write, and it says the model never took a turn:
   nobody failed to answer, because nobody was ever asked, and the reason
   recorded for years said otherwise. The runner writes the non-terminal
@@ -1856,13 +1856,13 @@ Parsing rules, non-negotiable:
   is retried and nothing is withdrawn. Amended 2026-08-07 — this said
   `audit_lost` and a bounded retry, which was the least-bad option while no
   code could write `answered`, so parking on a question was a wedge rather than
-  a pause. `answer.mjs` (§4.7) removed that constraint, and D1 governs: a leg
+  a pause. `answer.mjs` (ข้อ 4.7) removed that constraint, and D1 governs: a leg
   the transport killed is held, nothing retries by itself, a person unblocks
   it. Two things bound the hold, and a third bound it for one day. The scan
   reads `currentEntry` and visits only `audit_requested`, so writing the
   question is itself what stops the asking — a person is never handed a question
-  that is replaced every tick. And the question always has somewhere to BE: §6
-  places a token by its last event's `agent_id`, D6 (§1, 2026-08-08) refuses at
+  that is replaced every tick. And the question always has somewhere to BE: ข้อ 6
+  places a token by its last event's `agent_id`, D6 (ข้อ 1, 2026-08-08) refuses at
   LOAD any graph whose controller is a worker on no team, so `teamOf(controller)`
   always resolves. The parked question holds the control team's one slot and
   `admit.mjs` refuses admission at the limit: that is the whole stop mechanism,
@@ -1872,11 +1872,11 @@ Parsing rules, non-negotiable:
   paragraph named a THIRD bound — a runtime guard that declined to write a
   question a control-less graph could not place, and fell back to the old
   withdrawal — and called that graph "still valid". D6 landed the next day,
-  refused the graph at load, and the guard was deleted as unreachable; §4.2,
-  §4.7 and the AC table were rewritten with it and THIS paragraph was not.
+  refused the graph at load, and the guard was deleted as unreachable; ข้อ 4.2,
+  ข้อ 4.7 and the AC table were rewritten with it and THIS paragraph was not.
   Both changes ship in one release, so the contract contradicted itself and its
   own code in a section labelled non-negotiable. Found by an outside reviewer
-  reading the release diff, not by anyone here. The rule it breaks is §15.1's,
+  reading the release diff, not by anyone here. The rule it breaks is ข้อ 15.1's,
   and the shape is the one this document keeps paying for: prose that was true
   when written and never compared against the code again.
   And only POSITIVE evidence narrows the rule: a missing, unreadable,
@@ -1897,7 +1897,7 @@ Parsing rules, non-negotiable:
 | `MAX_LEGS` | 15 + granted | the whole token, all roles | escalate |
 | `RESUME_GRANT` | 3 | added per `resumed` event, clamped | raises the leg ceiling |
 | `MAX_IN_FLIGHT` | 4 | declared agents running across the whole board | wait |
-| `wip_limit` | derived: the team's worker count (§3.1) | tokens held by one team | wait / block the pull |
+| `wip_limit` | derived: the team's worker count (ข้อ 3.1) | tokens held by one team | wait / block the pull |
 | `ZOMBIE_SEC` | 180 s | an `assigned` with no live process | append `lost` |
 | `PULSE_STALE_SEC` | 120 s | evidence age | refuse to dispatch |
 | `PM_COOLDOWN_SEC` | 900 s | between controller dispatches | hold |
@@ -2003,7 +2003,7 @@ hard-coded one, so a slow loop is not read as a dead one. Staleness outranks
 `dispatching: false` is reported as what the runner *last said*, never as a hold
 in progress.
 
-Honesty, same rule as everywhere else (§12.7.1): `started` and `held` are
+Honesty, same rule as everywhere else (ข้อ 12.7.1): `started` and `held` are
 printed only when the runner measured them. A count it did not report says so
 instead of printing a zero; a measured `0` still prints. Today the only tick
 that emits `held: null` is the one that found the graph invalid, where occupancy
@@ -2047,16 +2047,16 @@ nothing here is a taxonomy invented for this file:
 
 | `action` | Read off | Meaning |
 | --- | --- | --- |
-| `escalate` | `plan.action` (`nextStep`, §5) | the token's own next step is escalation |
+| `escalate` | `plan.action` (`nextStep`, ข้อ 5) | the token's own next step is escalation |
 | `wait` | `plan.action` | every seat this token could use right now is busy |
 | `waiting` | `plan.action` | held on a person who has not answered yet |
 | `skip` | `plan.action` | nothing follows the token's last custody event |
-| `unreliable-history` | `validateLedgerFileTolerant(...).ok === false` | the ledger has a blocking problem, so no fresh leg may be dispatched onto it (§4.3) |
+| `unreliable-history` | `validateLedgerFileTolerant(...).ok === false` | the ledger has a blocking problem, so no fresh leg may be dispatched onto it (ข้อ 4.3) |
 | `no-brief` | `composeBrief(...).path === null` | no standing brief exists for the team this token would be dispatched to |
-| `wedged` | a `record(...)` call after an escalation returned `false` | the controller was dispatched and the ledger refused to record what it decided about this token; nothing will retry it on its own (§9, §14.2 item 3, AC74) |
+| `wedged` | a `record(...)` call after an escalation returned `false` | the controller was dispatched and the ledger refused to record what it decided about this token; nothing will retry it on its own (ข้อ 9, ข้อ 14.2 item 3, AC74) |
 
 **Overwritten whole, every tick — never appended.** A file that grew forever
-beside the ledger would be a second event store, which is exactly what §13
+beside the ledger would be a second event store, which is exactly what ข้อ 13
 exists to prevent; that is why the two advisors who wanted an append-only log
 (`decisions/<date>.jsonl`) lost the argument. The cost of that choice is
 stated rather than hidden: **this file answers "why is it not moving right
@@ -2077,7 +2077,7 @@ refused nothing still writes `decisions: []` with the new `tick_at` — that
 because `tick_at` moved; a reader must check `tick_at`, not just whether the
 array is empty.
 
-**A dry run does not write this file**, for the same reason §11.2's heartbeat
+**A dry run does not write this file**, for the same reason ข้อ 11.2's heartbeat
 does not stamp on one: a simulation overwriting what a live tick actually
 decided would report decisions nobody made.
 
@@ -2107,7 +2107,7 @@ may not become a board.
 2. **Workflows** — a plain horizontal team-level strip per workflow. No agents
    here.
 
-These are the bands **of the diagram**. The loop-health strip of §12.7.7 is not
+These are the bands **of the diagram**. The loop-health strip of ข้อ 12.7.7 is not
 one of them: it is page chrome that sits above the diagram entirely, so it
 neither reorders these two nor adds a third.
 
@@ -2134,13 +2134,13 @@ the dispatch; the model is reported only once verified. Never substitute one for
 the other.
 
 **The declared model is a third fact, and it is not this one.** `graph.json`
-names a model for every role and lets a seat override its own (§3.2, §3.2.1),
+names a model for every role and lets a seat override its own (ข้อ 3.2, ข้อ 3.2.1),
 and the RESOLVED name travels with each agent in the validated graph — so two
 workers on one team may state two different declared models. It is a
 DECLARATION: it says which model
 was *asked* for. Line 3 states the model that *answered*. Wiring the declared
 field into line 3 would turn this table's only honesty guarantee into a lie, and
-is forbidden (§12.7.2). A seat whose declared model was never acknowledged still
+is forbidden (ข้อ 12.7.2). A seat whose declared model was never acknowledged still
 reads `unverified`.
 
 ### 12.4 Status
@@ -2197,7 +2197,7 @@ These are standing requirements. Each one was a defect first.
 2. Never show a model that was not verified.
 3. Unreadable ledger lines and unplaceable tokens are surfaced, never hidden.
 4. The page and the controller must never disagree about occupancy — both read
-   the same function (§6).
+   the same function (ข้อ 6).
 5. Counters come from the ledger, which is the runner's own record, so a broken
    verdict-to-snapshot chain cannot make reviewing look like it never happened.
 6. Auto-refresh is real and pausable; the page states its own freshness.
@@ -2205,7 +2205,7 @@ These are standing requirements. Each one was a defect first.
    A board of declared agents with no evidence beside them is the same picture
    whether the loop is idle or dead, and this band is the only surface that can
    tell those apart. It sits directly under the header, reads
-   `runner-heartbeat.json` by the rules of §11.2, and names one of six states —
+   `runner-heartbeat.json` by the rules of ข้อ 11.2, and names one of six states —
    `never`, `stale`, `holding`, `dispatching`, `unreadable`, `unmeasured`. The
    four a reader must act on each have an honest failure mode behind them:
    `unreadable` is deliberately **not** collapsed into "never run", because that
@@ -2215,7 +2215,7 @@ These are standing requirements. Each one was a defect first.
    everything it describes is broken.
    Like every other status on this page, the state is carried more than one way:
    a shape that survives greyscale, an uppercase state word, a sentence, and a
-   machine-readable `data-loop-health` attribute — never colour alone (§12.4).
+   machine-readable `data-loop-health` attribute — never colour alone (ข้อ 12.4).
 
 ## 13. Prohibitions
 
@@ -2226,10 +2226,10 @@ These are standing requirements. Each one was a defect first.
   a leg started or ended, and routing it through the writer would mean spawning
   a process inside the dispatch path, so it is a sanctioned writer bound by the
   same obligations: every line it writes carries `actor`, and it writes only the
-  events §4 names for it (`assigned`, `delivered`). Everything else goes through
+  events ข้อ 4 names for it (`assigned`, `delivered`). Everything else goes through
   `ledger-writer.mjs`. A refused write did not happen and may not be reported as
   having happened.
-  *An earlier draft of this clause named one writer and was contradicted by §4's
+  *An earlier draft of this clause named one writer and was contradicted by ข้อ 4's
   own event table and by the code on every leg — the contract disagreeing with
   itself, which is worse than disagreeing with the code, because a reader
   believes the half that is false.*
@@ -2237,24 +2237,24 @@ These are standing requirements. Each one was a defect first.
 - No second implementation of the occupancy rule.
 - No agent may be dispatched without a brief.
 - No verdict may be inferred from prose.
-- No `wip_limit` is written into a declaration (§3.1).
-- No declared model is printed as a verified one (§12.7.2).
-- No list of known model names lives anywhere in this system (§3.2).
+- No `wip_limit` is written into a declaration (ข้อ 3.1).
+- No declared model is printed as a verified one (ข้อ 12.7.2).
+- No list of known model names lives anywhere in this system (ข้อ 3.2).
 - The page must never dispatch, pull, or mutate anything.
 - **No dispatch may pass a non-empty `mcpServers`.** Every ACP call that
   starts or resumes an agent's session sends the literal `mcpServers: []` —
   no option, environment variable, `graph.json` field, or profile key may
   make it configurable. This is the Execution seam's containment boundary: an
   agent this system dispatches can do exactly what its brief permits and
-  nothing more, and an MCP server grants reach that nothing in §3–§9 mediates
+  nothing more, and an MCP server grants reach that nothing in ข้อ 3–ข้อ 9 mediates
   or attributes. Opening it is a containment REDUCTION, not an added capability,
   and it opens only by amending this clause — see ADR 0003. **Unenforced
-  (§15.2)** — nothing tests the literal today; see §14.1.
+  (ข้อ 15.2)** — nothing tests the literal today; see ข้อ 14.1.
 
 ## 14. Acceptance criteria
 
 Every clause below is enforced by a test that exists today. A clause with no
-test is not enforced and must be marked as such in §14.1.
+test is not enforced and must be marked as such in ข้อ 14.1.
 
 AC1–AC37 live in `tests/loop-occupancy.test.mjs` or `tests/graph.test.mjs`.
 AC38 onward name their own file, because the batch of 2026-07-28 added three:
@@ -2263,160 +2263,160 @@ AC38 onward name their own file, because the batch of 2026-07-28 added three:
 
 | # | Clause | Assertion |
 | --- | --- | --- |
-| AC1 | §5 | every declared role has a ledger state that dispatches it |
-| AC2 | §7 | a delivered artifact goes to its own evaluator, never straight onward |
-| AC3 | §8 | a rejected review returns to the same team, not the next one |
-| AC4 | §8 | an evaluator that states no verdict yields `unresolved`, not a pass |
-| AC5 | §8 | the last verdict line wins, not the first mentioned |
-| AC6 | §4, §6 | a refused handoff is placed with the sending team |
-| AC7 | §6 | a finished token is done, not unplaceable |
-| AC8 | §6 | a failed leg still occupies the team that must rerun it |
-| AC9 | §6 | the board and the controller agree about a team holding a failed leg |
-| AC10 | §9 | a parked token is still held by its team |
-| AC11 | §9 | the controller's `resume` restores the work with a fresh budget |
-| AC12 | §9 | the controller's `abandon` closes it and frees the team |
-| AC13 | §9 | a controller that answers nothing changes nothing |
-| AC14 | §9 | a permanent problem does not re-dispatch the controller every cooldown |
-| AC15 | §10 | the runner never puts more work in a team than its WIP limit allows |
-| AC16 | §11 | a frozen pulse snapshot stops the runner dispatching |
-| AC17 | §3 | an invalid graph fails closed; a control character in a name is rejected |
-| AC18 | §12.3 | every role states the work it actually did, from the ledger |
-| AC19 | §12.3 | the outer controller states the same facts as every other agent |
-| AC20 | §12.3 | a node states status, lane and model separately, and never fakes a model |
-| AC21 | §12.4 | status is readable without colour: a dot plus a text tooltip |
-| AC22 | §12.5 | arrows carry meaning by colour, with no text on any edge |
-| AC23 | §12.5 | an edge only hardens once evidence exists for it |
-| AC24 | §12.6 | the controller's rail spans every team, including the first |
-| AC25 | §12.6 | the graph fills the viewport and is never pinned to a pixel size |
-| AC26 | §12.6 | hostile names stay escaped and the page declares utf-8 |
-| AC27 | §12.2 | a team shared by two workflows is drawn once, with every agent |
-| AC28 | §12.7 | the published page does not accuse a finished token of being unplaceable |
-| AC29 | §12.7 | the published page can actually load the refresh script it names |
-| AC30 | §10 | a lost leg is recorded, not left occupying its team forever |
-| AC31 | §10 | the board as a whole has a dispatch ceiling, not only each team |
-| AC32 | §10 | a token cannot exceed its leg ceiling unless the controller grants more |
-| AC33 | §9 | a finished route is read as a whole, not just leg by leg |
-| AC34 | §6 | reading a finished delivery never puts it back in a team |
-| AC35 | §9 | the controller hears about retries that succeeded quietly |
-| AC36 | §9 | a board holding work with nothing recorded is a stall, not calm |
-| AC37 | §8, §9 | an audit answer closes the flag, and silence does not |
+| AC1 | ข้อ 5 | every declared role has a ledger state that dispatches it |
+| AC2 | ข้อ 7 | a delivered artifact goes to its own evaluator, never straight onward |
+| AC3 | ข้อ 8 | a rejected review returns to the same team, not the next one |
+| AC4 | ข้อ 8 | an evaluator that states no verdict yields `unresolved`, not a pass |
+| AC5 | ข้อ 8 | the last verdict line wins, not the first mentioned |
+| AC6 | ข้อ 4, ข้อ 6 | a refused handoff is placed with the sending team |
+| AC7 | ข้อ 6 | a finished token is done, not unplaceable |
+| AC8 | ข้อ 6 | a failed leg still occupies the team that must rerun it |
+| AC9 | ข้อ 6 | the board and the controller agree about a team holding a failed leg |
+| AC10 | ข้อ 9 | a parked token is still held by its team |
+| AC11 | ข้อ 9 | the controller's `resume` restores the work with a fresh budget |
+| AC12 | ข้อ 9 | the controller's `abandon` closes it and frees the team |
+| AC13 | ข้อ 9 | a controller that answers nothing changes nothing |
+| AC14 | ข้อ 9 | a permanent problem does not re-dispatch the controller every cooldown |
+| AC15 | ข้อ 10 | the runner never puts more work in a team than its WIP limit allows |
+| AC16 | ข้อ 11 | a frozen pulse snapshot stops the runner dispatching |
+| AC17 | ข้อ 3 | an invalid graph fails closed; a control character in a name is rejected |
+| AC18 | ข้อ 12.3 | every role states the work it actually did, from the ledger |
+| AC19 | ข้อ 12.3 | the outer controller states the same facts as every other agent |
+| AC20 | ข้อ 12.3 | a node states status, lane and model separately, and never fakes a model |
+| AC21 | ข้อ 12.4 | status is readable without colour: a dot plus a text tooltip |
+| AC22 | ข้อ 12.5 | arrows carry meaning by colour, with no text on any edge |
+| AC23 | ข้อ 12.5 | an edge only hardens once evidence exists for it |
+| AC24 | ข้อ 12.6 | the controller's rail spans every team, including the first |
+| AC25 | ข้อ 12.6 | the graph fills the viewport and is never pinned to a pixel size |
+| AC26 | ข้อ 12.6 | hostile names stay escaped and the page declares utf-8 |
+| AC27 | ข้อ 12.2 | a team shared by two workflows is drawn once, with every agent |
+| AC28 | ข้อ 12.7 | the published page does not accuse a finished token of being unplaceable |
+| AC29 | ข้อ 12.7 | the published page can actually load the refresh script it names |
+| AC30 | ข้อ 10 | a lost leg is recorded, not left occupying its team forever |
+| AC31 | ข้อ 10 | the board as a whole has a dispatch ceiling, not only each team |
+| AC32 | ข้อ 10 | a token cannot exceed its leg ceiling unless the controller grants more |
+| AC33 | ข้อ 9 | a finished route is read as a whole, not just leg by leg |
+| AC34 | ข้อ 6 | reading a finished delivery never puts it back in a team |
+| AC35 | ข้อ 9 | the controller hears about retries that succeeded quietly |
+| AC36 | ข้อ 9 | a board holding work with nothing recorded is a stall, not calm |
+| AC37 | ข้อ 8, ข้อ 9 | an audit answer closes the flag, and silence does not |
 
 Added 2026-07-28. Each row names the file holding its test.
 
 | # | Clause | Assertion | Test file |
 | --- | --- | --- | --- |
-| AC38 | §3.1 | the WIP limit is the worker count whatever the graph does or does not say | `workflow-graph.test.mjs` |
-| AC39 | §3.1 | a declared `wip_limit` that differs from the worker count is rejected, naming both numbers | `workflow-graph.test.mjs` |
-| AC40 | §3.2 | a seat with no model is rejected, naming the team and the role | `workflow-graph.test.mjs` |
-| AC41 | §3.2 | a declared outer controller with no model is rejected | `workflow-graph.test.mjs` |
-| AC42 | §3.2 | a model value is never judged against a list of known models | `workflow-graph.test.mjs` |
-| AC43 | §3.2, §12.3 | the declared model travels with the team, the role and the agent, as declaration | `workflow-graph.test.mjs` |
-| AC77 | §3.2.1 | a seat overrides its role's model and lane, and only that seat | `workflow-graph.test.mjs` |
-| AC78 | §3.2.1, §3.1 | a graph with no `seats`, an empty `seats`, and a `seats` entry restating the role default all hash to one `source_digest` | `workflow-graph.test.mjs` |
-| AC79 | §3.2.1 | every way of declaring a seat and saying nothing is refused, naming the team and the seat | `workflow-graph.test.mjs` |
-| AC80 | §3.2.1, §9 | a `seats` entry for the outer controller is refused, because the dispatch reads `outer_controller_*` and would ignore it | `workflow-graph.test.mjs` |
-| AC81 | §3.2, §9 | the outer controller is dispatched on the lane it declares, like every other seat | `loop-runner-heartbeat-model.test.mjs` |
-| AC82 | §3.2.2 | a seat's declared effort resolves into `agents[]`, and an unoverridden seat carries `null`, not a role default | `graph.test.mjs` |
-| AC83 | §3.2.2 | a malformed effort (empty, over 64 characters, a control character) is refused, on a seat or on the outer controller | `graph.test.mjs` |
-| AC84 | §3.2.2, §9 | a seat's declared effort reaches `dispatch`'s spawn call and its child env (`ACP_REASONING_EFFORT`/`ACP_EXPECT_REASONING_EFFORT`) — the §3.2.1 "validated, normalized, dropped at dispatch" bug pattern does not recur for effort | `loop-occupancy.test.mjs` |
-| AC85 | §4.9 | a dispatcher's `WORKER:` line is harvested into `intake.worker_hint`; no line harvests as `null`, not `undefined` | `loop-occupancy.test.mjs` |
-| AC86 | §4.9 | a worker_hint naming a real, free seat overrides declared order, not merely a tie-break among equal seats | `loop-occupancy.test.mjs` |
-| AC87 | §4.9 | a worker_hint naming a seat not on the team's pool is escalated, naming the hint, never silently substituted | `loop-occupancy.test.mjs` |
-| AC88 | §4.9 | a worker_hint naming a real but busy seat waits for that seat and does not fall through to a different free one | `loop-occupancy.test.mjs` |
-| AC89 | §4.9 | `returned`/`resumed` never read a `worker_hint`, even if one were present on the line | `loop-occupancy.test.mjs` |
-| AC44 | §4.1 | a write with no actor, or a malformed one, is refused | `ledger.test.mjs` |
-| AC45 | §4.1 | the recorded actor cannot be spoofed by the event body | `ledger.test.mjs` |
-| AC46 | §4.1 | history that predates the actor is not condemned for lacking one | `ledger.test.mjs` |
-| AC47 | §4.2 | an event that would make the history impossible is refused, not written | `ledger.test.mjs` |
-| AC48 | §4.2 | an already-broken ledger is repaired first, never appended to | `ledger.test.mjs` |
-| AC49 | §4.2, §13 | writes append and never rewrite | `ledger.test.mjs` |
-| AC50 | §4.2 | a `work_item` cannot escape the work-items directory | `ledger.test.mjs` |
-| AC51 | §4.1 | the two hand-written `abandoned` events are legal, so only an actor could have caught them | `ledger.test.mjs` |
-| AC52 | §5, §4.3 | a token whose history cannot be believed is not dispatched onto | `loop-runner-heartbeat-model.test.mjs` |
-| AC53 | §5, §4.3 | a valid history still dispatches, so the gate is a gate and not a wall | `loop-runner-heartbeat-model.test.mjs` |
-| AC54 | §4.1, §13 | every line the runner appends names an accountable actor | `loop-runner-heartbeat-model.test.mjs` |
-| AC55 | §4.2 | an append the writer refused is not reported as having happened | `loop-runner-heartbeat-model.test.mjs` |
-| AC56 | §11.2 | a healthy tick stamps a heartbeat the page reads as dispatching | `loop-runner-heartbeat-model.test.mjs` |
-| AC57 | §11.2 | a tick that refuses still stamps, and says why | `loop-runner-heartbeat-model.test.mjs` |
-| AC58 | §11.2, §12.7.1 | a refusal with no graph does not invent an occupancy count | `loop-runner-heartbeat-model.test.mjs` |
-| AC59 | §11.2 | a dry run does not stamp, so a simulation cannot impersonate a live runner | `loop-runner-heartbeat-model.test.mjs` |
-| AC60 | §11.2 | the runner is judged against the tick it declares, not a hard-coded one | `loop-runner-heartbeat-model.test.mjs` |
-| AC61 | §3.2 | the sentinel is never sent as a request, so the account default stands | `loop-runner-heartbeat-model.test.mjs` |
-| AC62 | §3.2 | a real declared name is passed through as the request the adapter is held to | `loop-runner-heartbeat-model.test.mjs` |
-| AC63 | §3.2 | the model comes off the seat the agent actually sits in | `loop-runner-heartbeat-model.test.mjs` |
-| AC64 | §12.7.7 | a repo where the runner has never run says so instead of looking calm | `graph.test.mjs` |
-| AC65 | §11.2, §12.7.7 | a heartbeat older than three of its own ticks reads as not responding | `graph.test.mjs` |
-| AC66 | §11.2 | a stale hold is reported as what the runner last said, not as a hold in progress | `graph.test.mjs` |
-| AC67 | §11.2 | a slow loop is judged by its own tick and is not called dead | `graph.test.mjs` |
-| AC68 | §11.2 | a deliberate hold shows the reason the runner gave, escaped | `graph.test.mjs` |
-| AC69 | §12.7.1 | a count the runner did not report is not printed as a zero | `graph.test.mjs` |
-| AC70 | §12.7.7 | an unreadable heartbeat is not reported as a runner that never ran | `graph.test.mjs` |
-| AC71 | §12.7.7 | a heartbeat that cannot be judged says so rather than guessing | `graph.test.mjs` |
-| AC72 | §12.4, §12.7.7 | loop health is readable without colour: a state word and a shape | `graph.test.mjs` |
-| AC73 | §7, §4.3 | a token whose ledger cannot be believed is not handed to the next team, and the same refusal holds at apply time | `loop-occupancy.test.mjs` |
-| AC74 | §9, §14.2 item 3 | a controller dispatch paid for with nothing recorded is named as stuck, not logged as bookkeeping | `loop-runner-heartbeat-model.test.mjs` |
-| AC75 | §4, §8 | an accepted intake that stated no reason says so rather than leaving a mandatory field blank | `loop-runner-heartbeat-model.test.mjs` |
-| AC76 | §4, rule 2 | an intake refusal with nowhere to send it back still names the team holding the token | `loop-runner-heartbeat-model.test.mjs` |
-| AC90 | §11.3 | a tick that refuses a token records it in `decisions/latest.json`, with its reason, and a token nobody considered is absent — both in the same test | `loop-runner-decisions.test.mjs` |
-| AC91 | §11.3 | a dry run does not write `decisions/latest.json`, so a simulation cannot impersonate a live tick's refusals | `loop-runner-decisions.test.mjs` |
-| AC92 | §11.3 | a tick that returns before evaluating any token (invalid graph, stale pulse) leaves an existing `decisions/latest.json` untouched rather than overwriting it with an empty, falsely-fresh one | `loop-runner-decisions.test.mjs` |
-| AC93 | §16 | `listDeliveries` lists every `delivered` leg on a real synthetic ledger, oldest first, with an opaque id and no content | `agent-seat-reads.test.mjs` |
-| AC94 | §16 | `fetchDelivery` returns the exact outbox bytes for an id `listDeliveries` named, scoped to the work item it was listed under, and reports a missing outbox as `content_available: false` rather than as not-found | `agent-seat-reads.test.mjs` |
-| AC95 | §16 | `legOutcomes` lists every closed leg (`delivered`/`lost`/`reviewed`) and counts repeated rejections, so a caller need not fold the ledger itself | `agent-seat-reads.test.mjs` |
-| AC96 | §16 | no return value from any of the three functions, across a found case, a not-found case, and a hostile (path-shaped) argument, contains `.jsonl`, `.tmux-teams`, `.mailbox-out`, or an absolute path — and the module goes through the sanctioned aggregate ledger reader, keeping the ledger-reader ratchet green with no new baseline entry | `agent-seat-reads.test.mjs` |
+| AC38 | ข้อ 3.1 | the WIP limit is the worker count whatever the graph does or does not say | `workflow-graph.test.mjs` |
+| AC39 | ข้อ 3.1 | a declared `wip_limit` that differs from the worker count is rejected, naming both numbers | `workflow-graph.test.mjs` |
+| AC40 | ข้อ 3.2 | a seat with no model is rejected, naming the team and the role | `workflow-graph.test.mjs` |
+| AC41 | ข้อ 3.2 | a declared outer controller with no model is rejected | `workflow-graph.test.mjs` |
+| AC42 | ข้อ 3.2 | a model value is never judged against a list of known models | `workflow-graph.test.mjs` |
+| AC43 | ข้อ 3.2, ข้อ 12.3 | the declared model travels with the team, the role and the agent, as declaration | `workflow-graph.test.mjs` |
+| AC77 | ข้อ 3.2.1 | a seat overrides its role's model and lane, and only that seat | `workflow-graph.test.mjs` |
+| AC78 | ข้อ 3.2.1, ข้อ 3.1 | a graph with no `seats`, an empty `seats`, and a `seats` entry restating the role default all hash to one `source_digest` | `workflow-graph.test.mjs` |
+| AC79 | ข้อ 3.2.1 | every way of declaring a seat and saying nothing is refused, naming the team and the seat | `workflow-graph.test.mjs` |
+| AC80 | ข้อ 3.2.1, ข้อ 9 | a `seats` entry for the outer controller is refused, because the dispatch reads `outer_controller_*` and would ignore it | `workflow-graph.test.mjs` |
+| AC81 | ข้อ 3.2, ข้อ 9 | the outer controller is dispatched on the lane it declares, like every other seat | `loop-runner-heartbeat-model.test.mjs` |
+| AC82 | ข้อ 3.2.2 | a seat's declared effort resolves into `agents[]`, and an unoverridden seat carries `null`, not a role default | `graph.test.mjs` |
+| AC83 | ข้อ 3.2.2 | a malformed effort (empty, over 64 characters, a control character) is refused, on a seat or on the outer controller | `graph.test.mjs` |
+| AC84 | ข้อ 3.2.2, ข้อ 9 | a seat's declared effort reaches `dispatch`'s spawn call and its child env (`ACP_REASONING_EFFORT`/`ACP_EXPECT_REASONING_EFFORT`) — the ข้อ 3.2.1 "validated, normalized, dropped at dispatch" bug pattern does not recur for effort | `loop-occupancy.test.mjs` |
+| AC85 | ข้อ 4.9 | a dispatcher's `WORKER:` line is harvested into `intake.worker_hint`; no line harvests as `null`, not `undefined` | `loop-occupancy.test.mjs` |
+| AC86 | ข้อ 4.9 | a worker_hint naming a real, free seat overrides declared order, not merely a tie-break among equal seats | `loop-occupancy.test.mjs` |
+| AC87 | ข้อ 4.9 | a worker_hint naming a seat not on the team's pool is escalated, naming the hint, never silently substituted | `loop-occupancy.test.mjs` |
+| AC88 | ข้อ 4.9 | a worker_hint naming a real but busy seat waits for that seat and does not fall through to a different free one | `loop-occupancy.test.mjs` |
+| AC89 | ข้อ 4.9 | `returned`/`resumed` never read a `worker_hint`, even if one were present on the line | `loop-occupancy.test.mjs` |
+| AC44 | ข้อ 4.1 | a write with no actor, or a malformed one, is refused | `ledger.test.mjs` |
+| AC45 | ข้อ 4.1 | the recorded actor cannot be spoofed by the event body | `ledger.test.mjs` |
+| AC46 | ข้อ 4.1 | history that predates the actor is not condemned for lacking one | `ledger.test.mjs` |
+| AC47 | ข้อ 4.2 | an event that would make the history impossible is refused, not written | `ledger.test.mjs` |
+| AC48 | ข้อ 4.2 | an already-broken ledger is repaired first, never appended to | `ledger.test.mjs` |
+| AC49 | ข้อ 4.2, ข้อ 13 | writes append and never rewrite | `ledger.test.mjs` |
+| AC50 | ข้อ 4.2 | a `work_item` cannot escape the work-items directory | `ledger.test.mjs` |
+| AC51 | ข้อ 4.1 | the two hand-written `abandoned` events are legal, so only an actor could have caught them | `ledger.test.mjs` |
+| AC52 | ข้อ 5, ข้อ 4.3 | a token whose history cannot be believed is not dispatched onto | `loop-runner-heartbeat-model.test.mjs` |
+| AC53 | ข้อ 5, ข้อ 4.3 | a valid history still dispatches, so the gate is a gate and not a wall | `loop-runner-heartbeat-model.test.mjs` |
+| AC54 | ข้อ 4.1, ข้อ 13 | every line the runner appends names an accountable actor | `loop-runner-heartbeat-model.test.mjs` |
+| AC55 | ข้อ 4.2 | an append the writer refused is not reported as having happened | `loop-runner-heartbeat-model.test.mjs` |
+| AC56 | ข้อ 11.2 | a healthy tick stamps a heartbeat the page reads as dispatching | `loop-runner-heartbeat-model.test.mjs` |
+| AC57 | ข้อ 11.2 | a tick that refuses still stamps, and says why | `loop-runner-heartbeat-model.test.mjs` |
+| AC58 | ข้อ 11.2, ข้อ 12.7.1 | a refusal with no graph does not invent an occupancy count | `loop-runner-heartbeat-model.test.mjs` |
+| AC59 | ข้อ 11.2 | a dry run does not stamp, so a simulation cannot impersonate a live runner | `loop-runner-heartbeat-model.test.mjs` |
+| AC60 | ข้อ 11.2 | the runner is judged against the tick it declares, not a hard-coded one | `loop-runner-heartbeat-model.test.mjs` |
+| AC61 | ข้อ 3.2 | the sentinel is never sent as a request, so the account default stands | `loop-runner-heartbeat-model.test.mjs` |
+| AC62 | ข้อ 3.2 | a real declared name is passed through as the request the adapter is held to | `loop-runner-heartbeat-model.test.mjs` |
+| AC63 | ข้อ 3.2 | the model comes off the seat the agent actually sits in | `loop-runner-heartbeat-model.test.mjs` |
+| AC64 | ข้อ 12.7.7 | a repo where the runner has never run says so instead of looking calm | `graph.test.mjs` |
+| AC65 | ข้อ 11.2, ข้อ 12.7.7 | a heartbeat older than three of its own ticks reads as not responding | `graph.test.mjs` |
+| AC66 | ข้อ 11.2 | a stale hold is reported as what the runner last said, not as a hold in progress | `graph.test.mjs` |
+| AC67 | ข้อ 11.2 | a slow loop is judged by its own tick and is not called dead | `graph.test.mjs` |
+| AC68 | ข้อ 11.2 | a deliberate hold shows the reason the runner gave, escaped | `graph.test.mjs` |
+| AC69 | ข้อ 12.7.1 | a count the runner did not report is not printed as a zero | `graph.test.mjs` |
+| AC70 | ข้อ 12.7.7 | an unreadable heartbeat is not reported as a runner that never ran | `graph.test.mjs` |
+| AC71 | ข้อ 12.7.7 | a heartbeat that cannot be judged says so rather than guessing | `graph.test.mjs` |
+| AC72 | ข้อ 12.4, ข้อ 12.7.7 | loop health is readable without colour: a state word and a shape | `graph.test.mjs` |
+| AC73 | ข้อ 7, ข้อ 4.3 | a token whose ledger cannot be believed is not handed to the next team, and the same refusal holds at apply time | `loop-occupancy.test.mjs` |
+| AC74 | ข้อ 9, ข้อ 14.2 item 3 | a controller dispatch paid for with nothing recorded is named as stuck, not logged as bookkeeping | `loop-runner-heartbeat-model.test.mjs` |
+| AC75 | ข้อ 4, ข้อ 8 | an accepted intake that stated no reason says so rather than leaving a mandatory field blank | `loop-runner-heartbeat-model.test.mjs` |
+| AC76 | ข้อ 4, rule 2 | an intake refusal with nowhere to send it back still names the team holding the token | `loop-runner-heartbeat-model.test.mjs` |
+| AC90 | ข้อ 11.3 | a tick that refuses a token records it in `decisions/latest.json`, with its reason, and a token nobody considered is absent — both in the same test | `loop-runner-decisions.test.mjs` |
+| AC91 | ข้อ 11.3 | a dry run does not write `decisions/latest.json`, so a simulation cannot impersonate a live tick's refusals | `loop-runner-decisions.test.mjs` |
+| AC92 | ข้อ 11.3 | a tick that returns before evaluating any token (invalid graph, stale pulse) leaves an existing `decisions/latest.json` untouched rather than overwriting it with an empty, falsely-fresh one | `loop-runner-decisions.test.mjs` |
+| AC93 | ข้อ 16 | `listDeliveries` lists every `delivered` leg on a real synthetic ledger, oldest first, with an opaque id and no content | `agent-seat-reads.test.mjs` |
+| AC94 | ข้อ 16 | `fetchDelivery` returns the exact outbox bytes for an id `listDeliveries` named, scoped to the work item it was listed under, and reports a missing outbox as `content_available: false` rather than as not-found | `agent-seat-reads.test.mjs` |
+| AC95 | ข้อ 16 | `legOutcomes` lists every closed leg (`delivered`/`lost`/`reviewed`) and counts repeated rejections, so a caller need not fold the ledger itself | `agent-seat-reads.test.mjs` |
+| AC96 | ข้อ 16 | no return value from any of the three functions, across a found case, a not-found case, and a hostile (path-shaped) argument, contains `.jsonl`, `.tmux-teams`, `.mailbox-out`, or an absolute path — and the module goes through the sanctioned aggregate ledger reader, keeping the ledger-reader ratchet green with no new baseline entry | `agent-seat-reads.test.mjs` |
 
 Added 2026-08-05, GitHub #47 phase 1 (declaration only — no runtime code reads
 a palette yet).
 
 | # | Clause | Assertion | Test file |
 | --- | --- | --- | --- |
-| AC97 | §3.5 | a seat declaring a valid palette loads and validates; a graph declaring none resolves every seat's `palette` to `null`, and declarations that say the same thing still hash alike (§3.2.1) | `workflow-graph-palette.test.mjs` |
-| AC121 | §3 | a key the contract does not define is refused at load — at the root, on a team, and in a team's `models` or `adapters` role map — naming the key and listing what that object may declare | `workflow-graph.test.mjs` |
-| AC123 | §3 | a field with its own specific refusal (`controller_team`, `wip_limit`, `downstream_team_id`) is refused by that sentence, never by the generic unknown-key message | `workflow-graph.test.mjs` |
-| AC124 | §9 | a withdrawal whose read receipt could not be written is escalated again on a later tick instead of being held by the unchanged-trigger brake, and the stored identity omits it | `loop-occupancy.test.mjs` |
-| AC125 | §5 | a notice receipt that is empty, truncated, written by another actor, or names a different token does not retire a withdrawal | `loop-occupancy.test.mjs` |
-| AC126 | §12 | a terminal marker split across two stream chunks of one message is quoted, not reassembled into a forgeable line | `chat-marker-quoting.test.mjs` |
-| AC127 | §12 | a marker preceded or followed by control sequences — a CSI erase, a colour code, a carriage-return overwrite — is quoted on its VISIBLE form, so a costume of controls cannot smuggle a forgeable line past the anchor | `chat-marker-quoting.test.mjs` |
-| AC128 | §12 | the same holds for every character Unicode marks `Default_Ignorable_Code_Point` — joiners, BOM, bidi controls, variation selectors, the combining grapheme joiner — and for non-ASCII spaces used as indentation. The class is asked of Unicode, never enumerated here | `chat-marker-quoting.test.mjs` |
-| AC129 | §12 | a carriage return at the END of a line is a line terminator (CRLF), not an overwrite, so an ordinary CRLF marker line is quoted; a carriage return in the middle is still an overwrite | `chat-marker-quoting.test.mjs` |
-| AC134 | §12 | quoting applies to the UNIT that bounds the string. In chat that is the line; in a tool title, a plan entry or a permission title it is the FIELD — one whose whole visible content is a marker is quoted, one that mentions a marker in a sentence is left alone. Measured, not assumed: control characters are already flattened before these fields are composed into a `[tool] …` line, so a marker there never stands alone and no anchored reader can be fooled by it. What is defended is a person reading a completion marker in a plan tick | `chat-marker-quoting.test.mjs` |
-| AC132 | §12 | the visible form also drops STRING sequences — OSC, DCS, SOS, PM and APC — each of which carries a payload and ends at BEL or ST. Naming the family, not one member: `ESC ]0;title BEL` in front of a marker left its payload behind, missed the anchor, and a terminal that ate the title drew a clean forgeable line | `chat-marker-quoting.test.mjs` |
-| AC133 | §5 | the receipt WRITER refuses what the receipt reader refuses. `markNoticeRead` opens `O_NOFOLLOW`, so a receipt path that is a symlink fails the mark instead of writing through it and reporting success — a writer and a reader disagreeing about what counts as a file reopened the permanent-loss path AC124 closes | `loop-occupancy.test.mjs` |
-| AC130 | §12 | the companion's stdout is a diagnostic log, never a verdict source. The runner spawns it onto a file under `.tmux-teams/runner-logs/` and reads its verdict from the outbox FILE, hash-checked against the `outbox_digest` recorded at `delivered`. No shipped module reads the `[terminal]` line, and none may be added. The guard walks every shipped executable (`.mjs` and `.js`) for the THREE textual shapes a reader is written in — the token as a regex, as a quoted string, or as a template literal — over source with comments stripped, because a comment naming the line in markdown is prose and not a reader. It is a tripwire, not a proof of absence: `line.endsWith('] done')` would pass it, and so would a reader sharing a line with a trailing comment. Quoting defends a human reader, and that is the whole of what it claims | `plugin-structure.test.mjs` |
-| AC131 | §12 | quoting follows AUTHORSHIP, not provenance: an agent message, its thinking, and a user turn replayed on resume are all text this process did not author, all reach the same reader, and are all quoted alike | `chat-marker-quoting.test.mjs` |
-| AC135 | §13 | `mcpServers` is closed at RUNTIME, not by reading a diff. The real companion is driven against a mock ACP agent that records the params it RECEIVED, and both session-opening calls — `session/new`, and `session/load` on the resume path — must carry the literal empty ARRAY. `{}` fails and a populated list fails: an object is the other spelling an ACP agent accepts, and it is the shape a server registration would actually arrive in. Every assertion proves the call HAPPENED before it proves what the call carried, because "every `session/new` we saw" is vacuously true when none was seen — the exact failure that let a `readTerminalOutbox` test stay green while a refusal upstream meant it never ran | `mcp-servers-closed.test.mjs` |
-| AC137 | §11.1, §5 | a seat that is already holding an undelivered leg never receives a second `assigned`. Two defects had to close together and either alone leaves the measured run able to double-dispatch: across ticks nothing remembered a dispatch until pulse republished it, and inside ONE tick `planDispatches` spent the WIP slot on the in-flight branch without marking the seat — `nextStep` returned a bare `in-flight` that never named the seat, so the caller could not have marked it. Checkable from the ledger but only across the WHOLE work-items corpus: a token is never re-dispatched onto its own open leg, so one token's file structurally cannot show this. A leg that ended `lost` is legitimately reassigned and closes the claim — asserting on `delivered` alone builds a false positive into the guard. The outer controller's board leg writes into no token's ledger and is a structural blind spot for any ledger-only check; claims and liveness files cover it | `loop-replay.test.mjs` |
-| AC136 | §3.5.1 | what a leg ASKED for (the ledger's `assigned` line, written before the process spawned) and what ANSWERED it (the dispatch receipt) are joined on `task_id`, and can now contradict each other. The verdicts are enumerated from what MEASURABLY reaches disk, not imagined: driving the real companion through the mock produced unpinned, pinned-and-matched, pinned-and-refused, and adapter-with-no-identity — and `assigned` is written in ALL FOUR, including the refusal, which is exactly how a contradiction comes to sit on disk with nothing naming it. `unverified` is NOT a conflict: the AGY lane is permanently unverified by documented exemption, so a join that alarmed on it would alarm on every AGY leg and be ignored inside a week. The agreeing verdict is named `alias_agreed` and never "verified" — string equality proves the alias was honoured and says nothing about which vendor served it. The tick RECORDS a contradiction into `decisions/latest.json` (§11.3) and never acts on one: a tick that changed behaviour on a receipt would be a second dispatch authority | `dispatch-identity-join.test.mjs` |
-| AC122 | §3 | `downstream_team_id` on a team is refused by the whole-graph scan with its own routing sentence, never by the generic unknown-key message | `workflow-graph.test.mjs` |
-| AC98 | §3.5 | a malformed palette entry — bad model, adapter, effort, display_model, bucket, an unknown key, a non-object entry, or a palette of the wrong length — is refused, naming the team and the seat | `workflow-graph-palette.test.mjs` |
-| AC99 | §3.5 | `palette` alongside `model`/`adapter`/`effort`/`display_model` on the same seat is refused, not silently ignored | `workflow-graph-palette.test.mjs` |
-| AC100 | §3.5 | two consecutive palette entries in the same bucket are refused — explicitly declared, and defaulted from an unstated bucket to a shared lane — while a repeat separated by a different bucket is accepted | `workflow-graph-palette.test.mjs` |
-| AC101 | §3.1, §3.5 | `wip_limit` is unchanged by a palette of any length, on a team with exactly one worker seat | `workflow-graph-palette.test.mjs` |
-| AC102 | §3.5 | a seat's resolved `palette` on `agents[]` is `null` when none was declared, and the seat's single-value `model`/`adapter`/`effort`/`display_model` resolve to the palette's first entry when one was | `workflow-graph-palette.test.mjs` |
-| AC103 | §3.5 | a palette for a seat not on the team, or for the outer controller, is refused by the same checks §3.2.1 already runs for a plain seat override | `workflow-graph-palette.test.mjs` |
+| AC97 | ข้อ 3.5 | a seat declaring a valid palette loads and validates; a graph declaring none resolves every seat's `palette` to `null`, and declarations that say the same thing still hash alike (ข้อ 3.2.1) | `workflow-graph-palette.test.mjs` |
+| AC121 | ข้อ 3 | a key the contract does not define is refused at load — at the root, on a team, and in a team's `models` or `adapters` role map — naming the key and listing what that object may declare | `workflow-graph.test.mjs` |
+| AC123 | ข้อ 3 | a field with its own specific refusal (`controller_team`, `wip_limit`, `downstream_team_id`) is refused by that sentence, never by the generic unknown-key message | `workflow-graph.test.mjs` |
+| AC124 | ข้อ 9 | a withdrawal whose read receipt could not be written is escalated again on a later tick instead of being held by the unchanged-trigger brake, and the stored identity omits it | `loop-occupancy.test.mjs` |
+| AC125 | ข้อ 5 | a notice receipt that is empty, truncated, written by another actor, or names a different token does not retire a withdrawal | `loop-occupancy.test.mjs` |
+| AC126 | ข้อ 12 | a terminal marker split across two stream chunks of one message is quoted, not reassembled into a forgeable line | `chat-marker-quoting.test.mjs` |
+| AC127 | ข้อ 12 | a marker preceded or followed by control sequences — a CSI erase, a colour code, a carriage-return overwrite — is quoted on its VISIBLE form, so a costume of controls cannot smuggle a forgeable line past the anchor | `chat-marker-quoting.test.mjs` |
+| AC128 | ข้อ 12 | the same holds for every character Unicode marks `Default_Ignorable_Code_Point` — joiners, BOM, bidi controls, variation selectors, the combining grapheme joiner — and for non-ASCII spaces used as indentation. The class is asked of Unicode, never enumerated here | `chat-marker-quoting.test.mjs` |
+| AC129 | ข้อ 12 | a carriage return at the END of a line is a line terminator (CRLF), not an overwrite, so an ordinary CRLF marker line is quoted; a carriage return in the middle is still an overwrite | `chat-marker-quoting.test.mjs` |
+| AC134 | ข้อ 12 | quoting applies to the UNIT that bounds the string. In chat that is the line; in a tool title, a plan entry or a permission title it is the FIELD — one whose whole visible content is a marker is quoted, one that mentions a marker in a sentence is left alone. Measured, not assumed: control characters are already flattened before these fields are composed into a `[tool] …` line, so a marker there never stands alone and no anchored reader can be fooled by it. What is defended is a person reading a completion marker in a plan tick | `chat-marker-quoting.test.mjs` |
+| AC132 | ข้อ 12 | the visible form also drops STRING sequences — OSC, DCS, SOS, PM and APC — each of which carries a payload and ends at BEL or ST. Naming the family, not one member: `ESC ]0;title BEL` in front of a marker left its payload behind, missed the anchor, and a terminal that ate the title drew a clean forgeable line | `chat-marker-quoting.test.mjs` |
+| AC133 | ข้อ 5 | the receipt WRITER refuses what the receipt reader refuses. `markNoticeRead` opens `O_NOFOLLOW`, so a receipt path that is a symlink fails the mark instead of writing through it and reporting success — a writer and a reader disagreeing about what counts as a file reopened the permanent-loss path AC124 closes | `loop-occupancy.test.mjs` |
+| AC130 | ข้อ 12 | the companion's stdout is a diagnostic log, never a verdict source. The runner spawns it onto a file under `.tmux-teams/runner-logs/` and reads its verdict from the outbox FILE, hash-checked against the `outbox_digest` recorded at `delivered`. No shipped module reads the `[terminal]` line, and none may be added. The guard walks every shipped executable (`.mjs` and `.js`) for the THREE textual shapes a reader is written in — the token as a regex, as a quoted string, or as a template literal — over source with comments stripped, because a comment naming the line in markdown is prose and not a reader. It is a tripwire, not a proof of absence: `line.endsWith('] done')` would pass it, and so would a reader sharing a line with a trailing comment. Quoting defends a human reader, and that is the whole of what it claims | `plugin-structure.test.mjs` |
+| AC131 | ข้อ 12 | quoting follows AUTHORSHIP, not provenance: an agent message, its thinking, and a user turn replayed on resume are all text this process did not author, all reach the same reader, and are all quoted alike | `chat-marker-quoting.test.mjs` |
+| AC135 | ข้อ 13 | `mcpServers` is closed at RUNTIME, not by reading a diff. The real companion is driven against a mock ACP agent that records the params it RECEIVED, and both session-opening calls — `session/new`, and `session/load` on the resume path — must carry the literal empty ARRAY. `{}` fails and a populated list fails: an object is the other spelling an ACP agent accepts, and it is the shape a server registration would actually arrive in. Every assertion proves the call HAPPENED before it proves what the call carried, because "every `session/new` we saw" is vacuously true when none was seen — the exact failure that let a `readTerminalOutbox` test stay green while a refusal upstream meant it never ran | `mcp-servers-closed.test.mjs` |
+| AC137 | ข้อ 11.1, ข้อ 5 | a seat that is already holding an undelivered leg never receives a second `assigned`. Two defects had to close together and either alone leaves the measured run able to double-dispatch: across ticks nothing remembered a dispatch until pulse republished it, and inside ONE tick `planDispatches` spent the WIP slot on the in-flight branch without marking the seat — `nextStep` returned a bare `in-flight` that never named the seat, so the caller could not have marked it. Checkable from the ledger but only across the WHOLE work-items corpus: a token is never re-dispatched onto its own open leg, so one token's file structurally cannot show this. A leg that ended `lost` is legitimately reassigned and closes the claim — asserting on `delivered` alone builds a false positive into the guard. The outer controller's board leg writes into no token's ledger and is a structural blind spot for any ledger-only check; claims and liveness files cover it | `loop-replay.test.mjs` |
+| AC136 | ข้อ 3.5.1 | what a leg ASKED for (the ledger's `assigned` line, written before the process spawned) and what ANSWERED it (the dispatch receipt) are joined on `task_id`, and can now contradict each other. The verdicts are enumerated from what MEASURABLY reaches disk, not imagined: driving the real companion through the mock produced unpinned, pinned-and-matched, pinned-and-refused, and adapter-with-no-identity — and `assigned` is written in ALL FOUR, including the refusal, which is exactly how a contradiction comes to sit on disk with nothing naming it. `unverified` is NOT a conflict: the AGY lane is permanently unverified by documented exemption, so a join that alarmed on it would alarm on every AGY leg and be ignored inside a week. The agreeing verdict is named `alias_agreed` and never "verified" — string equality proves the alias was honoured and says nothing about which vendor served it. The tick RECORDS a contradiction into `decisions/latest.json` (ข้อ 11.3) and never acts on one: a tick that changed behaviour on a receipt would be a second dispatch authority | `dispatch-identity-join.test.mjs` |
+| AC122 | ข้อ 3 | `downstream_team_id` on a team is refused by the whole-graph scan with its own routing sentence, never by the generic unknown-key message | `workflow-graph.test.mjs` |
+| AC98 | ข้อ 3.5 | a malformed palette entry — bad model, adapter, effort, display_model, bucket, an unknown key, a non-object entry, or a palette of the wrong length — is refused, naming the team and the seat | `workflow-graph-palette.test.mjs` |
+| AC99 | ข้อ 3.5 | `palette` alongside `model`/`adapter`/`effort`/`display_model` on the same seat is refused, not silently ignored | `workflow-graph-palette.test.mjs` |
+| AC100 | ข้อ 3.5 | two consecutive palette entries in the same bucket are refused — explicitly declared, and defaulted from an unstated bucket to a shared lane — while a repeat separated by a different bucket is accepted | `workflow-graph-palette.test.mjs` |
+| AC101 | ข้อ 3.1, ข้อ 3.5 | `wip_limit` is unchanged by a palette of any length, on a team with exactly one worker seat | `workflow-graph-palette.test.mjs` |
+| AC102 | ข้อ 3.5 | a seat's resolved `palette` on `agents[]` is `null` when none was declared, and the seat's single-value `model`/`adapter`/`effort`/`display_model` resolve to the palette's first entry when one was | `workflow-graph-palette.test.mjs` |
+| AC103 | ข้อ 3.5 | a palette for a seat not on the team, or for the outer controller, is refused by the same checks ข้อ 3.2.1 already runs for a plain seat override | `workflow-graph-palette.test.mjs` |
 
-Added 2026-08-05, GitHub #47 phase 2 (§3.5.1: dispatch and fallback — the
+Added 2026-08-05, GitHub #47 phase 2 (ข้อ 3.5.1: dispatch and fallback — the
 ordering semantics phase 1 wrote down and left unenforced).
 
 | # | Clause | Assertion | Test file |
 | --- | --- | --- | --- |
-| AC104 | §3.5.1 | a fresh admission on a palette seat dispatches its first declared entry — "the starting point" — with no ledger read needed | `loop-runner-palette-dispatch.test.mjs` |
-| AC105 | §3.5.1, §4.10 | a leg whose `delivered` states `work_observed: false` advances the seat's NEXT leg to the next palette entry in declared order, wrapping past the end; a leg that reached the model (`work_observed: true`, absent, or `lost`) retries the same entry | `loop-runner-palette-dispatch.test.mjs` |
-| AC106 | §3.5.1 | once as many `work_observed: false` legs have accumulated on the seat since the last resume as the palette has entries, the runner escalates instead of dispatching the first entry a second time, naming the seat, the palette size and the miss count — and its stated reason claims only that, never that no entry ever reached the model (an intervening genuine failure retries the same entry, so one CAN have) | `loop-runner-palette-dispatch.test.mjs` |
-| AC107 | §3.5.1, §4.10, §10 | a palette leg still counts toward `legCeiling` unconditionally, transport-failed or not; the palette's own per-seat cycle bound escalates with legs to spare against that ceiling, not by weakening it | `loop-runner-palette-dispatch.test.mjs` |
-| AC108 | §3.5.1, §4.9 | `worker_hint` still names a seat only; a hinted palette seat resolves its own candidate exactly like a freely-picked one, and its no-palette sibling is unaffected | `loop-runner-palette-dispatch.test.mjs` |
-| AC109 | §3.5.1 | a seat with no palette dispatches with no `candidate` field at all. The six files named here (`loop-occupancy`, `loop-runner-heartbeat-model`, `loop-runner-decisions`, `loop-runner-busy`, `loop-replay`, `loop-smoke`) needed no line changed WHEN THIS CLAUSE WAS WRITTEN; D6 has since edited five of them for the mandatory control team, so read that as history rather than as a standing claim about the tree | `loop-runner-palette-dispatch.test.mjs` |
-| AC110 | §3.5.1, §4 | a real `acp-companion.mjs` run writes `assigned` carrying `requested_model` and `adapter`, and the line still satisfies §4's own required fields | `assigned-carries-model.test.mjs` |
-| AC111 | §3.5.1 | a leg that pinned no model records `requested_model: null` — the request, absent, never the adapter's later answer, which at write time has not been given | `assigned-carries-model.test.mjs` |
-| AC112 | §4, §5, §9 | a dead audit leg whose liveness says `work_observed: false` asks a person (`questioned`, `resume_role: audit`) and holds; one that says `true`, or says nothing at all, is still `abandoned` on the same deadline as before | `audit-transport-death.test.mjs` |
-| AC113 | §4.7, §9 | the question that path writes carries everything `answer.mjs` needs to close it — a `question_id`, an `agent_id` that resolves to a team, and `resume_role: audit` — and a token already parked on one is not asked again | `audit-transport-death.test.mjs` |
-| AC114 | §6, §9 | a parked question holds the control team's one slot, which is what closes the front door — `admit.mjs` refuses admission at the limit | `audit-transport-death.test.mjs` |
-| AC115 | §1, §6 | a graph whose outer controller is a worker on no team is REFUSED at load, and so is a graph naming no controller at all; both refusals say how to fix the declaration | `workflow-graph.test.mjs`, `graph-tour.test.mjs`, `controller-team.test.mjs`, `loop-runner-heartbeat-model.test.mjs` |
-| AC116 | §4.2, §6 | an escalated token occupies the CONTROL team's WIP, not the delivery team's; a `resumed` still returns to the team its `to_team` names | `loop-occupancy.test.mjs`, `kanban-board.test.mjs` |
-| AC117 | §4.1, §9 | a person can CLOSE a token (`withdraw.mjs` → `abandoned`, `human:` actor enforced by the door because the validator cannot: the runner writes the same event and signs as itself). A hard terminal, an unknown token and an empty reason are refused; success prints the `admit.mjs` line for a replacement | `withdraw-the-token.test.mjs` |
-| AC120 | §10, §11 | the runner wakes on a change under `.mailbox-out/` or `work-items/` as well as on its interval; a directory it cannot watch degrades to a note and the interval alone; a burst wakes it once; watching decides nothing | `watch-for-work.test.mjs` |
-| AC119 | §1 | a workflow or a team declaring a key the loader does not read is REFUSED, naming the key and listing what may be declared — it is not accepted and silently dropped | `workflow-graph.test.mjs` |
-| AC118 | §9 | the recorded reason quotes that leg's own `liveness_state`/`termination_reason` rather than a fixed phrase, so two different causes cannot report the same one | `audit-transport-death.test.mjs` |
+| AC104 | ข้อ 3.5.1 | a fresh admission on a palette seat dispatches its first declared entry — "the starting point" — with no ledger read needed | `loop-runner-palette-dispatch.test.mjs` |
+| AC105 | ข้อ 3.5.1, ข้อ 4.10 | a leg whose `delivered` states `work_observed: false` advances the seat's NEXT leg to the next palette entry in declared order, wrapping past the end; a leg that reached the model (`work_observed: true`, absent, or `lost`) retries the same entry | `loop-runner-palette-dispatch.test.mjs` |
+| AC106 | ข้อ 3.5.1 | once as many `work_observed: false` legs have accumulated on the seat since the last resume as the palette has entries, the runner escalates instead of dispatching the first entry a second time, naming the seat, the palette size and the miss count — and its stated reason claims only that, never that no entry ever reached the model (an intervening genuine failure retries the same entry, so one CAN have) | `loop-runner-palette-dispatch.test.mjs` |
+| AC107 | ข้อ 3.5.1, ข้อ 4.10, ข้อ 10 | a palette leg still counts toward `legCeiling` unconditionally, transport-failed or not; the palette's own per-seat cycle bound escalates with legs to spare against that ceiling, not by weakening it | `loop-runner-palette-dispatch.test.mjs` |
+| AC108 | ข้อ 3.5.1, ข้อ 4.9 | `worker_hint` still names a seat only; a hinted palette seat resolves its own candidate exactly like a freely-picked one, and its no-palette sibling is unaffected | `loop-runner-palette-dispatch.test.mjs` |
+| AC109 | ข้อ 3.5.1 | a seat with no palette dispatches with no `candidate` field at all. The six files named here (`loop-occupancy`, `loop-runner-heartbeat-model`, `loop-runner-decisions`, `loop-runner-busy`, `loop-replay`, `loop-smoke`) needed no line changed WHEN THIS CLAUSE WAS WRITTEN; D6 has since edited five of them for the mandatory control team, so read that as history rather than as a standing claim about the tree | `loop-runner-palette-dispatch.test.mjs` |
+| AC110 | ข้อ 3.5.1, ข้อ 4 | a real `acp-companion.mjs` run writes `assigned` carrying `requested_model` and `adapter`, and the line still satisfies ข้อ 4's own required fields | `assigned-carries-model.test.mjs` |
+| AC111 | ข้อ 3.5.1 | a leg that pinned no model records `requested_model: null` — the request, absent, never the adapter's later answer, which at write time has not been given | `assigned-carries-model.test.mjs` |
+| AC112 | ข้อ 4, ข้อ 5, ข้อ 9 | a dead audit leg whose liveness says `work_observed: false` asks a person (`questioned`, `resume_role: audit`) and holds; one that says `true`, or says nothing at all, is still `abandoned` on the same deadline as before | `audit-transport-death.test.mjs` |
+| AC113 | ข้อ 4.7, ข้อ 9 | the question that path writes carries everything `answer.mjs` needs to close it — a `question_id`, an `agent_id` that resolves to a team, and `resume_role: audit` — and a token already parked on one is not asked again | `audit-transport-death.test.mjs` |
+| AC114 | ข้อ 6, ข้อ 9 | a parked question holds the control team's one slot, which is what closes the front door — `admit.mjs` refuses admission at the limit | `audit-transport-death.test.mjs` |
+| AC115 | ข้อ 1, ข้อ 6 | a graph whose outer controller is a worker on no team is REFUSED at load, and so is a graph naming no controller at all; both refusals say how to fix the declaration | `workflow-graph.test.mjs`, `graph-tour.test.mjs`, `controller-team.test.mjs`, `loop-runner-heartbeat-model.test.mjs` |
+| AC116 | ข้อ 4.2, ข้อ 6 | an escalated token occupies the CONTROL team's WIP, not the delivery team's; a `resumed` still returns to the team its `to_team` names | `loop-occupancy.test.mjs`, `kanban-board.test.mjs` |
+| AC117 | ข้อ 4.1, ข้อ 9 | a person can CLOSE a token (`withdraw.mjs` → `abandoned`, `human:` actor enforced by the door because the validator cannot: the runner writes the same event and signs as itself). A hard terminal, an unknown token and an empty reason are refused; success prints the `admit.mjs` line for a replacement | `withdraw-the-token.test.mjs` |
+| AC120 | ข้อ 10, ข้อ 11 | the runner wakes on a change under `.mailbox-out/` or `work-items/` as well as on its interval; a directory it cannot watch degrades to a note and the interval alone; a burst wakes it once; watching decides nothing | `watch-for-work.test.mjs` |
+| AC119 | ข้อ 1 | a workflow or a team declaring a key the loader does not read is REFUSED, naming the key and listing what may be declared — it is not accepted and silently dropped | `workflow-graph.test.mjs` |
+| AC118 | ข้อ 9 | the recorded reason quotes that leg's own `liveness_state`/`termination_reason` rather than a fixed phrase, so two different causes cannot report the same one | `audit-transport-death.test.mjs` |
 
 ### 14.1 Clauses this contract does NOT yet enforce
 
@@ -2425,22 +2425,22 @@ today with nothing stopping it from regressing.
 
 | Clause | Rule with no test |
 | --- | --- |
-| §4, rule 3 | a malformed ledger line is skipped, counted, and the count reaches the page |
-| §4, rule 4 | equal timestamps keep append order |
-| §5 | the tick order is harvest → pulls → dispatch → escalation |
-| §12.7.6 | auto-refresh is pausable and the page states its own freshness — only the asset's existence and parseability are tested |
-| §13 | the REMAINING prohibitions are review rules, not runtime behaviour; they are enforced by reading a diff. `mcpServers` left this row on 2026-08-09 and is now AC135 — the others have not |
-| §3.5.1 | that the model an adapter SERVED is the vendor a palette entry names. **Narrowed 2026-08-09, not closed:** AC136 joined the ledger's request to the receipt's answer and made the two able to contradict each other, which is the middle link. Two links remain untested — the graph's palette ENTRY against what `assigned` recorded, and the alias against the endpoint that served it. The second cannot be closed by string equality at all: `opus` reaches three different vendors on three gateways in this project's own routing table, so only the endpoint proves a family |
+| ข้อ 4, rule 3 | a malformed ledger line is skipped, counted, and the count reaches the page |
+| ข้อ 4, rule 4 | equal timestamps keep append order |
+| ข้อ 5 | the tick order is harvest → pulls → dispatch → escalation |
+| ข้อ 12.7.6 | auto-refresh is pausable and the page states its own freshness — only the asset's existence and parseability are tested |
+| ข้อ 13 | the REMAINING prohibitions are review rules, not runtime behaviour; they are enforced by reading a diff. `mcpServers` left this row on 2026-08-09 and is now AC135 — the others have not |
+| ข้อ 3.5.1 | that the model an adapter SERVED is the vendor a palette entry names. **Narrowed 2026-08-09, not closed:** AC136 joined the ledger's request to the receipt's answer and made the two able to contradict each other, which is the middle link. Two links remain untested — the graph's palette ENTRY against what `assigned` recorded, and the alias against the endpoint that served it. The second cannot be closed by string equality at all: `opus` reaches three different vendors on three gateways in this project's own routing table, so only the endpoint proves a family |
 
 ### 14.2 Known contradictions and live defects, 2026-07-28
 
 Recorded here rather than left to be discovered. Each of these is a place where
 this contract and the code do **not** agree, or where the contract is satisfied
-by nothing. None is fixed by the batch that added §3.1, §3.2, §4.1, §4.2, §4.3
-and §11.2.
+by nothing. None is fixed by the batch that added ข้อ 3.1, ข้อ 3.2, ข้อ 4.1, ข้อ 4.2, ข้อ 4.3
+and ข้อ 11.2.
 
-1. **§4 has no spelling for a route-opening `pulled`, and the code refuses one.**
-   §5 starts every token at `pulled`; §4 requires `from_team` on `pulled`; the
+1. **ข้อ 4 has no spelling for a route-opening `pulled`, and the code refuses one.**
+   ข้อ 5 starts every token at `pulled`; ข้อ 4 requires `from_team` on `pulled`; the
    first pull of a route has **no sending team**. There is no `created` or
    `opened` event. So intake into the graph is unrepresentable through the
    sanctioned writer without fabricating a sender.
@@ -2448,13 +2448,13 @@ and §11.2.
    line 1 is exactly that event, and it fails validation today.
    *Corrected 2026-07-28:* an earlier draft of this item claimed that token is
    "permanently stuck" with a WIP slot never released. It is not. Its last event
-   is `audited`, which §6 lists as releasing, so no team holds it — measured:
+   is `audited`, which ข้อ 6 lists as releasing, so no team holds it — measured:
    all four teams count 0, no orphans, and the pull controller reports nothing
    waiting. The **mechanism** is real and would strand any token still in
    flight; the named instance is terminal. The evidence was wrong even though
    the conclusion was right, which is exactly the failure this section exists to
    catch, so it is corrected in place rather than quietly deleted.
-   *Settled 2026-07-28 (Master):* §4 gains a distinct opening event, `opened`.
+   *Settled 2026-07-28 (Master):* ข้อ 4 gains a distinct opening event, `opened`.
    The two rejected alternatives are recorded because the reasons outlive the
    choice. Making `from_team` optional on a token's first event would stop the
    validator catching a real pull that forgot its sender — permanently, for
@@ -2463,13 +2463,13 @@ and §11.2.
    An append-only *repair* event was rejected on a larger principle: a system
    whose entire claim is that history cannot be rewritten should not ship a word
    for rewriting history. `opened` adds vocabulary instead of removing
-   strictness. See §4.6.
+   strictness. See ข้อ 4.6.
 
-2. **§7's "an `invalid` token stays visibly blocked" is not drawn.**
+2. **ข้อ 7's "an `invalid` token stays visibly blocked" is not drawn.**
    `kanban.mjs` treated `blocked`, `failed` and `skip` as blocking and did not
    know `invalid`, so a gated token rendered as an ordinary card while the loop
    refused to move it. The board and the loop disagreed about that token.
-   **The code was the one that was wrong** (§15.3): §7 said what should happen.
+   **The code was the one that was wrong** (ข้อ 15.3): ข้อ 7 said what should happen.
    *Closed 2026-07-28.* `invalid` joined the blocking set. Fixing it exposed a
    test fixture that was a `reviewed` with nothing delivered — a history the
    validator refuses and the loop cannot produce, which had passed all along
@@ -2487,14 +2487,14 @@ and §11.2.
    validates every token's ledger independently of what state it is in, so an
    invalid ledger is visibly blocked from the moment it exists.
 
-3. **The escalation path is not gated by §5, and cannot be without
+3. **The escalation path is not gated by ข้อ 5, and cannot be without
    restructuring the tick.**
    The ledger check sits after the `action !== 'dispatch'` guard, so an
    `escalate` plan never passes through it. The consequence is specific: the
    controller is dispatched and `pm-notes/latest.md` is written **before** the
    `audit_requested` / `escalated` marks are appended, so a refused mark leaves
    the token's last event unchanged — the same trigger recurs next tick, the
-   unchanged-trigger brake of §9 then holds it forever, and a controller
+   unchanged-trigger brake of ข้อ 9 then holds it forever, and a controller
    dispatch was paid for with nothing recorded. The runner now says exactly that
    (`STUCK <token>`) instead of letting it pass as a bookkeeping complaint, and
    that refusal is tested. **The ordering hole itself remains.**
@@ -2505,7 +2505,7 @@ and §11.2.
    stuck`.)
 
 4. **No real model name has been proven acknowledged by this adapter.**
-   §3.2 says a declared name becomes a request the adapter is held to. That the
+   ข้อ 3.2 says a declared name becomes a request the adapter is held to. That the
    name is *composed and passed* from the right seat is tested (AC61–AC63);
    that any real name comes back `matched` from a live agent is **not**, and no
    test can prove it without one. Until one is proven, every seat in this
@@ -2549,19 +2549,19 @@ and §11.2.
    lines. A token broken only by an unparsable line is therefore invisible to
    the planner and surfaces only as a per-tick refusal on stderr from the
    writer, never as an `invalid` decision on the board. Closing this needs
-   `readWorkItems` to carry a per-token malformed count (§4, rule 3).
+   `readWorkItems` to carry a per-token malformed count (ข้อ 4, rule 3).
 
 7. **`ACTOR_RE` and the bare actor `runner`.** The actor vocabulary is
-   `agent:<id>` | `human:<id>` (§4.1). A bare `runner` is not legal, and the
+   `agent:<id>` | `human:<id>` (ข้อ 4.1). A bare `runner` is not legal, and the
    runner signs itself `agent:runner`. Stated here because an earlier brief
    specified the bare form.
 
 8. **The setup skill over-claims the consequence of skipping it.**
    `skills/graph-setup/SKILL.md` opens by saying nothing dispatches without
-   a `graph.json`. §3 says, and `graph.mjs` does, the opposite: a repo with
+   a `graph.json`. ข้อ 3 says, and `graph.mjs` does, the opposite: a repo with
    **no** file falls back to the bundled default and `graph.mjs check` on an
    empty directory exits 0 as `ok (default)`. Only an **invalid** file fails
-   closed. **The skill is the one that is wrong** (§15.3); §3 and the code
+   closed. **The skill is the one that is wrong** (ข้อ 15.3); ข้อ 3 and the code
    agree and are left alone.
 
 ### 14.3 Settled 2026-07-28 — the PM audit's findings
@@ -2578,7 +2578,7 @@ settling them. Recorded because the reasoning is the durable part.
    rendered as `Unknown event: audited`. The board that exists to report exactly
    that could not say it. Superseding the record would have hidden a true
    history to work around a display bug. `completed` now also reads
-   *"Completed — not yet audited"*, because §5 says it is only half closed.
+   *"Completed — not yet audited"*, because ข้อ 5 says it is only half closed.
 
 2. **`evidence_present` was `false` on all 13 legs.** Not a bug in the
    recording: `role-briefs.mjs` never once said the word `EVIDENCE`, so no agent
@@ -2586,10 +2586,10 @@ settling them. Recorded because the reasoning is the durable part.
    `acp-companion.mjs` looks for. A field that cannot be true is not a
    measurement. The shared rules now require the block and say why, and a test
    asserts every shipped brief carries the requirement. Worker briefs remain the
-   repo's own `<team>.md` (§4), so a repo that writes its own worker brief has to
+   repo's own `<team>.md` (ข้อ 4), so a repo that writes its own worker brief has to
    carry the requirement into it — that gap is real and is named here.
 
-3. **`pulled` with no sender.** Settled as §4.6 above.
+3. **`pulled` with no sender.** Settled as ข้อ 4.6 above.
 
 4. **Found while fixing the above: the cooldown mixed two clocks.**
    `planEscalation` took an injectable `now` and compared it against
@@ -2608,7 +2608,7 @@ Four defects this session were one defect: **the validator accepts a word and a
 reader downstream has never heard of it.** `opened` stranded a token; `audited`
 rendered a route the controller had raised concerns about as `Unknown event:
 audited`; `invalid` drew a token the loop refuses to move as an ordinary card;
-`lost` was handled by the runner but absent from §5. Every one was found by a
+`lost` was handled by the runner but absent from ข้อ 5. Every one was found by a
 person looking at a page, one word later than the last.
 
 Fixing them individually cannot converge, because nothing required a reader to
@@ -2625,14 +2625,14 @@ All three readers now carry it, each in the shape its own failure takes.
 - **The runner** (`tests/loop-occupancy.test.mjs`): every event either produces
   a dispatch or appears in `NO_DISPATCH_FOLLOWS` with the reason it is a dead
   end. Four are — `completed` (the controller audits it), `audit_requested`
-  (waiting on an outbox), `audited` and `abandoned` (terminal, §5).
+  (waiting on an outbox), `audited` and `abandoned` (terminal, ข้อ 5).
 - **The graph** (`tests/graph.test.mjs`): every event naming an `agent_id`
   either credits that agent with work, or appears in `NOT_THE_AGENTS_OWN_ACT`
   with the reason. Four are — `opened` and `pulled` name a dispatcher that has
   not judged yet, `assigned` is the dispatch rather than its outcome, and
   `audit_requested` is the runner asking rather than the controller acting.
 
-A word added to §4 now fails all three until somebody decides what it means to
+A word added to ข้อ 4 now fails all three until somebody decides what it means to
 each. That property is the fix; no individual patch was.
 
 **Corrected 2026-07-29, within the hour, by two outside advisors.** The
@@ -2688,7 +2688,7 @@ a harmless leftover: it is an instruction to build the wrong thing.
 receiving dispatcher, `to_team` is that team, and the `workflow` is a string the
 operator typed. The controller is never told. Two consequences, both real:
 
-1. **The auditor never saw the request.** §9 makes the controller the only role
+1. **The auditor never saw the request.** ข้อ 9 makes the controller the only role
    that can ask whether what came out of the end is what was asked for. It is
    handed that question at the end of a route it had no part in admitting. Master
    put it in one line: *"PM เป็นคนตรวจงานคนสุดท้าย แต่จะไม่รู้ว่างานนี้มาจากไหนได้อย่างไร"* — the
@@ -2702,13 +2702,13 @@ request to the controller; the controller admits it, chooses the workflow, and
 states why. The route then runs as it always has.
 
 **The objection, and why it fell.** A controller in the admission path looked
-like a bottleneck and a cost: §9 says event-triggered, never on a timer, and one
-controller leg answers one question with one verdict (§9, added 2026-07-29). N
+like a bottleneck and a cost: ข้อ 9 says event-triggered, never on a timer, and one
+controller leg answers one question with one verdict (ข้อ 9, added 2026-07-29). N
 tokens would mean N dispatches serialised behind a 15-minute cooldown. Master's
 answer was that this misreads the direction of the loop: *"คอขวดไม่ใช่ปัญหาเพราะเราใช้
 ระบบ pull เมื่อทีมลีดว่างจะมาดึงงานจาก PM ไปเอง"* — the controller does not push work to a
 team. It holds admitted work, and the receiving dispatcher **pulls** when it has
-room, exactly as every other handoff on this board already works (§7).
+room, exactly as every other handoff on this board already works (ข้อ 7).
 
 **What this also fixes, unplanned.** The head-of-route intake refusal — the wedge
 closed on 2026-07-29 by discriminating on `agent_id` — exists only because the
@@ -2716,7 +2716,7 @@ first team on a route has no sender to return work to. If every route begins at
 the controller, every team has a sender and that special case stops existing.
 
 **Settled the same day — the controller IS a team.** The open question was where
-an admitted token sits before the first team pulls it, since §6 can only place
+an admitted token sits before the first team pulls it, since ข้อ 6 can only place
 work with a team. The answer is that the controller stops being an exception:
 it is declared in `graph.json` as an ordinary team with **one worker, so WIP 1**.
 Every mechanism the board already has then applies to it unchanged — occupancy,
@@ -2728,7 +2728,7 @@ model already defines, pointed at the route instead of at one leg:
 | Controller's job | Its role on that team | Same rule as every other team |
 | --- | --- | --- |
 | take a request, make it a token, queue it | **dispatcher** | the receiving side decides whether to accept |
-| unstick what the loop cannot decide (§9 triggers) | **worker** | one worker, one leg, WIP 1 |
+| unstick what the loop cannot decide (ข้อ 9 triggers) | **worker** | one worker, one leg, WIP 1 |
 | read the finished delivery as a whole | **evaluator** | the gate that can send work back |
 
 An ordinary team's dispatcher admits work to that TEAM and its evaluator judges
@@ -2763,7 +2763,7 @@ none is skipped silently. And the grill objects but cannot veto — if a person
 confirms after being warned, the work proceeds, with the warning and the
 decision both on the record.
 
-**Still open:** the deadline value, who writes the expiry (today §9 names the
+**Still open:** the deadline value, who writes the expiry (today ข้อ 9 names the
 controller as the only mechanised writer of `abandoned`), and the countdown the
 board will have to draw — the first thing that page has ever had to show about a
 human's obligation rather than an agent's.
@@ -2791,7 +2791,7 @@ full interval to be noticed.
 
 Work arrives exactly three ways, and it is a closed set: a worker writes
 `.mailbox-out/<task>`; a person runs one of the three operator doors, which
-appends to `work-items/`; or a clock fires — the deadlines in §10. The first two
+appends to `work-items/`; or a clock fires — the deadlines in ข้อ 10. The first two
 are a file changing under one of two directories. **The third is why the
 interval stays.** No watcher can see time pass, so the sweep is not an optimisation
 to be removed later; it is the only reader those five deadlines have.
@@ -2823,7 +2823,7 @@ and that do-then-acknowledge fixes it — true, and not this system's problem. T
 queue here is an append-only ledger that every tick re-derives from scratch, so
 nothing can be lost; what polling costs is repetition, and repetition is what a
 watcher removes. Reaching for a broker would have added a second source of truth
-about work in flight next to the one §4 already names. AC120.
+about work in flight next to the one ข้อ 4 already names. AC120.
 
 **2026-08-08 — a declaration the loader does not read is refused, not
 dropped.** A workflow could declare `when`, `on_reject`, `sla_hours` — anything —
@@ -2836,7 +2836,7 @@ the file sat inside the most permissive ones.
 The defect is not that the fields did nothing. It is that the operator was never
 told. This document's own worst failures share that shape — a wizard template
 that could not load, a comment claiming nine ledger readers while the tool
-counted twelve, a §9 paragraph describing a guard the release had deleted. Each
+counted twelve, a ข้อ 9 paragraph describing a guard the release had deleted. Each
 was true-looking and silent. A declaration is a statement to the system; a
 statement the system discards without answering is the one thing this contract
 exists to prevent.
@@ -2853,7 +2853,7 @@ AC119.
 (`withdraw.mjs`), and the route stays one-way.** `abandoned` was written by the
 runner's clock and by the outer controller, and by nobody else. A person could
 open a token and, since the day before, answer a question about one — but could
-not STOP one. §4 forbids hand-editing a ledger, so the documented workaround was
+not STOP one. ข้อ 4 forbids hand-editing a ledger, so the documented workaround was
 invoking `ledger-writer.mjs` with a JSON literal and this document's field spec
 open alongside it. Somebody really did that.
 
@@ -2863,7 +2863,7 @@ and that was REJECTED by owner decision, because flow through a route is one
 way. The rule is enforced for `pulled` (`route_went_backwards`) and enforced for
 `resumed` by nothing at all, so an override would have quietly reopened every
 team a token had already passed through, and the hand-written line that started
-this did exactly that and validated. §6.3's own words are the alternative:
+this did exactly that and validated. ข้อ 6.3's own words are the alternative:
 "rework is a new token on a fresh route". So the exit is two honest steps rather
 than one dishonest one, and the withdrawal prints the `admit.mjs` line for the
 replacement with the token's workflow already filled in — an exit a person has
@@ -2873,7 +2873,7 @@ courtesy.
 One asymmetry worth stating, because it looks like an oversight and is not:
 `answered` carries `actor_kind: human` in the validator and `abandoned` does
 not, so `withdraw.mjs` checks the actor itself. The validator cannot: the RUNNER
-writes `abandoned` too (§9's deadline) and signs as itself, so a rule there
+writes `abandoned` too (ข้อ 9's deadline) and signs as itself, so a rule there
 would refuse the clock. Without the door's own check a model could close
 somebody's work while wearing the clock's identity. AC117 added.
 
@@ -2883,7 +2883,7 @@ real for the first time.** Owner decision, taken with the cost measured first:
 and some of them existed to pin that as supported. It was supported. That was
 the defect.
 
-§6 places a token by its last event's `agent_id`. On a graph where the outer
+ข้อ 6 places a token by its last event's `agent_id`. On a graph where the outer
 controller was a member of no team, everything that seat wrote resolved to no
 team at all — an escalation, a question at the front door, an audit's question —
 so the token ORPHANED: counted against nobody's WIP, stopping nothing, waiting
@@ -2901,12 +2901,12 @@ escalation mark refused for want of an `agent_id` the graph never had, so the
 unchanged-trigger brake holds the token for ever). D6 refuses the configuration
 instead of documenting its symptom.
 
-One thing had to change with it. §6's placement was `teamOf(agent_id) ?? to_team`
+One thing had to change with it. ข้อ 6's placement was `teamOf(agent_id) ?? to_team`
 — the signer always won, and `to_team` was a fallback that only ever fired
 because the controller resolved to nothing. Make the controller a team member
 and every `resumed` the controller signs parks the work on the PM instead of
 sending it back to the team the resume names: the shape of the resume-routing
-defect already open against this system, made total. §6 now names one set,
+defect already open against this system, made total. ข้อ 6 now names one set,
 `PLACES_BY_DESTINATION = {resumed}` — an event whose purpose is to MOVE a token
 is placed by its destination, an event that records a seat acting is placed by
 that seat. `escalated` is deliberately not in it: an escalation IS the PM's
@@ -2970,11 +2970,11 @@ person now has a window they can actually act in — but "held until a person
 comes" is not yet literally true, and saying so would overclaim.
 
 **2026-08-07 — the half of the exchange nobody could speak: `answer.mjs`.**
-§4.7 has specified `answered` down to the field since it was written, and
+ข้อ 4.7 has specified `answered` down to the field since it was written, and
 `loop-runner.mjs` has routed on it — `resume_role: worker` wakes the worker,
 `evaluator` the evaluator — but **no code in this system ever wrote the
 event.** Every writer of `questioned` had a reader waiting for a reply that
-could only arrive by hand-editing a ledger, which §4 forbids. So a token parked
+could only arrive by hand-editing a ledger, which ข้อ 4 forbids. So a token parked
 on a question was parked for good, and the mechanism that closed it was the
 answer deadline: `ANSWER_DEADLINE_SEC` reads like a guard against slow people
 and was in fact standing in for people who could not reply at all.
@@ -3006,7 +3006,7 @@ and it is why the interval is not an optimisation to be removed later.
 
 Found by the A5 ratchet on its first full run after the file appeared: a new
 reader of a token's ledger is refused until it is authorized by hand, and this
-one was, taking the recorded set to eleven. §16.2's closing paragraph was
+one was, taking the recorded set to eleven. ข้อ 16.2's closing paragraph was
 corrected in the same commit for carrying "9" in prose while the tool had said
 ten for two days.
 
@@ -3021,7 +3021,7 @@ answer, because nobody was ever asked. Three finished tokens were destroyed
 that way on one quota-exhausted morning, one per `ANSWER_DEADLINE_SEC`, each
 recoverable only by a fresh `admit` that re-runs the whole route.
 
-§4.10 had already invented the fact that settles it — `work_observed` — but
+ข้อ 4.10 had already invented the fact that settles it — `work_observed` — but
 wired it to the custody ledger, and `tick` spawns the controller's own leg with
 `workItem: ''`, which makes the companion's per-token write a no-op for
 precisely the leg that needed it. That is why this was not simply a missing
@@ -3045,13 +3045,13 @@ unconditionally, off the ledger's own `audit_lost` lines, so a restart cannot
 forget it and a lane that dies on every retry still ends the token. And only
 POSITIVE evidence narrows the rule — missing, unreadable, or work-bearing
 snapshots close exactly as fast as they did before. That default fails OPEN,
-toward the irreversible terminal, and that is the accepted price of keeping §9's
+toward the irreversible terminal, and that is the accepted price of keeping ข้อ 9's
 other guarantee that an audit cannot hang forever.
 
 One assumption is pinned rather than trusted: the budget counts a whole token
 because a token is `completed` exactly once. This was first written scoped to
 the newest delivery — for a "reworked" token — and the fixture gate refused the
-history outright, since §5 gives a closed route no successor that reopens it.
+history outright, since ข้อ 5 gives a closed route no successor that reopens it.
 Whoever adds a reopen event must scope the count, or a reworked token is born
 with its predecessor's retries already spent; `audit-transport-death.test.mjs`
 goes red when they do.
@@ -3093,13 +3093,13 @@ contract, the palette and the review gate) as the bmad-party-mode
 anti-consensus club. Every finding below was then handed to a skeptic told to
 REFUTE it; all survived. None was a style note.
 
-1. **`receipt_commit` counted as work.** §4.10's list of "real agent activity"
+1. **`receipt_commit` counted as work.** ข้อ 4.10's list of "real agent activity"
    named the receipt commit, and so did `acp-companion.mjs`. It is not late
    evidence: every receipt commit fires during session setup, the last
    immediately before `session/prompt` is sent. A leg that then hung or was
    rate-limited without one byte returning reported `work_observed: true`,
-   which spent a worker attempt (§4.10) *and* stopped a palette seat rotating
-   off a dead candidate (§3.5.1) — defeating both features this release
+   which spent a worker attempt (ข้อ 4.10) *and* stopped a palette seat rotating
+   off a dead candidate (ข้อ 3.5.1) — defeating both features this release
    shipped, in the one case they exist for. Now classified as handshake-only.
    `tests/work-observed-needs-a-turn.test.mjs` runs the real companion against
    a hanging adapter and reads the ledger, because every prior `work_observed`
@@ -3110,13 +3110,13 @@ REFUTE it; all survived. None was a style note.
    events in that fixture — true whatever `nextStep` does. It now drives 15
    legs through the real dispatch path and asserts the ceiling reason fires,
    which also pins the ORDER the two bounds are asked in.
-3. **AC106 and §3.5.1 claimed more than the code guarantees.** "Every entry
+3. **AC106 and ข้อ 3.5.1 claimed more than the code guarantees.** "Every entry
    tried, none ever reaching the model" is not `misses >= palette.length`: a
    genuine failure retries the same entry without advancing, so an entry can
    reach the model between two misses. The operator-facing escalation reason
    asserted it too. Both now state only what was counted, and a test pins the
    miss→hit→miss→miss sequence that disproves the stronger claim.
-4. **The panel gate compared one argv and launched another.** §12.7's diversity
+4. **The panel gate compared one argv and launched another.** ข้อ 12.7's diversity
    rule is enforced by `provenLaunchSignature`, which reads `profile.args`;
    `defaultLaneRunner` rebuilt the argv itself and never did. Two lanes
    declaring one `command` and different `args` had different signatures and
@@ -3124,7 +3124,7 @@ REFUTE it; all survived. None was a style note.
    Reproduced end-to-end through the exported `runReviewGate` seam. Both paths
    now share `launchArgv`. Inert against the ten frozen profiles, live for any
    injected one, which that module's own comment invites.
-5. **§12.7 honesty law 2 was broken by the page.** `display_model` was the
+5. **ข้อ 12.7 honesty law 2 was broken by the page.** `display_model` was the
    FIRST branch of `modelLine`, so a seat that never ran printed its declared
    model in the exact shape a verified one uses, and a verified model was
    silently replaced by the declaration. It now only ever translates a model
@@ -3135,18 +3135,18 @@ green for every one of them, and four of the five were pinned by tests that
 asserted something weaker than their own names claimed.
 
 **2026-08-05 — GitHub #47 phase 2b: `assigned` says which model the leg was
-dispatched on.** New AC110–111 (§14); §4's `assigned` row and §3.5.1 updated;
-§14.1's "genuinely unbuilt" row retired and replaced with the narrower gap
+dispatched on.** New AC110–111 (ข้อ 14); ข้อ 4's `assigned` row and ข้อ 3.5.1 updated;
+ข้อ 14.1's "genuinely unbuilt" row retired and replaced with the narrower gap
 that remains. Phase 2 stopped at this line and said so plainly rather than
 widening its scope, which was the right call and is why the follow-up is one
 argument long instead of an archaeology exercise: `acp-companion.mjs` is the
-sole writer of `assigned` (§13) because `dispatch_id` is minted inside it
+sole writer of `assigned` (ข้อ 13) because `dispatch_id` is minted inside it
 with no injection seam, so no other component can produce a line
-`ledger-validate.mjs`'s ownership check (§4.2) would accept.
+`ledger-validate.mjs`'s ownership check (ข้อ 4.2) would accept.
 
 Both `requested_model` and `adapter` are recorded, not one: a palette may
 hold the same model on two lanes — different buckets, so legal even as
-adjacent entries (§3.5) — and an alias names different vendors on different
+adjacent entries (ข้อ 3.5) — and an alias names different vendors on different
 lanes, so neither field identifies a leg alone. The pair still cannot
 separate two executables on one lane (`claude-qwen` from `claude-kimi`);
 neither can a palette entry, so the ledger answers exactly as much as the
@@ -3155,7 +3155,7 @@ closed deliberately unbuilt.
 
 Written **before spawn**, so it is the REQUEST and never the verified
 identity — `effective_identity`/`identity_status` are separate, later facts,
-and §14.1 now records that nothing joins the two. Both fields are optional
+and ข้อ 14.1 now records that nothing joins the two. Both fields are optional
 forever: shape-checking them in `ledger-validate.mjs` would refuse every
 pre-0.15.0 ledger, which `loadWorkItemLedgers` still reads, so absence means
 "written before this existed" and never "the model was unknown". Proven in
@@ -3165,13 +3165,13 @@ never that the ledger recorded it. Mutation-checked by file copy with a
 SHA-256 verified restore: dropping the two fields turns both tests RED.
 
 **2026-08-05 — GitHub #47 phase 1: a seat may declare an ordered palette of
-candidate models, declaration only.** New §3.5; new AC97–103 (§14) and the
-palette-ordering row in §14.1. `workflow-graph.mjs`'s `seats[agentId]` gains
+candidate models, declaration only.** New ข้อ 3.5; new AC97–103 (ข้อ 14) and the
+palette-ordering row in ข้อ 14.1. `workflow-graph.mjs`'s `seats[agentId]` gains
 an optional `palette` key — an array of 1 to 8 whole seat specs (`model`
 required, `adapter`/`effort`/`display_model`/`bucket` optional, the same
-fields and the same validators §3.2.1's plain seat override already uses) —
+fields and the same validators ข้อ 3.2.1's plain seat override already uses) —
 mutually exclusive with `model`/`adapter`/`effort`/`display_model` on that
-same seat, refused if declared alongside them. `wip_limit` (§3.1) is
+same seat, refused if declared alongside them. `wip_limit` (ข้อ 3.1) is
 unaffected by construction: the palette lives on a SEAT, never on
 `worker_ids`, so a one-worker team with an eight-entry palette is still WIP 1
 — GitHub #45's own defect, that a model palette used to cost a worker seat
@@ -3179,12 +3179,12 @@ per candidate, is closed by where this lives, not by a special case. `bucket`
 names the rate-limit family a candidate draws on (per model-family within a
 provider, not per provider — codex's `gpt` vs `codex-spark`, agy's `gemini`
 vs non-`gemini`, claude's `fable` vs `opus`/`sonnet`/`haiku`); it is
-shape-checked only, exactly like a model name (§3.2), reusing `isModelName`
+shape-checked only, exactly like a model name (ข้อ 3.2), reusing `isModelName`
 rather than a second checker, and defaults to the entry's own resolved
 adapter when unspecified. Two CONSECUTIVE entries sharing a bucket are
 refused rather than warned — this validator fails closed everywhere else in
 this file and has no "accepted with a warning" channel to reuse, and the
-failure a silent accept would produce is expensive (a leg spent, per §4.10,
+failure a silent accept would produce is expensive (a leg spent, per ข้อ 4.10,
 learning nothing a first refusal hadn't already shown) and would surface only
 much later, as a runtime symptom, instead of at load — a non-consecutive
 repeat (A, B, A) is accepted, because something else was tried in between.
@@ -3196,7 +3196,7 @@ as `null` rather than omitted, so every graph's `source_digest` moves at this
 version** — AC97 said the opposite when this amendment first landed, and its
 test compared two graphs resolved by the same code, a comparison that holds
 whatever the shape became. Corrected in the merge: AC97 now claims only
-§3.2.1's equivalence property, which is genuinely unaffected, and the test
+ข้อ 3.2.1's equivalence property, which is genuinely unaffected, and the test
 pins the resolved seat's keys so the next field to arrive fails by name
 instead of as an unexplained hash. Nothing joins on a *workflow* graph's
 digest across versions — `team-runtime.mjs` joins on
@@ -3204,8 +3204,8 @@ digest across versions — `team-runtime.mjs` joins on
 The ordering semantics
 GitHub #47's own text raises — the dispatcher's choice as the starting point,
 the declared array as the order after it, a full unanswered cycle as an
-escalation rather than a ninth retry — are written into §3.5 and marked
-**unenforced** (§14.1): no code reads a palette for dispatch yet.
+escalation rather than a ninth retry — are written into ข้อ 3.5 and marked
+**unenforced** (ข้อ 14.1): no code reads a palette for dispatch yet.
 `loop-runner.mjs`, `ledger-validate.mjs`, `ledger-writer.mjs`,
 `acp-companion.mjs`, `dispatch-facts.mjs` and `skills/party-mode/` are
 untouched, on purpose — GitHub #47 part 2 (`assigned` carrying the chosen
@@ -3219,12 +3219,12 @@ the check turns the two consecutive-bucket tests and the dedicated mutation
 test RED, on `result.ok`, not on any wording.
 
 **2026-08-05 — GitHub #47 phase 2: a palette seat dispatches from it, in
-declared order, with a bound on the walk.** New §3.5.1; new AC104–109 (§14),
-replacing the §14.1 palette-ordering row with a narrower one (below).
+declared order, with a bound on the walk.** New ข้อ 3.5.1; new AC104–109 (ข้อ 14),
+replacing the ข้อ 14.1 palette-ordering row with a narrower one (below).
 `loop-runner.mjs` gains `declaredPalette` (reads a seat's resolved `palette`,
 mirroring `declaredModel`/`declaredAdapter`/`declaredEffort`), `missesBy`
 (counts, since the token's last resume, how many of ONE seat's legs carried
-`delivered.work_observed: false` — the same fact §4.10 defined, summed rather
+`delivered.work_observed: false` — the same fact ข้อ 4.10 defined, summed rather
 than excluded), and `dispatchOn` (chosen from both branches of `want` that
 used to return a bare `{ action: 'dispatch', role, agent_id }` — the hint
 branch and the free-pick branch — so a hinted palette seat and a freely-picked
@@ -3233,13 +3233,13 @@ prior shape back, unedited: `dispatchOn`'s first line is `if (!palette) return
 { action: 'dispatch', role, agent_id: agentId }`. What triggers a fallback is
 stated as what it structurally is, not by name: `work_observed: false`, never
 a terminal string and never "on rate limit" — the runner has no narrower
-signal than the one §4.10 already put in the ledger. Each fallback candidate
+signal than the one ข้อ 4.10 already put in the ledger. Each fallback candidate
 is a new leg with its own `task_id`/`dispatch_id`, minted by the same
 `buildTaskId` call every retry already used; nothing about leg identity
 changes. A full cycle — `misses >= palette.length` — escalates instead of
-retrying entry 0 a second time, matching the ordering semantics §3.5 wrote
-down in advance. `legCeiling` (§10) is untouched: every `assigned` still
-counts toward it unconditionally, exactly as §4.10 requires by name; the new
+retrying entry 0 a second time, matching the ordering semantics ข้อ 3.5 wrote
+down in advance. `legCeiling` (ข้อ 10) is untouched: every `assigned` still
+counts toward it unconditionally, exactly as ข้อ 4.10 requires by name; the new
 per-seat cycle bound is a TIGHTER, additional gate in front of it (at most 8
 misses before escalating, against a 15-leg default ceiling), not a
 replacement — GitHub #45's own defect (a palette destroying the leg-ceiling
@@ -3247,7 +3247,7 @@ accounting) does not recur, by construction rather than by a special case.
 
 **Not built: `assigned` carrying the chosen model.** This is the one piece of
 GitHub #47's own text this amendment does not close, and the reason is
-structural. `assigned` is written by exactly one component (§13:
+structural. `assigned` is written by exactly one component (ข้อ 13:
 `acp-companion.mjs`, one of only two things that may append to a ledger, and
 the only one of the two permitted to write `assigned` or `delivered`), and
 the field `EVENT_SPEC` requires on it that matters here — `dispatch_id` — is
@@ -3255,17 +3255,17 @@ minted by `randomUUID()` inside `acp-companion.mjs` at process start, with no
 env var or argument through which `loop-runner.mjs` could supply or predict
 it. A dispatch_id `loop-runner.mjs` invented itself would not be the one
 `acp-companion.mjs` later carries on `delivered`, and `ledger-validate.mjs`'s
-own dispatch-id/task-id ownership check (§4.2) would read the two events as
+own dispatch-id/task-id ownership check (ข้อ 4.2) would read the two events as
 disagreeing — the ledger the runner itself refuses to dispatch onto, next
 tick. `acp-companion.mjs` is out of scope for this phase (Files, above); the
 model reaches the spawned process (unchanged — the same `modelEnv`/
 `ACP_MODEL`/`ACP_EXPECT_MODEL` plumbing every seat has always used) but not
 the ledger line. `ledger-validate.mjs` is unedited: only the event NAME is a
-closed vocabulary (§4), so a future `model` field on `assigned` needs no
+closed vocabulary (ข้อ 4), so a future `model` field on `assigned` needs no
 validator change to be accepted, and — following the precedent already set by
 `work_observed` and `worker_hint`, neither of which is shape-checked in
 `ledger-validate.mjs` today — this amendment does not add shape-checking for a
-field nothing yet writes. §14.1 now names this a genuinely UNBUILT clause,
+field nothing yet writes. ข้อ 14.1 now names this a genuinely UNBUILT clause,
 replacing the ordering-semantics row this amendment closed. Proven in
 `tests/loop-runner-palette-dispatch.test.mjs`: AC104–109, plus an unedited
 pass of every pre-existing loop-runner test file
@@ -3279,15 +3279,15 @@ file copy with a SHA-256 checksum verifying the restore, never by reversing a
 `plan.action` ('escalate' expected, 'dispatch' observed), not on any wording.
 
 **2026-08-05 — D1: the three read tools an agent seat actually needs.** New
-file `scripts/agent-seat-reads.mjs`; new §16 records the surface, and AC93–96
-(§14) record what proves it. Scenario work sized an agent seat's read demand
+file `scripts/agent-seat-reads.mjs`; new ข้อ 16 records the surface, and AC93–96
+(ข้อ 14) record what proves it. Scenario work sized an agent seat's read demand
 at three questions — what did an earlier leg deliver (`listDeliveries`), give
 me one piece of it by id (`fetchDelivery`), how did this token's earlier legs
 end (`legOutcomes`) — and this amendment builds exactly those three and
 nothing else: a fourth, asking a person, is a mutation and stays out of scope,
 and no write tool exists here. It is a plain module, not a server and not an
-MCP registration — §13's `mcpServers: []` prohibition is unaffected, and
-opening that seam remains a containment decision nobody has taken (§13, A3).
+MCP registration — ข้อ 13's `mcpServers: []` prohibition is unaffected, and
+opening that seam remains a containment decision nobody has taken (ข้อ 13, A3).
 Every ledger byte it reads comes from dispatch-facts.mjs's existing aggregate
 reader, imported under a re-exported name (`loadWorkItemLedgers`) chosen
 specifically so `./scripts/ledger-reader-ratchet.mjs`'s static-text scan needs
@@ -3302,14 +3302,14 @@ replays every case above (found, not-found, and a hostile path-shaped
 argument) and asserts none of `.jsonl`, `.tmux-teams`, `.mailbox-out`, or an
 absolute path appears anywhere in the returned JSON. `repo` — the project
 root — is the one argument every sanctioned reader in this contract already
-takes and is not treated as a hole in that wall; §16 states why.
+takes and is not treated as a hole in that wall; ข้อ 16 states why.
 
 **2026-08-05 — D2: one projection every reader could consume, and one reader
-moved onto it.** New §6.1. `./scripts/ledger-reader-ratchet.mjs` names the nine
+moved onto it.** New ข้อ 6.1. `./scripts/ledger-reader-ratchet.mjs` names the nine
 readers of a token's ledger as they stand today: `admit.mjs`,
 `dispatch-facts.mjs`, `graph.mjs`, `intake-stats.mjs`, `kanban.mjs`,
 `ledger-validate.mjs`, `ledger-writer.mjs`, `loop-runner.mjs`,
-`pull-controller.mjs`. §6's `teamOccupancy`/`currentEntry` already
+`pull-controller.mjs`. ข้อ 6's `teamOccupancy`/`currentEntry` already
 centralised "which team holds this token"; what was still folded
 independently, one reader at a time, was everything past that — when a
 token entered its CURRENT placement (`kanban.mjs`'s own `placingEvent`),
@@ -3318,9 +3318,9 @@ newest `pulled` line), and the token's own intake history — every
 `questioned`/`answered` pairing, who asked, whether the runner's own
 deadline (not a controller `abandon`) lapsed it (`intake-stats.mjs`'s own
 fold). New `token-projection.mjs`'s `projectToken(item)` is the union of
-those questions over ONE token's own custody, with §6.1 stating exactly what
+those questions over ONE token's own custody, with ข้อ 6.1 stating exactly what
 it deliberately excludes and why (per-team occupancy, `.tmux-teams/decisions/
-latest.json` from §11.3, ledger structural validity, and anything needing
+latest.json` from ข้อ 11.3, ledger structural validity, and anything needing
 the graph declaration or the wall clock). One reader — `kanban.mjs`, chosen
 because its fold is small and self-contained (a single `cardOf` function)
 and its tests are strong and dedicated (`tests/kanban.test.mjs`,
@@ -3334,7 +3334,7 @@ whose tests needed changing would have meant its behaviour changed, which
 this amendment does not claim.
 
 **2026-08-05 — C1: why the runner passed over a token now survives the tick
-that decided it.** Behaviour changed in `loop-runner.mjs`; new §11.3 records
+that decided it.** Behaviour changed in `loop-runner.mjs`; new ข้อ 11.3 records
 it. Four `log()` sites decided, on the tick's own evidence, that a token would
 not be dispatched onto this tick — every seat busy (`wait`), a person still
 being waited on (`waiting`), nothing following the token's last event
@@ -3342,7 +3342,7 @@ being waited on (`waiting`), nothing following the token's last event
 ledger too broken to trust (`unreliable-history`), no standing brief for the
 team (`no-brief`), and an escalation whose own `audit_requested`/`escalated`
 mark the ledger refused to record (`wedged`, already named `STUCK` in the
-log, §14.2 item 3, AC74). All seven reached only `console.log`; nothing else
+log, ข้อ 14.2 item 3, AC74). All seven reached only `console.log`; nothing else
 in the system could read them back, so a token nobody had looked at and a
 token refused for cause were indistinguishable once the tick ended.
 `.tmux-teams/decisions/latest.json` now carries the same seven, unchanged from
@@ -3353,22 +3353,22 @@ constructed message for the seventh. Two advisors disagreed on shape: one
 wanted `decisions/<date>.jsonl`, appended, so a token stuck on the same reason
 for 40 ticks would be visible as a pattern; two wanted overwrite, because an
 append-only file beside the ledger is a second event store, which is the
-disease §13 exists to prevent. Overwrite was built; §11.3 states the ceiling
+disease ข้อ 13 exists to prevent. Overwrite was built; ข้อ 11.3 states the ceiling
 this creates — the file answers "why is it not moving right now" and cannot
 answer "how long has it been stuck" — rather than letting it be discovered.
 Written only by a tick that reaches the point of evaluating tokens (an
 invalid-graph or stale-pulse tick returns earlier and leaves the file as the
 last full tick left it, so an empty `decisions: []` on disk always means
 "checked, nothing refused" and never "never checked"), and only when
-`apply` is true, matching §11.2's heartbeat: a dry run must not impersonate a
+`apply` is true, matching ข้อ 11.2's heartbeat: a dry run must not impersonate a
 live tick's refusals any more than it may impersonate its heartbeat. Written
 atomically (temp file, then rename) for the same reason `acp-companion.mjs`'s
 outbox writes are. Proven in `tests/loop-runner-decisions.test.mjs`: AC90–AC92.
 
 **2026-08-05 — B1/GitHub #45 part 2: a leg that never got a turn no longer
 spends the worker's attempt budget.** Behaviour changed in `loop-runner.mjs`
-and `acp-companion.mjs`. §4's `delivered` row and new §4.10 record the fix;
-§4.9's availability paragraph is corrected to say the router's blindness is
+and `acp-companion.mjs`. ข้อ 4's `delivered` row and new ข้อ 4.10 record the fix;
+ข้อ 4.9's availability paragraph is corrected to say the router's blindness is
 still open while the attempt-spend consequence is not. `attemptsBy` used to
 count every `assigned` line against `MAX_ATTEMPTS` regardless of whether the
 process ever started — a seat whose provider was rate-limited could burn all
@@ -3376,14 +3376,14 @@ three attempts on legs that never began. `acp-companion.mjs` (the sole writer
 of `delivered`, and the only process present when a leg dies at the transport)
 now tracks whether it ever observed real agent activity — a tool call, a
 message/thought chunk, a plan update, a completed prompt turn — as opposed to
-bare protocol handshaking or the pre-prompt receipt commit (§4.10), and writes
+bare protocol handshaking or the pre-prompt receipt commit (ข้อ 4.10), and writes
 `work_observed: false` on `delivered` when it saw none of that before the leg
 failed. `attemptsBy` excludes an `assigned` leg from the count only when its
 matching `delivered` states `work_observed: false` explicitly; a `lost` line
-(the runner's own "the process is gone and recorded nothing", §4) is never
+(the runner's own "the process is gone and recorded nothing", ข้อ 4) is never
 read this way, because that sentence is equally true of a leg killed after
 real work and one that never started, and the ledger alone cannot tell them
-apart — guessing from absence was considered and rejected (§4.10 decision 2).
+apart — guessing from absence was considered and rejected (ข้อ 4.10 decision 2).
 The exclusion keys off `work_observed`, never off `terminal`: a
 `protocol-error` (or any other non-`done` terminal) marked `work_observed:
 true` still spends an attempt exactly like `blocked` or `hard-timeout` always
@@ -3394,17 +3394,17 @@ transport-failed legs (`work_observed: false`) still read `dispatch`, and
 three legs that genuinely ran and failed (`work_observed: true`, same
 `protocol-error` terminal, so the guard cannot be keying off the terminal
 string) still reach `escalate` at `MAX_ATTEMPTS`. `legCeiling` (`MAX_LEGS`,
-§10) is unchanged — it still counts every `assigned` unconditionally, so a
+ข้อ 10) is unchanged — it still counts every `assigned` unconditionally, so a
 model palette (GitHub #47) no longer burns `MAX_ATTEMPTS` faster than a single
 seat would, but still burns the token's total leg ceiling at the same rate;
 that ordering is otherwise unblocked by this fix.
 
 **2026-08-05 — A3: the `mcpServers: []` containment seam is now a documented
-decision, not an accident.** No behaviour change; §13 gains a prohibition
-against a non-empty `mcpServers` on dispatch, marked unenforced (§15.2)
+decision, not an accident.** No behaviour change; ข้อ 13 gains a prohibition
+against a non-empty `mcpServers` on dispatch, marked unenforced (ข้อ 15.2)
 because nothing tests the literal sent at `session/new`
 (`acp-companion.mjs:3462`) and `session/load` (`:3478`) today — both entries
-recorded in §14.1. Per §15.3: the code was already right — every dispatch has
+recorded in ข้อ 14.1. Per ข้อ 15.3: the code was already right — every dispatch has
 sent the empty array since the seam existed — and this entry brings the
 contract into agreement with the code, not the reverse; nothing in
 `acp-companion.mjs` or any other `.mjs` file changed. ADR 0003
@@ -3416,7 +3416,7 @@ per-seat allowlist is noted there as a future option once something concrete
 exists for an allowlist to point at; it is not built.
 
 **2026-08-05 — the dispatcher was described by what it was designed for, not by
-what it does.** No behaviour change; §1 and §4.9 are corrected to match observed
+what it does.** No behaviour change; ข้อ 1 and ข้อ 4.9 are corrected to match observed
 use, and two consequences are recorded as open.
 This document has led the seat's definition with admission control since it was
 written. Master, asked directly: a refusal at the door has never been seen on
@@ -3426,12 +3426,12 @@ seat actually performs is choosing which MODEL runs a token: cheap for simple
 work, strong for hard, text-only where there is no media, multimodal where
 there is, another seat when a model is rate-limited.
 The mechanism was already there and was described in the wrong words. A seat
-carries its own `model`, `adapter` and `effort` (§3.2's `seats` override, which
-`declaredModel`/`declaredAdapter` are the only readers of), so §4.9's "name a
+carries its own `model`, `adapter` and `effort` (ข้อ 3.2's `seats` override, which
+`declaredModel`/`declaredAdapter` are the only readers of), so ข้อ 4.9's "name a
 worker seat" has always meant "name a model". A team with one worker looked
 pointless to reason about only because the question was being asked as "how
 many workers" when it is "how many models".
-Two defects fall out of the confusion and are stated rather than fixed. §3.1
+Two defects fall out of the confusion and are stated rather than fixed. ข้อ 3.1
 derives `wip_limit` from the worker-seat count, so a model palette and a
 concurrency limit are the same number — an operator wanting one token and four
 candidate models cannot express it. And `want()` knows only whether a seat is
@@ -3448,15 +3448,15 @@ refuses.** Behaviour changed in `pull-controller.mjs` and `ledger-validate.mjs`.
 `planPulls` picked the next hop from route position alone
 (`workflow.route[index + 1]`) and never consulted `heldTeams` — the set
 `ledger-validate.mjs` already tracks, filled at `intake` (admission, not
-arrival, per §1). On an escalation exit the declared route can point back at a
+arrival, per ข้อ 1). On an escalation exit the declared route can point back at a
 team the token already holds a place in, and the validator's own
-`route_went_backwards` refusal (§4.2) then refuses every such `pulled` the
+`route_went_backwards` refusal (ข้อ 4.2) then refuses every such `pulled` the
 planner proposes, forever: `tick()` recomputed the identical decision every
 loop with no exit in code. `validateLedger`/`validateLedgerTolerant` now
 return `heldTeams` on the verdict (additive; no existing field's meaning
 changed), and `planPulls` consumes it — the next hop is the first team on the
 rest of the route not already in that set, and a route with none left is
-`completed`. Not a new scan: the definition of "held" stays the one place §1
+`completed`. Not a new scan: the definition of "held" stays the one place ข้อ 1
 already put it. This fixes the planner root only; it does not address GitHub
 #46's mid-flight-restart hypothesis for the same symptom.
 
@@ -3468,10 +3468,10 @@ SIGTSTP, an IO stall, a starved scheduler, none of them exotic under tmux. The
 displaced stealer then resumed inside its own section, acting on bytes it had
 read before it slept, and unlinked the replacement's fresh lock and marker:
 exactly the two-writers-one-section overlap the marker was added to close, and
-§14.5 claimed closed. The section now carries a per-acquisition claim, and the
+ข้อ 14.5 claimed closed. The section now carries a per-acquisition claim, and the
 holder re-reads it immediately before the destructive step and again before
 clearing the marker; a stealer that was displaced destroys nothing on its way
-out. §14.5 states the residual window — a few syscalls wide, uncloseable with
+out. ข้อ 14.5 states the residual window — a few syscalls wide, uncloseable with
 file primitives — and states that the guard is not covered by a test, because a
 test that appeared to cover it passed with the guard removed.
 
@@ -3505,7 +3505,7 @@ declaration can.
 **2026-08-04 — r6-qwen, the rest: two quantifiers nothing pinned and one
 ceiling nobody stated.** No behaviour change beyond `ledger-writer.mjs`'s and
 `loop-runner.mjs`'s already-amended fixes; this records what the words were
-saying wrongly. §5 said the identity-free shorthand covers a "round-2+" report
+saying wrongly. ข้อ 5 said the identity-free shorthand covers a "round-2+" report
 and the code comment described an unbounded reject/rework/re-review pass. The
 code has never done that: an identityless outcome from an agent assigned more
 than once is discarded by the ambiguity rule, because nothing in such a line
@@ -3543,18 +3543,18 @@ right to refuse; it now varies by lane, as `gateProfile` beside it already did.
 
 **2026-08-04 — r5-codex BLOCKER 9: `completed` is only HALF closed, and the
 tolerance gate treated it as an ending.** Recorded late; r6-qwen was right that
-the change shipped in `6d560db` with no amendment of its own, which §15.1
+the change shipped in `6d560db` with no amendment of its own, which ข้อ 15.1
 forbids. Behaviour changed in `ledger-writer.mjs`: `appendEvent`'s
 closing-tolerance branch accepted any `TERMINAL_EVENTS` member onto a ledger
 whose only defects are closing-tolerated, and that set holds `completed` — which
-§5 calls half closed, its only continuation an `audit_requested`/`audited` pair
+ข้อ 5 calls half closed, its only continuation an `audit_requested`/`audited` pair
 that is not terminal and so is refused there in turn. Accepting it did not close
 the ledger, it stranded the token: the runner's next write came back
 `ledger_already_invalid` into the STUCK path while the board read the
 `completed` line as a releasing event and filed the card under Done with no
 blocked reason — invisible on the one screen a human would check.
 `HARD_TERMINAL_EVENTS` (`audited`, `abandoned`) is the set with no legal
-successor, and only those two may land there. §5's state machine is unchanged;
+successor, and only those two may land there. ข้อ 5's state machine is unchanged;
 this makes the writer agree with it.
 
 **2026-08-04 — r6-codex/Winston, the last caller that advanced past a
@@ -3563,11 +3563,11 @@ refusal.** Behaviour changed in `pull-controller.mjs`: the standalone
 so a run in which every planned pull was refused looked exactly like a run with
 nothing to do. It now compares written against planned and exits 1 with the
 count on stderr when they differ. The disagreement between the two is real and
-expected rather than a bug being papered over — §14.5 rule 6 says `planPulls`
+expected rather than a bug being papered over — ข้อ 14.5 rule 6 says `planPulls`
 judges the parsed projection, which has already dropped unparsable lines, while
 the writer judges the bytes, so a token broken only by an unparsable line is
 planned as a pull and then refused. Making that visible is the point.
-No section text changed: §7 already says a refused pull is not a pull.
+No section text changed: ข้อ 7 already says a refused pull is not a pull.
 
 **2026-08-04 — r6-codex: five holes, of which two were opened by the round
 that was closing them.** Behaviour changed in party-mode's
@@ -3591,12 +3591,12 @@ one new holder": `wx` guards the create, not the decision in front of it, so a
 second stealer acting on what it read could unlink the FRESH lock a first one
 had just taken and walk into the section it was inside. The steal is now
 serialised through its own `wx` marker and removes only a lock whose token is
-still the one it judged. §14.5 records what remains open.
+still the one it judged. ข้อ 14.5 records what remains open.
 `currentEntry`'s `reviewed_task` pass covered only a leg that DIED before the
 delivery existed; a leg still running can see a later delivery land and name
 it, with no new `assigned` of its own. The pass now also requires that the
 reviewer's current leg has not already reported — the harvester writes one
-`reviewed` per outbox. §5's paragraph on the shorthand is corrected, including
+`reviewed` per outbox. ข้อ 5's paragraph on the shorthand is corrected, including
 its use of the word "proof".
 `nextStep`'s `escalated` branch and `planEscalation`'s `audit_requested` scan
 took `busy` and never read it, so a controller alive and working past
@@ -3604,13 +3604,13 @@ took `busy` and never read it, so a controller alive and working past
 under — had its token hard-`abandoned` underneath it, and `abandoned` admits no
 successor, so its answer could not be harvested when it arrived. Both now treat
 a live process as in flight. Elapsed time is not proof that a process is dead.
-Also corrected without behaviour change: §14.5's claim that `appendEvent` has no
+Also corrected without behaviour change: ข้อ 14.5's claim that `appendEvent` has no
 lock, and `buildTaskId`'s claim to remove collisions — 16 hex is 64 bits, and
 the identical tuple in the identical millisecond still yields the identical id.
 What it removed was the sanitizer collision.
 
 **2026-08-04 — r6-agy, narrowed: the escape hatch had no automated caller.**
-Behaviour changed in `loop-runner.mjs`. §5's closing tolerance promises that a
+Behaviour changed in `loop-runner.mjs`. ข้อ 5's closing tolerance promises that a
 token whose only defects are pre-existing duplicate ids "must always be able to
 reach `abandoned`", and the writer keeps that promise — offered five events, a
 duplicate-tainted ledger refuses `delivered`, `escalated`, `lost` and
@@ -3625,9 +3625,9 @@ when EVERY blocking problem is closing-tolerated, and writes the one event that
 closes the token rather than any event that continues it. A ledger broken any
 other way is still left for a human, which is the point of refusing to write
 onto bytes nobody can believe. AGY named the shape; the reported form was
-wider — it claimed no automated `abandoned` exists at all, and §9's `expired`
+wider — it claimed no automated `abandoned` exists at all, and ข้อ 9's `expired`
 writer had been there since the clock got its own withdrawal.
-§5 and §9 are unchanged: this adds a caller for a rule both already state.
+ข้อ 5 and ข้อ 9 are unchanged: this adds a caller for a rule both already state.
 
 **2026-08-04 — retro-release-review r6-agy: the round-five lock released
 what it no longer held, and no caller could tell contention from a verdict.**
@@ -3645,26 +3645,26 @@ about the event — another process held the lock, and the next attempt may
 write. Every other code is a verdict on the bytes. The companion's custody
 append treated all refusals alike and dropped the line with a warning, which is
 right for a verdict and wrong for contention: a lost custody line is precisely
-what §13 makes this process a writer to prevent. It now retries `locked`
+what ข้อ 13 makes this process a writer to prevent. It now retries `locked`
 `LOCKED_APPEND_RETRIES` times (whole `appendEvent` calls, each waiting out
 `LOCK_MAX_WAIT_MS` on its own) before refusing loudly. `pull-controller.mjs`
 already carries its refusal home on the decision and is unchanged.
-No section text changed: §13 already binds this process to the writer's
+No section text changed: ข้อ 13 already binds this process to the writer's
 obligations, and both fixes make it meet them rather than restating them.
 
-**2026-08-04 — retro-release-review r5-codex BLOCKER 6: §4.7, §5, and §6
+**2026-08-04 — retro-release-review r5-codex BLOCKER 6: ข้อ 4.7, ข้อ 5, and ข้อ 6
 described behaviour two round-2 fixes had already replaced (no behaviour
-changed by this entry).** No code changed. §4.7 and §5's `answered`
+changed by this entry).** No code changed. ข้อ 4.7 and ข้อ 5's `answered`
 (pre-`completed`) row said `resume_role` is "recorded... but not yet wired"
 and that every `answered` resumes the dispatcher regardless of which seat
 asked; `loop-runner.mjs`'s H1 fix (also 2026-08-04, earlier in this log)
 already routes `resume_role: worker`/`evaluator` to that seat directly and
 `audit`/`outer` to a held/escalate path instead — the H1 log entry named
-§4.7 as corrected, but the paragraph was never actually edited, and a later
+ข้อ 4.7 as corrected, but the paragraph was never actually edited, and a later
 same-day entry ("the contract stopped contradicting itself") independently
 rewrote the same section for an unrelated reason and, reading from a copy
 that still said "not yet wired," preserved that sentence as if it were the
-reconciled truth. §6 separately still described the `reviewed`-ambiguity
+reconciled truth. ข้อ 6 separately still described the `reviewed`-ambiguity
 check as counting only a CONSECUTIVE run of an agent's own `assigned` lines,
 and described a matching `dispatch_id` as trusted outright — both were
 already replaced at retro-release-review round 2 (F1, Shape 2, same date):
@@ -3673,8 +3673,8 @@ to the judged entry's position (the consecutive version is what let a dead
 round-1 evaluator leg's stale `reviewed pass` survive an intervening rework
 leg), and `currentEntry` additionally requires a `dispatch_id`-matched
 entry's `task_id`, when present, to resolve to the holder's own leg. Under
-§15.3: the code was right in both packages; this document was not amended in
-the same commit as either fix, in violation of §15.1. Text corrected per
+ข้อ 15.3: the code was right in both packages; this document was not amended in
+the same commit as either fix, in violation of ข้อ 15.1. Text corrected per
 CONTRACT-PATCH.md, retro-release-review round 5 (codex BLOCKER 6).
 
 **2026-08-04 — retro-release-review r5: the evaluator read the wrong
@@ -3688,7 +3688,7 @@ and the `reviewed_task`/verdict storage that key off this function all read
 the stale leg's bytes). It now ranks by the array position of the `assigned`
 line that opened each candidate's leg — authored in dispatch order, and so
 never late — and a `delivered` whose `task_id` does not resolve to any
-`assigned` is not ranked at all. §6 gained the paragraph distinguishing this
+`assigned` is not ranked at all. ข้อ 6 gained the paragraph distinguishing this
 reader from a `currentEntry` call site above.
 Separately (BLOCKER 3), `nextStep`'s `escalated` branch and a new direct scan
 inside `planDispatches` each apply `answerDeadlineSec` — the same clock
@@ -3698,13 +3698,13 @@ controller's own leg (`escalated` naming the controller, or
 deadline: the runner now writes `abandoned`, the same way it already does for
 an unanswered `questioned`. Before this, a controller leg that died before
 writing an outbox left the token with NO automatic path to a terminal at
-all — its own dispatch record carries no work item (§9), so the companion's
+all — its own dispatch record carries no work item (ข้อ 9), so the companion's
 custody write for it is a no-op, and `audit_requested` additionally sits
-outside `held` (§6: `RELEASING_EVENT`) where `planDispatches`'s ordinary loop
-never reaches it either. §9's `abandon` bullet gained the third/fourth-writer
-paragraph above. Under §15.3: neither defect was a contract/code
+outside `held` (ข้อ 6: `RELEASING_EVENT`) where `planDispatches`'s ordinary loop
+never reaches it either. ข้อ 9's `abandon` bullet gained the third/fourth-writer
+paragraph above. Under ข้อ 15.3: neither defect was a contract/code
 disagreement — both are cases the contract was silent about and the code
-under-implemented; §6 and §9 are amended to state what the fix now does,
+under-implemented; ข้อ 6 and ข้อ 9 are amended to state what the fix now does,
 not to correct a prior claim.
 Reproduced and proven in `tests/loop-occupancy.test.mjs`: `BLOCKER 2` builds
 the exact declared-lost/retry/late-straggler custody through `tick`'s own
@@ -3724,7 +3724,7 @@ lock across its own read-validate-append.** Behaviour changed in two files.
 `buildTaskId(workItem, team, role, nowMs)` — a 47-char truncated,
 char-sanitized human-readable prefix plus a 16-hex-char sha256 digest slice
 over the raw (pre-sanitize) tuple, capped at 64 characters total so it can
-never overflow `acp-companion.mjs`'s own `ID_RE` (§4's `ID_RE` allows
+never overflow `acp-companion.mjs`'s own `ID_RE` (ข้อ 4's `ID_RE` allows
 `work_item` up to 128 characters and additionally `.`/`:`, neither of which
 `acp-companion.mjs`'s task-id gate accepts) — where the prior raw
 concatenation both could overflow that 64-char cap (making the child exit
@@ -3743,7 +3743,7 @@ landing several structurally duplicate `assigned` rows that
 `duplicate_dispatch_id`). A lock held past 30 seconds is treated as
 abandoned by a dead holder and stolen by the next acquirer; a caller unable
 to acquire within 5 seconds gets `{ok: false, code: 'locked'}`, which both
-existing callers already handle the same as any other refusal. §9's
+existing callers already handle the same as any other refusal. ข้อ 9's
 task_id-minting paragraph gained the two paragraphs in Patch 1 above.
 `tests/loop-occupancy.test.mjs` gained BLOCKER 4's cases, run against the
 real `acp-companion.mjs` process rather than a copied regex, since the
@@ -3752,7 +3752,7 @@ defect is specifically about what a SEPARATE process's own gate accepts;
 (genuinely simultaneous, not merely `Promise.all`-launched — process-startup
 jitter alone was measured to hide the race under a naive launch) 24-process
 race against a clean ledger, and a stale-lock-recovery case. Neither change
-alters any ledger event's recorded fields, so no §4 event-table row changed.
+alters any ledger event's recorded fields, so no ข้อ 4 event-table row changed.
 
 **2026-08-04 — retro-release-review round 5, package "BLOCKER 1 + 5 + 7": F1
 failed open one way and closed the other.** `dispatch-facts.mjs`'s
@@ -3790,9 +3790,9 @@ alone; `composeBrief` now opens with the exchange (`questioned.questions` +
 `answered.reason`) whenever it is briefing an item currently at `answered`;
 `planEscalation`'s `ask` text does the same for whichever token (audit or
 parked) it names as the one to answer for; `boardSummary` now renders that
-reply inline instead of the bare `(answered)` state name. §9 gained the
-identity-anchor paragraph above; §4.7 gained the exchange-delivery paragraph.
-Under §15.3, the code was wrong on both counts: §9 already stated the
+reply inline instead of the bare `(answered)` state name. ข้อ 9 gained the
+identity-anchor paragraph above; ข้อ 4.7 gained the exchange-delivery paragraph.
+Under ข้อ 15.3, the code was wrong on both counts: ข้อ 9 already stated the
 identity-anchor principle for the stall trigger specifically, and the two
 `answered`-recurring triggers had silently not followed it; nothing in the
 contract or the code ever claimed the resumed seat's brief carried the
@@ -3816,12 +3816,12 @@ than matched by code alone), `ledger-writer.mjs` (`appendEvent`'s continuable
 check now reads the shared, scoped list instead of its own flat `Set`),
 `pull-controller.mjs` (`planPulls` now calls `validateLedgerTolerant` instead
 of `validateLedger`), and `loop-runner.mjs` (`tick`'s dispatch gate now calls
-`validateLedgerFileTolerant` instead of `validateLedgerFile`). §1 gained the
+`validateLedgerFileTolerant` instead of `validateLedgerFile`). ข้อ 1 gained the
 B5 paragraphs above.
 
-Under §15.3, the code was wrong: the amendment below ("`opened.actor` is a
+Under ข้อ 15.3, the code was wrong: the amendment below ("`opened.actor` is a
 human decision (ADR 0002)...") tightened `EVENT_SPEC` on a system already
-running, exactly as §1's own backwards-pull rule had, but neither new problem
+running, exactly as ข้อ 1's own backwards-pull rule had, but neither new problem
 code was added to `ledger-writer.mjs`'s `LEGACY_TOLERATED` set — so a ledger
 clean before either amendment became permanently un-appendable
 (`ledger_already_invalid` on every `answered` or `abandoned`), stranding a
@@ -3832,7 +3832,7 @@ widening the writer's own tolerance, `pull-controller.mjs` and
 would still refuse to pull or dispatch onto such a token — so the fix has to
 be the single shared judgment described above, not three separate copies of
 the same list. Plain by-code tolerance was considered and rejected for these
-two specifically, for the reason given in §1: it is not scoped enough to
+two specifically, for the reason given in ข้อ 1: it is not scoped enough to
 avoid excusing an unrelated, genuinely new defect.
 
 **2026-08-04 — retro-release-review: H1 (resume_role wired for evaluator/
@@ -3843,11 +3843,11 @@ blocks the pull), H5 (an invalid ledger is caught before pull-readiness), M3
 read `currentEntry`, not the raw last event).** Three independent outside
 reviews (qwen, AGY/Gemini, gpt-5.6-sol) of `88bd851..c3997a5` returned
 BLOCKING; this batch is the subset of their findings assigned to this package.
-See §4.7, §4.8, and §14.2 item 2 above for the specific paragraphs each
+See ข้อ 4.7, ข้อ 4.8, and ข้อ 14.2 item 2 above for the specific paragraphs each
 behavior change corrects. `admit.mjs` now writes
 `.tmux-teams/work-items/<token>.md` from `request.reason` when that file does
 not already exist, on a successful admission only — closing the gap where
-`composeBrief` (§4.6) names that file as "the token's own request" but nothing
+`composeBrief` (ข้อ 4.6) names that file as "the token's own request" but nothing
 ever created it. `role-briefs.mjs`'s grill brief no longer tells the admitting
 seat "you also choose the route it takes" when nothing downstream reads a
 route decision out of its reply — it now states the route was fixed at
@@ -3869,31 +3869,31 @@ matching the "judge, do not inherit" scoping instruction under which the
 changed).** Three independent outside model-family reviews of
 `88bd851..c3997a5` (qwen, agy/Gemini, codex2) each found this document
 internally inconsistent after the same week's parallel amendments; the
-same-day §4.8 collision (GitHub #32's worker_hint and GitHub #31's
-target_verdict both claiming "§4.8") is the clearest single cause and is
-fixed by giving worker_hint its own §4.9. Also fixed: §4.1's `actor` rule
-stated as an unconditional absolute with no forward pointer to the §4.6/§4.7
+same-day ข้อ 4.8 collision (GitHub #32's worker_hint and GitHub #31's
+target_verdict both claiming "ข้อ 4.8") is the clearest single cause and is
+fixed by giving worker_hint its own ข้อ 4.9. Also fixed: ข้อ 4.1's `actor` rule
+stated as an unconditional absolute with no forward pointer to the ข้อ 4.6/ข้อ 4.7
 exception ADR 0002 already named, and its actor-less-history tolerance
 paragraph not carrying the carve-out that already applies to `opened`/
-`answered`; §4.2's already-invalid-ledger refusal stated with no exception
-though §1 (two sections earlier) already documents `LEGACY_TOLERATED`;
-§4.7's claim that `answered` is the ONLY actor-kind-constrained event, though
-`opened` (§4.6, ADR 0002) is too; §4.7's "resume_role... not yet wired"
+`answered`; ข้อ 4.2's already-invalid-ledger refusal stated with no exception
+though ข้อ 1 (two sections earlier) already documents `LEGACY_TOLERATED`;
+ข้อ 4.7's claim that `answered` is the ONLY actor-kind-constrained event, though
+`opened` (ข้อ 4.6, ADR 0002) is too; ข้อ 4.7's "resume_role... not yet wired"
 without stating what runs in its place (every `answered` resumes the
-dispatcher regardless of `resume_role` — §5 gained the missing pre-`completed`
-row); §4's own event table missing `questioned`/`answered` entirely (14 rows
-against `LEDGER_EVENTS`'s 16); §4.7 and §7.1 each opening with a
+dispatcher regardless of `resume_role` — ข้อ 5 gained the missing pre-`completed`
+row); ข้อ 4's own event table missing `questioned`/`answered` entirely (14 rows
+against `LEDGER_EVENTS`'s 16); ข้อ 4.7 and ข้อ 7.1 each opening with a
 `poc/controller-as-team`-only disclaimer that predates `admit.mjs` and the
 `question_id`/hard-terminal enforcement shipping to `main` in this very range;
-§6's "everything else holds" left to be reconciled against "an audit never
+ข้อ 6's "everything else holds" left to be reconciled against "an audit never
 takes custody" by tracing `dispatch-facts.mjs`'s orphan path by hand, done
 three times independently by three reviewers; and one stale line citation in
 this very amendment log, four entries below, pointing at
 `tests/loop-occupancy.test.mjs:877-895` for a test that lives at 1006-1037.
 
-Checked and found NOT a self-contradiction, so not touched: §4.8
-`target_verdict: reject` still pulling to the done queue against §1's "rework
-creates no token" — §3.4, §4.8, and §1 already agree explicitly; the daylight
+Checked and found NOT a self-contradiction, so not touched: ข้อ 4.8
+`target_verdict: reject` still pulling to the done queue against ข้อ 1's "rework
+creates no token" — ข้อ 3.4, ข้อ 4.8, and ข้อ 1 already agree explicitly; the daylight
 between the evaluator brief's stronger promise and the runtime is a
 brief-vs-runtime mismatch for whichever package owns `role-briefs.mjs` and
 GitHub #31 stage 3, not a contract inconsistency.
@@ -3903,7 +3903,7 @@ amendment's patch script was matched against the live file (unique,
 `str.count == 1`) immediately before writing, and each `new` was re-read after
 writing to confirm the section numbers, table rows, and prose it introduces
 do not themselves collide with anything already in the document (in
-particular: §4.9 was free, §4.10 remains free for the next arrival).
+particular: ข้อ 4.9 was free, ข้อ 4.10 remains free for the next arrival).
 
 **2026-08-04 — GitHub #32: per-seat reasoning effort, and a dispatcher's
 worker hint.** Behaviour changed in `workflow-graph.mjs` (`seats` gained a
@@ -3921,11 +3921,11 @@ honours a real free seat, escalates a seat not on the team's pool, and waits
 specifically for a real but busy one), and in `role-briefs.mjs`
 (`WORKER_HINT_RE`/`readWorkerHint`; the dispatcher brief now lists the team's
 workers with their declared model/effort and documents the optional line).
-§3 gained §3.2.2 and the `intake` row/AC table gained §4.8. Under §15.3 the
-document was wrong on both halves: §3.2 declared a model and a lane per seat
+ข้อ 3 gained ข้อ 3.2.2 and the `intake` row/AC table gained ข้อ 4.8. Under ข้อ 15.3 the
+document was wrong on both halves: ข้อ 3.2 declared a model and a lane per seat
 and said nothing about effort, though `acp-companion.mjs` had honoured
-`ACP_REASONING_EFFORT` since before this change; and §5's `intake` row said
-flatly "dispatch a worker" with declared order as the only rule §3.2.1 gave it,
+`ACP_REASONING_EFFORT` since before this change; and ข้อ 5's `intake` row said
+flatly "dispatch a worker" with declared order as the only rule ข้อ 3.2.1 gave it,
 though the two-tier dev pool this exists for needs the DISPATCHER, not
 declaration order alone, to be able to place harder work on the stronger seat.
 
@@ -3949,7 +3949,7 @@ A hint that names something unreal or unavailable is never silently absorbed:
 an unknown seat escalates (visible to the outer controller and the board, not
 a guessed substitution), and a busy real seat waits for THAT seat rather than
 picking a different free one — matching the existing "every worker busy" wait,
-not a new stall shape, because the same zombie detection (§11) that frees any
+not a new stall shape, because the same zombie detection (ข้อ 11) that frees any
 busy seat frees this one too.
 
 VERIFICATION: `tests/graph.test.mjs` (46/46) and `tests/loop-occupancy.test.mjs`
@@ -3967,7 +3967,7 @@ recorded for the same reason.
 **2026-08-04 — GitHub #31 stages 1–2: a team may declare it produces a
 verdict, and its evaluator may confirm one, on the record.** Behaviour changed
 in `workflow-graph.mjs` (a team's declaration gains optional `produces:
-"artifact" | "verdict"`, defaulting to `artifact`; §3.4), `role-briefs.mjs`
+"artifact" | "verdict"`, defaulting to `artifact`; ข้อ 3.4), `role-briefs.mjs`
 (new `TARGET_VERDICTS = {accept, reject}` — deliberately no `unresolved`
 member — and `readTargetVerdict`, which returns `stated: false` rather than a
 fabricated word when the evaluator said nothing; the evaluator brief gains a
@@ -3978,11 +3978,11 @@ evaluator brief; `harvestEvent` attaches `target_verdict`/`target_reason` to a
 evaluator stated one), and `ledger-validate.mjs` (`reviewed` may carry the
 optional pair; a new block — not a reuse of the `spec.verdicts` check, which is
 hardcoded to `entry.verdict` — refuses an unknown `target_verdict` and a
-`target_verdict` with no `target_reason`). New §3.4 and §4.8.
+`target_verdict` with no `target_reason`). New ข้อ 3.4 and ข้อ 4.8.
 
 This closes no GitHub issue by itself. GitHub #31 ("a confirmed rejection has
-nowhere to go") is a `pull-controller.mjs` gate that reads exactly what §7
-already said, plus a missing automatic writer of `opened` (§1) — a judged
+nowhere to go") is a `pull-controller.mjs` gate that reads exactly what ข้อ 7
+already said, plus a missing automatic writer of `opened` (ข้อ 1) — a judged
 three-design panel found neither is fixable by loosening the pull gate, which
 this amendment does not touch. This ships the DECLARATION and the RECORDING
 the eventual fix needs — a `reviewed pass` can now say, on the record, that it
@@ -4009,11 +4009,11 @@ rule and an optional `--relayed-by`/`relayed_by`), and in `loop-runner.mjs`
 `audited`/`abandoned` closed — instead of scanning history for the first-ever
 `audit_requested`/`audited`).
 
-Under §15.3, the document was wrong twice, both pre-existing: §4 documented
+Under ข้อ 15.3, the document was wrong twice, both pre-existing: ข้อ 4 documented
 `opened`'s `agent_id`/`to_team`/`reason` but not that `actor` was ever intended
 to be constrained (ADR 0002 settles this was always the intent —
-`admit.mjs`'s own doc comment said so — never enforced); and §5's state table
-called `completed` a terminal alongside `audited`/`abandoned` while §4.7
+`admit.mjs`'s own doc comment said so — never enforced); and ข้อ 5's state table
+called `completed` a terminal alongside `audited`/`abandoned` while ข้อ 4.7
 already documented `questioned`/`answered` legally following it, which is the
 same "first terminal wins" confusion the validator's old code had in
 executable form. A retroactive review (`retro-release-review`, F3/F4)
@@ -4023,14 +4023,14 @@ TRUTHFUL relay shape `{actor:'agent:operator', answered_by:'human:alice'}` on
 `answered`'s stricter neighbor — an inconsistency only explainable by `opened`
 never having gained the rule `answered` already enforced. Separately,
 `completed -> audit_requested -> questioned -> abandoned` (the exact shape the
-RUNNER writes for an expired post-completion audit question, §9) was refused
+RUNNER writes for an expired post-completion audit question, ข้อ 9) was refused
 as `event_after_terminal`, and `completed -> audit_requested -> audited ->
-audit_requested` validated clean despite `audited` being one of §5's two
+audit_requested` validated clean despite `audited` being one of ข้อ 5's two
 no-successor rows.
 
 `resume_role` is recorded on every `questioned` line as of this amendment but
 not yet consumed: an `answered` following a post-`completed` question is
-placed by §6's ordinary rule (`teamOf(agent_id)` or `to_team`, else orphan),
+placed by ข้อ 6's ordinary rule (`teamOf(agent_id)` or `to_team`, else orphan),
 which has no notion of "resume at the seat that asked" for a seat that is not
 a declared team (the outer controller/audit is not a team member). The data
 this needs is now on disk; the placement/dispatch change to read it is
@@ -4038,16 +4038,16 @@ deliberately left to a follow-up — see `HANDOFF-PATCH.md` — rather than
 widening this change into `dispatch-facts.mjs`'s occupancy rule under review-
 concurrency with the custody package's own edits to the same files.
 
-**2026-08-04 — the loop graph page's own state readers named in §6.** Behaviour
+**2026-08-04 — the loop graph page's own state readers named in ข้อ 6.** Behaviour
 changed in `graph.mjs`: `frontDoorStatus`, `controllerState`'s parked count, the
 `holding` set that marks a seat as holding a live token, a team's `stuck` flag,
 and the `delivered`/`waiting` tile counts now read `dispatch-facts.currentEntry`
-instead of `custody[length-1]`. Under §15.3 the code was wrong: §6 already named
+instead of `custody[length-1]`. Under ข้อ 15.3 the code was wrong: ข้อ 6 already named
 the rule and its five readers, but the graph page carried six more that answer
 the same two questions — is a person blocking the front door, is a seat
 currently holding a token, is a team stuck — through a second, independent
 last-line read of the same custody array, which is exactly the "two readers
-computing it separately" defect §6 opens by naming. A verified fixture: a
+computing it separately" defect ข้อ 6 opens by naming. A verified fixture: a
 controller `questioned` entry followed by a trailing, mismatched `delivered`
 from a superseded leg (older `dispatch_id`, different `agent_id`) made
 `frontDoorStatus` report the gate merely "busy" instead of blocked on a person —
@@ -4056,7 +4056,7 @@ not hide a person waiting at the front door". `graph.mjs`'s full-history tallies
 (`activityByAgent`, which counts every event a token ever recorded, not its
 current one) and its `cameFrom` search for the most recent `pulled` event are
 unchanged and do not belong on this list: neither answers where a token IS now,
-they answer what has happened or when — the class of read §6 already says must
+they answer what has happened or when — the class of read ข้อ 6 already says must
 NOT go through `currentEntry`.
 
 **2026-08-04 — kanban card evidence: a malformed timestamp is shown, not
@@ -4072,26 +4072,26 @@ ledger carries, never rounded or invented; the ledger's own `at` field is
 unaffected, this is only the card's machine-readable copy of it. The card's
 `<article>` also carries `aria-labelledby`, pointing at the token element's
 own `id`, and a visible `last event: <name>` line. This closes a gap an
-earlier change left open: dropping the card's `title` was correct (§13 — a
+earlier change left open: dropping the card's `title` was correct (ข้อ 13 — a
 tooltip overrides the accessible name a screen reader announces), but nothing
 replaced the name it incidentally carried, so the article became unreadable
 in a screen reader's article list without opening each one, and the literal
 last-event word — as opposed to `state`'s paraphrase of it — disappeared from
 the page entirely, on-screen and in the accessibility tree alike. Under
-§15.3: neither the code nor this document disagreed before this change — the
+ข้อ 15.3: neither the code nor this document disagreed before this change — the
 document named no rule for the kanban card's own timestamp validity or its
 accessible name, so this entry establishes one rather than correcting one.
 Flagged in the 2026-08-03/04 retroactive release review, findings F8 and F9.
 `tests/kanban.test.mjs` gained the F8 and F9 cases, and the pre-existing
 "two facts" test now asserts the token id at the ledger's own maximum length
-(128 characters, §4's `ID_RE`) rather than a 71-character stand-in whose own
+(128 characters, ข้อ 4's `ID_RE`) rather than a 71-character stand-in whose own
 comment claimed 72 — a fixture that short could not have caught a clip
 regression below 128.
 
 **2026-08-04 — the old-ledger compatibility claim was overstated.** No
 behaviour changed; this corrects two entries below (2026-08-04 "the last
 outcome line that could not name its leg" and 2026-08-03 "leg identity
-closes the review half of #30") and the claim in §6 they restate. Both said
+closes the review half of #30") and the claim in ข้อ 6 they restate. Both said
 an old ledger — or more precisely, any record where the trailing outcome or
 the holder's `assigned` lacks a `dispatch_id` — "reads exactly as it did
 before," "unchanged, and measured." That is true only for the case they were
@@ -4101,7 +4101,7 @@ sanctioned-writer-accepted ledger where `dispatch_id` IS present on both the
 live holder's `assigned` and a stale `delivered` for a different agent/task,
 but the two are self-contradictory (the id was issued to one assignment, the
 delivery claims a different agent/task under the same id). `currentEntry`'s
-dispatch_id match at §6 returns that stale `delivered` outright — it never
+dispatch_id match at ข้อ 6 returns that stale `delivered` outright — it never
 binds `(dispatch_id, task_id, agent_id)`, so "the id matches" is trusted over
 "the agent matches," and validation does not reject the contradiction either.
 The reader's answer differs from what the pre-dispatch_id (agent_id-only)
@@ -4122,7 +4122,7 @@ rather than as compatible legacy reads.
 
 **2026-08-03 — `TMUX_TEAMS_PHASE` retired.** Behaviour changed in
 `acp-companion.mjs`: the variable is refused rather than validated, and a
-dispatch footprint no longer carries a `phase:` line. Under §15.3 the code was
+dispatch footprint no longer carries a `phase:` line. Under ข้อ 15.3 the code was
 wrong: v0.14.0 deleted the four-stage delivery phases and this check kept
 enforcing their vocabulary for a release afterwards, so an operator running a
 companion by hand for a team named `control` was told to use words describing
@@ -4136,8 +4136,8 @@ disk. GitHub #21, third item.
 **2026-08-03 — a superseded leg is evidence, not a position.** Behaviour changed
 in `dispatch-facts.mjs` (new `currentEntry`), and in the five readers that
 answer position or state: `pull-controller.planPulls`, `loop-runner.planHarvest`,
-`nextStep`, `boardSummary`, and `kanban.cardOf`. §6 gained the rule and §5 the
-cross-reference. Under §15.3, the document was wrong: it said a token's state is
+`nextStep`, `boardSummary`, and `kanban.cardOf`. ข้อ 6 gained the rule and ข้อ 5 the
+cross-reference. Under ข้อ 15.3, the document was wrong: it said a token's state is
 the name of its LAST event, and that is true only while the leg that wrote it
 still holds the token. GitHub #30, from a real run: a killed review leg wrote its
 `delivered` after a human had already returned the token to development and the
@@ -4147,7 +4147,7 @@ runner dispatched a second review worker into a team the token had left.
 **2026-08-04 — the last outcome line that could not name its leg.** Behaviour
 changed in `loop-runner.mjs`: `nextStep`'s `lost` verdict now carries
 `dispatch_id` and the write in `tick` records it. Nothing in
-`dispatch-facts.mjs` changed — §6's rule already compares `dispatch_id`
+`dispatch-facts.mjs` changed — ข้อ 6's rule already compares `dispatch_id`
 whenever both sides recorded one, so the reader took the new field without
 being taught it, which is the test of whether that rule was written properly.
 This retires the closing sentence of the entry below: `lost` is no longer
@@ -4163,8 +4163,8 @@ this is not proven unchanged.
 **2026-08-03 — leg identity closes the review half of #30.** Behaviour changed
 in `dispatch-facts.mjs` (`currentEntry`, `LEG_OUTCOMES` now includes
 `reviewed`) and in `loop-runner.mjs` (`harvestEvent` stamps `dispatch_id` on
-the `reviewed` line it writes). §6 gained the `dispatch_id` rule and its two
-limits collapsed to one. Under §15.3, the document was wrong: §6 named "leg
+the `reviewed` line it writes). ข้อ 6 gained the `dispatch_id` rule and its two
+limits collapsed to one. Under ข้อ 15.3, the document was wrong: ข้อ 6 named "leg
 identity (`dispatch_id`)" as a known limit and said `reviewed` could not join
 `LEG_OUTCOMES` without reproducing the false positive the four tests caught —
 both were true only because nothing yet compared a trailing entry's own
@@ -4180,10 +4180,10 @@ agent whose superseded one ended in `lost` are told apart by `task_id` instead
 
 **2026-08-04 — an unlabeled outcome behind a live retry is not current
 (retro-release-review F1, F2).** Behaviour changed in `dispatch-facts.mjs`
-(`currentEntry`) and `ledger-validate.mjs` (`validateLedger`). §6 gained the
-`task_id` fallback and the dispatch_id-binding paragraph above. Under §15.3,
+(`currentEntry`) and `ledger-validate.mjs` (`validateLedger`). ข้อ 6 gained the
+`task_id` fallback and the dispatch_id-binding paragraph above. Under ข้อ 15.3,
 BOTH this document and the code were wrong, in the direction of trusting too
-much: §6 said an unlabeled `reviewed`, or a `delivered`/`lost` whose agent_id
+much: ข้อ 6 said an unlabeled `reviewed`, or a `delivered`/`lost` whose agent_id
 matched the holder, was "trusted exactly as before" — true of the words, false
 of the safety, because "before" already fails open. A same-agent retry (the
 identical evaluator run twice, a killed worker redispatched to the same
@@ -4192,7 +4192,7 @@ also carries no `dispatch_id`, nothing distinguished the dead leg's late last
 word from the live retry's own report, and a `reviewed pass` in that shape
 cleared `pull-controller.mjs`'s gate and released the token to the next team
 while the live leg was still running. `task_id` closes it: `assigned` already
-required one (§4), and it is required on `assigned` even in a ledger old
+required one (ข้อ 4), and it is required on `assigned` even in a ledger old
 enough to carry no `dispatch_id` at all, so it is never the field the fallback
 has nothing left to check. `tests/loop-occupancy.test.mjs:1006-1037` (test "a
 lost leg reporting in after its own retry does not speak for the retry"; line
@@ -4207,7 +4207,7 @@ Separately, `ledger-validate.mjs` did not bind a `dispatch_id` to the
 `(agent_id, task_id)` its own `assigned` line named, so a `delivered` could
 carry a dispatch_id belonging to a DIFFERENT, live leg while naming an
 entirely different agent and task, and `currentEntry`'s dispatch_id-match
-branch — the one case in §6 that was supposed to be authoritative — trusted it
+branch — the one case in ข้อ 6 that was supposed to be authoritative — trusted it
 outright. `validateLedger` now refuses such a line (`dispatch_id_agent_mismatch`,
 `dispatch_id_task_mismatch`); `dispatch-facts.mjs` still treats a matching
 dispatch_id as proof, unchanged, because a ledger that reaches it now cannot
@@ -4221,35 +4221,35 @@ first place validates exactly as it did.
 **2026-07-28 — WIP derived, models declared, the sanctioned writer, the runner's
 own pulse.** Behaviour changed in `workflow-graph.mjs`, `loop-runner.mjs`,
 `pull-controller.mjs`, `graph.mjs`, and in two new files `ledger-validate.mjs`
-and `ledger-writer.mjs`. Under §15.3, which document was wrong in each case:
+and `ledger-writer.mjs`. Under ข้อ 15.3, which document was wrong in each case:
 
 | Change | Which was wrong |
 | --- | --- |
-| `wip_limit` derived from the worker count (§2, §3.1, §10) | **the contract** — it declared `wip_limit` an input; the code now derives it, deliberately |
-| models required per seat (§2, §3.2, §12.3) | **the contract** — it had no model in the declaration at all |
-| `actor` on every written line, one sanctioned writer (§4.1, §4.2, §13) | **the contract** — it named no writer and no actor, which is how two hand-typed events became indistinguishable from machine evidence |
-| validation at write, before dispatch, before handoff (§4.3, §5, §7) | **the contract** — it said a ledger is evidence and never said who checks it |
-| the runner's heartbeat (§0, §2, §11.2, §12.7.7) | **the contract** — nothing described the runner itself, so a dead loop and an idle one drew the same board |
-| "a repo with no `graph.json` uses the bundled default" (§3) | **neither** — contract and code agree; the *setup skill* over-claims. See §14.2 item 8 |
+| `wip_limit` derived from the worker count (ข้อ 2, ข้อ 3.1, ข้อ 10) | **the contract** — it declared `wip_limit` an input; the code now derives it, deliberately |
+| models required per seat (ข้อ 2, ข้อ 3.2, ข้อ 12.3) | **the contract** — it had no model in the declaration at all |
+| `actor` on every written line, one sanctioned writer (ข้อ 4.1, ข้อ 4.2, ข้อ 13) | **the contract** — it named no writer and no actor, which is how two hand-typed events became indistinguishable from machine evidence |
+| validation at write, before dispatch, before handoff (ข้อ 4.3, ข้อ 5, ข้อ 7) | **the contract** — it said a ledger is evidence and never said who checks it |
+| the runner's heartbeat (ข้อ 0, ข้อ 2, ข้อ 11.2, ข้อ 12.7.7) | **the contract** — nothing described the runner itself, so a dead loop and an idle one drew the same board |
+| "a repo with no `graph.json` uses the bundled default" (ข้อ 3) | **neither** — contract and code agree; the *setup skill* over-claims. See ข้อ 14.2 item 8 |
 
 `.tmux-teams/graph.json` was migrated in the same commit: every seat and
-the outer controller now name `inherit-account-default`, because §14.2 item 4
+the outer controller now name `inherit-account-default`, because ข้อ 14.2 item 4
 says no real name is proven yet, and all four teams' `wip_limit` lines were
 removed even though each happened to match its worker count — leaving a field
-in the canonical artifact that §3.1 says is not an input would contradict this
+in the canonical artifact that ข้อ 3.1 says is not an input would contradict this
 document on its own example.
 
 ## 16. Agent seat read facade
 
 `scripts/agent-seat-reads.mjs` (D1). A caller-side facade, not a server and
-not an MCP registration: no dispatch sends a non-empty `mcpServers` (§13), and
-opening that seam is a containment decision nobody has taken (§13, ADR 0003).
+not an MCP registration: no dispatch sends a non-empty `mcpServers` (ข้อ 13), and
+opening that seam is a containment decision nobody has taken (ข้อ 13, ADR 0003).
 This is the thing an MCP adapter would later wrap, and it is useful without
 one because the runner and the board can already import it directly.
 
 Scenario work sized what an agent seat needs to READ at three questions. A
 fourth — asking a person — is a MUTATION, and mutation is out of scope: an
-outside review refuses any write tool on the current lock, and §14.5 agrees
+outside review refuses any write tool on the current lock, and ข้อ 14.5 agrees
 the lock cannot be made safe against stale takeover with file primitives. No
 function below writes anything, ever.
 
@@ -4262,17 +4262,17 @@ function below writes anything, ever.
 `listDeliveries` and `fetchDelivery` are deliberately two calls, not one: a
 single call either truncates a piece that turned out to be enormous or floods
 a caller that only wanted to know what exists. `listDeliveries` returns one
-entry per `delivered` line on the token's own ledger (event vocabulary: §4),
+entry per `delivered` line on the token's own ledger (event vocabulary: ข้อ 4),
 oldest first — `id`, `agent_id`, `at`, `terminal`, `work_observed`,
 `evidence_present` — and never the delivery's own text. `fetchDelivery` takes
 one of those `id`s back and returns that one piece's full content, read from
 the leg's own outbox, plus `content_available` (false when the ledger
 recorded the delivery but the outbox bytes are gone — evidence about the
 LEDGER is not invalidated by a later, separate loss of the bytes) and
-`truncated` (true past 256 KiB — smaller than §4 rule 5's whole-ledger 1 MiB,
+`truncated` (true past 256 KiB — smaller than ข้อ 4 rule 5's whole-ledger 1 MiB,
 because this is one file, not a token's whole history).
 
-`legOutcomes` returns one entry per `delivered`/`lost`/`reviewed` line (§4's
+`legOutcomes` returns one entry per `delivered`/`lost`/`reviewed` line (ข้อ 4's
 own leg-closing vocabulary — this function does not re-derive dispatch-facts
 .mjs's `currentEntry`, which answers who holds a token NOW and needs the
 dispatch_id/task_id disambiguation documented at length in that file; a
@@ -4293,7 +4293,7 @@ shape (found, not-found, or fed a hostile argument), may contain `.jsonl`,
 `.tmux-teams`, `.mailbox-out`, or an absolute path — proven for a found case,
 a not-found case, and a path-shaped `id` argument (`../../etc/passwd`,
 `/etc/passwd`, a bare `a/b`) in the same test, over the same calls the
-behavioural tests already made, not a hand-picked subset (§14, AC96).
+behavioural tests already made, not a hand-picked subset (ข้อ 14, AC96).
 
 `repo` — the project root — is the one argument this rule does not cover, and
 that is not a hole in it: it is the same first argument every sanctioned

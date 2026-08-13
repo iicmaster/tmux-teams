@@ -6,7 +6,7 @@
 // resume from an answer. Every half of the exchange existed except the half
 // where a person speaks: **nothing in this system wrote `answered`.** A token
 // parked on a question was parked for good, unless somebody edited the ledger by
-// hand — which §4 forbids, since every line must come through the sanctioned
+// hand — which ข้อ 4 forbids, since every line must come through the sanctioned
 // writer.
 //
 // That absence is why the deadline exists. `ANSWER_DEADLINE_SEC` closes an

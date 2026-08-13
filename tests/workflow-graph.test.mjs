@@ -357,7 +357,7 @@ test('the controller may hold one team seat, as that team’s only worker', () =
 
   // The other half, reversed by D6 on 2026-08-08. This test used to assert that
   // a graph putting the controller in no team "is the graph this system has
-  // always accepted" — and it was, which is exactly what was wrong with it. §6
+  // always accepted" — and it was, which is exactly what was wrong with it. ข้อ 6
   // places a token by its last event's `agent_id`, so on such a graph anything
   // the outer controller writes belongs to no team: a token parked on a
   // question orphans, holds nobody's WIP and stops nothing. The stop mechanism
@@ -605,7 +605,7 @@ test('a graph that declares no seat, or restates one, is the graph it already wa
   const empty = accepted(graphWith({
     teams: [teamOf('build', ['b_w1', 'b_w2'], { seats: {} }), teamOf('verify', ['v_w1'])],
   }))
-  // Restating the role's own value is not a change, which is the rule §3.1
+  // Restating the role's own value is not a change, which is the rule ข้อ 3.1
   // already applies to a `wip_limit` that matches its worker count.
   const restated = accepted(graphWith({
     teams: [

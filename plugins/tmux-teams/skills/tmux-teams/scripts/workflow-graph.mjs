@@ -61,7 +61,7 @@ export const TEAM_PRODUCES = new Set(['artifact', 'verdict'])
 
 // GitHub #32: `acp-companion.mjs` already honours `ACP_REASONING_EFFORT` and
 // verifies it via `ACP_EXPECT_REASONING_EFFORT` — the same request/expectation
-// pair §3.2 already built for `model` — but nothing between the graph and the
+// pair ข้อ 3.2 already built for `model` — but nothing between the graph and the
 // companion carried a value for it. Unlike model, effort has no per-ROLE
 // block and no required declaration: a team's two workers are meant to be able
 // to run the SAME model at DIFFERENT efforts (Master's two-tier dev pool), so
@@ -74,7 +74,7 @@ const EFFORT_MAX = 64
 const isEffortName = (value) =>
   typeof value === 'string' && value.length >= 1 && value.length <= EFFORT_MAX && !hasControlChar(value)
 
-// GitHub #47 phase 1 (contract §3.5): a seat's model, singular, may become an
+// GitHub #47 phase 1 (contract ข้อ 3.5): a seat's model, singular, may become an
 // ORDERED PALETTE — candidate seat specs for that ONE seat, not a second
 // worker seat. Declaring four candidates must not cost four seats of WIP, so
 // this lives on `seats[agentId]`, not on a role: it names candidates for one
@@ -88,7 +88,7 @@ const PALETTE_MAX = 8
 // counts gpt separately from codex-spark, agy counts gemini separately from
 // non-gemini, claude counts fable separately from opus/sonnet/haiku. A bucket
 // names that family. It is shape-checked only, exactly like a model name
-// (§3.2): this layer never learns what a bucket MEANS, only whether two are
+// (ข้อ 3.2): this layer never learns what a bucket MEANS, only whether two are
 // equal, so it reuses the model check rather than inventing a second one.
 const isBucketName = isModelName
 
@@ -142,7 +142,7 @@ const team = (id, name) => ({
 // evaluator are separate seats on purpose, because the controller cannot be its
 // own gate: the dispatcher grills an incoming request until nothing has to be
 // guessed, and the evaluator reads the finished delivery as a whole.
-// The three seat names come from `references/controller-as-team.md` §4 and are
+// The three seat names come from `references/controller-as-team.md` ข้อ 4 and are
 // not free to drift: `pm_intake` grills, `pm_outer_loop` unsticks, `pm_audit`
 // reads the finished delivery. An ordinary team's dispatcher admits work to
 // that TEAM; this one admits work to the SYSTEM.
@@ -246,7 +246,7 @@ export function validateWorkflowGraph(value) {
     return invalid(`the outer controller has an invalid reasoning effort — an effort is 1 to ${EFFORT_MAX} characters with no control characters`)
   }
 
-  // Derived, never declared — the same rule §3.1 applies to `wip_limit`. A
+  // Derived, never declared — the same rule ข้อ 3.1 applies to `wip_limit`. A
   // graph that states it in a field would be stating one fact twice, and two
   // statements of one fact eventually disagree.
   if (isObject(value) && 'controller_team' in value) {
@@ -383,7 +383,7 @@ export function validateWorkflowGraph(value) {
     const seatOverride = new Map(Object.entries(seats))
     const seatIds = new Set([dispatcher, ...workers, evaluator])
     // Which of the three roles a seat fills — needed to resolve a palette
-    // entry's default lane and default bucket (§3.5) the same way an
+    // entry's default lane and default bucket (ข้อ 3.5) the same way an
     // unoverridden seat already resolves its role's default lane.
     const roleOf = (agentId) => (agentId === dispatcher ? 'dispatcher' : agentId === evaluator ? 'evaluator' : 'worker')
     for (const [agentId, override] of seatOverride) {
@@ -409,11 +409,11 @@ export function validateWorkflowGraph(value) {
       if (keys.length === 0) {
         return invalid(`team ${teamId} declares an empty seat for ${agentId} — name a model, an adapter, an effort, a palette, or remove it`)
       }
-      // GitHub #47 phase 1 (§3.5): `palette` REPLACES the single-value fields
+      // GitHub #47 phase 1 (ข้อ 3.5): `palette` REPLACES the single-value fields
       // for this seat, it does not sit alongside them. A `model`/`adapter`/
       // `effort`/`display_model` next to a `palette` would read as a default
       // the palette falls back to and would in fact be silently ignored — the
-      // same "declaration that changes nothing" shape §3.2.1 already refuses.
+      // same "declaration that changes nothing" shape ข้อ 3.2.1 already refuses.
       if ('palette' in override && keys.length > 1) {
         return invalid(`team ${teamId} declares a palette on the seat ${agentId} alongside ${keys.filter((key) => key !== 'palette').join(', ')} — a palette entry already carries model, adapter, effort and display_model, so those keys next to it would be silently ignored`)
       }
@@ -449,7 +449,7 @@ export function validateWorkflowGraph(value) {
           if ('effort' in entry && !isEffortName(entry.effort)) {
             return invalid(`team ${teamId} has an invalid reasoning effort on palette entry ${index} of the seat ${agentId} — an effort is 1 to ${EFFORT_MAX} characters with no control characters`)
           }
-          // Shape only (§3.2, §3.5) — never checked against a list of known
+          // Shape only (ข้อ 3.2, ข้อ 3.5) — never checked against a list of known
           // buckets. Present-but-empty is refused, exactly like an empty
           // model; ABSENT defaults to this entry's own resolved lane below.
           if ('bucket' in entry && !isBucketName(entry.bucket)) {
@@ -457,7 +457,7 @@ export function validateWorkflowGraph(value) {
           }
           const entryAdapter = entry.adapter == null || entry.adapter === '' ? laneOf(role) : entry.adapter
           const entryBucket = 'bucket' in entry ? entry.bucket : entryAdapter
-          // The rule the whole design turns on (§3.5): two CONSECUTIVE entries
+          // The rule the whole design turns on (ข้อ 3.5): two CONSECUTIVE entries
           // in one bucket draw on the same rate limit, so trying the second
           // right after the first spends a leg to learn nothing. Refused, not
           // warned — this validator has no "accepted with a warning" channel
@@ -483,7 +483,7 @@ export function validateWorkflowGraph(value) {
         if ('adapter' in override && !ADAPTERS.has(override.adapter)) {
           return invalid(`team ${teamId} has an unknown adapter on the seat ${agentId} — one of ${[...ADAPTERS].join(', ')}`)
         }
-        // §32: no role-level default to restate, so — unlike model/adapter — there
+        // ข้อ 32: no role-level default to restate, so — unlike model/adapter — there
         // is no way to declare an effort that "resolves to the role default" and
         // say nothing; every declared effort is a real request.
         if ('effort' in override && !isEffortName(override.effort)) {
@@ -499,7 +499,7 @@ export function validateWorkflowGraph(value) {
     if (!TEAM_PRODUCES.has(produces)) {
       return invalid(`team ${teamId} declares produces ${show(produces)} — one of ${[...TEAM_PRODUCES].join(', ')}`)
     }
-    // GitHub #47 phase 1 (§3.5): a resolved palette entry, in the same shape
+    // GitHub #47 phase 1 (ข้อ 3.5): a resolved palette entry, in the same shape
     // `agents[]` has always reported for an unoverridden seat — adapter falls
     // back to the seat's own role, bucket falls back to the resolved adapter,
     // effort and display_model fall back to "nothing requested".
@@ -515,14 +515,14 @@ export function validateWorkflowGraph(value) {
     }
     // The full resolved palette for a seat, or `null` for a seat that declared
     // none — this is the only thing a reader outside this file may consume
-    // (§3.5); nothing here makes anything USE it yet.
+    // (ข้อ 3.5); nothing here makes anything USE it yet.
     const seatPalette = (agentId) => {
       const raw = seatOverride.get(agentId)?.palette
       return raw ? raw.map((entry) => resolvePaletteEntry(entry, roleOf(agentId))) : null
     }
     // A palette's FIRST entry is what an unmodified reader sees today for the
     // single-value fields below — "the dispatcher's choice is the starting
-    // point" (§3.5) is exactly this fallback in a system with no choice
+    // point" (ข้อ 3.5) is exactly this fallback in a system with no choice
     // mechanism built yet; phase 2 is what makes the choice real.
     const paletteFirst = (agentId) => seatPalette(agentId)?.[0] ?? null
     const seatModel = (agentId, role) => paletteFirst(agentId)?.model ?? seatOverride.get(agentId)?.model ?? models[role]
@@ -625,7 +625,7 @@ export function validateWorkflowGraph(value) {
   // MANDATORY since 2026-08-08 (D6). This was opt-in by construction: a graph
   // where the controller sat in no team was the graph this system had always
   // accepted, and validated unchanged. What that left, measured rather than
-  // argued: §6 places a token by its last event's `agent_id`, so anything the
+  // argued: ข้อ 6 places a token by its last event's `agent_id`, so anything the
   // outer controller writes on such a graph resolves to no team at all — a
   // token parked on a question orphans, counts against nobody's WIP, and stops
   // nothing. The stop mechanism this whole system is built around is Kanban's
@@ -664,8 +664,8 @@ export function validateWorkflowGraph(value) {
       if (workflow.route[0] !== controllerTeamId) {
         return invalid(`workflow ${workflow.workflow_id} starts at ${workflow.route[0]} — every route enters through the controller team ${controllerTeamId}`)
       }
-      // §1 already refuses a repeated team, so a controller appearing later in
-      // a route is caught above. This is the case §1 cannot see: a route that
+      // ข้อ 1 already refuses a repeated team, so a controller appearing later in
+      // a route is caught above. This is the case ข้อ 1 cannot see: a route that
       // starts somewhere else while another route starts at the controller,
       // which would mean the board has two front doors.
     }

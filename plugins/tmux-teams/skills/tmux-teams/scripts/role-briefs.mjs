@@ -51,7 +51,7 @@ export const OUTER_VERDICTS = new Set(['resume', 'abandon'])
 // work is already finished; the only thing left to say is whether what came out
 // of the end is sound.
 export const AUDIT_VERDICTS = new Set(['accept', 'concern'])
-// The six the grill must face (controller-as-team.md §5.2). They are an
+// The six the grill must face (controller-as-team.md ข้อ 5.2). They are an
 // enumeration and not prose because the ONLY reason to name them on the event
 // is to count them later: "which category do requests die in" is unanswerable
 // against free text, and that question is the whole value of keeping a

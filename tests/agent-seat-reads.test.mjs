@@ -1,5 +1,5 @@
 // agent-seat-reads.test.mjs — the D1 read facade (loop-system-contract.md
-// §16): three questions an agent seat can ask without ever being handed a
+// ข้อ 16): three questions an agent seat can ask without ever being handed a
 // filesystem path, proven against a real synthetic ledger plus the wall test
 // the task itself demands — no return value, from any function, in any
 // shape (found, not-found, or fed a hostile argument), may contain
@@ -38,7 +38,7 @@ function writeOutbox(repo, taskId, content) {
 // A route with three rejections before a pass — the exact shape the module's
 // own doc comment names ("an evaluator that has rejected the same thing
 // three times should know that") — plus one leg that never delivered
-// (`lost`), so every member of §4's `LEG_OUTCOME_EVENTS` is exercised.
+// (`lost`), so every member of ข้อ 4's `LEG_OUTCOME_EVENTS` is exercised.
 const TOK1 = [
   { at: '2026-08-05T09:00:00.000Z', event: 'opened', work_item: 'tok1', workflow: 'feature', agent_id: 'build_dispatcher', to_team: 'build', reason: 'entered', actor: 'human:master' },
   { at: '2026-08-05T09:00:01.000Z', event: 'assigned', work_item: 'tok1', workflow: 'feature', agent_id: 'build_w1', task_id: 't1', dispatch_id: 'd1' },

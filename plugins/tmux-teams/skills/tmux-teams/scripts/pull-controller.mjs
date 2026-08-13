@@ -168,7 +168,7 @@ export function planPulls(graph, items, now = new Date().toISOString()) {
     // already been ADMITTED by. On an escalation exit — parked at a later
     // team, resumed, and released there — the declared route can point back
     // at a team this token passed through earlier. The validator refuses that
-    // `pulled` outright as `route_went_backwards` (contract §1, ledger-
+    // `pulled` outright as `route_went_backwards` (contract ข้อ 1, ledger-
     // validate.mjs), so proposing it here is not a plan, it is the same
     // refused decision recomputed every tick with no way out. The next hop is
     // instead the first team on the rest of the route the token has NOT been
@@ -228,7 +228,7 @@ export function applyPulls(repo, decisions, onRefusal = reportRefusal) {
   for (const decision of decisions) {
     if (!decision.event) continue
     // Through the writer, never straight to the file: it stamps the actor,
-    // checks the event against contract §4, and refuses to append to a history
+    // checks the event against contract ข้อ 4, and refuses to append to a history
     // that is already broken — which is the same gate planPulls applied, now
     // re-run against the bytes on disk rather than the parsed projection.
     const result = appendEvent(repo, decision.event, { actor: PULL_ACTOR })
@@ -236,7 +236,7 @@ export function applyPulls(repo, decisions, onRefusal = reportRefusal) {
       // The outcome rides home on the decision itself. A count cannot say WHICH
       // handoff was refused, and the caller narrates this same array one loop
       // later — so without this the runner reports a refused pull in the words
-      // it uses for a written one, which §4.2 forbids outright.
+      // it uses for a written one, which ข้อ 4.2 forbids outright.
       decision.write_result = result
       onRefusal(decision, result)
       continue

@@ -137,14 +137,14 @@ function writeHeartbeat(repo, { tickSec, dispatching, reason = '', started = 0, 
   return record
 }
 
-// ── why a token was passed over (C1, contract §11.3) ─────────────────────────
+// ── why a token was passed over (C1, contract ข้อ 11.3) ─────────────────────────
 //
 // Every refusal the tick decides below is said once, to `log()`, and nowhere
 // else — a token nobody looked at and a token refused for cause become the
 // same thing the moment the tick ends, because neither survives the process
 // that decided it. This file is the fix: it is overwritten whole every tick,
 // never appended, so it can answer "why is this not moving right now" and
-// deliberately cannot answer "how long has it been stuck" (§11.3).
+// deliberately cannot answer "how long has it been stuck" (ข้อ 11.3).
 export const DECISIONS_DIR = 'decisions'
 export const DECISIONS_FILE = 'latest.json'
 
@@ -235,12 +235,12 @@ export function declaredEffort(graph, teamId, agentId) {
   return team?.agents.find((agent) => agent.agent_id === agentId)?.effort || ''
 }
 
-// GitHub #47 phase 2 (§3.5): a seat's declared palette, read the same way as
+// GitHub #47 phase 2 (ข้อ 3.5): a seat's declared palette, read the same way as
 // its model/adapter/effort above — off the agent's own resolved seat, never
 // re-paired from a role block. `null` for a seat that declared none, or the
 // fully-resolved array workflow-graph.mjs already computed (every entry's
 // adapter/effort/display_model/bucket default already applied — nothing here
-// re-derives a default). The outer controller can never declare one (§3.2.1,
+// re-derives a default). The outer controller can never declare one (ข้อ 3.2.1,
 // AC103 refuses it at load) so it reads null here unconditionally rather than
 // reaching for a field that does not exist on it.
 export function declaredPalette(graph, teamId, agentId) {
@@ -360,7 +360,7 @@ const pidAlive = (pid) => {
 // a claim reserved only the seat, and false since it began reserving the token
 // too, because a liveness row carries no work item and so releases a fact it
 // cannot replace. Left stale through one release-panel round, where three
-// separate readers (this comment, ADR 0004, contract §11.1) all still described
+// separate readers (this comment, ADR 0004, contract ข้อ 11.1) all still described
 // the pre-round-5 behaviour beside code doing the opposite. Found by the
 // release panel (zai and codex lanes, 2026-08-10, round 6).
 // A claim whose pid is gone before any file appeared is released too: that is
@@ -593,7 +593,7 @@ const dispatchRecord = (repo, taskId) => {
 
 // DECISION 4, write half. Every line this runner adds to a custody ledger goes
 // through the one sanctioned writer, which stamps an accountable actor and
-// checks the line both against contract §4 and against the ledger it is
+// checks the line both against contract ข้อ 4 and against the ledger it is
 // joining. Writing straight to the file — which is what this used to do — is
 // exactly the hand-append the writer exists to make impossible to imitate.
 //
@@ -680,7 +680,7 @@ function record(repo, event, actor = RUNNER_ACTOR) {
 //
 // The fix ranks by when the delivering leg was OPENED (its own `assigned`
 // entry's position in the ledger, which is authored in dispatch order and
-// never arrives late — §4 requires every `assigned` to carry the `task_id`
+// never arrives late — ข้อ 4 requires every `assigned` to carry the `task_id`
 // the delivery's `task_id` is matched back to it by), not by when the
 // delivery HAPPENED TO ARRIVE. The newest-opened leg with a genuine worker
 // delivery wins, however late its own report shows up. A `delivered` whose
@@ -725,7 +725,7 @@ const failedLegs = (item) => item.custody.filter((entry) =>
 // nothing has asked yet (`completed`) or when a person just replied
 // (`answered`) — not when a request is already in flight (`audit_requested`,
 // being watched by `planHarvest`) or already parked on a person (`questioned`,
-// not this function's job) or already closed (`audited`/`abandoned`, §5).
+// not this function's job) or already closed (`audited`/`abandoned`, ข้อ 5).
 // M3 (retro-release-review, 2026-08-04): this used to read the raw last
 // event name instead of `currentEntry`. A mixed-version or manually accepted
 // ledger can carry `completed -> audit_requested -> questioned -> answered`
@@ -814,7 +814,7 @@ function composeBrief(repo, graph, plan, item, scratchDir, answerDeadlineSec = A
         : graph.workflows.map((entry) => `${entry.workflow_id} (${entry.route.join(' → ')})`).join(', '),
       // An absolute time, not "you have ten minutes": it needs no page to
       // render it and cannot drift the way a duration read late does. The
-      // operator relaying this renders it in the reader's own zone (§6.4).
+      // operator relaying this renders it in the reader's own zone (ข้อ 6.4).
       deadlineText: new Date(Date.now() + answerDeadlineSec * 1000).toISOString().slice(11, 16) + ' UTC',
     }))
   } else if (role === 'dispatcher') {
@@ -912,11 +912,11 @@ export function planHarvest(graph, items, hasOutbox = () => false) {
   return jobs
 }
 
-// The id a fresh `questioned` names itself with (contract §4, ledger-validate
+// The id a fresh `questioned` names itself with (contract ข้อ 4, ledger-validate
 // EVENT_SPEC.questioned). Counted off the token's OWN history rather than a
 // random value, so a question's id is reproducible from the ledger alone —
 // two tokens can both be on their first question and that is not a
-// collision, because §4 keys every ledger by `work_item` already.
+// collision, because ข้อ 4 keys every ledger by `work_item` already.
 const nextQuestionId = (item) => `q-${item.work_item}-${item.custody.filter((entry) => entry.event === 'questioned').length + 1}`
 
 function harvestEvent(repo, graph, { item, last, role }, now) {
@@ -948,14 +948,14 @@ function harvestEvent(repo, graph, { item, last, role }, now) {
   if (role === 'dispatcher') {
     const { verdict, stated, reason } = readVerdict(text, INTAKE_VERDICTS)
     if (verdict === 'accept') {
-      // §4 requires a reason on `intake`. An accept with nothing said is
+      // ข้อ 4 requires a reason on `intake`. An accept with nothing said is
       // common and legal, so the absence is stated rather than left blank —
       // a blank field is refused by the writer and would stall the token.
       //
       // GitHub #32: `worker_hint` is optional and carries whatever the
       // dispatcher named — `nextStep`'s `want()` is what judges whether it is
       // a real, free seat; this line just records what was said. `null` when
-      // nothing was said, an EVENT_SPEC-permitted extra field either way (§4:
+      // nothing was said, an EVENT_SPEC-permitted extra field either way (ข้อ 4:
       // only the event NAME is a closed vocabulary).
       return {
         ...base, event: 'intake', agent_id: last.agent_id, verdict: 'accept',
@@ -963,7 +963,7 @@ function harvestEvent(repo, graph, { item, last, role }, now) {
       }
     }
     // At the front door a refusal is ADVICE, not a veto (controller-as-team.md
-    // §5.3): the gate may believe a request should not be built, and the person
+    // ข้อ 5.3): the gate may believe a request should not be built, and the person
     // may confirm anyway — warned, confirmed, done. So it parks on the human
     // exactly like a question does, carrying the objection as the thing to
     // answer. Anywhere else `reject` still returns the token to its sender.
@@ -995,7 +995,7 @@ function harvestEvent(repo, graph, { item, last, role }, now) {
     if (!pulled?.from_team) {
       return {
         ...base, event: 'escalated', agent_id: last.agent_id,
-        // §4.2: `escalated` must name the team still holding the token. There is
+        // ข้อ 4.2: `escalated` must name the team still holding the token. There is
         // no sending team to return to, so the work stays with the team whose
         // dispatcher refused it — without this the board draws parked work as
         // unplaceable and frees a WIP slot nobody released.
@@ -1161,7 +1161,7 @@ export function applyHarvest(repo, graph, jobs, now = new Date().toISOString(), 
     // event carries — the dispatcher that refused, the evaluator that judged,
     // the controller that answered. It is read from the harvested leg rather
     // than from the event, because `returned` deliberately carries no
-    // `agent_id` (§4.1) and would otherwise land with no actor at all.
+    // `agent_id` (ข้อ 4.1) and would otherwise land with no actor at all.
     if (!record(repo, event, `agent:${job.last.agent_id}`)) continue
     // A verdict that never reaches the snapshot leaves the page reading
     // `0 pass 0 reject` — indistinguishable from no reviewing at all. Say so
@@ -1192,7 +1192,7 @@ const sinceResume = (item) => {
 // MAX_ATTEMPTS on legs that never began, and `attemptsBy` would still say the
 // pool was spent.
 //
-// The fix does NOT stop writing `assigned` for a leg that never started (§4.10
+// The fix does NOT stop writing `assigned` for a leg that never started (ข้อ 4.10
 // decision 1): it stays a leg — it occupies the team, it still counts against
 // `legCeiling` a few lines below, and a reader can still see it happened — it
 // is simply excluded from the ATTEMPT count specifically. Deferring the
@@ -1204,7 +1204,7 @@ const sinceResume = (item) => {
 // (BLOCKER 4, 2026-08-04) for a token whose task id could never be assigned.
 //
 // `legOutcome` reads the fact from the LEDGER, not from absence. `lost` is
-// deliberately never treated as "never started": §4 defines it as "an
+// deliberately never treated as "never started": ข้อ 4 defines it as "an
 // assignment whose process is gone and which recorded nothing" — that is as
 // true of a leg killed after real, meaningful work as it is of one that never
 // began, and the ledger alone cannot tell those two apart (a killed process
@@ -1227,10 +1227,10 @@ const attemptsBy = (item, agentIds) =>
   sinceResume(item).filter((entry) => entry.event === 'assigned' && agentIds.includes(entry.agent_id)
     && !legNeverStarted(item, entry.task_id)).length
 
-// GitHub #47 phase 2 (§3.5): how many legs on ONE seat, since the last resume,
-// never reached the model — the same `work_observed: false` fact §4.10
+// GitHub #47 phase 2 (ข้อ 3.5): how many legs on ONE seat, since the last resume,
+// never reached the model — the same `work_observed: false` fact ข้อ 4.10
 // already defined, summed instead of excluded. Scoped to a single `agentId`,
-// not a role's whole pool, because a palette is declared PER SEAT (§3.5), not
+// not a role's whole pool, because a palette is declared PER SEAT (ข้อ 3.5), not
 // per role — cycling through it is a fact about the seat a token is parked
 // on, not about every seat sharing its role. This is what `dispatchOn` (below)
 // keys a palette's next candidate, and its exhaustion, on: the runner cannot
@@ -1243,14 +1243,14 @@ const missesBy = (item, agentId) =>
 
 // What the budget was actually spent ON. `all failed` was printed whatever
 // happened: three quality rejections — every leg `done`, the team's own loop
-// running exactly as §1 allows — and three legs killed by a gate that was down
+// running exactly as ข้อ 1 allows — and three legs killed by a gate that was down
 // produced the same sentence. That sentence is the whole of the evidence the
 // outer controller has when it chooses `resume` over `abandon`, and it is
 // copied verbatim into the brief, into `pm-notes/latest.md`, and into the
 // `escalated` line on the ledger. The runner does not interpret it — it lists
 // the terminals the legs ended on and lets the controller read them.
 //
-// `returned` carries no `agent_id` (§4.2 forbids it), so it can never match a
+// `returned` carries no `agent_id` (ข้อ 4.2 forbids it), so it can never match a
 // pool and needs no guard here.
 const outcomesBy = (item, agentIds) => [...new Set(sinceResume(item)
   .filter((entry) => agentIds.includes(entry.agent_id))
@@ -1300,20 +1300,20 @@ function nextStep(graph, team, item, { busy, busyTasks, nowMs, zombieSec, answer
   // specifically, exactly like the no-hint "every worker busy" wait already
   // does — it is not a new way to stall forever, because the same zombie
   // detection that frees any busy seat frees this one too.
-  // GitHub #47 phase 2 (§3.5): once a seat is chosen — by hint or by the free
+  // GitHub #47 phase 2 (ข้อ 3.5): once a seat is chosen — by hint or by the free
   // pick below, exactly as today — a seat that declared a palette resolves
   // WHICH entry from its OWN ledger history rather than always the first.
   // `dispatch()`'s `declaredModel`/`declaredAdapter`/`declaredEffort` already
   // fall back to a palette's first entry (workflow-graph.mjs's `paletteFirst`)
   // for a seat that has never run, so this is only ever consulted for a
-  // SECOND or later leg on that seat — "the starting point" (§3.5) already
+  // SECOND or later leg on that seat — "the starting point" (ข้อ 3.5) already
   // covers the first one via the resolved graph itself, with no ledger read
   // needed.
   //
   // A seat with no palette returns the exact `{ action: 'dispatch', role,
   // agent_id }` shape `want` always returned — no `candidate` key at all —
   // which is what keeps a no-palette seat's dispatch byte-for-byte unchanged
-  // (§3.5 AC3): the tick loop below only reaches for `plan.candidate` when it
+  // (ข้อ 3.5 AC3): the tick loop below only reaches for `plan.candidate` when it
   // is present.
   const dispatchOn = (role, agentId) => {
     const palette = declaredPalette(graph, team.team_id, agentId)
@@ -1345,7 +1345,7 @@ function nextStep(graph, team, item, { busy, busyTasks, nowMs, zombieSec, answer
           + ' the outage, not spend another leg guessing',
       }
     }
-    // Declared order, wrapping past the end back to the first (§3.5). Entry 0
+    // Declared order, wrapping past the end back to the first (ข้อ 3.5). Entry 0
     // is "the starting point"; each `work_observed: false` since is read as
     // the fact the ordering semantics call a rate-limited or refused attempt
     // — never a genuine worker failure, which retries this same candidate
@@ -1466,7 +1466,7 @@ function nextStep(graph, team, item, { busy, busyTasks, nowMs, zombieSec, answer
     // delivery, and without it the token sits in the team's WIP forever.
     return {
       // The dead leg's own identity, carried out with the verdict about it.
-      // `last` is the `assigned` that started it and §4 requires a dispatch_id
+      // `last` is the `assigned` that started it and ข้อ 4 requires a dispatch_id
       // there, so this is always available — it was simply never picked up, and
       // a `lost` that cannot name its leg is the one outcome line dispatch-facts
       // still has to fall back to agent_id for (dispatch-facts.mjs:129).
@@ -1505,12 +1505,12 @@ function nextStep(graph, team, item, { busy, busyTasks, nowMs, zombieSec, answer
 
   // `opened` and `pulled` mean the same thing to the state machine: work is
   // sitting with a team whose dispatcher has not judged it yet. They differ
-  // only in whether a team sent it (§4.6). Leaving `opened` out here would let
+  // only in whether a team sent it (ข้อ 4.6). Leaving `opened` out here would let
   // a token enter the graph and never be dispatched — the board would draw it
   // waiting for intake forever while the runner reported nothing to do.
   if (last.event === 'pulled' || last.event === 'opened') return want('dispatcher')
   // Admission is finished when the controller's own gate accepts. Its worker
-  // exists for the OTHER job — unsticking what the loop cannot decide (§9) — so
+  // exists for the OTHER job — unsticking what the loop cannot decide (ข้อ 9) — so
   // handing every admitted token to it would pay for a full leg to do nothing,
   // and would hold the controller's single WIP slot while doing it. `ready`
   // means the pull controller may move it on, which is what admission is for.
@@ -1578,7 +1578,7 @@ function nextStep(graph, team, item, { busy, busyTasks, nowMs, zombieSec, answer
   if (last.event === 'intake' && team.team_id === graph.controller_team) return { action: 'ready' }
   // Only a FRESH `intake` carries a hint — `returned` and `resumed` are the
   // rework paths (a refused handoff coming back, a controller-granted retry)
-  // and neither event has a `worker_hint` field (§4), so `last.worker_hint` is
+  // and neither event has a `worker_hint` field (ข้อ 4), so `last.worker_hint` is
   // simply undefined for them and this falls through to the default seat.
   if (last.event === 'intake' || last.event === 'returned' || last.event === 'resumed') {
     return want('worker', last.event === 'intake' ? (last.worker_hint || null) : null)
@@ -1598,7 +1598,7 @@ function nextStep(graph, team, item, { busy, busyTasks, nowMs, zombieSec, answer
 // There are exactly three ways work arrives, and two of them are a file
 // changing under one of two directories: a worker writing `.mailbox-out/<task>`
 // and a person running one of the three operator doors, which appends to
-// `work-items/`. The third is a clock — the deadlines in §10 — and no watcher
+// `work-items/`. The third is a clock — the deadlines in ข้อ 10 — and no watcher
 // can see that one, which is the reason the interval STAYS.
 //
 // So this is additive and cannot regress: the interval still sweeps, a missed
@@ -1748,7 +1748,7 @@ export function planDispatches(graph, items, busy, {
         plans.push({
           action: 'dispatch', work_item: workItem, team: teamId, role: step.role,
           agent_id: step.agent_id, workflow: item.workflow,
-          // GitHub #47 phase 2 (§3.5): the palette entry `dispatchOn` chose for
+          // GitHub #47 phase 2 (ข้อ 3.5): the palette entry `dispatchOn` chose for
           // THIS leg, carried through so the tick loop below can dispatch it
           // instead of the seat's declared default. Absent for a no-palette
           // seat's plan (`step.candidate` is undefined there), so the spread
@@ -1786,7 +1786,7 @@ export function planDispatches(graph, items, busy, {
     // terminal for both destroyed finished tokens while recording a reason that
     // was false. The ceiling is checked FIRST and unconditionally, so a leg
     // that reports `work_observed: false` on every single retry still ends.
-    // The whole custody, because a token is `completed` exactly once: §5 has no
+    // The whole custody, because a token is `completed` exactly once: ข้อ 5 has no
     // successor that reopens a closed route, and `ledger-validate` refuses a
     // second `completed` outright. Anyone adding a reopen event has to scope
     // this count to the newest delivery, or a reworked token is born with its
@@ -1909,7 +1909,7 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
     const failed = failedLegs(item)
     // Same wedge as above, one seat over: `awaitingAudit` re-surfaces an item
     // whose state is `answered` (a post-`completed` audit question just got a
-    // reply — §5), and its rendered text depends only on work_item/workflow/
+    // reply — ข้อ 5), and its rendered text depends only on work_item/workflow/
     // failed-leg-count, none of which changes across a completed->answered
     // cycle. Without the anchor a second audit-question reply on the same
     // item collided with the identity already stored from the first
@@ -1922,13 +1922,13 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
 
   // A request the clock withdrew. Master's rule for reading the intake
   // statistics: every time one is thrown away, not on a schedule — which keeps
-  // §9's promise that this role is event-triggered and never on a timer. The
+  // ข้อ 9's promise that this role is event-triggered and never on a timer. The
   // unchanged-trigger brake then stops it being re-read while nothing new has
   // been thrown away.
   // GitHub #50: these were never retired. The audit and the parked escalation
   // each record a mark on the token when the controller is dispatched, which
   // changes its last event and drops it out of the trigger set. A withdrawal
-  // CANNOT do that: `abandoned` is a hard terminal (§5) and nothing may follow
+  // CANNOT do that: `abandoned` is a hard terminal (ข้อ 5) and nothing may follow
   // it, ever. So the trigger stood for good — `pm-notes/latest.md` listed dead
   // tokens as standing problems, `pm holding:` printed every 60s indefinitely,
   // and every later dispatch re-read them. Observed on one board nine hours and
@@ -2067,7 +2067,7 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
       trigger: `${ask}\n\n${lines.join('\n')}`,
       // Read by the role that owns the door, on the event that proves the door
       // turned somebody away. It is a RECOMMENDATION surface, not a control
-      // one: §2 says a declaration is assigned by a human and never observed,
+      // one: ข้อ 2 says a declaration is assigned by a human and never observed,
       // so the controller says what the brief or the deadline should become and
       // a person changes it.
       board: `${boardSummary(graph, items, occupancy)}\n\n${
@@ -2167,7 +2167,7 @@ function dispatch(repo, { workItem, team, role, agentId, workflow, model, adapte
   })
   child.unref()
   // `{ taskId, pid }`, not a bare id, because the claim this dispatch is about
-  // to record advertises release "on a dead pid" (contract §11.1, ADR 0004) and
+  // to record advertises release "on a dead pid" (contract ข้อ 11.1, ADR 0004) and
   // the child's pid is the only place that fact exists. It used to be recorded
   // as `pid: null`, which `pidAlive` reads as "nothing to disprove" — so the
   // promised mechanism was implemented, documented, and unreachable from its
@@ -2191,7 +2191,7 @@ const legOf = (spawned) => (typeof spawned === 'string'
 export const NOTICE_DIR = 'notices'
 
 // A withdrawal needs a read receipt the token's ledger cannot carry —
-// `abandoned` is a hard terminal (§5). It is written when the controller has
+// `abandoned` is a hard terminal (ข้อ 5). It is written when the controller has
 // actually been dispatched with the withdrawal in its brief, not when the
 // notice is written, so a withdrawal nobody was told about stays on the board
 // (GitHub #50).
@@ -2341,7 +2341,7 @@ export function tick(repoArg, {
   const briefDir = scratchDir || join(repo, '.tmux-teams', 'runner-briefs')
   // C1: every token this tick passes over, with the reason it had at the
   // time. Written once, atomically, at the end of a tick that actually
-  // reaches this point — see `writeDecisions` and contract §11.3.
+  // reaches this point — see `writeDecisions` and contract ข้อ 11.3.
   const decisions = []
 
   // Harvest first. A judging leg that has finished but not been read leaves the
@@ -2374,7 +2374,7 @@ export function tick(repoArg, {
   for (const entry of pulls) {
     // The write was refused, and the REFUSED line above already said so. Saying
     // `pull` here as well would be this runner reporting a handoff the ledger
-    // never took — §4.2 — and the planner is right to plan it again next tick.
+    // never took — ข้อ 4.2 — and the planner is right to plan it again next tick.
     if (entry.write_result && !entry.write_result.ok) continue
     if (entry.action === 'blocked') log(`BLOCK  ${entry.work_item}: ${entry.reason}`)
     else if (entry.action === 'pull') log(`pull   ${entry.work_item}: ${entry.from_team} -> ${entry.to_team}`)
@@ -2464,14 +2464,14 @@ export function tick(repoArg, {
       continue
     }
     // The clock withdrew a request nobody answered. The RUNNER writes this one:
-    // §9 names the controller as the only mechanised writer of `abandoned`, and
+    // ข้อ 9 names the controller as the only mechanised writer of `abandoned`, and
     // this is the second — recorded rather than hidden, because `actor` already
     // tells the two apart and a reader looking for how a token ended wants one
     // word to search for, not two.
     if (plan.action === 'expired') {
       log(`EXPIRED ${plan.work_item}: ${plan.reason}`)
       if (apply) {
-        // The controller always says the last word (§6.3). A conversation that
+        // The controller always says the last word (ข้อ 6.3). A conversation that
         // ends in silence is unreadable from the other side: the person cannot
         // tell whether their request lapsed or the gate is still thinking. The
         // ledger line is the durable half; this is the half addressed AT them,
@@ -2533,7 +2533,7 @@ export function tick(repoArg, {
       decisions.push({ work_item: plan.work_item, action: 'no-brief', reason: brief.reason })
       continue
     }
-    // GitHub #47 phase 2 (§3.5): `plan.candidate` is the entry `dispatchOn`
+    // GitHub #47 phase 2 (ข้อ 3.5): `plan.candidate` is the entry `dispatchOn`
     // (loop-runner.mjs, `nextStep`) chose for THIS leg of a palette seat — set
     // only from a second or later leg on that seat, and already the fully
     // resolved shape workflow-graph.mjs produces (`model`/`adapter`/`effort`
@@ -2708,8 +2708,8 @@ export function tick(repoArg, {
   // C1: the tick's own refusals, in one file a human can still open after the
   // log has scrolled past. A dry run does not stamp this any more than it
   // stamps the heartbeat above — a simulation must never impersonate what a
-  // live tick actually decided (§11.3).
-  // §3.5.1 / AC136. What a leg ASKED for lives in the token's ledger, what
+  // live tick actually decided (ข้อ 11.3).
+  // ข้อ 3.5.1 / AC136. What a leg ASKED for lives in the token's ledger, what
   // ANSWERED it lives in the dispatch receipt, and until 2026-08-09 nothing
   // compared them: a leg dispatched on one palette entry and answered by some
   // other model was visible in two places and contradicted in neither.

@@ -29,7 +29,7 @@ const PULSE = join(ROOT, 'plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs
 
 const NOW = '2026-07-27T12:00:00.000Z'
 
-// Every seat names its model because §3 now requires one; the value is
+// Every seat names its model because ข้อ 3 now requires one; the value is
 // shape-checked only, never matched against a list, so a fixture name is as
 // legal here as a real one.
 const MODELS = { dispatcher: 'test-model', worker: 'test-model', evaluator: 'test-model' }
@@ -40,7 +40,7 @@ const TWO_TEAMS = {
   outer_controller_model: 'test-model',
   teams: [
     // Build carries TWO workers so its WIP limit is 2. The limit is no longer a
-    // number of its own (§3) — it is the worker count — so a team that has to be
+    // number of its own (ข้อ 3) — it is the worker count — so a team that has to be
     // drawn as `0/2` has to be a team of two.
     { team_id: 'build', name: 'Build', dispatcher_id: 'build_d', worker_ids: ['build_w1', 'build_w2'], evaluator_id: 'build_e', models: MODELS },
     { team_id: 'test', name: 'Test', dispatcher_id: 'test_d', worker_ids: ['test_w1'], evaluator_id: 'test_e', models: MODELS },
@@ -55,7 +55,7 @@ const TWO_TEAMS = {
 // Ledgers go down as JSONL text so the real reader runs, including its
 // line-skipping. `extra` writes a file verbatim — that is how a broken line
 // gets in front of the reader without this helper deciding what broken means.
-// Fields §4 requires that no assertion in this file is about. Stated once;
+// Fields ข้อ 4 requires that no assertion in this file is about. Stated once;
 // anything a fixture says itself wins, because the spread comes last.
 const fill = (entry) => {
   switch (entry.event) {
@@ -66,7 +66,7 @@ const fill = (entry) => {
     case 'reviewed':
       return { reviewed_task: 'task', reason: 'the evaluator said so', ...entry }
     case 'escalated':
-      // §4.2: the controller is not a team member, so without `to_team` the
+      // ข้อ 4.2: the controller is not a team member, so without `to_team` the
       // token cannot be placed at all.
       return { task_id: 'controller-task', to_team: 'build', reason: 'stated by the agent', ...entry }
     case 'audit_requested':
@@ -391,7 +391,7 @@ test('the header tiles state exactly what the columns draw', () => {
   assert.equal((html.match(/<article class="card/g) || []).length, 6)
 })
 
-// §14.2 item 2, closed: the pull controller refuses to move a token whose own
+// ข้อ 14.2 item 2, closed: the pull controller refuses to move a token whose own
 // history cannot be believed, and the board drew it as an ordinary card. The
 // loop would not touch it; the board said it was fine. That disagreement is the
 // one thing this file exists to catch, and it was the board that was wrong.

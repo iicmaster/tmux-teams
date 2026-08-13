@@ -4,7 +4,7 @@
 // question about one (`answer.mjs`). They could not CLOSE one: `abandoned` was
 // written by the runner's clock and by the outer controller, and by nobody
 // else. So the one thing an operator watching a token go nowhere could not do
-// was stop it — §4 forbids hand-editing the ledger, which left `ledger-writer`
+// was stop it — ข้อ 4 forbids hand-editing the ledger, which left `ledger-writer`
 // invoked by hand with a JSON literal and the validator's field spec open in
 // another window. That is a real thing a real person did.
 //

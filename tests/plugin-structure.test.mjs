@@ -316,7 +316,7 @@ test('semantic anchors: canonical fixes actually shipped', () => {
     assert.ok(txt.includes('../party-mode/SKILL.md'), `${wrapper}: sibling lookup missing`)
   }
   const tmux = readText(join(PLUGIN, 'skills/tmux-teams/SKILL.md'))
-  assert.ok(tmux.includes('## 7. PM workflow integration'), 'wire-in section (§7) missing')
+  assert.ok(tmux.includes('## 7. PM workflow integration'), 'wire-in section (ข้อ 7) missing')
   const wf = readText(join(PLUGIN, 'skills/tmux-teams/workflows/mailbox-run.js'))
   assert.ok(wf.includes('CLAUDE_PLUGIN_ROOT'), 'mailbox-run.js: no plugin-root deliver.sh candidate')
   assert.ok(wf.includes('TEAM_BLOCKED') && wf.includes('TEAM_FAILED'), 'mailbox-run.js: typed terminal markers missing')

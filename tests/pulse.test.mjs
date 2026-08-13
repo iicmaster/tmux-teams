@@ -1,4 +1,4 @@
-// pulse.test.mjs — the derived states of the live view (SKILL.md §10).
+// pulse.test.mjs — the derived states of the live view (SKILL.md ข้อ 10).
 // Each case fabricates the three sets in a temp repo and asserts what the page
 // concludes. No tmux and no real workers: liveness is absent in every case, so
 // these pin the hardest half — telling apart the ways a run can be NOT alive.

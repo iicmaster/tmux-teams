@@ -1,6 +1,6 @@
 // ledger-writer.mjs — the only sanctioned way a line enters a custody ledger.
 //
-// The ledger is append-only evidence (contract §2, §4), which means it is only
+// The ledger is append-only evidence (contract ข้อ 2, ข้อ 4), which means it is only
 // worth reading if everything in it got there under the same rules. Today any
 // shell can `>>` a line into it, and twice an assistant did exactly that: two
 // `abandoned` events that are structurally indistinguishable from ones the
@@ -10,13 +10,13 @@
 //
 // This module closes that. Every write:
 //   - names its `actor`, so a hand append stays visibly a hand append forever;
-//   - is checked against the per-event field table in contract §4;
+//   - is checked against the per-event field table in contract ข้อ 4;
 //   - is checked against the ledger it is joining, so an event that would make
 //     the token's history impossible is refused rather than recorded;
 //   - is refused outright if the ledger was ALREADY invalid, because appending
 //     to a broken history buries the break instead of surfacing it.
 //
-// It never rewrites. Corrections are appended (§4, §13).
+// It never rewrites. Corrections are appended (ข้อ 4, ข้อ 13).
 import {
   appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync,
   statSync, unlinkSync, writeSync,
@@ -29,7 +29,7 @@ import {
   TERMINAL_EVENTS, validateLedger,
 } from './ledger-validate.mjs'
 
-// §1 became enforceable on a system that was already running, and the first
+// ข้อ 1 became enforceable on a system that was already running, and the first
 // real ledger it met was `story-1-10` in a live repo: 46 lines, one violation
 // at line 36, a worker mid-leg at line 46. Under the first version of this rule
 // that token could be CLOSED and nothing else — so a rule written to keep work
@@ -289,7 +289,7 @@ export function appendEvent(repo, event, options = {}) {
   if (!Object.hasOwn(EVENT_SPEC, name)) {
     // Refusing the name is the whole point: an event nobody taught the readers
     // about is invisible to occupancy and would silently free a WIP slot.
-    return fail('unknown_event', `${name} is not an event in contract §4 (known: ${LEDGER_EVENTS.join(', ')})`)
+    return fail('unknown_event', `${name} is not an event in contract ข้อ 4 (known: ${LEDGER_EVENTS.join(', ')})`)
   }
 
   const workItem = String(event.work_item ?? '')
@@ -338,7 +338,7 @@ export function appendEvent(repo, event, options = {}) {
     }
 
     const before = validateLedger(existing)
-    // Master, 2026-08-03: §1 became enforceable on a system that had already been
+    // Master, 2026-08-03: ข้อ 1 became enforceable on a system that had already been
     // running, so a ledger written before it can contain a backwards pull. If
     // every append were refused, that token could never be CLOSED either — not
     // even `abandoned` — and a rule meant to keep work moving would strand the
@@ -361,7 +361,7 @@ export function appendEvent(repo, event, options = {}) {
     // successor: enough to close it, never enough to be trusted for another leg.
     //
     // codex BLOCKER 9 (round 5): that used to read TERMINAL_EVENTS, which also
-    // holds `completed` — and §5 calls `completed` only HALF closed, its sole
+    // holds `completed` — and ข้อ 5 calls `completed` only HALF closed, its sole
     // continuation an `audit_requested`/`audited` pair that is not terminal and
     // so is refused here in turn. Accepting it did not close the ledger, it
     // stranded the token: the runner's next write is refused with
@@ -399,7 +399,7 @@ export function appendEvent(repo, event, options = {}) {
         : 'invalid_event'
       const detail = code === 'timestamp_not_monotonic'
         ? `at ${at} is earlier than the last line already in ${path}`
-        : `${name} does not satisfy contract §4: ${problems.map((problem) => problem.detail).join('; ')}`
+        : `${name} does not satisfy contract ข้อ 4: ${problems.map((problem) => problem.detail).join('; ')}`
       return fail(code, detail, problems)
     }
 
@@ -427,7 +427,7 @@ const USAGE = `usage:
   ledger-writer.mjs --repo <repo> --actor <agent:id|human:id> --stdin   read the event JSON from stdin
 
 Known events: ${LEDGER_EVENTS.join(', ')}
-Every write is validated against contract §4 and against the ledger it joins.
+Every write is validated against contract ข้อ 4 and against the ledger it joins.
 Exits non-zero and writes nothing when either check fails.`
 
 function flag(args, name) {

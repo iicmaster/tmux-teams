@@ -2,7 +2,7 @@
 // should consume, instead of folding the same events its own way.
 //
 // D2: nine modules under this directory each read a token's ledger, and past
-// "who holds it now" — the one placement question §6 of the contract already
+// "who holds it now" — the one placement question ข้อ 6 of the contract already
 // centralised into dispatch-facts.mjs's current-leg and per-team occupancy
 // functions — every reader that needed anything more (when a token entered
 // its PRESENT placement, where that placement was pulled from, what its own
@@ -26,7 +26,7 @@
 //     item does not take (moving every reader onto that step at once is
 //     exactly the "rewrite with no way to tell which move broke what" this
 //     item was scoped to avoid).
-//   * `.tmux-teams/decisions/latest.json` (contract §11.3) — a different
+//   * `.tmux-teams/decisions/latest.json` (contract ข้อ 11.3) — a different
 //     file, on a different write cadence (the whole file is overwritten once
 //     per tick, never appended), answering why the RUNNER passed over a
 //     token on ONE tick. No reader of a custody ledger asks that question,
@@ -64,7 +64,7 @@ export function projectToken(item) {
   const custody = item.custody || []
 
   // Who holds it now, and is the route still open. The ONLY permitted
-  // placement read (contract §6) — reused, never re-derived.
+  // placement read (contract ข้อ 6) — reused, never re-derived.
   const current = currentEntry(custody)
   const releasing = Boolean(current) && RELEASING_EVENTS.has(current.event)
 
@@ -100,14 +100,14 @@ export function projectToken(item) {
     if (entry.event === 'answered' && asked) {
       const seconds = (Date.parse(entry.at || '') - Date.parse(asked.at || '')) / 1000
       // Only a real, forward-moving gap. A backwards one means a ledger that
-      // failed contract §4.4, and folding it in would quietly poison the
+      // failed contract ข้อ 4.4, and folding it in would quietly poison the
       // number this projection exists to hand a caller honestly.
       if (Number.isFinite(seconds) && seconds >= 0) asked.answered_seconds = Math.round(seconds)
       asked = null
     }
     // The runner's own close — a lapsed deadline. The controller's `abandon`
     // verdict writes the same event word; `actor` is what tells them apart
-    // (contract §9), and counting the controller's decision as a lapsed
+    // (contract ข้อ 9), and counting the controller's decision as a lapsed
     // request would misreport what actually happened.
     if (entry.event === 'abandoned' && String(entry.actor || '') === RUNNER_ACTOR) withdrawnByRunner = true
   }

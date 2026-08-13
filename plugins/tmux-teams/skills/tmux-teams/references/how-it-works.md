@@ -79,7 +79,7 @@ front door holds exactly one request at a time. `admit.mjs` is the only
 sanctioned door in, and it obeys that limit: a request arriving while the
 control team is full is refused, not queued.
 
-> **Where the code differs from the docs.** `controller-as-team.md` §4 and the
+> **Where the code differs from the docs.** `controller-as-team.md` ข้อ 4 and the
 > comment above `controlTeam` in `workflow-graph.mjs` both describe `pm_audit`
 > as the seat that reads a finished route. It is not. `planEscalation` builds
 > the audit brief with `roleBrief(repo, 'pm', ...)` and dispatches
@@ -136,7 +136,7 @@ block, from a `seats` entry that overrides it for one agent, or from
 `outer_controller_adapter`, defaulting to `claude` so an existing graph is
 unchanged. `validateWorkflowGraph` refuses any other name outright. The
 **model** is what that lane is asked to run, requested and then verified (see
-§4). The two are never substituted for one another.
+ข้อ 4). The two are never substituted for one another.
 
 Production dispatch also refuses to pass an ambient `ACP_CMD` down to the child.
 An `ACP_CMD` left in a shell used to replace the adapter every seat ran on, with

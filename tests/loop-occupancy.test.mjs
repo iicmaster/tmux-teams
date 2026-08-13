@@ -37,12 +37,12 @@ import { admitWorkItem } from '../plugins/tmux-teams/skills/tmux-teams/scripts/a
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PULSE = join(ROOT, 'plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs')
 
-// Every seat names its model because the declaration now requires one (§3), and
+// Every seat names its model because the declaration now requires one (ข้อ 3), and
 // the value is never checked against a list — only its shape — so a fixture name
 // is as legal here as a real one.
 const MODELS = { dispatcher: 'test-model', worker: 'test-model', evaluator: 'test-model' }
 
-// One worker per team on purpose: the WIP limit IS the worker count (§3), so one
+// One worker per team on purpose: the WIP limit IS the worker count (ข้อ 3), so one
 // worker makes "one too many" a single unambiguous event rather than an
 // arithmetic argument. No team declares `wip_limit` — it is derived, and a
 // declared number that disagreed would be rejected outright.
@@ -81,10 +81,10 @@ const graphOf = (value) => {
   return result.value
 }
 
-// Contract §4 names fields on some events that these fixtures do not care about
+// Contract ข้อ 4 names fields on some events that these fixtures do not care about
 // — which dispatch started a leg, whether it timed out, which task a review
 // judged. Since DECISION 4 every write goes through `ledger-writer.appendEvent`,
-// which refuses a line that does not satisfy §4 and refuses to append at all to
+// which refuses a line that does not satisfy ข้อ 4 and refuses to append at all to
 // a ledger that does not already validate. A shorthand history is therefore no
 // longer a history this system could have produced, and a fixture written in one
 // tests the loop against evidence it would never see.
@@ -103,14 +103,14 @@ const complete = (entry, lastDelivered) => {
       // history rather than invented: the last delivery before this line.
       return { reviewed_task: lastDelivered ?? 'nothing-delivered', reason: 'the evaluator said so', ...entry }
     // `returned` was missing from this list, and `escalated` /
-    // `audit_requested` name a task §4 requires. The fixture gate found all
+    // `audit_requested` name a task ข้อ 4 requires. The fixture gate found all
     // three: shorthand that had been quietly producing histories the writer
     // would refuse.
     case 'escalated':
     case 'audit_requested':
       return { task_id: 'controller-task', reason: 'stated by the agent that wrote it', ...entry }
     case 'audited':
-      // §4: the audit states a verdict, and `accept` is the one that changes
+      // ข้อ 4: the audit states a verdict, and `accept` is the one that changes
       // nothing — a fixture that omitted it was describing an audit that
       // reached no conclusion, which the controller cannot write.
       return { verdict: 'accept', reason: 'stated by the agent that wrote it', ...entry }
@@ -270,7 +270,7 @@ test('a token whose ledger cannot be believed is not handed to the next team', (
   assert.equal(decision.from_team, 'build')
   assert.equal(decision.event, undefined, 'a history that cannot be believed must not produce a custody event')
   // Named, not merely refused: a silent skip here is indistinguishable from a
-  // team with nothing waiting, and §13 forbids repairing the line in place.
+  // team with nothing waiting, and ข้อ 13 forbids repairing the line in place.
   assert.match(decision.reason, /reviewed requires reviewed_task/)
   assert.ok(decision.problems.length >= 1)
 
@@ -342,7 +342,7 @@ test('a failed leg is never handed to the next team', () => {
 // ── the runner that acts on all of it ────────────────────────────────────────
 
 test('the runner never puts more work in a team than its WIP limit allows', () => {
-  // A limit BELOW the worker count can no longer be declared (§3), so the
+  // A limit BELOW the worker count can no longer be declared (ข้อ 3), so the
   // pressure is applied the way it happens in production instead: one team of
   // one worker, holding two tokens whose next legs need two DIFFERENT agents.
   // `stuck` retries its failed leg on the worker t_w1; `pulled-in` needs the
@@ -361,7 +361,7 @@ test('the runner never puts more work in a team than its WIP limit allows', () =
   const dispatches = plans.filter((plan) => plan.action === 'dispatch')
   assert.equal(dispatches.length, 1, `dispatched ${dispatches.length} agents into a team limited to 1`)
   // A ceiling that stops something silently looks exactly like a team with
-  // nothing to do (§10), so the held-back token has to say why it waited.
+  // nothing to do (ข้อ 10), so the held-back token has to say why it waited.
   const waiting = plans.filter((plan) => plan.action === 'wait')
   assert.equal(waiting.length, 1)
   assert.match(waiting[0].reason, /at its WIP limit \(1\)/)
@@ -657,19 +657,19 @@ test('an unstated TARGET_VERDICT is null, not a fabricated word', () => {
   assert.equal(silent.stated, false)
 })
 
-// ── §14.4: the runner's half of the family guarantee ────────────────────────
+// ── ข้อ 14.4: the runner's half of the family guarantee ────────────────────────
 //
 // The board now fails when a word reaches its `default`. This is the same
 // promise for the state machine: every event either moves the loop or is a dead
 // end somebody wrote down. Four times this session a word was accepted by the
 // validator and unknown to a reader, each found by a person looking at a page.
-// A word added to §4 now has to answer this test instead of going quiet.
+// A word added to ข้อ 4 now has to answer this test instead of going quiet.
 const NO_DISPATCH_FOLLOWS = {
   completed: 'the outer controller audits it — planEscalation, not a dispatch',
   audit_requested: 'waiting on the controller outbox; planHarvest turns it into `audited`',
   audit_lost: 'the controller is owed another leg — planEscalation re-arms it via awaitingAudit, not a dispatch',
-  audited: 'terminal (§5)',
-  abandoned: 'terminal (§5)',
+  audited: 'terminal (ข้อ 5)',
+  abandoned: 'terminal (ข้อ 5)',
 }
 
 test('every event either moves the loop or is a dead end somebody wrote down', () => {
@@ -712,7 +712,7 @@ test('every event either moves the loop or is a dead end somebody wrote down', (
         : event === 'audited' ? [requested]
           : event === 'answered' ? [asked] : []
     // The one event whose ACTOR KIND is part of its validity: a person answered,
-    // and `human:` is how the ledger records that permanently (§5.1).
+    // and `human:` is how the ledger records that permanently (ข้อ 5.1).
     if (event === 'answered') entry.actor = 'human:someone'
     const [plan] = planDispatches(graph, itemsOf(['tok', [...prefix, entry]]), new Set(),
       { now: Date.parse(entry.at) + 1e6 })
@@ -730,7 +730,7 @@ test('every event either moves the loop or is a dead end somebody wrote down', (
   const [unknown] = planDispatches(
     graph,
     itemsOf(['tok', [{ at: '2026-07-27T09:00:00.000Z', event: 'not_an_event', agent_id: team.worker_ids[0] }],
-      { expectInvalid: true, why: 'a word outside §4 is the whole point — the control cannot exist without one' }]),
+      { expectInvalid: true, why: 'a word outside ข้อ 4 is the whole point — the control cannot exist without one' }]),
     new Set(), { now: Date.parse('2026-07-27T09:00:00.000Z') + 1e6 },
   )
   assert.equal(Boolean(unknown) && unknown.action !== 'skip', false,
@@ -1326,7 +1326,7 @@ test('a lost leg reporting in after its own retry does not speak for the retry',
   // agent_id cannot tell b-1's dead leg from b-2's live retry — they are the
   // SAME agent — so trusting the fallback here let a dead leg's report decide
   // where a token the live retry still holds actually is. `task_id` is
-  // required on `assigned` even in a ledger this old (§4), and `lost` names
+  // required on `assigned` even in a ledger this old (ข้อ 4), and `lost` names
   // the task_id its own leg was opened under, so it can still be traced back
   // to b-1's `assigned` and told apart from b-2's — no ID gap left to fall
   // back through. The migration answer: an unlabeled `lost`/`reviewed` behind
@@ -1403,7 +1403,7 @@ test('a token cannot exceed its leg ceiling unless the controller grants more', 
 // and the second never said the cause — so the controller, whose only two words
 // are `resume` and `abandon`, granted three more legs against the same wall.
 
-// One turn of a team's own quality loop. §1 blesses this and only this as
+// One turn of a team's own quality loop. ข้อ 1 blesses this and only this as
 // same-token rework: the worker delivers, the team's own evaluator runs its leg,
 // and rejects.
 const REWORK = (n) => ([
@@ -1509,9 +1509,9 @@ test('a second spent budget still reaches the controller', () => {
 // and every workflow is still working correctly.
 
 // This history begins where the first team accepted the work, not at a pull.
-// Contract §4 has no spelling for a route-OPENING `pulled`: it requires
+// Contract ข้อ 4 has no spelling for a route-OPENING `pulled`: it requires
 // `from_team`, and the first pull of a route has no sending team. That gap is
-// recorded as unresolved in contract §14.2 item 1; inventing a sending team here
+// recorded as unresolved in contract ข้อ 14.2 item 1; inventing a sending team here
 // to satisfy the validator would hide it.
 const ROUTE_DONE = [
   { event: 'intake', agent_id: 'b_d', verdict: 'accept' },
@@ -1719,7 +1719,7 @@ test('a dispatch refused for its declared model is not retried', () => {
   assert.equal(transport.action, 'dispatch')
 })
 
-// GitHub #45 part 2 (§4.10): a leg that died at the transport must not spend
+// GitHub #45 part 2 (ข้อ 4.10): a leg that died at the transport must not spend
 // the worker's attempt budget, and a leg the worker genuinely ran and failed
 // must still spend it — in the same file, so the distinction cannot rot in
 // one direction. `acp-companion.mjs` is the only writer of `delivered` and the
@@ -1874,7 +1874,7 @@ test('a door that has refused three times escalates instead of refusing again', 
       planHarvest(graph, itemsOf(['tok', [...refusals, ...atTheDoorAgain]])),
       '2026-07-27T09:00:00.000Z')
     assert.equal(fourth.event, 'escalated', 'the fourth refusal bounced the token again')
-    // §4.2: the token is at this team's door, so this team still holds it —
+    // ข้อ 4.2: the token is at this team's door, so this team still holds it —
     // the same placement the no-sending-team escalation uses.
     assert.equal(fourth.to_team, 'test')
     assert.equal(fourth.agent_id, 't_d')
@@ -1888,7 +1888,7 @@ test('a door that has refused three times escalates instead of refusing again', 
 // ── a refused pull must reach the caller that narrates it ────────────────────
 
 test('a pull the writer refuses comes back on the decision, not only on stderr', () => {
-  // §14.2 item 6, built on purpose: `readWorkItems` drops a line no reader can
+  // ข้อ 14.2 item 6, built on purpose: `readWorkItems` drops a line no reader can
   // parse, so `planPulls` judges a clean four-event history and plans the pull.
   // The writer reads the FILE, sees the sixth line, and refuses. That gap is
   // the only way a pull can be planned and then refused, and it was reported
@@ -2380,7 +2380,7 @@ test('H4 a second questioned(outer) -> answered cycle on the same token does not
 })
 
 // The sibling wedge: `awaitingAudit` re-surfaces a token whose state is
-// `answered` after a post-`completed` audit question gets a reply (§5). Its
+// `answered` after a post-`completed` audit question gets a reply (ข้อ 5). Its
 // rendered text is a function of work_item/workflow/failed-leg-count alone,
 // so a second audit-question reply on the same token collided with the
 // identity stored from the FIRST `completed` trigger the same way.
@@ -2454,7 +2454,7 @@ test('H4 the outer controller\'s brief carries what was asked and what the perso
 // reran the correct dispatcher with the original ambiguous request but
 // without the human answer. The seat can ask the same question again." Built
 // on the reachable path — `resume_role` unset (legacy/default) resumes the
-// dispatcher (§5), and `build` is TWO_TEAMS' `controller_team` (derived from
+// dispatcher (ข้อ 5), and `build` is TWO_TEAMS' `controller_team` (derived from
 // the head of its one route), so this is the front door itself.
 test('H4 composeBrief carries what was asked and what the person answered, for a seat resumed after answered', () => {
   const dir = mkdtempSync(join(tmpdir(), 'loop-compose-brief-answer-'))
@@ -2577,7 +2577,7 @@ test('a dispatched worker leg carries its seat effort into the spawned process e
 
 // ── GitHub #32: a dispatcher's worker hint, and its limits ──────────────────
 //
-// `want()`'s default is "first free seat in declared order" (§3.2.1). A hint
+// `want()`'s default is "first free seat in declared order" (ข้อ 3.2.1). A hint
 // is an override of THAT choice, not a new source of truth the loop trusts
 // blindly — naming a worker that does not exist on this team is escalated,
 // and naming one that is real but busy waits for that specific seat rather
@@ -2630,7 +2630,7 @@ test('a worker_hint naming a busy seat waits for that seat, and does not fall th
 
 test('rework paths (returned, resumed) never read a worker_hint even if one is present on the line', () => {
   const graph = graphOf(TWO_BUILD_WORKERS)
-  // Neither event carries `worker_hint` in real ledgers (§4: only `intake`
+  // Neither event carries `worker_hint` in real ledgers (ข้อ 4: only `intake`
   // does) — this proves the CODE ignores it there regardless, rather than
   // relying on the writer never producing the shape.
   const returned = planFor(graph, [
@@ -2702,7 +2702,7 @@ test('a truly identityless reviewed pass — no task_id, no dispatch_id — stil
   // The exact shape the F1 test above does NOT cover, despite its title: F1's
   // `reviewed` carries `task_id: 'r-1'`, which routes it through the task_id
   // branch. This one carries neither field at all — the shorthand the
-  // contract §6 says the system still writes — and the SAME evaluator was
+  // contract ข้อ 6 says the system still writes — and the SAME evaluator was
   // retried, so agent_id reads identical on both legs too. Nothing here can
   // name which leg the review belongs to.
   const graph = graphOf(TWO_TEAMS)
@@ -2936,7 +2936,7 @@ test('a reviewed that borrows the live holder\'s dispatch_id while naming an OLD
 // no cell for the opposite defect the round-4 fix (discard EVERY non-holder
 // `reviewed` whose agent has any earlier `assigned`, unconditionally)
 // introduced: a reviewer that had an OLDER leg somewhere in this ledger
-// (reject, rework, re-review — the ordinary shape §1 describes) is legally
+// (reject, rework, re-review — the ordinary shape ข้อ 1 describes) is legally
 // allowed to report round 2 with the SAME shorthand a never-assigned
 // reviewer writes — no new `assigned` of its own, no dispatch_id, no
 // task_id (loop-system-contract.md:843-847,867-870: reviewer identity is
@@ -2946,7 +2946,7 @@ test('a reviewed that borrows the live holder\'s dispatch_id while naming an OLD
 // re-dispatching and re-paying an evaluator that had already reported.
 //
 // `reviewed_task` is the fix: it is REQUIRED on every `reviewed` line
-// (contract §4) and the sanctioned producer (loop-runner.mjs harvestEvent)
+// (contract ข้อ 4) and the sanctioned producer (loop-runner.mjs harvestEvent)
 // always stamps it from the delivery actually being judged, at the moment of
 // judging — a leg that died BEFORE the holder's current delivery existed
 // cannot name that delivery's task_id, because it never saw it. Matching the

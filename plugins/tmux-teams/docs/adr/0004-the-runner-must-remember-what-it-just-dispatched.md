@@ -111,7 +111,7 @@ are computed.**
 
   **This bullet read "on evidence, never on elapsed time" until 2026-08-10,**
   and that was absolutist in a way the code never was: `CLAIM_GRACE_SEC` (30 s)
-  is in `loop-runner.mjs` and in contract §11.1, so a reader of the ADR ALONE
+  is in `loop-runner.mjs` and in contract ข้อ 11.1, so a reader of the ADR ALONE
   would conclude it must not exist. Read the code's own defence rather than
   deleting either: releasing after total silence *does not declare the leg
   dead* — it hands the question back to the evidence-based paths that own it,
@@ -184,7 +184,7 @@ depending on it for the one window the ledger cannot cover.
 
 ## Alternatives, and why each loses
 
-**The runner writes `assigned` itself.** Contract §13 makes the companion the
+**The runner writes `assigned` itself.** Contract ข้อ 13 makes the companion the
 sole writer of `assigned`, and a test states it. Changing that is a contract
 amendment to fix a 250 ms window. Rejected.
 
@@ -205,8 +205,8 @@ None of the following is part of this work. Each is real; each gets its own
 issue or ADR if it is worth doing.
 
 - **No broker, no message queue.** Already decided and not to be relitigated.
-- **No change to `pulse.json`'s schema.** Contract §11.1 is frozen.
-- **No change to who writes `assigned`.** Contract §13.
+- **No change to `pulse.json`'s schema.** Contract ข้อ 11.1 is frozen.
+- **No change to who writes `assigned`.** Contract ข้อ 13.
 - **No cross-process lock.** See the residual above.
 - **No change to cron-mode behaviour.**
 - **The sandboxed review gate.** `qwen` is unprovisioned on the test host and
@@ -276,7 +276,7 @@ issue or ADR if it is worth doing.
    and **dispatched legs equal required legs** with wall clock still around
    3.6 minutes. Anything faster than 600 s proves the watcher drove it.
 6. Contract amended in the same commits as the behaviour: the claim concept and
-   a new AC row naming the test. **§11.1 specifically, named here because this
+   a new AC row naming the test. **ข้อ 11.1 specifically, named here because this
    criterion was written without it and it would otherwise have fallen between
    owners** — found by a reader of this ADR, not by its author. That section
    states the defect as design:

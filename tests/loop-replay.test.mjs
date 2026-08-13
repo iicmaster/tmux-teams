@@ -298,7 +298,7 @@ test('a route replays to a decision, or the runner says which token it could not
   // once: a team accepting a handoff, a worker delivering, an evaluator judging,
   // a route closing, and the controller answering. A vocabulary missing here is
   // a path this test never reached and therefore never checked.
-  // Thirteen of the fourteen §4 events. `lost` is the one absentee and it is
+  // Thirteen of the fourteen ข้อ 4 events. `lost` is the one absentee and it is
   // absent by construction, not by luck: it needs an assignment older than
   // ZOMBIE_SEC and this test cannot reach 180 seconds — see the clock ceiling
   // at the top of the file. Anything else dropping out of this list means a

@@ -2,7 +2,7 @@
 //
 // `abandoned` was written by the runner's clock and by the outer controller, and
 // by nobody else. A person watching a token go nowhere had no command for it:
-// §4 forbids hand-editing a ledger, so the documented workaround was invoking
+// ข้อ 4 forbids hand-editing a ledger, so the documented workaround was invoking
 // `ledger-writer.mjs` with a JSON literal and the validator's field spec open in
 // another window. Somebody really did that.
 //

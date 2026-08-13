@@ -1,7 +1,7 @@
 // graph-tour.mjs — the loop graph as a guided tour rather than one static wall.
 //
 // What this page may draw and why: `references/loop-graph-page.md`, which
-// expands `references/loop-system-contract.md` §12 — the contract is the one
+// expands `references/loop-system-contract.md` ข้อ 12 — the contract is the one
 // source of truth and wins if the two documents ever disagree. Every rule in
 // the page document was written after the picture proved it. If this file and
 // that one disagree, one is a defect.
@@ -343,7 +343,7 @@ export function buildTour(graph, cards = new Map(), occupancy = { counts: new Ma
   // the sequence a token takes — down to a team, back to control, down to the
   // next — and it exists only to animate. It adds no edge to the board.
   // Custody, and only custody. The route ends where the ledger ends it: the
-  // last team writes `completed` (§6) and the controller's audit is a
+  // last team writes `completed` (ข้อ 6) and the controller's audit is a
   // RELEASING event — it reads the delivery, it never takes the token back.
   // An earlier version sent a token home to control and on to the sink, which
   // animated two handovers the ledger has no record of; worse, the "home" hop

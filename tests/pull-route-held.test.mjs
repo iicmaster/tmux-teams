@@ -6,7 +6,7 @@
 // already been ADMITTED by. On an escalation exit — parked at a later team,
 // resumed, and released there — the declared route can point back at a team
 // the token passed through earlier, and the validator's own
-// `route_went_backwards` refusal (contract §1, §4.2) then refuses that exact
+// `route_went_backwards` refusal (contract ข้อ 1, ข้อ 4.2) then refuses that exact
 // `pulled` forever: `tick()` recomputes the identical decision every loop
 // with no exit in code.
 //
@@ -14,7 +14,7 @@
 // into team B first, gets admitted there, is handed on to team A (out of the
 // route's declared order), hits trouble at A, escalates, resumes AT A (the
 // same team it escalated from — `resumed.to_team` always equals the team it
-// is already sitting at, contract §1), and finally passes review at A. The
+// is already sitting at, contract ข้อ 1), and finally passes review at A. The
 // declared route lists A before B, so the naive `route[index + 1]` points
 // straight back at B — a team this token was already admitted by.
 import { test } from 'node:test'
@@ -63,7 +63,7 @@ const GRAPH = graphResult.value
 // route's declared order on purpose — that is how B ends up ADMITTED before
 // A, even though A precedes B in the declared route), a failed leg at A,
 // escalated and resumed AT A (never at B — `resumed.to_team` is always the
-// team already holding the token, contract §1; loop-runner.mjs:765 stamps it
+// team already holding the token, contract ข้อ 1; loop-runner.mjs:765 stamps it
 // from `last.to_team`), then A's own worker and evaluator finish and pass.
 const story = (workItem, workflow) => gateHistory(workItem, [
   { at: '2026-08-05T09:00:00.000Z', event: 'opened', work_item: workItem, workflow, agent_id: 'b_d', to_team: 'B', reason: 'front door request', actor: 'human:ada' },
@@ -120,7 +120,7 @@ test('an escalation exit whose route has nothing left after the held team comple
   assert.equal(decisions[0].event.event, 'completed')
   assert.equal(decisions[0].event.from_team, 'A')
 
-  // §7: the token must visibly become something. `applyPulls` must write the
+  // ข้อ 7: the token must visibly become something. `applyPulls` must write the
   // `completed` event and refuse nothing.
   const dir = mkdtempSync(join(tmpdir(), 'pull-route-held-complete-'))
   try {

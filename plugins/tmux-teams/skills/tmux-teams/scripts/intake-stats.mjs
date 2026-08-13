@@ -56,14 +56,14 @@ export function intakeStats(repo) {
       if (entry.event === 'answered' && asked) {
         const seconds = (Date.parse(entry.at || '') - Date.parse(asked.at || '')) / 1000
         // Only real, forward-moving gaps. A backwards one would mean a ledger
-        // that failed §4.4, and averaging it in would quietly poison the number
+        // that failed ข้อ 4.4, and averaging it in would quietly poison the number
         // this measurement exists to defend.
         if (Number.isFinite(seconds) && seconds >= 0) answerSeconds.push(Math.round(seconds))
         asked = null
       }
       // The runner's own close, which is the withdrawal. The controller's
       // `abandon` verdict writes the same word — `actor` is what separates them
-      // (§9) — and counting a controller's decision as a lapsed request would
+      // (ข้อ 9) — and counting a controller's decision as a lapsed request would
       // make the deadline look harsher than it is.
       if (entry.event === 'abandoned' && String(entry.actor || '') === RUNNER_ACTOR) withdrawn += 1
     }

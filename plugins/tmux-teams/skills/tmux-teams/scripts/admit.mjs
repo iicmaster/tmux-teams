@@ -27,7 +27,7 @@ const fail = (code, detail) => ({ ok: false, code, detail })
  * @param {{work_item: string, workflow: string, reason: string}} request
  * @param {{actor: string, relayed_by?: string}} options — `actor` must be
  *        `human:<name>` even when an agent relays it: the actor names who
- *        DECIDED, and the person decided (§6.4.1, ADR 0002). Enforced by
+ *        DECIDED, and the person decided (ข้อ 6.4.1, ADR 0002). Enforced by
  *        `ledger-validate.mjs`'s `opened.actor_kind`, not merely documented
  *        here — a non-human actor is refused by `appendEvent` below. An agent
  *        relaying the words names itself in `relayed_by` instead of the
@@ -66,7 +66,7 @@ export function admitWorkItem(repo, request, options = {}) {
     event: 'opened',
     work_item: request.work_item,
     workflow: workflow.workflow_id,
-    // §4.6: `opened` names the receiving dispatcher, which is now always the
+    // ข้อ 4.6: `opened` names the receiving dispatcher, which is now always the
     // controller's intake gate.
     agent_id: control.dispatcher_id,
     to_team: controlId,

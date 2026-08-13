@@ -33,7 +33,7 @@ First `codex` run also offers "Sign in with ChatGPT". API-key auth alternatively
 | `codex` | interactive TUI session in cwd |
 | `codex "prompt"` | TUI with initial prompt |
 | `codex resume` / `codex resume --last` / `codex resume SESSION_ID` | reopen a recent conversation from the current repository |
-| `codex exec "task"` | non-interactive / headless run (§5) |
+| `codex exec "task"` | non-interactive / headless run (ข้อ 5) |
 | `codex --image img.png` | attach visual context to first prompt |
 | `codex --search` | enable live web search |
 | `codex cloud` | cloud tasks |
@@ -173,7 +173,7 @@ regexes). **None survived verification.** Practitioner projects exist (e.g.
 codex-yolo: an approver daemon polling `capture-pane` every 0.3s to auto-approve
 dialogs; awslabs/cli-agent-orchestrator) but their specifics were not confirmed
 against current Codex versions. Everything screen-scrape-related in SKILL.md is
-therefore heuristic; the `notify` hook (§4) and `codex exec --json` (§5) are the
+therefore heuristic; the `notify` hook (ข้อ 4) and `codex exec --json` (ข้อ 5) are the
 documented mechanisms to build on.
 
 ## Sources (fetched 2026-07-13)

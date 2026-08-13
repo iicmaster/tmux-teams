@@ -5,14 +5,14 @@
 // outbox self-check contract, then PM-side adversarially verifies every result
 // by re-running the worker's own evidence command. Structure borrowed from BMAD
 // step-file workflows (quick-dev: execute -> self-check -> adversarial-review);
-// mechanics from tmux-teams (SKILL.md §1/§2/§6 + scripts/deliver.sh).
+// mechanics from tmux-teams (SKILL.md ข้อ 1/ข้อ 2/ข้อ 6 + scripts/deliver.sh).
 //
 // HOW TO RUN:
 //   Workflow({ scriptPath: "<...>/tmux-teams/workflows/mailbox-run.js", args: {
 //     repo: "/abs/path/to/target/repo",           // where workers cd/run (default: cwd)
 //     ctlBase: "~/.tmux-teams/mailbox-run",        // control root; per-worker = ctlBase/<id>
 //     deliverSh: "<...>/tmux-teams/scripts/deliver.sh",  // optional; agents locate it if omitted
-//     kmsPath: "<...>/tmux-teams/scripts/kms.mjs",       // optional; same — Team KMS distill (§9)
+//     kmsPath: "<...>/tmux-teams/scripts/kms.mjs",       // optional; same — Team KMS distill (ข้อ 9)
 //     timeoutSec: 1200,                            // per-worker wait for a terminal marker
 //     runId: "r1",                                 // optional; suffixes the shared session name
 //     workers: [
@@ -93,7 +93,7 @@ const REPO = args_.repo || '.'
 const CTL_BASE = args_.ctlBase || '~/.tmux-teams/mailbox-run'
 const TIMEOUT = Number(args_.timeoutSec) > 0 ? Number(args_.timeoutSec) : 1200
 const DELIVER = args_.deliverSh || ''
-// One shared session per run (SKILL.md §1, 2026-07-17), one window per worker.
+// One shared session per run (SKILL.md ข้อ 1, 2026-07-17), one window per worker.
 // Optional runId keeps concurrent runs on the same folder in separate sessions.
 const RUNID = args_.runId ? '--' + String(args_.runId).toLowerCase().replace(/[^a-z0-9]+/g, '-') : ''
 
@@ -167,7 +167,7 @@ const results = await pipeline(
     const dispatchId = WORKER_DISPATCH_IDS.get(w.id)
     return agent(
     [
-      `You are the PM driving ONE foreign CLI worker over the tmux-teams file-mailbox. Do everything with Bash. Follow tmux-teams SKILL.md §1/§2/§6 exactly.`,
+      `You are the PM driving ONE foreign CLI worker over the tmux-teams file-mailbox. Do everything with Bash. Follow tmux-teams SKILL.md ข้อ 1/ข้อ 2/ข้อ 6 exactly.`,
       ``,
       `Worker id: ${w.id}`,
       `Dispatch id (PM-owned; copy exactly): ${dispatchId}`,
@@ -278,7 +278,7 @@ const report = WORKERS.map((w, i) => {
 
 // CLEANUP FIRST, then distill. Order is load-bearing: tearing down tmux is the
 // step that must always happen, and the KMS write is best-effort by design
-// (SKILL.md §9). Sharing one agent would let a failed memory write skip cleanup
+// (SKILL.md ข้อ 9). Sharing one agent would let a failed memory write skip cleanup
 // entirely — memory that can break a run is worse than no memory.
 const panes = WORKERS.map((w, i) => ({ id: w.id, pane: (results[i] && results[i].pane) || '' }))
 let cleanupNote = 'ok'

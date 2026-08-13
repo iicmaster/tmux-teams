@@ -1,7 +1,7 @@
 // ledger.test.mjs — the custody ledger is evidence, so these tests are about
 // what may NOT get into it.
 //
-// Contract §4 says what each event carries and §5 says what may follow what.
+// Contract ข้อ 4 says what each event carries and ข้อ 5 says what may follow what.
 // Both were previously enforced by nothing at all: the ledger is a JSONL file
 // and `>>` is a shell builtin. Two `abandoned` events in this repo were typed by
 // hand for exactly that reason, and nothing in either line says so.
@@ -114,7 +114,7 @@ test('a timestamp that goes backwards is caught, and equal timestamps are legal'
   assert.deepEqual(codes(backwards), ['time_went_backwards'])
   assert.equal(backwards.problems[0].line, 2)
 
-  // §4.4: equal timestamps keep append order — the runner writes several
+  // ข้อ 4.4: equal timestamps keep append order — the runner writes several
   // events inside one tick and none of them is a defect.
   const equal = validateLedger(jsonl(
     { at: '2026-07-27T10:00:00.000Z', event: 'assigned', work_item: 'tok', workflow: 'f', agent_id: 'w1', task_id: 't1', dispatch_id: 'd1' },
@@ -176,7 +176,7 @@ test('returned must carry to_team and must not carry agent_id', () => {
   assert.deepEqual(codes(bare), ['missing_field'])
   assert.match(bare.problems[0].detail, /returned requires to_team/)
 
-  // §4.1: the token is held by the team it went back to. An agent_id here
+  // ข้อ 4.1: the token is held by the team it went back to. An agent_id here
   // places the work with the dispatcher that refused it — the wrong team.
   const withAgent = validateLedger(jsonl(
     { at: '2026-07-27T10:00:00.000Z', event: 'returned', work_item: 'tok', workflow: 'f', to_team: 'design', refused_by: 'build_dispatcher', agent_id: 'build_dispatcher', reason: 'brief does not match' },
@@ -616,7 +616,7 @@ const HAND_WRITTEN_ABANDONS = {
 }
 
 test('the two hand-written abandoned events are structurally and sequentially legal', () => {
-  // This is the finding, not a bug: under contract §4 as it stands, a line an
+  // This is the finding, not a bug: under contract ข้อ 4 as it stands, a line an
   // assistant typed by hand is indistinguishable from one the runner wrote.
   // The validator cannot and must not catch it — only a recorded `actor` can,
   // which is exactly why the writer demands one.
@@ -708,7 +708,7 @@ test('each verdict-bearing event refuses a word outside its own vocabulary', () 
   }
 })
 
-// ── §4.6 `opened` — how work enters the graph ───────────────────────────────
+// ── ข้อ 4.6 `opened` — how work enters the graph ───────────────────────────────
 //
 // Before this event existed, intake had to be written either as a `pulled` with
 // no sender, which the validator refuses, or as a `pulled` naming a team that
@@ -785,12 +785,12 @@ test('adding `opened` did not soften what `pulled` still has to say', () => {
 })
 
 // ---------------------------------------------------------------------------
-// validateLedger — §1, flow is one way
+// validateLedger — ข้อ 1, flow is one way
 // ---------------------------------------------------------------------------
 
 // A leg of a route, the way the runner records one: the receiving team pulls,
 // its dispatcher admits, a worker delivers, the team's evaluator passes.
-// `at` is folded into task_id/dispatch_id (not just `to`) because §1 tests
+// `at` is folded into task_id/dispatch_id (not just `to`) because ข้อ 1 tests
 // deliberately route the SAME team twice in one ledger (a token that bounces
 // back to `design`, say) — every call here is already at a distinct `at`, so
 // this is the id space that is actually unique, and reusing `to` alone would
@@ -809,7 +809,7 @@ test('a token cannot be pulled back into a team that already admitted it', () =>
   const backwards = [
     ...leg('intake', 'design', '10:00'),
     ...leg('design', 'build', '10:10'),
-    // QA found a problem and sent the work back to Design. §1 forbids exactly
+    // QA found a problem and sent the work back to Design. ข้อ 1 forbids exactly
     // this: the fix is a NEW token on a fresh route, not this one upstream.
     ...leg('build', 'design', '10:20'),
   ]
@@ -879,7 +879,7 @@ test('the door may refuse three times; the fourth has to go to the controller', 
 
 test('a ledger that predates the one-way rule carries on; only a NEW backwards move is refused', (t) => {
   const repo = scratch(t)
-  // Written before §1 was enforceable: Design admitted it, Build admitted it,
+  // Written before ข้อ 1 was enforceable: Design admitted it, Build admitted it,
   // and then it went back to Design.
   const legacy = [
     ...leg('intake', 'design', '10:00'),
@@ -893,7 +893,7 @@ test('a ledger that predates the one-way rule carries on; only a NEW backwards m
   // else. That met a real ledger the same day — 46 lines, one violation at 36,
   // a worker mid-leg at 46 — and froze it. A rule written to keep work moving
   // must not be the thing that stops it, so the rule is enforced on the LINE
-  // BEING WRITTEN and history is not re-punished. Master confirmed §1 stands.
+  // BEING WRITTEN and history is not re-punished. Master confirmed ข้อ 1 stands.
   const carriedOn = appendEvent(repo, {
     event: 'pulled', work_item: 'tok', workflow: 'feature',
     agent_id: 'qa_dispatcher', from_team: 'design', to_team: 'qa',
@@ -931,7 +931,7 @@ test('a ledger that predates the one-way rule carries on; only a NEW backwards m
 // B5, 2026-08-04: three independent reviews each rebuilt a hand-crafted
 // ledger that validated clean at 88bd851 and showed it permanently frozen by
 // two rules this amendment added. These are those exact two shapes, built the
-// same way the §1 legacy test above is — direct `writeFileSync`, because
+// same way the ข้อ 1 legacy test above is — direct `writeFileSync`, because
 // `appendEvent` (and the fixture gate other tests route through) both judge
 // by the CURRENT rules, and the whole point here is a history that predates
 // them.
@@ -1116,7 +1116,7 @@ test('a pre-existing duplicate task_id can still be closed, but nothing else may
 })
 
 // codex BLOCKER 9, retro-release-review round 5, 2026-08-04: `completed` is a
-// member of `TERMINAL_EVENTS` but §5 calls it only HALF closed — its sole
+// member of `TERMINAL_EVENTS` but ข้อ 5 calls it only HALF closed — its sole
 // legal continuation is `audit_requested` -> `audited`, neither of which is
 // terminal. The pre-fix `continuableToClose` tested `TERMINAL_EVENTS`, so a
 // duplicate-tainted ledger accepted `completed` (it needs only `from_team`)
@@ -1203,7 +1203,7 @@ test('a pre-existing dispatch_id collision followed by its normal second-leg del
 })
 
 test('a team that admitted the work cannot send it back — it fixes it and forwards', () => {
-  // Master, 2026-08-03, confirming §1 against a live token: "ยืนยันกฏไม่ส่งกลับ
+  // Master, 2026-08-03, confirming ข้อ 1 against a live token: "ยืนยันกฏไม่ส่งกลับ
   // รีวิวเวอร์ที่เจอปัญหาก็ต้องแก้ต่อเองให้จบเลย". Nothing refused this before,
   // which is how a hand-written `returned` came to sit in a production ledger —
   // the operator used the only move the system left open.
@@ -1241,7 +1241,7 @@ test('a team that admitted the work cannot send it back — it fixes it and forw
 // writer can produce — validating it clean is what let dispatch-facts.mjs's
 // `currentEntry` trust it as the live leg's own outcome.
 test('a reviewed borrowing a live dispatch_id while naming an older task_id is refused (F1 Shape 2)', () => {
-  // `reviewed` requires a preceding `delivered` to review at all (§4.6) — the
+  // `reviewed` requires a preceding `delivered` to review at all (ข้อ 4.6) — the
   // worker's leg, unrelated to the evaluator legs this test is about.
   const workerDelivered = [
     { at: '2026-07-27T09:59:00.000Z', event: 'assigned', work_item: 'tok', workflow: 'feature', agent_id: 'design_w1', task_id: 't-1', dispatch_id: 'wd-1' },
@@ -1549,7 +1549,7 @@ test('audited closes a duplicate-tainted ledger, and it is not abandoned (r6-cod
 // A count is not a status. `pull-controller.mjs --apply` printed "appended 0
 // custody events" and exited 0 when every planned pull was refused, so a script
 // driving it could not tell a quiet success from a total failure (r6-codex).
-// The disagreement is real and expected: §14.5 says `planPulls` judges the
+// The disagreement is real and expected: ข้อ 14.5 says `planPulls` judges the
 // parsed projection, which has already dropped unparsable lines, while the
 // writer judges the bytes — so a token broken only by an unparsable line is
 // planned as a pull and then refused.

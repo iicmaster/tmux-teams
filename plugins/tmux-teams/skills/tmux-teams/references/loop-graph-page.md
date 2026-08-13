@@ -6,11 +6,11 @@ usually by being wrong first. When this file and the code disagree, one of them
 is a defect — say which.
 
 **This file is not a second source of truth.** It expands
-`references/loop-system-contract.md` §12 and inherits its authority. Where the
+`references/loop-system-contract.md` ข้อ 12 and inherits its authority. Where the
 two documents conflict, **the contract wins** — and the conflict is itself a
 defect to state in writing before either is edited. Two files that each declared
 themselves SSOT is how an implementer built the wrong controller on 2026-08-01
-(contract §14.5).
+(contract ข้อ 14.5).
 
 Code: `scripts/graph-tour.mjs` (layout, edges, scenes — no I/O) and
 `scripts/graph.mjs` (evidence → one card per seat, then the page shell).
@@ -203,7 +203,7 @@ or every scene is as wide as the whole board and the zoom never acts.
   that function until v0.15.0, so a seat that had never been dispatched printed
   its declared model in the identical shape a measured one uses, and a verified
   model was silently replaced by whatever the graph claimed. A reader had no
-  way to tell a claim from a measurement, which is §12.7 honesty law 2 and the
+  way to tell a claim from a measurement, which is ข้อ 12.7 honesty law 2 and the
   whole reason this page exists. `—` is the honest answer for a seat with no
   run; `<asked> unconfirmed` is the honest answer for a run with no verified
   model. Neither may be filled in from a declaration.

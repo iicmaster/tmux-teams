@@ -4,7 +4,7 @@
 // This phase does not touch dispatch: it makes a graph ABLE to declare a
 // palette on a seat, makes an invalid one refused, and proves `wip_limit`
 // stays derived from the worker count regardless of how long a palette grows
-// (§3.1, §3.5). `loop-runner.mjs` is untouched and out of scope here.
+// (ข้อ 3.1, ข้อ 3.5). `loop-runner.mjs` is untouched and out of scope here.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
@@ -69,11 +69,11 @@ const paletteEntry = (model, extra = {}) => ({ model, ...extra })
 
 // ── a palette declares and validates, every existing graph unaffected ───────
 
-// The digest property this proves is §3.2.1's — two declarations that SAY the
+// The digest property this proves is ข้อ 3.2.1's — two declarations that SAY the
 // same thing hash alike — and not "the digest a previous version produced".
 // Nothing here can prove the latter: both sides are resolved by the code in
 // this tree, so the comparison holds whatever `agents[]` became. `palette`
-// itself is the proof, since emitting it moved every graph's digest (§3.5).
+// itself is the proof, since emitting it moved every graph's digest (ข้อ 3.5).
 // A cross-version claim would have to pin the old hex, and no reader of a
 // *workflow* graph's `source_digest` joins on it across versions.
 test('declarations that say the same thing still hash alike, and an undeclared palette resolves to null', () => {
@@ -115,7 +115,7 @@ test('a seat with a valid two-entry palette loads and validates', () => {
     { model: 'qwen3.8-max', adapter: 'claude', effort: null, display_model: null, bucket: 'opus' },
     { model: 'k3', adapter: 'claude', effort: null, display_model: null, bucket: 'fable' },
   ])
-  // A palette's first entry is the starting point (§3.5): the single-value
+  // A palette's first entry is the starting point (ข้อ 3.5): the single-value
   // fields resolve to it so an unmodified reader sees a sane seat spec.
   assert.equal(seat.model, 'qwen3.8-max')
   assert.equal(seat.adapter, 'claude')
@@ -146,7 +146,7 @@ test('a bucket left unstated defaults to the entry\'s own resolved lane', () => 
   assert.equal(seat.palette[1].bucket, 'agy')
 })
 
-// ── wip_limit is unaffected — the whole point of the item (§3.1) ───────────
+// ── wip_limit is unaffected — the whole point of the item (ข้อ 3.1) ───────────
 
 test('wip_limit does not change when a palette grows to eight entries', () => {
   const bigPalette = Array.from({ length: 8 }, (_, index) =>

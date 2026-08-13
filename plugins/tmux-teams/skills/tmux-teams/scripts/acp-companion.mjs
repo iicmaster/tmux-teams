@@ -31,7 +31,7 @@ import { join, dirname, basename } from 'node:path'
 import { homedir } from 'node:os'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
-// §13: this process is a sanctioned ledger writer, so it appends through the
+// ข้อ 13: this process is a sanctioned ledger writer, so it appends through the
 // same gate the runner does rather than keeping a private copy of the policy.
 import { appendEvent } from './ledger-writer.mjs'
 
@@ -1543,7 +1543,7 @@ function snapshotData({ toolLimit = MAX_PUBLIC_TOOL_RECORDS, historyLimit = MAX_
     requested_reasoning_effort: minimal ? null : (requestedReasoningEffort || null),
     effective_identity: minimal ? null : (identity.effectiveIdentity || null),
     identity_status: minimal ? 'unverified' : identity.status,
-    // The same fact §4.10 defines, carried on the channel that works for EVERY
+    // The same fact ข้อ 4.10 defines, carried on the channel that works for EVERY
     // leg. The custody write below is a no-op when `workItem` is empty, which
     // is exactly how the outer controller's own leg is spawned — so for that
     // leg the ledger can never answer "did the model ever get a turn", and
@@ -1649,7 +1649,7 @@ function appendWorkItemEvent(event, extra = {}) {
   if (!workItem) return
   try {
     mkdirSync(workItemsDir, { recursive: true, mode: 0o700 })
-    // Through the sanctioned writer, never straight to the file. §13 names this
+    // Through the sanctioned writer, never straight to the file. ข้อ 13 names this
     // process a writer and binds it to the same obligations as the runner:
     // validate the event, and refuse to append to a history that is already
     // broken. It used to `appendFileSync` directly, so a probe could start from
@@ -1708,7 +1708,7 @@ function writeDispatchRecord({ required = false } = {}) {
     // refresh of the record — one leg of the journey is one assignment.
     if (!workItemAssigned) {
       workItemAssigned = true
-      // GitHub #47 phase 2b (§3.5.1, §4): which model this leg was dispatched
+      // GitHub #47 phase 2b (ข้อ 3.5.1, ข้อ 4): which model this leg was dispatched
       // ON. Until a seat could declare a palette, the ledger answered this by
       // inference — one seat, one model, look it up in the graph — and a
       // palette destroys that inference for exactly the legs where the answer
@@ -2296,7 +2296,7 @@ function recordTerminal(terminal, {
     terminal,
     timed_out: timedOut,
     evidence_present: evidencePresent,
-    // GitHub #45 part 2 (§4.10): the one positive fact that lets a reader with
+    // GitHub #45 part 2 (ข้อ 4.10): the one positive fact that lets a reader with
     // only the ledger tell "the model was never asked to do anything" from "the
     // worker tried and failed" — see `workObserved`'s own comment above for what
     // sets it and why the classification defaults toward counting.

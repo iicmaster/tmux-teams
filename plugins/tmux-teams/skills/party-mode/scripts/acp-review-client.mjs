@@ -520,7 +520,7 @@ async function prepareProviderState(profile, stateRoot, sourceEnv) {
   // two of them at once. Those trees hold `projects/`, `history.jsonl`,
   // `file-history/`, `session-env/`, `shell-snapshots/`, `tasks/`, `teams/` —
   // unrelated work a static-packet reviewer has no business reading, and
-  // SKILL.md §28 promises the opposite ("ephemeral HOME with minimum copied
+  // SKILL.md ข้อ 28 promises the opposite ("ephemeral HOME with minimum copied
   // auth and masked host user-data roots"). Nobody observed a provider sending
   // those bytes; the exposure and the false contract are the defect
   // (r4-codex, BLOCKER 1).

@@ -335,7 +335,7 @@ test('the runner says which model each dispatch will ask for', () => {
 // ── DECISION 4: the ledger ───────────────────────────────────────────────────
 
 test('a token whose history cannot be believed is not dispatched onto', () => {
-  // The seed `pulled` carries no `from_team`, which contract §4 requires.
+  // The seed `pulled` carries no `from_team`, which contract ข้อ 4 requires.
   const bad = HELD.map((entry, index) => (index === 0 ? { ...entry, from_team: undefined } : entry))
   const dir = repoWith({ ledgers: { wip: bad } })
   const { said } = saying(() => tick(dir, { apply: false, tickSec: 20 }))
@@ -414,7 +414,7 @@ test('an append the writer refuses is not reported as having happened', () => {
 })
 
 test('an intake refusal with nowhere to send it back names the team still holding it', () => {
-  // §4.2: without `to_team` the board draws parked work as unplaceable and
+  // ข้อ 4.2: without `to_team` the board draws parked work as unplaceable and
   // frees a WIP slot nobody released — and the writer refuses the line outright.
   const dir = repoWith({})
   const custody = [
@@ -489,7 +489,7 @@ test('an accepted intake that stated no reason says so rather than leaving it bl
 })
 
 test('a pull the writer refuses is not narrated as a pull that happened', () => {
-  // §4.2: "a refused write did not happen, and no caller may report it as
+  // ข้อ 4.2: "a refused write did not happen, and no caller may report it as
   // having happened." The runner logged every decision by the action it was
   // PLANNED with, so a refused handoff printed the same `pull` line a written
   // one does — and the loop planned it again the next tick, forever, while an

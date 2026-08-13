@@ -197,7 +197,7 @@ test('a seat with display_model shows the real model name, not the dispatch alia
 // v0.15.0 release review (gpt-5.6-luna), CONFIRMED under re-verification. The
 // test above passes whether `display_model` translates a VERIFIED model or
 // replaces one — its seat has a verified run either way. These two pin the
-// difference, which is §12.7 honesty law 2: never show a model that was not
+// difference, which is ข้อ 12.7 honesty law 2: never show a model that was not
 // verified.
 
 test('a declared display_model on a seat that never ran is not printed as a model', () => {
@@ -456,7 +456,7 @@ test('a repo still holding the old file name keeps its teams, and says which fil
 })
 
 test('a declaration that exists but cannot be parsed fails closed, it does not become the default', () => {
-  // §3: the bundled default is for a repo with NO declaration. One `catch` used
+  // ข้อ 3: the bundled default is for a repo with NO declaration. One `catch` used
   // to cover the read and the parse together, so a corrupt file was
   // indistinguishable from an absent one — the page drew four teams nobody
   // declared while `graph.mjs check` exited 0. Found by an outside review with
@@ -530,7 +530,7 @@ test('every role is credited with the work the ledger records for it', () => {
     { at: '2026-07-27T03:00:00.000Z', event: 'reviewed', agent_id: 'b_e', verdict: 'reject', reviewed_task: 't-1', reason: 'thin' },
     // The handoff this refusal refuses. Without it the fixture said Build
     // admitted the token and then something sent it back across a boundary,
-    // which §1 forbids — a refusal is a door check, and a door needs an arrival
+    // which ข้อ 1 forbids — a refusal is a door check, and a door needs an arrival
     // standing in front of it.
     { at: '2026-07-27T03:30:00.000Z', event: 'pulled', agent_id: 'v_d', from_team: 'build', to_team: 'verify' },
     { at: '2026-07-27T04:00:00.000Z', event: 'returned', to_team: 'build', refused_by: 'v_d', reason: 'not ours' },
@@ -552,9 +552,9 @@ test('every role is credited with the work the ledger records for it', () => {
   assert.equal(work.has('t_w1'), false)
 })
 
-// §14.4: the family guarantee the board already has, now for this page. Every
+// ข้อ 14.4: the family guarantee the board already has, now for this page. Every
 // event that names an agent either credits that agent with work, or is listed
-// here with the reason it does not — so a word added to §4 forces the decision
+// here with the reason it does not — so a word added to ข้อ 4 forces the decision
 // instead of silently landing in neither column.
 const NOT_THE_AGENTS_OWN_ACT = {
   opened: 'agent_id is the receiving dispatcher, which has not judged it yet',
@@ -666,7 +666,7 @@ test('a dispatching runner states the age of its last tick and what that tick di
   const page = pageOf(beat(repoWith(TWO_TEAMS), heartbeat({ started: 3, held: 1 })))
   assert.match(page, /DISPATCHING/)
   // What that tick DID, in the runner's own measured numbers — a zero it
-  // measured is worth printing; a zero this page invented is the lie §12.7
+  // measured is worth printing; a zero this page invented is the lie ข้อ 12.7
   // forbids, which is why the copy says "not measured" rather than 0.
   assert.match(page, /\b3\b/, 'the count it started')
   assert.match(page, /\b1\b/, 'and the count it held')
@@ -746,7 +746,7 @@ const ledger = (id, events) => [id, {
 // queue only once that team's own evaluator has passed it — so the fixture for
 // "ready to move on" ends in a review, not a delivery.
 //
-// Every field contract §4 names is stated, uninteresting ones included. Since
+// Every field contract ข้อ 4 names is stated, uninteresting ones included. Since
 // DECISION 4 the pull controller validates a token's whole history before
 // handing it on, so a shorthand history is refused as `invalid` rather than
 // pulled — and this fixture exists to reach the pull decision, not to test the
@@ -822,7 +822,7 @@ test('a seat with a dispatch running on it is marked working, on every scene', (
 // ── the page must not claim more than the evidence ───────────────────────────
 
 test('a declaration that exists but cannot be read fails closed', () => {
-  // §3: absent is the ONLY condition the bundled default is for. A directory
+  // ข้อ 3: absent is the ONLY condition the bundled default is for. A directory
   // where the file should be used to read as "no graph here", so the page drew
   // somebody else's four-team template and `check` exited 0.
   const dir = mkdtempSync(join(tmpdir(), 'graph-'))
@@ -850,14 +850,14 @@ test('a full front door is reported as blocked, never as watching', () => {
   assert.doesNotMatch(control.state, /no exception open/, 'so it cannot also be calm')
 })
 
-// §6: "readers that answer position or state go through [currentEntry]." A leg
+// ข้อ 6: "readers that answer position or state go through [currentEntry]." A leg
 // that has already been superseded can still write its outcome afterwards —
 // dispatch-facts.mjs's own example is a companion killed mid-review whose
 // `delivered` lands on disk after the token has moved on. `frontDoorStatus`
 // answers a STATE question (is a person blocking the gate) and used to read
 // `custody[length-1]` directly instead of `currentEntry(custody)`, so this late,
 // mismatched write could hide the person waiting and report the door as merely
-// busy — the exact disagreement §6 exists to make impossible.
+// busy — the exact disagreement ข้อ 6 exists to make impossible.
 test('a stale mismatched delivered from a superseded leg does not hide a person waiting at the front door', () => {
   const graph = { ...TWO_TEAMS,
     workflows: [{ workflow_id: 'full', name: 'Full', route: ['control', 'build', 'verify'] }] }

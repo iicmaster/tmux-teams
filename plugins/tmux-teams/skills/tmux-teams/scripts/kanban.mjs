@@ -46,7 +46,7 @@ const FONT_CSS_NAME = `pulse-fonts-${createHash('sha256').update(KANIT_FONT_CSS)
 // `complete` are what the runner *will* do next tick — printing them would put
 // a future on a card that only ever states the past.
 // `invalid` belongs here for the same reason as the other three and was the one
-// the board did not know (§14.2 item 2): the pull controller refuses to move a
+// the board did not know (ข้อ 14.2 item 2): the pull controller refuses to move a
 // token whose own history cannot be believed, and until this line the board drew
 // it as an ordinary card. A token the loop will not touch, rendered as one it is
 // working on, is the exact disagreement between board and loop this file exists
@@ -118,7 +118,7 @@ export function stateOf(graph, last) {
     case 'resumed':
       return { state: 'Resumed by the outer controller', detail: reason }
     case 'completed':
-      // Half closed, not finished (§5): the outer controller still has to read
+      // Half closed, not finished (ข้อ 5): the outer controller still has to read
       // the delivery as a whole, and until it has, "Completed" is the route's
       // own word for itself rather than a verdict anyone checked.
       return {
@@ -127,7 +127,7 @@ export function stateOf(graph, last) {
       }
     case 'audit_requested':
       return { state: 'Waiting for the outer controller to read it', detail: reason }
-    // §9, GitHub #52. Not a failure of the route and not a verdict: the leg
+    // ข้อ 9, GitHub #52. Not a failure of the route and not a verdict: the leg
     // that was going to read it died at the transport, and another one is
     // owed. Said in the board's own words rather than left to fall through to
     // `Unknown event`, which is how `audited` was unreadable here before.
@@ -288,7 +288,7 @@ export function readBoard(repo, now) {
     // `currentEntry`. A stale leg outcome trailing a genuinely current
     // `completed`/`answered`/etc. made this loop's own Done/unplaceable
     // classification disagree with the card describing the very same token —
-    // "Completed" on a card filed under Unplaceable. §6 exists precisely so a
+    // "Completed" on a card filed under Unplaceable. ข้อ 6 exists precisely so a
     // superseded leg's late outcome does not get read as current; reading it
     // here defeated that everywhere it mattered for this loop.
     const last = projectToken(item).current

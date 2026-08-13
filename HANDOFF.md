@@ -275,7 +275,7 @@ spawn เข้าไม่ถึง (`Authentication required` ทั้งท�
 
 **เราไม่เคยอ่านสเปก ACP มาก่อน** · พออ่านจริงเจอสามที่ที่ companion ไม่ทำตามที่โปรโตคอลบังคับ
 
-| ข้อบังคับ (ACP v1 prompt-turn §Cancellation) | เดิม | ตอนนี้ |
+| ข้อบังคับ (ACP v1 prompt-turn ข้อ Cancellation) | เดิม | ตอนนี้ |
 |---|---|---|
 | **MUST** ตอบ `session/request_permission` ที่ค้างด้วย outcome `cancelled` | **auto-approve ต่อ** แม้ส่ง `session/cancel` ไปแล้ว | ตอบ `cancelled` · เทสเชิงพฤติกรรม mutation แดงจริง |
 | **SHOULD** เลิก mark tool ที่ยังไม่จบว่ากำลังรัน | รายงานเป็น running ต่อ | เคลียร์ `activeToolIds` — **ไม่มีเทสค้ำ เหตุผลอยู่ในไฟล์เทส** |

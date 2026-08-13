@@ -3,13 +3,13 @@
 // The loop could ask and never hear back. `questioned` is written in five places,
 // the board renders "Waiting on a person to answer", the validator accepts the
 // word and `nextStep` knows how to resume from an answer — but **no code in this
-// system ever wrote `answered`**, and §4 forbids editing a ledger by hand. Every
+// system ever wrote `answered`**, and ข้อ 4 forbids editing a ledger by hand. Every
 // token parked on a question was parked permanently, and the answer deadline that
 // closes such a token with `abandoned` was standing in for people who could not
 // reply at all rather than for people who were slow.
 //
 // These tests run against a real ledger on disk and go through the sanctioned
-// writer, because that is the only path §4 allows and the only one that proves
+// writer, because that is the only path ข้อ 4 allows and the only one that proves
 // the line this produces is one the system would accept from anyone else.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'

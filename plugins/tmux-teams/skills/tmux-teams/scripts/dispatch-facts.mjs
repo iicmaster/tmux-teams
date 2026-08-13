@@ -91,7 +91,7 @@ const receiptValue = (value) => {
 /**
  * Join what a leg ASKED for (the ledger's `assigned` line, written before the
  * process spawned) against what ANSWERED (the dispatch receipt). Contract
- * §3.5.1 recorded the absence of this join in §14.1: the two facts were
+ * ข้อ 3.5.1 recorded the absence of this join in ข้อ 14.1: the two facts were
  * "visible in two places and contradicted in neither".
  *
  * Pure — takes the two records, reads no disk. Any module already holding both
@@ -281,7 +281,7 @@ export function readWorkItems(repo) {
   return { items, skippedLines }
 }
 
-// D1 (loop-system-contract.md §16): the agent-seat read facade
+// D1 (loop-system-contract.md ข้อ 16): the agent-seat read facade
 // (`agent-seat-reads.mjs`) needs exactly this aggregate reader and nothing
 // else. It imports this name rather than `readWorkItems` itself so that
 // `scripts/ledger-reader-ratchet.mjs`'s static-text scan does not need a new
@@ -363,7 +363,7 @@ export const RELEASING_EVENTS = new Set([
 // (retro-release-review, 2026-08-04, F1).
 //
 // `task_id` closes that gap `dispatch_id` cannot. `assigned` is required to
-// carry one (§4), and every outcome this matters for — `delivered`, `lost`,
+// carry one (ข้อ 4), and every outcome this matters for — `delivered`, `lost`,
 // and a harvester-written `reviewed` — carries the SAME task_id its own leg
 // was opened under (loop-runner.mjs:443 stamps `task_id: last.task_id` on
 // every harvested event, `reviewed` included). So an outcome that names a
@@ -472,7 +472,7 @@ export function currentEntry(custody) {
     // is enforced at the point bytes enter the ledger, not re-derivable here
     // (house rule: a branch that cannot answer says UNKNOWN, never "yes").
     // `reviewed_task` is different: it is REQUIRED on every `reviewed` line
-    // (contract §4) and the only sanctioned producer of one — the harvester
+    // (contract ข้อ 4) and the only sanctioned producer of one — the harvester
     // at loop-runner.mjs:703 — always stamps it from the delivery actually
     // being judged, at the moment of judging. A leg that died BEFORE the
     // holder's own delivery existed structurally cannot name that delivery's
@@ -482,7 +482,7 @@ export function currentEntry(custody) {
     // the contract never requires a reviewer's agent_id to equal the
     // holder's (loop-system-contract.md:843-847), and a reviewer that
     // happens to have an older leg elsewhere in this ledger (reject, rework,
-    // re-review by the SAME evaluator — the ordinary shape §1 describes) is
+    // re-review by the SAME evaluator — the ordinary shape ข้อ 1 describes) is
     // otherwise indistinguishable from one that never had a leg at all,
     // which this guard already trusts unconditionally two lines below. This
     // does not weaken the DIFFERENT-agent forgery defence above: it only
@@ -567,7 +567,7 @@ export function currentEntry(custody) {
       // shape of this check only counted a CONSECUTIVE run of that agent's
       // `assigned` lines, on the theory that two independent review rounds
       // (reject, rework, re-review — one team's own quality loop, contract
-      // §1) always have a different agent's `assigned` — the next worker leg
+      // ข้อ 1) always have a different agent's `assigned` — the next worker leg
       // — between the evaluator's two legs, so that shape would read as a run
       // of 1 and stay trusted. That theory was backwards: the rework leg
       // sitting between them is exactly what resets a "consecutive run"

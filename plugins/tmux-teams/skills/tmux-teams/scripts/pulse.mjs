@@ -6,12 +6,12 @@
 //
 // It PROBES rather than believes. Nothing here reads a "status: running" file,
 // because a worker announcing its own liveness is the same attestation the
-// outbox contract (SKILL.md §6) refuses to accept. Instead it compares three
+// outbox contract (SKILL.md ข้อ 6) refuses to accept. Instead it compares three
 // sets and reports the gaps between them:
 //
 //   FOOTPRINT  traces a dispatch leaves behind and cannot fake away
 //   ALIVE      processes that actually exist right now
-//   RECORDED   immutable events written when a run finished (§9)
+//   RECORDED   immutable events written when a run finished (ข้อ 9)
 //
 //   footprint + alive    + no record  -> running
 //   footprint + record                -> finished

@@ -5,12 +5,12 @@
 // was still alive. So a controller that read a delivery and sat silent for ten
 // minutes, and a leg a provider's rate limit killed sixteen seconds in before
 // the model ever got a turn, produced the same hard terminal — `abandoned`,
-// §4.7, nothing may follow — and the same recorded reason, "no outer-controller
+// ข้อ 4.7, nothing may follow — and the same recorded reason, "no outer-controller
 // audit answer in 10 minute(s)". For the second case that sentence is false:
 // nobody failed to answer, because nobody was ever asked. Three finished tokens
 // were destroyed that way on one quota-exhausted morning, one per deadline.
 //
-// §4.10 already invented the fact that settles it — `work_observed`, "did the
+// ข้อ 4.10 already invented the fact that settles it — `work_observed`, "did the
 // model take a turn" — but wired it to the custody ledger, and the controller's
 // own leg is spawned with `workItem: ''`, so the ledger write is a no-op for
 // precisely the leg that needed it. The fix carries the same fact on the one
@@ -131,7 +131,7 @@ test('a controller leg the transport killed asks a person, and abandons nothing'
 test('a controller that got its turn and said nothing is still abandoned', () => {
   // The conservative half, and the one that decides whether this change is a
   // narrowing or a hole: a leg that DID run and produced no verdict is the
-  // original failure §9 wrote `abandoned` for, and it still does.
+  // original failure ข้อ 9 wrote `abandoned` for, and it still does.
   const plan = planFor([...DELIVERED, requested()], () => deadAtTransport({ work_observed: true }))
 
   assert.equal(plan.action, 'expired', 'work was observed — this is silence, not a dead transport')
@@ -305,5 +305,5 @@ test('a token the controller already audited is not re-armed', () => {
   const settled = escalationFor([...DELIVERED, requested('pm-1'),
     { event: 'audited', agent_id: 'pm', verdict: 'accept', reason: 'the route holds' }])
 
-  assert.equal(settled, null, 'audited is §5 terminal — nothing follows it, including a retry')
+  assert.equal(settled, null, 'audited is ข้อ 5 terminal — nothing follows it, including a retry')
 })

@@ -24,7 +24,7 @@ the ADRs, or from the release notes.
   know the system. Start with `README.md` (install, the ten skills, the
   published pages) and
   [`skills/tmux-teams/references/loop-system-contract.md`](../skills/tmux-teams/references/loop-system-contract.md)
-  (§0–§9 for the model itself). Come back here once you're running something
+  (ข้อ 0–ข้อ 9 for the model itself). Come back here once you're running something
   and want to know what changed under you.
 
 ## What changed since v0.14.6
@@ -61,7 +61,7 @@ to break on an upgrade were each traced by hand:
   explicitly present and `false`.
 - **An existing `graph.json` still loads.** Two new keys on a seat override
   (`validateWorkflowGraph`), both *optional*: `display_model`, and `palette`
-  (contract §3.5). A declaration that has never heard of either hits no new
+  (contract ข้อ 3.5). A declaration that has never heard of either hits no new
   required field and no new key check that rejects it, and every board node
   falls back to the model it already showed
   (`plugins/tmux-teams/skills/tmux-teams/scripts/graph.mjs`, `modelLine`).
@@ -82,7 +82,7 @@ to break on an upgrade were each traced by hand:
   *workflow* graph's `source_digest` across versions — the digest
   `team-runtime.mjs` matches against is `team-graph-contract.mjs`'s, a
   different derivation over a different object — and because declarations
-  that say the same thing still hash alike, which is the property §3.2.1
+  that say the same thing still hash alike, which is the property ข้อ 3.2.1
   actually depends on. If you have built something outside this plugin that
   pins a workflow graph's digest, that is the one thing here that will notice
   the upgrade.
@@ -105,7 +105,7 @@ flag, no migration step.
   attempt. **Not covered:** `legCeiling` (`MAX_LEGS`) still counts every
   `assigned` leg unconditionally, transport-failed or not — this fix narrows
   the attempt budget specifically, not the total leg ceiling.
-  (GitHub #45 part 2; contract §4.10.)
+  (GitHub #45 part 2; contract ข้อ 4.10.)
 - **The planner stops proposing a pull the ledger writer is guaranteed to
   refuse.** On an escalation exit — a token parked at a later team, resumed,
   and released there — the old code picked the next hop as
@@ -116,7 +116,7 @@ flag, no migration step.
   was actually stuck in a loop with no exit in code. The planner now skips any
   team the token's own ledger shows it has already been admitted by, and
   finishes the route (`completed`) if none are left. (GitHub #42/#44;
-  contract §7.)
+  contract ข้อ 7.)
 - **The runner records why it passed over a token, once per tick.** Every
   refusal — busy seats, a person still being waited on, an unbelievable
   ledger, no standing brief, an escalation mark the ledger refused to
@@ -126,7 +126,7 @@ flag, no migration step.
   point of evaluating tokens. It answers "why is this not moving right now";
   it deliberately cannot answer "how long has it been stuck" — that's still
   the log's job. A dry run does not write it, same as the heartbeat file.
-  (Contract §11.3.)
+  (Contract ข้อ 11.3.)
 - **The panel-diversity check stops collapsing to one bucket.** Nine
   collision-decision functions in `party-mode`'s review-gate code were
   collapsed into one `laneIdentity()` with three explicit states —
@@ -174,7 +174,7 @@ flag, no migration step.
   omission, a closed seam. Since 2026-08-09 that is a RUNNING guard and not
   only a stated rule: AC135 drives the real companion against a recording
   agent and reads back what both session-opening calls carried.
-  `loop-system-contract.md` §13 prohibits a non-empty `mcpServers` outright,
+  `loop-system-contract.md` ข้อ 13 prohibits a non-empty `mcpServers` outright,
   and
   [`docs/adr/0003-mcp-server-containment-seam.md`](adr/0003-mcp-server-containment-seam.md)
   records why: an MCP server is a channel this system's own ledger, pull, and
@@ -190,8 +190,8 @@ flag, no migration step.
   a channel back into the ledger, the graph, or the loop's own state other
   than the sanctioned custody events its brief already asks for
   (`ledger-writer.mjs` / `acp-companion.mjs` remain the only two writers,
-  per §13). This is a separate fact from, and not the reason for, a known
-  limitation already on record: contract §14.2 item 5 documents that this
+  per ข้อ 13). This is a separate fact from, and not the reason for, a known
+  limitation already on record: contract ข้อ 14.2 item 5 documents that this
   system's own internal ledger-append lock (used between the runner and the
   companion, not exposed to a dispatched agent at all) cannot be proven safe
   against a stale takeover — a live-but-slow lock holder can still be stolen
@@ -209,12 +209,12 @@ you need the actual reasoning; this table only says where to look.
 
 | Change | Where | Opt-in? |
 | --- | --- | --- |
-| Attempt budget ignores legs that never got a turn | contract §4.10; `loop-runner.mjs`, `acp-companion.mjs` | No |
-| Planner skips route hops the token already holds | contract §7; `pull-controller.mjs`, `ledger-validate.mjs` | No |
-| `.tmux-teams/decisions/latest.json` records why a token was passed over | contract §11.3; `loop-runner.mjs` | No |
+| Attempt budget ignores legs that never got a turn | contract ข้อ 4.10; `loop-runner.mjs`, `acp-companion.mjs` | No |
+| Planner skips route hops the token already holds | contract ข้อ 7; `pull-controller.mjs`, `ledger-validate.mjs` | No |
+| `.tmux-teams/decisions/latest.json` records why a token was passed over | contract ข้อ 11.3; `loop-runner.mjs` | No |
 | Panel diversity: `laneIdentity()` replaces nine collision functions | `party-mode/scripts/review-profiles.mjs` | No |
 | A died run ages out of "process not found" | `graph.mjs` | No |
 | `/handoff` command file restored | `plugins/tmux-teams/commands/handoff.md` | No |
 | `display_model` on a seat | `workflow-graph.mjs`, `graph.mjs` | Yes — add the key |
 | Ledger-reader ratchet | `scripts/ledger-reader-ratchet.mjs` (repo dev tooling, not shipped) | Yes, and only if developing this plugin |
-| `mcpServers` stays closed | contract §13; `docs/adr/0003-mcp-server-containment-seam.md` | N/A — deliberately absent |
+| `mcpServers` stays closed | contract ข้อ 13; `docs/adr/0003-mcp-server-containment-seam.md` | N/A — deliberately absent |

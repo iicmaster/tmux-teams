@@ -1,4 +1,4 @@
-// kms.test.mjs — behaviour checks for the Team KMS store (SKILL.md §9).
+// kms.test.mjs — behaviour checks for the Team KMS store (SKILL.md ข้อ 9).
 // Every case runs kms.mjs as a subprocess with HOME pointed at a temp dir, so
 // the real store is never touched — each case gets its own temp repo.
 import { test } from 'node:test'

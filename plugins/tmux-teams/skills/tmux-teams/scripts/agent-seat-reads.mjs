@@ -1,8 +1,8 @@
 // agent-seat-reads.mjs — the three read-only questions an agent seat actually
 // needs, answered without ever handing it a filesystem path.
 //
-// D1 (loop-system-contract.md §16). A facade, not a server and not an MCP
-// registration — `mcpServers: []` is a literal on every ACP dispatch (§13),
+// D1 (loop-system-contract.md ข้อ 16). A facade, not a server and not an MCP
+// registration — `mcpServers: []` is a literal on every ACP dispatch (ข้อ 13),
 // and opening that seam is a containment decision nobody has taken. What this
 // file builds is the thing an MCP adapter would later wrap, useful today
 // because the runner and the board can call it directly.
@@ -75,7 +75,7 @@ import { loadWorkItemLedgers } from './dispatch-facts.mjs'
 // resembling a path-traversal argument is ever handed to `readFileSync`.
 const SAFE_ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$/
 
-// One outbox is one leg's whole delivery. Contract §4 rule 5 bounds a whole
+// One outbox is one leg's whole delivery. Contract ข้อ 4 rule 5 bounds a whole
 // TOKEN's ledger at 1 MiB; this is a single file, so the bound here is
 // smaller. `truncated: true` says so rather than silently handing back a
 // partial answer that reads as the complete one.
@@ -98,8 +98,8 @@ function lookupItem(repo, workItem) {
   return items.get(id) ?? null
 }
 
-// The three events contract §4 defines as closing a leg — the same
-// vocabulary the table in §4 names, not a fold over what "current" means
+// The three events contract ข้อ 4 defines as closing a leg — the same
+// vocabulary the table in ข้อ 4 names, not a fold over what "current" means
 // (that question, and the dispatch_id/task_id disambiguation it needs, stays
 // dispatch-facts.mjs's `currentEntry` alone; this file never re-derives it).
 const LEG_OUTCOME_EVENTS = new Set(['delivered', 'lost', 'reviewed'])

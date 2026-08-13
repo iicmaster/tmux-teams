@@ -16,7 +16,7 @@ for the diagrams.
 Current release: **0.20.0** (`.claude-plugin/marketplace.json` and
 `plugins/tmux-teams/.claude-plugin/plugin.json`). Upgrading from an earlier
 0.14.x release needs no change to an existing `graph.json` — the seat fields
-in §2 (`adapter`, `effort`, `display_model`) and the files in §6 are all
+in ข้อ 2 (`adapter`, `effort`, `display_model`) and the files in ข้อ 6 are all
 optional and additive.
 
 ---
@@ -127,7 +127,7 @@ it. In practice a door refusal is rare; the job an operator actually reaches
 for a dispatcher to do is **choosing which model runs the work** — this token
 is simple, give it the cheap seat; this one needs a multimodal seat; that
 model is rate-limited right now, use another. Admission control is still real
-and still enforced — §1 of the contract keeps the refusal ceiling — it is
+and still enforced — ข้อ 1 of the contract keeps the refusal ceiling — it is
 just the seat's secondary duty now.
 
 That routing is expressed per seat, not just per team. Any dispatcher,
@@ -136,7 +136,7 @@ worker, or evaluator entry in `graph.json` may override its team's default
 dispatch) and `effort`, in any combination. A seat may also declare
 `display_model`: a name shown on `graph.html`'s board, which can differ from
 the alias actually sent over the wire — the board can say `opus` while the
-dispatch sends whatever model string the adapter accepts. See §3 below for
+dispatch sends whatever model string the adapter accepts. See ข้อ 3 below for
 how a requested model is verified, not just asked for.
 
 **A seat may name several models, in order — the palette (new in 0.15.0).**
@@ -285,7 +285,7 @@ node plugins/tmux-teams/skills/tmux-teams/scripts/ledger-validate.mjs --repo <re
 `pulled` would invent a sender.
 
 `plugins/tmux-teams/skills/tmux-teams/references/loop-system-contract.md` is the
-SSOT for all of the above. Its §14.1 carries a standing list of clauses the
+SSOT for all of the above. Its ข้อ 14.1 carries a standing list of clauses the
 contract asserts that **no test enforces** — including the tick order itself —
 declared there rather than left to be discovered.
 
@@ -466,7 +466,7 @@ to a declared id to appear. A solid edge means a record exists; a dashed edge is
 declared but unobserved. The loop-health strip reads `runner-heartbeat.json`
 before presenting the diagram, so an idle loop and a dead runner do not look the
 same. A **missing** `graph.json` falls back to the bundled default declaration
-(see §1); an **invalid** one fails the page closed with the reason. What the
+(see ข้อ 1); an **invalid** one fails the page closed with the reason. What the
 page may draw, and why, is
 `plugins/tmux-teams/skills/tmux-teams/references/loop-graph-page.md`.
 
@@ -495,15 +495,15 @@ acceptance, and a `pass` that conflicts with terminal evidence is highlighted.
 
 **The worker answered but the loop says it produced nothing.**
 It wrote no outbox, or wrote a file whose last line is not an exact terminal
-marker. See §3. Check `<repo>/.tmux-teams/runner-logs/<task-id>.log` — every
+marker. See ข้อ 3. Check `<repo>/.tmux-teams/runner-logs/<task-id>.log` — every
 dispatch keeps its adapter stderr, on purpose.
 
 **A seat declares a non-Claude model or lane and I'm not sure it's honored.**
 It is. The automated loop reads each seat's declared `adapter` for which ACP
-lane carries the dispatch (`claude`, `codex`, or `agy` — §2 above), and reads
+lane carries the dispatch (`claude`, `codex`, or `agy` — ข้อ 2 above), and reads
 its declared `model` for both a request (`ACP_MODEL`) and a verification
 (`ACP_EXPECT_MODEL`) that the dispatch fails closed on before any prompt byte
-if the adapter doesn't answer with that exact name (§3). A seat naming
+if the adapter doesn't answer with that exact name (ข้อ 3). A seat naming
 neither inherits its team's default, and a team naming neither dispatches on
 `claude` at the account's default model — never a hardcoded pin. Standalone
 `acp-companion.mjs` dispatches select the lane and model the same way (see
@@ -513,7 +513,7 @@ Transports).
 don't know why.** Three refusals at the tick level, each stated rather than
 silent:
 - an **invalid** `graph.json` — the reason is in `runner-heartbeat.json`. A
-  **missing** one does not refuse; it silently uses the bundled default (§1);
+  **missing** one does not refuse; it silently uses the bundled default (ข้อ 1);
 - stale `pulse.json` — the runner logs `STALE` and refuses, because frozen
   evidence is worse than none. Is `pulse.mjs watch` running?
 - a receiving team at its WIP limit — logged as `BLOCK`. That is the queue
@@ -537,7 +537,7 @@ validate; every problem is printed with its line number. Repair by **appending**
 
 **An installed copy does not have my changes.** The install cache is
 version-keyed. Bump the version, push, then run both `marketplace update` and
-`plugin update` (§1).
+`plugin update` (ข้อ 1).
 
 **`node --test tests/` fails with MODULE_NOT_FOUND on Node 24.** Pass no path at
 all, or a glob like `tests/*.test.mjs`.
@@ -556,7 +556,7 @@ transport-independent:
 |---|---|---|
 | codex | ACP — `@agentclientprotocol/codex-acp@1.1.7` (drives the installed CLI; frontier model verified) | tmux |
 | claude | ACP — `@agentclientprotocol/claude-agent-acp` (pass `ANTHROPIC_MODEL=claude-opus-4-8`) | tmux |
-| agy | ACP — `antigravity-acp@1.0.0` (community adapter, source-audited 2026-07-21; needs `bun`; ToS risk — SKILL.md §8) | tmux |
+| agy | ACP — `antigravity-acp@1.0.0` (community adapter, source-audited 2026-07-21; needs `bun`; ToS risk — SKILL.md ข้อ 8) | tmux |
 
 The Gemini worker lane has been removed. The companion rejects that retired
 public agent name even when `ACP_CMD` is set, preventing an override from
@@ -621,7 +621,7 @@ shadowing, fake version output, profile drift, or an unsafe receipt directory
 fails before spawn; the resulting failure is represented by a null-operation
 receipt tombstone when publication is possible.
 
-See `plugins/tmux-teams/skills/tmux-teams/SKILL.md` §6-§8 for the contract,
+See `plugins/tmux-teams/skills/tmux-teams/SKILL.md` ข้อ 6-ข้อ 8 for the contract,
 tmux lane, and ACP lane.
 
 ### The components, in operating order
@@ -672,7 +672,7 @@ It includes snapshot identity/freshness, source diagnostics, run state,
 `dispatch_id` correlation, and explicit phase attribution. Pulse is read-only
 and reports `trust_level: advisory_same_uid`; suggested action codes are
 advisory and are never executed automatically. See
-`plugins/tmux-teams/skills/tmux-teams/SKILL.md` §10.
+`plugins/tmux-teams/skills/tmux-teams/SKILL.md` ข้อ 10.
 
 Pulse v4 is the default and keeps the same single
 `<repo>/.tmux-teams/pulse.json` SSOT. It preserves the bounded Pulse v3

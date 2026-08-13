@@ -20,7 +20,7 @@ any upgrade.
 
 | Situation | Use |
 |---|---|
-| One-shot task, scriptable, no human handoff | `codex exec` — headless; `--json` emits JSONL lifecycle events (watch `turn.completed` / `turn.failed`), `--output-last-message FILE` captures the final answer; `codex exec resume --last` continues a prior non-interactive session (references §5) |
+| One-shot task, scriptable, no human handoff | `codex exec` — headless; `--json` emits JSONL lifecycle events (watch `turn.completed` / `turn.failed`), `--output-last-message FILE` captures the final answer; `codex exec resume --last` continues a prior non-interactive session (references ข้อ 5) |
 | Human may take over the pane, interactive pickers/approvals, live mid-run steering | tmux TUI — this skill |
 
 If you only need an answer or a diff out of Codex, `codex exec` is structurally
@@ -68,7 +68,7 @@ is the most fragile part of the whole loop):
 ## 2. Submit a prompt
 
 The generic protocol (send-keys `-l` → Enter as a separate call → verify after ~2s →
-conditional retry) is owned by `tmux-teams` §2 — follow it verbatim, don't re-derive
+conditional retry) is owned by `tmux-teams` ข้อ 2 — follow it verbatim, don't re-derive
 it here. Codex specifics on top:
 
 - Observed swallow rate on this TUI: the paste-Enter was swallowed on **every
@@ -102,8 +102,8 @@ tmux capture-pane -t auto--myapp--codex -p -S -15
 |---|---|---|
 | `›` with empty composer AND no work marker | IDLE | dispatch next prompt |
 | `›` with your text still in composer | PENDING_INPUT | send `Enter` again |
-| `Working (Ns • esc to interrupt)` — lowercase `esc` (calibrated v0.144.1) | WORKING | wait (§4) |
-| Dialog listing a command/patch with options like `Yes` / `No` / `Always allow` | AWAITING_APPROVAL | §6 |
+| `Working (Ns • esc to interrupt)` — lowercase `esc` (calibrated v0.144.1) | WORKING | wait (ข้อ 4) |
+| Dialog listing a command/patch with options like `Yes` / `No` / `Always allow` | AWAITING_APPROVAL | ข้อ 6 |
 | Composer gone, shell prompt back | EXITED | verify via `pane_dead` / `pane_current_command` — a `Token usage:` summary MAY print on exit but is not guaranteed; relaunch + `codex resume --last` (same cwd) |
 
 Calibration notes (field-verified): the spinner prefix alternates `◦`/`•`; grep on
@@ -112,7 +112,7 @@ The `›` composer hint line stays visible **during** Working, so glyph-present 
 ≠ idle; idle = glyph present AND composer empty AND no work marker. Marker text
 churns between versions — recheck after any codex upgrade. The robust idle test is
 **stability**: N consecutive clean polls, not marker-appears-then-disappears (a
-fixed-interval poll can miss the whole working window; `tmux-teams` §3) — and even
+fixed-interval poll can miss the whole working window; `tmux-teams` ข้อ 3) — and even
 that is a heuristic; prefer structured events or the run's explicit artifact.
 
 ## 4. Completion detection — outbox file first, notify as diagnostics
@@ -127,7 +127,7 @@ never treat notify as the authoritative completion signal.
 Authoritative signal, in order:
 
 1. **Outbox file contract** (when dispatching via the mailbox pattern, `tmux-teams`
-   §6): the brief instructs Codex to write its answer to a run-scoped file, with
+   ข้อ 6): the brief instructs Codex to write its answer to a run-scoped file, with
    the sentinel as the file's LAST line. The only signal that never lied in field
    runs — but validate freshness + content + sentinel, not bare existence: Codex
    can write the file before its final message, write a partial file, or fail
@@ -144,7 +144,7 @@ Authoritative signal, in order:
    `input-messages`, `last-assistant-message`. If a notify chain already exists,
    never overwrite it — chain or fall back to (1)/(3).
 3. **Pane-stability loop** — 3 consecutive clean polls (no `esc to interrupt`),
-   always paired with a hard timeout (`tmux-teams` §3).
+   always paired with a hard timeout (`tmux-teams` ข้อ 3).
 
 Full session transcript is also on disk at
 `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` — a structured event log you can
@@ -154,7 +154,7 @@ rollout.
 ## 5. Capture results
 
 Scrollback capture protocol (command, capture-BEFORE-next-dispatch rule) is owned by
-`tmux-teams` §4. Codex-specific: prefer the outbox file (mailbox pattern), the notify
+`tmux-teams` ข้อ 4. Codex-specific: prefer the outbox file (mailbox pattern), the notify
 payload's `last-assistant-message`, or the rollout JSONL over pane text when you need
 the exact final answer — pane capture is the diagnostic, not the data path.
 
@@ -180,7 +180,7 @@ Send as ordinary text + Enter, one at a time:
 | `/permissions` | permission-profile picker: sandbox + approvals together (formerly `/approvals` in older builds; rename version unverified) |
 | `/new` | fresh task, same TUI |
 | `/fork` | branch the current task into a new one |
-| `/resume` | interactive picker (arrow keys) — from a script prefer `codex resume --last` at launch (cwd-scoped, see §1) |
+| `/resume` | interactive picker (arrow keys) — from a script prefer `codex resume --last` at launch (cwd-scoped, see ข้อ 1) |
 | `/review` | review current changes |
 | `/mcp` | list configured MCP tools (`/mcp verbose` for servers) |
 | `/init` | generate AGENTS.md (see `codex-md-management` for upkeep) |
@@ -206,7 +206,7 @@ Accumulated context is valuable — don't recycle sessions casually.
   block. Append `< /dev/null` whenever no supplemental stdin is intended.
 - `notify` is ignored in project-local `.codex/config.toml` and must precede TOML
   tables (verified via app-server `config/read`).
-- Orchestration-layer hijack of open-ended briefs — see §2.
+- Orchestration-layer hijack of open-ended briefs — see ข้อ 2.
 - No stable, versioned screen-scraping contract for the Codex TUI was found in the
   sources consulted — the markers above are field calibration, not an API.
 

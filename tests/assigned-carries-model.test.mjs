@@ -1,10 +1,10 @@
-// assigned-carries-model.test.mjs — GitHub #47 phase 2b (contract §3.5.1, §4).
+// assigned-carries-model.test.mjs — GitHub #47 phase 2b (contract ข้อ 3.5.1, ข้อ 4).
 //
 // Until a seat could declare a palette, "what model ran leg X" was answered by
 // inference: one seat, one model, look it up in the graph. A palette destroys
 // that inference for exactly the legs where the answer matters, so `assigned`
 // has to say it. This runs the REAL `acp-companion.mjs` against the stub ACP
-// agent, because it is the only component that writes `assigned` (§13) — a
+// agent, because it is the only component that writes `assigned` (ข้อ 13) — a
 // runner-side test using `spawnFn` proves the env was built, never that the
 // ledger recorded it.
 import { test } from 'node:test'
@@ -44,7 +44,7 @@ const runCompanion = (agentName, extraEnv) => {
   const ledger = seedLedger(cwd)
   const brief = join(cwd, 'brief.md')
   writeFileSync(brief, 'do the thing\n')
-  // §4 requires `agent_id` and `workflow` on `assigned`; the runner supplies
+  // ข้อ 4 requires `agent_id` and `workflow` on `assigned`; the runner supplies
   // both through the env, and without them the writer refuses the line — which
   // is the correct behaviour and would make this test silently vacuous.
   const env = { ...process.env, ACP_CMD: `${process.execPath} ${MOCK}`, ACP_STALL_POLICY: 'cancel',

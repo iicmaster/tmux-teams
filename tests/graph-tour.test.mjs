@@ -574,7 +574,7 @@ test('an edge told to leave the scene cannot be painted back in', () => {
   assert.deepEqual(perButtonOverrides.map((m) => m[0]), [],
     'a camera control that sizes itself differently breaks the row into a pile of parts')
 
-  // §2: the sink keeps a DASHED border because it is still not a team. The
+  // ข้อ 2: the sink keeps a DASHED border because it is still not a team. The
   // comment above the rule said exactly that while the rule never set
   // border-style, so it inherited `solid` from .tnode and the page drew a team.
   // Found by the UX review, measured on the served page.
@@ -850,7 +850,7 @@ test('a live leg outweighs the dry crawl, so it crawls on every scene', () => {
 
 // GitHub #34: an evaluator that is itself running (actively reviewing) must
 // light its incoming leg exactly as a running worker lights its incoming
-// assign — contract §5's 'live' means "a dispatch is running on that seat",
+// assign — contract ข้อ 5's 'live' means "a dispatch is running on that seat",
 // and that is role-agnostic. 'judge' (worker -> evaluator) was missing from
 // TOUR_SCRIPT's allowlist entirely, so a working evaluator drew no crawl and
 // no lit edge — the one working seat on the whole board that looked idle.

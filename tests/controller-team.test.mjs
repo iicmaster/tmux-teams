@@ -34,7 +34,7 @@ const team = (id, workers) => ({
 })
 
 // The controller as an ordinary team: its one worker IS `outer_controller_id`,
-// which is what turns the new rules on (§3 of the design).
+// which is what turns the new rules on (ข้อ 3 of the design).
 const GRAPH = {
   project_id: 'poc',
   outer_controller_id: 'pm',
@@ -65,7 +65,7 @@ const custody = (dir, token) => {
   return readFileSync(path, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))
 }
 
-// The operator: an agent writing on a person's behalf (§6.4 of the design).
+// The operator: an agent writing on a person's behalf (ข้อ 6.4 of the design).
 // It goes through `admit.mjs` rather than straight at the writer, because the
 // front door has a WIP rule of its own and the writer cannot see the graph.
 const admit = (dir, token) => admitWorkItem(dir, {

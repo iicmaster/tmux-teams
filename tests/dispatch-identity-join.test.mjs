@@ -1,7 +1,7 @@
-// dispatch-identity-join.test.mjs — contract §3.5.1 / AC136: what a leg ASKED
+// dispatch-identity-join.test.mjs — contract ข้อ 3.5.1 / AC136: what a leg ASKED
 // for and what ANSWERED it are joined, and can now contradict each other.
 //
-// §14.1 stated the gap in its own words: "`assigned` records the request (phase
+// ข้อ 14.1 stated the gap in its own words: "`assigned` records the request (phase
 // 2b), and `identity_status: matched` on the receipt verifies the answer, but
 // nothing joins the two — a leg dispatched on entry 2 and answered by some other
 // model would be visible in two places and contradicted in neither".

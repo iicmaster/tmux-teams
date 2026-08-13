@@ -9,11 +9,11 @@ Accepted
 `admit.mjs`'s doc comment has said, since the front door existed, that
 `options.actor` must be `human:<name>` even when an agent relays the request
 on a person's behalf — "the actor names who DECIDED, and the person decided
-(§6.4.1)". Nothing enforced it. `EVENT_SPEC.opened` in `ledger-validate.mjs`
+(ข้อ 6.4.1)". Nothing enforced it. `EVENT_SPEC.opened` in `ledger-validate.mjs`
 carried no `actor_kind`, so `appendEvent`/`validateLedger` accepted
 `actor: 'human:master'`, `actor: 'agent:reopen-controller'`, `actor:
 'agent:literally-anything'`, and an absent actor equally. The contract
-(§4.7) already enforces this exact rule for `opened`'s sibling event,
+(ข้อ 4.7) already enforces this exact rule for `opened`'s sibling event,
 `answered`: "the only event whose actor KIND is part of its validity... An
 operator agent may relay the words and then names itself in `relayed_by` —
 the actor says who DECIDED." `opened` never got the same treatment, and
@@ -35,7 +35,7 @@ Three readings were on the table:
 2. **Delete the claim.** `admit.mjs`'s doc comment describes a rule nothing
    enforces; make the code match the comment by removing the comment, and
    treat `actor` on `opened` as "whoever wrote the bytes" like most other
-   events (§4.1's general rule).
+   events (ข้อ 4.1's general rule).
 3. **Split the facts.** Keep a writer identity (`actor: 'agent:operator'`)
    separate from an independently meaningful, authenticated decision
    principal (e.g. `human_principal: 'human:alice'` plus an immutable
@@ -52,7 +52,7 @@ field — already documented for `answered`, now shape-validated
 (`bad_relayed_by`) for any event that carries it, not only `opened` and
 `answered`.
 
-This is a deliberate, intentionally-breaking exception to §4.1's general rule
+This is a deliberate, intentionally-breaking exception to ข้อ 4.1's general rule
 ("the actor is the component that performed the write, never the agent the
 line is about"). `opened` and `answered` are the two events whose SUBJECT is
 a person's decision rather than a mechanical step the runner or a companion

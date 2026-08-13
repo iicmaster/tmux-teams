@@ -123,7 +123,7 @@ node <skill-root>/scripts/kanban.mjs check <repo>
 
 The graph answers who exists and how they are wired. The kanban answers where a
 token is held. Pulse answers what transport activity is happening now. KMS,
-described in §9, records what a run taught the PM after that run is judged.
+described in ข้อ 9, records what a run taught the PM after that run is judged.
 
 Until 2026-08-09 that framing hid a dependency: the runner's entire occupancy
 answer — `busy` and `busyTasks` — was built from `pulse.json` alone, so a
@@ -169,7 +169,7 @@ MUST never be killed by automation.
   when the orchestrator has one (mailbox runs do) keeps concurrent runs on the
   same folder apart.
 - **Windows, never split panes.** Each TUI needs the full 220×50 — a squeezed pane
-  reflows/wraps the work marker and silently breaks §2 submit-verify and §3
+  reflows/wraps the work marker and silently breaks ข้อ 2 submit-verify and ข้อ 3
   completion detection. Windows keep full size; humans switch with `C-b w`.
 - **Pane id is the only stable handle.** tmux auto-renames windows after the
   foreground process unless `automatic-rename off` is set; window names are for
@@ -240,9 +240,9 @@ echo TEAM_DONE
 
 - Run via Bash `run_in_background` (one team) or Monitor (streaming several).
 - Known done-markers as extra signal: claude prints `✻ Worked for Xs`; codex
-  markers/states are calibrated in `codex-tmux-driver` §3 — use those verbatim.
+  markers/states are calibrated in `codex-tmux-driver` ข้อ 3 — use those verbatim.
 - Always pair with a timeout; on "never started" warnings, first re-check the
-  input box (see §2) before assuming the team is slow.
+  input box (see ข้อ 2) before assuming the team is slow.
 
 Live status board — who is busy right now (one session = one query):
 
@@ -271,7 +271,7 @@ paraphrase from memory.
 
 - **PM dispatches; it never does the worker's task itself.** Catching yourself
   editing a file the worker owns (because it's faster, or the worker stalled) means
-  re-dispatch, not ghost-write: PM-authored work skips the §6 self-check contract, so
+  re-dispatch, not ghost-write: PM-authored work skips the ข้อ 6 self-check contract, so
   nothing captures its evidence and no one verifies it.
 - One brief = one deliverable + output format + explicit constraints
   ("ห้ามแก้ไฟล์ใดๆ ทำแค่อ่านและวิเคราะห์").
@@ -287,7 +287,7 @@ paraphrase from memory.
   persona block into every brief (decided 2026-07-16): it duplicates a per-project file
   that already works and couples the transport to a manifest format. A persona is
   costume anyway — it carries no power to verify work; that job is the outbox
-  self-check contract in §6.
+  self-check contract in ข้อ 6.
 - Track a status board (team / session / model / task / status); report once
   with results compared side-by-side, not play-by-play.
 - Cleanup when done: `tmux kill-session -t "=auto--myapp"` — one exact-match call
@@ -376,15 +376,15 @@ sibling skills (same skill root / same plugin `skills/` dir):
   template over the objective to produce the dispatch plan: worker split,
   per-worker brief + `verify_cmd`, dependency order, stakes level. Then
   materialize that plan in the runtime task tracker (Claude Code:
-  `TaskCreate`; other runtimes: the §6 shared task board) — one task per
+  `TaskCreate`; other runtimes: the ข้อ 6 shared task board) — one task per
   worker carrying the brief summary, `verify_cmd`, and `blockedBy` for
   dependency order. Only then dispatch, and update each task's status as its
   outbox lands. **No sqthink plan + no tasks = no dispatch** — this replaces
   the earlier multi-worker/high-stakes-only rule; a single trivial task still
   gets a (short) sqthink pass and one task entry.
-- **After collection — completion gate:** the outbox self-check contract (§6)
+- **After collection — completion gate:** the outbox self-check contract (ข้อ 6)
   is the worker-level gate; the run-level gate escalates by stakes:
-  - Normal runs: PM adversarial verify (§6 / mailbox-run.js Verify stage) —
+  - Normal runs: PM adversarial verify (ข้อ 6 / mailbox-run.js Verify stage) —
     re-run the worker's own evidence command yourself.
   - High-stakes runs (production impact, multi-file, or Master asked for
     review): hand the collected evidence to `party-mode`'s bundled ACP-only
@@ -394,7 +394,7 @@ sibling skills (same skill root / same plugin `skills/` dir):
     reviewers and include AGY; AGY failure or any incomplete/invalid panel is
     blocked. Matching findings from two or more final reviewers are must-fix.
 - **Precedence:** when the overall task already runs under `party-mode`
-  (party-auto), party-mode's phases own the gates — §7 is then just the shape
+  (party-auto), party-mode's phases own the gates — ข้อ 7 is then just the shape
   of its Phase 5 execution and Phase 6 evidence for tmux runs, not a second
   workflow with its own plan/grill/review cycle.
 - When the run was party-gated, report in party-mode Phase 8 shape (Shipped /
@@ -402,12 +402,12 @@ sibling skills (same skill root / same plugin `skills/` dir):
 
 ## 8. ACP transport lane (added 2026-07-19, transport-equivalence proven by PoC)
 
-The mailbox **contract** (§6 brief + outbox + typed markers + PM verify) is
+The mailbox **contract** (ข้อ 6 brief + outbox + typed markers + PM verify) is
 transport-independent. Two transports carry it:
 
 | transport | for | mechanism |
 |---|---|---|
-| `tmux` | any TUI without ACP; codex/agy fallback | deliver.sh + markers (§1-§6) |
+| `tmux` | any TUI without ACP; codex/agy fallback | deliver.sh + markers (ข้อ 1-ข้อ 6) |
 | `acp` | codex (`@agentclientprotocol/codex-acp@1.1.7`, frontier-verified); claude (`@agentclientprotocol/claude-agent-acp`, official adapter — e2e-verified 2026-07-21, Task subagents work, effort via `MAX_THINKING_TOKENS`); agy (`antigravity-acp@1.0.0`, community adapter — audited + e2e-verified 2026-07-21, bun required, see ToS note) | `scripts/acp-companion.mjs` — JSON-RPC over stdio |
 
 The Gemini lane has been removed. The companion normalizes and rejects that
@@ -445,7 +445,7 @@ ANTHROPIC_MODEL=k3 \
   node <skill-root>/scripts/acp-companion.mjs claude <repo> <task-id> <brief-file> [stall-sec]
 ```
 
-The brief file carries the SAME §6 contract text; the worker writes the same
+The brief file carries the SAME ข้อ 6 contract text; the worker writes the same
 `.mailbox-out/<id>` outbox; the companion enforces the same last-line terminal
 match and exits 0=done/blocked/failed, 3=no-or-invalid outbox. The optional
 positional duration is an inactivity/stall lease, never a total task timeout.
@@ -544,7 +544,7 @@ resumes automatically.
 `gpt-5.6-sol` + `ultra` work exactly as the Frontier-always directive
 requires — e2e-verified 2026-07-19. Do NOT use the old zed-industries binary
 (stale embedded core; the companion maps its failure signatures to a clear
-message). tmux remains the fallback lane for codex and agy. §7's
+message). tmux remains the fallback lane for codex and agy. ข้อ 7's
 plan/tasks-before-dispatch rule applies to BOTH transports.
 
 **agy over ACP is UNLOCKED (2026-07-21)** via the community adapter
@@ -601,7 +601,7 @@ node <skill-root>/scripts/kms.mjs recall <repo> [terms...] [--worker W] [--limit
   store is worker-writable wherever it sits — a `$HOME` path would not have
   changed that, it would only have hidden meddling from `git status` as well. A
   PM event records the PM's verdict; no event replaces the PM re-running the check.
-  Do not build a "verified by KMS" claim on top of it — §6's tamper rule applies
+  Do not build a "verified by KMS" claim on top of it — ข้อ 6's tamper rule applies
   here too.
 - **Best-effort, never blocking.** A failed KMS write must not fail a run that
   otherwise worked; `mailbox-run.js` reports the error and continues. But it
@@ -623,7 +623,7 @@ node <skill-root>/scripts/kms.mjs recall <repo> [terms...] [--worker W] [--limit
 - **Do not confuse the two `.tmux-teams` paths.** `<repo>/.tmux-teams/kms/` is
   this memory and belongs in the project. `~/.tmux-teams/mailbox-run/` is the
   delivery CONTROL dir (inboxes, stop flag, pidfile) and must stay OUTSIDE the
-  repo — that is the control/sandbox split §6 depends on. Moving either one to
+  repo — that is the control/sandbox split ข้อ 6 depends on. Moving either one to
   where the other lives breaks a different guarantee.
 
 Event body — `key: value` lines, `task_id` and `worker` required. `kms.mjs`
@@ -663,7 +663,7 @@ re-run a stored `verify_cmd` blindly — re-derive it from the plan instead.
 
 ## 10. Pulse and the three projections
 
-§9 remembers what finished. `scripts/pulse.mjs` shows what is happening now,
+ข้อ 9 remembers what finished. `scripts/pulse.mjs` shows what is happening now,
 scoped to this repo and to workers this system dispatched. A publish separates
 transport evidence, loop wiring and token custody:
 
@@ -768,7 +768,7 @@ duplicate the watcher, and reclaimed when a prior watcher died. Calling
 session.
 
 **It probes; it does not believe.** No status file is read, because a worker
-announcing its own liveness is the attestation §6 rejects. Three sets are
+announcing its own liveness is the attestation ข้อ 6 rejects. Three sets are
 compared and the GAPS are the product:
 
 - **footprint** — `<repo>/.tmux-teams/dispatch/<id>.md`, written at dispatch by
@@ -785,7 +785,7 @@ compared and the GAPS are the product:
   any repo called api). A pane whose shell has **no child** is an idle prompt,
   not a running job: `mailbox-run` opens a shell and types `codex` into it, so
   the shell outlives a crashed worker.
-- **recorded** — §9 events, matched by id *and* recency: ids get reused, and
+- **recorded** — ข้อ 9 events, matched by id *and* recency: ids get reused, and
   yesterday's record must not settle today's dispatch. All events appear in
   recent history, but only an event with an explicit `pm_verdict` of `pass`,
   `reject`, or `unresolved` settles the live run or enters PM statistics. An ACP

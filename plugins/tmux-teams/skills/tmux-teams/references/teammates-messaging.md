@@ -123,7 +123,7 @@ What this buys, copied from teammates semantics:
 - **Queueing at turn boundary** — messages sent while an agent works wait until
   it is idle, never interleaving with a running task.
 - **The Enter-verify-retry dance is implemented once**, in the loop, not
-  re-improvised by the PM on every dispatch (§2 of SKILL.md stays true, it just
+  re-improvised by the PM on every dispatch (ข้อ 2 of SKILL.md stays true, it just
   has a single owner).
 - PM "sends" by writing a file — trivially auditable, replayable, and broadcast
   is a for-loop over inboxes.
@@ -141,7 +141,7 @@ Copy that through the **output contract in every brief**:
 - Completion detection = watch for the outbox file (or `TEAM_DONE <id>` in the
   pane as a secondary signal), not marker-disappears heuristics. This is our
   `idle_notification` equivalent — explicit, not inferred.
-- Kills the scrollback problem (§4 of SKILL.md): the full answer is in a file;
+- Kills the scrollback problem (ข้อ 4 of SKILL.md): the full answer is in a file;
   `capture-pane -S -300` becomes a debugging aid, not the data path.
 - Keep the stability-poll (3 clean polls of no work-marker) as the **fallback**
   for agents that ignore the contract, paired with a timeout as before.
@@ -174,7 +174,7 @@ This preserves partial results — the thing raw `kill-session` destroys.
 
 - **Turn-boundary injection by a runtime** — TUIs won't read files on their
   own; the delivery loop *is* our runtime, and it still rides on send-keys.
-  All §2 submission-verification lessons remain load-bearing.
+  All ข้อ 2 submission-verification lessons remain load-bearing.
 - **Automatic idle notifications** — ours are only as reliable as the output
   contract + fallback polling. Assume agents will sometimes forget the
   sentinel.
@@ -213,12 +213,12 @@ Pattern-level field facts — trust these over assumptions:
   window got both versions submitted back-to-back. Halt deliver.sh (stop flag →
   wait for PID exit) before touching the inbox or the pane. Also bound open-ended
   briefs and prepend "work alone — no subagents" for OMX-equipped tools; see
-  `tmux-teams` §5-6 and `codex-tmux-driver` §2.
+  `tmux-teams` ข้อ 5-6 and `codex-tmux-driver` ข้อ 2.
 
 Codex-specific calibration from this run (verbatim markers incl. lowercase
 `esc to interrupt`, boot-dialog single-keypress behavior, notify-chain no-op
 details, `/status` flag-override verification) is owned by `codex-tmux-driver`
-§§1-4 — the driver owns tool facts; this doc owns the pattern.
+ข้อ 1-4 — the driver owns tool facts; this doc owns the pattern.
 
 Residual risks for production (from the completion review): embed the sentinel as
 the outbox file's last line (today it's pane-only); artifact-presence is not a

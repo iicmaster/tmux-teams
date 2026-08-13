@@ -1,6 +1,6 @@
 // token-projection.test.mjs — pins the shape of the ONE per-token projection
 // (D2), and proves each field is a real fold of custody, not a guess:
-//   * `current`/`releasing` delegate to the same placement rule contract §6
+//   * `current`/`releasing` delegate to the same placement rule contract ข้อ 6
 //     already centralised (dispatch-facts.mjs's currentEntry/RELEASING_EVENTS)
 //     — never a second implementation of "which leg is current".
 //   * `placed_at`/`pulled_from` are the questions kanban.mjs and graph.mjs
@@ -54,7 +54,7 @@ test('current delegates to currentEntry — never a second "which leg is current
     'a naive last-element read returns the superseded leg\'s delivered line and must not pass here')
 })
 
-test('releasing is true exactly on the contract §6 RELEASING_EVENTS set, false otherwise', () => {
+test('releasing is true exactly on the contract ข้อ 6 RELEASING_EVENTS set, false otherwise', () => {
   for (const event of RELEASING_EVENTS) {
     const custody = [{ at: '2026-08-01T09:00:00.000Z', event, work_item: 'tok-1', agent_id: 'a' }]
     assert.equal(projectToken(itemOf(custody)).releasing, true, `${event} must read as releasing`)

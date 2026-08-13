@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// kms.mjs — Team KMS: run memory for the tmux-teams PM loop (SKILL.md §9).
+// kms.mjs — Team KMS: run memory for the tmux-teams PM loop (SKILL.md ข้อ 9).
 //
 // One event = one immutable file under <repo>/.tmux-teams/kms/events/. An ACP
 // dispatch can append a mechanical transport-terminal event first and a PM can

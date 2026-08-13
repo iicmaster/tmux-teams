@@ -110,9 +110,9 @@ over HTTP, then MEASURE — `getComputedStyle(el).animationName`, count
 `animateMotion` nodes and match `path` against each wire's `d`, compare
 `getBoundingClientRect()` of a halo with the card it rings. Every wire carries
 `data-from`/`data-to` so a check never reverse-engineers geometry.
-`plugins/tmux-teams/skills/tmux-teams/references/loop-graph-page.md` §9 is the
+`plugins/tmux-teams/skills/tmux-teams/references/loop-graph-page.md` ข้อ 9 is the
 method for this, and the rest of that file is what `graph.html` may draw. It is
-a chapter of `references/loop-system-contract.md` §12 — **the contract is the
+a chapter of `references/loop-system-contract.md` ข้อ 12 — **the contract is the
 one SSOT** and wins if the two ever disagree.
 
 ## Model policy for every ACP route

@@ -72,7 +72,7 @@ export function readWorkflowGraph(repo) {
     try {
       text = readFileSync(join(repo, '.tmux-teams', name), 'utf8')
     } catch (error) {
-      // Absent — and ONLY absent — is what the bundled default is for (§3).
+      // Absent — and ONLY absent — is what the bundled default is for (ข้อ 3).
       if (error?.code === 'ENOENT') continue
       // Anything else is a declaration that exists and could not be read: a
       // directory where the file should be, a permission error, a bad mount.
@@ -88,7 +88,7 @@ export function readWorkflowGraph(repo) {
     try {
       raw = JSON.parse(text)
     } catch (cause) {
-      // Present and unreadable is not the same fact as absent, and §3 says an
+      // Present and unreadable is not the same fact as absent, and ข้อ 3 says an
       // invalid graph fails closed. A single `catch` used to cover the read and
       // the parse together, so a corrupt declaration fell through to the
       // bundled template and the page rendered somebody else's project while
@@ -140,7 +140,7 @@ export function readRunnerHeartbeat(repo) {
 }
 
 // A zero the runner measured is a fact worth printing; a zero this page invented
-// because a field was absent is the exact lie §12.7 forbids. One helper, so the
+// because a field was absent is the exact lie ข้อ 12.7 forbids. One helper, so the
 // two can never be confused.
 const measured = (value) => (typeof value === 'number' && Number.isFinite(value) ? String(value) : 'not measured')
 
@@ -380,7 +380,7 @@ const laneLine = (run) => run ? `${run.worker || 'unknown'} · ${run.transport |
 // `display_model` comes from its palette's FIRST entry (workflow-graph.mjs,
 // `paletteFirst`), while dispatch may have chosen any entry — so passing it
 // blindly let entry 0's declared name replace a verified model that a
-// different candidate actually ran. That is the same §12.7 honesty-law-2 leak
+// different candidate actually ran. That is the same ข้อ 12.7 honesty-law-2 leak
 // this file closed one commit earlier, arriving through the palette instead of
 // through "no run at all"; the release review found it by rendering a probe.
 //
@@ -400,12 +400,12 @@ const modelLine = (run, fact, displayModel) => {
   // (e.g. qwen3.8-max-preview behind a dispatch alias like `opus`). It
   // TRANSLATES a model that was verified; it never stands in for one.
   //
-  // It used to be the first branch, above `if (!run)`, and that broke §12.7
+  // It used to be the first branch, above `if (!run)`, and that broke ข้อ 12.7
   // honesty law 2 in both directions: a seat that had never been dispatched
   // printed `model <declared>` in the identical shape a verified model uses,
   // and a seat whose run WAS verified had that verified name silently replaced
   // by whatever the graph declared. A reader had no way to tell a claim from a
-  // measurement. Found by the v0.15.0 release review; §12.7.2 already said
+  // measurement. Found by the v0.15.0 release review; ข้อ 12.7.2 already said
   // this, and the code did not.
   if (run.model) return displayModel || run.model
   const asked = fact?.requested_model && fact.requested_model !== 'none' ? fact.requested_model : ''
@@ -434,7 +434,7 @@ export function frontDoorStatus(graph, items, occupancy) {
   }
   const team = graph.teams.find((entry) => entry.team_id === controlId)
   const held = occupancy?.held?.get(controlId) || []
-  // §6: a STATE question goes through `currentEntry`, never `custody[length-1]`.
+  // ข้อ 6: a STATE question goes through `currentEntry`, never `custody[length-1]`.
   // A leg that has been superseded can still write its outcome afterwards — a
   // companion killed mid-review writes its `delivered` on the way out — and a
   // raw last-line read let that late, mismatched write stand in for the person
@@ -489,7 +489,7 @@ const controllerState = (run, items, occupancy, graph = null) => {
   // would be a fourth thing to learn, but the class and the legend both name it.
   if (door.blocked) return { status: 'blocked', copy: door.copy }
   if (run && WORKING.has(run.state)) return { status: 'working', copy: 'reviewing the board now' }
-  // §6: this counts how many tokens ARE parked right now — a STATE question —
+  // ข้อ 6: this counts how many tokens ARE parked right now — a STATE question —
   // so it goes through `currentEntry`, same reason as `waiting` above.
   const parked = [...items.values()]
     .filter((item) => currentEntry(item.custody)?.event === 'escalated').length
@@ -633,11 +633,11 @@ export function renderGraphPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, r
   // sits on that seat, nothing is waiting for it.
   const holding = new Set()
   for (const item of items.values()) {
-    // §6: "is a live token sitting on this seat right now" is a STATE question,
+    // ข้อ 6: "is a live token sitting on this seat right now" is a STATE question,
     // and `currentEntry` is the only permitted placement read — the same rule
     // `teamOccupancy` already follows one file over. A raw last-line read here
     // was a second, independent implementation of that same placement logic,
-    // which is the exact defect §6 exists to prevent.
+    // which is the exact defect ข้อ 6 exists to prevent.
     const last = currentEntry(item.custody)
     if (!last || RELEASING_EVENTS.has(last.event)) continue
     if (last.agent_id) holding.add(last.agent_id)
@@ -666,7 +666,7 @@ export function renderGraphPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, r
     // person. Both mean the same thing for the board — this team cannot move
     // that work on its own — and neither is the same as being busy.
     const held = occupancy.held.get(team.team_id) || []
-    // §6: whether this team is stuck right now is a STATE question about a
+    // ข้อ 6: whether this team is stuck right now is a STATE question about a
     // token it holds, so it reads the same placement entry `currentEntry`
     // returns rather than the raw last line.
     const stuck = held.some((workItem) => {
@@ -737,7 +737,7 @@ export function renderGraphPage(repo, snapshot, { fontCssName = FONT_CSS_NAME, r
   // What actually landed. `audited` is the only event that means the controller
   // read the finished delivery and accepted it: `completed` is half closed and
   // `abandoned` is work that left rather than work that arrived.
-  // §6: "has this token finished" is a STATE question, so it reads the same
+  // ข้อ 6: "has this token finished" is a STATE question, so it reads the same
   // placement entry every other position/state reader on this page does.
   const delivered = [...items.values()]
     .filter((item) => currentEntry(item.custody)?.event === 'audited').length
