@@ -84,6 +84,24 @@ plugins/tmux-teams/skills/tmux-teams/scripts/acp-companion.mjs claude <run-dir> 
   `TEAM_DONE <task-id>` · บรีฟที่สั่ง "JSON object เดียว ไม่มีอะไรอื่น" **ขัดกับ transport โดยโครงสร้าง**
   · ผู้เรียกต้องตัดบรรทัดท้ายก่อน parse
 
+### 🔴 `unverified` ของ AGY ในตารางข้างบนไม่จำเป็นต้องเป็นแบบนั้น — สมมติฐานเก่าผิด
+
+CLAUDE.md เคยเขียนว่า adapter ของ agy *"rejects EVERY model config value"* จึงยกเว้นให้ AGY
+ไม่ต้อง `matched` · **วัดสดกับ agy 1.1.12 เมื่อ 13 ส.ค. — มันรับทั้งสองแบบ**
+
+```
+โฆษณา  "gemini-3.6-flash-high\tGemini 3.6 Flash (High)"        ← TAB
+set    "gemini-3.6-flash-high"           → ACCEPTED · currentValue ชื่อเปล่า
+set    "gemini-3.6-flash-high\tGemini…"  → ACCEPTED · currentValue เต็ม
+```
+
+**สองอย่างที่ทำให้สรุปผิด:** `assertConfigOptionValue` เทียบตรงตัวเป๊ะ **ชื่อเปล่าจึงถูกปฏิเสธโดยเราเอง
+ก่อนถาม adapter** · และสตริงตัวที่สองในประโยคเก่ามี**ช่องว่าง**ตรงที่ของจริงเป็น**แท็บ** — แท็บที่ล็อก
+เรนเดอร์เป็นช่องว่าง แล้วมีคนคัดกลับมาใช้ · **สิ่งประดิษฐ์จากการคัดลอกกลายเป็นข้อยกเว้นถาวร**
+
+**แก้แล้ว — PR #63 merge เข้า `main` แล้ว** · ต่อไป `unverified` บนเลนนั้นคือ**เรื่องที่ต้องสืบ ไม่ใช่สิทธิ์ที่มีอยู่**
+· **ถ้าจะเขียนข้อยกเว้นใหม่ ให้วัด adapter ก่อน และวางค่าที่ escape แล้ว ไม่ใช่ค่าที่เรนเดอร์แล้ว**
+
 ### ช่องว่างของการบันทึกเกตที่เพิ่งเห็น
 
 `effective_identity` บนเส้นทาง direct ACP คืน **alias (`opus`, `sonnet`) ไม่ใช่รหัสโมเดล** ·

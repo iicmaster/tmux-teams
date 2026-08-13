@@ -295,18 +295,34 @@ not optional, and only a later explicit instruction from Master changes either.
    this path it is the only evidence of who actually read the diff. Write the
    brief to a file and point the lane at it; never paste a long brief.
 
-   **The AGY lane is exempt from `identity_status: matched`, and from nothing
-   else** (Master, 2026-08-07). Measured that day: the `antigravity-acp` adapter
-   rejects EVERY model config value — both `gemini-3.6-flash-high` and the
-   `"gemini-3.6-flash-high Gemini 3.6 Flash (High)"` string it reports for itself
-   — and runs only its own default, which IS `gemini-3.6-flash-high`. Since a
-   model cannot be requested there, it can never be matched. So for AGY only:
-   record the `effective_identity` the run actually reported and accept
-   `unverified`. **We can check afterwards what ran; we cannot bind beforehand
-   what should.** That is weaker than an attestation and it is the reason this
-   exemption names one lane, one field, and one adapter. If a review is accepted
-   from AGY without its reported identity written down, the release is not
-   gated — it is unrecorded.
+   **The AGY exemption from `identity_status: matched` rested on a false premise,
+   and the premise is now disproven** (measured 2026-08-13, twice: in PR #63 and
+   again live from this repo). The 2026-08-07 note said the `antigravity-acp`
+   adapter "rejects EVERY model config value". It does not. Probed directly
+   against agy 1.1.12:
+
+   ```
+   advertised            "gemini-3.6-flash-high\tGemini 3.6 Flash (High)"   ← a TAB
+   set "gemini-3.6-flash-high"          -> ACCEPTED, currentValue bare
+   set "gemini-3.6-flash-high\tGemini…" -> ACCEPTED, currentValue with the tab
+   ```
+
+   **Both are accepted.** Two things produced the old conclusion. Our own
+   `assertConfigOptionValue` compared the requested value against the advertised
+   list by exact equality, so the bare id — the form the adapter actually
+   prefers — was refused BY US before the adapter was ever asked. And the second
+   string in that old sentence has a SPACE where the real value has a tab: a tab
+   rendered as whitespace in a log, copied back, and refused for not existing.
+   A transcription artefact became a permanent exemption.
+
+   So AGY's model CAN be requested and its identity CAN be matched. The fix is
+   merged (PR #63). Treat `unverified` on that lane as a thing to investigate,
+   not a standing allowance — and if you re-add an exemption, measure the
+   adapter first and paste the escaped value, never the rendered one.
+
+   **What does not change: RECORDING.** If a review is accepted from AGY without
+   its reported identity written down, the release is not gated — it is
+   unrecorded. That was always the load-bearing half.
 
    The exemption is about MATCHING, not about recording, and the direct-ACP path
    above widens the recording obligation to every lane for a different reason:
