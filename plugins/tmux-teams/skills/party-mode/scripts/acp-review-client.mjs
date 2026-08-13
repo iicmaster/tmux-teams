@@ -1359,6 +1359,16 @@ export async function runAcpReview({
         ...reviewScopeInstructions,
         ...coverageInstructions,
         'Do not claim or invent input provenance or hashes; those are supplied by the runner.',
+        // Added 2026-08-13, the first time a full three-family panel ran through
+        // this gate. All three lanes were shown
+        // `const credentials = [REDACTED]` where the source says
+        // `const credentials = loadRoutedCredentialFile(profile, source)`: the
+        // identifier matches `sensitiveName` and the assignment pattern replaces
+        // to end of line, so the runner had mangled the diff on the way in. One
+        // reviewer correctly reported a syntax error in code that has none — a
+        // true finding about this pipeline and a false one about the repository.
+        // The redaction stays; the reviewer is now told it happened.
+        'Text matching a credential shape was replaced with [REDACTED] by the runner BEFORE this packet reached you, including inside source code. A [REDACTED] marker is the runner\'s, never the reviewed code\'s: do not report one as a syntax error, a missing value, or a defect of any kind, and do not treat a line containing one as evidence of anything except that redaction occurred.',
         'The neutral workspace contains no review input. Do not inspect it or any parent path; use only the static packet below.',
         `Runner provenance: ${prepared.provenance}; input_sha256: ${prepared.inputHash}.`,
         '<<<BEGIN_UNTRUSTED_STATIC_PACKET>>>',

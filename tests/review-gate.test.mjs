@@ -129,6 +129,14 @@ test('isolated ACP runner returns strict JSON with runner provenance and redacts
   assert.equal(out.review.leaked, null)
   assert.equal(out.review.sawRawSecret, false)
   assert.equal(out.review.sawBearerSecret, false)
+  // The reviewer must be TOLD the runner redacted the packet. Without this, all
+  // three lanes on 2026-08-13 were shown `const credentials = [REDACTED]` where
+  // the source reads `loadRoutedCredentialFile(profile, source)` — the
+  // identifier matches `sensitiveName` and the assignment pattern replaces to
+  // end of line — and one of them reported a syntax error in code that has
+  // none. A true finding about the pipeline, a false one about the repository.
+  assert.equal(out.review.sawRedactionNotice, true,
+    'the reviewer was not told that [REDACTED] markers are the runner\'s')
   assert.equal(out.review.toolsDisabled, true)
   assert.deepEqual(out.acknowledgements.model, { value: 'oc-review-model', source: 'session_config' })
   assert.deepEqual(out.acknowledgements.mode, { value: 'plan', source: 'session_config' })

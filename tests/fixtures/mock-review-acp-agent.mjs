@@ -48,6 +48,7 @@ function review() {
     leaked: process.env.SUPER_SECRET ?? null,
     sawRawSecret: promptText.includes('never-forward'),
     sawBearerSecret: promptText.includes('abcdefghijklmnopqrstuvwxyz123456'),
+    sawRedactionNotice: promptText.includes('[REDACTED] marker is the runner'),
     toolsDisabled,
     ...(behaviour === 'sandbox-probe' ? { targetMarkerVisible, targetWriteSucceeded } : {}),
     ...(behaviour === 'safe-workspace-read' ? { workspaceEntries } : {}),
