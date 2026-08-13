@@ -64,9 +64,15 @@ test('a hop moves the token — it never holds two delivery teams at once', () =
   assert.deepEqual(teamsHolding(state, 'w1'), ['review'])
 })
 
-test('a refusal at the door frees the slot the pull took', () => {
-  const state = team([ev('pulled', { to_team: 'build' }), ev('returned')])
-  assert.deepEqual(teamsHolding(state, 'w1'), [])
+test('a refusal hands the token BACK, it does not drop it', () => {
+  // Contract ข้อ 4.1: the token is held by the team it went back to, not by the
+  // dispatcher that refused it. Treating a refusal as a plain release would let
+  // work leave the system through the front door it was refused at.
+  const state = team([
+    ev('pulled', { to_team: 'build' }),
+    ev('returned', { to_team: 'control', refused_by: 'build_dispatcher' }),
+  ])
+  assert.deepEqual(teamsHolding(state, 'w1'), ['control'])
 })
 
 test('acceptance changes nothing about the slot, on purpose', () => {

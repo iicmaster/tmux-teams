@@ -84,9 +84,16 @@ export function teamDomain({ controlTeamId = CONTROL_TEAM_ID } = {}) {
           break
 
         case 'returned':
-          // Refused back to the sender: the slot frees.
+          // Refused at the door. The refusing team's slot frees and the SENDER
+          // takes one back — the token is held by the team it went back to, not
+          // by the dispatcher that refused it, which is why contract ข้อ 4.1
+          // forbids an `agent_id` here and requires `to_team`. Reading this as a
+          // plain release would let a refusal quietly drop work out of the
+          // system, and the design's own summary of it ("the slot frees") is
+          // true only of the team that said no.
           releaseEverywhere(state, item)
           freeSeatsOf(state, item)
+          take(state, event.to_team, item)
           break
 
         case 'assigned':
