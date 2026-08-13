@@ -4,7 +4,7 @@ import { createProjection } from '../plugins/tmux-teams/skills/tmux-teams/script
 import {
   CONTROL_TEAM_ID, SLOT_DECIDING_EVENTS, teamDomain, occupancyOf, teamsHolding,
 } from '../plugins/tmux-teams/skills/tmux-teams/scripts/domain-team.mjs'
-import { tokenDomain, lastLegOutcome, openLegCount } from '../plugins/tmux-teams/skills/tmux-teams/scripts/domain-token.mjs'
+import { tokenDomain, lastLegOutcome, lastLegFailed, openLegCount } from '../plugins/tmux-teams/skills/tmux-teams/scripts/domain-token.mjs'
 import { workflowDomain, nextHop, routeFinished, positionOf } from '../plugins/tmux-teams/skills/tmux-teams/scripts/domain-workflow.mjs'
 import { DEFAULT_WORKFLOW_GRAPH } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
 
@@ -131,22 +131,42 @@ test('a dead leg reporting late is matched to its own leg, not the open one', ()
   const state = createProjection({ token: tokenDomain() }).replay([
     ev('assigned', { agent_id: 'w', dispatch_id: 'd1' }),
     ev('assigned', { agent_id: 'w', dispatch_id: 'd2' }),
-    ev('delivered', { agent_id: 'w', dispatch_id: 'd1', outcome: 'rejected' }),
+    ev('delivered', { agent_id: 'w', dispatch_id: 'd1', terminal: 'refused' }),
   ]).stateOf('token')
   const legs = state.items.get('w1').legs
-  assert.equal(legs[0].outcome, 'rejected', 'the late word was applied to the wrong leg')
-  assert.equal(legs[1].outcome, null)
+  assert.equal(legs[0].terminal, 'refused', 'the late word was applied to the wrong leg')
+  assert.equal(legs[1].settled, false)
   assert.equal(openLegCount(state, 'w1'), 1)
 })
 
-test('the leg outcome is the bold cell — the newest leg that has one', () => {
+test('a failed leg reads as failed, on the field a writer actually writes', () => {
+  // The first version of this asked for a field called `outcome`. No writer has
+  // ever set one -- `delivered` carries `terminal` -- so every leg read back as
+  // a success and a failed leg would have stopped being re-dispatched. The test
+  // passed anyway, because the fixture invented the same field the code read.
+  // The split below is the one `nextStep` makes: lost, or a terminal that is
+  // not 'done'.
+  const settled = (terminal) => createProjection({ token: tokenDomain() }).replay([
+    ev('assigned', { agent_id: 'a', dispatch_id: 'd1' }),
+    ev('delivered', { agent_id: 'a', dispatch_id: 'd1', terminal }),
+  ]).stateOf('token')
+
+  assert.equal(lastLegFailed(settled('done'), 'w1'), false)
+  assert.equal(lastLegOutcome(settled('done'), 'w1'), 'done')
+  for (const terminal of ['timeout', 'no-outbox', 'identity-refused', 'error']) {
+    assert.equal(lastLegFailed(settled(terminal), 'w1'), true, `${terminal} read as a success`)
+  }
+})
+
+test('the leg outcome is the bold cell — the newest leg that reported', () => {
   const state = createProjection({ token: tokenDomain() }).replay([
     ev('assigned', { agent_id: 'a', dispatch_id: 'd1' }),
-    ev('delivered', { agent_id: 'a', dispatch_id: 'd1', outcome: 'delivered' }),
+    ev('delivered', { agent_id: 'a', dispatch_id: 'd1', terminal: 'done' }),
     ev('assigned', { agent_id: 'b', dispatch_id: 'd2' }),
-    ev('lost', { agent_id: 'b', dispatch_id: 'd2' }),
+    ev('lost', { agent_id: 'b', dispatch_id: 'd2', task_id: 't', reason: 'nothing came back' }),
   ]).stateOf('token')
   assert.equal(lastLegOutcome(state, 'w1'), 'lost')
+  assert.equal(lastLegFailed(state, 'w1'), true)
 })
 
 // ----------------------------------------------------------------- workflow

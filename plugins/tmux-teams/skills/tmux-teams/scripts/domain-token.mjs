@@ -43,15 +43,30 @@ export function tokenDomain() {
         token.legs.push({
           agent_id: event.agent_id ?? null,
           dispatch_id: event.dispatch_id ?? null,
-          outcome: null,
+          settled: false,
+          terminal: null,
+          failed: null,
         })
       } else if (event.event === 'delivered' || event.event === 'lost') {
         // The outcome belongs to the leg this word reports on. A dead leg writes
         // its last word on the way out, sometimes after the token has already
         // moved, so match on the leg's own identity when both sides recorded one
         // and fall back to the open leg only when they did not.
+        //
+        // The field is `terminal`, and the success value is exactly 'done' —
+        // this MUST match the predicate at loop-runner.mjs (`failed = lost ||
+        // (terminal && terminal !== 'done')`), because that is what decides
+        // whether the work is re-dispatched. An earlier version of this read a
+        // field called `outcome` that no writer has ever set, so every leg came
+        // back as a success and a failed leg would have stopped being retried.
+        // The unit test agreed with it, because the fixture invented the same
+        // field the code was reading.
         const leg = findLeg(token.legs, event)
-        if (leg) leg.outcome = event.event === 'lost' ? 'lost' : (event.outcome ?? 'delivered')
+        if (leg) {
+          leg.settled = true
+          leg.terminal = event.event === 'lost' ? 'lost' : (event.terminal ?? null)
+          leg.failed = event.event === 'lost' || (leg.terminal !== null && leg.terminal !== 'done')
+        }
       } else if (TERMINAL.has(event.event)) {
         token.terminal = event.event
       }
@@ -68,22 +83,28 @@ function findLeg(legs, event) {
   }
   const agent = event.agent_id ?? null
   if (agent !== null) {
-    const byAgent = [...legs].reverse().find((leg) => leg.agent_id === agent && leg.outcome === null)
+    const byAgent = [...legs].reverse().find((leg) => leg.agent_id === agent && !leg.settled)
     if (byAgent) return byAgent
   }
-  return [...legs].reverse().find((leg) => leg.outcome === null) ?? null
+  return [...legs].reverse().find((leg) => !leg.settled) ?? null
 }
 
-/** The outcome of the newest leg that has one — the bold cell, as a question. */
-export function lastLegOutcome(state, item) {
-  const token = state.items.get(item)
-  if (!token) return null
-  for (let i = token.legs.length - 1; i >= 0; i -= 1) {
-    if (token.legs[i].outcome !== null) return token.legs[i].outcome
-  }
+const newestSettled = (state, item) => {
+  const legs = state.items.get(item)?.legs ?? []
+  for (let i = legs.length - 1; i >= 0; i -= 1) if (legs[i].settled) return legs[i]
   return null
 }
 
+/** The terminal word of the newest leg that reported — the bold cell, as a question. */
+export function lastLegOutcome(state, item) {
+  return newestSettled(state, item)?.terminal ?? null
+}
+
+/** Did it fail? The same question `nextStep` asks before re-dispatching. */
+export function lastLegFailed(state, item) {
+  return newestSettled(state, item)?.failed ?? null
+}
+
 export function openLegCount(state, item) {
-  return (state.items.get(item)?.legs ?? []).filter((leg) => leg.outcome === null).length
+  return (state.items.get(item)?.legs ?? []).filter((leg) => !leg.settled).length
 }
