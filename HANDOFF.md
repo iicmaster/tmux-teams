@@ -112,8 +112,24 @@ system python3 paramiko 5.0.0                       ← ตัวที่ CLI �
 · **รูปเดียวกับบทเรียน `process.execPath` ใน CLAUDE.md เป๊ะ** — อย่าถาม PATH ว่าอินเทอร์พรีเตอร์ไหน
 เมื่อมีตัวจัดการเวอร์ชันคั่นอยู่ · `kill 13375` ไม่ช่วย **และจะทำให้ error ทึบน้อยลงเท่านั้น**
 
-**แก้ที่เรพอื่น (`~/agent-skills/plugins/artifact-sftp` · branch `fix/mcp-only-agent-routing`
-ของคนอื่น) — ต้องขออนุญาตก่อนแตะ** · เมื่อเผยแพร่ได้แล้ว: `node scripts/roadmap-gate.mjs --record <url>`
+**แก้แล้วที่ต้นเหตุ (Master อนุมัติ 13 ส.ค.)** — `~/agent-skills/plugins/artifact-sftp`
+คอมมิต `0f5faba` บน **branch ใหม่ `fix/mcp-child-path-venv`** (แตกจาก HEAD ของเขา
+· **ไม่แตะ `fix/mcp-only-agent-routing`** · **ยังไม่ push** เพราะเรพนั้นเป็นของ `ngs-th` ต้องขออนุญาตแยก)
+
+```
+service.py  _path_without_own_runtime()  ถอดเฉพาะ venv ของ adapter ออกจาก PATH ของลูก
+            การ์ด: ถ้า sys.prefix == sys.base_prefix ให้ข้าม  ← ไม่งั้นลบ /usr/bin ทิ้ง
+tests/test_subprocess_env.py  3 เทส · ตัวแรกรัน SubprocessRunner จริงกับสคริปต์จริง
+mutation      ลบบรรทัดเรียกใช้ → เทสแรกแดงทันที · restore ตรวจ sha256
+suite         11/11 เขียว
+end-to-end    สปอว์นใหม่ → setup_status  ready: true · exit 0 · READY
+```
+
+**⚠️ โพรเซสที่เซสชันนี้คุยด้วยยังเป็นตัวเก่า (PID 13375)** — Python โหลดโมดูลไว้ในหน่วยความจำแล้ว
+· เรียก tool ตอนนี้ยังได้ `exit_code 10` เหมือนเดิม · **ต้อง reconnect artifact-sftp ผ่าน `/mcp` ก่อน**
+· ถ้า reconnect แล้วไม่สปอว์นตัวใหม่ ค่อย `kill 13375`
+
+เมื่อเผยแพร่ได้แล้ว: `node scripts/roadmap-gate.mjs --record <url>`
 
 > **กับดักการวัดที่เกือบทำให้รายงานผิดอีกครั้ง** — probe ตัวแรกตัดบรรทัดที่ 900 ไบต์
 > `tools/list` เลยดูเหมือนมีทูลเดียว **เกือบเขียนว่า "branch นั้นถอดทูลออกสามตัว"**
