@@ -19,9 +19,49 @@ Current release: **0.20.0**
 | **A** | done | ACP transport for review lanes — spawn, initialize, session, prompt, terminal settlement |
 | **B** | done | The exact-three review gate: three distinct model families, endpoint pins, zero-tool isolation (ADR 0001) |
 | **C** | **closed by changing the question, 2026-08-13** | Was "run the three-family panel through bwrap on Linux". The panel now runs without bwrap on macOS and Linux alike (ADR 0006), and passed 3/3 on three packets for v0.20.0. |
-| **D** | not started | — |
-| **E** | not started | — |
+| **D** | designed, not built | **The rebuild by domain.** Four domains hold their own behaviour — `team.nextRole`, `token.canPull`/`token.deliver`, `workflow.nextHop` — and orchestration decides WHEN, never WHAT. One dependency reverses: today the loop reads a page (`display → scheduler`); the target is `run → scheduler`. |
+| **E** | designed, not built · **blocked on D** | **One publisher, N subscribers.** The ledger's own 17 words are the events; `token` subscribes to all 17, `team` to the 6 that take or free a slot, `workflow` to 5 about position, `display` to everything and it decides nothing. Scope is **six cells**, each moving one branch out of `nextStep` — counted, not estimated. |
 | **F** | proposed, not started | Per-seat pre-LLM / post-LLM scripts (Master's proposal). Three questions must be answered before any code. |
+
+## The rebuild the owner ordered — and where it actually stands
+
+The instruction was **rebuild by domain, then a message queue, then one publisher
+and N subscribers.** Phases D and E above are that instruction, and until
+2026-08-14 they were two blank rows in this table while the design sat in a
+published HTML page with no source in this repository — the identical failure
+this file was created to end, applied to the owner's own direction.
+
+**What was already done, and where the code is:**
+
+- **The queue question was answered by measurement, not skipped.** Four
+  carriers were compared on this machine — `fs.watch` on the ledger directory, a
+  `node:net` unix socket, a wake file, and a `node:sqlite` queue. None adds a
+  dependency, a daemon, a port or an account. Watching the ledger won because the
+  `delivered` append **is** the signal: no new writer, no second store, no schema,
+  no cleanup. A lost wake costs latency, never correctness, because the interval
+  underneath it is the floor.
+- **That carrier shipped**: `watchForWork()` in
+  `plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs`, guarded by
+  `tests/watch-for-work.test.mjs`, which probes whether `fs.watch` delivers on the
+  host before asserting that it does — on this project's CI it does not.
+- **The fact the queue was wanted for already existed**: a worker that writes
+  nothing still produces a ledger line, written by the harness — `recordTerminal`
+  in `acp-companion.mjs`, reached for the no-outbox path through
+  `finishDirectFailure`. What was missing was the WAKE, not the FACT.
+
+**What is NOT done: the six subscriptions, and the domains that must own their
+rules first.** Events between domains that do not yet hold their own rules
+relocate the tangle rather than reduce it, which is why E is blocked on D rather
+than merely sequenced after it.
+
+**Decisions on the record — argue with these, not from a blank slate.** A
+controller audit leg killed at the transport stays held; a person unsticks it
+(owner). Recovery is a question, not a new word: `questioned` / `answered`
+already exist, and no eighteenth event is minted (owner, after the room proposed
+a new word and was corrected). A completed-but-unaudited token is a
+control-team-held queue item (outside review). Making the audit the tail of the
+route is rejected — the route would finish without ever pulling it (outside
+review). The vocabulary work is part of the rebuild, not a side task (owner).
 
 ## What is actually open
 
