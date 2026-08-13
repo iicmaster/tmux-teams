@@ -85,6 +85,33 @@ test('a heartbeat that already said the leg ended does not hold it open', () => 
     'a finished leg was counted as still working')
 })
 
+test('a WORKING pulse row whose own liveness says terminal does not hold the seat', () => {
+  // The publisher ages a dead leg out only after GRACE_SEC; until then the
+  // row can read 'starting'/'running' while the leg's own liveness file has
+  // already said failed. busyAgents must trust the row's own evidence over
+  // the row's not-yet-aged state (eventbox 2026-08-12: ~300s dispatcher
+  // stalls after every failed agy leg).
+  for (const state of ['starting', 'running', 'orphan_running']) {
+    const dir = repoWith({ state, livenessState: 'failed', observedSecAgo: 1 })
+    assert.equal(busyAgents(dir, NOW).busy.has('review_w1'), false,
+      `state '${state}' overrode its own terminal liveness and held the seat`)
+  }
+})
+
+test('a WORKING row whose liveness says completed is a harvest, not a held seat', () => {
+  // The runner-side guard releases the seat for ANY terminal liveness — a
+  // finished leg freed the seat even when the page still aged its row.
+  const dir = repoWith({ state: 'starting', livenessState: 'completed', observedSecAgo: 1 })
+  assert.equal(busyAgents(dir, NOW).busy.has('review_w1'), false,
+    'a completed leg kept the seat busy on the runner side')
+})
+
+test('a WORKING pulse row with live liveness evidence still holds the seat', () => {
+  const dir = repoWith({ state: 'running', livenessState: 'tool_running', observedSecAgo: 1 })
+  assert.equal(busyAgents(dir, NOW).busy.has('review_w1'), true,
+    'a genuinely running leg was freed by the terminal guard')
+})
+
 test('a row with no liveness evidence still answers from the process scan alone', () => {
   // The ordinary case, and the one that must not regress: nothing the companion
   // wrote, so `state` is the whole answer — both ways.

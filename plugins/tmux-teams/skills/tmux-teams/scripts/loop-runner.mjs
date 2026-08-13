@@ -501,7 +501,16 @@ export function busyAgents(repo, nowMs = Date.now()) {
     const seen = newest.get(row.agent_id)
     if (!seen || String(row.started_at || '') > String(seen.started_at || '')) newest.set(row.agent_id, row)
   }
-  const liveRows = [...newest.values()].filter((row) => WORKING.has(row.state) || liveEvidence(row, nowMs))
+  // A WORKING pulse row whose OWN liveness evidence already says the leg ended
+  // is a row the publisher has not yet aged out (grace window, held pane), not
+  // a running leg. Letting the left side of the OR win anyway held a seat busy
+  // for up to GRACE_SEC per failed leg while the runner printed "every
+  // dispatcher on this team is busy" at a corpse (measured on eventbox,
+  // 2026-08-12: agy legs terminal=failed, row state 'starting', ~300s stalls).
+  // `liveEvidence` already refuses terminal rows; the WORKING side must too.
+  const liveRows = [...newest.values()].filter((row) =>
+    (WORKING.has(row.state) && !LIVENESS_TERMINAL.has(row.liveness_evidence?.liveness_state))
+    || liveEvidence(row, nowMs))
   const busy = new Set(liveRows.map((row) => row.agent_id))
   // WHICH leg is live, not merely which agent. r7-codex: an expiry guard that
   // asks `busy.has(agentId)` suppresses a withdrawal for as long as that agent

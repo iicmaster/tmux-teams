@@ -862,7 +862,23 @@ function derive(now, configuredAgentIds = null) {
     // the window kept reporting "starting" about a pane already destroyed.
     const paneHeld = f.pane && panesNow.available ? panesNow.ids.has(f.pane) : null
     const paneStatus = !f.pane ? 'not_recorded' : !panesNow.available ? 'probe_unavailable' : paneHeld ? 'held' : 'gone'
-    const state = working ? 'running'
+    const livenessEvidence = livenessResult.byDispatch.get(`${f.id}\u0000${f.dispatchId}`) || null
+    const livenessTerminal = ['completed', 'cancelled', 'failed'].includes(
+      livenessEvidence?.liveness_state,
+    )
+    // A 'failed' liveness state is the companion's own death certificate,
+    // and it outranks probes that only guess: without this first branch a
+    // failed leg with a held pane or inside GRACE_SEC kept reading
+    // 'starting'/'running' - WORKING in every consumer of this row,
+    // busyAgents included, for up to five minutes per corpse (measured on
+    // eventbox, 2026-08-12). Only 'failed' dies here. 'completed' and
+    // 'cancelled' are harvests, not deaths: collapsing them into 'died'
+    // made every successful delivery read PROCESS_MISSING_AFTER_DISPATCH
+    // for the full evidence lease and put 'awaiting-verdict'/'unrecorded'
+    // out of reach (adversarial review, reproduced pre/post) - so they
+    // keep flowing into the marker and pane branches below.
+    const state = livenessEvidence?.liveness_state === 'failed' ? 'died'
+      : working ? 'running'
       : !PROC_OK ? 'unknown'
       : f.terminalStatus === 'unreadable' ? 'unknown'
       : f.marker ? (ageSec > UNRECORDED_SEC ? 'unrecorded' : 'awaiting-verdict')
@@ -871,10 +887,6 @@ function derive(now, configuredAgentIds = null) {
       : f.pane && !panesNow.available ? 'unknown'
       : ageSec <= GRACE_SEC ? 'starting'
       : 'died'
-    const livenessEvidence = livenessResult.byDispatch.get(`${f.id}\u0000${f.dispatchId}`) || null
-    const livenessTerminal = ['completed', 'cancelled', 'failed'].includes(
-      livenessEvidence?.liveness_state,
-    )
     const livenessCurrent = Boolean(livenessEvidence) && !livenessTerminal
     const projected = {
       ...f, alive: !!alive, detail: alive ? alive.detail : '',
