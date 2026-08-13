@@ -18,6 +18,7 @@ node --test                        # whole suite — structure, semantics, KMS; 
 git diff --check                   # repository whitespace gate
 claude plugin validate --strict .  # manifest validation
 node scripts/gate-required.mjs     # does this release owe the three-model panel? 0=exempt 2=required
+node scripts/roadmap-gate.mjs      # is the published roadmap page behind ROADMAP.md? 0=current 2=stale
 ```
 
 `node scripts/run-fast.mjs fast` uses an explicit allowlist and prints every
@@ -356,7 +357,17 @@ not optional, and only a later explicit instruction from Master changes either.
    test guarding it at all. It has one now. **The pattern is the lesson: each
    time a place was added, it was found by a reader rather than by the flow, so
    assume there is a fifth and grep for the old number after every bump.**
-4. Run `node --test`, `git diff --check`, and
+4. **`git commit` the bumped files.** This step was missing from the flow until
+   2026-08-13, when the AGY review lane found it: `git push` sends only what is
+   committed, so following the old list literally pushed and tagged the PRE-bump
+   commit while the new version numbers sat uncommitted in the working tree. It
+   was added to `HANDOFF.md` the same hour and NOT here, and the release panel
+   caught that too — one document is not both documents.
+5. **`node scripts/roadmap-gate.mjs`** — `2` means the published roadmap page is
+   behind `ROADMAP.md`. Publish, then `--record <url>`. Before 2026-08-13 that
+   page had no source in this repository at all, so nothing could notice it had
+   rotted; it rotted, repeatedly. The gate never records for you.
+6. Run `node --test`, `git diff --check`, and
    `claude plugin validate --strict .` locally.
    **Read the SKIP count, not only the fail count.** Four tests skip themselves
    on macOS (`process.platform !== 'linux' || !existsSync('/usr/bin/bwrap')`),
@@ -385,10 +396,10 @@ not optional, and only a later explicit instruction from Master changes either.
    are fixed; the file is 130/130 and the suite 494/494 on this machine. Rules:
    a test states the outcome before the words about it, and a platform branch
    that cannot answer must say UNKNOWN, never "no".
-5. Push (confirm with Master first — see Rules), then
+7. Push (confirm with Master first — see Rules), then
    `claude plugin marketplace update tmux-teams` and
    `claude plugin update tmux-teams@tmux-teams` (install cache is version-keyed).
-6. **Watch the CI run that push triggers, and do not tag a red one.**
+8. **Watch the CI run that push triggers, and do not tag a red one.**
    `gh run list --limit 3` then `gh run view <id> --log-failed`. Added
    2026-08-08 because it was missing and it cost two releases: CI had been
    failing since before v0.16.0 and v0.17.0 shipped on it, while the local
@@ -398,7 +409,7 @@ not optional, and only a later explicit instruction from Master changes either.
    `~/.config/claude-profiles/`, and an `fs.watch` delivery assertion that holds
    on macOS FSEvents and not on CI's filesystem). Local green is necessary and
    is not sufficient.
-7. **Tag it and publish the GitHub release** — `git tag vX.Y.Z && git push
+9. **Tag it and publish the GitHub release** — `git tag vX.Y.Z && git push
    origin vX.Y.Z`, then `gh release create vX.Y.Z --title vX.Y.Z --notes ...`
    with notes written from the real `git log <prev-tag>..vX.Y.Z`. A version
    number in three JSON files is not a release: this step was missing from the
@@ -408,15 +419,15 @@ not optional, and only a later explicit instruction from Master changes either.
    the marketplace resolves a version-keyed cache, so an untagged release is a
    number nobody else can fetch. Write the notes with a heredoc or `--notes-file`,
    never `printf` — the backfill put a literal `%ad` into all 30 notes.
-8. Bump the `plugins/tmux-teams` submodule pointer in `~/agent-skills` to the
+10. Bump the `plugins/tmux-teams` submodule pointer in `~/agent-skills` to the
    new sha and push it. `agent-skills` uses that pin as the source for its
    OpenClaw bridge; Codex and Claude plugin runtimes use version-keyed caches.
 
 ## Rules
 
 - Only release and plugin files are tracked: `.github/`, `.claude-plugin/`,
-  `.gitignore`, `plugins/`, `tests/`, `scripts/`, `README.md`, `CLAUDE.md`, and
-  `HANDOFF.md`. The last is the state of play between sessions — what shipped,
+  `.gitignore`, `plugins/`, `tests/`, `scripts/`, `README.md`, `CLAUDE.md`,
+  `ROADMAP.md`, and `HANDOFF.md`. The last is the state of play between sessions — what shipped,
   what is open, what was decided and must not be relitigated, and where the
   disagreements were left. It is tracked so a fresh clone gets it too; a handoff
   only one machine can read is a handoff to nobody.

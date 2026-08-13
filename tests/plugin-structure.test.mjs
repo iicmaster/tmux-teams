@@ -376,7 +376,7 @@ test('no hardcoded home paths in release-facing files', () => {
 
 test('tracked-files policy includes release CI and repository instructions', () => {
   const policy = readText(join(ROOT, 'CLAUDE.md'))
-  for (const tracked of ['`.github/`', '`.claude-plugin/`', '`.gitignore`', '`plugins/`', '`tests/`', '`README.md`', '`CLAUDE.md`']) {
+  for (const tracked of ['`.github/`', '`.claude-plugin/`', '`.gitignore`', '`plugins/`', '`tests/`', '`README.md`', '`CLAUDE.md`', '`ROADMAP.md`']) {
     assert.ok(policy.includes(tracked), `tracked-files policy missing ${tracked}`)
   }
 })
