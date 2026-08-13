@@ -25,7 +25,7 @@ const GRAPH = validateWorkflowGraph(DEFAULT_WORKFLOW_GRAPH).value
 function repoWith(events) {
   const dir = mkdtempSync(join(tmpdir(), 'domain-equiv-'))
   mkdirSync(join(dir, '.tmux-teams', 'work-items'), { recursive: true })
-  writeFileSync(join(dir, '.tmux-teams/graph.json'), JSON.stringify(GRAPH))
+  writeFileSync(join(dir, '.tmux-teams/graph.json'), JSON.stringify(DEFAULT_WORKFLOW_GRAPH))
   const refused = []
   for (const { actor, ...event } of events) {
     const result = appendEvent(dir, event, { actor })

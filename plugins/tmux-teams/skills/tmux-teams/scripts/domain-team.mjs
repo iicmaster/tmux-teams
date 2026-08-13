@@ -23,9 +23,17 @@
 
 export const CONTROL_TEAM_ID = 'control'
 
-// Every word in the `team` column of the subscription table. Only `opened` is
-// absent, because a token that has not entered a team occupies nothing.
+// Every word in the `team` column of the subscription table, INCLUDING `opened`,
+// which the table marks "—".
+//
+// The table is wrong about that one and a real test caught it: `opened` requires
+// `to_team` (contract ข้อ 4.6) and the front door writes it naming control, so a
+// request occupies control's slot from the moment it is admitted. That is what
+// the front-door WIP check has always counted. Read "—" as "nothing beyond the
+// placement", which is true of the domain's other quiet words and is not true
+// here.
 export const TEAM_EVENTS = [
+  'opened',
   'pulled', 'intake', 'returned', 'assigned', 'delivered', 'reviewed', 'lost',
   'escalated', 'resumed', 'completed', 'audit_requested', 'audit_lost',
   'audited', 'abandoned', 'questioned', 'answered',
@@ -71,6 +79,12 @@ export function teamDomain({ controlTeamId = CONTROL_TEAM_ID } = {}) {
       const agent = event.agent_id || ''
 
       switch (event.event) {
+        case 'opened':
+          // Admitted. The request is in the controller's queue from here, which
+          // is the count the front door has always enforced.
+          take(state, event.to_team, item)
+          break
+
         case 'pulled':
           // A hop. The token leaves wherever it was and the destination takes a
           // slot — one move, not a free followed by an unrelated take, because

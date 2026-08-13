@@ -12,7 +12,9 @@
 // agent acts — not inside `ledger-writer`, which judges one event against one
 // ledger and has no business reading the graph.
 import { readWorkflowGraph } from './graph.mjs'
-import { readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
+import { readWorkItems } from './dispatch-facts.mjs'
+import { projectWorkItems } from './domain-projection.mjs'
+import { occupancyOf } from './domain-team.mjs'
 import { appendEvent } from './ledger-writer.mjs'
 import { fileURLToPath } from 'node:url'
 import { resolve, join, dirname } from 'node:path'
@@ -51,10 +53,23 @@ export function admitWorkItem(repo, request, options = {}) {
       `${String(request.workflow)} is not a declared workflow (${graph.value.workflows.map((entry) => entry.workflow_id).join(', ')})`)
   }
 
-  // Counted through the one function that owns the placement rule, never
-  // recounted here: two readers computing "who is holding this" separately is
-  // how a board and a controller came to disagree about the same team.
-  const { counts } = teamOccupancy(graph.value, readWorkItems(repo).items)
+  // Counted through the one place that owns the rule, never recounted here: two
+  // readers computing "who is holding this" separately is how a board and a
+  // controller came to disagree about the same team.
+  //
+  // That place is now the `team` subscriber rather than a derivation over
+  // custody, and the difference is the whole point. A derivation cannot HOLD
+  // anything, so a finished-but-unaudited delivery and an escalation both
+  // occupied nobody, control's single slot sat empty while work was stuck, and
+  // the front door stayed open — which is why eight timers and counters grew in
+  // loop-runner.mjs where the stop mechanism should be. With the accounting,
+  // control holds what it owes a verdict on, and a full front door is the alarm
+  // the owner described: the system stops instead of admitting more work to get
+  // stuck later, somewhere else.
+  const { counts } = occupancyOf(
+    projectWorkItems(graph.value, readWorkItems(repo).items).stateOf('team'),
+    graph.value,
+  )
   const held = counts.get(controlId) ?? 0
   if (held >= control.wip_limit) {
     return fail('controller_full',
