@@ -907,6 +907,38 @@ concurrentTest('per-dispatch ACP model and reasoning overrides are applied befor
   )
 })
 
+concurrentTest('label-suffixed model option values (antigravity-acp shape) still pin the bare id', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-tabbed-model-'))
+  const protocolLog = join(cwd, 'tabbed-model.protocol.log')
+  const r = await asyncRun('task-tabbed-model', {
+    ACP_MODEL: 'gemini-x',
+    MOCK_CONFIG_IDENTITY: '1',
+    MOCK_MODEL: 'gemini-default',
+    MOCK_MODEL_OPTIONS: 'gemini-x\tGemini X (High),gemini-default\tGemini Default',
+    MOCK_MODEL_OPTIONS_STRICT: '1',
+    MOCK_PROTOCOL_LOG: protocolLog,
+  }, cwd)
+  assert.equal(r.status, 0, `tabbed model value exit 0 expected; stderr:\n${r.stderr}`)
+  assert.equal(receipt(cwd).value.requested_model, 'gemini-x')
+  assert.deepEqual(
+    readFileSync(protocolLog, 'utf8').trim().split('\n').map((line) => line.split(':')[0]),
+    ['initialize', 'session/new', 'session/set_config_option', 'session/prompt'],
+  )
+})
+
+concurrentTest('a model absent from even the label-suffixed list is still refused', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-tabbed-missing-'))
+  const r = await asyncRun('task-tabbed-missing', {
+    ACP_MODEL: 'gemini-other',
+    MOCK_CONFIG_IDENTITY: '1',
+    MOCK_MODEL: 'gemini-default',
+    MOCK_MODEL_OPTIONS: 'gemini-x\tGemini X (High)',
+    MOCK_MODEL_OPTIONS_STRICT: '1',
+  }, cwd)
+  assert.notEqual(r.status, 0, 'unsupported model must still fail the pre-check')
+  assert.match(r.stderr, /rejected unsupported model value gemini-other/)
+})
+
 concurrentTest('per-dispatch ACP overrides also apply to a loaded session', async () => {
   const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-config-load-'))
   const first = await asyncRun('task-config-load', {

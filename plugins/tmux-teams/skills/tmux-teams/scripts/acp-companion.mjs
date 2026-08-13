@@ -1970,8 +1970,15 @@ function assertConfigOptionValue(response, id, value, phase) {
       code: 'config-option-unsupported',
     })
   }
+  // antigravity-acp 1.0.0 advertises model option values as "<id>\t<display
+  // label>" while its session/set_config_option accepts the bare id and
+  // reports it back bare — the bare id is the value the agent itself
+  // considers applied (probed against agy 1.1.12, 2026-08-12). Match both
+  // forms here, or every agy seat dies at this pre-check with a value the
+  // server would have accepted.
   if (Array.isArray(option.options)
-    && !option.options.some((candidate) => candidate?.value === value)) {
+    && !option.options.some((candidate) => candidate?.value === value
+      || (typeof candidate?.value === 'string' && candidate.value.split('\t')[0] === value))) {
     throw Object.assign(new Error(`${phase} rejected unsupported ${id} value ${value}`), {
       code: 'config-option-invalid',
     })
@@ -2484,8 +2491,13 @@ const LANE_ENV_KEYS = {
   // rounds. `claude` and `codex` were dispatched end to end on 2026-08-02.
   // The row is still the narrow one antigravity-acp happened to need; whoever
   // adds a variable should expect to add here too.
-  agy: ['AGY_API_KEY', 'AGY_BIN', 'AGY_SKIP_DOWNLOAD', 'ANTIGRAVITY_API_KEY',
-    'GOOGLE_API_KEY', 'GEMINI_API_KEY'],
+  // AGY_EXTRA_ARGS is the adapter's own knob (antigravity-acp reads it into
+  // the agy argv, e.g. `--dangerously-skip-permissions` for headless dispatch
+  // where no one can answer a permission prompt); without it here the knob
+  // dies at this allowlist and the operator's only route is
+  // ACP_ENV_PASSTHROUGH.
+  agy: ['AGY_API_KEY', 'AGY_BIN', 'AGY_EXTRA_ARGS', 'AGY_SKIP_DOWNLOAD',
+    'ANTIGRAVITY_API_KEY', 'GOOGLE_API_KEY', 'GEMINI_API_KEY'],
 }
 // `ACP_` and `TMUX_TEAMS_` are this system talking to itself. `MOCK_` belongs to
 // the bundled fixture agent and is named here rather than smuggled in through a
