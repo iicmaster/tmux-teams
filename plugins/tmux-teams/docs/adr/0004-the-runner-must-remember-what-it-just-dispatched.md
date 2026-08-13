@@ -212,8 +212,17 @@ issue or ADR if it is worth doing.
 - **The sandboxed review gate.** `qwen` is unprovisioned on the test host and
   ~~`zai` answers prose instead of strict JSON.~~ **Half of this was resolved
   2026-08-13**: the zai lane returned one strict JSON document in BOTH modes on
-  macOS (plan 87s, default 204s), so the model is not the cause — see ADR 0005
-  and the note beside the zai profile. `qwen` being unprovisioned on the Linux
+  macOS (plan 87s, default 204s), so the model is not the cause — see the
+  amendment on ADR 0001, which is where that measurement and the kept
+  `reviewMode` declaration are argued, and the note beside the zai profile.
+  (This pointer said ADR 0005 until the v0.20.0 release panel caught it: ADR
+  0005 is about MCP Tasks and says nothing about zai. A miswired pointer in a
+  note addressed to "whoever picks that up" sends the next reader to an
+  unrelated document, which is the one thing this corpus exists to prevent.)
+  The remaining half of the formatting problem was fixed on the RUNNER side the
+  same day: a verdict wrapped in prose is now extracted instead of discarded,
+  because that lane returned a strict document on 1 of 4 gate runs while the
+  other two returned 4 of 4. `qwen` being unprovisioned on the Linux
   test host is still true, and the host itself is gone. Both remain gate
   problems, not loop
   problems. Note for whoever picks that up: `review-profiles.mjs` says default
