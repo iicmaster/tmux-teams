@@ -60,9 +60,16 @@ slate.
 ## How this page stays true
 
 1. Edit `ROADMAP.md`.
-2. `node scripts/roadmap-gate.mjs` — exits 2 while the published page is behind.
-3. Publish, then `node scripts/roadmap-gate.mjs --record <url>`.
+2. `node scripts/roadmap-render.mjs` — writes `docs/roadmap.html`, deterministic,
+   no dependencies. Nothing about the page is written by hand any more.
+3. Publish that file, then `node scripts/roadmap-gate.mjs --record <url>`.
+4. `node scripts/roadmap-gate.mjs` — exits 2 while the published page is behind.
 
 The gate never records for you. A gate that writes its own answer passes
 forever, which is the same shape as a test asserting a value it just computed —
 this project has been bitten by that seven times and counting.
+
+The renderer exists because the gate alone was not enough. A gate raises the
+alarm; it does not lower the cost, and the cost was the whole problem — every
+published version of this page was HTML somebody wrote by hand, so staying
+current meant remembering to dispatch an agent at it. That is not a process.

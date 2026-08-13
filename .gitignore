@@ -20,3 +20,9 @@ CLAUDE.local.md
 
 # rendered pages from a smoke/verification run
 output/
+
+# `/docs/` at the ROOT is machine-local: artifact-sftp's read-back mirror of
+# whatever has been published, plus `roadmap.html` which `roadmap-render.mjs`
+# regenerates from ROADMAP.md. Leading slash on purpose —
+# `plugins/tmux-teams/docs/adr/` is tracked and must stay that way.
+/docs/

@@ -19,6 +19,7 @@ git diff --check                   # repository whitespace gate
 claude plugin validate --strict .  # manifest validation
 node scripts/gate-required.mjs     # does this release owe the three-model panel? 0=exempt 2=required
 node scripts/roadmap-gate.mjs      # is the published roadmap page behind ROADMAP.md? 0=current 2=stale
+node scripts/roadmap-render.mjs    # ROADMAP.md -> docs/roadmap.html, deterministic, no deps
 ```
 
 `node scripts/run-fast.mjs fast` uses an explicit allowlist and prints every
@@ -364,9 +365,15 @@ not optional, and only a later explicit instruction from Master changes either.
    was added to `HANDOFF.md` the same hour and NOT here, and the release panel
    caught that too — one document is not both documents.
 5. **`node scripts/roadmap-gate.mjs`** — `2` means the published roadmap page is
-   behind `ROADMAP.md`. Publish, then `--record <url>`. Before 2026-08-13 that
+   behind `ROADMAP.md`. Then `node scripts/roadmap-render.mjs`, publish
+   `docs/roadmap.html`, and `--record <url>`. Before 2026-08-13 that
    page had no source in this repository at all, so nothing could notice it had
    rotted; it rotted, repeatedly. The gate never records for you.
+   **The renderer landed the same day and for a second reason: a gate raises the
+   alarm without lowering the cost.** Every published version of that page was
+   HTML written by hand, so "keep it current" meant remembering to dispatch an
+   agent at it — and the gate would have gone on reporting STALE at a flow that
+   still had no cheap way to answer it.
 6. Run `node --test`, `git diff --check`, and
    `claude plugin validate --strict .` locally.
    **Read the SKIP count, not only the fail count.** Four tests skip themselves
@@ -427,7 +434,10 @@ not optional, and only a later explicit instruction from Master changes either.
 
 - Only release and plugin files are tracked: `.github/`, `.claude-plugin/`,
   `.gitignore`, `plugins/`, `tests/`, `scripts/`, `README.md`, `CLAUDE.md`,
-  `ROADMAP.md`, and `HANDOFF.md`. The last is the state of play between sessions — what shipped,
+  `ROADMAP.md`, `.roadmap-published.json`, and `HANDOFF.md`. The marker is
+  tracked for the same reason the roadmap is: one that only its author's machine
+  can read makes the gate answer STALE forever for everybody else, which turns a
+  gate into noise. `HANDOFF.md` is the state of play between sessions — what shipped,
   what is open, what was decided and must not be relitigated, and where the
   disagreements were left. It is tracked so a fresh clone gets it too; a handoff
   only one machine can read is a handoff to nobody.
