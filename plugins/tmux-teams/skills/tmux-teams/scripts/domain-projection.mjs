@@ -53,7 +53,7 @@ export function routesOf(graph) {
 export function projectWorkItems(graph, items) {
   const projection = createProjection({
     token: tokenDomain(),
-    team: teamDomain(),
+    team: teamDomain({ graph }),
     workflow: workflowDomain({ routes: routesOf(graph) }),
     display: displayDomain(),
   })

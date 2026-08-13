@@ -11,7 +11,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { appendEvent } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-writer.mjs'
-import { readWorkItems, teamOccupancy } from '../plugins/tmux-teams/skills/tmux-teams/scripts/dispatch-facts.mjs'
+import { readWorkItems, teamOccupancy, deriveTeamOccupancy } from '../plugins/tmux-teams/skills/tmux-teams/scripts/dispatch-facts.mjs'
 import { projectWorkItems, mergeCustody } from '../plugins/tmux-teams/skills/tmux-teams/scripts/domain-projection.mjs'
 import { occupancyOf, teamsHolding, CONTROL_TEAM_ID } from '../plugins/tmux-teams/skills/tmux-teams/scripts/domain-team.mjs'
 import { DEFAULT_WORKFLOW_GRAPH, validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
@@ -38,7 +38,10 @@ const occupancyPairs = (dir) => {
   // `readWorkItems` returns { items, skippedLines }; the Map is one field of
   // it, and taking the wrapper for the Map is how this test first went red.
   const { items } = readWorkItems(dir)
-  const before = teamOccupancy(GRAPH, items)
+  // The DERIVATION explicitly, not `teamOccupancy` -- that now delegates to the
+  // accounting, so comparing the two would compare a thing with itself and pass
+  // for ever. The derivation is kept unreachable for exactly this.
+  const before = deriveTeamOccupancy(GRAPH, items)
   const after = occupancyOf(projectWorkItems(GRAPH, items).stateOf('team'), GRAPH)
   return { items, before, after }
 }

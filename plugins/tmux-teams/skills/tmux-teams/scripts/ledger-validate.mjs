@@ -181,7 +181,9 @@ const AFTER_COMPLETED = new Set([
 // is not terminal at all, so `continuable` refuses it and the token is
 // STUCK — parked with `completed` on top, read as Done by the board, its
 // blocker invisible (`kanban.mjs`'s `blockedReason` is only carried for a
-// token `inTeam`, and a `completed`/`RELEASING_EVENTS` token is not). Only a
+// token `inTeam`, and a token carrying a `RELEASING_EVENTS` word is not — as of
+// 2026-08-14 that set is exactly the two words below, so a `completed` token IS
+// in a team now: the controller's). Only a
 // row with NO legal successor actually closes a broken history; `HARD_TERMINAL_EVENTS`
 // is that set, and it is what the writer's closing gate must test instead.
 export const HARD_TERMINAL_EVENTS = new Set(['audited', 'abandoned'])

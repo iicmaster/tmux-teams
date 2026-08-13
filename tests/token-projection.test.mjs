@@ -14,6 +14,8 @@ import assert from 'node:assert/strict'
 
 import { projectToken } from '../plugins/tmux-teams/skills/tmux-teams/scripts/token-projection.mjs'
 import { currentEntry, RELEASING_EVENTS } from '../plugins/tmux-teams/skills/tmux-teams/scripts/dispatch-facts.mjs'
+import { HARD_TERMINAL_EVENTS } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-validate.mjs'
+import { CLOSED as CLOSED_FOR_SLOTS } from '../plugins/tmux-teams/skills/tmux-teams/scripts/domain-team.mjs'
 
 const itemOf = (custody, extra = {}) => ({
   work_item: 'tok-1', workflow: 'feature', custody, lead_sec: 120, legs: 1, ...extra,
@@ -55,6 +57,21 @@ test('current delegates to currentEntry — never a second "which leg is current
 })
 
 test('releasing is true exactly on the contract ข้อ 6 RELEASING_EVENTS set, false otherwise', () => {
+  // Pinned LITERALLY as well as iterated. This loop used to be the whole test,
+  // and on 2026-08-14 the set narrowed from five words to two — the loop
+  // adjusted itself and stayed green, having tested nothing about the change it
+  // was sitting on top of. A test that iterates the constant it is validating
+  // proves only that the constant equals itself.
+  assert.deepEqual([...RELEASING_EVENTS].sort(), ['abandoned', 'audited'],
+    'the releasing set moved and this test followed it instead of catching it')
+
+  // Three files hold this same set under three names and nothing said they must
+  // agree: the reader's, the writer's closing gate, and the slot accounting's.
+  assert.deepEqual([...HARD_TERMINAL_EVENTS].sort(), [...RELEASING_EVENTS].sort(),
+    'the writer would close a history the reader still counts as held')
+  assert.deepEqual([...CLOSED_FOR_SLOTS].sort(), [...RELEASING_EVENTS].sort(),
+    'a word frees every slot but does not release the token, or the reverse')
+
   for (const event of RELEASING_EVENTS) {
     const custody = [{ at: '2026-08-01T09:00:00.000Z', event, work_item: 'tok-1', agent_id: 'a' }]
     assert.equal(projectToken(itemOf(custody)).releasing, true, `${event} must read as releasing`)

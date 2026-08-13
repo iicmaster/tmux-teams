@@ -19,8 +19,8 @@ Current release: **0.20.0**
 | **A** | done | ACP transport for review lanes — spawn, initialize, session, prompt, terminal settlement |
 | **B** | done | The exact-three review gate: three distinct model families, endpoint pins, zero-tool isolation (ADR 0001) |
 | **C** | **closed by changing the question, 2026-08-13** | Was "run the three-family panel through bwrap on Linux". The panel now runs without bwrap on macOS and Linux alike (ADR 0006), and passed 3/3 on three packets for v0.20.0. |
-| **D** | designed, not built | **The rebuild by domain.** Four domains hold their own behaviour — `team.nextRole`, `token.canPull`/`token.deliver`, `workflow.nextHop` — and orchestration decides WHEN, never WHAT. One dependency reverses: today the loop reads a page (`display → scheduler`); the target is `run → scheduler`. |
-| **E** | designed, not built · **blocked on D** | **One publisher, N subscribers.** The ledger's own 17 words are the events; `token` subscribes to all 17, `team` to the 6 that take or free a slot, `workflow` to 5 about position, `display` to everything and it decides nothing. Scope is **six cells**, each moving one branch out of `nextStep` — counted, not estimated. |
+| **D** | partly built | **The rebuild by domain.** Four domains hold their own behaviour — `team.nextRole`, `token.canPull`/`token.deliver`, `workflow.nextHop` — and orchestration decides WHEN, never WHAT. One dependency reverses: today the loop reads a page (`display → scheduler`); the target is `run → scheduler`. |
+| **E** | **slot accounting live**, four cells of six | **One publisher, N subscribers.** The ledger's own 17 words are the events; `token` subscribes to all 17, `team` to the 6 that take or free a slot, `workflow` to 5 about position, `display` to everything and it decides nothing. Scope is **six cells**, each moving one branch out of `nextStep` — counted, not estimated. |
 | **F** | proposed, not started | Per-seat pre-LLM / post-LLM scripts (Master's proposal). Three questions must be answered before any code. |
 
 ## The rebuild the owner ordered — and where it actually stands
@@ -49,10 +49,25 @@ this file was created to end, applied to the owner's own direction.
   in `acp-companion.mjs`, reached for the no-outbox path through
   `finishDirectFailure`. What was missing was the WAKE, not the FACT.
 
-**What is NOT done: the six subscriptions, and the domains that must own their
-rules first.** Events between domains that do not yet hold their own rules
-relocate the tangle rather than reduce it, which is why E is blocked on D rather
-than merely sequenced after it.
+**Built 2026-08-14, and E landed ahead of D rather than behind it.** The four
+subscribers exist and `teamOccupancy` delegates to the `team` one, so every
+reader — board, graph page, pull controller, runner, front door — gets the same
+answer and contract ข้อ 13 holds. `RELEASING_EVENTS` narrows to the two hard
+terminals; an escalation holds both its delivery team's slot and control's; a
+finished route is control's queue item until it is audited. The front door
+refuses while control owes a verdict, which is the alarm the owner described.
+
+**Four of the six cells are live: 1, 2, 4 and 6.** Cell 3 (`delivered` → the
+leg's outcome) has its subscriber and no consumer — `nextStep` still reads
+`last.terminal` inline. Cell 5 (`completed` → route finished) likewise:
+`routeFinished` exists and `awaitingAudit` still scans custody. Both are built
+and unwired, which is a different thing from done.
+
+**Phase D's real work is untouched**: `nextStep` still holds two domains'
+behaviour in 305 lines, and still reads a route zero times. The prediction that
+E could not pay before D landed turned out to be wrong for the slot accounting
+specifically — slots are the team's own business and needed no route — and it
+still stands for everything that depends on where a token goes next.
 
 **Decisions on the record — argue with these, not from a blank slate.** A
 controller audit leg killed at the transport stays held; a person unsticks it

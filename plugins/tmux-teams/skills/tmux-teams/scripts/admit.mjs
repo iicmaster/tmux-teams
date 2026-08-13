@@ -12,9 +12,7 @@
 // agent acts — not inside `ledger-writer`, which judges one event against one
 // ledger and has no business reading the graph.
 import { readWorkflowGraph } from './graph.mjs'
-import { readWorkItems } from './dispatch-facts.mjs'
-import { projectWorkItems } from './domain-projection.mjs'
-import { occupancyOf } from './domain-team.mjs'
+import { readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
 import { appendEvent } from './ledger-writer.mjs'
 import { fileURLToPath } from 'node:url'
 import { resolve, join, dirname } from 'node:path'
@@ -66,10 +64,7 @@ export function admitWorkItem(repo, request, options = {}) {
   // control holds what it owes a verdict on, and a full front door is the alarm
   // the owner described: the system stops instead of admitting more work to get
   // stuck later, somewhere else.
-  const { counts } = occupancyOf(
-    projectWorkItems(graph.value, readWorkItems(repo).items).stateOf('team'),
-    graph.value,
-  )
+  const { counts } = teamOccupancy(graph.value, readWorkItems(repo).items)
   const held = counts.get(controlId) ?? 0
   if (held >= control.wip_limit) {
     return fail('controller_full',

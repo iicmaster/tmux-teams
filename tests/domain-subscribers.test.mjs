@@ -82,10 +82,27 @@ test('acceptance changes nothing about the slot, on purpose', () => {
 
 test('delivering frees the SEAT and not the slot', () => {
   const state = team([
-    ev('pulled', { to_team: 'build' }), ev('assigned', { agent_id: 'w' }), ev('delivered', { agent_id: 'w' }),
+    ev('pulled', { to_team: 'build' }),
+    ev('assigned', { agent_id: 'w', dispatch_id: 'd1' }),
+    ev('delivered', { agent_id: 'w', dispatch_id: 'd1' }),
   ])
   assert.equal(state.seats.has('w'), false, 'the seat stayed busy after its leg reported')
   assert.deepEqual(teamsHolding(state, 'w1'), ['build'], 'the team stopped holding a token it still owns')
+})
+
+test('a dead leg reporting late does not free the seat a live leg is running', () => {
+  // A leg killed mid-review still writes its last word on the way out, and `at`
+  // is stamped when the line is written — so a dead leg's report genuinely
+  // arrives after a NEW leg took the same seat. Freeing on agent_id alone hands
+  // that seat away while work is still running on it.
+  const state = team([
+    ev('pulled', { to_team: 'build' }),
+    ev('assigned', { agent_id: 'w', dispatch_id: 'd1' }),
+    ev('assigned', { agent_id: 'w', dispatch_id: 'd2' }),
+    ev('delivered', { agent_id: 'w', dispatch_id: 'd1' }),
+  ])
+  assert.equal(state.seats.has('w'), true, 'the live leg lost its seat to a dead leg\'s last word')
+  assert.equal(state.seats.get('w').dispatch_id, 'd2')
 })
 
 test('a resume hands the work back and lets control go', () => {

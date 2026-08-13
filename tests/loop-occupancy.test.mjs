@@ -1148,10 +1148,27 @@ test('a token escalated to the controller occupies the CONTROL team', () => {
   // done. `escalated` still carries `to_team` and it is still not decoration —
   // it is what a `resumed` reads to send the work back — but the token is with
   // the seat that owes the next move, and that seat is the controller.
+  //
+  // Reversed AGAIN on 2026-08-14, and only half of it. The PM holding a slot was
+  // right and stands. "The delivery team is free to pull again" was the half
+  // that did not survive contact with the owner's own sentence: *a team stuck =
+  // the token is in the team = its WIP stays held*, and escalating adds the PM
+  // to that rather than swapping one for the other. Under the old reading three
+  // tokens could be stuck in three teams while every one of those teams pulled
+  // more work, which is how a system routes around a problem instead of
+  // stopping at it.
+  //
+  // So the hold is DOUBLE, and the two halves are not the same fact: `counts`
+  // is WIP and carries both, `held` is who gets to act next and carries one —
+  // the controller. A token planned for by two teams in one tick is two moves
+  // for one piece of work.
   assert.deepEqual(occupancy.orphans, [], 'parked work was reported as unplaceable')
   assert.equal(occupancy.counts.get('control'), 1, 'the PM owes a decision, so the PM holds a slot')
   assert.deepEqual(occupancy.held.get('control'), ['parked'])
-  assert.equal(occupancy.counts.get('test'), 0, 'and the delivery team is free to pull again')
+  assert.equal(occupancy.counts.get('test'), 1,
+    'the work is still stuck in its delivery team — an escalation costs two slots, and that is the stop mechanism')
+  assert.deepEqual(occupancy.held.get('test'), [],
+    'but only the controller acts on it, or the same token is planned for twice in one tick')
 })
 
 test('the controller saying resume puts the work back with a fresh budget', () => {

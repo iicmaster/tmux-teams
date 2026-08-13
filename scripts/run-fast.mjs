@@ -22,6 +22,7 @@ const TEST_DIRECTORY = join(REPO_ROOT, 'tests')
 // of them.
 const FAST_TEST_FILES = Object.freeze([
   'tests/domain-bus.test.mjs',
+  'tests/front-door-alarm.test.mjs',
   'tests/domain-equivalence.test.mjs',
   'tests/domain-subscribers.test.mjs',
   'tests/docs-paths.test.mjs',

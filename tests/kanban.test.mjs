@@ -280,13 +280,20 @@ test('AC3 completed and abandoned both land in Done, told apart', () => {
   })
   const columns = columnsOf(pageOf(dir))
   const done = columns.get('Done')
-  assert.equal(done.cards, 2)
-  // ข้อ 5: `completed` is only half closed — the outer controller has still to read
-  // the delivery as a whole. The card says so, because a route calling itself
-  // finished is not the same fact as a route somebody checked.
+  // Changed 2026-08-14. `completed` used to land here too, and the comment
+  // underneath already knew why that was wrong: a route calling itself finished
+  // is not the same fact as a route somebody checked. Decision D3 made the
+  // difference structural rather than a caption — a completed-but-unaudited
+  // token is a control-team-held queue item, not filed as Done and not left
+  // owned by nobody. Done is now the two hard terminals and nothing else.
+  assert.equal(done.cards, 1, 'only a token somebody actually closed belongs in Done')
   // Closed work is not an error. Accusing it of being unplaceable was a real bug.
   assert.equal(columns.has('Unplaceable'), false)
-  for (const team of FOUR_TEAMS.teams) assert.match(columns.get(team.name).html, /WIP 0\//)
+  assert.match(columns.get('Control').html, /WIP 1\//,
+    'the finished route is in the controller queue, which is where the audit it still owes will be read')
+  for (const team of FOUR_TEAMS.teams.filter((entry) => entry.team_id !== 'control')) {
+    assert.match(columns.get(team.name).html, /WIP 0\//)
+  }
 })
 
 // Rewritten from two tests that asked the same questions of rendered markup.
@@ -577,10 +584,17 @@ test('M3 a stray late outcome after audit_requested is filed under Done, not Unp
   const board = readBoard(dir, NOW)
   const buildColumn = board.columns.find((column) => column.team_id === 'build')
   const done = board.columns.find((column) => column.kind === 'done')
+  // Changed 2026-08-14 along with the Done column itself: a token awaiting its
+  // audit is the controller's queue item, not a finished one. The defect this
+  // test was written for is unchanged and still guarded — the loop must agree
+  // with `currentEntry` about where the token is, rather than reading the raw
+  // last line — only the correct answer moved from Done to Control.
+  const control = board.columns.find((column) => column.team_id === 'control')
   assert.equal(buildColumn.cards.length, 0, 'the stray late outcome kept the token in a team currentEntry says it left')
   assert.equal(board.unplaceable.length, 0, 'a token awaiting audit was drawn as unplaceable')
-  assert.equal(done.cards.length, 1, 'the token awaiting audit was not filed under Done')
-  assert.equal(done.cards[0].event, 'audit_requested')
+  assert.equal(done.cards.length, 0, 'a route still owed a verdict was filed as finished')
+  assert.equal(control.cards.length, 1, 'the token awaiting audit is not in the queue of the seat that owes it')
+  assert.equal(control.cards[0].event, 'audit_requested')
 })
 
 // ── AC6 — a token that cannot be placed is shown, not hidden ────────────────

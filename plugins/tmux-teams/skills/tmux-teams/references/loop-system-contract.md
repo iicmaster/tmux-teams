@@ -861,7 +861,7 @@ Common fields on every event: `at` (ISO 8601 UTC), `event`, `work_item`,
 | `lost` | runner | `agent_id`, `task_id`, `reason` | an assignment whose process is gone and which recorded nothing |
 | `escalated` | runner | `agent_id` = controller, `to_team`, `task_id`, `reason` | parked with the outer controller |
 | `resumed` | runner (harvest) | `agent_id` = controller, `to_team`, `grant`, `reason` | the controller sent it back with a fresh budget |
-| `completed` | pull-controller | `from_team` | the route finished |
+| `completed` | pull-controller | `from_team` | the route finished — and the token becomes the CONTROL team's queue item until it is audited (D3). It carries no `agent_id` and no `to_team`, so nothing on the line names that destination: the placement comes from the accounting, which knows the controller team from the graph. |
 | `audit_requested` | runner | `agent_id` = controller, `task_id`, `reason` | a finished route flagged for a whole-delivery read |
 | `audit_lost` | NOTHING since 2026-08-07 | `agent_id` = controller, `task_id`, `reason` | the flagged read never happened: that leg died at the transport before the model took a turn (ข้อ 9). Still READ everywhere — removing the word makes every ledger already carrying one unclosable |
 | `audited` | runner (harvest) | `agent_id` = controller, `verdict`, `reason` | the controller read the delivery |
@@ -874,10 +874,19 @@ Rules:
 1. `returned` carries **no `agent_id`** on purpose. The token is held by the
    team it went back to, not by the dispatcher that refused it.
 2. `escalated` **must** carry `to_team` — but since D6 (2026-08-08) it is not
-   what PLACES the token. The controller is now a team member, so an escalated
-   token occupies the CONTROL team's slot: Master's rule, and plain Kanban —
-   work stuck with a team keeps that team's WIP, and work escalated to the PM
-   holds the PM's until the PM is done with it. `to_team` remains required
+   what PLACES the token. The controller is a team member, so an escalated token
+   occupies the CONTROL team's slot — **and since 2026-08-14 it does not stop
+   occupying the delivery team's.** Master's rule is one sentence and it has two
+   halves: work stuck with a team keeps that team's WIP, AND work escalated to
+   the PM holds the PM's until the PM is done with it. Reading it as a swap let
+   three tokens be stuck in three teams while every one of those teams pulled
+   more work — routing around a problem rather than stopping at it. The double
+   hold IS the stop mechanism.
+   Who HOLDS and who ACTS are then two different questions, and `teamOccupancy`
+   answers them separately: `counts` is WIP and carries both slots, `held` is
+   the team that gets the next move and carries one. A token in both teams'
+   `held` lists is planned for twice in one tick — two moves for one piece of
+   work. `to_team` remains required
    because a later `resumed` reads it to send the work back. That one event is
    the whole of ข้อ 6's `PLACES_BY_DESTINATION`: a `resumed` is signed by the
    controller and MOVES the token, so its destination outranks its signer.
@@ -1283,7 +1292,7 @@ One token, keyed on its last event and the role of the actor.
 | `completed` | not yet audited | flag `audit_requested` and dispatch the controller |
 | `audit_requested` | controller outbox exists | harvest → `audited`, or `questioned` when the answer is not a word this seat reads |
 | `audit_requested` | leg dead past the deadline, liveness says `work_observed: false` | `questioned` with `resume_role: audit` — a person is asked and the token holds (ข้อ 9) |
-| `audit_lost` | — | re-arms `awaitingAudit` exactly as `completed` does; NOT terminal, and it releases the team like every other audit state (ข้อ 6). Legacy only — `answered` carries this now |
+| `audit_lost` | — | re-arms `awaitingAudit` exactly as `completed` does; NOT terminal, and it HOLDS the control team's slot like every other audit state (ข้อ 6) — the PM is still on the hook for it. Legacy only — `answered` carries this now |
 | `questioned` (pre-`completed`) | before the answer deadline | held; the runner does not dispatch while a person has not replied (ข้อ 4.7) |
 | `questioned` (pre-`completed`) | past the answer deadline | RUNNER closes it with `abandoned` (ข้อ 4.7, ข้อ 9) |
 | `answered` (pre-`completed`) | `resume_role: worker` | dispatch the **worker** (ข้อ 4.7) |
@@ -1327,21 +1336,29 @@ controller is the top, so its only remaining reader is a person. Without that
 route a finished route meeting an unusable audit answer had nowhere legal to
 go — the runner refused its own repair on every tick, visibly and for ever.
 
-- `RELEASING_EVENTS = {completed, abandoned, audit_requested, audit_lost, audited}`. Everything
-  else holds. An audit *observes* a delivery; it never takes custody of one, so
-  reading a finished route must not put it back into a team's WIP.
-  A post-`completed` `questioned`/`answered` is the case this pair of sentences
-  must disambiguate, and the two are not in conflict: neither event is in
-  `RELEASING_EVENTS`, so placement does not skip it — but the outer
-  controller/audit is not a declared team member and neither event carries
-  `to_team`, so `teamOf` and the `to_team` fallback both miss and the token is
-  placed as an **orphan** (surfaced, never silently dropped), never back inside
-  a delivery team's WIP. "Holds" above means "is not released from placement,"
-  not "occupies a team's WIP slot" — the orphan case is how those two stay
-  true at once.
-- Placement: `teamOf(last.agent_id)` if the actor is a declared team member,
-  otherwise `last.to_team`, otherwise the token is an **orphan** and is surfaced,
-  never dropped.
+- `RELEASING_EVENTS = {audited, abandoned}`. Everything else holds, and only a
+  hard terminal frees a slot.
+  **Narrowed 2026-08-14 from five words to two.** `completed`,
+  `audit_requested` and `audit_lost` were in this set on the reasoning that an
+  audit *observes* a delivery and never takes custody of one. The observation is
+  right; the conclusion drawn from it was that such a token occupied NOBODY, and
+  that is what left the controller's single slot empty while it owed a verdict,
+  kept the front door open on unfinished business, and grew eight timers and
+  counters in `loop-runner.mjs` where the stop mechanism belongs (ข้อ 10).
+  A finished route is now the CONTROL team's queue item until it has been
+  audited — not filed as Done, not left owned by nobody — so the orphan case
+  those five words used to produce is gone: a `completed` token is placed, and a
+  post-`completed` `questioned`/`answered` is held by the same seat that owes
+  the audit. Occupancy is an ACCOUNTING now, not a derivation over custody, and
+  the difference that matters is that an accounting can hold something.
+- Placement: a token is placed where a DOOR put it — `to_team` on `opened`,
+  `pulled`, `returned` and `resumed`; control's slot on `escalated`, `completed`
+  and the two audit words — and, when no door has placed it, by
+  `teamOf(last.agent_id)` if the actor is a declared team member. A token no
+  rule can place is an **orphan** and is surfaced, never dropped.
+  Placement-by-actor was the derivation's ONLY rule and is now the fallback; it
+  is not a legacy path, because a token whose history begins mid-flight is
+  genuinely located by the seat working on it and by nothing else.
 - `last` is `dispatch-facts.currentEntry(custody)`, **not** `custody[length-1]`.
   They differ in one case and it is a real one: a leg that has been superseded
   can still write its outcome afterwards. A companion killed mid-review writes
@@ -1841,9 +1858,15 @@ Parsing rules, non-negotiable:
   writes `.mailbox-out/<taskId>`) before producing anything therefore left a
   token parked in `escalated` (naming the controller) or in `audit_requested`
   with NOTHING that could ever revisit it: `planHarvest` needs an outbox to
-  harvest anything at all, and `audit_requested` is additionally never a
-  member of `held` (ข้อ 6: it is a `RELEASING_EVENT`), so `planDispatches`'s
-  ordinary per-team loop never even visits it. The runner now applies the
+  harvest anything at all, and `audit_requested` was additionally never a
+  member of `held` (ข้อ 6, until 2026-08-14: it was a `RELEASING_EVENT`), so
+  `planDispatches`'s ordinary per-team loop never even visited it. It is in
+  `held` now — the controller holds what it owes a verdict on — and the loop
+  skips it there on purpose (`CONTROL_QUEUE_EVENTS`), because the scan below
+  owns the move and `nextStep` has no case for the word. The reason this
+  paragraph gives for the scan is unchanged; only the mechanism keeping the
+  ordinary loop out of it is now something the code says rather than a side
+  effect of the token occupying nobody. The runner now applies the
   SAME `answerDeadlineSec` clock `questioned` already answers to, to both: a
   controller leg with no outbox past the deadline is treated as dead, and the
   runner writes `abandoned` exactly as it does for an unanswered `questioned`
@@ -1884,10 +1907,10 @@ Parsing rules, non-negotiable:
   second default fails OPEN — toward the irreversible terminal — on ambiguity,
   which is deliberate and is the price of this paragraph's other guarantee,
   that an audit cannot hang forever.
-  `escalated` reaches this inside `nextStep` (already visited via `held`,
-  since `escalated` — unlike `audit_requested` — is not a `RELEASING_EVENT`);
-  `audit_requested` is scanned for directly inside `planDispatches`, since
-  `held` will never carry it.
+  `escalated` reaches this inside `nextStep`, visited via `held`.
+  `audit_requested` is in `held` too since 2026-08-14, and is skipped there
+  deliberately: the scan inside `planDispatches` is what plans for it, and two
+  planners reaching one token in a tick is two moves for one piece of work.
 
 ## 10. Budgets and ceilings
 
@@ -2412,7 +2435,7 @@ ordering semantics phase 1 wrote down and left unenforced).
 | AC113 | ข้อ 4.7, ข้อ 9 | the question that path writes carries everything `answer.mjs` needs to close it — a `question_id`, an `agent_id` that resolves to a team, and `resume_role: audit` — and a token already parked on one is not asked again | `audit-transport-death.test.mjs` |
 | AC114 | ข้อ 6, ข้อ 9 | a parked question holds the control team's one slot, which is what closes the front door — `admit.mjs` refuses admission at the limit | `audit-transport-death.test.mjs` |
 | AC115 | ข้อ 1, ข้อ 6 | a graph whose outer controller is a worker on no team is REFUSED at load, and so is a graph naming no controller at all; both refusals say how to fix the declaration | `workflow-graph.test.mjs`, `graph-tour.test.mjs`, `controller-team.test.mjs`, `loop-runner-heartbeat-model.test.mjs` |
-| AC116 | ข้อ 4.2, ข้อ 6 | an escalated token occupies the CONTROL team's WIP, not the delivery team's; a `resumed` still returns to the team its `to_team` names | `loop-occupancy.test.mjs`, `kanban-board.test.mjs` |
+| AC116 | ข้อ 4.2, ข้อ 6 | an escalated token occupies BOTH the delivery team's WIP and the CONTROL team's, and only the controller appears in `held` for it; a `resumed` still returns it to the team its `to_team` names and drops the control hold | `loop-occupancy.test.mjs`, `kanban-board.test.mjs` |
 | AC117 | ข้อ 4.1, ข้อ 9 | a person can CLOSE a token (`withdraw.mjs` → `abandoned`, `human:` actor enforced by the door because the validator cannot: the runner writes the same event and signs as itself). A hard terminal, an unknown token and an empty reason are refused; success prints the `admit.mjs` line for a replacement | `withdraw-the-token.test.mjs` |
 | AC120 | ข้อ 10, ข้อ 11 | the runner wakes on a change under `.mailbox-out/` or `work-items/` as well as on its interval; a directory it cannot watch degrades to a note and the interval alone; a burst wakes it once; watching decides nothing | `watch-for-work.test.mjs` |
 | AC119 | ข้อ 1 | a workflow or a team declaring a key the loader does not read is REFUSED, naming the key and listing what may be declared — it is not accepted and silently dropped | `workflow-graph.test.mjs` |
@@ -2751,13 +2774,16 @@ BUILT throughout, for the same reason this section is: the contract describes
 what the runtime does.
 
 **Settled since:** an escalated token DOES consume the controller's WIP — one
-stuck token stops new admission, *stop starting, start finishing*. And the grill
+stuck token stops new admission, *stop starting, start finishing*. **And since
+2026-08-14 it does not stop consuming its delivery team's** — the hold is
+double, because the work is still stuck there while the PM is also on it. And the grill
 carries BOTH evidences: the six categories covered, and a human-actored line
 before `intake`.
 
 **Settled the same day, all of it:** an escalated token occupies the
-controller's WIP, and so does a token waiting on a human — unanswered questions
-expire on a deadline and free the queue rather than holding it forever. The
+controller's WIP — and, since 2026-08-14, its delivery team's as well — and so
+does a token waiting on a human, whose unanswered question expires on a deadline
+and frees the queue rather than holding it forever. The
 grill judges sufficiency rather than counting boxes: every category is faced,
 none is skipped silently. And the grill objects but cannot veto — if a person
 confirms after being warned, the work proceeds, with the warning and the
@@ -2782,6 +2808,39 @@ line.
    editing a file while a worker holds it has already cost one overwrite.
 
 ### Amendment log
+
+**2026-08-14 — occupancy is an accounting, and the PM's slot exists at last.**
+The owner's instruction was *rebuild by domain, then a message queue, then one
+publisher and N subscribers*. The publisher was already here: `appendEvent` is
+the single write door and the seventeen words are the events. What was missing
+was a subscriber that could HOLD something. `teamOccupancy` derived placement by
+walking custody, and a derivation cannot hold a slot — which is why
+`audit_requested` and `completed` released every slot, why the controller's one
+seat sat empty while it owed a verdict, why the front door stayed open on
+unfinished business, and why eight timers and counters in `loop-runner.mjs` grew
+where the stop mechanism belongs.
+
+`RELEASING_EVENTS` narrows to `{audited, abandoned}`. An escalated token holds
+BOTH its delivery team's slot and control's. A finished route is control's queue
+item until it is audited (D3). `teamOccupancy` delegates to the `team`
+subscriber so ข้อ 13 holds — the derivation is kept as `deriveTeamOccupancy`,
+unreachable, because it is what the accounting has to keep agreeing with, and
+the equivalence test asks it rather than asking `teamOccupancy`, which would be
+comparing a thing with itself.
+
+Four mechanisms had to be built to make the accounting agree with the derivation
+where it must, and every one was a real gap rather than a test to be edited:
+placement by WHO ACTED, which was the derivation's only rule and had no
+equivalent; the split between who HOLDS and who ACTS, without which a doubly
+held token is planned for twice in one tick; freeing a seat only for its own
+leg, since a leg killed mid-review writes its last word after a new leg took the
+seat; and reading the controller team from the graph, with an escalation signed
+by an undeclared seat placing nothing rather than being absorbed into the queue.
+
+Wiring only the front door first was a mistake worth recording: for one commit
+the door refused while the board showed control empty, which is exactly the
+disagreement ข้อ 13 exists to prevent, and 970 tests stayed green because none
+of them asked the two readers the same question.
 
 **2026-08-08 — the loop wakes on a change, and the interval stays.** Measured
 first: one `tick` calls `readWorkItems(repo)` THREE times, every interval,

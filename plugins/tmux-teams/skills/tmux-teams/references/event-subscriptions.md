@@ -1,6 +1,6 @@
 # Event subscriptions — one publisher, four subscribers
 
-**Status: being built.** This is the source of record for the owner's
+**Status: built and wired, 2026-08-14.** This is the source of record for the owner's
 instruction *"rebuild by domain, then a message queue, then one publisher and N
 subscribers"* — ROADMAP phases D and E.
 
@@ -143,3 +143,29 @@ deliver to.
 - **D5** The vocabulary work is **part of the rebuild, not a side task**, and
   the refusal words move directly to their owning domains rather than through an
   intermediate code field. *(owner)*
+
+## What the build changed about this document
+
+Four things here were wrong, and a run found every one of them — not a re-read.
+
+- **`opened` is not "—" for `team`.** It requires `to_team` (contract ข้อ 4.6)
+  and the front door writes it naming control, so a request occupies control's
+  slot from the moment it is admitted. That is the count the door has always
+  enforced. Read the dashes as "nothing beyond the placement".
+- **`returned` does not free the slot.** Contract ข้อ 4.1 forbids `agent_id`
+  there and requires `to_team`: the token is held by the team it went BACK to.
+  "The slot frees" is true only of the team that said no.
+- **`delivered` → token needed the field a writer writes.** The leg outcome is
+  `terminal`, and success is exactly `'done'`. An earlier version read a field
+  called `outcome` that nothing has ever set, so every leg — failed or not —
+  read back as a success, and a failed leg would have stopped being retried.
+- **Who HOLDS is not who DECIDES.** The table says an escalation holds two
+  slots and it is right, but exactly one team acts on it. `counts` carries both
+  and `held` carries the controller; without that split the planning loop
+  reaches the same token twice.
+
+And one thing the table could not have told anyone, because it is not about
+events at all: the derivation being replaced placed a token by WHO ACTED —
+`teamOf(agent_id)` — and the accounting had no equivalent, so a token whose
+history begins mid-flight was held by nobody. That single mechanism took the
+suite from 31 red to 7.

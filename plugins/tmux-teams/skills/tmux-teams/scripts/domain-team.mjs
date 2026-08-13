@@ -1,11 +1,14 @@
 // The `team` subscriber — slot accounting, driven by the ledger's own words.
 //
-// Today occupancy is DERIVED: `teamOccupancy` walks every token's whole custody
-// and asks "where is this now". That works, and it is why the eight brakes in
+// Occupancy USED to be derived: a walk over every token's whole custody asking
+// "where is this now". That worked, and it is why the eight brakes in
 // `loop-runner.mjs` exist — a derivation cannot hold a slot, so nothing could
-// stop the line and timers were put in the gap instead.
+// stop the line and timers were put in the gap instead. The walk is still in
+// the tree as `deriveTeamOccupancy`, unreachable, because it is what this has
+// to keep agreeing with for a token in flight.
 //
-// This subscriber ACCOUNTS instead. Six words take or free a slot; the rest are
+// Since 2026-08-14 `teamOccupancy` delegates HERE, so this module is the
+// occupancy rule — the only one, per contract ข้อ 13. It ACCOUNTS instead. Six words take or free a slot; the rest are
 // recorded because they move a seat, and one word does neither and is here only
 // so the table in `references/event-subscriptions.md` can be read straight off
 // the code. The difference that matters is not the data structure — it is that
@@ -46,12 +49,23 @@ export const SLOT_DECIDING_EVENTS = [
   'pulled', 'intake', 'returned', 'delivered', 'completed', 'audit_requested',
 ]
 
-const emptyState = () => ({ slots: new Map(), seats: new Map() })
+// `seen` is what lets this answer the question the derivation answered with a
+// null team id: a token the system knows about that is held by nobody. Surfaced,
+// never silently dropped — a token that vanishes from every count is a token
+// nobody will ever come looking for.
+// `decider` is deliberately NOT derivable from `slots`. A token under
+// escalation is held by two teams at once — that double hold IS the stop
+// mechanism — but exactly one of them gets to act on it, and that is the PM.
+// Without this the planning loop reaches the same token twice and publishes two
+// moves for it.
+const emptyState = () => ({ slots: new Map(), seats: new Map(), seen: new Map(), decider: new Map() })
 
-const take = (state, teamId, item) => {
-  if (!teamId || !item) return
+const take = (state, teamId, item, { decides = true } = {}) => {
+  if (!item) return
+  if (!teamId) return // recorded by `seen`; surfaced as an orphan, not dropped
   if (!state.slots.has(teamId)) state.slots.set(teamId, new Set())
   state.slots.get(teamId).add(item)
+  if (decides) state.decider.set(item, teamId)
 }
 
 const release = (state, teamId, item) => {
@@ -63,13 +77,46 @@ const releaseEverywhere = (state, item) => {
 }
 
 const freeSeatsOf = (state, item) => {
-  for (const [agent, held] of state.seats) if (held === item) state.seats.delete(agent)
+  for (const [agent, seat] of state.seats) if (seat.item === item) state.seats.delete(agent)
+}
+
+// A token whose route is over and whose verdict is in. It is held by nobody and
+// that is correct, so it is not an orphan.
+export const CLOSED = new Set(['audited', 'abandoned'])
+
+/**
+ * Occupancy in the shape the rest of the system already reads:
+ * `{ counts, held, orphans }`, with the same meaning `teamOccupancy` gives them.
+ */
+const heldAnywhere = (state, item) => {
+  for (const items of state.slots.values()) if (items.has(item)) return true
+  return false
+}
+
+const rosterOf = (graph) => {
+  const teamOf = new Map()
+  for (const team of graph?.teams ?? []) {
+    for (const agent of team.agents ?? []) teamOf.set(agent.agent_id, team.team_id)
+  }
+  return teamOf
 }
 
 /**
- * @param {{controlTeamId?: string}} options
+ * @param {{controlTeamId?: string, graph?: object}} options — `graph` supplies
+ *   the seat roster. Without it the domain still accounts correctly for every
+ *   token that entered through a door, and cannot place one that only ever
+ *   appears as somebody acting on it.
  */
-export function teamDomain({ controlTeamId = CONTROL_TEAM_ID } = {}) {
+export function teamDomain({ controlTeamId, graph = null } = {}) {
+  const teamOf = rosterOf(graph)
+  const declared = new Set((graph?.teams ?? []).map((team) => team.team_id))
+  // The graph names its own controller team — it is derived from the head of
+  // every route — so a constant is only the floor. And when the graph declares
+  // no such team at all, control's queue has nowhere to live: fall back to the
+  // team of whoever signed the event, which is what the derivation did for
+  // every one of these words anyway.
+  const controlId = controlTeamId ?? graph?.controller_team ?? CONTROL_TEAM_ID
+  const controlOr = (agentId) => (declared.has(controlId) ? controlId : (teamOf.get(agentId) ?? controlId))
   return {
     events: TEAM_EVENTS,
     init: emptyState,
@@ -77,6 +124,7 @@ export function teamDomain({ controlTeamId = CONTROL_TEAM_ID } = {}) {
       const item = event.work_item
       if (!item) return state
       const agent = event.agent_id || ''
+      state.seen.set(item, { event: event.event, agent_id: agent, workflow: event.workflow ?? '' })
 
       switch (event.event) {
         case 'opened':
@@ -111,16 +159,34 @@ export function teamDomain({ controlTeamId = CONTROL_TEAM_ID } = {}) {
           break
 
         case 'assigned':
-          if (agent) state.seats.set(agent, item)
+          // Keyed by seat, but REMEMBERING the leg. Two legs run by the same
+          // agent read identically on `agent_id` alone, and the newer one
+          // overwrites the older here, which is correct: the seat is running the
+          // newer one.
+          if (agent) state.seats.set(agent, { item, dispatch_id: event.dispatch_id ?? null })
           break
 
         case 'delivered':
-        case 'lost':
+        case 'lost': {
           // The SEAT is free. The slot is not — the team still holds the token
           // until it is judged and pulled onward.
-          if (agent) state.seats.delete(agent)
-          else freeSeatsOf(state, item)
+          //
+          // But only if this word belongs to the leg the seat is actually
+          // running. A leg killed mid-review still writes its last word on the
+          // way out, and `at` is stamped when the line is written, so a dead
+          // leg's report genuinely arrives after a NEW leg took the same seat.
+          // Freeing on `agent_id` alone hands that seat away while work is
+          // still running on it — the same trap `currentEntry` exists to avoid
+          // on the placement side, and the reason a trailing word is matched by
+          // `dispatch_id` whenever both sides recorded one.
+          if (!agent) { freeSeatsOf(state, item); break }
+          const seat = state.seats.get(agent)
+          if (!seat) break
+          const id = event.dispatch_id ?? null
+          const stale = id !== null && seat.dispatch_id !== null && seat.dispatch_id !== id
+          if (!stale) state.seats.delete(agent)
           break
+        }
 
         case 'reviewed':
           // A verdict changes who may act next, never who holds the slot.
@@ -130,13 +196,19 @@ export function teamDomain({ controlTeamId = CONTROL_TEAM_ID } = {}) {
           // The heart. The delivery team keeps its slot because the work is
           // still stuck there, AND control takes one because the PM is now
           // working. Nothing here releases.
-          take(state, controlTeamId, item)
+          //
+          // But an escalation signed by a seat the graph does not declare, on a
+          // token no team is holding, places nothing — the derivation never
+          // assumed control either, and a line naming a ghost has to surface as
+          // unplaceable rather than be absorbed into the controller's queue,
+          // where it would sit forever looking like ordinary work.
+          if (heldAnywhere(state, item) || teamOf.has(agent)) take(state, controlOr(agent), item)
           break
 
         case 'resumed':
           // The PM finished; the work goes back to a delivery team. Control's
           // slot frees here and only here for an escalation.
-          release(state, controlTeamId, item)
+          release(state, controlOr(agent), item)
           releaseEverywhere(state, item)
           take(state, event.to_team, item)
           break
@@ -148,7 +220,7 @@ export function teamDomain({ controlTeamId = CONTROL_TEAM_ID } = {}) {
           // verdict.
           releaseEverywhere(state, item)
           freeSeatsOf(state, item)
-          take(state, controlTeamId, item)
+          take(state, controlOr(agent), item)
           break
 
         case 'audit_requested':
@@ -157,7 +229,7 @@ export function teamDomain({ controlTeamId = CONTROL_TEAM_ID } = {}) {
           // one. Either way the PM is working, so the slot is held — today both
           // of these RELEASE, which is why an unresolved audit never closes the
           // front door.
-          take(state, controlTeamId, item)
+          take(state, controlOr(agent), item)
           break
 
         case 'audited':
@@ -174,21 +246,61 @@ export function teamDomain({ controlTeamId = CONTROL_TEAM_ID } = {}) {
         default:
           break
       }
+
+      // Placed by WHO ACTED, when nothing else has placed it. The derivation
+      // this replaces had no other rule: it read the token's newest event and
+      // asked which team its `agent_id` belongs to. That is not a fixture
+      // artefact — a token whose history begins mid-flight, or whose entering
+      // event predates a graph change, is genuinely located by the seat working
+      // on it and by nothing else.
+      //
+      // Only when it is held NOWHERE, so this can never overrule an explicit
+      // placement and can never undo the escalation double-hold, where the
+      // signer is a delivery dispatcher and control must keep its slot.
+      if (agent && !CLOSED.has(event.event) && !heldAnywhere(state, item)) {
+        take(state, teamOf.get(agent), item)
+      }
+      if (CLOSED.has(event.event)) state.decider.delete(item)
       return state
     },
   }
 }
 
-/** Occupancy in the shape the rest of the system already reads. */
+/** Which single team gets to act on this token now. */
+export function decidingTeam(state, item) {
+  return state.decider.get(item) ?? null
+}
+
 export function occupancyOf(state, graph) {
-  const counts = new Map((graph?.teams ?? []).map((team) => [team.team_id, 0]))
-  const held = new Map((graph?.teams ?? []).map((team) => [team.team_id, []]))
+  const declared = new Set((graph?.teams ?? []).map((team) => team.team_id))
+  const counts = new Map([...declared].map((teamId) => [teamId, 0]))
+  const held = new Map([...declared].map((teamId) => [teamId, []]))
+  const orphans = []
+  const placed = new Set()
+
   for (const [teamId, items] of state.slots) {
-    if (!counts.has(teamId)) { counts.set(teamId, 0); held.set(teamId, []) }
+    for (const item of items) placed.add(item)
+    if (!declared.has(teamId)) {
+      // Held by a team the graph no longer declares. The derivation reported
+      // this the same way: surfaced, never silently dropped.
+      for (const item of [...items].sort()) {
+        orphans.push({ work_item: item, event: state.seen.get(item)?.event ?? '', agent_id: state.seen.get(item)?.agent_id ?? '', workflow: state.seen.get(item)?.workflow ?? '' })
+      }
+      continue
+    }
+    // counts is WIP — every hold, including the escalation double-hold.
+    // held is who ACTS — the planning loop iterates it, and a token planned for
+    // twice in one tick is two moves for one piece of work.
     counts.set(teamId, items.size)
-    held.set(teamId, [...items].sort())
+    held.set(teamId, [...items].filter((item) => (state.decider.get(item) ?? teamId) === teamId).sort())
   }
-  return { counts, held }
+
+  for (const [item, last] of state.seen) {
+    if (placed.has(item) || CLOSED.has(last.event)) continue
+    orphans.push({ work_item: item, event: last.event, agent_id: last.agent_id, workflow: last.workflow })
+  }
+  orphans.sort((a, b) => (a.work_item < b.work_item ? -1 : a.work_item > b.work_item ? 1 : 0))
+  return { counts, held, orphans }
 }
 
 /** Which teams hold this token right now. Two during an escalation, by design. */

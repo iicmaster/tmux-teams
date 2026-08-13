@@ -6,6 +6,8 @@
 // were written — the dispatch record and the token's custody ledger. Reading
 // them here keeps the Pulse schema untouched and keeps each fact sourced from
 // the file that actually recorded it.
+import { projectWorkItems } from './domain-projection.mjs'
+import { occupancyOf } from './domain-team.mjs'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -318,12 +320,18 @@ export const loadWorkItemLedgers = readWorkItems
 // than a special case: any future event that MOVES a token belongs here.
 export const PLACES_BY_DESTINATION = new Set(['resumed'])
 
-export const RELEASING_EVENTS = new Set([
-  'completed', 'abandoned', 'audit_requested', 'audited',
-  // A token waiting for its next controller leg is still an audit, not work in
-  // progress. It releases for the same reason `audit_requested` does.
-  'audit_lost',
-])
+// Narrowed 2026-08-14 from five words to two, with the slot accounting that
+// made the narrower set true. `completed`, `audit_requested` and `audit_lost`
+// used to be here on the reasoning that an audit observes a delivery and never
+// takes custody of one. The observation is right; the conclusion was that such
+// a token occupied NOBODY, and that is what left control's single slot empty
+// while it owed a verdict, kept the front door open on unfinished business, and
+// grew eight timers and counters where the stop mechanism belongs.
+//
+// A finished route now sits in the controller's queue until it has been audited
+// (decision D3: not filed as Done, not left owned by nobody), so only a hard
+// terminal releases.
+export const RELEASING_EVENTS = new Set(['audited', 'abandoned'])
 
 // A leg is one `assigned` and everything that follows it until the next one.
 // The token's position is the newest event EXCEPT when that event is a leg
@@ -607,7 +615,26 @@ export function currentEntry(custody) {
   return custody[custody.length - 1]
 }
 
+/**
+ * Who is holding what, right now.
+ *
+ * The answer now comes from the `team` subscriber rather than from the walk
+ * below, and contract ข้อ 13 is why it is answered HERE rather than by moving
+ * every caller: "no second implementation of the occupancy rule". Two readers
+ * computing occupancy separately is how a board and a controller came to
+ * disagree about the same team, and wiring the front door to the accounting
+ * while the board still derived recreated exactly that for one commit.
+ *
+ * The derivation is kept below, unreachable, as `deriveTeamOccupancy` — it is
+ * the thing the accounting has to keep agreeing with for tokens in flight, and
+ * `tests/domain-equivalence.test.mjs` holds them to it. It is NOT a fallback:
+ * nothing in the system may call it.
+ */
 export function teamOccupancy(graph, items) {
+  return occupancyOf(projectWorkItems(graph, items).stateOf('team'), graph)
+}
+
+export function deriveTeamOccupancy(graph, items) {
   const teamOf = new Map()
   for (const team of graph.teams) {
     for (const agent of team.agents) teamOf.set(agent.agent_id, team.team_id)

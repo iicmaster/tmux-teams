@@ -61,8 +61,10 @@ const MAX_LEGS = 15
 // asks a person and holds — which is only an exit because `answer.mjs` exists;
 // before it, a question was a place tokens went to die and the retry was the
 // least-bad option available. `audit_lost` is still READ everywhere it was
-// (`awaitingAudit` below, `kanban.mjs`, `ledger-validate.mjs` and
-// `dispatch-facts.mjs`'s RELEASING_EVENTS); nothing writes
+// (`awaitingAudit` below, `kanban.mjs`, `ledger-validate.mjs` and the `team`
+// subscriber, which HOLDS control's slot on it since 2026-08-14 rather than
+// releasing every slot as `dispatch-facts.mjs`'s RELEASING_EVENTS used to);
+// nothing writes
 // it any more. Removing the word would make every ledger that already carries
 // one permanently unclosable — `unknown_event` is not tolerated.
 const ZOMBIE_SEC = 180   // an assignment with no live process and nothing delivered
@@ -1450,12 +1452,14 @@ function nextStep(graph, team, item, { busy, busyTasks, nowMs, zombieSec, answer
   }
 
   // `audit_requested` is handled OUTSIDE this function entirely — see the note
-  // in `planDispatches` below. `audit_requested` is a RELEASING_EVENT
-  // (`teamOccupancy`, dispatch-facts.mjs): a finished route audits without
-  // occupying a team's WIP, so it is never a member of `held` and `nextStep`
-  // is never invoked for it by `planDispatches`'s own loop. A deadline branch
-  // written here would be correct-looking, dead code — the fixture that would
-  // exercise it can never reach this function.
+  // in `planDispatches` below. It USED to be unreachable here for free: the
+  // word was a RELEASING_EVENT, so a finished route audited without occupying
+  // any team's WIP and could not be a member of `held`. Since 2026-08-14 the
+  // controller HOLDS what it owes a verdict on — that hold is the stop
+  // mechanism — so the word does reach `held`, and `planDispatches` skips it
+  // there deliberately (`CONTROL_QUEUE_EVENTS`). A branch written here would
+  // still be dead code, but it is the guard above that keeps it dead now, not
+  // the accounting.
 
   if (last.event === 'assigned') {
     if (busy.has(last.agent_id)) return { action: 'in-flight', agent_id: last.agent_id }
@@ -1654,6 +1658,12 @@ export function watchForWork(repo, { onChange, debounceMs = 250, watch = fsWatch
   }
 }
 
+// Words that put a token in the controller's queue. The audit scan at the end of
+// `planDispatches` owns every one of them; the per-team loop must not also plan
+// for them. Named here rather than inlined so the set is one thing a reader can
+// find, and so a future word joining the queue joins it in one place.
+const CONTROL_QUEUE_EVENTS = new Set(['completed', 'audit_requested', 'audit_lost'])
+
 export function planDispatches(graph, items, busy, {
   now = Date.now(), zombieSec = ZOMBIE_SEC, maxInFlight = MAX_IN_FLIGHT,
   answerDeadlineSec = ANSWER_DEADLINE_SEC,
@@ -1686,6 +1696,19 @@ export function planDispatches(graph, items, busy, {
     let slots = team.wip_limit
     for (const workItem of tokens) {
       const item = items.get(workItem)
+      // The controller's own queue, and this loop is not the thing that works
+      // it. A route that finished and a leg that is auditing or owes another
+      // audit attempt are all held by control now — that hold is the stop
+      // mechanism — but the move for each of them is decided by the audit scan
+      // at the bottom of this function, not by `nextStep`, which has no case
+      // for any of these words and would fall through to its catch-all and
+      // publish a second, meaningless plan for the same token.
+      //
+      // This guard used to be unnecessary and invisible: the three words were
+      // RELEASING_EVENTS, so a token carrying one was in no team's `held` list
+      // and this loop simply never reached it. Holding a slot is what made them
+      // reachable, so the exclusion had to become something the code says.
+      if (CONTROL_QUEUE_EVENTS.has(currentEntry(item?.custody ?? [])?.event ?? '')) continue
       // This token already has a leg in flight that nothing else can see yet:
       // it was dispatched by a previous tick and its companion has not written
       // `assigned` into the ledger, so `nextStep` — which reads the token's
@@ -1762,10 +1785,11 @@ export function planDispatches(graph, items, busy, {
   }
 
   // BLOCKER 3 (retro-release-review round 5, 2026-08-04): `audit_requested`
-  // is a RELEASING_EVENT (dispatch-facts.mjs `teamOccupancy`) — a finished
-  // route audits without occupying a team's WIP — so it is never a member of
-  // `held` and the loop above never visits it. That is correct for
-  // PLACEMENT; it left the token with no reader at all once its controller
+  // WAS a RELEASING_EVENT (dispatch-facts.mjs `teamOccupancy`) — a finished
+  // route audited without occupying any team's WIP — so it was never a member
+  // of `held` and the loop above never visited it. Since 2026-08-14 it is in
+  // `held` and the loop skips it on purpose; this scan is still the only thing
+  // that plans for it. The original reasoning held for PLACEMENT; it left the token with no reader at all once its controller
   // leg died before ever writing an outbox: `planHarvest` needs one to
   // harvest anything (loop-runner.mjs `planHarvest`'s `audit_requested`
   // branch) and nothing else revisits a token in this state. Scanned
