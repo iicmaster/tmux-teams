@@ -114,7 +114,9 @@ system python3 paramiko 5.0.0                       ← ตัวที่ CLI �
 
 **แก้แล้วที่ต้นเหตุ (Master อนุมัติ 13 ส.ค.)** — `~/agent-skills/plugins/artifact-sftp`
 คอมมิต `0f5faba` บน **branch ใหม่ `fix/mcp-child-path-venv`** (แตกจาก HEAD ของเขา
-· **ไม่แตะ `fix/mcp-only-agent-routing`** · **ยังไม่ push** เพราะเรพนั้นเป็นของ `ngs-th` ต้องขออนุญาตแยก)
+· **ไม่แตะ `fix/mcp-only-agent-routing`** · **ยังไม่ push** — ต้องขออนุญาตแยก)
+· ⚠️ **remote คือ `iicmaster/artifact-sftp` ไม่ใช่ `ngs-th`** — บรรทัดนี้เคยเขียนว่า ngs-th
+โดยไม่ได้รัน `git remote -v` เลย · **เดาเจ้าของเรพจากเรพข้างเคียง คือการเดา**
 
 ```
 service.py  _path_without_own_runtime()  ถอดเฉพาะ venv ของ adapter ออกจาก PATH ของลูก
