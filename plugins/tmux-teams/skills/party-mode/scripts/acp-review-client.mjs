@@ -264,12 +264,71 @@ function neutralEnv(extra = {}) {
   return { ...base, ...extra }
 }
 
+const MAX_JSON_CANDIDATES = 64
+
+// The first PARSEABLE object in a string, or null.
+//
+// Two things this is deliberately not. It is not a regex: a `{` inside a quoted
+// assessment would end a match early and a `}` inside one would end it late, so
+// braces are counted with string and escape awareness. And it does not stop at
+// the first BALANCED span — that was the first version of this function, and
+// the test written beside it caught it within the minute. Prose like
+// `assessment {not json} then {"verdict":…}` balances at `{not json}`, which
+// parses to nothing; the real document is the second candidate. So every `{` is
+// tried in order until one parses, bounded so a hostile string cannot make this
+// quadratic.
+function firstJsonObject(source) {
+  let attempts = 0
+  for (let start = source.indexOf('{'); start >= 0; start = source.indexOf('{', start + 1)) {
+    if (++attempts > MAX_JSON_CANDIDATES) return null
+    let depth = 0, inString = false, escaped = false
+    for (let i = start; i < source.length; i++) {
+      const ch = source[i]
+      if (escaped) { escaped = false; continue }
+      if (ch === '\\') { if (inString) escaped = true; continue }
+      if (ch === '"') { inString = !inString; continue }
+      if (inString) continue
+      if (ch === '{') depth++
+      else if (ch === '}' && --depth === 0) {
+        const candidate = source.slice(start, i + 1)
+        try {
+          const parsed = JSON.parse(candidate)
+          if (isObject(parsed)) return candidate
+        } catch {}
+        break
+      }
+    }
+  }
+  return null
+}
+
 function parseStrictReview(chunks) {
   const source = chunks.join('')
   if (!source.trim()) throw new ReviewTransportError('review', 'agent returned no review document')
   let review
-  try { review = JSON.parse(source) } catch (e) {
-    throw new ReviewTransportError('review', 'agent output is not one strict JSON document', e)
+  let extracted = false
+  try { review = JSON.parse(source) } catch (strictError) {
+    // TOLERANT SECOND PASS, added 2026-08-13 and measured into existence. The
+    // zai lane returned one strict JSON document on 1 of 4 gate runs that day
+    // while qwen and agy returned 4 of 4 — same machine, same minutes, same
+    // packets. Three complete reviews were discarded over formatting, and a
+    // release panel cannot be built on a lane that answers one time in four.
+    //
+    // What is NOT relaxed, and this is the whole objection answered: the
+    // extracted value must still be an object, it is still redacted, and the
+    // gate still validates it against the closed schema and the runner-evidence
+    // table before accepting anything. A reviewer cannot waffle into a PASS —
+    // prose around a valid verdict object is accepted, prose INSTEAD of one is
+    // not. And the caller is told extraction happened, so "it needed help" is
+    // visible rather than silent.
+    const candidate = firstJsonObject(source)
+    if (candidate === null) {
+      throw new ReviewTransportError('review', 'agent output is not one strict JSON document', strictError)
+    }
+    try { review = JSON.parse(candidate) } catch (e) {
+      throw new ReviewTransportError('review', 'agent output is not one strict JSON document', e)
+    }
+    extracted = true
   }
   if (!isObject(review)) throw new ReviewTransportError('review', 'review document must be a JSON object')
   // REDACT, DO NOT DISCARD. This threw until 2026-08-13, and measured on a real
@@ -297,7 +356,7 @@ function parseStrictReview(chunks) {
     keyNames: false,
   })
   if (!isObject(cleaned)) throw new ReviewTransportError('review', 'review document must be a JSON object')
-  return { review: cleaned, redacted: JSON.stringify(cleaned) !== JSON.stringify(review) }
+  return { review: cleaned, redacted: JSON.stringify(cleaned) !== JSON.stringify(review), extracted }
 }
 
 function isHarmlessAgyThink(update) {
@@ -1411,7 +1470,12 @@ export async function runAcpReview({
       }
       if (fatalError) throw fatalError
       const parsed = parseStrictReview(chunks)
-      return { stopReason: done?.stopReason, review: parsed.review, reviewRedacted: parsed.redacted }
+      return {
+        stopReason: done?.stopReason,
+        review: parsed.review,
+        reviewRedacted: parsed.redacted,
+        reviewExtracted: parsed.extracted,
+      }
     })()
     const result = await Promise.race([work, timeout, fatal])
     settled = true

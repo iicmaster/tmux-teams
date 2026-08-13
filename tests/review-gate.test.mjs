@@ -290,6 +290,33 @@ test('a remote protocol error says what the remote said, redacted and on one lin
   )
 })
 
+test('a valid verdict wrapped in prose is extracted, and prose alone is still refused', async () => {
+  // Measured 2026-08-13: through the gate the zai lane returned one strict JSON
+  // document on 1 of 4 runs while qwen and agy returned 4 of 4 — same machine,
+  // same minutes, same packets. Three complete reviews were being discarded over
+  // formatting, and a panel cannot be built on a lane that answers one time in
+  // four.
+  //
+  // Both halves matter. Prose AROUND a valid verdict object is accepted and the
+  // caller is told extraction happened. Prose INSTEAD of one is still refused —
+  // without that second assertion this test would license waffling into a PASS,
+  // which is exactly what the strict parse was there to prevent.
+  const wrapped = await invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'prose-wrapped-review' })
+  assert.equal(wrapped.review.verdict, 'PASS', 'a verdict wrapped in prose was lost')
+  assert.equal(wrapped.reviewExtracted, true, 'the caller was not told the document needed extraction')
+
+  await assert.rejects(
+    invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'prose-only-review' }),
+    (e) => e.code === 'review',
+    'prose with no verdict object was accepted as a review',
+  )
+})
+
+test('a review that parses strictly is not reported as extracted', () =>
+  invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'schema-only' }).then((out) => {
+    assert.equal(out.reviewExtracted, false, 'a clean document was reported as extracted')
+  }))
+
 test('a review carrying credential-shaped text is redacted and kept, not discarded', async () => {
   // These three used to be `assert.rejects(..., code === 'review')`. They were
   // changed on 2026-08-13 after a real run on a bwrap host threw away a COMPLETE

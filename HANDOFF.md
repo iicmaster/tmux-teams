@@ -46,7 +46,10 @@ gh issue list --state open
 
 **ทำซ้ำได้:** `CLAUDE_CONFIG_DIR=$HOME/.config/claude-profiles/<zai|qwen> node
 plugins/tmux-teams/skills/tmux-teams/scripts/acp-companion.mjs claude <run-dir> <task-id> <brief> 900`
-· เครื่องนี้ไม่มี `claude-*` wrapper — **รูป config-dir คือรูปเดียวที่ใช้ได้** และมันใช้ได้จริง
+· ⚠️ **ประโยคเดิมตรงนี้ผิด** — เคยเขียนว่า "เครื่องนี้ไม่มี `claude-*` wrapper" เพราะไปลิสต์
+`~/.local/bin` ไดเรกทอรีเดียวแล้วสรุป · **wrapper อยู่ที่ `~/bin/claude-{zai,qwen,kimi}` และอยู่ใน PATH**
+— เกตพิสูจน์เองใน `commandProvenSignature` · `claude-advisor/SKILL.md` เขียนวิธีตรวจไว้แล้ว
+(`command -v claude-qwen || ls -d ...`) **และผมใช้วิธีที่อ่อนกว่า** · ทั้งสองรูปใช้ได้บนเครื่องนี้
 
 **รอบสาม: agy 2 blocking · qwen ตายที่เพดาน 32k output (ดูตารางจุดล้มนอกโค้ด) · zai ยังไม่ได้ยิง**
 · finding ทั้งสองของ agy คือ**ชั้นเดิมเป็นรอบที่สาม** — แก้ส่วนใหม่แล้วปล่อยส่วนเก่าไว้ขัดกัน
@@ -107,6 +110,11 @@ set    "gemini-3.6-flash-high\tGemini…"  → ACCEPTED · currentValue เต�
 `effective_identity` บนเส้นทาง direct ACP คืน **alias (`opus`, `sonnet`) ไม่ใช่รหัสโมเดล** ·
 โปรไฟล์ไหนก็รายงาน `opus` ได้ **ใบเสร็จจึงพิสูจน์ตระกูลไม่ได้** · สิ่งเดียวที่แยกสองเลนออกจากกัน
 คือ `CLAUDE_CONFIG_DIR` ที่ผู้เรียกตั้ง — และ**มันไม่ได้ถูกบันทึกลงใบเสร็จเลย**
+
+**แต่ `review-gate.mjs` แข็งกว่ามาก และเป็นเหตุผลให้ใช้มันเป็นเส้นทางหลัก** — ผลของเกตบันทึก
+`familyProvenKey`, `commandProvenSignature`, `routingProvenDeclaration` พร้อม `inputHash`
+เช่น `zai → @agentclientprotocol/claude-agent-acp@0.61.0::pinned:api.z.ai/api/anthropic`
+· **มันพิสูจน์ว่าเลนวิ่งไปที่ไหนจริง ไม่ใช่แค่รายงานว่าตัวเองชื่ออะไร**
 
 ## 🔴 สิ่งที่มีค่าที่สุดจากวันนี้ — **เกตล้มด้วยเหตุนอกโค้ดห้าแบบ**
 

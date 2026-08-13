@@ -28,6 +28,15 @@ function review() {
       assessment: 'DATABASE_URL=postgresql://app:supersecret@db/prod and NPM_AUTH=dXNlcjpwYXNz must never be returned.',
     })
   }
+  if (behaviour === 'prose-wrapped-review') {
+    // A valid verdict object with prose either side — the shape the zai lane
+    // produced on 3 of 4 gate runs on 2026-08-13. The braces inside the prose
+    // are deliberate: a regex-based extractor would take the wrong slice.
+    return 'Here is my assessment {not json} :\n' + JSON.stringify(validReview) + '\nHope that helps }{'
+  }
+  if (behaviour === 'prose-only-review') {
+    return 'I reviewed the packet and everything looks fine to me.'
+  }
   if (behaviour === 'schema-only') return JSON.stringify(validReview)
   let targetMarkerVisible
   let targetWriteSucceeded
