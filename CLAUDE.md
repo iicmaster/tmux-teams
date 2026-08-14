@@ -348,13 +348,13 @@ not optional, and only a later explicit instruction from Master changes either.
    (twice: `metadata.version` and `plugins[0].version`),
    `plugins/tmux-teams/.claude-plugin/plugin.json`, `RELEASE_VERSION` in
    `tests/plugin-structure.test.mjs`, the `Current release: **X.Y.Z**` line
-   in `README.md`, `plugins/tmux-teams/plugin.json`, and — found 2026-08-14, by
-   grepping rather than by reading this list — the `Current release:` line in
-   `ROADMAP.md`, which additionally has its own gate: bumping it makes the
-   published page stale, so the release flow's roadmap step is not optional on a
-   version bump (the vendor-neutral
-   Agent Plugins manifest, added 2026-08-08 — it arrived WITH its guard rather
-   than waiting for a release to notice, which is the first time that happened). That test is the only thing checking they agree, so it has
+   in `README.md`, `plugins/tmux-teams/plugin.json` (the vendor-neutral Agent
+   Plugins manifest, added 2026-08-08 — it arrived WITH its guard rather than
+   waiting for a release to notice, which is the first time that happened), and
+   — found 2026-08-14, by grepping rather than by reading this list — the
+   `Current release:` line in `ROADMAP.md`, which additionally has its own gate:
+   bumping it makes the published page stale, so the roadmap step is not
+   optional on a version bump. That test is the only thing checking they agree, so it has
    to state the number itself. This step said "BOTH" until 2026-08-01, and
    v0.12.0 reached the bump with the third one still on 0.11.1 until the test
    caught it — then said "THREE" until 2026-08-05, when the v0.15.0

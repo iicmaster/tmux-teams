@@ -107,7 +107,7 @@ Nothing is blocking a release. These are real but unforced:
   shaped.
 - **Phase F** needs its three questions answered before it becomes work.
 - **A review packet has a working ceiling well below the 128 KiB the gate
-  enforces, and it is not written down anywhere but here.** The `qwen` lane
+  enforces.** The `qwen` lane
   failed `schema_invalid` three times running on a 72 KiB contract packet, always
   at `invalid finding summary` — a summary past the 1,000-character limit the
   prompt states plainly — while answering the same content cleanly at 22 KiB, and
