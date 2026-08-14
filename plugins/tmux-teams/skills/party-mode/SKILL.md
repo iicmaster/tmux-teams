@@ -36,6 +36,23 @@ If invoked through a subskill wrapper, read this `party-mode` skill and follow t
   the packet, and add a rule that a question the packet cannot answer must come
   back as a finding naming what was missing — that is a useful answer, not a
   failure.
+- **Trimming context invents adjacency.** Eliding unchanged lines to fit a packet
+  puts things next to each other that the file keeps far apart, and a reviewer
+  reads what it is given. Measured 2026-08-14: a trimmed contract packet placed
+  an acceptance-criterion row six lines from a heading that reads "clauses this
+  contract does NOT yet enforce", and a lane reported — correctly, against its
+  evidence — that enforced behaviour was documented as unenforced. Mark every
+  elision, and prefer dropping a whole hunk to trimming one until it lies.
+- **A packet's objective must describe only what is in it.** The same run split a
+  contract into rules and log, left the acceptance-criteria change in the rules
+  half, and told the log half it contained acceptance-criteria changes. All three
+  lanes spent a blocking finding on the absence. A reviewer cannot tell a missing
+  section from a dishonest claim, and should not have to.
+- **Reducing a packet is legitimate and must be stated in it.** The same contract
+  went 72 KiB to 22 KiB by removing 139 rename pairs line by line — the rows stay
+  as context, so nothing is hidden, and the objective says what was removed and
+  why. Before that reduction the qwen lane failed `schema_invalid` three times
+  running on the same content it answered cleanly at 22 KiB.
 - **Split by MEANING and say what rides along.** A mechanical rewrite inside a
   behavioural diff costs a reviewer their attention proving it is mechanical, and
   one lane spent a finding on exactly that. If a packet excludes hunks, the packet

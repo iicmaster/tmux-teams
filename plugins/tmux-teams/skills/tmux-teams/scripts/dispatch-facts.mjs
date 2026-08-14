@@ -625,8 +625,11 @@ export function currentEntry(custody) {
  * disagree about the same team, and wiring the front door to the accounting
  * while the board still derived recreated exactly that for one commit.
  *
- * The derivation is kept below, unreachable, as `deriveTeamOccupancy`. It is NOT
- * a fallback — nothing in the system may call it — and it is NOT a general
+ * The derivation is kept below as `deriveTeamOccupancy`, with NO SYSTEM CALLER.
+ * A review lane read "unreachable" beside a sentence naming the test that calls
+ * it and reported the contradiction, correctly: the equivalence test is its one
+ * caller and that is the point of keeping it. It is NOT a fallback — no shipped
+ * path may call it — and it is NOT a general
  * baseline either: the two answer DIFFERENTLY, on purpose, for every word whose
  * meaning this change altered. A completed route, an audit in progress and an
  * escalation are exactly where they must differ, and

@@ -1351,10 +1351,19 @@ go — the runner refused its own repair on every tick, visibly and for ever.
   post-`completed` `questioned`/`answered` is held by the same seat that owes
   the audit. Occupancy is an ACCOUNTING now, not a derivation over custody, and
   the difference that matters is that an accounting can hold something.
-- Placement: a token is placed where a DOOR put it — `to_team` on `opened`,
-  `pulled`, `returned` and `resumed`; control's slot on `escalated`, `completed`
-  and the two audit words — and, when no door has placed it, by
-  `teamOf(last.agent_id)` if the actor is a declared team member. A token no
+- Placement, in this order:
+  1. **A door that names a destination.** `opened`, `pulled`, `returned` and
+     `resumed` each carry `to_team`, and the token goes there.
+  2. **A word that means the controller is working.** `escalated`, `completed`,
+     `audit_requested` and `audit_lost` take CONTROL's slot. None of them carries
+     `to_team` for this purpose — `escalated` carries one so a later `resumed`
+     knows where to send the work back, and `completed` carries none at all — so
+     the destination comes from the graph's declared controller team, not from
+     the line.
+  3. **Otherwise, whoever acted.** `teamOf(last.agent_id)` when the actor is a
+     declared team member.
+  **`escalated` ADDS control and releases nothing** — read rule 2 above before
+  reading this list as a swap; a stuck token keeps its delivery team's slot. A token no
   rule can place is an **orphan** and is surfaced, never dropped.
   Placement-by-actor was the derivation's ONLY rule and is now the fallback; it
   is not a legacy path, because a token whose history begins mid-flight is
