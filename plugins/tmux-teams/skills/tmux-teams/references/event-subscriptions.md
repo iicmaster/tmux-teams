@@ -62,7 +62,7 @@ Read the columns, not the rows.
 
 | ledger event | token | team | workflow | display |
 |---|---|---|---|---|
-| opened | starts a history | — | picks the route | redraw |
+| opened | starts a history | **control's slot is taken** | picks the route | redraw |
 | pulled | changes hands | **a slot is taken** | advances a hop | redraw |
 | intake / returned | records the gate's answer | **accepted, or the slot frees** | on returned, the hop is undone | redraw |
 | assigned | a leg begins | a seat is busy | — | redraw |

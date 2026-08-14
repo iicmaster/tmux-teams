@@ -4,15 +4,26 @@
 // "where is this now". That worked, and it is why the eight brakes in
 // `loop-runner.mjs` exist — a derivation cannot hold a slot, so nothing could
 // stop the line and timers were put in the gap instead. The walk is still in
-// the tree as `deriveTeamOccupancy`, unreachable, because it is what this has
-// to keep agreeing with for a token in flight.
+// the tree as `deriveTeamOccupancy`, frozen against the event set it was
+// written for, because it is what this has to agree with for a token IN FLIGHT
+// — not everywhere. Where this change altered a word's meaning the two differ
+// on purpose, and the equivalence test states each difference rather than
+// asserting agreement.
 //
 // Since 2026-08-14 `teamOccupancy` delegates HERE, so this module is the
-// occupancy rule — the only one, per contract ข้อ 13. It ACCOUNTS instead. Six words take or free a slot; the rest are
-// recorded because they move a seat, and one word does neither and is here only
-// so the table in `references/event-subscriptions.md` can be read straight off
-// the code. The difference that matters is not the data structure — it is that
-// an accounting can hold something a derivation cannot.
+// occupancy rule — the only one, per contract ข้อ 13. It ACCOUNTS instead, and
+// the difference that matters is not the data structure: an accounting can hold
+// something a derivation cannot.
+//
+// TEN words move a slot — `opened`, `pulled`, `returned`, `escalated`,
+// `resumed`, `completed` and the two audit words take or move one, and
+// `audited`/`abandoned` release every one. `assigned`, `delivered` and `lost`
+// move a SEAT and no slot. `intake`, `reviewed`, `questioned` and `answered`
+// move neither and are listened for anyway, so the table in
+// `references/event-subscriptions.md` reads straight off the code. The SIX the
+// design marks in bold are named below and are a different count entirely; an
+// earlier version of this paragraph confused the two, and two review lanes read
+// it against the switch and said so.
 //
 // The owner's rule, which this exists to implement:
 //
@@ -206,8 +217,11 @@ export function teamDomain({ controlTeamId, graph = null } = {}) {
           break
 
         case 'resumed':
-          // The PM finished; the work goes back to a delivery team. Control's
-          // slot frees here and only here for an escalation.
+          // The PM finished; the work goes back to a delivery team, and control
+          // lets go. This is the ORDINARY end of an escalation's control hold;
+          // `audited` and `abandoned` also free it, by freeing everything. An
+          // earlier comment said "here and only here", and two review lanes read
+          // that against the code and found it false.
           release(state, controlOr(agent), item)
           releaseEverywhere(state, item)
           take(state, event.to_team, item)
@@ -226,9 +240,11 @@ export function teamDomain({ controlTeamId, graph = null } = {}) {
         case 'audit_requested':
         case 'audit_lost':
           // Control is reading a finished delivery, or owes another attempt at
-          // one. Either way the PM is working, so the slot is held — today both
-          // of these RELEASE, which is why an unresolved audit never closes the
-          // front door.
+          // one. Either way the PM is working, so the slot is held. Both of these
+          // USED to release every slot, which is why an unresolved audit never
+          // closed the front door — the comment said "today both of these
+          // RELEASE" inside the very code that stopped it, and a lane caught the
+          // tense.
           take(state, controlOr(agent), item)
           break
 

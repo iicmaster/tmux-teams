@@ -625,14 +625,35 @@ export function currentEntry(custody) {
  * disagree about the same team, and wiring the front door to the accounting
  * while the board still derived recreated exactly that for one commit.
  *
- * The derivation is kept below, unreachable, as `deriveTeamOccupancy` — it is
- * the thing the accounting has to keep agreeing with for tokens in flight, and
- * `tests/domain-equivalence.test.mjs` holds them to it. It is NOT a fallback:
- * nothing in the system may call it.
+ * The derivation is kept below, unreachable, as `deriveTeamOccupancy`. It is NOT
+ * a fallback — nothing in the system may call it — and it is NOT a general
+ * baseline either: the two answer DIFFERENTLY, on purpose, for every word whose
+ * meaning this change altered. A completed route, an audit in progress and an
+ * escalation are exactly where they must differ, and
+ * `tests/domain-equivalence.test.mjs` states each difference rather than
+ * asserting agreement. What it holds them to is the UNCHANGED case: a token in
+ * flight, pulled into a delivery team and not yet finished, must be placed
+ * identically by both. That is the claim moving the decision was allowed to
+ * make, and the only one.
+ *
+ * A review panel read the earlier wording — "the thing the accounting has to
+ * keep agreeing with for tokens in flight" — and all three lanes called it
+ * false by construction. They were right: it claimed agreement the code
+ * deliberately does not have.
  */
 export function teamOccupancy(graph, items) {
   return occupancyOf(projectWorkItems(graph, items).stateOf('team'), graph)
 }
+
+// The five words that released a slot BEFORE 2026-08-14, frozen here. The
+// panel caught this too, in all three lanes: leaving the derivation to read the
+// live `RELEASING_EVENTS` meant narrowing that set silently changed the
+// derivation as well, so it was neither the old behaviour nor the new one — a
+// hybrid nobody designed, and a baseline that agrees with whatever it is
+// compared against. A historical baseline has to be frozen or it is not one.
+const DERIVATION_RELEASING_EVENTS = new Set([
+  'completed', 'abandoned', 'audit_requested', 'audited', 'audit_lost',
+])
 
 export function deriveTeamOccupancy(graph, items) {
   const teamOf = new Map()
@@ -648,7 +669,7 @@ export function deriveTeamOccupancy(graph, items) {
     // The route is closed, so nobody is holding it. Counting a finished token
     // as unplaceable is how the page ended up accusing its own completed work
     // of being an error.
-    if (RELEASING_EVENTS.has(last.event)) continue
+    if (DERIVATION_RELEASING_EVENTS.has(last.event)) continue
     // A token is with the seat that acted, EXCEPT when the event's whole purpose
     // was to move it somewhere — then the destination wins. `resumed` is the one
     // event where the two disagree: the outer controller signs it and the work

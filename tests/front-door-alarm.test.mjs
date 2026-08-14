@@ -10,6 +10,8 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { planDispatches } from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs'
+import { teamOccupancy } from '../plugins/tmux-teams/skills/tmux-teams/scripts/dispatch-facts.mjs'
 import { admitWorkItem } from '../plugins/tmux-teams/skills/tmux-teams/scripts/admit.mjs'
 import { appendEvent } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-writer.mjs'
 import { DEFAULT_WORKFLOW_GRAPH, validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
@@ -98,4 +100,31 @@ test('an escalation holds the PM, so the door shuts on the whole system', () => 
   })
   moveOut(dir, 'w2')
   assert.equal(admit(dir, 'w3').ok, false, 'work was admitted while the PM was already unsticking something')
+})
+
+test('a full controller can still be reached for the token that filled it', () => {
+  // A review lane asked this and could not answer it from the diff: control has
+  // one seat, an escalation consumes it, and the only events that free it are
+  // ones the controller itself writes. If a full control team could not be
+  // planned for, the stop mechanism would be a deadlock wearing its clothes.
+  //
+  // It is not, and the reason is the split between holding and acting: the
+  // delivery team's slot is spent (WIP) while its `held` list is empty (the
+  // controller decides), so the token is reached exactly once, under control.
+  const custody = [
+    { at: '2026-08-14T09:00:00.000Z', event: 'opened', work_item: 'tok', workflow: WORKFLOW, agent_id: 'pm_intake', to_team: CONTROL, reason: 'admitted' },
+    { at: '2026-08-14T09:01:00.000Z', event: 'pulled', work_item: 'tok', workflow: WORKFLOW, agent_id: `${FIRST}_dispatcher`, from_team: CONTROL, to_team: FIRST },
+    { at: '2026-08-14T09:02:00.000Z', event: 'escalated', work_item: 'tok', workflow: WORKFLOW, agent_id: `${FIRST}_dispatcher`, to_team: CONTROL, task_id: 't1', reason: 'stuck here' },
+  ]
+  const items = new Map([['tok', { work_item: 'tok', workflow: WORKFLOW, custody }]])
+
+  const occupancy = teamOccupancy(GRAPH, items)
+  assert.equal(occupancy.counts.get(CONTROL), 1, 'the PM is working and is not counted for it')
+  assert.equal(occupancy.counts.get(FIRST), 1, 'the work is still stuck in its delivery team')
+  assert.deepEqual(occupancy.held.get(FIRST), [], 'two teams would plan for the same token in one tick')
+
+  const plans = planDispatches(GRAPH, items, new Set(), { now: Date.parse('2026-08-14T09:05:00.000Z') })
+  const forToken = plans.filter((plan) => plan.work_item === 'tok' || plan.team === CONTROL)
+  assert.equal(forToken.length, 1, 'the token that filled control was planned for zero times, or twice')
+  assert.equal(forToken[0].action, 'escalate')
 })
