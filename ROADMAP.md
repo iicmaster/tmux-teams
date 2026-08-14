@@ -106,6 +106,19 @@ Nothing is blocking a release. These are real but unforced:
   provider error can still reach an operator's log. Low severity, log-injection
   shaped.
 - **Phase F** needs its three questions answered before it becomes work.
+- **The `qwen` review lane cannot hold the JSON protocol on documentation-shaped
+  content.** It answers cleanly on source and on tests, and on a 35 KiB
+  reference-docs packet — and failed `schema_invalid` three times running on the
+  contract packet, always at `invalid finding summary`, meaning a summary past
+  the 1,000-character ceiling the prompt states plainly. The packet was reduced
+  from 72 KiB to 22 KiB by stripping 139 mechanical rename pairs, so if it fails
+  again the size hypothesis is dead and the lane is the finding. **Do not re-run
+  it until it happens to pass** — record what it did and change the route.
+- **The eight brakes in `loop-runner.mjs` are still there.** They exist because
+  no PM work occupied a PM slot; one does now, and the front door refuses while
+  control owes a verdict. Narrowing or removing a brake is separate work, and
+  each one needs its own evidence that the WIP hold covers what it was standing
+  in for. Nobody has done that.
 
 ## Decisions that are not up for re-litigation
 
