@@ -164,3 +164,22 @@ test('a finished route is picked up for audit, and the verdict gives the slot ba
   assert.equal(after.counts.get(CONTROL), 0, 'the verdict did not give the slot back')
   assert.equal(admit(dir, 'w2').ok, true, 'the front door never reopened')
 })
+
+test('a failed leg is re-dispatched, and the answer comes from the token subscriber', () => {
+  // Cell 3, at its consumer. The subscriber owning a leg's outcome proves
+  // nothing until `nextStep` asks it, and a pure function tested alone is this
+  // repository's third-most-repeated way of testing nothing.
+  const custody = [
+    { at: '2026-08-14T09:00:00.000Z', event: 'opened', work_item: 'w1', workflow: WORKFLOW, agent_id: 'pm_intake', to_team: CONTROL, reason: 'admitted' },
+    { at: '2026-08-14T09:01:00.000Z', event: 'pulled', work_item: 'w1', workflow: WORKFLOW, agent_id: `${FIRST}_dispatcher`, from_team: CONTROL, to_team: FIRST },
+    { at: '2026-08-14T09:02:00.000Z', event: 'intake', work_item: 'w1', workflow: WORKFLOW, agent_id: `${FIRST}_dispatcher`, verdict: 'accept', reason: 'looks doable' },
+    { at: '2026-08-14T09:03:00.000Z', event: 'assigned', work_item: 'w1', workflow: WORKFLOW, agent_id: `${FIRST}_worker_1`, task_id: 't1', dispatch_id: 'd1' },
+    { at: '2026-08-14T09:04:00.000Z', event: 'delivered', work_item: 'w1', workflow: WORKFLOW, agent_id: `${FIRST}_worker_1`, task_id: 't1', dispatch_id: 'd1', terminal: 'timeout', timed_out: true, evidence_present: false },
+  ]
+  const items = new Map([['w1', { work_item: 'w1', workflow: WORKFLOW, custody }]])
+  const plans = planDispatches(GRAPH, items, new Set(), { now: Date.parse('2026-08-14T09:05:00.000Z') })
+  const forToken = plans.filter((plan) => plan.work_item === 'w1')
+  assert.equal(forToken.length, 1, 'a leg that timed out was planned for zero times, or twice')
+  assert.equal(forToken[0].action, 'dispatch', 'a failed leg was not re-dispatched')
+  assert.equal(forToken[0].role, 'worker', 'a failed worker leg went to a seat that is not a worker')
+})

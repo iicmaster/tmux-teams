@@ -33,6 +33,8 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { currentEntry, joinDispatchIdentity, readDispatchFacts, readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
+import { lastLegFailed } from './domain-token.mjs'
+import { projectWorkItems } from './domain-projection.mjs'
 import { isClosingTolerated, MAX_DOOR_REFUSALS, validateLedgerFileTolerant } from './ledger-validate.mjs'
 import { appendEvent as appendLedgerEvent, ledgerPath } from './ledger-writer.mjs'
 import { planPulls, applyPulls } from './pull-controller.mjs'
@@ -1682,6 +1684,11 @@ export function planDispatches(graph, items, busy, {
   livenessFor = null,
 } = {}) {
   const { held } = teamOccupancy(graph, items)
+  // The `token` subscriber, built from the same durable log the occupancy came
+  // from, so cell 3 asks the domain that owns a leg's outcome instead of every
+  // reader re-deriving it. One replay per plan, alongside the one occupancy
+  // already does.
+  const tokenState = projectWorkItems(graph, items).stateOf('token')
   const teamById = new Map(graph.teams.map((team) => [team.team_id, team]))
   const declared = new Set(graph.teams.flatMap((team) => team.agents.map((agent) => agent.agent_id)))
   // Team WIP limits bound each column. This bounds the board: without it a wide
@@ -1724,7 +1731,7 @@ export function planDispatches(graph, items, busy, {
         })
         continue
       }
-      const step = nextStep(graph, team, item, { busy, busyTasks, nowMs: now, zombieSec, answerDeadlineSec })
+      const step = nextStep(graph, team, item, { busy, busyTasks, nowMs: now, zombieSec, answerDeadlineSec, tokenState })
       if (step.action === 'in-flight') {
         // Spend the slot AND remember the seat. It used to do only the first,
         // so a second token reaching this team later in the same tick read the
