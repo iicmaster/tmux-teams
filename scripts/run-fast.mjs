@@ -14,7 +14,7 @@ const TEST_DIRECTORY = join(REPO_ROOT, 'tests')
 // inner loop becomes a ritual. `ledger` (8.9s) and `loop-replay` (17.5s) are
 // the two that genuinely do not fit; they appear in the full-only list this
 // runner prints, so their absence is visible rather than assumed.
-// The domain subscribers belong here by the same measured rule: the three of
+// The domain subscribers belong here by the same measured rule: the four of
 // them together run in under half a second, they spawn nothing, and they cover
 // the slot accounting that is being moved out of `nextStep` — which makes them
 // the files most often edited while that work is in flight. They were full-only

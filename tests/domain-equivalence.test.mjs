@@ -140,3 +140,24 @@ test('merging a REAL two-token history keeps each in its own append order', () =
   assert.ok(merged.every((entry) => typeof entry.at === 'string' && entry.at !== ''),
     'the reader returned an entry with no timestamp to order by')
 })
+
+test('one replay per tick, not one per caller', () => {
+  // Three call sites read this in a single tick — teamOccupancy, the dispatch
+  // planner and the escalation planner — and each one used to replay the whole
+  // durable log again. Same Map, same graph, same answer, three times.
+  //
+  // Identity-keyed, so a fresh read of the ledger is a fresh projection: the
+  // cache can never serve a tick the stale state of the one before it.
+  const { dir } = repoWith([opened, pulled])
+  const { items } = readWorkItems(dir)
+  const first = projectWorkItems(GRAPH, items)
+  assert.equal(projectWorkItems(GRAPH, items), first, 'the same items map was replayed twice in one tick')
+
+  const { items: reread } = readWorkItems(dir)
+  assert.notEqual(projectWorkItems(GRAPH, reread), first,
+    'a new read of the ledger reused the previous tick\'s projection')
+  assert.deepEqual(
+    occupancyOf(projectWorkItems(GRAPH, reread).stateOf('team'), GRAPH).counts,
+    occupancyOf(first.stateOf('team'), GRAPH).counts,
+    'the two projections of the same history disagree')
+})

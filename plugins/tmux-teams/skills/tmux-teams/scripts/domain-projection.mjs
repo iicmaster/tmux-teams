@@ -50,7 +50,28 @@ export function routesOf(graph) {
  * Build the four projections from the durable log.
  * @returns the projection, so a caller can ask a domain rather than compute.
  */
+// One replay per (graph, items) pair, not per caller. `teamOccupancy` calls this,
+// `planDispatches` calls it again for the token state, and `planEscalation` a
+// third time for the workflow state — three full replays of the same durable log
+// in one tick, on a Map that has not changed between them. Keyed on the items
+// Map's identity, so a new read of the ledger is a new projection and nothing
+// stale can survive a tick boundary. WeakMap, so it holds nothing alive.
+const replayed = new WeakMap()
+
 export function projectWorkItems(graph, items) {
+  const perGraph = replayed.get(items)
+  const cached = perGraph?.get(graph)
+  if (cached) return cached
+  const built = buildProjection(graph, items)
+  if (items && typeof items === 'object') {
+    const bucket = perGraph ?? new WeakMap()
+    if (!perGraph) replayed.set(items, bucket)
+    if (graph && typeof graph === 'object') bucket.set(graph, built)
+  }
+  return built
+}
+
+function buildProjection(graph, items) {
   const projection = createProjection({
     token: tokenDomain(),
     team: teamDomain({ graph }),

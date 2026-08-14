@@ -2,7 +2,9 @@
 
 > **This file is the source of the published roadmap page.** Edit it here; the
 > page is a rendering. `node scripts/roadmap-gate.mjs` answers whether the
-> published page still matches these bytes, and the release flow runs it.
+> digest recorded at the last publish still matches these bytes — it reads no
+> network and never fetches the page, so it detects a stale page, not a page that
+> was changed underneath us, and the release flow runs it.
 >
 > It lives at the repository root, tracked, for the same reason `HANDOFF.md`
 > does: a roadmap only one machine can read is a roadmap to nobody. Before
@@ -20,7 +22,7 @@ Current release: **0.20.0**
 | **B** | done | The exact-three review gate: three distinct model families, endpoint pins, zero-tool isolation (ADR 0001) |
 | **C** | **closed by changing the question, 2026-08-13** | Was "run the three-family panel through bwrap on Linux". The panel now runs without bwrap on macOS and Linux alike (ADR 0006), and passed 3/3 on three packets for v0.20.0. |
 | **D** | partly built | **The rebuild by domain.** Four domains hold their own behaviour — `team.nextRole`, `token.canPull`/`token.deliver`, `workflow.nextHop` — and orchestration decides WHEN, never WHAT. One dependency reverses: today the loop reads a page (`display → scheduler`); the target is `run → scheduler`. |
-| **E** | **slot accounting live**, four cells of six | **One publisher, N subscribers.** The ledger's own 17 words are the events; `token` subscribes to all 17, `team` to the 6 that take or free a slot, `workflow` to 5 about position, `display` to everything and it decides nothing. Scope is **six cells**, each moving one branch out of `nextStep` — counted, not estimated. |
+| **E** | **slot accounting live**, five cells of six | **One publisher, N subscribers.** The ledger's own 17 words are the events; `token` subscribes to all 17, `team` to the 6 that take or free a slot, `workflow` to 5 about position, `display` to everything and it decides nothing. Scope is **six cells**, each moving one branch out of `nextStep` — counted, not estimated. |
 | **F** | proposed, not started | Per-seat pre-LLM / post-LLM scripts (Master's proposal). Three questions must be answered before any code. |
 
 ## The rebuild the owner ordered — and where it actually stands

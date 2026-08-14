@@ -95,13 +95,14 @@ makes today. Not seventeen new handlers — **six**:
 5. `completed` → **workflow**: route finished
 6. `audit_requested` / `audit_lost` → **team**: control's slot
 
-Cell 6 is the heart, and it is the one that was never built at all. The owner's
+Cell 6 is the heart, and it was the one that had never been built at all — it is live as of 2026-08-14, and the front door now refuses while control owes a verdict. The owner's
 rule: a stuck token holds its team's slot; escalating to the PM means the PM is
 working, so the PM's slot is held until that work is done, whatever the work is;
 a held front door is the alarm. **The system stops when there is a problem.**
 
-What the code has instead is eight brakes, every one a timer or a counter, all
-in `loop-runner.mjs`: `MAX_ATTEMPTS`, `MAX_LEGS`,
+What the code HAD instead — and still has, because narrowing the brakes is
+separate work nobody has done — is eight of them, every one a timer or a
+counter, all in `loop-runner.mjs`: `MAX_ATTEMPTS`, `MAX_LEGS`,
 `MAX_AUDIT_TRANSPORT_RETRIES`, `ZOMBIE_SEC`, `PM_COOLDOWN_SEC`,
 `MAX_IN_FLIGHT`, `ANSWER_DEADLINE_SEC`, and the unchanged-trigger brake. They
 exist because no PM work occupies a PM slot: `audit_requested` is a releasing
@@ -110,7 +111,7 @@ and still does not occupy the PM. So three tokens can be stuck in three teams
 while the PM's single slot sits empty and new work is admitted normally, to get
 stuck later, somewhere else.
 
-## Why phase E is blocked on phase D, not merely after it
+## Why phase E was thought to be blocked on phase D — and what actually happened
 
 Events between domains that do not yet hold their own rules **relocate the
 tangle rather than reduce it**. Today one function holds two domains' behaviour:
@@ -121,9 +122,15 @@ nextStep()   loop-runner.mjs:1282-1587   305 lines
 ```
 
 Measured 2026-08-06 as zero, and again 2026-08-14 as zero — the three matches
-inside that range are all comments. Until `team` owns how a team works and
-`workflow` owns how a token moves between teams, a subscription has nowhere to
-deliver to.
+inside that range are all comments.
+
+**The prediction was half right, and the half it got wrong is worth more than
+the half it got right.** Slot accounting needed no route: slots are the team's
+own business, so cells 1, 2, 4 and 6 landed while `nextStep` was untouched, and
+cell 3 followed by handing the planner a projection rather than decomposing
+anything. What still stands is everything that depends on WHERE a token goes
+next — a subscription about position has nowhere to deliver until `workflow`
+owns the route, and `nextStep` still reads one zero times.
 
 ## Decisions on the record — argue with these, not from a blank slate
 
