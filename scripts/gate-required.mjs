@@ -63,6 +63,15 @@ export const DOC_ONLY = new Set(['HANDOFF.md', 'README.md', 'CLAUDE.md'])
 // wrong in on purpose.
 export const VERSION_FILES = new Set([
   '.claude-plugin/marketplace.json',
+  // ROADMAP.md joined the tracked files on 2026-08-13 and the release flow on
+  // 2026-08-14, and it carries `Current release: **x.y.z**`. It is NOT doc-only:
+  // its content is the source of a published page and a substantive edit to it
+  // must still be gated. Only the version DECLARATION is exempt, which is what
+  // this set means. Without it, bumping the version demanded a full three-model
+  // panel for a one-line number change — the exact "charges the same price for a
+  // documentation edit" failure this gate was scoped to prevent, reproduced by
+  // the first release after the file arrived.
+  'ROADMAP.md',
   'plugins/tmux-teams/.claude-plugin/plugin.json',
   'plugins/tmux-teams/plugin.json',
   'tests/plugin-structure.test.mjs',
@@ -134,6 +143,11 @@ const VERSION_DECLARATIONS = new Map([
   ['plugins/tmux-teams/.claude-plugin/plugin.json', [/^ {2}"version": "\d+\.\d+\.\d+",$/]],
   ['plugins/tmux-teams/plugin.json', [/^ {2}"version": "\d+\.\d+\.\d+",$/]],
   ['tests/plugin-structure.test.mjs', [/^const RELEASE_VERSION = '\d+\.\d+\.\d+'$/]],
+  // The roadmap declares it in prose, and that ONE shape is all this exempts.
+  // Every other line in the file — a phase row, an open item, a decision — is a
+  // change and goes to the panel, which is why the file is here rather than in
+  // DOC_ONLY.
+  ['ROADMAP.md', [/^Current release: \*\*\d+\.\d+\.\d+\*\*$/]],
 ])
 const declaresAVersion = (path, line) =>
   (VERSION_DECLARATIONS.get(path) ?? []).some((shape) => shape.test(line))
