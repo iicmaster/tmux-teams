@@ -12,7 +12,7 @@
 > source, no publish script and nothing that could notice it had gone stale —
 > so it went stale, repeatedly, and nobody could tell without opening it.
 
-Current release: **0.20.0**
+Current release: **0.21.0**
 
 ## Where the phases stand
 

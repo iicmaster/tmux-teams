@@ -340,15 +340,19 @@ not optional, and only a later explicit instruction from Master changes either.
    produced it. This exists because every release before it was marked on one model's
    reading, and the three corrections that mattered most on 2026-08-03 all came
    from the advisor rather than from this room.
-3. Bump the version in FIVE files, SIX places — the counts differ because one
+3. Bump the version in SIX files, SEVEN places — the counts differ because one
    file carries it twice, and saying only the smaller one is how a marketplace
    half-bump gets past a checklist. `README.md` said it correctly while this
    line said "all FIVE places" and then listed six; a release reviewer caught
    the contradiction. The files: `.claude-plugin/marketplace.json`
    (twice: `metadata.version` and `plugins[0].version`),
    `plugins/tmux-teams/.claude-plugin/plugin.json`, `RELEASE_VERSION` in
-   `tests/plugin-structure.test.mjs`, and the `Current release: **X.Y.Z**` line
-   in `README.md`, and `plugins/tmux-teams/plugin.json` (the vendor-neutral
+   `tests/plugin-structure.test.mjs`, the `Current release: **X.Y.Z**` line
+   in `README.md`, `plugins/tmux-teams/plugin.json`, and — found 2026-08-14, by
+   grepping rather than by reading this list — the `Current release:` line in
+   `ROADMAP.md`, which additionally has its own gate: bumping it makes the
+   published page stale, so the release flow's roadmap step is not optional on a
+   version bump (the vendor-neutral
    Agent Plugins manifest, added 2026-08-08 — it arrived WITH its guard rather
    than waiting for a release to notice, which is the first time that happened). That test is the only thing checking they agree, so it has
    to state the number itself. This step said "BOTH" until 2026-08-01, and

@@ -13,7 +13,7 @@ New here? Read this file top to bottom, then
 [how-it-works.md](plugins/tmux-teams/skills/tmux-teams/references/how-it-works.md)
 for the diagrams.
 
-Current release: **0.20.0** (`.claude-plugin/marketplace.json` and
+Current release: **0.21.0** (`.claude-plugin/marketplace.json` and
 `plugins/tmux-teams/.claude-plugin/plugin.json`). Upgrading from an earlier
 0.14.x release needs no change to an existing `graph.json` — the seat fields
 in ข้อ 2 (`adapter`, `effort`, `display_model`) and the files in ข้อ 6 are all
