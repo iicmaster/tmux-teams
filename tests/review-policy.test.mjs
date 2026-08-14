@@ -702,3 +702,25 @@ test('every declared profile has a provider-secret list, even an empty one', () 
   assert.deepEqual(PROVIDER_SECRET_KEYS.deepseek, [],
     'deepseek reaches its provider through a routed wrapper and must forward no key from this process')
 })
+
+test('a profile whose sessionSettings name something other than its model declares the alias', () => {
+  // `deepseek` pinned 'sonnet' while its model is 'deepseek-v4-flash-0731', so
+  // the transport refused it at stage config every single time — and it is the
+  // claude route's only reserve, which is why the gate had no working
+  // substitution at all. The mismatch is legitimate: the gateway maps the alias
+  // onto the vendor, measured 2026-08-08. What was missing was declaring it.
+  const undeclared = []
+  for (const profile of Object.values(REVIEW_PROFILES)) {
+    const pinned = profile.sessionSettings?.availableModels
+    if (!Array.isArray(pinned) || pinned.length !== 1) continue
+    const requested = profile.requestModel ?? profile.model
+    if (pinned[0] !== requested) undeclared.push(`${profile.id}: pins ${pinned[0]}, requests ${requested}`)
+  }
+  assert.deepEqual(undeclared, [], `profiles whose pin cannot be satisfied: ${undeclared.join('; ')}`)
+
+  // Pinned literally: the reserve is the one that was broken, and the identity
+  // it records must NOT become the alias.
+  assert.equal(REVIEW_PROFILES.deepseek.requestModel, 'sonnet')
+  assert.equal(REVIEW_PROFILES.deepseek.model, 'deepseek-v4-flash-0731')
+  assert.notEqual(REVIEW_PROFILES.deepseek.requestModel, REVIEW_PROFILES.deepseek.model)
+})

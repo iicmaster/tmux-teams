@@ -184,6 +184,13 @@ export const REVIEW_PROFILES = freeze({
     settingsRelativePath: '.config/claude-profiles/qwen/settings.json',
     providerConfigDir: '.config/claude-profiles/qwen',
     endpoint: QWEN_ENDPOINT,
+    // The alias this gateway must be ASKED for, declared rather than left as a
+    // mismatch: the pin demands one value and compares it against this, while
+    // `model` above stays the identity that gets recorded. Until 2026-08-14 the
+    // two were simply inconsistent, so every attempt to seat this lane was
+    // refused at `stage: config` — and since it is the claude route's only
+    // reserve, the gate had no working substitution at all.
+    requestModel: 'sonnet',
     sessionSettings: { availableModels: ['sonnet'] },
     config: { model: 'sonnet', mode: 'plan' },
   },

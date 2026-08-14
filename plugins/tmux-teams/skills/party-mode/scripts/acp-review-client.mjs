@@ -1046,14 +1046,24 @@ export async function runAcpReview({
       ].join('\n'), { encoding: 'utf8', mode: 0o444 })
     }
     if (profile.sessionSettings) {
+      // The pin still admits exactly ONE value. What it pins is the name the
+      // adapter must be ASKED for, which is not always the model's identity: a
+      // gateway can map an alias onto a vendor, and `claude-qwen` does —
+      // `--model sonnet` measurably answers `deepseek-v4-flash-0731`. A profile
+      // in that position declares `requestModel` and the mismatch becomes a
+      // statement instead of a silent contradiction that made the lane
+      // unreachable for ever. Nothing is loosened: one value, declared, and the
+      // recorded identity stays `profile.model`.
+      const requested = profile.requestModel ?? profile.model
       const models = profile.sessionSettings.availableModels
-      if (!Array.isArray(models) || models.length !== 1 || models[0] !== profile.model) {
-        throw new ReviewTransportError('config', 'sessionSettings must pin exactly the routed model')
+      if (!Array.isArray(models) || models.length !== 1 || models[0] !== requested) {
+        throw new ReviewTransportError('config',
+          `sessionSettings must pin exactly the requested model (${requested})`)
       }
       const settingsDir = join(cwd, '.claude')
       await mkdir(settingsDir, { recursive: true })
       await writeFile(join(settingsDir, 'settings.local.json'), JSON.stringify({
-        availableModels: [profile.model],
+        availableModels: [requested],
       }), { encoding: 'utf8', mode: 0o600 })
     }
     // Refuse before preparing anything. `prepareProviderState` copies provider
