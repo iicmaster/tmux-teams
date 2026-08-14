@@ -169,3 +169,23 @@ events at all: the derivation being replaced placed a token by WHO ACTED —
 `teamOf(agent_id)` — and the accounting had no equivalent, so a token whose
 history begins mid-flight was held by nobody. That single mechanism took the
 suite from 31 red to 7.
+
+## Answers the review panel is owed
+
+A lane asked whether rewriting 1,073 contract cross-references from the section
+sign to a Thai word breaks any search, lint or ratchet that keys on them, and
+noted the rewrite rides along in the same diff as this change without being
+mentioned. Half of that is right and half is measured false:
+
+```
+code or config files still carrying the section sign   0   (no mixed notation)
+scripts that READ a clause reference                   0   (no lint, no ratchet)
+scripts and tests that MENTION one, in comments       26
+```
+
+So nothing keys on the marker, and the notation is not split. The rewrite's own
+reason is elsewhere and stands on its own: the owner cannot type the sign, and a
+document its owner cannot grep is a document its owner has to take on trust.
+What the lane was right about is packaging — a mechanical rewrite riding inside
+a behavioural diff, unexplained, makes a reviewer spend attention proving it is
+mechanical. Say it in the packet next time.
