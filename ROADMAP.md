@@ -106,14 +106,14 @@ Nothing is blocking a release. These are real but unforced:
   provider error can still reach an operator's log. Low severity, log-injection
   shaped.
 - **Phase F** needs its three questions answered before it becomes work.
-- **The `qwen` review lane cannot hold the JSON protocol on documentation-shaped
-  content.** It answers cleanly on source and on tests, and on a 35 KiB
-  reference-docs packet — and failed `schema_invalid` three times running on the
-  contract packet, always at `invalid finding summary`, meaning a summary past
-  the 1,000-character ceiling the prompt states plainly. The packet was reduced
-  from 72 KiB to 22 KiB by stripping 139 mechanical rename pairs, so if it fails
-  again the size hypothesis is dead and the lane is the finding. **Do not re-run
-  it until it happens to pass** — record what it did and change the route.
+- **A review packet has a working ceiling well below the 128 KiB the gate
+  enforces, and it is not written down anywhere but here.** The `qwen` lane
+  failed `schema_invalid` three times running on a 72 KiB contract packet, always
+  at `invalid finding summary` — a summary past the 1,000-character limit the
+  prompt states plainly — while answering the same content cleanly at 22 KiB, and
+  answering 74 KiB of source and 60 KiB of tests without trouble. So it is not
+  size alone: dense prose costs more than dense code. Nobody has found where the
+  real ceiling is, and the gate cannot warn about it.
 - **The eight brakes in `loop-runner.mjs` are still there.** They exist because
   no PM work occupied a PM slot; one does now, and the front door refuses while
   control owes a verdict. Narrowing or removing a brake is separate work, and
