@@ -76,6 +76,13 @@ test('releasing is true exactly on the contract ข้อ 6 RELEASING_EVENTS set
     const custody = [{ at: '2026-08-01T09:00:00.000Z', event, work_item: 'tok-1', agent_id: 'a' }]
     assert.equal(projectToken(itemOf(custody)).releasing, true, `${event} must read as releasing`)
   }
+  // And the FALSE side, per word. Asserting only the true side passes if
+  // `releasing` returns true for everything — a review lane pointed that out,
+  // and the words below are exactly the ones that stopped releasing today.
+  for (const event of ['completed', 'audit_requested', 'audit_lost', 'escalated', 'questioned', 'assigned']) {
+    const custody = [{ at: '2026-08-01T09:00:00.000Z', event, work_item: 'tok-1', agent_id: 'a' }]
+    assert.equal(projectToken(itemOf(custody)).releasing, false, `${event} must NOT read as releasing`)
+  }
   const held = [{ at: '2026-08-01T09:00:00.000Z', event: 'assigned', work_item: 'tok-1', agent_id: 'a', task_id: 't' }]
   assert.equal(projectToken(itemOf(held)).releasing, false)
 })

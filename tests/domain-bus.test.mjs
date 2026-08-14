@@ -44,6 +44,11 @@ test('replaying the same log twice gives the same state', () => {
   const log = [ev('opened'), ev('pulled'), ev('delivered'), ev('completed')]
   const build = () => createProjection({ team: recorder(EVERY_EVENT) }).replay(log).stateOf('team')
   assert.deepEqual(build(), build())
+  // ANCHORED. Comparing two builds of the same pure fold to each other passes
+  // if `replay` is deleted or becomes a no-op — both sides would be the initial
+  // state and equal. A review lane named this exactly. So the state is also
+  // pinned to what the log says it must be.
+  assert.deepEqual(build().seen, ['opened', 'pulled', 'delivered', 'completed'])
 })
 
 test('an event with no ledger word is refused, not silently dropped', () => {

@@ -49,12 +49,25 @@ const occupancyPairs = (dir) => {
 const countsOf = (occupancy) => Object.fromEntries([...occupancy.counts].filter(([, n]) => n > 0))
 
 test('the publisher this projection reads from is the one the system writes through', () => {
-  // If `appendEvent` refuses these fixtures, every comparison below is being
-  // made against a history the loop could not have produced.
+  // This asserted that `appendEvent` refused nothing — after appending NOTHING.
+  // Trivially true, and true whether the writer worked at all. A review lane
+  // called it the file's own designated fidelity gate and vacuous, and it was
+  // right: the gate has to push real events through and then show they came
+  // back out of the real reader.
   const teams = GRAPH.teams.map((team) => team.team_id)
   assert.ok(teams.includes(CONTROL_TEAM_ID))
-  const { refused } = repoWith([])
-  assert.deepEqual(refused, [])
+
+  const { dir, refused } = repoWith([opened, pulled])
+  assert.deepEqual(refused, [], 'the writer refused a history this file compares against')
+  const { items } = readWorkItems(dir)
+  const custody = items.get('w1')?.custody ?? []
+  assert.deepEqual(custody.map((entry) => entry.event), ['opened', 'pulled'],
+    'the reader did not return what the writer accepted')
+
+  // And the writer really does refuse: a shape this file must never build by
+  // hand is rejected, so the gate above is a gate and not a formality.
+  const bad = repoWith([{ actor: 'human:ada', event: 'opened', work_item: 'w2', workflow: WORKFLOW }])
+  assert.equal(bad.refused.length, 1, 'an event missing its required fields was accepted')
 })
 
 const ROUTE = GRAPH.workflows[0].route
@@ -106,4 +119,24 @@ test('merging keeps each token history in its own append order', () => {
   const aOnly = merged.filter((entry) => entry.work_item === 'a').map((entry) => entry.event)
   assert.deepEqual(aOnly, ['opened', 'pulled'], 'a tie on `at` reordered one token against itself')
   assert.equal(merged.length, 3)
+})
+
+test('merging a REAL two-token history keeps each in its own append order', () => {
+  // The test above builds its Map by hand, which contradicts this file's own
+  // header — a review lane caught the contradiction. It stays, because a
+  // millisecond tie is not something the writer can be made to produce on
+  // demand and the ordering rule has to be pinned somewhere. This one covers
+  // the same rule through the real writer and the real reader, so the pair is
+  // honest: one proves the tie-break, one proves the shape it runs on.
+  const { dir, refused } = repoWith([
+    opened, pulled,
+    { actor: 'human:ada', event: 'opened', work_item: 'w2', workflow: WORKFLOW, agent_id: 'pm_intake', to_team: 'control', reason: 'second request' },
+  ])
+  assert.deepEqual(refused, [])
+  const { items } = readWorkItems(dir)
+  const merged = mergeCustody(items)
+  assert.equal(merged.length, 3)
+  assert.deepEqual(merged.filter((e) => e.work_item === 'w1').map((e) => e.event), ['opened', 'pulled'])
+  assert.ok(merged.every((entry) => typeof entry.at === 'string' && entry.at !== ''),
+    'the reader returned an entry with no timestamp to order by')
 })
