@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PAGES, renderBody, renderInline, renderRoadmap, runRenderCli } from '../scripts/roadmap-render.mjs'
@@ -133,4 +133,36 @@ test('a page renders to the output its entry names, and takes its title from the
   assert.equal(runRenderCli([], { root: dir, stdout: { write: (s) => { printed += s } } }), 0)
   const html = readFileSync(join(dir, PAGES[0].out), 'utf8')
   assert.match(html, /<title>A Named Page<\/title>/, 'the page kept a title the source did not give it')
+})
+
+test('an undeclared source never renders over a declared page', () => {
+  // The whole defect in one line: the renderer fell back to the roadmap's output
+  // path for any source it did not know, so a typo — or the same file spelled
+  // `./ROADMAP.md` — rendered some other document straight over the published
+  // roadmap. Found by three review lanes independently.
+  const dir = mkdtempSync(join(tmpdir(), 'roadmap-unknown-'))
+  mkdirSync(join(dir, 'docs'), { recursive: true })
+  writeFileSync(join(dir, 'ROADMAP.md'), '# The Roadmap\n\nthe page that must not be overwritten.\n')
+  writeFileSync(join(dir, PAGES[0].out), '<html>the published roadmap</html>')
+  writeFileSync(join(dir, 'NOPE.md'), '# Not A Page\n\nsomething else entirely, long enough.\n')
+
+  let printed = ''
+  const code = runRenderCli(['NOPE.md'], { root: dir, stdout: { write: (s) => { printed += s } } })
+  assert.equal(code, 1)
+  assert.match(printed, /not a declared page/)
+  assert.equal(readFileSync(join(dir, PAGES[0].out), 'utf8'), '<html>the published roadmap</html>',
+    'an undeclared source overwrote the roadmap page')
+})
+
+test('a declared source renders to ITS output, named positionally', () => {
+  // The positional source argument — the core of the change — had no test at
+  // all; the only new one called the CLI with an empty argv.
+  const dir = mkdtempSync(join(tmpdir(), 'roadmap-positional-'))
+  const page = PAGES[1]
+  mkdirSync(join(dir, page.source.split('/').slice(0, -1).join('/')), { recursive: true })
+  writeFileSync(join(dir, page.source), '# Second Page\n\nbody long enough to be a real page.\n')
+  let printed = ''
+  assert.equal(runRenderCli([page.source], { root: dir, stdout: { write: (s) => { printed += s } } }), 0, printed)
+  assert.match(readFileSync(join(dir, page.out), 'utf8'), /<title>Second Page<\/title>/)
+  assert.equal(existsSync(join(dir, PAGES[0].out)), false, 'it also wrote the roadmap page')
 })

@@ -116,6 +116,33 @@ test('the repository ships a ROADMAP.md the gate can read', () => {
   assert.ok(readFileSync(join(root, ROADMAP_SOURCE), 'utf8').length > 200, 'ROADMAP.md is a stub')
 })
 
+test('an undeclared source is refused, never treated as the roadmap', () => {
+  // Three review lanes found this independently: an unknown or misspelled source
+  // fell back to the roadmap's marker, so a typo answered about a page that does
+  // not exist. The page list is the authority.
+  const dir = repoWith()
+  const { code, out } = run(['NOPE.md'], dir)
+  assert.equal(code, ROADMAP_EXIT.failed)
+  assert.match(out, /not a declared page/)
+  assert.match(out, /ROADMAP\.md/, 'the refusal did not say what the declared pages are')
+})
+
+test('one spelling per page — ./ROADMAP.md is ROADMAP.md', () => {
+  // Two spellings used to keep two separate records, which nothing would ever
+  // reconcile: one could read current while the other read stale, for one file.
+  const dir = repoWith()
+  run(['--record', 'https://artifacts.example/roadmap/'], dir)
+  assert.equal(run(['./ROADMAP.md'], dir).code, ROADMAP_EXIT.current,
+    'the same file spelled differently kept its own publication record')
+})
+
+test('--record=<url> records, exactly as --record <url> does', () => {
+  const dir = repoWith()
+  const { code, out } = run(['--record=https://artifacts.example/roadmap/'], dir)
+  assert.equal(code, ROADMAP_EXIT.current, out)
+  assert.equal(run([], dir).code, ROADMAP_EXIT.current)
+})
+
 test('--record works when a source is named first, and records that source', () => {
   // It asked whether argv[0] was `--record`. Naming a source first — the only
   // way to record any page but the roadmap — fell through to the CHECK branch,
@@ -123,7 +150,7 @@ test('--record works when a source is named first, and records that source', () 
   // command that does the opposite of what it was told, quietly, is worse than
   // one that refuses.
   const dir = repoWith()
-  const other = 'OTHER.md'
+  const other = 'RELEASE-PLAN.md'
   writeFileSync(join(dir, other), '# Other\n\nlong enough to be a real page, twice over.\n')
 
   const rec = run([other, '--record', 'https://artifacts.example/other/'], dir)
@@ -141,8 +168,8 @@ test('a stale page names the marker and source it actually read', () => {
   // checked, so a second page reported a missing `.roadmap-published.json` —
   // sending a reader to look at the wrong file for the wrong reason.
   const dir = repoWith()
-  writeFileSync(join(dir, 'OTHER.md'), '# Other\n\nlong enough to be a real page, twice over.\n')
-  const { out } = run(['OTHER.md'], dir)
-  assert.match(out, /OTHER/)
+  writeFileSync(join(dir, 'RELEASE-PLAN.md'), '# Other\n\nlong enough to be a real page, twice over.\n')
+  const { out } = run(['RELEASE-PLAN.md'], dir)
+  assert.match(out, /RELEASE-PLAN/)
   assert.doesNotMatch(out, /\.roadmap-published\.json/)
 })

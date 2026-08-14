@@ -20,6 +20,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { PAGES, normalisePage } from './roadmap-render.mjs'
 
 // Every page in `roadmap-render.mjs`'s PAGES list needs its own record, or a
 // gate that says "current" is only telling you about one of them. Keyed by
@@ -84,7 +85,16 @@ export function runRoadmapGateCli(argv = [], {
   // that one. A gate that only ever answered about one of three published pages
   // was telling the truth about a third of the question.
   const positional = argv.filter((arg, i) => !arg.startsWith('--') && !argv[i - 1]?.startsWith('--record'))
-  const source = positional[0] ?? ROADMAP_SOURCE
+  const source = normalisePage(positional[0] ?? ROADMAP_SOURCE)
+  // The page list is the authority. An undeclared source used to be checked
+  // against a marker derived from whatever string was typed, so a typo answered
+  // STALE about a page that does not exist and a second spelling of a real page
+  // kept its own separate record. Refuse instead of guessing.
+  if (!PAGES.some((page) => page.source === source)) {
+    stdout.write(`roadmap-gate: ${source} is not a declared page. Known pages:\n`)
+    for (const page of PAGES) stdout.write(`    ${page.source}\n`)
+    return ROADMAP_EXIT.failed
+  }
   const sourcePath = join(root, source)
   const markerPath = join(root, source === ROADMAP_SOURCE
     ? ROADMAP_MARKER
@@ -99,9 +109,13 @@ export function runRoadmapGateCli(argv = [], {
   // source first — the only way to record any page but the roadmap — silently
   // fell through to the check branch and recorded nothing, while printing STALE
   // as though nothing had been asked.
-  const recordIndex = argv.indexOf('--record')
+  // Both forms: `--record <url>` and `--record=<url>`. A lane found the second
+  // silently doing nothing, which is the same shape as the argv[0] bug this
+  // replaced — a command that accepts an instruction and ignores it.
+  const recordIndex = argv.findIndex((arg) => arg === '--record' || arg.startsWith('--record='))
   if (recordIndex >= 0) {
-    const url = argv[recordIndex + 1]
+    const inline = argv[recordIndex].startsWith('--record=') ? argv[recordIndex].slice('--record='.length) : null
+    const url = inline ?? argv[recordIndex + 1]
     if (typeof url !== 'string' || !url.startsWith('https://')) {
       stdout.write('roadmap-gate: usage: roadmap-gate.mjs --record <https url of the published page>\n')
       return ROADMAP_EXIT.failed

@@ -186,6 +186,11 @@ ${renderBody(markdown)}
 // list. It exists because two of the three pages did NOT: they were HTML written
 // by hand, went stale by a week, and nothing could notice. The roadmap got a
 // source first; the other two joined on 2026-08-14.
+// One spelling per page. `./ROADMAP.md` and `ROADMAP.md` are the same file and
+// used to produce different marker names, forking a page's publication record
+// in a way nothing would ever reconcile.
+export const normalisePage = (source) => String(source ?? '').replace(/^\.\//, '').replace(/\/+/g, '/').trim()
+
 export const PAGES = Object.freeze([
   { source: 'ROADMAP.md', out: 'docs/roadmap.html', slug: 'tmux-teams-next-plan' },
   {
@@ -199,11 +204,20 @@ export const PAGES = Object.freeze([
 export function runRenderCli(argv = [], { root = process.cwd(), stdout = process.stdout } = {}) {
   const outIndex = argv.indexOf('--out')
   const positional = argv.filter((arg, i) => !arg.startsWith('--') && argv[i - 1] !== '--out')
-  const source = positional[0] ?? 'ROADMAP.md'
+  const source = normalisePage(positional[0] ?? 'ROADMAP.md')
   const known = PAGES.find((page) => page.source === source)
-  const outPath = outIndex >= 0
-    ? argv[outIndex + 1]
-    : join(root, known?.out ?? 'docs/roadmap.html')
+  // An unknown source is an ERROR, never the roadmap by default. It used to
+  // fall back to the roadmap's output path, so a typo — or the same file spelled
+  // `./ROADMAP.md` — rendered some other document straight over the published
+  // roadmap page. Three review lanes found it independently. `--out` still lets
+  // a caller render anything anywhere; what is refused is guessing.
+  if (!known && outIndex < 0) {
+    stdout.write(`roadmap-render: ${source} is not a declared page. Known pages:\n`)
+    for (const page of PAGES) stdout.write(`    ${page.source}\n`)
+    stdout.write('Pass --out <file> to render something that is not one of them.\n')
+    return 1
+  }
+  const outPath = outIndex >= 0 ? argv[outIndex + 1] : join(root, known.out)
   if (outIndex >= 0 && !outPath) {
     stdout.write('roadmap-render: --out needs a path\n')
     return 1
