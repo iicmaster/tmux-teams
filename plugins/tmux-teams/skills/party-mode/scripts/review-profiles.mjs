@@ -9,14 +9,28 @@ const runtimeKeys = new Set([
   'LC_CTYPE', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME',
 ])
 
+// Every declared profile needs an entry, even an empty one — `deepseek` had
+// none, and it is the ONLY reserve the claude route has, so the gate's single
+// substitution path crashed with "providerSecrets[profile.id] is not iterable"
+// the first time anything reached it. Found 2026-08-14 by a documentation panel
+// whose qwen lane returned an invalid schema: the substitution fired, and the
+// thing meant to rescue the panel took it down instead.
+//
+// An empty list is a statement, not a gap: `qwen` and `deepseek` reach their
+// provider through a routed wrapper's own settings, so no key is forwarded from
+// this process. `tests/review-policy.test.mjs` holds every declared profile to
+// having an entry, so the next one added cannot quietly inherit a crash.
 const providerSecrets = {
   agy: ['AGY_API_KEY', 'ANTIGRAVITY_API_KEY', 'GOOGLE_API_KEY'],
   kimi: ['KIMI_API_KEY', 'MOONSHOT_API_KEY'],
   qwen: [],
+  deepseek: [],
   zai: ['ZAI_API_KEY'],
   claude: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
   codex: ['OPENAI_API_KEY'],
 }
+
+export const PROVIDER_SECRET_KEYS = providerSecrets
 
 const routedSettingsEnv = new Set([
   'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL',
@@ -724,7 +738,11 @@ export function buildProfileEnv(profileId, source = process.env, {
   const path = executablePath(source)
   if (path) env.PATH = path
   if (ROUTED_PROFILES.has(profile.id)) Object.assign(env, loadRoutedEnvironment(profile, source, settingsLoader))
-  for (const key of providerSecrets[profile.id]) {
+  const secretKeys = providerSecrets[profile.id]
+  if (!Array.isArray(secretKeys)) {
+    throw new TypeError(`profile ${profile.id} declares no provider-secret list — add one, empty if it forwards none`)
+  }
+  for (const key of secretKeys) {
     if (source?.[key] !== undefined && source[key] !== null) env[key] = String(source[key])
   }
   if (profile.id === 'agy') {

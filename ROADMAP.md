@@ -57,11 +57,21 @@ terminals; an escalation holds both its delivery team's slot and control's; a
 finished route is control's queue item until it is audited. The front door
 refuses while control owes a verdict, which is the alarm the owner described.
 
-**Four of the six cells are live: 1, 2, 4 and 6.** Cell 3 (`delivered` → the
-leg's outcome) has its subscriber and no consumer — `nextStep` still reads
-`last.terminal` inline. Cell 5 (`completed` → route finished) likewise:
-`routeFinished` exists and `awaitingAudit` still scans custody. Both are built
-and unwired, which is a different thing from done.
+**Five of the six cells are live: 1, 2, 3, 4 and 6.** Cell 3 landed last:
+`nextStep` asks the `token` subscriber whether a leg failed instead of
+re-deriving it, and escalates to a person if the subscriber and the ledger line
+disagree rather than quietly preferring one. Forcing the subscriber to answer
+false turns the planner's own test red, so the wiring is guarded at the
+consumer.
+
+**Cell 5 is a cross-check and is deliberately not load-bearing.** `awaitingAudit`
+consults `routeFinished` and arms the audit on either answer. Measured: deleting
+the domain's answer turns exactly one test red, and it is the domain's own unit
+test. That is not an oversight — the domain and the custody scan read the same
+field of the same log, so nothing can tell them apart behaviourally, and the
+only way to give the domain the weight is to delete the scan. Then a projection
+that is wrong drops an audit: a delivery that finished with nobody owing it a
+verdict, which is the exact failure this rebuild exists to end.
 
 **Phase D's real work is untouched**: `nextStep` still holds two domains'
 behaviour in 305 lines, and still reads a route zero times. The prediction that

@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import {
-  REVIEW_PROFILES, ROUTED_PROFILES, assertAdapterPackageBoundToCommand, assertPermittedModel, buildAcpLaunch,
+  PROVIDER_SECRET_KEYS, REVIEW_PROFILES, ROUTED_PROFILES, assertAdapterPackageBoundToCommand, assertPermittedModel, buildAcpLaunch,
   buildProfileEnv, loadProfileSettings, normalizePrimaryFamily, provenFamilyCollision, provenFamilyKey,
   provenLaunchSignature, validateRoutedEndpoint,
 } from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
@@ -685,4 +685,20 @@ test('r6-qwen: two lanes whose launch cannot be read at all fail closed, exactly
     assert.equal(provenFamilyCollision(panel), false,
       `a shipped panel was refused: ${panel.map((profile) => profile.id).join('+')}`)
   }
+})
+
+test('every declared profile has a provider-secret list, even an empty one', () => {
+  // `deepseek` had none, and it is the only reserve the claude route has, so the
+  // gate's single substitution path crashed the first time anything reached it
+  // — "providerSecrets[profile.id] is not iterable". The thing meant to rescue a
+  // panel took the panel down. Nothing tested the reserve because nothing had
+  // ever used it.
+  const missing = Object.keys(REVIEW_PROFILES).filter((id) => !Array.isArray(PROVIDER_SECRET_KEYS[id]))
+  assert.deepEqual(missing, [], `profiles with no provider-secret list: ${missing.join(', ')}`)
+
+  // Pinned literally too: a test that only iterates the profile list stops
+  // testing whatever is deleted from it.
+  assert.ok(Array.isArray(PROVIDER_SECRET_KEYS.deepseek), 'the reserve lane lost its entry again')
+  assert.deepEqual(PROVIDER_SECRET_KEYS.deepseek, [],
+    'deepseek reaches its provider through a routed wrapper and must forward no key from this process')
 })

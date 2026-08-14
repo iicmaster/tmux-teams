@@ -34,6 +34,7 @@ import { fileURLToPath } from 'node:url'
 
 import { currentEntry, joinDispatchIdentity, readDispatchFacts, readWorkItems, teamOccupancy } from './dispatch-facts.mjs'
 import { lastLegFailed } from './domain-token.mjs'
+import { routeFinished } from './domain-workflow.mjs'
 import { projectWorkItems } from './domain-projection.mjs'
 import { isClosingTolerated, MAX_DOOR_REFUSALS, validateLedgerFileTolerant } from './ledger-validate.mjs'
 import { appendEvent as appendLedgerEvent, ledgerPath } from './ledger-writer.mjs'
@@ -737,8 +738,45 @@ const failedLegs = (item) => item.custody.filter((entry) =>
 // that stale trailing entry and exposes `answered` as current, but the raw
 // tail read it as whatever the stale entry's event was and silently
 // suppressed the re-escalation this function exists to guarantee.
-const awaitingAudit = (item) => {
-  if (!item.custody.some((entry) => entry.event === 'completed')) return false
+const awaitingAudit = (item, workflowState = null) => {
+  // Cell 5 of the subscription table: "has this route finished" belongs to the
+  // `workflow` domain, which watches `completed` and says so. The custody scan
+  // stays as the answer when no projection was handed down — this is called
+  // from paths that hold only an item — and the two must agree. A disagreement
+  // means the projection is wrong about a history the runner can see, so it is
+  // surfaced by preferring the scan and leaving the token armed rather than
+  // silently dropping an audit somebody is owed.
+  // The domain ANSWERS when it was handed down; the custody scan is the answer
+  // only on the paths that hold an item and no projection. Consulting the domain
+  // and then using the scan anyway would be a cross-check wearing the clothes of
+  // a hand-over — the two read the same field of the same log, so no test could
+  // ever tell them apart, and the subscription would be decorative.
+  //
+  // A disagreement can only mean the projection is wrong about a history the
+  // runner can see. It arms the audit anyway and says so: an audit armed twice
+  // is noise, an audit dropped is a delivery nobody ever judged.
+  //
+  // BE HONEST ABOUT WHAT THIS IS. Because it arms on either answer, deleting
+  // the domain's answer changes no behaviour any test can reach — measured:
+  // forcing `routeFinished` to answer false turns exactly one test red, and it
+  // is the domain's own unit test, not a consumer. So cell 5 is a CROSS-CHECK,
+  // not the hand-over cell 3 is.
+  //
+  // It is not made load-bearing on purpose. The domain and the scan read the
+  // same field of the same log, so nothing can distinguish them behaviourally;
+  // the only way to give the domain the weight is to delete the scan, and then
+  // a projection that is wrong drops an audit. A dropped audit — a delivery
+  // that finished with nobody owing it a verdict — is the exact failure this
+  // whole rebuild exists to end. Five cells are wired; this one watches.
+  const finishedByScan = item.custody.some((entry) => entry.event === 'completed')
+  if (workflowState) {
+    const finishedByDomain = routeFinished(workflowState, item.work_item)
+    if (finishedByDomain !== finishedByScan) {
+      process.stderr.write(`[loop] workflow subscriber and ledger disagree that ${item.work_item} finished`
+        + ` (subscriber ${finishedByDomain}, ledger ${finishedByScan}) — arming anyway\n`)
+    }
+    if (!finishedByDomain && !finishedByScan) return false
+  } else if (!finishedByScan) return false
   const current = currentEntry(item.custody).event
   // `audit_lost` re-arms exactly the way `answered` does: the controller owes
   // this token a verdict and has not given one. It is NOT a terminal, and this
@@ -1935,7 +1973,8 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
   // and nobody looked at the delivery or heard about the failures. These are
   // events, not a timer — the objection to a heartbeat was that it bills for
   // reading a board that has not changed, and none of these fire unless it has.
-  const audits = [...items.values()].filter(awaitingAudit)
+  const workflowState = projectWorkItems(graph, items).stateOf('workflow')
+  const audits = [...items.values()].filter((item) => awaitingAudit(item, workflowState))
   for (const item of audits) {
     const failed = failedLegs(item)
     // Same wedge as above, one seat over: `awaitingAudit` re-surfaces an item
