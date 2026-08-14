@@ -115,3 +115,34 @@ test('the repository ships a ROADMAP.md the gate can read', () => {
   assert.equal(existsSync(join(root, ROADMAP_SOURCE)), true, 'ROADMAP.md is missing from the repository root')
   assert.ok(readFileSync(join(root, ROADMAP_SOURCE), 'utf8').length > 200, 'ROADMAP.md is a stub')
 })
+
+test('--record works when a source is named first, and records that source', () => {
+  // It asked whether argv[0] was `--record`. Naming a source first — the only
+  // way to record any page but the roadmap — fell through to the CHECK branch,
+  // recorded nothing, and printed STALE as though nothing had been asked. A
+  // command that does the opposite of what it was told, quietly, is worse than
+  // one that refuses.
+  const dir = repoWith()
+  const other = 'OTHER.md'
+  writeFileSync(join(dir, other), '# Other\n\nlong enough to be a real page, twice over.\n')
+
+  const rec = run([other, '--record', 'https://artifacts.example/other/'], dir)
+  assert.equal(rec.code, ROADMAP_EXIT.current, rec.out)
+  assert.match(rec.out, /recorded/)
+
+  // The named page is current; the roadmap is untouched by it.
+  assert.equal(run([other], dir).code, ROADMAP_EXIT.current)
+  assert.equal(run([], dir).code, ROADMAP_EXIT.stale, 'recording one page marked another as published')
+  assert.equal(existsSync(join(dir, ROADMAP_MARKER)), false, 'the roadmap marker was written by another page')
+})
+
+test('a stale page names the marker and source it actually read', () => {
+  // The message was built from the roadmap constants no matter which page was
+  // checked, so a second page reported a missing `.roadmap-published.json` —
+  // sending a reader to look at the wrong file for the wrong reason.
+  const dir = repoWith()
+  writeFileSync(join(dir, 'OTHER.md'), '# Other\n\nlong enough to be a real page, twice over.\n')
+  const { out } = run(['OTHER.md'], dir)
+  assert.match(out, /OTHER/)
+  assert.doesNotMatch(out, /\.roadmap-published\.json/)
+})

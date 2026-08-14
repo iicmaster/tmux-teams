@@ -1,9 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { renderBody, renderInline, renderRoadmap, runRenderCli } from '../scripts/roadmap-render.mjs'
+import { PAGES, renderBody, renderInline, renderRoadmap, runRenderCli } from '../scripts/roadmap-render.mjs'
 
 const REPO_ROOT = new URL('..', import.meta.url).pathname
 
@@ -109,4 +109,28 @@ test('a missing source fails the script rather than writing an empty page', () =
   const code = runRenderCli([], { root: dir, stdout: { write: (s) => { printed += s } } })
   assert.equal(code, 1)
   assert.match(printed, /cannot read ROADMAP\.md/)
+})
+
+test('every declared page has a source that exists and a distinct slug', () => {
+  // Two of the three published pages had no source in this repository at all,
+  // which is why they went a week stale with nothing able to notice. The list is
+  // the fix; a list naming a file that is not there would be the same failure
+  // wearing a checklist.
+  const root = new URL('..', import.meta.url).pathname
+  assert.ok(PAGES.length >= 2)
+  for (const page of PAGES) {
+    assert.equal(existsSync(join(root, page.source)), true, `${page.slug}: no source at ${page.source}`)
+    assert.ok(readFileSync(join(root, page.source), 'utf8').length > 200, `${page.slug}: source is a stub`)
+  }
+  assert.equal(new Set(PAGES.map((p) => p.slug)).size, PAGES.length, 'two pages publish to one slug')
+  assert.equal(new Set(PAGES.map((p) => p.out)).size, PAGES.length, 'two pages render to one file')
+})
+
+test('a page renders to the output its entry names, and takes its title from the source', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'roadmap-pages-'))
+  writeFileSync(join(dir, 'ROADMAP.md'), '# A Named Page\n\nbody text that is long enough.\n')
+  let printed = ''
+  assert.equal(runRenderCli([], { root: dir, stdout: { write: (s) => { printed += s } } }), 0)
+  const html = readFileSync(join(dir, PAGES[0].out), 'utf8')
+  assert.match(html, /<title>A Named Page<\/title>/, 'the page kept a title the source did not give it')
 })

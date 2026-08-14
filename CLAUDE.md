@@ -438,7 +438,8 @@ not optional, and only a later explicit instruction from Master changes either.
 
 - Only release and plugin files are tracked: `.github/`, `.claude-plugin/`,
   `.gitignore`, `plugins/`, `tests/`, `scripts/`, `README.md`, `CLAUDE.md`,
-  `ROADMAP.md`, `.roadmap-published.json`, and `HANDOFF.md`. The marker is
+  `ROADMAP.md`, `RELEASE-PLAN.md`, the `.published-*.json` markers (including
+  `.roadmap-published.json`), and `HANDOFF.md`. The marker is
   tracked for the same reason the roadmap is: one that only its author's machine
   can read makes the gate answer STALE forever for everybody else, which turns a
   gate into noise. `HANDOFF.md` is the state of play between sessions — what shipped,

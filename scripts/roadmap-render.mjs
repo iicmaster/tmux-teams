@@ -11,7 +11,7 @@
 // The output is DETERMINISTIC — no timestamps, no randomness, nothing derived
 // from the machine. The same source always renders the same bytes, which is
 // what lets `--record` pin a digest and mean it.
-import { readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -182,19 +182,42 @@ ${renderBody(markdown)}
 `
 }
 
+// Every published page in this repository has a tracked source, and this is the
+// list. It exists because two of the three pages did NOT: they were HTML written
+// by hand, went stale by a week, and nothing could notice. The roadmap got a
+// source first; the other two joined on 2026-08-14.
+export const PAGES = Object.freeze([
+  { source: 'ROADMAP.md', out: 'docs/roadmap.html', slug: 'tmux-teams-next-plan' },
+  {
+    source: 'plugins/tmux-teams/skills/tmux-teams/references/event-subscriptions.md',
+    out: 'docs/event-subscriptions.html',
+    slug: 'tmux-teams-ddd-reading',
+  },
+  { source: 'RELEASE-PLAN.md', out: 'docs/release-plan.html', slug: 'tmux-teams-release-plan' },
+])
+
 export function runRenderCli(argv = [], { root = process.cwd(), stdout = process.stdout } = {}) {
   const outIndex = argv.indexOf('--out')
-  const outPath = outIndex >= 0 ? argv[outIndex + 1] : join(root, 'docs', 'roadmap.html')
+  const positional = argv.filter((arg, i) => !arg.startsWith('--') && argv[i - 1] !== '--out')
+  const source = positional[0] ?? 'ROADMAP.md'
+  const known = PAGES.find((page) => page.source === source)
+  const outPath = outIndex >= 0
+    ? argv[outIndex + 1]
+    : join(root, known?.out ?? 'docs/roadmap.html')
   if (outIndex >= 0 && !outPath) {
     stdout.write('roadmap-render: --out needs a path\n')
     return 1
   }
   let markdown
-  try { markdown = readFileSync(join(root, 'ROADMAP.md'), 'utf8') } catch (error) {
-    stdout.write(`roadmap-render: cannot read ROADMAP.md: ${error.message}\n`)
+  try { markdown = readFileSync(join(root, source), 'utf8') } catch (error) {
+    stdout.write(`roadmap-render: cannot read ${source === 'ROADMAP.md' ? 'ROADMAP.md' : source}: ${error.message}\n`)
     return 1
   }
-  writeFileSync(outPath, renderRoadmap(markdown), 'utf8')
+  // The output directory may not exist — `docs/` is machine-local and ignored,
+  // so a fresh clone has none until something writes one.
+  mkdirSync(dirname(outPath), { recursive: true })
+  const title = markdown.match(/^#\s+(.+)$/m)?.[1]?.trim()
+  writeFileSync(outPath, renderRoadmap(markdown, title ? { title } : {}), 'utf8')
   stdout.write(`roadmap-render: wrote ${outPath}\n`)
   return 0
 }
