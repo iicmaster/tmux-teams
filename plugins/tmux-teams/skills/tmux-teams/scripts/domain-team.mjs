@@ -124,8 +124,13 @@ export function teamDomain({ controlTeamId, graph = null } = {}) {
   // The graph names its own controller team — it is derived from the head of
   // every route — so a constant is only the floor. And when the graph declares
   // no such team at all, control's queue has nowhere to live: fall back to the
-  // team of whoever signed the event, which is what the derivation did for
-  // every one of these words anyway.
+  // team of whoever signed the event.
+  //
+  // Do NOT read that as "what the derivation did anyway" — an earlier comment
+  // said so and a review lane checked it. The frozen derivation does the
+  // opposite for exactly these words: they were RELEASING there, so it placed
+  // them nowhere at all. This fallback is a choice about a graph that declares
+  // no controller, not a restoration of old behaviour.
   const controlId = controlTeamId ?? graph?.controller_team ?? CONTROL_TEAM_ID
   const controlOr = (agentId) => (declared.has(controlId) ? controlId : (teamOf.get(agentId) ?? controlId))
   return {

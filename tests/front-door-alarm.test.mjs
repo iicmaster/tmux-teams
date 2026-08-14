@@ -10,13 +10,15 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { planDispatches } from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs'
+import { planDispatches, planEscalation } from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs'
 import { teamOccupancy } from '../plugins/tmux-teams/skills/tmux-teams/scripts/dispatch-facts.mjs'
 import { admitWorkItem } from '../plugins/tmux-teams/skills/tmux-teams/scripts/admit.mjs'
+import { readWorkItems } from '../plugins/tmux-teams/skills/tmux-teams/scripts/dispatch-facts.mjs'
 import { appendEvent } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-writer.mjs'
 import { DEFAULT_WORKFLOW_GRAPH, validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
 
 const GRAPH = validateWorkflowGraph(DEFAULT_WORKFLOW_GRAPH).value
+const NOW = Date.parse('2026-08-14T10:00:00.000Z')
 const CONTROL = GRAPH.controller_team
 const WORKFLOW = GRAPH.workflows[0].workflow_id
 const FIRST = GRAPH.workflows[0].route[1]
@@ -127,4 +129,38 @@ test('a full controller can still be reached for the token that filled it', () =
   const forToken = plans.filter((plan) => plan.work_item === 'tok' || plan.team === CONTROL)
   assert.equal(forToken.length, 1, 'the token that filled control was planned for zero times, or twice')
   assert.equal(forToken[0].action, 'escalate')
+})
+
+test('a finished route is picked up for audit, and the verdict gives the slot back', () => {
+  // A review lane read `planDispatches` alone and concluded a completed token
+  // holds control's slot for ever with nothing able to free it. Correct against
+  // what it was given, and wrong about the system: the per-team loop skips the
+  // control queue precisely because another planner owns it. This walks the
+  // whole path, because "nothing can free it" is the worst thing that could be
+  // true here and no test proved otherwise end to end.
+  const dir = repo()
+  assert.equal(admit(dir, 'w1').ok, true)
+  moveOut(dir, 'w1')
+  write(dir, { actor: `agent:${FIRST}_evaluator`, event: 'completed', work_item: 'w1', workflow: WORKFLOW, from_team: FIRST })
+
+  const items = readWorkItems(dir).items
+  const occupancy = teamOccupancy(GRAPH, items)
+  assert.equal(occupancy.counts.get(CONTROL), 1, 'the finished route is not in the controller queue')
+  assert.deepEqual(planDispatches(GRAPH, items, new Set(), { now: NOW }), [],
+    'the per-team loop planned for a token the audit path owns')
+
+  const escalation = planEscalation(dir, GRAPH, items, [], occupancy, { now: NOW })
+  assert.deepEqual(escalation.audits, ['w1'], 'nothing offered the finished route to the controller')
+
+  // The grammar requires the request before the verdict — `audited with no
+  // preceding audit_requested` is refused by the writer — so the walk includes
+  // the step the controller takes when it picks the token up.
+  write(dir, { actor: 'agent:pm_audit', event: 'audit_requested', work_item: 'w1', workflow: WORKFLOW, agent_id: 'pm_audit', task_id: 't-a', reason: 'reading the delivery' })
+  assert.equal(teamOccupancy(GRAPH, readWorkItems(dir).items).counts.get(CONTROL), 1,
+    'the controller let go of the token while it was reading it')
+
+  write(dir, { actor: 'agent:pm_audit', event: 'audited', work_item: 'w1', workflow: WORKFLOW, agent_id: 'pm_audit', task_id: 't-a', verdict: 'accept', reason: 'read and accepted' })
+  const after = teamOccupancy(GRAPH, readWorkItems(dir).items)
+  assert.equal(after.counts.get(CONTROL), 0, 'the verdict did not give the slot back')
+  assert.equal(admit(dir, 'w2').ok, true, 'the front door never reopened')
 })

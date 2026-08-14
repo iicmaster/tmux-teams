@@ -631,10 +631,16 @@ export function currentEntry(custody) {
  * meaning this change altered. A completed route, an audit in progress and an
  * escalation are exactly where they must differ, and
  * `tests/domain-equivalence.test.mjs` states each difference rather than
- * asserting agreement. What it holds them to is the UNCHANGED case: a token in
- * flight, pulled into a delivery team and not yet finished, must be placed
- * identically by both. That is the claim moving the decision was allowed to
- * make, and the only one.
+ * asserting agreement, and it claims nothing in general. It pins the specific
+ * histories it walks and says what each one answers on both sides — a token
+ * pulled into a delivery team and worked there, and a route that finished.
+ *
+ * Two rounds of the review panel narrowed this sentence twice, and the second
+ * time was still too broad: `answered` is signed by the controller, and a
+ * `reviewed` written by another team's evaluator is signed by a seat that is
+ * not the holder, so the derivation places by the actor while the accounting
+ * leaves the token where a door put it. Do not restate a general equivalence
+ * here. Any claim about these two must name the history it is about.
  *
  * A review panel read the earlier wording — "the thing the accounting has to
  * keep agreeing with for tokens in flight" — and all three lanes called it
