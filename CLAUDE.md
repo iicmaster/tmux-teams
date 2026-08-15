@@ -430,6 +430,13 @@ not optional, and only a later explicit instruction from Master changes either.
    leaving anyone to guess from silence. Pushing a commit re-triggers it too.
    · Quota is per ACCOUNT, not per repository: this bot had reviewed PRs in
    `iicmaster/artifact-sftp` and the limit it hit here was the same budget.
+   · **Only Master waives this gate, and a waiver that is not RECORDED is the
+   silent skip again** — the same rule this file already states for the panel
+   exemption, and the state v0.18.1 was left in. Waived on v0.31.0 because the
+   budget was spent and the release was not going to wait on it; the waiver is
+   a comment on the PR and a line in the release notes, naming what stood in
+   its place (CI green on the merged bytes, and the three-model panel 3/3 run
+   four times). Never waive it by merging and saying nothing.
    · The three-model panel (step 2) is a SEPARATE obligation and neither gate
    replaces the other: the panel reads the release diff, the bot reads the PR.
    · After the merge: `claude plugin marketplace update tmux-teams` and
