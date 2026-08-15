@@ -424,8 +424,12 @@ not optional, and only a later explicit instruction from Master changes either.
    it exactly as this file already treats a missing panel lane: the release is
    visibly blocked, no silent substitution, no reviewer-count degradation.
    Check for a review STATE, not for the presence of any comment.
-   · When quota returns the bot does not re-review by itself — re-request it or
-   push a commit to the branch.
+   · When quota returns the bot does not re-review by itself. **Comment
+   `@codex review` on the PR** — measured 2026-08-16, it answers in about seven
+   seconds, so a same-turn poll settles whether quota is back rather than
+   leaving anyone to guess from silence. Pushing a commit re-triggers it too.
+   · Quota is per ACCOUNT, not per repository: this bot had reviewed PRs in
+   `iicmaster/artifact-sftp` and the limit it hit here was the same budget.
    · The three-model panel (step 2) is a SEPARATE obligation and neither gate
    replaces the other: the panel reads the release diff, the bot reads the PR.
    · After the merge: `claude plugin marketplace update tmux-teams` and
