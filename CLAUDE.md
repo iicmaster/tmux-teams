@@ -414,8 +414,21 @@ not optional, and only a later explicit instruction from Master changes either.
    are fixed; the file is 130/130 and the suite 494/494 on this machine. Rules:
    a test states the outcome before the words about it, and a platform branch
    that cannot answer must say UNKNOWN, never "no".
-7. Push (confirm with Master first — see Rules), then
-   `claude plugin marketplace update tmux-teams` and
+7. **A release goes out as a PULL REQUEST, never as a push to `main`** (Master,
+   2026-08-16). Branch, push the branch, `gh pr create`, and merge only after
+   BOTH gates answer: CI green, and the **codex bot review** (the
+   `chatgpt-codex-connector` reviewer that now runs automatically on every PR).
+   · **A comment from that bot is not a review.** On the first PR under this
+   rule it commented "You have reached your Codex usage limits for code
+   reviews" — an absent reviewer, which is neither a pass nor a failure. Treat
+   it exactly as this file already treats a missing panel lane: the release is
+   visibly blocked, no silent substitution, no reviewer-count degradation.
+   Check for a review STATE, not for the presence of any comment.
+   · When quota returns the bot does not re-review by itself — re-request it or
+   push a commit to the branch.
+   · The three-model panel (step 2) is a SEPARATE obligation and neither gate
+   replaces the other: the panel reads the release diff, the bot reads the PR.
+   · After the merge: `claude plugin marketplace update tmux-teams` and
    `claude plugin update tmux-teams@tmux-teams` (install cache is version-keyed).
 8. **Watch the CI run that push triggers, and do not tag a red one.**
    `gh run list --limit 3` then `gh run view <id> --log-failed`. Added
@@ -427,7 +440,10 @@ not optional, and only a later explicit instruction from Master changes either.
    `~/.config/claude-profiles/`, and an `fs.watch` delivery assertion that holds
    on macOS FSEvents and not on CI's filesystem). Local green is necessary and
    is not sufficient.
-9. **Tag it and publish the GitHub release** — `git tag vX.Y.Z && git push
+9. **Tag the MERGED commit, not the branch tip.** `git checkout main && git pull`,
+   confirm `main...origin/main` carries no `ahead`, and tag that sha — a merge or
+   squash produces a NEW commit, so tagging the branch head ships a sha that is
+   not what `main` holds. Then publish the GitHub release — `git tag vX.Y.Z && git push
    origin vX.Y.Z`, then `gh release create vX.Y.Z --title vX.Y.Z --notes ...`
    with notes written from the real `git log <prev-tag>..vX.Y.Z`. A version
    number in three JSON files is not a release: this step was missing from the
