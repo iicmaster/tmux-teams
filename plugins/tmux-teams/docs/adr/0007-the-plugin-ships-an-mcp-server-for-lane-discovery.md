@@ -41,8 +41,19 @@ Ship one stdio MCP server, `tmux-teams-acp-lanes`, declared in the plugin's
 - `acp_lanes` — what lanes this plugin declares: family, provider, model,
   adapter package, and whether the lane is pinned to a verified endpoint.
   Declared facts only, so it answers on a machine with nothing configured.
-- `acp_lane_status` — whether a lane can run **here**, and when it cannot, what
-  is missing and which environment variable points at it.
+- `acp_lane_status` — whether a lane's CONFIGURATION is valid **here**, and when
+  it is not, which closed diagnostic applies and which environment variable
+  points at the missing piece.
+
+It reports `valid`, `invalid` or `unchecked`, and never a boolean. The first
+version returned `ready: true`, and the advisor reproduced what that costs in one
+command: with no HOME, no PATH and no credentials, the `claude` and `codex` lanes
+both reported ready, because no parent-side check exists for either and a green
+answer from a check that never ran means nothing. Those two answer `unchecked`
+now. Every answer also carries what it did **not** prove — no endpoint contacted,
+no credential accepted, no adapter resolved, no session negotiated — because a
+diagnostic that says READY and is then contradicted by the real gate destroys
+trust in the one feature meant to explain a refusal.
 
 ## The three lines it does not cross
 
@@ -52,12 +63,22 @@ this server is about what an operator can ask. Adding a discovery surface for th
 operator does not weaken the containment seam, and if it ever looks like it does,
 the seam wins.
 
-**No credential is ever returned — and none is ever read.** Readiness is decided
-by handing the work to `buildAcpLaunch` and reporting whether it complained. That
-function builds an environment that contains the token; this server discards it
-untouched. The guard is a test that serialises a whole reply for a lane made
-ready by a fixture holding a secret and asserts the secret is not in the bytes,
-because the failure to fear is a future field added in good faith.
+**It reads credentials. It never returns them.** This paragraph said "none is
+ever read" until a Codex advisor round-table refused the wording on 2026-08-16
+and was right: deciding validity means calling `buildAcpLaunch`, which reads the
+settings JSON, reads the credential file and copies provider secrets out of the
+environment, and discarding a value you asked for is not declining to read it.
+Master chose the honest version of the requirement over the flattering one — it
+reads them, and nothing it returns carries them.
+
+The containment is therefore entirely on the OUTBOUND boundary, and it is
+enforced rather than asserted. A failure is reported as a code from a closed set
+with a sentence that is a constant of the module; the raw exception text never
+reaches the wire, because the first version exported `String(error.message)`
+verbatim and any future diagnostic downstream that interpolated a token would
+have shipped it silently. The guard serialises whole replies built from
+secret-bearing fixtures on the success path AND on each failure path, including
+a credential supplied through the ambient environment rather than a file.
 
 **Read-only, with no exceptions.** No tool dispatches, spawns a lane, or starts a
 review. This is the same principle that keeps a reviewer lane from launching
@@ -72,11 +93,21 @@ a repository that has twice decided against MCP. The counter-argument is real:
 this could have been a skill, a `--status` flag, or a paragraph in the README,
 none of which adds a protocol.
 
-It is not, for one reason. The failure being fixed is that a fact existed in code
-and nobody could reach it. A flag has to be known about before it is typed and a
-README has to be found before it is read — the same failure mode, one layer up. A
-tool advertised through the protocol the agent is already speaking is the only
-form of this answer that arrives without the operator knowing to ask for it.
+The reason to prefer it is that the failure being fixed is a fact existing in
+code that nobody could reach: a flag has to be known about before it is typed and
+a README has to be found before it is read, which is the same failure one layer
+up. A tool advertised through the protocol the agent already speaks arrives
+without the operator knowing to ask.
+
+**That is a preference, not a proof, and this section claimed to be the latter.**
+It said an MCP tool was "the only form of this answer" that arrives unprompted;
+the advisor named that a false dichotomy and it is one — a model-invoked skill is
+also discovered from its description and can drive a short-lived CLI, which would
+avoid a long-lived process that loads credentials. Nothing in this change
+measured discovery rate, startup cost or operator confusion for either shape, so
+the honest record is: **Master chose MCP; it is more reliably advertised in the
+operator's session, at the cost of an auto-started process holding this
+capability.** The comparison that would settle it has not been run.
 
 ## What would reverse this
 
