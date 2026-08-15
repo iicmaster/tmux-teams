@@ -186,3 +186,10 @@ test('--record=<url> with a named source records THAT source', () => {
   assert.equal(run(['RELEASE-PLAN.md'], dir).code, ROADMAP_EXIT.current)
   assert.equal(existsSync(join(dir, ROADMAP_MARKER)), false, 'it recorded against the roadmap instead')
 })
+
+test('the gate refuses an unknown flag rather than checking anyway', () => {
+  const dir = repoWith()
+  const { code, out } = run(['--recrd=https://x/'], dir)
+  assert.equal(code, ROADMAP_EXIT.failed)
+  assert.match(out, /unknown flag/)
+})

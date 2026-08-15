@@ -179,3 +179,15 @@ test('--out=<path> is honoured, not silently dropped', () => {
   assert.match(readFileSync(out, 'utf8'), /<h1>Inline<\/h1>/)
   assert.equal(existsSync(join(dir, PAGES[0].out)), false, 'it wrote the declared page as well')
 })
+
+test('an unknown flag is refused by both CLIs, not swallowed', () => {
+  // The third instance today of accepting an instruction and ignoring it: both
+  // positional filters discarded every `--`-prefixed argument, so a typo'd flag
+  // went unmentioned and the caller got the declared page.
+  const dir = mkdtempSync(join(tmpdir(), 'roadmap-unknown-flag-'))
+  writeFileSync(join(dir, 'ROADMAP.md'), '# Title\n\nbody long enough to be a real page.\n')
+  let printed = ''
+  assert.equal(runRenderCli(['--outt=x'], { root: dir, stdout: { write: (s) => { printed += s } } }), 1)
+  assert.match(printed, /unknown flag/)
+  assert.equal(existsSync(join(dir, PAGES[0].out)), false, 'it rendered the page anyway')
+})

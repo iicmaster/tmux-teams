@@ -211,6 +211,15 @@ export function runRenderCli(argv = [], { root = process.cwd(), stdout = process
     ? argv[outIndex].slice('--out='.length)
     : null
   const positional = argv.filter((arg, i) => !arg.startsWith('--') && argv[i - 1] !== '--out')
+  // A flag this CLI does not know is an error, not something to swallow. Both
+  // filters used to discard every `--`-prefixed argument silently, so `--outt=x`
+  // or a second `--out` went unmentioned and the caller got the declared page —
+  // the third instance today of accepting an instruction and ignoring it.
+  const unknownFlag = argv.find((arg) => arg.startsWith('--') && arg !== '--out' && !arg.startsWith('--out='))
+  if (unknownFlag) {
+    stdout.write(`roadmap-render: unknown flag ${unknownFlag}. Usage: roadmap-render.mjs [<source.md>] [--out <file>]\n`)
+    return 1
+  }
   const source = normalisePage(positional[0] ?? 'ROADMAP.md')
   const known = PAGES.find((page) => page.source === source)
   // An unknown source is an ERROR, never the roadmap by default. It used to

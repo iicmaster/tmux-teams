@@ -89,6 +89,11 @@ export function runRoadmapGateCli(argv = [], {
   // does — so the page was recorded against the ROADMAP's marker instead of its
   // own. Only the bare flag consumes the next argument.
   const positional = argv.filter((arg, i) => !arg.startsWith('--') && argv[i - 1] !== '--record')
+  const unknownFlag = argv.find((arg) => arg.startsWith('--') && arg !== '--record' && !arg.startsWith('--record='))
+  if (unknownFlag) {
+    stdout.write(`roadmap-gate: unknown flag ${unknownFlag}. Usage: roadmap-gate.mjs [<source.md>] [--record <url>]\n`)
+    return ROADMAP_EXIT.failed
+  }
   const source = normalisePage(positional[0] ?? ROADMAP_SOURCE)
   // The page list is the authority. An undeclared source used to be checked
   // against a marker derived from whatever string was typed, so a typo answered
