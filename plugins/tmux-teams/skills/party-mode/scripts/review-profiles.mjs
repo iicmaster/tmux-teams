@@ -66,11 +66,11 @@ const KIMI_ENDPOINT = freeze({ host: 'api.kimi.com', path: '/coding' })
 
 export const REVIEW_PROFILES = freeze({
   agy: {
-    id: 'agy', provider: 'google-antigravity', family: 'gemini', model: 'gemini-3.6-flash-high',
-    displayModel: 'agy/gemini-3.6-flash-high',
+    id: 'agy', provider: 'google-antigravity', family: 'gemini', model: 'gemini-3.7-flash-high',
+    displayModel: 'agy/gemini-3.7-flash-high',
     reviewMode: 'plan', command: ['bunx', 'antigravity-acp@1.0.0'],
     adapterPackage: 'antigravity-acp@1.0.0',
-    config: { model: 'gemini-3.6-flash-high', mode: 'plan' },
+    config: { model: 'gemini-3.7-flash-high', mode: 'plan' },
   },
   kimi: {
     id: 'kimi', provider: 'kimi', family: 'kimi', model: 'opus',

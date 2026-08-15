@@ -117,7 +117,14 @@ one SSOT** and wins if the two ever disagree.
 
 ## Model policy for every ACP route
 
-- Every tmux-teams AGY route defaults to `gemini-3.6-flash-high`. Gemini 3.1
+- Every tmux-teams AGY route defaults to `gemini-3.7-flash-high` (Master,
+  2026-08-16, moved off 3.6). The measurement that prompted it is worth keeping:
+  the release panel of 2026-08-15 recorded the adapter ADVERTISING
+  `gemini-3.7-flash-high` while this repo still pinned 3.6 — the set-and-
+  acknowledge succeeded, so the lane really did run 3.6, but the adapter's own
+  default had moved underneath the pin and nothing here had noticed. The probe
+  transcript further down still shows the 3.6 strings; it is a record of what
+  was measured that day and stays as written. Gemini 3.1
   variants are prohibited for ACP planning, review, and delivery work; fail
   closed if a configured or acknowledged AGY model is Gemini 3.1, and never
   fall back to it.
@@ -407,8 +414,32 @@ not optional, and only a later explicit instruction from Master changes either.
    are fixed; the file is 130/130 and the suite 494/494 on this machine. Rules:
    a test states the outcome before the words about it, and a platform branch
    that cannot answer must say UNKNOWN, never "no".
-7. Push (confirm with Master first — see Rules), then
-   `claude plugin marketplace update tmux-teams` and
+7. **A release goes out as a PULL REQUEST, never as a push to `main`** (Master,
+   2026-08-16). Branch, push the branch, `gh pr create`, and merge only after
+   BOTH gates answer: CI green, and the **codex bot review** (the
+   `chatgpt-codex-connector` reviewer that now runs automatically on every PR).
+   · **A comment from that bot is not a review.** On the first PR under this
+   rule it commented "You have reached your Codex usage limits for code
+   reviews" — an absent reviewer, which is neither a pass nor a failure. Treat
+   it exactly as this file already treats a missing panel lane: the release is
+   visibly blocked, no silent substitution, no reviewer-count degradation.
+   Check for a review STATE, not for the presence of any comment.
+   · When quota returns the bot does not re-review by itself. **Comment
+   `@codex review` on the PR** — measured 2026-08-16, it answers in about seven
+   seconds, so a same-turn poll settles whether quota is back rather than
+   leaving anyone to guess from silence. Pushing a commit re-triggers it too.
+   · Quota is per ACCOUNT, not per repository: this bot had reviewed PRs in
+   `iicmaster/artifact-sftp` and the limit it hit here was the same budget.
+   · **Only Master waives this gate, and a waiver that is not RECORDED is the
+   silent skip again** — the same rule this file already states for the panel
+   exemption, and the state v0.18.1 was left in. Waived on v0.31.0 because the
+   budget was spent and the release was not going to wait on it; the waiver is
+   a comment on the PR and a line in the release notes, naming what stood in
+   its place (CI green on the merged bytes, and the three-model panel 3/3 run
+   four times). Never waive it by merging and saying nothing.
+   · The three-model panel (step 2) is a SEPARATE obligation and neither gate
+   replaces the other: the panel reads the release diff, the bot reads the PR.
+   · After the merge: `claude plugin marketplace update tmux-teams` and
    `claude plugin update tmux-teams@tmux-teams` (install cache is version-keyed).
 8. **Watch the CI run that push triggers, and do not tag a red one.**
    `gh run list --limit 3` then `gh run view <id> --log-failed`. Added
@@ -420,7 +451,10 @@ not optional, and only a later explicit instruction from Master changes either.
    `~/.config/claude-profiles/`, and an `fs.watch` delivery assertion that holds
    on macOS FSEvents and not on CI's filesystem). Local green is necessary and
    is not sufficient.
-9. **Tag it and publish the GitHub release** — `git tag vX.Y.Z && git push
+9. **Tag the MERGED commit, not the branch tip.** `git checkout main && git pull`,
+   confirm `main...origin/main` carries no `ahead`, and tag that sha — a merge or
+   squash produces a NEW commit, so tagging the branch head ships a sha that is
+   not what `main` holds. Then publish the GitHub release — `git tag vX.Y.Z && git push
    origin vX.Y.Z`, then `gh release create vX.Y.Z --title vX.Y.Z --notes ...`
    with notes written from the real `git log <prev-tag>..vX.Y.Z`. A version
    number in three JSON files is not a release: this step was missing from the

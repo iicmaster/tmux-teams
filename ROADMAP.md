@@ -12,7 +12,7 @@
 > source, no publish script and nothing that could notice it had gone stale —
 > so it went stale, repeatedly, and nobody could tell without opening it.
 
-Current release: **0.30.0**
+Current release: **0.31.0**
 
 ## Where the phases stand
 
@@ -114,11 +114,43 @@ Nothing is blocking a release. These are real but unforced:
   answering 74 KiB of source and 60 KiB of tests without trouble. So it is not
   size alone: dense prose costs more than dense code. Nobody has found where the
   real ceiling is, and the gate cannot warn about it.
-- **The eight brakes in `loop-runner.mjs` are still there.** They exist because
-  no PM work occupied a PM slot; one does now, and the front door refuses while
-  control owes a verdict. Narrowing or removing a brake is separate work, and
-  each one needs its own evidence that the WIP hold covers what it was standing
-  in for. Nobody has done that.
+- **The brakes in `loop-runner.mjs`: there are SEVEN, and the evidence now
+  exists. None of them comes out.** This entry asked for per-brake evidence
+  that the WIP hold covers what each was standing in for; it was produced on
+  2026-08-15 by disabling each one and running the 216 loop tests.
+
+  First, the count was wrong. `MAX_AUDIT_TRANSPORT_RETRIES` was removed on
+  2026-08-07 and its own comment says so — three documents went on saying
+  "eight" for a week.
+
+  ```
+  brake                  tests red when disabled   what it actually stands for
+  ANSWER_DEADLINE_SEC             9                the door's clock
+  ZOMBIE_SEC                      7                a dead process, which no projection can see
+  MAX_ATTEMPTS                    4                what TRIGGERS an escalation
+  MAX_LEGS                        2                the length of a journey
+  unchanged-trigger brake         2                a permanent condition re-reading itself
+  MAX_IN_FLIGHT                   1                a ceiling on the whole board
+  PM_COOLDOWN_SEC                 0                the RATE a full agent is spent at
+  ```
+
+  Six are guarded and load-bearing. Not one is standing in for a PM seat: the
+  WIP hold says "this token already holds control's slot", and every brake
+  above answers a different question — a clock, a dead process, a journey
+  length, a spend rate. The premise this entry was written on ("they exist
+  because no PM work occupied a PM slot") is true of the SHAPE of the problem
+  and false of these seven items.
+
+  And the zero is the interesting one, in the direction opposite to the obvious
+  reading. `PM_COOLDOWN_SEC` could be set to 0 without one of 216 tests
+  noticing — not because the WIP hold covers it, but because nothing ever
+  guarded it. 28 of 33 `planEscalation` calls do leave `cooldownSec` at its
+  default, so the default is reached constantly; it just never bites, because
+  those boards have no `pm-notes/latest.md` for the clock branch to read.
+  **Zero red proves UNGUARDED, never redundant** — the same rule this
+  repository already applies to a platform branch that cannot answer. It has a
+  guard now (`tests/loop-occupancy.test.mjs`), and removing the brake turns it
+  red.
 
 ## Decisions that are not up for re-litigation
 

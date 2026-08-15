@@ -391,6 +391,12 @@ async function assessAttempt(attempt, validate, expectedInputHash) {
       displayModel: value.displayModel,
       mode: value.mode,
       acknowledgements: value.acknowledgements,
+      // A CLAIM, carried beside the proven facts above and deliberately not
+      // among them: `runnerSeeded: true` says this runner told the lane what
+      // models exist, so its "advertisement" is our own words read back. It
+      // feeds no decision -- `validReviewerSet` and `provenFamilyCollision`
+      // never see it.
+      claimedIdentity: value.claimedIdentity ?? null,
       isolation: value.isolation,
       review: value.review,
       inputHash: value.inputHash,

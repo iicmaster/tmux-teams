@@ -3664,3 +3664,40 @@ test('the shorthand pass is round 2 and no further, and the ceiling is a re-disp
     'an identityless report from a reviewer with two prior legs cannot say which leg wrote it')
   assert.equal(entry.task_id, 'b-3', 'the token is still where the worker left it — a re-review, not a loss')
 })
+
+test('the shipped controller cooldown is 900 seconds, and nothing was pinning it', () => {
+  // Measured 2026-08-15 while producing the per-brake evidence ROADMAP asks for
+  // before any brake is removed: setting `PM_COOLDOWN_SEC` to 0 turned NOT ONE
+  // of 216 loop tests red. 28 of the 33 `planEscalation` calls in this suite do
+  // leave `cooldownSec` at its default, so the default is reached constantly —
+  // it simply never BITES, because those boards have no `pm-notes/latest.md` to
+  // compare against and the clock branch is skipped entirely.
+  //
+  // Zero red therefore proved UNGUARDED, never redundant, and the two are not
+  // the same answer. This test is the guard; the brake stays.
+  const dir = mkdtempSync(join(tmpdir(), 'loop-pm-cooldown-'))
+  try {
+    const graph = graphOf(TWO_TEAMS)
+    const items = itemsOf(['tok', [{ event: 'pulled', agent_id: 't_d', from_team: 'build', to_team: 'test' }]])
+    const occupancy = teamOccupancy(graph, items)
+    const plans = [{ action: 'escalate', work_item: 'tok', team: 'test', reason: 'nothing can place this' }]
+    const noteAt = FIXED_NOW
+    mkdirSync(join(dir, '.tmux-teams', 'pm-notes'), { recursive: true })
+    // A body this board cannot produce, so the unchanged-trigger brake can
+    // never be the thing that answers: both calls below are about the clock and
+    // nothing else, and the trigger identity is anchored on what was RECORDED,
+    // so it is the same string in both.
+    writeFileSync(join(dir, '.tmux-teams', 'pm-notes', 'latest.md'),
+      `${new Date(noteAt).toISOString()}\n- a problem from a board that no longer exists\n`)
+
+    const inside = planEscalation(dir, graph, items, plans, occupancy, { now: noteAt + 899_000 })
+    assert.equal(inside.action, 'cooldown',
+      'one second inside the shipped cooldown, a full agent must not be dispatched again')
+
+    const outside = planEscalation(dir, graph, items, plans, occupancy, { now: noteAt + 901_000 })
+    assert.notEqual(outside.action, 'cooldown',
+      'one second past it, a board carrying a problem the controller has not read must reach it')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
