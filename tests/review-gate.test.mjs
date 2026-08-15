@@ -2199,3 +2199,56 @@ test('needsSandboxStaging and the bwrap argv ask sandboxRebindRoots the SAME que
 // drive. The forwarding in `stageHomeExecutable` is therefore held by the
 // direct predicate test above plus that earlier refusal, and by nothing else —
 // said plainly rather than covered by a test that passes for the wrong reason.
+
+test('the advertised model is recorded as a claim, and a runner-seeded list is labelled as one', async () => {
+  const unseeded = await invoke()
+  assert.deepEqual(unseeded.claimedIdentity, {
+    advertisedModel: 'oc-review-model',
+    runnerSeeded: false,
+  }, 'an adapter told nothing advertises its own value, and the receipt may say so plainly')
+
+  // `runnerSeeded` is read off the ACT -- the env this runner was handed and
+  // the settings file it wrote -- never off a restated rule, so the label
+  // cannot drift from what actually happened. Both seeding routes are pinned
+  // here because either one alone makes the advertisement our own words.
+  const viaEnv = await invoke(profile(), {
+    CLAUDE_MODEL_CONFIG: JSON.stringify({ availableModels: ['oc-review-model'] }),
+  })
+  assert.equal(viaEnv.claimedIdentity.runnerSeeded, true,
+    'CLAUDE_MODEL_CONFIG hands the lane its model list; the receipt must not present it as the adapter\'s')
+
+  const viaSettings = await invoke(profile('oc', {
+    sessionSettings: { availableModels: ['oc-review-model'] },
+  }))
+  assert.equal(viaSettings.claimedIdentity.runnerSeeded, true,
+    'a profile declaring sessionSettings gets .claude/settings.local.json written for it')
+})
+
+test('the identity claim reaches the panel record and decides nothing', async () => {
+  const profiles = keyedProfiles([profile('oc'), profile('codex'), profile('agy')])
+  const gate = runner => runReviewGate(packet(), {
+    profiles,
+    runAcpReview: runner,
+    buildProfileEnv: () => ({}),
+    planReviewPanel: () => testPlan(['oc', 'codex', 'agy']),
+    validateReview: () => true,
+    synthesizeReviews: (_plan, reviews) => ({ verdict: 'PASS', count: Object.keys(reviews).length }),
+  })
+
+  // THREE lanes claiming ONE identity. If the claim were counted anywhere this
+  // panel would refuse itself; it passes, which is the property being pinned.
+  const recorded = await gate(async ({ profile: p }) => ({
+    ...runnerResult(p, packet()),
+    claimedIdentity: { advertisedModel: 'one-model-for-all', runnerSeeded: true },
+  }))
+  assert.equal(recorded.count, 3)
+  assert.deepEqual(recorded.reviews.map(item => item.claimedIdentity.advertisedModel),
+    ['one-model-for-all', 'one-model-for-all', 'one-model-for-all'])
+  assert.deepEqual(recorded.reviews.map(item => item.claimedIdentity.runnerSeeded),
+    [true, true, true])
+
+  // A lane that offers no claim is recorded as having none, not dropped: a
+  // missing field and a field reading `null` are different receipts.
+  const silent = await gate(async ({ profile: p }) => runnerResult(p, packet()))
+  assert.deepEqual(silent.reviews.map(item => item.claimedIdentity), [null, null, null])
+})

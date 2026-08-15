@@ -1012,6 +1012,7 @@ export async function runAcpReview({
   const pending = new Map()
   const chunks = []
   const acknowledgements = {}
+  let claimedIdentity = null
   const clean = async () => { await rm(runRoot, { recursive: true, force: true }) }
   const reportProgress = event => {
     try {
@@ -1400,6 +1401,26 @@ export async function runAcpReview({
       // Session-scoped values are authoritative when an adapter happens to
       // repeat a config id in initialize metadata.
       const options = [...configList(session), ...configList(init)]
+      // What the adapter SAYS it will answer as. Recorded, never counted.
+      //
+      // Measured 2026-08-15, and it is the reason the gate rule was NOT changed
+      // to count this: for `agy` the advertised list is the adapter's own, but
+      // every claude-routed lane is handed its list by this runner —
+      // `CLAUDE_MODEL_CONFIG` from `buildProfileEnv`, and the
+      // `.claude/settings.local.json` written above for any profile declaring
+      // `sessionSettings`. Reading that back as identity would be quoting
+      // ourselves. `runnerSeeded` is therefore derived from the ACT (the env we
+      // were handed, the file we wrote) and never from a re-stated rule, so it
+      // cannot drift from what actually happened.
+      //
+      // `provenFamilyKey` stays the load-bearing family fact. This sits beside
+      // it as a claim so a receipt can show BOTH what a lane routed to and what
+      // it says it is — and show plainly when the second came from us.
+      const advertisedModelOption = options.find(x => x?.id === 'model' || x?.name === 'model')
+      claimedIdentity = Object.freeze({
+        advertisedModel: advertisedModelOption ? (currentValue(advertisedModelOption) ?? null) : null,
+        runnerSeeded: Boolean(profile.sessionSettings) || Boolean(env.CLAUDE_MODEL_CONFIG),
+      })
       // Profile identity is runner-owned. Model and mode are accepted only
       // when the ACP session advertises and acknowledges their exact values.
       const wantedConfig = {
@@ -1502,6 +1523,7 @@ export async function runAcpReview({
       displayModel: profile.displayModel ?? `${profile.provider ?? profile.id ?? lane}/${profile.model}`,
       mode: profile.reviewMode,
       acknowledgements: Object.freeze({ ...acknowledgements }),
+      claimedIdentity,
       isolation: Object.freeze({
         workspace: 'temporary',
         targetRepositoryCwd: false,
