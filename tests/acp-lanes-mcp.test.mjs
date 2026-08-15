@@ -162,3 +162,48 @@ test('laneStatus and laneFacts agree about a lane, so the two answers cannot dri
     assert.deepEqual(status[key], facts[key], `status disagrees with facts about ${key}`)
   }
 })
+
+test('the shipped script actually SERVES when node runs it, from a path with a space in it', async () => {
+  // Raised independently by two review lanes and true: every test above imports
+  // the module, so the boot path — the one line that decides whether a launched
+  // server speaks at all — was executed by nothing. The first version compared
+  // `import.meta.url` against a hand-built `file://` + argv[1] string; on any
+  // install path carrying a space or a non-ASCII character those never match,
+  // serve() is skipped, and node exits 0 with an empty event loop. It survived a
+  // manual stdio run only because this machine's paths are plain ASCII, which is
+  // exactly the kind of pass that proves nothing.
+  //
+  // So the directory name below has a space on purpose. Copying the two modules
+  // out of the plugin also drops `pluginVersion()` back to its fallback, which
+  // is fine — this test is about whether the process answers at all.
+  const base = mkdtempSync(join(tmpdir(), 'acp-lanes-boot-'))
+  const dir = join(base, 'a path with spaces')
+  try {
+    mkdirSync(dir, { recursive: true })
+    const scripts = join(ROOT, 'plugins', 'tmux-teams', 'skills', 'party-mode', 'scripts')
+    for (const name of ['acp-lanes-mcp.mjs', 'review-profiles.mjs']) {
+      writeFileSync(join(dir, name), readFileSync(join(scripts, name), 'utf8'))
+    }
+    const { spawn } = await import('node:child_process')
+    const child = spawn(process.execPath, [join(dir, 'acp-lanes-mcp.mjs')], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { PATH: process.env.PATH, HOME: '/nonexistent-layout' },
+    })
+    let out = ''
+    child.stdout.on('data', (chunk) => { out += chunk })
+    child.stdin.write(JSON.stringify({
+      jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'acp_lanes' },
+    }) + '\n')
+    const code = await new Promise((done) => {
+      setTimeout(() => { child.stdin.end() }, 400)
+      child.on('close', done)
+    })
+    assert.equal(code, 0, 'the server exited nonzero')
+    assert.ok(out.trim(), 'the launched server answered nothing at all — serve() never ran')
+    const reply = JSON.parse(out.trim().split('\n')[0])
+    const payload = JSON.parse(reply.result.content[0].text)
+    assert.equal(payload.lanes.length, 7)
+  } finally {
+    rmSync(base, { recursive: true, force: true })
+  }
+})

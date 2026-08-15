@@ -25,9 +25,9 @@
 //   Discovery only, for the same reason a reviewer lane cannot launch delivery
 //   work.
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
 import { createInterface } from 'node:readline'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { REVIEW_PROFILES, ROUTED_PROFILES, buildAcpLaunch } from './review-profiles.mjs'
@@ -179,4 +179,27 @@ export function serve({ input = process.stdin, output = process.stdout, env = pr
   return lines
 }
 
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) serve()
+// Compare PATHS, not a URL against a hand-built string. `import.meta.url` is a
+// percent-encoded file URL, so on any install path carrying a space or a
+// non-ASCII character the naive `file://` + argv[1] template never matches,
+// `serve()` is never called, and node exits 0 with an empty event loop — a
+// server that is declared, launched, and silently dead. Two review lanes raised
+// this independently; it survived a manual stdio run only because this machine's
+// paths happen to be plain ASCII.
+//
+// REALPATH, not just decode — and this half came from the test rather than from
+// the review. The suggested fix (`fileURLToPath` vs `resolve`) is still wrong on
+// macOS, where `/var` is a symlink to `/private/var` and Node's ESM loader
+// resolves the module URL through it while `argv[1]` keeps the path as typed.
+// The end-to-end test written for the FIRST version of this bug went red on the
+// second one, which is the whole argument for testing a boot path by booting it.
+function launchedDirectly(entry = process.argv[1]) {
+  if (!entry) return false
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(resolve(entry))
+  } catch {
+    return false
+  }
+}
+
+if (launchedDirectly()) serve()
