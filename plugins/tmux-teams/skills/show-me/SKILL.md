@@ -4,8 +4,12 @@ description: "Explain the thing on screen with the smallest picture that makes t
 ---
 
 Show the current topic visually. Skip the preamble, keep prose short, and pick
-the **smallest** view that makes the point. Adapted from humanlayer's `show-me`
-skill; the forms below are theirs, the rules underneath are this repository's.
+the **smallest** view that makes the point.
+
+**Source.** The forms below are adapted from humanlayer's `show-me` skill,
+MIT-licensed:
+<https://github.com/humanlayer/skills/blob/main/plugins/show-me/skills/show-me/SKILL.md>.
+The examples and the rules after them are this repository's.
 
 ## The forms
 
@@ -33,11 +37,15 @@ tick
 File responsibility or a refactor — a shallow file tree:
 
 ```text
-scripts/
+plugins/tmux-teams/skills/tmux-teams/scripts/
 ├── domain-bus.mjs        # the mechanism, no domain knowledge
 ├── domain-team.mjs       # slot accounting
 └── domain-projection.mjs # the durable log, replayed
 ```
+
+A tree with the wrong root is the rule below breaking itself: the first draft of
+this file rooted these three at `scripts/`, where they do not live, and a review
+lane caught it.
 
 Interaction over time — Mermaid:
 

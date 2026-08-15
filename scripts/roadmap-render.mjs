@@ -202,7 +202,14 @@ export const PAGES = Object.freeze([
 ])
 
 export function runRenderCli(argv = [], { root = process.cwd(), stdout = process.stdout } = {}) {
-  const outIndex = argv.indexOf('--out')
+  // Both forms. `--out=<path>` used to be dropped silently — `indexOf('--out')`
+  // never matches it — so a caller who asked for a different output got the
+  // declared page written instead, which is the same "accepts an instruction and
+  // ignores it" shape as the `--record=` bug next door. Found by three lanes.
+  const outIndex = argv.findIndex((arg) => arg === '--out' || arg.startsWith('--out='))
+  const inlineOut = outIndex >= 0 && argv[outIndex].startsWith('--out=')
+    ? argv[outIndex].slice('--out='.length)
+    : null
   const positional = argv.filter((arg, i) => !arg.startsWith('--') && argv[i - 1] !== '--out')
   const source = normalisePage(positional[0] ?? 'ROADMAP.md')
   const known = PAGES.find((page) => page.source === source)
@@ -217,7 +224,7 @@ export function runRenderCli(argv = [], { root = process.cwd(), stdout = process
     stdout.write('Pass --out <file> to render something that is not one of them.\n')
     return 1
   }
-  const outPath = outIndex >= 0 ? argv[outIndex + 1] : join(root, known.out)
+  const outPath = outIndex >= 0 ? (inlineOut ?? argv[outIndex + 1]) : join(root, known.out)
   if (outIndex >= 0 && !outPath) {
     stdout.write('roadmap-render: --out needs a path\n')
     return 1

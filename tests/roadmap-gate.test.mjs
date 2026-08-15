@@ -173,3 +173,16 @@ test('a stale page names the marker and source it actually read', () => {
   assert.match(out, /RELEASE-PLAN/)
   assert.doesNotMatch(out, /\.roadmap-published\.json/)
 })
+
+test('--record=<url> with a named source records THAT source', () => {
+  // The positional filter skipped any argument preceded by one starting
+  // `--record`, which the inline form also does, so the named page was recorded
+  // against the roadmap's marker. The page would then read current while the
+  // roadmap read published-and-wrong.
+  const dir = repoWith()
+  writeFileSync(join(dir, 'RELEASE-PLAN.md'), '# Other\n\nlong enough to be a real page, twice over.\n')
+  const rec = run(['--record=https://artifacts.example/other/', 'RELEASE-PLAN.md'], dir)
+  assert.equal(rec.code, ROADMAP_EXIT.current, rec.out)
+  assert.equal(run(['RELEASE-PLAN.md'], dir).code, ROADMAP_EXIT.current)
+  assert.equal(existsSync(join(dir, ROADMAP_MARKER)), false, 'it recorded against the roadmap instead')
+})

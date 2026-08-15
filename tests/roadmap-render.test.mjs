@@ -166,3 +166,16 @@ test('a declared source renders to ITS output, named positionally', () => {
   assert.match(readFileSync(join(dir, page.out), 'utf8'), /<title>Second Page<\/title>/)
   assert.equal(existsSync(join(dir, PAGES[0].out)), false, 'it also wrote the roadmap page')
 })
+
+test('--out=<path> is honoured, not silently dropped', () => {
+  // `indexOf('--out')` never matched the inline form, so a caller who asked for
+  // a different output got the declared page written instead — an instruction
+  // accepted and ignored. Three review lanes found it.
+  const dir = mkdtempSync(join(tmpdir(), 'roadmap-inline-out-'))
+  writeFileSync(join(dir, 'ROADMAP.md'), '# Inline\n\nbody long enough to be a real page.\n')
+  const out = join(dir, 'elsewhere.html')
+  let printed = ''
+  assert.equal(runRenderCli([`--out=${out}`], { root: dir, stdout: { write: (s) => { printed += s } } }), 0, printed)
+  assert.match(readFileSync(out, 'utf8'), /<h1>Inline<\/h1>/)
+  assert.equal(existsSync(join(dir, PAGES[0].out)), false, 'it wrote the declared page as well')
+})

@@ -84,7 +84,11 @@ export function runRoadmapGateCli(argv = [], {
   // release flow's step keep working unchanged; naming another source checks
   // that one. A gate that only ever answered about one of three published pages
   // was telling the truth about a third of the question.
-  const positional = argv.filter((arg, i) => !arg.startsWith('--') && !argv[i - 1]?.startsWith('--record'))
+  // A source after `--record=<url>` used to be dropped: the filter skipped any
+  // argument preceded by one starting `--record`, which the inline form also
+  // does — so the page was recorded against the ROADMAP's marker instead of its
+  // own. Only the bare flag consumes the next argument.
+  const positional = argv.filter((arg, i) => !arg.startsWith('--') && argv[i - 1] !== '--record')
   const source = normalisePage(positional[0] ?? ROADMAP_SOURCE)
   // The page list is the authority. An undeclared source used to be checked
   // against a marker derived from whatever string was typed, so a typo answered
