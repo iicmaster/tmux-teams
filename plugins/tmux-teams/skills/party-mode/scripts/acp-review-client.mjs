@@ -1013,6 +1013,7 @@ export async function runAcpReview({
   const chunks = []
   const acknowledgements = {}
   let claimedIdentity = null
+  let modelListWritten = false
   const clean = async () => { await rm(runRoot, { recursive: true, force: true }) }
   const reportProgress = event => {
     try {
@@ -1066,6 +1067,14 @@ export async function runAcpReview({
       await writeFile(join(settingsDir, 'settings.local.json'), JSON.stringify({
         availableModels: [requested],
       }), { encoding: 'utf8', mode: 0o600 })
+      // Set AFTER the write, never from the condition that reaches it. The zai
+      // and qwen lanes both raised this on the first panel that saw the field:
+      // reading `profile.sessionSettings` back later is reading the TRIGGER, so
+      // the label would go on claiming a seeded list even if this write became
+      // conditional or moved. Two of three is must-fix here, and they were
+      // right — the comment below promised the act and half of it delivered a
+      // restated rule.
+      modelListWritten = true
     }
     // Refuse before preparing anything. `prepareProviderState` copies provider
     // auth and settings into a child-visible home, and on a host without
@@ -1410,8 +1419,8 @@ export async function runAcpReview({
       // `.claude/settings.local.json` written above for any profile declaring
       // `sessionSettings`. Reading that back as identity would be quoting
       // ourselves. `runnerSeeded` is therefore derived from the ACT (the env we
-      // were handed, the file we wrote) and never from a re-stated rule, so it
-      // cannot drift from what actually happened.
+      // were handed) and from a flag set by the WRITE itself rather than by the
+      // condition that reaches it, so neither half can drift from the deed.
       //
       // `provenFamilyKey` stays the load-bearing family fact. This sits beside
       // it as a claim so a receipt can show BOTH what a lane routed to and what
@@ -1419,7 +1428,7 @@ export async function runAcpReview({
       const advertisedModelOption = options.find(x => x?.id === 'model' || x?.name === 'model')
       claimedIdentity = Object.freeze({
         advertisedModel: advertisedModelOption ? (currentValue(advertisedModelOption) ?? null) : null,
-        runnerSeeded: Boolean(profile.sessionSettings) || Boolean(env.CLAUDE_MODEL_CONFIG),
+        runnerSeeded: modelListWritten || Boolean(env.CLAUDE_MODEL_CONFIG),
       })
       // Profile identity is runner-owned. Model and mode are accepted only
       // when the ACP session advertises and acknowledges their exact values.
