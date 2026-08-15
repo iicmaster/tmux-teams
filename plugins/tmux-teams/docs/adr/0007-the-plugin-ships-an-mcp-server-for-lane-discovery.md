@@ -86,6 +86,17 @@ delivery work: a surface that can answer questions is a different thing from a
 surface that can act, and combining them is how the first one stops being safe to
 expose.
 
+Two limits on that sentence, both named by a review rather than by us. Tools and
+handlers are built from one descriptor list, which makes the surface auditable in
+one place — it does **not** make a hidden branch impossible, and this document
+said "unrepresentable" until an advisor pointed out that a differently named
+handler added later would still pass. And the read-only property is established
+by source inspection plus the mock-observed `mcpServers: []` request; the tool
+inventory inside a real dispatched ACP child has not been measured, so ADR 0003's
+guarantee remains a guarantee about what is REQUESTED. That distinction is the
+same one the boot bug in this very change taught: the bytes sent and the runtime
+that results are not synonyms.
+
 ## The argument against
 
 A shipped MCP server is a new attack surface and a new thing to keep working, in
@@ -96,18 +107,23 @@ none of which adds a protocol.
 The reason to prefer it is that the failure being fixed is a fact existing in
 code that nobody could reach: a flag has to be known about before it is typed and
 a README has to be found before it is read, which is the same failure one layer
-up. A tool advertised through the protocol the agent already speaks arrives
-without the operator knowing to ask.
+up.
 
-**That is a preference, not a proof, and this section claimed to be the latter.**
-It said an MCP tool was "the only form of this answer" that arrives unprompted;
-the advisor named that a false dichotomy and it is one — a model-invoked skill is
-also discovered from its description and can drive a short-lived CLI, which would
-avoid a long-lived process that loads credentials. Nothing in this change
-measured discovery rate, startup cost or operator confusion for either shape, so
-the honest record is: **Master chose MCP; it is more reliably advertised in the
-operator's session, at the cost of an auto-started process holding this
-capability.** The comparison that would settle it has not been run.
+**That is a preference, not a proof, and this section twice claimed otherwise.**
+The first version called an MCP tool "the only form of this answer" that arrives
+unprompted. A Codex advisor named that a false dichotomy and it is one — a
+model-invoked skill is also discovered from its description and can drive a
+short-lived CLI, avoiding a long-lived process that loads credentials. The
+replacement then said MCP is "more reliably advertised", and the same room caught
+that too: it is a comparative, this change measured no discovery rate, no
+invocation rate, no startup cost and no operator confusion for either shape, and
+a missing experiment stated as a conclusion is the thing an ADR exists to prevent.
+
+What is actually held, and all that is: **Master chose MCP. Claude registers a
+plugin's MCP server automatically, so a tool DESCRIPTOR is present in the
+operator's session without anyone typing anything — whether the model then
+notices and uses that descriptor more reliably than a skill description is
+unmeasured.** The cost is an auto-started process holding this capability.
 
 ## What would reverse this
 

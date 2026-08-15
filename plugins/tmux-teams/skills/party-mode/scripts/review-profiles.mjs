@@ -716,14 +716,24 @@ function executablePath(source) {
   return [...new Set([...candidates, ...current.split(delimiter).filter(Boolean)])].join(delimiter)
 }
 
-function trustedAgyBinary(source) {
+// The places a trusted `agy` is accepted from, exported so a diagnostic can
+// name exactly what was searched instead of guessing. `acp-lanes-mcp.mjs` told
+// an operator to repair the ADAPTER PACKAGE when this check was what refused —
+// a specific answer about the wrong executable, which a Codex advisor called
+// worse than an unclassified one because it sounds authoritative.
+export const AGY_BINARY_NAME = 'agy'
+
+export function agyBinaryCandidates(source) {
   const home = source?.HOME ?? source?.USERPROFILE
-  const candidates = [
-    ...(home ? [join(home, '.local', 'bin', 'agy')] : []),
-    '/usr/local/bin/agy',
-    '/usr/bin/agy',
+  return [
+    ...(home ? [join(home, '.local', 'bin', AGY_BINARY_NAME)] : []),
+    `/usr/local/bin/${AGY_BINARY_NAME}`,
+    `/usr/bin/${AGY_BINARY_NAME}`,
   ]
-  const found = candidates.find(existsSync)
+}
+
+function trustedAgyBinary(source) {
+  const found = agyBinaryCandidates(source).find(existsSync)
   return found ? realpathSync(found) : null
 }
 

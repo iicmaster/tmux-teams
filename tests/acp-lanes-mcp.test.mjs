@@ -93,21 +93,83 @@ test('a lane that cannot run says which closed diagnostic applies, never a raw m
   assert.equal(lane.problem.code, 'endpoint_missing')
   assert.equal(lane.problem.detail, DIAGNOSTICS.endpoint_missing,
     'the detail must be a constant of the module, not text that came from a file')
+  // The endpoint is what is missing, so the answer is about where the base URL
+  // comes from — not the credential file, which is a different cause with a
+  // different code. The previous version demanded both here, which is exactly
+  // the every-sentence-available answer the second advisor round rejected.
   const fixes = lane.fixes.join(' ')
   assert.match(fixes, /TMUX_TEAMS_REVIEW_ZAI_SETTINGS/)
-  assert.match(fixes, /TMUX_TEAMS_REVIEW_ZAI_ENV_FILE/)
+  assert.ok(!/TMUX_TEAMS_REVIEW_ZAI_ENV_FILE/.test(fixes),
+    'a missing endpoint was answered with credential advice')
 })
 
-test('no lane is answered with an empty fix list, which is what agy used to get', () => {
-  // Measured against the first version: `agy` has no settingsRelativePath and is
-  // not routed, so the only two branches that produced fixes both missed it and
-  // the tool promising to say what is missing said nothing.
+test('a fix names the thing that actually refused, not every setup step available', () => {
+  // The second advisor round called the first version of this symptom repair:
+  // `fixesFor` ignored the cause entirely, so `agy` — which fails because a
+  // trusted `agy` binary is absent — was told to repair the ADAPTER PACKAGE.
+  // Non-empty was never the property worth asserting.
+  const agy = fixesFor('agy', REVIEW_PROFILES.agy, 'executable_missing', { HOME: '/h' })
+  assert.ok(agy.some(f => /trusted `agy` binary/.test(f) && /\/h\/\.local\/bin\/agy/.test(f)),
+    `agy is not told about the binary the parent actually looked for: ${agy.join(' | ')}`)
+
+  // A missing endpoint is not answered with executable advice, and a missing
+  // executable is not answered with settings advice.
+  const endpoint = fixesFor('zai', REVIEW_PROFILES.zai, 'endpoint_missing', {})
+  assert.ok(endpoint.every(f => !/must resolve|wrapper/.test(f)),
+    `an endpoint problem was answered with executable advice: ${endpoint.join(' | ')}`)
+  assert.ok(endpoint.some(f => /TMUX_TEAMS_REVIEW_ZAI_SETTINGS/.test(f)))
+
+  const credential = fixesFor('zai', REVIEW_PROFILES.zai, 'credential_missing', {})
+  assert.match(credential[0], /TMUX_TEAMS_REVIEW_ZAI_ENV_FILE/,
+    'a missing credential must lead with the file that carries one')
+
+  const unreadable = fixesFor('zai', REVIEW_PROFILES.zai, 'settings_unreadable', {})
+  assert.match(unreadable[0], /must parse/)
+
   for (const [id, profile] of Object.entries(REVIEW_PROFILES)) {
-    assert.ok(fixesFor(id, profile, 'unclassified').length > 0,
-      `${id} is answered with no fixes at all`)
+    assert.ok(fixesFor(id, profile, 'unclassified', {}).length > 0, `${id} is answered with no fixes`)
   }
-  assert.ok(fixesFor('agy', REVIEW_PROFILES.agy, 'executable_missing')
-    .some(f => /antigravity-acp/.test(f)), 'agy is not told which adapter must resolve')
+})
+
+test('a routed lane names the WRAPPER among the things it did not prove', () => {
+  // Measured by an advisor against the previous version: pointing PATH at a
+  // path that does not exist left a routed lane answering `valid`, while
+  // `notProven` named only the adapter package. The profile models the adapter
+  // and the wrapper as separate fields, so a caveat about one does not cover
+  // the other.
+  const dir = mkdtempSync(join(tmpdir(), 'acp-lanes-wrapper-'))
+  try {
+    const settings = join(dir, 'zai.json')
+    writeFileSync(settings, JSON.stringify({
+      env: { ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic', ANTHROPIC_AUTH_TOKEN: 'x' },
+    }))
+    const [lane] = call('acp_lane_status', { lane: 'zai' }, {
+      HOME: '/nonexistent-layout', PATH: '/definitely/nonexistent',
+      TMUX_TEAMS_REVIEW_ZAI_SETTINGS: settings,
+    }).lanes
+    assert.equal(lane.configuration, 'valid')
+    assert.ok(lane.notProven.some(x => /wrapper `claude-zai`/.test(x)),
+      `a valid answer with no wrapper on PATH did not name it: ${lane.notProven.join(' | ')}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('malformed settings are diagnosed as unreadable, not shrugged at', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-lanes-bad-json-'))
+  try {
+    const settings = join(dir, 'zai.json')
+    writeFileSync(settings, '{ this is not json')
+    const [lane] = call('acp_lane_status', { lane: 'zai' }, {
+      HOME: '/nonexistent-layout', PATH: process.env.PATH,
+      TMUX_TEAMS_REVIEW_ZAI_SETTINGS: settings,
+    }).lanes
+    assert.equal(lane.configuration, 'invalid')
+    assert.equal(lane.problem.code, 'settings_unreadable',
+      'a JSON.parse failure carries V8 wording that mentions nothing of ours, and used to fall through')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('every diagnostic code the classifier can return has a constant sentence', () => {
@@ -214,6 +276,10 @@ test('initialize answers with the version this server speaks, never the caller\'
     jsonrpc: '2.0', id: 1, method: 'initialize',
     params: { protocolVersion: 'not-a-protocol-version' },
   }).result
+  // Pinned as a literal as well as against the constant: comparing a constant
+  // only against itself is the shape this repository has a rule about, and
+  // mutating PROTOCOL_VERSION to garbage passed the previous version of this.
+  assert.equal(asked.protocolVersion, '2025-06-18')
   assert.equal(asked.protocolVersion, PROTOCOL_VERSION,
     'echoing the request tells a client naming an unimplemented version that it got it')
   const declared = JSON.parse(readFileSync(join(PLUGIN, '.claude-plugin', 'plugin.json'), 'utf8')).version
@@ -229,8 +295,13 @@ test('ping is answered with an empty result, which the spec makes a MUST', () =>
   assert.deepEqual(pong, { jsonrpc: '2.0', id: 3, result: {} })
 })
 
-test('a notification gets no reply and an unknown method gets an error', () => {
-  assert.equal(handle({ jsonrpc: '2.0', method: 'notifications/initialized' }), null)
+test('NO notification is answered, whatever method it names', () => {
+  // The no-id check used to sit at the bottom, where only an unknown method
+  // reached it, so `ping` sent as a notification produced a reply carrying no
+  // id — answering a message nobody asked a question with.
+  for (const method of ['notifications/initialized', 'ping', 'tools/list', 'initialize']) {
+    assert.equal(handle({ jsonrpc: '2.0', method }), null, `${method} as a notification was answered`)
+  }
   assert.equal(handle({ jsonrpc: '2.0', id: 9, method: 'tools/nope' }).error.code, -32601)
 })
 
@@ -251,8 +322,13 @@ test('the manifest command boots the server through a legal MCP lifecycle, from 
       for (const name of ['acp-lanes-mcp.mjs', 'review-profiles.mjs']) {
         writeFileSync(join(dir, name), readFileSync(join(scripts, name), 'utf8'))
       }
-      const script = (SERVER.args ?? []).find(a => a.includes('.mjs')).split('/').pop()
-      const child = spawn(expand(SERVER.command), [join(dir, script)], {
+      // The manifest's OWN argv, expanded, with only the script path rebased into
+      // the copied tree. Rebuilding argv by hand left a fatal extra manifest
+      // argument passing, which an advisor caught.
+      const args = (SERVER.args ?? []).map(a => a.includes('.mjs')
+        ? join(dir, expand(a).split('/').pop())
+        : expand(a))
+      const child = spawn(expand(SERVER.command), args, {
         stdio: ['pipe', 'pipe', 'pipe'],
         cwd: dir,
         env: { PATH: process.env.PATH, HOME: '/nonexistent-layout' },
