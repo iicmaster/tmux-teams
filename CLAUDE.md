@@ -117,7 +117,14 @@ one SSOT** and wins if the two ever disagree.
 
 ## Model policy for every ACP route
 
-- Every tmux-teams AGY route defaults to `gemini-3.6-flash-high`. Gemini 3.1
+- Every tmux-teams AGY route defaults to `gemini-3.7-flash-high` (Master,
+  2026-08-16, moved off 3.6). The measurement that prompted it is worth keeping:
+  the release panel of 2026-08-15 recorded the adapter ADVERTISING
+  `gemini-3.7-flash-high` while this repo still pinned 3.6 — the set-and-
+  acknowledge succeeded, so the lane really did run 3.6, but the adapter's own
+  default had moved underneath the pin and nothing here had noticed. The probe
+  transcript further down still shows the 3.6 strings; it is a record of what
+  was measured that day and stays as written. Gemini 3.1
   variants are prohibited for ACP planning, review, and delivery work; fail
   closed if a configured or acknowledged AGY model is Gemini 3.1, and never
   fall back to it.
