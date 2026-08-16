@@ -141,12 +141,17 @@ consensus is itself a finding, usually that the question was too narrow.
    State plainly whatever you could not verify.
    ```
 
-2. **Dispatch.** Default seat:
+2. **Dispatch** through `acp-dispatch.mjs`, which detaches the lane into its own
+   process group and returns in seconds. Running `acp-companion.mjs` directly
+   puts the lane in the FOREGROUND, where the calling shell's cap silently
+   becomes the lane's deadline — on 2026-08-17 that killed a finished review at
+   ten minutes with 461 protocol events recorded. `tests/acp-dispatch.test.mjs`
+   refuses this file if it teaches the killable form. Default seat:
 
    ```bash
    ANTHROPIC_MODEL="claude-fable-5" \
    ACP_EXPECT_MODEL="claude-fable-5" \
-   node <plugin-root>/skills/tmux-teams/scripts/acp-companion.mjs \
+   node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
      claude <cwd> <task-id> <brief-file> [stall-sec]
    ```
 
@@ -155,7 +160,7 @@ consensus is itself a finding, usually that the question was too narrow.
    ```bash
    CLAUDE_CONFIG_DIR="$HOME/.config/claude-profiles/<profile>" \
    ACP_MODEL="<model>" \
-   node <plugin-root>/skills/tmux-teams/scripts/acp-companion.mjs \
+   node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
      claude <cwd> <task-id> <brief-file> [stall-sec]
    ```
 

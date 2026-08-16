@@ -318,7 +318,7 @@ the graph only when it was launched with `ACP_AGENT_ID` set to an id declared in
 this file:
 
 ```bash
-ACP_AGENT_ID=build_worker_1 node <plugin>/skills/tmux-teams/scripts/acp-companion.mjs \
+ACP_AGENT_ID=build_worker_1 node <plugin>/skills/tmux-teams/scripts/acp-dispatch.mjs \
   claude <repo> <task-id> <brief-file> <stall-sec>
 ```
 

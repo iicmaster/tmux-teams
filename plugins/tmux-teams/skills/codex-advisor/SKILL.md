@@ -97,9 +97,20 @@ answer is a failed consultation — say so rather than passing it on.
    ACP_REASONING_EFFORT="max" \
    ACP_EXPECT_MODEL="<model>" \
    ACP_EXPECT_REASONING_EFFORT="max" \
-   node <plugin-root>/skills/tmux-teams/scripts/acp-companion.mjs \
+   node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
      codex <cwd> <task-id> <brief-file> [stall-sec]
    ```
+
+   **`acp-dispatch.mjs`, never `acp-companion.mjs` — and this is not a style
+   preference.** The dispatcher puts the lane in its own process group and
+   returns in seconds; the companion runs the lane in the FOREGROUND, so
+   whatever cap the calling shell has becomes the lane's real deadline. On
+   2026-08-17 that cost a finished review: `stall-sec` 1200 typed into a shell
+   capped at 600, killed at exactly ten minutes with 461 protocol events
+   recorded and the answer unwritten. Both numbers were typed by the same
+   caller in the same command and nothing compared them.
+   `tests/acp-dispatch.test.mjs` now refuses this file if it teaches the
+   killable form.
 
    **Never set `ACP_CMD` on this lane.** The companion does not run `codex`
    directly: it launches a pinned `@agentclientprotocol/codex-acp` adapter whose
@@ -152,11 +163,29 @@ changes state. Work that comes out of a consultation goes to `party-auto`.
   analysis" — which costs a few hundred tokens instead of the whole review:
 
   ```bash
+  node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
+    status <cwd> <task-id>
+  ```
+
+  `status` prints the ready-to-paste resume command with the session id already
+  in it, so nobody digs it out of `.tmux-teams/` by hand. It looks like this,
+  and the shape matters:
+
+  ```bash
   ACP_RESUME="<session-id>" ACP_MODEL="<model>" ACP_REASONING_EFFORT="max" \
   ACP_EXPECT_MODEL="<model>" ACP_EXPECT_REASONING_EFFORT="max" \
-  node <plugin-root>/skills/tmux-teams/scripts/acp-companion.mjs \
+  node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
     codex <cwd> <task-id> <recovery-prompt> [stall-sec]
   ```
+
+  **Resume under the SAME task id.** The companion tells the worker to write
+  `.mailbox-out/<task-id>` and then reads that exact path back, so a resume
+  under a fresh id moves the outbox out from under the prompt the agent was
+  already given. On 2026-08-17 a recovery ran as `<task>-recover` while its
+  prompt still named `.mailbox-out/<task>`: the agent wrote a complete 22KB
+  review and the companion reported `no_outbox`. `status` now lists anything
+  else sitting in `.mailbox-out/` for exactly that reason — read those before
+  paying for a re-dispatch.
 
   Resume the seat you dispatched. Recovering one session under a different
   model is a different agent reading someone else's lineage.

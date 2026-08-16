@@ -90,9 +90,40 @@ control-team-held queue item (outside review). Making the audit the tail of the
 route is rejected — the route would finish without ever pulling it (outside
 review). The vocabulary work is part of the rebuild, not a side task (owner).
 
+## Shipped outside the phases
+
+- **`acp-dispatch.mjs` — the operator's entry to an ACP lane, 2026-08-17.**
+  Direct instruction from Master, on the day a `codex-advisor` review died with
+  its answer unwritten: `stall-sec` 1200 typed into a shell capped at 600, both
+  numbers in the same command, nothing comparing them, killed at exactly ten
+  minutes with 461 protocol events recorded. `loop-runner.mjs` had never been
+  able to fail that way — its `dispatch()` has always spawned the companion
+  `detached: true` and called `unref()`, so the lane leads its own process group
+  and a group kill aimed at the parent cannot reach it. The fix existed and only
+  the loop could reach it. The instruction was explicit: *make it impossible
+  with a script, not a rule the model is hoped to follow.* So the shape of the
+  answer is three things, not one — a script that detaches, a test that kills
+  the caller's whole process group mid-turn and demands the lane finish anyway,
+  and a test that reads every shipped skill and fails on a fenced command that
+  launches the companion directly. Seven such commands existed across four
+  skills and are gone. `status <cwd> <task-id>` closes the second half of the
+  same day: it reads back liveness, names the outbox it derived, LISTS anything
+  else in `.mailbox-out/`, and prints the resume command with the session id
+  already in it. That listing is not decoration — a recovery run under a
+  `-recover` task id while its prompt still named the original path produced a
+  complete 22 KB review that the companion reported as `no_outbox`.
+
 ## What is actually open
 
 Nothing is blocking a release. These are real but unforced:
+
+- **The raw companion is still runnable, and that is the honest limit of the
+  word "impossible".** `loop-runner.mjs` spawns it and the suite drives it, so
+  it cannot be removed. What was removed is every DOCUMENTED path to the
+  killable form, and `tests/acp-dispatch.test.mjs` keeps them removed — a model
+  reading a skill never finds a command to copy that a shell cap can cut in
+  half. A caller who types the companion's own path anyway is outside what a
+  script can reach.
 
 - **If bwrap is ever re-enabled**, the sandbox still does not carry a routed
   wrapper's own profile files into the ephemeral home. The gate knows where to

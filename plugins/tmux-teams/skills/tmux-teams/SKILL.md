@@ -29,6 +29,7 @@ Read the system in this order:
 | `scripts/pull-controller.mjs` | receiver-owned pulls, route completion and WIP enforcement |
 | `scripts/loop-runner.mjs` | the ordered tick: harvest → pull → dispatch → escalate |
 | `scripts/acp-companion.mjs` | the ACP leg; its custody-ledger authority is limited to its own `assigned` and `delivered` events |
+| `scripts/acp-dispatch.mjs` | the operator's way in to that leg — detaches it into its own process group so the calling shell's cap is not the lane's deadline, and `status <cwd> <task-id>` reads back liveness, outbox and the resume command |
 | `scripts/pulse.mjs` + `scripts/graph.mjs` + `scripts/kanban.mjs` | live transport, wiring and custody projections from the same evidence |
 | `scripts/kms.mjs` | immutable run memory; never a substitute for verification |
 
@@ -420,7 +421,7 @@ is rejected by the adapter):
 
 ```bash
 ANTHROPIC_MODEL=claude-opus-4-8 \
-  node <skill-root>/scripts/acp-companion.mjs claude <repo> <task-id> <brief-file> [stall-sec]
+  node <skill-root>/scripts/acp-dispatch.mjs claude <repo> <task-id> <brief-file> [stall-sec]
 ```
 
 For a per-dispatch Codex choice, set `ACP_MODEL` and
@@ -442,7 +443,7 @@ ANTHROPIC_BASE_URL=https://api.kimi.com/coding/ \
 ANTHROPIC_AUTH_TOKEN="$KIMI_TOKEN" \
 ANTHROPIC_API_KEY= \
 ANTHROPIC_MODEL=k3 \
-  node <skill-root>/scripts/acp-companion.mjs claude <repo> <task-id> <brief-file> [stall-sec]
+  node <skill-root>/scripts/acp-dispatch.mjs claude <repo> <task-id> <brief-file> [stall-sec]
 ```
 
 The brief file carries the SAME ข้อ 6 contract text; the worker writes the same
