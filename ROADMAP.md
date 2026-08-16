@@ -25,6 +25,13 @@ Current release: **0.31.0**
 | **E** | **slot accounting live**, five cells of six | **One publisher, N subscribers.** The ledger's own 17 words are the events; `token` subscribes to all 17, `team` to the 6 that take or free a slot, `workflow` to 5 about position, `display` to everything and it decides nothing. Scope is **six cells**, each moving one branch out of `nextStep` — counted, not estimated. |
 | **F** | proposed, not started | Per-seat pre-LLM / post-LLM scripts (Master's proposal). Three questions must be answered before any code. |
 
+**Measured 2026-08-16, and phase E's own scope sentence does not say it.** The
+scope reads "each cell moving one branch out of `nextStep`", and five cells are
+wired — but `nextStep` is still 308 lines carrying 32 `if` branches, the same
+shape it had before. The subscribers took over ANSWERING those questions; the
+branches that ask them did not move. Wiring a cell and shrinking `nextStep` are
+two pieces of work, and only the first has been done.
+
 ## The rebuild the owner ordered — and where it actually stands
 
 The instruction was **rebuild by domain, then a message queue, then one publisher
@@ -90,6 +97,40 @@ control-team-held queue item (outside review). Making the audit the tail of the
 route is rejected — the route would finish without ever pulling it (outside
 review). The vocabulary work is part of the rebuild, not a side task (owner).
 
+## Shipped since the phases were last written
+
+Work that arrived as a direct instruction rather than off this page. It belongs
+here because a goal document that does not know what happened is a goal document
+nobody can plan from.
+
+- **v0.31.0 — an ACP lane's identity claim, recorded and never counted.** The
+  instruction was to swap the review gate's family evidence from *where a lane
+  routed* to *what answered*. Measuring first refused the swap: for `agy` the
+  advertised model list is the adapter's own, but every claude-routed lane is
+  handed its list by this runner, so counting it is quoting ourselves.
+  `claimedIdentity` records the advertised value and whether the runner seeded
+  it; `provenFamilyKey` remains the only family evidence. On the first panel
+  that carried the field, two lanes advertised a bare `default` and `agy`
+  advertised `gemini-3.7-flash-high` while this repo pinned 3.6 — so the field
+  built to decide nothing is what caught a model moving underneath a pin.
+- **v0.31.0 — the AGY lane moved to `gemini-3.7-flash-high`**, which is where
+  its adapter already was.
+- **v0.31.0 — the brakes question was answered** (see below); no brake was
+  removed and one gained the guard it never had.
+- **The release flow now goes through a pull request.** Merge requires CI green
+  and the `chatgpt-codex-connector` review; only Master waives it and the waiver
+  is recorded. v0.31.0 used that waiver once, on an exhausted account quota.
+- **An MCP server for lane discovery — built, reviewed twice, not yet merged**
+  (ADR 0007, branch `feat/acp-lane-mcp`). Two read-only tools answer which ACP
+  lanes exist and what each still needs on this machine, because the per-machine
+  override variables had worked since 2026-08-13 and nothing surfaced them. A
+  `codex-advisor` lane blocked it twice on bytes a three-family panel had passed
+  3/3 with zero findings — a false `ready: true` reproduced in one command, and
+  then a fix list that named the wrong executable. **The lesson is a sequencing
+  one and it is now in `CLAUDE.md`: an advisor lane can execute and the panel
+  cannot, so attack with the advisor while the code is cheap to change and spend
+  the panel last, as the record.**
+
 ## What is actually open
 
 Nothing is blocking a release. These are real but unforced:
@@ -113,7 +154,15 @@ Nothing is blocking a release. These are real but unforced:
   prompt states plainly — while answering the same content cleanly at 22 KiB, and
   answering 74 KiB of source and 60 KiB of tests without trouble. So it is not
   size alone: dense prose costs more than dense code. Nobody has found where the
-  real ceiling is, and the gate cannot warn about it.
+  real ceiling is, and the gate cannot warn about it. Three more data points
+  from 2026-08-16, all mixed source and prose: 20 KiB and 26 KiB passed, and a
+  37 KiB packet was split by meaning rather than risked. The working practice is
+  to stay near 25 KiB and split; that is a habit, not a measurement of the
+  boundary.
+- **`nextStep` has not shrunk.** Five of phase E's six cells are wired and the
+  function is still 308 lines over 32 branches — the subscribers answer the
+  questions, and the branches that ask them are untouched. Moving one is the
+  next unit of that phase, and nothing yet says which one is cheapest.
 - **The brakes in `loop-runner.mjs`: there are SEVEN, and the evidence now
   exists. None of them comes out.** This entry asked for per-brake evidence
   that the WIP hold covers what each was standing in for; it was produced on
@@ -168,6 +217,10 @@ slate.
   are written down.
 - **ADR 0006** — shipped review profiles no longer declare bwrap. What that
   costs is stated, along with the strongest argument against the decision.
+- **ADR 0002** — `opened` names a human decision; the runner never invents one.
+- **ADR 0007** — the plugin ships one read-only MCP server for lane discovery.
+  It reads credentials and never returns them, and it does not reopen ADR 0003:
+  a DISPATCHED agent still receives none.
 
 ## How this page stays true
 
