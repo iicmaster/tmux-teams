@@ -84,11 +84,33 @@ export function resumeCommand(cwd, taskId, { sessionId, worker, model, effort, b
   ].join('\n')
 }
 
+// The companion's own vocabulary, not a guess at it. `VALID_TERMINAL_STATES` in
+// `acp-companion.mjs` is exactly these three, and `isLivenessTerminal()` is what
+// the companion asks itself. The first version of this file asked
+// `liveness_state !== 'running'` — a state the companion never writes — so a
+// lane sitting at `active` was reported as finished, complete with resume
+// advice for a turn that had not ended. It shipped because the status test was
+// built on a liveness fixture written BY HAND, which met a vocabulary nobody
+// checked against a real file.
+export const TERMINAL_LIVENESS_STATES = Object.freeze(['completed', 'cancelled', 'failed'])
+
+// `cancelling` is not in that set, and round three's interrupted lane died
+// there and never moved: a killed process writes no further snapshot. So a
+// recorded termination reason counts as settled too — and the reason field
+// carries the STRING 'none' while a lane is healthy, never null, which is its
+// own small trap.
+function isSettled(liveness) {
+  if (liveness === null) return false
+  if (TERMINAL_LIVENESS_STATES.includes(liveness.liveness_state)) return true
+  const reason = liveness.termination_reason
+  return typeof reason === 'string' && reason !== '' && reason !== 'none'
+}
+
 export function statusReport(cwd, taskId) {
   const liveness = readJson(livenessPath(cwd, taskId))
   const outbox = outboxPath(cwd, taskId)
   const found = existsSync(outbox) && lstatSync(outbox).isFile()
-  const settled = liveness === null ? false : liveness.liveness_state !== 'running'
+  const settled = isSettled(liveness)
   return {
     taskId,
     cwd,
@@ -147,6 +169,13 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
   return child
 }
 
+// Waits for the lane's IDENTITY, not merely for a file to appear. The companion
+// writes its first snapshot before it spawns the adapter, so the file exists
+// within milliseconds carrying `identity_status: 'missing'` — the first version
+// reported that as the boot result and printed `unknown (missing)` for a lane
+// whose identity was acknowledged as `matched` four seconds later. The point of
+// waiting at all is to keep the fail-closed identity check synchronous, so the
+// thing waited for has to be the acknowledgement.
 async function watchBoot(child, cwd, taskId, bootMs) {
   const path = livenessPath(cwd, taskId)
   const deadline = Date.now() + bootMs
@@ -154,11 +183,11 @@ async function watchBoot(child, cwd, taskId, bootMs) {
   child.on('exit', (code, signal) => { exited = { code, signal } })
   for (;;) {
     const record = readJson(path)
-    if (record) return { outcome: 'live', record }
+    if (record && (record.effective_identity || isSettled(record))) return { outcome: 'live', record }
     // Checked AFTER the liveness read so a child that wrote its file and exited
     // in the same tick is reported as booted rather than as a failure.
-    if (exited) return { outcome: 'exited', ...exited }
-    if (Date.now() >= deadline) return { outcome: 'booting' }
+    if (exited) return { outcome: 'exited', record, ...exited }
+    if (Date.now() >= deadline) return { outcome: 'booting', record }
     await sleep(POLL_MS)
   }
 }
@@ -196,7 +225,8 @@ export async function main(argv, { out = console.log, err = console.error, spawn
   if (booted.outcome === 'booting') {
     // Deliberately NOT a kill. This process has no authority over a lane's
     // lifetime; that is the entire point of the file.
-    out(`still booting after ${bootMs / 1000}s — the lane is RUNNING, not stuck. Poll with the status command above.`)
+    out(`identity not acknowledged after ${bootMs / 1000}s — the lane is RUNNING, not stuck.`)
+    out(`liveness_state: ${booted.record?.liveness_state ?? 'none'} · poll with the status command above.`)
     return 1
   }
   out(`effective_identity: ${booted.record.effective_identity ?? 'unknown'} (${booted.record.identity_status ?? 'unknown'})`)

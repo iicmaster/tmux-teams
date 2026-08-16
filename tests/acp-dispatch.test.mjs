@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, mkdi
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { statusReport, formatStatus, resumeCommand, outboxPath, strayOutboxes }
+import { statusReport, formatStatus, resumeCommand, outboxPath, strayOutboxes, TERMINAL_LIVENESS_STATES }
   from '../plugins/tmux-teams/skills/tmux-teams/scripts/acp-dispatch.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -126,6 +126,14 @@ test('the lane is placed in its own process group, which is why the kill above m
 
   await waitFor(() => caller.exitCode !== null, 60000, 'the caller to report and exit')
   assert.equal(caller.exitCode, 0, `caller exited ${caller.exitCode}: ${out}`)
+  // The caller waits for the ACKNOWLEDGED identity, not for a file to exist.
+  // The companion writes its first snapshot before it spawns the adapter, so
+  // the file carries `identity_status: 'missing'` within milliseconds — the
+  // first version reported exactly that for a lane whose identity arrived a
+  // moment later.
+  assert.doesNotMatch(out, /effective_identity: unknown/,
+    `the caller reported before the identity was acknowledged: ${out}`)
+  assert.match(out, /effective_identity: \S+ \((matched|unverified)\)/)
 
   const lanePid = Number(out.match(/pid (\d+)/)?.[1])
   assert.ok(Number.isInteger(lanePid), `no lane pid in caller output: ${out}`)
@@ -137,6 +145,50 @@ test('the lane is placed in its own process group, which is why the kill above m
 
   writeFileSync(releaseFile, 'go\n')
   await waitFor(() => existsSync(outboxPath(cwd, 'pgid')), 60000, 'the lane to finish')
+})
+
+test('the caller waits for an ACKNOWLEDGED identity, and says so plainly when it never comes', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX process groups')
+  // The discriminating case, and it took a mutation to find that the previous
+  // assertion was not one: with a fast mock the identity lands inside the first
+  // poll, so a caller that returned on "the liveness FILE exists" looked
+  // identical to one that waited for the acknowledgement. Holding the adapter
+  // at `initialize` widens that window past the boot budget — the companion has
+  // already written a snapshot carrying `identity_status: 'missing'`, so the
+  // file-exists version reports `unknown (missing)` and exits 0, and the real
+  // one keeps waiting and then says which of the two it is.
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-identity-'))
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+  const releaseFile = join(cwd, 'release')
+
+  const caller = spawn(process.execPath, [DISPATCH, 'mock', cwd, 'ident', brief, '120'], {
+    cwd,
+    detached: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: laneEnv({
+      ACP_DISPATCH_BOOT_SEC: '2',
+      MOCK_GATE_STAGE: 'initialize',
+      MOCK_GATE_RELEASE_FILE: releaseFile,
+      MOCK_GATE_WATCHDOG_MS: '60000',
+    }),
+  })
+  let out = ''
+  caller.stdout.on('data', (chunk) => { out += chunk })
+  caller.stderr.on('data', (chunk) => { out += chunk })
+
+  await waitFor(() => caller.exitCode !== null, 40000, 'the caller to give up waiting and report')
+  // The liveness file exists by now — that is the whole trap.
+  assert.ok(existsSync(join(cwd, '.tmux-teams', 'liveness', 'ident.json')),
+    'the premise of this test is gone: no snapshot was written before the adapter answered')
+  assert.equal(caller.exitCode, 1, `caller exited ${caller.exitCode} instead of reporting a slow boot: ${out}`)
+  assert.match(out, /identity not acknowledged after 2s/)
+  assert.doesNotMatch(out, /effective_identity: unknown/,
+    'the caller reported an identity it had not been given')
+  // Never a kill. The lane it just declined to wait for has to still be there.
+  writeFileSync(releaseFile, 'go\n')
+  await waitFor(() => existsSync(outboxPath(cwd, 'ident')), 60000,
+    'the lane died when its caller stopped waiting for it')
 })
 
 test('the caller reports the outbox path it derived, and never a second spelling of it', () => {
@@ -153,6 +205,47 @@ test('the caller reports the outbox path it derived, and never a second spelling
   const text = formatStatus(report)
   assert.match(text, /other files in \.mailbox-out\/: round3/)
   assert.match(text, /READ THOSE BEFORE RE-DISPATCHING/)
+})
+
+test('status reads the companion\'s own liveness vocabulary, not a guess at it', () => {
+  // This is here because the first version guessed. It asked
+  // `liveness_state !== 'running'` — a value the companion never writes — so a
+  // healthy lane sitting at `active` was reported as finished, with resume
+  // advice for a turn that had not ended. The status test that shipped beside
+  // it used a liveness fixture written BY HAND, so it only ever met states its
+  // own author had chosen.
+  const companion = readFileSync(join(SCRIPTS, 'acp-companion.mjs'), 'utf8')
+  assert.match(companion, /VALID_TERMINAL_STATES = new Set\(\['completed', 'cancelled', 'failed'\]\)/,
+    'the companion changed its terminal-state vocabulary and this file still assumes the old one')
+  assert.deepEqual([...TERMINAL_LIVENESS_STATES], ['completed', 'cancelled', 'failed'])
+
+  const cases = [
+    // state, termination_reason, settled?  — the reason field carries the
+    // STRING 'none' while a lane is healthy, never null.
+    ['starting', 'none', false],
+    ['active', 'none', false],
+    ['tool_running', 'none', false],
+    ['awaiting_agent', 'none', false],
+    ['stalled', 'none', false],
+    ['suspected_stalled', 'none', false],
+    // Round three died here and never moved: a killed process writes no further
+    // snapshot, so a recorded reason is what makes this one finished.
+    ['cancelling', 'controller_interrupted', true],
+    ['failed', 'no_outbox', true],
+    ['completed', 'none', true],
+    ['cancelled', 'stall', true],
+  ]
+  for (const [state, reason, settled] of cases) {
+    const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-vocab-'))
+    mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
+    writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'lane.json'),
+      JSON.stringify({ liveness_state: state, termination_reason: reason }))
+    const report = statusReport(cwd, 'lane')
+    assert.equal(report.settled, settled, `${state}/${reason} was judged settled=${report.settled}`)
+    const text = formatStatus(report)
+    assert.equal(/try RESUME/.test(text), settled && Boolean(report.sessionId),
+      `${state}/${reason} offered resume advice for a turn that has not ended`)
+  }
 })
 
 test('status hands over the resume command with the session id already in it', () => {
