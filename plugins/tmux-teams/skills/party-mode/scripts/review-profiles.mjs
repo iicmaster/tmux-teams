@@ -1,6 +1,6 @@
 // Immutable ACP reviewer definitions. The caller gets argv arrays and a
 // profile-scoped environment, never a shell command or ambient credential bag.
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { accessSync, constants as fsConstants, existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { delimiter, join } from 'node:path'
 
 const runtimeKeys = new Set([
@@ -637,9 +637,27 @@ function settingsPath(profile, source) {
 // ones, so pointing at a stray file cannot smuggle arbitrary environment into a
 // lane, and the settings JSON wins on any key present in both — a credential
 // file may ADD a secret, never redirect an endpoint.
+// The keys a routed lane's own files may supply: the shared endpoint vocabulary
+// plus THAT LANE's declared provider secrets, and nothing else.
+//
+// The second half was missing until 2026-08-17 and it made the diagnostic lie.
+// `validateRoutedEndpoint` accepts `env.ZAI_API_KEY`, and the ambient
+// environment reaches it through the `providerSecrets` loop in
+// `buildProfileEnv` — but this allowlist dropped the identical key when it came
+// from the env file, so `acp-lanes-mcp.mjs` told a zai operator to point
+// `TMUX_TEAMS_REVIEW_ZAI_ENV_FILE` at the file holding it and the lane refused
+// exactly as before. A Codex advisor reproduced it: same key, `valid` ambient
+// and `invalid` from the prescribed file. Widened per lane rather than
+// globally — a lane gains only the secret names it already declares, so a stray
+// file still cannot smuggle arbitrary environment anywhere.
+function acceptedRoutedKeys(profile) {
+  return new Set([...routedSettingsEnv, ...(providerSecrets[profile.id] ?? [])])
+}
+
 function loadRoutedCredentialFile(profile, source, reader = file => readFileSync(file, 'utf8')) {
   const file = source?.[`TMUX_TEAMS_REVIEW_${profile.id.toUpperCase()}_ENV_FILE`]
   if (!file || !existsSync(file)) return {}
+  const accepted = acceptedRoutedKeys(profile)
   const out = {}
   for (const rawLine of String(reader(file)).split(/\r?\n/)) {
     const line = rawLine.trim()
@@ -647,7 +665,7 @@ function loadRoutedCredentialFile(profile, source, reader = file => readFileSync
     const eq = line.indexOf('=')
     if (eq <= 0) continue
     const key = line.slice(0, eq).replace(/^export\s+/, '').trim()
-    if (!routedSettingsEnv.has(key)) continue
+    if (!accepted.has(key)) continue
     let value = line.slice(eq + 1).trim()
     if (value.length >= 2 && ((value[0] === '"' && value.at(-1) === '"') ||
         (value[0] === "'" && value.at(-1) === "'"))) value = value.slice(1, -1)
@@ -671,7 +689,7 @@ function loadRoutedEnvironment(profile, source, loader = file => JSON.parse(read
   return {
     ...credentials,
     ...Object.fromEntries(Object.entries(values)
-      .filter(([key, value]) => routedSettingsEnv.has(key) && value !== null && value !== undefined)
+      .filter(([key, value]) => acceptedRoutedKeys(profile).has(key) && value !== null && value !== undefined)
       .map(([key, value]) => [key, String(value)])),
   }
 }
@@ -732,8 +750,37 @@ export function agyBinaryCandidates(source) {
   ]
 }
 
+// The same list with `$HOME` left UNRESOLVED, for anything that reports a
+// refusal outward. `acp-lanes-mcp.mjs` interpolated the resolved form into its
+// fix sentence, and a Codex advisor showed what that costs: with a credential
+// value also present in `HOME`, the credential appeared in the reply — through
+// the path diagnostic, never through a credential field, which is exactly how
+// a denylist-shaped guard gets beaten. A constant is also the clearer thing to
+// print at an operator.
+export const AGY_BINARY_CANDIDATE_FORMS = Object.freeze([
+  `$HOME/.local/bin/${AGY_BINARY_NAME}`,
+  `/usr/local/bin/${AGY_BINARY_NAME}`,
+  `/usr/bin/${AGY_BINARY_NAME}`,
+])
+
+// `existsSync` was the whole check until 2026-08-17, so a mode-0644 file at a
+// candidate path — or a DIRECTORY named `agy` — made the lane report a valid
+// configuration while executing it failed `EACCES`. Reproduced by a Codex
+// advisor. Executable discovery is the one parent-side fact this lane claims to
+// establish, so `exists` is not enough: it must be a regular file this process
+// can execute.
+function executableCandidate(path) {
+  try {
+    if (!statSync(path).isFile()) return false
+    accessSync(path, fsConstants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
 function trustedAgyBinary(source) {
-  const found = agyBinaryCandidates(source).find(existsSync)
+  const found = agyBinaryCandidates(source).find(executableCandidate)
   return found ? realpathSync(found) : null
 }
 

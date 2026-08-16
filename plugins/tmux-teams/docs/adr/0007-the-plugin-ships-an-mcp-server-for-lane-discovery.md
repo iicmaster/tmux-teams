@@ -71,6 +71,16 @@ environment, and discarding a value you asked for is not declining to read it.
 Master chose the honest version of the requirement over the flattering one — it
 reads them, and nothing it returns carries them.
 
+**And "never returns them" survived one more round than it deserved.** A third
+advisor round reproduced a credential on the wire with the credential FIELDS
+all clean: the fix sentence for a missing `agy` binary interpolated the RESOLVED
+candidate path, so a secret value that also appeared in `HOME` was serialised
+through the path diagnostic. Aliasing is how a guard shaped like a denylist gets
+beaten, and the route the bytes took does not change what the bytes are. The
+sentence now carries `$HOME/.local/bin/agy` unresolved — a constant, which is
+also the clearer thing to print at an operator — and the suite pins a
+credential hidden inside `HOME` as its own case.
+
 The containment is therefore entirely on the OUTBOUND boundary, and it is
 enforced rather than asserted. A failure is reported as a code from a closed set
 with a sentence that is a constant of the module; the raw exception text never
@@ -96,6 +106,44 @@ inventory inside a real dispatched ACP child has not been measured, so ADR 0003'
 guarantee remains a guarantee about what is REQUESTED. That distinction is the
 same one the boot bug in this very change taught: the bytes sent and the runtime
 that results are not synonyms.
+
+## What the third round changed, and why it is in this document
+
+Three advisor rounds blocked this change; a static three-family panel passed the
+same bytes 3/3 with zero findings, twice, in between. That gap is the finding
+worth recording. The panel is forbidden to run anything, by design — what it
+proves is that three distinct families READ the bytes. An advisor lane can drive
+the server, mutate the source and re-run the suite, and every round-three
+finding arrived with a command and an output attached.
+
+Two of them changed what this server IS, rather than how it words an answer:
+
+**It validates its protocol now.** It previously accepted `"jsonrpc":"1.0"` and
+answered with a tool list, accepted array `arguments` against an object-only
+schema, reported an unknown tool as a SUCCESSFUL result carrying `isError`, and
+dropped both an empty batch and an `id: null` request in silence. A permissive
+host continuing anyway is not a conformance check — it is why nobody noticed. A
+client holding a stale tool cache cannot distinguish protocol misuse from tool
+failure when the first is reported as the second, so an unknown tool is
+`-32602`, a malformed envelope is `-32600` under `id: null`, and a notification
+is a request with no `id` MEMBER rather than one whose id happens to be null.
+
+**A diagnostic that cannot be acted on is worse than an unclassified one, and
+the credential fix was one.** `TMUX_TEAMS_REVIEW_ZAI_ENV_FILE` was the
+prescribed repair for a missing zai credential, and the env-file loader filtered
+through an allowlist that excluded `ZAI_API_KEY` while the endpoint validator
+accepted the identical key from the ambient environment. Same key, `valid` one
+way and `invalid` the other, with this server printing the way that does not
+work. The loader now accepts each lane's own declared provider secrets — per
+lane, so nothing gains another lane's vocabulary — and the guard applies the
+returned remediation and requires the state to change, because asserting that a
+sentence mentions the right variable is not a test of the repair.
+
+A third was smaller and the same shape: `existsSync` was the entire `agy`
+executable check, so a mode-0644 file, or a directory with the right name,
+reported a valid configuration while executing it failed `EACCES`. AGY is not in
+the unchecked set — executable discovery is the one parent-side fact it claims —
+so that green was false about its own boundary.
 
 ## The argument against
 

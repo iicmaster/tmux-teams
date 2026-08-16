@@ -63,8 +63,8 @@ import { createInterface } from 'node:readline'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { REVIEW_PROFILES, ROUTED_PROFILES, buildAcpLaunch, AGY_BINARY_NAME, agyBinaryCandidates }
-  from './review-profiles.mjs'
+import { REVIEW_PROFILES, ROUTED_PROFILES, buildAcpLaunch, AGY_BINARY_NAME,
+  AGY_BINARY_CANDIDATE_FORMS, PROVIDER_SECRET_KEYS } from './review-profiles.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PLUGIN_ROOT = join(HERE, '..', '..', '..')
@@ -177,11 +177,16 @@ function settingsFixes(id, profile) {
   ]
 }
 
-function executableFixes(id, profile, env) {
+function executableFixes(id, profile) {
   const out = []
   if (id === 'agy') {
-    out.push(`a trusted \`${AGY_BINARY_NAME}\` binary must exist at one of: `
-      + agyBinaryCandidates(env ?? {}).join(', '))
+    // The UNRESOLVED forms. Interpolating the resolved candidate put whatever
+    // `HOME` happened to contain on the wire, and an advisor demonstrated a
+    // credential escaping that way while every credential FIELD stayed clean.
+    // Nothing in this sentence now comes from the environment.
+    out.push(`a trusted, EXECUTABLE \`${AGY_BINARY_NAME}\` must exist at one of: `
+      + AGY_BINARY_CANDIDATE_FORMS.join(', ')
+      + ' — a file that merely exists is not enough, it must be a regular file with the execute bit')
   }
   if (profile.claudeExecutable) {
     out.push(`the wrapper \`${profile.claudeExecutable}\` must exist on PATH and select this provider`)
@@ -192,25 +197,38 @@ function executableFixes(id, profile, env) {
   return out
 }
 
-export function fixesFor(id, profile, code, env) {
+// Naming the keys that are actually accepted, because "point it at the env file
+// holding the credential" was true of the variable and false of the file: the
+// env-file loader dropped `ZAI_API_KEY` while the endpoint validator accepted
+// it ambient, so the prescribed repair left the lane refusing exactly as
+// before. The loader is fixed; the sentence now says which names work so a
+// reader is never left guessing at the vocabulary.
+function credentialFixes(id) {
+  if (!ROUTED_PROFILES.has(id)) return []
+  const names = overrideNames(id)
+  const accepted = ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', ...(PROVIDER_SECRET_KEYS[id] ?? [])]
+  return [
+    `if the credential lives outside that JSON, point ${names.credentials} at the env file holding it`,
+    `that file is read for ${accepted.join(', ')} — any other name in it is ignored`,
+  ]
+}
+
+export function fixesFor(id, profile, code) {
   const names = overrideNames(id)
   const settings = settingsFixes(id, profile)
-  const credential = ROUTED_PROFILES.has(id)
-    ? [`if the credential lives outside that JSON, point ${names.credentials} at the env file holding it`]
-    : []
   switch (code) {
     case 'endpoint_missing':
     case 'endpoint_mismatch':
       return settings.length ? settings
         : [`this lane's base URL must come from ${names.settings} or ${names.credentials}`]
     case 'credential_missing':
-      return [...credential, ...settings]
+      return [...credentialFixes(id), ...settings]
     case 'settings_unreadable':
       return ['the JSON this lane reads must parse and must be an object', ...settings]
     case 'executable_missing':
-      return executableFixes(id, profile, env)
+      return executableFixes(id, profile)
     default:
-      return [...settings, ...credential, ...executableFixes(id, profile, env)]
+      return [...settings, ...credentialFixes(id), ...executableFixes(id, profile)]
   }
 }
 
@@ -222,7 +240,7 @@ export function laneStatus(id, profile, env) {
       ...facts,
       configuration: 'unchecked',
       problem: null,
-      fixes: fixesFor(id, profile, null, env),
+      fixes: fixesFor(id, profile, null),
       notProven: notProvenFor(profile),
       note: 'no parent-side configuration check exists for this lane, so nothing here was verified',
     }
@@ -238,7 +256,7 @@ export function laneStatus(id, profile, env) {
       ...facts,
       configuration: 'invalid',
       problem: { code, detail: DIAGNOSTICS[code] },
-      fixes: fixesFor(id, profile, code, env),
+      fixes: fixesFor(id, profile, code),
       notProven: notProvenFor(profile),
     }
   }
@@ -290,14 +308,86 @@ export function callTool(name, args, env) {
   return handler(args, env)
 }
 
+// ## Validation, and why there was none
+//
+// The first three versions of this file validated nothing about the envelope.
+// A Codex advisor drove the real stdio server with hand-built frames and got a
+// successful tool list out of `"jsonrpc":"1.0"`, successful content out of
+// `arguments: []` against an object-only schema, an unknown tool reported as a
+// SUCCESSFUL result carrying `isError`, and silence for an `id: null` request.
+// Every one of those contradicts MCP 2025-06-18 and JSON-RPC 2.0, and a
+// permissive host continuing anyway is not a conformance check — it is the
+// reason nobody noticed. Middleware that cannot tell protocol misuse from tool
+// failure is the concrete cost.
+export const RPC_INVALID_REQUEST = -32600
+export const RPC_METHOD_NOT_FOUND = -32601
+export const RPC_INVALID_PARAMS = -32602
+export const RPC_PARSE_ERROR = -32700
+
+// Each reason is a constant sentence, for the same reason every diagnostic in
+// this file is: nothing a caller sent may be echoed back out.
+export const REQUEST_PROBLEMS = Object.freeze({
+  batch: 'JSON-RPC batching is not supported by MCP 2025-06-18',
+  not_an_object: 'a request must be a JSON object',
+  jsonrpc: 'a request must carry jsonrpc "2.0"',
+  method: 'a request must carry a string method',
+  id: 'a request id must be a string or an integer, and must not be null',
+})
+
+// Structure only. `null` means the frame is a legal request or a legal
+// notification; the caller decides which by whether an `id` member is present.
+export function requestProblem(message) {
+  if (Array.isArray(message)) return 'batch'
+  if (message === null || typeof message !== 'object') return 'not_an_object'
+  if (message.jsonrpc !== '2.0') return 'jsonrpc'
+  if (typeof message.method !== 'string') return 'method'
+  if ('id' in message) {
+    const { id } = message
+    // `id: null` is reserved for a response that could not determine one. As a
+    // REQUEST id it is invalid, and treating it as "no id" is what made the
+    // server drop such a frame in silence.
+    if (!(typeof id === 'string' || (typeof id === 'number' && Number.isInteger(id)))) return 'id'
+  }
+  return null
+}
+
+// A deliberately small schema check, matching only what the descriptors
+// declare: an object with typed, optional properties and no others. It is not a
+// JSON Schema implementation and must not grow into one — a descriptor that
+// needs more than this should be simplified instead.
+export function argumentsProblem(schema, args) {
+  if (args === undefined) return null
+  if (args === null || typeof args !== 'object' || Array.isArray(args)) return 'arguments must be an object'
+  // The names come from the DESCRIPTOR, never from the caller. Echoing the
+  // offending key back would be harmless to its sender and would still break
+  // the property this file is easiest to check against: every sentence it emits
+  // is a constant of the module.
+  const declaredNames = Object.keys(schema?.properties ?? {})
+  const allowed = declaredNames.length ? declaredNames.join(', ') : '(this tool takes no arguments)'
+  for (const [key, value] of Object.entries(args)) {
+    const declared = schema?.properties?.[key]
+    if (!declared) return `arguments may contain only: ${allowed}`
+    // Safe to name: this branch is reached only when `key` matched a declared
+    // property, so the string is the descriptor's, not the caller's.
+    if (declared.type === 'string' && typeof value !== 'string') return `argument ${key} must be a string`
+  }
+  return null
+}
+
+function rpcError(id, code, message) {
+  return { jsonrpc: '2.0', id, error: { code, message } }
+}
+
 export function handle(message, env = process.env) {
-  const { id, method, params } = message ?? {}
-  // A notification carries no id and is never answered — decided FIRST, before
-  // any method is dispatched. The previous order let `ping` sent as a
-  // notification produce a reply with no id at all, because the no-id check sat
-  // at the bottom where only unknown methods reached it.
-  const isNotification = id === undefined || id === null
-  if (isNotification) return null
+  const problem = requestProblem(message)
+  // An unreadable frame has no id to answer under, so JSON-RPC's own answer is
+  // an error carrying `id: null`.
+  if (problem) return rpcError(null, RPC_INVALID_REQUEST, REQUEST_PROBLEMS[problem])
+  const { id, method, params } = message
+  // A notification is a request with NO id member — decided here, after the
+  // frame is known to be well formed. An earlier version treated `id === null`
+  // as a notification too, so a malformed request vanished without a word.
+  if (!('id' in message)) return null
   if (method === 'initialize') {
     return {
       jsonrpc: '2.0',
@@ -316,17 +406,32 @@ export function handle(message, env = process.env) {
   if (method === 'ping') return { jsonrpc: '2.0', id, result: {} }
   if (method === 'tools/list') return { jsonrpc: '2.0', id, result: { tools: TOOLS } }
   if (method === 'tools/call') {
-    const payload = callTool(params?.name, params?.arguments, env)
+    if (params === null || typeof params !== 'object' || Array.isArray(params)) {
+      return rpcError(id, RPC_INVALID_PARAMS, 'tools/call params must be an object')
+    }
+    if (typeof params.name !== 'string') {
+      return rpcError(id, RPC_INVALID_PARAMS, 'tools/call params.name must be a string')
+    }
+    const descriptor = TOOL_DESCRIPTORS.find((d) => d.name === params.name)
+    // An unknown tool is a PROTOCOL error, not a tool that ran and failed. A
+    // client holding a stale tool cache has to be able to tell those apart, and
+    // reporting the first as the second is what makes that impossible.
+    if (!descriptor) return rpcError(id, RPC_INVALID_PARAMS, 'no such tool')
+    const badArgs = argumentsProblem(descriptor.inputSchema, params.arguments)
+    if (badArgs) return rpcError(id, RPC_INVALID_PARAMS, badArgs)
+    const payload = callTool(params.name, params.arguments, env)
     return {
       jsonrpc: '2.0',
       id,
       result: {
         content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
+        // Reserved for a tool that RAN and reported a problem — an unknown lane
+        // is the only one left, and it is genuinely a tool-level result.
         isError: Boolean(payload?.error),
       },
     }
   }
-  return { jsonrpc: '2.0', id, error: { code: -32601, message: `method not found: ${method}` } }
+  return rpcError(id, RPC_METHOD_NOT_FOUND, 'method not found')
 }
 
 export function serve({ input = process.stdin, output = process.stdout, env = process.env } = {}) {
@@ -339,7 +444,7 @@ export function serve({ input = process.stdin, output = process.stdout, env = pr
       message = JSON.parse(text)
     } catch {
       output.write(JSON.stringify({
-        jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' },
+        jsonrpc: '2.0', id: null, error: { code: RPC_PARSE_ERROR, message: 'parse error' },
       }) + '\n')
       return
     }

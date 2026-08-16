@@ -1,15 +1,16 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname, isAbsolute } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 
 import { handle, callTool, laneFacts, laneStatus, classify, fixesFor,
-  TOOLS, TOOL_DESCRIPTORS, DIAGNOSTICS, PROTOCOL_VERSION, UNCHECKED_LANES }
+  TOOLS, TOOL_DESCRIPTORS, DIAGNOSTICS, PROTOCOL_VERSION, UNCHECKED_LANES,
+  RPC_INVALID_REQUEST, RPC_INVALID_PARAMS, RPC_METHOD_NOT_FOUND, RPC_PARSE_ERROR }
   from '../plugins/tmux-teams/skills/party-mode/scripts/acp-lanes-mcp.mjs'
-import { REVIEW_PROFILES }
+import { REVIEW_PROFILES, PROVIDER_SECRET_KEYS }
   from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -108,9 +109,15 @@ test('a fix names the thing that actually refused, not every setup step availabl
   // `fixesFor` ignored the cause entirely, so `agy` — which fails because a
   // trusted `agy` binary is absent — was told to repair the ADAPTER PACKAGE.
   // Non-empty was never the property worth asserting.
-  const agy = fixesFor('agy', REVIEW_PROFILES.agy, 'executable_missing', { HOME: '/h' })
-  assert.ok(agy.some(f => /trusted `agy` binary/.test(f) && /\/h\/\.local\/bin\/agy/.test(f)),
+  const agy = fixesFor('agy', REVIEW_PROFILES.agy, 'executable_missing')
+  assert.ok(agy.some(f => /trusted, EXECUTABLE `agy`/.test(f) && /\$HOME\/\.local\/bin\/agy/.test(f)),
     `agy is not told about the binary the parent actually looked for: ${agy.join(' | ')}`)
+  // The UNRESOLVED form, and this is a security assertion rather than a style
+  // one: interpolating the resolved candidate put whatever HOME contained on
+  // the wire, and an advisor walked a credential out through it while every
+  // credential FIELD stayed clean.
+  assert.ok(agy.every(f => !/\/h\//.test(f)),
+    `a resolved HOME reached a fix sentence: ${agy.join(' | ')}`)
 
   // A missing endpoint is not answered with executable advice, and a missing
   // executable is not answered with settings advice.
@@ -129,6 +136,94 @@ test('a fix names the thing that actually refused, not every setup step availabl
   for (const [id, profile] of Object.entries(REVIEW_PROFILES)) {
     assert.ok(fixesFor(id, profile, 'unclassified', {}).length > 0, `${id} is answered with no fixes`)
   }
+})
+
+test('the credential fix, APPLIED, turns the lane it was given to from invalid to valid', () => {
+  // A prose assertion that a sentence mentions the right variable is not a test
+  // of the repair. A Codex advisor showed why: `loadRoutedCredentialFile`
+  // filtered through an allowlist that excluded `ZAI_API_KEY` while
+  // `validateRoutedEndpoint` accepted the identical key from the ambient
+  // environment — so the fix named the right file and the lane refused exactly
+  // as before. This applies the returned remediation and demands the state
+  // change, and the ambient path is measured beside it because "same key, two
+  // answers" is the defect.
+  const dir = mkdtempSync(join(tmpdir(), 'acp-lanes-repair-'))
+  try {
+    const settings = join(dir, 'zai.json')
+    const envFile = join(dir, 'zai.env')
+    writeFileSync(settings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic' } }))
+    writeFileSync(envFile, 'ZAI_API_KEY=fixture-secret-never-print\n')
+    const base = {
+      HOME: '/definitely/nonexistent', PATH: process.env.PATH,
+      TMUX_TEAMS_REVIEW_ZAI_SETTINGS: settings,
+    }
+
+    const before = laneStatus('zai', REVIEW_PROFILES.zai, base)
+    assert.equal(before.configuration, 'invalid')
+    assert.equal(before.problem.code, 'credential_missing')
+    assert.match(before.fixes.join(' '), /TMUX_TEAMS_REVIEW_ZAI_ENV_FILE/)
+    // The fix has to name the vocabulary too, or an operator writes the wrong
+    // key into the right file and gets the same silence.
+    assert.match(before.fixes.join(' '), /ZAI_API_KEY/)
+
+    const repaired = laneStatus('zai', REVIEW_PROFILES.zai,
+      { ...base, TMUX_TEAMS_REVIEW_ZAI_ENV_FILE: envFile })
+    assert.equal(repaired.configuration, 'valid',
+      'the remediation this tool prints does not repair the refusal it prints it for')
+
+    const ambient = laneStatus('zai', REVIEW_PROFILES.zai,
+      { ...base, ZAI_API_KEY: 'fixture-secret-never-print' })
+    assert.equal(ambient.configuration, repaired.configuration,
+      'the same key is accepted from one source and rejected from the other')
+
+    // The widening is per lane, not global: a lane gains only the secret names
+    // it declares, so a stray file still cannot smuggle another lane's key.
+    const foreign = join(dir, 'foreign.env')
+    writeFileSync(foreign, 'OPENAI_API_KEY=nope\nKIMI_API_KEY=nope\n')
+    assert.equal(laneStatus('zai', REVIEW_PROFILES.zai,
+      { ...base, TMUX_TEAMS_REVIEW_ZAI_ENV_FILE: foreign }).configuration, 'invalid')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the agy lane checks that its binary is EXECUTABLE, not merely that a name exists', () => {
+  // Reproduced by a Codex advisor against the previous bytes: a mode-0644 file
+  // at the trusted candidate path produced `valid`, `problem: null` and no
+  // fixes, while executing it failed EACCES. AGY is not in UNCHECKED_LANES —
+  // executable discovery is the ONE parent-side fact it claims to establish, so
+  // a green there is false about its own boundary rather than about the
+  // provider. This also kills the mutation that returned `valid` for agy
+  // unconditionally: `fixesFor` tested in isolation says nothing about the call
+  // site, and deleting the call site left all 18 tests green.
+  const cases = [
+    ['a regular file with no execute bit', (path, fs) => { fs.writeFileSync(path, ''); fs.chmodSync(path, 0o644) }, 'invalid'],
+    ['a directory with the right name', (path, fs) => fs.mkdirSync(path), 'invalid'],
+    ['a real executable', (path, fs) => { fs.writeFileSync(path, '#!/bin/sh\nexit 0\n'); fs.chmodSync(path, 0o755) }, 'valid'],
+  ]
+  for (const [label, make, expected] of cases) {
+    const home = mkdtempSync(join(tmpdir(), 'acp-lanes-agy-'))
+    try {
+      const bin = join(home, '.local', 'bin')
+      mkdirSync(bin, { recursive: true })
+      make(join(bin, 'agy'), { writeFileSync, chmodSync, mkdirSync })
+      const got = laneStatus('agy', REVIEW_PROFILES.agy, { HOME: home, PATH: '/definitely/nonexistent' })
+      assert.equal(got.configuration, expected, `${label} was answered ${got.configuration}`)
+      if (expected === 'invalid') {
+        assert.equal(got.problem.code, 'executable_missing')
+        assert.ok(got.fixes.some(f => /EXECUTABLE/.test(f)), `${label} got no executable-shaped fix`)
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  }
+
+  // And with nothing at any candidate path at all, which is the state the
+  // deleted call site would have reported as valid.
+  const bare = laneStatus('agy', REVIEW_PROFILES.agy,
+    { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' })
+  assert.equal(bare.configuration, 'invalid')
+  assert.equal(bare.problem.code, 'executable_missing')
 })
 
 test('a routed lane names the WRAPPER among the things it did not prove', () => {
@@ -250,6 +345,56 @@ test('a credential never reaches the wire — on the success path OR any failure
   }
 })
 
+test('no provider secret this plugin knows about reaches the wire, from any lane', () => {
+  // The test above seeds ONE key, and a Codex advisor mutated `laneStatus` to
+  // serialise `env.GOOGLE_API_KEY` directly: all 18 tests stayed green while a
+  // credential went out under a test named "a credential never reaches the
+  // wire". The inventory below is written out LITERALLY on purpose — a test
+  // that iterated `PROVIDER_SECRET_KEYS` would stop testing any key deleted
+  // from it and report that as a pass, which is a shape this repository has a
+  // rule about.
+  const INVENTORY = [
+    'AGY_API_KEY', 'ANTIGRAVITY_API_KEY', 'GOOGLE_API_KEY',
+    'KIMI_API_KEY', 'MOONSHOT_API_KEY',
+    'ZAI_API_KEY',
+    'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN',
+    'OPENAI_API_KEY',
+  ]
+  const declared = [...new Set(Object.values(PROVIDER_SECRET_KEYS).flat())].sort()
+  assert.deepEqual([...INVENTORY].sort(), declared,
+    'a provider secret was added or removed and this matrix was not told')
+
+  for (const key of INVENTORY) {
+    const value = `sk-matrix-${key.toLowerCase()}-` + 'q'.repeat(20)
+    // Every lane, in one call, so a leak from any handler branch is covered.
+    const wire = JSON.stringify(handle({
+      jsonrpc: '2.0', id: 5, method: 'tools/call',
+      params: { name: 'acp_lane_status', arguments: {} },
+    }, { HOME: '/definitely/nonexistent', PATH: process.env.PATH, [key]: value }))
+    assert.ok(!wire.includes(value), `${key} reached the wire`)
+    assert.ok(!wire.includes(key), `${key} — the field name itself reached the wire`)
+  }
+})
+
+test('a secret hidden in HOME does not walk out through a path diagnostic', () => {
+  // Aliasing, and the reason a denylist over credential FIELDS is not the
+  // guard. The fix sentence for agy used to interpolate the resolved candidate
+  // path, so with a credential value also present in HOME the whole reply
+  // carried the credential — through the path, never through a credential
+  // field. The route does not change what the bytes are.
+  // A synthetic marker rather than a credential-shaped literal: the repository's
+  // own pre-commit secret scanner reads `const secret = 'sk-...'` as the thing
+  // it exists to stop, and it is right to. What this test needs is one string
+  // that appears in BOTH `HOME` and a provider-secret variable.
+  const marker = 'HOMEALIAS-' + 'z'.repeat(24)
+  const wire = JSON.stringify(handle({
+    jsonrpc: '2.0', id: 91, method: 'tools/call',
+    params: { name: 'acp_lane_status', arguments: { lane: 'agy' } },
+  }, { HOME: `/private/tmp/${marker}`, PATH: '/definitely/nonexistent', GOOGLE_API_KEY: marker }))
+  assert.ok(!wire.includes(marker), 'a HOME-derived path carried a credential value onto the wire')
+  assert.match(wire, /\$HOME/, 'the unresolved form is what makes this safe; it is gone')
+})
+
 test('an unknown lane is answered, not crashed on', () => {
   const out = callTool('acp_lane_status', { lane: 'no-such-lane' }, {})
   assert.match(out.error, /no such lane/)
@@ -305,7 +450,71 @@ test('NO notification is answered, whatever method it names', () => {
   assert.equal(handle({ jsonrpc: '2.0', id: 9, method: 'tools/nope' }).error.code, -32601)
 })
 
-test('the manifest command boots the server through a legal MCP lifecycle, from a path with a space',
+test('a malformed frame is refused with the code the spec names for it', () => {
+  // There were NO negative protocol tests, and a Codex advisor drove the real
+  // stdio server to find out what that cost: `"jsonrpc":"1.0"` got a successful
+  // tool list; `arguments: []` got successful content against an object-only
+  // schema; an unknown tool came back as a SUCCESSFUL result carrying isError,
+  // so middleware could not tell protocol misuse from tool failure; a numeric
+  // method was method-not-found instead of invalid-request; and an empty array
+  // and an `id: null` request were both dropped in silence as though each were
+  // a notification. Codes are written as literals here — comparing them only
+  // against the module's own constants is the shape that lets both move
+  // together.
+  const cases = [
+    ['jsonrpc 1.0', { jsonrpc: '1.0', id: 11, method: 'tools/list' }, -32600, null],
+    ['no jsonrpc member', { id: 11, method: 'tools/list' }, -32600, null],
+    ['numeric method', { jsonrpc: '2.0', id: 14, method: 9 }, -32600, null],
+    ['a batch', [], -32600, null],
+    ['id null', { jsonrpc: '2.0', id: null, method: 'ping' }, -32600, null],
+    ['fractional id', { jsonrpc: '2.0', id: 1.5, method: 'ping' }, -32600, null],
+    ['a bare string', 'ping', -32600, null],
+    ['array arguments', { jsonrpc: '2.0', id: 12, method: 'tools/call', params: { name: 'acp_lanes', arguments: [] } }, -32602, 12],
+    ['unknown tool', { jsonrpc: '2.0', id: 13, method: 'tools/call', params: { name: 'no_such_tool', arguments: {} } }, -32602, 13],
+    ['no params at all', { jsonrpc: '2.0', id: 15, method: 'tools/call' }, -32602, 15],
+    ['non-string tool name', { jsonrpc: '2.0', id: 16, method: 'tools/call', params: { name: 7 } }, -32602, 16],
+    ['undeclared argument', { jsonrpc: '2.0', id: 17, method: 'tools/call', params: { name: 'acp_lanes', arguments: { lane: 'zai' } } }, -32602, 17],
+    ['wrongly typed argument', { jsonrpc: '2.0', id: 18, method: 'tools/call', params: { name: 'acp_lane_status', arguments: { lane: 7 } } }, -32602, 18],
+    ['unknown method', { jsonrpc: '2.0', id: 19, method: 'tools/nope' }, -32601, 19],
+  ]
+  for (const [label, frame, code, id] of cases) {
+    const reply = handle(frame, {})
+    assert.ok(reply, `${label} was dropped in silence — a request is not a notification`)
+    assert.equal(reply.error?.code, code, `${label} answered ${JSON.stringify(reply)}`)
+    assert.equal(reply.id, id, `${label} answered under the wrong id`)
+    assert.equal(reply.jsonrpc, '2.0')
+    assert.equal(reply.result, undefined, `${label} carried a result beside an error`)
+  }
+  // The constants agree with the literals above, which is the only thing this
+  // second assertion is for.
+  assert.equal(RPC_INVALID_REQUEST, -32600)
+  assert.equal(RPC_INVALID_PARAMS, -32602)
+  assert.equal(RPC_METHOD_NOT_FOUND, -32601)
+  assert.equal(RPC_PARSE_ERROR, -32700)
+  // Nothing a caller sent is echoed back: every refusal sentence is a constant
+  // of the module.
+  const echo = handle({ jsonrpc: '2.0', id: 20, method: 'tools/call',
+    params: { name: 'no_such_tool-SECRETMARKER', arguments: {} } }, {})
+  assert.ok(!JSON.stringify(echo).includes('SECRETMARKER'),
+    'the caller\'s own string was reflected into a diagnostic')
+})
+
+test('a parse failure over stdio is a -32700 with a null id, and the server stays up', async () => {
+  const { serve } = await import('../plugins/tmux-teams/skills/party-mode/scripts/acp-lanes-mcp.mjs')
+  const { Readable, Writable } = await import('node:stream')
+  const written = []
+  const input = Readable.from(['{ not json\n', '{"jsonrpc":"2.0","id":2,"method":"ping"}\n'])
+  const output = new Writable({ write(chunk, _enc, done) { written.push(String(chunk)); done() } })
+  const lines = serve({ input, output, env: {} })
+  await new Promise((done) => lines.on('close', done))
+  const replies = written.join('').trim().split('\n').map((l) => JSON.parse(l))
+  assert.equal(replies[0].error.code, -32700)
+  assert.equal(replies[0].id, null)
+  assert.deepEqual(replies[1], { jsonrpc: '2.0', id: 2, result: {} },
+    'one bad line took the server down with it')
+})
+
+test('the manifest command boots the server and answers a real client handshake, from a path with a space',
   async () => {
     // Three defects in one test, all of them found by review rather than by the
     // suite. (1) Every other test imports the module, so the boot path was
@@ -336,7 +545,20 @@ test('the manifest command boots the server through a legal MCP lifecycle, from 
       let out = ''
       child.stdout.on('data', (chunk) => { out += chunk })
       const send = (msg) => child.stdin.write(JSON.stringify(msg) + '\n')
-      send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: PROTOCOL_VERSION } })
+      // A schema-valid initialize: MCP 2025-06-18 requires client capabilities
+      // and client implementation info, and the previous version sent only
+      // `protocolVersion` while the test called itself a legal lifecycle. It
+      // proved boot and line framing, which is what it is named for now.
+      send({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: PROTOCOL_VERSION,
+          capabilities: {},
+          clientInfo: { name: 'tmux-teams-test-client', version: '1' },
+        },
+      })
       send({ jsonrpc: '2.0', method: 'notifications/initialized' })
       send({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
       send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'acp_lanes' } })
