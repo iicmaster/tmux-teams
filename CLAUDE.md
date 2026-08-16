@@ -1,5 +1,89 @@
 # tmux-teams plugin repo — agent instructions
 
+<!-- bmad:context -->
+<!-- Verified 2026-08-16 against 7c97605. Managed by bmad-project-context;
+     edits inside this block are replaced on refresh. Keep anything you want
+     preserved outside the markers. -->
+
+## tmux-teams
+
+A Claude Code directory marketplace shipping one plugin, and the canonical
+source of the skills it bundles. Node with no dependencies; `node --test` is the
+whole test story and CI runs it on Node 20 and 24. **`ROADMAP.md` is the standing
+goal** — the phases, what is open and what is closed — so read it before choosing
+work. Everything below this block is the casebook: the same rules carrying the
+dates and measurements that produced them.
+
+## Policy
+
+- Ship a release as a pull request; never push a release to `main`. Merge on CI
+  green plus the `chatgpt-codex-connector` review. Only Master waives that, and
+  the waiver is recorded on the PR and in the release notes.
+- Three distinct model families read the release diff before a version is
+  stamped. `node scripts/gate-required.mjs` decides when it is owed — `0` exempt,
+  `2` required.
+- Push as `iicmaster`; run `gh auth switch --user iicmaster` first. The active
+  account is often `ngs-th`, which has read access here, and the `fork` remote
+  accepts its push without complaining.
+- Commit no secret, token, customer data, or machine-only path.
+- `~/agent-skills` is a separate repository on a different account. Touch only
+  `plugins/tmux-teams` there, with `git commit --only -- <path>`; other people's
+  work sits staged in it.
+
+## Where things are
+
+- The goal is `ROADMAP.md`; the state of play between sessions is `HANDOFF.md`.
+- Shipped skills live in `plugins/tmux-teams/skills/` — this repo is their
+  source, not a mirror of one.
+- Decisions that are not up for re-litigation: `plugins/tmux-teams/docs/adr/`.
+- Three pages publish from tracked sources through `scripts/roadmap-render.mjs`
+  and are gated per page by `scripts/roadmap-gate.mjs`.
+
+## Running and verifying
+
+- Run `node --test` with no path. A bare `node --test tests/` fails on Node 24
+  with MODULE_NOT_FOUND; pass a glob or nothing.
+- Gate on the count, not on a grep: piping the suite to `grep '✖'` exits 0 when
+  it finds failures. Assert `grep -q '^ℹ fail 0$'` instead.
+- Read the skipped count as unexecuted rather than passing; four tests skip
+  themselves off Linux.
+- Run the suite on a quiet machine. Measured beside ACP lanes or parallel
+  agents, it measures the contention.
+- `node scripts/run-fast.mjs fast` is an inner tier covering no ACP, CLI,
+  publisher or schema behaviour; run the full suite before committing.
+- Run `node scripts/gate-required.mjs` only after committing. It reads
+  `<last-tag>..HEAD`, cannot see the working tree, and answers EXEMPT with the
+  same confidence it answers REQUIRED.
+
+## Conventions that differ from defaults
+
+- Put no backtick in any exported string whose name ends in `CSS` or `SCRIPT`;
+  one inside a comment closes the template literal and the module stops parsing
+  far from the cause.
+- A scripted edit asserts its anchor before writing (`assert old in s`) — a
+  replace that matches nothing writes the file unchanged and tells nobody.
+- Bumping a version touches six files in seven places; grep the old number
+  afterwards, because the seventh was found by grepping and not by reading a list.
+
+## Known pitfalls
+
+- Build a review packet from the file list `scripts/gate-required.mjs` prints rather than
+  from memory; three of four panels for one release each missed the same two
+  files while every lane answered 3/3.
+- Reach for the built-in `advisor` to shape an approach, a `codex-advisor` lane
+  to attack finished bytes, and the three-family panel last as the record. The
+  panel is forbidden to run anything; an advisor lane can, and has blocked
+  changes the panel passed.
+- Test a boot path by booting it. `import.meta.url` is percent-encoded and Node
+  resolves it through symlinks, so comparing it against `argv[1]` fails on a path
+  containing a space and again on macOS `/var`.
+- Assert the sentence a diagnostic should produce, never that it produced
+  something; a non-empty wrong answer is worse than an empty one because it
+  sounds specific.
+- Report a measured outcome, never the constant you edited.
+
+<!-- /bmad:context -->
+
 This repo is a **Claude Code directory marketplace** delivering one plugin
 (`tmux-teams`, see `plugins/tmux-teams/`) — and it is the **canonical source**
 of its bundled skills. Edit them directly under
@@ -303,7 +387,7 @@ not optional, and only a later explicit instruction from Master changes either.
    that. Split by MEANING — shipped source in one packet, the tests that guard
    it in another — and require every part to pass. Do not raise the cap.
 
-   **Build the packet from the list `gate-required.mjs` PRINTS, never from
+   **Build the packet from the list `scripts/gate-required.mjs` PRINTS, never from
    memory.** It names every deciding file. On 2026-08-15 three of the four
    panels run for one release were assembled by hand and all three missed the
    same two publication-marker files, so "the panel read the release diff" was
