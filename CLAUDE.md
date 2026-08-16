@@ -10,6 +10,16 @@ while nine were shipping. (Flipped 2026-07-21: agent-skills commit
 `dd43dc1` vendored this repo as the authoritative submodule and deleted its
 own `skills/shared/tmux-teams`; the old mirror/sync flow is gone.)
 
+## What to work on
+
+**`ROADMAP.md` is the standing goal, not a status page** — the phases, what is
+open, and what is closed are all in it, and it is tracked and gated for exactly
+that reason. Read it before asking anyone what to work on. On 2026-08-16 a
+session edited that file twice, ran its gate three times, published it, and then
+told Master there was no goal set. Work that arrives as a direct instruction and
+is not on the roadmap belongs on it before the session ends, or the next reader
+inherits a goal document that does not know what happened.
+
 ## Commands
 
 ```bash
@@ -293,6 +303,13 @@ not optional, and only a later explicit instruction from Master changes either.
    that. Split by MEANING — shipped source in one packet, the tests that guard
    it in another — and require every part to pass. Do not raise the cap.
 
+   **Build the packet from the list `gate-required.mjs` PRINTS, never from
+   memory.** It names every deciding file. On 2026-08-15 three of the four
+   panels run for one release were assembled by hand and all three missed the
+   same two publication-marker files, so "the panel read the release diff" was
+   false while every lane answered 3/3 — caught only by re-reading the gate's
+   own output.
+
    **On macOS, run the same three families through direct ACP**
    (`plugins/tmux-teams/skills/tmux-teams/scripts/acp-companion.mjs`, one run
    directory per lane — receipts are not
@@ -567,3 +584,29 @@ not optional, and only a later explicit instruction from Master changes either.
   not the script. And on a mise/asdf machine `realpath $(command -v node)` is
   the version-manager binary itself — it dispatches on `argv[0]`, so it is not
   an interpreter. Use `process.execPath` whenever the real one is meant.
+- **Pick a review mechanism by what it can PROVE, and run them in that order.**
+  The built-in `advisor` sees this session's whole transcript, runs nothing, and
+  is the cheapest — use it before committing to an approach. A `codex-advisor`
+  ACP lane can EXECUTE: on 2026-08-16 it blocked an MCP change twice on bytes
+  the three-model panel had passed 3/3 with zero findings, reproducing a false
+  `ready: true` with one command. The panel reads a static packet and is
+  forbidden to call a tool, by design — what it proves is that three distinct
+  families read these bytes, which is the release RECORD, not a behavioural
+  check. So: advisor to shape, `codex-advisor` to attack while the code is still
+  cheap to change, panel last. Two panels were spent on this change before an
+  advisor read it, and both were wasted.
+- **A boot path is tested only by booting it.** `import.meta.url === \`file://${process.argv[1]}\``
+  is wrong twice over: `import.meta.url` is percent-encoded, so an install path
+  containing a space never matches, and Node's ESM loader resolves the module
+  URL through symlinks (`/var` → `/private/var` on macOS) while `argv[1]` keeps
+  the path as typed. Compare `realpathSync(fileURLToPath(import.meta.url))`
+  against `realpathSync(resolve(argv[1]))`, and spawn the script from a
+  directory whose name contains a space. Importing the module proves nothing
+  about the one line that decides whether it serves at all — and the second half
+  of this bug was found by the test written for the first half.
+- **"Non-empty" is not an acceptance criterion.** A diagnostic that answered a
+  failure with an empty list was "fixed" by emitting every generic sentence the
+  data allowed, and its test asserted only that something came back. That turned
+  an empty wrong answer into a non-empty wrong answer, which is worse: it sounds
+  specific and sends the reader to the wrong file. Assert the sentence that
+  names the thing that actually refused.
