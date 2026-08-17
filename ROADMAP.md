@@ -25,6 +25,13 @@ Current release: **0.31.0**
 | **E** | **slot accounting live**, five cells of six | **One publisher, N subscribers.** The ledger's own 17 words are the events; `token` subscribes to all 17, `team` to the 6 that take or free a slot, `workflow` to 5 about position, `display` to everything and it decides nothing. Scope is **six cells**, each moving one branch out of `nextStep` — counted, not estimated. |
 | **F** | proposed, not started | Per-seat pre-LLM / post-LLM scripts (Master's proposal). Three questions must be answered before any code. |
 
+**Measured 2026-08-16, and phase E's own scope sentence does not say it.** The
+scope reads "each cell moving one branch out of `nextStep`", and five cells are
+wired — but `nextStep` is still 308 lines carrying 32 `if` branches, the same
+shape it had before. The subscribers took over ANSWERING those questions; the
+branches that ask them did not move. Wiring a cell and shrinking `nextStep` are
+two pieces of work, and only the first has been done.
+
 ## The rebuild the owner ordered — and where it actually stands
 
 The instruction was **rebuild by domain, then a message queue, then one publisher
@@ -90,7 +97,40 @@ control-team-held queue item (outside review). Making the audit the tail of the
 route is rejected — the route would finish without ever pulling it (outside
 review). The vocabulary work is part of the rebuild, not a side task (owner).
 
-## Shipped outside the phases
+## Shipped since the phases were last written
+
+Work that arrived as a direct instruction rather than off this page. It belongs
+here because a goal document that does not know what happened is a goal document
+nobody can plan from.
+
+- **v0.31.0 — an ACP lane's identity claim, recorded and never counted.** The
+  instruction was to swap the review gate's family evidence from *where a lane
+  routed* to *what answered*. Measuring first refused the swap: for `agy` the
+  advertised model list is the adapter's own, but every claude-routed lane is
+  handed its list by this runner, so counting it is quoting ourselves.
+  `claimedIdentity` records the advertised value and whether the runner seeded
+  it; `provenFamilyKey` remains the only family evidence. On the first panel
+  that carried the field, two lanes advertised a bare `default` and `agy`
+  advertised `gemini-3.7-flash-high` while this repo pinned 3.6 — so the field
+  built to decide nothing is what caught a model moving underneath a pin.
+- **v0.31.0 — the AGY lane moved to `gemini-3.7-flash-high`**, which is where
+  its adapter already was.
+- **v0.31.0 — the brakes question was answered** (see below); no brake was
+  removed and one gained the guard it never had.
+- **The release flow now goes through a pull request.** Merge requires CI green
+  and the `chatgpt-codex-connector` review; only Master waives it and the waiver
+  is recorded. v0.31.0 used that waiver once, on an exhausted account quota.
+- **An MCP server for lane discovery — built, reviewed twice, not yet merged**
+  (ADR 0007, branch `feat/acp-lane-mcp`). Two read-only tools answer which ACP
+  lanes exist and what each still needs on this machine, because the per-machine
+  override variables had worked since 2026-08-13 and nothing surfaced them. A
+  `codex-advisor` lane blocked it twice on bytes a three-family panel had passed
+  3/3 with zero findings — a false `ready: true` reproduced in one command, and
+  then a fix list that named the wrong executable. **The lesson is a sequencing
+  one and it is now in `CLAUDE.md`: an advisor lane can execute and the panel
+  cannot, so attack with the advisor while the code is cheap to change and spend
+  the panel last, as the record.**
+
 
 - **`acp-dispatch.mjs` — the operator's entry to an ACP lane, 2026-08-17.**
   Direct instruction from Master, on the day a `codex-advisor` review died with
@@ -113,9 +153,49 @@ review). The vocabulary work is part of the rebuild, not a side task (owner).
   `-recover` task id while its prompt still named the original path produced a
   complete 22 KB review that the companion reported as `no_outbox`.
 
+## The release in flight — v0.32.0
+
+Scope set by Master, 2026-08-17: **one release carrying both** the MCP
+lane-discovery server and `acp-dispatch.mjs`. They touch one file in common and
+they are the same subject — the lifecycle of an ACP lane — so they are reviewed
+and shipped together rather than paying for two panels and two version bumps.
+
+**It is BLOCKED, and by exactly one thing.** A `codex-advisor` lane read the
+round-three fixes and found five more, every one reproduced with a command:
+
+1. The Kimi lane repeats the credential defect that round three "fixed" for
+   Zai. `acceptedRoutedKeys` widened the LOADER; `validateRoutedEndpoint` still
+   counts only `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY` and `ZAI_API_KEY`,
+   so a `KIMI_API_KEY` is read and then not accepted from any source. **The fix
+   was half a fix, and the half that shipped is the half that advertises.**
+2. A fractional numeric request id is refused `-32600`. JSON-RPC 2.0 says
+   fractional ids SHOULD NOT be used, not MUST NOT, and MCP's `RequestId` is
+   string-or-number — so a legal request is rejected and its correlation lost.
+3. Only `tools/call` validates its params. `initialize` with no params,
+   `tools/list` with `params: []`, and `ping` with unexpected params all still
+   answer success.
+4. Credential FIELD NAMES do reach the wire, in the `credential_missing` fix
+   sentences — put there deliberately in round three — while the module comment,
+   ADR 0007 and a test title all claim they do not. The contract is false, not
+   the bytes; the honest repair is to say that names are diagnostic vocabulary
+   and values are what never leave.
+5. Moving `MOONSHOT_API_KEY` from the `kimi` lane to `qwen` keeps both suites
+   green and forwards a foreign key into the Qwen child. The literal inventory
+   pins the SET; nothing pins which lane owns which name.
+
+The room split on two more and did not reconcile: a mode-0755 file whose shebang
+names a missing interpreter still answers `valid` (proving it would require
+EXECUTING the candidate, which turns a read-only status tool into an acting
+one), and the settings/ambient precedence for a provider secret is undocumented
+and untested.
+
+Also in scope and not code: the published roadmap page, the submodule pin in
+`~/agent-skills`, and a `HANDOFF.md` that currently still says the third review
+has not been run.
+
 ## What is actually open
 
-Nothing is blocking a release. These are real but unforced:
+These are real but unforced, and separate from the release above:
 
 - **The raw companion is still runnable, and that is the honest limit of the
   word "impossible".** `loop-runner.mjs` spawns it and the suite drives it, so
@@ -144,7 +224,15 @@ Nothing is blocking a release. These are real but unforced:
   prompt states plainly — while answering the same content cleanly at 22 KiB, and
   answering 74 KiB of source and 60 KiB of tests without trouble. So it is not
   size alone: dense prose costs more than dense code. Nobody has found where the
-  real ceiling is, and the gate cannot warn about it.
+  real ceiling is, and the gate cannot warn about it. Three more data points
+  from 2026-08-16, all mixed source and prose: 20 KiB and 26 KiB passed, and a
+  37 KiB packet was split by meaning rather than risked. The working practice is
+  to stay near 25 KiB and split; that is a habit, not a measurement of the
+  boundary.
+- **`nextStep` has not shrunk.** Five of phase E's six cells are wired and the
+  function is still 308 lines over 32 branches — the subscribers answer the
+  questions, and the branches that ask them are untouched. Moving one is the
+  next unit of that phase, and nothing yet says which one is cheapest.
 - **The brakes in `loop-runner.mjs`: there are SEVEN, and the evidence now
   exists. None of them comes out.** This entry asked for per-brake evidence
   that the WIP hold covers what each was standing in for; it was produced on
@@ -199,6 +287,10 @@ slate.
   are written down.
 - **ADR 0006** — shipped review profiles no longer declare bwrap. What that
   costs is stated, along with the strongest argument against the decision.
+- **ADR 0002** — `opened` names a human decision; the runner never invents one.
+- **ADR 0007** — the plugin ships one read-only MCP server for lane discovery.
+  It reads credentials and never returns them, and it does not reopen ADR 0003:
+  a DISPATCHED agent still receives none.
 
 ## How this page stays true
 
