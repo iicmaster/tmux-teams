@@ -42,8 +42,16 @@ node <skill-root>/scripts/graph.mjs init <repo>
 node <skill-root>/scripts/graph.mjs check <repo>
 ```
 
-A missing declaration uses the bundled four-team template. A present but
-invalid declaration fails closed. WIP is always the worker count; it is not a
+**A missing declaration is not a default.** The bundled four-team template still
+LOADS, because the pages need something to draw while they explain what is
+missing — but the runner refuses to dispatch on it: `tick()` sees
+`graph.source === 'default'` and writes a heartbeat carrying
+`dispatching: false` and `no team graph declared`. This section said the
+template was simply used, with no qualifier, while `graph-setup/SKILL.md` said
+the opposite in the same breath and the code sided with graph-setup. Two panel
+families found the two files disagreeing.
+
+A present but invalid declaration fails closed. WIP is always the worker count; it is not a
 second number in the declaration. `inherit-account-default` requests no model
 and must never be displayed as a verified model.
 

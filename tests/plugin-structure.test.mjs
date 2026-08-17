@@ -599,3 +599,30 @@ test('an advisor skill that claims read-only ships the switch that makes it read
   assert.doesNotMatch(claude, /Read-only: it advises, it never edits/,
     'the claude advisor promises an enforcement it has no mechanism for')
 })
+
+test('the two skills that describe an undeclared graph agree with tick()', () => {
+  // Two panel families found `tmux-teams/SKILL.md` and `graph-setup/SKILL.md`
+  // saying opposite things about a missing declaration, with the code siding
+  // with graph-setup: `tick()` sees `graph.source === 'default'` and writes a
+  // heartbeat carrying `dispatching: false` and `no team graph declared`. The
+  // bundled template LOADS — the pages need something to draw — and the runner
+  // will not dispatch on it.
+  const main = readFileSync(join(PLUGIN, 'skills', 'tmux-teams', 'SKILL.md'), 'utf8')
+  const setup = readFileSync(join(PLUGIN, 'skills', 'graph-setup', 'SKILL.md'), 'utf8')
+  const runner = readFileSync(join(PLUGIN, 'skills', 'tmux-teams', 'scripts', 'loop-runner.mjs'), 'utf8')
+
+  assert.match(runner, /graph\.source === 'default'/, 'the refusal this documents is gone from the runner')
+  assert.doesNotMatch(main, /A missing declaration uses the bundled four-team template\./,
+    'the skill teaches a fallback the runner refuses')
+  for (const [name, text] of [['tmux-teams', main], ['graph-setup', setup]]) {
+    assert.match(text, /missing declaration is \*\*?not\*\*? a default|not a default/i,
+      `${name} does not say that a missing declaration is not a default`)
+  }
+
+  // And the heartbeat example matches the value the refusal path writes: `null`
+  // is the absence of a measurement, `0` is a measurement. On a page about
+  // telling absent from stale from refusing, that distinction is the subject.
+  assert.match(runner, /beat\(\{ dispatching: false, reason, started: 0, held: null \}\)/)
+  assert.doesNotMatch(setup, /"started": 0, "held": 0 \}/,
+    'the example turns "not measured" into "measured zero"')
+})
