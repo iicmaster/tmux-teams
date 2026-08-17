@@ -1,12 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { statusReport, formatStatus, resumeCommand, outboxPath, strayOutboxes, TERMINAL_LIVENESS_STATES,
-  waitForSettlement, EXIT_OUTBOX, EXIT_RUNNING, EXIT_NO_OUTBOX, pidPath, recordedPid, belongsToThisRun }
+  waitForSettlement, EXIT_OUTBOX, EXIT_RUNNING, EXIT_NO_OUTBOX, pidPath, recordedPid, belongsToThisRun,
+  statusExitCode }
   from '../plugins/tmux-teams/skills/tmux-teams/scripts/acp-dispatch.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -647,41 +648,150 @@ test('a resume reuses the task id, because a new one moves the outbox out from u
 // The rule this replaces was prose, and prose is what failed. Every shipped
 // skill that tells someone how to dispatch has to name the detached entry
 // point, or the next caller copies a killable command out of a document.
-test('no shipped DOCUMENT teaches a runnable command that launches the companion directly', () => {
-  // Scoped to `skills/` until 2026-08-17, when the repository's PR reviewer
-  // pointed out that `README.md` still carried exactly such a command — the
-  // primary document a reader meets, outside the only directory this guard
-  // looked at. It stayed green while the failure it exists to prevent was one
-  // copy-paste away. That is the same shape as the secret matrix that passed by
-  // never reaching the credential branch: **a guard's SCOPE is part of the
-  // guard.** Everything tracked and readable is scanned now.
-  const offenders = []
-  const SKIP_DIRS = new Set(['node_modules', '.git', '_bmad', 'docs'])
-  const walk = (dir) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const path = join(dir, entry.name)
-      if (entry.isDirectory()) {
-        if (!SKIP_DIRS.has(entry.name)) walk(path)
-        continue
-      }
-      if (!entry.name.endsWith('.md')) continue
-      const text = readFileSync(path, 'utf8')
-      // Fenced blocks only. An ADR or a contract may DESCRIBE the companion;
-      // what may not exist is a command somebody can paste.
-      for (const [, body] of text.matchAll(/```(?:bash|sh|shell)\n([\s\S]*?)```/g)) {
-        // A line continuation makes one command out of several lines.
-        for (const command of body.replace(/\\\n/g, ' ').split('\n')) {
-          if (/(^|[\s/])(node|exec)\s+\S*acp-companion\.mjs/.test(command)) {
-            offenders.push(`${path.slice(join(HERE, '..').length + 1)}: ${command.trim()}`)
-          }
-        }
-      }
+// Extracted so the guard can be pointed at a fixture as well as at the repo —
+// a detector that can only ever be run over a clean tree cannot be shown to
+// detect anything.
+function foregroundCompanionCommands(text) {
+  const found = []
+  // Fenced blocks only. An ADR or a contract may DESCRIBE the companion; what
+  // may not exist is a command somebody can paste.
+  for (const [, body] of text.matchAll(/```(?:bash|sh|shell)\n([\s\S]*?)```/g)) {
+    // A line continuation makes one command out of several lines.
+    for (const command of body.replace(/\\\n/g, ' ').split('\n')) {
+      if (/(^|[\s/])(node|exec)\s+\S*acp-companion\.mjs/.test(command)) found.push(command.trim())
     }
   }
-  walk(join(HERE, '..'))
+  return found
+}
+
+test('no TRACKED document teaches a runnable command that launches the companion directly', () => {
+  // Third scope failure in this guard's short life, and each was found by a
+  // reviewer rather than by the guard. It scanned `skills/` while README.md
+  // carried the command; it was widened to a filesystem walk that SKIPPED every
+  // directory named `docs`, so a fenced command under `plugins/tmux-teams/docs/`
+  // would never have been observed; and its name said "every tracked document"
+  // while it asked the filesystem rather than git.
+  //
+  // It asks git now, which is what the name claims, and the negative control
+  // below plants the offending command in the exact directory the old walker
+  // pruned.
+  const tracked = execFileSync('git', ['ls-files', '-z', '--', '*.md'], { cwd: join(HERE, '..'), encoding: 'utf8' })
+    .split('\0').filter(Boolean)
+  assert.ok(tracked.includes('README.md'), 'the tracked-file query did not reach README.md')
+  assert.ok(tracked.some((f) => f.startsWith('plugins/tmux-teams/docs/')),
+    'no document under plugins/tmux-teams/docs/ was considered — the pruned directory is back')
+  assert.ok(tracked.length > 20, `only ${tracked.length} documents were considered`)
+
+  const offenders = []
+  for (const rel of tracked) {
+    for (const command of foregroundCompanionCommands(readFileSync(join(HERE, '..', rel), 'utf8'))) {
+      offenders.push(`${rel}: ${command}`)
+    }
+  }
   assert.deepEqual(offenders, [],
     `these are copy-pasteable commands that a shell cap can kill mid-turn:\n${offenders.join('\n')}`)
-  // The scope itself is asserted, because a guard that quietly stops walking
-  // is indistinguishable from one that finds nothing.
-  assert.ok(existsSync(join(HERE, '..', 'README.md')), 'the walk root does not contain README.md')
+
+  // The negative control: the detector must actually detect. Without this the
+  // whole test passes on an empty candidate list, which is how it passed while
+  // README.md was offending.
+  const planted = '```bash\nnode plugins/tmux-teams/skills/tmux-teams/scripts/acp-companion.mjs \\\n  codex . t b\n```\n'
+  assert.equal(foregroundCompanionCommands(planted).length, 1,
+    'the detector does not detect the thing it forbids')
+  assert.equal(foregroundCompanionCommands('`acp-companion.mjs` is described here, not run.').length, 0,
+    'prose about the companion is not an offence, and this guard must not say it is')
+})
+
+test('status and wait refuse the traversal syntax dispatch refuses, and read nothing', () => {
+  // An advisor round's blocker 1: dispatch validated the id, the other two
+  // PUBLIC modes did not, and `statusReport` builds six paths out of it. So the
+  // command that refused `../` on dispatch happily read whatever `../` pointed
+  // at on `status`, and reflected fields out of it. A guard on one entry point
+  // is not a guard on the surface.
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-readpath-'))
+  mkdirSync(join(cwd, 'run', '.tmux-teams', 'liveness'), { recursive: true })
+  // The planted target, one level above the run directory.
+  writeFileSync(join(cwd, 'secret.json'), JSON.stringify({
+    liveness_state: 'completed', termination_reason: 'none',
+    effective_identity: 'PLANTED-IDENTITY-MARKER', session_id: 'PLANTED-SESSION',
+  }))
+
+  for (const mode of ['status', 'wait']) {
+    const r = spawnSync(process.execPath, [DISPATCH, mode, join(cwd, 'run'), '../../secret', '5'],
+      { cwd, encoding: 'utf8', env: laneEnv(), timeout: 20000 })
+    assert.equal(r.status, 2, `${mode} accepted a traversal id`)
+    assert.match(r.stderr, /invalid task id/)
+    assert.doesNotMatch(`${r.stdout}${r.stderr}`, /PLANTED-IDENTITY-MARKER|PLANTED-SESSION/,
+      `${mode} read the planted file and reflected it`)
+  }
+
+  // And the exported boundary refuses too, so a programmatic caller cannot
+  // route around the CLI check.
+  assert.throws(() => statusReport(join(cwd, 'run'), '../../secret'), /invalid task id/)
+})
+
+test('a symlink planted where a run artifact belongs is refused, not followed', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX symlinks')
+  // An advisor round's blocker 2, and the sharper half of the traversal story:
+  // a lexical id check confines the SPELLING, not the write. A pre-positioned
+  // symlink at `.tmux-teams/dispatch-pids/<id>` is followed by an ordinary
+  // write, which truncates whatever it points at — after the child has already
+  // spawned, so the damage is done by a process nobody is watching.
+  for (const artifact of [['dispatch-pids', 'planted'], ['dispatch-routing', 'planted.json'],
+    ['runner-logs', 'planted.log']]) {
+    const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-symlink-'))
+    const brief = join(cwd, 'brief.md')
+    writeFileSync(brief, 'do the thing\n')
+    const victim = join(cwd, 'victim')
+    writeFileSync(victim, 'PRECIOUS\n')
+    mkdirSync(join(cwd, '.tmux-teams', artifact[0]), { recursive: true })
+    symlinkSync(victim, join(cwd, '.tmux-teams', artifact[0], artifact[1]))
+
+    const r = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'planted', brief, '120'],
+      { cwd, encoding: 'utf8', env: laneEnv({ ACP_DISPATCH_BOOT_SEC: '5' }), timeout: 30000 })
+    assert.equal(readFileSync(victim, 'utf8'), 'PRECIOUS\n',
+      `a symlink at ${artifact.join('/')} was followed and the victim was truncated`)
+    assert.notEqual(r.status, 0, `${artifact.join('/')}: a hostile run directory was dispatched into`)
+  }
+})
+
+test('a predecessor\'s terminal record and outbox never add up to this run finishing', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX process groups')
+  // An advisor round's blocker 3. `outbox && terminated` sounds sufficient
+  // until BOTH bytes belong to yesterday's run of the same task id while
+  // today's pid is alive — a false success at the exact moment an operator is
+  // deciding whether the work is done.
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-generation-'))
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+  const releaseFile = join(cwd, 'release')
+  mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
+  mkdirSync(join(cwd, '.mailbox-out'), { recursive: true })
+  // The predecessor: finished, with an answer.
+  writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'gen.json'), JSON.stringify({
+    started_at: '2026-08-16T21:36:10.138Z', observed_at: '2026-08-16T21:46:10.092Z',
+    liveness_state: 'completed', termination_reason: 'none', effective_identity: 'YESTERDAY[max]',
+  }))
+  writeFileSync(outboxPath(cwd, 'gen'), "yesterday's answer\n")
+
+  const caller = spawn(process.execPath, [DISPATCH, 'mock', cwd, 'gen', brief, '120'], {
+    cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+    env: laneEnv({ MOCK_GATE_STAGE: 'prompt', MOCK_GATE_RELEASE_FILE: releaseFile,
+      MOCK_GATE_WATCHDOG_MS: '60000' }),
+  })
+  let out = ''
+  caller.stdout.on('data', (chunk) => { out += chunk })
+  await waitFor(() => caller.exitCode !== null, 60000, 'the caller to report and exit')
+  assert.doesNotMatch(out, /YESTERDAY/, 'the predecessor\'s identity was reported as this run\'s')
+
+  // The moment that used to lie: a live lane, a terminal record and an outbox
+  // all present at once.
+  const report = statusReport(cwd, 'gen')
+  assert.equal(statusExitCode(report), EXIT_RUNNING,
+    'a predecessor\'s finished record plus its outbox were reported as this run finishing')
+  // The old answer is retired rather than deleted, and named where it went.
+  assert.ok(report.strays.some((name) => name.startsWith('gen.superseded-')),
+    `the predecessor's outbox was not retired: ${report.strays.join(', ')}`)
+
+  writeFileSync(releaseFile, 'go\n')
+  await waitFor(() => existsSync(outboxPath(cwd, 'gen')), 60000, 'the lane to finish')
 })

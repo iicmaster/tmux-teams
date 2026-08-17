@@ -19,7 +19,8 @@
 // child — a wrapper that enforces a deadline would be the bug it was written to
 // remove.
 import { spawn } from 'node:child_process'
-import { existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs'
+import { closeSync, constants as fsConstants, existsSync, fchmodSync, lstatSync, mkdirSync, openSync,
+  readFileSync, readdirSync, realpathSync, renameSync, writeSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -70,6 +71,39 @@ function assertSafeTaskId(taskId) {
     )
   }
   return taskId
+}
+
+// Opening a path is not the same as opening the FILE you meant, and a lexical
+// id check only confines the spelling. A pre-existing symlink at
+// `.tmux-teams/dispatch-pids/<id>` is followed by an ordinary write, which
+// truncates whatever it points at — outside the run directory, after the child
+// has already spawned. The log is worse: a symlink there redirects the child's
+// entire stdout somewhere else. Raised by an advisor round on 2026-08-17 as the
+// half the id regex does not close.
+//
+// `O_NOFOLLOW` refuses a symlink at the final component, which is the component
+// an attacker can pre-position. Failing closed here is right: a run directory
+// with a symlink where a regular file belongs is not a directory this process
+// should be writing into at all.
+function openNoFollow(path, flags) {
+  try {
+    return openSync(path, flags | (fsConstants.O_NOFOLLOW ?? 0))
+  } catch (cause) {
+    if (cause.code === 'ELOOP' || cause.code === 'EMLINK') {
+      throw Object.assign(new Error(`refusing to write through a symlink at ${path}`), { code: 'unsafe_artifact' })
+    }
+    throw cause
+  }
+}
+
+function writeNoFollow(path, contents) {
+  const fd = openNoFollow(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC)
+  try {
+    writeSync(fd, contents)
+    fchmodSync(fd, 0o600)
+  } finally {
+    closeSync(fd)
+  }
 }
 
 export function livenessPath(cwd, taskId) { return join(cwd, '.tmux-teams', 'liveness', `${taskId}.json`) }
@@ -216,7 +250,20 @@ function isSettled(liveness, options = {}) {
 }
 
 export function statusReport(cwd, taskId) {
-  const liveness = readJson(livenessPath(cwd, taskId))
+  // The same rule the dispatch path applies, at the boundary that BUILDS the
+  // paths. `status` and `wait` are public modes and were passing the raw id
+  // straight in here, so an id containing `../` made them read attacker-chosen
+  // JSON and reflect fields out of it — the read half of the traversal, which
+  // the dispatch-only guard did not cover.
+  assertSafeTaskId(taskId)
+  const routing = recordedRouting(cwd, taskId)
+  const spawnedAtMs = Date.parse(routing?.spawnedAt ?? '')
+  const rawLiveness = readJson(livenessPath(cwd, taskId))
+  // A liveness record that predates the dispatch we recorded is the previous
+  // run's, and settling on it is how a stale terminal record plus a stale
+  // outbox add up to a false success.
+  const liveness = Number.isFinite(spawnedAtMs) && rawLiveness !== null
+    && !belongsToThisRun(rawLiveness, spawnedAtMs) ? null : rawLiveness
   const outbox = outboxPath(cwd, taskId)
   const found = existsSync(outbox) && lstatSync(outbox).isFile()
   // The pid answers NOW; the lease answers in up to fifteen minutes. Both, and
@@ -248,6 +295,7 @@ export function statusReport(cwd, taskId) {
     notReporting: stopped,
     stoppedBecause: pidGone ? 'its process is gone' : (stopped ? 'its own lease expired' : null),
     pid,
+    routing,
     lastSeen: liveness?.observed_at ?? null,
   }
 }
@@ -286,7 +334,7 @@ export function formatStatus(report) {
     const resume = resumeCommand(report.cwd, report.taskId, {
       sessionId: report.sessionId,
       worker: report.liveness?.worker,
-      routing: recordedRouting(report.cwd, report.taskId),
+      routing: report.routing,
     })
     lines.push('', 'the turn ended without an outbox — try RESUME before paying for a re-dispatch:', resume)
   }
@@ -328,8 +376,21 @@ export function pidAlive(pid) {
 export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnFn = spawn, env = process.env } = {}) {
   // FIRST. Every line below builds a path out of this value.
   assertSafeTaskId(taskId)
+  const spawnedAtIso = new Date().toISOString()
+  // Retire the PREDECESSOR's outbox before the new lane starts.
+  //
+  // `statusExitCode` requires a terminal record AND an outbox, which sounds
+  // sufficient until both bytes belong to the previous run of the same task id
+  // while today's pid is alive — a false SUCCESS at the exact moment an
+  // operator is deciding whether the work is done. An advisor round named it on
+  // 2026-08-17. Renaming rather than deleting: the predecessor's answer is
+  // still on disk, and `strayOutboxes` will point at it.
+  const previous = outboxPath(cwd, taskId)
+  if (existsSync(previous)) {
+    renameSync(previous, `${previous}.superseded-${spawnedAtIso.replaceAll(':', '-')}`)
+  }
   mkdirSync(join(cwd, '.tmux-teams', 'runner-logs'), { recursive: true })
-  const logFd = openSync(logPath(cwd, taskId), 'a', 0o600)
+  const logFd = openNoFollow(logPath(cwd, taskId), fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND)
   const argv = [COMPANION, worker, cwd, taskId, briefFile]
   if (stallSec !== undefined) argv.push(String(stallSec))
   // The whole environment, not an allowlist. Every ACP_* variable an operator
@@ -339,7 +400,7 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
   child.unref()
   if (Number.isInteger(child.pid)) {
     mkdirSync(join(cwd, '.tmux-teams', 'dispatch-pids'), { recursive: true })
-    writeFileSync(pidPath(cwd, taskId), `${child.pid}\n`, { mode: 0o600 })
+    writeNoFollow(pidPath(cwd, taskId), `${child.pid}\n`)
   }
   // `ACP_RESUME` is deliberately NOT captured: a resume of a resume must carry
   // the session id the operator is recovering, not the one the last attempt was
@@ -349,9 +410,8 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
     if (env?.[key] !== undefined && env[key] !== '') routingEnv[key] = String(env[key])
   }
   mkdirSync(join(cwd, '.tmux-teams', 'dispatch-routing'), { recursive: true })
-  writeFileSync(routingPath(cwd, taskId),
-    `${JSON.stringify({ worker, briefFile, stallSec: stallSec ?? null, env: routingEnv }, null, 2)}\n`,
-    { mode: 0o600 })
+  writeNoFollow(routingPath(cwd, taskId),
+    `${JSON.stringify({ worker, briefFile, stallSec: stallSec ?? null, spawnedAt: spawnedAtIso, env: routingEnv }, null, 2)}\n`)
   return child
 }
 
@@ -456,9 +516,19 @@ export async function waitForSettlement(cwd, taskId, maxMs, {
 }
 
 export async function main(argv, { out = console.log, err = console.error, spawnFn = spawn, env = process.env } = {}) {
+  // Both public read modes get the id rule too. They were passing the raw value
+  // into `statusReport`, which builds six paths out of it — so the command that
+  // REFUSES `../` on dispatch accepted it on `status`, and read whatever it
+  // pointed at.
+  const refuseId = (taskId) => {
+    err(`invalid task id "${taskId}" — 1-64 chars, alphanumeric/_/-, starts alphanumeric or _`)
+    return 2
+  }
+
   if (argv[0] === 'status') {
     const [, cwdArg, taskId] = argv
     if (!cwdArg || !taskId) { err(USAGE); return 2 }
+    if (!safeTaskId(taskId)) return refuseId(taskId)
     const report = statusReport(resolve(cwdArg), taskId)
     out(formatStatus(report))
     return statusExitCode(report)
@@ -467,6 +537,7 @@ export async function main(argv, { out = console.log, err = console.error, spawn
   if (argv[0] === 'wait') {
     const [, cwdArg, taskId, maxSec] = argv
     if (!cwdArg || !taskId) { err(USAGE); return 2 }
+    if (!safeTaskId(taskId)) return refuseId(taskId)
     const budget = Number(maxSec ?? 3600)
     if (!Number.isFinite(budget) || budget <= 0) { err(USAGE); return 2 }
     return waitForSettlement(resolve(cwdArg), taskId, budget * 1000,
@@ -477,10 +548,7 @@ export async function main(argv, { out = console.log, err = console.error, spawn
   if (!worker || !cwdArg || !taskId || !briefFile) { err(USAGE); return 2 }
   // Before ANY path is built from it. `spawnDetached` asserts the same thing —
   // this is the operator-facing message, that one is the guarantee.
-  if (!safeTaskId(taskId)) {
-    err(`invalid task id "${taskId}" — 1-64 chars, alphanumeric/_/-, starts alphanumeric or _`)
-    return 2
-  }
+  if (!safeTaskId(taskId)) return refuseId(taskId)
   const cwd = resolve(cwdArg)
   // A typo here used to restore the very coupling this file removes: a
   // non-numeric value made `bootMs` NaN, every deadline comparison false, and
