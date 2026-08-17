@@ -114,8 +114,20 @@ export const DIAGNOSTICS = Object.freeze({
 
 // Classification reads the exception and keeps only which BUCKET it fell into.
 // Nothing derived from the message text survives this function.
+// Matched against the SHAPE this system throws, not against loose text anywhere
+// in the message. Every phrase below is one this module's own dependencies
+// raise as `<lane> review <phrase>`, and the anchor is what stops a settings
+// PATH containing the same words from selecting a diagnosis — a panel lane
+// pointed out that a caller who controls a filename controls the classification.
+const REVIEW_PHRASE = /(^|[\s:])review /
+
 export function classify(message) {
-  const text = String(message ?? '')
+  const raw = String(message ?? '')
+  // Ordinary filesystem failures were classified by nothing and fell through to
+  // `unclassified`, which told an operator to run the gate for a detail the
+  // gate would report as the same unreadable file.
+  if (/\b(ENOENT|EACCES|EISDIR|ELOOP|EPERM)\b/.test(raw)) return 'settings_unreadable'
+  const text = REVIEW_PHRASE.test(raw) ? raw.slice(raw.search(REVIEW_PHRASE)) : raw
   if (/requires ANTHROPIC_BASE_URL/.test(text)) return 'endpoint_missing'
   if (/endpoint must be|must be a valid URL/.test(text)) return 'endpoint_mismatch'
   if (/explicit provider credential/.test(text)) return 'credential_missing'
@@ -444,8 +456,13 @@ export function paramsProblem(method, params) {
   // panel lane read the code and found nothing validating ping at all. The
   // comment described a fix that was never written — worse than no comment,
   // because it tells a reader to stop looking.
-  if (method === 'ping' && params !== undefined && Object.keys(params).length > 0) {
-    return 'ping takes no params'
+  // `_meta` is legal on ANY request in MCP 2025-06-18, so "ping takes no params"
+  // rejected conforming traffic. Two commits after being told that tolerance was
+  // wrong, I was told strictness was — and both were right, because the line is
+  // the spec rather than a preference in either direction.
+  if (method === 'ping' && params !== undefined) {
+    const extra = Object.keys(params).filter((key) => key !== '_meta')
+    if (extra.length > 0) return 'ping takes no params other than _meta'
   }
   return null
 }

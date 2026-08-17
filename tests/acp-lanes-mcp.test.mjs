@@ -829,3 +829,25 @@ test('the things three panel families found in one sitting', () => {
   const tool = JSON.stringify(callTool(`${marker}_tool`, {}, {}))
   assert.ok(!tool.includes(marker), `the tool name was echoed: ${tool}`)
 })
+
+test('_meta is legal on any request, and a filename cannot choose the diagnosis', () => {
+  // Two commits after a panel told me the tolerant `initialize` was wrong, a
+  // panel told me the strict `ping` was — and both were right, because the line
+  // is the spec and not a preference in either direction. `_meta` is legal on
+  // ANY request in MCP 2025-06-18, so "ping takes no params" refused conforming
+  // traffic.
+  assert.deepEqual(handle({ jsonrpc: '2.0', id: 1, method: 'ping', params: { _meta: { a: 1 } } }, {}),
+    { jsonrpc: '2.0', id: 1, result: {} })
+  assert.equal(handle({ jsonrpc: '2.0', id: 2, method: 'ping', params: { other: 1 } }, {}).error?.code, -32602)
+
+  // A caller who controls a settings PATH controlled the classification: the
+  // regexes ran over the whole exception text, and a filename carrying
+  // "pins no endpoint" or "must be a JSON object" selected that diagnosis.
+  assert.equal(classify('ENOENT: no such file or directory, open ' +
+    "'/home/u/pins no endpoint/settings.json'"), 'settings_unreadable')
+  assert.equal(classify("Cannot read '/tmp/must be a JSON object/x' — EACCES"), 'settings_unreadable')
+  // And the shapes this system really throws still land where they belong.
+  assert.equal(classify('zai review routes its provider but pins no endpoint'), 'profile_incomplete')
+  assert.equal(classify('zai review requires ANTHROPIC_BASE_URL'), 'endpoint_missing')
+  assert.equal(classify('zai review endpoint requires an explicit provider credential'), 'credential_missing')
+})
