@@ -93,16 +93,23 @@ function assertSafeTaskId(taskId) {
 // spawned — a refusal after `unref()` leaves a detached lane alive with no
 // trustworthy records, which is a different and worse failure than not starting.
 //
-// **The residual is stated rather than papered over: this is TOCTOU-prone.**
-// Node exposes no `openat`, so there is no way here to hold a directory
-// capability and open relative to it; between the check and the open, a
-// sufficiently privileged attacker can swap a component. What this closes is
-// the pre-positioned symlink — a file that is already there when the command
-// runs — which is the reachable case. An anchored-fd design would close the
-// race and needs a primitive Node does not give us.
-function openNoFollow(path, flags) {
+// **The residual, stated exactly, because the first two attempts at this
+// paragraph overstated it and a review round said so both times.** Node exposes
+// no `openat`, so nothing here can hold a directory capability and open
+// relative to it. Two windows follow, not one: between a component check and
+// the next component's `mkdir`, and between the final check and the open. An
+// attacker with write and search permission on a relevant parent — no elevated
+// privilege needed — can swap a component in either window and get a directory
+// created or a file opened outside the root.
+//
+// So the guarantee is: **absent concurrent replacement, creation never happens
+// past a symlinked component, and a pre-positioned symlink is refused.** That
+// is the reachable case and it is what these checks close. Under an attacker
+// racing the walk, they do not. An anchored-fd design would, and needs a
+// primitive Node does not give us.
+function openNoFollow(path, flags, mode = 0o600) {
   try {
-    return openSync(path, flags | (fsConstants.O_NOFOLLOW ?? 0))
+    return openSync(path, flags | (fsConstants.O_NOFOLLOW ?? 0), mode)
   } catch (cause) {
     if (cause.code === 'ELOOP' || cause.code === 'EMLINK') {
       throw Object.assign(new Error(`refusing to write through a symlink at ${path}`), { code: 'unsafe_artifact' })
@@ -138,7 +145,12 @@ export function assertContainedDir(root, ...parts) {
       if (cause.code !== 'ENOENT') throw cause
     }
     if (stat === null) {
-      mkdirSync(current)
+      // 0700, not the umask default. This repository's ledger writer already
+      // states that prose-bearing state is owner-only and enforces 0700/0600,
+      // and an ACP runner log carries prompts, model output and diagnostics.
+      // A review round measured 0755 here under an ordinary umask and was right
+      // that the default is not the safe choice for this content.
+      mkdirSync(current, { mode: 0o700 })
       continue
     }
     if (stat.isSymbolicLink() || !stat.isDirectory()) {
@@ -492,7 +504,9 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
     assertNotSymlink(previous)
     renameSync(previous, `${previous}.superseded-${spawnedAtIso.replaceAll(':', '-')}`)
   }
-  const logFd = openNoFollow(logPath(cwd, taskId), fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND)
+  // 0600 for the same reason: the log is the most prose-bearing artifact here.
+  const logFd = openNoFollow(logPath(cwd, taskId),
+    fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND, 0o600)
   const argv = [COMPANION, worker, cwd, taskId, briefFile]
   if (stallSec !== undefined) argv.push(String(stallSec))
   // The whole environment, not an allowlist. Every ACP_* variable an operator
@@ -615,6 +629,12 @@ export async function waitForSettlement(cwd, taskId, maxMs, {
   }
 }
 
+// Reading modes tolerate a run directory that has gone: `status` on a lane
+// whose tree was cleaned up should report what it can, not crash.
+function canonicalRoot(path) {
+  try { return realpathSync(path) } catch { return path }
+}
+
 export async function main(argv, { out = console.log, err = console.error, spawnFn = spawn, env = process.env } = {}) {
   // Both public read modes get the id rule too. They were passing the raw value
   // into `statusReport`, which builds six paths out of it — so the command that
@@ -629,7 +649,7 @@ export async function main(argv, { out = console.log, err = console.error, spawn
     const [, cwdArg, taskId] = argv
     if (!cwdArg || !taskId) { err(USAGE); return 2 }
     if (!safeTaskId(taskId)) return refuseId(taskId)
-    const report = statusReport(resolve(cwdArg), taskId)
+    const report = statusReport(canonicalRoot(resolve(cwdArg)), taskId)
     out(formatStatus(report))
     return statusExitCode(report)
   }
@@ -640,7 +660,7 @@ export async function main(argv, { out = console.log, err = console.error, spawn
     if (!safeTaskId(taskId)) return refuseId(taskId)
     const budget = Number(maxSec ?? 3600)
     if (!Number.isFinite(budget) || budget <= 0) { err(USAGE); return 2 }
-    return waitForSettlement(resolve(cwdArg), taskId, budget * 1000,
+    return waitForSettlement(canonicalRoot(resolve(cwdArg)), taskId, budget * 1000,
       { out, pollMs: Number(env.ACP_DISPATCH_POLL_SEC ?? 15) * 1000 })
   }
 
@@ -649,7 +669,24 @@ export async function main(argv, { out = console.log, err = console.error, spawn
   // Before ANY path is built from it. `spawnDetached` asserts the same thing —
   // this is the operator-facing message, that one is the guarantee.
   if (!safeTaskId(taskId)) return refuseId(taskId)
-  const cwd = resolve(cwdArg)
+  // The run root is CANONICALISED before anything is built from it. A review
+  // round found it sitting outside the component walk entirely: a `cwd` that is
+  // itself a symlink received both artifact trees without ever being examined.
+  //
+  // Resolving rather than refusing is the right answer — a caller who passes an
+  // alias usually means "use this path for its target", and this tool has to
+  // work against directories other people made. What was missing is that the
+  // target became the semantic root SILENTLY. It is resolved once, everything
+  // downstream uses the resolved path, and when the two differ the operator is
+  // told which directory this command actually operated on.
+  let cwd
+  try {
+    cwd = realpathSync(resolve(cwdArg))
+  } catch (cause) {
+    err(`cannot resolve the run directory ${cwdArg}: ${cause.code ?? cause.message}`)
+    return 2
+  }
+  if (cwd !== resolve(cwdArg)) out(`run directory resolves to: ${cwd}`)
   // A typo here used to restore the very coupling this file removes: a
   // non-numeric value made `bootMs` NaN, every deadline comparison false, and
   // the "short-lived" dispatcher attached to a hanging child forever.

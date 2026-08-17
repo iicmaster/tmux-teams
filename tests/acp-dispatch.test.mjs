@@ -1,7 +1,8 @@
 import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, mkdirSync, rmSync, symlinkSync,
+  realpathSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -952,4 +953,69 @@ test('a symlinked .mailbox-out cannot make the outbox retirement rename a strang
   await sleep(1200)
   assert.ok(!existsSync(join(cwd, '.tmux-teams', 'liveness', 'linked.json')),
     'a lane was spawned before the refusal')
+})
+
+test('a symlinked run root is resolved, used, and REPORTED rather than silently adopted', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX symlinks')
+  // Round nine, blocker 1: the run root sat outside the component walk
+  // entirely, so a `cwd` that was itself a symlink received both artifact trees
+  // without ever being examined. Refusing would be wrong — a caller who passes
+  // an alias usually means "use this path for its target", and this tool has to
+  // work against directories other people made. What was missing is that the
+  // target became the semantic root in silence.
+  const real = tempDir('acp-dispatch-realroot-')
+  const holder = tempDir('acp-dispatch-alias-')
+  const alias = join(holder, 'alias')
+  symlinkSync(real, alias)
+  const brief = join(real, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+  const releaseFile = join(real, 'release')
+
+  const caller = spawn(process.execPath, [DISPATCH, 'mock', alias, 'aliased', brief, '120'], {
+    cwd: real, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+    env: laneEnv({ MOCK_GATE_STAGE: 'prompt', MOCK_GATE_RELEASE_FILE: releaseFile,
+      MOCK_GATE_WATCHDOG_MS: '60000' }),
+  })
+  let out = ''
+  caller.stdout.on('data', (chunk) => { out += chunk })
+  await waitFor(() => caller.exitCode !== null, 60000, 'the caller to report and exit')
+  assert.equal(caller.exitCode, 0, `a symlinked run root was refused: ${out}`)
+  assert.match(out, /run directory resolves to: /,
+    'the alias became the semantic root without the operator being told')
+  assert.ok(out.includes(realpathSync(real)), 'the reported root is not the resolved one')
+  // Everything landed in the real directory, under its real name.
+  assert.ok(existsSync(join(realpathSync(real), '.tmux-teams', 'liveness', 'aliased.json')))
+
+  writeFileSync(releaseFile, 'go\n')
+  await waitFor(() => existsSync(outboxPath(realpathSync(real), 'aliased')), 60000, 'the lane to finish')
+})
+
+test('state this dispatcher creates is owner-only, because it carries prose', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX modes')
+  // Round nine, blocker 2, REPRODUCED by the reviewer: 0755 under an ordinary
+  // umask. This repository's ledger writer already states that prose-bearing
+  // state is owner-only and enforces 0700/0600, and an ACP runner log carries
+  // prompts, model output and diagnostics — it is the most prose-bearing file
+  // here and it was the one created with a default mode and never chmodded.
+  const cwd = tempDir('acp-dispatch-modes-')
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+  const releaseFile = join(cwd, 'release')
+  const caller = spawn(process.execPath, [DISPATCH, 'mock', cwd, 'modes', brief, '120'], {
+    cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+    env: laneEnv({ MOCK_GATE_STAGE: 'prompt', MOCK_GATE_RELEASE_FILE: releaseFile,
+      MOCK_GATE_WATCHDOG_MS: '60000' }),
+  })
+  await waitFor(() => caller.exitCode !== null, 60000, 'the caller to report and exit')
+
+  const mode = (p) => (statSync(p).mode & 0o777).toString(8)
+  for (const dir of ['.tmux-teams', join('.tmux-teams', 'runner-logs'),
+    join('.tmux-teams', 'dispatch-pids'), join('.tmux-teams', 'dispatch-routing'), '.mailbox-out']) {
+    assert.equal(mode(join(cwd, dir)), '700', `${dir} is not owner-only`)
+  }
+  assert.equal(mode(logPath(cwd, 'modes')), '600', 'the runner log is readable by others')
+  assert.equal(mode(pidPath(cwd, 'modes')), '600')
+
+  writeFileSync(releaseFile, 'go\n')
+  await waitFor(() => existsSync(outboxPath(cwd, 'modes')), 60000, 'the lane to finish')
 })

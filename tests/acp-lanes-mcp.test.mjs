@@ -51,7 +51,29 @@ test('every declared lane is listed, and the list is pinned rather than derived 
     'the tool and the profile registry disagree about which lanes exist')
   assert.equal(out.lanes.find(l => l.lane === 'zai').routing, 'pinned:api.z.ai/api/anthropic')
   assert.equal(out.lanes.find(l => l.lane === 'agy').routing, 'unrouted')
-  assert.equal(out.lanes.find(l => l.lane === 'agy').model, 'gemini-3.7-flash-high')
+
+  // EVERY declared field the tool's own description promises, for every lane.
+  // A review round identified this gap and could not run it before its turn
+  // ended; running it confirmed the miss — `provider: null` for all seven lanes
+  // kept this file 27/27 green, because the assertions above pin names, routing
+  // and adapter presence and never touched `provider` or `family`. The tool
+  // advertises "family, provider, model, adapter package"; the guard now pins
+  // all four, per lane, literally.
+  const declared = Object.fromEntries(out.lanes.map((l) => [l.lane, l]))
+  for (const [lane, family, provider, model] of [
+    ['agy', 'gemini', 'google-antigravity', 'gemini-3.7-flash-high'],
+    ['claude', 'claude', 'anthropic', 'claude-opus-4-8'],
+    ['codex', 'openai', 'openai', 'gpt-5.6-sol'],
+    ['deepseek', 'deepseek', 'qwen', 'deepseek-v4-flash-0731'],
+    ['kimi', 'kimi', 'kimi', 'opus'],
+    ['qwen', 'qwen', 'qwen', 'qwen3.8-max-preview'],
+    ['zai', 'zai', 'zai', 'glm-5.2'],
+  ]) {
+    assert.equal(declared[lane].family, family, `${lane} family`)
+    assert.equal(declared[lane].provider, provider, `${lane} provider`)
+    assert.equal(declared[lane].model, model, `${lane} model`)
+    assert.ok(declared[lane].adapter, `${lane} adapter`)
+  }
 })
 
 test('declared facts need nothing from this machine', () => {
