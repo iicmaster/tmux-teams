@@ -108,6 +108,7 @@ export const DIAGNOSTICS = Object.freeze({
   credential_missing: 'the endpoint is configured but no provider credential was found for it',
   settings_unreadable: 'the settings this lane points at are not a readable JSON object',
   executable_missing: 'an executable this lane needs was not found on this machine',
+  profile_incomplete: 'this lane routes to a provider but its shipped profile declares no endpoint to pin',
   unclassified: 'the lane refused for a reason this server does not classify; run the gate for the detail',
 })
 
@@ -118,7 +119,14 @@ export function classify(message) {
   if (/requires ANTHROPIC_BASE_URL/.test(text)) return 'endpoint_missing'
   if (/endpoint must be|must be a valid URL/.test(text)) return 'endpoint_mismatch'
   if (/explicit provider credential/.test(text)) return 'credential_missing'
-  if (/must be a JSON object|pins no endpoint/.test(text)) return 'settings_unreadable'
+  // `pins no endpoint` is a PROFILE defect — this lane routes and declares no
+  // endpoint to route to — and it used to be classified as unreadable SETTINGS.
+  // A release panel called it a false diagnosis with non-repairing
+  // instructions, and it was: the settings file is fine, the profile is not,
+  // and telling an operator to fix their JSON sends them to a file that has
+  // nothing wrong with it.
+  if (/pins no endpoint/.test(text)) return 'profile_incomplete'
+  if (/must be a JSON object/.test(text)) return 'settings_unreadable'
   // A JSON.parse failure arrives as V8's own wording and never mentions this
   // system at all, so the first version dropped ordinary malformed settings
   // into `unclassified` — safe on the wire and useless as a diagnosis.
@@ -239,6 +247,11 @@ export function fixesFor(id, profile, code) {
       return [...credentialFixes(id), ...settings]
     case 'settings_unreadable':
       return ['the JSON this lane reads must parse and must be an object', ...settings]
+    case 'profile_incomplete':
+      // Nothing an operator can repair on their own machine: the profile ships
+      // with the plugin. Saying so is the honest answer.
+      return ['this is a defect in the shipped profile, not in your configuration — '
+        + 'the lane declares routing with no endpoint, and only a plugin change can fix it']
     case 'executable_missing':
       return executableFixes(id, profile)
     default:
@@ -283,7 +296,7 @@ export const TOOL_DESCRIPTORS = Object.freeze([
   {
     name: 'acp_lanes',
     description: 'List every ACP review lane this plugin declares: family, provider, model, '
-      + 'adapter package, and whether the lane is pinned to a verified endpoint. Declared facts only '
+      + 'adapter package, and whether the lane DECLARES a pinned endpoint. Declared facts only '
       + '- it touches nothing on this machine and answers with no configuration present.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     handler: () => ({ lanes: Object.entries(REVIEW_PROFILES).map(([id, p]) => laneFacts(id, p)) }),
@@ -378,13 +391,21 @@ export function requestProblem(message) {
 // `tools/list` with `params: []` and `ping` with unexpected params all answered
 // SUCCESS — reproduced over the real stdio server in round four.
 //
-// Strict about TYPES, and about `protocolVersion` because it is the field this
-// server acts on. Deliberately NOT strict about the presence of `capabilities`
-// and `clientInfo`, which MCP 2025-06-18 does require of a client: refusing a
-// host that omits one buys this server nothing, and no real host has ever
-// initialized it, so the cost of being wrong is a dead feature nobody can
-// diagnose. That asymmetry is the reason, and it is the line to revisit first if
-// a conformance failure is ever what needs finding.
+// `initialize` requires everything MCP 2025-06-18 requires: `protocolVersion`,
+// `capabilities` and `clientInfo`.
+//
+// **This reverses a judgement, and the reversal is the interesting part.** The
+// tolerant version was deliberate — refusing a host that omits a field buys
+// this server nothing, no real host has ever initialized it, and the cost of
+// being wrong is a dead feature nobody can diagnose. An advisor round accepted
+// that reasoning with one condition: never sell it as strict conformance.
+//
+// Then a release panel raised it independently, against bytes that advertise
+// `protocolVersion: '2025-06-18'`. Two distinct reviewers arriving at the same
+// objection is this project's own must-fix bar, and the tie-breaker is that
+// the tolerance protects a case nobody has observed while the advertisement is
+// made on every single initialize. A conformant client sends all three; the
+// rule now matches the version this server claims to speak.
 // Every method this server answers. Pinned as a set rather than inferred from
 // the if-chain below, so a method that gains params validation and a method
 // that gains a handler cannot drift apart.
@@ -399,9 +420,8 @@ export function paramsProblem(method, params) {
     if (typeof params.protocolVersion !== 'string') return 'initialize requires a string protocolVersion'
     for (const key of ['capabilities', 'clientInfo']) {
       const value = params[key]
-      if (value === undefined) continue
-      if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-        return `initialize ${key} must be an object`
+      if (value === null || value === undefined || typeof value !== 'object' || Array.isArray(value)) {
+        return `initialize requires an object ${key}`
       }
     }
   }

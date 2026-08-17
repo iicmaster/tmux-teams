@@ -1019,3 +1019,42 @@ test('state this dispatcher creates is owner-only, because it carries prose', as
   writeFileSync(releaseFile, 'go\n')
   await waitFor(() => existsSync(outboxPath(cwd, 'modes')), 60000, 'the lane to finish')
 })
+
+test('a nonsense poll interval is refused rather than spinning a core for the whole budget', () => {
+  // A release panel found `ACP_DISPATCH_POLL_SEC` converted and never
+  // validated: NaN, zero or a negative turned the wait loop into zero-delay
+  // polling. The same class had already been fixed for the boot budget — and
+  // missed here, because the fix went to the value that had bitten rather than
+  // to the kind of value.
+  const cwd = tempDir('acp-dispatch-poll-')
+  for (const bad of ['soon', '', '0', '-1', 'NaN']) {
+    const r = spawnSync(process.execPath, [DISPATCH, 'wait', cwd, 'poll', '5'],
+      { cwd, encoding: 'utf8', env: laneEnv({ ACP_DISPATCH_POLL_SEC: bad }), timeout: 20000 })
+    assert.equal(r.status, 2, `ACP_DISPATCH_POLL_SEC="${bad}" was accepted`)
+    assert.match(r.stderr, /ACP_DISPATCH_POLL_SEC must be a positive number/)
+  }
+})
+
+test('boot reports on the ACKNOWLEDGED identity status, not on a non-empty string', () => {
+  // A release panel caught a truthy `effective_identity` standing in for an
+  // ACCEPTED identity — the exact substitution this plugin exists to refuse,
+  // committed inside the check written to enforce it. A record carrying an
+  // identity with `identity_status: 'missing'` is not a booted lane.
+  const cwd = tempDir('acp-dispatch-identitystatus-')
+  mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
+  mkdirSync(join(cwd, '.tmux-teams', 'dispatch-routing'), { recursive: true })
+  const spawnedAt = new Date().toISOString()
+  writeFileSync(join(cwd, '.tmux-teams', 'dispatch-routing', 'ident.json'),
+    JSON.stringify({ worker: 'mock', spawnedAt, env: {} }))
+  writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'ident.json'), JSON.stringify({
+    started_at: spawnedAt, liveness_state: 'active', termination_reason: 'none',
+    effective_identity: 'looks-like-an-identity', identity_status: 'missing',
+  }))
+  // statusReport is the reader that shares this record; the boot path's own
+  // acceptance is asserted through the dispatch tests above. Here the point is
+  // that a 'missing' status is visible rather than dressed up as an identity.
+  const report = statusReport(cwd, 'ident')
+  assert.equal(report.identityStatus, 'missing')
+  assert.match(formatStatus(report), /looks-like-an-identity \(missing\)/,
+    'a status that was never accepted is reported as though it had been')
+})

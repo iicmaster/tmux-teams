@@ -291,7 +291,7 @@ test('malformed settings are diagnosed as unreadable, not shrugged at', () => {
 
 test('every diagnostic code the classifier can return has a constant sentence', () => {
   const codes = ['endpoint_missing', 'endpoint_mismatch', 'credential_missing',
-    'settings_unreadable', 'executable_missing', 'unclassified']
+    'settings_unreadable', 'profile_incomplete', 'executable_missing', 'unclassified']
   assert.deepEqual(Object.keys(DIAGNOSTICS).sort(), [...codes].sort())
   // and the classifier maps real messages onto them rather than onto `unclassified`
   assert.equal(classify('zai review requires ANTHROPIC_BASE_URL'), 'endpoint_missing')
@@ -299,6 +299,14 @@ test('every diagnostic code the classifier can return has a constant sentence', 
   assert.equal(classify('zai review endpoint requires an explicit provider credential'), 'credential_missing')
   assert.equal(classify('trusted agy executable not found'), 'executable_missing')
   assert.equal(classify('something nobody has seen before'), 'unclassified')
+  // A release panel called the old mapping a false diagnosis with non-repairing
+  // instructions, and it was: a lane that routes and declares no endpoint has a
+  // PROFILE defect, and telling the operator to fix their settings JSON sends
+  // them to a file with nothing wrong with it.
+  assert.equal(classify('zai review routes its provider but pins no endpoint'), 'profile_incomplete')
+  assert.equal(classify('zai review settings must be a JSON object'), 'settings_unreadable')
+  assert.match(fixesFor('zai', REVIEW_PROFILES.zai, 'profile_incomplete')[0],
+    /defect in the shipped profile, not in your configuration/)
 })
 
 test('a lane whose configuration IS valid says so, and says only that', () => {
@@ -570,10 +578,23 @@ test('a handler that is not advertised cannot exist, because both come from one 
 })
 
 test('initialize answers with the version this server speaks, never the caller\'s', () => {
-  const asked = handle({
-    jsonrpc: '2.0', id: 1, method: 'initialize',
-    params: { protocolVersion: 'not-a-protocol-version' },
-  }).result
+  const legal = {
+    protocolVersion: 'not-a-protocol-version',
+    capabilities: {},
+    clientInfo: { name: 'a-client', version: '1' },
+  }
+  const asked = handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: legal }).result
+  // Reversed on 2026-08-17 after a release panel raised independently what an
+  // advisor round had accepted as a documented tolerance: this server
+  // advertises 2025-06-18 on every initialize, and that version requires all
+  // three. Two distinct reviewers is this project's must-fix bar.
+  for (const missing of ['capabilities', 'clientInfo']) {
+    const without = { ...legal }
+    delete without[missing]
+    assert.equal(
+      handle({ jsonrpc: '2.0', id: 2, method: 'initialize', params: without }).error.code, -32602,
+      `initialize accepted a client that omitted ${missing} while advertising 2025-06-18`)
+  }
   // Pinned as a literal as well as against the constant: comparing a constant
   // only against itself is the shape this repository has a rule about, and
   // mutating PROTOCOL_VERSION to garbage passed the previous version of this.

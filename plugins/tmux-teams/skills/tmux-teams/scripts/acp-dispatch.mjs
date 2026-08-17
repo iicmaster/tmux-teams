@@ -514,6 +514,9 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
   // nothing to remember and nothing to forget.
   const child = spawnFn(process.execPath, argv, { cwd, detached: true, stdio: ['ignore', logFd, logFd], env })
   child.unref()
+  // The child holds its own duplicate; this parent has no use for the
+  // descriptor and leaked it for the life of the process.
+  try { closeSync(logFd) } catch { /* the spawn may already have consumed it */ }
   if (Number.isInteger(child.pid)) {
     writeNoFollow(pidPath(cwd, taskId), `${child.pid}\n`)
   }
@@ -572,7 +575,14 @@ async function watchBoot(child, cwd, taskId, bootMs, spawnedAtMs) {
     // its own outcome now, because "dispatched successfully" and "refused before
     // the prompt" are not the same answer.
     if (record && hasTerminated(record)) return { outcome: 'terminal', record }
-    if (record && record.effective_identity) return { outcome: 'live', record }
+    // `identity_status`, not the truthiness of a string. A release panel caught
+    // that a non-empty `effective_identity` was standing in for an ACCEPTED
+    // identity — which is the substitution this whole plugin exists to refuse,
+    // committed inside the check written to enforce it.
+    if (record && record.effective_identity
+      && ['matched', 'unverified'].includes(record.identity_status)) {
+      return { outcome: 'live', record }
+    }
     // Checked AFTER the liveness read so a child that wrote its file and exited
     // in the same tick is reported as booted rather than as a failure.
     if (exited) return { outcome: 'exited', record, ...exited }
@@ -660,8 +670,18 @@ export async function main(argv, { out = console.log, err = console.error, spawn
     if (!safeTaskId(taskId)) return refuseId(taskId)
     const budget = Number(maxSec ?? 3600)
     if (!Number.isFinite(budget) || budget <= 0) { err(USAGE); return 2 }
+    // Converted and never validated until a release panel said so: NaN, zero or
+    // a negative value turned the wait loop into zero-delay polling that could
+    // spin a core for the whole budget. Same class as the boot budget, which
+    // had already been fixed — and missed here because the fix was applied to
+    // the value that had bitten rather than to the kind of value.
+    const pollSec = Number(env.ACP_DISPATCH_POLL_SEC ?? 15)
+    if (!Number.isFinite(pollSec) || pollSec <= 0) {
+      err(`ACP_DISPATCH_POLL_SEC must be a positive number of seconds, got "${env.ACP_DISPATCH_POLL_SEC}"`)
+      return 2
+    }
     return waitForSettlement(canonicalRoot(resolve(cwdArg)), taskId, budget * 1000,
-      { out, pollMs: Number(env.ACP_DISPATCH_POLL_SEC ?? 15) * 1000 })
+      { out, pollMs: pollSec * 1000 })
   }
 
   const [worker, cwdArg, taskId, briefFile, stallSec] = argv
