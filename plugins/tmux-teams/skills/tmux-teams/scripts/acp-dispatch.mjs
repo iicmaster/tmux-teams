@@ -378,7 +378,7 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
 // the SAME host clock: the slack buys nothing and, on a retry inside one
 // second, accepts the predecessor's snapshot — recreating the exact
 // stale-identity failure this check exists to prevent.
-function belongsToThisRun(record, spawnedAtMs) {
+export function belongsToThisRun(record, spawnedAtMs) {
   const started = Date.parse(record?.started_at ?? '')
   return Number.isFinite(started) && started >= spawnedAtMs
 }

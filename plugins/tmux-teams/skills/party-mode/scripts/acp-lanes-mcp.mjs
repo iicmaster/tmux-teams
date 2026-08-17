@@ -345,7 +345,7 @@ export const REQUEST_PROBLEMS = Object.freeze({
   not_an_object: 'a request must be a JSON object',
   jsonrpc: 'a request must carry jsonrpc "2.0"',
   method: 'a request must carry a string method',
-  id: 'a request id must be a string or an integer, and must not be null',
+  id: 'a request id must be a string or a finite number, and must not be null',
 })
 
 // Structure only. `null` means the frame is a legal request or a legal

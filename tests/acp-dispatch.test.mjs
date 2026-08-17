@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { statusReport, formatStatus, resumeCommand, outboxPath, strayOutboxes, TERMINAL_LIVENESS_STATES,
-  waitForSettlement, EXIT_OUTBOX, EXIT_RUNNING, EXIT_NO_OUTBOX, pidPath, recordedPid }
+  waitForSettlement, EXIT_OUTBOX, EXIT_RUNNING, EXIT_NO_OUTBOX, pidPath, recordedPid, belongsToThisRun }
   from '../plugins/tmux-teams/skills/tmux-teams/scripts/acp-dispatch.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -334,6 +334,20 @@ test('a previous run\'s identity is never reported as this dispatch\'s', async (
 
   writeFileSync(releaseFile, 'go\n')
   await waitFor(() => existsSync(outboxPath(cwd, 'stale')), 60000, 'the lane to finish')
+
+  // The integration case above uses an hours-old snapshot, which a one-second
+  // tolerance would also have rejected — so it never proved the BOUNDARY. Round
+  // five said so plainly: "the stale identity test that passed does not prove
+  // the boundary inside one second". Here it is, at the millisecond.
+  const spawnedAt = 1_700_000_000_000
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt).toISOString() }, spawnedAt), true)
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt + 1).toISOString() }, spawnedAt), true)
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt - 1).toISOString() }, spawnedAt), false,
+    'a snapshot written one millisecond before this spawn was accepted as this run\'s')
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt - 999).toISOString() }, spawnedAt), false,
+    'the one-second slack is back: a sub-second retry will inherit its predecessor\'s identity')
+  assert.equal(belongsToThisRun({}, spawnedAt), false, 'a record with no started_at was claimed')
+  assert.equal(belongsToThisRun(null, spawnedAt), false)
 })
 
 test('a task id that would escape the run directory is refused before any file is opened', async (t) => {

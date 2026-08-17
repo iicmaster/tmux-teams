@@ -632,6 +632,13 @@ test('a malformed frame is refused with the code the spec names for it', () => {
   assert.equal(RPC_INVALID_PARAMS, -32602)
   assert.equal(RPC_METHOD_NOT_FOUND, -32601)
   assert.equal(RPC_PARSE_ERROR, -32700)
+  // The SENTENCE has to match what the code accepts. Round five caught it still
+  // saying "an integer" after `Number.isInteger` became `Number.isFinite` — a
+  // contract-wording defect, which is the same class as the credential-name
+  // claim that survived three rounds, just cheaper.
+  const badId = handle({ jsonrpc: '2.0', id: {}, method: 'ping' }, {})
+  assert.match(badId.error.message, /string or a finite number/)
+  assert.doesNotMatch(badId.error.message, /integer/)
   // Nothing a caller sent is echoed back: every refusal sentence is a constant
   // of the module.
   const echo = handle({ jsonrpc: '2.0', id: 20, method: 'tools/call',
