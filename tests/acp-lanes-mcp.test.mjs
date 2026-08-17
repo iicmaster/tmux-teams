@@ -10,7 +10,7 @@ import { handle, callTool, laneFacts, laneStatus, classify, fixesFor,
   TOOLS, TOOL_DESCRIPTORS, DIAGNOSTICS, PROTOCOL_VERSION, UNCHECKED_LANES,
   RPC_INVALID_REQUEST, RPC_INVALID_PARAMS, RPC_METHOD_NOT_FOUND, RPC_PARSE_ERROR }
   from '../plugins/tmux-teams/skills/party-mode/scripts/acp-lanes-mcp.mjs'
-import { REVIEW_PROFILES, PROVIDER_SECRET_KEYS }
+import { REVIEW_PROFILES, PROVIDER_SECRET_KEYS, acceptedCredentialNames, buildProfileEnv }
   from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -331,7 +331,12 @@ test('a credential never reaches the wire — on the success path OR any failure
       assert.equal(lane.configuration, expected,
         `the ${tag} fixture did not reach the state it exists to exercise`)
       assert.ok(!wire.includes(token), `${tag}: the credential reached the wire`)
-      assert.ok(!wire.includes('ANTHROPIC_AUTH_TOKEN'), `${tag}: the credential field name reached the wire`)
+      // NOT asserted: that the field NAME stays off the wire. It does not, and
+      // it is not meant to — see the credential-vocabulary test below. This
+      // line demanded the opposite until 2026-08-17 and passed only because
+      // every fixture here fails at `endpoint_missing`, where no credential
+      // sentence is produced. A guard that holds by never reaching the branch
+      // it guards is the shape a Codex advisor found in round four.
     }
     // A credential supplied through the AMBIENT environment rather than a file.
     const ambient = secret('ambient')
@@ -364,6 +369,47 @@ test('no provider secret this plugin knows about reaches the wire, from any lane
   assert.deepEqual([...INVENTORY].sort(), declared,
     'a provider secret was added or removed and this matrix was not told')
 
+  // OWNERSHIP, not just membership. The set above pins WHICH names exist and a
+  // Codex advisor showed in round four what that misses: moving
+  // `MOONSHOT_API_KEY` from `kimi` to `qwen` leaves the union unchanged, keeps
+  // both suites green, and forwards a foreign key into the Qwen child. So the
+  // map is written out per lane, literally, and an empty list is a statement
+  // rather than a gap — `qwen` and `deepseek` reach their provider through a
+  // routed wrapper's own settings and forward nothing from this process.
+  assert.deepEqual(PROVIDER_SECRET_KEYS, {
+    agy: ['AGY_API_KEY', 'ANTIGRAVITY_API_KEY', 'GOOGLE_API_KEY'],
+    kimi: ['KIMI_API_KEY', 'MOONSHOT_API_KEY'],
+    qwen: [],
+    deepseek: [],
+    zai: ['ZAI_API_KEY'],
+    claude: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
+    codex: ['OPENAI_API_KEY'],
+  }, 'a provider secret changed which LANE owns it')
+
+  // And behaviourally, because a constant can be edited to match a test: a key
+  // one lane declares must not reach another lane's child.
+  const foreign = 'PLANTEDFOREIGN-' + 'w'.repeat(20)
+  const dir = mkdtempSync(join(tmpdir(), 'acp-lanes-foreign-'))
+  try {
+    const settings = join(dir, 'qwen.json')
+    writeFileSync(settings, JSON.stringify({
+      env: {
+        ANTHROPIC_BASE_URL: `https://${REVIEW_PROFILES.qwen.endpoint.host}${REVIEW_PROFILES.qwen.endpoint.path}`,
+        ANTHROPIC_AUTH_TOKEN: 'fixture',
+      },
+    }))
+    const child = buildProfileEnv('qwen', {
+      HOME: '/definitely/nonexistent', PATH: process.env.PATH,
+      TMUX_TEAMS_REVIEW_QWEN_SETTINGS: settings,
+      MOONSHOT_API_KEY: foreign, KIMI_API_KEY: foreign, ZAI_API_KEY: foreign,
+    })
+    assert.ok(!Object.values(child).includes(foreign),
+      'a key another lane declares was forwarded into the qwen child')
+    assert.ok(!('MOONSHOT_API_KEY' in child))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+
   for (const key of INVENTORY) {
     const value = `sk-matrix-${key.toLowerCase()}-` + 'q'.repeat(20)
     // Every lane, in one call, so a leak from any handler branch is covered.
@@ -372,7 +418,92 @@ test('no provider secret this plugin knows about reaches the wire, from any lane
       params: { name: 'acp_lane_status', arguments: {} },
     }, { HOME: '/definitely/nonexistent', PATH: process.env.PATH, [key]: value }))
     assert.ok(!wire.includes(value), `${key} reached the wire`)
-    assert.ok(!wire.includes(key), `${key} — the field name itself reached the wire`)
+    // Values only. The names are diagnostic vocabulary and go out on purpose.
+  }
+})
+
+test('the credential_missing branch names the vocabulary and still carries no value', () => {
+  // The branch the secret matrix never reached, which is why a contradiction
+  // between the contract and the bytes survived three rounds: every fixture in
+  // that test fails at `endpoint_missing`, where no credential sentence exists.
+  // Here the endpoint is RIGHT and the credential absent, so the fix sentences
+  // are produced — and what they must contain is the accepted key names, while
+  // what must never appear is a value.
+  const dir = mkdtempSync(join(tmpdir(), 'acp-lanes-vocab-'))
+  try {
+    const settings = join(dir, 'kimi.json')
+    writeFileSync(settings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'https://api.kimi.com/coding/' } }))
+    const planted = 'PLANTEDVALUE-' + 'q'.repeat(20)
+    const reply = handle({
+      jsonrpc: '2.0', id: 4, method: 'tools/call',
+      params: { name: 'acp_lane_status', arguments: { lane: 'kimi' } },
+    }, {
+      HOME: `/definitely/nonexistent/${planted}`, PATH: process.env.PATH,
+      TMUX_TEAMS_REVIEW_KIMI_SETTINGS: settings,
+    })
+    const wire = JSON.stringify(reply)
+    const [lane] = JSON.parse(reply.result.content[0].text).lanes
+    assert.equal(lane.problem.code, 'credential_missing',
+      'this fixture must reach the credential branch or it tests nothing')
+    // Names: present, deliberately, and the SAME ones the validator accepts.
+    const fixes = lane.fixes.join(' ')
+    for (const key of ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'KIMI_API_KEY', 'MOONSHOT_API_KEY']) {
+      assert.ok(fixes.includes(key), `the repair does not name ${key}, which the endpoint check accepts`)
+    }
+    // Value: absent, including one planted where a path diagnostic could carry it.
+    assert.ok(!wire.includes(planted), 'a value reached the wire')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the advertised credential names ARE the accepted ones, by construction', () => {
+  // Round three built the advertised list by hand next to a check that named
+  // three keys literally, and they drifted apart within one release: the fix
+  // for a missing Kimi credential named keys the endpoint validator refused, so
+  // the repair could not repair. Same function on both sides now — this asserts
+  // the behaviour rather than the wiring, by applying each advertised name.
+  for (const id of ['zai', 'kimi', 'qwen', 'deepseek']) {
+    const profile = REVIEW_PROFILES[id]
+    const advertised = acceptedCredentialNames(profile)
+    assert.deepEqual(advertised.slice(0, 2), ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY'])
+    const dir = mkdtempSync(join(tmpdir(), `acp-lanes-accept-${id}-`))
+    try {
+      const settings = join(dir, 'lane.json')
+      const base = `https://${profile.endpoint.host}${profile.endpoint.path}`
+      writeFileSync(settings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: base } }))
+      const env = {
+        HOME: '/definitely/nonexistent', PATH: process.env.PATH,
+        [`TMUX_TEAMS_REVIEW_${id.toUpperCase()}_SETTINGS`]: settings,
+      }
+      assert.equal(laneStatus(id, profile, env).problem.code, 'credential_missing',
+        `${id} must start from the credential branch`)
+      // Through the FILE, which is what the fix sentence prescribes: "point
+      // <ENV_FILE> at the file holding it — that file is read for <names>".
+      const envFile = join(dir, 'lane.env')
+      for (const key of advertised) {
+        writeFileSync(envFile, `${key}=fixture\n`)
+        assert.equal(
+          laneStatus(id, profile, { ...env, [`TMUX_TEAMS_REVIEW_${id.toUpperCase()}_ENV_FILE`]: envFile }).configuration,
+          'valid', `${id} advertises ${key} and then refuses it from the file it names`)
+      }
+      // Ambient works only for the lane's OWN declared secrets, and that
+      // asymmetry is deliberate: `ANTHROPIC_AUTH_TOKEN` sitting in an
+      // operator's shell must not silently authenticate a routed lane, so it
+      // is honoured from this lane's files and nowhere else. The test states
+      // it rather than discovering it — it discovered it once already, by
+      // asserting ambient for every name and going red on zai.
+      for (const key of PROVIDER_SECRET_KEYS[id]) {
+        assert.equal(laneStatus(id, profile, { ...env, [key]: 'fixture' }).configuration, 'valid',
+          `${id} declares ${key} as its own secret and then refuses it from the environment`)
+      }
+      for (const key of ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY']) {
+        assert.equal(laneStatus(id, profile, { ...env, [key]: 'fixture' }).problem?.code, 'credential_missing',
+          `${id} accepted an ambient ${key}, which no routed lane forwards`)
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   }
 })
 
@@ -467,7 +598,6 @@ test('a malformed frame is refused with the code the spec names for it', () => {
     ['numeric method', { jsonrpc: '2.0', id: 14, method: 9 }, -32600, null],
     ['a batch', [], -32600, null],
     ['id null', { jsonrpc: '2.0', id: null, method: 'ping' }, -32600, null],
-    ['fractional id', { jsonrpc: '2.0', id: 1.5, method: 'ping' }, -32600, null],
     ['a bare string', 'ping', -32600, null],
     ['array arguments', { jsonrpc: '2.0', id: 12, method: 'tools/call', params: { name: 'acp_lanes', arguments: [] } }, -32602, 12],
     ['unknown tool', { jsonrpc: '2.0', id: 13, method: 'tools/call', params: { name: 'no_such_tool', arguments: {} } }, -32602, 13],
@@ -476,6 +606,17 @@ test('a malformed frame is refused with the code the spec names for it', () => {
     ['undeclared argument', { jsonrpc: '2.0', id: 17, method: 'tools/call', params: { name: 'acp_lanes', arguments: { lane: 'zai' } } }, -32602, 17],
     ['wrongly typed argument', { jsonrpc: '2.0', id: 18, method: 'tools/call', params: { name: 'acp_lane_status', arguments: { lane: 7 } } }, -32602, 18],
     ['unknown method', { jsonrpc: '2.0', id: 19, method: 'tools/nope' }, -32601, 19],
+    // Method-not-found outranks bad params: complaining about arguments to a
+    // method that does not exist sends the reader to the wrong problem.
+    ['unknown method with bad params', { jsonrpc: '2.0', id: 30, method: 'tools/nope', params: [] }, -32601, 30],
+    // Per-method params, all reproduced answering SUCCESS in round four.
+    ['initialize with no params', { jsonrpc: '2.0', id: 31, method: 'initialize' }, -32602, 31],
+    ['initialize with array params', { jsonrpc: '2.0', id: 32, method: 'initialize', params: [] }, -32602, 32],
+    ['initialize with a non-string protocolVersion', { jsonrpc: '2.0', id: 33, method: 'initialize', params: { protocolVersion: 7 } }, -32602, 33],
+    ['initialize with array capabilities', { jsonrpc: '2.0', id: 34, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: [] } }, -32602, 34],
+    ['tools/list with array params', { jsonrpc: '2.0', id: 35, method: 'tools/list', params: [] }, -32602, 35],
+    ['tools/list with a numeric cursor', { jsonrpc: '2.0', id: 36, method: 'tools/list', params: { cursor: 7 } }, -32602, 36],
+    ['ping with array params', { jsonrpc: '2.0', id: 37, method: 'ping', params: [] }, -32602, 37],
   ]
   for (const [label, frame, code, id] of cases) {
     const reply = handle(frame, {})
@@ -497,6 +638,19 @@ test('a malformed frame is refused with the code the spec names for it', () => {
     params: { name: 'no_such_tool-SECRETMARKER', arguments: {} } }, {})
   assert.ok(!JSON.stringify(echo).includes('SECRETMARKER'),
     'the caller\'s own string was reflected into a diagnostic')
+})
+
+test('every id shape the spec calls legal is ACCEPTED, including the ugly one', () => {
+  // The refusals have a table of their own; this is the other half, and it was
+  // missing. Round three demanded `Number.isInteger`, turning JSON-RPC's
+  // "fractional ids SHOULD NOT be used" into a local MUST NOT — so `id: 1.5`
+  // was refused, and refused in the one way that loses the correlation, under
+  // `id: null`. MCP 2025-06-18 types `RequestId` as `string | number`.
+  for (const id of [1, -1, 0, 1.5, 2.5e3, 'a-string-id', '', '0']) {
+    const reply = handle({ jsonrpc: '2.0', id, method: 'ping' }, {})
+    assert.deepEqual(reply, { jsonrpc: '2.0', id, result: {} },
+      `a legal request id was not answered as itself: ${JSON.stringify(id)}`)
+  }
 })
 
 test('a parse failure over stdio is a -32700 with a null id, and the server stays up', async () => {

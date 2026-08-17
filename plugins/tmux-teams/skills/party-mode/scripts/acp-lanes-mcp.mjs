@@ -22,9 +22,18 @@
 // So the containment is about the OUTBOUND boundary, and it is enforced rather
 // than promised:
 //
-//   - No reply carries a credential, its value, or its field name. Tested by
-//     serialising whole replies built from secret-bearing fixtures, on the
-//     success path AND on the failure paths.
+//   - **No reply carries a credential VALUE.** Tested by serialising whole
+//     replies built from secret-bearing fixtures, on the success path AND on
+//     each failure path, for every provider-secret name this plugin knows.
+//   - **Credential field NAMES do go out, deliberately.** This paragraph said
+//     "or its field name" until 2026-08-17, and a Codex advisor reproduced the
+//     contradiction: the `credential_missing` fix sentences name
+//     `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY` and the lane's own keys,
+//     because an operator who is not told the vocabulary writes the wrong key
+//     into the right file and gets the same silence. A name is not a secret; a
+//     value is. What was wrong was the CLAIM, not the bytes — and a contract
+//     that its own code contradicts is worse than a narrower one, because it
+//     teaches a reader to stop checking.
 //   - A failure is reported as a CODE from a closed set with a sentence that is
 //     a constant of this file. The raw exception text never reaches the wire.
 //     That is not tidiness: the previous version exported
@@ -64,7 +73,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { REVIEW_PROFILES, ROUTED_PROFILES, buildAcpLaunch, AGY_BINARY_NAME,
-  AGY_BINARY_CANDIDATE_FORMS, PROVIDER_SECRET_KEYS } from './review-profiles.mjs'
+  AGY_BINARY_CANDIDATE_FORMS, acceptedCredentialNames } from './review-profiles.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PLUGIN_ROOT = join(HERE, '..', '..', '..')
@@ -206,7 +215,12 @@ function executableFixes(id, profile) {
 function credentialFixes(id) {
   if (!ROUTED_PROFILES.has(id)) return []
   const names = overrideNames(id)
-  const accepted = ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', ...(PROVIDER_SECRET_KEYS[id] ?? [])]
+  // The SAME function the validator calls, not a second list that agrees with
+  // it today. Round three built this list here by hand and it drifted from the
+  // check within one release — advertising names the endpoint validator did not
+  // accept, which is a fix sentence that cannot repair the refusal it is
+  // printed for.
+  const accepted = acceptedCredentialNames(REVIEW_PROFILES[id])
   return [
     `if the credential lives outside that JSON, point ${names.credentials} at the env file holding it`,
     `that file is read for ${accepted.join(', ')} — any other name in it is ignored`,
@@ -346,7 +360,53 @@ export function requestProblem(message) {
     // `id: null` is reserved for a response that could not determine one. As a
     // REQUEST id it is invalid, and treating it as "no id" is what made the
     // server drop such a frame in silence.
-    if (!(typeof id === 'string' || (typeof id === 'number' && Number.isInteger(id)))) return 'id'
+    //
+    // Any NUMBER, not any integer. The first version demanded `Number.isInteger`
+    // and a Codex advisor caught it turning a SHOULD NOT into a MUST NOT:
+    // JSON-RPC 2.0 says fractional ids should not be used and MCP's `RequestId`
+    // is `string | number`, so `id: 1.5` is a legal request that this server was
+    // refusing — and refusing in the one way that loses the correlation, under
+    // `id: null`. Being stricter than the spec is not the safe direction when
+    // the cost is dropping legitimate traffic.
+    if (!(typeof id === 'string' || (typeof id === 'number' && Number.isFinite(id)))) return 'id'
+  }
+  return null
+}
+
+// Per-method params, because an envelope check is not a params check. Round
+// three validated `tools/call` and nothing else, so `initialize` with no params,
+// `tools/list` with `params: []` and `ping` with unexpected params all answered
+// SUCCESS — reproduced over the real stdio server in round four.
+//
+// Strict about TYPES, and about `protocolVersion` because it is the field this
+// server acts on. Deliberately NOT strict about the presence of `capabilities`
+// and `clientInfo`, which MCP 2025-06-18 does require of a client: refusing a
+// host that omits one buys this server nothing, and no real host has ever
+// initialized it, so the cost of being wrong is a dead feature nobody can
+// diagnose. That asymmetry is the reason, and it is the line to revisit first if
+// a conformance failure is ever what needs finding.
+// Every method this server answers. Pinned as a set rather than inferred from
+// the if-chain below, so a method that gains params validation and a method
+// that gains a handler cannot drift apart.
+export const KNOWN_METHODS = new Set(['initialize', 'ping', 'tools/list', 'tools/call'])
+
+export function paramsProblem(method, params) {
+  const isObject = params === undefined
+    || (params !== null && typeof params === 'object' && !Array.isArray(params))
+  if (!isObject) return `${method} params must be an object`
+  if (method === 'initialize') {
+    if (params === undefined) return 'initialize requires params'
+    if (typeof params.protocolVersion !== 'string') return 'initialize requires a string protocolVersion'
+    for (const key of ['capabilities', 'clientInfo']) {
+      const value = params[key]
+      if (value === undefined) continue
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+        return `initialize ${key} must be an object`
+      }
+    }
+  }
+  if (method === 'tools/list' && params?.cursor !== undefined && typeof params.cursor !== 'string') {
+    return 'tools/list cursor must be a string'
   }
   return null
 }
@@ -388,6 +448,12 @@ export function handle(message, env = process.env) {
   // frame is known to be well formed. An earlier version treated `id === null`
   // as a notification too, so a malformed request vanished without a word.
   if (!('id' in message)) return null
+  // Method-not-found outranks bad params: a caller naming a method this server
+  // does not implement has to hear THAT, not a complaint about the arguments to
+  // something that does not exist.
+  if (!KNOWN_METHODS.has(method)) return rpcError(id, RPC_METHOD_NOT_FOUND, 'method not found')
+  const badParams = paramsProblem(method, params)
+  if (badParams) return rpcError(id, RPC_INVALID_PARAMS, badParams)
   if (method === 'initialize') {
     return {
       jsonrpc: '2.0',

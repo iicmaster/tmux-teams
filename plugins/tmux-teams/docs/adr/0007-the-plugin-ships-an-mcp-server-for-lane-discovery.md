@@ -63,13 +63,27 @@ this server is about what an operator can ask. Adding a discovery surface for th
 operator does not weaken the containment seam, and if it ever looks like it does,
 the seam wins.
 
-**It reads credentials. It never returns them.** This paragraph said "none is
-ever read" until a Codex advisor round-table refused the wording on 2026-08-16
-and was right: deciding validity means calling `buildAcpLaunch`, which reads the
-settings JSON, reads the credential file and copies provider secrets out of the
-environment, and discarding a value you asked for is not declining to read it.
-Master chose the honest version of the requirement over the flattering one — it
-reads them, and nothing it returns carries them.
+**It reads credentials. It never returns a credential VALUE.** This paragraph
+said "none is ever read" until a Codex advisor round-table refused the wording on
+2026-08-16 and was right: deciding validity means calling `buildAcpLaunch`, which
+reads the settings JSON, reads the credential file and copies provider secrets
+out of the environment, and discarding a value you asked for is not declining to
+read it. Master chose the honest version of the requirement over the flattering
+one.
+
+**And the sentence had to be narrowed a second time, for the same reason.** It
+said values *and field names* never leave, while the shipped code names
+`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY` and the lane's own keys in the
+`credential_missing` repair — put there deliberately in round three, because an
+operator who is not told the vocabulary writes the wrong key into the right file
+and gets the same silence. Round four reproduced the contradiction. A name is
+not a secret; a value is. What was wrong was the CLAIM, and a claim its own code
+contradicts is worse than a narrower one because it teaches a reader to stop
+checking. The guard that missed it is the more interesting half: the secret
+matrix asserted no field name reached the wire and passed, because every fixture
+in it failed at `endpoint_missing` — where no credential sentence is produced.
+**A guard that holds by never reaching the branch it guards is not a guard**, and
+there is now a fixture that lands on that branch on purpose.
 
 **And "never returns them" survived one more round than it deserved.** A third
 advisor round reproduced a credential on the wire with the credential FIELDS
@@ -144,6 +158,41 @@ executable check, so a mode-0644 file, or a directory with the right name,
 reported a valid configuration while executing it failed `EACCES`. AGY is not in
 the unchecked set — executable discovery is the one parent-side fact it claims —
 so that green was false about its own boundary.
+
+## What the fourth round changed
+
+Round three fixed the Zai credential repair by widening the LOADER and stopped
+there. Round four found the same defect alive in the Kimi lane: the endpoint
+check still named three keys literally, so `KIMI_API_KEY` was read and then not
+accepted from any source, while this server printed it as the repair. **The half
+that shipped was the half that advertises.** Both sides now call one function,
+`acceptedCredentialNames`, so the advertised vocabulary and the accepted
+vocabulary cannot drift again — and the guard applies each advertised name and
+requires the state to change, rather than asserting that a sentence mentions it.
+
+Writing that guard surfaced an asymmetry worth stating: `ANTHROPIC_AUTH_TOKEN`
+and `ANTHROPIC_API_KEY` are honoured from a routed lane's own FILES and not from
+the ambient environment, while a lane's declared secrets work from either. That
+is deliberate — a token sitting in an operator's shell must not silently
+authenticate a routed lane — and it was undocumented until a test asserted the
+simpler thing and went red.
+
+Two protocol answers were also wrong in the other direction, which is the
+direction that is easy to miss because it looks like rigour. `Number.isInteger`
+turned JSON-RPC's "fractional ids SHOULD NOT be used" into a local MUST NOT, so
+`id: 1.5` — legal under MCP's `string | number` — was refused, and refused under
+`id: null`, which loses the correlation. And only `tools/call` validated its
+params, so `initialize` with none, `tools/list` with an array and `ping` with
+unexpected params all answered success.
+
+The per-method validation stops deliberately short of MCP's full
+`InitializeRequest` requirement: `protocolVersion` is required because it is the
+field this server acts on, while `capabilities` and `clientInfo` are type-checked
+when present and not demanded. Refusing a host that omits one buys this server
+nothing, and **no real host has ever initialized it**, so the cost of being wrong
+is a dead feature nobody can diagnose. That asymmetry is a judgement, not a
+reading of the spec, and it is the first line to revisit if conformance is ever
+what needs finding.
 
 ## The argument against
 

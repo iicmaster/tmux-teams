@@ -717,9 +717,32 @@ export function validateRoutedEndpoint(profile, env) {
       url.search || url.hash || url.pathname.replace(/\/$/, '') !== pinned.path) {
     throw new TypeError(`${profile.id} review endpoint must be ${expected}`)
   }
-  if (!env.ANTHROPIC_AUTH_TOKEN && !env.ANTHROPIC_API_KEY && !env.ZAI_API_KEY) {
+  if (!acceptedCredential(profile, env)) {
     throw new TypeError(`${profile.id} review endpoint requires an explicit provider credential`)
   }
+}
+
+// The list of names that COUNT as this lane's credential, and it has to be the
+// same list the loader reads and the same list the diagnostic advertises.
+//
+// It was not. Until 2026-08-17 this check named three keys literally —
+// `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `ZAI_API_KEY` — which is why
+// `ZAI_API_KEY` worked and `KIMI_API_KEY` did not, from any source. Round three
+// widened `acceptedRoutedKeys` so the loader would READ a lane's own secret
+// names, and stopped there; a Codex advisor reproduced the consequence in round
+// four: the Kimi lane repeating the exact defect that had just been "fixed" for
+// Zai, with `acp-lanes-mcp.mjs` printing the key names as the repair.
+//
+// **The half that shipped was the half that advertises.** Derived from
+// `providerSecrets` now, so a lane added later cannot inherit the gap — and an
+// empty list is still a statement: `qwen` and `deepseek` forward nothing of
+// their own and are authenticated by the ANTHROPIC_* pair alone.
+export function acceptedCredentialNames(profile) {
+  return ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', ...(providerSecrets[profile.id] ?? [])]
+}
+
+function acceptedCredential(profile, env) {
+  return acceptedCredentialNames(profile).some((key) => Boolean(env?.[key]))
 }
 
 function executablePath(source) {
