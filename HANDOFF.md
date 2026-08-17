@@ -5,29 +5,43 @@ Written 2026-08-17 through `bmad-party-mode`.
 
 ## 1. READ THIS FIRST
 
-- Branch `fix/acp-dispatch-detached`, pushed, and it is the **v0.32.0 release
-  branch** carrying BOTH halves: the MCP lane-discovery server (merged in from
-  `feat/acp-lane-mcp`) and `acp-dispatch.mjs`. Scope set by Master, 2026-08-17.
-- `main` is at v0.31.0 — merged, tagged, released, marketplace updated,
-  submodule pinned. Nothing is owed on it.
-- **The release is BLOCKED on two things, both outside the code.** A sixth
-  `codex-advisor` round has not returned a verdict on the current bytes, and the
-  `chatgpt-codex-connector` review the merge requires is absent — its account
-  quota is exhausted, which per `CLAUDE.md` is neither a pass nor a failure.
-  Only Master waives that.
-- **Six advisor rounds and one automated PR review have read this branch, and
-  the last two converged.** Round five's four dispatcher blockers were the same
-  four the PR reviewer raised independently, without either seeing the other:
-  the unvalidated task id used to build filesystem paths, `wait` succeeding on
-  an outbox file before terminal settlement, a non-terminal state with a
-  termination reason counted as ended, and a one-second slack that let a
-  sub-second retry inherit its predecessor's identity. All fixed.
-- A three-family panel passed the pre-round-three bytes 3/3 with zero findings,
-  twice, while an advisor was blocking them. **The panel reads a static packet
-  and cannot run anything.** That is not a criticism of the panel — it is what
-  the panel is for — but it is why the advisor goes first. See DO NOT.
-- The panel is still OWED for this release: `node scripts/gate-required.mjs`
-  answers REQUIRED. It is spent LAST, on the bytes that will ship.
+- Branch `fix/acp-dispatch-detached`, pushed. It is the **v0.32.0 release
+  branch** and carries both halves: the MCP lane-discovery server and
+  `acp-dispatch.mjs`. Scope set by Master, 2026-08-17.
+- `main` is at v0.31.0 and owes nothing.
+- **What is left is one gate and five mechanical steps.** The three-model panel
+  on the frozen bytes, then: bump seven places, render/publish/record the
+  roadmap, merge, tag the merged sha, pin the submodule in `~/agent-skills`.
+- **The bytes are FROZEN at `3366c88` while the panel reads them, and that
+  discipline is the finding, not a formality.** Two earlier panel runs were
+  wasted because findings were fixed while the run was still going: the
+  remaining lanes then read bytes that no longer existed, and eighteen verdicts
+  arrived naming a sha four commits behind HEAD. **A panel is evidence about one
+  sha or it is not evidence.** `panel-superseded/` holds those runs as a record
+  of what they found; none of them counts for this release.
+- **`HANDOFF.md` and `README.md` are not deciding files** (`scripts/gate-required.mjs`
+  names the thirteen that are), which is why this section can be written during
+  a freeze.
+
+### What the reviewing has actually cost, because the next person will want to know
+
+Nine `codex-advisor` rounds, one automated PR review, and four panel runs. Well
+over thirty findings, every one fixed with a guard a mutation turns red. The
+rate did not fall off — round nine and panel round three were still finding
+real defects, including one that had taken ownership of the happy path
+(`watchBoot` calling a fast successful lane "a consultation that never
+started").
+
+**Two things converged independently and are worth more than either alone.**
+Round five's four dispatcher blockers were the same four the automated PR
+reviewer raised without either seeing the other. And a panel lane and an advisor
+lane separately refused the same overclaim in ADR 0007.
+
+**The reviewers also contradicted each other, correctly.** A panel told me the
+tolerant `initialize` was wrong; two commits later a panel told me the strict
+`ping` was. Both were right — the line is the spec, not a preference in either
+direction, and the second finding is the one that would have broken conforming
+traffic.
 
 ## 2. HOW TO VERIFY
 
@@ -171,6 +185,22 @@ release, not something to do after it.
   pid file from the raw value, so `../../../victim` truncated a file outside the
   run directory. Copy the rule, name its source, and assert the two stay
   identical; that answers the drift objection without keeping the hole.
+- **Do not fix a finding while the panel that found it is still running.** It
+  reads a static packet built from one sha; a fix mid-run means the remaining
+  lanes judge bytes that no longer exist, and the run ends with verdicts nobody
+  can cite. Two runs were spent learning this. Freeze, run, collect, then fix.
+- **Do not leave a long job in a killable foreground — including a job that
+  supervises unkillable ones.** The panel script ran as a harness background
+  task, was killed mid-run, and its lanes survived because THEY are detached
+  while the thing collecting their answers was not. One verdict had to be
+  recovered by hand. `nohup … &` for the supervisor too.
+- **Do not let a test leak the directory it made.** `tests/acp-dispatch.test.mjs`
+  had 25 `mkdtempSync` calls and one `rmSync`; several of those hold a real
+  lane's logs and receipts. Enough runs took a 228 GB volume to zero — twice —
+  and stopped every tool that writes, including the ones needed to fix it.
+  Register and remove in `after()`. The panel runner had the same shape and was
+  found only after it cost the machine a second time: **after fixing a leak, go
+  and look for the same shape somewhere else.**
 - **Do not push a release to `main`.** See DECIDED.
 - **Do not `rm -rf` an ACP run directory before recording its session id.** An
   outbox-less dispatch is often recoverable with `ACP_RESUME`.
