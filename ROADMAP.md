@@ -289,7 +289,10 @@ slate.
   costs is stated, along with the strongest argument against the decision.
 - **ADR 0002** — `opened` names a human decision; the runner never invents one.
 - **ADR 0007** — the plugin ships one read-only MCP server for lane discovery.
-  It reads credentials and never returns them, and it does not reopen ADR 0003:
+  It reads credentials and never returns a credential VALUE — field NAMES are
+  diagnostic vocabulary and go out on purpose, which ADR 0007 now states and
+  this page contradicted until a panel lane caught the two disagreeing. It does
+  not reopen ADR 0003:
   a DISPATCHED agent still receives none.
 
 ## How this page stays true

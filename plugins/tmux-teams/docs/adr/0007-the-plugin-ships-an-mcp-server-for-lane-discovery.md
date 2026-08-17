@@ -57,8 +57,12 @@ trust in the one feature meant to explain a refusal.
 
 ## The three lines it does not cross
 
-**ADR 0003 stands.** A dispatched agent still receives no MCP server, enforced at
-runtime and asserted by the suite. That guarantee is about what a lane is handed;
+**ADR 0003 stands, and what "enforced" means here is narrower than the word
+suggests.** A dispatched agent still receives no MCP server — the runner
+REQUESTS `mcpServers: []` and the suite asserts that request. A panel lane
+pushed back on the categorical phrasing and was right: what has been observed is
+a mock receiving an empty request, not a real child's tool inventory. The
+guarantee is about what is asked for. That guarantee is about what a lane is handed;
 this server is about what an operator can ask. Adding a discovery surface for the
 operator does not weaken the containment seam, and if it ever looks like it does,
 the seam wins.
@@ -95,8 +99,12 @@ sentence now carries `$HOME/.local/bin/agy` unresolved — a constant, which is
 also the clearer thing to print at an operator — and the suite pins a
 credential hidden inside `HOME` as its own case.
 
-The containment is therefore entirely on the OUTBOUND boundary, and it is
-enforced rather than asserted. A failure is reported as a code from a closed set
+The containment is therefore entirely on the OUTBOUND boundary, and the strength
+of that word is worth stating exactly, because a panel lane challenged it: the
+closed diagnostic set and the constant sentences are STRUCTURAL — a value cannot
+reach the wire through a sentence that is a literal. The no-secret matrix is a
+TEST ASSERTION over fixtures, which is evidence and not a mechanism. Both are
+real; only the first is enforcement. A failure is reported as a code from a closed set
 with a sentence that is a constant of the module; the raw exception text never
 reaches the wire, because the first version exported `String(error.message)`
 verbatim and any future diagnostic downstream that interpolated a token would
