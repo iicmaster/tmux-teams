@@ -29,7 +29,7 @@ Read the system in this order:
 | `scripts/pull-controller.mjs` | receiver-owned pulls, route completion and WIP enforcement |
 | `scripts/loop-runner.mjs` | the ordered tick: harvest → pull → dispatch → escalate |
 | `scripts/acp-companion.mjs` | the ACP leg; its custody-ledger authority is limited to its own `assigned` and `delivered` events |
-| `scripts/acp-dispatch.mjs` | the operator's way in to that leg — detaches it into its own process group so the calling shell's cap is not the lane's deadline, and `status <cwd> <task-id>` reads back liveness, outbox and the resume command |
+| `scripts/acp-dispatch.mjs` | the operator's way in to that leg — detaches it into its own process group so the calling shell's cap is not the lane's deadline; `status <cwd> <task-id>` reads back liveness, outbox and the resume command, and `wait <cwd> <task-id> [max-sec]` blocks until the turn ends EITHER way. It never kills a lane, including its own |
 | `scripts/pulse.mjs` + `scripts/graph.mjs` + `scripts/kanban.mjs` | live transport, wiring and custody projections from the same evidence |
 | `scripts/kms.mjs` | immutable run memory; never a substitute for verification |
 

@@ -125,10 +125,25 @@ answer is a failed consultation — say so rather than passing it on.
    `identity_status: matched`. If the installed ACP agent does not advertise
    the requested model/effort, the adapter fails closed before the prompt.
 
-3. **Read the outbox.** No outbox file means no advice, whatever scrolled past
+3. **Arm a watcher, because the dispatch RETURNS while the lane runs.** That is
+   the point of it, and it is also how a finished review sits unread. Run this
+   in the BACKGROUND — killing the waiter does not touch the lane:
+
+   ```bash
+   node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
+     wait <cwd> <task-id> 3600
+   ```
+
+   It exits `0` when the outbox is written, `2` when the turn ENDED without one
+   (resume — see Failure modes), and `1` when the wait budget ran out with the
+   lane still going. Both terminal outcomes end the wait, on purpose: a watcher
+   that looked only for an outbox would stay silent through a turn that wrote
+   nothing, and silence reads exactly like still-running.
+
+4. **Read the outbox.** No outbox file means no advice, whatever scrolled past
    in the terminal.
 
-4. **Report identity with the advice** — the acknowledged model and effort beside
+5. **Report identity with the advice** — the acknowledged model and effort beside
    the round-table, so a reader never has to take provenance on trust.
 
 ## Using both advisors on one question

@@ -173,12 +173,27 @@ consensus is itself a finding, usually that the question was too narrow.
    prove which vendor served it — the endpoint does that, and it is the caller's
    job to say so.
 
-3. **Read the outbox.** No outbox file means no advice. A run that printed to
+3. **Arm a watcher, because the dispatch RETURNS while the lane runs.** That is
+   the point of it, and it is also how a finished answer sits unread. Run this in
+   the BACKGROUND — killing the waiter does not touch the lane:
+
+   ```bash
+   node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
+     wait <cwd> <task-id> 3600
+   ```
+
+   `0` = the outbox is written · `2` = the turn ENDED without one · `1` = the
+   wait budget ran out while the lane is still going. It ends on BOTH terminal
+   outcomes on purpose: a watcher that looked only for an outbox would stay
+   silent through a turn that wrote nothing, and silence reads exactly like
+   still-running.
+
+4. **Read the outbox.** No outbox file means no advice. A run that printed to
    the terminal and wrote nothing has produced no consultation, however good the
    text looked scrolling past — this has happened with a real model, whose
    answer was correct and landed nowhere a reader could find it.
 
-4. **Report identity with the advice** — the acknowledged alias, the bin or
+5. **Report identity with the advice** — the acknowledged alias, the bin or
    profile, AND the endpoint it routes to. On a routed seat the alias alone is
    not provenance; that is the whole point of the table above.
 

@@ -1,11 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { statusReport, formatStatus, resumeCommand, outboxPath, strayOutboxes, TERMINAL_LIVENESS_STATES }
+import { statusReport, formatStatus, resumeCommand, outboxPath, strayOutboxes, TERMINAL_LIVENESS_STATES,
+  waitForSettlement, EXIT_OUTBOX, EXIT_RUNNING, EXIT_NO_OUTBOX, pidPath, recordedPid }
   from '../plugins/tmux-teams/skills/tmux-teams/scripts/acp-dispatch.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -191,6 +192,129 @@ test('the caller waits for an ACKNOWLEDGED identity, and says so plainly when it
     'the lane died when its caller stopped waiting for it')
 })
 
+test('wait ends on BOTH terminal outcomes, because silence reads exactly like still-running', async () => {
+  // Detaching answered "the lane must not die". It created "nobody is told when
+  // it ends", and Master asked the obvious question. A watcher that only looks
+  // for an outbox stays quiet through a turn that ended writing nothing, which
+  // is the failure round three actually had.
+  const settled = mkdtempSync(join(tmpdir(), 'acp-dispatch-wait-none-'))
+  mkdirSync(join(settled, '.tmux-teams', 'liveness'), { recursive: true })
+  writeFileSync(join(settled, '.tmux-teams', 'liveness', 'lane.json'),
+    JSON.stringify({ liveness_state: 'failed', termination_reason: 'no_outbox', worker: 'codex' }))
+  const said = []
+  assert.equal(await waitForSettlement(settled, 'lane', 5000, { out: (l) => said.push(l), pollMs: 10 }),
+    EXIT_NO_OUTBOX, 'a turn that ended without an outbox did not end the wait')
+  assert.match(said.join('\n'), /termination_reason: no_outbox/)
+
+  // And it ends on the good outcome, arriving mid-wait rather than up front.
+  const arriving = mkdtempSync(join(tmpdir(), 'acp-dispatch-wait-late-'))
+  mkdirSync(join(arriving, '.tmux-teams', 'liveness'), { recursive: true })
+  mkdirSync(join(arriving, '.mailbox-out'), { recursive: true })
+  writeFileSync(join(arriving, '.tmux-teams', 'liveness', 'lane.json'),
+    JSON.stringify({ liveness_state: 'active', termination_reason: 'none' }))
+  const late = setTimeout(() => writeFileSync(outboxPath(arriving, 'lane'), 'the answer\n'), 300)
+  assert.equal(await waitForSettlement(arriving, 'lane', 20000, { out: () => {}, pollMs: 25 }), EXIT_OUTBOX)
+  clearTimeout(late)
+
+  // A lane still going when the budget runs out is reported as still going, and
+  // the sentence has to say the lane was not touched — that is the whole
+  // contract of a waiter that is a separate process from the thing it watches.
+  const running = mkdtempSync(join(tmpdir(), 'acp-dispatch-wait-run-'))
+  mkdirSync(join(running, '.tmux-teams', 'liveness'), { recursive: true })
+  writeFileSync(join(running, '.tmux-teams', 'liveness', 'lane.json'),
+    JSON.stringify({ liveness_state: 'tool_running', termination_reason: 'none' }))
+  const lines = []
+  assert.equal(await waitForSettlement(running, 'lane', 120, { out: (l) => lines.push(l), pollMs: 20 }),
+    EXIT_RUNNING)
+  assert.match(lines.join('\n'), /THE LANE IS UNTOUCHED/)
+})
+
+test('a wait that gives up does not reap the lane it was waiting for', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX process groups')
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-wait-live-'))
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+  const releaseFile = join(cwd, 'release')
+  const stageFile = join(cwd, 'stages')
+
+  const caller = spawn(process.execPath, [DISPATCH, 'mock', cwd, 'patient', brief, '120'], {
+    cwd,
+    detached: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: laneEnv({
+      MOCK_GATE_STAGE: 'prompt',
+      MOCK_GATE_RELEASE_FILE: releaseFile,
+      MOCK_GATE_WATCHDOG_MS: '60000',
+      MOCK_STAGE_FILE: stageFile,
+    }),
+  })
+  let out = ''
+  caller.stdout.on('data', (chunk) => { out += chunk })
+  await waitFor(() => existsSync(stageFile) && readFileSync(stageFile, 'utf8').includes('prompt-reached'),
+    30000, 'the adapter to reach session/prompt')
+  // Wait for the caller to FINISH before reading what it said. The gate is on
+  // the adapter and the report is on the caller, so `prompt-reached` and a
+  // flushed stdout race — asserting on `out` here passed alone and failed 3/3
+  // in the file, on an empty string.
+  await waitFor(() => caller.exitCode !== null, 30000, 'the caller to report and exit')
+  // The dispatch report has to hand the operator this command, or the answer
+  // exists and nobody is given it.
+  assert.match(out, /wait:\s+node .*acp-dispatch\.mjs wait /)
+
+  const code = await waitForSettlement(cwd, 'patient', 400, { out: () => {}, pollMs: 50 })
+  assert.equal(code, EXIT_RUNNING, 'a gated lane was reported as settled')
+
+  writeFileSync(releaseFile, 'go\n')
+  await waitFor(() => existsSync(outboxPath(cwd, 'patient')), 60000,
+    'the lane died when its waiter gave up on it')
+})
+
+test('a previous run\'s identity is never reported as this dispatch\'s', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX process groups')
+  // Measured on 2026-08-17, resuming a lane into the run directory its dead
+  // predecessor had used. The caller printed
+  // `effective_identity: gpt-5.6-sol[max] (matched)` and a session id — read
+  // straight out of the DEAD run's snapshot, one second before the live run
+  // wrote `identity_status: missing`. On a plugin whose whole subject is
+  // provenance, that is the worst small bug on offer.
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-stale-'))
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+  const releaseFile = join(cwd, 'release')
+  mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
+  // The predecessor: finished, identified, and a plausible thing to believe.
+  writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'stale.json'), JSON.stringify({
+    started_at: '2026-08-16T21:36:10.138Z',
+    observed_at: '2026-08-16T21:46:10.092Z',
+    liveness_state: 'tool_running',
+    termination_reason: 'none',
+    effective_identity: 'GHOST-OF-A-PREVIOUS-RUN[max]',
+    identity_status: 'matched',
+  }))
+
+  const caller = spawn(process.execPath, [DISPATCH, 'mock', cwd, 'stale', brief, '120'], {
+    cwd,
+    detached: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: laneEnv({
+      ACP_DISPATCH_BOOT_SEC: '30',
+      MOCK_GATE_STAGE: 'prompt',
+      MOCK_GATE_RELEASE_FILE: releaseFile,
+      MOCK_GATE_WATCHDOG_MS: '60000',
+    }),
+  })
+  let out = ''
+  caller.stdout.on('data', (chunk) => { out += chunk })
+  await waitFor(() => caller.exitCode !== null, 60000, 'the caller to report and exit')
+  assert.doesNotMatch(out, /GHOST-OF-A-PREVIOUS-RUN/,
+    `the caller reported a dead run's identity as this dispatch's: ${out}`)
+  assert.match(out, /effective_identity: \S+ \((matched|unverified)\)/,
+    `no identity of its own was reported: ${out}`)
+
+  writeFileSync(releaseFile, 'go\n')
+  await waitFor(() => existsSync(outboxPath(cwd, 'stale')), 60000, 'the lane to finish')
+})
+
 test('the caller reports the outbox path it derived, and never a second spelling of it', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-outbox-'))
   mkdirSync(join(cwd, '.mailbox-out'), { recursive: true })
@@ -246,6 +370,96 @@ test('status reads the companion\'s own liveness vocabulary, not a guess at it',
     assert.equal(/try RESUME/.test(text), settled && Boolean(report.sessionId),
       `${state}/${reason} offered resume advice for a turn that has not ended`)
   }
+})
+
+test('a lane that stopped reporting is not reported as running, however alive its last snapshot looked', () => {
+  // The real numbers, from 2026-08-17. A review lane died when the disk filled
+  // — its log ends with the companion failing to persist its own snapshot with
+  // ENOSPC — so it never wrote a terminal state and its last record still says
+  // `tool_running`. `status` went on calling that RUNNING for nearly four
+  // hours, and a `wait` built on it would never have returned. That is this
+  // file trusting a file its writer can no longer correct for the third time.
+  //
+  // `next_lease_expiry_at` is the companion's OWN statement of when it should
+  // next have been heard from, so no threshold here is invented.
+  const dead = {
+    liveness_state: 'tool_running',
+    termination_reason: 'none',
+    observed_at: '2026-08-16T22:54:54.379Z',
+    next_lease_expiry_at: '2026-08-16T23:34:54.324Z',
+    meaningful_progress_count: 461,
+    worker: 'codex',
+    requested_model: 'gpt-5.6-sol',
+    requested_reasoning_effort: 'max',
+  }
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-lease-'))
+  mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
+  mkdirSync(join(cwd, '.tmux-teams', 'sessions'), { recursive: true })
+  writeFileSync(join(cwd, '.tmux-teams', 'sessions', 'lane'), '01a00cbb-b70c-7670-b9b3-b523a70aa393\n')
+  writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'lane.json'), JSON.stringify(dead))
+
+  const report = statusReport(cwd, 'lane')
+  assert.equal(report.livenessState, 'tool_running', 'the fixture must LOOK alive or it tests nothing')
+  assert.equal(report.notReporting, true)
+  assert.equal(report.settled, true, 'a lane that stopped reporting would hang a waiter forever')
+  const text = formatStatus(report)
+  assert.match(text, /NOT REPORTING — its own lease expired/,
+    'the sentence must say WHICH signal judged it, not merely that something did')
+  assert.match(text, /Last snapshot 2026-08-16T22:54:54\.379Z/)
+  // And it still offers the recovery, because a session that stopped reporting
+  // is exactly the one worth resuming rather than re-paying for.
+  assert.match(text, /ACP_RESUME="01a00cbb-b70c-7670-b9b3-b523a70aa393"/)
+
+  // A lease still in the future is a lane still running, and must NOT be
+  // swept up by this — otherwise every healthy lane is declared dead.
+  const alive = mkdtempSync(join(tmpdir(), 'acp-dispatch-lease-ok-'))
+  mkdirSync(join(alive, '.tmux-teams', 'liveness'), { recursive: true })
+  writeFileSync(join(alive, '.tmux-teams', 'liveness', 'lane.json'), JSON.stringify({
+    ...dead,
+    observed_at: new Date().toISOString(),
+    next_lease_expiry_at: new Date(Date.now() + 20 * 60 * 1000).toISOString(),
+  }))
+  const healthy = statusReport(alive, 'lane')
+  assert.equal(healthy.notReporting, false)
+  assert.equal(healthy.settled, false)
+  assert.doesNotMatch(formatStatus(healthy), /NOT REPORTING/)
+})
+
+test('a dead process is noticed immediately, without waiting out the lease', () => {
+  // The lease is correct and SLOW: `next_lease_expiry_at` sits up to fifteen
+  // minutes out, so a lane that died two minutes ago still reads as running.
+  // That happened twice on 2026-08-17 while a recovery was waiting on it. The
+  // dispatcher records the pid it spawned, so the immediate answer exists.
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-pid-'))
+  mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
+  mkdirSync(join(cwd, '.tmux-teams', 'dispatch-pids'), { recursive: true })
+  // A snapshot that looks alive AND a lease still well in the future: the lease
+  // check alone would call this running.
+  writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'lane.json'), JSON.stringify({
+    liveness_state: 'tool_running',
+    termination_reason: 'none',
+    observed_at: new Date().toISOString(),
+    next_lease_expiry_at: new Date(Date.now() + 20 * 60 * 1000).toISOString(),
+  }))
+
+  // This process is alive by definition, so it stands in for a healthy lane.
+  writeFileSync(pidPath(cwd, 'lane'), `${process.pid}\n`)
+  const alive = statusReport(cwd, 'lane')
+  assert.equal(alive.notReporting, false, 'a live pid was reported as gone')
+  assert.equal(alive.settled, false)
+
+  // A pid that cannot exist.
+  writeFileSync(pidPath(cwd, 'lane'), '2147483646\n')
+  const dead = statusReport(cwd, 'lane')
+  assert.equal(dead.notReporting, true, 'a dead pid was reported as running because the lease had not expired')
+  assert.equal(dead.settled, true, 'a waiter would have hung on this')
+  assert.match(formatStatus(dead), /NOT REPORTING — its process is gone/)
+
+  // And `status` still works against a run directory this dispatcher did not
+  // create, where there is no pid to read.
+  rmSync(pidPath(cwd, 'lane'))
+  assert.equal(recordedPid(cwd, 'lane'), null)
+  assert.equal(statusReport(cwd, 'lane').notReporting, false)
 })
 
 test('status hands over the resume command with the session id already in it', () => {
