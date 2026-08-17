@@ -551,3 +551,51 @@ test('no shipped client string carries a backtick, whoever adds the next one', a
     assert.ok(found.includes(expected), `${expected} was not discovered — the scan is looking in the wrong place`)
   }
 })
+
+test('an advisor skill that claims read-only ships the switch that makes it read-only', () => {
+  // A release panel read both advisor frontmatters — "Read-only: it advises, it
+  // never edits" — against the dispatch commands under them and found nothing
+  // enforcing it. Codex children DEFAULT to INITIAL_AGENT_MODE=agent-full-access,
+  // so the documented command launched a full-access advisor and the brief was
+  // the only thing asking it to behave. `read-only` is one of the three modes
+  // the companion accepts, so this was an unenforced claim, not an
+  // unenforceable one.
+  const codex = readFileSync(join(PLUGIN, 'skills', 'codex-advisor', 'SKILL.md'), 'utf8')
+  const claude = readFileSync(join(PLUGIN, 'skills', 'claude-advisor', 'SKILL.md'), 'utf8')
+
+  // every codex dispatch or resume block carries the mode
+  // Truncate at the CLOSING fence. `split('```bash')` runs each piece on to the
+  // next fenced block, so a piece includes the prose after its own command —
+  // and the prose here names the very flag being asserted, which made the check
+  // pass on an explanation instead of on a command. A mutation caught it: the
+  // flag was deleted from a real command and every test stayed green. Same
+  // vacuous-assertion shape a panel lane had just found in the traversal test.
+  const commandBlocks = (text) => text.split('```bash').slice(1)
+    .map((b) => b.split('```')[0])
+    .filter((b) => /acp-dispatch\.mjs[\s\\]+\n?\s*(codex|claude) </.test(b))
+
+  const codexBlocks = commandBlocks(codex)
+  assert.ok(codexBlocks.length >= 2, `expected dispatch and recovery blocks, got ${codexBlocks.length}`)
+  for (const block of codexBlocks) {
+    assert.match(block, /INITIAL_AGENT_MODE="read-only"/,
+      `a codex advisor command runs at the full-access default:\n${block.slice(0, 400)}`)
+  }
+
+  // and the identity guarantee is not fail-open: the default mode CONTINUES
+  // after a receipt-persistence failure and records `receipt_digest: none`, so
+  // an advisor could report an identity resting on a receipt never written.
+  for (const [name, text] of [['codex-advisor', codex], ['claude-advisor', claude]]) {
+    const blocks = commandBlocks(text)
+    // The count is pinned too: a block that stops MATCHING is indistinguishable
+    // from a block that passes, and `> 0` cannot tell them apart.
+    assert.equal(blocks.length, 2, `${name} should document a dispatch and a recovery command`)
+    for (const block of blocks) {
+      assert.match(block, /ACP_SESSION_RECEIPT_REQUIRED=1/,
+        `${name} runs a lane whose receipt may silently not exist:\n${block.slice(0, 400)}`)
+    }
+  }
+
+  // The Claude lane has no mode switch, so it must not promise one it lacks.
+  assert.doesNotMatch(claude, /Read-only: it advises, it never edits/,
+    'the claude advisor promises an enforcement it has no mechanism for')
+})

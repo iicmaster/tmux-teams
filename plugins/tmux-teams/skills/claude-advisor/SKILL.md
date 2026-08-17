@@ -1,6 +1,6 @@
 ---
 name: claude-advisor
-description: "Consult a Claude-protocol advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. Defaults to the top Claude model (fable at the session's effort); optionally takes a routing pair — $claude-advisor <bin> <model> — to reach k3, qwen3.8-max, deepseek or glm through a routed profile. Use when the user invokes $claude-advisor, asks for a second opinion, or names a specific advisor seat. Read-only: it advises, it never edits."
+description: "Consult a Claude-protocol advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. Defaults to the top Claude model (fable at the session's effort); optionally takes a routing pair — $claude-advisor <bin> <model> — to reach k3, qwen3.8-max, deepseek or glm through a routed profile. Use when the user invokes $claude-advisor, asks for a second opinion, or names a specific advisor seat. Read-only by brief and by this skill issuing no write instruction; unlike the Codex lane there is no mode switch to enforce it."
 ---
 
 # Claude Advisor
@@ -149,6 +149,7 @@ consensus is itself a finding, usually that the question was too narrow.
    refuses this file if it teaches the killable form. Default seat:
 
    ```bash
+   ACP_SESSION_RECEIPT_REQUIRED=1 \
    ANTHROPIC_MODEL="claude-fable-5" \
    ACP_EXPECT_MODEL="claude-fable-5" \
    node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
@@ -158,11 +159,25 @@ consensus is itself a finding, usually that the question was too narrow.
    Routed seat — the config-dir form, which is the one verified on this machine:
 
    ```bash
+   ACP_SESSION_RECEIPT_REQUIRED=1 \
    CLAUDE_CONFIG_DIR="$HOME/.config/claude-profiles/<profile>" \
    ACP_MODEL="<model>" \
    node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
      claude <cwd> <task-id> <brief-file> [stall-sec]
    ```
+
+   **`ACP_SESSION_RECEIPT_REQUIRED=1` on both, and it was missing from both.**
+   The default mode CONTINUES after a receipt-persistence failure and records
+   `receipt_digest: none`, so the identity this skill reports could rest on a
+   receipt that was never written — a release panel called the guarantee
+   fail-open and it was right. **A consultation with no receipt is a failed
+   consultation.** Report it as one; do not report an identity the run did not
+   prove.
+
+   There is no `INITIAL_AGENT_MODE` here — that is Codex's control, and this
+   lane has no equivalent switch. So the read-only property of a Claude advisor
+   rests on the brief and on this skill never issuing a write instruction, which
+   is weaker than the Codex lane and is stated rather than implied.
 
    Do **not** set `ACP_CMD` — it bypasses the companion's own launch path. Do
    **not** set `ACP_EXPECT_REASONING_EFFORT`; it cannot be satisfied on this lane

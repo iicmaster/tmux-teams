@@ -93,6 +93,8 @@ answer is a failed consultation — say so rather than passing it on.
    the expanded id — `gpt-5.6-sol` unless the caller named another:
 
    ```bash
+   INITIAL_AGENT_MODE="read-only" \
+   ACP_SESSION_RECEIPT_REQUIRED=1 \
    ACP_MODEL="<model>" \
    ACP_REASONING_EFFORT="max" \
    ACP_EXPECT_MODEL="<model>" \
@@ -100,6 +102,21 @@ answer is a failed consultation — say so rather than passing it on.
    node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
      codex <cwd> <task-id> <brief-file> [stall-sec]
    ```
+
+   **The first two lines are the read-only claim, and they were missing.** A
+   release panel read this skill's own frontmatter — "Read-only: it advises, it
+   never edits" — against the command below it and found nothing enforcing it:
+   Codex children default to `INITIAL_AGENT_MODE=agent-full-access`, so the
+   documented command launched a full-access advisor, and the brief was the only
+   thing asking it to behave. `read-only` is one of the three modes the
+   companion accepts, so this was an unenforced claim rather than an
+   unenforceable one.
+
+   And `ACP_SESSION_RECEIPT_REQUIRED=1`, because the default mode CONTINUES
+   after a receipt-persistence failure with `receipt_digest: none` — so the
+   identity this skill reports could rest on a receipt that was never written.
+   **A consultation with no receipt is a failed consultation**; report it as one
+   rather than reporting the identity it did not prove.
 
    **`acp-dispatch.mjs`, never `acp-companion.mjs` — and this is not a style
    preference.** The dispatcher puts the lane in its own process group and
@@ -187,6 +204,7 @@ changes state. Work that comes out of a consultation goes to `party-auto`.
   and the shape matters:
 
   ```bash
+  INITIAL_AGENT_MODE="read-only" ACP_SESSION_RECEIPT_REQUIRED=1 \
   ACP_RESUME="<session-id>" ACP_MODEL="<model>" ACP_REASONING_EFFORT="max" \
   ACP_EXPECT_MODEL="<model>" ACP_EXPECT_REASONING_EFFORT="max" \
   node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
