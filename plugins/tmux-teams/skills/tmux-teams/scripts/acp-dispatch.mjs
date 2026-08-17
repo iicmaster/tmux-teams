@@ -262,6 +262,14 @@ export function statusReport(cwd, taskId) {
   // A liveness record that predates the dispatch we recorded is the previous
   // run's, and settling on it is how a stale terminal record plus a stale
   // outbox add up to a false success.
+  //
+  // With NO routing file there is nothing to bind to, and the record is taken
+  // as-is. That is deliberate rather than an oversight: `status` has to work
+  // against a run directory this dispatcher never created — a lane started by
+  // `loop-runner.mjs`, or by an operator on another machine — and refusing to
+  // report on one would make the tool useless exactly where a person is most
+  // lost. The cost is that the generation binding protects only runs this
+  // dispatcher started, which is the population it can speak for.
   const liveness = Number.isFinite(spawnedAtMs) && rawLiveness !== null
     && !belongsToThisRun(rawLiveness, spawnedAtMs) ? null : rawLiveness
   const outbox = outboxPath(cwd, taskId)

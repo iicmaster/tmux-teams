@@ -795,3 +795,35 @@ test('a predecessor\'s terminal record and outbox never add up to this run finis
   writeFileSync(releaseFile, 'go\n')
   await waitFor(() => existsSync(outboxPath(cwd, 'gen')), 60000, 'the lane to finish')
 })
+
+test('status works against a run directory this dispatcher never created', () => {
+  // Named in HANDOFF as unproven, and it is the first thing an advisor asked
+  // about the generation binding: with no routing file there is nothing to bind
+  // to. A lane started by `loop-runner.mjs`, or on another machine, still has
+  // to be reportable — refusing there would make the tool useless exactly where
+  // a person is most lost. So the binding protects the runs this dispatcher
+  // started, and says nothing about the others rather than hiding them.
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-foreign-'))
+  mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
+  mkdirSync(join(cwd, '.mailbox-out'), { recursive: true })
+  writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'foreign.json'), JSON.stringify({
+    started_at: '2026-08-16T21:36:10.138Z',
+    liveness_state: 'completed', termination_reason: 'none',
+    effective_identity: 'someone-elses-lane[max]', identity_status: 'matched',
+  }))
+  writeFileSync(outboxPath(cwd, 'foreign'), 'their answer\n')
+
+  const report = statusReport(cwd, 'foreign')
+  assert.equal(report.routing, null, 'the premise is gone: this directory has routing')
+  assert.equal(report.terminated, true, 'a foreign run was hidden rather than reported')
+  assert.equal(statusExitCode(report), EXIT_OUTBOX)
+  assert.match(formatStatus(report), /someone-elses-lane/)
+
+  // And a running foreign lane is still running, not settled by an absent pid.
+  writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'foreign.json'), JSON.stringify({
+    started_at: '2026-08-16T21:36:10.138Z',
+    liveness_state: 'active', termination_reason: 'none',
+    next_lease_expiry_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+  }))
+  assert.equal(statusExitCode(statusReport(cwd, 'foreign')), EXIT_RUNNING)
+})

@@ -220,10 +220,12 @@ Everything here rests on reading or on a synthetic environment, not on a run.
   of tests passed, 72 KiB of dense prose failed three times and passed at 22 KiB;
   20 KiB and 26 KiB passed on 2026-08-16 and a 37 KiB packet was split rather
   than risked. Staying near 25 KiB is a habit, not a measurement of the boundary.
-- **The dispatcher has never run against a lane it did not itself spawn.**
-  `status` and `wait` are written to work against a run directory this process
-  did not create — the pid file is optional and the lease answers without it —
-  but every measurement so far has been on a directory it made.
+- ~~The dispatcher has never run against a lane it did not itself spawn.~~
+  **Closed 2026-08-17**: `tests/acp-dispatch.test.mjs` now reports on a foreign
+  run directory in both a finished and a running state. What remains unproven
+  is narrower and worth keeping: the run-generation binding protects only the
+  runs this dispatcher started, because a foreign directory has no routing file
+  to bind to. That is stated in the code rather than implied.
 - **`initialize` tolerance is unmeasured in both directions.** No real host has
   initialized this server, so neither the tolerance nor a stricter rule has been
   tested against one.
