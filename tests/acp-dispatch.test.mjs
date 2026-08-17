@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, mkdi
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { statusReport, formatStatus, resumeCommand, outboxPath, strayOutboxes, TERMINAL_LIVENESS_STATES,
+import { statusReport, formatStatus, resumeCommand, outboxPath, sessionPath, strayOutboxes, TERMINAL_LIVENESS_STATES,
   waitForSettlement, EXIT_OUTBOX, EXIT_RUNNING, EXIT_NO_OUTBOX, pidPath, recordedPid, belongsToThisRun,
   statusExitCode, logPath }
   from '../plugins/tmux-teams/skills/tmux-teams/scripts/acp-dispatch.mjs'
@@ -1219,4 +1219,101 @@ test('a dangling symlink is the dangerous one, and a future-stamped record is no
   assert.notEqual(r.status, 0, 'a dangling outbox symlink was written through')
   assert.match(`${r.stdout}${r.stderr}`, /symlink/)
   assert.equal(existsSync(victim), false, 'the write landed on the symlink target')
+})
+
+test('three families on one line: a live pid never settles, and completed never skips the identity gate', () => {
+  // hasStopped was raised as a BLOCKER by all THREE panel families in one round
+  // — gemini, openai and qwen — and openai marked it REPRODUCED. The lease
+  // measures MEANINGFUL PROGRESS, so a companion in a long tool call reaches
+  // it, records a suspected stall, extends it and carries on. Settling on that
+  // makes `wait` abandon a working lane and print resume advice for a turn that
+  // is still running.
+  const cwd = tempDir('acp-dispatch-livepid-')
+  mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
+  mkdirSync(join(cwd, '.tmux-teams', 'dispatch-pids'), { recursive: true })
+  writeFileSync(pidPath(cwd, 'alive'), `${process.pid}\n`)
+  writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'alive.json'), JSON.stringify({
+    liveness_state: 'tool_running', termination_reason: 'none',
+    observed_at: new Date().toISOString(),
+    next_lease_expiry_at: new Date(Date.now() - 60_000).toISOString(),
+  }))
+  const r = statusReport(cwd, 'alive')
+  assert.equal(r.settled, false, 'an expired lease settled a lane whose pid is alive')
+  assert.equal(r.leaseStale, true, 'leaseStale was unreachable for every expired nonterminal record')
+  assert.equal(r.notReporting, true, 'a lane that has gone quiet is still worth reporting as quiet')
+  assert.notEqual(statusExitCode(r), EXIT_NO_OUTBOX,
+    'wait would have exited 2 and offered resume advice for a running lane')
+
+  // and the two cases a caller must be able to tell apart
+  assert.match(r.stoppedBecause, /still alive/)
+  rmSync(pidPath(cwd, 'alive'))
+  const noPid = statusReport(cwd, 'alive')
+  assert.equal(noPid.settled, true, 'with no pid to ask, the lease is the only evidence there is')
+  assert.match(noPid.stoppedBecause, /lease expired/)
+})
+
+test('a live pid with a long-dead lease does not lock the task id forever', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX pids')
+  // The false-POSITIVE half of what a panel lane found in admission. Pid
+  // numbers are reused: an unrelated process inheriting the number would refuse
+  // every future dispatch under that task id, permanently. A pid is evidence of
+  // a process, not of THIS lane — the lease is what says the lane is alive.
+  const cwd = tempDir('acp-dispatch-notlocked-')
+  mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
+  mkdirSync(join(cwd, '.tmux-teams', 'dispatch-pids'), { recursive: true })
+  writeFileSync(pidPath(cwd, 'reclaim'), `${process.pid}\n`)   // alive, and not ours
+  writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'reclaim.json'), JSON.stringify({
+    liveness_state: 'tool_running', termination_reason: 'none',
+    observed_at: new Date(Date.now() - 3_600_000).toISOString(),
+    next_lease_expiry_at: new Date(Date.now() - 3_000_000).toISOString(),
+  }))
+  writeFileSync(join(cwd, 'brief.md'), 'do the thing\n')
+  const r = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'reclaim', join(cwd, 'brief.md'), '120'],
+    { cwd, encoding: 'utf8', env: laneEnv(), timeout: 60000 })
+  assert.equal(r.status, 0,
+    `a reused pid locked the task id out:\n${r.stdout}${r.stderr}`)
+  assert.doesNotMatch(`${r.stdout}${r.stderr}`, /already running/)
+
+  // and the predecessor's leaves were retired rather than inherited: a panel
+  // lane reproduced a fresh dispatch printing `session_id: predecessor-session`
+  // and offering ACP_RESUME for a session that was never this run's.
+  const superseded = readdirSync(join(cwd, '.tmux-teams', 'liveness'))
+  assert.ok(superseded.some((f) => f.includes('.superseded-')),
+    `the predecessor liveness record was not retired: ${superseded.join(', ')}`)
+})
+
+test('a planted predecessor record cannot lend its session or its silence to a new run', async (t) => {
+  if (process.platform !== 'linux' && process.platform !== 'darwin') return t.skip('POSIX')
+  // A panel lane reproduced a fresh dispatch printing `session_id:
+  // predecessor-session` and offering ACP_RESUME for a session that was never
+  // this run's, because `belongsToThisRun` authenticates by TIMESTAMP alone —
+  // no nonce, no task id, no worker — so a record stamped inside the accepted
+  // window reads as ours.
+  //
+  // A bound cannot fix that; removal can. The predecessor's leaves are retired
+  // at dispatch, so what this asserts is the OUTCOME: the identity and session
+  // reported are the ones this run's lane produced, not the planted ones.
+  const cwd = tempDir('acp-dispatch-ghost-')
+  mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
+  mkdirSync(join(cwd, '.tmux-teams', 'sessions'), { recursive: true })
+  writeFileSync(join(cwd, 'brief.md'), 'do the thing\n')
+  writeFileSync(sessionPath(cwd, 'ghost'), 'predecessor-session\n')
+  writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'ghost.json'), JSON.stringify({
+    liveness_state: 'completed', termination_reason: 'none',
+    started_at: new Date(Date.now() + 30_000).toISOString(),
+    observed_at: new Date(Date.now() + 30_000).toISOString(),
+    next_lease_expiry_at: new Date(Date.now() + 900_000).toISOString(),
+  }))
+  const r = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'ghost', join(cwd, 'brief.md'), '120'],
+    { cwd, encoding: 'utf8', env: laneEnv({ ACP_DISPATCH_BOOT_SEC: '10' }), timeout: 60000 })
+  const out = `${r.stdout}${r.stderr}`
+  assert.equal(r.status, 0, `the dispatch failed outright:\n${out}`)
+  assert.match(out, /session_id: sess_mock/, `the planted session was inherited:\n${out}`)
+  assert.doesNotMatch(out, /predecessor-session/, 'a session that was never this run\'s reached the operator')
+  assert.match(out, /effective_identity: gpt-mock/, 'the reported identity was not this lane\'s')
+  for (const dir of ['liveness', 'sessions']) {
+    const kept = readdirSync(join(cwd, '.tmux-teams', dir))
+    assert.ok(kept.some((f) => f.includes('.superseded-')),
+      `the predecessor ${dir} leaf was neither retired nor kept: ${kept.join(', ')}`)
+  }
 })

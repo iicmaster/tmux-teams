@@ -224,6 +224,24 @@ function writeNoFollow(path, contents) {
 
 export function livenessPath(cwd, taskId) { return join(cwd, '.tmux-teams', 'liveness', `${taskId}.json`) }
 export function sessionPath(cwd, taskId) { return join(cwd, '.tmux-teams', 'sessions', taskId) }
+
+// Move a predecessor's leaf out of the way rather than deleting it, so its
+// bytes stay readable and `strayOutboxes`-style forensics still work. The
+// symlink check runs first for the same reason it does everywhere else in this
+// file: a rename through a link moves someone else's file.
+function retirePredecessorLeaf(path, spawnedAtIso) {
+  let stat = null
+  try {
+    stat = lstatSync(path)
+  } catch (cause) {
+    if (cause.code !== 'ENOENT') throw cause
+    return
+  }
+  if (stat.isSymbolicLink()) {
+    throw Object.assign(new Error(`refusing to retire through a symlink at ${path}`), { code: 'unsafe_artifact' })
+  }
+  renameSync(path, `${path}.superseded-${spawnedAtIso.replaceAll(':', '-')}`)
+}
 export function logPath(cwd, taskId) { return join(cwd, '.tmux-teams', 'runner-logs', `${taskId}.log`) }
 // The one path the worker is told to write and this process reads back. It is
 // derived from the task id in BOTH places and never typed twice — the second
@@ -363,21 +381,28 @@ export function leaseExpired(liveness, now = Date.now()) {
 // A lane has STOPPED when its process is gone, or — when nobody recorded a pid
 // to ask — when the lease it published itself has run out.
 //
-// The `pid === null` guard is the PR reviewer's correction and it matters:
-// `next_lease_expiry_at` is a MEANINGFUL-PROGRESS lease, not a heartbeat. A
-// companion may reach it, record a suspected stall, extend it and carry on. So
-// an expired lease must never outvote a pid that `pidAlive` just confirmed —
-// ORing the two made `wait` give up on a living lane in the window before its
-// next tick.
+// `next_lease_expiry_at` is a MEANINGFUL-PROGRESS lease, not a heartbeat: a
+// companion may reach it, record a suspected stall, extend it and carry on. An
+// expired lease therefore never outvotes a pid `pidAlive` just confirmed.
+//
+// This comment and the one inside the function said OPPOSITE things for three
+// commits, and the code agreed with neither — written in two rounds that pulled
+// in different directions, and caught by a panel lane quoting both back. When a
+// function is edited from two sides, re-read every comment that touches it.
 function hasStopped(liveness, { pid = null, now = Date.now() } = {}) {
   if (hasTerminated(liveness)) return false
-  // A DEAD pid settles it immediately. A live one does not settle it forever:
-  // pid numbers are reused, and a panel lane pointed out that an unrelated
-  // process inheriting the number would suppress the lease evidence for good,
-  // reporting a long-dead lane as running and refusing new dispatches under
-  // that task id. So a live pid wins over an unexpired lease, and an expired
-  // lease still counts.
-  if (pid !== null && !pidAlive(pid)) return true
+  // Two panel families reproduced this from opposite directions and the answer
+  // is that they were describing two different CALL SITES, not two opinions.
+  // gemini: an expired lease must not settle a lane `pidAlive` just confirmed —
+  // the lease measures MEANINGFUL PROGRESS, and a companion in a long tool call
+  // reaches it, records a suspected stall, extends it and carries on. openai: a
+  // reused pid number must not hide a dead lane forever. The first is about
+  // THIS function; the second is about admission, and is fixed there.
+  //
+  // So: a dead pid settles it. A live pid settles nothing — `leaseStale` in the
+  // report carries that evidence without ending the wait. With no pid to ask,
+  // the lease is the only evidence there is.
+  if (pid !== null) return !pidAlive(pid)
   return liveness !== null && leaseExpired(liveness, now)
 }
 
@@ -539,22 +564,6 @@ export function pidAlive(pid) {
 export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnFn = spawn, env = process.env } = {}) {
   // FIRST. Every line below builds a path out of this value.
   assertSafeTaskId(taskId)
-  // ADMISSION. A second dispatch under a live task id gives two companions the
-  // same liveness file, the same pid file and the same outbox path, and the
-  // operator cannot tell whose answer they read. A release panel raised it; the
-  // check is cheap because the pid is already recorded.
-  //
-  // It is not atomic — two dispatches racing this line both pass — and saying
-  // so matters more than the check: what it stops is the ordinary case of
-  // dispatching twice by hand, not a race.
-  const livePid = recordedPid(cwd, taskId)
-  if (livePid !== null && pidAlive(livePid)) {
-    throw Object.assign(
-      new Error(`a lane for "${taskId}" is already running as pid ${livePid} — `
-        + 'ask it with `status`, or use a different task id'),
-      { code: 'already_running' },
-    )
-  }
   const spawnedAtIso = new Date().toISOString()
   // Retire the PREDECESSOR's outbox before the new lane starts.
   //
@@ -581,6 +590,48 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
   // stranger's file before anything spawned — the same parent-resolution class
   // as the three above, on the one directory that was not in the list.
   assertContainedDir(cwd, '.mailbox-out')
+  // ADMISSION, and it sits HERE for a reason a panel lane reproduced: it used to
+  // run at the top of this function, so `recordedPid()` READ a pid file before
+  // the containment preflight above had established that `dispatch-pids` is a
+  // real directory inside the tree. A read-before-check, introduced by the very
+  // feature meant to make dispatch safer.
+  //
+  // Two companions under one task id share a liveness file, a pid file and an
+  // outbox path, and the operator cannot tell whose answer they read. But a
+  // LIVE PID ALONE is not evidence of a live lane — pid numbers are reused, and
+  // refusing on that alone locks a task id forever behind an unrelated process
+  // (the other half of what the panel found). So refuse only when the pid is
+  // alive AND the lane is still reporting progress.
+  //
+  // Not atomic — two dispatches racing this both pass — and saying so matters
+  // more than the check: what it stops is dispatching twice by hand.
+  const livePid = recordedPid(cwd, taskId)
+  if (livePid !== null && pidAlive(livePid)) {
+    const record = readJson(livenessPath(cwd, taskId))
+    const stillReporting = record !== null && !hasTerminated(record)
+      && !leaseExpired(record, Date.now())
+    if (stillReporting) {
+      throw Object.assign(
+        new Error(`a lane for "${taskId}" is already running as pid ${livePid} — `
+          + 'ask it with `status`, or use a different task id'),
+        { code: 'already_running' },
+      )
+    }
+  }
+  // Retire the PREDECESSOR's liveness and session leaves, for the same reason
+  // the outbox above is retired and by the same means. `belongsToThisRun`
+  // compares TIMESTAMPS and nothing else — no nonce, no task id, no worker — so
+  // a record stamped inside the accepted window reads as ours, and a panel lane
+  // reproduced a fresh dispatch reporting `session_id: predecessor-session`
+  // and offering ACP_RESUME for a session that was never ours.
+  //
+  // A bound cannot fix that; only identity can, and a nonce is a protocol
+  // change. What IS available today is removal: a leaf that is not on disk
+  // cannot be mistaken for this run's, and the predecessor's bytes are kept
+  // under a suffix rather than deleted, exactly as the outbox is.
+  for (const leaf of [livenessPath(cwd, taskId), sessionPath(cwd, taskId)]) {
+    retirePredecessorLeaf(leaf, spawnedAtIso)
+  }
   assertNotSymlink(logPath(cwd, taskId))
   assertNotSymlink(pidPath(cwd, taskId))
   assertNotSymlink(routingPath(cwd, taskId))
@@ -696,7 +747,14 @@ async function watchBoot(child, cwd, taskId, bootMs, spawnedAtMs) {
     if (record && ['failed', 'cancelled'].includes(record.liveness_state)) {
       return { outcome: 'terminal', record }
     }
-    if (record && record.liveness_state === 'completed') return { outcome: 'live', record }
+    // `completed` is a lane that FINISHED, not one that never started — but it
+    // is NOT a bypass of the identity check. This line was added to stop a fast
+    // consultation being called a failure, and it was placed ABOVE the identity
+    // gate, so any record saying `completed` reported success without ever
+    // being asked who answered. A panel lane reproduced it. The fix for one
+    // guard owning the happy path must not hand the happy path to no guard at
+    // all: `completed` now falls through to the same identity check as
+    // everything else.
     // `identity_status`, not the truthiness of a string. A release panel caught
     // that a non-empty `effective_identity` was standing in for an ACCEPTED
     // identity — which is the substitution this whole plugin exists to refuse,
@@ -704,6 +762,12 @@ async function watchBoot(child, cwd, taskId, bootMs, spawnedAtMs) {
     if (record && record.effective_identity
       && ['matched', 'unverified'].includes(record.identity_status)) {
       return { outcome: 'live', record }
+    }
+    // A `completed` record that never carried an accepted identity is a lane
+    // that finished without anyone establishing who ran it. That is a refusal,
+    // not a success — the whole point of the identity gate.
+    if (record && record.liveness_state === 'completed') {
+      return { outcome: 'terminal', record }
     }
     // Checked AFTER the liveness read so a child that wrote its file and exited
     // in the same tick is reported as booted rather than as a failure.
