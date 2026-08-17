@@ -1,20 +1,33 @@
 # HANDOFF
 
 State of play for the next agent. Overwritten in place, never appended.
-Written 2026-08-16 through `bmad-party-mode`.
+Written 2026-08-17 through `bmad-party-mode`.
 
 ## 1. READ THIS FIRST
 
-- Branch `feat/acp-lane-mcp`, pushed, 7 commits ahead of `origin/main`. Tree clean.
-- `main` is at v0.31.0 — merged, tagged, GitHub release published, marketplace
-  updated, submodule pinned in `~/agent-skills`. Nothing is owed on it.
-- **The dangerous thing: the branch you are on was BLOCKED twice by a
-  `codex-advisor` review and the third review has not been run.** No pull
-  request is open for it. Do not open one and do not merge it until a
-  `codex-advisor` lane reads `39b3d66` and clears it.
-- A three-family panel passed these same bytes 3/3 with zero findings, twice,
-  while the advisor was blocking them. The panel is not a substitute for that
-  read — see DO NOT.
+- Branch `fix/acp-dispatch-detached`, pushed, and it is the **v0.32.0 release
+  branch** carrying BOTH halves: the MCP lane-discovery server (merged in from
+  `feat/acp-lane-mcp`) and `acp-dispatch.mjs`. Scope set by Master, 2026-08-17.
+- `main` is at v0.31.0 — merged, tagged, released, marketplace updated,
+  submodule pinned. Nothing is owed on it.
+- **The release is BLOCKED on two things, both outside the code.** A sixth
+  `codex-advisor` round has not returned a verdict on the current bytes, and the
+  `chatgpt-codex-connector` review the merge requires is absent — its account
+  quota is exhausted, which per `CLAUDE.md` is neither a pass nor a failure.
+  Only Master waives that.
+- **Six advisor rounds and one automated PR review have read this branch, and
+  the last two converged.** Round five's four dispatcher blockers were the same
+  four the PR reviewer raised independently, without either seeing the other:
+  the unvalidated task id used to build filesystem paths, `wait` succeeding on
+  an outbox file before terminal settlement, a non-terminal state with a
+  termination reason counted as ended, and a one-second slack that let a
+  sub-second retry inherit its predecessor's identity. All fixed.
+- A three-family panel passed the pre-round-three bytes 3/3 with zero findings,
+  twice, while an advisor was blocking them. **The panel reads a static packet
+  and cannot run anything.** That is not a criticism of the panel — it is what
+  the panel is for — but it is why the advisor goes first. See DO NOT.
+- The panel is still OWED for this release: `node scripts/gate-required.mjs`
+  answers REQUIRED. It is spent LAST, on the bytes that will ship.
 
 ## 2. HOW TO VERIFY
 
@@ -22,11 +35,11 @@ Written 2026-08-16 through `bmad-party-mode`.
 node --test > /tmp/suite.log 2>&1; grep -E '^ℹ (tests|pass|fail|skipped)' /tmp/suite.log
 ```
 
-Green here on 2026-08-16 is exactly:
+Green here on 2026-08-17, measured on the release branch, is exactly:
 
 ```
-ℹ tests 1013
-ℹ pass 1009
+ℹ tests 1038
+ℹ pass 1034
 ℹ fail 0
 ℹ skipped 4
 ```
@@ -48,8 +61,9 @@ node scripts/gate-required.mjs                # 0 exempt · 2 panel required · 
 node scripts/roadmap-gate.mjs ROADMAP.md      # 0 current · 2 published page is behind
 ```
 
-All three published pages answered `0` at `39b3d66`: `ROADMAP.md`,
-`RELEASE-PLAN.md`, `references/event-subscriptions.md`.
+`roadmap-gate.mjs` answers **2 (STALE)** on this branch — `ROADMAP.md` gained a
+release-scope section. Rendering, publishing and `--record` are part of this
+release, not something to do after it.
 
 ## 3. STATE
 
@@ -68,21 +82,26 @@ All three published pages answered `0` at `39b3d66`: `ROADMAP.md`,
   `ROADMAP.md`. `PM_COOLDOWN_SEC` (`loop-runner.mjs:74`) had no guard at all
   until `tests/loop-occupancy.test.mjs:3668`.
 
-### Open on this branch — the MCP lane-discovery server
+### Open on this branch — the v0.32.0 release
 
-- `plugins/tmux-teams/.mcp.json` declares one stdio server;
-  `plugins/tmux-teams/skills/party-mode/scripts/acp-lanes-mcp.mjs` is it.
-  Decision record: `plugins/tmux-teams/docs/adr/0007-the-plugin-ships-an-mcp-server-for-lane-discovery.md`.
-- Two read-only tools. `laneStatus` at `acp-lanes-mcp.mjs:218` answers
-  `valid` / `invalid` / `unchecked`, never a boolean. `UNCHECKED_LANES` at
-  `:125` names `claude` and `codex`, for which no parent-side check exists.
-- Failures are a closed code set — `DIAGNOSTICS` at `:96`, `classify` at `:107`
-  — and the raw exception text never reaches the wire.
-- `fixesFor` at `:195` is keyed on the cause. `launchedDirectly` at `:365`
-  compares realpaths.
-- 18 tests in `tests/acp-lanes-mcp.test.mjs`. The one that matters most is at
-  `:308`: it boots the manifest's own command from a directory whose name
-  contains a space.
+- **`acp-dispatch.mjs`** (`plugins/tmux-teams/skills/tmux-teams/scripts/`) is
+  the operator's entry to an ACP lane: it detaches the lane into its own process
+  group so a caller's shell cap is not the lane's deadline, and `status` / `wait`
+  report back. It never kills a lane, including on its own timeout.
+  16 tests in `tests/acp-dispatch.test.mjs`.
+- **The MCP lane-discovery server** is unchanged in purpose from ADR 0007 and
+  much changed in detail: envelope AND per-method params validation, a request
+  id that may be any finite number, credential vocabulary shared with the
+  endpoint validator by construction, and an `agy` check that requires an
+  executable regular file. 27 tests in `tests/acp-lanes-mcp.test.mjs`.
+- **Two things are kept deliberately and are judgements, not spec readings.**
+  `initialize` does not demand `capabilities` or `clientInfo` — no real host has
+  ever initialized this server, so refusing one that omits a field costs a dead
+  feature and buys nothing. And a routed lane honours `ANTHROPIC_AUTH_TOKEN` /
+  `ANTHROPIC_API_KEY` from its own FILES but never from the ambient
+  environment, while its declared secrets work from either. Both are in ADR
+  0007. An advisor round accepted both with the caveat that this must never be
+  sold as strict MCP conformance.
 
 ### Open, off this branch
 
@@ -137,6 +156,21 @@ All three published pages answered `0` at `39b3d66`: `ROADMAP.md`,
   the adapter package when a trusted `agy` binary was what the parent refused.
 - **Do not run the suite beside ACP lanes or parallel agents.** It measures the
   contention. Serialise every measurement through one caller.
+- **Do not trust a guard without checking its SCOPE and whether it REACHES the
+  branch it guards.** Three times in two days: the secret matrix asserted no
+  credential field name reached the wire and passed because every fixture in it
+  failed at `endpoint_missing`, where no credential sentence exists; the
+  companion-command guard scanned `skills/` while `README.md` carried the exact
+  command it forbids; and the stale-identity test used an hours-old snapshot, so
+  it never touched the one-second boundary it was named for. All three were
+  green. **A guard that never reaches its branch is not a guard**, and neither
+  is one pointed at the wrong directory.
+- **Do not build a path out of an argument before validating it**, however good
+  the reason for delegating the validation. The dispatcher deliberately left
+  task-id checking to the companion — and then opened the log file and wrote the
+  pid file from the raw value, so `../../../victim` truncated a file outside the
+  run directory. Copy the rule, name its source, and assert the two stay
+  identical; that answers the drift objection without keeping the hole.
 - **Do not push a release to `main`.** See DECIDED.
 - **Do not `rm -rf` an ACP run directory before recording its session id.** An
   outbox-less dispatch is often recoverable with `ACP_RESUME`.
@@ -186,8 +220,15 @@ Everything here rests on reading or on a synthetic environment, not on a run.
   of tests passed, 72 KiB of dense prose failed three times and passed at 22 KiB;
   20 KiB and 26 KiB passed on 2026-08-16 and a 37 KiB packet was split rather
   than risked. Staying near 25 KiB is a habit, not a measurement of the boundary.
-- **Line numbers in this file were resolved on 2026-08-16 at `39b3d66`.** They
-  rot. Re-grep the symbol rather than trusting the number.
+- **The dispatcher has never run against a lane it did not itself spawn.**
+  `status` and `wait` are written to work against a run directory this process
+  did not create — the pid file is optional and the lease answers without it —
+  but every measurement so far has been on a directory it made.
+- **`initialize` tolerance is unmeasured in both directions.** No real host has
+  initialized this server, so neither the tolerance nor a stricter rule has been
+  tested against one.
+- **Line numbers in this file were resolved on 2026-08-17.** They rot. Re-grep
+  the symbol rather than trusting the number.
 
 ## 7. WHERE THINGS LIVE
 
@@ -204,7 +245,9 @@ plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs              the lo
 scripts/gate-required.mjs                         does this release owe a panel
 scripts/roadmap-gate.mjs                          is a published page behind its source
 scripts/roadmap-render.mjs                        source to page, deterministic
+plugins/tmux-teams/skills/tmux-teams/scripts/acp-dispatch.mjs             the operator's entry to a lane
 tests/acp-lanes-mcp.test.mjs                      guards the MCP server
+tests/acp-dispatch.test.mjs                       guards detachment, status and wait
 tests/loop-occupancy.test.mjs                     guards slot accounting and the controller brakes
 tests/review-gate.test.mjs                        guards the review transport and the gate
 tests/review-policy.test.mjs                      guards lane identity and collision policy
