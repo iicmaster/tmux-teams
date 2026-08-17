@@ -46,9 +46,20 @@ async function waitFor(predicate, timeoutMs, label) {
   assert.fail(`timed out after ${timeoutMs}ms waiting for ${label}`)
 }
 
+// Every `ACP_*` the caller's shell happens to carry is REMOVED before the
+// lane's own settings are applied. A panel lane found this and it reproduces in
+// one command: `ACP_MODEL=gemini-3.7-flash-high node --test
+// tests/acp-dispatch.test.mjs` turned 35 pass / 0 fail into 23 / 12, because
+// the companion then demands the adapter advertise that model and the mock does
+// not. A suite that is green only in the author's shell is the same class as
+// the test that read the author's `~/.config/claude-profiles` and shipped two
+// releases on red CI.
 function laneEnv(extra = {}) {
+  const ambient = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !key.startsWith('ACP_')),
+  )
   return {
-    ...process.env,
+    ...ambient,
     ACP_CMD: `${process.execPath} ${MOCK}`,
     ACP_STALL_POLICY: 'cancel',
     ACP_HARD_TIMEOUT_SEC: '0',
@@ -1315,5 +1326,35 @@ test('a planted predecessor record cannot lend its session or its silence to a n
     const kept = readdirSync(join(cwd, '.tmux-teams', dir))
     assert.ok(kept.some((f) => f.includes('.superseded-')),
       `the predecessor ${dir} leaf was neither retired nor kept: ${kept.join(', ')}`)
+  }
+})
+
+test('the suite is green in a shell that carries ACP variables of its own', () => {
+  // A panel lane read `laneEnv` and predicted this; the reproduction took one
+  // command and turned 35 pass / 0 fail into 23 / 12. A suite that is green
+  // only in the author's shell is the same class as the test that read the
+  // author's `~/.config/claude-profiles` and let two releases ship on red CI.
+  //
+  // Asserted on `laneEnv` itself rather than by re-running the suite: a test
+  // that spawns the suite inside the suite is a way to spend two minutes
+  // proving what one object literal already says.
+  const hostile = ['ACP_MODEL', 'ACP_EXPECT_MODEL', 'ACP_REASONING_EFFORT',
+    'ACP_EXPECT_REASONING_EFFORT', 'ACP_AGENT_ID', 'ACP_SESSION_OPERATION']
+  const saved = Object.fromEntries(hostile.map((k) => [k, process.env[k]]))
+  try {
+    for (const k of hostile) process.env[k] = 'from-the-callers-shell'
+    const env = laneEnv()
+    for (const k of hostile) {
+      assert.notEqual(env[k], 'from-the-callers-shell', `${k} leaked in from the caller's shell`)
+    }
+    // and what the lane sets on purpose still arrives
+    assert.match(env.ACP_CMD, /mock-acp-agent\.mjs$/)
+    assert.equal(env.ACP_STALL_POLICY, 'cancel')
+    assert.equal(laneEnv({ ACP_MODEL: 'named-on-purpose' }).ACP_MODEL, 'named-on-purpose')
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
   }
 })

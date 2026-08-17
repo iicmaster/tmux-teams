@@ -177,6 +177,16 @@ test('a real ACP route reaches audit and leaves coherent ledger, snapshot, and p
   ].map((key) => [key, process.env[key]]))
 
   try {
+    // By PREFIX, not by the list above. That list is written by hand and it had
+    // missed `ACP_REASONING_EFFORT` — so this test failed for a caller whose
+    // shell happened to export it, and the reason had nothing to do with what
+    // the test checks. Found by running the whole suite from a hostile shell
+    // after a panel lane reported the same shape in the dispatcher suite; a
+    // grep for the shape would have found the spread and not the gap in a list.
+    // The named list still decides what is RESTORED afterwards.
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith('ACP_')) delete process.env[key]
+    }
     for (const key of Object.keys(inherited)) delete process.env[key]
     Object.assign(process.env, {
       // Named deliberately, not inherited. The runner refuses to pass an ambient
