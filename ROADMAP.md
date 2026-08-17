@@ -83,7 +83,7 @@ that is wrong drops an audit: a delivery that finished with nobody owing it a
 verdict, which is the exact failure this rebuild exists to end.
 
 **Phase D's real work is untouched**: `nextStep` still holds two domains'
-behaviour in 305 lines, and still reads a route zero times. The prediction that
+behaviour in 308 lines, and still reads a route zero times. The prediction that
 E could not pay before D landed turned out to be wrong for the slot accounting
 specifically — slots are the team's own business and needed no route — and it
 still stands for everything that depends on where a token goes next.
@@ -160,38 +160,36 @@ lane-discovery server and `acp-dispatch.mjs`. They touch one file in common and
 they are the same subject — the lifecycle of an ACP lane — so they are reviewed
 and shipped together rather than paying for two panels and two version bumps.
 
-**It is BLOCKED, and by exactly one thing.** A `codex-advisor` lane read the
-round-three fixes and found five more, every one reproduced with a command:
+**Where it actually stands, 2026-08-18.** This section described the release as
+blocked by five `codex-advisor` findings from round three, and a panel lane
+caught that they had all shipped while the page still called them the reason
+the release was blocked. All five are closed: the Kimi credential path shares
+`acceptedCredentialNames` with the Zai one, a fractional numeric request id is
+accepted, every method validates its own params, the credential contract says
+plainly that field NAMES are diagnostic vocabulary and VALUES are what never
+leave, and the lane that owns each provider key is pinned rather than only the
+set of keys being pinned.
 
-1. The Kimi lane repeats the credential defect that round three "fixed" for
-   Zai. `acceptedRoutedKeys` widened the LOADER; `validateRoutedEndpoint` still
-   counts only `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY` and `ZAI_API_KEY`,
-   so a `KIMI_API_KEY` is read and then not accepted from any source. **The fix
-   was half a fix, and the half that shipped is the half that advertises.**
-2. A fractional numeric request id is refused `-32600`. JSON-RPC 2.0 says
-   fractional ids SHOULD NOT be used, not MUST NOT, and MCP's `RequestId` is
-   string-or-number — so a legal request is rejected and its correlation lost.
-3. Only `tools/call` validates its params. `initialize` with no params,
-   `tools/list` with `params: []`, and `ping` with unexpected params all still
-   answer success.
-4. Credential FIELD NAMES do reach the wire, in the `credential_missing` fix
-   sentences — put there deliberately in round three — while the module comment,
-   ADR 0007 and a test title all claim they do not. The contract is false, not
-   the bytes; the honest repair is to say that names are diagnostic vocabulary
-   and values are what never leave.
-5. Moving `MOONSHOT_API_KEY` from the `kimi` lane to `qwen` keeps both suites
-   green and forwards a foreign key into the Qwen child. The literal inventory
-   pins the SET; nothing pins which lane owns which name.
+What has been spent on it since: nine `codex-advisor` rounds, one automated PR
+review that returned ten findings before its quota ran out, and five panel
+rounds. Every finding closed, each with a guard a mutation turns red.
 
-The room split on two more and did not reconcile: a mode-0755 file whose shebang
-names a missing interpreter still answers `valid` (proving it would require
-EXECUTING the candidate, which turns a read-only status tool into an acting
-one), and the settings/ambient precedence for a provider secret is undocumented
-and untested.
+**What is left is the panel and the mechanical steps.** Three families read the
+frozen bytes — gemini, openai and qwen; zai's gateway refuses a disabled
+thinking mode and its package expired, kimi and deepseek are out of quota, and
+the default `claude` lane cannot reach an ACP session at all (that last one is
+v0.33.0's first item). Then: bump seven places, render and publish and record
+this page, open the PR, merge on CI green, tag the merged sha, and move the
+submodule pin in `~/agent-skills`.
 
-Also in scope and not code: the published roadmap page, the submodule pin in
-`~/agent-skills`, and a `HANDOFF.md` that currently still says the third review
-has not been run.
+**One dispute is still open and is NOT closed by shipping.** A mode-0755 file
+whose shebang names a missing interpreter still answers `valid`. Proving
+otherwise would require EXECUTING the candidate, which turns a read-only status
+tool into an acting one — but a panel lane pointed out that `unchecked` is
+already in the result vocabulary and would describe that state honestly without
+executing anything. Unresolved by choice, recorded rather than settled. The
+settings/ambient precedence for a provider secret is likewise undocumented and
+untested.
 
 ## The release after — v0.33.0, and why these five
 
@@ -360,8 +358,13 @@ slate.
 
 - **ADR 0001** — the exact-three ACP review gate, and why plan mode was never
   what made a lane read-only.
-- **ADR 0003** — a dispatched agent receives no MCP server. Enforced at runtime
-  (AC135), not merely stated.
+- **ADR 0003** — a dispatched agent is REQUESTED with no MCP server. The runner
+  sends `mcpServers: []` and the suite asserts that request. "Enforced at
+  runtime" is what this line said, and ADR 0007 already admitted the narrower
+  truth two paragraphs into itself: what has been observed is a mock receiving
+  an empty request, never a real child's tool inventory. A panel lane read the
+  page against the document it summarises. The guarantee is about what is asked
+  for.
 - **ADR 0004** — the runner reserves a SEAT and a TOKEN, and releases a claim on
   evidence, never on elapsed time.
 - **ADR 0005** — MCP's Tasks extension converged on this companion's design
