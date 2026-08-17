@@ -565,9 +565,15 @@ silently reviving it.
 One worker over ACP:
 
 ```bash
-node plugins/tmux-teams/skills/tmux-teams/scripts/acp-companion.mjs \
+node plugins/tmux-teams/skills/tmux-teams/scripts/acp-dispatch.mjs \
   codex <repo> <task-id> <brief-file> [stall-sec]
 ```
+
+`acp-dispatch.mjs` detaches the lane into its own process group and returns in
+seconds, so the calling shell's timeout is not the lane's deadline; running
+`acp-companion.mjs` directly puts it in the foreground, where it is. Ask
+`acp-dispatch.mjs status <repo> <task-id>` what happened, or
+`wait <repo> <task-id> [max-sec]` to block until the turn ends either way.
 
 The optional duration is an inactivity/stall lease, not a total task timeout;
 there is no wall-clock ceiling unless `ACP_HARD_TIMEOUT_SEC>0` is set. ACP

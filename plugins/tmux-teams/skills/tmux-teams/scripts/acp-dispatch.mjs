@@ -45,6 +45,33 @@ export const EXIT_NO_OUTBOX = 2     // the turn ENDED and wrote nothing: resume 
 const BOOT_SEC_DEFAULT = 120
 const POLL_MS = 250
 
+// The companion's own id rule, and this file has to apply it BEFORE it builds a
+// path — not after, and not by delegation.
+//
+// An earlier version deliberately delegated: "re-validating the task id here
+// would be a second copy of a rule that can drift". True, and it still opened
+// the log file and wrote the pid file from the raw value first. A task id of
+// `../../../victim` therefore escaped `.tmux-teams/` and `writeFileSync`
+// TRUNCATED an arbitrary writable file before the companion ever saw the id.
+// Found by the repository's PR reviewer, 2026-08-17. The rule is copied here
+// with the source named, and `tests/acp-dispatch.test.mjs` asserts the two stay
+// identical, which is the drift answer that does not require the hole.
+const ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/
+
+export function safeTaskId(taskId) {
+  return typeof taskId === 'string' && ID_RE.test(taskId)
+}
+
+function assertSafeTaskId(taskId) {
+  if (!safeTaskId(taskId)) {
+    throw Object.assign(
+      new Error(`invalid task id — 1-64 chars, alphanumeric/_/-, starts alphanumeric or _`),
+      { code: 'invalid_task_id' },
+    )
+  }
+  return taskId
+}
+
 export function livenessPath(cwd, taskId) { return join(cwd, '.tmux-teams', 'liveness', `${taskId}.json`) }
 export function sessionPath(cwd, taskId) { return join(cwd, '.tmux-teams', 'sessions', taskId) }
 export function logPath(cwd, taskId) { return join(cwd, '.tmux-teams', 'runner-logs', `${taskId}.log`) }
@@ -77,17 +104,50 @@ export function strayOutboxes(cwd, taskId) {
   }
 }
 
+// Single-quote for `sh`. A generated command that cannot be pasted is not a
+// generated command, and this plugin already knows what an unquoted path costs:
+// the boot guard two hundred lines down exists because an install path with a
+// space broke a comparison nobody had run.
+export function shQuote(value) {
+  return `'${String(value).replaceAll("'", `'\\''`)}'`
+}
+
+// The routing a dispatch actually used, captured at spawn so a resume can
+// reproduce it. Nothing here is a secret — these select a profile, a model or a
+// mode; the credential lives in the profile the wrapper loads.
+//
+// Written because the first resume command was generic: it turned the recorded
+// EXPECTATION into `ACP_MODEL` and dropped everything else, so pasting it for a
+// routed Claude seat could load the session through a different profile or
+// endpoint while looking like it preserved the identity. The PR reviewer named
+// it; the fix is to record what was used rather than to guess it back.
+export const ROUTING_ENV_KEYS = Object.freeze([
+  'ACP_MODEL', 'ACP_REASONING_EFFORT', 'ACP_EXPECT_MODEL', 'ACP_EXPECT_REASONING_EFFORT',
+  'ANTHROPIC_MODEL', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_EXECUTABLE', 'INITIAL_AGENT_MODE',
+  'ACP_AGENT_ID', 'ACP_EXECUTION_PROFILE',
+])
+
+export function routingPath(cwd, taskId) { return join(cwd, '.tmux-teams', 'dispatch-routing', `${taskId}.json`) }
+
+export function recordedRouting(cwd, taskId) {
+  const record = readJson(routingPath(cwd, taskId))
+  return record && typeof record === 'object' && !Array.isArray(record) ? record : null
+}
+
 // Reuses the SAME task id on purpose. A resume under a fresh id moves the outbox
 // path out from under the prompt the agent was already given — see `outboxPath`.
-export function resumeCommand(cwd, taskId, { sessionId, worker, model, effort, briefFile }) {
+export function resumeCommand(cwd, taskId, { sessionId, worker, routing, briefFile }) {
   if (!sessionId) return null
-  const parts = [`ACP_RESUME="${sessionId}"`]
-  if (model) parts.push(`ACP_MODEL="${model}"`, `ACP_EXPECT_MODEL="${model}"`)
-  if (effort) parts.push(`ACP_REASONING_EFFORT="${effort}"`, `ACP_EXPECT_REASONING_EFFORT="${effort}"`)
+  const env = routing?.env ?? {}
+  const parts = [`ACP_RESUME=${shQuote(sessionId)}`]
+  for (const key of ROUTING_ENV_KEYS) {
+    if (env[key] !== undefined && env[key] !== '') parts.push(`${key}=${shQuote(env[key])}`)
+  }
   return [
     `${parts.join(' ')} \\`,
-    `  node ${join(HERE, 'acp-dispatch.mjs')} \\`,
-    `    ${worker ?? '<worker>'} ${cwd} ${taskId} ${briefFile ?? '<recovery-brief-file>'} 900`,
+    `  node ${shQuote(join(HERE, 'acp-dispatch.mjs'))} \\`,
+    `    ${shQuote(routing?.worker ?? worker ?? '<worker>')} ${shQuote(cwd)} ${shQuote(taskId)} `
+      + `${briefFile ? shQuote(briefFile) : '<recovery-brief-file>'} 900`,
   ].join('\n')
 }
 
@@ -101,16 +161,22 @@ export function resumeCommand(cwd, taskId, { sessionId, worker, model, effort, b
 // checked against a real file.
 export const TERMINAL_LIVENESS_STATES = Object.freeze(['completed', 'cancelled', 'failed'])
 
-// `cancelling` is not in that set, and round three's interrupted lane died
-// there and never moved: a killed process writes no further snapshot. So a
-// recorded termination reason counts as settled too — and the reason field
-// carries the STRING 'none' while a lane is healthy, never null, which is its
-// own small trap.
+// TERMINAL STATES ONLY. An earlier version also counted "any termination_reason
+// other than 'none'", reasoning from round three's lane that died at
+// `cancelling` and never moved. The repository's PR reviewer showed what that
+// costs: under `ACP_STALL_POLICY=report` the companion writes
+// `liveness_state: stalled` with `termination_reason: stall_confirmed` and stays
+// ALIVE to recover, and an ordinary cancellation spends time in `cancelling`
+// with a reason set before it reaches a terminal state. Both would have been
+// called finished, with `wait` returning and resume advice printed for a lane
+// still working.
+//
+// The round-three case is not lost — it is answered by the right evidence
+// instead. A lane that stopped is detected by its process being gone, or by its
+// lease running out when no pid was recorded. Being stalled is not being over.
 function hasTerminated(liveness) {
   if (liveness === null) return false
-  if (TERMINAL_LIVENESS_STATES.includes(liveness.liveness_state)) return true
-  const reason = liveness.termination_reason
-  return typeof reason === 'string' && reason !== '' && reason !== 'none'
+  return TERMINAL_LIVENESS_STATES.includes(liveness.liveness_state)
 }
 
 // The third way this file has now trusted a file its writer can no longer
@@ -130,8 +196,23 @@ export function leaseExpired(liveness, now = Date.now()) {
   return Number.isFinite(expiry) && expiry < now
 }
 
-function isSettled(liveness, now = Date.now()) {
-  return hasTerminated(liveness) || (liveness !== null && leaseExpired(liveness, now))
+// A lane has STOPPED when its process is gone, or — when nobody recorded a pid
+// to ask — when the lease it published itself has run out.
+//
+// The `pid === null` guard is the PR reviewer's correction and it matters:
+// `next_lease_expiry_at` is a MEANINGFUL-PROGRESS lease, not a heartbeat. A
+// companion may reach it, record a suspected stall, extend it and carry on. So
+// an expired lease must never outvote a pid that `pidAlive` just confirmed —
+// ORing the two made `wait` give up on a living lane in the window before its
+// next tick.
+function hasStopped(liveness, { pid = null, now = Date.now() } = {}) {
+  if (hasTerminated(liveness)) return false
+  if (pid !== null) return !pidAlive(pid)
+  return liveness !== null && leaseExpired(liveness, now)
+}
+
+function isSettled(liveness, options = {}) {
+  return hasTerminated(liveness) || hasStopped(liveness, options)
 }
 
 export function statusReport(cwd, taskId) {
@@ -143,8 +224,9 @@ export function statusReport(cwd, taskId) {
   // against a run directory it did not create.
   const pid = recordedPid(cwd, taskId)
   const pidGone = pid !== null && !pidAlive(pid)
-  const stopped = !hasTerminated(liveness) && (pidGone || (liveness !== null && leaseExpired(liveness)))
-  const settled = hasTerminated(liveness) || stopped
+  const stopped = hasStopped(liveness, { pid })
+  const terminated = hasTerminated(liveness)
+  const settled = terminated || stopped
   return {
     taskId,
     cwd,
@@ -159,6 +241,7 @@ export function statusReport(cwd, taskId) {
     strays: strayOutboxes(cwd, taskId),
     sessionId: readSessionId(cwd, taskId),
     settled,
+    terminated,
     // Distinguished from `settled` because the ADVICE differs: a lane that
     // recorded a terminal state finished, and one that stopped saying anything
     // was killed, ran out of memory, or filled the disk under itself.
@@ -192,12 +275,18 @@ export function formatStatus(report) {
       'READ THOSE BEFORE RE-DISPATCHING — a worker told a different path writes a real answer nobody reads.',
     )
   }
+  if (report.outboxFound && !report.terminated) {
+    lines.push(
+      'the outbox FILE exists but the companion has not recorded a terminal state for this turn.',
+      'A worker writes it before session/prompt returns and the companion validates it after, so',
+      'this file may still be being written, or about to be refused. Wait for the terminal state.',
+    )
+  }
   if (!report.outboxFound && report.settled && report.sessionId) {
     const resume = resumeCommand(report.cwd, report.taskId, {
       sessionId: report.sessionId,
       worker: report.liveness?.worker,
-      model: report.liveness?.requested_model,
-      effort: report.liveness?.requested_reasoning_effort,
+      routing: recordedRouting(report.cwd, report.taskId),
     })
     lines.push('', 'the turn ended without an outbox — try RESUME before paying for a re-dispatch:', resume)
   }
@@ -237,6 +326,8 @@ export function pidAlive(pid) {
 }
 
 export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnFn = spawn, env = process.env } = {}) {
+  // FIRST. Every line below builds a path out of this value.
+  assertSafeTaskId(taskId)
   mkdirSync(join(cwd, '.tmux-teams', 'runner-logs'), { recursive: true })
   const logFd = openSync(logPath(cwd, taskId), 'a', 0o600)
   const argv = [COMPANION, worker, cwd, taskId, briefFile]
@@ -250,6 +341,17 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
     mkdirSync(join(cwd, '.tmux-teams', 'dispatch-pids'), { recursive: true })
     writeFileSync(pidPath(cwd, taskId), `${child.pid}\n`, { mode: 0o600 })
   }
+  // `ACP_RESUME` is deliberately NOT captured: a resume of a resume must carry
+  // the session id the operator is recovering, not the one the last attempt was
+  // itself resuming.
+  const routingEnv = {}
+  for (const key of ROUTING_ENV_KEYS) {
+    if (env?.[key] !== undefined && env[key] !== '') routingEnv[key] = String(env[key])
+  }
+  mkdirSync(join(cwd, '.tmux-teams', 'dispatch-routing'), { recursive: true })
+  writeFileSync(routingPath(cwd, taskId),
+    `${JSON.stringify({ worker, briefFile, stallSec: stallSec ?? null, env: routingEnv }, null, 2)}\n`,
+    { mode: 0o600 })
   return child
 }
 
@@ -271,9 +373,14 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
 // A record with no `started_at` is treated as not-this-run rather than
 // accepted: the companion always writes it, so its absence means the file is
 // not what this function is looking for.
+// No tolerance. The first version allowed a second of slack for clock
+// granularity, and the PR reviewer pointed out that both timestamps come from
+// the SAME host clock: the slack buys nothing and, on a retry inside one
+// second, accepts the predecessor's snapshot — recreating the exact
+// stale-identity failure this check exists to prevent.
 function belongsToThisRun(record, spawnedAtMs) {
   const started = Date.parse(record?.started_at ?? '')
-  return Number.isFinite(started) && started >= spawnedAtMs - 1000
+  return Number.isFinite(started) && started >= spawnedAtMs
 }
 
 async function watchBoot(child, cwd, taskId, bootMs, spawnedAtMs) {
@@ -284,7 +391,14 @@ async function watchBoot(child, cwd, taskId, bootMs, spawnedAtMs) {
   for (;;) {
     const found = readJson(path)
     const record = belongsToThisRun(found, spawnedAtMs) ? found : null
-    if (record && (record.effective_identity || isSettled(record))) return { outcome: 'live', record }
+    // A lane that reached a TERMINAL state during boot did not boot — it failed.
+    // The first version folded this into `live` and printed an identity beside
+    // exit 0 for a consultation that never started: an identity refusal, an
+    // unsupported model, a config option the adapter would not take. Reported as
+    // its own outcome now, because "dispatched successfully" and "refused before
+    // the prompt" are not the same answer.
+    if (record && hasTerminated(record)) return { outcome: 'terminal', record }
+    if (record && record.effective_identity) return { outcome: 'live', record }
     // Checked AFTER the liveness read so a child that wrote its file and exited
     // in the same tick is reported as booted rather than as a failure.
     if (exited) return { outcome: 'exited', record, ...exited }
@@ -293,9 +407,19 @@ async function watchBoot(child, cwd, taskId, bootMs, spawnedAtMs) {
   }
 }
 
+// `0` means THE TURN ENDED and the outbox is the answer, so it needs both.
+//
+// An ACP worker normally writes its outbox before `session/prompt` returns, and
+// the companion validates that file and records its terminal state afterwards —
+// so ranking the file first let `wait` exit 0 while the lane was still active,
+// handing back a file that might still be being written or about to be
+// rejected. The repository's PR reviewer caught it contradicting this file's own
+// documented promise. Waiting the extra moment costs nothing; the wrong answer
+// costs a review read from a half-written file.
 export function statusExitCode(report) {
-  if (report.outboxFound) return EXIT_OUTBOX
-  return report.settled ? EXIT_NO_OUTBOX : EXIT_RUNNING
+  if (report.outboxFound && report.terminated) return EXIT_OUTBOX
+  if (!report.settled) return EXIT_RUNNING
+  return EXIT_NO_OUTBOX
 }
 
 // The other half of detaching, and it was missing until Master asked the
@@ -351,26 +475,44 @@ export async function main(argv, { out = console.log, err = console.error, spawn
 
   const [worker, cwdArg, taskId, briefFile, stallSec] = argv
   if (!worker || !cwdArg || !taskId || !briefFile) { err(USAGE); return 2 }
+  // Before ANY path is built from it. `spawnDetached` asserts the same thing —
+  // this is the operator-facing message, that one is the guarantee.
+  if (!safeTaskId(taskId)) {
+    err(`invalid task id "${taskId}" — 1-64 chars, alphanumeric/_/-, starts alphanumeric or _`)
+    return 2
+  }
   const cwd = resolve(cwdArg)
-  // Argv beyond this point is the companion's to judge. Re-validating the task
-  // id here would be a second copy of a rule that can drift from the one that
-  // matters; the companion exits 2 and this process reports it.
+  // A typo here used to restore the very coupling this file removes: a
+  // non-numeric value made `bootMs` NaN, every deadline comparison false, and
+  // the "short-lived" dispatcher attached to a hanging child forever.
+  const bootSec = Number(env.ACP_DISPATCH_BOOT_SEC ?? BOOT_SEC_DEFAULT)
+  if (!Number.isFinite(bootSec) || bootSec <= 0) {
+    err(`ACP_DISPATCH_BOOT_SEC must be a positive number of seconds, got "${env.ACP_DISPATCH_BOOT_SEC}"`)
+    return 2
+  }
   // Taken BEFORE the spawn, so any snapshot the child writes is stamped later
   // than this and a previous run's snapshot is stamped earlier.
   const spawnedAtMs = Date.now()
   const child = spawnDetached(worker, cwd, taskId, resolve(briefFile), stallSec, { spawnFn, env })
-  const bootMs = Number(env.ACP_DISPATCH_BOOT_SEC ?? BOOT_SEC_DEFAULT) * 1000
+  const bootMs = bootSec * 1000
   const booted = await watchBoot(child, cwd, taskId, bootMs, spawnedAtMs)
 
+  const self = shQuote(join(HERE, 'acp-dispatch.mjs'))
   out(`dispatched ${worker} as ${taskId} — pid ${child.pid}, detached, own process group`)
   out(`log: ${logPath(cwd, taskId)}`)
   out(`outbox will be: ${outboxPath(cwd, taskId)}`)
-  out(`status: node ${join(HERE, 'acp-dispatch.mjs')} status ${cwd} ${taskId}`)
+  out(`status: node ${self} status ${shQuote(cwd)} ${shQuote(taskId)}`)
   // Printed beside status because "how do I know it finished" is the question
   // detaching creates, and an answer nobody is handed is not an answer.
-  out(`wait:   node ${join(HERE, 'acp-dispatch.mjs')} wait ${cwd} ${taskId} 3600`)
+  out(`wait:   node ${self} wait ${shQuote(cwd)} ${shQuote(taskId)} 3600`)
   out('        (run `wait` in the background — killing the waiter does not touch the lane)')
 
+  if (booted.outcome === 'terminal') {
+    err(`the lane reached ${booted.record.liveness_state} before its prompt — `
+      + `termination_reason: ${booted.record.termination_reason ?? 'none'}`)
+    err('this consultation never started. Read the log above; an identity or config refusal ends here.')
+    return 2
+  }
   if (booted.outcome === 'exited') {
     err(`the companion exited before writing liveness — code ${booted.code}, signal ${booted.signal ?? 'none'}`)
     err('read the log above; a usage or identity refusal exits here.')

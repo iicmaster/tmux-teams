@@ -212,9 +212,30 @@ test('wait ends on BOTH terminal outcomes, because silence reads exactly like st
   mkdirSync(join(arriving, '.mailbox-out'), { recursive: true })
   writeFileSync(join(arriving, '.tmux-teams', 'liveness', 'lane.json'),
     JSON.stringify({ liveness_state: 'active', termination_reason: 'none' }))
-  const late = setTimeout(() => writeFileSync(outboxPath(arriving, 'lane'), 'the answer\n'), 300)
+  // Both, and in the order a real lane produces them: the worker writes the
+  // outbox before session/prompt returns, and the companion records the
+  // terminal state after validating it. Ranking the file alone let `wait`
+  // return 0 on a file that might still be being written — the PR reviewer's
+  // finding, and the reason this fixture now moves the liveness record too.
+  const late = setTimeout(() => {
+    writeFileSync(outboxPath(arriving, 'lane'), 'the answer\n')
+    setTimeout(() => writeFileSync(join(arriving, '.tmux-teams', 'liveness', 'lane.json'),
+      JSON.stringify({ liveness_state: 'completed', termination_reason: 'none' })), 150)
+  }, 300)
   assert.equal(await waitForSettlement(arriving, 'lane', 20000, { out: () => {}, pollMs: 25 }), EXIT_OUTBOX)
   clearTimeout(late)
+
+  // And the window between them is reported as STILL RUNNING, never as done.
+  const midway = mkdtempSync(join(tmpdir(), 'acp-dispatch-wait-midway-'))
+  mkdirSync(join(midway, '.tmux-teams', 'liveness'), { recursive: true })
+  mkdirSync(join(midway, '.mailbox-out'), { recursive: true })
+  writeFileSync(join(midway, '.tmux-teams', 'liveness', 'lane.json'),
+    JSON.stringify({ liveness_state: 'active', termination_reason: 'none' }))
+  writeFileSync(outboxPath(midway, 'lane'), 'half a review\n')
+  const said2 = []
+  assert.equal(await waitForSettlement(midway, 'lane', 200, { out: (l) => said2.push(l), pollMs: 20 }),
+    EXIT_RUNNING, 'an outbox file with no terminal state was reported as a finished turn')
+  assert.match(said2.join('\n'), /has not recorded a terminal state/)
 
   // A lane still going when the budget runs out is reported as still going, and
   // the sentence has to say the lane was not touched — that is the whole
@@ -259,7 +280,7 @@ test('a wait that gives up does not reap the lane it was waiting for', async (t)
   await waitFor(() => caller.exitCode !== null, 30000, 'the caller to report and exit')
   // The dispatch report has to hand the operator this command, or the answer
   // exists and nobody is given it.
-  assert.match(out, /wait:\s+node .*acp-dispatch\.mjs wait /)
+  assert.match(out, /wait:\s+node '[^']*acp-dispatch\.mjs' wait /)
 
   const code = await waitForSettlement(cwd, 'patient', 400, { out: () => {}, pollMs: 50 })
   assert.equal(code, EXIT_RUNNING, 'a gated lane was reported as settled')
@@ -315,6 +336,86 @@ test('a previous run\'s identity is never reported as this dispatch\'s', async (
   await waitFor(() => existsSync(outboxPath(cwd, 'stale')), 60000, 'the lane to finish')
 })
 
+test('a task id that would escape the run directory is refused before any file is opened', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX paths')
+  // The repository's PR reviewer found this and it is the worst thing in the
+  // change. An earlier version deliberately delegated id validation to the
+  // companion — "a second copy of a rule can drift" — and then built the log
+  // path and the pid path from the raw value FIRST. `writeFileSync` truncates,
+  // so a task id of `../../../victim` replaced an arbitrary writable file with
+  // a pid before the companion ever saw the id it was going to reject.
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-traversal-'))
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+  const victim = join(cwd, 'victim')
+  writeFileSync(victim, 'PRECIOUS\n')
+
+  for (const evil of ['../victim', '../../etc/passwd', 'a/b', '.', '..', '-leading-dash', 'x'.repeat(65)]) {
+    const r = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, evil, brief, '120'],
+      { cwd, encoding: 'utf8', env: laneEnv() })
+    assert.equal(r.status, 2, `"${evil}" was accepted: ${r.stdout}${r.stderr}`)
+    assert.match(r.stderr, /invalid task id/)
+  }
+  // An empty id is a usage error rather than an invalid one, and exits 2 too.
+  const empty = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, '', brief, '120'],
+    { cwd, encoding: 'utf8', env: laneEnv() })
+  assert.equal(empty.status, 2)
+  assert.equal(readFileSync(victim, 'utf8'), 'PRECIOUS\n', 'a task id truncated a file outside its run directory')
+  // And nothing was created for any of them.
+  assert.ok(!existsSync(join(cwd, '.tmux-teams', 'dispatch-pids')),
+    'a pid file directory was created for a refused id')
+
+  // The rule is the companion's, copied with its source named. This asserts the
+  // two have not drifted, which is the answer to the objection that made the
+  // first version delegate.
+  const companion = readFileSync(join(SCRIPTS, 'acp-companion.mjs'), 'utf8')
+  assert.match(companion, /const ID_RE = \/\^\[A-Za-z0-9_\]\[A-Za-z0-9_-\]\{0,63\}\$\//,
+    'the companion changed its task-id rule and this file still enforces the old one')
+})
+
+test('a lane that reaches a terminal state during boot is a failed dispatch, not a successful one', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX process groups')
+  // Also the PR reviewer's. `isSettled(record)` used to fold a terminal boot
+  // record into `outcome: 'live'`, so a consultation refused before its prompt
+  // — an unsupported model, an identity mismatch, a config option the adapter
+  // would not take — printed an identity and exited 0. "Dispatched
+  // successfully" and "refused before the prompt" are not the same answer.
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-refused-'))
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+  const r = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'refused', brief, '120'], {
+    cwd, encoding: 'utf8',
+    // The mock advertises a model list that does not contain what we demand, so
+    // the companion refuses the identity before the prompt is ever delivered.
+    env: laneEnv({
+      ACP_DISPATCH_BOOT_SEC: '30',
+      MOCK_CONFIG_IDENTITY: '1',
+      MOCK_MODEL_OPTIONS: 'something-else',
+      MOCK_MODEL_OPTIONS_STRICT: '1',
+      ACP_MODEL: 'a-model-the-adapter-will-not-take',
+      ACP_EXPECT_MODEL: 'a-model-the-adapter-will-not-take',
+    }),
+  })
+  assert.notEqual(r.status, 0, `a refused dispatch reported success:\n${r.stdout}${r.stderr}`)
+  assert.doesNotMatch(r.stdout, /^effective_identity: /m,
+    'an identity was printed for a consultation that never started')
+})
+
+test('a nonsense boot budget is refused rather than becoming an infinite wait', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-bootsec-'))
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+  // NaN made every deadline comparison false, so the "short-lived" dispatcher
+  // stayed attached to a hanging child forever — restoring, through a typo, the
+  // caller-lifetime coupling this whole file exists to remove.
+  for (const bad of ['soon', '', '0', '-5', 'NaN']) {
+    const r = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'bootsec', brief, '120'],
+      { cwd, encoding: 'utf8', env: laneEnv({ ACP_DISPATCH_BOOT_SEC: bad }), timeout: 20000 })
+    assert.equal(r.status, 2, `ACP_DISPATCH_BOOT_SEC="${bad}" was accepted`)
+    assert.match(r.stderr, /ACP_DISPATCH_BOOT_SEC must be a positive number/)
+  }
+})
+
 test('the caller reports the outbox path it derived, and never a second spelling of it', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-outbox-'))
   mkdirSync(join(cwd, '.mailbox-out'), { recursive: true })
@@ -352,9 +453,17 @@ test('status reads the companion\'s own liveness vocabulary, not a guess at it',
     ['awaiting_agent', 'none', false],
     ['stalled', 'none', false],
     ['suspected_stalled', 'none', false],
-    // Round three died here and never moved: a killed process writes no further
-    // snapshot, so a recorded reason is what makes this one finished.
-    ['cancelling', 'controller_interrupted', true],
+    // NOT settled by the reason alone, and this changed on 2026-08-17. A
+    // previous version counted any termination_reason other than 'none', and
+    // the repository's PR reviewer showed what that costs: under
+    // ACP_STALL_POLICY=report the companion writes `stalled` /
+    // `stall_confirmed` and STAYS ALIVE to recover, and an ordinary
+    // cancellation sits in `cancelling` with a reason set before it reaches a
+    // terminal state. Both were being called finished. A lane that really
+    // stopped is caught by its pid or by its lease instead — see the two tests
+    // below — and being stalled is not being over.
+    ['cancelling', 'controller_interrupted', false],
+    ['stalled', 'stall_confirmed', false],
     ['failed', 'no_outbox', true],
     ['completed', 'none', true],
     ['cancelled', 'stall', true],
@@ -408,7 +517,7 @@ test('a lane that stopped reporting is not reported as running, however alive it
   assert.match(text, /Last snapshot 2026-08-16T22:54:54\.379Z/)
   // And it still offers the recovery, because a session that stopped reporting
   // is exactly the one worth resuming rather than re-paying for.
-  assert.match(text, /ACP_RESUME="01a00cbb-b70c-7670-b9b3-b523a70aa393"/)
+  assert.match(text, /ACP_RESUME='01a00cbb-b70c-7670-b9b3-b523a70aa393'/)
 
   // A lease still in the future is a lane still running, and must NOT be
   // swept up by this — otherwise every healthy lane is declared dead.
@@ -474,10 +583,27 @@ test('status hands over the resume command with the session id already in it', (
     requested_model: 'gpt-5.6-sol',
     requested_reasoning_effort: 'max',
   }))
+  // The routing the dispatch ACTUALLY used, recorded at spawn. The first
+  // version rebuilt a generic command from the liveness record's requested
+  // model — which turned an EXPECTATION into `ACP_MODEL` and dropped
+  // CLAUDE_CONFIG_DIR entirely, so pasting it for a routed Claude seat could
+  // load the session through a different profile while looking like it
+  // preserved the identity. The PR reviewer named it.
+  mkdirSync(join(cwd, '.tmux-teams', 'dispatch-routing'), { recursive: true })
+  writeFileSync(join(cwd, '.tmux-teams', 'dispatch-routing', 'lane.json'), JSON.stringify({
+    worker: 'codex',
+    env: {
+      ACP_MODEL: 'gpt-5.6-sol', ACP_EXPECT_MODEL: 'gpt-5.6-sol',
+      ACP_REASONING_EFFORT: 'max', ACP_EXPECT_REASONING_EFFORT: 'max',
+      CLAUDE_CONFIG_DIR: '/home/someone/.config/claude-profiles/zai',
+    },
+  }))
   const text = formatStatus(statusReport(cwd, 'lane'))
-  assert.match(text, /ACP_RESUME="01a00c81-0383-7522-963a-16e2d007d656"/)
-  assert.match(text, /ACP_EXPECT_MODEL="gpt-5\.6-sol"/)
-  assert.match(text, /ACP_EXPECT_REASONING_EFFORT="max"/)
+  assert.match(text, /ACP_RESUME='01a00c81-0383-7522-963a-16e2d007d656'/)
+  assert.match(text, /ACP_EXPECT_MODEL='gpt-5\.6-sol'/)
+  assert.match(text, /ACP_EXPECT_REASONING_EFFORT='max'/)
+  assert.match(text, /CLAUDE_CONFIG_DIR='\/home\/someone\/\.config\/claude-profiles\/zai'/,
+    'the profile the dispatch routed through was dropped from its own recovery command')
   // The resume must re-enter through THIS script; a resume typed at the
   // companion is exactly as killable as the dispatch that lost the turn.
   assert.match(text, /acp-dispatch\.mjs/)
@@ -486,21 +612,44 @@ test('status hands over the resume command with the session id already in it', (
 
 test('a resume reuses the task id, because a new one moves the outbox out from under the prompt', () => {
   const command = resumeCommand('/repo', 'round3', {
-    sessionId: 'sess-1', worker: 'codex', model: 'gpt-5.6-sol', effort: 'max', briefFile: '/tmp/recover.md',
+    sessionId: 'sess-1', routing: { worker: 'codex', env: { ACP_MODEL: 'gpt-5.6-sol' } },
+    briefFile: '/tmp/recover.md',
   })
-  assert.match(command, /codex \/repo round3 \/tmp\/recover\.md/)
+  assert.match(command, /'codex' '\/repo' 'round3' '\/tmp\/recover\.md'/)
   assert.equal(resumeCommand('/repo', 'round3', { sessionId: null }), null)
+
+  // Every generated argument is shell-quoted. A path with a space produced a
+  // command that split into the wrong argv when pasted — the same class as the
+  // boot guard this file already carries a comment about.
+  const spaced = resumeCommand('/a path/with spaces', 'round3', {
+    sessionId: "it's-quoted", routing: { worker: 'codex', env: {} }, briefFile: '/b rief.md',
+  })
+  assert.match(spaced, /'\/a path\/with spaces'/)
+  assert.match(spaced, /'\/b rief\.md'/)
+  assert.match(spaced, /ACP_RESUME='it'\\''s-quoted'/,
+    'a single quote in a value broke out of its own quoting')
 })
 
 // The rule this replaces was prose, and prose is what failed. Every shipped
 // skill that tells someone how to dispatch has to name the detached entry
 // point, or the next caller copies a killable command out of a document.
-test('no shipped skill teaches a runnable command that launches the companion directly', () => {
+test('no shipped DOCUMENT teaches a runnable command that launches the companion directly', () => {
+  // Scoped to `skills/` until 2026-08-17, when the repository's PR reviewer
+  // pointed out that `README.md` still carried exactly such a command — the
+  // primary document a reader meets, outside the only directory this guard
+  // looked at. It stayed green while the failure it exists to prevent was one
+  // copy-paste away. That is the same shape as the secret matrix that passed by
+  // never reaching the credential branch: **a guard's SCOPE is part of the
+  // guard.** Everything tracked and readable is scanned now.
   const offenders = []
+  const SKIP_DIRS = new Set(['node_modules', '.git', '_bmad', 'docs'])
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name)
-      if (entry.isDirectory()) { walk(path); continue }
+      if (entry.isDirectory()) {
+        if (!SKIP_DIRS.has(entry.name)) walk(path)
+        continue
+      }
       if (!entry.name.endsWith('.md')) continue
       const text = readFileSync(path, 'utf8')
       // Fenced blocks only. An ADR or a contract may DESCRIBE the companion;
@@ -509,13 +658,16 @@ test('no shipped skill teaches a runnable command that launches the companion di
         // A line continuation makes one command out of several lines.
         for (const command of body.replace(/\\\n/g, ' ').split('\n')) {
           if (/(^|[\s/])(node|exec)\s+\S*acp-companion\.mjs/.test(command)) {
-            offenders.push(`${path.slice(SKILLS.length + 1)}: ${command.trim()}`)
+            offenders.push(`${path.slice(join(HERE, '..').length + 1)}: ${command.trim()}`)
           }
         }
       }
     }
   }
-  walk(SKILLS)
+  walk(join(HERE, '..'))
   assert.deepEqual(offenders, [],
     `these are copy-pasteable commands that a shell cap can kill mid-turn:\n${offenders.join('\n')}`)
+  // The scope itself is asserted, because a guard that quietly stops walking
+  // is indistinguishable from one that finds nothing.
+  assert.ok(existsSync(join(HERE, '..', 'README.md')), 'the walk root does not contain README.md')
 })
