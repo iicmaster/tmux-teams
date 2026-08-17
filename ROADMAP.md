@@ -199,7 +199,7 @@ Ordered by what they cost when left alone, not by size. The first two arrived
 as GitHub issues; the last three are things v0.32.0 measured and could not fix
 inside its own scope.
 
-### 1. The default `claude` ACP lane cannot reuse a logged-in Claude Max session
+**The default `claude` ACP lane cannot reuse a logged-in Claude Max session.**
 
 Filed 2026-08-17 as *"ACP default Claude lane cannot reuse Claude Max OAuth
 login"*. The default `claude` CLI reports a logged-in Claude Max account; the
@@ -227,7 +227,7 @@ worth repeating are that a lane with no credentials must return a structured,
 actionable blocker rather than hang or blame the model, and that no secret
 value may reach a log, receipt, KMS event or outbox.
 
-### 2. `loop-runner` re-dispatches a `blocked` terminal instead of escalating
+**`loop-runner` re-dispatches a `blocked` terminal instead of escalating.**
 
 Filed as *"loop-runner retries a 'blocked' terminal instead of escalating —
 burns worker legs on a token that needs a human"*. `blocked` is this plugin's
@@ -242,7 +242,7 @@ worker legs were spent asking the same question. The review policy and the
 handoff guidance both already say a `TEAM_BLOCKED` outbox must not be
 auto-answered; only the runner disagrees.
 
-### 3. Lane health is discovered one release at a time
+**Lane health is discovered one release at a time.**
 
 There is no preflight that answers "which lanes can actually review today", so
 the answer is assembled by probing lanes one at a time in the middle of a
@@ -257,7 +257,7 @@ Worth stating what this is not: it is not a health-check that runs on a timer
 and it must not become one. The measurement is only wanted when a panel is
 about to be assembled.
 
-### 4. `belongsToThisRun` has bounds, not a nonce
+**`belongsToThisRun` has bounds, not a nonce.**
 
 v0.32.0 closed the forgery a panel lane found — a liveness record stamped in
 the future read as belonging to this run forever — by bounding the timestamp on
@@ -267,7 +267,7 @@ A real nonce needs the companion to echo a value the dispatcher generated,
 which is a protocol change and was out of scope. The code says so at the call
 site rather than implying otherwise.
 
-### 5. No real Claude host has ever initialized the shipped MCP server
+**No real Claude host has ever initialized the shipped MCP server.**
 
 ADR 0007 states this plainly and it is still true: the server's read-only
 property is established by source inspection plus a mock-observed

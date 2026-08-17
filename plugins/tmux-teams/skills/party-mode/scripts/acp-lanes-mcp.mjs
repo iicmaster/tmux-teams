@@ -122,7 +122,12 @@ export const DIAGNOSTICS = Object.freeze({
 // pointed out that a caller who controls a filename controls the classification.
 const REVIEW_PHRASE = /(^|[\s:])review /
 
-export function classify(message) {
+export function classify(message, { fileKind = null } = {}) {
+  // `fileKind` is supplied by a caller that opened the file itself. It is the
+  // only trustworthy source for which read failed; a path is caller-controlled
+  // text and a message is not evidence of its own subject.
+  if (fileKind === 'credential') return 'credential_unreadable'
+  if (fileKind === 'settings') return 'settings_unreadable'
   const raw = String(message ?? '')
   // Ordinary filesystem failures were classified by nothing and fell through to
   // `unclassified`, which told an operator to run the gate for a detail the
@@ -132,7 +137,16 @@ export function classify(message) {
   // sent the operator to edit the wrong file and the wrong variable. A panel
   // lane caught it one commit after I introduced it.
   if (/\b(ENOENT|EACCES|EISDIR|ELOOP|EPERM)\b/.test(raw)) {
-    return /credential|auth|api[-_ ]?key|\.env/i.test(raw) ? 'credential_unreadable' : 'settings_unreadable'
+    // WHICH file failed is not knowable from the message, and the previous
+    // version searched the raw text — INCLUDING THE PATH — for 'credential' or
+    // '.env'. A caller who controls a filename therefore chose the diagnosis,
+    // which is the exact invariant this module claims to hold. A panel lane
+    // reproduced it directly.
+    //
+    // The honest answer without call-site identity is the generic one. The
+    // caller that KNOWS which file it opened passes `fileKind` and gets the
+    // specific code; nothing guesses.
+    return 'settings_unreadable'
   }
   const text = REVIEW_PHRASE.test(raw) ? raw.slice(raw.search(REVIEW_PHRASE)) : raw
   if (/requires ANTHROPIC_BASE_URL/.test(text)) return 'endpoint_missing'
@@ -482,10 +496,13 @@ export function paramsProblem(method, params) {
     && (typeof params._meta !== 'object' || params._meta === null || Array.isArray(params._meta))) {
     return '_meta must be an object'
   }
-  if (method === 'ping' && params !== undefined) {
-    const extra = Object.keys(params).filter((key) => key !== '_meta')
-    if (extra.length > 0) return 'ping takes no params other than _meta'
-  }
+  // `PingRequest.params` is an OPEN object in MCP 2025-06-18 — `_meta` plus
+  // arbitrary keys — so rejecting unknown keys refused conforming traffic
+  // (`{traceContext: {}}` is the reviewer's own reproduction). This line has
+  // now been wrong in both directions and the lesson is the same each time:
+  // the answer is the specification, and a preference for strictness is not a
+  // reading of it. `_meta`'s TYPE is still checked above, because the spec
+  // types that one.
   return null
 }
 

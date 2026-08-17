@@ -316,10 +316,17 @@ function normalizeFamilyValues(raw) {
   if (/^claude[-_]kimi(?:[-_ ]?acp)?$/.test(value)) return ['kimi']
   if (/^claude[-_]qwen(?:[-_ ]?acp)?$/.test(value)) return ['qwen']
   if (/^claude[-_](?:zai|glm)(?:[-_ ]?acp)?$/.test(value)) return ['zai']
+  if (/^claude[-_]deepseek(?:[-_ ]?acp)?$/.test(value)) return ['deepseek']
   const families = []
   if (/(?:^|[^a-z0-9])(?:antigravity|gemini|agy|google)(?:[^a-z0-9]|$)/.test(value)) families.push('gemini')
   if (/(?:^|[^a-z0-9])(?:kimi|moonshot)(?:[^a-z0-9]|$)/.test(value)) families.push('kimi')
   if (/(?:^|[^a-z0-9])qwen(?:[0-9]|[^a-z0-9]|$)/.test(value)) families.push('qwen')
+  // `deepseek` SHIPS as a profile and was recognized by nothing: neither the
+  // alias map nor any regex named it, so `normalizePrimaryFamily('deepseek')`
+  // answered 'unknown' — and the lane reached its seat through a gateway that
+  // also serves qwen, so the nearest wrong answer was 'qwen'. A panel lane
+  // found it. A family the panel counts on for distinctness must be nameable.
+  if (/(?:^|[^a-z0-9])deep[-_ ]?seek(?:[0-9]|[^a-z0-9]|$)/.test(value)) families.push('deepseek')
   if (/(?:^|[^a-z0-9])(?:zai|z\.ai|glm)(?:[^a-z0-9]|$)/.test(value)) families.push('zai')
   if (/(?:^|[^a-z0-9])(?:claude|anthropic)(?:[^a-z0-9]|$)/.test(value)) families.push('claude')
   if (/(?:^|[^a-z0-9])(?:gpt|openai|codex)(?:[^a-z0-9]|$)/.test(value)) families.push('openai')

@@ -10,7 +10,7 @@ import { handle, callTool, laneFacts, laneStatus, classify, fixesFor,
   TOOLS, TOOL_DESCRIPTORS, DIAGNOSTICS, PROTOCOL_VERSION, UNCHECKED_LANES,
   RPC_INVALID_REQUEST, RPC_INVALID_PARAMS, RPC_METHOD_NOT_FOUND, RPC_PARSE_ERROR }
   from '../plugins/tmux-teams/skills/party-mode/scripts/acp-lanes-mcp.mjs'
-import { REVIEW_PROFILES, PROVIDER_SECRET_KEYS, acceptedCredentialNames, buildProfileEnv }
+import { REVIEW_PROFILES, normalizePrimaryFamily, PROVIDER_SECRET_KEYS, acceptedCredentialNames, buildProfileEnv }
   from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -302,10 +302,17 @@ test('every diagnostic code the classifier can return has a constant sentence', 
   // WHICH FILE failed decides the repair. Aiming every filesystem error at the
   // settings file sent the operator to edit a file that was fine — a panel lane
   // caught it one commit after it was introduced.
-  assert.equal(classify("EACCES: permission denied, open '/home/u/.config/zai/credential.json'"),
-    'credential_unreadable')
-  assert.equal(classify("ENOENT: no such file or directory, open '/home/u/.config/zai/settings.json'"),
-    'settings_unreadable')
+  // WHICH file failed is not knowable from the message. The previous version
+  // searched the raw text — INCLUDING THE PATH — so a caller who controls a
+  // filename chose the diagnosis, against this module's own invariant.
+  // Identity comes from the caller that opened the file, or not at all.
+  for (const path of ['/home/u/credential.json', '/home/u/.env', '/tmp/settings.json',
+    '/tmp/auth/api-key/settings.json']) {
+    assert.equal(classify(`EACCES: permission denied, open '${path}'`), 'settings_unreadable',
+      `the filename ${path} chose the diagnosis`)
+  }
+  assert.equal(classify('EACCES: permission denied', { fileKind: 'credential' }), 'credential_unreadable')
+  assert.equal(classify('EACCES: permission denied', { fileKind: 'settings' }), 'settings_unreadable')
   // ponytail: the repair sentence is reached through the switch, which the
   // closed-set assertion above already covers; exporting a helper only so a
   // test can call it would be the test shaping the module.
@@ -822,10 +829,14 @@ test('the things three panel families found in one sitting', () => {
   assert.ok(handle({ jsonrpc: '2.0', id: 3, method: 'initialize',
     params: { ...base, clientInfo: { name: 'a', version: '1' } } }, {}).result)
 
-  // `ping` takes no params. The header comment claimed round four had fixed
-  // this; a panel lane read the code and found nothing validating ping at all.
-  // A comment describing a fix that was never written is worse than no comment.
-  assert.equal(handle({ jsonrpc: '2.0', id: 4, method: 'ping', params: { extra: 1 } }, {}).error?.code, -32602)
+  // This assertion was itself a defect and is kept as a record of one. Round
+  // four found `ping` validating nothing and this test demanded that unknown
+  // keys be REFUSED — but MCP 2025-06-18 types PingRequest.params as an open
+  // object, so the test pinned a violation of the spec and a later panel lane
+  // reproduced conforming traffic being rejected. A test can hold a bug in
+  // place; the fix is the specification, not the previous reviewer's wording.
+  assert.deepEqual(handle({ jsonrpc: '2.0', id: 4, method: 'ping', params: { extra: 1 } }, {}),
+    { jsonrpc: '2.0', id: 4, result: {} })
   assert.deepEqual(handle({ jsonrpc: '2.0', id: 5, method: 'ping', params: {} }, {}),
     { jsonrpc: '2.0', id: 5, result: {} })
   assert.deepEqual(handle({ jsonrpc: '2.0', id: 6, method: 'ping' }, {}),
@@ -849,7 +860,12 @@ test('_meta is legal on any request, and a filename cannot choose the diagnosis'
   // traffic.
   assert.deepEqual(handle({ jsonrpc: '2.0', id: 1, method: 'ping', params: { _meta: { a: 1 } } }, {}),
     { jsonrpc: '2.0', id: 1, result: {} })
-  assert.equal(handle({ jsonrpc: '2.0', id: 2, method: 'ping', params: { other: 1 } }, {}).error?.code, -32602)
+  // `PingRequest.params` is an OPEN object in MCP 2025-06-18 — `_meta` plus
+  // arbitrary keys — so refusing unknown keys refused conforming traffic. This
+  // line was wrong in BOTH directions across three commits, and the answer was
+  // the specification every time.
+  assert.deepEqual(handle({ jsonrpc: '2.0', id: 2, method: 'ping', params: { traceContext: {} } }, {}),
+    { jsonrpc: '2.0', id: 2, result: {} })
   // `_meta` is legal AND typed as an object. Accepting it as ANY value was the
   // overcorrection — one commit stopped refusing legal traffic and started
   // accepting illegal traffic. Found by mutation: removing the type check left
@@ -871,4 +887,56 @@ test('_meta is legal on any request, and a filename cannot choose the diagnosis'
   assert.equal(classify('zai review routes its provider but pins no endpoint'), 'profile_incomplete')
   assert.equal(classify('zai review requires ANTHROPIC_BASE_URL'), 'endpoint_missing')
   assert.equal(classify('zai review endpoint requires an explicit provider credential'), 'credential_missing')
+})
+
+test('every shipped profile declares a family the normalizer can name', () => {
+  // `deepseek` ships as a profile and was recognized by NOTHING — not the alias
+  // map, not any regex — so normalizePrimaryFamily('deepseek') answered
+  // 'unknown', and its lane reaches its seat through a gateway that also serves
+  // qwen, which is the nearest wrong answer. A panel lane found it.
+  //
+  // The panel's whole premise is three DISTINCT families, so a shipped family
+  // the normalizer cannot name is a hole in the one property it exists to
+  // check. Iterating the profiles is the point here: a profile added later
+  // without a family gets caught by this, which a pinned list would not do.
+  for (const [id, profile] of Object.entries(REVIEW_PROFILES)) {
+    assert.equal(normalizePrimaryFamily(profile.family), profile.family,
+      `profile ${id} declares family "${profile.family}" that the normalizer answers `
+      + `"${normalizePrimaryFamily(profile.family)}" for`)
+  }
+  // and the shapes that reach the normalizer from a wrapper name and a model id
+  assert.equal(normalizePrimaryFamily('claude-deepseek'), 'deepseek')
+  assert.equal(normalizePrimaryFamily('deepseek-v4-flash-0731'), 'deepseek')
+  assert.notEqual(normalizePrimaryFamily('deepseek'), 'qwen')
+})
+
+test('each MCP registration satisfies the contract it names', () => {
+  // One file declared the Agent Plugins 1.0 schema and then spoke Claude Code:
+  // that schema discovers `mcp.json` and its `cwd` rule accepts only `./…`,
+  // `${PLUGIN_ROOT}…` or `${PLUGIN_DATA}…`, while the file supplied
+  // `${CLAUDE_PLUGIN_ROOT}`. A panel lane read the two against each other. Both
+  // hosts are real, so both files ship — what is not allowed is one file
+  // claiming a contract it violates.
+  const claude = JSON.parse(readFileSync(join(PLUGIN, '.mcp.json'), 'utf8'))
+  const neutral = JSON.parse(readFileSync(join(PLUGIN, 'mcp.json'), 'utf8'))
+
+  assert.equal(claude.$schema, undefined,
+    '.mcp.json is the Claude Code registration and must not claim the vendor-neutral schema')
+  const c = claude.mcpServers['tmux-teams-acp-lanes']
+  assert.match(c.cwd, /^\$\{CLAUDE_PLUGIN_ROOT\}/)
+  assert.match(c.args[0], /^\$\{CLAUDE_PLUGIN_ROOT\}/)
+
+  assert.equal(neutral.$schema, 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json')
+  const n = neutral.mcpServers['tmux-teams-acp-lanes']
+  assert.match(n.cwd, /^(\.\/|\$\{PLUGIN_ROOT\}|\$\{PLUGIN_DATA\})/,
+    'the vendor-neutral cwd must satisfy the schema it declares')
+  assert.match(n.args[0], /^(\.\/|\$\{PLUGIN_ROOT\}|\$\{PLUGIN_DATA\})/)
+  assert.ok(!JSON.stringify(neutral).includes('CLAUDE_PLUGIN_ROOT'),
+    'the vendor-neutral registration leaks a Claude Code variable')
+
+  // both point at the same shipped file
+  for (const [file, entry] of [['.mcp.json', c], ['mcp.json', n]]) {
+    const target = entry.args[0].replace(/^\$\{(CLAUDE_)?PLUGIN_ROOT\}/, PLUGIN)
+    assert.ok(existsSync(target), `${file} points at a file that is not shipped: ${target}`)
+  }
 })
