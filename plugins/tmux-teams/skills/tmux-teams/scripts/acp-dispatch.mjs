@@ -41,6 +41,11 @@ export const EXIT_RUNNING = 1       // still going — for `wait`, still going w
 // that ENDED without writing, and a lane that STOPPED REPORTING and may have
 // died mid-turn. `status` says which; the exit code cannot, and pretending it
 // does is how an operator resumes something that is still running.
+// Kept beside the resume command that prints it. The companion owns the real
+// default; this constant exists so the two can be asserted equal rather than
+// hoped equal.
+export const COMPANION_DEFAULT_STALL_SEC = 600
+
 export const EXIT_NO_OUTBOX = 2     // no outbox, and the lane is not going to produce one on its own
 
 // The window this process is willing to sit and watch a boot. It is a REPORTING
@@ -251,12 +256,35 @@ export function logPath(cwd, taskId) { return join(cwd, '.tmux-teams', 'runner-l
 // reported as `no_outbox`.
 export function outboxPath(cwd, taskId) { return join(cwd, '.mailbox-out', taskId) }
 
+// The READ side had no symlink policy at all, and a panel lane showed what that
+// costs: `status` follows a session symlink pointing anywhere and reflects the
+// text it finds into the pasteable `ACP_RESUME` command. The dispatch-side
+// guards refuse to WRITE through a link; they say nothing about reading one, and
+// `status` runs against directories this dispatcher never created.
+//
+// So every read of a control leaf goes through here. A link is not followed and
+// is not an error either — a report is a diagnostic, and refusing to print one
+// because a leaf is hostile helps nobody. It reads as absent, which is the
+// honest answer: there is no trustworthy record.
+function readLeafSync(path) {
+  let stat = null
+  try {
+    stat = lstatSync(path)
+  } catch {
+    return null
+  }
+  if (!stat.isFile() || stat.nlink > 1) return null
+  try { return readFileSync(path, 'utf8') } catch { return null }
+}
+
 function readJson(path) {
-  try { return JSON.parse(readFileSync(path, 'utf8')) } catch { return null }
+  const text = readLeafSync(path)
+  if (text === null) return null
+  try { return JSON.parse(text) } catch { return null }
 }
 
 function readSessionId(cwd, taskId) {
-  try { return readFileSync(sessionPath(cwd, taskId), 'utf8').trim() || null } catch { return null }
+  return readLeafSync(sessionPath(cwd, taskId))?.trim() || null
 }
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
@@ -318,7 +346,13 @@ export function resumeCommand(cwd, taskId, { sessionId, worker, routing, briefFi
   // silently reset a custom stall to the default. Found by the gemini panel
   // lane — a fallback that fires always is indistinguishable from no feature.
   const recordedStall = Number(routing?.stallSec)
-  const stall = Number.isFinite(recordedStall) && recordedStall > 0 ? recordedStall : 900
+  // 600, because that is what `acp-companion.mjs` itself falls back to
+  // (`positiveNumber(leaseArg, 600)`). This said 900, so a resume command
+  // generated for a run with an omitted or unusable stall told the operator to
+  // use a lease the original run never had — a panel lane read the two files
+  // against each other and caught the drift. Measured in the companion, not
+  // recalled.
+  const stall = Number.isFinite(recordedStall) && recordedStall > 0 ? recordedStall : COMPANION_DEFAULT_STALL_SEC
   const parts = [`ACP_RESUME=${shQuote(sessionId)}`]
   for (const key of ROUTING_ENV_KEYS) {
     if (env[key] !== undefined && env[key] !== '') parts.push(`${key}=${shQuote(env[key])}`)

@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, mkdi
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { statusReport, formatStatus, resumeCommand, outboxPath, sessionPath, strayOutboxes, TERMINAL_LIVENESS_STATES,
+import { statusReport, formatStatus, resumeCommand, outboxPath, sessionPath, COMPANION_DEFAULT_STALL_SEC, strayOutboxes, TERMINAL_LIVENESS_STATES,
   waitForSettlement, EXIT_OUTBOX, EXIT_RUNNING, EXIT_NO_OUTBOX, pidPath, recordedPid, belongsToThisRun,
   statusExitCode, logPath }
   from '../plugins/tmux-teams/skills/tmux-teams/scripts/acp-dispatch.mjs'
@@ -1171,7 +1171,15 @@ test('a recorded stall survives being a string, which is what argv gives', () =>
   const nonsense = resumeCommand('/repo', 'r', {
     sessionId: 's', routing: { worker: 'codex', briefFile: '/b.md', stallSec: 'soon', env: {} },
   })
-  assert.match(nonsense, /'\/b\.md' 900$/m, 'an unusable recorded stall must fall back, not propagate')
+  // 600, not 900. `acp-companion.mjs` falls back to `positiveNumber(leaseArg, 600)`,
+  // so a resume command offering 900 told the operator to use a lease the
+  // original run never had. A panel lane read the two files against each other.
+  assert.match(nonsense, /'\/b\.md' 600$/m, 'an unusable recorded stall must fall back, not propagate')
+  assert.equal(COMPANION_DEFAULT_STALL_SEC, 600)
+  // and the constant is not free to drift from the file that owns the default
+  const companion = readFileSync(join(dirname(DISPATCH), 'acp-companion.mjs'), 'utf8')
+  assert.match(companion, new RegExp(`positiveNumber\\(leaseArg, ${COMPANION_DEFAULT_STALL_SEC}\\)`),
+    'the dispatcher and the companion disagree about the default stall')
 })
 
 test('a reused pid cannot suppress the lease, and a refusal is a sentence not a stack', () => {
@@ -1357,4 +1365,53 @@ test('the suite is green in a shell that carries ACP variables of its own', () =
       else process.env[k] = v
     }
   }
+})
+
+test('status does not follow a link out of the tree, and the old traversal fixture missed its own target', () => {
+  // A panel lane found TWO things here. First the fixture: from
+  // `<cwd>/run/.tmux-teams/liveness`, a task id of `../../secret` normalizes to
+  // `<cwd>/run/secret.json` while the old test planted `<cwd>/secret.json`, so
+  // its "no secret was reflected" assertion passed without the traversal ever
+  // reaching the file. A vacuous assertion is worse than none: it reads as
+  // coverage. This plants the secret where the traversal actually lands.
+  const cwd = tempDir('acp-dispatch-read-')
+  const run = join(cwd, 'run')
+  mkdirSync(join(run, '.tmux-teams', 'liveness'), { recursive: true })
+  mkdirSync(join(run, '.tmux-teams', 'sessions'), { recursive: true })
+  writeFileSync(join(run, 'secret.json'), JSON.stringify({
+    liveness_state: 'completed', effective_identity: 'SECRETVALUE', identity_status: 'matched',
+  }))
+  const traversed = spawnSync(process.execPath, [DISPATCH, 'status', run, '../../secret'],
+    { encoding: 'utf8', env: laneEnv(), timeout: 20000 })
+  assert.ok(!`${traversed.stdout}${traversed.stderr}`.includes('SECRETVALUE'),
+    'a task id that traverses out of the tree reflected the file it landed on')
+
+  // Second, and the reason the read side needed a policy at all: `status`
+  // followed a SESSION symlink pointing anywhere and reflected what it found
+  // into the pasteable ACP_RESUME command. The dispatch-side guards refuse to
+  // WRITE through a link and said nothing about reading one.
+  const outside = join(cwd, 'not-ours')
+  writeFileSync(outside, 'STOLENSESSION\n')
+  symlinkSync(outside, sessionPath(run, 'linked'))
+  writeFileSync(join(run, '.tmux-teams', 'liveness', 'linked.json'), JSON.stringify({
+    liveness_state: 'failed', termination_reason: 'protocol_error',
+    observed_at: new Date().toISOString(),
+    next_lease_expiry_at: new Date(Date.now() - 1000).toISOString(),
+  }))
+  const linked = spawnSync(process.execPath, [DISPATCH, 'status', run, 'linked'],
+    { encoding: 'utf8', env: laneEnv(), timeout: 20000 })
+  const out = `${linked.stdout}${linked.stderr}`
+  assert.ok(!out.includes('STOLENSESSION'),
+    `a session symlink was followed and printed into the resume command:\n${out}`)
+  // and a hostile leaf reads as ABSENT rather than crashing the report — a
+  // diagnostic that refuses to print helps nobody.
+  assert.match(out, /liveness_state: failed/)
+
+  // A hard-linked liveness record is somebody else's file too.
+  const victim = join(cwd, 'victim.json')
+  writeFileSync(victim, JSON.stringify({ liveness_state: 'completed', effective_identity: 'HARDLINKED' }))
+  linkSync(victim, join(run, '.tmux-teams', 'liveness', 'hard.json'))
+  const hard = spawnSync(process.execPath, [DISPATCH, 'status', run, 'hard'],
+    { encoding: 'utf8', env: laneEnv(), timeout: 20000 })
+  assert.ok(!`${hard.stdout}${hard.stderr}`.includes('HARDLINKED'))
 })
