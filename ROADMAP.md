@@ -193,6 +193,88 @@ Also in scope and not code: the published roadmap page, the submodule pin in
 `~/agent-skills`, and a `HANDOFF.md` that currently still says the third review
 has not been run.
 
+## The release after — v0.33.0, and why these five
+
+Ordered by what they cost when left alone, not by size. The first two arrived
+as GitHub issues; the last three are things v0.32.0 measured and could not fix
+inside its own scope.
+
+### 1. The default `claude` ACP lane cannot reuse a logged-in Claude Max session
+
+Filed 2026-08-17 as *"ACP default Claude lane cannot reuse Claude Max OAuth
+login"*. The default `claude` CLI reports a logged-in Claude Max account; the
+companion drives the same binary and dies at `[fatal] -32000 Authentication
+required` after `initialize` and `session/new` both succeed. No prompt is
+delivered and no outbox is produced.
+
+The gap named in the issue is specific: the companion advertises filesystem
+capabilities only and never advertises the ACP terminal-auth capability, and
+the upstream adapter exposes its Claude Subscription / Console login methods
+only to a client that asks for them. So the adapter has a working login route
+and we never let it offer one.
+
+**This is first because of what it costs, which is more than one lane.** On
+2026-08-17 a release panel needed three model families and found that four of
+the seven declared lanes could not answer: `zai` refuses because its gateway
+will not accept a disabled thinking mode and its package expired, `kimi` and
+`deepseek` are out of quota, and `claude` — the one lane that needs no routed
+profile and no third-party quota at all — is unreachable for the reason above.
+A reviewer family that should be the fallback for every other one is the family
+that has never been tried.
+
+Acceptance is written out on the issue and is not restated here; the two parts
+worth repeating are that a lane with no credentials must return a structured,
+actionable blocker rather than hang or blame the model, and that no secret
+value may reach a log, receipt, KMS event or outbox.
+
+### 2. `loop-runner` re-dispatches a `blocked` terminal instead of escalating
+
+Filed as *"loop-runner retries a 'blocked' terminal instead of escalating —
+burns worker legs on a token that needs a human"*. `blocked` is this plugin's
+own signal that a person must act, and `loop-runner.mjs` treats it as a crashed
+process: `last.terminal !== 'done'` is the whole test, so the human gate and a
+segfault are the same branch.
+
+The issue carries a real run: `blocked` at 19:56, re-dispatched, `failed`,
+re-dispatched, `blocked` again, and a human stopped it at 20:04. Nothing about
+the token changed between legs — the first answer was the answer, and two more
+worker legs were spent asking the same question. The review policy and the
+handoff guidance both already say a `TEAM_BLOCKED` outbox must not be
+auto-answered; only the runner disagrees.
+
+### 3. Lane health is discovered one release at a time
+
+There is no preflight that answers "which lanes can actually review today", so
+the answer is assembled by probing lanes one at a time in the middle of a
+release. On 2026-08-17 that cost four probes and a swapped panel composition
+after the run had already started. `acp_lane_status` reports whether a lane is
+CONFIGURED, which is a different question and deliberately so — it contacts no
+endpoint. What is missing is the cheap live check: one trivial brief per lane,
+run on demand, reporting reachable / quota / refused, with the refusal
+classified rather than echoed.
+
+Worth stating what this is not: it is not a health-check that runs on a timer
+and it must not become one. The measurement is only wanted when a panel is
+about to be assembled.
+
+### 4. `belongsToThisRun` has bounds, not a nonce
+
+v0.32.0 closed the forgery a panel lane found — a liveness record stamped in
+the future read as belonging to this run forever — by bounding the timestamp on
+both sides. That stops the accidental case and the clock-skew case. It does not
+stop a deliberate one, because nothing in the record is unique to this dispatch.
+A real nonce needs the companion to echo a value the dispatcher generated,
+which is a protocol change and was out of scope. The code says so at the call
+site rather than implying otherwise.
+
+### 5. No real Claude host has ever initialized the shipped MCP server
+
+ADR 0007 states this plainly and it is still true: the server's read-only
+property is established by source inspection plus a mock-observed
+`mcpServers: []` request, and the tool inventory inside a real dispatched ACP
+child has never been measured. Until a real host initializes it, ADR 0003's
+guarantee remains a guarantee about what is REQUESTED.
+
 ## What is actually open
 
 These are real but unforced, and separate from the release above:
