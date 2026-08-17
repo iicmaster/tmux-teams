@@ -1162,3 +1162,40 @@ test('a recorded stall survives being a string, which is what argv gives', () =>
   })
   assert.match(nonsense, /'\/b\.md' 900$/m, 'an unusable recorded stall must fall back, not propagate')
 })
+
+test('a reused pid cannot suppress the lease, and a refusal is a sentence not a stack', () => {
+  // A panel lane: a live pid settled "still running" forever. Pid numbers are
+  // reused, so an unrelated process inheriting the number would report a
+  // long-dead lane as running AND refuse every new dispatch under that task id.
+  // A live pid wins over an unexpired lease; an EXPIRED lease still counts.
+  const cwd = tempDir('acp-dispatch-reuse-')
+  mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
+  mkdirSync(join(cwd, '.tmux-teams', 'dispatch-pids'), { recursive: true })
+  writeFileSync(pidPath(cwd, 'reused'), `${process.pid}\n`)   // alive by definition
+  const record = (leaseOffsetMs) => writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'reused.json'),
+    JSON.stringify({
+      liveness_state: 'tool_running', termination_reason: 'none',
+      observed_at: new Date().toISOString(),
+      next_lease_expiry_at: new Date(Date.now() + leaseOffsetMs).toISOString(),
+    }))
+
+  record(15 * 60 * 1000)
+  assert.equal(statusReport(cwd, 'reused').notReporting, false, 'a healthy lane was called stopped')
+  record(-60 * 1000)
+  assert.equal(statusReport(cwd, 'reused').notReporting, true,
+    'a live pid suppressed an expired lease — a reused number would hide a dead lane for good')
+
+  // Every refusal this file raises arrives as a throw, and the entry had no
+  // rejection handler: Node turned it into an unhandled rejection with a stack
+  // and no sentence an operator can act on.
+  const hostile = tempDir('acp-dispatch-throwpath-')
+  writeFileSync(join(hostile, 'brief.md'), 'x\n')
+  const outside = tempDir('acp-dispatch-throwvictim-')
+  mkdirSync(join(hostile, '.tmux-teams'), { recursive: true })
+  symlinkSync(outside, join(hostile, '.tmux-teams', 'liveness'))
+  const r = spawnSync(process.execPath, [DISPATCH, 'mock', hostile, 'thrown', join(hostile, 'brief.md'), '120'],
+    { cwd: hostile, encoding: 'utf8', env: laneEnv({ ACP_DISPATCH_BOOT_SEC: '5' }), timeout: 30000 })
+  assert.equal(r.status, 2, `a refusal did not exit 2: ${r.stderr}`)
+  assert.doesNotMatch(r.stderr, /at .*acp-dispatch\.mjs:\d+/, 'the operator was handed a stack trace')
+  assert.match(r.stderr, /resolves outside it|not a real directory inside it/)
+})

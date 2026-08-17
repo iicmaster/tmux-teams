@@ -37,7 +37,11 @@ export const USAGE = [
 // one is asking the same question.
 export const EXIT_OUTBOX = 0        // the turn ended and wrote its outbox
 export const EXIT_RUNNING = 1       // still going — for `wait`, still going when the wait budget ran out
-export const EXIT_NO_OUTBOX = 2     // the turn ENDED and wrote nothing: resume before re-dispatching
+// 2 covers two different facts and the comment used to name only one: a turn
+// that ENDED without writing, and a lane that STOPPED REPORTING and may have
+// died mid-turn. `status` says which; the exit code cannot, and pretending it
+// does is how an operator resumes something that is still running.
+export const EXIT_NO_OUTBOX = 2     // no outbox, and the lane is not going to produce one on its own
 
 // The window this process is willing to sit and watch a boot. It is a REPORTING
 // bound, not a lifetime: when it expires the child keeps running and this
@@ -367,7 +371,13 @@ export function leaseExpired(liveness, now = Date.now()) {
 // next tick.
 function hasStopped(liveness, { pid = null, now = Date.now() } = {}) {
   if (hasTerminated(liveness)) return false
-  if (pid !== null) return !pidAlive(pid)
+  // A DEAD pid settles it immediately. A live one does not settle it forever:
+  // pid numbers are reused, and a panel lane pointed out that an unrelated
+  // process inheriting the number would suppress the lease evidence for good,
+  // reporting a long-dead lane as running and refusing new dispatches under
+  // that task id. So a live pid wins over an unexpired lease, and an expired
+  // lease still counts.
+  if (pid !== null && !pidAlive(pid)) return true
   return liveness !== null && leaseExpired(liveness, now)
 }
 
@@ -546,7 +556,12 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
   // The whole filesystem question, answered BEFORE anything is spawned. A
   // refusal after `unref()` leaves a detached lane alive with no trustworthy
   // records — worse than never starting.
-  for (const artifact of ['runner-logs', 'dispatch-pids', 'dispatch-routing']) {
+  // `liveness` and `sessions` were NOT in this list, and three panel lanes said
+  // so. The companion writes both, `statusReport` READS both, and a symlinked
+  // parent on either sends the write out of the tree or feeds the reader a
+  // stranger's file — which is the same class as the four already covered, on
+  // the two directories whose contents this tool actually reports.
+  for (const artifact of ['runner-logs', 'dispatch-pids', 'dispatch-routing', 'liveness', 'sessions']) {
     assertContainedDir(cwd, '.tmux-teams', artifact)
   }
   // `.mailbox-out` is the FOURTH write path and it was not checked. The
@@ -842,5 +857,14 @@ export function launchedDirectly(entry = process.argv[1]) {
 }
 
 if (launchedDirectly()) {
-  main(process.argv.slice(2)).then((code) => { process.exitCode = code })
+  // A rejection here used to become an unhandled promise rejection, which Node
+  // turns into a nonzero exit with a stack trace and no sentence an operator
+  // can act on. Every refusal this file raises — an unsafe artifact, an
+  // occupied task id — arrives as a throw, so this is the path they all take.
+  main(process.argv.slice(2))
+    .then((code) => { process.exitCode = code })
+    .catch((cause) => {
+      console.error(cause?.message ?? String(cause))
+      process.exitCode = 2
+    })
 }
