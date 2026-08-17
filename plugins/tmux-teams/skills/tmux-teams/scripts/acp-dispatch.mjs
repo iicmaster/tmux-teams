@@ -21,7 +21,7 @@
 import { spawn } from 'node:child_process'
 import { closeSync, constants as fsConstants, existsSync, fchmodSync, lstatSync, mkdirSync, openSync,
   readFileSync, readdirSync, realpathSync, renameSync, writeSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -78,13 +78,28 @@ function assertSafeTaskId(taskId) {
 // `.tmux-teams/dispatch-pids/<id>` is followed by an ordinary write, which
 // truncates whatever it points at — outside the run directory, after the child
 // has already spawned. The log is worse: a symlink there redirects the child's
-// entire stdout somewhere else. Raised by an advisor round on 2026-08-17 as the
-// half the id regex does not close.
+// entire stdout somewhere else. Raised by an advisor round on 2026-08-17.
 //
-// `O_NOFOLLOW` refuses a symlink at the final component, which is the component
-// an attacker can pre-position. Failing closed here is right: a run directory
-// with a symlink where a regular file belongs is not a directory this process
-// should be writing into at all.
+// **The first fix was `O_NOFOLLOW` alone, with a comment calling the final
+// component "the component an attacker can pre-position". That claim was
+// false**, and the next round said so: `O_NOFOLLOW` refuses a symlinked LEAF
+// and pathname resolution still walks the parents, so a symlinked
+// `.tmux-teams`, `runner-logs`, `dispatch-pids` or `dispatch-routing` sends an
+// `O_TRUNC` write to a same-named file in any writable directory. Under the
+// hostile-run-directory model this file claims to hold, the attacker owns the
+// whole walk before that safe basename.
+//
+// So the chain is checked as well as the leaf, and checked BEFORE the child is
+// spawned — a refusal after `unref()` leaves a detached lane alive with no
+// trustworthy records, which is a different and worse failure than not starting.
+//
+// **The residual is stated rather than papered over: this is TOCTOU-prone.**
+// Node exposes no `openat`, so there is no way here to hold a directory
+// capability and open relative to it; between the check and the open, a
+// sufficiently privileged attacker can swap a component. What this closes is
+// the pre-positioned symlink — a file that is already there when the command
+// runs — which is the reachable case. An anchored-fd design would close the
+// race and needs a primitive Node does not give us.
 function openNoFollow(path, flags) {
   try {
     return openSync(path, flags | (fsConstants.O_NOFOLLOW ?? 0))
@@ -93,6 +108,36 @@ function openNoFollow(path, flags) {
       throw Object.assign(new Error(`refusing to write through a symlink at ${path}`), { code: 'unsafe_artifact' })
     }
     throw cause
+  }
+}
+
+// Every directory between the run root and an artifact must still BE inside the
+// run root once symlinks are resolved. Checked for all three artifact
+// directories up front, so the answer to "is this run directory hostile" is
+// known before anything is spawned.
+export function assertContainedDir(root, dir) {
+  mkdirSync(dir, { recursive: true })
+  const realRoot = realpathSync(root)
+  const realDir = realpathSync(dir)
+  if (realDir !== realRoot && !realDir.startsWith(realRoot + sep)) {
+    throw Object.assign(
+      new Error(`refusing a run directory whose ${dir.slice(root.length + 1)} resolves outside it`),
+      { code: 'unsafe_artifact' },
+    )
+  }
+  return realDir
+}
+
+// And the leaf, before spawn as well as at write time. `O_NOFOLLOW` at the
+// write is the guarantee; this is the part that lets the refusal happen while
+// refusing still means "nothing started".
+function assertNotSymlink(path) {
+  try {
+    if (lstatSync(path).isSymbolicLink()) {
+      throw Object.assign(new Error(`refusing to write through a symlink at ${path}`), { code: 'unsafe_artifact' })
+    }
+  } catch (cause) {
+    if (cause.code !== 'ENOENT') throw cause
   }
 }
 
@@ -393,11 +438,20 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
   // operator is deciding whether the work is done. An advisor round named it on
   // 2026-08-17. Renaming rather than deleting: the predecessor's answer is
   // still on disk, and `strayOutboxes` will point at it.
+  // The whole filesystem question, answered BEFORE anything is spawned. A
+  // refusal after `unref()` leaves a detached lane alive with no trustworthy
+  // records — worse than never starting.
+  for (const artifact of ['runner-logs', 'dispatch-pids', 'dispatch-routing']) {
+    assertContainedDir(cwd, join(cwd, '.tmux-teams', artifact))
+  }
+  assertNotSymlink(logPath(cwd, taskId))
+  assertNotSymlink(pidPath(cwd, taskId))
+  assertNotSymlink(routingPath(cwd, taskId))
   const previous = outboxPath(cwd, taskId)
   if (existsSync(previous)) {
+    assertNotSymlink(previous)
     renameSync(previous, `${previous}.superseded-${spawnedAtIso.replaceAll(':', '-')}`)
   }
-  mkdirSync(join(cwd, '.tmux-teams', 'runner-logs'), { recursive: true })
   const logFd = openNoFollow(logPath(cwd, taskId), fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND)
   const argv = [COMPANION, worker, cwd, taskId, briefFile]
   if (stallSec !== undefined) argv.push(String(stallSec))
@@ -407,7 +461,6 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
   const child = spawnFn(process.execPath, argv, { cwd, detached: true, stdio: ['ignore', logFd, logFd], env })
   child.unref()
   if (Number.isInteger(child.pid)) {
-    mkdirSync(join(cwd, '.tmux-teams', 'dispatch-pids'), { recursive: true })
     writeNoFollow(pidPath(cwd, taskId), `${child.pid}\n`)
   }
   // `ACP_RESUME` is deliberately NOT captured: a resume of a resume must carry
@@ -417,7 +470,6 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
   for (const key of ROUTING_ENV_KEYS) {
     if (env?.[key] !== undefined && env[key] !== '') routingEnv[key] = String(env[key])
   }
-  mkdirSync(join(cwd, '.tmux-teams', 'dispatch-routing'), { recursive: true })
   writeNoFollow(routingPath(cwd, taskId),
     `${JSON.stringify({ worker, briefFile, stallSec: stallSec ?? null, spawnedAt: spawnedAtIso, env: routingEnv }, null, 2)}\n`)
   return child

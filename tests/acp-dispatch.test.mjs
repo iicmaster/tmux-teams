@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { statusReport, formatStatus, resumeCommand, outboxPath, strayOutboxes, TERMINAL_LIVENESS_STATES,
   waitForSettlement, EXIT_OUTBOX, EXIT_RUNNING, EXIT_NO_OUTBOX, pidPath, recordedPid, belongsToThisRun,
-  statusExitCode }
+  statusExitCode, logPath }
   from '../plugins/tmux-teams/skills/tmux-teams/scripts/acp-dispatch.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -751,6 +751,27 @@ test('a symlink planted where a run artifact belongs is refused, not followed', 
     assert.equal(readFileSync(victim, 'utf8'), 'PRECIOUS\n',
       `a symlink at ${artifact.join('/')} was followed and the victim was truncated`)
     assert.notEqual(r.status, 0, `${artifact.join('/')}: a hostile run directory was dispatched into`)
+    // And NOTHING started. The pid and routing writes happen after `unref()`,
+    // so without a pre-spawn check on those leaves the refusal arrives too
+    // late: a detached lane alive with no trustworthy records, which an advisor
+    // round called operationally worse than not starting. A mutation removing
+    // the pre-spawn leaf checks passed until this assertion existed.
+    // The probe has to be a thing the CHILD does, not a thing the parent
+    // prints: `spawnDetached` throwing means the parent's own report never
+    // runs, so an absent "dispatched" line proves nothing about whether a lane
+    // started. The companion writes to its log within milliseconds of starting,
+    // so an empty log after the refusal is the evidence. A mutation removing
+    // the pre-spawn leaf checks passed against the printed-output version of
+    // this assertion and fails against this one.
+    // The probe has to be a thing the CHILD does, and it has to be given time:
+    // `spawnDetached` throwing means the parent's own report never runs, so an
+    // absent "dispatched" line proves nothing, and a check taken the instant
+    // spawnSync returns can beat the companion to its first write. The liveness
+    // snapshot is the companion's own first act and its path is not the one
+    // under attack here, so it is the clean witness.
+    await sleep(1200)
+    assert.ok(!existsSync(join(cwd, '.tmux-teams', 'liveness', 'planted.json')),
+      `${artifact.join('/')}: a lane was spawned and the refusal came afterwards`)
   }
 })
 
@@ -826,4 +847,54 @@ test('status works against a run directory this dispatcher never created', () =>
     next_lease_expiry_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
   }))
   assert.equal(statusExitCode(statusReport(cwd, 'foreign')), EXIT_RUNNING)
+})
+
+test('a symlinked DIRECTORY on the way to a run artifact is refused before anything spawns', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX symlinks')
+  // Round seven's only blocker, and it was a comment of mine that was simply
+  // false: `O_NOFOLLOW` was applied to the leaf while a comment claimed the leaf
+  // is "the component an attacker can pre-position". Pathname resolution walks
+  // the PARENTS, so a symlinked `.tmux-teams` — or any one artifact directory —
+  // sends an `O_TRUNC` write to a same-named file wherever it points.
+  //
+  // Four distinct parents, because one leaf test generalising was the mistake
+  // that got here. And the refusal has to happen BEFORE the spawn: a secure
+  // refusal after `unref()` leaves a detached lane alive with no trustworthy
+  // records, which is operationally worse than not starting.
+  for (const chain of [['.tmux-teams'], ['.tmux-teams', 'runner-logs'],
+    ['.tmux-teams', 'dispatch-pids'], ['.tmux-teams', 'dispatch-routing']]) {
+    const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-dirlink-'))
+    const brief = join(cwd, 'brief.md')
+    writeFileSync(brief, 'do the thing\n')
+    const outside = mkdtempSync(join(tmpdir(), 'acp-dispatch-victimdir-'))
+    // Same-named files the escape would truncate.
+    for (const victim of ['dirlink.log', 'dirlink', 'dirlink.json']) {
+      writeFileSync(join(outside, victim), 'PRECIOUS\n')
+    }
+    // Build the chain, making the LAST element a symlink out of the run tree.
+    let here = cwd
+    for (const part of chain.slice(0, -1)) {
+      here = join(here, part)
+      mkdirSync(here, { recursive: true })
+    }
+    symlinkSync(outside, join(here, chain.at(-1)))
+
+    const r = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'dirlink', brief, '120'],
+      { cwd, encoding: 'utf8', env: laneEnv({ ACP_DISPATCH_BOOT_SEC: '5' }), timeout: 30000 })
+
+    const label = chain.join('/')
+    assert.notEqual(r.status, 0, `${label}: a hostile run directory was dispatched into`)
+    assert.match(`${r.stdout}${r.stderr}`, /resolves outside it|symlink/,
+      `${label}: refused for the wrong reason: ${r.stderr}`)
+    for (const victim of ['dirlink.log', 'dirlink', 'dirlink.json']) {
+      assert.equal(readFileSync(join(outside, victim), 'utf8'), 'PRECIOUS\n',
+        `${label}: the escape truncated ${victim} outside the run directory`)
+    }
+    // Nothing started. A companion writes its first liveness snapshot before it
+    // spawns the adapter, so its absence in either place is the evidence.
+    assert.ok(!existsSync(join(outside, 'liveness')), `${label}: a lane was spawned into the victim directory`)
+    assert.ok(!existsSync(join(cwd, '.tmux-teams', 'liveness', 'dirlink.json')),
+      `${label}: a lane was spawned before the refusal`)
+    assert.doesNotMatch(r.stdout, /dispatched mock/, `${label}: the refusal came after the spawn`)
+  }
 })
