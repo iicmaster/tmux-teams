@@ -197,14 +197,24 @@ turned JSON-RPC's "fractional ids SHOULD NOT be used" into a local MUST NOT, so
 params, so `initialize` with none, `tools/list` with an array and `ping` with
 unexpected params all answered success.
 
-The per-method validation stops deliberately short of MCP's full
-`InitializeRequest` requirement: `protocolVersion` is required because it is the
-field this server acts on, while `capabilities` and `clientInfo` are type-checked
-when present and not demanded. Refusing a host that omits one buys this server
-nothing, and **no real host has ever initialized it**, so the cost of being wrong
-is a dead feature nobody can diagnose. That asymmetry is a judgement, not a
-reading of the spec, and it is the first line to revisit if conformance is ever
-what needs finding.
+The per-method validation matches MCP's `InitializeRequest` in full:
+`protocolVersion`, `capabilities` and `clientInfo` are all required, and
+`clientInfo` must carry a string `name` and `version`.
+
+**This paragraph said the opposite for one release cycle**, describing
+`capabilities` and `clientInfo` as type-checked-when-present and deliberately
+not demanded, with an argument for why the asymmetry was a reasonable judgement.
+A panel lane read the paragraph against the code at the same sha and found the
+code had moved: a different lane, one round earlier, had objected that requiring
+`clientInfo` to BE an object while never checking its contents was half a rule,
+and the fix went in without this document following it.
+
+That is the failure this whole release has been chasing, committed once more in
+the document that describes it. The rule now is what the code does, and what
+changed the decision is worth keeping: `ping` and `initialize` were each wrong
+in BOTH directions across three commits — too tolerant, then too strict — and
+the answer was the specification every time, never a preference for strictness
+or for tolerance.
 
 ## The argument against
 
