@@ -784,3 +784,48 @@ test('the manifest command boots the server and answers a real client handshake,
       rmSync(base, { recursive: true, force: true })
     }
   })
+
+test('the things three panel families found in one sitting', () => {
+  // A prototype name is not a declared argument. `properties` is a plain object
+  // literal, so `properties['constructor']` resolves up the chain and returns a
+  // function — which a truthiness test reads as "declared". That made
+  // `additionalProperties: false` bypassable by naming anything on
+  // Object.prototype.
+  for (const name of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+    const reply = handle({
+      jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'acp_lane_status', arguments: { [name]: 'x' } },
+    }, {})
+    assert.equal(reply.error?.code, -32602, `an argument named ${name} was accepted`)
+  }
+
+  // `clientInfo` is an Implementation and requires name and version. Requiring
+  // the object and not its contents is half a rule, and the file claimed the
+  // check "matches the version this server claims to speak".
+  const base = { protocolVersion: '2025-06-18', capabilities: {} }
+  for (const clientInfo of [{}, { name: 'a' }, { version: '1' }, { name: 1, version: '1' }]) {
+    assert.equal(
+      handle({ jsonrpc: '2.0', id: 2, method: 'initialize', params: { ...base, clientInfo } }, {}).error?.code,
+      -32602, `initialize accepted clientInfo ${JSON.stringify(clientInfo)}`)
+  }
+  assert.ok(handle({ jsonrpc: '2.0', id: 3, method: 'initialize',
+    params: { ...base, clientInfo: { name: 'a', version: '1' } } }, {}).result)
+
+  // `ping` takes no params. The header comment claimed round four had fixed
+  // this; a panel lane read the code and found nothing validating ping at all.
+  // A comment describing a fix that was never written is worse than no comment.
+  assert.equal(handle({ jsonrpc: '2.0', id: 4, method: 'ping', params: { extra: 1 } }, {}).error?.code, -32602)
+  assert.deepEqual(handle({ jsonrpc: '2.0', id: 5, method: 'ping', params: {} }, {}),
+    { jsonrpc: '2.0', id: 5, result: {} })
+  assert.deepEqual(handle({ jsonrpc: '2.0', id: 6, method: 'ping' }, {}),
+    { jsonrpc: '2.0', id: 6, result: {} })
+
+  // Nothing the caller sent comes back. Two lanes raised this independently
+  // against the file's own claim that every sentence it emits is a constant —
+  // the `known` lists already carry the vocabulary, so the echo added nothing.
+  const marker = 'CALLERMARKER'
+  const lane = JSON.stringify(callTool('acp_lane_status', { lane: marker }, {}))
+  assert.ok(!lane.includes(marker), `the lane name was echoed: ${lane}`)
+  const tool = JSON.stringify(callTool(`${marker}_tool`, {}, {}))
+  assert.ok(!tool.includes(marker), `the tool name was echoed: ${tool}`)
+})

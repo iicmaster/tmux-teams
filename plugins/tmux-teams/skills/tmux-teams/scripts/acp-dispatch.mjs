@@ -291,7 +291,12 @@ export function resumeCommand(cwd, taskId, { sessionId, worker, routing, briefFi
   // command whose whole purpose is being pasted. The placeholder survives only
   // when there is genuinely nothing recorded to name.
   const brief = briefFile ?? routing?.briefFile ?? null
-  const stall = Number.isFinite(routing?.stallSec) ? routing.stallSec : 900
+  // `Number(...)`, because `stallSec` is recorded from argv and argv is
+  // strings: `Number.isFinite('2400')` is false, so every recovery command
+  // silently reset a custom stall to the default. Found by the gemini panel
+  // lane — a fallback that fires always is indistinguishable from no feature.
+  const recordedStall = Number(routing?.stallSec)
+  const stall = Number.isFinite(recordedStall) && recordedStall > 0 ? recordedStall : 900
   const parts = [`ACP_RESUME=${shQuote(sessionId)}`]
   for (const key of ROUTING_ENV_KEYS) {
     if (env[key] !== undefined && env[key] !== '') parts.push(`${key}=${shQuote(env[key])}`)
@@ -619,6 +624,12 @@ async function watchBoot(child, cwd, taskId, bootMs, spawnedAtMs) {
   const deadline = Date.now() + bootMs
   let exited = null
   child.on('exit', (code, signal) => { exited = { code, signal } })
+  // A spawn that fails asynchronously — ENOENT on the interpreter, EACCES —
+  // emits 'error', and an EventEmitter with no 'error' listener THROWS. This
+  // process would have died with a stack trace naming a socket instead of
+  // reporting a lane that never started. The same shape the ACP gate hit in
+  // August when an EPIPE with no listener killed a whole review run.
+  child.on('error', (cause) => { exited = { code: null, signal: null, error: cause } })
   for (;;) {
     const found = readJson(path)
     const record = belongsToThisRun(found, spawnedAtMs) ? found : null
@@ -628,7 +639,16 @@ async function watchBoot(child, cwd, taskId, bootMs, spawnedAtMs) {
     // unsupported model, a config option the adapter would not take. Reported as
     // its own outcome now, because "dispatched successfully" and "refused before
     // the prompt" are not the same answer.
-    if (record && hasTerminated(record)) return { outcome: 'terminal', record }
+    // `completed` is a lane that FINISHED, not one that never started. The
+    // previous version asked `hasTerminated`, which includes it — so a fast
+    // consultation that answered before the boot poll came round was told
+    // "this consultation never started" and exited 2. Found by the gemini panel
+    // lane; it is the happy path for a quick lane, which is exactly the path a
+    // guard against failure should never have owned.
+    if (record && ['failed', 'cancelled'].includes(record.liveness_state)) {
+      return { outcome: 'terminal', record }
+    }
+    if (record && record.liveness_state === 'completed') return { outcome: 'live', record }
     // `identity_status`, not the truthiness of a string. A release panel caught
     // that a non-empty `effective_identity` was standing in for an ACCEPTED
     // identity — which is the substitution this whole plugin exists to refuse,

@@ -1115,3 +1115,50 @@ test('a recovery command names the brief and the stall the dispatch actually use
   const bare = resumeCommand('/repo', 'r', { sessionId: 's', routing: { worker: 'codex', env: {} } })
   assert.doesNotMatch(bare, /[<>]/, 'the placeholder is still shell syntax')
 })
+
+test('a lane that FINISHED before the boot poll is a success, not a consultation that never started', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX process groups')
+  // The gemini panel lane's first finding, and the worst kind: a guard against
+  // failure that had quietly taken ownership of the happy path. `watchBoot`
+  // asked `hasTerminated`, which includes `completed`, so a quick consultation
+  // that answered before the poll came round was told "this consultation never
+  // started" and exited 2.
+  const cwd = tempDir('acp-dispatch-quick-')
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+  const r = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'quick', brief, '120'],
+    { cwd, encoding: 'utf8', env: laneEnv({ ACP_DISPATCH_BOOT_SEC: '30' }), timeout: 60000 })
+  assert.equal(r.status, 0, `a fast successful lane was reported as a failure:\n${r.stdout}${r.stderr}`)
+  assert.doesNotMatch(`${r.stdout}${r.stderr}`, /never started/)
+  assert.ok(existsSync(outboxPath(cwd, 'quick')), 'the lane did not actually finish')
+
+  // A terminal FAILURE at boot is still a failure.
+  const bad = tempDir('acp-dispatch-refused2-')
+  writeFileSync(join(bad, 'brief.md'), 'do the thing\n')
+  const r2 = spawnSync(process.execPath, [DISPATCH, 'mock', bad, 'refused', join(bad, 'brief.md'), '120'], {
+    cwd: bad, encoding: 'utf8',
+    env: laneEnv({ ACP_DISPATCH_BOOT_SEC: '30', MOCK_CONFIG_IDENTITY: '1',
+      MOCK_MODEL_OPTIONS: 'something-else', MOCK_MODEL_OPTIONS_STRICT: '1',
+      ACP_MODEL: 'not-on-offer', ACP_EXPECT_MODEL: 'not-on-offer' }),
+  })
+  assert.notEqual(r2.status, 0, 'an identity refusal was reported as a success')
+})
+
+test('a recorded stall survives being a string, which is what argv gives', () => {
+  // The gemini panel lane again: `stallSec` is recorded from argv and argv is
+  // strings, so `Number.isFinite('2400')` was false and EVERY recovery command
+  // silently reset a custom stall to the default. A fallback that fires always
+  // is indistinguishable from not having the feature.
+  const asString = resumeCommand('/repo', 'r', {
+    sessionId: 's', routing: { worker: 'codex', briefFile: '/b.md', stallSec: '2400', env: {} },
+  })
+  assert.match(asString, /'\/b\.md' 2400$/m, 'a stall recorded as a string was reset to the default')
+  const asNumber = resumeCommand('/repo', 'r', {
+    sessionId: 's', routing: { worker: 'codex', briefFile: '/b.md', stallSec: 1800, env: {} },
+  })
+  assert.match(asNumber, /'\/b\.md' 1800$/m)
+  const nonsense = resumeCommand('/repo', 'r', {
+    sessionId: 's', routing: { worker: 'codex', briefFile: '/b.md', stallSec: 'soon', env: {} },
+  })
+  assert.match(nonsense, /'\/b\.md' 900$/m, 'an unusable recorded stall must fall back, not propagate')
+})

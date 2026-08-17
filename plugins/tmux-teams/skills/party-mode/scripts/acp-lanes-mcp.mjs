@@ -318,7 +318,11 @@ export const TOOL_DESCRIPTORS = Object.freeze([
     handler: (args, env) => {
       const wanted = args?.lane
       if (wanted !== undefined && !Object.hasOwn(REVIEW_PROFILES, wanted)) {
-        return { error: `no such lane: ${wanted}`, known: Object.keys(REVIEW_PROFILES) }
+        // The `known` list already carries the vocabulary, so echoing what the
+        // caller sent adds nothing and contradicts this file's own stated
+        // invariant that every sentence it emits is a constant. Two panel
+        // lanes raised it independently.
+        return { error: 'no such lane', known: Object.keys(REVIEW_PROFILES) }
       }
       const ids = wanted === undefined ? Object.keys(REVIEW_PROFILES) : [wanted]
       return { lanes: ids.map((id) => laneStatus(id, REVIEW_PROFILES[id], env)) }
@@ -331,7 +335,7 @@ const HANDLERS = new Map(TOOL_DESCRIPTORS.map((d) => [d.name, d.handler]))
 
 export function callTool(name, args, env) {
   const handler = HANDLERS.get(name)
-  if (!handler) return { error: `no such tool: ${name}`, known: [...HANDLERS.keys()] }
+  if (!handler) return { error: 'no such tool', known: [...HANDLERS.keys()] }
   return handler(args, env)
 }
 
@@ -424,9 +428,24 @@ export function paramsProblem(method, params) {
         return `initialize requires an object ${key}`
       }
     }
+    // `clientInfo` is an Implementation: it requires `name` and `version`.
+    // Requiring the OBJECT and not its contents is half a rule, and two panel
+    // lanes said so — the file claims the check "matches the version this
+    // server claims to speak", and it did not.
+    for (const key of ['name', 'version']) {
+      if (typeof params.clientInfo[key] !== 'string') return `initialize clientInfo requires a string ${key}`
+    }
   }
   if (method === 'tools/list' && params?.cursor !== undefined && typeof params.cursor !== 'string') {
     return 'tools/list cursor must be a string'
+  }
+  // `ping` takes no params. The header comment said round four had reproduced
+  // `ping` with unexpected params answering SUCCESS and that it was fixed; a
+  // panel lane read the code and found nothing validating ping at all. The
+  // comment described a fix that was never written — worse than no comment,
+  // because it tells a reader to stop looking.
+  if (method === 'ping' && params !== undefined && Object.keys(params).length > 0) {
+    return 'ping takes no params'
   }
   return null
 }
@@ -445,7 +464,12 @@ export function argumentsProblem(schema, args) {
   const declaredNames = Object.keys(schema?.properties ?? {})
   const allowed = declaredNames.length ? declaredNames.join(', ') : '(this tool takes no arguments)'
   for (const [key, value] of Object.entries(args)) {
-    const declared = schema?.properties?.[key]
+    // `Object.hasOwn`, not a truthiness test on a lookup. `properties` is a
+    // plain object literal, so `properties['constructor']` resolves up the
+    // prototype chain and returns a function — which the old check read as "yes,
+    // that argument is declared". A panel lane found it: `additionalProperties:
+    // false` was bypassable by naming anything on Object.prototype.
+    const declared = Object.hasOwn(schema?.properties ?? {}, key) ? schema.properties[key] : undefined
     if (!declared) return `arguments may contain only: ${allowed}`
     // Safe to name: this branch is reached only when `key` matched a declared
     // property, so the string is the descriptor's, not the caller's.
