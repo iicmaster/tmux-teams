@@ -39,7 +39,9 @@ Ship one stdio MCP server, `tmux-teams-acp-lanes`, declared in the plugin's
 `.mcp.json`, with two read-only tools:
 
 - `acp_lanes` — what lanes this plugin declares: family, provider, model,
-  adapter package, and whether the lane is pinned to a verified endpoint.
+  adapter package, and whether the lane DECLARES a pinned endpoint — the tool
+  description said "verified" until a panel lane pointed out that a handler
+  returning declared facts cannot have verified anything.
   Declared facts only, so it answers on a machine with nothing configured.
 - `acp_lane_status` — whether a lane's CONFIGURATION is valid **here**, and when
   it is not, which closed diagnostic applies and which environment variable
@@ -62,8 +64,8 @@ suggests.** A dispatched agent still receives no MCP server — the runner
 REQUESTS `mcpServers: []` and the suite asserts that request. A panel lane
 pushed back on the categorical phrasing and was right: what has been observed is
 a mock receiving an empty request, not a real child's tool inventory. The
-guarantee is about what is asked for. That guarantee is about what a lane is handed;
-this server is about what an operator can ask. Adding a discovery surface for the
+guarantee is about what is ASKED FOR — which is about what a lane is handed,
+while this server is about what an operator can ask. Adding a discovery surface for the
 operator does not weaken the containment seam, and if it ever looks like it does,
 the seam wins.
 
@@ -104,7 +106,9 @@ of that word is worth stating exactly, because a panel lane challenged it: the
 closed diagnostic set and the constant sentences are STRUCTURAL — a value cannot
 reach the wire through a sentence that is a literal. The no-secret matrix is a
 TEST ASSERTION over fixtures, which is evidence and not a mechanism. Both are
-real; only the first is enforcement. A failure is reported as a code from a closed set
+real; only the first is enforcement.
+
+A failure is reported as a code from a closed set
 with a sentence that is a constant of the module; the raw exception text never
 reaches the wire, because the first version exported `String(error.message)`
 verbatim and any future diagnostic downstream that interpolated a token would
