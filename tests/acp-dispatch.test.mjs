@@ -902,8 +902,17 @@ test('a symlinked DIRECTORY on the way to a run artifact is refused before anyth
 
     const label = chain.join('/')
     assert.notEqual(r.status, 0, `${label}: a hostile run directory was dispatched into`)
-    assert.match(`${r.stdout}${r.stderr}`, /resolves outside it|symlink/,
+    assert.match(`${r.stdout}${r.stderr}`, /resolves outside it|not a real directory inside it|symlink/,
       `${label}: refused for the wrong reason: ${r.stderr}`)
+    // Round eight's blocker 1: the refusal must not have CREATED anything out
+    // there first. `mkdirSync(recursive)` ran before containment was
+    // established, so a symlinked `.tmux-teams` had the missing artifact
+    // directory made in the victim tree and only then refused — a fail-closed
+    // preflight that mutates outside the root before failing is not fail-closed.
+    for (const made of ['runner-logs', 'dispatch-pids', 'dispatch-routing']) {
+      assert.ok(!existsSync(join(outside, made)),
+        `${label}: the preflight created ${made} outside the run root before refusing`)
+    }
     for (const victim of ['dirlink.log', 'dirlink', 'dirlink.json']) {
       assert.equal(readFileSync(join(outside, victim), 'utf8'), 'PRECIOUS\n',
         `${label}: the escape truncated ${victim} outside the run directory`)
@@ -915,4 +924,32 @@ test('a symlinked DIRECTORY on the way to a run artifact is refused before anyth
       `${label}: a lane was spawned before the refusal`)
     assert.doesNotMatch(r.stdout, /dispatched mock/, `${label}: the refusal came after the spawn`)
   }
+})
+
+test('a symlinked .mailbox-out cannot make the outbox retirement rename a stranger\'s file', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX symlinks')
+  // Round eight's blocker 2, and the sharpest kind of finding: the FOURTH write
+  // path, in exactly the class round seven had just fixed for the other three.
+  // `spawnDetached` retires a predecessor's outbox with `renameSync`, and
+  // `.mailbox-out` was the one directory not in the containment list — so a
+  // symlink there plus an outside regular file named for the task moved a
+  // stranger's file, before anything spawned, with no receipt for where it went.
+  const cwd = tempDir('acp-dispatch-outboxlink-')
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+  const outside = tempDir('acp-dispatch-outboxvictim-')
+  writeFileSync(join(outside, 'linked'), 'PRECIOUS\n')
+  symlinkSync(outside, join(cwd, '.mailbox-out'))
+
+  const r = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'linked', brief, '120'],
+    { cwd, encoding: 'utf8', env: laneEnv({ ACP_DISPATCH_BOOT_SEC: '5' }), timeout: 30000 })
+
+  assert.notEqual(r.status, 0, 'a run directory with a symlinked .mailbox-out was dispatched into')
+  assert.equal(readFileSync(join(outside, 'linked'), 'utf8'), 'PRECIOUS\n',
+    'the outbox retirement renamed a file outside the run root')
+  assert.deepEqual(readdirSync(outside), ['linked'],
+    `the outside tree gained or lost entries: ${readdirSync(outside).join(', ')}`)
+  await sleep(1200)
+  assert.ok(!existsSync(join(cwd, '.tmux-teams', 'liveness', 'linked.json')),
+    'a lane was spawned before the refusal')
 })

@@ -115,13 +115,47 @@ function openNoFollow(path, flags) {
 // run root once symlinks are resolved. Checked for all three artifact
 // directories up front, so the answer to "is this run directory hostile" is
 // known before anything is spawned.
-export function assertContainedDir(root, dir) {
-  mkdirSync(dir, { recursive: true })
+export function assertContainedDir(root, ...parts) {
+  // ONE COMPONENT AT A TIME, checking before creating.
+  //
+  // The first version called `mkdirSync(dir, { recursive: true })` and THEN
+  // checked containment, which an advisor round caught: with `.tmux-teams`
+  // pre-positioned as a symlink to a writable outside directory, the missing
+  // `runner-logs` was CREATED out there and only then refused. A fail-closed
+  // preflight that mutates outside the root before failing is not fail-closed,
+  // and the operator gets no receipt for what it made.
+  //
+  // Walking instead of recursing is what fixes it: every component that already
+  // exists is rejected if it is a symlink before its child is considered, so
+  // creation never happens past one.
+  let current = root
+  for (const part of parts) {
+    current = join(current, part)
+    let stat = null
+    try {
+      stat = lstatSync(current)
+    } catch (cause) {
+      if (cause.code !== 'ENOENT') throw cause
+    }
+    if (stat === null) {
+      mkdirSync(current)
+      continue
+    }
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw Object.assign(
+        new Error(`refusing a run directory whose ${current.slice(root.length + 1)} is not a real directory inside it`),
+        { code: 'unsafe_artifact' },
+      )
+    }
+  }
+  // Belt and braces: the walk above should make this unreachable, and an
+  // unreachable check that costs one syscall is worth keeping on a path whose
+  // whole job is refusing a hostile directory.
   const realRoot = realpathSync(root)
-  const realDir = realpathSync(dir)
+  const realDir = realpathSync(current)
   if (realDir !== realRoot && !realDir.startsWith(realRoot + sep)) {
     throw Object.assign(
-      new Error(`refusing a run directory whose ${dir.slice(root.length + 1)} resolves outside it`),
+      new Error(`refusing a run directory whose ${current.slice(root.length + 1)} resolves outside it`),
       { code: 'unsafe_artifact' },
     )
   }
@@ -442,8 +476,14 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
   // refusal after `unref()` leaves a detached lane alive with no trustworthy
   // records — worse than never starting.
   for (const artifact of ['runner-logs', 'dispatch-pids', 'dispatch-routing']) {
-    assertContainedDir(cwd, join(cwd, '.tmux-teams', artifact))
+    assertContainedDir(cwd, '.tmux-teams', artifact)
   }
+  // `.mailbox-out` is the FOURTH write path and it was not checked. The
+  // predecessor-outbox retirement renames through it, so a symlinked
+  // `.mailbox-out` plus an outside regular file named for the task moved a
+  // stranger's file before anything spawned — the same parent-resolution class
+  // as the three above, on the one directory that was not in the list.
+  assertContainedDir(cwd, '.mailbox-out')
   assertNotSymlink(logPath(cwd, taskId))
   assertNotSymlink(pidPath(cwd, taskId))
   assertNotSymlink(routingPath(cwd, taskId))
