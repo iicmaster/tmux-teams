@@ -291,13 +291,24 @@ test('malformed settings are diagnosed as unreadable, not shrugged at', () => {
 
 test('every diagnostic code the classifier can return has a constant sentence', () => {
   const codes = ['endpoint_missing', 'endpoint_mismatch', 'credential_missing',
-    'settings_unreadable', 'profile_incomplete', 'executable_missing', 'unclassified']
+    'settings_unreadable', 'credential_unreadable', 'profile_incomplete',
+    'executable_missing', 'unclassified']
   assert.deepEqual(Object.keys(DIAGNOSTICS).sort(), [...codes].sort())
   // and the classifier maps real messages onto them rather than onto `unclassified`
   assert.equal(classify('zai review requires ANTHROPIC_BASE_URL'), 'endpoint_missing')
   assert.equal(classify('zai review endpoint must be https://api.z.ai/api/anthropic'), 'endpoint_mismatch')
   assert.equal(classify('zai review endpoint requires an explicit provider credential'), 'credential_missing')
   assert.equal(classify('trusted agy executable not found'), 'executable_missing')
+  // WHICH FILE failed decides the repair. Aiming every filesystem error at the
+  // settings file sent the operator to edit a file that was fine — a panel lane
+  // caught it one commit after it was introduced.
+  assert.equal(classify("EACCES: permission denied, open '/home/u/.config/zai/credential.json'"),
+    'credential_unreadable')
+  assert.equal(classify("ENOENT: no such file or directory, open '/home/u/.config/zai/settings.json'"),
+    'settings_unreadable')
+  // ponytail: the repair sentence is reached through the switch, which the
+  // closed-set assertion above already covers; exporting a helper only so a
+  // test can call it would be the test shaping the module.
   assert.equal(classify('something nobody has seen before'), 'unclassified')
   // A release panel called the old mapping a false diagnosis with non-repairing
   // instructions, and it was: a lane that routes and declares no endpoint has a
@@ -839,6 +850,16 @@ test('_meta is legal on any request, and a filename cannot choose the diagnosis'
   assert.deepEqual(handle({ jsonrpc: '2.0', id: 1, method: 'ping', params: { _meta: { a: 1 } } }, {}),
     { jsonrpc: '2.0', id: 1, result: {} })
   assert.equal(handle({ jsonrpc: '2.0', id: 2, method: 'ping', params: { other: 1 } }, {}).error?.code, -32602)
+  // `_meta` is legal AND typed as an object. Accepting it as ANY value was the
+  // overcorrection — one commit stopped refusing legal traffic and started
+  // accepting illegal traffic. Found by mutation: removing the type check left
+  // every test green, which is the "guard that guards nothing" shape.
+  for (const bad of ['a string', 42, [], null, true]) {
+    for (const method of ['ping', 'tools/list']) {
+      assert.equal(handle({ jsonrpc: '2.0', id: 9, method, params: { _meta: bad } }, {}).error?.code,
+        -32602, `${method} accepted _meta as ${JSON.stringify(bad)}`)
+    }
+  }
 
   // A caller who controls a settings PATH controlled the classification: the
   // regexes ran over the whole exception text, and a filename carrying

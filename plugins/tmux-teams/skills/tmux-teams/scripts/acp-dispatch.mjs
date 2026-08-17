@@ -417,6 +417,8 @@ export function statusReport(cwd, taskId) {
   const pidGone = pid !== null && !pidAlive(pid)
   const stopped = hasStopped(liveness, { pid })
   const terminated = hasTerminated(liveness)
+  const leaseStale = liveness !== null && !hasTerminated(liveness)
+    && leaseExpired(liveness, Date.now()) && !stopped
   const settled = terminated || stopped
   return {
     taskId,
@@ -436,8 +438,17 @@ export function statusReport(cwd, taskId) {
     // Distinguished from `settled` because the ADVICE differs: a lane that
     // recorded a terminal state finished, and one that stopped saying anything
     // was killed, ran out of memory, or filled the disk under itself.
-    notReporting: stopped,
-    stoppedBecause: pidGone ? 'its process is gone' : (stopped ? 'its own lease expired' : null),
+    notReporting: stopped || leaseStale,
+    // `leaseStale` reports and does NOT settle. Two panel families landed on
+    // opposite sides of this in one round and both were right: a live pid must
+    // not mask an expired lease forever (a reused pid number would hide a dead
+    // lane), and an expired lease must not settle a lane that is mid-tool-call.
+    // They are two facts. `settled` uses only the one that can be proven; the
+    // other is reported so an operator can look.
+    leaseStale,
+    stoppedBecause: pidGone
+      ? 'its process is gone'
+      : (stopped ? 'its own lease expired' : (leaseStale ? 'its lease expired while its process is still alive' : null)),
     pid,
     routing,
     lastSeen: liveness?.observed_at ?? null,
@@ -574,7 +585,19 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
   assertNotSymlink(pidPath(cwd, taskId))
   assertNotSymlink(routingPath(cwd, taskId))
   const previous = outboxPath(cwd, taskId)
-  if (existsSync(previous)) {
+  // `lstatSync`, not `existsSync`. `existsSync` FOLLOWS the link and answers
+  // false for a DANGLING symlink, so the one kind of pre-positioned link that
+  // is guaranteed to redirect our write — one aimed at a file that does not
+  // exist yet, waiting for us to create it — walked straight past this check.
+  // A panel lane found it. I had guarded the harmless case and skipped the
+  // dangerous one.
+  let previousStat = null
+  try {
+    previousStat = lstatSync(previous)
+  } catch (cause) {
+    if (cause.code !== 'ENOENT') throw cause
+  }
+  if (previousStat !== null) {
     assertNotSymlink(previous)
     renameSync(previous, `${previous}.superseded-${spawnedAtIso.replaceAll(':', '-')}`)
   }
@@ -629,9 +652,19 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
 // the SAME host clock: the slack buys nothing and, on a retry inside one
 // second, accepts the predecessor's snapshot — recreating the exact
 // stale-identity failure this check exists to prevent.
-export function belongsToThisRun(record, spawnedAtMs) {
+export function belongsToThisRun(record, spawnedAtMs, nowMs = Date.now()) {
   const started = Date.parse(record?.started_at ?? '')
-  return Number.isFinite(started) && started >= spawnedAtMs
+  if (!Number.isFinite(started)) return false
+  // A lower bound alone accepted anything stamped in the FUTURE, so a record
+  // left by a predecessor with a skewed clock — or written on purpose — read as
+  // ours forever. A panel lane pointed out there was no upper bound and no
+  // nonce. The upper bound is cheap and closes the forgery; a real nonce is
+  // still owed and is written down as such rather than implied.
+  // ponytail: bounds, not a nonce. A nonce needs the companion to echo it back,
+  // which is a protocol change; the bound stops the accidental and the
+  // clock-skew cases today.
+  const FUTURE_TOLERANCE_MS = 60_000
+  return started >= spawnedAtMs && started <= nowMs + FUTURE_TOLERANCE_MS
 }
 
 async function watchBoot(child, cwd, taskId, bootMs, spawnedAtMs) {

@@ -107,6 +107,7 @@ export const DIAGNOSTICS = Object.freeze({
   endpoint_mismatch: 'the base URL configured here is not the endpoint this lane is pinned to',
   credential_missing: 'the endpoint is configured but no provider credential was found for it',
   settings_unreadable: 'the settings this lane points at are not a readable JSON object',
+  credential_unreadable: 'the credential file this lane points at exists but could not be read',
   executable_missing: 'an executable this lane needs was not found on this machine',
   profile_incomplete: 'this lane routes to a provider but its shipped profile declares no endpoint to pin',
   unclassified: 'the lane refused for a reason this server does not classify; run the gate for the detail',
@@ -126,7 +127,13 @@ export function classify(message) {
   // Ordinary filesystem failures were classified by nothing and fell through to
   // `unclassified`, which told an operator to run the gate for a detail the
   // gate would report as the same unreadable file.
-  if (/\b(ENOENT|EACCES|EISDIR|ELOOP|EPERM)\b/.test(raw)) return 'settings_unreadable'
+  // Which FILE failed decides the repair, and the previous version aimed every
+  // filesystem error at the settings file — so an unreadable credential file
+  // sent the operator to edit the wrong file and the wrong variable. A panel
+  // lane caught it one commit after I introduced it.
+  if (/\b(ENOENT|EACCES|EISDIR|ELOOP|EPERM)\b/.test(raw)) {
+    return /credential|auth|api[-_ ]?key|\.env/i.test(raw) ? 'credential_unreadable' : 'settings_unreadable'
+  }
   const text = REVIEW_PHRASE.test(raw) ? raw.slice(raw.search(REVIEW_PHRASE)) : raw
   if (/requires ANTHROPIC_BASE_URL/.test(text)) return 'endpoint_missing'
   if (/endpoint must be|must be a valid URL/.test(text)) return 'endpoint_mismatch'
@@ -259,6 +266,13 @@ export function fixesFor(id, profile, code) {
       return [...credentialFixes(id), ...settings]
     case 'settings_unreadable':
       return ['the JSON this lane reads must parse and must be an object', ...settings]
+    case 'credential_unreadable':
+      // Deliberately does NOT point at the settings file. Aiming every
+      // filesystem failure at the settings repair is the defect this code was
+      // added for: it sent the operator to edit a file that was fine.
+      return ['the credential file exists but could not be read — check that it is '
+        + 'readable by this user, and that its mode is 0600 rather than a directory or a dangling link',
+      ...credentialFixes(id)]
     case 'profile_incomplete':
       // Nothing an operator can repair on their own machine: the profile ships
       // with the plugin. Saying so is the honest answer.
@@ -460,6 +474,14 @@ export function paramsProblem(method, params) {
   // rejected conforming traffic. Two commits after being told that tolerance was
   // wrong, I was told strictness was — and both were right, because the line is
   // the spec rather than a preference in either direction.
+  // `_meta` is legal on any request AND is typed as an object. Accepting it as
+  // any value was the overcorrection: one commit stopped refusing legal traffic
+  // and started accepting illegal traffic, and the same panel family caught
+  // both halves.
+  if (params !== undefined && params._meta !== undefined
+    && (typeof params._meta !== 'object' || params._meta === null || Array.isArray(params._meta))) {
+    return '_meta must be an object'
+  }
   if (method === 'ping' && params !== undefined) {
     const extra = Object.keys(params).filter((key) => key !== '_meta')
     if (extra.length > 0) return 'ping takes no params other than _meta'

@@ -1199,3 +1199,24 @@ test('a reused pid cannot suppress the lease, and a refusal is a sentence not a 
   assert.doesNotMatch(r.stderr, /at .*acp-dispatch\.mjs:\d+/, 'the operator was handed a stack trace')
   assert.match(r.stderr, /resolves outside it|not a real directory inside it/)
 })
+
+test('a dangling symlink is the dangerous one, and a future-stamped record is not ours', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX links')
+  // `existsSync` FOLLOWS the link and answers false for a DANGLING one, so the
+  // single kind of pre-positioned symlink guaranteed to redirect our write —
+  // aimed at a file that does not exist yet, waiting for us to create it —
+  // walked straight past the leaf check. The harmless case was guarded and the
+  // dangerous one was not.
+  const cwd = tempDir('acp-dispatch-dangling-')
+  const victimDir = tempDir('acp-dispatch-danglingvictim-')
+  const victim = join(victimDir, 'stolen-outbox')
+  mkdirSync(join(cwd, '.mailbox-out'), { recursive: true })
+  symlinkSync(victim, outboxPath(cwd, 'dangle'))
+  assert.equal(existsSync(outboxPath(cwd, 'dangle')), false, 'the fixture is not a dangling link')
+  writeFileSync(join(cwd, 'brief.md'), 'do the thing\n')
+  const r = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'dangle', join(cwd, 'brief.md'), '120'],
+    { cwd, encoding: 'utf8', env: laneEnv({ ACP_DISPATCH_BOOT_SEC: '5' }), timeout: 30000 })
+  assert.notEqual(r.status, 0, 'a dangling outbox symlink was written through')
+  assert.match(`${r.stdout}${r.stderr}`, /symlink/)
+  assert.equal(existsSync(victim), false, 'the write landed on the symlink target')
+})
