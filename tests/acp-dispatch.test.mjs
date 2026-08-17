@@ -1,4 +1,4 @@
-import { test } from 'node:test'
+import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
@@ -17,6 +17,24 @@ const MOCK = join(HERE, 'fixtures', 'mock-acp-agent.mjs')
 const SKILLS = join(HERE, '..', 'plugins', 'tmux-teams', 'skills')
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
+
+// Every temp directory this file makes, removed when the file ends.
+//
+// Written 2026-08-17 after this file helped fill the machine's disk twice in
+// one day. It had 25 `mkdtempSync` calls and one `rmSync`, and several of those
+// directories hold a real lane's logs, receipts and KMS events — so every run
+// left tens of megabytes behind, and enough runs took the volume to zero and
+// stopped every tool that writes, this one included. A test that leaks is a
+// test that eventually stops the work.
+const TEMP_DIRS = []
+function tempDir(prefix) {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  TEMP_DIRS.push(dir)
+  return dir
+}
+after(() => {
+  for (const dir of TEMP_DIRS) rmSync(dir, { recursive: true, force: true })
+})
 
 async function waitFor(predicate, timeoutMs, label) {
   const deadline = Date.now() + timeoutMs
@@ -52,7 +70,7 @@ function pgidOf(pid) {
 // by a SIGTERM aimed at its whole group, and the lane has to finish anyway.
 test('a SIGTERM to the dispatching shell\'s process group does not reach the lane', async (t) => {
   if (process.platform === 'win32') return t.skip('POSIX process groups')
-  const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-group-'))
+  const cwd = tempDir('acp-dispatch-group-')
   const brief = join(cwd, 'brief.md')
   writeFileSync(brief, 'do the thing\n')
   const stageFile = join(cwd, 'stages')
@@ -108,7 +126,7 @@ test('a SIGTERM to the dispatching shell\'s process group does not reach the lan
 
 test('the lane is placed in its own process group, which is why the kill above misses', async (t) => {
   if (process.platform === 'win32') return t.skip('POSIX process groups')
-  const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-pgid-'))
+  const cwd = tempDir('acp-dispatch-pgid-')
   const brief = join(cwd, 'brief.md')
   writeFileSync(brief, 'do the thing\n')
   const releaseFile = join(cwd, 'release')
@@ -159,7 +177,7 @@ test('the caller waits for an ACKNOWLEDGED identity, and says so plainly when it
   // already written a snapshot carrying `identity_status: 'missing'`, so the
   // file-exists version reports `unknown (missing)` and exits 0, and the real
   // one keeps waiting and then says which of the two it is.
-  const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-identity-'))
+  const cwd = tempDir('acp-dispatch-identity-')
   const brief = join(cwd, 'brief.md')
   writeFileSync(brief, 'do the thing\n')
   const releaseFile = join(cwd, 'release')
@@ -198,7 +216,7 @@ test('wait ends on BOTH terminal outcomes, because silence reads exactly like st
   // it ends", and Master asked the obvious question. A watcher that only looks
   // for an outbox stays quiet through a turn that ended writing nothing, which
   // is the failure round three actually had.
-  const settled = mkdtempSync(join(tmpdir(), 'acp-dispatch-wait-none-'))
+  const settled = tempDir('acp-dispatch-wait-none-')
   mkdirSync(join(settled, '.tmux-teams', 'liveness'), { recursive: true })
   writeFileSync(join(settled, '.tmux-teams', 'liveness', 'lane.json'),
     JSON.stringify({ liveness_state: 'failed', termination_reason: 'no_outbox', worker: 'codex' }))
@@ -208,7 +226,7 @@ test('wait ends on BOTH terminal outcomes, because silence reads exactly like st
   assert.match(said.join('\n'), /termination_reason: no_outbox/)
 
   // And it ends on the good outcome, arriving mid-wait rather than up front.
-  const arriving = mkdtempSync(join(tmpdir(), 'acp-dispatch-wait-late-'))
+  const arriving = tempDir('acp-dispatch-wait-late-')
   mkdirSync(join(arriving, '.tmux-teams', 'liveness'), { recursive: true })
   mkdirSync(join(arriving, '.mailbox-out'), { recursive: true })
   writeFileSync(join(arriving, '.tmux-teams', 'liveness', 'lane.json'),
@@ -227,7 +245,7 @@ test('wait ends on BOTH terminal outcomes, because silence reads exactly like st
   clearTimeout(late)
 
   // And the window between them is reported as STILL RUNNING, never as done.
-  const midway = mkdtempSync(join(tmpdir(), 'acp-dispatch-wait-midway-'))
+  const midway = tempDir('acp-dispatch-wait-midway-')
   mkdirSync(join(midway, '.tmux-teams', 'liveness'), { recursive: true })
   mkdirSync(join(midway, '.mailbox-out'), { recursive: true })
   writeFileSync(join(midway, '.tmux-teams', 'liveness', 'lane.json'),
@@ -241,7 +259,7 @@ test('wait ends on BOTH terminal outcomes, because silence reads exactly like st
   // A lane still going when the budget runs out is reported as still going, and
   // the sentence has to say the lane was not touched — that is the whole
   // contract of a waiter that is a separate process from the thing it watches.
-  const running = mkdtempSync(join(tmpdir(), 'acp-dispatch-wait-run-'))
+  const running = tempDir('acp-dispatch-wait-run-')
   mkdirSync(join(running, '.tmux-teams', 'liveness'), { recursive: true })
   writeFileSync(join(running, '.tmux-teams', 'liveness', 'lane.json'),
     JSON.stringify({ liveness_state: 'tool_running', termination_reason: 'none' }))
@@ -253,7 +271,7 @@ test('wait ends on BOTH terminal outcomes, because silence reads exactly like st
 
 test('a wait that gives up does not reap the lane it was waiting for', async (t) => {
   if (process.platform === 'win32') return t.skip('POSIX process groups')
-  const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-wait-live-'))
+  const cwd = tempDir('acp-dispatch-wait-live-')
   const brief = join(cwd, 'brief.md')
   writeFileSync(brief, 'do the thing\n')
   const releaseFile = join(cwd, 'release')
@@ -299,7 +317,7 @@ test('a previous run\'s identity is never reported as this dispatch\'s', async (
   // straight out of the DEAD run's snapshot, one second before the live run
   // wrote `identity_status: missing`. On a plugin whose whole subject is
   // provenance, that is the worst small bug on offer.
-  const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-stale-'))
+  const cwd = tempDir('acp-dispatch-stale-')
   const brief = join(cwd, 'brief.md')
   writeFileSync(brief, 'do the thing\n')
   const releaseFile = join(cwd, 'release')
@@ -359,7 +377,7 @@ test('a task id that would escape the run directory is refused before any file i
   // path and the pid path from the raw value FIRST. `writeFileSync` truncates,
   // so a task id of `../../../victim` replaced an arbitrary writable file with
   // a pid before the companion ever saw the id it was going to reject.
-  const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-traversal-'))
+  const cwd = tempDir('acp-dispatch-traversal-')
   const brief = join(cwd, 'brief.md')
   writeFileSync(brief, 'do the thing\n')
   const victim = join(cwd, 'victim')
@@ -395,7 +413,7 @@ test('a lane that reaches a terminal state during boot is a failed dispatch, not
   // — an unsupported model, an identity mismatch, a config option the adapter
   // would not take — printed an identity and exited 0. "Dispatched
   // successfully" and "refused before the prompt" are not the same answer.
-  const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-refused-'))
+  const cwd = tempDir('acp-dispatch-refused-')
   const brief = join(cwd, 'brief.md')
   writeFileSync(brief, 'do the thing\n')
   const r = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'refused', brief, '120'], {
@@ -417,7 +435,7 @@ test('a lane that reaches a terminal state during boot is a failed dispatch, not
 })
 
 test('a nonsense boot budget is refused rather than becoming an infinite wait', () => {
-  const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-bootsec-'))
+  const cwd = tempDir('acp-dispatch-bootsec-')
   const brief = join(cwd, 'brief.md')
   writeFileSync(brief, 'do the thing\n')
   // NaN made every deadline comparison false, so the "short-lived" dispatcher
@@ -432,7 +450,7 @@ test('a nonsense boot budget is refused rather than becoming an infinite wait', 
 })
 
 test('the caller reports the outbox path it derived, and never a second spelling of it', () => {
-  const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-outbox-'))
+  const cwd = tempDir('acp-dispatch-outbox-')
   mkdirSync(join(cwd, '.mailbox-out'), { recursive: true })
   writeFileSync(join(cwd, '.mailbox-out', 'round3'), 'the finished review\n')
   // The second half of the same day's failure: the recovery prompt named
@@ -484,7 +502,7 @@ test('status reads the companion\'s own liveness vocabulary, not a guess at it',
     ['cancelled', 'stall', true],
   ]
   for (const [state, reason, settled] of cases) {
-    const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-vocab-'))
+    const cwd = tempDir('acp-dispatch-vocab-')
     mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
     writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'lane.json'),
       JSON.stringify({ liveness_state: state, termination_reason: reason }))
@@ -516,7 +534,7 @@ test('a lane that stopped reporting is not reported as running, however alive it
     requested_model: 'gpt-5.6-sol',
     requested_reasoning_effort: 'max',
   }
-  const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-lease-'))
+  const cwd = tempDir('acp-dispatch-lease-')
   mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
   mkdirSync(join(cwd, '.tmux-teams', 'sessions'), { recursive: true })
   writeFileSync(join(cwd, '.tmux-teams', 'sessions', 'lane'), '01a00cbb-b70c-7670-b9b3-b523a70aa393\n')
@@ -536,7 +554,7 @@ test('a lane that stopped reporting is not reported as running, however alive it
 
   // A lease still in the future is a lane still running, and must NOT be
   // swept up by this — otherwise every healthy lane is declared dead.
-  const alive = mkdtempSync(join(tmpdir(), 'acp-dispatch-lease-ok-'))
+  const alive = tempDir('acp-dispatch-lease-ok-')
   mkdirSync(join(alive, '.tmux-teams', 'liveness'), { recursive: true })
   writeFileSync(join(alive, '.tmux-teams', 'liveness', 'lane.json'), JSON.stringify({
     ...dead,
@@ -554,7 +572,7 @@ test('a dead process is noticed immediately, without waiting out the lease', () 
   // minutes out, so a lane that died two minutes ago still reads as running.
   // That happened twice on 2026-08-17 while a recovery was waiting on it. The
   // dispatcher records the pid it spawned, so the immediate answer exists.
-  const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-pid-'))
+  const cwd = tempDir('acp-dispatch-pid-')
   mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
   mkdirSync(join(cwd, '.tmux-teams', 'dispatch-pids'), { recursive: true })
   // A snapshot that looks alive AND a lease still well in the future: the lease
@@ -587,7 +605,7 @@ test('a dead process is noticed immediately, without waiting out the lease', () 
 })
 
 test('status hands over the resume command with the session id already in it', () => {
-  const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-resume-'))
+  const cwd = tempDir('acp-dispatch-resume-')
   mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
   mkdirSync(join(cwd, '.tmux-teams', 'sessions'), { recursive: true })
   writeFileSync(join(cwd, '.tmux-teams', 'sessions', 'lane'), '01a00c81-0383-7522-963a-16e2d007d656\n')
@@ -707,7 +725,7 @@ test('status and wait refuse the traversal syntax dispatch refuses, and read not
   // command that refused `../` on dispatch happily read whatever `../` pointed
   // at on `status`, and reflected fields out of it. A guard on one entry point
   // is not a guard on the surface.
-  const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-readpath-'))
+  const cwd = tempDir('acp-dispatch-readpath-')
   mkdirSync(join(cwd, 'run', '.tmux-teams', 'liveness'), { recursive: true })
   // The planted target, one level above the run directory.
   writeFileSync(join(cwd, 'secret.json'), JSON.stringify({
@@ -738,7 +756,7 @@ test('a symlink planted where a run artifact belongs is refused, not followed', 
   // spawned, so the damage is done by a process nobody is watching.
   for (const artifact of [['dispatch-pids', 'planted'], ['dispatch-routing', 'planted.json'],
     ['runner-logs', 'planted.log']]) {
-    const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-symlink-'))
+    const cwd = tempDir('acp-dispatch-symlink-')
     const brief = join(cwd, 'brief.md')
     writeFileSync(brief, 'do the thing\n')
     const victim = join(cwd, 'victim')
@@ -781,7 +799,7 @@ test('a predecessor\'s terminal record and outbox never add up to this run finis
   // until BOTH bytes belong to yesterday's run of the same task id while
   // today's pid is alive — a false success at the exact moment an operator is
   // deciding whether the work is done.
-  const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-generation-'))
+  const cwd = tempDir('acp-dispatch-generation-')
   const brief = join(cwd, 'brief.md')
   writeFileSync(brief, 'do the thing\n')
   const releaseFile = join(cwd, 'release')
@@ -824,7 +842,7 @@ test('status works against a run directory this dispatcher never created', () =>
   // to be reportable — refusing there would make the tool useless exactly where
   // a person is most lost. So the binding protects the runs this dispatcher
   // started, and says nothing about the others rather than hiding them.
-  const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-foreign-'))
+  const cwd = tempDir('acp-dispatch-foreign-')
   mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
   mkdirSync(join(cwd, '.mailbox-out'), { recursive: true })
   writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'foreign.json'), JSON.stringify({
@@ -863,10 +881,10 @@ test('a symlinked DIRECTORY on the way to a run artifact is refused before anyth
   // records, which is operationally worse than not starting.
   for (const chain of [['.tmux-teams'], ['.tmux-teams', 'runner-logs'],
     ['.tmux-teams', 'dispatch-pids'], ['.tmux-teams', 'dispatch-routing']]) {
-    const cwd = mkdtempSync(join(tmpdir(), 'acp-dispatch-dirlink-'))
+    const cwd = tempDir('acp-dispatch-dirlink-')
     const brief = join(cwd, 'brief.md')
     writeFileSync(brief, 'do the thing\n')
-    const outside = mkdtempSync(join(tmpdir(), 'acp-dispatch-victimdir-'))
+    const outside = tempDir('acp-dispatch-victimdir-')
     // Same-named files the escape would truncate.
     for (const victim of ['dirlink.log', 'dirlink', 'dirlink.json']) {
       writeFileSync(join(outside, victim), 'PRECIOUS\n')
