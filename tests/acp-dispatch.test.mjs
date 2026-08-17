@@ -2,7 +2,7 @@ import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, mkdirSync, rmSync, symlinkSync,
-  realpathSync, statSync } from 'node:fs'
+  realpathSync, statSync, linkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -1057,4 +1057,61 @@ test('boot reports on the ACKNOWLEDGED identity status, not on a non-empty strin
   assert.equal(report.identityStatus, 'missing')
   assert.match(formatStatus(report), /looks-like-an-identity \(missing\)/,
     'a status that was never accepted is reported as though it had been')
+})
+
+test('a second lane under a live task id is refused, and the leaf policy is not symlink-only', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX links')
+  const cwd = tempDir('acp-dispatch-admission-')
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+  const releaseFile = join(cwd, 'release')
+
+  // One live lane, held at the prompt.
+  const first = spawn(process.execPath, [DISPATCH, 'mock', cwd, 'twice', brief, '120'], {
+    cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+    env: laneEnv({ MOCK_GATE_STAGE: 'prompt', MOCK_GATE_RELEASE_FILE: releaseFile,
+      MOCK_GATE_WATCHDOG_MS: '60000' }),
+  })
+  await waitFor(() => first.exitCode !== null, 60000, 'the first caller to report and exit')
+
+  // A release panel: two companions under one task id share the liveness file,
+  // the pid file and the outbox path, and the operator cannot tell whose answer
+  // they read.
+  const second = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'twice', brief, '120'],
+    { cwd, encoding: 'utf8', env: laneEnv(), timeout: 30000 })
+  assert.notEqual(second.status, 0, 'a second lane was admitted under a live task id')
+  assert.match(second.stderr, /already running as pid \d+/)
+
+  writeFileSync(releaseFile, 'go\n')
+  await waitFor(() => existsSync(outboxPath(cwd, 'twice')), 60000, 'the first lane to finish')
+
+  // Hard links and special files are not symlinks, and the policy used to name
+  // only symlinks. A hard link shares the victim's inode and `lstat` calls it a
+  // regular file.
+  const hard = tempDir('acp-dispatch-hardlink-')
+  const victim = join(hard, 'victim')
+  writeFileSync(victim, 'PRECIOUS\n')
+  mkdirSync(join(hard, '.tmux-teams', 'dispatch-pids'), { recursive: true })
+  linkSync(victim, join(hard, '.tmux-teams', 'dispatch-pids', 'linked'))
+  writeFileSync(join(hard, 'brief.md'), 'do the thing\n')
+  const r = spawnSync(process.execPath, [DISPATCH, 'mock', hard, 'linked', join(hard, 'brief.md'), '120'],
+    { cwd: hard, encoding: 'utf8', env: laneEnv({ ACP_DISPATCH_BOOT_SEC: '5' }), timeout: 30000 })
+  assert.notEqual(r.status, 0, 'a hard-linked pid file was written through')
+  assert.match(`${r.stdout}${r.stderr}`, /hard-linked/)
+  assert.equal(readFileSync(victim, 'utf8'), 'PRECIOUS\n')
+})
+
+test('a recovery command names the brief and the stall the dispatch actually used', () => {
+  // A release panel found the recorded brief ignored and a literal
+  // `<recovery-brief-file>` emitted into a command line — shell syntax, in the
+  // one string whose whole purpose is being pasted.
+  const withRouting = resumeCommand('/repo', 'r', {
+    sessionId: 's', routing: { worker: 'codex', briefFile: '/tmp/the brief.md', stallSec: 2400, env: {} },
+  })
+  assert.match(withRouting, /'\/tmp\/the brief\.md' 2400/,
+    'the recorded brief and stall were dropped in favour of a placeholder')
+  // The placeholder survives only when nothing was recorded to name, and it is
+  // no longer shell metacharacters.
+  const bare = resumeCommand('/repo', 'r', { sessionId: 's', routing: { worker: 'codex', env: {} } })
+  assert.doesNotMatch(bare, /[<>]/, 'the placeholder is still shell syntax')
 })

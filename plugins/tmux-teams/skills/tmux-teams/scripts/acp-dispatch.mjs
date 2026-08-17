@@ -19,7 +19,7 @@
 // child — a wrapper that enforces a deadline would be the bug it was written to
 // remove.
 import { spawn } from 'node:child_process'
-import { closeSync, constants as fsConstants, existsSync, fchmodSync, lstatSync, mkdirSync, openSync,
+import { chmodSync, closeSync, constants as fsConstants, existsSync, fchmodSync, lstatSync, mkdirSync, openSync,
   readFileSync, readdirSync, realpathSync, renameSync, writeSync } from 'node:fs'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -178,13 +178,34 @@ export function assertContainedDir(root, ...parts) {
 // write is the guarantee; this is the part that lets the refusal happen while
 // refusing still means "nothing started".
 function assertNotSymlink(path) {
+  let stat = null
   try {
-    if (lstatSync(path).isSymbolicLink()) {
-      throw Object.assign(new Error(`refusing to write through a symlink at ${path}`), { code: 'unsafe_artifact' })
-    }
+    stat = lstatSync(path)
   } catch (cause) {
     if (cause.code !== 'ENOENT') throw cause
+    return
   }
+  // A symlink is not the only way a leaf can be someone else's file. A release
+  // panel pointed out that the policy was symlink-ONLY: a hard link shares the
+  // inode with a victim and `lstat` calls it a regular file, and a fifo or a
+  // device is not a thing to write a pid into at all. `nlink > 1` is what a
+  // hard link looks like from here.
+  if (stat.isSymbolicLink()) {
+    throw Object.assign(new Error(`refusing to write through a symlink at ${path}`), { code: 'unsafe_artifact' })
+  }
+  if (!stat.isFile()) {
+    throw Object.assign(new Error(`refusing to write to a non-regular file at ${path}`), { code: 'unsafe_artifact' })
+  }
+  if (stat.nlink > 1) {
+    throw Object.assign(
+      new Error(`refusing to write to a hard-linked file at ${path} — it is also someone else's`),
+      { code: 'unsafe_artifact' },
+    )
+  }
+  // An existing artifact keeps whatever mode it was created with, so the
+  // owner-only guarantee applied only to files this dispatcher made. Tighten
+  // what is already there rather than trusting its history.
+  if ((stat.mode & 0o777) !== 0o600) chmodSync(path, 0o600)
 }
 
 function writeNoFollow(path, contents) {
@@ -264,6 +285,13 @@ export function recordedRouting(cwd, taskId) {
 export function resumeCommand(cwd, taskId, { sessionId, worker, routing, briefFile }) {
   if (!sessionId) return null
   const env = routing?.env ?? {}
+  // The brief and the stall the dispatch ACTUALLY used, recorded at spawn. A
+  // release panel found the recorded brief ignored and a literal
+  // `<recovery-brief-file>` emitted into a command line — shell syntax, in a
+  // command whose whole purpose is being pasted. The placeholder survives only
+  // when there is genuinely nothing recorded to name.
+  const brief = briefFile ?? routing?.briefFile ?? null
+  const stall = Number.isFinite(routing?.stallSec) ? routing.stallSec : 900
   const parts = [`ACP_RESUME=${shQuote(sessionId)}`]
   for (const key of ROUTING_ENV_KEYS) {
     if (env[key] !== undefined && env[key] !== '') parts.push(`${key}=${shQuote(env[key])}`)
@@ -272,7 +300,9 @@ export function resumeCommand(cwd, taskId, { sessionId, worker, routing, briefFi
     `${parts.join(' ')} \\`,
     `  node ${shQuote(join(HERE, 'acp-dispatch.mjs'))} \\`,
     `    ${shQuote(routing?.worker ?? worker ?? '<worker>')} ${shQuote(cwd)} ${shQuote(taskId)} `
-      + `${briefFile ? shQuote(briefFile) : '<recovery-brief-file>'} 900`,
+      // Quoted even when it is a placeholder: `<...>` is a redirection, so the
+      // old form made a paste do something rather than fail.
+      + `${shQuote(brief ?? 'PUT-THE-RECOVERY-BRIEF-PATH-HERE')} ${stall}`,
   ].join('\n')
 }
 
@@ -422,6 +452,14 @@ export function formatStatus(report) {
       'READ THOSE BEFORE RE-DISPATCHING — a worker told a different path writes a real answer nobody reads.',
     )
   }
+  if (report.outboxFound && report.terminated
+    && ['failed', 'cancelled'].includes(report.livenessState)) {
+    lines.push(
+      `the outbox exists AND the turn ended as ${report.livenessState}`
+        + ` (${report.terminationReason}). Read it, but read the log too:`,
+      'a lane can write an answer and still have ended badly, and exit 0 alone does not say which.',
+    )
+  }
   if (report.outboxFound && !report.terminated) {
     lines.push(
       'the outbox FILE exists but the companion has not recorded a terminal state for this turn.',
@@ -475,6 +513,22 @@ export function pidAlive(pid) {
 export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnFn = spawn, env = process.env } = {}) {
   // FIRST. Every line below builds a path out of this value.
   assertSafeTaskId(taskId)
+  // ADMISSION. A second dispatch under a live task id gives two companions the
+  // same liveness file, the same pid file and the same outbox path, and the
+  // operator cannot tell whose answer they read. A release panel raised it; the
+  // check is cheap because the pid is already recorded.
+  //
+  // It is not atomic — two dispatches racing this line both pass — and saying
+  // so matters more than the check: what it stops is the ordinary case of
+  // dispatching twice by hand, not a race.
+  const livePid = recordedPid(cwd, taskId)
+  if (livePid !== null && pidAlive(livePid)) {
+    throw Object.assign(
+      new Error(`a lane for "${taskId}" is already running as pid ${livePid} — `
+        + 'ask it with `status`, or use a different task id'),
+      { code: 'already_running' },
+    )
+  }
   const spawnedAtIso = new Date().toISOString()
   // Retire the PREDECESSOR's outbox before the new lane starts.
   //
