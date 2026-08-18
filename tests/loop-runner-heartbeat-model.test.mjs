@@ -81,7 +81,7 @@ function repoWith({ graph = graphDecl(), ledgers = {}, pulseAgeSec = 5, rawGraph
   return dir
 }
 
-test.after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }) })
+test.after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }) })
 
 const at = (index) => `2026-07-27T0${index}:00:00.000Z`
 

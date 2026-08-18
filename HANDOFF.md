@@ -12,7 +12,15 @@ Written 2026-08-17 through `bmad-party-mode`.
   the frozen bytes, then bump seven places, render/publish/record the roadmap,
   merge the PR, tag the merged sha, pin the submodule in `~/agent-skills`.
 
-### The third family is `opencode`, and how that was found
+### The review of record is `codex-advisor` at `gpt-5.6-luna`, effort `max`
+
+**Master, 2026-08-19: that lane is the review, and the three-family panel is
+waived for v0.32.0.** Recorded here and on the PR because a waiver nobody wrote
+down is the silent skip this file already has a section about. What follows is
+the search that preceded the decision, kept because the availability table is
+still true and the next release will need it.
+
+### The third family had been `opencode`, and how that was found
 
 Seven review lanes ship with the plugin. Measured 2026-08-18, **two of them
 could answer**: `agy` (gemini) and `codex` (openai). `qwen` hit a one-week quota,
@@ -74,14 +82,21 @@ command — never by re-running until it goes away.
 node --test > /tmp/suite.log 2>&1; grep -E '^ℹ (tests|pass|fail|skipped)' /tmp/suite.log
 ```
 
-Green here on 2026-08-17, measured on the release branch, is exactly:
+Green here on 2026-08-19, measured on the release branch, is exactly:
 
 ```
-ℹ tests 1038
-ℹ pass 1034
+ℹ tests 1105
+ℹ pass 1101
 ℹ fail 0
 ℹ skipped 4
 ```
+
+**And "green three times on a quiet machine" is not the same as green.** On
+2026-08-19 a review lane running its own dispatch races and MCP boots beside the
+suite got 1106/1101/**1**/4: every bulk-at-exit `rmSync` in the suite could throw
+ENOTEMPTY, because `force: true` swallows ENOENT and nothing else and a recursive
+removal can race its own readdir. Nine hooks carry `maxRetries` now. Run it once
+under load before believing a clean run.
 
 The 4 skips are the bwrap set skipping itself off Linux. **A skipped test is an
 unexecuted guard, not a passing one.**
@@ -137,7 +152,7 @@ release, not something to do after it.
   much changed in detail: envelope AND per-method params validation, a request
   id that may be any finite number, credential vocabulary shared with the
   endpoint validator by construction, and an `agy` check that requires an
-  executable regular file. 47 tests in `tests/acp-lanes-mcp.test.mjs`.
+  executable regular file. 48 tests in `tests/acp-lanes-mcp.test.mjs`.
 - **Two things are kept deliberately and are judgements, not spec readings.**
   `initialize` DOES demand `capabilities` and `clientInfo`, including
   `clientInfo.name` and `.version`, and this bullet said the opposite: measured,

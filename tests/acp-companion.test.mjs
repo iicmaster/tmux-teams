@@ -76,7 +76,7 @@ function concurrentTest(name, fn) {
   CONCURRENT_TEST_CASES.push(Object.freeze({ name, fn }))
 }
 after(() => {
-  for (const dir of TEST_REPOSITORIES) rmSync(dir, { recursive: true, force: true })
+  for (const dir of TEST_REPOSITORIES) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 })
   rmSync(TEST_TMP_ROOT, { recursive: true, force: true })
 })
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/

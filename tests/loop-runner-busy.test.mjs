@@ -57,7 +57,7 @@ function repoWith({ state, livenessState, observedSecAgo }) {
   return dir
 }
 
-test.after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }) })
+test.after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }) })
 
 test('a companion the process scan missed is still busy while its own heartbeat is fresh', () => {
   // The incident: `died` is what one ps sweep concluded about a worker that was

@@ -78,7 +78,13 @@ stdout and timeout ceilings rather than weakening those bounds.
   blocks the workflow.
 - Callers must supply the trusted absolute target path separately from the
   untrusted static packet.
-- Linux hosts require `/usr/bin/bwrap` and configured ACP provider runtimes.
+- Linux hosts require configured ACP provider runtimes. They required
+  `/usr/bin/bwrap` too until ADR 0006, which made the sandbox opt-in; no shipped
+  profile declares `osSandbox: 'bwrap'`, so this requirement now applies only to
+  a profile that does. The categorical sentence stood here for a release after
+  0006 landed, and a review lane obtained opposite current requirements from two
+  deciding documents — which is worse than either answer, because both look
+  authoritative.
 - Schema validity and configuration acknowledgement do not replace PM semantic
   review of findings and cited evidence.
 

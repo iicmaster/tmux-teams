@@ -105,7 +105,7 @@ after(async () => {
   while (Date.now() < deadline && pids.some((pid) => {
     try { process.kill(pid, 0); return true } catch { return false }
   })) await sleep(100)
-  for (const dir of TEMP_DIRS) rmSync(dir, { recursive: true, force: true })
+  for (const dir of TEMP_DIRS) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 })
 })
 
 async function waitFor(predicate, timeoutMs, label) {
