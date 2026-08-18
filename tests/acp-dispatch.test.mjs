@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, mkdi
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { statusReport, formatStatus, resumeCommand, outboxPath, sessionPath, COMPANION_DEFAULT_STALL_SEC, strayOutboxes, TERMINAL_LIVENESS_STATES,
+import { statusReport, formatStatus, resumeCommand, outboxPath, sessionPath, COMPANION_DEFAULT_STALL_SEC, leaseExpired, strayOutboxes, TERMINAL_LIVENESS_STATES,
   waitForSettlement, EXIT_OUTBOX, EXIT_RUNNING, EXIT_NO_OUTBOX, pidPath, recordedPid, belongsToThisRun,
   statusExitCode, logPath }
   from '../plugins/tmux-teams/skills/tmux-teams/scripts/acp-dispatch.mjs'
@@ -1952,4 +1952,58 @@ test('a parent symlinked INSIDE the run is still refused: containment is not ide
   }))
   assert.equal(statusReport(honest, 'ok').outboxFound, true,
     'an ordinary outbox stopped being found')
+})
+
+test('admission sees a routing-less lane, and a leaseless leftover does not block a re-dispatch', () => {
+  // A round-nine lane reproduced the first half: `loop-runner.mjs` starts
+  // companions WITHOUT a dispatcher routing file, and admission required one
+  // before it would look at liveness at all — so a live lane's own record was
+  // discarded and a second writer admitted beside it. `statusReport` accepts
+  // routing-less liveness for exactly that reason; admission was stricter than
+  // the thing it exists to agree with.
+  //
+  // The second half is what makes that safe. A leaseless record is AMBIGUOUS:
+  // a lane in `starting` has not published a lease yet, and a leftover from two
+  // days ago never will. `observed_at` separates them, and a record with NO
+  // timing at all is unknown rather than expired — answering "stopped" to a
+  // missing field would settle a lane on an absence.
+  const now = Date.now()
+  const fresh = { liveness_state: 'tool_running', termination_reason: 'none',
+    observed_at: new Date(now - 5_000).toISOString() }
+  const ancient = { liveness_state: 'tool_running', termination_reason: 'none',
+    observed_at: '2026-08-16T21:46:10.092Z' }
+  const timeless = { liveness_state: 'starting', termination_reason: 'none' }
+
+  assert.equal(leaseExpired(fresh, now), false, 'a lane observed seconds ago was called stale')
+  assert.equal(leaseExpired(ancient, now), true, 'a two-day-old record was treated as progress')
+  assert.equal(leaseExpired(timeless, now), false, 'a record with no timing was settled on an absence')
+
+  // an explicit lease still wins over the observation
+  assert.equal(leaseExpired({ ...fresh, next_lease_expiry_at: new Date(now - 1).toISOString() }, now),
+    true, 'an expired lease was overridden by a recent observation')
+  assert.equal(leaseExpired({ ...ancient, next_lease_expiry_at: new Date(now + 60_000).toISOString() }, now),
+    false, 'a live lease was overridden by an old observation')
+
+  // AND THROUGH ADMISSION, because asserting the predicate proved nothing about
+  // the caller — the first version of this test left the routing-less branch
+  // mutable and green. A lane with a fresh record, no pid and NO ROUTING is a
+  // `loop-runner` lane, and a second writer must not be admitted beside it.
+  const cwd = tempDir('acp-dispatch-noroute-')
+  mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
+  writeFileSync(join(cwd, 'brief.md'), 'do the thing\n')
+  writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'looprun.json'), JSON.stringify({
+    ...fresh, next_lease_expiry_at: new Date(now + 900_000).toISOString(),
+  }))
+  const r = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'looprun', join(cwd, 'brief.md'), '120'],
+    { cwd, encoding: 'utf8', env: laneEnv(), timeout: 60000 })
+  assert.notEqual(r.status, 0,
+    'a second writer was admitted beside a routing-less lane that is still reporting')
+  assert.match(`${r.stdout}${r.stderr}`, /still reporting progress/)
+
+  // and the same directory with an ANCIENT routing-less record dispatches
+  writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'looprun.json'), JSON.stringify(ancient))
+  const again = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'looprun', join(cwd, 'brief.md'), '120'],
+    { cwd, encoding: 'utf8', env: laneEnv(), timeout: 60000 })
+  assert.equal(again.status, 0,
+    `a leaseless leftover blocked a re-dispatch:\n${again.stdout}${again.stderr}`)
 })

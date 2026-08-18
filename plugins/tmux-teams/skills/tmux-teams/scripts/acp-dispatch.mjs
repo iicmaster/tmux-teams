@@ -491,8 +491,31 @@ function hasTerminated(liveness) {
 // that moment is in the past, the lane is not reporting. It is a lease, not a
 // death certificate — say "not reporting", never "dead".
 export function leaseExpired(liveness, now = Date.now()) {
+  // NO LEASE READS AS EXPIRED. `Number.isFinite(expiry) && …` treated a record
+  // with no `next_lease_expiry_at` — or an unparseable one — as a lane that is
+  // still making progress, which is the absence of evidence read as evidence.
+  // CLAUDE.md's own rule for a branch that cannot answer: say UNKNOWN, never
+  // "no". Here the safe UNKNOWN is "not proven alive".
+  //
+  // This is what lets admission accept routing-less liveness (a loop-runner
+  // lane is real and has a live lease) without a predecessor's leaseless
+  // leftover blocking every re-dispatch.
   const expiry = Date.parse(liveness?.next_lease_expiry_at ?? '')
-  return Number.isFinite(expiry) && expiry < now
+  if (Number.isFinite(expiry)) return expiry < now
+  // No lease is AMBIGUOUS, not absent: a lane in `starting` has not published
+  // one yet, and a leftover from days ago never will. The record's own
+  // `observed_at` is the evidence that distinguishes them — recent means a lane
+  // that is between its start and its first lease, old means nobody is coming
+  // back to write one. The window is the companion's default stall, because
+  // that is the longest a lane may legitimately go without saying anything.
+  const observed = Date.parse(liveness?.observed_at ?? '')
+  // NO TIMING AT ALL is UNKNOWN, and unknown is not "expired". A record with
+  // neither a lease nor an observation says nothing about time, and answering
+  // "stopped" to that would settle a lane on the absence of a field. What the
+  // old-observation branch above catches is a record that DOES carry a time and
+  // whose time is long past.
+  if (!Number.isFinite(observed)) return false
+  return observed + COMPANION_DEFAULT_STALL_SEC * 1000 < now
 }
 
 // A lane has STOPPED when its process is gone, or — when nobody recorded a pid
@@ -767,10 +790,20 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
     // the thing the retirement below exists to move aside, and refusing on it
     // would make every re-dispatch after an interrupted run impossible. The
     // test caught that within a minute of the first version.
+    // WITH NO ROUTING, the record is still evidence. A lane reproduced the gap:
+    // `loop-runner.mjs` starts companions without writing a dispatcher routing
+    // file, so requiring one discarded a live lane's own liveness and admitted a
+    // second writer beside it. `statusReport` deliberately accepts routing-less
+    // liveness for exactly that reason; admission was stricter than the thing it
+    // is meant to agree with.
+    //
+    // Bound to the recorded dispatch when there IS one — a predecessor's record
+    // must not block a re-dispatch — and taken at face value when there is not.
+    const liveness = readJson(livenessPath(cwd, taskId), cwd)
     const priorSpawn = Date.parse(recordedRouting(cwd, taskId)?.spawnedAt ?? '')
-    const record = Number.isFinite(priorSpawn) && belongsToThisRun(readJson(livenessPath(cwd, taskId), cwd), priorSpawn)
-      ? readJson(livenessPath(cwd, taskId), cwd)
-      : null
+    const record = Number.isFinite(priorSpawn)
+      ? (belongsToThisRun(liveness, priorSpawn) ? liveness : null)
+      : liveness
     if (record !== null && !isSettled(record, { pid: null })) {
       throw Object.assign(
         new Error(`a lane for "${taskId}" is still reporting progress and its pid file `
