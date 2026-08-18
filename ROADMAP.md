@@ -22,7 +22,7 @@ Current release: **0.31.0**
 | **B** | done | The exact-three review gate: three distinct model families, endpoint pins, zero-tool isolation (ADR 0001) |
 | **C** | **closed by changing the question, 2026-08-13** | Was "run the three-family panel through bwrap on Linux". The panel now runs without bwrap on macOS and Linux alike (ADR 0006), and passed 3/3 on three packets for v0.20.0. |
 | **D** | partly built | **The rebuild by domain.** Four domains hold their own behaviour — `team.nextRole`, `token.canPull`/`token.deliver`, `workflow.nextHop` — and orchestration decides WHEN, never WHAT. One dependency reverses: today the loop reads a page (`display → scheduler`); the target is `run → scheduler`. |
-| **E** | **slot accounting live**, five cells of six | **One publisher, N subscribers.** The ledger's own 17 words are the events; `token` subscribes to all 17, `team` to the 6 that take or free a slot, `workflow` to 5 about position, `display` to everything and it decides nothing. Scope is **six cells**, each moving one branch out of `nextStep` — counted, not estimated. |
+| **E** | **slot accounting live**, five cells of six | **One publisher, N subscribers.** The ledger's own 17 words are the events; `token` subscribes to all 17, `team` to all 17 as well, `workflow` to 7 about position, `display` to everything and it decides nothing. (`team` 6 and `workflow` 5 stood here until a panel lane said the code disagreed and the lists were counted: `TEAM_EVENTS` holds all seventeen, `WORKFLOW_EVENTS` seven. The 6 was the design intent — the events that take or free a slot — written as though it were the shipped list.) Scope is **six cells**, each moving one branch out of `nextStep` — counted, not estimated. |
 | **F** | proposed, not started | Per-seat pre-LLM / post-LLM scripts (Master's proposal). Three questions must be answered before any code. |
 
 **Measured 2026-08-16, and phase E's own scope sentence does not say it.** The
@@ -66,12 +66,17 @@ terminals; an escalation holds both its delivery team's slot and control's; a
 finished route is control's queue item until it is audited. The front door
 refuses while control owes a verdict, which is the alarm the owner described.
 
-**Five of the six cells are live: 1, 2, 3, 4 and 6.** Cell 3 landed last:
-`nextStep` asks the `token` subscriber whether a leg failed instead of
-re-deriving it, and escalates to a person if the subscriber and the ledger line
-disagree rather than quietly preferring one. Forcing the subscriber to answer
-false turns the planner's own test red, so the wiring is guarded at the
-consumer.
+**Four of the six cells are live: 1, 2, 4 and 6 — and cell 3 is NOT among
+them.** This paragraph said cell 3 landed last, with `nextStep` asking the
+`token` subscriber whether a leg failed instead of re-deriving it, and
+escalating to a person on disagreement. A panel lane said the code did not
+contain it, and the code agrees with the lane: `failedLegs(item)` filters
+`item.custody` directly, asks no subscriber, and has nothing to disagree with.
+Commit `6d19d95`'s message carries the same overclaim — a commit message cannot
+be corrected after the fact, so the correction lives here and says that the
+commit said it too.
+
+Cell 3 is open work, not shipped work.
 
 **Cell 5 is a cross-check and is deliberately not load-bearing.** `awaitingAudit`
 consults `routeFinished` and arms the audit on either answer. Measured: deleting
@@ -172,7 +177,11 @@ set of keys being pinned.
 
 What has been spent on it since: nine `codex-advisor` rounds, one automated PR
 review that returned ten findings before its quota ran out, and five panel
-rounds. Every finding closed, each with a guard a mutation turns red.
+rounds. Every ACCEPTED finding closed, each with a guard a mutation turns red —
+and the word matters, because a panel lane caught this sentence saying "every
+finding" two paragraphs before the page recorded an open dispute. Nine findings
+are deferred with their reasoning, listed under what is open; one dispute
+recorded as unresolved was later resolved AGAINST the position recorded here.
 
 **What is left is the panel and the mechanical steps.** Three families read the
 frozen bytes — gemini, openai and qwen; zai's gateway refuses a disabled
@@ -264,6 +273,44 @@ stop a deliberate one, because nothing in the record is unique to this dispatch.
 A real nonce needs the companion to echo a value the dispatcher generated,
 which is a protocol change and was out of scope. The code says so at the call
 site rather than implying otherwise.
+
+**Nine findings from the v0.32.0 panel that are NOT v0.32.0's to fix.** Recorded
+rather than dropped, because a finding that disappears without an answer is the
+silent skip this file keeps legislating against.
+
+The openai lane raised them in rounds five and six; gemini answered CLEAR on
+those packets both times and qwen answered CLEAR on one and did not raise them
+on the other. The repo's bar is that an objection two of three families raise is
+must-fix — one family is a judgement, and this is the judgement: none of the
+nine touches either feature v0.32.0 ships, and all of them predate it.
+
+- `graph-setup`'s "an `init` copy is only a shape, never an answer" is false
+  against `graph.mjs init`, which the main skill then tells a reader to use
+  unchanged.
+- The numbered interview cannot construct its own mandatory control team: Q2
+  says the outer controller belongs to no team, Q15 derives workers per team,
+  and a later section requires that controller to be the control team's sole
+  worker.
+- Valid graph IDs become invalid agent IDs — Q1 permits dots, colons and 128
+  characters in `project_id`, Q2 recommends `pm_<project_id>`, and the AGENT_ID
+  grammar forbids dots and colons and caps the length.
+- The wizard collects models and never adapter or lane declarations, though the
+  same skill says a model means nothing without one.
+- The copy-paste admission command opens the bundled workflow at
+  `requirement_dispatcher`, bypassing the control front door the same file calls
+  mandatory, and the next section admits such graphs need `admit.mjs`.
+- `graph.mjs` emits three strings where the contract requires `unverified`, and
+  the skill tells the reader to reinterpret the output rather than fixing it.
+- Pulse's startup exemption masks the silent worker death it exists to detect.
+- The "robust" completion and live-status algorithms knowingly produce false
+  DONE/idle results.
+- ACP context is not opt-in and can bleed across reused task ids, and the
+  footprint authenticity guarantee contradicts the same-UID trust model.
+
+**If a second family raises any of these, it becomes must-fix and this entry is
+wrong to have deferred it.** The round-seven packets carry this paragraph, so
+the lane that raised them can read the reasoning and answer it — which is how
+the `valid`-versus-`unchecked` dispute was settled against me.
 
 **No real Claude host has ever initialized the shipped MCP server.**
 
