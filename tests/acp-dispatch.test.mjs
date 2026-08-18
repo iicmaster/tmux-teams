@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { statusReport, formatStatus, resumeCommand, outboxPath, sessionPath, COMPANION_DEFAULT_STALL_SEC, leaseExpired, strayOutboxes, TERMINAL_LIVENESS_STATES,
   waitForSettlement, EXIT_OUTBOX, EXIT_RUNNING, EXIT_NO_OUTBOX, pidPath, recordedPid, belongsToThisRun,
-  statusExitCode, logPath, readLeafSync }
+  statusExitCode, logPath, readLeafSync, recordedRouting, spawnDetached, ROUTING_ENV_KEYS }
   from '../plugins/tmux-teams/skills/tmux-teams/scripts/acp-dispatch.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -2192,7 +2192,8 @@ test('admission refuses an artifact directory it is not allowed to read', () => 
     const said = `${r.stdout}${r.stderr}`
     assert.notEqual(r.status, 0, `an unreadable artifact directory was admitted:\n${said}`)
     assert.match(said, /cannot be listed/, `the refusal did not name the failure:\n${said}`)
-    // And it must NOT claim a symlink, because there is not one here.
+    // It must not claim a symlink is the SOLE cause; it may still offer one as
+    // a possibility, and it does. The old exact phrase asserted the cause.
     assert.doesNotMatch(said, /is reached through a symlink, so/,
       `a permission failure was reported as a symlink:\n${said}`)
   } finally {
@@ -2217,4 +2218,48 @@ test('an explicit receipt opt-out resumes without receipt lineage', () => {
     // ran, and what ran said 0.
     assert.match(command, new RegExp(`ACP_SESSION_RECEIPT_REQUIRED='${value}'`))
   }
+})
+
+// Two mutants survived the whole file in both directions and a lane showed they
+// are not algebraic. The routing capture and the resume emission share a shape
+// — `if the value is present and non-empty` — and forcing it TRUE writes the
+// STRING "undefined" into the record and then into a pasted command, including
+// an INITIAL_AGENT_MODE the Codex adapter does not accept. Forcing it FALSE
+// records nothing, so a recovery silently loses the model, the profile and the
+// receipt guarantee.
+//
+// Neither direction was visible because every existing fixture supplied a full
+// env. A sparse one is the ordinary case — most dispatches set two or three of
+// these ten keys.
+test('routing records the keys that were set and invents none', () => {
+  const cwd = tempDir('acp-routing-')
+  mkdirSync(join(cwd, '.tmux-teams'), { recursive: true })
+  writeFileSync(join(cwd, 'brief.md'), 'brief\n')
+  spawnDetached('codex', cwd, 'rt', join(cwd, 'brief.md'), 600, {
+    spawnFn: () => ({ pid: 424242, unref() {}, on() {} }),
+    env: { ACP_MODEL: 'gpt-5.6-sol', ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_REASONING_EFFORT: '',
+      SOMETHING_UNRELATED: 'not routing' },
+  })
+  const recorded = recordedRouting(cwd, 'rt')?.env ?? {}
+  assert.deepEqual(recorded, { ACP_MODEL: 'gpt-5.6-sol', ACP_SESSION_RECEIPT_REQUIRED: '1' },
+    `routing recorded something other than the keys that were set: ${JSON.stringify(recorded)}`)
+  // Named explicitly, because "deepEqual to two keys" would also pass if the
+  // capture had recorded the literal string "undefined" for a third.
+  for (const key of ROUTING_ENV_KEYS) {
+    assert.notEqual(recorded[key], 'undefined', `${key} was recorded as the string "undefined"`)
+  }
+})
+
+test('a resume command names no setting the dispatch did not have', () => {
+  const command = resumeCommand('/run', 'rt', {
+    sessionId: 'sess', routing: { worker: 'codex', briefFile: '/tmp/b.md', stallSec: 600,
+      env: { ACP_MODEL: 'gpt-5.6-sol' } },
+  })
+  assert.doesNotMatch(command, /'undefined'/,
+    `the resume command manufactured a literal undefined setting:\n${command}`)
+  assert.match(command, /ACP_MODEL='gpt-5.6-sol'/)
+  // INITIAL_AGENT_MODE='undefined' is the one that bites: the Codex adapter
+  // rejects it, so a paste fails in a way that reads like a broken dispatcher.
+  assert.doesNotMatch(command, /INITIAL_AGENT_MODE=/,
+    `a mode was emitted for a dispatch that never set one:\n${command}`)
 })

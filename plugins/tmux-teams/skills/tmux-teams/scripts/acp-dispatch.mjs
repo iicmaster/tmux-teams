@@ -350,17 +350,22 @@ function readDirSync(path, runRoot) {
   if (!noSymlinkOnTheWay(path, runRoot)) return null
   try {
     return readdirSync(path)
-  } catch (cause) {
-    // ENOENT is "nothing here". EVERY OTHER FAILURE IS "I cannot answer", and
-    // catching them all as `[]` is what made the guard below unreachable in
-    // practice: a real directory with write+search and no read permission
-    // passed the preflight, returned EACCES from `readdirSync`, and was read as
-    // holding no case collision. A lane admitted a colliding id that way, exit
-    // 0, on a case-insensitive volume.
+  } catch {
+    // EVERY enumeration failure is "I cannot answer", ENOENT included. Catching
+    // them as `[]` is what made the guard below unreachable in practice: a real
+    // directory with write+search and no read permission passed the preflight,
+    // returned EACCES, and was read as holding no case collision. A lane
+    // admitted a colliding id that way, exit 0, on a case-insensitive volume.
+    // The symlink walk was never the only way to fail to enumerate — it was the
+    // only one anybody had pictured.
     //
-    // The symlink walk was never the only way to fail to enumerate. It was just
-    // the only one anybody had pictured.
-    if (cause.code === 'ENOENT') return []
+    // ENOENT was briefly special-cased back to `[]`, and a lane pointed out the
+    // distinction had no consumer: `strayOutboxes` coalesces null itself, and
+    // admission pre-creates the three directories it scans, so the only ENOENT
+    // left is a removal racing the walk — where refusing IS the right answer,
+    // because collision evidence that cannot be read has not been checked. One
+    // return, no classifier, and the mutant that survived the classifier is
+    // gone with it.
     return null
   }
 }
@@ -833,9 +838,10 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
     const leaves = readDirSync(at, cwd)
     if (leaves === null) {
       throw Object.assign(
-        // The sentence no longer names a symlink. It said so when the walk was
-        // the only refusal it could receive, and a permission failure then
-        // arrived and would have been reported as something it is not.
+        // The sentence no longer names a symlink as the SOLE cause — it still
+        // offers it as one, because it usually is. An earlier version of this
+        // comment claimed the word was gone, and a lane pointed out the word is
+        // right there in the string below it. Two lines apart.
         new Error(`task id "${taskId}" cannot be admitted: .tmux-teams/${dir} cannot be `
           + 'listed — it is reached through a symlink, or it is not readable — so what it '
           + 'holds cannot be checked for a case collision'),

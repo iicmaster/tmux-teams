@@ -175,11 +175,21 @@ plainly that field NAMES are diagnostic vocabulary and VALUES are what never
 leave, and the lane that owns each provider key is pinned rather than only the
 set of keys being pinned.
 
-What has been spent on it since: nine `codex-advisor` rounds, one automated PR
-review that returned ten findings before its quota ran out, and five panel
-rounds. Every ACCEPTED finding closed, each with a guard a mutation turns red —
-and the word matters, because a panel lane caught this sentence saying "every
-finding" two paragraphs before the page recorded an open dispute. Nine findings
+What has been spent on it since: fourteen `codex-advisor` rounds, one automated
+PR review that returned ten findings before its quota ran out, and NINE panel
+rounds, with a tenth owed on the current bytes. This said "five panel rounds"
+while two later paragraphs on the same page named findings from rounds five and
+six and described what the ROUND-SEVEN packets carry — a number that its own
+document disproved twice, caught by a lane asked to read the file against
+itself.
+
+Every accepted finding is closed, and the claim that each one carries a guard a
+mutation turns red is now MEASURED rather than asserted: three predicates
+survived their whole test file in both directions until 2026-08-18, and they
+were behaviour-changing — one manufactured the literal string `undefined` as an
+agent mode, another silently dropped the model and receipt guarantee from every
+recovery. They have tests. The claim is worth keeping only while somebody keeps
+running the mutations, so read it as a report on the last run, not a property. Nine findings
 are deferred with their reasoning, listed under what is open; one dispute
 recorded as unresolved was later resolved AGAINST the position recorded here.
 
