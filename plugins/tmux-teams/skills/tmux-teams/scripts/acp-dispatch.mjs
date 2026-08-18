@@ -571,12 +571,14 @@ export function formatStatus(report) {
 export function pidPath(cwd, taskId) { return join(cwd, '.tmux-teams', 'dispatch-pids', `${taskId}`) }
 
 export function recordedPid(cwd, taskId) {
-  try {
-    const value = Number(readFileSync(pidPath(cwd, taskId), 'utf8').trim())
-    return Number.isInteger(value) && value > 0 ? value : null
-  } catch {
-    return null
-  }
+  // Through `readLeafSync`, like every other control-leaf read. This function
+  // called `readFileSync` on the pid path directly, so the "safe read boundary"
+  // had a hole in the one reader admission depends on — and a FIFO planted
+  // there blocks the reader outright. A panel lane reproduced both.
+  const text = readLeafSync(pidPath(cwd, taskId))
+  if (text === null) return null
+  const pid = Number.parseInt(text.trim(), 10)
+  return Number.isInteger(pid) && pid > 1 ? pid : null
 }
 
 // No EPERM branch, deliberately. The first version had one — "it exists and is
@@ -641,13 +643,31 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
   // more than the check: what it stops is dispatching twice by hand.
   const livePid = recordedPid(cwd, taskId)
   if (livePid !== null && pidAlive(livePid)) {
+    // The SAME predicate `status` uses, because a panel lane reproduced the two
+    // disagreeing: `hasStopped` leaves a live pid unsettled (the companion may
+    // be mid-tool-call) while this computed `stillReporting = false` from an
+    // expired lease and admitted a SECOND child under the same task id — the
+    // duplicate writer admission exists to refuse. I fixed the two call sites
+    // to satisfy two different reviewers and made them contradict each other.
+    //
+    // One question, asked once: is this lane settled? If it is not, it is still
+    // this task id's lane and a second one is refused.
     const record = readJson(livenessPath(cwd, taskId))
-    const stillReporting = record !== null && !hasTerminated(record)
-      && !leaseExpired(record, Date.now())
-    if (stillReporting) {
+    if (!isSettled(record, { pid: livePid })) {
+      // The two panel rounds pulled in opposite directions here, from the SAME
+      // family: round five said a reused pid must not lock a task id forever;
+      // round six said admission must not admit a second writer for a lane
+      // status calls unsettled. A pid number plus a lease cannot tell a wedged
+      // lane from a recycled pid, so this refuses — a duplicate writer is
+      // unrecoverable, a refusal is not — and names the way out instead of
+      // leaving the operator to find it.
+      const stale = readJson(livenessPath(cwd, taskId))?.next_lease_expiry_at ?? null
       throw Object.assign(
         new Error(`a lane for "${taskId}" is already running as pid ${livePid} — `
-          + 'ask it with `status`, or use a different task id'),
+          + 'ask it with `status`, or use a different task id.'
+          + (stale ? ` Its progress lease says ${stale}: if that is long past and pid ${livePid} `
+            + 'is some other program that inherited the number, remove '
+            + `.tmux-teams/dispatch-pids/${taskId} and dispatch again.` : '')),
         { code: 'already_running' },
       )
     }

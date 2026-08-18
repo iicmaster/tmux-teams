@@ -1023,3 +1023,34 @@ test('a candidate whose interpreter is missing answers unchecked, not valid', ()
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+test('the exported surface is frozen through its records, and LC_ is a set not a prefix', () => {
+  // `Object.freeze` on an array freezes the ARRAY, not the records inside it,
+  // so both exports stayed writable by an in-process importer while ADR 0007
+  // called the one-descriptor-list invariant not representable as drift. A
+  // panel lane read the claim against the two calls.
+  for (const [name, arr] of [['TOOLS', TOOLS], ['TOOL_DESCRIPTORS', TOOL_DESCRIPTORS]]) {
+    assert.ok(Object.isFrozen(arr), `${name} itself is not frozen`)
+    const before = arr[0].name
+    try { arr[0].name = 'hijacked' } catch { /* strict mode throws, which is fine */ }
+    assert.equal(arr[0].name, before, `${name}'s records are writable by any importer`)
+    assert.ok(Object.isFrozen(arr[0]), `${name}'s records are not frozen`)
+  }
+
+  // The child-environment allowlist copied every name beginning `LC_`, so a
+  // source entry a caller invented rode into every profile — in a file that
+  // promises a profile-scoped environment with no ambient credential bag.
+  // `codex`, because it needs no routed endpoint or resolved binary to build an
+  // environment — measured across the four lanes rather than assumed, after
+  // `zai` refused for a reason that had nothing to do with what this checks.
+  const env = buildProfileEnv('codex', {
+    HOME: '/tmp', PATH: '/usr/bin',
+    LC_ALL: 'C',                       // a real locale variable: allowed
+    LC_PRIVATE_TOKEN: 'SECRETVALUE',   // a name somebody chose: not
+    LC_HAX: 'nope',
+  })
+  assert.equal(env.LC_ALL, 'C', 'a POSIX locale variable was dropped')
+  assert.equal(env.LC_PRIVATE_TOKEN, undefined, 'an invented LC_ name reached the child')
+  assert.equal(env.LC_HAX, undefined)
+  assert.ok(!JSON.stringify(env).includes('SECRETVALUE'))
+})

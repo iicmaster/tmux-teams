@@ -1334,13 +1334,24 @@ test('a live pid with a long-dead lease does not lock the task id forever', asyn
   writeFileSync(join(cwd, 'brief.md'), 'do the thing\n')
   const r = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'reclaim', join(cwd, 'brief.md'), '120'],
     { cwd, encoding: 'utf8', env: laneEnv(), timeout: 60000 })
-  assert.equal(r.status, 0,
-    `a reused pid locked the task id out:\n${r.stdout}${r.stderr}`)
-  assert.doesNotMatch(`${r.stdout}${r.stderr}`, /already running/)
+  // THIS ASSERTION WAS BACKWARDS, and two panel rounds are why. Round five
+  // (openai): a reused pid must not lock a task id forever, so admit. Round six
+  // (openai, REPRODUCED): admission must not admit a second writer for a lane
+  // `status` calls unsettled, so refuse. Same family, opposite directions, and
+  // a pid plus a lease cannot tell a wedged lane from a recycled number.
+  //
+  // A duplicate writer is unrecoverable; a refusal is not. So it refuses AND
+  // names the way out — which is the part that answers round five.
+  assert.notEqual(r.status, 0, 'a second writer was admitted under a live task id')
+  assert.match(`${r.stdout}${r.stderr}`, /already running/)
+  assert.match(`${r.stdout}${r.stderr}`, /remove \.tmux-teams\/dispatch-pids\/reclaim/,
+    'the refusal did not tell the operator how to reclaim a task id from a recycled pid')
 
-  // and the predecessor's leaves were retired rather than inherited: a panel
-  // lane reproduced a fresh dispatch printing `session_id: predecessor-session`
-  // and offering ACP_RESUME for a session that was never this run's.
+  // and taking the documented escape works
+  rmSync(pidPath(cwd, 'reclaim'))
+  const again = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'reclaim', join(cwd, 'brief.md'), '120'],
+    { cwd, encoding: 'utf8', env: laneEnv(), timeout: 60000 })
+  assert.equal(again.status, 0, `the documented escape did not work:\n${again.stdout}${again.stderr}`)
   const superseded = readdirSync(join(cwd, '.tmux-teams', 'liveness'))
   assert.ok(superseded.some((f) => f.includes('.superseded-')),
     `the predecessor liveness record was not retired: ${superseded.join(', ')}`)
@@ -1451,6 +1462,25 @@ test('status does not follow a link out of the tree, and the old traversal fixtu
   // and a hostile leaf reads as ABSENT rather than crashing the report — a
   // diagnostic that refuses to print helps nobody.
   assert.match(out, /liveness_state: failed/)
+
+  // THE PID LEAF, which `recordedPid()` used to read with a bare `readFileSync`
+  // — a panel lane reported the "universal read boundary" had a hole in the one
+  // reader admission depends on, and a mutation of this file confirmed the gap
+  // was untested. A symlinked pid file must read as ABSENT, not be followed.
+  const foreignPid = join(cwd, 'not-our-pid')
+  writeFileSync(foreignPid, `${process.pid}\n`)
+  mkdirSync(join(run, '.tmux-teams', 'dispatch-pids'), { recursive: true })
+  symlinkSync(foreignPid, join(run, '.tmux-teams', 'dispatch-pids', 'linkedpid'))
+  writeFileSync(join(run, '.tmux-teams', 'liveness', 'linkedpid.json'), JSON.stringify({
+    liveness_state: 'tool_running', termination_reason: 'none',
+    observed_at: new Date().toISOString(),
+    next_lease_expiry_at: new Date(Date.now() - 60_000).toISOString(),
+  }))
+  const viaLink = statusReport(run, 'linkedpid')
+  assert.equal(viaLink.pid, null,
+    'a symlinked pid file was followed, so a stranger\'s pid decided this lane\'s state')
+  // with no trustworthy pid, the expired lease is the only evidence there is
+  assert.equal(viaLink.settled, true)
 
   // A hard-linked liveness record is somebody else's file too.
   const victim = join(cwd, 'victim.json')

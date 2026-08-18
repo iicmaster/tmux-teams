@@ -785,6 +785,15 @@ function executablePath(source) {
 // worse than an unclassified one because it sounds authoritative.
 export const AGY_BINARY_NAME = 'agy'
 
+// The POSIX locale variables, by name. Everything else beginning `LC_` is a
+// name somebody chose, and this file's promise is that no such name reaches a
+// child.
+const POSIX_LOCALE_VARS = new Set([
+  'LC_ALL', 'LC_COLLATE', 'LC_CTYPE', 'LC_MESSAGES', 'LC_MONETARY',
+  'LC_NUMERIC', 'LC_TIME', 'LC_ADDRESS', 'LC_IDENTIFICATION', 'LC_MEASUREMENT',
+  'LC_NAME', 'LC_PAPER', 'LC_TELEPHONE',
+])
+
 export function agyBinaryCandidates(source) {
   const home = source?.HOME ?? source?.USERPROFILE
   return [
@@ -886,7 +895,12 @@ export function buildProfileEnv(profileId, source = process.env, {
   const env = {}
   for (const [key, value] of Object.entries(source ?? {})) {
     if (value === undefined || value === null) continue
-    if (runtimeKeys.has(key) || key.startsWith('LC_')) env[key] = String(value)
+    // Named locale variables only. This read `key.startsWith('LC_')`, so any
+    // name a source invented — `LC_PRIVATE_TOKEN=<secret>` is the reviewer's
+    // own example — rode into every profile, in a file whose opening lines
+    // promise a profile-scoped environment with no ambient credential bag.
+    // A prefix is not an allowlist.
+    if (runtimeKeys.has(key) || POSIX_LOCALE_VARS.has(key)) env[key] = String(value)
   }
   const path = executablePath(source)
   if (path) env.PATH = path

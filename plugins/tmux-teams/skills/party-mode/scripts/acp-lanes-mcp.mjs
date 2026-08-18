@@ -102,6 +102,13 @@ const overrideNames = (id) => ({
 // A closed set of outbound diagnostics. The raw exception is classified and
 // then DROPPED; each sentence is a constant of this file and can therefore
 // never contain anything a settings file put there.
+function deepFreeze(value) {
+  if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return value
+  Object.freeze(value)
+  for (const inner of Object.values(value)) deepFreeze(inner)
+  return value
+}
+
 export const DIAGNOSTICS = Object.freeze({
   endpoint_missing: 'the lane is pinned to an endpoint and this machine supplies no base URL for it',
   endpoint_mismatch: 'the base URL configured here is not the endpoint this lane is pinned to',
@@ -359,7 +366,13 @@ export function laneStatus(id, profile, env) {
 // ONE list. `TOOLS` and the dispatcher are both derived from it, so an
 // unadvertised handler is not something a reviewer has to go looking for — it
 // is unrepresentable.
-export const TOOL_DESCRIPTORS = Object.freeze([
+// `Object.freeze` on an array freezes the ARRAY, not the records inside it, so
+// both of these stayed writable by an in-process importer while ADR 0007 called
+// the one-descriptor-list invariant not representable as drift. A panel lane
+// read the claim against the two calls. `deepFreeze` makes the claim true for
+// what it covers; it still cannot stop a differently named handler being added
+// later, which the ADR already says.
+export const TOOL_DESCRIPTORS = deepFreeze([
   {
     name: 'acp_lanes',
     description: 'List every ACP review lane this plugin declares: family, provider, model, '
@@ -397,7 +410,7 @@ export const TOOL_DESCRIPTORS = Object.freeze([
   },
 ])
 
-export const TOOLS = Object.freeze(TOOL_DESCRIPTORS.map(({ handler, ...rest }) => rest))
+export const TOOLS = deepFreeze(TOOL_DESCRIPTORS.map(({ handler, ...rest }) => rest))
 const HANDLERS = new Map(TOOL_DESCRIPTORS.map((d) => [d.name, d.handler]))
 
 export function callTool(name, args, env) {
