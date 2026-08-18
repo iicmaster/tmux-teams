@@ -95,6 +95,7 @@ answer is a failed consultation — say so rather than passing it on.
    ```bash
    INITIAL_AGENT_MODE="read-only" \
    ACP_SESSION_RECEIPT_REQUIRED=1 \
+   ACP_SESSION_OPERATION="new" \
    ACP_MODEL="<model>" \
    ACP_REASONING_EFFORT="max" \
    ACP_EXPECT_MODEL="<model>" \
@@ -205,11 +206,26 @@ changes state. Work that comes out of a consultation goes to `party-auto`.
 
   ```bash
   INITIAL_AGENT_MODE="read-only" ACP_SESSION_RECEIPT_REQUIRED=1 \
+  ACP_SESSION_OPERATION="load" \
+  ACP_PRIOR_DISPATCH_ID="<dispatch-id from the failed run's receipt>" \
+  ACP_PRIOR_RECEIPT_DIGEST="<receipt_digest from that run>" \
   ACP_RESUME="<session-id>" ACP_MODEL="<model>" ACP_REASONING_EFFORT="max" \
   ACP_EXPECT_MODEL="<model>" ACP_EXPECT_REASONING_EFFORT="max" \
   node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
     codex <cwd> <task-id> <recovery-prompt> [stall-sec]
   ```
+
+  **A receipt-required LOAD needs its lineage, and the first version of this
+  block had none of it.** `ACP_SESSION_OPERATION=load` plus the prior dispatch
+  id and receipt digest are what bind the resumed turn to the run that failed;
+  without them the companion refuses, and without the whole set the resume is
+  not receipt-backed at all. Three panel families reported the fresh-dispatch
+  half of this and one reported the resume half — all against a command block
+  that had been "fixed" the day before by adding one variable and testing that
+  the variable was PRESENT.
+
+  Read the two values out of the failed run's receipt; `status` cannot supply
+  them, which is stated here rather than left for a paste to discover.
 
   **Resume under the SAME task id.** The companion tells the worker to write
   `.mailbox-out/<task-id>` and then reads that exact path back, so a resume

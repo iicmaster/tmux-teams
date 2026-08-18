@@ -150,6 +150,7 @@ consensus is itself a finding, usually that the question was too narrow.
 
    ```bash
    ACP_SESSION_RECEIPT_REQUIRED=1 \
+   ACP_SESSION_OPERATION="new" \
    ANTHROPIC_MODEL="claude-fable-5" \
    ACP_EXPECT_MODEL="claude-fable-5" \
    node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
@@ -160,6 +161,7 @@ consensus is itself a finding, usually that the question was too narrow.
 
    ```bash
    ACP_SESSION_RECEIPT_REQUIRED=1 \
+   ACP_SESSION_OPERATION="new" \
    CLAUDE_CONFIG_DIR="$HOME/.config/claude-profiles/<profile>" \
    ACP_MODEL="<model>" \
    node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \

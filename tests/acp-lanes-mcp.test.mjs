@@ -10,7 +10,7 @@ import { handle, callTool, laneFacts, laneStatus, classify, fixesFor,
   TOOLS, TOOL_DESCRIPTORS, DIAGNOSTICS, PROTOCOL_VERSION, UNCHECKED_LANES,
   RPC_INVALID_REQUEST, RPC_INVALID_PARAMS, RPC_METHOD_NOT_FOUND, RPC_PARSE_ERROR }
   from '../plugins/tmux-teams/skills/party-mode/scripts/acp-lanes-mcp.mjs'
-import { REVIEW_PROFILES, normalizePrimaryFamily, PROVIDER_SECRET_KEYS, acceptedCredentialNames, buildProfileEnv }
+import { REVIEW_PROFILES, normalizePrimaryFamily, PROVIDER_SECRET_KEYS, acceptedCredentialNames, unresolvedInterpreterFor, buildProfileEnv }
   from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -938,5 +938,88 @@ test('each MCP registration satisfies the contract it names', () => {
   for (const [file, entry] of [['.mcp.json', c], ['mcp.json', n]]) {
     const target = entry.args[0].replace(/^\$\{(CLAUDE_)?PLUGIN_ROOT\}/, PLUGIN)
     assert.ok(existsSync(target), `${file} points at a file that is not shipped: ${target}`)
+  }
+})
+
+test('an unreadable credential file reaches the operator AS a credential problem', () => {
+  // The end-to-end guard that was missing. `credential_unreadable` and the
+  // `fileKind` argument that carries it were added together, the test called
+  // `classify` DIRECTLY, and no caller ever passed one — so two panel families
+  // reported the code unreachable from any reply this server can produce, and
+  // an unreadable credential file kept prescribing the settings-file repair.
+  //
+  // This goes through the TOOL, so deleting the argument at the call site turns
+  // it red. Asserting the pure function proves nothing about its consumer.
+  const dir = mkdtempSync(join(tmpdir(), 'lane-credfail-'))
+  const credential = join(dir, 'creds.env')
+  writeFileSync(credential, 'ANTHROPIC_AUTH_TOKEN=shhh\n')
+  chmodSync(credential, 0o000)          // present, and not readable
+  try {
+    const reply = callTool('acp_lane_status', { lane: 'zai' }, {
+      TMUX_TEAMS_REVIEW_ZAI_ENV_FILE: credential,
+      ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic',
+    })
+    const text = JSON.stringify(reply)
+    assert.ok(!text.includes('shhh'), 'the credential value reached the wire')
+    if (process.getuid?.() === 0) return   // root reads anything; the branch cannot be reached
+    assert.match(text, /credential_unreadable/,
+      `an unreadable credential file was not diagnosed as one: ${text}`)
+    assert.ok(!text.includes('settings_unreadable'),
+      'the operator was sent to the settings file, which is fine')
+  } finally {
+    chmodSync(credential, 0o600)
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a candidate whose interpreter is missing answers unchecked, not valid', () => {
+  // Two panel families, two rounds. The defence recorded on the roadmap —
+  // "proving otherwise means EXECUTING the candidate, which turns a read-only
+  // tool into an acting one" — rested on a choice that does not exist. The
+  // alternative was never `valid` versus running the file: `unchecked` is
+  // already in the result vocabulary and describes this state exactly. Reading
+  // 256 bytes is not executing.
+  //
+  // The candidate list is `$HOME/.local/bin/agy` and two absolute paths — not
+  // an env var, which is what the first version of this test assumed. Measured
+  // from `agyBinaryCandidates` rather than remembered.
+  const home = mkdtempSync(join(tmpdir(), 'lane-shebang-'))
+  const binDir = join(home, '.local', 'bin')
+  mkdirSync(binDir, { recursive: true })
+  const bin = join(binDir, 'agy')
+  try {
+    writeFileSync(bin, '#!/definitely/not/here/python3\nprint("hi")\n')
+    chmodSync(bin, 0o755)                       // executable, and cannot start
+    assert.equal(unresolvedInterpreterFor('agy', { env: { HOME: home } }),
+      '/definitely/not/here/python3',
+      'a 0755 file whose shebang names a missing interpreter was read as startable')
+
+    // a file that CAN start is not maligned
+    writeFileSync(bin, `#!${process.execPath}\nprocess.exit(0)\n`)
+    chmodSync(bin, 0o755)
+    assert.equal(unresolvedInterpreterFor('agy', { env: { HOME: home } }), null)
+
+    // a bare-name shebang resolves through PATH, which this check does not own:
+    // it says nothing rather than guessing, because a wrong specific answer
+    // sends the reader to the wrong file.
+    writeFileSync(bin, '#!python3\n')
+    chmodSync(bin, 0o755)
+    assert.equal(unresolvedInterpreterFor('agy', { env: { HOME: home } }), null)
+
+    // and lanes that resolve no binary parent-side are not second-guessed
+    assert.equal(unresolvedInterpreterFor('zai', { env: { HOME: home } }), null)
+
+    // THROUGH THE TOOL, not just the helper. The first version of this test
+    // asserted the helper alone, and deleting the CALL SITE left it green —
+    // which is the exact defect round six raised about `credential_unreadable`,
+    // committed again in the test written to close it. Mutate the call site.
+    writeFileSync(bin, '#!/definitely/not/here/python3\n')
+    chmodSync(bin, 0o755)
+    const lane = callTool('acp_lane_status', { lane: 'agy' }, { HOME: home }).lanes[0]
+    assert.equal(lane.configuration, 'unchecked',
+      `a lane that cannot start reported ${lane.configuration}`)
+    assert.match(JSON.stringify(lane.fixes), /interpreter/)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
   }
 })

@@ -73,7 +73,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { REVIEW_PROFILES, ROUTED_PROFILES, buildAcpLaunch, AGY_BINARY_NAME,
-  AGY_BINARY_CANDIDATE_FORMS, acceptedCredentialNames } from './review-profiles.mjs'
+  AGY_BINARY_CANDIDATE_FORMS, acceptedCredentialNames, unresolvedInterpreterFor } from './review-profiles.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PLUGIN_ROOT = join(HERE, '..', '..', '..')
@@ -316,9 +316,36 @@ export function laneStatus(id, profile, env) {
     // The object this returns CONTAINS the credential. It is bound to nothing
     // and referenced nowhere, which is the whole of what "never returned" means.
     buildAcpLaunch(id, { env })
+    // `valid` means every parent-side check PASSED — not that some of them
+    // could not be run. A candidate whose shebang names an interpreter that is
+    // not on this machine passes `executableCandidate` (the kernel would accept
+    // the file and then fail to find the interpreter), so the lane used to
+    // answer `valid` for a configuration that cannot start. Two panel families
+    // raised it across two rounds.
+    //
+    // `unchecked` is what that state is, it is already in the vocabulary, and
+    // reaching it costs one 256-byte read — not the execution the old defence
+    // said it would require.
+    const unresolved = unresolvedInterpreterFor(id, { env })
+    if (unresolved) {
+      return {
+        ...facts,
+        configuration: 'unchecked',
+        problem: null,
+        fixes: [`the executable this lane resolves to begins \`#!\` naming an interpreter `
+          + `that is not on this machine — install it, or point the lane at a binary that needs none`],
+        notProven: notProvenFor(profile),
+        note: 'the configuration is complete, and the executable it resolves to cannot start here',
+      }
+    }
     return { ...facts, configuration: 'valid', problem: null, fixes: [], notProven: notProvenFor(profile) }
   } catch (error) {
-    const code = classify(error?.message)
+    // `error.fileKind` when the thrower knew which file it was opening. A pure
+    // function tested in isolation says nothing about its consumer — CLAUDE.md's
+    // own rule, and this line broke it: `classify` grew a `fileKind` parameter,
+    // the test called it directly, and NOTHING ever passed one, so the new
+    // diagnostic was dead on every path a caller can reach.
+    const code = classify(error?.message, { fileKind: error?.fileKind ?? null })
     return {
       ...facts,
       configuration: 'invalid',

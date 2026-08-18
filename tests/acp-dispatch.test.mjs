@@ -19,21 +19,66 @@ const SKILLS = join(HERE, '..', 'plugins', 'tmux-teams', 'skills')
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
 
-// Every temp directory this file makes, removed when the file ends.
+// Every temp directory this file makes, removed when the file ends — AND every
+// lane it spawned killed first, because deleting the directory is not the same
+// as ending the writer.
 //
-// Written 2026-08-17 after this file helped fill the machine's disk twice in
-// one day. It had 25 `mkdtempSync` calls and one `rmSync`, and several of those
-// directories hold a real lane's logs, receipts and KMS events — so every run
-// left tens of megabytes behind, and enough runs took the volume to zero and
-// stopped every tool that writes, this one included. A test that leaks is a
-// test that eventually stops the work.
+// Written 2026-08-17 after this file helped fill the machine's disk twice in one
+// day: 25 `mkdtempSync` calls and one `rmSync`, several holding a real lane's
+// logs, receipts and KMS events.
+//
+// **That fix was not enough and a panel lane proved it on this machine.** It
+// counted 17 leaked directories, named three, and showed mtimes ~60s after the
+// suite ended — the lanes are DETACHED, so `after()` deleted the trees and the
+// still-running companions recreated them while winding down (terminal
+// persistence, receipts, KMS) or when a mock watchdog released a gated lane. It
+// reproduced on a fully GREEN run too, and one recreated directory came back at
+// 0755 rather than the 0700 this dispatcher enforces — proof the mkdir was the
+// companion's, after the deletion.
+//
+// So the cleanup ends the writers first. A detached lane is not ours to wait
+// for indefinitely, so this signals and then verifies rather than blocking: any
+// pid still alive gets SIGKILL, and the directory is removed after its process
+// is gone.
 const TEMP_DIRS = []
 function tempDir(prefix) {
   const dir = mkdtempSync(join(tmpdir(), prefix))
   TEMP_DIRS.push(dir)
   return dir
 }
-after(() => {
+
+function lanePidsUnder(dir) {
+  const pids = []
+  const pidDir = join(dir, '.tmux-teams', 'dispatch-pids')
+  if (!existsSync(pidDir)) return pids
+  for (const leaf of readdirSync(pidDir)) {
+    const pid = Number.parseInt(readFileSync(join(pidDir, leaf), 'utf8').trim(), 10)
+    // NEVER our own pid, and never our own group. Several fixtures plant
+    // `process.pid` on purpose — they need a pid that is definitely alive to
+    // test reuse and admission — and the first version of this hook killed the
+    // test runner's own process group with them. The suite stopped at 26 of 37
+    // and left 62 directories behind, which is the leak this hook exists to
+    // stop, made four times worse by the fix for it.
+    if (Number.isInteger(pid) && pid > 1 && pid !== process.pid && pid !== process.ppid) {
+      pids.push(pid)
+    }
+  }
+  return pids
+}
+
+after(async () => {
+  const pids = TEMP_DIRS.flatMap((dir) => {
+    try { return lanePidsUnder(dir) } catch { return [] }
+  })
+  for (const pid of pids) {
+    try { process.kill(-pid, 'SIGKILL') } catch { /* group already gone */ }
+    try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ }
+  }
+  // Give the kills a moment to land before deleting what they were writing to.
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline && pids.some((pid) => {
+    try { process.kill(pid, 0); return true } catch { return false }
+  })) await sleep(100)
   for (const dir of TEMP_DIRS) rmSync(dir, { recursive: true, force: true })
 })
 
@@ -1414,4 +1459,54 @@ test('status does not follow a link out of the tree, and the old traversal fixtu
   const hard = spawnSync(process.execPath, [DISPATCH, 'status', run, 'hard'],
     { encoding: 'utf8', env: laneEnv(), timeout: 20000 })
   assert.ok(!`${hard.stdout}${hard.stderr}`.includes('HARDLINKED'))
+})
+
+test('the dispatch command each advisor skill documents gets past the companion preconditions', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX process groups')
+  // THE GUARD THAT WAS MISSING, and its absence produced the worst finding of
+  // the release. Yesterday `ACP_SESSION_RECEIPT_REQUIRED=1` was added to all
+  // four documented advisor commands to close a fail-open identity guarantee,
+  // and the test asserted THE FLAG IS PRESENT — proof that I typed it. The
+  // companion requires `ACP_SESSION_OPERATION=new|load` whenever that flag is
+  // set and exits 2 BEFORE prompt delivery otherwise, so every documented
+  // command was broken. All three panel families reported it.
+  //
+  // WHAT THIS PROVES AND WHAT IT DOES NOT. It runs each documented command's
+  // own environment and asserts the companion does not refuse it on a usage
+  // preconditionrather than checking that a string appears in a file. It does
+  // NOT prove an end-to-end consultation: receipt-required mode correctly
+  // refuses an arbitrary `ACP_CMD` without an execution profile, so
+  // substituting the mock is itself rejected further down. That refusal is a
+  // real protection and building a signed profile here would test the profile
+  // machinery rather than the documented command.
+  const SKILLS = join(dirname(DISPATCH), '..', '..')
+  for (const skill of ['codex-advisor', 'claude-advisor']) {
+    const text = readFileSync(join(SKILLS, skill, 'SKILL.md'), 'utf8')
+    const blocks = text.split('```bash').slice(1).map((b) => b.split('```')[0])
+      .filter((b) => /acp-dispatch\.mjs[\s\\]+\n?\s*(codex|claude) </.test(b))
+      .filter((b) => !b.includes('ACP_RESUME'))
+    assert.ok(blocks.length >= 1, `${skill}: no fresh-dispatch block found`)
+
+    for (const block of blocks) {
+      const cwd = tempDir(`acp-doc-${skill}-`)
+      writeFileSync(join(cwd, 'brief.md'), 'do the thing\n')
+      const env = { ...laneEnv() }
+      for (const [, k, v] of block.matchAll(/^\s*([A-Z_][A-Z0-9_]*)="?([^"\\\n]*)"?\s*\\?$/gm)) {
+        if (['ACP_MODEL', 'ACP_EXPECT_MODEL', 'ANTHROPIC_MODEL', 'CLAUDE_CONFIG_DIR'].includes(k)) continue
+        env[k] = v.trim()
+      }
+      assert.equal(env.ACP_SESSION_RECEIPT_REQUIRED, '1',
+        `${skill} documents a dispatch whose receipt may silently not exist`)
+      spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'doc', join(cwd, 'brief.md'), '120'],
+        { cwd, encoding: 'utf8', env, timeout: 90000 })
+      const log = join(cwd, '.tmux-teams', 'runner-logs', 'doc.log')
+      assert.ok(existsSync(log), `${skill}: the documented command never reached the companion`)
+      const text2 = readFileSync(log, 'utf8')
+      assert.doesNotMatch(text2, /requires explicit ACP_SESSION_OPERATION/,
+        `${skill}'s documented command is refused before prompt delivery:\n${text2.slice(0, 600)}`)
+      // it got as far as the receipt stage, which is past every usage check
+      assert.match(text2, /\[receipt\]|receipt committed/,
+        `${skill}'s documented command never reached the receipt stage:\n${text2.slice(0, 600)}`)
+    }
+  }
 })

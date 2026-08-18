@@ -1,6 +1,6 @@
 // Immutable ACP reviewer definitions. The caller gets argv arrays and a
 // profile-scoped environment, never a shell command or ambient credential bag.
-import { accessSync, constants as fsConstants, existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { accessSync, closeSync, constants as fsConstants, existsSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs'
 import { delimiter, join } from 'node:path'
 
 const runtimeKeys = new Set([
@@ -666,7 +666,21 @@ function loadRoutedCredentialFile(profile, source, reader = file => readFileSync
   if (!file || !existsSync(file)) return {}
   const accepted = acceptedRoutedKeys(profile)
   const out = {}
-  for (const rawLine of String(reader(file)).split(/\r?\n/)) {
+  // A read failure here is about the CREDENTIAL file, and the only place that
+  // fact exists is right here. Two panel families reported that
+  // `credential_unreadable` was unreachable from any reply the server can
+  // produce: the diagnostic and the argument to carry it were added together,
+  // and no caller ever passed it, so an unreadable credential file kept
+  // prescribing the settings-file repair. The exception now carries the
+  // identity instead of the caller guessing from a path it does not own.
+  let contents
+  try {
+    contents = String(reader(file))
+  } catch (cause) {
+    throw Object.assign(new Error(`${profile.id} review credential file could not be read: ${cause.code ?? 'read failed'}`),
+      { code: 'credential_unreadable', fileKind: 'credential', cause })
+  }
+  for (const rawLine of contents.split(/\r?\n/)) {
     const line = rawLine.trim()
     if (!line || line.startsWith('#')) continue
     const eq = line.indexOf('=')
@@ -807,6 +821,51 @@ function executableCandidate(path) {
   } catch {
     return false
   }
+}
+
+// A shebang naming an interpreter that is not here. `executableCandidate` says
+// the file is executable and it IS — the kernel would accept it and then fail
+// to find `#!/usr/bin/env whatever`, so the lane answers `valid` for a
+// configuration that cannot start.
+//
+// Two panel families raised it across two rounds, and the defence recorded here
+// — "proving otherwise means EXECUTING the candidate, which turns a read-only
+// tool into an acting one" — rested on a choice that does not exist. The
+// alternative was never `valid` versus running the file: `unchecked` is already
+// in the result vocabulary and describes this state exactly, WITHOUT executing
+// anything. Reading the first line of a file is not running it.
+export function shebangInterpreterMissing(path) {
+  let head = ''
+  try {
+    const fd = openSync(path, 'r')
+    try {
+      const buf = Buffer.alloc(256)
+      head = buf.subarray(0, readSync(fd, buf, 0, 256, 0)).toString('utf8')
+    } finally { closeSync(fd) }
+  } catch {
+    return null                    // unreadable is a different diagnosis
+  }
+  if (!head.startsWith('#!')) return null       // a binary, or no shebang: nothing to check
+  const line = head.split('\n', 1)[0].slice(2).trim()
+  if (!line) return null
+  const parts = line.split(/\s+/)
+  const interpreter = parts[0].endsWith('/env') && parts[1] ? parts[1] : parts[0]
+  if (interpreter.includes('/')) {
+    return executableCandidate(interpreter) ? null : interpreter
+  }
+  // A bare name goes through PATH, which this function does not own; say so
+  // rather than guessing, because a wrong specific answer is worse than none.
+  return null
+}
+
+// Which executable a lane resolves to, and whether it can start. Only the agy
+// lane resolves a binary parent-side; everything else routes through a wrapper
+// this function does not own, so it answers null rather than guessing — a wrong
+// specific answer is worse than none.
+export function unresolvedInterpreterFor(id, { env = process.env } = {}) {
+  if (id !== 'agy') return null
+  const found = agyBinaryCandidates(env).find(executableCandidate)
+  return found ? shebangInterpreterMissing(found) : null
 }
 
 function trustedAgyBinary(source) {
