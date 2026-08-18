@@ -266,7 +266,13 @@ export function outboxPath(cwd, taskId) { return join(cwd, '.mailbox-out', taskI
 // is not an error either — a report is a diagnostic, and refusing to print one
 // because a leaf is hostile helps nobody. It reads as absent, which is the
 // honest answer: there is no trustworthy record.
-function readLeafSync(path) {
+// The run root is PASSED, not derived. The first version counted three
+// `dirname` calls back from the leaf, which is right for `.tmux-teams/<dir>/<x>`
+// and one level too high for `.mailbox-out/<x>` — so the outbox check accepted
+// a symlink pointing anywhere under the run directory's PARENT. Found by the
+// test written for the fix, on the same afternoon: a guard that infers its own
+// boundary from path shape is guessing.
+function readLeafSync(path, runRoot) {
   // The PARENTS as well as the leaf. `lstat` on the final component says
   // nothing about `.tmux-teams` or `sessions` being symlinks, so a hostile
   // parent still redirected the read — the boundary was called universal and
@@ -279,7 +285,7 @@ function readLeafSync(path) {
   let stat = null
   try {
     const parent = realpathSync(dirname(path))
-    const root = realpathSync(dirname(dirname(dirname(path))))
+    const root = realpathSync(runRoot)
     if (!parent.startsWith(root + sep) && parent !== root) return null
     stat = lstatSync(path)
   } catch {
@@ -289,14 +295,14 @@ function readLeafSync(path) {
   try { return readFileSync(path, 'utf8') } catch { return null }
 }
 
-function readJson(path) {
-  const text = readLeafSync(path)
+function readJson(path, runRoot) {
+  const text = readLeafSync(path, runRoot)
   if (text === null) return null
   try { return JSON.parse(text) } catch { return null }
 }
 
 function readSessionId(cwd, taskId) {
-  return readLeafSync(sessionPath(cwd, taskId))?.trim() || null
+  return readLeafSync(sessionPath(cwd, taskId), cwd)?.trim() || null
 }
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
@@ -338,7 +344,7 @@ export const ROUTING_ENV_KEYS = Object.freeze([
 export function routingPath(cwd, taskId) { return join(cwd, '.tmux-teams', 'dispatch-routing', `${taskId}.json`) }
 
 export function recordedRouting(cwd, taskId) {
-  const record = readJson(routingPath(cwd, taskId))
+  const record = readJson(routingPath(cwd, taskId), cwd)
   return record && typeof record === 'object' && !Array.isArray(record) ? record : null
 }
 
@@ -465,7 +471,7 @@ export function statusReport(cwd, taskId) {
   assertSafeTaskId(taskId)
   const routing = recordedRouting(cwd, taskId)
   const spawnedAtMs = Date.parse(routing?.spawnedAt ?? '')
-  const rawLiveness = readJson(livenessPath(cwd, taskId))
+  const rawLiveness = readJson(livenessPath(cwd, taskId), cwd)
   // A liveness record that predates the dispatch we recorded is the previous
   // run's, and settling on it is how a stale terminal record plus a stale
   // outbox add up to a false success.
@@ -480,7 +486,13 @@ export function statusReport(cwd, taskId) {
   const liveness = Number.isFinite(spawnedAtMs) && rawLiveness !== null
     && !belongsToThisRun(rawLiveness, spawnedAtMs) ? null : rawLiveness
   const outbox = outboxPath(cwd, taskId)
-  const found = existsSync(outbox) && lstatSync(outbox).isFile()
+  // Through the same boundary as every other control read. This checked the
+  // LEAF's type and nothing above it, so a symlinked `.mailbox-out` decided
+  // whether this run counts as finished — on the ONE artifact the exit code is
+  // built from. A lane reproduced it. `readLeafSync` returns null for a path
+  // whose parent resolves outside the run root, for a non-regular file and for
+  // a hard link, which is exactly the set that must not answer this question.
+  const found = readLeafSync(outbox, cwd) !== null
   // The pid answers NOW; the lease answers in up to fifteen minutes. Both, and
   // the pid only when this dispatcher recorded one — `status` also has to work
   // against a run directory it did not create.
@@ -587,7 +599,7 @@ export function recordedPid(cwd, taskId) {
   // called `readFileSync` on the pid path directly, so the "safe read boundary"
   // had a hole in the one reader admission depends on — and a FIFO planted
   // there blocks the reader outright. A panel lane reproduced both.
-  const text = readLeafSync(pidPath(cwd, taskId))
+  const text = readLeafSync(pidPath(cwd, taskId), cwd)
   if (text === null) return null
   const pid = Number.parseInt(text.trim(), 10)
   return Number.isInteger(pid) && pid > 1 ? pid : null
@@ -661,6 +673,27 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
   //
   // With no pid to ask, the lease is the only evidence there is — the same rule
   // `hasStopped` already applies, applied here too.
+  // CASE. macOS and Windows default to case-insensitive filesystems, so `Review`
+  // and `review` are two task ids to this dispatcher and one set of files to the
+  // disk — two lanes writing the same liveness, pid, routing and outbox while
+  // every check above says they are unrelated. A lane reproduced it. There is no
+  // portable way to make the paths distinct, so the collision is refused where
+  // it can be seen: an existing artifact spelled differently means the id is
+  // taken.
+  for (const dir of ['liveness', 'dispatch-pids', 'dispatch-routing']) {
+    const at = join(cwd, '.tmux-teams', dir)
+    if (!existsSync(at)) continue
+    for (const leaf of readdirSync(at)) {
+      const stem = leaf.replace(/\.(json|superseded-.*)$/, '').replace(/\.superseded-.*$/, '')
+      if (stem !== taskId && stem.toLowerCase() === taskId.toLowerCase()) {
+        throw Object.assign(
+          new Error(`task id "${taskId}" differs only by case from "${stem}", which already has `
+            + `artifacts here — on a case-insensitive filesystem they are the same files`),
+          { code: 'task_id_case_collision' },
+        )
+      }
+    }
+  }
   const livePid = recordedPid(cwd, taskId)
   if (livePid === null) {
     // Bound to the RECORDED dispatch, exactly as `statusReport` binds it. A
@@ -669,8 +702,8 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
     // would make every re-dispatch after an interrupted run impossible. The
     // test caught that within a minute of the first version.
     const priorSpawn = Date.parse(recordedRouting(cwd, taskId)?.spawnedAt ?? '')
-    const record = Number.isFinite(priorSpawn) && belongsToThisRun(readJson(livenessPath(cwd, taskId)), priorSpawn)
-      ? readJson(livenessPath(cwd, taskId))
+    const record = Number.isFinite(priorSpawn) && belongsToThisRun(readJson(livenessPath(cwd, taskId), cwd), priorSpawn)
+      ? readJson(livenessPath(cwd, taskId), cwd)
       : null
     if (record !== null && !isSettled(record, { pid: null })) {
       throw Object.assign(
@@ -690,7 +723,7 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
     //
     // One question, asked once: is this lane settled? If it is not, it is still
     // this task id's lane and a second one is refused.
-    const record = readJson(livenessPath(cwd, taskId))
+    const record = readJson(livenessPath(cwd, taskId), cwd)
     if (!isSettled(record, { pid: livePid })) {
       // The two panel rounds pulled in opposite directions here, from the SAME
       // family: round five said a reused pid must not lock a task id forever;
@@ -699,7 +732,7 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
       // lane from a recycled pid, so this refuses — a duplicate writer is
       // unrecoverable, a refusal is not — and names the way out instead of
       // leaving the operator to find it.
-      const stale = readJson(livenessPath(cwd, taskId))?.next_lease_expiry_at ?? null
+      const stale = readJson(livenessPath(cwd, taskId), cwd)?.next_lease_expiry_at ?? null
       throw Object.assign(
         new Error(`a lane for "${taskId}" is already running as pid ${livePid} — `
           + 'ask it with `status`, or use a different task id.'
@@ -822,7 +855,7 @@ async function watchBoot(child, cwd, taskId, bootMs, spawnedAtMs) {
   // August when an EPIPE with no listener killed a whole review run.
   child.on('error', (cause) => { exited = { code: null, signal: null, error: cause } })
   for (;;) {
-    const found = readJson(path)
+    const found = readJson(path, cwd)
     const record = belongsToThisRun(found, spawnedAtMs) ? found : null
     // A lane that reached a TERMINAL state during boot did not boot — it failed.
     // The first version folded this into `live` and printed an identity beside

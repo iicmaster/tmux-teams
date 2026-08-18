@@ -1584,3 +1584,44 @@ test('a hostile PARENT directory redirects no read, and a missing pid leaf is no
   assert.notEqual(r.status, 0, 'a second writer was admitted for a lane that is still reporting progress')
   assert.match(`${r.stdout}${r.stderr}`, /still reporting progress and its pid file/)
 })
+
+test('the outbox is read through the boundary, and a case-only task id is refused', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX links')
+  // REPRODUCED by a lane: `statusReport` decided whether the run had finished
+  // with `existsSync(outbox) && lstatSync(outbox).isFile()` — the LEAF's type
+  // and nothing above it — so a symlinked `.mailbox-out` answered the one
+  // question the exit code is built from.
+  const cwd = tempDir('acp-dispatch-outboxlink-')
+  const elsewhere = tempDir('acp-dispatch-outboxlink-target-')
+  writeFileSync(join(elsewhere, 'o'), 'SOMEBODY ELSE\n')
+  symlinkSync(elsewhere, join(cwd, '.mailbox-out'))
+  mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
+  writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'o.json'), JSON.stringify({
+    liveness_state: 'completed', termination_reason: 'none',
+    observed_at: new Date().toISOString(),
+    next_lease_expiry_at: new Date(Date.now() + 900_000).toISOString(),
+  }))
+  const report = statusReport(cwd, 'o')
+  assert.equal(report.outboxFound, false,
+    'a symlinked .mailbox-out decided that this run had finished')
+  assert.notEqual(statusExitCode(report), EXIT_OUTBOX,
+    'the exit code said success on a stranger\'s file')
+
+  // REPRODUCED: macOS and Windows default to case-insensitive filesystems, so
+  // `Review` and `review` are two task ids here and one set of files on disk —
+  // two lanes writing the same liveness, pid, routing and outbox while every
+  // check says they are unrelated.
+  const dir = tempDir('acp-dispatch-case-')
+  mkdirSync(join(dir, '.tmux-teams', 'liveness'), { recursive: true })
+  writeFileSync(join(dir, '.tmux-teams', 'liveness', 'Review.json'), '{}')
+  writeFileSync(join(dir, 'brief.md'), 'do the thing\n')
+  const r = spawnSync(process.execPath, [DISPATCH, 'mock', dir, 'review', join(dir, 'brief.md'), '120'],
+    { cwd: dir, encoding: 'utf8', env: laneEnv(), timeout: 60000 })
+  assert.notEqual(r.status, 0, 'two task ids differing only by case were both admitted')
+  assert.match(`${r.stdout}${r.stderr}`, /differs only by case/)
+
+  // and a genuinely different id in the same directory still works
+  const ok = spawnSync(process.execPath, [DISPATCH, 'mock', dir, 'other', join(dir, 'brief.md'), '120'],
+    { cwd: dir, encoding: 'utf8', env: laneEnv(), timeout: 60000 })
+  assert.equal(ok.status, 0, `an unrelated id was refused:\n${ok.stdout}${ok.stderr}`)
+})
