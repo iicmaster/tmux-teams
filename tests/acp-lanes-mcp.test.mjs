@@ -10,7 +10,7 @@ import { handle, callTool, laneFacts, laneStatus, classify, fixesFor,
   TOOLS, TOOL_DESCRIPTORS, DIAGNOSTICS, PROTOCOL_VERSION, UNCHECKED_LANES,
   RPC_INVALID_REQUEST, RPC_INVALID_PARAMS, RPC_METHOD_NOT_FOUND, RPC_PARSE_ERROR }
   from '../plugins/tmux-teams/skills/party-mode/scripts/acp-lanes-mcp.mjs'
-import { REVIEW_PROFILES, ROUTED_PROFILES, provenFamilyCollision, normalizePrimaryFamily, PROVIDER_SECRET_KEYS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys, buildProfileEnv }
+import { REVIEW_PROFILES, ROUTED_PROFILES, provenFamilyCollision, normalizePrimaryFamily, PROVIDER_SECRET_KEYS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys, buildAcpLaunch, buildProfileEnv }
   from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -1158,5 +1158,48 @@ test('a routing that could not pass validation cannot exempt a launch collision'
     const crippled = { ...b, endpoint: { ...b.endpoint, path: badPath } }
     assert.equal(provenFamilyCollision([a, crippled]), true,
       `a routing with path ${JSON.stringify(badPath)} bought an exemption the validator would refuse`)
+  }
+})
+
+test('every routed lane accepts its OWN provider key, not just the Anthropic pair', () => {
+  // A round-seven lane reported that `acceptedCredentialNames` does not exist
+  // and that `validateRoutedEndpoint` still checks three hardcoded keys, so
+  // KIMI_API_KEY is read and never accepted. Measured against the shipped code,
+  // that is FALSE — and this test is the record of the disproof, so the next
+  // reader does not have to take my word for it.
+  //
+  // Two of my own probes were wrong before this one was right: ANTHROPIC_BASE_URL
+  // passed in ambient env is NOT read, because `buildProfileEnv` copies only the
+  // runtime keys and the routed settings come from the file. A claim about this
+  // code has to be tested the way the loader loads.
+  for (const id of ROUTED_PROFILES) {
+    const profile = REVIEW_PROFILES[id]
+    // EVERY name the lane advertises, not "at least one of its own" — that was
+    // an invented requirement and `deepseek` and `qwen` failed it honestly:
+    // both route through a gateway that authenticates with the Anthropic pair
+    // and declare no key of their own. The defect being disproved is narrower
+    // and is the half-fix shape: a name that is READ and then not ACCEPTED.
+    const own = acceptedCredentialNames(profile)
+    assert.ok(own.length > 0, `${id} accepts no credential name at all`)
+
+    const dir = mkdtempSync(join(tmpdir(), `lane-cred-${id}-`))
+    try {
+      const url = `https://${profile.endpoint.host}${profile.endpoint.path}`
+      for (const key of own) {
+        writeFileSync(join(dir, 'creds.env'), `ANTHROPIC_BASE_URL=${url}\n${key}=value\n`)
+        const env = { HOME: '/tmp', PATH: '/usr/bin',
+          [`TMUX_TEAMS_REVIEW_${id.toUpperCase()}_ENV_FILE`]: join(dir, 'creds.env') }
+        assert.doesNotThrow(() => buildAcpLaunch(id, { env }),
+          `${id} reads ${key} and then refuses it — the half-fix shape`)
+      }
+      // and a key belonging to ANOTHER lane is still refused
+      writeFileSync(join(dir, 'creds.env'), `ANTHROPIC_BASE_URL=${url}\nSOMEONE_ELSES_API_KEY=value\n`)
+      assert.throws(() => buildAcpLaunch(id, {
+        env: { HOME: '/tmp', PATH: '/usr/bin',
+          [`TMUX_TEAMS_REVIEW_${id.toUpperCase()}_ENV_FILE`]: join(dir, 'creds.env') },
+      }), `${id} accepted a credential name that belongs to no lane`)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   }
 })
