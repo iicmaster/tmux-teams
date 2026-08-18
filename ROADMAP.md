@@ -22,12 +22,15 @@ Current release: **0.31.0**
 | **B** | done | The exact-three review gate: three distinct model families, endpoint pins, zero-tool isolation (ADR 0001) |
 | **C** | **closed by changing the question, 2026-08-13** | Was "run the three-family panel through bwrap on Linux". The panel now runs without bwrap on macOS and Linux alike (ADR 0006), and passed 3/3 on three packets for v0.20.0. |
 | **D** | partly built | **The rebuild by domain.** Four domains hold their own behaviour — `team.nextRole`, `token.canPull`/`token.deliver`, `workflow.nextHop` — and orchestration decides WHEN, never WHAT. One dependency reverses: today the loop reads a page (`display → scheduler`); the target is `run → scheduler`. |
-| **E** | **slot accounting live**, five cells of six | **One publisher, N subscribers.** The ledger's own 17 words are the events; `token` subscribes to all 17, `team` to all 17 as well, `workflow` to 7 about position, `display` to everything and it decides nothing. (`team` 6 and `workflow` 5 stood here until a panel lane said the code disagreed and the lists were counted: `TEAM_EVENTS` holds all seventeen, `WORKFLOW_EVENTS` seven. The 6 was the design intent — the events that take or free a slot — written as though it were the shipped list.) Scope is **six cells**, each moving one branch out of `nextStep` — counted, not estimated. |
+| **E** | **slot accounting live**, four load-bearing cells of six plus one cross-check | **One publisher, N subscribers.** The ledger's own 17 words are the events; `token` subscribes to all 17, `team` to all 17 as well, `workflow` to 7 about position, `display` to everything and it decides nothing. (`team` 6 and `workflow` 5 stood here until a panel lane said the code disagreed and the lists were counted: `TEAM_EVENTS` holds all seventeen, `WORKFLOW_EVENTS` seven. The 6 was the design intent — the events that take or free a slot — written as though it were the shipped list.) Scope is **six cells**, each moving one branch out of `nextStep` — counted, not estimated. |
 | **F** | proposed, not started | Per-seat pre-LLM / post-LLM scripts (Master's proposal). Three questions must be answered before any code. |
 
 **Measured 2026-08-16, and phase E's own scope sentence does not say it.** The
 scope reads "each cell moving one branch out of `nextStep`", and five cells are
-wired — but `nextStep` is still 308 lines carrying 32 `if` branches, the same
+wired — four load-bearing and cell 5 as a non-load-bearing cross-check, which is
+the same five the "four are live" paragraph below counts differently. "Live" and
+"wired" were being used as synonyms for two different states, and a lane reading
+the page against itself is what separated them — but `nextStep` is still 308 lines carrying 32 `if` branches, the same
 shape it had before. The subscribers took over ANSWERING those questions; the
 branches that ask them did not move. Wiring a cell and shrinking `nextStep` are
 two pieces of work, and only the first has been done.
@@ -125,7 +128,7 @@ nobody can plan from.
 - **The release flow now goes through a pull request.** Merge requires CI green
   and the `chatgpt-codex-connector` review; only Master waives it and the waiver
   is recorded. v0.31.0 used that waiver once, on an exhausted account quota.
-- **An MCP server for lane discovery — built, reviewed twice, not yet merged**
+- **An MCP server for lane discovery — built, reviewed, merged in `f7b07c6`**
   (ADR 0007, branch `feat/acp-lane-mcp`). Two read-only tools answer which ACP
   lanes exist and what each still needs on this machine, because the per-machine
   override variables had worked since 2026-08-13 and nothing surfaced them. A
@@ -184,7 +187,7 @@ document disproved twice, caught by a lane asked to read the file against
 itself.
 
 Every accepted finding is closed, and the claim that each one carries a guard a
-mutation turns red is now MEASURED rather than asserted: three predicates
+mutation turns red is now MEASURED rather than asserted: two predicates
 survived their whole test file in both directions until 2026-08-18, and they
 were behaviour-changing — one manufactured the literal string `undefined` as an
 agent mode, another silently dropped the model and receipt guarantee from every

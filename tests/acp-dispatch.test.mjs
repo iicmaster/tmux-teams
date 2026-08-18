@@ -2220,7 +2220,8 @@ test('an explicit receipt opt-out resumes without receipt lineage', () => {
   }
 })
 
-// Two mutants survived the whole file in both directions and a lane showed they
+// Two predicates survived the whole file — the capture in both directions and
+// the emission forced true, three mutants in all — and a lane showed they
 // are not algebraic. The routing capture and the resume emission share a shape
 // — `if the value is present and non-empty` — and forcing it TRUE writes the
 // STRING "undefined" into the record and then into a pasted command, including
@@ -2230,7 +2231,7 @@ test('an explicit receipt opt-out resumes without receipt lineage', () => {
 //
 // Neither direction was visible because every existing fixture supplied a full
 // env. A sparse one is the ordinary case — most dispatches set two or three of
-// these ten keys.
+// these eleven keys.
 test('routing records the keys that were set and invents none', () => {
   const cwd = tempDir('acp-routing-')
   mkdirSync(join(cwd, '.tmux-teams'), { recursive: true })
@@ -2251,10 +2252,18 @@ test('routing records the keys that were set and invents none', () => {
 })
 
 test('a resume command names no setting the dispatch did not have', () => {
+  // An EMPTY value beside the absent ones. A lane found this test pinned the
+  // `undefined` half of "present and non-empty" and nothing else: deleting just
+  // the `!== ''` clause left all 58 green, and the mutant emitted
+  // `INITIAL_AGENT_MODE=''` — a mode the Codex adapter refuses. A fixture built
+  // from a reproduction tests the reported case; the rule needs the neighbour
+  // the reproduction did not happen to use.
   const command = resumeCommand('/run', 'rt', {
     sessionId: 'sess', routing: { worker: 'codex', briefFile: '/tmp/b.md', stallSec: 600,
-      env: { ACP_MODEL: 'gpt-5.6-sol' } },
+      env: { ACP_MODEL: 'gpt-5.6-sol', INITIAL_AGENT_MODE: '', ACP_AGENT_ID: '' } },
   })
+  assert.doesNotMatch(command, /=''/,
+    `an empty recorded value was emitted as an empty assignment:\n${command}`)
   assert.doesNotMatch(command, /'undefined'/,
     `the resume command manufactured a literal undefined setting:\n${command}`)
   assert.match(command, /ACP_MODEL='gpt-5.6-sol'/)

@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync
 import { tmpdir } from 'node:os'
 import { join, dirname, isAbsolute } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
 import { spawn } from 'node:child_process'
 
 import { handle, callTool, laneFacts, laneStatus, classify, fixesFor,
@@ -1570,4 +1571,42 @@ test('experimental carries typed values, not just a typed container', () => {
   // that collapses the two is visible rather than merely still-refusing.
   assert.equal(init({ experimental: null }).error?.message,
     'initialize capabilities members must be objects')
+})
+
+// A GOOD credential beside a bad one. The previous NUL test pinned two isolated
+// examples — a bad value alone is invalid, a good value alone builds a clean
+// environment — and a lane found the case between them: `spawnableValue` decided
+// whether at least one accepted credential was usable and was never applied on
+// the way out, so `ANTHROPIC_AUTH_TOKEN` valid + `ZAI_API_KEY` NUL-bearing gave
+// `configuration: "valid"` on an environment `spawnSync` refuses with
+// ERR_INVALID_ARG_VALUE.
+//
+// "One credential is usable" and "this environment can start a process" are
+// different sentences, and the first fix answered only the first.
+test('a good credential does not smuggle an unspawnable one into the child', () => {
+  const NUL = String.fromCharCode(0)
+  const dir = mkdtempSync(join(tmpdir(), 'mcp-nul-mixed-'))
+  try {
+    const settings = join(dir, 'zai.json')
+    writeFileSync(settings, JSON.stringify({ env: {
+      ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic',
+      ANTHROPIC_AUTH_TOKEN: 'valid-token' } }))
+    const env = { HOME: dir, PATH: process.env.PATH,
+      TMUX_TEAMS_REVIEW_ZAI_SETTINGS: settings, ZAI_API_KEY: `bad${NUL}value` }
+
+    const launch = buildAcpLaunch('zai', { env })
+    const smuggled = Object.entries(launch.env)
+      .filter(([, value]) => String(value).includes(NUL)).map(([key]) => key)
+    assert.deepEqual(smuggled, [],
+      `the child environment carries values Node cannot spawn: ${smuggled.join(', ')}`)
+
+    // The launch must actually be usable, not merely NUL-free — asserting the
+    // absence of a byte is how the first fix passed while the defect stood.
+    assert.doesNotThrow(() => spawnSync(process.execPath, ['-e', ''], { env: launch.env }),
+      'the environment this lane reports on cannot start a process')
+    assert.equal(laneStatus('zai', REVIEW_PROFILES.zai, env).configuration, 'valid',
+      'a lane with a usable credential and a startable environment was not called valid')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

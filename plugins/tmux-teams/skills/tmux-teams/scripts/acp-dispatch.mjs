@@ -15,9 +15,15 @@
 // a command, because the fix already existed and only the loop could reach it.
 //
 // So the supervisor's budget stops mattering: this process exits in seconds
-// while the lane runs for as long as it was given. Nothing here ever kills the
-// child — a wrapper that enforces a deadline would be the bug it was written to
-// remove.
+// while the lane runs for as long as it was given. Nothing here enforces a
+// DEADLINE on the child — a wrapper that did would be the bug this was written
+// to remove.
+//
+// It is not "never kills the child", which is what this said until a lane read
+// it against the code: a lane whose pid or routing record cannot be published
+// is SIGKILLed, because the alternative is a detached process nobody can find
+// again. Cleaning up a lane that failed to become findable is the opposite of
+// imposing a deadline on one that is working.
 import { spawn } from 'node:child_process'
 import { chmodSync, closeSync, constants as fsConstants, existsSync, fchmodSync, lstatSync, mkdirSync, openSync,
   readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeSync } from 'node:fs'

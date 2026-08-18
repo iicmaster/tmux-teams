@@ -129,7 +129,11 @@ async function waitFor(condition, description, repo) {
     await sleep(15)
   }
   const events = ledger(repo).map((entry) => entry.event).join(' -> ')
-  throw new Error(`${description} did not settle within 5s (ledger: ${events || 'empty'})`)
+  // The number comes from the deadline above rather than being typed twice.
+  // It said 5s beside a 20s wait — a diagnostic reporting a measurement it did
+  // not take, which is worse than none: it sends the reader looking for a
+  // timing problem that is not there.
+  throw new Error(`${description} did not settle within 20s (ledger: ${events || 'empty'})`)
 }
 
 async function settleStarted(repo, started) {

@@ -783,14 +783,22 @@ the source for its OpenClaw bridge. Codex and Claude load their own
 version-keyed plugin caches.
 
 1. Edit the skill under `plugins/tmux-teams/skills/` and commit here.
-2. Bump the version in **five files, six places**:
+2. Bump the version in **six files, seven places**:
    `.claude-plugin/marketplace.json` (twice — `metadata.version` and
    `plugins[0].version`), `plugins/tmux-teams/.claude-plugin/plugin.json`,
    `plugins/tmux-teams/plugin.json` (the vendor-neutral Agent Plugins manifest),
-   `RELEASE_VERSION` in `tests/plugin-structure.test.mjs`, and the
-   `Current release:` line above. That test is the only thing checking they
-   agree, so it has to state the number itself — and this list has been wrong at
-   every count so far, so **grep for the old number after every bump**.
+   `RELEASE_VERSION` in `tests/plugin-structure.test.mjs`, the
+   `Current release:` line above, and the `Current release:` line in
+   `ROADMAP.md`. That test is what checks they agree, so it has to state the
+   number itself — and this list has been wrong at every count so far, so
+   **grep for the old number after every bump**.
+
+   This paragraph said "five files, six places" and omitted ROADMAP.md while
+   CLAUDE.md said six and seven. A lane copied the checkout, bumped exactly the
+   five files named here, and the suite passed 21/21 with ROADMAP.md still on
+   the old version — a half-bump that a reader following this file would have
+   shipped. ROADMAP.md is guarded now, so the count and the test agree; note
+   that the test is what made the disagreement survivable, not the prose.
    This paragraph said "all three" while CLAUDE.md said five; a release reviewer
    found the contradiction, which is the fourth time a version location was
    found by a reader rather than by the process.

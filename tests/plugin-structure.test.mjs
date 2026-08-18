@@ -58,6 +58,16 @@ test('marketplace and plugin manifests agree', () => {
   const readmeVersion = readText(join(ROOT, 'README.md')).match(/Current release: \*\*([^*]+)\*\*/)
   assert.ok(readmeVersion, 'README.md must state "Current release: **<version>**"')
   assert.equal(readmeVersion[1], RELEASE_VERSION, 'README.md states a different release than the manifests')
+  // ROADMAP.md carries the number too, and nothing checked it. A lane copied
+  // this checkout, bumped exactly the five files README.md names, and this
+  // suite passed 21/21 with ROADMAP.md still on the previous version — the
+  // seventh place, found by grepping in the first place and then left
+  // unguarded. It also has its own publication gate, so a missed bump here
+  // makes the published page stale on top of being wrong.
+  const roadmapVersion = readFileSync(join(ROOT, 'ROADMAP.md'), 'utf8')
+    .match(/^Current release: \*\*([0-9]+\.[0-9]+\.[0-9]+)\*\*/m)
+  assert.ok(roadmapVersion, 'ROADMAP.md has no `Current release: **X.Y.Z**` line for the bump to update')
+  assert.equal(roadmapVersion[1], RELEASE_VERSION, 'ROADMAP.md states a different release than the manifests')
 
   // The FIFTH FILE and the SIXTH version occurrence — the counts differ because
   // marketplace.json carries it twice, and this comment said "the FIFTH place"

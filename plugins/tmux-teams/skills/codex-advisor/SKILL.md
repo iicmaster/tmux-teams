@@ -152,7 +152,13 @@ answer is a failed consultation — say so rather than passing it on.
      wait <cwd> <task-id> 3600
    ```
 
-   It exits `0` when the outbox is written, `2` when the turn ENDED without one
+   It exits `0` when the outbox is written, `2` when there is no outbox and the
+   lane will not produce one — the turn ended without writing, OR it stopped
+   reporting without reaching a terminal state. Both are exit 2 and they need
+   different responses, so read the liveness rather than the code: a lane that
+   ENDED is a re-dispatch, a lane that went quiet may still hold a session worth
+   resuming. This said only "the turn ENDED" until a lane reproduced the second
+   case and got `{"exit":2,"terminated":false,"notReporting":true,"livenessState":"active"}`
    (resume — see Failure modes), and `1` when the wait budget ran out with the
    lane still going. Both terminal outcomes end the wait, on purpose: a watcher
    that looked only for an outbox would stay silent through a turn that wrote

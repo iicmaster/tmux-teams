@@ -968,7 +968,22 @@ export function buildProfileEnv(profileId, source = process.env, {
     throw new TypeError(`profile ${profile.id} declares no provider-secret list — add one, empty if it forwards none`)
   }
   for (const key of secretKeys) {
-    if (source?.[key] !== undefined && source[key] !== null) env[key] = String(source[key])
+    if (source?.[key] === undefined || source[key] === null) continue
+    // EVERY value, not just the one credential that made the lane look usable.
+    // `spawnableValue` was applied where we decide whether at least one accepted
+    // credential exists, and nowhere on the way out — so a good
+    // ANTHROPIC_AUTH_TOKEN beside a NUL-bearing ZAI_API_KEY gave
+    // `configuration: "valid"` on an environment `spawnSync` refuses with
+    // ERR_INVALID_ARG_VALUE. A lane reproduced exactly that pair; the previous
+    // round's fix covered "one credential is usable", which is a different
+    // sentence from "this environment can start a process".
+    //
+    // Omitted rather than thrown: a forwarded provider secret is optional by
+    // construction, and the lane's own credential check already refuses when
+    // nothing usable is left. Dropping it turns an unstartable child into a
+    // legible credential refusal.
+    const value = String(source[key])
+    if (spawnableValue(value)) env[key] = value
   }
   if (profile.id === 'agy') {
     const agyBinary = agyBinaryResolver(source)

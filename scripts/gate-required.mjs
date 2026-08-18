@@ -46,9 +46,10 @@ export const DOC_ONLY = new Set(['HANDOFF.md', 'README.md', 'CLAUDE.md'])
 // deliberate rather than overlooked (raised as non-blocking by the release
 // panel, AGY lane, 2026-08-10). Widen it only alongside a case that proves the
 // widened pattern still cannot swallow a semantic change.
-// The SIX places the release flow bumps, and the ONLY files where a changed
+// The SEVEN places the release flow bumps, and the ONLY files where a changed
 // semver may be read as "just the version". Everything else with an `x.y.z` in
-// it goes to the panel.
+// it goes to the panel. (Said SIX until 2026-08-19; ROADMAP.md was the seventh
+// and had been in the flow, unguarded and uncounted, since 2026-08-14.)
 //
 // Blanking every `x.y.z` in every file was a bypass, not a convenience: a
 // shipped dependency pin moving from `@agentclientprotocol/claude-agent-acp@0.61.0`
@@ -79,8 +80,8 @@ export const VERSION_FILES = new Set([
   // is already in DOC_ONLY and that check runs first, so an entry here would be
   // unreachable — a line a reader would maintain believing it decided
   // something. Raised as non-blocking by the release panel (zai lane,
-  // 2026-08-10, round 4). The "six places" the release flow bumps is a count of
-  // string positions, not of files: `marketplace.json` carries two.
+  // 2026-08-10, round 4). The "seven places" the release flow bumps is a count
+  // of string positions, not of files: `marketplace.json` carries two.
 ])
 
 // Release semver only — no pre-release suffix. A `-rc1` therefore does NOT

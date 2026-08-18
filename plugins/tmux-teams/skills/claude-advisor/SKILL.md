@@ -225,7 +225,11 @@ consensus is itself a finding, usually that the question was too narrow.
      wait <cwd> <task-id> 3600
    ```
 
-   `0` = the outbox is written · `2` = the turn ENDED without one · `1` = the
+   `0` = the outbox is written · `2` = there is no outbox, either because the
+   turn ended without writing one or because the lane stopped reporting without
+   reaching a terminal state (measured: `terminated:false, notReporting:true,
+   livenessState:"active"` also exits 2, so read the liveness before deciding
+   between a re-dispatch and a resume) · `1` = the
    wait budget ran out while the lane is still going. It ends on BOTH terminal
    outcomes on purpose: a watcher that looked only for an outbox would stay
    silent through a turn that wrote nothing, and silence reads exactly like
