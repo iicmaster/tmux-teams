@@ -13,7 +13,7 @@ New here? Read this file top to bottom, then
 [how-it-works.md](plugins/tmux-teams/skills/tmux-teams/references/how-it-works.md)
 for the diagrams.
 
-Current release: **0.31.0** (`.claude-plugin/marketplace.json` and
+Current release: **0.32.0** (`.claude-plugin/marketplace.json` and
 `plugins/tmux-teams/.claude-plugin/plugin.json`). Upgrading from an earlier
 0.14.x release needs no change to an existing `graph.json` — the seat fields
 in ข้อ 2 (`adapter`, `effort`, `display_model`) and the files in ข้อ 6 are all
@@ -47,7 +47,7 @@ Authenticate `gh`/git first if your GitHub setup requires it.
 | Node 20+ with `npx` | the ACP adapters. CI exercises Node 20 and Node 24 |
 | `tmux` and the `codex` CLI | the tmux worker lane |
 | `bun` | the `agy` ACP adapter (`bunx antigravity-acp@1.0.0`) |
-| `/usr/bin/bwrap` (Linux) | party-mode's 3-model review gate — it fails closed without it |
+| `/usr/bin/bwrap` (Linux) | only for a profile that declares `osSandbox: 'bwrap'` — no shipped profile does since ADR 0006, so the gate runs on macOS and Linux without it |
 
 ### First run
 
@@ -389,7 +389,7 @@ relaying a person's words is expected to sign `human:` and name itself in
 
 ---
 
-## 4. The ten skills
+## 4. The eleven skills
 
 **Setting up and running the loop**
 
@@ -565,9 +565,15 @@ silently reviving it.
 One worker over ACP:
 
 ```bash
-node plugins/tmux-teams/skills/tmux-teams/scripts/acp-companion.mjs \
+node plugins/tmux-teams/skills/tmux-teams/scripts/acp-dispatch.mjs \
   codex <repo> <task-id> <brief-file> [stall-sec]
 ```
+
+`acp-dispatch.mjs` detaches the lane into its own process group and returns in
+seconds, so the calling shell's timeout is not the lane's deadline; running
+`acp-companion.mjs` directly puts it in the foreground, where it is. Ask
+`acp-dispatch.mjs status <repo> <task-id>` what happened, or
+`wait <repo> <task-id> [max-sec]` to block until the turn ends either way.
 
 The optional duration is an inactivity/stall lease, not a total task timeout;
 there is no wall-clock ceiling unless `ACP_HARD_TIMEOUT_SEC>0` is set. ACP
@@ -735,8 +741,12 @@ here is teams and workflows.
 
 party-mode's 3-model review uses its bundled JavaScript ACP gate
 (`plugins/tmux-teams/skills/party-mode/scripts/review-gate.mjs`), not `oc`/AGY/
-Codex review plugins or MCP review tools. On Linux it fails closed without
-`/usr/bin/bwrap`. It also needs the supported ACP reviewer runtimes:
+Codex review plugins or MCP review tools. It no longer requires
+`/usr/bin/bwrap`: ADR 0006 removed `osSandbox: 'bwrap'` from every shipped
+profile, so the gate runs on macOS and Linux alike. The machinery is retained
+and still tested — a profile that declares the field gets the full sandbox — and
+this line claimed the opposite until a lane read it against ROADMAP.md and
+CLAUDE.md, which had both been updated. It also needs the supported ACP reviewer runtimes:
 `antigravity-acp@1.0.0` + trusted `agy`, Qwen/Zai through the pinned
 Claude ACP adapter, and the Codex ACP adapter. `claude-zai` and `claude-qwen` must both use the
 pinned `@agentclientprotocol/claude-agent-acp` adapter with their machine-local
@@ -777,14 +787,22 @@ the source for its OpenClaw bridge. Codex and Claude load their own
 version-keyed plugin caches.
 
 1. Edit the skill under `plugins/tmux-teams/skills/` and commit here.
-2. Bump the version in **five files, six places**:
+2. Bump the version in **six files, seven places**:
    `.claude-plugin/marketplace.json` (twice — `metadata.version` and
    `plugins[0].version`), `plugins/tmux-teams/.claude-plugin/plugin.json`,
    `plugins/tmux-teams/plugin.json` (the vendor-neutral Agent Plugins manifest),
-   `RELEASE_VERSION` in `tests/plugin-structure.test.mjs`, and the
-   `Current release:` line above. That test is the only thing checking they
-   agree, so it has to state the number itself — and this list has been wrong at
-   every count so far, so **grep for the old number after every bump**.
+   `RELEASE_VERSION` in `tests/plugin-structure.test.mjs`, the
+   `Current release:` line above, and the `Current release:` line in
+   `ROADMAP.md`. That test is what checks they agree, so it has to state the
+   number itself — and this list has been wrong at every count so far, so
+   **grep for the old number after every bump**.
+
+   This paragraph said "five files, six places" and omitted ROADMAP.md while
+   CLAUDE.md said six and seven. A lane copied the checkout, bumped exactly the
+   five files named here, and the suite passed 21/21 with ROADMAP.md still on
+   the old version — a half-bump that a reader following this file would have
+   shipped. ROADMAP.md is guarded now, so the count and the test agree; note
+   that the test is what made the disagreement survivable, not the prose.
    This paragraph said "all three" while CLAUDE.md said five; a release reviewer
    found the contradiction, which is the fourth time a version location was
    found by a reader rather than by the process.

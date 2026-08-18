@@ -98,6 +98,17 @@ other way on evidence and on cost, not because the argument is weak.
 
 - Deleting the bwrap implementation. It stays, tested, opt-in.
 - Any change to the three-family requirement, the endpoint pins, or the
-  zero-tool contract. ADR 0001 is untouched — it never decided the sandbox; it
-  mentions bwrap once, in Consequences, as a platform requirement.
+  zero-tool contract.
+
+**Correction, 2026-08-19.** The sentence that stood here said ADR 0001 "never
+decided the sandbox" and "mentions bwrap once, in Consequences, as a platform
+requirement". Both halves are wrong, and a codex-advisor lane reading the two
+ADRs against each other found it: 0001 states in its Decision that on Linux each
+lane runs under bubblewrap with the target and host user-data roots hidden, a
+new PID namespace, a temporary workspace and an ephemeral home, and repeats the
+requirement in its Consequences. This ADR therefore SUPERSEDES that part of 0001
+rather than leaving it untouched, and 0001's Linux-sandbox statements are to be
+read through this one. The decision itself does not change — only the account of
+what it displaces, which was written from memory of the other document instead
+of from the document.
 - The macOS direct-ACP panel path, which is unchanged and already works.

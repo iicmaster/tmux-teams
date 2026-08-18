@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "tmux-teams-acp-lanes": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/skills/party-mode/scripts/acp-lanes-mcp.mjs"
+      ],
+      "cwd": "${CLAUDE_PLUGIN_ROOT}"
+    }
+  }
+}

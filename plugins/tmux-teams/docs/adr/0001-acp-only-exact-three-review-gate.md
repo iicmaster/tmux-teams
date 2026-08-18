@@ -40,6 +40,13 @@ target-repository path, packet hash, and provenance. Each ACP adapter must
 acknowledge the pinned model and safety configuration. Review text uses a
 closed, bounded schema; two independent matching findings are must-fix.
 
+**Superseded in part by ADR 0006 (2026-08-13):** no shipped profile declares
+`osSandbox: 'bwrap'` any more, so the paragraph below describes what a profile
+that DOES declare it gets, not what every Linux lane gets. Everything else in
+this ADR stands. Left in place rather than rewritten — an ADR records what was
+decided when it was decided — but a lane found 0006 claiming this document never
+decided the sandbox, which it plainly did, so the pointer belongs here too.
+
 On Linux, each lane runs under bubblewrap with the target and host user-data
 roots hidden, a new PID namespace, a temporary workspace, and an ephemeral
 provider HOME containing only required copied auth/config. MCP and built-in
@@ -71,7 +78,13 @@ stdout and timeout ceilings rather than weakening those bounds.
   blocks the workflow.
 - Callers must supply the trusted absolute target path separately from the
   untrusted static packet.
-- Linux hosts require `/usr/bin/bwrap` and configured ACP provider runtimes.
+- Linux hosts require configured ACP provider runtimes. They required
+  `/usr/bin/bwrap` too until ADR 0006, which made the sandbox opt-in; no shipped
+  profile declares `osSandbox: 'bwrap'`, so this requirement now applies only to
+  a profile that does. The categorical sentence stood here for a release after
+  0006 landed, and a review lane obtained opposite current requirements from two
+  deciding documents — which is worse than either answer, because both look
+  authoritative.
 - Schema validity and configuration acknowledgement do not replace PM semantic
   review of findings and cited evidence.
 

@@ -37,8 +37,15 @@ The runner states that refusal in `<repo>/.tmux-teams/runner-heartbeat.json`:
 
 ```json
 { "schema": "tmux-teams.runner-heartbeat", "at": "<ISO 8601 UTC>", "tick_sec": 30,
-  "dispatching": false, "reason": "<why it is holding>", "started": 0, "held": 0 }
+  "dispatching": false, "reason": "<why it is holding>", "started": 0, "held": null }
 ```
+
+`"held": null`, not `0`. A panel lane checked this example against
+`loop-runner.mjs` and found the refusal paths pass `held: null` — the runner did
+not COUNT zero held items, it never got far enough to count at all, and `0` is a
+measurement while `null` is the absence of one. On a page whose whole subject is
+the difference between absent, stale and refusing, an example that turns "not
+measured" into "measured zero" teaches the opposite of what the section is for.
 
 Read it the way every other reader must:
 
@@ -318,7 +325,7 @@ the graph only when it was launched with `ACP_AGENT_ID` set to an id declared in
 this file:
 
 ```bash
-ACP_AGENT_ID=build_worker_1 node <plugin>/skills/tmux-teams/scripts/acp-companion.mjs \
+ACP_AGENT_ID=build_worker_1 node <plugin>/skills/tmux-teams/scripts/acp-dispatch.mjs \
   claude <repo> <task-id> <brief-file> <stall-sec>
 ```
 

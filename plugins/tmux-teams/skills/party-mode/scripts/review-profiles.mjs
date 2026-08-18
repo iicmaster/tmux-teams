@@ -1,6 +1,6 @@
 // Immutable ACP reviewer definitions. The caller gets argv arrays and a
 // profile-scoped environment, never a shell command or ambient credential bag.
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { accessSync, closeSync, constants as fsConstants, existsSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs'
 import { delimiter, join } from 'node:path'
 
 const runtimeKeys = new Set([
@@ -316,10 +316,17 @@ function normalizeFamilyValues(raw) {
   if (/^claude[-_]kimi(?:[-_ ]?acp)?$/.test(value)) return ['kimi']
   if (/^claude[-_]qwen(?:[-_ ]?acp)?$/.test(value)) return ['qwen']
   if (/^claude[-_](?:zai|glm)(?:[-_ ]?acp)?$/.test(value)) return ['zai']
+  if (/^claude[-_]deepseek(?:[-_ ]?acp)?$/.test(value)) return ['deepseek']
   const families = []
   if (/(?:^|[^a-z0-9])(?:antigravity|gemini|agy|google)(?:[^a-z0-9]|$)/.test(value)) families.push('gemini')
   if (/(?:^|[^a-z0-9])(?:kimi|moonshot)(?:[^a-z0-9]|$)/.test(value)) families.push('kimi')
   if (/(?:^|[^a-z0-9])qwen(?:[0-9]|[^a-z0-9]|$)/.test(value)) families.push('qwen')
+  // `deepseek` SHIPS as a profile and was recognized by nothing: neither the
+  // alias map nor any regex named it, so `normalizePrimaryFamily('deepseek')`
+  // answered 'unknown' — and the lane reached its seat through a gateway that
+  // also serves qwen, so the nearest wrong answer was 'qwen'. A panel lane
+  // found it. A family the panel counts on for distinctness must be nameable.
+  if (/(?:^|[^a-z0-9])deep[-_ ]?seek(?:[0-9]|[^a-z0-9]|$)/.test(value)) families.push('deepseek')
   if (/(?:^|[^a-z0-9])(?:zai|z\.ai|glm)(?:[^a-z0-9]|$)/.test(value)) families.push('zai')
   if (/(?:^|[^a-z0-9])(?:claude|anthropic)(?:[^a-z0-9]|$)/.test(value)) families.push('claude')
   if (/(?:^|[^a-z0-9])(?:gpt|openai|codex)(?:[^a-z0-9]|$)/.test(value)) families.push('openai')
@@ -516,8 +523,23 @@ function resolvedExecutable(name) {
 function routingDeclaration(profile) {
   if (!profile || !ROUTED_PROFILES.has(profile.id)) return null
   const endpoint = profile.endpoint
+  // The SAME shape `validateRoutedEndpoint` demands — host AND path, both
+  // strings. This required only a non-empty host and serialized a missing path
+  // as `null`, so `routesApart()` could certify two byte-identical launches as
+  // distinct on the strength of metadata the validator standing next to it
+  // would reject. A panel lane read the two functions against each other.
+  //
+  // A pin that cannot pass validation is not a pin, and exempting a collision
+  // on one is the bypass this whole check exists to close.
   if (!endpoint || typeof endpoint.host !== 'string' || endpoint.host === '') return null
-  return JSON.stringify([endpoint.host, endpoint.path ?? null])
+  // A string, INCLUDING the empty one. `validateRoutedEndpoint` accepts `''` —
+  // `https://host` has pathname `/`, which its trailing-slash strip turns into
+  // `''` — so a host-root endpoint is a legitimate pin. Refusing it here made
+  // the two functions disagree in the direction that FALSELY BLOCKS a genuinely
+  // distinct routed family, which a panel lane named exactly. The shape they
+  // must agree on is "both are strings", and that is the shape checked.
+  if (typeof endpoint.path !== 'string') return null
+  return JSON.stringify([endpoint.host, endpoint.path])
 }
 
 // Same bytes, different vendor: two lanes exec-identical on argv and executable
@@ -637,17 +659,55 @@ function settingsPath(profile, source) {
 // ones, so pointing at a stray file cannot smuggle arbitrary environment into a
 // lane, and the settings JSON wins on any key present in both — a credential
 // file may ADD a secret, never redirect an endpoint.
+// The keys a routed lane's own files may supply: the shared endpoint vocabulary
+// plus THAT LANE's declared provider secrets, and nothing else.
+//
+// The second half was missing until 2026-08-17 and it made the diagnostic lie.
+// `validateRoutedEndpoint` accepts `env.ZAI_API_KEY`, and the ambient
+// environment reaches it through the `providerSecrets` loop in
+// `buildProfileEnv` — but this allowlist dropped the identical key when it came
+// from the env file, so `acp-lanes-mcp.mjs` told a zai operator to point
+// `TMUX_TEAMS_REVIEW_ZAI_ENV_FILE` at the file holding it and the lane refused
+// exactly as before. A Codex advisor reproduced it: same key, `valid` ambient
+// and `invalid` from the prescribed file. Widened per lane rather than
+// globally — a lane gains only the secret names it already declares, so a stray
+// file still cannot smuggle arbitrary environment anywhere.
+// EXPORTED because a repair sentence promised what this set decides and named a
+// smaller one. `acceptedCredentialNames` is the credential subset; the loader
+// honours the routed settings names too, so "any other name in it is ignored"
+// was false by four names. A lane raised it in round six and again in round
+// seven after I deferred it as single-family — which is the reversal condition
+// written into the roadmap.
+export function acceptedRoutedKeys(profile) {
+  return new Set([...routedSettingsEnv, ...(providerSecrets[profile.id] ?? [])])
+}
+
 function loadRoutedCredentialFile(profile, source, reader = file => readFileSync(file, 'utf8')) {
   const file = source?.[`TMUX_TEAMS_REVIEW_${profile.id.toUpperCase()}_ENV_FILE`]
   if (!file || !existsSync(file)) return {}
+  const accepted = acceptedRoutedKeys(profile)
   const out = {}
-  for (const rawLine of String(reader(file)).split(/\r?\n/)) {
+  // A read failure here is about the CREDENTIAL file, and the only place that
+  // fact exists is right here. Two panel families reported that
+  // `credential_unreadable` was unreachable from any reply the server can
+  // produce: the diagnostic and the argument to carry it were added together,
+  // and no caller ever passed it, so an unreadable credential file kept
+  // prescribing the settings-file repair. The exception now carries the
+  // identity instead of the caller guessing from a path it does not own.
+  let contents
+  try {
+    contents = String(reader(file))
+  } catch (cause) {
+    throw Object.assign(new Error(`${profile.id} review credential file could not be read: ${cause.code ?? 'read failed'}`),
+      { code: 'credential_unreadable', fileKind: 'credential', cause })
+  }
+  for (const rawLine of contents.split(/\r?\n/)) {
     const line = rawLine.trim()
     if (!line || line.startsWith('#')) continue
     const eq = line.indexOf('=')
     if (eq <= 0) continue
     const key = line.slice(0, eq).replace(/^export\s+/, '').trim()
-    if (!routedSettingsEnv.has(key)) continue
+    if (!accepted.has(key)) continue
     let value = line.slice(eq + 1).trim()
     if (value.length >= 2 && ((value[0] === '"' && value.at(-1) === '"') ||
         (value[0] === "'" && value.at(-1) === "'"))) value = value.slice(1, -1)
@@ -671,7 +731,7 @@ function loadRoutedEnvironment(profile, source, loader = file => JSON.parse(read
   return {
     ...credentials,
     ...Object.fromEntries(Object.entries(values)
-      .filter(([key, value]) => routedSettingsEnv.has(key) && value !== null && value !== undefined)
+      .filter(([key, value]) => acceptedRoutedKeys(profile).has(key) && value !== null && value !== undefined)
       .map(([key, value]) => [key, String(value)])),
   }
 }
@@ -699,9 +759,42 @@ export function validateRoutedEndpoint(profile, env) {
       url.search || url.hash || url.pathname.replace(/\/$/, '') !== pinned.path) {
     throw new TypeError(`${profile.id} review endpoint must be ${expected}`)
   }
-  if (!env.ANTHROPIC_AUTH_TOKEN && !env.ANTHROPIC_API_KEY && !env.ZAI_API_KEY) {
+  if (!acceptedCredential(profile, env)) {
     throw new TypeError(`${profile.id} review endpoint requires an explicit provider credential`)
   }
+}
+
+// The list of names that COUNT as this lane's credential, and it has to be the
+// same list the loader reads and the same list the diagnostic advertises.
+//
+// It was not. Until 2026-08-17 this check named three keys literally —
+// `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `ZAI_API_KEY` — which is why
+// `ZAI_API_KEY` worked and `KIMI_API_KEY` did not, from any source. Round three
+// widened `acceptedRoutedKeys` so the loader would READ a lane's own secret
+// names, and stopped there; a Codex advisor reproduced the consequence in round
+// four: the Kimi lane repeating the exact defect that had just been "fixed" for
+// Zai, with `acp-lanes-mcp.mjs` printing the key names as the repair.
+//
+// **The half that shipped was the half that advertises.** Derived from
+// `providerSecrets` now, so a lane added later cannot inherit the gap — and an
+// empty list is still a statement: `qwen` and `deepseek` forward nothing of
+// their own and are authenticated by the ANTHROPIC_* pair alone.
+export function acceptedCredentialNames(profile) {
+  return ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', ...(providerSecrets[profile.id] ?? [])]
+}
+
+// A value Node cannot put in a child environment is not a credential, whatever
+// it looks like. `Boolean(value)` accepted a NUL-bearing string, so
+// `acp_lane_status` answered `valid` for a configuration whose own
+// `buildAcpLaunch().env` makes process creation throw
+// `ERR_INVALID_ARG_VALUE` — a lane reproduced exactly that. The status of a
+// configuration that cannot start a process is not "valid".
+function spawnableValue(value) {
+  return typeof value === 'string' && value !== '' && !value.includes('\u0000')
+}
+
+function acceptedCredential(profile, env) {
+  return acceptedCredentialNames(profile).some((key) => spawnableValue(env?.[key]))
 }
 
 function executablePath(source) {
@@ -716,14 +809,130 @@ function executablePath(source) {
   return [...new Set([...candidates, ...current.split(delimiter).filter(Boolean)])].join(delimiter)
 }
 
-function trustedAgyBinary(source) {
+// The places a trusted `agy` is accepted from, exported so a diagnostic can
+// name exactly what was searched instead of guessing. `acp-lanes-mcp.mjs` told
+// an operator to repair the ADAPTER PACKAGE when this check was what refused —
+// a specific answer about the wrong executable, which a Codex advisor called
+// worse than an unclassified one because it sounds authoritative.
+export const AGY_BINARY_NAME = 'agy'
+
+// The POSIX locale variables, by name. Everything else beginning `LC_` is a
+// name somebody chose, and this file's promise is that no such name reaches a
+// child.
+const POSIX_LOCALE_VARS = new Set([
+  'LC_ALL', 'LC_COLLATE', 'LC_CTYPE', 'LC_MESSAGES', 'LC_MONETARY',
+  'LC_NUMERIC', 'LC_TIME', 'LC_ADDRESS', 'LC_IDENTIFICATION', 'LC_MEASUREMENT',
+  'LC_NAME', 'LC_PAPER', 'LC_TELEPHONE',
+])
+
+export function agyBinaryCandidates(source) {
   const home = source?.HOME ?? source?.USERPROFILE
-  const candidates = [
-    ...(home ? [join(home, '.local', 'bin', 'agy')] : []),
-    '/usr/local/bin/agy',
-    '/usr/bin/agy',
+  return [
+    ...(home ? [join(home, '.local', 'bin', AGY_BINARY_NAME)] : []),
+    `/usr/local/bin/${AGY_BINARY_NAME}`,
+    `/usr/bin/${AGY_BINARY_NAME}`,
   ]
-  const found = candidates.find(existsSync)
+}
+
+// The same list with `$HOME` left UNRESOLVED, for anything that reports a
+// refusal outward. `acp-lanes-mcp.mjs` interpolated the resolved form into its
+// fix sentence, and a Codex advisor showed what that costs: with a credential
+// value also present in `HOME`, the credential appeared in the reply — through
+// the path diagnostic, never through a credential field, which is exactly how
+// a denylist-shaped guard gets beaten. A constant is also the clearer thing to
+// print at an operator.
+export const AGY_BINARY_CANDIDATE_FORMS = Object.freeze([
+  `$HOME/.local/bin/${AGY_BINARY_NAME}`,
+  `/usr/local/bin/${AGY_BINARY_NAME}`,
+  `/usr/bin/${AGY_BINARY_NAME}`,
+])
+
+// `existsSync` was the whole check until 2026-08-17, so a mode-0644 file at a
+// candidate path — or a DIRECTORY named `agy` — made the lane report a valid
+// configuration while executing it failed `EACCES`. Reproduced by a Codex
+// advisor. Executable discovery is the one parent-side fact this lane claims to
+// establish, so `exists` is not enough: it must be a regular file this process
+// can execute.
+function executableCandidate(path) {
+  try {
+    if (!statSync(path).isFile()) return false
+    accessSync(path, fsConstants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// A shebang naming an interpreter that is not here. `executableCandidate` says
+// the file is executable and it IS — the kernel would accept it and then fail
+// to find `#!/usr/bin/env whatever`, so the lane answers `valid` for a
+// configuration that cannot start.
+//
+// Two panel families raised it across two rounds, and the defence recorded here
+// — "proving otherwise means EXECUTING the candidate, which turns a read-only
+// tool into an acting one" — rested on a choice that does not exist. The
+// alternative was never `valid` versus running the file: `unchecked` is already
+// in the result vocabulary and describes this state exactly, WITHOUT executing
+// anything. Reading the first line of a file is not running it.
+export function shebangInterpreterMissing(path, { pathValue = null } = {}) {
+  let head = ''
+  try {
+    const fd = openSync(path, 'r')
+    try {
+      const buf = Buffer.alloc(256)
+      head = buf.subarray(0, readSync(fd, buf, 0, 256, 0)).toString('utf8')
+    } finally { closeSync(fd) }
+  } catch {
+    return null                    // unreadable is a different diagnosis
+  }
+  if (!head.startsWith('#!')) return null       // a binary, or no shebang: nothing to check
+  const line = head.split('\n', 1)[0].slice(2).trim()
+  if (!line) return null
+  const parts = line.split(/\s+/)
+  // THE `env` BINARY IS ITSELF AN INTERPRETER. This treated any path ending
+  // `/env` as a working `env` and checked only the token after it, so
+  // `#!/definitely/not/here/env sh` found `sh` on PATH and answered null while
+  // the kernel fails on the missing `env`. A lane reproduced it — the fourth
+  // iteration of this function, and the third where the fix covered the case I
+  // pictured rather than the class.
+  if (parts[0].endsWith('/env') && !executableCandidate(parts[0])) return parts[0]
+  const interpreter = parts[0].endsWith('/env') && parts[1] ? parts[1] : parts[0]
+  if (interpreter.includes('/')) {
+    return executableCandidate(interpreter) ? null : interpreter
+  }
+  // A bare name goes through PATH — and this function IS given the PATH, so the
+  // refusal that stood here was a hole wearing the words of a principle. Two
+  // families raised it in three consecutive rounds, and the case they named,
+  // `#!/usr/bin/env <missing>`, is the one the motivating comment used.
+  //
+  // With no PATH supplied there is genuinely nothing to resolve against, and
+  // THAT is when saying nothing is honest.
+  if (!pathValue) return null
+  for (const dir of pathValue.split(delimiter)) {
+    if (dir && executableCandidate(join(dir, interpreter))) return null
+  }
+  return interpreter
+}
+
+// Which executable a lane resolves to, and whether it can start. Only the agy
+// lane resolves a binary parent-side; everything else routes through a wrapper
+// this function does not own, so it answers null rather than guessing — a wrong
+// specific answer is worse than none.
+export function unresolvedInterpreterFor(id, { env = process.env } = {}) {
+  if (id !== 'agy') return null
+  const found = agyBinaryCandidates(env).find(executableCandidate)
+  // `executablePath(env)`, NOT `env.PATH`. The child receives the PATH this
+  // function builds — with `$HOME/.local/bin`, `$HOME/.kimi-code/bin` and
+  // `$HOME/.bun/bin` prepended — so resolving against the caller's raw PATH
+  // answered about a different machine state than the one the lane will run in.
+  // A lane reproduced BOTH errors from it: a false `valid` when the interpreter
+  // is only on the prepended path, and a false `unchecked` when it is only on
+  // the caller's.
+  return found ? shebangInterpreterMissing(found, { pathValue: executablePath(env) }) : null
+}
+
+function trustedAgyBinary(source) {
+  const found = agyBinaryCandidates(source).find(executableCandidate)
   return found ? realpathSync(found) : null
 }
 
@@ -740,7 +949,16 @@ export function buildProfileEnv(profileId, source = process.env, {
   const env = {}
   for (const [key, value] of Object.entries(source ?? {})) {
     if (value === undefined || value === null) continue
-    if (runtimeKeys.has(key) || key.startsWith('LC_')) env[key] = String(value)
+    // Named locale variables only. This read `key.startsWith('LC_')`, so any
+    // name a source invented — `LC_PRIVATE_TOKEN=<secret>` is the reviewer's
+    // own example — rode into every profile, in a file whose opening lines
+    // promise a profile-scoped environment with no ambient credential bag.
+    // A prefix is not an allowlist.
+    // Same rule as the credential check: a NUL-bearing value cannot reach a
+    // child environment, so it is dropped here rather than thrown at spawn.
+    if ((runtimeKeys.has(key) || POSIX_LOCALE_VARS.has(key)) && spawnableValue(String(value))) {
+      env[key] = String(value)
+    }
   }
   const path = executablePath(source)
   if (path) env.PATH = path
@@ -750,7 +968,21 @@ export function buildProfileEnv(profileId, source = process.env, {
     throw new TypeError(`profile ${profile.id} declares no provider-secret list — add one, empty if it forwards none`)
   }
   for (const key of secretKeys) {
-    if (source?.[key] !== undefined && source[key] !== null) env[key] = String(source[key])
+    if (source?.[key] === undefined || source[key] === null) continue
+    // EVERY value, not just the one credential that made the lane look usable.
+    // `spawnableValue` was applied where we decide whether at least one accepted
+    // credential exists, and nowhere on the way out — so a good
+    // ANTHROPIC_AUTH_TOKEN beside a NUL-bearing ZAI_API_KEY gave
+    // `configuration: "valid"` on an environment `spawnSync` refuses with
+    // ERR_INVALID_ARG_VALUE. A lane reproduced exactly that pair; the previous
+    // round's fix covered "one credential is usable", which is a different
+    // sentence from "this environment can start a process".
+    //
+    // Omitted rather than thrown: a forwarded provider secret is optional by
+    // construction, and the lane's own credential check already refuses when
+    // nothing usable is left. Dropping it turns an unstartable child into a
+    // legible credential refusal.
+    env[key] = String(source[key])
   }
   if (profile.id === 'agy') {
     const agyBinary = agyBinaryResolver(source)
@@ -759,7 +991,17 @@ export function buildProfileEnv(profileId, source = process.env, {
     env.AGY_SKIP_DOWNLOAD = '1'
   }
   if (ROUTED_PROFILES.has(profile.id) || profile.claudeExecutable || profile.id === 'claude') {
-    env.CLAUDE_MODEL_CONFIG = JSON.stringify({ availableModels: [profile.model] })
+    // `requestModel` when the profile declares one. A lane reproduced the
+    // mismatch: `deepseek` pins `requestModel: 'sonnet'` because that is the
+    // alias its gateway answers to, while `profile.model` is the vendor's own
+    // id `deepseek-v4-flash-0731` — so this advertised a model the gateway does
+    // not take, in the one place the adapter reads to decide what to ask for.
+    //
+    // `model` stays the identity the panel records; `requestModel` is what the
+    // wire is asked for. Two different questions that had one answer here.
+    env.CLAUDE_MODEL_CONFIG = JSON.stringify({
+      availableModels: [profile.requestModel ?? profile.model],
+    })
   }
   // Set from the profile, never from the caller: `runtimeKeys` does not carry
   // this name, so the only way a lane can point the adapter at another Claude
@@ -769,8 +1011,85 @@ export function buildProfileEnv(profileId, source = process.env, {
   if (Number.isSafeInteger(profile.thinkingBudgetTokens) && profile.thinkingBudgetTokens >= 0) {
     env.MAX_THINKING_TOKENS = String(profile.thinkingBudgetTokens)
   }
+  // BEFORE the endpoint check, not after. A lane whose ONLY credential carried
+  // a NUL had that credential rejected by `acceptedCredential` first, so the
+  // answer was `credential_missing` — the exact "you already added it, the tool
+  // says it is missing" outcome this check was added to prevent, still produced
+  // by the check that prevents it, because it ran second.
+  assertStartableEnvironment(profile.id, env)
   if (ROUTED_PROFILES.has(profile.id)) validateRoutedEndpoint(profile, env)
   return Object.freeze(env)
+}
+
+// A POLICY BUDGET, and the distinction cost a round. This machine spawns a
+// 921,600-byte environment without complaint, so a refusal at 256 KiB is not a
+// statement about what the OS will do — it is ours. The first version said
+// "cannot start a process" for it, which was measurably false and is the kind
+// of confident wrong sentence this repository has a rule about.
+const ENVIRONMENT_BYTE_CEILING = 256 * 1024
+
+// Linux caps a SINGLE argument or environment string at MAX_ARG_STRLEN, which
+// is 32 pages — 131072 bytes on an ordinary 4 KiB-page kernel — INDEPENDENTLY
+// of the total. So a 200 KiB credential fits under the total budget above and
+// still fails with E2BIG on the CI host, where nothing here runs to notice.
+// Unreproduced on this macOS box and taken on the reviewer's word plus the
+// kernel constant, which is why the number is half the documented limit rather
+// than equal to it.
+const ENVIRONMENT_ENTRY_BYTE_CEILING = 64 * 1024
+
+// ONE sweep over the FINAL environment, which is the only place that can answer
+// "can this start a process". Two rounds of narrower fixes did not:
+//
+// - the first applied `spawnableValue` where we decide whether at least one
+//   accepted credential exists, so a good token beside a NUL-bearing one gave
+//   `configuration: "valid"` on an env `spawnSync` refuses;
+// - the second applied it to the forwarded provider secrets, and a lane put the
+//   same NUL in the routed SETTINGS file instead, which is assigned earlier and
+//   was never in that loop.
+//
+// Both fixes were correct about the case they were shown. The property is about
+// the finished object, so it is checked on the finished object.
+//
+// It THROWS rather than omitting. Omitting made a malformed supplied credential
+// read as "missing", which sends an operator to add a credential they already
+// added; a lane raised that as the wrong half of the trade.
+// TWO refusals, because they are two different claims and one sentence was
+// making both. A NUL byte means the environment CANNOT start a process — a
+// fact, true on every platform. A size means we have DECIDED not to try — a
+// policy, and saying "cannot start" about it was false on the machine that
+// measured it.
+//
+// Both carry `code: 'config'` so `review-gate.mjs` reads them through
+// `laneStage` as a deterministic stage and tells the operator to fix the
+// profile. Without it a plain TypeError has no code, lands in `transport`, and
+// the report says "re-run this lane alone" about a refusal that is identical on
+// every attempt. And both carry `envKey`, so the repair can name the value that
+// failed instead of pointing at a settings file that may not even hold it.
+function assertStartableEnvironment(profileId, env) {
+  let bytes = 0
+  for (const [key, value] of Object.entries(env)) {
+    const text = String(value)
+    if (text.includes('\u0000')) {
+      throw Object.assign(
+        new TypeError(`${profileId} review environment cannot start a process: `
+          + `${key} contains a NUL byte`),
+        { code: 'config', envKey: key })
+    }
+    const entryBytes = Buffer.byteLength(key) + Buffer.byteLength(text) + 2
+    if (entryBytes > ENVIRONMENT_ENTRY_BYTE_CEILING) {
+      throw Object.assign(
+        new TypeError(`${profileId} review environment is over budget: ${key} is `
+          + `${entryBytes} bytes and the per-value ceiling is ${ENVIRONMENT_ENTRY_BYTE_CEILING}`),
+        { code: 'config', envKey: key })
+    }
+    bytes += entryBytes
+  }
+  if (bytes > ENVIRONMENT_BYTE_CEILING) {
+    throw Object.assign(
+      new TypeError(`${profileId} review environment is over budget: it is ${bytes} `
+        + `bytes and the ceiling is ${ENVIRONMENT_BYTE_CEILING}`),
+      { code: 'config', envKey: null })
+  }
 }
 
 export function buildAcpLaunch(profileId, {

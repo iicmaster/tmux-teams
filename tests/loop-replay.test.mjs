@@ -71,7 +71,7 @@ const GRAPH = {
 }
 
 const dirs = []
-test.after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }) })
+test.after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }) })
 
 // `graph` defaults to the module-level replay GRAPH so every existing caller
 // is untouched; the AC1 reproduction below passes its own, because it needs a

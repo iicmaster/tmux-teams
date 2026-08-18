@@ -14,7 +14,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PLUGIN = join(ROOT, 'plugins/tmux-teams')
 const SKILLS = ['tmux-teams', 'party-mode', 'party-auto', 'party-advise', 'sqthink', 'codex-tmux-driver',
   'graph-setup', 'claude-advisor', 'codex-advisor', 'handoff', 'show-me']
-const RELEASE_VERSION = '0.31.0'
+const RELEASE_VERSION = '0.32.0'
 // The Stage 1 CLI entry points went on 2026-07-29 and the rest of the phase
 // subsystem — nine scripts, its gate, its store and its exporter — went on
 // 2026-08-02. The note that used to stand here said deleting the remainder
@@ -58,6 +58,16 @@ test('marketplace and plugin manifests agree', () => {
   const readmeVersion = readText(join(ROOT, 'README.md')).match(/Current release: \*\*([^*]+)\*\*/)
   assert.ok(readmeVersion, 'README.md must state "Current release: **<version>**"')
   assert.equal(readmeVersion[1], RELEASE_VERSION, 'README.md states a different release than the manifests')
+  // ROADMAP.md carries the number too, and nothing checked it. A lane copied
+  // this checkout, bumped exactly the five files README.md names, and this
+  // suite passed 21/21 with ROADMAP.md still on the previous version — the
+  // seventh place, found by grepping in the first place and then left
+  // unguarded. It also has its own publication gate, so a missed bump here
+  // makes the published page stale on top of being wrong.
+  const roadmapVersion = readFileSync(join(ROOT, 'ROADMAP.md'), 'utf8')
+    .match(/^Current release: \*\*([0-9]+\.[0-9]+\.[0-9]+)\*\*/m)
+  assert.ok(roadmapVersion, 'ROADMAP.md has no `Current release: **X.Y.Z**` line for the bump to update')
+  assert.equal(roadmapVersion[1], RELEASE_VERSION, 'ROADMAP.md states a different release than the manifests')
 
   // The FIFTH FILE and the SIXTH version occurrence — the counts differ because
   // marketplace.json carries it twice, and this comment said "the FIFTH place"
@@ -550,4 +560,142 @@ test('no shipped client string carries a backtick, whoever adds the next one', a
   for (const expected of ['TOUR_CSS', 'TOUR_SCRIPT', 'NAV_CSS', 'KANIT_FONT_CSS']) {
     assert.ok(found.includes(expected), `${expected} was not discovered — the scan is looking in the wrong place`)
   }
+})
+
+test('an advisor skill that claims read-only ships the switch that makes it read-only', () => {
+  // A release panel read both advisor frontmatters — "Read-only: it advises, it
+  // never edits" — against the dispatch commands under them and found nothing
+  // enforcing it. Codex children DEFAULT to INITIAL_AGENT_MODE=agent-full-access,
+  // so the documented command launched a full-access advisor and the brief was
+  // the only thing asking it to behave. `read-only` is one of the three modes
+  // the companion accepts, so this was an unenforced claim, not an
+  // unenforceable one.
+  const codex = readFileSync(join(PLUGIN, 'skills', 'codex-advisor', 'SKILL.md'), 'utf8')
+  const claude = readFileSync(join(PLUGIN, 'skills', 'claude-advisor', 'SKILL.md'), 'utf8')
+
+  // every codex dispatch or resume block carries the mode
+  // Truncate at the CLOSING fence. `split('```bash')` runs each piece on to the
+  // next fenced block, so a piece includes the prose after its own command —
+  // and the prose here names the very flag being asserted, which made the check
+  // pass on an explanation instead of on a command. A mutation caught it: the
+  // flag was deleted from a real command and every test stayed green. Same
+  // vacuous-assertion shape a panel lane had just found in the traversal test.
+  const commandBlocks = (text) => text.split('```bash').slice(1)
+    .map((b) => b.split('```')[0])
+    .filter((b) => /acp-dispatch\.mjs[\s\\]+\n?\s*(codex|claude) </.test(b))
+
+  const codexBlocks = commandBlocks(codex)
+  assert.ok(codexBlocks.length >= 2, `expected dispatch and recovery blocks, got ${codexBlocks.length}`)
+  for (const block of codexBlocks) {
+    assert.match(block, /INITIAL_AGENT_MODE="read-only"/,
+      `a codex advisor command runs at the full-access default:\n${block.slice(0, 400)}`)
+  }
+
+  // and the identity guarantee is not fail-open: the default mode CONTINUES
+  // after a receipt-persistence failure and records `receipt_digest: none`, so
+  // an advisor could report an identity resting on a receipt never written.
+  for (const [name, text] of [['codex-advisor', codex], ['claude-advisor', claude]]) {
+    const blocks = commandBlocks(text)
+    // The count is pinned too: a block that stops MATCHING is indistinguishable
+    // from a block that passes, and `> 0` cannot tell them apart.
+    // Pinned per file, and the numbers are what each skill documents: codex has
+    // a dispatch and a recovery, claude has a default seat, a routed seat and a
+    // recovery. The count is pinned at all because a block that stops MATCHING
+    // is indistinguishable from a block that passes, and `> 0` cannot tell them
+    // apart — but it is pinned per file so ADDING a documented command is a
+    // deliberate edit here rather than a silent one.
+    const expected = { 'codex-advisor': 2, 'claude-advisor': 3 }[name]
+    assert.equal(blocks.length, expected,
+      `${name} documents ${blocks.length} lane-launching commands, not ${expected}`)
+    for (const block of blocks) {
+      assert.match(block, /ACP_SESSION_RECEIPT_REQUIRED=1/,
+        `${name} runs a lane whose receipt may silently not exist:\n${block.slice(0, 400)}`)
+    }
+  }
+
+  // The Claude lane has no mode switch, so it must not promise one it lacks.
+  assert.doesNotMatch(claude, /Read-only: it advises, it never edits/,
+    'the claude advisor promises an enforcement it has no mechanism for')
+})
+
+test('the two skills that describe an undeclared graph agree with tick()', () => {
+  // Two panel families found `tmux-teams/SKILL.md` and `graph-setup/SKILL.md`
+  // saying opposite things about a missing declaration, with the code siding
+  // with graph-setup: `tick()` sees `graph.source === 'default'` and writes a
+  // heartbeat carrying `dispatching: false` and `no team graph declared`. The
+  // bundled template LOADS — the pages need something to draw — and the runner
+  // will not dispatch on it.
+  const main = readFileSync(join(PLUGIN, 'skills', 'tmux-teams', 'SKILL.md'), 'utf8')
+  const setup = readFileSync(join(PLUGIN, 'skills', 'graph-setup', 'SKILL.md'), 'utf8')
+  const runner = readFileSync(join(PLUGIN, 'skills', 'tmux-teams', 'scripts', 'loop-runner.mjs'), 'utf8')
+
+  assert.match(runner, /graph\.source === 'default'/, 'the refusal this documents is gone from the runner')
+  assert.doesNotMatch(main, /A missing declaration uses the bundled four-team template\./,
+    'the skill teaches a fallback the runner refuses')
+  for (const [name, text] of [['tmux-teams', main], ['graph-setup', setup]]) {
+    assert.match(text, /missing declaration is \*\*?not\*\*? a default|not a default/i,
+      `${name} does not say that a missing declaration is not a default`)
+  }
+
+  // And the heartbeat example matches the value the refusal path writes: `null`
+  // is the absence of a measurement, `0` is a measurement. On a page about
+  // telling absent from stale from refusing, that distinction is the subject.
+  assert.match(runner, /beat\(\{ dispatching: false, reason, started: 0, held: null \}\)/)
+  assert.doesNotMatch(setup, /"started": 0, "held": 0 \}/,
+    'the example turns "not measured" into "measured zero"')
+})
+
+test('the read-only guarantee is carried by the thing it says it rests on', () => {
+  // `claude-advisor`'s frontmatter says read-only "rests on the brief" because
+  // the lane has no mode switch. A panel lane read that against the mandatory
+  // brief and found only party format and uncertainty instructions — the thing
+  // the guarantee leaned on did not carry it. The Codex lane has
+  // INITIAL_AGENT_MODE=read-only; here the text IS the mechanism.
+  const claude = readFileSync(join(PLUGIN, 'skills', 'claude-advisor', 'SKILL.md'), 'utf8')
+  // `Cast 3-5 named voices`, not the round-table phrase — the frontmatter
+  // description contains that phrase too, so the first match was the YAML
+  // header and the assertion was about the wrong bytes.
+  const mandate = claude.split('```').find((b) => b.includes('Cast 3-5 named voices'))
+  assert.ok(mandate, 'the mandatory brief is gone')
+  assert.match(mandate, /READ-ONLY/, 'the brief the guarantee rests on carries no read-only instruction')
+  for (const forbidden of [/do not edit/i, /change nothing/i]) {
+    assert.match(mandate, forbidden, `the brief does not say ${forbidden}`)
+  }
+
+  // And the recovery path keeps the receipt contract the fresh commands
+  // declare: dropping receipt mode exactly when the first delivery is missing
+  // is the moment it matters most.
+  for (const skill of ['codex-advisor', 'claude-advisor']) {
+    const text = readFileSync(join(PLUGIN, 'skills', skill, 'SKILL.md'), 'utf8')
+    const recovery = text.split('```bash').slice(1).map((b) => b.split('```')[0])
+      .filter((b) => b.includes('ACP_RESUME'))
+    assert.equal(recovery.length, 1, `${skill} documents ${recovery.length} recovery commands`)
+    for (const need of ['ACP_SESSION_RECEIPT_REQUIRED=1', 'ACP_SESSION_OPERATION="load"',
+      'ACP_PRIOR_DISPATCH_ID', 'ACP_PRIOR_RECEIPT_DIGEST']) {
+      assert.ok(recovery[0].includes(need),
+        `${skill}'s recovery drops ${need}, so the resumed turn is not receipt-backed`)
+    }
+  }
+})
+
+test('the claude advisor does not promise an identity proof its routed seat cannot give', () => {
+  // A panel lane read the headline — "can prove which model answered" — against
+  // this file's own paragraph fifty lines down: a receipt recording
+  // `effective_identity: opus` has told you nothing about who answered, because
+  // `opus` on three different bins reaches three different vendors. Both cannot
+  // be true, and the headline is the one a reader sees first.
+  const claude = readFileSync(join(PLUGIN, 'skills', 'claude-advisor', 'SKILL.md'), 'utf8')
+  const body = claude.split('---').slice(2).join('---')   // past the frontmatter
+
+  assert.ok(body.includes('has told\nyou nothing about who answered')
+    || body.includes('has told you nothing about who answered'),
+    'the alias-is-not-a-family paragraph is gone, so the contradiction may have been "fixed" by deletion')
+
+  // an unqualified promise must not stand next to it
+  const unqualified = /returns a\s+round-table, and \*\*can prove which model answered\*\*/
+  assert.doesNotMatch(body, unqualified,
+    'the headline promises an identity proof the routed seat cannot give')
+  // and the qualification names WHICH seat can
+  assert.match(body, /default seat.{0,80}can prove/s,
+    'the file does not say which seat the proof holds for')
 })
