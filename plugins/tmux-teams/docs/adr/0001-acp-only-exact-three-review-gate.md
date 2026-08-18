@@ -40,6 +40,13 @@ target-repository path, packet hash, and provenance. Each ACP adapter must
 acknowledge the pinned model and safety configuration. Review text uses a
 closed, bounded schema; two independent matching findings are must-fix.
 
+**Superseded in part by ADR 0006 (2026-08-13):** no shipped profile declares
+`osSandbox: 'bwrap'` any more, so the paragraph below describes what a profile
+that DOES declare it gets, not what every Linux lane gets. Everything else in
+this ADR stands. Left in place rather than rewritten — an ADR records what was
+decided when it was decided — but a lane found 0006 claiming this document never
+decided the sandbox, which it plainly did, so the pointer belongs here too.
+
 On Linux, each lane runs under bubblewrap with the target and host user-data
 roots hidden, a new PID namespace, a temporary workspace, and an ephemeral
 provider HOME containing only required copied auth/config. MCP and built-in

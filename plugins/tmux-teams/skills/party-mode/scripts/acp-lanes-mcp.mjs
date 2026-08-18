@@ -337,9 +337,16 @@ export function fixesFor(id, profile, code, { envKey = null } = {}) {
         : 'one of the values this lane forwards contains a NUL byte and cannot be '
           + 'passed to a process']
     case 'environment_over_budget':
+      // NO "point it at a credential file". That was the second half of this
+      // sentence and it does not repair anything: `loadRoutedCredentialFile`
+      // reads the file and puts the same bytes into the child environment,
+      // where the same ceiling refuses them. A lane applied the advice and
+      // measured an identical refusal — which is the test this repository's own
+      // diagnostic contract asks for, that applying a fix changes the state.
       return [envKey
-        ? `${envKey} is larger than this gate passes to a lane — shorten it, or point `
-          + `the lane at a credential file instead of an inline value`
+        ? `${envKey} is larger than this gate passes to a lane — it has to be `
+          + `SHORTER, and moving it to a credential file does not help because `
+          + `the file's contents reach the lane the same way`
         : 'the values this lane forwards exceed the total this gate passes to a lane']
     case 'settings_unreadable':
       return ['the JSON this lane reads must parse and must be an object', ...settings]

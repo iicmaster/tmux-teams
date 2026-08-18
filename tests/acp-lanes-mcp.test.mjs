@@ -1606,7 +1606,7 @@ test('experimental carries typed values, not just a typed container', () => {
 test('an environment that cannot start a process is never reported valid', () => {
   const NUL = String.fromCharCode(0)
   const NUL_FIX = 'contains a NUL byte and cannot be passed to a process'
-  const BUDGET_FIX = 'is larger than this gate passes to a lane'
+  const BUDGET_FIX = 'is larger than this gate passes to a lane — it has to be'
   const endpoint = { ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic' }
   const withToken = { ...endpoint, ANTHROPIC_AUTH_TOKEN: 'valid-token' }
   const cases = [
@@ -1626,7 +1626,20 @@ test('an environment that cannot start a process is never reported valid', () =>
       code: 'environment_over_budget', expectedFix: `ZAI_API_KEY ${BUDGET_FIX}` },
     // Under the TOTAL and over the per-string cap Linux enforces at 131072.
     // This host spawns it; the CI host would not.
-    { name: 'one value over the per-string cap', settings: withToken,
+    // BOTH SIDES of the per-value boundary. A single 200 KiB case proved only
+    // that SOME bound existed: raising the ceiling from 64 KiB to 192 KiB left
+    // the whole suite green, so a value between the Linux MAX_ARG_STRLEN of
+    // 131072 and our ceiling could be admitted while the test named for that
+    // cap stayed green. The pair pins the number.
+    { name: 'a value just under the per-value ceiling', settings: withToken,
+      ambient: { ZAI_API_KEY: 'x'.repeat(63 * 1024) }, code: null },
+    { name: 'a value just over the per-value ceiling', settings: withToken,
+      ambient: { ZAI_API_KEY: 'x'.repeat(70 * 1024) },
+      code: 'environment_over_budget', expectedFix: `ZAI_API_KEY ${BUDGET_FIX}` },
+    // Comfortably under the total and OVER the Linux per-string cap. Refusing
+    // it is the whole point of having a per-value rule at all, and this host
+    // spawns it happily, so nothing but the rule can catch it here.
+    { name: 'one value over the Linux per-string cap', settings: withToken,
       ambient: { ZAI_API_KEY: 'x'.repeat(200 * 1024) },
       code: 'environment_over_budget', expectedFix: `ZAI_API_KEY ${BUDGET_FIX}` },
     // MANY values, each comfortably under the per-string cap, summing past the
@@ -1705,6 +1718,47 @@ test('the size refusal claims a budget and never claims the platform refused', (
         'the size refusal asserts the platform refused, which was measured false')
       return true
     })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// The repair, APPLIED. A lane found the over-budget advice said "point the lane
+// at a credential file instead of an inline value" and measured the identical
+// refusal after doing exactly that: `loadRoutedCredentialFile` reads the file
+// and puts the same bytes into the child environment, where the same ceiling
+// refuses them.
+//
+// This repository's diagnostic contract is that applying a fix changes the
+// state, and a prose assertion that a sentence mentions the right thing is not
+// a test of the repair — the file already says so about a different fix, and
+// the same gap reopened one commit later in a sentence I wrote.
+test('the over-budget repair does not send an operator somewhere that repeats the refusal', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mcp-budget-move-'))
+  try {
+    const settings = join(dir, 'zai.json')
+    const credentials = join(dir, 'zai.env')
+    const big = 'x'.repeat(70 * 1024)
+    writeFileSync(settings, JSON.stringify({ env: {
+      ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic' } }))
+    const base = { HOME: dir, PATH: process.env.PATH, TMUX_TEAMS_REVIEW_ZAI_SETTINGS: settings }
+
+    const inline = laneStatus('zai', REVIEW_PROFILES.zai, { ...base, ZAI_API_KEY: big })
+    assert.equal(inline.problem?.code, 'environment_over_budget')
+
+    writeFileSync(credentials, `ZAI_API_KEY=${big}\n`)
+    const moved = laneStatus('zai', REVIEW_PROFILES.zai,
+      { ...base, TMUX_TEAMS_REVIEW_ZAI_ENV_FILE: credentials })
+    assert.equal(moved.problem?.code, 'environment_over_budget',
+      'moving the value to a file changed the refusal, so the old advice was right after all')
+
+    // Since it does NOT repair, the advice must not offer it. Asserting the
+    // absence is what keeps the sentence honest when somebody re-adds the
+    // helpful-sounding half.
+    const said = inline.fixes.join(' ')
+    assert.doesNotMatch(said, /credential file instead of an inline value/,
+      `the repair still offers a move that reproduces the refusal: ${said}`)
+    assert.match(said, /has to be SHORTER/, `the repair does not say what would work: ${said}`)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
