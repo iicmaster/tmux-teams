@@ -111,7 +111,15 @@ function deepFreeze(value) {
 
 // The capability names MCP 2025-06-18 types. Anything else is a client
 // extension and is not this server's to judge.
-const MCP_TYPED_CAPABILITIES = Object.freeze(['roots', 'sampling', 'elicitation'])
+// `roots` ALONE. MCP 2025-06-18 types `listChanged` on that capability and
+// leaves `sampling` and `elicitation` as open objects, so demanding a boolean
+// from those two refused a conforming
+// `sampling: { listChanged: "vendor-extension" }`.
+//
+// Third correction of this line. It went every-capability, then three, and the
+// answer is one — each narrowing was toward the spec and stopped where I
+// guessed rather than where the document does.
+const MCP_TYPED_CAPABILITIES = Object.freeze(['roots'])
 
 export const DIAGNOSTICS = Object.freeze({
   endpoint_missing: 'the lane is pinned to an endpoint and this machine supplies no base URL for it',

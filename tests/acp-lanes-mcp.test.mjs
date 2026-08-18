@@ -1027,6 +1027,15 @@ test('a candidate whose interpreter is missing answers unchecked, not valid', ()
       'definitelynotinstalled',
       'the exact case the comment names went unchecked')
 
+    // THE `env` BINARY ITSELF. `#!/definitely/not/here/env sh` finds `sh` on
+    // PATH, and the kernel still fails on the missing `env` — the previous
+    // version treated any path ending `/env` as a working one.
+    writeFileSync(bin, '#!/definitely/not/here/env sh\n')
+    chmodSync(bin, 0o755)
+    assert.equal(unresolvedInterpreterFor('agy', { env: { HOME: home, PATH: '/usr/bin:/bin' } }),
+      '/definitely/not/here/env',
+      'a missing env binary was accepted because the token after it resolves')
+
     // and a bare name that IS on the PATH is not maligned
     writeFileSync(bin, '#!/usr/bin/env sh\n')
     chmodSync(bin, 0o755)
@@ -1143,6 +1152,17 @@ test('initialize types the members MCP 2025-06-18 types, and still admits an unk
 
   assert.equal(init({ protocolVersion: '2025-06-18', clientInfo: ok,
     capabilities: { roots: { listChanged: 'yes' } } }).error?.code, -32602)
+  // `sampling` and `elicitation` are OPEN objects in this version — only
+  // `roots` types `listChanged`. A lane reproduced a conforming
+  // `sampling: { listChanged: "vendor-extension" }` being refused by the
+  // previous narrowing, which had gone from every capability to three.
+  for (const open of ['sampling', 'elicitation']) {
+    assert.ok(init({ protocolVersion: '2025-06-18', clientInfo: ok,
+      capabilities: { [open]: { listChanged: 'vendor-extension' } } }).result,
+      `a conforming ${open} capability was refused`)
+    assert.ok(init({ protocolVersion: '2025-06-18', clientInfo: ok,
+      capabilities: { [open]: { anything: { nested: true } } } }).result)
+  }
   assert.ok(init({ protocolVersion: '2025-06-18', clientInfo: ok,
     capabilities: { roots: { listChanged: true } } }).result)
   assert.equal(init({ protocolVersion: '2025-06-18', clientInfo: ok,
@@ -1299,5 +1319,37 @@ test('a lane report calls its adapter DECLARED, because a caller can change whic
     if (!argv.length) continue
     assert.ok(['npx', 'bunx'].includes(argv[0]) || argv[0].includes('/'),
       `${id} launches ${argv[0]}, which is neither a bare resolver nor an absolute path`)
+  }
+})
+
+test('a credential Node cannot spawn with is not a valid configuration', () => {
+  // A lane reproduced it end to end: `acceptedCredential` tested only
+  // truthiness, so a NUL-bearing `ZAI_API_KEY` gave `configuration: "valid"`
+  // while passing the resulting `buildAcpLaunch().env` to process creation
+  // throws ERR_INVALID_ARG_VALUE. The status of a configuration that cannot
+  // start a process is not "valid".
+  const NUL = String.fromCharCode(0)
+  const dir = mkdtempSync(join(tmpdir(), 'lane-nul-'))
+  try {
+    const profile = REVIEW_PROFILES.zai
+    const url = `https://${profile.endpoint.host}${profile.endpoint.path}`
+    writeFileSync(join(dir, 'creds.env'), `ANTHROPIC_BASE_URL=${url}\nZAI_API_KEY=x${NUL}y\n`)
+    const env = { HOME: '/tmp', PATH: '/usr/bin',
+      TMUX_TEAMS_REVIEW_ZAI_ENV_FILE: join(dir, 'creds.env') }
+    const lane = callTool('acp_lane_status', { lane: 'zai' }, env).lanes[0]
+    assert.notEqual(lane.configuration, 'valid',
+      'a NUL-bearing credential was reported as a valid configuration')
+
+    // and the environment a good credential builds is one Node will accept
+    const good = join(dir, 'good.env')
+    writeFileSync(good, `ANTHROPIC_BASE_URL=${url}\nZAI_API_KEY=ordinary\n`)
+    const built = buildAcpLaunch('zai', {
+      env: { HOME: '/tmp', PATH: '/usr/bin', TMUX_TEAMS_REVIEW_ZAI_ENV_FILE: good },
+    })
+    for (const [k, v] of Object.entries(built.env ?? {})) {
+      assert.ok(!String(v).includes(NUL), `${k} carries a NUL into the child environment`)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })

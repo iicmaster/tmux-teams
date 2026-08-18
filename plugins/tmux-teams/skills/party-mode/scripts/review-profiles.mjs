@@ -783,8 +783,18 @@ export function acceptedCredentialNames(profile) {
   return ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', ...(providerSecrets[profile.id] ?? [])]
 }
 
+// A value Node cannot put in a child environment is not a credential, whatever
+// it looks like. `Boolean(value)` accepted a NUL-bearing string, so
+// `acp_lane_status` answered `valid` for a configuration whose own
+// `buildAcpLaunch().env` makes process creation throw
+// `ERR_INVALID_ARG_VALUE` — a lane reproduced exactly that. The status of a
+// configuration that cannot start a process is not "valid".
+function spawnableValue(value) {
+  return typeof value === 'string' && value !== '' && !value.includes('\u0000')
+}
+
 function acceptedCredential(profile, env) {
-  return acceptedCredentialNames(profile).some((key) => Boolean(env?.[key]))
+  return acceptedCredentialNames(profile).some((key) => spawnableValue(env?.[key]))
 }
 
 function executablePath(source) {
@@ -879,6 +889,13 @@ export function shebangInterpreterMissing(path, { pathValue = null } = {}) {
   const line = head.split('\n', 1)[0].slice(2).trim()
   if (!line) return null
   const parts = line.split(/\s+/)
+  // THE `env` BINARY IS ITSELF AN INTERPRETER. This treated any path ending
+  // `/env` as a working `env` and checked only the token after it, so
+  // `#!/definitely/not/here/env sh` found `sh` on PATH and answered null while
+  // the kernel fails on the missing `env`. A lane reproduced it — the fourth
+  // iteration of this function, and the third where the fix covered the case I
+  // pictured rather than the class.
+  if (parts[0].endsWith('/env') && !executableCandidate(parts[0])) return parts[0]
   const interpreter = parts[0].endsWith('/env') && parts[1] ? parts[1] : parts[0]
   if (interpreter.includes('/')) {
     return executableCandidate(interpreter) ? null : interpreter
@@ -937,7 +954,11 @@ export function buildProfileEnv(profileId, source = process.env, {
     // own example — rode into every profile, in a file whose opening lines
     // promise a profile-scoped environment with no ambient credential bag.
     // A prefix is not an allowlist.
-    if (runtimeKeys.has(key) || POSIX_LOCALE_VARS.has(key)) env[key] = String(value)
+    // Same rule as the credential check: a NUL-bearing value cannot reach a
+    // child environment, so it is dropped here rather than thrown at spawn.
+    if ((runtimeKeys.has(key) || POSIX_LOCALE_VARS.has(key)) && spawnableValue(String(value))) {
+      env[key] = String(value)
+    }
   }
   const path = executablePath(source)
   if (path) env.PATH = path
