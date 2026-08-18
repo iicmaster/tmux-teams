@@ -191,14 +191,22 @@ v0.33.0's first item). Then: bump seven places, render and publish and record
 this page, open the PR, merge on CI green, tag the merged sha, and move the
 submodule pin in `~/agent-skills`.
 
-**One dispute is still open and is NOT closed by shipping.** A mode-0755 file
-whose shebang names a missing interpreter still answers `valid`. Proving
-otherwise would require EXECUTING the candidate, which turns a read-only status
-tool into an acting one — but a panel lane pointed out that `unchecked` is
-already in the result vocabulary and would describe that state honestly without
-executing anything. Unresolved by choice, recorded rather than settled. The
-settings/ambient precedence for a provider secret is likewise undocumented and
-untested.
+**That dispute is CLOSED, and this paragraph said otherwise for a whole
+release.** A mode-0755 file whose shebang names a missing interpreter used to
+answer `valid`, and the defence was that proving otherwise would require
+EXECUTING the candidate. A panel lane answered that `unchecked` was already in
+the vocabulary and describes the state honestly without executing anything, and
+it was right: `unresolvedInterpreterFor` reads 256 bytes and
+`acp-lanes-mcp.mjs:363` returns `unchecked` with a fix sentence naming the
+missing interpreter. The settings/ambient precedence for a provider secret is
+tested too — `tests/acp-lanes-mcp.test.mjs:163` applies the returned remediation
+and measures the ambient path beside it.
+
+Two hundred lines further down, this file already recorded the dispute as
+settled against me. Both sentences shipped in the same document. A
+codex-advisor lane read them against each other and against the code, which is
+the only reason it is being corrected now rather than by the next reader of a
+gate file that contradicts itself.
 
 ## The release after — v0.33.0, and why these five
 

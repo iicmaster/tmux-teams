@@ -350,8 +350,18 @@ function readDirSync(path, runRoot) {
   if (!noSymlinkOnTheWay(path, runRoot)) return null
   try {
     return readdirSync(path)
-  } catch {
-    return []
+  } catch (cause) {
+    // ENOENT is "nothing here". EVERY OTHER FAILURE IS "I cannot answer", and
+    // catching them all as `[]` is what made the guard below unreachable in
+    // practice: a real directory with write+search and no read permission
+    // passed the preflight, returned EACCES from `readdirSync`, and was read as
+    // holding no case collision. A lane admitted a colliding id that way, exit
+    // 0, on a case-insensitive volume.
+    //
+    // The symlink walk was never the only way to fail to enumerate. It was just
+    // the only one anybody had pictured.
+    if (cause.code === 'ENOENT') return []
+    return null
   }
 }
 
@@ -472,7 +482,15 @@ export function resumeCommand(cwd, taskId, { sessionId, worker, routing, briefFi
   // own SKILL.md called the output ready to paste — the skill's later paragraph
   // already said a receipt-required load needs lineage, so the file disagreed
   // with itself and the code sided with the wrong half.
-  if (env.ACP_SESSION_RECEIPT_REQUIRED) {
+  // `=== '1'`, not truthiness. `acp-companion.mjs` treats ONLY `1` as required,
+  // so `0` is a valid explicit opt-out — and a JavaScript string `'0'` is
+  // truthy, so the first version of this branch handed an opt-out dispatch both
+  // lineage placeholders. A lane ran the command it produced: the dispatcher
+  // exited 2 on `prior lineage validation failed: ENOENT
+  // .../receipts/PUT-THE-PRIOR-DISPATCH-ID-HERE.json`. A recovery path that
+  // only works for the mode you had in mind is worse than none, because it
+  // looks like the feature.
+  if (env.ACP_SESSION_RECEIPT_REQUIRED === '1') {
     parts.push(`ACP_SESSION_OPERATION=${shQuote('load')}`)
     parts.push(`ACP_PRIOR_DISPATCH_ID=${shQuote('PUT-THE-PRIOR-DISPATCH-ID-HERE')}`)
     parts.push(`ACP_PRIOR_RECEIPT_DIGEST=${shQuote('PUT-THE-PRIOR-RECEIPT-DIGEST-HERE')}`)
@@ -815,8 +833,12 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
     const leaves = readDirSync(at, cwd)
     if (leaves === null) {
       throw Object.assign(
-        new Error(`task id "${taskId}" cannot be admitted: .tmux-teams/${dir} is reached `
-          + 'through a symlink, so what it holds cannot be checked for a case collision'),
+        // The sentence no longer names a symlink. It said so when the walk was
+        // the only refusal it could receive, and a permission failure then
+        // arrived and would have been reported as something it is not.
+        new Error(`task id "${taskId}" cannot be admitted: .tmux-teams/${dir} cannot be `
+          + 'listed — it is reached through a symlink, or it is not readable — so what it '
+          + 'holds cannot be checked for a case collision'),
         { code: 'unreadable_run_directory' },
       )
     }

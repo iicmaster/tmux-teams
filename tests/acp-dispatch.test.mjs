@@ -2165,3 +2165,56 @@ test('a receipt-required dispatch resumes as a receipt-required load', () => {
   assert.doesNotMatch(plain, /ACP_SESSION_OPERATION|ACP_PRIOR_/,
     `a plain dispatch was given lineage it never had:\n${plain}`)
 })
+
+// The guard I kept as unreachable defence-in-depth turned out to be reachable,
+// and the thing standing between it and the defect was its own producer. A lane
+// found that `readDirSync` caught EVERY `readdirSync` failure as `[]`, so a real
+// directory with write and search permission but no read permission passed the
+// preflight, answered EACCES, and was read as holding no case collision. It
+// admitted a colliding id, exit 0, on this case-insensitive volume.
+//
+// The symlink walk was never the only way to fail to enumerate — it was the
+// only one anybody had pictured, which is also why the refusal used to say
+// "reached through a symlink" about a permission error.
+test('admission refuses an artifact directory it is not allowed to read', () => {
+  const cwd = tempDir('acp-eacces-')
+  const dir = join(cwd, '.tmux-teams', 'liveness')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'Other.json'), JSON.stringify({ liveness_state: 'failed' }))
+  // Only meaningful where the two spellings are the same file. Elsewhere there
+  // is no collision to miss, so the test would pass without proving anything.
+  if (!existsSync(join(dir, 'other.json'))) return
+  writeFileSync(join(cwd, 'brief.md'), 'brief\n')
+  chmodSync(dir, 0o300)
+  try {
+    const r = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'other', join(cwd, 'brief.md'), '5'],
+      { cwd, encoding: 'utf8', env: laneEnv(), timeout: 60000 })
+    const said = `${r.stdout}${r.stderr}`
+    assert.notEqual(r.status, 0, `an unreadable artifact directory was admitted:\n${said}`)
+    assert.match(said, /cannot be listed/, `the refusal did not name the failure:\n${said}`)
+    // And it must NOT claim a symlink, because there is not one here.
+    assert.doesNotMatch(said, /is reached through a symlink, so/,
+      `a permission failure was reported as a symlink:\n${said}`)
+  } finally {
+    chmodSync(dir, 0o700)
+  }
+})
+
+// `'0'` is truthy in JavaScript and is an explicit opt-out to the companion,
+// which treats only `'1'` as required. The first version of the resume branch
+// tested truthiness, so an opt-out dispatch was handed both lineage
+// placeholders; a lane RAN the resulting command and the dispatcher exited 2 on
+// `prior lineage validation failed: ENOENT .../PUT-THE-PRIOR-DISPATCH-ID-HERE.json`.
+test('an explicit receipt opt-out resumes without receipt lineage', () => {
+  for (const value of ['0', 'false', 'no']) {
+    const command = resumeCommand('/run', 'adv', {
+      sessionId: 'sess', routing: { worker: 'codex', briefFile: '/tmp/b.md', stallSec: 600,
+        env: { ACP_SESSION_RECEIPT_REQUIRED: value, ACP_MODEL: 'x' } },
+    })
+    assert.doesNotMatch(command, /ACP_SESSION_OPERATION|ACP_PRIOR_/,
+      `ACP_SESSION_RECEIPT_REQUIRED=${value} was treated as a receipt requirement:\n${command}`)
+    // The recorded value is still carried through — the resume reproduces what
+    // ran, and what ran said 0.
+    assert.match(command, new RegExp(`ACP_SESSION_RECEIPT_REQUIRED='${value}'`))
+  }
+})
