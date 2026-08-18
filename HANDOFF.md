@@ -26,13 +26,23 @@ Measured 2026-08-18. Seven review lanes ship; **three can answer**:
 | `deepseek` | deepseek | child exits 1 |
 | `claude`/fable | claude | identity MATCHES and the OAuth session is expired |
 
-Master chose **fable** as the third family. It needs one interactive command that
-an agent cannot run: `claude auth login`. Two different errors, and the
-difference is diagnostic — with no `CLAUDE_CONFIG_DIR` it is `Authentication
-required` (the credential is not found at all, which is the GitHub issue about
-the default Claude ACP lane not reusing a Claude Max login); with
-`CLAUDE_CONFIG_DIR=$HOME/.claude` it is `OAuth session expired and could not be
-refreshed`.
+Master chose **fable** as the third family. **`claude auth login` does not fix
+it, and this paragraph said it would until the login was actually run.**
+
+Measured 2026-08-18 after a successful fresh login:
+
+- with no `CLAUDE_CONFIG_DIR`: `Authentication required` — the credential is not
+  found at all
+- with `CLAUDE_CONFIG_DIR=$HOME/.claude`: `OAuth session expired and could not
+  be refreshed`, identity `claude-fable-5 (matched)`, four progress events
+- `~/.claude/.credentials.json` mtime: **13 July**, untouched by the login
+- the Keychain entry `Claude Code-credentials`: present, written by the login
+
+So the adapter reads a credential store the CLI no longer writes. It is not
+staleness and a re-login cannot reach it — which is the GitHub issue about the
+default Claude ACP lane being unable to reuse a Claude Max login, and it is
+v0.33.0's first item. "Session expired" was the wrong diagnosis; the sentence
+the adapter prints is not the reason it fails.
 
 Round eight is running the two available families over all six packets — 12 of
 18 lanes. `PANEL_THIRD=qwen` or `PANEL_THIRD=fable` re-runs the script and adds
