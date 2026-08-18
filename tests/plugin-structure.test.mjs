@@ -13,7 +13,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PLUGIN = join(ROOT, 'plugins/tmux-teams')
 const SKILLS = ['tmux-teams', 'party-mode', 'party-auto', 'party-advise', 'sqthink', 'codex-tmux-driver',
-  'graph-setup', 'claude-advisor', 'codex-advisor', 'handoff', 'show-me']
+  'graph-setup', 'claude-advisor', 'codex-advisor', 'agy-advisor', 'handoff', 'show-me']
 const RELEASE_VERSION = '0.32.0'
 // The Stage 1 CLI entry points went on 2026-07-29 and the rest of the phase
 // subsystem — nine scripts, its gate, its store and its exporter — went on
@@ -572,6 +572,7 @@ test('an advisor skill that claims read-only ships the switch that makes it read
   // unenforceable one.
   const codex = readFileSync(join(PLUGIN, 'skills', 'codex-advisor', 'SKILL.md'), 'utf8')
   const claude = readFileSync(join(PLUGIN, 'skills', 'claude-advisor', 'SKILL.md'), 'utf8')
+  const agy = readFileSync(join(PLUGIN, 'skills', 'agy-advisor', 'SKILL.md'), 'utf8')
 
   // every codex dispatch or resume block carries the mode
   // Truncate at the CLOSING fence. `split('```bash')` runs each piece on to the
@@ -582,7 +583,11 @@ test('an advisor skill that claims read-only ships the switch that makes it read
   // vacuous-assertion shape a panel lane had just found in the traversal test.
   const commandBlocks = (text) => text.split('```bash').slice(1)
     .map((b) => b.split('```')[0])
-    .filter((b) => /acp-dispatch\.mjs[\s\\]+\n?\s*(codex|claude) </.test(b))
+    // EVERY worker this dispatcher takes. Naming only the workers that existed
+    // when the guard was written means the next advisor skill ships unguarded:
+    // its commands match nothing, `blocks.length` is 0, and a full-access
+    // command passes silently.
+    .filter((b) => /acp-dispatch\.mjs[\s\\]+\n?\s*(codex|claude|agy|mock) </.test(b))
 
   const codexBlocks = commandBlocks(codex)
   assert.ok(codexBlocks.length >= 2, `expected dispatch and recovery blocks, got ${codexBlocks.length}`)
@@ -594,7 +599,8 @@ test('an advisor skill that claims read-only ships the switch that makes it read
   // and the identity guarantee is not fail-open: the default mode CONTINUES
   // after a receipt-persistence failure and records `receipt_digest: none`, so
   // an advisor could report an identity resting on a receipt never written.
-  for (const [name, text] of [['codex-advisor', codex], ['claude-advisor', claude]]) {
+  for (const [name, text] of [['codex-advisor', codex], ['claude-advisor', claude],
+    ['agy-advisor', agy]]) {
     const blocks = commandBlocks(text)
     // The count is pinned too: a block that stops MATCHING is indistinguishable
     // from a block that passes, and `> 0` cannot tell them apart.
@@ -604,13 +610,22 @@ test('an advisor skill that claims read-only ships the switch that makes it read
     // is indistinguishable from a block that passes, and `> 0` cannot tell them
     // apart — but it is pinned per file so ADDING a documented command is a
     // deliberate edit here rather than a silent one.
-    const expected = { 'codex-advisor': 2, 'claude-advisor': 3 }[name]
+    const expected = { 'codex-advisor': 2, 'claude-advisor': 3, 'agy-advisor': 1 }[name]
     assert.equal(blocks.length, expected,
       `${name} documents ${blocks.length} lane-launching commands, not ${expected}`)
     for (const block of blocks) {
       assert.match(block, /ACP_SESSION_RECEIPT_REQUIRED=1/,
         `${name} runs a lane whose receipt may silently not exist:\n${block.slice(0, 400)}`)
     }
+  }
+
+  // The AGY lane HAS the mode switch — measured 2026-08-19: it accepts
+  // read-only, writes a receipt and reports
+  // `effective_identity: gemini-3.7-flash-high (matched)`. Held to the same
+  // enforcement as codex rather than excused like claude.
+  for (const block of commandBlocks(agy)) {
+    assert.match(block, /INITIAL_AGENT_MODE="read-only"/,
+      `an agy advisor command runs at the default mode:\n${block.slice(0, 400)}`)
   }
 
   // The Claude lane has no mode switch, so it must not promise one it lacks.
@@ -652,6 +667,7 @@ test('the read-only guarantee is carried by the thing it says it rests on', () =
   // the guarantee leaned on did not carry it. The Codex lane has
   // INITIAL_AGENT_MODE=read-only; here the text IS the mechanism.
   const claude = readFileSync(join(PLUGIN, 'skills', 'claude-advisor', 'SKILL.md'), 'utf8')
+  const agy = readFileSync(join(PLUGIN, 'skills', 'agy-advisor', 'SKILL.md'), 'utf8')
   // `Cast 3-5 named voices`, not the round-table phrase — the frontmatter
   // description contains that phrase too, so the first match was the YAML
   // header and the assertion was about the wrong bytes.
@@ -685,6 +701,7 @@ test('the claude advisor does not promise an identity proof its routed seat cann
   // `opus` on three different bins reaches three different vendors. Both cannot
   // be true, and the headline is the one a reader sees first.
   const claude = readFileSync(join(PLUGIN, 'skills', 'claude-advisor', 'SKILL.md'), 'utf8')
+  const agy = readFileSync(join(PLUGIN, 'skills', 'agy-advisor', 'SKILL.md'), 'utf8')
   const body = claude.split('---').slice(2).join('---')   // past the frontmatter
 
   assert.ok(body.includes('has told\nyou nothing about who answered')

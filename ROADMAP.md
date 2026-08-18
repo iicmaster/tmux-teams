@@ -227,11 +227,31 @@ codex-advisor lane read them against each other and against the code, which is
 the only reason it is being corrected now rather than by the next reader of a
 gate file that contradicts itself.
 
-## The release after — v0.33.0, and why these five
+## The release after — v0.33.0, and why these six
 
 Ordered by what they cost when left alone, not by size. The first two arrived
-as GitHub issues; the last three are things v0.32.0 measured and could not fix
-inside its own scope.
+as GitHub issues; the next three are things v0.32.0 measured and could not fix
+inside its own scope; the sixth is Master's, added 2026-08-19.
+
+**A third advisor seat: `agy-advisor`.** `codex-advisor` and `claude-advisor`
+cover the OpenAI and Anthropic families, so every consultation this project can
+hold is a two-family split — and v0.32.0 spent nine review rounds on one seat
+before a change of model found in its first round what the nine had not. A
+Gemini seat through Antigravity is the cheapest way to stop that.
+
+Measured before the skill was written rather than after: the lane accepts
+`INITIAL_AGENT_MODE=read-only`, `ACP_SESSION_RECEIPT_REQUIRED=1` and
+`ACP_SESSION_OPERATION=new`, writes a receipt, and reports
+`effective_identity: gemini-3.7-flash-high (matched)`. So it is held to the same
+enforcement as the Codex seat rather than excused like the Claude one, which has
+no mode switch. It has no reasoning-effort dimension, so its identity is the
+bare model id where Codex reads `gpt-5.6-sol[max]`.
+
+The guard mattered more than the skill: `tests/plugin-structure.test.mjs`
+matched advisor commands on the workers `codex|claude` only, so a new advisor's
+commands would have matched NOTHING and shipped unguarded. That filter now names
+every worker the dispatcher takes, and the mutation that reverts it turns the
+suite red.
 
 **The default `claude` ACP lane cannot reuse a logged-in Claude Max session.**
 
