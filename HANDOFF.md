@@ -5,43 +5,65 @@ Written 2026-08-17 through `bmad-party-mode`.
 
 ## 1. READ THIS FIRST
 
-- Branch `fix/acp-dispatch-detached`, pushed. It is the **v0.32.0 release
-  branch** and carries both halves: the MCP lane-discovery server and
-  `acp-dispatch.mjs`. Scope set by Master, 2026-08-17.
+- Branch `release/v0.32.0`, pushed. It carries the MCP lane-discovery server and
+  `acp-dispatch.mjs`. Scope set by Master 2026-08-17.
 - `main` is at v0.31.0 and owes nothing.
-- **What is left is one gate and five mechanical steps.** The three-model panel
-  on the frozen bytes, then: bump seven places, render/publish/record the
-  roadmap, merge, tag the merged sha, pin the submodule in `~/agent-skills`.
-- **The bytes are FROZEN at `3366c88` while the panel reads them, and that
-  discipline is the finding, not a formality.** Two earlier panel runs were
-  wasted because findings were fixed while the run was still going: the
-  remaining lanes then read bytes that no longer existed, and eighteen verdicts
-  arrived naming a sha four commits behind HEAD. **A panel is evidence about one
-  sha or it is not evidence.** `panel-superseded/` holds those runs as a record
-  of what they found; none of them counts for this release.
-- **`HANDOFF.md` and `README.md` are not deciding files** (`scripts/gate-required.mjs`
-  names the thirteen that are), which is why this section can be written during
-  a freeze.
+- **What is left is one gate and five mechanical steps**: a three-family panel on
+  the frozen bytes, then bump seven places, render/publish/record the roadmap,
+  merge the PR, tag the merged sha, pin the submodule in `~/agent-skills`.
 
-### What the reviewing has actually cost, because the next person will want to know
+### The gate is blocked on lane availability, not on the code
 
-Nine `codex-advisor` rounds, one automated PR review, and four panel runs. Well
-over thirty findings, every one fixed with a guard a mutation turns red. The
-rate did not fall off — round nine and panel round three were still finding
-real defects, including one that had taken ownership of the happy path
-(`watchBoot` calling a fast successful lane "a consultation that never
-started").
+Measured 2026-08-18. Seven review lanes ship; **three can answer**:
 
-**Two things converged independently and are worth more than either alone.**
-Round five's four dispatcher blockers were the same four the automated PR
-reviewer raised without either seeing the other. And a panel lane and an advisor
-lane separately refused the same overclaim in ADR 0007.
+| lane | family | state |
+|------|--------|-------|
+| `agy` | gemini | works |
+| `codex` | openai | works |
+| `qwen` | qwen | 429, one-week quota exhausted, resets 08-19 16:37 UTC |
+| `zai` | zai | 400 `[1210] This model always engages in thinking and cannot be disabled`; a thinking budget did not help; package expired |
+| `kimi` | kimi | child exits 1 |
+| `deepseek` | deepseek | child exits 1 |
+| `claude`/fable | claude | identity MATCHES and the OAuth session is expired |
 
-**The reviewers also contradicted each other, correctly.** A panel told me the
-tolerant `initialize` was wrong; two commits later a panel told me the strict
-`ping` was. Both were right — the line is the spec, not a preference in either
-direction, and the second finding is the one that would have broken conforming
-traffic.
+Master chose **fable** as the third family. It needs one interactive command that
+an agent cannot run: `claude auth login`. Two different errors, and the
+difference is diagnostic — with no `CLAUDE_CONFIG_DIR` it is `Authentication
+required` (the credential is not found at all, which is the GitHub issue about
+the default Claude ACP lane not reusing a Claude Max login); with
+`CLAUDE_CONFIG_DIR=$HOME/.claude` it is `OAuth session expired and could not be
+refreshed`.
+
+Round eight is running the two available families over all six packets — 12 of
+18 lanes. `PANEL_THIRD=qwen` or `PANEL_THIRD=fable` re-runs the script and adds
+the missing six; every pair that already has an outbox is skipped, so nothing is
+paid for twice.
+
+### Eight panel rounds, and what they actually cost
+
+Rounds five, six and seven each found defects **in the previous round's fixes**,
+never in untouched code. Every one was the same shape: the fix went in the right
+direction and stopped short of its own call site.
+
+- read policy added — `recordedPid()` never routed through it
+- `hasStopped` corrected — admission left applying the opposite rule
+- `credential_unreadable` added — no caller ever passed `fileKind`
+- `mcp.json` added — only `.mcp.json` was ever booted
+- `ACP_SESSION_RECEIPT_REQUIRED=1` added — without
+  `ACP_SESSION_OPERATION`, which made every documented advisor command exit 2
+- the leaf read policy — parents were still resolved through symlinks
+
+**What changed in round seven is the method, not the effort.** Mutate the CALL
+SITE, not the function: if deleting the call leaves the suite green, the guard
+does not exist. And run the documented command instead of grepping for it — a
+string check proves you typed something. Both caught real holes in guards
+written minutes earlier, four times.
+
+A panel lane can also be WRONG. One reported `acceptedCredentialNames` missing
+from the codebase; it is at `review-profiles.mjs:776` and the disproof is
+committed as a test, because a disproof in a chat message is worth nothing
+later. Resolve a blocking finding by fixing it or by disproving it with a
+command — never by re-running until it goes away.
 
 ## 2. HOW TO VERIFY
 
@@ -201,6 +223,19 @@ release, not something to do after it.
   Register and remove in `after()`. The panel runner had the same shape and was
   found only after it cost the machine a second time: **after fixing a leak, go
   and look for the same shape somewhere else.**
+- **Do not mutate the FUNCTION when you mean to test the wiring.** Deleting a
+  call site must turn a test red. Four guards written this release passed their
+  own mutation and still guarded nothing, because the mutation hit the helper
+  and every consumer had been left unwired.
+- **Do not grep for a command when you can run it.** A string check proves you
+  typed something. `ACP_SESSION_RECEIPT_REQUIRED=1` was added to four documented
+  advisor commands, asserted as present, and broke all four — the companion
+  refuses that flag without `ACP_SESSION_OPERATION` and exits 2 before prompt
+  delivery. Three families reported it.
+- **Do not let a `git commit` follow a test run without depending on it.**
+  `node --test > log; grep ...; git add -A && git commit` commits on red,
+  because the grep controls nothing. It shipped one commit this release.
+  Put the commit inside `if grep -q '^ℹ fail 0$' log; then`.
 - **Do not push a release to `main`.** See DECIDED.
 - **Do not `rm -rf` an ACP run directory before recording its session id.** An
   outbox-less dispatch is often recoverable with `ACP_RESUME`.
