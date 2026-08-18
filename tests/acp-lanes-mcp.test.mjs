@@ -1388,3 +1388,54 @@ test('a lane is told the model its gateway answers to, not the one the panel rec
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('the vendor-neutral registration BOOTS, and a live client that never closes gets answers', async () => {
+  // Two round-nine findings, both about this file proving less than it says.
+  //
+  // First: `mcp.json` had only ever been compared as STRINGS against
+  // `.mcp.json`. A lane reported it in round six, I closed that with a
+  // string-comparison test, and the lane repeated in round nine that comparing
+  // strings is not booting. So this SPAWNS the vendor-neutral registration's
+  // own argv, with `${PLUGIN_ROOT}` expanded the way its contract says.
+  //
+  // Second: both stdio checks fed input that ENDS (`Readable.from` closes), so
+  // a server that never answers a live client passed them. This client stays
+  // open until it has its reply, which is what a real host does.
+  const neutral = JSON.parse(readFileSync(join(PLUGIN, 'mcp.json'), 'utf8'))
+    .mcpServers['tmux-teams-acp-lanes']
+  const argv = neutral.args.map((a) => a.replace('${PLUGIN_ROOT}', PLUGIN))
+  // `process.execPath` where the manifest says bare `node`: on a
+  // version-manager machine there is no `node` on a minimal PATH, which this
+  // repository has already paid for once. The manifest's own `command` is
+  // asserted separately below — running it here would test this machine's PATH,
+  // not the registration.
+  assert.equal(neutral.command, 'node')
+  const child = spawn(process.execPath, argv, {
+    cwd: neutral.cwd.replace('${PLUGIN_ROOT}', PLUGIN),
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, HOME: '/tmp' },
+  })
+  try {
+    let out = ''
+    child.stdout.on('data', (d) => { out += d })
+    // stdin stays OPEN — the frames go in and nothing closes the stream
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize',
+      params: { protocolVersion: '2025-06-18', capabilities: {},
+        clientInfo: { name: 'live-client', version: '1' } } })}\n`)
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' })}\n`)
+
+    const deadline = Date.now() + 20_000
+    while (Date.now() < deadline && out.split('\n').filter(Boolean).length < 2) {
+      await new Promise((r) => setTimeout(r, 100))
+    }
+    const replies = out.split('\n').filter(Boolean).map((l) => JSON.parse(l))
+    assert.equal(replies.length, 2,
+      `the vendor-neutral server answered ${replies.length} of 2 frames from a client that stayed open`)
+    assert.equal(replies[0].id, 1)
+    assert.ok(replies[0].result?.protocolVersion, 'initialize returned no protocolVersion')
+    assert.equal(replies[1].id, 2)
+    assert.ok(Array.isArray(replies[1].result?.tools), 'tools/list returned no tools')
+  } finally {
+    child.kill('SIGKILL')
+  }
+})
