@@ -1,71 +1,52 @@
 #!/usr/bin/env node
 // An MCP server that answers ONE question: which ACP review lanes exist here,
-// and what does each one still need on THIS machine.
+// and what does each one still need on THIS machine. The per-machine overrides
+// `TMUX_TEAMS_REVIEW_<ID>_SETTINGS` and `_ENV_FILE` had worked since 2026-08-13
+// and nothing surfaced them — "read the comment at review-profiles.mjs" is a
+// document, not an answer.
 //
-// Why it exists. The per-machine half of the ACP problem was solved in code on
-// 2026-08-13 — `TMUX_TEAMS_REVIEW_<ID>_SETTINGS` and
-// `TMUX_TEAMS_REVIEW_<ID>_ENV_FILE` let a profile live anywhere — and then
-// nothing told anybody. The answer to "why does my lane refuse" was "read the
-// comment at review-profiles.mjs:627", which is a document, not an answer.
+// ## Credentials: it READS them and never returns them
 //
-// ## What it does with credentials, stated the way it behaves
+// Deciding whether a lane is configured means calling `buildAcpLaunch`, which
+// reads the settings JSON and the credential file and copies provider secrets
+// from the environment. Do not claim otherwise: discarding a value you asked
+// for is not declining to read it (Master, 2026-08-16).
 //
-// **It READS them.** Deciding whether a lane's configuration is valid means
-// calling `buildAcpLaunch`, which reads the settings JSON, reads the credential
-// file, and copies provider secrets out of the environment. An earlier version
-// of this file and of ADR 0007 claimed "none is ever read", on the grounds that
-// the returned object is discarded. A Codex advisor round-table refused that
-// wording and was right: discarding a value you asked for is not declining to
-// read it. Master's decision, 2026-08-16 — it reads them, and it never returns
-// them.
-//
-// So the containment is about the OUTBOUND boundary, and it is enforced rather
-// than promised:
+// The containment is OUTBOUND and enforced, not promised:
 //
 //   - **No reply carries a credential VALUE.** Tested by serialising whole
-//     replies built from secret-bearing fixtures, on the success path AND on
-//     each failure path, for every provider-secret name this plugin knows.
-//   - **Credential field NAMES do go out, deliberately.** This paragraph said
-//     "or its field name" until 2026-08-17, and a Codex advisor reproduced the
-//     contradiction: the `credential_missing` fix sentences name
-//     `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY` and the lane's own keys,
-//     because an operator who is not told the vocabulary writes the wrong key
-//     into the right file and gets the same silence. A name is not a secret; a
-//     value is. What was wrong was the CLAIM, not the bytes — and a contract
-//     that its own code contradicts is worse than a narrower one, because it
-//     teaches a reader to stop checking.
-//   - A failure is reported as a CODE from a closed set with a sentence that is
-//     a constant of this file. The raw exception text never reaches the wire.
-//     That is not tidiness: the previous version exported
-//     `String(error.message)` verbatim, so any future diagnostic downstream
-//     that interpolated a token would have shipped it, and nothing here would
-//     have noticed.
+//     replies built from secret-bearing fixtures, on the success path and on
+//     every failure path, for every provider-secret name this plugin knows.
+//   - **Credential field NAMES go out deliberately** — the `credential_missing`
+//     fixes must name `ANTHROPIC_AUTH_TOKEN` and the lane's own keys, because an
+//     operator not told the vocabulary writes the wrong key into the right file
+//     and gets the same silence. A name is not a secret; a value is.
+//   - A failure is a CODE from a closed set with a sentence that is a constant
+//     of this file. Raw exception text never reaches the wire — exporting
+//     `String(error.message)` would ship whatever a future diagnostic
+//     interpolates into it.
 //
-// ## What "valid configuration" does and does not prove
+// ## "Valid configuration" does not mean the lane runs
 //
-// It proves the parent-side checks pass. It does NOT prove the lane runs — no
-// endpoint is contacted, no credential is accepted by anybody, no adapter is
-// resolved, no session is negotiated. The first version called that
-// `ready: true`, and the advisor reproduced the consequence in one command:
-// with no HOME, no PATH and no credentials, the `claude` and `codex` lanes both
-// reported ready. They report `unchecked` now, because for those two no
-// parent-side check exists at all, and a diagnostic that says READY and then
-// watches the real gate refuse is worse than no diagnostic.
+// No endpoint is contacted, no credential accepted, no adapter resolved, no
+// session negotiated. Reporting `ready: true` for that is measurably wrong: with
+// no HOME, no PATH and no credentials the `claude` and `codex` lanes both
+// reported ready. They answer `unchecked`, because for those two no parent-side
+// check exists at all, and a diagnostic that says READY and then watches the
+// real gate refuse is worse than none.
 //
 // ## ADR 0003 stands
 //
-// A DISPATCHED agent receives no MCP server, enforced at runtime and asserted
-// by the suite. This server is the operator's surface, which is a different
-// thing. Nothing here adds an allowlist, a profile field or a companion branch
-// that would make crossing that easier.
+// A DISPATCHED agent receives no MCP server, enforced at runtime and asserted by
+// the suite. This server is the OPERATOR's surface. Nothing here adds an
+// allowlist, profile field or companion branch that makes crossing that easier.
 //
 // ## Read-only, structurally
 //
-// Tools and their handlers come from ONE descriptor list, so the advertisement
-// and the dispatcher cannot disagree about which names exist. That is weaker
-// than the word this comment used to use: an advisor pointed out that a
-// differently named hidden branch added later would still pass, so what is held
-// here is auditability in one place, not impossibility.
+// Tools and handlers come from ONE descriptor list, so the advertisement and the
+// dispatcher cannot disagree about which names exist. That is auditability in
+// one place, not impossibility — a differently named hidden branch added later
+// would still pass.
 
 import { readFileSync, realpathSync } from 'node:fs'
 import { createInterface } from 'node:readline'
@@ -113,20 +94,13 @@ function deepFreeze(value) {
 // extension and is not this server's to judge.
 // `roots` ALONE. MCP 2025-06-18 types `listChanged` on that capability and
 // leaves `sampling` and `elicitation` as open objects, so demanding a boolean
-// from those two refused a conforming
-// `sampling: { listChanged: "vendor-extension" }`.
-//
-// Third correction of this line. It went every-capability, then three, and the
-// answer is one — each narrowing was toward the spec and stopped where I
-// guessed rather than where the document does.
-// TWO axes, and they were one list until a codex-advisor lane sent
-// `sampling: true` to the running server and got a success back. MCP 2025-06-18
-// types four client capability members as objects; only `roots` types
-// `listChanged` as a boolean. Collapsing that into one list meant the fix for
-// the second axis — narrowing from every capability name to `roots` — silently
-// narrowed the first one with it, and the suite stayed green because every
-// capability test sent a well-formed object carrying an odd VALUE and never a
-// member that was not an object at all.
+// from those refuses a conforming `sampling: { listChanged: "vendor-extension" }`.
+// Read the schema for this list; three earlier versions were guesses at it.
+// TWO axes, kept in two lists. MCP 2025-06-18 types four client capability
+// members as objects and only `roots` types `listChanged` as a boolean —
+// collapsing them means narrowing one axis silently narrows the other, and a
+// test suite that only ever sends well-formed objects carrying odd VALUES will
+// not notice.
 const MCP_OBJECT_CAPABILITIES = Object.freeze(['roots', 'sampling', 'elicitation', 'experimental'])
 const MCP_LISTCHANGED_CAPABILITIES = Object.freeze(['roots'])
 
@@ -147,9 +121,9 @@ export const DIAGNOSTICS = Object.freeze({
 // Nothing derived from the message text survives this function.
 // Matched against the SHAPE this system throws, not against loose text anywhere
 // in the message. Every phrase below is one this module's own dependencies
-// raise as `<lane> review <phrase>`, and the anchor is what stops a settings
-// PATH containing the same words from selecting a diagnosis — a panel lane
-// pointed out that a caller who controls a filename controls the classification.
+// raise as `<lane> review <phrase>`, and the anchor stops a settings PATH
+// containing the same words from selecting a diagnosis — otherwise a caller who
+// controls a filename controls the classification.
 const REVIEW_PHRASE = /(^|[\s:])review /
 
 export function classify(message, { fileKind = null } = {}) {
@@ -162,16 +136,12 @@ export function classify(message, { fileKind = null } = {}) {
   // Ordinary filesystem failures were classified by nothing and fell through to
   // `unclassified`, which told an operator to run the gate for a detail the
   // gate would report as the same unreadable file.
-  // Which FILE failed decides the repair, and the previous version aimed every
-  // filesystem error at the settings file — so an unreadable credential file
-  // sent the operator to edit the wrong file and the wrong variable. A panel
-  // lane caught it one commit after I introduced it.
+  // Which FILE failed decides the repair: aiming every filesystem error at the
+  // settings file sends the operator to edit the wrong file and variable.
   if (/\b(ENOENT|EACCES|EISDIR|ELOOP|EPERM)\b/.test(raw)) {
-    // WHICH file failed is not knowable from the message, and the previous
-    // version searched the raw text — INCLUDING THE PATH — for 'credential' or
-    // '.env'. A caller who controls a filename therefore chose the diagnosis,
-    // which is the exact invariant this module claims to hold. A panel lane
-    // reproduced it directly.
+    // WHICH file failed is NOT knowable from the message. Searching the raw
+    // text — which includes the PATH — for 'credential' or '.env' lets a caller
+    // who controls a filename choose the diagnosis.
     //
     // The honest answer without call-site identity is the generic one. The
     // caller that KNOWS which file it opened passes `fileKind` and gets the
@@ -251,13 +221,11 @@ export function laneFacts(id, profile) {
   }
 }
 
-// Fixes keyed on the CAUSE. The first version ignored `code` entirely and
-// emitted every generic setup sentence the profile allowed, so `agy` — which
-// fails because a trusted `agy` binary is absent — was told to repair the
-// ADAPTER PACKAGE. A Codex advisor called that worse than an unclassified
-// answer, because it sounds specific and sends the operator to the wrong file.
-// Non-empty was never the property worth asserting; naming the thing that
-// actually refused is.
+// Fixes keyed on the CAUSE. Ignoring `code` and emitting every generic setup
+// sentence the profile allows tells `agy` — which fails for a missing binary —
+// to repair the ADAPTER PACKAGE: worse than an unclassified answer, because it
+// sounds specific. Non-empty was never the property worth asserting; naming the
+// thing that actually refused is.
 function settingsFixes(id, profile) {
   const names = overrideNames(id)
   if (!profile.settingsRelativePath) return []
@@ -296,11 +264,10 @@ function executableFixes(id, profile) {
 function credentialFixes(id) {
   if (!ROUTED_PROFILES.has(id)) return []
   const names = overrideNames(id)
-  // The SAME function the validator calls, not a second list that agrees with
-  // it today. Round three built this list here by hand and it drifted from the
-  // check within one release — advertising names the endpoint validator did not
-  // accept, which is a fix sentence that cannot repair the refusal it is
-  // printed for.
+  // The SAME function the validator calls, never a second list that agrees with
+  // it today — a hand-built copy drifts within a release and advertises names
+  // the validator will not accept, which is a fix that cannot repair its own
+  // refusal.
   const accepted = acceptedCredentialNames(REVIEW_PROFILES[id])
   return [
     `if the credential lives outside that JSON, point ${names.credentials} at the env file holding it`,
@@ -533,26 +500,14 @@ export function requestProblem(message) {
   return null
 }
 
-// Per-method params, because an envelope check is not a params check. Round
-// three validated `tools/call` and nothing else, so `initialize` with no params,
-// `tools/list` with `params: []` and `ping` with unexpected params all answered
-// SUCCESS — reproduced over the real stdio server in round four.
+// Per-method params, because an envelope check is not a params check: validate
+// `tools/call` alone and `initialize` with no params, `tools/list` with
+// `params: []` and `ping` with unexpected params all answer SUCCESS.
 //
-// `initialize` requires everything MCP 2025-06-18 requires: `protocolVersion`,
-// `capabilities` and `clientInfo`.
-//
-// **This reverses a judgement, and the reversal is the interesting part.** The
-// tolerant version was deliberate — refusing a host that omits a field buys
-// this server nothing, no real host has ever initialized it, and the cost of
-// being wrong is a dead feature nobody can diagnose. An advisor round accepted
-// that reasoning with one condition: never sell it as strict conformance.
-//
-// Then a release panel raised it independently, against bytes that advertise
-// `protocolVersion: '2025-06-18'`. Two distinct reviewers arriving at the same
-// objection is this project's own must-fix bar, and the tie-breaker is that
-// the tolerance protects a case nobody has observed while the advertisement is
-// made on every single initialize. A conformant client sends all three; the
-// rule now matches the version this server claims to speak.
+// `initialize` requires everything MCP 2025-06-18 requires — `protocolVersion`,
+// `capabilities` and `clientInfo`. Being tolerant here was argued for and
+// reversed: the tolerance protects a case nobody has observed, while the
+// `2025-06-18` advertisement is made on every single initialize.
 // Every method this server answers. Pinned as a set rather than inferred from
 // the if-chain below, so a method that gains params validation and a method
 // that gains a handler cannot drift apart.
