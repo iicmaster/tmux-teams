@@ -1487,3 +1487,40 @@ test('the endpoint pin is checked against a written-down value, not against itse
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// Found by a codex-advisor lane against the running stdio server, then pinned
+// here. The check above types `roots` and stops, so `sampling: true`,
+// `elicitation: null` and `experimental: null` were all ACCEPTED while MCP
+// 2025-06-18 types every one of them as an object.
+//
+// Note WHY the previous test did not catch it, because the shape repeats: it
+// sent well-formed objects carrying odd VALUES and never sent a member that was
+// not an object at all. Two separate axes were being validated by one list, and
+// narrowing the list to fix the `listChanged` axis silently narrowed the
+// object-shape axis with it. They are separate lists now.
+test('every capability member MCP types as an object must be one', () => {
+  const ok = { name: 'probe', version: '1' }
+  const init = (capabilities) => handle({ jsonrpc: '2.0', id: 1, method: 'initialize',
+    params: { protocolVersion: '2025-06-18', clientInfo: ok, capabilities } }, {})
+
+  for (const name of ['roots', 'sampling', 'elicitation', 'experimental']) {
+    for (const bad of [true, null, 42, 'yes', ['a']]) {
+      const answer = init({ [name]: bad })
+      assert.equal(answer.error?.code, -32602,
+        `capabilities.${name} = ${JSON.stringify(bad)} was accepted`)
+      assert.equal(answer.error?.message, 'initialize capabilities members must be objects',
+        `capabilities.${name} = ${JSON.stringify(bad)} was refused with the wrong sentence`)
+    }
+    assert.ok(init({ [name]: {} }).result, `an empty ${name} object was refused`)
+  }
+
+  // The two axes stay separate: only `roots` types `listChanged`, and an
+  // unknown name is a client extension whatever it holds. Both are re-asserted
+  // HERE rather than trusted from the test above, because the fix that added
+  // the object list is exactly the change that could swing them back.
+  assert.equal(init({ roots: { listChanged: 'yes' } }).error?.code, -32602)
+  assert.ok(init({ sampling: { listChanged: 'vendor-extension' } }).result,
+    'a conforming open-object sampling capability was refused')
+  assert.ok(init({ someVendorExtension: null }).result,
+    'an unknown capability was typed as though MCP named it')
+})

@@ -1833,12 +1833,19 @@ test('two dispatches racing one task id cannot both win', async (t) => {
   // and exactly one lane exists
   assert.equal(readdirSync(join(cwd, '.tmux-teams', 'dispatch-pids')).length, 1)
 
-  // WHAT THIS TEST CANNOT PROVE, measured rather than claimed. Neutering the
-  // `O_CREAT|O_EXCL` claim leaves it GREEN: eight `spawn` calls each take about
-  // a hundred milliseconds to reach the admission reads, so those reads already
-  // pick a single winner at this granularity. The claim's unique contribution
-  // appears only under true simultaneity, which a test cannot stage from
-  // outside the process it needs to interrupt.
+  // WHAT THIS TEST PROVES, re-measured after the paragraph that used to stand
+  // here went false. It said neutering the `O_CREAT|O_EXCL` claim leaves this
+  // GREEN, and that WAS true when it was written — an unconditional `rmSync`
+  // ran before the claim, so the claim guarded nothing and removing it changed
+  // nothing. Taking the `rmSync` out is what made the claim real, and it made
+  // this paragraph false in the same commit; nobody re-read it. A codex-advisor
+  // lane measured the mutant on this checkout: `if (false)` in place of
+  // `if (!claimTaskId(cwd, taskId))` gives 1085 pass / 2 fail, this race test
+  // among them, at 2 of 8 admitted.
+  //
+  // The lesson is not about the claim. A comment that records a measurement has
+  // to be re-measured by whatever changes the thing it measured, or it becomes
+  // a confident false statement sitting next to working code.
   //
   // It stays because the reads CANNOT be made atomic — they answer "is the
   // holder alive", which takes several syscalls — while the claim either
@@ -2006,4 +2013,56 @@ test('admission sees a routing-less lane, and a leaseless leftover does not bloc
     { cwd, encoding: 'utf8', env: laneEnv(), timeout: 60000 })
   assert.equal(again.status, 0,
     `a leaseless leftover blocked a re-dispatch:\n${again.stdout}${again.stderr}`)
+})
+
+// Found by a codex-advisor lane on the release candidate, reproduced here
+// before the fix. `readDirSync` checked only that `realpath(path)` stayed under
+// `realpath(runRoot)` — so a `.mailbox-out` symlinked to another directory
+// INSIDE the same run passed, and the listing reported the target's files as
+// this run's. The leaf reader had already learned that containment is not
+// identity; the directory reader had not, though the comment above it claimed
+// both were fixed.
+test('an outbox directory reached through a symlink enumerates nothing of its own', () => {
+  const cwd = tempDir('acp-dirlink-')
+  mkdirSync(join(cwd, 'inside-target'), { recursive: true })
+  writeFileSync(join(cwd, 'inside-target', 'foreign'), 'not this run\n')
+  symlinkSync(join(cwd, 'inside-target'), join(cwd, '.mailbox-out'))
+  assert.deepEqual(strayOutboxes(cwd, 'mine'), [],
+    "a symlinked .mailbox-out reported the link target's files as this run's outboxes")
+})
+
+// The same lane found the one `readJson` call site of eight that omitted its
+// run root, in the refusal that loses the claim race. Chasing it turned up
+// something the lane could not see from the source alone: even with the root
+// restored the read finds nothing, because admission RETIRES that leaf about
+// forty lines earlier. The sentence it fed was unreachable from the start.
+//
+// So this test pins the two things that are true instead of the one that was
+// assumed. The refusal names the id and the file and stops there; and the leaf
+// really is retired rather than deleted, which is what keeps a superseded
+// lane's bytes readable.
+test('a refused claim says only what it can support, and keeps the retired leaf', () => {
+  const cwd = tempDir('acp-claimlease-')
+  mkdirSync(join(cwd, '.tmux-teams', 'dispatch-pids'), { recursive: true })
+  mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
+  // A DEAD pid, because the two refusals are different branches and only one of
+  // them is the claim. A live pid takes the "already running" path, whose own
+  // lease read never lost its run root — so planting `process.pid` here tested
+  // the branch that already worked. The first version of this test did exactly
+  // that and failed for a reason that looked like the bug and was not.
+  const dead = spawnSync(process.execPath, ['-e', '0'], { encoding: 'utf8' }).pid
+  writeFileSync(join(cwd, '.tmux-teams', 'dispatch-pids', 'held'), `${dead}\n`)
+  writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'held.json'),
+    JSON.stringify({ task_id: 'held', liveness_state: 'active',
+      next_lease_expiry_at: '2999-01-01T00:00:00.000Z' }))
+  writeFileSync(join(cwd, 'brief.md'), 'brief\n')
+  const r = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'held', join(cwd, 'brief.md'), '30'],
+    { cwd, encoding: 'utf8', env: laneEnv(), timeout: 60000 })
+  const said = `${r.stdout}${r.stderr}`
+  assert.match(said, /task id "held" is claimed here/, `the claim was not refused:\n${said}`)
+  assert.doesNotMatch(said, /progress lease says/,
+    `the refusal quoted a lease belonging to the occupant it had just retired:\n${said}`)
+  const leaves = readdirSync(join(cwd, '.tmux-teams', 'liveness'))
+  assert.equal(leaves.filter((n) => n.startsWith('held.json.superseded-')).length, 1,
+    `the predecessor leaf was not retired under a suffix: ${leaves.join(', ')}`)
 })

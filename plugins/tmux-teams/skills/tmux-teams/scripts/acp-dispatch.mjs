@@ -309,11 +309,46 @@ export function outboxPath(cwd, taskId) { return join(cwd, '.mailbox-out', taskI
 // report its contents as this run's. Returns an empty list rather than
 // throwing, because a report that cannot enumerate should say "nothing here I
 // can trust", not fail.
-function readDirSync(path, runRoot) {
+// NO SYMLINK ON THE WAY, not merely "resolves somewhere under the run root" —
+// containment is not identity, and a link pointing back INSIDE the same run
+// satisfies containment while redirecting the read. Each component is walked
+// from the run root instead, which is what the write side already does.
+//
+// Comparing `realpath(dir)` against `realpath(join(root, relative))` does not
+// work: both resolve the same link and are always equal. And the relative part
+// comes from the UNRESOLVED root, because the caller built `dir` from that same
+// unresolved string — slicing by the RESOLVED length ate the wrong number of
+// characters on macOS, where `/var` resolves to `/private/var`, and every read
+// began failing.
+//
+// A directory that is not under the run root at all is REFUSED rather than
+// walked. The previous version answered `''` for that case and then checked
+// nothing, which is how the one call site that forgot its run root read as
+// "no components to inspect" instead of as a mistake.
+function noSymlinkOnTheWay(dir, runRoot) {
   try {
-    const real = realpathSync(path)
-    const root = realpathSync(runRoot)
-    if (!real.startsWith(root + sep) && real !== root) return []
+    if (dir !== runRoot && !dir.startsWith(runRoot + sep)) return false
+    const relative = dir === runRoot ? '' : dir.slice(runRoot.length + 1)
+    let walked = realpathSync(runRoot)
+    for (const part of relative ? relative.split(sep) : []) {
+      walked = join(walked, part)
+      if (lstatSync(walked).isSymbolicLink()) return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+// `null` means REFUSED and `[]` means "nothing there", and the difference
+// matters to the two callers: a report that cannot enumerate should say
+// "nothing here I can trust", while ADMISSION must not read a refusal as
+// "no collision found" — that is the permissive answer to a safety question.
+// The directory ITSELF is walked, not its parent: `.mailbox-out` being the link
+// is the case a lane reproduced.
+function readDirSync(path, runRoot) {
+  if (!noSymlinkOnTheWay(path, runRoot)) return null
+  try {
     return readdirSync(path)
   } catch {
     return []
@@ -327,31 +362,9 @@ function readLeafSync(path, runRoot) {
   // covered one component of the path. A panel lane reproduced it after the
   // leaf check went in, which is the second time a fix here covered the case I
   // pictured and not the case that was named.
-  //
-  // `realpathSync` on the DIRECTORY, compared against the run root: cheap, and
-  // it answers the question the leaf check cannot.
+  if (!noSymlinkOnTheWay(dirname(path), runRoot)) return null
   let stat = null
   try {
-    // NO SYMLINK ON THE WAY, not merely "resolves somewhere under the run root".
-    // A lane reproduced the gap: `.mailbox-out` symlinked to another directory
-    // INSIDE the same run still passed a containment test, so a liveness file
-    // could answer the outbox question. Containment is not identity.
-    //
-    // Comparing `realpath(parent)` against `realpath(join(root, relative))` does
-    // not work — both resolve the same link and are always equal. Each
-    // component is checked instead, which is what the write side already does.
-    // The relative part comes from the UNRESOLVED root, because `path` was built
-    // from the same unresolved string — slicing by the resolved length ate the
-    // wrong number of characters on macOS, where `/var` resolves to
-    // `/private/var`, and every read started failing.
-    const relative = dirname(path).startsWith(runRoot + sep)
-      ? dirname(path).slice(runRoot.length + 1)
-      : ''
-    let walked = realpathSync(runRoot)
-    for (const part of relative ? relative.split(sep) : []) {
-      walked = join(walked, part)
-      if (lstatSync(walked).isSymbolicLink()) return null
-    }
     stat = lstatSync(path)
   } catch {
     return null
@@ -377,7 +390,9 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
 // difference between them is a whole re-dispatch.
 export function strayOutboxes(cwd, taskId) {
   try {
-    return readDirSync(join(cwd, '.mailbox-out'), cwd).filter((name) => name !== taskId).sort()
+    // A refusal reports nothing rather than throwing: this is a report, and
+    // "nothing here I can trust" is the honest answer to give a reader.
+    return (readDirSync(join(cwd, '.mailbox-out'), cwd) ?? []).filter((name) => name !== taskId).sort()
   } catch {
     return []
   }
@@ -772,7 +787,18 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
   // taken.
   for (const dir of ['liveness', 'dispatch-pids', 'dispatch-routing']) {
     const at = join(cwd, '.tmux-teams', dir)
-    for (const leaf of readDirSync(at, cwd)) {
+    // ADMISSION, not a report — so a refusal must not read as "no collision".
+    // Enumerating nothing and being unable to enumerate are the same value to a
+    // `for` loop and opposite answers to the question being asked.
+    const leaves = readDirSync(at, cwd)
+    if (leaves === null) {
+      throw Object.assign(
+        new Error(`task id "${taskId}" cannot be admitted: .tmux-teams/${dir} is reached `
+          + 'through a symlink, so what it holds cannot be checked for a case collision'),
+        { code: 'unreadable_run_directory' },
+      )
+    }
+    for (const leaf of leaves) {
       const stem = leaf.replace(/\.(json|superseded-.*)$/, '').replace(/\.superseded-.*$/, '')
       if (stem !== taskId && stem.toLowerCase() === taskId.toLowerCase()) {
         throw Object.assign(
@@ -900,10 +926,23 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
   // already names and the tests already exercise — and admission is exact.
   assertNotSymlink(pidPath(cwd, taskId))
   if (!claimTaskId(cwd, taskId)) {
-    const stale = readJson(livenessPath(cwd, taskId))?.next_lease_expiry_at ?? null
+    // NO LEASE SENTENCE HERE, and the reason is worth the paragraph. This
+    // branch used to append "Its progress lease says <t>", read from
+    // `livenessPath(cwd, taskId)`. A codex-advisor lane found that read was the
+    // one `readJson` call of eight missing its run root, so it always answered
+    // null and the sentence never appeared. Fixing the run root did not make it
+    // appear either: the loop above RETIRES that very leaf, unconditionally,
+    // about forty lines before this check runs. The branch was unreachable from
+    // the day it was written.
+    //
+    // It is deleted rather than repaired because repairing it would be worse.
+    // The leaf we just renamed away belonged to the PREVIOUS occupant of this
+    // id; whoever holds the claim we just lost is a different lane, and may not
+    // have written a liveness file yet. Quoting the predecessor's lease as
+    // "its progress lease" is a confident wrong answer, which this file already
+    // has a rule about: it sounds specific and sends the reader somewhere else.
     throw Object.assign(
       new Error(`task id "${taskId}" is claimed here: .tmux-teams/dispatch-pids/${taskId} exists.`
-        + (stale ? ` Its progress lease says ${stale}.` : '')
         + ' Ask it with `status`; if that lane is gone, remove that file and dispatch again'),
       { code: 'already_running' },
     )

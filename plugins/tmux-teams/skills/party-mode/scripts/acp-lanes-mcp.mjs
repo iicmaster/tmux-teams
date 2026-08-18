@@ -119,7 +119,16 @@ function deepFreeze(value) {
 // Third correction of this line. It went every-capability, then three, and the
 // answer is one — each narrowing was toward the spec and stopped where I
 // guessed rather than where the document does.
-const MCP_TYPED_CAPABILITIES = Object.freeze(['roots'])
+// TWO axes, and they were one list until a codex-advisor lane sent
+// `sampling: true` to the running server and got a success back. MCP 2025-06-18
+// types four client capability members as objects; only `roots` types
+// `listChanged` as a boolean. Collapsing that into one list meant the fix for
+// the second axis — narrowing from every capability name to `roots` — silently
+// narrowed the first one with it, and the suite stayed green because every
+// capability test sent a well-formed object carrying an odd VALUE and never a
+// member that was not an object at all.
+const MCP_OBJECT_CAPABILITIES = Object.freeze(['roots', 'sampling', 'elicitation', 'experimental'])
+const MCP_LISTCHANGED_CAPABILITIES = Object.freeze(['roots'])
 
 export const DIAGNOSTICS = Object.freeze({
   endpoint_missing: 'the lane is pinned to an endpoint and this machine supplies no base URL for it',
@@ -553,13 +562,16 @@ export function paramsProblem(method, params) {
     // stay legal — and it interpolated the caller's capability NAME into the
     // reply, which is the constant-sentence invariant this module states about
     // itself, broken inside the check written to enforce a different one.
-    for (const name of MCP_TYPED_CAPABILITIES) {
+    for (const name of MCP_OBJECT_CAPABILITIES) {
       const member = params.capabilities[name]
       if (member === undefined) continue
       if (member === null || typeof member !== 'object' || Array.isArray(member)) {
         return 'initialize capabilities members must be objects'
       }
-      if (member.listChanged !== undefined && typeof member.listChanged !== 'boolean') {
+    }
+    for (const name of MCP_LISTCHANGED_CAPABILITIES) {
+      const member = params.capabilities[name]
+      if (member?.listChanged !== undefined && typeof member.listChanged !== 'boolean') {
         return 'initialize capabilities listChanged must be a boolean'
       }
     }
