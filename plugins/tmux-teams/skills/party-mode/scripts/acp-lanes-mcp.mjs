@@ -139,6 +139,7 @@ export const DIAGNOSTICS = Object.freeze({
   executable_missing: 'an executable this lane needs was not found on this machine',
   profile_incomplete: 'this lane routes to a provider but its shipped profile declares no endpoint to pin',
   environment_unspawnable: 'the environment this lane would launch with cannot start a process',
+  environment_over_budget: 'the environment this lane would launch with is larger than this gate allows',
   unclassified: 'the lane refused for a reason this server does not classify; run the gate for the detail',
 })
 
@@ -198,6 +199,11 @@ export function classify(message, { fileKind = null } = {}) {
   // telling an operator to fix a credential is a false instruction in three of
   // those four cases.
   if (/cannot start a process/.test(text)) return 'environment_unspawnable'
+  // A SEPARATE code, because the two sentences make different claims. "cannot
+  // start" is a fact about the platform; "over budget" is a decision of ours,
+  // and a lane measured this machine spawning an environment three times the
+  // ceiling. One code for both would have kept saying the false half.
+  if (/environment is over budget/.test(text)) return 'environment_over_budget'
   if (/executable not found/.test(text)) return 'executable_missing'
   return 'unclassified'
 }
@@ -308,7 +314,7 @@ function credentialFixes(id) {
   ]
 }
 
-export function fixesFor(id, profile, code) {
+export function fixesFor(id, profile, code, { envKey = null } = {}) {
   const names = overrideNames(id)
   const settings = settingsFixes(id, profile)
   switch (code) {
@@ -319,9 +325,22 @@ export function fixesFor(id, profile, code) {
     case 'credential_missing':
       return [...credentialFixes(id), ...settings]
     case 'environment_unspawnable':
-      return ['one of the values this lane forwards cannot be passed to a process — '
-        + 'a NUL byte, or an environment larger than the launcher allows; the refusal names which',
-        ...settings]
+      // NAMES THE VALUE. The first version said "the refusal names which" while
+      // this boundary deliberately drops the raw exception, so it named nothing
+      // — and then pointed at the settings file, which a lane showed loses to
+      // the later ambient assignment for the very key that failed. The key
+      // travels on the error the same way `fileKind` does.
+      return [envKey
+        ? `${envKey} contains a NUL byte and cannot be passed to a process — `
+          + `clear it wherever it is set for this lane, which may be the ambient `
+          + `environment rather than ${overrideNames(id).settings}`
+        : 'one of the values this lane forwards contains a NUL byte and cannot be '
+          + 'passed to a process']
+    case 'environment_over_budget':
+      return [envKey
+        ? `${envKey} is larger than this gate passes to a lane — shorten it, or point `
+          + `the lane at a credential file instead of an inline value`
+        : 'the values this lane forwards exceed the total this gate passes to a lane']
     case 'settings_unreadable':
       return ['the JSON this lane reads must parse and must be an object', ...settings]
     case 'credential_unreadable':
@@ -394,7 +413,7 @@ export function laneStatus(id, profile, env) {
       ...facts,
       configuration: 'invalid',
       problem: { code, detail: DIAGNOSTICS[code] },
-      fixes: fixesFor(id, profile, code),
+      fixes: fixesFor(id, profile, code, { envKey: error?.envKey ?? null }),
       notProven: notProvenFor(profile),
     }
   }

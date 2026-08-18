@@ -131,16 +131,21 @@ release, not something to do after it.
   a lane read it against the source. A lane whose pid or routing record cannot
   be published IS killed, because the alternative is a detached process with no
   way back to it.
-  16 tests in `tests/acp-dispatch.test.mjs`.
+  58 tests in `tests/acp-dispatch.test.mjs` — a count that said 16 through six
+  advisor rounds, because a number in prose is only true on the day it is typed.
 - **The MCP lane-discovery server** is unchanged in purpose from ADR 0007 and
   much changed in detail: envelope AND per-method params validation, a request
   id that may be any finite number, credential vocabulary shared with the
   endpoint validator by construction, and an `agy` check that requires an
-  executable regular file. 27 tests in `tests/acp-lanes-mcp.test.mjs`.
+  executable regular file. 47 tests in `tests/acp-lanes-mcp.test.mjs`.
 - **Two things are kept deliberately and are judgements, not spec readings.**
-  `initialize` does not demand `capabilities` or `clientInfo` — no real host has
-  ever initialized this server, so refusing one that omits a field costs a dead
-  feature and buys nothing. And a routed lane honours `ANTHROPIC_AUTH_TOKEN` /
+  `initialize` DOES demand `capabilities` and `clientInfo`, including
+  `clientInfo.name` and `.version`, and this bullet said the opposite: measured,
+  a call carrying only `protocolVersion` answers `initialize requires an object
+  capabilities`, and adding one answers `initialize requires an object
+  clientInfo`. The judgement that was kept is the narrower one — an UNKNOWN
+  capability name stays legal whatever it holds, because refusing a future
+  protocol is not validating this one. And a routed lane honours `ANTHROPIC_AUTH_TOKEN` /
   `ANTHROPIC_API_KEY` from its own FILES but never from the ambient
   environment, while its declared secrets work from either. Both are in ADR
   0007. An advisor round accepted both with the caveat that this must never be

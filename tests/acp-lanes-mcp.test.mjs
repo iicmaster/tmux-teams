@@ -293,7 +293,8 @@ test('malformed settings are diagnosed as unreadable, not shrugged at', () => {
 test('every diagnostic code the classifier can return has a constant sentence', () => {
   const codes = ['endpoint_missing', 'endpoint_mismatch', 'credential_missing',
     'settings_unreadable', 'credential_unreadable', 'profile_incomplete',
-    'executable_missing', 'environment_unspawnable', 'unclassified']
+    'executable_missing', 'environment_unspawnable', 'environment_over_budget',
+    'unclassified']
   assert.deepEqual(Object.keys(DIAGNOSTICS).sort(), [...codes].sort())
   // and the classifier maps real messages onto them rather than onto `unclassified`
   assert.equal(classify('zai review requires ANTHROPIC_BASE_URL'), 'endpoint_missing')
@@ -305,8 +306,13 @@ test('every diagnostic code the classifier can return has a constant sentence', 
   // nothing to do with a credential.
   assert.equal(classify('zai review environment cannot start a process: ZAI_API_KEY contains a NUL byte'),
     'environment_unspawnable')
-  assert.equal(classify('zai review environment cannot start a process: it is 2097262 bytes and the ceiling is 262144'),
-    'environment_unspawnable')
+  // A DIFFERENT code from the NUL case, and the reason is the sentence: this
+  // machine spawns an environment three times the ceiling, so calling the size
+  // refusal "cannot start a process" was measurably false.
+  assert.equal(classify('zai review environment is over budget: it is 2097262 bytes and the ceiling is 262144'),
+    'environment_over_budget')
+  assert.equal(classify('zai review environment is over budget: ZAI_API_KEY is 204802 bytes and the per-value ceiling is 65536'),
+    'environment_over_budget')
   // WHICH FILE failed decides the repair. Aiming every filesystem error at the
   // settings file sent the operator to edit a file that was fine — a panel lane
   // caught it one commit after it was introduced.
@@ -1580,58 +1586,97 @@ test('experimental carries typed values, not just a typed container', () => {
     'initialize capabilities members must be objects')
 })
 
-// THREE rounds of narrower fixes, each correct about the case it was shown and
-// none of them about the property. First `spawnableValue` decided whether at
-// least one accepted credential existed — so a good token beside a NUL-bearing
-// one reported `valid` on an environment spawnSync refuses. Then it was applied
-// to the forwarded provider secrets — and a lane put the same NUL in the routed
-// SETTINGS file, which is assigned earlier and was never in that loop. Then a
-// 2 MiB credential passed every per-value check and the kernel answered E2BIG.
+// FOUR rounds of narrower fixes, each correct about the case it was shown and
+// none about the property. `spawnableValue` first decided whether at least one
+// accepted credential existed; then it was applied to the forwarded secrets and
+// a lane put the same NUL in the routed SETTINGS, assigned earlier; then a
+// 2 MiB credential passed every per-value check and the kernel answered E2BIG;
+// then the sweep that fixed all three ran AFTER the endpoint check, so a lane
+// whose only credential carried a NUL still answered `credential_missing` — the
+// "you already added it" outcome the sweep exists to prevent, produced by the
+// sweep that prevents it.
 //
-// The property is about the FINISHED environment, so it is asserted on the
-// finished environment, and this table is the shape of that rule rather than
-// three examples of breaking it.
+// The property is about the FINISHED environment, so it is asserted there, and
+// this table is the rule rather than four examples of breaking it.
 //
-// The test it replaces claimed to prove the launch could really start a process
-// and proved nothing: `assert.doesNotThrow(() => spawnSync(...))` — spawnSync
-// RETURNS `result.error`, it does not throw. A lane short-circuited that line to
-// `false && spawnSync(...)` and the whole 1103-test suite stayed green.
+// The test this replaces claimed to prove the launch could start a process and
+// proved nothing: `assert.doesNotThrow(() => spawnSync(...))` — spawnSync
+// RETURNS `result.error`. A lane short-circuited that line and all 1103 tests
+// stayed green.
 test('an environment that cannot start a process is never reported valid', () => {
   const NUL = String.fromCharCode(0)
-  const endpoint = { ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic',
-    ANTHROPIC_AUTH_TOKEN: 'valid-token' }
+  const NUL_FIX = 'contains a NUL byte and cannot be passed to a process'
+  const BUDGET_FIX = 'is larger than this gate passes to a lane'
+  const endpoint = { ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic' }
+  const withToken = { ...endpoint, ANTHROPIC_AUTH_TOKEN: 'valid-token' }
   const cases = [
-    { name: 'a clean lane', settings: {}, ambient: {}, startable: true },
-    { name: 'a NUL in the routed settings', settings: { ZAI_API_KEY: `bad${NUL}value` },
-      ambient: {}, startable: false },
-    { name: 'a NUL in an ambient secret', settings: {},
-      ambient: { ZAI_API_KEY: `bad${NUL}value` }, startable: false },
-    { name: 'a credential larger than the launcher allows', settings: {},
-      ambient: { ZAI_API_KEY: 'x'.repeat(2 * 1024 * 1024) }, startable: false },
+    { name: 'a clean lane', settings: withToken, ambient: {}, code: null },
+    // The ORDER case: no second credential to fall back on, so a sweep running
+    // after the endpoint check answers `credential_missing` here.
+    { name: 'the only credential carries a NUL', settings: endpoint,
+      ambient: { ZAI_API_KEY: `bad${NUL}value` }, code: 'environment_unspawnable',
+      expectedFix: `ZAI_API_KEY ${NUL_FIX}` },
+    { name: 'a NUL beside a good credential', settings: withToken,
+      ambient: { ZAI_API_KEY: `bad${NUL}value` }, code: 'environment_unspawnable',
+      expectedFix: `ZAI_API_KEY ${NUL_FIX}` },
+    { name: 'a NUL in the routed settings', settings: { ...withToken, ZAI_API_KEY: `bad${NUL}value` },
+      ambient: {}, code: 'environment_unspawnable', expectedFix: `ZAI_API_KEY ${NUL_FIX}` },
+    { name: 'a credential over the total budget', settings: withToken,
+      ambient: { ZAI_API_KEY: 'x'.repeat(2 * 1024 * 1024) },
+      code: 'environment_over_budget', expectedFix: `ZAI_API_KEY ${BUDGET_FIX}` },
+    // Under the TOTAL and over the per-string cap Linux enforces at 131072.
+    // This host spawns it; the CI host would not.
+    { name: 'one value over the per-string cap', settings: withToken,
+      ambient: { ZAI_API_KEY: 'x'.repeat(200 * 1024) },
+      code: 'environment_over_budget', expectedFix: `ZAI_API_KEY ${BUDGET_FIX}` },
+    // MANY values, each comfortably under the per-string cap, summing past the
+    // total. Without this the total ceiling had no guard of its own: widening
+    // it from 256 KiB to 1 MiB left every case above still refused by the
+    // per-string rule, so the number could move and nothing noticed.
+    { name: 'many values summing over the total budget',
+      settings: { ...withToken,
+        ANTHROPIC_CUSTOM_HEADERS: 'h'.repeat(60 * 1024),
+        ANTHROPIC_DEFAULT_OPUS_MODEL: 'o'.repeat(60 * 1024),
+        ANTHROPIC_DEFAULT_SONNET_MODEL: 's'.repeat(60 * 1024),
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: 'h'.repeat(60 * 1024),
+        ANTHROPIC_API_KEY: 'k'.repeat(60 * 1024) },
+      ambient: {}, code: 'environment_over_budget',
+      expectedFix: 'the values this lane forwards exceed the total' },
   ]
-  for (const { name, settings, ambient, startable } of cases) {
+  for (const { name, settings, ambient, code, expectedFix } of cases) {
     const dir = mkdtempSync(join(tmpdir(), 'mcp-env-'))
     try {
       const file = join(dir, 'zai.json')
-      writeFileSync(file, JSON.stringify({ env: { ...endpoint, ...settings } }))
+      writeFileSync(file, JSON.stringify({ env: settings }))
       const env = { HOME: dir, PATH: process.env.PATH,
         TMUX_TEAMS_REVIEW_ZAI_SETTINGS: file, ...ambient }
       const status = laneStatus('zai', REVIEW_PROFILES.zai, env)
 
-      if (!startable) {
+      if (code) {
         assert.equal(status.configuration, 'invalid', `${name} was reported valid`)
-        assert.equal(status.problem?.code, 'environment_unspawnable',
-          `${name} was refused as ${status.problem?.code} rather than for what it is`)
-        assert.throws(() => buildAcpLaunch('zai', { env }), /cannot start a process/,
-          `${name} produced a launch object at all`)
+        assert.equal(status.problem?.code, code,
+          `${name} was refused as ${status.problem?.code}`)
+        // The REPAIR names the value. It used to say "the refusal names which"
+        // while this boundary drops the raw exception, so it named nothing, and
+        // then pointed at a settings file that does not hold an ambient key.
+        // The SENTENCE, not merely the key appearing somewhere. Renaming the
+        // remediation case out of the switch left this green when it only
+        // checked for the key, because the fallback repair names the settings
+        // file and the settings file path contains it. A guard that a wrong
+        // answer satisfies is not a guard.
+        assert.ok(status.fixes.some((fix) => fix.includes(expectedFix)),
+          `${name} produced a repair that never says "${expectedFix}": ${JSON.stringify(status.fixes)}`)
+        // A deterministic stage for review-gate: a plain TypeError has no code,
+        // lands in `transport`, and the operator is told to re-run a refusal
+        // that is identical on every attempt.
+        assert.throws(() => buildAcpLaunch('zai', { env }), (error) => error.code === 'config',
+          `${name} threw without a deterministic stage code`)
         continue
       }
 
       assert.equal(status.configuration, 'valid', `${name} was refused`)
       const launch = buildAcpLaunch('zai', { env })
-      // `result.error`, not doesNotThrow. This is the assertion the previous
-      // version got wrong, and getting it wrong is what let three rounds of
-      // partial fixes read as complete.
+      // `result.error`, not doesNotThrow — spawnSync returns its failure.
       const result = spawnSync(process.execPath, ['-e', ''], { env: launch.env })
       assert.equal(result.error, undefined,
         `${name} built an environment the OS refused: ${result.error?.code}`)
@@ -1639,5 +1684,28 @@ test('an environment that cannot start a process is never reported valid', () =>
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  }
+})
+
+// A separate assertion on the SIZE claim, because the sentence is the finding.
+// The first version refused at 256 KiB saying "cannot start a process", and a
+// lane measured this machine starting one at 921,600 bytes. The refusal is a
+// policy of ours; it has to read like one.
+test('the size refusal claims a budget and never claims the platform refused', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mcp-budget-'))
+  try {
+    const file = join(dir, 'zai.json')
+    writeFileSync(file, JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic',
+      ANTHROPIC_AUTH_TOKEN: 'valid-token' } }))
+    const env = { HOME: dir, PATH: process.env.PATH, TMUX_TEAMS_REVIEW_ZAI_SETTINGS: file,
+      ZAI_API_KEY: 'x'.repeat(2 * 1024 * 1024) }
+    assert.throws(() => buildAcpLaunch('zai', { env }), (error) => {
+      assert.match(error.message, /over budget/)
+      assert.doesNotMatch(error.message, /cannot start a process/,
+        'the size refusal asserts the platform refused, which was measured false')
+      return true
+    })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })

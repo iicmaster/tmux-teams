@@ -1011,17 +1011,31 @@ export function buildProfileEnv(profileId, source = process.env, {
   if (Number.isSafeInteger(profile.thinkingBudgetTokens) && profile.thinkingBudgetTokens >= 0) {
     env.MAX_THINKING_TOKENS = String(profile.thinkingBudgetTokens)
   }
-  if (ROUTED_PROFILES.has(profile.id)) validateRoutedEndpoint(profile, env)
+  // BEFORE the endpoint check, not after. A lane whose ONLY credential carried
+  // a NUL had that credential rejected by `acceptedCredential` first, so the
+  // answer was `credential_missing` — the exact "you already added it, the tool
+  // says it is missing" outcome this check was added to prevent, still produced
+  // by the check that prevents it, because it ran second.
   assertStartableEnvironment(profile.id, env)
+  if (ROUTED_PROFILES.has(profile.id)) validateRoutedEndpoint(profile, env)
   return Object.freeze(env)
 }
 
-// A quarter of the smallest ARG_MAX worth caring about — this machine reports
-// 1048576 for argv AND environment together, and the lane still has a command
-// line to fit beside this. Not a guess at the OS limit: a bound far below every
-// limit, so the refusal is ours and legible rather than the kernel's E2BIG at
-// spawn time.
+// A POLICY BUDGET, and the distinction cost a round. This machine spawns a
+// 921,600-byte environment without complaint, so a refusal at 256 KiB is not a
+// statement about what the OS will do — it is ours. The first version said
+// "cannot start a process" for it, which was measurably false and is the kind
+// of confident wrong sentence this repository has a rule about.
 const ENVIRONMENT_BYTE_CEILING = 256 * 1024
+
+// Linux caps a SINGLE argument or environment string at MAX_ARG_STRLEN, which
+// is 32 pages — 131072 bytes on an ordinary 4 KiB-page kernel — INDEPENDENTLY
+// of the total. So a 200 KiB credential fits under the total budget above and
+// still fails with E2BIG on the CI host, where nothing here runs to notice.
+// Unreproduced on this macOS box and taken on the reviewer's word plus the
+// kernel constant, which is why the number is half the documented limit rather
+// than equal to it.
+const ENVIRONMENT_ENTRY_BYTE_CEILING = 64 * 1024
 
 // ONE sweep over the FINAL environment, which is the only place that can answer
 // "can this start a process". Two rounds of narrower fixes did not:
@@ -1039,22 +1053,42 @@ const ENVIRONMENT_BYTE_CEILING = 256 * 1024
 // It THROWS rather than omitting. Omitting made a malformed supplied credential
 // read as "missing", which sends an operator to add a credential they already
 // added; a lane raised that as the wrong half of the trade.
+// TWO refusals, because they are two different claims and one sentence was
+// making both. A NUL byte means the environment CANNOT start a process — a
+// fact, true on every platform. A size means we have DECIDED not to try — a
+// policy, and saying "cannot start" about it was false on the machine that
+// measured it.
+//
+// Both carry `code: 'config'` so `review-gate.mjs` reads them through
+// `laneStage` as a deterministic stage and tells the operator to fix the
+// profile. Without it a plain TypeError has no code, lands in `transport`, and
+// the report says "re-run this lane alone" about a refusal that is identical on
+// every attempt. And both carry `envKey`, so the repair can name the value that
+// failed instead of pointing at a settings file that may not even hold it.
 function assertStartableEnvironment(profileId, env) {
   let bytes = 0
   for (const [key, value] of Object.entries(env)) {
     const text = String(value)
     if (text.includes('\u0000')) {
-      throw new TypeError(`${profileId} review environment cannot start a process: `
-        + `${key} contains a NUL byte`)
+      throw Object.assign(
+        new TypeError(`${profileId} review environment cannot start a process: `
+          + `${key} contains a NUL byte`),
+        { code: 'config', envKey: key })
     }
-    bytes += Buffer.byteLength(key) + Buffer.byteLength(text) + 2
+    const entryBytes = Buffer.byteLength(key) + Buffer.byteLength(text) + 2
+    if (entryBytes > ENVIRONMENT_ENTRY_BYTE_CEILING) {
+      throw Object.assign(
+        new TypeError(`${profileId} review environment is over budget: ${key} is `
+          + `${entryBytes} bytes and the per-value ceiling is ${ENVIRONMENT_ENTRY_BYTE_CEILING}`),
+        { code: 'config', envKey: key })
+    }
+    bytes += entryBytes
   }
-  // A NUL is not the only way an environment refuses. A 2 MiB credential passes
-  // every per-value check and the kernel answers E2BIG — measured by a lane on
-  // exactly that value, against a lane this file had just reported `valid`.
   if (bytes > ENVIRONMENT_BYTE_CEILING) {
-    throw new TypeError(`${profileId} review environment cannot start a process: `
-      + `it is ${bytes} bytes and the ceiling is ${ENVIRONMENT_BYTE_CEILING}`)
+    throw Object.assign(
+      new TypeError(`${profileId} review environment is over budget: it is ${bytes} `
+        + `bytes and the ceiling is ${ENVIRONMENT_BYTE_CEILING}`),
+      { code: 'config', envKey: null })
   }
 }
 
