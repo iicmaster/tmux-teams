@@ -200,9 +200,20 @@ changes state. Work that comes out of a consultation goes to `party-auto`.
     status <cwd> <task-id>
   ```
 
-  `status` prints the ready-to-paste resume command with the session id already
-  in it, so nobody digs it out of `.tmux-teams/` by hand. It looks like this,
-  and the shape matters:
+  `status` prints the resume command with the session id already in it, so
+  nobody digs that out of `.tmux-teams/` by hand — and with `ACP_PRIOR_DISPATCH_ID`
+  and `ACP_PRIOR_RECEIPT_DIGEST` as visible placeholders, because status cannot
+  know them. **It is not ready to paste, and the two words were doing damage.**
+  This file used to call it ready-to-paste in one paragraph and explain nine
+  lines further down that a receipt-required load needs lineage status has no
+  way to supply. The code sided with the wrong paragraph: it emitted neither the
+  receipt flag nor the operation, so a paste did not fail, it DOWNGRADED — the
+  companion defaults `receiptRequired` to false, and the recovered consultation
+  came back without the guarantee the original ran under. Found by a
+  codex-advisor lane reading this skill against the function it describes.
+
+  Fill the two placeholders from the failed run's receipt before running it.
+  It looks like this, and the shape matters:
 
   ```bash
   INITIAL_AGENT_MODE="read-only" ACP_SESSION_RECEIPT_REQUIRED=1 \

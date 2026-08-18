@@ -569,6 +569,19 @@ export function paramsProblem(method, params) {
         return 'initialize capabilities members must be objects'
       }
     }
+    // `experimental` is `{ [key: string]: object }` — the VALUES are typed too,
+    // and checking only the outer object accepted `{"vendor": true}` from a
+    // live client. Found by driving the running server, not by reading: the
+    // outer-shape fix landed and read as complete, because the four names in
+    // the list above are the right four and nothing said the map had a second
+    // rule inside it.
+    if (params.capabilities.experimental !== undefined) {
+      for (const value of Object.values(params.capabilities.experimental)) {
+        if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+          return 'initialize capabilities experimental values must be objects'
+        }
+      }
+    }
     for (const name of MCP_LISTCHANGED_CAPABILITIES) {
       const member = params.capabilities[name]
       if (member?.listChanged !== undefined && typeof member.listChanged !== 'boolean') {

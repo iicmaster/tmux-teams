@@ -419,6 +419,11 @@ export const ROUTING_ENV_KEYS = Object.freeze([
   'ACP_MODEL', 'ACP_REASONING_EFFORT', 'ACP_EXPECT_MODEL', 'ACP_EXPECT_REASONING_EFFORT',
   'ANTHROPIC_MODEL', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_EXECUTABLE', 'INITIAL_AGENT_MODE',
   'ACP_AGENT_ID', 'ACP_EXECUTION_PROFILE',
+  // Recorded for the same reason as the rest: a resume that drops it does not
+  // fail, it DOWNGRADES — the companion defaults `receiptRequired` to false, so
+  // a lane that was dispatched under a receipt guarantee comes back without one
+  // and says nothing. Not a secret; it selects a mode.
+  'ACP_SESSION_RECEIPT_REQUIRED',
 ])
 
 export function routingPath(cwd, taskId) { return join(cwd, '.tmux-teams', 'dispatch-routing', `${taskId}.json`) }
@@ -454,6 +459,23 @@ export function resumeCommand(cwd, taskId, { sessionId, worker, routing, briefFi
   const parts = [`ACP_RESUME=${shQuote(sessionId)}`]
   for (const key of ROUTING_ENV_KEYS) {
     if (env[key] !== undefined && env[key] !== '') parts.push(`${key}=${shQuote(env[key])}`)
+  }
+  // A receipt-required dispatch resumes as a receipt-required LOAD, and a load
+  // needs lineage this function cannot know. `ACP_SESSION_OPERATION` is
+  // synthesised rather than copied, because the recorded value is `new` and
+  // pasting `new` would start a fresh session under a resume command.
+  //
+  // The two lineage values are emitted as QUOTED PLACEHOLDERS, on the same
+  // reasoning the brief path already uses here: an operator who pastes this
+  // unedited must get a refusal, not a quieter guarantee. A codex-advisor lane
+  // found the command being printed with none of these while `codex-advisor`'s
+  // own SKILL.md called the output ready to paste — the skill's later paragraph
+  // already said a receipt-required load needs lineage, so the file disagreed
+  // with itself and the code sided with the wrong half.
+  if (env.ACP_SESSION_RECEIPT_REQUIRED) {
+    parts.push(`ACP_SESSION_OPERATION=${shQuote('load')}`)
+    parts.push(`ACP_PRIOR_DISPATCH_ID=${shQuote('PUT-THE-PRIOR-DISPATCH-ID-HERE')}`)
+    parts.push(`ACP_PRIOR_RECEIPT_DIGEST=${shQuote('PUT-THE-PRIOR-RECEIPT-DIGEST-HERE')}`)
   }
   return [
     `${parts.join(' ')} \\`,

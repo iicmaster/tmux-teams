@@ -1181,9 +1181,22 @@ test('initialize types the members MCP 2025-06-18 types, and still admits an unk
   // `listChanged` from EVERY capability name, and a lane reproduced a legal
   // `experimental` map being refused for it. A fixture that cannot fail the
   // rule it is written for proves nothing.
+  //
+  // One fixture MOVED, and the move is the point. This list used to carry
+  // `{ experimental: { listChanged: 'a string, and legal here' } }` as an
+  // example of a legal extension. It is not one: `experimental` is a member MCP
+  // NAMES, declared `{ [key: string]: object }`, so a string value inside it is
+  // invalid however unknown the key is. The lesson the fixture was written for
+  // — `listChanged` is not boolean-typed outside `roots` — is true at an
+  // UNKNOWN top-level name, which is where it now lives. The version below it,
+  // with an object value, stays exactly where it was and still carries the same
+  // proof inside `experimental`.
+  //
+  // Two things were being called "extension": a capability name MCP has never
+  // heard of, and a key inside a map MCP defines. Only the first is untyped.
   for (const extension of [
     { somethingNobodyHasShippedYet: { whatever: 1 } },
-    { experimental: { listChanged: 'a string, and legal here' } },
+    { someVendorNamespace: { listChanged: 'a string, and legal here' } },
     { experimental: { listChanged: { nested: true } } },
     { vendorThing: null },
   ]) {
@@ -1523,4 +1536,38 @@ test('every capability member MCP types as an object must be one', () => {
     'a conforming open-object sampling capability was refused')
   assert.ok(init({ someVendorExtension: null }).result,
     'an unknown capability was typed as though MCP named it')
+})
+
+// `experimental` carries a SECOND rule inside it, and the first fix stopped at
+// the door. MCP 2025-06-18 declares `experimental?: { [key: string]: object }`,
+// so every value in that map is object-typed as well. A lane sent
+// `{"experimental":{"vendor":true}}` to the running server and got a successful
+// initialize back — after the outer-shape list had been corrected and looked
+// complete, because the four names in it ARE the right four.
+//
+// The shape to remember: a fix that satisfies the sentence in the report is not
+// the same as a fix that satisfies the schema. Nothing in "sampling:true is
+// accepted" hints that a map has typed values.
+test('experimental carries typed values, not just a typed container', () => {
+  const ok = { name: 'probe', version: '1' }
+  const init = (capabilities) => handle({ jsonrpc: '2.0', id: 1, method: 'initialize',
+    params: { protocolVersion: '2025-06-18', clientInfo: ok, capabilities } }, {})
+
+  for (const bad of [true, null, 42, 'x', ['a']]) {
+    const answer = init({ experimental: { vendor: bad } })
+    assert.equal(answer.error?.code, -32602,
+      `experimental.vendor = ${JSON.stringify(bad)} was accepted`)
+    assert.equal(answer.error?.message, 'initialize capabilities experimental values must be objects',
+      `experimental.vendor = ${JSON.stringify(bad)} was refused with the wrong sentence`)
+  }
+  assert.ok(init({ experimental: { vendor: {} } }).result,
+    'an empty experimental value object was refused')
+  assert.ok(init({ experimental: { vendor: { nested: 'anything' } }, }).result,
+    'a populated experimental value object was refused')
+  assert.ok(init({ experimental: {} }).result, 'an empty experimental map was refused')
+
+  // The OUTER rule still applies and is a different sentence, so a regression
+  // that collapses the two is visible rather than merely still-refusing.
+  assert.equal(init({ experimental: null }).error?.message,
+    'initialize capabilities members must be objects')
 })

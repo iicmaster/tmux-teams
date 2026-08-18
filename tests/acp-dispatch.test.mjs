@@ -2067,15 +2067,27 @@ test('a refused claim says only what it can support, and keeps the retired leaf'
     `the predecessor leaf was not retired under a suffix: ${leaves.join(', ')}`)
 })
 
-// This test exists because a mutation SURVIVED, and it ended up pinning
-// something other than what it was written for. Making the collision scan
-// refuse an unenumerable directory left the file green — so the guard had no
-// consumer test. Writing one showed why: the scan can never SEE that case,
-// because `assertContainedDir` refuses a symlinked `.tmux-teams/<dir>` forty
-// lines earlier. The guard was removed rather than given a test it could not
-// reach, and what is pinned here instead is the guarantee that made removing it
-// safe. Which is the useful lesson: an untested branch is a question, and the
-// answer is sometimes "delete it", not "test it".
+// This test exists because a mutation SURVIVED, and what it pins is not what it
+// was written for. Making the collision scan stop refusing an unenumerable
+// directory left the whole file green, so that guard has no consumer test.
+// Writing one showed why: the scan can never SEE that case, because
+// `assertContainedDir` refuses a symlinked `.tmux-teams/<dir>` forty lines
+// earlier. So what is asserted below is the guarantee that stands in front of
+// it — the one that is reachable.
+//
+// THE GUARD IS STILL IN THE CODE, and an earlier version of this paragraph said
+// it had been removed. It had not: the removal was written, then reverted by a
+// `git checkout --` run to undo a mutation, and the commit that claimed it went
+// out with the claim and without the change. A codex-advisor lane read the
+// paragraph against `acp-dispatch.mjs` and caught it.
+//
+// It stays, for a reason that came from that same lane rather than from me: the
+// preflight makes the branch unreachable in ordinary sequence, but a directory
+// replaced concurrently BETWEEN preflight and scan lands in it, and there it
+// gives a named refusal instead of a `for...of null` TypeError. Both fail
+// closed; one of them tells the operator which directory refused. That is
+// defence in depth with an honest label — untested, unreachable by any test
+// this suite can stage, and kept deliberately rather than by oversight.
 test('admission refuses an artifact directory that is a symlink', () => {
   const cwd = tempDir('acp-dirscan-')
   mkdirSync(join(cwd, '.tmux-teams'), { recursive: true })
@@ -2114,4 +2126,42 @@ test('the read boundary refuses a path outside the run root it was given', () =>
   assert.equal(readLeafSync(cwd, cwd), null, 'the run root itself is not a leaf')
   assert.equal(readLeafSync(join(cwd, 'mine'), cwd), 'this run\n',
     'a file inside the run root was refused')
+})
+
+// A codex-advisor lane read `codex-advisor/SKILL.md` against the function it
+// describes and found them disagreeing. The skill required a receipt on every
+// dispatch and a receipt-required LOAD on every recovery; `resumeCommand`
+// emitted neither the flag nor the operation. Because the companion defaults
+// `receiptRequired` to false, pasting the generated command did not fail — it
+// came back with the guarantee quietly removed, which is the failure mode this
+// repository already has a rule about.
+//
+// The two lineage values are placeholders on purpose, the same way the brief
+// path already was: status cannot know a digest it did not write, and an
+// operator who pastes this unedited must get a refusal rather than a resume
+// that silently means something weaker.
+test('a receipt-required dispatch resumes as a receipt-required load', () => {
+  const command = resumeCommand('/run', 'adv', {
+    sessionId: 'sess-1',
+    routing: { worker: 'codex', briefFile: '/tmp/recover.md', stallSec: 600,
+      env: { INITIAL_AGENT_MODE: 'read-only', ACP_SESSION_RECEIPT_REQUIRED: '1',
+        ACP_MODEL: 'gpt-5.6-sol' } },
+  })
+  for (const key of ['ACP_SESSION_RECEIPT_REQUIRED', 'ACP_SESSION_OPERATION',
+    'ACP_PRIOR_DISPATCH_ID', 'ACP_PRIOR_RECEIPT_DIGEST']) {
+    assert.match(command, new RegExp(`${key}=`), `the resume command dropped ${key}:\n${command}`)
+  }
+  assert.match(command, /ACP_SESSION_OPERATION='load'/,
+    `the resume copied the recorded operation instead of loading:\n${command}`)
+  // Quoted, so an unedited paste is a refusal rather than a shell redirection.
+  assert.match(command, /ACP_PRIOR_DISPATCH_ID='PUT-THE-PRIOR-DISPATCH-ID-HERE'/)
+
+  // A dispatch that never asked for a receipt does not acquire one here. The
+  // recovery has to reproduce what ran, not improve on it.
+  const plain = resumeCommand('/run', 'adv', {
+    sessionId: 'sess-2',
+    routing: { worker: 'codex', briefFile: '/tmp/b.md', stallSec: 600, env: { ACP_MODEL: 'x' } },
+  })
+  assert.doesNotMatch(plain, /ACP_SESSION_OPERATION|ACP_PRIOR_/,
+    `a plain dispatch was given lineage it never had:\n${plain}`)
 })
