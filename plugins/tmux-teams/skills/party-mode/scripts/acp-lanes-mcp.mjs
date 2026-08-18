@@ -109,6 +109,10 @@ function deepFreeze(value) {
   return value
 }
 
+// The capability names MCP 2025-06-18 types. Anything else is a client
+// extension and is not this server's to judge.
+const MCP_TYPED_CAPABILITIES = Object.freeze(['roots', 'sampling', 'elicitation'])
+
 export const DIAGNOSTICS = Object.freeze({
   endpoint_missing: 'the lane is pinned to an endpoint and this machine supplies no base URL for it',
   endpoint_mismatch: 'the base URL configured here is not the endpoint this lane is pinned to',
@@ -533,12 +537,22 @@ export function paramsProblem(method, params) {
     // members MCP names are checked; an unknown capability is a client
     // extension and stays legal, which is the difference between validating a
     // protocol and refusing a future one.
-    for (const [name, member] of Object.entries(params.capabilities)) {
+    // KNOWN members only, and NO caller text in the sentence. The previous
+    // version failed both ways at once, and a lane reproduced each: it demanded
+    // a boolean `listChanged` from EVERY capability name — so a legal
+    // `experimental` map carrying a `listChanged` of another shape was refused,
+    // turning a validator into a ceiling on a protocol that says extensions
+    // stay legal — and it interpolated the caller's capability NAME into the
+    // reply, which is the constant-sentence invariant this module states about
+    // itself, broken inside the check written to enforce a different one.
+    for (const name of MCP_TYPED_CAPABILITIES) {
+      const member = params.capabilities[name]
+      if (member === undefined) continue
       if (member === null || typeof member !== 'object' || Array.isArray(member)) {
-        return `initialize capabilities.${name} must be an object`
+        return 'initialize capabilities members must be objects'
       }
       if (member.listChanged !== undefined && typeof member.listChanged !== 'boolean') {
-        return `initialize capabilities.${name}.listChanged must be a boolean`
+        return 'initialize capabilities listChanged must be a boolean'
       }
     }
   }

@@ -898,7 +898,14 @@ export function shebangInterpreterMissing(path, { pathValue = null } = {}) {
 export function unresolvedInterpreterFor(id, { env = process.env } = {}) {
   if (id !== 'agy') return null
   const found = agyBinaryCandidates(env).find(executableCandidate)
-  return found ? shebangInterpreterMissing(found, { pathValue: env?.PATH ?? null }) : null
+  // `executablePath(env)`, NOT `env.PATH`. The child receives the PATH this
+  // function builds — with `$HOME/.local/bin`, `$HOME/.kimi-code/bin` and
+  // `$HOME/.bun/bin` prepended — so resolving against the caller's raw PATH
+  // answered about a different machine state than the one the lane will run in.
+  // A lane reproduced BOTH errors from it: a false `valid` when the interpreter
+  // is only on the prepended path, and a false `unchecked` when it is only on
+  // the caller's.
+  return found ? shebangInterpreterMissing(found, { pathValue: executablePath(env) }) : null
 }
 
 function trustedAgyBinary(source) {

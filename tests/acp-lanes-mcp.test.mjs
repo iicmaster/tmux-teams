@@ -1015,11 +1015,31 @@ test('a candidate whose interpreter is missing answers unchecked, not valid', ()
     chmodSync(bin, 0o755)
     assert.equal(unresolvedInterpreterFor('agy', { env: { HOME: home, PATH: '/usr/bin:/bin' } }), null)
 
-    // with NO PATH supplied there is genuinely nothing to resolve against, and
-    // THAT is when saying nothing is the honest answer rather than a hole.
+    // Resolution uses the PATH THE CHILD RECEIVES, which is
+    // `executablePath(env)` — the caller's PATH with `$HOME/.local/bin`,
+    // `$HOME/.kimi-code/bin` and `$HOME/.bun/bin` prepended. A lane reproduced
+    // both errors from resolving against the caller's raw PATH instead: a false
+    // `valid` when the interpreter is only on the prepended path, and a false
+    // `unchecked` when it is only on the caller's.
+    //
+    // So with no caller PATH there is still something to resolve against, and
+    // this assertion used to say the opposite because it encoded the older
+    // design rather than the child's environment.
     writeFileSync(bin, '#!/usr/bin/env definitelynotinstalled\n')
     chmodSync(bin, 0o755)
-    assert.equal(unresolvedInterpreterFor('agy', { env: { HOME: home } }), null)
+    assert.equal(unresolvedInterpreterFor('agy', { env: { HOME: home } }),
+      'definitelynotinstalled',
+      'with no caller PATH the child still gets one, so the answer is knowable')
+
+    // and an interpreter that exists ONLY on the prepended path resolves, which
+    // resolving against the caller's PATH would have called missing
+    const prepended = join(home, '.local', 'bin')
+    writeFileSync(join(prepended, 'privatetool'), '#!/bin/sh\nexit 0\n')
+    chmodSync(join(prepended, 'privatetool'), 0o755)
+    writeFileSync(bin, '#!/usr/bin/env privatetool\n')
+    chmodSync(bin, 0o755)
+    assert.equal(unresolvedInterpreterFor('agy', { env: { HOME: home, PATH: '/nonexistent' } }), null,
+      'an interpreter on the prepended path was reported missing')
 
     // and lanes that resolve no binary parent-side are not second-guessed
     assert.equal(unresolvedInterpreterFor('zai', { env: { HOME: home } }), null)
@@ -1111,11 +1131,35 @@ test('initialize types the members MCP 2025-06-18 types, and still admits an unk
   assert.equal(init({ protocolVersion: '2025-06-18', clientInfo: ok,
     capabilities: { roots: 'yes' } }).error?.code, -32602)
 
-  // An UNKNOWN capability is a client extension and stays legal — the
-  // difference between validating a protocol and refusing a future one.
-  assert.ok(init({ protocolVersion: '2025-06-18', clientInfo: ok,
-    capabilities: { somethingNobodyHasShippedYet: { whatever: 1 } } }).result,
-    'a client extension was refused, which turns a validator into a ceiling')
+  // An UNKNOWN capability is a client extension and stays legal. The first
+  // version of this assertion used an extension with NO `listChanged` key, so
+  // it passed while the real hole stood: the check demanded a boolean
+  // `listChanged` from EVERY capability name, and a lane reproduced a legal
+  // `experimental` map being refused for it. A fixture that cannot fail the
+  // rule it is written for proves nothing.
+  for (const extension of [
+    { somethingNobodyHasShippedYet: { whatever: 1 } },
+    { experimental: { listChanged: 'a string, and legal here' } },
+    { experimental: { listChanged: { nested: true } } },
+    { vendorThing: null },
+  ]) {
+    assert.ok(init({ protocolVersion: '2025-06-18', clientInfo: ok, capabilities: extension }).result,
+      `a client extension was refused (${JSON.stringify(extension)}), `
+      + 'which turns a validator into a ceiling on the protocol')
+  }
+
+  // and NO caller text reaches the reply — the constant-sentence invariant this
+  // module states about itself, which the capability loop broke while enforcing
+  // a different one.
+  // Note what this can and cannot prove. Once the loop reads only the three
+  // typed names, `name` is a constant and interpolating it is harmless — a
+  // mutation that restores `${name}` correctly does NOT turn this red. The
+  // assertion that guards the echo is the one above: iterating the CALLER's
+  // keys fails, and that is the only way caller text can reach the sentence.
+  const marker = 'SECRETSHAPEDCALLERVALUE'
+  const echoed = JSON.stringify(init({ protocolVersion: '2025-06-18', clientInfo: ok,
+    capabilities: { [marker]: null } }))
+  assert.ok(!echoed.includes(marker), `the caller's capability name was echoed: ${echoed}`)
 })
 
 test('a routing that could not pass validation cannot exempt a launch collision', () => {
