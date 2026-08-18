@@ -10,7 +10,7 @@ import { handle, callTool, laneFacts, laneStatus, classify, fixesFor,
   TOOLS, TOOL_DESCRIPTORS, DIAGNOSTICS, PROTOCOL_VERSION, UNCHECKED_LANES,
   RPC_INVALID_REQUEST, RPC_INVALID_PARAMS, RPC_METHOD_NOT_FOUND, RPC_PARSE_ERROR }
   from '../plugins/tmux-teams/skills/party-mode/scripts/acp-lanes-mcp.mjs'
-import { REVIEW_PROFILES, ROUTED_PROFILES, routingDeclaration, normalizePrimaryFamily, PROVIDER_SECRET_KEYS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys, buildProfileEnv }
+import { REVIEW_PROFILES, ROUTED_PROFILES, provenFamilyCollision, normalizePrimaryFamily, PROVIDER_SECRET_KEYS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys, buildProfileEnv }
   from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -1119,34 +1119,44 @@ test('initialize types the members MCP 2025-06-18 types, and still admits an unk
 })
 
 test('a routing that could not pass validation cannot exempt a launch collision', () => {
-  // `routingDeclaration()` required only a non-empty host and serialized a
-  // missing path as `null`, while `validateRoutedEndpoint()` demands both as
-  // strings. So two byte-identical launches could be certified DISTINCT by
-  // metadata the validator standing next to it would reject — a panel lane read
-  // the two functions against each other. A pin that cannot pass validation is
-  // not a pin.
+  // `routingDeclaration()` took a non-empty host and serialized a missing path
+  // as `null`, while `validateRoutedEndpoint()` beside it demands both as
+  // strings — so two byte-identical launches could be certified DISTINCT by
+  // metadata the validator would reject. A pin that cannot pass validation is
+  // not a pin, and exempting a collision on one is the bypass that check exists
+  // to close.
   //
-  // Every shipped routed profile declares both as strings, so this pins the
-  // RULE rather than a current value: the guard is what stops a profile added
-  // later with a host and no path from buying an exemption.
-  // THE RULE, not today's data. The first version of this asserted every
-  // shipped profile carries a string path — true, and it stayed green when the
-  // requirement was deleted, because the shipped profiles were never what was
-  // at risk. A profile added later with a host and no path is.
-  const routed = [...ROUTED_PROFILES][0]
-  const base = REVIEW_PROFILES[routed]
-  assert.ok(routingDeclaration(base), 'a fully declared routed profile produced no pin')
-  for (const bad of [undefined, null, '', 42, {}]) {
-    const profile = { ...base, endpoint: { ...base.endpoint, path: bad } }
-    assert.equal(routingDeclaration(profile), null,
-      `a routing with path ${JSON.stringify(bad)} bought an exemption the validator would refuse`)
-  }
-  for (const bad of [undefined, null, '', 42]) {
-    const profile = { ...base, endpoint: { ...base.endpoint, host: bad } }
-    assert.equal(routingDeclaration(profile), null)
-  }
-  // and today's data does satisfy it
-  for (const id of ROUTED_PROFILES) {
-    assert.ok(routingDeclaration(REVIEW_PROFILES[id]), `${id} declares an unpinnable routing`)
+  // Driven through `provenFamilyCollision`, the exported consumer, because
+  // `routingDeclaration` is internal ON PURPOSE — issue #43 folded those
+  // helpers away and `tests/lane-identity.test.mjs` pins that they stay folded.
+  // The first version of this guard exported it and turned that test red; the
+  // second asserted the shipped profiles carry string paths, which is today's
+  // DATA and stayed green when the requirement was deleted.
+  // Two REAL routed lanes of different families that share an adapter command —
+  // the exact shape `routesApart` exists for, taken from the shipped table
+  // rather than invented, because an invented family normalises to `unknown`
+  // and collides for a reason that has nothing to do with routing.
+  // qwen and deepseek, because they REALLY share a launch signature — both run
+  // the same adapter through `/Users/ngs/bin/claude-qwen`. Measured, not
+  // chosen: kimi and zai have distinct wrappers, so a fixture built from them
+  // never reaches the routing comparison at all and the guard proves nothing.
+  // This is the pair the reviewer named.
+  const a = REVIEW_PROFILES.qwen
+  const shipped = REVIEW_PROFILES.deepseek
+  // Measured: the two SHIPPED lanes share a wrapper AND an endpoint, so they
+  // collide — correctly, and this test is not about that. Give the second a
+  // genuinely different host and the collision must lift.
+  assert.equal(provenFamilyCollision([a, shipped]), true,
+    'two lanes sharing a wrapper AND an endpoint stopped colliding')
+  const b = { ...shipped, endpoint: { host: 'deepseek.example', path: '/v1' } }
+  assert.equal(provenFamilyCollision([a, b]), false,
+    'two exec-identical lanes pinned to DIFFERENT endpoints were treated as a collision')
+
+  // the same pair where one pin has no path: it cannot validate, so it must not
+  // buy an exemption
+  for (const badPath of [undefined, '', 42, null]) {
+    const crippled = { ...b, endpoint: { ...b.endpoint, path: badPath } }
+    assert.equal(provenFamilyCollision([a, crippled]), true,
+      `a routing with path ${JSON.stringify(badPath)} bought an exemption the validator would refuse`)
   }
 })

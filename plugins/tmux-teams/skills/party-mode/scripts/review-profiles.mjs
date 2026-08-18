@@ -520,12 +520,7 @@ function resolvedExecutable(name) {
 // No longer exported (#43): the only caller outside this file went through
 // `review-gate.mjs`, which now reads this off `laneIdentity(profile).routing`
 // instead of importing the function directly.
-// EXPORTED so a guard can prove the RULE rather than the current data. The
-// first version of that guard asserted every shipped profile carries a string
-// path — true today, and it stayed green when the requirement was deleted,
-// because the profiles were never the thing at risk. A profile added later
-// with a host and no path is.
-export function routingDeclaration(profile) {
+function routingDeclaration(profile) {
   if (!profile || !ROUTED_PROFILES.has(profile.id)) return null
   const endpoint = profile.endpoint
   // The SAME shape `validateRoutedEndpoint` demands — host AND path, both
