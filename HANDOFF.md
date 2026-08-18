@@ -12,42 +12,35 @@ Written 2026-08-17 through `bmad-party-mode`.
   the frozen bytes, then bump seven places, render/publish/record the roadmap,
   merge the PR, tag the merged sha, pin the submodule in `~/agent-skills`.
 
-### The gate is blocked on lane availability, not on the code
+### The third family is `opencode`, and how that was found
 
-Measured 2026-08-18. Seven review lanes ship; **three can answer**:
+Seven review lanes ship with the plugin. Measured 2026-08-18, **two of them
+could answer**: `agy` (gemini) and `codex` (openai). `qwen` hit a one-week quota,
+`zai`'s gateway refuses a disabled thinking mode, `kimi` and `deepseek` exit 1,
+and the default `claude`/fable seat cannot authenticate at all.
 
-| lane | family | state |
-|------|--------|-------|
-| `agy` | gemini | works |
-| `codex` | openai | works |
-| `qwen` | qwen | 429, one-week quota exhausted, resets 08-19 16:37 UTC |
-| `zai` | zai | 400 `[1210] This model always engages in thinking and cannot be disabled`; a thinking budget did not help; package expired |
-| `kimi` | kimi | child exits 1 |
-| `deepseek` | deepseek | child exits 1 |
-| `claude`/fable | claude | identity MATCHES and the OAuth session is expired |
+The third family came from OUTSIDE that list: **`opencode acp` speaks ACP
+directly and carries its own credential store**, so
+`opencode/deepseek-v4-flash-free` runs as a deepseek lane with no Claude
+keychain and no per-provider wrapper binary. It returns `completed` with
+`effective_identity: opencode/deepseek-v4-flash-free (matched)` — a matched
+identity, not `unverified`, so it satisfies the recording rule as it stands.
 
-Master chose **fable** as the third family. **`claude auth login` does not fix
-it, and this paragraph said it would until the login was actually run.**
+    ACP_CMD="$(command -v opencode) acp" ACP_MODEL="opencode/deepseek-v4-flash-free"
 
-Measured 2026-08-18 after a successful fresh login:
+**The lesson is the one that cost most of a day.** Availability was counted from
+the seven lanes the plugin declares, and the answer "only two families are
+possible" was wrong the whole time — the machine could reach a third through a
+tool the plugin does not ship. Count what the machine can do, not what the
+config file lists. Master pointed at `opencode`; nothing in this repository
+would have.
 
-- with no `CLAUDE_CONFIG_DIR`: `Authentication required` — the credential is not
-  found at all
-- with `CLAUDE_CONFIG_DIR=$HOME/.claude`: `OAuth session expired and could not
-  be refreshed`, identity `claude-fable-5 (matched)`, four progress events
-- `~/.claude/.credentials.json` mtime: **13 July**, untouched by the login
-- the Keychain entry `Claude Code-credentials`: present, written by the login
-
-So the adapter reads a credential store the CLI no longer writes. It is not
-staleness and a re-login cannot reach it — which is the GitHub issue about the
-default Claude ACP lane being unable to reuse a Claude Max login, and it is
-v0.33.0's first item. "Session expired" was the wrong diagnosis; the sentence
-the adapter prints is not the reason it fails.
-
-Round eight is running the two available families over all six packets — 12 of
-18 lanes. `PANEL_THIRD=qwen` or `PANEL_THIRD=fable` re-runs the script and adds
-the missing six; every pair that already has an outbox is skipped, so nothing is
-paid for twice.
+The fable seat is a separate matter and is NOT a login problem: three successful
+`claude auth login` runs changed nothing, `~/.claude/.credentials.json` has an
+mtime of 13 July, and the Keychain entry the login writes is not reachable by a
+subprocess. That is the GitHub issue about the default Claude ACP lane being
+unable to reuse a Claude Max login, it is v0.33.0's first item, and the
+measurement is recorded on the issue.
 
 ### Eight panel rounds, and what they actually cost
 
