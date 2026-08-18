@@ -134,12 +134,25 @@ consensus is itself a finding, usually that the question was too narrow.
    (paths, diffs, measurements — not a summary you composed), and this mandate:
 
    ```
+   You are READ-ONLY. Read anything you need; change nothing. Do not edit,
+   create, move or delete a file, do not run a command that writes, commits,
+   pushes or installs, and do not start any other agent. The one file you
+   write is your outbox, named above. If answering seems to require a
+   change, describe the change instead and say why you did not make it.
+
    Answer as a bmad-party-mode round-table. Cast 3-5 named voices with
    distinct expertise and real disagreements. They address each other, not
    only me. Do not resolve the clash into consensus; where they cannot
    agree, say so and say why. End with each voice's own bottom line.
    State plainly whatever you could not verify.
    ```
+
+   **The read-only paragraph is first because the guarantee rests on it.** A
+   panel lane read the frontmatter — read-only "rests on the brief" — against
+   this mandate and found the mandate contained only party format and
+   uncertainty instructions. The thing the guarantee leaned on did not carry
+   it, and the Codex lane's `INITIAL_AGENT_MODE=read-only` has no equivalent
+   here, so this text is the whole mechanism.
 
 2. **Dispatch** through `acp-dispatch.mjs`, which detaches the lane into its own
    process group and returns in seconds. Running `acp-companion.mjs` directly
@@ -233,12 +246,32 @@ changes state. If the consultation ends in work to be done, hand that to
 - **Empty outbox (`no_outbox`). TRY RESUME first, and never reconstruct.**
   Reconstructing from terminal output is attestation and this plugin does not
   accept attestation. Resume is cheap and is the only path that could still hold
-  the analysis, but it is unproven here: the one attempt on 2026-08-04 loaded
-  without its prior lineage and answered `I have nothing`. Send a short prompt
-  to the same session —
-  `ACP_RESUME=<session-id>`, "you already read it, write what you have to
-  `<path>`, do not redo the analysis" — which costs a few hundred tokens instead
-  of the whole consultation. Ask it to answer "I have nothing" plainly if the
+  the analysis. Two attempts are on record: 2026-08-04 loaded without its prior
+  lineage and answered `I have nothing`; 2026-08-18 recovered a complete
+  4,823-byte review with six findings from a lane that had run 343 progress
+  events and written nothing. The difference was the lineage.
+
+  **A resume under required receipts needs the same inputs a fresh dispatch
+  needs, plus its lineage** — a panel lane found this block supplying only
+  `ACP_RESUME`, while the fresh commands above declare a receiptless
+  consultation FAILED. Dropping receipt mode exactly when the first delivery is
+  missing is the moment it matters most.
+
+  ```bash
+  ACP_SESSION_RECEIPT_REQUIRED=1 \
+  ACP_SESSION_OPERATION="load" \
+  ACP_PRIOR_DISPATCH_ID="<dispatch_id from the failed run's receipt>" \
+  ACP_PRIOR_RECEIPT_DIGEST="<receipt_digest from that run>" \
+  ACP_RESUME="<session-id>" \
+  ANTHROPIC_MODEL="<the model the failed run used>" \
+  ACP_EXPECT_MODEL="<the same model>" \
+  node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
+    claude <cwd> <same-task-id> <recovery-prompt-file> [stall-sec]
+  ```
+
+  The recovery prompt is short: "you already read it, write what you have to
+  `<path>`, do not redo the analysis" — a few hundred tokens instead of the
+  whole consultation. Ask it to answer "I have nothing" plainly if the
   context really is gone; a short honest refusal is worth more than a
   reconstruction.
 

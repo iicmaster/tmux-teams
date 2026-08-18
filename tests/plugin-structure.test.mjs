@@ -588,7 +588,15 @@ test('an advisor skill that claims read-only ships the switch that makes it read
     const blocks = commandBlocks(text)
     // The count is pinned too: a block that stops MATCHING is indistinguishable
     // from a block that passes, and `> 0` cannot tell them apart.
-    assert.equal(blocks.length, 2, `${name} should document a dispatch and a recovery command`)
+    // Pinned per file, and the numbers are what each skill documents: codex has
+    // a dispatch and a recovery, claude has a default seat, a routed seat and a
+    // recovery. The count is pinned at all because a block that stops MATCHING
+    // is indistinguishable from a block that passes, and `> 0` cannot tell them
+    // apart — but it is pinned per file so ADDING a documented command is a
+    // deliberate edit here rather than a silent one.
+    const expected = { 'codex-advisor': 2, 'claude-advisor': 3 }[name]
+    assert.equal(blocks.length, expected,
+      `${name} documents ${blocks.length} lane-launching commands, not ${expected}`)
     for (const block of blocks) {
       assert.match(block, /ACP_SESSION_RECEIPT_REQUIRED=1/,
         `${name} runs a lane whose receipt may silently not exist:\n${block.slice(0, 400)}`)
@@ -625,4 +633,37 @@ test('the two skills that describe an undeclared graph agree with tick()', () =>
   assert.match(runner, /beat\(\{ dispatching: false, reason, started: 0, held: null \}\)/)
   assert.doesNotMatch(setup, /"started": 0, "held": 0 \}/,
     'the example turns "not measured" into "measured zero"')
+})
+
+test('the read-only guarantee is carried by the thing it says it rests on', () => {
+  // `claude-advisor`'s frontmatter says read-only "rests on the brief" because
+  // the lane has no mode switch. A panel lane read that against the mandatory
+  // brief and found only party format and uncertainty instructions — the thing
+  // the guarantee leaned on did not carry it. The Codex lane has
+  // INITIAL_AGENT_MODE=read-only; here the text IS the mechanism.
+  const claude = readFileSync(join(PLUGIN, 'skills', 'claude-advisor', 'SKILL.md'), 'utf8')
+  // `Cast 3-5 named voices`, not the round-table phrase — the frontmatter
+  // description contains that phrase too, so the first match was the YAML
+  // header and the assertion was about the wrong bytes.
+  const mandate = claude.split('```').find((b) => b.includes('Cast 3-5 named voices'))
+  assert.ok(mandate, 'the mandatory brief is gone')
+  assert.match(mandate, /READ-ONLY/, 'the brief the guarantee rests on carries no read-only instruction')
+  for (const forbidden of [/do not edit/i, /change nothing/i]) {
+    assert.match(mandate, forbidden, `the brief does not say ${forbidden}`)
+  }
+
+  // And the recovery path keeps the receipt contract the fresh commands
+  // declare: dropping receipt mode exactly when the first delivery is missing
+  // is the moment it matters most.
+  for (const skill of ['codex-advisor', 'claude-advisor']) {
+    const text = readFileSync(join(PLUGIN, 'skills', skill, 'SKILL.md'), 'utf8')
+    const recovery = text.split('```bash').slice(1).map((b) => b.split('```')[0])
+      .filter((b) => b.includes('ACP_RESUME'))
+    assert.equal(recovery.length, 1, `${skill} documents ${recovery.length} recovery commands`)
+    for (const need of ['ACP_SESSION_RECEIPT_REQUIRED=1', 'ACP_SESSION_OPERATION="load"',
+      'ACP_PRIOR_DISPATCH_ID', 'ACP_PRIOR_RECEIPT_DIGEST']) {
+      assert.ok(recovery[0].includes(need),
+        `${skill}'s recovery drops ${need}, so the resumed turn is not receipt-backed`)
+    }
+  }
 })
