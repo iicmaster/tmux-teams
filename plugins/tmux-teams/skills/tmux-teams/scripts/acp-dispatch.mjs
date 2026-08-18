@@ -267,8 +267,20 @@ export function outboxPath(cwd, taskId) { return join(cwd, '.mailbox-out', taskI
 // because a leaf is hostile helps nobody. It reads as absent, which is the
 // honest answer: there is no trustworthy record.
 function readLeafSync(path) {
+  // The PARENTS as well as the leaf. `lstat` on the final component says
+  // nothing about `.tmux-teams` or `sessions` being symlinks, so a hostile
+  // parent still redirected the read — the boundary was called universal and
+  // covered one component of the path. A panel lane reproduced it after the
+  // leaf check went in, which is the second time a fix here covered the case I
+  // pictured and not the case that was named.
+  //
+  // `realpathSync` on the DIRECTORY, compared against the run root: cheap, and
+  // it answers the question the leaf check cannot.
   let stat = null
   try {
+    const parent = realpathSync(dirname(path))
+    const root = realpathSync(dirname(dirname(dirname(path))))
+    if (!parent.startsWith(root + sep) && parent !== root) return null
     stat = lstatSync(path)
   } catch {
     return null
@@ -641,7 +653,33 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
   //
   // Not atomic — two dispatches racing this both pass — and saying so matters
   // more than the check: what it stops is dispatching twice by hand.
+  // A MISSING pid leaf is not evidence that nothing is running: the leaf can be
+  // refused by the read policy, deleted by an operator, or never have been
+  // written. Admission asked `recordedPid` and stopped there, so a lane whose
+  // liveness says it is mid-turn was admitted a second writer whenever its pid
+  // file was unreadable. A panel lane reproduced it.
+  //
+  // With no pid to ask, the lease is the only evidence there is — the same rule
+  // `hasStopped` already applies, applied here too.
   const livePid = recordedPid(cwd, taskId)
+  if (livePid === null) {
+    // Bound to the RECORDED dispatch, exactly as `statusReport` binds it. A
+    // predecessor's unsettled record is not this task id's live lane — it is
+    // the thing the retirement below exists to move aside, and refusing on it
+    // would make every re-dispatch after an interrupted run impossible. The
+    // test caught that within a minute of the first version.
+    const priorSpawn = Date.parse(recordedRouting(cwd, taskId)?.spawnedAt ?? '')
+    const record = Number.isFinite(priorSpawn) && belongsToThisRun(readJson(livenessPath(cwd, taskId)), priorSpawn)
+      ? readJson(livenessPath(cwd, taskId))
+      : null
+    if (record !== null && !isSettled(record, { pid: null })) {
+      throw Object.assign(
+        new Error(`a lane for "${taskId}" is still reporting progress and its pid file `
+          + 'cannot be read — ask it with `status`, or use a different task id'),
+        { code: 'already_running' },
+      )
+    }
+  }
   if (livePid !== null && pidAlive(livePid)) {
     // The SAME predicate `status` uses, because a panel lane reproduced the two
     // disagreeing: `hasStopped` leaves a live pid unsettled (the companion may

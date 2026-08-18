@@ -1540,3 +1540,47 @@ test('the dispatch command each advisor skill documents gets past the companion 
     }
   }
 })
+
+test('a hostile PARENT directory redirects no read, and a missing pid leaf is not proof of quiet', () => {
+  // BLOCKER 1, REPRODUCED by a panel lane AFTER the leaf check went in:
+  // `lstat` on the final component says nothing about `.tmux-teams` or
+  // `sessions` being symlinks, so the boundary called universal covered one
+  // component of the path. Second time a fix here covered the case I pictured
+  // rather than the case that was named.
+  const cwd = tempDir('acp-dispatch-parentlink-')
+  const elsewhere = tempDir('acp-dispatch-parentlink-target-')
+  mkdirSync(join(elsewhere, 'sessions'), { recursive: true })
+  writeFileSync(join(elsewhere, 'sessions', 'p'), 'STOLENSESSION\n')
+  mkdirSync(join(elsewhere, 'liveness'), { recursive: true })
+  writeFileSync(join(elsewhere, 'liveness', 'p.json'), JSON.stringify({
+    liveness_state: 'completed', effective_identity: 'NOTOURS', identity_status: 'matched',
+  }))
+  symlinkSync(elsewhere, join(cwd, '.tmux-teams'))
+  const report = statusReport(cwd, 'p')
+  assert.equal(report.sessionId, null, 'a symlinked .tmux-teams redirected the session read')
+  assert.notEqual(report.identity, 'NOTOURS', 'a symlinked parent supplied this run\'s identity')
+
+  // BLOCKER 2, REPRODUCED: a MISSING pid leaf is not evidence that nothing is
+  // running — the leaf can be refused by the read policy, deleted, or never
+  // written. Admission asked `recordedPid` and stopped, so a lane whose
+  // liveness says it is mid-turn got a second writer whenever its pid file was
+  // unreadable.
+  const live = tempDir('acp-dispatch-nopid-')
+  mkdirSync(join(live, '.tmux-teams', 'liveness'), { recursive: true })
+  mkdirSync(join(live, '.tmux-teams', 'dispatch-routing'), { recursive: true })
+  writeFileSync(join(live, 'brief.md'), 'do the thing\n')
+  const spawnedAt = new Date(Date.now() - 60_000).toISOString()
+  writeFileSync(join(live, '.tmux-teams', 'dispatch-routing', 'busy.json'),
+    JSON.stringify({ worker: 'mock', spawnedAt, env: {} }))
+  writeFileSync(join(live, '.tmux-teams', 'liveness', 'busy.json'), JSON.stringify({
+    liveness_state: 'tool_running', termination_reason: 'none',
+    started_at: new Date(Date.parse(spawnedAt) + 1000).toISOString(),
+    observed_at: new Date().toISOString(),
+    next_lease_expiry_at: new Date(Date.now() + 900_000).toISOString(),
+  }))
+  // no pid leaf at all
+  const r = spawnSync(process.execPath, [DISPATCH, 'mock', live, 'busy', join(live, 'brief.md'), '120'],
+    { cwd: live, encoding: 'utf8', env: laneEnv(), timeout: 60000 })
+  assert.notEqual(r.status, 0, 'a second writer was admitted for a lane that is still reporting progress')
+  assert.match(`${r.stdout}${r.stderr}`, /still reporting progress and its pid file/)
+})
