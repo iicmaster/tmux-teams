@@ -606,7 +606,10 @@ test('initialize answers with the version this server speaks, never the caller\'
   // advisor round had accepted as a documented tolerance: this server
   // advertises 2025-06-18 on every initialize, and that version requires all
   // three. Two distinct reviewers is this project's must-fix bar.
-  for (const missing of ['capabilities', 'clientInfo']) {
+  // `protocolVersion` is in the loop because a round-nine lane found the
+  // surrounding text saying all THREE initialize fields are required while the
+  // loop removed two — so a regression on the third would have stayed green.
+  for (const missing of ['capabilities', 'clientInfo', 'protocolVersion']) {
     const without = { ...legal }
     delete without[missing]
     assert.equal(
@@ -636,7 +639,11 @@ test('NO notification is answered, whatever method it names', () => {
   // The no-id check used to sit at the bottom, where only an unknown method
   // reached it, so `ping` sent as a notification produced a reply carrying no
   // id — answering a message nobody asked a question with.
-  for (const method of ['notifications/initialized', 'ping', 'tools/list', 'initialize']) {
+  // `tools/call` is in the list because a round-nine lane found it MISSING: a
+  // mutation that replied only to an id-less `tools/call` survived, since every
+  // method here reached the no-id check through a path that did not run a
+  // handler. The one method that does is the one that was left out.
+  for (const method of ['notifications/initialized', 'ping', 'tools/list', 'initialize', 'tools/call']) {
     assert.equal(handle({ jsonrpc: '2.0', method }), null, `${method} as a notification was answered`)
   }
   assert.equal(handle({ jsonrpc: '2.0', id: 9, method: 'tools/nope' }).error.code, -32601)
@@ -1437,5 +1444,46 @@ test('the vendor-neutral registration BOOTS, and a live client that never closes
     assert.ok(Array.isArray(replies[1].result?.tools), 'tools/list returned no tools')
   } finally {
     child.kill('SIGKILL')
+  }
+})
+
+test('the endpoint pin is checked against a written-down value, not against itself', () => {
+  // A round-nine lane: the wire fixtures covered a correct URL, a different
+  // host and no endpoint — never the pinned PATH being wrong — and the oracle
+  // was derived from `REVIEW_PROFILES[id].endpoint`, the same value it was
+  // meant to establish. Change the profile and the test agrees with the change.
+  //
+  // These literals are the pins as reviewed. A profile edit that moves an
+  // endpoint now has to move a written-down value too, which is the point.
+  const PINNED = {
+    zai: 'https://api.z.ai/api/anthropic',
+    kimi: 'https://api.kimi.com/coding',
+    qwen: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic',
+    deepseek: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic',
+  }
+  for (const [id, url] of Object.entries(PINNED)) {
+    const e = REVIEW_PROFILES[id].endpoint
+    assert.equal(`https://${e.host}${e.path}`, url, `${id}'s pinned endpoint moved`)
+  }
+
+  // and a WRONG PATH on the right host is refused, which no fixture covered
+  const dir = mkdtempSync(join(tmpdir(), 'lane-pinpath-'))
+  try {
+    const e = REVIEW_PROFILES.zai.endpoint
+    for (const wrong of [`https://${e.host}/wrong`, `https://${e.host}`, `https://${e.host}${e.path}/extra`]) {
+      writeFileSync(join(dir, 'creds.env'),
+        `ANTHROPIC_BASE_URL=${wrong}\nZAI_API_KEY=ordinary\n`)
+      assert.throws(() => buildAcpLaunch('zai', {
+        env: { HOME: '/tmp', PATH: '/usr/bin', TMUX_TEAMS_REVIEW_ZAI_ENV_FILE: join(dir, 'creds.env') },
+      }), `${wrong} was accepted for a lane pinned to ${e.path}`)
+    }
+    // the right one still works
+    writeFileSync(join(dir, 'creds.env'),
+      `ANTHROPIC_BASE_URL=https://${e.host}${e.path}\nZAI_API_KEY=ordinary\n`)
+    assert.doesNotThrow(() => buildAcpLaunch('zai', {
+      env: { HOME: '/tmp', PATH: '/usr/bin', TMUX_TEAMS_REVIEW_ZAI_ENV_FILE: join(dir, 'creds.env') },
+    }))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })
