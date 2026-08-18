@@ -982,8 +982,7 @@ export function buildProfileEnv(profileId, source = process.env, {
     // construction, and the lane's own credential check already refuses when
     // nothing usable is left. Dropping it turns an unstartable child into a
     // legible credential refusal.
-    const value = String(source[key])
-    if (spawnableValue(value)) env[key] = value
+    env[key] = String(source[key])
   }
   if (profile.id === 'agy') {
     const agyBinary = agyBinaryResolver(source)
@@ -1013,7 +1012,50 @@ export function buildProfileEnv(profileId, source = process.env, {
     env.MAX_THINKING_TOKENS = String(profile.thinkingBudgetTokens)
   }
   if (ROUTED_PROFILES.has(profile.id)) validateRoutedEndpoint(profile, env)
+  assertStartableEnvironment(profile.id, env)
   return Object.freeze(env)
+}
+
+// A quarter of the smallest ARG_MAX worth caring about — this machine reports
+// 1048576 for argv AND environment together, and the lane still has a command
+// line to fit beside this. Not a guess at the OS limit: a bound far below every
+// limit, so the refusal is ours and legible rather than the kernel's E2BIG at
+// spawn time.
+const ENVIRONMENT_BYTE_CEILING = 256 * 1024
+
+// ONE sweep over the FINAL environment, which is the only place that can answer
+// "can this start a process". Two rounds of narrower fixes did not:
+//
+// - the first applied `spawnableValue` where we decide whether at least one
+//   accepted credential exists, so a good token beside a NUL-bearing one gave
+//   `configuration: "valid"` on an env `spawnSync` refuses;
+// - the second applied it to the forwarded provider secrets, and a lane put the
+//   same NUL in the routed SETTINGS file instead, which is assigned earlier and
+//   was never in that loop.
+//
+// Both fixes were correct about the case they were shown. The property is about
+// the finished object, so it is checked on the finished object.
+//
+// It THROWS rather than omitting. Omitting made a malformed supplied credential
+// read as "missing", which sends an operator to add a credential they already
+// added; a lane raised that as the wrong half of the trade.
+function assertStartableEnvironment(profileId, env) {
+  let bytes = 0
+  for (const [key, value] of Object.entries(env)) {
+    const text = String(value)
+    if (text.includes('\u0000')) {
+      throw new TypeError(`${profileId} review environment cannot start a process: `
+        + `${key} contains a NUL byte`)
+    }
+    bytes += Buffer.byteLength(key) + Buffer.byteLength(text) + 2
+  }
+  // A NUL is not the only way an environment refuses. A 2 MiB credential passes
+  // every per-value check and the kernel answers E2BIG — measured by a lane on
+  // exactly that value, against a lane this file had just reported `valid`.
+  if (bytes > ENVIRONMENT_BYTE_CEILING) {
+    throw new TypeError(`${profileId} review environment cannot start a process: `
+      + `it is ${bytes} bytes and the ceiling is ${ENVIRONMENT_BYTE_CEILING}`)
+  }
 }
 
 export function buildAcpLaunch(profileId, {

@@ -42,7 +42,7 @@ subprocess. That is the GitHub issue about the default Claude ACP lane being
 unable to reuse a Claude Max login, it is v0.33.0's first item, and the
 measurement is recorded on the issue.
 
-### Eight panel rounds, and what they actually cost
+### Nine panel rounds, and what they actually cost
 
 Rounds five, six and seven each found defects **in the previous round's fixes**,
 never in untouched code. Every one was the same shape: the fix went in the right
@@ -126,7 +126,11 @@ release, not something to do after it.
 - **`acp-dispatch.mjs`** (`plugins/tmux-teams/skills/tmux-teams/scripts/`) is
   the operator's entry to an ACP lane: it detaches the lane into its own process
   group so a caller's shell cap is not the lane's deadline, and `status` / `wait`
-  report back. It never kills a lane, including on its own timeout.
+  report back. It imposes NO DEADLINE on a lane, including its own — which is
+  not the same as never killing one, and this line said the stronger thing until
+  a lane read it against the source. A lane whose pid or routing record cannot
+  be published IS killed, because the alternative is a detached process with no
+  way back to it.
   16 tests in `tests/acp-dispatch.test.mjs`.
 - **The MCP lane-discovery server** is unchanged in purpose from ADR 0007 and
   much changed in detail: envelope AND per-method params validation, a request

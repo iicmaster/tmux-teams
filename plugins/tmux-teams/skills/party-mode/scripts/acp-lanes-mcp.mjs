@@ -138,6 +138,7 @@ export const DIAGNOSTICS = Object.freeze({
   credential_unreadable: 'the credential file this lane points at exists but could not be read',
   executable_missing: 'an executable this lane needs was not found on this machine',
   profile_incomplete: 'this lane routes to a provider but its shipped profile declares no endpoint to pin',
+  environment_unspawnable: 'the environment this lane would launch with cannot start a process',
   unclassified: 'the lane refused for a reason this server does not classify; run the gate for the detail',
 })
 
@@ -192,6 +193,11 @@ export function classify(message, { fileKind = null } = {}) {
   // system at all, so the first version dropped ordinary malformed settings
   // into `unclassified` — safe on the wire and useless as a diagnosis.
   if (/JSON|Unexpected token|Unexpected end of/.test(text)) return 'settings_unreadable'
+  // Its own bucket rather than `credential_*`: the value may be a credential
+  // and may equally be a header, a model config or an oversized total, and
+  // telling an operator to fix a credential is a false instruction in three of
+  // those four cases.
+  if (/cannot start a process/.test(text)) return 'environment_unspawnable'
   if (/executable not found/.test(text)) return 'executable_missing'
   return 'unclassified'
 }
@@ -312,6 +318,10 @@ export function fixesFor(id, profile, code) {
         : [`this lane's base URL must come from ${names.settings} or ${names.credentials}`]
     case 'credential_missing':
       return [...credentialFixes(id), ...settings]
+    case 'environment_unspawnable':
+      return ['one of the values this lane forwards cannot be passed to a process — '
+        + 'a NUL byte, or an environment larger than the launcher allows; the refusal names which',
+        ...settings]
     case 'settings_unreadable':
       return ['the JSON this lane reads must parse and must be an object', ...settings]
     case 'credential_unreadable':

@@ -389,7 +389,7 @@ relaying a person's words is expected to sign `human:` and name itself in
 
 ---
 
-## 4. The ten skills
+## 4. The eleven skills
 
 **Setting up and running the loop**
 

@@ -58,8 +58,10 @@ export const DOC_ONLY = new Set(['HANDOFF.md', 'README.md', 'CLAUDE.md'])
 // the thing that exists to catch it. Measured, not argued (`whyGated` answered
 // `null`). Found by the release panel (codex lane, 2026-08-10, round 2).
 //
-// A seventh place will appear — five have already, each found by a reader
-// rather than by the flow — and until it is added here its bump requires the
+// An eighth place will appear — SEVEN have already, each found by a reader
+// rather than by the flow, the seventh being ROADMAP.md, which sat in the flow
+// unguarded and uncounted from 2026-08-14 until a lane bumped the other six and
+// watched the suite pass — and until it is added here its bump requires the
 // panel. That is the safe direction, and it is the direction this list is
 // wrong in on purpose.
 export const VERSION_FILES = new Set([
@@ -119,7 +121,7 @@ const SEMVER = /\d+\.\d+\.\d+/g
 // round 4) in the fix for the round-3 version of the same defect.
 //
 // Anchored patterns need no URL guard: a URL cannot match either of them.
-// A seventh bump site will appear — five have already — and until its shape is
+// An eighth bump site will appear — seven have already — and until its shape is
 // listed here its bump requires the panel. That is the safe direction.
 // PER FILE, not one pool. A generic pool let the JSON shape be accepted inside
 // `tests/plugin-structure.test.mjs`, which is executable and full of fixture
@@ -198,8 +200,10 @@ export function whyGated(file) {
   // Sorting is kept for the version files, where it is the point: two identical
   // lines both moving is a different diff from one moving, which a Set would
   // miss. A reorder inside those five files still exempts, and that is bounded
-  // and acceptable — they are two JSON manifests, a test constant and a README
-  // line, none of which have execution order.
+  // and acceptable — they are three JSON manifests, a test constant and
+  // ROADMAP.md's release line, none of which have execution order. (README.md
+  // carries the seventh place and is not in this set: it reaches the exemption
+  // through DOC_ONLY instead.)
   if (!VERSION_FILES.has(file.path)) return 'changes more than the version string'
 
   // EVERY changed line in a version file has to BE a version declaration. The
