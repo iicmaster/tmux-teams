@@ -73,7 +73,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { REVIEW_PROFILES, ROUTED_PROFILES, buildAcpLaunch, AGY_BINARY_NAME,
-  AGY_BINARY_CANDIDATE_FORMS, acceptedCredentialNames, unresolvedInterpreterFor } from './review-profiles.mjs'
+  AGY_BINARY_CANDIDATE_FORMS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys } from './review-profiles.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PLUGIN_ROOT = join(HERE, '..', '..', '..')
@@ -271,7 +271,13 @@ function credentialFixes(id) {
   const accepted = acceptedCredentialNames(REVIEW_PROFILES[id])
   return [
     `if the credential lives outside that JSON, point ${names.credentials} at the env file holding it`,
-    `that file is read for ${accepted.join(', ')} — any other name in it is ignored`,
+    // The FULL set the loader honours, not the credential subset. This named
+    // `acceptedCredentialNames` and then said every other name is ignored,
+    // which was false by the routed settings names — an operator who put
+    // ANTHROPIC_BASE_URL in that file was told it would be ignored while the
+    // loader read it.
+    `that file is read for ${[...acceptedRoutedKeys(REVIEW_PROFILES[id])].sort().join(', ')} `
+      + '— any other name in it is ignored',
   ]
 }
 

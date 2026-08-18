@@ -657,7 +657,13 @@ function settingsPath(profile, source) {
 // and `invalid` from the prescribed file. Widened per lane rather than
 // globally — a lane gains only the secret names it already declares, so a stray
 // file still cannot smuggle arbitrary environment anywhere.
-function acceptedRoutedKeys(profile) {
+// EXPORTED because a repair sentence promised what this set decides and named a
+// smaller one. `acceptedCredentialNames` is the credential subset; the loader
+// honours the routed settings names too, so "any other name in it is ignored"
+// was false by four names. A lane raised it in round six and again in round
+// seven after I deferred it as single-family — which is the reversal condition
+// written into the roadmap.
+export function acceptedRoutedKeys(profile) {
   return new Set([...routedSettingsEnv, ...(providerSecrets[profile.id] ?? [])])
 }
 
@@ -843,7 +849,7 @@ function executableCandidate(path) {
 // alternative was never `valid` versus running the file: `unchecked` is already
 // in the result vocabulary and describes this state exactly, WITHOUT executing
 // anything. Reading the first line of a file is not running it.
-export function shebangInterpreterMissing(path) {
+export function shebangInterpreterMissing(path, { pathValue = null } = {}) {
   let head = ''
   try {
     const fd = openSync(path, 'r')
@@ -862,9 +868,18 @@ export function shebangInterpreterMissing(path) {
   if (interpreter.includes('/')) {
     return executableCandidate(interpreter) ? null : interpreter
   }
-  // A bare name goes through PATH, which this function does not own; say so
-  // rather than guessing, because a wrong specific answer is worse than none.
-  return null
+  // A bare name goes through PATH — and this function IS given the PATH, so the
+  // refusal that stood here was a hole wearing the words of a principle. Two
+  // families raised it in three consecutive rounds, and the case they named,
+  // `#!/usr/bin/env <missing>`, is the one the motivating comment used.
+  //
+  // With no PATH supplied there is genuinely nothing to resolve against, and
+  // THAT is when saying nothing is honest.
+  if (!pathValue) return null
+  for (const dir of pathValue.split(delimiter)) {
+    if (dir && executableCandidate(join(dir, interpreter))) return null
+  }
+  return interpreter
 }
 
 // Which executable a lane resolves to, and whether it can start. Only the agy
@@ -874,7 +889,7 @@ export function shebangInterpreterMissing(path) {
 export function unresolvedInterpreterFor(id, { env = process.env } = {}) {
   if (id !== 'agy') return null
   const found = agyBinaryCandidates(env).find(executableCandidate)
-  return found ? shebangInterpreterMissing(found) : null
+  return found ? shebangInterpreterMissing(found, { pathValue: env?.PATH ?? null }) : null
 }
 
 function trustedAgyBinary(source) {

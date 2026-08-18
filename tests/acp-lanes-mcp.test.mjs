@@ -10,7 +10,7 @@ import { handle, callTool, laneFacts, laneStatus, classify, fixesFor,
   TOOLS, TOOL_DESCRIPTORS, DIAGNOSTICS, PROTOCOL_VERSION, UNCHECKED_LANES,
   RPC_INVALID_REQUEST, RPC_INVALID_PARAMS, RPC_METHOD_NOT_FOUND, RPC_PARSE_ERROR }
   from '../plugins/tmux-teams/skills/party-mode/scripts/acp-lanes-mcp.mjs'
-import { REVIEW_PROFILES, normalizePrimaryFamily, PROVIDER_SECRET_KEYS, acceptedCredentialNames, unresolvedInterpreterFor, buildProfileEnv }
+import { REVIEW_PROFILES, normalizePrimaryFamily, PROVIDER_SECRET_KEYS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys, buildProfileEnv }
   from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -999,10 +999,25 @@ test('a candidate whose interpreter is missing answers unchecked, not valid', ()
     chmodSync(bin, 0o755)
     assert.equal(unresolvedInterpreterFor('agy', { env: { HOME: home } }), null)
 
-    // a bare-name shebang resolves through PATH, which this check does not own:
-    // it says nothing rather than guessing, because a wrong specific answer
-    // sends the reader to the wrong file.
-    writeFileSync(bin, '#!python3\n')
+    // A BARE NAME RESOLVES AGAINST THE SUPPLIED PATH. The first version refused
+    // to — "this function does not own the PATH" — and that refusal was a hole
+    // wearing the words of a principle: the function is GIVEN the PATH, and the
+    // case two families named in three consecutive rounds,
+    // `#!/usr/bin/env <missing>`, is the one the motivating comment used.
+    writeFileSync(bin, '#!/usr/bin/env definitelynotinstalled\n')
+    chmodSync(bin, 0o755)
+    assert.equal(unresolvedInterpreterFor('agy', { env: { HOME: home, PATH: '/usr/bin:/bin' } }),
+      'definitelynotinstalled',
+      'the exact case the comment names went unchecked')
+
+    // and a bare name that IS on the PATH is not maligned
+    writeFileSync(bin, '#!/usr/bin/env sh\n')
+    chmodSync(bin, 0o755)
+    assert.equal(unresolvedInterpreterFor('agy', { env: { HOME: home, PATH: '/usr/bin:/bin' } }), null)
+
+    // with NO PATH supplied there is genuinely nothing to resolve against, and
+    // THAT is when saying nothing is the honest answer rather than a hole.
+    writeFileSync(bin, '#!/usr/bin/env definitelynotinstalled\n')
     chmodSync(bin, 0o755)
     assert.equal(unresolvedInterpreterFor('agy', { env: { HOME: home } }), null)
 
@@ -1053,4 +1068,26 @@ test('the exported surface is frozen through its records, and LC_ is a set not a
   assert.equal(env.LC_PRIVATE_TOKEN, undefined, 'an invented LC_ name reached the child')
   assert.equal(env.LC_HAX, undefined)
   assert.ok(!JSON.stringify(env).includes('SECRETVALUE'))
+})
+
+test('the sentence about which names that file is read for names all of them', () => {
+  // "any other name in it is ignored" listed `acceptedCredentialNames` — the
+  // credential subset — while the loader honours `acceptedRoutedKeys`, which
+  // adds the routed settings names. An operator who put ANTHROPIC_BASE_URL in
+  // that file was told it would be ignored while the loader read it.
+  //
+  // A lane raised this in round six; I deferred it as single-family; the same
+  // lane raised it again in round seven after reading that deferral, which is
+  // the reversal condition the roadmap states.
+  const honoured = [...acceptedRoutedKeys(REVIEW_PROFILES.zai)]
+  const sentence = fixesFor('zai', REVIEW_PROFILES.zai, 'credential_missing').join(' ')
+  const named = sentence.match(/that file is read for ([^—]+)—/)?.[1] ?? ''
+  for (const key of honoured) {
+    assert.ok(named.includes(key),
+      `the loader honours ${key} and the sentence tells the operator it is ignored`)
+  }
+  // and it does not promise names the loader drops
+  for (const key of named.split(',').map((k) => k.trim()).filter(Boolean)) {
+    assert.ok(honoured.includes(key), `the sentence advertises ${key}, which the loader ignores`)
+  }
 })
