@@ -708,16 +708,33 @@ test('a malformed frame is refused with the code the spec names for it', () => {
     'the caller\'s own string was reflected into a diagnostic')
 })
 
-test('every id shape the spec calls legal is ACCEPTED, including the ugly one', () => {
-  // The refusals have a table of their own; this is the other half, and it was
-  // missing. Round three demanded `Number.isInteger`, turning JSON-RPC's
-  // "fractional ids SHOULD NOT be used" into a local MUST NOT — so `id: 1.5`
-  // was refused, and refused in the one way that loses the correlation, under
-  // `id: null`. MCP 2025-06-18 types `RequestId` as `string | number`.
-  for (const id of [1, -1, 0, 1.5, 2.5e3, 'a-string-id', '', '0']) {
+test('an id the spec calls legal is answered as itself, and a fractional one never loses correlation', () => {
+  // Strings and integers are not in dispute.
+  for (const id of [1, -1, 0, 2500, 'a-string-id', '', '0']) {
     const reply = handle({ jsonrpc: '2.0', id, method: 'ping' }, {})
     assert.deepEqual(reply, { jsonrpc: '2.0', id, result: {} },
       `a legal request id was not answered as itself: ${JSON.stringify(id)}`)
+  }
+
+  // FRACTIONAL IDS ARE DISPUTED AND THIS TEST NO LONGER PICKS A SIDE.
+  // A Codex advisor round read MCP's `RequestId` as `string | number` and
+  // called `Number.isInteger` a local MUST NOT invented from JSON-RPC's
+  // SHOULD NOT. A round-eight panel lane read the 2025-06-18 versioned schema
+  // as `string | integer` and called the TypeScript alias too broad to make
+  // fractional ids legal. No copy of the schema is readable from this machine,
+  // so neither reading can be settled here.
+  //
+  // What the previous version of this test did was pin ONE of them, which
+  // forced a conforming fix red — the lane's actual complaint. So it asserts
+  // the property both readings agree on: whichever way `1.5` is answered, the
+  // answer must carry the id back. Refusing under `id: null` is the one
+  // outcome that is wrong under either reading, because it loses the
+  // correlation the caller needs to match the reply to the request.
+  for (const id of [1.5, 2.5e3 + 0.5]) {
+    const reply = handle({ jsonrpc: '2.0', id, method: 'ping' }, {})
+    assert.equal(reply.id, id,
+      `a fractional id was answered under a different id (${JSON.stringify(reply.id)}), `
+      + 'which loses the correlation whether or not it is legal')
   }
 })
 
@@ -1198,11 +1215,23 @@ test('a routing that could not pass validation cannot exempt a launch collision'
 
   // the same pair where one pin has no path: it cannot validate, so it must not
   // buy an exemption
-  for (const badPath of [undefined, '', 42, null]) {
+  // NOT the empty string: `validateRoutedEndpoint` accepts `''` because
+  // `https://host` has pathname `/` and its trailing-slash strip makes that
+  // `''`, so a host-root endpoint is a real pin. The first version of this test
+  // called `''` unvalidatable and required a collision — holding route identity
+  // and launch validation to contradictory definitions, which a panel lane
+  // named and which can falsely block a genuinely distinct routed family.
+  for (const badPath of [undefined, 42, null, {}]) {
     const crippled = { ...b, endpoint: { ...b.endpoint, path: badPath } }
     assert.equal(provenFamilyCollision([a, crippled]), true,
       `a routing with path ${JSON.stringify(badPath)} bought an exemption the validator would refuse`)
   }
+
+  // and a HOST-ROOT pin is a real pin, so it must lift the collision the same
+  // way a path-bearing one does — the direction the old rule got wrong.
+  const hostRoot = { ...shipped, endpoint: { host: 'deepseek.example', path: '' } }
+  assert.equal(provenFamilyCollision([a, hostRoot]), false,
+    'a legitimate host-root endpoint was treated as an unvalidatable pin')
 })
 
 test('every routed lane accepts its OWN provider key, not just the Anthropic pair', () => {

@@ -532,7 +532,13 @@ function routingDeclaration(profile) {
   // A pin that cannot pass validation is not a pin, and exempting a collision
   // on one is the bypass this whole check exists to close.
   if (!endpoint || typeof endpoint.host !== 'string' || endpoint.host === '') return null
-  if (typeof endpoint.path !== 'string' || endpoint.path === '') return null
+  // A string, INCLUDING the empty one. `validateRoutedEndpoint` accepts `''` —
+  // `https://host` has pathname `/`, which its trailing-slash strip turns into
+  // `''` — so a host-root endpoint is a legitimate pin. Refusing it here made
+  // the two functions disagree in the direction that FALSELY BLOCKS a genuinely
+  // distinct routed family, which a panel lane named exactly. The shape they
+  // must agree on is "both are strings", and that is the shape checked.
+  if (typeof endpoint.path !== 'string') return null
   return JSON.stringify([endpoint.host, endpoint.path])
 }
 
