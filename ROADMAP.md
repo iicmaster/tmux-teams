@@ -196,12 +196,18 @@ running the mutations, so read it as a report on the last run, not a property. N
 are deferred with their reasoning, listed under what is open; one dispute
 recorded as unresolved was later resolved AGAINST the position recorded here.
 
-**What is left is the panel and the mechanical steps.** Three families read the
-frozen bytes — gemini, openai and qwen; zai's gateway refuses a disabled
-thinking mode and its package expired, kimi and deepseek are out of quota, and
-the default `claude` lane cannot reach an ACP session at all (that last one is
-v0.33.0's first item). Then: bump seven places, render and publish and record
-this page, open the PR, merge on CI green, tag the merged sha, and move the
+**What is left is the mechanical steps.** Master waived the three-family panel
+for v0.32.0 on 2026-08-19; the review of record is the `codex-advisor` lane at
+`gpt-5.6-luna`, effort `max`, whose reported identity is written into the
+release notes the way a panel lane's would be. The availability that prompted
+it, measured 2026-08-18: of seven shipped lanes only `agy` (gemini) and `codex`
+(openai) could answer — qwen hit a one-week quota, zai's gateway refuses a
+disabled thinking mode and its package expired, kimi and deepseek are out of
+quota, and the default `claude` seat cannot reach an ACP session at all, which
+is v0.33.0's first item.
+
+Then: bump seven places, render and publish and record this page, open the PR,
+merge on CI green plus the codex bot review, tag the merged sha, and move the
 submodule pin in `~/agent-skills`.
 
 **That dispute is CLOSED, and this paragraph said otherwise for a whole

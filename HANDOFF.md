@@ -8,9 +8,13 @@ Written 2026-08-17 through `bmad-party-mode`.
 - Branch `release/v0.32.0`, pushed. It carries the MCP lane-discovery server and
   `acp-dispatch.mjs`. Scope set by Master 2026-08-17.
 - `main` is at v0.31.0 and owes nothing.
-- **What is left is one gate and five mechanical steps**: a three-family panel on
-  the frozen bytes, then bump seven places, render/publish/record the roadmap,
-  merge the PR, tag the merged sha, pin the submodule in `~/agent-skills`.
+- **What is left is five mechanical steps**: bump seven places,
+  render/publish/record the roadmap, open and merge the PR, tag the merged sha,
+  pin the submodule in `~/agent-skills`. The three-family panel is WAIVED for
+  v0.32.0 by Master (2026-08-19) in favour of the `codex-advisor` lane at
+  `gpt-5.6-luna`, effort `max` — see the section below. `gate-required.mjs`
+  still answers REQUIRED and is right to: it is fail-closed and does not read
+  waivers, so the record lives here, on the PR and in the release notes.
 
 ### The review of record is `codex-advisor` at `gpt-5.6-luna`, effort `max`
 
@@ -322,9 +326,10 @@ release, not something to do after it.
 
 Everything here rests on reading or on a synthetic environment, not on a run.
 
-- **The MCP server has never been exercised by a real Claude host.** All 18
+- **The MCP server has never been exercised by a real Claude host.** All 48
   tests drive it in-process or spawn it directly; nothing has registered it
-  through `.mcp.json` and called a tool from a session.
+  through `.mcp.json` and called a tool from a session. (Said 18 for several
+  releases — a count in prose is true on the day it is typed and on no other.)
 - **`configuration: valid` does not mean a lane runs.** No endpoint is
   contacted, no credential is accepted by anyone, no adapter is resolved, no
   session is negotiated. Each answer carries `notProven` saying so.

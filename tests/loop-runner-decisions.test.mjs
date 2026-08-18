@@ -90,11 +90,24 @@ function repoWith({ ledgers = {}, busyAgentIds = [], pulseAgeSec = 5 } = {}) {
 // beside the suite: bare `node --test` went red at 1106/1101/1/4 here while
 // `--test-concurrency=1` and three plain runs on an idle box were green.
 //
-// This file spawns nothing, so nothing was still writing: the race is inside
-// `rmSync` on a loaded macOS filesystem. Every bulk-at-exit hook in the suite
-// got the same options — they remove many directories at the one moment the
-// process is busiest, which is why this shape failed and the single mid-test
-// removals did not.
+// THIS file spawns nothing, so nothing was still writing here: the race is
+// inside `rmSync` on a loaded macOS filesystem. Every bulk-at-exit hook in the
+// suite got the same options — they remove many directories at the one moment
+// the process is busiest, which is why this shape failed and the single
+// mid-test removals did not.
+//
+// The first version of this paragraph said none of the covered files spawn
+// anything, and that is FALSE: acp-companion, acp-dispatch and loop-smoke all
+// fork real children. What is true of them is narrower — their test paths await
+// or kill those writers before cleanup runs, which a review lane checked by
+// running loop-smoke isolated and finding no surviving child and no leftover
+// directory. A comment that generalises from one file to nine is how a correct
+// fix acquires a wrong reason.
+//
+// And the retries are not a proven cure: the 1106/1 failure has NOT been
+// reproduced since, including under a deliberate load run. Read this as the
+// right shape for the error observed, not as a fix with a measurement behind
+// it.
 //
 // Worth remembering how it surfaced: green three times running on a quiet
 // machine is not evidence, and the reviewer that found it was not looking for
