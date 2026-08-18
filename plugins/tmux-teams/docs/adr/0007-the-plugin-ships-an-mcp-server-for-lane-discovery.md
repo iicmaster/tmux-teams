@@ -116,6 +116,32 @@ have shipped it silently. The guard serialises whole replies built from
 secret-bearing fixtures on the success path AND on each failure path, including
 a credential supplied through the ambient environment rather than a file.
 
+**What `acp_lanes` reports about an adapter is a DECLARATION, and a caller can
+change which bytes run.** A round-seven panel lane put it precisely: every
+shipped adapter command begins with a bare `npx` or `bunx`, `buildProfileEnv`
+preserves the caller's `PATH`, and `executablePath` PREPENDS `$HOME/.local/bin`,
+`$HOME/.kimi-code/bin` and `$HOME/.bun/bin` when they exist. So an operator who
+controls their own home directory controls which adapter binary resolves — and
+this tool reports the package the profile names, not the bytes that ran.
+
+That prepending is deliberate and is not being removed: on a version-manager
+machine the toolchain lives under `$HOME`, and a launch that cannot find it is
+the shipped outage this project has already paid for once. The honest statement
+is the boundary, not a fix:
+
+- **Without required receipts**, the adapter identity in a lane report is a
+  declaration. It says what the profile pins, and nothing observed it.
+- **With `ACP_SESSION_RECEIPT_REQUIRED=1`**, the companion refuses an arbitrary
+  `ACP_CMD` without an execution profile, and the receipt binds
+  `adapter_integrity`, `adapter_entry_digest`, `adapter_metadata_digest`,
+  `adapter_package_spec` and `adapter_resolved_version` — a mismatch on any of
+  them fails the turn. That is where the bytes are pinned, and it is why both
+  advisor skills now set the flag on every documented command.
+
+The tool cannot close the gap itself without executing something, which is the
+line it does not cross. Naming where the guarantee begins is the part that was
+missing.
+
 **Read-only, with no exceptions.** No tool dispatches, spawns a lane, or starts a
 review. This is the same principle that keeps a reviewer lane from launching
 delivery work: a surface that can answer questions is a different thing from a

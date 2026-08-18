@@ -5,8 +5,21 @@ description: "Consult a Claude-protocol advisor over ACP and get the answer back
 
 # Claude Advisor
 
-A consultation lane. It asks a Claude-protocol seat a question, returns a
-round-table, and **can prove which model answered**.
+A consultation lane. It asks a Claude-protocol seat a question and returns a
+round-table.
+
+**On the default seat it can prove which model answered; on a routed seat it
+cannot, and this line used to promise both.** A panel lane read the headline —
+"can prove which model answered" — against this file's own paragraph fifty lines
+down, which says a receipt recording `effective_identity: opus` has told you
+nothing about who answered, because `opus` on three different bins reaches three
+different vendors. Both cannot be true.
+
+What holds: the default seat asks for `claude-fable-5` and the receipt binds
+that exact string, so the identity IS the model. A ROUTED seat asks a gateway
+for an alias, and the receipt records the alias — the `<bin>` and the endpoint
+are the facts, the alias is a slot. Prove a routed seat's family from its
+endpoint, never from its identity.
 
 ## What this skill actually guarantees
 

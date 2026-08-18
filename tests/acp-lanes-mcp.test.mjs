@@ -1203,3 +1203,28 @@ test('every routed lane accepts its OWN provider key, not just the Anthropic pai
     }
   }
 })
+
+test('a lane report calls its adapter DECLARED, because a caller can change which bytes run', () => {
+  // A round-seven lane: every shipped adapter command begins with a bare `npx`
+  // or `bunx`, `buildProfileEnv` preserves the caller's PATH, and
+  // `executablePath` PREPENDS caller-owned home directories. So the operator
+  // controls which binary resolves, and this tool reports the package the
+  // profile names rather than the bytes that ran.
+  //
+  // The prepending stays — on a version-manager machine the toolchain lives
+  // under $HOME and a launch that cannot find it is a shipped outage. What must
+  // hold is that the REPORT does not overclaim.
+  const facts = JSON.stringify(callTool('acp_lanes', {}, { HOME: '/tmp', PATH: '/usr/bin' }))
+  assert.ok(!/verified adapter|adapter verified|adapter identity confirmed/i.test(facts),
+    'a lane report claims the adapter bytes were verified')
+  assert.match(facts, /"adapter"/, 'the report stopped naming the adapter at all')
+
+  // and every shipped adapter command really does start with a bare resolver,
+  // which is WHY the report can only declare
+  for (const [id, profile] of Object.entries(REVIEW_PROFILES)) {
+    const argv = profile.command ?? profile.argv ?? []
+    if (!argv.length) continue
+    assert.ok(['npx', 'bunx'].includes(argv[0]) || argv[0].includes('/'),
+      `${id} launches ${argv[0]}, which is neither a bare resolver nor an absolute path`)
+  }
+})

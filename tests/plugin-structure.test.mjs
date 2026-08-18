@@ -667,3 +667,25 @@ test('the read-only guarantee is carried by the thing it says it rests on', () =
     }
   }
 })
+
+test('the claude advisor does not promise an identity proof its routed seat cannot give', () => {
+  // A panel lane read the headline — "can prove which model answered" — against
+  // this file's own paragraph fifty lines down: a receipt recording
+  // `effective_identity: opus` has told you nothing about who answered, because
+  // `opus` on three different bins reaches three different vendors. Both cannot
+  // be true, and the headline is the one a reader sees first.
+  const claude = readFileSync(join(PLUGIN, 'skills', 'claude-advisor', 'SKILL.md'), 'utf8')
+  const body = claude.split('---').slice(2).join('---')   // past the frontmatter
+
+  assert.ok(body.includes('has told\nyou nothing about who answered')
+    || body.includes('has told you nothing about who answered'),
+    'the alias-is-not-a-family paragraph is gone, so the contradiction may have been "fixed" by deletion')
+
+  // an unqualified promise must not stand next to it
+  const unqualified = /returns a\s+round-table, and \*\*can prove which model answered\*\*/
+  assert.doesNotMatch(body, unqualified,
+    'the headline promises an identity proof the routed seat cannot give')
+  // and the qualification names WHICH seat can
+  assert.match(body, /default seat.{0,80}can prove/s,
+    'the file does not say which seat the proof holds for')
+})
