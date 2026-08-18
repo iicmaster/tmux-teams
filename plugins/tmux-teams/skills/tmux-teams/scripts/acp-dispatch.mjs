@@ -891,8 +891,24 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
   // The child holds its own duplicate; this parent has no use for the
   // descriptor and leaked it for the life of the process.
   try { closeSync(logFd) } catch { /* the spawn may already have consumed it */ }
-  if (Number.isInteger(child.pid)) {
-    writeNoFollow(pidPath(cwd, taskId), `${child.pid}\n`)
+  // GUARDED, like the routing write below. This was not — the edit that added
+  // the routing guard asserted two anchors, the first failed, and I re-applied
+  // only the half that had errored. A lane reported the pid half still
+  // unguarded a round later, which is the third time in this release that a
+  // scripted edit failed silently and I read the line after it instead of the
+  // failure.
+  try {
+    if (Number.isInteger(child.pid)) {
+      writeNoFollow(pidPath(cwd, taskId), `${child.pid}\n`)
+    }
+  } catch (cause) {
+    try { process.kill(-child.pid, 'SIGKILL') } catch { /* group already gone */ }
+    try { process.kill(child.pid, 'SIGKILL') } catch { /* already gone */ }
+    throw Object.assign(
+      new Error(`the lane started as pid ${child.pid} and its pid file could not be written `
+        + `(${cause.code ?? cause.message}) — it has been killed rather than left unfindable`),
+      { code: 'publication_failed', cause },
+    )
   }
   // `ACP_RESUME` is deliberately NOT captured: a resume of a resume must carry
   // the session id the operator is recovering, not the one the last attempt was
@@ -995,6 +1011,14 @@ async function watchBoot(child, cwd, taskId, bootMs, spawnedAtMs) {
     // that a non-empty `effective_identity` was standing in for an ACCEPTED
     // identity — which is the substitution this whole plugin exists to refuse,
     // committed inside the check written to enforce it.
+    // EXITED FIRST. A lane reproduced this: the identity check ran before the
+    // captured `exited` state, so a child that had already exited nonzero — and
+    // whose exit this loop had observed — was reported as a healthy boot on the
+    // strength of a record it wrote on its way out.
+    //
+    // A record proves what a lane SAID; `exited` proves what happened to it.
+    // When they disagree the process wins.
+    if (exited && exited.code !== 0) return { outcome: 'exited', record, ...exited }
     if (record && record.effective_identity
       && ['matched', 'unverified'].includes(record.identity_status)) {
       return { outcome: 'live', record }

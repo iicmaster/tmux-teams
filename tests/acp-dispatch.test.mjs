@@ -2,7 +2,7 @@ import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, mkdirSync, rmSync, symlinkSync,
-  realpathSync, statSync, linkSync } from 'node:fs'
+  realpathSync, statSync, linkSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -1776,6 +1776,9 @@ test('a lane whose records cannot be written is killed, not left running nameles
   const cwd = tempDir('acp-dispatch-orphan-')
   writeFileSync(join(cwd, 'brief.md'), 'do the thing\n')
   mkdirSync(join(cwd, '.tmux-teams', 'dispatch-routing'), { recursive: true })
+  // BOTH publications, not just routing. The edit that added this guard
+  // asserted two anchors, the first failed, and only the second half was
+  // re-applied — a lane found the pid write still unguarded a round later.
   const r = spawnSync(process.execPath, ['-e', `
     process.env.ACP_DISPATCH_BOOT_SEC = '10'
     const m = await import(${JSON.stringify(DISPATCH)})
@@ -1844,4 +1847,73 @@ test('two dispatches racing one task id cannot both win', async (t) => {
   // dispatches and refuses the rest for the right reason. It also caught a real
   // defect on its first run: the preflight's `mkdirSync` raced itself and
   // crashed the losers with EEXIST before they ever reached admission.
+})
+
+test('an unwritable pid directory refuses BEFORE a child exists', () => {
+  if (process.platform === 'win32') return
+  // The routing half of the publication guard shipped and the pid half did not,
+  // because a scripted edit asserted two anchors, failed on the first, and only
+  // the second was re-applied. A round-nine lane reported it. Both halves are
+  // guarded now.
+  //
+  // But the pid half CANNOT be reached by making that directory unwritable,
+  // and the reason is the better outcome: `claimTaskId` is the earliest write
+  // there, so a permission problem is refused before any child exists and
+  // there is nothing to orphan. The guard covers the narrower window between
+  // the claim and the write — a disk that fills in between — which a test
+  // cannot stage.
+  const cwd = tempDir('acp-dispatch-orphanpid-')
+  writeFileSync(join(cwd, 'brief.md'), 'do the thing\n')
+  mkdirSync(join(cwd, '.tmux-teams', 'dispatch-pids'), { recursive: true })
+  chmodSync(join(cwd, '.tmux-teams', 'dispatch-pids'), 0o500)
+  try {
+    const r = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'orphanpid', join(cwd, 'brief.md'), '120'],
+      { cwd, encoding: 'utf8', env: laneEnv(), timeout: 60000 })
+    assert.notEqual(r.status, 0, 'a dispatch proceeded with an unwritable pid directory')
+    assert.match(`${r.stdout}${r.stderr}`, /EACCES|permission denied/)
+    // nothing was started, so nothing needs killing
+    assert.equal(readdirSync(join(cwd, '.tmux-teams', 'runner-logs')).length, 0)
+  } finally {
+    chmodSync(join(cwd, '.tmux-teams', 'dispatch-pids'), 0o700)
+  }
+
+  // and both publications really are guarded in the source, which is what the
+  // lane's finding was about
+  const src = readFileSync(DISPATCH, 'utf8')
+  assert.equal((src.match(/code: 'publication_failed'/g) ?? []).length, 2,
+    'one of the two publication writes is unguarded again')
+})
+
+test('an observed nonzero exit outranks a record the child wrote on its way out', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX')
+  // A round-nine lane reported the identity check running BEFORE the captured
+  // `exited` state, so a child that had already exited nonzero — and whose exit
+  // this loop had observed — was reported as a healthy boot on the strength of
+  // a record it wrote on its way out.
+  //
+  // A record proves what a lane SAID; `exited` proves what happened to it. An
+  // identity refusal is the case that produces both: the companion writes the
+  // identity it saw, refuses it, and exits nonzero.
+  const cwd = tempDir('acp-dispatch-exitwins-')
+  writeFileSync(join(cwd, 'brief.md'), 'do the thing\n')
+  const r = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'exitwins', join(cwd, 'brief.md'), '120'], {
+    cwd, encoding: 'utf8', timeout: 60000,
+    env: laneEnv({ ACP_DISPATCH_BOOT_SEC: '30', MOCK_CONFIG_IDENTITY: '1',
+      MOCK_MODEL_OPTIONS: 'something-else', MOCK_MODEL_OPTIONS_STRICT: '1',
+      ACP_MODEL: 'not-on-offer', ACP_EXPECT_MODEL: 'not-on-offer' }),
+  })
+  const out = `${r.stdout}${r.stderr}`
+  assert.notEqual(r.status, 0, `a refused identity was reported as a healthy boot:\n${out}`)
+  assert.doesNotMatch(out, /^dispatched .* and is running/m,
+    'the caller was told a lane that exited is running')
+
+  // WHAT THIS DOES NOT PROVE, measured: removing the `exited` check leaves this
+  // green, because an identity refusal ALSO writes `liveness_state: failed` and
+  // the terminal branch catches it first. The `exited` rule covers the case
+  // where the record looks HEALTHY and the process died anyway — a mock that
+  // writes a good identity and then crashes, which the fixtures cannot produce.
+  //
+  // It stays because a record proves what a lane said and `exited` proves what
+  // happened to it, and the panel found the ordering wrong by reading rather
+  // than by running. Saying so is better than leaving the survivor unexplained.
 })
