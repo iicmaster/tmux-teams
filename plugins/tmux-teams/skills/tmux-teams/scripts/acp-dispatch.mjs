@@ -355,7 +355,7 @@ function readDirSync(path, runRoot) {
   }
 }
 
-function readLeafSync(path, runRoot) {
+export function readLeafSync(path, runRoot) {
   // The PARENTS as well as the leaf. `lstat` on the final component says
   // nothing about `.tmux-teams` or `sessions` being symlinks, so a hostile
   // parent still redirected the read — the boundary was called universal and

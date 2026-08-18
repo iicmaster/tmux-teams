@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { statusReport, formatStatus, resumeCommand, outboxPath, sessionPath, COMPANION_DEFAULT_STALL_SEC, leaseExpired, strayOutboxes, TERMINAL_LIVENESS_STATES,
   waitForSettlement, EXIT_OUTBOX, EXIT_RUNNING, EXIT_NO_OUTBOX, pidPath, recordedPid, belongsToThisRun,
-  statusExitCode, logPath }
+  statusExitCode, logPath, readLeafSync }
   from '../plugins/tmux-teams/skills/tmux-teams/scripts/acp-dispatch.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -2065,4 +2065,53 @@ test('a refused claim says only what it can support, and keeps the retired leaf'
   const leaves = readdirSync(join(cwd, '.tmux-teams', 'liveness'))
   assert.equal(leaves.filter((n) => n.startsWith('held.json.superseded-')).length, 1,
     `the predecessor leaf was not retired under a suffix: ${leaves.join(', ')}`)
+})
+
+// This test exists because a mutation SURVIVED, and it ended up pinning
+// something other than what it was written for. Making the collision scan
+// refuse an unenumerable directory left the file green — so the guard had no
+// consumer test. Writing one showed why: the scan can never SEE that case,
+// because `assertContainedDir` refuses a symlinked `.tmux-teams/<dir>` forty
+// lines earlier. The guard was removed rather than given a test it could not
+// reach, and what is pinned here instead is the guarantee that made removing it
+// safe. Which is the useful lesson: an untested branch is a question, and the
+// answer is sometimes "delete it", not "test it".
+test('admission refuses an artifact directory that is a symlink', () => {
+  const cwd = tempDir('acp-dirscan-')
+  mkdirSync(join(cwd, '.tmux-teams'), { recursive: true })
+  mkdirSync(join(cwd, 'elsewhere'), { recursive: true })
+  // Spelled differently on purpose: were the scan ever to enumerate through the
+  // link it would find a case collision, so a pass here cannot come from an
+  // empty directory. The link points back INSIDE the run root, which is what
+  // makes a containment test useless against it.
+  writeFileSync(join(cwd, 'elsewhere', 'Held.json'), '{}')
+  symlinkSync(join(cwd, 'elsewhere'), join(cwd, '.tmux-teams', 'liveness'))
+  writeFileSync(join(cwd, 'brief.md'), 'brief\n')
+  const r = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'held', join(cwd, 'brief.md'), '30'],
+    { cwd, encoding: 'utf8', env: laneEnv(), timeout: 60000 })
+  const said = `${r.stdout}${r.stderr}`
+  assert.notEqual(r.status, 0, `a run directory reached through a symlink was admitted:\n${said}`)
+  assert.match(said, /refusing a run directory whose \.tmux-teams\/liveness is not a real directory inside it/,
+    `the refusal did not name the directory that refused:\n${said}`)
+})
+
+// The primitive, tested directly, because NO consumer can reach this branch —
+// every call site builds its path from the run root it also passes. That is
+// exactly why the branch matters: it is what turns "a caller forgot the run
+// root" from a silent pass into a refusal, and the release this test ships in
+// contains one call site that had forgotten it.
+//
+// The previous shape answered `relative = ''` for a path outside the root and
+// then walked no components at all, so the boundary agreed with anything it
+// could not place. A mutation survived the whole file until this went in.
+test('the read boundary refuses a path outside the run root it was given', () => {
+  const cwd = tempDir('acp-outside-')
+  const other = tempDir('acp-other-')
+  writeFileSync(join(other, 'secret'), 'not this run\n')
+  writeFileSync(join(cwd, 'mine'), 'this run\n')
+  assert.equal(readLeafSync(join(other, 'secret'), cwd), null,
+    'a file outside the run root was read')
+  assert.equal(readLeafSync(cwd, cwd), null, 'the run root itself is not a leaf')
+  assert.equal(readLeafSync(join(cwd, 'mine'), cwd), 'this run\n',
+    'a file inside the run root was refused')
 })
