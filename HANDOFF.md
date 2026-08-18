@@ -155,6 +155,31 @@ release, not something to do after it.
   now, and a dead copy was removed from `~/bin/claude-qwen`, but the key itself
   has not been changed. Only its owner can do that.
 - Full open list with measurements: `ROADMAP.md`, section "What is actually open".
+- **The claude/anthropic review lane, measured 2026-08-18 — two faults, and the
+  interesting one is that they masked each other.** The lane was written off as
+  "auth broken" for a whole day. It had a wrong model id sitting IN FRONT of the
+  auth failure, so every probe died at the first fault and nobody saw the
+  second. Probed against the adapter's own `configOptions`, it advertises
+  exactly `default`, `opus[1m]`, `sonnet`, `haiku` — `claude-fable-5` is refused
+  and so is a bare `opus`. With `opus[1m]` the lane reports
+  `effective_identity: opus[1m] (matched)` and then dies on
+  `OAuth session expired and could not be refreshed`.
+  That second failure is real and is NOT fixed by `claude auth login`:
+  `~/.claude/.credentials.json` carries `claudeAiOauth.expiresAt =
+  2026-06-11 15:49 UTC`, expired 68 days, while the CLI reads the macOS
+  Keychain. So `claude -p` answers `OK` in a subprocess at the same moment the
+  ACP lane refuses — the two read different credential stores, which is the
+  v0.33.0 item, now with a measurement behind it instead of a guess.
+  The mint is `claude setup-token` and it belongs to Master: it produces a
+  durable credential and prints it, so running it through a session would put
+  the secret in a transcript.
+- **A diagnostic that holds the answer and does not say it.**
+  `assertConfigOptionValue` (`acp-companion.mjs:1966`) refuses with
+  `rejected unsupported model value <v>` while the advertised list is in its
+  hand. Four probes were spent recovering what it could have printed. Not
+  changed for v0.32.0 — the bytes are frozen for the panel — and it is on the
+  roadmap, but note the shape: this repo's own rule is to assert the sentence a
+  diagnostic should produce, and the rule was written for exactly this.
 
 ## 4. DO NOT
 
@@ -171,6 +196,14 @@ release, not something to do after it.
   `planEscalation` (`loop-runner.mjs:1939`) calls leave the default in place, so
   it is reached constantly and never bites, because those boards have no
   `pm-notes/latest.md` for the clock branch to read.
+- **Do not start a panel round on a run directory holding the previous round's
+  answers.** The runner resumes by skipping any lane that already has an outbox,
+  which is right within a round and wrong across one: round nine's ten verdicts
+  sat in `panel-runs/` after all fourteen of its findings were fixed, and a
+  re-run would have reported verdicts on the PRE-fix bytes as the new round's.
+  Archive the directory under the sha it answered — `panel-runs-round9-218433d`
+  — rather than deleting it, because a superseded verdict is still the evidence
+  that the fix was owed.
 - **Do not build a review packet from memory.** `scripts/gate-required.mjs`
   prints every deciding file. Three of the four panels run for v0.31.0 were
   assembled by hand and all three missed the same two publication markers, so
