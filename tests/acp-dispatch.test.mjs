@@ -1708,3 +1708,55 @@ test('listing a directory is a read too, and a symlinked parent enumerates nothi
   assert.deepEqual(statusReport(honest, 'o').strays, ['somebody-elses-task'],
     'a real stray inside the run directory stopped being reported')
 })
+
+test('a completed record with no accepted identity, and one stamped in the future, are both refused', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX process groups')
+  // TWO REGRESSIONS THIS FILE NAMED AND NEVER EXERCISED. A panel lane found
+  // both in round seven and again in round eight: the comments describe the
+  // identity gate and the future-stamp bound, and no test body reached either,
+  // which a mutation confirmed by surviving.
+  //
+  // Both are asserted through `belongsToThisRun` and the boot path's own
+  // observable output, because that is where they decide anything.
+  const spawnedAt = Date.now()
+
+  // A record stamped in the future is not this run's, however close.
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt + 90_000).toISOString() }, spawnedAt),
+    false, 'a record stamped 90s ahead was accepted as this dispatch\'s')
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt + 1_000).toISOString() }, spawnedAt),
+    true, 'a record from a second after the spawn was rejected')
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt - 1_000).toISOString() }, spawnedAt),
+    false, 'a record predating the spawn was accepted')
+
+  // A `completed` record carrying NO accepted identity must not report success.
+  // The dispatcher prints the identity it accepted; a ghost record has none, so
+  // the run must not come back reporting one.
+  const cwd = tempDir('acp-dispatch-ghostid-')
+  mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
+  writeFileSync(join(cwd, 'brief.md'), 'do the thing\n')
+  writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'ghostid.json'), JSON.stringify({
+    liveness_state: 'completed', termination_reason: 'none',
+    started_at: new Date(spawnedAt + 5_000).toISOString(),
+    observed_at: new Date(spawnedAt + 5_000).toISOString(),
+    next_lease_expiry_at: new Date(spawnedAt + 900_000).toISOString(),
+  }))
+  const r = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'ghostid', join(cwd, 'brief.md'), '120'],
+    { cwd, encoding: 'utf8', env: laneEnv({ ACP_DISPATCH_BOOT_SEC: '10' }), timeout: 60000 })
+  const out = `${r.stdout}${r.stderr}`
+  // whatever it reports, it must be THIS lane's identity, never the ghost's absence
+  assert.match(out, /effective_identity: gpt-mock/,
+    `a completed record with no identity was allowed to stand in for one:\n${out}`)
+  // The predecessor's record was moved aside rather than believed.
+  assert.ok(readdirSync(join(cwd, '.tmux-teams', 'liveness')).some((f) => f.includes('.superseded-')),
+    'the ghost record was not retired')
+
+  // WHAT THIS CANNOT PROVE, measured rather than assumed. Mutating the boot
+  // path's identity gate back to `outcome: 'live'` leaves this test GREEN,
+  // because the retirement above removes the ghost before boot ever reads it.
+  // The gate is defence in depth behind that retirement — reachable only if a
+  // record appears after the retirement and during boot, which a test cannot
+  // stage without a race. It stays because the retirement can fail: a read
+  // refused by the containment boundary leaves the record in place. The
+  // assertion that bites here is the retirement, and saying so is better than
+  // leaving a surviving mutation for the next reader to discover.
+})
