@@ -272,6 +272,24 @@ export function outboxPath(cwd, taskId) { return join(cwd, '.mailbox-out', taskI
 // a symlink pointing anywhere under the run directory's PARENT. Found by the
 // test written for the fix, on the same afternoon: a guard that infers its own
 // boundary from path shape is guessing.
+// Listing a directory is a read too, and these were not going through any
+// boundary — `strayOutboxes` listed `.mailbox-out` and the case check listed
+// `.tmux-teams/<dir>`, both by pathname. Two panel families named it: a
+// symlinked parent makes both of them enumerate somebody else's directory and
+// report its contents as this run's. Returns an empty list rather than
+// throwing, because a report that cannot enumerate should say "nothing here I
+// can trust", not fail.
+function readDirSync(path, runRoot) {
+  try {
+    const real = realpathSync(path)
+    const root = realpathSync(runRoot)
+    if (!real.startsWith(root + sep) && real !== root) return []
+    return readdirSync(path)
+  } catch {
+    return []
+  }
+}
+
 function readLeafSync(path, runRoot) {
   // The PARENTS as well as the leaf. `lstat` on the final component says
   // nothing about `.tmux-teams` or `sessions` being symlinks, so a hostile
@@ -312,7 +330,7 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
 // difference between them is a whole re-dispatch.
 export function strayOutboxes(cwd, taskId) {
   try {
-    return readdirSync(join(cwd, '.mailbox-out')).filter((name) => name !== taskId).sort()
+    return readDirSync(join(cwd, '.mailbox-out'), cwd).filter((name) => name !== taskId).sort()
   } catch {
     return []
   }
@@ -682,8 +700,7 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
   // taken.
   for (const dir of ['liveness', 'dispatch-pids', 'dispatch-routing']) {
     const at = join(cwd, '.tmux-teams', dir)
-    if (!existsSync(at)) continue
-    for (const leaf of readdirSync(at)) {
+    for (const leaf of readDirSync(at, cwd)) {
       const stem = leaf.replace(/\.(json|superseded-.*)$/, '').replace(/\.superseded-.*$/, '')
       if (stem !== taskId && stem.toLowerCase() === taskId.toLowerCase()) {
         throw Object.assign(

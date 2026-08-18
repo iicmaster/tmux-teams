@@ -47,12 +47,38 @@ function tempDir(prefix) {
   return dir
 }
 
+// Only pids THIS RUN recorded. Two panel families found the earlier version
+// dangerous for the same reason: it read whatever pid files were lying in a
+// temp directory and SIGKILLed the group, so a stale pid whose number the OS
+// had recycled belonged to a stranger — on the developer's own machine. It had
+// already killed the test runner once while being written, which should have
+// been the signal.
+//
+// A pid file only says a NUMBER. Whether that number is still the process this
+// suite started is answered by its start time: anything running before this
+// file began cannot be ours, however the number got there. `ps -o lstart=` is
+// available on macOS and Linux; if it cannot answer, the pid is left alone,
+// because not killing a lane leaks a directory and killing a stranger does not.
+const SUITE_STARTED_AT = Date.now()
+
+function startedAfterThisSuite(pid) {
+  try {
+    const out = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8' }).trim()
+    if (!out) return false
+    const started = Date.parse(out)
+    return Number.isFinite(started) && started >= SUITE_STARTED_AT - 5000
+  } catch {
+    return false
+  }
+}
+
 function lanePidsUnder(dir) {
   const pids = []
   const pidDir = join(dir, '.tmux-teams', 'dispatch-pids')
   if (!existsSync(pidDir)) return pids
   for (const leaf of readdirSync(pidDir)) {
     const pid = Number.parseInt(readFileSync(join(pidDir, leaf), 'utf8').trim(), 10)
+    if (!startedAfterThisSuite(pid)) continue
     // NEVER our own pid, and never our own group. Several fixtures plant
     // `process.pid` on purpose — they need a pid that is definitely alive to
     // test reuse and admission — and the first version of this hook killed the
@@ -1624,4 +1650,61 @@ test('the outbox is read through the boundary, and a case-only task id is refuse
   const ok = spawnSync(process.execPath, [DISPATCH, 'mock', dir, 'other', join(dir, 'brief.md'), '120'],
     { cwd: dir, encoding: 'utf8', env: laneEnv(), timeout: 60000 })
   assert.equal(ok.status, 0, `an unrelated id was refused:\n${ok.stdout}${ok.stderr}`)
+})
+
+test('the cleanup will not kill a process older than this suite', () => {
+  // Two panel families found the earlier hook dangerous for the same reason: it
+  // read whatever pid files were lying in a temp directory and SIGKILLed the
+  // GROUP, so a stale pid whose number the OS had recycled belonged to a
+  // stranger — on the developer's own machine. It had already killed the test
+  // runner once while being written.
+  //
+  // Ownership is decided by START TIME, not by the file. This asserts the
+  // predicate directly, because the hook itself runs after every test and
+  // cannot be observed from inside one.
+  const dir = tempDir('acp-dispatch-ownership-')
+  mkdirSync(join(dir, '.tmux-teams', 'dispatch-pids'), { recursive: true })
+
+  // pid 1 has been running since long before this suite: never ours
+  writeFileSync(join(dir, '.tmux-teams', 'dispatch-pids', 'ancient'), '1\n')
+  assert.deepEqual(lanePidsUnder(dir), [],
+    'the cleanup claimed a process that predates the suite')
+
+  // and a pid that does not exist at all is not claimed either
+  writeFileSync(join(dir, '.tmux-teams', 'dispatch-pids', 'gone'), '999999\n')
+  assert.deepEqual(lanePidsUnder(dir), [])
+
+  // a process started INSIDE this suite is ours — spawn one and check
+  const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { detached: true })
+  try {
+    writeFileSync(join(dir, '.tmux-teams', 'dispatch-pids', 'ours'), `${child.pid}\n`)
+    assert.deepEqual(lanePidsUnder(dir), [child.pid],
+      'the cleanup did not recognise a process this suite started')
+  } finally {
+    try { process.kill(child.pid, 'SIGKILL') } catch { /* already gone */ }
+  }
+})
+
+test('listing a directory is a read too, and a symlinked parent enumerates nothing', () => {
+  // Two panel families named this: `strayOutboxes` listed `.mailbox-out` and
+  // the case-collision scan listed `.tmux-teams/<dir>`, both by pathname and
+  // neither through the boundary every FILE read goes through. A symlinked
+  // parent made both enumerate somebody else's directory and report its
+  // contents as this run's.
+  const cwd = tempDir('acp-dispatch-listlink-')
+  const elsewhere = tempDir('acp-dispatch-listlink-target-')
+  writeFileSync(join(elsewhere, 'not-ours'), 'x\n')
+  writeFileSync(join(elsewhere, 'also-not-ours'), 'x\n')
+  symlinkSync(elsewhere, join(cwd, '.mailbox-out'))
+
+  const report = statusReport(cwd, 'o')
+  assert.deepEqual(report.strays, [],
+    `a symlinked .mailbox-out was enumerated as this run's: ${report.strays.join(', ')}`)
+
+  // and a real directory inside the tree still lists
+  const honest = tempDir('acp-dispatch-listok-')
+  mkdirSync(join(honest, '.mailbox-out'), { recursive: true })
+  writeFileSync(join(honest, '.mailbox-out', 'somebody-elses-task'), 'x\n')
+  assert.deepEqual(statusReport(honest, 'o').strays, ['somebody-elses-task'],
+    'a real stray inside the run directory stopped being reported')
 })
