@@ -5,16 +5,22 @@ Written 2026-08-17 through `bmad-party-mode`.
 
 ## 1. READ THIS FIRST
 
-- Branch `release/v0.32.0`, pushed. It carries the MCP lane-discovery server and
-  `acp-dispatch.mjs`. Scope set by Master 2026-08-17.
-- `main` is at v0.31.0 and owes nothing.
-- **What is left is five mechanical steps**: bump seven places,
-  render/publish/record the roadmap, open and merge the PR, tag the merged sha,
-  pin the submodule in `~/agent-skills`. The three-family panel is WAIVED for
-  v0.32.0 by Master (2026-08-19) in favour of the `codex-advisor` lane at
-  `gpt-5.6-luna`, effort `max` — see the section below. `gate-required.mjs`
+- **v0.32.0 SHIPPED 2026-08-19.** PR #69 merged; `main` is at `6b95101`, which
+  is the sha the tag points at — a merge produces a new commit, so the branch
+  tip is not what shipped. Release page and marketplace both live; the local
+  install moved 0.31.0 -> 0.32.0.
+- **One step is left and it is in another repository**: bump the
+  `plugins/tmux-teams` submodule pin in `~/agent-skills` to `6b95101` and push
+  it. That repo is a separate project on a different account — touch only
+  `plugins/tmux-teams` there, with `git commit --only -- <path>`, and ask first.
+- **Two gates were WAIVED by Master on 2026-08-19**, both recorded on PR #69 and
+  in the release notes: the three-family panel, in favour of the
+  `codex-advisor` lane at `gpt-5.6-luna` effort `max` run twice on the release
+  bytes; and the `chatgpt-codex-connector` review, which answered `@codex
+  review` with a usage-limit comment and no review state. `gate-required.mjs`
   still answers REQUIRED and is right to: it is fail-closed and does not read
-  waivers, so the record lives here, on the PR and in the release notes.
+  waivers, which is exactly why the record lives in documents rather than in the
+  script.
 
 ### The review of record is `codex-advisor` at `gpt-5.6-luna`, effort `max`
 
@@ -125,7 +131,7 @@ release, not something to do after it.
 
 ## 3. STATE
 
-### Shipped in v0.31.0 (on `main`)
+### Shipped in v0.32.0 (on `main`, tag v0.32.0, sha 6b95101)
 
 - **An ACP lane's identity claim, recorded and never counted.**
   `acp-review-client.mjs:1429` builds `claimedIdentity`; `review-gate.mjs:399`
