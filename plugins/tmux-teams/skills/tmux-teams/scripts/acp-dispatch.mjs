@@ -817,8 +817,18 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
   for (const key of ROUTING_ENV_KEYS) {
     if (env?.[key] !== undefined && env[key] !== '') routingEnv[key] = String(env[key])
   }
-  writeNoFollow(routingPath(cwd, taskId),
-    `${JSON.stringify({ worker, briefFile, stallSec: stallSec ?? null, spawnedAt: spawnedAtIso, env: routingEnv }, null, 2)}\n`)
+  try {
+    writeNoFollow(routingPath(cwd, taskId),
+      `${JSON.stringify({ worker, briefFile, stallSec: stallSec ?? null, spawnedAt: spawnedAtIso, env: routingEnv }, null, 2)}\n`)
+  } catch (cause) {
+    try { process.kill(-child.pid, 'SIGKILL') } catch { /* group already gone */ }
+    try { process.kill(child.pid, 'SIGKILL') } catch { /* already gone */ }
+    throw Object.assign(
+      new Error(`the lane started as pid ${child.pid} and its routing file could not be written `
+        + `(${cause.code ?? cause.message}) — it has been killed rather than left unfindable`),
+      { code: 'publication_failed', cause },
+    )
+  }
   return child
 }
 

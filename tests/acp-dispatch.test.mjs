@@ -1760,3 +1760,43 @@ test('a completed record with no accepted identity, and one stamped in the futur
   // assertion that bites here is the retirement, and saying so is better than
   // leaving a surviving mutation for the next reader to discover.
 })
+
+test('a lane whose records cannot be written is killed, not left running namelessly', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX process groups')
+  // A panel lane reproduced the gap: the child is detached BEFORE its pid and
+  // routing exist on disk, so an ordinary metadata failure — a full disk, a
+  // directory turned read-only between the preflight and the write — leaves a
+  // LIVE lane with no record anyone can find it by. `status` reports nothing,
+  // admission admits a second writer, and the operator has an orphan burning
+  // tokens under no name.
+  //
+  // The window cannot be closed, because the pid does not exist until the spawn
+  // does. So the failure is made recoverable: the lane is killed and the error
+  // names its pid.
+  const cwd = tempDir('acp-dispatch-orphan-')
+  writeFileSync(join(cwd, 'brief.md'), 'do the thing\n')
+  mkdirSync(join(cwd, '.tmux-teams', 'dispatch-routing'), { recursive: true })
+  const r = spawnSync(process.execPath, ['-e', `
+    process.env.ACP_DISPATCH_BOOT_SEC = '10'
+    const m = await import(${JSON.stringify(DISPATCH)})
+    const { chmodSync } = await import('node:fs')
+    // make the routing directory unwritable AFTER the preflight has passed
+    const orig = m.spawnDetached
+    try {
+      chmodSync(${JSON.stringify(join(cwd, '.tmux-teams', 'dispatch-routing'))}, 0o500)
+      orig('mock', ${JSON.stringify(cwd)}, 'orphan', ${JSON.stringify(join(cwd, 'brief.md'))}, 120)
+      console.log('NO ERROR')
+    } catch (e) {
+      console.log('CODE ' + e.code)
+      console.log('MSG ' + e.message)
+    }
+  `], { cwd, encoding: 'utf8', env: laneEnv(), timeout: 60000 })
+  const out = `${r.stdout}${r.stderr}`
+  assert.doesNotMatch(out, /NO ERROR/, 'a lane whose routing could not be written was left running')
+  assert.match(out, /CODE publication_failed/, `unexpected outcome:\n${out}`)
+  assert.match(out, /killed rather than left unfindable/)
+  const pid = Number.parseInt(out.match(/pid (\d+)/)?.[1] ?? '0', 10)
+  assert.ok(pid > 1, 'the error did not name the pid it killed')
+  await sleep(300)
+  assert.throws(() => process.kill(pid, 0), 'the lane named in the error is still alive')
+})
