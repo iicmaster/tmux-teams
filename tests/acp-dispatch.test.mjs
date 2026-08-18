@@ -1824,7 +1824,7 @@ test('two dispatches racing one task id cannot both win', async (t) => {
   assert.equal(winners.length, 1,
     `${winners.length} of 8 racing dispatches won the same task id`)
   for (const loser of racers.filter((r) => r.code !== 0)) {
-    assert.match(loser.out, /already running|already claimed|claimed by another/,
+    assert.match(loser.out, /already running|is claimed here|claimed by another/,
       `a loser failed for some reason other than losing the race:\n${loser.out.slice(0, 400)}`)
   }
   // and exactly one lane exists

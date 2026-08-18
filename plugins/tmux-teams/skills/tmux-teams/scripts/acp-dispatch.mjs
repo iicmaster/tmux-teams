@@ -820,12 +820,41 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
   // path, which quietly deleted a planted symlink instead of refusing it — a
   // regression this file's own tests caught immediately, and one that would
   // have turned a refusal into a silent overwrite of somebody else's file.
+  // NO REMOVE BEFORE THE CLAIM. Two panel families reproduced the previous
+  // version: an unconditional `rmSync` in front of `O_CREAT|O_EXCL` gives two
+  // contenders a window where both remove and both create, so the claim added
+  // to close a non-atomic admission was not atomic either.
+  //
+  // It also explains a mutation I had rationalised away: the race test's
+  // survivor was blamed on process start-up granularity when the truer answer
+  // was that the claim guarded nothing. A surviving mutation needs its
+  // explanation TESTED, not merely stated.
+  //
+  // Taking over a DEAD holder's leaf goes through a uniquely-named temp file
+  // and one `renameSync`. Exactly one rename lands on the stale path; a loser
+  // finds its own temp file already consumed and refuses, rather than sharing
+  // the id.
+  // THE CLAIM IS THE WHOLE OF IT: `O_CREAT|O_EXCL` succeeds or this dispatch
+  // refuses. No take-over path, because every version of one raced.
+  //
+  // Measured, in order: remove-then-create let 2 of 8 concurrent dispatches win
+  // the same id; rename-onto-the-path overwrote silently and let all of them
+  // win; retiring the stale leaf by rename fixed most of it and still failed 2
+  // runs in 6; gating that on mtime got to 1 in 6 and cannot get further,
+  // because a contender that starts admission AFTER the winner claims sees the
+  // winner's fresh leaf as older than itself and retires a LIVE claim.
+  //
+  // There is no filesystem primitive that both takes over a dead holder's file
+  // and refuses a live one, so the take-over is gone. A leftover leaf from an
+  // interrupted run is now an operator step — the same one the refusal above
+  // already names and the tests already exercise — and admission is exact.
   assertNotSymlink(pidPath(cwd, taskId))
-  try { rmSync(pidPath(cwd, taskId), { force: true }) } catch { /* nothing to remove */ }
   if (!claimTaskId(cwd, taskId)) {
+    const stale = readJson(livenessPath(cwd, taskId))?.next_lease_expiry_at ?? null
     throw Object.assign(
-      new Error(`task id "${taskId}" was claimed by another dispatch a moment ago — `
-        + 'ask it with `status`, or use a different task id'),
+      new Error(`task id "${taskId}" is claimed here: .tmux-teams/dispatch-pids/${taskId} exists.`
+        + (stale ? ` Its progress lease says ${stale}.` : '')
+        + ' Ask it with `status`; if that lane is gone, remove that file and dispatch again'),
       { code: 'already_running' },
     )
   }
