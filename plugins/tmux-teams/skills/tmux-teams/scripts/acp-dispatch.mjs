@@ -20,7 +20,7 @@
 // remove.
 import { spawn } from 'node:child_process'
 import { chmodSync, closeSync, constants as fsConstants, existsSync, fchmodSync, lstatSync, mkdirSync, openSync,
-  readFileSync, readdirSync, realpathSync, renameSync, writeSync } from 'node:fs'
+  readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeSync } from 'node:fs'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -159,7 +159,16 @@ export function assertContainedDir(root, ...parts) {
       // and an ACP runner log carries prompts, model output and diagnostics.
       // A review round measured 0755 here under an ordinary umask and was right
       // that the default is not the safe choice for this content.
-      mkdirSync(current, { mode: 0o700 })
+      // EEXIST is a RACE, not an error: another dispatch created the same
+      // directory between the lstat above and this line. Tolerating it here is
+      // what lets two concurrent dispatches reach the atomic claim instead of
+      // crashing in the preflight — found by the race test written for that
+      // claim, which is the only way a window this small shows itself.
+      try {
+        mkdirSync(current, { mode: 0o700 })
+      } catch (cause) {
+        if (cause.code !== 'EEXIST') throw cause
+      }
       continue
     }
     if (stat.isSymbolicLink() || !stat.isDirectory()) {
@@ -224,6 +233,27 @@ function writeNoFollow(path, contents) {
     fchmodSync(fd, 0o600)
   } finally {
     closeSync(fd)
+  }
+}
+
+// The ONE step in admission the filesystem can make atomic. `O_CREAT|O_EXCL`
+// either creates the file or fails; two dispatches racing it cannot both win.
+// The pid inside is written later, when the child exists — this only claims the
+// NAME, which is the thing two lanes fight over.
+//
+// A panel lane marked the non-atomic admission PACKET-ADMITTED: my own comment
+// said two dispatches racing the check both pass, and admitting a limitation is
+// not the same as having one that cannot be removed. This removes the half that
+// can be removed, on one machine. Two machines sharing a directory over NFS are
+// still outside what this can promise, and that is stated rather than implied.
+function claimTaskId(cwd, taskId) {
+  const path = pidPath(cwd, taskId)
+  try {
+    closeSync(openSync(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600))
+    return true
+  } catch (cause) {
+    if (cause.code === 'EEXIST') return false
+    throw cause
   }
 }
 
@@ -681,8 +711,10 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
   // (the other half of what the panel found). So refuse only when the pid is
   // alive AND the lane is still reporting progress.
   //
-  // Not atomic — two dispatches racing this both pass — and saying so matters
-  // more than the check: what it stops is dispatching twice by hand.
+  // The checks above read state and can be raced. The CLAIM below cannot: it is
+  // an `O_CREAT|O_EXCL` create of the pid path, so of two dispatches racing to
+  // the same task id on this machine exactly one proceeds. What the reads above
+  // still buy is a good REFUSAL MESSAGE — the claim alone would say only "taken".
   // A MISSING pid leaf is not evidence that nothing is running: the leaf can be
   // refused by the read policy, deleted by an operator, or never have been
   // written. Admission asked `recordedPid` and stopped there, so a lane whose
@@ -773,6 +805,29 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
   // under a suffix rather than deleted, exactly as the outbox is.
   for (const leaf of [livenessPath(cwd, taskId), sessionPath(cwd, taskId)]) {
     retirePredecessorLeaf(leaf, spawnedAtIso)
+  }
+  // The name is claimed AFTER the reads above, not before: a pid file left by a
+  // lane that has since finished is not a live claim, and claiming first made
+  // every ordinary re-dispatch fail. The reads decide whether the holder is
+  // alive; the claim decides who wins when two dispatches pass those reads at
+  // the same instant.
+  //
+  // `O_CREAT|O_EXCL` on a path that may legitimately already exist: remove the
+  // dead holder's file first, which is safe because the reads above have just
+  // established it is dead, then claim. Two racers both reach here, one create
+  // succeeds, the other gets EEXIST and stops having changed nothing.
+  // The leaf policy FIRST. The first version removed whatever was at the pid
+  // path, which quietly deleted a planted symlink instead of refusing it — a
+  // regression this file's own tests caught immediately, and one that would
+  // have turned a refusal into a silent overwrite of somebody else's file.
+  assertNotSymlink(pidPath(cwd, taskId))
+  try { rmSync(pidPath(cwd, taskId), { force: true }) } catch { /* nothing to remove */ }
+  if (!claimTaskId(cwd, taskId)) {
+    throw Object.assign(
+      new Error(`task id "${taskId}" was claimed by another dispatch a moment ago — `
+        + 'ask it with `status`, or use a different task id'),
+      { code: 'already_running' },
+    )
   }
   assertNotSymlink(logPath(cwd, taskId))
   assertNotSymlink(pidPath(cwd, taskId))

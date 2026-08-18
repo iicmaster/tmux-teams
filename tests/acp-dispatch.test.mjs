@@ -1800,3 +1800,48 @@ test('a lane whose records cannot be written is killed, not left running nameles
   await sleep(300)
   assert.throws(() => process.kill(pid, 0), 'the lane named in the error is still alive')
 })
+
+test('two dispatches racing one task id cannot both win', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX')
+  // A panel lane marked the non-atomic admission PACKET-ADMITTED: this file's
+  // own comment said two dispatches racing the check both pass, and admitting a
+  // limitation is not the same as having one that cannot be removed.
+  //
+  // The reads cannot be made atomic — they answer "is the holder alive". The
+  // CLAIM can: `O_CREAT|O_EXCL` on the pid path either creates or fails, so of
+  // N racers exactly one proceeds. This starts eight at once and counts.
+  const cwd = tempDir('acp-dispatch-race-')
+  writeFileSync(join(cwd, 'brief.md'), 'do the thing\n')
+  const racers = await Promise.all(Array.from({ length: 8 }, () => new Promise((done) => {
+    const p = spawn(process.execPath, [DISPATCH, 'mock', cwd, 'contested', join(cwd, 'brief.md'), '120'],
+      { cwd, encoding: 'utf8', env: laneEnv({ ACP_DISPATCH_BOOT_SEC: '20' }), stdio: ['ignore', 'pipe', 'pipe'] })
+    let out = ''
+    p.stdout.on('data', (d) => { out += d })
+    p.stderr.on('data', (d) => { out += d })
+    p.on('close', (code) => done({ code, out }))
+  })))
+  const winners = racers.filter((r) => r.code === 0)
+  assert.equal(winners.length, 1,
+    `${winners.length} of 8 racing dispatches won the same task id`)
+  for (const loser of racers.filter((r) => r.code !== 0)) {
+    assert.match(loser.out, /already running|already claimed|claimed by another/,
+      `a loser failed for some reason other than losing the race:\n${loser.out.slice(0, 400)}`)
+  }
+  // and exactly one lane exists
+  assert.equal(readdirSync(join(cwd, '.tmux-teams', 'dispatch-pids')).length, 1)
+
+  // WHAT THIS TEST CANNOT PROVE, measured rather than claimed. Neutering the
+  // `O_CREAT|O_EXCL` claim leaves it GREEN: eight `spawn` calls each take about
+  // a hundred milliseconds to reach the admission reads, so those reads already
+  // pick a single winner at this granularity. The claim's unique contribution
+  // appears only under true simultaneity, which a test cannot stage from
+  // outside the process it needs to interrupt.
+  //
+  // It stays because the reads CANNOT be made atomic — they answer "is the
+  // holder alive", which takes several syscalls — while the claim either
+  // creates the name or does not. What this test does prove is that the whole
+  // admission path, claim included, admits exactly one of eight concurrent
+  // dispatches and refuses the rest for the right reason. It also caught a real
+  // defect on its first run: the preflight's `mkdirSync` raced itself and
+  // crashed the losers with EEXIST before they ever reached admission.
+})
