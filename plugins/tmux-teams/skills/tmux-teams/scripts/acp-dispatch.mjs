@@ -332,9 +332,26 @@ function readLeafSync(path, runRoot) {
   // it answers the question the leaf check cannot.
   let stat = null
   try {
-    const parent = realpathSync(dirname(path))
-    const root = realpathSync(runRoot)
-    if (!parent.startsWith(root + sep) && parent !== root) return null
+    // NO SYMLINK ON THE WAY, not merely "resolves somewhere under the run root".
+    // A lane reproduced the gap: `.mailbox-out` symlinked to another directory
+    // INSIDE the same run still passed a containment test, so a liveness file
+    // could answer the outbox question. Containment is not identity.
+    //
+    // Comparing `realpath(parent)` against `realpath(join(root, relative))` does
+    // not work — both resolve the same link and are always equal. Each
+    // component is checked instead, which is what the write side already does.
+    // The relative part comes from the UNRESOLVED root, because `path` was built
+    // from the same unresolved string — slicing by the resolved length ate the
+    // wrong number of characters on macOS, where `/var` resolves to
+    // `/private/var`, and every read started failing.
+    const relative = dirname(path).startsWith(runRoot + sep)
+      ? dirname(path).slice(runRoot.length + 1)
+      : ''
+    let walked = realpathSync(runRoot)
+    for (const part of relative ? relative.split(sep) : []) {
+      walked = join(walked, part)
+      if (lstatSync(walked).isSymbolicLink()) return null
+    }
     stat = lstatSync(path)
   } catch {
     return null

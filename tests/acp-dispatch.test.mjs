@@ -1917,3 +1917,39 @@ test('an observed nonzero exit outranks a record the child wrote on its way out'
   // happened to it, and the panel found the ordering wrong by reading rather
   // than by running. Saying so is better than leaving the survivor unexplained.
 })
+
+test('a parent symlinked INSIDE the run is still refused: containment is not identity', () => {
+  if (process.platform === 'win32') return
+  // A round-nine lane found the boundary accepting any parent that resolved
+  // somewhere under the run root — so `.mailbox-out` pointed at another
+  // directory in the SAME run still passed, and a liveness file could answer
+  // the outbox question. The check walks each component now.
+  const cwd = tempDir('acp-dispatch-inside-')
+  mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
+  writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'inside'), 'NOT AN OUTBOX\n')
+  writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'inside.json'), JSON.stringify({
+    liveness_state: 'completed', termination_reason: 'none',
+    observed_at: new Date().toISOString(),
+    next_lease_expiry_at: new Date(Date.now() + 900_000).toISOString(),
+  }))
+  // point .mailbox-out at a directory that IS inside the run root
+  symlinkSync(join(cwd, '.tmux-teams', 'liveness'), join(cwd, '.mailbox-out'))
+
+  const report = statusReport(cwd, 'inside')
+  assert.equal(report.outboxFound, false,
+    'a parent symlinked to another directory inside the same run answered the outbox question')
+  assert.notEqual(statusExitCode(report), EXIT_OUTBOX)
+
+  // and an ordinary run directory still reads normally
+  const honest = tempDir('acp-dispatch-inside-ok-')
+  mkdirSync(join(honest, '.mailbox-out'), { recursive: true })
+  writeFileSync(outboxPath(honest, 'ok'), 'the answer\n')
+  mkdirSync(join(honest, '.tmux-teams', 'liveness'), { recursive: true })
+  writeFileSync(join(honest, '.tmux-teams', 'liveness', 'ok.json'), JSON.stringify({
+    liveness_state: 'completed', termination_reason: 'none',
+    observed_at: new Date().toISOString(),
+    next_lease_expiry_at: new Date(Date.now() + 900_000).toISOString(),
+  }))
+  assert.equal(statusReport(honest, 'ok').outboxFound, true,
+    'an ordinary outbox stopped being found')
+})
