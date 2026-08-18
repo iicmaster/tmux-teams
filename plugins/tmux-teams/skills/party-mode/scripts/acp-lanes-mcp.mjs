@@ -521,6 +521,26 @@ export function paramsProblem(method, params) {
     for (const key of ['name', 'version']) {
       if (typeof params.clientInfo[key] !== 'string') return `initialize clientInfo requires a string ${key}`
     }
+    // `title` is OPTIONAL and typed as a string when present. A lane reproduced
+    // `clientInfo: { name, version, title: 42 }` returning success from a
+    // validator that claims to match this protocol version.
+    if (params.clientInfo.title !== undefined && typeof params.clientInfo.title !== 'string') {
+      return 'initialize clientInfo title must be a string'
+    }
+    // The known capability members are typed too — `roots.listChanged` and
+    // `sampling`/`elicitation` shapes. Same lane, same frame:
+    // `capabilities: { roots: { listChanged: "yes" } }` was accepted. Only the
+    // members MCP names are checked; an unknown capability is a client
+    // extension and stays legal, which is the difference between validating a
+    // protocol and refusing a future one.
+    for (const [name, member] of Object.entries(params.capabilities)) {
+      if (member === null || typeof member !== 'object' || Array.isArray(member)) {
+        return `initialize capabilities.${name} must be an object`
+      }
+      if (member.listChanged !== undefined && typeof member.listChanged !== 'boolean') {
+        return `initialize capabilities.${name}.listChanged must be a boolean`
+      }
+    }
   }
   if (method === 'tools/list' && params?.cursor !== undefined && typeof params.cursor !== 'string') {
     return 'tools/list cursor must be a string'

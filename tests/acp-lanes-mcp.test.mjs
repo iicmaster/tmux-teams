@@ -10,7 +10,7 @@ import { handle, callTool, laneFacts, laneStatus, classify, fixesFor,
   TOOLS, TOOL_DESCRIPTORS, DIAGNOSTICS, PROTOCOL_VERSION, UNCHECKED_LANES,
   RPC_INVALID_REQUEST, RPC_INVALID_PARAMS, RPC_METHOD_NOT_FOUND, RPC_PARSE_ERROR }
   from '../plugins/tmux-teams/skills/party-mode/scripts/acp-lanes-mcp.mjs'
-import { REVIEW_PROFILES, normalizePrimaryFamily, PROVIDER_SECRET_KEYS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys, buildProfileEnv }
+import { REVIEW_PROFILES, ROUTED_PROFILES, routingDeclaration, normalizePrimaryFamily, PROVIDER_SECRET_KEYS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys, buildProfileEnv }
   from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -1089,5 +1089,64 @@ test('the sentence about which names that file is read for names all of them', (
   // and it does not promise names the loader drops
   for (const key of named.split(',').map((k) => k.trim()).filter(Boolean)) {
     assert.ok(honoured.includes(key), `the sentence advertises ${key}, which the loader ignores`)
+  }
+})
+
+test('initialize types the members MCP 2025-06-18 types, and still admits an unknown capability', () => {
+  // A lane reproduced both frames returning SUCCESS from a validator whose
+  // comment claims to match this protocol version: `clientInfo.title: 42` and
+  // `capabilities: { roots: { listChanged: "yes" } }`.
+  const base = { protocolVersion: '2025-06-18', capabilities: {} }
+  const ok = { name: 'probe', version: '1' }
+  const init = (params) => handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params }, {})
+
+  assert.equal(init({ ...base, clientInfo: { ...ok, title: 42 } }).error?.code, -32602)
+  assert.ok(init({ ...base, clientInfo: { ...ok, title: 'A Probe' } }).result,
+    'an optional title of the right type was refused')
+
+  assert.equal(init({ protocolVersion: '2025-06-18', clientInfo: ok,
+    capabilities: { roots: { listChanged: 'yes' } } }).error?.code, -32602)
+  assert.ok(init({ protocolVersion: '2025-06-18', clientInfo: ok,
+    capabilities: { roots: { listChanged: true } } }).result)
+  assert.equal(init({ protocolVersion: '2025-06-18', clientInfo: ok,
+    capabilities: { roots: 'yes' } }).error?.code, -32602)
+
+  // An UNKNOWN capability is a client extension and stays legal — the
+  // difference between validating a protocol and refusing a future one.
+  assert.ok(init({ protocolVersion: '2025-06-18', clientInfo: ok,
+    capabilities: { somethingNobodyHasShippedYet: { whatever: 1 } } }).result,
+    'a client extension was refused, which turns a validator into a ceiling')
+})
+
+test('a routing that could not pass validation cannot exempt a launch collision', () => {
+  // `routingDeclaration()` required only a non-empty host and serialized a
+  // missing path as `null`, while `validateRoutedEndpoint()` demands both as
+  // strings. So two byte-identical launches could be certified DISTINCT by
+  // metadata the validator standing next to it would reject — a panel lane read
+  // the two functions against each other. A pin that cannot pass validation is
+  // not a pin.
+  //
+  // Every shipped routed profile declares both as strings, so this pins the
+  // RULE rather than a current value: the guard is what stops a profile added
+  // later with a host and no path from buying an exemption.
+  // THE RULE, not today's data. The first version of this asserted every
+  // shipped profile carries a string path — true, and it stayed green when the
+  // requirement was deleted, because the shipped profiles were never what was
+  // at risk. A profile added later with a host and no path is.
+  const routed = [...ROUTED_PROFILES][0]
+  const base = REVIEW_PROFILES[routed]
+  assert.ok(routingDeclaration(base), 'a fully declared routed profile produced no pin')
+  for (const bad of [undefined, null, '', 42, {}]) {
+    const profile = { ...base, endpoint: { ...base.endpoint, path: bad } }
+    assert.equal(routingDeclaration(profile), null,
+      `a routing with path ${JSON.stringify(bad)} bought an exemption the validator would refuse`)
+  }
+  for (const bad of [undefined, null, '', 42]) {
+    const profile = { ...base, endpoint: { ...base.endpoint, host: bad } }
+    assert.equal(routingDeclaration(profile), null)
+  }
+  // and today's data does satisfy it
+  for (const id of ROUTED_PROFILES) {
+    assert.ok(routingDeclaration(REVIEW_PROFILES[id]), `${id} declares an unpinnable routing`)
   }
 })
