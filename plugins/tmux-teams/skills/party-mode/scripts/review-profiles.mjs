@@ -977,7 +977,17 @@ export function buildProfileEnv(profileId, source = process.env, {
     env.AGY_SKIP_DOWNLOAD = '1'
   }
   if (ROUTED_PROFILES.has(profile.id) || profile.claudeExecutable || profile.id === 'claude') {
-    env.CLAUDE_MODEL_CONFIG = JSON.stringify({ availableModels: [profile.model] })
+    // `requestModel` when the profile declares one. A lane reproduced the
+    // mismatch: `deepseek` pins `requestModel: 'sonnet'` because that is the
+    // alias its gateway answers to, while `profile.model` is the vendor's own
+    // id `deepseek-v4-flash-0731` — so this advertised a model the gateway does
+    // not take, in the one place the adapter reads to decide what to ask for.
+    //
+    // `model` stays the identity the panel records; `requestModel` is what the
+    // wire is asked for. Two different questions that had one answer here.
+    env.CLAUDE_MODEL_CONFIG = JSON.stringify({
+      availableModels: [profile.requestModel ?? profile.model],
+    })
   }
   // Set from the profile, never from the caller: `runtimeKeys` does not carry
   // this name, so the only way a lane can point the adapter at another Claude

@@ -1353,3 +1353,38 @@ test('a credential Node cannot spawn with is not a valid configuration', () => {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('a lane is told the model its gateway answers to, not the one the panel records', () => {
+  // A round-nine lane reproduced the mismatch: `deepseek` pins
+  // `requestModel: 'sonnet'` because that is the alias its gateway takes, while
+  // `profile.model` is the vendor id `deepseek-v4-flash-0731`.
+  // `CLAUDE_MODEL_CONFIG.availableModels` was built from `model`, so the
+  // adapter advertised a model the gateway does not accept — in the one place
+  // it reads to decide what to ask for.
+  //
+  // Two questions that had shared one answer: `model` is the identity the panel
+  // RECORDS, `requestModel` is what the wire is ASKED for.
+  // Routed lanes refuse to build an env without their pinned endpoint and a
+  // credential, so the fixture supplies both through the file the loader reads
+  // — measured the hard way twice already: ambient env is not read.
+  const dir = mkdtempSync(join(tmpdir(), 'lane-reqmodel-'))
+  try {
+  for (const [id, profile] of Object.entries(REVIEW_PROFILES)) {
+    if (!profile.requestModel) continue
+    const source = { HOME: '/tmp', PATH: '/usr/bin' }
+    if (profile.endpoint) {
+      const file = join(dir, `${id}.env`)
+      writeFileSync(file, `ANTHROPIC_BASE_URL=https://${profile.endpoint.host}${profile.endpoint.path}\n`
+        + 'ANTHROPIC_AUTH_TOKEN=ordinary\n')
+      source[`TMUX_TEAMS_REVIEW_${id.toUpperCase()}_ENV_FILE`] = file
+    }
+    const env = buildProfileEnv(id, source)
+    if (!env.CLAUDE_MODEL_CONFIG) continue
+    const advertised = JSON.parse(env.CLAUDE_MODEL_CONFIG).availableModels
+    assert.deepEqual(advertised, [profile.requestModel],
+      `${id} advertises ${JSON.stringify(advertised)} to a gateway that takes ${profile.requestModel}`)
+  }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
