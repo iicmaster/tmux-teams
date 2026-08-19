@@ -7,7 +7,7 @@
 import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -18,7 +18,7 @@ import { stateOf, readBoard } from '../plugins/tmux-teams/skills/tmux-teams/scri
 import { validateWorkItems } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-validate.mjs'
 import { appendEvent } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-writer.mjs'
 import { tick } from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs'
-import { projectLivenessEvidence } from '../plugins/tmux-teams/skills/tmux-teams/scripts/pulse-data.mjs'
+import { projectLivenessEvidence, validateAcpLivenessV1 } from '../plugins/tmux-teams/skills/tmux-teams/scripts/pulse-data.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
@@ -285,6 +285,49 @@ test('a real ACP route reaches audit and leaves coherent ledger, snapshot, and p
     for (const [key, value] of Object.entries(inherited)) {
       if (value === undefined) delete process.env[key]
       else process.env[key] = value
+    }
+  }
+})
+
+// The liveness validator, run against a snapshot a REAL companion produced in
+// this file's own loop — not a hand-written fixture, because a hand-written
+// fixture is how the list drifted from the writer in the first place.
+//
+// Measured before the fix: `validateAcpLivenessV1` answered
+// `raw liveness keys are not closed` for EVERY production snapshot, because
+// `work_observed` is written by `acp-companion.mjs` on every one and was absent
+// from the closed key set. `pulse.mjs` turns that into a throw, so the whole
+// liveness-evidence path refused real evidence. A validator that refuses
+// everything is off, and reads as a guard.
+test('the liveness validator accepts what the companion actually writes', async () => {
+  const repo = makeRepo()
+  const inherited = Object.fromEntries(['ACP_CMD', 'TMUX_TEAMS_ACP_CMD', 'MOCK_EVIDENCE',
+    'MOCK_LOOP_VERDICTS', 'ACP_STALL_POLICY', 'ECC_GATEGUARD'].map((k) => [k, process.env[k]]))
+  try {
+    for (const key of Object.keys(process.env)) if (key.startsWith('ACP_')) delete process.env[key]
+    Object.assign(process.env, {
+      TMUX_TEAMS_ACP_CMD: `${process.execPath} ${MOCK}`,
+      ACP_CANCEL_GRACE_MS: '100', ACP_HARD_TIMEOUT_SEC: '2',
+      ACP_PROCESS_KILL_GRACE_MS: '100', ACP_STALL_POLICY: 'cancel',
+      ECC_GATEGUARD: 'off', MOCK_EVIDENCE: '1', MOCK_LOOP_VERDICTS: LOOP_VERDICTS,
+    })
+    const result = tick(repo, { apply: true, tickSec: 1, scratchDir: join(repo, 'runner-briefs') })
+    assert.ok(result.ok, `tick refused: ${result.reason}`)
+    await settleStarted(repo, result.started)
+
+    const dir = join(repo, '.tmux-teams', 'liveness')
+    const files = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.json')) : []
+    assert.ok(files.length > 0, 'the loop produced no liveness snapshot to validate')
+    for (const file of files) {
+      const snapshot = JSON.parse(readFileSync(join(dir, file), 'utf8'))
+      const verdict = validateAcpLivenessV1(snapshot)
+      assert.equal(verdict.ok, true,
+        `${file} is a real snapshot this validator refuses: ${verdict.reason} — `
+        + `keys written: ${Object.keys(snapshot).sort().join(', ')}`)
+    }
+  } finally {
+    for (const [key, value] of Object.entries(inherited)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value
     }
   }
 })

@@ -134,6 +134,17 @@ const ACP_LIVENESS_RAW_KEYS = Object.freeze([
   'stall_recoveries', 'stall_history', 'active_tools', 'tools', 'plan_digest',
   'plan_entry_count', 'cancellation_unavailable', 'requested_model',
   'requested_reasoning_effort', 'effective_identity', 'identity_status',
+  // `work_observed` and `spawn_nonce` are written by `acp-companion.mjs` into
+  // every snapshot. They were absent here, and `exactKeys` closes the set — so
+  // this validator answered `raw liveness keys are not closed` for EVERY real
+  // production snapshot, and `pulse.mjs` turned that into a throw. A validator
+  // that refuses everything is off, and reads as a guard.
+  //
+  // Measured on a snapshot from a real loop run rather than on a fixture: a
+  // hand-written fixture is how the list drifted from the writer in the first
+  // place, so the test for this dispatches a mock lane and validates what the
+  // companion actually produced.
+  'work_observed',
 ])
 const ACP_LIVENESS_RAW_TOOL_KEYS = Object.freeze([
   'tool_call_id', 'title', 'kind', 'status', 'content_digest', 'output_digest',
@@ -211,7 +222,11 @@ function validRawHistory(value) {
  * identity, digest-tool, and history member has passed this closed contract.
  */
 export function validateAcpLivenessV1(value) {
-  if (!exactKeys(value, ACP_LIVENESS_RAW_KEYS, ['agent_id'])) {
+  // `spawn_nonce` is OPTIONAL, not required. `exactKeys` demands every REQUIRED
+  // key be present, so listing it there would refuse every snapshot from a lane
+  // the dispatcher did not start — `loop-runner.mjs` starts companions with no
+  // nonce and the companion writes the field only when it has one.
+  if (!exactKeys(value, ACP_LIVENESS_RAW_KEYS, ['agent_id', 'spawn_nonce'])) {
     return { ok: false, code: 'LIVENESS_EVIDENCE_INVALID', reason: 'raw liveness keys are not closed' }
   }
   if (value.schema_version !== ACP_LIVENESS_SCHEMA || typeof value.task_id !== 'string' ||

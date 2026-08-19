@@ -56,6 +56,18 @@ if (rawAgentId !== undefined && !ID_RE.test(rawAgentId)) {
 }
 const agentId = rawAgentId ?? ''
 
+// The dispatcher's proof that a later-read liveness record is the one THIS
+// spawn produced, not a predecessor's or a forgery stamped inside its
+// timestamp window (`acp-dispatch.mjs`'s `belongsToThisRun`). Optional here:
+// `loop-runner.mjs` starts companions directly and never checks this field, so
+// a lane it starts simply carries none.
+const rawSpawnNonce = process.env.ACP_SPAWN_NONCE
+if (rawSpawnNonce !== undefined && !ID_RE.test(rawSpawnNonce)) {
+  console.error(`invalid ACP_SPAWN_NONCE "${rawSpawnNonce}" — 1-64 chars, alphanumeric/_/-, starts alphanumeric or _`)
+  process.exit(2)
+}
+const spawnNonce = rawSpawnNonce ?? ''
+
 if (agentName.trim().toLowerCase() === 'gemini') {
   console.error(`unsupported agent "${agentName}" — use claude|codex|agy or another name with ACP_CMD`)
   process.exit(2)
@@ -283,6 +295,7 @@ const snapshotByteBudget = Number.isFinite(configuredTestSnapshotBudget) && conf
   : MAX_SNAPSHOT_BYTES
 const MAX_WORKER = 64
 const MAX_DISPATCH_ID = 64
+const MAX_SPAWN_NONCE = 64
 const MAX_SESSION_ID = 128
 const MAX_MODEL = 128
 const MAX_REASONING_EFFORT = 64
@@ -1581,6 +1594,11 @@ function snapshotData({ toolLimit = MAX_PUBLIC_TOOL_RECORDS, historyLimit = MAX_
     work_observed: workObserved,
   }
   if (agentId) snapshot.agent_id = boundedText(agentId, '', MAX_WORKER)
+  // CONDITIONAL, not `null` when absent: a loop-runner lane never sets
+  // `ACP_SPAWN_NONCE`, and an unconditional field here would put a `spawn_nonce:
+  // null` into every snapshot that never had one, moving bytes no reader asked
+  // to see move.
+  if (spawnNonce) snapshot.spawn_nonce = boundedText(spawnNonce, '', MAX_SPAWN_NONCE)
   return snapshot
 }
 

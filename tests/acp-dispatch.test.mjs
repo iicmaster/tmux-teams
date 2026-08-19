@@ -442,14 +442,121 @@ test('a previous run\'s identity is never reported as this dispatch\'s', async (
   // five said so plainly: "the stale identity test that passed does not prove
   // the boundary inside one second". Here it is, at the millisecond.
   const spawnedAt = 1_700_000_000_000
-  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt).toISOString() }, spawnedAt), true)
-  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt + 1).toISOString() }, spawnedAt), true)
-  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt - 1).toISOString() }, spawnedAt), false,
+  const nonce = 'unit-boundary-nonce'
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt).toISOString(), spawn_nonce: nonce }, spawnedAt, nonce), true)
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt + 1).toISOString(), spawn_nonce: nonce }, spawnedAt, nonce), true)
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt - 1).toISOString(), spawn_nonce: nonce }, spawnedAt, nonce), false,
     'a snapshot written one millisecond before this spawn was accepted as this run\'s')
-  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt - 999).toISOString() }, spawnedAt), false,
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt - 999).toISOString(), spawn_nonce: nonce }, spawnedAt, nonce), false,
     'the one-second slack is back: a sub-second retry will inherit its predecessor\'s identity')
-  assert.equal(belongsToThisRun({}, spawnedAt), false, 'a record with no started_at was claimed')
-  assert.equal(belongsToThisRun(null, spawnedAt), false)
+  assert.equal(belongsToThisRun({}, spawnedAt, nonce), false, 'a record with no started_at was claimed')
+  assert.equal(belongsToThisRun(null, spawnedAt, nonce), false)
+  // The bounds alone are not identity: an in-window record with a different
+  // nonce, or no nonce at all, must still be refused — the case a timestamp
+  // cannot close by itself.
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt).toISOString(), spawn_nonce: 'someone-elses-nonce' },
+    spawnedAt, nonce), false, 'an in-window record with a different nonce was accepted as this run\'s')
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt).toISOString() }, spawnedAt, nonce), false,
+    'an in-window record with no nonce at all was accepted as this run\'s')
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt).toISOString(), spawn_nonce: nonce }, spawnedAt, undefined), false,
+    'a record matched against no expected nonce at all')
+})
+
+// These three go through `statusReport`, never a direct `belongsToThisRun`
+// call with the new argument count — calling the new signature directly
+// against the OLD source silently reinterprets the extra argument as `nowMs`,
+// which corrupts the upper bound into NaN and makes the old code refuse for
+// the wrong reason. Going through the reader that decides how many arguments
+// it passes is what lets the same test genuinely fail on old source and pass
+// on new.
+test('a record with the right timestamp and a forged or missing nonce is refused', () => {
+  const cwd = tempDir('acp-dispatch-forged-')
+  mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
+  mkdirSync(join(cwd, '.tmux-teams', 'dispatch-routing'), { recursive: true })
+  const spawnedAt = new Date().toISOString()
+
+  // Missing entirely — what a record written before this field existed, or
+  // forged without knowing it, looks like.
+  writeFileSync(join(cwd, '.tmux-teams', 'dispatch-routing', 'forged-a.json'),
+    JSON.stringify({ worker: 'mock', spawnedAt, spawnNonce: 'this-dispatchs-own-nonce', env: {} }))
+  writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'forged-a.json'), JSON.stringify({
+    started_at: new Date(Date.parse(spawnedAt) + 5_000).toISOString(),
+    liveness_state: 'completed', termination_reason: 'none',
+    effective_identity: 'FORGED-A[max]', identity_status: 'matched',
+  }))
+  const reportA = statusReport(cwd, 'forged-a')
+  assert.equal(reportA.liveness, null,
+    'an in-window record with no nonce at all was adopted as this run\'s')
+  assert.notEqual(reportA.identity, 'FORGED-A[max]', 'a forged identity reached the report')
+
+  // Present, but wrong.
+  writeFileSync(join(cwd, '.tmux-teams', 'dispatch-routing', 'forged-b.json'),
+    JSON.stringify({ worker: 'mock', spawnedAt, spawnNonce: 'this-dispatchs-own-nonce', env: {} }))
+  writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'forged-b.json'), JSON.stringify({
+    started_at: new Date(Date.parse(spawnedAt) + 5_000).toISOString(),
+    liveness_state: 'completed', termination_reason: 'none',
+    effective_identity: 'FORGED-B[max]', identity_status: 'matched',
+    spawn_nonce: 'not-this-dispatchs-nonce',
+  }))
+  const reportB = statusReport(cwd, 'forged-b')
+  assert.equal(reportB.liveness, null,
+    'an in-window record with the WRONG nonce was adopted as this run\'s')
+  assert.notEqual(reportB.identity, 'FORGED-B[max]', 'a forged identity reached the report')
+})
+
+test('a genuine dispatch\'s liveness record carries the nonce the dispatcher recorded for it', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX process groups')
+  // The wire, proven end to end: the dispatcher generates a nonce per
+  // dispatch, hands it to the companion over ACP_SPAWN_NONCE, and the
+  // companion echoes it into `spawn_nonce` — the value `belongsToThisRun` now
+  // requires to match.
+  const cwd = tempDir('acp-dispatch-nonce-genuine-')
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+  const r = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'nonce-genuine', brief, '120'],
+    { cwd, encoding: 'utf8', env: laneEnv(), timeout: 60000 })
+  assert.equal(r.status, 0, `the dispatch failed outright:\n${r.stdout}${r.stderr}`)
+  const routing = recordedRouting(cwd, 'nonce-genuine')
+  assert.ok(routing?.spawnNonce, `no nonce was recorded in routing: ${JSON.stringify(routing)}`)
+  const liveness = JSON.parse(readFileSync(join(cwd, '.tmux-teams', 'liveness', 'nonce-genuine.json'), 'utf8'))
+  assert.equal(liveness.spawn_nonce, routing.spawnNonce,
+    `the companion's liveness record did not carry the dispatcher's nonce: ${JSON.stringify(liveness)}`)
+  const report = statusReport(cwd, 'nonce-genuine')
+  assert.notEqual(report.liveness, null, 'a genuine record was refused by belongsToThisRun')
+})
+
+test('a predecessor\'s record from an earlier dispatch is refused for a later window it happens to fall inside', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX process groups')
+  // The case the timestamp bounds were added for: a real earlier dispatch at
+  // this task id leaves a genuine liveness record on disk, and a later
+  // dispatch into the same task id (a resume, a quick retry) can have a
+  // window that legitimately covers it. The bound alone cannot tell the two
+  // dispatches apart; only the nonce can.
+  const cwd = tempDir('acp-dispatch-predecessor-')
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+
+  // Dispatch A: a genuine, earlier run at this task id.
+  const first = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'predecessor', brief, '120'],
+    { cwd, encoding: 'utf8', env: laneEnv(), timeout: 60000 })
+  assert.equal(first.status, 0, `the predecessor dispatch failed outright:\n${first.stdout}${first.stderr}`)
+
+  // A LATER dispatch's own routing record, landing at the same task id — a
+  // spawnedAt just before A's own started_at (so A's record sits inside the
+  // later window) and a nonce that is necessarily different: every dispatch
+  // mints its own.
+  const predecessorLiveness = JSON.parse(
+    readFileSync(join(cwd, '.tmux-teams', 'liveness', 'predecessor.json'), 'utf8'))
+  writeFileSync(join(cwd, '.tmux-teams', 'dispatch-routing', 'predecessor.json'), JSON.stringify({
+    worker: 'mock',
+    spawnedAt: new Date(Date.parse(predecessorLiveness.started_at) - 1).toISOString(),
+    spawnNonce: 'a-later-dispatchs-own-nonce',
+    env: {},
+  }))
+
+  const report = statusReport(cwd, 'predecessor')
+  assert.equal(report.liveness, null,
+    'a predecessor\'s record, inside a later dispatch\'s window, was adopted as the later dispatch\'s own')
 })
 
 test('a task id that would escape the run directory is refused before any file is opened', async (t) => {
@@ -1126,11 +1233,13 @@ test('boot reports on the ACKNOWLEDGED identity status, not on a non-empty strin
   mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
   mkdirSync(join(cwd, '.tmux-teams', 'dispatch-routing'), { recursive: true })
   const spawnedAt = new Date().toISOString()
+  const spawnNonce = 'ident-nonce'
   writeFileSync(join(cwd, '.tmux-teams', 'dispatch-routing', 'ident.json'),
-    JSON.stringify({ worker: 'mock', spawnedAt, env: {} }))
+    JSON.stringify({ worker: 'mock', spawnedAt, spawnNonce, env: {} }))
   writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'ident.json'), JSON.stringify({
     started_at: spawnedAt, liveness_state: 'active', termination_reason: 'none',
     effective_identity: 'looks-like-an-identity', identity_status: 'missing',
+    spawn_nonce: spawnNonce,
   }))
   // statusReport is the reader that shares this record; the boot path's own
   // acceptance is asserted through the dispatch tests above. Here the point is
@@ -1596,13 +1705,15 @@ test('a hostile PARENT directory redirects no read, and a missing pid leaf is no
   mkdirSync(join(live, '.tmux-teams', 'dispatch-routing'), { recursive: true })
   writeFileSync(join(live, 'brief.md'), 'do the thing\n')
   const spawnedAt = new Date(Date.now() - 60_000).toISOString()
+  const busyNonce = 'busy-nonce'
   writeFileSync(join(live, '.tmux-teams', 'dispatch-routing', 'busy.json'),
-    JSON.stringify({ worker: 'mock', spawnedAt, env: {} }))
+    JSON.stringify({ worker: 'mock', spawnedAt, spawnNonce: busyNonce, env: {} }))
   writeFileSync(join(live, '.tmux-teams', 'liveness', 'busy.json'), JSON.stringify({
     liveness_state: 'tool_running', termination_reason: 'none',
     started_at: new Date(Date.parse(spawnedAt) + 1000).toISOString(),
     observed_at: new Date().toISOString(),
     next_lease_expiry_at: new Date(Date.now() + 900_000).toISOString(),
+    spawn_nonce: busyNonce,
   }))
   // no pid leaf at all
   const r = spawnSync(process.execPath, [DISPATCH, 'mock', live, 'busy', join(live, 'brief.md'), '120'],
@@ -1719,13 +1830,14 @@ test('a completed record with no accepted identity, and one stamped in the futur
   // Both are asserted through `belongsToThisRun` and the boot path's own
   // observable output, because that is where they decide anything.
   const spawnedAt = Date.now()
+  const nonce = 'ghostid-nonce'
 
   // A record stamped in the future is not this run's, however close.
-  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt + 90_000).toISOString() }, spawnedAt),
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt + 90_000).toISOString(), spawn_nonce: nonce }, spawnedAt, nonce),
     false, 'a record stamped 90s ahead was accepted as this dispatch\'s')
-  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt + 1_000).toISOString() }, spawnedAt),
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt + 1_000).toISOString(), spawn_nonce: nonce }, spawnedAt, nonce),
     true, 'a record from a second after the spawn was rejected')
-  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt - 1_000).toISOString() }, spawnedAt),
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt - 1_000).toISOString(), spawn_nonce: nonce }, spawnedAt, nonce),
     false, 'a record predating the spawn was accepted')
 
   // A `completed` record carrying NO accepted identity must not report success.

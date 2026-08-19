@@ -11,6 +11,7 @@
 // pid or routing record cannot be published is SIGKILLed, because the
 // alternative is a detached process nobody can find again.
 import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { chmodSync, closeSync, constants as fsConstants, existsSync, fchmodSync, lstatSync, mkdirSync, openSync,
   readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeSync } from 'node:fs'
 import { dirname, join, resolve, sep } from 'node:path'
@@ -556,7 +557,7 @@ export function statusReport(cwd, taskId) {
   // lost. The cost is that the generation binding protects only runs this
   // dispatcher started, which is the population it can speak for.
   const liveness = Number.isFinite(spawnedAtMs) && rawLiveness !== null
-    && !belongsToThisRun(rawLiveness, spawnedAtMs) ? null : rawLiveness
+    && !belongsToThisRun(rawLiveness, spawnedAtMs, routing?.spawnNonce) ? null : rawLiveness
   const outbox = outboxPath(cwd, taskId)
   // Through the same boundary as every other control read. This checked the
   // LEAF's type and nothing above it, so a symlinked `.mailbox-out` decided
@@ -691,7 +692,8 @@ export function pidAlive(pid) {
   }
 }
 
-export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnFn = spawn, env = process.env } = {}) {
+export function spawnDetached(worker, cwd, taskId, briefFile, stallSec,
+  { spawnFn = spawn, env = process.env, nonce = randomUUID() } = {}) {
   // FIRST. Every line below builds a path out of this value.
   assertSafeTaskId(taskId)
   const spawnedAtIso = new Date().toISOString()
@@ -770,9 +772,10 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
     // live lane's liveness and admits a second writer. Admission must not be
     // stricter than `statusReport`, which accepts routing-less liveness.
     const liveness = readJson(livenessPath(cwd, taskId), cwd)
-    const priorSpawn = Date.parse(recordedRouting(cwd, taskId)?.spawnedAt ?? '')
+    const priorRouting = recordedRouting(cwd, taskId)
+    const priorSpawn = Date.parse(priorRouting?.spawnedAt ?? '')
     const record = Number.isFinite(priorSpawn)
-      ? (belongsToThisRun(liveness, priorSpawn) ? liveness : null)
+      ? (belongsToThisRun(liveness, priorSpawn, priorRouting?.spawnNonce) ? liveness : null)
       : liveness
     if (record !== null && !isSettled(record, { pid: null })) {
       throw Object.assign(
@@ -813,16 +816,14 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
     }
   }
   // Retire the PREDECESSOR's liveness and session leaves, for the same reason
-  // the outbox above is retired and by the same means. `belongsToThisRun`
-  // compares TIMESTAMPS and nothing else — no nonce, no task id, no worker — so
-  // a record stamped inside the accepted window reads as ours, and a panel lane
-  // reproduced a fresh dispatch reporting `session_id: predecessor-session`
-  // and offering ACP_RESUME for a session that was never ours.
-  //
-  // A bound cannot fix that; only identity can, and a nonce is a protocol
-  // change. What IS available today is removal: a leaf that is not on disk
-  // cannot be mistaken for this run's, and the predecessor's bytes are kept
-  // under a suffix rather than deleted, exactly as the outbox is.
+  // the outbox above is retired and by the same means. `belongsToThisRun` now
+  // requires a matching nonce as well as the timestamp bounds, which closes
+  // deliberate forgery — but this dispatch's nonce does not exist yet at this
+  // point in the function, so there is nothing on disk to compare against
+  // before the child is even spawned. Removal stays the belt-and-braces answer
+  // here: a leaf that is not on disk cannot be mistaken for this run's, and the
+  // predecessor's bytes are kept under a suffix rather than deleted, exactly as
+  // the outbox is.
   for (const leaf of [livenessPath(cwd, taskId), sessionPath(cwd, taskId)]) {
     retirePredecessorLeaf(leaf, spawnedAtIso)
   }
@@ -883,7 +884,12 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
   // The whole environment, not an allowlist. Every ACP_* variable an operator
   // exports — model, expectation, resume, adapter — reaches the lane with
   // nothing to remember and nothing to forget.
-  const child = spawnFn(process.execPath, argv, { cwd, detached: true, stdio: ['ignore', logFd, logFd], env })
+  //
+  // `ACP_SPAWN_NONCE` is ADDED on top, never taken from the operator's `env`:
+  // it is this dispatch's own proof of authorship, generated above, and an
+  // operator-supplied value here would defeat the thing it exists to prove.
+  const childEnv = { ...env, ACP_SPAWN_NONCE: nonce }
+  const child = spawnFn(process.execPath, argv, { cwd, detached: true, stdio: ['ignore', logFd, logFd], env: childEnv })
   child.unref()
   // The child holds its own duplicate; this parent has no use for the
   // descriptor and leaked it for the life of the process.
@@ -915,8 +921,13 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
     if (env?.[key] !== undefined && env[key] !== '') routingEnv[key] = String(env[key])
   }
   try {
+    // `spawnNonce` sits beside `spawnedAt`, not inside `env`: it is this
+    // dispatcher's own record of what it told the companion, not something a
+    // resume command should ever echo — a resume is a fresh dispatch and gets
+    // a fresh nonce, so `ROUTING_ENV_KEYS` deliberately excludes it.
     writeNoFollow(routingPath(cwd, taskId),
-      `${JSON.stringify({ worker, briefFile, stallSec: stallSec ?? null, spawnedAt: spawnedAtIso, env: routingEnv }, null, 2)}\n`)
+      `${JSON.stringify({ worker, briefFile, stallSec: stallSec ?? null, spawnedAt: spawnedAtIso,
+        spawnNonce: nonce, env: routingEnv }, null, 2)}\n`)
   } catch (cause) {
     try { process.kill(-child.pid, 'SIGKILL') } catch { /* group already gone */ }
     try { process.kill(child.pid, 'SIGKILL') } catch { /* already gone */ }
@@ -944,19 +955,44 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
 // NO slack for clock granularity — both timestamps come from the same host
 // clock, so slack buys nothing and, on a retry inside one second, accepts the
 // predecessor's snapshot.
-export function belongsToThisRun(record, spawnedAtMs, nowMs = Date.now()) {
+//
+// BOUNDS AND A NONCE, both required. A bound is not identity: nothing in a
+// timestamp is unique to THIS dispatch, so a record stamped inside the window
+// by a predecessor — or forged on purpose — passed. `spawnDetached` mints a
+// nonce per dispatch and hands it over `ACP_SPAWN_NONCE`; the companion echoes
+// it back as `spawn_nonce`. The bounds STAY, because a resume into the same
+// task id can produce a predecessor record carrying the same nonce.
+export function belongsToThisRun(record, spawnedAtMs, expectedNonce, nowMs = Date.now()) {
   const started = Date.parse(record?.started_at ?? '')
   if (!Number.isFinite(started)) return false
   // A lower bound ALONE accepts anything stamped in the future, so a record left
   // by a skewed or hostile clock reads as ours forever.
-  // ponytail: bounds, not a nonce. A nonce needs the companion to echo it back,
-  // which is a protocol change; the bound stops the accidental and clock-skew
-  // cases, and the forgery case is still owed.
   const FUTURE_TOLERANCE_MS = 60_000
-  return started >= spawnedAtMs && started <= nowMs + FUTURE_TOLERANCE_MS
+  if (started < spawnedAtMs || started > nowMs + FUTURE_TOLERANCE_MS) return false
+  // MISSING ON EITHER SIDE REFUSES. A routing file written before this field
+  // existed has no `expectedNonce`, and an old or foreign liveness record has no
+  // `spawn_nonce` — both read as "cannot prove", never as a pass.
+  return Boolean(expectedNonce) && record?.spawn_nonce === expectedNonce
 }
 
-async function watchBoot(child, cwd, taskId, bootMs, spawnedAtMs) {
+// **The residual, stated exactly.** This closes forgery for a lane THIS
+// dispatcher started, because only it knows the nonce. It does NOT close it in
+// general, and the reason is a requirement rather than an oversight:
+// `loop-runner.mjs` starts companions with no dispatcher routing file, and both
+// `statusReport` and admission deliberately accept routing-less liveness — so
+// where there is no routing there is no nonce to compare, and the record is
+// taken on its timestamps alone.
+//
+// An attacker who can plant a liveness file in a run directory can also delete
+// the routing file beside it and land back in that path. So against someone who
+// owns the directory the nonce buys nothing; what it closes is a PREDECESSOR's
+// record, an accident, and a forgery by anything that cannot write the run root.
+//
+// `watchBoot` is the exception and the strongest case: it is called by the
+// dispatch that just minted the nonce, so it always has one and never falls
+// back.
+
+async function watchBoot(child, cwd, taskId, bootMs, spawnedAtMs, spawnNonce) {
   const path = livenessPath(cwd, taskId)
   const deadline = Date.now() + bootMs
   let exited = null
@@ -969,7 +1005,7 @@ async function watchBoot(child, cwd, taskId, bootMs, spawnedAtMs) {
   child.on('error', (cause) => { exited = { code: null, signal: null, error: cause } })
   for (;;) {
     const found = readJson(path, cwd)
-    const record = belongsToThisRun(found, spawnedAtMs) ? found : null
+    const record = belongsToThisRun(found, spawnedAtMs, spawnNonce) ? found : null
     // A lane that reached a TERMINAL state during boot did not boot — it failed,
     // and gets its own outcome, because "dispatched successfully" and "refused
     // before the prompt" are not the same answer.
@@ -1141,9 +1177,13 @@ export async function main(argv, { out = console.log, err = console.error, spawn
   // Taken BEFORE the spawn, so any snapshot the child writes is stamped later
   // than this and a previous run's snapshot is stamped earlier.
   const spawnedAtMs = Date.now()
-  const child = spawnDetached(worker, cwd, taskId, resolve(briefFile), stallSec, { spawnFn, env })
+  // Generated here, not inside `spawnDetached`, so this same value can also be
+  // handed to `watchBoot` below — one nonce per dispatch, not one per function
+  // that happens to need it.
+  const spawnNonce = randomUUID()
+  const child = spawnDetached(worker, cwd, taskId, resolve(briefFile), stallSec, { spawnFn, env, nonce: spawnNonce })
   const bootMs = bootSec * 1000
-  const booted = await watchBoot(child, cwd, taskId, bootMs, spawnedAtMs)
+  const booted = await watchBoot(child, cwd, taskId, bootMs, spawnedAtMs, spawnNonce)
 
   const self = shQuote(join(HERE, 'acp-dispatch.mjs'))
   out(`dispatched ${worker} as ${taskId} — pid ${child.pid}, detached, own process group`)
