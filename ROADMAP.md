@@ -233,7 +233,27 @@ Ordered by what they cost when left alone, not by size. The first two arrived
 as GitHub issues; the next three are things v0.32.0 measured and could not fix
 inside its own scope; the sixth is Master's, added 2026-08-19.
 
-**A third advisor seat: `agy-advisor`.** `codex-advisor` and `claude-advisor`
+**Delivered so far on `feat/v0.33.0`, and three of the four were not on this
+page when the work started.** Recorded here rather than at the end, because this
+file is the standing goal and a goal that learns what happened only after the
+fact is a status page:
+
+| shipped | was it declared here? |
+|---|---|
+| `agy-advisor` | yes — the item below |
+| the comment diet on the v0.32.0 files, 51% -> 44% | **no** — Master's instruction |
+| one advisor contract across all three lanes | **no** — Master's instruction |
+| the prohibited model accepted at dispatch | **no** — found while measuring the one above |
+
+The last is the one worth reading. `ACP_MODEL=gemini-3.1-pro-high` on an AGY lane
+was ACCEPTED and reported `effective_identity: gemini-3.1-pro-high (matched)` —
+the identity check certifying a model CLAUDE.md prohibits and says to fail closed
+on. The prohibition was enforced over the pinned profile models at import and
+never over the model an operator requests, and the adapter advertises both 3.1
+seats, so it was reachable by typing. Asking three advisors to "accept a model"
+is what made a documented command able to reach it.
+
+**A third advisor seat: `agy-advisor`.** SHIPPED. `codex-advisor` and `claude-advisor`
 cover the OpenAI and Anthropic families, so every consultation this project can
 hold is a two-family split — and v0.32.0 spent nine review rounds on one seat
 before a change of model found in its first round what the nine had not. A
