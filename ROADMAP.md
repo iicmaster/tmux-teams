@@ -253,6 +253,49 @@ never over the model an operator requests, and the adapter advertises both 3.1
 seats, so it was reachable by typing. Asking three advisors to "accept a model"
 is what made a documented command able to reach it.
 
+## v0.33.0 scope, settled by Master 2026-08-19
+
+Three of these were ambiguous enough to stop and ask rather than guess, and the
+answers are recorded here because a scope decided in conversation and not written
+down is a scope that gets re-decided.
+
+| # | item | state |
+|---|---|---|
+| 1 | `agy-advisor` | **shipped** |
+| 2 | the comment diet on the v0.32.0 files | **shipped** |
+| 3 | one advisor contract across all three lanes | **shipped** |
+| 4 | the prohibited model accepted at dispatch | **shipped** |
+| 5 | the `claude` lane cannot reuse a Claude Max login | open |
+| 6 | `loop-runner` re-dispatches `blocked` instead of escalating | open |
+| 7 | a live lane-health preflight | open |
+| 8 | `belongsToThisRun` proves identity, not just recency | open |
+
+**Item 5 is fixed the way the issue names, not the way v0.32.0 measured.** Both
+diagnoses are real: the companion advertises filesystem capabilities only and
+never the ACP terminal-auth capability, so the adapter has a login route it is
+never invited to offer; and separately the adapter reads
+`~/.claude/.credentials.json` while the CLI reads the macOS Keychain, which is
+why `claude -p` answers at the moment the lane refuses. Master's call is the
+capability, so a person can log in from the terminal the lane is running in.
+The credential-store split stays recorded, not fixed.
+
+**Item 7 is a THIRD TOOL on the MCP server**, beside `acp_lanes` and
+`acp_lane_status`. That contacts an endpoint, which ADR 0007 currently forbids —
+so the ADR is amended as part of the item rather than quietly contradicted. It
+is still not a health check on a timer: one trivial brief per lane, on demand,
+reporting reachable / quota / refused with the refusal classified.
+
+**Item 8 takes the protocol change.** The entry below used to list it and then
+explain in its own text that a real nonce was out of scope, which is a
+contradiction this page carried while calling itself the standing goal. Master
+settled it: v0.33.0 does it. The dispatcher generates a value, the companion
+echoes it into the liveness record, and `belongsToThisRun` checks it — which
+closes the deliberate forgery that bounds cannot.
+
+**Delivery model, also Master's, 2026-08-19:** implementation is dispatched to
+Sonnet subagents; `agy` and `codex` at `gpt-5.6-luna` review. The session drives
+and measures rather than typing the change itself.
+
 **A third advisor seat: `agy-advisor`.** SHIPPED. `codex-advisor` and `claude-advisor`
 cover the OpenAI and Anthropic families, so every consultation this project can
 hold is a two-family split — and v0.32.0 spent nine review rounds on one seat
