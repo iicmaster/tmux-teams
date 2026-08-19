@@ -1541,6 +1541,17 @@ function nextStep(graph, team, item, { busy, busyTasks, nowMs, zombieSec, answer
         reason: `${last.agent_id} was refused for its declared model (${last.terminal}) — a rerun cannot change that, a human must fix the declaration`,
       }
     }
+    // `blocked` is TEAM_BLOCKED — the worker's own signal that a PERSON must
+    // decide, not a crashed leg. `failed` below would send it to `want(role)`
+    // and dispatch a fresh worker to ask the same question the first leg
+    // already answered; nothing about the token changes between legs, so
+    // escalate on the first one instead of spending more of them.
+    if (last.terminal === 'blocked') {
+      return {
+        action: 'escalate',
+        reason: `${last.agent_id} reported TEAM_BLOCKED — a person must act, a rerun would only ask the same question again`,
+      }
+    }
     const failed = last.event === 'lost' || (last.terminal && last.terminal !== 'done')
     if (failed) return want(role)
     if (role === 'worker') return want('evaluator')
