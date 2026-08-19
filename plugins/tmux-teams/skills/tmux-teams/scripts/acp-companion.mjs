@@ -1406,9 +1406,36 @@ function requestedConfigOverride(name, limit) {
 // per-dispatch session configuration; when no separate expectation is given,
 // the requested value becomes the expected value so the adapter cannot claim a
 // successful dispatch after the ACP agent silently ignored the override.
-const requestedModelOverride = requestedConfigOverride('ACP_MODEL', MAX_MODEL)
+// CLAUDE.md prohibits Gemini 3.1 on every tmux-teams route and says to fail
+// closed. `review-profiles.mjs` enforced that over the PINNED profile models at
+// import — and nothing checked the model an operator REQUESTS at dispatch, which
+// is the one an advisor skill taking a model argument would set. Measured
+// 2026-08-19: `ACP_MODEL=gemini-3.1-pro-high` on an agy lane was accepted and
+// reported `effective_identity: gemini-3.1-pro-high (matched)`, so the identity
+// check confirmed the prohibited model rather than refusing it. The AGY adapter
+// advertises both 3.1 seats, so this is reachable by typing, not by hacking.
+//
+// The pattern is COPIED from `review-profiles.mjs` with its source named,
+// because this file imports only node builtins on purpose; a test asserts the
+// two stay identical, which is the drift answer that does not require coupling
+// the two skills.
+export const PROHIBITED_MODEL = /(?:^|[^0-9a-z])gemini[-_ ]?3\.1(?:[^0-9]|$)/i
+
+function assertPermittedModel(value, name) {
+  if (typeof value === 'string' && PROHIBITED_MODEL.test(value)) {
+    console.error(`${name}: Gemini 3.1 is prohibited on tmux-teams routes, got ${value}`)
+    process.exit(2)
+  }
+  return value
+}
+
+const requestedModelOverride = assertPermittedModel(
+  requestedConfigOverride('ACP_MODEL', MAX_MODEL), 'ACP_MODEL')
 const requestedReasoningEffortOverride = requestedConfigOverride('ACP_REASONING_EFFORT', MAX_REASONING_EFFORT)
-const requestedModelExpected = process.env.ACP_EXPECT_MODEL?.trim() || requestedModelOverride
+// The EXPECTATION too: expecting a prohibited model is how a lane would be
+// certified as having run one.
+const requestedModelExpected = assertPermittedModel(
+  process.env.ACP_EXPECT_MODEL?.trim() || requestedModelOverride, 'ACP_EXPECT_MODEL')
 const requestedReasoningEffortExpected = process.env.ACP_EXPECT_REASONING_EFFORT?.trim() || requestedReasoningEffortOverride
 const requestedModel = boundedText(requestedModelExpected, '', MAX_MODEL)
 const requestedReasoningEffort = boundedText(requestedReasoningEffortExpected, '', MAX_REASONING_EFFORT)
