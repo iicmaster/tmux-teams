@@ -716,3 +716,55 @@ test('the claude advisor does not promise an identity proof its routed seat cann
   assert.match(body, /default seat.{0,80}can prove/s,
     'the file does not say which seat the proof holds for')
 })
+
+// Master, 2026-08-19: the advisors must be the same thing three times — every
+// one forces a bmad-party-mode round-table, every one takes a model.
+//
+// Measured before this test existed, they were three different shapes: the
+// party-mode obligation was PROSE in all three and enforced by nothing, and
+// `agy-advisor` took no model at all and said "One seat" while its adapter
+// advertises fourteen. A uniform contract that nothing checks is the same
+// unenforced claim in three files instead of one.
+//
+// UNIFORM MEANS THE CONTRACT, NOT THE CAPABILITIES. `claude-advisor` has no
+// read-only switch because that lane has none, and the test above asserts it
+// must not promise one. Pretending three lanes are identical is the failure this
+// avoids, not the goal.
+test('every advisor carries the same contract: a party, and a model', () => {
+  // Named literally as well as iterated. A loop over a list is a test of the
+  // list: drop an entry and it simply stops checking that one.
+  const NAMES = ['codex-advisor', 'claude-advisor', 'agy-advisor']
+  assert.deepEqual(
+    SKILLS.filter((s) => s.endsWith('-advisor')).sort(), [...NAMES].sort(),
+    'an advisor skill exists that this contract does not cover')
+
+  for (const name of NAMES) {
+    const text = readFileSync(join(PLUGIN, 'skills', name, 'SKILL.md'), 'utf8')
+    const front = text.split('---')[1] ?? ''
+
+    assert.match(front, /bmad-party-mode round-table/,
+      `${name}: the frontmatter does not promise a round-table, so a reader never sees the obligation`)
+    assert.match(text, /## The consultation is a party\. Only a party\./,
+      `${name}: no party mandate section`)
+    assert.match(text, /MUST answer as a `bmad-party-mode` round-table/,
+      `${name}: the mandate is described but never stated as a requirement`)
+    // The words that go INTO the brief, not a paraphrase about them — this is
+    // the only part the advisor ever sees.
+    assert.match(text, /Answer as a bmad-party-mode round-table\. Cast 3-5 named voices/,
+      `${name}: the brief mandate an advisor is actually given is missing`)
+    assert.match(text, /single-voice\s+answer is a failed consultation/,
+      `${name}: does not say what to do when the answer comes back as one voice`)
+
+    // A model can be named. The grammars differ because the seats differ — codex
+    // has three named seats, claude needs a bin AND a model, agy has three
+    // efforts of one family — so what is pinned is that a default and at least
+    // one alternative are BOTH documented.
+    const args = text.split('## Arguments')[1]
+    assert.ok(args, `${name}: no Arguments section, so no way to name a model`)
+    const lines = args.split('```')[1]?.split('\n').filter((l) => l.trim().startsWith('$')) ?? []
+    assert.ok(lines.length >= 2,
+      `${name}: documents ${lines.length} invocation(s) — a default and at least one named seat are required`)
+    assert.ok(lines.some((l) => /default seat/.test(l)),
+      `${name}: no invocation is marked as the default seat`)
+  }
+})

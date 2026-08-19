@@ -66,14 +66,49 @@ would have noticed if it had not.
 ## Arguments
 
 ```
-$agy-advisor              # gemini-3.7-flash-high
+$agy-advisor              # default seat: gemini-3.7-flash-high
+$agy-advisor high         # gemini-3.7-flash-high
+$agy-advisor medium       # gemini-3.7-flash-medium
+$agy-advisor low          # gemini-3.7-flash-low
 ```
 
-One seat. If Antigravity gains a second model worth consulting, add it here with
-its measured identity string, not with a guess at the name.
+A bare alias is expanded; the full `gemini-3.7-flash-*` id is what reaches the
+adapter and what the receipt must show. Any other name is a usage error — do not
+pass a model through unrecognised, because an unknown value either fails the
+dispatch or silently seats something nobody chose.
 
-## Reporting
+**This said "One seat" until 2026-08-19, and it was false the day it was
+written.** Probed against the adapter, it advertises FOURTEEN values: the 3.7,
+3.6 and 3.5 Flash seats at high/medium/low, both Gemini 3.1 Pro seats, two
+Anthropic models and a GPT-OSS one. The sentence came from an assumption instead
+of a measurement.
 
-The answer comes back as a round-table, the same as its siblings: John (PM),
-Sally (UX) and Grumbal (The Adversary) mandatory, others as the topic needs.
-An advisor that reports as one voice has thrown away the reason it was asked.
+## Two refusals, and they are not style
+
+**Gemini 3.1 is PROHIBITED** and the adapter advertises `gemini-3.1-pro-high`
+and `gemini-3.1-pro-low` in the list above, so it is reachable by typing. The
+companion refuses both the request and the expectation and exits 2 before a
+session exists — measured, not assumed. Never route around it.
+
+**Never send a `claude-*` or `gpt-oss-*` value through this lane.** The adapter
+will take them, and the moment it does, this seat stops being the Gemini family:
+a three-family panel would be one lane wearing three names. The point of this
+advisor is the family, not the endpoint.
+
+## The consultation is a party. Only a party.
+
+The advisor MUST answer as a `bmad-party-mode` round-table: several named voices
+who argue with each other and are not reconciled into consensus. A single-voice
+answer is a failed consultation — say so rather than passing it on.
+
+Put the mandate in the brief, in these words:
+
+```
+Answer as a bmad-party-mode round-table. Cast 3-5 named voices with
+distinct expertise and real disagreements. They address each other, not
+me. Do not reconcile them into one recommendation.
+```
+
+John (PM), Sally (UX) and Grumbal (The Adversary) are mandatory; others as the
+topic needs. An advisor that reports as one voice has thrown away the reason it
+was asked.
