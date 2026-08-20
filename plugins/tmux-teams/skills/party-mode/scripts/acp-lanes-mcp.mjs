@@ -52,6 +52,8 @@ import { readFileSync, realpathSync } from 'node:fs'
 import { createInterface } from 'node:readline'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { spawn } from 'node:child_process'
+import { tmpdir } from 'node:os'
 
 import { REVIEW_PROFILES, ROUTED_PROFILES, buildAcpLaunch, AGY_BINARY_NAME,
   AGY_BINARY_CANDIDATE_FORMS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys } from './review-profiles.mjs'
@@ -115,6 +117,16 @@ export const DIAGNOSTICS = Object.freeze({
   environment_unspawnable: 'the environment this lane would launch with cannot start a process',
   environment_over_budget: 'the environment this lane would launch with is larger than this gate allows',
   unclassified: 'the lane refused for a reason this server does not classify; run the gate for the detail',
+  // Added for `acp_lane_probe` — these two are outcomes a LIVE attempt can
+  // learn that `acp_lane_status` structurally cannot, because it contacts
+  // nothing. Everything else a live attempt can go wrong in collapses onto
+  // `executable_missing` (the process never started) or `unclassified` (it
+  // started and did not finish a turn, for a reason not confidently telling
+  // quota from something else): the closed set stays small on purpose, and a
+  // code is added here only once the transport can genuinely tell it apart
+  // from a signal, never from provider text.
+  quota_exhausted: 'the endpoint answered and reported no quota remaining for this credential',
+  probe_timeout: 'the lane did not complete a trivial prompt within the probe timeout',
 })
 
 // Classification reads the exception and keeps only which BUCKET it fell into.
@@ -191,6 +203,18 @@ const NOT_PROVEN = Object.freeze([
   'that the credential is accepted by the provider',
   'that the adapter package resolves and starts',
   'that a session negotiates the requested model and mode',
+])
+
+// `acp_lane_probe` proves a strict superset of `NOT_PROVEN` and a strict
+// subset of a real review — it is one trivial turn, once, right now. Stated
+// on every probe answer for the same reason `NOT_PROVEN` is: a green answer
+// that is silent about its own boundary is what `ready: true` cost this file
+// once already.
+const PROBE_NOT_PROVEN = Object.freeze([
+  'that this lane stays reachable by the time a real review dispatches',
+  'that the model answering is the model this lane declares',
+  'that a review-sized brief succeeds the way this one-word probe did',
+  'anything about quota remaining beyond this single call',
 ])
 
 // A routed lane declares a WRAPPER as well as an adapter, and `buildProfileEnv`
@@ -393,6 +417,261 @@ export function laneStatus(id, profile, env) {
   }
 }
 
+// ## `acp_lane_probe` — the one tool in this file that contacts an endpoint
+//
+// Everything above this line answers from declared facts or local files.
+// This section spawns a real process and speaks the minimum of ACP needed to
+// learn whether the OTHER end answers, is out of quota, or refuses for some
+// other reason — classified into a SIGNAL shape, never into text, so the
+// classifier below never sees a provider's own words.
+
+// A per-lane ceiling, not a suggestion. A probe that never returns is a probe
+// that was not cheap, and "cheap" is the entire justification for shipping
+// this at all.
+export const PROBE_TIMEOUT_MS = 20_000
+
+// Deliberately not a question the model can answer at length. One word bounds
+// the reply this tool has to wait for and keeps every probe the same size.
+export const PROBE_BRIEF = 'Reply with exactly one word: ok.'
+
+// Printed only when the promise this tool returns rejects anyway — every path
+// inside `probeLanes` catches its own failure and resolves a classified
+// result, so this sentence is a backstop against a bug, not an expected
+// outcome. A rejected handler promise reaching `serve()` with nothing to
+// catch it is the EPIPE shape this project has already lost a whole gate to.
+const PROBE_CRASHED = 'the probe crashed before producing a classified result'
+
+// The transport's contract is a closed SIGNAL shape, never text:
+//   { settled: 'response' }                    a session/prompt result arrived
+//   { settled: 'timeout' }                      nothing arrived inside PROBE_TIMEOUT_MS
+//   { settled: 'spawn_error', errnoCode }        the process itself never started
+//   { settled: 'exit', code, quotaSignal }       the process exited before finishing the turn;
+//                                                 quotaSignal is a boolean the TRANSPORT decided,
+//                                                 never the bytes that decided it
+// `classifyProbe` reads only this shape. It is exported and pure so a test
+// can drive every branch with a plain object and never a subprocess.
+export function classifyProbe(result) {
+  if (!result || typeof result !== 'object') return 'unclassified'
+  if (result.settled === 'response') return null
+  if (result.settled === 'timeout') return 'probe_timeout'
+  if (result.settled === 'spawn_error') return 'executable_missing'
+  if (result.settled === 'exit' && result.quotaSignal === true) return 'quota_exhausted'
+  return 'unclassified'
+}
+
+// The REAL transport. Nothing in this file's own suite drives it — the seam
+// below (`deps.probeTransport`) is what every test exercises instead, on
+// purpose, per the roadmap's own warning that a real probe spends real
+// minutes and real provider quota. Treat this function as unverified against
+// a live provider by this change's own tests, the same honesty this repo
+// already applies to `party-advise`'s bwrap gate: designed carefully, proven
+// only by a real run nobody has yet spent the quota to take.
+async function realProbeTransport({ command, env, timeoutMs }) {
+  return new Promise((settle) => {
+    let done = false
+    let child
+    let killTimer = null
+    const finish = (result) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      if (killTimer) clearTimeout(killTimer)
+      if (child && child.exitCode === null && child.signalCode === null) {
+        try { child.kill('SIGTERM') } catch { /* already gone */ }
+        killTimer = setTimeout(() => { try { child.kill('SIGKILL') } catch { /* already gone */ } }, 2000)
+      }
+      settle(result)
+    }
+    const timer = setTimeout(() => finish({ settled: 'timeout' }), timeoutMs)
+
+    const [bin, ...args] = command
+    try {
+      child = spawn(bin, args, { cwd: tmpdir(), env, stdio: ['pipe', 'pipe', 'pipe'] })
+    } catch (error) {
+      clearTimeout(timer)
+      finish({ settled: 'spawn_error', errnoCode: error?.code ?? null })
+      return
+    }
+    let spawnFailed = false
+    child.once('error', (error) => {
+      spawnFailed = true
+      finish({ settled: 'spawn_error', errnoCode: error?.code ?? null })
+    })
+
+    // A provider's own wording never leaves this function — this boolean is
+    // the ONLY thing either stream is allowed to produce for the caller.
+    let quotaSignal = false
+    const QUOTA_SIGNAL = /\b(quota|rate.?limit(?:ed)?|429|insufficient_quota|resource_exhausted)\b/i
+    const noteQuotaSignal = (chunk) => { if (QUOTA_SIGNAL.test(String(chunk))) quotaSignal = true }
+    child.stderr.on('data', noteQuotaSignal)
+
+    // One JSON-RPC line at a time, id-correlated, exactly the framing this
+    // server itself speaks on its own stdio — the difference is this side is
+    // the CLIENT now.
+    let buf = ''
+    let outBytes = 0
+    // A generous multiple of a one-word answer, not a real turn's budget: an
+    // adapter emits one envelope per streamed token, and this project has
+    // already measured that amplify past 2MB on an ordinary answer.
+    const OUT_CAP = 2_000_000
+    let nextId = 1
+    const pending = new Map()
+    const send = (method, params) => new Promise((resolve, reject) => {
+      const id = nextId++
+      pending.set(id, { resolve, reject })
+      try {
+        child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
+      } catch (error) {
+        pending.delete(id)
+        reject(error)
+      }
+    })
+    const replyToChild = (id, result) => {
+      try { child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`) } catch { /* child is gone */ }
+    }
+
+    child.stdout.on('data', (chunk) => {
+      noteQuotaSignal(chunk)
+      outBytes += chunk.length
+      if (outBytes > OUT_CAP) return
+      buf += chunk
+      let idx
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx)
+        buf = buf.slice(idx + 1)
+        if (!line.trim()) continue
+        let message
+        try { message = JSON.parse(line) } catch { continue }
+        if (!message || typeof message !== 'object') continue
+        if ('id' in message && !('method' in message)) {
+          const entry = pending.get(message.id)
+          if (!entry) continue
+          pending.delete(message.id)
+          if (message.error) entry.reject(new Error('probe request refused'))
+          else entry.resolve(message.result)
+        } else if ('id' in message && 'method' in message) {
+          // A child-initiated request. NEVER granted — a probe proves
+          // reachability, it authorizes nothing. Answering immediately also
+          // keeps a spec-conforming child from stalling us to the timeout
+          // waiting on a reply that was never coming.
+          replyToChild(message.id, message.method === 'session/request_permission'
+            ? { outcome: { outcome: 'cancelled' } }
+            : {})
+        }
+        // A notification (no `id`) is ignored — this probe classifies the
+        // final outcome, not the stream of progress in between.
+      }
+    })
+
+    child.once('exit', (code) => {
+      if (spawnFailed) return
+      finish({ settled: 'exit', code, quotaSignal })
+    })
+
+    ;(async () => {
+      try {
+        await send('initialize', {
+          protocolVersion: 1,
+          clientInfo: { name: 'tmux-teams-acp-lane-probe', version: pluginVersion() },
+          clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
+        })
+        const session = await send('session/new', { cwd: tmpdir(), mcpServers: [] })
+        if (!session?.sessionId) return
+        await send('session/prompt', { sessionId: session.sessionId, prompt: [{ type: 'text', text: PROBE_BRIEF }] })
+        finish({ settled: 'response' })
+      } catch {
+        // A rejected request is the child refusing (auth, quota, malformed
+        // reply) or dying mid-handshake. Either way the `exit` handler above,
+        // or the timeout, already carries the honest signal — this catch only
+        // stops that rejection from becoming an unhandled one.
+      }
+    })()
+  })
+}
+
+// All shape enforcement for `acp_lane_probe` lives HERE, not in
+// `argumentsProblem` — that checker only types declared STRING properties
+// and does not read `required`, so `lanes` missing, empty, a bare string, or
+// carrying a non-string entry all pass the envelope check untouched. This
+// function is therefore the entire anti-sweep guard: every branch below
+// returns before a single process is spawned, and the ONLY way past it is a
+// non-empty array of ids this plugin already declares.
+function probeArgsProblem(args) {
+  const lanes = args?.lanes
+  if (!Array.isArray(lanes) || lanes.length === 0) {
+    return 'lanes is required and must be a non-empty array of lane ids — there is no probe-everything default'
+  }
+  if (!lanes.every((entry) => typeof entry === 'string')) {
+    return 'every entry in lanes must be a string lane id'
+  }
+  return null
+}
+
+async function probeOneLane(id, profile, env, transport) {
+  const status = laneStatus(id, profile, env)
+  // Already known broken, and known WHY — a live attempt would learn nothing
+  // a spawn cannot already answer, and would spend a process on a lane that
+  // cannot start. `acp_lane_status`'s own diagnostic is the honest answer.
+  if (status.configuration === 'invalid') {
+    return {
+      lane: id,
+      probe: 'not_attempted',
+      configuration: 'invalid',
+      problem: status.problem,
+      fixes: status.fixes,
+      notProven: PROBE_NOT_PROVEN,
+    }
+  }
+  let launch
+  try {
+    launch = buildAcpLaunch(id, { env })
+  } catch (error) {
+    const code = classify(error?.message, { fileKind: error?.fileKind ?? null })
+    return {
+      lane: id,
+      probe: 'unreachable',
+      configuration: status.configuration,
+      problem: { code, detail: DIAGNOSTICS[code] },
+      fixes: fixesFor(id, profile, code, { envKey: error?.envKey ?? null }),
+      notProven: PROBE_NOT_PROVEN,
+    }
+  }
+  const result = await transport({
+    id, command: launch.command, env: launch.env, timeoutMs: PROBE_TIMEOUT_MS,
+  })
+  const code = classifyProbe(result)
+  if (!code) {
+    return { lane: id, probe: 'reachable', configuration: status.configuration, problem: null, notProven: PROBE_NOT_PROVEN }
+  }
+  return {
+    lane: id,
+    probe: 'unreachable',
+    configuration: status.configuration,
+    problem: { code, detail: DIAGNOSTICS[code] },
+    fixes: code === 'executable_missing' ? executableFixes(id, profile) : [],
+    notProven: PROBE_NOT_PROVEN,
+  }
+}
+
+// The anti-sweep guard AND the dedup guard live before the loop: a caller who
+// repeats a lane id must not spend that lane's quota twice for one call.
+async function probeLanes(args, env, transport) {
+  const problem = probeArgsProblem(args)
+  if (problem) return { error: problem, known: Object.keys(REVIEW_PROFILES) }
+  const ids = [...new Set(args.lanes)]
+  if (ids.some((id) => !Object.hasOwn(REVIEW_PROFILES, id))) {
+    return { error: 'no such lane', known: Object.keys(REVIEW_PROFILES) }
+  }
+  // Sequential, never Promise.all — a live probe spends real quota and real
+  // minutes, and running lanes concurrently would spend several budgets at
+  // once for a caller who typed one call.
+  const lanes = []
+  for (const id of ids) {
+    lanes.push(await probeOneLane(id, REVIEW_PROFILES[id], env, transport))
+  }
+  return { lanes }
+}
+
 // ONE list. `TOOLS` and the dispatcher are both derived from it, so an
 // unadvertised handler is not something a reviewer has to go looking for — it
 // is unrepresentable.
@@ -438,15 +717,43 @@ export const TOOL_DESCRIPTORS = deepFreeze([
       return { lanes: ids.map((id) => laneStatus(id, REVIEW_PROFILES[id], env)) }
     },
   },
+  {
+    name: 'acp_lane_probe',
+    description: 'Contact named ACP lanes LIVE, one trivial one-word brief each, and report each as '
+      + 'reachable, out of quota, or refused — classified into a closed code, never the provider\'s own '
+      + 'wording. This is the one tool on this server that contacts an endpoint: it spends real minutes '
+      + 'and real provider quota, bounded by a per-lane timeout. `lanes` is REQUIRED and must be a '
+      + 'non-empty array of lane ids named explicitly — there is no probe-everything default, so a sweep '
+      + 'has to be typed on purpose every time. A lane whose configuration is already invalid is reported '
+      + 'from that diagnosis without being contacted. This starts no review and no delivery work: one '
+      + 'process per named lane, asked one word, torn down.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        lanes: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Lane ids to probe live, named explicitly. Required and non-empty — omitting it '
+            + 'or sending an empty array is refused rather than defaulting to every lane.',
+        },
+      },
+      required: ['lanes'],
+      additionalProperties: false,
+    },
+    // `deps.probeTransport` is the seam every test in this file's suite
+    // drives instead of a subprocess. The real transport runs only when
+    // nothing injects one — i.e. only from the manifest-launched server.
+    handler: (args, env, deps = {}) => probeLanes(args, env, deps.probeTransport ?? realProbeTransport),
+  },
 ])
 
 export const TOOLS = deepFreeze(TOOL_DESCRIPTORS.map(({ handler, ...rest }) => rest))
 const HANDLERS = new Map(TOOL_DESCRIPTORS.map((d) => [d.name, d.handler]))
 
-export function callTool(name, args, env) {
+export function callTool(name, args, env, deps) {
   const handler = HANDLERS.get(name)
   if (!handler) return { error: 'no such tool', known: [...HANDLERS.keys()] }
-  return handler(args, env)
+  return handler(args, env, deps)
 }
 
 // ## Validation, and why there was none
@@ -642,7 +949,7 @@ function rpcError(id, code, message) {
   return { jsonrpc: '2.0', id, error: { code, message } }
 }
 
-export function handle(message, env = process.env) {
+export function handle(message, env = process.env, deps) {
   const problem = requestProblem(message)
   // An unreadable frame has no id to answer under, so JSON-RPC's own answer is
   // an error carrying `id: null`.
@@ -689,22 +996,36 @@ export function handle(message, env = process.env) {
     if (!descriptor) return rpcError(id, RPC_INVALID_PARAMS, 'no such tool')
     const badArgs = argumentsProblem(descriptor.inputSchema, params.arguments)
     if (badArgs) return rpcError(id, RPC_INVALID_PARAMS, badArgs)
-    const payload = callTool(params.name, params.arguments, env)
-    return {
+    const payload = callTool(params.name, params.arguments, env, deps)
+    const buildReply = (resolved) => ({
       jsonrpc: '2.0',
       id,
       result: {
-        content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
+        content: [{ type: 'text', text: JSON.stringify(resolved, null, 2) }],
         // Reserved for a tool that RAN and reported a problem — an unknown lane
-        // is the only one left, and it is genuinely a tool-level result.
-        isError: Boolean(payload?.error),
+        // (or, now, an unreachable one) is the only one left, and it is
+        // genuinely a tool-level result.
+        isError: Boolean(resolved?.error),
       },
+    })
+    // Only `acp_lane_probe`'s handler returns a Promise — it is the only tool
+    // that spawns a process and has to wait on it. Every other handler still
+    // returns a plain object, so `handle` still answers SYNCHRONOUSLY for
+    // every caller that never reaches the async branch: no existing call site
+    // awaits it, and none has to. The `.catch` is load-bearing, not
+    // decoration — a rejected handler promise reaching a caller with nothing
+    // to catch it is the EPIPE-takes-the-whole-gate-down shape this project
+    // has already lost a release to once; `probeLanes` is written to never
+    // reject, and this is the backstop for the day it does anyway.
+    if (payload && typeof payload.then === 'function') {
+      return payload.then(buildReply, () => buildReply({ error: PROBE_CRASHED }))
     }
+    return buildReply(payload)
   }
   return rpcError(id, RPC_METHOD_NOT_FOUND, 'method not found')
 }
 
-export function serve({ input = process.stdin, output = process.stdout, env = process.env } = {}) {
+export function serve({ input = process.stdin, output = process.stdout, env = process.env, deps } = {}) {
   const lines = createInterface({ input })
   lines.on('line', (line) => {
     const text = line.trim()
@@ -718,8 +1039,15 @@ export function serve({ input = process.stdin, output = process.stdout, env = pr
       }) + '\n')
       return
     }
-    const reply = handle(message, env)
-    if (reply) output.write(JSON.stringify(reply) + '\n')
+    // `handle` may answer synchronously (every method except a probe call) or
+    // return a Promise (only `acp_lane_probe`). `Promise.resolve` normalises
+    // both without changing the synchronous path's timing in practice, and
+    // the `.catch` here is the same backstop `handle` already applies —
+    // doubled deliberately, because a socket write after an unhandled
+    // rejection killed a whole review gate in this project once already.
+    Promise.resolve(handle(message, env, deps)).then((reply) => {
+      if (reply) output.write(JSON.stringify(reply) + '\n')
+    }).catch(() => {})
   })
   return lines
 }

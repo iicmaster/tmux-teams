@@ -9,7 +9,8 @@ import { spawn } from 'node:child_process'
 
 import { handle, callTool, laneFacts, laneStatus, classify, fixesFor,
   TOOLS, TOOL_DESCRIPTORS, DIAGNOSTICS, PROTOCOL_VERSION, UNCHECKED_LANES,
-  RPC_INVALID_REQUEST, RPC_INVALID_PARAMS, RPC_METHOD_NOT_FOUND, RPC_PARSE_ERROR }
+  RPC_INVALID_REQUEST, RPC_INVALID_PARAMS, RPC_METHOD_NOT_FOUND, RPC_PARSE_ERROR,
+  classifyProbe, PROBE_TIMEOUT_MS, PROBE_BRIEF }
   from '../plugins/tmux-teams/skills/party-mode/scripts/acp-lanes-mcp.mjs'
 import { REVIEW_PROFILES, ROUTED_PROFILES, provenFamilyCollision, normalizePrimaryFamily, PROVIDER_SECRET_KEYS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys, buildAcpLaunch, buildProfileEnv }
   from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
@@ -294,7 +295,10 @@ test('every diagnostic code the classifier can return has a constant sentence', 
   const codes = ['endpoint_missing', 'endpoint_mismatch', 'credential_missing',
     'settings_unreadable', 'credential_unreadable', 'profile_incomplete',
     'executable_missing', 'environment_unspawnable', 'environment_over_budget',
-    'unclassified']
+    'unclassified',
+    // Added for `acp_lane_probe` — the two outcomes a LIVE attempt can learn
+    // that config-time checking structurally cannot.
+    'quota_exhausted', 'probe_timeout']
   assert.deepEqual(Object.keys(DIAGNOSTICS).sort(), [...codes].sort())
   // and the classifier maps real messages onto them rather than onto `unclassified`
   assert.equal(classify('zai review requires ANTHROPIC_BASE_URL'), 'endpoint_missing')
@@ -599,13 +603,13 @@ test('a handler that is not advertised cannot exist, because both come from one 
   // branch in the dispatcher walks straight past. The dispatcher is now built
   // from the same descriptor list the advertisement is, so the property is
   // structural: this asserts the structure rather than the vocabulary.
-  assert.deepEqual(TOOLS.map(t => t.name), ['acp_lanes', 'acp_lane_status'])
+  assert.deepEqual(TOOLS.map(t => t.name), ['acp_lanes', 'acp_lane_status', 'acp_lane_probe'])
   assert.deepEqual(TOOL_DESCRIPTORS.map(d => d.name), TOOLS.map(t => t.name))
   assert.ok(TOOL_DESCRIPTORS.every(d => typeof d.handler === 'function'))
   assert.ok(TOOLS.every(t => !('handler' in t)), 'the handler must not be advertised to a client')
   const refused = callTool('launch_lane', {}, {})
   assert.match(refused.error, /no such tool/)
-  assert.deepEqual(refused.known, ['acp_lanes', 'acp_lane_status'],
+  assert.deepEqual(refused.known, ['acp_lanes', 'acp_lane_status', 'acp_lane_probe'],
     'the dispatcher knows a name the advertisement does not')
 })
 
@@ -822,7 +826,11 @@ test('the manifest command boots the server and answers a real client handshake,
       send({ jsonrpc: '2.0', method: 'notifications/initialized' })
       send({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
       send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'acp_lanes' } })
-      send({ jsonrpc: '2.0', id: 4, method: 'ping' })
+      // The anti-sweep guard, over the REAL spawned subprocess rather than
+      // in-process only. This is free and deterministic even here: a refusal
+      // never reaches the transport, so no lane is ever spawned by this call.
+      send({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'acp_lane_probe', arguments: {} } })
+      send({ jsonrpc: '2.0', id: 5, method: 'ping' })
       const code = await new Promise((done) => {
         setTimeout(() => child.stdin.end(), 600)
         child.on('close', done)
@@ -830,12 +838,24 @@ test('the manifest command boots the server and answers a real client handshake,
       assert.equal(code, 0, 'the server exited nonzero')
       assert.ok(out.trim(), 'the launched server answered nothing at all — serve() never ran')
       const replies = out.trim().split('\n').map(line => JSON.parse(line))
-      assert.deepEqual(replies.map(r => r.id), [1, 2, 3, 4],
-        'the notification was answered, or a request was not')
-      assert.equal(replies[0].result.protocolVersion, PROTOCOL_VERSION)
-      assert.deepEqual(replies[1].result.tools.map(t => t.name), ['acp_lanes', 'acp_lane_status'])
-      assert.equal(JSON.parse(replies[2].result.content[0].text).lanes.length, 7)
-      assert.deepEqual(replies[3].result, {}, 'ping was not answered with an empty result')
+      // Membership, not wire ORDER: `acp_lane_probe` is the one handler that
+      // is genuinely async (its own anti-sweep refusal still returns through
+      // an async function, so it resolves a microtask or more later than a
+      // purely synchronous reply like ping's). JSON-RPC 2.0 does not promise
+      // response order for concurrent requests — a client correlates by `id`
+      // — so asserting a fixed position here would pin an accident of timing
+      // rather than the contract.
+      assert.deepEqual([...replies.map(r => r.id)].sort((a, b) => a - b), [1, 2, 3, 4, 5],
+        'the notification was answered, or a request was not, or one arrived under the wrong id')
+      const byId = new Map(replies.map(r => [r.id, r]))
+      assert.equal(byId.get(1).result.protocolVersion, PROTOCOL_VERSION)
+      assert.deepEqual(byId.get(2).result.tools.map(t => t.name),
+        ['acp_lanes', 'acp_lane_status', 'acp_lane_probe'])
+      assert.equal(JSON.parse(byId.get(3).result.content[0].text).lanes.length, 7)
+      const probeRefusal = JSON.parse(byId.get(4).result.content[0].text)
+      assert.equal(byId.get(4).result.isError, true, 'a probe call with no lanes must be reported as refused')
+      assert.match(probeRefusal.error, /non-empty array of lane ids/)
+      assert.deepEqual(byId.get(5).result, {}, 'ping was not answered with an empty result')
     } finally {
       rmSync(base, { recursive: true, force: true })
     }
@@ -1762,4 +1782,210 @@ test('the over-budget repair does not send an operator somewhere that repeats th
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// ## `acp_lane_probe` — the third tool, and the only one that contacts anything
+//
+// Every test below injects `deps.probeTransport` — never a real subprocess.
+// That is deliberate, not a shortcut: the roadmap item this ships names its
+// own cost ("a real probe costs minutes and real quota"), so this suite must
+// stay free and deterministic. The one exception is the anti-sweep refusal
+// inside the boot test above, which is free even over a real spawned server
+// because a refusal never reaches the transport.
+
+const callProbe = async (args, env, transport) => {
+  const reply = await handle({
+    jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'acp_lane_probe', arguments: args },
+  }, env, { probeTransport: transport })
+  return { reply, payload: JSON.parse(reply.result.content[0].text) }
+}
+
+test('acp_lane_probe is advertised, and the advertised descriptor is the dispatcher\'s own', () => {
+  const advertised = TOOLS.find(t => t.name === 'acp_lane_probe')
+  assert.ok(advertised, 'the third tool was not advertised in tools/list')
+  assert.deepEqual(advertised.inputSchema.required, ['lanes'],
+    'the schema does not even ADVERTISE that lanes is required')
+  assert.equal(advertised.inputSchema.properties.lanes.type, 'array')
+  assert.equal(advertised.inputSchema.additionalProperties, false)
+  const descriptor = TOOL_DESCRIPTORS.find(d => d.name === 'acp_lane_probe')
+  assert.equal(typeof descriptor.handler, 'function')
+  assert.equal(descriptor.description, advertised.description,
+    'the advertised description and the dispatcher\'s own descriptor drifted apart')
+  assert.match(descriptor.description, /spends real minutes and real provider quota/,
+    'the cost is not stated honestly, which is part of the anti-sweep posture')
+})
+
+test('classifyProbe maps a closed SIGNAL shape onto a closed code, never onto text', () => {
+  assert.equal(classifyProbe({ settled: 'response' }), null, 'a real reply is success, not a problem code')
+  assert.equal(classifyProbe({ settled: 'timeout' }), 'probe_timeout')
+  assert.equal(classifyProbe({ settled: 'spawn_error', errnoCode: 'ENOENT' }), 'executable_missing')
+  assert.equal(classifyProbe({ settled: 'exit', code: 1, quotaSignal: true }), 'quota_exhausted')
+  assert.equal(classifyProbe({ settled: 'exit', code: 1, quotaSignal: false }), 'unclassified')
+  assert.equal(classifyProbe({ settled: 'exit', code: 0, quotaSignal: false }), 'unclassified')
+  // A misbehaving or future transport gets the honest catch-all, never a crash
+  // and never a guess dressed as a specific answer.
+  assert.equal(classifyProbe(null), 'unclassified')
+  assert.equal(classifyProbe(undefined), 'unclassified')
+  assert.equal(classifyProbe('a bare string a future transport might return'), 'unclassified')
+  assert.equal(classifyProbe({ settled: 'a kind this file has never seen' }), 'unclassified')
+  // Every non-null code this function can produce has to already be a key of
+  // the closed set — a code `classifyProbe` can return that `DIAGNOSTICS` does
+  // not know is a detail sentence nobody wrote.
+  for (const shape of [{ settled: 'timeout' }, { settled: 'spawn_error' },
+    { settled: 'exit', quotaSignal: true }, { settled: 'exit' }, {}]) {
+    const code = classifyProbe(shape)
+    assert.ok(code === null || Object.hasOwn(DIAGNOSTICS, code),
+      `classifyProbe(${JSON.stringify(shape)}) returned ${code}, which DIAGNOSTICS does not define`)
+  }
+  assert.ok(Object.hasOwn(DIAGNOSTICS, 'quota_exhausted') && Object.hasOwn(DIAGNOSTICS, 'probe_timeout'))
+})
+
+test('acp_lane_probe refuses every shape that is not an explicit non-empty array of ids, and spawns nothing', async () => {
+  const spy = []
+  const transport = async (call) => { spy.push(call); return { settled: 'response' } }
+  const cases = [
+    [{}, /non-empty array of lane ids/],
+    [{ lanes: [] }, /non-empty array of lane ids/],
+    [{ lanes: 'zai' }, /non-empty array of lane ids/],
+    [{ lanes: [1, 2] }, /every entry in lanes must be a string/],
+    [{ lanes: ['no-such-lane'] }, /no such lane/],
+    [{ lanes: ['zai', 'no-such-lane'] }, /no such lane/],
+  ]
+  for (const [args, expected] of cases) {
+    const { reply, payload } = await callProbe(args, {}, transport)
+    assert.equal(reply.result.isError, true, `${JSON.stringify(args)} was not reported as refused`)
+    assert.match(payload.error, expected, `${JSON.stringify(args)} produced: ${payload.error}`)
+    assert.ok(payload.known.includes('zai'), 'a refusal that does not say what does exist is half an answer')
+  }
+  assert.equal(spy.length, 0,
+    'a call this server should have refused reached the transport — the anti-sweep guard is not structural')
+})
+
+test('a repeated lane id is probed once, not once per repetition', async () => {
+  let calls = 0
+  const transport = async () => { calls += 1; return { settled: 'response' } }
+  const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+  const { payload } = await callProbe({ lanes: ['claude', 'claude', 'claude'] }, bare, transport)
+  assert.equal(payload.lanes.length, 1, 'a deduped id must appear once in the answer, not three times')
+  assert.equal(calls, 1, 'the same lane id was probed more than once for one call')
+})
+
+test('a lane that is already invalid is reported from that diagnosis, and never contacted', async () => {
+  const transport = async () => { throw new Error('an already-invalid lane must never be contacted') }
+  const { payload } = await callProbe({ lanes: ['zai'] },
+    { HOME: '/nonexistent-layout', PATH: '/definitely/nonexistent' }, transport)
+  const [lane] = payload.lanes
+  assert.equal(lane.probe, 'not_attempted')
+  assert.equal(lane.configuration, 'invalid')
+  assert.equal(lane.problem.code, 'endpoint_missing', 'reused the wrong config-time diagnostic')
+  assert.equal(lane.problem.detail, DIAGNOSTICS.endpoint_missing)
+})
+
+test('an UNCHECKED lane is genuinely contacted — a live probe is the only signal that exists for it', async () => {
+  const spy = []
+  const transport = async (call) => { spy.push(call); return { settled: 'response' } }
+  const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+  const { payload } = await callProbe({ lanes: ['claude'] }, bare, transport)
+  assert.equal(spy.length, 1, 'the one lane with no parent-side check was never actually contacted')
+  assert.equal(spy[0].id, 'claude')
+  assert.ok(Array.isArray(spy[0].command) && spy[0].command.length, 'the transport got no command to spawn')
+  assert.ok(spy[0].env && typeof spy[0].env === 'object', 'the transport got no environment to spawn with')
+  assert.equal(spy[0].timeoutMs, PROBE_TIMEOUT_MS, 'the bounded timeout did not reach the transport')
+  const [lane] = payload.lanes
+  assert.equal(lane.probe, 'reachable')
+  assert.equal(lane.configuration, 'unchecked')
+  assert.equal(lane.problem, null)
+  assert.ok(Array.isArray(lane.notProven) && lane.notProven.length >= 4,
+    'a live reachable answer with no stated boundary is the same overclaim ready:true was')
+})
+
+test('every unreachable outcome the transport can report lands on a classified code, and nothing extra rides along', async () => {
+  const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+  const outcomes = [
+    [{ settled: 'timeout' }, 'probe_timeout'],
+    [{ settled: 'spawn_error', errnoCode: 'ENOENT', rawStderr: 'CANARY-SHOULD-NEVER-SURFACE' }, 'executable_missing'],
+    [{ settled: 'exit', code: 1, quotaSignal: true, rawText: 'CANARY-QUOTA-TEXT' }, 'quota_exhausted'],
+    [{ settled: 'exit', code: 1, quotaSignal: false }, 'unclassified'],
+    [{ settled: 'a kind this file has never seen' }, 'unclassified'],
+  ]
+  for (const [outcome, code] of outcomes) {
+    const { payload } = await callProbe({ lanes: ['claude'] }, bare, async () => outcome)
+    const [lane] = payload.lanes
+    assert.equal(lane.probe, 'unreachable', JSON.stringify(outcome))
+    assert.equal(lane.problem.code, code, JSON.stringify(outcome))
+    assert.equal(lane.problem.detail, DIAGNOSTICS[code], 'the detail is not the constant sentence for its own code')
+    const wire = JSON.stringify(payload)
+    assert.ok(!wire.includes('CANARY'),
+      `a field the transport contract does not declare still reached the wire: ${wire}`)
+  }
+})
+
+test('a credential inside an unreadable settings file still never reaches a probe reply', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-lanes-probe-secret-'))
+  try {
+    const settings = join(dir, 'zai.json')
+    // A synthetic marker, not a credential-shaped literal: this repository's
+    // own pre-commit secret scanner reads `const secret = '...'` as the thing
+    // it exists to stop, and it is right to — build the value instead of
+    // writing it as one string.
+    const marker = 'PROBE-MARKER-NEVER-ON-THE-WIRE-' + 'q'.repeat(20)
+    writeFileSync(settings, `{ "token": "${marker}", this is not valid json`)
+    const transport = async () => { throw new Error('an invalid lane must never be contacted') }
+    const { payload } = await callProbe({ lanes: ['zai'] },
+      { HOME: '/nonexistent-layout', PATH: '/definitely/nonexistent', TMUX_TEAMS_REVIEW_ZAI_SETTINGS: settings },
+      transport)
+    assert.equal(payload.lanes[0].probe, 'not_attempted')
+    assert.equal(payload.lanes[0].problem.code, 'settings_unreadable')
+    assert.ok(!JSON.stringify(payload).includes(marker),
+      'a credential sitting inside an unreadable settings file reached a probe reply')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a live credential reaches the transport to spawn with, and never reaches the reply back', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-lanes-probe-live-secret-'))
+  try {
+    const settings = join(dir, 'zai.json')
+    const marker = 'LIVE-PROBE-MARKER-' + '9f3a'.repeat(5)
+    writeFileSync(settings, JSON.stringify({
+      env: { ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic', ANTHROPIC_AUTH_TOKEN: marker },
+    }))
+    const env = { HOME: dir, PATH: process.env.PATH, TMUX_TEAMS_REVIEW_ZAI_SETTINGS: settings }
+    let sawMarkerInLaunchEnv = false
+    const transport = async (call) => {
+      sawMarkerInLaunchEnv = Object.values(call.env ?? {}).includes(marker)
+      return { settled: 'exit', code: 1, quotaSignal: true }
+    }
+    const { payload } = await callProbe({ lanes: ['zai'] }, env, transport)
+    assert.ok(sawMarkerInLaunchEnv,
+      'the transport never received the credential it would need to actually probe with — the test proves nothing')
+    assert.equal(payload.lanes[0].probe, 'unreachable')
+    assert.equal(payload.lanes[0].problem.code, 'quota_exhausted')
+    assert.ok(!JSON.stringify(payload).includes(marker),
+      'a credential that reached the transport also reached the reply')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('lanes are probed sequentially, never concurrently — a live probe spends real quota per lane', async () => {
+  let inFlight = 0
+  let maxInFlight = 0
+  const order = []
+  const transport = async (call) => {
+    inFlight += 1
+    maxInFlight = Math.max(maxInFlight, inFlight)
+    order.push(`start:${call.id}`)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    order.push(`end:${call.id}`)
+    inFlight -= 1
+    return { settled: 'response' }
+  }
+  const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+  const { payload } = await callProbe({ lanes: ['claude', 'codex'] }, bare, transport)
+  assert.equal(maxInFlight, 1,
+    'two lanes were in flight at once — that is Promise.all, and this tool must never spend two budgets for one call')
+  assert.deepEqual(order, ['start:claude', 'end:claude', 'start:codex', 'end:codex'])
+  assert.equal(payload.lanes.length, 2)
 })
