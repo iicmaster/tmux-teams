@@ -265,10 +265,22 @@ down is a scope that gets re-decided.
 | 2 | the comment diet on the v0.32.0 files | **shipped** |
 | 3 | one advisor contract across all three lanes | **shipped** |
 | 4 | the prohibited model accepted at dispatch | **shipped** |
-| 5 | the `claude` lane cannot reuse a Claude Max login | open |
-| 6 | `loop-runner` re-dispatches `blocked` instead of escalating | open |
-| 7 | a live lane-health preflight | open |
-| 8 | `belongsToThisRun` proves identity, not just recency | open |
+| 5 | the `claude` lane cannot reuse a Claude Max login | **half** — see below |
+| 6 | `loop-runner` re-dispatches `blocked` instead of escalating | **shipped** |
+| 7 | a live lane-health preflight | **shipped** |
+| 8 | `belongsToThisRun` proves identity, not just recency | **shipped** |
+
+**Item 5 is HALF, and the half that is missing is the half that matters to a
+user.** The companion now advertises the ACP terminal capability, gated behind
+an explicit `ACP_ENABLE_TERMINAL=1` login mode, and serves all five terminal
+methods for real; the ordinary dispatch path advertises nothing new and refuses
+a terminal request outright. All of that is under test.
+
+**Nobody has completed an actual Claude Max login through it.** That needs a
+person at a real terminal and it has not been done. Do not read this row as
+"the lane works" until someone has run it and said so here. The issue's other
+acceptance half — a structured, actionable blocker when an unauthenticated
+ordinary lane hits `-32000` — is untouched.
 
 **Item 5 is fixed the way the issue names, not the way v0.32.0 measured.** Both
 diagnoses are real: the companion advertises filesystem capabilities only and
