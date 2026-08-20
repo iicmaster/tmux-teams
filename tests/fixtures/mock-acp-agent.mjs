@@ -295,12 +295,28 @@ async function runTerminalRoundtrip(prompt) {
 // a file in cwd (the companion's cwd, since no `cwd` override is sent) so a
 // test with no other way to see inside the companion's process table can
 // still prove whether that pid is still alive after the companion exits.
+//
+// Same trap `writeDescendant` already documents (issue #39): a plain
+// `writeFileSync` opens O_CREAT|O_TRUNC and writes second, so a path can
+// exist and read empty. The spawned child writes a `.tmp` file and renames it
+// into place, and this function then WAITS for that final name to exist
+// before letting the turn finish — otherwise the teardown sweep this scenario
+// exists to test could SIGTERM the child mid-startup, before it ever reaches
+// the rename, and the test would read "no pid file" as a pass instead of a
+// missed measurement.
 async function runTerminalOrphanProbe(prompt) {
   await sendMockRequest('terminal/create', {
     sessionId: currentSessionId,
     command: process.execPath,
-    args: ['-e', 'require("fs").writeFileSync("terminal-orphan-pid", String(process.pid)); setInterval(() => {}, 1000)'],
+    args: ['-e',
+      'const fs = require("fs"); fs.writeFileSync("terminal-orphan-pid.tmp", String(process.pid)); '
+      + 'fs.renameSync("terminal-orphan-pid.tmp", "terminal-orphan-pid"); setInterval(() => {}, 1000)'],
   })
+  const deadline = Date.now() + envNumber('MOCK_GATE_WATCHDOG_MS', 15000)
+  while (!existsSync('terminal-orphan-pid')) {
+    if (Date.now() >= deadline) process.exit(17)
+    await wait(10)
+  }
   writeOutbox(prompt)
   reply(prompt.id, { stopReason: 'end_turn' })
 }
