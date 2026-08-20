@@ -1,0 +1,31 @@
+// A stub ACP agent for exercising `realProbeTransport` without contacting a
+// provider. STUB_MODE picks the shape:
+//
+//   ok       answers initialize, session/new and session/prompt
+//   quota    answers the handshake, then refuses the PROMPT the way an
+//            exhausted provider does — 429 on stderr and no reply
+//   noisy    prints quota-shaped words on stderr and answers anyway, which is
+//            REACHABLE: a lane that answered is not a lane that refused
+//   silent   never answers anything
+import { createInterface } from 'node:readline'
+
+const mode = process.env.STUB_MODE ?? 'ok'
+if (mode === 'noisy') process.stderr.write('warn: approaching your rate limit\n')
+
+const rl = createInterface({ input: process.stdin })
+rl.on('line', (line) => {
+  let message
+  try { message = JSON.parse(line) } catch { return }
+  if (mode === 'silent') return
+  const reply = (result) => process.stdout.write(
+    `${JSON.stringify({ jsonrpc: '2.0', id: message.id, result })}\n`)
+  if (message.method === 'initialize') reply({ protocolVersion: 1, agentCapabilities: {} })
+  else if (message.method === 'session/new') reply({ sessionId: 'stub-session' })
+  else if (message.method === 'session/prompt') {
+    if (mode === 'quota') {
+      process.stderr.write('Error 429: you have exhausted your quota for today\n')
+      process.exit(1)
+    }
+    reply({ stopReason: 'end_turn' })
+  }
+})

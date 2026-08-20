@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process'
 import { handle, callTool, laneFacts, laneStatus, classify, fixesFor,
   TOOLS, TOOL_DESCRIPTORS, DIAGNOSTICS, PROTOCOL_VERSION, UNCHECKED_LANES,
   RPC_INVALID_REQUEST, RPC_INVALID_PARAMS, RPC_METHOD_NOT_FOUND, RPC_PARSE_ERROR,
-  classifyProbe, PROBE_TIMEOUT_MS, PROBE_BRIEF }
+  classifyProbe, PROBE_TIMEOUT_MS, PROBE_BRIEF, realProbeTransport }
   from '../plugins/tmux-teams/skills/party-mode/scripts/acp-lanes-mcp.mjs'
 import { REVIEW_PROFILES, ROUTED_PROFILES, provenFamilyCollision, normalizePrimaryFamily, PROVIDER_SECRET_KEYS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys, buildAcpLaunch, buildProfileEnv }
   from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
@@ -2011,4 +2011,63 @@ test('a transport that REJECTS is classified per lane, never leaks its message, 
   const wire = JSON.stringify(payload)
   assert.ok(!wire.includes('PROVIDER-REJECT-MARKER') && !wire.includes('401') && !wire.includes('9f3a'),
     `the rejecting transport's own message reached the wire: ${wire}`)
+})
+
+// `realProbeTransport` was the one piece of the probe nothing ran: every other
+// test injects a fake through `deps.probeTransport`, which exercises the
+// CLASSIFIER and says nothing about the code that spawns an adapter, writes
+// JSON-RPC frames and reads them back. The quota pattern is the sharpest case —
+// if it misses a provider's real wording, an exhausted lane reports
+// `unclassified`, and no fake transport can ever tell you that.
+//
+// A stub ACP agent costs nothing and contacts nobody.
+test('the real probe transport speaks to an agent and reads what comes back', async () => {
+  const stub = join(ROOT, 'tests', 'fixtures', 'probe-stub-agent.mjs')
+  const run = (mode, timeoutMs = 8000) => realProbeTransport({
+    command: [process.execPath, stub],
+    env: { ...process.env, STUB_MODE: mode },
+    timeoutMs,
+  })
+
+  assert.deepEqual(await run('ok'), { settled: 'response' },
+    'a stub that answers all three methods was not read as reachable')
+
+  // An exhausted lane answers the handshake and refuses the PROMPT — that is
+  // the shape, not a 429 arriving out of nowhere.
+  //
+  // And the split is the point: the TRANSPORT reports a fact it observed
+  // (`exit`, plus a boolean it decided from the stream) and the CLASSIFIER
+  // turns that into the code an operator reads. Asserting both halves in one
+  // place is what proves they meet — a fake transport can satisfy the
+  // classifier forever while the real one never produces the shape it wants.
+  const quota = await run('quota')
+  assert.equal(quota.settled, 'exit', `an exhausted lane settled as ${quota.settled}`)
+  assert.equal(quota.quotaSignal, true, 'the transport did not notice the 429 on stderr')
+  assert.equal(classifyProbe(quota), 'quota_exhausted',
+    'the classifier did not turn a real exhausted lane into its own code')
+
+  // And the other direction, which is the one a keyword match gets wrong:
+  // quota-shaped words on stderr from a lane that ANSWERED are not a refusal.
+  // A lane that answered is reachable, whatever it printed on the way.
+  assert.deepEqual(await run('noisy'), { settled: 'response' },
+    'a lane that answered was called exhausted because of a warning it printed')
+
+  // A stub that never answers must TIME OUT rather than hang the caller, and
+  // the timeout has to be the transport's own — a test that waits for the
+  // production 
+  const started = Date.now()
+  const silent = await run('silent', 1200)
+  assert.equal(silent.settled, 'timeout', `a silent agent settled as ${silent.settled}`)
+  assert.ok(Date.now() - started < 6000,
+    'the transport ignored the timeout it was given')
+
+  // A command that does not exist is a spawn error carrying an errno CODE and
+  // never a message — this is the path that reaches an operator.
+  const missing = await realProbeTransport({
+    command: [join(ROOT, 'tests', 'fixtures', 'no-such-binary-here'), '--x'],
+    env: { ...process.env }, timeoutMs: 4000,
+  })
+  assert.equal(missing.settled, 'spawn_error')
+  assert.equal(missing.errnoCode, 'ENOENT', `spawn failure reported ${missing.errnoCode}`)
+  assert.equal(missing.message, undefined, 'the transport leaked a message onto its result')
 })

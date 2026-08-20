@@ -469,7 +469,14 @@ export function classifyProbe(result) {
 // a live provider by this change's own tests, the same honesty this repo
 // already applies to `party-advise`'s bwrap gate: designed carefully, proven
 // only by a real run nobody has yet spent the quota to take.
-async function realProbeTransport({ command, env, timeoutMs }) {
+// EXPORTED so it can be exercised against a stub ACP agent. It was the one
+// piece of this feature nothing ran: every test injected a fake through
+// `deps.probeTransport`, which proves the classifier and proves nothing about
+// the code that actually spawns an adapter and reads its frames. The quota
+// pattern below is the sharpest example — if it misses a provider's real
+// wording, an exhausted lane reports `unclassified` and a fake transport can
+// never tell you.
+export async function realProbeTransport({ command, env, timeoutMs }) {
   return new Promise((settle) => {
     let done = false
     let child
