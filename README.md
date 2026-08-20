@@ -389,7 +389,7 @@ relaying a person's words is expected to sign `human:` and name itself in
 
 ---
 
-## 4. The eleven skills
+## 4. The twelve skills
 
 **Setting up and running the loop**
 
@@ -407,6 +407,8 @@ relaying a person's words is expected to sign `human:` and name itself in
 | `tmux-teams:party-auto` | executing multi-file or production-impacting work — planning, critique, file ownership, grill gate, verification, 3-model review |
 | `tmux-teams:party-advise` | advice, plan critique, tradeoff or risk review — read-only, never edits |
 | `tmux-teams:sqthink` | structured step-by-step analysis, comparison, or planning before deciding |
+| `tmux-teams:show-me` | explaining behavior with the smallest useful picture — a diagram, tree, diff, or focused page |
+| `tmux-teams:pm-delegation` | preparing bounded implementation briefs with explicit approvals, verification, and evidence handoff |
 
 **Getting a second opinion**
 

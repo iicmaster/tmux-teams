@@ -13,7 +13,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PLUGIN = join(ROOT, 'plugins/tmux-teams')
 const SKILLS = ['tmux-teams', 'party-mode', 'party-auto', 'party-advise', 'sqthink', 'codex-tmux-driver',
-  'graph-setup', 'claude-advisor', 'codex-advisor', 'handoff', 'show-me']
+  'graph-setup', 'claude-advisor', 'codex-advisor', 'handoff', 'show-me', 'pm-delegation']
 const RELEASE_VERSION = '0.32.0'
 // The Stage 1 CLI entry points went on 2026-07-29 and the rest of the phase
 // subsystem — nine scripts, its gate, its store and its exporter — went on
@@ -309,6 +309,29 @@ test('every bundled skill is present with matching frontmatter names', () => {
     assert.ok(fm, `${name}: no frontmatter name`)
     assert.equal(fm[1], name, `${name}: frontmatter name mismatch`)
   }
+})
+
+test('README skill inventory matches the bundled list', () => {
+  const readme = readText(join(ROOT, 'README.md'))
+  const inventory = readme.match(/^## 4\. The ([A-Za-z0-9-]+) skills\n([\s\S]*?)(?=^## 5\.)/m)
+  assert.ok(inventory, 'README.md skill inventory section missing')
+  const listed = [...inventory[2].matchAll(/^\| `tmux-teams:([^`]+)` \|/gm)]
+    .map(([, name]) => name)
+  const countToken = inventory[1].toLowerCase()
+  const headingCount = /^\d+$/.test(countToken)
+    ? Number(countToken)
+    : ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight',
+      'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen',
+      'sixteen', 'seventeen', 'eighteen', 'nineteen', 'twenty'].indexOf(countToken)
+
+  assert.equal(headingCount, SKILLS.length,
+    'README.md skill count does not match the bundled list')
+  assert.equal(listed.length, SKILLS.length,
+    'README.md skill table count does not match the bundled list')
+  assert.ok(listed.includes('pm-delegation'),
+    'README.md skill inventory is missing pm-delegation')
+  assert.deepEqual([...listed].sort(), [...SKILLS].sort(),
+    'README.md skill inventory does not match the bundled list')
 })
 
 test('deliver.sh keeps its executable bit', () => {
