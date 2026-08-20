@@ -748,8 +748,26 @@ test('the runtime model request is held to the same prohibition as the pinned on
   const original = source.match(/const PROHIBITED_MODEL = (\/.*\/i)/)
   assert.ok(original, 'review-profiles.mjs no longer carries the prohibition at all')
 
+  // THREE copies now: review-profiles owns the rule, and both the companion and
+  // the dispatcher carry it because all three take only node builtins by design
+  // and live in two different skills. A drift would let one refuse what another
+  // runs.
+  const dispatch = readFileSync(
+    join(ROOT, 'plugins/tmux-teams/skills/tmux-teams/scripts/acp-dispatch.mjs'), 'utf8')
+  const inDispatch = dispatch.match(/const PROHIBITED_MODEL = (\/.*\/i)/)
+  assert.ok(inDispatch, 'acp-dispatch.mjs no longer carries the prohibition at all')
+
   assert.equal(copied[1], original[1],
-    'the two prohibition patterns have drifted — one lane would refuse what the other runs')
+    'the companion prohibition pattern drifted from review-profiles')
+  assert.equal(inDispatch[1], original[1],
+    'the dispatcher prohibition pattern drifted from review-profiles')
+
+  // And the dispatcher APPLIES it before anything is spawned — a refusal in the
+  // child still spawns a lane and tells the operator `dispatched` first.
+  assert.match(dispatch, /assertPermittedModel\(env\.ACP_MODEL, 'ACP_MODEL'\)/,
+    'the dispatcher reads ACP_MODEL without checking the prohibition')
+  assert.match(dispatch, /assertPermittedModel\(env\.ACP_EXPECT_MODEL, 'ACP_EXPECT_MODEL'\)/,
+    'the dispatcher reads ACP_EXPECT_MODEL without checking the prohibition')
 
   // And it is APPLIED, not merely present: both the requested model and the
   // expectation go through it. Expecting a prohibited model is how a lane gets

@@ -692,10 +692,35 @@ export function pidAlive(pid) {
   }
 }
 
+// CLAUDE.md prohibits Gemini 3.1 on every tmux-teams route and says to fail
+// CLOSED. The companion refuses it too, but that refusal happens in the CHILD:
+// the lane is spawned, the operator is told `dispatched`, and only then does it
+// die. A configured model is knowable HERE, before anything starts, and
+// "configured" is half of what the rule names.
+//
+// The pattern is COPIED — this file and the companion both take only node
+// builtins on purpose, and `review-profiles.mjs` is another skill. A test
+// asserts all THREE copies are character-identical, which is the drift answer
+// that does not couple them.
+const PROHIBITED_MODEL = /(?:^|[^0-9a-z])gemini[-_ ]?3\.1(?:[^0-9]|$)/i
+
+function assertPermittedModel(value, name) {
+  if (typeof value === 'string' && PROHIBITED_MODEL.test(value)) {
+    throw Object.assign(
+      new Error(`${name}: Gemini 3.1 is prohibited on tmux-teams routes, got ${value}`),
+      { code: 'prohibited_model' },
+    )
+  }
+}
+
 export function spawnDetached(worker, cwd, taskId, briefFile, stallSec,
   { spawnFn = spawn, env = process.env, nonce = randomUUID() } = {}) {
   // FIRST. Every line below builds a path out of this value.
   assertSafeTaskId(taskId)
+  // Before the outbox is retired and before anything is spawned: a refusal
+  // after either leaves state behind for a lane that was never allowed.
+  assertPermittedModel(env.ACP_MODEL, 'ACP_MODEL')
+  assertPermittedModel(env.ACP_EXPECT_MODEL, 'ACP_EXPECT_MODEL')
   const spawnedAtIso = new Date().toISOString()
   // Retire the PREDECESSOR's outbox before the new lane starts.
   //

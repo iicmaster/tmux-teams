@@ -2384,3 +2384,56 @@ test('a resume command names no setting the dispatch did not have', () => {
   assert.doesNotMatch(command, /INITIAL_AGENT_MODE=/,
     `a mode was emitted for a dispatch that never set one:\n${command}`)
 })
+
+// BEHAVIOUR, not the source text. The first guard for this shipped with a test
+// that grepped `acp-companion.mjs` for the guard's own source lines — and a
+// reviewer replaced the condition with `if (false)` and watched the whole suite
+// stay green at 1113/1109/0/4. A source grep is a tripwire, not a test: it
+// proves a string is present, never that anything happens.
+//
+// The prohibition is CLAUDE.md's, it says fail closed, and the AGY adapter
+// advertises both Gemini 3.1 seats — so this is reachable by typing.
+test('a prohibited model refuses the dispatch before a session exists', () => {
+  // The directory name deliberately avoids the word this test asserts. The
+  // dispatcher prints `run directory resolves to: <path>`, so a fixture called
+  // `acp-prohibited-*` satisfies a `/prohibited/` match on its own — the same
+  // shape this repository already records elsewhere as "a caller who controls a
+  // filename controls the classification". Caught by the assertion failing on a
+  // PERMITTED model.
+  const cwd = tempDir('acp-modelguard-')
+  writeFileSync(join(cwd, 'brief.md'), 'probe\n')
+  const run = (model) => spawnSync(process.execPath,
+    [DISPATCH, 'mock', cwd, `p-${model.replace(/[^a-z0-9]/gi, '')}`, join(cwd, 'brief.md'), '20'],
+    { cwd, encoding: 'utf8', timeout: 60000,
+      env: { ...laneEnv(), ACP_MODEL: model, ACP_EXPECT_MODEL: model } })
+
+  for (const model of ['gemini-3.1-pro-high', 'gemini-3.1-pro-low', 'Gemini 3.1']) {
+    const r = run(model)
+    const said = `${r.stdout}${r.stderr}`
+    assert.notEqual(r.status, 0, `${model} was dispatched:\n${said.slice(0, 300)}`)
+    assert.match(said, /Gemini 3\.1 is prohibited/,
+      `${model} was refused for some other reason, or not refused at all:\n${said.slice(0, 300)}`)
+  }
+
+  // The EXPECTATION is checked too — expecting a prohibited model is how a lane
+  // gets certified as having run one.
+  const expected = spawnSync(process.execPath,
+    [DISPATCH, 'mock', cwd, 'p-expect', join(cwd, 'brief.md'), '20'],
+    { cwd, encoding: 'utf8', timeout: 60000,
+      env: { ...laneEnv(), ACP_MODEL: 'gemini-3.7-flash-high', ACP_EXPECT_MODEL: 'gemini-3.1-pro-low' } })
+  assert.match(`${expected.stdout}${expected.stderr}`, /Gemini 3\.1 is prohibited/,
+    'a prohibited EXPECTATION was accepted')
+
+  // And a permitted model still starts, or the guard is just an outage.
+  const ok = spawnSync(process.execPath,
+    [DISPATCH, 'mock', cwd, 'p-ok', join(cwd, 'brief.md'), '20'],
+    { cwd, encoding: 'utf8', timeout: 60000,
+      env: { ...laneEnv(), ACP_MODEL: 'gemini-3.7-flash-high', ACP_EXPECT_MODEL: 'gemini-3.7-flash-high' } })
+  assert.doesNotMatch(`${ok.stdout}${ok.stderr}`, /is prohibited on tmux-teams routes/,
+    'a permitted model was refused by the prohibition guard')
+  // The dispatched LINE, not the exit code — this command's success code is not
+  // 0 by convention and asserting one I had not checked is how the previous
+  // version of this line failed on a lane that had dispatched perfectly well.
+  assert.match(`${ok.stdout}${ok.stderr}`, /dispatched mock as p-ok/,
+    `a permitted model did not dispatch:\n${ok.stdout}${ok.stderr}`)
+})
