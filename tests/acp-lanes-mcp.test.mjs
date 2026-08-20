@@ -1989,3 +1989,26 @@ test('lanes are probed sequentially, never concurrently — a live probe spends 
   assert.deepEqual(order, ['start:claude', 'end:claude', 'start:codex', 'end:codex'])
   assert.equal(payload.lanes.length, 2)
 })
+
+test('a transport that REJECTS is classified per lane, never leaks its message, and never scraps the batch', async () => {
+  const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+  const transport = async (call) => {
+    if (call.id === 'claude') throw new Error('PROVIDER-REJECT-MARKER: 401 invalid token for account 9f3a')
+    return { settled: 'response' }
+  }
+  const { reply, payload } = await callProbe({ lanes: ['claude', 'codex'] }, bare, transport)
+  // The whole tool call still answers — one lane's transport throwing must not
+  // reject `handle`'s own promise and take the reply down with it.
+  assert.equal(reply.result.isError, false, 'a per-lane failure is not a tool-call-level error')
+  assert.equal(payload.lanes.length, 2, 'the lane probed AFTER the rejecting one was dropped from the batch')
+  const [claude, codex] = payload.lanes
+  assert.equal(claude.lane, 'claude')
+  assert.equal(claude.probe, 'unreachable')
+  assert.equal(claude.problem.code, 'unclassified',
+    'a rejecting transport has to land in the same honest bucket a malformed signal does')
+  assert.equal(codex.lane, 'codex')
+  assert.equal(codex.probe, 'reachable', 'the lane probed after the rejecting one must still be attempted')
+  const wire = JSON.stringify(payload)
+  assert.ok(!wire.includes('PROVIDER-REJECT-MARKER') && !wire.includes('401') && !wire.includes('9f3a'),
+    `the rejecting transport's own message reached the wire: ${wire}`)
+})

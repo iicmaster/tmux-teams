@@ -434,11 +434,14 @@ export const PROBE_TIMEOUT_MS = 20_000
 // the reply this tool has to wait for and keeps every probe the same size.
 export const PROBE_BRIEF = 'Reply with exactly one word: ok.'
 
-// Printed only when the promise this tool returns rejects anyway — every path
-// inside `probeLanes` catches its own failure and resolves a classified
-// result, so this sentence is a backstop against a bug, not an expected
-// outcome. A rejected handler promise reaching `serve()` with nothing to
-// catch it is the EPIPE shape this project has already lost a whole gate to.
+// Printed only when the promise this tool returns rejects anyway. Every
+// EXPECTED failure — including a transport that rejects instead of resolving
+// a signal — is caught inside `probeOneLane` and turned into a classified,
+// per-lane `unclassified` result, so a bad lane never scraps the lanes probed
+// before it in the same call. This sentence is therefore a backstop against a
+// bug THIS file has, not an expected outcome. A rejected handler promise
+// reaching `serve()` with nothing to catch it is the EPIPE shape this project
+// has already lost a whole gate to.
 const PROBE_CRASHED = 'the probe crashed before producing a classified result'
 
 // The transport's contract is a closed SIGNAL shape, never text:
@@ -636,9 +639,21 @@ async function probeOneLane(id, profile, env, transport) {
       notProven: PROBE_NOT_PROVEN,
     }
   }
-  const result = await transport({
-    id, command: launch.command, env: launch.env, timeoutMs: PROBE_TIMEOUT_MS,
-  })
+  // A REJECTING transport is caught HERE, per lane, on purpose. Left
+  // unguarded, one misbehaving lane would reject the whole `probeLanes`
+  // promise and scrap every other lane already probed sequentially before
+  // it in the same call — and whatever the rejection carries, which may be a
+  // raw provider message, must never propagate any further than this catch.
+  // `classifyProbe(null)` already answers `unclassified`, so a rejection
+  // lands in the same honest bucket a malformed signal would.
+  let result
+  try {
+    result = await transport({
+      id, command: launch.command, env: launch.env, timeoutMs: PROBE_TIMEOUT_MS,
+    })
+  } catch {
+    result = null
+  }
   const code = classifyProbe(result)
   if (!code) {
     return { lane: id, probe: 'reachable', configuration: status.configuration, problem: null, notProven: PROBE_NOT_PROVEN }
