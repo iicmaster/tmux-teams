@@ -20,6 +20,17 @@ let permissionDecision = ''
 let pendingPermissionPrompt = null
 const PERMISSION_REQUEST_ID = 'mock-permission-request'
 const CANCEL_PERMISSION_REQUEST_ID = 'mock-permission-after-cancel'
+// Generic id -> resolver map for requests THIS fixture originates (terminal/*
+// so far). Separate from the two hand-named ids above because those predate
+// it and nothing needs them to move.
+const mockPendingResponses = new Map()
+function sendMockRequest(method, params) {
+  return new Promise((resolve) => {
+    const id = `mock-${method.replace(/[^a-z0-9]+/gi, '-')}-${Math.random().toString(36).slice(2)}`
+    mockPendingResponses.set(id, (message) => resolve({ result: message.result ?? null, error: message.error ?? null }))
+    send({ jsonrpc: '2.0', id, method, params })
+  })
+}
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const envNumber = (name, fallback) => {
@@ -251,6 +262,33 @@ function permissionOptions(scenario) {
   return [{ optionId: 'reject-once', kind: 'reject_once', name: 'Reject once' }]
 }
 
+// Drives the full terminal/* lifecycle against the real companion and
+// records what came back, so a test can tell "refused" from "served" without
+// a human — and "served" means a real child process actually ran, not a
+// stubbed terminalId. `outputByteLimit: 4096` is set explicitly so the
+// companion's own default cannot silently satisfy the assertion.
+async function runTerminalRoundtrip(prompt) {
+  const steps = {}
+  steps.create = await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: process.execPath,
+    args: ['-e', 'process.stdout.write("terminal-probe-output\\n"); process.exitCode = 3'],
+    outputByteLimit: 4096,
+  })
+  const terminalId = steps.create.result?.terminalId
+  if (terminalId) {
+    steps.wait_for_exit = await sendMockRequest('terminal/wait_for_exit', { sessionId: currentSessionId, terminalId })
+    steps.output = await sendMockRequest('terminal/output', { sessionId: currentSessionId, terminalId })
+    steps.release = await sendMockRequest('terminal/release', { sessionId: currentSessionId, terminalId })
+    // A `release`d id must stop working — proves release actually freed the
+    // resource rather than only returning a success shape.
+    steps.output_after_release = await sendMockRequest('terminal/output', { sessionId: currentSessionId, terminalId })
+  }
+  writeFileSync(join(process.cwd(), '.terminal-roundtrip.json'), `${JSON.stringify(steps, null, 2)}\n`, { mode: 0o600 })
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
 function requestPermission(prompt) {
   const scenario = process.env.MOCK_REQUEST_PERMISSION
   if (!scenario || permissionDecision || pendingPermissionPrompt) return false
@@ -279,6 +317,8 @@ async function handlePrompt(message) {
     || scenario === 'cancel-no-ack' || scenario === 'cancel-clean-exit' || scenario === 'cancel-exit-7'
     || scenario === 'cancel-race-exit-7' || scenario === 'cancel-sigterm-exit-zero'
     || scenario === 'exit-during-cancel') return
+
+  if (scenario === 'terminal-roundtrip') return void runTerminalRoundtrip(message)
 
   if (scenario === 'report-recover') {
     notify({ sessionUpdate: 'agent_thought_chunk', messageId: 'pre-stall-progress', content: { type: 'text', text: 'starting the recovery observation' } })
@@ -451,6 +491,12 @@ async function handleLine(line) {
   if (process.env.MOCK_REQUEST_LOG && message.method) {
     appendFileSync(process.env.MOCK_REQUEST_LOG,
       `${JSON.stringify({ method: message.method, params: message.params ?? null })}\n`, { mode: 0o600 })
+  }
+  if (mockPendingResponses.has(message.id) && !message.method) {
+    const resolve = mockPendingResponses.get(message.id)
+    mockPendingResponses.delete(message.id)
+    resolve(message)
+    return undefined
   }
   // A permission request the mock deliberately raises AFTER `session/cancel`.
   // ACP v1 obliges the CLIENT to answer it with the `cancelled` outcome; the

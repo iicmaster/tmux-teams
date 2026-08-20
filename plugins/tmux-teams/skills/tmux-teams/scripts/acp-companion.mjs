@@ -84,6 +84,23 @@ const effectiveInitialAgentMode = agentName === 'codex'
   ? explicitInitialAgentMode ?? 'agent-full-access'
   : explicitInitialAgentMode
 
+// The ACP terminal capability, gated by explicit opt-in and off by default.
+// RULE: a dispatched review lane must never gain a terminal — the review
+// gate's whole contract is zero built-in tools, no MCP servers, every
+// permission denied, and a terminal is a bigger hole than any of those. So
+// this is never inferred from agentName or from anything the adapter says;
+// it is only ever true when an operator sets it, for a person-attended login
+// run where the adapter's own Claude Subscription / Console auth flow needs
+// somewhere to print a URL or code and read back what a human typed. No
+// caller in this repo (acp-dispatch.mjs, loop-runner.mjs, review-gate.mjs)
+// may ever set this for ordinary dispatch or review.
+const terminalCapabilityEnv = process.env.ACP_ENABLE_TERMINAL
+if (terminalCapabilityEnv !== undefined && terminalCapabilityEnv !== '0' && terminalCapabilityEnv !== '1') {
+  console.error('invalid ACP_ENABLE_TERMINAL — use 0 or 1')
+  process.exit(2)
+}
+const terminalCapabilityEnabled = terminalCapabilityEnv === '1'
+
 const receiptRequiredEnv = process.env.ACP_SESSION_RECEIPT_REQUIRED
 if (receiptRequiredEnv !== undefined && receiptRequiredEnv !== '0' && receiptRequiredEnv !== '1') {
   console.error('invalid ACP_SESSION_RECEIPT_REQUIRED — use 0 or 1')
@@ -304,6 +321,13 @@ const MAX_TERMINATION_REASON = 64
 // is a 42 KiB cross-vendor round-table; 4 MiB leaves that two orders of room and
 // still refuses a file nothing here should be reading into memory at once.
 const MAX_OUTBOX_BYTES = 4 * 1024 * 1024
+// A `terminal/create` request may ask for any outputByteLimit; this is the
+// ceiling regardless of what is requested, so a misbehaving or hostile agent
+// cannot make the companion retain unbounded output in memory. The default
+// (no outputByteLimit in the request) is smaller still — a login command's
+// real output is a URL and a short code, not a build log.
+const MAX_TERMINAL_OUTPUT_BYTES = 1024 * 1024
+const DEFAULT_TERMINAL_OUTPUT_BYTES = 64 * 1024
 const MAX_ERROR_TEXT = 512
 const MAX_TOOL_CALL_ID = 128
 const MAX_TOOL_TITLE = 128
@@ -2959,6 +2983,196 @@ function respond(id, result) {
   try { agent.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`) } catch {}
 }
 
+function respondError(id, code, message) {
+  try { agent.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } })}\n`) } catch {}
+}
+
+// ACP terminal/* — the methods `clientCapabilities.terminal: true` promises.
+// RULE: this is the one path that can actually grant a terminal, so it is
+// where "not enabled" is enforced, not only at `initialize`. An unadvertised
+// capability is a request a spec-conforming adapter should never send, but a
+// request that arrives anyway must still be refused HERE — a policy stated
+// only in what we advertise and never checked where it is served is not a
+// policy, it is a hope.
+const terminals = new Map() // terminalId -> term record, see createTerminal
+let terminalStdinBridgeInstalled = false
+
+function truncateToByteLimit(text, limit) {
+  const buf = Buffer.from(text, 'utf8')
+  if (buf.length <= limit) return text
+  let start = buf.length - limit
+  // TRAP: slicing a UTF-8 buffer at an arbitrary byte offset can land inside
+  // a multi-byte character. Walk forward past any continuation byte
+  // (10xxxxxx) so the kept tail always starts on a character boundary, same
+  // requirement the ACP spec states for this field.
+  while (start < buf.length && (buf[start] & 0xc0) === 0x80) start += 1
+  return buf.subarray(start).toString('utf8')
+}
+
+function appendTerminalOutput(term, text) {
+  term.outputText += text
+  if (Buffer.byteLength(term.outputText, 'utf8') > term.outputByteLimit) {
+    term.truncated = true
+    term.outputText = truncateToByteLimit(term.outputText, term.outputByteLimit)
+  }
+}
+
+function settleTerminalExit(term, status) {
+  if (term.exitStatus) return
+  term.exitStatus = status
+  const waiters = term.waiters
+  term.waiters = []
+  for (const resolve of waiters) resolve(status)
+}
+
+// Only login mode ever reads the companion's OWN stdin — ordinary dispatch
+// never does, so this is never wired up unless a terminal actually exists.
+// Broadcast to every open terminal rather than routing per-terminal: a login
+// run drives one interactive command at a time, and building session-aware
+// input routing for a case that does not occur would be guessing at a
+// requirement nobody has.
+function ensureTerminalStdinBridge() {
+  if (terminalStdinBridgeInstalled) return
+  terminalStdinBridgeInstalled = true
+  process.stdin.on('data', (chunk) => {
+    for (const term of terminals.values()) {
+      if (term.exitStatus || term.released) continue
+      try { term.child.stdin.write(chunk) } catch {}
+    }
+  })
+  process.stdin.resume()
+}
+
+function createTerminal(params) {
+  const command = typeof params?.command === 'string' && params.command ? params.command : null
+  if (!command) throw new Error('terminal/create requires a non-empty command string')
+  const args = Array.isArray(params.args) ? params.args.filter((value) => typeof value === 'string') : []
+  const envOverrides = Array.isArray(params.env)
+    ? Object.fromEntries(
+      params.env
+        .filter((entry) => entry && typeof entry.name === 'string')
+        .map((entry) => [entry.name, String(entry.value ?? '')]),
+    )
+    : {}
+  const terminalCwd = typeof params.cwd === 'string' && params.cwd.trim() ? params.cwd : cwd
+  const requestedLimit = Number.isFinite(params.outputByteLimit) && params.outputByteLimit > 0
+    ? Number(params.outputByteLimit)
+    : DEFAULT_TERMINAL_OUTPUT_BYTES
+  const outputByteLimit = Math.max(1, Math.min(requestedLimit, MAX_TERMINAL_OUTPUT_BYTES))
+
+  const terminalId = `term_${randomUUID()}`
+  let child
+  try {
+    child = spawn(command, args, {
+      cwd: terminalCwd,
+      env: { ...process.env, ...envOverrides },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+  } catch (cause) {
+    throw new Error(`cannot spawn terminal command: ${cause.message}`)
+  }
+
+  const term = {
+    terminalId, child, outputText: '', outputByteLimit,
+    truncated: false, exitStatus: null, released: false, waiters: [],
+  }
+  terminals.set(terminalId, term)
+
+  const onOutput = (chunk) => {
+    const text = chunk.toString('utf8')
+    appendTerminalOutput(term, text)
+    // The human at the keyboard is the only reader who can act on a login
+    // prompt (a URL to open, a code to paste back). Mirror it live, the same
+    // way the ACP adapter's own stderr is already mirrored below, so it
+    // actually reaches a screen instead of sitting only in `terminal/output`.
+    try { process.stderr.write(redact(`[terminal:${terminalId}] ${text}`).slice(0, MAX_DISPLAY_TEXT)) } catch {}
+  }
+  child.stdout.on('data', onOutput)
+  child.stderr.on('data', onOutput)
+  child.stdin.on('error', () => {})
+  child.on('error', (cause) => {
+    appendTerminalOutput(term, `\n[terminal spawn error] ${cause.message}\n`)
+    settleTerminalExit(term, { exitCode: null, signal: null })
+  })
+  child.on('exit', (code, signal) => settleTerminalExit(term, { exitCode: code, signal }))
+
+  ensureTerminalStdinBridge()
+  return { terminalId }
+}
+
+function requireTerminal(terminalId) {
+  const term = typeof terminalId === 'string' ? terminals.get(terminalId) : undefined
+  if (!term || term.released) throw new Error(`unknown or released terminal ${boundedText(terminalId, '?', 64)}`)
+  return term
+}
+
+function terminalOutputResult(term) {
+  return {
+    output: term.outputText,
+    truncated: term.truncated,
+    exitStatus: term.exitStatus ? { exitCode: term.exitStatus.exitCode, signal: term.exitStatus.signal } : null,
+  }
+}
+
+function waitForTerminalExit(term) {
+  if (term.exitStatus) return Promise.resolve({ exitCode: term.exitStatus.exitCode, signal: term.exitStatus.signal })
+  return new Promise((resolve) => {
+    term.waiters.push((status) => resolve({ exitCode: status.exitCode, signal: status.signal }))
+  })
+}
+
+// `terminal/kill` per spec: terminate without releasing — the terminal stays
+// valid for `output` and a later `wait_for_exit`. `terminal/release` per
+// spec: terminate AND free resources — the id becomes invalid afterward. The
+// two are different methods with different postconditions; collapsing them
+// would silently break whichever one a real adapter relies on.
+function killTerminal(term) {
+  if (!term.exitStatus) { try { term.child.kill('SIGTERM') } catch {} }
+}
+
+function releaseTerminal(term) {
+  if (!term.exitStatus) { try { term.child.kill('SIGTERM') } catch {} }
+  term.released = true
+  terminals.delete(term.terminalId)
+}
+
+async function handleTerminalRequest(message) {
+  const { method, id, params } = message
+  if (!terminalCapabilityEnabled) {
+    // Defense in depth: even if this request should have been unreachable
+    // (the capability was never advertised), refuse it explicitly rather
+    // than falling through to the generic `respond(id, undefined)` an
+    // unrecognised method gets — a silent empty ack here would look served.
+    respondError(id, -32601, `${method} refused — terminal capability is not enabled on this lane`)
+    return
+  }
+  try {
+    switch (method) {
+      case 'terminal/create':
+        respond(id, createTerminal(params ?? {}))
+        break
+      case 'terminal/output':
+        respond(id, terminalOutputResult(requireTerminal(params?.terminalId)))
+        break
+      case 'terminal/wait_for_exit':
+        respond(id, await waitForTerminalExit(requireTerminal(params?.terminalId)))
+        break
+      case 'terminal/kill':
+        killTerminal(requireTerminal(params?.terminalId))
+        respond(id, {})
+        break
+      case 'terminal/release':
+        releaseTerminal(requireTerminal(params?.terminalId))
+        respond(id, {})
+        break
+      default:
+        respondError(id, -32601, `unknown method ${boundedText(method, '?', 64)}`)
+    }
+  } catch (cause) {
+    respondError(id, -32602, boundedText(cause?.message, 'invalid terminal request', MAX_ERROR_TEXT))
+  }
+}
+
 agent.stderr.on('data', (chunk) => {
   const text = String(chunk)
   stderrBuf = `${stderrBuf}${text}`.slice(-MAX_STDERR)
@@ -3303,6 +3517,8 @@ rl.on('line', (rawLine) => {
         line(`[permission] ${quoteAgentField(message.params?.toolCall?.title, '?')} -> cancelled (no options)`)
         respond(message.id, { outcome: { outcome: 'cancelled' } })
       }
+    } else if (message.method.startsWith('terminal/')) {
+      void handleTerminalRequest(message)
     } else {
       respond(message.id, undefined)
     }
@@ -3854,7 +4070,17 @@ async function protocolRun() {
   const init = await request('initialize', {
     protocolVersion: 1,
     clientInfo: adapterProfile?.agent_info,
-    clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
+    // `terminal` is the ACP boolean capability (ClientCapabilities.terminal in
+    // the v1 schema, not an object like `fs`) that gates every `terminal/*`
+    // method. Advertising it when nobody asked for login mode would be
+    // offering the adapter a login route on an ordinary lane; the key is
+    // omitted entirely rather than sent as `false`, so a reader of the wire
+    // traffic sees an ABSENT capability, not a declined one, on every path
+    // that did not ask for it.
+    clientCapabilities: {
+      fs: { readTextFile: false, writeTextFile: false },
+      ...(terminalCapabilityEnabled ? { terminal: true } : {}),
+    },
   }, { trace: initializeTrace })
   assertProtocolFence('initialize response')
   enforceObservedInitializeIdentity(init)
