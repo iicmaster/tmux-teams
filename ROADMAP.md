@@ -12,7 +12,7 @@
 > source, no publish script and nothing that could notice it had gone stale —
 > so it went stale, repeatedly, and nobody could tell without opening it.
 
-Current release: **0.32.0**
+Current release: **0.33.0**
 
 ## Where the phases stand
 
@@ -161,7 +161,7 @@ nobody can plan from.
   `-recover` task id while its prompt still named the original path produced a
   complete 22 KB review that the companion reported as `no_outbox`.
 
-## The release in flight — v0.32.0
+## The last release — v0.32.0, shipped
 
 Scope set by Master, 2026-08-17: **one release carrying both** the MCP
 lane-discovery server and `acp-dispatch.mjs`. They touch one file in common and
@@ -196,19 +196,15 @@ running the mutations, so read it as a report on the last run, not a property. N
 are deferred with their reasoning, listed under what is open; one dispute
 recorded as unresolved was later resolved AGAINST the position recorded here.
 
-**What is left is the mechanical steps.** Master waived the three-family panel
-for v0.32.0 on 2026-08-19; the review of record is the `codex-advisor` lane at
-`gpt-5.6-luna`, effort `max`, whose reported identity is written into the
-release notes the way a panel lane's would be. The availability that prompted
-it, measured 2026-08-18: of seven shipped lanes only `agy` (gemini) and `codex`
-(openai) could answer — qwen hit a one-week quota, zai's gateway refuses a
+**It shipped.** PR #69 merged to `main` at `6b95101`, tagged `v0.32.0` on
+2026-08-19. Master waived the three-family panel for it; the review of record
+was the `codex-advisor` lane at `gpt-5.6-luna`, effort `max`, whose reported
+identity is written into the release notes the way a panel lane's would be. The
+availability that prompted the waiver, measured 2026-08-18: of seven shipped
+lanes only `agy` (gemini) and `codex` (openai) could answer — qwen hit a one-week quota, zai's gateway refuses a
 disabled thinking mode and its package expired, kimi and deepseek are out of
 quota, and the default `claude` seat cannot reach an ACP session at all, which
 is v0.33.0's first item.
-
-Then: bump seven places, render and publish and record this page, open the PR,
-merge on CI green plus the codex bot review, tag the merged sha, and move the
-submodule pin in `~/agent-skills`.
 
 **That dispute is CLOSED, and this paragraph said otherwise for a whole
 release.** A mode-0755 file whose shebang names a missing interpreter used to
@@ -227,7 +223,7 @@ codex-advisor lane read them against each other and against the code, which is
 the only reason it is being corrected now rather than by the next reader of a
 gate file that contradicts itself.
 
-## The release after — v0.33.0, and why these six
+## The release in flight — v0.33.0, and why these six
 
 Ordered by what they cost when left alone, not by size. The first two arrived
 as GitHub issues; the next three are things v0.32.0 measured and could not fix
@@ -441,6 +437,16 @@ property is established by source inspection plus a mock-observed
 `mcpServers: []` request, and the tool inventory inside a real dispatched ACP
 child has never been measured. Until a real host initializes it, ADR 0003's
 guarantee remains a guarantee about what is REQUESTED.
+
+**What is left on v0.33.0 is the mechanical steps, and one thing that is not
+mechanical.** The steps: this bump, render and publish and record this page,
+open the PR, merge on CI green plus the codex bot review, tag the merged sha,
+and move the submodule pin in `~/agent-skills`. The thing that is not:
+`scripts/gate-required.mjs` answers REQUIRED on these bytes and no review of
+record has been accepted for them. The panel is NOT waived for this release —
+v0.32.0's waiver was written for v0.32.0, and only Master waives, in writing,
+per release. A waiver inherited by assumption is the silent skip this page has
+a section about.
 
 ## What is actually open
 
