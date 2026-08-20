@@ -289,6 +289,22 @@ async function runTerminalRoundtrip(prompt) {
   reply(prompt.id, { stopReason: 'end_turn' })
 }
 
+// Creates a terminal that never exits on its own and never releases it —
+// standing in for a login command still waiting on human input when the rest
+// of the turn otherwise completes normally. The child writes its OWN pid to
+// a file in cwd (the companion's cwd, since no `cwd` override is sent) so a
+// test with no other way to see inside the companion's process table can
+// still prove whether that pid is still alive after the companion exits.
+async function runTerminalOrphanProbe(prompt) {
+  await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: process.execPath,
+    args: ['-e', 'require("fs").writeFileSync("terminal-orphan-pid", String(process.pid)); setInterval(() => {}, 1000)'],
+  })
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
 function requestPermission(prompt) {
   const scenario = process.env.MOCK_REQUEST_PERMISSION
   if (!scenario || permissionDecision || pendingPermissionPrompt) return false
@@ -319,6 +335,7 @@ async function handlePrompt(message) {
     || scenario === 'exit-during-cancel') return
 
   if (scenario === 'terminal-roundtrip') return void runTerminalRoundtrip(message)
+  if (scenario === 'terminal-orphan') return void runTerminalOrphanProbe(message)
 
   if (scenario === 'report-recover') {
     notify({ sessionUpdate: 'agent_thought_chunk', messageId: 'pre-stall-progress', content: { type: 'text', text: 'starting the recovery observation' } })

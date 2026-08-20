@@ -3041,6 +3041,15 @@ function ensureTerminalStdinBridge() {
     }
   })
   process.stdin.resume()
+  // TRAP: this file ends in `process.exitCode = exitCode`, not
+  // `process.exit(...)` — it relies on the event loop draining once every
+  // handle closes. A resumed TTY never emits 'end' on its own (only Ctrl-D or
+  // process exit closes it), so without unref() a real interactive login run
+  // would finish the whole ACP exchange and then hang forever instead of
+  // exiting with the code it already decided. unref() lets this stream keep
+  // delivering keystrokes while anything else holds the loop open, without
+  // itself being a reason the loop stays open once nothing else does.
+  process.stdin.unref?.()
 }
 
 function createTerminal(params) {
@@ -3134,6 +3143,21 @@ function releaseTerminal(term) {
   if (!term.exitStatus) { try { term.child.kill('SIGTERM') } catch {} }
   term.released = true
   terminals.delete(term.terminalId)
+}
+
+// RULE: a terminal the companion spawned is the companion's to reap. Unlike
+// `agent`, a terminal child is never `detached` and carries no process-group
+// tracking of its own, so nothing else in this file's descendant-cleanup
+// machinery (built for `agent`'s group) ever looks at it. Called from
+// `main()`'s `finally`, which every JS-level exit path — normal completion,
+// a thrown error, a finished cancellation — runs through. Best-effort only:
+// a companion killed by an external SIGKILL runs no JS at all, the same
+// blind spot every in-process cleanup in this file has.
+function killAllLiveTerminals(signal = 'SIGTERM') {
+  for (const term of terminals.values()) {
+    if (term.exitStatus) continue
+    try { term.child.kill(signal) } catch {}
+  }
 }
 
 async function handleTerminalRequest(message) {
@@ -4260,6 +4284,7 @@ async function main() {
     if (controllerSignalHandlerInstalled) {
       for (const [signal, handler] of controllerSignalHandlers) process.removeListener(signal, handler)
     }
+    killAllLiveTerminals()
   }
 }
 

@@ -56,9 +56,18 @@ function runCompanion(taskId, extraEnv) {
     ...extraEnv,
   })
 
+  // A companion that fails to reap a live terminal child holds an active
+  // child_process handle and never drains its own event loop — measured
+  // directly while writing this file: reverting the teardown-sweep fix made
+  // this exact spawnSync hang past 120s instead of failing. `timeout` turns
+  // that failure mode into a fast, readable one instead of a wedged `node
+  // --test` run that a caller has to notice and kill by hand.
   const result = spawnSync(process.execPath, [COMPANION, 'mock', cwd, taskId, brief, '30'], {
-    cwd, encoding: 'utf8', env,
+    cwd, encoding: 'utf8', env, timeout: 20_000, killSignal: 'SIGKILL',
   })
+  assert.equal(result.signal, null,
+    `companion did not exit on its own within 20s (signal ${result.signal}) — `
+    + `it likely leaked a live child and never drained its event loop; stderr:\n${result.stderr}`)
 
   const requests = existsSync(requestLog)
     ? readFileSync(requestLog, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))
@@ -66,6 +75,19 @@ function runCompanion(taskId, extraEnv) {
   const roundtripPath = join(cwd, '.terminal-roundtrip.json')
   const roundtrip = existsSync(roundtripPath) ? JSON.parse(readFileSync(roundtripPath, 'utf8')) : null
   return { ...result, cwd, requests, roundtrip, stderr: result.stderr || '', stdout: result.stdout || '' }
+}
+
+function isPidAlive(pid) {
+  try { process.kill(pid, 0); return true } catch { return false }
+}
+
+async function waitForPidGone(pid, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs
+  while (isPidAlive(pid)) {
+    if (Date.now() >= deadline) return false
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  return true
 }
 
 function initializeCall(run) {
@@ -144,4 +166,23 @@ test('a terminal request in login mode is SERVED end to end by a real process', 
   assert.ok(outputAfterRelease?.error,
     `terminal/output after release should be refused, got: ${JSON.stringify(outputAfterRelease)}`)
   assert.equal(outputAfterRelease.result, null)
+})
+
+test('a live terminal child is killed at companion teardown, not left running', async () => {
+  // The mock creates a terminal running `setInterval(() => {}, 1000)` — it
+  // would never exit on its own — and never releases or waits on it. The turn
+  // otherwise completes normally (outbox written, end_turn returned), so this
+  // proves the companion's OWN cleanup reaps it, not the child's own logic.
+  const run = runCompanion('task-term-orphan', {
+    ACP_ENABLE_TERMINAL: '1',
+    MOCK_SCENARIO: 'terminal-orphan',
+  })
+  assert.equal(run.status, 0, `expected a clean dispatch; stderr:\n${run.stderr}`)
+  const pidFile = join(run.cwd, 'terminal-orphan-pid')
+  assert.ok(existsSync(pidFile),
+    `the spawned terminal never wrote its own pid — it may never have started; stderr:\n${run.stderr}`)
+  const pid = Number(readFileSync(pidFile, 'utf8').trim())
+  assert.ok(Number.isInteger(pid) && pid > 0, `unexpected pid file contents: ${pid}`)
+  const gone = await waitForPidGone(pid)
+  assert.ok(gone, `terminal child pid ${pid} is still alive after the companion exited — an orphan`)
 })
