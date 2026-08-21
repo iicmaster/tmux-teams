@@ -2173,9 +2173,25 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
 // fixed one round earlier; this one stayed open because nobody went looking for
 // the second door after closing the first.
 export function childEnv(source = process.env) {
-  const { ACP_CMD: _ambient, ACP_ENABLE_TERMINAL: _neverForwarded,
-    TMUX_TEAMS_ACP_CMD: injected, ...rest } = source
-  return injected ? { ...rest, ACP_CMD: injected } : rest
+  // EVERY ambient ACP_ variable is dropped, and the one this runner supplies is
+  // put back explicitly. Three doors of this shape were closed one review round
+  // apart — ACP_CMD, then ACP_ENABLE_TERMINAL, then ACP_SPAWN_NONCE — each fix
+  // naming the variable that had just been reported. Writing the guard as a
+  // SHAPE instead of a list immediately found five more: ACP_MODEL,
+  // ACP_EXPECT_MODEL, ACP_REASONING_EFFORT, ACP_RESUME and
+  // ACP_SESSION_OPERATION all reached a dispatched worker from whatever the
+  // operator's shell was carrying.
+  //
+  // The model pair is the one that matters most, because `modelEnv()` returns
+  // {} for a seat declaring INHERIT_ACCOUNT_DEFAULT — the sentinel whose whole
+  // meaning is "request nothing". A leaked ambient ACP_MODEL therefore made
+  // that seat request something the graph never declared, and the identity
+  // check certified it as matched.
+  const forwarded = Object.fromEntries(
+    Object.entries(source).filter(([key]) => !key.startsWith('ACP_')))
+  const injected = source.TMUX_TEAMS_ACP_CMD
+  delete forwarded.TMUX_TEAMS_ACP_CMD
+  return injected ? { ...forwarded, ACP_CMD: injected } : forwarded
 }
 
 // codex BLOCKER 4 (retro-release-review round 5, 2026-08-04): a work item the

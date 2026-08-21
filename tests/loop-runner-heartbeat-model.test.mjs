@@ -299,6 +299,44 @@ test('an ambient ACP_CMD never reaches a dispatched worker', () => {
 // This proves the FUNCTION. The call site is proved separately, in
 // tests/loop-runner-palette-dispatch.test.mjs, because deleting the childEnv()
 // call from dispatch would leave this test green.
+// Three doors of one shape have now been closed one review round apart:
+// ACP_CMD, then ACP_ENABLE_TERMINAL, then ACP_SPAWN_NONCE. Each time the fix
+// was for the variable that had been NAMED, and each time the next one was
+// still open. This test is the shape rather than the list: whatever ACP_*
+// variables a caller's shell is carrying, a dispatched worker sees only what
+// this runner decided to give it.
+//
+// The allowed set is written out. A test that derived it from `childEnv`'s own
+// destructuring would agree with whatever that line says, including a line
+// somebody widened.
+test('no ambient ACP_ variable survives childEnv except the ones this runner re-supplies', () => {
+  const ambient = {
+    PATH: '/bin',
+    ACP_CMD: 'node /somebody-elses-adapter.mjs',
+    ACP_ENABLE_TERMINAL: '1',
+    ACP_SPAWN_NONCE: 'a-stale-nonce-from-a-hand-run',
+    ACP_MODEL: 'somebody-elses-model',
+    ACP_EXPECT_MODEL: 'somebody-elses-expectation',
+    ACP_REASONING_EFFORT: 'low',
+    ACP_SESSION_OPERATION: 'load',
+    ACP_RESUME: 'somebody-elses-session',
+  }
+  const passed = childEnv(ambient)
+  const survivors = Object.keys(passed).filter((k) => k.startsWith('ACP_')).sort()
+  // `dispatch()` supplies model, effort, agent id and the rest deliberately
+  // AFTER this call. Nothing ambient is entitled to arrive on its own.
+  assert.deepEqual(survivors, [],
+    `these ambient ACP_ variables reached a worker: ${survivors.join(', ')}`)
+  assert.equal(passed.PATH, '/bin', 'the filter ate something it was not asked to')
+
+  // And the one ACP_ variable this runner DOES set, from its own explicit
+  // dependency rather than from the environment.
+  const named = childEnv({ ...ambient, TMUX_TEAMS_ACP_CMD: 'node /mock.mjs' })
+  assert.equal(named.ACP_CMD, 'node /mock.mjs')
+  assert.equal('TMUX_TEAMS_ACP_CMD' in named, false)
+  assert.equal('ACP_SPAWN_NONCE' in named, false, 'a stale nonce rode in beside the injected adapter')
+})
+
 test('an ambient ACP_ENABLE_TERMINAL never reaches a dispatched worker', () => {
   const ambient = childEnv({ PATH: '/bin', ACP_ENABLE_TERMINAL: '1' })
   assert.equal('ACP_ENABLE_TERMINAL' in ambient, false, JSON.stringify(ambient))
