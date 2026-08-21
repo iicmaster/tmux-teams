@@ -1367,7 +1367,8 @@ test('a lane report calls its adapter DECLARED, because a caller can change whic
   assert.match(facts, /"adapter"/, 'the report stopped naming the adapter at all')
 
   // and every shipped adapter command really does start with a bare resolver,
-  // which is WHY the report can only declare
+  // which is WHY the report can only declare the package, never confirm the
+  // bytes that ran.
   for (const [id, profile] of Object.entries(REVIEW_PROFILES)) {
     const argv = profile.command ?? profile.argv ?? []
     if (!argv.length) continue
@@ -2054,7 +2055,7 @@ test('the real probe transport speaks to an agent and reads what comes back', as
 
   // A stub that never answers must TIME OUT rather than hang the caller, and
   // the timeout has to be the transport's own — a test that waits for the
-  // production 
+  // production default measures the default, not the transport.
   const started = Date.now()
   const silent = await run('silent', 1200)
   assert.equal(silent.settled, 'timeout', `a silent agent settled as ${silent.settled}`)

@@ -270,7 +270,10 @@ down is a scope that gets re-decided.
 user.** The companion now advertises the ACP terminal capability, gated behind
 an explicit `ACP_ENABLE_TERMINAL=1` login mode, and serves all five terminal
 methods for real; the ordinary dispatch path advertises nothing new and refuses
-a terminal request outright. All of that is under test.
+a terminal request outright. **Four of the five are exercised** — create,
+wait_for_exit, output, release, and the refusal after release. `terminal/kill`
+is implemented and no test calls it, which is an unexecuted guard rather than a
+working one.
 
 **Nobody has completed an actual Claude Max login through it.** That needs a
 person at a real terminal and it has not been done. Do not read this row as

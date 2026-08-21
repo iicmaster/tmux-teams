@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { statusReport, formatStatus, resumeCommand, outboxPath, sessionPath, COMPANION_DEFAULT_STALL_SEC, leaseExpired, strayOutboxes, TERMINAL_LIVENESS_STATES,
   waitForSettlement, EXIT_OUTBOX, EXIT_RUNNING, EXIT_NO_OUTBOX, pidPath, recordedPid, belongsToThisRun,
-  statusExitCode, logPath, readLeafSync, recordedRouting, spawnDetached, ROUTING_ENV_KEYS }
+  statusExitCode, logPath, readLeafSync, recordedRouting, spawnDetached, ROUTING_ENV_KEYS, main }
   from '../plugins/tmux-teams/skills/tmux-teams/scripts/acp-dispatch.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -523,6 +523,47 @@ test('a genuine dispatch\'s liveness record carries the nonce the dispatcher rec
     `the companion's liveness record did not carry the dispatcher's nonce: ${JSON.stringify(liveness)}`)
   const report = statusReport(cwd, 'nonce-genuine')
   assert.notEqual(report.liveness, null, 'a genuine record was refused by belongsToThisRun')
+})
+
+test('the companion refuses a prohibited model when it is reached without the dispatcher', () => {
+  // The dispatcher refuses this too, and the test for that stops in the parent.
+  // This is the child-side layer, and the only caller who can reach it is one
+  // who runs the companion by hand — which is exactly the caller the layer is
+  // for. Defence in depth that nothing exercises is decoration.
+  const cwd = tempDir('acp-companion-prohibited-')
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+  for (const [key, value] of [['ACP_MODEL', 'gemini-3.1-pro-high'], ['ACP_EXPECT_MODEL', 'gemini-3.1-flash']]) {
+    const r = spawnSync(process.execPath, [join(SCRIPTS, 'acp-companion.mjs'), 'mock', cwd, `child-${key}`, brief, '120'],
+      { cwd, encoding: 'utf8', env: laneEnv({ [key]: value }), timeout: 20_000 })
+    assert.equal(r.status, 2, `${key}=${value} was accepted by the companion:\n${r.stdout}${r.stderr}`)
+    assert.match(r.stderr, new RegExp(`${key}: Gemini 3\\.1 is prohibited on tmux-teams routes, got ${value}`),
+      `unexpected refusal for ${key}:\n${r.stderr}`)
+  }
+  // The mock agent writes `.adapter-env.json` unconditionally at its own top
+  // level, so its ABSENCE is what proves the refusal landed before any adapter
+  // process ran — not merely that the exit code was 2 in the end.
+  assert.equal(existsSync(join(cwd, '.adapter-env.json')), false,
+    'the adapter started before the companion refused the prohibited model')
+})
+
+test('a malformed ACP_SPAWN_NONCE is refused before the companion ever starts', () => {
+  // The dispatcher always OVERWRITES ACP_SPAWN_NONCE with its own generated
+  // value, so this guard is unreachable through acp-dispatch.mjs. It exists for
+  // the caller who runs the companion by hand, and that is the only path that
+  // can exercise it.
+  const cwd = tempDir('acp-dispatch-nonce-malformed-')
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+  const r = spawnSync(process.execPath, [join(SCRIPTS, 'acp-companion.mjs'), 'mock', cwd, 'nonce-malformed', brief, '120'],
+    { cwd, encoding: 'utf8', env: laneEnv({ ACP_SPAWN_NONCE: 'not a valid nonce!' }), timeout: 20_000 })
+  assert.equal(r.status, 2, `a malformed ACP_SPAWN_NONCE was accepted:\n${r.stdout}${r.stderr}`)
+  assert.match(r.stderr, /invalid ACP_SPAWN_NONCE "not a valid nonce!" — 1-64 chars/,
+    `unexpected refusal message:\n${r.stderr}`)
+  // Refused before any state is touched, so no record exists for a dispatch
+  // that was never allowed to begin.
+  assert.equal(existsSync(join(cwd, '.tmux-teams', 'liveness', 'nonce-malformed.json')), false,
+    'the companion wrote a liveness record before refusing the malformed nonce')
 })
 
 test('a predecessor\'s record from an earlier dispatch is refused for a later window it happens to fall inside', async (t) => {
@@ -1722,6 +1763,34 @@ test('a hostile PARENT directory redirects no read, and a missing pid leaf is no
   assert.match(`${r.stdout}${r.stderr}`, /still reporting progress and its pid file/)
 })
 
+test('a liveness record whose nonce is a stranger\'s does not block admission', () => {
+  // The admission call site passes the record through belongsToThisRun before
+  // treating it as a live lane. The fixture above gives the liveness record the
+  // SAME nonce as its routing record, so deleting that call changes nothing
+  // there. Here the nonces DIFFER and everything else says "live": in-window
+  // started_at, an unsettled state, a lease fifteen minutes out, no pid leaf.
+  // With the check, the record belongs to nobody and admission proceeds.
+  // Without it, a stray or forged liveness file blocks this task id forever.
+  const cwd = tempDir('acp-dispatch-foreign-nonce-')
+  mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
+  mkdirSync(join(cwd, '.tmux-teams', 'dispatch-routing'), { recursive: true })
+  writeFileSync(join(cwd, 'brief.md'), 'do the thing\n')
+  const spawnedAt = new Date(Date.now() - 60_000).toISOString()
+  writeFileSync(join(cwd, '.tmux-teams', 'dispatch-routing', 'foreign.json'),
+    JSON.stringify({ worker: 'mock', spawnedAt, spawnNonce: 'the-real-priors-nonce', env: {} }))
+  writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'foreign.json'), JSON.stringify({
+    liveness_state: 'tool_running', termination_reason: 'none',
+    started_at: new Date(Date.parse(spawnedAt) + 1000).toISOString(),
+    observed_at: new Date().toISOString(),
+    next_lease_expiry_at: new Date(Date.now() + 900_000).toISOString(),
+    spawn_nonce: 'a-strangers-nonce',
+  }))
+  const r = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'foreign', join(cwd, 'brief.md'), '120'],
+    { cwd, encoding: 'utf8', env: laneEnv(), timeout: 60_000 })
+  assert.equal(r.status, 0,
+    `admission refused over a liveness record whose nonce does not match the recorded routing:\n${r.stdout}${r.stderr}`)
+})
+
 test('the outbox is read through the boundary, and a case-only task id is refused', async (t) => {
   if (process.platform === 'win32') return t.skip('POSIX links')
   // REPRODUCED by a lane: `statusReport` decided whether the run had finished
@@ -1871,6 +1940,38 @@ test('a completed record with no accepted identity, and one stamped in the futur
   // refused by the containment boundary leaves the record in place. The
   // assertion that bites here is the retirement, and saying so is better than
   // leaving a surviving mutation for the next reader to discover.
+})
+
+test('watchBoot ignores a foreign-nonce record that lands after retirement', async () => {
+  // The test above says in its own comment that it cannot reach watchBoot's
+  // identity gate: a pre-placed ghost is retired by spawnDetached before boot
+  // ever polls. This reaches it without staging an OS-level race. An async
+  // function runs synchronously up to its first await; spawnDetached and
+  // retirement are fully synchronous, and watchBoot's first poll is too. So by
+  // the time main() hands back a pending promise, retirement has run and poll
+  // one has found nothing — the record written on the next line lands strictly
+  // between poll one and poll two. The stub spawnFn means no companion races it.
+  const cwd = tempDir('acp-dispatch-boot-forge-')
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+  const lines = []
+  const p = main(['mock', cwd, 'boot-forge', brief, '120'], {
+    out: (s) => lines.push(s), err: (s) => lines.push(s),
+    spawnFn: () => ({ pid: 424243, unref() {}, on() {} }),
+    env: { ACP_DISPATCH_BOOT_SEC: '2' },
+  })
+  writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'boot-forge.json'), JSON.stringify({
+    started_at: new Date(Date.now() + 1000).toISOString(),
+    liveness_state: 'completed', termination_reason: 'none',
+    effective_identity: 'STRANGER-IDENTITY[max]', identity_status: 'matched',
+    spawn_nonce: 'a-strangers-nonce',
+  }))
+  const code = await p
+  const out = lines.join('\n')
+  assert.doesNotMatch(out, /STRANGER-IDENTITY/,
+    `a foreign-nonce record was reported as this dispatch's own identity:\n${out}`)
+  assert.equal(code, 1,
+    `expected the booting outcome — no record ever belonged to this dispatch's nonce:\n${out}`)
 })
 
 test('a lane whose records cannot be written is killed, not left running namelessly', async (t) => {

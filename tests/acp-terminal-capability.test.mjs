@@ -120,6 +120,18 @@ test('terminal capability is PRESENT only under ACP_ENABLE_TERMINAL=1', () => {
   assert.equal(caps.terminal, true, `expected terminal: true under login mode: ${JSON.stringify(caps)}`)
 })
 
+test('ACP_ENABLE_TERMINAL is refused when it is neither absent, "0", nor "1"', () => {
+  const run = runCompanion('task-term-invalid', { ACP_ENABLE_TERMINAL: 'true' })
+  assert.equal(run.status, 2,
+    `expected exit 2 for a malformed ACP_ENABLE_TERMINAL, got ${run.status}; stderr:\n${run.stderr}`)
+  assert.match(run.stderr, /invalid ACP_ENABLE_TERMINAL — use 0 or 1/)
+  // Refused before the adapter is reached. A request here would mean the
+  // malformed value had been read as "disabled" rather than refused, which is
+  // the failure this guard exists to prevent.
+  assert.equal(run.requests.length, 0,
+    'the companion spoke to the adapter before refusing the malformed ACP_ENABLE_TERMINAL')
+})
+
 test('a terminal request arriving on an ordinary lane is REFUSED', () => {
   const run = runCompanion('task-term-refused', { MOCK_SCENARIO: 'terminal-roundtrip' })
   assert.equal(run.status, 0,
@@ -132,6 +144,32 @@ test('a terminal request arriving on an ordinary lane is REFUSED', () => {
   // The mock only proceeds past terminal/create when it got a terminalId back
   // — so a refusal must mean nothing downstream ran either.
   assert.equal(run.roundtrip.wait_for_exit, undefined)
+})
+
+test('terminal output over the byte cap is truncated, and cut at a character boundary', () => {
+  // 100 Thai characters at 3 bytes each against a 64-byte cap: the tail starts
+  // 236 bytes in, two bytes INSIDE a character. Under-limit output proves
+  // neither half of this — the cap never fires and the boundary walk is never
+  // reached, which is why the served test above cannot stand in for it.
+  const run = runCompanion('task-term-overflow', {
+    ACP_ENABLE_TERMINAL: '1',
+    MOCK_SCENARIO: 'terminal-overflow',
+  })
+  assert.equal(run.status, 0, `expected a clean dispatch; stderr:\n${run.stderr}`)
+  const recorded = join(run.cwd, '.terminal-overflow.json')
+  assert.ok(existsSync(recorded), `mock never wrote .terminal-overflow.json; stderr:\n${run.stderr}`)
+  const steps = JSON.parse(readFileSync(recorded, 'utf8'))
+  assert.equal(steps.create.error, null, `terminal/create was refused: ${JSON.stringify(steps.create.error)}`)
+  const out = steps.output?.result
+  assert.ok(out, `terminal/output returned nothing: ${JSON.stringify(steps.output)}`)
+  assert.equal(out.truncated, true, 'output past the cap came back with truncated unset')
+  assert.ok(Buffer.byteLength(out.output, 'utf8') <= 64,
+    `the kept tail is ${Buffer.byteLength(out.output, 'utf8')} bytes against a 64-byte cap`)
+  // A slice with no boundary walk starts mid-character, and that shows up as
+  // U+FFFD at the leading edge and nowhere else.
+  assert.ok(!out.output.includes('\uFFFD'),
+    `the tail split a multi-byte character: ${JSON.stringify(out.output.slice(0, 8))}`)
+  assert.match(out.output, /^\u0e01+$/, `unexpected tail: ${JSON.stringify(out.output)}`)
 })
 
 test('a terminal request in login mode is SERVED end to end by a real process', () => {

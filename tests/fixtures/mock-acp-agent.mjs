@@ -289,6 +289,31 @@ async function runTerminalRoundtrip(prompt) {
   reply(prompt.id, { stopReason: 'end_turn' })
 }
 
+// Overruns the terminal output cap ON PURPOSE, with multi-byte characters
+// positioned so a naive byte slice lands INSIDE one. 100 Thai characters at 3
+// bytes each is 300 bytes against a 64-byte cap, so the tail starts 236 bytes
+// in — two bytes into a character. A companion that keeps the whole buffer,
+// or that slices without walking to a character boundary, is visible in the
+// recorded output and in nothing else.
+async function runTerminalOverflow(prompt) {
+  const steps = {}
+  steps.create = await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: process.execPath,
+    args: ['-e', 'process.stdout.write("\u0e01".repeat(100))'],
+    outputByteLimit: 64,
+  })
+  const terminalId = steps.create.result?.terminalId
+  if (terminalId) {
+    steps.wait_for_exit = await sendMockRequest('terminal/wait_for_exit', { sessionId: currentSessionId, terminalId })
+    steps.output = await sendMockRequest('terminal/output', { sessionId: currentSessionId, terminalId })
+    steps.release = await sendMockRequest('terminal/release', { sessionId: currentSessionId, terminalId })
+  }
+  writeFileSync(join(process.cwd(), '.terminal-overflow.json'), `${JSON.stringify(steps, null, 2)}\n`, { mode: 0o600 })
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
 // Creates a terminal that never exits on its own and never releases it —
 // standing in for a login command still waiting on human input when the rest
 // of the turn otherwise completes normally. The child writes its OWN pid to
@@ -351,6 +376,7 @@ async function handlePrompt(message) {
     || scenario === 'exit-during-cancel') return
 
   if (scenario === 'terminal-roundtrip') return void runTerminalRoundtrip(message)
+  if (scenario === 'terminal-overflow') return void runTerminalOverflow(message)
   if (scenario === 'terminal-orphan') return void runTerminalOrphanProbe(message)
 
   if (scenario === 'report-recover') {

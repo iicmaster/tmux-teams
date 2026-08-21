@@ -302,9 +302,16 @@ This is the most misunderstood part of the plugin.
 prior session), then **exactly one `session/prompt`**, and then waits for the
 worker's outbox file.
 
-There is **no channel for a person to type into a running worker session**. The
-companion's stdin is the JSON-RPC transport to the adapter, not a human input
-path. If you have seen this described as a live chat you can interject into, it
+There is **no channel for a person to type into a running worker session** on
+the ordinary dispatch path, which is every route but one. The companion's stdin
+is the JSON-RPC transport to the adapter, not a human input path.
+
+The exception, added in v0.33.0, is `ACP_ENABLE_TERMINAL=1` login mode, so a
+person can finish an interactive provider login in the terminal the lane runs
+in. There the companion DOES read its own stdin and forwards it to the terminals
+it opened (`ensureTerminalStdinBridge` in `acp-companion.mjs`). That is still
+not a chat with the agent: the keystrokes reach the command the agent started,
+never the model. If you have seen this described as a live chat you can interject into, it
 is not that. Session continuity exists, but it is resume-by-id (`ACP_RESUME` +
 `session/load`, with prior-receipt lineage checks), not a conversation window.
 
