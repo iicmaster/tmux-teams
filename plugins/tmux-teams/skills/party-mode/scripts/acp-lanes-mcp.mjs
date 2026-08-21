@@ -463,6 +463,11 @@ const PROBE_CRASHED = 'the probe crashed before producing a classified result'
 //                                                 stopReason: 'cancelled' — a round trip, not an answer
 // `classifyProbe` reads only this shape. It is exported and pure so a test
 // can drive every branch with a plain object and never a subprocess.
+// The companion's own session-id shape, copied with its source named. This file
+// imports no sibling script on purpose, so the drift answer is a test that
+// asserts the two stay identical rather than a coupling.
+const PROBE_SESSION_ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$/
+
 export function classifyProbe(result) {
   if (!result || typeof result !== 'object') return 'unclassified'
   if (result.settled === 'response') return null
@@ -501,7 +506,13 @@ export function classifyProbe(result) {
 // pattern below is the sharpest example — if it misses a provider's real
 // wording, an exhausted lane reports `unclassified` and a fake transport can
 // never tell you.
-export async function realProbeTransport({ command, env, timeoutMs }) {
+// `spawnFn` is a seam, defaulted to the real `spawn` so production has no
+// branch. It exists because the stream-level 'error' listeners below cannot be
+// reached any other way: a read fault on a pipe is not something a test can
+// schedule, and the first attempt at that test passed `spawnFn` to a function
+// that did not take it — so nothing was injected and it went green while the
+// listeners were deleted.
+export async function realProbeTransport({ command, env, timeoutMs, spawnFn = spawn }) {
   return new Promise((settle) => {
     let done = false
     let child
@@ -522,9 +533,15 @@ export async function realProbeTransport({ command, env, timeoutMs }) {
       // kill grace window, contradicting the one-budget-at-a-time comment
       // above `probeLanes`.
       if (child?.pid !== undefined && child.exitCode === null && child.signalCode === null) {
-        child.once('exit', () => settle(result))
+        // Clear the escalation on the way out. Without this the timer outlives
+        // settlement: a stub probe that answered in ~70ms held the node process
+        // alive for the full 2s and then tried to SIGKILL a child that had been
+        // dead the whole time. Bounded, so not a leak — but latency nobody
+        // chose, on the one path a caller runs once per lane.
+        child.once('exit', () => { if (killTimer) clearTimeout(killTimer); settle(result) })
         try { child.kill('SIGTERM') } catch { /* already gone */ }
         killTimer = setTimeout(() => { try { child.kill('SIGKILL') } catch { /* already gone */ } }, 2000)
+        killTimer.unref?.()
         return
       }
       settle(result)
@@ -533,7 +550,7 @@ export async function realProbeTransport({ command, env, timeoutMs }) {
 
     const [bin, ...args] = command
     try {
-      child = spawn(bin, args, { cwd: tmpdir(), env, stdio: ['pipe', 'pipe', 'pipe'] })
+      child = spawnFn(bin, args, { cwd: tmpdir(), env, stdio: ['pipe', 'pipe', 'pipe'] })
     } catch (error) {
       clearTimeout(timer)
       finish({ settled: 'spawn_error', errnoCode: error?.code ?? null })
@@ -570,6 +587,9 @@ export async function realProbeTransport({ command, env, timeoutMs }) {
     // bytes, not lines: an agent that never stops talking must not grow this
     // without bound, and every word this regex matches is under 20 bytes, so a
     // tail many times that length still catches a split across any boundary.
+    // Code units, not bytes. The quota tokens this watches for are ASCII, so a
+    // 64-unit tail always spans them; the name says CAP rather than BYTES for
+    // that reason, and ADR 0007 says 'characters' where it once said 'bytes'.
     const QUOTA_TAIL_CAP = 64
     const makeQuotaWatcher = () => {
       let tail = ''
@@ -584,6 +604,12 @@ export async function realProbeTransport({ command, env, timeoutMs }) {
     // from the other.
     const noteStderrQuotaSignal = makeQuotaWatcher()
     const noteStdoutQuotaSignal = makeQuotaWatcher()
+    // A stdio Socket emits its OWN 'error'; `child.on('error')` is the ChildProcess
+    // and does not cover it, so an unhandled read fault here takes the whole process
+    // down. Found on the third pass: two doors were named, a survey of every stream
+    // with a 'data' listener and no 'error' listener found seven.
+    child.stderr.on('error', () => {})
+    child.stdout.on('error', () => {})
     child.stderr.on('data', noteStderrQuotaSignal)
 
     // One JSON-RPC line at a time, id-correlated, exactly the framing this
@@ -662,7 +688,17 @@ export async function realProbeTransport({ command, env, timeoutMs }) {
         // settled here left only the 20s timeout to close this out, reporting
         // a lane that answered an invalid handshake immediately as one that
         // never answered at all.
-        if (!session?.sessionId) { finish({ settled: 'invalid_handshake' }); return }
+        // TYPE, not truthiness. `sessionId: {}` is truthy, so the first version of
+        // this guard let a malformed handshake through and the lane was reported
+        // `reachable` — an actionable lie from the one tool whose entire job is
+        // classifying reachability. The shape is the companion's own
+        // `SESSION_ID_RE`, named here rather than imported because this file
+        // deliberately depends on no sibling script.
+        // `typeof` FIRST: `RegExp.test` coerces, so the regex alone accepts 42 and
+        // true — measured while writing this, one fix after the same mistake.
+        if (typeof session?.sessionId !== 'string' || !PROBE_SESSION_ID_RE.test(session.sessionId)) {
+          finish({ settled: 'invalid_handshake' }); return
+        }
         const result = await send('session/prompt',
           { sessionId: session.sessionId, prompt: [{ type: 'text', text: PROBE_BRIEF }] })
         // `stopReason: 'cancelled'` is what comes back when the turn itself

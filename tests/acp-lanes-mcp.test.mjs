@@ -2368,3 +2368,132 @@ test('a session/new success with no sessionId settles immediately as an invalid 
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// Round eight of the review of record asked whether a THIRD stream could still
+// emit an unhandled 'error', and the answer was two: `child.stderr` and
+// `child.stdout` carried only 'data' listeners. `child.on('error')` is the
+// ChildProcess, not either stdio Socket, so a read fault on one of them takes
+// the whole MCP server down — the same class already fixed twice in this file
+// and, it turned out, still open in five more places across the shipped tree.
+//
+// The error is INJECTED rather than waited for: a natural read fault on a pipe
+// is not something a test can schedule, and what is under test is the presence
+// of the listener, not the operating system.
+test('realProbeTransport survives an error on the child stdout and stderr streams', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-stream-error-'))
+  try {
+    const targetUrl = pathToFileURL(
+      join(PLUGIN, 'skills', 'party-mode', 'scripts', 'acp-lanes-mcp.mjs')).href
+    const stub = join(dir, 'quiet.cjs')
+    writeFileSync(stub, "setInterval(() => {}, 1000)\n")
+    for (const stream of ['stdout', 'stderr']) {
+      const harness = join(dir, `harness-${stream}.mjs`)
+      // The transport is called with a spawnFn that hands back the real child
+      // and then emits an error on the named stream once the listeners are
+      // attached. If the listener is missing this harness dies; the test
+      // runner never sees it, which is the whole point of the extra process.
+      writeFileSync(harness, [
+        `import { realProbeTransport } from ${JSON.stringify(targetUrl)}`,
+        "import { spawn } from 'node:child_process'",
+        'const spawnFn = (...args) => {',
+        '  const child = spawn(...args)',
+        `  setTimeout(() => child.${stream}.emit('error', Object.assign(new Error('injected'), { code: 'EIO' })), 150)`,
+        '  return child',
+        '}',
+        'const result = await realProbeTransport({',
+        `  command: [process.execPath, ${JSON.stringify(stub)}],`,
+        '  env: process.env,',
+        '  timeoutMs: 1200,',
+        '  spawnFn,',
+        '})',
+        "process.stdout.write('RESULT:' + JSON.stringify(result) + '\\n')",
+      ].join('\n'))
+      const out = spawnSync(process.execPath, [harness], { encoding: 'utf8', timeout: 9000 })
+      assert.equal(out.status, 0,
+        `an error on child.${stream} crashed the process: ${out.stderr}`)
+      assert.ok(!/Unhandled ['"]error['"] event/.test(out.stderr ?? ''),
+        `an unhandled 'error' from child.${stream} reached the process: ${out.stderr}`)
+      const line = (out.stdout ?? '').split('\n').find((l) => l.startsWith('RESULT:'))
+      assert.ok(line, `the transport never settled after a child.${stream} error: ${out.stdout}${out.stderr}`)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 })
+  }
+})
+
+// `sessionId: {}` is truthy, so a guard written as `!session?.sessionId` let a
+// malformed handshake through and the lane came back `reachable` — an
+// actionable lie from the one tool whose job is classifying reachability.
+// Found by round eight. The cases are written out rather than looped from a
+// list, and `42` and `true` are here because the FIRST repair used a bare
+// regex: `RegExp.test` coerces, so both passed it.
+test('a handshake whose sessionId is not a well-formed string is invalid, not reachable', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-bad-session-'))
+  try {
+    // Driven through the real transport, because the point is not what
+    // `classifyProbe` does with `invalid_handshake` — that was already true
+    // before the repair — but that a malformed handshake REACHES it instead of
+    // sailing on to a `response`. `42` and `true` are here because the first
+    // repair used a bare regex and `RegExp.test` coerces, so both passed it.
+    for (const bad of ['{}', '42', 'true', '""', '"-leading-dash"']) {
+      const stub = join(dir, `stub-${Buffer.from(bad).toString('hex')}.cjs`)
+      writeFileSync(stub, [
+        "const readline = require('readline')",
+        "const rl = readline.createInterface({ input: process.stdin })",
+        "const say = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n')",
+        "rl.on('line', (line) => {",
+        '  let m; try { m = JSON.parse(line) } catch { return }',
+        "  if (m.method === 'initialize') return say(m.id, { protocolVersion: 1 })",
+        `  if (m.method === 'session/new') return say(m.id, { sessionId: ${bad} })`,
+        "  if (m.method === 'session/prompt') return say(m.id, { stopReason: 'end_turn' })",
+        '})',
+        'setInterval(() => {}, 1000)',
+      ].join('\n'))
+      const result = await realProbeTransport({
+        command: [process.execPath, stub], env: process.env, timeoutMs: 4000,
+      })
+      assert.equal(result.settled, 'invalid_handshake',
+        `sessionId ${bad} was accepted as a handshake: ${JSON.stringify(result)}`)
+      assert.equal(classifyProbe(result), 'unclassified',
+        `sessionId ${bad} was reported to a caller as ${classifyProbe(result)}`)
+    }
+    // And a well-formed one still completes, so the guard is not refusing
+    // everything and calling that a pass.
+    const good = join(dir, 'good.cjs')
+    writeFileSync(good, [
+      "const readline = require('readline')",
+      "const rl = readline.createInterface({ input: process.stdin })",
+      "const say = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n')",
+      "rl.on('line', (line) => {",
+      '  let m; try { m = JSON.parse(line) } catch { return }',
+      "  if (m.method === 'initialize') return say(m.id, { protocolVersion: 1 })",
+      "  if (m.method === 'session/new') return say(m.id, { sessionId: 'sess_ok' })",
+      "  if (m.method === 'session/prompt') return say(m.id, { stopReason: 'end_turn' })",
+      '})',
+      'setInterval(() => {}, 1000)',
+    ].join('\n'))
+    const ok = await realProbeTransport({
+      command: [process.execPath, good], env: process.env, timeoutMs: 4000,
+    })
+    assert.equal(ok.settled, 'response', `a well-formed handshake was refused: ${JSON.stringify(ok)}`)
+    assert.equal(classifyProbe(ok), null, 'a completed probe should classify as reachable')
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 })
+  }
+})
+
+test('the probe session-id rule has not drifted from the companion it names as its source', () => {
+  // The shape itself, pinned literally: this file deliberately imports no
+  // sibling script, so the drift answer is an assertion that its copy of the
+  // companion's session-id rule still matches the companion's own.
+  const companion = readFileSync(
+    join(PLUGIN, 'skills', 'tmux-teams', 'scripts', 'acp-companion.mjs'), 'utf8')
+  const theirs = companion.match(/^const SESSION_ID_RE = (.+)$/m)
+  assert.ok(theirs, 'the companion no longer declares SESSION_ID_RE — the copy below has nothing to track')
+  const ours = readFileSync(
+    join(PLUGIN, 'skills', 'party-mode', 'scripts', 'acp-lanes-mcp.mjs'), 'utf8')
+    .match(/^const PROBE_SESSION_ID_RE = (.+)$/m)
+  assert.ok(ours, 'the probe no longer declares PROBE_SESSION_ID_RE')
+  assert.equal(ours[1], theirs[1],
+    'the probe copy of the session-id rule has drifted from the companion it names as its source')
+})

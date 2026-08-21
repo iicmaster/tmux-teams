@@ -3065,6 +3065,8 @@ function settleTerminalExit(term, status) {
 function ensureTerminalStdinBridge() {
   if (terminalStdinBridgeInstalled) return
   terminalStdinBridgeInstalled = true
+  // The companion's own stdin is a stream too, and in login mode it is resumed.
+  process.stdin.on('error', () => {})
   process.stdin.on('data', (chunk) => {
     for (const term of terminals.values()) {
       if (term.exitStatus || term.released) continue
@@ -3144,6 +3146,11 @@ function attachTerminalOutputStream(term, terminalId, stream) {
       mirrorBuffer = ''
     }
   }
+  // A stdio Socket emits its OWN 'error'; `child.on('error')` is the ChildProcess
+  // and does not cover it, so an unhandled read fault here takes the whole process
+  // down. Found on the third pass: two doors were named, a survey of every stream
+  // with a 'data' listener and no 'error' listener found seven.
+  stream.on('error', () => {})
   stream.on('data', (chunk) => onDecoded(decoder.write(chunk)))
   // Flush at exit: a trailing partial line with no '\n' yet must still reach
   // the operator rather than being silently dropped, and `decoder.end()`
@@ -3364,6 +3371,12 @@ async function handleTerminalRequest(message) {
   }
 }
 
+// A stdio Socket emits its OWN 'error'; `child.on('error')` is the ChildProcess
+// and does not cover it, so an unhandled read fault here takes the whole process
+// down. Found on the third pass: two doors were named, a survey of every stream
+// with a 'data' listener and no 'error' listener found seven.
+agent.stderr.on('error', () => {})
+agent.stdout.on('error', () => {})
 agent.stderr.on('data', (chunk) => {
   const text = String(chunk)
   stderrBuf = `${stderrBuf}${text}`.slice(-MAX_STDERR)

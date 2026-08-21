@@ -228,9 +228,13 @@ bot found that every spawn failure was answering `executable_missing`, so
 operator to install a file that was already there. That is
 `executable_unusable`. The same review found that the quota regex was tested
 against each stream chunk in isolation, so a refusal split across two `data`
-events was missed; detection now runs over a **bounded 64-byte rolling tail**,
+events was missed; detection now runs over a **bounded 64-character rolling tail**,
 which is a small correction to the sentence above: bytes are held for the
-length of that tail rather than examined and dropped within one chunk. Nothing
+length of that tail rather than examined and dropped within one chunk. It is
+sixty-four CODE UNITS, not bytes — this paragraph said bytes for a day, and a
+review lane read `String.prototype.slice` and said so. The tokens it watches
+for are ASCII, so the span is what matters and the memory is bounded either
+way; the claim is corrected rather than the code, because the code is right. Nothing
 about where they may go changed. The internal `settled` shapes also grew —
 `refused`, `cancelled` and `invalid_handshake` join `response`, `exit`,
 `timeout` and `spawn_error` — because three paths used to reach the twenty-

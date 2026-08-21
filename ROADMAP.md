@@ -528,18 +528,38 @@ what settled that.** `plugins/tmux-teams/plugin.json` already satisfies
 passes the pattern, and `author` carries only permitted keys. What does not
 match is the shape around it. The 1.0 portable root is `plugin.json`, `skills/`,
 `mcp.json`, and **reverse-domain namespaces** for client-specific material.
-This tree scatters that material instead: `.claude-plugin/` and `commands/` sit
-at the root, and there is both an `mcp.json` and a `.mcp.json` — two copies that
-must agree with nothing enforcing it, which this repository has already been
-bitten by once (`mcp.json` was added and only `.mcp.json` was ever booted).
+This tree keeps that material at the root instead: `.claude-plugin/` and
+`commands/` sit beside `skills/`.
 
-**Write the layout test BEFORE moving a single file.** `.claude-plugin/` is how
-Claude Code finds this plugin at all, and `claude plugin validate --strict .`
-checks the marketplace manifest, not the 1.0 layout — so the move touches
-something no gate is watching. A test written after the move confirms what was
-done rather than checking whether it was right, and a test that is green from
-its first second and never red is the exact shape v0.33.0 spent seven review
-rounds removing.
+**Two sentences that stood here were wrong, and the correction is the finding.**
+This paragraph called `mcp.json` and `.mcp.json` "two copies that must agree
+with nothing enforcing it". They are not copies and something does enforce them.
+`mcp.json` is the vendor-neutral registration — it carries the
+`agent-plugins.org/schemas/1.0.0/mcp.schema.json` declaration and uses
+`${PLUGIN_ROOT}`; `.mcp.json` is the Claude Code one, carries no `$schema`, and
+uses `${CLAUDE_PLUGIN_ROOT}`. They differ ON PURPOSE.
+`tests/acp-lanes-mcp.test.mjs` reads both, asserts which must and must not carry
+the schema key, asserts both point at the same shipped script, and separately
+BOOTS the vendor-neutral one over JSON-RPC so a string-alike copy cannot pass.
+The sentence was written from two filenames and a memory of an old bug, without
+opening either file.
+
+**And the real obstacle is not tidiness, it is a conflict.** Measured from the
+installed Claude Code binary's own strings: it recognises plugin content by
+looking for `.claude-plugin/` — or a top-level `commands/`, `skills/`,
+`agents/`, `hooks/`, `themes/`, `output-styles/`, `monitors/`, `workflows/`,
+`SKILL.md`, `.mcp.json` or `.lsp.json` — and it contains **no** occurrence of
+`agent-plugins.org` or of a bare `${PLUGIN_ROOT}`. The client this plugin ships
+to cannot read the namespace the standard asks us to move into. Moving
+`.claude-plugin/` under `com.anthropic.claude/` would satisfy 1.0 and make the
+plugin uninstallable.
+
+So item 1 is a decision, not a chore: conform where the two agree, and record
+where they cannot. **Whatever is decided, the layout test comes BEFORE anything
+moves.** No test today asserts layout at all — every existing one reads a known
+path and checks its CONTENTS, so a move that updated the four hard-coded paths
+would keep the suite green. A test written after the move confirms what was
+done rather than checking whether it was right.
 
 **Item 2 removes a duplicate, not a feature.** `show-me` collides by name with
 the `artifact-sftp` plugin's own `show-me`, which is installed on the same

@@ -1316,6 +1316,12 @@ export async function runAcpReview({
       }
       return protocolError(`ACP notification not allowed: ${msg.method ?? 'unknown'}`)
     }
+    // A stdio Socket emits its OWN 'error'; `child.on('error')` is the ChildProcess
+    // and does not cover it, so an unhandled read fault here takes the whole process
+    // down. Found on the third pass: two doors were named, a survey of every stream
+    // with a 'data' listener and no 'error' listener found seven.
+    agent.stdout.on('error', () => {})
+    agent.stderr.on('error', () => {})
     agent.stdout.on('data', part => {
       stdoutBytes += part.length
       if (stdoutBytes > limits.stdoutBytes) protocolError('ACP stdout exceeds limit')
