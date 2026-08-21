@@ -1,17 +1,28 @@
 ---
 name: pm-delegation
-description: "The contract for handing bounded work to an implementer and getting back something a verifier can check — what a brief must carry, what an implementer may not do, what counts as evidence, and when to STOP instead of continuing. Use when dispatching work to subagents or another agent, when writing a brief, when deciding whether a returned result is acceptable, or when work has hit something a person must answer. ใช้เมื่อสั่งงาน subagent, เขียน brief, ตรวจงานที่ส่งกลับ, หรือเจอสิ่งที่คนต้องตัดสิน. Invoked by implement-spec for every ticket it dispatches. Do not use to write the code yourself; this is the contract, not the work."
+description: "Act as PM over other agents — subagents or ACP lanes — from one delegation to a whole spec. Covers the brief contract, the STOP rule, what counts as evidence, and the autonomous run: tickets as a dependency graph, one research pass, parallel implementers each in its own worktree, merged as they land, reviewed against the spec, worktrees cleaned up. Use when dispatching work to subagents or ACP, writing a brief, judging a returned result, or implementing a whole spec with minimal supervision — 'implement the spec', 'work the tickets', 'ทำตาม spec', 'ลุยทั้ง spec'. ใช้เมื่อรับบทเป็น PM คุมงานเอเจนต์อื่น. Do not use for a single edit you can make yourself, and never to route work through the delivery loop — that is tmux-teams."
 ---
 
-# PM delegation
+# PM over other agents
 
-The contract between whoever is holding the work and whoever is doing a piece of
-it. `implement-spec` runs this for every ticket it dispatches; you can also run
-it by hand for a single delegation.
+You are holding work and other agents will do pieces of it. This covers one
+delegation and a whole spec, because the contract is the same either way and
+only the number of agents changes.
 
-It is a contract and not a procedure. Nothing here says how to implement
-anything — it says what has to be true about the handing over and the handing
-back, because that is where delegated work fails.
+**Workers are host subagents or ACP lanes.** A subagent in its own worktree is
+the cheap default; an ACP lane through `acp-dispatch.mjs` is for a different
+model or a longer job. The contract does not care which.
+
+**This does NOT feed the delivery loop.** `tmux-teams` routes a work item token
+through teams over ACP with a custody ledger, WIP limits and brakes, and its
+`Workflow` is a route that never revisits a team — a linear shape. Tickets here
+are a **dependency graph**. Nothing in this skill writes to the custody ledger
+or reads it. Two models, named apart on purpose: if you want WIP limits and
+escalation, you want the loop, not this.
+
+---
+
+# Part one — one delegation
 
 ## The brief
 
@@ -104,3 +115,102 @@ Some things are not the implementer's to do even inside its radius: pushing to a
 remote, opening or closing anything outward-facing, deleting what it did not
 create, or spending a budget the caller owns. Those come back as a request, and
 the caller decides.
+
+---
+
+# Part two — a whole spec, run autonomously
+
+Same contract, many agents. You need a **spec** (what is being built and what
+makes it done) and **tickets** (bounded units with their dependencies). Both
+live as files in the repository, so they are reviewed and diffed like anything
+else.
+
+If either is missing, stop and say so. Inventing the spec and then implementing
+it is one agent agreeing with itself.
+
+## The frontier
+
+Tickets are a graph. The **frontier** is every ticket whose dependencies are
+complete — that is what you dispatch, not a list in order.
+
+Recompute it every time a ticket lands. A completion usually unblocks others,
+and dispatching those immediately is the whole reason to model dependencies
+rather than walk a list.
+
+**An empty frontier with tickets left means a cycle or a failed dependency.**
+Say which, and stop. It is not a slow moment to wait through.
+
+## Steps
+
+1. **Read the spec and every ticket. Build the graph and state it back** — ids
+   and what blocks what — before dispatching anything. A graph nobody checked is
+   a plan nobody agreed to.
+
+2. **Research once, in one read-only subagent.** Where things live, the existing
+   patterns, what will fight the change. **It writes notes to a file outside the
+   repository** and every implementer is given that path. One pass, not one per
+   ticket: six implementers rediscovering the same layout costs six times as
+   much and they will not all reach the same answer.
+
+3. **Branch, and open a draft pull request**, so the work has somewhere to
+   accumulate and a reader can watch it.
+
+4. **Dispatch the frontier — one implementer per ticket, each in its own
+   worktree.** The worktree is not optional. Agents sharing one checkout race on
+   `git checkout -b`, land commits on each other's branches, and reset branches
+   still checked out elsewhere. That has happened here, and nothing was lost by
+   luck rather than care.
+
+   Each implementer gets: the primary checkout is off limits, its file radius,
+   the research notes path, and its acceptance.
+
+5. **Merge each result as it lands, one at a time.** Do not batch — merging a
+   finished ticket while others still run is the point of the parallelism, and a
+   barrier at the end throws it away.
+
+   **Merge conflicts are yours.** The implementer no longer has the context, and
+   re-dispatching it to resolve one costs more than resolving it.
+
+6. **Recompute the frontier, dispatch what became unblocked.** Repeat from 4.
+
+7. **Review the whole result against the SPEC, not the tickets.** Every ticket
+   can be satisfied while the spec is not — that is what a spec is for.
+
+   Use a review that can execute, not only read: `codex-advisor` for the read of
+   record, `/code-review` for the diff.
+
+8. **Fix review findings in ONE implementer**, not one per finding. They overlap,
+   and sequencing them inside one agent is cheaper than across several.
+
+9. **Clean up every worktree.** Then mark the PR ready.
+
+## Pointers, not copies
+
+Send **paths**: to the spec, the ticket, the research notes, the commits already
+merged. A pasted copy is a snapshot from when the brief was written; two tickets
+later it describes a tree that no longer exists, and the implementer believes it
+because it arrived in the instructions.
+
+## What you run, and what they run
+
+An implementer runs **the focused test for its own ticket** and reports the
+count. **You run the full suite once**, after the last merge and before the
+review. That number is the one that means anything — measured here, fifteen
+concurrent full passes took a load average to 28 on 8 cores and after 42 minutes
+not one agent had finished.
+
+## Where a run stops on its own
+
+- **A ticket comes back STOPped.** The answer is a decision, not the same brief.
+  If the decision is the user's, ask.
+- **Empty frontier with tickets left.** Cycle or failed dependency; say which.
+- **The same ticket fails twice.** The second failure is information about the
+  ticket, not the implementer. Re-read it before spending a third.
+- **A merge conflict the spec does not settle.** Two tickets disagree about the
+  same lines and nothing says which wins. That is a spec question.
+
+## What this will not do
+
+- Push, tag, or release. It leaves a draft PR.
+- Widen a ticket into "while I was in there".
+- Report a suite it did not run.
