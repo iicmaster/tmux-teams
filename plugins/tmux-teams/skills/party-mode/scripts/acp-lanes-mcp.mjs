@@ -583,13 +583,14 @@ export async function realProbeTransport({ command, env, timeoutMs, spawnFn = sp
     // half alone matches. Testing each chunk in isolation misses the signal
     // at a high rate. Carry a bounded TAIL of the previous chunk into the next
     // test instead — the same reason the JSON-RPC line parser below
-    // accumulates into `buf` rather than trusting chunk boundaries. The cap is
-    // bytes, not lines: an agent that never stops talking must not grow this
-    // without bound, and every word this regex matches is under 20 bytes, so a
-    // tail many times that length still catches a split across any boundary.
-    // Code units, not bytes. The quota tokens this watches for are ASCII, so a
-    // 64-unit tail always spans them; the name says CAP rather than BYTES for
-    // that reason, and ADR 0007 says 'characters' where it once said 'bytes'.
+    // accumulates into `buf` rather than trusting chunk boundaries.
+    //
+    // The cap is CODE UNITS. `String.prototype.slice` counts them, not bytes —
+    // this comment said both in consecutive sentences until a review lane read
+    // it. The quota tokens are ASCII and under 20 characters, so a 64-unit tail
+    // spans any of them however a chunk falls, and the memory is bounded for an
+    // agent that never stops talking. The name says CAP rather than BYTES for
+    // that reason, and ADR 0007 says characters where it once said bytes.
     const QUOTA_TAIL_CAP = 64
     const makeQuotaWatcher = () => {
       let tail = ''
@@ -1184,6 +1185,16 @@ export function serve({ input = process.stdin, output = process.stdout, env = pr
   // in-flight or queued result is a worse outcome than one lost write.
   output.on('error', () => {})
   const lines = createInterface({ input })
+  // A readline Interface is its OWN error receiver: Node FORWARDS an input
+  // stream's error onto the Interface, so a listener on `input` does not cover
+  // it. Measured on Node v24.18.1 — a minimal reproduction still exited 1 with
+  // `Unhandled 'error' event` naming the Interface, WITH an error listener
+  // already on the underlying stream. The survey that closed seven `data`
+  // receivers never named this shape, which is how it survived that sweep.
+  // Swallowed here for the same reason `output` is: the host that broke this
+  // pipe is already gone, and killing every other lane's queued result is the
+  // worse outcome.
+  lines.on('error', () => {})
   lines.on('line', (line) => {
     const text = line.trim()
     if (!text) return
