@@ -9,13 +9,14 @@ Written 2026-08-21 through `bmad-party-mode`.
   `main` is at v0.32.0 (`6b95101`) and owes nothing.
 - Tree is clean. Version is `0.33.0` in all seven places.
 - Pull request **#71** is open. CI was red on whitespace and that is fixed.
-- **The most dangerous thing: the review of record has answered BLOCKED six
-  times running, and each round found defects the previous round did not — on
-  bytes that passed every automated gate every time.** Twenty-six findings, in
-  rounds of 8, 4, 6, 4, 3, 1. Rounds two through four found defects in the previous
-  round's FIXES rather than in untouched code; round five found the first real
-  RUNTIME defect of the series, in a validator this release had extended.
-  Do not read "the suite is green" as "this is ready".
+- **The review of record answered BLOCKED six times running before it cleared
+  on the seventh** — on bytes that passed every automated gate every time.
+  Twenty-six findings, in rounds of 8, 4, 6, 4, 3, 1, then `TEAM_DONE`. Rounds
+  two through four found defects in the previous round's FIXES rather than in
+  untouched code; round five found the first real RUNTIME defect, in a validator
+  this release had itself extended; round six found the second door of a leak
+  round five had closed at the first. **Do not read "the suite is green" as
+  "this is ready" — it was green for all twenty-six.**
 - **Editing `ROADMAP.md` makes the published page stale.** Run
   `node scripts/roadmap-gate.mjs` and believe THAT, not a status written here:
   this file said "answers 2 (STALE)" and was wrong within the hour, because the

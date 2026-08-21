@@ -473,9 +473,14 @@ identity in its notes, and move the submodule pin in `~/agent-skills`.
 
 **The review of record is the `codex-advisor` lane at `gpt-5.6-luna`, effort
 `max` — Master's decision of 2026-08-19, that this seat alone is sufficient.**
-It has read these bytes five times and blocked four of them; twenty-four
-findings were raised and closed. Its `effective_identity` goes in the release
-notes the way a panel lane's would.
+**It read these bytes seven times and blocked six of them.** Twenty-six findings
+were raised and closed, in rounds of 8, 4, 6, 4, 3, 1 — and round seven answered
+`TEAM_DONE`: no substantive ship blocker, with the unverified limits named
+rather than waved past. Its `effective_identity`, `gpt-5.6-luna[max]` with
+`identity_status: matched`, goes in the release notes the way a panel lane's
+would. Rounds two through four found defects in the previous round's FIXES
+rather than in untouched code; round five found the first real runtime defect,
+in a validator this release had itself extended.
 
 `scripts/gate-required.mjs` still answers REQUIRED, and will keep doing so: it
 is fail-closed and reads no waiver. **Report that as a fact, not as a veto.**
