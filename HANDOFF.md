@@ -39,8 +39,8 @@ node --test > /tmp/suite.log 2>&1; grep -E '^ℹ (tests|pass|fail|skipped)' /tmp
 Green on 2026-08-21, measured on this branch, is exactly:
 
 ```
-ℹ tests 1141
-ℹ pass 1137
+ℹ tests 1158
+ℹ pass 1154
 ℹ fail 0
 ℹ skipped 4
 ```
@@ -50,7 +50,7 @@ measured 1137/1131/**2**/4 in a shell carrying ambient `ACP_*` variables — the
 state any shell is in after running a dispatch by hand. Four separate test files
 kept their own hand-written list of variables to scrub and every one was missing
 something; they scrub by `ACP_*` prefix now, and the hostile shell measures
-1141/1137/0/4 like the friendly one. Keep verifying with it, because the
+1158/1154/0/4 like the friendly one. Keep verifying with it, because the
 friendly one already agreed with you:
 
 ```bash
@@ -100,16 +100,16 @@ removal. Each now has one, and each was proved by deleting the call site:
 
 | guard | test | with the call deleted |
 |---|---|---|
-| malformed `ACP_SPAWN_NONCE` (`acp-companion.mjs:65`) | `tests/acp-dispatch.test.mjs:562` | 67/2 |
-| invalid `ACP_ENABLE_TERMINAL` (`acp-companion.mjs:98`) | `tests/acp-terminal-capability.test.mjs:123` | 67/2 |
-| `belongsToThisRun` at admission (`acp-dispatch.mjs:803`) | `tests/acp-dispatch.test.mjs:1778` | 63/2 |
-| `belongsToThisRun` in `watchBoot` (`acp-dispatch.mjs:1033`) | `tests/acp-dispatch.test.mjs:1957` | 63/2 |
+| malformed `ACP_SPAWN_NONCE` (`acp-companion.mjs:66`) | `tests/acp-dispatch.test.mjs:593` | 67/2 |
+| invalid `ACP_ENABLE_TERMINAL` (`acp-companion.mjs:99`) | `tests/acp-terminal-capability.test.mjs:136` | 67/2 |
+| `belongsToThisRun` at admission (`acp-dispatch.mjs:803`) | `tests/acp-dispatch.test.mjs:1809` | 63/2 |
+| `belongsToThisRun` in `watchBoot` (`acp-dispatch.mjs:1033`) | `tests/acp-dispatch.test.mjs:1988` | 63/2 |
 | child-side prohibited model (`acp-companion.mjs:1469`) | `tests/acp-dispatch.test.mjs:528` | 65/1 |
-| terminal output cap + UTF-8 tail (`acp-companion.mjs:3000`) | `tests/acp-terminal-capability.test.mjs:149` | 6/1, on two separate edits |
+| terminal output cap + UTF-8 tail (`acp-companion.mjs:3026`) | `tests/acp-terminal-capability.test.mjs:218` | 6/1, on two separate edits |
 
 `belongsToThisRun` is at `acp-dispatch.mjs:990`; `PROHIBITED_MODEL` at
 `acp-dispatch.mjs:705`; the blocked→escalate branch at `loop-runner.mjs:1549`;
-the login-mode stdin bridge at `acp-companion.mjs:3034`.
+the login-mode stdin bridge at `acp-companion.mjs:3065`.
 
 ### Open, off this branch
 
@@ -153,6 +153,15 @@ the login-mode stdin bridge at `acp-companion.mjs:3034`.
   `childEnv()` CALL from `dispatch` leaves the function-level test green and
   turns only `the real dispatch path hands no terminal capability to a worker`
   red. Measured 2 fail / 1 fail on the two mutations.
+- **Do not read the review bot's BODY and call it a verdict.** It is boilerplate
+  either way. The findings are inline comments, they carry P2 badges, and there
+  were 26 of them on this pull request while this session twice reported none.
+  Fifteen were real. `gh api repos/<owner>/<repo>/pulls/<n>/comments`.
+- **Do not correct a reference without re-checking it afterwards.** Refreshing
+  the twelve `file:line` refs in this file for the bot-finding commit MOVED one
+  that was already right — 1469 became 1470, one line past the guard and onto
+  its `console.error`. Caught by re-running the checker, not by reading. Seven of
+  the twelve really had shifted, which is why the sweep happened at all.
 - **Do not assume the file a release ADDED has been reviewed.** Seven review
   rounds read `acp-dispatch.mjs`, `acp-companion.mjs`, `loop-runner.mjs` and the
   documents. `acp-lanes-mcp.mjs` — the MCP server v0.33.0 introduced — was never
