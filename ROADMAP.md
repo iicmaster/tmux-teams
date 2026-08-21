@@ -516,10 +516,26 @@ that has to be written rather than vendored.
 
 | # | item | state |
 |---|---|---|
-| 1 | conform to the Agent Plugins 1.0 LAYOUT | open |
-| 2 | remove the `show-me` skill | open |
-| 3 | `pm-delegation`, written here | open |
-| 4 | an autonomous multi-agent implementer, written here | open |
+| 1 | Agent Plugins 1.0 — conform where possible, record where not | **shipped** — ADR 0008 |
+| 2 | remove the `show-me` skill | **shipped** |
+| 3+4 | `pm-delegation`, written here | **shipped** — one skill, not two |
+
+**Item 1 closed as a DECISION, not a move.** The manifest already conformed on
+every field; the layout cannot, because the client this plugin ships to has no
+awareness of the standard. Measured from the installed Claude Code binary's own
+strings: it finds plugin content by `.claude-plugin/` or a top-level
+`commands/`, `skills/`, `agents/`, `hooks/`, `themes/`, `output-styles/`,
+`monitors/`, `workflows/`, `SKILL.md`, `.mcp.json` or `.lsp.json`, and contains
+no occurrence of `agent-plugins.org`. Moving `.claude-plugin/` into a
+reverse-domain namespace would satisfy 1.0 and make the plugin uninstallable.
+ADR 0008 records the decision and the argument against it. The layout test came
+first and turns red at 21/3 if anything moves.
+
+**Items 3 and 4 became one skill, on Master's answer.** They were shipped as two
+— a contract and an implementer — and the answer was one `pm-delegation` for
+acting as PM over subagents OR ACP lanes, not feeding the graph loop. Part one is
+one delegation, part two is a whole spec. The rewrite is in the history; the
+two-skill version never left the branch.
 
 **Item 1 is a layout problem, not a manifest problem, and reading the schema is
 what settled that.** `plugins/tmux-teams/plugin.json` already satisfies
