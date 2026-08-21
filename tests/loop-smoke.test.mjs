@@ -28,6 +28,21 @@ const PULSE = join(ROOT, 'plugins', 'tmux-teams', 'skills', 'tmux-teams', 'scrip
 const dirs = []
 after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }) })
 
+// Two tests in this file delete every ambient ACP_* key from THIS process and
+// then restore what they snapshotted. Both snapshotted an incomplete set at
+// some point and the suite stayed green, because the damage is to the process
+// the tests share rather than to any assertion they make. A sentinel is the
+// only thing that makes it visible: it is an ACP_* key nothing reads, so the
+// prefix delete takes it and only a prefix-wide restore puts it back.
+const ACP_SENTINEL = 'ACP_LOOP_SMOKE_SENTINEL'
+process.env[ACP_SENTINEL] = 'do-not-delete'
+after(() => {
+  const survived = process.env[ACP_SENTINEL]
+  delete process.env[ACP_SENTINEL]
+  assert.equal(survived, 'do-not-delete',
+    'a test in this file deleted an ambient ACP_* variable from this process and did not put it back')
+})
+
 // `workers` overridable so the control team D6 requires can name the outer
 // controller as its one seat.
 const team = (id, workers = null) => ({
@@ -311,6 +326,12 @@ test('the liveness validator accepts what the companion actually writes', async 
   const repo = makeRepo()
   const inherited = Object.fromEntries(['ACP_CMD', 'TMUX_TEAMS_ACP_CMD', 'MOCK_EVIDENCE',
     'MOCK_LOOP_VERDICTS', 'ACP_STALL_POLICY', 'ECC_GATEGUARD'].map((k) => [k, process.env[k]]))
+  // Snapshot by the same prefix the next line deletes by. The sibling test above
+  // had this fixed and this one did not — the same shape, one function down,
+  // found by a review lane observing the PARENT process after the test rather
+  // than the child environment inside it.
+  const inheritedAcp = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => key.startsWith('ACP_')))
   try {
     for (const key of Object.keys(process.env)) if (key.startsWith('ACP_')) delete process.env[key]
     Object.assign(process.env, {
@@ -334,6 +355,7 @@ test('the liveness validator accepts what the companion actually writes', async 
         + `keys written: ${Object.keys(snapshot).sort().join(', ')}`)
     }
   } finally {
+    Object.assign(process.env, inheritedAcp)
     for (const [key, value] of Object.entries(inherited)) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value
     }

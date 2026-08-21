@@ -12,7 +12,9 @@
 > source, no publish script and nothing that could notice it had gone stale —
 > so it went stale, repeatedly, and nobody could tell without opening it.
 
-Current release: **0.33.0**
+Current release: **0.33.0** — the version stamped in this tree, in flight on
+a pull request and not yet tagged. `main` still carries 0.32.0, and anyone
+installing from the marketplace resolves the last TAG, not this line.
 
 ## Where the phases stand
 
@@ -363,7 +365,13 @@ worth repeating are that a lane with no credentials must return a structured,
 actionable blocker rather than hang or blame the model, and that no secret
 value may reach a log, receipt, KMS event or outbox.
 
-**`loop-runner` re-dispatches a `blocked` terminal instead of escalating.**
+**`loop-runner` re-dispatched a `blocked` terminal instead of escalating —
+SHIPPED in v0.33.0.** What follows is the issue as filed, in the tense it was
+filed in; the behaviour it describes is gone. `loop-runner.mjs` returns
+`escalate` for a `blocked` terminal and `pull-controller.mjs` says it needs a
+person. A review lane read this section's present tense against the table above
+that already marked it shipped, which is how a standing goal misleads an
+operator into believing a fixed thing is still broken.
 
 Filed as *"loop-runner retries a 'blocked' terminal instead of escalating —
 burns worker legs on a token that needs a human"*. `blocked` is this plugin's
@@ -378,9 +386,11 @@ worker legs were spent asking the same question. The review policy and the
 handoff guidance both already say a `TEAM_BLOCKED` outbox must not be
 auto-answered; only the runner disagrees.
 
-**Lane health is discovered one release at a time.**
+**Lane health was discovered one release at a time — SHIPPED in v0.33.0.**
+The third MCP tool is the preflight this section asked for. What follows is the
+issue as filed, in the tense it was filed in.
 
-There is no preflight that answers "which lanes can actually review today", so
+There was no preflight that answered "which lanes can actually review today", so
 the answer is assembled by probing lanes one at a time in the middle of a
 release. On 2026-08-17 that cost four probes and a swapped panel composition
 after the run had already started. `acp_lane_status` reports whether a lane is

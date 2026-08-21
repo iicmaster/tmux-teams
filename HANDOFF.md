@@ -9,13 +9,17 @@ Written 2026-08-21 through `bmad-party-mode`.
   `main` is at v0.32.0 (`6b95101`) and owes nothing.
 - Tree is clean. Version is `0.33.0` in all seven places.
 - Pull request **#71** is open. CI was red on whitespace and that is fixed.
-- **The most dangerous thing: the review of record has answered BLOCKED three
+- **The most dangerous thing: the review of record has answered BLOCKED four
   times running, and each round found defects the previous round did not — on
-  bytes that passed every automated gate every time.** Eighteen findings so far.
+  bytes that passed every automated gate every time.** Twenty-two findings so
+  far, and the counts per round were 8, 4, 6, 4 — not converging. Rounds two
+  through four found defects in round one's FIXES, not in untouched code.
   Do not read "the suite is green" as "this is ready".
-- `node scripts/roadmap-gate.mjs` answers **2 (STALE)** as of this writing:
-  `ROADMAP.md` changed in the last commit and the page has not been republished.
-  Republish before the release, not after.
+- **Editing `ROADMAP.md` makes the published page stale.** Run
+  `node scripts/roadmap-gate.mjs` and believe THAT, not a status written here:
+  this file said "answers 2 (STALE)" and was wrong within the hour, because the
+  page was republished right after. A handoff must not quote the value of a gate
+  a reader can run in a second.
 
 ## 2. HOW TO VERIFY
 
@@ -32,12 +36,13 @@ Green on 2026-08-21, measured on this branch, is exactly:
 ℹ skipped 4
 ```
 
-**And green in YOUR shell is not green.** On 2026-08-21 the same bytes measured
-1137/1131/**2**/4 in a shell carrying seven ambient `ACP_*` variables — the state
-any shell is in after running a dispatch by hand. Four separate test files kept
-their own hand-written list of variables to scrub and every one of them was
-missing something. They scrub by `ACP_*` prefix now. Verify with the hostile
-shell, because the friendly one already agreed with you:
+**And green in YOUR shell is not green.** On 2026-08-21 the PRE-fix bytes
+measured 1137/1131/**2**/4 in a shell carrying ambient `ACP_*` variables — the
+state any shell is in after running a dispatch by hand. Four separate test files
+kept their own hand-written list of variables to scrub and every one was missing
+something; they scrub by `ACP_*` prefix now, and the hostile shell measures
+1137/1133/0/4 like the friendly one. Keep verifying with it, because the
+friendly one already agreed with you:
 
 ```bash
 ACP_MODEL=ambient ACP_EXPECT_MODEL=ambient ACP_REASONING_EFFORT=ambient \
@@ -116,6 +121,12 @@ the login-mode stdin bridge at `acp-companion.mjs:3034`.
   `ACP_MODEL` check alone was caught by its neighbour and the test failed only
   over the error LABEL. It took a review lane running the mutation itself to
   see that. Isolate the call site: prohibited request, PERMITTED expectation.
+- **Do not fix one cleanup path and stop.** `tests/loop-smoke.test.mjs` has two
+  tests that delete every ambient `ACP_*` key from THIS process; round three
+  fixed the restore in one and round four found the same shape in the other,
+  reproduced by observing the parent process after the test. There is a sentinel
+  in `after()` now that goes red for either. **After fixing a leak, go and look
+  for the same shape somewhere else.**
 - **Do not fix a hand-maintained list by adding the missing name.** Round two
   added `ACP_SPAWN_NONCE` to one scrub list and left `ACP_ENABLE_TERMINAL`
   missing from the same list — a second omission introduced by the same
@@ -133,7 +144,7 @@ the login-mode stdin bridge at `acp-companion.mjs:3034`.
   correct. Repopulate with `npx -y @agentclientprotocol/codex-acp@1.1.7
   --version` — **in the background**, it hung past two minutes once.
 - **Do not run the suite beside ACP lanes or parallel agents.** Measured:
-  `tests/loop-smoke.test.mjs:174` failed a 20s outbox deadline in a 225s loaded
+  `tests/loop-smoke.test.mjs:189` failed a 20s outbox deadline in a 225s loaded
   run and passed in a 136s quiet one; `required load binds every prior identity`
   failed at 12.9s under load and passes at 3.4s alone. Serialise measurements
   through one caller.
