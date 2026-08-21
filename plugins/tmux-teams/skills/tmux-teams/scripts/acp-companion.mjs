@@ -3635,6 +3635,11 @@ function render(update) {
 }
 
 const rl = createInterface({ input: agent.stdout })
+// Node forwards the input stream's error onto the Interface, so the listener on
+// `agent.stdout` does not cover this one. Routed to `failProtocol` rather than
+// swallowed: a lane whose adapter stream failed has not produced an answer, and
+// a silently-continuing companion would settle as though it had.
+rl.on('error', (err) => failProtocol(err))
 rl.on('line', (rawLine) => {
   if (!rawLine.trim()) return
   let message

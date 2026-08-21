@@ -2497,3 +2497,46 @@ test('the probe session-id rule has not drifted from the companion it names as i
   assert.equal(ours[1], theirs[1],
     'the probe copy of the session-id rule has drifted from the companion it names as its source')
 })
+
+// Round nine of the review of record: the survey that closed seven `data`
+// receivers never named a readline Interface, and Node FORWARDS an input
+// stream's error onto the Interface — so `input.on('error')` does not cover it.
+// Reproduced by the lane against the real `serve()` path on Node v24.18.1, and
+// reproduced again here: a minimal readline still exits 1 with
+// `Unhandled 'error' event` naming the Interface even when the underlying
+// stream already has a listener.
+//
+// `serve()` is called with an injectable `input`, so this drives the shipped
+// function rather than a copy of its shape.
+test('serve() survives an error forwarded onto its readline interface', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-serve-rl-error-'))
+  try {
+    const targetUrl = pathToFileURL(
+      join(PLUGIN, 'skills', 'party-mode', 'scripts', 'acp-lanes-mcp.mjs')).href
+    const harness = join(dir, 'harness.mjs')
+    writeFileSync(harness, [
+      `import { serve } from ${JSON.stringify(targetUrl)}`,
+      "import { PassThrough } from 'node:stream'",
+      'const input = new PassThrough()',
+      'const output = new PassThrough()',
+      'output.resume()',
+      '// An error listener on the INPUT, so this test cannot pass by way of the',
+      '// stream-level guard the previous round added.',
+      "input.on('error', () => {})",
+      'serve({ input, output })',
+      'setTimeout(() => {',
+      "  input.emit('error', Object.assign(new Error('injected'), { code: 'EIO' }))",
+      "  setTimeout(() => { process.stdout.write('SURVIVED\\n'); process.exit(0) }, 150)",
+      '}, 100)',
+    ].join('\n'))
+    const out = spawnSync(process.execPath, [harness], { encoding: 'utf8', timeout: 9000 })
+    assert.equal(out.status, 0,
+      `an error forwarded onto the readline interface crashed the server: ${out.stderr}`)
+    assert.ok(!/Unhandled ['"]error['"] event/.test(out.stderr ?? ''),
+      `an unhandled Interface error reached the process: ${out.stderr}`)
+    assert.match(out.stdout ?? '', /SURVIVED/,
+      `serve() did not survive the injected interface error: ${out.stdout}${out.stderr}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 })
+  }
+})
