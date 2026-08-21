@@ -5,7 +5,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync, statSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -767,4 +767,35 @@ test('every advisor carries the same contract: a party, and a model', () => {
     assert.ok(lines.some((l) => /default seat/.test(l)),
       `${name}: no invocation is marked as the default seat`)
   }
+})
+
+// CLAUDE.md states which paths this repository tracks, and a test above asserts
+// that the LIST says what it should. Nothing asserted that the tracked files
+// MATCH the list — so `.mailbox-out-archive-round1/`, a directory this session
+// created to preserve a review transcript, rode into the release on a
+// `git add -A`. `.mailbox-out/` was ignored; the archive name was not. Ten
+// rounds of the review of record read past it, and `gate-required.mjs` named
+// it as a deciding file for the panel without anyone noticing what it was.
+//
+// The set is pinned literally rather than derived from CLAUDE.md: a test that
+// reads its expectation out of the document it is checking agrees with whatever
+// the document says, including a document somebody widened to make a test pass.
+test('the tracked top-level entries are exactly the ones this repository declares', () => {
+  const listed = execFileSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8' })
+    .split('\n').filter(Boolean)
+    .map((p) => p.split('/')[0])
+  const actual = [...new Set(listed)].sort()
+  const allowed = [
+    '.claude-plugin', '.github', '.gitignore',
+    '.published-RELEASE-PLAN.json', '.published-event-subscriptions.json',
+    '.roadmap-published.json',
+    'CLAUDE.md', 'HANDOFF.md', 'README.md', 'RELEASE-PLAN.md', 'ROADMAP.md',
+    'plugins', 'scripts', 'tests',
+  ].sort()
+  const unexpected = actual.filter((e) => !allowed.includes(e))
+  const missing = allowed.filter((e) => !actual.includes(e))
+  assert.deepEqual(unexpected, [],
+    `these are tracked and this repository does not declare them: ${unexpected.join(', ')}`)
+  assert.deepEqual(missing, [],
+    `these are declared and no longer tracked: ${missing.join(', ')}`)
 })

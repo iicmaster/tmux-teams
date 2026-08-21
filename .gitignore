@@ -12,6 +12,10 @@ CLAUDE.local.md
 
 # worker outboxes carry raw command output — never commit them
 .mailbox-out/
+# Archived review outboxes.  was ignored and this was not, so a
+# 10KB review transcript rode into the release on a `git add -A` and ten review
+# rounds read past it. The pattern, not the one name.
+.mailbox-out-archive*/
 
 # `.tmux-teams/` is the repo's own runtime state — published pages, dispatch
 # records, KMS events, liveness. It is NOT listed here because it ignores itself
