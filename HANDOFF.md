@@ -8,7 +8,12 @@ Written 2026-08-21 through `bmad-party-mode`.
 - Branch `feat/v0.33.0`, **pushed** to `origin` (`iicmaster/tmux-teams`).
   `main` is at v0.32.0 (`6b95101`) and owes nothing.
 - Tree is clean. Version is `0.33.0` in all seven places.
-- Pull request **#71** is open. CI was red on whitespace and that is fixed.
+- Pull request **#71** is open, CI green. HEAD is `331d218`.
+- **A sibling branch `feat/v0.34.0` exists and carries finished work** — the
+  `show-me` removal, a layout gate, `pm-delegation`, and ADR 0008. It was
+  branched from this one and has already taken this branch's later fixes by
+  merge. Anything that lands here from now on must be merged into it too, or
+  those skills sit on bytes with known defects.
 - **THERE ARE TWO REVIEWERS AND ONLY ONE OF THEM IS OBVIOUS.** The PR review
   bot's findings are INLINE COMMENTS, not the review body — the body is
   boilerplate that says nothing either way. This session read the body twice,
@@ -39,8 +44,8 @@ node --test > /tmp/suite.log 2>&1; grep -E '^ℹ (tests|pass|fail|skipped)' /tmp
 Green on 2026-08-21, measured on this branch, is exactly:
 
 ```
-ℹ tests 1158
-ℹ pass 1154
+ℹ tests 1162
+ℹ pass 1158
 ℹ fail 0
 ℹ skipped 4
 ```
@@ -50,7 +55,7 @@ measured 1137/1131/**2**/4 in a shell carrying ambient `ACP_*` variables — the
 state any shell is in after running a dispatch by hand. Four separate test files
 kept their own hand-written list of variables to scrub and every one was missing
 something; they scrub by `ACP_*` prefix now, and the hostile shell measures
-1158/1154/0/4 like the friendly one. Keep verifying with it, because the
+1162/1158/0/4 like the friendly one. Keep verifying with it, because the
 friendly one already agreed with you:
 
 ```bash
