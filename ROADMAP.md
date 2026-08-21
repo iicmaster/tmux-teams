@@ -509,6 +509,63 @@ never revisited — while `HANDOFF.md` recorded the decision correctly. A review
 lane read the two against each other. Two shipped documents must tell the next
 operator the same thing about what a decision means.
 
+## v0.34.0 scope, set by Master 2026-08-22
+
+Four items. Two are inventory, one is conformance, and one is a new capability
+that has to be written rather than vendored.
+
+| # | item | state |
+|---|---|---|
+| 1 | conform to the Agent Plugins 1.0 LAYOUT | open |
+| 2 | remove the `show-me` skill | open |
+| 3 | `pm-delegation`, written here | open |
+| 4 | an autonomous multi-agent implementer, written here | open |
+
+**Item 1 is a layout problem, not a manifest problem, and reading the schema is
+what settled that.** `plugins/tmux-teams/plugin.json` already satisfies
+`agent-plugins.org/schemas/1.0.0` on every field: the required set is
+`["$schema", "name"]`, both are present, `$schema` matches exactly, `name`
+passes the pattern, and `author` carries only permitted keys. What does not
+match is the shape around it. The 1.0 portable root is `plugin.json`, `skills/`,
+`mcp.json`, and **reverse-domain namespaces** for client-specific material.
+This tree scatters that material instead: `.claude-plugin/` and `commands/` sit
+at the root, and there is both an `mcp.json` and a `.mcp.json` — two copies that
+must agree with nothing enforcing it, which this repository has already been
+bitten by once (`mcp.json` was added and only `.mcp.json` was ever booted).
+
+**Write the layout test BEFORE moving a single file.** `.claude-plugin/` is how
+Claude Code finds this plugin at all, and `claude plugin validate --strict .`
+checks the marketplace manifest, not the 1.0 layout — so the move touches
+something no gate is watching. A test written after the move confirms what was
+done rather than checking whether it was right, and a test that is green from
+its first second and never red is the exact shape v0.33.0 spent seven review
+rounds removing.
+
+**Item 2 removes a duplicate, not a feature.** `show-me` collides by name with
+the `artifact-sftp` plugin's own `show-me`, which is installed on the same
+machine. Shipping a name another plugin already uses hands the ambiguity to the
+user. `SKILLS` in `tests/plugin-structure.test.mjs` and the README inventory are
+both guarded, so the removal cannot be half-done quietly.
+
+**Items 3 and 4 are written here, not vendored.** A pull request offering a
+vendor-neutral `pm-delegation` guide is declined with thanks and the reason
+recorded on it; the subject is one this plugin has opinions about and they
+belong in our own words. `implement-spec` in `mattpocock/skills` is read as
+prior art and not copied.
+
+What item 4 has to be, in Master's words: a multi-agent implementer that takes a
+spec and its tickets, does codebase research in a subagent, implements every
+ticket in subagents at maximum concurrency, reviews the finished code against
+the spec, and cleans up every worktree — able to take on large chunks of work
+with minimal supervision.
+
+**The tension to resolve before writing it, not during.** Tickets are a task
+GRAPH with a moving frontier, and this plugin already has an orchestration model
+of its own — a ledger, WIP limits, seven brakes, and a review gate. Vendoring a
+second model would ship a plugin that teaches two conflicting ways to run work.
+Whether the frontier is a new mechanism or an expression of the ledger this
+system already keeps is the design question, and it is item 4's real content.
+
 ## What is actually open
 
 These are real but unforced, and separate from the release above:
