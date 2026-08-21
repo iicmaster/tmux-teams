@@ -559,6 +559,37 @@ test('the companion refuses a prohibited model when it is reached without the di
     'the adapter started before the companion refused the prohibited model')
 })
 
+test('an ambient ACP_ENABLE_TERMINAL is never forwarded to a detached lane', () => {
+  // `acp-companion.mjs` states the rule: a dispatched review lane must never
+  // gain a terminal. The dispatcher forwards the whole caller environment, so
+  // an operator whose shell still carried the login-mode opt-in would have
+  // handed one to every lane they dispatched — including a review lane, on the
+  // direct-ACP path this project uses for the review of record.
+  //
+  // Dropping it costs nothing the capability could have delivered: the child
+  // below is spawned with `stdin: 'ignore'`, so a terminal opened this way can
+  // never receive a keystroke and cannot serve the person-attended login it
+  // exists for. A login run talks to the companion directly.
+  const cwd = tempDir('acp-dispatch-terminal-optin-')
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+  let seen = null
+  spawnDetached('mock', cwd, 'terminal-optin', brief, 120, {
+    spawnFn: (_exe, _argv, options) => { seen = options; return { pid: 424244, unref() {}, on() {} } },
+    env: { ...laneEnv(), ACP_ENABLE_TERMINAL: '1' },
+  })
+  assert.ok(seen, 'spawnDetached never spawned')
+  assert.equal(Object.hasOwn(seen.env, 'ACP_ENABLE_TERMINAL'), false,
+    `the terminal opt-in reached a detached lane: ${JSON.stringify(seen.env.ACP_ENABLE_TERMINAL)}`)
+  // The reason it is safe to drop, asserted rather than described.
+  assert.equal(seen.stdio[0], 'ignore',
+    'this lane can read stdin, so dropping the terminal opt-in would remove something usable')
+  // And the rest of the environment still arrives, so this is a removal of one
+  // key rather than a sanitiser nobody noticed was eating everything.
+  assert.equal(seen.env.ACP_CMD, laneEnv().ACP_CMD, 'the forwarded environment was damaged')
+  assert.ok(seen.env.ACP_SPAWN_NONCE, 'the dispatcher stopped adding its nonce')
+})
+
 test('a malformed ACP_SPAWN_NONCE is refused before the companion ever starts', () => {
   // The dispatcher always OVERWRITES ACP_SPAWN_NONCE with its own generated
   // value, so this guard is unreachable through acp-dispatch.mjs. It exists for

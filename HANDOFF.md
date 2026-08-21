@@ -9,11 +9,12 @@ Written 2026-08-21 through `bmad-party-mode`.
   `main` is at v0.32.0 (`6b95101`) and owes nothing.
 - Tree is clean. Version is `0.33.0` in all seven places.
 - Pull request **#71** is open. CI was red on whitespace and that is fixed.
-- **The most dangerous thing: the review of record has answered BLOCKED four
+- **The most dangerous thing: the review of record has answered BLOCKED five
   times running, and each round found defects the previous round did not — on
-  bytes that passed every automated gate every time.** Twenty-two findings so
-  far, and the counts per round were 8, 4, 6, 4 — not converging. Rounds two
-  through four found defects in round one's FIXES, not in untouched code.
+  bytes that passed every automated gate every time.** Twenty-five findings, in
+  rounds of 8, 4, 6, 4, 3. Rounds two through four found defects in the previous
+  round's FIXES rather than in untouched code; round five found the first real
+  RUNTIME defect of the series, in a validator this release had extended.
   Do not read "the suite is green" as "this is ready".
 - **Editing `ROADMAP.md` makes the published page stale.** Run
   `node scripts/roadmap-gate.mjs` and believe THAT, not a status written here:
@@ -30,8 +31,8 @@ node --test > /tmp/suite.log 2>&1; grep -E '^ℹ (tests|pass|fail|skipped)' /tmp
 Green on 2026-08-21, measured on this branch, is exactly:
 
 ```
-ℹ tests 1137
-ℹ pass 1133
+ℹ tests 1139
+ℹ pass 1135
 ℹ fail 0
 ℹ skipped 4
 ```
@@ -41,7 +42,7 @@ measured 1137/1131/**2**/4 in a shell carrying ambient `ACP_*` variables — the
 state any shell is in after running a dispatch by hand. Four separate test files
 kept their own hand-written list of variables to scrub and every one was missing
 something; they scrub by `ACP_*` prefix now, and the hostile shell measures
-1137/1133/0/4 like the friendly one. Keep verifying with it, because the
+1139/1135/0/4 like the friendly one. Keep verifying with it, because the
 friendly one already agreed with you:
 
 ```bash
@@ -121,6 +122,21 @@ the login-mode stdin bridge at `acp-companion.mjs:3034`.
   `ACP_MODEL` check alone was caught by its neighbour and the test failed only
   over the error LABEL. It took a review lane running the mutation itself to
   see that. Isolate the call site: prohibited request, PERMITTED expectation.
+- **Do not mistake a closed set of key NAMES for a closed contract.**
+  `validateAcpLivenessV1` (`pulse-data.mjs`) admitted `work_observed` and
+  `spawn_nonce` to its key set in v0.33.0 and gave neither a type. Measured: the
+  STRING `'false'` was accepted, and `loop-runner.mjs` compares
+  `work_observed === false`, so a truthy string read as work observed and the
+  plan came back `expired` — withdrawing a delivery that should have been held
+  for a person. An object `spawn_nonce` was accepted too, and it is compared for
+  equality against a string. Both are typed now, each with its own negative.
+- **Do not assume a dispatcher forwards only what it means to.**
+  `spawnDetached` spreads the whole caller environment, so an ambient
+  `ACP_ENABLE_TERMINAL=1` reached the companion and would have handed a DETACHED
+  lane — including a review lane — the terminal capability the companion's own
+  comment says a review lane must never gain. It is dropped now, and the reason
+  it costs nothing is asserted rather than described: that child is spawned with
+  `stdin: 'ignore'`, so such a terminal could never receive a keystroke.
 - **Do not fix one cleanup path and stop.** `tests/loop-smoke.test.mjs` has two
   tests that delete every ambient `ACP_*` key from THIS process; round three
   fixed the restore in one and round four found the same shape in the other,

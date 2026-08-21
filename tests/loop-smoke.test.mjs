@@ -361,3 +361,46 @@ test('the liveness validator accepts what the companion actually writes', async 
     }
   }
 })
+
+// A closed set of KEY NAMES is not a closed contract, and v0.33.0 admitted two
+// fields to that set without giving either a type. Measured before the fix, from
+// the shipped fixture: `work_observed: 'false'` was ACCEPTED, and so was
+// `spawn_nonce: { forged: true }`. The consequence is not cosmetic —
+// `loop-runner.mjs` compares `work_observed === false`, so a truthy string reads
+// as work observed and the plan came back `expired`, withdrawing a delivery that
+// should have been held for a person. `spawn_nonce` is compared for equality
+// against a string, so an object silently never matches.
+//
+// The cases are written out rather than derived from the key list: a test that
+// iterates the constant it is validating stops testing whatever is deleted.
+test('the liveness validator closes types, not only key names', () => {
+  const fixture = JSON.parse(readFileSync(join(HERE, 'fixtures', 'acp-liveness-v1.json'), 'utf8'))
+  assert.equal(validateAcpLivenessV1(fixture).ok, true,
+    'the shipped fixture must be valid, or every case below proves nothing')
+
+  const refused = (patch, what) => {
+    const verdict = validateAcpLivenessV1({ ...fixture, ...patch })
+    assert.equal(verdict.ok, false, `${what} was accepted: ${JSON.stringify(patch)}`)
+    assert.equal(verdict.reason, 'raw liveness field is invalid',
+      `${what} was refused for the wrong reason: ${verdict.reason}`)
+  }
+
+  refused({ work_observed: 'false' }, 'a string work_observed')
+  refused({ work_observed: 'true' }, 'a truthy string work_observed')
+  refused({ work_observed: 1 }, 'a numeric work_observed')
+  refused({ work_observed: null }, 'a null work_observed')
+  refused({ spawn_nonce: { forged: true } }, 'an object spawn_nonce')
+  refused({ spawn_nonce: 42 }, 'a numeric spawn_nonce')
+  refused({ spawn_nonce: 'has a space' }, 'a spawn_nonce the companion would refuse')
+  refused({ spawn_nonce: '' }, 'an empty spawn_nonce')
+
+  // And the shapes that MUST stay legal, because refusing them would break every
+  // lane loop-runner starts, which writes no nonce at all.
+  assert.equal(validateAcpLivenessV1({ ...fixture, spawn_nonce: 'a-valid-nonce_1' }).ok, true,
+    'a well-formed spawn_nonce was refused')
+  assert.equal(validateAcpLivenessV1({ ...fixture, work_observed: false }).ok, true,
+    'work_observed false was refused')
+  const { spawn_nonce: _omitted, ...noNonce } = fixture
+  assert.equal(validateAcpLivenessV1(noNonce).ok, true,
+    'a snapshot with no spawn_nonce was refused — that is every loop-runner lane')
+})

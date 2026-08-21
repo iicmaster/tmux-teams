@@ -913,7 +913,16 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec,
   // `ACP_SPAWN_NONCE` is ADDED on top, never taken from the operator's `env`:
   // it is this dispatch's own proof of authorship, generated above, and an
   // operator-supplied value here would defeat the thing it exists to prove.
-  const childEnv = { ...env, ACP_SPAWN_NONCE: nonce }
+  // The whole caller environment is forwarded, so an ambient ACP_ENABLE_TERMINAL
+  // would reach the companion and hand a DETACHED lane the terminal capability —
+  // including a review lane, which `acp-companion.mjs` states must never gain
+  // one. It is dropped here rather than trusted, and the reason is one line
+  // down: this child gets `stdin: 'ignore'`, so a terminal opened through the
+  // dispatcher can never receive a keystroke. It could not serve the
+  // person-attended login it exists for, and would only widen what the lane can
+  // do. A login run talks to the companion directly.
+  const { ACP_ENABLE_TERMINAL: _neverForwarded, ...forwarded } = env
+  const childEnv = { ...forwarded, ACP_SPAWN_NONCE: nonce }
   const child = spawnFn(process.execPath, argv, { cwd, detached: true, stdio: ['ignore', logFd, logFd], env: childEnv })
   child.unref()
   // The child holds its own duplicate; this parent has no use for the

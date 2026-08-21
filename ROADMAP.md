@@ -467,15 +467,23 @@ property is established by source inspection plus a mock-observed
 child has never been measured. Until a real host initializes it, ADR 0003's
 guarantee remains a guarantee about what is REQUESTED.
 
-**What is left on v0.33.0 is the mechanical steps, and one thing that is not
-mechanical.** The steps: this bump, render and publish and record this page,
-open the PR, merge on CI green plus the codex bot review, tag the merged sha,
-and move the submodule pin in `~/agent-skills`. The thing that is not:
-`scripts/gate-required.mjs` answers REQUIRED on these bytes and no review of
-record has been accepted for them. The panel is NOT waived for this release —
-v0.32.0's waiver was written for v0.32.0, and only Master waives, in writing,
-per release. A waiver inherited by assumption is the silent skip this page has
-a section about.
+**What is left on v0.33.0 is the mechanical steps.** Merge on CI green plus the
+codex bot review, tag the merged sha, publish the release with the review
+identity in its notes, and move the submodule pin in `~/agent-skills`.
+
+**The review of record is the `codex-advisor` lane at `gpt-5.6-luna`, effort
+`max` — Master's decision of 2026-08-19, that this seat alone is sufficient.**
+It has read these bytes five times and blocked four of them; twenty-four
+findings were raised and closed. Its `effective_identity` goes in the release
+notes the way a panel lane's would.
+
+`scripts/gate-required.mjs` still answers REQUIRED, and will keep doing so: it
+is fail-closed and reads no waiver. **Report that as a fact, not as a veto.**
+This paragraph said "no review of record has been accepted" and "the panel is
+NOT waived" for most of the release — written before the owner answered and
+never revisited — while `HANDOFF.md` recorded the decision correctly. A review
+lane read the two against each other. Two shipped documents must tell the next
+operator the same thing about what a decision means.
 
 ## What is actually open
 

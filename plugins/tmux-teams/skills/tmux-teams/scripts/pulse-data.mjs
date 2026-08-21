@@ -257,6 +257,16 @@ export function validateAcpLivenessV1(value) {
       !rawNullableString(value.requested_reasoning_effort, 64) ||
       !rawNullableString(value.effective_identity, 194) ||
       !ACP_LIVENESS_RAW_IDENTITY_STATES.has(value.identity_status) ||
+      // Both of these were admitted to the key set by v0.33.0 and neither was
+      // given a type. A closed set of NAMES is not a closed contract: the string
+      // 'false' passed, and `loop-runner.mjs` compares `=== false`, so a
+      // truthy string read as work observed and the plan came back `expired` —
+      // withdrawing a delivery that should have been held for a person. An
+      // object `spawn_nonce` passed too, and it is compared for equality
+      // against a string.
+      typeof value.work_observed !== 'boolean' ||
+      Object.hasOwn(value, 'spawn_nonce') &&
+        (typeof value.spawn_nonce !== 'string' || !ID_RE.test(value.spawn_nonce)) ||
       Object.hasOwn(value, 'agent_id') &&
         (typeof value.agent_id !== 'string' || !ID_RE.test(value.agent_id))) {
     return { ok: false, code: 'LIVENESS_EVIDENCE_INVALID', reason: 'raw liveness field is invalid' }
