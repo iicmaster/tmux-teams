@@ -2166,8 +2166,15 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
 // therefore refuses to pass it on. A test that needs the seam names it
 // deliberately through TMUX_TEAMS_ACP_CMD, which is an explicit dependency
 // rather than whatever the environment happened to be carrying.
+// ACP_ENABLE_TERMINAL is dropped for the reason `acp-companion.mjs` states in
+// its own comment: no ordinary caller, loop-runner included, may hand a lane the
+// terminal capability. It was reaching one from a shell that merely still had
+// the login-mode opt-in exported. `acp-dispatch.mjs` had the same shape and was
+// fixed one round earlier; this one stayed open because nobody went looking for
+// the second door after closing the first.
 export function childEnv(source = process.env) {
-  const { ACP_CMD: _ambient, TMUX_TEAMS_ACP_CMD: injected, ...rest } = source
+  const { ACP_CMD: _ambient, ACP_ENABLE_TERMINAL: _neverForwarded,
+    TMUX_TEAMS_ACP_CMD: injected, ...rest } = source
   return injected ? { ...rest, ACP_CMD: injected } : rest
 }
 

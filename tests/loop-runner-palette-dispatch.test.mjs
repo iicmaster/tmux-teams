@@ -282,6 +282,49 @@ test('a seat with no palette still escalates at MAX_ATTEMPTS genuine failures, u
 // ── AC1/AC2 (as far as reachable), end to end: the REAL child env a palette
 // fallback would spawn, not merely what the plan says it would ─────────────
 
+// The CALL SITE, not the function. `childEnv` filtering ACP_ENABLE_TERMINAL is
+// proved in tests/loop-runner-heartbeat-model.test.mjs — and that test stays
+// green if `dispatch` stops calling `childEnv` at all, which is the exact shape
+// this repository has shipped before. `spawnFn` is the inner seam: it keeps the
+// real `dispatch` and its real env construction, and replaces only process
+// creation, so what is asserted below is the environment a worker would have
+// been handed.
+test('the real dispatch path hands no terminal capability to a worker, whatever the shell exports', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-terminal-optin-'))
+  const restore = process.env.ACP_ENABLE_TERMINAL
+  try {
+    process.env.ACP_ENABLE_TERMINAL = '1'
+    const store = join(dir, '.tmux-teams')
+    mkdirSync(join(store, 'work-items'), { recursive: true })
+    mkdirSync(join(store, 'team-briefs'), { recursive: true })
+    writeFileSync(join(store, 'team-briefs', 'build.md'), '# standing brief\n')
+    const graph = { ...BASE, teams: [teamOf({}), CONTROL_TEAM] }
+    writeFileSync(join(store, 'graph.json'), JSON.stringify(graph))
+    writeFileSync(join(store, 'work-items', 'tok.jsonl'),
+      `${ledger('tok', ADMITTED).map((entry) => JSON.stringify(entry)).join('\n')}\n`)
+
+    const captured = []
+    tick(dir, { apply: true, scratchDir: join(dir, 'scratch'),
+      spawnFn: (cmd, args, options) => { captured.push(options); return { unref() {} } } })
+
+    assert.ok(captured.length > 0, 'nothing was dispatched, so nothing was proved')
+    for (const call of captured) {
+      assert.equal(Object.hasOwn(call.env, 'ACP_ENABLE_TERMINAL'), false,
+        `a worker was handed the terminal opt-in: ${JSON.stringify(call.env.ACP_ENABLE_TERMINAL)}`)
+      // The env still arrives, so this is one key removed rather than a filter
+      // nobody noticed was eating everything.
+      assert.ok(call.env.ACP_AGENT_ID, 'the dispatch environment was damaged')
+      // And the reason the removal costs nothing, asserted rather than described.
+      assert.equal(call.stdio[0], 'ignore',
+        'this child can read stdin, so a terminal here would not be inert')
+    }
+  } finally {
+    if (restore === undefined) delete process.env.ACP_ENABLE_TERMINAL
+    else process.env.ACP_ENABLE_TERMINAL = restore
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 })
+  }
+})
+
 test('a palette seat\'s second leg spawns the process with the SECOND candidate\'s model/adapter/effort, for real', () => {
   const dir = mkdtempSync(join(tmpdir(), 'loop-palette-dispatch-'))
   try {

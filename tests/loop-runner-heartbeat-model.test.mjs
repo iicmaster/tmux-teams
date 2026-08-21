@@ -289,6 +289,25 @@ test('an ambient ACP_CMD never reaches a dispatched worker', () => {
   assert.equal('TMUX_TEAMS_ACP_CMD' in named, false)
 })
 
+// `acp-companion.mjs` states it in its own comment: no ordinary caller,
+// loop-runner included, may hand a lane the terminal capability. It was reaching
+// one from any shell that still had the login-mode opt-in exported —
+// `ACP_ENABLE_TERMINAL=1 node -e "childEnv().ACP_ENABLE_TERMINAL"` printed "1".
+// `acp-dispatch.mjs` had the identical shape and was closed one review round
+// earlier; this door stayed open because nobody went looking for the second one.
+//
+// This proves the FUNCTION. The call site is proved separately, in
+// tests/loop-runner-palette-dispatch.test.mjs, because deleting the childEnv()
+// call from dispatch would leave this test green.
+test('an ambient ACP_ENABLE_TERMINAL never reaches a dispatched worker', () => {
+  const ambient = childEnv({ PATH: '/bin', ACP_ENABLE_TERMINAL: '1' })
+  assert.equal('ACP_ENABLE_TERMINAL' in ambient, false, JSON.stringify(ambient))
+  assert.equal(ambient.PATH, '/bin', 'the filter ate something it was not asked to')
+  // '0' is a legal value the companion accepts, and it is dropped too: the
+  // point is that this caller never speaks about terminals at all.
+  assert.equal('ACP_ENABLE_TERMINAL' in childEnv({ PATH: '/bin', ACP_ENABLE_TERMINAL: '0' }), false)
+})
+
 // This test was named for the request and asserted only the expectation, so it
 // passed for as long as the loop demanded a model it never asked for. ACP_MODEL
 // is what makes the adapter become the name; ACP_EXPECT_MODEL is what refuses

@@ -9,10 +9,10 @@ Written 2026-08-21 through `bmad-party-mode`.
   `main` is at v0.32.0 (`6b95101`) and owes nothing.
 - Tree is clean. Version is `0.33.0` in all seven places.
 - Pull request **#71** is open. CI was red on whitespace and that is fixed.
-- **The most dangerous thing: the review of record has answered BLOCKED five
+- **The most dangerous thing: the review of record has answered BLOCKED six
   times running, and each round found defects the previous round did not — on
-  bytes that passed every automated gate every time.** Twenty-five findings, in
-  rounds of 8, 4, 6, 4, 3. Rounds two through four found defects in the previous
+  bytes that passed every automated gate every time.** Twenty-six findings, in
+  rounds of 8, 4, 6, 4, 3, 1. Rounds two through four found defects in the previous
   round's FIXES rather than in untouched code; round five found the first real
   RUNTIME defect of the series, in a validator this release had extended.
   Do not read "the suite is green" as "this is ready".
@@ -31,8 +31,8 @@ node --test > /tmp/suite.log 2>&1; grep -E '^ℹ (tests|pass|fail|skipped)' /tmp
 Green on 2026-08-21, measured on this branch, is exactly:
 
 ```
-ℹ tests 1139
-ℹ pass 1135
+ℹ tests 1141
+ℹ pass 1137
 ℹ fail 0
 ℹ skipped 4
 ```
@@ -42,7 +42,7 @@ measured 1137/1131/**2**/4 in a shell carrying ambient `ACP_*` variables — the
 state any shell is in after running a dispatch by hand. Four separate test files
 kept their own hand-written list of variables to scrub and every one was missing
 something; they scrub by `ACP_*` prefix now, and the hostile shell measures
-1139/1135/0/4 like the friendly one. Keep verifying with it, because the
+1141/1137/0/4 like the friendly one. Keep verifying with it, because the
 friendly one already agreed with you:
 
 ```bash
@@ -130,13 +130,21 @@ the login-mode stdin bridge at `acp-companion.mjs:3034`.
   plan came back `expired` — withdrawing a delivery that should have been held
   for a person. An object `spawn_nonce` was accepted too, and it is compared for
   equality against a string. Both are typed now, each with its own negative.
-- **Do not assume a dispatcher forwards only what it means to.**
-  `spawnDetached` spreads the whole caller environment, so an ambient
-  `ACP_ENABLE_TERMINAL=1` reached the companion and would have handed a DETACHED
-  lane — including a review lane — the terminal capability the companion's own
-  comment says a review lane must never gain. It is dropped now, and the reason
-  it costs nothing is asserted rather than described: that child is spawned with
-  `stdin: 'ignore'`, so such a terminal could never receive a keystroke.
+- **Do not assume a spawner forwards only what it means to — and there are TWO
+  of them.** `spawnDetached` (`acp-dispatch.mjs`) and `childEnv`
+  (`loop-runner.mjs`) each spread the whole caller environment, so an ambient
+  `ACP_ENABLE_TERMINAL=1` reached the companion and handed an ordinary lane —
+  a review lane included — the terminal capability the companion's own comment
+  says no ordinary caller may grant. Both are closed. **The second one stayed
+  open for a whole review round because this file already said "after fixing a
+  leak, go and look for the same shape somewhere else" and nobody did.**
+  The reason dropping it costs nothing is asserted rather than described: both
+  children are spawned with `stdin: 'ignore'`, so such a terminal could never
+  receive a keystroke and could not serve the login it exists for.
+  Guarded at BOTH levels, and the second one is the point: deleting the
+  `childEnv()` CALL from `dispatch` leaves the function-level test green and
+  turns only `the real dispatch path hands no terminal capability to a worker`
+  red. Measured 2 fail / 1 fail on the two mutations.
 - **Do not fix one cleanup path and stop.** `tests/loop-smoke.test.mjs` has two
   tests that delete every ambient `ACP_*` key from THIS process; round three
   fixed the restore in one and round four found the same shape in the other,
