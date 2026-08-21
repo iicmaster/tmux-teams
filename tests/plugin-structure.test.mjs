@@ -13,7 +13,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PLUGIN = join(ROOT, 'plugins/tmux-teams')
 const SKILLS = ['tmux-teams', 'party-mode', 'party-auto', 'party-advise', 'sqthink', 'codex-tmux-driver',
-  'graph-setup', 'claude-advisor', 'codex-advisor', 'agy-advisor', 'handoff', 'show-me']
+  'graph-setup', 'claude-advisor', 'codex-advisor', 'agy-advisor', 'handoff']
 const RELEASE_VERSION = '0.33.0'
 // The Stage 1 CLI entry points went on 2026-07-29 and the rest of the phase
 // subsystem — nine scripts, its gate, its store and its exporter — went on
@@ -767,4 +767,53 @@ test('every advisor carries the same contract: a party, and a model', () => {
     assert.ok(lines.some((l) => /default seat/.test(l)),
       `${name}: no invocation is marked as the default seat`)
   }
+})
+
+
+// The README named eleven skills while twelve shipped, and the missing one was
+// `show-me` — a skill the plugin delivered and its own documentation never
+// mentioned. Nothing caught that, because `SKILLS` and the README were two
+// hand-kept lists with no relationship. This is the relationship. It was
+// proposed in a pull request offering a vendor-neutral delegation guide; the
+// guide was declined and this half was kept, which is why it is here and not
+// there.
+test('every shipped skill is named in the README, and the README names no skill that is not shipped', () => {
+  const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
+  const named = new Set([...readme.matchAll(/`tmux-teams:([a-z0-9-]+)`/g)].map((m) => m[1]))
+  // `tmux-teams:tmux-teams` is the plugin's own entry skill and is named the
+  // same as the plugin, so it appears in prose that is not an inventory line.
+  const shipped = new Set(SKILLS)
+  const undocumented = [...shipped].filter((s) => !named.has(s)).sort()
+  const phantom = [...named].filter((s) => !shipped.has(s)).sort()
+  assert.deepEqual(undocumented, [],
+    `these skills ship and the README never names them: ${undocumented.join(', ')}`)
+  assert.deepEqual(phantom, [],
+    `the README names skills that are not shipped: ${phantom.join(', ')}`)
+})
+
+// Agent Plugins 1.0 asks for client-specific material under a reverse-domain
+// namespace. Claude Code cannot read one: measured from the installed binary's
+// own strings, it recognises plugin content by finding `.claude-plugin/` — or a
+// top-level `commands/`, `skills/`, `agents/`, `hooks/`, `themes/`,
+// `output-styles/`, `monitors/`, `workflows/`, `SKILL.md`, `.mcp.json` or
+// `.lsp.json` — and contains no occurrence of `agent-plugins.org` at all.
+//
+// So these paths are load-bearing for INSTALLATION, and until this test no
+// gate watched them: every existing check reads a known path and asserts its
+// CONTENTS, so a move that updated the hard-coded paths would keep the suite
+// green while making the plugin uninstallable. Written BEFORE anything moves,
+// on purpose — a test written afterwards confirms what was done rather than
+// checking whether it was right.
+test('the paths Claude Code needs to recognise this plugin are where it looks for them', () => {
+  for (const required of ['.claude-plugin/plugin.json', '.mcp.json', 'skills']) {
+    assert.ok(existsSync(join(PLUGIN, required)),
+      `${required} is missing from the plugin root — Claude Code finds plugin content by these names`)
+  }
+  // And the vendor-neutral pair, which is how this repository already answers
+  // the same conflict for one file: two registrations, deliberately different,
+  // side by side.
+  assert.ok(existsSync(join(PLUGIN, 'plugin.json')),
+    'the vendor-neutral Agent Plugins manifest is missing')
+  assert.ok(existsSync(join(PLUGIN, 'mcp.json')),
+    'the vendor-neutral MCP registration is missing')
 })
