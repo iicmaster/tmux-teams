@@ -211,15 +211,31 @@ process, and speaks the minimum of ACP needed to complete one turn —
 process is torn down (SIGTERM then SIGKILL) whether it finishes, times out, or
 refuses, bounded by a twenty-second per-lane ceiling. The result is classified
 into a closed SIGNAL shape before this file ever sees it — `reachable`,
-`quota_exhausted`, `probe_timeout`, `executable_missing`, or `unclassified` —
-and the classifier (`classifyProbe`) reads only that shape, never a byte of
-stdout or stderr. The same outbound contract this whole document already
-states for `acp_lane_status` — a failure is a code from a closed set with a
-constant sentence, never the raw exception — applies here without
+`quota_exhausted`, `probe_timeout`, `executable_missing`, `executable_unusable`
+or `unclassified` — and the classifier (`classifyProbe`) reads only that shape,
+never a byte of stdout or stderr. The same outbound contract this whole document
+already states for `acp_lane_status` — a failure is a code from a closed set
+with a constant sentence, never the raw exception — applies here without
 exception, and the actual bytes a provider sends back (including whatever a
 quota refusal or an auth refusal says in its own words) are read by the
-transport ONLY to set one boolean (`quotaSignal`) and then discarded; they
-never reach a return value, a log this server owns, or a reply.
+transport ONLY to set one boolean (`quotaSignal`); they never reach a return
+value, a log this server owns, or a reply.
+
+**Amended again, 2026-08-22, and the shape of the correction is the point.**
+This section listed FIVE codes and the transport now produces six: a PR review
+bot found that every spawn failure was answering `executable_missing`, so
+`EACCES` and `EPERM` — found, and this process may not run it — sent an
+operator to install a file that was already there. That is
+`executable_unusable`. The same review found that the quota regex was tested
+against each stream chunk in isolation, so a refusal split across two `data`
+events was missed; detection now runs over a **bounded 64-byte rolling tail**,
+which is a small correction to the sentence above: bytes are held for the
+length of that tail rather than examined and dropped within one chunk. Nothing
+about where they may go changed. The internal `settled` shapes also grew —
+`refused`, `cancelled` and `invalid_handshake` join `response`, `exit`,
+`timeout` and `spawn_error` — because three paths used to reach the twenty-
+second ceiling instead of settling, and one reported a cancelled turn as a
+real answer.
 
 **What is still never done, and this is the amendment's whole boundary.**
 

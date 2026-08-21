@@ -117,16 +117,19 @@ export const DIAGNOSTICS = Object.freeze({
   environment_unspawnable: 'the environment this lane would launch with cannot start a process',
   environment_over_budget: 'the environment this lane would launch with is larger than this gate allows',
   unclassified: 'the lane refused for a reason this server does not classify; run the gate for the detail',
-  // Added for `acp_lane_probe` — these two are outcomes a LIVE attempt can
-  // learn that `acp_lane_status` structurally cannot, because it contacts
-  // nothing. Everything else a live attempt can go wrong in collapses onto
-  // `executable_missing` (the process never started) or `unclassified` (it
-  // started and did not finish a turn, for a reason not confidently telling
-  // quota from something else): the closed set stays small on purpose, and a
-  // code is added here only once the transport can genuinely tell it apart
-  // from a signal, never from provider text.
+  // Added for `acp_lane_probe` — three outcomes a LIVE attempt can learn that
+  // `acp_lane_status` structurally cannot, because it contacts nothing. A code
+  // is added here only once the transport can genuinely tell it apart from a
+  // signal, never from provider text; anything that does not clear that bar
+  // stays `unclassified`.
   quota_exhausted: 'the endpoint answered and reported no quota remaining for this credential',
   probe_timeout: 'the lane did not complete a trivial prompt within the probe timeout',
+  // A live spawn failure the parent-side check can never see: EACCES/EPERM
+  // means the resolved candidate EXISTS and this process is refused
+  // permission to run it, which is a different repair from `executable_missing`
+  // ("was not found") and a false one if told the same sentence — installing
+  // or relocating a file that is already sitting right there fixes nothing.
+  executable_unusable: 'an executable this lane needs was found but this process is not permitted to run it',
 })
 
 // Classification reads the exception and keeps only which BUCKET it fell into.
@@ -451,14 +454,36 @@ const PROBE_CRASHED = 'the probe crashed before producing a classified result'
 //   { settled: 'exit', code, quotaSignal }       the process exited before finishing the turn;
 //                                                 quotaSignal is a boolean the TRANSPORT decided,
 //                                                 never the bytes that decided it
+//   { settled: 'refused', quotaSignal }          session/prompt came back a JSON-RPC error and the
+//                                                 process did NOT exit — no 'exit' event is coming,
+//                                                 so this is the only place left that can still see
+//                                                 whatever quotaSignal was already true by then
+//   { settled: 'invalid_handshake' }             session/new succeeded with no sessionId
+//   { settled: 'cancelled' }                     session/prompt completed carrying
+//                                                 stopReason: 'cancelled' — a round trip, not an answer
 // `classifyProbe` reads only this shape. It is exported and pure so a test
 // can drive every branch with a plain object and never a subprocess.
 export function classifyProbe(result) {
   if (!result || typeof result !== 'object') return 'unclassified'
   if (result.settled === 'response') return null
   if (result.settled === 'timeout') return 'probe_timeout'
-  if (result.settled === 'spawn_error') return 'executable_missing'
+  if (result.settled === 'spawn_error') {
+    // ENOENT is "not found"; EACCES/EPERM is "found, and this process may not
+    // run it" — a permissions problem, not a missing binary. Collapsing both
+    // onto one code sent an operator to install or relocate a file that was
+    // already sitting right there.
+    return result.errnoCode === 'EACCES' || result.errnoCode === 'EPERM'
+      ? 'executable_unusable' : 'executable_missing'
+  }
   if (result.settled === 'exit' && result.quotaSignal === true) return 'quota_exhausted'
+  if (result.settled === 'refused') return result.quotaSignal === true ? 'quota_exhausted' : 'unclassified'
+  // These two return what the default below returns, and deleting this line
+  // leaves the suite at 69/0 — measured, so it is written down rather than
+  // presented as a guard. It is a PIN, not a decision: it fixes the answer for
+  // two shapes this release introduced, so that changing the catch-all cannot
+  // silently reclassify a cancelled turn or a handshake with no session as
+  // something a caller would act on.
+  if (result.settled === 'invalid_handshake' || result.settled === 'cancelled') return 'unclassified'
   return 'unclassified'
 }
 
@@ -486,9 +511,21 @@ export async function realProbeTransport({ command, env, timeoutMs }) {
       done = true
       clearTimeout(timer)
       if (killTimer) clearTimeout(killTimer)
-      if (child && child.exitCode === null && child.signalCode === null) {
+      // `pid` unset means the process never actually forked (a synchronous
+      // spawn() throw, or an async 'error' before any pid was assigned) — no
+      // 'exit' event is guaranteed for that shape on every platform, and
+      // waiting for one would trade a fast, correct classification for a
+      // probe that never settles. A child that DID fork is signalled and this
+      // promise now waits for its REAL 'exit' before resolving: settling on
+      // SIGTERM/SIGKILL alone let `probeLanes`'s own sequential loop start the
+      // NEXT lane's spawn while this one was still tearing down through the
+      // kill grace window, contradicting the one-budget-at-a-time comment
+      // above `probeLanes`.
+      if (child?.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+        child.once('exit', () => settle(result))
         try { child.kill('SIGTERM') } catch { /* already gone */ }
         killTimer = setTimeout(() => { try { child.kill('SIGKILL') } catch { /* already gone */ } }, 2000)
+        return
       }
       settle(result)
     }
@@ -507,13 +544,47 @@ export async function realProbeTransport({ command, env, timeoutMs }) {
       spawnFailed = true
       finish({ settled: 'spawn_error', errnoCode: error?.code ?? null })
     })
+    // A child that closes fd 0 at the OS level while staying alive (a
+    // non-Node adapter closing its input pipe, or exiting its read loop
+    // without exiting the process) delivers the parent's NEXT
+    // `child.stdin.write()` as an async 'error' event — measured directly:
+    // `write()` itself returns `false` with no throw, so the try/catch inside
+    // `send()`/`replyToChild()` below is a no-op, and the event fires after
+    // the call already returned. Swallowing here is correct, not a shortcut:
+    // the child's own `exit`/`error` handlers above already carry what
+    // happened; this listener only stops the write-side echo of that same
+    // event from becoming an unhandled one that kills the whole server.
+    child.stdin.on('error', () => {})
 
     // A provider's own wording never leaves this function — this boolean is
     // the ONLY thing either stream is allowed to produce for the caller.
     let quotaSignal = false
     const QUOTA_SIGNAL = /\b(quota|rate.?limit(?:ed)?|429|insufficient_quota|resource_exhausted)\b/i
-    const noteQuotaSignal = (chunk) => { if (QUOTA_SIGNAL.test(String(chunk))) quotaSignal = true }
-    child.stderr.on('data', noteQuotaSignal)
+    // Measured, not theoretical: two ordinary back-to-back writes of one word
+    // split across the write boundary ('resource_' then 'exhausted') arrived
+    // as two SEPARATE 'data' events in the majority of trials, and neither
+    // half alone matches. Testing each chunk in isolation misses the signal
+    // at a high rate. Carry a bounded TAIL of the previous chunk into the next
+    // test instead — the same reason the JSON-RPC line parser below
+    // accumulates into `buf` rather than trusting chunk boundaries. The cap is
+    // bytes, not lines: an agent that never stops talking must not grow this
+    // without bound, and every word this regex matches is under 20 bytes, so a
+    // tail many times that length still catches a split across any boundary.
+    const QUOTA_TAIL_CAP = 64
+    const makeQuotaWatcher = () => {
+      let tail = ''
+      return (chunk) => {
+        const text = tail + String(chunk)
+        if (QUOTA_SIGNAL.test(text)) quotaSignal = true
+        tail = text.slice(-QUOTA_TAIL_CAP)
+      }
+    }
+    // One watcher per stream: stderr and stdout arrive on independent OS
+    // pipes, so a tail built from one must never be tested against a chunk
+    // from the other.
+    const noteStderrQuotaSignal = makeQuotaWatcher()
+    const noteStdoutQuotaSignal = makeQuotaWatcher()
+    child.stderr.on('data', noteStderrQuotaSignal)
 
     // One JSON-RPC line at a time, id-correlated, exactly the framing this
     // server itself speaks on its own stdio — the difference is this side is
@@ -541,7 +612,7 @@ export async function realProbeTransport({ command, env, timeoutMs }) {
     }
 
     child.stdout.on('data', (chunk) => {
-      noteQuotaSignal(chunk)
+      noteStdoutQuotaSignal(chunk)
       outBytes += chunk.length
       if (outBytes > OUT_CAP) return
       buf += chunk
@@ -586,14 +657,30 @@ export async function realProbeTransport({ command, env, timeoutMs }) {
           clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
         })
         const session = await send('session/new', { cwd: tmpdir(), mcpServers: [] })
-        if (!session?.sessionId) return
-        await send('session/prompt', { sessionId: session.sessionId, prompt: [{ type: 'text', text: PROBE_BRIEF }] })
-        finish({ settled: 'response' })
+        // A well-formed success can still omit `sessionId` — nothing upstream
+        // validates the shape of a session/new result. Returning with nothing
+        // settled here left only the 20s timeout to close this out, reporting
+        // a lane that answered an invalid handshake immediately as one that
+        // never answered at all.
+        if (!session?.sessionId) { finish({ settled: 'invalid_handshake' }); return }
+        const result = await send('session/prompt',
+          { sessionId: session.sessionId, prompt: [{ type: 'text', text: PROBE_BRIEF }] })
+        // `stopReason: 'cancelled'` is what comes back when the turn itself
+        // was cut short — including by our OWN `replyToChild` above, which
+        // never grants a permission request. The round trip completed, but no
+        // answer was produced, which is not the claim `settled: 'response'`
+        // makes: treating any non-error result as reachable let a cancelled
+        // turn report the same as a real one.
+        finish({ settled: result?.stopReason === 'cancelled' ? 'cancelled' : 'response' })
       } catch {
-        // A rejected request is the child refusing (auth, quota, malformed
-        // reply) or dying mid-handshake. Either way the `exit` handler above,
-        // or the timeout, already carries the honest signal — this catch only
-        // stops that rejection from becoming an unhandled one.
+        // A rejected request means the child refused (auth, quota, malformed
+        // reply) WITHOUT exiting — the `exit` handler above cannot help here
+        // because the process is still alive, so the 20s timeout used to be
+        // the only thing that settled this, discarding an already-true
+        // quotaSignal for the entire wait and reporting the wrong code after
+        // the longest possible delay. Settle now with whatever this call
+        // already knows.
+        finish({ settled: 'refused', quotaSignal })
       }
     })()
   })
@@ -670,7 +757,8 @@ async function probeOneLane(id, profile, env, transport) {
     probe: 'unreachable',
     configuration: status.configuration,
     problem: { code, detail: DIAGNOSTICS[code] },
-    fixes: code === 'executable_missing' ? executableFixes(id, profile) : [],
+    fixes: (code === 'executable_missing' || code === 'executable_unusable')
+      ? executableFixes(id, profile) : [],
     notProven: PROBE_NOT_PROVEN,
   }
 }
@@ -1048,6 +1136,17 @@ export function handle(message, env = process.env, deps) {
 }
 
 export function serve({ input = process.stdin, output = process.stdout, env = process.env, deps } = {}) {
+  // A host that closes its read pipe mid-call (disconnect, exit) delivers the
+  // NEXT output.write() as an async 'error' event on the stream itself, not a
+  // promise rejection — the `.catch(() => {})` a few lines below cannot see
+  // it, because it backstops a rejecting `handle()`, a different failure than
+  // a write-side EPIPE. This project has already lost a whole run to this
+  // exact shape on a child's stdin (acp-review-client.mjs, acp-dispatch.mjs);
+  // `output` gets the same swallow-and-move-on guard for the same reason: the
+  // caller who broke the pipe already lost this reply, and nothing here can
+  // un-break it, so an unhandled 'error' event killing every OTHER lane's
+  // in-flight or queued result is a worse outcome than one lost write.
+  output.on('error', () => {})
   const lines = createInterface({ input })
   lines.on('line', (line) => {
     const text = line.trim()

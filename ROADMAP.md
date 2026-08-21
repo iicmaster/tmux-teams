@@ -482,6 +482,25 @@ would. Rounds two through four found defects in the previous round's FIXES
 rather than in untouched code; round five found the first real runtime defect,
 in a validator this release had itself extended.
 
+**And then a second reviewer, unread for the whole cycle, had 26 more.** The PR
+review bot's findings do not live in the review BODY — that is boilerplate —
+they are inline comments, and this session twice reported "no suggestions" after
+reading only the body. Triaged against the current bytes by four readers with
+two adversarial verifiers each: 2 already fixed, 4 not defects with the design
+comment quoted, **15 confirmed and closed here**, three of them ship-blocking.
+
+Two were unhandled stream `'error'` events that would take the whole MCP server
+down on a broken pipe — a bug class this repository had already found and fixed
+in two sibling files, and did not carry across to the one v0.33.0 added. The
+third was a Gemini 3.1 seat reachable through an account default: the
+prohibition was enforced on the model REQUESTED and a seat declaring
+`INHERIT_ACCOUNT_DEFAULT` requests none, so nothing was checked. It is enforced
+on the identity the session reports back now.
+
+**Eight of the fifteen were in `acp-lanes-mcp.mjs`, which no review round ever
+opened.** Seven rounds read the dispatcher, the companion, the loop and the
+documents. The file this release ADDED was the one nobody looked at.
+
 `scripts/gate-required.mjs` still answers REQUIRED, and will keep doing so: it
 is fail-closed and reads no waiver. **Report that as a fact, not as a veto.**
 This paragraph said "no review of record has been accepted" and "the panel is

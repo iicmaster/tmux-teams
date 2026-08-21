@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname, isAbsolute } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { spawn } from 'node:child_process'
 
@@ -296,9 +296,12 @@ test('every diagnostic code the classifier can return has a constant sentence', 
     'settings_unreadable', 'credential_unreadable', 'profile_incomplete',
     'executable_missing', 'environment_unspawnable', 'environment_over_budget',
     'unclassified',
-    // Added for `acp_lane_probe` — the two outcomes a LIVE attempt can learn
-    // that config-time checking structurally cannot.
-    'quota_exhausted', 'probe_timeout']
+    // Added for `acp_lane_probe` — the outcomes a LIVE attempt can learn that
+    // config-time checking structurally cannot: quota/timeout are two
+    // providers can trigger, and `executable_unusable` is EACCES/EPERM told
+    // apart from ENOENT, which the parent-side check never spawns anything to
+    // observe.
+    'quota_exhausted', 'probe_timeout', 'executable_unusable']
   assert.deepEqual(Object.keys(DIAGNOSTICS).sort(), [...codes].sort())
   // and the classifier maps real messages onto them rather than onto `unclassified`
   assert.equal(classify('zai review requires ANTHROPIC_BASE_URL'), 'endpoint_missing')
@@ -1820,9 +1823,21 @@ test('classifyProbe maps a closed SIGNAL shape onto a closed code, never onto te
   assert.equal(classifyProbe({ settled: 'response' }), null, 'a real reply is success, not a problem code')
   assert.equal(classifyProbe({ settled: 'timeout' }), 'probe_timeout')
   assert.equal(classifyProbe({ settled: 'spawn_error', errnoCode: 'ENOENT' }), 'executable_missing')
+  // EACCES and EPERM are BOTH "found, not permitted" — not just the one this
+  // machine's own EACCES repro happens to produce. Asserting only EACCES left
+  // the EPERM half of the `||` unreached by any test.
+  assert.equal(classifyProbe({ settled: 'spawn_error', errnoCode: 'EACCES' }), 'executable_unusable')
+  assert.equal(classifyProbe({ settled: 'spawn_error', errnoCode: 'EPERM' }), 'executable_unusable')
   assert.equal(classifyProbe({ settled: 'exit', code: 1, quotaSignal: true }), 'quota_exhausted')
   assert.equal(classifyProbe({ settled: 'exit', code: 1, quotaSignal: false }), 'unclassified')
   assert.equal(classifyProbe({ settled: 'exit', code: 0, quotaSignal: false }), 'unclassified')
+  // The three shapes only a JSON-RPC-level refusal or a malformed handshake
+  // produces — none of them settle 'exit', so they had no coverage above.
+  assert.equal(classifyProbe({ settled: 'refused', quotaSignal: true }), 'quota_exhausted')
+  assert.equal(classifyProbe({ settled: 'refused', quotaSignal: false }), 'unclassified')
+  assert.equal(classifyProbe({ settled: 'refused' }), 'unclassified')
+  assert.equal(classifyProbe({ settled: 'invalid_handshake' }), 'unclassified')
+  assert.equal(classifyProbe({ settled: 'cancelled' }), 'unclassified')
   // A misbehaving or future transport gets the honest catch-all, never a crash
   // and never a guess dressed as a specific answer.
   assert.equal(classifyProbe(null), 'unclassified')
@@ -1833,7 +1848,11 @@ test('classifyProbe maps a closed SIGNAL shape onto a closed code, never onto te
   // the closed set — a code `classifyProbe` can return that `DIAGNOSTICS` does
   // not know is a detail sentence nobody wrote.
   for (const shape of [{ settled: 'timeout' }, { settled: 'spawn_error' },
-    { settled: 'exit', quotaSignal: true }, { settled: 'exit' }, {}]) {
+    { settled: 'spawn_error', errnoCode: 'ENOENT' }, { settled: 'spawn_error', errnoCode: 'EACCES' },
+    { settled: 'spawn_error', errnoCode: 'EPERM' },
+    { settled: 'exit', quotaSignal: true }, { settled: 'exit' },
+    { settled: 'refused', quotaSignal: true }, { settled: 'refused' },
+    { settled: 'invalid_handshake' }, { settled: 'cancelled' }, {}]) {
     const code = classifyProbe(shape)
     assert.ok(code === null || Object.hasOwn(DIAGNOSTICS, code),
       `classifyProbe(${JSON.stringify(shape)}) returned ${code}, which DIAGNOSTICS does not define`)
@@ -2071,4 +2090,281 @@ test('the real probe transport speaks to an agent and reads what comes back', as
   assert.equal(missing.settled, 'spawn_error')
   assert.equal(missing.errnoCode, 'ENOENT', `spawn failure reported ${missing.errnoCode}`)
   assert.equal(missing.message, undefined, 'the transport leaked a message onto its result')
+})
+
+// ## Eight findings against the live probe, each reproduced for real
+//
+// A unit test of a helper proves nothing about a STREAM. Every test below that
+// claims to guard an async 'error' event spawns a real, separate OS process —
+// the real server for the output.write() case, a harness subprocess for the
+// child.stdin case — so an unguarded crash kills only that child, never this
+// test run, and the assertion is "did the child survive", not "was a guard
+// function called".
+
+test('serve() survives output.write() EPIPE — a host that disconnects mid-call does not take the whole server down', async () => {
+  const script = join(PLUGIN, 'skills', 'party-mode', 'scripts', 'acp-lanes-mcp.mjs')
+  const child = spawn(process.execPath, [script], { stdio: ['pipe', 'pipe', 'pipe'] })
+  try {
+    let out = ''
+    let stderr = ''
+    child.stdout.on('data', (d) => { out += d })
+    child.stderr.on('data', (d) => { stderr += d })
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' })}\n`)
+    const upDeadline = Date.now() + 5000
+    while (Date.now() < upDeadline && out.split('\n').filter(Boolean).length < 1) {
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    assert.equal(out.split('\n').filter(Boolean).length, 1,
+      'the server never answered an ordinary request before the pipe was broken')
+    // NOW break the pipe — the moral equivalent of piping the server through
+    // `head -c 10`, which is exactly how the finding measured this. Several
+    // writes follow so at least one lands after the close actually takes.
+    child.stdout.destroy()
+    for (let i = 0; i < 5; i += 1) {
+      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 10 + i, method: 'ping' })}\n`)
+      await new Promise((r) => setTimeout(r, 20))
+    }
+    await new Promise((r) => setTimeout(r, 500))
+    assert.equal(child.exitCode, null, `the server crashed on a write to a closed pipe: ${stderr}`)
+    assert.equal(child.signalCode, null, `the server was killed rather than surviving: ${stderr}`)
+    assert.ok(!/Unhandled ['"]error['"] event|write EPIPE/.test(stderr),
+      `an unhandled stream error reached the process: ${stderr}`)
+  } finally {
+    child.kill('SIGKILL')
+  }
+})
+
+test('realProbeTransport survives child.stdin.write() EPIPE — a child that closes stdin while staying alive does not crash the caller', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-stdin-epipe-'))
+  try {
+    const targetUrl = pathToFileURL(
+      join(PLUGIN, 'skills', 'party-mode', 'scripts', 'acp-lanes-mcp.mjs')).href
+    const stub = join(dir, 'close-after-initialize.cjs')
+    // Answers `initialize`, THEN closes its own fd 0 and stays alive. The
+    // close happens causally AFTER the parent's first write already landed —
+    // it rides on the reply the parent must first receive and act on — so the
+    // parent's NEXT write (session/new) is guaranteed to hit a closed pipe,
+    // rather than racing an unconditional close against process startup.
+    writeFileSync(stub, [
+      "const fs = require('fs')",
+      "const readline = require('readline')",
+      "const rl = readline.createInterface({ input: process.stdin })",
+      "rl.on('line', (line) => {",
+      '  let message',
+      '  try { message = JSON.parse(line) } catch { return }',
+      "  if (message.method === 'initialize') {",
+      "    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id,",
+      "      result: { protocolVersion: 1 } }) + '\\n')",
+      '    fs.closeSync(0)',
+      '  }',
+      '})',
+      'setInterval(() => {}, 1000)',
+    ].join('\n'))
+    const harness = join(dir, 'harness.mjs')
+    // Runs realProbeTransport in ITS OWN process: if the fix is missing, the
+    // unhandled 'error' event crashes THIS harness, not the test runner —
+    // exactly the isolation an in-process call could not give us.
+    writeFileSync(harness, [
+      `import { realProbeTransport } from ${JSON.stringify(targetUrl)}`,
+      'const result = await realProbeTransport({',
+      `  command: [process.execPath, ${JSON.stringify(stub)}],`,
+      '  env: process.env,',
+      '  timeoutMs: 1500,',
+      '})',
+      "process.stdout.write('RESULT:' + JSON.stringify(result) + '\\n')",
+    ].join('\n'))
+    const out = spawnSync(process.execPath, [harness], { encoding: 'utf8', timeout: 8000 })
+    assert.equal(out.status, 0,
+      `the harness crashed instead of the promise settling: ${out.stderr}`)
+    assert.ok(!/Unhandled ['"]error['"] event|write EPIPE/.test(out.stderr ?? ''),
+      `an unhandled EPIPE reached the process: ${out.stderr}`)
+    const line = (out.stdout ?? '').split('\n').find((l) => l.startsWith('RESULT:'))
+    assert.ok(line, `realProbeTransport never settled — stdout=${out.stdout} stderr=${out.stderr}`)
+    const result = JSON.parse(line.slice('RESULT:'.length))
+    assert.equal(result.settled, 'timeout',
+      'a child that answered once and then closed its stdin should time out, not crash first')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a quota signal split across two stderr chunks is still detected, not defeated by chunk boundaries', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-quota-split-'))
+  try {
+    const script = join(dir, 'split-quota.cjs')
+    // Two ordinary, separate writes with a real gap between them — the shape
+    // the finding measured splitting across 'data' events at a high rate.
+    // Neither half alone ('resource_' / 'exhausted') matches QUOTA_SIGNAL.
+    writeFileSync(script, [
+      "process.stderr.write('resource_')",
+      "setTimeout(() => { process.stderr.write('exhausted'); process.exit(1) }, 50)",
+    ].join('\n'))
+    const result = await realProbeTransport({
+      command: [process.execPath, script], env: process.env, timeoutMs: 4000,
+    })
+    assert.equal(result.settled, 'exit')
+    assert.equal(result.quotaSignal, true,
+      'a quota signal split across two writes was missed by testing each chunk in isolation')
+    assert.equal(classifyProbe(result), 'quota_exhausted')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a JSON-RPC error on session/prompt while quota is already signalled settles immediately, not after the full probe timeout', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-refused-quota-'))
+  try {
+    const script = join(dir, 'refuse-and-stay-alive.cjs')
+    // Answers the handshake, prints a quota-shaped line, then answers
+    // session/prompt with a JSON-RPC ERROR and never exits — an adapter
+    // idling for more input, not one that died mid-turn.
+    writeFileSync(script, [
+      "const readline = require('readline')",
+      "process.stderr.write('429 rate limited, please retry later\\n')",
+      "const rl = readline.createInterface({ input: process.stdin })",
+      "rl.on('line', (line) => {",
+      '  let message',
+      '  try { message = JSON.parse(line) } catch { return }',
+      '  const reply = (result) => process.stdout.write(',
+      "    JSON.stringify({ jsonrpc: '2.0', id: message.id, result }) + '\\n')",
+      "  if (message.method === 'initialize') reply({ protocolVersion: 1 })",
+      "  else if (message.method === 'session/new') reply({ sessionId: 'stub' })",
+      "  else if (message.method === 'session/prompt') {",
+      '    process.stdout.write(JSON.stringify({',
+      "      jsonrpc: '2.0', id: message.id, error: { code: -32000, message: 'refused' } }) + '\\n')",
+      '  }',
+      '})',
+    ].join('\n'))
+    const started = Date.now()
+    const result = await realProbeTransport({
+      command: [process.execPath, script], env: process.env, timeoutMs: 6000,
+    })
+    const elapsed = Date.now() - started
+    assert.ok(elapsed < 2000,
+      `settling an already-signalled refusal took ${elapsed}ms — it must not wait for the full timeout`)
+    assert.equal(result.settled, 'refused')
+    assert.equal(result.quotaSignal, true)
+    assert.equal(classifyProbe(result), 'quota_exhausted')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('finish() does not settle until a killed child has actually exited', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-finish-waits-'))
+  const pidFile = join(dir, 'pid')
+  try {
+    const script = join(dir, 'ignore-term.cjs')
+    // Ignores SIGTERM on purpose, forcing the kill ladder all the way to
+    // SIGKILL — a `finish()` that settles as soon as it SENDS a signal, rather
+    // than once the child's own 'exit' event confirms it, resolves while this
+    // process is still alive.
+    writeFileSync(script, [
+      "const fs = require('fs')",
+      `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))`,
+      "process.on('SIGTERM', () => {})",
+      'setInterval(() => {}, 1000)',
+    ].join('\n'))
+    const result = await realProbeTransport({
+      command: [process.execPath, script], env: process.env, timeoutMs: 300,
+    })
+    assert.equal(result.settled, 'timeout')
+    const pid = Number(readFileSync(pidFile, 'utf8'))
+    let alive = true
+    try { process.kill(pid, 0) } catch { alive = false }
+    assert.equal(alive, false,
+      'realProbeTransport resolved while the killed child was still alive — probeLanes\' next lane could start spawning over it')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a session/prompt that completes with stopReason cancelled is not reported reachable', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-cancelled-'))
+  try {
+    const script = join(dir, 'cancelled-turn.cjs')
+    writeFileSync(script, [
+      "const readline = require('readline')",
+      "const rl = readline.createInterface({ input: process.stdin })",
+      "rl.on('line', (line) => {",
+      '  let message',
+      '  try { message = JSON.parse(line) } catch { return }',
+      '  const reply = (result) => process.stdout.write(',
+      "    JSON.stringify({ jsonrpc: '2.0', id: message.id, result }) + '\\n')",
+      "  if (message.method === 'initialize') reply({ protocolVersion: 1 })",
+      "  else if (message.method === 'session/new') reply({ sessionId: 'stub' })",
+      "  else if (message.method === 'session/prompt') reply({ stopReason: 'cancelled' })",
+      '})',
+    ].join('\n'))
+    const result = await realProbeTransport({
+      command: [process.execPath, script], env: process.env, timeoutMs: 4000,
+    })
+    assert.equal(result.settled, 'cancelled',
+      'a completed round trip carrying stopReason cancelled was reported the same as a real answer')
+    assert.notEqual(classifyProbe(result), null, 'a cancelled turn was classified reachable')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a spawn failure from a non-executable file is EACCES, told apart from ENOENT', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-eacces-'))
+  try {
+    const notExecutable = join(dir, 'not-executable')
+    writeFileSync(notExecutable, '#!/bin/sh\necho hi\n')
+    chmodSync(notExecutable, 0o644) // exists, but no execute bit for anybody
+    const result = await realProbeTransport({
+      command: [notExecutable], env: process.env, timeoutMs: 4000,
+    })
+    assert.equal(result.settled, 'spawn_error')
+    assert.equal(result.errnoCode, 'EACCES', `spawn failure reported ${result.errnoCode}`)
+    assert.equal(classifyProbe(result), 'executable_unusable',
+      'a permission problem was classified the same as a missing file')
+    assert.notEqual(classifyProbe(result), 'executable_missing')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an EACCES spawn failure reaches the operator with its own sentence and its own fixes, not the missing-file one', async () => {
+  const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+  const transport = async () => ({ settled: 'spawn_error', errnoCode: 'EACCES' })
+  const { payload } = await callProbe({ lanes: ['claude'] }, bare, transport)
+  const [lane] = payload.lanes
+  assert.equal(lane.problem.code, 'executable_unusable')
+  assert.equal(lane.problem.detail, DIAGNOSTICS.executable_unusable)
+  assert.notEqual(lane.problem.detail, DIAGNOSTICS.executable_missing,
+    'an EACCES failure was told with the "not found" sentence, which is false for a file that exists')
+  assert.ok(lane.fixes.length > 0, 'an EACCES failure produced no fix at all')
+})
+
+test('a session/new success with no sessionId settles immediately as an invalid handshake, not after the full probe timeout', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-no-sessionid-'))
+  try {
+    const script = join(dir, 'no-session-id.cjs')
+    writeFileSync(script, [
+      "const readline = require('readline')",
+      "const rl = readline.createInterface({ input: process.stdin })",
+      "rl.on('line', (line) => {",
+      '  let message',
+      '  try { message = JSON.parse(line) } catch { return }',
+      '  const reply = (result) => process.stdout.write(',
+      "    JSON.stringify({ jsonrpc: '2.0', id: message.id, result }) + '\\n')",
+      "  if (message.method === 'initialize') reply({ protocolVersion: 1 })",
+      "  else if (message.method === 'session/new') reply({})",
+      '  // Never answers session/prompt, never exits.',
+      '})',
+    ].join('\n'))
+    const started = Date.now()
+    const result = await realProbeTransport({
+      command: [process.execPath, script], env: process.env, timeoutMs: 6000,
+    })
+    const elapsed = Date.now() - started
+    assert.ok(elapsed < 2000,
+      `settling an invalid handshake took ${elapsed}ms — it must not wait for the full probe timeout`)
+    assert.equal(result.settled, 'invalid_handshake')
+    assert.equal(classifyProbe(result), 'unclassified')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

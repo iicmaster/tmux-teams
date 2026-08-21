@@ -90,6 +90,19 @@ async function waitForPidGone(pid, timeoutMs = 3000) {
   return true
 }
 
+// Returns the text of an INTACT "[terminal:<id>] " mirrored line — one whole
+// regex line starting with the label and running to the next newline (or end
+// of stream). A mirror that split the label into the middle of the line
+// either fails to match this at all, or matches a line whose captured text
+// still contains the raw bytes/label fragment the split left behind — either
+// way the caller's exact-string comparison against the clean expected line
+// is what actually proves the split did not happen, not this helper alone.
+function redactedMirrorLine(stderr, terminalId) {
+  const escaped = terminalId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = stderr.match(new RegExp(`^\\[terminal:${escaped}\\] (.*)$`, 'm'))
+  return match ? match[1] : null
+}
+
 function initializeCall(run) {
   const calls = run.requests.filter((entry) => entry.method === 'initialize')
   assert.ok(calls.length > 0,
@@ -279,4 +292,135 @@ test('a live terminal child is killed at companion teardown, not left running', 
   assert.ok(Number.isInteger(pid) && pid > 0, `unexpected pid file contents: ${pid}`)
   const gone = await waitForPidGone(pid)
   assert.ok(gone, `terminal child pid ${pid} is still alive after the companion exited — an orphan`)
+})
+
+test('a terminal child that traps SIGTERM is still reaped, via SIGKILL escalation', async () => {
+  // The mock installs a no-op SIGTERM handler before it loops — the shape a
+  // real login command with its own signal handling (or `trap "" TERM`) can
+  // present. killAllLiveTerminals sending a single SIGTERM and never
+  // escalating would leave this child running past companion teardown, and
+  // its open stdio pipes would keep the companion's own event loop alive —
+  // this is also what runCompanion's own `result.signal === null` assertion
+  // catches: without the escalation, the companion never exits within the
+  // harness's 20s spawnSync timeout and that assertion fails first.
+  const run = runCompanion('task-term-sigterm-trap', {
+    ACP_ENABLE_TERMINAL: '1',
+    MOCK_SCENARIO: 'terminal-sigterm-trap',
+    ACP_TERMINAL_KILL_GRACE_MS: '200',
+  })
+  assert.equal(run.status, 0, `expected a clean dispatch; stderr:\n${run.stderr}`)
+  const pidFile = join(run.cwd, 'terminal-sigterm-trap-pid')
+  assert.ok(existsSync(pidFile),
+    `the spawned terminal never wrote its own pid — it may never have started; stderr:\n${run.stderr}`)
+  const pid = Number(readFileSync(pidFile, 'utf8').trim())
+  assert.ok(Number.isInteger(pid) && pid > 0, `unexpected pid file contents: ${pid}`)
+  const gone = await waitForPidGone(pid)
+  assert.ok(gone,
+    `terminal child pid ${pid} ignored SIGTERM and outlived the companion — SIGKILL escalation never fired`)
+})
+
+test('a RELEASED terminal that traps SIGTERM is still reaped, via SIGKILL escalation', async () => {
+  // terminal/release sends its own SIGTERM and used to delete the terminal
+  // from the tracking map immediately, regardless of whether the child
+  // actually died — invisible to killAllLiveTerminals' teardown sweep from
+  // that point on. This is finding 2 reached through release instead of an
+  // orphaned terminal: the same SIGTERM-trapping child, but explicitly
+  // released before the turn ends.
+  const run = runCompanion('task-term-sigterm-trap-release', {
+    ACP_ENABLE_TERMINAL: '1',
+    MOCK_SCENARIO: 'terminal-sigterm-trap-release',
+    ACP_TERMINAL_KILL_GRACE_MS: '200',
+  })
+  assert.equal(run.status, 0, `expected a clean dispatch; stderr:\n${run.stderr}`)
+  const pidFile = join(run.cwd, 'terminal-sigterm-trap-release-pid')
+  assert.ok(existsSync(pidFile),
+    `the spawned terminal never wrote its own pid — it may never have started; stderr:\n${run.stderr}`)
+  const pid = Number(readFileSync(pidFile, 'utf8').trim())
+  assert.ok(Number.isInteger(pid) && pid > 0, `unexpected pid file contents: ${pid}`)
+  const gone = await waitForPidGone(pid)
+  assert.ok(gone,
+    `released terminal child pid ${pid} ignored SIGTERM and outlived the companion — `
+    + 'release removed it from the teardown sweep before it actually exited')
+})
+
+test('terminal/create with a non-string args element is refused, not silently coerced', () => {
+  const run = runCompanion('task-term-bad-args', {
+    ACP_ENABLE_TERMINAL: '1',
+    MOCK_SCENARIO: 'terminal-malformed-args',
+  })
+  assert.equal(run.status, 0, `a refused terminal/create must not crash the whole dispatch; stderr:\n${run.stderr}`)
+  const recorded = join(run.cwd, '.terminal-malformed-args.json')
+  assert.ok(existsSync(recorded), `mock never wrote .terminal-malformed-args.json; stderr:\n${run.stderr}`)
+  const steps = JSON.parse(readFileSync(recorded, 'utf8'))
+  assert.equal(steps.create.result, null,
+    `terminal/create must not succeed with a non-string args element: ${JSON.stringify(steps.create)}`)
+  assert.ok(steps.create.error, 'terminal/create must come back as a JSON-RPC error, not a silent success')
+  assert.match(String(steps.create.error.message), /args\[1\] must be a string/)
+})
+
+test('terminal/create with a non-string env value is refused, not coerced to "[object Object]"', () => {
+  const run = runCompanion('task-term-bad-env', {
+    ACP_ENABLE_TERMINAL: '1',
+    MOCK_SCENARIO: 'terminal-malformed-env',
+  })
+  assert.equal(run.status, 0, `a refused terminal/create must not crash the whole dispatch; stderr:\n${run.stderr}`)
+  const recorded = join(run.cwd, '.terminal-malformed-env.json')
+  assert.ok(existsSync(recorded), `mock never wrote .terminal-malformed-env.json; stderr:\n${run.stderr}`)
+  const steps = JSON.parse(readFileSync(recorded, 'utf8'))
+  assert.equal(steps.create.result, null,
+    `terminal/create must not succeed with a non-string env value: ${JSON.stringify(steps.create)}`)
+  assert.ok(steps.create.error, 'terminal/create must come back as a JSON-RPC error, not a silent success')
+  assert.match(String(steps.create.error.message), /env\[0\]\.value must be a string/)
+})
+
+test('terminal output split across chunks decodes correctly and mirrors at a line boundary', () => {
+  // chunk1 ends with the first byte of 'é' (0xC3), chunk2 opens with the
+  // second (0xA9) — a decode split. The two bytes also straddle the point a
+  // human would read as "the middle of the URL" — a mirror split. One
+  // scenario proves both fixes at once: a per-chunk `toString('utf8')` turns
+  // the split byte pair into two U+FFFD, and a per-chunk stderr mirror would
+  // print a second "[terminal:<id>] " label between "ex" and "mple.com".
+  const run = runCompanion('task-term-chunk-split', {
+    ACP_ENABLE_TERMINAL: '1',
+    MOCK_SCENARIO: 'terminal-chunk-split',
+  })
+  assert.equal(run.status, 0, `expected a clean dispatch; stderr:\n${run.stderr}`)
+  const recorded = join(run.cwd, '.terminal-chunk-split.json')
+  assert.ok(existsSync(recorded), `mock never wrote .terminal-chunk-split.json; stderr:\n${run.stderr}`)
+  const steps = JSON.parse(readFileSync(recorded, 'utf8'))
+  assert.equal(steps.create.error, null, `terminal/create was refused: ${JSON.stringify(steps.create.error)}`)
+  const terminalId = steps.create.result?.terminalId
+  assert.equal(typeof terminalId, 'string')
+  const out = steps.output?.result
+  assert.ok(out, `terminal/output returned nothing: ${JSON.stringify(steps.output)}`)
+  // A decoder that lost the split bytes shows up as U+FFFD, and nowhere else.
+  assert.ok(!out.output.includes('�'),
+    `the split character decoded to a replacement character: ${JSON.stringify(out.output)}`)
+  assert.equal(out.output, 'open https://exémple.com/device?code=ABC123\n')
+  // The ACP terminal/output field carries no label at all (appendTerminalOutput
+  // never adds one) — the label only exists on the human-facing stderr mirror,
+  // so the line-boundary half of this test has to read THAT stream instead.
+  const mirrored = redactedMirrorLine(run.stderr, terminalId)
+  assert.ok(mirrored,
+    `no intact mirrored line found for ${terminalId} in stderr:\n${run.stderr}`)
+  assert.equal(mirrored, 'open https://exémple.com/device?code=ABC123',
+    `the mirror split the label into the middle of the line: ${JSON.stringify(mirrored)}`)
+})
+
+test('a session-reported model is refused when it is Gemini 3.1, even though nothing requested it', () => {
+  // No ACP_MODEL / ACP_EXPECT_MODEL is set below — this is the
+  // INHERIT_ACCOUNT_DEFAULT shape: a seat that asks for whatever the account
+  // currently defaults to. MOCK_MODEL stands in for that account default
+  // reporting a prohibited Gemini 3.1 seat back on session/new. Before the
+  // fix, identityRequested is false, extractIdentity forces status
+  // 'unverified', and enforceIdentity returns without ever comparing the
+  // observed model against PROHIBITED_MODEL — the turn would proceed on a
+  // prohibited model with no console.error and exit 0.
+  const run = runCompanion('task-term-prohibited-model', { MOCK_MODEL: 'gemini-3.1-pro-high' })
+  assert.notEqual(run.status, 0,
+    `a session reporting a prohibited Gemini 3.1 model must not be treated as a clean dispatch; stderr:\n${run.stderr}`)
+  assert.match(run.stderr, /Gemini 3\.1 is prohibited/,
+    `expected the fail-closed refusal to name the prohibition; stderr:\n${run.stderr}`)
+  assert.ok(!run.requests.some((entry) => entry.method === 'session/prompt'),
+    'the turn proceeded on a prohibited model instead of being refused before session/prompt')
 })

@@ -9,6 +9,13 @@ Written 2026-08-21 through `bmad-party-mode`.
   `main` is at v0.32.0 (`6b95101`) and owes nothing.
 - Tree is clean. Version is `0.33.0` in all seven places.
 - Pull request **#71** is open. CI was red on whitespace and that is fixed.
+- **THERE ARE TWO REVIEWERS AND ONLY ONE OF THEM IS OBVIOUS.** The PR review
+  bot's findings are INLINE COMMENTS, not the review body — the body is
+  boilerplate that says nothing either way. This session read the body twice,
+  reported "no suggestions" twice, and was wrong twice: 26 findings were sitting
+  there, 15 of them real, three ship-blocking. Read them with
+  `gh api repos/iicmaster/tmux-teams/pulls/<n>/comments`, never by opening the
+  review.
 - **The review of record answered BLOCKED six times running before it cleared
   on the seventh** — on bytes that passed every automated gate every time.
   Twenty-six findings, in rounds of 8, 4, 6, 4, 3, 1, then `TEAM_DONE`. Rounds
@@ -146,6 +153,12 @@ the login-mode stdin bridge at `acp-companion.mjs:3034`.
   `childEnv()` CALL from `dispatch` leaves the function-level test green and
   turns only `the real dispatch path hands no terminal capability to a worker`
   red. Measured 2 fail / 1 fail on the two mutations.
+- **Do not assume the file a release ADDED has been reviewed.** Seven review
+  rounds read `acp-dispatch.mjs`, `acp-companion.mjs`, `loop-runner.mjs` and the
+  documents. `acp-lanes-mcp.mjs` — the MCP server v0.33.0 introduced — was never
+  opened by any of them, and eight of the fifteen confirmed bot findings were in
+  it, including both unhandled-EPIPE crashes. **New code is the least-reviewed
+  code, not the most.**
 - **Do not fix one cleanup path and stop.** `tests/loop-smoke.test.mjs` has two
   tests that delete every ambient `ACP_*` key from THIS process; round three
   fixed the restore in one and round four found the same shape in the other,

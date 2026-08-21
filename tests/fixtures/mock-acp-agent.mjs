@@ -383,6 +383,119 @@ async function runTerminalOrphanProbe(prompt) {
   reply(prompt.id, { stopReason: 'end_turn' })
 }
 
+// Same pid-file trick as runTerminalOrphanProbe, but the child ALSO installs
+// a no-op SIGTERM handler before it loops — the shape a real login command
+// with its own signal handling (or a shell "trap \"\" TERM") can present. A
+// companion that sends only one SIGTERM and never escalates leaves this
+// child running forever; the test proves the opposite by checking the pid is
+// gone after the companion has already exited.
+async function runTerminalSigtermTrapProbe(prompt) {
+  await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: process.execPath,
+    args: ['-e',
+      'process.on("SIGTERM", () => {}); '
+      + 'const fs = require("fs"); fs.writeFileSync("terminal-sigterm-trap-pid.tmp", String(process.pid)); '
+      + 'fs.renameSync("terminal-sigterm-trap-pid.tmp", "terminal-sigterm-trap-pid"); setInterval(() => {}, 1000)'],
+  })
+  const deadline = Date.now() + envNumber('MOCK_GATE_WATCHDOG_MS', 15000)
+  while (!existsSync('terminal-sigterm-trap-pid')) {
+    if (Date.now() >= deadline) process.exit(17)
+    await wait(10)
+  }
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
+// Same SIGTERM-trapping child as runTerminalSigtermTrapProbe, but this one is
+// RELEASED (terminal/release) before the turn ends instead of being left
+// orphaned. terminal/release used to delete the terminal from the tracking
+// map the instant it sent its own SIGTERM — regardless of whether the child
+// actually died — which made it invisible to killAllLiveTerminals' teardown
+// sweep from that point on. A child that traps SIGTERM would then survive
+// BOTH the release's own signal and teardown, exactly the "outlives the
+// companion" shape the finding describes, just reached through a second door.
+async function runTerminalSigtermTrapReleaseProbe(prompt) {
+  const create = await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: process.execPath,
+    args: ['-e',
+      'process.on("SIGTERM", () => {}); '
+      + 'const fs = require("fs"); fs.writeFileSync("terminal-sigterm-trap-release-pid.tmp", String(process.pid)); '
+      + 'fs.renameSync("terminal-sigterm-trap-release-pid.tmp", "terminal-sigterm-trap-release-pid"); setInterval(() => {}, 1000)'],
+  })
+  const terminalId = create.result?.terminalId
+  const deadline = Date.now() + envNumber('MOCK_GATE_WATCHDOG_MS', 15000)
+  while (!existsSync('terminal-sigterm-trap-release-pid')) {
+    if (Date.now() >= deadline) process.exit(17)
+    await wait(10)
+  }
+  if (terminalId) await sendMockRequest('terminal/release', { sessionId: currentSessionId, terminalId })
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
+// terminal/create with a non-string args element — the companion must refuse
+// the whole request rather than silently dropping the bad element and running
+// a different command than what was asked for.
+async function runTerminalMalformedArgs(prompt) {
+  const steps = {}
+  steps.create = await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: 'echo',
+    args: ['a', 1, 'b'],
+  })
+  writeFileSync(join(process.cwd(), '.terminal-malformed-args.json'), `${JSON.stringify(steps, null, 2)}\n`, { mode: 0o600 })
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
+// terminal/create with a non-string env override value — the companion must
+// refuse rather than coerce the value to the literal string "[object Object]".
+async function runTerminalMalformedEnv(prompt) {
+  const steps = {}
+  steps.create = await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: 'echo',
+    args: ['hi'],
+    env: [{ name: 'FOO', value: { bad: 1 } }],
+  })
+  writeFileSync(join(process.cwd(), '.terminal-malformed-env.json'), `${JSON.stringify(steps, null, 2)}\n`, { mode: 0o600 })
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
+// A URL split across two 'data' events at a point that ALSO splits one
+// multi-byte UTF-8 character's bytes: chunk1 ends with the first byte of
+// 'é' (0xC3), chunk2 opens with its second byte (0xA9). One scenario proves
+// two mechanisms at once, deliberately: decoding chunk-by-chunk with no
+// stateful decoder turns 0xC3 and 0xA9 into two U+FFFD, and mirroring
+// chunk-by-chunk with no line buffering would put a second
+// "[terminal:id] " label mid-URL even if the bytes decoded correctly. The
+// 60ms gap (a setTimeout, not a second synchronous write) is what forces the
+// two writes to arrive as two separate 'data' events instead of being
+// coalesced into one pipe read.
+async function runTerminalChunkSplit(prompt) {
+  const steps = {}
+  steps.create = await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: process.execPath,
+    args: ['-e',
+      'const b1 = Buffer.concat([Buffer.from("open https://ex"), Buffer.from([0xC3])]); '
+      + 'const b2 = Buffer.concat([Buffer.from([0xA9]), Buffer.from("mple.com/device?code=ABC123\\n")]); '
+      + 'process.stdout.write(b1); '
+      + 'setTimeout(() => { process.stdout.write(b2) }, 60)'],
+  })
+  const terminalId = steps.create.result?.terminalId
+  if (terminalId) {
+    steps.wait_for_exit = await sendMockRequest('terminal/wait_for_exit', { sessionId: currentSessionId, terminalId })
+    steps.output = await sendMockRequest('terminal/output', { sessionId: currentSessionId, terminalId })
+  }
+  writeFileSync(join(process.cwd(), '.terminal-chunk-split.json'), `${JSON.stringify(steps, null, 2)}\n`, { mode: 0o600 })
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
 function requestPermission(prompt) {
   const scenario = process.env.MOCK_REQUEST_PERMISSION
   if (!scenario || permissionDecision || pendingPermissionPrompt) return false
@@ -417,6 +530,11 @@ async function handlePrompt(message) {
   if (scenario === 'malformed-request') return void runMalformedRequest(message)
   if (scenario === 'terminal-eof') return void runTerminalEof(message)
   if (scenario === 'terminal-orphan') return void runTerminalOrphanProbe(message)
+  if (scenario === 'terminal-sigterm-trap') return void runTerminalSigtermTrapProbe(message)
+  if (scenario === 'terminal-sigterm-trap-release') return void runTerminalSigtermTrapReleaseProbe(message)
+  if (scenario === 'terminal-malformed-args') return void runTerminalMalformedArgs(message)
+  if (scenario === 'terminal-malformed-env') return void runTerminalMalformedEnv(message)
+  if (scenario === 'terminal-chunk-split') return void runTerminalChunkSplit(message)
 
   if (scenario === 'report-recover') {
     notify({ sessionUpdate: 'agent_thought_chunk', messageId: 'pre-stall-progress', content: { type: 'text', text: 'starting the recovery observation' } })

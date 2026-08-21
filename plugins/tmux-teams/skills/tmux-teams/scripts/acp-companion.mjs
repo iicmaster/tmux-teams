@@ -30,6 +30,7 @@ import {
 import { join, dirname, basename } from 'node:path'
 import { homedir } from 'node:os'
 import { createInterface } from 'node:readline'
+import { StringDecoder } from 'node:string_decoder'
 import { fileURLToPath } from 'node:url'
 // ข้อ 13: this process is a sanctioned ledger writer, so it appends through the
 // same gate the runner does rather than keeping a private copy of the policy.
@@ -181,6 +182,12 @@ const processKillGraceMs = process.env.ACP_PROCESS_KILL_GRACE_MS === undefined
 // SIGTERM→SIGKILL grace above. Production keeps the historical 1000 ms floor;
 // hermetic tests may shorten both reap waits explicitly.
 const processReapGraceMs = strictNonNegativeEnvNumber('ACP_PROCESS_REAP_GRACE_MS', 1000)
+// A terminal child gets its own grace rather than reusing processKillGraceMs
+// directly: it is a separate ladder (see killAllLiveTerminals) with no
+// process-group tracking of its own, and a test that needs a fast SIGKILL
+// escalation for a SIGTERM-trapping terminal must not also shorten the main
+// agent child's unrelated grace.
+const terminalKillGraceMs = strictNonNegativeEnvNumber('ACP_TERMINAL_KILL_GRACE_MS', processKillGraceMs)
 const livenessTickMs = positiveNumber(
   process.env.ACP_LIVENESS_TICK_MS,
   Math.max(10, Math.min(1000, stallMs / 4)),
@@ -2019,7 +2026,20 @@ function extractIdentity(session) {
     ? (normalizedReasoningEffort ? `${normalizedModel}[${normalizedReasoningEffort}]` : normalizedModel)
     : ''
   const identityRequested = requestedModelExpected || requestedReasoningEffortExpected
-  const status = !identityRequested ? 'unverified' :
+  // A seat that sets neither ACP_MODEL nor ACP_EXPECT_MODEL (the
+  // INHERIT_ACCOUNT_DEFAULT sentinel loop-runner sends for a seat that wants
+  // "whatever the account defaults to") reaches this function with
+  // identityRequested false — the branch below would otherwise report
+  // 'unverified' and enforceIdentity returns without ever comparing
+  // effectiveIdentity to PROHIBITED_MODEL. CLAUDE.md's own casebook records
+  // the AGY adapter's default drifting between releases without this repo
+  // noticing, so an account default is exactly the value that must still be
+  // checked — the refusal here does not depend on anything having been
+  // requested. Checked before the requested/expected branch so a lane cannot
+  // land on 'matched' or 'unverified' while running a prohibited model.
+  const prohibited = normalizedModel !== '' && PROHIBITED_MODEL.test(normalizedModel)
+  const status = prohibited ? 'mismatched' :
+    !identityRequested ? 'unverified' :
     (!normalizedModel || (requestedReasoningEffortExpected && !normalizedReasoningEffort) ? 'missing' :
       (requestedModelExpected && baseModel !== requestedModelExpected) ||
       (requestedReasoningEffortExpected && reasoningEffort !== requestedReasoningEffortExpected)
@@ -2125,6 +2145,12 @@ function enforceIdentity(session) {
   writeDispatchRecord()
   schedulePersistence()
   if (identity.status === 'unverified' || identity.status === 'matched') return
+  // Name the specific policy this lane just broke, not only the generic
+  // mismatch — the gap this closes was reported with "no console.error, no
+  // exit(2), no signal" that CLAUDE.md's fail-closed rule had been violated.
+  if (PROHIBITED_MODEL.test(identity.effectiveIdentity)) {
+    console.error(`observed session model: Gemini 3.1 is prohibited on tmux-teams routes, got ${identity.effectiveIdentity}`)
+  }
   const terminal = identity.status === 'missing' ? 'identity-missing' : 'identity-mismatch'
   const expected = `${requestedModel || 'missing'}${requestedReasoningEffort ? `[${requestedReasoningEffort}]` : ''}`
   throw Object.assign(new Error(`identity ${identity.status}: expected ${expected}, effective ${identity.effectiveIdentity || 'missing'}`), {
@@ -3023,6 +3049,11 @@ function settleTerminalExit(term, status) {
   const waiters = term.waiters
   term.waiters = []
   for (const resolve of waiters) resolve(status)
+  // A released-but-still-alive terminal is removed HERE, once it actually
+  // exits — not at release time. See releaseTerminal for why: removing it
+  // immediately took it out of killAllLiveTerminals' teardown sweep while the
+  // child could still be alive and ignoring the SIGTERM release itself sent.
+  if (term.released) terminals.delete(term.terminalId)
 }
 
 // Only login mode ever reads the companion's OWN stdin — ordinary dispatch
@@ -3068,16 +3099,93 @@ function ensureTerminalStdinBridge() {
   process.stdin.unref?.()
 }
 
+// Decoding a raw child_process pipe chunk with `chunk.toString('utf8')` per
+// 'data' event corrupts any multi-byte UTF-8 character whose bytes land in
+// two different reads: 0xC3 alone and 0xA9 alone each decode to U+FFFD, where
+// the same two bytes decoded together (or via a stateful decoder) produce
+// 'é'. Measured directly against this exact split. `StringDecoder` carries
+// any trailing incomplete sequence forward to the NEXT `write()` instead of
+// discarding it, which is the fix — one decoder per stream (never shared
+// between stdout and stderr: those are independent pipes, so a byte sequence
+// split across a read always stays within the one stream it came from).
+//
+// The same per-chunk-arrival problem shows up a second way: mirroring raw
+// chunks to stderr put the "[terminal:id] " label wherever a chunk boundary
+// happened to fall, including the middle of a URL a human needs to copy
+// whole. Line-buffer the mirror so the label only ever starts a line — the
+// ACP `terminal/output` field itself (`appendTerminalOutput`, via
+// `onDecoded` below) is unaffected, since nothing there requires line
+// boundaries.
+function attachTerminalOutputStream(term, terminalId, stream) {
+  const decoder = new StringDecoder('utf8')
+  let mirrorBuffer = ''
+  const mirrorLine = (line) => {
+    try { process.stderr.write(redact(`[terminal:${terminalId}] ${line}\n`).slice(0, MAX_DISPLAY_TEXT)) } catch {}
+  }
+  const onDecoded = (text) => {
+    if (!text) return
+    appendTerminalOutput(term, text)
+    // The human at the keyboard is the only reader who can act on a login
+    // prompt (a URL to open, a code to paste back). Mirror it live, the same
+    // way the ACP adapter's own stderr is already mirrored below, so it
+    // actually reaches a screen instead of sitting only in `terminal/output`.
+    mirrorBuffer += text
+    const lines = mirrorBuffer.split('\n')
+    mirrorBuffer = lines.pop() ?? ''
+    for (const line of lines) mirrorLine(line)
+    // MAX_TERMINAL_OUTPUT_BYTES exists so "a misbehaving or hostile agent
+    // cannot make the companion retain unbounded output in memory" — a
+    // pending line with no '\n' yet is exactly such unbounded retention if
+    // nothing ever bounds it. mirrorLine already slices to MAX_DISPLAY_TEXT,
+    // so a pending line already past that cap gains nothing from waiting for
+    // its newline; flush it now instead of growing it forever.
+    if (mirrorBuffer.length > MAX_DISPLAY_TEXT) {
+      mirrorLine(mirrorBuffer)
+      mirrorBuffer = ''
+    }
+  }
+  stream.on('data', (chunk) => onDecoded(decoder.write(chunk)))
+  // Flush at exit: a trailing partial line with no '\n' yet must still reach
+  // the operator rather than being silently dropped, and `decoder.end()`
+  // resolves whatever incomplete byte sequence the pipe closed on (correctly
+  // as U+FFFD if the child genuinely wrote a truncated sequence — that case
+  // is real corruption at the source, not this bug).
+  return () => {
+    onDecoded(decoder.end())
+    if (mirrorBuffer) mirrorLine(mirrorBuffer)
+    mirrorBuffer = ''
+  }
+}
+
 function createTerminal(params) {
   const command = typeof params?.command === 'string' && params.command ? params.command : null
   if (!command) throw new Error('terminal/create requires a non-empty command string')
-  const args = Array.isArray(params.args) ? params.args.filter((value) => typeof value === 'string') : []
+  // Refuse a malformed element rather than silently dropping it (args) or
+  // coercing it (env value). A `.filter` here used to spawn `echo a b` for
+  // `args: ['a', 1, 'b']` — the caller believing it asked for `echo a 1 b`
+  // and getting a different command run instead — and `value: {bad: 1}` used
+  // to set the child's env var to the literal string "[object Object]" with
+  // no signal that the request was never actually honored. The catch in
+  // handleTerminalRequest already maps a thrown error to -32602, so throwing
+  // needs no new plumbing.
+  const args = Array.isArray(params.args)
+    ? params.args.map((value, index) => {
+      if (typeof value !== 'string') {
+        throw new Error(`terminal/create args[${index}] must be a string, got ${typeof value}`)
+      }
+      return value
+    })
+    : []
   const envOverrides = Array.isArray(params.env)
-    ? Object.fromEntries(
-      params.env
-        .filter((entry) => entry && typeof entry.name === 'string')
-        .map((entry) => [entry.name, String(entry.value ?? '')]),
-    )
+    ? Object.fromEntries(params.env.map((entry, index) => {
+      if (!entry || typeof entry !== 'object' || typeof entry.name !== 'string') {
+        throw new Error(`terminal/create env[${index}] must be an object with a string name`)
+      }
+      if (entry.value !== undefined && entry.value !== null && typeof entry.value !== 'string') {
+        throw new Error(`terminal/create env[${index}].value must be a string, got ${typeof entry.value}`)
+      }
+      return [entry.name, entry.value ?? '']
+    }))
     : {}
   const terminalCwd = typeof params.cwd === 'string' && params.cwd.trim() ? params.cwd : cwd
   const requestedLimit = Number.isFinite(params.outputByteLimit) && params.outputByteLimit > 0
@@ -3103,23 +3211,20 @@ function createTerminal(params) {
   }
   terminals.set(terminalId, term)
 
-  const onOutput = (chunk) => {
-    const text = chunk.toString('utf8')
-    appendTerminalOutput(term, text)
-    // The human at the keyboard is the only reader who can act on a login
-    // prompt (a URL to open, a code to paste back). Mirror it live, the same
-    // way the ACP adapter's own stderr is already mirrored below, so it
-    // actually reaches a screen instead of sitting only in `terminal/output`.
-    try { process.stderr.write(redact(`[terminal:${terminalId}] ${text}`).slice(0, MAX_DISPLAY_TEXT)) } catch {}
-  }
-  child.stdout.on('data', onOutput)
-  child.stderr.on('data', onOutput)
+  const flushStdout = attachTerminalOutputStream(term, terminalId, child.stdout)
+  const flushStderr = attachTerminalOutputStream(term, terminalId, child.stderr)
   child.stdin.on('error', () => {})
   child.on('error', (cause) => {
+    flushStdout()
+    flushStderr()
     appendTerminalOutput(term, `\n[terminal spawn error] ${cause.message}\n`)
     settleTerminalExit(term, { exitCode: null, signal: null })
   })
-  child.on('exit', (code, signal) => settleTerminalExit(term, { exitCode: code, signal }))
+  child.on('exit', (code, signal) => {
+    flushStdout()
+    flushStderr()
+    settleTerminalExit(term, { exitCode: code, signal })
+  })
 
   ensureTerminalStdinBridge()
   return { terminalId }
@@ -3158,7 +3263,34 @@ function killTerminal(term) {
 function releaseTerminal(term) {
   if (!term.exitStatus) { try { term.child.kill('SIGTERM') } catch {} }
   term.released = true
-  terminals.delete(term.terminalId)
+  // A child that traps or ignores the SIGTERM release just sent is still
+  // alive here — deleting it from `terminals` unconditionally used to make
+  // it invisible to killAllLiveTerminals' teardown sweep from this point on,
+  // so `terminal/release` defeated the very reap this file otherwise
+  // guarantees. Keep a still-live terminal in the map; settleTerminalExit
+  // deletes it once it actually exits. `requireTerminal` already refuses any
+  // request naming a released id via `term.released`, and the stdin bridge
+  // already skips released terminals, so the ACP postcondition (the id
+  // becomes invalid immediately) is unchanged for every caller.
+  if (term.exitStatus) terminals.delete(term.terminalId)
+}
+
+function waitForTerminalSettle(term, timeoutMs) {
+  if (term.exitStatus) return Promise.resolve(true)
+  return new Promise((resolve) => {
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      resolve(false)
+    }, Math.max(0, timeoutMs))
+    term.waiters.push(() => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(true)
+    })
+  })
 }
 
 // RULE: a terminal the companion spawned is the companion's to reap. Unlike
@@ -3169,11 +3301,30 @@ function releaseTerminal(term) {
 // a thrown error, a finished cancellation — runs through. Best-effort only:
 // a companion killed by an external SIGKILL runs no JS at all, the same
 // blind spot every in-process cleanup in this file has.
-function killAllLiveTerminals(signal = 'SIGTERM') {
+//
+// A single SIGTERM was not enough: measured directly, a child that traps or
+// ignores it (`trap "" TERM`, or any adapter with its own signal handling)
+// kept running past companion teardown — its stdout/stderr pipes stayed
+// open, which keeps Node's event loop alive, and this file exits through
+// `process.exitCode`, never `process.exit()`, so the companion hung
+// indefinitely instead of leaving with the exit code it had already decided.
+// Escalate to SIGKILL after terminalKillGraceMs, the same ladder shape
+// `closeAndReapChild` already gives the main agent child — SIGKILL cannot be
+// trapped, so this is the point past which a terminal child cannot outlive
+// the companion.
+async function killAllLiveTerminals(signal = 'SIGTERM') {
+  const live = []
   for (const term of terminals.values()) {
     if (term.exitStatus) continue
     try { term.child.kill(signal) } catch {}
+    live.push(term)
   }
+  if (!live.length) return
+  await Promise.all(live.map(async (term) => {
+    if (await waitForTerminalSettle(term, terminalKillGraceMs)) return
+    try { term.child.kill('SIGKILL') } catch {}
+    await waitForTerminalSettle(term, terminalKillGraceMs)
+  }))
 }
 
 async function handleTerminalRequest(message) {
@@ -4305,7 +4456,7 @@ async function main() {
     if (controllerSignalHandlerInstalled) {
       for (const [signal, handler] of controllerSignalHandlers) process.removeListener(signal, handler)
     }
-    killAllLiveTerminals()
+    await killAllLiveTerminals()
   }
 }
 
