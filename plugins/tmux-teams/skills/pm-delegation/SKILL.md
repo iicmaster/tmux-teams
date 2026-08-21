@@ -164,12 +164,21 @@ Say which, and stop. It is not a slow moment to wait through.
    Each implementer gets: the primary checkout is off limits, its file radius,
    the research notes path, and its acceptance.
 
+   **Dispatch them in the background and do not wait on any one of them.** This
+   is the sentence that makes the parallelism real: a caller who dispatches and
+   then awaits each result in turn has followed every other rule here and still
+   produced a serial run. Send the whole frontier, then handle results as they
+   arrive.
+
 5. **Merge each result as it lands, one at a time.** Do not batch — merging a
    finished ticket while others still run is the point of the parallelism, and a
    barrier at the end throws it away.
 
-   **Merge conflicts are yours.** The implementer no longer has the context, and
-   re-dispatching it to resolve one costs more than resolving it.
+   **You merge, not a merger agent.** Prior art hands this to a dedicated merger
+   subagent; here it is the caller's, deliberately. You are the only one holding
+   the spec, the graph and every ticket already landed — the context a conflict
+   is resolved from. An agent given only two diffs will guess, and a wrong guess
+   inside a merge is the hardest kind to see afterwards.
 
 6. **Recompute the frontier, dispatch what became unblocked.** Repeat from 4.
 
