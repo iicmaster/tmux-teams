@@ -132,6 +132,62 @@ test('ACP_ENABLE_TERMINAL is refused when it is neither absent, "0", nor "1"', (
     'the companion spoke to the adapter before refusing the malformed ACP_ENABLE_TERMINAL')
 })
 
+test('EOF on the companion stdin closes a login terminal\'s input instead of hanging the turn', () => {
+  // Found by the PR review bot. The login-mode bridge forwarded `data` and never
+  // `end`, so a command that reads until EOF — which is most of them, and the
+  // exact shape a person finishes with Ctrl-D — stayed blocked, and
+  // `terminal/wait_for_exit` and the ACP turn hung behind it.
+  //
+  // `input: ''` gives the companion a stdin that is a pipe and ends at once, so
+  // this also covers the case where EOF has ALREADY happened before the first
+  // terminal exists and the 'end' event will never fire again.
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-terminal-eof-'))
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+  const env = { ...process.env }
+  for (const key of Object.keys(env)) if (key.startsWith('ACP_')) delete env[key]
+  Object.assign(env, {
+    ACP_CMD: `${process.execPath} ${MOCK}`,
+    ACP_STALL_POLICY: 'cancel',
+    ACP_HARD_TIMEOUT_SEC: '0',
+    ACP_ENABLE_TERMINAL: '1',
+    MOCK_SCENARIO: 'terminal-eof',
+  })
+  const result = spawnSync(process.execPath, [COMPANION, 'mock', cwd, 'task-term-eof', brief, '30'],
+    { cwd, encoding: 'utf8', env, input: '', timeout: 30_000, killSignal: 'SIGKILL' })
+  assert.equal(result.signal, null,
+    `the companion had to be killed — the login terminal never saw EOF; stderr:\n${result.stderr}`)
+
+  const recorded = join(cwd, '.terminal-eof.json')
+  assert.ok(existsSync(recorded), `mock never wrote .terminal-eof.json; stderr:\n${result.stderr}`)
+  const steps = JSON.parse(readFileSync(recorded, 'utf8'))
+  assert.equal(steps.create.error, null, `terminal/create was refused: ${JSON.stringify(steps.create.error)}`)
+  assert.ok(steps.wait_for_exit, 'terminal/wait_for_exit never returned — the child was still blocked on input')
+  assert.equal(steps.wait_for_exit.error, null, JSON.stringify(steps.wait_for_exit.error))
+  // 7 is what the child sets on 'end'. Any other code means it exited for some
+  // other reason and this test would be proving nothing about EOF.
+  assert.equal(steps.wait_for_exit.result?.exitCode, 7,
+    `the child did not exit on EOF: ${JSON.stringify(steps.wait_for_exit.result)}`)
+})
+
+test('a child request whose method is not a string is refused, and does not kill the lane', () => {
+  // Found by the PR review bot on the bytes this release added. The router
+  // checked `message.method` for TRUTHINESS and then called
+  // `.startsWith('terminal/')` on it, so `{"id":1,"method":42}` threw
+  // TypeError inside the readline callback — an uncaught exception that takes
+  // the companion down before its terminal snapshot and cleanup, turning one
+  // bad protocol frame into a lane that stopped with no record of why.
+  const run = runCompanion('task-malformed-method', { MOCK_SCENARIO: 'malformed-request' })
+  assert.equal(run.status, 0,
+    `a malformed child request killed the dispatch; stderr:\n${run.stderr}`)
+  assert.doesNotMatch(run.stderr, /TypeError/,
+    `the router threw instead of refusing:\n${run.stderr}`)
+  // The turn still completed, which is what proves the frame was survived
+  // rather than merely not crashing on its way out.
+  assert.match(run.stdout + run.stderr, /turn done|end_turn/,
+    `the lane never finished its turn:\n${run.stdout}${run.stderr}`)
+})
+
 test('a terminal request arriving on an ordinary lane is REFUSED', () => {
   const run = runCompanion('task-term-refused', { MOCK_SCENARIO: 'terminal-roundtrip' })
   assert.equal(run.status, 0,

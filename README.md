@@ -423,10 +423,14 @@ relaying a person's words is expected to sign `human:` and name itself in
 | Skill | Reach for it when |
 |---|---|
 | `tmux-teams:claude-advisor` | you want Claude's strongest model — pinned to `claude-fable-5`, model identity verified via `ACP_EXPECT_MODEL` |
-| `tmux-teams:codex-advisor` | you want a read from outside the Claude family — pinned to `gpt-5.6-sol` at `ultra` |
+| `tmux-teams:codex-advisor` | you want a read from outside the Claude family — `gpt-5.6-sol` by default, or `luna` / `terra`, always at `max` |
+| `tmux-teams:agy-advisor` | you want a third family — Gemini through Antigravity, `gemini-3.7-flash-high` by default |
 
-Both advisors return a round-table rather than a single voice, and both are
-read-only. Ask both on a hard call: where they disagree is the finding.
+**Three** advisors, added to over time — this said "Both advisors" while a third
+was shipping in the same release, which is how a reader comes to believe a seat
+does not exist. Each returns a round-table rather than a single voice and each is
+read-only. Ask more than one on a hard call: where they disagree is the finding,
+and two seats from the same vendor are not two families.
 
 **Closing out a session**
 

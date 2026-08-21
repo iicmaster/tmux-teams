@@ -3040,6 +3040,22 @@ function ensureTerminalStdinBridge() {
       try { term.child.stdin.write(chunk) } catch {}
     }
   })
+  // EOF has to travel too. A login command that reads until end-of-input — or an
+  // operator pressing Ctrl-D, or a finite pipe running dry — would otherwise sit
+  // blocked forever while `terminal/wait_for_exit` and the whole ACP turn hang,
+  // because the bridge forwarded every keystroke and never the end of them.
+  const closeTerminalInput = () => {
+    for (const term of terminals.values()) {
+      if (term.exitStatus || term.released) continue
+      try { term.child.stdin.end() } catch {}
+    }
+  }
+  // One listener, and no catch-up for an already-ended stdin. That catch-up was
+  // written here on the reasoning that a finite pipe could end before the first
+  // terminal exists — and then deleting it left the EOF test GREEN while
+  // deleting both turned it red at the 30s kill. It defends a case nobody could
+  // produce, which in this file is not a guard.
+  process.stdin.on('end', closeTerminalInput)
   process.stdin.resume()
   // TRAP: this file ends in `process.exitCode = exitCode`, not
   // `process.exit(...)` — it relies on the event loop draining once every
@@ -3516,7 +3532,12 @@ rl.on('line', (rawLine) => {
     else entry.resolve(message.result)
     return
   }
-  if (hasId && message.method) {
+  // TYPE, not truthiness. `.startsWith` below threw TypeError on a frame like
+  // `{"id":1,"method":42}`, and an uncaught throw inside the readline callback
+  // takes the companion down before its terminal snapshot — one bad frame from
+  // an adapter and the lane stops with no record of why. Found by the PR review
+  // bot on this release's own bytes.
+  if (hasId && typeof message.method === 'string' && message.method) {
     if (message.method === 'session/request_permission') {
       // ACP v1 prompt-turn, Cancellation: "The Client MUST respond to all
       // pending `session/request_permission` requests with the `cancelled`

@@ -289,6 +289,43 @@ async function runTerminalRoundtrip(prompt) {
   reply(prompt.id, { stopReason: 'end_turn' })
 }
 
+// A login command that reads its input until EOF. The stdin bridge forwarded
+// every keystroke and never the end of them, so this child blocked forever and
+// took `terminal/wait_for_exit` and the whole turn with it. The child exits 7 on
+// 'end', so the recorded exit status says plainly whether EOF arrived.
+async function runTerminalEof(prompt) {
+  const steps = {}
+  steps.create = await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: process.execPath,
+    args: ['-e', "process.stdin.resume(); process.stdin.on('end', () => { process.exitCode = 7 })"],
+    outputByteLimit: 4096,
+  })
+  const terminalId = steps.create.result?.terminalId
+  if (terminalId) {
+    steps.wait_for_exit = await sendMockRequest('terminal/wait_for_exit', { sessionId: currentSessionId, terminalId })
+    steps.release = await sendMockRequest('terminal/release', { sessionId: currentSessionId, terminalId })
+  }
+  writeFileSync(join(process.cwd(), '.terminal-eof.json'), `${JSON.stringify(steps, null, 2)}\n`, { mode: 0o600 })
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
+// Emits a child request whose `method` is truthy but NOT a string, then finishes
+// the turn normally. The companion's router reached `message.method.startsWith`
+// after only a truthy check, so this frame threw TypeError inside the readline
+// callback and killed the process before its terminal snapshot — one bad frame
+// from an adapter, and the lane stops with no record of why.
+async function runMalformedRequest(prompt) {
+  send({ jsonrpc: '2.0', id: 'malformed-1', method: 42, params: {} })
+  send({ jsonrpc: '2.0', id: 'malformed-2', method: { nested: true }, params: {} })
+  // A well-formed unknown method must still be answered, so this scenario also
+  // proves the refusal is about the TYPE and not about the router giving up.
+  send({ jsonrpc: '2.0', id: 'malformed-3', method: 'nobody/knows', params: {} })
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
 // Overruns the terminal output cap ON PURPOSE, with multi-byte characters
 // positioned so a naive byte slice lands INSIDE one. 100 Thai characters at 3
 // bytes each is 300 bytes against a 64-byte cap, so the tail starts 236 bytes
@@ -377,6 +414,8 @@ async function handlePrompt(message) {
 
   if (scenario === 'terminal-roundtrip') return void runTerminalRoundtrip(message)
   if (scenario === 'terminal-overflow') return void runTerminalOverflow(message)
+  if (scenario === 'malformed-request') return void runMalformedRequest(message)
+  if (scenario === 'terminal-eof') return void runTerminalEof(message)
   if (scenario === 'terminal-orphan') return void runTerminalOrphanProbe(message)
 
   if (scenario === 'report-recover') {

@@ -17,11 +17,21 @@ carries only what is DIFFERENT about the AGY seat.
 ## The command
 
 ```bash
+# The binary first. `buildProfileEnv` derives this for a REVIEW lane; a lane
+# dispatched by hand is not that lane and gets nothing, so the command has to
+# do it. The candidates, in order, are the ones `agyBinaryCandidates` builds in
+# the party-mode review profiles.
+AGY_BIN="$(for c in "$HOME/.local/bin/agy" /usr/local/bin/agy /usr/bin/agy; do
+  [ -x "$c" ] && { echo "$c"; break; }; done)"
+[ -n "$AGY_BIN" ] || { echo 'no agy binary on this machine — stop, do not let the adapter fetch one'; exit 1; }
+
 INITIAL_AGENT_MODE="read-only" \
 ACP_SESSION_RECEIPT_REQUIRED=1 \
 ACP_SESSION_OPERATION="new" \
 ACP_MODEL="gemini-3.7-flash-high" \
 ACP_EXPECT_MODEL="gemini-3.7-flash-high" \
+AGY_BIN="$AGY_BIN" \
+AGY_SKIP_DOWNLOAD=1 \
 node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
   agy <cwd> <task-id> <brief-file> [stall-sec]
 ```
@@ -45,9 +55,12 @@ rendered log has a SPACE where the real string has a tab, and a tab rendered as
 whitespace is how this seat spent months carrying an identity exemption it did
 not need.
 
-**It needs its executable, not a package manager.** `AGY_BIN` comes from
-`trustedAgyBinary` and `AGY_SKIP_DOWNLOAD=1` stops the adapter fetching its own;
-`buildProfileEnv` sets both. A lane started outside that builder gets neither.
+**It needs its executable, not a package manager.** `AGY_BIN` names the binary
+and `AGY_SKIP_DOWNLOAD=1` stops the adapter fetching its own. `buildProfileEnv`
+sets both for a REVIEW lane; a lane dispatched by hand is not that lane and gets
+neither — which is why the command above derives them rather than assuming.
+This paragraph described that gap accurately while the command printed directly
+above it walked straight into it, for the whole of v0.33.0's review cycle.
 
 ## Model policy — this is the part that fails closed
 
