@@ -239,6 +239,7 @@ work it has room for. One pass over the token ledgers decides, per token:
 | last event is `reviewed` `pass` (a delivery team's evaluator accepted it) | eligible to move |
 | last event is `intake` `accept` on the control team | eligible to move — admission is the claim, there is no artifact yet |
 | last leg `delivered` with a non-`done` terminal | `failed` — a rerun, not a handoff |
+| last leg `delivered` with terminal `blocked` | **escalated to a person** — a rerun would ask the same question again |
 | the ledger does not validate | `invalid` — every problem printed, nothing appended |
 | next team is under its WIP limit | `pulled`, signed by the **receiving** dispatcher |
 | next team is at its WIP limit | `blocked`, with the count, and the token stays put |

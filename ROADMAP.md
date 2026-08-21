@@ -223,23 +223,25 @@ codex-advisor lane read them against each other and against the code, which is
 the only reason it is being corrected now rather than by the next reader of a
 gate file that contradicts itself.
 
-## The release in flight — v0.33.0, and why these six
+## The release in flight — v0.33.0
 
-Ordered by what they cost when left alone, not by size. The first two arrived
-as GitHub issues; the next three are things v0.32.0 measured and could not fix
-inside its own scope; the sixth is Master's, added 2026-08-19.
+**Eight items ship; five were declared here before the work started and three
+arrived during it.** This heading said "why these six" and the paragraph under
+it counted two-plus-three-plus-one, while the settled table below listed eight —
+a page that disagreed with its own table, which is exactly what makes a status
+page unauditable. The five declared: the Claude Max login, the live lane-health
+preflight, the `blocked` re-dispatch, the nonce, and `agy-advisor`. Ordered
+below by what they cost when left alone, not by size.
 
-**Delivered so far on `feat/v0.33.0`, and three of the four were not on this
-page when the work started.** Recorded here rather than at the end, because this
-file is the standing goal and a goal that learns what happened only after the
-fact is a status page:
+**The three that were NOT declared here before the work started.** Recorded
+because this file is the standing goal, and a goal that learns what happened
+only after the fact is a status page:
 
-| shipped | was it declared here? |
+| arrived during the release | how |
 |---|---|
-| `agy-advisor` | yes — the item below |
-| the comment diet on the v0.32.0 files, 51% -> 44% | **no** — Master's instruction |
-| one advisor contract across all three lanes | **no** — Master's instruction |
-| the prohibited model accepted at dispatch | **no** — found while measuring the one above |
+| the comment diet on the v0.32.0 files, 51% -> 44% | Master's instruction |
+| one advisor contract across all three lanes | Master's instruction |
+| the prohibited model accepted at dispatch | found while measuring the one above |
 
 The last is the one worth reading. `ACP_MODEL=gemini-3.1-pro-high` on an AGY lane
 was ACCEPTED and reported `effective_identity: gemini-3.1-pro-high (matched)` —
@@ -303,7 +305,11 @@ explain in its own text that a real nonce was out of scope, which is a
 contradiction this page carried while calling itself the standing goal. Master
 settled it: v0.33.0 does it. The dispatcher generates a value, the companion
 echoes it into the liveness record, and `belongsToThisRun` checks it — which
-closes the deliberate forgery that bounds cannot.
+closes the deliberate forgery that bounds cannot **for lanes this dispatcher
+started**. A record with no routing file, which is what `loop-runner.mjs`
+produces when it starts a companion directly, still passes on bounds alone by
+deliberate compatibility choice. The unqualified sentence stood here until a
+review lane read it against `acp-dispatch.mjs`.
 
 **Delivery model, also Master's, 2026-08-19:** implementation is dispatched to
 Sonnet subagents; `agy` and `codex` at `gpt-5.6-luna` review. The session drives
@@ -387,15 +393,23 @@ Worth stating what this is not: it is not a health-check that runs on a timer
 and it must not become one. The measurement is only wanted when a panel is
 about to be assembled.
 
-**`belongsToThisRun` has bounds, not a nonce.**
+**`belongsToThisRun` had bounds and now has a nonce — CLOSED in v0.33.0.**
 
 v0.32.0 closed the forgery a panel lane found — a liveness record stamped in
 the future read as belonging to this run forever — by bounding the timestamp on
-both sides. That stops the accidental case and the clock-skew case. It does not
-stop a deliberate one, because nothing in the record is unique to this dispatch.
-A real nonce needs the companion to echo a value the dispatcher generated,
-which is a protocol change and was out of scope. The code says so at the call
-site rather than implying otherwise.
+both sides. That stopped the accidental case and the clock-skew case and not a
+deliberate one, because nothing in the record was unique to the dispatch. The
+protocol change that was out of scope then is in v0.33.0: the dispatcher
+generates `ACP_SPAWN_NONCE`, the companion echoes it into the liveness record,
+and `belongsToThisRun` requires an exact match on top of the bounds.
+
+**Scope it the way the code does.** That closes forgery for lanes THIS
+dispatcher started. A record with no routing file — the shape `loop-runner.mjs`
+produces, which starts companions directly and writes no nonce — is still
+accepted on bounds alone, deliberately, as a compatibility mode. This paragraph
+said the opposite of the one above it for a whole release, until a review lane
+read the page against itself; do not read either as covering the routing-less
+path.
 
 **Nine findings from the v0.32.0 panel that are NOT v0.32.0's to fix.** Recorded
 rather than dropped, because a finding that disappears without an answer is the

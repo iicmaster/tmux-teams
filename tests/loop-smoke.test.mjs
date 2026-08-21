@@ -179,6 +179,13 @@ test('a real ACP route reaches audit and leaves coherent ledger, snapshot, and p
     'ACP_SESSION_RECEIPT_REQUIRED', 'ACP_STALL_POLICY', 'ECC_GATEGUARD', 'INITIAL_AGENT_MODE',
     'MOCK_EVIDENCE', 'MOCK_LOOP_VERDICTS', 'MOCK_SCENARIO', 'MOCK_TERMINAL', 'TMUX_TEAMS_PHASE',
   ].map((key) => [key, process.env[key]]))
+  // The named list decides what is restored, and it had missed the ACP_* keys
+  // the prefix delete below removes — so a caller's ambient ACP_REASONING_EFFORT
+  // or ACP_SPAWN_NONCE was deleted from this process and never put back, which
+  // is a leak out of the test rather than into it. Snapshot by the same prefix
+  // that deletes.
+  const inheritedAcp = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => key.startsWith('ACP_')))
 
   try {
     // By PREFIX, not by the list above. That list is written by hand and it had
@@ -286,6 +293,7 @@ test('a real ACP route reaches audit and leaves coherent ledger, snapshot, and p
       if (value === undefined) delete process.env[key]
       else process.env[key] = value
     }
+    Object.assign(process.env, inheritedAcp)
   }
 })
 
