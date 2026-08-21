@@ -268,12 +268,14 @@ down is a scope that gets re-decided.
 
 **Item 5 is HALF, and the half that is missing is the half that matters to a
 user.** The companion now advertises the ACP terminal capability, gated behind
-an explicit `ACP_ENABLE_TERMINAL=1` login mode, and serves all five terminal
-methods for real; the ordinary dispatch path advertises nothing new and refuses
-a terminal request outright. **Four of the five are exercised** — create,
-wait_for_exit, output, release, and the refusal after release. `terminal/kill`
-is implemented and no test calls it, which is an unexecuted guard rather than a
-working one.
+an explicit `ACP_ENABLE_TERMINAL=1` login mode, and IMPLEMENTS all five terminal
+methods; the ordinary dispatch path advertises nothing new and refuses a
+terminal request outright. **Four of the five are exercised** — create,
+wait_for_exit, output and release, plus the refusal of output after release,
+which is a postcondition of `terminal/output` and not a fifth method.
+`terminal/kill` is implemented and no test calls it, which is an unexecuted
+guard rather than a working one. Read "implements" as source: no runtime
+exchange with a real adapter has been observed for any of the five.
 
 **Nobody has completed an actual Claude Max login through it.** That needs a
 person at a real terminal and it has not been done. Do not read this row as

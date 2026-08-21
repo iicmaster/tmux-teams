@@ -123,6 +123,10 @@ const HERMETIC_ENV_KEYS = [
   'ACP_RESUME',
   'INITIAL_AGENT_MODE',
   'TMUX_TEAMS_PHASE',
+  // v0.33.0 added this one and did not add it here, so a shell that had run a
+  // dispatch by hand carried it into the producer snapshots and turned the bare
+  // suite red for a reason no reader could see in the diff.
+  'ACP_SPAWN_NONCE',
 ]
 
 function testEnv(extraEnv = {}) {

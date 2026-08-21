@@ -303,8 +303,10 @@ prior session), then **exactly one `session/prompt`**, and then waits for the
 worker's outbox file.
 
 There is **no channel for a person to type into a running worker session** on
-the ordinary dispatch path, which is every route but one. The companion's stdin
-is the JSON-RPC transport to the adapter, not a human input path.
+the ordinary dispatch path, which is every route but one. JSON-RPC travels on
+the ADAPTER's stdin, which the companion writes to; the companion's own stdin is
+read by nothing there. This sentence said the companion's stdin WAS the
+transport until a review lane read it against the two streams.
 
 The exception, added in v0.33.0, is `ACP_ENABLE_TERMINAL=1` login mode, so a
 person can finish an interactive provider login in the terminal the lane runs

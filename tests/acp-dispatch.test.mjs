@@ -533,12 +533,24 @@ test('the companion refuses a prohibited model when it is reached without the di
   const cwd = tempDir('acp-companion-prohibited-')
   const brief = join(cwd, 'brief.md')
   writeFileSync(brief, 'do the thing\n')
-  for (const [key, value] of [['ACP_MODEL', 'gemini-3.1-pro-high'], ['ACP_EXPECT_MODEL', 'gemini-3.1-flash']]) {
-    const r = spawnSync(process.execPath, [join(SCRIPTS, 'acp-companion.mjs'), 'mock', cwd, `child-${key}`, brief, '120'],
-      { cwd, encoding: 'utf8', env: laneEnv({ [key]: value }), timeout: 20_000 })
-    assert.equal(r.status, 2, `${key}=${value} was accepted by the companion:\n${r.stdout}${r.stderr}`)
-    assert.match(r.stderr, new RegExp(`${key}: Gemini 3\\.1 is prohibited on tmux-teams routes, got ${value}`),
-      `unexpected refusal for ${key}:\n${r.stderr}`)
+  // Each case must leave exactly ONE call site able to refuse. A review lane
+  // showed why that matters: ACP_EXPECT_MODEL falls back to the requested
+  // model, so a lone prohibited ACP_MODEL is still caught by the expectation
+  // check with the call site under test deleted — red, but for the wrong
+  // reason. Pairing a prohibited request with a PERMITTED expectation is what
+  // isolates the ACP_MODEL call site.
+  const cases = [
+    { env: { ACP_EXPECT_MODEL: 'gemini-3.1-flash' }, label: 'ACP_EXPECT_MODEL', value: 'gemini-3.1-flash' },
+    { env: { ACP_MODEL: 'gemini-3.1-pro-high', ACP_EXPECT_MODEL: 'gpt-5.6-luna' },
+      label: 'ACP_MODEL', value: 'gemini-3.1-pro-high' },
+  ]
+  for (const [i, probe] of cases.entries()) {
+    const r = spawnSync(process.execPath, [join(SCRIPTS, 'acp-companion.mjs'), 'mock', cwd, `child-case-${i}`, brief, '120'],
+      { cwd, encoding: 'utf8', env: laneEnv(probe.env), timeout: 20_000 })
+    assert.equal(r.status, 2,
+      `case ${i} (${JSON.stringify(probe.env)}) was accepted by the companion:\n${r.stdout}${r.stderr}`)
+    assert.match(r.stderr, new RegExp(`${probe.label}: Gemini 3\\.1 is prohibited on tmux-teams routes, got ${probe.value}`),
+      `case ${i} refused under the wrong name:\n${r.stderr}`)
   }
   // The mock agent writes `.adapter-env.json` unconditionally at its own top
   // level, so its ABSENCE is what proves the refusal landed before any adapter
