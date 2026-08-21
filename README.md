@@ -416,6 +416,8 @@ relaying a person's words is expected to sign `human:` and name itself in
 | `tmux-teams:party-mode` | the umbrella: routes a request to one of the two lanes below |
 | `tmux-teams:party-auto` | executing multi-file or production-impacting work — planning, critique, file ownership, grill gate, verification, 3-model review |
 | `tmux-teams:party-advise` | advice, plan critique, tradeoff or risk review — read-only, never edits |
+| `tmux-teams:implement-spec` | a spec with tickets, and you want the whole thing built with minimal supervision — tickets as a dependency graph, parallel implementer subagents each in its own worktree, reviewed against the spec |
+| `tmux-teams:pm-delegation` | the contract for handing bounded work to an implementer: what a brief carries, what comes back, when to STOP. `implement-spec` runs it for every dispatch |
 | `tmux-teams:sqthink` | structured step-by-step analysis, comparison, or planning before deciding |
 
 **Getting a second opinion**
