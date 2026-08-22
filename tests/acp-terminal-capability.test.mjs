@@ -343,6 +343,110 @@ test('a RELEASED terminal that traps SIGTERM is still reaped, via SIGKILL escala
     + 'release removed it from the teardown sweep before it actually exited')
 })
 
+test('a wrapper terminal command that forks a descendant has the WHOLE subtree reaped at teardown', async () => {
+  // The mock's terminal command is itself a LAUNCHER: it forks a plain
+  // (non-detached) descendant that traps SIGTERM, then the wrapper exits on
+  // its own almost immediately — standing in for a shell, npx, or bunx
+  // wrapper. Before createTerminal spawned with `detached: true`, the
+  // wrapper and its descendant shared the COMPANION's own process group, so
+  // once the wrapper's 'exit' event fired, `term.exitStatus` was set and
+  // killAllLiveTerminals' `if (term.exitStatus) continue` skipped this
+  // terminal entirely — the descendant was never signalled by anything.
+  const run = runCompanion('task-term-wrapper-descendant', {
+    ACP_ENABLE_TERMINAL: '1',
+    MOCK_SCENARIO: 'terminal-wrapper-descendant',
+    ACP_TERMINAL_KILL_GRACE_MS: '200',
+  })
+  assert.equal(run.status, 0, `expected a clean dispatch; stderr:\n${run.stderr}`)
+  const pidFile = join(run.cwd, 'terminal-wrapper-descendant-pid')
+  assert.ok(existsSync(pidFile),
+    `the wrapper's descendant never wrote its own pid — it may never have started; stderr:\n${run.stderr}`)
+  const pid = Number(readFileSync(pidFile, 'utf8').trim())
+  assert.ok(Number.isInteger(pid) && pid > 0, `unexpected pid file contents: ${pid}`)
+  const gone = await waitForPidGone(pid)
+  assert.ok(gone,
+    `the wrapper's descendant pid ${pid} is still alive after the companion exited — `
+    + "the wrapper settling hid its descendant from the teardown sweep")
+})
+
+test('terminal/kill escalates to SIGKILL itself when SIGTERM is ignored, before acking success', () => {
+  // Found by a second reviewer of the prior round's fix: the teardown sweep
+  // (killAllLiveTerminals) already escalates to SIGKILL, but the terminal/kill
+  // REQUEST path sent one SIGTERM and answered `{}` immediately, so a caller
+  // that trusted that ack and immediately called terminal/wait_for_exit could
+  // block the whole turn on a process the kill claimed had already stopped.
+  //
+  // The load-bearing assertion is REQUEST LATENCY, not just eventual death: a
+  // fire-and-forget kill answers in a few milliseconds regardless of the
+  // grace period, while an escalation that actually lives inside the request
+  // must sit through the whole ACP_TERMINAL_KILL_GRACE_MS before it can know
+  // SIGTERM did nothing. A single post-response aliveness snapshot cannot
+  // tell the two apart on its own: the SAME background escalation still runs
+  // and kills the child moments later even in the un-awaited (broken) shape,
+  // so a bounded poll window comparable to the grace period can read "dead"
+  // either way. Kept as a secondary corroborating signal only.
+  const run = runCompanion('task-term-kill-escalation', {
+    ACP_ENABLE_TERMINAL: '1',
+    MOCK_SCENARIO: 'terminal-kill-escalation',
+    ACP_TERMINAL_KILL_GRACE_MS: '200',
+  })
+  assert.equal(run.status, 0, `expected a clean dispatch; stderr:\n${run.stderr}`)
+  const recorded = join(run.cwd, '.terminal-kill-escalation.json')
+  assert.ok(existsSync(recorded), `mock never wrote .terminal-kill-escalation.json; stderr:\n${run.stderr}`)
+  const steps = JSON.parse(readFileSync(recorded, 'utf8'))
+  assert.equal(steps.kill?.error, null, `terminal/kill was refused: ${JSON.stringify(steps.kill?.error)}`)
+  assert.ok(steps.killElapsedMs >= 150,
+    `terminal/kill against a SIGTERM-trapping child answered in ${steps.killElapsedMs}ms — `
+    + 'a request that actually waits out the 200ms grace before escalating to SIGKILL cannot '
+    + 'answer this fast; the response path never escalated within the request itself')
+  assert.equal(steps.aliveAfterKill, false,
+    'the SIGTERM-trapping child was still alive after the request-path escalation and its '
+    + 'follow-up poll window — SIGKILL never reached it at all')
+})
+
+test('a second terminal/create while the first is still live is refused', () => {
+  // Finding 4, judged on the merits: the stdin bridge broadcasts to every
+  // open terminal on the stated assumption that a login run drives at most
+  // one at a time. Nothing enforced that assumption at the one place that
+  // could create a second terminal, so this proves createTerminal now refuses
+  // a concurrent one instead of silently letting two children compete for the
+  // same keystrokes (including a login code meant for only one of them).
+  const run = runCompanion('task-term-concurrent-create', {
+    ACP_ENABLE_TERMINAL: '1',
+    MOCK_SCENARIO: 'terminal-concurrent-create',
+  })
+  assert.equal(run.status, 0, `expected a clean dispatch; stderr:\n${run.stderr}`)
+  const recorded = join(run.cwd, '.terminal-concurrent-create.json')
+  assert.ok(existsSync(recorded), `mock never wrote .terminal-concurrent-create.json; stderr:\n${run.stderr}`)
+  const steps = JSON.parse(readFileSync(recorded, 'utf8'))
+  assert.equal(steps.first.error, null, `the first terminal/create was refused: ${JSON.stringify(steps.first.error)}`)
+  assert.equal(steps.second.result, null,
+    `a second terminal/create must not succeed while the first is still live: ${JSON.stringify(steps.second)}`)
+  assert.ok(steps.second.error, 'a concurrent terminal/create must come back as a JSON-RPC error, not a silent success')
+  assert.match(String(steps.second.error.message), /at most one live terminal/)
+  assert.equal(steps.release?.error, null, `releasing the first terminal failed: ${JSON.stringify(steps.release?.error)}`)
+})
+
+test('terminal/create with a non-array args value is refused, not silently dropped', () => {
+  // The element-type check assumes `args` is already an array and never runs
+  // against a bare non-array value — the ternary in createTerminal used to
+  // fall through to `[]` for `args: "--login"` exactly like it does for
+  // `undefined`, silently dropping every argument and running a materially
+  // different command instead of refusing the malformed request.
+  const run = runCompanion('task-term-args-not-array', {
+    ACP_ENABLE_TERMINAL: '1',
+    MOCK_SCENARIO: 'terminal-args-not-array',
+  })
+  assert.equal(run.status, 0, `a refused terminal/create must not crash the whole dispatch; stderr:\n${run.stderr}`)
+  const recorded = join(run.cwd, '.terminal-args-not-array.json')
+  assert.ok(existsSync(recorded), `mock never wrote .terminal-args-not-array.json; stderr:\n${run.stderr}`)
+  const steps = JSON.parse(readFileSync(recorded, 'utf8'))
+  assert.equal(steps.create.result, null,
+    `terminal/create must not succeed with a non-array args value: ${JSON.stringify(steps.create)}`)
+  assert.ok(steps.create.error, 'terminal/create must come back as a JSON-RPC error, not a silent success')
+  assert.match(String(steps.create.error.message), /args must be an array/)
+})
+
 test('terminal/create with a non-string args element is refused, not silently coerced', () => {
   const run = runCompanion('task-term-bad-args', {
     ACP_ENABLE_TERMINAL: '1',

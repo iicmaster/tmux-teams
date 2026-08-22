@@ -2880,10 +2880,12 @@ async function waitForChildClose(timeoutMs) {
 // process in the group is left. Returning true unplaced on anything but Linux
 // declared the group reaped without looking, so the escalation below — the last
 // thing that would have signalled a surviving descendant — never ran once.
-async function waitForGroupGone(timeoutMs = 1000) {
+// `groupId` is a parameter rather than reading `agent?.pid` directly so the
+// terminal capability's own reap ladder (`reapTerminalGroup`) can reuse this
+// exact wait instead of a second copy scoped only to `agent`.
+async function waitForGroupGone(groupId, timeoutMs = 1000) {
   const deadline = Date.now() + Math.max(0, timeoutMs)
   while (Date.now() <= deadline) {
-    const groupId = agent?.pid
     let groupExists = false
     if (groupId) {
       try { process.kill(-groupId, 0); groupExists = true } catch {}
@@ -2891,7 +2893,6 @@ async function waitForGroupGone(timeoutMs = 1000) {
     if (!groupExists && groupPids(groupId).length === 0) return true
     await waitFor(20)
   }
-  const groupId = agent?.pid
   try { process.kill(-groupId, 0); return false } catch {}
   return groupPids(groupId).length === 0
 }
@@ -2934,13 +2935,13 @@ async function closeAndReapChild({ signalIfNeeded = true, closeGraceMs = process
   if (closeResult && signalIfNeeded && groupPids(agent?.pid).some((pid) => pid !== agent?.pid)) {
     reapSignal('SIGTERM', '[reap] signal SIGTERM for descendants after child settlement')
   }
-  let groupGone = await waitForGroupGone(Math.max(processReapGraceMs, processKillGraceMs * 2))
+  let groupGone = await waitForGroupGone(agent?.pid, Math.max(processReapGraceMs, processKillGraceMs * 2))
   if (!groupGone && signalIfNeeded) {
     reapSignal('SIGTERM', '[reap] signal SIGTERM for remaining process group')
-    groupGone = await waitForGroupGone(processKillGraceMs)
+    groupGone = await waitForGroupGone(agent?.pid, processKillGraceMs)
     if (!groupGone) {
       reapSignal('SIGKILL', '[reap] signal SIGKILL for remaining process group')
-      groupGone = await waitForGroupGone(processKillGraceMs)
+      groupGone = await waitForGroupGone(agent?.pid, processKillGraceMs)
     }
   }
   return {
@@ -3059,9 +3060,12 @@ function settleTerminalExit(term, status) {
 // Only login mode ever reads the companion's OWN stdin — ordinary dispatch
 // never does, so this is never wired up unless a terminal actually exists.
 // Broadcast to every open terminal rather than routing per-terminal: a login
-// run drives one interactive command at a time, and building session-aware
-// input routing for a case that does not occur would be guessing at a
-// requirement nobody has.
+// run drives one interactive command at a time, and createTerminal now
+// ENFORCES that instead of merely assuming it — a second `terminal/create`
+// while one is still live is refused there. With at most one live terminal,
+// this loop broadcasting to "every open terminal" is provably a unicast, not
+// a hope; building session-aware input routing for a case that cannot occur
+// would only be guessing at a requirement nobody has.
 function ensureTerminalStdinBridge() {
   if (terminalStdinBridgeInstalled) return
   terminalStdinBridgeInstalled = true
@@ -3167,6 +3171,24 @@ function attachTerminalOutputStream(term, terminalId, stream) {
 function createTerminal(params) {
   const command = typeof params?.command === 'string' && params.command ? params.command : null
   if (!command) throw new Error('terminal/create requires a non-empty command string')
+  // A login run drives at most one live terminal at a time — the assumption
+  // ensureTerminalStdinBridge's broadcast already relies on. That used to be
+  // stated only in a comment and never checked where terminal/create is
+  // actually served, which this file's own RULE above says is not a policy,
+  // it is a hope: a second `terminal/create` while one is still live would
+  // make every future keystroke (including a login code meant for the first
+  // command) go to both children, and could corrupt both interactive flows.
+  // Refuse it outright rather than building session-aware input routing for
+  // a case the comment already says does not occur. A terminal stops being
+  // "live" the moment it exits OR is released — same test the stdin bridge
+  // itself uses (`term.exitStatus || term.released`) — so a login flow that
+  // finishes one command and then opens the next is unaffected.
+  const existingLive = [...terminals.values()].find((term) => !term.exitStatus && !term.released)
+  if (existingLive) {
+    throw new Error(
+      `terminal/create refused — a login run drives at most one live terminal at a time `
+      + `(terminal ${existingLive.terminalId} is still live)`)
+  }
   // Refuse a malformed element rather than silently dropping it (args) or
   // coercing it (env value). A `.filter` here used to spawn `echo a b` for
   // `args: ['a', 1, 'b']` — the caller believing it asked for `echo a 1 b`
@@ -3175,6 +3197,15 @@ function createTerminal(params) {
   // no signal that the request was never actually honored. The catch in
   // handleTerminalRequest already maps a thrown error to -32602, so throwing
   // needs no new plumbing.
+  // A non-array `args` (e.g. a bare string) used to fall through the ternary
+  // below to the `[]` branch just like `undefined` does, silently dropping
+  // every argument instead of refusing the malformed shape the element check
+  // already refuses one value at a time. `params.args === null` also lands
+  // here (typeof null is 'object') — deliberate: null is a present, non-array
+  // value, not an absent one, and gets the same refusal as any other.
+  if (params.args !== undefined && !Array.isArray(params.args)) {
+    throw new Error(`terminal/create args must be an array, got ${typeof params.args}`)
+  }
   const args = Array.isArray(params.args)
     ? params.args.map((value, index) => {
       if (typeof value !== 'string') {
@@ -3203,10 +3234,18 @@ function createTerminal(params) {
   const terminalId = `term_${randomUUID()}`
   let child
   try {
+    // `detached: true` makes this child its OWN process-group leader (its pid
+    // doubles as its pgid), same trick the main `agent` child already relies
+    // on. A terminal command that is itself a launcher — a shell, npx, bunx,
+    // anything that forks — spawns its descendant WITHOUT `detached`, so that
+    // descendant inherits THIS group rather than the companion's own. That is
+    // what lets `signalTerminalGroup` reach the whole subtree via
+    // `process.kill(-pid, …)` instead of only ever touching the wrapper pid.
     child = spawn(command, args, {
       cwd: terminalCwd,
       env: { ...process.env, ...envOverrides },
       stdio: ['pipe', 'pipe', 'pipe'],
+      detached: true,
     })
   } catch (cause) {
     throw new Error(`cannot spawn terminal command: ${cause.message}`)
@@ -3263,12 +3302,26 @@ function waitForTerminalExit(term) {
 // spec: terminate AND free resources — the id becomes invalid afterward. The
 // two are different methods with different postconditions; collapsing them
 // would silently break whichever one a real adapter relies on.
-function killTerminal(term) {
-  if (!term.exitStatus) { try { term.child.kill('SIGTERM') } catch {} }
+//
+// Both route through `reapTerminalGroup` (below), which signals the
+// terminal's WHOLE process group and escalates to SIGKILL if a bounded grace
+// period passes with something still alive — not just the wrapper's own pid.
+// `terminal/kill` used to send one SIGTERM to the wrapper and respond
+// immediately: a command that traps or ignores SIGTERM (or is itself a
+// launcher — a shell, npx, bunx, anything that forks — leaving a live
+// descendant behind) then stayed alive while the caller had already been
+// told the kill succeeded, and a caller that followed that ack with
+// `terminal/wait_for_exit` could block the whole turn on it. This now waits
+// for the escalation before treating the kill as done — the same ladder
+// shape the teardown sweep below already used, just applied to the request
+// itself instead of only at companion exit.
+async function killTerminal(term) {
+  if (term.exitStatus) return
+  await reapTerminalGroup(term, 'SIGTERM', terminalKillGraceMs)
 }
 
 function releaseTerminal(term) {
-  if (!term.exitStatus) { try { term.child.kill('SIGTERM') } catch {} }
+  if (!term.exitStatus) signalTerminalGroup(term, 'SIGTERM')
   term.released = true
   // A child that traps or ignores the SIGTERM release just sent is still
   // alive here — deleting it from `terminals` unconditionally used to make
@@ -3278,60 +3331,79 @@ function releaseTerminal(term) {
   // deletes it once it actually exits. `requireTerminal` already refuses any
   // request naming a released id via `term.released`, and the stdin bridge
   // already skips released terminals, so the ACP postcondition (the id
-  // becomes invalid immediately) is unchanged for every caller.
+  // becomes invalid immediately) is unchanged for every caller. Release
+  // itself does not wait out the escalation ladder — the ACP method has no
+  // "still terminating" reply to give — but killAllLiveTerminals' teardown
+  // sweep runs that same ladder over every terminal still in this map
+  // regardless of `released`, so a released-but-still-alive group is still
+  // guaranteed gone before the companion exits.
   if (term.exitStatus) terminals.delete(term.terminalId)
 }
 
-function waitForTerminalSettle(term, timeoutMs) {
-  if (term.exitStatus) return Promise.resolve(true)
-  return new Promise((resolve) => {
-    let settled = false
-    const timer = setTimeout(() => {
-      if (settled) return
-      settled = true
-      resolve(false)
-    }, Math.max(0, timeoutMs))
-    term.waiters.push(() => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      resolve(true)
-    })
-  })
+// One check, no signal sent: true only when nothing in this pid's process
+// group is left alive. Used as `reapTerminalGroup`'s fast path so a terminal
+// whose whole group is already gone costs this function nothing beyond one
+// `kill(-pid, 0)` probe.
+function isGroupGone(groupId) {
+  if (!groupId) return true
+  try { process.kill(-groupId, 0); return false } catch {}
+  return groupPids(groupId).length === 0
 }
 
-// RULE: a terminal the companion spawned is the companion's to reap. Unlike
-// `agent`, a terminal child is never `detached` and carries no process-group
-// tracking of its own, so nothing else in this file's descendant-cleanup
-// machinery (built for `agent`'s group) ever looks at it. Called from
-// `main()`'s `finally`, which every JS-level exit path — normal completion,
-// a thrown error, a finished cancellation — runs through. Best-effort only:
-// a companion killed by an external SIGKILL runs no JS at all, the same
-// blind spot every in-process cleanup in this file has.
+// Signal a terminal's WHOLE process group, not just the wrapper pid.
+// createTerminal spawns with `detached: true`, so `term.child.pid` doubles as
+// the group's own pgid — `process.kill(-pid, …)` reaches a shell/npx/bunx
+// descendant the wrapper forked (a plain, non-detached spawn from the
+// wrapper inherits that same pgid), the same trick `signalProcessGroup`
+// already uses for the main agent child. Falls back to a direct signal on
+// the wrapper only if the group call itself throws.
+function signalTerminalGroup(term, signal) {
+  const pid = term.child?.pid
+  if (!pid) return
+  try { process.kill(-pid, signal); return } catch {}
+  try { term.child.kill(signal) } catch {}
+}
+
+// Bounded SIGTERM -> SIGKILL escalation for one terminal's whole process
+// group, shared by the `terminal/kill` request path and the teardown sweep
+// below — a single SIGTERM was not enough: measured directly, a child that
+// traps or ignores it (`trap "" TERM`, or any adapter with its own signal
+// handling) kept running past a plain signal, its open stdio pipes keeping
+// Node's event loop alive, and this file exits through `process.exitCode`,
+// never `process.exit()`, so the companion would hang indefinitely instead
+// of leaving with the exit code it had already decided. `term.exitStatus`
+// only says the WRAPPER exited — a descendant it forked before dying can
+// still be alive and sharing its pgid — which is why this checks the GROUP
+// rather than trusting that field, and why killAllLiveTerminals (below) no
+// longer skips a terminal just because its wrapper already settled.
+async function reapTerminalGroup(term, signal, graceMs) {
+  const pid = term.child?.pid
+  if (!pid || isGroupGone(pid)) return
+  signalTerminalGroup(term, signal)
+  if (await waitForGroupGone(pid, graceMs)) return
+  signalTerminalGroup(term, 'SIGKILL')
+  await waitForGroupGone(pid, graceMs)
+}
+
+// RULE: a terminal the companion spawned is the companion's to reap. Called
+// from `main()`'s `finally`, which every JS-level exit path — normal
+// completion, a thrown error, a finished cancellation — runs through.
+// Best-effort only: a companion killed by an external SIGKILL runs no JS at
+// all, the same blind spot every in-process cleanup in this file has.
 //
-// A single SIGTERM was not enough: measured directly, a child that traps or
-// ignores it (`trap "" TERM`, or any adapter with its own signal handling)
-// kept running past companion teardown — its stdout/stderr pipes stayed
-// open, which keeps Node's event loop alive, and this file exits through
-// `process.exitCode`, never `process.exit()`, so the companion hung
-// indefinitely instead of leaving with the exit code it had already decided.
-// Escalate to SIGKILL after terminalKillGraceMs, the same ladder shape
-// `closeAndReapChild` already gives the main agent child — SIGKILL cannot be
-// trapped, so this is the point past which a terminal child cannot outlive
-// the companion.
+// Sweeps EVERY terminal still in the map, not only ones whose wrapper is
+// still running: `term.exitStatus` set only means the wrapper itself exited,
+// and a launcher command (a shell, npx, bunx, anything that forks) can leave
+// a live descendant behind sharing its process group after the wrapper is
+// gone. Skipping here on `term.exitStatus` used to make exactly that
+// descendant invisible to this sweep the moment its wrapper died.
+// `reapTerminalGroup`'s own `isGroupGone` check makes this a no-op for a
+// terminal whose whole group is already empty, so nothing here does extra
+// signalling for the common case of a terminal that fully exited on its own.
 async function killAllLiveTerminals(signal = 'SIGTERM') {
-  const live = []
-  for (const term of terminals.values()) {
-    if (term.exitStatus) continue
-    try { term.child.kill(signal) } catch {}
-    live.push(term)
-  }
-  if (!live.length) return
-  await Promise.all(live.map(async (term) => {
-    if (await waitForTerminalSettle(term, terminalKillGraceMs)) return
-    try { term.child.kill('SIGKILL') } catch {}
-    await waitForTerminalSettle(term, terminalKillGraceMs)
-  }))
+  const candidates = [...terminals.values()]
+  if (!candidates.length) return
+  await Promise.all(candidates.map((term) => reapTerminalGroup(term, signal, terminalKillGraceMs)))
 }
 
 async function handleTerminalRequest(message) {
@@ -3356,7 +3428,7 @@ async function handleTerminalRequest(message) {
         respond(id, await waitForTerminalExit(requireTerminal(params?.terminalId)))
         break
       case 'terminal/kill':
-        killTerminal(requireTerminal(params?.terminalId))
+        await killTerminal(requireTerminal(params?.terminalId))
         respond(id, {})
         break
       case 'terminal/release':

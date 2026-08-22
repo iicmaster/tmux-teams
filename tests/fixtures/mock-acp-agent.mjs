@@ -3,7 +3,7 @@
 // updates, cancellation, identity, and descendant-process cleanup paths.
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { appendFileSync, existsSync, mkdirSync, readdirSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`)
@@ -435,6 +435,115 @@ async function runTerminalSigtermTrapReleaseProbe(prompt) {
   reply(prompt.id, { stopReason: 'end_turn' })
 }
 
+// A terminal command that is itself a LAUNCHER — standing in for a shell,
+// npx, or bunx wrapper — forks a plain (non-detached) descendant that traps
+// SIGTERM, then the wrapper exits immediately on its own. Before
+// createTerminal spawned with `detached: true`, the wrapper and its
+// descendant shared the COMPANION's own process group, so any signal aimed
+// at "this terminal" could only ever reach the wrapper pid; once the wrapper
+// exited on its own, the descendant was invisible both to that 'exit' event
+// and to any attempt to signal the terminal as a whole. The turn otherwise
+// completes normally and this terminal is never released, so this proves the
+// companion's teardown sweep reaps the WHOLE subtree the wrapper forked, not
+// only the wrapper it directly spawned.
+async function runTerminalWrapperDescendantProbe(prompt) {
+  const descendantScript = [
+    'process.on("SIGTERM", () => {});',
+    'const fs = require("fs");',
+    'fs.writeFileSync("terminal-wrapper-descendant-pid.tmp", String(process.pid));',
+    'fs.renameSync("terminal-wrapper-descendant-pid.tmp", "terminal-wrapper-descendant-pid");',
+    'setInterval(() => {}, 1000);',
+  ].join(' ')
+  const wrapperScript = [
+    'const fs = require("fs");',
+    'const { spawn } = require("child_process");',
+    'fs.writeFileSync("wrapper-descendant-child.js", ' + JSON.stringify(descendantScript) + ');',
+    'const child = spawn(process.execPath, ["wrapper-descendant-child.js"], { stdio: "ignore" });',
+    'child.unref();',
+    'process.exit(0);',
+  ].join(' ')
+  await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: process.execPath,
+    args: ['-e', wrapperScript],
+  })
+  const deadline = Date.now() + envNumber('MOCK_GATE_WATCHDOG_MS', 15000)
+  while (!existsSync('terminal-wrapper-descendant-pid')) {
+    if (Date.now() >= deadline) process.exit(17)
+    await wait(10)
+  }
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
+// terminal/kill against a child that traps SIGTERM, called MID-TURN rather
+// than left for companion teardown. Before the request path escalated to
+// SIGKILL itself, it sent one SIGTERM and answered success IMMEDIATELY, so
+// the primary measurement here is REQUEST LATENCY: with the escalation ladder
+// inside the request, a SIGTERM-trapping child forces `terminal/kill` to sit
+// through the whole ACP_TERMINAL_KILL_GRACE_MS grace period before it can
+// answer, because that is the only way it can know SIGTERM did nothing. A
+// fire-and-forget kill instead answers in a handful of milliseconds no matter
+// how long the grace period is — and does so even though the SAME background
+// escalation still runs and kills the child moments later, so a single
+// post-response aliveness check alone cannot tell the two apart if the poll
+// window is comparable to the grace period. The poll below is kept only as a
+// secondary corroborating signal, not the load-bearing one.
+async function runTerminalKillEscalationProbe(prompt) {
+  const create = await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: process.execPath,
+    args: ['-e',
+      'process.on("SIGTERM", () => {}); '
+      + 'const fs = require("fs"); fs.writeFileSync("terminal-kill-trap-pid.tmp", String(process.pid)); '
+      + 'fs.renameSync("terminal-kill-trap-pid.tmp", "terminal-kill-trap-pid"); setInterval(() => {}, 1000)'],
+  })
+  const terminalId = create.result?.terminalId
+  const deadline = Date.now() + envNumber('MOCK_GATE_WATCHDOG_MS', 15000)
+  while (!existsSync('terminal-kill-trap-pid')) {
+    if (Date.now() >= deadline) process.exit(17)
+    await wait(10)
+  }
+  const pid = Number(readFileSync('terminal-kill-trap-pid', 'utf8').trim())
+  const killStartedAt = Date.now()
+  const kill = terminalId ? await sendMockRequest('terminal/kill', { sessionId: currentSessionId, terminalId }) : null
+  const killElapsedMs = Date.now() - killStartedAt
+  const pollDeadline = Date.now() + envNumber('MOCK_KILL_POLL_MS', 250)
+  let aliveAfterKill = true
+  while (Date.now() < pollDeadline) {
+    try { process.kill(pid, 0); aliveAfterKill = true } catch { aliveAfterKill = false; break }
+    await wait(10)
+  }
+  writeFileSync(join(process.cwd(), '.terminal-kill-escalation.json'),
+    `${JSON.stringify({ kill, killElapsedMs, aliveAfterKill }, null, 2)}\n`, { mode: 0o600 })
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
+// A second terminal/create while the first is still live (never released,
+// never exited). createTerminal now refuses this instead of allowing both
+// terminals onto the login stdin bridge's broadcast, which would deliver
+// every keystroke — including a login code meant for one command — to both
+// children. Releases the first afterward so the turn completes cleanly.
+async function runTerminalConcurrentCreate(prompt) {
+  const steps = {}
+  steps.first = await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: process.execPath,
+    args: ['-e', 'setInterval(() => {}, 1000)'],
+  })
+  steps.second = await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: process.execPath,
+    args: ['-e', 'setInterval(() => {}, 1000)'],
+  })
+  const firstId = steps.first.result?.terminalId
+  if (firstId) steps.release = await sendMockRequest('terminal/release', { sessionId: currentSessionId, terminalId: firstId })
+  writeFileSync(join(process.cwd(), '.terminal-concurrent-create.json'), `${JSON.stringify(steps, null, 2)}\n`, { mode: 0o600 })
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
 // terminal/create with a non-string args element — the companion must refuse
 // the whole request rather than silently dropping the bad element and running
 // a different command than what was asked for.
@@ -446,6 +555,24 @@ async function runTerminalMalformedArgs(prompt) {
     args: ['a', 1, 'b'],
   })
   writeFileSync(join(process.cwd(), '.terminal-malformed-args.json'), `${JSON.stringify(steps, null, 2)}\n`, { mode: 0o600 })
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
+// terminal/create with `args` present but NOT an array (a bare string) — the
+// element-type check above assumes args is already an array and never runs
+// against this shape, so the ternary in createTerminal used to fall through
+// to `[]` exactly like it does for `undefined`, silently dropping every
+// argument and running a materially different command instead of refusing
+// the malformed request.
+async function runTerminalArgsNotArray(prompt) {
+  const steps = {}
+  steps.create = await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: 'echo',
+    args: '--login',
+  })
+  writeFileSync(join(process.cwd(), '.terminal-args-not-array.json'), `${JSON.stringify(steps, null, 2)}\n`, { mode: 0o600 })
   writeOutbox(prompt)
   reply(prompt.id, { stopReason: 'end_turn' })
 }
@@ -532,6 +659,10 @@ async function handlePrompt(message) {
   if (scenario === 'terminal-orphan') return void runTerminalOrphanProbe(message)
   if (scenario === 'terminal-sigterm-trap') return void runTerminalSigtermTrapProbe(message)
   if (scenario === 'terminal-sigterm-trap-release') return void runTerminalSigtermTrapReleaseProbe(message)
+  if (scenario === 'terminal-wrapper-descendant') return void runTerminalWrapperDescendantProbe(message)
+  if (scenario === 'terminal-kill-escalation') return void runTerminalKillEscalationProbe(message)
+  if (scenario === 'terminal-concurrent-create') return void runTerminalConcurrentCreate(message)
+  if (scenario === 'terminal-args-not-array') return void runTerminalArgsNotArray(message)
   if (scenario === 'terminal-malformed-args') return void runTerminalMalformedArgs(message)
   if (scenario === 'terminal-malformed-env') return void runTerminalMalformedEnv(message)
   if (scenario === 'terminal-chunk-split') return void runTerminalChunkSplit(message)
