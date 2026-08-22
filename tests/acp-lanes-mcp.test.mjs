@@ -2184,9 +2184,25 @@ test('a cancelled multi-lane probe stops the remaining lanes, reaps the active c
     assert.ok(elapsed < 2000,
       `settling a cancelled probe took ${elapsed}ms — it rode out the lane's own timeout instead of actually aborting`)
     const pid = Number(readFileSync(pidFile, 'utf8'))
+    // `waitForProbeGroupGone` already confirmed the GROUP gone before this
+    // promise settled — checked here with `kill(pid, 0)` on the PID directly
+    // (what an operator would actually check) rather than repeating that same
+    // group-level check. The two can disagree for a few milliseconds under
+    // load: a process this call just killed can sit as a zombie — still
+    // visible to a direct PID probe — until this Node process's own libuv
+    // reaps its exit status on a later event-loop turn, independent of
+    // anything this fix controls. `elapsed < 2000` above already proves the
+    // teardown was prompt; this polls briefly rather than checking once so
+    // that ORDINARY reap latency cannot be mistaken for the child staying
+    // alive, which is the actual claim.
+    const aliveDeadline = Date.now() + 500
     let alive = true
-    try { process.kill(pid, 0) } catch { alive = false }
-    assert.equal(alive, false, 'the active child was still alive after the cancelled probe settled')
+    do {
+      try { process.kill(pid, 0); alive = true } catch { alive = false }
+      if (alive) await new Promise((r) => setTimeout(r, 20))
+    } while (alive && Date.now() < aliveDeadline)
+    assert.equal(alive, false, 'the active child was still alive (not merely an unreaped zombie) '
+      + 'half a second after the cancelled probe settled')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
