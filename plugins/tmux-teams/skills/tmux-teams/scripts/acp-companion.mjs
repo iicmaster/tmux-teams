@@ -3068,7 +3068,21 @@ function settleTerminalExit(term, status) {
   // exits — not at release time. See releaseTerminal for why: removing it
   // immediately took it out of killAllLiveTerminals' teardown sweep while the
   // child could still be alive and ignoring the SIGTERM release itself sent.
-  if (term.released) terminals.delete(term.terminalId)
+  //
+  // `released` alone is not enough: it says the wrapper's OWN exit settled,
+  // not that the whole process GROUP is gone. A wrapper that forked a plain
+  // (non-detached) descendant before dying — one that traps SIGTERM, or was
+  // never reached by release's own signal because release ran while the
+  // wrapper was still alive and only the wrapper died from it — leaves that
+  // descendant sharing the same pgid and still alive right here. Deleting on
+  // `released` alone would drop it from `terminals` before
+  // killAllLiveTerminals' teardown sweep ever runs, orphaning it permanently.
+  // Keeping the entry when the group is not yet gone costs nothing: it is
+  // still reaped as soon as `isGroupGone` says so, either by a later call
+  // here (it won't fire again for this wrapper) or, in practice, by the
+  // teardown sweep itself — `reapTerminalGroup`'s own `isGroupGone` check
+  // makes that a no-op the moment this becomes true on its own.
+  if (term.released && isGroupGone(term.child?.pid)) terminals.delete(term.terminalId)
 }
 
 // Only login mode ever reads the companion's OWN stdin — ordinary dispatch
@@ -3356,13 +3370,28 @@ function waitForTerminalExit(term) {
 // for the escalation before treating the kill as done — the same ladder
 // shape the teardown sweep below already used, just applied to the request
 // itself instead of only at companion exit.
+// `term.exitStatus` only says the WRAPPER exited, not that its process GROUP
+// is empty — a launcher wrapper (shell, npx, bunx, anything that forks) can
+// settle while a plain descendant it spawned is still alive and sharing its
+// pgid. Guarding on `exitStatus` here used to skip the reap entirely for
+// exactly that terminal: the request answered as if the kill had done
+// something, while the still-live descendant was never even signalled once.
+// Ask the question this function actually needs answered — is the GROUP
+// gone — via the same `isGroupGone` probe `reapTerminalGroup` itself leads
+// with, so this stays a fast, harmless no-op for the ordinary case (the
+// wrapper exited AND nothing it forked outlived it) and only actually skips
+// when there is truly nothing left to reap.
 async function killTerminal(term) {
-  if (term.exitStatus) return
+  if (isGroupGone(term.child?.pid)) return
   await reapTerminalGroup(term, 'SIGTERM', terminalKillGraceMs)
 }
 
 function releaseTerminal(term) {
-  if (!term.exitStatus) signalTerminalGroup(term, 'SIGTERM')
+  // Same question as killTerminal above: whether to bother signalling is
+  // about the GROUP, not the wrapper's own `exitStatus`. A wrapper that
+  // already exited can still have a live descendant sharing its pgid, and
+  // that descendant has not yet been sent anything.
+  if (!isGroupGone(term.child?.pid)) signalTerminalGroup(term, 'SIGTERM')
   term.released = true
   // A child that traps or ignores the SIGTERM release just sent is still
   // alive here — deleting it from `terminals` unconditionally used to make
@@ -3378,7 +3407,19 @@ function releaseTerminal(term) {
   // sweep runs that same ladder over every terminal still in this map
   // regardless of `released`, so a released-but-still-alive group is still
   // guaranteed gone before the companion exits.
-  if (term.exitStatus) terminals.delete(term.terminalId)
+  //
+  // The guard below used to read `term.exitStatus`: true the instant the
+  // WRAPPER settled, even with a live descendant sharing its pgid still
+  // holding no pipe of its own — deleting right there hid that descendant
+  // from the teardown sweep forever, since nothing else ever deletes this
+  // entry for a wrapper that has already exited (settleTerminalExit only
+  // runs once, and it already ran before this call). Ask about the GROUP
+  // instead: if it is not yet gone, leave the entry in place so
+  // killAllLiveTerminals still finds it; `reapTerminalGroup`'s own
+  // `isGroupGone` check makes that sweep a cheap no-op the moment the group
+  // actually is gone, so a terminal that exited normally with nothing left
+  // behind is deleted here exactly as before.
+  if (isGroupGone(term.child?.pid)) terminals.delete(term.terminalId)
 }
 
 // One check, no signal sent: true only when nothing in this pid's process
