@@ -2596,10 +2596,24 @@ test('realProbeTransport reaps a descendant left behind by a package-runner wrap
       `fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid))`,
       'setInterval(() => {}, 1000)',
     ].join('\n'))
+    // 2000ms, not the 300ms this was written with. The probe's deadline is
+    // also the wrapper's whole lifetime, and a node process that has not
+    // BOOTED yet has not spawned the descendant this test is about. At 300ms
+    // the full suite killed the wrapper before it wrote `descendant-pid`, and
+    // the test died on a raw ENOENT stack — measured on the first quiet full
+    // run after this landed, while the file alone had passed 79/79 twice.
+    // A too-short deadline here does not make the test flaky, it makes it
+    // VACUOUS: no descendant ever existed to survive a sweep.
     const result = await realProbeTransport({
-      command: [process.execPath, wrapper], env: process.env, timeoutMs: 300,
+      command: [process.execPath, wrapper], env: process.env, timeoutMs: 2000,
     })
     assert.equal(result.settled, 'timeout')
+    // And say which thing failed. An ENOENT stack names a temp path and
+    // nothing else; this names the precondition, so a future shortening of
+    // the deadline is diagnosed in one line instead of read as a real defect.
+    assert.ok(existsSync(pidFile),
+      'the wrapper was reaped before it could spawn a descendant, so this test proved nothing about '
+      + 'the sweep — raise timeoutMs rather than reading this as a reaping failure')
     const descendantPid = Number(readFileSync(pidFile, 'utf8'))
     const gone = await waitForPidGone(descendantPid, 2000)
     assert.equal(gone, true,
