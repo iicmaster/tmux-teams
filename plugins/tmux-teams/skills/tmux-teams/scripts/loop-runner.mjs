@@ -2172,24 +2172,42 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
 // the login-mode opt-in exported. `acp-dispatch.mjs` had the same shape and was
 // fixed one round earlier; this one stayed open because nobody went looking for
 // the second door after closing the first.
-// The operator surface this loop's own SKILL.md declares — "There is no
-// wall-clock ceiling by default; set ACP_HARD_TIMEOUT_SEC>0" and the
-// ACP_STALL_POLICY=report note beside it. These are the ACP_ variables an
-// operator is INVITED to set for a whole loop, so they are forwarded to every
-// leg; everything else the companion reads is this runner's to decide.
+// THE CRITERION IS BOUND-VERSUS-WIDEN, and it replaces "is it documented".
+// A review-of-record lane BLOCKED on the earlier rule, and it was right to: the
+// list was assembled by asking whether a name appeared in a SKILL.md, which is
+// circular — a knob is owned because nobody wrote it down, and nobody writes
+// down a knob that is owned. It also produced a wrong answer.
 //
-// The criterion is the documented promise, not harmlessness. A leaked
-// ACP_STALL_POLICY=report genuinely weakens a brake — it is forwarded anyway,
-// because the skill tells an operator they may set it.
+// Forwarded: a control that BOUNDS what a lane may do — how long it may run,
+// how long a cancellation waits, how a stall is handled. An operator setting
+// one is narrowing this loop's behaviour, and the P1 that produced this whole
+// section was a loop running with NO wall-clock ceiling because a bound the
+// operator set was silently dropped.
 //
-// ACP_CANCEL_GRACE_SEC is here because it is a LIVE fallback rather than dead
-// legacy: `acp-companion.mjs` reads _MS and falls back to _SEC * 1000 when _MS
-// is absent, so forwarding one without the other would honour half a setting.
+// Owned: anything that WIDENS what a lane can reach, or changes who it is.
+// ACP_ENV_PASSTHROUGH is the case that proves the criterion needed replacing.
+// It IS an operator control — `acp-companion.mjs`'s own comment calls it "the
+// operator's only route" past the adapter allowlist — so the documented-ness
+// rule got it wrong twice over: undocumented in any SKILL.md, and genuinely an
+// operator's. But it widens an allowlist rather than bounding a lane, and an
+// ambient `ACP_ENV_PASSTHROUGH=ANTHROPIC_API_KEY` would push a credential into
+// every lane's adapter environment from a shell nobody inspected. Owned.
+//
+// ACP_CANCEL_GRACE_SEC is a bound AND a live fallback: `acp-companion.mjs`
+// reads _MS and falls back to _SEC * 1000 when _MS is absent, so forwarding one
+// without the other would honour half a setting.
+//
+// ACP_TERMINAL_CLOSE_GRACE_MS and ACP_TERMINAL_KILL_GRACE_MS are bounds and are
+// still owned, for a reason that is not the criterion: they are INERT here. The
+// loop never enables the terminal capability — `ACP_ENABLE_TERMINAL` is dropped
+// below and a call-site test asserts a dispatched worker never receives it — so
+// forwarding them would advertise a knob that cannot do anything.
 export const LOOP_FORWARDED_ACP_CONTROLS = Object.freeze([
   'ACP_CANCEL_GRACE_MS',
   'ACP_CANCEL_GRACE_SEC',
   'ACP_HARD_TIMEOUT_SEC',
   'ACP_PROCESS_KILL_GRACE_MS',
+  'ACP_PROCESS_REAP_GRACE_MS',
   'ACP_STALL_POLICY',
 ])
 

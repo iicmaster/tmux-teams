@@ -495,8 +495,16 @@ export function classifyProbe(result) {
   // later cannot silently reclassify a cancelled turn, a handshake with no
   // session, a malformed prompt result, or a faulted transport stream as
   // something a caller would act on.
+  // `aborted` is settled by THIS file, not a provider: `notifications/cancelled`
+  // reaching `handle()` mid-probe threads a signal into the active
+  // `realProbeTransport` call, which reuses its own teardown and settles this
+  // shape once the child's process GROUP is confirmed gone. The reply this
+  // classification would sit inside is never sent — a cancelled request MUST
+  // NOT get one, per MCP — so this exists only so the shape stays inside the
+  // closed set rather than falling through to a bare, unpinned default.
   if (result.settled === 'invalid_handshake' || result.settled === 'invalid_prompt_result'
-    || result.settled === 'cancelled' || result.settled === 'transport_error') return 'unclassified'
+    || result.settled === 'cancelled' || result.settled === 'transport_error'
+    || result.settled === 'aborted') return 'unclassified'
   return 'unclassified'
 }
 
@@ -545,7 +553,9 @@ async function waitForProbeGroupGone(groupId, timeoutMs) {
   try { process.kill(-groupId, 0); return false } catch { return true }
 }
 
-export async function realProbeTransport({ command, env, timeoutMs, spawnFn = spawn }) {
+// `abortSignal` — named apart from the POSIX signal STRINGS `killGroup` below
+// sends ('SIGTERM'/'SIGKILL') on purpose, so neither reads as the other.
+export async function realProbeTransport({ command, env, timeoutMs, spawnFn = spawn, abortSignal }) {
   return new Promise((settle) => {
     let done = false
     let child
@@ -555,6 +565,7 @@ export async function realProbeTransport({ command, env, timeoutMs, spawnFn = sp
       done = true
       clearTimeout(timer)
       if (killTimer) clearTimeout(killTimer)
+      if (abortSignal) abortSignal.removeEventListener('abort', onAbort)
       // `pid` unset means the process never actually forked (a synchronous
       // spawn() throw, or an async 'error' before any pid was assigned) — no
       // 'exit' event is guaranteed for that shape on every platform, and
@@ -608,6 +619,22 @@ export async function realProbeTransport({ command, env, timeoutMs, spawnFn = sp
       settle(result)
     }
     const timer = setTimeout(() => finish({ settled: 'timeout' }), timeoutMs)
+
+    // Finding: an MCP host that cancels an in-flight `acp_lane_probe` had no
+    // way to reach the process this promise is waiting on — `handle()` threads
+    // an `AbortSignal` down to exactly this call for that reason. `onAbort`
+    // calls the SAME `finish` every other terminal outcome calls, so the
+    // process-group kill and `waitForProbeGroupGone` wait below run exactly
+    // once, on whichever path gets there first; nothing new is invented for
+    // cancellation. An already-aborted signal (a cancellation that raced the
+    // spawn itself) is caught here, before anything is spawned at all — `return`
+    // exits this executor with nothing left behind to reap, rather than
+    // settling and then spawning a process nobody will ever wait for again.
+    const onAbort = () => finish({ settled: 'aborted' })
+    if (abortSignal) {
+      if (abortSignal.aborted) { finish({ settled: 'aborted' }); return }
+      abortSignal.addEventListener('abort', onAbort, { once: true })
+    }
 
     const [bin, ...args] = command
     try {
@@ -848,7 +875,7 @@ function probeArgsProblem(args) {
   return null
 }
 
-async function probeOneLane(id, profile, env, transport) {
+async function probeOneLane(id, profile, env, transport, abortSignal) {
   const status = laneStatus(id, profile, env)
   // Already known broken, and known WHY — a live attempt would learn nothing
   // a spawn cannot already answer, and would spend a process on a lane that
@@ -886,8 +913,11 @@ async function probeOneLane(id, profile, env, transport) {
   // lands in the same honest bucket a malformed signal would.
   let result
   try {
+    // `abortSignal` reaches the ACTIVE call — the only one a cancellation can
+    // still change anything for. `probeLanes`'s own loop is what stops the
+    // NEXT lane from starting; this is what stops the one already running.
     result = await transport({
-      id, command: launch.command, env: launch.env, timeoutMs: PROBE_TIMEOUT_MS,
+      id, command: launch.command, env: launch.env, timeoutMs: PROBE_TIMEOUT_MS, abortSignal,
     })
   } catch {
     result = null
@@ -909,7 +939,7 @@ async function probeOneLane(id, profile, env, transport) {
 
 // The anti-sweep guard AND the dedup guard live before the loop: a caller who
 // repeats a lane id must not spend that lane's quota twice for one call.
-async function probeLanes(args, env, transport) {
+async function probeLanes(args, env, transport, abortSignal) {
   const problem = probeArgsProblem(args)
   if (problem) return { error: problem, known: Object.keys(REVIEW_PROFILES) }
   const ids = [...new Set(args.lanes)]
@@ -918,10 +948,19 @@ async function probeLanes(args, env, transport) {
   }
   // Sequential, never Promise.all — a live probe spends real quota and real
   // minutes, and running lanes concurrently would spend several budgets at
-  // once for a caller who typed one call.
+  // once for a caller who typed one call. This orders LANES within this one
+  // call; it says nothing about a SECOND `acp_lane_probe` call arriving while
+  // this one is still running — that is `serve()`'s own queue, further down
+  // in this file, and is a separate guarantee this loop cannot provide alone.
   const lanes = []
   for (const id of ids) {
-    lanes.push(await probeOneLane(id, REVIEW_PROFILES[id], env, transport))
+    // Checked BEFORE starting each lane, never only once up front: a
+    // cancellation can arrive between two lanes of a multi-lane call, and the
+    // one thing this loop owes a cancelled request is that the NEXT lane
+    // never spawns. The lane already running is stopped by threading the same
+    // `abortSignal` into `probeOneLane`/the transport below, not by this check.
+    if (abortSignal?.aborted) break
+    lanes.push(await probeOneLane(id, REVIEW_PROFILES[id], env, transport, abortSignal))
   }
   return { lanes }
 }
@@ -997,7 +1036,11 @@ export const TOOL_DESCRIPTORS = deepFreeze([
     // `deps.probeTransport` is the seam every test in this file's suite
     // drives instead of a subprocess. The real transport runs only when
     // nothing injects one — i.e. only from the manifest-launched server.
-    handler: (args, env, deps = {}) => probeLanes(args, env, deps.probeTransport ?? realProbeTransport),
+    // `deps.abortSignal` is `handle()`'s own doing: it is the ONE call this
+    // server tracks for `notifications/cancelled`, and this is the seam that
+    // carries the signal in without this handler needing to know anything
+    // about request ids or the registry that maps them to controllers.
+    handler: (args, env, deps = {}) => probeLanes(args, env, deps.probeTransport ?? realProbeTransport, deps.abortSignal),
   },
 ])
 
@@ -1212,7 +1255,22 @@ export function handle(message, env = process.env, deps) {
   // A notification is a request with NO id member — decided here, after the
   // frame is known to be well formed. An earlier version treated `id === null`
   // as a notification too, so a malformed request vanished without a word.
-  if (!('id' in message)) return null
+  if (!('id' in message)) {
+    // `notifications/cancelled` is the one notification this server ACTS on
+    // before discarding it, same as every other one — it never gets a reply
+    // either way. It names the id of a still-answering `acp_lane_probe` call,
+    // and finding that id in `deps.pendingProbes` is the only way this server
+    // can stop that call from continuing to spend provider quota once the
+    // host no longer wants the answer. An id this server never registered —
+    // unknown, or a call that already finished — is silently ignored: MCP
+    // says a sender MUST NOT cancel a request that has already completed, so
+    // a receiver that gets one anyway for any reason has nothing left to act
+    // on.
+    if (method === 'notifications/cancelled' && params && typeof params === 'object') {
+      deps?.pendingProbes?.get(params.requestId)?.abort()
+    }
+    return null
+  }
   // Method-not-found outranks bad params: a caller naming a method this server
   // does not implement has to hear THAT, not a complaint about the arguments to
   // something that does not exist.
@@ -1250,18 +1308,40 @@ export function handle(message, env = process.env, deps) {
     if (!descriptor) return rpcError(id, RPC_INVALID_PARAMS, 'no such tool')
     const badArgs = argumentsProblem(descriptor.inputSchema, params.arguments)
     if (badArgs) return rpcError(id, RPC_INVALID_PARAMS, badArgs)
-    const payload = callTool(params.name, params.arguments, env, deps)
-    const buildReply = (resolved) => ({
-      jsonrpc: '2.0',
-      id,
-      result: {
-        content: [{ type: 'text', text: JSON.stringify(resolved, null, 2) }],
-        // Reserved for a tool that RAN and reported a problem — an unknown lane
-        // (or, now, an unreachable one) is the only one left, and it is
-        // genuinely a tool-level result.
-        isError: Boolean(resolved?.error),
-      },
-    })
+    // `acp_lane_probe` is the one handler worth tracking for cancellation — it
+    // is the only one that spends real time and real provider quota, so it is
+    // the only one a `notifications/cancelled` naming this id can usefully act
+    // on. `deps.pendingProbes`, when the caller supplied one (only `serve()`
+    // does for a real connection; a test may supply its own Map to drive this
+    // path directly through `handle()`), is where this controller becomes
+    // visible to a LATER `handle()` call carrying the cancellation.
+    const isProbe = params.name === 'acp_lane_probe'
+    const controller = isProbe ? new AbortController() : null
+    if (controller) deps?.pendingProbes?.set(id, controller)
+    const forgetProbe = () => { if (controller) deps?.pendingProbes?.delete(id) }
+    const payload = callTool(params.name, params.arguments, env,
+      controller ? { ...deps, abortSignal: controller.signal } : deps)
+    const buildReply = (resolved) => {
+      // MCP: a receiver of `notifications/cancelled` SHOULD NOT send a
+      // response for the cancelled request — the host already said the
+      // answer is not wanted, so mailing one back anyway is not a courtesy,
+      // it is traffic the host explicitly opted out of. Returning `null`
+      // reuses the exact path a notification already takes above: `serve()`'s
+      // own line handler only ever writes a truthy reply, so this needs no
+      // second suppression mechanism.
+      if (controller?.signal.aborted) return null
+      return {
+        jsonrpc: '2.0',
+        id,
+        result: {
+          content: [{ type: 'text', text: JSON.stringify(resolved, null, 2) }],
+          // Reserved for a tool that RAN and reported a problem — an unknown lane
+          // (or, now, an unreachable one) is the only one left, and it is
+          // genuinely a tool-level result.
+          isError: Boolean(resolved?.error),
+        },
+      }
+    }
     // Only `acp_lane_probe`'s handler returns a Promise — it is the only tool
     // that spawns a process and has to wait on it. Every other handler still
     // returns a plain object, so `handle` still answers SYNCHRONOUSLY for
@@ -1272,8 +1352,12 @@ export function handle(message, env = process.env, deps) {
     // has already lost a release to once; `probeLanes` is written to never
     // reject, and this is the backstop for the day it does anyway.
     if (payload && typeof payload.then === 'function') {
-      return payload.then(buildReply, () => buildReply({ error: PROBE_CRASHED }))
+      return payload.then(
+        (resolved) => { forgetProbe(); return buildReply(resolved) },
+        () => { forgetProbe(); return controller?.signal.aborted ? null : buildReply({ error: PROBE_CRASHED }) },
+      )
     }
+    forgetProbe()
     return buildReply(payload)
   }
   return rpcError(id, RPC_METHOD_NOT_FOUND, 'method not found')
@@ -1291,6 +1375,44 @@ export function serve({ input = process.stdin, output = process.stdout, env = pr
   // un-break it, so an unhandled 'error' event killing every OTHER lane's
   // in-flight or queued result is a worse outcome than one lost write.
   output.on('error', () => {})
+  // Connection-scoped state `handle()` itself cannot hold, because it is
+  // called once per message and never sees the messages around it. Both of
+  // these exist for exactly one shape: `acp_lane_probe`, the one tool that
+  // spends real minutes and real provider quota.
+  //
+  // `pendingProbes` is what lets a `notifications/cancelled` line arriving
+  // LATER on this same connection find the controller a `tools/call` line
+  // registered earlier — `handle()` reads and writes it through `deps`, this
+  // function only owns its lifetime.
+  //
+  // `probeChain` is the fix for the finding this shipped for: an MCP host
+  // that pipelines two `acp_lane_probe` `tools/call` requests used to have
+  // this very callback invoke `handle()` for both the moment their lines
+  // arrived, leaving both promises in flight — `probeLanes` only orders LANES
+  // within one call, so two requests spent two providers' quota at once.
+  // Every probe dispatch on this connection is chained onto ONE promise here,
+  // so a second probe call never starts until the first has fully settled.
+  // Nothing else waits on it: `ping`, `tools/list`, `initialize`, and any
+  // non-probe `tools/call` still reach `handle()` the instant their line
+  // arrives, exactly as before — a host that cannot get a `ping` answered
+  // while a probe runs for minutes would read this server as dead.
+  const pendingProbes = new Map()
+  const callDeps = { ...deps, pendingProbes }
+  let probeChain = Promise.resolve()
+  const isProbeCall = (message) => Boolean(message) && typeof message === 'object'
+    && !Array.isArray(message) && message.method === 'tools/call'
+    && message.params && typeof message.params === 'object' && !Array.isArray(message.params)
+    && message.params.name === 'acp_lane_probe'
+  const dispatch = (message) => {
+    if (!isProbeCall(message)) return Promise.resolve(handle(message, env, callDeps))
+    const run = probeChain.then(() => handle(message, env, callDeps))
+    // The CHAIN survives a rejecting call — swallowed here, on the chain only.
+    // `run`, returned below, still carries the real rejection to its own
+    // `.catch` a few lines down; this `.then(ok, ok)` exists only so one bad
+    // probe cannot wedge the queue and block every probe after it forever.
+    probeChain = run.then(() => {}, () => {})
+    return run
+  }
   const lines = createInterface({ input })
   // A readline Interface is its OWN error receiver: Node FORWARDS an input
   // stream's error onto the Interface, so a listener on `input` does not cover
@@ -1315,12 +1437,14 @@ export function serve({ input = process.stdin, output = process.stdout, env = pr
       return
     }
     // `handle` may answer synchronously (every method except a probe call) or
-    // return a Promise (only `acp_lane_probe`). `Promise.resolve` normalises
-    // both without changing the synchronous path's timing in practice, and
-    // the `.catch` here is the same backstop `handle` already applies —
-    // doubled deliberately, because a socket write after an unhandled
-    // rejection killed a whole review gate in this project once already.
-    Promise.resolve(handle(message, env, deps)).then((reply) => {
+    // return a Promise (only `acp_lane_probe`). `dispatch` decides WHEN to
+    // call it — immediately for everything else, queued behind any probe
+    // already running for `acp_lane_probe` — and its own return value is
+    // normalised the same way either branch used to be. The `.catch` here is
+    // the same backstop `handle` already applies — doubled deliberately,
+    // because a socket write after an unhandled rejection killed a whole
+    // review gate in this project once already.
+    Promise.resolve(dispatch(message)).then((reply) => {
       if (reply) output.write(JSON.stringify(reply) + '\n')
     }).catch(() => {})
   })

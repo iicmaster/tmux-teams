@@ -476,6 +476,152 @@ async function runTerminalWrapperDescendantProbe(prompt) {
   reply(prompt.id, { stopReason: 'end_turn' })
 }
 
+// The gap the wrapper-descendant probe above does NOT cover: that one never
+// releases the terminal, so it stays in `terminals` (never deleted) and
+// killAllLiveTerminals' teardown sweep reaps the whole group regardless of the
+// wrapper's own `exitStatus`. This probe forces the order the finding names —
+// the wrapper (a launcher, same shape as above) exits and settles FIRST, and
+// only THEN is `terminal/release` called. `terminal/wait_for_exit` is awaited
+// first so the release below deterministically lands after `exitStatus` is
+// set — otherwise this could race and accidentally exercise the OTHER order
+// (release-before-exit) instead, which is a different code path entirely.
+// The descendant traps SIGTERM and holds NO pipe (`stdio: 'ignore'`), so
+// nothing about its own I/O keeps anything open — it is exactly the shape
+// the finding says slips past every existing test.
+async function runTerminalReleaseAfterCloseProbe(prompt) {
+  const descendantScript = [
+    'process.on("SIGTERM", () => {});',
+    'const fs = require("fs");',
+    'fs.writeFileSync("terminal-release-after-close-pid.tmp", String(process.pid));',
+    'fs.renameSync("terminal-release-after-close-pid.tmp", "terminal-release-after-close-pid");',
+    'setInterval(() => {}, 1000);',
+  ].join(' ')
+  const wrapperScript = [
+    'const fs = require("fs");',
+    'const { spawn } = require("child_process");',
+    'fs.writeFileSync("release-after-close-child.js", ' + JSON.stringify(descendantScript) + ');',
+    'const child = spawn(process.execPath, ["release-after-close-child.js"], { stdio: "ignore" });',
+    'child.unref();',
+    'process.exit(0);',
+  ].join(' ')
+  const create = await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: process.execPath,
+    args: ['-e', wrapperScript],
+  })
+  const terminalId = create.result?.terminalId
+  const deadline = Date.now() + envNumber('MOCK_GATE_WATCHDOG_MS', 15000)
+  while (!existsSync('terminal-release-after-close-pid')) {
+    if (Date.now() >= deadline) process.exit(17)
+    await wait(10)
+  }
+  if (terminalId) {
+    await sendMockRequest('terminal/wait_for_exit', { sessionId: currentSessionId, terminalId })
+    await sendMockRequest('terminal/release', { sessionId: currentSessionId, terminalId })
+  }
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
+// Same order as the release probe above (wrapper settles first, its
+// stdio-'ignore' descendant traps SIGTERM and outlives it), but through
+// `terminal/kill` instead of `terminal/release`. This one is NOT provable by
+// a final "is the pid gone" check alone: `killTerminal` returning early
+// without reaping does not delete the map entry, so the LATER teardown sweep
+// would reap the descendant anyway and hide the bug. The load-bearing
+// assertion is the immediate one — `killElapsedMs` and `aliveAfterKill`
+// checked right after the `terminal/kill` request itself resolves, same shape
+// `runTerminalKillEscalationProbe` already uses.
+async function runTerminalKillAfterCloseProbe(prompt) {
+  const descendantScript = [
+    'process.on("SIGTERM", () => {});',
+    'const fs = require("fs");',
+    'fs.writeFileSync("terminal-kill-after-close-pid.tmp", String(process.pid));',
+    'fs.renameSync("terminal-kill-after-close-pid.tmp", "terminal-kill-after-close-pid");',
+    'setInterval(() => {}, 1000);',
+  ].join(' ')
+  const wrapperScript = [
+    'const fs = require("fs");',
+    'const { spawn } = require("child_process");',
+    'fs.writeFileSync("kill-after-close-child.js", ' + JSON.stringify(descendantScript) + ');',
+    'const child = spawn(process.execPath, ["kill-after-close-child.js"], { stdio: "ignore" });',
+    'child.unref();',
+    'process.exit(0);',
+  ].join(' ')
+  const create = await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: process.execPath,
+    args: ['-e', wrapperScript],
+  })
+  const terminalId = create.result?.terminalId
+  const deadline = Date.now() + envNumber('MOCK_GATE_WATCHDOG_MS', 15000)
+  while (!existsSync('terminal-kill-after-close-pid')) {
+    if (Date.now() >= deadline) process.exit(17)
+    await wait(10)
+  }
+  const descendantPid = Number(readFileSync('terminal-kill-after-close-pid', 'utf8').trim())
+  if (terminalId) {
+    await sendMockRequest('terminal/wait_for_exit', { sessionId: currentSessionId, terminalId })
+    const killStartedAt = Date.now()
+    const kill = await sendMockRequest('terminal/kill', { sessionId: currentSessionId, terminalId })
+    const killElapsedMs = Date.now() - killStartedAt
+    const pollDeadline = Date.now() + envNumber('MOCK_KILL_POLL_MS', 400)
+    let aliveAfterKill = true
+    while (Date.now() < pollDeadline) {
+      try { process.kill(descendantPid, 0); aliveAfterKill = true } catch { aliveAfterKill = false; break }
+      await wait(10)
+    }
+    writeFileSync(join(process.cwd(), '.terminal-kill-after-close.json'),
+      `${JSON.stringify({ kill, killElapsedMs, aliveAfterKill, descendantPid }, null, 2)}\n`, { mode: 0o600 })
+  }
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
+// The THIRD site (`settleTerminalExit`), reached through the OPPOSITE order:
+// `terminal/release` is called while the wrapper is still alive, and the
+// wrapper's own settlement follows afterward. The wrapper here deliberately
+// does NOT trap SIGTERM, so release's own group signal kills it almost
+// immediately; the descendant DOES trap SIGTERM (and holds no pipe) and
+// outlives that same signal. `settleTerminalExit` then runs for the wrapper
+// with `term.released` already true — the exact moment a delete keyed only on
+// `released` (instead of on the group actually being gone) would drop the
+// still-live descendant from the map before the teardown sweep ever sees it.
+async function runTerminalReleaseWhileAliveTrappedDescendantProbe(prompt) {
+  const descendantScript = [
+    'process.on("SIGTERM", () => {});',
+    'const fs = require("fs");',
+    'fs.writeFileSync("terminal-release-while-alive-pid.tmp", String(process.pid));',
+    'fs.renameSync("terminal-release-while-alive-pid.tmp", "terminal-release-while-alive-pid");',
+    'setInterval(() => {}, 1000);',
+  ].join(' ')
+  const wrapperScript = [
+    'const fs = require("fs");',
+    'const { spawn } = require("child_process");',
+    'fs.writeFileSync("release-while-alive-child.js", ' + JSON.stringify(descendantScript) + ');',
+    'const child = spawn(process.execPath, ["release-while-alive-child.js"], { stdio: "ignore" });',
+    'child.unref();',
+    // The wrapper itself installs NO SIGTERM handler, so it dies at the first
+    // group signal release sends — it must stay alive (via this interval)
+    // only until that signal arrives, never trap it.
+    'setInterval(() => {}, 1000);',
+  ].join(' ')
+  const create = await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: process.execPath,
+    args: ['-e', wrapperScript],
+  })
+  const terminalId = create.result?.terminalId
+  const deadline = Date.now() + envNumber('MOCK_GATE_WATCHDOG_MS', 15000)
+  while (!existsSync('terminal-release-while-alive-pid')) {
+    if (Date.now() >= deadline) process.exit(17)
+    await wait(10)
+  }
+  if (terminalId) await sendMockRequest('terminal/release', { sessionId: currentSessionId, terminalId })
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
 // terminal/kill against a child that traps SIGTERM, called MID-TURN rather
 // than left for companion teardown. Before the request path escalated to
 // SIGKILL itself, it sent one SIGTERM and answered success IMMEDIATELY, so
@@ -767,6 +913,9 @@ async function handlePrompt(message) {
   if (scenario === 'terminal-sigterm-trap') return void runTerminalSigtermTrapProbe(message)
   if (scenario === 'terminal-sigterm-trap-release') return void runTerminalSigtermTrapReleaseProbe(message)
   if (scenario === 'terminal-wrapper-descendant') return void runTerminalWrapperDescendantProbe(message)
+  if (scenario === 'terminal-release-after-close') return void runTerminalReleaseAfterCloseProbe(message)
+  if (scenario === 'terminal-kill-after-close') return void runTerminalKillAfterCloseProbe(message)
+  if (scenario === 'terminal-release-while-alive-trapped-descendant') return void runTerminalReleaseWhileAliveTrappedDescendantProbe(message)
   if (scenario === 'terminal-kill-escalation') return void runTerminalKillEscalationProbe(message)
   if (scenario === 'terminal-concurrent-create') return void runTerminalConcurrentCreate(message)
   if (scenario === 'terminal-args-not-array') return void runTerminalArgsNotArray(message)

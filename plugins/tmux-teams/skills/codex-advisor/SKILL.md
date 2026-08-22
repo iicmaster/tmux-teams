@@ -93,7 +93,18 @@ answer is a failed consultation — say so rather than passing it on.
    the expanded id — `gpt-5.6-sol` unless the caller named another:
 
    ```bash
+   # The binary first, and ABSOLUTELY. `buildBuiltinProfile` refuses a
+   # receipt-required Codex dispatch without an absolute CODEX_PATH and exits 2
+   # before a session exists. This command omitted it until 2026-08-22 and could
+   # not run as written on any machine — found by RUNNING it to dispatch a
+   # review round, not by reading it. `agy-advisor` had the identical gap with
+   # AGY_BIN and `claude-advisor` sets CLAUDE_CODE_EXECUTABLE, so this was the
+   # last of the three, and it was the review of record.
+   CODEX_PATH="$(realpath "$(command -v codex)" 2>/dev/null)"
+   [ -n "$CODEX_PATH" ] || { echo 'no codex binary on this machine — stop'; exit 1; }
+
    INITIAL_AGENT_MODE="read-only" \
+   CODEX_PATH="$CODEX_PATH" \
    ACP_SESSION_RECEIPT_REQUIRED=1 \
    ACP_SESSION_OPERATION="new" \
    ACP_MODEL="<model>" \

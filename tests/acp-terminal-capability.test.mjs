@@ -369,6 +369,94 @@ test('a wrapper terminal command that forks a descendant has the WHOLE subtree r
     + "the wrapper settling hid its descendant from the teardown sweep")
 })
 
+test('a wrapper that settles BEFORE release still has its stdio-ignore descendant reaped', async () => {
+  // The wrapper-descendant test above never releases the terminal, so it stays
+  // in `terminals` (nothing deletes an entry whose `released` is still false)
+  // and the teardown sweep reaps it regardless of `exitStatus`. This is the
+  // order the finding actually names: the wrapper (a launcher, same shape)
+  // exits and settles FIRST — `exitStatus` gets set — and only THEN is
+  // `terminal/release` called. `releaseTerminal` used to read `term.exitStatus`
+  // as "this terminal is finished" and delete it from the map right there,
+  // which made the still-live descendant (holding no pipe, so nothing else
+  // keeps it visible) invisible to killAllLiveTerminals from that point on —
+  // a permanent orphan, not just a delayed reap.
+  const run = runCompanion('task-term-release-after-close', {
+    ACP_ENABLE_TERMINAL: '1',
+    MOCK_SCENARIO: 'terminal-release-after-close',
+    ACP_TERMINAL_KILL_GRACE_MS: '200',
+  })
+  assert.equal(run.status, 0, `expected a clean dispatch; stderr:\n${run.stderr}`)
+  const pidFile = join(run.cwd, 'terminal-release-after-close-pid')
+  assert.ok(existsSync(pidFile),
+    `the wrapper's descendant never wrote its own pid — it may never have started; stderr:\n${run.stderr}`)
+  const pid = Number(readFileSync(pidFile, 'utf8').trim())
+  assert.ok(Number.isInteger(pid) && pid > 0, `unexpected pid file contents: ${pid}`)
+  const gone = await waitForPidGone(pid)
+  assert.ok(gone,
+    `the wrapper's descendant pid ${pid} is still alive after the companion exited — `
+    + 'releaseTerminal deleted the entry the instant the already-exited wrapper made '
+    + 'exitStatus true, hiding a still-live descendant from the teardown sweep forever')
+})
+
+test('terminal/kill against a wrapper that already settled still reaps its stdio-ignore descendant', () => {
+  // The same order as the release test above, but through terminal/kill.
+  // killTerminal used to return immediately once `term.exitStatus` was set,
+  // without ever probing (let alone signalling) the process GROUP — so a
+  // caller that had just been told the kill succeeded had done nothing at
+  // all to the still-live descendant. This is NOT provable by a final
+  // "is the pid gone" check alone: killTerminal returning early does not
+  // delete the map entry, so the LATER teardown sweep reaps the descendant
+  // anyway and a final check would stay green even against the bug. The
+  // load-bearing assertion is the immediate one, checked right after the
+  // terminal/kill request itself resolves.
+  const run = runCompanion('task-term-kill-after-close', {
+    ACP_ENABLE_TERMINAL: '1',
+    MOCK_SCENARIO: 'terminal-kill-after-close',
+    ACP_TERMINAL_KILL_GRACE_MS: '200',
+  })
+  assert.equal(run.status, 0, `expected a clean dispatch; stderr:\n${run.stderr}`)
+  const recorded = join(run.cwd, '.terminal-kill-after-close.json')
+  assert.ok(existsSync(recorded), `mock never wrote .terminal-kill-after-close.json; stderr:\n${run.stderr}`)
+  const steps = JSON.parse(readFileSync(recorded, 'utf8'))
+  assert.equal(steps.kill?.error, null, `terminal/kill was refused: ${JSON.stringify(steps.kill?.error)}`)
+  assert.ok(steps.killElapsedMs >= 150,
+    `terminal/kill against an already-settled wrapper answered in ${steps.killElapsedMs}ms — `
+    + 'a request that actually probes and reaps the still-live descendant group cannot '
+    + 'answer this fast; killTerminal returned early on exitStatus instead of checking the group')
+  assert.equal(steps.aliveAfterKill, false,
+    `the wrapper's descendant (pid ${steps.descendantPid}) was still alive after terminal/kill `
+    + 'and its follow-up poll window — killTerminal never reaped the group at all')
+})
+
+test('a wrapper that settles AFTER release still has its trapped, stdio-ignore descendant reaped', async () => {
+  // The third site: settleTerminalExit. Here the ORDER is reversed from the
+  // two tests above — terminal/release is called while the wrapper is still
+  // alive (term.exitStatus is null), so releaseTerminal's own signal-and-mark
+  // path is not what's under test. The wrapper does not trap SIGTERM, so
+  // release's own group signal kills it almost immediately; the descendant
+  // DOES trap SIGTERM (and holds no pipe) and outlives that same signal.
+  // settleTerminalExit then runs for the wrapper with `term.released` already
+  // true — the exact moment a delete keyed only on `released` (rather than on
+  // the group actually being gone) drops the still-live descendant from the
+  // map before the teardown sweep ever gets a chance to see it.
+  const run = runCompanion('task-term-release-while-alive', {
+    ACP_ENABLE_TERMINAL: '1',
+    MOCK_SCENARIO: 'terminal-release-while-alive-trapped-descendant',
+    ACP_TERMINAL_KILL_GRACE_MS: '200',
+  })
+  assert.equal(run.status, 0, `expected a clean dispatch; stderr:\n${run.stderr}`)
+  const pidFile = join(run.cwd, 'terminal-release-while-alive-pid')
+  assert.ok(existsSync(pidFile),
+    `the wrapper's descendant never wrote its own pid — it may never have started; stderr:\n${run.stderr}`)
+  const pid = Number(readFileSync(pidFile, 'utf8').trim())
+  assert.ok(Number.isInteger(pid) && pid > 0, `unexpected pid file contents: ${pid}`)
+  const gone = await waitForPidGone(pid)
+  assert.ok(gone,
+    `the wrapper's descendant pid ${pid} is still alive after the companion exited — `
+    + 'settleTerminalExit deleted the entry because the terminal was released, without '
+    + 'checking whether the process group it shares with the descendant was actually gone')
+})
+
 test('terminal/kill escalates to SIGKILL itself when SIGTERM is ignored, before acking success', () => {
   // Found by a second reviewer of the prior round's fix: the teardown sweep
   // (killAllLiveTerminals) already escalates to SIGKILL, but the terminal/kill

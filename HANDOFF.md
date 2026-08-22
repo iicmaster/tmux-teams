@@ -31,11 +31,11 @@ Written 2026-08-22 through `bmad-party-mode`.
 node --test > /tmp/suite.log 2>&1; grep -E '^ℹ (tests|pass|fail|skipped)' /tmp/suite.log
 ```
 
-Green on `feat/v0.33.0` at `fbeb8b3` is exactly, measured on a quiet machine:
+Green on `feat/v0.33.0` at `9282868` is exactly, measured on a quiet machine:
 
 ```
-ℹ tests 1179
-ℹ pass 1175
+ℹ tests 1183
+ℹ pass 1179
 ℹ fail 0
 ℹ skipped 4
 ```
@@ -197,8 +197,14 @@ skills sit on bytes with defects this release already found.
 
 ### OPEN, found by reading and deliberately not fixed in v0.33.0
 
-**A released terminal whose descendant does not hold the pipe still escapes the
-teardown sweep.** Reported by a subagent with a premise that is WRONG as
+~~**A released terminal whose descendant does not hold the pipe still escapes
+the teardown sweep.**~~ **CLOSED** — round eleven blocked on it, correctly:
+  `SKILL.md` promises complete group reaping, so this was a broken promise
+  rather than an open gap. All three sites ask `isGroupGone` now. Kept below for
+  the reading it took, because the report that raised it was WRONG about the
+  code and half a correct finding sends a reader to the wrong line.
+
+  The original entry, for that lesson: Reported by a subagent with a premise that is WRONG as
 written — it said `releaseTerminal` deletes the moment `exitStatus` is set,
 "even though a descendant sharing its process group can still be alive". Read
 the code: `acp-companion.mjs:3365-3380` already closed the case it describes,
@@ -226,6 +232,75 @@ green in the full suite. **OPEN and unreproduced, not closed** — this file's o
 rule is that a failure there is never noise, and the clause that called an
 `acp-companion.test.mjs` failure a timing flake was false for an unknown number
 of releases.
+
+### Round TWELVE answered TEAM_DONE on `9282868`
+
+`codex-advisor` at `gpt-5.6-luna[max]`, `identity_status: matched`, run
+2026-08-22. Four voices, **no named ship-blocking defect**, and one condition
+that binds the RELEASE RECORD rather than the code:
+
+> DONE only for bounded claims; BLOCKED for any release note that implies live
+> Claude Max login, real MCP/provider reachability, or a three-family panel that
+> I did not verify.
+
+The drafted notes (`scratchpad/release-notes-v0.33.0.md`) already carry all
+three as open, and the Gate line records `1/1` with the owner's 2026-08-19
+waiver plus the fact that `gate-required.mjs` answers REQUIRED. **Do not tidy
+any of that away.** A voice also declined to resolve the owner-policy
+disagreement between the script's REQUIRED and the owner's sufficient-alone
+decision, and was right not to: both are recorded, neither overrides the other.
+
+### Round ELEVEN answered BLOCKED, and what that cost
+
+The review of record read the post-round-ten delta at `06bc493` and answered
+**BLOCKED** with four voices and six findings, none of them laundered into
+consensus. All six are in, plus a seventh its own dispatch exposed.
+
+**The one worth reading is that the call site was never proved.** The `childEnv`
+test proves the FUNCTION and stays green if `dispatch` stops calling it — which
+is exactly how the P1 it answers reached a release. There is now a call-site
+test (`tests/loop-runner-palette-dispatch.test.mjs`, "the operator bounds an
+ambient shell sets arrive at a real dispatched worker") and unwiring `childEnv`
+from `dispatch` turns it red. **This repository has written that rule down three
+times and broken it again anyway.**
+
+**The classification criterion was circular and is replaced.** "Is it
+documented" makes a knob owned because nobody wrote it down, and nobody writes
+down a knob that is owned. It is now **bound versus widen** — a control that
+BOUNDS what a lane may do is the operator's and is forwarded; anything that
+WIDENS what a lane can reach, or changes who it is, is the runner's.
+`ACP_ENV_PASSTHROUGH` proved the old rule wrong twice over: undocumented in any
+SKILL.md AND genuinely an operator control by the companion's own comment. It
+stays owned, now with a reason. Six controls are forwarded and both contracts
+are declared in `plugins/tmux-teams/skills/tmux-teams/SKILL.md`.
+
+**Finding 15 is CLOSED and it was blocking, not deferrable** — the lane found
+what this file's own entry had missed: `SKILL.md` promises "Every terminal path
+closes and reaps the complete detached process group", so it was a promise the
+code broke rather than a gap left open. All three sites ask `isGroupGone` now,
+and the mutation matrix is 1:1:1.
+
+**Three tests written this round were green against the defect they were written
+for**, and each is recorded inside itself: the computed-read assertion claimed
+there were no computed reads (there are four), the call-site test asserted
+absence for keys `dispatch` legitimately re-supplies, and the finding-16 guard
+matched a derivation line in a preamble instead of the assignment that reaches
+the dispatch. **Write the mutation before believing the test.**
+
+### Finding 16 — the review of record's own command could not run
+
+Dispatching round eleven failed at `invalid_execution_profile: required Codex
+execution requires an absolute CODEX_PATH`. `codex-advisor/SKILL.md` omitted it
+— the third seat of three to have that gap, after `agy-advisor`/`AGY_BIN` earlier
+this release, and the only one the release gate depends on. **Found by running
+the command, not by reading it.**
+
+The runtime guard cannot reach that branch: it dispatches worker `mock` with an
+`ACP_CMD`, and the requirement lives behind
+`agentName === 'codex' && !process.env.ACP_CMD`. The new guard is static, reads
+the requirement out of the companion's own error sentences, and **pins which
+seats it covers** — deleting `AGY_BIN` from the agy command does NOT red it, and
+a reader who assumed otherwise would be wrong.
 
 ## 4. DO NOT
 

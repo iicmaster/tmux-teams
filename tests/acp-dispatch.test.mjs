@@ -1760,6 +1760,84 @@ test('the dispatch command each advisor skill documents gets past the companion 
   }
 })
 
+// FINDING 16, and the honest thing about it is what this test CANNOT be.
+//
+// `codex-advisor`'s documented command omitted CODEX_PATH and could not run as
+// written on any machine: `buildBuiltinProfile` refuses a receipt-required
+// Codex dispatch without an absolute one and exits 2 before a session exists.
+// It was found by RUNNING the command to dispatch a review round, after the
+// guard above had been widened to three seats an hour earlier and passed.
+//
+// WHY THE GUARD ABOVE COULD NOT CATCH IT, and why this one is static. That
+// guard dispatches worker `mock` with an ACP_CMD, and the requirement lives
+// behind `agentName === 'codex' && !process.env.ACP_CMD` — so the branch is
+// unreachable both because of the worker name AND because of the very seam
+// that makes the test hermetic. Reaching it at runtime needs a real codex
+// binary, a real adapter and no ACP_CMD, which is not a thing CI has. A guard
+// that cannot reach its branch is not a guard, and pretending otherwise with a
+// skipped test would be worse: four tests in this suite already skip
+// themselves, and a skipped test is an unexecuted guard.
+//
+// So this reads the requirement out of the companion's OWN error sentences
+// rather than from a list somebody types here. A new
+// "required X execution requires an absolute Y" turns this red for whichever
+// advisor documents worker X.
+test('each advisor skill documents the executable its own worker refuses to run without', () => {
+  const companion = readFileSync(join(SCRIPTS, 'acp-companion.mjs'), 'utf8')
+  const required = new Map()
+  for (const [, agent, variable] of companion.matchAll(
+    /required (\w+) execution requires an absolute ([A-Z][A-Z0-9_]*)/g)) {
+    required.set(agent.toLowerCase(), variable)
+  }
+  assert.ok(required.size >= 1,
+    'the companion states no absolute-executable requirement in that wording any more — '
+    + 'this test reads its expectation from those sentences and now reads nothing')
+
+  const checked = []
+  for (const skill of ['codex-advisor', 'claude-advisor', 'agy-advisor']) {
+    const text = readFileSync(join(SKILLS, skill, 'SKILL.md'), 'utf8')
+    for (const block of text.split('```bash').slice(1).map((b) => b.split('```')[0])) {
+      const worker = block.match(/acp-dispatch\.mjs[\s\\]+\n?\s*(\w+) </)?.[1]
+      if (!worker || block.includes('ACP_RESUME')) continue
+      const variable = required.get(worker)
+      if (!variable) continue
+      checked.push(`${skill}:${worker}:${variable}`)
+      // THE INVOCATION, not the block. The first version of this asserted the
+      // variable appeared anywhere in the bash block — and stayed GREEN when
+      // the assignment was deleted from the command, because the derivation
+      // line above it still mentioned the name. It would have passed against
+      // the exact broken command that produced this finding. What has to carry
+      // the variable is the backslash-continued run of assignments that ends at
+      // the dispatch call; a shell variable computed in a preamble and never
+      // passed reaches nothing.
+      const invocation = block.split(/\n\s*\n/).find((chunk) => chunk.includes('acp-dispatch.mjs'))
+      assert.ok(invocation, `${skill}: the dispatch call is not in a chunk this test can read`)
+      assert.match(invocation, new RegExp(`^\\s*${variable}=`, 'm'),
+        `${skill} documents a receipt-required ${worker} dispatch and never passes ${variable} to `
+        + 'it — the companion refuses that and exits 2 before a session exists, so this command '
+        + 'cannot run as written')
+      // Absolute, not merely present: the check is `startsWith('/')`, so a bare
+      // `command -v` result that is a relative path or a shell function name
+      // fails the same way an absent one does. The derivation may live in the
+      // preamble; only the passing of it must be in the invocation.
+      assert.ok(block.includes(`${variable}="$(realpath`) || block.includes(`${variable}="$(for `),
+        `${skill} sets ${variable} without resolving it to an absolute path, and the companion `
+        + 'requires one')
+    }
+  }
+  // WHAT IS COVERED, stated rather than implied. Only `codex` states this
+  // requirement in the companion, so only codex-advisor is checked — deleting
+  // AGY_BIN from the agy command does NOT turn this red, and a reader who
+  // assumed otherwise would be wrong. That is not a hole in this test: AGY_BIN
+  // is not enforced by the companion at all, it is the adapter's own knob, and
+  // a test that pretended to cover it would be the "non-empty is not an
+  // acceptance criterion" mistake in a new place. Pinned so that losing this
+  // coverage is a failure rather than a quiet zero.
+  assert.deepEqual(checked, ['codex-advisor:codex:CODEX_PATH'],
+    'the set of advisor seats checked against a companion requirement changed — if the companion '
+    + `gained or lost one, this pin is where you say so: ${checked.join(', ')}`)
+})
+
 test('the AGY seat the caller asked for is the seat dispatched, and an ambient reasoning effort is cleared', (t) => {
   if (process.platform === 'win32') return t.skip('POSIX shell')
   // FINDINGS 11 AND 12 of the review bot's second batch. One test, because they
