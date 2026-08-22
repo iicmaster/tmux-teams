@@ -31,14 +31,27 @@ Written 2026-08-22 through `bmad-party-mode`.
 node --test > /tmp/suite.log 2>&1; grep -E '^ℹ (tests|pass|fail|skipped)' /tmp/suite.log
 ```
 
-Green on `feat/v0.33.0` at `c045beb` is exactly:
+Green on `feat/v0.33.0` at `fbeb8b3` is exactly, measured on a quiet machine:
 
 ```
-ℹ tests 1164
-ℹ pass 1160
+ℹ tests 1179
+ℹ pass 1175
 ℹ fail 0
 ℹ skipped 4
 ```
+
+~63s wall, 313% CPU. The hostile-env run below gives the same four numbers.
+
+**RUN THE WHOLE SUITE, NOT THE FILE.** The first quiet full run after the
+batch-2 merge went **1179/1174/1/4** — `realProbeTransport reaps a descendant
+left behind by a package-runner wrapper` died on a raw ENOENT naming a temp
+path, while that same file had passed 79/79 twice and the single test 3/3 under
+load average 7.3. The probe's 300ms deadline was also the wrapper process's
+whole lifetime, so under suite load node had not booted to spawn the descendant.
+**A deadline shorter than the subject's boot does not make a test flaky, it
+makes it vacuous** — it would have passed against a version that reaps nothing.
+Fixed in `fbeb8b3`, and the precondition now fails with a sentence naming
+itself instead of an ENOENT stack.
 
 **Green in YOUR shell is not green.** Run it hostile too — this is the state any
 shell is in after a hand dispatch:
