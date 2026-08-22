@@ -531,6 +531,85 @@ test('terminal output split across chunks decodes correctly and mirrors at a lin
     `the mirror split the label into the middle of the line: ${JSON.stringify(mirrored)}`)
 })
 
+test('wait_for_exit does not release until output still in flight at child exit has arrived', () => {
+  // PR #71 inline comment 3835247725: a terminal child's `exit` can fire
+  // before its stdout/stderr pipes finish delivering `data`, so finalizing
+  // (ending the decoders, resolving every `wait_for_exit` waiter) on `exit`
+  // let an adapter that waited and then called `terminal/output` miss the
+  // command's final output. The mock's command forces this deterministically:
+  // its own process exits almost at once, while an unref'd grandchild it
+  // forked keeps the inherited stdout pipe open and writes a marker line only
+  // after a 300ms delay of its own — so the marker cannot possibly have
+  // arrived by the time the wrapper's bare `exit` event fires, and the pipe
+  // cannot reach EOF (no `close`) until the grandchild's delay elapses.
+  const run = runCompanion('task-term-exit-before-close', {
+    ACP_ENABLE_TERMINAL: '1',
+    MOCK_SCENARIO: 'terminal-exit-before-close',
+  })
+  assert.equal(run.status, 0, `expected a clean dispatch; stderr:\n${run.stderr}`)
+  const recorded = join(run.cwd, '.terminal-exit-before-close.json')
+  assert.ok(existsSync(recorded), `mock never wrote .terminal-exit-before-close.json; stderr:\n${run.stderr}`)
+  const steps = JSON.parse(readFileSync(recorded, 'utf8'))
+  assert.equal(steps.create.error, null, `terminal/create was refused: ${JSON.stringify(steps.create.error)}`)
+
+  // The wrapper's OWN exit status, not the grandchild's — proves the fix kept
+  // the two apart rather than merging finalization with status reporting.
+  assert.equal(steps.wait_for_exit?.error, null, `terminal/wait_for_exit failed: ${JSON.stringify(steps.wait_for_exit?.error)}`)
+  assert.equal(steps.wait_for_exit?.result?.exitCode, 3)
+
+  const out = steps.output_immediate?.result
+  assert.ok(out, `terminal/output returned nothing: ${JSON.stringify(steps.output_immediate)}`)
+  // Asserted FIRST, deliberately: this is the assertion the unfixed
+  // 'exit'-only handler cannot pass. The marker is written 300ms after the
+  // wrapper's own exit fires, so a terminal/output read immediately after
+  // wait_for_exit resolves can only see it if wait_for_exit itself waited for
+  // the output to actually finish arriving, not merely for the wrapper
+  // process to have exited. The early "before-exit" write below is a much
+  // smaller, near-instant write that the buggy handler usually also catches,
+  // so checking it first would sometimes name the wrong line as the failure.
+  assert.match(String(out.output), /LATE-MARKER-XYZ/,
+    `terminal/output read immediately after wait_for_exit is missing output that was still in `
+    + `flight when the child exited — wait_for_exit released before the terminal record was `
+    + `finalized: ${JSON.stringify(out)}`)
+  assert.match(String(out.output), /before-exit/, `expected at least the early write: ${JSON.stringify(out.output)}`)
+
+  assert.equal(steps.release?.error, null, `terminal/release failed: ${JSON.stringify(steps.release?.error)}`)
+})
+
+test('wait_for_exit resolves at the bounded close grace, not forever, when a descendant never lets the pipe close', () => {
+  // The other half of the fix above: waiting for `close` instead of `exit`
+  // must not turn into an unbounded hang when a launcher's forked descendant
+  // never lets go of the inherited stdio pipe (a real shape this file already
+  // has to reap on teardown — see the sigterm-trap and wrapper-descendant
+  // tests). The mock's grandchild here is immortal (`setInterval` forever, no
+  // exit, no write), so `close` can never fire on its own; only
+  // ACP_TERMINAL_CLOSE_GRACE_MS forces a finalize.
+  const run = runCompanion('task-term-close-grace-timeout', {
+    ACP_ENABLE_TERMINAL: '1',
+    MOCK_SCENARIO: 'terminal-close-grace-timeout',
+    ACP_TERMINAL_CLOSE_GRACE_MS: '200',
+  })
+  assert.equal(run.status, 0, `expected a clean dispatch; stderr:\n${run.stderr}`)
+  const recorded = join(run.cwd, '.terminal-close-grace-timeout.json')
+  assert.ok(existsSync(recorded), `mock never wrote .terminal-close-grace-timeout.json; stderr:\n${run.stderr}`)
+  const steps = JSON.parse(readFileSync(recorded, 'utf8'))
+  assert.equal(steps.create.error, null, `terminal/create was refused: ${JSON.stringify(steps.create.error)}`)
+  assert.equal(steps.wait_for_exit?.error, null, `terminal/wait_for_exit failed: ${JSON.stringify(steps.wait_for_exit?.error)}`)
+  // The WRAPPER's own exit status — proves the bounded fallback finalizes
+  // with the status `exit` recorded, not something derived from the
+  // grandchild (which never exits and has no status to report at all).
+  assert.equal(steps.wait_for_exit?.result?.exitCode, 3)
+  // A request that answered near-instantly never actually rode out the grace
+  // — it would mean 'close' fired on its own (impossible here, the grandchild
+  // never exits) or the bound isn't wired to this env var at all.
+  assert.ok(steps.waitElapsedMs >= 150,
+    `wait_for_exit against a pipe that can never reach EOF resolved in ${steps.waitElapsedMs}ms — `
+    + `expected it to ride out ACP_TERMINAL_CLOSE_GRACE_MS=200 before finalizing`)
+  const out = steps.output_after_grace?.result
+  assert.ok(out, `terminal/output returned nothing: ${JSON.stringify(steps.output_after_grace)}`)
+  assert.match(String(out.output), /before-exit/, `expected the early write to have been captured: ${JSON.stringify(out.output)}`)
+})
+
 test('a session-reported model is refused when it is Gemini 3.1, even though nothing requested it', () => {
   // No ACP_MODEL / ACP_EXPECT_MODEL is set below — this is the
   // INHERIT_ACCOUNT_DEFAULT shape: a seat that asks for whatever the account

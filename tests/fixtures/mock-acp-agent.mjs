@@ -638,6 +638,98 @@ async function runTerminalChunkSplit(prompt) {
   reply(prompt.id, { stopReason: 'end_turn' })
 }
 
+// Forces the exact race PR #71 comment 3835247725 named: the terminal
+// wrapper's own process exits almost immediately, while a grandchild it
+// forked and left unref'd (a stand-in for a shell/npx/bunx launcher's own
+// forked work) keeps the wrapper's inherited stdout fd open and writes a
+// LATE marker line only after a further delay. `child.unref()` means the
+// wrapper's event loop does not wait on the grandchild, so the wrapper's own
+// `exit` fires almost at once — deterministically before the marker line has
+// even been written, let alone delivered — while the pipe itself cannot
+// reach EOF (and Node's child_process 'close' cannot fire) until the
+// grandchild also lets go of that fd, which only happens once its own delay
+// elapses. A companion that finalizes on 'exit' resolves
+// `terminal/wait_for_exit` before the marker arrives, so the immediate
+// `terminal/output` that follows is missing it; one that waits for 'close'
+// cannot return before the marker is already in `outputText`, because the
+// same 'data' listener that appends it also runs before 'close' can fire.
+async function runTerminalExitBeforeClose(prompt) {
+  const steps = {}
+  const grandchildScript = 'setTimeout(() => { process.stdout.write("LATE-MARKER-XYZ\\n") }, 300);'
+  const wrapperScript = [
+    'const fs = require("fs");',
+    'const { spawn } = require("child_process");',
+    'fs.writeFileSync("exit-before-close-child.js", ' + JSON.stringify(grandchildScript) + ');',
+    'process.stdout.write("before-exit\\n");',
+    'const child = spawn(process.execPath, ["exit-before-close-child.js"], { stdio: "inherit" });',
+    'child.unref();',
+    'process.exitCode = 3;',
+  ].join(' ')
+  steps.create = await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: process.execPath,
+    args: ['-e', wrapperScript],
+    outputByteLimit: 4096,
+  })
+  const terminalId = steps.create.result?.terminalId
+  if (terminalId) {
+    steps.wait_for_exit = await sendMockRequest('terminal/wait_for_exit', { sessionId: currentSessionId, terminalId })
+    // No delay of our own between wait_for_exit resolving and this read — the
+    // whole point is to observe whatever `outputText` holds at the instant the
+    // waiter was released, not after giving the marker more time to arrive.
+    steps.output_immediate = await sendMockRequest('terminal/output', { sessionId: currentSessionId, terminalId })
+    steps.release = await sendMockRequest('terminal/release', { sessionId: currentSessionId, terminalId })
+  }
+  writeFileSync(join(process.cwd(), '.terminal-exit-before-close.json'), `${JSON.stringify(steps, null, 2)}\n`, { mode: 0o600 })
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
+// The other half of the same fix: a grandchild that never lets go of the
+// inherited pipe at all (it just loops forever, never exits) means `close`
+// never fires either — proving the wait is BOUNDED, not that waiting for
+// `close` traded a stale-output bug for a hang. Records elapsed time around
+// `wait_for_exit` so the test can assert it actually rode out the bound
+// rather than resolving instantly (which would mean the fix wasn't really
+// exercised) or never returning at all (which would mean the bound is not
+// real).
+//
+// Deliberately never releases the terminal: releasing an already-exited one
+// deletes it from the tracking map immediately, which would hide this
+// grandchild from killAllLiveTerminals' teardown sweep the same way the
+// sigterm-trap-release test already proves for a still-live wrapper — left
+// in the map, the sweep at companion exit reaps the whole process group
+// (wrapper and grandchild share one, per createTerminal's `detached: true`).
+async function runTerminalCloseGraceTimeout(prompt) {
+  const steps = {}
+  const grandchildScript = 'setInterval(() => {}, 1000);'
+  const wrapperScript = [
+    'const fs = require("fs");',
+    'const { spawn } = require("child_process");',
+    'fs.writeFileSync("close-grace-timeout-child.js", ' + JSON.stringify(grandchildScript) + ');',
+    'process.stdout.write("before-exit\\n");',
+    'const child = spawn(process.execPath, ["close-grace-timeout-child.js"], { stdio: "inherit" });',
+    'child.unref();',
+    'process.exitCode = 3;',
+  ].join(' ')
+  steps.create = await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: process.execPath,
+    args: ['-e', wrapperScript],
+    outputByteLimit: 4096,
+  })
+  const terminalId = steps.create.result?.terminalId
+  if (terminalId) {
+    const startedAt = Date.now()
+    steps.wait_for_exit = await sendMockRequest('terminal/wait_for_exit', { sessionId: currentSessionId, terminalId })
+    steps.waitElapsedMs = Date.now() - startedAt
+    steps.output_after_grace = await sendMockRequest('terminal/output', { sessionId: currentSessionId, terminalId })
+  }
+  writeFileSync(join(process.cwd(), '.terminal-close-grace-timeout.json'), `${JSON.stringify(steps, null, 2)}\n`, { mode: 0o600 })
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
 function requestPermission(prompt) {
   const scenario = process.env.MOCK_REQUEST_PERMISSION
   if (!scenario || permissionDecision || pendingPermissionPrompt) return false
@@ -682,6 +774,8 @@ async function handlePrompt(message) {
   if (scenario === 'terminal-env-not-array') return void runTerminalEnvNotArray(message)
   if (scenario === 'terminal-malformed-env') return void runTerminalMalformedEnv(message)
   if (scenario === 'terminal-chunk-split') return void runTerminalChunkSplit(message)
+  if (scenario === 'terminal-exit-before-close') return void runTerminalExitBeforeClose(message)
+  if (scenario === 'terminal-close-grace-timeout') return void runTerminalCloseGraceTimeout(message)
 
   if (scenario === 'report-recover') {
     notify({ sessionUpdate: 'agent_thought_chunk', messageId: 'pre-stall-progress', content: { type: 'text', text: 'starting the recovery observation' } })
