@@ -195,6 +195,38 @@ skill covering a single delegation and a whole autonomous spec run.
 landing on the release branch from now on must be merged in again**, or those
 skills sit on bytes with defects this release already found.
 
+### OPEN, found by reading and deliberately not fixed in v0.33.0
+
+**A released terminal whose descendant does not hold the pipe still escapes the
+teardown sweep.** Reported by a subagent with a premise that is WRONG as
+written — it said `releaseTerminal` deletes the moment `exitStatus` is set,
+"even though a descendant sharing its process group can still be alive". Read
+the code: `acp-companion.mjs:3365-3380` already closed the case it describes,
+and keeps a still-live terminal in the map on purpose, with the reason in a
+comment. The residual hole is narrower and real:
+
+- a descendant spawned `stdio: 'ignore'` does NOT hold the wrapper's pipe, so
+  `close` fires, `exitStatus` is set, and `acp-companion.mjs:3381` deletes the
+  entry — after which `killAllLiveTerminals` (`:3444`) cannot see it;
+- the 2000ms `ACP_TERMINAL_CLOSE_GRACE_MS` fallback sets `exitStatus` anyway
+  even when the pipe IS held, so the window closes on a timer either way;
+- `settleTerminalExit` (`:3071`) has the same shape via `term.released`.
+
+The correct check is group liveness, not `exitStatus`. Not fixed here because
+Master scoped this round to the two third-batch P2s, and the terminal
+capability only exists on the login route nobody has completed. **Verify the
+premise yourself before acting — the report that raised it was wrong about the
+code, and half a correct finding sends a reader to the wrong line.**
+
+**An unreproduced red.** A subagent saw `finish() does not settle until a killed
+child has actually exited` (`tests/acp-lanes-mcp.test.mjs`) fail once, in a
+full-file run, before it had touched anything. This caller could not reproduce
+it: 3/3 green alone at load average 7.3, 2/2 green over the whole file, 2/2
+green in the full suite. **OPEN and unreproduced, not closed** — this file's own
+rule is that a failure there is never noise, and the clause that called an
+`acp-companion.test.mjs` failure a timing flake was false for an unknown number
+of releases.
+
 ## 4. DO NOT
 
 - **Do not read the review bot's BODY and call it a verdict.** It is boilerplate
