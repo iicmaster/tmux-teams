@@ -361,8 +361,10 @@ const LOOP_OWNED_ACP = [
   'ACP_EXECUTION_PROFILE', 'ACP_EXPECT_MODEL', 'ACP_EXPECT_REASONING_EFFORT',
   'ACP_INHERIT_PROJECT_CONFIG', 'ACP_KMS_AUTO', 'ACP_LIVENESS_TICK_MS',
   'ACP_LIVENESS_WRITE_INTERVAL_MS', 'ACP_MODEL', 'ACP_PRIOR_DISPATCH_ID',
-  'ACP_PRIOR_RECEIPT_DIGEST', 'ACP_REASONING_EFFORT', 'ACP_RESUME',
-  'ACP_SESSION_OPERATION', 'ACP_SESSION_RECEIPT_REQUIRED', 'ACP_SPAWN_NONCE',
+  'ACP_ENV_PASSTHROUGH', 'ACP_PRIOR_RECEIPT_DIGEST', 'ACP_PROCESS_REAP_GRACE_MS',
+  'ACP_REASONING_EFFORT', 'ACP_RESUME', 'ACP_SESSION_OPERATION',
+  'ACP_SESSION_RECEIPT_REQUIRED', 'ACP_SPAWN_NONCE',
+  'ACP_TERMINAL_CLOSE_GRACE_MS', 'ACP_TERMINAL_KILL_GRACE_MS',
 ]
 
 // WHY THIS TEST EXISTS AND NOT JUST THE ONE ABOVE. Deny-by-default is only
@@ -372,23 +374,35 @@ const LOOP_OWNED_ACP = [
 // the other, so a new knob turns THIS red instead of being silently dropped in
 // production and found by a review bot two releases later.
 //
-// TWO PATTERNS, NOT ONE. `ACP_MODEL` and `ACP_REASONING_EFFORT` are never
-// written as `process.env.ACP_MODEL`; they arrive through
-// `requestedConfigOverride('ACP_MODEL', …)`. A scan for the first pattern alone
-// misses both and reports full coverage while covering neither.
+// SCAN EVERY ACP_ IDENTIFIER, not the ways of reading one. This test was first
+// written with two patterns — `process.env.X` and `requestedConfigOverride('X')`
+// — on the reasoning that those were the two ways the companion read an env
+// var. **Within the hour a knob landed through a third**
+// (`strictNonNegativeEnvNumber('ACP_TERMINAL_CLOSE_GRACE_MS', 2000)`) and this
+// test reported full coverage over 35 names while 39 existed. Enumerating the
+// READING HELPERS is the same list problem one level up, and it rotted faster
+// than the list it was written to protect.
+//
+// So the scan is every `ACP_*` identifier in the file. Over-inclusive is the
+// safe direction: a name that is not an env var costs one line in a list,
+// while a name that is missed costs a silently dropped operator control.
+// Prefix FRAGMENTS used to build names (`ACP_EXPECT_`, `ACP_TEST_RECEIPT_`) are
+// excluded by the one property that distinguishes them — a real variable name
+// does not end in an underscore — rather than by naming them.
 test('every ACP_ variable the companion reads is classified as forwarded or owned', () => {
   const src = readFileSync(
     new URL('../plugins/tmux-teams/skills/tmux-teams/scripts/acp-companion.mjs', import.meta.url), 'utf8')
-  const names = new Set([
-    ...src.matchAll(/process\.env\.(ACP_[A-Z0-9_]+)/g),
-    ...src.matchAll(/process\.env\[\s*['"](ACP_[A-Z0-9_]+)['"]\s*\]/g),
-    ...src.matchAll(/requestedConfigOverride\(\s*['"](ACP_[A-Z0-9_]+)['"]/g),
-  ].map((m) => m[1]))
+  const names = new Set([...src.matchAll(/\bACP_[A-Z0-9_]+/g)]
+    .map((m) => m[0]).filter((name) => !name.endsWith('_')))
   // A scan that quietly stops matching reports perfect classification.
-  assert.ok(names.size >= 30,
-    `the companion scan found only ${names.size} ACP_ names — a pattern stopped matching`)
-  assert.ok(names.has('ACP_MODEL'),
-    'the requestedConfigOverride pattern found nothing, and ACP_MODEL is read that way and only that way')
+  assert.ok(names.size >= 39,
+    `the companion scan found only ${names.size} ACP_ names — the pattern stopped matching`)
+  // Three names, each read a DIFFERENT way, pinned so a narrowed scan is caught:
+  // a plain member access, a config-override call, and a helper call.
+  assert.ok(names.has('ACP_SPAWN_NONCE'), 'the scan missed a plain process.env read')
+  assert.ok(names.has('ACP_MODEL'), 'the scan missed a requestedConfigOverride name')
+  assert.ok(names.has('ACP_TERMINAL_CLOSE_GRACE_MS'),
+    'the scan missed a name read through an env helper — the exact hole that made this test lie')
 
   const unclassified = [...names].filter((n) => !LOOP_FORWARDED_ACP_CONTROLS.includes(n)
     && !LOOP_OWNED_ACP.includes(n) && !n.startsWith('ACP_TEST_')).sort()
@@ -403,7 +417,7 @@ test('every ACP_ variable the companion reads is classified as forwarded or owne
     'ACP_CANCEL_GRACE_MS', 'ACP_CANCEL_GRACE_SEC', 'ACP_HARD_TIMEOUT_SEC',
     'ACP_PROCESS_KILL_GRACE_MS', 'ACP_STALL_POLICY',
   ], 'the forwarded operator surface changed — SKILL.md documents it and must change with it')
-  assert.equal(LOOP_OWNED_ACP.length, 19)
+  assert.equal(LOOP_OWNED_ACP.length, 23)
 })
 
 test('an ambient ACP_ENABLE_TERMINAL never reaches a dispatched worker', () => {
