@@ -3203,8 +3203,18 @@ function createTerminal(params) {
   // already refuses one value at a time. `params.args === null` also lands
   // here (typeof null is 'object') — deliberate: null is a present, non-array
   // value, not an absent one, and gets the same refusal as any other.
-  if (params.args !== undefined && !Array.isArray(params.args)) {
-    throw new Error(`terminal/create args must be an array, got ${typeof params.args}`)
+  //
+  // BOTH containers, checked together. The first version of this guard named
+  // `args` alone, and `env` one line down had the identical defect —
+  // `env: "FOO=1"` fell to `{}` and the caller's whole environment override
+  // vanished with no signal. That is the shape this repository keeps finding:
+  // a guard written for the container that was REPORTED, with its twin left
+  // open beside it. Both are optional arrays; neither may be a present
+  // non-array, `null` included.
+  for (const key of ['args', 'env']) {
+    if (params[key] !== undefined && !Array.isArray(params[key])) {
+      throw new Error(`terminal/create ${key} must be an array, got ${typeof params[key]}`)
+    }
   }
   const args = Array.isArray(params.args)
     ? params.args.map((value, index) => {

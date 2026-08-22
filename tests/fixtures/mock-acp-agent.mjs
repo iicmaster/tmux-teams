@@ -577,6 +577,21 @@ async function runTerminalArgsNotArray(prompt) {
   reply(prompt.id, { stopReason: 'end_turn' })
 }
 
+// terminal/create with a non-array env — the twin of the args case, and it was
+// still open after the args one was closed.
+async function runTerminalEnvNotArray(prompt) {
+  const steps = {}
+  steps.create = await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: 'echo',
+    args: ['hi'],
+    env: 'FOO=1',
+  })
+  writeFileSync(join(process.cwd(), '.terminal-env-not-array.json'), `${JSON.stringify(steps, null, 2)}\n`, { mode: 0o600 })
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
 // terminal/create with a non-string env override value — the companion must
 // refuse rather than coerce the value to the literal string "[object Object]".
 async function runTerminalMalformedEnv(prompt) {
@@ -664,6 +679,7 @@ async function handlePrompt(message) {
   if (scenario === 'terminal-concurrent-create') return void runTerminalConcurrentCreate(message)
   if (scenario === 'terminal-args-not-array') return void runTerminalArgsNotArray(message)
   if (scenario === 'terminal-malformed-args') return void runTerminalMalformedArgs(message)
+  if (scenario === 'terminal-env-not-array') return void runTerminalEnvNotArray(message)
   if (scenario === 'terminal-malformed-env') return void runTerminalMalformedEnv(message)
   if (scenario === 'terminal-chunk-split') return void runTerminalChunkSplit(message)
 

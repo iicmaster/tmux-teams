@@ -447,6 +447,26 @@ test('terminal/create with a non-array args value is refused, not silently dropp
   assert.match(String(steps.create.error.message), /args must be an array/)
 })
 
+test('terminal/create with a non-array env is refused, the twin of the args case', () => {
+  // Found by reading the fix for `args` rather than by a review round: the
+  // guard beside it named one container, and `env: "FOO=1"` still fell through
+  // its own ternary to `{}`. The caller believes it set the child's
+  // environment; the child runs with the parent's. Same defect, one line down,
+  // and the kind that arrives as next release's finding.
+  const run = runCompanion('task-term-env-not-array', {
+    ACP_ENABLE_TERMINAL: '1',
+    MOCK_SCENARIO: 'terminal-env-not-array',
+  })
+  assert.equal(run.status, 0, `a refused terminal/create must not crash the whole dispatch; stderr:\n${run.stderr}`)
+  const recorded = join(run.cwd, '.terminal-env-not-array.json')
+  assert.ok(existsSync(recorded), `mock never wrote .terminal-env-not-array.json; stderr:\n${run.stderr}`)
+  const steps = JSON.parse(readFileSync(recorded, 'utf8'))
+  assert.equal(steps.create.result, null,
+    `terminal/create must not succeed with a non-array env: ${JSON.stringify(steps.create)}`)
+  assert.ok(steps.create.error, 'terminal/create must come back as a JSON-RPC error, not a silent success')
+  assert.match(String(steps.create.error.message), /env must be an array/)
+})
+
 test('terminal/create with a non-string args element is refused, not silently coerced', () => {
   const run = runCompanion('task-term-bad-args', {
     ACP_ENABLE_TERMINAL: '1',
