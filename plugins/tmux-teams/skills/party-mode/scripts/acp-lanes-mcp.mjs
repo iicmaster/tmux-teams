@@ -558,22 +558,29 @@ export async function realProbeTransport({ command, env, timeoutMs, spawnFn = sp
       // spawn() throw, or an async 'error' before any pid was assigned) — no
       // 'exit' event is guaranteed for that shape on every platform, and
       // waiting for one would trade a fast, correct classification for a
-      // probe that never settles. A child that DID fork is signalled and this
-      // promise now waits for the WHOLE PROCESS GROUP to be gone before
-      // resolving: settling on the WRAPPER's own exit alone (an earlier
-      // version of this code) let `probeLanes`'s own sequential loop start the
-      // NEXT lane's spawn while THIS lane's real adapter was still tearing
-      // down behind it, contradicting the one-budget-at-a-time comment above
-      // `probeLanes`.
-      if (child?.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+      // probe that never settles. A child that DID fork gets its whole
+      // process GROUP swept before this promise resolves — on EVERY path,
+      // not only the one where this call is what killed it: the wrapper can
+      // just as easily exit ON ITS OWN (a quota refusal, an ordinary
+      // completed turn) while the descendant it launched is still there,
+      // reparented once the leader is gone, and the group id stays valid
+      // until every member of it is. Gating the sweep on "is the wrapper
+      // still alive" (an earlier version of this code) swept only the path
+      // where THIS call did the killing and settled the natural-exit path
+      // with no sweep at all — the exact shape the finding this fixes
+      // described, just on the other branch of it.
+      if (child?.pid !== undefined) {
         const groupId = child.pid
         const killGroup = (signal) => {
           // The GROUP first: `detached: true` on the spawn below makes
           // `groupId` the wrapper's own process-group id, so one call here
-          // reaches the wrapper and every descendant sharing it. Falling back
-          // to the single-pid form only when the group form itself throws is
-          // never worse than the old behaviour — it IS the old behaviour,
-          // kept as the last resort rather than the whole strategy.
+          // reaches the wrapper (if still alive) and every descendant
+          // sharing it. Falling back to the single-pid form only when the
+          // group form itself throws is never worse than the old behaviour
+          // — it IS the old behaviour, kept as the last resort rather than
+          // the whole strategy. When the wrapper has already exited on its
+          // own this signals only whatever remains of its group, which is
+          // exactly the case this branch exists to reach.
           try { process.kill(-groupId, signal); return }
           catch { try { child.kill(signal) } catch { /* already gone */ } }
         }
@@ -582,10 +589,15 @@ export async function realProbeTransport({ command, env, timeoutMs, spawnFn = sp
         killTimer.unref?.()
         ;(async () => {
           // Bounded at 4s: 2s of SIGTERM grace plus room for the SIGKILL
-          // escalation that follows it to actually land. Clearing the
-          // escalation on the way out matters for the same reason it did
-          // before this change — a stub probe that answers in ~70ms must not
-          // hold this process alive for a SIGKILL timer nothing still needs.
+          // escalation that follows it to actually land. When the group is
+          // already empty — the overwhelmingly common case, wrapper exited
+          // clean with no descendant left behind — the first existence check
+          // inside this call fails immediately and this resolves in
+          // microseconds, not 4s: the cost of covering the natural-exit path
+          // is one syscall, not a wait. Clearing the escalation on the way
+          // out matters for the same reason it did before this change — a
+          // stub probe that answers in ~70ms must not hold this process
+          // alive for a SIGKILL timer nothing still needs.
           await waitForProbeGroupGone(groupId, 4000)
           if (killTimer) clearTimeout(killTimer)
           settle(result)

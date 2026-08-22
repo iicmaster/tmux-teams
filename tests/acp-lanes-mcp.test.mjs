@@ -26,6 +26,25 @@ const call = (name, args, env) => JSON.parse(handle({
 
 const expand = (value) => value.replaceAll('${CLAUDE_PLUGIN_ROOT}', PLUGIN)
 
+// A SIGKILLed process the caller does not itself own the reaping of (a
+// descendant this test process never forked directly, only observed by pid)
+// can answer `kill(pid, 0)` as "alive" for a short window AFTER the signal
+// actually lands and after `kill(-pgid, 0)` already reports the group empty
+// — measured directly on this machine: the group check cleared a tick before
+// the specific pid did. That gap is an already-dead process still sitting in
+// the table awaiting its own (unrelated) parent's reap, not a live one doing
+// anything, so a single-shot check right at the instant a promise settles
+// can lose this race under load without the production code being wrong.
+// Poll instead of asserting on the first read.
+async function waitForPidGone(pid, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() <= deadline) {
+    try { process.kill(pid, 0) } catch { return true }
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  try { process.kill(pid, 0); return false } catch { return true }
+}
+
 test('the declaration names a command AND a script that both exist', () => {
   // The shape that has bitten this repository before: the deepseek reserve lane
   // was declared for months and no test ever reached it. A `.mcp.json` naming a
@@ -2582,11 +2601,48 @@ test('realProbeTransport reaps a descendant left behind by a package-runner wrap
     })
     assert.equal(result.settled, 'timeout')
     const descendantPid = Number(readFileSync(pidFile, 'utf8'))
-    let alive = true
-    try { process.kill(descendantPid, 0) } catch { alive = false }
-    assert.equal(alive, false,
+    const gone = await waitForPidGone(descendantPid, 2000)
+    assert.equal(gone, true,
       'realProbeTransport settled while the wrapper\'s descendant was still alive — '
       + 'probeLanes\' next lane could start spawning over it')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// The sibling test above kills the wrapper (via timeout); this one lets it
+// exit ON ITS OWN — a quota refusal or an ordinary completed run — which is a
+// SEPARATE path through `finish()` (the `child.once('exit', ...)` listener,
+// not the kill branch). A sweep gated on "is the wrapper still alive" reaches
+// only the first shape and settles this one with no sweep at all: the
+// process group id stays valid — and a member of it can still be alive —
+// until every member is gone, not merely until the leader is.
+test('a wrapper that exits on its own does not leave its descendant behind, either', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-descendant-natural-exit-'))
+  const pidFile = join(dir, 'descendant-pid')
+  try {
+    const descendant = join(dir, 'descendant.cjs')
+    writeFileSync(descendant, [
+      "process.on('SIGTERM', () => {})",
+      'setInterval(() => {}, 1000)',
+    ].join('\n'))
+    const wrapper = join(dir, 'wrapper.cjs')
+    writeFileSync(wrapper, [
+      "const { spawn } = require('child_process')",
+      "const fs = require('fs')",
+      `const child = spawn(process.execPath, [${JSON.stringify(descendant)}], { stdio: 'ignore' })`,
+      `fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid))`,
+      'process.exit(1)',
+    ].join('\n'))
+    const result = await realProbeTransport({
+      command: [process.execPath, wrapper], env: process.env, timeoutMs: 4000,
+    })
+    assert.equal(result.settled, 'exit',
+      'a wrapper that exited cleanly on its own was not read as an "exit" outcome')
+    const descendantPid = Number(readFileSync(pidFile, 'utf8'))
+    const gone = await waitForPidGone(descendantPid, 2000)
+    assert.equal(gone, true,
+      'realProbeTransport settled while a descendant of an ALREADY-EXITED wrapper was still alive')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
