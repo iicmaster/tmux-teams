@@ -375,7 +375,26 @@ you answer:
   impossible. It closes and stops occupying its team.
 
 Choose **abandon** only when a rerun genuinely cannot help. Choose **resume**
-when it might. If you truly cannot tell from the evidence, say \`resume\` and
+when it might.
+
+**If the leg you are unsticking reported \`TEAM_BLOCKED\`, resume is the wrong
+answer and you already know it.** That word is this system's way of saying a
+PERSON must decide — the agent that wrote it had the evidence in front of it and
+concluded no rerun would get past. Answering \`resume\` sends the same question
+back to the same team to be asked again, which is the exact loop the block
+exists to stop. Say \`resume\` and put the human's question in REASON as the
+FIRST thing you write, so the person reading the board sees a question and not a
+retry. Do not spend a fresh attempt budget on it: say in REASON that the budget
+is being granted only to carry the question, and that the next leg is expected
+to block again until a person answers.
+
+That is the honest shape of what this role can do — it has two verdict words and
+neither of them is "ask a human". The loop dispatches this role rather than
+notifying anyone, so a blocked token reaches a person only if you write the
+question where a person will read it. A future version routes \`blocked\`
+somewhere else entirely; until then this paragraph is the whole mechanism.
+
+If you cannot tell from the evidence for any OTHER reason, say \`resume\` and
 state in REASON exactly what a human must check — parking it again silently is
 the one option you do not have.
 

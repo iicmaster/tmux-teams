@@ -25,16 +25,24 @@ AGY_BIN="$(for c in "$HOME/.local/bin/agy" /usr/local/bin/agy /usr/bin/agy; do
   [ -x "$c" ] && { echo "$c"; break; }; done)"
 [ -n "$AGY_BIN" ] || { echo 'no agy binary on this machine — stop, do not let the adapter fetch one'; exit 1; }
 
+env -u ACP_REASONING_EFFORT -u ACP_EXPECT_REASONING_EFFORT \
 INITIAL_AGENT_MODE="read-only" \
 ACP_SESSION_RECEIPT_REQUIRED=1 \
 ACP_SESSION_OPERATION="new" \
-ACP_MODEL="gemini-3.7-flash-high" \
-ACP_EXPECT_MODEL="gemini-3.7-flash-high" \
+ACP_MODEL="<model>" \
+ACP_EXPECT_MODEL="<model>" \
 AGY_BIN="$AGY_BIN" \
 AGY_SKIP_DOWNLOAD=1 \
 node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
   agy <cwd> <task-id> <brief-file> [stall-sec]
 ```
+
+`<model>` is the expanded id — `gemini-3.7-flash-high` unless the caller named
+another seat, see Arguments below. It goes in BOTH assignments: the request
+without a matching expectation is a dispatch nobody verified. This command
+hardcoded `high` in both places while the Arguments table promised `medium` and
+`low`, so `$agy-advisor medium` ran high and produced a high receipt that
+MATCHED — a silently ignored seat is worse than a refused one.
 
 Measured 2026-08-19 rather than assumed: the lane accepts all three contract
 variables, writes a receipt, and reports
@@ -47,6 +55,15 @@ and verifies it, so its identity reads `gpt-5.6-sol[max]`. The Antigravity
 adapter has no such dimension — the AGY identity is the bare model id, and
 sending `ACP_REASONING_EFFORT` here asks for a config option the adapter does not
 advertise, which fails the dispatch before the prompt.
+
+**So the command CLEARS both variables rather than merely not setting them.** A
+shell that has just dispatched a codex lane still carries
+`ACP_REASONING_EFFORT` and `ACP_EXPECT_REASONING_EFFORT`, and
+`acp-dispatch.mjs` forwards the whole caller environment. Measured: dispatched
+from such a shell, the lane's `dispatch-routing/<task-id>.json` records both —
+and `ROUTING_ENV_KEYS` is what a `resume` command is rebuilt from, so the
+inherited effort outlives the dispatch that inherited it. Not setting a
+variable is not the same as clearing it.
 
 **The adapter advertises `<id>\t<display label>` — with a TAB.** The pre-check
 accepts either the full advertised string or the bare id, and the bare id is what

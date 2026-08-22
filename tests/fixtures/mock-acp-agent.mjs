@@ -3,7 +3,7 @@
 // updates, cancellation, identity, and descendant-process cleanup paths.
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { appendFileSync, existsSync, mkdirSync, readdirSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`)
@@ -435,6 +435,115 @@ async function runTerminalSigtermTrapReleaseProbe(prompt) {
   reply(prompt.id, { stopReason: 'end_turn' })
 }
 
+// A terminal command that is itself a LAUNCHER — standing in for a shell,
+// npx, or bunx wrapper — forks a plain (non-detached) descendant that traps
+// SIGTERM, then the wrapper exits immediately on its own. Before
+// createTerminal spawned with `detached: true`, the wrapper and its
+// descendant shared the COMPANION's own process group, so any signal aimed
+// at "this terminal" could only ever reach the wrapper pid; once the wrapper
+// exited on its own, the descendant was invisible both to that 'exit' event
+// and to any attempt to signal the terminal as a whole. The turn otherwise
+// completes normally and this terminal is never released, so this proves the
+// companion's teardown sweep reaps the WHOLE subtree the wrapper forked, not
+// only the wrapper it directly spawned.
+async function runTerminalWrapperDescendantProbe(prompt) {
+  const descendantScript = [
+    'process.on("SIGTERM", () => {});',
+    'const fs = require("fs");',
+    'fs.writeFileSync("terminal-wrapper-descendant-pid.tmp", String(process.pid));',
+    'fs.renameSync("terminal-wrapper-descendant-pid.tmp", "terminal-wrapper-descendant-pid");',
+    'setInterval(() => {}, 1000);',
+  ].join(' ')
+  const wrapperScript = [
+    'const fs = require("fs");',
+    'const { spawn } = require("child_process");',
+    'fs.writeFileSync("wrapper-descendant-child.js", ' + JSON.stringify(descendantScript) + ');',
+    'const child = spawn(process.execPath, ["wrapper-descendant-child.js"], { stdio: "ignore" });',
+    'child.unref();',
+    'process.exit(0);',
+  ].join(' ')
+  await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: process.execPath,
+    args: ['-e', wrapperScript],
+  })
+  const deadline = Date.now() + envNumber('MOCK_GATE_WATCHDOG_MS', 15000)
+  while (!existsSync('terminal-wrapper-descendant-pid')) {
+    if (Date.now() >= deadline) process.exit(17)
+    await wait(10)
+  }
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
+// terminal/kill against a child that traps SIGTERM, called MID-TURN rather
+// than left for companion teardown. Before the request path escalated to
+// SIGKILL itself, it sent one SIGTERM and answered success IMMEDIATELY, so
+// the primary measurement here is REQUEST LATENCY: with the escalation ladder
+// inside the request, a SIGTERM-trapping child forces `terminal/kill` to sit
+// through the whole ACP_TERMINAL_KILL_GRACE_MS grace period before it can
+// answer, because that is the only way it can know SIGTERM did nothing. A
+// fire-and-forget kill instead answers in a handful of milliseconds no matter
+// how long the grace period is — and does so even though the SAME background
+// escalation still runs and kills the child moments later, so a single
+// post-response aliveness check alone cannot tell the two apart if the poll
+// window is comparable to the grace period. The poll below is kept only as a
+// secondary corroborating signal, not the load-bearing one.
+async function runTerminalKillEscalationProbe(prompt) {
+  const create = await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: process.execPath,
+    args: ['-e',
+      'process.on("SIGTERM", () => {}); '
+      + 'const fs = require("fs"); fs.writeFileSync("terminal-kill-trap-pid.tmp", String(process.pid)); '
+      + 'fs.renameSync("terminal-kill-trap-pid.tmp", "terminal-kill-trap-pid"); setInterval(() => {}, 1000)'],
+  })
+  const terminalId = create.result?.terminalId
+  const deadline = Date.now() + envNumber('MOCK_GATE_WATCHDOG_MS', 15000)
+  while (!existsSync('terminal-kill-trap-pid')) {
+    if (Date.now() >= deadline) process.exit(17)
+    await wait(10)
+  }
+  const pid = Number(readFileSync('terminal-kill-trap-pid', 'utf8').trim())
+  const killStartedAt = Date.now()
+  const kill = terminalId ? await sendMockRequest('terminal/kill', { sessionId: currentSessionId, terminalId }) : null
+  const killElapsedMs = Date.now() - killStartedAt
+  const pollDeadline = Date.now() + envNumber('MOCK_KILL_POLL_MS', 250)
+  let aliveAfterKill = true
+  while (Date.now() < pollDeadline) {
+    try { process.kill(pid, 0); aliveAfterKill = true } catch { aliveAfterKill = false; break }
+    await wait(10)
+  }
+  writeFileSync(join(process.cwd(), '.terminal-kill-escalation.json'),
+    `${JSON.stringify({ kill, killElapsedMs, aliveAfterKill }, null, 2)}\n`, { mode: 0o600 })
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
+// A second terminal/create while the first is still live (never released,
+// never exited). createTerminal now refuses this instead of allowing both
+// terminals onto the login stdin bridge's broadcast, which would deliver
+// every keystroke — including a login code meant for one command — to both
+// children. Releases the first afterward so the turn completes cleanly.
+async function runTerminalConcurrentCreate(prompt) {
+  const steps = {}
+  steps.first = await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: process.execPath,
+    args: ['-e', 'setInterval(() => {}, 1000)'],
+  })
+  steps.second = await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: process.execPath,
+    args: ['-e', 'setInterval(() => {}, 1000)'],
+  })
+  const firstId = steps.first.result?.terminalId
+  if (firstId) steps.release = await sendMockRequest('terminal/release', { sessionId: currentSessionId, terminalId: firstId })
+  writeFileSync(join(process.cwd(), '.terminal-concurrent-create.json'), `${JSON.stringify(steps, null, 2)}\n`, { mode: 0o600 })
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
 // terminal/create with a non-string args element — the companion must refuse
 // the whole request rather than silently dropping the bad element and running
 // a different command than what was asked for.
@@ -446,6 +555,39 @@ async function runTerminalMalformedArgs(prompt) {
     args: ['a', 1, 'b'],
   })
   writeFileSync(join(process.cwd(), '.terminal-malformed-args.json'), `${JSON.stringify(steps, null, 2)}\n`, { mode: 0o600 })
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
+// terminal/create with `args` present but NOT an array (a bare string) — the
+// element-type check above assumes args is already an array and never runs
+// against this shape, so the ternary in createTerminal used to fall through
+// to `[]` exactly like it does for `undefined`, silently dropping every
+// argument and running a materially different command instead of refusing
+// the malformed request.
+async function runTerminalArgsNotArray(prompt) {
+  const steps = {}
+  steps.create = await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: 'echo',
+    args: '--login',
+  })
+  writeFileSync(join(process.cwd(), '.terminal-args-not-array.json'), `${JSON.stringify(steps, null, 2)}\n`, { mode: 0o600 })
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
+// terminal/create with a non-array env — the twin of the args case, and it was
+// still open after the args one was closed.
+async function runTerminalEnvNotArray(prompt) {
+  const steps = {}
+  steps.create = await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: 'echo',
+    args: ['hi'],
+    env: 'FOO=1',
+  })
+  writeFileSync(join(process.cwd(), '.terminal-env-not-array.json'), `${JSON.stringify(steps, null, 2)}\n`, { mode: 0o600 })
   writeOutbox(prompt)
   reply(prompt.id, { stopReason: 'end_turn' })
 }
@@ -496,6 +638,98 @@ async function runTerminalChunkSplit(prompt) {
   reply(prompt.id, { stopReason: 'end_turn' })
 }
 
+// Forces the exact race PR #71 comment 3835247725 named: the terminal
+// wrapper's own process exits almost immediately, while a grandchild it
+// forked and left unref'd (a stand-in for a shell/npx/bunx launcher's own
+// forked work) keeps the wrapper's inherited stdout fd open and writes a
+// LATE marker line only after a further delay. `child.unref()` means the
+// wrapper's event loop does not wait on the grandchild, so the wrapper's own
+// `exit` fires almost at once — deterministically before the marker line has
+// even been written, let alone delivered — while the pipe itself cannot
+// reach EOF (and Node's child_process 'close' cannot fire) until the
+// grandchild also lets go of that fd, which only happens once its own delay
+// elapses. A companion that finalizes on 'exit' resolves
+// `terminal/wait_for_exit` before the marker arrives, so the immediate
+// `terminal/output` that follows is missing it; one that waits for 'close'
+// cannot return before the marker is already in `outputText`, because the
+// same 'data' listener that appends it also runs before 'close' can fire.
+async function runTerminalExitBeforeClose(prompt) {
+  const steps = {}
+  const grandchildScript = 'setTimeout(() => { process.stdout.write("LATE-MARKER-XYZ\\n") }, 300);'
+  const wrapperScript = [
+    'const fs = require("fs");',
+    'const { spawn } = require("child_process");',
+    'fs.writeFileSync("exit-before-close-child.js", ' + JSON.stringify(grandchildScript) + ');',
+    'process.stdout.write("before-exit\\n");',
+    'const child = spawn(process.execPath, ["exit-before-close-child.js"], { stdio: "inherit" });',
+    'child.unref();',
+    'process.exitCode = 3;',
+  ].join(' ')
+  steps.create = await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: process.execPath,
+    args: ['-e', wrapperScript],
+    outputByteLimit: 4096,
+  })
+  const terminalId = steps.create.result?.terminalId
+  if (terminalId) {
+    steps.wait_for_exit = await sendMockRequest('terminal/wait_for_exit', { sessionId: currentSessionId, terminalId })
+    // No delay of our own between wait_for_exit resolving and this read — the
+    // whole point is to observe whatever `outputText` holds at the instant the
+    // waiter was released, not after giving the marker more time to arrive.
+    steps.output_immediate = await sendMockRequest('terminal/output', { sessionId: currentSessionId, terminalId })
+    steps.release = await sendMockRequest('terminal/release', { sessionId: currentSessionId, terminalId })
+  }
+  writeFileSync(join(process.cwd(), '.terminal-exit-before-close.json'), `${JSON.stringify(steps, null, 2)}\n`, { mode: 0o600 })
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
+// The other half of the same fix: a grandchild that never lets go of the
+// inherited pipe at all (it just loops forever, never exits) means `close`
+// never fires either — proving the wait is BOUNDED, not that waiting for
+// `close` traded a stale-output bug for a hang. Records elapsed time around
+// `wait_for_exit` so the test can assert it actually rode out the bound
+// rather than resolving instantly (which would mean the fix wasn't really
+// exercised) or never returning at all (which would mean the bound is not
+// real).
+//
+// Deliberately never releases the terminal: releasing an already-exited one
+// deletes it from the tracking map immediately, which would hide this
+// grandchild from killAllLiveTerminals' teardown sweep the same way the
+// sigterm-trap-release test already proves for a still-live wrapper — left
+// in the map, the sweep at companion exit reaps the whole process group
+// (wrapper and grandchild share one, per createTerminal's `detached: true`).
+async function runTerminalCloseGraceTimeout(prompt) {
+  const steps = {}
+  const grandchildScript = 'setInterval(() => {}, 1000);'
+  const wrapperScript = [
+    'const fs = require("fs");',
+    'const { spawn } = require("child_process");',
+    'fs.writeFileSync("close-grace-timeout-child.js", ' + JSON.stringify(grandchildScript) + ');',
+    'process.stdout.write("before-exit\\n");',
+    'const child = spawn(process.execPath, ["close-grace-timeout-child.js"], { stdio: "inherit" });',
+    'child.unref();',
+    'process.exitCode = 3;',
+  ].join(' ')
+  steps.create = await sendMockRequest('terminal/create', {
+    sessionId: currentSessionId,
+    command: process.execPath,
+    args: ['-e', wrapperScript],
+    outputByteLimit: 4096,
+  })
+  const terminalId = steps.create.result?.terminalId
+  if (terminalId) {
+    const startedAt = Date.now()
+    steps.wait_for_exit = await sendMockRequest('terminal/wait_for_exit', { sessionId: currentSessionId, terminalId })
+    steps.waitElapsedMs = Date.now() - startedAt
+    steps.output_after_grace = await sendMockRequest('terminal/output', { sessionId: currentSessionId, terminalId })
+  }
+  writeFileSync(join(process.cwd(), '.terminal-close-grace-timeout.json'), `${JSON.stringify(steps, null, 2)}\n`, { mode: 0o600 })
+  writeOutbox(prompt)
+  reply(prompt.id, { stopReason: 'end_turn' })
+}
+
 function requestPermission(prompt) {
   const scenario = process.env.MOCK_REQUEST_PERMISSION
   if (!scenario || permissionDecision || pendingPermissionPrompt) return false
@@ -532,9 +766,16 @@ async function handlePrompt(message) {
   if (scenario === 'terminal-orphan') return void runTerminalOrphanProbe(message)
   if (scenario === 'terminal-sigterm-trap') return void runTerminalSigtermTrapProbe(message)
   if (scenario === 'terminal-sigterm-trap-release') return void runTerminalSigtermTrapReleaseProbe(message)
+  if (scenario === 'terminal-wrapper-descendant') return void runTerminalWrapperDescendantProbe(message)
+  if (scenario === 'terminal-kill-escalation') return void runTerminalKillEscalationProbe(message)
+  if (scenario === 'terminal-concurrent-create') return void runTerminalConcurrentCreate(message)
+  if (scenario === 'terminal-args-not-array') return void runTerminalArgsNotArray(message)
   if (scenario === 'terminal-malformed-args') return void runTerminalMalformedArgs(message)
+  if (scenario === 'terminal-env-not-array') return void runTerminalEnvNotArray(message)
   if (scenario === 'terminal-malformed-env') return void runTerminalMalformedEnv(message)
   if (scenario === 'terminal-chunk-split') return void runTerminalChunkSplit(message)
+  if (scenario === 'terminal-exit-before-close') return void runTerminalExitBeforeClose(message)
+  if (scenario === 'terminal-close-grace-timeout') return void runTerminalCloseGraceTimeout(message)
 
   if (scenario === 'report-recover') {
     notify({ sessionUpdate: 'agent_thought_chunk', messageId: 'pre-stall-progress', content: { type: 'text', text: 'starting the recovery observation' } })
