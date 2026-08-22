@@ -2172,23 +2172,56 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
 // the login-mode opt-in exported. `acp-dispatch.mjs` had the same shape and was
 // fixed one round earlier; this one stayed open because nobody went looking for
 // the second door after closing the first.
+// The operator surface this loop's own SKILL.md declares — "There is no
+// wall-clock ceiling by default; set ACP_HARD_TIMEOUT_SEC>0" and the
+// ACP_STALL_POLICY=report note beside it. These are the ACP_ variables an
+// operator is INVITED to set for a whole loop, so they are forwarded to every
+// leg; everything else the companion reads is this runner's to decide.
+//
+// The criterion is the documented promise, not harmlessness. A leaked
+// ACP_STALL_POLICY=report genuinely weakens a brake — it is forwarded anyway,
+// because the skill tells an operator they may set it.
+//
+// ACP_CANCEL_GRACE_SEC is here because it is a LIVE fallback rather than dead
+// legacy: `acp-companion.mjs` reads _MS and falls back to _SEC * 1000 when _MS
+// is absent, so forwarding one without the other would honour half a setting.
+export const LOOP_FORWARDED_ACP_CONTROLS = Object.freeze([
+  'ACP_CANCEL_GRACE_MS',
+  'ACP_CANCEL_GRACE_SEC',
+  'ACP_HARD_TIMEOUT_SEC',
+  'ACP_PROCESS_KILL_GRACE_MS',
+  'ACP_STALL_POLICY',
+])
+
 export function childEnv(source = process.env) {
-  // EVERY ambient ACP_ variable is dropped, and the one this runner supplies is
-  // put back explicitly. Three doors of this shape were closed one review round
-  // apart — ACP_CMD, then ACP_ENABLE_TERMINAL, then ACP_SPAWN_NONCE — each fix
-  // naming the variable that had just been reported. Writing the guard as a
-  // SHAPE instead of a list immediately found five more: ACP_MODEL,
-  // ACP_EXPECT_MODEL, ACP_REASONING_EFFORT, ACP_RESUME and
-  // ACP_SESSION_OPERATION all reached a dispatched worker from whatever the
-  // operator's shell was carrying.
+  // Every ambient ACP_ variable is dropped EXCEPT the documented operator
+  // controls above, and the one this runner supplies is put back explicitly.
+  // Three doors of this shape were closed one review round apart — ACP_CMD,
+  // then ACP_ENABLE_TERMINAL, then ACP_SPAWN_NONCE — each fix naming the
+  // variable that had just been reported. Writing the guard as a SHAPE instead
+  // of a list immediately found five more: ACP_MODEL, ACP_EXPECT_MODEL,
+  // ACP_REASONING_EFFORT, ACP_RESUME and ACP_SESSION_OPERATION all reached a
+  // dispatched worker from whatever the operator's shell was carrying.
+  //
+  // AND THE SHAPE THEN CUT TOO WIDE — finding 3835247721, a P1 that this
+  // release's own fix created. Dropping the prefix dropped four controls the
+  // skill documents, so a loop launched with ACP_HARD_TIMEOUT_SEC ran with no
+  // wall-clock ceiling at all and said nothing. `tests/loop-smoke.test.mjs`
+  // supplied all four and never checked one arrived.
+  //
+  // Deny by default with a named exception is FAIL-CLOSED for a knob nobody
+  // has classified yet; filtering the dangerous classes instead would be
+  // fail-open for every name added after today. The list does not rot because
+  // `loop-runner-heartbeat-model.test.mjs` reads the companion's own source and
+  // refuses an ACP_ name that is in neither list.
   //
   // The model pair is the one that matters most, because `modelEnv()` returns
   // {} for a seat declaring INHERIT_ACCOUNT_DEFAULT — the sentinel whose whole
   // meaning is "request nothing". A leaked ambient ACP_MODEL therefore made
   // that seat request something the graph never declared, and the identity
   // check certified it as matched.
-  const forwarded = Object.fromEntries(
-    Object.entries(source).filter(([key]) => !key.startsWith('ACP_')))
+  const forwarded = Object.fromEntries(Object.entries(source).filter(
+    ([key]) => !key.startsWith('ACP_') || LOOP_FORWARDED_ACP_CONTROLS.includes(key)))
   const injected = source.TMUX_TEAMS_ACP_CMD
   delete forwarded.TMUX_TEAMS_ACP_CMD
   return injected ? { ...forwarded, ACP_CMD: injected } : forwarded
