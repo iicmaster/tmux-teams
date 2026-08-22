@@ -2440,14 +2440,33 @@ test('finish() does not settle until a killed child has actually exited', async 
       "process.on('SIGTERM', () => {})",
       'setInterval(() => {}, 1000)',
     ].join('\n'))
+    // 2000ms, not 300ms: the probe's deadline is also all the time the child
+    // has to BOOT and write its pid. Under full-suite load node had not started
+    // yet, and the sibling descendant test failed the same way on the first
+    // quiet full run of this release.
     const result = await realProbeTransport({
-      command: [process.execPath, script], env: process.env, timeoutMs: 300,
+      command: [process.execPath, script], env: process.env, timeoutMs: 2000,
     })
     assert.equal(result.settled, 'timeout')
+    assert.ok(existsSync(pidFile),
+      'the child was reaped before it could write its pid, so this test proved nothing — raise timeoutMs')
     const pid = Number(readFileSync(pidFile, 'utf8'))
-    let alive = true
-    try { process.kill(pid, 0) } catch { alive = false }
-    assert.equal(alive, false,
+    // POLL, and here is why that does not weaken the claim. This test failed
+    // once for a subagent and could not be reproduced by the caller — 3/3 alone
+    // at load 7.3, 2/2 over the file, 2/2 in the full suite — and was carried as
+    // OPEN and unreproduced. A later agent found the cause independently while
+    // hitting it in a test of its own: a SIGKILLed process stays a ZOMBIE, still
+    // answering `kill(pid, 0)`, for a few milliseconds until libuv reaps it. The
+    // single immediate check read that window as "still alive".
+    //
+    // A bounded poll is sound HERE specifically: this child ignores SIGTERM and
+    // otherwise loops forever, so the only thing that can end it is the SIGKILL
+    // `finish()`'s own ladder sends. Nothing else could make the pid disappear
+    // during the poll, so "gone within 500ms of finish() returning" still proves
+    // finish() drove the kill to completion. Do not copy this poll to a test
+    // whose child can exit on its own — there it WOULD weaken the claim.
+    const gone = await waitForPidGone(pid, 500)
+    assert.equal(gone, true,
       'realProbeTransport resolved while the killed child was still alive — probeLanes\' next lane could start spawning over it')
   } finally {
     rmSync(dir, { recursive: true, force: true })
