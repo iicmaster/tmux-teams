@@ -374,9 +374,16 @@ test('terminal/kill escalates to SIGKILL itself when SIGTERM is ignored, before 
   // REQUEST path sent one SIGTERM and answered `{}` immediately, so a caller
   // that trusted that ack and immediately called terminal/wait_for_exit could
   // block the whole turn on a process the kill claimed had already stopped.
-  // The mock polls for the child's death for a bounded window right after
-  // terminal/kill resolves, mid-turn — not at companion teardown — so this can
-  // only go green if the escalation happened INSIDE the request itself.
+  //
+  // The load-bearing assertion is REQUEST LATENCY, not just eventual death: a
+  // fire-and-forget kill answers in a few milliseconds regardless of the
+  // grace period, while an escalation that actually lives inside the request
+  // must sit through the whole ACP_TERMINAL_KILL_GRACE_MS before it can know
+  // SIGTERM did nothing. A single post-response aliveness snapshot cannot
+  // tell the two apart on its own: the SAME background escalation still runs
+  // and kills the child moments later even in the un-awaited (broken) shape,
+  // so a bounded poll window comparable to the grace period can read "dead"
+  // either way. Kept as a secondary corroborating signal only.
   const run = runCompanion('task-term-kill-escalation', {
     ACP_ENABLE_TERMINAL: '1',
     MOCK_SCENARIO: 'terminal-kill-escalation',
@@ -387,9 +394,13 @@ test('terminal/kill escalates to SIGKILL itself when SIGTERM is ignored, before 
   assert.ok(existsSync(recorded), `mock never wrote .terminal-kill-escalation.json; stderr:\n${run.stderr}`)
   const steps = JSON.parse(readFileSync(recorded, 'utf8'))
   assert.equal(steps.kill?.error, null, `terminal/kill was refused: ${JSON.stringify(steps.kill?.error)}`)
+  assert.ok(steps.killElapsedMs >= 150,
+    `terminal/kill against a SIGTERM-trapping child answered in ${steps.killElapsedMs}ms — `
+    + 'a request that actually waits out the 200ms grace before escalating to SIGKILL cannot '
+    + 'answer this fast; the response path never escalated within the request itself')
   assert.equal(steps.aliveAfterKill, false,
-    'the SIGTERM-trapping child was still alive by the time terminal/kill resolved — '
-    + 'the request path never escalated to SIGKILL itself')
+    'the SIGTERM-trapping child was still alive after the request-path escalation and its '
+    + 'follow-up poll window — SIGKILL never reached it at all')
 })
 
 test('a second terminal/create while the first is still live is refused', () => {

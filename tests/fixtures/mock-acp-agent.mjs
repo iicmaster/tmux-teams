@@ -478,13 +478,17 @@ async function runTerminalWrapperDescendantProbe(prompt) {
 
 // terminal/kill against a child that traps SIGTERM, called MID-TURN rather
 // than left for companion teardown. Before the request path escalated to
-// SIGKILL itself, it sent one SIGTERM and answered success immediately; this
-// records whether the process is STILL ALIVE by the time that response
-// actually arrives, polling for a bounded window rather than taking a single
-// instantaneous snapshot (a delivered SIGKILL can still be un-reaped for a
-// moment). A caller that trusted the ack and immediately called
-// terminal/wait_for_exit could otherwise block the whole turn on a process
-// the kill claimed to have already stopped.
+// SIGKILL itself, it sent one SIGTERM and answered success IMMEDIATELY, so
+// the primary measurement here is REQUEST LATENCY: with the escalation ladder
+// inside the request, a SIGTERM-trapping child forces `terminal/kill` to sit
+// through the whole ACP_TERMINAL_KILL_GRACE_MS grace period before it can
+// answer, because that is the only way it can know SIGTERM did nothing. A
+// fire-and-forget kill instead answers in a handful of milliseconds no matter
+// how long the grace period is — and does so even though the SAME background
+// escalation still runs and kills the child moments later, so a single
+// post-response aliveness check alone cannot tell the two apart if the poll
+// window is comparable to the grace period. The poll below is kept only as a
+// secondary corroborating signal, not the load-bearing one.
 async function runTerminalKillEscalationProbe(prompt) {
   const create = await sendMockRequest('terminal/create', {
     sessionId: currentSessionId,
@@ -501,7 +505,9 @@ async function runTerminalKillEscalationProbe(prompt) {
     await wait(10)
   }
   const pid = Number(readFileSync('terminal-kill-trap-pid', 'utf8').trim())
+  const killStartedAt = Date.now()
   const kill = terminalId ? await sendMockRequest('terminal/kill', { sessionId: currentSessionId, terminalId }) : null
+  const killElapsedMs = Date.now() - killStartedAt
   const pollDeadline = Date.now() + envNumber('MOCK_KILL_POLL_MS', 250)
   let aliveAfterKill = true
   while (Date.now() < pollDeadline) {
@@ -509,7 +515,7 @@ async function runTerminalKillEscalationProbe(prompt) {
     await wait(10)
   }
   writeFileSync(join(process.cwd(), '.terminal-kill-escalation.json'),
-    `${JSON.stringify({ kill, aliveAfterKill }, null, 2)}\n`, { mode: 0o600 })
+    `${JSON.stringify({ kill, killElapsedMs, aliveAfterKill }, null, 2)}\n`, { mode: 0o600 })
   writeOutbox(prompt)
   reply(prompt.id, { stopReason: 'end_turn' })
 }
