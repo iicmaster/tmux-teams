@@ -82,11 +82,23 @@ All confirmed by two refuters each; none rated ship-blocking. Status:
 | 8 | login input broadcasts to every terminal | `fix2-companion` |
 | 9 | `childEnv` forwarded ambient `ACP_*` | **DONE** `6ac3fbc` |
 | 10 | `TEAM_BLOCKED` reached an agent defaulting to `resume` | **DONE** `c045beb` |
-| 11 | agy-advisor command hardcodes the model, ignoring its alias argument | **NOT STARTED** |
-| 12 | agy-advisor command never clears inherited `ACP_REASONING_EFFORT` | **NOT STARTED** |
+| 11 | agy-advisor command hardcodes the model, ignoring its alias argument | **DONE** |
+| 12 | agy-advisor command never clears inherited `ACP_REASONING_EFFORT` | **DONE** |
 
-11 and 12 are in `plugins/tmux-teams/skills/agy-advisor/SKILL.md`. Every
-finding in full: `scratchpad/bot-findings-batch2.md`.
+Every finding in full: `scratchpad/bot-findings-batch2.md`.
+
+11 and 12 were one block in `plugins/tmux-teams/skills/agy-advisor/SKILL.md`
+and are guarded by one test — `tests/acp-dispatch.test.mjs`, "the AGY seat the
+caller asked for". **The observable is the ROUTING RECORD, not the companion
+log**, and two probes were spent finding that out: receipt-required mode refuses
+an arbitrary `ACP_CMD` at the receipt stage before any config option is
+negotiated, so the log is byte-identical with and without an ambient
+`ACP_REASONING_EFFORT`. `dispatch-routing/<task-id>.json` is written before
+that, and `ROUTING_ENV_KEYS` is what a resume is rebuilt from — an inherited
+effort outlives the dispatch that inherited it. Three mutations, three distinct
+red sentences: strip `env -u`, hardcode `ACP_MODEL`, hardcode
+`ACP_EXPECT_MODEL`. The existing documented-command guard was widened from two
+seats to three in the same commit; it had never covered AGY.
 
 ### What #9 turned out to be, because it is this release's lesson
 

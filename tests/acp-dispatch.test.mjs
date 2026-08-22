@@ -1729,10 +1729,10 @@ test('the dispatch command each advisor skill documents gets past the companion 
   // real protection and building a signed profile here would test the profile
   // machinery rather than the documented command.
   const SKILLS = join(dirname(DISPATCH), '..', '..')
-  for (const skill of ['codex-advisor', 'claude-advisor']) {
+  for (const skill of ['codex-advisor', 'claude-advisor', 'agy-advisor']) {
     const text = readFileSync(join(SKILLS, skill, 'SKILL.md'), 'utf8')
     const blocks = text.split('```bash').slice(1).map((b) => b.split('```')[0])
-      .filter((b) => /acp-dispatch\.mjs[\s\\]+\n?\s*(codex|claude) </.test(b))
+      .filter((b) => /acp-dispatch\.mjs[\s\\]+\n?\s*(codex|claude|agy) </.test(b))
       .filter((b) => !b.includes('ACP_RESUME'))
     assert.ok(blocks.length >= 1, `${skill}: no fresh-dispatch block found`)
 
@@ -1758,6 +1758,76 @@ test('the dispatch command each advisor skill documents gets past the companion 
         `${skill}'s documented command never reached the receipt stage:\n${text2.slice(0, 600)}`)
     }
   }
+})
+
+test('the AGY seat the caller asked for is the seat dispatched, and an ambient reasoning effort is cleared', (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX shell')
+  // FINDINGS 11 AND 12 of the review bot's second batch. One test, because they
+  // are one block and one observable. The command hardcoded
+  // `gemini-3.7-flash-high` in both ACP_MODEL and ACP_EXPECT_MODEL while the
+  // Arguments table promised medium and low seats — so `$agy-advisor medium`
+  // ran high and produced a high receipt that MATCHED. And it cleared nothing,
+  // so a shell that had just dispatched a codex lane forwarded
+  // ACP_REASONING_EFFORT to an adapter that does not advertise the option.
+  //
+  // WHY THE ROUTING RECORD IS THE OBSERVABLE, and it took two probes to find
+  // out. The mock lane cannot show either defect: receipt-required mode refuses
+  // an arbitrary ACP_CMD at the receipt stage before any config option is
+  // negotiated, so the companion log is byte-identical with and without the
+  // ambient variables — measured, both runs `[receipt] invalid_execution_profile`
+  // and nothing else. The dispatcher writes `dispatch-routing/<task-id>.json`
+  // before that, and ROUTING_ENV_KEYS is what `resumeCommand` rebuilds a resume
+  // from, so an inherited effort does not merely fail this dispatch — it
+  // outlives it.
+  const block = readFileSync(join(SKILLS, 'agy-advisor', 'SKILL.md'), 'utf8')
+    .split('```bash').slice(1).map((b) => b.split('```')[0])
+    .find((b) => /acp-dispatch\.mjs[\s\\]+\n?\s*agy </.test(b))
+  assert.ok(block, 'agy-advisor documents no fresh-dispatch block')
+
+  const cwd = tempDir('acp-agy-doc-')
+  const home = tempDir('acp-agy-home-')
+  mkdirSync(join(home, '.local', 'bin'), { recursive: true })
+  // The block's own binary-discovery loop RUNS here rather than being replaced;
+  // a stub at its first candidate path is what makes that machine-independent.
+  writeFileSync(join(home, '.local', 'bin', 'agy'), '#!/bin/sh\nexit 0\n')
+  chmodSync(join(home, '.local', 'bin', 'agy'), 0o755)
+  writeFileSync(join(cwd, 'brief.md'), 'do the thing\n')
+
+  // NOT the default seat. A test that substitutes the default passes against a
+  // command that hardcodes it, which is the defect.
+  const SEAT = 'gemini-3.7-flash-medium'
+  const script = block
+    .replaceAll('<plugin-root>', join(SKILLS, '..'))
+    .replaceAll('<model>', SEAT)
+    .replace(/agy <cwd> <task-id> <brief-file> \[stall-sec\]/,
+      `agy ${cwd} doc ${join(cwd, 'brief.md')} 120`)
+  assert.doesNotMatch(script, /<model>|<plugin-root>|<cwd>|<task-id>/,
+    'a placeholder survived substitution, so this ran something other than the documented command')
+  writeFileSync(join(cwd, 'run.sh'), script)
+
+  const run = spawnSync('bash', [join(cwd, 'run.sh')], {
+    cwd, encoding: 'utf8', timeout: 90000,
+    env: {
+      ...laneEnv(),
+      HOME: home,
+      ACP_REASONING_EFFORT: 'ambient-effort',
+      ACP_EXPECT_REASONING_EFFORT: 'ambient-effort',
+    },
+  })
+  const routingFile = join(cwd, '.tmux-teams', 'dispatch-routing', 'doc.json')
+  assert.ok(existsSync(routingFile),
+    `the documented AGY command never dispatched:\n${run.stdout}${run.stderr}`)
+  const routing = JSON.parse(readFileSync(routingFile, 'utf8'))
+
+  assert.equal(routing.worker, 'agy')
+  assert.equal(routing.env.ACP_MODEL, SEAT,
+    'the documented command requests a seat the caller did not ask for')
+  assert.equal(routing.env.ACP_EXPECT_MODEL, SEAT,
+    'the documented command verifies a seat the caller did not ask for')
+  assert.equal(routing.env.ACP_REASONING_EFFORT, undefined,
+    'an ambient ACP_REASONING_EFFORT reached the AGY lane, and every resume rebuilt from this record')
+  assert.equal(routing.env.ACP_EXPECT_REASONING_EFFORT, undefined,
+    'an ambient ACP_EXPECT_REASONING_EFFORT reached the AGY lane, and every resume rebuilt from this record')
 })
 
 test('a hostile PARENT directory redirects no read, and a missing pid leaf is not proof of quiet', () => {
