@@ -1857,6 +1857,12 @@ test('classifyProbe maps a closed SIGNAL shape onto a closed code, never onto te
   assert.equal(classifyProbe({ settled: 'refused' }), 'unclassified')
   assert.equal(classifyProbe({ settled: 'invalid_handshake' }), 'unclassified')
   assert.equal(classifyProbe({ settled: 'cancelled' }), 'unclassified')
+  // `aborted` is settled by THIS file (an MCP-level `notifications/cancelled`
+  // reaching the active transport call), never by a provider — pinned
+  // explicitly for the same reason its siblings above are: the reply it would
+  // ride in on is never actually sent, but the shape still has to stay inside
+  // the closed set rather than fall through to an unpinned default.
+  assert.equal(classifyProbe({ settled: 'aborted' }), 'unclassified')
   // A misbehaving or future transport gets the honest catch-all, never a crash
   // and never a guess dressed as a specific answer.
   assert.equal(classifyProbe(null), 'unclassified')
@@ -1871,7 +1877,7 @@ test('classifyProbe maps a closed SIGNAL shape onto a closed code, never onto te
     { settled: 'spawn_error', errnoCode: 'EPERM' },
     { settled: 'exit', quotaSignal: true }, { settled: 'exit' },
     { settled: 'refused', quotaSignal: true }, { settled: 'refused' },
-    { settled: 'invalid_handshake' }, { settled: 'cancelled' }, {}]) {
+    { settled: 'invalid_handshake' }, { settled: 'cancelled' }, { settled: 'aborted' }, {}]) {
     const code = classifyProbe(shape)
     assert.ok(code === null || Object.hasOwn(DIAGNOSTICS, code),
       `classifyProbe(${JSON.stringify(shape)}) returned ${code}, which DIAGNOSTICS does not define`)
@@ -2050,6 +2056,156 @@ test('a transport that REJECTS is classified per lane, never leaks its message, 
   const wire = JSON.stringify(payload)
   assert.ok(!wire.includes('PROVIDER-REJECT-MARKER') && !wire.includes('401') && !wire.includes('9f3a'),
     `the rejecting transport's own message reached the wire: ${wire}`)
+})
+
+// ## Finding: `acp_lane_probe` calls were not serialized ACROSS requests
+//
+// The sequential loop proven above (`lanes are probed sequentially, never
+// concurrently`) only orders LANES within ONE call. An MCP host that
+// pipelines two SEPARATE `acp_lane_probe` `tools/call` requests before this
+// server answers the first used to have `serve()`'s own line callback invoke
+// `handle()` for both the instant their lines arrived, leaving both returned
+// promises in flight — two provider processes spawned at once, spending two
+// budgets for a tool whose own description promises one at a time. This
+// drives `serve()` itself (not `handle()` directly) because the defect lives
+// in the callback that decides WHEN to call `handle()`, not inside it.
+test('acp_lane_probe calls are queued globally across requests, and ping is still answered while one is in flight',
+  async () => {
+    const { serve } = await import('../plugins/tmux-teams/skills/party-mode/scripts/acp-lanes-mcp.mjs')
+    const { PassThrough } = await import('node:stream')
+    const written = []
+    const input = new PassThrough()
+    const output = new PassThrough()
+    output.on('data', (chunk) => written.push(String(chunk)))
+    const order = []
+    let releaseClaude
+    const claudeGate = new Promise((resolve) => { releaseClaude = resolve })
+    // `claude`/`codex` are `UNCHECKED_LANES` — the only lanes that reach a
+    // transport regardless of environment, which is what every other probe
+    // test in this file already uses `bare` env to reach deliberately.
+    const transport = async (call) => {
+      order.push(`start:${call.id}`)
+      if (call.id === 'claude') await claudeGate
+      order.push(`end:${call.id}`)
+      return { settled: 'response' }
+    }
+    const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+    const lines = serve({ input, output, env: bare, deps: { probeTransport: transport } })
+    const send = (msg) => input.write(`${JSON.stringify(msg)}\n`)
+    send({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'acp_lane_probe', arguments: { lanes: ['claude'] } } })
+    send({ jsonrpc: '2.0', id: 2, method: 'ping' })
+    send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'acp_lane_probe', arguments: { lanes: ['codex'] } } })
+
+    // Enough real time for the synchronously-answerable `ping` and the
+    // dispatch bookkeeping of both probe calls to run — the claude call
+    // itself is parked on `claudeGate` and cannot progress further no matter
+    // how long this waits, so this is a floor, not a race.
+    await new Promise((r) => setTimeout(r, 50))
+
+    assert.deepEqual(order, ['start:claude'],
+      'the second probe call started before the first one finished — probes are not serialized across requests')
+    const repliesSoFar = written.join('').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
+    const pingReply = repliesSoFar.find((r) => r.id === 2)
+    assert.ok(pingReply,
+      'ping was not answered while a probe call was in flight — a non-probe method must not queue behind a probe')
+    assert.deepEqual(pingReply.result, {})
+    assert.ok(!repliesSoFar.some((r) => r.id === 3),
+      'the second probe call was already answered before the first one released — nothing is actually queued')
+
+    releaseClaude()
+    await new Promise((r) => setTimeout(r, 50))
+    assert.deepEqual(order, ['start:claude', 'end:claude', 'start:codex', 'end:codex'],
+      'the queued second probe call did not run once the first was released')
+
+    input.end()
+    await new Promise((done) => lines.on('close', done))
+  })
+
+// ## Finding: `notifications/cancelled` was dropped before dispatch, and a
+// cancelled `acp_lane_probe` kept spending quota for the rest of its lanes
+//
+// `handle()` used to return `null` for every notification before even
+// reading its `method` — correct for the notification's OWN reply (there is
+// never one), wrong for the ACTION `notifications/cancelled` is supposed to
+// trigger. This proves the fix end to end: (a) the lane named after the
+// cancelled one never starts, (b) the lane already running has its real
+// process GROUP confirmed gone — reusing `realProbeTransport`'s own
+// teardown (`finish`, the process-group kill, `waitForProbeGroupGone`), not a
+// second kill mechanism — before the call settles, and (c) the host that
+// cancelled the call gets no reply at all, which is what MCP 2025-06-18
+// requires of a cancelled request.
+test('a cancelled multi-lane probe stops the remaining lanes, reaps the active child\'s process group, '
+  + 'and the host gets no reply', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-lanes-cancel-'))
+  const pidFile = join(dir, 'pid')
+  try {
+    const script = join(dir, 'stay-alive.cjs')
+    // No SIGTERM handler of its own: Node's default behavior is to exit on
+    // SIGTERM, so an abort that reaches this script settles fast. The slow,
+    // SIGKILL-forcing shape ("ignore-term.cjs") is what the existing
+    // `finish() does not settle until a killed child has actually exited`
+    // test already covers; this test is about WHO gets to reach the kill at
+    // all, not about the kill ladder's own escalation timing.
+    writeFileSync(script, [
+      "const fs = require('fs')",
+      `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))`,
+      'setInterval(() => {}, 1000)',
+    ].join('\n'))
+    let codexStarted = false
+    const transport = async (call) => {
+      if (call.id === 'codex') { codexStarted = true; return { settled: 'response' } }
+      // The lane's own declared command is irrelevant to what this test
+      // proves — a real child process is what has to die, and reusing
+      // `realProbeTransport` itself (rather than a synthetic fake) is what
+      // proves the SHIPPED teardown is what does it, not a test-only stand-in.
+      return realProbeTransport({
+        command: [process.execPath, script], env: process.env, timeoutMs: 6000,
+        abortSignal: call.abortSignal,
+      })
+    }
+    const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+    const pendingProbes = new Map()
+    const deps = { probeTransport: transport, pendingProbes }
+    const requestId = 42
+    const started = Date.now()
+    const probePromise = handle({
+      jsonrpc: '2.0', id: requestId, method: 'tools/call',
+      params: { name: 'acp_lane_probe', arguments: { lanes: ['claude', 'codex'] } },
+    }, bare, deps)
+    const deadline = Date.now() + 4000
+    while (!existsSync(pidFile) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10))
+    assert.ok(existsSync(pidFile), 'the active lane never actually started — this proves nothing about a cancel mid-flight')
+    handle({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId } }, bare, deps)
+    const reply = await probePromise
+    const elapsed = Date.now() - started
+    assert.equal(reply, null,
+      'a cancelled acp_lane_probe call still produced a reply — MCP says a receiver must not send one')
+    assert.equal(codexStarted, false, 'the lane named after the cancelled one started anyway')
+    assert.ok(elapsed < 2000,
+      `settling a cancelled probe took ${elapsed}ms — it rode out the lane's own timeout instead of actually aborting`)
+    const pid = Number(readFileSync(pidFile, 'utf8'))
+    // `waitForProbeGroupGone` already confirmed the GROUP gone before this
+    // promise settled — checked here with `kill(pid, 0)` on the PID directly
+    // (what an operator would actually check) rather than repeating that same
+    // group-level check. The two can disagree for a few milliseconds under
+    // load: a process this call just killed can sit as a zombie — still
+    // visible to a direct PID probe — until this Node process's own libuv
+    // reaps its exit status on a later event-loop turn, independent of
+    // anything this fix controls. `elapsed < 2000` above already proves the
+    // teardown was prompt; this polls briefly rather than checking once so
+    // that ORDINARY reap latency cannot be mistaken for the child staying
+    // alive, which is the actual claim.
+    const aliveDeadline = Date.now() + 500
+    let alive = true
+    do {
+      try { process.kill(pid, 0); alive = true } catch { alive = false }
+      if (alive) await new Promise((r) => setTimeout(r, 20))
+    } while (alive && Date.now() < aliveDeadline)
+    assert.equal(alive, false, 'the active child was still alive (not merely an unreaped zombie) '
+      + 'half a second after the cancelled probe settled')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 // `realProbeTransport` was the one piece of the probe nothing ran: every other
