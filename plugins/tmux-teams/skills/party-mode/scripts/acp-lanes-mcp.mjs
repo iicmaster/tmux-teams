@@ -464,8 +464,9 @@ const PROBE_CRASHED = 'the probe crashed before producing a classified result'
 //                                                 stopReason — {} and null both land here
 //   { settled: 'cancelled' }                     session/prompt completed carrying
 //                                                 stopReason: 'cancelled' — a round trip, not an answer
-//   { settled: 'transport_error' }                a live stream (stdout) faulted mid-probe; no
-//                                                 further JSON-RPC frame can arrive on it
+//   { settled: 'transport_error' }                a live stream (stdout) faulted mid-probe, or the
+//                                                 probe deliberately stopped reading it past OUT_CAP —
+//                                                 either way no further JSON-RPC frame can arrive on it
 // `classifyProbe` reads only this shape. It is exported and pure so a test
 // can drive every branch with a plain object and never a subprocess.
 // The companion's own session-id shape, copied with its source named. This file
@@ -721,7 +722,19 @@ export async function realProbeTransport({ command, env, timeoutMs, spawnFn = sp
     child.stdout.on('data', (chunk) => {
       noteStdoutQuotaSignal(chunk)
       outBytes += chunk.length
-      if (outBytes > OUT_CAP) return
+      // Crossing the cap must SETTLE, not just stop parsing. A bare `return`
+      // here left every later 'data' event silently discarded with nothing
+      // calling `finish` — a lane whose adapter had already answered
+      // `session/prompt` past the cap (verbose reasoning, progress
+      // notifications) rode the full timeout and was reported
+      // `probe_timeout`, telling an operator the endpoint never replied when
+      // it plainly had (PR #71 inline comment 3835247727). `transport_error`
+      // is the same bucket `child.stdout` faulting uses just above: no
+      // further JSON-RPC frame can be read off this stream either way, and
+      // it is already pinned in `classifyProbe` to `unclassified`, never
+      // `probe_timeout` — distinguishable from a real timeout, and it starts
+      // the SAME teardown every other terminal outcome gets.
+      if (outBytes > OUT_CAP) { finish({ settled: 'transport_error' }); return }
       buf += chunk
       let idx
       while ((idx = buf.indexOf('\n')) >= 0) {

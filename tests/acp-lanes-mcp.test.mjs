@@ -2783,3 +2783,54 @@ test('an error on the child stdout stream settles the probe immediately as a tra
     rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 })
   }
 })
+
+// PR #71 inline comment 3835247727: `if (outBytes > OUT_CAP) return` used to
+// be an unconditional, permanent stop — every 'data' event after the cap is
+// crossed is discarded with nothing calling `finish`, including the chunk
+// that carries a VALID `session/prompt` reply. An adapter whose verbose
+// reasoning or progress notifications overrun the 2MB cap before its real
+// answer arrives therefore rode the probe out to the full timeout and was
+// reported `probe_timeout` — telling an operator the endpoint never replied
+// when it plainly had. The stub below floods well past OUT_CAP BEFORE
+// answering `session/prompt`, and never exits on its own, so only the
+// cap-crossing path (or the timeout, if the bug is still present) can ever
+// settle this probe.
+test('an adapter that overruns OUT_CAP settles the probe immediately, not after the full timeout, even when a valid reply follows the flood', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-stdout-overflow-'))
+  try {
+    const stub = join(dir, 'flood.cjs')
+    writeFileSync(stub, [
+      "const readline = require('readline')",
+      "const rl = readline.createInterface({ input: process.stdin })",
+      "const say = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n')",
+      "rl.on('line', (line) => {",
+      '  let m; try { m = JSON.parse(line) } catch { return }',
+      "  if (m.method === 'initialize') return say(m.id, { protocolVersion: 1 })",
+      "  if (m.method === 'session/new') return say(m.id, { sessionId: 'sess_ok' })",
+      "  if (m.method === 'session/prompt') {",
+      '    // ~2.6MB of notification noise, well past the 2MB OUT_CAP, written',
+      '    // BEFORE the real reply — the exact shape the finding named.',
+      "    const junk = 'x'.repeat(65536)",
+      '    for (let i = 0; i < 40; i++) {',
+      "      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'thinking', params: { text: junk } }) + '\\n')",
+      '    }',
+      "    return say(m.id, { stopReason: 'end_turn' })",
+      '  }',
+      '})',
+      'setInterval(() => {}, 1000)',
+    ].join('\n'))
+    const started = Date.now()
+    const result = await realProbeTransport({
+      command: [process.execPath, stub], env: process.env, timeoutMs: 6000,
+    })
+    const elapsed = Date.now() - started
+    assert.equal(result.settled, 'transport_error',
+      `an adapter that overran OUT_CAP before replying was settled as ${JSON.stringify(result)}, not a transport failure`)
+    assert.equal(classifyProbe(result), 'unclassified',
+      `an OUT_CAP overrun was reported as ${classifyProbe(result)} — indistinguishable from a real probe_timeout`)
+    assert.ok(elapsed < 3000,
+      `an adapter that overran OUT_CAP still took ${elapsed}ms to settle — crossing the cap must settle immediately, not ride the 6s deadline`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 })
+  }
+})
