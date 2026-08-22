@@ -464,7 +464,25 @@ is `suspected_stalled`; a second consecutive miss confirms `stalled`. Confirmed
 stalls and hard ceilings use one cancel-first coordinator (`session/cancel`,
 bounded grace/ACK observation, then TERM/KILL only if still unsettled). The
 `ACP_STALL_POLICY=report` mode remains observable and can recover without
-cancelling the ACP child. Snapshots use the exact `acp-liveness.v1` contract;
+cancelling the ACP child.
+
+**Which of these the LOOP forwards, and the rule that decides.** A loop leg is
+dispatched by `loop-runner.mjs`, which drops the ambient `ACP_*` environment so
+a shell that last ran a hand dispatch cannot silently reseat, resume or
+re-identify a lane. Six controls are forwarded and they are the whole set:
+`ACP_HARD_TIMEOUT_SEC`, `ACP_STALL_POLICY`, `ACP_CANCEL_GRACE_MS`,
+`ACP_CANCEL_GRACE_SEC`, `ACP_PROCESS_KILL_GRACE_MS`,
+`ACP_PROCESS_REAP_GRACE_MS`. The rule is **bound versus widen**: a control that
+BOUNDS what a lane may do is the operator's and is forwarded; anything that
+WIDENS what a lane can reach, or changes who it is, belongs to the runner and is
+dropped — `ACP_ENV_PASSTHROUGH` is an operator control everywhere else and is
+dropped here for exactly that reason. `ACP_TERMINAL_CLOSE_GRACE_MS` and
+`ACP_TERMINAL_KILL_GRACE_MS` are bounds and are dropped too, because the loop
+never enables the terminal capability and forwarding them would advertise a knob
+that cannot act. Set any of the six directly on the companion and it applies to
+that one dispatch; set one before a loop run and it applies to every leg.
+
+Snapshots use the exact `acp-liveness.v1` contract;
 the public projection is bounded to `tools` 64, `active_tools` 8,
 `stall_history` 32, and 64 KiB of UTF-8 JSON, with active tools selected first
 and deterministic compaction/fallback for terminal writes. Tool records are
@@ -478,7 +496,15 @@ cancel ACK, attempted/delivered TERM/KILL, child exit code/signal, child-settlem
 signal delivery, and descendant-only cleanup delivery separate. A clean child
 exit 0 remains `cancelled` when only descendant cleanup was signalled; descendant
 cleanup never reclassifies a clean child settlement as `stalled`/forced. Every
-terminal path closes and reaps the complete detached process group. `ACP_AGENT_ID`,
+terminal path closes and reaps the complete detached process group. **A login
+run drives at most ONE live terminal at a time**: a `terminal/create` while
+another is still live — neither exited nor released — is refused with an error
+naming the live id, rather than served. The stdin bridge delivers a keystroke to
+every live terminal, so two concurrent ones would hand the same login code to
+both children; the constraint is declared here rather than left an unstated
+assumption in a comment. A terminal stops being live the moment it exits or is
+released, so a sequential login flow — finish one command, open the next — is
+unaffected. `ACP_AGENT_ID`,
 when supplied, is validated and preserved as the stable
 Pulse identity; Codex children default to `INITIAL_AGENT_MODE=agent-full-access`
 unless the caller explicitly overrides it with `read-only`, `agent`, or

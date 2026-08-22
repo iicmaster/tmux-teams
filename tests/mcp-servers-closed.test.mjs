@@ -35,12 +35,12 @@ const MOCK = join(HERE, 'fixtures', 'mock-acp-agent.mjs')
 // leaking in through `{...process.env}` turned a green suite into 12 failures on
 // the machine that runs the review lanes, and it is the shape of both CI burns
 // this repo has had.
+// Everything ACP_*, by prefix rather than by name. Three files in this suite
+// each carried their own hand list, and all three went stale the hour v0.33.0
+// introduced ACP_SPAWN_NONCE — a list that must be edited whenever a variable
+// is added is a list that will be wrong again.
 const HERMETIC_ENV_KEYS = [
-  'ACP_CMD', 'ACP_MODEL', 'ACP_REASONING_EFFORT', 'ACP_EXPECT_MODEL',
-  'ACP_EXPECT_REASONING_EFFORT', 'ACP_RESUME', 'ACP_AGENT_ID', 'ACP_STALL_POLICY',
-  'ACP_HARD_TIMEOUT_SEC', 'ACP_EXECUTION_PROFILE', 'ACP_SESSION_RECEIPT_REQUIRED',
-  'ACP_SESSION_OPERATION', 'ACP_PRIOR_DISPATCH_ID', 'ACP_PRIOR_RECEIPT_DIGEST',
-  'ACP_CONTROL_LOG', 'INITIAL_AGENT_MODE', 'TMUX_TEAMS_PHASE',
+  'INITIAL_AGENT_MODE', 'TMUX_TEAMS_PHASE',
 ]
 
 function runCompanion(taskId, extraEnv) {
@@ -49,7 +49,7 @@ function runCompanion(taskId, extraEnv) {
   const brief = join(cwd, 'brief.md')
   writeFileSync(brief, 'do the thing\n')
 
-  const env = { ...process.env }
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('ACP_')))
   for (const key of HERMETIC_ENV_KEYS) delete env[key]
   Object.assign(env, {
     ACP_CMD: `${process.execPath} ${MOCK}`,

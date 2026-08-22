@@ -47,7 +47,10 @@ const runCompanion = (agentName, extraEnv) => {
   // ข้อ 4 requires `agent_id` and `workflow` on `assigned`; the runner supplies
   // both through the env, and without them the writer refuses the line — which
   // is the correct behaviour and would make this test silently vacuous.
-  const env = { ...process.env, ACP_CMD: `${process.execPath} ${MOCK}`, ACP_STALL_POLICY: 'cancel',
+  // Ambient ACP_* is stripped, not spread: a caller who had run a dispatch by
+  // hand carries values that reach the real companion this test measures.
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('ACP_'))),
+    ACP_CMD: `${process.execPath} ${MOCK}`, ACP_STALL_POLICY: 'cancel',
     ACP_HARD_TIMEOUT_SEC: '0', ACP_CANCEL_GRACE_MS: '100', ACP_RESUME: '',
     TMUX_TEAMS_WORK_ITEM: WORK_ITEM, TMUX_TEAMS_WORKFLOW: 'feature', ACP_AGENT_ID: 'build_w1',
     ...extraEnv }

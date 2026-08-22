@@ -13,7 +13,7 @@ New here? Read this file top to bottom, then
 [how-it-works.md](plugins/tmux-teams/skills/tmux-teams/references/how-it-works.md)
 for the diagrams.
 
-Current release: **0.32.0** (`.claude-plugin/marketplace.json` and
+Current release: **0.33.0** (`.claude-plugin/marketplace.json` and
 `plugins/tmux-teams/.claude-plugin/plugin.json`). Upgrading from an earlier
 0.14.x release needs no change to an existing `graph.json` — the seat fields
 in ข้อ 2 (`adapter`, `effort`, `display_model`) and the files in ข้อ 6 are all
@@ -239,6 +239,7 @@ work it has room for. One pass over the token ledgers decides, per token:
 | last event is `reviewed` `pass` (a delivery team's evaluator accepted it) | eligible to move |
 | last event is `intake` `accept` on the control team | eligible to move — admission is the claim, there is no artifact yet |
 | last leg `delivered` with a non-`done` terminal | `failed` — a rerun, not a handoff |
+| last leg `delivered` with terminal `blocked` | **escalated to a person** — a rerun would ask the same question again |
 | the ledger does not validate | `invalid` — every problem printed, nothing appended |
 | next team is under its WIP limit | `pulled`, signed by the **receiving** dispatcher |
 | next team is at its WIP limit | `blocked`, with the count, and the token stays put |
@@ -302,9 +303,18 @@ This is the most misunderstood part of the plugin.
 prior session), then **exactly one `session/prompt`**, and then waits for the
 worker's outbox file.
 
-There is **no channel for a person to type into a running worker session**. The
-companion's stdin is the JSON-RPC transport to the adapter, not a human input
-path. If you have seen this described as a live chat you can interject into, it
+There is **no channel for a person to type into a running worker session** on
+the ordinary dispatch path, which is every route but one. JSON-RPC travels on
+the ADAPTER's stdin, which the companion writes to; the companion's own stdin is
+read by nothing there. This sentence said the companion's stdin WAS the
+transport until a review lane read it against the two streams.
+
+The exception, added in v0.33.0, is `ACP_ENABLE_TERMINAL=1` login mode, so a
+person can finish an interactive provider login in the terminal the lane runs
+in. There the companion DOES read its own stdin and forwards it to the terminals
+it opened (`ensureTerminalStdinBridge` in `acp-companion.mjs`). That is still
+not a chat with the agent: the keystrokes reach the command the agent started,
+never the model. If you have seen this described as a live chat you can interject into, it
 is not that. Session continuity exists, but it is resume-by-id (`ACP_RESUME` +
 `session/load`, with prior-receipt lineage checks), not a conversation window.
 
@@ -413,10 +423,14 @@ relaying a person's words is expected to sign `human:` and name itself in
 | Skill | Reach for it when |
 |---|---|
 | `tmux-teams:claude-advisor` | you want Claude's strongest model — pinned to `claude-fable-5`, model identity verified via `ACP_EXPECT_MODEL` |
-| `tmux-teams:codex-advisor` | you want a read from outside the Claude family — pinned to `gpt-5.6-sol` at `ultra` |
+| `tmux-teams:codex-advisor` | you want a read from outside the Claude family — `gpt-5.6-sol` by default, or `luna` / `terra`, always at `max` |
+| `tmux-teams:agy-advisor` | you want a third family — Gemini through Antigravity, `gemini-3.7-flash-high` by default |
 
-Both advisors return a round-table rather than a single voice, and both are
-read-only. Ask both on a hard call: where they disagree is the finding.
+**Three** advisors, added to over time — this said "Both advisors" while a third
+was shipping in the same release, which is how a reader comes to believe a seat
+does not exist. Each returns a round-table rather than a single voice and each is
+read-only. Ask more than one on a hard call: where they disagree is the finding,
+and two seats from the same vendor are not two families.
 
 **Closing out a session**
 

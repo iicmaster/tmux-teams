@@ -6,6 +6,17 @@ Accepted — 2026-08-16, on Master's instruction, after the room measured that t
 per-machine problem it addresses was already solved in code and unsolved in
 practice.
 
+**Amended — 2026-08-20, per Master's 2026-08-19 v0.33.0 scope decision (item 7,
+`ROADMAP.md`): a live lane-health preflight.** This amendment adds a THIRD
+tool, `acp_lane_probe`, and it contacts an endpoint — which is exactly the
+thing the two paragraphs below (now marked amended in place) said this server
+would never do. The roadmap entry names the amendment as part of the item
+rather than a thing to ship quietly around it: "That contacts an endpoint,
+which ADR 0007 currently forbids — so the ADR is amended as part of the item
+rather than quietly contradicted." What follows is that amendment, not a
+second document, because a reader who trusts the earlier "no endpoint
+contacted" sentence deserves to find the correction in the same place.
+
 ## Why this document exists
 
 Two earlier decisions in this repository say "no MCP", and a reader who finds an
@@ -36,7 +47,8 @@ read; a tool answers when asked.
 ## The decision
 
 Ship one stdio MCP server, `tmux-teams-acp-lanes`, declared in the plugin's
-`.mcp.json`, with two read-only tools:
+`.mcp.json`, with **three** tools (was two — see the 2026-08-20 amendment
+below for the third):
 
 - `acp_lanes` — what lanes this plugin declares: family, provider, model,
   adapter package, and whether the lane DECLARES a pinned endpoint — the tool
@@ -46,16 +58,27 @@ Ship one stdio MCP server, `tmux-teams-acp-lanes`, declared in the plugin's
 - `acp_lane_status` — whether a lane's CONFIGURATION is valid **here**, and when
   it is not, which closed diagnostic applies and which environment variable
   points at the missing piece.
+- `acp_lane_probe` — **amendment, 2026-08-20.** Whether a NAMED lane can be
+  reached live, right now, with one trivial one-word brief: reachable, out of
+  quota, or refused, classified into a closed code and never into the
+  provider's own wording. This is the one tool in this server that contacts
+  an endpoint. See "The live probe" section below for what that costs and
+  what it does not change.
 
-It reports `valid`, `invalid` or `unchecked`, and never a boolean. The first
-version returned `ready: true`, and the advisor reproduced what that costs in one
-command: with no HOME, no PATH and no credentials, the `claude` and `codex` lanes
-both reported ready, because no parent-side check exists for either and a green
-answer from a check that never ran means nothing. Those two answer `unchecked`
-now. Every answer also carries what it did **not** prove — no endpoint contacted,
-no credential accepted, no adapter resolved, no session negotiated — because a
-diagnostic that says READY and is then contradicted by the real gate destroys
-trust in the one feature meant to explain a refusal.
+`acp_lanes` and `acp_lane_status` remain exactly what this document already
+says of them: declared facts and local-file configuration checking, nothing
+contacted, nothing dispatched. That has not moved.
+
+`acp_lane_status` reports `valid`, `invalid` or `unchecked`, and never a
+boolean. The first version returned `ready: true`, and the advisor reproduced
+what that costs in one command: with no HOME, no PATH and no credentials, the
+`claude` and `codex` lanes both reported ready, because no parent-side check
+exists for either and a green answer from a check that never ran means
+nothing. Those two answer `unchecked` now. Every answer also carries what it
+did **not** prove — no endpoint contacted, no credential accepted, no adapter
+resolved, no session negotiated — because a diagnostic that says READY and is
+then contradicted by the real gate destroys trust in the one feature meant to
+explain a refusal.
 
 ## The three lines it does not cross
 
@@ -142,11 +165,21 @@ The tool cannot close the gap itself without executing something, which is the
 line it does not cross. Naming where the guarantee begins is the part that was
 missing.
 
-**Read-only, with no exceptions.** No tool dispatches, spawns a lane, or starts a
-review. This is the same principle that keeps a reviewer lane from launching
-delivery work: a surface that can answer questions is a different thing from a
-surface that can act, and combining them is how the first one stops being safe to
-expose.
+**Read-only, with no exceptions — amended 2026-08-20, because this sentence
+became false the day `acp_lane_probe` shipped and saying otherwise here would
+be the quiet contradiction this whole amendment exists to avoid.** It used to
+read "No tool dispatches, spawns a lane, or starts a review," and the middle
+clause is no longer true: the probe spawns exactly one process per lane
+named, to ask it one trivial word and tear it down. What is still true, and is
+the property this paragraph actually protects: **no tool dispatches or starts
+a REVIEW, and no tool starts DELIVERY work.** A process started to prove
+reachability is not a lane doing review work any more than a `ping` is — it
+sends one message, discards every actual answer content, and reports a
+classified reachability code. This is the same principle that keeps a
+reviewer lane from launching delivery work: a surface that can answer
+questions is a different thing from a surface that can act on an operator's
+behalf, and the probe stays on the answering side of that line — it proves a
+lane is alive, it does not use that lane for anything.
 
 Two limits on that sentence, both named by a review rather than by us. Tools and
 handlers are built from one descriptor list, which makes the surface auditable in
@@ -158,6 +191,113 @@ inventory inside a real dispatched ACP child has not been measured, so ADR 0003'
 guarantee remains a guarantee about what is REQUESTED. That distinction is the
 same one the boot bug in this very change taught: the bytes sent and the runtime
 that results are not synonyms.
+
+## The live probe — amendment, 2026-08-20
+
+`ROADMAP.md`'s v0.33.0 item 7 named the gap this closes: "Lane health is
+discovered one release at a time... On 2026-08-17 that cost four probes and a
+swapped panel composition after the run had already started." `acp_lane_status`
+answers whether a lane's CONFIGURATION is valid, which is a different question
+on purpose — it contacts nothing, so it cannot tell an operator whether a
+correctly-configured lane is actually out of quota today. Only a live attempt
+can answer that, and this amendment ships the cheapest version of one.
+
+**What is now contacted.** `acp_lane_probe` takes one or more lane ids,
+explicitly named, and for each one not already known invalid: builds its
+launch the same way a real dispatch would (`buildAcpLaunch`, the same function
+`acp_lane_status` already calls to decide validity), spawns the adapter
+process, and speaks the minimum of ACP needed to complete one turn —
+`initialize`, `session/new`, `session/prompt` with a fixed one-word brief. The
+process is torn down (SIGTERM then SIGKILL) whether it finishes, times out, or
+refuses, bounded by a twenty-second per-lane ceiling. The result is classified
+into a closed SIGNAL shape before this file ever sees it — `reachable`,
+`quota_exhausted`, `probe_timeout`, `executable_missing`, `executable_unusable`
+or `unclassified` — and the classifier (`classifyProbe`) reads only that shape,
+never a byte of stdout or stderr. The same outbound contract this whole document
+already states for `acp_lane_status` — a failure is a code from a closed set
+with a constant sentence, never the raw exception — applies here without
+exception, and the actual bytes a provider sends back (including whatever a
+quota refusal or an auth refusal says in its own words) are read by the
+transport ONLY to set one boolean (`quotaSignal`); they never reach a return
+value, a log this server owns, or a reply.
+
+**Amended again, 2026-08-22, and the shape of the correction is the point.**
+This section listed FIVE codes and the transport now produces six: a PR review
+bot found that every spawn failure was answering `executable_missing`, so
+`EACCES` and `EPERM` — found, and this process may not run it — sent an
+operator to install a file that was already there. That is
+`executable_unusable`. The same review found that the quota regex was tested
+against each stream chunk in isolation, so a refusal split across two `data`
+events was missed; detection now runs over a **bounded 64-character rolling tail**,
+which is a small correction to the sentence above: bytes are held for the
+length of that tail rather than examined and dropped within one chunk. It is
+sixty-four CODE UNITS, not bytes — this paragraph said bytes for a day, and a
+review lane read `String.prototype.slice` and said so. The tokens it watches
+for are ASCII, so the span is what matters and the memory is bounded either
+way; the claim is corrected rather than the code, because the code is right. Nothing
+about where they may go changed. The internal `settled` shapes also grew —
+`refused`, `cancelled` and `invalid_handshake` join `response`, `exit`,
+`timeout` and `spawn_error` — because three paths used to reach the twenty-
+second ceiling instead of settling, and one reported a cancelled turn as a
+real answer.
+
+**What is still never done, and this is the amendment's whole boundary.**
+
+- **No scheduler ships.** This is an on-demand MCP tool with no timer, no
+  cron, and no loop anywhere in this codebase that calls it automatically.
+  ROADMAP.md states this as a requirement in its own words: "it is not a
+  health-check that runs on a timer and it must not become one." An MCP tool
+  has no scheduler of its own, so the only way this becomes one is somebody
+  wrapping the call in a loop elsewhere — nothing in THIS server can stop
+  that, which is exactly why the structural answer lives in the next bullet
+  rather than in a promise about how the tool is used.
+- **No probe-everything default.** `lanes` is a required, non-empty array —
+  refused synchronously, before any process is spawned, if it is missing,
+  empty, not an array, or contains a non-string. A caller who wants every lane
+  probed has to type every lane id; there is no shorthand that reaches all
+  seven with less typing than naming them, so a sweep is a decision made on
+  purpose every time rather than the path of least resistance. The suite
+  proves the negative half of this directly: every refusal case is asserted
+  against a transport spy that records whether it was ever called, and it
+  never is.
+- **ADR 0003 is untouched.** A dispatched ACP agent still receives no MCP
+  server at all, this one included. The probe runs only from the operator's
+  own MCP session, the same surface `acp_lanes` and `acp_lane_status` already
+  occupied.
+- **No credential value reaches a reply, on any path.** The invalid-lane
+  short-circuit reuses `acp_lane_status`'s own guarantee unchanged. The live
+  path is new and carries the same guarantee for a new reason: the transport
+  DOES receive real credentials (it has to — a probe that cannot authenticate
+  proves nothing), and the classifier it reports through is the closed SIGNAL
+  shape above, which structurally has no field a value could ride in. The
+  suite's secret-matrix tests were extended rather than duplicated: one proves
+  a credential sitting in an unreadable file still never surfaces (the
+  existing guarantee, exercised through the new tool), and a second proves a
+  credential that DOES reach the transport — confirmed by the fake transport
+  asserting it saw the real value — still never reaches the reply back.
+- **No tool call authorizes anything the probed lane asks for.** An ACP
+  adapter that sends a client-initiated request mid-handshake (most notably
+  `session/request_permission`) is answered immediately with a refusal
+  (`{ outcome: { outcome: 'cancelled' } }`, or an empty result for anything
+  else) rather than left to stall toward the timeout or, worse, granted by
+  default. A probe proves a lane is alive; it does not use that lane's tools
+  for anything, on purpose.
+
+**What the operator is trusting.** Each `acp_lane_probe` call spends real
+minutes (up to the per-lane timeout) and real provider quota — this is stated
+in the tool's own description, not only here, because the anti-sweep posture
+this amendment insists on is worth nothing if the cost is hidden from the
+caller deciding whether to spend it. The answer is a snapshot: `reachable`
+right now says nothing about a minute from now, and the probe's own
+`notProven` list says so on every answer, the same discipline `acp_lane_status`
+already applies to `valid`. And the real transport that talks to an actual
+provider adapter has not been driven against a live provider by this change's
+own tests — deliberately, matching the roadmap's own warning about spending
+real quota in a verification pass. Every test in this file's suite injects a
+fake transport instead; the real one is exercised only by the manifest-launched
+server an operator actually runs. Treat it with the same honesty this project's
+`CLAUDE.md` already applies to the `party-advise` bwrap gate: designed
+carefully, unproven by a real run until someone spends the quota to take one.
 
 ## What the third round changed, and why it is in this document
 
@@ -272,6 +412,44 @@ unmeasured.** The cost is an auto-started process holding this capability.
 
 ## What would reverse this
 
-If the server ever needs to do more than answer — a tool that starts something,
-a field that carries a secret, or a reason to hand it to a dispatched agent —
-that is not an extension of this decision. Write the next ADR.
+This section used to say: "If the server ever needs to do more than answer —
+a tool that starts something... that is not an extension of this decision.
+Write the next ADR." **That is exactly what `acp_lane_probe` is, and this
+document is the record of it happening rather than a second one.** The
+difference between a quiet violation and a governed amendment is not that the
+line moved without being named — it is that Master decided it explicitly
+(`ROADMAP.md`, v0.33.0 item 7, 2026-08-19: "That contacts an endpoint, which
+ADR 0007 currently forbids — so the ADR is amended as part of the item rather
+than quietly contradicted"), and the amendment above states plainly what is
+now contacted, what still is not, and what an operator is trusting. Amending
+this document in place rather than opening ADR 0008 was a judgement call: the
+probe is a third tool on the SAME server, answering the SAME kind of
+question — "what can this server tell me right now" — rather than a
+different capability bolted alongside it, so the two earlier "no MCP"
+decisions this document already distinguishes itself from (ADR 0003, ADR 0005)
+still apply unchanged and a new ADR number would not have said anything this
+one plus its amendment does not.
+
+What reverses THIS decision, updated for what now exists:
+
+- **A scheduler.** `acp_lane_probe` is on-demand only; nothing in this
+  codebase calls it on a timer, and the amendment above states that as a
+  requirement, not a description of today's behavior. Wrapping it in one is
+  the reversal.
+- **A probe-everything default**, or any change that makes naming every lane
+  cheaper than typing every lane id. The anti-sweep guard is the entire
+  argument for shipping this at all.
+- **A probe that touches a lane's actual capabilities** — approves a tool
+  call, reads a file, writes anything, or otherwise uses the lane for
+  something instead of proving it answers. The moment a probe does real work,
+  it is dispatch wearing this tool's name, and ADR 0003's boundary is the one
+  that would actually be crossed.
+- **A credential value reaching a reply, on any path**, live or config-time.
+  That line has not moved since this document's first version and the live
+  probe does not get a lighter version of it.
+- **Handing this server, or any tool on it, to a dispatched agent.** ADR 0003
+  still says a dispatched agent receives no MCP server, and nothing in this
+  amendment argues for an exception.
+
+Anything else this server needs to do beyond a bounded, explicitly-named live
+probe is the next ADR, same as before.

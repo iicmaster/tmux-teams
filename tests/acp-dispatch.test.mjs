@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { statusReport, formatStatus, resumeCommand, outboxPath, sessionPath, COMPANION_DEFAULT_STALL_SEC, leaseExpired, strayOutboxes, TERMINAL_LIVENESS_STATES,
   waitForSettlement, EXIT_OUTBOX, EXIT_RUNNING, EXIT_NO_OUTBOX, pidPath, recordedPid, belongsToThisRun,
-  statusExitCode, logPath, readLeafSync, recordedRouting, spawnDetached, ROUTING_ENV_KEYS }
+  statusExitCode, logPath, readLeafSync, recordedRouting, spawnDetached, ROUTING_ENV_KEYS, main }
   from '../plugins/tmux-teams/skills/tmux-teams/scripts/acp-dispatch.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -442,14 +442,205 @@ test('a previous run\'s identity is never reported as this dispatch\'s', async (
   // five said so plainly: "the stale identity test that passed does not prove
   // the boundary inside one second". Here it is, at the millisecond.
   const spawnedAt = 1_700_000_000_000
-  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt).toISOString() }, spawnedAt), true)
-  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt + 1).toISOString() }, spawnedAt), true)
-  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt - 1).toISOString() }, spawnedAt), false,
+  const nonce = 'unit-boundary-nonce'
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt).toISOString(), spawn_nonce: nonce }, spawnedAt, nonce), true)
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt + 1).toISOString(), spawn_nonce: nonce }, spawnedAt, nonce), true)
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt - 1).toISOString(), spawn_nonce: nonce }, spawnedAt, nonce), false,
     'a snapshot written one millisecond before this spawn was accepted as this run\'s')
-  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt - 999).toISOString() }, spawnedAt), false,
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt - 999).toISOString(), spawn_nonce: nonce }, spawnedAt, nonce), false,
     'the one-second slack is back: a sub-second retry will inherit its predecessor\'s identity')
-  assert.equal(belongsToThisRun({}, spawnedAt), false, 'a record with no started_at was claimed')
-  assert.equal(belongsToThisRun(null, spawnedAt), false)
+  assert.equal(belongsToThisRun({}, spawnedAt, nonce), false, 'a record with no started_at was claimed')
+  assert.equal(belongsToThisRun(null, spawnedAt, nonce), false)
+  // The bounds alone are not identity: an in-window record with a different
+  // nonce, or no nonce at all, must still be refused — the case a timestamp
+  // cannot close by itself.
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt).toISOString(), spawn_nonce: 'someone-elses-nonce' },
+    spawnedAt, nonce), false, 'an in-window record with a different nonce was accepted as this run\'s')
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt).toISOString() }, spawnedAt, nonce), false,
+    'an in-window record with no nonce at all was accepted as this run\'s')
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt).toISOString(), spawn_nonce: nonce }, spawnedAt, undefined), false,
+    'a record matched against no expected nonce at all')
+})
+
+// These three go through `statusReport`, never a direct `belongsToThisRun`
+// call with the new argument count — calling the new signature directly
+// against the OLD source silently reinterprets the extra argument as `nowMs`,
+// which corrupts the upper bound into NaN and makes the old code refuse for
+// the wrong reason. Going through the reader that decides how many arguments
+// it passes is what lets the same test genuinely fail on old source and pass
+// on new.
+test('a record with the right timestamp and a forged or missing nonce is refused', () => {
+  const cwd = tempDir('acp-dispatch-forged-')
+  mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
+  mkdirSync(join(cwd, '.tmux-teams', 'dispatch-routing'), { recursive: true })
+  const spawnedAt = new Date().toISOString()
+
+  // Missing entirely — what a record written before this field existed, or
+  // forged without knowing it, looks like.
+  writeFileSync(join(cwd, '.tmux-teams', 'dispatch-routing', 'forged-a.json'),
+    JSON.stringify({ worker: 'mock', spawnedAt, spawnNonce: 'this-dispatchs-own-nonce', env: {} }))
+  writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'forged-a.json'), JSON.stringify({
+    started_at: new Date(Date.parse(spawnedAt) + 5_000).toISOString(),
+    liveness_state: 'completed', termination_reason: 'none',
+    effective_identity: 'FORGED-A[max]', identity_status: 'matched',
+  }))
+  const reportA = statusReport(cwd, 'forged-a')
+  assert.equal(reportA.liveness, null,
+    'an in-window record with no nonce at all was adopted as this run\'s')
+  assert.notEqual(reportA.identity, 'FORGED-A[max]', 'a forged identity reached the report')
+
+  // Present, but wrong.
+  writeFileSync(join(cwd, '.tmux-teams', 'dispatch-routing', 'forged-b.json'),
+    JSON.stringify({ worker: 'mock', spawnedAt, spawnNonce: 'this-dispatchs-own-nonce', env: {} }))
+  writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'forged-b.json'), JSON.stringify({
+    started_at: new Date(Date.parse(spawnedAt) + 5_000).toISOString(),
+    liveness_state: 'completed', termination_reason: 'none',
+    effective_identity: 'FORGED-B[max]', identity_status: 'matched',
+    spawn_nonce: 'not-this-dispatchs-nonce',
+  }))
+  const reportB = statusReport(cwd, 'forged-b')
+  assert.equal(reportB.liveness, null,
+    'an in-window record with the WRONG nonce was adopted as this run\'s')
+  assert.notEqual(reportB.identity, 'FORGED-B[max]', 'a forged identity reached the report')
+})
+
+test('a genuine dispatch\'s liveness record carries the nonce the dispatcher recorded for it', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX process groups')
+  // The wire, proven end to end: the dispatcher generates a nonce per
+  // dispatch, hands it to the companion over ACP_SPAWN_NONCE, and the
+  // companion echoes it into `spawn_nonce` — the value `belongsToThisRun` now
+  // requires to match.
+  const cwd = tempDir('acp-dispatch-nonce-genuine-')
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+  const r = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'nonce-genuine', brief, '120'],
+    { cwd, encoding: 'utf8', env: laneEnv(), timeout: 60000 })
+  assert.equal(r.status, 0, `the dispatch failed outright:\n${r.stdout}${r.stderr}`)
+  const routing = recordedRouting(cwd, 'nonce-genuine')
+  assert.ok(routing?.spawnNonce, `no nonce was recorded in routing: ${JSON.stringify(routing)}`)
+  const liveness = JSON.parse(readFileSync(join(cwd, '.tmux-teams', 'liveness', 'nonce-genuine.json'), 'utf8'))
+  assert.equal(liveness.spawn_nonce, routing.spawnNonce,
+    `the companion's liveness record did not carry the dispatcher's nonce: ${JSON.stringify(liveness)}`)
+  const report = statusReport(cwd, 'nonce-genuine')
+  assert.notEqual(report.liveness, null, 'a genuine record was refused by belongsToThisRun')
+})
+
+test('the companion refuses a prohibited model when it is reached without the dispatcher', () => {
+  // The dispatcher refuses this too, and the test for that stops in the parent.
+  // This is the child-side layer, and the only caller who can reach it is one
+  // who runs the companion by hand — which is exactly the caller the layer is
+  // for. Defence in depth that nothing exercises is decoration.
+  const cwd = tempDir('acp-companion-prohibited-')
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+  // Each case must leave exactly ONE call site able to refuse. A review lane
+  // showed why that matters: ACP_EXPECT_MODEL falls back to the requested
+  // model, so a lone prohibited ACP_MODEL is still caught by the expectation
+  // check with the call site under test deleted — red, but for the wrong
+  // reason. Pairing a prohibited request with a PERMITTED expectation is what
+  // isolates the ACP_MODEL call site.
+  const cases = [
+    { env: { ACP_EXPECT_MODEL: 'gemini-3.1-flash' }, label: 'ACP_EXPECT_MODEL', value: 'gemini-3.1-flash' },
+    { env: { ACP_MODEL: 'gemini-3.1-pro-high', ACP_EXPECT_MODEL: 'gpt-5.6-luna' },
+      label: 'ACP_MODEL', value: 'gemini-3.1-pro-high' },
+  ]
+  for (const [i, probe] of cases.entries()) {
+    const r = spawnSync(process.execPath, [join(SCRIPTS, 'acp-companion.mjs'), 'mock', cwd, `child-case-${i}`, brief, '120'],
+      { cwd, encoding: 'utf8', env: laneEnv(probe.env), timeout: 20_000 })
+    assert.equal(r.status, 2,
+      `case ${i} (${JSON.stringify(probe.env)}) was accepted by the companion:\n${r.stdout}${r.stderr}`)
+    assert.match(r.stderr, new RegExp(`${probe.label}: Gemini 3\\.1 is prohibited on tmux-teams routes, got ${probe.value}`),
+      `case ${i} refused under the wrong name:\n${r.stderr}`)
+  }
+  // The mock agent writes `.adapter-env.json` unconditionally at its own top
+  // level, so its ABSENCE is what proves the refusal landed before any adapter
+  // process ran — not merely that the exit code was 2 in the end.
+  assert.equal(existsSync(join(cwd, '.adapter-env.json')), false,
+    'the adapter started before the companion refused the prohibited model')
+})
+
+test('an ambient ACP_ENABLE_TERMINAL is never forwarded to a detached lane', () => {
+  // `acp-companion.mjs` states the rule: a dispatched review lane must never
+  // gain a terminal. The dispatcher forwards the whole caller environment, so
+  // an operator whose shell still carried the login-mode opt-in would have
+  // handed one to every lane they dispatched — including a review lane, on the
+  // direct-ACP path this project uses for the review of record.
+  //
+  // Dropping it costs nothing the capability could have delivered: the child
+  // below is spawned with `stdin: 'ignore'`, so a terminal opened this way can
+  // never receive a keystroke and cannot serve the person-attended login it
+  // exists for. A login run talks to the companion directly.
+  const cwd = tempDir('acp-dispatch-terminal-optin-')
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+  let seen = null
+  spawnDetached('mock', cwd, 'terminal-optin', brief, 120, {
+    spawnFn: (_exe, _argv, options) => { seen = options; return { pid: 424244, unref() {}, on() {} } },
+    env: { ...laneEnv(), ACP_ENABLE_TERMINAL: '1' },
+  })
+  assert.ok(seen, 'spawnDetached never spawned')
+  assert.equal(Object.hasOwn(seen.env, 'ACP_ENABLE_TERMINAL'), false,
+    `the terminal opt-in reached a detached lane: ${JSON.stringify(seen.env.ACP_ENABLE_TERMINAL)}`)
+  // The reason it is safe to drop, asserted rather than described.
+  assert.equal(seen.stdio[0], 'ignore',
+    'this lane can read stdin, so dropping the terminal opt-in would remove something usable')
+  // And the rest of the environment still arrives, so this is a removal of one
+  // key rather than a sanitiser nobody noticed was eating everything.
+  assert.equal(seen.env.ACP_CMD, laneEnv().ACP_CMD, 'the forwarded environment was damaged')
+  assert.ok(seen.env.ACP_SPAWN_NONCE, 'the dispatcher stopped adding its nonce')
+})
+
+test('a malformed ACP_SPAWN_NONCE is refused before the companion ever starts', () => {
+  // The dispatcher always OVERWRITES ACP_SPAWN_NONCE with its own generated
+  // value, so this guard is unreachable through acp-dispatch.mjs. It exists for
+  // the caller who runs the companion by hand, and that is the only path that
+  // can exercise it.
+  const cwd = tempDir('acp-dispatch-nonce-malformed-')
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+  const r = spawnSync(process.execPath, [join(SCRIPTS, 'acp-companion.mjs'), 'mock', cwd, 'nonce-malformed', brief, '120'],
+    { cwd, encoding: 'utf8', env: laneEnv({ ACP_SPAWN_NONCE: 'not a valid nonce!' }), timeout: 20_000 })
+  assert.equal(r.status, 2, `a malformed ACP_SPAWN_NONCE was accepted:\n${r.stdout}${r.stderr}`)
+  assert.match(r.stderr, /invalid ACP_SPAWN_NONCE "not a valid nonce!" — 1-64 chars/,
+    `unexpected refusal message:\n${r.stderr}`)
+  // Refused before any state is touched, so no record exists for a dispatch
+  // that was never allowed to begin.
+  assert.equal(existsSync(join(cwd, '.tmux-teams', 'liveness', 'nonce-malformed.json')), false,
+    'the companion wrote a liveness record before refusing the malformed nonce')
+})
+
+test('a predecessor\'s record from an earlier dispatch is refused for a later window it happens to fall inside', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX process groups')
+  // The case the timestamp bounds were added for: a real earlier dispatch at
+  // this task id leaves a genuine liveness record on disk, and a later
+  // dispatch into the same task id (a resume, a quick retry) can have a
+  // window that legitimately covers it. The bound alone cannot tell the two
+  // dispatches apart; only the nonce can.
+  const cwd = tempDir('acp-dispatch-predecessor-')
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+
+  // Dispatch A: a genuine, earlier run at this task id.
+  const first = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'predecessor', brief, '120'],
+    { cwd, encoding: 'utf8', env: laneEnv(), timeout: 60000 })
+  assert.equal(first.status, 0, `the predecessor dispatch failed outright:\n${first.stdout}${first.stderr}`)
+
+  // A LATER dispatch's own routing record, landing at the same task id — a
+  // spawnedAt just before A's own started_at (so A's record sits inside the
+  // later window) and a nonce that is necessarily different: every dispatch
+  // mints its own.
+  const predecessorLiveness = JSON.parse(
+    readFileSync(join(cwd, '.tmux-teams', 'liveness', 'predecessor.json'), 'utf8'))
+  writeFileSync(join(cwd, '.tmux-teams', 'dispatch-routing', 'predecessor.json'), JSON.stringify({
+    worker: 'mock',
+    spawnedAt: new Date(Date.parse(predecessorLiveness.started_at) - 1).toISOString(),
+    spawnNonce: 'a-later-dispatchs-own-nonce',
+    env: {},
+  }))
+
+  const report = statusReport(cwd, 'predecessor')
+  assert.equal(report.liveness, null,
+    'a predecessor\'s record, inside a later dispatch\'s window, was adopted as the later dispatch\'s own')
 })
 
 test('a task id that would escape the run directory is refused before any file is opened', async (t) => {
@@ -1126,11 +1317,13 @@ test('boot reports on the ACKNOWLEDGED identity status, not on a non-empty strin
   mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
   mkdirSync(join(cwd, '.tmux-teams', 'dispatch-routing'), { recursive: true })
   const spawnedAt = new Date().toISOString()
+  const spawnNonce = 'ident-nonce'
   writeFileSync(join(cwd, '.tmux-teams', 'dispatch-routing', 'ident.json'),
-    JSON.stringify({ worker: 'mock', spawnedAt, env: {} }))
+    JSON.stringify({ worker: 'mock', spawnedAt, spawnNonce, env: {} }))
   writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'ident.json'), JSON.stringify({
     started_at: spawnedAt, liveness_state: 'active', termination_reason: 'none',
     effective_identity: 'looks-like-an-identity', identity_status: 'missing',
+    spawn_nonce: spawnNonce,
   }))
   // statusReport is the reader that shares this record; the boot path's own
   // acceptance is asserted through the dispatch tests above. Here the point is
@@ -1536,10 +1729,10 @@ test('the dispatch command each advisor skill documents gets past the companion 
   // real protection and building a signed profile here would test the profile
   // machinery rather than the documented command.
   const SKILLS = join(dirname(DISPATCH), '..', '..')
-  for (const skill of ['codex-advisor', 'claude-advisor']) {
+  for (const skill of ['codex-advisor', 'claude-advisor', 'agy-advisor']) {
     const text = readFileSync(join(SKILLS, skill, 'SKILL.md'), 'utf8')
     const blocks = text.split('```bash').slice(1).map((b) => b.split('```')[0])
-      .filter((b) => /acp-dispatch\.mjs[\s\\]+\n?\s*(codex|claude) </.test(b))
+      .filter((b) => /acp-dispatch\.mjs[\s\\]+\n?\s*(codex|claude|agy) </.test(b))
       .filter((b) => !b.includes('ACP_RESUME'))
     assert.ok(blocks.length >= 1, `${skill}: no fresh-dispatch block found`)
 
@@ -1565,6 +1758,154 @@ test('the dispatch command each advisor skill documents gets past the companion 
         `${skill}'s documented command never reached the receipt stage:\n${text2.slice(0, 600)}`)
     }
   }
+})
+
+// FINDING 16, and the honest thing about it is what this test CANNOT be.
+//
+// `codex-advisor`'s documented command omitted CODEX_PATH and could not run as
+// written on any machine: `buildBuiltinProfile` refuses a receipt-required
+// Codex dispatch without an absolute one and exits 2 before a session exists.
+// It was found by RUNNING the command to dispatch a review round, after the
+// guard above had been widened to three seats an hour earlier and passed.
+//
+// WHY THE GUARD ABOVE COULD NOT CATCH IT, and why this one is static. That
+// guard dispatches worker `mock` with an ACP_CMD, and the requirement lives
+// behind `agentName === 'codex' && !process.env.ACP_CMD` — so the branch is
+// unreachable both because of the worker name AND because of the very seam
+// that makes the test hermetic. Reaching it at runtime needs a real codex
+// binary, a real adapter and no ACP_CMD, which is not a thing CI has. A guard
+// that cannot reach its branch is not a guard, and pretending otherwise with a
+// skipped test would be worse: four tests in this suite already skip
+// themselves, and a skipped test is an unexecuted guard.
+//
+// So this reads the requirement out of the companion's OWN error sentences
+// rather than from a list somebody types here. A new
+// "required X execution requires an absolute Y" turns this red for whichever
+// advisor documents worker X.
+test('each advisor skill documents the executable its own worker refuses to run without', () => {
+  const companion = readFileSync(join(SCRIPTS, 'acp-companion.mjs'), 'utf8')
+  const required = new Map()
+  for (const [, agent, variable] of companion.matchAll(
+    /required (\w+) execution requires an absolute ([A-Z][A-Z0-9_]*)/g)) {
+    required.set(agent.toLowerCase(), variable)
+  }
+  assert.ok(required.size >= 1,
+    'the companion states no absolute-executable requirement in that wording any more — '
+    + 'this test reads its expectation from those sentences and now reads nothing')
+
+  const checked = []
+  for (const skill of ['codex-advisor', 'claude-advisor', 'agy-advisor']) {
+    const text = readFileSync(join(SKILLS, skill, 'SKILL.md'), 'utf8')
+    for (const block of text.split('```bash').slice(1).map((b) => b.split('```')[0])) {
+      const worker = block.match(/acp-dispatch\.mjs[\s\\]+\n?\s*(\w+) </)?.[1]
+      if (!worker || block.includes('ACP_RESUME')) continue
+      const variable = required.get(worker)
+      if (!variable) continue
+      checked.push(`${skill}:${worker}:${variable}`)
+      // THE INVOCATION, not the block. The first version of this asserted the
+      // variable appeared anywhere in the bash block — and stayed GREEN when
+      // the assignment was deleted from the command, because the derivation
+      // line above it still mentioned the name. It would have passed against
+      // the exact broken command that produced this finding. What has to carry
+      // the variable is the backslash-continued run of assignments that ends at
+      // the dispatch call; a shell variable computed in a preamble and never
+      // passed reaches nothing.
+      const invocation = block.split(/\n\s*\n/).find((chunk) => chunk.includes('acp-dispatch.mjs'))
+      assert.ok(invocation, `${skill}: the dispatch call is not in a chunk this test can read`)
+      assert.match(invocation, new RegExp(`^\\s*${variable}=`, 'm'),
+        `${skill} documents a receipt-required ${worker} dispatch and never passes ${variable} to `
+        + 'it — the companion refuses that and exits 2 before a session exists, so this command '
+        + 'cannot run as written')
+      // Absolute, not merely present: the check is `startsWith('/')`, so a bare
+      // `command -v` result that is a relative path or a shell function name
+      // fails the same way an absent one does. The derivation may live in the
+      // preamble; only the passing of it must be in the invocation.
+      assert.ok(block.includes(`${variable}="$(realpath`) || block.includes(`${variable}="$(for `),
+        `${skill} sets ${variable} without resolving it to an absolute path, and the companion `
+        + 'requires one')
+    }
+  }
+  // WHAT IS COVERED, stated rather than implied. Only `codex` states this
+  // requirement in the companion, so only codex-advisor is checked — deleting
+  // AGY_BIN from the agy command does NOT turn this red, and a reader who
+  // assumed otherwise would be wrong. That is not a hole in this test: AGY_BIN
+  // is not enforced by the companion at all, it is the adapter's own knob, and
+  // a test that pretended to cover it would be the "non-empty is not an
+  // acceptance criterion" mistake in a new place. Pinned so that losing this
+  // coverage is a failure rather than a quiet zero.
+  assert.deepEqual(checked, ['codex-advisor:codex:CODEX_PATH'],
+    'the set of advisor seats checked against a companion requirement changed — if the companion '
+    + `gained or lost one, this pin is where you say so: ${checked.join(', ')}`)
+})
+
+test('the AGY seat the caller asked for is the seat dispatched, and an ambient reasoning effort is cleared', (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX shell')
+  // FINDINGS 11 AND 12 of the review bot's second batch. One test, because they
+  // are one block and one observable. The command hardcoded
+  // `gemini-3.7-flash-high` in both ACP_MODEL and ACP_EXPECT_MODEL while the
+  // Arguments table promised medium and low seats — so `$agy-advisor medium`
+  // ran high and produced a high receipt that MATCHED. And it cleared nothing,
+  // so a shell that had just dispatched a codex lane forwarded
+  // ACP_REASONING_EFFORT to an adapter that does not advertise the option.
+  //
+  // WHY THE ROUTING RECORD IS THE OBSERVABLE, and it took two probes to find
+  // out. The mock lane cannot show either defect: receipt-required mode refuses
+  // an arbitrary ACP_CMD at the receipt stage before any config option is
+  // negotiated, so the companion log is byte-identical with and without the
+  // ambient variables — measured, both runs `[receipt] invalid_execution_profile`
+  // and nothing else. The dispatcher writes `dispatch-routing/<task-id>.json`
+  // before that, and ROUTING_ENV_KEYS is what `resumeCommand` rebuilds a resume
+  // from, so an inherited effort does not merely fail this dispatch — it
+  // outlives it.
+  const block = readFileSync(join(SKILLS, 'agy-advisor', 'SKILL.md'), 'utf8')
+    .split('```bash').slice(1).map((b) => b.split('```')[0])
+    .find((b) => /acp-dispatch\.mjs[\s\\]+\n?\s*agy </.test(b))
+  assert.ok(block, 'agy-advisor documents no fresh-dispatch block')
+
+  const cwd = tempDir('acp-agy-doc-')
+  const home = tempDir('acp-agy-home-')
+  mkdirSync(join(home, '.local', 'bin'), { recursive: true })
+  // The block's own binary-discovery loop RUNS here rather than being replaced;
+  // a stub at its first candidate path is what makes that machine-independent.
+  writeFileSync(join(home, '.local', 'bin', 'agy'), '#!/bin/sh\nexit 0\n')
+  chmodSync(join(home, '.local', 'bin', 'agy'), 0o755)
+  writeFileSync(join(cwd, 'brief.md'), 'do the thing\n')
+
+  // NOT the default seat. A test that substitutes the default passes against a
+  // command that hardcodes it, which is the defect.
+  const SEAT = 'gemini-3.7-flash-medium'
+  const script = block
+    .replaceAll('<plugin-root>', join(SKILLS, '..'))
+    .replaceAll('<model>', SEAT)
+    .replace(/agy <cwd> <task-id> <brief-file> \[stall-sec\]/,
+      `agy ${cwd} doc ${join(cwd, 'brief.md')} 120`)
+  assert.doesNotMatch(script, /<model>|<plugin-root>|<cwd>|<task-id>/,
+    'a placeholder survived substitution, so this ran something other than the documented command')
+  writeFileSync(join(cwd, 'run.sh'), script)
+
+  const run = spawnSync('bash', [join(cwd, 'run.sh')], {
+    cwd, encoding: 'utf8', timeout: 90000,
+    env: {
+      ...laneEnv(),
+      HOME: home,
+      ACP_REASONING_EFFORT: 'ambient-effort',
+      ACP_EXPECT_REASONING_EFFORT: 'ambient-effort',
+    },
+  })
+  const routingFile = join(cwd, '.tmux-teams', 'dispatch-routing', 'doc.json')
+  assert.ok(existsSync(routingFile),
+    `the documented AGY command never dispatched:\n${run.stdout}${run.stderr}`)
+  const routing = JSON.parse(readFileSync(routingFile, 'utf8'))
+
+  assert.equal(routing.worker, 'agy')
+  assert.equal(routing.env.ACP_MODEL, SEAT,
+    'the documented command requests a seat the caller did not ask for')
+  assert.equal(routing.env.ACP_EXPECT_MODEL, SEAT,
+    'the documented command verifies a seat the caller did not ask for')
+  assert.equal(routing.env.ACP_REASONING_EFFORT, undefined,
+    'an ambient ACP_REASONING_EFFORT reached the AGY lane, and every resume rebuilt from this record')
+  assert.equal(routing.env.ACP_EXPECT_REASONING_EFFORT, undefined,
+    'an ambient ACP_EXPECT_REASONING_EFFORT reached the AGY lane, and every resume rebuilt from this record')
 })
 
 test('a hostile PARENT directory redirects no read, and a missing pid leaf is not proof of quiet', () => {
@@ -1596,19 +1937,49 @@ test('a hostile PARENT directory redirects no read, and a missing pid leaf is no
   mkdirSync(join(live, '.tmux-teams', 'dispatch-routing'), { recursive: true })
   writeFileSync(join(live, 'brief.md'), 'do the thing\n')
   const spawnedAt = new Date(Date.now() - 60_000).toISOString()
+  const busyNonce = 'busy-nonce'
   writeFileSync(join(live, '.tmux-teams', 'dispatch-routing', 'busy.json'),
-    JSON.stringify({ worker: 'mock', spawnedAt, env: {} }))
+    JSON.stringify({ worker: 'mock', spawnedAt, spawnNonce: busyNonce, env: {} }))
   writeFileSync(join(live, '.tmux-teams', 'liveness', 'busy.json'), JSON.stringify({
     liveness_state: 'tool_running', termination_reason: 'none',
     started_at: new Date(Date.parse(spawnedAt) + 1000).toISOString(),
     observed_at: new Date().toISOString(),
     next_lease_expiry_at: new Date(Date.now() + 900_000).toISOString(),
+    spawn_nonce: busyNonce,
   }))
   // no pid leaf at all
   const r = spawnSync(process.execPath, [DISPATCH, 'mock', live, 'busy', join(live, 'brief.md'), '120'],
     { cwd: live, encoding: 'utf8', env: laneEnv(), timeout: 60000 })
   assert.notEqual(r.status, 0, 'a second writer was admitted for a lane that is still reporting progress')
   assert.match(`${r.stdout}${r.stderr}`, /still reporting progress and its pid file/)
+})
+
+test('a liveness record whose nonce is a stranger\'s does not block admission', () => {
+  // The admission call site passes the record through belongsToThisRun before
+  // treating it as a live lane. The fixture above gives the liveness record the
+  // SAME nonce as its routing record, so deleting that call changes nothing
+  // there. Here the nonces DIFFER and everything else says "live": in-window
+  // started_at, an unsettled state, a lease fifteen minutes out, no pid leaf.
+  // With the check, the record belongs to nobody and admission proceeds.
+  // Without it, a stray or forged liveness file blocks this task id forever.
+  const cwd = tempDir('acp-dispatch-foreign-nonce-')
+  mkdirSync(join(cwd, '.tmux-teams', 'liveness'), { recursive: true })
+  mkdirSync(join(cwd, '.tmux-teams', 'dispatch-routing'), { recursive: true })
+  writeFileSync(join(cwd, 'brief.md'), 'do the thing\n')
+  const spawnedAt = new Date(Date.now() - 60_000).toISOString()
+  writeFileSync(join(cwd, '.tmux-teams', 'dispatch-routing', 'foreign.json'),
+    JSON.stringify({ worker: 'mock', spawnedAt, spawnNonce: 'the-real-priors-nonce', env: {} }))
+  writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'foreign.json'), JSON.stringify({
+    liveness_state: 'tool_running', termination_reason: 'none',
+    started_at: new Date(Date.parse(spawnedAt) + 1000).toISOString(),
+    observed_at: new Date().toISOString(),
+    next_lease_expiry_at: new Date(Date.now() + 900_000).toISOString(),
+    spawn_nonce: 'a-strangers-nonce',
+  }))
+  const r = spawnSync(process.execPath, [DISPATCH, 'mock', cwd, 'foreign', join(cwd, 'brief.md'), '120'],
+    { cwd, encoding: 'utf8', env: laneEnv(), timeout: 60_000 })
+  assert.equal(r.status, 0,
+    `admission refused over a liveness record whose nonce does not match the recorded routing:\n${r.stdout}${r.stderr}`)
 })
 
 test('the outbox is read through the boundary, and a case-only task id is refused', async (t) => {
@@ -1719,13 +2090,14 @@ test('a completed record with no accepted identity, and one stamped in the futur
   // Both are asserted through `belongsToThisRun` and the boot path's own
   // observable output, because that is where they decide anything.
   const spawnedAt = Date.now()
+  const nonce = 'ghostid-nonce'
 
   // A record stamped in the future is not this run's, however close.
-  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt + 90_000).toISOString() }, spawnedAt),
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt + 90_000).toISOString(), spawn_nonce: nonce }, spawnedAt, nonce),
     false, 'a record stamped 90s ahead was accepted as this dispatch\'s')
-  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt + 1_000).toISOString() }, spawnedAt),
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt + 1_000).toISOString(), spawn_nonce: nonce }, spawnedAt, nonce),
     true, 'a record from a second after the spawn was rejected')
-  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt - 1_000).toISOString() }, spawnedAt),
+  assert.equal(belongsToThisRun({ started_at: new Date(spawnedAt - 1_000).toISOString(), spawn_nonce: nonce }, spawnedAt, nonce),
     false, 'a record predating the spawn was accepted')
 
   // A `completed` record carrying NO accepted identity must not report success.
@@ -1759,6 +2131,38 @@ test('a completed record with no accepted identity, and one stamped in the futur
   // refused by the containment boundary leaves the record in place. The
   // assertion that bites here is the retirement, and saying so is better than
   // leaving a surviving mutation for the next reader to discover.
+})
+
+test('watchBoot ignores a foreign-nonce record that lands after retirement', async () => {
+  // The test above says in its own comment that it cannot reach watchBoot's
+  // identity gate: a pre-placed ghost is retired by spawnDetached before boot
+  // ever polls. This reaches it without staging an OS-level race. An async
+  // function runs synchronously up to its first await; spawnDetached and
+  // retirement are fully synchronous, and watchBoot's first poll is too. So by
+  // the time main() hands back a pending promise, retirement has run and poll
+  // one has found nothing — the record written on the next line lands strictly
+  // between poll one and poll two. The stub spawnFn means no companion races it.
+  const cwd = tempDir('acp-dispatch-boot-forge-')
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'do the thing\n')
+  const lines = []
+  const p = main(['mock', cwd, 'boot-forge', brief, '120'], {
+    out: (s) => lines.push(s), err: (s) => lines.push(s),
+    spawnFn: () => ({ pid: 424243, unref() {}, on() {} }),
+    env: { ACP_DISPATCH_BOOT_SEC: '2' },
+  })
+  writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'boot-forge.json'), JSON.stringify({
+    started_at: new Date(Date.now() + 1000).toISOString(),
+    liveness_state: 'completed', termination_reason: 'none',
+    effective_identity: 'STRANGER-IDENTITY[max]', identity_status: 'matched',
+    spawn_nonce: 'a-strangers-nonce',
+  }))
+  const code = await p
+  const out = lines.join('\n')
+  assert.doesNotMatch(out, /STRANGER-IDENTITY/,
+    `a foreign-nonce record was reported as this dispatch's own identity:\n${out}`)
+  assert.equal(code, 1,
+    `expected the booting outcome — no record ever belonged to this dispatch's nonce:\n${out}`)
 })
 
 test('a lane whose records cannot be written is killed, not left running namelessly', async (t) => {
@@ -2271,4 +2675,57 @@ test('a resume command names no setting the dispatch did not have', () => {
   // rejects it, so a paste fails in a way that reads like a broken dispatcher.
   assert.doesNotMatch(command, /INITIAL_AGENT_MODE=/,
     `a mode was emitted for a dispatch that never set one:\n${command}`)
+})
+
+// BEHAVIOUR, not the source text. The first guard for this shipped with a test
+// that grepped `acp-companion.mjs` for the guard's own source lines — and a
+// reviewer replaced the condition with `if (false)` and watched the whole suite
+// stay green at 1113/1109/0/4. A source grep is a tripwire, not a test: it
+// proves a string is present, never that anything happens.
+//
+// The prohibition is CLAUDE.md's, it says fail closed, and the AGY adapter
+// advertises both Gemini 3.1 seats — so this is reachable by typing.
+test('a prohibited model refuses the dispatch before a session exists', () => {
+  // The directory name deliberately avoids the word this test asserts. The
+  // dispatcher prints `run directory resolves to: <path>`, so a fixture called
+  // `acp-prohibited-*` satisfies a `/prohibited/` match on its own — the same
+  // shape this repository already records elsewhere as "a caller who controls a
+  // filename controls the classification". Caught by the assertion failing on a
+  // PERMITTED model.
+  const cwd = tempDir('acp-modelguard-')
+  writeFileSync(join(cwd, 'brief.md'), 'probe\n')
+  const run = (model) => spawnSync(process.execPath,
+    [DISPATCH, 'mock', cwd, `p-${model.replace(/[^a-z0-9]/gi, '')}`, join(cwd, 'brief.md'), '20'],
+    { cwd, encoding: 'utf8', timeout: 60000,
+      env: { ...laneEnv(), ACP_MODEL: model, ACP_EXPECT_MODEL: model } })
+
+  for (const model of ['gemini-3.1-pro-high', 'gemini-3.1-pro-low', 'Gemini 3.1']) {
+    const r = run(model)
+    const said = `${r.stdout}${r.stderr}`
+    assert.notEqual(r.status, 0, `${model} was dispatched:\n${said.slice(0, 300)}`)
+    assert.match(said, /Gemini 3\.1 is prohibited/,
+      `${model} was refused for some other reason, or not refused at all:\n${said.slice(0, 300)}`)
+  }
+
+  // The EXPECTATION is checked too — expecting a prohibited model is how a lane
+  // gets certified as having run one.
+  const expected = spawnSync(process.execPath,
+    [DISPATCH, 'mock', cwd, 'p-expect', join(cwd, 'brief.md'), '20'],
+    { cwd, encoding: 'utf8', timeout: 60000,
+      env: { ...laneEnv(), ACP_MODEL: 'gemini-3.7-flash-high', ACP_EXPECT_MODEL: 'gemini-3.1-pro-low' } })
+  assert.match(`${expected.stdout}${expected.stderr}`, /Gemini 3\.1 is prohibited/,
+    'a prohibited EXPECTATION was accepted')
+
+  // And a permitted model still starts, or the guard is just an outage.
+  const ok = spawnSync(process.execPath,
+    [DISPATCH, 'mock', cwd, 'p-ok', join(cwd, 'brief.md'), '20'],
+    { cwd, encoding: 'utf8', timeout: 60000,
+      env: { ...laneEnv(), ACP_MODEL: 'gemini-3.7-flash-high', ACP_EXPECT_MODEL: 'gemini-3.7-flash-high' } })
+  assert.doesNotMatch(`${ok.stdout}${ok.stderr}`, /is prohibited on tmux-teams routes/,
+    'a permitted model was refused by the prohibition guard')
+  // The dispatched LINE, not the exit code — this command's success code is not
+  // 0 by convention and asserting one I had not checked is how the previous
+  // version of this line failed on a lane that had dispatched perfectly well.
+  assert.match(`${ok.stdout}${ok.stderr}`, /dispatched mock as p-ok/,
+    `a permitted model did not dispatch:\n${ok.stdout}${ok.stderr}`)
 })

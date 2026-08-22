@@ -1316,11 +1316,22 @@ export async function runAcpReview({
       }
       return protocolError(`ACP notification not allowed: ${msg.method ?? 'unknown'}`)
     }
+    // A stdio Socket emits its OWN 'error'; `child.on('error')` is the ChildProcess
+    // and does not cover it, so an unhandled read fault here takes the whole process
+    // down. Found on the third pass: two doors were named, a survey of every stream
+    // with a 'data' listener and no 'error' listener found seven.
+    agent.stdout.on('error', () => {})
+    agent.stderr.on('error', () => {})
     agent.stdout.on('data', part => {
       stdoutBytes += part.length
       if (stdoutBytes > limits.stdoutBytes) protocolError('ACP stdout exceeds limit')
     })
     const lines = createInterface({ input: agent.stdout, crlfDelay: Infinity })
+    // Node forwards `agent.stdout`'s error onto this Interface, so the listener
+    // on the stream above does not cover it — measured, not assumed. Routed to
+    // `protocolError` rather than swallowed: a review transport that loses its
+    // input has failed, and saying so is the whole contract.
+    lines.on('error', err => protocolError(`ACP stdout stream failed: ${err?.code ?? err?.message ?? 'unknown'}`))
     lines.on('line', raw => { if (stdoutBytes <= limits.stdoutBytes) handle(raw) })
     agent.stderr.on('data', part => { if (stderr.length < limits.stderrBytes) stderr += part.toString().slice(0, limits.stderrBytes - stderr.length) })
     const fatalizeUnexpectedExit = (code, signal) => {

@@ -45,7 +45,10 @@ const runHangingLeg = () => {
   spawnSync('node', [COMPANION, 'mock', cwd, 'task-hang', brief, '3'], {
     cwd, encoding: 'utf8', timeout: 90_000,
     env: {
-      ...process.env,
+      // Ambient ACP_* is stripped rather than spread: a caller who had just run
+      // a dispatch by hand carries ACP_SPAWN_NONCE and friends, and they reach
+      // the producer snapshot this test reads back.
+      ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('ACP_'))),
       ACP_CMD: `${process.execPath} ${MOCK}`,
       // The adapter completes initialize and session/new — so the receipt IS
       // committed — and then never answers session/prompt.

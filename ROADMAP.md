@@ -12,7 +12,9 @@
 > source, no publish script and nothing that could notice it had gone stale —
 > so it went stale, repeatedly, and nobody could tell without opening it.
 
-Current release: **0.32.0**
+Current release: **0.33.0** — the version stamped in this tree, in flight on
+a pull request and not yet tagged. `main` still carries 0.32.0, and anyone
+installing from the marketplace resolves the last TAG, not this line.
 
 ## Where the phases stand
 
@@ -161,7 +163,7 @@ nobody can plan from.
   `-recover` task id while its prompt still named the original path produced a
   complete 22 KB review that the companion reported as `no_outbox`.
 
-## The release in flight — v0.32.0
+## The last release — v0.32.0, shipped
 
 Scope set by Master, 2026-08-17: **one release carrying both** the MCP
 lane-discovery server and `acp-dispatch.mjs`. They touch one file in common and
@@ -196,19 +198,15 @@ running the mutations, so read it as a report on the last run, not a property. N
 are deferred with their reasoning, listed under what is open; one dispute
 recorded as unresolved was later resolved AGAINST the position recorded here.
 
-**What is left is the mechanical steps.** Master waived the three-family panel
-for v0.32.0 on 2026-08-19; the review of record is the `codex-advisor` lane at
-`gpt-5.6-luna`, effort `max`, whose reported identity is written into the
-release notes the way a panel lane's would be. The availability that prompted
-it, measured 2026-08-18: of seven shipped lanes only `agy` (gemini) and `codex`
-(openai) could answer — qwen hit a one-week quota, zai's gateway refuses a
+**It shipped.** PR #69 merged to `main` at `6b95101`, tagged `v0.32.0` on
+2026-08-19. Master waived the three-family panel for it; the review of record
+was the `codex-advisor` lane at `gpt-5.6-luna`, effort `max`, whose reported
+identity is written into the release notes the way a panel lane's would be. The
+availability that prompted the waiver, measured 2026-08-18: of seven shipped
+lanes only `agy` (gemini) and `codex` (openai) could answer — qwen hit a one-week quota, zai's gateway refuses a
 disabled thinking mode and its package expired, kimi and deepseek are out of
 quota, and the default `claude` seat cannot reach an ACP session at all, which
 is v0.33.0's first item.
-
-Then: bump seven places, render and publish and record this page, open the PR,
-merge on CI green plus the codex bot review, tag the merged sha, and move the
-submodule pin in `~/agent-skills`.
 
 **That dispute is CLOSED, and this paragraph said otherwise for a whole
 release.** A mode-0755 file whose shebang names a missing interpreter used to
@@ -227,11 +225,117 @@ codex-advisor lane read them against each other and against the code, which is
 the only reason it is being corrected now rather than by the next reader of a
 gate file that contradicts itself.
 
-## The release after — v0.33.0, and why these five
+## The release in flight — v0.33.0
 
-Ordered by what they cost when left alone, not by size. The first two arrived
-as GitHub issues; the last three are things v0.32.0 measured and could not fix
-inside its own scope.
+**Eight items ship; five were declared here before the work started and three
+arrived during it.** This heading said "why these six" and the paragraph under
+it counted two-plus-three-plus-one, while the settled table below listed eight —
+a page that disagreed with its own table, which is exactly what makes a status
+page unauditable. The five declared: the Claude Max login, the live lane-health
+preflight, the `blocked` re-dispatch, the nonce, and `agy-advisor`. Ordered
+below by what they cost when left alone, not by size.
+
+**The three that were NOT declared here before the work started.** Recorded
+because this file is the standing goal, and a goal that learns what happened
+only after the fact is a status page:
+
+| arrived during the release | how |
+|---|---|
+| the comment diet on the v0.32.0 files, 51% -> 44% | Master's instruction |
+| one advisor contract across all three lanes | Master's instruction |
+| the prohibited model accepted at dispatch | found while measuring the one above |
+
+The last is the one worth reading. `ACP_MODEL=gemini-3.1-pro-high` on an AGY lane
+was ACCEPTED and reported `effective_identity: gemini-3.1-pro-high (matched)` —
+the identity check certifying a model CLAUDE.md prohibits and says to fail closed
+on. The prohibition was enforced over the pinned profile models at import and
+never over the model an operator requests, and the adapter advertises both 3.1
+seats, so it was reachable by typing. Asking three advisors to "accept a model"
+is what made a documented command able to reach it.
+
+## v0.33.0 scope, settled by Master 2026-08-19
+
+Three of these were ambiguous enough to stop and ask rather than guess, and the
+answers are recorded here because a scope decided in conversation and not written
+down is a scope that gets re-decided.
+
+| # | item | state |
+|---|---|---|
+| 1 | `agy-advisor` | **shipped** |
+| 2 | the comment diet on the v0.32.0 files | **shipped** |
+| 3 | one advisor contract across all three lanes | **shipped** |
+| 4 | the prohibited model accepted at dispatch | **shipped** |
+| 5 | the `claude` lane cannot reuse a Claude Max login | **half** — see below |
+| 6 | `loop-runner` re-dispatches `blocked` instead of escalating | **shipped** |
+| 7 | a live lane-health preflight | **shipped** |
+| 8 | `belongsToThisRun` proves identity, not just recency | **shipped** |
+
+**Item 5 is HALF, and the half that is missing is the half that matters to a
+user.** The companion now advertises the ACP terminal capability, gated behind
+an explicit `ACP_ENABLE_TERMINAL=1` login mode, and IMPLEMENTS all five terminal
+methods; the ordinary dispatch path advertises nothing new and refuses a
+terminal request outright. **Four of the five are exercised** — create,
+wait_for_exit, output and release, plus the refusal of output after release,
+which is a postcondition of `terminal/output` and not a fifth method.
+`terminal/kill` is implemented and no test calls it, which is an unexecuted
+guard rather than a working one. Read "implements" as source: no runtime
+exchange with a real adapter has been observed for any of the five.
+
+**Nobody has completed an actual Claude Max login through it.** That needs a
+person at a real terminal and it has not been done. Do not read this row as
+"the lane works" until someone has run it and said so here. The issue's other
+acceptance half — a structured, actionable blocker when an unauthenticated
+ordinary lane hits `-32000` — is untouched.
+
+**Item 5 is fixed the way the issue names, not the way v0.32.0 measured.** Both
+diagnoses are real: the companion advertises filesystem capabilities only and
+never the ACP terminal-auth capability, so the adapter has a login route it is
+never invited to offer; and separately the adapter reads
+`~/.claude/.credentials.json` while the CLI reads the macOS Keychain, which is
+why `claude -p` answers at the moment the lane refuses. Master's call is the
+capability, so a person can log in from the terminal the lane is running in.
+The credential-store split stays recorded, not fixed.
+
+**Item 7 is a THIRD TOOL on the MCP server**, beside `acp_lanes` and
+`acp_lane_status`. That contacts an endpoint, which ADR 0007 currently forbids —
+so the ADR is amended as part of the item rather than quietly contradicted. It
+is still not a health check on a timer: one trivial brief per lane, on demand,
+reporting reachable / quota / refused with the refusal classified.
+
+**Item 8 takes the protocol change.** The entry below used to list it and then
+explain in its own text that a real nonce was out of scope, which is a
+contradiction this page carried while calling itself the standing goal. Master
+settled it: v0.33.0 does it. The dispatcher generates a value, the companion
+echoes it into the liveness record, and `belongsToThisRun` checks it — which
+closes the deliberate forgery that bounds cannot **for lanes this dispatcher
+started**. A record with no routing file, which is what `loop-runner.mjs`
+produces when it starts a companion directly, still passes on bounds alone by
+deliberate compatibility choice. The unqualified sentence stood here until a
+review lane read it against `acp-dispatch.mjs`.
+
+**Delivery model, also Master's, 2026-08-19:** implementation is dispatched to
+Sonnet subagents; `agy` and `codex` at `gpt-5.6-luna` review. The session drives
+and measures rather than typing the change itself.
+
+**A third advisor seat: `agy-advisor`.** SHIPPED. `codex-advisor` and `claude-advisor`
+cover the OpenAI and Anthropic families, so every consultation this project can
+hold is a two-family split — and v0.32.0 spent nine review rounds on one seat
+before a change of model found in its first round what the nine had not. A
+Gemini seat through Antigravity is the cheapest way to stop that.
+
+Measured before the skill was written rather than after: the lane accepts
+`INITIAL_AGENT_MODE=read-only`, `ACP_SESSION_RECEIPT_REQUIRED=1` and
+`ACP_SESSION_OPERATION=new`, writes a receipt, and reports
+`effective_identity: gemini-3.7-flash-high (matched)`. So it is held to the same
+enforcement as the Codex seat rather than excused like the Claude one, which has
+no mode switch. It has no reasoning-effort dimension, so its identity is the
+bare model id where Codex reads `gpt-5.6-sol[max]`.
+
+The guard mattered more than the skill: `tests/plugin-structure.test.mjs`
+matched advisor commands on the workers `codex|claude` only, so a new advisor's
+commands would have matched NOTHING and shipped unguarded. That filter now names
+every worker the dispatcher takes, and the mutation that reverts it turns the
+suite red.
 
 **The default `claude` ACP lane cannot reuse a logged-in Claude Max session.**
 
@@ -261,7 +365,13 @@ worth repeating are that a lane with no credentials must return a structured,
 actionable blocker rather than hang or blame the model, and that no secret
 value may reach a log, receipt, KMS event or outbox.
 
-**`loop-runner` re-dispatches a `blocked` terminal instead of escalating.**
+**`loop-runner` re-dispatched a `blocked` terminal instead of escalating —
+SHIPPED in v0.33.0.** What follows is the issue as filed, in the tense it was
+filed in; the behaviour it describes is gone. `loop-runner.mjs` returns
+`escalate` for a `blocked` terminal and `pull-controller.mjs` says it needs a
+person. A review lane read this section's present tense against the table above
+that already marked it shipped, which is how a standing goal misleads an
+operator into believing a fixed thing is still broken.
 
 Filed as *"loop-runner retries a 'blocked' terminal instead of escalating —
 burns worker legs on a token that needs a human"*. `blocked` is this plugin's
@@ -276,9 +386,11 @@ worker legs were spent asking the same question. The review policy and the
 handoff guidance both already say a `TEAM_BLOCKED` outbox must not be
 auto-answered; only the runner disagrees.
 
-**Lane health is discovered one release at a time.**
+**Lane health was discovered one release at a time — SHIPPED in v0.33.0.**
+The third MCP tool is the preflight this section asked for. What follows is the
+issue as filed, in the tense it was filed in.
 
-There is no preflight that answers "which lanes can actually review today", so
+There was no preflight that answered "which lanes can actually review today", so
 the answer is assembled by probing lanes one at a time in the middle of a
 release. On 2026-08-17 that cost four probes and a swapped panel composition
 after the run had already started. `acp_lane_status` reports whether a lane is
@@ -291,15 +403,23 @@ Worth stating what this is not: it is not a health-check that runs on a timer
 and it must not become one. The measurement is only wanted when a panel is
 about to be assembled.
 
-**`belongsToThisRun` has bounds, not a nonce.**
+**`belongsToThisRun` had bounds and now has a nonce — CLOSED in v0.33.0.**
 
 v0.32.0 closed the forgery a panel lane found — a liveness record stamped in
 the future read as belonging to this run forever — by bounding the timestamp on
-both sides. That stops the accidental case and the clock-skew case. It does not
-stop a deliberate one, because nothing in the record is unique to this dispatch.
-A real nonce needs the companion to echo a value the dispatcher generated,
-which is a protocol change and was out of scope. The code says so at the call
-site rather than implying otherwise.
+both sides. That stopped the accidental case and the clock-skew case and not a
+deliberate one, because nothing in the record was unique to the dispatch. The
+protocol change that was out of scope then is in v0.33.0: the dispatcher
+generates `ACP_SPAWN_NONCE`, the companion echoes it into the liveness record,
+and `belongsToThisRun` requires an exact match on top of the bounds.
+
+**Scope it the way the code does.** That closes forgery for lanes THIS
+dispatcher started. A record with no routing file — the shape `loop-runner.mjs`
+produces, which starts companions directly and writes no nonce — is still
+accepted on bounds alone, deliberately, as a compatibility mode. This paragraph
+said the opposite of the one above it for a whole release, until a review lane
+read the page against itself; do not read either as covering the routing-less
+path.
 
 **Nine findings from the v0.32.0 panel that are NOT v0.32.0's to fix.** Recorded
 rather than dropped, because a finding that disappears without an answer is the
@@ -346,6 +466,125 @@ property is established by source inspection plus a mock-observed
 `mcpServers: []` request, and the tool inventory inside a real dispatched ACP
 child has never been measured. Until a real host initializes it, ADR 0003's
 guarantee remains a guarantee about what is REQUESTED.
+
+**What is left on v0.33.0 is the mechanical steps.** Merge on CI green plus the
+codex bot review, tag the merged sha, publish the release with the review
+identity in its notes, and move the submodule pin in `~/agent-skills`.
+
+**The review of record is the `codex-advisor` lane at `gpt-5.6-luna`, effort
+`max` — Master's decision of 2026-08-19, that this seat alone is sufficient.**
+**It read these bytes seven times and blocked six of them.** Twenty-six findings
+were raised and closed, in rounds of 8, 4, 6, 4, 3, 1 — and round seven answered
+`TEAM_DONE`: no substantive ship blocker, with the unverified limits named
+rather than waved past. Its `effective_identity`, `gpt-5.6-luna[max]` with
+`identity_status: matched`, goes in the release notes the way a panel lane's
+would. Rounds two through four found defects in the previous round's FIXES
+rather than in untouched code; round five found the first real runtime defect,
+in a validator this release had itself extended.
+
+**And then a second reviewer, unread for the whole cycle, had 26 more.** The PR
+review bot's findings do not live in the review BODY — that is boilerplate —
+they are inline comments, and this session twice reported "no suggestions" after
+reading only the body. Triaged against the current bytes by four readers with
+two adversarial verifiers each: 2 already fixed, 4 not defects with the design
+comment quoted, **15 confirmed and closed here**, three of them ship-blocking.
+
+Two were unhandled stream `'error'` events that would take the whole MCP server
+down on a broken pipe — a bug class this repository had already found and fixed
+in two sibling files, and did not carry across to the one v0.33.0 added. The
+third was a Gemini 3.1 seat reachable through an account default: the
+prohibition was enforced on the model REQUESTED and a seat declaring
+`INHERIT_ACCOUNT_DEFAULT` requests none, so nothing was checked. It is enforced
+on the identity the session reports back now.
+
+**Eight of the fifteen were in `acp-lanes-mcp.mjs`, which no review round ever
+opened.** Seven rounds read the dispatcher, the companion, the loop and the
+documents. The file this release ADDED was the one nobody looked at.
+
+`scripts/gate-required.mjs` still answers REQUIRED, and will keep doing so: it
+is fail-closed and reads no waiver. **Report that as a fact, not as a veto.**
+This paragraph said "no review of record has been accepted" and "the panel is
+NOT waived" for most of the release — written before the owner answered and
+never revisited — while `HANDOFF.md` recorded the decision correctly. A review
+lane read the two against each other. Two shipped documents must tell the next
+operator the same thing about what a decision means.
+
+## v0.34.0 scope, set by Master 2026-08-22
+
+Four items. Two are inventory, one is conformance, and one is a new capability
+that has to be written rather than vendored.
+
+| # | item | state |
+|---|---|---|
+| 1 | conform to the Agent Plugins 1.0 LAYOUT | open |
+| 2 | remove the `show-me` skill | open |
+| 3 | `pm-delegation`, written here | open |
+| 4 | an autonomous multi-agent implementer, written here | open |
+
+**Item 1 is a layout problem, not a manifest problem, and reading the schema is
+what settled that.** `plugins/tmux-teams/plugin.json` already satisfies
+`agent-plugins.org/schemas/1.0.0` on every field: the required set is
+`["$schema", "name"]`, both are present, `$schema` matches exactly, `name`
+passes the pattern, and `author` carries only permitted keys. What does not
+match is the shape around it. The 1.0 portable root is `plugin.json`, `skills/`,
+`mcp.json`, and **reverse-domain namespaces** for client-specific material.
+This tree keeps that material at the root instead: `.claude-plugin/` and
+`commands/` sit beside `skills/`.
+
+**Two sentences that stood here were wrong, and the correction is the finding.**
+This paragraph called `mcp.json` and `.mcp.json` "two copies that must agree
+with nothing enforcing it". They are not copies and something does enforce them.
+`mcp.json` is the vendor-neutral registration — it carries the
+`agent-plugins.org/schemas/1.0.0/mcp.schema.json` declaration and uses
+`${PLUGIN_ROOT}`; `.mcp.json` is the Claude Code one, carries no `$schema`, and
+uses `${CLAUDE_PLUGIN_ROOT}`. They differ ON PURPOSE.
+`tests/acp-lanes-mcp.test.mjs` reads both, asserts which must and must not carry
+the schema key, asserts both point at the same shipped script, and separately
+BOOTS the vendor-neutral one over JSON-RPC so a string-alike copy cannot pass.
+The sentence was written from two filenames and a memory of an old bug, without
+opening either file.
+
+**And the real obstacle is not tidiness, it is a conflict.** Measured from the
+installed Claude Code binary's own strings: it recognises plugin content by
+looking for `.claude-plugin/` — or a top-level `commands/`, `skills/`,
+`agents/`, `hooks/`, `themes/`, `output-styles/`, `monitors/`, `workflows/`,
+`SKILL.md`, `.mcp.json` or `.lsp.json` — and it contains **no** occurrence of
+`agent-plugins.org` or of a bare `${PLUGIN_ROOT}`. The client this plugin ships
+to cannot read the namespace the standard asks us to move into. Moving
+`.claude-plugin/` under `com.anthropic.claude/` would satisfy 1.0 and make the
+plugin uninstallable.
+
+So item 1 is a decision, not a chore: conform where the two agree, and record
+where they cannot. **Whatever is decided, the layout test comes BEFORE anything
+moves.** No test today asserts layout at all — every existing one reads a known
+path and checks its CONTENTS, so a move that updated the four hard-coded paths
+would keep the suite green. A test written after the move confirms what was
+done rather than checking whether it was right.
+
+**Item 2 removes a duplicate, not a feature.** `show-me` collides by name with
+the `artifact-sftp` plugin's own `show-me`, which is installed on the same
+machine. Shipping a name another plugin already uses hands the ambiguity to the
+user. `SKILLS` in `tests/plugin-structure.test.mjs` and the README inventory are
+both guarded, so the removal cannot be half-done quietly.
+
+**Items 3 and 4 are written here, not vendored.** A pull request offering a
+vendor-neutral `pm-delegation` guide is declined with thanks and the reason
+recorded on it; the subject is one this plugin has opinions about and they
+belong in our own words. `implement-spec` in `mattpocock/skills` is read as
+prior art and not copied.
+
+What item 4 has to be, in Master's words: a multi-agent implementer that takes a
+spec and its tickets, does codebase research in a subagent, implements every
+ticket in subagents at maximum concurrency, reviews the finished code against
+the spec, and cleans up every worktree — able to take on large chunks of work
+with minimal supervision.
+
+**The tension to resolve before writing it, not during.** Tickets are a task
+GRAPH with a moving frontier, and this plugin already has an orchestration model
+of its own — a ledger, WIP limits, seven brakes, and a review gate. Vendoring a
+second model would ship a plugin that teaches two conflicting ways to run work.
+Whether the frontier is a new mechanism or an expression of the ledger this
+system already keeps is the design question, and it is item 4's real content.
 
 ## What is actually open
 

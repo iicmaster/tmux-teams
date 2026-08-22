@@ -123,10 +123,19 @@ const HERMETIC_ENV_KEYS = [
   'ACP_RESUME',
   'INITIAL_AGENT_MODE',
   'TMUX_TEAMS_PHASE',
+  // v0.33.0 added this one and did not add it here, so a shell that had run a
+  // dispatch by hand carried it into the producer snapshots and turned the bare
+  // suite red for a reason no reader could see in the diff.
+  'ACP_SPAWN_NONCE',
 ]
 
 function testEnv(extraEnv = {}) {
-  const env = { ...process.env }
+  // Every ACP_* key by prefix, then the named non-ACP ones. The list below was
+  // by hand and went stale twice in one release — ACP_SPAWN_NONCE turned the
+  // bare suite red on a shell that had run a dispatch, and ACP_ENABLE_TERMINAL
+  // was still missing after that was patched. The list now only has to hold
+  // what the prefix cannot reach.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('ACP_')))
   for (const key of HERMETIC_ENV_KEYS) delete env[key]
   Object.assign(env, {
     ACP_CMD: `${NODE_EXECUTABLE} ${MOCK}`,

@@ -44,15 +44,15 @@ const WORK_ITEM = 'palette-token'
 // help: it is the fallback, and `ACP_MODEL` is what triggers the request path.
 // CLAUDE.md already names this class from the last time it shipped. Found by
 // the release panel (zai lane, 2026-08-10, round 5).
+// Everything ACP_*, by prefix rather than by name. Three files in this suite
+// each carried their own hand list, and all three went stale the hour v0.33.0
+// introduced ACP_SPAWN_NONCE — a list that must be edited whenever a variable
+// is added is a list that will be wrong again.
 const HERMETIC_ENV_KEYS = [
-  'ACP_CMD', 'ACP_MODEL', 'ACP_REASONING_EFFORT', 'ACP_EXPECT_MODEL',
-  'ACP_EXPECT_REASONING_EFFORT', 'ACP_RESUME', 'ACP_AGENT_ID', 'ACP_STALL_POLICY',
-  'ACP_HARD_TIMEOUT_SEC', 'ACP_EXECUTION_PROFILE', 'ACP_SESSION_RECEIPT_REQUIRED',
-  'ACP_SESSION_OPERATION', 'ACP_PRIOR_DISPATCH_ID', 'ACP_PRIOR_RECEIPT_DIGEST',
-  'ACP_CONTROL_LOG', 'INITIAL_AGENT_MODE', 'TMUX_TEAMS_PHASE',
+  'INITIAL_AGENT_MODE', 'TMUX_TEAMS_PHASE',
 ]
 const hermeticEnv = () => {
-  const env = { ...process.env }
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('ACP_')))
   for (const key of HERMETIC_ENV_KEYS) delete env[key]
   return env
 }

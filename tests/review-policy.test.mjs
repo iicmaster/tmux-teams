@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { delimiter, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 import {
   PROVIDER_SECRET_KEYS, REVIEW_PROFILES, ROUTED_PROFILES, assertAdapterPackageBoundToCommand, assertPermittedModel, buildAcpLaunch,
   buildProfileEnv, loadProfileSettings, normalizePrimaryFamily, provenFamilyCollision, provenFamilyKey,
@@ -723,4 +725,55 @@ test('a profile whose sessionSettings name something other than its model declar
   assert.equal(REVIEW_PROFILES.deepseek.requestModel, 'sonnet')
   assert.equal(REVIEW_PROFILES.deepseek.model, 'deepseek-v4-flash-0731')
   assert.notEqual(REVIEW_PROFILES.deepseek.requestModel, REVIEW_PROFILES.deepseek.model)
+})
+
+// The prohibition was enforced over the PINNED profile models at import and
+// nowhere over the model an operator REQUESTS at dispatch — which is the one an
+// advisor skill that takes a model argument sets. Measured 2026-08-19 before the
+// fix: `ACP_MODEL=gemini-3.1-pro-high` on an agy lane was accepted and reported
+// `effective_identity: gemini-3.1-pro-high (matched)`, so the identity check
+// certified the prohibited model instead of refusing it. The AGY adapter
+// advertises both 3.1 seats, so it was reachable by typing.
+test('the runtime model request is held to the same prohibition as the pinned one', () => {
+  // The companion RUNS on import, so it is read as TEXT rather than imported:
+  // the point is that the two patterns cannot drift, and a copy that agrees
+  // today is exactly what this repository has a rule about.
+  const text = readFileSync(
+    join(ROOT, 'plugins/tmux-teams/skills/tmux-teams/scripts/acp-companion.mjs'), 'utf8')
+  const copied = text.match(/export const PROHIBITED_MODEL = (\/.*\/i)/)
+  assert.ok(copied, 'acp-companion.mjs no longer carries the prohibition at all')
+
+  const source = readFileSync(
+    join(ROOT, 'plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'), 'utf8')
+  const original = source.match(/const PROHIBITED_MODEL = (\/.*\/i)/)
+  assert.ok(original, 'review-profiles.mjs no longer carries the prohibition at all')
+
+  // THREE copies now: review-profiles owns the rule, and both the companion and
+  // the dispatcher carry it because all three take only node builtins by design
+  // and live in two different skills. A drift would let one refuse what another
+  // runs.
+  const dispatch = readFileSync(
+    join(ROOT, 'plugins/tmux-teams/skills/tmux-teams/scripts/acp-dispatch.mjs'), 'utf8')
+  const inDispatch = dispatch.match(/const PROHIBITED_MODEL = (\/.*\/i)/)
+  assert.ok(inDispatch, 'acp-dispatch.mjs no longer carries the prohibition at all')
+
+  assert.equal(copied[1], original[1],
+    'the companion prohibition pattern drifted from review-profiles')
+  assert.equal(inDispatch[1], original[1],
+    'the dispatcher prohibition pattern drifted from review-profiles')
+
+  // And the dispatcher APPLIES it before anything is spawned — a refusal in the
+  // child still spawns a lane and tells the operator `dispatched` first.
+  assert.match(dispatch, /assertPermittedModel\(env\.ACP_MODEL, 'ACP_MODEL'\)/,
+    'the dispatcher reads ACP_MODEL without checking the prohibition')
+  assert.match(dispatch, /assertPermittedModel\(env\.ACP_EXPECT_MODEL, 'ACP_EXPECT_MODEL'\)/,
+    'the dispatcher reads ACP_EXPECT_MODEL without checking the prohibition')
+
+  // And it is APPLIED, not merely present: both the requested model and the
+  // expectation go through it. Expecting a prohibited model is how a lane gets
+  // certified as having run one.
+  assert.match(text, /requestedConfigOverride\('ACP_MODEL', MAX_MODEL\), 'ACP_MODEL'\)/,
+    'ACP_MODEL is read without being checked against the prohibition')
+  assert.match(text, /ACP_EXPECT_MODEL\?\.trim\(\) \|\| requestedModelOverride, 'ACP_EXPECT_MODEL'\)/,
+    'ACP_EXPECT_MODEL is read without being checked against the prohibition')
 })

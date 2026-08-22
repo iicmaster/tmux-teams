@@ -1454,17 +1454,22 @@ test('a spent attempt budget says what the attempts ended as', () => {
   assert.match(quality.reason, /ended: done/)
   assert.doesNotMatch(quality.reason, /all failed/)
 
-  // Three legs blocked by a gate that was down. Same budget, opposite cause.
+  // Used to take three legs blocked by a gate that was down to reach this
+  // budget accounting — same budget, opposite cause. It no longer does:
+  // `blocked` is TEAM_BLOCKED, this plugin's own signal that a person must
+  // act, and it now escalates on the FIRST leg (see 'a blocked terminal
+  // escalates...' below), never spending the attempt budget at all. What
+  // still has to hold is the reason NAMING the cause rather than reading
+  // like a generic exhausted budget.
   const blocked = planDispatches(graph, itemsOf(['tok', [
     { event: 'pulled', agent_id: 't_d', from_team: 'build', to_team: 'test' },
     { event: 'intake', agent_id: 't_d', verdict: 'accept' },
-    ...[1, 2, 3].flatMap((n) => ([
-      { event: 'assigned', agent_id: 't_w1', task_id: `t-${n}` },
-      { event: 'delivered', agent_id: 't_w1', task_id: `t-${n}`, terminal: 'blocked', evidence_present: false },
-    ])),
+    { event: 'assigned', agent_id: 't_w1', task_id: 't-1' },
+    { event: 'delivered', agent_id: 't_w1', task_id: 't-1', terminal: 'blocked', evidence_present: false },
   ]]), new Set(), { now: FIXED_NOW })[0]
   assert.equal(blocked.action, 'escalate')
-  assert.match(blocked.reason, /ended: blocked/)
+  assert.match(blocked.reason, /TEAM_BLOCKED/)
+  assert.doesNotMatch(blocked.reason, /all failed/)
 
   // A leg the runner declared lost delivered nothing at all, and says so rather
   // than borrowing the vocabulary of one that did.
@@ -1734,6 +1739,45 @@ test('a dispatch refused for its declared model is not retried', () => {
     { event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'protocol-error' },
   ]]), new Set())[0]
   assert.equal(transport.action, 'dispatch')
+})
+
+test('a blocked terminal escalates to a person instead of burning another leg', () => {
+  const graph = graphOf(TWO_TEAMS)
+  // TEAM_BLOCKED is the worker's own signal that a person must decide — nothing
+  // about the token changes between legs, so a rerun would only ask the first
+  // question again. This is the exact shape the filed run showed: blocked,
+  // re-dispatched, failed, re-dispatched, blocked again.
+  const items = itemsOf(['tok', [
+    { event: 'opened', agent_id: 'b_d', to_team: 'build' },
+    { event: 'intake', agent_id: 'b_d', verdict: 'accept' },
+    { event: 'assigned', agent_id: 'b_w1', task_id: 'b-1' },
+    { event: 'delivered', agent_id: 'b_w1', task_id: 'b-1', terminal: 'blocked' },
+  ]])
+  const plans = planDispatches(graph, items, new Set())
+  assert.equal(plans.length, 1, 'blocked token was not the only plan the tick produced')
+  assert.equal(plans[0].action, 'escalate', `blocked was retried: ${JSON.stringify(plans[0])}`)
+  assert.match(plans[0].reason, /TEAM_BLOCKED/)
+  assert.equal(plans.some((plan) => plan.action === 'dispatch'), false,
+    'a blocked token was dispatched again — the worker leg it does not need')
+
+  // `planEscalation` is the escalation path this fix reuses — the same one
+  // `identityRefused` already goes through — so an `escalate` plan really does
+  // reach the outer controller as a trigger, not just carry the right label.
+  const occupancy = teamOccupancy(graph, items)
+  const escalation = planEscalation('/tmux-teams-test-no-such-repo', graph, items, plans, occupancy, { now: FIXED_NOW })
+  assert.equal(escalation?.action, 'escalate')
+  assert.match(escalation.triggers.join('\n'), /TEAM_BLOCKED/)
+
+  // A genuine worker failure is not swept into the same branch — it must still
+  // get its retries, exactly as before this fix, or the next crash never
+  // recovers on its own either.
+  const retried = planDispatches(graph, itemsOf(['tok2', [
+    { event: 'opened', agent_id: 'b_d', to_team: 'build' },
+    { event: 'intake', agent_id: 'b_d', verdict: 'accept' },
+    { event: 'assigned', agent_id: 'b_w1', task_id: 'b-2' },
+    { event: 'delivered', agent_id: 'b_w1', task_id: 'b-2', terminal: 'failed' },
+  ]]), new Set())[0]
+  assert.equal(retried.action, 'dispatch', 'an ordinary worker failure stopped getting retries')
 })
 
 // GitHub #45 part 2 (ข้อ 4.10): a leg that died at the transport must not spend

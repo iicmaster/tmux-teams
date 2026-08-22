@@ -1,30 +1,17 @@
 #!/usr/bin/env node
-// The operator's entry point to an ACP lane, and the reason it exists is a
-// measurement rather than a preference.
+// The operator's entry point to an ACP lane. A lane run in the FOREGROUND dies
+// to the calling shell's own cap — a 1200s stall budget inside a 600s shell is
+// killed at ten minutes with its review unwritten, both numbers typed by the
+// same caller and nothing comparing them. So the lane is spawned `detached`
+// into its own process group and `unref()`d, the shape `loop-runner.mjs`
+// already used and only the loop could reach.
 //
-// On 2026-08-17 a `codex-advisor` lane was dispatched with `stall-sec` 1200 and
-// run in the foreground of a shell whose own cap was 600 seconds. Both numbers
-// were typed by the same caller in the same command and nothing compared them.
-// At exactly ten minutes the shell killed the process group: the lane died
-// `controller_interrupted` with 461 protocol events recorded, every tool call
-// completed, and its review unwritten. `loop-runner.mjs` has never been able to
-// fail that way — its `dispatch()` spawns the companion `detached: true` with
-// `stdio: ['ignore', logFd, logFd]` and calls `unref()`, so the child sits in
-// its OWN process group and a group kill aimed at the parent cannot reach it.
-// This script is that same shape, made available to a human or an agent typing
-// a command, because the fix already existed and only the loop could reach it.
-//
-// So the supervisor's budget stops mattering: this process exits in seconds
-// while the lane runs for as long as it was given. Nothing here enforces a
-// DEADLINE on the child — a wrapper that did would be the bug this was written
-// to remove.
-//
-// It is not "never kills the child", which is what this said until a lane read
-// it against the code: a lane whose pid or routing record cannot be published
-// is SIGKILLed, because the alternative is a detached process nobody can find
-// again. Cleaning up a lane that failed to become findable is the opposite of
-// imposing a deadline on one that is working.
+// Nothing here enforces a DEADLINE on the child; a wrapper that did would be
+// the bug this removes. That is not the same as never killing it: a lane whose
+// pid or routing record cannot be published is SIGKILLed, because the
+// alternative is a detached process nobody can find again.
 import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { chmodSync, closeSync, constants as fsConstants, existsSync, fchmodSync, lstatSync, mkdirSync, openSync,
   readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeSync } from 'node:fs'
 import { dirname, join, resolve, sep } from 'node:path'
@@ -69,9 +56,8 @@ const POLL_MS = 250
 // the log file and wrote the pid file from the raw value first. A task id of
 // `../../../victim` therefore escaped `.tmux-teams/` and `writeFileSync`
 // TRUNCATED an arbitrary writable file before the companion ever saw the id.
-// Found by the repository's PR reviewer, 2026-08-17. The rule is copied here
-// with the source named, and `tests/acp-dispatch.test.mjs` asserts the two stay
-// identical, which is the drift answer that does not require the hole.
+// The rule is copied here with its source named, and the tests assert the two
+// stay identical — the drift answer that does not reopen the hole.
 const ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/
 
 export function safeTaskId(taskId) {
@@ -88,40 +74,29 @@ function assertSafeTaskId(taskId) {
   return taskId
 }
 
-// Opening a path is not the same as opening the FILE you meant, and a lexical
-// id check only confines the spelling. A pre-existing symlink at
-// `.tmux-teams/dispatch-pids/<id>` is followed by an ordinary write, which
-// truncates whatever it points at — outside the run directory, after the child
-// has already spawned. The log is worse: a symlink there redirects the child's
-// entire stdout somewhere else. Raised by an advisor round on 2026-08-17.
+// Opening a path is not the same as opening the FILE you meant. A pre-existing
+// symlink at a control leaf is followed by an ordinary write and truncates
+// whatever it points at; at the log it redirects the child's entire stdout.
 //
-// **The first fix was `O_NOFOLLOW` alone, with a comment calling the final
-// component "the component an attacker can pre-position". That claim was
-// false**, and the next round said so: `O_NOFOLLOW` refuses a symlinked LEAF
-// and pathname resolution still walks the parents, so a symlinked
-// `.tmux-teams`, `runner-logs`, `dispatch-pids` or `dispatch-routing` sends an
-// `O_TRUNC` write to a same-named file in any writable directory. Under the
-// hostile-run-directory model this file claims to hold, the attacker owns the
-// whole walk before that safe basename.
+// `O_NOFOLLOW` ALONE IS NOT ENOUGH, which is the mistake this guard exists to
+// stop being made again: it refuses a symlinked LEAF while pathname resolution
+// still walks the parents, so a symlinked `.tmux-teams` or `dispatch-pids`
+// sends an `O_TRUNC` write to a same-named file in any writable directory. The
+// chain is checked as well as the leaf, and BEFORE the child spawns — a refusal
+// after `unref()` leaves a detached lane alive with no trustworthy records.
 //
-// So the chain is checked as well as the leaf, and checked BEFORE the child is
-// spawned — a refusal after `unref()` leaves a detached lane alive with no
-// trustworthy records, which is a different and worse failure than not starting.
-//
-// **The residual, stated exactly, because the first two attempts at this
-// paragraph overstated it and a review round said so both times.** Node exposes
-// no `openat`, so nothing here can hold a directory capability and open
-// relative to it. Two windows follow, not one: between a component check and
-// the next component's `mkdir`, and between the final check and the open. An
-// attacker with write and search permission on a relevant parent — no elevated
-// privilege needed — can swap a component in either window and get a directory
-// created or a file opened outside the root.
+// **The residual, stated exactly.** Node exposes no `openat`, so nothing here
+// can hold a directory capability and open relative to it. Two windows follow,
+// not one: between a component check and the next component's `mkdir`, and
+// between the final check and the open. An attacker with write and search
+// permission on a relevant parent — no elevated privilege needed — can swap a
+// component in either window and get a directory created or a file opened
+// outside the root.
 //
 // So the guarantee is: **absent concurrent replacement, creation never happens
-// past a symlinked component, and a pre-positioned symlink is refused.** That
-// is the reachable case and it is what these checks close. Under an attacker
-// racing the walk, they do not. An anchored-fd design would, and needs a
-// primitive Node does not give us.
+// past a symlinked component, and a pre-positioned symlink is refused.** Under
+// an attacker racing the walk, it does not hold. An anchored-fd design would,
+// and needs a primitive Node does not give us.
 function openNoFollow(path, flags, mode = 0o600) {
   try {
     return openSync(path, flags | (fsConstants.O_NOFOLLOW ?? 0), mode)
@@ -140,12 +115,10 @@ function openNoFollow(path, flags, mode = 0o600) {
 export function assertContainedDir(root, ...parts) {
   // ONE COMPONENT AT A TIME, checking before creating.
   //
-  // The first version called `mkdirSync(dir, { recursive: true })` and THEN
-  // checked containment, which an advisor round caught: with `.tmux-teams`
-  // pre-positioned as a symlink to a writable outside directory, the missing
-  // `runner-logs` was CREATED out there and only then refused. A fail-closed
-  // preflight that mutates outside the root before failing is not fail-closed,
-  // and the operator gets no receipt for what it made.
+  // NOT `mkdirSync(dir, { recursive: true })` followed by a containment check:
+  // with `.tmux-teams` pre-positioned as a symlink, the missing `runner-logs` is
+  // CREATED outside and only then refused. A fail-closed preflight that mutates
+  // outside the root before failing is not fail-closed.
   //
   // Walking instead of recursing is what fixes it: every component that already
   // exists is rejected if it is a symlink before its child is considered, so
@@ -163,13 +136,11 @@ export function assertContainedDir(root, ...parts) {
       // 0700, not the umask default. This repository's ledger writer already
       // states that prose-bearing state is owner-only and enforces 0700/0600,
       // and an ACP runner log carries prompts, model output and diagnostics.
-      // A review round measured 0755 here under an ordinary umask and was right
-      // that the default is not the safe choice for this content.
+      // Measured at 0755 under an ordinary umask, which is not safe for this.
       // EEXIST is a RACE, not an error: another dispatch created the same
       // directory between the lstat above and this line. Tolerating it here is
       // what lets two concurrent dispatches reach the atomic claim instead of
-      // crashing in the preflight — found by the race test written for that
-      // claim, which is the only way a window this small shows itself.
+      // crashing in the preflight. Only a race test shows a window this small.
       try {
         mkdirSync(current, { mode: 0o700 })
       } catch (cause) {
@@ -247,11 +218,9 @@ function writeNoFollow(path, contents) {
 // The pid inside is written later, when the child exists — this only claims the
 // NAME, which is the thing two lanes fight over.
 //
-// A panel lane marked the non-atomic admission PACKET-ADMITTED: my own comment
-// said two dispatches racing the check both pass, and admitting a limitation is
-// not the same as having one that cannot be removed. This removes the half that
-// can be removed, on one machine. Two machines sharing a directory over NFS are
-// still outside what this can promise, and that is stated rather than implied.
+// Admitting a limitation is not the same as having one that cannot be removed.
+// This removes the half that can be, on ONE machine. Two machines sharing a
+// directory over NFS stay outside what this promises.
 function claimTaskId(cwd, taskId) {
   const path = pidPath(cwd, taskId)
   try {
@@ -292,45 +261,28 @@ export function logPath(cwd, taskId) { return join(cwd, '.tmux-teams', 'runner-l
 // reported as `no_outbox`.
 export function outboxPath(cwd, taskId) { return join(cwd, '.mailbox-out', taskId) }
 
-// The READ side had no symlink policy at all, and a panel lane showed what that
-// costs: `status` follows a session symlink pointing anywhere and reflects the
-// text it finds into the pasteable `ACP_RESUME` command. The dispatch-side
-// guards refuse to WRITE through a link; they say nothing about reading one, and
-// `status` runs against directories this dispatcher never created.
+// EVERY read of a control leaf goes through here, because `status` runs against
+// directories this dispatcher never created and the write-side guards say
+// nothing about reading. A link is not followed and is not an error either: a
+// hostile leaf reads as ABSENT, which is the honest answer for a diagnostic.
 //
-// So every read of a control leaf goes through here. A link is not followed and
-// is not an error either — a report is a diagnostic, and refusing to print one
-// because a leaf is hostile helps nobody. It reads as absent, which is the
-// honest answer: there is no trustworthy record.
-// The run root is PASSED, not derived. The first version counted three
-// `dirname` calls back from the leaf, which is right for `.tmux-teams/<dir>/<x>`
-// and one level too high for `.mailbox-out/<x>` — so the outbox check accepted
-// a symlink pointing anywhere under the run directory's PARENT. Found by the
-// test written for the fix, on the same afternoon: a guard that infers its own
-// boundary from path shape is guessing.
-// Listing a directory is a read too, and these were not going through any
-// boundary — `strayOutboxes` listed `.mailbox-out` and the case check listed
-// `.tmux-teams/<dir>`, both by pathname. Two panel families named it: a
-// symlinked parent makes both of them enumerate somebody else's directory and
-// report its contents as this run's. Returns an empty list rather than
-// throwing, because a report that cannot enumerate should say "nothing here I
-// can trust", not fail.
-// NO SYMLINK ON THE WAY, not merely "resolves somewhere under the run root" —
+// The run root is PASSED, never derived from the leaf's shape — `dirname` counts
+// differ between `.tmux-teams/<dir>/<x>` and `.mailbox-out/<x>`, and a guard
+// that infers its own boundary is guessing.
+// Listing a directory is a read too: a symlinked parent makes an enumeration
+// report somebody else's directory as this run's.
+// NO SYMLINK ON THE WAY, not "resolves somewhere under the run root":
 // containment is not identity, and a link pointing back INSIDE the same run
-// satisfies containment while redirecting the read. Each component is walked
-// from the run root instead, which is what the write side already does.
+// satisfies containment while redirecting the read. Each component is walked.
 //
-// Comparing `realpath(dir)` against `realpath(join(root, relative))` does not
-// work: both resolve the same link and are always equal. And the relative part
-// comes from the UNRESOLVED root, because the caller built `dir` from that same
-// unresolved string — slicing by the RESOLVED length ate the wrong number of
-// characters on macOS, where `/var` resolves to `/private/var`, and every read
-// began failing.
+// Two approaches that look right and are not. Comparing `realpath(dir)` against
+// `realpath(join(root, relative))` always matches — both resolve the same link.
+// And `relative` must be sliced from the UNRESOLVED root, because the caller
+// built `dir` from that same string; slicing by the resolved length eats the
+// wrong number of characters wherever `/var` resolves to `/private/var`.
 //
-// A directory that is not under the run root at all is REFUSED rather than
-// walked. The previous version answered `''` for that case and then checked
-// nothing, which is how the one call site that forgot its run root read as
-// "no components to inspect" instead of as a mistake.
+// A directory not under the run root at all is REFUSED, not walked — otherwise
+// a caller that forgets its run root reads as "no components to inspect".
 function noSymlinkOnTheWay(dir, runRoot) {
   try {
     if (dir !== runRoot && !dir.startsWith(runRoot + sep)) return false
@@ -465,17 +417,13 @@ export function resumeCommand(cwd, taskId, { sessionId, worker, routing, briefFi
   // command whose whole purpose is being pasted. The placeholder survives only
   // when there is genuinely nothing recorded to name.
   const brief = briefFile ?? routing?.briefFile ?? null
-  // `Number(...)`, because `stallSec` is recorded from argv and argv is
-  // strings: `Number.isFinite('2400')` is false, so every recovery command
-  // silently reset a custom stall to the default. Found by the gemini panel
-  // lane — a fallback that fires always is indistinguishable from no feature.
+  // `Number(...)`, because `stallSec` comes from argv and argv is strings:
+  // `Number.isFinite('2400')` is false, so the fallback fires ALWAYS and
+  // silently resets every custom stall to the default.
   const recordedStall = Number(routing?.stallSec)
-  // 600, because that is what `acp-companion.mjs` itself falls back to
-  // (`positiveNumber(leaseArg, 600)`). This said 900, so a resume command
-  // generated for a run with an omitted or unusable stall told the operator to
-  // use a lease the original run never had — a panel lane read the two files
-  // against each other and caught the drift. Measured in the companion, not
-  // recalled.
+  // 600, read from `acp-companion.mjs` (`positiveNumber(leaseArg, 600)`) rather
+  // than recalled — any other number tells the operator to use a lease the
+  // original run never had.
   const stall = Number.isFinite(recordedStall) && recordedStall > 0 ? recordedStall : COMPANION_DEFAULT_STALL_SEC
   const parts = [`ACP_RESUME=${shQuote(sessionId)}`]
   for (const key of ROUTING_ENV_KEYS) {
@@ -486,21 +434,12 @@ export function resumeCommand(cwd, taskId, { sessionId, worker, routing, briefFi
   // synthesised rather than copied, because the recorded value is `new` and
   // pasting `new` would start a fresh session under a resume command.
   //
-  // The two lineage values are emitted as QUOTED PLACEHOLDERS, on the same
-  // reasoning the brief path already uses here: an operator who pastes this
-  // unedited must get a refusal, not a quieter guarantee. A codex-advisor lane
-  // found the command being printed with none of these while `codex-advisor`'s
-  // own SKILL.md called the output ready to paste — the skill's later paragraph
-  // already said a receipt-required load needs lineage, so the file disagreed
-  // with itself and the code sided with the wrong half.
-  // `=== '1'`, not truthiness. `acp-companion.mjs` treats ONLY `1` as required,
-  // so `0` is a valid explicit opt-out — and a JavaScript string `'0'` is
-  // truthy, so the first version of this branch handed an opt-out dispatch both
-  // lineage placeholders. A lane ran the command it produced: the dispatcher
-  // exited 2 on `prior lineage validation failed: ENOENT
-  // .../receipts/PUT-THE-PRIOR-DISPATCH-ID-HERE.json`. A recovery path that
-  // only works for the mode you had in mind is worse than none, because it
-  // looks like the feature.
+  // The two lineage values are QUOTED PLACEHOLDERS, like the brief path above:
+  // an operator who pastes this unedited must get a refusal, not a quieter
+  // guarantee.
+  // `=== '1'`, NOT truthiness: the companion treats only `1` as required, so `0`
+  // is a valid explicit opt-out — and the string `'0'` is truthy, which hands an
+  // opt-out dispatch lineage placeholders that make its own resume exit 2.
   if (env.ACP_SESSION_RECEIPT_REQUIRED === '1') {
     parts.push(`ACP_SESSION_OPERATION=${shQuote('load')}`)
     parts.push(`ACP_PRIOR_DISPATCH_ID=${shQuote('PUT-THE-PRIOR-DISPATCH-ID-HERE')}`)
@@ -516,41 +455,26 @@ export function resumeCommand(cwd, taskId, { sessionId, worker, routing, briefFi
   ].join('\n')
 }
 
-// The companion's own vocabulary, not a guess at it. `VALID_TERMINAL_STATES` in
-// `acp-companion.mjs` is exactly these three, and `isLivenessTerminal()` is what
-// the companion asks itself. The first version of this file asked
-// `liveness_state !== 'running'` — a state the companion never writes — so a
-// lane sitting at `active` was reported as finished, complete with resume
-// advice for a turn that had not ended. It shipped because the status test was
-// built on a liveness fixture written BY HAND, which met a vocabulary nobody
-// checked against a real file.
+// The companion's own vocabulary, not a guess at it: `VALID_TERMINAL_STATES` in
+// `acp-companion.mjs` is exactly these three. Asking `liveness_state !==
+// 'running'` names a state the companion never writes, so a lane at `active`
+// reads as finished — and a hand-written liveness fixture will not catch it.
 export const TERMINAL_LIVENESS_STATES = Object.freeze(['completed', 'cancelled', 'failed'])
 
-// TERMINAL STATES ONLY. An earlier version also counted "any termination_reason
-// other than 'none'", reasoning from round three's lane that died at
-// `cancelling` and never moved. The repository's PR reviewer showed what that
-// costs: under `ACP_STALL_POLICY=report` the companion writes
-// `liveness_state: stalled` with `termination_reason: stall_confirmed` and stays
-// ALIVE to recover, and an ordinary cancellation spends time in `cancelling`
-// with a reason set before it reaches a terminal state. Both would have been
-// called finished, with `wait` returning and resume advice printed for a lane
-// still working.
-//
-// The round-three case is not lost — it is answered by the right evidence
-// instead. A lane that stopped is detected by its process being gone, or by its
-// lease running out when no pid was recorded. Being stalled is not being over.
+// TERMINAL STATES ONLY — never "any termination_reason other than none". Under
+// `ACP_STALL_POLICY=report` a stalled companion sets a reason and stays ALIVE to
+// recover, and an ordinary cancellation sets one while still in `cancelling`;
+// both would be called finished and get resume advice printed at a working lane.
+// A lane that stopped is detected by its process being gone, or by its lease
+// running out. Being stalled is not being over.
 function hasTerminated(liveness) {
   if (liveness === null) return false
   return TERMINAL_LIVENESS_STATES.includes(liveness.liveness_state)
 }
 
-// The third way this file has now trusted a file its writer can no longer
-// correct, and the most expensive: a lane killed hard writes NO terminal
-// snapshot, so its last record says `tool_running` forever. On 2026-08-17 a
-// review lane died when the disk filled — the log ends with the companion
-// failing to persist its own snapshot — and `status` went on reporting it as
-// running for nearly four hours. A watcher built on that would never have
-// returned.
+// A lane killed hard writes NO terminal snapshot, so its last record says
+// `tool_running` forever — one that died to a full disk was reported running
+// for nearly four hours, and a watcher built on that never returns.
 //
 // `next_lease_expiry_at` is the companion's OWN statement of when it should
 // next have been heard from, so this needs no threshold of mine and no pid: if
@@ -591,19 +515,14 @@ export function leaseExpired(liveness, now = Date.now()) {
 // companion may reach it, record a suspected stall, extend it and carry on. An
 // expired lease therefore never outvotes a pid `pidAlive` just confirmed.
 //
-// This comment and the one inside the function said OPPOSITE things for three
-// commits, and the code agreed with neither — written in two rounds that pulled
-// in different directions, and caught by a panel lane quoting both back. When a
-// function is edited from two sides, re-read every comment that touches it.
+// When a function is edited from two sides, re-read every comment that touches
+// it: this one and the one inside said opposite things for three commits.
 function hasStopped(liveness, { pid = null, now = Date.now() } = {}) {
   if (hasTerminated(liveness)) return false
-  // Two panel families reproduced this from opposite directions and the answer
-  // is that they were describing two different CALL SITES, not two opinions.
-  // gemini: an expired lease must not settle a lane `pidAlive` just confirmed —
-  // the lease measures MEANINGFUL PROGRESS, and a companion in a long tool call
-  // reaches it, records a suspected stall, extends it and carries on. openai: a
-  // reused pid number must not hide a dead lane forever. The first is about
-  // THIS function; the second is about admission, and is fixed there.
+  // Two requirements that sound contradictory belong to two CALL SITES. An
+  // expired lease must not settle a lane `pidAlive` just confirmed — that is
+  // THIS function. A reused pid number must not hide a dead lane forever — that
+  // is admission, and is answered there.
   //
   // So: a dead pid settles it. A live pid settles nothing — `leaseStale` in the
   // report carries that evidence without ending the wait. With no pid to ask,
@@ -638,7 +557,7 @@ export function statusReport(cwd, taskId) {
   // lost. The cost is that the generation binding protects only runs this
   // dispatcher started, which is the population it can speak for.
   const liveness = Number.isFinite(spawnedAtMs) && rawLiveness !== null
-    && !belongsToThisRun(rawLiveness, spawnedAtMs) ? null : rawLiveness
+    && !belongsToThisRun(rawLiveness, spawnedAtMs, routing?.spawnNonce) ? null : rawLiveness
   const outbox = outboxPath(cwd, taskId)
   // Through the same boundary as every other control read. This checked the
   // LEAF's type and nothing above it, so a symlinked `.mailbox-out` decided
@@ -741,18 +660,16 @@ export function formatStatus(report) {
   return lines.join('\n')
 }
 
-// Recorded because the lease is the SLOW answer. `next_lease_expiry_at` is up
-// to fifteen minutes out, so a lane that died two minutes ago still reads as
-// running — measured twice on 2026-08-17, once for four hours. A pid answers
-// immediately. Pid reuse can only produce a false ALIVE, which then falls back
+// Recorded because the lease is the SLOW answer: `next_lease_expiry_at` is up
+// to fifteen minutes out, so a lane that died minutes ago still reads as
+// running. A pid answers immediately. Pid reuse can only produce a false ALIVE, which then falls back
 // to the lease, so the wrong answer is the harmless direction.
 export function pidPath(cwd, taskId) { return join(cwd, '.tmux-teams', 'dispatch-pids', `${taskId}`) }
 
 export function recordedPid(cwd, taskId) {
-  // Through `readLeafSync`, like every other control-leaf read. This function
-  // called `readFileSync` on the pid path directly, so the "safe read boundary"
-  // had a hole in the one reader admission depends on — and a FIFO planted
-  // there blocks the reader outright. A panel lane reproduced both.
+  // Through `readLeafSync`, like every other control-leaf read: a direct
+  // `readFileSync` puts a hole in the boundary at the one reader admission
+  // depends on, and a planted FIFO blocks it outright.
   const text = readLeafSync(pidPath(cwd, taskId), cwd)
   if (text === null) return null
   const pid = Number.parseInt(text.trim(), 10)
@@ -775,26 +692,49 @@ export function pidAlive(pid) {
   }
 }
 
-export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnFn = spawn, env = process.env } = {}) {
+// CLAUDE.md prohibits Gemini 3.1 on every tmux-teams route and says to fail
+// CLOSED. The companion refuses it too, but that refusal happens in the CHILD:
+// the lane is spawned, the operator is told `dispatched`, and only then does it
+// die. A configured model is knowable HERE, before anything starts, and
+// "configured" is half of what the rule names.
+//
+// The pattern is COPIED — this file and the companion both take only node
+// builtins on purpose, and `review-profiles.mjs` is another skill. A test
+// asserts all THREE copies are character-identical, which is the drift answer
+// that does not couple them.
+const PROHIBITED_MODEL = /(?:^|[^0-9a-z])gemini[-_ ]?3\.1(?:[^0-9]|$)/i
+
+function assertPermittedModel(value, name) {
+  if (typeof value === 'string' && PROHIBITED_MODEL.test(value)) {
+    throw Object.assign(
+      new Error(`${name}: Gemini 3.1 is prohibited on tmux-teams routes, got ${value}`),
+      { code: 'prohibited_model' },
+    )
+  }
+}
+
+export function spawnDetached(worker, cwd, taskId, briefFile, stallSec,
+  { spawnFn = spawn, env = process.env, nonce = randomUUID() } = {}) {
   // FIRST. Every line below builds a path out of this value.
   assertSafeTaskId(taskId)
+  // Before the outbox is retired and before anything is spawned: a refusal
+  // after either leaves state behind for a lane that was never allowed.
+  assertPermittedModel(env.ACP_MODEL, 'ACP_MODEL')
+  assertPermittedModel(env.ACP_EXPECT_MODEL, 'ACP_EXPECT_MODEL')
   const spawnedAtIso = new Date().toISOString()
   // Retire the PREDECESSOR's outbox before the new lane starts.
   //
   // `statusExitCode` requires a terminal record AND an outbox, which sounds
   // sufficient until both bytes belong to the previous run of the same task id
-  // while today's pid is alive — a false SUCCESS at the exact moment an
-  // operator is deciding whether the work is done. An advisor round named it on
-  // 2026-08-17. Renaming rather than deleting: the predecessor's answer is
-  // still on disk, and `strayOutboxes` will point at it.
+  // while today's pid is alive — a false SUCCESS at the moment an operator is
+  // deciding whether the work is done. Renamed rather than deleted, so the
+  // predecessor's answer stays on disk and `strayOutboxes` points at it.
   // The whole filesystem question, answered BEFORE anything is spawned. A
   // refusal after `unref()` leaves a detached lane alive with no trustworthy
   // records — worse than never starting.
-  // `liveness` and `sessions` were NOT in this list, and three panel lanes said
-  // so. The companion writes both, `statusReport` READS both, and a symlinked
-  // parent on either sends the write out of the tree or feeds the reader a
-  // stranger's file — which is the same class as the four already covered, on
-  // the two directories whose contents this tool actually reports.
+  // `liveness` and `sessions` belong here too: the companion writes both and
+  // `statusReport` reads both, so a symlinked parent on either sends a write out
+  // of the tree or feeds the reader a stranger's file.
   for (const artifact of ['runner-logs', 'dispatch-pids', 'dispatch-routing', 'liveness', 'sessions']) {
     assertContainedDir(cwd, '.tmux-teams', artifact)
   }
@@ -804,38 +744,22 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
   // stranger's file before anything spawned — the same parent-resolution class
   // as the three above, on the one directory that was not in the list.
   assertContainedDir(cwd, '.mailbox-out')
-  // ADMISSION, and it sits HERE for a reason a panel lane reproduced: it used to
-  // run at the top of this function, so `recordedPid()` READ a pid file before
-  // the containment preflight above had established that `dispatch-pids` is a
-  // real directory inside the tree. A read-before-check, introduced by the very
-  // feature meant to make dispatch safer.
+  // ADMISSION, and it must sit BELOW the containment preflight: reading a pid
+  // file before establishing that `dispatch-pids` is a real directory inside
+  // the tree is a read-before-check.
   //
-  // Two companions under one task id share a liveness file, a pid file and an
-  // outbox path, and the operator cannot tell whose answer they read. But a
-  // LIVE PID ALONE is not evidence of a live lane — pid numbers are reused, and
-  // refusing on that alone locks a task id forever behind an unrelated process
-  // (the other half of what the panel found). So refuse only when the pid is
-  // alive AND the lane is still reporting progress.
-  //
-  // The checks above read state and can be raced. The CLAIM below cannot: it is
-  // an `O_CREAT|O_EXCL` create of the pid path, so of two dispatches racing to
-  // the same task id on this machine exactly one proceeds. What the reads above
-  // still buy is a good REFUSAL MESSAGE — the claim alone would say only "taken".
-  // A MISSING pid leaf is not evidence that nothing is running: the leaf can be
-  // refused by the read policy, deleted by an operator, or never have been
-  // written. Admission asked `recordedPid` and stopped there, so a lane whose
-  // liveness says it is mid-turn was admitted a second writer whenever its pid
-  // file was unreadable. A panel lane reproduced it.
-  //
-  // With no pid to ask, the lease is the only evidence there is — the same rule
-  // `hasStopped` already applies, applied here too.
-  // CASE. macOS and Windows default to case-insensitive filesystems, so `Review`
-  // and `review` are two task ids to this dispatcher and one set of files to the
-  // disk — two lanes writing the same liveness, pid, routing and outbox while
-  // every check above says they are unrelated. A lane reproduced it. There is no
-  // portable way to make the paths distinct, so the collision is refused where
-  // it can be seen: an existing artifact spelled differently means the id is
-  // taken.
+  // A LIVE PID ALONE is not evidence of a live lane — pid numbers are reused,
+  // and refusing on that alone locks a task id forever behind an unrelated
+  // process. Refuse only when the pid is alive AND the lane still reports
+  // progress. These reads can be raced; the claim below cannot. What they buy
+  // is a good REFUSAL MESSAGE, since the claim alone would say only "taken".
+  // A MISSING pid leaf is not evidence that nothing is running — it can be
+  // refused by the read policy, deleted, or never written. With no pid to ask,
+  // the lease is the only evidence there is.
+  // CASE. On a case-insensitive filesystem `Review` and `review` are two task
+  // ids here and one set of files on disk, so every check above calls them
+  // unrelated while they overwrite each other. No portable way to make the
+  // paths distinct: an existing artifact spelled differently means it is taken.
   for (const dir of ['liveness', 'dispatch-pids', 'dispatch-routing']) {
     const at = join(cwd, '.tmux-teams', dir)
     // ADMISSION, not a report — so a refusal must not read as "no collision".
@@ -844,10 +768,8 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
     const leaves = readDirSync(at, cwd)
     if (leaves === null) {
       throw Object.assign(
-        // The sentence no longer names a symlink as the SOLE cause — it still
-        // offers it as one, because it usually is. An earlier version of this
-        // comment claimed the word was gone, and a lane pointed out the word is
-        // right there in the string below it. Two lines apart.
+        // A symlink is offered as ONE cause, not the only one — a permission
+        // failure reaches here too.
         new Error(`task id "${taskId}" cannot be admitted: .tmux-teams/${dir} cannot be `
           + 'listed — it is reached through a symlink, or it is not readable — so what it '
           + 'holds cannot be checked for a case collision'),
@@ -867,24 +789,18 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
   }
   const livePid = recordedPid(cwd, taskId)
   if (livePid === null) {
-    // Bound to the RECORDED dispatch, exactly as `statusReport` binds it. A
-    // predecessor's unsettled record is not this task id's live lane — it is
-    // the thing the retirement below exists to move aside, and refusing on it
-    // would make every re-dispatch after an interrupted run impossible. The
-    // test caught that within a minute of the first version.
-    // WITH NO ROUTING, the record is still evidence. A lane reproduced the gap:
-    // `loop-runner.mjs` starts companions without writing a dispatcher routing
-    // file, so requiring one discarded a live lane's own liveness and admitted a
-    // second writer beside it. `statusReport` deliberately accepts routing-less
-    // liveness for exactly that reason; admission was stricter than the thing it
-    // is meant to agree with.
-    //
-    // Bound to the recorded dispatch when there IS one — a predecessor's record
-    // must not block a re-dispatch — and taken at face value when there is not.
+    // Bound to the RECORDED dispatch, as `statusReport` binds it. A
+    // predecessor's unsettled record is not this id's live lane, and refusing on
+    // it makes every re-dispatch after an interrupted run impossible.
+    // WITH NO ROUTING, the record is still evidence: `loop-runner.mjs` starts
+    // companions without a dispatcher routing file, so requiring one discards a
+    // live lane's liveness and admits a second writer. Admission must not be
+    // stricter than `statusReport`, which accepts routing-less liveness.
     const liveness = readJson(livenessPath(cwd, taskId), cwd)
-    const priorSpawn = Date.parse(recordedRouting(cwd, taskId)?.spawnedAt ?? '')
+    const priorRouting = recordedRouting(cwd, taskId)
+    const priorSpawn = Date.parse(priorRouting?.spawnedAt ?? '')
     const record = Number.isFinite(priorSpawn)
-      ? (belongsToThisRun(liveness, priorSpawn) ? liveness : null)
+      ? (belongsToThisRun(liveness, priorSpawn, priorRouting?.spawnNonce) ? liveness : null)
       : liveness
     if (record !== null && !isSettled(record, { pid: null })) {
       throw Object.assign(
@@ -925,73 +841,36 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
     }
   }
   // Retire the PREDECESSOR's liveness and session leaves, for the same reason
-  // the outbox above is retired and by the same means. `belongsToThisRun`
-  // compares TIMESTAMPS and nothing else — no nonce, no task id, no worker — so
-  // a record stamped inside the accepted window reads as ours, and a panel lane
-  // reproduced a fresh dispatch reporting `session_id: predecessor-session`
-  // and offering ACP_RESUME for a session that was never ours.
-  //
-  // A bound cannot fix that; only identity can, and a nonce is a protocol
-  // change. What IS available today is removal: a leaf that is not on disk
-  // cannot be mistaken for this run's, and the predecessor's bytes are kept
-  // under a suffix rather than deleted, exactly as the outbox is.
+  // the outbox above is retired and by the same means. `belongsToThisRun` now
+  // requires a matching nonce as well as the timestamp bounds, which closes
+  // deliberate forgery — but this dispatch's nonce does not exist yet at this
+  // point in the function, so there is nothing on disk to compare against
+  // before the child is even spawned. Removal stays the belt-and-braces answer
+  // here: a leaf that is not on disk cannot be mistaken for this run's, and the
+  // predecessor's bytes are kept under a suffix rather than deleted, exactly as
+  // the outbox is.
   for (const leaf of [livenessPath(cwd, taskId), sessionPath(cwd, taskId)]) {
     retirePredecessorLeaf(leaf, spawnedAtIso)
   }
-  // The name is claimed AFTER the reads above, not before: a pid file left by a
-  // lane that has since finished is not a live claim, and claiming first made
-  // every ordinary re-dispatch fail. The reads decide whether the holder is
-  // alive; the claim decides who wins when two dispatches pass those reads at
-  // the same instant.
+  // Claimed AFTER the reads, not before — a pid file left by a finished lane is
+  // not a live claim, and claiming first fails every ordinary re-dispatch.
   //
-  // `O_CREAT|O_EXCL` on a path that may legitimately already exist: remove the
-  // dead holder's file first, which is safe because the reads above have just
-  // established it is dead, then claim. Two racers both reach here, one create
-  // succeeds, the other gets EEXIST and stops having changed nothing.
-  // The leaf policy FIRST. The first version removed whatever was at the pid
-  // path, which quietly deleted a planted symlink instead of refusing it — a
-  // regression this file's own tests caught immediately, and one that would
-  // have turned a refusal into a silent overwrite of somebody else's file.
-  // NO REMOVE BEFORE THE CLAIM. Two panel families reproduced the previous
-  // version: an unconditional `rmSync` in front of `O_CREAT|O_EXCL` gives two
-  // contenders a window where both remove and both create, so the claim added
-  // to close a non-atomic admission was not atomic either.
-  //
-  // It also explains a mutation I had rationalised away: the race test's
-  // survivor was blamed on process start-up granularity when the truer answer
-  // was that the claim guarded nothing. A surviving mutation needs its
-  // explanation TESTED, not merely stated.
-  //
-  // Taking over a DEAD holder's leaf goes through a uniquely-named temp file
-  // and one `renameSync`. Exactly one rename lands on the stale path; a loser
-  // finds its own temp file already consumed and refuses, rather than sharing
-  // the id.
   // THE CLAIM IS THE WHOLE OF IT: `O_CREAT|O_EXCL` succeeds or this dispatch
-  // refuses. No take-over path, because every version of one raced.
+  // refuses. NO TAKE-OVER PATH, and do not add one — four designs were measured
+  // and every one raced. Remove-then-create let 2 of 8 concurrent dispatches
+  // win the same id; rename-onto-the-path let all of them win; retiring the
+  // stale leaf by rename still failed 2 runs in 6; gating that on mtime reached
+  // 1 in 6 and cannot go further, because a contender starting admission AFTER
+  // the winner claims sees the winner's fresh leaf as older than its own and
+  // retires a LIVE claim.
   //
-  // Measured, in order: remove-then-create let 2 of 8 concurrent dispatches win
-  // the same id; rename-onto-the-path overwrote silently and let all of them
-  // win; retiring the stale leaf by rename fixed most of it and still failed 2
-  // runs in 6; gating that on mtime got to 1 in 6 and cannot get further,
-  // because a contender that starts admission AFTER the winner claims sees the
-  // winner's fresh leaf as older than itself and retires a LIVE claim.
-  //
-  // There is no filesystem primitive that both takes over a dead holder's file
-  // and refuses a live one, so the take-over is gone. A leftover leaf from an
-  // interrupted run is now an operator step — the same one the refusal above
-  // already names and the tests already exercise — and admission is exact.
+  // No filesystem primitive both takes over a dead holder's file and refuses a
+  // live one. A leftover leaf is an operator step, which the refusal names.
   assertNotSymlink(pidPath(cwd, taskId))
   if (!claimTaskId(cwd, taskId)) {
-    // NO LEASE SENTENCE HERE, and the reason is worth the paragraph. This
-    // branch used to append "Its progress lease says <t>", read from
-    // `livenessPath(cwd, taskId)`. A codex-advisor lane found that read was the
-    // one `readJson` call of eight missing its run root, so it always answered
-    // null and the sentence never appeared. Fixing the run root did not make it
-    // appear either: the loop above RETIRES that very leaf, unconditionally,
-    // about forty lines before this check runs. The branch was unreachable from
-    // the day it was written.
-    //
-    // It is deleted rather than repaired because repairing it would be worse.
+    // NO LEASE SENTENCE HERE, and do not add one back. The loop above RETIRES
+    // that leaf unconditionally forty lines earlier, so any such read is
+    // unreachable — and repairing it would be worse than leaving it out.
     // The leaf we just renamed away belonged to the PREVIOUS occupant of this
     // id; whoever holds the claim we just lost is a different lane, and may not
     // have written a liveness file yet. Quoting the predecessor's lease as
@@ -1011,8 +890,7 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
   // false for a DANGLING symlink, so the one kind of pre-positioned link that
   // is guaranteed to redirect our write — one aimed at a file that does not
   // exist yet, waiting for us to create it — walked straight past this check.
-  // A panel lane found it. I had guarded the harmless case and skipped the
-  // dangerous one.
+  // The harmless case is the one that looks like it needs guarding.
   let previousStat = null
   try {
     previousStat = lstatSync(previous)
@@ -1031,7 +909,21 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
   // The whole environment, not an allowlist. Every ACP_* variable an operator
   // exports — model, expectation, resume, adapter — reaches the lane with
   // nothing to remember and nothing to forget.
-  const child = spawnFn(process.execPath, argv, { cwd, detached: true, stdio: ['ignore', logFd, logFd], env })
+  //
+  // `ACP_SPAWN_NONCE` is ADDED on top, never taken from the operator's `env`:
+  // it is this dispatch's own proof of authorship, generated above, and an
+  // operator-supplied value here would defeat the thing it exists to prove.
+  // The whole caller environment is forwarded, so an ambient ACP_ENABLE_TERMINAL
+  // would reach the companion and hand a DETACHED lane the terminal capability —
+  // including a review lane, which `acp-companion.mjs` states must never gain
+  // one. It is dropped here rather than trusted, and the reason is one line
+  // down: this child gets `stdin: 'ignore'`, so a terminal opened through the
+  // dispatcher can never receive a keystroke. It could not serve the
+  // person-attended login it exists for, and would only widen what the lane can
+  // do. A login run talks to the companion directly.
+  const { ACP_ENABLE_TERMINAL: _neverForwarded, ...forwarded } = env
+  const childEnv = { ...forwarded, ACP_SPAWN_NONCE: nonce }
+  const child = spawnFn(process.execPath, argv, { cwd, detached: true, stdio: ['ignore', logFd, logFd], env: childEnv })
   child.unref()
   // The child holds its own duplicate; this parent has no use for the
   // descriptor and leaked it for the life of the process.
@@ -1063,8 +955,13 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
     if (env?.[key] !== undefined && env[key] !== '') routingEnv[key] = String(env[key])
   }
   try {
+    // `spawnNonce` sits beside `spawnedAt`, not inside `env`: it is this
+    // dispatcher's own record of what it told the companion, not something a
+    // resume command should ever echo — a resume is a fresh dispatch and gets
+    // a fresh nonce, so `ROUTING_ENV_KEYS` deliberately excludes it.
     writeNoFollow(routingPath(cwd, taskId),
-      `${JSON.stringify({ worker, briefFile, stallSec: stallSec ?? null, spawnedAt: spawnedAtIso, env: routingEnv }, null, 2)}\n`)
+      `${JSON.stringify({ worker, briefFile, stallSec: stallSec ?? null, spawnedAt: spawnedAtIso,
+        spawnNonce: nonce, env: routingEnv }, null, 2)}\n`)
   } catch (cause) {
     try { process.kill(-child.pid, 'SIGKILL') } catch { /* group already gone */ }
     try { process.kill(child.pid, 'SIGKILL') } catch { /* already gone */ }
@@ -1078,44 +975,58 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec, { spawnF
 }
 
 // Waits for the lane's IDENTITY, not merely for a file to appear. The companion
-// writes its first snapshot before it spawns the adapter, so the file exists
-// within milliseconds carrying `identity_status: 'missing'` — the first version
-// reported that as the boot result and printed `unknown (missing)` for a lane
-// whose identity was acknowledged as `matched` four seconds later. The point of
-// waiting at all is to keep the fail-closed identity check synchronous, so the
-// thing waited for has to be the acknowledgement.
+// writes its first snapshot before spawning the adapter, so the file exists
+// within milliseconds carrying `identity_status: 'missing'` — waiting for the
+// FILE reports `unknown (missing)` for a lane acknowledged `matched` seconds
+// later. The point of waiting is to keep the identity check synchronous.
 // A liveness record belongs to THIS dispatch only if the child wrote it after
-// we spawned the child. Re-dispatching or resuming into the same run directory
-// leaves the previous run's snapshot in place, identity and all — and this
-// caller read one: it reported `gpt-5.6-sol[max] (matched)` and a session id
-// for a resume whose own record, one second later, said `identity_status:
-// missing`. On a plugin whose entire subject is provenance, reporting a
-// previous run's identity as this one's is the worst small bug available.
+// the spawn. Re-dispatching into the same run directory leaves the previous
+// run's snapshot in place, identity and all, and on a plugin whose subject is
+// provenance, reporting a predecessor's identity as this one's is the worst
+// small bug available.
 //
-// A record with no `started_at` is treated as not-this-run rather than
-// accepted: the companion always writes it, so its absence means the file is
-// not what this function is looking for.
-// No tolerance. The first version allowed a second of slack for clock
-// granularity, and the PR reviewer pointed out that both timestamps come from
-// the SAME host clock: the slack buys nothing and, on a retry inside one
-// second, accepts the predecessor's snapshot — recreating the exact
-// stale-identity failure this check exists to prevent.
-export function belongsToThisRun(record, spawnedAtMs, nowMs = Date.now()) {
+// A record with no `started_at` is not-this-run: the companion always writes it.
+// NO slack for clock granularity — both timestamps come from the same host
+// clock, so slack buys nothing and, on a retry inside one second, accepts the
+// predecessor's snapshot.
+//
+// BOUNDS AND A NONCE, both required. A bound is not identity: nothing in a
+// timestamp is unique to THIS dispatch, so a record stamped inside the window
+// by a predecessor — or forged on purpose — passed. `spawnDetached` mints a
+// nonce per dispatch and hands it over `ACP_SPAWN_NONCE`; the companion echoes
+// it back as `spawn_nonce`. The bounds STAY, because a resume into the same
+// task id can produce a predecessor record carrying the same nonce.
+export function belongsToThisRun(record, spawnedAtMs, expectedNonce, nowMs = Date.now()) {
   const started = Date.parse(record?.started_at ?? '')
   if (!Number.isFinite(started)) return false
-  // A lower bound alone accepted anything stamped in the FUTURE, so a record
-  // left by a predecessor with a skewed clock — or written on purpose — read as
-  // ours forever. A panel lane pointed out there was no upper bound and no
-  // nonce. The upper bound is cheap and closes the forgery; a real nonce is
-  // still owed and is written down as such rather than implied.
-  // ponytail: bounds, not a nonce. A nonce needs the companion to echo it back,
-  // which is a protocol change; the bound stops the accidental and the
-  // clock-skew cases today.
+  // A lower bound ALONE accepts anything stamped in the future, so a record left
+  // by a skewed or hostile clock reads as ours forever.
   const FUTURE_TOLERANCE_MS = 60_000
-  return started >= spawnedAtMs && started <= nowMs + FUTURE_TOLERANCE_MS
+  if (started < spawnedAtMs || started > nowMs + FUTURE_TOLERANCE_MS) return false
+  // MISSING ON EITHER SIDE REFUSES. A routing file written before this field
+  // existed has no `expectedNonce`, and an old or foreign liveness record has no
+  // `spawn_nonce` — both read as "cannot prove", never as a pass.
+  return Boolean(expectedNonce) && record?.spawn_nonce === expectedNonce
 }
 
-async function watchBoot(child, cwd, taskId, bootMs, spawnedAtMs) {
+// **The residual, stated exactly.** This closes forgery for a lane THIS
+// dispatcher started, because only it knows the nonce. It does NOT close it in
+// general, and the reason is a requirement rather than an oversight:
+// `loop-runner.mjs` starts companions with no dispatcher routing file, and both
+// `statusReport` and admission deliberately accept routing-less liveness — so
+// where there is no routing there is no nonce to compare, and the record is
+// taken on its timestamps alone.
+//
+// An attacker who can plant a liveness file in a run directory can also delete
+// the routing file beside it and land back in that path. So against someone who
+// owns the directory the nonce buys nothing; what it closes is a PREDECESSOR's
+// record, an accident, and a forgery by anything that cannot write the run root.
+//
+// `watchBoot` is the exception and the strongest case: it is called by the
+// dispatch that just minted the nonce, so it always has one and never falls
+// back.
+
+async function watchBoot(child, cwd, taskId, bootMs, spawnedAtMs, spawnNonce) {
   const path = livenessPath(cwd, taskId)
   const deadline = Date.now() + bootMs
   let exited = null
@@ -1128,34 +1039,25 @@ async function watchBoot(child, cwd, taskId, bootMs, spawnedAtMs) {
   child.on('error', (cause) => { exited = { code: null, signal: null, error: cause } })
   for (;;) {
     const found = readJson(path, cwd)
-    const record = belongsToThisRun(found, spawnedAtMs) ? found : null
-    // A lane that reached a TERMINAL state during boot did not boot — it failed.
-    // The first version folded this into `live` and printed an identity beside
-    // exit 0 for a consultation that never started: an identity refusal, an
-    // unsupported model, a config option the adapter would not take. Reported as
-    // its own outcome now, because "dispatched successfully" and "refused before
-    // the prompt" are not the same answer.
-    // `completed` is a lane that FINISHED, not one that never started. The
-    // previous version asked `hasTerminated`, which includes it — so a fast
-    // consultation that answered before the boot poll came round was told
-    // "this consultation never started" and exited 2. Found by the gemini panel
-    // lane; it is the happy path for a quick lane, which is exactly the path a
-    // guard against failure should never have owned.
+    const record = belongsToThisRun(found, spawnedAtMs, spawnNonce) ? found : null
+    // A lane that reached a TERMINAL state during boot did not boot — it failed,
+    // and gets its own outcome, because "dispatched successfully" and "refused
+    // before the prompt" are not the same answer.
+    //
+    // `failed`/`cancelled` ONLY, never `hasTerminated`: that includes
+    // `completed`, which is a lane that FINISHED fast, not one that never
+    // started — the happy path a failure guard must not own.
     if (record && ['failed', 'cancelled'].includes(record.liveness_state)) {
       return { outcome: 'terminal', record }
     }
-    // `completed` is a lane that FINISHED, not one that never started — but it
-    // is NOT a bypass of the identity check. This line was added to stop a fast
-    // consultation being called a failure, and it was placed ABOVE the identity
-    // gate, so any record saying `completed` reported success without ever
-    // being asked who answered. A panel lane reproduced it. The fix for one
-    // guard owning the happy path must not hand the happy path to no guard at
-    // all: `completed` now falls through to the same identity check as
-    // everything else.
-    // `identity_status`, not the truthiness of a string. A release panel caught
-    // that a non-empty `effective_identity` was standing in for an ACCEPTED
-    // identity — which is the substitution this whole plugin exists to refuse,
-    // committed inside the check written to enforce it.
+    // `completed` falls THROUGH to the identity check rather than short-circuiting
+    // it. Excusing it above this gate reports success without ever asking who
+    // answered: taking the happy path away from one guard must not hand it to
+    // none.
+    //
+    // `identity_status`, not the truthiness of a string — a non-empty
+    // `effective_identity` standing in for an ACCEPTED one is the exact
+    // substitution this plugin exists to refuse.
     // EXITED FIRST. A lane reproduced this: the identity check ran before the
     // captured `exited` state, so a child that had already exited nonzero — and
     // whose exit this loop had observed — was reported as a healthy boot on the
@@ -1309,9 +1211,13 @@ export async function main(argv, { out = console.log, err = console.error, spawn
   // Taken BEFORE the spawn, so any snapshot the child writes is stamped later
   // than this and a previous run's snapshot is stamped earlier.
   const spawnedAtMs = Date.now()
-  const child = spawnDetached(worker, cwd, taskId, resolve(briefFile), stallSec, { spawnFn, env })
+  // Generated here, not inside `spawnDetached`, so this same value can also be
+  // handed to `watchBoot` below — one nonce per dispatch, not one per function
+  // that happens to need it.
+  const spawnNonce = randomUUID()
+  const child = spawnDetached(worker, cwd, taskId, resolve(briefFile), stallSec, { spawnFn, env, nonce: spawnNonce })
   const bootMs = bootSec * 1000
-  const booted = await watchBoot(child, cwd, taskId, bootMs, spawnedAtMs)
+  const booted = await watchBoot(child, cwd, taskId, bootMs, spawnedAtMs, spawnNonce)
 
   const self = shQuote(join(HERE, 'acp-dispatch.mjs'))
   out(`dispatched ${worker} as ${taskId} — pid ${child.pid}, detached, own process group`)

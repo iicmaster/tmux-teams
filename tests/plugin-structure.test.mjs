@@ -5,7 +5,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync, statSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -13,8 +13,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PLUGIN = join(ROOT, 'plugins/tmux-teams')
 const SKILLS = ['tmux-teams', 'party-mode', 'party-auto', 'party-advise', 'sqthink', 'codex-tmux-driver',
-  'graph-setup', 'claude-advisor', 'codex-advisor', 'handoff', 'show-me']
-const RELEASE_VERSION = '0.32.0'
+  'graph-setup', 'claude-advisor', 'codex-advisor', 'agy-advisor', 'handoff', 'show-me']
+const RELEASE_VERSION = '0.33.0'
 // The Stage 1 CLI entry points went on 2026-07-29 and the rest of the phase
 // subsystem — nine scripts, its gate, its store and its exporter — went on
 // 2026-08-02. The note that used to stand here said deleting the remainder
@@ -572,6 +572,7 @@ test('an advisor skill that claims read-only ships the switch that makes it read
   // unenforceable one.
   const codex = readFileSync(join(PLUGIN, 'skills', 'codex-advisor', 'SKILL.md'), 'utf8')
   const claude = readFileSync(join(PLUGIN, 'skills', 'claude-advisor', 'SKILL.md'), 'utf8')
+  const agy = readFileSync(join(PLUGIN, 'skills', 'agy-advisor', 'SKILL.md'), 'utf8')
 
   // every codex dispatch or resume block carries the mode
   // Truncate at the CLOSING fence. `split('```bash')` runs each piece on to the
@@ -582,7 +583,11 @@ test('an advisor skill that claims read-only ships the switch that makes it read
   // vacuous-assertion shape a panel lane had just found in the traversal test.
   const commandBlocks = (text) => text.split('```bash').slice(1)
     .map((b) => b.split('```')[0])
-    .filter((b) => /acp-dispatch\.mjs[\s\\]+\n?\s*(codex|claude) </.test(b))
+    // EVERY worker this dispatcher takes. Naming only the workers that existed
+    // when the guard was written means the next advisor skill ships unguarded:
+    // its commands match nothing, `blocks.length` is 0, and a full-access
+    // command passes silently.
+    .filter((b) => /acp-dispatch\.mjs[\s\\]+\n?\s*(codex|claude|agy|mock) </.test(b))
 
   const codexBlocks = commandBlocks(codex)
   assert.ok(codexBlocks.length >= 2, `expected dispatch and recovery blocks, got ${codexBlocks.length}`)
@@ -594,7 +599,8 @@ test('an advisor skill that claims read-only ships the switch that makes it read
   // and the identity guarantee is not fail-open: the default mode CONTINUES
   // after a receipt-persistence failure and records `receipt_digest: none`, so
   // an advisor could report an identity resting on a receipt never written.
-  for (const [name, text] of [['codex-advisor', codex], ['claude-advisor', claude]]) {
+  for (const [name, text] of [['codex-advisor', codex], ['claude-advisor', claude],
+    ['agy-advisor', agy]]) {
     const blocks = commandBlocks(text)
     // The count is pinned too: a block that stops MATCHING is indistinguishable
     // from a block that passes, and `> 0` cannot tell them apart.
@@ -604,13 +610,22 @@ test('an advisor skill that claims read-only ships the switch that makes it read
     // is indistinguishable from a block that passes, and `> 0` cannot tell them
     // apart — but it is pinned per file so ADDING a documented command is a
     // deliberate edit here rather than a silent one.
-    const expected = { 'codex-advisor': 2, 'claude-advisor': 3 }[name]
+    const expected = { 'codex-advisor': 2, 'claude-advisor': 3, 'agy-advisor': 1 }[name]
     assert.equal(blocks.length, expected,
       `${name} documents ${blocks.length} lane-launching commands, not ${expected}`)
     for (const block of blocks) {
       assert.match(block, /ACP_SESSION_RECEIPT_REQUIRED=1/,
         `${name} runs a lane whose receipt may silently not exist:\n${block.slice(0, 400)}`)
     }
+  }
+
+  // The AGY lane HAS the mode switch — measured 2026-08-19: it accepts
+  // read-only, writes a receipt and reports
+  // `effective_identity: gemini-3.7-flash-high (matched)`. Held to the same
+  // enforcement as codex rather than excused like claude.
+  for (const block of commandBlocks(agy)) {
+    assert.match(block, /INITIAL_AGENT_MODE="read-only"/,
+      `an agy advisor command runs at the default mode:\n${block.slice(0, 400)}`)
   }
 
   // The Claude lane has no mode switch, so it must not promise one it lacks.
@@ -652,6 +667,7 @@ test('the read-only guarantee is carried by the thing it says it rests on', () =
   // the guarantee leaned on did not carry it. The Codex lane has
   // INITIAL_AGENT_MODE=read-only; here the text IS the mechanism.
   const claude = readFileSync(join(PLUGIN, 'skills', 'claude-advisor', 'SKILL.md'), 'utf8')
+  const agy = readFileSync(join(PLUGIN, 'skills', 'agy-advisor', 'SKILL.md'), 'utf8')
   // `Cast 3-5 named voices`, not the round-table phrase — the frontmatter
   // description contains that phrase too, so the first match was the YAML
   // header and the assertion was about the wrong bytes.
@@ -685,6 +701,7 @@ test('the claude advisor does not promise an identity proof its routed seat cann
   // `opus` on three different bins reaches three different vendors. Both cannot
   // be true, and the headline is the one a reader sees first.
   const claude = readFileSync(join(PLUGIN, 'skills', 'claude-advisor', 'SKILL.md'), 'utf8')
+  const agy = readFileSync(join(PLUGIN, 'skills', 'agy-advisor', 'SKILL.md'), 'utf8')
   const body = claude.split('---').slice(2).join('---')   // past the frontmatter
 
   assert.ok(body.includes('has told\nyou nothing about who answered')
@@ -698,4 +715,87 @@ test('the claude advisor does not promise an identity proof its routed seat cann
   // and the qualification names WHICH seat can
   assert.match(body, /default seat.{0,80}can prove/s,
     'the file does not say which seat the proof holds for')
+})
+
+// Master, 2026-08-19: the advisors must be the same thing three times — every
+// one forces a bmad-party-mode round-table, every one takes a model.
+//
+// Measured before this test existed, they were three different shapes: the
+// party-mode obligation was PROSE in all three and enforced by nothing, and
+// `agy-advisor` took no model at all and said "One seat" while its adapter
+// advertises fourteen. A uniform contract that nothing checks is the same
+// unenforced claim in three files instead of one.
+//
+// UNIFORM MEANS THE CONTRACT, NOT THE CAPABILITIES. `claude-advisor` has no
+// read-only switch because that lane has none, and the test above asserts it
+// must not promise one. Pretending three lanes are identical is the failure this
+// avoids, not the goal.
+test('every advisor carries the same contract: a party, and a model', () => {
+  // Named literally as well as iterated. A loop over a list is a test of the
+  // list: drop an entry and it simply stops checking that one.
+  const NAMES = ['codex-advisor', 'claude-advisor', 'agy-advisor']
+  assert.deepEqual(
+    SKILLS.filter((s) => s.endsWith('-advisor')).sort(), [...NAMES].sort(),
+    'an advisor skill exists that this contract does not cover')
+
+  for (const name of NAMES) {
+    const text = readFileSync(join(PLUGIN, 'skills', name, 'SKILL.md'), 'utf8')
+    const front = text.split('---')[1] ?? ''
+
+    assert.match(front, /bmad-party-mode round-table/,
+      `${name}: the frontmatter does not promise a round-table, so a reader never sees the obligation`)
+    assert.match(text, /## The consultation is a party\. Only a party\./,
+      `${name}: no party mandate section`)
+    assert.match(text, /MUST answer as a `bmad-party-mode` round-table/,
+      `${name}: the mandate is described but never stated as a requirement`)
+    // The words that go INTO the brief, not a paraphrase about them — this is
+    // the only part the advisor ever sees.
+    assert.match(text, /Answer as a bmad-party-mode round-table\. Cast 3-5 named voices/,
+      `${name}: the brief mandate an advisor is actually given is missing`)
+    assert.match(text, /single-voice\s+answer is a failed consultation/,
+      `${name}: does not say what to do when the answer comes back as one voice`)
+
+    // A model can be named. The grammars differ because the seats differ — codex
+    // has three named seats, claude needs a bin AND a model, agy has three
+    // efforts of one family — so what is pinned is that a default and at least
+    // one alternative are BOTH documented.
+    const args = text.split('## Arguments')[1]
+    assert.ok(args, `${name}: no Arguments section, so no way to name a model`)
+    const lines = args.split('```')[1]?.split('\n').filter((l) => l.trim().startsWith('$')) ?? []
+    assert.ok(lines.length >= 2,
+      `${name}: documents ${lines.length} invocation(s) — a default and at least one named seat are required`)
+    assert.ok(lines.some((l) => /default seat/.test(l)),
+      `${name}: no invocation is marked as the default seat`)
+  }
+})
+
+// CLAUDE.md states which paths this repository tracks, and a test above asserts
+// that the LIST says what it should. Nothing asserted that the tracked files
+// MATCH the list — so `.mailbox-out-archive-round1/`, a directory this session
+// created to preserve a review transcript, rode into the release on a
+// `git add -A`. `.mailbox-out/` was ignored; the archive name was not. Ten
+// rounds of the review of record read past it, and `gate-required.mjs` named
+// it as a deciding file for the panel without anyone noticing what it was.
+//
+// The set is pinned literally rather than derived from CLAUDE.md: a test that
+// reads its expectation out of the document it is checking agrees with whatever
+// the document says, including a document somebody widened to make a test pass.
+test('the tracked top-level entries are exactly the ones this repository declares', () => {
+  const listed = execFileSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8' })
+    .split('\n').filter(Boolean)
+    .map((p) => p.split('/')[0])
+  const actual = [...new Set(listed)].sort()
+  const allowed = [
+    '.claude-plugin', '.github', '.gitignore',
+    '.published-RELEASE-PLAN.json', '.published-event-subscriptions.json',
+    '.roadmap-published.json',
+    'CLAUDE.md', 'HANDOFF.md', 'README.md', 'RELEASE-PLAN.md', 'ROADMAP.md',
+    'plugins', 'scripts', 'tests',
+  ].sort()
+  const unexpected = actual.filter((e) => !allowed.includes(e))
+  const missing = allowed.filter((e) => !actual.includes(e))
+  assert.deepEqual(unexpected, [],
+    `these are tracked and this repository does not declare them: ${unexpected.join(', ')}`)
+  assert.deepEqual(missing, [],
+    `these are declared and no longer tracked: ${missing.join(', ')}`)
 })
