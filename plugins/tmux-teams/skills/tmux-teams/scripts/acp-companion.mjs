@@ -188,6 +188,20 @@ const processReapGraceMs = strictNonNegativeEnvNumber('ACP_PROCESS_REAP_GRACE_MS
 // escalation for a SIGTERM-trapping terminal must not also shorten the main
 // agent child's unrelated grace.
 const terminalKillGraceMs = strictNonNegativeEnvNumber('ACP_TERMINAL_KILL_GRACE_MS', processKillGraceMs)
+// A terminal child's `exit` can fire before its stdout/stderr pipes are fully
+// drained — Node's own docs say plainly that data may still be buffered at
+// that point — so finalizing the terminal record (ending both decoders,
+// releasing every `terminal/wait_for_exit` waiter) waits for `close` instead,
+// which fires only once those streams have actually finished. A launcher
+// command (a shell, npx, bunx, anything that forks) can leave a descendant
+// holding the same pipe open past the wrapper's own exit, and if that
+// descendant never lets go, `close` would never fire on its own — this bounds
+// that wait so a misbehaving terminal cannot hang `wait_for_exit` for the
+// rest of the turn. A dedicated grace rather than reusing processReapGraceMs
+// or terminalKillGraceMs: it bounds a different wait (stream finalization,
+// not process-group liveness or a kill escalation) and a hermetic test must
+// be able to shorten it without also shortening those.
+const terminalCloseGraceMs = strictNonNegativeEnvNumber('ACP_TERMINAL_CLOSE_GRACE_MS', 2000)
 const livenessTickMs = positiveNumber(
   process.env.ACP_LIVENESS_TICK_MS,
   Math.max(10, Math.min(1000, stallMs / 4)),
@@ -3270,16 +3284,33 @@ function createTerminal(params) {
   const flushStdout = attachTerminalOutputStream(term, terminalId, child.stdout)
   const flushStderr = attachTerminalOutputStream(term, terminalId, child.stderr)
   child.stdin.on('error', () => {})
-  child.on('error', (cause) => {
+
+  // `exit` gives the process's exit status; it is NOT proof the output is
+  // complete — see the grace comment above `terminalCloseGraceMs`. Keep the
+  // two apart: `exit` only records the raw status, `close` (or the bounded
+  // fallback below) is what actually finalizes the terminal record.
+  let rawExitStatus = null
+  let closeGraceTimer = null
+  const finalizeTerminalExit = (status) => {
+    if (closeGraceTimer) { clearTimeout(closeGraceTimer); closeGraceTimer = null }
     flushStdout()
     flushStderr()
+    settleTerminalExit(term, status)
+  }
+  child.on('error', (cause) => {
+    // A spawn failure never produced a real process or streams with output in
+    // flight, so there is nothing to wait for — finalize immediately, same as
+    // before this fix.
     appendTerminalOutput(term, `\n[terminal spawn error] ${cause.message}\n`)
-    settleTerminalExit(term, { exitCode: null, signal: null })
+    finalizeTerminalExit({ exitCode: null, signal: null })
   })
   child.on('exit', (code, signal) => {
-    flushStdout()
-    flushStderr()
-    settleTerminalExit(term, { exitCode: code, signal })
+    rawExitStatus = { exitCode: code, signal }
+    closeGraceTimer = setTimeout(() => finalizeTerminalExit(rawExitStatus), terminalCloseGraceMs)
+    closeGraceTimer.unref?.()
+  })
+  child.on('close', (code, signal) => {
+    finalizeTerminalExit(rawExitStatus ?? { exitCode: code, signal })
   })
 
   ensureTerminalStdinBridge()
