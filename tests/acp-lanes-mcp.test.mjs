@@ -2540,3 +2540,190 @@ test('serve() survives an error forwarded onto its readline interface', async ()
     rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 })
   }
 })
+
+// ## Second batch of confirmed findings against acp-lanes-mcp.mjs
+//
+// Every shipped lane launches its adapter through a package-runner wrapper
+// (`npx`/`bunx`), so the process `realProbeTransport` spawns is never the ACP
+// agent itself. Signalling only that wrapper's own pid reaped the wrapper and
+// left the descendant it launched running, still able to answer a timed-out
+// provider call while `probeLanes`'s sequential loop started the next lane —
+// contradicting its own one-budget-at-a-time comment. Reproduced with a real
+// wrapper process that spawns a real descendant, the same shape every shipped
+// lane actually launches, not a mock of one.
+test('realProbeTransport reaps a descendant left behind by a package-runner wrapper, not only the wrapper itself', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-descendant-'))
+  const pidFile = join(dir, 'descendant-pid')
+  try {
+    const descendant = join(dir, 'descendant.cjs')
+    // Ignores SIGTERM on purpose — the same shape as the existing
+    // "finish() does not settle until a killed child has actually exited"
+    // test, forcing the kill ladder all the way to SIGKILL so a signal
+    // delivered only to the wrapper (and never to this process) would leave
+    // it running indefinitely instead of merely slow to die.
+    writeFileSync(descendant, [
+      "process.on('SIGTERM', () => {})",
+      'setInterval(() => {}, 1000)',
+    ].join('\n'))
+    const wrapper = join(dir, 'wrapper.cjs')
+    // A wrapper that execs the real work as a SEPARATE process sharing its
+    // process group — exactly what `npx`/`bunx` do — and never itself speaks
+    // ACP, so the probe has nothing to read and must time out, the same as a
+    // real wrapper stalled resolving a package while its own child idles.
+    writeFileSync(wrapper, [
+      "const { spawn } = require('child_process')",
+      "const fs = require('fs')",
+      `const child = spawn(process.execPath, [${JSON.stringify(descendant)}], { stdio: 'ignore' })`,
+      `fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid))`,
+      'setInterval(() => {}, 1000)',
+    ].join('\n'))
+    const result = await realProbeTransport({
+      command: [process.execPath, wrapper], env: process.env, timeoutMs: 300,
+    })
+    assert.equal(result.settled, 'timeout')
+    const descendantPid = Number(readFileSync(pidFile, 'utf8'))
+    let alive = true
+    try { process.kill(descendantPid, 0) } catch { alive = false }
+    assert.equal(alive, false,
+      'realProbeTransport settled while the wrapper\'s descendant was still alive — '
+      + 'probeLanes\' next lane could start spawning over it')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// `rate_limit_exceeded` used to fall through QUOTA_SIGNAL entirely: `_` is a
+// word character, so the `\b` closing the `rate.?limit(?:ed)?` alternative
+// refused to match right after "limit" with "_exceeded" following it — even
+// though `insufficient_quota` and `resource_exhausted`, spelled out as their
+// own literal alternatives in the same regex, matched fine.
+test('the machine-readable rate_limit_exceeded error code is recognized as a quota signal', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-quota-underscore-'))
+  try {
+    const script = join(dir, 'rate-limit-exceeded.cjs')
+    writeFileSync(script, [
+      "process.stderr.write('rate_limit_exceeded')",
+      'process.exit(1)',
+    ].join('\n'))
+    const result = await realProbeTransport({
+      command: [process.execPath, script], env: process.env, timeoutMs: 4000,
+    })
+    assert.equal(result.settled, 'exit')
+    assert.equal(result.quotaSignal, true,
+      'the machine-readable rate_limit_exceeded code was not recognized as a quota signal')
+    assert.equal(classifyProbe(result), 'quota_exhausted',
+      'a recognized quota signal on exit did not classify as quota_exhausted')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// A JSON-RPC SUCCESS carrying `{}` or `null` for session/prompt is not an
+// answer, and nothing validated the result's own shape before this fix — any
+// non-error result that was not `stopReason: 'cancelled'` fell into
+// `settled: 'response'`, reporting a lane that produced no answer as reachable.
+test('a malformed session/prompt result -- {} or null -- is not reported reachable', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-malformed-prompt-'))
+  try {
+    for (const bad of ['{}', 'null']) {
+      const stub = join(dir, `stub-${bad === '{}' ? 'empty' : 'null'}.cjs`)
+      writeFileSync(stub, [
+        "const readline = require('readline')",
+        "const rl = readline.createInterface({ input: process.stdin })",
+        "const say = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n')",
+        "rl.on('line', (line) => {",
+        '  let m; try { m = JSON.parse(line) } catch { return }',
+        "  if (m.method === 'initialize') return say(m.id, { protocolVersion: 1 })",
+        "  if (m.method === 'session/new') return say(m.id, { sessionId: 'sess_ok' })",
+        `  if (m.method === 'session/prompt') return say(m.id, ${bad})`,
+        '})',
+        'setInterval(() => {}, 1000)',
+      ].join('\n'))
+      const started = Date.now()
+      const result = await realProbeTransport({
+        command: [process.execPath, stub], env: process.env, timeoutMs: 4000,
+      })
+      const elapsed = Date.now() - started
+      assert.ok(elapsed < 2000,
+        `a malformed prompt result ${bad} was not classified until close to the full probe timeout (${elapsed}ms)`)
+      assert.notEqual(result.settled, 'response',
+        `a session/prompt result of ${bad} was reported reachable: ${JSON.stringify(result)}`)
+      assert.equal(classifyProbe(result), 'unclassified',
+        `a malformed prompt result ${bad} was reported to a caller as ${classifyProbe(result)}`)
+    }
+    // And a well-formed one still completes — the guard must not be refusing
+    // everything and calling that a pass.
+    const good = join(dir, 'good.cjs')
+    writeFileSync(good, [
+      "const readline = require('readline')",
+      "const rl = readline.createInterface({ input: process.stdin })",
+      "const say = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n')",
+      "rl.on('line', (line) => {",
+      '  let m; try { m = JSON.parse(line) } catch { return }',
+      "  if (m.method === 'initialize') return say(m.id, { protocolVersion: 1 })",
+      "  if (m.method === 'session/new') return say(m.id, { sessionId: 'sess_ok' })",
+      "  if (m.method === 'session/prompt') return say(m.id, { stopReason: 'end_turn' })",
+      '})',
+      'setInterval(() => {}, 1000)',
+    ].join('\n'))
+    const ok = await realProbeTransport({
+      command: [process.execPath, good], env: process.env, timeoutMs: 4000,
+    })
+    assert.equal(ok.settled, 'response', `a well-formed prompt result was refused: ${JSON.stringify(ok)}`)
+    assert.equal(classifyProbe(ok), null, 'a completed probe should classify as reachable')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// An 'error' on the child's OWN stdout stream was swallowed by an empty
+// listener that stopped the crash but settled nothing: every pending
+// `send()` request was left unresolved forever, so the probe rode the full
+// timeout out reporting `probe_timeout` even though the stream itself had
+// just proven no further JSON-RPC frame could ever arrive. Run through a
+// harness process the same way the sibling stream-crash test above does: an
+// unhandled 'error' from a missing listener would kill the HARNESS, not this
+// test runner, which is the point of the extra process. The stub here never
+// answers anything, so a fast settlement can only come from the injected
+// stream error, never from a reply racing it.
+test('an error on the child stdout stream settles the probe immediately as a transport failure, not after the full timeout', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-stdout-error-settles-'))
+  try {
+    const targetUrl = pathToFileURL(
+      join(PLUGIN, 'skills', 'party-mode', 'scripts', 'acp-lanes-mcp.mjs')).href
+    const stub = join(dir, 'quiet.cjs')
+    writeFileSync(stub, "setInterval(() => {}, 1000)\n")
+    const harness = join(dir, 'harness.mjs')
+    writeFileSync(harness, [
+      `import { realProbeTransport } from ${JSON.stringify(targetUrl)}`,
+      "import { spawn } from 'node:child_process'",
+      'const spawnFn = (...args) => {',
+      '  const child = spawn(...args)',
+      "  setTimeout(() => child.stdout.emit('error', Object.assign(new Error('injected'), { code: 'EIO' })), 150)",
+      '  return child',
+      '}',
+      'const started = Date.now()',
+      'const result = await realProbeTransport({',
+      `  command: [process.execPath, ${JSON.stringify(stub)}],`,
+      '  env: process.env,',
+      '  timeoutMs: 4000,',
+      '  spawnFn,',
+      '})',
+      'const elapsed = Date.now() - started',
+      "process.stdout.write('RESULT:' + JSON.stringify({ ...result, elapsed }) + '\\n')",
+    ].join('\n'))
+    const out = spawnSync(process.execPath, [harness], { encoding: 'utf8', timeout: 12000 })
+    assert.equal(out.status, 0, `the harness crashed instead of the promise settling: ${out.stderr}`)
+    assert.ok(!/Unhandled ['"]error['"] event/.test(out.stderr ?? ''),
+      `an unhandled 'error' from child.stdout reached the process: ${out.stderr}`)
+    const line = (out.stdout ?? '').split('\n').find((l) => l.startsWith('RESULT:'))
+    assert.ok(line, `realProbeTransport never settled after a stdout stream error: ${out.stdout}${out.stderr}`)
+    const result = JSON.parse(line.slice('RESULT:'.length))
+    assert.equal(result.settled, 'transport_error',
+      `a stdout stream error was not classified as a transport failure: ${JSON.stringify(result)}`)
+    assert.ok(result.elapsed < 2000,
+      `an already-failed stdout stream still rode out toward the 4s probe timeout (${result.elapsed}ms)`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 })
+  }
+})

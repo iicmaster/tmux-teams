@@ -459,8 +459,13 @@ const PROBE_CRASHED = 'the probe crashed before producing a classified result'
 //                                                 so this is the only place left that can still see
 //                                                 whatever quotaSignal was already true by then
 //   { settled: 'invalid_handshake' }             session/new succeeded with no sessionId
+//   { settled: 'invalid_prompt_result' }         session/prompt succeeded but the result itself
+//                                                 is not a well-formed object carrying a string
+//                                                 stopReason — {} and null both land here
 //   { settled: 'cancelled' }                     session/prompt completed carrying
 //                                                 stopReason: 'cancelled' — a round trip, not an answer
+//   { settled: 'transport_error' }                a live stream (stdout) faulted mid-probe; no
+//                                                 further JSON-RPC frame can arrive on it
 // `classifyProbe` reads only this shape. It is exported and pure so a test
 // can drive every branch with a plain object and never a subprocess.
 // The companion's own session-id shape, copied with its source named. This file
@@ -482,13 +487,15 @@ export function classifyProbe(result) {
   }
   if (result.settled === 'exit' && result.quotaSignal === true) return 'quota_exhausted'
   if (result.settled === 'refused') return result.quotaSignal === true ? 'quota_exhausted' : 'unclassified'
-  // These two return what the default below returns, and deleting this line
-  // leaves the suite at 69/0 — measured, so it is written down rather than
-  // presented as a guard. It is a PIN, not a decision: it fixes the answer for
-  // two shapes this release introduced, so that changing the catch-all cannot
-  // silently reclassify a cancelled turn or a handshake with no session as
+  // These return what the default below returns anyway, and that is exactly
+  // why they are pinned here rather than left to fall through it. It is a
+  // PIN, not a decision: it fixes the answer for every named shape this file
+  // settles on its own (never a provider's), so that changing the catch-all
+  // later cannot silently reclassify a cancelled turn, a handshake with no
+  // session, a malformed prompt result, or a faulted transport stream as
   // something a caller would act on.
-  if (result.settled === 'invalid_handshake' || result.settled === 'cancelled') return 'unclassified'
+  if (result.settled === 'invalid_handshake' || result.settled === 'invalid_prompt_result'
+    || result.settled === 'cancelled' || result.settled === 'transport_error') return 'unclassified'
   return 'unclassified'
 }
 
@@ -512,6 +519,31 @@ export function classifyProbe(result) {
 // schedule, and the first attempt at that test passed `spawnFn` to a function
 // that did not take it — so nothing was injected and it went green while the
 // listeners were deleted.
+//
+// Every shipped lane launches its adapter through a package-runner wrapper
+// (`npx`/`bunx` — see review-profiles.mjs), so the process this transport
+// spawns is never the ACP agent itself; it is a wrapper that resolves and
+// execs one. Signalling only `child.pid` reaps the WRAPPER and leaves the
+// agent it launched running, still holding the inherited pipes and still able
+// to answer a timed-out provider call while `probeLanes`'s own sequential loop
+// starts the NEXT lane — contradicting its one-budget-at-a-time comment.
+// `detached: true` on the spawn below makes `child.pid` the id of a NEW
+// process group the wrapper leads, so a NEGATIVE-pid signal reaches the
+// wrapper and every descendant sharing that group at once — the same
+// primitive `acp-companion.mjs` already uses for the same reason
+// (`process.kill(-agent.pid, signal)`, `groupPids`, `waitForGroupGone`).
+// `kill(-pgid, 0)` is POSIX and, per that file's own comment on the
+// primitive, fails only once no member of the group is left — proof enough
+// on its own that this probe needs no `ps` survey to get the same guarantee.
+async function waitForProbeGroupGone(groupId, timeoutMs) {
+  const deadline = Date.now() + Math.max(0, timeoutMs)
+  while (Date.now() <= deadline) {
+    try { process.kill(-groupId, 0) } catch { return true }
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  try { process.kill(-groupId, 0); return false } catch { return true }
+}
+
 export async function realProbeTransport({ command, env, timeoutMs, spawnFn = spawn }) {
   return new Promise((settle) => {
     let done = false
@@ -527,21 +559,37 @@ export async function realProbeTransport({ command, env, timeoutMs, spawnFn = sp
       // 'exit' event is guaranteed for that shape on every platform, and
       // waiting for one would trade a fast, correct classification for a
       // probe that never settles. A child that DID fork is signalled and this
-      // promise now waits for its REAL 'exit' before resolving: settling on
-      // SIGTERM/SIGKILL alone let `probeLanes`'s own sequential loop start the
-      // NEXT lane's spawn while this one was still tearing down through the
-      // kill grace window, contradicting the one-budget-at-a-time comment
-      // above `probeLanes`.
+      // promise now waits for the WHOLE PROCESS GROUP to be gone before
+      // resolving: settling on the WRAPPER's own exit alone (an earlier
+      // version of this code) let `probeLanes`'s own sequential loop start the
+      // NEXT lane's spawn while THIS lane's real adapter was still tearing
+      // down behind it, contradicting the one-budget-at-a-time comment above
+      // `probeLanes`.
       if (child?.pid !== undefined && child.exitCode === null && child.signalCode === null) {
-        // Clear the escalation on the way out. Without this the timer outlives
-        // settlement: a stub probe that answered in ~70ms held the node process
-        // alive for the full 2s and then tried to SIGKILL a child that had been
-        // dead the whole time. Bounded, so not a leak — but latency nobody
-        // chose, on the one path a caller runs once per lane.
-        child.once('exit', () => { if (killTimer) clearTimeout(killTimer); settle(result) })
-        try { child.kill('SIGTERM') } catch { /* already gone */ }
-        killTimer = setTimeout(() => { try { child.kill('SIGKILL') } catch { /* already gone */ } }, 2000)
+        const groupId = child.pid
+        const killGroup = (signal) => {
+          // The GROUP first: `detached: true` on the spawn below makes
+          // `groupId` the wrapper's own process-group id, so one call here
+          // reaches the wrapper and every descendant sharing it. Falling back
+          // to the single-pid form only when the group form itself throws is
+          // never worse than the old behaviour — it IS the old behaviour,
+          // kept as the last resort rather than the whole strategy.
+          try { process.kill(-groupId, signal); return }
+          catch { try { child.kill(signal) } catch { /* already gone */ } }
+        }
+        killGroup('SIGTERM')
+        killTimer = setTimeout(() => killGroup('SIGKILL'), 2000)
         killTimer.unref?.()
+        ;(async () => {
+          // Bounded at 4s: 2s of SIGTERM grace plus room for the SIGKILL
+          // escalation that follows it to actually land. Clearing the
+          // escalation on the way out matters for the same reason it did
+          // before this change — a stub probe that answers in ~70ms must not
+          // hold this process alive for a SIGKILL timer nothing still needs.
+          await waitForProbeGroupGone(groupId, 4000)
+          if (killTimer) clearTimeout(killTimer)
+          settle(result)
+        })()
         return
       }
       settle(result)
@@ -550,7 +598,11 @@ export async function realProbeTransport({ command, env, timeoutMs, spawnFn = sp
 
     const [bin, ...args] = command
     try {
-      child = spawnFn(bin, args, { cwd: tmpdir(), env, stdio: ['pipe', 'pipe', 'pipe'] })
+      // `detached: true` makes the wrapper this spawns its OWN process-group
+      // leader (`child.pid` becomes the group id) rather than sharing this
+      // process's group — the precondition `killGroup`/`waitForProbeGroupGone`
+      // above rely on to reach the wrapper's descendants with one signal.
+      child = spawnFn(bin, args, { cwd: tmpdir(), env, stdio: ['pipe', 'pipe', 'pipe'], detached: true })
     } catch (error) {
       clearTimeout(timer)
       finish({ settled: 'spawn_error', errnoCode: error?.code ?? null })
@@ -576,7 +628,15 @@ export async function realProbeTransport({ command, env, timeoutMs, spawnFn = sp
     // A provider's own wording never leaves this function — this boolean is
     // the ONLY thing either stream is allowed to produce for the caller.
     let quotaSignal = false
-    const QUOTA_SIGNAL = /\b(quota|rate.?limit(?:ed)?|429|insufficient_quota|resource_exhausted)\b/i
+    // `rate_limit_exceeded` used to fall through this list entirely: `_` is a
+    // word character, so the `\b` that closes the `rate.?limit(?:ed)?`
+    // alternative refuses to match right after "limit" when the next
+    // character is the underscore in "_exceeded" — the same reason
+    // `insufficient_quota` and `resource_exhausted` are spelled out here as
+    // their OWN literal alternatives rather than assumed to fall out of
+    // `quota` alone. One gap, not a category: named explicitly rather than
+    // loosening the boundary rule this regex otherwise relies on.
+    const QUOTA_SIGNAL = /\b(quota|rate.?limit(?:ed)?|rate_limit_exceeded|429|insufficient_quota|resource_exhausted)\b/i
     // Measured, not theoretical: two ordinary back-to-back writes of one word
     // split across the write boundary ('resource_' then 'exhausted') arrived
     // as two SEPARATE 'data' events in the majority of trials, and neither
@@ -610,7 +670,15 @@ export async function realProbeTransport({ command, env, timeoutMs, spawnFn = sp
     // down. Found on the third pass: two doors were named, a survey of every stream
     // with a 'data' listener and no 'error' listener found seven.
     child.stderr.on('error', () => {})
-    child.stdout.on('error', () => {})
+    // stdout is different from stderr: losing stderr costs only the quota
+    // watcher, but every JSON-RPC frame this probe will ever read arrives on
+    // stdout. An empty listener here swallowed the fault and left the process
+    // alive with every pending `send()` unresolved, so the probe rode the
+    // full PROBE_TIMEOUT_MS out reporting `probe_timeout` for a lane that had
+    // already told us, immediately, that no further reply could arrive.
+    // Settle now with what this call already knows, and let `finish` start
+    // the SAME teardown it runs for every other terminal outcome.
+    child.stdout.on('error', () => { finish({ settled: 'transport_error' }) })
     child.stderr.on('data', noteStderrQuotaSignal)
 
     // One JSON-RPC line at a time, id-correlated, exactly the framing this
@@ -702,13 +770,27 @@ export async function realProbeTransport({ command, env, timeoutMs, spawnFn = sp
         }
         const result = await send('session/prompt',
           { sessionId: session.sessionId, prompt: [{ type: 'text', text: PROBE_BRIEF }] })
+        // A JSON-RPC SUCCESS carrying `{}` or `null` is not an answer — nothing
+        // upstream validated the RESULT's own shape, only that a result (and
+        // not an error) arrived, so `result?.stopReason === 'cancelled' ?
+        // 'cancelled' : 'response'` sent every one of those down the
+        // `'response'` branch: a lane that produced no answer reported as one
+        // that did, from the one tool whose entire job is classifying
+        // reachability. Same precedent as the handshake guard above — TYPE
+        // first, because `RegExp.test` (or here, a bare truthy/coercing check)
+        // accepts shapes a caller never meant to send — and an object check
+        // alone still passes an array, so that is refused too.
+        if (result === null || typeof result !== 'object' || Array.isArray(result)
+          || typeof result.stopReason !== 'string') {
+          finish({ settled: 'invalid_prompt_result' }); return
+        }
         // `stopReason: 'cancelled'` is what comes back when the turn itself
         // was cut short — including by our OWN `replyToChild` above, which
         // never grants a permission request. The round trip completed, but no
         // answer was produced, which is not the claim `settled: 'response'`
         // makes: treating any non-error result as reachable let a cancelled
         // turn report the same as a real one.
-        finish({ settled: result?.stopReason === 'cancelled' ? 'cancelled' : 'response' })
+        finish({ settled: result.stopReason === 'cancelled' ? 'cancelled' : 'response' })
       } catch {
         // A rejected request means the child refused (auth, quota, malformed
         // reply) WITHOUT exiting — the `exit` handler above cannot help here
