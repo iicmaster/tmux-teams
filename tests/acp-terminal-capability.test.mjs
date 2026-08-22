@@ -355,6 +355,7 @@ test('a wrapper terminal command that forks a descendant has the WHOLE subtree r
   const run = runCompanion('task-term-wrapper-descendant', {
     ACP_ENABLE_TERMINAL: '1',
     MOCK_SCENARIO: 'terminal-wrapper-descendant',
+    ACP_TERMINAL_KILL_GRACE_MS: '200',
   })
   assert.equal(run.status, 0, `expected a clean dispatch; stderr:\n${run.stderr}`)
   const pidFile = join(run.cwd, 'terminal-wrapper-descendant-pid')
