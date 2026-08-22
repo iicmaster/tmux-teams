@@ -361,7 +361,7 @@ const LOOP_OWNED_ACP = [
   'ACP_EXECUTION_PROFILE', 'ACP_EXPECT_MODEL', 'ACP_EXPECT_REASONING_EFFORT',
   'ACP_INHERIT_PROJECT_CONFIG', 'ACP_KMS_AUTO', 'ACP_LIVENESS_TICK_MS',
   'ACP_LIVENESS_WRITE_INTERVAL_MS', 'ACP_MODEL', 'ACP_PRIOR_DISPATCH_ID',
-  'ACP_ENV_PASSTHROUGH', 'ACP_PRIOR_RECEIPT_DIGEST', 'ACP_PROCESS_REAP_GRACE_MS',
+  'ACP_ENV_PASSTHROUGH', 'ACP_PRIOR_RECEIPT_DIGEST',
   'ACP_REASONING_EFFORT', 'ACP_RESUME', 'ACP_SESSION_OPERATION',
   'ACP_SESSION_RECEIPT_REQUIRED', 'ACP_SPAWN_NONCE',
   'ACP_TERMINAL_CLOSE_GRACE_MS', 'ACP_TERMINAL_KILL_GRACE_MS',
@@ -415,9 +415,42 @@ test('every ACP_ variable the companion reads is classified as forwarded or owne
   // repository has now written down three times.
   assert.deepEqual([...LOOP_FORWARDED_ACP_CONTROLS], [
     'ACP_CANCEL_GRACE_MS', 'ACP_CANCEL_GRACE_SEC', 'ACP_HARD_TIMEOUT_SEC',
-    'ACP_PROCESS_KILL_GRACE_MS', 'ACP_STALL_POLICY',
+    'ACP_PROCESS_KILL_GRACE_MS', 'ACP_PROCESS_REAP_GRACE_MS', 'ACP_STALL_POLICY',
   ], 'the forwarded operator surface changed — SKILL.md documents it and must change with it')
-  assert.equal(LOOP_OWNED_ACP.length, 23)
+  assert.equal(LOOP_OWNED_ACP.length, 22)
+
+  // THE SCANNER'S REMAINING BLIND SPOT, named by the lane that blocked on it.
+  // Every check above reads NAMES out of the source, so a read whose name is
+  // COMPUTED is invisible to all of them and the classification would report
+  // complete while a whole family went unclassified.
+  //
+  // The first draft of this asserted there were NONE. There are four, and that
+  // is why it asserts a property instead of an absence. Two shapes are safe and
+  // one is not:
+  //
+  //   `process.env[name]` — a bare identifier, i.e. a helper parameter
+  //   (`strictNonNegativeEnvNumber`, `requestedConfigOverride`) or a loop
+  //   variable over a declared constant. Every CALL SITE passes a literal, and
+  //   the identifier scan above reads those.
+  //
+  //   `process.env[`ACP_TEST_..._FAILURE`]` — a name BUILT at runtime, whose
+  //   literal head sits inside a family this runner owns by prefix. Owned
+  //   whatever the tail turns out to be.
+  //
+  //   Anything else — a name built from a head that is not an owned family —
+  //   cannot be classified by reading names at all, and is refused here.
+  const bracketArgs = [...src.matchAll(/process\.env\[([^\]]*)\]/g)]
+    .map((m) => m[1].trim())
+    .filter((arg) => !/^['"][A-Za-z_][A-Za-z0-9_]*['"]$/.test(arg))
+    .filter((arg) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(arg))
+  const unclassifiable = bracketArgs.filter((arg) => !/^[`'"]ACP_TEST_/.test(arg))
+  assert.deepEqual(unclassifiable, [],
+    'the companion builds an env variable name from a head no owned family covers, so no scan over '
+    + `names can classify it — use a literal, or own the family by prefix: ${unclassifiable.join(' · ')}`)
+  // And the safe shapes are asserted to still BE the safe shapes, so this does
+  // not quietly become a filter that passes everything.
+  assert.ok(bracketArgs.length >= 1,
+    'the computed-read scan matched nothing at all — the pattern stopped working')
 })
 
 test('an ambient ACP_ENABLE_TERMINAL never reaches a dispatched worker', () => {
