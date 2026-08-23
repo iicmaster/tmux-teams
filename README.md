@@ -399,7 +399,7 @@ relaying a person's words is expected to sign `human:` and name itself in
 
 ---
 
-## 4. The twelve skills
+## 4. The eleven skills
 
 **Setting up and running the loop**
 
@@ -407,7 +407,6 @@ relaying a person's words is expected to sign `human:` and name itself in
 |---|---|
 | `tmux-teams:graph-setup` | first run, or the declaration is missing/rejected — interviews until `graph.json` is complete, then validates it |
 | `tmux-teams:tmux-teams` | you are the PM: dispatch, completion detection, capture, the mailbox contract, the delivery loop |
-| `tmux-teams:codex-tmux-driver` | driving a live Codex TUI — its flags, calibrated markers, and dialog behavior |
 
 **Getting work done carefully**
 

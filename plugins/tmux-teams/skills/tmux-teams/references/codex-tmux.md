@@ -1,15 +1,23 @@
----
-name: codex-tmux-driver
-description: "Drive an OpenAI Codex CLI interactive session via tmux — launch codex with the right approval/sandbox flags, submit prompts reliably, detect working/idle/approval states, catch turn completion reliably (outbox contract first, notify hook, stability polling), capture results, and resume sessions. Use when delegating coding work to a live Codex TUI inside tmux, babysitting a long Codex run, or handling Codex approval prompts. ใช้เมื่อต้องขับ/สั่งงาน Codex CLI แบบ interactive ผ่าน tmux จาก Claude Code. For one-shot headless runs prefer codex exec (see references). NOT for orchestrating many mixed agents as PM (use tmux-teams)."
-metadata:
-  author: ngs
-  scope: claude
----
+# Driving a live Codex TUI through tmux
 
-# Codex tmux driver
+Codex-specific calibration for the generic protocol in `SKILL.md` — launch
+flags, state markers, approval-dialog behaviour, completion detection and
+session lifecycle. Read `SKILL.md` ข้อ 2-5 first; this file only says what is
+DIFFERENT about codex.
 
-Drive a live Codex CLI TUI from Claude Code through tmux. Codex-specific knowledge
-lives here; the generic tmux mechanics (send/verify/retry, PM discipline) live in
+**This was a top-level skill (`codex-tmux-driver`) until v0.35.0.** It became a
+reference because the split it belonged to was never real: `SKILL.md` claimed
+tool-specific facts lived in per-tool driver skills, and exactly one such skill
+ever existed while claude-zai and opencode facts stayed inline. See ADR 0009.
+
+For a one-shot headless run prefer `codex exec` — see
+`codex-cli-reference.md`. For orchestrating several mixed agents as PM, that is
+`SKILL.md` itself, not this file.
+
+## What this file assumes
+
+Codex-specific knowledge lives here; the generic tmux mechanics
+(send/verify/retry, PM discipline) live in
 `tmux-teams` and `interactive-agent-driver` — don't re-derive them.
 
 Facts below marked "field-verified" were measured on codex-cli 0.144.1

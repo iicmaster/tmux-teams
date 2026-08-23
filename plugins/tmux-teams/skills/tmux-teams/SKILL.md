@@ -1,6 +1,6 @@
 ---
 name: tmux-teams
-description: 'Use when acting as PM dispatching work to interactive CLI agents (codex, claude, claude-zai, opencode) inside tmux sessions — reliable prompt submission, completion detection, and output capture. Triggers: "สั่งงานผ่าน tmux", "ทีม codex/claude-zai", PM-via-tmux orchestration.'
+description: 'Drive interactive CLI agents (codex, claude, claude-zai, opencode) inside tmux — from ONE live session to a whole PM-run team. Reliable prompt submission, working/idle/approval state detection, completion detection, output capture, and session resume. Use when delegating coding work to a live Codex or Claude TUI, babysitting a long run, handling an approval prompt, or acting as PM over several mixed agents. Codex-specific flags, markers and dialog behaviour are in references/codex-tmux.md; for a one-shot headless codex run prefer codex exec. Triggers: "สั่งงานผ่าน tmux", "ขับ codex", "ทีม codex/claude-zai", PM-via-tmux orchestration.'
 ---
 
 # tmux-teams — orchestrating interactive CLI agents via tmux
@@ -9,9 +9,18 @@ Drive interactive TUI agents (codex / claude / claude-zai) as "teams": you plan
 and dispatch, teams execute. Every lesson below was paid for by a real failure.
 
 This skill owns the **generic protocol** (dispatch, completion, capture, PM
-discipline, mailbox pattern). Tool-specific facts live in per-tool driver skills
-and are the source of truth for that tool: **codex → `codex-tmux-driver`**
-(flags, calibrated markers, dialog behavior, notify caveats, slash commands).
+discipline, mailbox pattern) AND the tool-specific facts, because a tool's
+calibration is useless without the protocol it calibrates.
+
+Codex has enough of it to earn its own file:
+`references/codex-tmux.md` (flags, calibrated markers, dialog behavior, notify
+caveats, slash commands). claude-zai and opencode specifics stay inline below.
+
+**That was three separate skills' worth of promise until v0.35.0, and only one
+was ever kept.** This file used to say tool-specific facts lived in "per-tool
+driver skills" — plural — while exactly one existed and the other two tools'
+facts sat in this very file. An abstraction with one implementation, violated
+for everything else. ADR 0009 records the collapse.
 
 ## 0. Delivery loop — declaration, custody, pull, tick
 
@@ -249,7 +258,7 @@ echo TEAM_DONE
 
 - Run via Bash `run_in_background` (one team) or Monitor (streaming several).
 - Known done-markers as extra signal: claude prints `✻ Worked for Xs`; codex
-  markers/states are calibrated in `codex-tmux-driver` ข้อ 3 — use those verbatim.
+  markers/states are calibrated in `references/codex-tmux.md` ข้อ 3 — use those verbatim.
 - Always pair with a timeout; on "never started" warnings, first re-check the
   input box (see ข้อ 2) before assuming the team is slow.
 
@@ -359,7 +368,7 @@ versions submitted back-to-back.
 Design, delivery-loop script, and what does/doesn't transfer from the native
 feature: `references/teammates-messaging.md` (Part 3 = field-verified PoC results
 at the pattern level: round-trip, queueing proof, Enter-swallow every dispatch;
-codex-specific calibration lives in `codex-tmux-driver`).
+codex-specific calibration lives in `references/codex-tmux.md`).
 Proven loop: `scripts/deliver.sh`. If the whole team is Claude Code,
 consider native teams instead (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`,
 `--teammate-mode tmux`); this skill remains the path for mixed-tool teams.
@@ -599,7 +608,7 @@ with a Vertex AI / AI Studio API key instead of OAuth.
 **Permissions (stall-tested 2026-07-20):** the two transports fail very
 differently here. On tmux, a TUI approval dialog SILENTLY STALLS the turn —
 deliver.sh can only WARN and wait — so workers MUST be launched with the
-right flags up front (codex approval/sandbox flags per codex-tmux-driver,
+right flags up front (codex approval/sandbox flags per `references/codex-tmux.md`,
 claude bypass-permissions, agy trust-once). On ACP there is no stall: under
 the most restrictive codex config (`approval_policy = "untrusted"` +
 `sandbox_mode = "read-only"`) the run still completed hands-free — approvals

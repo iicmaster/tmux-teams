@@ -605,6 +605,10 @@ not optional, and only a later explicit instruction from Master changes either.
   `tmux-teams`, `party-mode`, `party-auto`, `party-advise`, `sqthink`,
   `codex-tmux-driver` — its `PLUGIN_DELIVERED` names exactly those, and the
   plugin has bundled more since.
+  **`codex-tmux-driver` stopped being a skill in v0.35.0** (ADR 0009 — it is now
+  `skills/tmux-teams/references/codex-tmux.md`). That name is still correct in
+  the other repo's `PLUGIN_DELIVERED` list, which exists to PURGE stale copies,
+  and a name that no longer ships still needs purging. Do not remove it there.
   Treat THIS repo as authoritative; its submodule pin feeds the OpenClaw
   bridge, and must never be copied back from installed targets.
 - `~/.claude/skills` must NOT contain those same six (they were

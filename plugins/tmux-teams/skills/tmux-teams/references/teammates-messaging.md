@@ -213,11 +213,11 @@ Pattern-level field facts — trust these over assumptions:
   window got both versions submitted back-to-back. Halt deliver.sh (stop flag →
   wait for PID exit) before touching the inbox or the pane. Also bound open-ended
   briefs and prepend "work alone — no subagents" for OMX-equipped tools; see
-  `tmux-teams` ข้อ 5-6 and `codex-tmux-driver` ข้อ 2.
+  `tmux-teams` ข้อ 5-6 and `codex-tmux.md` ข้อ 2.
 
 Codex-specific calibration from this run (verbatim markers incl. lowercase
 `esc to interrupt`, boot-dialog single-keypress behavior, notify-chain no-op
-details, `/status` flag-override verification) is owned by `codex-tmux-driver`
+details, `/status` flag-override verification) is owned by `codex-tmux.md`
 ข้อ 1-4 — the driver owns tool facts; this doc owns the pattern.
 
 Residual risks for production (from the completion review): embed the sentinel as
