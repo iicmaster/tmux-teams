@@ -783,13 +783,36 @@ test('every shipped skill is named in the README, and the README names no skill 
   const named = new Set([...readme.matchAll(/`tmux-teams:([a-z0-9-]+)`/g)].map((m) => m[1]))
   // `tmux-teams:tmux-teams` is the plugin's own entry skill and is named the
   // same as the plugin, so it appears in prose that is not an inventory line.
-  const shipped = new Set(SKILLS)
+  // READ THE DIRECTORY, do not trust the list. A review lane blocked v0.34.0
+  // partly on this: the word "shipped" here used to mean `new Set(SKILLS)`, so
+  // a skill directory that existed and was in NEITHER `SKILLS` nor the README
+  // passed every check in this file. The list is still pinned separately — that
+  // is what catches a deletion — but "shipped" now means what is on disk.
+  const onDisk = readdirSync(join(PLUGIN, 'skills'), { withFileTypes: true })
+    .filter((e) => e.isDirectory() && existsSync(join(PLUGIN, 'skills', e.name, 'SKILL.md')))
+    .map((e) => e.name)
+  const shipped = new Set(onDisk)
+  assert.deepEqual([...shipped].sort(), [...SKILLS].sort(),
+    'the skills on disk and the SKILLS list of record disagree — one of them is wrong, '
+    + 'and until this test read the directory neither could say which')
   const undocumented = [...shipped].filter((s) => !named.has(s)).sort()
   const phantom = [...named].filter((s) => !shipped.has(s)).sort()
   assert.deepEqual(undocumented, [],
     `these skills ship and the README never names them: ${undocumented.join(', ')}`)
   assert.deepEqual(phantom, [],
     `the README names skills that are not shipped: ${phantom.join(', ')}`)
+
+  // AND THE COUNT IN PROSE, which is what actually shipped wrong. The section
+  // heading said "The eleven skills" while the tables below it named twelve —
+  // a contradiction inside one document, and nothing was watching a number
+  // written as a word.
+  const WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight',
+    'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen',
+    'seventeen', 'eighteen', 'nineteen', 'twenty']
+  const heading = readme.match(/^##\s*\d+\.\s*The\s+(\w+)\s+skills\s*$/m)
+  assert.ok(heading, 'the README no longer has a "The <n> skills" heading for this test to check')
+  assert.equal(heading[1], WORDS[shipped.size],
+    `the README heading says "${heading[1]}" and ${shipped.size} skills ship`)
 })
 
 // Agent Plugins 1.0 asks for client-specific material under a reverse-domain

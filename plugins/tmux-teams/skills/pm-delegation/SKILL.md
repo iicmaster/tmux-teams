@@ -152,8 +152,12 @@ Say which, and stop. It is not a slow moment to wait through.
    ticket: six implementers rediscovering the same layout costs six times as
    much and they will not all reach the same answer.
 
-3. **Branch, and open a draft pull request**, so the work has somewhere to
-   accumulate and a reader can watch it.
+3. **Branch.** The work needs somewhere to accumulate. **Do NOT push and do NOT
+   open a pull request** — this skill has no authority to touch a remote, and an
+   earlier version of this step asked for a draft PR while the boundary below
+   forbade the push that a PR requires. A review lane caught the impossibility.
+   The branch and its commits ARE the deliverable; step 10 hands them back and
+   the owner opens the PR.
 
 4. **Dispatch the frontier — one implementer per ticket, each in its own
    worktree.** The worktree is not optional. Agents sharing one checkout race on
@@ -185,13 +189,28 @@ Say which, and stop. It is not a slow moment to wait through.
 7. **Review the whole result against the SPEC, not the tickets.** Every ticket
    can be satisfied while the spec is not — that is what a spec is for.
 
-   Use a review that can execute, not only read: `codex-advisor` for the read of
-   record, `/code-review` for the diff.
+   Use a review that can EXECUTE, not only read. This plugin ships that route:
+   dispatch `codex-advisor` (or `agy-advisor` / `claude-advisor`) at the diff
+   through `acp-dispatch.mjs`, and give it the spec and the branch.
+
+   If your host also provides a `/code-review` command, run it as well — it is
+   an OPTIONAL host extra, not part of this plugin. An earlier version of this
+   step named it as the route and named nothing else; `/code-review` ships
+   nowhere in this plugin (its only other occurrence is a keyword in
+   `plugin.json`), so an agent reaching this step had no prescribed action.
+   **If neither route is available, STOP and say so** — do not mark the work
+   reviewed because the tests passed.
 
 8. **Fix review findings in ONE implementer**, not one per finding. They overlap,
    and sequencing them inside one agent is cheaper than across several.
 
-9. **Clean up every worktree.** Then mark the PR ready.
+9. **Clean up every worktree.** A worktree left behind is a checkout the next
+   run will collide with.
+
+10. **Hand back, and stop.** Report the branch name, the head commit, what each
+    ticket landed, what the spec review said, and anything you could not prove.
+    **The owner opens the pull request.** That is the boundary this skill keeps,
+    and it is why step 3 does not push.
 
 ## Pointers, not copies
 
@@ -220,6 +239,7 @@ not one agent had finished.
 
 ## What this will not do
 
-- Push, tag, or release. It leaves a draft PR.
+- Push, tag, or release. **It leaves a local branch and hands it back** — it
+  does not open a pull request, because it cannot: a PR needs a push.
 - Widen a ticket into "while I was in there".
 - Report a suite it did not run.
