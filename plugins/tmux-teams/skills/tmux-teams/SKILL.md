@@ -16,11 +16,13 @@ Codex has enough of it to earn its own file:
 `references/codex-tmux.md` (flags, calibrated markers, dialog behavior, notify
 caveats, slash commands). claude-zai and opencode specifics stay inline below.
 
-**That was three separate skills' worth of promise until v0.35.0, and only one
-was ever kept.** This file used to say tool-specific facts lived in "per-tool
-driver skills" — plural — while exactly one existed and the other two tools'
-facts sat in this very file. An abstraction with one implementation, violated
-for everything else. ADR 0009 records the collapse.
+**This file used to promise "per-tool driver skills" — plural — and only one
+ever existed.** Counted here before the collapse: codex 30 mentions and a driver
+skill of its own; claude-zai 3 and no driver; opencode 3 and no driver. An
+abstraction with one implementation, contradicted for every other tool it named.
+`codex-tmux-driver` was folded into `references/codex-tmux.md` rather than
+growing two more drivers, because the cost being paid was that nobody remembered
+the one that existed.
 
 ## 0. Delivery loop — declaration, custody, pull, tick
 

@@ -8,7 +8,10 @@ DIFFERENT about codex.
 **This was a top-level skill (`codex-tmux-driver`) until v0.35.0.** It became a
 reference because the split it belonged to was never real: `SKILL.md` claimed
 tool-specific facts lived in per-tool driver skills, and exactly one such skill
-ever existed while claude-zai and opencode facts stayed inline. See ADR 0009.
+ever existed while claude-zai and opencode facts stayed inline in `SKILL.md`
+itself. The alternative — extracting drivers for those two as well — was
+rejected: it answers an asymmetry by adding two more things to forget, and
+forgetting this one is what prompted the change.
 
 For a one-shot headless run prefer `codex exec` — see
 `codex-cli-reference.md`. For orchestrating several mixed agents as PM, that is
