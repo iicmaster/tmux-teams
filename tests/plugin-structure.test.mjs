@@ -13,8 +13,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PLUGIN = join(ROOT, 'plugins/tmux-teams')
 const SKILLS = ['tmux-teams', 'party-mode', 'party-auto', 'party-advise', 'sqthink', 'codex-tmux-driver',
-  'graph-setup', 'claude-advisor', 'codex-advisor', 'agy-advisor', 'handoff',
-  'pm-delegation']
+  'graph-setup', 'claude-advisor', 'codex-advisor', 'agy-advisor', 'handoff', 'pm-delegation',
+  'test-quality']
 const RELEASE_VERSION = '0.34.0'
 // The Stage 1 CLI entry points went on 2026-07-29 and the rest of the phase
 // subsystem — nine scripts, its gate, its store and its exporter — went on
@@ -356,6 +356,33 @@ test('semantic anchors: canonical fixes actually shipped', () => {
     assert.match(doc[1], /--time-zone/, `${doc[0]}: Pulse timezone CLI contract missing`)
     assert.match(doc[1], /RFC 3339 UTC/, `${doc[0]}: Pulse UTC data invariant missing`)
   }
+})
+
+test('test-quality semantic contract: state planes, denominator, no-auto-exec, no-threshold', () => {
+  const txt = readText(join(PLUGIN, 'skills/test-quality/SKILL.md'))
+  // Closed vocabularies, pinned literally (a loop over a mutable list proves nothing).
+  for (const v of ['observe', 'advisory', 'blocking', 'measured', 'unknown', 'tool_failure', 'flaky',
+    'allow', 'warn', 'block', 'needs_human_decision']) {
+    assert.ok(txt.includes(v), `state vocabulary missing: ${v}`)
+  }
+  // Planes stay separate — policy decision is not evidence state, not enforcement.
+  assert.ok(txt.includes('policy decision') && txt.includes('Enforcement/approval'),
+    'four-state-plane separation missing')
+  assert.ok(txt.includes("can NEVER become pass"), 'unknown/tool_failure/flaky pass rule missing')
+  // Blocking = contract-and-integrity only; universal numeric thresholds forbidden.
+  assert.ok(txt.includes('contract-and-integrity blocking'), 'blocking scope missing')
+  assert.ok(txt.includes('NEVER block on an uncalibrated universal numeric threshold'),
+    'no-universal-threshold rule missing')
+  // Denominator reconciliation + equivalent-suspected isolation.
+  assert.ok(txt.includes('partitions must sum to\n  total'), 'denominator reconciliation invariant missing')
+  assert.ok(txt.includes('is never\n  counted as killed'), 'equivalent-suspected isolation missing')
+  // verify_cmd is audit trail; re-execution comes from trusted sources.
+  assert.ok(txt.includes('audit trail'), 'verify-command audit-trail rule missing')
+  assert.ok(!/exec\(|eval\(|child_process/.test(txt), 'skill must not embed execution machinery')
+  assert.ok(txt.includes('auto-install or auto-execute'), 'no-auto-install/execute rule missing')
+  // Method-level granularity mandatory.
+  assert.ok(txt.includes('method/function-level granularity is mandatory'),
+    'method-level granularity rule missing')
 })
 
 test('party-auto/party-advise sibling path resolves inside the plugin', () => {

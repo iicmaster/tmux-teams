@@ -83,6 +83,34 @@ unexecuted guard.
 
 ## 3. STATE
 
+### `test-quality` skill — implemented on this branch, 2026-08-23 (unreleased)
+
+New sibling skill `plugins/tmux-teams/skills/test-quality/` — contract-only
+MVP: CRAP as risk/triage signal, mutation testing as test-adequacy evidence,
+policy decision (`allow|warn|block|needs_human_decision`) kept separate from
+evidence state (`measured|unknown|tool_failure|flaky`), requested mode
+(`observe|advisory|blocking`) and enforcement kept separate from both. No
+runner, no schema file, no baseline store, no dependency. Architecture was
+reviewed read-only BEFORE implementation by two lanes dispatched to
+`/tmp/test-quality-review-cwd`: AGY (`gemini-3.7-flash-high`, receipt
+`cf357494…`, identity unverified-but-recorded per the PR #63 rule) and Codex
+(`gpt-5.6-sol[max]`, receipt `e16afda5…`, matched). Both answered PROCEED WITH
+CHANGES; the convergent blockers are all in the shipped contract — blocking =
+contract-and-integrity only, method/function-level granularity mandatory,
+verify-command-in-report is audit trail (PM re-verifies from plan-derived or
+allowlisted commands only), denominator reconciliation invariant with raw
+partition counts, waiver = human-only policy-layer override, baseline = external
+immutable input. Codex's divergent additions also in: comparison-pairing
+declaration for any before/after delta, flaky attempt-history retention, raw-
+output completeness/redaction flags, four-state-plane table. Session ids are
+recorded in `/tmp/test-quality-review-cwd/.tmux-teams/` — do not rm that
+directory before copying them out.
+
+Guarded by a semantic-contract test in `tests/plugin-structure.test.mjs`
+(closed vocabularies pinned literally, reconciliation invariant, no-auto-exec,
+no-universal-threshold) plus the `SKILLS` inventory entry; full suite 1187
+pass / 0 fail / 4 skipped on this machine.
+
 ### The twelve findings from the bot's second batch
 
 All confirmed by two refuters each; none rated ship-blocking. Status:
