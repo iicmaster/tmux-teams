@@ -810,13 +810,18 @@ test('canonical availability matrix never launches or prepares direct Claude', a
     gateProfile('kimi', 'kimi'),
     gateProfile('qwen', 'qwen'),
     gateProfile('zai', 'zai'),
+    gateProfile('ninerouter', 'zai'),
     gateProfile('codex', 'openai'),
     gateProfile('claude', 'claude'),
     gateProfile('deepseek', 'deepseek'),
   ])
+  // The kimi route seats `ninerouter` since 2026-08-24; a failing ninerouter
+  // falls back to zai (same declared family, three still distinct), so that
+  // pair moved from blocked to the covered set and kimi/zai is no longer a
+  // case here.
   const blockedCases = [
     ['openai', 'qwen'], ['openai', 'zai'],
-    ['kimi', 'codex'], ['kimi', 'zai'],
+    ['kimi', 'codex'],
     ['zai', 'codex'], ['zai', 'qwen'],
     ['qwen', 'codex'], ['qwen', 'zai'],
   ]

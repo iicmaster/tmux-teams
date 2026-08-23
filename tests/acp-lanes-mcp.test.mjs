@@ -67,7 +67,7 @@ test('every declared lane is listed, and the list is pinned rather than derived 
   const listed = out.lanes.map(l => l.lane).sort()
   // Pinned literally. A test that only compared this against Object.keys of the
   // same object would keep passing while a lane quietly disappeared.
-  assert.deepEqual(listed, ['agy', 'claude', 'codex', 'deepseek', 'kimi', 'qwen', 'zai'])
+  assert.deepEqual(listed, ['agy', 'claude', 'codex', 'deepseek', 'kimi', 'ninerouter', 'qwen', 'zai'])
   assert.deepEqual(listed, Object.keys(REVIEW_PROFILES).sort(),
     'the tool and the profile registry disagree about which lanes exist')
   assert.equal(out.lanes.find(l => l.lane === 'zai').routing, 'pinned:api.z.ai/api/anthropic')
@@ -99,7 +99,7 @@ test('every declared lane is listed, and the list is pinned rather than derived 
 
 test('declared facts need nothing from this machine', () => {
   const out = callTool('acp_lanes', {}, { HOME: '/nonexistent' })
-  assert.equal(out.lanes.length, 7)
+  assert.equal(out.lanes.length, 8)
   assert.ok(out.lanes.every(l => l.adapter), 'a lane with no adapter package is not a usable answer')
 })
 
@@ -121,7 +121,7 @@ test('a lane with no parent-side check says UNCHECKED, and never that it is fine
 
 test('every status answer states what it did NOT prove', () => {
   const out = call('acp_lane_status', undefined, { HOME: '/definitely/nonexistent' })
-  assert.equal(out.lanes.length, 7)
+  assert.equal(out.lanes.length, 8)
   for (const lane of out.lanes) {
     assert.ok(Array.isArray(lane.notProven) && lane.notProven.length >= 4,
       `${lane.lane} claims a state with no boundary stated beside it`)
@@ -472,6 +472,7 @@ test('no provider secret this plugin knows about reaches the wire, from any lane
     zai: ['ZAI_API_KEY'],
     claude: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
     codex: ['OPENAI_API_KEY'],
+    ninerouter: [],
   }, 'a provider secret changed which LANE owns it')
 
   // And behaviourally, because a constant can be edited to match a test: a key
@@ -873,7 +874,7 @@ test('the manifest command boots the server and answers a real client handshake,
       assert.equal(byId.get(1).result.protocolVersion, PROTOCOL_VERSION)
       assert.deepEqual(byId.get(2).result.tools.map(t => t.name),
         ['acp_lanes', 'acp_lane_status', 'acp_lane_probe'])
-      assert.equal(JSON.parse(byId.get(3).result.content[0].text).lanes.length, 7)
+      assert.equal(JSON.parse(byId.get(3).result.content[0].text).lanes.length, 8)
       const probeRefusal = JSON.parse(byId.get(4).result.content[0].text)
       assert.equal(byId.get(4).result.isError, true, 'a probe call with no lanes must be reported as refused')
       assert.match(probeRefusal.error, /non-empty array of lane ids/)
@@ -1353,7 +1354,10 @@ test('every routed lane accepts its OWN provider key, not just the Anthropic pai
 
     const dir = mkdtempSync(join(tmpdir(), `lane-cred-${id}-`))
     try {
-      const url = `https://${profile.endpoint.host}${profile.endpoint.path}`
+      const schemePort = profile.endpoint.scheme
+        ? `http://${profile.endpoint.host}:${profile.endpoint.port}${profile.endpoint.path}`
+        : `https://${profile.endpoint.host}${profile.endpoint.path}`
+      const url = schemePort
       for (const key of own) {
         writeFileSync(join(dir, 'creds.env'), `ANTHROPIC_BASE_URL=${url}\n${key}=value\n`)
         const env = { HOME: '/tmp', PATH: '/usr/bin',

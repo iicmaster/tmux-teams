@@ -15,7 +15,9 @@ const ROUTES = Object.freeze({
   // the one that is. `planFallback` re-validates and refuses that on its own.
   // Put codex back when its quota returns.
   claude: Object.freeze({ reviewers: Object.freeze(['agy', 'zai', 'qwen']), reserve: 'deepseek' }),
-  kimi: Object.freeze({ reviewers: Object.freeze(['agy', 'codex', 'zai']), reserve: 'claude' }),
+  // 2026-08-24: the kimi route seats the local 9Router lane in place of zai
+  // where the only reviewer upstream is the operator's loopback gateway.
+  kimi: Object.freeze({ reviewers: Object.freeze(['agy', 'codex', 'ninerouter']), reserve: 'claude' }),
   zai: Object.freeze({ reviewers: Object.freeze(['agy', 'codex', 'qwen']), reserve: 'claude' }),
   qwen: Object.freeze({ reviewers: Object.freeze(['agy', 'codex', 'zai']), reserve: 'claude' }),
 })

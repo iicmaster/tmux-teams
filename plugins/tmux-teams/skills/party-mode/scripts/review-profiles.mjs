@@ -28,6 +28,7 @@ const providerSecrets = {
   zai: ['ZAI_API_KEY'],
   claude: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
   codex: ['OPENAI_API_KEY'],
+  ninerouter: [],
 }
 
 export const PROVIDER_SECRET_KEYS = providerSecrets
@@ -49,7 +50,7 @@ function freeze(value) {
 // A routed lane reaches its provider through a machine-local settings file the
 // operator owns. Pinning the host here is what keeps `family` honest — see the
 // qwen and zai entries.
-export const ROUTED_PROFILES = new Set(['deepseek', 'kimi', 'qwen', 'zai'])
+export const ROUTED_PROFILES = new Set(['deepseek', 'kimi', 'ninerouter', 'qwen', 'zai'])
 const ZAI_ENDPOINT = freeze({ host: 'api.z.ai', path: '/api/anthropic' })
 const QWEN_ENDPOINT = freeze({ host: 'token-plan.ap-southeast-1.maas.aliyuncs.com', path: '/apps/anthropic' })
 // Master, 2026-08-04: `claude-kimi` reaches a K3 model, `claude` reaches opus —
@@ -63,6 +64,9 @@ const QWEN_ENDPOINT = freeze({ host: 'token-plan.ap-southeast-1.maas.aliyuncs.co
 // trailing slash is dropped because `validateRoutedEndpoint` compares
 // `pathname.replace(/\/$/, '')`.
 const KIMI_ENDPOINT = freeze({ host: 'api.kimi.com', path: '/coding' })
+// Loopback-only pin. `scheme: 'http'` is read by validateRoutedEndpoint; a
+// remote name would defeat the whole point of a pin this machine can verify.
+const NINEROUTER_ENDPOINT = freeze({ scheme: 'http', host: '127.0.0.1', port: '20128', path: '/v1' })
 
 export const REVIEW_PROFILES = freeze({
   agy: {
@@ -202,6 +206,25 @@ export const REVIEW_PROFILES = freeze({
     adapterPackage: '@agentclientprotocol/claude-agent-acp@0.61.0',
     sessionSettings: { availableModels: ['claude-opus-4-8'] },
     config: { model: 'claude-opus-4-8', mode: 'plan' },
+  },
+  ninerouter: {
+    // 2026-08-24, Master-approved: hosts whose ONLY reviewer route is the
+    // operator's own local 9Router gateway (claude-9r wrapper -> loopback
+    // proxy). Family `zai` is a DECLARATION about which upstream family this
+    // lane reaches (glm-5.2-class through the gateway), same as every other
+    // `family` label in this table; the pin is what makes it provable — here
+    // http against an explicit loopback host, never a remote name.
+    id: 'ninerouter', provider: 'ninerouter', family: 'zai', model: 'glm-5.2',
+    displayModel: 'ninerouter/glm-5.2',
+    reviewMode: 'plan',
+    command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
+    adapterPackage: '@agentclientprotocol/claude-agent-acp@0.61.0',
+    claudeExecutable: 'claude-9r',
+    settingsRelativePath: '.config/claude-profiles/ninerouter/settings.json',
+    providerConfigDir: '.config/claude-profiles/ninerouter',
+    endpoint: NINEROUTER_ENDPOINT,
+    sessionSettings: { availableModels: ['glm-5.2'] },
+    config: { model: 'glm-5.2', mode: 'plan' },
   },
   codex: {
     id: 'codex', provider: 'openai', family: 'openai', model: 'gpt-5.6-sol',
@@ -749,13 +772,24 @@ export function validateRoutedEndpoint(profile, env) {
   if (!pinned || typeof pinned.host !== 'string' || typeof pinned.path !== 'string') {
     throw new TypeError(`${profile.id} review routes its provider but pins no endpoint`)
   }
-  const expected = `https://${pinned.host}${pinned.path}`
+  // A pin is scheme-carrying: every shipped remote provider pins https, and the
+  // local-gateway profile (`ninerouter`, added 2026-08-24 for hosts whose only
+  // reviewer route is the operator's own 9Router proxy) pins http against an
+  // explicit loopback host. The scheme comes from the PIN, not from the caller,
+  // so a settings file still cannot redirect one of these lanes to a scheme the
+  // profile never declared.
+  const shownPort = pinned.port ? `:${pinned.port}` : ''
+  const expected = `${pinned.scheme ?? 'https'}://${pinned.host}${shownPort}${pinned.path}`
+  const expectedScheme = `${pinned.scheme ?? 'https'}:`
   const raw = env.ANTHROPIC_BASE_URL
   if (typeof raw !== 'string' || !raw) throw new TypeError(`${profile.id} review requires ANTHROPIC_BASE_URL`)
   let url
   try { url = new URL(raw) } catch { throw new TypeError(`${profile.id} review endpoint must be a valid URL`) }
-  if (url.protocol !== 'https:' || url.hostname !== pinned.host ||
-      (url.port && url.port !== '443') || url.username || url.password ||
+  const expectedPort = pinned.port ?? ''
+  const gotDefault = !url.port
+  if (url.protocol !== expectedScheme || url.hostname !== pinned.host ||
+      (!gotDefault && url.port !== expectedPort) || (gotDefault && expectedPort) ||
+      url.username || url.password ||
       url.search || url.hash || url.pathname.replace(/\/$/, '') !== pinned.path) {
     throw new TypeError(`${profile.id} review endpoint must be ${expected}`)
   }
