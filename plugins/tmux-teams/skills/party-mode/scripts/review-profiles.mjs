@@ -221,9 +221,12 @@ export const REVIEW_PROFILES = freeze({
     // deepseek: `model` is the identity this panel records; `requestModel`
     // is the alias the wire is asked for; ANTHROPIC_DEFAULT_OPUS_MODEL in
     // the lane's settings file maps alias -> vendor id.
-    id: 'ninerouter', provider: 'ninerouter', family: 'zai', model: 'glm-5.2',
-    displayModel: 'ninerouter/glm-5.3 via opus alias',
-    requestModel: 'opus',
+    // Master, 2026-08-24: the lane calls the wrapper's DEFAULT model — no
+    // alias pinning, no settings-side model mapping, nothing the wrapper does
+    // not already do (its own ANTHROPIC_MODEL=deepseek-v4-flash). `model` is
+    // therefore what the wrapper actually answers as, measured by probe.
+    id: 'ninerouter', provider: 'ninerouter', family: 'zai', model: 'deepseek-v4-flash',
+    displayModel: 'ninerouter/deepseek-v4-flash (wrapper default)',
     reviewMode: 'plan',
     command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
     adapterPackage: '@agentclientprotocol/claude-agent-acp@0.61.0',
@@ -231,8 +234,6 @@ export const REVIEW_PROFILES = freeze({
     settingsRelativePath: '.config/claude-profiles/ninerouter/settings.json',
     providerConfigDir: '.config/claude-profiles/ninerouter',
     endpoint: NINEROUTER_ENDPOINT,
-    sessionSettings: { availableModels: ['opus'] },
-    config: { model: 'opus', mode: 'plan' },
   },
   codex: {
     id: 'codex', provider: 'openai', family: 'openai', model: 'gpt-5.6-sol',
