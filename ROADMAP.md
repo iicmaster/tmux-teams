@@ -616,7 +616,7 @@ These are real but unforced, and separate from the release above:
   half. A caller who types the companion's own path anyway is outside what a
   script can reach.
 
-- **If bwrap is ever re-enabled**, the sandbox still does not carry a routed
+- **If a sandbox is ever written again** (the bwrap one was removed 2026-08-24), it still would not carry a routed
   wrapper's own profile files into the ephemeral home. The gate knows where to
   READ them (`TMUX_TEAMS_REVIEW_<ID>_SETTINGS` / `_ENV_FILE`) and never places
   them where the wrapper looks. The layout-agnostic fix is to mirror the
@@ -701,7 +701,7 @@ slate.
 - **ADR 0005** — MCP's Tasks extension converged on this companion's design
   independently; we stay divergent, and the conditions that would reverse that
   are written down.
-- **ADR 0006** — shipped review profiles no longer declare bwrap. What that
+- **ADR 0006** (amended 2026-08-24) — the OS sandbox is removed entirely. What that
   costs is stated, along with the strongest argument against the decision.
 - **ADR 0002** — `opened` names a human decision; the runner never invents one.
 - **ADR 0007** — the plugin ships one read-only MCP server for lane discovery.

@@ -4,10 +4,9 @@ import { mkdirSync, mkdtempSync, writeFileSync, existsSync, readFileSync, symlin
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { runAcpReview, prepareReviewPacket, ReviewTransportError, sandboxStagedExecutables,
-  needsSandboxStaging, SANDBOX_MASKED_ROOTS, interpreterRoots, trustedExecutableRoots,
-  resolveExecutable, sandboxRebindRoots, rebindHomeSource, stageHomeExecutable,
-  swallowsStagingFailure } from '../plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs'
+import { runAcpReview, prepareReviewPacket, ReviewTransportError, interpreterRoots,
+  trustedExecutableRoots, resolveExecutable,
+} from '../plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs'
 import { runReviewGate, runReviewGateCli, LANE_TIMEOUT_DEFAULT_MS, laneTimeoutMs, LANE_FAILURES,
 } from '../plugins/tmux-teams/skills/party-mode/scripts/review-gate.mjs'
 import { REVIEW_PROFILES } from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
@@ -72,11 +71,11 @@ const runnerResult = (p, staticPacket, review = validReview) => ({
   isolation: {
     workspace: 'temporary',
     targetRepositoryCwd: false,
-    targetRepositoryHidden: p.osSandbox === 'bwrap',
-    targetRepositoryCanonical: p.osSandbox === 'bwrap' ? '/tmp/test-target' : undefined,
-    hostRootBaseReadOnly: p.osSandbox === 'bwrap',
-    hostDataRootsMasked: p.osSandbox === 'bwrap',
-    hostProcessNamespaceIsolated: p.osSandbox === 'bwrap',
+    targetRepositoryHidden: false,
+    targetRepositoryCanonical: undefined,
+    hostRootBaseReadOnly: false,
+    hostDataRootsMasked: false,
+    hostProcessNamespaceIsolated: false,
     mcpServers: 0,
     builtInToolsRequested: false,
     toolCallsObserved: 0,
@@ -84,11 +83,11 @@ const runnerResult = (p, staticPacket, review = validReview) => ({
     safeRuntimeReadsObserved: 0,
     safeWorkspaceReadsObserved: 0,
     temporaryModelSettings: Boolean(p.sessionSettings),
-    hostProviderHomeVisible: p.osSandbox !== 'bwrap',
-    ephemeralProviderStateWritable: p.osSandbox === 'bwrap',
-    hostProviderStatePersistent: p.osSandbox !== 'bwrap',
+    hostProviderHomeVisible: true,
+    ephemeralProviderStateWritable: false,
+    hostProviderStatePersistent: true,
     providerMayPersistRemoteState: true,
-    networkSharedWithHost: p.osSandbox === 'bwrap',
+    networkSharedWithHost: false,
     acpPermissionRequests: 'deny',
   },
   review,
@@ -147,37 +146,6 @@ test('isolated ACP runner returns strict JSON with runner provenance and redacts
   assert.equal(readFileSync(marker, 'utf8'), 'unchanged', 'review transport does not mutate a target repository')
 })
 
-test('bubblewrap hides the runner-owned canonical target even when the packet names a decoy', {
-  skip: process.platform !== 'linux' || !existsSync('/usr/bin/bwrap'),
-}, async () => {
-  const targetRepo = mkdtempSync(join(tmpdir(), 'review-target-'))
-  const marker = join(targetRepo, 'marker.txt')
-  writeFileSync(marker, 'host-secret-marker')
-  const sandboxed = profile('sandboxed', {
-    args: ['--input-type=module', '-e', readFileSync(MOCK, 'utf8')],
-    osSandbox: 'bwrap',
-  })
-  const out = await runAcpReview({
-    profile: sandboxed,
-    lane: sandboxed.lane,
-    packet: { ...packet(), target_repo: '/tmp/decoy-controlled-by-packet' },
-    targetRepository: targetRepo,
-    timeoutMs: 3_000,
-    env: {
-      MOCK_REVIEW_BEHAVIOUR: 'sandbox-probe',
-      MOCK_REVIEW_MODEL: sandboxed.model,
-      MOCK_TARGET_MARKER: marker,
-    },
-  })
-  assert.equal(out.review.targetMarkerVisible, false)
-  assert.equal(out.review.targetWriteSucceeded, false)
-  assert.equal(out.isolation.targetRepositoryHidden, true)
-  assert.equal(out.isolation.hostRootBaseReadOnly, true)
-  assert.equal(out.isolation.hostDataRootsMasked, true)
-  assert.equal(out.isolation.hostProcessNamespaceIsolated, true)
-  assert.equal(out.isolation.targetRepositoryCanonical, targetRepo)
-  assert.equal(readFileSync(marker, 'utf8'), 'host-secret-marker')
-})
 
 test('oversize static packets are blocked before any ACP agent can be launched', () => {
   assert.throws(() => prepareReviewPacket({ artifact: 'x'.repeat(256) }, { maxBytes: 32 }), e => e.code === 'input')
@@ -262,33 +230,6 @@ test('permission requests are always denied and a missing model acknowledgement 
   await assert.rejects(invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'ack-mismatch' }), e => e instanceof ReviewTransportError && e.code === 'config')
 })
 
-test('a remote protocol error says what the remote said, redacted and on one line', async () => {
-  // Added 2026-08-13. The zai lane's `session/new` failure had been
-  // undiagnosable for five days — "ACP session/new failed with a remote protocol
-  // error", `stderrBytes: 0`, and an empty `error.cause`. Measured on the bwrap
-  // host that day: the adapter WAS answering. The reject threw `msg.error` away,
-  // so an operator following the issue's own advice and running the lane alone
-  // learned nothing the panel had not already told them.
-  //
-  // Provider bytes are untrusted, so this asserts both halves at once: the
-  // detail arrives, AND it cannot be used to smuggle a secret or a second line.
-  await assert.rejects(
-    invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'session-new-remote-error' }),
-    (error) => {
-      assert.equal(error.code, 'protocol')
-      assert.match(error.message, /remote code -32603/)
-      assert.match(error.message, /upstream refused/)
-      assert.match(error.message, /Invalid value for config option model/,
-        'data.details carries the only useful sentence some adapters send')
-      assert.equal(error.message.includes('AKIA'), false,
-        'only named string fields may be read out of the remote error object')
-      assert.equal(error.message.includes('hunter2'), false, 'the remote error leaked a credential')
-      assert.equal(/[\r\n]/.test(error.message), false, 'the remote error spanned more than one line')
-      assert.ok(error.message.length < 400, `remote detail was not bounded (${error.message.length} chars)`)
-      return true
-    },
-  )
-})
 
 test('a valid verdict wrapped in prose is extracted, and prose alone is still refused', async () => {
   // Measured 2026-08-13: through the gate the zai lane returned one strict JSON
@@ -317,31 +258,6 @@ test('a review that parses strictly is not reported as extracted', () =>
     assert.equal(out.reviewExtracted, false, 'a clean document was reported as extracted')
   }))
 
-test('a review carrying credential-shaped text is redacted and kept, not discarded', async () => {
-  // These three used to be `assert.rejects(..., code === 'review')`. They were
-  // changed on 2026-08-13 after a real run on a bwrap host threw away a COMPLETE
-  // AGY review of a diff about an environment-variable allowlist: `sensitiveName`
-  // matches any identifier containing token/auth/secret, one pattern fires on
-  // `NAME:`, and a reviewer writing `CLAUDE_CODE_MAX_OUTPUT_TOKENS: raise this`
-  // lost its whole document. The inbound packet was always redacted rather than
-  // refused; the outbound review now matches.
-  //
-  // The security property is what these assertions are for, and it is unchanged:
-  // the secret must be GONE. The change is only that the review survives beside
-  // it, and that the caller is told the document was touched.
-  for (const [behaviour, secret] of [
-    ['escaped-secret-review', 'abcdefghijklmnopqrstuvwxyz123456'],
-    ['plain-secret-review', 'hunter2'],
-    ['url-secret-review', 'supersecret'],
-  ]) {
-    const out = await invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: behaviour })
-    assert.equal(out.reviewRedacted, true, `${behaviour}: the caller was not told the review was redacted`)
-    const serialized = JSON.stringify(out.review)
-    assert.equal(serialized.includes(secret), false, `${behaviour}: the secret survived into the accepted review`)
-    assert.match(serialized, /\[REDACTED\]/, `${behaviour}: nothing was marked as redacted`)
-    assert.equal(out.review.verdict, 'PASS', `${behaviour}: the review itself was lost`)
-  }
-})
 
 test('a clean review is not reported as redacted', () =>
   invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'schema-only' }).then((out) => {
@@ -433,155 +349,8 @@ test('only the exact AGY non-side-effect think update is ignored', async () => {
   await assert.rejects(invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'think-update' }), e => e.code === 'protocol')
 })
 
-test('AGY may read only copied provider runtime docs, never the target or arbitrary paths', {
-  skip: process.platform !== 'linux' || !existsSync('/usr/bin/bwrap'),
-}, async () => {
-  const fakeHome = mkdtempSync(join(tmpdir(), 'review-agy-home-'))
-  const guide = join(fakeHome, '.gemini', 'antigravity-cli', 'builtin', 'guide.md')
-  mkdirSync(dirname(guide), { recursive: true })
-  writeFileSync(guide, 'provider runtime documentation')
-  const targetRepo = mkdtempSync(join(tmpdir(), 'review-agy-target-'))
-  const targetFile = join(targetRepo, 'private.txt')
-  writeFileSync(targetFile, 'target data')
-  const agy = profile('agy', {
-    args: ['--input-type=module', '-e', readFileSync(MOCK, 'utf8')],
-    osSandbox: 'bwrap',
-  })
-  const common = {
-    profile: agy,
-    lane: agy.lane,
-    packet: packet(),
-    targetRepository: targetRepo,
-    timeoutMs: 3_000,
-  }
-  const out = await runAcpReview({
-    ...common,
-    env: {
-      HOME: fakeHome,
-      PATH: process.env.PATH,
-      MOCK_REVIEW_BEHAVIOUR: 'safe-runtime-read',
-      MOCK_REVIEW_MODEL: agy.model,
-      MOCK_SAFE_RUNTIME_PATH: guide,
-    },
-  })
-  assert.equal(out.review.verdict, 'PASS')
-  assert.equal(out.isolation.safeRuntimeReadsObserved, 1)
-  assert.equal(out.isolation.safeWorkspaceReadsObserved, 0)
-  assert.equal(out.isolation.toolCallsObserved, 0)
-  await assert.rejects(runAcpReview({
-    ...common,
-    env: {
-      HOME: fakeHome,
-      PATH: process.env.PATH,
-      MOCK_REVIEW_BEHAVIOUR: 'safe-runtime-read',
-      MOCK_REVIEW_MODEL: agy.model,
-      MOCK_SAFE_RUNTIME_PATH: targetFile,
-    },
-  }), e => e.code === 'protocol')
-})
 
-test('AGY safe reads require lexical and canonical scope; parents, aliases, escapes, and mixed scopes fail', {
-  skip: process.platform !== 'linux' || !existsSync('/usr/bin/bwrap'),
-}, async () => {
-  const fakeHome = mkdtempSync(join(tmpdir(), 'review-agy-workspace-home-'))
-  const guide = join(fakeHome, '.gemini', 'antigravity-cli', 'builtin', 'guide.md')
-  mkdirSync(dirname(guide), { recursive: true })
-  writeFileSync(guide, 'provider runtime documentation')
-  const runtimeAlias = join(fakeHome, '.gemini', 'antigravity-cli', 'runtime-guide-alias')
-  symlinkSync(guide, runtimeAlias)
-  const targetRepo = mkdtempSync(join(tmpdir(), 'review-agy-workspace-target-'))
-  const agy = profile('agy', {
-    args: ['--input-type=module', '-e', readFileSync(MOCK, 'utf8')],
-    osSandbox: 'bwrap',
-  })
-  const common = {
-    profile: agy,
-    lane: agy.lane,
-    packet: packet(),
-    targetRepository: targetRepo,
-    timeoutMs: 3_000,
-  }
-  const testEnv = extra => ({
-    HOME: fakeHome,
-    PATH: process.env.PATH,
-    MOCK_REVIEW_BEHAVIOUR: 'safe-workspace-read',
-    MOCK_REVIEW_MODEL: agy.model,
-    ...extra,
-  })
-  const out = await runAcpReview({
-    ...common,
-    env: testEnv(),
-  })
-  assert.equal(out.review.verdict, 'PASS')
-  assert.deepEqual(out.review.workspaceEntries, ['REVIEW_STATIC_PACKET_ONLY.md'])
-  assert.equal(out.isolation.safeRuntimeReadsObserved, 0)
-  assert.equal(out.isolation.safeWorkspaceReadsObserved, 1)
-  assert.equal(out.isolation.toolCallsObserved, 0)
-  const guideOut = await runAcpReview({
-    ...common,
-    env: {
-      ...testEnv(),
-      MOCK_REVIEW_BEHAVIOUR: 'safe-workspace-sentinel-read',
-    },
-  })
-  assert.equal(guideOut.review.verdict, 'PASS')
-  assert.equal(guideOut.isolation.safeWorkspaceReadsObserved, 1)
-  for (const variant of [
-    'relative-escape', 'child', 'symlink', 'symlink-parent', 'symlink-root',
-    'symlink-guide', 'runtime-inward', 'parent-location', 'nested',
-  ]) {
-    await assert.rejects(runAcpReview({
-      ...common,
-      env: testEnv({
-        MOCK_SAFE_WORKSPACE_VARIANT: variant,
-        MOCK_SAFE_RUNTIME_ALIAS: runtimeAlias,
-      }),
-    }), error => error.code === 'protocol', `${variant} must fail closed`)
-  }
-  await assert.rejects(runAcpReview({
-    ...common,
-    env: {
-      ...testEnv({ MOCK_SAFE_WORKSPACE_VARIANT: 'mixed' }),
-      MOCK_SAFE_RUNTIME_PATH: guide,
-    },
-  }), error => error.code === 'protocol')
-  await assert.rejects(runAcpReview({
-    ...common,
-    env: testEnv({ MOCK_SAFE_WORKSPACE_LOCATION: targetRepo }),
-  }), error => error.code === 'protocol')
-})
 
-test('sandbox rejects a PATH-shadowed ACP executable inside the target before launch', {
-  skip: process.platform !== 'linux' || !existsSync('/usr/bin/bwrap'),
-}, async () => {
-  const targetRepo = mkdtempSync(join(tmpdir(), 'review-shadow-target-'))
-  const fakeBin = join(targetRepo, 'bin')
-  const fakeNpx = join(fakeBin, 'npx')
-  const fakeHome = mkdtempSync(join(tmpdir(), 'review-shadow-home-'))
-  mkdirSync(fakeBin, { recursive: true })
-  writeFileSync(fakeNpx, '#!/bin/sh\nexit 99\n', { mode: 0o755 })
-  let launches = 0
-  await assert.rejects(runAcpReview({
-    profile: profile('zai', {
-      command: 'npx',
-      args: [],
-      osSandbox: 'bwrap',
-    }),
-    lane: 'zai',
-    packet: packet(),
-    targetRepository: targetRepo,
-    timeoutMs: 3_000,
-    env: {
-      HOME: fakeHome,
-      PATH: `${fakeBin}:${process.env.PATH}`,
-    },
-    spawn: () => {
-      launches++
-      throw new Error('must not launch')
-    },
-  }), error => error.code === 'config' && /target repository/.test(error.message))
-  assert.equal(launches, 0)
-})
 
 test('gate starts three primaries in parallel and reports exactly three accepted reviews', async () => {
   const starts = []
@@ -1462,85 +1231,7 @@ test('F7: a deterministic config/policy rejection is not told to re-run and diff
   assert.equal(transient.report.attempts.find(a => a.profile === 'oc').reason, 'lane_failed')
 })
 
-test('a sandboxed lane carries in its claude wrapper AND the CLI that wrapper execs', () => {
-  // #60. The sandbox replaces /home with a tmpfs and strips every $HOME entry
-  // from PATH; `CLAUDE_CODE_EXECUTABLE` was never staged, so every claude-routed
-  // lane died at `session/new` with zero stderr and AGY was the only survivor —
-  // the three-family requirement failing on the only platform where the
-  // sandboxed gate runs.
-  //
-  // This tests the DECISION, not the act. The staging itself sits behind
-  // `platform === 'linux' && /usr/bin/bwrap`, so nothing on this machine can
-  // reach it, and a test written against it would be a guard that cannot go
-  // red. End-to-end confirmation is owed on a Linux host and the issue stays
-  // open until it is given.
-  const claudeLane = sandboxStagedExecutables({ CLAUDE_CODE_EXECUTABLE: '/home/x/.local/bin/claude-zai' })
-  assert.deepEqual(claudeLane.map(e => e.outputName), ['claude-zai', 'claude'],
-    'a wrapper staged without the CLI it execs is still a broken lane')
-  assert.equal(claudeLane[0].assignTo, 'CLAUDE_CODE_EXECUTABLE',
-    'the staged wrapper must be what the adapter is told to run')
-  assert.equal(claudeLane[0].required, true, 'a missing wrapper must refuse the lane, not run the host one')
-  assert.equal(claudeLane[1].required, false,
-    'a profile with no wrapper has no CLI to find, and refusing there breaks the lanes this fixes')
 
-  // AGY still behaves exactly as before — it is the lane that already worked.
-  const agyLane = sandboxStagedExecutables({ AGY_BIN: '/home/x/.local/bin/agy' })
-  assert.deepEqual(agyLane, [{ command: '/home/x/.local/bin/agy', outputName: 'agy', assignTo: 'AGY_BIN', required: true }])
-
-  // A lane declaring both carries both, and nothing is staged for a lane that
-  // declares neither — the ACP command itself is staged separately.
-  assert.equal(sandboxStagedExecutables({}).length, 0)
-  assert.equal(sandboxStagedExecutables({ AGY_BIN: 'a', CLAUDE_CODE_EXECUTABLE: 'b' }).length, 3)
-})
-
-test('lanes that stop at one stage for different reasons are not announced as one shared precondition', async () => {
-  // Round 8, codex. #51 taught the gate to say "one missing thing" when every
-  // lane died at the same deterministic stage — and it said it whether or not
-  // the lanes agreed. A missing review executable, an absent bwrap and an
-  // unacknowledged ACP setting all stop at `config`; the operator was told to
-  // look for one precondition behind three unrelated faults.
-  //
-  // `detail` is what discriminates, not `reason`: `reason` is derived from the
-  // stage, so every deterministic-stage failure is `lane_rejected` and it can
-  // never disagree when the stage agrees. A guard written on `reason` here
-  // could not have gone red.
-  // A REAL packet file, because the CLI opens it before it ever calls `gate` —
-  // the first version of this test passed a bare name, died at ENOENT, and
-  // asserted against a sentence the code under test never produced.
-  const packetPath = join(mkdtempSync(join(tmpdir(), 'gate-cause-')), 'packet.json')
-  writeFileSync(packetPath, JSON.stringify({ objective: 'x', acceptance: ['y'], brief: 'z' }))
-  const stderrFor = async (attempts) => {
-    const lines = []
-    await runReviewGateCli([packetPath, '/abs/target'], {
-      gate: async () => { throw Object.assign(new Error('blocked'), { report: { attempts } }) },
-      stdout: { write: () => {} },
-      stderr: { write: (line) => lines.push(line) },
-    })
-    return lines.join('')
-  }
-  const lane = (profile, detail) => ({ status: 'failed', profile, stage: 'config', reason: 'lane_rejected', detail })
-
-  const differing = await stderrFor([
-    lane('kimi', 'no review executable on PATH'),
-    lane('zai', 'bubblewrap is required for the ACP review sandbox'),
-    lane('agy', 'the configured model was never acknowledged'),
-  ])
-  assert.match(differing, /3 different reasons/, `three unrelated faults were not called out as such:\n${differing}`)
-  assert.doesNotMatch(differing, /one shared precondition, not one fault/,
-    `the gate still claimed one shared precondition over three causes:\n${differing}`)
-  // The per-lane sentences are what the operator acts on, so they must survive.
-  for (const cause of ['no review executable on PATH', 'bubblewrap is required', 'never acknowledged']) {
-    assert.ok(differing.includes(cause), `${cause} never reached the operator:\n${differing}`)
-  }
-
-  const shared = await stderrFor([
-    lane('kimi', 'bubblewrap is required for the ACP review sandbox'),
-    lane('zai', 'bubblewrap is required for the ACP review sandbox'),
-    lane('agy', 'bubblewrap is required for the ACP review sandbox'),
-  ])
-  assert.match(shared, /one shared precondition, not one fault per profile/,
-    `the #51 sentence stopped being said when it was true:\n${shared}`)
-})
 
 test('F7: a throwing fallback planner or synthesizer still leaves a structured report, not empty stdout', async () => {
   // These are the two exported dependency-injection seams the advisor found
@@ -1628,103 +1319,12 @@ test('what a lane LAUNCHES includes its declared args, not just what its signatu
 // guard that cannot go red is not a guard", and then left the decision itself
 // behind exactly such a gate.
 
-test('staging is decided by what the sandbox masks, never by $HOME', () => {
-  // The measured failure, in one assertion. The lane's interpreter lived under
-  // a mise install inside $HOME, the review environment carries no HOME at all
-  // (this file asserts elsewhere that a profile environment is explicit and not
-  // inherited), and the old question — "is it under $HOME" — answered "no
-  // staging needed" about a path bwrap had just replaced with an empty tmpfs.
-  // The path below is the SHAPE that was measured, deliberately under a home
-  // that is nobody's. It used to be the literal measured path,
-  // `/home/server/.local/share/mise/...`, and that made this test RED on
-  // exactly one machine in the world — the machine that path is real on, which
-  // is the Ubuntu 26.04 host the original failure was measured on and the only
-  // host where the sandbox can start at all. Found 2026-08-13, the first time
-  // the suite was run there since the rebind landed.
-  //
-  // Why it went red is the thing worth keeping: `sandboxRebindRoots()` mounts
-  // the RUNNING interpreter's own prefix read-only into the sandbox (layer 4,
-  // `a3a7d60`). On that host the running interpreter IS that mise install, so
-  // the path survives into the sandbox and correctly needs no staging. The code
-  // was right and the fixture had aged into a machine-dependent assertion.
-  const miseNode = '/home/nobody/.local/share/mise/installs/node/24.19.0/bin/node'
-  assert.equal(needsSandboxStaging(miseNode, {}), true)
-  assert.equal(needsSandboxStaging(miseNode, { HOME: undefined }), true)
-  // The second measured shape: HOME is set, but to the sandbox's own ephemeral
-  // home, so the HOST interpreter is correctly "not under it" and was skipped.
-  assert.equal(needsSandboxStaging(miseNode, { HOME: '/tmp/review-agy-home-oGnLL0' }), true)
-})
 
-test('the running interpreter is not staged, because its prefix is rebound instead', () => {
-  // The other half of the decision, and the half nothing asserted until a real
-  // bwrap host made its absence visible. Staging and rebinding are two answers
-  // to one question — "will this path exist inside the sandbox" — and a path
-  // the rebind already carries must NOT also be staged, or the two mechanisms
-  // fight over the same file.
-  //
-  // Asserted through `process.execPath` rather than a literal, so it states the
-  // rule on every machine instead of one machine's layout. On a host whose
-  // interpreter sits outside every masked root there is nothing to rebind and
-  // nothing to stage, which is the same answer for a different reason — so the
-  // assertion is conditional on there BEING a rebind, and says so.
-  const roots = sandboxRebindRoots()
-  if (roots.length === 0) {
-    assert.equal(needsSandboxStaging(process.execPath, {}), false,
-      'an interpreter outside every masked root needs no staging')
-    return
-  }
-  assert.equal(needsSandboxStaging(process.execPath, {}), false,
-    'the running interpreter is carried by the rebind and must not be staged too')
-})
 
-test('every masked root is covered, not just the one that was measured', () => {
-  // nvm, fnm, volta and asdf all install under $HOME; /opt and /var hold plenty
-  // of vendor toolchains. Naming the family rather than the member is the fix
-  // this repo keeps having to make a second time.
-  //
-  // PINNED EXPLICITLY, and deliberately not derived from the constant. The loop
-  // below alone is vacuous — drop a root and it simply stops testing that root.
-  // That is not hypothetical: removing `/opt` was injected as a mutation here
-  // and went GREEN until this assertion was added.
-  assert.deepEqual([...SANDBOX_MASKED_ROOTS],
-    ['/home', '/root', '/mnt', '/media', '/opt', '/srv', '/var', '/run', '/tmp'],
-    'the sandbox mask list is a security boundary — a change here is a decision, not a tidy-up')
-  for (const root of SANDBOX_MASKED_ROOTS) {
-    assert.equal(needsSandboxStaging(`${root}/vendor/bin/node`, {}), true, root)
-  }
-})
 
-test('a system path the sandbox keeps is not copied for no reason', () => {
-  assert.equal(needsSandboxStaging('/usr/bin/node', {}), false)
-  assert.equal(needsSandboxStaging('/usr/local/bin/claude', {}), false)
-  assert.equal(needsSandboxStaging('/bin/sh', {}), false)
-})
 
-test('something already inside the re-bound runtime directory is left alone', () => {
-  // The runtime directory lives under /tmp, which IS masked — and then bound
-  // back in. Reading the mask list alone would copy it into itself.
-  const runtime = '/tmp/tmux-teams-review-abc123/runtime'
-  assert.equal(needsSandboxStaging(`${runtime}/node`, {}, runtime), false)
-  assert.equal(needsSandboxStaging('/tmp/somewhere-else/node', {}, runtime), true)
-})
 
-test('a HOME outside every masked root still forces staging', () => {
-  // Kept because the sandbox is Linux-only today and this is what stops the
-  // predicate quietly regressing to "masked roots only" if that ever changes.
-  assert.equal(needsSandboxStaging('/data/me/.nvm/bin/node', { HOME: '/data/me' }), true)
-  assert.equal(needsSandboxStaging('/data/other/bin/node', { HOME: '/data/me' }), false)
-})
 
-test('the masked-root list is the one bwrap is actually handed', () => {
-  // The whole defect was two lists that were meant to agree and had no reason
-  // to. This asserts the argv builder reads the exported constant rather than
-  // repeating it — mutate either and the other moves with it.
-  const source = readFileSync(join(HERE, '..', 'plugins', 'tmux-teams', 'skills', 'party-mode', 'scripts', 'acp-review-client.mjs'), 'utf8')
-  assert.match(source, /SANDBOX_MASKED_ROOTS\.flatMap\(root => \['--tmpfs', root\]\)/,
-    'the bwrap argv must build its tmpfs list FROM the exported constant')
-  assert.equal(/'--tmpfs', '\/home'/.test(source), false,
-    'a hand-written --tmpfs literal is a second list waiting to drift')
-})
 
 // ---------------------------------------------------------------------------
 // Which runtimes a lane is allowed to launch. Measured on Ubuntu 26.04 on the
@@ -1902,292 +1502,17 @@ const withExecPath = (value, body) => {
   }
 }
 
-test('sandboxRebindRoots names the interpreter prefix only when it sits under a masked root', () => {
-  // Pure-function shape, same pattern as the interpreterRoots tests above --
-  // and, same lesson as those, not sufficient alone. See the wiring test below
-  // for why testing this function in isolation says nothing about its callers.
-  const prefix = installPrefix()
-  withExecPath(join(prefix, 'bin', 'node'), () => {
-    assert.deepEqual(sandboxRebindRoots(), [prefix])
-  })
-  withExecPath('/usr/local/bin/node', () => {
-    assert.deepEqual(sandboxRebindRoots(), [],
-      'a system interpreter is already visible under the read-only "/" bind and needs no re-bind')
-  })
-})
 
-test('sandboxRebindRoots refuses a prefix that is a home directory or one of its direct children', () => {
-  // The two shapes a release reviewer measured (codex lane, 2026-08-10, round
-  // 3). This function's own comment claimed the bound directory "holds no user
-  // data, no credentials and no part of the target repository". That was true
-  // of a version-managed prefix and false of these two, and binding either one
-  // hands the sandboxed reviewer back the tree the mask had just removed --
-  // the single thing the sandbox exists to prevent.
-  const home = mkdtempSync(join(tmpdir(), 'fakehome-'))
-  for (const part of ['bin', 'lib', join('.local', 'bin'), join('.local', 'lib')]) {
-    mkdirSync(join(home, part), { recursive: true })
-  }
-  const originalHome = process.env.HOME
-  try {
-    process.env.HOME = home
-    // ~/bin/node -> the prefix is HOME itself.
-    withExecPath(join(home, 'bin', 'node'), () => {
-      assert.deepEqual(sandboxRebindRoots(), [],
-        'binding HOME back into the sandbox undoes the mask entirely')
-    })
-    // ~/.local/bin/node -> the prefix is a direct child of HOME holding user data.
-    withExecPath(join(home, '.local', 'bin', 'node'), () => {
-      assert.deepEqual(sandboxRebindRoots(), [],
-        '~/.local carries share/ and state/ — it is user data, not a toolchain prefix')
-    })
-    // The control: a real-looking install prefix under the same masked root is
-    // still bound, so the two refusals above are not a function that refuses
-    // everything.
-    const prefix = installPrefix()
-    withExecPath(join(prefix, 'bin', 'node'), () => {
-      assert.deepEqual(sandboxRebindRoots(), [prefix],
-        'a version-managed install prefix must still be bound, or no claude-routed lane can run at all')
-    })
-  } finally {
-    if (originalHome === undefined) delete process.env.HOME
-    else process.env.HOME = originalHome
-  }
-})
 
-test('sandboxRebindRoots refuses ~/.local even when HOME is reached through a symlink', () => {
-  // The desynchronisation, which is the only way this guard can fail OPEN.
-  // `process.execPath` on Linux comes from `/proc/self/exe` and is already
-  // resolved by the kernel; `$HOME` is whatever the environment says. Point
-  // HOME at a symlink and compare the two raw and they never match, so
-  // `~/.local` passes the direct-child test, passes bin/lib, and is bound.
-  // Raised as non-blocking by the release panel (zai lane, 2026-08-10, round 4)
-  // and closed rather than noted, because a security guard that fails open is
-  // not a guard.
-  // NOT realpath'd, deliberately. On macOS `mkdtemp` returns `/var/folders/...`
-  // whose realpath is `/private/var/...`, and only the first is under a masked
-  // root — realpath it here and `sandboxRebindRoots` returns `[]` at its very
-  // first guard, so the canonicalisation this test exists to check is never
-  // reached and the test passes on a build that does not do it. That is exactly
-  // what the first version of this test did, and the release panel measured it
-  // (zai lane, 2026-08-10, round 5). Fourth vacuous test in one day.
-  const realHome = mkdtempSync(join(tmpdir(), 'realhome-'))
-  for (const part of [join('.local', 'bin'), join('.local', 'lib')]) {
-    mkdirSync(join(realHome, part), { recursive: true })
-  }
-  const linkedHome = join(mkdtempSync(join(tmpdir(), 'linkhome-')), 'home')
-  symlinkSync(realHome, linkedHome)
 
-  const originalHome = process.env.HOME
-  try {
-    // HOME is the SYMLINK; the interpreter sits at the REAL path.
-    process.env.HOME = linkedHome
-    withExecPath(join(realHome, '.local', 'bin', 'node'), () => {
-      assert.deepEqual(sandboxRebindRoots(), [],
-        '~/.local was bound because HOME and execPath were compared in different forms')
-    })
-  } finally {
-    if (originalHome === undefined) delete process.env.HOME
-    else process.env.HOME = originalHome
-  }
-})
 
-test('the home the rebind guard uses does not depend on an environment variable', () => {
-  // `process.env.HOME ?? ''` made the direct-child refusal CONDITIONAL: unset
-  // the variable and the guard did not run, so a `.local` prefix was bound
-  // unchecked. Found by the release panel (codex lane, 2026-08-10, round 4).
-  // The source is its own function now so this can be checked without a test
-  // that has to create directories inside the real home.
-  const originalHome = process.env.HOME
-  try {
-    process.env.HOME = '/somewhere/explicit'
-    assert.equal(rebindHomeSource(), '/somewhere/explicit', 'an explicit HOME still wins')
-    delete process.env.HOME
-    assert.ok(rebindHomeSource().length > 0,
-      'with HOME unset the guard had no home to compare against and stopped guarding')
-  } finally {
-    if (originalHome === undefined) delete process.env.HOME
-    else process.env.HOME = originalHome
-  }
-})
 
-test('sandboxRebindRoots refuses a .local prefix under the home it was given', () => {
-  // The guard itself, driven with an injected home so it is exercised rather
-  // than skipped. The prefix is the RAW temp path (under /var on macOS, /tmp on
-  // Linux — both masked) while the home is compared canonically, which is the
-  // desynchronisation the round-4 review described.
-  const rawHome = mkdtempSync(join(tmpdir(), 'guardhome-'))
-  for (const part of [join('.local', 'bin'), join('.local', 'lib'), 'bin', 'lib']) {
-    mkdirSync(join(rawHome, part), { recursive: true })
-  }
-  withExecPath(join(rawHome, '.local', 'bin', 'node'), () => {
-    assert.deepEqual(sandboxRebindRoots(rawHome), [],
-      '~/.local is a direct child of the home it was given and must never be bound')
-  })
-  withExecPath(join(rawHome, 'bin', 'node'), () => {
-    assert.deepEqual(sandboxRebindRoots(rawHome), [],
-      'the home directory itself must never be bound')
-  })
-  // The control: an install prefix under the same masked root, with the same
-  // home, IS bound — so the two refusals are the guard working and not a
-  // function that refuses everything.
-  const prefix = installPrefix()
-  withExecPath(join(prefix, 'bin', 'node'), () => {
-    assert.deepEqual(sandboxRebindRoots(rawHome), [prefix])
-  })
 
-  // And the DEFAULT is wired to the ambient home, not only to an argument a
-  // caller remembered to pass. Every assertion above hands `homeSource` in
-  // explicitly, so replacing the default parameter with anything at all left
-  // them green. Raised as non-blocking by the release panel (zai lane,
-  // 2026-08-10, round 5).
-  const originalHome = process.env.HOME
-  try {
-    process.env.HOME = rawHome
-    withExecPath(join(rawHome, '.local', 'bin', 'node'), () => {
-      assert.deepEqual(sandboxRebindRoots(), [],
-        'called with no argument the guard did not consult the ambient home at all')
-    })
-  } finally {
-    if (originalHome === undefined) delete process.env.HOME
-    else process.env.HOME = originalHome
-  }
-})
 
-test('sandboxRebindRoots never names the target repository, nor anything containing it', () => {
-  // The bwrap argv mounts a hidden target OVER the canonical target path and
-  // then re-binds every root this returns, so a prefix that overlaps the target
-  // overwrites the masking mount and hands the reviewer the repository the gate
-  // certifies as hidden. An interpreter inside the checkout is all it takes.
-  // Found by the release panel (codex lane, 2026-08-10, round 5).
-  const home = mkdtempSync(join(tmpdir(), 'targethome-'))
-  const target = join(home, 'src', 'secret')
-  for (const part of ['bin', 'lib']) mkdirSync(join(target, part), { recursive: true })
 
-  withExecPath(join(target, 'bin', 'node'), () => {
-    assert.deepEqual(sandboxRebindRoots(home, target), [],
-      'the prefix IS the target repository and binding it undoes the hidden-target mount')
-    assert.deepEqual(sandboxRebindRoots(home, join(target, 'lib')), [],
-      'a target INSIDE the prefix is just as bad — the bind still exposes it')
-    // The control: the same prefix with an unrelated target IS bound, so the
-    // two refusals are the target check and not the guards above it.
-    assert.deepEqual(sandboxRebindRoots(home, join(home, 'somewhere', 'else')), [target])
-  })
-})
 
-test('sandboxRebindRoots refuses a prefix with no bin/ and lib/ beneath it', () => {
-  const bare = mkdtempSync(join(tmpdir(), 'notatoolchain-'))
-  mkdirSync(join(bare, 'installs', 'node', '24.19.0', 'bin'), { recursive: true })
-  withExecPath(join(bare, 'installs', 'node', '24.19.0', 'bin', 'node'), () => {
-    assert.deepEqual(sandboxRebindRoots(), [],
-      'a directory with bin/ but no lib/ is not an install prefix — refuse rather than guess')
-  })
-})
 
-test('needsSandboxStaging skips exactly the rebound interpreter prefix, not the whole masked root it sits under', () => {
-  // The consumer, not the pure function. Deleting the sandboxRebindRoots()
-  // check from needsSandboxStaging was tried as a mutation while writing this
-  // test and went GREEN until this assertion existed -- the same "pure
-  // function tested alone says nothing about its consumer" miss this file's
-  // own comments describe for interpreterRoots/trustedExecutableRoots, twice
-  // in one day now.
-  const prefix = installPrefix()
-  const original = process.execPath
-  try {
-    Object.defineProperty(process, 'execPath', { value: `${prefix}/bin/node`, configurable: true })
-    assert.equal(needsSandboxStaging(`${prefix}/lib/node_modules/npm/bin/npx-cli.js`, {}), false,
-      'a file inside the rebound interpreter prefix must not be staged -- it is bind-mounted whole')
-    // NEGATIVE CASE: a SIBLING version directory, still under the same masked
-    // root (/home) but OUTSIDE the rebind prefix, must still be staged --
-    // otherwise a mutation that widened the exemption to the whole masked root
-    // would pass the assertion above and go undetected.
-    assert.equal(
-      needsSandboxStaging('/home/server/.local/share/mise/installs/node/22.10.0/bin/node', {}),
-      true,
-      'a sibling interpreter version outside the rebound prefix must still be staged',
-    )
-  } finally {
-    Object.defineProperty(process, 'execPath', { value: original, configurable: true })
-  }
-})
 
-test('sandboxRebindRoots also reaches the bwrap argv and the sandbox PATH, not only needsSandboxStaging', () => {
-  // TRIPWIRE, not a behavioural check -- labelled per this file's own rule
-  // (see "the masked-root list is the one bwrap is actually handed" above,
-  // which does the same thing for the same reason). Both call sites live
-  // inside `profile.osSandbox === 'bwrap'` in runAcpReview, past the
-  // `platform === 'linux' && /usr/bin/bwrap` gate no machine without both can
-  // pass, so a behavioural check here would be a guard that cannot go red.
-  // End-to-end confirmation of these two wirings on a Linux+bwrap host is
-  // still owed, same as the rest of this file's sandbox argv construction.
-  const source = readFileSync(join(HERE, '..', 'plugins', 'tmux-teams', 'skills', 'party-mode', 'scripts', 'acp-review-client.mjs'), 'utf8')
-  assert.match(source, /sandboxRebindRoots\(rebindHomeSource\(\), canonicalTargetRepository\)\.flatMap\(root => \['--ro-bind', root, root\]\)/,
-    'the bwrap argv must re-bind the roots sandboxRebindRoots() names, not repeat a second hand-written list')
-  assert.match(source, /const toolchainBin = sandboxRebindRoots\(rebindHomeSource\(\), canonicalTargetRepository\)\.length \? \[dirname\(process\.execPath\)\] : \[\]/,
-    'the sandbox PATH must gain the toolchain bin sandboxRebindRoots() implies, or a re-bound interpreter is invisible to its own shebang')
-})
-
-test('swallowsStagingFailure swallows only a genuine absence, and only for an optional entry', () => {
-  // The exact message strings a real ACP review-client throw would carry, not
-  // paraphrases -- `stageHomeExecutable` throws the "not found" text verbatim
-  // (see its own `ACP review executable not found: ${basename(command)}`),
-  // and resolveExecutable throws the "refused" text verbatim. A test built on
-  // paraphrases would not notice if either wording drifted out of sync with
-  // the regex this predicate matches against.
-  const notFound = new ReviewTransportError('config', 'ACP review executable not found: claude')
-  const refused = new ReviewTransportError('config', 'ACP review executable is outside trusted runtime roots')
-  const optional = { required: false }
-  const required = { required: true }
-
-  assert.equal(swallowsStagingFailure(optional, notFound), true,
-    'a genuinely absent optional CLI must still be swallowed -- a profile with no wrapper has no CLI to find')
-  assert.equal(swallowsStagingFailure(optional, refused), false,
-    'a present-but-refused optional CLI must throw, not vanish into a silent exit 127')
-  assert.equal(swallowsStagingFailure(required, notFound), false,
-    'a required entry refuses loudly regardless of reason -- absence included')
-  assert.equal(swallowsStagingFailure(required, refused), false)
-  // No usable message (a rejection with no `.message`) must not be misread as
-  // "not found" by an unguarded regex test against undefined.
-  assert.equal(swallowsStagingFailure(optional, new Error()), false)
-  assert.equal(swallowsStagingFailure(optional, undefined), false)
-})
-
-test('the optional-staging catch block in runAcpReview defers to swallowsStagingFailure, not a re-inlined check', () => {
-  // TRIPWIRE, same reasoning and same label as the sandboxRebindRoots wiring
-  // test above: this catch block lives behind the identical Linux+bwrap-only
-  // gate, so a behavioural check that could observe "the call site was
-  // deleted, or reverted to swallow every reason again" is not reachable on
-  // this machine. The unit test above proves the function; this proves the
-  // call site still exists and still governs the throw.
-  const source = readFileSync(join(HERE, '..', 'plugins', 'tmux-teams', 'skills', 'party-mode', 'scripts', 'acp-review-client.mjs'), 'utf8')
-  assert.match(source, /if \(!swallowsStagingFailure\(entry, error\)\) throw error/,
-    'the optional-staging catch block must gate its throw on swallowsStagingFailure')
-})
-
-test('needsSandboxStaging and the bwrap argv ask sandboxRebindRoots the SAME question', () => {
-  // They did not. Staging called it with no target and got `[prefix]`, so it
-  // skipped copying the executable in; the argv called it WITH the target, got
-  // `[]`, and refused to bind it. Neither staged nor mounted, the lane dies at
-  // ENOENT/127 — a failure caused entirely by two callers disagreeing about one
-  // question. Found by the release panel (AGY lane, 2026-08-10, round 7), in
-  // the round-5 fix that gave the parameter to one caller and not the other.
-  const home = mkdtempSync(join(tmpdir(), 'stagehome-'))
-  const target = join(home, 'src', 'checkout')
-  for (const part of ['bin', 'lib']) mkdirSync(join(target, part), { recursive: true })
-  const interpreter = join(target, 'bin', 'node')
-  writeFileSync(interpreter, '#!/bin/sh\n')
-
-  withExecPath(interpreter, () => {
-    // The argv refuses to bind a prefix overlapping the target...
-    assert.deepEqual(sandboxRebindRoots(home, target), [])
-    // ...so staging must NOT skip it. Told the same target, it agrees.
-    assert.equal(needsSandboxStaging(interpreter, {}, null, target), true,
-      'staging skipped an executable the sandbox will refuse to bind — it reaches the sandbox by neither route')
-    // The control: with no target overlap the prefix IS bound, and staging
-    // correctly skips because bwrap will mount it whole.
-    assert.deepEqual(sandboxRebindRoots(home, join(home, 'elsewhere')), [target])
-    assert.equal(needsSandboxStaging(interpreter, {}, null, join(home, 'elsewhere')), false)
-  })
-})
 
 // NOT a behavioural test of `stageHomeExecutable`, and the reason is worth more
 // than the test would have been. The scenario the round-7 review described — an
@@ -2251,4 +1576,107 @@ test('the identity claim reaches the panel record and decides nothing', async ()
   // missing field and a field reading `null` are different receipts.
   const silent = await gate(async ({ profile: p }) => runnerResult(p, packet()))
   assert.deepEqual(silent.reviews.map(item => item.claimedIdentity), [null, null, null])
+})
+
+test('a remote protocol error says what the remote said, redacted and on one line', async () => {
+  // Added 2026-08-13. The zai lane's `session/new` failure had been
+  // undiagnosable for five days — "ACP session/new failed with a remote protocol
+  // error", `stderrBytes: 0`, and an empty `error.cause`. Measured (2026-08) on the then-sandboxed
+  // host that day: the adapter WAS answering. The reject threw `msg.error` away,
+  // so an operator following the issue's own advice and running the lane alone
+  // learned nothing the panel had not already told them.
+  //
+  // Provider bytes are untrusted, so this asserts both halves at once: the
+  // detail arrives, AND it cannot be used to smuggle a secret or a second line.
+  await assert.rejects(
+    invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'session-new-remote-error' }),
+    (error) => {
+      assert.equal(error.code, 'protocol')
+      assert.match(error.message, /remote code -32603/)
+      assert.match(error.message, /upstream refused/)
+      assert.match(error.message, /Invalid value for config option model/,
+        'data.details carries the only useful sentence some adapters send')
+      assert.equal(error.message.includes('AKIA'), false,
+        'only named string fields may be read out of the remote error object')
+      assert.equal(error.message.includes('hunter2'), false, 'the remote error leaked a credential')
+      assert.equal(/[\r\n]/.test(error.message), false, 'the remote error spanned more than one line')
+      assert.ok(error.message.length < 400, `remote detail was not bounded (${error.message.length} chars)`)
+      return true
+    },
+  )
+})
+
+test('a review carrying credential-shaped text is redacted and kept, not discarded', async () => {
+  // These three used to be `assert.rejects(..., code === 'review')`. They were
+  // changed on 2026-08-13 after a real run on the then-sandboxed host threw away a COMPLETE
+  // AGY review of a diff about an environment-variable allowlist: `sensitiveName`
+  // matches any identifier containing token/auth/secret, one pattern fires on
+  // `NAME:`, and a reviewer writing `CLAUDE_CODE_MAX_OUTPUT_TOKENS: raise this`
+  // lost its whole document. The inbound packet was always redacted rather than
+  // refused; the outbound review now matches.
+  //
+  // The security property is what these assertions are for, and it is unchanged:
+  // the secret must be GONE. The change is only that the review survives beside
+  // it, and that the caller is told the document was touched.
+  for (const [behaviour, secret] of [
+    ['escaped-secret-review', 'abcdefghijklmnopqrstuvwxyz123456'],
+    ['plain-secret-review', 'hunter2'],
+    ['url-secret-review', 'supersecret'],
+  ]) {
+    const out = await invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: behaviour })
+    assert.equal(out.reviewRedacted, true, `${behaviour}: the caller was not told the review was redacted`)
+    const serialized = JSON.stringify(out.review)
+    assert.equal(serialized.includes(secret), false, `${behaviour}: the secret survived into the accepted review`)
+    assert.match(serialized, /\[REDACTED\]/, `${behaviour}: nothing was marked as redacted`)
+    assert.equal(out.review.verdict, 'PASS', `${behaviour}: the review itself was lost`)
+  }
+})
+
+test('lanes that stop at one stage for different reasons are not announced as one shared precondition', async () => {
+  // Round 8, codex. #51 taught the gate to say "one missing thing" when every
+  // lane died at the same deterministic stage — and it said it whether or not
+  // the lanes agreed. A missing review executable, an unreachable endpoint and an
+  // unacknowledged ACP setting all stop at `config`; the operator was told to
+  // look for one precondition behind three unrelated faults.
+  //
+  // `detail` is what discriminates, not `reason`: `reason` is derived from the
+  // stage, so every deterministic-stage failure is `lane_rejected` and it can
+  // never disagree when the stage agrees. A guard written on `reason` here
+  // could not have gone red.
+  // A REAL packet file, because the CLI opens it before it ever calls `gate` —
+  // the first version of this test passed a bare name, died at ENOENT, and
+  // asserted against a sentence the code under test never produced.
+  const packetPath = join(mkdtempSync(join(tmpdir(), 'gate-cause-')), 'packet.json')
+  writeFileSync(packetPath, JSON.stringify({ objective: 'x', acceptance: ['y'], brief: 'z' }))
+  const stderrFor = async (attempts) => {
+    const lines = []
+    await runReviewGateCli([packetPath, '/abs/target'], {
+      gate: async () => { throw Object.assign(new Error('blocked'), { report: { attempts } }) },
+      stdout: { write: () => {} },
+      stderr: { write: (line) => lines.push(line) },
+    })
+    return lines.join('')
+  }
+  const lane = (profile, detail) => ({ status: 'failed', profile, stage: 'config', reason: 'lane_rejected', detail })
+
+  const differing = await stderrFor([
+    lane('kimi', 'no review executable on PATH'),
+    lane('zai', 'review executable not found'),
+    lane('agy', 'the configured model was never acknowledged'),
+  ])
+  assert.match(differing, /3 different reasons/, `three unrelated faults were not called out as such:\n${differing}`)
+  assert.doesNotMatch(differing, /one shared precondition, not one fault/,
+    `the gate still claimed one shared precondition over three causes:\n${differing}`)
+  // The per-lane sentences are what the operator acts on, so they must survive.
+  for (const cause of ['no review executable on PATH', 'review executable not found', 'never acknowledged']) {
+    assert.ok(differing.includes(cause), `${cause} never reached the operator:\n${differing}`)
+  }
+
+  const shared = await stderrFor([
+    lane('kimi', 'review executable not found'),
+    lane('zai', 'review executable not found'),
+    lane('agy', 'review executable not found'),
+  ])
+  assert.match(shared, /one shared precondition, not one fault per profile/,
+    `the #51 sentence stopped being said when it was true:\n${shared}`)
 })

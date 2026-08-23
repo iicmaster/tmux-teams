@@ -47,7 +47,7 @@ Authenticate `gh`/git first if your GitHub setup requires it.
 | Node 20+ with `npx` | the ACP adapters. CI exercises Node 20 and Node 24 |
 | `tmux` and the `codex` CLI | the tmux worker lane |
 | `bun` | the `agy` ACP adapter (`bunx antigravity-acp@1.0.0`) |
-| `/usr/bin/bwrap` (Linux) | only for a profile that declares `osSandbox: 'bwrap'` — no shipped profile does since ADR 0006, so the gate runs on macOS and Linux without it |
+| ~~`/usr/bin/bwrap`~~ | not used at all — removed 2026-08-24, see ADR 0006, so the gate runs on macOS and Linux without it |
 
 ### First run
 
@@ -757,10 +757,9 @@ party-mode's 3-model review uses its bundled JavaScript ACP gate
 (`plugins/tmux-teams/skills/party-mode/scripts/review-gate.mjs`), not `oc`/AGY/
 Codex review plugins or MCP review tools. It no longer requires
 `/usr/bin/bwrap`: ADR 0006 removed `osSandbox: 'bwrap'` from every shipped
-profile, so the gate runs on macOS and Linux alike. The machinery is retained
-and still tested — a profile that declares the field gets the full sandbox — and
-this line claimed the opposite until a lane read it against ROADMAP.md and
-CLAUDE.md, which had both been updated. It also needs the supported ACP reviewer runtimes:
+profile in 2026-08-13, and its 2026-08-24 amendment removed the machinery
+itself. There is no OS sandbox and no way to switch one back on; the gate runs
+on macOS and Linux alike. What it still checks never came from bwrap. It also needs the supported ACP reviewer runtimes:
 `antigravity-acp@1.0.0` + trusted `agy`, Qwen/Zai through the pinned
 Claude ACP adapter, and the Codex ACP adapter. `claude-zai` and `claude-qwen` must both use the
 pinned `@agentclientprotocol/claude-agent-acp` adapter with their machine-local

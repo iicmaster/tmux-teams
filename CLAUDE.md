@@ -368,11 +368,13 @@ not optional, and only a later explicit instruction from Master changes either.
    host is a prerequisite of that run, not a separate item.
 
    **It was Linux-only, and as of 2026-08-13 it is not — see ADR 0006.** No
-   shipped profile declares `osSandbox: 'bwrap'` any more, so the gate runs on
-   macOS too. The bwrap machinery is retained and still tested; a profile that
-   declares the field gets the full sandbox, and turning it back on is one word.
-   What was given up is filesystem confinement at the OS level, and the ADR
-   states that plainly along with the argument against the decision.
+   shipped profile declared `osSandbox: 'bwrap'` after that date, so the gate
+   ran on macOS too. **Its 2026-08-24 amendment removed the machinery entirely,
+   on Master's instruction**: 441 lines of dead helpers and branches, plus the
+   four tests that had skipped themselves on every run since. Restoring a
+   sandbox now means writing one, not setting a field. What was given up is
+   filesystem confinement at the OS level, and the ADR states that plainly
+   along with the argument against it.
    Everything else the gate checks is unchanged and never came from bwrap: a
    temporary workspace, `toolCallsObserved: 0`, no built-in tools, no MCP
    servers, every permission denied, the endpoint pinned and verified in the
@@ -488,10 +490,12 @@ not optional, and only a later explicit instruction from Master changes either.
    still had no cheap way to answer it.
 6. Run `node --test`, `git diff --check`, and
    `claude plugin validate --strict .` locally.
-   **Read the SKIP count, not only the fail count.** Four tests skip themselves
-   on macOS (`process.platform !== 'linux' || !existsSync('/usr/bin/bwrap')`),
-   so the suite reads `847 pass / 0 fail / 4 skipped` here and `847/0/0` on a
-   Linux host. A skipped test is an UNEXECUTED GUARD, not a passing one: those
+   **Read the SKIP count, not only the fail count.** It should now be ZERO on
+   every platform: the four tests that skipped themselves on macOS
+   (`process.platform !== 'linux' || !existsSync('/usr/bin/bwrap')`) went with
+   the sandbox on 2026-08-24, and a non-zero skip count is a new one to
+   investigate rather than the familiar four. A skipped test is an UNEXECUTED
+   GUARD, not a passing one: those
    four had never run on any machine until 2026-08-09, and three of them failed
    the first time they did. `tests/acp-companion.test.mjs`
    was long treated as a timing flake — "a different name each time, re-run it

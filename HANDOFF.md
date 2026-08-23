@@ -78,7 +78,7 @@ node scripts/roadmap-gate.mjs    # 0 current · 2 published page is behind
 that list is what found a 10KB review transcript tracked in the release after
 ten review rounds had read past it.
 
-The 4 skips are the bwrap set skipping itself off Linux. A skipped test is an
+There are no skips any more: the bwrap set that skipped itself off Linux was removed 2026-08-24. A skipped test is an
 unexecuted guard.
 
 ## 3. STATE
