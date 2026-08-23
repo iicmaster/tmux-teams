@@ -34,9 +34,12 @@ Closed rules:
   repository policy decides warn/block/needs_human_decision for each.
 - MVP `blocking` = contract-and-integrity blocking only: missing required
   evidence fields, tool failure when evidence is required, test-suite failure,
-  unverified self-approval, or operator-defined criteria in high-risk scope.
-  NEVER block on an uncalibrated universal numeric threshold (CRAP > N,
-  mutation < N%) — research forbids it without local calibration.
+  or unverified self-approval. Any further blocking criterion must be
+  PREDECLARED in the trusted repository policy selected BEFORE measurement —
+  an operator may not add a blocking rule after seeing results, and no
+  locally worded numeric rule counts as predeclared. NEVER block on an
+  uncalibrated universal numeric threshold (CRAP > N, mutation < N%) —
+  research forbids it without local calibration.
 - A completed analysis uses the mailbox's normal completion marker even when
   its separate policy decision is `block`. `blocking` mode does NOT claim CI,
   merge, or approval enforcement in this MVP.
@@ -107,5 +110,6 @@ future-dated/unverifiable baseline = no baseline-relative pass.
 6. Evaluate policy separately → policy decision.
 7. Hand decision to external PM/CI/human.
 
-Missing tools/configuration produce `unknown`/unconfigured evidence and a
-named next action — never auto-install or auto-execute.
+Missing tools or configuration produce `unknown`/unconfigured evidence plus a
+named next action. The skill never installs a tool, never discovers one, and
+never executes anything on its own initiative.

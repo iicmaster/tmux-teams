@@ -365,13 +365,20 @@ test('test-quality semantic contract: state planes, denominator, no-auto-exec, n
     'allow', 'warn', 'block', 'needs_human_decision']) {
     assert.ok(txt.includes(v), `state vocabulary missing: ${v}`)
   }
-  // Planes stay separate — policy decision is not evidence state, not enforcement.
-  assert.ok(txt.includes('policy decision') && txt.includes('Enforcement/approval'),
-    'four-state-plane separation missing')
+  // The vocabularies are CLOSED per plane: the state-plane table is parsed row
+  // by row and each plane's value list must match EXACTLY — a new evidence
+  // state or a value moved to the wrong plane now turns the suite red instead
+  // of riding through an includes() check (panel AC-6, 2026-08-24).
+  const table = txt.slice(txt.indexOf('| Plane |'), txt.indexOf('Closed rules:'))
+  const row = name => table.split('\n').find(l => l.startsWith(`| ${name} |`))
+  assert.equal(row('Requested mode'), '| Requested mode | `observe` / `advisory` / `blocking` | caller |')
+  assert.equal(row('Evidence state'), '| Evidence state | `measured` / `unknown` / `tool_failure` / `flaky` | evidence layer |')
+  assert.equal(row('Policy decision'), '| Policy decision | `allow` / `warn` / `block` / `needs_human_decision` | policy layer |')
+  assert.equal(row('Enforcement/approval'), '| Enforcement/approval | external PM/CI/human only | outer workflow |')
   assert.ok(txt.includes("can NEVER become pass"), 'unknown/tool_failure/flaky pass rule missing')
   // Blocking = contract-and-integrity only; universal numeric thresholds forbidden.
   assert.ok(txt.includes('contract-and-integrity blocking'), 'blocking scope missing')
-  assert.ok(txt.includes('NEVER block on an uncalibrated universal numeric threshold'),
+  assert.ok(txt.includes('NEVER block on an\n  uncalibrated universal numeric threshold'),
     'no-universal-threshold rule missing')
   // Denominator reconciliation + equivalent-suspected isolation.
   assert.ok(txt.includes('partitions must sum to\n  total'), 'denominator reconciliation invariant missing')
@@ -379,7 +386,11 @@ test('test-quality semantic contract: state planes, denominator, no-auto-exec, n
   // verify_cmd is audit trail; re-execution comes from trusted sources.
   assert.ok(txt.includes('audit trail'), 'verify-command audit-trail rule missing')
   assert.ok(!/exec\(|eval\(|child_process/.test(txt), 'skill must not embed execution machinery')
-  assert.ok(txt.includes('auto-install or auto-execute'), 'no-auto-install/execute rule missing')
+  assert.ok(txt.includes('never installs a tool, never discovers one, and\nnever executes anything on its own initiative'),
+    'no-auto-install/execute rule missing')
+  // AC-2 (panel round 2026-08-24): blocking criteria must be predeclared.
+  assert.ok(txt.includes('PREDECLARED in the trusted repository policy selected BEFORE measurement'),
+    'predeclared-blocking-criteria rule missing')
   // Method-level granularity mandatory.
   assert.ok(txt.includes('method/function-level granularity is mandatory'),
     'method-level granularity rule missing')
