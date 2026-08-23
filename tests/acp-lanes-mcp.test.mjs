@@ -1455,7 +1455,10 @@ test('a lane is told the model its gateway answers to, not the one the panel rec
     const source = { HOME: '/tmp', PATH: '/usr/bin' }
     if (profile.endpoint) {
       const file = join(dir, `${id}.env`)
-      writeFileSync(file, `ANTHROPIC_BASE_URL=https://${profile.endpoint.host}${profile.endpoint.path}\n`
+      const base = profile.endpoint.scheme
+        ? `http://${profile.endpoint.host}:${profile.endpoint.port}${profile.endpoint.path}`
+        : `https://${profile.endpoint.host}${profile.endpoint.path}`
+      writeFileSync(file, `ANTHROPIC_BASE_URL=${base}\n`
         + 'ANTHROPIC_AUTH_TOKEN=ordinary\n')
       source[`TMUX_TEAMS_REVIEW_${id.toUpperCase()}_ENV_FILE`] = file
     }

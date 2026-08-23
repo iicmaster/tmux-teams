@@ -214,8 +214,16 @@ export const REVIEW_PROFILES = freeze({
     // lane reaches (glm-5.2-class through the gateway), same as every other
     // `family` label in this table; the pin is what makes it provable — here
     // http against an explicit loopback host, never a remote name.
+    // The gateway serves the glm family under its own routed name and the
+    // wrapper maps a PUBLIC ALIAS onto it: `--model opus` answers through
+    // `zenmux/z-ai/glm-5.3-free` (measured 2026-08-24, probe returned OK;
+    // bare `glm-5.2` answered `-32603 model may not exist`). Same shape as
+    // deepseek: `model` is the identity this panel records; `requestModel`
+    // is the alias the wire is asked for; ANTHROPIC_DEFAULT_OPUS_MODEL in
+    // the lane's settings file maps alias -> vendor id.
     id: 'ninerouter', provider: 'ninerouter', family: 'zai', model: 'glm-5.2',
-    displayModel: 'ninerouter/glm-5.2',
+    displayModel: 'ninerouter/glm-5.3 via opus alias',
+    requestModel: 'opus',
     reviewMode: 'plan',
     command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
     adapterPackage: '@agentclientprotocol/claude-agent-acp@0.61.0',
@@ -223,8 +231,8 @@ export const REVIEW_PROFILES = freeze({
     settingsRelativePath: '.config/claude-profiles/ninerouter/settings.json',
     providerConfigDir: '.config/claude-profiles/ninerouter',
     endpoint: NINEROUTER_ENDPOINT,
-    sessionSettings: { availableModels: ['glm-5.2'] },
-    config: { model: 'glm-5.2', mode: 'plan' },
+    sessionSettings: { availableModels: ['opus'] },
+    config: { model: 'opus', mode: 'plan' },
   },
   codex: {
     id: 'codex', provider: 'openai', family: 'openai', model: 'gpt-5.6-sol',
