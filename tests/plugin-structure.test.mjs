@@ -13,8 +13,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PLUGIN = join(ROOT, 'plugins/tmux-teams')
 const SKILLS = ['tmux-teams', 'party-mode', 'party-auto', 'party-advise', 'sqthink', 'codex-tmux-driver',
-  'graph-setup', 'claude-advisor', 'codex-advisor', 'agy-advisor', 'handoff', 'show-me']
-const RELEASE_VERSION = '0.33.0'
+  'graph-setup', 'claude-advisor', 'codex-advisor', 'agy-advisor', 'handoff',
+  'pm-delegation']
+const RELEASE_VERSION = '0.34.0'
 // The Stage 1 CLI entry points went on 2026-07-29 and the rest of the phase
 // subsystem — nine scripts, its gate, its store and its exporter — went on
 // 2026-08-02. The note that used to stand here said deleting the remainder
@@ -767,6 +768,78 @@ test('every advisor carries the same contract: a party, and a model', () => {
     assert.ok(lines.some((l) => /default seat/.test(l)),
       `${name}: no invocation is marked as the default seat`)
   }
+})
+
+
+// The README named eleven skills while twelve shipped, and the missing one was
+// `show-me` — a skill the plugin delivered and its own documentation never
+// mentioned. Nothing caught that, because `SKILLS` and the README were two
+// hand-kept lists with no relationship. This is the relationship. It was
+// proposed in a pull request offering a vendor-neutral delegation guide; the
+// guide was declined and this half was kept, which is why it is here and not
+// there.
+test('every shipped skill is named in the README, and the README names no skill that is not shipped', () => {
+  const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
+  const named = new Set([...readme.matchAll(/`tmux-teams:([a-z0-9-]+)`/g)].map((m) => m[1]))
+  // `tmux-teams:tmux-teams` is the plugin's own entry skill and is named the
+  // same as the plugin, so it appears in prose that is not an inventory line.
+  // READ THE DIRECTORY, do not trust the list. A review lane blocked v0.34.0
+  // partly on this: the word "shipped" here used to mean `new Set(SKILLS)`, so
+  // a skill directory that existed and was in NEITHER `SKILLS` nor the README
+  // passed every check in this file. The list is still pinned separately — that
+  // is what catches a deletion — but "shipped" now means what is on disk.
+  const onDisk = readdirSync(join(PLUGIN, 'skills'), { withFileTypes: true })
+    .filter((e) => e.isDirectory() && existsSync(join(PLUGIN, 'skills', e.name, 'SKILL.md')))
+    .map((e) => e.name)
+  const shipped = new Set(onDisk)
+  assert.deepEqual([...shipped].sort(), [...SKILLS].sort(),
+    'the skills on disk and the SKILLS list of record disagree — one of them is wrong, '
+    + 'and until this test read the directory neither could say which')
+  const undocumented = [...shipped].filter((s) => !named.has(s)).sort()
+  const phantom = [...named].filter((s) => !shipped.has(s)).sort()
+  assert.deepEqual(undocumented, [],
+    `these skills ship and the README never names them: ${undocumented.join(', ')}`)
+  assert.deepEqual(phantom, [],
+    `the README names skills that are not shipped: ${phantom.join(', ')}`)
+
+  // AND THE COUNT IN PROSE, which is what actually shipped wrong. The section
+  // heading said "The eleven skills" while the tables below it named twelve —
+  // a contradiction inside one document, and nothing was watching a number
+  // written as a word.
+  const WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight',
+    'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen',
+    'seventeen', 'eighteen', 'nineteen', 'twenty']
+  const heading = readme.match(/^##\s*\d+\.\s*The\s+(\w+)\s+skills\s*$/m)
+  assert.ok(heading, 'the README no longer has a "The <n> skills" heading for this test to check')
+  assert.equal(heading[1], WORDS[shipped.size],
+    `the README heading says "${heading[1]}" and ${shipped.size} skills ship`)
+})
+
+// Agent Plugins 1.0 asks for client-specific material under a reverse-domain
+// namespace. Claude Code cannot read one: measured from the installed binary's
+// own strings, it recognises plugin content by finding `.claude-plugin/` — or a
+// top-level `commands/`, `skills/`, `agents/`, `hooks/`, `themes/`,
+// `output-styles/`, `monitors/`, `workflows/`, `SKILL.md`, `.mcp.json` or
+// `.lsp.json` — and contains no occurrence of `agent-plugins.org` at all.
+//
+// So these paths are load-bearing for INSTALLATION, and until this test no
+// gate watched them: every existing check reads a known path and asserts its
+// CONTENTS, so a move that updated the hard-coded paths would keep the suite
+// green while making the plugin uninstallable. Written BEFORE anything moves,
+// on purpose — a test written afterwards confirms what was done rather than
+// checking whether it was right.
+test('the paths Claude Code needs to recognise this plugin are where it looks for them', () => {
+  for (const required of ['.claude-plugin/plugin.json', '.mcp.json', 'skills']) {
+    assert.ok(existsSync(join(PLUGIN, required)),
+      `${required} is missing from the plugin root — Claude Code finds plugin content by these names`)
+  }
+  // And the vendor-neutral pair, which is how this repository already answers
+  // the same conflict for one file: two registrations, deliberately different,
+  // side by side.
+  assert.ok(existsSync(join(PLUGIN, 'plugin.json')),
+    'the vendor-neutral Agent Plugins manifest is missing')
+  assert.ok(existsSync(join(PLUGIN, 'mcp.json')),
+    'the vendor-neutral MCP registration is missing')
 })
 
 // CLAUDE.md states which paths this repository tracks, and a test above asserts

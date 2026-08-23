@@ -13,7 +13,7 @@ New here? Read this file top to bottom, then
 [how-it-works.md](plugins/tmux-teams/skills/tmux-teams/references/how-it-works.md)
 for the diagrams.
 
-Current release: **0.33.0** (`.claude-plugin/marketplace.json` and
+Current release: **0.34.0** (`.claude-plugin/marketplace.json` and
 `plugins/tmux-teams/.claude-plugin/plugin.json`). Upgrading from an earlier
 0.14.x release needs no change to an existing `graph.json` — the seat fields
 in ข้อ 2 (`adapter`, `effort`, `display_model`) and the files in ข้อ 6 are all
@@ -399,7 +399,7 @@ relaying a person's words is expected to sign `human:` and name itself in
 
 ---
 
-## 4. The eleven skills
+## 4. The twelve skills
 
 **Setting up and running the loop**
 
@@ -416,6 +416,7 @@ relaying a person's words is expected to sign `human:` and name itself in
 | `tmux-teams:party-mode` | the umbrella: routes a request to one of the two lanes below |
 | `tmux-teams:party-auto` | executing multi-file or production-impacting work — planning, critique, file ownership, grill gate, verification, 3-model review |
 | `tmux-teams:party-advise` | advice, plan critique, tradeoff or risk review — read-only, never edits |
+| `tmux-teams:pm-delegation` | acting as PM over other agents — subagents or ACP lanes. One delegation or a whole spec: the brief contract, the STOP rule, and the autonomous run (tickets as a dependency graph, parallel implementers in worktrees, reviewed against the spec). Does not touch the delivery loop |
 | `tmux-teams:sqthink` | structured step-by-step analysis, comparison, or planning before deciding |
 
 **Getting a second opinion**
