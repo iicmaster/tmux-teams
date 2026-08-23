@@ -4,7 +4,7 @@
 // with semantic anchors instead of brittle prose regexes.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, readdirSync, statSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync, lstatSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
@@ -853,13 +853,74 @@ test('the paths Claude Code needs to recognise this plugin are where it looks fo
 // The set is pinned literally rather than derived from CLAUDE.md: a test that
 // reads its expectation out of the document it is checking agrees with whatever
 // the document says, including a document somebody widened to make a test pass.
+// The 1.0 portable root, and why it is symlinks rather than a copy.
+//
+// ADR 0008 recorded that this plugin's layout does NOT conform: section 8 of
+// the specification says "Client-specific files MUST be represented under a
+// top-level directory named for that namespace", and `.claude-plugin/`,
+// `.mcp.json` and `commands/` sit at the plugin root instead. Moving them
+// satisfies 1.0 and makes the plugin uninstallable in Claude Code, whose binary
+// contains no `agent-plugins.org` string at all.
+//
+// So there are two roots. `plugins/tmux-teams/` is what Claude Code installs and
+// is unchanged. `agent-plugins/tmux-teams/` is what a standard-aware client
+// installs, and it is SYMLINKS — measured: git stores them as mode 120000, six
+// lines total for 2.4 MB of skills, and they survive both `git clone` and
+// `git archive` as real links with content readable through them. A copy would
+// have been 69 files that drift; a generator would have been a script and a
+// staleness gate. Neither is needed when the filesystem already has the feature.
+test('the portable root conforms to Agent Plugins 1.0, and every link in it resolves', () => {
+  const PORTABLE = join(ROOT, 'agent-plugins', 'tmux-teams')
+  const NS = join(PORTABLE, 'com.anthropic.claude')
+
+  // What the spec fixes by name: the manifest, the MCP path, the skills dir.
+  for (const required of ['plugin.json', 'mcp.json', 'skills']) {
+    const p = join(PORTABLE, required)
+    assert.ok(lstatSync(p).isSymbolicLink(), `${required} in the portable root is not a symlink — a copy drifts`)
+    assert.ok(existsSync(p), `${required} in the portable root is a DEAD symlink`)
+  }
+
+  // Section 8's MUST is the whole reason this root exists: client-specific
+  // files live under the namespace, not at the root.
+  for (const clientOwned of ['.claude-plugin', '.mcp.json', 'commands']) {
+    assert.equal(existsSync(join(PORTABLE, clientOwned)), false,
+      `${clientOwned} is client-specific and sits at the portable root — that is the exact 1.0 `
+      + 'violation this root exists to avoid')
+  }
+  for (const inNamespace of ['plugin.json', 'mcp.json', 'commands']) {
+    const p = join(NS, inNamespace)
+    assert.ok(lstatSync(p).isSymbolicLink(), `com.anthropic.claude/${inNamespace} is not a symlink`)
+    assert.ok(existsSync(p), `com.anthropic.claude/${inNamespace} is a DEAD symlink`)
+  }
+
+  // Reading THROUGH the links, not merely stat-ing them. A symlink can resolve
+  // to a directory that is empty or to a file that is not what it claims.
+  const portableManifest = JSON.parse(readFileSync(join(PORTABLE, 'plugin.json'), 'utf8'))
+  assert.equal(portableManifest.$schema, 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+    'the portable manifest lost its 1.0 $schema')
+  assert.equal(portableManifest.name, 'tmux-teams')
+  assert.equal(portableManifest.version, RELEASE_VERSION,
+    'the portable manifest is a different version from the release — the symlink is pointing somewhere stale')
+
+  const claudeManifest = JSON.parse(readFileSync(join(NS, 'plugin.json'), 'utf8'))
+  assert.equal('$schema' in claudeManifest, false,
+    'the namespaced Claude manifest gained a 1.0 $schema — the two manifests differ on purpose')
+  assert.equal(claudeManifest.version, RELEASE_VERSION)
+
+  // The skills link must reach the real inventory, not an empty directory.
+  const portableSkills = readdirSync(join(PORTABLE, 'skills'), { withFileTypes: true })
+    .filter((e) => e.isDirectory()).map((e) => e.name).sort()
+  assert.deepEqual(portableSkills, [...SKILLS].sort(),
+    'the portable root sees a different set of skills than ships')
+})
+
 test('the tracked top-level entries are exactly the ones this repository declares', () => {
   const listed = execFileSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8' })
     .split('\n').filter(Boolean)
     .map((p) => p.split('/')[0])
   const actual = [...new Set(listed)].sort()
   const allowed = [
-    '.claude-plugin', '.github', '.gitignore',
+    '.claude-plugin', '.github', '.gitignore', 'agent-plugins',
     '.published-RELEASE-PLAN.json', '.published-event-subscriptions.json',
     '.roadmap-published.json',
     'CLAUDE.md', 'HANDOFF.md', 'README.md', 'RELEASE-PLAN.md', 'ROADMAP.md',

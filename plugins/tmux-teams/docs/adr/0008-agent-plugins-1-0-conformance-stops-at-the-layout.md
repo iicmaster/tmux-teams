@@ -2,6 +2,11 @@
 
 ## Status
 
+**Amended — 2026-08-24, on Master's instruction.** The decision below stands for
+the SHIPPED root and its reasoning is unchanged. What changed is that the
+divergence is no longer only recorded: a second, conformant root now exists
+beside it. See "The amendment" at the end.
+
 Accepted — 2026-08-22. Scope set by Master as v0.34.0 item 1, "conform to the
 Agent Plugins 1.0 standard". The manifest already did. The layout cannot, and
 this records the decision not to try.
@@ -102,3 +107,91 @@ Whether `commands/` — which Claude Code recognises but the standard leaves to
 "each client's control" — should eventually move. It is left where it is, and
 the layout test does not currently pin it, because nothing has forced the
 question.
+
+## The amendment — 2026-08-24
+
+**Master's instruction: keep Claude as the primary layout, and add a second
+folder that follows the standard. A client installing per the standard installs
+from that folder instead.**
+
+### What was re-measured, because the original reading was challenged
+
+This ADR asserted non-conformance from a summary. The specification was fetched
+again and quoted verbatim. Section 8:
+
+> "Client-specific files MUST be represented under a top-level directory named
+> for that namespace."
+
+That is a MUST, and it settles the question the original text left implicit:
+`.claude-plugin/`, `.mcp.json` and `commands/` ARE client-specific files, and
+they sit at the plugin root. **The layout genuinely does not conform, and this
+ADR's conclusion was right.**
+
+Two things it did not say, both now measured:
+
+- **Extra non-client entries at the root are fine.** Section 4.2's own standard
+  layout prints `LICENSE` and `CHANGELOG.md` beside `plugin.json`, `skills/` and
+  `mcp.json`. So `docs/` and `CONTEXT.md` were never the problem.
+- **A first read of the same page said the namespace directory was OPTIONAL.**
+  It was a paraphrase of "the spec does not mandate that plugins must provide
+  such directories" — true only of a plugin that has no client-specific files at
+  all. Ours has three. **The verbatim MUST is what governs; a summarised spec is
+  not a spec**, and this is the second time this document has been moved by
+  someone insisting on the literal text.
+
+### What was built
+
+`agent-plugins/tmux-teams/` — a conformant root, entirely symlinks:
+
+```
+agent-plugins/tmux-teams/
+├── plugin.json              -> ../../plugins/tmux-teams/plugin.json
+├── mcp.json                 -> ../../plugins/tmux-teams/mcp.json
+├── skills                   -> ../../plugins/tmux-teams/skills
+└── com.anthropic.claude/
+    ├── plugin.json          -> ../../../plugins/tmux-teams/.claude-plugin/plugin.json
+    ├── mcp.json             -> ../../../plugins/tmux-teams/.mcp.json
+    └── commands             -> ../../../plugins/tmux-teams/commands
+```
+
+`plugins/tmux-teams/` is untouched, so Claude Code installs exactly what it
+installed before.
+
+**Symlinks rather than a copy or a generator, and that was measured rather than
+assumed.** Probed before choosing: git stores them as mode `120000`, and they
+survive both `git clone` and `git archive` as real links with content readable
+through them. The cost is six lines in git for 2.4 MB and 69 files of skills,
+and **drift is not prevented, it is impossible** — there is only ever one copy.
+A generated root would have needed a build script and a staleness gate, which is
+this repository's own `roadmap-render`/`roadmap-gate` pattern and would have been
+the answer had the probe failed.
+
+### The bet this ADR recorded, and how it was lost
+
+The original text said:
+
+> "We also chose not to create the namespace speculatively. That is a bet that no
+> second client arrives before someone reads this file. The bet is recorded here
+> so it can be lost visibly."
+
+**It was lost, and visibly, exactly as intended — but not the way it expected.**
+No second client arrived. The owner read the file and decided that conformance
+should not wait for one. The bet was framed around a trigger from outside; what
+fired was a decision from inside.
+
+### What guards it
+
+`tests/plugin-structure.test.mjs` asserts every entry in the portable root is a
+symlink AND resolves, reads the manifests THROUGH the links (the portable one
+must carry the 1.0 `$schema`, the namespaced Claude one must not), checks both
+against `RELEASE_VERSION`, compares the skills the portable root sees against the
+shipped list, and refuses any client-specific entry at the portable root.
+
+Three mutations, each red: point a link at a missing target; replace a link with
+a real copy; put `commands/` back at the portable root.
+
+### What this still does not decide
+
+Nothing has installed from `agent-plugins/tmux-teams/`. No client implementing
+the 1.0 layout was available to try, which is the same gap the original decision
+named — only now the plugin is ready for one instead of waiting to become ready.
