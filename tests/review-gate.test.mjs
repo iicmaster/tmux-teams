@@ -433,6 +433,41 @@ test('panel preflight rejects duplicate or primary-matching runtime families', a
   }
 })
 
+// The AGY safe-read exemption outlived the thing it was for. `inspectAgySafeRead`
+// and the sandbox `builtin/` tree went with ADR 0006's removal, so the runner
+// cannot produce a non-zero safe-read count for any lane — but the gate went on
+// exempting AGY from checking them, which is dead permission: it only widens
+// what a wrong or hostile runner can slip past, and it reads to an auditor like
+// a live allowance. An openai review lane found it on the v0.35.0 diff.
+//
+// Behavioural, not a grep: the exemption was deleted and the whole suite stayed
+// green, which is how it survived removal in the first place.
+test('the gate rejects an AGY safe-read count, which it used to be exempt from', async () => {
+  // AGY only, because AGY is the only lane the exemption ever covered — every
+  // other lane was already required to report zero and that has not changed.
+  const lane = 'agy'
+  {
+    for (const field of ['safeRuntimeReadsObserved', 'safeWorkspaceReadsObserved']) {
+      const profiles = keyedProfiles([
+        gateProfile('kimi', 'kimi'), gateProfile('zai', 'zai'), gateProfile('agy', 'gemini'),
+      ])
+      await assert.rejects(runReviewGate(packet(), {
+        profiles,
+        runAcpReview: async ({ profile: selected }) => {
+          const result = runnerResult(selected, packet())
+          if (selected.id === lane) result.isolation[field] = 1
+          return result
+        },
+        buildProfileEnv: () => ({}),
+        planReviewPanel: () => testPlan(['kimi', 'zai', 'agy'], null),
+        validateReview: () => ({ ok: true }),
+        synthesizeReviews: () => ({ verdict: 'PASS' }),
+      }), /isolation/,
+        `lane ${lane} reported ${field}: 1 and the gate accepted it`)
+    }
+  }
+})
+
 test('final gate rejects a fallback that introduces duplicate or primary-matching runtime families', async () => {
   const cases = [
     { reserveFamily: 'kimi', message: /families are not distinct/ },

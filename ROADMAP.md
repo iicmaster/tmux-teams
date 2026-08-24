@@ -697,6 +697,23 @@ that walks the copy, refuses any surviving symlink, and compares four manifests
 byte for byte against the sources they were linked to. Turning the dereference
 off turns it red.
 
+**And a third, found on the rerun: the AGY safe-read exemption outlived what it
+was for.** The sandbox removal left `const agyReadInspection = null` guarding
+`if (null?.scope)` — a branch that can never run and two counters that can never
+leave zero — while `review-gate.mjs` went on exempting AGY from checking them.
+Dead code holding open a dead permission: it could not help any real lane and
+could only widen what a wrong runner slips past, and it read to an auditor like
+a live allowance. The branch is deleted and the gate now requires zero from
+every lane. Deleting the exemption did not turn one test red, which is how it
+survived removal in the first place, so a behavioural guard was added; restoring
+the exemption turns that guard red.
+
+**What the panel cost and what it bought.** Three rounds, because a finding
+changes the bytes and the bytes are what the panel read. The gemini lane found
+the documentation defect, the openai lane found all three code defects, and two
+of the four were older than this release rather than introduced by it. Every one
+was the same shape — a sweep that updated the neighbours and missed one.
+
 ## What is actually open
 
 These are real but unforced, and separate from the release above:

@@ -839,22 +839,20 @@ export async function runAcpReview({
             })
             return
           }
-          const agyReadInspection = null
-          if (agyReadInspection?.scope) {
-            if (agyReadInspection.scope === 'runtime') safeRuntimeReadsObserved++
-            else safeWorkspaceReadsObserved++
-            reportProgress({
-              kind: 'notification',
-              method: 'session/update',
-            })
-            return
-          }
+          // The AGY safe-read exception is GONE, not merely unreachable. It was
+          // a tolerance for one completed read confined to the sandbox's own
+          // `builtin/` tree, and both `inspectAgySafeRead` and that tree went
+          // with the sandbox. What was left here was `const agyReadInspection =
+          // null` guarding `if (null?.scope)` — a branch that can never run and
+          // two counters that can never leave zero, which read like a live
+          // allowance to anyone auditing the gate that still exempted them.
+          // Found by an openai review lane on the v0.35.0 release diff.
+          // An AGY tool call now blocks the lane exactly like any other.
           const safeKinds = new Set(['think', 'read', 'search', 'edit', 'execute', 'fetch', 'other'])
           const kind = safeKinds.has(update?.kind) ? update.kind : 'unknown'
           const status = ['pending', 'in_progress', 'completed', 'failed'].includes(update?.status)
             ? update.status : 'unknown'
-          const detail = agyReadInspection?.rejection ? `; rejected: ${agyReadInspection.rejection}` : ''
-          return protocolError(`ACP reviewer attempted a ${kind} tool call (${status}${detail})`)
+          return protocolError(`ACP reviewer attempted a ${kind} tool call (${status})`)
         }
         if (update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
           if (!promptIssued) return protocolError('ACP replay/pre-prompt agent message is not allowed')

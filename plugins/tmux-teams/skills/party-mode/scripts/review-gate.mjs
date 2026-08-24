@@ -276,10 +276,10 @@ function runnerEvidenceFault(profile, value, expectedInputHash) {
       (!isAgy(profile) && isolation.reasoningUpdatesObserved !== 0) ||
       !Number.isInteger(isolation?.safeRuntimeReadsObserved) ||
       isolation.safeRuntimeReadsObserved < 0 ||
-      (!isAgy(profile) && isolation.safeRuntimeReadsObserved !== 0) ||
+      isolation.safeRuntimeReadsObserved !== 0 ||
       !Number.isInteger(isolation?.safeWorkspaceReadsObserved) ||
       isolation.safeWorkspaceReadsObserved < 0 ||
-      (!isAgy(profile) && isolation.safeWorkspaceReadsObserved !== 0) ||
+      isolation.safeWorkspaceReadsObserved !== 0 ||
       isolation?.temporaryModelSettings !== Boolean(profile.sessionSettings) ||
       isolation?.hostProviderHomeVisible !== true ||
       isolation?.ephemeralProviderStateWritable !== false ||
