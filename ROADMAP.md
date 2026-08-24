@@ -741,6 +741,23 @@ as it is. One round earlier the same rewrite had fixed an OVERstatement in the
 same paragraph, which is worth noticing: a document describing a capability that
 was removed gets both kinds of wrong.
 
+**And the closing round found that the fix for item 5 was itself hollow — two
+families, independently.** Restoring the executable-trust call without restoring
+the canonicalisation left `canonicalTargetRepository` declared in the deleted
+bwrap block and never assigned, so `resolveExecutable` received `undefined`, its
+`targetRepository &&` clause short-circuited, and a binary sitting in the
+reviewed checkout would have been accepted as trusted. The gemini and openai
+lanes raised it separately on the same bytes, which is the "two of three is
+must-fix" rule doing exactly what it is for. Canonicalisation restored, and the
+guard asserts the REFUSAL — a shadow binary on PATH inside the target repository
+must be rejected with `spawn` never reached. Removing the assignment turns it
+red.
+
+That is the sixth finding of this release and the second one introduced by a fix
+for an earlier one. The lesson is not "review harder", it is that a guard
+restored without the value it reads is indistinguishable from a guard, and only
+a test that asserts the refusal can tell them apart.
+
 One finding was refused on measurement rather than argued away: the claim that
 the gate fixture's `networkSharedWithHost` is decoupled from production is
 false — mutating the emitter alone turns two behavioural tests red. Recorded

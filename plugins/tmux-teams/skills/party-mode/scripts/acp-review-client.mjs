@@ -728,6 +728,27 @@ export async function runAcpReview({
     let spawnCommand = command
     let spawnArgs = args
     let canonicalTargetRepository
+    // CANONICALISE IT, or the check below is decoration. `targetRepository` was
+    // resolved inside the deleted bwrap block, so restoring the trust call
+    // without restoring this left `canonicalTargetRepository` declared and never
+    // assigned — `resolveExecutable` then received `undefined`, its
+    // `targetRepository &&` clause short-circuited, and a binary sitting in the
+    // reviewed checkout would have been accepted as trusted. The same openai
+    // lane that asked for the trust call back found that the call it got was
+    // hollow, one round later.
+    if (typeof targetRepository === 'string' && targetRepository.length > 0) {
+      if (!isAbsolute(targetRepository)) {
+        throw new ReviewTransportError('input', 'runner-owned targetRepository must be an absolute path')
+      }
+      try {
+        canonicalTargetRepository = await realpath(targetRepository)
+      } catch (error) {
+        throw new ReviewTransportError('input', `runner-owned targetRepository is not an existing directory: ${error.message}`, error)
+      }
+      if (canonicalTargetRepository === '/') {
+        throw new ReviewTransportError('input', 'runner-owned targetRepository must not be the filesystem root')
+      }
+    }
     // RESOLVE BEFORE SPAWNING, for every lane. This is the executable-trust
     // boundary `party-mode/SKILL.md` promises: the profile-owned binary is
     // resolved through PATH, refused if it resolves inside the target

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, writeFileSync, existsSync, readFileSync, symlinkSync, realpathSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync, existsSync, readFileSync, symlinkSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -160,6 +160,37 @@ test('isolated ACP runner returns strict JSON with runner provenance and redacts
 // So this test does not call `resolveExecutable`. It calls `runAcpReview` and
 // proves the refusal happens BEFORE a process starts, which is the only property
 // that matters and the only one a deleted call site breaks.
+// And the OTHER half of that boundary: a binary sitting inside the checkout
+// being reviewed must be refused. `resolveExecutable` guards it with
+// `if (targetRepository && ...)`, which means the guard is only as real as the
+// value handed to it — and the first version of the restored trust call handed
+// it `undefined`, because `canonicalTargetRepository` was declared in the
+// deleted bwrap block and never assigned outside it. The call was present, the
+// check short-circuited, and a target-controlled binary would have been trusted.
+//
+// So this asserts the REFUSAL, not the presence of a call.
+test('an executable inside the reviewed checkout is refused, not trusted', async () => {
+  const repo = mkdtempSync(join(tmpdir(), 'target-repo-'))
+  try {
+    const shadow = join(repo, 'shadow-review-bin')
+    writeFileSync(shadow, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+    let spawned = false
+    await assert.rejects(runAcpReview({
+      profile: profile('oc', { command: 'shadow-review-bin' }),
+      lane: 'oc',
+      packet: packet(),
+      timeoutMs: 3_000,
+      targetRepository: repo,
+      env: { MOCK_REVIEW_BEHAVIOUR: 'ok', PATH: repo },
+      spawn: (...args) => { spawned = true; return nodeSpawnForTest(...args) },
+    }), e => e.code === 'config' && /resolves inside the target repository/.test(e.message),
+      'an executable inside the reviewed checkout was not refused — targetRepository never reached the check')
+    assert.equal(spawned, false, 'the target-controlled binary was spawned')
+  } finally {
+    rmSync(repo, { recursive: true, force: true })
+  }
+})
+
 test('an unresolvable review executable is refused before anything is spawned', async () => {
   let spawned = false
   await assert.rejects(runAcpReview({
