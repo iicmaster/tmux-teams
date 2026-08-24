@@ -986,10 +986,24 @@ test('the materialised portable root is self-contained and byte-identical to wha
         `${rel} in the materialised root is not the bytes of ${source}`)
     }
 
-    // And the skills really came across, by name, not merely as a directory.
-    const copied = readdirSync(join(written, 'skills')).sort()
-    const source = readdirSync(join(PLUGIN, 'skills')).sort()
-    assert.deepEqual(copied, source, 'the materialised skills tree is not the shipped one')
+    // EVERY file in the skills tree, by path and by bytes — not the directory
+    // names. Checking names plus four top-level manifests passes while a nested
+    // skill document is dropped or altered, which is a materialised plugin that
+    // installs and is quietly incomplete. An openai review lane found that gap
+    // in the first version of this test.
+    const listAll = (dir, base = '') => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const rel = base ? `${base}/${entry.name}` : entry.name
+      return entry.isDirectory() ? listAll(join(dir, entry.name), rel) : [rel]
+    })
+    const copiedSkills = listAll(join(written, 'skills')).sort()
+    const sourceSkills = listAll(join(PLUGIN, 'skills')).sort()
+    assert.deepEqual(copiedSkills, sourceSkills, 'the materialised skills tree is not the shipped one')
+    for (const rel of sourceSkills) {
+      assert.deepEqual(
+        readFileSync(join(written, 'skills', rel)),
+        readFileSync(join(PLUGIN, 'skills', rel)),
+        `skills/${rel} differs from the shipped bytes in the materialised root`)
+    }
 
     // It refuses to overwrite rather than deleting a tree somebody typed by
     // mistake — a destructive default is not a convenience.

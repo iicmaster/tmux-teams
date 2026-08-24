@@ -740,6 +740,32 @@ export async function runAcpReview({
     let spawnCommand = command
     let spawnArgs = args
     let canonicalTargetRepository
+    // RESOLVE BEFORE SPAWNING, for every lane. This is the executable-trust
+    // boundary `party-mode/SKILL.md` promises: the profile-owned binary is
+    // resolved through PATH, refused if it resolves inside the target
+    // repository, and refused if neither the launcher path nor the real file
+    // sits under a trusted root.
+    //
+    // It was not being enforced, and not because this release broke it. At
+    // v0.34.0 the only production call to `resolveExecutable` lived inside
+    // `stageHomeExecutable`, which was called inside `if (profile.osSandbox ===
+    // 'bwrap')` — and ADR 0006 stopped any shipped profile declaring that on
+    // 2026-08-13, so no lane has resolved its executable since. Removing the
+    // sandbox deleted code that was already dead; what it exposed is that the
+    // guarantee had an audience and no enforcement.
+    //
+    // The function survived intact, exported and unit-tested, which is exactly
+    // why nothing went red: a pure function tested in isolation says nothing
+    // about its consumer, and its consumer had been gone for eleven days.
+    // Found by an openai review lane on the v0.35.0 release diff.
+    const resolved = await resolveExecutable(command, childEnv, {
+      profileId: profile.id,
+      targetRepository: canonicalTargetRepository,
+    })
+    if (!resolved) {
+      throw new ReviewTransportError('config', `ACP review executable not found: ${basename(command)}`)
+    }
+    spawnCommand = resolved
     agent = spawn(spawnCommand, spawnArgs, {
       cwd,
       env: neutralEnv(childEnv),

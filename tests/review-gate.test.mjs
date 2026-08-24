@@ -51,6 +51,7 @@ const profile = (id = 'oc', extra = {}) => ({
   adapterPackage: `mock-adapter-${id}`,
   ...extra,
 })
+const nodeSpawnForTest = () => { throw new Error('the trust boundary let a spawn through') }
 const invoke = (p = profile(), extra = {}) => runAcpReview({
   profile: p,
   lane: p.lane,
@@ -146,6 +147,33 @@ test('isolated ACP runner returns strict JSON with runner provenance and redacts
   assert.equal(readFileSync(marker, 'utf8'), 'unchanged', 'review transport does not mutate a target repository')
 })
 
+
+// The executable-trust boundary, asserted AT ITS CALL SITE.
+//
+// `resolveExecutable` has always been exported and unit-tested, and that proved
+// nothing: at v0.34.0 its only production caller sat inside
+// `if (profile.osSandbox === 'bwrap')`, and ADR 0006 stopped any shipped profile
+// declaring that on 2026-08-13 — so no lane resolved its executable for eleven
+// days while every test stayed green and `party-mode/SKILL.md` went on promising
+// the check. A pure function tested in isolation says nothing about its consumer.
+//
+// So this test does not call `resolveExecutable`. It calls `runAcpReview` and
+// proves the refusal happens BEFORE a process starts, which is the only property
+// that matters and the only one a deleted call site breaks.
+test('an unresolvable review executable is refused before anything is spawned', async () => {
+  let spawned = false
+  await assert.rejects(runAcpReview({
+    profile: profile('oc', { command: 'definitely-not-on-this-path-tmux-teams' }),
+    lane: 'oc',
+    packet: packet(),
+    timeoutMs: 3_000,
+    env: { MOCK_REVIEW_BEHAVIOUR: 'ok', PATH: '/definitely/nonexistent' },
+    spawn: (...args) => { spawned = true; return nodeSpawnForTest(...args) },
+  }), e => e.code === 'config' && /review executable not found/.test(e.message),
+    'an unresolvable executable did not produce the config refusal')
+  assert.equal(spawned, false,
+    'the review spawned a process before resolving its executable — the trust boundary is not on the spawn path')
+})
 
 test('oversize static packets are blocked before any ACP agent can be launched', () => {
   assert.throws(() => prepareReviewPacket({ artifact: 'x'.repeat(256) }, { maxBytes: 32 }), e => e.code === 'input')

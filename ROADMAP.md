@@ -708,11 +708,32 @@ every lane. Deleting the exemption did not turn one test red, which is how it
 survived removal in the first place, so a behavioural guard was added; restoring
 the exemption turns that guard red.
 
-**What the panel cost and what it bought.** Three rounds, because a finding
+**And a fourth, the most serious, found on the round after that: the
+executable-trust boundary had no caller.** `party-mode/SKILL.md` promises that
+before launch the profile-owned executable is resolved, binaries shadowed by the
+target repository or by PATH are rejected, and a trusted runtime root is
+required. `resolveExecutable` and `trustedExecutableRoots` were exported and
+unit-tested throughout — and at v0.34.0 their only production caller sat inside
+`stageHomeExecutable`, which was called inside `if (profile.osSandbox ===
+'bwrap')`. ADR 0006 stopped any shipped profile declaring that on 2026-08-13, so
+no lane had resolved its executable for eleven days. The sandbox removal deleted
+code that was already dead; what it exposed is a documented guarantee with
+nothing behind it. The call is now on the spawn path for every lane, and the
+guard is behavioural: an unresolvable command must be refused with `spawn` never
+reached. Deleting the call site turns it red.
+
+**What the panel cost and what it bought.** Four rounds, because a finding
 changes the bytes and the bytes are what the panel read. The gemini lane found
-the documentation defect, the openai lane found all three code defects, and two
-of the four were older than this release rather than introduced by it. Every one
-was the same shape — a sweep that updated the neighbours and missed one.
+the documentation defect and then accepted every later round with no findings;
+the openai lane found all four code defects. **Three of the five were older than
+this release rather than introduced by it**, and every one was the same shape: a
+sweep that updated the neighbours and missed one, or a guard whose consumer went
+away while the guard stayed green.
+
+One finding was refused on measurement rather than argued away: the claim that
+the gate fixture's `networkSharedWithHost` is decoupled from production is
+false — mutating the emitter alone turns two behavioural tests red. Recorded
+because a panel objection that survives is worth as much as one that lands.
 
 ## What is actually open
 
