@@ -1005,6 +1005,21 @@ test('the materialised portable root is self-contained and byte-identical to wha
         `skills/${rel} differs from the shipped bytes in the materialised root`)
     }
 
+    // The NAMESPACED tree too, by path and bytes. Four manifests plus the skills
+    // directory left `com.anthropic.claude/commands` unchecked entirely, so a
+    // materialiser that dropped the client commands passed — an installed
+    // portable plugin with no commands. Same openai lane, one round later.
+    const copiedCommands = listAll(join(written, 'com.anthropic.claude', 'commands')).sort()
+    const sourceCommands = listAll(join(PLUGIN, 'commands')).sort()
+    assert.ok(sourceCommands.length > 0, 'the plugin ships no commands, so this guard proves nothing')
+    assert.deepEqual(copiedCommands, sourceCommands, 'the materialised commands tree is not the shipped one')
+    for (const rel of sourceCommands) {
+      assert.deepEqual(
+        readFileSync(join(written, 'com.anthropic.claude', 'commands', rel)),
+        readFileSync(join(PLUGIN, 'commands', rel)),
+        `commands/${rel} differs from the shipped bytes in the materialised root`)
+    }
+
     // It refuses to overwrite rather than deleting a tree somebody typed by
     // mistake — a destructive default is not a convenience.
     await assert.rejects(() => materialisePortableRoot(ROOT, out), /--force/,

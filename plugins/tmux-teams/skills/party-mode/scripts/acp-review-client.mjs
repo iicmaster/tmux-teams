@@ -748,6 +748,15 @@ export async function runAcpReview({
       if (canonicalTargetRepository === '/') {
         throw new ReviewTransportError('input', 'runner-owned targetRepository must not be the filesystem root')
       }
+      // A DIRECTORY, not merely an existing path. `realpath` succeeds on a
+      // regular file, which would leave the shadow check comparing candidate
+      // paths against a file — `isWithin` can never be true of one, so the
+      // guard silently passes everything. The v0.34.0 version did not check
+      // this either; an openai review lane raised it on the round after the
+      // canonicalisation was restored.
+      if (!(await stat(canonicalTargetRepository)).isDirectory()) {
+        throw new ReviewTransportError('input', 'runner-owned targetRepository must be a directory')
+      }
     }
     // RESOLVE BEFORE SPAWNING, for every lane. This is the executable-trust
     // boundary `party-mode/SKILL.md` promises: the profile-owned binary is

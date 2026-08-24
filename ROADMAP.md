@@ -758,6 +758,26 @@ for an earlier one. The lesson is not "review harder", it is that a guard
 restored without the value it reads is indistinguishable from a guard, and only
 a test that asserts the refusal can tell them apart.
 
+**The fifth round: gemini accepted both packets with zero findings, and openai
+found two more small ones.** `realpath` succeeds on a regular file, so a
+`targetRepository` pointing at a file was canonicalised and accepted — the
+shadow check then compared candidates against a file, which `isWithin` can never
+match, so the guard silently passed everything. A directory check was added. And
+the materialisation test compared four manifests and the skills tree while
+leaving `com.anthropic.claude/commands` entirely unchecked, so a materialiser
+that dropped the client commands passed; it now compares that tree by path and
+bytes, and dropping it turns the test red.
+
+**One objection was raised in three separate rounds and is not being actioned,
+which is a decision and not an oversight.** The openai lane keeps reporting that
+the portable root's symlinks escape it and that the raw subtree is therefore not
+installable. That is true, it is the finding that produced
+`scripts/portable-root.mjs`, and Master settled the shape on 2026-08-24: the
+tree keeps one copy of everything so the two roots cannot drift, and the
+materialiser hands out a self-contained directory to anyone who needs one. The
+gemini lane accepted the same bytes. Recorded here so the next reader meets the
+decision rather than re-deriving the objection.
+
 One finding was refused on measurement rather than argued away: the claim that
 the gate fixture's `networkSharedWithHost` is decoupled from production is
 false — mutating the emitter alone turns two behavioural tests red. Recorded
