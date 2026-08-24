@@ -1,6 +1,6 @@
 {
   "schema": "tmux-teams.roadmap-published.v1",
-  "source_sha256": "caab8047d6410292ac89ece4790fea08ed462e3525b6e7305932c7a543c378e0",
-  "url": "https://artifacts.ngs.bz/claude/private/tmux-teams-next-plan/",
-  "published_at": "2026-08-23T12:42:16.179Z"
+  "source_sha256": "bcb85cb9158b7bf6c31863fca77e90b29f4afc8f6d36b247a3c56a1b06fd7fbc",
+  "url": "https://artifacts.ngs.bz/claude/private/tmux-teams-roadmap/",
+  "published_at": "2026-08-24T14:20:25.201Z"
 }
