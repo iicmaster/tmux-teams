@@ -1,410 +1,213 @@
 # HANDOFF
 
 State of play for the next agent. Overwritten in place, never appended.
-Written 2026-08-22 through `bmad-party-mode`.
+Written 2026-08-24 through `bmad-party-mode`.
 
 ## 1. READ THIS FIRST
 
-- **TWO branches are live.** `feat/v0.33.0` (the release, PR #71) and
-  `feat/v0.34.0` (finished work, branched from it). Neither is merged. `main` is
-  at v0.32.0.
-- **The review of record answered CLEAR on round ten, and TWO further batches of
-  findings have landed since.** Do not read "round ten cleared it" as "ship it":
-  batch 2 raised twelve (all twelve survived adversarial verification, all
-  twelve are now in), batch 3 raised three more, and one of those three was a
-  **P1 caused by batch 2's own fix**. Re-list the PR's inline comments by
-  `created_at` before any merge.
-- **`feat/v0.33.0` is at `769897a`, pushed, CI green on Linux.** All twelve
-  batch-2 findings plus the P1 plus a thirteenth found by reading are in.
-- **Two subagents were running when this was written**, each in its own
-  worktree, each owning one file: `fix3-lanes` on `acp-lanes-mcp.mjs` + its
-  test, `fix3-companion` on `acp-companion.mjs` +
-  `tests/acp-terminal-capability.test.mjs` + `tests/fixtures/mock-acp-agent.mjs`.
-  If the session ended before they reported, their work is UNCOMMITTED in
-  `.claude/worktrees/`. Look before redoing it.
-- **The full suite has NOT been run since the two merges.** Focused files are
-  green (see HOW TO VERIFY); the whole-suite number below predates them.
+- Branch `release/v0.35.0`, **NOT pushed**. It carries 19 commits and a merge of
+  `origin/main`. The tree is clean.
+- The three-model panel is **3/3 ACCEPT with zero findings on these exact
+  bytes** — six lane runs, three families, both packets. Do not re-run it unless
+  the bytes change.
+- **The single most dangerous thing here: any edit to `ROADMAP.md` voids that
+  panel.** `ROADMAP.md` is NOT in `DOC_ONLY` (`scripts/gate-required.mjs:41`
+  exempts only `HANDOFF.md`, `README.md`, `CLAUDE.md`). The v0.36 scope below is
+  recorded in THIS file for exactly that reason. Move it to `ROADMAP.md` only
+  AFTER v0.35.0 is tagged and released.
+- Everything else about the release is done: seven version places bumped,
+  roadmap page published and recorded (gate 0), suite green, manifest valid.
+  What remains is push, PR, review, merge, tag, release.
 
 ## 2. HOW TO VERIFY
 
 ```bash
 node --test > /tmp/suite.log 2>&1; grep -E '^ℹ (tests|pass|fail|skipped)' /tmp/suite.log
+grep -q '^ℹ fail 0$' /tmp/suite.log || { grep '^✖' /tmp/suite.log | head; false; }
 ```
 
-Green on `feat/v0.33.0` at `9282868` is exactly, measured on a quiet machine:
+Green here is **`1170 pass / 0 fail / 0 skipped`**. The zero skipped is new: the
+bwrap sandbox removal took the four Linux-only tests with it, so this suite has
+no unexecuted guards on any platform for the first time.
 
-```
-ℹ tests 1183
-ℹ pass 1179
-ℹ fail 0
-ℹ skipped 4
-```
-
-~63s wall, 313% CPU. The hostile-env run below gives the same four numbers.
-
-**RUN THE WHOLE SUITE, NOT THE FILE.** The first quiet full run after the
-batch-2 merge went **1179/1174/1/4** — `realProbeTransport reaps a descendant
-left behind by a package-runner wrapper` died on a raw ENOENT naming a temp
-path, while that same file had passed 79/79 twice and the single test 3/3 under
-load average 7.3. The probe's 300ms deadline was also the wrapper process's
-whole lifetime, so under suite load node had not booted to spawn the descendant.
-**A deadline shorter than the subject's boot does not make a test flaky, it
-makes it vacuous** — it would have passed against a version that reaps nothing.
-Fixed in `fbeb8b3`, and the precondition now fails with a sentence naming
-itself instead of an ENOENT stack.
-
-**Green in YOUR shell is not green.** Run it hostile too — this is the state any
-shell is in after a hand dispatch:
+`node --test | grep '✖'` **exits 0 when it FINDS failures.** Gate on the count,
+never on the grep. This repository has committed on red twice that way.
 
 ```bash
-ACP_MODEL=ambient ACP_EXPECT_MODEL=ambient ACP_REASONING_EFFORT=ambient \
-ACP_SPAWN_NONCE=ambient-nonce ACP_ENABLE_TERMINAL=1 ACP_AGENT_ID=ambient-agent \
-ACP_SESSION_OPERATION=new ACP_SESSION_RECEIPT_REQUIRED=1 node --test
+git diff --check                    # whitespace
+claude plugin validate --strict .   # manifest — "✔ Validation passed"
+node scripts/roadmap-gate.mjs       # 0 = published page current, 2 = stale
+node scripts/gate-required.mjs      # run ONLY on a committed tree; 2 = panel owed
 ```
 
-**`node --test | grep '✖'` exits 0 when it FINDS failures.** Gate on the count.
-A background `node --test …; grep …` reports the GREP's exit code — a red suite
-arrived as `exit code 0` in a task notification.
-
-**`git diff --check` with no range reads the working tree only.** CI reads
-`$PR_BASE_SHA...HEAD`. Use `git diff --check main...HEAD`.
-
-```bash
-node scripts/gate-required.mjs   # run AFTER committing; it reads <last-tag>..HEAD
-node scripts/roadmap-gate.mjs    # 0 current · 2 published page is behind
-```
-
-**READ WHAT `gate-required` PRINTS.** It names every deciding file, and reading
-that list is what found a 10KB review transcript tracked in the release after
-ten review rounds had read past it.
-
-There are no skips any more: the bwrap set that skipped itself off Linux was removed 2026-08-24. A skipped test is an
-unexecuted guard.
+`gate-required.mjs` reads `<last-tag>..HEAD` and cannot see the working tree. On
+a dirty tree it answers EXEMPT with full confidence and is wrong.
 
 ## 3. STATE
 
-### `test-quality` skill — implemented on this branch, 2026-08-23 (unreleased)
+### v0.35.0 — what it ships
 
-New sibling skill `plugins/tmux-teams/skills/test-quality/` — contract-only
-MVP: CRAP as risk/triage signal, mutation testing as test-adequacy evidence,
-policy decision (`allow|warn|block|needs_human_decision`) kept separate from
-evidence state (`measured|unknown|tool_failure|flaky`), requested mode
-(`observe|advisory|blocking`) and enforcement kept separate from both. No
-runner, no schema file, no baseline store, no dependency. Architecture was
-reviewed read-only BEFORE implementation by two lanes dispatched to
-`/tmp/test-quality-review-cwd`: AGY (`gemini-3.7-flash-high`, receipt
-`cf357494…`, identity unverified-but-recorded per the PR #63 rule) and Codex
-(`gpt-5.6-sol[max]`, receipt `e16afda5…`, matched). Both answered PROCEED WITH
-CHANGES; the convergent blockers are all in the shipped contract — blocking =
-contract-and-integrity only, method/function-level granularity mandatory,
-verify-command-in-report is audit trail (PM re-verifies from plan-derived or
-allowlisted commands only), denominator reconciliation invariant with raw
-partition counts, waiver = human-only policy-layer override, baseline = external
-immutable input. Codex's divergent additions also in: comparison-pairing
-declaration for any before/after delta, flaky attempt-history retention, raw-
-output completeness/redaction flags, four-state-plane table. Session ids are
-recorded in `/tmp/test-quality-review-cwd/.tmux-teams/` — do not rm that
-directory before copying them out.
+Nine defects were found by the panel across six rounds. **Three were older than
+this release; two were introduced by the fix for an earlier one.**
 
-Guarded by a semantic-contract test in `tests/plugin-structure.test.mjs`
-(closed vocabularies pinned literally, reconciliation invariant, no-auto-exec,
-no-universal-threshold) plus the `SKILLS` inventory entry; full suite 1187
-pass / 0 fail / 4 skipped on this machine.
-
-### The twelve findings from the bot's second batch
-
-All confirmed by two refuters each; none rated ship-blocking. Status:
-
-| # | finding | state |
+| # | fix | where |
 |---|---|---|
-| 1 | `realProbeTransport` reaps only the wrapper pid, never descendants | **DONE** merged |
-| 2 | `QUOTA_SIGNAL` misses the underscored `rate_limit_exceeded` | **DONE** merged |
-| 3 | a malformed `session/prompt` result classifies as reachable | **DONE** merged |
-| 4 | the stdout `'error'` handler swallows and never settles | **DONE** merged |
-| 5 | terminal descendants survive a wrapper's exit | **DONE** merged |
-| 6 | `terminal/kill` does not escalate past SIGTERM | **DONE** merged |
-| 7 | a non-array `args` is not rejected | **DONE** merged |
-| 8 | login input broadcasts to every terminal | **DONE** merged |
-| 9 | `childEnv` forwarded ambient `ACP_*` | **DONE** `6ac3fbc` |
-| 10 | `TEAM_BLOCKED` reached an agent defaulting to `resume` | **DONE** `c045beb` |
-| 11 | agy-advisor command hardcodes the model, ignoring its alias argument | **DONE** `5509d39` |
-| 12 | agy-advisor command never clears inherited `ACP_REASONING_EFFORT` | **DONE** `5509d39` |
+| 1 | probe budget split — 240s boot / 30s reply, rearmed at `initialize`, new closed code `probe_boot_timeout` | `plugins/tmux-teams/skills/party-mode/scripts/acp-lanes-mcp.mjs:455` |
+| 2 | executable-trust call restored to the spawn path for every lane | `plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs:779` |
+| 3 | `targetRepository` canonicalised + directory-checked before that call | same file, just above 779 |
+| 4 | `networkSharedWithHost` corrected `false` → `true` in emitter and gate | `acp-review-client.mjs:1190`, `review-gate.mjs:288` |
+| 5 | AGY safe-read exemption deleted from runner and gate | both files |
+| 6 | dead auth-copy helpers deleted; `SKILL.md` corrected twice | `plugins/tmux-teams/skills/party-mode/SKILL.md` |
+| 7 | `codex-tmux-driver` folded into a reference; skills 12 → 11, then 12 with `test-quality` from main | `plugins/tmux-teams/skills/tmux-teams/references/codex-tmux.md` |
+| 8 | Agent Plugins 1.0 portable root + materialiser | `agent-plugins/tmux-teams/`, `scripts/portable-root.mjs:35` |
+| 9 | bwrap OS sandbox removed entirely | ADR 0006, amended |
 
-**All twelve are in and CI is green on the merged bytes** (`769897a`, Linux,
-clean HOME). Their work arrived on two branches from two subagents and was
-verified by THIS caller by mutation, not on their word: deleting `detached:
-true` from the probe spawn reds two descendant tests; dropping the `await` on
-`killTerminal` reds the kill-escalation test at "answered in 0ms".
+### The panel record for the release notes
 
-**A thirteenth was found by reading the twelfth's fix, not by a review round.**
-`terminal/create` had just been taught to refuse a non-array `args`, and `env`
-one line down still fell through its own ternary to `{}` — the caller believes
-it set the child's environment, the child runs with the parent's, nothing says
-so. One loop now covers both names (`769897a`). **This is the release's most
-repeated shape: a guard written for the container that was REPORTED, with its
-twin left open beside it.** Look for the twin every time.
+```
+Gate: 3/3
+  agy   (gemini)   effective_identity: gemini-3.7-flash-high   identity_status: matched
+  codex (openai)   effective_identity: gpt-5.6-luna[max]       identity_status: unverified
+  qwen  (deepseek) effective_identity: opus                    identity_status: matched
+```
 
-**Deliberate contract narrowing, recorded so it is not mistaken for a defect
-fix:** finding 8 was closed by REFUSING a second `terminal/create` while one is
-live, rather than by building session-aware input routing. Nothing in any
-shipped SKILL.md, ADR or reference promises concurrent terminals, the predicate
-matches the one the stdin bridge already uses (`exitStatus || released`), and
-the capability only exists on the login route nobody has completed. A
-sequential login flow is unaffected.
+`opus` on the qwen gateway is **deepseek-v4-pro-0813** — the alias is set by
+`ANTHROPIC_DEFAULT_OPUS_MODEL` in that profile's settings. Record the resolution,
+not just the alias: two lanes can share one gateway and the alias alone cannot
+tell two families apart.
 
-Every finding in full: `scratchpad/bot-findings-batch2.md`.
+### v0.36 SCOPE — set by Master, 2026-08-24
 
-11 and 12 were one block in `plugins/tmux-teams/skills/agy-advisor/SKILL.md`
-and are guarded by one test — `tests/acp-dispatch.test.mjs`, "the AGY seat the
-caller asked for". **The observable is the ROUTING RECORD, not the companion
-log**, and two probes were spent finding that out: receipt-required mode refuses
-an arbitrary `ACP_CMD` at the receipt stage before any config option is
-negotiated, so the log is byte-identical with and without an ambient
-`ACP_REASONING_EFFORT`. `dispatch-routing/<task-id>.json` is written before
-that, and `ROUTING_ENV_KEYS` is what a resume is rebuilt from — an inherited
-effort outlives the dispatch that inherited it. Three mutations, three distinct
-red sentences: strip `env -u`, hardcode `ACP_MODEL`, hardcode
-`ACP_EXPECT_MODEL`. The existing documented-command guard was widened from two
-seats to three in the same commit; it had never covered AGY.
+**A plugin setup system: a readiness check, and per-machine `bin` configuration,
+so that lanes appear as selectable options to MCP.**
 
-### Batch THREE, and the P1 in it is this release's own regression
+Today there is **no per-machine configuration layer at all**. Every entry in
+`REVIEW_PROFILES` (`plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs:71`)
+hardcodes three machine-dependent things: a launcher (`bunx` or `npx -y`), a
+pinned adapter package version, and a wrapper executable name (`claude-qwen`,
+`claude-9r`, `claude-zai`). A grep for `TMUX_TEAMS_*CONFIG`, `lanes.json` or any
+local override in that file returns nothing.
 
-Pushing the batch-2 fixes produced three more findings (2026-08-22 05:16Z).
-All three premises verified by reading the source. One is **P1 and it was
-caused by the fix for #9**:
+**Seven machine-specific failures were measured in this one release, on one
+machine. This is the evidence base for the scope — it is not hypothetical:**
 
-- **`loop-runner.mjs` `childEnv` — 3835247721.** The shape guard dropped EVERY
-  ambient `ACP_*`, which closed six doors and also closed four the loop's own
-  `SKILL.md:461,466` invites an operator to open. **A loop launched with
-  `ACP_HARD_TIMEOUT_SEC` ran with no wall-clock ceiling at all and said
-  nothing**; `ACP_STALL_POLICY`, `ACP_CANCEL_GRACE_MS` and
-  `ACP_PROCESS_KILL_GRACE_MS` went the same way. `tests/loop-smoke.test.mjs`
-  supplies all four and never checked one arrived. **DONE** `1a4c83b`.
-- `acp-lanes-mcp.mjs:724` — crossing `OUT_CAP` returns and never settles, so a
-  probe that finished rides the 20s deadline and is reported `probe_timeout`:
-  a confidently wrong diagnostic. **With `fix3-lanes`.**
-- `acp-companion.mjs` terminal — finalizes on `'exit'` rather than `'close'`,
-  so `wait_for_exit` can release before the last output lands. **With
-  `fix3-companion`.**
+| lane | what failed | why it is a MACHINE fact, not a code fact |
+|---|---|---|
+| codex | `Missing optional dependency @openai/codex-darwin-arm64` | the npm cache resolves to `/Volumes/KINGSTON` (a removable volume) holding a truncated install; only **uppercase** `NPM_CONFIG_CACHE` redirected it, lowercase `npm_config_cache` did not reach the child |
+| opencode | model id does not exist | `opencode/deepseek-v4-flash-free` → the `-free` suffix is gone; the old id was recorded verbatim in a doc |
+| opencode | `No payment method` | that machine's account |
+| kimi | `402 unable to verify your membership benefits` | that machine's account |
+| zai | `unsupported model value glm-5.2` | the adapter advertises a different value than the profile pins |
+| qwen | needs `CLAUDE_CONFIG_DIR`; `opus` resolves to a different model per that profile's settings file; `effortLevel: xhigh` drove 25-minute turns | entirely per-machine |
+| agy | the only lane that worked first try | because `bunx` is a native binary — **healthy by coincidence, not by design** |
 
-**The fix for the P1 is two CLASSES, not a longer list.**
-`LOOP_FORWARDED_ACP_CONTROLS` is the operator surface the skill declares;
-everything else is the runner's. The criterion is the documented promise, not
-harmlessness — a leaked `ACP_STALL_POLICY=report` really does weaken a brake
-and is forwarded anyway, because the skill says an operator may set it.
-Deny-by-default with a named exception is fail-CLOSED for a knob nobody has
-classified; the bot's own first suggestion (filter the dangerous classes) is
-fail-OPEN for every name added after today. **The list does not rot because a
-second test reads the companion's own source and refuses any `ACP_` name in
-neither list — scanning TWO patterns, because `ACP_MODEL` and
-`ACP_REASONING_EFFORT` arrive through `requestedConfigOverride` and a
-one-pattern scan misses both while reporting full coverage.**
+So the scope has three parts, in this order:
 
-### What #9 turned out to be, because it is this release's lesson
+1. **A readiness check** that answers, per lane, whether this machine can
+   actually run it — and distinguishes *not installed*, *installed but broken*,
+   *no credential*, *no quota* — reusing the closed-code discipline already in
+   `acp_lane_probe` rather than inventing a second vocabulary.
+2. **Per-machine `bin` configuration** so a launcher, an adapter version and a
+   wrapper path can be set for THIS machine without editing a shipped profile.
+   The failures above are all in that layer.
+3. **Surfacing the result to MCP** so only lanes this machine can actually run
+   appear as choices.
 
-The bot named ONE variable. Writing the test as the SHAPE — no ambient `ACP_*`
-survives `childEnv` — found **five more in one run**: `ACP_MODEL`,
-`ACP_EXPECT_MODEL`, `ACP_REASONING_EFFORT`, `ACP_RESUME`,
-`ACP_SESSION_OPERATION`. The model pair inverts a sentinel: `modelEnv()` returns
-`{}` for `INHERIT_ACCOUNT_DEFAULT`, whose entire meaning is "request nothing",
-so a leaked ambient `ACP_MODEL` made exactly that seat request something the
-graph never declared — and the identity check certified it `matched`.
+**Open design questions, not yet answered — do not start coding past them:**
 
-### v0.34.0, on its own branch
-
-All four items committed. Agent Plugins 1.0 closed as a DECISION, not a move
-(ADR 0008): the manifest already conformed on every field, and the layout cannot
-because the installed Claude Code binary contains no `agent-plugins.org` string
-at all — moving `.claude-plugin/` into a reverse-domain namespace would satisfy
-1.0 and make the plugin uninstallable. `show-me` removed. One `pm-delegation`
-skill covering a single delegation and a whole autonomous spec run.
-
-**`feat/v0.34.0` has already taken `feat/v0.33.0`'s fixes by merge once. Anything
-landing on the release branch from now on must be merged in again**, or those
-skills sit on bytes with defects this release already found.
-
-### OPEN, found by reading and deliberately not fixed in v0.33.0
-
-~~**A released terminal whose descendant does not hold the pipe still escapes
-the teardown sweep.**~~ **CLOSED** — round eleven blocked on it, correctly:
-  `SKILL.md` promises complete group reaping, so this was a broken promise
-  rather than an open gap. All three sites ask `isGroupGone` now. Kept below for
-  the reading it took, because the report that raised it was WRONG about the
-  code and half a correct finding sends a reader to the wrong line.
-
-  The original entry, for that lesson: Reported by a subagent with a premise that is WRONG as
-written — it said `releaseTerminal` deletes the moment `exitStatus` is set,
-"even though a descendant sharing its process group can still be alive". Read
-the code: `acp-companion.mjs:3365-3380` already closed the case it describes,
-and keeps a still-live terminal in the map on purpose, with the reason in a
-comment. The residual hole is narrower and real:
-
-- a descendant spawned `stdio: 'ignore'` does NOT hold the wrapper's pipe, so
-  `close` fires, `exitStatus` is set, and `acp-companion.mjs:3381` deletes the
-  entry — after which `killAllLiveTerminals` (`:3444`) cannot see it;
-- the 2000ms `ACP_TERMINAL_CLOSE_GRACE_MS` fallback sets `exitStatus` anyway
-  even when the pipe IS held, so the window closes on a timer either way;
-- `settleTerminalExit` (`:3071`) has the same shape via `term.released`.
-
-The correct check is group liveness, not `exitStatus`. Not fixed here because
-Master scoped this round to the two third-batch P2s, and the terminal
-capability only exists on the login route nobody has completed. **Verify the
-premise yourself before acting — the report that raised it was wrong about the
-code, and half a correct finding sends a reader to the wrong line.**
-
-**An unreproduced red.** A subagent saw `finish() does not settle until a killed
-child has actually exited` (`tests/acp-lanes-mcp.test.mjs`) fail once, in a
-full-file run, before it had touched anything. This caller could not reproduce
-it: 3/3 green alone at load average 7.3, 2/2 green over the whole file, 2/2
-green in the full suite. **OPEN and unreproduced, not closed** — this file's own
-rule is that a failure there is never noise, and the clause that called an
-`acp-companion.test.mjs` failure a timing flake was false for an unknown number
-of releases.
-
-### Round TWELVE answered TEAM_DONE on `9282868`
-
-`codex-advisor` at `gpt-5.6-luna[max]`, `identity_status: matched`, run
-2026-08-22. Four voices, **no named ship-blocking defect**, and one condition
-that binds the RELEASE RECORD rather than the code:
-
-> DONE only for bounded claims; BLOCKED for any release note that implies live
-> Claude Max login, real MCP/provider reachability, or a three-family panel that
-> I did not verify.
-
-The drafted notes (`scratchpad/release-notes-v0.33.0.md`) already carry all
-three as open, and the Gate line records `1/1` with the owner's 2026-08-19
-waiver plus the fact that `gate-required.mjs` answers REQUIRED. **Do not tidy
-any of that away.** A voice also declined to resolve the owner-policy
-disagreement between the script's REQUIRED and the owner's sufficient-alone
-decision, and was right not to: both are recorded, neither overrides the other.
-
-### Round ELEVEN answered BLOCKED, and what that cost
-
-The review of record read the post-round-ten delta at `06bc493` and answered
-**BLOCKED** with four voices and six findings, none of them laundered into
-consensus. All six are in, plus a seventh its own dispatch exposed.
-
-**The one worth reading is that the call site was never proved.** The `childEnv`
-test proves the FUNCTION and stays green if `dispatch` stops calling it — which
-is exactly how the P1 it answers reached a release. There is now a call-site
-test (`tests/loop-runner-palette-dispatch.test.mjs`, "the operator bounds an
-ambient shell sets arrive at a real dispatched worker") and unwiring `childEnv`
-from `dispatch` turns it red. **This repository has written that rule down three
-times and broken it again anyway.**
-
-**The classification criterion was circular and is replaced.** "Is it
-documented" makes a knob owned because nobody wrote it down, and nobody writes
-down a knob that is owned. It is now **bound versus widen** — a control that
-BOUNDS what a lane may do is the operator's and is forwarded; anything that
-WIDENS what a lane can reach, or changes who it is, is the runner's.
-`ACP_ENV_PASSTHROUGH` proved the old rule wrong twice over: undocumented in any
-SKILL.md AND genuinely an operator control by the companion's own comment. It
-stays owned, now with a reason. Six controls are forwarded and both contracts
-are declared in `plugins/tmux-teams/skills/tmux-teams/SKILL.md`.
-
-**Finding 15 is CLOSED and it was blocking, not deferrable** — the lane found
-what this file's own entry had missed: `SKILL.md` promises "Every terminal path
-closes and reaps the complete detached process group", so it was a promise the
-code broke rather than a gap left open. All three sites ask `isGroupGone` now,
-and the mutation matrix is 1:1:1.
-
-**Three tests written this round were green against the defect they were written
-for**, and each is recorded inside itself: the computed-read assertion claimed
-there were no computed reads (there are four), the call-site test asserted
-absence for keys `dispatch` legitimately re-supplies, and the finding-16 guard
-matched a derivation line in a preamble instead of the assignment that reaches
-the dispatch. **Write the mutation before believing the test.**
-
-### Finding 16 — the review of record's own command could not run
-
-Dispatching round eleven failed at `invalid_execution_profile: required Codex
-execution requires an absolute CODEX_PATH`. `codex-advisor/SKILL.md` omitted it
-— the third seat of three to have that gap, after `agy-advisor`/`AGY_BIN` earlier
-this release, and the only one the release gate depends on. **Found by running
-the command, not by reading it.**
-
-The runtime guard cannot reach that branch: it dispatches worker `mock` with an
-`ACP_CMD`, and the requirement lives behind
-`agentName === 'codex' && !process.env.ACP_CMD`. The new guard is static, reads
-the requirement out of the companion's own error sentences, and **pins which
-seats it covers** — deleting `AGY_BIN` from the agy command does NOT red it, and
-a reader who assumed otherwise would be wrong.
+- Where does per-machine config live, and what reads it first — the profile, an
+  override file, or the environment?
+- Does a readiness check contact an endpoint (real quota, real minutes) or stay
+  structural? `acp_lane_status` is structural and `acp_lane_probe` is live; this
+  may be a third thing or may be one of those two doing more.
+- ADR 0007 says the plugin ships **read-only** lane-discovery tools. Writing
+  configuration is not read-only. Either the setup surface is not an MCP tool,
+  or ADR 0007 is amended **as part of the work** — not contradicted quietly.
+  This exact tension was already resolved once when `acp_lane_probe` was added:
+  the ADR was amended rather than bypassed. Do the same.
 
 ## 4. DO NOT
 
-- **Do not read the review bot's BODY and call it a verdict.** It is boilerplate
-  either way. The findings are inline comments carrying P2 badges. This session
-  read the body twice and reported "no suggestions" twice while 26 sat unread.
-  `gh api repos/iicmaster/tmux-teams/pulls/71/comments --paginate`
-- **Do not assume a triage stays current.** The bot writes NEW findings on every
-  push. 26 were triaged, fixed and pushed — and 12 more appeared, of which 12 of
-  12 survived. Re-list by `created_at` before merging.
-- **Do not fix the variable that was named.** Three doors of one shape were
-  closed one round apart, each fix naming the reported variable. Write the guard
-  as a shape and the test as a shape.
-- **Do not mistake a stream listener for an Interface listener.** Node FORWARDS
-  an input stream's `'error'` onto a readline Interface; `input.on('error')` does
-  not cover it. Measured — the process still dies with the listener present.
-- **Do not use `git checkout -- <file>` to undo a mutation.** It restores the
-  COMMITTED version and eats uncommitted work. Three times in one session.
-- **Do not run the suite beside ACP lanes or parallel agents.** The same bytes
-  ran 66s quiet and 723s loaded; two tests fail under contention and pass alone.
-- **Do not let a subagent run the full suite.** Give it the focused file; the
-  caller measures once.
-- **Do not push a release to `main`.** See DECIDED.
+- **Do not edit `ROADMAP.md` before v0.35.0 is tagged.** It voids a 3/3 panel
+  that cost six rounds and six lane runs. That is the whole reason the v0.36
+  scope is in this file instead.
+- **Do not add a per-machine override by widening the `DOC_ONLY` allowlist** in
+  `scripts/gate-required.mjs`. Anything under `plugins/` reaches an installed
+  plugin and is exactly what the panel exists for.
+- **Do not treat `PM_COOLDOWN_SEC` (or any brake) as redundant because
+  disabling it turned no test red.** Measured 2026-08-15: zero red means
+  UNGUARDED, never redundant. It has a guard now in
+  `tests/loop-occupancy.test.mjs`.
+- **Do not run `acp_lane_probe` and read `probe_timeout` as "the endpoint is
+  down".** Until this release the ceiling was 20s while a cold `npx -y` adapter
+  install measured **190s** and a warm one **24.4s**, so every lane reported
+  unreachable while the network was up and the endpoint answered 200 in 126ms.
+  Fixed here; the failure shape is what to remember.
+- **Do not fan out subagents that each run `node --test`.** Measured
+  2026-08-03: fifteen concurrent passes drove load average to 28 on 8 cores and
+  after 42 minutes not one agent had finished.
+- **Do not `rm -rf` an ACP run directory before recording the session id.** Four
+  lanes ended `no_outbox` in this release and **three of their answers were
+  recovered from the run log**, not from a re-run. `grep -v '^\[' <log> | grep -o
+  '{"verdict".*'` is what recovered them.
+- **Do not commit anything in `~/agent-skills`, including the submodule pin.**
+  `CLAUDE.md` release step 10 says to bump it; the owner's standing boundary
+  says that repository is not ours to touch. The boundary wins. Report the pin
+  bump as a task for the owner.
 
 ## 5. DECIDED — DO NOT RELITIGATE
 
-- **The review of record is `codex-advisor` at `gpt-5.6-luna`, effort `max`, and
-  it alone is sufficient.** Master, 2026-08-19. `gate-required.mjs` is
-  fail-closed and reads no waiver, so it answers REQUIRED forever — report that
-  as a fact, never as a veto.
-- **All twelve second-batch findings are fixed before v0.33.0 ships.** Master,
-  2026-08-22, asked directly whether to ship on ship-blocking only.
-- **Both third-batch P2s are fixed before the merge too.** Master, 2026-08-22,
-  asked with the alternative of carrying them to v0.34.0 spelled out.
-- **`TEAM_BLOCKED` is fixed in the outer controller's BRIEF, not by
-  restructuring the routing.** Master, 2026-08-22.
-- **`pm-delegation` is one skill, not two** — subagents OR ACP lanes, and it does
-  not feed the delivery loop. Master, 2026-08-22.
-- **Spec and tickets are files in the repository**, not GitHub issues. Master.
-- A release ships as a pull request; merge needs CI green plus the
-  `chatgpt-codex-connector` review. Only Master waives, in writing, per release.
-- Remaining closed decisions: `plugins/tmux-teams/docs/adr/` 0001–0008.
+- **The portable root's symlinks point outside it BY DESIGN** (Master,
+  2026-08-24). The tree keeps one copy of everything so the two roots cannot
+  drift; `scripts/portable-root.mjs` hands out a self-contained copy on demand.
+  The openai lane raised "the raw subtree is not installable" in three separate
+  rounds — it is the finding that produced the materialiser, not an oversight.
+- **The OS sandbox is removed, not merely undeclared** (Master, 2026-08-24).
+  ADR 0006 is amended. `osSandbox` is read by nothing.
+- **v0.36's first item is the setup/readiness/bin system** (Master,
+  2026-08-24), recorded above.
+- **A release ships as a pull request, never a push to `main`** (Master,
+  2026-08-16). Merge needs CI green plus a codex bot review STATE. A bot comment
+  saying quota is exhausted is an ABSENT reviewer — neither pass nor fail — and
+  only Master waives it, in writing, on the PR and in the notes.
 
 ## 6. UNPROVEN
 
-- **Nobody has completed a real Claude Max login.** `terminal/kill` has no test.
-- **No real MCP host has initialized the shipped server**, and the live probe has
-  never contacted a real provider.
-- **Round ten's CLEAR was measured on `331d218`.** Everything after it — the
-  untracking, the shape guard, the brief — has not been read by that lane.
-- **The two subagents' work was unverified by this caller.** Their counts are
-  their own until someone runs the mutations.
-- **Whether the bot ever stops producing findings is still unknown, but the
-  rate IS falling.** Counted by `created_at` rather than by memory: 26, then 12,
-  then 3 — 41 raised in total. This file said "the rate did not fall" after two
-  batches; a third made that false. **There is no push-free path to a merge, so
-  every merge decision is taken on a batch the bot has not yet answered.** That
-  is a standing property of this loop, not a thing to wait out.
-- **Line numbers here were resolved 2026-08-22.** Re-grep the symbol.
+Be generous here; the next agent builds on whatever is missing.
+
+- **Nothing has ever installed from `agent-plugins/tmux-teams/`.** No 1.0-aware
+  client was available to test with. The tests prove the layout and the
+  materialised copy's byte-identity; they do not prove any client accepts it.
+- **The panel read a static diff and ran nothing.** Its 3/3 says three families
+  read these bytes. It is not a behavioural check and the lanes said so
+  themselves in every `notes` field.
+- **`identity_status: unverified` on the codex lane** — direct ACP pins no
+  endpoint, so `gpt-5.6-luna[max]` is that lane's own report and nothing
+  corroborates it.
+- **The real ceiling of a review packet is unknown.** The gate allows 128 KiB; a
+  72 KiB prose-dense packet failed three times running while 74 KiB of source
+  passed. Working habit is ~25 KiB and split. That is a habit, not a measurement.
+- **`nextStep` has not shrunk.** Five of phase E's six cells are wired and it is
+  still 308 lines over 32 branches. "Wired" and "live" are different states.
+- **CI has never run these bytes.** Local green is necessary and not sufficient:
+  CI runs Linux with a clean HOME, and two releases once shipped on a red CI
+  that local runs could not see.
 
 ## 7. WHERE THINGS LIVE
 
 ```
-ROADMAP.md                                the standing goal; v0.34.0 scope
-CLAUDE.md                                 the rules with their measurements
-plugins/tmux-teams/docs/adr/              closed decisions, 0001 through 0008
-plugins/tmux-teams/skills/                the shipped skills
-plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs     the loop, childEnv
-plugins/tmux-teams/skills/tmux-teams/scripts/acp-companion.mjs   the ACP leg
-plugins/tmux-teams/skills/tmux-teams/scripts/acp-dispatch.mjs    the dispatcher
-plugins/tmux-teams/skills/tmux-teams/scripts/role-briefs.mjs     the agent briefs
-plugins/tmux-teams/skills/party-mode/scripts/acp-lanes-mcp.mjs   the MCP server
-scripts/gate-required.mjs                 does this release owe a panel
-scripts/roadmap-gate.mjs                  is the published page behind its source
-scratchpad/bot-findings-batch2.md         the twelve, in full
-scratchpad/release-notes-v0.33.0.md       drafted from the real git log
-scratchpad/wt34/                          the v0.34.0 worktree
-~/.npm/_npx -> /Volumes/KINGSTON/...      the ACP adapter lives on a USB volume
+ROADMAP.md                                  the standing goal; gated, not exempt
+plugins/tmux-teams/docs/adr/                decisions that are closed
+plugins/tmux-teams/skills/                  the shipped skills — this repo IS their source
+  party-mode/scripts/review-profiles.mjs:71 REVIEW_PROFILES — the hardcoded lanes v0.36 targets
+  party-mode/scripts/acp-lanes-mcp.mjs:455  PROBE_BOOT_TIMEOUT_MS / PROBE_REPLY_TIMEOUT_MS
+  party-mode/scripts/acp-review-client.mjs:779   the executable-trust call site
+  party-mode/scripts/review-gate.mjs:288    the isolation-evidence expectations
+scripts/gate-required.mjs:41                DOC_ONLY — the only exempt files
+scripts/portable-root.mjs:35                materialisePortableRoot
+scripts/roadmap-gate.mjs                    0 current / 2 stale; never records for you
+tests/plugin-structure.test.mjs:15          SKILLS and RELEASE_VERSION — the list of record
+.roadmap-published.json                     tracked marker; a private marker makes the gate lie
 ```
+
+Published roadmap page: `https://artifacts.ngs.bz/claude/private/tmux-teams-roadmap/`
