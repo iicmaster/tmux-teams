@@ -1045,9 +1045,15 @@ export async function runAcpReview({
       })
       // Profile identity is runner-owned. Model and mode are accepted only
       // when the ACP session advertises and acknowledges their exact values.
+      // `requestModel` is what the wire is ASKED for (the alias the gateway
+      // takes); `profile.model` is the identity the panel RECORDS. The config
+      // acknowledgement must ask for the first — asking for the second made
+      // the ninerouter lane answer `-32603 Invalid value for model: glm-5.2`
+      // against a gateway that only knows its routed name. Same distinction
+      // `buildProfileEnv` already makes for CLAUDE_MODEL_CONFIG.
       const wantedConfig = {
         ...(profile.config && typeof profile.config === 'object' ? profile.config : {}),
-        ...(profile.model === undefined ? {} : { model: profile.model }),
+        ...(profile.requestModel ?? profile.model) === undefined ? {} : { model: profile.requestModel ?? profile.model },
       }
       for (const [id, wanted] of Object.entries(wantedConfig)) {
         if (wanted === undefined) continue

@@ -399,7 +399,7 @@ relaying a person's words is expected to sign `human:` and name itself in
 
 ---
 
-## 4. The eleven skills
+## 4. The twelve skills
 
 **Setting up and running the loop**
 
@@ -417,6 +417,7 @@ relaying a person's words is expected to sign `human:` and name itself in
 | `tmux-teams:party-advise` | advice, plan critique, tradeoff or risk review — read-only, never edits |
 | `tmux-teams:pm-delegation` | acting as PM over other agents — subagents or ACP lanes. One delegation or a whole spec: the brief contract, the STOP rule, and the autonomous run (tickets as a dependency graph, parallel implementers in worktrees, reviewed against the spec). Does not touch the delivery loop |
 | `tmux-teams:sqthink` | structured step-by-step analysis, comparison, or planning before deciding |
+| `tmux-teams:test-quality` | test-adequacy evidence contract for agent-authored code — CRAP as risk/triage signal, mutation testing as evidence, policy decision kept separate from evidence state. Contract only: no runner, no thresholds, no auto-execution |
 
 **Getting a second opinion**
 

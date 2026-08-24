@@ -138,9 +138,19 @@ test('fallback routes unavailable direct Claude through claude-zai only when all
   assert.match(planFallback(openai, 'qwen').reason, /duplicate/)
   assert.match(planFallback(openai, 'zai').reason, /retry/)
 
+  // The kimi route seats the local 9Router lane in place of zai since
+  // 2026-08-24 (hosts whose only reviewer upstream is the loopback gateway);
+  // the failed-lane assertions follow the route as it now is.
+  // ninerouter declares family `zai`, so a ninerouter failure CAN fall back to
+  // the claude→zai availability alias (three families still hold); but a codex
+  // failure cannot — zai would sit beside ninerouter, same declared family.
   const kimi = createReviewPlan('kimi')
-  assert.match(planFallback(kimi, 'codex').reason, /duplicate/)
-  assert.match(planFallback(kimi, 'zai').reason, /retry/)
+  assert.deepEqual(kimi.reviewers, ['codex', 'ninerouter', 'agy'])
+  assert.match(planFallback(kimi, 'codex').reason, /diversity/)
+  const nrFallback = planFallback(kimi, 'ninerouter')
+  assert.equal(nrFallback.blocked, false)
+  assert.deepEqual(nrFallback.replaced, { failed: 'ninerouter', replacement: 'zai' })
+  assert.match(planFallback(kimi, 'zai').reason, /not planned/)
 
   const zai = createReviewPlan('zai')
   assert.match(planFallback(zai, 'codex').reason, /diversity/)
