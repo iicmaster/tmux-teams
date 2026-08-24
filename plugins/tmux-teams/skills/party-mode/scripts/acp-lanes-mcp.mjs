@@ -471,7 +471,7 @@ const PROBE_CRASHED = 'the probe crashed before producing a classified result'
 
 // The transport's contract is a closed SIGNAL shape, never text:
 //   { settled: 'response' }                    a session/prompt result arrived
-//   { settled: 'timeout' }                      nothing arrived inside PROBE_TIMEOUT_MS
+//   { settled: 'timeout' }                      the endpoint said nothing inside the REPLY budget
 //   { settled: 'spawn_error', errnoCode }        the process itself never started
 //   { settled: 'exit', code, quotaSignal }       the process exited before finishing the turn;
 //                                                 quotaSignal is a boolean the TRANSPORT decided,
@@ -753,7 +753,7 @@ export async function realProbeTransport({ command, env, spawnFn = spawn, abortS
     // watcher, but every JSON-RPC frame this probe will ever read arrives on
     // stdout. An empty listener here swallowed the fault and left the process
     // alive with every pending `send()` unresolved, so the probe rode the
-    // full PROBE_TIMEOUT_MS out reporting `probe_timeout` for a lane that had
+    // full reply budget out reporting `probe_timeout` for a lane that had
     // already told us, immediately, that no further reply could arrive.
     // Settle now with what this call already knows, and let `finish` start
     // the SAME teardown it runs for every other terminal outcome.
