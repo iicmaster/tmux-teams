@@ -780,6 +780,82 @@ same lane also queried a temporal-dead-zone risk in the rearmed probe timer;
 `let timer` is declared at line 652 and the only synchronous `finish` call is at
 674, so the ordering is safe and the query is recorded rather than actioned.
 
+## v0.36.0 scope, set by Master 2026-08-24
+
+**A plugin setup system: a readiness check, and per-machine `bin` configuration,
+so that lanes appear as selectable options to MCP.**
+
+### Why, and it is not a hypothesis
+
+There is **no per-machine configuration layer at all** today. Every entry in
+`REVIEW_PROFILES` hardcodes three machine-dependent things — a launcher (`bunx`
+or `npx -y`), a pinned adapter package version, and a wrapper executable name
+(`claude-qwen`, `claude-9r`, `claude-zai`). A grep of that file for any local
+override returns nothing.
+
+The v0.35.0 release measured **seven lane failures on one machine, none of them
+a code defect.** They do not all have the same repair, and counting them
+together makes this scope look larger than it is:
+
+| class | lanes | can configuration fix it? |
+|---|---|---|
+| **this machine cannot run it** | `codex` — npm cache resolved to a removable volume holding a truncated install, and only UPPERCASE `NPM_CONFIG_CACHE` redirected the child · `zai` — adapter advertises a model value the profile does not pin · `qwen` — needs `CLAUDE_CONFIG_DIR`, and its `opus` alias resolves to a different model per that machine's settings · `agy` — the only lane that worked first try, because `bunx` is a native binary rather than a node script | **yes — four of seven** |
+| **this account cannot use it** | `opencode` — no payment method · `kimi` — 402 membership | **no.** No amount of `bin` setup passes a billing wall |
+| **the recorded value rotted** | `opencode/deepseek-v4-flash-free` — the suffix no longer exists; the dead id was written down verbatim in a handoff | yes, but by a different mechanism |
+
+`agy` is the one to read twice. It was healthy **by coincidence**, not by design
+— its launcher happens not to be the kind of thing that breaks. One lane working
+while its neighbour fails for a reason nobody can see from the config file is
+the whole problem in one line.
+
+### The three parts, in order
+
+1. **A readiness check** answering, per lane, whether THIS machine can run it —
+   and distinguishing *not installed*, *installed but broken*, *no credential*
+   and *no quota*. It reuses the closed-code discipline `acp_lane_probe` already
+   has rather than inventing a second vocabulary for the same job.
+2. **Per-machine `bin` configuration** so a launcher, an adapter version and a
+   wrapper path can be set for this machine without editing a shipped profile.
+   Every class-one failure above lives in this layer.
+3. **Surfacing the result to MCP** so only the lanes this machine can actually
+   run appear as choices.
+
+### Decided before any code, 2026-08-24
+
+**MCP stays read-only; the writing surface is not an MCP tool.** ADR 0007 draws
+its line at "answering questions is a different thing from a surface that can act
+on an operator's behalf". Reading readiness is answering. Writing a `bin` path is
+acting. So the setup surface is a skill or a script, and MCP is the CONSUMER of
+what it writes — which is also exactly what the instruction says: configure the
+bins *so that they appear as choices for MCP*. **ADR 0007 needs no amendment,
+and this paragraph exists so nobody discovers that question late and answers it
+by quietly contradicting the ADR.**
+
+**A stored value must know when it is stale.** The strongest objection in the
+room was that a per-machine override file is a second source of truth for the
+thing that just burned us, and that anything written down rots — the dead
+`opencode` model id was *already recorded in a handoff* when it rotted. The
+counter is that discovery cannot run every time: a cold adapter install measured
+190s. So the resolution is not "a better file" and not "no file": it is a cache
+that carries what it was derived from, so a reader can tell a current answer from
+a remembered one. **A file nobody has to remember to update, rather than a file
+somebody must.**
+
+### Open, and blocking code rather than blocking the scope
+
+- Where does the per-machine config live, and what reads it first — the profile,
+  the override, or the environment? The layering is undecided.
+- Does the readiness check contact an endpoint (real minutes, real quota) or stay
+  structural? `acp_lane_status` is structural, `acp_lane_probe` is live. This may
+  be a third thing, or one of those two doing more.
+- What invalidates the cache above? Nothing is decided beyond "it must be
+  answerable without asking a human to remember".
+
+### Not in scope, stated so it is not discovered as a gap
+
+Class-two failures. A billing wall and an expired membership are facts about an
+account, and this work reports them accurately rather than fixing them.
+
 ## What is actually open
 
 These are real but unforced, and separate from the release above:

@@ -5,19 +5,19 @@ Written 2026-08-24 through `bmad-party-mode`.
 
 ## 1. READ THIS FIRST
 
-- Branch `release/v0.35.0`, **NOT pushed**. It carries 19 commits and a merge of
-  `origin/main`. The tree is clean.
-- The three-model panel is **3/3 ACCEPT with zero findings on these exact
-  bytes** — six lane runs, three families, both packets. Do not re-run it unless
-  the bytes change.
-- **The single most dangerous thing here: any edit to `ROADMAP.md` voids that
-  panel.** `ROADMAP.md` is NOT in `DOC_ONLY` (`scripts/gate-required.mjs:41`
-  exempts only `HANDOFF.md`, `README.md`, `CLAUDE.md`). The v0.36 scope below is
-  recorded in THIS file for exactly that reason. Move it to `ROADMAP.md` only
-  AFTER v0.35.0 is tagged and released.
-- Everything else about the release is done: seven version places bumped,
-  roadmap page published and recorded (gate 0), suite green, manifest valid.
-  What remains is push, PR, review, merge, tag, release.
+- **v0.35.0 is SHIPPED.** Tagged at the merged sha `db36789` (not the branch tip
+  `fad4125`), released, and the local plugin install is updated 0.34.0 → 0.35.0.
+- Branch `feat/v0.36-setup`, cut from that merge. Tree state is whatever you
+  find; the only thing on it so far is the v0.36 scope written into `ROADMAP.md`.
+- **The single most dangerous thing here: the codex bot review gate is BROKEN,
+  not merely waived.** Three consecutive pull requests carry zero reviews — the
+  v0.35.0 release, the test-quality skill PR, and the v0.34.0 release. That last
+  one means **v0.34.0 also shipped without this reviewer and nobody recorded
+  it.** v0.35.0's waiver IS recorded, on the PR and in the release notes. Do not
+  read a fourth silent PR as consent.
+- Second most dangerous: the submodule pin in `~/agent-skills` was NOT bumped.
+  `CLAUDE.md` release step 10 says to; the owner's standing boundary says that
+  repository is not ours to touch. The boundary won. It is the owner's task.
 
 ## 2. HOW TO VERIFY
 
@@ -76,55 +76,15 @@ Gate: 3/3
 not just the alias: two lanes can share one gateway and the alias alone cannot
 tell two families apart.
 
-### v0.36 SCOPE — set by Master, 2026-08-24
+### v0.36 scope — now on the ROADMAP, not here
 
-**A plugin setup system: a readiness check, and per-machine `bin` configuration,
-so that lanes appear as selectable options to MCP.**
-
-Today there is **no per-machine configuration layer at all**. Every entry in
-`REVIEW_PROFILES` (`plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs:71`)
-hardcodes three machine-dependent things: a launcher (`bunx` or `npx -y`), a
-pinned adapter package version, and a wrapper executable name (`claude-qwen`,
-`claude-9r`, `claude-zai`). A grep for `TMUX_TEAMS_*CONFIG`, `lanes.json` or any
-local override in that file returns nothing.
-
-**Seven machine-specific failures were measured in this one release, on one
-machine. This is the evidence base for the scope — it is not hypothetical:**
-
-| lane | what failed | why it is a MACHINE fact, not a code fact |
-|---|---|---|
-| codex | `Missing optional dependency @openai/codex-darwin-arm64` | the npm cache resolves to `/Volumes/KINGSTON` (a removable volume) holding a truncated install; only **uppercase** `NPM_CONFIG_CACHE` redirected it, lowercase `npm_config_cache` did not reach the child |
-| opencode | model id does not exist | `opencode/deepseek-v4-flash-free` → the `-free` suffix is gone; the old id was recorded verbatim in a doc |
-| opencode | `No payment method` | that machine's account |
-| kimi | `402 unable to verify your membership benefits` | that machine's account |
-| zai | `unsupported model value glm-5.2` | the adapter advertises a different value than the profile pins |
-| qwen | needs `CLAUDE_CONFIG_DIR`; `opus` resolves to a different model per that profile's settings file; `effortLevel: xhigh` drove 25-minute turns | entirely per-machine |
-| agy | the only lane that worked first try | because `bunx` is a native binary — **healthy by coincidence, not by design** |
-
-So the scope has three parts, in this order:
-
-1. **A readiness check** that answers, per lane, whether this machine can
-   actually run it — and distinguishes *not installed*, *installed but broken*,
-   *no credential*, *no quota* — reusing the closed-code discipline already in
-   `acp_lane_probe` rather than inventing a second vocabulary.
-2. **Per-machine `bin` configuration** so a launcher, an adapter version and a
-   wrapper path can be set for THIS machine without editing a shipped profile.
-   The failures above are all in that layer.
-3. **Surfacing the result to MCP** so only lanes this machine can actually run
-   appear as choices.
-
-**Open design questions, not yet answered — do not start coding past them:**
-
-- Where does per-machine config live, and what reads it first — the profile, an
-  override file, or the environment?
-- Does a readiness check contact an endpoint (real quota, real minutes) or stay
-  structural? `acp_lane_status` is structural and `acp_lane_probe` is live; this
-  may be a third thing or may be one of those two doing more.
-- ADR 0007 says the plugin ships **read-only** lane-discovery tools. Writing
-  configuration is not read-only. Either the setup surface is not an MCP tool,
-  or ADR 0007 is amended **as part of the work** — not contradicted quietly.
-  This exact tension was already resolved once when `acp_lane_probe` was added:
-  the ADR was amended rather than bypassed. Do the same.
+It was recorded in this file only because editing `ROADMAP.md` before v0.35.0
+was tagged would have voided a 3/3 panel. v0.35.0 is tagged at `db36789`, so the
+scope has moved to **`ROADMAP.md` → "v0.36.0 scope, set by Master 2026-08-24"**,
+which is where the standing goal belongs. Read it there; it carries the
+seven-failure evidence table, the three-class split, and the two things the room
+decided before any code (MCP stays read-only, and a stored value must know when
+it is stale).
 
 ## 4. DO NOT
 
