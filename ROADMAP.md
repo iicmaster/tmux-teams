@@ -730,10 +730,24 @@ this release rather than introduced by it**, and every one was the same shape: a
 sweep that updated the neighbours and missed one, or a guard whose consumer went
 away while the guard stayed green.
 
+**A fifth, from the third family, and it understates rather than overstates.**
+The rewritten no-sandbox bullet said the adapter "can read the minimum copied
+auth in its own ephemeral HOME". Nothing is copied: `prepareProviderState`
+creates an empty state home and returns, `copyIfPresent` and `copyTreeIfPresent`
+had no callers left, and the child inherits the real host `HOME` — which is what
+`hostProviderHomeVisible: true` and `hostDataRootsMasked: false` were already
+reporting. The dead helpers are deleted and the bullet now states the exposure
+as it is. One round earlier the same rewrite had fixed an OVERstatement in the
+same paragraph, which is worth noticing: a document describing a capability that
+was removed gets both kinds of wrong.
+
 One finding was refused on measurement rather than argued away: the claim that
 the gate fixture's `networkSharedWithHost` is decoupled from production is
 false — mutating the emitter alone turns two behavioural tests red. Recorded
-because a panel objection that survives is worth as much as one that lands.
+because a panel objection that survives is worth as much as one that lands. The
+same lane also queried a temporal-dead-zone risk in the rearmed probe timer;
+`let timer` is declared at line 652 and the only synchronous `finish` call is at
+674, so the ordering is safe and the query is recorded rather than actioned.
 
 ## What is actually open
 

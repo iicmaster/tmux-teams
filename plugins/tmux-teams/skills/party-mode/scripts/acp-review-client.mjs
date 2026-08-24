@@ -6,7 +6,7 @@
 import { spawn as nodeSpawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, realpathSync } from 'node:fs'
-import { chmod, copyFile, cp, mkdir, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -373,18 +373,6 @@ function isHarmlessAgyThink(update) {
     block.content.type === 'text' && typeof block.content.text === 'string')
 }
 
-
-async function copyIfPresent(source, destination) {
-  if (!existsSync(source)) return
-  await mkdir(dirname(destination), { recursive: true })
-  await copyFile(source, destination)
-}
-
-async function copyTreeIfPresent(source, destination) {
-  if (!existsSync(source)) return
-  await mkdir(dirname(destination), { recursive: true })
-  await cp(source, destination, { recursive: true, force: true })
-}
 
 async function prepareProviderState(profile, stateRoot, sourceEnv) {
   const env = { ...sourceEnv }
