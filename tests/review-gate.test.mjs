@@ -87,7 +87,7 @@ const runnerResult = (p, staticPacket, review = validReview) => ({
     ephemeralProviderStateWritable: false,
     hostProviderStatePersistent: true,
     providerMayPersistRemoteState: true,
-    networkSharedWithHost: false,
+    networkSharedWithHost: true,
     acpPermissionRequests: 'deny',
   },
   review,

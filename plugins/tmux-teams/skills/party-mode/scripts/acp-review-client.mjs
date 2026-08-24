@@ -1127,7 +1127,19 @@ export async function runAcpReview({
         ephemeralProviderStateWritable: false,
         hostProviderStatePersistent: true,
         providerMayPersistRemoteState: true,
-        networkSharedWithHost: false,
+        // TRUE, and it always should have been. This field states a FACT about
+        // sharing, while every sibling above states a fact about CONFINEMENT --
+        // an inverted polarity in the middle of a list, which is exactly why the
+        // sandbox removal flipped the neighbours and froze this one. Read the
+        // history: at v0.34.0 it was `profile.osSandbox === 'bwrap'`, so a
+        // sandboxed lane reported `true` and every other lane reported `false`.
+        // But the sandbox never unshared the network -- the bwrap argv carried
+        // `--unshare-pid` and nothing else -- so the network was shared with the
+        // host on BOTH sides of that expression, and `false` was a claim of
+        // network isolation that has never been true of any lane. It has been
+        // shipping since ADR 0006 stopped any profile declaring bwrap.
+        // Found by an openai review lane on the v0.35.0 release diff.
+        networkSharedWithHost: true,
         acpPermissionRequests: 'deny',
       }),
       ...result,

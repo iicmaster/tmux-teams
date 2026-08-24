@@ -285,7 +285,7 @@ function runnerEvidenceFault(profile, value, expectedInputHash) {
       isolation?.ephemeralProviderStateWritable !== false ||
       isolation?.hostProviderStatePersistent !== true ||
       isolation?.providerMayPersistRemoteState !== true ||
-      isolation?.networkSharedWithHost !== false ||
+      isolation?.networkSharedWithHost !== true ||
       isolation?.acpPermissionRequests !== 'deny') {
     return { reason: 'isolation_unacknowledged' }
   }
