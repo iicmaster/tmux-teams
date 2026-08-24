@@ -4,7 +4,7 @@
 // with semantic anchors instead of brittle prose regexes.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, readdirSync, statSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync, lstatSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
@@ -12,10 +12,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PLUGIN = join(ROOT, 'plugins/tmux-teams')
-const SKILLS = ['tmux-teams', 'party-mode', 'party-auto', 'party-advise', 'sqthink', 'codex-tmux-driver',
-  'graph-setup', 'claude-advisor', 'codex-advisor', 'agy-advisor', 'handoff', 'pm-delegation',
-  'test-quality']
-const RELEASE_VERSION = '0.34.0'
+const SKILLS = ['tmux-teams', 'party-mode', 'party-auto', 'party-advise', 'sqthink',
+  'graph-setup', 'claude-advisor', 'codex-advisor', 'agy-advisor', 'handoff',
+  'pm-delegation', 'test-quality']
+const RELEASE_VERSION = '0.35.0'
 // The Stage 1 CLI entry points went on 2026-07-29 and the rest of the phase
 // subsystem — nine scripts, its gate, its store and its exporter — went on
 // 2026-08-02. The note that used to stand here said deleting the remainder
@@ -891,13 +891,86 @@ test('the paths Claude Code needs to recognise this plugin are where it looks fo
 // The set is pinned literally rather than derived from CLAUDE.md: a test that
 // reads its expectation out of the document it is checking agrees with whatever
 // the document says, including a document somebody widened to make a test pass.
+// The 1.0 portable root, and why it is symlinks rather than a copy.
+//
+// ADR 0008 recorded that this plugin's layout does NOT conform: section 8 of
+// the specification says "Client-specific files MUST be represented under a
+// top-level directory named for that namespace", and `.claude-plugin/`,
+// `.mcp.json` and `commands/` sit at the plugin root instead. Moving them
+// satisfies 1.0 and makes the plugin uninstallable in Claude Code, whose binary
+// contains no `agent-plugins.org` string at all.
+//
+// So there are two roots. `plugins/tmux-teams/` is what Claude Code installs and
+// is unchanged. `agent-plugins/tmux-teams/` is what a standard-aware client
+// installs, and it is SYMLINKS — measured: git stores them as mode 120000, six
+// lines total for 2.4 MB of skills, and they survive both `git clone` and
+// `git archive` as real links. A copy would have been 69 files that drift.
+//
+// THE LINKS ARE ONLY READABLE FROM A FULL CHECKOUT, and this comment claimed
+// more than that until an openai review lane checked it on the v0.35.0 diff.
+// Every one of the six points outside the root it lives in (`../../plugins/…`),
+// so the root is a VIEW of this repository, not a directory you can pick up:
+//
+//     git archive HEAD agent-plugins | tar -x -C /tmp/ar
+//     /tmp/ar/agent-plugins/tmux-teams/plugin.json   -> dangling
+//
+// which is a problem precisely because the second root exists so that a
+// standard-aware installer can be pointed at it. `scripts/portable-root.mjs`
+// resolves that: the tree keeps the links, and anyone who needs a directory
+// they can carry asks for one. The test below is what makes the copy's
+// equivalence a fact rather than an intention.
+test('the portable root conforms to Agent Plugins 1.0, and every link in it resolves', () => {
+  const PORTABLE = join(ROOT, 'agent-plugins', 'tmux-teams')
+  const NS = join(PORTABLE, 'com.anthropic.claude')
+
+  // What the spec fixes by name: the manifest, the MCP path, the skills dir.
+  for (const required of ['plugin.json', 'mcp.json', 'skills']) {
+    const p = join(PORTABLE, required)
+    assert.ok(lstatSync(p).isSymbolicLink(), `${required} in the portable root is not a symlink — a copy drifts`)
+    assert.ok(existsSync(p), `${required} in the portable root is a DEAD symlink`)
+  }
+
+  // Section 8's MUST is the whole reason this root exists: client-specific
+  // files live under the namespace, not at the root.
+  for (const clientOwned of ['.claude-plugin', '.mcp.json', 'commands']) {
+    assert.equal(existsSync(join(PORTABLE, clientOwned)), false,
+      `${clientOwned} is client-specific and sits at the portable root — that is the exact 1.0 `
+      + 'violation this root exists to avoid')
+  }
+  for (const inNamespace of ['plugin.json', 'mcp.json', 'commands']) {
+    const p = join(NS, inNamespace)
+    assert.ok(lstatSync(p).isSymbolicLink(), `com.anthropic.claude/${inNamespace} is not a symlink`)
+    assert.ok(existsSync(p), `com.anthropic.claude/${inNamespace} is a DEAD symlink`)
+  }
+
+  // Reading THROUGH the links, not merely stat-ing them. A symlink can resolve
+  // to a directory that is empty or to a file that is not what it claims.
+  const portableManifest = JSON.parse(readFileSync(join(PORTABLE, 'plugin.json'), 'utf8'))
+  assert.equal(portableManifest.$schema, 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+    'the portable manifest lost its 1.0 $schema')
+  assert.equal(portableManifest.name, 'tmux-teams')
+  assert.equal(portableManifest.version, RELEASE_VERSION,
+    'the portable manifest is a different version from the release — the symlink is pointing somewhere stale')
+
+  const claudeManifest = JSON.parse(readFileSync(join(NS, 'plugin.json'), 'utf8'))
+  assert.equal('$schema' in claudeManifest, false,
+    'the namespaced Claude manifest gained a 1.0 $schema — the two manifests differ on purpose')
+  assert.equal(claudeManifest.version, RELEASE_VERSION)
+
+  // The skills link must reach the real inventory, not an empty directory.
+  const portableSkills = readdirSync(join(PORTABLE, 'skills'), { withFileTypes: true })
+    .filter((e) => e.isDirectory()).map((e) => e.name).sort()
+  assert.deepEqual(portableSkills, [...SKILLS].sort(),
+    'the portable root sees a different set of skills than ships')
+})
+
 test('the tracked top-level entries are exactly the ones this repository declares', () => {
   const listed = execFileSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8' })
     .split('\n').filter(Boolean)
     .map((p) => p.split('/')[0])
   const actual = [...new Set(listed)].sort()
   const allowed = [
-    '.claude-plugin', '.github', '.gitignore',
+    '.claude-plugin', '.github', '.gitignore', 'agent-plugins',
     '.published-RELEASE-PLAN.json', '.published-event-subscriptions.json',
     '.roadmap-published.json',
     'CLAUDE.md', 'HANDOFF.md', 'README.md', 'RELEASE-PLAN.md', 'ROADMAP.md',
@@ -909,4 +982,87 @@ test('the tracked top-level entries are exactly the ones this repository declare
     `these are tracked and this repository does not declare them: ${unexpected.join(', ')}`)
   assert.deepEqual(missing, [],
     `these are declared and no longer tracked: ${missing.join(', ')}`)
+})
+
+// A copy is only worth having if it is the same thing. `fs.cp` with
+// `dereference: true` is the whole mechanism, so the failure worth guarding is
+// the one where it silently is not: a link copied AS a link (dangling again), or
+// a file whose bytes differ from the source it claims to be.
+test('the materialised portable root is self-contained and byte-identical to what it came from', async () => {
+  const { materialisePortableRoot } = await import(pathToFileURL(join(ROOT, 'scripts', 'portable-root.mjs')).href)
+  const out = mkdtempSync(join(tmpdir(), 'portable-root-'))
+  try {
+    const written = await materialisePortableRoot(ROOT, out)
+
+    // Every path in the copy, and not one of them may still be a link — that is
+    // the entire defect this script exists to answer.
+    const walk = (dir, base = '') => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const rel = base ? `${base}/${entry.name}` : entry.name
+      const abs = join(dir, entry.name)
+      assert.ok(!lstatSync(abs).isSymbolicLink(),
+        `${rel} came out of the materialiser as a symlink, so the copy dangles exactly like the source root`)
+      return entry.isDirectory() ? walk(abs, rel) : [rel]
+    })
+    const files = walk(written)
+    assert.ok(files.length > 20, `the copy holds only ${files.length} files — the skills tree did not come across`)
+
+    // The four entries the spec fixes by name, plus the namespaced ones.
+    for (const required of ['plugin.json', 'mcp.json', 'skills', 'com.anthropic.claude']) {
+      assert.ok(existsSync(join(written, required)), `${required} is missing from the materialised root`)
+    }
+
+    // Byte equality against the ORIGINAL, read through the link. A copy that is
+    // merely present proves nothing; a copy that disagrees is worse than none.
+    const pairs = [
+      ['plugin.json', join(PLUGIN, 'plugin.json')],
+      ['mcp.json', join(PLUGIN, 'mcp.json')],
+      ['com.anthropic.claude/plugin.json', join(PLUGIN, '.claude-plugin', 'plugin.json')],
+      ['com.anthropic.claude/mcp.json', join(PLUGIN, '.mcp.json')],
+    ]
+    for (const [rel, source] of pairs) {
+      assert.equal(readFileSync(join(written, rel), 'utf8'), readFileSync(source, 'utf8'),
+        `${rel} in the materialised root is not the bytes of ${source}`)
+    }
+
+    // EVERY file in the skills tree, by path and by bytes — not the directory
+    // names. Checking names plus four top-level manifests passes while a nested
+    // skill document is dropped or altered, which is a materialised plugin that
+    // installs and is quietly incomplete. An openai review lane found that gap
+    // in the first version of this test.
+    const listAll = (dir, base = '') => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const rel = base ? `${base}/${entry.name}` : entry.name
+      return entry.isDirectory() ? listAll(join(dir, entry.name), rel) : [rel]
+    })
+    const copiedSkills = listAll(join(written, 'skills')).sort()
+    const sourceSkills = listAll(join(PLUGIN, 'skills')).sort()
+    assert.deepEqual(copiedSkills, sourceSkills, 'the materialised skills tree is not the shipped one')
+    for (const rel of sourceSkills) {
+      assert.deepEqual(
+        readFileSync(join(written, 'skills', rel)),
+        readFileSync(join(PLUGIN, 'skills', rel)),
+        `skills/${rel} differs from the shipped bytes in the materialised root`)
+    }
+
+    // The NAMESPACED tree too, by path and bytes. Four manifests plus the skills
+    // directory left `com.anthropic.claude/commands` unchecked entirely, so a
+    // materialiser that dropped the client commands passed — an installed
+    // portable plugin with no commands. Same openai lane, one round later.
+    const copiedCommands = listAll(join(written, 'com.anthropic.claude', 'commands')).sort()
+    const sourceCommands = listAll(join(PLUGIN, 'commands')).sort()
+    assert.ok(sourceCommands.length > 0, 'the plugin ships no commands, so this guard proves nothing')
+    assert.deepEqual(copiedCommands, sourceCommands, 'the materialised commands tree is not the shipped one')
+    for (const rel of sourceCommands) {
+      assert.deepEqual(
+        readFileSync(join(written, 'com.anthropic.claude', 'commands', rel)),
+        readFileSync(join(PLUGIN, 'commands', rel)),
+        `commands/${rel} differs from the shipped bytes in the materialised root`)
+    }
+
+    // It refuses to overwrite rather than deleting a tree somebody typed by
+    // mistake — a destructive default is not a convenience.
+    await assert.rejects(() => materialisePortableRoot(ROOT, out), /--force/,
+      'a second run overwrote an existing directory without being asked to')
+  } finally {
+    rmSync(out, { recursive: true, force: true })
+  }
 })

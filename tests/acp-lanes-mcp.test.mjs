@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process'
 import { handle, callTool, laneFacts, laneStatus, classify, fixesFor,
   TOOLS, TOOL_DESCRIPTORS, DIAGNOSTICS, PROTOCOL_VERSION, UNCHECKED_LANES,
   RPC_INVALID_REQUEST, RPC_INVALID_PARAMS, RPC_METHOD_NOT_FOUND, RPC_PARSE_ERROR,
-  classifyProbe, PROBE_TIMEOUT_MS, PROBE_BRIEF, realProbeTransport }
+  classifyProbe, PROBE_BOOT_TIMEOUT_MS, PROBE_REPLY_TIMEOUT_MS, PROBE_BRIEF, realProbeTransport }
   from '../plugins/tmux-teams/skills/party-mode/scripts/acp-lanes-mcp.mjs'
 import { REVIEW_PROFILES, ROUTED_PROFILES, provenFamilyCollision, normalizePrimaryFamily, PROVIDER_SECRET_KEYS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys, buildAcpLaunch, buildProfileEnv }
   from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
@@ -320,7 +320,7 @@ test('every diagnostic code the classifier can return has a constant sentence', 
     // providers can trigger, and `executable_unusable` is EACCES/EPERM told
     // apart from ENOENT, which the parent-side check never spawns anything to
     // observe.
-    'quota_exhausted', 'probe_timeout', 'executable_unusable']
+    'quota_exhausted', 'probe_timeout', 'probe_boot_timeout', 'executable_unusable']
   assert.deepEqual(Object.keys(DIAGNOSTICS).sort(), [...codes].sort())
   // and the classifier maps real messages onto them rather than onto `unclassified`
   assert.equal(classify('zai review requires ANTHROPIC_BASE_URL'), 'endpoint_missing')
@@ -1942,7 +1942,13 @@ test('an UNCHECKED lane is genuinely contacted — a live probe is the only sign
   assert.equal(spy[0].id, 'claude')
   assert.ok(Array.isArray(spy[0].command) && spy[0].command.length, 'the transport got no command to spawn')
   assert.ok(spy[0].env && typeof spy[0].env === 'object', 'the transport got no environment to spawn with')
-  assert.equal(spy[0].timeoutMs, PROBE_TIMEOUT_MS, 'the bounded timeout did not reach the transport')
+  // BOTH budgets, asserted at the CALL SITE. Defaults on the transport mean a
+  // deleted argument here would still produce a working probe, so nothing but
+  // this line notices the production wiring going missing.
+  assert.equal(spy[0].bootTimeoutMs, PROBE_BOOT_TIMEOUT_MS, 'the boot budget did not reach the transport')
+  assert.equal(spy[0].replyTimeoutMs, PROBE_REPLY_TIMEOUT_MS, 'the reply budget did not reach the transport')
+  assert.ok(PROBE_BOOT_TIMEOUT_MS > PROBE_REPLY_TIMEOUT_MS,
+    'the boot budget must outlast the reply budget: a cold `npx -y` install was measured at 190s and one word is not')
   const [lane] = payload.lanes
   assert.equal(lane.probe, 'reachable')
   assert.equal(lane.configuration, 'unchecked')
@@ -1955,6 +1961,7 @@ test('every unreachable outcome the transport can report lands on a classified c
   const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
   const outcomes = [
     [{ settled: 'timeout' }, 'probe_timeout'],
+    [{ settled: 'boot_timeout' }, 'probe_boot_timeout'],
     [{ settled: 'spawn_error', errnoCode: 'ENOENT', rawStderr: 'CANARY-SHOULD-NEVER-SURFACE' }, 'executable_missing'],
     [{ settled: 'exit', code: 1, quotaSignal: true, rawText: 'CANARY-QUOTA-TEXT' }, 'quota_exhausted'],
     [{ settled: 'exit', code: 1, quotaSignal: false }, 'unclassified'],
@@ -2166,7 +2173,7 @@ test('a cancelled multi-lane probe stops the remaining lanes, reaps the active c
       // `realProbeTransport` itself (rather than a synthetic fake) is what
       // proves the SHIPPED teardown is what does it, not a test-only stand-in.
       return realProbeTransport({
-        command: [process.execPath, script], env: process.env, timeoutMs: 6000,
+        command: [process.execPath, script], env: process.env, bootTimeoutMs: 6000, replyTimeoutMs: 6000,
         abortSignal: call.abortSignal,
       })
     }
@@ -2225,10 +2232,10 @@ test('a cancelled multi-lane probe stops the remaining lanes, reaps the active c
 // A stub ACP agent costs nothing and contacts nobody.
 test('the real probe transport speaks to an agent and reads what comes back', async () => {
   const stub = join(ROOT, 'tests', 'fixtures', 'probe-stub-agent.mjs')
-  const run = (mode, timeoutMs = 8000) => realProbeTransport({
+  const run = (mode, ms = 8000) => realProbeTransport({
     command: [process.execPath, stub],
     env: { ...process.env, STUB_MODE: mode },
-    timeoutMs,
+    bootTimeoutMs: ms, replyTimeoutMs: ms,
   })
 
   assert.deepEqual(await run('ok'), { settled: 'response' },
@@ -2259,15 +2266,37 @@ test('the real probe transport speaks to an agent and reads what comes back', as
   // production default measures the default, not the transport.
   const started = Date.now()
   const silent = await run('silent', 1200)
-  assert.equal(silent.settled, 'timeout', `a silent agent settled as ${silent.settled}`)
+  assert.equal(silent.settled, 'boot_timeout', `a silent agent settled as ${silent.settled}`)
   assert.ok(Date.now() - started < 6000,
     'the transport ignored the timeout it was given')
+
+  // THE REARM, proved by making the two budgets disagree. `mute` answers the
+  // handshake and then goes quiet, so the adapter is demonstrably up: the wait
+  // that follows belongs to the REPLY budget. Give it a boot budget long enough
+  // that riding it would blow this assertion's own clock, and a reply budget
+  // that fires quickly -- if the rearm is deleted, the surviving boot timer
+  // settles this as `boot_timeout` at 30s and both assertions below fail.
+  const muteStarted = Date.now()
+  const mute = await realProbeTransport({
+    command: [process.execPath, stub],
+    env: { ...process.env, STUB_MODE: 'mute' },
+    bootTimeoutMs: 30_000, replyTimeoutMs: 900,
+  })
+  const muteElapsed = Date.now() - muteStarted
+  assert.equal(mute.settled, 'timeout',
+    `an adapter that started and then went quiet settled as ${mute.settled} — the reply budget never took over`)
+  assert.ok(muteElapsed < 15_000,
+    `the probe waited ${muteElapsed}ms on a 900ms reply budget, so it was still riding the boot timer`)
+  assert.equal(classifyProbe(mute), 'probe_timeout',
+    'a live endpoint that went quiet must read as the endpoint timing out, not as the adapter failing to start')
+  assert.equal(classifyProbe(silent), 'probe_boot_timeout',
+    'an adapter that never answered initialize must not be reported as an endpoint that never replied')
 
   // A command that does not exist is a spawn error carrying an errno CODE and
   // never a message — this is the path that reaches an operator.
   const missing = await realProbeTransport({
     command: [join(ROOT, 'tests', 'fixtures', 'no-such-binary-here'), '--x'],
-    env: { ...process.env }, timeoutMs: 4000,
+    env: { ...process.env }, bootTimeoutMs: 4000, replyTimeoutMs: 4000,
   })
   assert.equal(missing.settled, 'spawn_error')
   assert.equal(missing.errnoCode, 'ENOENT', `spawn failure reported ${missing.errnoCode}`)
@@ -2351,7 +2380,7 @@ test('realProbeTransport survives child.stdin.write() EPIPE — a child that clo
       'const result = await realProbeTransport({',
       `  command: [process.execPath, ${JSON.stringify(stub)}],`,
       '  env: process.env,',
-      '  timeoutMs: 1500,',
+      '  bootTimeoutMs: 1500, replyTimeoutMs: 1500,',
       '})',
       "process.stdout.write('RESULT:' + JSON.stringify(result) + '\\n')",
     ].join('\n'))
@@ -2382,7 +2411,7 @@ test('a quota signal split across two stderr chunks is still detected, not defea
       "setTimeout(() => { process.stderr.write('exhausted'); process.exit(1) }, 50)",
     ].join('\n'))
     const result = await realProbeTransport({
-      command: [process.execPath, script], env: process.env, timeoutMs: 4000,
+      command: [process.execPath, script], env: process.env, bootTimeoutMs: 4000, replyTimeoutMs: 4000,
     })
     assert.equal(result.settled, 'exit')
     assert.equal(result.quotaSignal, true,
@@ -2419,7 +2448,7 @@ test('a JSON-RPC error on session/prompt while quota is already signalled settle
     ].join('\n'))
     const started = Date.now()
     const result = await realProbeTransport({
-      command: [process.execPath, script], env: process.env, timeoutMs: 6000,
+      command: [process.execPath, script], env: process.env, bootTimeoutMs: 6000, replyTimeoutMs: 6000,
     })
     const elapsed = Date.now() - started
     assert.ok(elapsed < 2000,
@@ -2452,11 +2481,15 @@ test('finish() does not settle until a killed child has actually exited', async 
     // yet, and the sibling descendant test failed the same way on the first
     // quiet full run of this release.
     const result = await realProbeTransport({
-      command: [process.execPath, script], env: process.env, timeoutMs: 2000,
+      command: [process.execPath, script], env: process.env, bootTimeoutMs: 2000, replyTimeoutMs: 2000,
     })
-    assert.equal(result.settled, 'timeout')
+    // `boot_timeout`, not `timeout`: this wrapper never speaks ACP at all, so
+    // `initialize` is never answered and the reply budget is never armed. What
+    // this test is about is the REAPING below, and the code only has to be the
+    // one a non-answering wrapper really produces.
+    assert.equal(result.settled, 'boot_timeout')
     assert.ok(existsSync(pidFile),
-      'the child was reaped before it could write its pid, so this test proved nothing — raise timeoutMs')
+      'the child was reaped before it could write its pid, so this test proved nothing — raise the probe budgets')
     const pid = Number(readFileSync(pidFile, 'utf8'))
     // POLL, and here is why that does not weaken the claim. This test failed
     // once for a subagent and could not be reproduced by the caller — 3/3 alone
@@ -2498,7 +2531,7 @@ test('a session/prompt that completes with stopReason cancelled is not reported 
       '})',
     ].join('\n'))
     const result = await realProbeTransport({
-      command: [process.execPath, script], env: process.env, timeoutMs: 4000,
+      command: [process.execPath, script], env: process.env, bootTimeoutMs: 4000, replyTimeoutMs: 4000,
     })
     assert.equal(result.settled, 'cancelled',
       'a completed round trip carrying stopReason cancelled was reported the same as a real answer')
@@ -2515,7 +2548,7 @@ test('a spawn failure from a non-executable file is EACCES, told apart from ENOE
     writeFileSync(notExecutable, '#!/bin/sh\necho hi\n')
     chmodSync(notExecutable, 0o644) // exists, but no execute bit for anybody
     const result = await realProbeTransport({
-      command: [notExecutable], env: process.env, timeoutMs: 4000,
+      command: [notExecutable], env: process.env, bootTimeoutMs: 4000, replyTimeoutMs: 4000,
     })
     assert.equal(result.settled, 'spawn_error')
     assert.equal(result.errnoCode, 'EACCES', `spawn failure reported ${result.errnoCode}`)
@@ -2558,7 +2591,7 @@ test('a session/new success with no sessionId settles immediately as an invalid 
     ].join('\n'))
     const started = Date.now()
     const result = await realProbeTransport({
-      command: [process.execPath, script], env: process.env, timeoutMs: 6000,
+      command: [process.execPath, script], env: process.env, bootTimeoutMs: 6000, replyTimeoutMs: 6000,
     })
     const elapsed = Date.now() - started
     assert.ok(elapsed < 2000,
@@ -2604,7 +2637,7 @@ test('realProbeTransport survives an error on the child stdout and stderr stream
         'const result = await realProbeTransport({',
         `  command: [process.execPath, ${JSON.stringify(stub)}],`,
         '  env: process.env,',
-        '  timeoutMs: 1200,',
+        '  bootTimeoutMs: 1200, replyTimeoutMs: 1200,',
         '  spawnFn,',
         '})',
         "process.stdout.write('RESULT:' + JSON.stringify(result) + '\\n')",
@@ -2651,7 +2684,7 @@ test('a handshake whose sessionId is not a well-formed string is invalid, not re
         'setInterval(() => {}, 1000)',
       ].join('\n'))
       const result = await realProbeTransport({
-        command: [process.execPath, stub], env: process.env, timeoutMs: 4000,
+        command: [process.execPath, stub], env: process.env, bootTimeoutMs: 4000, replyTimeoutMs: 4000,
       })
       assert.equal(result.settled, 'invalid_handshake',
         `sessionId ${bad} was accepted as a handshake: ${JSON.stringify(result)}`)
@@ -2674,7 +2707,7 @@ test('a handshake whose sessionId is not a well-formed string is invalid, not re
       'setInterval(() => {}, 1000)',
     ].join('\n'))
     const ok = await realProbeTransport({
-      command: [process.execPath, good], env: process.env, timeoutMs: 4000,
+      command: [process.execPath, good], env: process.env, bootTimeoutMs: 4000, replyTimeoutMs: 4000,
     })
     assert.equal(ok.settled, 'response', `a well-formed handshake was refused: ${JSON.stringify(ok)}`)
     assert.equal(classifyProbe(ok), null, 'a completed probe should classify as reachable')
@@ -2787,15 +2820,19 @@ test('realProbeTransport reaps a descendant left behind by a package-runner wrap
     // A too-short deadline here does not make the test flaky, it makes it
     // VACUOUS: no descendant ever existed to survive a sweep.
     const result = await realProbeTransport({
-      command: [process.execPath, wrapper], env: process.env, timeoutMs: 2000,
+      command: [process.execPath, wrapper], env: process.env, bootTimeoutMs: 2000, replyTimeoutMs: 2000,
     })
-    assert.equal(result.settled, 'timeout')
+    // `boot_timeout`, not `timeout`: this wrapper never speaks ACP at all, so
+    // `initialize` is never answered and the reply budget is never armed. What
+    // this test is about is the REAPING below, and the code only has to be the
+    // one a non-answering wrapper really produces.
+    assert.equal(result.settled, 'boot_timeout')
     // And say which thing failed. An ENOENT stack names a temp path and
     // nothing else; this names the precondition, so a future shortening of
     // the deadline is diagnosed in one line instead of read as a real defect.
     assert.ok(existsSync(pidFile),
       'the wrapper was reaped before it could spawn a descendant, so this test proved nothing about '
-      + 'the sweep — raise timeoutMs rather than reading this as a reaping failure')
+      + 'the sweep — raise the probe budgets rather than reading this as a reaping failure')
     const descendantPid = Number(readFileSync(pidFile, 'utf8'))
     const gone = await waitForPidGone(descendantPid, 2000)
     assert.equal(gone, true,
@@ -2831,7 +2868,7 @@ test('a wrapper that exits on its own does not leave its descendant behind, eith
       'process.exit(1)',
     ].join('\n'))
     const result = await realProbeTransport({
-      command: [process.execPath, wrapper], env: process.env, timeoutMs: 4000,
+      command: [process.execPath, wrapper], env: process.env, bootTimeoutMs: 4000, replyTimeoutMs: 4000,
     })
     assert.equal(result.settled, 'exit',
       'a wrapper that exited cleanly on its own was not read as an "exit" outcome')
@@ -2858,7 +2895,7 @@ test('the machine-readable rate_limit_exceeded error code is recognized as a quo
       'process.exit(1)',
     ].join('\n'))
     const result = await realProbeTransport({
-      command: [process.execPath, script], env: process.env, timeoutMs: 4000,
+      command: [process.execPath, script], env: process.env, bootTimeoutMs: 4000, replyTimeoutMs: 4000,
     })
     assert.equal(result.settled, 'exit')
     assert.equal(result.quotaSignal, true,
@@ -2893,7 +2930,7 @@ test('a malformed session/prompt result -- {} or null -- is not reported reachab
       ].join('\n'))
       const started = Date.now()
       const result = await realProbeTransport({
-        command: [process.execPath, stub], env: process.env, timeoutMs: 4000,
+        command: [process.execPath, stub], env: process.env, bootTimeoutMs: 4000, replyTimeoutMs: 4000,
       })
       const elapsed = Date.now() - started
       assert.ok(elapsed < 2000,
@@ -2919,7 +2956,7 @@ test('a malformed session/prompt result -- {} or null -- is not reported reachab
       'setInterval(() => {}, 1000)',
     ].join('\n'))
     const ok = await realProbeTransport({
-      command: [process.execPath, good], env: process.env, timeoutMs: 4000,
+      command: [process.execPath, good], env: process.env, bootTimeoutMs: 4000, replyTimeoutMs: 4000,
     })
     assert.equal(ok.settled, 'response', `a well-formed prompt result was refused: ${JSON.stringify(ok)}`)
     assert.equal(classifyProbe(ok), null, 'a completed probe should classify as reachable')
@@ -2958,7 +2995,7 @@ test('an error on the child stdout stream settles the probe immediately as a tra
       'const result = await realProbeTransport({',
       `  command: [process.execPath, ${JSON.stringify(stub)}],`,
       '  env: process.env,',
-      '  timeoutMs: 4000,',
+      '  bootTimeoutMs: 4000, replyTimeoutMs: 4000,',
       '  spawnFn,',
       '})',
       'const elapsed = Date.now() - started',
@@ -3017,7 +3054,7 @@ test('an adapter that overruns OUT_CAP settles the probe immediately, not after 
     ].join('\n'))
     const started = Date.now()
     const result = await realProbeTransport({
-      command: [process.execPath, stub], env: process.env, timeoutMs: 6000,
+      command: [process.execPath, stub], env: process.env, bootTimeoutMs: 6000, replyTimeoutMs: 6000,
     })
     const elapsed = Date.now() - started
     assert.equal(result.settled, 'transport_error',

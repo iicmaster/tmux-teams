@@ -13,7 +13,7 @@ New here? Read this file top to bottom, then
 [how-it-works.md](plugins/tmux-teams/skills/tmux-teams/references/how-it-works.md)
 for the diagrams.
 
-Current release: **0.34.0** (`.claude-plugin/marketplace.json` and
+Current release: **0.35.0** (`.claude-plugin/marketplace.json` and
 `plugins/tmux-teams/.claude-plugin/plugin.json`). Upgrading from an earlier
 0.14.x release needs no change to an existing `graph.json` — the seat fields
 in ข้อ 2 (`adapter`, `effort`, `display_model`) and the files in ข้อ 6 are all
@@ -47,7 +47,7 @@ Authenticate `gh`/git first if your GitHub setup requires it.
 | Node 20+ with `npx` | the ACP adapters. CI exercises Node 20 and Node 24 |
 | `tmux` and the `codex` CLI | the tmux worker lane |
 | `bun` | the `agy` ACP adapter (`bunx antigravity-acp@1.0.0`) |
-| `/usr/bin/bwrap` (Linux) | only for a profile that declares `osSandbox: 'bwrap'` — no shipped profile does since ADR 0006, so the gate runs on macOS and Linux without it |
+| ~~`/usr/bin/bwrap`~~ | not used at all — removed 2026-08-24, see ADR 0006, so the gate runs on macOS and Linux without it |
 
 ### First run
 
@@ -399,7 +399,7 @@ relaying a person's words is expected to sign `human:` and name itself in
 
 ---
 
-## 4. The thirteen skills
+## 4. The twelve skills
 
 **Setting up and running the loop**
 
@@ -407,7 +407,6 @@ relaying a person's words is expected to sign `human:` and name itself in
 |---|---|
 | `tmux-teams:graph-setup` | first run, or the declaration is missing/rejected — interviews until `graph.json` is complete, then validates it |
 | `tmux-teams:tmux-teams` | you are the PM: dispatch, completion detection, capture, the mailbox contract, the delivery loop |
-| `tmux-teams:codex-tmux-driver` | driving a live Codex TUI — its flags, calibrated markers, and dialog behavior |
 
 **Getting work done carefully**
 
@@ -759,10 +758,9 @@ party-mode's 3-model review uses its bundled JavaScript ACP gate
 (`plugins/tmux-teams/skills/party-mode/scripts/review-gate.mjs`), not `oc`/AGY/
 Codex review plugins or MCP review tools. It no longer requires
 `/usr/bin/bwrap`: ADR 0006 removed `osSandbox: 'bwrap'` from every shipped
-profile, so the gate runs on macOS and Linux alike. The machinery is retained
-and still tested — a profile that declares the field gets the full sandbox — and
-this line claimed the opposite until a lane read it against ROADMAP.md and
-CLAUDE.md, which had both been updated. It also needs the supported ACP reviewer runtimes:
+profile in 2026-08-13, and its 2026-08-24 amendment removed the machinery
+itself. There is no OS sandbox and no way to switch one back on; the gate runs
+on macOS and Linux alike. What it still checks never came from bwrap. It also needs the supported ACP reviewer runtimes:
 `antigravity-acp@1.0.0` + trusted `agy`, Qwen/Zai through the pinned
 Claude ACP adapter, and the Codex ACP adapter. `claude-zai` and `claude-qwen` must both use the
 pinned `@agentclientprotocol/claude-agent-acp` adapter with their machine-local

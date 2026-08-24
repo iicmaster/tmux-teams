@@ -12,9 +12,9 @@
 > source, no publish script and nothing that could notice it had gone stale —
 > so it went stale, repeatedly, and nobody could tell without opening it.
 
-Current release: **0.34.0** — the version stamped in this tree, in flight on
-a pull request and not yet tagged. `main` carries **v0.33.0**, tagged at the
-MERGED sha `8a0f63b` (not the branch tip `f31c468` — those are different
+Current release: **0.35.0** — the version stamped in this tree, in flight on
+a pull request and not yet tagged. `main` carries **v0.34.0**, tagged at the
+MERGED sha `d58307d` (not the branch tip `bede67c` — those are different
 commits, and tagging the wrong one ships a sha `main` does not hold). Anyone
 installing from the marketplace resolves the last TAG, not this line.
 
@@ -598,6 +598,188 @@ second model would ship a plugin that teaches two conflicting ways to run work.
 Whether the frontier is a new mechanism or an expression of the ledger this
 system already keeps is the design question, and it is item 4's real content.
 
+## v0.35.0 scope, set by Master 2026-08-24
+
+Four items. Three were direct instructions; the fourth was found by running the
+tool the previous release shipped.
+
+| # | item | state |
+|---|---|---|
+| 1 | fold `codex-tmux-driver` into `tmux-teams` — it was a skill for one client | **shipped** — skills 12 → 11 |
+| 2 | a conformant Agent Plugins 1.0 root beside the Claude one | **shipped** — `agent-plugins/` |
+| 3 | remove the OS sandbox rather than merely stop declaring it | **shipped** — ADR 0006 amended |
+| 4 | `acp_lane_probe` reported every lane unreachable, and was wrong | **shipped** — two budgets |
+| 5 | two P1s the release panel found, one of them older than the release | **shipped** — see below |
+
+**Item 2 is what ADR 0008 lost its own bet to, and it is the cheap answer it
+did not see.** That ADR recorded a conformance gap as permanent because the
+client cannot read the standard layout, and wrote itself down so the loss would
+be visible. Master's answer was not to argue with the client: keep the Claude
+layout as the one that ships, and put a second root beside it that IS the
+standard, for whoever installs by the standard. Every entry under
+`agent-plugins/tmux-teams/` is a symlink into the Claude tree, so the two roots
+cannot drift into disagreeing — there is only one copy of anything.
+
+**Item 4 is the one worth reading, because the tool was lying confidently.**
+`acp_lane_probe` shipped in v0.33.0 with a single 20-second ceiling, and probed
+on 2026-08-24 it reported all five contacted lanes `probe_timeout` — a closed
+code whose sentence told the operator the endpoint had not answered. Measured
+the same hour, the network was up, every adapter resolved on PATH, and the
+pinned endpoint answered 200 in 126ms. The lanes were fine. What took longer
+than 20 seconds was the ADAPTER STARTING: a cold `npx -y` install of
+`@agentclientprotocol/claude-agent-acp@0.61.0` reached `initialize` in 190s, and
+a warm one still took 24.4s to reach a prompt.
+
+Raising the number was rejected as the fix. A single ceiling has to cover the
+worst case, and a ceiling that covers a 190s cold install is one every genuinely
+dead lane then rides in full — which is the cost the tool's own "cheap"
+justification cannot pay five times in a sweep. The budget is split instead, at
+the boundary the handshake already crosses: everything before `initialize`
+answers is installation and process start, everything after it is an endpoint
+being asked one word. `probe_boot_timeout` is a new closed code with its own
+sentence, so the two failures no longer send an operator to the same wrong
+place. A ceiling costs nothing when the lane answers, so the warm sweep did not
+get slower.
+
+**Measured against real lanes, not only the stub.** Driving the patched module
+directly at `zai`, `codex` and `agy`: **agy came back `reachable`** — the same
+lane that answered `probe_timeout` an hour earlier under the single ceiling.
+The other two moved off `probe_timeout` as well, onto `unclassified`, which is
+a refusal this server does not classify rather than a silence it invented. The
+whole three-lane sweep took **20.5s**, so the larger boot budget did not cost
+the sweep anything, exactly as the split predicted.
+
+The stub and the mutation still carry the guard: a `mute` mode that answers the
+handshake and then goes quiet, run with the budgets deliberately disagreeing,
+and deleting the rearm turns that test red at 31.5s.
+
+**What is still not proven:** that the two lanes now reading `unclassified` are
+refusing for the reason their provider would give. `unclassified` is by design
+the code for "this server will not guess", and nobody has run the gate to find
+out what is behind it.
+
+**Item 5 is what the release panel was for, and it earned its cost twice.**
+
+The gemini lane read the source packet and found that `party-mode/SKILL.md`
+announced the sandbox was gone in its opening sentence and then described that
+sandbox, in the present tense, for the rest of the same bullet — masked host
+roots, an ephemeral provider HOME, a new PID namespace, and a tolerance rule for
+AGY built-in reads. Confirmed three ways in the code: `osSandbox` is read by
+nothing, `inspectAgySafeRead` is gone, and the isolated `builtin/` tree is gone.
+
+The openai lane blocked the release on two P1s and both were real.
+
+**`networkSharedWithHost` was `false`, and no lane has ever satisfied it.** The
+field states a fact about SHARING while every sibling in the same evidence
+object states a fact about CONFINEMENT, and that inverted polarity in the middle
+of a list is what let the sandbox removal flip the neighbours and freeze this
+one. It was wrong before this release: at v0.34.0 it read
+`profile.osSandbox === 'bwrap'`, and the bwrap argv carried `--unshare-pid` and
+nothing else, because a review lane has to reach its provider's API. The network
+was shared on both sides of that expression. Corrected to `true` in the emitter,
+the gate's expectation and the fixture; mutating the emitter alone turns two
+behavioural tests red.
+
+**The portable root could not be picked up.** All six links point outside the
+root they live in, so `git archive HEAD agent-plugins | tar -x` produces six
+dangling links — and "install from that folder instead" is the entire reason the
+folder exists. Master's answer, 2026-08-24: keep the links in the tree, and add
+`scripts/portable-root.mjs` to hand out a resolved copy on demand. The two
+properties were only in conflict while nothing could produce the second.
+`fs.cp` with `dereference: true` is the whole mechanism, and the guard is a test
+that walks the copy, refuses any surviving symlink, and compares four manifests
+byte for byte against the sources they were linked to. Turning the dereference
+off turns it red.
+
+**And a third, found on the rerun: the AGY safe-read exemption outlived what it
+was for.** The sandbox removal left `const agyReadInspection = null` guarding
+`if (null?.scope)` — a branch that can never run and two counters that can never
+leave zero — while `review-gate.mjs` went on exempting AGY from checking them.
+Dead code holding open a dead permission: it could not help any real lane and
+could only widen what a wrong runner slips past, and it read to an auditor like
+a live allowance. The branch is deleted and the gate now requires zero from
+every lane. Deleting the exemption did not turn one test red, which is how it
+survived removal in the first place, so a behavioural guard was added; restoring
+the exemption turns that guard red.
+
+**And a fourth, the most serious, found on the round after that: the
+executable-trust boundary had no caller.** `party-mode/SKILL.md` promises that
+before launch the profile-owned executable is resolved, binaries shadowed by the
+target repository or by PATH are rejected, and a trusted runtime root is
+required. `resolveExecutable` and `trustedExecutableRoots` were exported and
+unit-tested throughout — and at v0.34.0 their only production caller sat inside
+`stageHomeExecutable`, which was called inside `if (profile.osSandbox ===
+'bwrap')`. ADR 0006 stopped any shipped profile declaring that on 2026-08-13, so
+no lane had resolved its executable for eleven days. The sandbox removal deleted
+code that was already dead; what it exposed is a documented guarantee with
+nothing behind it. The call is now on the spawn path for every lane, and the
+guard is behavioural: an unresolvable command must be refused with `spawn` never
+reached. Deleting the call site turns it red.
+
+**What the panel cost and what it bought.** Four rounds, because a finding
+changes the bytes and the bytes are what the panel read. The gemini lane found
+the documentation defect and then accepted every later round with no findings;
+the openai lane found all four code defects. **Three of the five were older than
+this release rather than introduced by it**, and every one was the same shape: a
+sweep that updated the neighbours and missed one, or a guard whose consumer went
+away while the guard stayed green.
+
+**A fifth, from the third family, and it understates rather than overstates.**
+The rewritten no-sandbox bullet said the adapter "can read the minimum copied
+auth in its own ephemeral HOME". Nothing is copied: `prepareProviderState`
+creates an empty state home and returns, `copyIfPresent` and `copyTreeIfPresent`
+had no callers left, and the child inherits the real host `HOME` — which is what
+`hostProviderHomeVisible: true` and `hostDataRootsMasked: false` were already
+reporting. The dead helpers are deleted and the bullet now states the exposure
+as it is. One round earlier the same rewrite had fixed an OVERstatement in the
+same paragraph, which is worth noticing: a document describing a capability that
+was removed gets both kinds of wrong.
+
+**And the closing round found that the fix for item 5 was itself hollow — two
+families, independently.** Restoring the executable-trust call without restoring
+the canonicalisation left `canonicalTargetRepository` declared in the deleted
+bwrap block and never assigned, so `resolveExecutable` received `undefined`, its
+`targetRepository &&` clause short-circuited, and a binary sitting in the
+reviewed checkout would have been accepted as trusted. The gemini and openai
+lanes raised it separately on the same bytes, which is the "two of three is
+must-fix" rule doing exactly what it is for. Canonicalisation restored, and the
+guard asserts the REFUSAL — a shadow binary on PATH inside the target repository
+must be rejected with `spawn` never reached. Removing the assignment turns it
+red.
+
+That is the sixth finding of this release and the second one introduced by a fix
+for an earlier one. The lesson is not "review harder", it is that a guard
+restored without the value it reads is indistinguishable from a guard, and only
+a test that asserts the refusal can tell them apart.
+
+**The fifth round: gemini accepted both packets with zero findings, and openai
+found two more small ones.** `realpath` succeeds on a regular file, so a
+`targetRepository` pointing at a file was canonicalised and accepted — the
+shadow check then compared candidates against a file, which `isWithin` can never
+match, so the guard silently passed everything. A directory check was added. And
+the materialisation test compared four manifests and the skills tree while
+leaving `com.anthropic.claude/commands` entirely unchecked, so a materialiser
+that dropped the client commands passed; it now compares that tree by path and
+bytes, and dropping it turns the test red.
+
+**One objection was raised in three separate rounds and is not being actioned,
+which is a decision and not an oversight.** The openai lane keeps reporting that
+the portable root's symlinks escape it and that the raw subtree is therefore not
+installable. That is true, it is the finding that produced
+`scripts/portable-root.mjs`, and Master settled the shape on 2026-08-24: the
+tree keeps one copy of everything so the two roots cannot drift, and the
+materialiser hands out a self-contained directory to anyone who needs one. The
+gemini lane accepted the same bytes. Recorded here so the next reader meets the
+decision rather than re-deriving the objection.
+
+One finding was refused on measurement rather than argued away: the claim that
+the gate fixture's `networkSharedWithHost` is decoupled from production is
+false — mutating the emitter alone turns two behavioural tests red. Recorded
+because a panel objection that survives is worth as much as one that lands. The
+same lane also queried a temporal-dead-zone risk in the rearmed probe timer;
+`let timer` is declared at line 652 and the only synchronous `finish` call is at
+674, so the ordering is safe and the query is recorded rather than actioned.
+
 ## What is actually open
 
 These are real but unforced, and separate from the release above:
@@ -610,7 +792,7 @@ These are real but unforced, and separate from the release above:
   half. A caller who types the companion's own path anyway is outside what a
   script can reach.
 
-- **If bwrap is ever re-enabled**, the sandbox still does not carry a routed
+- **If a sandbox is ever written again** (the bwrap one was removed 2026-08-24), it still would not carry a routed
   wrapper's own profile files into the ephemeral home. The gate knows where to
   READ them (`TMUX_TEAMS_REVIEW_<ID>_SETTINGS` / `_ENV_FILE`) and never places
   them where the wrapper looks. The layout-agnostic fix is to mirror the
@@ -695,7 +877,7 @@ slate.
 - **ADR 0005** — MCP's Tasks extension converged on this companion's design
   independently; we stay divergent, and the conditions that would reverse that
   are written down.
-- **ADR 0006** — shipped review profiles no longer declare bwrap. What that
+- **ADR 0006** (amended 2026-08-24) — the OS sandbox is removed entirely. What that
   costs is stated, along with the strongest argument against the decision.
 - **ADR 0002** — `opened` names a human decision; the runner never invents one.
 - **ADR 0007** — the plugin ships one read-only MCP server for lane discovery.

@@ -265,11 +265,10 @@ function runnerEvidenceFault(profile, value, expectedInputHash) {
   }
   const isolation = value.isolation
   if (isolation?.workspace !== 'temporary' || isolation?.targetRepositoryCwd !== false ||
-      isolation?.targetRepositoryHidden !== (profile.osSandbox === 'bwrap') ||
-      (profile.osSandbox === 'bwrap' && (!isAbsolute(isolation?.targetRepositoryCanonical) ||
-        isolation?.hostRootBaseReadOnly !== true ||
-        isolation?.hostDataRootsMasked !== true ||
-        isolation?.hostProcessNamespaceIsolated !== true)) ||
+      isolation?.targetRepositoryHidden !== false ||
+      isolation?.hostRootBaseReadOnly !== false ||
+      isolation?.hostDataRootsMasked !== false ||
+      isolation?.hostProcessNamespaceIsolated !== false ||
       isolation?.mcpServers !== 0 || isolation?.builtInToolsRequested !== false ||
       isolation?.toolCallsObserved !== 0 ||
       !Number.isInteger(isolation?.reasoningUpdatesObserved) ||
@@ -277,16 +276,16 @@ function runnerEvidenceFault(profile, value, expectedInputHash) {
       (!isAgy(profile) && isolation.reasoningUpdatesObserved !== 0) ||
       !Number.isInteger(isolation?.safeRuntimeReadsObserved) ||
       isolation.safeRuntimeReadsObserved < 0 ||
-      (!isAgy(profile) && isolation.safeRuntimeReadsObserved !== 0) ||
+      isolation.safeRuntimeReadsObserved !== 0 ||
       !Number.isInteger(isolation?.safeWorkspaceReadsObserved) ||
       isolation.safeWorkspaceReadsObserved < 0 ||
-      (!isAgy(profile) && isolation.safeWorkspaceReadsObserved !== 0) ||
+      isolation.safeWorkspaceReadsObserved !== 0 ||
       isolation?.temporaryModelSettings !== Boolean(profile.sessionSettings) ||
-      isolation?.hostProviderHomeVisible !== (profile.osSandbox !== 'bwrap') ||
-      isolation?.ephemeralProviderStateWritable !== (profile.osSandbox === 'bwrap') ||
-      isolation?.hostProviderStatePersistent !== (profile.osSandbox !== 'bwrap') ||
+      isolation?.hostProviderHomeVisible !== true ||
+      isolation?.ephemeralProviderStateWritable !== false ||
+      isolation?.hostProviderStatePersistent !== true ||
       isolation?.providerMayPersistRemoteState !== true ||
-      isolation?.networkSharedWithHost !== (profile.osSandbox === 'bwrap') ||
+      isolation?.networkSharedWithHost !== true ||
       isolation?.acpPermissionRequests !== 'deny') {
     return { reason: 'isolation_unacknowledged' }
   }
@@ -626,7 +625,7 @@ export async function runReviewGateCli([packetPath, targetRepository] = [], {
     // per-lane advice three times, is what turns "three broken profiles" back
     // into "one missing thing" (GitHub #51).
     // The STAGE alone does not establish a shared cause, and saying it did was
-    // its own kind of lie: a missing review executable, an absent bwrap and an
+    // its own kind of lie: a missing review executable, an unreachable endpoint and an
     // unacknowledged ACP setting all stop at `config`, and the gate announced
     // one precondition over three unrelated faults.
     //
