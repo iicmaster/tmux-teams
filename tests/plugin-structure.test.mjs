@@ -866,9 +866,21 @@ test('the paths Claude Code needs to recognise this plugin are where it looks fo
 // is unchanged. `agent-plugins/tmux-teams/` is what a standard-aware client
 // installs, and it is SYMLINKS — measured: git stores them as mode 120000, six
 // lines total for 2.4 MB of skills, and they survive both `git clone` and
-// `git archive` as real links with content readable through them. A copy would
-// have been 69 files that drift; a generator would have been a script and a
-// staleness gate. Neither is needed when the filesystem already has the feature.
+// `git archive` as real links. A copy would have been 69 files that drift.
+//
+// THE LINKS ARE ONLY READABLE FROM A FULL CHECKOUT, and this comment claimed
+// more than that until an openai review lane checked it on the v0.35.0 diff.
+// Every one of the six points outside the root it lives in (`../../plugins/…`),
+// so the root is a VIEW of this repository, not a directory you can pick up:
+//
+//     git archive HEAD agent-plugins | tar -x -C /tmp/ar
+//     /tmp/ar/agent-plugins/tmux-teams/plugin.json   -> dangling
+//
+// which is a problem precisely because the second root exists so that a
+// standard-aware installer can be pointed at it. `scripts/portable-root.mjs`
+// resolves that: the tree keeps the links, and anyone who needs a directory
+// they can carry asks for one. The test below is what makes the copy's
+// equivalence a fact rather than an intention.
 test('the portable root conforms to Agent Plugins 1.0, and every link in it resolves', () => {
   const PORTABLE = join(ROOT, 'agent-plugins', 'tmux-teams')
   const NS = join(PORTABLE, 'com.anthropic.claude')
@@ -932,4 +944,58 @@ test('the tracked top-level entries are exactly the ones this repository declare
     `these are tracked and this repository does not declare them: ${unexpected.join(', ')}`)
   assert.deepEqual(missing, [],
     `these are declared and no longer tracked: ${missing.join(', ')}`)
+})
+
+// A copy is only worth having if it is the same thing. `fs.cp` with
+// `dereference: true` is the whole mechanism, so the failure worth guarding is
+// the one where it silently is not: a link copied AS a link (dangling again), or
+// a file whose bytes differ from the source it claims to be.
+test('the materialised portable root is self-contained and byte-identical to what it came from', async () => {
+  const { materialisePortableRoot } = await import(pathToFileURL(join(ROOT, 'scripts', 'portable-root.mjs')).href)
+  const out = mkdtempSync(join(tmpdir(), 'portable-root-'))
+  try {
+    const written = await materialisePortableRoot(ROOT, out)
+
+    // Every path in the copy, and not one of them may still be a link — that is
+    // the entire defect this script exists to answer.
+    const walk = (dir, base = '') => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const rel = base ? `${base}/${entry.name}` : entry.name
+      const abs = join(dir, entry.name)
+      assert.ok(!lstatSync(abs).isSymbolicLink(),
+        `${rel} came out of the materialiser as a symlink, so the copy dangles exactly like the source root`)
+      return entry.isDirectory() ? walk(abs, rel) : [rel]
+    })
+    const files = walk(written)
+    assert.ok(files.length > 20, `the copy holds only ${files.length} files — the skills tree did not come across`)
+
+    // The four entries the spec fixes by name, plus the namespaced ones.
+    for (const required of ['plugin.json', 'mcp.json', 'skills', 'com.anthropic.claude']) {
+      assert.ok(existsSync(join(written, required)), `${required} is missing from the materialised root`)
+    }
+
+    // Byte equality against the ORIGINAL, read through the link. A copy that is
+    // merely present proves nothing; a copy that disagrees is worse than none.
+    const pairs = [
+      ['plugin.json', join(PLUGIN, 'plugin.json')],
+      ['mcp.json', join(PLUGIN, 'mcp.json')],
+      ['com.anthropic.claude/plugin.json', join(PLUGIN, '.claude-plugin', 'plugin.json')],
+      ['com.anthropic.claude/mcp.json', join(PLUGIN, '.mcp.json')],
+    ]
+    for (const [rel, source] of pairs) {
+      assert.equal(readFileSync(join(written, rel), 'utf8'), readFileSync(source, 'utf8'),
+        `${rel} in the materialised root is not the bytes of ${source}`)
+    }
+
+    // And the skills really came across, by name, not merely as a directory.
+    const copied = readdirSync(join(written, 'skills')).sort()
+    const source = readdirSync(join(PLUGIN, 'skills')).sort()
+    assert.deepEqual(copied, source, 'the materialised skills tree is not the shipped one')
+
+    // It refuses to overwrite rather than deleting a tree somebody typed by
+    // mistake — a destructive default is not a convenience.
+    await assert.rejects(() => materialisePortableRoot(ROOT, out), /--force/,
+      'a second run overwrote an existing directory without being asked to')
+  } finally {
+    rmSync(out, { recursive: true, force: true })
+  }
 })

@@ -615,6 +615,7 @@ tool the previous release shipped.
 | 2 | a conformant Agent Plugins 1.0 root beside the Claude one | **shipped** — `agent-plugins/` |
 | 3 | remove the OS sandbox rather than merely stop declaring it | **shipped** — ADR 0006 amended |
 | 4 | `acp_lane_probe` reported every lane unreachable, and was wrong | **shipped** — two budgets |
+| 5 | two P1s the release panel found, one of them older than the release | **shipped** — see below |
 
 **Item 2 is what ADR 0008 lost its own bet to, and it is the cheap answer it
 did not see.** That ADR recorded a conformance gap as permanent because the
@@ -662,6 +663,39 @@ and deleting the rearm turns that test red at 31.5s.
 refusing for the reason their provider would give. `unclassified` is by design
 the code for "this server will not guess", and nobody has run the gate to find
 out what is behind it.
+
+**Item 5 is what the release panel was for, and it earned its cost twice.**
+
+The gemini lane read the source packet and found that `party-mode/SKILL.md`
+announced the sandbox was gone in its opening sentence and then described that
+sandbox, in the present tense, for the rest of the same bullet — masked host
+roots, an ephemeral provider HOME, a new PID namespace, and a tolerance rule for
+AGY built-in reads. Confirmed three ways in the code: `osSandbox` is read by
+nothing, `inspectAgySafeRead` is gone, and the isolated `builtin/` tree is gone.
+
+The openai lane blocked the release on two P1s and both were real.
+
+**`networkSharedWithHost` was `false`, and no lane has ever satisfied it.** The
+field states a fact about SHARING while every sibling in the same evidence
+object states a fact about CONFINEMENT, and that inverted polarity in the middle
+of a list is what let the sandbox removal flip the neighbours and freeze this
+one. It was wrong before this release: at v0.34.0 it read
+`profile.osSandbox === 'bwrap'`, and the bwrap argv carried `--unshare-pid` and
+nothing else, because a review lane has to reach its provider's API. The network
+was shared on both sides of that expression. Corrected to `true` in the emitter,
+the gate's expectation and the fixture; mutating the emitter alone turns two
+behavioural tests red.
+
+**The portable root could not be picked up.** All six links point outside the
+root they live in, so `git archive HEAD agent-plugins | tar -x` produces six
+dangling links — and "install from that folder instead" is the entire reason the
+folder exists. Master's answer, 2026-08-24: keep the links in the tree, and add
+`scripts/portable-root.mjs` to hand out a resolved copy on demand. The two
+properties were only in conflict while nothing could produce the second.
+`fs.cp` with `dereference: true` is the whole mechanism, and the guard is a test
+that walks the copy, refuses any surviving symlink, and compares four manifests
+byte for byte against the sources they were linked to. Turning the dereference
+off turns it red.
 
 ## What is actually open
 

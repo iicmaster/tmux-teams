@@ -114,6 +114,7 @@ claude plugin validate --strict .  # manifest validation
 node scripts/gate-required.mjs     # does this release owe the three-model panel? 0=exempt 2=required
 node scripts/roadmap-gate.mjs      # is the published roadmap page behind ROADMAP.md? 0=current 2=stale
 node scripts/roadmap-render.mjs    # ROADMAP.md -> docs/roadmap.html, deterministic, no deps
+node scripts/portable-root.mjs <dir>  # agent-plugins/ root copied out with its symlinks resolved
 ```
 
 `node scripts/run-fast.mjs fast` uses an explicit allowlist and prints every
