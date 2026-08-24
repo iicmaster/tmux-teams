@@ -21,7 +21,11 @@ For a one-shot headless run prefer `codex exec` — see
 
 Codex-specific knowledge lives here; the generic tmux mechanics
 (send/verify/retry, PM discipline) live in
-`tmux-teams` and `interactive-agent-driver` — don't re-derive them.
+`tmux-teams` — don't re-derive them. (`interactive-agent-driver` covered the
+same ground and is NOT shipped by this plugin; it lives in a separate skills
+repository, so treat it as optional background rather than a companion file you
+can open. A deepseek review lane flagged both names on the v0.35.0 diff as
+pointing at things a plugin-only reader cannot find.)
 
 Facts below marked "field-verified" were measured on codex-cli 0.144.1
 (2026-07-14, macOS, tmux 3.6a) — including a Codex self-audit run. Re-verify after
@@ -194,7 +198,7 @@ Send as ordinary text + Enter, one at a time:
 | `/resume` | interactive picker (arrow keys) — from a script prefer `codex resume --last` at launch (cwd-scoped, see ข้อ 1) |
 | `/review` | review current changes |
 | `/mcp` | list configured MCP tools (`/mcp verbose` for servers) |
-| `/init` | generate AGENTS.md (see `codex-md-management` for upkeep) |
+| `/init` | generate AGENTS.md (`codex-md-management`, a separate skills repo, covers upkeep) |
 | `/quit` | exit |
 
 Restart only when exited/crashed or context is truly unusable. At idle: `/quit`,
