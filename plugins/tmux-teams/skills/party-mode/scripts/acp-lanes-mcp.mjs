@@ -214,6 +214,30 @@ const NOT_PROVEN = Object.freeze([
 // on every probe answer for the same reason `NOT_PROVEN` is: a green answer
 // that is silent about its own boundary is what `ready: true` cost this file
 // once already.
+// Two depths, and the shallower one is the point. Measured 2026-08-24 by
+// reproducing four real lane failures and recording where in the protocol each
+// became visible: an adapter whose install was truncated died BEFORE
+// `initialize`, while a 402 membership and a missing payment method were
+// invisible until a prompt was actually sent. A completion is what a provider
+// bills for, so a check that stops after the handshake can answer "can this
+// machine start this lane at all" for nothing.
+//
+// `prompt` stays the DEFAULT so an existing caller's behaviour does not change
+// under it.
+export const PROBE_DEPTHS = Object.freeze(['handshake', 'prompt'])
+export const DEFAULT_PROBE_DEPTH = 'prompt'
+
+// A handshake-depth pass proves strictly LESS than a prompt-depth one, and must
+// say so in the same field. Reporting the two identically is the overclaim this
+// tool exists to avoid — it would tell an operator a lane can answer when all
+// that was established is that it can start.
+const HANDSHAKE_NOT_PROVEN = Object.freeze([
+  'that this lane can answer a prompt at all — no prompt was sent',
+  'anything about quota or billing, which are only visible when a completion is attempted',
+  'that the model answering is the model this lane declares',
+  'that this lane stays reachable by the time a real review dispatches',
+])
+
 const PROBE_NOT_PROVEN = Object.freeze([
   'that this lane stays reachable by the time a real review dispatches',
   'that the model answering is the model this lane declares',
@@ -498,7 +522,12 @@ const PROBE_SESSION_ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$/
 
 export function classifyProbe(result) {
   if (!result || typeof result !== 'object') return 'unclassified'
+  // Both are "nothing is wrong at the depth that was asked for". They are kept
+  // as separate SHAPES rather than one, so that a transport which settles
+  // `handshake_ok` while a caller asked for prompt depth cannot be read as a
+  // completed prompt.
   if (result.settled === 'response') return null
+  if (result.settled === 'handshake_ok') return null
   if (result.settled === 'timeout') return 'probe_timeout'
   // Kept apart from `probe_timeout` on purpose: the repair is different. One
   // says the endpoint went quiet, the other says the adapter never got far
@@ -583,6 +612,7 @@ async function waitForProbeGroupGone(groupId, timeoutMs) {
 // `abortSignal` — named apart from the POSIX signal STRINGS `killGroup` below
 // sends ('SIGTERM'/'SIGKILL') on purpose, so neither reads as the other.
 export async function realProbeTransport({ command, env, spawnFn = spawn, abortSignal,
+  depth = DEFAULT_PROBE_DEPTH,
   bootTimeoutMs = PROBE_BOOT_TIMEOUT_MS, replyTimeoutMs = PROBE_REPLY_TIMEOUT_MS }) {
   return new Promise((settle) => {
     let done = false
@@ -860,6 +890,11 @@ export async function realProbeTransport({ command, env, spawnFn = spawn, abortS
         if (typeof session?.sessionId !== 'string' || !PROBE_SESSION_ID_RE.test(session.sessionId)) {
           finish({ settled: 'invalid_handshake' }); return
         }
+        // STOP HERE at handshake depth. Everything the shallow check can learn
+        // has been learned: the process started, spoke the protocol, and issued
+        // a well-formed session. Sending the prompt is what costs money, and
+        // the caller asked us not to.
+        if (depth === 'handshake') { finish({ settled: 'handshake_ok' }); return }
         const result = await send('session/prompt',
           { sessionId: session.sessionId, prompt: [{ type: 'text', text: PROBE_BRIEF }] })
         // A JSON-RPC SUCCESS carrying `{}` or `null` is not an answer — nothing
@@ -912,10 +947,19 @@ function probeArgsProblem(args) {
   if (!lanes.every((entry) => typeof entry === 'string')) {
     return 'every entry in lanes must be a string lane id'
   }
+  // A closed set, REFUSED rather than defaulted. A caller who types `depth:
+  // "handshakes"` means to spend nothing; silently giving them a prompt-depth
+  // sweep would spend real quota on a typo.
+  if (args.depth !== undefined && !PROBE_DEPTHS.includes(args.depth)) {
+    return 'depth must be one of: handshake, prompt'
+  }
   return null
 }
 
-async function probeOneLane(id, profile, env, transport, abortSignal) {
+async function probeOneLane(id, profile, env, transport, abortSignal, depth = DEFAULT_PROBE_DEPTH) {
+  // The boundary list is chosen by DEPTH, not by outcome: a handshake pass
+  // and a prompt pass are both `reachable`, and they are not the same claim.
+  const notProven = depth === 'handshake' ? HANDSHAKE_NOT_PROVEN : PROBE_NOT_PROVEN
   const status = laneStatus(id, profile, env)
   // Already known broken, and known WHY — a live attempt would learn nothing
   // a spawn cannot already answer, and would spend a process on a lane that
@@ -927,7 +971,8 @@ async function probeOneLane(id, profile, env, transport, abortSignal) {
       configuration: 'invalid',
       problem: status.problem,
       fixes: status.fixes,
-      notProven: PROBE_NOT_PROVEN,
+      notProven,
+      depth,
     }
   }
   let launch
@@ -941,7 +986,8 @@ async function probeOneLane(id, profile, env, transport, abortSignal) {
       configuration: status.configuration,
       problem: { code, detail: DIAGNOSTICS[code] },
       fixes: fixesFor(id, profile, code, { envKey: error?.envKey ?? null }),
-      notProven: PROBE_NOT_PROVEN,
+      notProven,
+      depth,
     }
   }
   // A REJECTING transport is caught HERE, per lane, on purpose. Left
@@ -957,7 +1003,7 @@ async function probeOneLane(id, profile, env, transport, abortSignal) {
     // still change anything for. `probeLanes`'s own loop is what stops the
     // NEXT lane from starting; this is what stops the one already running.
     result = await transport({
-      id, command: launch.command, env: launch.env, abortSignal,
+      id, command: launch.command, env: launch.env, abortSignal, depth,
       bootTimeoutMs: PROBE_BOOT_TIMEOUT_MS, replyTimeoutMs: PROBE_REPLY_TIMEOUT_MS,
     })
   } catch {
@@ -965,7 +1011,7 @@ async function probeOneLane(id, profile, env, transport, abortSignal) {
   }
   const code = classifyProbe(result)
   if (!code) {
-    return { lane: id, probe: 'reachable', configuration: status.configuration, problem: null, notProven: PROBE_NOT_PROVEN }
+    return { lane: id, probe: 'reachable', configuration: status.configuration, problem: null, notProven, depth }
   }
   return {
     lane: id,
@@ -974,7 +1020,8 @@ async function probeOneLane(id, profile, env, transport, abortSignal) {
     problem: { code, detail: DIAGNOSTICS[code] },
     fixes: (code === 'executable_missing' || code === 'executable_unusable')
       ? executableFixes(id, profile) : [],
-    notProven: PROBE_NOT_PROVEN,
+    notProven,
+    depth,
   }
 }
 
@@ -983,6 +1030,9 @@ async function probeOneLane(id, profile, env, transport, abortSignal) {
 async function probeLanes(args, env, transport, abortSignal) {
   const problem = probeArgsProblem(args)
   if (problem) return { error: problem, known: Object.keys(REVIEW_PROFILES) }
+  // Read AFTER validation, so an invalid depth is refused rather than
+  // silently falling back to the one that spends money.
+  const depth = args.depth ?? DEFAULT_PROBE_DEPTH
   const ids = [...new Set(args.lanes)]
   if (ids.some((id) => !Object.hasOwn(REVIEW_PROFILES, id))) {
     return { error: 'no such lane', known: Object.keys(REVIEW_PROFILES) }
@@ -1001,7 +1051,7 @@ async function probeLanes(args, env, transport, abortSignal) {
     // never spawns. The lane already running is stopped by threading the same
     // `abortSignal` into `probeOneLane`/the transport below, not by this check.
     if (abortSignal?.aborted) break
-    lanes.push(await probeOneLane(id, REVIEW_PROFILES[id], env, transport, abortSignal))
+    lanes.push(await probeOneLane(id, REVIEW_PROFILES[id], env, transport, abortSignal, depth))
   }
   return { lanes }
 }
@@ -1060,7 +1110,12 @@ export const TOOL_DESCRIPTORS = deepFreeze([
       + 'non-empty array of lane ids named explicitly — there is no probe-everything default, so a sweep '
       + 'has to be typed on purpose every time. A lane whose configuration is already invalid is reported '
       + 'from that diagnosis without being contacted. This starts no review and no delivery work: one '
-      + 'process per named lane, asked one word, torn down.',
+      + 'process per named lane, asked one word, torn down. Pass `depth: "handshake"` to stop after the '
+      + 'session handshake instead: it still spawns the lane and still costs minutes, but sends no '
+      + 'prompt, so nothing a provider bills for is spent. Measured 2026-08-24: an adapter whose '
+      + 'install was truncated dies before `initialize`, while a 402 membership and a missing '
+      + 'payment method are invisible until a prompt is actually sent — so the shallow depth '
+      + 'answers "can this machine start this lane" and cannot answer "will it pay out".',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1069,6 +1124,15 @@ export const TOOL_DESCRIPTORS = deepFreeze([
           items: { type: 'string' },
           description: 'Lane ids to probe live, named explicitly. Required and non-empty — omitting it '
             + 'or sending an empty array is refused rather than defaulting to every lane.',
+        },
+        depth: {
+          type: 'string',
+          enum: [...PROBE_DEPTHS],
+          description: 'How far to go. `handshake` spawns the lane, completes initialize and '
+            + 'session/new, and STOPS without sending a prompt — it answers whether this machine can '
+            + 'start this lane, and sends nothing a provider bills for. `prompt` (the default) also '
+            + 'sends the one-word brief, which is the only way quota and billing failures become '
+            + 'visible. A handshake pass proves strictly less and says so in its own notProven list.',
         },
       },
       required: ['lanes'],

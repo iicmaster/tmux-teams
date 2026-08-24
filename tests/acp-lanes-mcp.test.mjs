@@ -10,7 +10,8 @@ import { spawn } from 'node:child_process'
 import { handle, callTool, laneFacts, laneStatus, classify, fixesFor,
   TOOLS, TOOL_DESCRIPTORS, DIAGNOSTICS, PROTOCOL_VERSION, UNCHECKED_LANES,
   RPC_INVALID_REQUEST, RPC_INVALID_PARAMS, RPC_METHOD_NOT_FOUND, RPC_PARSE_ERROR,
-  classifyProbe, PROBE_BOOT_TIMEOUT_MS, PROBE_REPLY_TIMEOUT_MS, PROBE_BRIEF, realProbeTransport }
+  classifyProbe, PROBE_BOOT_TIMEOUT_MS, PROBE_REPLY_TIMEOUT_MS, PROBE_BRIEF, realProbeTransport,
+  PROBE_DEPTHS, DEFAULT_PROBE_DEPTH }
   from '../plugins/tmux-teams/skills/party-mode/scripts/acp-lanes-mcp.mjs'
 import { REVIEW_PROFILES, ROUTED_PROFILES, provenFamilyCollision, normalizePrimaryFamily, PROVIDER_SECRET_KEYS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys, buildAcpLaunch, buildProfileEnv }
   from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
@@ -1955,6 +1956,97 @@ test('an UNCHECKED lane is genuinely contacted — a live probe is the only sign
   assert.equal(lane.problem, null)
   assert.ok(Array.isArray(lane.notProven) && lane.notProven.length >= 4,
     'a live reachable answer with no stated boundary is the same overclaim ready:true was')
+})
+
+// ## Probe depth — and the only assertion that proves the money claim
+//
+// `depth: 'handshake'` exists because a completion is what a provider bills for.
+// Measured 2026-08-24 against four reproduced lane failures: an adapter whose
+// install was truncated died BEFORE `initialize`, while a 402 membership and a
+// missing payment method stayed invisible until a prompt was actually sent.
+//
+// A test that only checks the returned shape cannot tell a skipped prompt from
+// a quickly-answered one — and those differ by real money. So the stub records
+// every method it is ASKED, and the assertion is the absence of one.
+test('handshake depth completes the session and sends no prompt at all', async () => {
+  const stub = join(ROOT, 'tests', 'fixtures', 'probe-stub-agent.mjs')
+  const dir = mkdtempSync(join(tmpdir(), 'probe-depth-'))
+  try {
+    const runAt = async (depth) => {
+      const log = join(dir, `${depth}.log`)
+      writeFileSync(log, '')
+      const result = await realProbeTransport({
+        command: [process.execPath, stub],
+        env: { ...process.env, STUB_MODE: 'ok', STUB_LOG: log },
+        depth,
+        bootTimeoutMs: 8000, replyTimeoutMs: 8000,
+      })
+      const asked = readFileSync(log, 'utf8').split('\n').filter(Boolean)
+      return { result, asked }
+    }
+
+    const shallow = await runAt('handshake')
+    assert.deepEqual(shallow.result, { settled: 'handshake_ok' },
+      `handshake depth settled as ${JSON.stringify(shallow.result)}`)
+    assert.ok(shallow.asked.includes('initialize') && shallow.asked.includes('session/new'),
+      `handshake depth did not complete the handshake — it asked ${shallow.asked.join(', ')}`)
+    assert.ok(!shallow.asked.includes('session/prompt'),
+      'handshake depth SENT A PROMPT — the entire reason this depth exists is that a prompt is what gets billed')
+
+    // The control. Without it, a transport that never prompts at ANY depth
+    // would pass the assertion above and this feature would be a no-op that
+    // silently broke the paying path.
+    const deep = await runAt('prompt')
+    assert.deepEqual(deep.result, { settled: 'response' })
+    assert.ok(deep.asked.includes('session/prompt'),
+      'prompt depth did not send a prompt, so the assertion above proves nothing')
+
+    // Both are "nothing wrong at the depth asked for", and the classifier must
+    // say so for each — otherwise a healthy shallow check reads as a failure.
+    assert.equal(classifyProbe(shallow.result), null)
+    assert.equal(classifyProbe(deep.result), null)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// A typo must COST NOTHING. A caller who writes `handshakes` is asking to spend
+// no quota; silently treating that as the paying default would spend a whole
+// sweep's budget on a spelling mistake.
+test('an unknown depth is refused rather than defaulted to the paying one', async () => {
+  let contacted = false
+  const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+  const { payload } = await callProbe({ lanes: ['claude'], depth: 'handshakes' }, bare,
+    async () => { contacted = true; return { settled: 'response' } })
+  assert.match(payload.error ?? '', /depth must be one of/,
+    'an unknown depth was accepted')
+  assert.equal(contacted, false, 'a lane was contacted despite an invalid depth')
+  assert.deepEqual([...PROBE_DEPTHS], ['handshake', 'prompt'])
+  assert.equal(DEFAULT_PROBE_DEPTH, 'prompt',
+    'the default must remain the paying depth, so an existing caller is not silently downgraded')
+})
+
+// A shallower check proves less, and the boundary list is the only place a
+// caller is told so. Reporting the two identically is the overclaim this whole
+// tool exists to avoid.
+test('a handshake pass states a different boundary than a prompt pass', async () => {
+  const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+  const shallow = await callProbe({ lanes: ['claude'], depth: 'handshake' }, bare,
+    async () => ({ settled: 'handshake_ok' }))
+  const deep = await callProbe({ lanes: ['claude'] }, bare, async () => ({ settled: 'response' }))
+
+  const [s] = shallow.payload.lanes
+  const [d] = deep.payload.lanes
+  assert.equal(s.probe, 'reachable')
+  assert.equal(d.probe, 'reachable')
+  assert.equal(s.depth, 'handshake', 'the result does not say which depth produced it')
+  assert.equal(d.depth, 'prompt')
+  assert.notDeepEqual(s.notProven, d.notProven,
+    'a handshake pass claims exactly what a prompt pass claims — it proved strictly less')
+  assert.ok(s.notProven.some(line => /no prompt was sent/.test(line)),
+    'a handshake pass does not tell the caller that no prompt was sent')
+  assert.ok(s.notProven.some(line => /quota or billing/.test(line)),
+    'a handshake pass does not tell the caller it says nothing about billing')
 })
 
 test('every unreachable outcome the transport can report lands on a classified code, and nothing extra rides along', async () => {

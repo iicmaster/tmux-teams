@@ -15,6 +15,7 @@
 //            one rides the boot budget instead, which is exactly the bug the
 //            split fixes.
 import { createInterface } from 'node:readline'
+import { appendFileSync } from 'node:fs'
 
 const mode = process.env.STUB_MODE ?? 'ok'
 if (mode === 'noisy') process.stderr.write('warn: approaching your rate limit\n')
@@ -23,6 +24,14 @@ const rl = createInterface({ input: process.stdin })
 rl.on('line', (line) => {
   let message
   try { message = JSON.parse(line) } catch { return }
+  // STUB_LOG records the METHODS this agent was actually asked, one per line.
+  // It is the only way to prove a negative that matters here — that handshake
+  // depth sent no `session/prompt` — because a caller cannot see from the
+  // outside whether a prompt was skipped or merely answered quickly, and a
+  // prompt is the thing a provider bills for.
+  if (process.env.STUB_LOG && typeof message.method === 'string') {
+    appendFileSync(process.env.STUB_LOG, `${message.method}\n`)
+  }
   if (mode === 'silent') return
   const reply = (result) => process.stdout.write(
     `${JSON.stringify({ jsonrpc: '2.0', id: message.id, result })}\n`)

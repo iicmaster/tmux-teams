@@ -841,15 +841,102 @@ that carries what it was derived from, so a reader can tell a current answer fro
 a remembered one. **A file nobody has to remember to update, rather than a file
 somebody must.**
 
-### Open, and blocking code rather than blocking the scope
+### ANSWERED 2026-08-24 by measurement: the readiness check is a DEPTH, not a tool
+
+Four lane failures were reproduced deliberately to find where in the ACP
+protocol each one becomes visible. The point was to learn what a readiness check
+must reach, and what it can stop short of:
+
+| lane, failure | reached `initialize` | reached `session/new` | prompt SENT |
+|---|:---:|:---:|:---:|
+| `codex`, adapter install truncated on a removable volume | **no** | no | no |
+| `zai`, model value the adapter does not advertise | yes | yes | **no** |
+| `kimi`, 402 membership | yes | yes | **yes** |
+| `opencode`, no payment method | yes | yes | **yes** |
+
+So a check that spawns, completes the handshake, acknowledges the configuration
+and then STOPS sees both class-one failures above while sending no prompt — and
+a prompt is what a provider bills for. The two account-level failures need the
+prompt and cannot be reached any other way.
+
+**The honest limit, and it is not what the first draft of this section said.**
+"Every class-one failure is visible without a prompt" is FALSE, and this
+session's own log disproves it: `zai` with no `ACP_MODEL` set reached
+`liveness: active` and an `agent_message_chunk` before the gateway answered
+`400 … this model always engages in thinking and cannot be disabled`. That is
+config-fixable — `ACP_REASONING_EFFORT` exists and the liveness record shows
+`requested_reasoning_effort: null` — yet it appears only when a completion is
+attempted. So the claim is the measured one: **the handshake depth catches the
+failure shapes reproduced above, and at least one configuration failure is
+visible only at prompt depth.** An advisor caught the overclaim before it was
+written; this repository has spent a whole release on claims that outran their
+evidence.
+
+**It is a `depth` parameter on `acp_lane_probe`, not a third tool.** That tool's
+own description records "This is the one tool on this server that contacts an
+endpoint" (`acp-lanes-mcp.mjs:1058`). A second contacting tool makes that
+recorded sentence false and drags ADR 0007 along with it. A depth keeps the
+sentence true, reuses the closed-code vocabulary, and honours the rule already
+written above about not inventing a second vocabulary for the same job.
+
+**Known cost, decided before writing it.** The `zai` model rejection is caught by
+the COMPANION's config-acknowledge assertion — the probe transport does
+`initialize`, `session/new`, `session/prompt` and never sets or asserts a config
+option. Handshake depth therefore needs a step the probe does not have, and
+`acp-lanes-mcp.mjs` deliberately imports no sibling script (its own comments say
+so twice). The answer is the one this file already uses for `PROBE_SESSION_ID_RE`:
+copy the shape and guard it with a drift test, rather than couple the modules.
+
+### Built 2026-08-24 — `depth` on `acp_lane_probe`
+
+Shipped as a parameter, not a third tool, for the reason above. `handshake`
+spawns the lane, completes `initialize` and `session/new`, and stops. `prompt`
+stays the default so no existing caller is silently downgraded, and an unknown
+depth is REFUSED rather than defaulted — a caller who types `handshakes` is
+asking to spend nothing, and quietly giving them a paying sweep would charge a
+spelling mistake to the account.
+
+**The guard is the absence of a method call, not the shape of a result.** A
+returned object cannot distinguish a skipped prompt from a quickly-answered one,
+and those differ by real money, so the stub agent records every method it is
+asked and the test asserts `session/prompt` never arrives — with a prompt-depth
+control beside it, because a transport that never prompts at any depth would
+otherwise pass. Deleting the stop turns it red; deleting the depth validation
+turns the other guard red.
+
+**Measured against live lanes the same day, and the result argues against
+itself in the useful way:**
+
+| lane | `handshake` | `prompt` |
+|---|---|---|
+| `agy` | reachable | — |
+| `kimi` | **reachable** | **unreachable, 35.1s** |
+| `codex` (npm cache on the removable volume) | unreachable | — |
+
+Three lanes at handshake depth took **12.7s and sent no prompt**. `kimi` — the
+lane with the 402 membership — answers **`reachable` at handshake depth**, which
+is correct and is exactly what `HANDSHAKE_NOT_PROVEN` exists to say out loud:
+the shallow check answers "can this machine start this lane" and is forbidden
+from implying anything about billing. An operator who read `reachable` without
+that boundary list would compose a panel around a lane that cannot pay out.
+(On this run the prompt-depth attempt hit the reply budget rather than returning
+the 402 itself; that is what was measured, and the code is `probe_timeout`.)
+
+**Not covered, stated so it is not discovered as a gap.** The `zai` model
+rejection is caught by the COMPANION's config-acknowledge assertion, and the
+probe still never sets or asserts a config option — so handshake depth does not
+see that shape yet. Adding it needs a step copied with a drift test, per the
+note above. Parts two and three of the scope are untouched.
+
+### Still open, and still blocking code rather than the scope
 
 - Where does the per-machine config live, and what reads it first — the profile,
-  the override, or the environment? The layering is undecided.
-- Does the readiness check contact an endpoint (real minutes, real quota) or stay
-  structural? `acp_lane_status` is structural, `acp_lane_probe` is live. This may
-  be a third thing, or one of those two doing more.
-- What invalidates the cache above? Nothing is decided beyond "it must be
-  answerable without asking a human to remember".
+  the override, or the environment? The layering is undecided, and **part one
+  must not answer it by implication.** A JSON override keyed by lane, env
+  winning, a cache carrying its own derivation — all of that is judgement, none
+  of it is measured, and Master has not ruled.
+- What invalidates the cache? Nothing is decided beyond "it must be answerable
+  without asking a human to remember".
 
 ### Not in scope, stated so it is not discovered as a gap
 
