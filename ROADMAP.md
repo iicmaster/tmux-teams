@@ -604,6 +604,65 @@ second model would ship a plugin that teaches two conflicting ways to run work.
 Whether the frontier is a new mechanism or an expression of the ledger this
 system already keeps is the design question, and it is item 4's real content.
 
+## v0.35.0 scope, set by Master 2026-08-24
+
+Four items. Three were direct instructions; the fourth was found by running the
+tool the previous release shipped.
+
+| # | item | state |
+|---|---|---|
+| 1 | fold `codex-tmux-driver` into `tmux-teams` — it was a skill for one client | **shipped** — skills 12 → 11 |
+| 2 | a conformant Agent Plugins 1.0 root beside the Claude one | **shipped** — `agent-plugins/` |
+| 3 | remove the OS sandbox rather than merely stop declaring it | **shipped** — ADR 0006 amended |
+| 4 | `acp_lane_probe` reported every lane unreachable, and was wrong | **shipped** — two budgets |
+
+**Item 2 is what ADR 0008 lost its own bet to, and it is the cheap answer it
+did not see.** That ADR recorded a conformance gap as permanent because the
+client cannot read the standard layout, and wrote itself down so the loss would
+be visible. Master's answer was not to argue with the client: keep the Claude
+layout as the one that ships, and put a second root beside it that IS the
+standard, for whoever installs by the standard. Every entry under
+`agent-plugins/tmux-teams/` is a symlink into the Claude tree, so the two roots
+cannot drift into disagreeing — there is only one copy of anything.
+
+**Item 4 is the one worth reading, because the tool was lying confidently.**
+`acp_lane_probe` shipped in v0.33.0 with a single 20-second ceiling, and probed
+on 2026-08-24 it reported all five contacted lanes `probe_timeout` — a closed
+code whose sentence told the operator the endpoint had not answered. Measured
+the same hour, the network was up, every adapter resolved on PATH, and the
+pinned endpoint answered 200 in 126ms. The lanes were fine. What took longer
+than 20 seconds was the ADAPTER STARTING: a cold `npx -y` install of
+`@agentclientprotocol/claude-agent-acp@0.61.0` reached `initialize` in 190s, and
+a warm one still took 24.4s to reach a prompt.
+
+Raising the number was rejected as the fix. A single ceiling has to cover the
+worst case, and a ceiling that covers a 190s cold install is one every genuinely
+dead lane then rides in full — which is the cost the tool's own "cheap"
+justification cannot pay five times in a sweep. The budget is split instead, at
+the boundary the handshake already crosses: everything before `initialize`
+answers is installation and process start, everything after it is an endpoint
+being asked one word. `probe_boot_timeout` is a new closed code with its own
+sentence, so the two failures no longer send an operator to the same wrong
+place. A ceiling costs nothing when the lane answers, so the warm sweep did not
+get slower.
+
+**Measured against real lanes, not only the stub.** Driving the patched module
+directly at `zai`, `codex` and `agy`: **agy came back `reachable`** — the same
+lane that answered `probe_timeout` an hour earlier under the single ceiling.
+The other two moved off `probe_timeout` as well, onto `unclassified`, which is
+a refusal this server does not classify rather than a silence it invented. The
+whole three-lane sweep took **20.5s**, so the larger boot budget did not cost
+the sweep anything, exactly as the split predicted.
+
+The stub and the mutation still carry the guard: a `mute` mode that answers the
+handshake and then goes quiet, run with the budgets deliberately disagreeing,
+and deleting the rearm turns that test red at 31.5s.
+
+**What is still not proven:** that the two lanes now reading `unclassified` are
+refusing for the reason their provider would give. `unclassified` is by design
+the code for "this server will not guess", and nobody has run the gate to find
+out what is behind it.
+
 ## What is actually open
 
 These are real but unforced, and separate from the release above:

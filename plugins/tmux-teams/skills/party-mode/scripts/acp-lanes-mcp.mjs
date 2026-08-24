@@ -123,7 +123,8 @@ export const DIAGNOSTICS = Object.freeze({
   // signal, never from provider text; anything that does not clear that bar
   // stays `unclassified`.
   quota_exhausted: 'the endpoint answered and reported no quota remaining for this credential',
-  probe_timeout: 'the lane did not complete a trivial prompt within the probe timeout',
+  probe_timeout: 'the endpoint did not answer a trivial prompt within the probe reply budget',
+  probe_boot_timeout: 'the lane adapter did not finish starting within the probe boot budget, so no endpoint was ever contacted',
   // A live spawn failure the parent-side check can never see: EACCES/EPERM
   // means the resolved candidate EXISTS and this process is refused
   // permission to run it, which is a different repair from `executable_missing`
@@ -431,7 +432,28 @@ export function laneStatus(id, profile, env) {
 // A per-lane ceiling, not a suggestion. A probe that never returns is a probe
 // that was not cheap, and "cheap" is the entire justification for shipping
 // this at all.
-export const PROBE_TIMEOUT_MS = 20_000
+//
+// TWO ceilings, because this waits for two different things and one number
+// could not be right for both. Measured 2026-08-24 on macOS: a COLD
+// `npx -y @agentclientprotocol/claude-agent-acp@0.61.0` took 190s to answer
+// `initialize`, and a WARM one still took 24.4s to reach a prompt. The single
+// 20s ceiling that stood here was shorter than both, so every one of the five
+// lanes probed that day came back `probe_timeout` while the network was up,
+// every adapter resolved on PATH, and the pinned endpoint answered 200 in
+// 126ms. The tool whose whole job is classifying reachability was telling an
+// operator the endpoint never replied about lanes it had never finished
+// starting -- a wrong answer that sounds specific, which is the failure this
+// repository treats as worse than no answer at all.
+//
+// Raising the one number would have bought that back at the price of the
+// justification: a lane that is genuinely dead would then hold the full
+// ceiling, and a five-lane sweep of dead lanes costs five times it. Splitting
+// it does not, because a ceiling costs nothing when the lane answers -- and
+// the two waits have completely different shapes. Everything before
+// `initialize` resolves is package installation and process start, paid once
+// per machine. Everything after it is an endpoint being asked one word.
+export const PROBE_BOOT_TIMEOUT_MS = 240_000
+export const PROBE_REPLY_TIMEOUT_MS = 30_000
 
 // Deliberately not a question the model can answer at length. One word bounds
 // the reply this tool has to wait for and keeps every probe the same size.
@@ -478,6 +500,11 @@ export function classifyProbe(result) {
   if (!result || typeof result !== 'object') return 'unclassified'
   if (result.settled === 'response') return null
   if (result.settled === 'timeout') return 'probe_timeout'
+  // Kept apart from `probe_timeout` on purpose: the repair is different. One
+  // says the endpoint went quiet, the other says the adapter never got far
+  // enough to ask it anything -- and the overwhelmingly common cause of the
+  // second is a package this machine has not downloaded yet.
+  if (result.settled === 'boot_timeout') return 'probe_boot_timeout'
   if (result.settled === 'spawn_error') {
     // ENOENT is "not found"; EACCES/EPERM is "found, and this process may not
     // run it" — a permissions problem, not a missing binary. Collapsing both
@@ -555,7 +582,8 @@ async function waitForProbeGroupGone(groupId, timeoutMs) {
 
 // `abortSignal` — named apart from the POSIX signal STRINGS `killGroup` below
 // sends ('SIGTERM'/'SIGKILL') on purpose, so neither reads as the other.
-export async function realProbeTransport({ command, env, timeoutMs, spawnFn = spawn, abortSignal }) {
+export async function realProbeTransport({ command, env, spawnFn = spawn, abortSignal,
+  bootTimeoutMs = PROBE_BOOT_TIMEOUT_MS, replyTimeoutMs = PROBE_REPLY_TIMEOUT_MS }) {
   return new Promise((settle) => {
     let done = false
     let child
@@ -618,7 +646,18 @@ export async function realProbeTransport({ command, env, timeoutMs, spawnFn = sp
       }
       settle(result)
     }
-    const timer = setTimeout(() => finish({ settled: 'timeout' }), timeoutMs)
+    // `let`, because this is REARMED once the adapter proves it is up. `finish`
+    // above closes over the binding rather than the first timer, so whichever
+    // budget is live when a terminal outcome arrives is the one cleared.
+    let timer = setTimeout(() => finish({ settled: 'boot_timeout' }), bootTimeoutMs)
+    // Called exactly once, the moment `initialize` answers. That is the only
+    // point on the wire where "the adapter has not started" stops being a
+    // possible explanation and "the endpoint is not answering" starts being
+    // one, so it is where the budget changes meaning as well as size.
+    const armReplyBudget = () => {
+      clearTimeout(timer)
+      timer = setTimeout(() => finish({ settled: 'timeout' }), replyTimeoutMs)
+    }
 
     // Finding: an MCP host that cancels an in-flight `acp_lane_probe` had no
     // way to reach the process this promise is waiting on — `handle()` threads
@@ -803,6 +842,7 @@ export async function realProbeTransport({ command, env, timeoutMs, spawnFn = sp
           clientInfo: { name: 'tmux-teams-acp-lane-probe', version: pluginVersion() },
           clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
         })
+        armReplyBudget()
         const session = await send('session/new', { cwd: tmpdir(), mcpServers: [] })
         // A well-formed success can still omit `sessionId` — nothing upstream
         // validates the shape of a session/new result. Returning with nothing
@@ -917,7 +957,8 @@ async function probeOneLane(id, profile, env, transport, abortSignal) {
     // still change anything for. `probeLanes`'s own loop is what stops the
     // NEXT lane from starting; this is what stops the one already running.
     result = await transport({
-      id, command: launch.command, env: launch.env, timeoutMs: PROBE_TIMEOUT_MS, abortSignal,
+      id, command: launch.command, env: launch.env, abortSignal,
+      bootTimeoutMs: PROBE_BOOT_TIMEOUT_MS, replyTimeoutMs: PROBE_REPLY_TIMEOUT_MS,
     })
   } catch {
     result = null
