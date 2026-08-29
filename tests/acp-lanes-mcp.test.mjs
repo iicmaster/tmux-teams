@@ -2060,6 +2060,29 @@ test('a listing says what this machine can actually call, not what the file decl
 // that was opening the wrapper's settings file by hand. Two lanes can share one
 // gateway and answer as different families; the release record depends on
 // telling them apart.
+// A DESCRIPTION IS A CLAIM AND GETS THE SAME TREATMENT AS CODE. `acp_lanes`
+// advertised "touches nothing on this machine" while its handler resolved
+// executables on PATH, stat'd them, and read two local files. Two review
+// families raised it independently — this repository's must-fix threshold — and
+// it is the release's own defect shape in the sentence an agent reads to decide
+// whether calling the tool is free.
+test('the acp_lanes description does not deny the machine state it reads', async () => {
+  const advertised = TOOLS.find(t => t.name === 'acp_lanes')
+  assert.ok(advertised, 'acp_lanes is not advertised')
+  const text = advertised.description
+
+  assert.ok(!/touches nothing on this machine/.test(text),
+    'the description still claims to touch nothing while the handler reads PATH and two files')
+  for (const promised of [/PATH/, /override/, /setupRequired/]) {
+    assert.match(text, promised,
+      'the description does not tell a caller which machine state this tool reads')
+  }
+  // And the half that IS still true has to stay said, or a caller cannot tell
+  // this tool from the one that spends quota.
+  assert.match(text, /contacts NO endpoint|no provider quota/,
+    'the description no longer says this tool is free, which is the reason to prefer it')
+})
+
 test('a lane reports what it REQUESTS and what this machine resolves it to', async () => {
   const { laneModel } = await import(
     pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-models.mjs')).href)

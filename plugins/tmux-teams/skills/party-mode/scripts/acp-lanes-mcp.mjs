@@ -1141,9 +1141,20 @@ async function probeLanes(args, env, transport, abortSignal) {
 export const TOOL_DESCRIPTORS = deepFreeze([
   {
     name: 'acp_lanes',
-    description: 'List every ACP review lane this plugin declares: family, provider, model, '
-      + 'adapter package, and whether the lane DECLARES a pinned endpoint. Declared facts only '
-      + '- it touches nothing on this machine and answers with no configuration present.',
+    // The description said "Declared facts only - it touches nothing on this
+    // machine" while this handler resolves executables on PATH, stats them,
+    // reads the per-machine override file and reads a model-alias settings file.
+    // TWO review families raised it independently on the same bytes, which is
+    // this repository's must-fix threshold — and it is the same defect shape the
+    // whole release is about, in the sentence an agent reads to decide whether
+    // calling this tool is free.
+    description: 'List every ACP review lane this plugin declares — family, provider, model, '
+      + 'adapter package, pinned endpoint — AND whether this machine can actually start it. '
+      + 'It reads local state to answer that second half: it resolves each declared executable '
+      + 'and launcher on PATH and stats them, reads the per-machine override file, and reads '
+      + 'the model-alias settings a routed lane points at. It contacts NO endpoint, sends no '
+      + 'prompt and spends no provider quota, and it returns no credential value. Read '
+      + '`setupRequired` before dispatching: it is true when this machine cannot start anything.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     // Availability rides WITH the declaration, never instead of it: an operator
     // needs to see what a lane claims AND whether this machine can honour the
