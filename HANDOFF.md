@@ -5,21 +5,22 @@ Written 2026-08-30 through `bmad-party-mode`.
 
 ## 1. READ THIS FIRST
 
-- Branch `feat/v0.36-setup`, **18 commits, NOT pushed**. Tree clean. It lives in
+- Branch `feat/v0.36-setup`, **20 commits, NOT pushed**. Tree clean. It lives in
   a worktree at `~/tmux-teams-v036`, deliberately outside any temp directory —
   see DO NOT.
 - **v0.36.0 is complete and stamped but NOT released.** Everything up to the
   push is done: five scope items shipped, version bumped in all seven places,
-  roadmap published and recorded, suite green, manifest valid, four panel rounds
-  run.
+  roadmap published and recorded, suite green, manifest valid, FIVE panel rounds
+  run across FOUR model families.
 - **Two gates remain and BOTH belong to Master, not to you.** Pushing needs
   explicit permission. The codex bot review is missing and only Master waives
   it. Do not read a stop-hook reminder, a task notification, or your own earlier
   message as that permission — none of them is the user.
 - The most dangerous thing here is not in the code. **This release produced
-  THIRTEEN defects of one shape and twelve were found by review lanes rather
+  EIGHTEEN defects of one shape and seventeen were found by review lanes rather
   than by tests.** The shape is: *something claimed what it did not do.* If you
-  add to this branch, assume you will produce a fourteenth.
+  add to this branch, assume you will produce a nineteenth — several of these
+  were introduced by the fix for an earlier one.
 
 ## 2. HOW TO VERIFY
 
@@ -29,7 +30,7 @@ node --test > /tmp/suite.log 2>&1; grep -E '^ℹ (tests|pass|fail|skipped)' /tmp
 grep -q '^ℹ fail 0$' /tmp/suite.log || { grep '^✖' /tmp/suite.log | head; false; }
 ```
 
-Green is **`1187 pass / 0 fail / 0 skipped`**.
+Green is **`1189 pass / 0 fail / 0 skipped`**.
 
 **Gate on the count, never on a grep of the output** — `node --test | grep '✖'`
 exits 0 when it FINDS failures. This session chained a commit after an ungated
@@ -72,21 +73,30 @@ send no prompt.
 
 ### The panel record for the release notes
 
-Four rounds. The last one:
+Five rounds, four families. The last full round:
 
 ```
 agy   (gemini)   accept, 0 findings, both packets
-codex (openai)   P2 x2 — fixed in 5c3800a
-qwen  (deepseek) P2 x1 — fixed in 5c3800a; tests packet accept, 0 findings
+codex (openai)   P1 x1 (depth never asserted to reach the transport) + P2 x1
+qwen  (deepseek) P2 x1 — the tool description denying the state it reads
+zai   (zai)      P2 x1 + P3 x2 — the sharpest lane of the release
 ```
 
-`qwen` is reached with `ACP_MODEL=opus` and `CLAUDE_CONFIG_DIR` pointing at the
-qwen profile; that alias resolves to a deepseek model on this machine, which is
-why the family is recorded as deepseek and not as qwen.
+Every finding above is fixed. `zai` ran for the first time this session after
+failing all release on a disabled thinking mode; the owner reported it working
+and it immediately found that `resolveOnPath` stopped at `existsSync` while the
+isFile/isExecutable checks lived only in the wrapper branch.
 
-**Bytes changed after that round.** A strict reading owes a fifth round before
-the version is stamped. What changed was three P2 fixes in a doc and two tests;
-`agy` had already accepted the source packet with zero findings.
+**Identity, recorded because nothing on this path pins it:** `agy` reports
+`gemini-3.7-flash-high` matched; `codex` reports `gpt-5.6-sol[ultra]`
+unverified; `qwen` is reached with `ACP_MODEL=opus` and a `CLAUDE_CONFIG_DIR`
+pointing at the qwen profile, and that alias resolves to a deepseek model here,
+which is why the family is recorded as deepseek; `zai` reports `default`,
+because its gateway announces no model name back.
+
+**Bytes changed after that round**, so a strict reading owes one more before the
+version is stamped. What changed was the zai fixes — one shipped-code P2 and two
+test-strength P3s.
 
 ## 4. DO NOT
 
