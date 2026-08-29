@@ -2056,7 +2056,7 @@ test('a lane reports what it REQUESTS and what this machine resolves it to', asy
     writeFileSync(join(dir, 'settings.json'), JSON.stringify({
       env: {
         ANTHROPIC_AUTH_TOKEN: 'CANARY-TOKEN-MUST-NEVER-APPEAR-' + 'z'.repeat(16),
-        ANTHROPIC_BASE_URL: 'https://example.invalid/anthropic',
+        ANTHROPIC_BASE_URL: 'https://CANARY-ENDPOINT-MUST-NEVER-APPEAR.invalid/anthropic',
         ANTHROPIC_DEFAULT_OPUS_MODEL: 'a-real-model-id',
       },
     }))
@@ -2077,8 +2077,13 @@ test('a lane reports what it REQUESTS and what this machine resolves it to', asy
 
     // THE ASSERTION THAT MATTERS MOST. The alias map shares a file with a
     // credential; a prefix match over env keys would carry the token out.
+    // Every VALUE in that file is canaried, not just the token. A deepseek review
+    // lane pointed out that this asserted the token value and the key NAMES while
+    // an endpoint value could have walked out unnoticed — and an endpoint is a
+    // machine fact this repository already refuses to put on the wire.
     const dump = JSON.stringify(answer)
     assert.ok(!dump.includes('CANARY-TOKEN'), 'a credential reached the model listing')
+    assert.ok(!dump.includes('CANARY-ENDPOINT'), 'an endpoint value reached the model listing')
     assert.ok(!/AUTH_TOKEN|BASE_URL/.test(dump),
       'a key name from the settings file leaked into the listing')
   } finally {
