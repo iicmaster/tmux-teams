@@ -56,6 +56,16 @@ export const PLUGIN_BINARIES = Object.freeze([
 // Closed vocabulary. A caller reads a CODE; nothing here is built from an
 // environment value or a provider's wording, so a hostile PATH entry cannot
 // place text in an operator's terminal through this file.
+const isFile = path => {
+  try { return statSync(path).isFile() } catch { return false }
+}
+
+// EXISTING AND RUNNABLE ARE DIFFERENT FACTS, and this now guards every
+// resolution rather than only the wrapper's.
+const isExecutable = path => {
+  try { accessSync(path, fsConstants.X_OK); return true } catch { return false }
+}
+
 export const READINESS_PROBLEMS = Object.freeze({
   executable_absent: 'the executable this lane declares was not found on PATH',
   executable_not_file: 'the executable this lane declares resolves to something that is not a file',
@@ -68,21 +78,59 @@ export const READINESS_PROBLEMS = Object.freeze({
  * Resolve a command name against a PATH, without executing anything.
  * An absolute path is checked where it points; a bare name is searched.
  * Returns the resolved path, or null.
+ *
+ * RESOLUTION MEANS RUNNABLE, and it did not until a zai review lane said so.
+ * This stopped at `existsSync`, and the isFile/isExecutable checks lived only in
+ * the WRAPPER branch below — so a mode-0644 regular file (or a directory) named
+ * `npx` sitting earlier on PATH resolved, left `blocking` empty, and reported
+ * every npx-launched lane callable with `setupRequired: false`, right up to a
+ * spawn dying EACCES. A non-executable `node` did the same to `plugin.ready`.
+ * That is the exact failure the wrapper checks were added to prevent, one branch
+ * over, and the shape this whole release is about: a check that claimed more
+ * than it did. A directory is skipped here too — `existsSync` is true of one.
  */
 export function resolveOnPath(command, env = process.env) {
-  if (typeof command !== 'string' || command.length === 0) return null
-  if (isAbsolute(command)) return existsSync(command) ? command : null
-  const parts = String(env.PATH ?? '').split(delimiter).filter(Boolean)
-  for (const dir of parts) {
-    const candidate = join(dir, command)
-    if (existsSync(candidate)) return candidate
-  }
-  return null
+  return resolveOnPathDetailed(command, env).path
 }
 
-const isFile = path => {
-  try { return statSync(path).isFile() } catch { return false }
+/**
+ * The same walk, keeping WHY it failed.
+ *
+ * Making `resolveOnPath` strict was right and it swallowed a distinction the
+ * wrapper branch needs: a name that resolves to a present-but-unexecutable file
+ * is not a missing name, and telling an operator to install something already
+ * sitting there fixes nothing. `blocked` carries the first such near-miss so the
+ * caller can say `executable_not_executable` instead of `executable_absent`.
+ */
+export function resolveOnPathDetailed(command, env = process.env) {
+  if (typeof command !== 'string' || command.length === 0) return { path: null, blocked: null }
+  const classify = (candidate) => {
+    if (!existsSync(candidate)) return null
+    if (!isFile(candidate)) return 'executable_not_file'
+    if (!isExecutable(candidate)) return 'executable_not_executable'
+    return 'ok'
+  }
+  if (isAbsolute(command)) {
+    const verdict = classify(command)
+    if (verdict === 'ok') return { path: command, blocked: null }
+    return { path: null, blocked: verdict }
+  }
+  const parts = String(env.PATH ?? '').split(delimiter).filter(Boolean)
+  let blocked = null
+  for (const dir of parts) {
+    const candidate = join(dir, command)
+    const verdict = classify(candidate)
+    if (verdict === 'ok') return { path: candidate, blocked: null }
+    // Keep WALKING past an unusable hit: a shadowing non-executable file
+    // earlier on PATH must not hide the real launcher behind it, which is how
+    // PATH already behaves for a shell. Remember the first one only if nothing
+    // usable turns up later.
+    if (verdict && !blocked) blocked = verdict
+  }
+  return { path: null, blocked }
 }
+
+
 
 // EXISTING AND RUNNABLE ARE DIFFERENT FACTS. A mode-0644 file named like a
 // wrapper resolves, stats as a regular file, and cannot be executed — so a
@@ -91,9 +139,7 @@ const isFile = path => {
 // distinction already exists in this plugin's vocabulary: `acp_lane_probe`
 // tells `executable_missing` from `executable_unusable` for the same reason,
 // because installing a file that is already there fixes nothing.
-const isExecutable = path => {
-  try { accessSync(path, fsConstants.X_OK); return true } catch { return false }
-}
+
 
 /**
  * Can this machine call this lane at all?
@@ -111,10 +157,8 @@ export function laneAvailability(id, profile, env = process.env) {
   // does not have it.
   const wrapper = profile?.claudeExecutable
   if (wrapper) {
-    const resolved = resolveOnPath(wrapper, env)
-    if (!resolved) blocking.push({ code: 'executable_absent', missing: wrapper })
-    else if (!isFile(resolved)) blocking.push({ code: 'executable_not_file', missing: wrapper })
-    else if (!isExecutable(resolved)) blocking.push({ code: 'executable_not_executable', missing: wrapper })
+    const { path, blocked } = resolveOnPathDetailed(wrapper, env)
+    if (!path) blocking.push({ code: blocked ?? 'executable_absent', missing: wrapper })
   }
 
   // The launcher. Three of the eight lanes report `executable: null` today,

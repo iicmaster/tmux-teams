@@ -100,9 +100,13 @@ the version is stamped. What changed was three P2 fixes in a doc and two tests;
   losing the whole directory, and `/tmp` rescue copies went with it. Only
   committed work survived. That is why this branch lives in `~/tmux-teams-v036`
   and why every step here commits immediately.
-- **Do not trust a suite that ran beside ACP lanes.** One `acp-dispatch` test
-  went red once during a full run with four panel lanes active and passed 69/69
-  alone. It has not reproduced since. Recorded as unexplained, NOT as a flake.
+- **Do not trust a suite that ran beside ACP lanes, and do not call this a
+  flake.** `acp-dispatch` tests went red TWICE in this session during full runs,
+  a different test each time, and passed on an immediate rerun and when the file
+  was run alone. Both happened while panel lanes were active. That is consistent
+  with contention and is not proof of it — nobody has reproduced it deliberately.
+  Treat any red there as OPEN: this repository already lost an unknown number of
+  releases to a real failure dismissed as timing.
 - **Do not add an overridable field without making it move what runs.**
   `adapterPackage` was overridable and inert: setting it changed a declaration
   while the shipped package went on launching. `bad_adapter_swap` now refuses an

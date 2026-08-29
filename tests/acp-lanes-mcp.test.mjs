@@ -2017,13 +2017,18 @@ test('a lane whose executable is absent is refused BEFORE anything is spawned', 
   assert.match(lane.setup ?? '', /setup/,
     'the refusal offers no way forward — an error the operator cannot act on is the state this replaced')
 
-  // ORDER IS THE FINDING, not a preference. `ninerouter` is missing its wrapper
-  // AND unable to reach its local gateway, and the configuration check used to
-  // reach it first and answer `endpoint_missing` — sending an operator to fix an
-  // endpoint when no binary exists to talk to it. With no executable the
-  // endpoint question cannot even be asked.
-  assert.notEqual(lane.problem.code, 'endpoint_missing',
-    'the configuration check ran first again and reported the less fundamental cause')
+  // ORDER IS THE FINDING, and the assertion that used to sit here could not
+  // fail: `notEqual(code, 'endpoint_missing')` directly under
+  // `equal(code, 'executable_absent')` tests the same value twice. A zai review
+  // lane called it dead weight and was right — it observed no ordering at all,
+  // only the final code.
+  //
+  // What actually proves the order is a lane that would FAIL BOTH checks: this
+  // fixture's wrapper is absent AND its routed settings are unreachable under an
+  // isolated HOME. An implementation that asked the endpoint question first
+  // answers `endpoint_missing` here and nothing else does.
+  assert.equal(lane.configuration, 'invalid',
+    'this fixture is meant to fail the configuration check too, or it cannot prove an order')
 })
 
 test('a listing says what this machine can actually call, not what the file declares', async () => {
@@ -2237,14 +2242,29 @@ test('a caller with no home in its environment gets unknown, not the server home
       `lane ${lane.lane} claimed evidence it could not have had`)
   }
 
-  // The control: WITH a home that has the alias map, resolution happens. Without
-  // it this test would pass against an implementation that never resolves.
-  const withHome = await handle({ jsonrpc: '2.0', id: 1, method: 'tools/call',
-    params: { name: 'acp_lanes', arguments: {} } }, process.env)
-  const resolved = JSON.parse(withHome.result.content[0].text).lanes
-    .filter(l => l.resolvedModel !== null)
-  assert.ok(resolved.length > 0,
-    'no lane resolved even with a real home, so the assertion above proves nothing')
+  // The control, CONSTRUCTED rather than inherited. This handed the tool
+  // `process.env` and hoped the runner's real home held alias settings — a fact
+  // about the machine that wrote the test, and the same anti-pattern removed
+  // from the brake fixture a few blocks up. A zai review lane caught the
+  // inconsistency. Build the alias map, then require resolution.
+  const home = mkdtempSync(join(tmpdir(), 'lane-model-control-'))
+  try {
+    // `kimi` because it REQUESTS the alias `opus`; a lane that names a model
+    // directly has no alias to resolve and would make this control fail for a
+    // reason that has nothing to do with what it is guarding.
+    const dir = join(home, '.config', 'claude-profiles', 'kimi')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'settings.json'),
+      JSON.stringify({ env: { ANTHROPIC_DEFAULT_OPUS_MODEL: 'control-model-id' } }))
+    const withHome = await handle({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'acp_lanes', arguments: {} } }, { ...process.env, HOME: home })
+    const resolved = JSON.parse(withHome.result.content[0].text).lanes
+      .filter(l => l.resolvedModel !== null)
+    assert.ok(resolved.length > 0,
+      'no lane resolved even from a home this test built, so the assertion above proves nothing')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
 })
 
 test('an adapterPackage override is refused on a lane whose command cannot carry it', async () => {
@@ -2271,6 +2291,45 @@ test('an adapterPackage override is refused on a lane whose command cannot carry
   })
   assert.deepEqual(ok.problems, [], 'a swap the command can carry was refused')
   assert.equal(ok.overrides.swappable.adapterPackage, 'pkg@2')
+})
+
+// The isFile/isExecutable checks lived ONLY in the wrapper branch. A zai review
+// lane pointed out that a mode-0644 file named `npx` earlier on PATH resolved,
+// left `blocking` empty, and reported every npx-launched lane callable with
+// setupRequired false — right up to a spawn dying EACCES. The same held for the
+// plugin binaries, so a non-executable `node` gave `plugin.ready: true`.
+test('a non-executable launcher or plugin binary is not mistaken for a working one', async () => {
+  const { laneAvailability, pluginReadiness } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-readiness.mjs')).href)
+  const shadow = mkdtempSync(join(tmpdir(), 'path-shadow-'))
+  try {
+    // A file with the launcher's name and no execute bit, placed AHEAD of the
+    // real one — the shape a broken install or a stray download leaves behind.
+    writeFileSync(join(shadow, 'npx'), '#!/bin/sh\nexit 0\n', { mode: 0o644 })
+    writeFileSync(join(shadow, 'node'), 'not a program', { mode: 0o644 })
+    const shadowedFirst = { PATH: `${shadow}${delimiter}${process.env.PATH}` }
+
+    // A shadowing non-executable must not HIDE the real one either: the walk
+    // continues, exactly as a shell's PATH lookup does.
+    const lane = laneAvailability('codex', REVIEW_PROFILES.codex, shadowedFirst)
+    assert.equal(lane.available, true,
+      'a non-executable file earlier on PATH hid the real launcher behind it')
+
+    // With ONLY the shadow on PATH there is nothing usable to find.
+    const onlyShadow = { PATH: shadow }
+    const dead = laneAvailability('codex', REVIEW_PROFILES.codex, onlyShadow)
+    assert.equal(dead.available, false,
+      'a lane whose only launcher is a non-executable file was reported callable')
+    assert.equal(dead.blocking[0].missing, 'npx')
+
+    const plugin = pluginReadiness(onlyShadow)
+    assert.equal(plugin.ready, false,
+      'a non-executable node was accepted as a ready plugin')
+    assert.ok(plugin.missing.some(m => m.missing === 'node'),
+      'the unusable binary is not named, so an operator cannot act on it')
+  } finally {
+    rmSync(shadow, { recursive: true, force: true })
+  }
 })
 
 test('a wrapper that exists but cannot be executed is not called callable', async () => {
