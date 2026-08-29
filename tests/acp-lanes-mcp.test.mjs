@@ -2506,6 +2506,20 @@ test('a handshake pass states a different boundary than a prompt pass', async ()
   assert.equal(d.probe, 'reachable')
   assert.equal(s.depth, 'handshake', 'the result does not say which depth produced it')
   assert.equal(d.depth, 'prompt')
+
+  // AND THE DEPTH MUST REACH THE TRANSPORT, which is where it decides whether a
+  // billable prompt is sent. Everything else about depth was covered from both
+  // ends — the transport behaves correctly when handed one, and the tool accepts
+  // and reports one — with nothing in between: drop `depth` from the transport
+  // call and the transport falls back to its PAYING default while every one of
+  // those tests still passes. An openai review lane found the gap.
+  const forwarded = []
+  await callProbe({ lanes: ['claude'], depth: 'handshake' }, bare,
+    async (call) => { forwarded.push(call.depth); return { settled: 'handshake_ok' } })
+  await callProbe({ lanes: ['claude'] }, bare,
+    async (call) => { forwarded.push(call.depth); return { settled: 'response' } })
+  assert.deepEqual(forwarded, ['handshake', 'prompt'],
+    'the requested depth never reached the transport, so a handshake probe would send a billable prompt')
   assert.notDeepEqual(s.notProven, d.notProven,
     'a handshake pass claims exactly what a prompt pass claims — it proved strictly less')
   assert.ok(s.notProven.some(line => /no prompt was sent/.test(line)),
