@@ -55,6 +55,7 @@ import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 
+import { laneAvailability, readinessReport, READINESS_PROBLEMS } from './lane-readiness.mjs'
 import { REVIEW_PROFILES, ROUTED_PROFILES, buildAcpLaunch, AGY_BINARY_NAME,
   AGY_BINARY_CANDIDATE_FORMS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys } from './review-profiles.mjs'
 
@@ -270,6 +271,20 @@ export function laneFacts(id, profile) {
     reviewMode: profile.reviewMode ?? null,
     routing: pinned ? `pinned:${endpoint.host}${endpoint.path ?? ''}` : 'unrouted',
     executable: profile.claudeExecutable ?? null,
+  }
+}
+
+// THE LIGHT, WIRED TO THE BRAKE. `laneFacts` above echoes a declaration; this
+// asks the disk. Both go out together on purpose, because a listing that shows
+// only the declaration is what let `ninerouter` sit beside working lanes while
+// the `claude-9r` it names does not exist on this machine.
+function laneWithAvailability(id, profile, env) {
+  const { available, blocking, needs } = laneAvailability(id, profile, env)
+  return {
+    ...laneFacts(id, profile),
+    available,
+    needs,
+    blocking: blocking.map(b => ({ ...b, detail: READINESS_PROBLEMS[b.code] })),
   }
 }
 
@@ -1072,7 +1087,23 @@ export const TOOL_DESCRIPTORS = deepFreeze([
       + 'adapter package, and whether the lane DECLARES a pinned endpoint. Declared facts only '
       + '- it touches nothing on this machine and answers with no configuration present.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-    handler: () => ({ lanes: Object.entries(REVIEW_PROFILES).map(([id, p]) => laneFacts(id, p)) }),
+    // Availability rides WITH the declaration, never instead of it: an operator
+    // needs to see what a lane claims AND whether this machine can honour the
+    // claim. `setupRequired` is the gate a caller reads BEFORE dispatching, and
+    // it is the whole difference between an answer now and an error later.
+    handler: (args, env) => {
+      const report = readinessReport(REVIEW_PROFILES, env)
+      return {
+        lanes: Object.entries(REVIEW_PROFILES).map(([id, p]) => laneWithAvailability(id, p, env)),
+        plugin: report.plugin,
+        callableLanes: report.callableLanes,
+        callableFamilies: report.callableFamilies,
+        setupRequired: report.setupRequired,
+        setup: report.setupRequired
+          ? 'this machine cannot start one or more declared lanes — run the tmux-teams lane setup before dispatching'
+          : null,
+      }
+    },
   },
   {
     name: 'acp_lane_status',
