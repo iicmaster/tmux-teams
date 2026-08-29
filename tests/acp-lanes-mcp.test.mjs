@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, chmodSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, chmodSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname, isAbsolute } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -815,8 +815,17 @@ test('the manifest command boots the server and answers a real client handshake,
     const dir = join(base, 'a path with spaces')
     try {
       mkdirSync(dir, { recursive: true })
+      // READ THE DIRECTORY, do not trust a list. This staged two files by name
+      // and went red the moment the server grew a third sibling
+      // (`lane-overrides.mjs`) — which is the test working, but only because
+      // somebody was watching. A hardcoded list here reports "the server boots"
+      // about a tree that is missing whatever was added last. The same rule the
+      // README skill-inventory guard already uses, for the same reason.
       const scripts = join(PLUGIN, 'skills', 'party-mode', 'scripts')
-      for (const name of ['acp-lanes-mcp.mjs', 'review-profiles.mjs']) {
+      const staged = readdirSync(scripts).filter(name => name.endsWith('.mjs'))
+      assert.ok(staged.length >= 3,
+        `only ${staged.length} scripts staged — the server has siblings and this test must carry all of them`)
+      for (const name of staged) {
         writeFileSync(join(dir, name), readFileSync(join(scripts, name), 'utf8'))
       }
       // The manifest's OWN argv, expanded, with only the script path rebased into
