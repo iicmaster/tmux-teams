@@ -110,7 +110,7 @@ test('a lane with no parent-side check says UNCHECKED, and never that it is fine
   // both answered `ready: true`. Nothing validates those two, so a green
   // answer meant only "no check ran" — a diagnostic that says READY and then
   // watches the real gate refuse is worse than no diagnostic at all.
-  const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
   for (const lane of ['claude', 'codex']) {
     const [got] = call('acp_lane_status', { lane }, bare).lanes
     assert.equal(got.configuration, 'unchecked', `${lane} claimed a state nothing verified`)
@@ -265,7 +265,7 @@ test('the agy lane checks that its binary is EXECUTABLE, not merely that a name 
   // And with nothing at any candidate path at all, which is the state the
   // deleted call site would have reported as valid.
   const bare = laneStatus('agy', REVIEW_PROFILES.agy,
-    { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' })
+    { HOME: '/definitely/nonexistent', PATH: process.env.PATH })
   assert.equal(bare.configuration, 'invalid')
   assert.equal(bare.problem.code, 'executable_missing')
 })
@@ -1926,7 +1926,7 @@ test('acp_lane_probe refuses every shape that is not an explicit non-empty array
 test('a repeated lane id is probed once, not once per repetition', async () => {
   let calls = 0
   const transport = async () => { calls += 1; return { settled: 'response' } }
-  const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
   const { payload } = await callProbe({ lanes: ['claude', 'claude', 'claude'] }, bare, transport)
   assert.equal(payload.lanes.length, 1, 'a deduped id must appear once in the answer, not three times')
   assert.equal(calls, 1, 'the same lane id was probed more than once for one call')
@@ -1935,7 +1935,7 @@ test('a repeated lane id is probed once, not once per repetition', async () => {
 test('a lane that is already invalid is reported from that diagnosis, and never contacted', async () => {
   const transport = async () => { throw new Error('an already-invalid lane must never be contacted') }
   const { payload } = await callProbe({ lanes: ['zai'] },
-    { HOME: '/nonexistent-layout', PATH: '/definitely/nonexistent' }, transport)
+    { HOME: '/nonexistent-layout', PATH: process.env.PATH }, transport)
   const [lane] = payload.lanes
   assert.equal(lane.probe, 'not_attempted')
   assert.equal(lane.configuration, 'invalid')
@@ -1946,7 +1946,7 @@ test('a lane that is already invalid is reported from that diagnosis, and never 
 test('an UNCHECKED lane is genuinely contacted — a live probe is the only signal that exists for it', async () => {
   const spy = []
   const transport = async (call) => { spy.push(call); return { settled: 'response' } }
-  const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
   const { payload } = await callProbe({ lanes: ['claude'] }, bare, transport)
   assert.equal(spy.length, 1, 'the one lane with no parent-side check was never actually contacted')
   assert.equal(spy[0].id, 'claude')
@@ -1977,6 +1977,75 @@ test('an UNCHECKED lane is genuinely contacted — a live probe is the only sign
 // A test that only checks the returned shape cannot tell a skipped prompt from
 // a quickly-answered one — and those differ by real money. So the stub records
 // every method it is ASKED, and the assertion is the absence of one.
+// ## Readiness — the light, the brake, and the way out
+//
+// The owner's complaint was that the plugin could not say whether it was ready
+// or what could be called, and that an unusable lane produced an error later
+// instead of a refusal now. Three guards, one per part, because the parts fail
+// independently: a status nobody reads, a brake wired to nothing, and a refusal
+// with no way forward are three different bugs.
+test('a lane whose executable is absent is refused BEFORE anything is spawned', async () => {
+  let spawned = false
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
+  const { payload } = await callProbe({ lanes: ['ninerouter'], depth: 'handshake' }, bare,
+    async () => { spawned = true; return { settled: 'handshake_ok' } })
+  const [lane] = payload.lanes
+
+  assert.equal(spawned, false,
+    'a process was spawned for a lane whose executable does not exist — the brake is not on the spawn path')
+  assert.equal(lane.probe, 'not_attempted')
+  assert.equal(lane.problem.code, 'executable_absent',
+    `the refusal named ${lane.problem.code} — the operator is sent to fix the wrong thing`)
+  assert.equal(lane.missing, 'claude-9r',
+    'the refusal does not name WHICH executable is missing, so it is not actionable')
+  assert.match(lane.setup ?? '', /setup/,
+    'the refusal offers no way forward — an error the operator cannot act on is the state this replaced')
+
+  // ORDER IS THE FINDING, not a preference. `ninerouter` is missing its wrapper
+  // AND unable to reach its local gateway, and the configuration check used to
+  // reach it first and answer `endpoint_missing` — sending an operator to fix an
+  // endpoint when no binary exists to talk to it. With no executable the
+  // endpoint question cannot even be asked.
+  assert.notEqual(lane.problem.code, 'endpoint_missing',
+    'the configuration check ran first again and reported the less fundamental cause')
+})
+
+test('a listing says what this machine can actually call, not what the file declares', async () => {
+  const reply = await handle({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+    params: { name: 'acp_lanes', arguments: {} } }, process.env)
+  const payload = JSON.parse(reply.result.content[0].text)
+
+  assert.ok(Array.isArray(payload.callableLanes), 'the listing does not say which lanes are callable')
+  assert.equal(typeof payload.setupRequired, 'boolean', 'the listing carries no gate for a caller to read')
+  assert.ok(payload.plugin && typeof payload.plugin.ready === 'boolean',
+    'the listing says nothing about whether the PLUGIN itself is usable')
+
+  // Every lane states what it NEEDS. Three lanes used to report
+  // `executable: null`, which reads as "needs nothing" and is false — they need
+  // bunx or npx from command[0], where no listing surface was looking.
+  for (const lane of payload.lanes) {
+    assert.ok(Array.isArray(lane.needs) && lane.needs.length > 0,
+      `lane ${lane.lane} reports needing nothing, which is true of no lane here`)
+    assert.equal(typeof lane.available, 'boolean', `lane ${lane.lane} does not say whether it is callable`)
+  }
+})
+
+test('a missing plugin binary is reported once, not as one failure per lane', async () => {
+  const { pluginReadiness, readinessReport } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-readiness.mjs')).href)
+
+  const nothing = { PATH: '/definitely/nonexistent' }
+  const plugin = pluginReadiness(nothing)
+  assert.equal(plugin.ready, false, 'an empty PATH was reported as a ready plugin')
+  assert.ok(plugin.missing.length >= 3, 'an empty PATH lost almost nothing, so the check is not looking')
+
+  // The point of separating them: an operator whose `node` is missing must not
+  // read eight identical lane failures and go looking in eight wrong places.
+  const report = readinessReport(REVIEW_PROFILES, nothing)
+  assert.equal(report.setupRequired, true, 'a machine with no binaries at all did not require setup')
+  assert.deepEqual(report.callableLanes, [], 'lanes were called callable on a machine with an empty PATH')
+})
+
 test('handshake depth completes the session and sends no prompt at all', async () => {
   const stub = join(ROOT, 'tests', 'fixtures', 'probe-stub-agent.mjs')
   const dir = mkdtempSync(join(tmpdir(), 'probe-depth-'))
@@ -2024,7 +2093,7 @@ test('handshake depth completes the session and sends no prompt at all', async (
 // sweep's budget on a spelling mistake.
 test('an unknown depth is refused rather than defaulted to the paying one', async () => {
   let contacted = false
-  const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
   const { payload } = await callProbe({ lanes: ['claude'], depth: 'handshakes' }, bare,
     async () => { contacted = true; return { settled: 'response' } })
   assert.match(payload.error ?? '', /depth must be one of/,
@@ -2039,7 +2108,7 @@ test('an unknown depth is refused rather than defaulted to the paying one', asyn
 // caller is told so. Reporting the two identically is the overclaim this whole
 // tool exists to avoid.
 test('a handshake pass states a different boundary than a prompt pass', async () => {
-  const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
   const shallow = await callProbe({ lanes: ['claude'], depth: 'handshake' }, bare,
     async () => ({ settled: 'handshake_ok' }))
   const deep = await callProbe({ lanes: ['claude'] }, bare, async () => ({ settled: 'response' }))
@@ -2059,7 +2128,7 @@ test('a handshake pass states a different boundary than a prompt pass', async ()
 })
 
 test('every unreachable outcome the transport can report lands on a classified code, and nothing extra rides along', async () => {
-  const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
   const outcomes = [
     [{ settled: 'timeout' }, 'probe_timeout'],
     [{ settled: 'boot_timeout' }, 'probe_boot_timeout'],
@@ -2092,7 +2161,10 @@ test('a credential inside an unreadable settings file still never reaches a prob
     writeFileSync(settings, `{ "token": "${marker}", this is not valid json`)
     const transport = async () => { throw new Error('an invalid lane must never be contacted') }
     const { payload } = await callProbe({ lanes: ['zai'] },
-      { HOME: '/nonexistent-layout', PATH: '/definitely/nonexistent', TMUX_TEAMS_REVIEW_ZAI_SETTINGS: settings },
+      // Real PATH so the SETTINGS check is the one that fires: a fake PATH now
+      // refuses at the launcher first, which is a correct answer to a different
+      // question and would leave this test proving nothing about secrets.
+      { HOME: '/nonexistent-layout', PATH: process.env.PATH, TMUX_TEAMS_REVIEW_ZAI_SETTINGS: settings },
       transport)
     assert.equal(payload.lanes[0].probe, 'not_attempted')
     assert.equal(payload.lanes[0].problem.code, 'settings_unreadable')
@@ -2142,7 +2214,7 @@ test('lanes are probed sequentially, never concurrently — a live probe spends 
     inFlight -= 1
     return { settled: 'response' }
   }
-  const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
   const { payload } = await callProbe({ lanes: ['claude', 'codex'] }, bare, transport)
   assert.equal(maxInFlight, 1,
     'two lanes were in flight at once — that is Promise.all, and this tool must never spend two budgets for one call')
@@ -2151,7 +2223,7 @@ test('lanes are probed sequentially, never concurrently — a live probe spends 
 })
 
 test('a transport that REJECTS is classified per lane, never leaks its message, and never scraps the batch', async () => {
-  const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
   const transport = async (call) => {
     if (call.id === 'claude') throw new Error('PROVIDER-REJECT-MARKER: 401 invalid token for account 9f3a')
     return { settled: 'response' }
@@ -2204,7 +2276,7 @@ test('acp_lane_probe calls are queued globally across requests, and ping is stil
       order.push(`end:${call.id}`)
       return { settled: 'response' }
     }
-    const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+    const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
     const lines = serve({ input, output, env: bare, deps: { probeTransport: transport } })
     const send = (msg) => input.write(`${JSON.stringify(msg)}\n`)
     send({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'acp_lane_probe', arguments: { lanes: ['claude'] } } })
@@ -2278,7 +2350,7 @@ test('a cancelled multi-lane probe stops the remaining lanes, reaps the active c
         abortSignal: call.abortSignal,
       })
     }
-    const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+    const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
     const pendingProbes = new Map()
     const deps = { probeTransport: transport, pendingProbes }
     const requestId = 42
@@ -2662,7 +2734,7 @@ test('a spawn failure from a non-executable file is EACCES, told apart from ENOE
 })
 
 test('an EACCES spawn failure reaches the operator with its own sentence and its own fixes, not the missing-file one', async () => {
-  const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
   const transport = async () => ({ settled: 'spawn_error', errnoCode: 'EACCES' })
   const { payload } = await callProbe({ lanes: ['claude'] }, bare, transport)
   const [lane] = payload.lanes

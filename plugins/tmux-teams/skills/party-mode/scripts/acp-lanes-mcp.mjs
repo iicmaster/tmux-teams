@@ -976,6 +976,37 @@ async function probeOneLane(id, profile, env, transport, abortSignal, depth = DE
   // and a prompt pass are both `reachable`, and they are not the same claim.
   const notProven = depth === 'handshake' ? HANDSHAKE_NOT_PROVEN : PROBE_NOT_PROVEN
   const status = laneStatus(id, profile, env)
+  // AVAILABILITY IS CHECKED FIRST, and the order is the finding. `ninerouter`
+  // declares a wrapper this machine does not have AND a local gateway it cannot
+  // reach, so the configuration check below reached it first and answered
+  // `endpoint_missing` — sending an operator to fix an endpoint when the real
+  // cause is an absent binary. A missing executable is the more fundamental
+  // fact: with no binary, the endpoint question cannot be asked at all.
+  // THE BRAKE, and the reason this whole surface exists. A lane whose declared
+  // executable is not on this machine cannot start, and spawning it anyway buys
+  // an operator a subprocess, a timeout, and a diagnosis that names the symptom
+  // instead of the cause — which is exactly what happened to `ninerouter` here.
+  // Refuse BEFORE the spawn and name the missing thing and the way out.
+  //
+  // This mirrors what the loop runner already does for a missing `graph.json`:
+  // it "refuses to dispatch against it, and says so rather than idling
+  // silently". The status existed for lanes; nothing was wired to it.
+  const availability = laneAvailability(id, profile, env)
+  if (!availability.available) {
+    const first = availability.blocking[0]
+    return {
+      lane: id,
+      probe: 'not_attempted',
+      configuration: status.configuration,
+      problem: { code: first.code, detail: READINESS_PROBLEMS[first.code] },
+      missing: first.missing,
+      needs: availability.needs,
+      setup: 'run the tmux-teams lane setup — this machine cannot start this lane',
+      fixes: [],
+      notProven,
+      depth,
+    }
+  }
   // Already known broken, and known WHY — a live attempt would learn nothing
   // a spawn cannot already answer, and would spend a process on a lane that
   // cannot start. `acp_lane_status`'s own diagnostic is the honest answer.
