@@ -1151,7 +1151,13 @@ export function buildAcpLaunch(profileId, {
   // nowhere else. The probe, the gate and the runner all read what this
   // function returns, so one insertion covers every caller and leaves no
   // second place for the shipped layer and the machine layer to disagree.
-  const { overrides, problems } = overrideLoader({ knownLanes: Object.keys(REVIEW_PROFILES) })
+  // Pass the ENV this call was given. Omitting it made the loader fall back
+  // to a path computed from the process's own home at import time, so a
+  // caller that supplied an environment was silently reading somebody
+  // else's configuration. Fifth occurrence of this release's own defect
+  // shape — a consumer resolving from the ambient world instead of the one
+  // it was handed — and the fourth found by a review lane rather than a test.
+  const { overrides, problems } = overrideLoader({ knownLanes: Object.keys(REVIEW_PROFILES), env })
   if (problems.length > 0) {
     // FAIL CLOSED. An operator who wrote an override is saying the shipped
     // default does not work on this machine; running the shipped default

@@ -2108,6 +2108,45 @@ test('a lane this machine cannot resolve says so instead of guessing', async () 
 // still said available: false. A gemini review lane found it — the THIRD
 // consumer in this release to read the shipped profile instead of the machine's,
 // after two had already been fixed. The shape repeats, so this pins it.
+// EVERY consumer resolves from the environment it was HANDED, not the ambient
+// one. This release produced that defect five times — readiness, the brake, the
+// lane rows, the loader's own path, and buildAcpLaunch — and a review lane found
+// four of them. So the guard is not "does this one call site pass env": it walks
+// the real entry points with an isolated HOME and asserts none of them reads the
+// developer's actual configuration.
+test('no consumer reads the process home when it was given an environment', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'lane-env-'))
+  try {
+    mkdirSync(join(home, '.config', 'tmux-teams'), { recursive: true })
+    // An override that would be VISIBLE if the isolated HOME is honoured, and
+    // invisible if a consumer reaches for the process home instead.
+    // `codex` for the launch half: it is unrouted, so an isolated HOME does not
+    // trip the routed-endpoint check, which is a DIFFERENT and legitimate guard
+    // and would mask the one under test. `ninerouter` for the listing half,
+    // which never builds a launch.
+    writeFileSync(join(home, '.config', 'tmux-teams', 'lanes.json'),
+      JSON.stringify({
+        ninerouter: { claudeExecutable: 'node' },
+        codex: { adapterPackage: 'marker-from-the-given-home' },
+      }))
+    const env = { ...process.env, HOME: home }
+
+    const launch = buildAcpLaunch('codex', { env })
+    assert.equal(launch.overrideApplied, true,
+      'buildAcpLaunch ignored the HOME it was given and read the process home')
+    assert.equal(launch.profile.adapterPackage, 'marker-from-the-given-home',
+      'the override from the given HOME did not reach the resolved profile')
+
+    const reply = await handle({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'acp_lanes', arguments: {} } }, env)
+    const payload = JSON.parse(reply.result.content[0].text)
+    assert.ok(payload.callableLanes.includes('ninerouter'),
+      'acp_lanes ignored the HOME it was given')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
 test('the lane rows and the summary in one answer agree with each other', async () => {
   const home = mkdtempSync(join(tmpdir(), 'lanes-consistency-'))
   try {
