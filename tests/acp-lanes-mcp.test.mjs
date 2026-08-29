@@ -1985,10 +1985,26 @@ test('an UNCHECKED lane is genuinely contacted — a live probe is the only sign
 // independently: a status nobody reads, a brake wired to nothing, and a refusal
 // with no way forward are three different bugs.
 test('a lane whose executable is absent is refused BEFORE anything is spawned', async () => {
+  // CONSTRUCT the absence rather than inheriting it. This asserted that
+  // `ninerouter`'s wrapper is missing, which is true on the machine that wrote
+  // the test and is a fact about that machine — on a runner where `claude-9r`
+  // IS installed the lane would reach the transport and every assertion below
+  // would silently stop testing what it names. An openai review lane found it.
+  // A per-machine override points the lane at a name that cannot exist, so the
+  // absence is now a property of the fixture.
+  const home = mkdtempSync(join(tmpdir(), 'brake-absent-'))
   let spawned = false
-  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
-  const { payload } = await callProbe({ lanes: ['ninerouter'], depth: 'handshake' }, bare,
-    async () => { spawned = true; return { settled: 'handshake_ok' } })
+  let payload
+  try {
+    mkdirSync(join(home, '.config', 'tmux-teams'), { recursive: true })
+    writeFileSync(join(home, '.config', 'tmux-teams', 'lanes.json'),
+      JSON.stringify({ ninerouter: { claudeExecutable: 'tmux-teams-no-such-binary-exists' } }))
+    ;({ payload } = await callProbe({ lanes: ['ninerouter'], depth: 'handshake' },
+      { ...process.env, HOME: home },
+      async () => { spawned = true; return { settled: 'handshake_ok' } }))
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
   const [lane] = payload.lanes
 
   assert.equal(spawned, false,
@@ -1996,7 +2012,7 @@ test('a lane whose executable is absent is refused BEFORE anything is spawned', 
   assert.equal(lane.probe, 'not_attempted')
   assert.equal(lane.problem.code, 'executable_absent',
     `the refusal named ${lane.problem.code} — the operator is sent to fix the wrong thing`)
-  assert.equal(lane.missing, 'claude-9r',
+  assert.equal(lane.missing, 'tmux-teams-no-such-binary-exists',
     'the refusal does not name WHICH executable is missing, so it is not actionable')
   assert.match(lane.setup ?? '', /setup/,
     'the refusal offers no way forward — an error the operator cannot act on is the state this replaced')
@@ -2057,6 +2073,13 @@ test('a lane reports what it REQUESTS and what this machine resolves it to', asy
       env: {
         ANTHROPIC_AUTH_TOKEN: 'CANARY-TOKEN-MUST-NEVER-APPEAR-' + 'z'.repeat(16),
         ANTHROPIC_BASE_URL: 'https://CANARY-ENDPOINT-MUST-NEVER-APPEAR.invalid/anthropic',
+        // A key nobody named. The promise is an ALLOWLIST of three alias keys,
+        // and a test that blocks two names by hand does not enforce one — an
+        // openai review lane pointed out that an implementation copying
+        // everything except those two would leak this and pass. Third time this
+        // fixture was strengthened; each round it was blocking names instead of
+        // permitting them.
+        SOME_OTHER_SECRET: 'CANARY-OTHER-MUST-NEVER-APPEAR',
         ANTHROPIC_DEFAULT_OPUS_MODEL: 'a-real-model-id',
       },
     }))
@@ -2081,11 +2104,22 @@ test('a lane reports what it REQUESTS and what this machine resolves it to', asy
     // lane pointed out that this asserted the token value and the key NAMES while
     // an endpoint value could have walked out unnoticed — and an endpoint is a
     // machine fact this repository already refuses to put on the wire.
+    // AN ALLOWLIST, ASSERTED AS ONE. Every canary is a value this file holds and
+    // the listing has no business carrying; naming them individually is how the
+    // previous two versions of this test stayed too weak.
     const dump = JSON.stringify(answer)
-    assert.ok(!dump.includes('CANARY-TOKEN'), 'a credential reached the model listing')
-    assert.ok(!dump.includes('CANARY-ENDPOINT'), 'an endpoint value reached the model listing')
-    assert.ok(!/AUTH_TOKEN|BASE_URL/.test(dump),
+    for (const canary of ['CANARY-TOKEN', 'CANARY-ENDPOINT', 'CANARY-OTHER']) {
+      assert.ok(!dump.includes(canary), `${canary} from the settings file reached the model listing`)
+    }
+    assert.ok(!/AUTH_TOKEN|BASE_URL|SOME_OTHER_SECRET/.test(dump),
       'a key name from the settings file leaked into the listing')
+    // And the shape itself: the answer carries exactly these fields, so a new
+    // one cannot be added quietly and carry a file value out with it.
+    assert.deepEqual(Object.keys(answer).sort(),
+      ['aliasesOnThisMachine', 'declared', 'detail', 'lane', 'requested', 'resolved', 'source'],
+      'the answer grew or lost a field — anything new must be reviewed for what it can carry')
+    assert.deepEqual(Object.keys(answer.aliasesOnThisMachine ?? {}), ['opus'],
+      'the alias map carries a key outside the three-alias allowlist')
   } finally {
     rmSync(home, { recursive: true, force: true })
   }
