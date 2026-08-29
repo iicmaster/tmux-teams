@@ -2030,6 +2030,37 @@ test('a listing says what this machine can actually call, not what the file decl
   }
 })
 
+// The two layers must agree, and they did not. Readiness read the SHIPPED
+// profiles and never the per-machine file, so setting an override wrote the
+// file and the re-check went on reporting the shipped executable as missing —
+// a setting that looks applied and is not, which is the precise failure this
+// release exists to end, reproduced by the release itself. Caught by running
+// the round trip rather than by any unit test, which is why this one asserts
+// the round trip.
+test('readiness applies the per-machine override, not just the shipped profile', async () => {
+  const { readinessReport } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-readiness.mjs')).href)
+
+  const env = { PATH: process.env.PATH }
+  const shipped = readinessReport(REVIEW_PROFILES, env)
+  const before = shipped.lanes.find(l => l.lane === 'ninerouter')
+  assert.equal(before.available, false,
+    'this test needs a lane that is uncallable from the shipped profile alone')
+
+  // An override pointing the lane at a wrapper this machine really has.
+  const loader = () => ({
+    overrides: { ninerouter: { claudeExecutable: 'node' } },
+    problems: [],
+    present: true,
+  })
+  const after = readinessReport(REVIEW_PROFILES, env, { overrideLoader: loader })
+  const fixed = after.lanes.find(l => l.lane === 'ninerouter')
+  assert.equal(fixed.available, true,
+    'the per-machine override was written and readiness still reports the shipped executable')
+  assert.ok(after.callableLanes.includes('ninerouter'),
+    'the lane is callable but the callable list does not say so')
+})
+
 test('a missing plugin binary is reported once, not as one failure per lane', async () => {
   const { pluginReadiness, readinessReport } = await import(
     pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-readiness.mjs')).href)

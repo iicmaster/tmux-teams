@@ -56,6 +56,7 @@ import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 
 import { laneAvailability, readinessReport, READINESS_PROBLEMS } from './lane-readiness.mjs'
+import { loadLaneOverrides, applyLaneOverride } from './lane-overrides.mjs'
 import { REVIEW_PROFILES, ROUTED_PROFILES, buildAcpLaunch, AGY_BINARY_NAME,
   AGY_BINARY_CANDIDATE_FORMS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys } from './review-profiles.mjs'
 
@@ -991,7 +992,10 @@ async function probeOneLane(id, profile, env, transport, abortSignal, depth = DE
   // This mirrors what the loop runner already does for a missing `graph.json`:
   // it "refuses to dispatch against it, and says so rather than idling
   // silently". The status existed for lanes; nothing was wired to it.
-  const availability = laneAvailability(id, profile, env)
+  // The override is applied here too, or the brake refuses a lane the
+  // operator has already fixed on this machine.
+  const { overrides } = loadLaneOverrides({ knownLanes: Object.keys(REVIEW_PROFILES) })
+  const availability = laneAvailability(id, applyLaneOverride(profile, overrides[id], env), env)
   if (!availability.available) {
     const first = availability.blocking[0]
     return {
@@ -1123,7 +1127,7 @@ export const TOOL_DESCRIPTORS = deepFreeze([
     // claim. `setupRequired` is the gate a caller reads BEFORE dispatching, and
     // it is the whole difference between an answer now and an error later.
     handler: (args, env) => {
-      const report = readinessReport(REVIEW_PROFILES, env)
+      const report = readinessReport(REVIEW_PROFILES, env, { overrideLoader: loadLaneOverrides })
       return {
         lanes: Object.entries(REVIEW_PROFILES).map(([id, p]) => laneWithAvailability(id, p, env)),
         plugin: report.plugin,

@@ -39,6 +39,7 @@
 // what lets this run on every listing without an operator thinking about cost.
 import { existsSync, statSync } from 'node:fs'
 import { delimiter, isAbsolute, join } from 'node:path'
+import { applyLaneOverride } from './lane-overrides.mjs'
 
 // The binaries the shipped scripts actually spawn, established by grepping
 // every `spawn`/`spawnSync` call site rather than from memory. `tmux` is
@@ -150,9 +151,23 @@ export function pluginReadiness(env = process.env) {
  * later instead of an answer now. A caller that dispatches anyway is choosing
  * to, rather than not having been told.
  */
-export function readinessReport(profiles, env = process.env) {
+export function readinessReport(profiles, env = process.env, {
+  overrideLoader = null,
+} = {}) {
   const plugin = pluginReadiness(env)
-  const lanes = Object.entries(profiles).map(([id, p]) => laneAvailability(id, p, env))
+  // APPLY THE PER-MACHINE OVERRIDES FIRST. Readiness read the shipped profiles
+  // and nothing else until a round-trip caught it: setting an override wrote
+  // the file, and the re-check went on reporting the shipped executable as
+  // missing. That is a setting that looks applied and is not — the exact
+  // failure this release exists to end, reproduced by the release itself.
+  // The loader is injected so a test can drive it without writing to a home
+  // directory, and defaults to null so a caller with no per-machine file (the
+  // overwhelmingly common case) pays nothing.
+  const overrides = overrideLoader
+    ? (overrideLoader({ knownLanes: Object.keys(profiles) })?.overrides ?? {})
+    : {}
+  const lanes = Object.entries(profiles).map(([id, p]) =>
+    laneAvailability(id, applyLaneOverride(p, overrides[id], env), env))
   const callable = lanes.filter(l => l.available)
   return {
     plugin,
