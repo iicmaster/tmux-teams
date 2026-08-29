@@ -33,6 +33,9 @@ const REPAIR = Object.freeze({
   executable_absent: lane =>
     `install the wrapper, or point this lane at one you have:\n`
     + `      node lane-setup.mjs set ${lane} claudeExecutable <the-name-on-your-PATH>`,
+  executable_not_executable: lane =>
+    `the file exists but is not executable — chmod +x it, or point the lane elsewhere:\n`
+    + `      node lane-setup.mjs set ${lane} claudeExecutable <the-name-on-your-PATH>`,
   executable_not_file: lane =>
     `the name resolves to something that is not a file — point the lane elsewhere:\n`
     + `      node lane-setup.mjs set ${lane} claudeExecutable <the-name-on-your-PATH>`,
@@ -48,7 +51,7 @@ const readOverrides = async () => {
 
 async function check() {
   const report = readinessReport(REVIEW_PROFILES, process.env, { overrideLoader: loadLaneOverrides })
-  const { problems } = loadLaneOverrides({ knownLanes: LANES })
+  const { problems } = loadLaneOverrides({ knownLanes: LANES, profiles: REVIEW_PROFILES })
 
   if (problems.length > 0) {
     // A broken override file is reported FIRST and alone. Everything below it
@@ -130,7 +133,7 @@ async function set(lane, key, rawValue) {
   console.log(`\n  wrote ${lane}.${key} to ${OVERRIDE_PATH}`)
 
   // THE RE-CHECK. Writing is not the outcome; the lane becoming callable is.
-  const { problems } = loadLaneOverrides({ knownLanes: LANES })
+  const { problems } = loadLaneOverrides({ knownLanes: LANES, profiles: REVIEW_PROFILES })
   if (problems.length > 0) {
     console.log(`\n  the file is now UNUSABLE — ${problems[0].code}: ${OVERRIDE_PROBLEMS[problems[0].code]}`)
     console.log('  nothing in it is applied until that is fixed.\n')

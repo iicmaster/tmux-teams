@@ -37,7 +37,7 @@
 // no network, no provider quota. It answers "is the thing here", never "will it
 // answer", which is what `acp_lane_probe` is for. Keeping that line sharp is
 // what lets this run on every listing without an operator thinking about cost.
-import { existsSync, statSync } from 'node:fs'
+import { accessSync, constants as fsConstants, existsSync, statSync } from 'node:fs'
 import { delimiter, isAbsolute, join } from 'node:path'
 import { applyLaneOverride } from './lane-overrides.mjs'
 
@@ -59,6 +59,7 @@ export const PLUGIN_BINARIES = Object.freeze([
 export const READINESS_PROBLEMS = Object.freeze({
   executable_absent: 'the executable this lane declares was not found on PATH',
   executable_not_file: 'the executable this lane declares resolves to something that is not a file',
+  executable_not_executable: 'the executable this lane declares exists but this process may not run it',
   launcher_absent: 'the launcher this lane needs to start its adapter was not found on PATH',
   binary_absent: 'a binary this plugin invokes was not found on PATH',
 })
@@ -83,6 +84,17 @@ const isFile = path => {
   try { return statSync(path).isFile() } catch { return false }
 }
 
+// EXISTING AND RUNNABLE ARE DIFFERENT FACTS. A mode-0644 file named like a
+// wrapper resolves, stats as a regular file, and cannot be executed — so a
+// check that stops at `isFile` reports the lane callable and hands the spawn an
+// EACCES it was supposed to prevent. An openai review lane found it. The
+// distinction already exists in this plugin's vocabulary: `acp_lane_probe`
+// tells `executable_missing` from `executable_unusable` for the same reason,
+// because installing a file that is already there fixes nothing.
+const isExecutable = path => {
+  try { accessSync(path, fsConstants.X_OK); return true } catch { return false }
+}
+
 /**
  * Can this machine call this lane at all?
  *
@@ -102,6 +114,7 @@ export function laneAvailability(id, profile, env = process.env) {
     const resolved = resolveOnPath(wrapper, env)
     if (!resolved) blocking.push({ code: 'executable_absent', missing: wrapper })
     else if (!isFile(resolved)) blocking.push({ code: 'executable_not_file', missing: wrapper })
+    else if (!isExecutable(resolved)) blocking.push({ code: 'executable_not_executable', missing: wrapper })
   }
 
   // The launcher. Three of the eight lanes report `executable: null` today,
@@ -171,7 +184,7 @@ export function readinessReport(profiles, env = process.env, {
   // can say WHY, and `setupRequired` is forced true because nothing can be
   // trusted until the file parses.
   const loaded = overrideLoader
-    ? overrideLoader({ knownLanes: Object.keys(profiles), env })
+    ? overrideLoader({ knownLanes: Object.keys(profiles), profiles, env })
     : { overrides: {}, problems: [] }
   const overrideProblems = loaded?.problems ?? []
   const overrides = overrideProblems.length > 0 ? {} : (loaded?.overrides ?? {})

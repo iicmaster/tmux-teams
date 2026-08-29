@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, chmodSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, dirname, isAbsolute } from 'node:path'
+import { join, dirname, isAbsolute, delimiter } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { spawn } from 'node:child_process'
@@ -2184,6 +2184,71 @@ test('overriding the adapter package changes the command that actually runs', as
   // broke it would fail far from here.
   assert.ok(resolved.command.includes(resolved.adapterPackage),
     'the command and the declared adapterPackage disagree after the override')
+})
+
+// EXISTING IS NOT RUNNABLE. A mode-0644 file named like a wrapper resolves on
+// PATH and stats as a regular file, so a check stopping at isFile reports the
+// lane callable and hands the spawn an EACCES it was meant to prevent. An
+// openai review lane found it. This plugin already tells `executable_missing`
+// from `executable_unusable` for the same reason: installing a file that is
+// already sitting there fixes nothing.
+// AN OVERRIDE THAT CANNOT TAKE EFFECT IS REFUSED, NOT IGNORED. Substituting the
+// adapter package works only when the shipped command names it verbatim; a lane
+// whose command does not — a native-binary lane, or one naming no package —
+// would have accepted the field, changed a declaration, and launched the old
+// package anyway. A deepseek review lane found that the file's own comment
+// promised this refusal while nothing implemented it.
+test('an adapterPackage override is refused on a lane whose command cannot carry it', async () => {
+  const { loadLaneOverrides } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-overrides.mjs')).href)
+
+  const profiles = {
+    swappable: { command: ['npx', '-y', 'pkg@1'], adapterPackage: 'pkg@1' },
+    native: { command: ['bunx', 'native-thing@1'], adapterPackage: 'something-else@1' },
+  }
+  const read = () => JSON.stringify({
+    native: { adapterPackage: 'pkg@2' },
+  })
+  const refused = loadLaneOverrides({ knownLanes: Object.keys(profiles), profiles, readFile: read })
+  assert.equal(refused.problems.length, 1, 'an override that cannot take effect was accepted')
+  assert.equal(refused.problems[0].code, 'bad_adapter_swap')
+  assert.deepEqual(refused.overrides, {}, 'a refused file was partly applied')
+
+  // The control: a lane whose command DOES name its package accepts the swap.
+  // Without this the test would pass against a loader that refuses every swap.
+  const ok = loadLaneOverrides({
+    knownLanes: Object.keys(profiles), profiles,
+    readFile: () => JSON.stringify({ swappable: { adapterPackage: 'pkg@2' } }),
+  })
+  assert.deepEqual(ok.problems, [], 'a swap the command can carry was refused')
+  assert.equal(ok.overrides.swappable.adapterPackage, 'pkg@2')
+})
+
+test('a wrapper that exists but cannot be executed is not called callable', async () => {
+  const { laneAvailability } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-readiness.mjs')).href)
+  const dir = mkdtempSync(join(tmpdir(), 'lane-not-exec-'))
+  try {
+    const name = 'tmux-teams-fixture-wrapper'
+    writeFileSync(join(dir, name), '#!/bin/sh\nexit 0\n', { mode: 0o644 })
+
+    const env = { PATH: dir }
+    const profile = { command: ['node'], claudeExecutable: name }
+    const answer = laneAvailability('demo', profile, { ...env, PATH: `${dir}${delimiter}${process.env.PATH}` })
+
+    assert.equal(answer.available, false,
+      'a file with no execute bit was reported callable, so the spawn gets the EACCES instead')
+    assert.equal(answer.blocking[0].code, 'executable_not_executable',
+      `reported ${answer.blocking[0]?.code} — "missing" would send the operator to install a file that is already there`)
+
+    // And the control: the same file, made executable, is callable. Without it
+    // this test would pass against a check that refuses everything.
+    chmodSync(join(dir, name), 0o755)
+    const after = laneAvailability('demo', profile, { ...env, PATH: `${dir}${delimiter}${process.env.PATH}` })
+    assert.equal(after.available, true, 'an executable wrapper was still refused')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('the pre-spawn brake honours a per-machine override', async () => {

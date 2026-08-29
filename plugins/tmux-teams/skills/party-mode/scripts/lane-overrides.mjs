@@ -66,6 +66,7 @@ export const OVERRIDE_PROBLEMS = Object.freeze({
   bad_command: 'an override command must be a non-empty array of strings',
   bad_env: 'an override env must be an object whose keys and values are all strings',
   bad_string: 'an override field must be a non-empty string',
+  bad_adapter_swap: 'this lane cannot take an adapterPackage override — its launch command does not name the package it declares',
 })
 
 const isPlainObject = value => value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -80,6 +81,9 @@ const isPlainObject = value => value !== null && typeof value === 'object' && !A
  */
 export function loadLaneOverrides({
   knownLanes,
+  // The shipped profiles, when a caller has them. Only ONE check needs them and
+  // it is the one that stops a silent no-op: see `bad_adapter_swap` below.
+  profiles = null,
   env,
   path = env ? overridePathFor(env) : OVERRIDE_PATH,
   readFile = readFileSync,
@@ -132,6 +136,21 @@ export function loadLaneOverrides({
           problems.push({ code: 'bad_string', lane, field }); continue
         }
         clean[field] = value
+      }
+    }
+    // AN OVERRIDE THAT CANNOT TAKE EFFECT IS REFUSED, NOT IGNORED. The package
+    // that launches lives in `command`; substituting it works only when the
+    // command names the shipped package verbatim. A lane whose command does not
+    // — a native-binary lane, or one that names no package at all — would have
+    // accepted the field, changed a declaration, and gone on launching the old
+    // package. A deepseek review lane found that this file's own comment
+    // promised this refusal while nothing implemented it.
+    if (clean.adapterPackage && profiles) {
+      const shipped = profiles[lane]
+      const command = Array.isArray(shipped?.command) ? shipped.command : []
+      if (!shipped?.adapterPackage || !command.includes(shipped.adapterPackage)) {
+        problems.push({ code: 'bad_adapter_swap', lane, field: 'adapterPackage' })
+        continue
       }
     }
     overrides[lane] = Object.freeze(clean)

@@ -1010,7 +1010,7 @@ async function probeOneLane(id, profile, env, transport, abortSignal, depth = DE
   // silently". The status existed for lanes; nothing was wired to it.
   // The override is applied here too, or the brake refuses a lane the
   // operator has already fixed on this machine.
-  const { overrides } = loadLaneOverrides({ knownLanes: Object.keys(REVIEW_PROFILES), env })
+  const { overrides } = loadLaneOverrides({ knownLanes: Object.keys(REVIEW_PROFILES), profiles: REVIEW_PROFILES, env })
   const availability = laneAvailability(id, applyLaneOverride(profile, overrides[id], env), env)
   if (!availability.available) {
     const first = availability.blocking[0]
@@ -1148,7 +1148,7 @@ export const TOOL_DESCRIPTORS = deepFreeze([
       // comment said that while the code loaded twice — `readinessReport` again
       // internally — and a deepseek review lane caught the two disagreeing. The
       // loader is injected so there is now genuinely one read.
-      const loaded = loadLaneOverrides({ knownLanes: Object.keys(REVIEW_PROFILES), env })
+      const loaded = loadLaneOverrides({ knownLanes: Object.keys(REVIEW_PROFILES), profiles: REVIEW_PROFILES, env })
       const overrides = loaded.overrides
       const report = readinessReport(REVIEW_PROFILES, env, { overrideLoader: () => loaded })
       return {

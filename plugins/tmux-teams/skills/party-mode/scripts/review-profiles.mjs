@@ -1157,7 +1157,7 @@ export function buildAcpLaunch(profileId, {
   // else's configuration. Fifth occurrence of this release's own defect
   // shape — a consumer resolving from the ambient world instead of the one
   // it was handed — and the fourth found by a review lane rather than a test.
-  const { overrides, problems } = overrideLoader({ knownLanes: Object.keys(REVIEW_PROFILES), env })
+  const { overrides, problems } = overrideLoader({ knownLanes: Object.keys(REVIEW_PROFILES), profiles: REVIEW_PROFILES, env })
   if (problems.length > 0) {
     // FAIL CLOSED. An operator who wrote an override is saying the shipped
     // default does not work on this machine; running the shipped default
