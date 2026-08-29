@@ -56,6 +56,7 @@ import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 
 import { laneAvailability, readinessReport, READINESS_PROBLEMS } from './lane-readiness.mjs'
+import { laneModel } from './lane-models.mjs'
 import { loadLaneOverrides, applyLaneOverride } from './lane-overrides.mjs'
 import { REVIEW_PROFILES, ROUTED_PROFILES, buildAcpLaunch, AGY_BINARY_NAME,
   AGY_BINARY_CANDIDATE_FORMS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys } from './review-profiles.mjs'
@@ -281,8 +282,16 @@ export function laneFacts(id, profile) {
 // the `claude-9r` it names does not exist on this machine.
 function laneWithAvailability(id, profile, env) {
   const { available, blocking, needs } = laneAvailability(id, profile, env)
+  // What this lane will actually REQUEST, and what this machine resolves that
+  // to. `model` from `laneFacts` is the identity the panel records; it is not
+  // always what goes on the wire, and on a shared gateway it is not always the
+  // family that answers.
+  const model = laneModel(id, profile, { home: env.HOME ?? env.USERPROFILE ?? undefined })
   return {
     ...laneFacts(id, profile),
+    requestedModel: model.requested,
+    resolvedModel: model.resolved,
+    modelSource: model.source,
     available,
     needs,
     blocking: blocking.map(b => ({ ...b, detail: READINESS_PROBLEMS[b.code] })),

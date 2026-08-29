@@ -2037,6 +2037,70 @@ test('a listing says what this machine can actually call, not what the file decl
 // release exists to end, reproduced by the release itself. Caught by running
 // the round trip rather than by any unit test, which is why this one asserts
 // the round trip.
+// ## What a lane actually calls
+//
+// The v0.35.0 panel recorded a lane as "qwen" while the alias it requested was
+// resolved by that gateway to a deepseek model, and the only way anyone learned
+// that was opening the wrapper's settings file by hand. Two lanes can share one
+// gateway and answer as different families; the release record depends on
+// telling them apart.
+test('a lane reports what it REQUESTS and what this machine resolves it to', async () => {
+  const { laneModel } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-models.mjs')).href)
+  const home = mkdtempSync(join(tmpdir(), 'lane-models-'))
+  try {
+    const dir = join(home, '.config', 'claude-profiles', 'demo')
+    mkdirSync(dir, { recursive: true })
+    // A settings file shaped like a real one: the alias map sits beside a
+    // credential, which is exactly why only the three alias keys may be read.
+    writeFileSync(join(dir, 'settings.json'), JSON.stringify({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: 'CANARY-TOKEN-MUST-NEVER-APPEAR-' + 'z'.repeat(16),
+        ANTHROPIC_BASE_URL: 'https://example.invalid/anthropic',
+        ANTHROPIC_DEFAULT_OPUS_MODEL: 'a-real-model-id',
+      },
+    }))
+    const profile = {
+      model: 'recorded-identity',
+      requestModel: 'opus',
+      settingsRelativePath: '.config/claude-profiles/demo/settings.json',
+    }
+    const answer = laneModel('demo', profile, { home })
+
+    assert.equal(answer.requested, 'opus',
+      'the lane reported its recorded identity instead of the alias that goes on the wire')
+    assert.equal(answer.resolved, 'a-real-model-id',
+      'the alias was not resolved through this machine settings file')
+    assert.equal(answer.source, 'alias_resolved')
+    assert.notEqual(answer.declared, answer.resolved,
+      'this fixture is meant to have a declaration that differs from what answers')
+
+    // THE ASSERTION THAT MATTERS MOST. The alias map shares a file with a
+    // credential; a prefix match over env keys would carry the token out.
+    const dump = JSON.stringify(answer)
+    assert.ok(!dump.includes('CANARY-TOKEN'), 'a credential reached the model listing')
+    assert.ok(!/AUTH_TOKEN|BASE_URL/.test(dump),
+      'a key name from the settings file leaked into the listing')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('a lane this machine cannot resolve says so instead of guessing', async () => {
+  const { laneModel } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-models.mjs')).href)
+
+  // No settings file at all — the overwhelmingly common case for an unrouted
+  // lane. A guess here would be a confident wrong answer, which this repository
+  // treats as worse than none.
+  const answer = laneModel('demo', { model: 'declared-only' }, { home: '/definitely/nonexistent' })
+  assert.equal(answer.resolved, null, 'a model was invented for a lane with nothing to read')
+  assert.equal(answer.source, 'declared',
+    'a declaration was reported as though this machine had confirmed it')
+  assert.match(answer.detail, /no machine evidence/,
+    'the boundary is not stated, so a declaration reads as a measurement')
+})
+
 test('readiness applies the per-machine override, not just the shipped profile', async () => {
   const { readinessReport } = await import(
     pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-readiness.mjs')).href)
