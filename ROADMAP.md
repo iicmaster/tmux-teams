@@ -928,6 +928,46 @@ probe still never sets or asserts a config option — so handshake depth does no
 see that shape yet. Adding it needs a step copied with a drift test, per the
 note above. Parts two and three of the scope are untouched.
 
+### Shipped 2026-08-29 — all five items
+
+| # | item | what it does |
+|---|---|---|
+| 1 | probe depth | `handshake` spawns, completes the session, and stops — no prompt, so nothing a provider bills for |
+| 2 | per-machine config | `~/.config/tmux-teams/lanes.json` overrides launcher, adapter, wrapper and env; survives `claude plugin update` |
+| 3 | status, gate, exit | `acp_lanes` reports `plugin.ready`, `callableLanes`, `setupRequired` and per-lane `needs`; a lane whose executable is absent is refused **before** the spawn |
+| 4 | `tmux-teams:lane-setup` | reports what is missing, writes the override, and RE-CHECKS that the lane became callable |
+| 5 | `lane-models` | what each lane REQUESTS and what this machine resolves it to, read from a file — no prompt, no quota |
+
+**Measured on this machine:** 7 of 8 lanes callable across 7 families;
+`ninerouter` refused in 0.0s with `executable_absent: claude-9r` and no process
+started; `kimi` declares the model `opus` and this machine resolves that alias
+to `k3[1m]`.
+
+**Two defects were introduced by this release and caught inside it.** Both are
+worth keeping, because both are the failure this release exists to end.
+
+*The two layers did not agree.* Readiness read the shipped profiles and never
+the per-machine file, so `lane-setup set` wrote the override and the re-check
+went on reporting the shipped executable as missing — a setting that looks
+applied and is not. No unit test caught it: the pure function was correct and
+its consumer was not reading it. The round trip caught it, and the guard now
+asserts the round trip.
+
+*The refusal named the wrong cause.* The configuration check ran before the
+availability check, so `ninerouter` — missing both its wrapper and its local
+gateway — answered `endpoint_missing`, sending an operator to fix a gateway when
+no binary exists to talk to it. Availability is checked first now and a guard
+pins that ordering.
+
+**The honest limits, stated rather than discovered later.** A handshake pass
+proves the lane can START and says nothing about billing: measured, `kimi`
+answers `reachable` at handshake depth and `unreachable` at prompt depth. Model
+resolution reads a file, so a gateway that resolves aliases server-side is
+unknowable from here and reports `source: declared` rather than a guess. And
+class-two failures — a 402 membership, a missing payment method — are facts
+about an account that no override repairs; setup reports them and cannot fix
+them.
+
 ### Still open, and still blocking code rather than the scope
 
 - Where does the per-machine config live, and what reads it first — the profile,
