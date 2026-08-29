@@ -1014,7 +1014,7 @@ async function probeOneLane(id, profile, env, transport, abortSignal, depth = DE
       problem: { code: first.code, detail: READINESS_PROBLEMS[first.code] },
       missing: first.missing,
       needs: availability.needs,
-      setup: 'run the tmux-teams lane setup — this machine cannot start this lane',
+      setup: 'run the tmux-teams:lane-setup skill — this machine cannot start this lane',
       fixes: [],
       notProven,
       depth,
@@ -1144,7 +1144,7 @@ export const TOOL_DESCRIPTORS = deepFreeze([
         callableFamilies: report.callableFamilies,
         setupRequired: report.setupRequired,
         setup: report.setupRequired
-          ? 'this machine cannot start one or more declared lanes — run the tmux-teams lane setup before dispatching'
+          ? 'this machine cannot start one or more declared lanes — run the tmux-teams:lane-setup skill before dispatching'
           : null,
       }
     },
