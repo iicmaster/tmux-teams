@@ -159,6 +159,21 @@ export function applyLaneOverride(profile, override, processEnv = {}) {
     if (field === 'env' || !(field in override)) continue
     next[field] = override[field]
   }
+  // `adapterPackage` alone changes NOTHING that runs: the package that actually
+  // launches lives in `command`, and `assertAdapterPackageBoundToCommand`
+  // requires the two to agree. An openai review lane found that an operator
+  // could set the field, be told the lane was callable, and still launch the
+  // shipped package — a setting that looks applied and is not, which is the
+  // defect shape this whole release exists to end.
+  //
+  // So the package is substituted INTO the command, in the one argument that
+  // carries it. If no argument matches the shipped package the override is
+  // refused at load rather than applied silently — see `bad_adapter_swap`.
+  if (override.adapterPackage && Array.isArray(next.command)) {
+    const shipped = profile.adapterPackage
+    next.command = Object.freeze(next.command.map(
+      arg => (arg === shipped ? override.adapterPackage : arg)))
+  }
   if (override.env) {
     const merged = { ...override.env }
     for (const key of Object.keys(merged)) {

@@ -1143,10 +1143,14 @@ export const TOOL_DESCRIPTORS = deepFreeze([
     // claim. `setupRequired` is the gate a caller reads BEFORE dispatching, and
     // it is the whole difference between an answer now and an error later.
     handler: (args, env) => {
-      const report = readinessReport(REVIEW_PROFILES, env, { overrideLoader: loadLaneOverrides })
-      // ONE load, shared by both halves of this answer, so the per-lane rows
-      // and the summary cannot be computed from different configurations.
-      const { overrides } = loadLaneOverrides({ knownLanes: Object.keys(REVIEW_PROFILES), env })
+      // ONE load, shared by both halves of this answer, so the per-lane rows and
+      // the summary cannot be computed from different configurations. This
+      // comment said that while the code loaded twice — `readinessReport` again
+      // internally — and a deepseek review lane caught the two disagreeing. The
+      // loader is injected so there is now genuinely one read.
+      const loaded = loadLaneOverrides({ knownLanes: Object.keys(REVIEW_PROFILES), env })
+      const overrides = loaded.overrides
+      const report = readinessReport(REVIEW_PROFILES, env, { overrideLoader: () => loaded })
       return {
         lanes: Object.entries(REVIEW_PROFILES).map(([id, p]) => laneWithAvailability(id, p, env, overrides[id])),
         plugin: report.plugin,

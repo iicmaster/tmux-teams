@@ -2119,6 +2119,79 @@ test('a lane this machine cannot resolve says so instead of guessing', async () 
 // four of them. So the guard is not "does this one call site pass env": it walks
 // the real entry points with an isolated HOME and asserts none of them reads the
 // developer's actual configuration.
+// The BRAKE must read the override too. Every probe guard added in this release
+// probed the shipped profile only, so a brake that ignored the per-machine file
+// would refuse a lane the operator had already fixed and pass every one of
+// them. An openai review lane named the gap.
+// An overridable field that changes nothing is a field advertising a capability
+// it does not have — the defect shape of this whole release. `adapterPackage`
+// was exactly that: the package that actually launches lives in `command`, so
+// setting the field left the shipped package running while setup reported the
+// lane callable. An openai review lane found it; the first fix shipped with NO
+// guard, and a mutation that disabled it left the suite green.
+test('overriding the adapter package changes the command that actually runs', async () => {
+  const { applyLaneOverride } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-overrides.mjs')).href)
+
+  const shipped = REVIEW_PROFILES.codex
+  assert.ok(shipped.command.includes(shipped.adapterPackage),
+    'this test assumes the shipped command carries the adapter package verbatim')
+
+  const swapped = '@agentclientprotocol/codex-acp@9.9.9'
+  const resolved = applyLaneOverride(shipped, { adapterPackage: swapped }, {})
+
+  assert.equal(resolved.adapterPackage, swapped)
+  assert.ok(resolved.command.includes(swapped),
+    'the override changed the declared package while the command still launches the shipped one')
+  assert.ok(!resolved.command.includes(shipped.adapterPackage),
+    'the shipped package survived in the command, so both versions are named at once')
+  // The launch argv and the declared package must still agree — the repo
+  // asserts that binding at import for every profile, and an override that
+  // broke it would fail far from here.
+  assert.ok(resolved.command.includes(resolved.adapterPackage),
+    'the command and the declared adapterPackage disagree after the override')
+})
+
+test('the pre-spawn brake honours a per-machine override', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'brake-override-'))
+  try {
+    mkdirSync(join(home, '.config', 'tmux-teams'), { recursive: true })
+    writeFileSync(join(home, '.config', 'tmux-teams', 'lanes.json'),
+      JSON.stringify({ ninerouter: { claudeExecutable: 'node' } }))
+
+    let spawned = false
+    const { payload } = await callProbe({ lanes: ['ninerouter'], depth: 'handshake' },
+      { ...process.env, HOME: home },
+      async () => { spawned = true; return { settled: 'handshake_ok' } })
+    const [lane] = payload.lanes
+
+    assert.notEqual(lane.problem?.code, 'executable_absent',
+      'the brake refused a lane whose executable the operator had already pointed at a real binary')
+    assert.equal(spawned || lane.probe === 'not_attempted', true,
+      'the lane neither ran nor produced a diagnosis')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+// A malformed override file must not read as "no overrides". Discarding the
+// loader's problems made readiness report from shipped defaults while
+// buildAcpLaunch throws on the same file — a green gate in front of a dispatch
+// that cannot start.
+test('a malformed override file forces setup rather than reading as empty', async () => {
+  const { readinessReport } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-readiness.mjs')).href)
+
+  const broken = () => ({ overrides: {}, problems: [{ code: 'not_json', lane: null, field: null }], present: true })
+  const report = readinessReport(REVIEW_PROFILES, { PATH: process.env.PATH }, { overrideLoader: broken })
+
+  assert.equal(report.setupRequired, true,
+    'a file that cannot be parsed was reported as a machine needing no setup')
+  assert.equal(report.overrideProblems.length, 1,
+    'the reason the file was refused is not reported, so a caller cannot say why')
+  assert.equal(report.overrideProblems[0].code, 'not_json')
+})
+
 test('no consumer reads the process home when it was given an environment', async () => {
   const home = mkdtempSync(join(tmpdir(), 'lane-env-'))
   try {
@@ -2168,6 +2241,15 @@ test('the lane rows and the summary in one answer agree with each other', async 
       l.available !== payload.callableLanes.includes(l.lane))
     assert.deepEqual(disagreeing.map(l => l.lane), [],
       'a lane row and the callable summary in the SAME answer disagree about that lane')
+
+    // AGREEMENT IS NOT ENOUGH. Two false answers agree perfectly, so an
+    // implementation that ignored the override entirely would satisfy the
+    // assertion above — an openai review lane pointed that out. Pin the
+    // override actually taking effect as well.
+    const row = payload.lanes.find(l => l.lane === 'ninerouter')
+    assert.equal(row.available, true,
+      'the override was ignored — this assertion is what stops the agreement check being vacuous')
+    assert.ok(payload.callableLanes.includes('ninerouter'))
   } finally {
     rmSync(home, { recursive: true, force: true })
   }

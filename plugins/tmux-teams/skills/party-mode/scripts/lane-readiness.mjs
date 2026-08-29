@@ -163,17 +163,27 @@ export function readinessReport(profiles, env = process.env, {
   // The loader is injected so a test can drive it without writing to a home
   // directory, and defaults to null so a caller with no per-machine file (the
   // overwhelmingly common case) pays nothing.
-  const overrides = overrideLoader
-    ? (overrideLoader({ knownLanes: Object.keys(profiles), env })?.overrides ?? {})
-    : {}
+  // A BROKEN FILE IS NOT AN EMPTY ONE. `loadLaneOverrides` refuses a malformed
+  // file whole and returns its problems; discarding them here made readiness
+  // report from shipped defaults while `buildAcpLaunch` throws on the same
+  // file — a green gate in front of a dispatch that cannot start. An openai
+  // review lane found it. `overrideProblems` rides on the report so a caller
+  // can say WHY, and `setupRequired` is forced true because nothing can be
+  // trusted until the file parses.
+  const loaded = overrideLoader
+    ? overrideLoader({ knownLanes: Object.keys(profiles), env })
+    : { overrides: {}, problems: [] }
+  const overrideProblems = loaded?.problems ?? []
+  const overrides = overrideProblems.length > 0 ? {} : (loaded?.overrides ?? {})
   const lanes = Object.entries(profiles).map(([id, p]) =>
     laneAvailability(id, applyLaneOverride(p, overrides[id], env), env))
   const callable = lanes.filter(l => l.available)
   return {
     plugin,
     lanes: Object.freeze(lanes),
+    overrideProblems: Object.freeze(overrideProblems),
     callableLanes: Object.freeze(callable.map(l => l.lane)),
-    setupRequired: !plugin.ready || callable.length === 0,
+    setupRequired: !plugin.ready || callable.length === 0 || overrideProblems.length > 0,
     // A review panel needs three distinct families. Reporting "two lanes work"
     // without that is a number an operator cannot act on.
     callableFamilies: Object.freeze([...new Set(
