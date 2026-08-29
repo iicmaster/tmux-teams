@@ -280,15 +280,22 @@ export function laneFacts(id, profile) {
 // asks the disk. Both go out together on purpose, because a listing that shows
 // only the declaration is what let `ninerouter` sit beside working lanes while
 // the `claude-9r` it names does not exist on this machine.
-function laneWithAvailability(id, profile, env) {
-  const { available, blocking, needs } = laneAvailability(id, profile, env)
+function laneWithAvailability(id, profile, env, override) {
+  // The override is applied HERE too. `readinessReport` below already
+  // applies it, so passing the raw profile to this function put two
+  // disagreeing answers in ONE payload: `callableLanes` counted a lane the
+  // operator had fixed while `lanes[].available` still said false. A gemini
+  // review lane found it — the third consumer to read the shipped profile
+  // instead of the machine's, in a release that had already fixed two.
+  const resolved = applyLaneOverride(profile, override, env)
+  const { available, blocking, needs } = laneAvailability(id, resolved, env)
   // What this lane will actually REQUEST, and what this machine resolves that
   // to. `model` from `laneFacts` is the identity the panel records; it is not
   // always what goes on the wire, and on a shared gateway it is not always the
   // family that answers.
-  const model = laneModel(id, profile, { home: env.HOME ?? env.USERPROFILE ?? undefined })
+  const model = laneModel(id, resolved, { home: env.HOME ?? env.USERPROFILE ?? undefined })
   return {
-    ...laneFacts(id, profile),
+    ...laneFacts(id, resolved),
     requestedModel: model.requested,
     resolvedModel: model.resolved,
     modelSource: model.source,
@@ -1003,7 +1010,7 @@ async function probeOneLane(id, profile, env, transport, abortSignal, depth = DE
   // silently". The status existed for lanes; nothing was wired to it.
   // The override is applied here too, or the brake refuses a lane the
   // operator has already fixed on this machine.
-  const { overrides } = loadLaneOverrides({ knownLanes: Object.keys(REVIEW_PROFILES) })
+  const { overrides } = loadLaneOverrides({ knownLanes: Object.keys(REVIEW_PROFILES), env })
   const availability = laneAvailability(id, applyLaneOverride(profile, overrides[id], env), env)
   if (!availability.available) {
     const first = availability.blocking[0]
@@ -1137,8 +1144,11 @@ export const TOOL_DESCRIPTORS = deepFreeze([
     // it is the whole difference between an answer now and an error later.
     handler: (args, env) => {
       const report = readinessReport(REVIEW_PROFILES, env, { overrideLoader: loadLaneOverrides })
+      // ONE load, shared by both halves of this answer, so the per-lane rows
+      // and the summary cannot be computed from different configurations.
+      const { overrides } = loadLaneOverrides({ knownLanes: Object.keys(REVIEW_PROFILES), env })
       return {
-        lanes: Object.entries(REVIEW_PROFILES).map(([id, p]) => laneWithAvailability(id, p, env)),
+        lanes: Object.entries(REVIEW_PROFILES).map(([id, p]) => laneWithAvailability(id, p, env, overrides[id])),
         plugin: report.plugin,
         callableLanes: report.callableLanes,
         callableFamilies: report.callableFamilies,

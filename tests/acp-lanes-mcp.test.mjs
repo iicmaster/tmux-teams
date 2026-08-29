@@ -2101,6 +2101,34 @@ test('a lane this machine cannot resolve says so instead of guessing', async () 
     'the boundary is not stated, so a declaration reads as a measurement')
 })
 
+// ONE PAYLOAD MUST NOT CONTRADICT ITSELF. The summary and the per-lane rows were
+// computed from different configurations: readinessReport applied the
+// per-machine override, laneWithAvailability got the raw profile, so
+// callableLanes counted a lane the operator had fixed while that lane's own row
+// still said available: false. A gemini review lane found it — the THIRD
+// consumer in this release to read the shipped profile instead of the machine's,
+// after two had already been fixed. The shape repeats, so this pins it.
+test('the lane rows and the summary in one answer agree with each other', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'lanes-consistency-'))
+  try {
+    mkdirSync(join(home, '.config', 'tmux-teams'), { recursive: true })
+    // Point an uncallable lane at a binary this machine certainly has.
+    writeFileSync(join(home, '.config', 'tmux-teams', 'lanes.json'),
+      JSON.stringify({ ninerouter: { claudeExecutable: 'node' } }))
+
+    const reply = await handle({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'acp_lanes', arguments: {} } }, { ...process.env, HOME: home })
+    const payload = JSON.parse(reply.result.content[0].text)
+
+    const disagreeing = payload.lanes.filter(l =>
+      l.available !== payload.callableLanes.includes(l.lane))
+    assert.deepEqual(disagreeing.map(l => l.lane), [],
+      'a lane row and the callable summary in the SAME answer disagree about that lane')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
 test('readiness applies the per-machine override, not just the shipped profile', async () => {
   const { readinessReport } = await import(
     pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-readiness.mjs')).href)

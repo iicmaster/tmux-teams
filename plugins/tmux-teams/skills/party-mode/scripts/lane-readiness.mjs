@@ -164,7 +164,7 @@ export function readinessReport(profiles, env = process.env, {
   // directory, and defaults to null so a caller with no per-machine file (the
   // overwhelmingly common case) pays nothing.
   const overrides = overrideLoader
-    ? (overrideLoader({ knownLanes: Object.keys(profiles) })?.overrides ?? {})
+    ? (overrideLoader({ knownLanes: Object.keys(profiles), env })?.overrides ?? {})
     : {}
   const lanes = Object.entries(profiles).map(([id, p]) =>
     laneAvailability(id, applyLaneOverride(p, overrides[id], env), env))

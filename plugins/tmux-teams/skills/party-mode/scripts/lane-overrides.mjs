@@ -30,6 +30,17 @@ import { join } from 'node:path'
 export const OVERRIDE_DIR = join(homedir(), '.config', 'tmux-teams')
 export const OVERRIDE_PATH = join(OVERRIDE_DIR, 'lanes.json')
 
+// The path RESOLVED AGAINST A GIVEN ENVIRONMENT, not against the process's own
+// home. The constants above are computed once at import from `homedir()`, which
+// made every caller read the developer's real home no matter what environment
+// it was handed — a server that is given an `env` and ignores it, and a test
+// whose result depends on whose machine runs it. Found when a leftover override
+// file from a manual reproduction turned a passing guard red.
+export function overridePathFor(env = process.env) {
+  const home = env?.HOME ?? env?.USERPROFILE
+  return home ? join(home, '.config', 'tmux-teams', 'lanes.json') : OVERRIDE_PATH
+}
+
 // A CLOSED set. A field outside it is REFUSED rather than ignored, because an
 // ignored typo is a setting the operator believes is in effect and is not —
 // the exact shape of failure this whole feature exists to end.
@@ -69,7 +80,8 @@ const isPlainObject = value => value !== null && typeof value === 'object' && !A
  */
 export function loadLaneOverrides({
   knownLanes,
-  path = OVERRIDE_PATH,
+  env,
+  path = env ? overridePathFor(env) : OVERRIDE_PATH,
   readFile = readFileSync,
 } = {}) {
   const known = new Set(knownLanes ?? [])
