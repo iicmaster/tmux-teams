@@ -71,6 +71,12 @@ node plugins/tmux-teams/skills/party-mode/scripts/lane-setup.mjs set ninerouter 
 - **Never put a credential in this file.** It holds names and paths. Provider
   tokens live where each wrapper already keeps them, and nothing here reads or
   writes one.
-- **Setup does not fix a bill.** A `402` membership or a missing payment method
-  is a fact about an account. `check` reports those honestly and cannot repair
-  them; no override makes an unpaid lane answer.
+- **Setup cannot SEE a bill, let alone fix one.** A `402` membership or a
+  missing payment method is a fact about an account, and it only becomes visible
+  when a completion is attempted. `check` contacts nothing — it resolves PATH and
+  reads files — so a lane with every binary in place and no credit reports as
+  callable here and fails at dispatch. That is not a bug in `check`; it is the
+  boundary of a free check, and this line said "reports those honestly" until an
+  openai review lane pointed out that it cannot. To see a billing failure, probe
+  the lane at prompt depth: `acp_lane_probe` with `depth: "prompt"`, which spends
+  real quota and is the only thing that can.

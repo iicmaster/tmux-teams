@@ -293,7 +293,14 @@ function laneWithAvailability(id, profile, env, override) {
   // to. `model` from `laneFacts` is the identity the panel records; it is not
   // always what goes on the wire, and on a shared gateway it is not always the
   // family that answers.
-  const model = laneModel(id, resolved, { home: env.HOME ?? env.USERPROFILE ?? undefined })
+  // An env with NEITHER home variable must not fall through to the process's
+  // own home — `laneModel`'s default parameter is `homedir()`, so passing
+  // `undefined` reads the server's home instead of the caller's nothing. Sixth
+  // instance of this release's shape, found by a deepseek review lane.
+  const callerHome = env.HOME ?? env.USERPROFILE ?? null
+  const model = callerHome === null
+    ? { requested: resolved.requestModel ?? resolved.model ?? null, resolved: null, source: 'unknown' }
+    : laneModel(id, resolved, { home: callerHome })
   return {
     ...laneFacts(id, resolved),
     requestedModel: model.requested,

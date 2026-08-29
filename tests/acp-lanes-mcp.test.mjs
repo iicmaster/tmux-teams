@@ -2198,6 +2198,32 @@ test('overriding the adapter package changes the command that actually runs', as
 // would have accepted the field, changed a declaration, and launched the old
 // package anyway. A deepseek review lane found that the file's own comment
 // promised this refusal while nothing implemented it.
+// An env with NEITHER home variable must not fall through to the process's own
+// home. `laneModel`'s default parameter is `homedir()`, so handing it
+// `undefined` reads the SERVER's home rather than the caller's nothing — the
+// sixth instance of this release's shape, found by a deepseek review lane.
+test('a caller with no home in its environment gets unknown, not the server home', async () => {
+  const reply = await handle({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+    params: { name: 'acp_lanes', arguments: {} } }, { PATH: process.env.PATH })
+  const payload = JSON.parse(reply.result.content[0].text)
+
+  for (const lane of payload.lanes) {
+    assert.equal(lane.resolvedModel, null,
+      `lane ${lane.lane} resolved a model from a home the caller never supplied`)
+    assert.equal(lane.modelSource, 'unknown',
+      `lane ${lane.lane} claimed evidence it could not have had`)
+  }
+
+  // The control: WITH a home that has the alias map, resolution happens. Without
+  // it this test would pass against an implementation that never resolves.
+  const withHome = await handle({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+    params: { name: 'acp_lanes', arguments: {} } }, process.env)
+  const resolved = JSON.parse(withHome.result.content[0].text).lanes
+    .filter(l => l.resolvedModel !== null)
+  assert.ok(resolved.length > 0,
+    'no lane resolved even with a real home, so the assertion above proves nothing')
+})
+
 test('an adapterPackage override is refused on a lane whose command cannot carry it', async () => {
   const { loadLaneOverrides } = await import(
     pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-overrides.mjs')).href)
@@ -2392,6 +2418,19 @@ test('a missing plugin binary is reported once, not as one failure per lane', as
   const report = readinessReport(REVIEW_PROFILES, nothing)
   assert.equal(report.setupRequired, true, 'a machine with no binaries at all did not require setup')
   assert.deepEqual(report.callableLanes, [], 'lanes were called callable on a machine with an empty PATH')
+
+  // ASSERT THE ABSENCE THIS TEST IS NAMED FOR. An implementation that copied
+  // every missing plugin binary into every lane's diagnostics would keep
+  // setupRequired true and callableLanes empty, so both assertions above would
+  // pass while the operator read the same failure eight times and went looking
+  // in eight wrong places. An openai review lane pointed out the test never
+  // checked the thing its own title promises.
+  const pluginNames = new Set(plugin.missing.map(m => m.missing))
+  for (const lane of report.lanes) {
+    const repeated = lane.blocking.filter(b => pluginNames.has(b.missing) && b.code === 'binary_absent')
+    assert.deepEqual(repeated, [],
+      `lane ${lane.lane} repeats a PLUGIN-level missing binary in its own diagnostics`)
+  }
 })
 
 test('handshake depth completes the session and sends no prompt at all', async () => {
