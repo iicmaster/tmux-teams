@@ -83,6 +83,15 @@ const runLane = (extraEnv = {}) => {
   writeFileSync(join(dir, 'brief.md'), 'build the thing\n')
   const env = hermeticEnv({ MOCK_REPO: dir, ACP_CMD: `${process.execPath} ${join(dir, 'stub.mjs')}`, ...extraEnv })
   delete env.CLAUDE_CODE_SIMPLE
+  // AND THE RUNNER'S OWN CREDENTIALS, for the same reason the sibling guard in
+  // tests/acp-companion.test.mjs scrubs them: this release made a credential in
+  // the ENVIRONMENT choose bare mode, so a maintainer whose shell exports
+  // ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY would see the two not-bare arms
+  // below fail while CI, with a clean HOME, stayed green. A zai lane found that
+  // the scrub had been added to one of the two files and not the other — the
+  // neighbour of a fix, which is where this release keeps finding its defects.
+  delete env.ANTHROPIC_API_KEY
+  delete env.ANTHROPIC_AUTH_TOKEN
   Object.assign(env, extraEnv)
   const out = execFileSync(process.execPath, [COMPANION, 'claude', dir, 'iso-task', join(dir, 'brief.md'), '30'],
     { env, encoding: 'utf8' })

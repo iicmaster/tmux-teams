@@ -94,7 +94,12 @@ test('roster text cannot break its block, stand as its own line, or get the last
       // U+000C asserted against nothing — a deepseek lane said so, and an
       // openai lane and a zai lane had each named VT and FF as missing from
       // the collapse itself.
-      capabilities: `Breaks things.\u2029${attack} now.\u0085${attack} again.`,
+      // Plus an ANSI conceal sequence: on a terminal it hides everything after
+      // it, including the closing fence and the restated READ-ONLY line, so
+      // roster text changes how the mandate is READ without changing what it
+      // says. The same class as breaking the fence, one layer out. An openai
+      // lane found it.
+      capabilities: `Breaks things.\u2029${attack} now.\u0085${attack} again.\u001b[8m`,
       // A field this renderer does not emit at all. The comment above the
       // fixture used to say it covered EVERY field a roster can carry while
       // `code` — which the canonical fixture at the top of this file shows is
@@ -143,6 +148,10 @@ test('roster text cannot break its block, stand as its own line, or get the last
   // `split('\n')`, which cannot see them either.
   assert.ok(!/[\u000b\u000c\u0085\u2028\u2029]/.test(text),
     'a Unicode line separator survived, so roster text can still start its own line')
+  // No control character except the mandate's OWN newlines, which separate its
+  // paragraphs and are 0x0A. An ESC alone is enough to hide everything after it.
+  assert.ok(!/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/.test(text),
+    'a control character survived, so roster text can change how the mandate renders')
   // A field the renderer ignores must reach nothing at all.
   assert.ok(!text.includes('via code'), 'members[].code reached the mandate unchecked')
   // The content is not deleted — it is still visible as description, which is
@@ -305,7 +314,21 @@ test('a missing install and a missing uv are told apart, and both refuse rather 
       run: () => ({ status: 0, stdout: JSON.stringify({ active: 'default', name: 'Default', members: [{ name: 'Vex' }] }) }),
     })
     assert.equal(swapped.code, 'party_substituted', 'a substituted party was rendered instead of refused')
+    assert.equal(swapped.ok, false, 'a substituted party came back as a success')
     assert.ok(PARTY_PROBLEMS.party_substituted, 'the refusal code has no sentence')
+    // AND `main` HAS TO REFUSE WITHOUT RENDERING. Asserting only the code let a
+    // result carrying `ok: true` — or a main that printed anyway — satisfy the
+    // guard while the resolver's own party was printed at exit 0. An openai lane
+    // called that a P1: the guard checked the label, not the outcome.
+    const err = []
+    const code = main(['review'], {
+      env: { BMAD_PARTY_MODE_ROOT: root },
+      run: () => ({ status: 0, stdout: JSON.stringify({ active: 'default', name: 'Default', members: [{ name: 'Vex' }] }) }),
+      out: () => assert.fail('a substituted party was printed'),
+      err: m => err.push(m),
+    })
+    assert.equal(code, 2, 'a substituted party did not exit 2')
+    assert.match(err.join('\n'), /party_substituted/)
 
     // A ROSTER THIS FILE CANNOT RENDER IS NOT A ROSTER. `members: [null]` threw
     // an uncaught TypeError out of the renderer instead of the documented exit
@@ -314,11 +337,22 @@ test('a missing install and a missing uv are told apart, and both refuse rather 
     // A name of U+0085 alone passes `String.trim()` and is then collapsed to a
     // space and trimmed away by the renderer, so it rendered as a bare `- `.
     // Validation runs through the renderer's own normalisation now.
+    // A name has to be VISIBLE, not merely non-empty after normalisation: a
+    // zero-width space rendered a blank voice under a mandate saying every
+    // voice speaks under the name it is given. Same finding as the U+0085 name,
+    // one character class over, and an openai lane found the second one too.
     for (const members of [[null], [{}], [{ name: '   ' }], [{ name: 'M' }, null],
-      [{ name: String.fromCharCode(0x85) }], [{ name: String.fromCharCode(0x0b) }]]) {
+      [{ name: String.fromCharCode(0x85) }], [{ name: String.fromCharCode(0x0b) }],
+      [{ name: String.fromCharCode(0x200b) }], [{ name: String.fromCharCode(0xfeff) }],
+      // Control characters ALONE. An ESC followed by '[8m' is deliberately not
+      // here: stripping the ESC leaves a visible '[8m', which is a usable name.
+      // That payload belongs in the containment test, and it is there.
+      [{ name: String.fromCharCode(0x1b) }], [{ name: String.fromCharCode(0x07) }]]) {
       const r = resolveParty('x', {
         env: { BMAD_PARTY_MODE_ROOT: root },
-        run: () => ({ status: 0, stdout: JSON.stringify({ active: 'a', name: 'n', members }) }),
+        // `active` matches the requested id, so a member list that slips through
+        // fails on the members rule rather than on the substitution rule.
+        run: () => ({ status: 0, stdout: JSON.stringify({ active: 'x', name: 'n', members }) }),
       })
       assert.equal(r.code, 'resolver_failed',
         `an unusable member list was accepted: ${JSON.stringify(members)}`)

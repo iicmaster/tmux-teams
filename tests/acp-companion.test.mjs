@@ -236,7 +236,9 @@ test('the default claude lane is not put in bare mode, because bare mode cannot 
     const values = JSON.stringify(Object.values(observed))
     assert.ok(!values.includes(DECOY_CREDENTIAL),
       'a credential handed to the child was written into the env dump on disk')
-    assert.deepEqual(Object.keys(observed).sort().filter(k => !['CLAUDE_CODE_SIMPLE', 'CLAUDE_CONFIG_DIR'].includes(k)), [],
+    const allowed = ['CLAUDE_CODE_SIMPLE', 'CLAUDE_CONFIG_DIR',
+      'ANTHROPIC_API_KEY__PRESENT', 'ANTHROPIC_AUTH_TOKEN__PRESENT']
+    assert.deepEqual(Object.keys(observed).sort().filter(k => !allowed.includes(k)), [],
       'the child-env dump carried a key outside its allowlist, which is how a credential reaches disk')
     return observed
   }
@@ -293,6 +295,14 @@ test('the default claude lane is not put in bare mode, because bare mode cannot 
     // so this is where that has to be asserted.
     assert.ok(!JSON.stringify(Object.values(viaEnv)).includes(CREDENTIAL_DECOY),
       `${key} was written into the env dump on disk`)
+    // AND IT REALLY REACHED THE CHILD. Observing only the rule's output cannot
+    // tell a companion that reads the constructed child environment from one
+    // that reads its own process.env — and if the lane allowlist ever dropped
+    // these keys, the child would be put in bare mode with no credential and
+    // could not authenticate, which is the 22-day failure behind a green test.
+    // An openai lane called this a P1 and a zai lane raised the same gap.
+    assert.equal(viaEnv[`${key}__PRESENT`], 'yes',
+      `${key} never reached the child, so bare mode was chosen for a credential the lane does not have`)
   }
 
   // (b2) A profile dir with NO credential — the plan-mode isolation several

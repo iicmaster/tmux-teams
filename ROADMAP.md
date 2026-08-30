@@ -1078,9 +1078,16 @@ cannot drift apart on how a roster is rendered.
 
 It refuses rather than substitutes — `unknown_party` (listing the ids that
 exist), `not_installed` (bmad-party-mode is a separate install this plugin does
-not ship), `uv_missing`, `resolver_failed` — and the skills say to stop and ASK
-before falling back to the invented cast. Someone who typed `--party` asked for
-a specific room.
+not ship), `uv_missing`, `resolver_failed`, and `party_substituted` (the
+resolver answered with a party other than the one asked for) — and the skills
+say to stop and ASK before falling back to the invented cast. Someone who typed
+`--party` asked for a specific room. A usage error in the command itself —
+a missing id, a flag with no value, an extra argument — exits `1` with the usage
+line instead, and the skills document that separately.
+
+`party_substituted` was the fifth code and this list named four for a while
+after it shipped, which is worth noticing: the missing one is the code that
+enforces the sentence it was missing from.
 
 Proven on the lane item 1 repaired: the Code Review Crew mandate came back as a
 debate among Vex, Grumbal, Boundary, Yui and Dana, every saved name present and

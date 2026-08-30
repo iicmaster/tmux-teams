@@ -84,7 +84,7 @@ export function resolveParty(id, { env = process.env, projectRoot = process.cwd(
   // member that passed validation rendered as a bare `- `. An openai lane found
   // the gap between the check and the thing it is checking for.
   const usableMember = m => m !== null && typeof m === 'object' && !Array.isArray(m)
-    && typeof m.name === 'string' && asDescription(m.name) !== ''
+    && typeof m.name === 'string' && VISIBLE.test(asDescription(m.name))
   if (!Array.isArray(parsed?.members) || parsed.members.length === 0
     || !parsed.members.every(usableMember)) {
     return { ok: false, code: 'resolver_failed', available: [] }
@@ -155,11 +155,29 @@ const NEUTRALISED = '[fence removed]'
 // named them.
 const LINE_BREAKS = /[\r\n\u000b\u000c\u0085\u2028\u2029]+/g
 
+// CONTROL CHARACTERS ARE PRESENTATION, AND PRESENTATION IS THE INSTRUCTION HERE.
+// A scene of `\u001b[8m` puts an ANSI terminal into conceal mode and never
+// resets it, so everything after it — the closing fence and the restated
+// READ-ONLY line, which is the entire barrier — is invisible to the operator
+// reading or copying what this prints. Same class as breaking the fence, one
+// layer out: roster text changing how the mandate is READ rather than what it
+// says. An openai lane found it. C0 and C1 are removed outright; the line
+// breaks above are collapsed to a space before this runs, so nothing legible
+// is lost.
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g
+
+// A name has to be VISIBLE, not merely non-empty. A member named with a
+// zero-width space passed a non-empty check and rendered a blank voice under a
+// mandate saying every voice speaks under the name it is given — the same
+// finding as the U+0085 name, one character class over.
+const VISIBLE = /[^\s\u00ad\u200b-\u200f\u2060\ufeff]/
+
 // Collapse line breaks, neutralise the fence delimiters, and defuse a code
 // fence. A persona is a sentence about a person; it never legitimately needs to
 // open a block or a new section.
 const asDescription = (text) => String(text ?? '')
   .replace(LINE_BREAKS, ' ')
+  .replace(CONTROL_CHARS, '')
   .split(DESCRIPTION_FENCE).join(NEUTRALISED)
   .split(DESCRIPTION_FENCE_END).join(NEUTRALISED)
   .replace(/```/g, "'''")

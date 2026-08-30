@@ -22,11 +22,24 @@ const replyError = (id, message = 'mock operation failed') => send({ jsonrpc: '2
 // round 4. The guards read two keys; only those two are written, and a key
 // added here should be one no credential can occupy.
 const ENV_DUMP_KEYS = ['CLAUDE_CODE_SIMPLE', 'CLAUDE_CONFIG_DIR']
+
+// PRESENCE, NEVER VALUE, for the keys that can hold a credential. A guard has
+// to be able to prove the credential REACHED the child — an openai lane and a
+// zai lane both pointed out that observing only the rule's output cannot tell a
+// companion reading the constructed child environment from one reading its own
+// process.env, and that if the lane allowlist ever dropped these keys the child
+// would start bare with nothing to authenticate with, behind a green test. That
+// is the 22-day failure again. So the fixture reports whether each is set and
+// never what it is: the guard becomes possible and no credential reaches disk.
+const CREDENTIAL_PRESENCE_KEYS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN']
 if (process.env.MOCK_ENV_DUMP) {
   const { writeFileSync } = await import('node:fs')
   const observed = {}
   for (const key of ENV_DUMP_KEYS) {
     if (process.env[key] !== undefined) observed[key] = process.env[key]
+  }
+  for (const key of CREDENTIAL_PRESENCE_KEYS) {
+    observed[`${key}__PRESENT`] = process.env[key] ? 'yes' : 'no'
   }
   writeFileSync(process.env.MOCK_ENV_DUMP, JSON.stringify(observed))
 }
