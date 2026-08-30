@@ -32,14 +32,32 @@ const ENV_DUMP_KEYS = ['CLAUDE_CODE_SIMPLE', 'CLAUDE_CONFIG_DIR']
 // is the 22-day failure again. So the fixture reports whether each is set and
 // never what it is: the guard becomes possible and no credential reaches disk.
 const CREDENTIAL_PRESENCE_KEYS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN']
+
+// A RULE, NOT A SECOND HAND-MAINTAINED LIST. The no-credential-to-disk
+// guarantee used to hold only while ENV_DUMP_KEYS and the decoy's carrier
+// stayed disjoint — widen the first with a credential-shaped name and the value
+// is written out while the suite stays green. A zai lane called that a P1. Any
+// key whose NAME looks like a secret is reported by digest, whatever list it
+// was added to.
+const SECRET_SHAPED = /KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|HEADERS|AUTH/i
+
+// A DIGEST, NOT A PRESENCE FLAG. `PRESENT: yes` cannot tell the injected
+// credential from a stale one the companion substituted — an openai lane called
+// that a P1, and it is right: the child would authenticate with the wrong token
+// behind a green test. A truncated SHA-256 pins the exact value and reveals
+// none of it.
+const { createHash } = await import('node:crypto')
+const digest = value => createHash('sha256').update(String(value)).digest('hex').slice(0, 16)
+
 if (process.env.MOCK_ENV_DUMP) {
   const { writeFileSync } = await import('node:fs')
   const observed = {}
   for (const key of ENV_DUMP_KEYS) {
-    if (process.env[key] !== undefined) observed[key] = process.env[key]
+    if (process.env[key] === undefined) continue
+    observed[key] = SECRET_SHAPED.test(key) ? `sha256:${digest(process.env[key])}` : process.env[key]
   }
   for (const key of CREDENTIAL_PRESENCE_KEYS) {
-    observed[`${key}__PRESENT`] = process.env[key] ? 'yes' : 'no'
+    observed[`${key}__DIGEST`] = process.env[key] ? `sha256:${digest(process.env[key])}` : ''
   }
   writeFileSync(process.env.MOCK_ENV_DUMP, JSON.stringify(observed))
 }

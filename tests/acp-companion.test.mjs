@@ -177,7 +177,9 @@ function run(taskId, extraEnv = {}, cwd = mkdtempSync(join(tmpdir(), 'acp-compan
 // 2026-08-30: the real binary as a node subprocess authenticates; the same
 // binary with CLAUDE_CODE_SIMPLE=1 exits 1 at $0.
 //
-// SEVEN arms — and the count was six here while seven were listed below it,
+// SEVEN LABELS over EIGHT bullet lines, because (b5) runs once per credential
+// key — the count said seven and a zai lane counted the lines. The count was
+// six before that while seven were listed,
 // which is the stale-prose shape this comment exists to prevent, committed by
 // the edit that added the seventh. Asserted on the env the CHILD received
 // (MOCK_ENV_DUMP) rather than
@@ -201,6 +203,7 @@ function run(taskId, extraEnv = {}, cwd = mkdtempSync(join(tmpdir(), 'acp-compan
 // (b) also asserts the child was HANDED the profile the decision was taken
 // against, which is what watches the per-lane env allowlist.
 test('the default claude lane is not put in bare mode, because bare mode cannot use a subscription', () => {
+  const sha256Short = value => createHash('sha256').update(String(value)).digest('hex').slice(0, 16)
   const DECOY_CREDENTIAL = 'decoy-credential-must-not-reach-disk'
   const CREDENTIAL_DECOY = 'fixture-not-a-real-credential-must-not-reach-disk'
   const dumpOf = (taskId, extraEnv) => {
@@ -237,7 +240,7 @@ test('the default claude lane is not put in bare mode, because bare mode cannot 
     assert.ok(!values.includes(DECOY_CREDENTIAL),
       'a credential handed to the child was written into the env dump on disk')
     const allowed = ['CLAUDE_CODE_SIMPLE', 'CLAUDE_CONFIG_DIR',
-      'ANTHROPIC_API_KEY__PRESENT', 'ANTHROPIC_AUTH_TOKEN__PRESENT']
+      'ANTHROPIC_API_KEY__DIGEST', 'ANTHROPIC_AUTH_TOKEN__DIGEST']
     assert.deepEqual(Object.keys(observed).sort().filter(k => !allowed.includes(k)), [],
       'the child-env dump carried a key outside its allowlist, which is how a credential reaches disk')
     return observed
@@ -301,8 +304,13 @@ test('the default claude lane is not put in bare mode, because bare mode cannot 
     // these keys, the child would be put in bare mode with no credential and
     // could not authenticate, which is the 22-day failure behind a green test.
     // An openai lane called this a P1 and a zai lane raised the same gap.
-    assert.equal(viaEnv[`${key}__PRESENT`], 'yes',
-      `${key} never reached the child, so bare mode was chosen for a credential the lane does not have`)
+    // THE EXACT VALUE, not merely something. `PRESENT: yes` could not tell the
+    // injected credential from a stale one the companion had substituted, so a
+    // child authenticating with the wrong token passed — an openai lane called
+    // that a P1. The fixture reports a truncated SHA-256, which pins the value
+    // and reveals none of it.
+    assert.equal(viaEnv[`${key}__DIGEST`], `sha256:${sha256Short(CREDENTIAL_DECOY)}`,
+      `${key} did not reach the child with the value the lane was given`)
   }
 
   // (b2) A profile dir with NO credential — the plan-mode isolation several

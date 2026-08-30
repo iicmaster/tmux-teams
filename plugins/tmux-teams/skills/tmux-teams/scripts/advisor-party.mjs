@@ -146,6 +146,7 @@ const DESCRIPTION_FENCE_END = 'PARTY-ROSTER>>>'
 // honest: a reader sees that something was neutralised rather than wondering
 // what went missing.
 const NEUTRALISED = '[fence removed]'
+const MARKUP_NEUTRALISED = '[markup removed]'
 
 // `[\r\n]` is not the set of line breaks. U+2028 LINE SEPARATOR, U+2029
 // PARAGRAPH SEPARATOR, U+0085 NEL, U+000B VERTICAL TAB and U+000C FORM FEED are
@@ -155,29 +156,59 @@ const NEUTRALISED = '[fence removed]'
 // named them.
 const LINE_BREAKS = /[\r\n\u000b\u000c\u0085\u2028\u2029]+/g
 
-// CONTROL CHARACTERS ARE PRESENTATION, AND PRESENTATION IS THE INSTRUCTION HERE.
-// A scene of `\u001b[8m` puts an ANSI terminal into conceal mode and never
-// resets it, so everything after it — the closing fence and the restated
-// READ-ONLY line, which is the entire barrier — is invisible to the operator
-// reading or copying what this prints. Same class as breaking the fence, one
-// layer out: roster text changing how the mandate is READ rather than what it
-// says. An openai lane found it. C0 and C1 are removed outright; the line
-// breaks above are collapsed to a space before this runs, so nothing legible
-// is lost.
-const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g
+// CONTROL AND FORMAT CHARACTERS ARE PRESENTATION, AND PRESENTATION IS THE
+// INSTRUCTION HERE. A scene of ESC[8m puts an ANSI terminal into conceal mode
+// and never resets it, so everything after it — the closing fence and the
+// restated READ-ONLY line, which is the entire barrier — is invisible to the
+// operator reading or copying what this prints. U+202E RIGHT-TO-LEFT OVERRIDE
+// does the same job in a bidi-aware renderer by reordering it. Same class as
+// breaking the fence, one layer out: roster text changing how the mandate is
+// READ rather than what it says.
+//
+// THIS WAS A DENYLIST FOR THREE ROUNDS AND A REVIEW LANE FOUND THE NEXT
+// CODEPOINT OUTSIDE IT EVERY TIME — first the ASCII pair alone, then U+2028,
+// U+2029 and U+0085, then U+000B and U+000C, then C0/C1, then the bidi
+// overrides. It is a Unicode PROPERTY now: `\p{C}` is Other — control, format,
+// surrogate, private-use and unassigned — which covers every one of those and
+// the ones nobody has thought of. Line breaks are collapsed to a space first,
+// so nothing legible is lost to this.
+const CONTROL_CHARS = /\p{C}/gu
 
-// A name has to be VISIBLE, not merely non-empty. A member named with a
-// zero-width space passed a non-empty check and rendered a blank voice under a
-// mandate saying every voice speaks under the name it is given — the same
-// finding as the U+0085 name, one character class over.
-const VISIBLE = /[^\s\u00ad\u200b-\u200f\u2060\ufeff]/
+// HTML IS PRESENTATION TOO. `<details><summary>x</summary>` left open before
+// the closing fence collapses the fence and the READ-ONLY tail inside a
+// disclosure in any renderer that permits raw HTML — the ESC[8m attack with
+// different bytes. An openai lane found it. Tag-shaped sequences are
+// neutralised; `a < b` is left alone because it is not one.
+const HTML_TAG = /<\/?[a-zA-Z][^>]*>/g
+
+// A name has to be VISIBLE, not merely non-empty. After `\p{C}` is gone this
+// is the remainder: separators, and the characters that ARE letters or symbols
+// by category and still render as nothing.
+//
+// THIS HALF IS A DENYLIST AND IS THEREFORE INCOMPLETE, and saying so is the
+// point — U+3164 HANGUL FILLER is `\p{Lo}` and U+2800 BRAILLE PATTERN BLANK is
+// `\p{So}`, so no property separates them from real letters and symbols. Two
+// lanes found this list one codepoint short in round 8 after it was written in
+// round 7. A name made only of the next one nobody has named will still pass;
+// what it cannot do any more is carry a control or format character, which is
+// the half that had a property available.
+const BLANK_BUT_LETTERED = '\u115f\u1160\u3164\uffa0\u2800\u180e\u2061-\u2064\ufe00-\ufe0f\u034f'
+const VISIBLE = new RegExp(`[^\\s\\p{Z}${BLANK_BUT_LETTERED}]`, 'u')
 
 // Collapse line breaks, neutralise the fence delimiters, and defuse a code
 // fence. A persona is a sentence about a person; it never legitimately needs to
 // open a block or a new section.
+// ORDER MATTERS AND IT IS NOT ARBITRARY. The control strip DELETES, and
+// deletion is the reconstruction class this file has been bitten by twice — so
+// it runs BEFORE the fence is neutralised, never after: `PARTY-ROSTER>>ESC>`
+// becomes an exact delimiter the moment the ESC is removed, and the
+// substitution that follows is what catches it. An openai lane raised the
+// reversed order as a P1; this order is the answer and there is a fixture for
+// that exact payload.
 const asDescription = (text) => String(text ?? '')
   .replace(LINE_BREAKS, ' ')
   .replace(CONTROL_CHARS, '')
+  .replace(HTML_TAG, MARKUP_NEUTRALISED)
   .split(DESCRIPTION_FENCE).join(NEUTRALISED)
   .split(DESCRIPTION_FENCE_END).join(NEUTRALISED)
   .replace(/```/g, "'''")
@@ -232,8 +263,13 @@ export function main(argv, { env = process.env, out = console.log, err = console
   }
   const result = resolveParty(id, { env, projectRoot, run })
   if (!result.ok) {
+    // THE REFUSAL PATH PRINTS ROSTER-DERIVED TEXT TOO. The ids come from the
+    // same editable party store the mandate defends against, and they reached
+    // the operator's terminal raw — so a party id embedding ESC[8m would
+    // conceal the very list the refusal exists to offer as its remedy. A zai
+    // lane found the one output path the presentation fix had not covered.
     err(`${result.code}: ${PARTY_PROBLEMS[result.code]}`)
-    if (result.available.length) err(`available: ${result.available.join(', ')}`)
+    if (result.available.length) err(`available: ${result.available.map(asDescription).filter(Boolean).join(', ')}`)
     return 2
   }
   out(renderPartyMandate(result.party))
