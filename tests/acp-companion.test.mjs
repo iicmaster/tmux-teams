@@ -168,11 +168,6 @@ function run(taskId, extraEnv = {}, cwd = mkdtempSync(join(tmpdir(), 'acp-compan
   return runAs('mock', taskId, extraEnv, cwd, timeoutSec)
 }
 
-// The one thing kept when the phase subsystem was deleted. A repository that
-// was governed by it could not run a raw companion without the controller's
-// exact reservation; letting an upgrade quietly turn that into an ungoverned
-// repository is the single behaviour change nobody would have seen. It refuses
-// instead. Goes red if either refusal is dropped.
 // BARE MODE DROPS OAUTH, and for 22 days nothing here knew. The CLI's --help for
 // CLAUDE_CODE_SIMPLE=1 says "OAuth and keychain are never read"; since 8a05d6d
 // the companion set it for every claude lane, so the operator's own claude.ai
@@ -192,7 +187,7 @@ function run(taskId, extraEnv = {}, cwd = mkdtempSync(join(tmpdir(), 'acp-compan
 //   (b)  ANTHROPIC_AUTH_TOKEN -> bare      · keeping it unconditional passes
 //   (b4) ANTHROPIC_API_KEY   -> bare
 //   (b2) profile, no credential -> not bare · only the real rule passes a+b+b2
-//   (b3) apiKeyHelper        -> bare
+//   (b3) apiKeyHelper ALONE  -> not bare · measured, not read off the help text
 //   (c)  explicit CLAUDE_CODE_SIMPLE wins, asserted in BOTH directions against
 //        profiles whose defaults are the opposite
 //
@@ -204,7 +199,14 @@ test('the default claude lane is not put in bare mode, because bare mode cannot 
     const dump = join(cwd, 'child-env.json')
     const r = runAs('claude', taskId, { MOCK_ENV_DUMP: dump, ...extraEnv }, cwd)
     assert.ok(existsSync(dump), `the mock never started, so nothing was observed; stderr:\n${r.stderr}`)
-    return JSON.parse(readFileSync(dump, 'utf8'))
+    const observed = JSON.parse(readFileSync(dump, 'utf8'))
+    // THE DUMP IS AN ALLOWLIST. It serialised the child's whole environment,
+    // so a real ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN in the operator's
+    // shell was written in plaintext to a temp file nothing removes — found by
+    // an openai lane in round 4. Widening it again should fail here.
+    assert.deepEqual(Object.keys(observed).sort().filter(k => !['CLAUDE_CODE_SIMPLE', 'CLAUDE_CONFIG_DIR'].includes(k)), [],
+      'the child-env dump carried a key outside its allowlist, which is how a credential reaches disk')
+    return observed
   }
 
   // (a) No profile dir: the operator's default login. Bare mode here forbids
@@ -249,11 +251,18 @@ test('the default claude lane is not put in bare mode, because bare mode cannot 
   assert.notEqual(isolated.CLAUDE_CODE_SIMPLE, '1',
     'a profile with no credential was put in bare mode, which forbids the OAuth it would have to fall back on')
 
-  // (b3) A profile using apiKeyHelper — the other credential bare mode accepts.
+  // (b3) A profile using apiKeyHelper. This asserted BARE on the strength of
+  // the CLI help text naming apiKeyHelper beside ANTHROPIC_API_KEY — the one
+  // arm of the rule that rested on reading prose rather than on a run, which is
+  // what a zai lane said in round 4. Measured that day with the real binary and
+  // a real helper script: "Not logged in · Please run /login",
+  // duration_api_ms 0, the API never contacted. The help text scopes
+  // apiKeyHelper to `--settings`, not to a profile directory, so pinning such a
+  // profile to bare mode recreates the 22-day refusal.
   const helper = mkdtempSync(join(tmpdir(), 'profile-helper-'))
   writeFileSync(join(helper, 'settings.json'), JSON.stringify({ apiKeyHelper: '/bin/echo key' }))
-  assert.equal(dumpOf('bare-helper', { CLAUDE_CONFIG_DIR: helper }).CLAUDE_CODE_SIMPLE, '1',
-    'a profile whose credential is an apiKeyHelper lost bare mode')
+  assert.notEqual(dumpOf('bare-helper', { CLAUDE_CONFIG_DIR: helper }).CLAUDE_CODE_SIMPLE, '1',
+    'a profile whose only credential is an apiKeyHelper was pinned to bare mode, which refuses it')
 
   // (c) An explicit operator choice wins over the rule in both directions.
   const forcedOn = dumpOf('bare-forced-on', { CLAUDE_CONFIG_DIR: '', CLAUDE_CODE_SIMPLE: '1' })
@@ -266,6 +275,11 @@ test('the default claude lane is not put in bare mode, because bare mode cannot 
   assert.equal(forcedOff.CLAUDE_CODE_SIMPLE, '0', 'an explicit CLAUDE_CODE_SIMPLE=0 was overridden by the default rule')
 })
 
+// The one thing kept when the phase subsystem was deleted. A repository that
+// was governed by it could not run a raw companion without the controller's
+// exact reservation; letting an upgrade quietly turn that into an ungoverned
+// repository is the single behaviour change nobody would have seen. It refuses
+// instead. Goes red if either refusal is dropped.
 test('a repository still carrying a retired phase gate is refused, not silently downgraded', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-retired-gate-'))
   mkdirSync(join(cwd, '.tmux-teams'), { recursive: true })

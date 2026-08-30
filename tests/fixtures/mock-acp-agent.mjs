@@ -14,9 +14,21 @@ const replyError = (id, message = 'mock operation failed') => send({ jsonrpc: '2
 // what the companion's source appears to compute. Added for the bare-mode fix —
 // the claim under test is "the default claude lane no longer gets
 // CLAUDE_CODE_SIMPLE=1", and only the child can say what it received.
+//
+// IT WRITES AN ALLOWLIST, NOT THE ENVIRONMENT. Serialising all of `process.env`
+// put whatever credential the operator's shell was carrying —
+// ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, anything a lane forwards — in
+// plaintext into a temp file the test never removes. An openai lane found it in
+// round 4. The guards read two keys; only those two are written, and a key
+// added here should be one no credential can occupy.
+const ENV_DUMP_KEYS = ['CLAUDE_CODE_SIMPLE', 'CLAUDE_CONFIG_DIR']
 if (process.env.MOCK_ENV_DUMP) {
   const { writeFileSync } = await import('node:fs')
-  writeFileSync(process.env.MOCK_ENV_DUMP, JSON.stringify(process.env))
+  const observed = {}
+  for (const key of ENV_DUMP_KEYS) {
+    if (process.env[key] !== undefined) observed[key] = process.env[key]
+  }
+  writeFileSync(process.env.MOCK_ENV_DUMP, JSON.stringify(observed))
 }
 let currentSessionId = process.env.MOCK_SESSION_ID ?? 'sess_mock'
 let configuredModel = process.env.MOCK_MODEL ?? process.env.ACP_EXPECT_MODEL ?? 'gpt-mock'

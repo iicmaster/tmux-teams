@@ -2717,10 +2717,20 @@ const profileCarriesToken = (dir) => {
     // Bare mode reads AUTH_TOKEN. The help text is narrower than the binary,
     // and the control is what makes that a measurement rather than an opinion.
     //
-    // `apiKeyHelper` is the other credential bare mode accepts, per that same
-    // help text. A profile using it is as usable in bare mode as one with a
-    // literal token.
-    return typeof parsed?.apiKeyHelper === 'string' && parsed.apiKeyHelper.length > 0
+    // `apiKeyHelper` IS NOT ACCEPTED, and it was until a zai lane pointed out
+    // that this arm — alone among the three — rested on a reading of prose
+    // rather than on a run, and that the help text scopes apiKeyHelper to
+    // `--settings` rather than to a profile directory. Measured 2026-08-30,
+    // the same way as the AUTH_TOKEN arm above:
+    //
+    //   CLAUDE_CONFIG_DIR=<profile whose settings.json has only apiKeyHelper>
+    //   CLAUDE_CODE_SIMPLE=1  ->  "Not logged in · Please run /login",
+    //                             duration_api_ms 0, the API never contacted
+    //
+    // So a profile carrying only an apiKeyHelper must NOT be pinned to bare
+    // mode: doing so recreates the exact 22-day refusal this change exists to
+    // end. It resolves to not-bare and keeps the login it can actually use.
+    return false
   } catch {
     return false
   }

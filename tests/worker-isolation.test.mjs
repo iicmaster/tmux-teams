@@ -11,7 +11,8 @@
 //
 // `CLAUDE_CODE_SIMPLE=1` is what `claude --bare` sets — and bare mode ALSO reads
 // no OAuth and no keychain, so it is only safe for a worker whose profile
-// carries a token (see the bare-mode test below). It is the lever this
+// carries a credential — an ANTHROPIC_API_KEY or an ANTHROPIC_AUTH_TOKEN, and
+// NOT an apiKeyHelper, which was measured refused. It is the lever this
 // process can reach: the ACP adapter spawns the CLI itself so its argv is not
 // ours, but the child environment is. That it works was MEASURED, not read off
 // the help text — a project hook writing a marker file fired on a plain run and
