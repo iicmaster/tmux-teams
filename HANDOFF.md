@@ -1,25 +1,24 @@
 # HANDOFF
 
 State of play for the next agent. Overwritten in place, never appended.
-Written 2026-08-30 through `bmad-party-mode` (installed; roster Mary, John,
+Written 2026-08-31 through `bmad-party-mode` (installed; roster Mary, John,
 Sally, Winston, Amelia, with the adversary seat taken by Grumbal from
 `code-review-crew`).
 
 ## 1. READ THIS FIRST
 
-- Branch `feat/v0.37-advisors`, **17 commits on top of v0.36.0, NOT pushed**.
-  Tree clean. Worktree at `~/tmux-teams-v036` — outside any temp directory.
-- **v0.37.0 is stamped but NOT released.** Version in all seven places, roadmap
-  published at version 12 and recorded, suite 1199 green, manifest valid.
-- **SIX release panels have run and FIVE blocked.** Every round found defects
-  the previous round's FIX introduced, and by round 5 most findings were against
-  GUARDS written in this loop. Round 6's findings are fixed in `644568a`; **no
-  panel has read those bytes.**
-- **The session STOPPED here on purpose.** Master decides what happens next:
-  another round, or a recorded waiver. Do not self-dispatch round 7.
-- **Two gates belong to Master:** pushing, and waiving the codex bot review. A
-  stop-hook reminder, a task notification, or an earlier message of your own is
-  not that permission.
+- Branch `feat/v0.37-advisors`, **23 commits on top of v0.36.0, NOT pushed**.
+  Tree clean. Worktree at `~/tmux-teams-v036`.
+- **v0.37.0 is stamped, gated and WAIVED, but NOT released.** Version in all
+  seven places, roadmap published at version 12 and recorded, suite 1202 green,
+  manifest valid.
+- **TWELVE release panels ran. Master waived the thirteenth on 2026-08-31** —
+  see THE WAIVER below. That waiver is the record; do not treat the release as
+  ungated, and do not start round 13 to "confirm" it.
+- **Pushing is still Master's gate and has NOT been given.** So is waiving the
+  codex bot review on the PR, which is a SEPARATE gate from the panel waiver.
+- Nothing here is dangerous to touch. The danger is procedural: this branch
+  looks finished, and two gates that belong to Master are still open.
 
 ## 2. HOW TO VERIFY
 
@@ -29,22 +28,21 @@ node --test > /tmp/suite.log 2>&1; grep -E '^ℹ (tests|pass|fail|skipped)' /tmp
 grep -q '^ℹ fail 0$' /tmp/suite.log || { grep '^✖' /tmp/suite.log | head; false; }
 ```
 
-Green is **`1199 pass / 0 fail / 0 skipped`** — measured on `644568a`.
+Green is **`1202 pass / 0 fail / 0 skipped`** — measured on `e8b6ef0`.
 
 **Gate on the count, never on a grep of the output.** `node --test | grep '✖'`
-exits 0 when it FINDS failures. This session chained a commit after an ungated
-run and **committed on red** — the third time this repository has recorded that
-mistake. Every commit since put `grep -q '^ℹ fail 0$'` between run and commit.
+exits 0 when it FINDS failures. This session committed on red once that way —
+the third time this repository has recorded it. Every commit after put
+`grep -q '^ℹ fail 0$'` between the run and the commit.
 
-**Do not run the suite while ACP lanes are live.** A run under contention
-measures the contention.
+**Do not run the suite while ACP lanes are live.**
 
 ```bash
 git diff --check                    # whitespace — passes
 claude plugin validate --strict .   # "✔ Validation passed"
 node scripts/roadmap-gate.mjs       # 0 — the published page is current
 node scripts/gate-required.mjs      # 2 — panel owed; run only on a committed tree
-cd ~/tt-panel && python3 read-r6.py # the last panel's verdicts and identities
+cd ~/tt-panel && python3 read-r12.py   # the last panel's verdicts and identities
 ```
 
 ## 3. STATE
@@ -56,19 +54,17 @@ diagnosis was wrong for 22 days.** Not a stale `.credentials.json` against an
 unreachable keychain: `CLAUDE_CODE_SIMPLE=1`, set on every claude lane since
 `8a05d6d` to strip repository hooks, forbids OAuth and keychain outright.
 
-Bare mode is now the default only when a credential is actually REACHABLE —
-in the lane's own environment, or in the `settings.json` of the profile
-`CLAUDE_CONFIG_DIR` names. Both sources count; reading only the profile was
-itself a regression that silently handed repository hooks back to
-environment-credentialled lanes.
+Bare mode is the default only when a credential is REACHABLE — in the lane's own
+environment, or in the `settings.json` of the profile `CLAUDE_CONFIG_DIR` names.
 
-- `acp-companion.mjs:2697` `CREDENTIAL_ENV_KEYS` · `:2698` `profileCarriesToken`
-  · `:2771` `envCarriesToken` · `:2774` `claudeBareByDefault`.
-- An explicit `CLAUDE_CODE_SIMPLE` still wins, and an EMPTY one is not explicit.
-- Guards: `tests/acp-companion.test.mjs` (seven arms, listed in its header) and
-  `tests/worker-isolation.test.mjs` (three, profile source only).
+- `acp-companion.mjs:2711` `CREDENTIAL_ENV_KEYS` · `:2712` `profileCarriesToken`
+  · `:2785` `envCarriesToken` · `:2788` `claudeBareByDefault`.
+- An explicit `CLAUDE_CODE_SIMPLE` wins; an EMPTY one is not explicit.
+- Guards: `tests/acp-companion.test.mjs` (seven labelled cases, nine `dumpOf`
+  runs — both numbers are in its header because one alone rotted three times)
+  and `tests/worker-isolation.test.mjs` (three, profile source only).
 
-**The credential matrix, measured against the real binary 2026-08-30:**
+**The credential matrix, measured against the real binary, 2026-08-30:**
 
 | credential | from the profile | from the environment |
 |---|---|---|
@@ -78,105 +74,99 @@ environment-credentialled lanes.
 | nothing | refused, no API call | — |
 
 A 401 means the credential was READ AND TRIED. **`duration_api_ms` is 0 for a
-401 exactly as it is for "never found", so the MESSAGE is the discriminator and
-the duration is not** — reading the number alone would have removed
-`ANTHROPIC_API_KEY`, the one credential the CLI's help text names outright.
-
-**Measured end to end:** a real dispatch on the default claude lane returned
-`effective_identity: claude-fable-5`, matched, outbox written.
+401 exactly as for "never found", so the MESSAGE is the discriminator** —
+reading the number alone would have removed `ANTHROPIC_API_KEY`.
 
 **2. `--party <id>` on all three `*-advisor` skills.**
 
-- `advisor-party.mjs:43` `resolveParty` — shells to bmad-party-mode's own
-  `resolve_party.py` through `uv`; that skill is a SEPARATE install this plugin
-  does not ship, so `not_installed` is an ordinary outcome.
-- `advisor-party.mjs:26` `PARTY_PROBLEMS` — the closed refusal codes, including
-  `:31` `party_substituted`, enforced at `:99`: the resolver's `active` must
-  equal the id that was asked for.
-- `advisor-party.mjs:148` `NEUTRALISED` · `:156` `LINE_BREAKS` · `:161`
-  `asDescription` · `:168` `renderPartyMandate`.
-- Guards: `tests/advisor-party.test.mjs`, nine tests.
-- Exit `0` success, `2` a named refusal, `1` a usage error. All three
+- `advisor-party.mjs:99` — the resolver's `active` must equal the id asked for;
+  `:31` `party_substituted` is the code when it does not.
+- `:148` `NEUTRALISED` — substitution, never deletion. Deletion joins what sat
+  either side and rebuilt both a fence delimiter and a code fence.
+- `:175` `CONTROL_CHARS = /\p{C}/gu` · `:202` `MARKUP_OPENER` · `:256`
+  `CHARACTER_REFERENCE` · `:271` `VISIBLE`.
+- Exit `0` success, `2` a named refusal, `1` a usage error — all three
   documented in all three SKILL.md files.
+- Guards: `tests/advisor-party.test.mjs`, nine tests.
 
 **Measured live:** the fable lane answered as Vex / Grumbal / Boundary / Yui /
 Dana with no invented names.
 
-### The panel record
+### THE WAIVER — Master, 2026-08-31
 
-| round | bytes | gemini | openai | deepseek | zai |
-|---|---|---|---|---|---|
-| 2 | `aef8472` | accept ×2 | block ×2 | block | block + accept |
-| 3 | `ff4a415` | accept ×2 | block ×2 | block | accept + block |
-| 4 | `4a9…`(pre-`f01eece`) | accept ×2 | block ×2 | block | accept ×2 |
-| 5 | `6037bec` | accept ×2 | block ×2 | no_outbox ×2 | accept ×2 |
-| 6 | `644f612` | accept + no_outbox | block ×2 | accept + no_outbox | accept + block |
+**Twelve panel rounds ran; eleven blocked. Master waived the thirteenth.** This
+line is the record the release flow requires; it belongs in the PR body and the
+GitHub release notes verbatim:
+
+> `Gate: panel waived by Master after 12 rounds.` Rounds 11 and 12 each had
+> **gemini accept both packets and zai accept both packets**; only the openai
+> lane blocked, on P2/P3 findings. Every finding from all twelve rounds is
+> fixed or explicitly refused with its reason in the code. The final commit
+> `e8b6ef0` has not been read by a panel.
 
 **Identity, recorded because direct ACP pins nothing:** `agy` =
 `gemini-3.7-flash-high`, matched · `codex` = `gpt-5.6-sol[ultra]`, unverified ·
-`qwen` is reached with `ACP_MODEL=opus` and a `CLAUDE_CONFIG_DIR` pointing at
-the qwen profile; that alias resolves to a deepseek model here, which is why the
-family is recorded as deepseek · `zai` = `default`, unverified, because its
-gateway announces no model name back.
+`qwen` reached with `ACP_MODEL=opus` and the qwen profile, which resolves to a
+deepseek model here · `zai` = `default`, unverified, gateway announces no name.
 
-**Findings per round: 4 → 13 → 6 → 13 → 6 → 6.** P1s stopped after round 3.
-Rounds 5 and 6 were almost entirely findings against guards written in this
-loop, plus prose that had not caught up with the code.
+**Findings per round: 4, 13, 6, 13, 6, 6, 6, 10, 4, 2, 4, 4.** P1s stopped after
+round 3 and returned twice. From round 5 on, most findings were against GUARDS
+written during the loop rather than against the release's own scope.
 
-**Between rounds, the built-in `advisor` found five more** — the backtick fence
-rebuilt by delimiter deletion, the `unknown_group` substring exemption, the
-`available: [null]` crash, the dangling `- Vex — `, and the environment-credential
-regression. Each was REPRODUCED on the committed bytes before being changed.
-That order (advisor → fix → panel) is cheaper than a panel round and caught
-things the panel had passed.
+**Five classes were enumerated and had to become rules** — this is the most
+reusable thing the twelve rounds produced:
 
-**`qwen` and `agy` have each ended `no_outbox`.** Session ids are in the tails of
-`~/tt-panel/r<N>-<lane>-<part>.log`. Resume is worth trying for the SAME bytes;
-for changed bytes it would record a review of a diff that no longer exists.
+| class | started as | ended as |
+|---|---|---|
+| line breaks | `[\r\n]` | seven codepoints, then subsumed |
+| control/format | hand-kept C0/C1 | `\p{C}` |
+| blank-rendering names | ten codepoints | `\p{Default_Ignorable_Code_Point}` + U+2800 |
+| character references | `&#?[a-zA-Z0-9]{1,10};` | numeric any form + a closed named set |
+| "looks like a secret" | six substrings | INVERTED — name what is safe to print |
+
+**One finding was REFUSED with its reasoning in the code**: `queue<limit` is
+still neutralised, because `<` before an ASCII letter is TAG OPEN in the HTML
+tokenizer and really can swallow the closing fence, while `<` before a digit is
+not. See `advisor-party.mjs` above `MARKUP_OPENER`.
+
+**Three earlier objections were refused on measurement** and are in section 5.
 
 ### Packets
 
-`~/tt-panel/brief6-{src,tst}.md`, built from the eleven files
-`node scripts/gate-required.mjs` PRINTS — never from memory. Each carries a
-round note naming what changed and, where an objection was REFUSED, the
-measurement that refused it.
+`~/tt-panel/brief12-{src,tst}.md`, built from the eleven files
+`node scripts/gate-required.mjs` PRINTS — never from memory.
 
 ## 4. DO NOT
 
 - **Do not push, and do not open the PR, without Master saying so in their own
-  message.**
-- **Do not waive the codex bot yourself.** Only Master waives it, and an
-  unrecorded waiver is the silent skip.
-- **Do not fix a claim by making its excuse bigger, and never stop at the line a
-  finding named.** Every round here produced defects in the previous round's
-  fix, and the neighbours of a finding are where they were: `members: [null]`
-  was fixed while `available: [null]` threw the same way one field over;
-  validating a member's name left `- Vex — ` rendering with nothing after it;
-  the `unknown_group` exemption written to close a fail-open reopened it through
-  a substring match.
+  message.** The panel waiver is NOT that permission, and neither is a stop hook.
+- **Do not waive the codex bot yourself.** It is a separate gate from the panel.
+- **Do not start round 13.** Master closed the loop. Findings were still
+  arriving, and would have continued; that was the reason for the waiver, not an
+  argument against it.
 - **Never neutralise text by DELETING it.** Deletion joins what sat either side:
   `PPARTY-ROSTER>>>ARTY-ROSTER>>>` rebuilt an exact delimiter, and
-  "``<<<PARTY-ROSTER`" rebuilt a code fence. Iterating deletion to a fixed point
-  closed both and bought a crafted-input stall (~17,000 whole-string passes on
-  256 KiB). Substitution with a marker cannot join anything — measured 0 ms.
+  "``<<<PARTY-ROSTER`" rebuilt a code fence. Substitution cannot, and is linear.
+- **Over-neutralising is a defect too.** The mandate carries what the operator
+  saved. `risk<10%`, `n<3`, `Rock &roll;`, `Tom &Harry;`, `AT&T`, `Q&A` and
+  `a & b` must survive intact, and are asserted to.
 - **Do not read `duration_api_ms` as proof no API call was made.** A 401
   reports 0.
-- **Do not let a test inherit the runner's credentials.** The bare-mode arms
-  would have failed on any machine whose shell exports `ANTHROPIC_API_KEY` or
-  `ANTHROPIC_AUTH_TOKEN` while CI stayed green. They scrub all three variables
-  now. This repository has already lost two releases to a local/CI gap.
-- **Do not let a test fixture serialise an environment.** `MOCK_ENV_DUMP` wrote
-  the child's whole `process.env` to an unremoved temp file.
+- **Do not let a test inherit the runner's credentials**, and do not let a
+  fixture serialise an environment. Both happened here.
+- **`tests/fixtures/mock-acp-agent.mjs` has a 64 KiB HARD BOUND** the companion
+  enforces on an adapter entry. Twelve lines of comment took it past and 39
+  tests went red *naming a checksum*, because one condition answered three facts
+  with one sentence. Both halves are fixed and guarded; explain in the TEST.
 - **Do not chain an edit behind `grep && python`.** One did here, the grep
-  matched nothing, the edit never ran, and the next command reported success —
-  caught only because a test stayed red with the identical message.
-- **Do not read a panel outbox by stripping `TEAM_DONE` alone.** A blocking lane
-  ends `TEAM_BLOCKED`, and the reader silently reported "not JSON" for a
-  four-finding block. `~/tt-panel/read-r*.py` strips all three sentinels now.
-- **Do not work in `$TMPDIR` or the session scratchpad.** A worktree there was
-  destroyed TWICE in the v0.36 session, once losing `.git` itself.
+  matched nothing, the edit never ran, and the next command reported success.
+- **Do not read a panel outbox by stripping `TEAM_DONE` alone** — a blocking
+  lane ends `TEAM_BLOCKED`. `~/tt-panel/read-r*.py` strips all three sentinels.
+- **Do not name a test variable `secret`.** The repository's pre-commit scanner
+  blocks the commit, correctly: it cannot tell a decoy from a credential by name.
 - **Do not re-run `~/tt-panel/dispatch-r<N>.sh` to retry one lane.** Its `go()`
-  opens with `rm -rf "$dir"` and destroys all eight run directories.
+  opens with `rm -rf "$dir"`.
+- **Do not work in `$TMPDIR` or the session scratchpad.**
 
 ## 5. DECIDED — DO NOT RELITIGATE
 
@@ -184,52 +174,53 @@ measurement that refused it.
   overruled on measurement: it answers).
 - **`apiKeyHelper` is NOT one** (round-4 objection, upheld on measurement).
 - **A credential in the environment counts as well as one in a profile.**
-- **A roster is contained, not censored.** Its text stays visible as
-  description, fenced, with READ-ONLY restated after it.
-- **What that containment PROVES is structural**: roster text cannot break the
-  block, stand as its own instruction line, or get the last word. A persona that
-  reads as an instruction INLINE is still delivered. The test name says so.
-- **An advisor REFUSES an unknown or substituted party** rather than falling
-  back to the invented cast.
+- **`queue<limit` is neutralised** (round-12 objection, refused on the HTML
+  tokenizer's tag-open rule).
+- **A roster is contained, not censored**, and what containment PROVES is
+  structural: roster text cannot break the block, stand as its own instruction
+  line, or get the last word. A persona that reads as an instruction INLINE is
+  still delivered.
+- **An advisor REFUSES an unknown or substituted party.**
 - **MCP stays read-only; the writing surface is a skill** — ADR 0007.
 - **Master, 2026-08-30: no version pin in `~/agent-skills`.** Release flow step
   10 is retired (`aa0ab7c`).
+- **Master, 2026-08-31: the panel is waived after twelve rounds.**
 
 ## 6. UNPROVEN
 
-- **No panel has read `644568a`.** Round 6's fixes are unreviewed.
+- **No panel has read `e8b6ef0`.** The waiver covers this; the fact stands.
 - **CI has never run these bytes.** CI is Linux with a clean HOME; two releases
   once shipped on a red CI.
-- **`--party` has been exercised on the claude/fable lane only.** The codex and
-  agy advisor skills document the same command; neither was dispatched with it.
+- **`--party` has been exercised on the claude/fable lane only.**
 - **`apiKeyHelper` was measured from a profile only**, not from the environment.
-- **No lane has been dispatched end to end through v0.36's readiness brake in
-  anger.**
+- **The sanitizer is measured against the payloads named in this file and in the
+  tests.** It is not proved complete, and the comments say which parts are a
+  closed spec and which are a bounded denylist.
 - **Nothing has ever installed from `agent-plugins/tmux-teams/`.**
 
 ## 7. WHERE THINGS LIVE
 
 ```
-~/tmux-teams-v036                          the worktree — NOT in a temp dir
+~/tmux-teams-v036                          the worktree
 ROADMAP.md                                 the standing goal; gated, not exempt
 plugins/tmux-teams/skills/tmux-teams/scripts/
-  acp-companion.mjs:2697                   CREDENTIAL_ENV_KEYS
-  acp-companion.mjs:2698                   profileCarriesToken
-  acp-companion.mjs:2771                   envCarriesToken
-  acp-companion.mjs:2774                   claudeBareByDefault
-  advisor-party.mjs:26                     PARTY_PROBLEMS — the closed codes
-  advisor-party.mjs:99                     the no-substitution check
+  acp-companion.mjs:2711                   CREDENTIAL_ENV_KEYS
+  acp-companion.mjs:2712                   profileCarriesToken
+  acp-companion.mjs:2785                   envCarriesToken
+  acp-companion.mjs:2788                   claudeBareByDefault
+  advisor-party.mjs:31,99                  party_substituted and its check
   advisor-party.mjs:148                    NEUTRALISED — substitution, not deletion
-  advisor-party.mjs:156                    LINE_BREAKS — all five separators
-  acp-dispatch.mjs                         the operator's entry to a lane
+  advisor-party.mjs:175                    CONTROL_CHARS — \p{C}
+  advisor-party.mjs:202                    MARKUP_OPENER — the tokenizer's rule
+  advisor-party.mjs:256                    CHARACTER_REFERENCE — the closed set
+  advisor-party.mjs:271                    VISIBLE
 plugins/tmux-teams/skills/{claude,codex,agy}-advisor/SKILL.md
 tests/advisor-party.test.mjs               nine tests
-tests/acp-companion.test.mjs               seven bare-mode arms, listed in its header
+tests/acp-companion.test.mjs               seven bare-mode cases, nine runs
 tests/worker-isolation.test.mjs            three more, profile source only
-tests/fixtures/mock-acp-agent.mjs          ENV_DUMP_KEYS — the allowlist
+tests/fixtures/mock-acp-agent.mjs          PLAINTEXT_SAFE_KEYS — 64 KiB bound
 scripts/gate-required.mjs                  DOC_ONLY at :41 is the only exemption
-~/tt-panel/                                packets, run dirs, read-r<N>.py
-~/tt-panel/dispatch-r6.sh                  re-runs the panel — rm -rf's every run dir
+~/tt-panel/                                twelve rounds of packets and run dirs
 ~/.config/claude-profiles/                 the gateway profiles the lanes route through
 ```
 
