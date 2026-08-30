@@ -1026,8 +1026,12 @@ subscription has no credential but the keychain entry, so it was refused, and
 the refusal was read as a credential-store problem instead of a flag.
 
 Bare mode is now the default only when `CLAUDE_CONFIG_DIR` names a profile whose
-`settings.json` CARRIES a credential — `ANTHROPIC_API_KEY` or
-`ANTHROPIC_AUTH_TOKEN`, and NOT an `apiKeyHelper`. Naming a profile is not enough: the
+`settings.json` CARRIES a credential, or the lane's own environment does —
+`ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`, and NOT an `apiKeyHelper`. Both
+sources count, and reading only the profile was itself a regression: before this
+release every claude lane was bare unconditionally, so a lane carrying its token
+in the environment had the target repository's hooks stripped, and asking only
+the profile handed them back in silence. Naming a profile is not enough: the
 first attempt checked only that the variable was non-empty while every sentence
 about it said "carries a token", so a plan-mode isolation profile with no
 credential would have been refused exactly as the default lane was. Routed lanes
