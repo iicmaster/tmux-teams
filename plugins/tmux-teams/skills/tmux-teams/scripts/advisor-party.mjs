@@ -190,6 +190,15 @@ const CONTROL_CHARS = /\p{C}/gu
 // rendered as `risk[markup removed]10%`, silently rewriting roster prose that
 // could not open markup in any renderer. Over-neutralising is the conservative
 // direction and it is still WRONG — the mandate carries what the operator saved.
+//
+// `queue<limit` IS STILL NEUTRALISED, AND THAT IS NOT THE SAME DEFECT. Two
+// lanes reported it as one in round 12; the answer is the HTML tokenizer's own
+// rule, not a preference. `<` followed by an ASCII letter is TAG OPEN — a
+// parser begins a tag there and consumes until `>` or end of input, so
+// `queue<limit` really can swallow the closing fence in a way `risk<10%` cannot,
+// because `<` followed by a digit is not tag open and is emitted as text. The
+// rule matches the tokenizer exactly: letter, `/`, `!`, `?`. Prose that pays
+// for it is prose an HTML renderer would also eat.
 const MARKUP_OPENER = /<(?=[a-zA-Z!/?])/g
 
 // AND MARKUP CAN ARRIVE ENCODED. `&#8238;` is pure printable ASCII to every
@@ -207,16 +216,45 @@ const MARKUP_OPENER = /<(?=[a-zA-Z!/?])/g
 // The rule is the SHAPE of a reference: `&#` digits or `&#x` hex with the
 // semicolon OPTIONAL, and a NAMED reference only WITH its semicolon.
 //
-// That asymmetry is deliberate, and it has ONE exception. Requiring the
-// semicolon on named forms is the price of not mangling `Rock &roll` and
-// `Tom &Harry`, which a zai lane found the first rule rewriting to
-// `Rock [markup removed]`. But a semicolon-less `&lt` decodes to a literal `<`
-// AFTER every filter here has run, so `&ltdetails>` would reach a renderer as
-// `<details>` — MARKUP_OPENER cannot help, because at the time it looks there
-// is no `<` yet. The five legacy names that decode to markup characters are
-// therefore matched with or without their semicolon; every other name needs one.
-// `AT&T`, `Q&A` and `a & b` keep their ampersands.
-const CHARACTER_REFERENCE = /&(?:#[0-9]+;?|#[xX][0-9a-fA-F]+;?|(?:lt|gt|amp|quot|apos);?|[a-zA-Z][a-zA-Z0-9]{1,30};)/gi
+// NUMERIC REFERENCES IN ANY FORM, AND ONLY THE NAMED ONES THAT MATTER.
+//
+// A numeric reference can name any codepoint, so all of them go, with or
+// without the semicolon — a parser resolves `&#8238` either way.
+//
+// Named references are different, and the first two attempts were both wrong.
+// Neutralising every `&word` mangled `Rock &roll`; neutralising every `&word;`
+// mangled `Rock &roll; keep the beat`, which an openai lane and a zai lane both
+// caught, because an UNDEFINED name is not decoded by a conformant renderer at
+// all — it is emitted literally, and rewriting it loses the operator's text for
+// nothing.
+//
+// So the named arm is a CLOSED LIST, and that is defensible here where an
+// enumeration was not defensible four times before: HTML's named-reference set
+// is FROZEN by specification, and only two groups within it can hurt this
+// mandate — the five that decode to markup characters, and those that decode to
+// something invisible or reordering. Everything outside it decodes to visible
+// text, which is exactly what a description is allowed to contain.
+//
+// The five markup names are matched WITHOUT their semicolon too, because a bare
+// `&lt` decodes to a literal `<` after every filter here has run: `&ltdetails>`
+// would reach a renderer as `<details>`, and MARKUP_OPENER cannot help, since
+// when it looks there is no `<` yet.
+//
+// `AT&T`, `Q&A`, `a & b`, `Rock &roll`, `Tom &Harry;` all survive intact.
+// Decode to `<`, `>`, `&`, `"` or `'` — with or without the semicolon.
+const MARKUP_NAMES = 'lt|gt|amp|quot|apos|LT|GT|AMP|QUOT'
+// Decode to something invisible, zero-width, or direction-changing. Named
+// exactly as HTML spells them, semicolon required, because that is the only
+// form a renderer resolves for these.
+const INVISIBLE_NAMES = [
+  'ZeroWidthSpace', 'NegativeVeryThinSpace', 'NegativeThinSpace',
+  'NegativeMediumSpace', 'NegativeThickSpace', 'zwnj', 'zwj', 'lrm', 'rlm',
+  'shy', 'ThinSpace', 'VeryThinSpace', 'MediumSpace', 'NoBreak',
+  'ApplyFunction', 'af', 'InvisibleTimes', 'it', 'InvisibleComma', 'ic',
+  'nbsp', 'NonBreakingSpace', 'emsp', 'ensp', 'numsp', 'puncsp', 'hairsp',
+].join('|')
+const CHARACTER_REFERENCE = new RegExp(
+  `&(?:#[0-9]+;?|#[xX][0-9a-fA-F]+;?|(?:${MARKUP_NAMES});?|(?:${INVISIBLE_NAMES});)`, 'g')
 
 // A name has to be VISIBLE, not merely non-empty.
 //

@@ -372,6 +372,7 @@ test('the default claude lane is not put in bare mode, because bare mode cannot 
 // print, everything else is digested, and a key nobody has thought of yet
 // resolves to secret.
 test('a key outside the fixture safe-list is digested, never printed', () => {
+  const sha256Short = value => createHash('sha256').update(String(value)).digest('hex').slice(0, 16)
   const cwd = mkdtempSync(join(tmpdir(), 'acp-secret-'))
   const dump = join(cwd, 'child-env.json')
   // MOCK_PASSPHRASE reaches the child through the MOCK_ passthrough prefix AND
@@ -382,8 +383,14 @@ test('a key outside the fixture safe-list is digested, never printed', () => {
     MOCK_ENV_DUMP: dump, MOCK_DUMP_EXTRA_KEYS: 'MOCK_PASSPHRASE', MOCK_PASSPHRASE: decoyValue,
   }, cwd)
   assert.ok(existsSync(dump), 'the mock never started')
-  const observed = readFileSync(dump, 'utf8')
-  assert.ok(!observed.includes(decoyValue),
+  const observed = JSON.parse(readFileSync(dump, 'utf8'))
+  // POSITIVELY, not by absence. Asserting only that the plaintext is missing
+  // passes when the key never arrived at all — an openai lane and a zai lane
+  // both called that vacuous. The digest must be PRESENT and must be the digest
+  // of the value that was sent.
+  assert.equal(observed.MOCK_PASSPHRASE, `sha256:${sha256Short(decoyValue)}`,
+    'an unknown key was not digested into the dump, so the safe-list inversion is unproven here')
+  assert.ok(!JSON.stringify(observed).includes(decoyValue),
     'a value outside the safe-list was written in plaintext; naming the secrets instead of the safe keys is how that happens')
   rmSync(cwd, { recursive: true, force: true })
 })

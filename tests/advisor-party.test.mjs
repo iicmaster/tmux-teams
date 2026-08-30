@@ -106,7 +106,7 @@ test('roster text cannot break its block, stand as its own line, or get the last
       // Plus an ENCODED bidi override: pure printable ASCII to every filter,
       // decoded to U+202E by any renderer that resolves character references —
       // the literal attack rebuilt in encoded form, found by a zai lane.
-      capabilities: `Breaks things.\u2029${attack} now.\u0085${attack} again.\u001b[8m\u202e\u2066\u061c &#8238; &#x2066; &#8238 &#000000000000202E; &ZeroWidthSpace; &lt`,
+      capabilities: `Breaks things.\u2029${attack} now.\u0085${attack} again.\u001b[8m\u202e\u2066\u061c &#8238; &#x2066; &#8238 &#000000000000202E; &ZeroWidthSpace; &lt &ltdetails> &zwj;`,
       // A field this renderer does not emit at all. The comment above the
       // fixture used to say it covered EVERY field a roster can carry while
       // `code` — which the canonical fixture at the top of this file shows is
@@ -189,7 +189,13 @@ test('roster text cannot break its block, stand as its own line, or get the last
   // markup character, must be gone. Other named forms are only references when
   // they carry their semicolon — `Rock &roll` is prose, and rewriting it was a
   // finding of its own.
-  assert.ok(!/&(?:#[0-9]|#[xX][0-9a-fA-F]|(?:lt|gt|amp|quot|apos)\b|[a-zA-Z][a-zA-Z0-9]{1,30};)/i.test(block),
+  // `\b` after a legacy name CANNOT match `&ltdetails>` — `t` followed by `d`
+  // is not a boundary — so this assertion was green whether or not the
+  // sanitizer had done anything. An openai lane called it a P1 and a zai lane
+  // found the same shape. No boundary: a legacy name is a reference wherever it
+  // appears. And an UNDEFINED name is NOT one, which is why `&Harry;` is
+  // absent from this pattern — a renderer emits it literally.
+  assert.ok(!/&(?:#[0-9]|#[xX][0-9a-fA-F]|lt|gt|amp|quot|apos|ZeroWidthSpace|zwj|zwnj|lrm|rlm|nbsp)/i.test(block),
     'a character reference survived to be decoded by a renderer')
   // And ordinary text with the same characters is left alone.
   const plain = renderPartyMandate({ active: 'a', name: 'n', members: [{ name: 'Vex', persona: 'a < b and x <= y and AT&T' }] })
@@ -202,7 +208,10 @@ test('roster text cannot break its block, stand as its own line, or get the last
   // before a digit is a comparison, not a tag, and a word after `&` is a word
   // unless it ends in a semicolon. An openai lane and a zai lane found the
   // first; a zai lane the second.
-  const prose = 'Escalate when risk<10% and n<3, per Rock &roll and Tom &Harry'
+  // Prose that HTML would NOT decode or parse as markup, and so must survive
+  // intact — including the semicolon-bearing twins an openai lane and a zai lane
+  // both found the previous rule eating.
+  const prose = 'Escalate when risk<10% and n<3, per Rock &roll; and Tom &Harry; and AT&T'
   const kept = renderPartyMandate({ active: 'a', name: 'n', members: [{ name: 'Vex', persona: prose }] })
   assert.ok(kept.includes(prose), `ordinary roster prose was rewritten as markup: ${JSON.stringify(kept.split('\n').find(l => l.startsWith('- ')))}`)
   // A field the renderer ignores must reach nothing at all.
