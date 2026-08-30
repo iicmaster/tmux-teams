@@ -12,7 +12,7 @@
 > source, no publish script and nothing that could notice it had gone stale —
 > so it went stale, repeatedly, and nobody could tell without opening it.
 
-Current release: **0.36.0** — the version stamped in this tree, in flight on
+Current release: **0.37.0** — the version stamped in this tree, in flight on
 a pull request and not yet tagged. `main` carries **v0.34.0**, tagged at the
 MERGED sha `d58307d` (not the branch tip `bede67c` — those are different
 commits, and tagging the wrong one ships a sha `main` does not hold). Anyone
@@ -994,6 +994,75 @@ them.
 
 Class-two failures. A billing wall and an expired membership are facts about an
 account, and this work reports them accurately rather than fixing them.
+
+## v0.37.0 scope, set by Master 2026-08-30
+
+Two items, both arriving as direct instructions rather than from the phase list.
+
+| # | item | state |
+|---|---|---|
+| 1 | make the `claude-advisor` fable seat actually work | **shipped** |
+| 2 | `--party <id>` on all three `*-advisor` skills | **shipped** |
+
+### Item 1 — the diagnosis had been wrong for 22 days
+
+The default `claude` lane answered `Authentication required` on every dispatch
+since `8a05d6d` (2026-08-08), and four releases of handoffs recorded the cause
+as "the adapter reads a stale `~/.claude/.credentials.json` while the CLI reads
+the macOS Keychain, which a subprocess cannot reach". Measured 2026-08-30:
+
+```
+the real claude binary, spawned by node with no TTY   exit 0, end_turn
+the same binary with CLAUDE_CODE_SIMPLE=1             exit 1, no API call
+```
+
+The keychain is reachable from a subprocess. What refused was bare mode, whose
+own `--help` says it reads "strictly ANTHROPIC_API_KEY or apiKeyHelper (OAuth
+and keychain are never read)". `acp-companion.mjs` set it on every claude lane
+to strip a repository's hooks, in a comment that listed hooks, MCP, commands and
+permissions as what bare mode drops and **never said auth**. The operator's
+subscription has no credential but the keychain entry, so it was refused, and
+the refusal was read as a credential-store problem instead of a flag.
+
+Bare mode is now the default only when `CLAUDE_CONFIG_DIR` names a profile — a
+routed lane whose settings carry a token, which bare mode still reads — so those
+lanes keep the hook-stripping. An explicit `CLAUDE_CODE_SIMPLE` wins either way.
+Proven end to end, not at the handshake: a real dispatch came back completed,
+`effective_identity: claude-fable-5` matched, with a written outbox.
+
+**A green test had pinned the defect.** `worker-isolation.test.mjs` asserted
+"a claude worker is handed the bare-mode flag by default" unconditionally. A
+passing test with that name is what made the wrong rule look intentional.
+
+### Item 2 — one script, three skills
+
+`advisor-party.mjs` resolves a party id through bmad-party-mode's own
+`resolve_party.py` and prints the paragraph that replaces the invented-cast
+paragraph in an advisor brief: real names, titles, personas and the saved scene,
+with "add no one and rename no one". All three skills shell to it, so they
+cannot drift apart on how a roster is rendered.
+
+It refuses rather than substitutes — `unknown_party` (listing the ids that
+exist), `not_installed` (bmad-party-mode is a separate install this plugin does
+not ship), `uv_missing`, `resolver_failed` — and the skills say to stop and ASK
+before falling back to the invented cast. Someone who typed `--party` asked for
+a specific room.
+
+Proven on the lane item 1 repaired: the Code Review Crew mandate came back as a
+debate among Vex, Grumbal, Boundary, Yui and Dana, every saved name present and
+no invented one.
+
+### Two things worth keeping from how this release went
+
+A **full disk** turned 413 tests red mid-session. It was not a code failure and
+it did not look like one; deleting a reconstructible npx cache recovered 2.1 GiB
+and the suite returned to green. A red suite is not always a red repository.
+
+And the guard that finds the read-only mandate does so by the phrase
+`Cast 3-5 named voices`. The first draft of the new `--party` section used that
+phrase and pulled the finder onto the wrong block. Reworded rather than
+loosening the guard — a text-anchored guard is fragile in exactly this way, and
+the fragility is the price of it being cheap.
 
 ## What is actually open
 
