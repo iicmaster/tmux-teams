@@ -76,9 +76,15 @@ Paste what it prints into the brief **in place of** the invented-cast paragraph
 exactly as it is. Exit `0` is the only
 success. Exit `2` names why it refused — `unknown_party` (with the ids that do
 exist), `not_installed` (bmad-party-mode is a separate install, not shipped
-here), `uv_missing`, or `resolver_failed` — and on `2` **stop and tell the
-operator, then ask whether to run with the invented cast instead.** Never
-substitute silently: someone who typed `--party` asked for a specific room.
+here), `uv_missing`, `resolver_failed`, or `party_substituted` (the resolver
+answered with a different party than the one asked for) — and on `2` **stop and
+tell the operator, then ask whether to run with the invented cast instead.**
+Exit `1` is a USAGE error in the command you typed — a missing id, a flag with
+no value, an extra argument — and it prints the usage line and nothing else; fix
+the command and run it again. A zai review lane found this section naming only
+`0` and `2`, which left a lane that branches on those two with no rule for `1`
+and free to proceed with the invented cast. Never substitute silently: someone
+who typed `--party` asked for a specific room.
 
 ### The seats, read off each profile's `settings.json` on 2026-08-09
 

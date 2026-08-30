@@ -295,6 +295,18 @@ test('a missing install and a missing uv are told apart, and both refuse rather 
       assert.deepEqual(bad.available, expected)
     }
 
+    // THE ROOM THAT COMES BACK MUST BE THE ROOM THAT WAS ASKED FOR. This file
+    // refuses rather than falling back precisely so a different party is never
+    // run quietly — and nothing enforced it: a resolver exiting 0 with
+    // `active: 'default'` for `--party review` rendered Default. An openai lane
+    // found the guarantee with no code behind it.
+    const swapped = resolveParty('review', {
+      env: { BMAD_PARTY_MODE_ROOT: root },
+      run: () => ({ status: 0, stdout: JSON.stringify({ active: 'default', name: 'Default', members: [{ name: 'Vex' }] }) }),
+    })
+    assert.equal(swapped.code, 'party_substituted', 'a substituted party was rendered instead of refused')
+    assert.ok(PARTY_PROBLEMS.party_substituted, 'the refusal code has no sentence')
+
     // A ROSTER THIS FILE CANNOT RENDER IS NOT A ROSTER. `members: [null]` threw
     // an uncaught TypeError out of the renderer instead of the documented exit
     // 2, and `members: [{}]` produced a blank `-  — ` voice under a mandate

@@ -28,6 +28,7 @@ export const PARTY_PROBLEMS = Object.freeze({
   uv_missing: 'uv is not on PATH, and bmad-party-mode resolves its rosters through uv',
   unknown_party: 'no saved party has that id',
   resolver_failed: 'the party resolver ran and did not return a roster',
+  party_substituted: 'the party resolver returned a different party than the one asked for',
 })
 
 export function partyModeRoot(env = process.env) {
@@ -88,6 +89,14 @@ export function resolveParty(id, { env = process.env, projectRoot = process.cwd(
     || !parsed.members.every(usableMember)) {
     return { ok: false, code: 'resolver_failed', available: [] }
   }
+  // THE ROOM THAT CAME BACK HAS TO BE THE ROOM THAT WAS ASKED FOR. This file's
+  // whole reason for refusing rather than falling back is that quietly running
+  // a different party is the silent substitution the plugin refuses everywhere
+  // — and nothing checked that the resolver returned the party requested. A
+  // resolver exiting 0 with `active: 'default'` for `--party review` rendered
+  // Default and exited 0. An openai lane found the guarantee with no enforcement
+  // behind it.
+  if (parsed.active !== id) return { ok: false, code: 'party_substituted', available: [] }
   return { ok: true, party: parsed }
 }
 

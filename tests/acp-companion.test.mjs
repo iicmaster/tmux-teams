@@ -177,7 +177,10 @@ function run(taskId, extraEnv = {}, cwd = mkdtempSync(join(tmpdir(), 'acp-compan
 // 2026-08-30: the real binary as a node subprocess authenticates; the same
 // binary with CLAUDE_CODE_SIMPLE=1 exits 1 at $0.
 //
-// SIX arms, asserted on the env the CHILD received (MOCK_ENV_DUMP) rather than
+// SEVEN arms — and the count was six here while seven were listed below it,
+// which is the stale-prose shape this comment exists to prevent, committed by
+// the edit that added the seventh. Asserted on the env the CHILD received
+// (MOCK_ENV_DUMP) rather than
 // on the companion's source. This said "three" after three more were added, and
 // a zai lane read the stale count as the same shape this release was convened
 // to hunt — prose describing code it no longer matches. A reader who trusts a
@@ -185,7 +188,10 @@ function run(taskId, extraEnv = {}, cwd = mkdtempSync(join(tmpdir(), 'acp-compan
 //
 //   (a)  no profile          -> not bare   · dropping the rule entirely passes
 //   (b)  ANTHROPIC_AUTH_TOKEN -> bare      · keeping it unconditional passes
-//   (b5) a credential in the ENV, no profile -> bare · the regression arm
+//   (b5) a credential in the ENV, no profile -> bare · the regression arm,
+//        run once per credential key, and the only arms where a genuine
+//        credential key is populated — so also where the env dump is proven
+//        not to carry one
 //   (b4) ANTHROPIC_API_KEY   -> bare
 //   (b2) profile, no credential -> not bare · only the real rule passes a+b+b2
 //   (b3) apiKeyHelper ALONE  -> not bare · measured, not read off the help text
@@ -196,6 +202,7 @@ function run(taskId, extraEnv = {}, cwd = mkdtempSync(join(tmpdir(), 'acp-compan
 // against, which is what watches the per-lane env allowlist.
 test('the default claude lane is not put in bare mode, because bare mode cannot use a subscription', () => {
   const DECOY_CREDENTIAL = 'decoy-credential-must-not-reach-disk'
+  const CREDENTIAL_DECOY = 'fixture-not-a-real-credential-must-not-reach-disk'
   const dumpOf = (taskId, extraEnv) => {
     const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-bare-'))
     const dump = join(cwd, 'child-env.json')
@@ -203,8 +210,17 @@ test('the default claude lane is not put in bare mode, because bare mode cannot 
     // claude lane's env allowlist and is NOT one of the two keys the bare-mode
     // rule reads — a decoy on ANTHROPIC_AUTH_TOKEN would make every arm bare
     // and quietly delete the thing each arm is asserting.
-    const r = runAs('claude', taskId,
-      { MOCK_ENV_DUMP: dump, ANTHROPIC_CUSTOM_HEADERS: DECOY_CREDENTIAL, ...extraEnv }, cwd)
+    // EVERY ARM SCRUBS THE RUNNER'S OWN CREDENTIALS FIRST. Arm (b5) proves that
+    // ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN reach the child through the
+    // claude lane's allowlist, so a maintainer whose shell exports either one
+    // would see the not-bare arms fail — and CI, with a clean HOME, would not.
+    // An openai lane and a zai lane both named it. `''` is how this suite
+    // already unsets CLAUDE_CONFIG_DIR, and an inherited CLAUDE_CODE_SIMPLE
+    // would override the default this whole test is about.
+    const r = runAs('claude', taskId, {
+      ANTHROPIC_API_KEY: '', ANTHROPIC_AUTH_TOKEN: '', CLAUDE_CODE_SIMPLE: '',
+      MOCK_ENV_DUMP: dump, ANTHROPIC_CUSTOM_HEADERS: DECOY_CREDENTIAL, ...extraEnv,
+    }, cwd)
     assert.ok(existsSync(dump), `the mock never started, so nothing was observed; stderr:\n${r.stderr}`)
     const observed = JSON.parse(readFileSync(dump, 'utf8'))
     // THE DUMP IS AN ALLOWLIST. It serialised the child's whole environment, so
@@ -267,9 +283,16 @@ test('the default claude lane is not put in bare mode, because bare mode cannot 
   // "401 Invalid bearer token" and an env API_KEY "401 API key is invalid" —
   // both READ and TRIED, not the "Not logged in" that means none was found.
   for (const key of ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY']) {
-    const viaEnv = dumpOf(`bare-env-${key}`, { CLAUDE_CONFIG_DIR: '', [key]: 'fixture-not-a-real-credential' })
+    const viaEnv = dumpOf(`bare-env-${key}`, { CLAUDE_CONFIG_DIR: '', [key]: CREDENTIAL_DECOY })
     assert.equal(viaEnv.CLAUDE_CODE_SIMPLE, '1',
       `a lane carrying ${key} in its environment lost bare mode, so it inherits the repository hooks`)
+    // AND A REAL CREDENTIAL KEY IS PROVEN EXCLUDED FROM THE DUMP, not only the
+    // decoy's own carrier. A zai lane pointed out that a check riding on
+    // ANTHROPIC_CUSTOM_HEADERS can never fire for the two keys that matter;
+    // these two arms are the only place a genuine credential key is populated,
+    // so this is where that has to be asserted.
+    assert.ok(!JSON.stringify(Object.values(viaEnv)).includes(CREDENTIAL_DECOY),
+      `${key} was written into the env dump on disk`)
   }
 
   // (b2) A profile dir with NO credential — the plan-mode isolation several

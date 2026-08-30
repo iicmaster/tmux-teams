@@ -11,7 +11,8 @@
 //
 // `CLAUDE_CODE_SIMPLE=1` is what `claude --bare` sets — and bare mode ALSO reads
 // no OAuth and no keychain, so it is only safe for a worker whose profile
-// carries a credential — an ANTHROPIC_API_KEY or an ANTHROPIC_AUTH_TOKEN, and
+// or its own environment carries a credential — an ANTHROPIC_API_KEY or an
+// ANTHROPIC_AUTH_TOKEN, and
 // NOT an apiKeyHelper, which was measured refused. It is the lever this
 // process can reach: the ACP adapter spawns the CLI itself so its argv is not
 // ours, but the child environment is. That it works was MEASURED, not read off
@@ -106,8 +107,12 @@ test('a claude worker whose profile carries a credential is handed the bare-mode
   // 22 days while four handoffs blamed the credential store. A green test
   // named "by default" is what let the wrong rule look intentional.
   //
-  // The rule now: bare mode is the default only when CLAUDE_CONFIG_DIR names a
-  // profile whose settings CARRY A CREDENTIAL. Naming a profile is not enough,
+  // The rule now: bare mode is the default only when a credential is actually
+  // reachable — in the lane's own environment, or in the settings of the profile
+  // CLAUDE_CONFIG_DIR names. The environment source is pinned by arm (b5) in
+  // tests/acp-companion.test.mjs; this file covers the profile source, and it
+  // said profile-only after the environment source shipped. Naming a profile is
+  // not enough,
   // and the third fixture below is a profile that names one and carries none —
   // the plan-mode isolation several workers use. This comment said "names a
   // profile, because a routed profile's settings carry a token", a universal

@@ -303,10 +303,11 @@ ANTHROPIC_API_KEY or apiKeyHelper (OAuth and keychain are never read)". And
 hooks, MCP, commands and permissions as what bare mode drops and never said
 auth. The default lane's only credential is the keychain OAuth entry, so it was
 refused on every dispatch, and the refusal was read as a credential-store
-problem instead of a flag. Bare mode is now the default only when
-`CLAUDE_CONFIG_DIR` names a profile whose `settings.json` CARRIES a credential —
-being set is not enough — and an explicit `CLAUDE_CODE_SIMPLE` still wins either
-way. Measured after the
+problem instead of a flag. Bare mode is now the default only when a credential
+is actually reachable — in the lane's own environment, or in the `settings.json`
+of the profile `CLAUDE_CONFIG_DIR` names. Naming a profile is not enough, and
+reading only the profile is not enough either. An explicit `CLAUDE_CODE_SIMPLE`
+still wins, and an EMPTY one is not explicit. Measured after the
 fix: the default lane authenticates, identity `fable`, `end_turn`. The
 terminal-auth capability from v0.33 stays as built; it was never the fix for
 this, and nobody has completed a login through it.

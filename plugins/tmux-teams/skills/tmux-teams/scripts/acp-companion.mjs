@@ -2776,7 +2776,15 @@ const claudeBareByDefault = envCarriesToken(baseSpawnEnv)
 const spawnEnv = {
   ...baseSpawnEnv,
   ...(agentName === 'claude' && process.env.ACP_INHERIT_PROJECT_CONFIG !== '1'
-    ? { CLAUDE_CODE_SIMPLE: process.env.CLAUDE_CODE_SIMPLE ?? (claudeBareByDefault ? '1' : '0') } : {}),
+    // `??` treats an EMPTY CLAUDE_CODE_SIMPLE as an explicit choice, so
+    // `CLAUDE_CODE_SIMPLE= node ...` silently beat the rule with a value that
+    // states nothing — the same shape as `CLAUDE_CONFIG_DIR=''`, which this
+    // file already reads as "not set". An explicit choice has to say something.
+    ? {
+      CLAUDE_CODE_SIMPLE: process.env.CLAUDE_CODE_SIMPLE
+        ? process.env.CLAUDE_CODE_SIMPLE
+        : (claudeBareByDefault ? '1' : '0'),
+    } : {}),
   ...(agentName === 'agy' ? { AGY_SKIP_DOWNLOAD: process.env.AGY_SKIP_DOWNLOAD ?? '1' } : {}),
   ...(agentName === 'codex' ? { INITIAL_AGENT_MODE: effectiveInitialAgentMode } : {}),
 }
