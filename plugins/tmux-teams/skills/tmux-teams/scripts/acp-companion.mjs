@@ -1078,8 +1078,20 @@ function validateExecutionProfile(profile, profilePath) {
   if (profile.adapter.entry_path !== null) {
     let entryStat
     try { entryStat = lstatSync(profile.adapter.entry_path) } catch { throw Object.assign(new Error('execution profile adapter entry is unavailable'), { code: 'invalid_execution_profile' }) }
-    if (!entryStat.isFile() || entryStat.isSymbolicLink() || entryStat.size > MAX_PROFILE_BYTES
-      || sha256File(profile.adapter.entry_path) !== profile.adapter.entry_digest) {
+    // THREE DIFFERENT FACTS, AND THEY USED TO SHARE ONE SENTENCE. An entry that
+    // was too large answered "digest drifted", which is a specific claim about
+    // a different thing — and it cost a session an hour hunting a digest cache
+    // that does not exist, after `tests/fixtures/mock-acp-agent.mjs` grew 229
+    // bytes past this bound and 39 tests went red naming a checksum. A
+    // non-empty wrong diagnosis is worse than an empty one because it sounds
+    // like it knows.
+    if (!entryStat.isFile() || entryStat.isSymbolicLink()) {
+      throw Object.assign(new Error('execution profile adapter entry is not a regular file'), { code: 'execution_profile_drift' })
+    }
+    if (entryStat.size > MAX_PROFILE_BYTES) {
+      throw Object.assign(new Error(`execution profile adapter entry is ${entryStat.size} bytes, over the ${MAX_PROFILE_BYTES}-byte bound`), { code: 'execution_profile_drift' })
+    }
+    if (sha256File(profile.adapter.entry_path) !== profile.adapter.entry_digest) {
       throw Object.assign(new Error('execution profile adapter entry digest drifted'), { code: 'execution_profile_drift' })
     }
     // Hashing the entry proves a file has not changed. It says nothing about

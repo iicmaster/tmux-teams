@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdtempSync as fsMkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, realpathSync, rmSync, chmodSync, symlinkSync, lstatSync } from 'node:fs'
+import { mkdtempSync as fsMkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, realpathSync, rmSync, chmodSync, symlinkSync, lstatSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -351,6 +351,41 @@ test('the default claude lane is not put in bare mode, because bare mode cannot 
 // exact reservation; letting an upgrade quietly turn that into an ungoverned
 // repository is the single behaviour change nobody would have seen. It refuses
 // instead. Goes red if either refusal is dropped.
+// THE MOCK ADAPTER HAS A HARD SIZE BOUND AND NOTHING SAID SO. The companion
+// refuses an adapter entry over MAX_PROFILE_BYTES (64 KiB), and this fixture had
+// grown to 174 bytes under it. Twelve lines of comment took it past and 39 tests
+// went red — naming a CHECKSUM, because one branch answered three different
+// facts with "digest drifted". An hour went into hunting a digest cache that
+// does not exist. Both halves are fixed here: the branch says which fact, and
+// this asserts the headroom so the next comment is refused by a number instead
+// of by a lie.
+test('the mock adapter entry stays inside the bound the companion enforces', () => {
+  const MAX_PROFILE_BYTES = 64 * 1024
+  const size = statSync(MOCK).size
+  assert.ok(size <= MAX_PROFILE_BYTES,
+    `tests/fixtures/mock-acp-agent.mjs is ${size} bytes, over the ${MAX_PROFILE_BYTES}-byte adapter-entry bound — every profile test fails when it is`)
+  // Headroom, so this fails while there is still room to act rather than at the
+  // moment the suite goes red for a reason that names something else.
+  assert.ok(MAX_PROFILE_BYTES - size >= 512,
+    `only ${MAX_PROFILE_BYTES - size} bytes of headroom left; trim the fixture's comments before adding to it`)
+})
+
+// And the branch that refuses it has to say WHICH fact refused. One condition
+// answered "digest drifted" for a file that was merely too large, and that
+// sentence sent a session hunting a digest cache that does not exist.
+test('an oversized adapter entry is refused by size, not reported as a checksum', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-oversize-'))
+  const { profilePath, adapterPath } = writeBinaryAdapterProfile(cwd, { oversize: true })
+  const r = run('task-oversize', {
+    ACP_EXECUTION_PROFILE: profilePath, ACP_CMD: `${NODE_EXECUTABLE} ${adapterPath}`,
+  }, cwd)
+  assert.notEqual(r.status, 0, `an oversized entry must be refused; stdout:\n${r.stdout}`)
+  assert.match(r.stderr, /over the \d+-byte bound/,
+    'the refusal did not name the size, so an operator reads a checksum failure for a file that is simply too large')
+  assert.doesNotMatch(r.stderr, /digest drifted/, 'a size failure still claims a checksum drifted')
+  rmSync(cwd, { recursive: true, force: true })
+})
+
 test('a repository still carrying a retired phase gate is refused, not silently downgraded', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-retired-gate-'))
   mkdirSync(join(cwd, '.tmux-teams'), { recursive: true })
@@ -658,10 +693,13 @@ test('a profile that hashes one entry and runs another is refused', () => {
   assert.match(result.stderr, /does not run the adapter entry it verified/)
 })
 
-function writeBinaryAdapterProfile(cwd, { divergent = false } = {}) {
+function writeBinaryAdapterProfile(cwd, { divergent = false, oversize = false } = {}) {
   const adapterPath = join(cwd, divergent ? 'binary-adapter-divergent.mjs' : 'binary-adapter.mjs')
   const identity = fixtureExecutionIdentity()
-  const prefix = Buffer.concat([identity.mockBytes, Buffer.from('\n// binary fixture: NUL and invalid UTF-8 follow ', 'utf8')])
+  // `oversize` pads a profile that is valid in every other respect, so the
+  // refusal under test is the SIZE bound and not the schema or the digest.
+  const pad = oversize ? Buffer.from(`\n// ${'x'.repeat(70 * 1024)}`, 'utf8') : Buffer.alloc(0)
+  const prefix = Buffer.concat([identity.mockBytes, pad, Buffer.from('\n// binary fixture: NUL and invalid UTF-8 follow ', 'utf8')])
   const suffix = Buffer.from([0x00, 0xff, 0xfe, 0x80])
   const bytes = Buffer.concat([prefix, suffix])
   if (divergent) bytes[bytes.length - 1] = 0x81

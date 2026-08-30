@@ -15,37 +15,29 @@ const replyError = (id, message = 'mock operation failed') => send({ jsonrpc: '2
 // the claim under test is "the default claude lane no longer gets
 // CLAUDE_CODE_SIMPLE=1", and only the child can say what it received.
 //
-// IT WRITES AN ALLOWLIST, NOT THE ENVIRONMENT. Serialising all of `process.env`
-// put whatever credential the operator's shell was carrying —
-// ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, anything a lane forwards — in
-// plaintext into a temp file the test never removes. An openai lane found it in
-// round 4. The guards read two keys; only those two are written, and a key
-// added here should be one no credential can occupy.
+// IT WRITES AN ALLOWLIST, NOT THE ENVIRONMENT: serialising all of `process.env`
+// put whatever credential the shell carried into a temp file nothing removes.
 const ENV_DUMP_KEYS = ['CLAUDE_CODE_SIMPLE', 'CLAUDE_CONFIG_DIR']
 
-// PRESENCE, NEVER VALUE, for the keys that can hold a credential. A guard has
-// to be able to prove the credential REACHED the child — an openai lane and a
-// zai lane both pointed out that observing only the rule's output cannot tell a
-// companion reading the constructed child environment from one reading its own
-// process.env, and that if the lane allowlist ever dropped these keys the child
-// would start bare with nothing to authenticate with, behind a green test. That
-// is the 22-day failure again. So the fixture reports whether each is set and
-// never what it is: the guard becomes possible and no credential reaches disk.
-const CREDENTIAL_PRESENCE_KEYS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN']
+// A guard must be able to prove the credential REACHED the child: observing the
+// rule's output alone cannot tell a companion reading the constructed child
+// environment from one reading its own process.env, and a lane allowlist that
+// dropped these keys would start the child bare with nothing to authenticate
+// with — the 22-day failure behind a green test.
+const CREDENTIAL_DIGEST_KEYS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN']
 
-// A RULE, NOT A SECOND HAND-MAINTAINED LIST. The no-credential-to-disk
-// guarantee used to hold only while ENV_DUMP_KEYS and the decoy's carrier
-// stayed disjoint — widen the first with a credential-shaped name and the value
-// is written out while the suite stays green. A zai lane called that a P1. Any
-// key whose NAME looks like a secret is reported by digest, whatever list it
-// was added to.
+// A RULE, NOT A SECOND LIST: the guarantee used to hold only while ENV_DUMP_KEYS
+// and the decoy's carrier stayed disjoint. Any key whose NAME looks like a
+// secret is reported by digest, whatever list it was added to.
 const SECRET_SHAPED = /KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|HEADERS|AUTH/i
 
-// A DIGEST, NOT A PRESENCE FLAG. `PRESENT: yes` cannot tell the injected
-// credential from a stale one the companion substituted — an openai lane called
-// that a P1, and it is right: the child would authenticate with the wrong token
-// behind a green test. A truncated SHA-256 pins the exact value and reveals
-// none of it.
+// A DIGEST, NOT A PRESENCE FLAG: equality across dumps is the POINT, not a leak
+// — it is what proves the child got the value the lane was given rather than a
+// stale one. A truncated SHA-256 pins it and reveals none of it.
+//
+// THIS FILE SITS JUST UNDER A HARD BOUND. `MAX_PROFILE_BYTES` is 64 KiB and the
+// companion refuses a larger adapter entry; twelve lines of comment took it
+// past and turned 39 tests red. Explain in the TEST, not here.
 const { createHash } = await import('node:crypto')
 const digest = value => createHash('sha256').update(String(value)).digest('hex').slice(0, 16)
 
@@ -56,7 +48,7 @@ if (process.env.MOCK_ENV_DUMP) {
     if (process.env[key] === undefined) continue
     observed[key] = SECRET_SHAPED.test(key) ? `sha256:${digest(process.env[key])}` : process.env[key]
   }
-  for (const key of CREDENTIAL_PRESENCE_KEYS) {
+  for (const key of CREDENTIAL_DIGEST_KEYS) {
     observed[`${key}__DIGEST`] = process.env[key] ? `sha256:${digest(process.env[key])}` : ''
   }
   writeFileSync(process.env.MOCK_ENV_DUMP, JSON.stringify(observed))

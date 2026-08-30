@@ -174,26 +174,39 @@ const LINE_BREAKS = /[\r\n\u000b\u000c\u0085\u2028\u2029]+/g
 // so nothing legible is lost to this.
 const CONTROL_CHARS = /\p{C}/gu
 
-// HTML IS PRESENTATION TOO. `<details><summary>x</summary>` left open before
-// the closing fence collapses the fence and the READ-ONLY tail inside a
-// disclosure in any renderer that permits raw HTML — the ESC[8m attack with
-// different bytes. An openai lane found it. Tag-shaped sequences are
-// neutralised; `a < b` is left alone because it is not one.
-const HTML_TAG = /<\/?[a-zA-Z][^>]*>/g
-
-// A name has to be VISIBLE, not merely non-empty. After `\p{C}` is gone this
-// is the remainder: separators, and the characters that ARE letters or symbols
-// by category and still render as nothing.
+// MARKUP IS PRESENTATION TOO, AND A TAG IS NOT THE ONLY MARKUP. An unclosed
+// `<details><summary>` collapses the fence and the READ-ONLY tail inside a
+// disclosure wherever raw HTML renders — and so does a bare `<!--`, which
+// comments out the rest of the document and which the first version of this
+// rule sailed past because it demanded a letter after the `<`. An openai lane
+// and a zai lane both found that within one round of the tag fix.
 //
-// THIS HALF IS A DENYLIST AND IS THEREFORE INCOMPLETE, and saying so is the
-// point — U+3164 HANGUL FILLER is `\p{Lo}` and U+2800 BRAILLE PATTERN BLANK is
-// `\p{So}`, so no property separates them from real letters and symbols. Two
-// lanes found this list one codepoint short in round 8 after it was written in
-// round 7. A name made only of the next one nobody has named will still pass;
-// what it cannot do any more is carry a control or format character, which is
-// the half that had a property available.
-const BLANK_BUT_LETTERED = '\u115f\u1160\u3164\uffa0\u2800\u180e\u2061-\u2064\ufe00-\ufe0f\u034f'
-const VISIBLE = new RegExp(`[^\\s\\p{Z}${BLANK_BUT_LETTERED}]`, 'u')
+// So no `<` may begin anything: the bracket is neutralised whenever the next
+// character is not a space or an `=`, which is every markup construct — tag,
+// comment, doctype, CDATA, processing instruction — and no arithmetic, because
+// `a < b` and `x <= y` both keep theirs.
+const MARKUP_OPENER = /<(?=[^\s=])/g
+
+// AND MARKUP CAN ARRIVE ENCODED. `&#8238;` is pure printable ASCII to every
+// filter above it and decodes to U+202E in any renderer that resolves character
+// references, rebuilding the literal attack inside the fix that closed its
+// literal form. A zai lane found it. Character references are neutralised
+// whole; `AT&T` is not one.
+const CHARACTER_REFERENCE = /&#?[a-zA-Z0-9]{1,10};/g
+
+// A name has to be VISIBLE, not merely non-empty.
+//
+// I WROTE HERE THAT NO PROPERTY COULD SEPARATE A BLANK-RENDERING LETTER FROM A
+// REAL ONE, AND AN OPENAI LANE NAMED ONE: `\p{Default_Ignorable_Code_Point}`.
+// Measured — it covers U+3164, U+FFA0, U+115F, U+1160, U+180E, U+200B, U+2060,
+// the variation selectors AND the supplementary ones at U+E0100 that were never
+// on the hand-kept list at all. The list it replaces was wrong in both
+// directions: incomplete, and defended in a comment as unavoidable.
+//
+// U+2800 BRAILLE PATTERN BLANK is what is left: a real symbol that renders as
+// nothing and is not default-ignorable. One codepoint, named, and this is still
+// a denylist for that one.
+const VISIBLE = /[^\s\p{Z}\p{C}\p{Default_Ignorable_Code_Point}\u2800]/u
 
 // Collapse line breaks, neutralise the fence delimiters, and defuse a code
 // fence. A persona is a sentence about a person; it never legitimately needs to
@@ -208,7 +221,8 @@ const VISIBLE = new RegExp(`[^\\s\\p{Z}${BLANK_BUT_LETTERED}]`, 'u')
 const asDescription = (text) => String(text ?? '')
   .replace(LINE_BREAKS, ' ')
   .replace(CONTROL_CHARS, '')
-  .replace(HTML_TAG, MARKUP_NEUTRALISED)
+  .replace(CHARACTER_REFERENCE, MARKUP_NEUTRALISED)
+  .replace(MARKUP_OPENER, MARKUP_NEUTRALISED)
   .split(DESCRIPTION_FENCE).join(NEUTRALISED)
   .split(DESCRIPTION_FENCE_END).join(NEUTRALISED)
   .replace(/```/g, "'''")
