@@ -50,16 +50,19 @@ export function resolveParty(id, { env = process.env, projectRoot = process.cwd(
   // never the exit status, so a resolver that printed a valid-looking roster and
   // then failed — or was killed mid-write — was accepted, and the closed refusal
   // path this file advertises failed open. An openai lane found it in round 3.
-  // `unknown_group` is reported below and may carry a non-zero status of its
-  // own, so the status check comes after that shape is recognised.
-  if (r.status !== 0 && !String(r.stdout ?? '').includes('unknown_group')) {
-    return { ok: false, code: 'resolver_failed', available: [] }
-  }
+  //
+  // The first fix for it exempted a non-zero status when raw stdout CONTAINED
+  // the string `unknown_group`, because that refusal may carry its own exit
+  // code — and a roster whose scene merely discusses unknown groups then
+  // matched the substring and was accepted at status 1, the same fail-open
+  // rebuilt inside its own repair. The shape is read from the PARSED document
+  // instead, and everything that is not that shape must have exited cleanly.
   let parsed
   try { parsed = JSON.parse(r.stdout ?? '') } catch { return { ok: false, code: 'resolver_failed', available: [] } }
   if (parsed?.error === 'unknown_group') {
     return { ok: false, code: 'unknown_party', available: (parsed.available ?? []).map(g => g.id) }
   }
+  if (r.status !== 0) return { ok: false, code: 'resolver_failed', available: [] }
   if (!Array.isArray(parsed?.members) || parsed.members.length === 0) {
     return { ok: false, code: 'resolver_failed', available: [] }
   }
@@ -119,11 +122,18 @@ const LINE_BREAKS = /[\r\n\u0085\u2028\u2029]+/g
 // persona is a sentence about a person; it never legitimately needs to open a
 // block or a new section.
 const asDescription = (text) => {
-  // Substituting ``` cannot manufacture a new one — it removes backticks — but
-  // the fence deletions can, so both run until the text is stable.
-  let out = String(text ?? '').replace(LINE_BREAKS, ' ').replace(/```/g, "'''")
+  // EVERY transform runs to stability, and they run TOGETHER. Substituting ```
+  // once before the loop was not enough: the fence deletion runs afterwards,
+  // and deleting `<<<PARTY-ROSTER` out of "``<<<PARTY-ROSTER`" joins two
+  // backticks to a third and MANUFACTURES the code fence the substitution had
+  // already passed over. That is the same reconstruction class as the
+  // delimiter bug, one transform's output feeding another's pattern, so the
+  // whole pipeline is iterated rather than one step of it.
+  let out = String(text ?? '').replace(LINE_BREAKS, ' ')
   for (;;) {
-    const next = stripUntilGone(stripUntilGone(out, DESCRIPTION_FENCE), DESCRIPTION_FENCE_END)
+    const next = stripUntilGone(
+      stripUntilGone(out.replace(/```/g, "'''"), DESCRIPTION_FENCE),
+      DESCRIPTION_FENCE_END)
     if (next === out) return out.trim()
     out = next
   }
