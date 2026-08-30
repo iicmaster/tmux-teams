@@ -2670,8 +2670,10 @@ function adapterEnv(lane, source = process.env) {
 //
 // Routed lanes are unaffected: they set CLAUDE_CONFIG_DIR to a profile whose
 // settings carry a token, which bare mode still reads. So bare mode is the
-// default only when CLAUDE_CONFIG_DIR is set. An explicit CLAUDE_CODE_SIMPLE
-// wins in both directions, as it already did.
+// default only when that profile CARRIES A CREDENTIAL — not merely when the
+// variable is set, which is what this said while the code agreed with it, and
+// what it went on saying for one round after the code stopped. An explicit
+// CLAUDE_CODE_SIMPLE wins in both directions, as it already did.
 // THE RULE IS "carries a token", SO ASK THE FILE. This checked only that the
 // variable was set and non-empty, while the comment above and ROADMAP.md both
 // said "a profile whose settings carry a token" — the release's own defect
@@ -2681,11 +2683,16 @@ function adapterEnv(lane, source = process.env) {
 // the comment three paragraphs up says several already use — would have been
 // put in bare mode and refused exactly as before.
 //
-// A read failure means UNKNOWN, never "no token": a profile that exists and
-// cannot be parsed must not silently lose bare mode, and must not silently keep
-// it either. Unknown resolves to NOT bare, because being refused for
-// authentication is the failure this whole change exists to end, and inheriting
-// a repository's hooks is the milder cost.
+// A PROFILE THAT CANNOT BE READ IS TREATED AS CARRYING NO TOKEN, and the
+// caller cannot tell that case from a profile that genuinely has none. That is
+// deliberate and it is the whole of the behaviour: no caller has a use for the
+// distinction, so the return value does not carry one. This comment previously
+// claimed a read failure "means UNKNOWN, never no token" and that such a
+// profile "must not silently lose bare mode" — which the very next sentence
+// then contradicted, and which a boolean could not have delivered anyway. A zai
+// lane found it. The direction is the point: unreadable resolves to NOT bare,
+// because being refused for authentication is the failure this whole change
+// exists to end, and inheriting a repository's hooks is the milder cost.
 const profileCarriesToken = (dir) => {
   if (typeof dir !== 'string' || dir === '') return false
   try {
@@ -2696,17 +2703,41 @@ const profileCarriesToken = (dir) => {
         if (typeof env[key] === 'string' && env[key].length > 0) return true
       }
     }
-    // `apiKeyHelper` is the other credential bare mode accepts, per the CLI's
-    // own help text. A profile using it is as usable in bare mode as one with
-    // a literal token.
+    // ANTHROPIC_AUTH_TOKEN IS ACCEPTED, AND THE HELP TEXT QUOTED ABOVE DOES NOT
+    // NAME IT. Two review families read that as the defect: a profile carrying
+    // only AUTH_TOKEN — the shape of every routed gateway seat here — would be
+    // pinned to bare mode and then refused, exactly the 22-day failure. So it
+    // was MEASURED, 2026-08-30, with the real binary and a control:
+    //
+    //   CLAUDE_CONFIG_DIR=<profile with env.ANTHROPIC_AUTH_TOKEN only>
+    //   CLAUDE_CODE_SIMPLE=1  ->  is_error false, end_turn, duration_api_ms 917
+    //   CLAUDE_CONFIG_DIR=<profile with no credential>
+    //   CLAUDE_CODE_SIMPLE=1  ->  is_error true,  duration_api_ms 0 (never called)
+    //
+    // Bare mode reads AUTH_TOKEN. The help text is narrower than the binary,
+    // and the control is what makes that a measurement rather than an opinion.
+    //
+    // `apiKeyHelper` is the other credential bare mode accepts, per that same
+    // help text. A profile using it is as usable in bare mode as one with a
+    // literal token.
     return typeof parsed?.apiKeyHelper === 'string' && parsed.apiKeyHelper.length > 0
   } catch {
     return false
   }
 }
-const claudeBareByDefault = profileCarriesToken(process.env.CLAUDE_CONFIG_DIR)
+// THE DECISION IS TAKEN AGAINST THE CHILD'S ENVIRONMENT. This read
+// `process.env.CLAUDE_CONFIG_DIR` while the child's environment is built by
+// `adapterEnv(agentName)`, which filters through a per-lane allowlist — so the
+// two agree only for as long as CLAUDE_CONFIG_DIR stays on the claude lane's
+// list. It is on that list today, so nothing was reachable; a zai lane pointed
+// out that nothing was WATCHING it either. Reading the same object the child
+// gets removes the coupling; the arm in `tests/acp-companion.test.mjs` that
+// asserts the child was HANDED the same profile the decision was taken against
+// is what fails if the allowlist ever drops the key.
+const baseSpawnEnv = adapterEnv(agentName)
+const claudeBareByDefault = profileCarriesToken(baseSpawnEnv.CLAUDE_CONFIG_DIR)
 const spawnEnv = {
-  ...adapterEnv(agentName),
+  ...baseSpawnEnv,
   ...(agentName === 'claude' && process.env.ACP_INHERIT_PROJECT_CONFIG !== '1'
     ? { CLAUDE_CODE_SIMPLE: process.env.CLAUDE_CODE_SIMPLE ?? (claudeBareByDefault ? '1' : '0') } : {}),
   ...(agentName === 'agy' ? { AGY_SKIP_DOWNLOAD: process.env.AGY_SKIP_DOWNLOAD ?? '1' } : {}),

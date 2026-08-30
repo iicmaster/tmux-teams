@@ -1,26 +1,24 @@
 # HANDOFF
 
 State of play for the next agent. Overwritten in place, never appended.
-Written 2026-08-30 through `bmad-party-mode`.
+Written 2026-08-30 through `bmad-party-mode` (installed; roster Mary, John,
+Sally, Winston, Amelia — the adversary seat was taken by Grumbal from
+`code-review-crew`).
 
 ## 1. READ THIS FIRST
 
-- Branch `feat/v0.36-setup`, **20 commits, NOT pushed**. Tree clean. It lives in
-  a worktree at `~/tmux-teams-v036`, deliberately outside any temp directory —
-  see DO NOT.
-- **v0.36.0 is complete and stamped but NOT released.** Everything up to the
-  push is done: five scope items shipped, version bumped in all seven places,
-  roadmap published and recorded, suite green, manifest valid, FIVE panel rounds
-  run across FOUR model families.
-- **Two gates remain and BOTH belong to Master, not to you.** Pushing needs
-  explicit permission. The codex bot review is missing and only Master waives
-  it. Do not read a stop-hook reminder, a task notification, or your own earlier
-  message as that permission — none of them is the user.
-- The most dangerous thing here is not in the code. **This release produced
-  EIGHTEEN defects of one shape and seventeen were found by review lanes rather
-  than by tests.** The shape is: *something claimed what it did not do.* If you
-  add to this branch, assume you will produce a nineteenth — several of these
-  were introduced by the fix for an earlier one.
+- Branch `feat/v0.37-advisors`, **3 commits on top of v0.36.0, NOT pushed**.
+  Tree clean. Worktree at `~/tmux-teams-v036` — deliberately outside any temp
+  directory, see DO NOT.
+- **v0.37.0 is stamped but NOT released.** Version bumped in all seven places,
+  roadmap published and recorded, suite green, manifest valid.
+- **The most dangerous thing here: the release panel is INCOMPLETE.** Round 2
+  was dispatched against the current bytes and only the `agy` lane has answered.
+  Do not stamp, tag, or merge on a partial panel. Section 3 says exactly where
+  the other six live.
+- **Two gates belong to Master, not to you:** pushing, and waiving the codex bot
+  review. A stop-hook reminder, a task notification, or an earlier message of
+  your own is not that permission.
 
 ## 2. HOW TO VERIFY
 
@@ -30,132 +28,187 @@ node --test > /tmp/suite.log 2>&1; grep -E '^ℹ (tests|pass|fail|skipped)' /tmp
 grep -q '^ℹ fail 0$' /tmp/suite.log || { grep '^✖' /tmp/suite.log | head; false; }
 ```
 
-Green is **`1189 pass / 0 fail / 0 skipped`**.
+Green is **`1196 pass / 0 fail / 0 skipped`** — measured on commit `aef8472`.
 
-**Gate on the count, never on a grep of the output** — `node --test | grep '✖'`
+**Gate on the count, never on a grep of the output.** `node --test | grep '✖'`
 exits 0 when it FINDS failures. This session chained a commit after an ungated
-`node --test` and **committed on red**; that is the third time this repository
-has recorded that mistake. Every later commit here put `grep -q '^ℹ fail 0$'`
-between the run and the commit.
+run and **committed on red** — the third time this repository has recorded that
+mistake. Every commit after it put `grep -q '^ℹ fail 0$'` between the run and
+the commit, and that is the only reason `aef8472` is trustworthy.
+
+**Do not run the suite while ACP lanes are live.** A verification run under
+contention measures the contention.
 
 ```bash
-git diff --check                    # whitespace
+git diff --check                    # whitespace — passes
 claude plugin validate --strict .   # "✔ Validation passed"
-node scripts/roadmap-gate.mjs       # 0 = published page current
-node scripts/gate-required.mjs      # run only on a committed tree; 2 = panel owed
+node scripts/roadmap-gate.mjs       # 0 — the published page is current
+node scripts/gate-required.mjs      # 2 — panel owed; run only on a committed tree
 ```
 
-See the readiness surface working:
-
-```bash
-node plugins/tmux-teams/skills/party-mode/scripts/lane-setup.mjs check
-```
-
-Expect `plugin: ready`, 7 of 8 lanes callable, and `ninerouter` blocked on
-`executable_absent: claude-9r`.
+All four measured on `aef8472`.
 
 ## 3. STATE
 
-### What v0.36.0 ships — all five scope items
+### What v0.37.0 ships
 
-| # | item | where |
-|---|---|---|
-| 1 | probe `depth: handshake` — spawns, completes the session, sends NO prompt | `acp-lanes-mcp.mjs` |
-| 2 | per-machine overrides at `~/.config/tmux-teams/lanes.json` | `lane-overrides.mjs` |
-| 3 | readiness, the pre-spawn brake, and the pointer out | `lane-readiness.mjs` |
-| 4 | `tmux-teams:lane-setup` — reports, writes, RE-CHECKS | `skills/lane-setup/` + `lane-setup.mjs` |
-| 5 | what each lane requests and what this machine resolves it to | `lane-models.mjs` |
+**1. The default `claude` lane could not authenticate, and the recorded
+diagnosis had been wrong for 22 days.** Every handoff since v0.32 blamed a stale
+`~/.claude/.credentials.json` against a keychain a subprocess cannot reach.
+Measured: the real binary spawned by node with no TTY authenticates fine (exit
+0, `end_turn`); the same binary with `CLAUDE_CODE_SIMPLE=1` exits 1 without an
+API call. The CLI's own `--help` says bare mode reads "strictly
+ANTHROPIC_API_KEY or apiKeyHelper (OAuth and keychain are never read)". The
+companion had set that flag on every claude lane since `8a05d6d` (2026-08-08) to
+strip repository hooks, in a comment that listed hooks, MCP, commands and
+permissions and never said auth.
 
-Measured on this machine: 7 of 8 lanes callable across 7 families; `ninerouter`
-refused in 0.0s with no process started; `kimi` declares `opus` and this machine
-resolves that alias to `k3[1m]`; three lanes at handshake depth take 12.7s and
-send no prompt.
+- `acp-companion.mjs:2689` — `profileCarriesToken(dir)` reads the profile's
+  `settings.json` for `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or
+  `apiKeyHelper`. An unreadable profile resolves to NOT bare.
+- `acp-companion.mjs:2707` — `claudeBareByDefault`; `:2711` an explicit
+  `CLAUDE_CODE_SIMPLE` still wins either way.
+- Guards: `tests/acp-companion.test.mjs` (three arms via `MOCK_ENV_DUMP` in
+  `tests/fixtures/mock-acp-agent.mjs`) and `tests/worker-isolation.test.mjs`.
 
-### The panel record for the release notes
+**Measured end to end:** a real dispatch on the default claude lane returned
+`effective_identity: claude-fable-5`, `identity_status: matched`, and wrote its
+outbox. The 22-day diagnosis is dead.
 
-Five rounds, four families. The last full round:
+**2. `--party <id>` on all three `*-advisor` skills.**
+
+- `advisor-party.mjs:42` `resolveParty` — shells to bmad-party-mode's own
+  `resolve_party.py` through `uv`; that skill is a SEPARATE install and this
+  plugin does not ship it, so its absence is the ordinary `not_installed`
+  outcome, not a bug.
+- `advisor-party.mjs:26` `PARTY_PROBLEMS` — a closed vocabulary. It REFUSES with
+  a code and exit 2; it never substitutes a different room.
+- `advisor-party.mjs:90` `renderPartyMandate` — three containment layers at
+  `:77` (`DESCRIPTION_FENCE`), `:83` (`asDescription`, collapses newlines and
+  fences), and the restated READ-ONLY line that comes AFTER the roster.
+- Guards: `tests/advisor-party.test.mjs` — six tests; the injection one is at
+  `:58`, the boot-from-a-path-with-a-space one at `:149`.
+
+**Measured live:** the fable lane answered as Vex / Grumbal / Boundary / Yui /
+Dana with no invented names.
+
+### The panel — INCOMPLETE, and this is the open item
+
+Round 1 (against `4fc91b9`) raised four findings; all four are fixed in
+`aef8472` and each fix was mutation-tested — restoring the any-non-empty rule,
+removing the newline collapse and dropping the restated read-only each turned a
+guard red, and both files restored with matching checksums.
+
+Round 2 was dispatched against `aef8472`. **Answered so far:**
 
 ```
-agy   (gemini)   accept, 0 findings, both packets
-codex (openai)   P1 x1 (depth never asserted to reach the transport) + P2 x1
-qwen  (deepseek) P2 x1 — the tool description denying the state it reads
-zai   (zai)      P2 x1 + P3 x2 — the sharpest lane of the release
+agy   (gemini)  gemini-3.7-flash-high  matched     accept, 0 findings, BOTH packets
 ```
 
-Every finding above is fixed. `zai` ran for the first time this session after
-failing all release on a disabled thinking mode; the owner reported it working
-and it immediately found that `resolveOnPath` stopped at `existsSync` while the
-isFile/isExecutable checks lived only in the wrapper branch.
+**Still in flight, or dead — determine which before acting:**
 
-**Identity, recorded because nothing on this path pins it:** `agy` reports
-`gemini-3.7-flash-high` matched; `codex` reports `gpt-5.6-sol[ultra]`
-unverified; `qwen` is reached with `ACP_MODEL=opus` and a `CLAUDE_CONFIG_DIR`
-pointing at the qwen profile, and that alias resolves to a deepseek model here,
-which is why the family is recorded as deepseek; `zai` reports `default`,
-because its gateway announces no model name back.
+```bash
+cd ~/tt-panel && python3 read-r2.py        # verdict + identity for all eight
+ls r2-*/.mailbox-out/                      # 8 outboxes = the round is complete
+```
 
-**Bytes changed after that round**, so a strict reading owes one more before the
-version is stamped. What changed was the zai fixes — one shipped-code P2 and two
-test-strength P3s.
+Run directories are `~/tt-panel/r2-{agy,codex,qwen,zai}-{src,tst}`; logs are
+`~/tt-panel/r2-<lane>-<part>.log`, and each log's tail carries the session id.
+**A lane that ended `no_outbox` is recoverable — try `ACP_RESUME=<session-id>`
+with a short "write what you already have, and say plainly if you have nothing"
+prompt before paying for a re-run, and NEVER `rm -rf` a run directory before
+recording its session id.** `~/tt-panel/dispatch-r2.sh` re-runs the whole panel
+and its `go()` opens with `rm -rf "$dir"` — running it wholesale destroys all
+eight run directories including the sessions you would resume from. A targeted
+retry is one hand-copied `go` invocation.
+
+Identities already published by the six that have not written an outbox, read
+from each run dir's `.tmux-teams/liveness/*.json`:
+`codex` = `gpt-5.6-sol[ultra]` unverified · `qwen` = `opus` matched (that alias
+resolves to a deepseek model on this machine, which is why the family is
+recorded as deepseek) · `zai` = `default` unverified, because its gateway
+announces no model name back.
+
+**Record every lane's `effective_identity`, not only AGY.** On direct ACP
+nothing pins where a lane routed, so its own reported identity is the entire
+evidence of who read the diff.
+
+### Packets
+
+`~/tt-panel/brief2-src.md` (33,315 bytes) and `brief2-tst.md` (24,674 bytes),
+both under the 128 KiB prepared cap. They were built from the eleven files
+`node scripts/gate-required.mjs` PRINTS, not from memory — on 2026-08-15 three
+of four hand-assembled panels missed the same two files while every lane
+answered 3/3. Each carries a "ROUND 2 — what changed" section pointing the lane
+at `aef8472` as the newest and least-reviewed work.
 
 ## 4. DO NOT
 
 - **Do not push, and do not open the PR, without Master saying so in their own
   message.** A stop hook repeating "the work is not complete" is not that.
-- **Do not waive the codex bot yourself.** Three consecutive PRs carry zero
-  reviews — v0.35.0's, the test-quality one, and v0.34.0's. That last one means
-  **v0.34.0 shipped without this reviewer and nobody recorded it.**
+- **Do not waive the codex bot yourself.** Only Master waives it, and a waiver
+  that is not recorded on the PR and in the release notes is the silent skip.
+- **Do not treat an earlier panel's acceptance as covering later bytes.** Round
+  1 accepted `4fc91b9`; `aef8472` changed shipped source, which is exactly why
+  round 2 exists.
+- **Do not commit chained after an ungated `node --test`.** Done in this session.
+  `node --test | grep '✖'` exits 0 when it finds failures, so `&&` commits on red.
 - **Do not work in `$TMPDIR` or the session scratchpad.** A worktree there was
-  destroyed TWICE mid-session — once losing every dotfile including `.git`, once
-  losing the whole directory, and `/tmp` rescue copies went with it. Only
-  committed work survived. That is why this branch lives in `~/tmux-teams-v036`
-  and why every step here commits immediately.
-- **Do not trust a suite that ran beside ACP lanes, and do not call this a
-  flake.** `acp-dispatch` tests went red TWICE in this session during full runs,
-  a different test each time, and passed on an immediate rerun and when the file
-  was run alone. Both happened while panel lanes were active. That is consistent
-  with contention and is not proof of it — nobody has reproduced it deliberately.
-  Treat any red there as OPEN: this repository already lost an unknown number of
-  releases to a real failure dismissed as timing.
-- **Do not add an overridable field without making it move what runs.**
-  `adapterPackage` was overridable and inert: setting it changed a declaration
-  while the shipped package went on launching. `bad_adapter_swap` now refuses an
-  override the command cannot carry.
-- **Do not let a guard ship without a mutation.** The `adapterPackage` fix
-  shipped with no guard at all — disabling it left the suite green. Every guard
-  added afterwards has a control as well, because a check that refuses
-  everything passes a test that only asserts refusal.
+  destroyed TWICE in the v0.36 session — once losing every dotfile including
+  `.git`, once losing the whole directory, and `/tmp` rescue copies went with
+  it. Only committed work survived.
+- **Do not fix a claim by making the code's excuse bigger.** Round 2's own
+  first finding was that the bare-mode COMMENT said "a profile whose settings
+  carry a token" while the code checked only that `CLAUDE_CONFIG_DIR` was
+  non-empty — the defect shape of the previous release, written into the fix for
+  that shape, and caught by two lanes independently.
+- **Do not pass a nonexistent path to a bare-mode fixture.** Two guards in two
+  files did exactly that (`/definitely/nonexistent/profile`) and asserted bare
+  mode — an assertion no token-checking implementation could satisfy, so they
+  pinned the defect rather than the rule.
+- **Do not document a script path repo-relative in a SKILL.** All three advisor
+  skills did, so an advisor invoked from the operator's own project would have
+  resolved it under THAT tree and exited MODULE_NOT_FOUND. The spelling that
+  works is `<plugin-root>/`; `$CLAUDE_PLUGIN_ROOT` was tried and broke the
+  docs-path guard rather than satisfying it.
+- **Do not bump a submodule pin in `~/agent-skills` after a release.** That step
+  is retired — `scripts/sync.sh` there fetches `origin/main` at run time
+  (commit `dd0b848`). Touch that repo only on explicit instruction, and only
+  with `git commit --only -- <path>`: other people's work sits staged in it.
 
 ## 5. DECIDED — DO NOT RELITIGATE
 
-- **MCP stays read-only; the writing surface is a skill.** ADR 0007 draws its
-  line at "answering questions is a different thing from a surface that can act
-  on an operator's behalf". Reading readiness answers, writing a bin path acts.
-  ADR 0007 needed no amendment.
-- **A stored value must know when it is stale**, rather than a better file or no
-  file. The dead `opencode` model id was already written down in a handoff when
-  it rotted.
-- **The per-machine file lives in the user's config dir**, never beside the
+- **Bare mode is conditional, not removed** (this session, after two lanes
+  raised it): default ON only when `CLAUDE_CONFIG_DIR` names a profile whose
+  `settings.json` carries a token, and an unreadable profile resolves to NOT
+  bare — being refused for auth is the failure this change exists to end, and
+  inheriting hooks is the milder cost.
+- **A roster is contained, not censored** (this session): its text stays visible
+  as description. Deleting it would hide what the operator saved; letting it
+  speak as instruction would let a saved file dissolve the read-only rule.
+- **An advisor REFUSES an unknown party rather than falling back to the invented
+  cast.** An operator who typed `--party` asked for a specific room.
+- **MCP stays read-only; the writing surface is a skill** — ADR 0007, unchanged
+  by v0.36 and v0.37.
+- **The per-machine lane file lives in the user's config dir**, never beside the
   plugin: a plugin install is version-keyed and `claude plugin update` destroys
   anything in its cache.
-- **Availability is checked before configuration.** With no binary the endpoint
-  question cannot be asked, and the old order sent operators to fix a gateway
-  when the wrapper was missing.
-- **Class-two failures are out of scope.** A 402 membership and a missing
-  payment method are facts about an account; this release reports them and
-  cannot repair them.
+- **Master's instruction, 2026-08-30: no version pin in `~/agent-skills`.**
+  Release flow step 10 is retired (`aa0ab7c`).
 
 ## 6. UNPROVEN
 
-- **No lane has been dispatched end-to-end through the new brake in anger.** The
-  brake, the override round trip and the model resolution are each measured, but
-  no real review has run through the whole path since.
-- **`check` cannot see a billing failure** and said it could until the closing
-  round. Only a prompt-depth probe can, and that spends quota.
-- **Model resolution reads a file.** A gateway that resolves aliases
-  server-side is unknowable from here and reports `source: declared`.
+- **The panel is not complete.** Six of eight lanes have not answered. Anything
+  that reads "3/3" or "4/4" for v0.37.0 is not yet true.
 - **CI has never run these bytes.** Local green is necessary and not sufficient:
   CI runs Linux with a clean HOME, and two releases once shipped on a red CI.
+- **`--party` has been exercised on the claude/fable lane only.** The codex and
+  agy advisor skills carry the same documented command; neither was dispatched
+  with it.
+- **`profileCarriesToken` was measured against fixtures and against the qwen and
+  zai gateway profiles** (both carry `ANTHROPIC_AUTH_TOKEN`, so both panel lanes
+  really did run bare — the first live exercise of the changed path). It has not
+  been measured against an `apiKeyHelper` profile outside a fixture.
 - **Nothing has ever installed from `agent-plugins/tmux-teams/`.**
 
 ## 7. WHERE THINGS LIVE
@@ -163,19 +216,22 @@ test-strength P3s.
 ```
 ~/tmux-teams-v036                          the worktree — NOT in a temp dir
 ROADMAP.md                                 the standing goal; gated, not exempt
-plugins/tmux-teams/skills/lane-setup/      the wizard the refusals point at
-plugins/tmux-teams/skills/party-mode/scripts/
-  lane-readiness.mjs                       availability, plugin readiness, the gate
-  lane-overrides.mjs                       the per-machine file and its closed codes
-  lane-models.mjs                          requested vs resolved, three alias keys only
-  lane-setup.mjs                           check / set / show
-  acp-lanes-mcp.mjs                        the MCP surface and the pre-spawn brake
-  review-profiles.mjs                      REVIEW_PROFILES — eight lanes
+plugins/tmux-teams/skills/tmux-teams/scripts/
+  acp-companion.mjs:2689                   profileCarriesToken
+  acp-companion.mjs:2707                   claudeBareByDefault
+  advisor-party.mjs:26                     PARTY_PROBLEMS — the closed codes
+  advisor-party.mjs:77,83                  the fence and asDescription
+  acp-dispatch.mjs                         the operator's entry to a lane
+plugins/tmux-teams/skills/{claude,codex,agy}-advisor/SKILL.md
+tests/advisor-party.test.mjs:58            the injection guard
+tests/acp-companion.test.mjs               the three-arm bare-mode guard
+tests/worker-isolation.test.mjs            the second bare-mode guard
+tests/plugin-structure.test.mjs            SKILLS and RELEASE_VERSION
 scripts/gate-required.mjs                  DOC_ONLY at :41 is the only exemption
-tests/plugin-structure.test.mjs            SKILLS and RELEASE_VERSION, thirteen skills
-~/tt-panel/                                panel packets and lane run directories
+~/tt-panel/                                packets, run dirs, read-r2.py
+~/tt-panel/dispatch-r2.sh                  re-runs the panel — rm -rf's every run dir
 ~/.config/tmux-teams/lanes.json            the per-machine file (absent = normal)
+~/.config/claude-profiles/                 the gateway profiles the lanes route through
 ```
 
 Published roadmap: `https://artifacts.ngs.bz/claude/private/tmux-teams-roadmap/`
-Published v0.36 scope: `https://artifacts.ngs.bz/claude/private/tmux-teams-scope-v036/`

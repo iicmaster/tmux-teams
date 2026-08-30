@@ -304,8 +304,9 @@ hooks, MCP, commands and permissions as what bare mode drops and never said
 auth. The default lane's only credential is the keychain OAuth entry, so it was
 refused on every dispatch, and the refusal was read as a credential-store
 problem instead of a flag. Bare mode is now the default only when
-`CLAUDE_CONFIG_DIR` is set — a routed profile whose settings carry a token —
-and an explicit `CLAUDE_CODE_SIMPLE` still wins either way. Measured after the
+`CLAUDE_CONFIG_DIR` names a profile whose `settings.json` CARRIES a credential —
+being set is not enough — and an explicit `CLAUDE_CODE_SIMPLE` still wins either
+way. Measured after the
 fix: the default lane authenticates, identity `fable`, `end_turn`. The
 terminal-auth capability from v0.33 stays as built; it was never the fix for
 this, and nobody has completed a login through it.
@@ -1024,9 +1025,22 @@ permissions as what bare mode drops and **never said auth**. The operator's
 subscription has no credential but the keychain entry, so it was refused, and
 the refusal was read as a credential-store problem instead of a flag.
 
-Bare mode is now the default only when `CLAUDE_CONFIG_DIR` names a profile — a
-routed lane whose settings carry a token, which bare mode still reads — so those
-lanes keep the hook-stripping. An explicit `CLAUDE_CODE_SIMPLE` wins either way.
+Bare mode is now the default only when `CLAUDE_CONFIG_DIR` names a profile whose
+`settings.json` CARRIES a credential — `ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN` or an `apiKeyHelper`. Naming a profile is not enough: the
+first attempt checked only that the variable was non-empty while every sentence
+about it said "carries a token", so a plan-mode isolation profile with no
+credential would have been refused exactly as the default lane was. Routed lanes
+keep the hook-stripping because their profiles really do carry one. An explicit
+`CLAUDE_CODE_SIMPLE` wins either way.
+
+`ANTHROPIC_AUTH_TOKEN` is not named in the `--help` text quoted above, and two
+review families read that as a second instance of the same defect. Measured with
+the real binary and a control, 2026-08-30: a profile carrying only
+`ANTHROPIC_AUTH_TOKEN` answers under `CLAUDE_CODE_SIMPLE=1` (`end_turn`,
+`duration_api_ms` 917), and a profile carrying no credential is refused with
+`duration_api_ms` 0 — never contacting the API. Bare mode reads it; the help
+text is narrower than the binary.
 Proven end to end, not at the handshake: a real dispatch came back completed,
 `effective_identity: claude-fable-5` matched, with a written outbox.
 

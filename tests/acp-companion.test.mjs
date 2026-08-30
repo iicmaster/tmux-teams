@@ -213,6 +213,20 @@ test('the default claude lane is not put in bare mode, because bare mode cannot 
   const routed = dumpOf('bare-routed', { CLAUDE_CONFIG_DIR: withToken })
   assert.equal(routed.CLAUDE_CODE_SIMPLE, '1',
     'a profile carrying a token lost bare mode, so it inherits the repository hooks 8a05d6d removed it from')
+  // The decision is taken against the environment the CHILD receives, which is
+  // built by a per-lane allowlist. If that list ever drops CLAUDE_CONFIG_DIR,
+  // the companion would judge a profile the child never sees — reachable only
+  // through this assertion, because both halves are otherwise silent.
+  assert.equal(routed.CLAUDE_CONFIG_DIR, withToken,
+    'the child was not given the profile the bare-mode decision was taken against')
+
+  // (b4) ANTHROPIC_API_KEY — the one credential the CLI help text names by
+  // itself, and the only one no arm here exercised until a zai lane said so.
+  const withApiKey = mkdtempSync(join(tmpdir(), 'profile-apikey-'))
+  writeFileSync(join(withApiKey, 'settings.json'),
+    JSON.stringify({ env: { ANTHROPIC_API_KEY: 'fixture-not-a-real-key' } }))
+  assert.equal(dumpOf('bare-apikey', { CLAUDE_CONFIG_DIR: withApiKey }).CLAUDE_CODE_SIMPLE, '1',
+    'a profile carrying ANTHROPIC_API_KEY lost bare mode')
 
   // (b2) A profile dir with NO credential — the plan-mode isolation several
   // workers already use. Bare mode here reads neither OAuth nor keychain, so it
@@ -232,7 +246,11 @@ test('the default claude lane is not put in bare mode, because bare mode cannot 
   // (c) An explicit operator choice wins over the rule in both directions.
   const forcedOn = dumpOf('bare-forced-on', { CLAUDE_CONFIG_DIR: '', CLAUDE_CODE_SIMPLE: '1' })
   assert.equal(forcedOn.CLAUDE_CODE_SIMPLE, '1', 'an explicit CLAUDE_CODE_SIMPLE=1 was overridden by the default rule')
-  const forcedOff = dumpOf('bare-forced-off', { CLAUDE_CONFIG_DIR: '/definitely/nonexistent/profile', CLAUDE_CODE_SIMPLE: '0' })
+  // The off direction has to be asserted where the rule WOULD say '1', or it
+  // asserts nothing: a nonexistent profile defaults to not-bare, so '0' comes
+  // back whether the explicit value was honoured or ignored. A deepseek lane
+  // found that this arm was that vacuous.
+  const forcedOff = dumpOf('bare-forced-off', { CLAUDE_CONFIG_DIR: withToken, CLAUDE_CODE_SIMPLE: '0' })
   assert.equal(forcedOff.CLAUDE_CODE_SIMPLE, '0', 'an explicit CLAUDE_CODE_SIMPLE=0 was overridden by the default rule')
 })
 

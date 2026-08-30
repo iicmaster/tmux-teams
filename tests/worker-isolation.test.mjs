@@ -96,7 +96,7 @@ const runLane = (extraEnv = {}) => {
   }
 }
 
-test('a claude worker with its own profile dir is handed the bare-mode flag; the default login is not', () => {
+test('a claude worker whose profile carries a credential is handed the bare-mode flag; a bare profile dir and the default login are not', () => {
   // This test used to be named "handed the bare-mode flag by default" and
   // asserted '1' unconditionally. That WAS the behaviour, and it was the
   // defect: the CLI's own --help says CLAUDE_CODE_SIMPLE=1 means "OAuth and
@@ -106,9 +106,16 @@ test('a claude worker with its own profile dir is handed the bare-mode flag; the
   // named "by default" is what let the wrong rule look intentional.
   //
   // The rule now: bare mode is the default only when CLAUDE_CONFIG_DIR names a
-  // profile, because a routed profile's settings carry a token that bare mode
-  // still reads. Both arms are asserted so that dropping bare mode entirely
-  // fails the second and restoring the old unconditional rule fails the first.
+  // profile whose settings CARRY A CREDENTIAL. Naming a profile is not enough,
+  // and the third fixture below is a profile that names one and carries none —
+  // the plan-mode isolation several workers use. This comment said "names a
+  // profile, because a routed profile's settings carry a token", a universal
+  // that its own third fixture disproves, and it said "both arms" for a guard
+  // with three; an openai lane and a zai lane each read the contradiction.
+  //
+  // Three arms, so that dropping bare mode entirely fails the second, restoring
+  // the old unconditional rule fails the first, and restoring the cruder
+  // any-profile-dir rule fails the third.
   //
   // What is asserted is still what this process can reach — the variable the
   // child is HANDED. That the flag suppresses a project hook was measured by
