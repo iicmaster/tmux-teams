@@ -194,16 +194,27 @@ function run(taskId, extraEnv = {}, cwd = mkdtempSync(join(tmpdir(), 'acp-compan
 // (b) also asserts the child was HANDED the profile the decision was taken
 // against, which is what watches the per-lane env allowlist.
 test('the default claude lane is not put in bare mode, because bare mode cannot use a subscription', () => {
+  const DECOY_CREDENTIAL = 'decoy-credential-must-not-reach-disk'
   const dumpOf = (taskId, extraEnv) => {
     const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-bare-'))
     const dump = join(cwd, 'child-env.json')
-    const r = runAs('claude', taskId, { MOCK_ENV_DUMP: dump, ...extraEnv }, cwd)
+    const r = runAs('claude', taskId,
+      { MOCK_ENV_DUMP: dump, ANTHROPIC_AUTH_TOKEN: DECOY_CREDENTIAL, ...extraEnv }, cwd)
     assert.ok(existsSync(dump), `the mock never started, so nothing was observed; stderr:\n${r.stderr}`)
     const observed = JSON.parse(readFileSync(dump, 'utf8'))
-    // THE DUMP IS AN ALLOWLIST. It serialised the child's whole environment,
-    // so a real ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN in the operator's
-    // shell was written in plaintext to a temp file nothing removes — found by
-    // an openai lane in round 4. Widening it again should fail here.
+    // THE DUMP IS AN ALLOWLIST. It serialised the child's whole environment, so
+    // a real ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN in the operator's shell
+    // was written in plaintext to a temp file nothing removes — an openai lane
+    // found that in round 4, and in round 5 found that this check only ever
+    // inspected keys that HAD been serialised: widening the fixture's list to a
+    // variable unset on the machine running the suite left it green.
+    //
+    // So a decoy credential is planted in every call. It is on the claude
+    // lane's env allowlist, so the child really does receive it, and the only
+    // reason it must not appear in the dump is the fixture's own allowlist.
+    const values = JSON.stringify(Object.values(observed))
+    assert.ok(!values.includes(DECOY_CREDENTIAL),
+      'a credential handed to the child was written into the env dump on disk')
     assert.deepEqual(Object.keys(observed).sort().filter(k => !['CLAUDE_CODE_SIMPLE', 'CLAUDE_CONFIG_DIR'].includes(k)), [],
       'the child-env dump carried a key outside its allowlist, which is how a credential reaches disk')
     return observed

@@ -1068,7 +1068,7 @@ passing test with that name is what made the wrong rule look intentional.
 `advisor-party.mjs` resolves a party id through bmad-party-mode's own
 `resolve_party.py` and prints the paragraph that replaces the invented-cast
 paragraph in an advisor brief: real names, titles, personas and the saved scene,
-with "add no one and rename no one". All three skills shell to it, so they
+with "add no one, invent no name". All three skills shell to it, so they
 cannot drift apart on how a roster is rendered.
 
 It refuses rather than substitutes — `unknown_party` (listing the ids that
