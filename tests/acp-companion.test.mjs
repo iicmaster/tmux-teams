@@ -185,6 +185,7 @@ function run(taskId, extraEnv = {}, cwd = mkdtempSync(join(tmpdir(), 'acp-compan
 //
 //   (a)  no profile          -> not bare   · dropping the rule entirely passes
 //   (b)  ANTHROPIC_AUTH_TOKEN -> bare      · keeping it unconditional passes
+//   (b5) a credential in the ENV, no profile -> bare · the regression arm
 //   (b4) ANTHROPIC_API_KEY   -> bare
 //   (b2) profile, no credential -> not bare · only the real rule passes a+b+b2
 //   (b3) apiKeyHelper ALONE  -> not bare · measured, not read off the help text
@@ -198,8 +199,12 @@ test('the default claude lane is not put in bare mode, because bare mode cannot 
   const dumpOf = (taskId, extraEnv) => {
     const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-bare-'))
     const dump = join(cwd, 'child-env.json')
+    // Carried on ANTHROPIC_CUSTOM_HEADERS, which reaches the child through the
+    // claude lane's env allowlist and is NOT one of the two keys the bare-mode
+    // rule reads — a decoy on ANTHROPIC_AUTH_TOKEN would make every arm bare
+    // and quietly delete the thing each arm is asserting.
     const r = runAs('claude', taskId,
-      { MOCK_ENV_DUMP: dump, ANTHROPIC_AUTH_TOKEN: DECOY_CREDENTIAL, ...extraEnv }, cwd)
+      { MOCK_ENV_DUMP: dump, ANTHROPIC_CUSTOM_HEADERS: DECOY_CREDENTIAL, ...extraEnv }, cwd)
     assert.ok(existsSync(dump), `the mock never started, so nothing was observed; stderr:\n${r.stderr}`)
     const observed = JSON.parse(readFileSync(dump, 'utf8'))
     // THE DUMP IS AN ALLOWLIST. It serialised the child's whole environment, so
@@ -252,6 +257,20 @@ test('the default claude lane is not put in bare mode, because bare mode cannot 
     JSON.stringify({ env: { ANTHROPIC_API_KEY: 'fixture-not-a-real-key' } }))
   assert.equal(dumpOf('bare-apikey', { CLAUDE_CONFIG_DIR: withApiKey }).CLAUDE_CODE_SIMPLE, '1',
     'a profile carrying ANTHROPIC_API_KEY lost bare mode')
+
+  // (b5) A CREDENTIAL IN THE ENVIRONMENT AND NO PROFILE. Before this release
+  // every claude lane was bare unconditionally, so a lane carrying its token in
+  // the environment authenticated fine and had the repository's hooks stripped.
+  // Reading only the profile handed those hooks back — the failure 8a05d6d
+  // exists to prevent, revived by the fix for a different one. Measured against
+  // the real binary in bare mode with no profile: an env AUTH_TOKEN answers
+  // "401 Invalid bearer token" and an env API_KEY "401 API key is invalid" —
+  // both READ and TRIED, not the "Not logged in" that means none was found.
+  for (const key of ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY']) {
+    const viaEnv = dumpOf(`bare-env-${key}`, { CLAUDE_CONFIG_DIR: '', [key]: 'fixture-not-a-real-credential' })
+    assert.equal(viaEnv.CLAUDE_CODE_SIMPLE, '1',
+      `a lane carrying ${key} in its environment lost bare mode, so it inherits the repository hooks`)
+  }
 
   // (b2) A profile dir with NO credential — the plan-mode isolation several
   // workers already use. Bare mode here reads neither OAuth nor keychain, so it

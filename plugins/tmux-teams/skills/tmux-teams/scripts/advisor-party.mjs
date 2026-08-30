@@ -193,8 +193,13 @@ export function main(argv, { env = process.env, out = console.log, err = console
     projectRoot = value
     args.splice(i, 2)
   }
+  // ONE PARTY ID AND NOTHING ELSE. An unrecognised extra argument was ignored
+  // in silence while this file and all three skills that document it advertise
+  // a closed set of outcomes — and an operator who typed a second thing meant
+  // it. Refusing costs a usage line; ignoring costs a run that did not do what
+  // was asked and said nothing.
   const id = args[0]
-  if (!id || id.startsWith('-')) {
+  if (!id || id.startsWith('-') || args.length > 1) {
     err('usage: node advisor-party.mjs <party-id> [--project-root <dir>]')
     return 1
   }

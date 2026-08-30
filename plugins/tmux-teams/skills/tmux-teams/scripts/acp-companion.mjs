@@ -2693,13 +2693,15 @@ function adapterEnv(lane, source = process.env) {
 // lane found it. The direction is the point: unreadable resolves to NOT bare,
 // because being refused for authentication is the failure this whole change
 // exists to end, and inheriting a repository's hooks is the milder cost.
+// The two credentials bare mode reads, wherever they arrive from — the
+const CREDENTIAL_ENV_KEYS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN']
 const profileCarriesToken = (dir) => {
   if (typeof dir !== 'string' || dir === '') return false
   try {
     const parsed = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'))
     const env = parsed?.env
     if (env && typeof env === 'object') {
-      for (const key of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN']) {
+      for (const key of CREDENTIAL_ENV_KEYS) {
         if (typeof env[key] === 'string' && env[key].length > 0) return true
       }
     }
@@ -2753,8 +2755,24 @@ const profileCarriesToken = (dir) => {
 // gets removes the coupling; the arm in `tests/acp-companion.test.mjs` that
 // asserts the child was HANDED the same profile the decision was taken against
 // is what fails if the allowlist ever drops the key.
+// A CREDENTIAL IN THE ENVIRONMENT COUNTS TOO, and reading only the profile was
+// a regression this release introduced. Before `647102b` every claude lane was
+// bare unconditionally, so a lane carrying ANTHROPIC_AUTH_TOKEN or
+// ANTHROPIC_API_KEY directly in its environment and no CLAUDE_CONFIG_DIR
+// authenticated fine AND had the repository's hooks stripped. Asking only the
+// profile silently handed those hooks back — which is the failure `8a05d6d`
+// exists to prevent, revived by the fix for a different one.
+//
+// Measured 2026-08-30 with the real binary, no profile, bare mode:
+//   ANTHROPIC_AUTH_TOKEN=<fake>  ->  "401 Invalid bearer token"
+//   ANTHROPIC_API_KEY=<fake>     ->  "401 API key is invalid"
+// Both READ and TRIED — a credential-specific 401, not the "Not logged in"
+// that means none was found.
+const envCarriesToken = env => CREDENTIAL_ENV_KEYS.some(
+  key => typeof env?.[key] === 'string' && env[key].length > 0)
 const baseSpawnEnv = adapterEnv(agentName)
-const claudeBareByDefault = profileCarriesToken(baseSpawnEnv.CLAUDE_CONFIG_DIR)
+const claudeBareByDefault = envCarriesToken(baseSpawnEnv)
+  || profileCarriesToken(baseSpawnEnv.CLAUDE_CONFIG_DIR)
 const spawnEnv = {
   ...baseSpawnEnv,
   ...(agentName === 'claude' && process.env.ACP_INHERIT_PROJECT_CONFIG !== '1'
