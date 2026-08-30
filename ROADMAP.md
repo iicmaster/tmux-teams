@@ -1026,8 +1026,8 @@ subscription has no credential but the keychain entry, so it was refused, and
 the refusal was read as a credential-store problem instead of a flag.
 
 Bare mode is now the default only when `CLAUDE_CONFIG_DIR` names a profile whose
-`settings.json` CARRIES a credential — `ANTHROPIC_API_KEY`,
-`ANTHROPIC_AUTH_TOKEN` or an `apiKeyHelper`. Naming a profile is not enough: the
+`settings.json` CARRIES a credential — `ANTHROPIC_API_KEY` or
+`ANTHROPIC_AUTH_TOKEN`, and NOT an `apiKeyHelper`. Naming a profile is not enough: the
 first attempt checked only that the variable was non-empty while every sentence
 about it said "carries a token", so a plan-mode isolation profile with no
 credential would have been refused exactly as the default lane was. Routed lanes
@@ -1041,6 +1041,15 @@ the real binary and a control, 2026-08-30: a profile carrying only
 `duration_api_ms` 917), and a profile carrying no credential is refused with
 `duration_api_ms` 0 — never contacting the API. Bare mode reads it; the help
 text is narrower than the binary.
+
+`apiKeyHelper` went the other way, and it was in this list until a review lane
+observed that it was the one credential here nobody had ever run — the help text
+above scopes it to `--settings`, not to a profile directory. Measured the same
+day with a real helper script: a profile carrying only an `apiKeyHelper` answers
+`Not logged in · Please run /login` at `duration_api_ms` 0. Pinning such a
+profile to bare mode would have shipped a fresh instance of the 22-day refusal
+inside its own repair, so it resolves to not-bare and keeps the login it can
+use.
 Proven end to end, not at the handshake: a real dispatch came back completed,
 `effective_identity: claude-fable-5` matched, with a written outbox.
 
