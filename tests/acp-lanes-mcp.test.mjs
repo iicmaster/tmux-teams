@@ -1833,6 +1833,25 @@ test('the over-budget repair does not send an operator somewhere that repeats th
 // inside the boot test above, which is free even over a real spawned server
 // because a refusal never reaches the transport.
 
+// A PATH THIS TEST FILE OWNS, holding executable stubs for the launcher and
+// wrapper a lane declares.
+//
+// Several tests want to reach the SETTINGS and ENDPOINT checks, which sit behind
+// the availability check. They used `PATH: process.env.PATH` and reached them
+// only because the developer's machine happens to have `claude-zai` and
+// `claude-qwen` installed. CI runs Linux with a clean HOME and none of those
+// wrappers, so the availability check fired first and three tests failed there
+// having proved nothing about credentials — exactly the local-green-CI-red gap
+// this repository has already lost two releases to, and exactly the
+// inherited-state anti-pattern a zai review lane flagged elsewhere in this same
+// diff. Build what the test needs instead of hoping for it.
+const stubPathFor = (dir, ...names) => {
+  for (const name of names) {
+    writeFileSync(join(dir, name), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+  }
+  return `${dir}${delimiter}${process.env.PATH}`
+}
+
 const callProbe = async (args, env, transport) => {
   const reply = await handle({
     jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'acp_lane_probe', arguments: args },
@@ -1933,14 +1952,21 @@ test('a repeated lane id is probed once, not once per repetition', async () => {
 })
 
 test('a lane that is already invalid is reported from that diagnosis, and never contacted', async () => {
-  const transport = async () => { throw new Error('an already-invalid lane must never be contacted') }
-  const { payload } = await callProbe({ lanes: ['zai'] },
-    { HOME: '/nonexistent-layout', PATH: process.env.PATH }, transport)
-  const [lane] = payload.lanes
-  assert.equal(lane.probe, 'not_attempted')
-  assert.equal(lane.configuration, 'invalid')
-  assert.equal(lane.problem.code, 'endpoint_missing', 'reused the wrong config-time diagnostic')
-  assert.equal(lane.problem.detail, DIAGNOSTICS.endpoint_missing)
+  const bin = mkdtempSync(join(tmpdir(), 'lane-stub-'))
+  try {
+    // The wrapper and launcher must RESOLVE so the availability check passes and
+    // the endpoint check — the one this test is about — is what fires.
+    const transport = async () => { throw new Error('an already-invalid lane must never be contacted') }
+    const { payload } = await callProbe({ lanes: ['zai'] },
+      { HOME: '/nonexistent-layout', PATH: stubPathFor(bin, 'claude-zai', 'npx') }, transport)
+    const [lane] = payload.lanes
+    assert.equal(lane.probe, 'not_attempted')
+    assert.equal(lane.configuration, 'invalid')
+    assert.equal(lane.problem.code, 'endpoint_missing', 'reused the wrong config-time diagnostic')
+    assert.equal(lane.problem.detail, DIAGNOSTICS.endpoint_missing)
+  } finally {
+    rmSync(bin, { recursive: true, force: true })
+  }
 })
 
 test('an UNCHECKED lane is genuinely contacted — a live probe is the only signal that exists for it', async () => {
@@ -2647,7 +2673,11 @@ test('a credential inside an unreadable settings file still never reaches a prob
       // Real PATH so the SETTINGS check is the one that fires: a fake PATH now
       // refuses at the launcher first, which is a correct answer to a different
       // question and would leave this test proving nothing about secrets.
-      { HOME: '/nonexistent-layout', PATH: process.env.PATH, TMUX_TEAMS_REVIEW_ZAI_SETTINGS: settings },
+      // Stubs so the availability check passes and the SETTINGS check is what
+      // fires — this test is about a credential, and on a machine without
+      // `claude-zai` it used to stop one gate earlier and prove nothing.
+      { HOME: '/nonexistent-layout', PATH: stubPathFor(dir, 'claude-zai', 'npx'),
+        TMUX_TEAMS_REVIEW_ZAI_SETTINGS: settings },
       transport)
     assert.equal(payload.lanes[0].probe, 'not_attempted')
     assert.equal(payload.lanes[0].problem.code, 'settings_unreadable')
@@ -2666,7 +2696,8 @@ test('a live credential reaches the transport to spawn with, and never reaches t
     writeFileSync(settings, JSON.stringify({
       env: { ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic', ANTHROPIC_AUTH_TOKEN: marker },
     }))
-    const env = { HOME: dir, PATH: process.env.PATH, TMUX_TEAMS_REVIEW_ZAI_SETTINGS: settings }
+    const env = { HOME: dir, PATH: stubPathFor(dir, 'claude-zai', 'npx'),
+      TMUX_TEAMS_REVIEW_ZAI_SETTINGS: settings }
     let sawMarkerInLaunchEnv = false
     const transport = async (call) => {
       sawMarkerInLaunchEnv = Object.values(call.env ?? {}).includes(marker)
