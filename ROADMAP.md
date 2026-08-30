@@ -12,7 +12,7 @@
 > source, no publish script and nothing that could notice it had gone stale —
 > so it went stale, repeatedly, and nobody could tell without opening it.
 
-Current release: **0.35.0** — the version stamped in this tree, in flight on
+Current release: **0.36.0** — the version stamped in this tree, in flight on
 a pull request and not yet tagged. `main` carries **v0.34.0**, tagged at the
 MERGED sha `d58307d` (not the branch tip `bede67c` — those are different
 commits, and tagging the wrong one ships a sha `main` does not hold). Anyone
@@ -779,6 +779,209 @@ because a panel objection that survives is worth as much as one that lands. The
 same lane also queried a temporal-dead-zone risk in the rearmed probe timer;
 `let timer` is declared at line 652 and the only synchronous `finish` call is at
 674, so the ordering is safe and the query is recorded rather than actioned.
+
+## v0.36.0 scope, set by Master 2026-08-24
+
+**A plugin setup system: a readiness check, and per-machine `bin` configuration,
+so that lanes appear as selectable options to MCP.**
+
+### Why, and it is not a hypothesis
+
+There is **no per-machine configuration layer at all** today. Every entry in
+`REVIEW_PROFILES` hardcodes three machine-dependent things — a launcher (`bunx`
+or `npx -y`), a pinned adapter package version, and a wrapper executable name
+(`claude-qwen`, `claude-9r`, `claude-zai`). A grep of that file for any local
+override returns nothing.
+
+The v0.35.0 release measured **seven lane failures on one machine, none of them
+a code defect.** They do not all have the same repair, and counting them
+together makes this scope look larger than it is:
+
+| class | lanes | can configuration fix it? |
+|---|---|---|
+| **this machine cannot run it** | `codex` — npm cache resolved to a removable volume holding a truncated install, and only UPPERCASE `NPM_CONFIG_CACHE` redirected the child · `zai` — adapter advertises a model value the profile does not pin · `qwen` — needs `CLAUDE_CONFIG_DIR`, and its `opus` alias resolves to a different model per that machine's settings · `agy` — the only lane that worked first try, because `bunx` is a native binary rather than a node script | **yes — four of seven** |
+| **this account cannot use it** | `opencode` — no payment method · `kimi` — 402 membership | **no.** No amount of `bin` setup passes a billing wall |
+| **the recorded value rotted** | `opencode/deepseek-v4-flash-free` — the suffix no longer exists; the dead id was written down verbatim in a handoff | yes, but by a different mechanism |
+
+`agy` is the one to read twice. It was healthy **by coincidence**, not by design
+— its launcher happens not to be the kind of thing that breaks. One lane working
+while its neighbour fails for a reason nobody can see from the config file is
+the whole problem in one line.
+
+### The three parts, in order
+
+1. **A readiness check** answering, per lane, whether THIS machine can run it —
+   and distinguishing *not installed*, *installed but broken*, *no credential*
+   and *no quota*. It reuses the closed-code discipline `acp_lane_probe` already
+   has rather than inventing a second vocabulary for the same job.
+2. **Per-machine `bin` configuration** so a launcher, an adapter version and a
+   wrapper path can be set for this machine without editing a shipped profile.
+   Every class-one failure above lives in this layer.
+3. **Surfacing the result to MCP** so only the lanes this machine can actually
+   run appear as choices.
+
+### Decided before any code, 2026-08-24
+
+**MCP stays read-only; the writing surface is not an MCP tool.** ADR 0007 draws
+its line at "answering questions is a different thing from a surface that can act
+on an operator's behalf". Reading readiness is answering. Writing a `bin` path is
+acting. So the setup surface is a skill or a script, and MCP is the CONSUMER of
+what it writes — which is also exactly what the instruction says: configure the
+bins *so that they appear as choices for MCP*. **ADR 0007 needs no amendment,
+and this paragraph exists so nobody discovers that question late and answers it
+by quietly contradicting the ADR.**
+
+**A stored value must know when it is stale.** The strongest objection in the
+room was that a per-machine override file is a second source of truth for the
+thing that just burned us, and that anything written down rots — the dead
+`opencode` model id was *already recorded in a handoff* when it rotted. The
+counter is that discovery cannot run every time: a cold adapter install measured
+190s. So the resolution is not "a better file" and not "no file": it is a cache
+that carries what it was derived from, so a reader can tell a current answer from
+a remembered one. **A file nobody has to remember to update, rather than a file
+somebody must.**
+
+### ANSWERED 2026-08-24 by measurement: the readiness check is a DEPTH, not a tool
+
+Four lane failures were reproduced deliberately to find where in the ACP
+protocol each one becomes visible. The point was to learn what a readiness check
+must reach, and what it can stop short of:
+
+| lane, failure | reached `initialize` | reached `session/new` | prompt SENT |
+|---|:---:|:---:|:---:|
+| `codex`, adapter install truncated on a removable volume | **no** | no | no |
+| `zai`, model value the adapter does not advertise | yes | yes | **no** |
+| `kimi`, 402 membership | yes | yes | **yes** |
+| `opencode`, no payment method | yes | yes | **yes** |
+
+So a check that spawns, completes the handshake, acknowledges the configuration
+and then STOPS sees both class-one failures above while sending no prompt — and
+a prompt is what a provider bills for. The two account-level failures need the
+prompt and cannot be reached any other way.
+
+**The honest limit, and it is not what the first draft of this section said.**
+"Every class-one failure is visible without a prompt" is FALSE, and this
+session's own log disproves it: `zai` with no `ACP_MODEL` set reached
+`liveness: active` and an `agent_message_chunk` before the gateway answered
+`400 … this model always engages in thinking and cannot be disabled`. That is
+config-fixable — `ACP_REASONING_EFFORT` exists and the liveness record shows
+`requested_reasoning_effort: null` — yet it appears only when a completion is
+attempted. So the claim is the measured one: **the handshake depth catches the
+failure shapes reproduced above, and at least one configuration failure is
+visible only at prompt depth.** An advisor caught the overclaim before it was
+written; this repository has spent a whole release on claims that outran their
+evidence.
+
+**It is a `depth` parameter on `acp_lane_probe`, not a third tool.** That tool's
+own description records "This is the one tool on this server that contacts an
+endpoint" (`acp-lanes-mcp.mjs:1058`). A second contacting tool makes that
+recorded sentence false and drags ADR 0007 along with it. A depth keeps the
+sentence true, reuses the closed-code vocabulary, and honours the rule already
+written above about not inventing a second vocabulary for the same job.
+
+**Known cost, decided before writing it.** The `zai` model rejection is caught by
+the COMPANION's config-acknowledge assertion — the probe transport does
+`initialize`, `session/new`, `session/prompt` and never sets or asserts a config
+option. Handshake depth therefore needs a step the probe does not have, and
+`acp-lanes-mcp.mjs` deliberately imports no sibling script (its own comments say
+so twice). The answer is the one this file already uses for `PROBE_SESSION_ID_RE`:
+copy the shape and guard it with a drift test, rather than couple the modules.
+
+### Built 2026-08-24 — `depth` on `acp_lane_probe`
+
+Shipped as a parameter, not a third tool, for the reason above. `handshake`
+spawns the lane, completes `initialize` and `session/new`, and stops. `prompt`
+stays the default so no existing caller is silently downgraded, and an unknown
+depth is REFUSED rather than defaulted — a caller who types `handshakes` is
+asking to spend nothing, and quietly giving them a paying sweep would charge a
+spelling mistake to the account.
+
+**The guard is the absence of a method call, not the shape of a result.** A
+returned object cannot distinguish a skipped prompt from a quickly-answered one,
+and those differ by real money, so the stub agent records every method it is
+asked and the test asserts `session/prompt` never arrives — with a prompt-depth
+control beside it, because a transport that never prompts at any depth would
+otherwise pass. Deleting the stop turns it red; deleting the depth validation
+turns the other guard red.
+
+**Measured against live lanes the same day, and the result argues against
+itself in the useful way:**
+
+| lane | `handshake` | `prompt` |
+|---|---|---|
+| `agy` | reachable | — |
+| `kimi` | **reachable** | **unreachable, 35.1s** |
+| `codex` (npm cache on the removable volume) | unreachable | — |
+
+Three lanes at handshake depth took **12.7s and sent no prompt**. `kimi` — the
+lane with the 402 membership — answers **`reachable` at handshake depth**, which
+is correct and is exactly what `HANDSHAKE_NOT_PROVEN` exists to say out loud:
+the shallow check answers "can this machine start this lane" and is forbidden
+from implying anything about billing. An operator who read `reachable` without
+that boundary list would compose a panel around a lane that cannot pay out.
+(On this run the prompt-depth attempt hit the reply budget rather than returning
+the 402 itself; that is what was measured, and the code is `probe_timeout`.)
+
+**Not covered, stated so it is not discovered as a gap.** The `zai` model
+rejection is caught by the COMPANION's config-acknowledge assertion, and the
+probe still never sets or asserts a config option — so handshake depth does not
+see that shape yet. Adding it needs a step copied with a drift test, per the
+note above. Parts two and three of the scope are untouched.
+
+### Shipped 2026-08-29 — all five items
+
+| # | item | what it does |
+|---|---|---|
+| 1 | probe depth | `handshake` spawns, completes the session, and stops — no prompt, so nothing a provider bills for |
+| 2 | per-machine config | `~/.config/tmux-teams/lanes.json` overrides launcher, adapter, wrapper and env; survives `claude plugin update` |
+| 3 | status, gate, exit | `acp_lanes` reports `plugin.ready`, `callableLanes`, `setupRequired` and per-lane `needs`; a lane whose executable is absent is refused **before** the spawn |
+| 4 | `tmux-teams:lane-setup` | reports what is missing, writes the override, and RE-CHECKS that the lane became callable |
+| 5 | `lane-models` | what each lane REQUESTS and what this machine resolves it to, read from a file — no prompt, no quota |
+
+**Measured on this machine:** 7 of 8 lanes callable across 7 families;
+`ninerouter` refused in 0.0s with `executable_absent: claude-9r` and no process
+started; `kimi` declares the model `opus` and this machine resolves that alias
+to `k3[1m]`.
+
+**Two defects were introduced by this release and caught inside it.** Both are
+worth keeping, because both are the failure this release exists to end.
+
+*The two layers did not agree.* Readiness read the shipped profiles and never
+the per-machine file, so `lane-setup set` wrote the override and the re-check
+went on reporting the shipped executable as missing — a setting that looks
+applied and is not. No unit test caught it: the pure function was correct and
+its consumer was not reading it. The round trip caught it, and the guard now
+asserts the round trip.
+
+*The refusal named the wrong cause.* The configuration check ran before the
+availability check, so `ninerouter` — missing both its wrapper and its local
+gateway — answered `endpoint_missing`, sending an operator to fix a gateway when
+no binary exists to talk to it. Availability is checked first now and a guard
+pins that ordering.
+
+**The honest limits, stated rather than discovered later.** A handshake pass
+proves the lane can START and says nothing about billing: measured, `kimi`
+answers `reachable` at handshake depth and `unreachable` at prompt depth. Model
+resolution reads a file, so a gateway that resolves aliases server-side is
+unknowable from here and reports `source: declared` rather than a guess. And
+class-two failures — a 402 membership, a missing payment method — are facts
+about an account that no override repairs; setup reports them and cannot fix
+them.
+
+### Still open, and still blocking code rather than the scope
+
+- Where does the per-machine config live, and what reads it first — the profile,
+  the override, or the environment? The layering is undecided, and **part one
+  must not answer it by implication.** A JSON override keyed by lane, env
+  winning, a cache carrying its own derivation — all of that is judgement, none
+  of it is measured, and Master has not ruled.
+- What invalidates the cache? Nothing is decided beyond "it must be answerable
+  without asking a human to remember".
+
+### Not in scope, stated so it is not discovered as a gap
+
+Class-two failures. A billing wall and an expired membership are facts about an
+account, and this work reports them accurately rather than fixing them.
 
 ## What is actually open
 

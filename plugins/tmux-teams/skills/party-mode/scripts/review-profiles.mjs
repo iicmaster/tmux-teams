@@ -2,6 +2,7 @@
 // profile-scoped environment, never a shell command or ambient credential bag.
 import { accessSync, closeSync, constants as fsConstants, existsSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs'
 import { delimiter, join } from 'node:path'
+import { loadLaneOverrides, applyLaneOverride } from './lane-overrides.mjs'
 
 const runtimeKeys = new Set([
   'PATH', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'TMP', 'TEMP',
@@ -1140,12 +1141,41 @@ export function buildAcpLaunch(profileId, {
   settingsLoader,
   routedSettingsLoader,
   agyBinaryResolver,
+  // The per-machine layer, injected rather than read here so a test can drive
+  // every shape without writing into the developer's own home directory — the
+  // same seam `settingsLoader` already is.
+  overrideLoader = loadLaneOverrides,
 } = {}) {
-  const profile = getReviewProfile(profileId)
+  const shipped = getReviewProfile(profileId)
+  // THE SINGLE RESOLUTION POINT, which is why the override lands here and
+  // nowhere else. The probe, the gate and the runner all read what this
+  // function returns, so one insertion covers every caller and leaves no
+  // second place for the shipped layer and the machine layer to disagree.
+  // Pass the ENV this call was given. Omitting it made the loader fall back
+  // to a path computed from the process's own home at import time, so a
+  // caller that supplied an environment was silently reading somebody
+  // else's configuration. Fifth occurrence of this release's own defect
+  // shape — a consumer resolving from the ambient world instead of the one
+  // it was handed — and the fourth found by a review lane rather than a test.
+  const { overrides, problems } = overrideLoader({ knownLanes: Object.keys(REVIEW_PROFILES), profiles: REVIEW_PROFILES, env })
+  if (problems.length > 0) {
+    // FAIL CLOSED. An operator who wrote an override is saying the shipped
+    // default does not work on this machine; running the shipped default
+    // anyway reproduces their original failure while the fix looks applied.
+    const error = new Error(`${profileId} review lane override file is unusable: ${problems[0].code}`)
+    error.overrideProblems = problems
+    throw error
+  }
+  const profile = applyLaneOverride(shipped, overrides[profileId], env)
+  const childEnv = buildProfileEnv(profileId, env, { settingsLoader: routedSettingsLoader, agyBinaryResolver })
   return Object.freeze({
     profile,
     command: Object.freeze([...profile.command]),
-    env: buildProfileEnv(profileId, env, { settingsLoader: routedSettingsLoader, agyBinaryResolver }),
+    // The override's env is merged onto the child environment last, and
+    // `applyLaneOverride` has already let the real process environment win key
+    // by key.
+    env: Object.freeze({ ...childEnv, ...(profile.overrideEnv ?? {}) }),
     settings: loadProfileSettings(profileId, settingsLoader),
+    overrideApplied: Boolean(overrides[profileId]),
   })
 }

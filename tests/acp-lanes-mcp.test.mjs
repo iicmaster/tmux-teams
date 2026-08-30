@@ -1,8 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, chmodSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, chmodSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, dirname, isAbsolute } from 'node:path'
+import { join, dirname, isAbsolute, delimiter } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { spawn } from 'node:child_process'
@@ -10,7 +10,8 @@ import { spawn } from 'node:child_process'
 import { handle, callTool, laneFacts, laneStatus, classify, fixesFor,
   TOOLS, TOOL_DESCRIPTORS, DIAGNOSTICS, PROTOCOL_VERSION, UNCHECKED_LANES,
   RPC_INVALID_REQUEST, RPC_INVALID_PARAMS, RPC_METHOD_NOT_FOUND, RPC_PARSE_ERROR,
-  classifyProbe, PROBE_BOOT_TIMEOUT_MS, PROBE_REPLY_TIMEOUT_MS, PROBE_BRIEF, realProbeTransport }
+  classifyProbe, PROBE_BOOT_TIMEOUT_MS, PROBE_REPLY_TIMEOUT_MS, PROBE_BRIEF, realProbeTransport,
+  PROBE_DEPTHS, DEFAULT_PROBE_DEPTH }
   from '../plugins/tmux-teams/skills/party-mode/scripts/acp-lanes-mcp.mjs'
 import { REVIEW_PROFILES, ROUTED_PROFILES, provenFamilyCollision, normalizePrimaryFamily, PROVIDER_SECRET_KEYS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys, buildAcpLaunch, buildProfileEnv }
   from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
@@ -109,7 +110,7 @@ test('a lane with no parent-side check says UNCHECKED, and never that it is fine
   // both answered `ready: true`. Nothing validates those two, so a green
   // answer meant only "no check ran" — a diagnostic that says READY and then
   // watches the real gate refuse is worse than no diagnostic at all.
-  const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
   for (const lane of ['claude', 'codex']) {
     const [got] = call('acp_lane_status', { lane }, bare).lanes
     assert.equal(got.configuration, 'unchecked', `${lane} claimed a state nothing verified`)
@@ -264,7 +265,7 @@ test('the agy lane checks that its binary is EXECUTABLE, not merely that a name 
   // And with nothing at any candidate path at all, which is the state the
   // deleted call site would have reported as valid.
   const bare = laneStatus('agy', REVIEW_PROFILES.agy,
-    { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' })
+    { HOME: '/definitely/nonexistent', PATH: process.env.PATH })
   assert.equal(bare.configuration, 'invalid')
   assert.equal(bare.problem.code, 'executable_missing')
 })
@@ -814,8 +815,17 @@ test('the manifest command boots the server and answers a real client handshake,
     const dir = join(base, 'a path with spaces')
     try {
       mkdirSync(dir, { recursive: true })
+      // READ THE DIRECTORY, do not trust a list. This staged two files by name
+      // and went red the moment the server grew a third sibling
+      // (`lane-overrides.mjs`) — which is the test working, but only because
+      // somebody was watching. A hardcoded list here reports "the server boots"
+      // about a tree that is missing whatever was added last. The same rule the
+      // README skill-inventory guard already uses, for the same reason.
       const scripts = join(PLUGIN, 'skills', 'party-mode', 'scripts')
-      for (const name of ['acp-lanes-mcp.mjs', 'review-profiles.mjs']) {
+      const staged = readdirSync(scripts).filter(name => name.endsWith('.mjs'))
+      assert.ok(staged.length >= 3,
+        `only ${staged.length} scripts staged — the server has siblings and this test must carry all of them`)
+      for (const name of staged) {
         writeFileSync(join(dir, name), readFileSync(join(scripts, name), 'utf8'))
       }
       // The manifest's OWN argv, expanded, with only the script path rebased into
@@ -1823,6 +1833,25 @@ test('the over-budget repair does not send an operator somewhere that repeats th
 // inside the boot test above, which is free even over a real spawned server
 // because a refusal never reaches the transport.
 
+// A PATH THIS TEST FILE OWNS, holding executable stubs for the launcher and
+// wrapper a lane declares.
+//
+// Several tests want to reach the SETTINGS and ENDPOINT checks, which sit behind
+// the availability check. They used `PATH: process.env.PATH` and reached them
+// only because the developer's machine happens to have `claude-zai` and
+// `claude-qwen` installed. CI runs Linux with a clean HOME and none of those
+// wrappers, so the availability check fired first and three tests failed there
+// having proved nothing about credentials — exactly the local-green-CI-red gap
+// this repository has already lost two releases to, and exactly the
+// inherited-state anti-pattern a zai review lane flagged elsewhere in this same
+// diff. Build what the test needs instead of hoping for it.
+const stubPathFor = (dir, ...names) => {
+  for (const name of names) {
+    writeFileSync(join(dir, name), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+  }
+  return `${dir}${delimiter}${process.env.PATH}`
+}
+
 const callProbe = async (args, env, transport) => {
   const reply = await handle({
     jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'acp_lane_probe', arguments: args },
@@ -1916,27 +1945,34 @@ test('acp_lane_probe refuses every shape that is not an explicit non-empty array
 test('a repeated lane id is probed once, not once per repetition', async () => {
   let calls = 0
   const transport = async () => { calls += 1; return { settled: 'response' } }
-  const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
   const { payload } = await callProbe({ lanes: ['claude', 'claude', 'claude'] }, bare, transport)
   assert.equal(payload.lanes.length, 1, 'a deduped id must appear once in the answer, not three times')
   assert.equal(calls, 1, 'the same lane id was probed more than once for one call')
 })
 
 test('a lane that is already invalid is reported from that diagnosis, and never contacted', async () => {
-  const transport = async () => { throw new Error('an already-invalid lane must never be contacted') }
-  const { payload } = await callProbe({ lanes: ['zai'] },
-    { HOME: '/nonexistent-layout', PATH: '/definitely/nonexistent' }, transport)
-  const [lane] = payload.lanes
-  assert.equal(lane.probe, 'not_attempted')
-  assert.equal(lane.configuration, 'invalid')
-  assert.equal(lane.problem.code, 'endpoint_missing', 'reused the wrong config-time diagnostic')
-  assert.equal(lane.problem.detail, DIAGNOSTICS.endpoint_missing)
+  const bin = mkdtempSync(join(tmpdir(), 'lane-stub-'))
+  try {
+    // The wrapper and launcher must RESOLVE so the availability check passes and
+    // the endpoint check — the one this test is about — is what fires.
+    const transport = async () => { throw new Error('an already-invalid lane must never be contacted') }
+    const { payload } = await callProbe({ lanes: ['zai'] },
+      { HOME: '/nonexistent-layout', PATH: stubPathFor(bin, 'claude-zai', 'npx') }, transport)
+    const [lane] = payload.lanes
+    assert.equal(lane.probe, 'not_attempted')
+    assert.equal(lane.configuration, 'invalid')
+    assert.equal(lane.problem.code, 'endpoint_missing', 'reused the wrong config-time diagnostic')
+    assert.equal(lane.problem.detail, DIAGNOSTICS.endpoint_missing)
+  } finally {
+    rmSync(bin, { recursive: true, force: true })
+  }
 })
 
 test('an UNCHECKED lane is genuinely contacted — a live probe is the only signal that exists for it', async () => {
   const spy = []
   const transport = async (call) => { spy.push(call); return { settled: 'response' } }
-  const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
   const { payload } = await callProbe({ lanes: ['claude'] }, bare, transport)
   assert.equal(spy.length, 1, 'the one lane with no parent-side check was never actually contacted')
   assert.equal(spy[0].id, 'claude')
@@ -1957,8 +1993,651 @@ test('an UNCHECKED lane is genuinely contacted — a live probe is the only sign
     'a live reachable answer with no stated boundary is the same overclaim ready:true was')
 })
 
+// ## Probe depth — and the only assertion that proves the money claim
+//
+// `depth: 'handshake'` exists because a completion is what a provider bills for.
+// Measured 2026-08-24 against four reproduced lane failures: an adapter whose
+// install was truncated died BEFORE `initialize`, while a 402 membership and a
+// missing payment method stayed invisible until a prompt was actually sent.
+//
+// A test that only checks the returned shape cannot tell a skipped prompt from
+// a quickly-answered one — and those differ by real money. So the stub records
+// every method it is ASKED, and the assertion is the absence of one.
+// ## Readiness — the light, the brake, and the way out
+//
+// The owner's complaint was that the plugin could not say whether it was ready
+// or what could be called, and that an unusable lane produced an error later
+// instead of a refusal now. Three guards, one per part, because the parts fail
+// independently: a status nobody reads, a brake wired to nothing, and a refusal
+// with no way forward are three different bugs.
+test('a lane whose executable is absent is refused BEFORE anything is spawned', async () => {
+  // CONSTRUCT the absence rather than inheriting it. This asserted that
+  // `ninerouter`'s wrapper is missing, which is true on the machine that wrote
+  // the test and is a fact about that machine — on a runner where `claude-9r`
+  // IS installed the lane would reach the transport and every assertion below
+  // would silently stop testing what it names. An openai review lane found it.
+  // A per-machine override points the lane at a name that cannot exist, so the
+  // absence is now a property of the fixture.
+  const home = mkdtempSync(join(tmpdir(), 'brake-absent-'))
+  let spawned = false
+  let payload
+  try {
+    mkdirSync(join(home, '.config', 'tmux-teams'), { recursive: true })
+    writeFileSync(join(home, '.config', 'tmux-teams', 'lanes.json'),
+      JSON.stringify({ ninerouter: { claudeExecutable: 'tmux-teams-no-such-binary-exists' } }))
+    ;({ payload } = await callProbe({ lanes: ['ninerouter'], depth: 'handshake' },
+      { ...process.env, HOME: home },
+      async () => { spawned = true; return { settled: 'handshake_ok' } }))
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+  const [lane] = payload.lanes
+
+  assert.equal(spawned, false,
+    'a process was spawned for a lane whose executable does not exist — the brake is not on the spawn path')
+  assert.equal(lane.probe, 'not_attempted')
+  assert.equal(lane.problem.code, 'executable_absent',
+    `the refusal named ${lane.problem.code} — the operator is sent to fix the wrong thing`)
+  assert.equal(lane.missing, 'tmux-teams-no-such-binary-exists',
+    'the refusal does not name WHICH executable is missing, so it is not actionable')
+  assert.match(lane.setup ?? '', /setup/,
+    'the refusal offers no way forward — an error the operator cannot act on is the state this replaced')
+
+  // ORDER IS THE FINDING, and the assertion that used to sit here could not
+  // fail: `notEqual(code, 'endpoint_missing')` directly under
+  // `equal(code, 'executable_absent')` tests the same value twice. A zai review
+  // lane called it dead weight and was right — it observed no ordering at all,
+  // only the final code.
+  //
+  // What actually proves the order is a lane that would FAIL BOTH checks: this
+  // fixture's wrapper is absent AND its routed settings are unreachable under an
+  // isolated HOME. An implementation that asked the endpoint question first
+  // answers `endpoint_missing` here and nothing else does.
+  assert.equal(lane.configuration, 'invalid',
+    'this fixture is meant to fail the configuration check too, or it cannot prove an order')
+})
+
+test('a listing says what this machine can actually call, not what the file declares', async () => {
+  const reply = await handle({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+    params: { name: 'acp_lanes', arguments: {} } }, process.env)
+  const payload = JSON.parse(reply.result.content[0].text)
+
+  assert.ok(Array.isArray(payload.callableLanes), 'the listing does not say which lanes are callable')
+  assert.equal(typeof payload.setupRequired, 'boolean', 'the listing carries no gate for a caller to read')
+  assert.ok(payload.plugin && typeof payload.plugin.ready === 'boolean',
+    'the listing says nothing about whether the PLUGIN itself is usable')
+
+  // Every lane states what it NEEDS. Three lanes used to report
+  // `executable: null`, which reads as "needs nothing" and is false — they need
+  // bunx or npx from command[0], where no listing surface was looking.
+  for (const lane of payload.lanes) {
+    assert.ok(Array.isArray(lane.needs) && lane.needs.length > 0,
+      `lane ${lane.lane} reports needing nothing, which is true of no lane here`)
+    assert.equal(typeof lane.available, 'boolean', `lane ${lane.lane} does not say whether it is callable`)
+  }
+})
+
+// The two layers must agree, and they did not. Readiness read the SHIPPED
+// profiles and never the per-machine file, so setting an override wrote the
+// file and the re-check went on reporting the shipped executable as missing —
+// a setting that looks applied and is not, which is the precise failure this
+// release exists to end, reproduced by the release itself. Caught by running
+// the round trip rather than by any unit test, which is why this one asserts
+// the round trip.
+// ## What a lane actually calls
+//
+// The v0.35.0 panel recorded a lane as "qwen" while the alias it requested was
+// resolved by that gateway to a deepseek model, and the only way anyone learned
+// that was opening the wrapper's settings file by hand. Two lanes can share one
+// gateway and answer as different families; the release record depends on
+// telling them apart.
+// A DESCRIPTION IS A CLAIM AND GETS THE SAME TREATMENT AS CODE. `acp_lanes`
+// advertised "touches nothing on this machine" while its handler resolved
+// executables on PATH, stat'd them, and read two local files. Two review
+// families raised it independently — this repository's must-fix threshold — and
+// it is the release's own defect shape in the sentence an agent reads to decide
+// whether calling the tool is free.
+test('the acp_lanes description does not deny the machine state it reads', async () => {
+  const advertised = TOOLS.find(t => t.name === 'acp_lanes')
+  assert.ok(advertised, 'acp_lanes is not advertised')
+  const text = advertised.description
+
+  assert.ok(!/touches nothing on this machine/.test(text),
+    'the description still claims to touch nothing while the handler reads PATH and two files')
+  for (const promised of [/PATH/, /override/, /setupRequired/]) {
+    assert.match(text, promised,
+      'the description does not tell a caller which machine state this tool reads')
+  }
+  // And the half that IS still true has to stay said, or a caller cannot tell
+  // this tool from the one that spends quota.
+  assert.match(text, /contacts NO endpoint|no provider quota/,
+    'the description no longer says this tool is free, which is the reason to prefer it')
+})
+
+test('a lane reports what it REQUESTS and what this machine resolves it to', async () => {
+  const { laneModel } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-models.mjs')).href)
+  const home = mkdtempSync(join(tmpdir(), 'lane-models-'))
+  try {
+    const dir = join(home, '.config', 'claude-profiles', 'demo')
+    mkdirSync(dir, { recursive: true })
+    // A settings file shaped like a real one: the alias map sits beside a
+    // credential, which is exactly why only the three alias keys may be read.
+    writeFileSync(join(dir, 'settings.json'), JSON.stringify({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: 'CANARY-TOKEN-MUST-NEVER-APPEAR-' + 'z'.repeat(16),
+        ANTHROPIC_BASE_URL: 'https://CANARY-ENDPOINT-MUST-NEVER-APPEAR.invalid/anthropic',
+        // A key nobody named. The promise is an ALLOWLIST of three alias keys,
+        // and a test that blocks two names by hand does not enforce one — an
+        // openai review lane pointed out that an implementation copying
+        // everything except those two would leak this and pass. Third time this
+        // fixture was strengthened; each round it was blocking names instead of
+        // permitting them.
+        SOME_OTHER_SECRET: 'CANARY-OTHER-MUST-NEVER-APPEAR',
+        ANTHROPIC_DEFAULT_OPUS_MODEL: 'a-real-model-id',
+      },
+    }))
+    const profile = {
+      model: 'recorded-identity',
+      requestModel: 'opus',
+      settingsRelativePath: '.config/claude-profiles/demo/settings.json',
+    }
+    const answer = laneModel('demo', profile, { home })
+
+    assert.equal(answer.requested, 'opus',
+      'the lane reported its recorded identity instead of the alias that goes on the wire')
+    assert.equal(answer.resolved, 'a-real-model-id',
+      'the alias was not resolved through this machine settings file')
+    assert.equal(answer.source, 'alias_resolved')
+    assert.notEqual(answer.declared, answer.resolved,
+      'this fixture is meant to have a declaration that differs from what answers')
+
+    // THE ASSERTION THAT MATTERS MOST. The alias map shares a file with a
+    // credential; a prefix match over env keys would carry the token out.
+    // Every VALUE in that file is canaried, not just the token. A deepseek review
+    // lane pointed out that this asserted the token value and the key NAMES while
+    // an endpoint value could have walked out unnoticed — and an endpoint is a
+    // machine fact this repository already refuses to put on the wire.
+    // AN ALLOWLIST, ASSERTED AS ONE. Every canary is a value this file holds and
+    // the listing has no business carrying; naming them individually is how the
+    // previous two versions of this test stayed too weak.
+    const dump = JSON.stringify(answer)
+    for (const canary of ['CANARY-TOKEN', 'CANARY-ENDPOINT', 'CANARY-OTHER']) {
+      assert.ok(!dump.includes(canary), `${canary} from the settings file reached the model listing`)
+    }
+    assert.ok(!/AUTH_TOKEN|BASE_URL|SOME_OTHER_SECRET/.test(dump),
+      'a key name from the settings file leaked into the listing')
+    // And the shape itself: the answer carries exactly these fields, so a new
+    // one cannot be added quietly and carry a file value out with it.
+    assert.deepEqual(Object.keys(answer).sort(),
+      ['aliasesOnThisMachine', 'declared', 'detail', 'lane', 'requested', 'resolved', 'source'],
+      'the answer grew or lost a field — anything new must be reviewed for what it can carry')
+    assert.deepEqual(Object.keys(answer.aliasesOnThisMachine ?? {}), ['opus'],
+      'the alias map carries a key outside the three-alias allowlist')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('a lane this machine cannot resolve says so instead of guessing', async () => {
+  const { laneModel } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-models.mjs')).href)
+
+  // No settings file at all — the overwhelmingly common case for an unrouted
+  // lane. A guess here would be a confident wrong answer, which this repository
+  // treats as worse than none.
+  const answer = laneModel('demo', { model: 'declared-only' }, { home: '/definitely/nonexistent' })
+  assert.equal(answer.resolved, null, 'a model was invented for a lane with nothing to read')
+  assert.equal(answer.source, 'declared',
+    'a declaration was reported as though this machine had confirmed it')
+  assert.match(answer.detail, /no machine evidence/,
+    'the boundary is not stated, so a declaration reads as a measurement')
+})
+
+// ONE PAYLOAD MUST NOT CONTRADICT ITSELF. The summary and the per-lane rows were
+// computed from different configurations: readinessReport applied the
+// per-machine override, laneWithAvailability got the raw profile, so
+// callableLanes counted a lane the operator had fixed while that lane's own row
+// still said available: false. A gemini review lane found it — the THIRD
+// consumer in this release to read the shipped profile instead of the machine's,
+// after two had already been fixed. The shape repeats, so this pins it.
+// EVERY consumer resolves from the environment it was HANDED, not the ambient
+// one. This release produced that defect five times — readiness, the brake, the
+// lane rows, the loader's own path, and buildAcpLaunch — and a review lane found
+// four of them. So the guard is not "does this one call site pass env": it walks
+// the real entry points with an isolated HOME and asserts none of them reads the
+// developer's actual configuration.
+// The BRAKE must read the override too. Every probe guard added in this release
+// probed the shipped profile only, so a brake that ignored the per-machine file
+// would refuse a lane the operator had already fixed and pass every one of
+// them. An openai review lane named the gap.
+// An overridable field that changes nothing is a field advertising a capability
+// it does not have — the defect shape of this whole release. `adapterPackage`
+// was exactly that: the package that actually launches lives in `command`, so
+// setting the field left the shipped package running while setup reported the
+// lane callable. An openai review lane found it; the first fix shipped with NO
+// guard, and a mutation that disabled it left the suite green.
+test('overriding the adapter package changes the command that actually runs', async () => {
+  const { applyLaneOverride } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-overrides.mjs')).href)
+
+  const shipped = REVIEW_PROFILES.codex
+  assert.ok(shipped.command.includes(shipped.adapterPackage),
+    'this test assumes the shipped command carries the adapter package verbatim')
+
+  const swapped = '@agentclientprotocol/codex-acp@9.9.9'
+  const resolved = applyLaneOverride(shipped, { adapterPackage: swapped }, {})
+
+  assert.equal(resolved.adapterPackage, swapped)
+  assert.ok(resolved.command.includes(swapped),
+    'the override changed the declared package while the command still launches the shipped one')
+  assert.ok(!resolved.command.includes(shipped.adapterPackage),
+    'the shipped package survived in the command, so both versions are named at once')
+  // The launch argv and the declared package must still agree — the repo
+  // asserts that binding at import for every profile, and an override that
+  // broke it would fail far from here.
+  assert.ok(resolved.command.includes(resolved.adapterPackage),
+    'the command and the declared adapterPackage disagree after the override')
+})
+
+// EXISTING IS NOT RUNNABLE. A mode-0644 file named like a wrapper resolves on
+// PATH and stats as a regular file, so a check stopping at isFile reports the
+// lane callable and hands the spawn an EACCES it was meant to prevent. An
+// openai review lane found it. This plugin already tells `executable_missing`
+// from `executable_unusable` for the same reason: installing a file that is
+// already sitting there fixes nothing.
+// AN OVERRIDE THAT CANNOT TAKE EFFECT IS REFUSED, NOT IGNORED. Substituting the
+// adapter package works only when the shipped command names it verbatim; a lane
+// whose command does not — a native-binary lane, or one naming no package —
+// would have accepted the field, changed a declaration, and launched the old
+// package anyway. A deepseek review lane found that the file's own comment
+// promised this refusal while nothing implemented it.
+// An env with NEITHER home variable must not fall through to the process's own
+// home. `laneModel`'s default parameter is `homedir()`, so handing it
+// `undefined` reads the SERVER's home rather than the caller's nothing — the
+// sixth instance of this release's shape, found by a deepseek review lane.
+test('a caller with no home in its environment gets unknown, not the server home', async () => {
+  const reply = await handle({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+    params: { name: 'acp_lanes', arguments: {} } }, { PATH: process.env.PATH })
+  const payload = JSON.parse(reply.result.content[0].text)
+
+  for (const lane of payload.lanes) {
+    assert.equal(lane.resolvedModel, null,
+      `lane ${lane.lane} resolved a model from a home the caller never supplied`)
+    assert.equal(lane.modelSource, 'unknown',
+      `lane ${lane.lane} claimed evidence it could not have had`)
+  }
+
+  // The control, CONSTRUCTED rather than inherited. This handed the tool
+  // `process.env` and hoped the runner's real home held alias settings — a fact
+  // about the machine that wrote the test, and the same anti-pattern removed
+  // from the brake fixture a few blocks up. A zai review lane caught the
+  // inconsistency. Build the alias map, then require resolution.
+  const home = mkdtempSync(join(tmpdir(), 'lane-model-control-'))
+  try {
+    // `kimi` because it REQUESTS the alias `opus`; a lane that names a model
+    // directly has no alias to resolve and would make this control fail for a
+    // reason that has nothing to do with what it is guarding.
+    const dir = join(home, '.config', 'claude-profiles', 'kimi')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'settings.json'),
+      JSON.stringify({ env: { ANTHROPIC_DEFAULT_OPUS_MODEL: 'control-model-id' } }))
+    const withHome = await handle({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'acp_lanes', arguments: {} } }, { ...process.env, HOME: home })
+    const resolved = JSON.parse(withHome.result.content[0].text).lanes
+      .filter(l => l.resolvedModel !== null)
+    assert.ok(resolved.length > 0,
+      'no lane resolved even from a home this test built, so the assertion above proves nothing')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('an adapterPackage override is refused on a lane whose command cannot carry it', async () => {
+  const { loadLaneOverrides } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-overrides.mjs')).href)
+
+  const profiles = {
+    swappable: { command: ['npx', '-y', 'pkg@1'], adapterPackage: 'pkg@1' },
+    native: { command: ['bunx', 'native-thing@1'], adapterPackage: 'something-else@1' },
+  }
+  const read = () => JSON.stringify({
+    native: { adapterPackage: 'pkg@2' },
+  })
+  const refused = loadLaneOverrides({ knownLanes: Object.keys(profiles), profiles, readFile: read })
+  assert.equal(refused.problems.length, 1, 'an override that cannot take effect was accepted')
+  assert.equal(refused.problems[0].code, 'bad_adapter_swap')
+  assert.deepEqual(refused.overrides, {}, 'a refused file was partly applied')
+
+  // The control: a lane whose command DOES name its package accepts the swap.
+  // Without this the test would pass against a loader that refuses every swap.
+  const ok = loadLaneOverrides({
+    knownLanes: Object.keys(profiles), profiles,
+    readFile: () => JSON.stringify({ swappable: { adapterPackage: 'pkg@2' } }),
+  })
+  assert.deepEqual(ok.problems, [], 'a swap the command can carry was refused')
+  assert.equal(ok.overrides.swappable.adapterPackage, 'pkg@2')
+})
+
+// The isFile/isExecutable checks lived ONLY in the wrapper branch. A zai review
+// lane pointed out that a mode-0644 file named `npx` earlier on PATH resolved,
+// left `blocking` empty, and reported every npx-launched lane callable with
+// setupRequired false — right up to a spawn dying EACCES. The same held for the
+// plugin binaries, so a non-executable `node` gave `plugin.ready: true`.
+test('a non-executable launcher or plugin binary is not mistaken for a working one', async () => {
+  const { laneAvailability, pluginReadiness } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-readiness.mjs')).href)
+  const shadow = mkdtempSync(join(tmpdir(), 'path-shadow-'))
+  try {
+    // A file with the launcher's name and no execute bit, placed AHEAD of the
+    // real one — the shape a broken install or a stray download leaves behind.
+    writeFileSync(join(shadow, 'npx'), '#!/bin/sh\nexit 0\n', { mode: 0o644 })
+    writeFileSync(join(shadow, 'node'), 'not a program', { mode: 0o644 })
+    const shadowedFirst = { PATH: `${shadow}${delimiter}${process.env.PATH}` }
+
+    // A shadowing non-executable must not HIDE the real one either: the walk
+    // continues, exactly as a shell's PATH lookup does.
+    const lane = laneAvailability('codex', REVIEW_PROFILES.codex, shadowedFirst)
+    assert.equal(lane.available, true,
+      'a non-executable file earlier on PATH hid the real launcher behind it')
+
+    // With ONLY the shadow on PATH there is nothing usable to find.
+    const onlyShadow = { PATH: shadow }
+    const dead = laneAvailability('codex', REVIEW_PROFILES.codex, onlyShadow)
+    assert.equal(dead.available, false,
+      'a lane whose only launcher is a non-executable file was reported callable')
+    assert.equal(dead.blocking[0].missing, 'npx')
+
+    const plugin = pluginReadiness(onlyShadow)
+    assert.equal(plugin.ready, false,
+      'a non-executable node was accepted as a ready plugin')
+    assert.ok(plugin.missing.some(m => m.missing === 'node'),
+      'the unusable binary is not named, so an operator cannot act on it')
+  } finally {
+    rmSync(shadow, { recursive: true, force: true })
+  }
+})
+
+test('a wrapper that exists but cannot be executed is not called callable', async () => {
+  const { laneAvailability } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-readiness.mjs')).href)
+  const dir = mkdtempSync(join(tmpdir(), 'lane-not-exec-'))
+  try {
+    const name = 'tmux-teams-fixture-wrapper'
+    writeFileSync(join(dir, name), '#!/bin/sh\nexit 0\n', { mode: 0o644 })
+
+    const env = { PATH: dir }
+    const profile = { command: ['node'], claudeExecutable: name }
+    const answer = laneAvailability('demo', profile, { ...env, PATH: `${dir}${delimiter}${process.env.PATH}` })
+
+    assert.equal(answer.available, false,
+      'a file with no execute bit was reported callable, so the spawn gets the EACCES instead')
+    assert.equal(answer.blocking[0].code, 'executable_not_executable',
+      `reported ${answer.blocking[0]?.code} — "missing" would send the operator to install a file that is already there`)
+
+    // And the control: the same file, made executable, is callable. Without it
+    // this test would pass against a check that refuses everything.
+    chmodSync(join(dir, name), 0o755)
+    const after = laneAvailability('demo', profile, { ...env, PATH: `${dir}${delimiter}${process.env.PATH}` })
+    assert.equal(after.available, true, 'an executable wrapper was still refused')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the pre-spawn brake honours a per-machine override', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'brake-override-'))
+  try {
+    mkdirSync(join(home, '.config', 'tmux-teams'), { recursive: true })
+    writeFileSync(join(home, '.config', 'tmux-teams', 'lanes.json'),
+      JSON.stringify({ ninerouter: { claudeExecutable: 'node' } }))
+
+    let spawned = false
+    const { payload } = await callProbe({ lanes: ['ninerouter'], depth: 'handshake' },
+      { ...process.env, HOME: home },
+      async () => { spawned = true; return { settled: 'handshake_ok' } })
+    const [lane] = payload.lanes
+
+    assert.notEqual(lane.problem?.code, 'executable_absent',
+      'the brake refused a lane whose executable the operator had already pointed at a real binary')
+    assert.equal(spawned || lane.probe === 'not_attempted', true,
+      'the lane neither ran nor produced a diagnosis')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+// A malformed override file must not read as "no overrides". Discarding the
+// loader's problems made readiness report from shipped defaults while
+// buildAcpLaunch throws on the same file — a green gate in front of a dispatch
+// that cannot start.
+test('a malformed override file forces setup rather than reading as empty', async () => {
+  const { readinessReport } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-readiness.mjs')).href)
+
+  const broken = () => ({ overrides: {}, problems: [{ code: 'not_json', lane: null, field: null }], present: true })
+  const report = readinessReport(REVIEW_PROFILES, { PATH: process.env.PATH }, { overrideLoader: broken })
+
+  assert.equal(report.setupRequired, true,
+    'a file that cannot be parsed was reported as a machine needing no setup')
+  assert.equal(report.overrideProblems.length, 1,
+    'the reason the file was refused is not reported, so a caller cannot say why')
+  assert.equal(report.overrideProblems[0].code, 'not_json')
+})
+
+test('no consumer reads the process home when it was given an environment', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'lane-env-'))
+  try {
+    mkdirSync(join(home, '.config', 'tmux-teams'), { recursive: true })
+    // An override that would be VISIBLE if the isolated HOME is honoured, and
+    // invisible if a consumer reaches for the process home instead.
+    // `codex` for the launch half: it is unrouted, so an isolated HOME does not
+    // trip the routed-endpoint check, which is a DIFFERENT and legitimate guard
+    // and would mask the one under test. `ninerouter` for the listing half,
+    // which never builds a launch.
+    writeFileSync(join(home, '.config', 'tmux-teams', 'lanes.json'),
+      JSON.stringify({
+        ninerouter: { claudeExecutable: 'node' },
+        codex: { adapterPackage: 'marker-from-the-given-home' },
+      }))
+    const env = { ...process.env, HOME: home }
+
+    const launch = buildAcpLaunch('codex', { env })
+    assert.equal(launch.overrideApplied, true,
+      'buildAcpLaunch ignored the HOME it was given and read the process home')
+    assert.equal(launch.profile.adapterPackage, 'marker-from-the-given-home',
+      'the override from the given HOME did not reach the resolved profile')
+
+    const reply = await handle({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'acp_lanes', arguments: {} } }, env)
+    const payload = JSON.parse(reply.result.content[0].text)
+    assert.ok(payload.callableLanes.includes('ninerouter'),
+      'acp_lanes ignored the HOME it was given')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('the lane rows and the summary in one answer agree with each other', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'lanes-consistency-'))
+  try {
+    mkdirSync(join(home, '.config', 'tmux-teams'), { recursive: true })
+    // Point an uncallable lane at a binary this machine certainly has.
+    writeFileSync(join(home, '.config', 'tmux-teams', 'lanes.json'),
+      JSON.stringify({ ninerouter: { claudeExecutable: 'node' } }))
+
+    const reply = await handle({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'acp_lanes', arguments: {} } }, { ...process.env, HOME: home })
+    const payload = JSON.parse(reply.result.content[0].text)
+
+    const disagreeing = payload.lanes.filter(l =>
+      l.available !== payload.callableLanes.includes(l.lane))
+    assert.deepEqual(disagreeing.map(l => l.lane), [],
+      'a lane row and the callable summary in the SAME answer disagree about that lane')
+
+    // AGREEMENT IS NOT ENOUGH. Two false answers agree perfectly, so an
+    // implementation that ignored the override entirely would satisfy the
+    // assertion above — an openai review lane pointed that out. Pin the
+    // override actually taking effect as well.
+    const row = payload.lanes.find(l => l.lane === 'ninerouter')
+    assert.equal(row.available, true,
+      'the override was ignored — this assertion is what stops the agreement check being vacuous')
+    assert.ok(payload.callableLanes.includes('ninerouter'))
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('readiness applies the per-machine override, not just the shipped profile', async () => {
+  const { readinessReport } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-readiness.mjs')).href)
+
+  const env = { PATH: process.env.PATH }
+  const shipped = readinessReport(REVIEW_PROFILES, env)
+  const before = shipped.lanes.find(l => l.lane === 'ninerouter')
+  assert.equal(before.available, false,
+    'this test needs a lane that is uncallable from the shipped profile alone')
+
+  // An override pointing the lane at a wrapper this machine really has.
+  const loader = () => ({
+    overrides: { ninerouter: { claudeExecutable: 'node' } },
+    problems: [],
+    present: true,
+  })
+  const after = readinessReport(REVIEW_PROFILES, env, { overrideLoader: loader })
+  const fixed = after.lanes.find(l => l.lane === 'ninerouter')
+  assert.equal(fixed.available, true,
+    'the per-machine override was written and readiness still reports the shipped executable')
+  assert.ok(after.callableLanes.includes('ninerouter'),
+    'the lane is callable but the callable list does not say so')
+})
+
+test('a missing plugin binary is reported once, not as one failure per lane', async () => {
+  const { pluginReadiness, readinessReport } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-readiness.mjs')).href)
+
+  const nothing = { PATH: '/definitely/nonexistent' }
+  const plugin = pluginReadiness(nothing)
+  assert.equal(plugin.ready, false, 'an empty PATH was reported as a ready plugin')
+  assert.ok(plugin.missing.length >= 3, 'an empty PATH lost almost nothing, so the check is not looking')
+
+  // The point of separating them: an operator whose `node` is missing must not
+  // read eight identical lane failures and go looking in eight wrong places.
+  const report = readinessReport(REVIEW_PROFILES, nothing)
+  assert.equal(report.setupRequired, true, 'a machine with no binaries at all did not require setup')
+  assert.deepEqual(report.callableLanes, [], 'lanes were called callable on a machine with an empty PATH')
+
+  // ASSERT THE ABSENCE THIS TEST IS NAMED FOR. An implementation that copied
+  // every missing plugin binary into every lane's diagnostics would keep
+  // setupRequired true and callableLanes empty, so both assertions above would
+  // pass while the operator read the same failure eight times and went looking
+  // in eight wrong places. An openai review lane pointed out the test never
+  // checked the thing its own title promises.
+  const pluginNames = new Set(plugin.missing.map(m => m.missing))
+  for (const lane of report.lanes) {
+    const repeated = lane.blocking.filter(b => pluginNames.has(b.missing) && b.code === 'binary_absent')
+    assert.deepEqual(repeated, [],
+      `lane ${lane.lane} repeats a PLUGIN-level missing binary in its own diagnostics`)
+  }
+})
+
+test('handshake depth completes the session and sends no prompt at all', async () => {
+  const stub = join(ROOT, 'tests', 'fixtures', 'probe-stub-agent.mjs')
+  const dir = mkdtempSync(join(tmpdir(), 'probe-depth-'))
+  try {
+    const runAt = async (depth) => {
+      const log = join(dir, `${depth}.log`)
+      writeFileSync(log, '')
+      const result = await realProbeTransport({
+        command: [process.execPath, stub],
+        env: { ...process.env, STUB_MODE: 'ok', STUB_LOG: log },
+        depth,
+        bootTimeoutMs: 8000, replyTimeoutMs: 8000,
+      })
+      const asked = readFileSync(log, 'utf8').split('\n').filter(Boolean)
+      return { result, asked }
+    }
+
+    const shallow = await runAt('handshake')
+    assert.deepEqual(shallow.result, { settled: 'handshake_ok' },
+      `handshake depth settled as ${JSON.stringify(shallow.result)}`)
+    assert.ok(shallow.asked.includes('initialize') && shallow.asked.includes('session/new'),
+      `handshake depth did not complete the handshake — it asked ${shallow.asked.join(', ')}`)
+    assert.ok(!shallow.asked.includes('session/prompt'),
+      'handshake depth SENT A PROMPT — the entire reason this depth exists is that a prompt is what gets billed')
+
+    // The control. Without it, a transport that never prompts at ANY depth
+    // would pass the assertion above and this feature would be a no-op that
+    // silently broke the paying path.
+    const deep = await runAt('prompt')
+    assert.deepEqual(deep.result, { settled: 'response' })
+    assert.ok(deep.asked.includes('session/prompt'),
+      'prompt depth did not send a prompt, so the assertion above proves nothing')
+
+    // Both are "nothing wrong at the depth asked for", and the classifier must
+    // say so for each — otherwise a healthy shallow check reads as a failure.
+    assert.equal(classifyProbe(shallow.result), null)
+    assert.equal(classifyProbe(deep.result), null)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// A typo must COST NOTHING. A caller who writes `handshakes` is asking to spend
+// no quota; silently treating that as the paying default would spend a whole
+// sweep's budget on a spelling mistake.
+test('an unknown depth is refused rather than defaulted to the paying one', async () => {
+  let contacted = false
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
+  const { payload } = await callProbe({ lanes: ['claude'], depth: 'handshakes' }, bare,
+    async () => { contacted = true; return { settled: 'response' } })
+  assert.match(payload.error ?? '', /depth must be one of/,
+    'an unknown depth was accepted')
+  assert.equal(contacted, false, 'a lane was contacted despite an invalid depth')
+  assert.deepEqual([...PROBE_DEPTHS], ['handshake', 'prompt'])
+  assert.equal(DEFAULT_PROBE_DEPTH, 'prompt',
+    'the default must remain the paying depth, so an existing caller is not silently downgraded')
+})
+
+// A shallower check proves less, and the boundary list is the only place a
+// caller is told so. Reporting the two identically is the overclaim this whole
+// tool exists to avoid.
+test('a handshake pass states a different boundary than a prompt pass', async () => {
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
+  const shallow = await callProbe({ lanes: ['claude'], depth: 'handshake' }, bare,
+    async () => ({ settled: 'handshake_ok' }))
+  const deep = await callProbe({ lanes: ['claude'] }, bare, async () => ({ settled: 'response' }))
+
+  const [s] = shallow.payload.lanes
+  const [d] = deep.payload.lanes
+  assert.equal(s.probe, 'reachable')
+  assert.equal(d.probe, 'reachable')
+  assert.equal(s.depth, 'handshake', 'the result does not say which depth produced it')
+  assert.equal(d.depth, 'prompt')
+
+  // AND THE DEPTH MUST REACH THE TRANSPORT, which is where it decides whether a
+  // billable prompt is sent. Everything else about depth was covered from both
+  // ends — the transport behaves correctly when handed one, and the tool accepts
+  // and reports one — with nothing in between: drop `depth` from the transport
+  // call and the transport falls back to its PAYING default while every one of
+  // those tests still passes. An openai review lane found the gap.
+  const forwarded = []
+  await callProbe({ lanes: ['claude'], depth: 'handshake' }, bare,
+    async (call) => { forwarded.push(call.depth); return { settled: 'handshake_ok' } })
+  await callProbe({ lanes: ['claude'] }, bare,
+    async (call) => { forwarded.push(call.depth); return { settled: 'response' } })
+  assert.deepEqual(forwarded, ['handshake', 'prompt'],
+    'the requested depth never reached the transport, so a handshake probe would send a billable prompt')
+  assert.notDeepEqual(s.notProven, d.notProven,
+    'a handshake pass claims exactly what a prompt pass claims — it proved strictly less')
+  assert.ok(s.notProven.some(line => /no prompt was sent/.test(line)),
+    'a handshake pass does not tell the caller that no prompt was sent')
+  assert.ok(s.notProven.some(line => /quota or billing/.test(line)),
+    'a handshake pass does not tell the caller it says nothing about billing')
+})
+
 test('every unreachable outcome the transport can report lands on a classified code, and nothing extra rides along', async () => {
-  const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
   const outcomes = [
     [{ settled: 'timeout' }, 'probe_timeout'],
     [{ settled: 'boot_timeout' }, 'probe_boot_timeout'],
@@ -1991,7 +2670,14 @@ test('a credential inside an unreadable settings file still never reaches a prob
     writeFileSync(settings, `{ "token": "${marker}", this is not valid json`)
     const transport = async () => { throw new Error('an invalid lane must never be contacted') }
     const { payload } = await callProbe({ lanes: ['zai'] },
-      { HOME: '/nonexistent-layout', PATH: '/definitely/nonexistent', TMUX_TEAMS_REVIEW_ZAI_SETTINGS: settings },
+      // Real PATH so the SETTINGS check is the one that fires: a fake PATH now
+      // refuses at the launcher first, which is a correct answer to a different
+      // question and would leave this test proving nothing about secrets.
+      // Stubs so the availability check passes and the SETTINGS check is what
+      // fires — this test is about a credential, and on a machine without
+      // `claude-zai` it used to stop one gate earlier and prove nothing.
+      { HOME: '/nonexistent-layout', PATH: stubPathFor(dir, 'claude-zai', 'npx'),
+        TMUX_TEAMS_REVIEW_ZAI_SETTINGS: settings },
       transport)
     assert.equal(payload.lanes[0].probe, 'not_attempted')
     assert.equal(payload.lanes[0].problem.code, 'settings_unreadable')
@@ -2010,7 +2696,8 @@ test('a live credential reaches the transport to spawn with, and never reaches t
     writeFileSync(settings, JSON.stringify({
       env: { ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic', ANTHROPIC_AUTH_TOKEN: marker },
     }))
-    const env = { HOME: dir, PATH: process.env.PATH, TMUX_TEAMS_REVIEW_ZAI_SETTINGS: settings }
+    const env = { HOME: dir, PATH: stubPathFor(dir, 'claude-zai', 'npx'),
+      TMUX_TEAMS_REVIEW_ZAI_SETTINGS: settings }
     let sawMarkerInLaunchEnv = false
     const transport = async (call) => {
       sawMarkerInLaunchEnv = Object.values(call.env ?? {}).includes(marker)
@@ -2041,7 +2728,7 @@ test('lanes are probed sequentially, never concurrently — a live probe spends 
     inFlight -= 1
     return { settled: 'response' }
   }
-  const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
   const { payload } = await callProbe({ lanes: ['claude', 'codex'] }, bare, transport)
   assert.equal(maxInFlight, 1,
     'two lanes were in flight at once — that is Promise.all, and this tool must never spend two budgets for one call')
@@ -2050,7 +2737,7 @@ test('lanes are probed sequentially, never concurrently — a live probe spends 
 })
 
 test('a transport that REJECTS is classified per lane, never leaks its message, and never scraps the batch', async () => {
-  const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
   const transport = async (call) => {
     if (call.id === 'claude') throw new Error('PROVIDER-REJECT-MARKER: 401 invalid token for account 9f3a')
     return { settled: 'response' }
@@ -2103,7 +2790,7 @@ test('acp_lane_probe calls are queued globally across requests, and ping is stil
       order.push(`end:${call.id}`)
       return { settled: 'response' }
     }
-    const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+    const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
     const lines = serve({ input, output, env: bare, deps: { probeTransport: transport } })
     const send = (msg) => input.write(`${JSON.stringify(msg)}\n`)
     send({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'acp_lane_probe', arguments: { lanes: ['claude'] } } })
@@ -2177,7 +2864,7 @@ test('a cancelled multi-lane probe stops the remaining lanes, reaps the active c
         abortSignal: call.abortSignal,
       })
     }
-    const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+    const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
     const pendingProbes = new Map()
     const deps = { probeTransport: transport, pendingProbes }
     const requestId = 42
@@ -2561,7 +3248,7 @@ test('a spawn failure from a non-executable file is EACCES, told apart from ENOE
 })
 
 test('an EACCES spawn failure reaches the operator with its own sentence and its own fixes, not the missing-file one', async () => {
-  const bare = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
   const transport = async () => ({ settled: 'spawn_error', errnoCode: 'EACCES' })
   const { payload } = await callProbe({ lanes: ['claude'] }, bare, transport)
   const [lane] = payload.lanes

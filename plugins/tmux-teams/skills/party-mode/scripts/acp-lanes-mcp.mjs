@@ -55,6 +55,9 @@ import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 
+import { laneAvailability, readinessReport, READINESS_PROBLEMS } from './lane-readiness.mjs'
+import { laneModel } from './lane-models.mjs'
+import { loadLaneOverrides, applyLaneOverride } from './lane-overrides.mjs'
 import { REVIEW_PROFILES, ROUTED_PROFILES, buildAcpLaunch, AGY_BINARY_NAME,
   AGY_BINARY_CANDIDATE_FORMS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys } from './review-profiles.mjs'
 
@@ -214,6 +217,30 @@ const NOT_PROVEN = Object.freeze([
 // on every probe answer for the same reason `NOT_PROVEN` is: a green answer
 // that is silent about its own boundary is what `ready: true` cost this file
 // once already.
+// Two depths, and the shallower one is the point. Measured 2026-08-24 by
+// reproducing four real lane failures and recording where in the protocol each
+// became visible: an adapter whose install was truncated died BEFORE
+// `initialize`, while a 402 membership and a missing payment method were
+// invisible until a prompt was actually sent. A completion is what a provider
+// bills for, so a check that stops after the handshake can answer "can this
+// machine start this lane at all" for nothing.
+//
+// `prompt` stays the DEFAULT so an existing caller's behaviour does not change
+// under it.
+export const PROBE_DEPTHS = Object.freeze(['handshake', 'prompt'])
+export const DEFAULT_PROBE_DEPTH = 'prompt'
+
+// A handshake-depth pass proves strictly LESS than a prompt-depth one, and must
+// say so in the same field. Reporting the two identically is the overclaim this
+// tool exists to avoid — it would tell an operator a lane can answer when all
+// that was established is that it can start.
+const HANDSHAKE_NOT_PROVEN = Object.freeze([
+  'that this lane can answer a prompt at all — no prompt was sent',
+  'anything about quota or billing, which are only visible when a completion is attempted',
+  'that the model answering is the model this lane declares',
+  'that this lane stays reachable by the time a real review dispatches',
+])
+
 const PROBE_NOT_PROVEN = Object.freeze([
   'that this lane stays reachable by the time a real review dispatches',
   'that the model answering is the model this lane declares',
@@ -246,6 +273,42 @@ export function laneFacts(id, profile) {
     reviewMode: profile.reviewMode ?? null,
     routing: pinned ? `pinned:${endpoint.host}${endpoint.path ?? ''}` : 'unrouted',
     executable: profile.claudeExecutable ?? null,
+  }
+}
+
+// THE LIGHT, WIRED TO THE BRAKE. `laneFacts` above echoes a declaration; this
+// asks the disk. Both go out together on purpose, because a listing that shows
+// only the declaration is what let `ninerouter` sit beside working lanes while
+// the `claude-9r` it names does not exist on this machine.
+function laneWithAvailability(id, profile, env, override) {
+  // The override is applied HERE too. `readinessReport` below already
+  // applies it, so passing the raw profile to this function put two
+  // disagreeing answers in ONE payload: `callableLanes` counted a lane the
+  // operator had fixed while `lanes[].available` still said false. A gemini
+  // review lane found it — the third consumer to read the shipped profile
+  // instead of the machine's, in a release that had already fixed two.
+  const resolved = applyLaneOverride(profile, override, env)
+  const { available, blocking, needs } = laneAvailability(id, resolved, env)
+  // What this lane will actually REQUEST, and what this machine resolves that
+  // to. `model` from `laneFacts` is the identity the panel records; it is not
+  // always what goes on the wire, and on a shared gateway it is not always the
+  // family that answers.
+  // An env with NEITHER home variable must not fall through to the process's
+  // own home — `laneModel`'s default parameter is `homedir()`, so passing
+  // `undefined` reads the server's home instead of the caller's nothing. Sixth
+  // instance of this release's shape, found by a deepseek review lane.
+  const callerHome = env.HOME ?? env.USERPROFILE ?? null
+  const model = callerHome === null
+    ? { requested: resolved.requestModel ?? resolved.model ?? null, resolved: null, source: 'unknown' }
+    : laneModel(id, resolved, { home: callerHome })
+  return {
+    ...laneFacts(id, resolved),
+    requestedModel: model.requested,
+    resolvedModel: model.resolved,
+    modelSource: model.source,
+    available,
+    needs,
+    blocking: blocking.map(b => ({ ...b, detail: READINESS_PROBLEMS[b.code] })),
   }
 }
 
@@ -498,7 +561,12 @@ const PROBE_SESSION_ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$/
 
 export function classifyProbe(result) {
   if (!result || typeof result !== 'object') return 'unclassified'
+  // Both are "nothing is wrong at the depth that was asked for". They are kept
+  // as separate SHAPES rather than one, so that a transport which settles
+  // `handshake_ok` while a caller asked for prompt depth cannot be read as a
+  // completed prompt.
   if (result.settled === 'response') return null
+  if (result.settled === 'handshake_ok') return null
   if (result.settled === 'timeout') return 'probe_timeout'
   // Kept apart from `probe_timeout` on purpose: the repair is different. One
   // says the endpoint went quiet, the other says the adapter never got far
@@ -583,6 +651,7 @@ async function waitForProbeGroupGone(groupId, timeoutMs) {
 // `abortSignal` — named apart from the POSIX signal STRINGS `killGroup` below
 // sends ('SIGTERM'/'SIGKILL') on purpose, so neither reads as the other.
 export async function realProbeTransport({ command, env, spawnFn = spawn, abortSignal,
+  depth = DEFAULT_PROBE_DEPTH,
   bootTimeoutMs = PROBE_BOOT_TIMEOUT_MS, replyTimeoutMs = PROBE_REPLY_TIMEOUT_MS }) {
   return new Promise((settle) => {
     let done = false
@@ -860,6 +929,11 @@ export async function realProbeTransport({ command, env, spawnFn = spawn, abortS
         if (typeof session?.sessionId !== 'string' || !PROBE_SESSION_ID_RE.test(session.sessionId)) {
           finish({ settled: 'invalid_handshake' }); return
         }
+        // STOP HERE at handshake depth. Everything the shallow check can learn
+        // has been learned: the process started, spoke the protocol, and issued
+        // a well-formed session. Sending the prompt is what costs money, and
+        // the caller asked us not to.
+        if (depth === 'handshake') { finish({ settled: 'handshake_ok' }); return }
         const result = await send('session/prompt',
           { sessionId: session.sessionId, prompt: [{ type: 'text', text: PROBE_BRIEF }] })
         // A JSON-RPC SUCCESS carrying `{}` or `null` is not an answer — nothing
@@ -912,11 +986,54 @@ function probeArgsProblem(args) {
   if (!lanes.every((entry) => typeof entry === 'string')) {
     return 'every entry in lanes must be a string lane id'
   }
+  // A closed set, REFUSED rather than defaulted. A caller who types `depth:
+  // "handshakes"` means to spend nothing; silently giving them a prompt-depth
+  // sweep would spend real quota on a typo.
+  if (args.depth !== undefined && !PROBE_DEPTHS.includes(args.depth)) {
+    return 'depth must be one of: handshake, prompt'
+  }
   return null
 }
 
-async function probeOneLane(id, profile, env, transport, abortSignal) {
+async function probeOneLane(id, profile, env, transport, abortSignal, depth = DEFAULT_PROBE_DEPTH) {
+  // The boundary list is chosen by DEPTH, not by outcome: a handshake pass
+  // and a prompt pass are both `reachable`, and they are not the same claim.
+  const notProven = depth === 'handshake' ? HANDSHAKE_NOT_PROVEN : PROBE_NOT_PROVEN
   const status = laneStatus(id, profile, env)
+  // AVAILABILITY IS CHECKED FIRST, and the order is the finding. `ninerouter`
+  // declares a wrapper this machine does not have AND a local gateway it cannot
+  // reach, so the configuration check below reached it first and answered
+  // `endpoint_missing` — sending an operator to fix an endpoint when the real
+  // cause is an absent binary. A missing executable is the more fundamental
+  // fact: with no binary, the endpoint question cannot be asked at all.
+  // THE BRAKE, and the reason this whole surface exists. A lane whose declared
+  // executable is not on this machine cannot start, and spawning it anyway buys
+  // an operator a subprocess, a timeout, and a diagnosis that names the symptom
+  // instead of the cause — which is exactly what happened to `ninerouter` here.
+  // Refuse BEFORE the spawn and name the missing thing and the way out.
+  //
+  // This mirrors what the loop runner already does for a missing `graph.json`:
+  // it "refuses to dispatch against it, and says so rather than idling
+  // silently". The status existed for lanes; nothing was wired to it.
+  // The override is applied here too, or the brake refuses a lane the
+  // operator has already fixed on this machine.
+  const { overrides } = loadLaneOverrides({ knownLanes: Object.keys(REVIEW_PROFILES), profiles: REVIEW_PROFILES, env })
+  const availability = laneAvailability(id, applyLaneOverride(profile, overrides[id], env), env)
+  if (!availability.available) {
+    const first = availability.blocking[0]
+    return {
+      lane: id,
+      probe: 'not_attempted',
+      configuration: status.configuration,
+      problem: { code: first.code, detail: READINESS_PROBLEMS[first.code] },
+      missing: first.missing,
+      needs: availability.needs,
+      setup: 'run the tmux-teams:lane-setup skill — this machine cannot start this lane',
+      fixes: [],
+      notProven,
+      depth,
+    }
+  }
   // Already known broken, and known WHY — a live attempt would learn nothing
   // a spawn cannot already answer, and would spend a process on a lane that
   // cannot start. `acp_lane_status`'s own diagnostic is the honest answer.
@@ -927,7 +1044,8 @@ async function probeOneLane(id, profile, env, transport, abortSignal) {
       configuration: 'invalid',
       problem: status.problem,
       fixes: status.fixes,
-      notProven: PROBE_NOT_PROVEN,
+      notProven,
+      depth,
     }
   }
   let launch
@@ -941,7 +1059,8 @@ async function probeOneLane(id, profile, env, transport, abortSignal) {
       configuration: status.configuration,
       problem: { code, detail: DIAGNOSTICS[code] },
       fixes: fixesFor(id, profile, code, { envKey: error?.envKey ?? null }),
-      notProven: PROBE_NOT_PROVEN,
+      notProven,
+      depth,
     }
   }
   // A REJECTING transport is caught HERE, per lane, on purpose. Left
@@ -957,7 +1076,7 @@ async function probeOneLane(id, profile, env, transport, abortSignal) {
     // still change anything for. `probeLanes`'s own loop is what stops the
     // NEXT lane from starting; this is what stops the one already running.
     result = await transport({
-      id, command: launch.command, env: launch.env, abortSignal,
+      id, command: launch.command, env: launch.env, abortSignal, depth,
       bootTimeoutMs: PROBE_BOOT_TIMEOUT_MS, replyTimeoutMs: PROBE_REPLY_TIMEOUT_MS,
     })
   } catch {
@@ -965,7 +1084,7 @@ async function probeOneLane(id, profile, env, transport, abortSignal) {
   }
   const code = classifyProbe(result)
   if (!code) {
-    return { lane: id, probe: 'reachable', configuration: status.configuration, problem: null, notProven: PROBE_NOT_PROVEN }
+    return { lane: id, probe: 'reachable', configuration: status.configuration, problem: null, notProven, depth }
   }
   return {
     lane: id,
@@ -974,7 +1093,8 @@ async function probeOneLane(id, profile, env, transport, abortSignal) {
     problem: { code, detail: DIAGNOSTICS[code] },
     fixes: (code === 'executable_missing' || code === 'executable_unusable')
       ? executableFixes(id, profile) : [],
-    notProven: PROBE_NOT_PROVEN,
+    notProven,
+    depth,
   }
 }
 
@@ -983,6 +1103,9 @@ async function probeOneLane(id, profile, env, transport, abortSignal) {
 async function probeLanes(args, env, transport, abortSignal) {
   const problem = probeArgsProblem(args)
   if (problem) return { error: problem, known: Object.keys(REVIEW_PROFILES) }
+  // Read AFTER validation, so an invalid depth is refused rather than
+  // silently falling back to the one that spends money.
+  const depth = args.depth ?? DEFAULT_PROBE_DEPTH
   const ids = [...new Set(args.lanes)]
   if (ids.some((id) => !Object.hasOwn(REVIEW_PROFILES, id))) {
     return { error: 'no such lane', known: Object.keys(REVIEW_PROFILES) }
@@ -1001,7 +1124,7 @@ async function probeLanes(args, env, transport, abortSignal) {
     // never spawns. The lane already running is stopped by threading the same
     // `abortSignal` into `probeOneLane`/the transport below, not by this check.
     if (abortSignal?.aborted) break
-    lanes.push(await probeOneLane(id, REVIEW_PROFILES[id], env, transport, abortSignal))
+    lanes.push(await probeOneLane(id, REVIEW_PROFILES[id], env, transport, abortSignal, depth))
   }
   return { lanes }
 }
@@ -1018,11 +1141,45 @@ async function probeLanes(args, env, transport, abortSignal) {
 export const TOOL_DESCRIPTORS = deepFreeze([
   {
     name: 'acp_lanes',
-    description: 'List every ACP review lane this plugin declares: family, provider, model, '
-      + 'adapter package, and whether the lane DECLARES a pinned endpoint. Declared facts only '
-      + '- it touches nothing on this machine and answers with no configuration present.',
+    // The description said "Declared facts only - it touches nothing on this
+    // machine" while this handler resolves executables on PATH, stats them,
+    // reads the per-machine override file and reads a model-alias settings file.
+    // TWO review families raised it independently on the same bytes, which is
+    // this repository's must-fix threshold — and it is the same defect shape the
+    // whole release is about, in the sentence an agent reads to decide whether
+    // calling this tool is free.
+    description: 'List every ACP review lane this plugin declares — family, provider, model, '
+      + 'adapter package, pinned endpoint — AND whether this machine can actually start it. '
+      + 'It reads local state to answer that second half: it resolves each declared executable '
+      + 'and launcher on PATH and stats them, reads the per-machine override file, and reads '
+      + 'the model-alias settings a routed lane points at. It contacts NO endpoint, sends no '
+      + 'prompt and spends no provider quota, and it returns no credential value. Read '
+      + '`setupRequired` before dispatching: it is true when this machine cannot start anything.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-    handler: () => ({ lanes: Object.entries(REVIEW_PROFILES).map(([id, p]) => laneFacts(id, p)) }),
+    // Availability rides WITH the declaration, never instead of it: an operator
+    // needs to see what a lane claims AND whether this machine can honour the
+    // claim. `setupRequired` is the gate a caller reads BEFORE dispatching, and
+    // it is the whole difference between an answer now and an error later.
+    handler: (args, env) => {
+      // ONE load, shared by both halves of this answer, so the per-lane rows and
+      // the summary cannot be computed from different configurations. This
+      // comment said that while the code loaded twice — `readinessReport` again
+      // internally — and a deepseek review lane caught the two disagreeing. The
+      // loader is injected so there is now genuinely one read.
+      const loaded = loadLaneOverrides({ knownLanes: Object.keys(REVIEW_PROFILES), profiles: REVIEW_PROFILES, env })
+      const overrides = loaded.overrides
+      const report = readinessReport(REVIEW_PROFILES, env, { overrideLoader: () => loaded })
+      return {
+        lanes: Object.entries(REVIEW_PROFILES).map(([id, p]) => laneWithAvailability(id, p, env, overrides[id])),
+        plugin: report.plugin,
+        callableLanes: report.callableLanes,
+        callableFamilies: report.callableFamilies,
+        setupRequired: report.setupRequired,
+        setup: report.setupRequired
+          ? 'this machine cannot start one or more declared lanes — run the tmux-teams:lane-setup skill before dispatching'
+          : null,
+      }
+    },
   },
   {
     name: 'acp_lane_status',
@@ -1060,7 +1217,12 @@ export const TOOL_DESCRIPTORS = deepFreeze([
       + 'non-empty array of lane ids named explicitly — there is no probe-everything default, so a sweep '
       + 'has to be typed on purpose every time. A lane whose configuration is already invalid is reported '
       + 'from that diagnosis without being contacted. This starts no review and no delivery work: one '
-      + 'process per named lane, asked one word, torn down.',
+      + 'process per named lane, asked one word, torn down. Pass `depth: "handshake"` to stop after the '
+      + 'session handshake instead: it still spawns the lane and still costs minutes, but sends no '
+      + 'prompt, so nothing a provider bills for is spent. Measured 2026-08-24: an adapter whose '
+      + 'install was truncated dies before `initialize`, while a 402 membership and a missing '
+      + 'payment method are invisible until a prompt is actually sent — so the shallow depth '
+      + 'answers "can this machine start this lane" and cannot answer "will it pay out".',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1069,6 +1231,15 @@ export const TOOL_DESCRIPTORS = deepFreeze([
           items: { type: 'string' },
           description: 'Lane ids to probe live, named explicitly. Required and non-empty — omitting it '
             + 'or sending an empty array is refused rather than defaulting to every lane.',
+        },
+        depth: {
+          type: 'string',
+          enum: [...PROBE_DEPTHS],
+          description: 'How far to go. `handshake` spawns the lane, completes initialize and '
+            + 'session/new, and STOPS without sending a prompt — it answers whether this machine can '
+            + 'start this lane, and sends nothing a provider bills for. `prompt` (the default) also '
+            + 'sends the one-word brief, which is the only way quota and billing failures become '
+            + 'visible. A handshake pass proves strictly less and says so in its own notProven list.',
         },
       },
       required: ['lanes'],
