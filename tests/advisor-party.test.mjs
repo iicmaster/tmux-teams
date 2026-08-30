@@ -141,6 +141,12 @@ test('roster text cannot break its block, stand as its own line, or get the last
   // what makes this containment rather than silent censorship.
   assert.ok(text.includes('Nice person.'), 'the persona was dropped instead of contained')
 
+  // A member may have no title, and the dash used to be appended anyway —
+  // `- Vex — ` with nothing after it, the surviving half of the blank-voice
+  // finding.
+  const titleless = renderPartyMandate({ active: 'a', name: 'n', members: [{ name: 'Vex' }] })
+  assert.ok(titleless.includes('\n- Vex\n'), `a title-less voice rendered a dangling separator: ${JSON.stringify(titleless.split('\n').find(l => l.startsWith('- ')))}`)
+
   // EVERY field's payload landed inside the block. `lastIndexOf` alone cannot
   // see an early close, so the bounds come from the counted delimiters above:
   // with exactly two of each, the block is the second of each.
@@ -258,6 +264,19 @@ test('a missing install and a missing uv are told apart, and both refuse rather 
     })
     assert.equal(refused.code, 'unknown_party', 'the refusal shape was swallowed by the status check')
     assert.deepEqual(refused.available, ['a'])
+
+    // THE REFUSAL PATH MUST SURVIVE A BAD REFUSAL. `.map(g => g.id)` threw an
+    // uncaught TypeError on a null entry or a non-array, so the documented exit
+    // 2 became a stack trace on the one path whose whole job is to refuse
+    // cleanly — the `members: [null]` class, one field over.
+    for (const [available, expected] of [[[null], []], ['nope', []], [[{ id: 'a' }, null], ['a']]]) {
+      const bad = resolveParty('x', {
+        env: { BMAD_PARTY_MODE_ROOT: root },
+        run: () => ({ status: 0, stdout: JSON.stringify({ error: 'unknown_group', available }) }),
+      })
+      assert.equal(bad.code, 'unknown_party', `a malformed available list broke the refusal: ${JSON.stringify(available)}`)
+      assert.deepEqual(bad.available, expected)
+    }
 
     // A ROSTER THIS FILE CANNOT RENDER IS NOT A ROSTER. `members: [null]` threw
     // an uncaught TypeError out of the renderer instead of the documented exit

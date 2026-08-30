@@ -60,7 +60,16 @@ export function resolveParty(id, { env = process.env, projectRoot = process.cwd(
   let parsed
   try { parsed = JSON.parse(r.stdout ?? '') } catch { return { ok: false, code: 'resolver_failed', available: [] } }
   if (parsed?.error === 'unknown_group') {
-    return { ok: false, code: 'unknown_party', available: (parsed.available ?? []).map(g => g.id) }
+    // THE REFUSAL PATH HAS TO SURVIVE A BAD REFUSAL. `.map(g => g.id)` threw an
+    // uncaught TypeError on `available: [null]` or on a non-array — the same
+    // class as `members: [null]` one field over, so the documented exit 2
+    // became a stack trace on the very path that exists to refuse cleanly.
+    const available = Array.isArray(parsed.available) ? parsed.available : []
+    return {
+      ok: false,
+      code: 'unknown_party',
+      available: available.filter(g => g !== null && typeof g === 'object' && typeof g.id === 'string').map(g => g.id),
+    }
   }
   if (r.status !== 0) return { ok: false, code: 'resolver_failed', available: [] }
   // EVERY MEMBER HAS TO BE A VOICE. `members: [null]` threw out of here — an
@@ -142,7 +151,11 @@ const asDescription = (text) => String(text ?? '')
 
 export function renderPartyMandate(party) {
   const cast = party.members.map(m => {
-    const head = `${m.icon ? `${asDescription(m.icon)} ` : ''}${asDescription(m.name)} — ${asDescription(m.title)}`
+    // A member needs a name and may have no title; appending the dash
+    // unconditionally rendered `- Vex — ` with nothing after it. The surviving
+    // half of the blank-voice finding an openai lane raised.
+    const title = asDescription(m.title)
+    const head = `${m.icon ? `${asDescription(m.icon)} ` : ''}${asDescription(m.name)}${title ? ` — ${title}` : ''}`
     const body = [m.persona, m.capabilities].map(asDescription).filter(Boolean).join(' ')
     return body ? `- ${head}: ${body}` : `- ${head}`
   }).join('\n')

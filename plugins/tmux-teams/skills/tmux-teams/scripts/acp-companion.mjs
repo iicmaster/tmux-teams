@@ -2713,6 +2713,15 @@ const profileCarriesToken = (dir) => {
     //   CLAUDE_CODE_SIMPLE=1  ->  is_error false, end_turn, duration_api_ms 917
     //   CLAUDE_CONFIG_DIR=<profile with no credential>
     //   CLAUDE_CODE_SIMPLE=1  ->  is_error true,  duration_api_ms 0 (never called)
+    //   CLAUDE_CONFIG_DIR=<profile with env.ANTHROPIC_API_KEY only>
+    //   CLAUDE_CODE_SIMPLE=1  ->  "401 API key is invalid" — read, and tried
+    //
+    // DURATION IS NOT THE DISCRIMINATOR; the MESSAGE is. That 401 also reports
+    // `duration_api_ms 0`, so reading the number alone would have removed
+    // ANTHROPIC_API_KEY — the one credential the help text names outright — for
+    // looking identical to a profile with nothing in it. What tells the three
+    // apart is what the CLI says: an answer, a 401 from a key it read, or
+    // "Not logged in" from a credential it never found.
     //
     // Bare mode reads AUTH_TOKEN. The help text is narrower than the binary,
     // and the control is what makes that a measurement rather than an opinion.

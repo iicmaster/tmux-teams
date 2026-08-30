@@ -1042,11 +1042,17 @@ the real binary and a control, 2026-08-30: a profile carrying only
 `duration_api_ms` 0 — never contacting the API. Bare mode reads it; the help
 text is narrower than the binary.
 
+`ANTHROPIC_API_KEY` was measured the same day and from a profile's
+`settings.json`: `Failed to authenticate. API Error: 401 API key is invalid` —
+the key was read and tried. Note what that rules out as a method: the 401 also
+reports `duration_api_ms` 0, so the duration alone cannot tell a key that was
+tried from a credential that was never found. The MESSAGE is the discriminator.
+
 `apiKeyHelper` went the other way, and it was in this list until a review lane
 observed that it was the one credential here nobody had ever run — the help text
 above scopes it to `--settings`, not to a profile directory. Measured the same
 day with a real helper script: a profile carrying only an `apiKeyHelper` answers
-`Not logged in · Please run /login` at `duration_api_ms` 0. Pinning such a
+`Not logged in · Please run /login`, with no API call made. Pinning such a
 profile to bare mode would have shipped a fresh instance of the 22-day refusal
 inside its own repair, so it resolves to not-bare and keeps the login it can
 use.
