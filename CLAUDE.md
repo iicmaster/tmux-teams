@@ -570,9 +570,16 @@ not optional, and only a later explicit instruction from Master changes either.
    the marketplace resolves a version-keyed cache, so an untagged release is a
    number nobody else can fetch. Write the notes with a heredoc or `--notes-file`,
    never `printf` — the backfill put a literal `%ad` into all 30 notes.
-10. Bump the `plugins/tmux-teams` submodule pointer in `~/agent-skills` to the
-   new sha and push it. `agent-skills` uses that pin as the source for its
-   OpenClaw bridge; Codex and Claude plugin runtimes use version-keyed caches.
+10. **RETIRED — there is nothing to do in `~/agent-skills` any more** (owner
+   decision, 2026-08-30: "in the context of agent-skills there is no need to
+   reference a specific version"). Its `sync.sh` now fetches and checks out
+   the submodule's `origin/main` at run time and logs the sha it delivered, so
+   the recorded pin is informational and the bridge follows a release on its
+   own. The step is kept in the list, numbered, because the failure it used to
+   guard is worth remembering: the pin was hand-bumped after every release,
+   was forgotten at least once, and was one release stale on the day it was
+   retired. Codex and Claude plugin runtimes use version-keyed caches as
+   before.
 
 ## Rules
 
