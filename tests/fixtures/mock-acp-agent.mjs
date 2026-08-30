@@ -19,34 +19,33 @@ const replyError = (id, message = 'mock operation failed') => send({ jsonrpc: '2
 // put whatever credential the shell carried into a temp file nothing removes.
 const ENV_DUMP_KEYS = ['CLAUDE_CODE_SIMPLE', 'CLAUDE_CONFIG_DIR']
 
-// A guard must be able to prove the credential REACHED the child: observing the
-// rule's output alone cannot tell a companion reading the constructed child
-// environment from one reading its own process.env, and a lane allowlist that
-// dropped these keys would start the child bare with nothing to authenticate
-// with — the 22-day failure behind a green test.
+// A guard must prove the credential REACHED the child: the rule's output alone
+// cannot tell a companion reading the constructed child environment from one
+// reading its own process.env.
 const CREDENTIAL_DIGEST_KEYS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN']
 
-// A RULE, NOT A SECOND LIST: the guarantee used to hold only while ENV_DUMP_KEYS
-// and the decoy's carrier stayed disjoint. Any key whose NAME looks like a
-// secret is reported by digest, whatever list it was added to.
-const SECRET_SHAPED = /KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|HEADERS|AUTH/i
+// Names what is SAFE to print, never what is secret: unknown resolves to
+// secret, the only direction that fails safe. See the guard in
+// tests/acp-companion.test.mjs for why this is inverted.
+const PLAINTEXT_SAFE_KEYS = new Set(['CLAUDE_CODE_SIMPLE', 'CLAUDE_CONFIG_DIR'])
 
-// A DIGEST, NOT A PRESENCE FLAG: equality across dumps is the POINT, not a leak
-// — it is what proves the child got the value the lane was given rather than a
-// stale one. A truncated SHA-256 pins it and reveals none of it.
+// A DIGEST, NOT A PRESENCE FLAG: equality across dumps proves the child got the
+// value the lane was given, and reveals none of it.
 //
-// THIS FILE SITS JUST UNDER A HARD BOUND. `MAX_PROFILE_BYTES` is 64 KiB and the
-// companion refuses a larger adapter entry; twelve lines of comment took it
-// past and turned 39 tests red. Explain in the TEST, not here.
+// THIS FILE SITS UNDER A HARD 64 KiB BOUND the companion enforces on an adapter
+// entry. Explain in the TEST, not here.
 const { createHash } = await import('node:crypto')
 const digest = value => createHash('sha256').update(String(value)).digest('hex').slice(0, 16)
 
 if (process.env.MOCK_ENV_DUMP) {
   const { writeFileSync } = await import('node:fs')
   const observed = {}
-  for (const key of ENV_DUMP_KEYS) {
+  // MOCK_DUMP_EXTRA_KEYS widens the dumped set at runtime, so a guard can prove
+  // the safe-list decides — not the current contents of ENV_DUMP_KEYS.
+  const keys = [...ENV_DUMP_KEYS, ...(process.env.MOCK_DUMP_EXTRA_KEYS ?? '').split(',').filter(Boolean)]
+  for (const key of keys) {
     if (process.env[key] === undefined) continue
-    observed[key] = SECRET_SHAPED.test(key) ? `sha256:${digest(process.env[key])}` : process.env[key]
+    observed[key] = PLAINTEXT_SAFE_KEYS.has(key) ? process.env[key] : `sha256:${digest(process.env[key])}`
   }
   for (const key of CREDENTIAL_DIGEST_KEYS) {
     observed[`${key}__DIGEST`] = process.env[key] ? `sha256:${digest(process.env[key])}` : ''

@@ -2705,7 +2705,9 @@ function adapterEnv(lane, source = process.env) {
 // lane found it. The direction is the point: unreadable resolves to NOT bare,
 // because being refused for authentication is the failure this whole change
 // exists to end, and inheriting a repository's hooks is the milder cost.
-// The two credentials bare mode reads, wherever they arrive from — the
+// The two credentials bare mode reads, wherever they arrive from: a profile's
+// settings.json or the lane's own environment. This sentence was truncated at
+// "— the" for four rounds; a zai lane read the shipped file to find it.
 const CREDENTIAL_ENV_KEYS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN']
 const profileCarriesToken = (dir) => {
   if (typeof dir !== 'string' || dir === '') return false

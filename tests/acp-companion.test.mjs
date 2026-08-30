@@ -361,6 +361,33 @@ test('the default claude lane is not put in bare mode, because bare mode cannot 
 // does not exist. Both halves are fixed here: the branch says which fact, and
 // this asserts the headroom so the next comment is refused by a number instead
 // of by a lie.
+// WHY THE FIXTURE NAMES WHAT IS SAFE RATHER THAN WHAT IS SECRET. It carried
+// `SECRET_SHAPED = /KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|HEADERS|AUTH/i` and a
+// comment calling it "a rule, not a second list" — six hand-kept substrings
+// describing the class "looks like a secret", which misses PASSPHRASE, BEARER
+// and COOKIE. An openai lane and a zai lane both named it, and the zai lane
+// counted it as the FIFTH class in this release enumerated instead of
+// described: line breaks, control characters, blank-rendering names, character
+// references, and this. Inverting it ends the series — two keys are safe to
+// print, everything else is digested, and a key nobody has thought of yet
+// resolves to secret.
+test('a key outside the fixture safe-list is digested, never printed', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-secret-'))
+  const dump = join(cwd, 'child-env.json')
+  // MOCK_PASSPHRASE reaches the child through the MOCK_ passthrough prefix AND
+  // misses every fragment of the old six-substring rule — which is the whole
+  // point: a decoy the retired rule would have caught proves nothing about it.
+  const decoyValue = 'fixture-value-that-must-not-reach-disk'
+  runAs('claude', 'task-secret-shape', {
+    MOCK_ENV_DUMP: dump, MOCK_DUMP_EXTRA_KEYS: 'MOCK_PASSPHRASE', MOCK_PASSPHRASE: decoyValue,
+  }, cwd)
+  assert.ok(existsSync(dump), 'the mock never started')
+  const observed = readFileSync(dump, 'utf8')
+  assert.ok(!observed.includes(decoyValue),
+    'a value outside the safe-list was written in plaintext; naming the secrets instead of the safe keys is how that happens')
+  rmSync(cwd, { recursive: true, force: true })
+})
+
 test('the mock adapter entry stays inside the bound the companion enforces', () => {
   const MAX_PROFILE_BYTES = 64 * 1024
   const size = statSync(MOCK).size

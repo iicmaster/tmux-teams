@@ -177,18 +177,34 @@ test('roster text cannot break its block, stand as its own line, or get the last
   // openai lane and a zai lane found `<!--`, which needs no letter, and an
   // encoded `&#8238;`, which needs no control character.
   const block = text.split('<<<PARTY-ROSTER').pop()
-  assert.ok(!/<[^\s=]/.test(block), 'markup survived inside the roster block')
+  // The invariant is that no `<` can BEGIN MARKUP — a letter, `/`, `!` or `?`
+  // after it. A `<` before a digit is a comparison and is deliberately left
+  // alone; asserting the wider rule here contradicted the narrowed one.
+  assert.ok(!/<[a-zA-Z!/?]/.test(block), 'markup survived inside the roster block')
   // The SHAPE of a reference, not one spelling of it: an openai lane and a zai
   // lane found the first rule missing the semicolon-less form, the zero-padded
   // form, the legacy named form and any name over ten characters — and a
   // renderer resolves all four.
-  assert.ok(!/&(?:#[0-9]|#[xX][0-9a-fA-F]|[a-zA-Z][a-zA-Z0-9])/.test(block),
+  // Numeric references in any form, and the five legacy names that decode to a
+  // markup character, must be gone. Other named forms are only references when
+  // they carry their semicolon — `Rock &roll` is prose, and rewriting it was a
+  // finding of its own.
+  assert.ok(!/&(?:#[0-9]|#[xX][0-9a-fA-F]|(?:lt|gt|amp|quot|apos)\b|[a-zA-Z][a-zA-Z0-9]{1,30};)/i.test(block),
     'a character reference survived to be decoded by a renderer')
   // And ordinary text with the same characters is left alone.
   const plain = renderPartyMandate({ active: 'a', name: 'n', members: [{ name: 'Vex', persona: 'a < b and x <= y and AT&T' }] })
   assert.match(plain, /a < b and x <= y and AT&T/, 'arithmetic and an ampersand were mangled as markup')
   const amps = renderPartyMandate({ active: 'a', name: 'n', members: [{ name: 'Vex', persona: 'Q&A and a & b' }] })
   assert.match(amps, /Q&A and a & b/, 'a bare ampersand was neutralised as a reference')
+
+  // NEUTRALISING TOO MUCH IS ALSO WRONG. The mandate carries what the operator
+  // saved, and the first versions of both rules rewrote ordinary prose: `<`
+  // before a digit is a comparison, not a tag, and a word after `&` is a word
+  // unless it ends in a semicolon. An openai lane and a zai lane found the
+  // first; a zai lane the second.
+  const prose = 'Escalate when risk<10% and n<3, per Rock &roll and Tom &Harry'
+  const kept = renderPartyMandate({ active: 'a', name: 'n', members: [{ name: 'Vex', persona: prose }] })
+  assert.ok(kept.includes(prose), `ordinary roster prose was rewritten as markup: ${JSON.stringify(kept.split('\n').find(l => l.startsWith('- ')))}`)
   // A field the renderer ignores must reach nothing at all.
   assert.ok(!text.includes('via code'), 'members[].code reached the mandate unchecked')
   // The content is not deleted — it is still visible as description, which is

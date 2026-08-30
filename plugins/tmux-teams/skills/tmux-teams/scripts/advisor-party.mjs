@@ -181,11 +181,16 @@ const CONTROL_CHARS = /\p{C}/gu
 // rule sailed past because it demanded a letter after the `<`. An openai lane
 // and a zai lane both found that within one round of the tag fix.
 //
-// So no `<` may begin anything: the bracket is neutralised whenever the next
-// character is not a space or an `=`, which is every markup construct — tag,
-// comment, doctype, CDATA, processing instruction — and no arithmetic, because
-// `a < b` and `x <= y` both keep theirs.
-const MARKUP_OPENER = /<(?=[^\s=])/g
+// So no `<` may begin MARKUP: the bracket is neutralised when the next character
+// is one that can start a construct — a letter, `/`, `!` or `?` — which covers
+// tag, closing tag, comment, doctype, CDATA and processing instruction.
+//
+// "Not a space or an `=`" was the first rule and it was too wide: an openai lane
+// and a zai lane both found that a scene reading `Escalate only when risk<10%`
+// rendered as `risk[markup removed]10%`, silently rewriting roster prose that
+// could not open markup in any renderer. Over-neutralising is the conservative
+// direction and it is still WRONG — the mandate carries what the operator saved.
+const MARKUP_OPENER = /<(?=[a-zA-Z!/?])/g
 
 // AND MARKUP CAN ARRIVE ENCODED. `&#8238;` is pure printable ASCII to every
 // filter above it and decodes to U+202E in any renderer that resolves character
@@ -199,11 +204,19 @@ const MARKUP_OPENER = /<(?=[^\s=])/g
 //   &ZeroWidthSpace;        a named reference longer than the cap
 //   &lt                     a legacy named reference, also unterminated
 //
-// The rule is now the SHAPE of a reference — `&#` digits, `&#x` hex, or `&`
-// followed by a name of two or more characters — with the semicolon optional,
-// because a renderer does not require it either. `AT&T` keeps its ampersand:
-// a single letter is not a name.
-const CHARACTER_REFERENCE = /&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]{1,30});?/g
+// The rule is the SHAPE of a reference: `&#` digits or `&#x` hex with the
+// semicolon OPTIONAL, and a NAMED reference only WITH its semicolon.
+//
+// That asymmetry is deliberate, and it has ONE exception. Requiring the
+// semicolon on named forms is the price of not mangling `Rock &roll` and
+// `Tom &Harry`, which a zai lane found the first rule rewriting to
+// `Rock [markup removed]`. But a semicolon-less `&lt` decodes to a literal `<`
+// AFTER every filter here has run, so `&ltdetails>` would reach a renderer as
+// `<details>` — MARKUP_OPENER cannot help, because at the time it looks there
+// is no `<` yet. The five legacy names that decode to markup characters are
+// therefore matched with or without their semicolon; every other name needs one.
+// `AT&T`, `Q&A` and `a & b` keep their ampersands.
+const CHARACTER_REFERENCE = /&(?:#[0-9]+;?|#[xX][0-9a-fA-F]+;?|(?:lt|gt|amp|quot|apos);?|[a-zA-Z][a-zA-Z0-9]{1,30};)/gi
 
 // A name has to be VISIBLE, not merely non-empty.
 //
