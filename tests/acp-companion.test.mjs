@@ -173,6 +173,48 @@ function run(taskId, extraEnv = {}, cwd = mkdtempSync(join(tmpdir(), 'acp-compan
 // exact reservation; letting an upgrade quietly turn that into an ungoverned
 // repository is the single behaviour change nobody would have seen. It refuses
 // instead. Goes red if either refusal is dropped.
+// BARE MODE DROPS OAUTH, and for 22 days nothing here knew. The CLI's --help for
+// CLAUDE_CODE_SIMPLE=1 says "OAuth and keychain are never read"; since 8a05d6d
+// the companion set it for every claude lane, so the operator's own claude.ai
+// subscription — whose only credential IS the keychain entry — answered
+// "Authentication required" on every dispatch, and four releases of handoffs
+// wrote that down as "the keychain is unreachable from a subprocess". Measured
+// 2026-08-30: the real binary as a node subprocess authenticates; the same
+// binary with CLAUDE_CODE_SIMPLE=1 exits 1 at $0.
+//
+// Three arms, asserted on the env the CHILD received (MOCK_ENV_DUMP) rather
+// than on the companion's source, and each arm is the other's control:
+// dropping bare mode entirely passes (a); keeping it unconditional passes (b);
+// only the real rule passes all three.
+test('the default claude lane is not put in bare mode, because bare mode cannot use a subscription', () => {
+  const dumpOf = (taskId, extraEnv) => {
+    const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-bare-'))
+    const dump = join(cwd, 'child-env.json')
+    const r = runAs('claude', taskId, { MOCK_ENV_DUMP: dump, ...extraEnv }, cwd)
+    assert.ok(existsSync(dump), `the mock never started, so nothing was observed; stderr:\n${r.stderr}`)
+    return JSON.parse(readFileSync(dump, 'utf8'))
+  }
+
+  // (a) No profile dir: the operator's default login. Bare mode here forbids
+  // the only credential that exists.
+  const plain = dumpOf('bare-default', { CLAUDE_CONFIG_DIR: '' })
+  assert.notEqual(plain.CLAUDE_CODE_SIMPLE, '1',
+    'the default claude lane was put in bare mode, which forbids OAuth and keychain — the subscription cannot authenticate')
+
+  // (b) A profile dir: a routed lane whose settings carry a token, which bare
+  // mode still reads. The hook-stripping that 8a05d6d wanted must survive here,
+  // or "fix auth" quietly became "drop bare mode".
+  const routed = dumpOf('bare-routed', { CLAUDE_CONFIG_DIR: '/definitely/nonexistent/profile' })
+  assert.equal(routed.CLAUDE_CODE_SIMPLE, '1',
+    'a routed lane lost bare mode, so it inherits the repository hooks 8a05d6d removed it from')
+
+  // (c) An explicit operator choice wins over the rule in both directions.
+  const forcedOn = dumpOf('bare-forced-on', { CLAUDE_CONFIG_DIR: '', CLAUDE_CODE_SIMPLE: '1' })
+  assert.equal(forcedOn.CLAUDE_CODE_SIMPLE, '1', 'an explicit CLAUDE_CODE_SIMPLE=1 was overridden by the default rule')
+  const forcedOff = dumpOf('bare-forced-off', { CLAUDE_CONFIG_DIR: '/definitely/nonexistent/profile', CLAUDE_CODE_SIMPLE: '0' })
+  assert.equal(forcedOff.CLAUDE_CODE_SIMPLE, '0', 'an explicit CLAUDE_CODE_SIMPLE=0 was overridden by the default rule')
+})
+
 test('a repository still carrying a retired phase gate is refused, not silently downgraded', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-retired-gate-'))
   mkdirSync(join(cwd, '.tmux-teams'), { recursive: true })

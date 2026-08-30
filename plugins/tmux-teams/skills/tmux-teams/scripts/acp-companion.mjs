@@ -2655,10 +2655,28 @@ function adapterEnv(lane, source = process.env) {
 // The plan-mode half is not fixed here — that lives in the operator's user
 // settings, and the way out is an isolated `CLAUDE_CONFIG_DIR` for the worker
 // profile, which several already use.
+// BARE MODE ALSO DROPS OAUTH, and the comment above never said so. The CLI's own
+// --help for CLAUDE_CODE_SIMPLE=1 reads: "Anthropic auth is strictly
+// ANTHROPIC_API_KEY or apiKeyHelper via --settings (OAuth and keychain are never
+// read)". Since 8a05d6d (2026-08-08) this file set it for every claude lane, so
+// the DEFAULT lane — the operator's claude.ai subscription, whose only
+// credential is the keychain OAuth entry — answered "Authentication required"
+// on every dispatch, and four releases of handoffs recorded that as "the
+// keychain is unreachable from a subprocess". Measured 2026-08-30: the real
+// binary run as a node subprocess with no TTY authenticates fine; the same
+// binary with CLAUDE_CODE_SIMPLE=1 exits 1 at $0 without contacting the API.
+// The diagnosis was wrong for 22 days because this comment listed hooks, MCP,
+// commands and permissions as what bare mode drops, and not auth.
+//
+// Routed lanes are unaffected: they set CLAUDE_CONFIG_DIR to a profile whose
+// settings carry a token, which bare mode still reads. So bare mode is the
+// default only when CLAUDE_CONFIG_DIR is set. An explicit CLAUDE_CODE_SIMPLE
+// wins in both directions, as it already did.
+const claudeBareByDefault = process.env.CLAUDE_CONFIG_DIR !== undefined && process.env.CLAUDE_CONFIG_DIR !== ''
 const spawnEnv = {
   ...adapterEnv(agentName),
   ...(agentName === 'claude' && process.env.ACP_INHERIT_PROJECT_CONFIG !== '1'
-    ? { CLAUDE_CODE_SIMPLE: process.env.CLAUDE_CODE_SIMPLE ?? '1' } : {}),
+    ? { CLAUDE_CODE_SIMPLE: process.env.CLAUDE_CODE_SIMPLE ?? (claudeBareByDefault ? '1' : '0') } : {}),
   ...(agentName === 'agy' ? { AGY_SKIP_DOWNLOAD: process.env.AGY_SKIP_DOWNLOAD ?? '1' } : {}),
   ...(agentName === 'codex' ? { INITIAL_AGENT_MODE: effectiveInitialAgentMode } : {}),
 }

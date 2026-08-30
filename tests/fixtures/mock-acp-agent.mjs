@@ -9,6 +9,15 @@ import { join } from 'node:path'
 const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`)
 const reply = (id, result) => send({ jsonrpc: '2.0', id, result })
 const replyError = (id, message = 'mock operation failed') => send({ jsonrpc: '2.0', id, error: { code: -32000, message } })
+// MOCK_ENV_DUMP=<file>: write the environment this agent was SPAWNED with, so
+// a test can assert what the companion actually handed the adapter rather than
+// what the companion's source appears to compute. Added for the bare-mode fix —
+// the claim under test is "the default claude lane no longer gets
+// CLAUDE_CODE_SIMPLE=1", and only the child can say what it received.
+if (process.env.MOCK_ENV_DUMP) {
+  const { writeFileSync } = await import('node:fs')
+  writeFileSync(process.env.MOCK_ENV_DUMP, JSON.stringify(process.env))
+}
 let currentSessionId = process.env.MOCK_SESSION_ID ?? 'sess_mock'
 let configuredModel = process.env.MOCK_MODEL ?? process.env.ACP_EXPECT_MODEL ?? 'gpt-mock'
 let configuredReasoningEffort = process.env.MOCK_REASONING_EFFORT ?? process.env.ACP_EXPECT_REASONING_EFFORT ?? ''

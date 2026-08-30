@@ -9,7 +9,9 @@
 // `defaultMode: plan` started it in plan mode, where it thought 442 times and
 // executed nothing.
 //
-// `CLAUDE_CODE_SIMPLE=1` is what `claude --bare` sets, and it is the lever this
+// `CLAUDE_CODE_SIMPLE=1` is what `claude --bare` sets — and bare mode ALSO reads
+// no OAuth and no keychain, so it is only safe for a worker whose profile
+// carries a token (see the bare-mode test below). It is the lever this
 // process can reach: the ACP adapter spawns the CLI itself so its argv is not
 // ours, but the child environment is. That it works was MEASURED, not read off
 // the help text — a project hook writing a marker file fired on a plain run and
@@ -94,22 +96,29 @@ const runLane = (extraEnv = {}) => {
   }
 }
 
-test('a claude worker is handed the bare-mode flag by default', () => {
-  // The name says what this proves and no more, after a reviewer pointed out
-  // that it claimed the outcome and measured the input. What is asserted here
-  // is that the child is HANDED `CLAUDE_CODE_SIMPLE=1` — the lever this process
-  // can actually reach, since the ACP adapter spawns the CLI itself and its
-  // argv is not ours.
+test('a claude worker with its own profile dir is handed the bare-mode flag; the default login is not', () => {
+  // This test used to be named "handed the bare-mode flag by default" and
+  // asserted '1' unconditionally. That WAS the behaviour, and it was the
+  // defect: the CLI's own --help says CLAUDE_CODE_SIMPLE=1 means "OAuth and
+  // keychain are never read", so the operator's default claude.ai login — whose
+  // only credential is the keychain entry — was refused on every dispatch for
+  // 22 days while four handoffs blamed the credential store. A green test
+  // named "by default" is what let the wrong rule look intentional.
   //
-  // That the flag SUPPRESSES a project hook was measured separately, by hand,
-  // with a hook that wrote a marker file: it fired on a plain run and did not
-  // fire with the variable set (see the file header). That measurement is not
-  // re-run here — it needs a real Claude CLI — so if a future release keeps
-  // accepting the variable and stops honouring it, this test stays green and
-  // says nothing about it. Written down because a test whose name promised the
-  // behaviour would have hidden exactly that.
-  const { seen } = runLane()
-  assert.equal(seen, '1', `the worker was handed CLAUDE_CODE_SIMPLE=${seen}`)
+  // The rule now: bare mode is the default only when CLAUDE_CONFIG_DIR names a
+  // profile, because a routed profile's settings carry a token that bare mode
+  // still reads. Both arms are asserted so that dropping bare mode entirely
+  // fails the second and restoring the old unconditional rule fails the first.
+  //
+  // What is asserted is still what this process can reach — the variable the
+  // child is HANDED. That the flag suppresses a project hook was measured by
+  // hand with a real CLI (see the file header) and is not re-run here.
+  const plain = runLane({ CLAUDE_CONFIG_DIR: '' })
+  assert.equal(plain.seen, '0',
+    `the default login was handed CLAUDE_CODE_SIMPLE=${plain.seen}, which forbids the only credential it has`)
+  const routed = runLane({ CLAUDE_CONFIG_DIR: '/definitely/nonexistent/profile' })
+  assert.equal(routed.seen, '1',
+    `a routed worker was handed CLAUDE_CODE_SIMPLE=${routed.seen} and so inherits the repository hooks`)
 })
 
 test('an operator can put the project config back, deliberately', () => {

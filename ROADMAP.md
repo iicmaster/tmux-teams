@@ -289,14 +289,26 @@ person at a real terminal and it has not been done. Do not read this row as
 acceptance half — a structured, actionable blocker when an unauthenticated
 ordinary lane hits `-32000` — is untouched.
 
-**Item 5 is fixed the way the issue names, not the way v0.32.0 measured.** Both
-diagnoses are real: the companion advertises filesystem capabilities only and
-never the ACP terminal-auth capability, so the adapter has a login route it is
-never invited to offer; and separately the adapter reads
-`~/.claude/.credentials.json` while the CLI reads the macOS Keychain, which is
-why `claude -p` answers at the moment the lane refuses. Master's call is the
-capability, so a person can log in from the terminal the lane is running in.
-The credential-store split stays recorded, not fixed.
+**Item 5 — the diagnosis above was WRONG, and it was wrong for 22 days.**
+Corrected 2026-08-30 by measurement, and left here struck rather than deleted
+because four handoffs repeated it. What this paragraph said: the adapter reads
+`~/.claude/.credentials.json` while the CLI reads the macOS Keychain, so a
+subprocess cannot reuse a Claude Max login. What is actually true: the real
+`claude` binary run as a node subprocess with no TTY authenticates and answers
+`end_turn`. The same binary with `CLAUDE_CODE_SIMPLE=1` exits 1 at $0 without
+contacting the API — the CLI's own `--help` says bare mode reads "strictly
+ANTHROPIC_API_KEY or apiKeyHelper (OAuth and keychain are never read)". And
+`acp-companion.mjs` had set `CLAUDE_CODE_SIMPLE=1` on every claude lane since
+`8a05d6d` (2026-08-08), to strip repository hooks, in a comment that listed
+hooks, MCP, commands and permissions as what bare mode drops and never said
+auth. The default lane's only credential is the keychain OAuth entry, so it was
+refused on every dispatch, and the refusal was read as a credential-store
+problem instead of a flag. Bare mode is now the default only when
+`CLAUDE_CONFIG_DIR` is set — a routed profile whose settings carry a token —
+and an explicit `CLAUDE_CODE_SIMPLE` still wins either way. Measured after the
+fix: the default lane authenticates, identity `fable`, `end_turn`. The
+terminal-auth capability from v0.33 stays as built; it was never the fix for
+this, and nobody has completed a login through it.
 
 **Item 7 is a THIRD TOOL on the MCP server**, beside `acp_lanes` and
 `acp_lane_status`. That contacts an endpoint, which ADR 0007 currently forbids —
