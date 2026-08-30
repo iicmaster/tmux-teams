@@ -20,7 +20,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -116,9 +116,33 @@ test('a claude worker with its own profile dir is handed the bare-mode flag; the
   const plain = runLane({ CLAUDE_CONFIG_DIR: '' })
   assert.equal(plain.seen, '0',
     `the default login was handed CLAUDE_CODE_SIMPLE=${plain.seen}, which forbids the only credential it has`)
-  const routed = runLane({ CLAUDE_CONFIG_DIR: '/definitely/nonexistent/profile' })
-  assert.equal(routed.seen, '1',
-    `a routed worker was handed CLAUDE_CODE_SIMPLE=${routed.seen} and so inherits the repository hooks`)
+  // A profile that REALLY CARRIES A TOKEN. This passed a nonexistent path and
+  // asserted bare mode, which pinned "any non-empty CLAUDE_CONFIG_DIR" rather
+  // than the stated rule — two review families caught the same shortcut in the
+  // companion's own guard, and it lived here too.
+  const withToken = mkdtempSync(join(tmpdir(), 'worker-profile-'))
+  try {
+    writeFileSync(join(withToken, 'settings.json'),
+      JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: 'fixture-not-a-real-token' } }))
+    const routed = runLane({ CLAUDE_CONFIG_DIR: withToken })
+    assert.equal(routed.seen, '1',
+      `a routed worker was handed CLAUDE_CODE_SIMPLE=${routed.seen} and so inherits the repository hooks`)
+
+    // And a profile with no credential must NOT get bare mode: it would read
+    // neither OAuth nor keychain and be refused, which is the failure this rule
+    // exists to end.
+    const empty = mkdtempSync(join(tmpdir(), 'worker-profile-empty-'))
+    try {
+      writeFileSync(join(empty, 'settings.json'), JSON.stringify({ permissions: { defaultMode: 'plan' } }))
+      const isolated = runLane({ CLAUDE_CONFIG_DIR: empty })
+      assert.notEqual(isolated.seen, '1',
+        'a profile carrying no credential was put in bare mode, which forbids the OAuth it must fall back on')
+    } finally {
+      rmSync(empty, { recursive: true, force: true })
+    }
+  } finally {
+    rmSync(withToken, { recursive: true, force: true })
+  }
 })
 
 test('an operator can put the project config back, deliberately', () => {

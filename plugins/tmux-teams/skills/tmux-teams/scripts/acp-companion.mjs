@@ -2672,7 +2672,39 @@ function adapterEnv(lane, source = process.env) {
 // settings carry a token, which bare mode still reads. So bare mode is the
 // default only when CLAUDE_CONFIG_DIR is set. An explicit CLAUDE_CODE_SIMPLE
 // wins in both directions, as it already did.
-const claudeBareByDefault = process.env.CLAUDE_CONFIG_DIR !== undefined && process.env.CLAUDE_CONFIG_DIR !== ''
+// THE RULE IS "carries a token", SO ASK THE FILE. This checked only that the
+// variable was set and non-empty, while the comment above and ROADMAP.md both
+// said "a profile whose settings carry a token" — the release's own defect
+// shape, written into the fix for that shape. Two review families found it
+// independently, which is this repository's must-fix threshold. An isolated
+// worker profile with no credential in its settings — the plan-mode isolation
+// the comment three paragraphs up says several already use — would have been
+// put in bare mode and refused exactly as before.
+//
+// A read failure means UNKNOWN, never "no token": a profile that exists and
+// cannot be parsed must not silently lose bare mode, and must not silently keep
+// it either. Unknown resolves to NOT bare, because being refused for
+// authentication is the failure this whole change exists to end, and inheriting
+// a repository's hooks is the milder cost.
+const profileCarriesToken = (dir) => {
+  if (typeof dir !== 'string' || dir === '') return false
+  try {
+    const parsed = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'))
+    const env = parsed?.env
+    if (env && typeof env === 'object') {
+      for (const key of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN']) {
+        if (typeof env[key] === 'string' && env[key].length > 0) return true
+      }
+    }
+    // `apiKeyHelper` is the other credential bare mode accepts, per the CLI's
+    // own help text. A profile using it is as usable in bare mode as one with
+    // a literal token.
+    return typeof parsed?.apiKeyHelper === 'string' && parsed.apiKeyHelper.length > 0
+  } catch {
+    return false
+  }
+}
+const claudeBareByDefault = profileCarriesToken(process.env.CLAUDE_CONFIG_DIR)
 const spawnEnv = {
   ...adapterEnv(agentName),
   ...(agentName === 'claude' && process.env.ACP_INHERIT_PROJECT_CONFIG !== '1'

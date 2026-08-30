@@ -201,12 +201,33 @@ test('the default claude lane is not put in bare mode, because bare mode cannot 
   assert.notEqual(plain.CLAUDE_CODE_SIMPLE, '1',
     'the default claude lane was put in bare mode, which forbids OAuth and keychain — the subscription cannot authenticate')
 
-  // (b) A profile dir: a routed lane whose settings carry a token, which bare
-  // mode still reads. The hook-stripping that 8a05d6d wanted must survive here,
-  // or "fix auth" quietly became "drop bare mode".
-  const routed = dumpOf('bare-routed', { CLAUDE_CONFIG_DIR: '/definitely/nonexistent/profile' })
+  // (b) A profile whose settings REALLY CARRY A TOKEN. This passed
+  // `/definitely/nonexistent/profile` and asserted bare mode, which pinned the
+  // cruder "any non-empty CLAUDE_CONFIG_DIR" rule instead of the stated one —
+  // an openai lane and a zai lane found that independently, and it mattered:
+  // an isolated worker profile with no credential would have been put in bare
+  // mode and refused exactly as before the fix.
+  const withToken = mkdtempSync(join(tmpdir(), 'profile-token-'))
+  writeFileSync(join(withToken, 'settings.json'),
+    JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: 'fixture-not-a-real-token' } }))
+  const routed = dumpOf('bare-routed', { CLAUDE_CONFIG_DIR: withToken })
   assert.equal(routed.CLAUDE_CODE_SIMPLE, '1',
-    'a routed lane lost bare mode, so it inherits the repository hooks 8a05d6d removed it from')
+    'a profile carrying a token lost bare mode, so it inherits the repository hooks 8a05d6d removed it from')
+
+  // (b2) A profile dir with NO credential — the plan-mode isolation several
+  // workers already use. Bare mode here reads neither OAuth nor keychain, so it
+  // recreates the 22-day authentication failure this release exists to end.
+  const noToken = mkdtempSync(join(tmpdir(), 'profile-empty-'))
+  writeFileSync(join(noToken, 'settings.json'), JSON.stringify({ permissions: { defaultMode: 'plan' } }))
+  const isolated = dumpOf('bare-isolated', { CLAUDE_CONFIG_DIR: noToken })
+  assert.notEqual(isolated.CLAUDE_CODE_SIMPLE, '1',
+    'a profile with no credential was put in bare mode, which forbids the OAuth it would have to fall back on')
+
+  // (b3) A profile using apiKeyHelper — the other credential bare mode accepts.
+  const helper = mkdtempSync(join(tmpdir(), 'profile-helper-'))
+  writeFileSync(join(helper, 'settings.json'), JSON.stringify({ apiKeyHelper: '/bin/echo key' }))
+  assert.equal(dumpOf('bare-helper', { CLAUDE_CONFIG_DIR: helper }).CLAUDE_CODE_SIMPLE, '1',
+    'a profile whose credential is an apiKeyHelper lost bare mode')
 
   // (c) An explicit operator choice wins over the rule in both directions.
   const forcedOn = dumpOf('bare-forced-on', { CLAUDE_CONFIG_DIR: '', CLAUDE_CODE_SIMPLE: '1' })

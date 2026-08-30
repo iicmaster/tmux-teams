@@ -61,8 +61,15 @@ party — real names, titles and scene. One script renders the roster so all thr
 `*-advisor` skills seat it the same way:
 
 ```bash
-node plugins/tmux-teams/skills/tmux-teams/scripts/advisor-party.mjs <id>
+node <plugin-root>/skills/tmux-teams/scripts/advisor-party.mjs <id>
 ```
+
+`<plugin-root>` — the same spelling every dispatch command in this file uses,
+expanded to `$CLAUDE_PLUGIN_ROOT` when you run it. NOT a repository-relative
+path: an advisor is invoked from the operator's own project, where
+`plugins/tmux-teams/...` resolves under THAT tree and exits `MODULE_NOT_FOUND`,
+so `--party` would never reach the resolver. An openai review lane caught the
+relative form in all three skills at once.
 
 Paste what it prints into the brief **in place of** the invented-cast paragraph
 (the one that asks for three to five named voices); leave the READ-ONLY paragraph
