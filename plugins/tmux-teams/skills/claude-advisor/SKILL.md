@@ -1,6 +1,6 @@
 ---
 name: claude-advisor
-description: "Consult a Claude-protocol advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. Defaults to the top Claude model (fable at the session's effort); optionally takes a routing pair — $claude-advisor <bin> <model> — to reach k3, qwen3.8-max, deepseek or glm through a routed profile. Use when the user invokes $claude-advisor, asks for a second opinion, or names a specific advisor seat. Read-only by brief and by this skill issuing no write instruction; unlike the Codex lane there is no mode switch to enforce it."
+description: "Consult a Claude-protocol advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. Defaults to the top Claude model (fable at the session's effort); optionally takes a routing pair — $claude-advisor <bin> <model> — to reach k3, qwen3.8-max, deepseek or glm through a routed profile. Use when the user invokes $claude-advisor, asks for a second opinion, names a specific advisor seat, or adds --party <id> to seat a saved bmad-party-mode roster. Read-only by brief and by this skill issuing no write instruction; unlike the Codex lane there is no mode switch to enforce it."
 ---
 
 # Claude Advisor
@@ -52,6 +52,26 @@ $claude-advisor <bin> <model>        # a routed seat
 alias the wrapper maps onto a vendor model. Both are required together — a bin
 with no model, or a model with no bin, is a usage error, because the alias only
 means something inside a profile.
+
+### `--party <id>` — seat a saved bmad-party-mode roster
+
+Any seat above also takes `--party <id>`, the same flag `bmad-party-mode` takes.
+Instead of the lane inventing 3-5 voices, it answers as the operator's own saved
+party — real names, titles and scene. One script renders the roster so all three
+`*-advisor` skills seat it the same way:
+
+```bash
+node plugins/tmux-teams/skills/tmux-teams/scripts/advisor-party.mjs <id>
+```
+
+Paste what it prints into the brief **in place of** the invented-cast paragraph
+(the one that asks for three to five named voices); leave the READ-ONLY paragraph
+exactly as it is. Exit `0` is the only
+success. Exit `2` names why it refused — `unknown_party` (with the ids that do
+exist), `not_installed` (bmad-party-mode is a separate install, not shipped
+here), `uv_missing`, or `resolver_failed` — and on `2` **stop and tell the
+operator, then ask whether to run with the invented cast instead.** Never
+substitute silently: someone who typed `--party` asked for a specific room.
 
 ### The seats, read off each profile's `settings.json` on 2026-08-09
 
