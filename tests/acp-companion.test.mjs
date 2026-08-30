@@ -182,10 +182,22 @@ function run(taskId, extraEnv = {}, cwd = mkdtempSync(join(tmpdir(), 'acp-compan
 // 2026-08-30: the real binary as a node subprocess authenticates; the same
 // binary with CLAUDE_CODE_SIMPLE=1 exits 1 at $0.
 //
-// Three arms, asserted on the env the CHILD received (MOCK_ENV_DUMP) rather
-// than on the companion's source, and each arm is the other's control:
-// dropping bare mode entirely passes (a); keeping it unconditional passes (b);
-// only the real rule passes all three.
+// SIX arms, asserted on the env the CHILD received (MOCK_ENV_DUMP) rather than
+// on the companion's source. This said "three" after three more were added, and
+// a zai lane read the stale count as the same shape this release was convened
+// to hunt — prose describing code it no longer matches. A reader who trusts a
+// count stops at the arms it names:
+//
+//   (a)  no profile          -> not bare   · dropping the rule entirely passes
+//   (b)  ANTHROPIC_AUTH_TOKEN -> bare      · keeping it unconditional passes
+//   (b4) ANTHROPIC_API_KEY   -> bare
+//   (b2) profile, no credential -> not bare · only the real rule passes a+b+b2
+//   (b3) apiKeyHelper        -> bare
+//   (c)  explicit CLAUDE_CODE_SIMPLE wins, asserted in BOTH directions against
+//        profiles whose defaults are the opposite
+//
+// (b) also asserts the child was HANDED the profile the decision was taken
+// against, which is what watches the per-lane env allowlist.
 test('the default claude lane is not put in bare mode, because bare mode cannot use a subscription', () => {
   const dumpOf = (taskId, extraEnv) => {
     const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-bare-'))

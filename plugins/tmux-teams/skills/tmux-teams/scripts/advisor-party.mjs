@@ -46,6 +46,15 @@ export function resolveParty(id, { env = process.env, projectRoot = process.cwd(
   const r = run('uv', ['run', script, '--project-root', projectRoot, '--skill', root, '--party', id],
     { encoding: 'utf8', env })
   if (r.error?.code === 'ENOENT') return { ok: false, code: 'uv_missing', available: [] }
+  // A ROSTER IS ONLY A ROSTER IF THE RESOLVER SUCCEEDED. This read stdout and
+  // never the exit status, so a resolver that printed a valid-looking roster and
+  // then failed — or was killed mid-write — was accepted, and the closed refusal
+  // path this file advertises failed open. An openai lane found it in round 3.
+  // `unknown_group` is reported below and may carry a non-zero status of its
+  // own, so the status check comes after that shape is recognised.
+  if (r.status !== 0 && !String(r.stdout ?? '').includes('unknown_group')) {
+    return { ok: false, code: 'resolver_failed', available: [] }
+  }
   let parsed
   try { parsed = JSON.parse(r.stdout ?? '') } catch { return { ok: false, code: 'resolver_failed', available: [] } }
   if (parsed?.error === 'unknown_group') {
@@ -86,15 +95,39 @@ export function resolveParty(id, { env = process.env, projectRoot = process.cwd(
 const DESCRIPTION_FENCE = '<<<PARTY-ROSTER'
 const DESCRIPTION_FENCE_END = 'PARTY-ROSTER>>>'
 
+// A SINGLE-PASS DELETE REBUILDS WHAT IT DELETES. Removing the inner match from
+// `PPARTY-ROSTER>>>ARTY-ROSTER>>>` joins the surviving halves into an exact
+// `PARTY-ROSTER>>>`, so one replacement pass handed the roster the delimiter it
+// had just been denied. An openai lane found it in round 3, in the containment
+// written for round 2. Delete until the text stops changing instead.
+const stripUntilGone = (text, needle) => {
+  let out = text
+  for (;;) {
+    const next = out.split(needle).join('')
+    if (next === out) return out
+    out = next
+  }
+}
+
+// `[\r\n]` is not the set of line breaks. U+2028 and U+2029 are LINE
+// SEPARATOR and PARAGRAPH SEPARATOR, U+0085 is NEL, and a reader that treats
+// any of them as a new line sees roster text standing alone as an instruction
+// while this collapse leaves it inline. Same lane, same round.
+const LINE_BREAKS = /[\r\n\u0085\u2028\u2029]+/g
+
 // Collapse newlines and anything that looks like a fence or a heading. A
 // persona is a sentence about a person; it never legitimately needs to open a
 // block or a new section.
-const asDescription = (text) => String(text ?? '')
-  .replace(/[\r\n]+/g, ' ')
-  .replace(/```/g, "'''")
-  .replace(new RegExp(DESCRIPTION_FENCE, 'g'), '')
-  .replace(new RegExp(DESCRIPTION_FENCE_END, 'g'), '')
-  .trim()
+const asDescription = (text) => {
+  // Substituting ``` cannot manufacture a new one — it removes backticks — but
+  // the fence deletions can, so both run until the text is stable.
+  let out = String(text ?? '').replace(LINE_BREAKS, ' ').replace(/```/g, "'''")
+  for (;;) {
+    const next = stripUntilGone(stripUntilGone(out, DESCRIPTION_FENCE), DESCRIPTION_FENCE_END)
+    if (next === out) return out.trim()
+    out = next
+  }
+}
 
 export function renderPartyMandate(party) {
   const cast = party.members.map(m => {
