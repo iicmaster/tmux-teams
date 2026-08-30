@@ -177,9 +177,11 @@ function run(taskId, extraEnv = {}, cwd = mkdtempSync(join(tmpdir(), 'acp-compan
 // 2026-08-30: the real binary as a node subprocess authenticates; the same
 // binary with CLAUDE_CODE_SIMPLE=1 exits 1 at $0.
 //
-// SEVEN LABELS over EIGHT bullet lines, because (b5) runs once per credential
-// key — the count said seven and a zai lane counted the lines. The count was
-// six before that while seven were listed,
+// SEVEN LABELLED CASES, NINE `dumpOf` RUNS — (b5) runs once per credential key
+// and (c) runs once per direction. A single number has been wrong here three
+// times running: it said six over seven labels, then seven over a list a zai
+// lane counted as eight, and the count-by-runs it then claimed was nine. Both
+// numbers are stated because either alone has proved able to rot,
 // which is the stale-prose shape this comment exists to prevent, committed by
 // the edit that added the seventh. Asserted on the env the CHILD received
 // (MOCK_ENV_DUMP) rather than

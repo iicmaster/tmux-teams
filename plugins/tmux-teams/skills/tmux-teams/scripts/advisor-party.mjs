@@ -190,9 +190,20 @@ const MARKUP_OPENER = /<(?=[^\s=])/g
 // AND MARKUP CAN ARRIVE ENCODED. `&#8238;` is pure printable ASCII to every
 // filter above it and decodes to U+202E in any renderer that resolves character
 // references, rebuilding the literal attack inside the fix that closed its
-// literal form. A zai lane found it. Character references are neutralised
-// whole; `AT&T` is not one.
-const CHARACTER_REFERENCE = /&#?[a-zA-Z0-9]{1,10};/g
+// literal form. A zai lane found that; an openai lane and a zai lane then found
+// the first regex for it too narrow in FOUR ways, which is the shape of every
+// character rule in this file before it stopped being a hand-drawn one:
+//
+//   &#8238                  no trailing semicolon — HTML parsers resolve it
+//   &#000000000000202E;     zero-padded past a 10-character body cap
+//   &ZeroWidthSpace;        a named reference longer than the cap
+//   &lt                     a legacy named reference, also unterminated
+//
+// The rule is now the SHAPE of a reference — `&#` digits, `&#x` hex, or `&`
+// followed by a name of two or more characters — with the semicolon optional,
+// because a renderer does not require it either. `AT&T` keeps its ampersand:
+// a single letter is not a name.
+const CHARACTER_REFERENCE = /&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]{1,30});?/g
 
 // A name has to be VISIBLE, not merely non-empty.
 //

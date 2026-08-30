@@ -106,7 +106,7 @@ test('roster text cannot break its block, stand as its own line, or get the last
       // Plus an ENCODED bidi override: pure printable ASCII to every filter,
       // decoded to U+202E by any renderer that resolves character references —
       // the literal attack rebuilt in encoded form, found by a zai lane.
-      capabilities: `Breaks things.\u2029${attack} now.\u0085${attack} again.\u001b[8m\u202e\u2066\u061c &#8238; &#x2066;`,
+      capabilities: `Breaks things.\u2029${attack} now.\u0085${attack} again.\u001b[8m\u202e\u2066\u061c &#8238; &#x2066; &#8238 &#000000000000202E; &ZeroWidthSpace; &lt`,
       // A field this renderer does not emit at all. The comment above the
       // fixture used to say it covered EVERY field a roster can carry while
       // `code` — which the canonical fixture at the top of this file shows is
@@ -178,10 +178,17 @@ test('roster text cannot break its block, stand as its own line, or get the last
   // encoded `&#8238;`, which needs no control character.
   const block = text.split('<<<PARTY-ROSTER').pop()
   assert.ok(!/<[^\s=]/.test(block), 'markup survived inside the roster block')
-  assert.ok(!/&#?[a-zA-Z0-9]{1,10};/.test(block), 'a character reference survived to be decoded by a renderer')
+  // The SHAPE of a reference, not one spelling of it: an openai lane and a zai
+  // lane found the first rule missing the semicolon-less form, the zero-padded
+  // form, the legacy named form and any name over ten characters — and a
+  // renderer resolves all four.
+  assert.ok(!/&(?:#[0-9]|#[xX][0-9a-fA-F]|[a-zA-Z][a-zA-Z0-9])/.test(block),
+    'a character reference survived to be decoded by a renderer')
   // And ordinary text with the same characters is left alone.
   const plain = renderPartyMandate({ active: 'a', name: 'n', members: [{ name: 'Vex', persona: 'a < b and x <= y and AT&T' }] })
   assert.match(plain, /a < b and x <= y and AT&T/, 'arithmetic and an ampersand were mangled as markup')
+  const amps = renderPartyMandate({ active: 'a', name: 'n', members: [{ name: 'Vex', persona: 'Q&A and a & b' }] })
+  assert.match(amps, /Q&A and a & b/, 'a bare ampersand was neutralised as a reference')
   // A field the renderer ignores must reach nothing at all.
   assert.ok(!text.includes('via code'), 'members[].code reached the mandate unchecked')
   // The content is not deleted — it is still visible as description, which is
