@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdtempSync as fsMkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, realpathSync, rmSync, chmodSync, symlinkSync, lstatSync } from 'node:fs'
+import { mkdtempSync as fsMkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, realpathSync, rmSync, chmodSync, symlinkSync, lstatSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -168,11 +168,260 @@ function run(taskId, extraEnv = {}, cwd = mkdtempSync(join(tmpdir(), 'acp-compan
   return runAs('mock', taskId, extraEnv, cwd, timeoutSec)
 }
 
+// BARE MODE DROPS OAUTH, and for 22 days nothing here knew. The CLI's --help for
+// CLAUDE_CODE_SIMPLE=1 says "OAuth and keychain are never read"; since 8a05d6d
+// the companion set it for every claude lane, so the operator's own claude.ai
+// subscription — whose only credential IS the keychain entry — answered
+// "Authentication required" on every dispatch, and four releases of handoffs
+// wrote that down as "the keychain is unreachable from a subprocess". Measured
+// 2026-08-30: the real binary as a node subprocess authenticates; the same
+// binary with CLAUDE_CODE_SIMPLE=1 exits 1 at $0.
+//
+// SEVEN LABELLED CASES, NINE `dumpOf` RUNS — (b5) runs once per credential key
+// and (c) runs once per direction. A single number has been wrong here three
+// times running: it said six over seven labels, then seven over a list a zai
+// lane counted as eight, and the count-by-runs it then claimed was nine. Both
+// numbers are stated because either alone has proved able to rot,
+// which is the stale-prose shape this comment exists to prevent, committed by
+// the edit that added the seventh. Asserted on the env the CHILD received
+// (MOCK_ENV_DUMP) rather than
+// on the companion's source. This said "three" after three more were added, and
+// a zai lane read the stale count as the same shape this release was convened
+// to hunt — prose describing code it no longer matches. A reader who trusts a
+// count stops at the arms it names:
+//
+//   (a)  no profile          -> not bare   · dropping the rule entirely passes
+//   (b)  ANTHROPIC_AUTH_TOKEN -> bare      · keeping it unconditional passes
+//   (b5) a credential in the ENV, no profile -> bare · the regression arm,
+//        run once per credential key, and the only arms where a genuine
+//        credential key is populated — so also where the env dump is proven
+//        not to carry one
+//   (b4) ANTHROPIC_API_KEY   -> bare
+//   (b2) profile, no credential -> not bare · only the real rule passes a+b+b2
+//   (b3) apiKeyHelper ALONE  -> not bare · measured, not read off the help text
+//   (c)  explicit CLAUDE_CODE_SIMPLE wins, asserted in BOTH directions against
+//        profiles whose defaults are the opposite
+//
+// (b) also asserts the child was HANDED the profile the decision was taken
+// against, which is what watches the per-lane env allowlist.
+test('the default claude lane is not put in bare mode, because bare mode cannot use a subscription', () => {
+  const sha256Short = value => createHash('sha256').update(String(value)).digest('hex').slice(0, 16)
+  const DECOY_CREDENTIAL = 'decoy-credential-must-not-reach-disk'
+  const CREDENTIAL_DECOY = 'fixture-not-a-real-credential-must-not-reach-disk'
+  const dumpOf = (taskId, extraEnv) => {
+    const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-bare-'))
+    const dump = join(cwd, 'child-env.json')
+    // Carried on ANTHROPIC_CUSTOM_HEADERS, which reaches the child through the
+    // claude lane's env allowlist and is NOT one of the two keys the bare-mode
+    // rule reads — a decoy on ANTHROPIC_AUTH_TOKEN would make every arm bare
+    // and quietly delete the thing each arm is asserting.
+    // EVERY ARM SCRUBS THE RUNNER'S OWN CREDENTIALS FIRST. Arm (b5) proves that
+    // ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN reach the child through the
+    // claude lane's allowlist, so a maintainer whose shell exports either one
+    // would see the not-bare arms fail — and CI, with a clean HOME, would not.
+    // An openai lane and a zai lane both named it. `''` is how this suite
+    // already unsets CLAUDE_CONFIG_DIR, and an inherited CLAUDE_CODE_SIMPLE
+    // would override the default this whole test is about.
+    const r = runAs('claude', taskId, {
+      ANTHROPIC_API_KEY: '', ANTHROPIC_AUTH_TOKEN: '', CLAUDE_CODE_SIMPLE: '',
+      MOCK_ENV_DUMP: dump, ANTHROPIC_CUSTOM_HEADERS: DECOY_CREDENTIAL, ...extraEnv,
+    }, cwd)
+    assert.ok(existsSync(dump), `the mock never started, so nothing was observed; stderr:\n${r.stderr}`)
+    const observed = JSON.parse(readFileSync(dump, 'utf8'))
+    // THE DUMP IS AN ALLOWLIST. It serialised the child's whole environment, so
+    // a real ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN in the operator's shell
+    // was written in plaintext to a temp file nothing removes — an openai lane
+    // found that in round 4, and in round 5 found that this check only ever
+    // inspected keys that HAD been serialised: widening the fixture's list to a
+    // variable unset on the machine running the suite left it green.
+    //
+    // So a decoy credential is planted in every call. It is on the claude
+    // lane's env allowlist, so the child really does receive it, and the only
+    // reason it must not appear in the dump is the fixture's own allowlist.
+    const values = JSON.stringify(Object.values(observed))
+    assert.ok(!values.includes(DECOY_CREDENTIAL),
+      'a credential handed to the child was written into the env dump on disk')
+    const allowed = ['CLAUDE_CODE_SIMPLE', 'CLAUDE_CONFIG_DIR',
+      'ANTHROPIC_API_KEY__DIGEST', 'ANTHROPIC_AUTH_TOKEN__DIGEST']
+    assert.deepEqual(Object.keys(observed).sort().filter(k => !allowed.includes(k)), [],
+      'the child-env dump carried a key outside its allowlist, which is how a credential reaches disk')
+    return observed
+  }
+
+  // (a) No profile dir: the operator's default login. Bare mode here forbids
+  // the only credential that exists.
+  const plain = dumpOf('bare-default', { CLAUDE_CONFIG_DIR: '' })
+  assert.notEqual(plain.CLAUDE_CODE_SIMPLE, '1',
+    'the default claude lane was put in bare mode, which forbids OAuth and keychain — the subscription cannot authenticate')
+
+  // (b) A profile whose settings REALLY CARRY A TOKEN. This passed
+  // `/definitely/nonexistent/profile` and asserted bare mode, which pinned the
+  // cruder "any non-empty CLAUDE_CONFIG_DIR" rule instead of the stated one —
+  // an openai lane and a zai lane found that independently, and it mattered:
+  // an isolated worker profile with no credential would have been put in bare
+  // mode and refused exactly as before the fix.
+  const withToken = mkdtempSync(join(tmpdir(), 'profile-token-'))
+  writeFileSync(join(withToken, 'settings.json'),
+    JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: 'fixture-not-a-real-token' } }))
+  const routed = dumpOf('bare-routed', { CLAUDE_CONFIG_DIR: withToken })
+  assert.equal(routed.CLAUDE_CODE_SIMPLE, '1',
+    'a profile carrying a token lost bare mode, so it inherits the repository hooks 8a05d6d removed it from')
+  // The decision is taken against the environment the CHILD receives, which is
+  // built by a per-lane allowlist. If that list ever drops CLAUDE_CONFIG_DIR,
+  // the companion would judge a profile the child never sees — reachable only
+  // through this assertion, because both halves are otherwise silent.
+  assert.equal(routed.CLAUDE_CONFIG_DIR, withToken,
+    'the child was not given the profile the bare-mode decision was taken against')
+
+  // (b4) ANTHROPIC_API_KEY — the one credential the CLI help text names by
+  // itself, and the only one no arm here exercised until a zai lane said so.
+  const withApiKey = mkdtempSync(join(tmpdir(), 'profile-apikey-'))
+  writeFileSync(join(withApiKey, 'settings.json'),
+    JSON.stringify({ env: { ANTHROPIC_API_KEY: 'fixture-not-a-real-key' } }))
+  assert.equal(dumpOf('bare-apikey', { CLAUDE_CONFIG_DIR: withApiKey }).CLAUDE_CODE_SIMPLE, '1',
+    'a profile carrying ANTHROPIC_API_KEY lost bare mode')
+
+  // (b5) A CREDENTIAL IN THE ENVIRONMENT AND NO PROFILE. Before this release
+  // every claude lane was bare unconditionally, so a lane carrying its token in
+  // the environment authenticated fine and had the repository's hooks stripped.
+  // Reading only the profile handed those hooks back — the failure 8a05d6d
+  // exists to prevent, revived by the fix for a different one. Measured against
+  // the real binary in bare mode with no profile: an env AUTH_TOKEN answers
+  // "401 Invalid bearer token" and an env API_KEY "401 API key is invalid" —
+  // both READ and TRIED, not the "Not logged in" that means none was found.
+  for (const key of ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY']) {
+    const viaEnv = dumpOf(`bare-env-${key}`, { CLAUDE_CONFIG_DIR: '', [key]: CREDENTIAL_DECOY })
+    assert.equal(viaEnv.CLAUDE_CODE_SIMPLE, '1',
+      `a lane carrying ${key} in its environment lost bare mode, so it inherits the repository hooks`)
+    // AND A REAL CREDENTIAL KEY IS PROVEN EXCLUDED FROM THE DUMP, not only the
+    // decoy's own carrier. A zai lane pointed out that a check riding on
+    // ANTHROPIC_CUSTOM_HEADERS can never fire for the two keys that matter;
+    // these two arms are the only place a genuine credential key is populated,
+    // so this is where that has to be asserted.
+    assert.ok(!JSON.stringify(Object.values(viaEnv)).includes(CREDENTIAL_DECOY),
+      `${key} was written into the env dump on disk`)
+    // AND IT REALLY REACHED THE CHILD. Observing only the rule's output cannot
+    // tell a companion that reads the constructed child environment from one
+    // that reads its own process.env — and if the lane allowlist ever dropped
+    // these keys, the child would be put in bare mode with no credential and
+    // could not authenticate, which is the 22-day failure behind a green test.
+    // An openai lane called this a P1 and a zai lane raised the same gap.
+    // THE EXACT VALUE, not merely something. `PRESENT: yes` could not tell the
+    // injected credential from a stale one the companion had substituted, so a
+    // child authenticating with the wrong token passed — an openai lane called
+    // that a P1. The fixture reports a truncated SHA-256, which pins the value
+    // and reveals none of it.
+    assert.equal(viaEnv[`${key}__DIGEST`], `sha256:${sha256Short(CREDENTIAL_DECOY)}`,
+      `${key} did not reach the child with the value the lane was given`)
+  }
+
+  // (b2) A profile dir with NO credential — the plan-mode isolation several
+  // workers already use. Bare mode here reads neither OAuth nor keychain, so it
+  // recreates the 22-day authentication failure this release exists to end.
+  const noToken = mkdtempSync(join(tmpdir(), 'profile-empty-'))
+  writeFileSync(join(noToken, 'settings.json'), JSON.stringify({ permissions: { defaultMode: 'plan' } }))
+  const isolated = dumpOf('bare-isolated', { CLAUDE_CONFIG_DIR: noToken })
+  assert.notEqual(isolated.CLAUDE_CODE_SIMPLE, '1',
+    'a profile with no credential was put in bare mode, which forbids the OAuth it would have to fall back on')
+
+  // (b3) A profile using apiKeyHelper. This asserted BARE on the strength of
+  // the CLI help text naming apiKeyHelper beside ANTHROPIC_API_KEY — the one
+  // arm of the rule that rested on reading prose rather than on a run, which is
+  // what a zai lane said in round 4. Measured that day with the real binary and
+  // a real helper script: "Not logged in · Please run /login",
+  // duration_api_ms 0, the API never contacted. The help text scopes
+  // apiKeyHelper to `--settings`, not to a profile directory, so pinning such a
+  // profile to bare mode recreates the 22-day refusal.
+  const helper = mkdtempSync(join(tmpdir(), 'profile-helper-'))
+  writeFileSync(join(helper, 'settings.json'), JSON.stringify({ apiKeyHelper: '/bin/echo key' }))
+  assert.notEqual(dumpOf('bare-helper', { CLAUDE_CONFIG_DIR: helper }).CLAUDE_CODE_SIMPLE, '1',
+    'a profile whose only credential is an apiKeyHelper was pinned to bare mode, which refuses it')
+
+  // (c) An explicit operator choice wins over the rule in both directions.
+  const forcedOn = dumpOf('bare-forced-on', { CLAUDE_CONFIG_DIR: '', CLAUDE_CODE_SIMPLE: '1' })
+  assert.equal(forcedOn.CLAUDE_CODE_SIMPLE, '1', 'an explicit CLAUDE_CODE_SIMPLE=1 was overridden by the default rule')
+  // The off direction has to be asserted where the rule WOULD say '1', or it
+  // asserts nothing: a nonexistent profile defaults to not-bare, so '0' comes
+  // back whether the explicit value was honoured or ignored. A deepseek lane
+  // found that this arm was that vacuous.
+  const forcedOff = dumpOf('bare-forced-off', { CLAUDE_CONFIG_DIR: withToken, CLAUDE_CODE_SIMPLE: '0' })
+  assert.equal(forcedOff.CLAUDE_CODE_SIMPLE, '0', 'an explicit CLAUDE_CODE_SIMPLE=0 was overridden by the default rule')
+})
+
 // The one thing kept when the phase subsystem was deleted. A repository that
 // was governed by it could not run a raw companion without the controller's
 // exact reservation; letting an upgrade quietly turn that into an ungoverned
 // repository is the single behaviour change nobody would have seen. It refuses
 // instead. Goes red if either refusal is dropped.
+// THE MOCK ADAPTER HAS A HARD SIZE BOUND AND NOTHING SAID SO. The companion
+// refuses an adapter entry over MAX_PROFILE_BYTES (64 KiB), and this fixture had
+// grown to 174 bytes under it. Twelve lines of comment took it past and 39 tests
+// went red — naming a CHECKSUM, because one branch answered three different
+// facts with "digest drifted". An hour went into hunting a digest cache that
+// does not exist. Both halves are fixed here: the branch says which fact, and
+// this asserts the headroom so the next comment is refused by a number instead
+// of by a lie.
+// WHY THE FIXTURE NAMES WHAT IS SAFE RATHER THAN WHAT IS SECRET. It carried
+// `SECRET_SHAPED = /KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|HEADERS|AUTH/i` and a
+// comment calling it "a rule, not a second list" — six hand-kept substrings
+// describing the class "looks like a secret", which misses PASSPHRASE, BEARER
+// and COOKIE. An openai lane and a zai lane both named it, and the zai lane
+// counted it as the FIFTH class in this release enumerated instead of
+// described: line breaks, control characters, blank-rendering names, character
+// references, and this. Inverting it ends the series — two keys are safe to
+// print, everything else is digested, and a key nobody has thought of yet
+// resolves to secret.
+test('a key outside the fixture safe-list is digested, never printed', () => {
+  const sha256Short = value => createHash('sha256').update(String(value)).digest('hex').slice(0, 16)
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-secret-'))
+  const dump = join(cwd, 'child-env.json')
+  // MOCK_PASSPHRASE reaches the child through the MOCK_ passthrough prefix AND
+  // misses every fragment of the old six-substring rule — which is the whole
+  // point: a decoy the retired rule would have caught proves nothing about it.
+  const decoyValue = 'fixture-value-that-must-not-reach-disk'
+  runAs('claude', 'task-secret-shape', {
+    MOCK_ENV_DUMP: dump, MOCK_DUMP_EXTRA_KEYS: 'MOCK_PASSPHRASE', MOCK_PASSPHRASE: decoyValue,
+  }, cwd)
+  assert.ok(existsSync(dump), 'the mock never started')
+  const observed = JSON.parse(readFileSync(dump, 'utf8'))
+  // POSITIVELY, not by absence. Asserting only that the plaintext is missing
+  // passes when the key never arrived at all — an openai lane and a zai lane
+  // both called that vacuous. The digest must be PRESENT and must be the digest
+  // of the value that was sent.
+  assert.equal(observed.MOCK_PASSPHRASE, `sha256:${sha256Short(decoyValue)}`,
+    'an unknown key was not digested into the dump, so the safe-list inversion is unproven here')
+  assert.ok(!JSON.stringify(observed).includes(decoyValue),
+    'a value outside the safe-list was written in plaintext; naming the secrets instead of the safe keys is how that happens')
+  rmSync(cwd, { recursive: true, force: true })
+})
+
+test('the mock adapter entry stays inside the bound the companion enforces', () => {
+  const MAX_PROFILE_BYTES = 64 * 1024
+  const size = statSync(MOCK).size
+  assert.ok(size <= MAX_PROFILE_BYTES,
+    `tests/fixtures/mock-acp-agent.mjs is ${size} bytes, over the ${MAX_PROFILE_BYTES}-byte adapter-entry bound — every profile test fails when it is`)
+  // Headroom, so this fails while there is still room to act rather than at the
+  // moment the suite goes red for a reason that names something else.
+  assert.ok(MAX_PROFILE_BYTES - size >= 512,
+    `only ${MAX_PROFILE_BYTES - size} bytes of headroom left; trim the fixture's comments before adding to it`)
+})
+
+// And the branch that refuses it has to say WHICH fact refused. One condition
+// answered "digest drifted" for a file that was merely too large, and that
+// sentence sent a session hunting a digest cache that does not exist.
+test('an oversized adapter entry is refused by size, not reported as a checksum', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-oversize-'))
+  const { profilePath, adapterPath } = writeBinaryAdapterProfile(cwd, { oversize: true })
+  const r = run('task-oversize', {
+    ACP_EXECUTION_PROFILE: profilePath, ACP_CMD: `${NODE_EXECUTABLE} ${adapterPath}`,
+  }, cwd)
+  assert.notEqual(r.status, 0, `an oversized entry must be refused; stdout:\n${r.stdout}`)
+  assert.match(r.stderr, /over the \d+-byte bound/,
+    'the refusal did not name the size, so an operator reads a checksum failure for a file that is simply too large')
+  assert.doesNotMatch(r.stderr, /digest drifted/, 'a size failure still claims a checksum drifted')
+  rmSync(cwd, { recursive: true, force: true })
+})
+
 test('a repository still carrying a retired phase gate is refused, not silently downgraded', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-retired-gate-'))
   mkdirSync(join(cwd, '.tmux-teams'), { recursive: true })
@@ -480,10 +729,13 @@ test('a profile that hashes one entry and runs another is refused', () => {
   assert.match(result.stderr, /does not run the adapter entry it verified/)
 })
 
-function writeBinaryAdapterProfile(cwd, { divergent = false } = {}) {
+function writeBinaryAdapterProfile(cwd, { divergent = false, oversize = false } = {}) {
   const adapterPath = join(cwd, divergent ? 'binary-adapter-divergent.mjs' : 'binary-adapter.mjs')
   const identity = fixtureExecutionIdentity()
-  const prefix = Buffer.concat([identity.mockBytes, Buffer.from('\n// binary fixture: NUL and invalid UTF-8 follow ', 'utf8')])
+  // `oversize` pads a profile that is valid in every other respect, so the
+  // refusal under test is the SIZE bound and not the schema or the digest.
+  const pad = oversize ? Buffer.from(`\n// ${'x'.repeat(70 * 1024)}`, 'utf8') : Buffer.alloc(0)
+  const prefix = Buffer.concat([identity.mockBytes, pad, Buffer.from('\n// binary fixture: NUL and invalid UTF-8 follow ', 'utf8')])
   const suffix = Buffer.from([0x00, 0xff, 0xfe, 0x80])
   const bytes = Buffer.concat([prefix, suffix])
   if (divergent) bytes[bytes.length - 1] = 0x81

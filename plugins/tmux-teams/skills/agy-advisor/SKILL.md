@@ -1,6 +1,6 @@
 ---
 name: agy-advisor
-description: "Consult an Antigravity/Gemini advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. Use when the user invokes $agy-advisor, wants an opinion from outside both the Claude and the OpenAI families, or names the AGY seat. Read-only: it advises, it never edits."
+description: "Consult an Antigravity/Gemini advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. Use when the user invokes $agy-advisor, wants an opinion from outside both the Claude and the OpenAI families, names the AGY seat, or adds --party <id> to seat a saved bmad-party-mode roster. Read-only: it advises, it never edits."
 ---
 
 # AGY Advisor
@@ -106,6 +106,39 @@ A bare alias is expanded; the full `gemini-3.7-flash-*` id is what reaches the
 adapter and what the receipt must show. Any other name is a usage error — do not
 pass a model through unrecognised, because an unknown value either fails the
 dispatch or silently seats something nobody chose.
+
+### `--party <id>` — seat a saved bmad-party-mode roster
+
+Any seat above also takes `--party <id>`, the same flag `bmad-party-mode` takes.
+Instead of the lane inventing 3-5 voices, it answers as the operator's own saved
+party — real names, titles and scene. One script renders the roster so all three
+`*-advisor` skills seat it the same way:
+
+```bash
+node <plugin-root>/skills/tmux-teams/scripts/advisor-party.mjs <id>
+```
+
+`<plugin-root>` — the same spelling every dispatch command in this file uses,
+expanded to `$CLAUDE_PLUGIN_ROOT` when you run it. NOT a repository-relative
+path: an advisor is invoked from the operator's own project, where
+`plugins/tmux-teams/...` resolves under THAT tree and exits `MODULE_NOT_FOUND`,
+so `--party` would never reach the resolver. An openai review lane caught the
+relative form in all three skills at once.
+
+Paste what it prints into the brief **in place of** the invented-cast paragraph
+(the one that asks for three to five named voices); leave the READ-ONLY paragraph
+exactly as it is. Exit `0` is the only
+success. Exit `2` names why it refused — `unknown_party` (with the ids that do
+exist), `not_installed` (bmad-party-mode is a separate install, not shipped
+here), `uv_missing`, `resolver_failed`, or `party_substituted` (the resolver
+answered with a different party than the one asked for) — and on `2` **stop and
+tell the operator, then ask whether to run with the invented cast instead.**
+Exit `1` is a USAGE error in the command you typed — a missing id, a flag with
+no value, an extra argument — and it prints the usage line and nothing else; fix
+the command and run it again. A zai review lane found this section naming only
+`0` and `2`, which left a lane that branches on those two with no rule for `1`
+and free to proceed with the invented cast. Never substitute silently: someone
+who typed `--party` asked for a specific room.
 
 **This said "One seat" until 2026-08-19, and it was false the day it was
 written.** Probed against the adapter, it advertises FOURTEEN values: the 3.7,

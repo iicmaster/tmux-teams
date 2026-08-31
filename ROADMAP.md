@@ -12,7 +12,7 @@
 > source, no publish script and nothing that could notice it had gone stale —
 > so it went stale, repeatedly, and nobody could tell without opening it.
 
-Current release: **0.36.0** — the version stamped in this tree, in flight on
+Current release: **0.37.0** — the version stamped in this tree, in flight on
 a pull request and not yet tagged. `main` carries **v0.34.0**, tagged at the
 MERGED sha `d58307d` (not the branch tip `bede67c` — those are different
 commits, and tagging the wrong one ships a sha `main` does not hold). Anyone
@@ -289,14 +289,28 @@ person at a real terminal and it has not been done. Do not read this row as
 acceptance half — a structured, actionable blocker when an unauthenticated
 ordinary lane hits `-32000` — is untouched.
 
-**Item 5 is fixed the way the issue names, not the way v0.32.0 measured.** Both
-diagnoses are real: the companion advertises filesystem capabilities only and
-never the ACP terminal-auth capability, so the adapter has a login route it is
-never invited to offer; and separately the adapter reads
-`~/.claude/.credentials.json` while the CLI reads the macOS Keychain, which is
-why `claude -p` answers at the moment the lane refuses. Master's call is the
-capability, so a person can log in from the terminal the lane is running in.
-The credential-store split stays recorded, not fixed.
+**Item 5 — the diagnosis above was WRONG, and it was wrong for 22 days.**
+Corrected 2026-08-30 by measurement, and left here struck rather than deleted
+because four handoffs repeated it. What this paragraph said: the adapter reads
+`~/.claude/.credentials.json` while the CLI reads the macOS Keychain, so a
+subprocess cannot reuse a Claude Max login. What is actually true: the real
+`claude` binary run as a node subprocess with no TTY authenticates and answers
+`end_turn`. The same binary with `CLAUDE_CODE_SIMPLE=1` exits 1 at $0 without
+contacting the API — the CLI's own `--help` says bare mode reads "strictly
+ANTHROPIC_API_KEY or apiKeyHelper (OAuth and keychain are never read)". And
+`acp-companion.mjs` had set `CLAUDE_CODE_SIMPLE=1` on every claude lane since
+`8a05d6d` (2026-08-08), to strip repository hooks, in a comment that listed
+hooks, MCP, commands and permissions as what bare mode drops and never said
+auth. The default lane's only credential is the keychain OAuth entry, so it was
+refused on every dispatch, and the refusal was read as a credential-store
+problem instead of a flag. Bare mode is now the default only when a credential
+is actually reachable — in the lane's own environment, or in the `settings.json`
+of the profile `CLAUDE_CONFIG_DIR` names. Naming a profile is not enough, and
+reading only the profile is not enough either. An explicit `CLAUDE_CODE_SIMPLE`
+still wins, and an EMPTY one is not explicit. Measured after the
+fix: the default lane authenticates, identity `fable`, `end_turn`. The
+terminal-auth capability from v0.33 stays as built; it was never the fix for
+this, and nobody has completed a login through it.
 
 **Item 7 is a THIRD TOOL on the MCP server**, beside `acp_lanes` and
 `acp_lane_status`. That contacts an endpoint, which ADR 0007 currently forbids —
@@ -982,6 +996,114 @@ them.
 
 Class-two failures. A billing wall and an expired membership are facts about an
 account, and this work reports them accurately rather than fixing them.
+
+## v0.37.0 scope, set by Master 2026-08-30
+
+Two items, both arriving as direct instructions rather than from the phase list.
+
+| # | item | state |
+|---|---|---|
+| 1 | make the `claude-advisor` fable seat actually work | **shipped** |
+| 2 | `--party <id>` on all three `*-advisor` skills | **shipped** |
+
+### Item 1 — the diagnosis had been wrong for 22 days
+
+The default `claude` lane answered `Authentication required` on every dispatch
+since `8a05d6d` (2026-08-08), and four releases of handoffs recorded the cause
+as "the adapter reads a stale `~/.claude/.credentials.json` while the CLI reads
+the macOS Keychain, which a subprocess cannot reach". Measured 2026-08-30:
+
+```
+the real claude binary, spawned by node with no TTY   exit 0, end_turn
+the same binary with CLAUDE_CODE_SIMPLE=1             exit 1, no API call
+```
+
+The keychain is reachable from a subprocess. What refused was bare mode, whose
+own `--help` says it reads "strictly ANTHROPIC_API_KEY or apiKeyHelper (OAuth
+and keychain are never read)". `acp-companion.mjs` set it on every claude lane
+to strip a repository's hooks, in a comment that listed hooks, MCP, commands and
+permissions as what bare mode drops and **never said auth**. The operator's
+subscription has no credential but the keychain entry, so it was refused, and
+the refusal was read as a credential-store problem instead of a flag.
+
+Bare mode is now the default only when `CLAUDE_CONFIG_DIR` names a profile whose
+`settings.json` CARRIES a credential, or the lane's own environment does —
+`ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`, and NOT an `apiKeyHelper`. Both
+sources count, and reading only the profile was itself a regression: before this
+release every claude lane was bare unconditionally, so a lane carrying its token
+in the environment had the target repository's hooks stripped, and asking only
+the profile handed them back in silence. Naming a profile is not enough: the
+first attempt checked only that the variable was non-empty while every sentence
+about it said "carries a token", so a plan-mode isolation profile with no
+credential would have been refused exactly as the default lane was. Routed lanes
+keep the hook-stripping because their profiles really do carry one. An explicit
+`CLAUDE_CODE_SIMPLE` wins either way.
+
+`ANTHROPIC_AUTH_TOKEN` is not named in the `--help` text quoted above, and two
+review families read that as a second instance of the same defect. Measured with
+the real binary and a control, 2026-08-30: a profile carrying only
+`ANTHROPIC_AUTH_TOKEN` answers under `CLAUDE_CODE_SIMPLE=1` (`end_turn`,
+`duration_api_ms` 917), and a profile carrying no credential is refused with
+`duration_api_ms` 0 — never contacting the API. Bare mode reads it; the help
+text is narrower than the binary.
+
+`ANTHROPIC_API_KEY` was measured the same day and from a profile's
+`settings.json`: `Failed to authenticate. API Error: 401 API key is invalid` —
+the key was read and tried. Note what that rules out as a method: the 401 also
+reports `duration_api_ms` 0, so the duration alone cannot tell a key that was
+tried from a credential that was never found. The MESSAGE is the discriminator.
+
+`apiKeyHelper` went the other way, and it was in this list until a review lane
+observed that it was the one credential here nobody had ever run — the help text
+above scopes it to `--settings`, not to a profile directory. Measured the same
+day with a real helper script: a profile carrying only an `apiKeyHelper` answers
+`Not logged in · Please run /login`, with no API call made. Pinning such a
+profile to bare mode would have shipped a fresh instance of the 22-day refusal
+inside its own repair, so it resolves to not-bare and keeps the login it can
+use.
+Proven end to end, not at the handshake: a real dispatch came back completed,
+`effective_identity: claude-fable-5` matched, with a written outbox.
+
+**A green test had pinned the defect.** `worker-isolation.test.mjs` asserted
+"a claude worker is handed the bare-mode flag by default" unconditionally. A
+passing test with that name is what made the wrong rule look intentional.
+
+### Item 2 — one script, three skills
+
+`advisor-party.mjs` resolves a party id through bmad-party-mode's own
+`resolve_party.py` and prints the paragraph that replaces the invented-cast
+paragraph in an advisor brief: real names, titles, personas and the saved scene,
+with "add no one, invent no name". All three skills shell to it, so they
+cannot drift apart on how a roster is rendered.
+
+It refuses rather than substitutes — `unknown_party` (listing the ids that
+exist), `not_installed` (bmad-party-mode is a separate install this plugin does
+not ship), `uv_missing`, `resolver_failed`, and `party_substituted` (the
+resolver answered with a party other than the one asked for) — and the skills
+say to stop and ASK before falling back to the invented cast. Someone who typed
+`--party` asked for a specific room. A usage error in the command itself —
+a missing id, a flag with no value, an extra argument — exits `1` with the usage
+line instead, and the skills document that separately.
+
+`party_substituted` was the fifth code and this list named four for a while
+after it shipped, which is worth noticing: the missing one is the code that
+enforces the sentence it was missing from.
+
+Proven on the lane item 1 repaired: the Code Review Crew mandate came back as a
+debate among Vex, Grumbal, Boundary, Yui and Dana, every saved name present and
+no invented one.
+
+### Two things worth keeping from how this release went
+
+A **full disk** turned 413 tests red mid-session. It was not a code failure and
+it did not look like one; deleting a reconstructible npx cache recovered 2.1 GiB
+and the suite returned to green. A red suite is not always a red repository.
+
+And the guard that finds the read-only mandate does so by the phrase
+`Cast 3-5 named voices`. The first draft of the new `--party` section used that
+phrase and pulled the finder onto the wrong block. Reworded rather than
+loosening the guard — a text-anchored guard is fragile in exactly this way, and
+the fragility is the price of it being cheap.
 
 ## What is actually open
 

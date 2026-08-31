@@ -1078,8 +1078,20 @@ function validateExecutionProfile(profile, profilePath) {
   if (profile.adapter.entry_path !== null) {
     let entryStat
     try { entryStat = lstatSync(profile.adapter.entry_path) } catch { throw Object.assign(new Error('execution profile adapter entry is unavailable'), { code: 'invalid_execution_profile' }) }
-    if (!entryStat.isFile() || entryStat.isSymbolicLink() || entryStat.size > MAX_PROFILE_BYTES
-      || sha256File(profile.adapter.entry_path) !== profile.adapter.entry_digest) {
+    // THREE DIFFERENT FACTS, AND THEY USED TO SHARE ONE SENTENCE. An entry that
+    // was too large answered "digest drifted", which is a specific claim about
+    // a different thing — and it cost a session an hour hunting a digest cache
+    // that does not exist, after `tests/fixtures/mock-acp-agent.mjs` grew 229
+    // bytes past this bound and 39 tests went red naming a checksum. A
+    // non-empty wrong diagnosis is worse than an empty one because it sounds
+    // like it knows.
+    if (!entryStat.isFile() || entryStat.isSymbolicLink()) {
+      throw Object.assign(new Error('execution profile adapter entry is not a regular file'), { code: 'execution_profile_drift' })
+    }
+    if (entryStat.size > MAX_PROFILE_BYTES) {
+      throw Object.assign(new Error(`execution profile adapter entry is ${entryStat.size} bytes, over the ${MAX_PROFILE_BYTES}-byte bound`), { code: 'execution_profile_drift' })
+    }
+    if (sha256File(profile.adapter.entry_path) !== profile.adapter.entry_digest) {
       throw Object.assign(new Error('execution profile adapter entry digest drifted'), { code: 'execution_profile_drift' })
     }
     // Hashing the entry proves a file has not changed. It says nothing about
@@ -2655,10 +2667,138 @@ function adapterEnv(lane, source = process.env) {
 // The plan-mode half is not fixed here — that lives in the operator's user
 // settings, and the way out is an isolated `CLAUDE_CONFIG_DIR` for the worker
 // profile, which several already use.
+// BARE MODE ALSO DROPS OAUTH, and the comment above never said so. The CLI's own
+// --help for CLAUDE_CODE_SIMPLE=1 reads: "Anthropic auth is strictly
+// ANTHROPIC_API_KEY or apiKeyHelper via --settings (OAuth and keychain are never
+// read)". Since 8a05d6d (2026-08-08) this file set it for every claude lane, so
+// the DEFAULT lane — the operator's claude.ai subscription, whose only
+// credential is the keychain OAuth entry — answered "Authentication required"
+// on every dispatch, and four releases of handoffs recorded that as "the
+// keychain is unreachable from a subprocess". Measured 2026-08-30: the real
+// binary run as a node subprocess with no TTY authenticates fine; the same
+// binary with CLAUDE_CODE_SIMPLE=1 exits 1 at $0 without contacting the API.
+// The diagnosis was wrong for 22 days because this comment listed hooks, MCP,
+// commands and permissions as what bare mode drops, and not auth.
+//
+// Routed lanes are unaffected: they set CLAUDE_CONFIG_DIR to a profile whose
+// settings carry a token, which bare mode still reads. So bare mode is the
+// default only when that profile CARRIES A CREDENTIAL — not merely when the
+// variable is set, which is what this said while the code agreed with it, and
+// what it went on saying for one round after the code stopped. An explicit
+// CLAUDE_CODE_SIMPLE wins in both directions, as it already did.
+// THE RULE IS "carries a token", SO ASK THE FILE. This checked only that the
+// variable was set and non-empty, while the comment above and ROADMAP.md both
+// said "a profile whose settings carry a token" — the release's own defect
+// shape, written into the fix for that shape. Two review families found it
+// independently, which is this repository's must-fix threshold. An isolated
+// worker profile with no credential in its settings — the plan-mode isolation
+// the comment three paragraphs up says several already use — would have been
+// put in bare mode and refused exactly as before.
+//
+// A PROFILE THAT CANNOT BE READ IS TREATED AS CARRYING NO TOKEN, and the
+// caller cannot tell that case from a profile that genuinely has none. That is
+// deliberate and it is the whole of the behaviour: no caller has a use for the
+// distinction, so the return value does not carry one. This comment previously
+// claimed a read failure "means UNKNOWN, never no token" and that such a
+// profile "must not silently lose bare mode" — which the very next sentence
+// then contradicted, and which a boolean could not have delivered anyway. A zai
+// lane found it. The direction is the point: unreadable resolves to NOT bare,
+// because being refused for authentication is the failure this whole change
+// exists to end, and inheriting a repository's hooks is the milder cost.
+// The two credentials bare mode reads, wherever they arrive from: a profile's
+// settings.json or the lane's own environment. This sentence was truncated at
+// "— the" for four rounds; a zai lane read the shipped file to find it.
+const CREDENTIAL_ENV_KEYS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN']
+const profileCarriesToken = (dir) => {
+  if (typeof dir !== 'string' || dir === '') return false
+  try {
+    const parsed = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'))
+    const env = parsed?.env
+    if (env && typeof env === 'object') {
+      for (const key of CREDENTIAL_ENV_KEYS) {
+        if (typeof env[key] === 'string' && env[key].length > 0) return true
+      }
+    }
+    // ANTHROPIC_AUTH_TOKEN IS ACCEPTED, AND THE HELP TEXT QUOTED ABOVE DOES NOT
+    // NAME IT. Two review families read that as the defect: a profile carrying
+    // only AUTH_TOKEN — the shape of every routed gateway seat here — would be
+    // pinned to bare mode and then refused, exactly the 22-day failure. So it
+    // was MEASURED, 2026-08-30, with the real binary and a control:
+    //
+    //   CLAUDE_CONFIG_DIR=<profile with env.ANTHROPIC_AUTH_TOKEN only>
+    //   CLAUDE_CODE_SIMPLE=1  ->  is_error false, end_turn, duration_api_ms 917
+    //   CLAUDE_CONFIG_DIR=<profile with no credential>
+    //   CLAUDE_CODE_SIMPLE=1  ->  is_error true,  duration_api_ms 0 (never called)
+    //   CLAUDE_CONFIG_DIR=<profile with env.ANTHROPIC_API_KEY only>
+    //   CLAUDE_CODE_SIMPLE=1  ->  "401 API key is invalid" — read, and tried
+    //
+    // DURATION IS NOT THE DISCRIMINATOR; the MESSAGE is. That 401 also reports
+    // `duration_api_ms 0`, so reading the number alone would have removed
+    // ANTHROPIC_API_KEY — the one credential the help text names outright — for
+    // looking identical to a profile with nothing in it. What tells the three
+    // apart is what the CLI says: an answer, a 401 from a key it read, or
+    // "Not logged in" from a credential it never found.
+    //
+    // Bare mode reads AUTH_TOKEN. The help text is narrower than the binary,
+    // and the control is what makes that a measurement rather than an opinion.
+    //
+    // `apiKeyHelper` IS NOT ACCEPTED, and it was until a zai lane pointed out
+    // that this arm — alone among the three — rested on a reading of prose
+    // rather than on a run, and that the help text scopes apiKeyHelper to
+    // `--settings` rather than to a profile directory. Measured 2026-08-30,
+    // the same way as the AUTH_TOKEN arm above:
+    //
+    //   CLAUDE_CONFIG_DIR=<profile whose settings.json has only apiKeyHelper>
+    //   CLAUDE_CODE_SIMPLE=1  ->  "Not logged in · Please run /login",
+    //                             duration_api_ms 0, the API never contacted
+    //
+    // So a profile carrying only an apiKeyHelper must NOT be pinned to bare
+    // mode: doing so recreates the exact 22-day refusal this change exists to
+    // end. It resolves to not-bare and keeps the login it can actually use.
+    return false
+  } catch {
+    return false
+  }
+}
+// THE DECISION IS TAKEN AGAINST THE CHILD'S ENVIRONMENT. This read
+// `process.env.CLAUDE_CONFIG_DIR` while the child's environment is built by
+// `adapterEnv(agentName)`, which filters through a per-lane allowlist — so the
+// two agree only for as long as CLAUDE_CONFIG_DIR stays on the claude lane's
+// list. It is on that list today, so nothing was reachable; a zai lane pointed
+// out that nothing was WATCHING it either. Reading the same object the child
+// gets removes the coupling; the arm in `tests/acp-companion.test.mjs` that
+// asserts the child was HANDED the same profile the decision was taken against
+// is what fails if the allowlist ever drops the key.
+// A CREDENTIAL IN THE ENVIRONMENT COUNTS TOO, and reading only the profile was
+// a regression this release introduced. Before `647102b` every claude lane was
+// bare unconditionally, so a lane carrying ANTHROPIC_AUTH_TOKEN or
+// ANTHROPIC_API_KEY directly in its environment and no CLAUDE_CONFIG_DIR
+// authenticated fine AND had the repository's hooks stripped. Asking only the
+// profile silently handed those hooks back — which is the failure `8a05d6d`
+// exists to prevent, revived by the fix for a different one.
+//
+// Measured 2026-08-30 with the real binary, no profile, bare mode:
+//   ANTHROPIC_AUTH_TOKEN=<fake>  ->  "401 Invalid bearer token"
+//   ANTHROPIC_API_KEY=<fake>     ->  "401 API key is invalid"
+// Both READ and TRIED — a credential-specific 401, not the "Not logged in"
+// that means none was found.
+const envCarriesToken = env => CREDENTIAL_ENV_KEYS.some(
+  key => typeof env?.[key] === 'string' && env[key].length > 0)
+const baseSpawnEnv = adapterEnv(agentName)
+const claudeBareByDefault = envCarriesToken(baseSpawnEnv)
+  || profileCarriesToken(baseSpawnEnv.CLAUDE_CONFIG_DIR)
 const spawnEnv = {
-  ...adapterEnv(agentName),
+  ...baseSpawnEnv,
   ...(agentName === 'claude' && process.env.ACP_INHERIT_PROJECT_CONFIG !== '1'
-    ? { CLAUDE_CODE_SIMPLE: process.env.CLAUDE_CODE_SIMPLE ?? '1' } : {}),
+    // `??` treats an EMPTY CLAUDE_CODE_SIMPLE as an explicit choice, so
+    // `CLAUDE_CODE_SIMPLE= node ...` silently beat the rule with a value that
+    // states nothing — the same shape as `CLAUDE_CONFIG_DIR=''`, which this
+    // file already reads as "not set". An explicit choice has to say something.
+    ? {
+      CLAUDE_CODE_SIMPLE: process.env.CLAUDE_CODE_SIMPLE
+        ? process.env.CLAUDE_CODE_SIMPLE
+        : (claudeBareByDefault ? '1' : '0'),
+    } : {}),
   ...(agentName === 'agy' ? { AGY_SKIP_DOWNLOAD: process.env.AGY_SKIP_DOWNLOAD ?? '1' } : {}),
   ...(agentName === 'codex' ? { INITIAL_AGENT_MODE: effectiveInitialAgentMode } : {}),
 }
