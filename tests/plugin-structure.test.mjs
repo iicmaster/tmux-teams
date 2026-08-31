@@ -4,17 +4,18 @@
 // with semantic anchors instead of brittle prose regexes.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, readdirSync, statSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
+import { readFileSync, readdirSync, statSync, lstatSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PLUGIN = join(ROOT, 'plugins/tmux-teams')
-const SKILLS = ['tmux-teams', 'party-mode', 'party-auto', 'party-advise', 'sqthink', 'codex-tmux-driver',
-  'graph-setup', 'claude-advisor', 'codex-advisor', 'handoff']
-const RELEASE_VERSION = '0.21.0'
+const SKILLS = ['tmux-teams', 'party-mode', 'party-auto', 'party-advise', 'sqthink',
+  'graph-setup', 'claude-advisor', 'codex-advisor', 'agy-advisor', 'handoff',
+  'pm-delegation', 'test-quality', 'lane-setup']
+const RELEASE_VERSION = '0.37.0'
 // The Stage 1 CLI entry points went on 2026-07-29 and the rest of the phase
 // subsystem — nine scripts, its gate, its store and its exporter — went on
 // 2026-08-02. The note that used to stand here said deleting the remainder
@@ -58,6 +59,16 @@ test('marketplace and plugin manifests agree', () => {
   const readmeVersion = readText(join(ROOT, 'README.md')).match(/Current release: \*\*([^*]+)\*\*/)
   assert.ok(readmeVersion, 'README.md must state "Current release: **<version>**"')
   assert.equal(readmeVersion[1], RELEASE_VERSION, 'README.md states a different release than the manifests')
+  // ROADMAP.md carries the number too, and nothing checked it. A lane copied
+  // this checkout, bumped exactly the five files README.md names, and this
+  // suite passed 21/21 with ROADMAP.md still on the previous version — the
+  // seventh place, found by grepping in the first place and then left
+  // unguarded. It also has its own publication gate, so a missed bump here
+  // makes the published page stale on top of being wrong.
+  const roadmapVersion = readFileSync(join(ROOT, 'ROADMAP.md'), 'utf8')
+    .match(/^Current release: \*\*([0-9]+\.[0-9]+\.[0-9]+)\*\*/m)
+  assert.ok(roadmapVersion, 'ROADMAP.md has no `Current release: **X.Y.Z**` line for the bump to update')
+  assert.equal(roadmapVersion[1], RELEASE_VERSION, 'ROADMAP.md states a different release than the manifests')
 
   // The FIFTH FILE and the SIXTH version occurrence — the counts differ because
   // marketplace.json carries it twice, and this comment said "the FIFTH place"
@@ -347,6 +358,44 @@ test('semantic anchors: canonical fixes actually shipped', () => {
   }
 })
 
+test('test-quality semantic contract: state planes, denominator, no-auto-exec, no-threshold', () => {
+  const txt = readText(join(PLUGIN, 'skills/test-quality/SKILL.md'))
+  // Closed vocabularies, pinned literally (a loop over a mutable list proves nothing).
+  for (const v of ['observe', 'advisory', 'blocking', 'measured', 'unknown', 'tool_failure', 'flaky',
+    'allow', 'warn', 'block', 'needs_human_decision']) {
+    assert.ok(txt.includes(v), `state vocabulary missing: ${v}`)
+  }
+  // The vocabularies are CLOSED per plane: the state-plane table is parsed row
+  // by row and each plane's value list must match EXACTLY — a new evidence
+  // state or a value moved to the wrong plane now turns the suite red instead
+  // of riding through an includes() check (panel AC-6, 2026-08-24).
+  const table = txt.slice(txt.indexOf('| Plane |'), txt.indexOf('Closed rules:'))
+  const row = name => table.split('\n').find(l => l.startsWith(`| ${name} |`))
+  assert.equal(row('Requested mode'), '| Requested mode | `observe` / `advisory` / `blocking` | caller |')
+  assert.equal(row('Evidence state'), '| Evidence state | `measured` / `unknown` / `tool_failure` / `flaky` | evidence layer |')
+  assert.equal(row('Policy decision'), '| Policy decision | `allow` / `warn` / `block` / `needs_human_decision` | policy layer |')
+  assert.equal(row('Enforcement/approval'), '| Enforcement/approval | external PM/CI/human only | outer workflow |')
+  assert.ok(txt.includes("can NEVER become pass"), 'unknown/tool_failure/flaky pass rule missing')
+  // Blocking = contract-and-integrity only; universal numeric thresholds forbidden.
+  assert.ok(txt.includes('contract-and-integrity blocking'), 'blocking scope missing')
+  assert.ok(txt.includes('NEVER block on an\n  uncalibrated universal numeric threshold'),
+    'no-universal-threshold rule missing')
+  // Denominator reconciliation + equivalent-suspected isolation.
+  assert.ok(txt.includes('partitions must sum to\n  total'), 'denominator reconciliation invariant missing')
+  assert.ok(txt.includes('is never\n  counted as killed'), 'equivalent-suspected isolation missing')
+  // verify_cmd is audit trail; re-execution comes from trusted sources.
+  assert.ok(txt.includes('audit trail'), 'verify-command audit-trail rule missing')
+  assert.ok(!/exec\(|eval\(|child_process/.test(txt), 'skill must not embed execution machinery')
+  assert.ok(txt.includes('never installs a tool, never discovers one, and\nnever executes anything on its own initiative'),
+    'no-auto-install/execute rule missing')
+  // AC-2 (panel round 2026-08-24): blocking criteria must be predeclared.
+  assert.ok(txt.includes('PREDECLARED in the trusted repository policy selected BEFORE measurement'),
+    'predeclared-blocking-criteria rule missing')
+  // Method-level granularity mandatory.
+  assert.ok(txt.includes('method/function-level granularity is mandatory'),
+    'method-level granularity rule missing')
+})
+
 test('party-auto/party-advise sibling path resolves inside the plugin', () => {
   const resolved = join(PLUGIN, 'skills/party-auto', '../party-mode/SKILL.md')
   assert.ok(existsSync(resolved), 'sibling ../party-mode/SKILL.md does not resolve')
@@ -549,5 +598,471 @@ test('no shipped client string carries a backtick, whoever adds the next one', a
   // The three the old hand-written guard knew about, plus the ones it did not.
   for (const expected of ['TOUR_CSS', 'TOUR_SCRIPT', 'NAV_CSS', 'KANIT_FONT_CSS']) {
     assert.ok(found.includes(expected), `${expected} was not discovered — the scan is looking in the wrong place`)
+  }
+})
+
+test('an advisor skill that claims read-only ships the switch that makes it read-only', () => {
+  // A release panel read both advisor frontmatters — "Read-only: it advises, it
+  // never edits" — against the dispatch commands under them and found nothing
+  // enforcing it. Codex children DEFAULT to INITIAL_AGENT_MODE=agent-full-access,
+  // so the documented command launched a full-access advisor and the brief was
+  // the only thing asking it to behave. `read-only` is one of the three modes
+  // the companion accepts, so this was an unenforced claim, not an
+  // unenforceable one.
+  const codex = readFileSync(join(PLUGIN, 'skills', 'codex-advisor', 'SKILL.md'), 'utf8')
+  const claude = readFileSync(join(PLUGIN, 'skills', 'claude-advisor', 'SKILL.md'), 'utf8')
+  const agy = readFileSync(join(PLUGIN, 'skills', 'agy-advisor', 'SKILL.md'), 'utf8')
+
+  // every codex dispatch or resume block carries the mode
+  // Truncate at the CLOSING fence. `split('```bash')` runs each piece on to the
+  // next fenced block, so a piece includes the prose after its own command —
+  // and the prose here names the very flag being asserted, which made the check
+  // pass on an explanation instead of on a command. A mutation caught it: the
+  // flag was deleted from a real command and every test stayed green. Same
+  // vacuous-assertion shape a panel lane had just found in the traversal test.
+  const commandBlocks = (text) => text.split('```bash').slice(1)
+    .map((b) => b.split('```')[0])
+    // EVERY worker this dispatcher takes. Naming only the workers that existed
+    // when the guard was written means the next advisor skill ships unguarded:
+    // its commands match nothing, `blocks.length` is 0, and a full-access
+    // command passes silently.
+    .filter((b) => /acp-dispatch\.mjs[\s\\]+\n?\s*(codex|claude|agy|mock) </.test(b))
+
+  const codexBlocks = commandBlocks(codex)
+  assert.ok(codexBlocks.length >= 2, `expected dispatch and recovery blocks, got ${codexBlocks.length}`)
+  for (const block of codexBlocks) {
+    assert.match(block, /INITIAL_AGENT_MODE="read-only"/,
+      `a codex advisor command runs at the full-access default:\n${block.slice(0, 400)}`)
+  }
+
+  // and the identity guarantee is not fail-open: the default mode CONTINUES
+  // after a receipt-persistence failure and records `receipt_digest: none`, so
+  // an advisor could report an identity resting on a receipt never written.
+  for (const [name, text] of [['codex-advisor', codex], ['claude-advisor', claude],
+    ['agy-advisor', agy]]) {
+    const blocks = commandBlocks(text)
+    // The count is pinned too: a block that stops MATCHING is indistinguishable
+    // from a block that passes, and `> 0` cannot tell them apart.
+    // Pinned per file, and the numbers are what each skill documents: codex has
+    // a dispatch and a recovery, claude has a default seat, a routed seat and a
+    // recovery. The count is pinned at all because a block that stops MATCHING
+    // is indistinguishable from a block that passes, and `> 0` cannot tell them
+    // apart — but it is pinned per file so ADDING a documented command is a
+    // deliberate edit here rather than a silent one.
+    const expected = { 'codex-advisor': 2, 'claude-advisor': 3, 'agy-advisor': 1 }[name]
+    assert.equal(blocks.length, expected,
+      `${name} documents ${blocks.length} lane-launching commands, not ${expected}`)
+    for (const block of blocks) {
+      assert.match(block, /ACP_SESSION_RECEIPT_REQUIRED=1/,
+        `${name} runs a lane whose receipt may silently not exist:\n${block.slice(0, 400)}`)
+    }
+  }
+
+  // The AGY lane HAS the mode switch — measured 2026-08-19: it accepts
+  // read-only, writes a receipt and reports
+  // `effective_identity: gemini-3.7-flash-high (matched)`. Held to the same
+  // enforcement as codex rather than excused like claude.
+  for (const block of commandBlocks(agy)) {
+    assert.match(block, /INITIAL_AGENT_MODE="read-only"/,
+      `an agy advisor command runs at the default mode:\n${block.slice(0, 400)}`)
+  }
+
+  // The Claude lane has no mode switch, so it must not promise one it lacks.
+  assert.doesNotMatch(claude, /Read-only: it advises, it never edits/,
+    'the claude advisor promises an enforcement it has no mechanism for')
+})
+
+test('the two skills that describe an undeclared graph agree with tick()', () => {
+  // Two panel families found `tmux-teams/SKILL.md` and `graph-setup/SKILL.md`
+  // saying opposite things about a missing declaration, with the code siding
+  // with graph-setup: `tick()` sees `graph.source === 'default'` and writes a
+  // heartbeat carrying `dispatching: false` and `no team graph declared`. The
+  // bundled template LOADS — the pages need something to draw — and the runner
+  // will not dispatch on it.
+  const main = readFileSync(join(PLUGIN, 'skills', 'tmux-teams', 'SKILL.md'), 'utf8')
+  const setup = readFileSync(join(PLUGIN, 'skills', 'graph-setup', 'SKILL.md'), 'utf8')
+  const runner = readFileSync(join(PLUGIN, 'skills', 'tmux-teams', 'scripts', 'loop-runner.mjs'), 'utf8')
+
+  assert.match(runner, /graph\.source === 'default'/, 'the refusal this documents is gone from the runner')
+  assert.doesNotMatch(main, /A missing declaration uses the bundled four-team template\./,
+    'the skill teaches a fallback the runner refuses')
+  for (const [name, text] of [['tmux-teams', main], ['graph-setup', setup]]) {
+    assert.match(text, /missing declaration is \*\*?not\*\*? a default|not a default/i,
+      `${name} does not say that a missing declaration is not a default`)
+  }
+
+  // And the heartbeat example matches the value the refusal path writes: `null`
+  // is the absence of a measurement, `0` is a measurement. On a page about
+  // telling absent from stale from refusing, that distinction is the subject.
+  assert.match(runner, /beat\(\{ dispatching: false, reason, started: 0, held: null \}\)/)
+  assert.doesNotMatch(setup, /"started": 0, "held": 0 \}/,
+    'the example turns "not measured" into "measured zero"')
+})
+
+test('the read-only guarantee is carried by the thing it says it rests on', () => {
+  // `claude-advisor`'s frontmatter says read-only "rests on the brief" because
+  // the lane has no mode switch. A panel lane read that against the mandatory
+  // brief and found only party format and uncertainty instructions — the thing
+  // the guarantee leaned on did not carry it. The Codex lane has
+  // INITIAL_AGENT_MODE=read-only; here the text IS the mechanism.
+  const claude = readFileSync(join(PLUGIN, 'skills', 'claude-advisor', 'SKILL.md'), 'utf8')
+  const agy = readFileSync(join(PLUGIN, 'skills', 'agy-advisor', 'SKILL.md'), 'utf8')
+  // `Cast 3-5 named voices`, not the round-table phrase — the frontmatter
+  // description contains that phrase too, so the first match was the YAML
+  // header and the assertion was about the wrong bytes.
+  const mandate = claude.split('```').find((b) => b.includes('Cast 3-5 named voices'))
+  assert.ok(mandate, 'the mandatory brief is gone')
+  assert.match(mandate, /READ-ONLY/, 'the brief the guarantee rests on carries no read-only instruction')
+  for (const forbidden of [/do not edit/i, /change nothing/i]) {
+    assert.match(mandate, forbidden, `the brief does not say ${forbidden}`)
+  }
+
+  // And the recovery path keeps the receipt contract the fresh commands
+  // declare: dropping receipt mode exactly when the first delivery is missing
+  // is the moment it matters most.
+  for (const skill of ['codex-advisor', 'claude-advisor']) {
+    const text = readFileSync(join(PLUGIN, 'skills', skill, 'SKILL.md'), 'utf8')
+    const recovery = text.split('```bash').slice(1).map((b) => b.split('```')[0])
+      .filter((b) => b.includes('ACP_RESUME'))
+    assert.equal(recovery.length, 1, `${skill} documents ${recovery.length} recovery commands`)
+    for (const need of ['ACP_SESSION_RECEIPT_REQUIRED=1', 'ACP_SESSION_OPERATION="load"',
+      'ACP_PRIOR_DISPATCH_ID', 'ACP_PRIOR_RECEIPT_DIGEST']) {
+      assert.ok(recovery[0].includes(need),
+        `${skill}'s recovery drops ${need}, so the resumed turn is not receipt-backed`)
+    }
+  }
+})
+
+test('the claude advisor does not promise an identity proof its routed seat cannot give', () => {
+  // A panel lane read the headline — "can prove which model answered" — against
+  // this file's own paragraph fifty lines down: a receipt recording
+  // `effective_identity: opus` has told you nothing about who answered, because
+  // `opus` on three different bins reaches three different vendors. Both cannot
+  // be true, and the headline is the one a reader sees first.
+  const claude = readFileSync(join(PLUGIN, 'skills', 'claude-advisor', 'SKILL.md'), 'utf8')
+  const agy = readFileSync(join(PLUGIN, 'skills', 'agy-advisor', 'SKILL.md'), 'utf8')
+  const body = claude.split('---').slice(2).join('---')   // past the frontmatter
+
+  assert.ok(body.includes('has told\nyou nothing about who answered')
+    || body.includes('has told you nothing about who answered'),
+    'the alias-is-not-a-family paragraph is gone, so the contradiction may have been "fixed" by deletion')
+
+  // an unqualified promise must not stand next to it
+  const unqualified = /returns a\s+round-table, and \*\*can prove which model answered\*\*/
+  assert.doesNotMatch(body, unqualified,
+    'the headline promises an identity proof the routed seat cannot give')
+  // and the qualification names WHICH seat can
+  assert.match(body, /default seat.{0,80}can prove/s,
+    'the file does not say which seat the proof holds for')
+})
+
+// Master, 2026-08-19: the advisors must be the same thing three times — every
+// one forces a bmad-party-mode round-table, every one takes a model.
+//
+// Measured before this test existed, they were three different shapes: the
+// party-mode obligation was PROSE in all three and enforced by nothing, and
+// `agy-advisor` took no model at all and said "One seat" while its adapter
+// advertises fourteen. A uniform contract that nothing checks is the same
+// unenforced claim in three files instead of one.
+//
+// UNIFORM MEANS THE CONTRACT, NOT THE CAPABILITIES. `claude-advisor` has no
+// read-only switch because that lane has none, and the test above asserts it
+// must not promise one. Pretending three lanes are identical is the failure this
+// avoids, not the goal.
+test('every advisor carries the same contract: a party, and a model', () => {
+  // Named literally as well as iterated. A loop over a list is a test of the
+  // list: drop an entry and it simply stops checking that one.
+  const NAMES = ['codex-advisor', 'claude-advisor', 'agy-advisor']
+  assert.deepEqual(
+    SKILLS.filter((s) => s.endsWith('-advisor')).sort(), [...NAMES].sort(),
+    'an advisor skill exists that this contract does not cover')
+
+  for (const name of NAMES) {
+    const text = readFileSync(join(PLUGIN, 'skills', name, 'SKILL.md'), 'utf8')
+    const front = text.split('---')[1] ?? ''
+
+    assert.match(front, /bmad-party-mode round-table/,
+      `${name}: the frontmatter does not promise a round-table, so a reader never sees the obligation`)
+    assert.match(text, /## The consultation is a party\. Only a party\./,
+      `${name}: no party mandate section`)
+    assert.match(text, /MUST answer as a `bmad-party-mode` round-table/,
+      `${name}: the mandate is described but never stated as a requirement`)
+    // The words that go INTO the brief, not a paraphrase about them — this is
+    // the only part the advisor ever sees.
+    assert.match(text, /Answer as a bmad-party-mode round-table\. Cast 3-5 named voices/,
+      `${name}: the brief mandate an advisor is actually given is missing`)
+    assert.match(text, /single-voice\s+answer is a failed consultation/,
+      `${name}: does not say what to do when the answer comes back as one voice`)
+
+    // A model can be named. The grammars differ because the seats differ — codex
+    // has three named seats, claude needs a bin AND a model, agy has three
+    // efforts of one family — so what is pinned is that a default and at least
+    // one alternative are BOTH documented.
+    const args = text.split('## Arguments')[1]
+    assert.ok(args, `${name}: no Arguments section, so no way to name a model`)
+    const lines = args.split('```')[1]?.split('\n').filter((l) => l.trim().startsWith('$')) ?? []
+    assert.ok(lines.length >= 2,
+      `${name}: documents ${lines.length} invocation(s) — a default and at least one named seat are required`)
+    assert.ok(lines.some((l) => /default seat/.test(l)),
+      `${name}: no invocation is marked as the default seat`)
+  }
+})
+
+
+// The README named eleven skills while twelve shipped, and the missing one was
+// `show-me` — a skill the plugin delivered and its own documentation never
+// mentioned. Nothing caught that, because `SKILLS` and the README were two
+// hand-kept lists with no relationship. This is the relationship. It was
+// proposed in a pull request offering a vendor-neutral delegation guide; the
+// guide was declined and this half was kept, which is why it is here and not
+// there.
+test('every shipped skill is named in the README, and the README names no skill that is not shipped', () => {
+  const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
+  const named = new Set([...readme.matchAll(/`tmux-teams:([a-z0-9-]+)`/g)].map((m) => m[1]))
+  // `tmux-teams:tmux-teams` is the plugin's own entry skill and is named the
+  // same as the plugin, so it appears in prose that is not an inventory line.
+  // READ THE DIRECTORY, do not trust the list. A review lane blocked v0.34.0
+  // partly on this: the word "shipped" here used to mean `new Set(SKILLS)`, so
+  // a skill directory that existed and was in NEITHER `SKILLS` nor the README
+  // passed every check in this file. The list is still pinned separately — that
+  // is what catches a deletion — but "shipped" now means what is on disk.
+  const onDisk = readdirSync(join(PLUGIN, 'skills'), { withFileTypes: true })
+    .filter((e) => e.isDirectory() && existsSync(join(PLUGIN, 'skills', e.name, 'SKILL.md')))
+    .map((e) => e.name)
+  const shipped = new Set(onDisk)
+  assert.deepEqual([...shipped].sort(), [...SKILLS].sort(),
+    'the skills on disk and the SKILLS list of record disagree — one of them is wrong, '
+    + 'and until this test read the directory neither could say which')
+  const undocumented = [...shipped].filter((s) => !named.has(s)).sort()
+  const phantom = [...named].filter((s) => !shipped.has(s)).sort()
+  assert.deepEqual(undocumented, [],
+    `these skills ship and the README never names them: ${undocumented.join(', ')}`)
+  assert.deepEqual(phantom, [],
+    `the README names skills that are not shipped: ${phantom.join(', ')}`)
+
+  // AND THE COUNT IN PROSE, which is what actually shipped wrong. The section
+  // heading said "The eleven skills" while the tables below it named twelve —
+  // a contradiction inside one document, and nothing was watching a number
+  // written as a word.
+  const WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight',
+    'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen',
+    'seventeen', 'eighteen', 'nineteen', 'twenty']
+  const heading = readme.match(/^##\s*\d+\.\s*The\s+(\w+)\s+skills\s*$/m)
+  assert.ok(heading, 'the README no longer has a "The <n> skills" heading for this test to check')
+  assert.equal(heading[1], WORDS[shipped.size],
+    `the README heading says "${heading[1]}" and ${shipped.size} skills ship`)
+})
+
+// Agent Plugins 1.0 asks for client-specific material under a reverse-domain
+// namespace. Claude Code cannot read one: measured from the installed binary's
+// own strings, it recognises plugin content by finding `.claude-plugin/` — or a
+// top-level `commands/`, `skills/`, `agents/`, `hooks/`, `themes/`,
+// `output-styles/`, `monitors/`, `workflows/`, `SKILL.md`, `.mcp.json` or
+// `.lsp.json` — and contains no occurrence of `agent-plugins.org` at all.
+//
+// So these paths are load-bearing for INSTALLATION, and until this test no
+// gate watched them: every existing check reads a known path and asserts its
+// CONTENTS, so a move that updated the hard-coded paths would keep the suite
+// green while making the plugin uninstallable. Written BEFORE anything moves,
+// on purpose — a test written afterwards confirms what was done rather than
+// checking whether it was right.
+test('the paths Claude Code needs to recognise this plugin are where it looks for them', () => {
+  for (const required of ['.claude-plugin/plugin.json', '.mcp.json', 'skills']) {
+    assert.ok(existsSync(join(PLUGIN, required)),
+      `${required} is missing from the plugin root — Claude Code finds plugin content by these names`)
+  }
+  // And the vendor-neutral pair, which is how this repository already answers
+  // the same conflict for one file: two registrations, deliberately different,
+  // side by side.
+  assert.ok(existsSync(join(PLUGIN, 'plugin.json')),
+    'the vendor-neutral Agent Plugins manifest is missing')
+  assert.ok(existsSync(join(PLUGIN, 'mcp.json')),
+    'the vendor-neutral MCP registration is missing')
+})
+
+// CLAUDE.md states which paths this repository tracks, and a test above asserts
+// that the LIST says what it should. Nothing asserted that the tracked files
+// MATCH the list — so `.mailbox-out-archive-round1/`, a directory this session
+// created to preserve a review transcript, rode into the release on a
+// `git add -A`. `.mailbox-out/` was ignored; the archive name was not. Ten
+// rounds of the review of record read past it, and `gate-required.mjs` named
+// it as a deciding file for the panel without anyone noticing what it was.
+//
+// The set is pinned literally rather than derived from CLAUDE.md: a test that
+// reads its expectation out of the document it is checking agrees with whatever
+// the document says, including a document somebody widened to make a test pass.
+// The 1.0 portable root, and why it is symlinks rather than a copy.
+//
+// ADR 0008 recorded that this plugin's layout does NOT conform: section 8 of
+// the specification says "Client-specific files MUST be represented under a
+// top-level directory named for that namespace", and `.claude-plugin/`,
+// `.mcp.json` and `commands/` sit at the plugin root instead. Moving them
+// satisfies 1.0 and makes the plugin uninstallable in Claude Code, whose binary
+// contains no `agent-plugins.org` string at all.
+//
+// So there are two roots. `plugins/tmux-teams/` is what Claude Code installs and
+// is unchanged. `agent-plugins/tmux-teams/` is what a standard-aware client
+// installs, and it is SYMLINKS — measured: git stores them as mode 120000, six
+// lines total for 2.4 MB of skills, and they survive both `git clone` and
+// `git archive` as real links. A copy would have been 69 files that drift.
+//
+// THE LINKS ARE ONLY READABLE FROM A FULL CHECKOUT, and this comment claimed
+// more than that until an openai review lane checked it on the v0.35.0 diff.
+// Every one of the six points outside the root it lives in (`../../plugins/…`),
+// so the root is a VIEW of this repository, not a directory you can pick up:
+//
+//     git archive HEAD agent-plugins | tar -x -C /tmp/ar
+//     /tmp/ar/agent-plugins/tmux-teams/plugin.json   -> dangling
+//
+// which is a problem precisely because the second root exists so that a
+// standard-aware installer can be pointed at it. `scripts/portable-root.mjs`
+// resolves that: the tree keeps the links, and anyone who needs a directory
+// they can carry asks for one. The test below is what makes the copy's
+// equivalence a fact rather than an intention.
+test('the portable root conforms to Agent Plugins 1.0, and every link in it resolves', () => {
+  const PORTABLE = join(ROOT, 'agent-plugins', 'tmux-teams')
+  const NS = join(PORTABLE, 'com.anthropic.claude')
+
+  // What the spec fixes by name: the manifest, the MCP path, the skills dir.
+  for (const required of ['plugin.json', 'mcp.json', 'skills']) {
+    const p = join(PORTABLE, required)
+    assert.ok(lstatSync(p).isSymbolicLink(), `${required} in the portable root is not a symlink — a copy drifts`)
+    assert.ok(existsSync(p), `${required} in the portable root is a DEAD symlink`)
+  }
+
+  // Section 8's MUST is the whole reason this root exists: client-specific
+  // files live under the namespace, not at the root.
+  for (const clientOwned of ['.claude-plugin', '.mcp.json', 'commands']) {
+    assert.equal(existsSync(join(PORTABLE, clientOwned)), false,
+      `${clientOwned} is client-specific and sits at the portable root — that is the exact 1.0 `
+      + 'violation this root exists to avoid')
+  }
+  for (const inNamespace of ['plugin.json', 'mcp.json', 'commands']) {
+    const p = join(NS, inNamespace)
+    assert.ok(lstatSync(p).isSymbolicLink(), `com.anthropic.claude/${inNamespace} is not a symlink`)
+    assert.ok(existsSync(p), `com.anthropic.claude/${inNamespace} is a DEAD symlink`)
+  }
+
+  // Reading THROUGH the links, not merely stat-ing them. A symlink can resolve
+  // to a directory that is empty or to a file that is not what it claims.
+  const portableManifest = JSON.parse(readFileSync(join(PORTABLE, 'plugin.json'), 'utf8'))
+  assert.equal(portableManifest.$schema, 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
+    'the portable manifest lost its 1.0 $schema')
+  assert.equal(portableManifest.name, 'tmux-teams')
+  assert.equal(portableManifest.version, RELEASE_VERSION,
+    'the portable manifest is a different version from the release — the symlink is pointing somewhere stale')
+
+  const claudeManifest = JSON.parse(readFileSync(join(NS, 'plugin.json'), 'utf8'))
+  assert.equal('$schema' in claudeManifest, false,
+    'the namespaced Claude manifest gained a 1.0 $schema — the two manifests differ on purpose')
+  assert.equal(claudeManifest.version, RELEASE_VERSION)
+
+  // The skills link must reach the real inventory, not an empty directory.
+  const portableSkills = readdirSync(join(PORTABLE, 'skills'), { withFileTypes: true })
+    .filter((e) => e.isDirectory()).map((e) => e.name).sort()
+  assert.deepEqual(portableSkills, [...SKILLS].sort(),
+    'the portable root sees a different set of skills than ships')
+})
+
+test('the tracked top-level entries are exactly the ones this repository declares', () => {
+  const listed = execFileSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8' })
+    .split('\n').filter(Boolean)
+    .map((p) => p.split('/')[0])
+  const actual = [...new Set(listed)].sort()
+  const allowed = [
+    '.claude-plugin', '.github', '.gitignore', 'agent-plugins',
+    '.published-RELEASE-PLAN.json', '.published-event-subscriptions.json',
+    '.roadmap-published.json',
+    'CLAUDE.md', 'HANDOFF.md', 'README.md', 'RELEASE-PLAN.md', 'ROADMAP.md',
+    'plugins', 'scripts', 'tests',
+  ].sort()
+  const unexpected = actual.filter((e) => !allowed.includes(e))
+  const missing = allowed.filter((e) => !actual.includes(e))
+  assert.deepEqual(unexpected, [],
+    `these are tracked and this repository does not declare them: ${unexpected.join(', ')}`)
+  assert.deepEqual(missing, [],
+    `these are declared and no longer tracked: ${missing.join(', ')}`)
+})
+
+// A copy is only worth having if it is the same thing. `fs.cp` with
+// `dereference: true` is the whole mechanism, so the failure worth guarding is
+// the one where it silently is not: a link copied AS a link (dangling again), or
+// a file whose bytes differ from the source it claims to be.
+test('the materialised portable root is self-contained and byte-identical to what it came from', async () => {
+  const { materialisePortableRoot } = await import(pathToFileURL(join(ROOT, 'scripts', 'portable-root.mjs')).href)
+  const out = mkdtempSync(join(tmpdir(), 'portable-root-'))
+  try {
+    const written = await materialisePortableRoot(ROOT, out)
+
+    // Every path in the copy, and not one of them may still be a link — that is
+    // the entire defect this script exists to answer.
+    const walk = (dir, base = '') => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const rel = base ? `${base}/${entry.name}` : entry.name
+      const abs = join(dir, entry.name)
+      assert.ok(!lstatSync(abs).isSymbolicLink(),
+        `${rel} came out of the materialiser as a symlink, so the copy dangles exactly like the source root`)
+      return entry.isDirectory() ? walk(abs, rel) : [rel]
+    })
+    const files = walk(written)
+    assert.ok(files.length > 20, `the copy holds only ${files.length} files — the skills tree did not come across`)
+
+    // The four entries the spec fixes by name, plus the namespaced ones.
+    for (const required of ['plugin.json', 'mcp.json', 'skills', 'com.anthropic.claude']) {
+      assert.ok(existsSync(join(written, required)), `${required} is missing from the materialised root`)
+    }
+
+    // Byte equality against the ORIGINAL, read through the link. A copy that is
+    // merely present proves nothing; a copy that disagrees is worse than none.
+    const pairs = [
+      ['plugin.json', join(PLUGIN, 'plugin.json')],
+      ['mcp.json', join(PLUGIN, 'mcp.json')],
+      ['com.anthropic.claude/plugin.json', join(PLUGIN, '.claude-plugin', 'plugin.json')],
+      ['com.anthropic.claude/mcp.json', join(PLUGIN, '.mcp.json')],
+    ]
+    for (const [rel, source] of pairs) {
+      assert.equal(readFileSync(join(written, rel), 'utf8'), readFileSync(source, 'utf8'),
+        `${rel} in the materialised root is not the bytes of ${source}`)
+    }
+
+    // EVERY file in the skills tree, by path and by bytes — not the directory
+    // names. Checking names plus four top-level manifests passes while a nested
+    // skill document is dropped or altered, which is a materialised plugin that
+    // installs and is quietly incomplete. An openai review lane found that gap
+    // in the first version of this test.
+    const listAll = (dir, base = '') => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const rel = base ? `${base}/${entry.name}` : entry.name
+      return entry.isDirectory() ? listAll(join(dir, entry.name), rel) : [rel]
+    })
+    const copiedSkills = listAll(join(written, 'skills')).sort()
+    const sourceSkills = listAll(join(PLUGIN, 'skills')).sort()
+    assert.deepEqual(copiedSkills, sourceSkills, 'the materialised skills tree is not the shipped one')
+    for (const rel of sourceSkills) {
+      assert.deepEqual(
+        readFileSync(join(written, 'skills', rel)),
+        readFileSync(join(PLUGIN, 'skills', rel)),
+        `skills/${rel} differs from the shipped bytes in the materialised root`)
+    }
+
+    // The NAMESPACED tree too, by path and bytes. Four manifests plus the skills
+    // directory left `com.anthropic.claude/commands` unchecked entirely, so a
+    // materialiser that dropped the client commands passed — an installed
+    // portable plugin with no commands. Same openai lane, one round later.
+    const copiedCommands = listAll(join(written, 'com.anthropic.claude', 'commands')).sort()
+    const sourceCommands = listAll(join(PLUGIN, 'commands')).sort()
+    assert.ok(sourceCommands.length > 0, 'the plugin ships no commands, so this guard proves nothing')
+    assert.deepEqual(copiedCommands, sourceCommands, 'the materialised commands tree is not the shipped one')
+    for (const rel of sourceCommands) {
+      assert.deepEqual(
+        readFileSync(join(written, 'com.anthropic.claude', 'commands', rel)),
+        readFileSync(join(PLUGIN, 'commands', rel)),
+        `commands/${rel} differs from the shipped bytes in the materialised root`)
+    }
+
+    // It refuses to overwrite rather than deleting a tree somebody typed by
+    // mistake — a destructive default is not a convenience.
+    await assert.rejects(() => materialisePortableRoot(ROOT, out), /--force/,
+      'a second run overwrote an existing directory without being asked to')
+  } finally {
+    rmSync(out, { recursive: true, force: true })
   }
 })

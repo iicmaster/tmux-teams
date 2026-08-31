@@ -282,6 +282,162 @@ test('a seat with no palette still escalates at MAX_ATTEMPTS genuine failures, u
 // ── AC1/AC2 (as far as reachable), end to end: the REAL child env a palette
 // fallback would spawn, not merely what the plan says it would ─────────────
 
+// The CALL SITE, not the function. `childEnv` filtering ACP_ENABLE_TERMINAL is
+// proved in tests/loop-runner-heartbeat-model.test.mjs — and that test stays
+// green if `dispatch` stops calling `childEnv` at all, which is the exact shape
+// this repository has shipped before. `spawnFn` is the inner seam: it keeps the
+// real `dispatch` and its real env construction, and replaces only process
+// creation, so what is asserted below is the environment a worker would have
+// been handed.
+test('the real dispatch path hands no terminal capability to a worker, whatever the shell exports', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-terminal-optin-'))
+  const restore = process.env.ACP_ENABLE_TERMINAL
+  try {
+    process.env.ACP_ENABLE_TERMINAL = '1'
+    const store = join(dir, '.tmux-teams')
+    mkdirSync(join(store, 'work-items'), { recursive: true })
+    mkdirSync(join(store, 'team-briefs'), { recursive: true })
+    writeFileSync(join(store, 'team-briefs', 'build.md'), '# standing brief\n')
+    const graph = { ...BASE, teams: [teamOf({}), CONTROL_TEAM] }
+    writeFileSync(join(store, 'graph.json'), JSON.stringify(graph))
+    writeFileSync(join(store, 'work-items', 'tok.jsonl'),
+      `${ledger('tok', ADMITTED).map((entry) => JSON.stringify(entry)).join('\n')}\n`)
+
+    const captured = []
+    tick(dir, { apply: true, scratchDir: join(dir, 'scratch'),
+      spawnFn: (cmd, args, options) => { captured.push(options); return { unref() {} } } })
+
+    assert.ok(captured.length > 0, 'nothing was dispatched, so nothing was proved')
+    for (const call of captured) {
+      assert.equal(Object.hasOwn(call.env, 'ACP_ENABLE_TERMINAL'), false,
+        `a worker was handed the terminal opt-in: ${JSON.stringify(call.env.ACP_ENABLE_TERMINAL)}`)
+      // The env still arrives, so this is one key removed rather than a filter
+      // nobody noticed was eating everything.
+      assert.ok(call.env.ACP_AGENT_ID, 'the dispatch environment was damaged')
+      // And the reason the removal costs nothing, asserted rather than described.
+      assert.equal(call.stdio[0], 'ignore',
+        'this child can read stdin, so a terminal here would not be inert')
+    }
+  } finally {
+    if (restore === undefined) delete process.env.ACP_ENABLE_TERMINAL
+    else process.env.ACP_ENABLE_TERMINAL = restore
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 })
+  }
+})
+
+// THE CALL SITE FOR THE FORWARDED HALF, and the reason it exists is that a
+// review-of-record lane BLOCKED the release for its absence. The test above
+// proves one variable is REMOVED at the real call site; nothing proved the six
+// that must SURVIVE ever arrive. `childEnv` is tested as a function in
+// tests/loop-runner-heartbeat-model.test.mjs, and that test stays green if
+// `dispatch` stops calling it — which is exactly how the P1 this whole section
+// answers reached a release. Same `spawnFn` seam: the real `dispatch`, the real
+// env construction, only process creation replaced.
+test('the operator bounds an ambient shell sets arrive at a real dispatched worker, and nothing else does', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'loop-forwarded-controls-'))
+  // Bounds an operator is invited to set, each with a value nothing else in
+  // this test could produce, so an assertion cannot pass on a coincidence.
+  const BOUNDS = {
+    ACP_HARD_TIMEOUT_SEC: '911',
+    ACP_STALL_POLICY: 'report',
+    ACP_CANCEL_GRACE_MS: '912',
+    ACP_CANCEL_GRACE_SEC: '913',
+    ACP_PROCESS_KILL_GRACE_MS: '914',
+    ACP_PROCESS_REAP_GRACE_MS: '915',
+  }
+  // Identity, routing and session state a shell may be carrying after a hand
+  // dispatch. None of it is this operator's to give a loop leg.
+  const HOSTILE = {
+    ACP_MODEL: 'somebody-elses-model',
+    ACP_EXPECT_MODEL: 'somebody-elses-expectation',
+    ACP_REASONING_EFFORT: 'low',
+    ACP_RESUME: 'somebody-elses-session',
+    ACP_SESSION_OPERATION: 'load',
+    ACP_SPAWN_NONCE: 'a-stale-nonce-from-a-hand-run',
+    ACP_ENV_PASSTHROUGH: 'ANTHROPIC_API_KEY',
+  }
+  const restore = Object.fromEntries(
+    [...Object.keys(BOUNDS), ...Object.keys(HOSTILE)].map((k) => [k, process.env[k]]))
+  try {
+    Object.assign(process.env, BOUNDS, HOSTILE)
+    const store = join(dir, '.tmux-teams')
+    mkdirSync(join(store, 'work-items'), { recursive: true })
+    mkdirSync(join(store, 'team-briefs'), { recursive: true })
+    writeFileSync(join(store, 'team-briefs', 'build.md'), '# standing brief\n')
+    const graph = { ...BASE, teams: [teamOf({}), CONTROL_TEAM] }
+    writeFileSync(join(store, 'graph.json'), JSON.stringify(graph))
+    writeFileSync(join(store, 'work-items', 'tok.jsonl'),
+      `${ledger('tok', ADMITTED).map((entry) => JSON.stringify(entry)).join('\n')}\n`)
+
+    // Collected from the graph this runner will read, not from a literal — and
+    // collected by KEY NAME, because a graph carries models three ways:
+    // `outer_controller_model`, a team's `models` role map, and a palette
+    // candidate's `model`. The first draft walked only the last of those and
+    // its own "declares no model" guard caught it, which is why that guard is
+    // an assertion rather than a comment.
+    const declaredModels = new Set()
+    const walk = (node) => {
+      if (Array.isArray(node)) return void node.forEach(walk)
+      if (!node || typeof node !== 'object') return
+      for (const [key, value] of Object.entries(node)) {
+        if (typeof value === 'string' && (key === 'model' || key.endsWith('_model'))) declaredModels.add(value)
+        else if (key === 'models' && value && typeof value === 'object') {
+          for (const seat of Object.values(value)) if (typeof seat === 'string') declaredModels.add(seat)
+        }
+        walk(value)
+      }
+    }
+    walk(graph)
+    assert.ok(declaredModels.size > 0, 'this graph declares no model, so the check below proves nothing')
+
+    const captured = []
+    tick(dir, { apply: true, scratchDir: join(dir, 'scratch'),
+      spawnFn: (cmd, args, options) => { captured.push(options); return { unref() {} } } })
+
+    assert.ok(captured.length > 0, 'nothing was dispatched, so nothing was proved')
+    for (const call of captured) {
+      for (const [key, value] of Object.entries(BOUNDS)) {
+        assert.equal(call.env[key], value,
+          `${key} is a bound this loop's SKILL.md invites an operator to set, and it did not reach `
+          + `the worker — a lane running without the ceiling its operator asked for, saying nothing`)
+      }
+      // ABSENCE IS THE WRONG TEST for half of these, and writing it that way is
+      // how this test found its own bug on the first run: `dispatch` deliberately
+      // re-supplies ACP_MODEL from the SEAT'S declared model after childEnv has
+      // dropped the ambient one, so the key is present and must be. What must
+      // never survive is the ambient VALUE.
+      for (const [key, ambient] of Object.entries(HOSTILE)) {
+        assert.notEqual(call.env[key], ambient,
+          `${key} rode an ambient shell into a dispatched worker: ${JSON.stringify(ambient)}`)
+      }
+      // And the ones this runner never supplies at all are absent, not merely
+      // different — a value-only check would pass on any wrong value.
+      for (const key of ['ACP_RESUME', 'ACP_SPAWN_NONCE', 'ACP_ENV_PASSTHROUGH']) {
+        assert.equal(Object.hasOwn(call.env, key), false,
+          `${key} reached a worker and this runner never sets it: ${JSON.stringify(call.env[key])}`)
+      }
+      // ACP_MODEL is the one that inverts a sentinel rather than merely leaking:
+      // a seat declaring INHERIT_ACCOUNT_DEFAULT requests NOTHING, so an ambient
+      // value makes exactly that seat request something the graph never declared
+      // and the identity check certify it matched. So the positive statement is
+      // worth making — but NOT against a hardcoded seat: which leg is due on a
+      // given tick is the runner's business, and the first draft of this asserted
+      // the worker's model and caught the controller's. The claim that survives a
+      // scheduling change is that the model came from THIS GRAPH.
+      assert.ok(declaredModels.has(call.env.ACP_MODEL),
+        `a worker was dispatched with a model this graph never declares: `
+        + `${JSON.stringify(call.env.ACP_MODEL)} (declared: ${[...declaredModels].join(', ')})`)
+      assert.ok(call.env.ACP_AGENT_ID, 'the dispatch environment was damaged')
+    }
+  } finally {
+    for (const [key, value] of Object.entries(restore)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 })
+  }
+})
+
 test('a palette seat\'s second leg spawns the process with the SECOND candidate\'s model/adapter/effort, for real', () => {
   const dir = mkdtempSync(join(tmpdir(), 'loop-palette-dispatch-'))
   try {

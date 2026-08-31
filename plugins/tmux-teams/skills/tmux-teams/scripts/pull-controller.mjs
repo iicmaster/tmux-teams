@@ -63,7 +63,12 @@ export function planPulls(graph, items, now = new Date().toISOString()) {
     if (last.event === 'delivered' && last.terminal && last.terminal !== 'done') {
       decisions.push({
         work_item: item.work_item, action: 'failed', from_team: team.team_id,
-        reason: `last leg ended ${last.terminal} — needs a rerun, not a handoff`,
+        // `blocked` needs a PERSON, not a rerun — the runner escalates it rather
+        // than re-dispatching, and a refusal here that says "rerun" sends an
+        // operator to do the one thing that cannot help.
+        reason: last.terminal === 'blocked'
+          ? `last leg ended blocked — needs a person, not a handoff and not a rerun`
+          : `last leg ended ${last.terminal} — needs a rerun, not a handoff`,
       })
       continue
     }

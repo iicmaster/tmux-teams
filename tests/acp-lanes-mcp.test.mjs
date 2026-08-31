@@ -1,0 +1,3756 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, chmodSync, readdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, dirname, isAbsolute, delimiter } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
+
+import { handle, callTool, laneFacts, laneStatus, classify, fixesFor,
+  TOOLS, TOOL_DESCRIPTORS, DIAGNOSTICS, PROTOCOL_VERSION, UNCHECKED_LANES,
+  RPC_INVALID_REQUEST, RPC_INVALID_PARAMS, RPC_METHOD_NOT_FOUND, RPC_PARSE_ERROR,
+  classifyProbe, PROBE_BOOT_TIMEOUT_MS, PROBE_REPLY_TIMEOUT_MS, PROBE_BRIEF, realProbeTransport,
+  PROBE_DEPTHS, DEFAULT_PROBE_DEPTH }
+  from '../plugins/tmux-teams/skills/party-mode/scripts/acp-lanes-mcp.mjs'
+import { REVIEW_PROFILES, ROUTED_PROFILES, provenFamilyCollision, normalizePrimaryFamily, PROVIDER_SECRET_KEYS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys, buildAcpLaunch, buildProfileEnv }
+  from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+const PLUGIN = join(ROOT, 'plugins', 'tmux-teams')
+const MANIFEST = JSON.parse(readFileSync(join(PLUGIN, '.mcp.json'), 'utf8'))
+const SERVER = MANIFEST.mcpServers['tmux-teams-acp-lanes']
+
+const call = (name, args, env) => JSON.parse(handle({
+  jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args },
+}, env).result.content[0].text)
+
+const expand = (value) => value.replaceAll('${CLAUDE_PLUGIN_ROOT}', PLUGIN)
+
+// A SIGKILLed process the caller does not itself own the reaping of (a
+// descendant this test process never forked directly, only observed by pid)
+// can answer `kill(pid, 0)` as "alive" for a short window AFTER the signal
+// actually lands and after `kill(-pgid, 0)` already reports the group empty
+// — measured directly on this machine: the group check cleared a tick before
+// the specific pid did. That gap is an already-dead process still sitting in
+// the table awaiting its own (unrelated) parent's reap, not a live one doing
+// anything, so a single-shot check right at the instant a promise settles
+// can lose this race under load without the production code being wrong.
+// Poll instead of asserting on the first read.
+async function waitForPidGone(pid, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() <= deadline) {
+    try { process.kill(pid, 0) } catch { return true }
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  try { process.kill(pid, 0); return false } catch { return true }
+}
+
+test('the declaration names a command AND a script that both exist', () => {
+  // The shape that has bitten this repository before: the deepseek reserve lane
+  // was declared for months and no test ever reached it. A `.mcp.json` naming a
+  // script that is not there fails that way — and so does one naming a command
+  // that is not there, which the first version of this test could not see:
+  // changing `node` to `node-does-not-exist` left it green.
+  assert.equal(SERVER.type, 'stdio')
+  assert.ok(SERVER.command, 'the declaration names no command')
+  assert.equal(SERVER.cwd, '${CLAUDE_PLUGIN_ROOT}', 'cwd must be the plugin root, not a machine path')
+  const target = (SERVER.args ?? []).find(a => a.includes('.mjs'))
+  assert.ok(target, 'the server declaration names no script at all')
+  assert.ok(target.startsWith('${CLAUDE_PLUGIN_ROOT}/'),
+    'the path must be plugin-root relative — an absolute path is one machine\'s answer')
+  assert.ok(!isAbsolute(target))
+  assert.ok(existsSync(expand(target)), `.mcp.json points at a file that is not shipped: ${target}`)
+})
+
+test('every declared lane is listed, and the list is pinned rather than derived from itself', () => {
+  const out = callTool('acp_lanes', {}, {})
+  const listed = out.lanes.map(l => l.lane).sort()
+  // Pinned literally. A test that only compared this against Object.keys of the
+  // same object would keep passing while a lane quietly disappeared.
+  assert.deepEqual(listed, ['agy', 'claude', 'codex', 'deepseek', 'kimi', 'ninerouter', 'qwen', 'zai'])
+  assert.deepEqual(listed, Object.keys(REVIEW_PROFILES).sort(),
+    'the tool and the profile registry disagree about which lanes exist')
+  assert.equal(out.lanes.find(l => l.lane === 'zai').routing, 'pinned:api.z.ai/api/anthropic')
+  assert.equal(out.lanes.find(l => l.lane === 'agy').routing, 'unrouted')
+
+  // EVERY declared field the tool's own description promises, for every lane.
+  // A review round identified this gap and could not run it before its turn
+  // ended; running it confirmed the miss — `provider: null` for all seven lanes
+  // kept this file 27/27 green, because the assertions above pin names, routing
+  // and adapter presence and never touched `provider` or `family`. The tool
+  // advertises "family, provider, model, adapter package"; the guard now pins
+  // all four, per lane, literally.
+  const declared = Object.fromEntries(out.lanes.map((l) => [l.lane, l]))
+  for (const [lane, family, provider, model] of [
+    ['agy', 'gemini', 'google-antigravity', 'gemini-3.7-flash-high'],
+    ['claude', 'claude', 'anthropic', 'claude-opus-4-8'],
+    ['codex', 'openai', 'openai', 'gpt-5.6-sol'],
+    ['deepseek', 'deepseek', 'qwen', 'deepseek-v4-flash-0731'],
+    ['kimi', 'kimi', 'kimi', 'opus'],
+    ['qwen', 'qwen', 'qwen', 'qwen3.8-max-preview'],
+    ['zai', 'zai', 'zai', 'glm-5.2'],
+  ]) {
+    assert.equal(declared[lane].family, family, `${lane} family`)
+    assert.equal(declared[lane].provider, provider, `${lane} provider`)
+    assert.equal(declared[lane].model, model, `${lane} model`)
+    assert.ok(declared[lane].adapter, `${lane} adapter`)
+  }
+})
+
+test('declared facts need nothing from this machine', () => {
+  const out = callTool('acp_lanes', {}, { HOME: '/nonexistent' })
+  assert.equal(out.lanes.length, 8)
+  assert.ok(out.lanes.every(l => l.adapter), 'a lane with no adapter package is not a usable answer')
+})
+
+test('a lane with no parent-side check says UNCHECKED, and never that it is fine', () => {
+  // The defect a Codex advisor reproduced in one command against the first
+  // version: with no HOME, no PATH and no credentials, `claude` and `codex`
+  // both answered `ready: true`. Nothing validates those two, so a green
+  // answer meant only "no check ran" — a diagnostic that says READY and then
+  // watches the real gate refuse is worse than no diagnostic at all.
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
+  for (const lane of ['claude', 'codex']) {
+    const [got] = call('acp_lane_status', { lane }, bare).lanes
+    assert.equal(got.configuration, 'unchecked', `${lane} claimed a state nothing verified`)
+    assert.match(got.note, /no parent-side configuration check/)
+    assert.ok(!('ready' in got), 'the boolean that overclaimed is gone, not renamed alongside itself')
+  }
+  assert.deepEqual([...UNCHECKED_LANES].sort(), ['claude', 'codex'])
+})
+
+test('every status answer states what it did NOT prove', () => {
+  const out = call('acp_lane_status', undefined, { HOME: '/definitely/nonexistent' })
+  assert.equal(out.lanes.length, 8)
+  for (const lane of out.lanes) {
+    assert.ok(Array.isArray(lane.notProven) && lane.notProven.length >= 4,
+      `${lane.lane} claims a state with no boundary stated beside it`)
+    assert.ok(lane.notProven.some(x => /endpoint can be reached/.test(x)))
+    assert.ok(['valid', 'invalid', 'unchecked'].includes(lane.configuration))
+  }
+})
+
+test('a lane that cannot run says which closed diagnostic applies, never a raw message', () => {
+  const [lane] = call('acp_lane_status', { lane: 'zai' },
+    { HOME: '/nonexistent-layout', PATH: process.env.PATH }).lanes
+  assert.equal(lane.configuration, 'invalid')
+  assert.equal(lane.problem.code, 'endpoint_missing')
+  assert.equal(lane.problem.detail, DIAGNOSTICS.endpoint_missing,
+    'the detail must be a constant of the module, not text that came from a file')
+  // The endpoint is what is missing, so the answer is about where the base URL
+  // comes from — not the credential file, which is a different cause with a
+  // different code. The previous version demanded both here, which is exactly
+  // the every-sentence-available answer the second advisor round rejected.
+  const fixes = lane.fixes.join(' ')
+  assert.match(fixes, /TMUX_TEAMS_REVIEW_ZAI_SETTINGS/)
+  assert.ok(!/TMUX_TEAMS_REVIEW_ZAI_ENV_FILE/.test(fixes),
+    'a missing endpoint was answered with credential advice')
+})
+
+test('a fix names the thing that actually refused, not every setup step available', () => {
+  // The second advisor round called the first version of this symptom repair:
+  // `fixesFor` ignored the cause entirely, so `agy` — which fails because a
+  // trusted `agy` binary is absent — was told to repair the ADAPTER PACKAGE.
+  // Non-empty was never the property worth asserting.
+  const agy = fixesFor('agy', REVIEW_PROFILES.agy, 'executable_missing')
+  assert.ok(agy.some(f => /trusted, EXECUTABLE `agy`/.test(f) && /\$HOME\/\.local\/bin\/agy/.test(f)),
+    `agy is not told about the binary the parent actually looked for: ${agy.join(' | ')}`)
+  // The UNRESOLVED form, and this is a security assertion rather than a style
+  // one: interpolating the resolved candidate put whatever HOME contained on
+  // the wire, and an advisor walked a credential out through it while every
+  // credential FIELD stayed clean.
+  assert.ok(agy.every(f => !/\/h\//.test(f)),
+    `a resolved HOME reached a fix sentence: ${agy.join(' | ')}`)
+
+  // A missing endpoint is not answered with executable advice, and a missing
+  // executable is not answered with settings advice.
+  const endpoint = fixesFor('zai', REVIEW_PROFILES.zai, 'endpoint_missing', {})
+  assert.ok(endpoint.every(f => !/must resolve|wrapper/.test(f)),
+    `an endpoint problem was answered with executable advice: ${endpoint.join(' | ')}`)
+  assert.ok(endpoint.some(f => /TMUX_TEAMS_REVIEW_ZAI_SETTINGS/.test(f)))
+
+  const credential = fixesFor('zai', REVIEW_PROFILES.zai, 'credential_missing', {})
+  assert.match(credential[0], /TMUX_TEAMS_REVIEW_ZAI_ENV_FILE/,
+    'a missing credential must lead with the file that carries one')
+
+  const unreadable = fixesFor('zai', REVIEW_PROFILES.zai, 'settings_unreadable', {})
+  assert.match(unreadable[0], /must parse/)
+
+  for (const [id, profile] of Object.entries(REVIEW_PROFILES)) {
+    assert.ok(fixesFor(id, profile, 'unclassified', {}).length > 0, `${id} is answered with no fixes`)
+  }
+})
+
+test('the credential fix, APPLIED, turns the lane it was given to from invalid to valid', () => {
+  // A prose assertion that a sentence mentions the right variable is not a test
+  // of the repair. A Codex advisor showed why: `loadRoutedCredentialFile`
+  // filtered through an allowlist that excluded `ZAI_API_KEY` while
+  // `validateRoutedEndpoint` accepted the identical key from the ambient
+  // environment — so the fix named the right file and the lane refused exactly
+  // as before. This applies the returned remediation and demands the state
+  // change, and the ambient path is measured beside it because "same key, two
+  // answers" is the defect.
+  const dir = mkdtempSync(join(tmpdir(), 'acp-lanes-repair-'))
+  try {
+    const settings = join(dir, 'zai.json')
+    const envFile = join(dir, 'zai.env')
+    writeFileSync(settings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic' } }))
+    writeFileSync(envFile, 'ZAI_API_KEY=fixture-secret-never-print\n')
+    const base = {
+      HOME: '/definitely/nonexistent', PATH: process.env.PATH,
+      TMUX_TEAMS_REVIEW_ZAI_SETTINGS: settings,
+    }
+
+    const before = laneStatus('zai', REVIEW_PROFILES.zai, base)
+    assert.equal(before.configuration, 'invalid')
+    assert.equal(before.problem.code, 'credential_missing')
+    assert.match(before.fixes.join(' '), /TMUX_TEAMS_REVIEW_ZAI_ENV_FILE/)
+    // The fix has to name the vocabulary too, or an operator writes the wrong
+    // key into the right file and gets the same silence.
+    assert.match(before.fixes.join(' '), /ZAI_API_KEY/)
+
+    const repaired = laneStatus('zai', REVIEW_PROFILES.zai,
+      { ...base, TMUX_TEAMS_REVIEW_ZAI_ENV_FILE: envFile })
+    assert.equal(repaired.configuration, 'valid',
+      'the remediation this tool prints does not repair the refusal it prints it for')
+
+    const ambient = laneStatus('zai', REVIEW_PROFILES.zai,
+      { ...base, ZAI_API_KEY: 'fixture-secret-never-print' })
+    assert.equal(ambient.configuration, repaired.configuration,
+      'the same key is accepted from one source and rejected from the other')
+
+    // The widening is per lane, not global: a lane gains only the secret names
+    // it declares, so a stray file still cannot smuggle another lane's key.
+    const foreign = join(dir, 'foreign.env')
+    writeFileSync(foreign, 'OPENAI_API_KEY=nope\nKIMI_API_KEY=nope\n')
+    assert.equal(laneStatus('zai', REVIEW_PROFILES.zai,
+      { ...base, TMUX_TEAMS_REVIEW_ZAI_ENV_FILE: foreign }).configuration, 'invalid')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the agy lane checks that its binary is EXECUTABLE, not merely that a name exists', () => {
+  // Reproduced by a Codex advisor against the previous bytes: a mode-0644 file
+  // at the trusted candidate path produced `valid`, `problem: null` and no
+  // fixes, while executing it failed EACCES. AGY is not in UNCHECKED_LANES —
+  // executable discovery is the ONE parent-side fact it claims to establish, so
+  // a green there is false about its own boundary rather than about the
+  // provider. This also kills the mutation that returned `valid` for agy
+  // unconditionally: `fixesFor` tested in isolation says nothing about the call
+  // site, and deleting the call site left all 18 tests green.
+  const cases = [
+    ['a regular file with no execute bit', (path, fs) => { fs.writeFileSync(path, ''); fs.chmodSync(path, 0o644) }, 'invalid'],
+    ['a directory with the right name', (path, fs) => fs.mkdirSync(path), 'invalid'],
+    ['a real executable', (path, fs) => { fs.writeFileSync(path, '#!/bin/sh\nexit 0\n'); fs.chmodSync(path, 0o755) }, 'valid'],
+  ]
+  for (const [label, make, expected] of cases) {
+    const home = mkdtempSync(join(tmpdir(), 'acp-lanes-agy-'))
+    try {
+      const bin = join(home, '.local', 'bin')
+      mkdirSync(bin, { recursive: true })
+      make(join(bin, 'agy'), { writeFileSync, chmodSync, mkdirSync })
+      const got = laneStatus('agy', REVIEW_PROFILES.agy, { HOME: home, PATH: '/definitely/nonexistent' })
+      assert.equal(got.configuration, expected, `${label} was answered ${got.configuration}`)
+      if (expected === 'invalid') {
+        assert.equal(got.problem.code, 'executable_missing')
+        assert.ok(got.fixes.some(f => /EXECUTABLE/.test(f)), `${label} got no executable-shaped fix`)
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  }
+
+  // And with nothing at any candidate path at all, which is the state the
+  // deleted call site would have reported as valid.
+  const bare = laneStatus('agy', REVIEW_PROFILES.agy,
+    { HOME: '/definitely/nonexistent', PATH: process.env.PATH })
+  assert.equal(bare.configuration, 'invalid')
+  assert.equal(bare.problem.code, 'executable_missing')
+})
+
+test('a routed lane names the WRAPPER among the things it did not prove', () => {
+  // Measured by an advisor against the previous version: pointing PATH at a
+  // path that does not exist left a routed lane answering `valid`, while
+  // `notProven` named only the adapter package. The profile models the adapter
+  // and the wrapper as separate fields, so a caveat about one does not cover
+  // the other.
+  const dir = mkdtempSync(join(tmpdir(), 'acp-lanes-wrapper-'))
+  try {
+    const settings = join(dir, 'zai.json')
+    writeFileSync(settings, JSON.stringify({
+      env: { ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic', ANTHROPIC_AUTH_TOKEN: 'x' },
+    }))
+    const [lane] = call('acp_lane_status', { lane: 'zai' }, {
+      HOME: '/nonexistent-layout', PATH: '/definitely/nonexistent',
+      TMUX_TEAMS_REVIEW_ZAI_SETTINGS: settings,
+    }).lanes
+    assert.equal(lane.configuration, 'valid')
+    assert.ok(lane.notProven.some(x => /wrapper `claude-zai`/.test(x)),
+      `a valid answer with no wrapper on PATH did not name it: ${lane.notProven.join(' | ')}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('malformed settings are diagnosed as unreadable, not shrugged at', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-lanes-bad-json-'))
+  try {
+    const settings = join(dir, 'zai.json')
+    writeFileSync(settings, '{ this is not json')
+    const [lane] = call('acp_lane_status', { lane: 'zai' }, {
+      HOME: '/nonexistent-layout', PATH: process.env.PATH,
+      TMUX_TEAMS_REVIEW_ZAI_SETTINGS: settings,
+    }).lanes
+    assert.equal(lane.configuration, 'invalid')
+    assert.equal(lane.problem.code, 'settings_unreadable',
+      'a JSON.parse failure carries V8 wording that mentions nothing of ours, and used to fall through')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('every diagnostic code the classifier can return has a constant sentence', () => {
+  const codes = ['endpoint_missing', 'endpoint_mismatch', 'credential_missing',
+    'settings_unreadable', 'credential_unreadable', 'profile_incomplete',
+    'executable_missing', 'environment_unspawnable', 'environment_over_budget',
+    'unclassified',
+    // Added for `acp_lane_probe` — the outcomes a LIVE attempt can learn that
+    // config-time checking structurally cannot: quota/timeout are two
+    // providers can trigger, and `executable_unusable` is EACCES/EPERM told
+    // apart from ENOENT, which the parent-side check never spawns anything to
+    // observe.
+    'quota_exhausted', 'probe_timeout', 'probe_boot_timeout', 'executable_unusable']
+  assert.deepEqual(Object.keys(DIAGNOSTICS).sort(), [...codes].sort())
+  // and the classifier maps real messages onto them rather than onto `unclassified`
+  assert.equal(classify('zai review requires ANTHROPIC_BASE_URL'), 'endpoint_missing')
+  assert.equal(classify('zai review endpoint must be https://api.z.ai/api/anthropic'), 'endpoint_mismatch')
+  assert.equal(classify('zai review endpoint requires an explicit provider credential'), 'credential_missing')
+  assert.equal(classify('trusted agy executable not found'), 'executable_missing')
+  // Its own bucket, not a credential one: the offending value may be a header,
+  // a model config or an oversized total, and three of those four repairs have
+  // nothing to do with a credential.
+  assert.equal(classify('zai review environment cannot start a process: ZAI_API_KEY contains a NUL byte'),
+    'environment_unspawnable')
+  // A DIFFERENT code from the NUL case, and the reason is the sentence: this
+  // machine spawns an environment three times the ceiling, so calling the size
+  // refusal "cannot start a process" was measurably false.
+  assert.equal(classify('zai review environment is over budget: it is 2097262 bytes and the ceiling is 262144'),
+    'environment_over_budget')
+  assert.equal(classify('zai review environment is over budget: ZAI_API_KEY is 204802 bytes and the per-value ceiling is 65536'),
+    'environment_over_budget')
+  // WHICH FILE failed decides the repair. Aiming every filesystem error at the
+  // settings file sent the operator to edit a file that was fine — a panel lane
+  // caught it one commit after it was introduced.
+  // WHICH file failed is not knowable from the message. The previous version
+  // searched the raw text — INCLUDING THE PATH — so a caller who controls a
+  // filename chose the diagnosis, against this module's own invariant.
+  // Identity comes from the caller that opened the file, or not at all.
+  for (const path of ['/home/u/credential.json', '/home/u/.env', '/tmp/settings.json',
+    '/tmp/auth/api-key/settings.json']) {
+    assert.equal(classify(`EACCES: permission denied, open '${path}'`), 'settings_unreadable',
+      `the filename ${path} chose the diagnosis`)
+  }
+  assert.equal(classify('EACCES: permission denied', { fileKind: 'credential' }), 'credential_unreadable')
+  assert.equal(classify('EACCES: permission denied', { fileKind: 'settings' }), 'settings_unreadable')
+  // ponytail: the repair sentence is reached through the switch, which the
+  // closed-set assertion above already covers; exporting a helper only so a
+  // test can call it would be the test shaping the module.
+  assert.equal(classify('something nobody has seen before'), 'unclassified')
+  // A release panel called the old mapping a false diagnosis with non-repairing
+  // instructions, and it was: a lane that routes and declares no endpoint has a
+  // PROFILE defect, and telling the operator to fix their settings JSON sends
+  // them to a file with nothing wrong with it.
+  assert.equal(classify('zai review routes its provider but pins no endpoint'), 'profile_incomplete')
+  assert.equal(classify('zai review settings must be a JSON object'), 'settings_unreadable')
+  assert.match(fixesFor('zai', REVIEW_PROFILES.zai, 'profile_incomplete')[0],
+    /defect in the shipped profile, not in your configuration/)
+})
+
+test('a lane whose configuration IS valid says so, and says only that', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-lanes-'))
+  try {
+    const settings = join(dir, 'zai.json')
+    writeFileSync(settings, JSON.stringify({
+      env: {
+        ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic',
+        ANTHROPIC_AUTH_TOKEN: 'test-token-that-must-never-be-echoed',
+      },
+    }))
+    const [lane] = call('acp_lane_status', { lane: 'zai' }, {
+      HOME: '/nonexistent-layout', PATH: process.env.PATH,
+      TMUX_TEAMS_REVIEW_ZAI_SETTINGS: settings,
+    }).lanes
+    assert.equal(lane.configuration, 'valid')
+    assert.equal(lane.problem, null)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a credential never reaches the wire — on the success path OR any failure path', () => {
+  // The strongest guard here. The earlier version tested only the success path,
+  // and its failure path exported `String(error.message)` verbatim: a future
+  // diagnostic downstream that interpolated a token would have shipped it with
+  // nothing red. Each case below puts a unique secret somewhere real and then
+  // asserts over the whole serialised reply.
+  const dir = mkdtempSync(join(tmpdir(), 'acp-lanes-secret-'))
+  try {
+    const secret = (tag) => `sk-do-not-echo-${tag}-` + 'z'.repeat(20)
+    const cases = [
+      ['ready', { ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic' }, 'valid'],
+      ['wrong-endpoint', { ANTHROPIC_BASE_URL: 'https://attacker.example/anthropic' }, 'invalid'],
+      ['no-endpoint', {}, 'invalid'],
+    ]
+    for (const [tag, extra, expected] of cases) {
+      const token = secret(tag)
+      const settings = join(dir, `${tag}.json`)
+      writeFileSync(settings, JSON.stringify({ env: { ...extra, ANTHROPIC_AUTH_TOKEN: token } }))
+      const env = {
+        HOME: '/nonexistent-layout', PATH: process.env.PATH,
+        TMUX_TEAMS_REVIEW_ZAI_SETTINGS: settings,
+      }
+      const reply = handle({
+        jsonrpc: '2.0', id: 7, method: 'tools/call',
+        params: { name: 'acp_lane_status', arguments: { lane: 'zai' } },
+      }, env)
+      const wire = JSON.stringify(reply)
+      const [lane] = JSON.parse(reply.result.content[0].text).lanes
+      assert.equal(lane.configuration, expected,
+        `the ${tag} fixture did not reach the state it exists to exercise`)
+      assert.ok(!wire.includes(token), `${tag}: the credential reached the wire`)
+      // NOT asserted: that the field NAME stays off the wire. It does not, and
+      // it is not meant to — see the credential-vocabulary test below. This
+      // line demanded the opposite until 2026-08-17 and passed only because
+      // every fixture here fails at `endpoint_missing`, where no credential
+      // sentence is produced. A guard that holds by never reaching the branch
+      // it guards is the shape a Codex advisor found in round four.
+    }
+    // A credential supplied through the AMBIENT environment rather than a file.
+    const ambient = secret('ambient')
+    const wire = JSON.stringify(handle({
+      jsonrpc: '2.0', id: 8, method: 'tools/call',
+      params: { name: 'acp_lane_status', arguments: {} },
+    }, { HOME: '/nonexistent-layout', PATH: process.env.PATH, ANTHROPIC_AUTH_TOKEN: ambient }))
+    assert.ok(!wire.includes(ambient), 'an ambient credential reached the wire')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('no provider secret this plugin knows about reaches the wire, from any lane', () => {
+  // The test above seeds ONE key, and a Codex advisor mutated `laneStatus` to
+  // serialise `env.GOOGLE_API_KEY` directly: all 18 tests stayed green while a
+  // credential went out under a test named "a credential never reaches the
+  // wire". The inventory below is written out LITERALLY on purpose — a test
+  // that iterated `PROVIDER_SECRET_KEYS` would stop testing any key deleted
+  // from it and report that as a pass, which is a shape this repository has a
+  // rule about.
+  const INVENTORY = [
+    'AGY_API_KEY', 'ANTIGRAVITY_API_KEY', 'GOOGLE_API_KEY',
+    'KIMI_API_KEY', 'MOONSHOT_API_KEY',
+    'ZAI_API_KEY',
+    'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN',
+    'OPENAI_API_KEY',
+  ]
+  const declared = [...new Set(Object.values(PROVIDER_SECRET_KEYS).flat())].sort()
+  assert.deepEqual([...INVENTORY].sort(), declared,
+    'a provider secret was added or removed and this matrix was not told')
+
+  // OWNERSHIP, not just membership. The set above pins WHICH names exist and a
+  // Codex advisor showed in round four what that misses: moving
+  // `MOONSHOT_API_KEY` from `kimi` to `qwen` leaves the union unchanged, keeps
+  // both suites green, and forwards a foreign key into the Qwen child. So the
+  // map is written out per lane, literally, and an empty list is a statement
+  // rather than a gap — `qwen` and `deepseek` reach their provider through a
+  // routed wrapper's own settings and forward nothing from this process.
+  assert.deepEqual(PROVIDER_SECRET_KEYS, {
+    agy: ['AGY_API_KEY', 'ANTIGRAVITY_API_KEY', 'GOOGLE_API_KEY'],
+    kimi: ['KIMI_API_KEY', 'MOONSHOT_API_KEY'],
+    qwen: [],
+    deepseek: [],
+    zai: ['ZAI_API_KEY'],
+    claude: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
+    codex: ['OPENAI_API_KEY'],
+    ninerouter: [],
+  }, 'a provider secret changed which LANE owns it')
+
+  // And behaviourally, because a constant can be edited to match a test: a key
+  // one lane declares must not reach another lane's child.
+  const foreign = 'PLANTEDFOREIGN-' + 'w'.repeat(20)
+  const dir = mkdtempSync(join(tmpdir(), 'acp-lanes-foreign-'))
+  try {
+    const settings = join(dir, 'qwen.json')
+    writeFileSync(settings, JSON.stringify({
+      env: {
+        ANTHROPIC_BASE_URL: `https://${REVIEW_PROFILES.qwen.endpoint.host}${REVIEW_PROFILES.qwen.endpoint.path}`,
+        ANTHROPIC_AUTH_TOKEN: 'fixture',
+      },
+    }))
+    const child = buildProfileEnv('qwen', {
+      HOME: '/definitely/nonexistent', PATH: process.env.PATH,
+      TMUX_TEAMS_REVIEW_QWEN_SETTINGS: settings,
+      MOONSHOT_API_KEY: foreign, KIMI_API_KEY: foreign, ZAI_API_KEY: foreign,
+    })
+    assert.ok(!Object.values(child).includes(foreign),
+      'a key another lane declares was forwarded into the qwen child')
+    assert.ok(!('MOONSHOT_API_KEY' in child))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+
+  for (const key of INVENTORY) {
+    const value = `sk-matrix-${key.toLowerCase()}-` + 'q'.repeat(20)
+    // Every lane, in one call, so a leak from any handler branch is covered.
+    const wire = JSON.stringify(handle({
+      jsonrpc: '2.0', id: 5, method: 'tools/call',
+      params: { name: 'acp_lane_status', arguments: {} },
+    }, { HOME: '/definitely/nonexistent', PATH: process.env.PATH, [key]: value }))
+    assert.ok(!wire.includes(value), `${key} reached the wire`)
+    // Values only. The names are diagnostic vocabulary and go out on purpose.
+  }
+})
+
+test('the credential_missing branch names the vocabulary and still carries no value', () => {
+  // The branch the secret matrix never reached, which is why a contradiction
+  // between the contract and the bytes survived three rounds: every fixture in
+  // that test fails at `endpoint_missing`, where no credential sentence exists.
+  // Here the endpoint is RIGHT and the credential absent, so the fix sentences
+  // are produced — and what they must contain is the accepted key names, while
+  // what must never appear is a value.
+  const dir = mkdtempSync(join(tmpdir(), 'acp-lanes-vocab-'))
+  try {
+    const settings = join(dir, 'kimi.json')
+    writeFileSync(settings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'https://api.kimi.com/coding/' } }))
+    const planted = 'PLANTEDVALUE-' + 'q'.repeat(20)
+    const reply = handle({
+      jsonrpc: '2.0', id: 4, method: 'tools/call',
+      params: { name: 'acp_lane_status', arguments: { lane: 'kimi' } },
+    }, {
+      HOME: `/definitely/nonexistent/${planted}`, PATH: process.env.PATH,
+      TMUX_TEAMS_REVIEW_KIMI_SETTINGS: settings,
+    })
+    const wire = JSON.stringify(reply)
+    const [lane] = JSON.parse(reply.result.content[0].text).lanes
+    assert.equal(lane.problem.code, 'credential_missing',
+      'this fixture must reach the credential branch or it tests nothing')
+    // Names: present, deliberately, and the SAME ones the validator accepts.
+    const fixes = lane.fixes.join(' ')
+    for (const key of ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'KIMI_API_KEY', 'MOONSHOT_API_KEY']) {
+      assert.ok(fixes.includes(key), `the repair does not name ${key}, which the endpoint check accepts`)
+    }
+    // Value: absent, including one planted where a path diagnostic could carry it.
+    assert.ok(!wire.includes(planted), 'a value reached the wire')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the advertised credential names ARE the accepted ones, by construction', () => {
+  // Round three built the advertised list by hand next to a check that named
+  // three keys literally, and they drifted apart within one release: the fix
+  // for a missing Kimi credential named keys the endpoint validator refused, so
+  // the repair could not repair. Same function on both sides now — this asserts
+  // the behaviour rather than the wiring, by applying each advertised name.
+  for (const id of ['zai', 'kimi', 'qwen', 'deepseek']) {
+    const profile = REVIEW_PROFILES[id]
+    const advertised = acceptedCredentialNames(profile)
+    assert.deepEqual(advertised.slice(0, 2), ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY'])
+    const dir = mkdtempSync(join(tmpdir(), `acp-lanes-accept-${id}-`))
+    try {
+      const settings = join(dir, 'lane.json')
+      const base = `https://${profile.endpoint.host}${profile.endpoint.path}`
+      writeFileSync(settings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: base } }))
+      const env = {
+        HOME: '/definitely/nonexistent', PATH: process.env.PATH,
+        [`TMUX_TEAMS_REVIEW_${id.toUpperCase()}_SETTINGS`]: settings,
+      }
+      assert.equal(laneStatus(id, profile, env).problem.code, 'credential_missing',
+        `${id} must start from the credential branch`)
+      // Through the FILE, which is what the fix sentence prescribes: "point
+      // <ENV_FILE> at the file holding it — that file is read for <names>".
+      const envFile = join(dir, 'lane.env')
+      for (const key of advertised) {
+        writeFileSync(envFile, `${key}=fixture\n`)
+        assert.equal(
+          laneStatus(id, profile, { ...env, [`TMUX_TEAMS_REVIEW_${id.toUpperCase()}_ENV_FILE`]: envFile }).configuration,
+          'valid', `${id} advertises ${key} and then refuses it from the file it names`)
+      }
+      // Ambient works only for the lane's OWN declared secrets, and that
+      // asymmetry is deliberate: `ANTHROPIC_AUTH_TOKEN` sitting in an
+      // operator's shell must not silently authenticate a routed lane, so it
+      // is honoured from this lane's files and nowhere else. The test states
+      // it rather than discovering it — it discovered it once already, by
+      // asserting ambient for every name and going red on zai.
+      for (const key of PROVIDER_SECRET_KEYS[id]) {
+        assert.equal(laneStatus(id, profile, { ...env, [key]: 'fixture' }).configuration, 'valid',
+          `${id} declares ${key} as its own secret and then refuses it from the environment`)
+      }
+      for (const key of ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY']) {
+        assert.equal(laneStatus(id, profile, { ...env, [key]: 'fixture' }).problem?.code, 'credential_missing',
+          `${id} accepted an ambient ${key}, which no routed lane forwards`)
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+})
+
+test('a secret hidden in HOME does not walk out through a path diagnostic', () => {
+  // Aliasing, and the reason a denylist over credential FIELDS is not the
+  // guard. The fix sentence for agy used to interpolate the resolved candidate
+  // path, so with a credential value also present in HOME the whole reply
+  // carried the credential — through the path, never through a credential
+  // field. The route does not change what the bytes are.
+  // A synthetic marker rather than a credential-shaped literal: the repository's
+  // own pre-commit secret scanner reads `const secret = 'sk-...'` as the thing
+  // it exists to stop, and it is right to. What this test needs is one string
+  // that appears in BOTH `HOME` and a provider-secret variable.
+  const marker = 'HOMEALIAS-' + 'z'.repeat(24)
+  const wire = JSON.stringify(handle({
+    jsonrpc: '2.0', id: 91, method: 'tools/call',
+    params: { name: 'acp_lane_status', arguments: { lane: 'agy' } },
+  }, { HOME: `/private/tmp/${marker}`, PATH: '/definitely/nonexistent', GOOGLE_API_KEY: marker }))
+  assert.ok(!wire.includes(marker), 'a HOME-derived path carried a credential value onto the wire')
+  assert.match(wire, /\$HOME/, 'the unresolved form is what makes this safe; it is gone')
+})
+
+test('an unknown lane is answered, not crashed on', () => {
+  const out = callTool('acp_lane_status', { lane: 'no-such-lane' }, {})
+  assert.match(out.error, /no such lane/)
+  assert.ok(out.known.includes('zai'), 'refusing without saying what does exist is half an answer')
+})
+
+test('a handler that is not advertised cannot exist, because both come from one list', () => {
+  // The earlier test scanned advertised NAMES for action verbs, which a hidden
+  // branch in the dispatcher walks straight past. The dispatcher is now built
+  // from the same descriptor list the advertisement is, so the property is
+  // structural: this asserts the structure rather than the vocabulary.
+  assert.deepEqual(TOOLS.map(t => t.name), ['acp_lanes', 'acp_lane_status', 'acp_lane_probe'])
+  assert.deepEqual(TOOL_DESCRIPTORS.map(d => d.name), TOOLS.map(t => t.name))
+  assert.ok(TOOL_DESCRIPTORS.every(d => typeof d.handler === 'function'))
+  assert.ok(TOOLS.every(t => !('handler' in t)), 'the handler must not be advertised to a client')
+  const refused = callTool('launch_lane', {}, {})
+  assert.match(refused.error, /no such tool/)
+  assert.deepEqual(refused.known, ['acp_lanes', 'acp_lane_status', 'acp_lane_probe'],
+    'the dispatcher knows a name the advertisement does not')
+})
+
+test('initialize answers with the version this server speaks, never the caller\'s', () => {
+  const legal = {
+    protocolVersion: 'not-a-protocol-version',
+    capabilities: {},
+    clientInfo: { name: 'a-client', version: '1' },
+  }
+  const asked = handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: legal }).result
+  // Reversed on 2026-08-17 after a release panel raised independently what an
+  // advisor round had accepted as a documented tolerance: this server
+  // advertises 2025-06-18 on every initialize, and that version requires all
+  // three. Two distinct reviewers is this project's must-fix bar.
+  // `protocolVersion` is in the loop because a round-nine lane found the
+  // surrounding text saying all THREE initialize fields are required while the
+  // loop removed two — so a regression on the third would have stayed green.
+  for (const missing of ['capabilities', 'clientInfo', 'protocolVersion']) {
+    const without = { ...legal }
+    delete without[missing]
+    assert.equal(
+      handle({ jsonrpc: '2.0', id: 2, method: 'initialize', params: without }).error.code, -32602,
+      `initialize accepted a client that omitted ${missing} while advertising 2025-06-18`)
+  }
+  // Pinned as a literal as well as against the constant: comparing a constant
+  // only against itself is the shape this repository has a rule about, and
+  // mutating PROTOCOL_VERSION to garbage passed the previous version of this.
+  assert.equal(asked.protocolVersion, '2025-06-18')
+  assert.equal(asked.protocolVersion, PROTOCOL_VERSION,
+    'echoing the request tells a client naming an unimplemented version that it got it')
+  const declared = JSON.parse(readFileSync(join(PLUGIN, '.claude-plugin', 'plugin.json'), 'utf8')).version
+  assert.equal(asked.serverInfo.version, declared,
+    'the server carries its own version literal — that is an eighth place to bump')
+  assert.equal(asked.serverInfo.name, 'tmux-teams-acp-lanes')
+})
+
+test('ping is answered with an empty result, which the spec makes a MUST', () => {
+  // A host health check that pings and receives -32601 reads this server as
+  // dead and drops it: the silent-disconnection twin of the boot bug below.
+  const pong = handle({ jsonrpc: '2.0', id: 3, method: 'ping' })
+  assert.deepEqual(pong, { jsonrpc: '2.0', id: 3, result: {} })
+})
+
+test('NO notification is answered, whatever method it names', () => {
+  // The no-id check used to sit at the bottom, where only an unknown method
+  // reached it, so `ping` sent as a notification produced a reply carrying no
+  // id — answering a message nobody asked a question with.
+  // `tools/call` is in the list because a round-nine lane found it MISSING: a
+  // mutation that replied only to an id-less `tools/call` survived, since every
+  // method here reached the no-id check through a path that did not run a
+  // handler. The one method that does is the one that was left out.
+  for (const method of ['notifications/initialized', 'ping', 'tools/list', 'initialize', 'tools/call']) {
+    assert.equal(handle({ jsonrpc: '2.0', method }), null, `${method} as a notification was answered`)
+  }
+  assert.equal(handle({ jsonrpc: '2.0', id: 9, method: 'tools/nope' }).error.code, -32601)
+})
+
+test('a malformed frame is refused with the code the spec names for it', () => {
+  // There were NO negative protocol tests, and a Codex advisor drove the real
+  // stdio server to find out what that cost: `"jsonrpc":"1.0"` got a successful
+  // tool list; `arguments: []` got successful content against an object-only
+  // schema; an unknown tool came back as a SUCCESSFUL result carrying isError,
+  // so middleware could not tell protocol misuse from tool failure; a numeric
+  // method was method-not-found instead of invalid-request; and an empty array
+  // and an `id: null` request were both dropped in silence as though each were
+  // a notification. Codes are written as literals here — comparing them only
+  // against the module's own constants is the shape that lets both move
+  // together.
+  const cases = [
+    ['jsonrpc 1.0', { jsonrpc: '1.0', id: 11, method: 'tools/list' }, -32600, null],
+    ['no jsonrpc member', { id: 11, method: 'tools/list' }, -32600, null],
+    ['numeric method', { jsonrpc: '2.0', id: 14, method: 9 }, -32600, null],
+    ['a batch', [], -32600, null],
+    ['id null', { jsonrpc: '2.0', id: null, method: 'ping' }, -32600, null],
+    ['a bare string', 'ping', -32600, null],
+    ['array arguments', { jsonrpc: '2.0', id: 12, method: 'tools/call', params: { name: 'acp_lanes', arguments: [] } }, -32602, 12],
+    ['unknown tool', { jsonrpc: '2.0', id: 13, method: 'tools/call', params: { name: 'no_such_tool', arguments: {} } }, -32602, 13],
+    ['no params at all', { jsonrpc: '2.0', id: 15, method: 'tools/call' }, -32602, 15],
+    ['non-string tool name', { jsonrpc: '2.0', id: 16, method: 'tools/call', params: { name: 7 } }, -32602, 16],
+    ['undeclared argument', { jsonrpc: '2.0', id: 17, method: 'tools/call', params: { name: 'acp_lanes', arguments: { lane: 'zai' } } }, -32602, 17],
+    ['wrongly typed argument', { jsonrpc: '2.0', id: 18, method: 'tools/call', params: { name: 'acp_lane_status', arguments: { lane: 7 } } }, -32602, 18],
+    ['unknown method', { jsonrpc: '2.0', id: 19, method: 'tools/nope' }, -32601, 19],
+    // Method-not-found outranks bad params: complaining about arguments to a
+    // method that does not exist sends the reader to the wrong problem.
+    ['unknown method with bad params', { jsonrpc: '2.0', id: 30, method: 'tools/nope', params: [] }, -32601, 30],
+    // Per-method params, all reproduced answering SUCCESS in round four.
+    ['initialize with no params', { jsonrpc: '2.0', id: 31, method: 'initialize' }, -32602, 31],
+    ['initialize with array params', { jsonrpc: '2.0', id: 32, method: 'initialize', params: [] }, -32602, 32],
+    ['initialize with a non-string protocolVersion', { jsonrpc: '2.0', id: 33, method: 'initialize', params: { protocolVersion: 7 } }, -32602, 33],
+    ['initialize with array capabilities', { jsonrpc: '2.0', id: 34, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: [] } }, -32602, 34],
+    ['tools/list with array params', { jsonrpc: '2.0', id: 35, method: 'tools/list', params: [] }, -32602, 35],
+    ['tools/list with a numeric cursor', { jsonrpc: '2.0', id: 36, method: 'tools/list', params: { cursor: 7 } }, -32602, 36],
+    ['ping with array params', { jsonrpc: '2.0', id: 37, method: 'ping', params: [] }, -32602, 37],
+  ]
+  for (const [label, frame, code, id] of cases) {
+    const reply = handle(frame, {})
+    assert.ok(reply, `${label} was dropped in silence — a request is not a notification`)
+    assert.equal(reply.error?.code, code, `${label} answered ${JSON.stringify(reply)}`)
+    assert.equal(reply.id, id, `${label} answered under the wrong id`)
+    assert.equal(reply.jsonrpc, '2.0')
+    assert.equal(reply.result, undefined, `${label} carried a result beside an error`)
+  }
+  // The constants agree with the literals above, which is the only thing this
+  // second assertion is for.
+  assert.equal(RPC_INVALID_REQUEST, -32600)
+  assert.equal(RPC_INVALID_PARAMS, -32602)
+  assert.equal(RPC_METHOD_NOT_FOUND, -32601)
+  assert.equal(RPC_PARSE_ERROR, -32700)
+  // The SENTENCE has to match what the code accepts. Round five caught it still
+  // saying "an integer" after `Number.isInteger` became `Number.isFinite` — a
+  // contract-wording defect, which is the same class as the credential-name
+  // claim that survived three rounds, just cheaper.
+  const badId = handle({ jsonrpc: '2.0', id: {}, method: 'ping' }, {})
+  assert.match(badId.error.message, /string or a finite number/)
+  assert.doesNotMatch(badId.error.message, /integer/)
+  // Nothing a caller sent is echoed back: every refusal sentence is a constant
+  // of the module.
+  const echo = handle({ jsonrpc: '2.0', id: 20, method: 'tools/call',
+    params: { name: 'no_such_tool-SECRETMARKER', arguments: {} } }, {})
+  assert.ok(!JSON.stringify(echo).includes('SECRETMARKER'),
+    'the caller\'s own string was reflected into a diagnostic')
+})
+
+test('an id the spec calls legal is answered as itself, and a fractional one never loses correlation', () => {
+  // Strings and integers are not in dispute.
+  for (const id of [1, -1, 0, 2500, 'a-string-id', '', '0']) {
+    const reply = handle({ jsonrpc: '2.0', id, method: 'ping' }, {})
+    assert.deepEqual(reply, { jsonrpc: '2.0', id, result: {} },
+      `a legal request id was not answered as itself: ${JSON.stringify(id)}`)
+  }
+
+  // FRACTIONAL IDS ARE DISPUTED AND THIS TEST NO LONGER PICKS A SIDE.
+  // A Codex advisor round read MCP's `RequestId` as `string | number` and
+  // called `Number.isInteger` a local MUST NOT invented from JSON-RPC's
+  // SHOULD NOT. A round-eight panel lane read the 2025-06-18 versioned schema
+  // as `string | integer` and called the TypeScript alias too broad to make
+  // fractional ids legal. No copy of the schema is readable from this machine,
+  // so neither reading can be settled here.
+  //
+  // What the previous version of this test did was pin ONE of them, which
+  // forced a conforming fix red — the lane's actual complaint. So it asserts
+  // the property both readings agree on: whichever way `1.5` is answered, the
+  // answer must carry the id back. Refusing under `id: null` is the one
+  // outcome that is wrong under either reading, because it loses the
+  // correlation the caller needs to match the reply to the request.
+  for (const id of [1.5, 2.5e3 + 0.5]) {
+    const reply = handle({ jsonrpc: '2.0', id, method: 'ping' }, {})
+    assert.equal(reply.id, id,
+      `a fractional id was answered under a different id (${JSON.stringify(reply.id)}), `
+      + 'which loses the correlation whether or not it is legal')
+  }
+})
+
+test('a parse failure over stdio is a -32700 with a null id, and the server stays up', async () => {
+  const { serve } = await import('../plugins/tmux-teams/skills/party-mode/scripts/acp-lanes-mcp.mjs')
+  const { Readable, Writable } = await import('node:stream')
+  const written = []
+  const input = Readable.from(['{ not json\n', '{"jsonrpc":"2.0","id":2,"method":"ping"}\n'])
+  const output = new Writable({ write(chunk, _enc, done) { written.push(String(chunk)); done() } })
+  const lines = serve({ input, output, env: {} })
+  await new Promise((done) => lines.on('close', done))
+  const replies = written.join('').trim().split('\n').map((l) => JSON.parse(l))
+  assert.equal(replies[0].error.code, -32700)
+  assert.equal(replies[0].id, null)
+  assert.deepEqual(replies[1], { jsonrpc: '2.0', id: 2, result: {} },
+    'one bad line took the server down with it')
+})
+
+test('the manifest command boots the server and answers a real client handshake, from a path with a space',
+  async () => {
+    // Three defects in one test, all of them found by review rather than by the
+    // suite. (1) Every other test imports the module, so the boot path was
+    // executed by nothing — and it was broken, twice over: a percent-encoded URL
+    // compared against a raw argv path, and then a /var -> /private/var symlink
+    // the first fix still missed. (2) The manifest's COMMAND was never checked,
+    // so `node-does-not-exist` stayed green. (3) The first boot test sent
+    // tools/call first, which is not a lifecycle any host performs.
+    const base = mkdtempSync(join(tmpdir(), 'acp-lanes-boot-'))
+    const dir = join(base, 'a path with spaces')
+    try {
+      mkdirSync(dir, { recursive: true })
+      // READ THE DIRECTORY, do not trust a list. This staged two files by name
+      // and went red the moment the server grew a third sibling
+      // (`lane-overrides.mjs`) — which is the test working, but only because
+      // somebody was watching. A hardcoded list here reports "the server boots"
+      // about a tree that is missing whatever was added last. The same rule the
+      // README skill-inventory guard already uses, for the same reason.
+      const scripts = join(PLUGIN, 'skills', 'party-mode', 'scripts')
+      const staged = readdirSync(scripts).filter(name => name.endsWith('.mjs'))
+      assert.ok(staged.length >= 3,
+        `only ${staged.length} scripts staged — the server has siblings and this test must carry all of them`)
+      for (const name of staged) {
+        writeFileSync(join(dir, name), readFileSync(join(scripts, name), 'utf8'))
+      }
+      // The manifest's OWN argv, expanded, with only the script path rebased into
+      // the copied tree. Rebuilding argv by hand left a fatal extra manifest
+      // argument passing, which an advisor caught.
+      const args = (SERVER.args ?? []).map(a => a.includes('.mjs')
+        ? join(dir, expand(a).split('/').pop())
+        : expand(a))
+      const child = spawn(expand(SERVER.command), args, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        cwd: dir,
+        env: { PATH: process.env.PATH, HOME: '/nonexistent-layout' },
+      })
+      let out = ''
+      child.stdout.on('data', (chunk) => { out += chunk })
+      const send = (msg) => child.stdin.write(JSON.stringify(msg) + '\n')
+      // A schema-valid initialize: MCP 2025-06-18 requires client capabilities
+      // and client implementation info, and the previous version sent only
+      // `protocolVersion` while the test called itself a legal lifecycle. It
+      // proved boot and line framing, which is what it is named for now.
+      send({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: PROTOCOL_VERSION,
+          capabilities: {},
+          clientInfo: { name: 'tmux-teams-test-client', version: '1' },
+        },
+      })
+      send({ jsonrpc: '2.0', method: 'notifications/initialized' })
+      send({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
+      send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'acp_lanes' } })
+      // The anti-sweep guard, over the REAL spawned subprocess rather than
+      // in-process only. This is free and deterministic even here: a refusal
+      // never reaches the transport, so no lane is ever spawned by this call.
+      send({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'acp_lane_probe', arguments: {} } })
+      send({ jsonrpc: '2.0', id: 5, method: 'ping' })
+      const code = await new Promise((done) => {
+        setTimeout(() => child.stdin.end(), 600)
+        child.on('close', done)
+      })
+      assert.equal(code, 0, 'the server exited nonzero')
+      assert.ok(out.trim(), 'the launched server answered nothing at all — serve() never ran')
+      const replies = out.trim().split('\n').map(line => JSON.parse(line))
+      // Membership, not wire ORDER: `acp_lane_probe` is the one handler that
+      // is genuinely async (its own anti-sweep refusal still returns through
+      // an async function, so it resolves a microtask or more later than a
+      // purely synchronous reply like ping's). JSON-RPC 2.0 does not promise
+      // response order for concurrent requests — a client correlates by `id`
+      // — so asserting a fixed position here would pin an accident of timing
+      // rather than the contract.
+      assert.deepEqual([...replies.map(r => r.id)].sort((a, b) => a - b), [1, 2, 3, 4, 5],
+        'the notification was answered, or a request was not, or one arrived under the wrong id')
+      const byId = new Map(replies.map(r => [r.id, r]))
+      assert.equal(byId.get(1).result.protocolVersion, PROTOCOL_VERSION)
+      assert.deepEqual(byId.get(2).result.tools.map(t => t.name),
+        ['acp_lanes', 'acp_lane_status', 'acp_lane_probe'])
+      assert.equal(JSON.parse(byId.get(3).result.content[0].text).lanes.length, 8)
+      const probeRefusal = JSON.parse(byId.get(4).result.content[0].text)
+      assert.equal(byId.get(4).result.isError, true, 'a probe call with no lanes must be reported as refused')
+      assert.match(probeRefusal.error, /non-empty array of lane ids/)
+      assert.deepEqual(byId.get(5).result, {}, 'ping was not answered with an empty result')
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+test('the things three panel families found in one sitting', () => {
+  // A prototype name is not a declared argument. `properties` is a plain object
+  // literal, so `properties['constructor']` resolves up the chain and returns a
+  // function — which a truthiness test reads as "declared". That made
+  // `additionalProperties: false` bypassable by naming anything on
+  // Object.prototype.
+  for (const name of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+    const reply = handle({
+      jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'acp_lane_status', arguments: { [name]: 'x' } },
+    }, {})
+    assert.equal(reply.error?.code, -32602, `an argument named ${name} was accepted`)
+  }
+
+  // `clientInfo` is an Implementation and requires name and version. Requiring
+  // the object and not its contents is half a rule, and the file claimed the
+  // check "matches the version this server claims to speak".
+  const base = { protocolVersion: '2025-06-18', capabilities: {} }
+  for (const clientInfo of [{}, { name: 'a' }, { version: '1' }, { name: 1, version: '1' }]) {
+    assert.equal(
+      handle({ jsonrpc: '2.0', id: 2, method: 'initialize', params: { ...base, clientInfo } }, {}).error?.code,
+      -32602, `initialize accepted clientInfo ${JSON.stringify(clientInfo)}`)
+  }
+  assert.ok(handle({ jsonrpc: '2.0', id: 3, method: 'initialize',
+    params: { ...base, clientInfo: { name: 'a', version: '1' } } }, {}).result)
+
+  // This assertion was itself a defect and is kept as a record of one. Round
+  // four found `ping` validating nothing and this test demanded that unknown
+  // keys be REFUSED — but MCP 2025-06-18 types PingRequest.params as an open
+  // object, so the test pinned a violation of the spec and a later panel lane
+  // reproduced conforming traffic being rejected. A test can hold a bug in
+  // place; the fix is the specification, not the previous reviewer's wording.
+  assert.deepEqual(handle({ jsonrpc: '2.0', id: 4, method: 'ping', params: { extra: 1 } }, {}),
+    { jsonrpc: '2.0', id: 4, result: {} })
+  assert.deepEqual(handle({ jsonrpc: '2.0', id: 5, method: 'ping', params: {} }, {}),
+    { jsonrpc: '2.0', id: 5, result: {} })
+  assert.deepEqual(handle({ jsonrpc: '2.0', id: 6, method: 'ping' }, {}),
+    { jsonrpc: '2.0', id: 6, result: {} })
+
+  // Nothing the caller sent comes back. Two lanes raised this independently
+  // against the file's own claim that every sentence it emits is a constant —
+  // the `known` lists already carry the vocabulary, so the echo added nothing.
+  const marker = 'CALLERMARKER'
+  const lane = JSON.stringify(callTool('acp_lane_status', { lane: marker }, {}))
+  assert.ok(!lane.includes(marker), `the lane name was echoed: ${lane}`)
+  const tool = JSON.stringify(callTool(`${marker}_tool`, {}, {}))
+  assert.ok(!tool.includes(marker), `the tool name was echoed: ${tool}`)
+})
+
+test('_meta is legal on any request, and a filename cannot choose the diagnosis', () => {
+  // Two commits after a panel told me the tolerant `initialize` was wrong, a
+  // panel told me the strict `ping` was — and both were right, because the line
+  // is the spec and not a preference in either direction. `_meta` is legal on
+  // ANY request in MCP 2025-06-18, so "ping takes no params" refused conforming
+  // traffic.
+  assert.deepEqual(handle({ jsonrpc: '2.0', id: 1, method: 'ping', params: { _meta: { a: 1 } } }, {}),
+    { jsonrpc: '2.0', id: 1, result: {} })
+  // `PingRequest.params` is an OPEN object in MCP 2025-06-18 — `_meta` plus
+  // arbitrary keys — so refusing unknown keys refused conforming traffic. This
+  // line was wrong in BOTH directions across three commits, and the answer was
+  // the specification every time.
+  assert.deepEqual(handle({ jsonrpc: '2.0', id: 2, method: 'ping', params: { traceContext: {} } }, {}),
+    { jsonrpc: '2.0', id: 2, result: {} })
+  // `_meta` is legal AND typed as an object. Accepting it as ANY value was the
+  // overcorrection — one commit stopped refusing legal traffic and started
+  // accepting illegal traffic. Found by mutation: removing the type check left
+  // every test green, which is the "guard that guards nothing" shape.
+  for (const bad of ['a string', 42, [], null, true]) {
+    for (const method of ['ping', 'tools/list']) {
+      assert.equal(handle({ jsonrpc: '2.0', id: 9, method, params: { _meta: bad } }, {}).error?.code,
+        -32602, `${method} accepted _meta as ${JSON.stringify(bad)}`)
+    }
+  }
+
+  // A caller who controls a settings PATH controlled the classification: the
+  // regexes ran over the whole exception text, and a filename carrying
+  // "pins no endpoint" or "must be a JSON object" selected that diagnosis.
+  assert.equal(classify('ENOENT: no such file or directory, open ' +
+    "'/home/u/pins no endpoint/settings.json'"), 'settings_unreadable')
+  assert.equal(classify("Cannot read '/tmp/must be a JSON object/x' — EACCES"), 'settings_unreadable')
+  // And the shapes this system really throws still land where they belong.
+  assert.equal(classify('zai review routes its provider but pins no endpoint'), 'profile_incomplete')
+  assert.equal(classify('zai review requires ANTHROPIC_BASE_URL'), 'endpoint_missing')
+  assert.equal(classify('zai review endpoint requires an explicit provider credential'), 'credential_missing')
+})
+
+test('every shipped profile declares a family the normalizer can name', () => {
+  // `deepseek` ships as a profile and was recognized by NOTHING — not the alias
+  // map, not any regex — so normalizePrimaryFamily('deepseek') answered
+  // 'unknown', and its lane reaches its seat through a gateway that also serves
+  // qwen, which is the nearest wrong answer. A panel lane found it.
+  //
+  // The panel's whole premise is three DISTINCT families, so a shipped family
+  // the normalizer cannot name is a hole in the one property it exists to
+  // check. Iterating the profiles is the point here: a profile added later
+  // without a family gets caught by this, which a pinned list would not do.
+  for (const [id, profile] of Object.entries(REVIEW_PROFILES)) {
+    assert.equal(normalizePrimaryFamily(profile.family), profile.family,
+      `profile ${id} declares family "${profile.family}" that the normalizer answers `
+      + `"${normalizePrimaryFamily(profile.family)}" for`)
+  }
+  // and the shapes that reach the normalizer from a wrapper name and a model id
+  assert.equal(normalizePrimaryFamily('claude-deepseek'), 'deepseek')
+  assert.equal(normalizePrimaryFamily('deepseek-v4-flash-0731'), 'deepseek')
+  assert.notEqual(normalizePrimaryFamily('deepseek'), 'qwen')
+})
+
+test('each MCP registration satisfies the contract it names', () => {
+  // One file declared the Agent Plugins 1.0 schema and then spoke Claude Code:
+  // that schema discovers `mcp.json` and its `cwd` rule accepts only `./…`,
+  // `${PLUGIN_ROOT}…` or `${PLUGIN_DATA}…`, while the file supplied
+  // `${CLAUDE_PLUGIN_ROOT}`. A panel lane read the two against each other. Both
+  // hosts are real, so both files ship — what is not allowed is one file
+  // claiming a contract it violates.
+  const claude = JSON.parse(readFileSync(join(PLUGIN, '.mcp.json'), 'utf8'))
+  const neutral = JSON.parse(readFileSync(join(PLUGIN, 'mcp.json'), 'utf8'))
+
+  assert.equal(claude.$schema, undefined,
+    '.mcp.json is the Claude Code registration and must not claim the vendor-neutral schema')
+  const c = claude.mcpServers['tmux-teams-acp-lanes']
+  assert.match(c.cwd, /^\$\{CLAUDE_PLUGIN_ROOT\}/)
+  assert.match(c.args[0], /^\$\{CLAUDE_PLUGIN_ROOT\}/)
+
+  assert.equal(neutral.$schema, 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json')
+  const n = neutral.mcpServers['tmux-teams-acp-lanes']
+  assert.match(n.cwd, /^(\.\/|\$\{PLUGIN_ROOT\}|\$\{PLUGIN_DATA\})/,
+    'the vendor-neutral cwd must satisfy the schema it declares')
+  assert.match(n.args[0], /^(\.\/|\$\{PLUGIN_ROOT\}|\$\{PLUGIN_DATA\})/)
+  assert.ok(!JSON.stringify(neutral).includes('CLAUDE_PLUGIN_ROOT'),
+    'the vendor-neutral registration leaks a Claude Code variable')
+
+  // both point at the same shipped file
+  for (const [file, entry] of [['.mcp.json', c], ['mcp.json', n]]) {
+    const target = entry.args[0].replace(/^\$\{(CLAUDE_)?PLUGIN_ROOT\}/, PLUGIN)
+    assert.ok(existsSync(target), `${file} points at a file that is not shipped: ${target}`)
+  }
+})
+
+test('an unreadable credential file reaches the operator AS a credential problem', () => {
+  // The end-to-end guard that was missing. `credential_unreadable` and the
+  // `fileKind` argument that carries it were added together, the test called
+  // `classify` DIRECTLY, and no caller ever passed one — so two panel families
+  // reported the code unreachable from any reply this server can produce, and
+  // an unreadable credential file kept prescribing the settings-file repair.
+  //
+  // This goes through the TOOL, so deleting the argument at the call site turns
+  // it red. Asserting the pure function proves nothing about its consumer.
+  const dir = mkdtempSync(join(tmpdir(), 'lane-credfail-'))
+  const credential = join(dir, 'creds.env')
+  writeFileSync(credential, 'ANTHROPIC_AUTH_TOKEN=shhh\n')
+  chmodSync(credential, 0o000)          // present, and not readable
+  try {
+    const reply = callTool('acp_lane_status', { lane: 'zai' }, {
+      TMUX_TEAMS_REVIEW_ZAI_ENV_FILE: credential,
+      ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic',
+    })
+    const text = JSON.stringify(reply)
+    assert.ok(!text.includes('shhh'), 'the credential value reached the wire')
+    if (process.getuid?.() === 0) return   // root reads anything; the branch cannot be reached
+    assert.match(text, /credential_unreadable/,
+      `an unreadable credential file was not diagnosed as one: ${text}`)
+    assert.ok(!text.includes('settings_unreadable'),
+      'the operator was sent to the settings file, which is fine')
+  } finally {
+    chmodSync(credential, 0o600)
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a candidate whose interpreter is missing answers unchecked, not valid', () => {
+  // Two panel families, two rounds. The defence recorded on the roadmap —
+  // "proving otherwise means EXECUTING the candidate, which turns a read-only
+  // tool into an acting one" — rested on a choice that does not exist. The
+  // alternative was never `valid` versus running the file: `unchecked` is
+  // already in the result vocabulary and describes this state exactly. Reading
+  // 256 bytes is not executing.
+  //
+  // The candidate list is `$HOME/.local/bin/agy` and two absolute paths — not
+  // an env var, which is what the first version of this test assumed. Measured
+  // from `agyBinaryCandidates` rather than remembered.
+  const home = mkdtempSync(join(tmpdir(), 'lane-shebang-'))
+  const binDir = join(home, '.local', 'bin')
+  mkdirSync(binDir, { recursive: true })
+  const bin = join(binDir, 'agy')
+  try {
+    writeFileSync(bin, '#!/definitely/not/here/python3\nprint("hi")\n')
+    chmodSync(bin, 0o755)                       // executable, and cannot start
+    assert.equal(unresolvedInterpreterFor('agy', { env: { HOME: home } }),
+      '/definitely/not/here/python3',
+      'a 0755 file whose shebang names a missing interpreter was read as startable')
+
+    // a file that CAN start is not maligned
+    writeFileSync(bin, `#!${process.execPath}\nprocess.exit(0)\n`)
+    chmodSync(bin, 0o755)
+    assert.equal(unresolvedInterpreterFor('agy', { env: { HOME: home } }), null)
+
+    // A BARE NAME RESOLVES AGAINST THE SUPPLIED PATH. The first version refused
+    // to — "this function does not own the PATH" — and that refusal was a hole
+    // wearing the words of a principle: the function is GIVEN the PATH, and the
+    // case two families named in three consecutive rounds,
+    // `#!/usr/bin/env <missing>`, is the one the motivating comment used.
+    writeFileSync(bin, '#!/usr/bin/env definitelynotinstalled\n')
+    chmodSync(bin, 0o755)
+    assert.equal(unresolvedInterpreterFor('agy', { env: { HOME: home, PATH: '/usr/bin:/bin' } }),
+      'definitelynotinstalled',
+      'the exact case the comment names went unchecked')
+
+    // THE `env` BINARY ITSELF. `#!/definitely/not/here/env sh` finds `sh` on
+    // PATH, and the kernel still fails on the missing `env` — the previous
+    // version treated any path ending `/env` as a working one.
+    writeFileSync(bin, '#!/definitely/not/here/env sh\n')
+    chmodSync(bin, 0o755)
+    assert.equal(unresolvedInterpreterFor('agy', { env: { HOME: home, PATH: '/usr/bin:/bin' } }),
+      '/definitely/not/here/env',
+      'a missing env binary was accepted because the token after it resolves')
+
+    // and a bare name that IS on the PATH is not maligned
+    writeFileSync(bin, '#!/usr/bin/env sh\n')
+    chmodSync(bin, 0o755)
+    assert.equal(unresolvedInterpreterFor('agy', { env: { HOME: home, PATH: '/usr/bin:/bin' } }), null)
+
+    // Resolution uses the PATH THE CHILD RECEIVES, which is
+    // `executablePath(env)` — the caller's PATH with `$HOME/.local/bin`,
+    // `$HOME/.kimi-code/bin` and `$HOME/.bun/bin` prepended. A lane reproduced
+    // both errors from resolving against the caller's raw PATH instead: a false
+    // `valid` when the interpreter is only on the prepended path, and a false
+    // `unchecked` when it is only on the caller's.
+    //
+    // So with no caller PATH there is still something to resolve against, and
+    // this assertion used to say the opposite because it encoded the older
+    // design rather than the child's environment.
+    writeFileSync(bin, '#!/usr/bin/env definitelynotinstalled\n')
+    chmodSync(bin, 0o755)
+    assert.equal(unresolvedInterpreterFor('agy', { env: { HOME: home } }),
+      'definitelynotinstalled',
+      'with no caller PATH the child still gets one, so the answer is knowable')
+
+    // and an interpreter that exists ONLY on the prepended path resolves, which
+    // resolving against the caller's PATH would have called missing
+    const prepended = join(home, '.local', 'bin')
+    writeFileSync(join(prepended, 'privatetool'), '#!/bin/sh\nexit 0\n')
+    chmodSync(join(prepended, 'privatetool'), 0o755)
+    writeFileSync(bin, '#!/usr/bin/env privatetool\n')
+    chmodSync(bin, 0o755)
+    assert.equal(unresolvedInterpreterFor('agy', { env: { HOME: home, PATH: '/nonexistent' } }), null,
+      'an interpreter on the prepended path was reported missing')
+
+    // and lanes that resolve no binary parent-side are not second-guessed
+    assert.equal(unresolvedInterpreterFor('zai', { env: { HOME: home } }), null)
+
+    // THROUGH THE TOOL, not just the helper. The first version of this test
+    // asserted the helper alone, and deleting the CALL SITE left it green —
+    // which is the exact defect round six raised about `credential_unreadable`,
+    // committed again in the test written to close it. Mutate the call site.
+    writeFileSync(bin, '#!/definitely/not/here/python3\n')
+    chmodSync(bin, 0o755)
+    const lane = callTool('acp_lane_status', { lane: 'agy' }, { HOME: home }).lanes[0]
+    assert.equal(lane.configuration, 'unchecked',
+      `a lane that cannot start reported ${lane.configuration}`)
+    assert.match(JSON.stringify(lane.fixes), /interpreter/)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('the exported surface is frozen through its records, and LC_ is a set not a prefix', () => {
+  // `Object.freeze` on an array freezes the ARRAY, not the records inside it,
+  // so both exports stayed writable by an in-process importer while ADR 0007
+  // called the one-descriptor-list invariant not representable as drift. A
+  // panel lane read the claim against the two calls.
+  for (const [name, arr] of [['TOOLS', TOOLS], ['TOOL_DESCRIPTORS', TOOL_DESCRIPTORS]]) {
+    assert.ok(Object.isFrozen(arr), `${name} itself is not frozen`)
+    const before = arr[0].name
+    try { arr[0].name = 'hijacked' } catch { /* strict mode throws, which is fine */ }
+    assert.equal(arr[0].name, before, `${name}'s records are writable by any importer`)
+    assert.ok(Object.isFrozen(arr[0]), `${name}'s records are not frozen`)
+  }
+
+  // The child-environment allowlist copied every name beginning `LC_`, so a
+  // source entry a caller invented rode into every profile — in a file that
+  // promises a profile-scoped environment with no ambient credential bag.
+  // `codex`, because it needs no routed endpoint or resolved binary to build an
+  // environment — measured across the four lanes rather than assumed, after
+  // `zai` refused for a reason that had nothing to do with what this checks.
+  const env = buildProfileEnv('codex', {
+    HOME: '/tmp', PATH: '/usr/bin',
+    LC_ALL: 'C',                       // a real locale variable: allowed
+    LC_PRIVATE_TOKEN: 'SECRETVALUE',   // a name somebody chose: not
+    LC_HAX: 'nope',
+  })
+  assert.equal(env.LC_ALL, 'C', 'a POSIX locale variable was dropped')
+  assert.equal(env.LC_PRIVATE_TOKEN, undefined, 'an invented LC_ name reached the child')
+  assert.equal(env.LC_HAX, undefined)
+  assert.ok(!JSON.stringify(env).includes('SECRETVALUE'))
+})
+
+test('the sentence about which names that file is read for names all of them', () => {
+  // "any other name in it is ignored" listed `acceptedCredentialNames` — the
+  // credential subset — while the loader honours `acceptedRoutedKeys`, which
+  // adds the routed settings names. An operator who put ANTHROPIC_BASE_URL in
+  // that file was told it would be ignored while the loader read it.
+  //
+  // A lane raised this in round six; I deferred it as single-family; the same
+  // lane raised it again in round seven after reading that deferral, which is
+  // the reversal condition the roadmap states.
+  const honoured = [...acceptedRoutedKeys(REVIEW_PROFILES.zai)]
+  const sentence = fixesFor('zai', REVIEW_PROFILES.zai, 'credential_missing').join(' ')
+  const named = sentence.match(/that file is read for ([^—]+)—/)?.[1] ?? ''
+  for (const key of honoured) {
+    assert.ok(named.includes(key),
+      `the loader honours ${key} and the sentence tells the operator it is ignored`)
+  }
+  // and it does not promise names the loader drops
+  for (const key of named.split(',').map((k) => k.trim()).filter(Boolean)) {
+    assert.ok(honoured.includes(key), `the sentence advertises ${key}, which the loader ignores`)
+  }
+})
+
+test('initialize types the members MCP 2025-06-18 types, and still admits an unknown capability', () => {
+  // A lane reproduced both frames returning SUCCESS from a validator whose
+  // comment claims to match this protocol version: `clientInfo.title: 42` and
+  // `capabilities: { roots: { listChanged: "yes" } }`.
+  const base = { protocolVersion: '2025-06-18', capabilities: {} }
+  const ok = { name: 'probe', version: '1' }
+  const init = (params) => handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params }, {})
+
+  assert.equal(init({ ...base, clientInfo: { ...ok, title: 42 } }).error?.code, -32602)
+  assert.ok(init({ ...base, clientInfo: { ...ok, title: 'A Probe' } }).result,
+    'an optional title of the right type was refused')
+
+  assert.equal(init({ protocolVersion: '2025-06-18', clientInfo: ok,
+    capabilities: { roots: { listChanged: 'yes' } } }).error?.code, -32602)
+  // `sampling` and `elicitation` are OPEN objects in this version — only
+  // `roots` types `listChanged`. A lane reproduced a conforming
+  // `sampling: { listChanged: "vendor-extension" }` being refused by the
+  // previous narrowing, which had gone from every capability to three.
+  for (const open of ['sampling', 'elicitation']) {
+    assert.ok(init({ protocolVersion: '2025-06-18', clientInfo: ok,
+      capabilities: { [open]: { listChanged: 'vendor-extension' } } }).result,
+      `a conforming ${open} capability was refused`)
+    assert.ok(init({ protocolVersion: '2025-06-18', clientInfo: ok,
+      capabilities: { [open]: { anything: { nested: true } } } }).result)
+  }
+  assert.ok(init({ protocolVersion: '2025-06-18', clientInfo: ok,
+    capabilities: { roots: { listChanged: true } } }).result)
+  assert.equal(init({ protocolVersion: '2025-06-18', clientInfo: ok,
+    capabilities: { roots: 'yes' } }).error?.code, -32602)
+
+  // An UNKNOWN capability is a client extension and stays legal. The first
+  // version of this assertion used an extension with NO `listChanged` key, so
+  // it passed while the real hole stood: the check demanded a boolean
+  // `listChanged` from EVERY capability name, and a lane reproduced a legal
+  // `experimental` map being refused for it. A fixture that cannot fail the
+  // rule it is written for proves nothing.
+  //
+  // One fixture MOVED, and the move is the point. This list used to carry
+  // `{ experimental: { listChanged: 'a string, and legal here' } }` as an
+  // example of a legal extension. It is not one: `experimental` is a member MCP
+  // NAMES, declared `{ [key: string]: object }`, so a string value inside it is
+  // invalid however unknown the key is. The lesson the fixture was written for
+  // — `listChanged` is not boolean-typed outside `roots` — is true at an
+  // UNKNOWN top-level name, which is where it now lives. The version below it,
+  // with an object value, stays exactly where it was and still carries the same
+  // proof inside `experimental`.
+  //
+  // Two things were being called "extension": a capability name MCP has never
+  // heard of, and a key inside a map MCP defines. Only the first is untyped.
+  for (const extension of [
+    { somethingNobodyHasShippedYet: { whatever: 1 } },
+    { someVendorNamespace: { listChanged: 'a string, and legal here' } },
+    { experimental: { listChanged: { nested: true } } },
+    { vendorThing: null },
+  ]) {
+    assert.ok(init({ protocolVersion: '2025-06-18', clientInfo: ok, capabilities: extension }).result,
+      `a client extension was refused (${JSON.stringify(extension)}), `
+      + 'which turns a validator into a ceiling on the protocol')
+  }
+
+  // and NO caller text reaches the reply — the constant-sentence invariant this
+  // module states about itself, which the capability loop broke while enforcing
+  // a different one.
+  // Note what this can and cannot prove. Once the loop reads only the three
+  // typed names, `name` is a constant and interpolating it is harmless — a
+  // mutation that restores `${name}` correctly does NOT turn this red. The
+  // assertion that guards the echo is the one above: iterating the CALLER's
+  // keys fails, and that is the only way caller text can reach the sentence.
+  const marker = 'SECRETSHAPEDCALLERVALUE'
+  const echoed = JSON.stringify(init({ protocolVersion: '2025-06-18', clientInfo: ok,
+    capabilities: { [marker]: null } }))
+  assert.ok(!echoed.includes(marker), `the caller's capability name was echoed: ${echoed}`)
+})
+
+test('a routing that could not pass validation cannot exempt a launch collision', () => {
+  // `routingDeclaration()` took a non-empty host and serialized a missing path
+  // as `null`, while `validateRoutedEndpoint()` beside it demands both as
+  // strings — so two byte-identical launches could be certified DISTINCT by
+  // metadata the validator would reject. A pin that cannot pass validation is
+  // not a pin, and exempting a collision on one is the bypass that check exists
+  // to close.
+  //
+  // Driven through `provenFamilyCollision`, the exported consumer, because
+  // `routingDeclaration` is internal ON PURPOSE — issue #43 folded those
+  // helpers away and `tests/lane-identity.test.mjs` pins that they stay folded.
+  // The first version of this guard exported it and turned that test red; the
+  // second asserted the shipped profiles carry string paths, which is today's
+  // DATA and stayed green when the requirement was deleted.
+  // Two REAL routed lanes of different families that share an adapter command —
+  // the exact shape `routesApart` exists for, taken from the shipped table
+  // rather than invented, because an invented family normalises to `unknown`
+  // and collides for a reason that has nothing to do with routing.
+  // qwen and deepseek, because they REALLY share a launch signature — both run
+  // the same adapter through `/Users/ngs/bin/claude-qwen`. Measured, not
+  // chosen: kimi and zai have distinct wrappers, so a fixture built from them
+  // never reaches the routing comparison at all and the guard proves nothing.
+  // This is the pair the reviewer named.
+  const a = REVIEW_PROFILES.qwen
+  const shipped = REVIEW_PROFILES.deepseek
+  // Measured: the two SHIPPED lanes share a wrapper AND an endpoint, so they
+  // collide — correctly, and this test is not about that. Give the second a
+  // genuinely different host and the collision must lift.
+  assert.equal(provenFamilyCollision([a, shipped]), true,
+    'two lanes sharing a wrapper AND an endpoint stopped colliding')
+  const b = { ...shipped, endpoint: { host: 'deepseek.example', path: '/v1' } }
+  assert.equal(provenFamilyCollision([a, b]), false,
+    'two exec-identical lanes pinned to DIFFERENT endpoints were treated as a collision')
+
+  // the same pair where one pin has no path: it cannot validate, so it must not
+  // buy an exemption
+  // NOT the empty string: `validateRoutedEndpoint` accepts `''` because
+  // `https://host` has pathname `/` and its trailing-slash strip makes that
+  // `''`, so a host-root endpoint is a real pin. The first version of this test
+  // called `''` unvalidatable and required a collision — holding route identity
+  // and launch validation to contradictory definitions, which a panel lane
+  // named and which can falsely block a genuinely distinct routed family.
+  for (const badPath of [undefined, 42, null, {}]) {
+    const crippled = { ...b, endpoint: { ...b.endpoint, path: badPath } }
+    assert.equal(provenFamilyCollision([a, crippled]), true,
+      `a routing with path ${JSON.stringify(badPath)} bought an exemption the validator would refuse`)
+  }
+
+  // and a HOST-ROOT pin is a real pin, so it must lift the collision the same
+  // way a path-bearing one does — the direction the old rule got wrong.
+  const hostRoot = { ...shipped, endpoint: { host: 'deepseek.example', path: '' } }
+  assert.equal(provenFamilyCollision([a, hostRoot]), false,
+    'a legitimate host-root endpoint was treated as an unvalidatable pin')
+})
+
+test('every routed lane accepts its OWN provider key, not just the Anthropic pair', () => {
+  // A round-seven lane reported that `acceptedCredentialNames` does not exist
+  // and that `validateRoutedEndpoint` still checks three hardcoded keys, so
+  // KIMI_API_KEY is read and never accepted. Measured against the shipped code,
+  // that is FALSE — and this test is the record of the disproof, so the next
+  // reader does not have to take my word for it.
+  //
+  // Two of my own probes were wrong before this one was right: ANTHROPIC_BASE_URL
+  // passed in ambient env is NOT read, because `buildProfileEnv` copies only the
+  // runtime keys and the routed settings come from the file. A claim about this
+  // code has to be tested the way the loader loads.
+  for (const id of ROUTED_PROFILES) {
+    const profile = REVIEW_PROFILES[id]
+    // EVERY name the lane advertises, not "at least one of its own" — that was
+    // an invented requirement and `deepseek` and `qwen` failed it honestly:
+    // both route through a gateway that authenticates with the Anthropic pair
+    // and declare no key of their own. The defect being disproved is narrower
+    // and is the half-fix shape: a name that is READ and then not ACCEPTED.
+    const own = acceptedCredentialNames(profile)
+    assert.ok(own.length > 0, `${id} accepts no credential name at all`)
+
+    const dir = mkdtempSync(join(tmpdir(), `lane-cred-${id}-`))
+    try {
+      const schemePort = profile.endpoint.scheme
+        ? `http://${profile.endpoint.host}:${profile.endpoint.port}${profile.endpoint.path}`
+        : `https://${profile.endpoint.host}${profile.endpoint.path}`
+      const url = schemePort
+      for (const key of own) {
+        writeFileSync(join(dir, 'creds.env'), `ANTHROPIC_BASE_URL=${url}\n${key}=value\n`)
+        const env = { HOME: '/tmp', PATH: '/usr/bin',
+          [`TMUX_TEAMS_REVIEW_${id.toUpperCase()}_ENV_FILE`]: join(dir, 'creds.env') }
+        assert.doesNotThrow(() => buildAcpLaunch(id, { env }),
+          `${id} reads ${key} and then refuses it — the half-fix shape`)
+      }
+      // and a key belonging to ANOTHER lane is still refused
+      writeFileSync(join(dir, 'creds.env'), `ANTHROPIC_BASE_URL=${url}\nSOMEONE_ELSES_API_KEY=value\n`)
+      assert.throws(() => buildAcpLaunch(id, {
+        env: { HOME: '/tmp', PATH: '/usr/bin',
+          [`TMUX_TEAMS_REVIEW_${id.toUpperCase()}_ENV_FILE`]: join(dir, 'creds.env') },
+      }), `${id} accepted a credential name that belongs to no lane`)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+})
+
+test('a lane report calls its adapter DECLARED, because a caller can change which bytes run', () => {
+  // A round-seven lane: every shipped adapter command begins with a bare `npx`
+  // or `bunx`, `buildProfileEnv` preserves the caller's PATH, and
+  // `executablePath` PREPENDS caller-owned home directories. So the operator
+  // controls which binary resolves, and this tool reports the package the
+  // profile names rather than the bytes that ran.
+  //
+  // The prepending stays — on a version-manager machine the toolchain lives
+  // under $HOME and a launch that cannot find it is a shipped outage. What must
+  // hold is that the REPORT does not overclaim.
+  const facts = JSON.stringify(callTool('acp_lanes', {}, { HOME: '/tmp', PATH: '/usr/bin' }))
+  assert.ok(!/verified adapter|adapter verified|adapter identity confirmed/i.test(facts),
+    'a lane report claims the adapter bytes were verified')
+  assert.match(facts, /"adapter"/, 'the report stopped naming the adapter at all')
+
+  // and every shipped adapter command really does start with a bare resolver,
+  // which is WHY the report can only declare the package, never confirm the
+  // bytes that ran.
+  for (const [id, profile] of Object.entries(REVIEW_PROFILES)) {
+    const argv = profile.command ?? profile.argv ?? []
+    if (!argv.length) continue
+    assert.ok(['npx', 'bunx'].includes(argv[0]) || argv[0].includes('/'),
+      `${id} launches ${argv[0]}, which is neither a bare resolver nor an absolute path`)
+  }
+})
+
+test('a credential Node cannot spawn with is not a valid configuration', () => {
+  // A lane reproduced it end to end: `acceptedCredential` tested only
+  // truthiness, so a NUL-bearing `ZAI_API_KEY` gave `configuration: "valid"`
+  // while passing the resulting `buildAcpLaunch().env` to process creation
+  // throws ERR_INVALID_ARG_VALUE. The status of a configuration that cannot
+  // start a process is not "valid".
+  const NUL = String.fromCharCode(0)
+  const dir = mkdtempSync(join(tmpdir(), 'lane-nul-'))
+  try {
+    const profile = REVIEW_PROFILES.zai
+    const url = `https://${profile.endpoint.host}${profile.endpoint.path}`
+    writeFileSync(join(dir, 'creds.env'), `ANTHROPIC_BASE_URL=${url}\nZAI_API_KEY=x${NUL}y\n`)
+    const env = { HOME: '/tmp', PATH: '/usr/bin',
+      TMUX_TEAMS_REVIEW_ZAI_ENV_FILE: join(dir, 'creds.env') }
+    const lane = callTool('acp_lane_status', { lane: 'zai' }, env).lanes[0]
+    assert.notEqual(lane.configuration, 'valid',
+      'a NUL-bearing credential was reported as a valid configuration')
+
+    // and the environment a good credential builds is one Node will accept
+    const good = join(dir, 'good.env')
+    writeFileSync(good, `ANTHROPIC_BASE_URL=${url}\nZAI_API_KEY=ordinary\n`)
+    const built = buildAcpLaunch('zai', {
+      env: { HOME: '/tmp', PATH: '/usr/bin', TMUX_TEAMS_REVIEW_ZAI_ENV_FILE: good },
+    })
+    for (const [k, v] of Object.entries(built.env ?? {})) {
+      assert.ok(!String(v).includes(NUL), `${k} carries a NUL into the child environment`)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a lane is told the model its gateway answers to, not the one the panel records', () => {
+  // A round-nine lane reproduced the mismatch: `deepseek` pins
+  // `requestModel: 'sonnet'` because that is the alias its gateway takes, while
+  // `profile.model` is the vendor id `deepseek-v4-flash-0731`.
+  // `CLAUDE_MODEL_CONFIG.availableModels` was built from `model`, so the
+  // adapter advertised a model the gateway does not accept — in the one place
+  // it reads to decide what to ask for.
+  //
+  // Two questions that had shared one answer: `model` is the identity the panel
+  // RECORDS, `requestModel` is what the wire is ASKED for.
+  // Routed lanes refuse to build an env without their pinned endpoint and a
+  // credential, so the fixture supplies both through the file the loader reads
+  // — measured the hard way twice already: ambient env is not read.
+  const dir = mkdtempSync(join(tmpdir(), 'lane-reqmodel-'))
+  try {
+  for (const [id, profile] of Object.entries(REVIEW_PROFILES)) {
+    if (!profile.requestModel) continue
+    const source = { HOME: '/tmp', PATH: '/usr/bin' }
+    if (profile.endpoint) {
+      const file = join(dir, `${id}.env`)
+      const base = profile.endpoint.scheme
+        ? `http://${profile.endpoint.host}:${profile.endpoint.port}${profile.endpoint.path}`
+        : `https://${profile.endpoint.host}${profile.endpoint.path}`
+      writeFileSync(file, `ANTHROPIC_BASE_URL=${base}\n`
+        + 'ANTHROPIC_AUTH_TOKEN=ordinary\n')
+      source[`TMUX_TEAMS_REVIEW_${id.toUpperCase()}_ENV_FILE`] = file
+    }
+    const env = buildProfileEnv(id, source)
+    if (!env.CLAUDE_MODEL_CONFIG) continue
+    const advertised = JSON.parse(env.CLAUDE_MODEL_CONFIG).availableModels
+    assert.deepEqual(advertised, [profile.requestModel],
+      `${id} advertises ${JSON.stringify(advertised)} to a gateway that takes ${profile.requestModel}`)
+  }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the vendor-neutral registration BOOTS, and a live client that never closes gets answers', async () => {
+  // Two round-nine findings, both about this file proving less than it says.
+  //
+  // First: `mcp.json` had only ever been compared as STRINGS against
+  // `.mcp.json`. A lane reported it in round six, I closed that with a
+  // string-comparison test, and the lane repeated in round nine that comparing
+  // strings is not booting. So this SPAWNS the vendor-neutral registration's
+  // own argv, with `${PLUGIN_ROOT}` expanded the way its contract says.
+  //
+  // Second: both stdio checks fed input that ENDS (`Readable.from` closes), so
+  // a server that never answers a live client passed them. This client stays
+  // open until it has its reply, which is what a real host does.
+  const neutral = JSON.parse(readFileSync(join(PLUGIN, 'mcp.json'), 'utf8'))
+    .mcpServers['tmux-teams-acp-lanes']
+  const argv = neutral.args.map((a) => a.replace('${PLUGIN_ROOT}', PLUGIN))
+  // `process.execPath` where the manifest says bare `node`: on a
+  // version-manager machine there is no `node` on a minimal PATH, which this
+  // repository has already paid for once. The manifest's own `command` is
+  // asserted separately below — running it here would test this machine's PATH,
+  // not the registration.
+  assert.equal(neutral.command, 'node')
+  const child = spawn(process.execPath, argv, {
+    cwd: neutral.cwd.replace('${PLUGIN_ROOT}', PLUGIN),
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, HOME: '/tmp' },
+  })
+  try {
+    let out = ''
+    child.stdout.on('data', (d) => { out += d })
+    // stdin stays OPEN — the frames go in and nothing closes the stream
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize',
+      params: { protocolVersion: '2025-06-18', capabilities: {},
+        clientInfo: { name: 'live-client', version: '1' } } })}\n`)
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' })}\n`)
+
+    const deadline = Date.now() + 20_000
+    while (Date.now() < deadline && out.split('\n').filter(Boolean).length < 2) {
+      await new Promise((r) => setTimeout(r, 100))
+    }
+    const replies = out.split('\n').filter(Boolean).map((l) => JSON.parse(l))
+    assert.equal(replies.length, 2,
+      `the vendor-neutral server answered ${replies.length} of 2 frames from a client that stayed open`)
+    assert.equal(replies[0].id, 1)
+    assert.ok(replies[0].result?.protocolVersion, 'initialize returned no protocolVersion')
+    assert.equal(replies[1].id, 2)
+    assert.ok(Array.isArray(replies[1].result?.tools), 'tools/list returned no tools')
+  } finally {
+    child.kill('SIGKILL')
+  }
+})
+
+test('the endpoint pin is checked against a written-down value, not against itself', () => {
+  // A round-nine lane: the wire fixtures covered a correct URL, a different
+  // host and no endpoint — never the pinned PATH being wrong — and the oracle
+  // was derived from `REVIEW_PROFILES[id].endpoint`, the same value it was
+  // meant to establish. Change the profile and the test agrees with the change.
+  //
+  // These literals are the pins as reviewed. A profile edit that moves an
+  // endpoint now has to move a written-down value too, which is the point.
+  const PINNED = {
+    zai: 'https://api.z.ai/api/anthropic',
+    kimi: 'https://api.kimi.com/coding',
+    qwen: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic',
+    deepseek: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic',
+  }
+  for (const [id, url] of Object.entries(PINNED)) {
+    const e = REVIEW_PROFILES[id].endpoint
+    assert.equal(`https://${e.host}${e.path}`, url, `${id}'s pinned endpoint moved`)
+  }
+
+  // and a WRONG PATH on the right host is refused, which no fixture covered
+  const dir = mkdtempSync(join(tmpdir(), 'lane-pinpath-'))
+  try {
+    const e = REVIEW_PROFILES.zai.endpoint
+    for (const wrong of [`https://${e.host}/wrong`, `https://${e.host}`, `https://${e.host}${e.path}/extra`]) {
+      writeFileSync(join(dir, 'creds.env'),
+        `ANTHROPIC_BASE_URL=${wrong}\nZAI_API_KEY=ordinary\n`)
+      assert.throws(() => buildAcpLaunch('zai', {
+        env: { HOME: '/tmp', PATH: '/usr/bin', TMUX_TEAMS_REVIEW_ZAI_ENV_FILE: join(dir, 'creds.env') },
+      }), `${wrong} was accepted for a lane pinned to ${e.path}`)
+    }
+    // the right one still works
+    writeFileSync(join(dir, 'creds.env'),
+      `ANTHROPIC_BASE_URL=https://${e.host}${e.path}\nZAI_API_KEY=ordinary\n`)
+    assert.doesNotThrow(() => buildAcpLaunch('zai', {
+      env: { HOME: '/tmp', PATH: '/usr/bin', TMUX_TEAMS_REVIEW_ZAI_ENV_FILE: join(dir, 'creds.env') },
+    }))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// Found by a codex-advisor lane against the running stdio server, then pinned
+// here. The check above types `roots` and stops, so `sampling: true`,
+// `elicitation: null` and `experimental: null` were all ACCEPTED while MCP
+// 2025-06-18 types every one of them as an object.
+//
+// Note WHY the previous test did not catch it, because the shape repeats: it
+// sent well-formed objects carrying odd VALUES and never sent a member that was
+// not an object at all. Two separate axes were being validated by one list, and
+// narrowing the list to fix the `listChanged` axis silently narrowed the
+// object-shape axis with it. They are separate lists now.
+test('every capability member MCP types as an object must be one', () => {
+  const ok = { name: 'probe', version: '1' }
+  const init = (capabilities) => handle({ jsonrpc: '2.0', id: 1, method: 'initialize',
+    params: { protocolVersion: '2025-06-18', clientInfo: ok, capabilities } }, {})
+
+  for (const name of ['roots', 'sampling', 'elicitation', 'experimental']) {
+    for (const bad of [true, null, 42, 'yes', ['a']]) {
+      const answer = init({ [name]: bad })
+      assert.equal(answer.error?.code, -32602,
+        `capabilities.${name} = ${JSON.stringify(bad)} was accepted`)
+      assert.equal(answer.error?.message, 'initialize capabilities members must be objects',
+        `capabilities.${name} = ${JSON.stringify(bad)} was refused with the wrong sentence`)
+    }
+    assert.ok(init({ [name]: {} }).result, `an empty ${name} object was refused`)
+  }
+
+  // The two axes stay separate: only `roots` types `listChanged`, and an
+  // unknown name is a client extension whatever it holds. Both are re-asserted
+  // HERE rather than trusted from the test above, because the fix that added
+  // the object list is exactly the change that could swing them back.
+  assert.equal(init({ roots: { listChanged: 'yes' } }).error?.code, -32602)
+  assert.ok(init({ sampling: { listChanged: 'vendor-extension' } }).result,
+    'a conforming open-object sampling capability was refused')
+  assert.ok(init({ someVendorExtension: null }).result,
+    'an unknown capability was typed as though MCP named it')
+})
+
+// `experimental` carries a SECOND rule inside it, and the first fix stopped at
+// the door. MCP 2025-06-18 declares `experimental?: { [key: string]: object }`,
+// so every value in that map is object-typed as well. A lane sent
+// `{"experimental":{"vendor":true}}` to the running server and got a successful
+// initialize back — after the outer-shape list had been corrected and looked
+// complete, because the four names in it ARE the right four.
+//
+// The shape to remember: a fix that satisfies the sentence in the report is not
+// the same as a fix that satisfies the schema. Nothing in "sampling:true is
+// accepted" hints that a map has typed values.
+test('experimental carries typed values, not just a typed container', () => {
+  const ok = { name: 'probe', version: '1' }
+  const init = (capabilities) => handle({ jsonrpc: '2.0', id: 1, method: 'initialize',
+    params: { protocolVersion: '2025-06-18', clientInfo: ok, capabilities } }, {})
+
+  for (const bad of [true, null, 42, 'x', ['a']]) {
+    const answer = init({ experimental: { vendor: bad } })
+    assert.equal(answer.error?.code, -32602,
+      `experimental.vendor = ${JSON.stringify(bad)} was accepted`)
+    assert.equal(answer.error?.message, 'initialize capabilities experimental values must be objects',
+      `experimental.vendor = ${JSON.stringify(bad)} was refused with the wrong sentence`)
+  }
+  assert.ok(init({ experimental: { vendor: {} } }).result,
+    'an empty experimental value object was refused')
+  assert.ok(init({ experimental: { vendor: { nested: 'anything' } }, }).result,
+    'a populated experimental value object was refused')
+  assert.ok(init({ experimental: {} }).result, 'an empty experimental map was refused')
+
+  // The OUTER rule still applies and is a different sentence, so a regression
+  // that collapses the two is visible rather than merely still-refusing.
+  assert.equal(init({ experimental: null }).error?.message,
+    'initialize capabilities members must be objects')
+})
+
+// FOUR rounds of narrower fixes, each correct about the case it was shown and
+// none about the property. `spawnableValue` first decided whether at least one
+// accepted credential existed; then it was applied to the forwarded secrets and
+// a lane put the same NUL in the routed SETTINGS, assigned earlier; then a
+// 2 MiB credential passed every per-value check and the kernel answered E2BIG;
+// then the sweep that fixed all three ran AFTER the endpoint check, so a lane
+// whose only credential carried a NUL still answered `credential_missing` — the
+// "you already added it" outcome the sweep exists to prevent, produced by the
+// sweep that prevents it.
+//
+// The property is about the FINISHED environment, so it is asserted there, and
+// this table is the rule rather than four examples of breaking it.
+//
+// The test this replaces claimed to prove the launch could start a process and
+// proved nothing: `assert.doesNotThrow(() => spawnSync(...))` — spawnSync
+// RETURNS `result.error`. A lane short-circuited that line and all 1103 tests
+// stayed green.
+test('an environment that cannot start a process is never reported valid', () => {
+  const NUL = String.fromCharCode(0)
+  const NUL_FIX = 'contains a NUL byte and cannot be passed to a process'
+  const BUDGET_FIX = 'is larger than this gate passes to a lane — it has to be'
+  const endpoint = { ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic' }
+  const withToken = { ...endpoint, ANTHROPIC_AUTH_TOKEN: 'valid-token' }
+  const cases = [
+    { name: 'a clean lane', settings: withToken, ambient: {}, code: null },
+    // The ORDER case: no second credential to fall back on, so a sweep running
+    // after the endpoint check answers `credential_missing` here.
+    { name: 'the only credential carries a NUL', settings: endpoint,
+      ambient: { ZAI_API_KEY: `bad${NUL}value` }, code: 'environment_unspawnable',
+      expectedFix: `ZAI_API_KEY ${NUL_FIX}` },
+    { name: 'a NUL beside a good credential', settings: withToken,
+      ambient: { ZAI_API_KEY: `bad${NUL}value` }, code: 'environment_unspawnable',
+      expectedFix: `ZAI_API_KEY ${NUL_FIX}` },
+    { name: 'a NUL in the routed settings', settings: { ...withToken, ZAI_API_KEY: `bad${NUL}value` },
+      ambient: {}, code: 'environment_unspawnable', expectedFix: `ZAI_API_KEY ${NUL_FIX}` },
+    { name: 'a credential over the total budget', settings: withToken,
+      ambient: { ZAI_API_KEY: 'x'.repeat(2 * 1024 * 1024) },
+      code: 'environment_over_budget', expectedFix: `ZAI_API_KEY ${BUDGET_FIX}` },
+    // Under the TOTAL and over the per-string cap Linux enforces at 131072.
+    // This host spawns it; the CI host would not.
+    // BOTH SIDES of the per-value boundary. A single 200 KiB case proved only
+    // that SOME bound existed: raising the ceiling from 64 KiB to 192 KiB left
+    // the whole suite green, so a value between the Linux MAX_ARG_STRLEN of
+    // 131072 and our ceiling could be admitted while the test named for that
+    // cap stayed green. The pair pins the number.
+    { name: 'a value just under the per-value ceiling', settings: withToken,
+      ambient: { ZAI_API_KEY: 'x'.repeat(63 * 1024) }, code: null },
+    { name: 'a value just over the per-value ceiling', settings: withToken,
+      ambient: { ZAI_API_KEY: 'x'.repeat(70 * 1024) },
+      code: 'environment_over_budget', expectedFix: `ZAI_API_KEY ${BUDGET_FIX}` },
+    // Comfortably under the total and OVER the Linux per-string cap. Refusing
+    // it is the whole point of having a per-value rule at all, and this host
+    // spawns it happily, so nothing but the rule can catch it here.
+    { name: 'one value over the Linux per-string cap', settings: withToken,
+      ambient: { ZAI_API_KEY: 'x'.repeat(200 * 1024) },
+      code: 'environment_over_budget', expectedFix: `ZAI_API_KEY ${BUDGET_FIX}` },
+    // MANY values, each comfortably under the per-string cap, summing past the
+    // total. Without this the total ceiling had no guard of its own: widening
+    // it from 256 KiB to 1 MiB left every case above still refused by the
+    // per-string rule, so the number could move and nothing noticed.
+    { name: 'many values summing over the total budget',
+      settings: { ...withToken,
+        ANTHROPIC_CUSTOM_HEADERS: 'h'.repeat(60 * 1024),
+        ANTHROPIC_DEFAULT_OPUS_MODEL: 'o'.repeat(60 * 1024),
+        ANTHROPIC_DEFAULT_SONNET_MODEL: 's'.repeat(60 * 1024),
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: 'h'.repeat(60 * 1024),
+        ANTHROPIC_API_KEY: 'k'.repeat(60 * 1024) },
+      ambient: {}, code: 'environment_over_budget',
+      expectedFix: 'the values this lane forwards exceed the total' },
+  ]
+  for (const { name, settings, ambient, code, expectedFix } of cases) {
+    const dir = mkdtempSync(join(tmpdir(), 'mcp-env-'))
+    try {
+      const file = join(dir, 'zai.json')
+      writeFileSync(file, JSON.stringify({ env: settings }))
+      const env = { HOME: dir, PATH: process.env.PATH,
+        TMUX_TEAMS_REVIEW_ZAI_SETTINGS: file, ...ambient }
+      const status = laneStatus('zai', REVIEW_PROFILES.zai, env)
+
+      if (code) {
+        assert.equal(status.configuration, 'invalid', `${name} was reported valid`)
+        assert.equal(status.problem?.code, code,
+          `${name} was refused as ${status.problem?.code}`)
+        // The REPAIR names the value. It used to say "the refusal names which"
+        // while this boundary drops the raw exception, so it named nothing, and
+        // then pointed at a settings file that does not hold an ambient key.
+        // The SENTENCE, not merely the key appearing somewhere. Renaming the
+        // remediation case out of the switch left this green when it only
+        // checked for the key, because the fallback repair names the settings
+        // file and the settings file path contains it. A guard that a wrong
+        // answer satisfies is not a guard.
+        assert.ok(status.fixes.some((fix) => fix.includes(expectedFix)),
+          `${name} produced a repair that never says "${expectedFix}": ${JSON.stringify(status.fixes)}`)
+        // A deterministic stage for review-gate: a plain TypeError has no code,
+        // lands in `transport`, and the operator is told to re-run a refusal
+        // that is identical on every attempt.
+        assert.throws(() => buildAcpLaunch('zai', { env }), (error) => error.code === 'config',
+          `${name} threw without a deterministic stage code`)
+        continue
+      }
+
+      assert.equal(status.configuration, 'valid', `${name} was refused`)
+      const launch = buildAcpLaunch('zai', { env })
+      // `result.error`, not doesNotThrow — spawnSync returns its failure.
+      const result = spawnSync(process.execPath, ['-e', ''], { env: launch.env })
+      assert.equal(result.error, undefined,
+        `${name} built an environment the OS refused: ${result.error?.code}`)
+      assert.equal(result.status, 0, `${name} built an environment that exited ${result.status}`)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+})
+
+// A separate assertion on the SIZE claim, because the sentence is the finding.
+// The first version refused at 256 KiB saying "cannot start a process", and a
+// lane measured this machine starting one at 921,600 bytes. The refusal is a
+// policy of ours; it has to read like one.
+test('the size refusal claims a budget and never claims the platform refused', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mcp-budget-'))
+  try {
+    const file = join(dir, 'zai.json')
+    writeFileSync(file, JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic',
+      ANTHROPIC_AUTH_TOKEN: 'valid-token' } }))
+    const env = { HOME: dir, PATH: process.env.PATH, TMUX_TEAMS_REVIEW_ZAI_SETTINGS: file,
+      ZAI_API_KEY: 'x'.repeat(2 * 1024 * 1024) }
+    assert.throws(() => buildAcpLaunch('zai', { env }), (error) => {
+      assert.match(error.message, /over budget/)
+      assert.doesNotMatch(error.message, /cannot start a process/,
+        'the size refusal asserts the platform refused, which was measured false')
+      return true
+    })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// The repair, APPLIED. A lane found the over-budget advice said "point the lane
+// at a credential file instead of an inline value" and measured the identical
+// refusal after doing exactly that: `loadRoutedCredentialFile` reads the file
+// and puts the same bytes into the child environment, where the same ceiling
+// refuses them.
+//
+// This repository's diagnostic contract is that applying a fix changes the
+// state, and a prose assertion that a sentence mentions the right thing is not
+// a test of the repair — the file already says so about a different fix, and
+// the same gap reopened one commit later in a sentence I wrote.
+test('the over-budget repair does not send an operator somewhere that repeats the refusal', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mcp-budget-move-'))
+  try {
+    const settings = join(dir, 'zai.json')
+    const credentials = join(dir, 'zai.env')
+    const big = 'x'.repeat(70 * 1024)
+    writeFileSync(settings, JSON.stringify({ env: {
+      ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic' } }))
+    const base = { HOME: dir, PATH: process.env.PATH, TMUX_TEAMS_REVIEW_ZAI_SETTINGS: settings }
+
+    const inline = laneStatus('zai', REVIEW_PROFILES.zai, { ...base, ZAI_API_KEY: big })
+    assert.equal(inline.problem?.code, 'environment_over_budget')
+
+    writeFileSync(credentials, `ZAI_API_KEY=${big}\n`)
+    const moved = laneStatus('zai', REVIEW_PROFILES.zai,
+      { ...base, TMUX_TEAMS_REVIEW_ZAI_ENV_FILE: credentials })
+    assert.equal(moved.problem?.code, 'environment_over_budget',
+      'moving the value to a file changed the refusal, so the old advice was right after all')
+
+    // Since it does NOT repair, the advice must not offer it. Asserting the
+    // absence is what keeps the sentence honest when somebody re-adds the
+    // helpful-sounding half.
+    const said = inline.fixes.join(' ')
+    assert.doesNotMatch(said, /credential file instead of an inline value/,
+      `the repair still offers a move that reproduces the refusal: ${said}`)
+    assert.match(said, /has to be SHORTER/, `the repair does not say what would work: ${said}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ## `acp_lane_probe` — the third tool, and the only one that contacts anything
+//
+// Every test below injects `deps.probeTransport` — never a real subprocess.
+// That is deliberate, not a shortcut: the roadmap item this ships names its
+// own cost ("a real probe costs minutes and real quota"), so this suite must
+// stay free and deterministic. The one exception is the anti-sweep refusal
+// inside the boot test above, which is free even over a real spawned server
+// because a refusal never reaches the transport.
+
+// A PATH THIS TEST FILE OWNS, holding executable stubs for the launcher and
+// wrapper a lane declares.
+//
+// Several tests want to reach the SETTINGS and ENDPOINT checks, which sit behind
+// the availability check. They used `PATH: process.env.PATH` and reached them
+// only because the developer's machine happens to have `claude-zai` and
+// `claude-qwen` installed. CI runs Linux with a clean HOME and none of those
+// wrappers, so the availability check fired first and three tests failed there
+// having proved nothing about credentials — exactly the local-green-CI-red gap
+// this repository has already lost two releases to, and exactly the
+// inherited-state anti-pattern a zai review lane flagged elsewhere in this same
+// diff. Build what the test needs instead of hoping for it.
+const stubPathFor = (dir, ...names) => {
+  for (const name of names) {
+    writeFileSync(join(dir, name), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+  }
+  return `${dir}${delimiter}${process.env.PATH}`
+}
+
+const callProbe = async (args, env, transport) => {
+  const reply = await handle({
+    jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'acp_lane_probe', arguments: args },
+  }, env, { probeTransport: transport })
+  return { reply, payload: JSON.parse(reply.result.content[0].text) }
+}
+
+test('acp_lane_probe is advertised, and the advertised descriptor is the dispatcher\'s own', () => {
+  const advertised = TOOLS.find(t => t.name === 'acp_lane_probe')
+  assert.ok(advertised, 'the third tool was not advertised in tools/list')
+  assert.deepEqual(advertised.inputSchema.required, ['lanes'],
+    'the schema does not even ADVERTISE that lanes is required')
+  assert.equal(advertised.inputSchema.properties.lanes.type, 'array')
+  assert.equal(advertised.inputSchema.additionalProperties, false)
+  const descriptor = TOOL_DESCRIPTORS.find(d => d.name === 'acp_lane_probe')
+  assert.equal(typeof descriptor.handler, 'function')
+  assert.equal(descriptor.description, advertised.description,
+    'the advertised description and the dispatcher\'s own descriptor drifted apart')
+  assert.match(descriptor.description, /spends real minutes and real provider quota/,
+    'the cost is not stated honestly, which is part of the anti-sweep posture')
+})
+
+test('classifyProbe maps a closed SIGNAL shape onto a closed code, never onto text', () => {
+  assert.equal(classifyProbe({ settled: 'response' }), null, 'a real reply is success, not a problem code')
+  assert.equal(classifyProbe({ settled: 'timeout' }), 'probe_timeout')
+  assert.equal(classifyProbe({ settled: 'spawn_error', errnoCode: 'ENOENT' }), 'executable_missing')
+  // EACCES and EPERM are BOTH "found, not permitted" — not just the one this
+  // machine's own EACCES repro happens to produce. Asserting only EACCES left
+  // the EPERM half of the `||` unreached by any test.
+  assert.equal(classifyProbe({ settled: 'spawn_error', errnoCode: 'EACCES' }), 'executable_unusable')
+  assert.equal(classifyProbe({ settled: 'spawn_error', errnoCode: 'EPERM' }), 'executable_unusable')
+  assert.equal(classifyProbe({ settled: 'exit', code: 1, quotaSignal: true }), 'quota_exhausted')
+  assert.equal(classifyProbe({ settled: 'exit', code: 1, quotaSignal: false }), 'unclassified')
+  assert.equal(classifyProbe({ settled: 'exit', code: 0, quotaSignal: false }), 'unclassified')
+  // The three shapes only a JSON-RPC-level refusal or a malformed handshake
+  // produces — none of them settle 'exit', so they had no coverage above.
+  assert.equal(classifyProbe({ settled: 'refused', quotaSignal: true }), 'quota_exhausted')
+  assert.equal(classifyProbe({ settled: 'refused', quotaSignal: false }), 'unclassified')
+  assert.equal(classifyProbe({ settled: 'refused' }), 'unclassified')
+  assert.equal(classifyProbe({ settled: 'invalid_handshake' }), 'unclassified')
+  assert.equal(classifyProbe({ settled: 'cancelled' }), 'unclassified')
+  // `aborted` is settled by THIS file (an MCP-level `notifications/cancelled`
+  // reaching the active transport call), never by a provider — pinned
+  // explicitly for the same reason its siblings above are: the reply it would
+  // ride in on is never actually sent, but the shape still has to stay inside
+  // the closed set rather than fall through to an unpinned default.
+  assert.equal(classifyProbe({ settled: 'aborted' }), 'unclassified')
+  // A misbehaving or future transport gets the honest catch-all, never a crash
+  // and never a guess dressed as a specific answer.
+  assert.equal(classifyProbe(null), 'unclassified')
+  assert.equal(classifyProbe(undefined), 'unclassified')
+  assert.equal(classifyProbe('a bare string a future transport might return'), 'unclassified')
+  assert.equal(classifyProbe({ settled: 'a kind this file has never seen' }), 'unclassified')
+  // Every non-null code this function can produce has to already be a key of
+  // the closed set — a code `classifyProbe` can return that `DIAGNOSTICS` does
+  // not know is a detail sentence nobody wrote.
+  for (const shape of [{ settled: 'timeout' }, { settled: 'spawn_error' },
+    { settled: 'spawn_error', errnoCode: 'ENOENT' }, { settled: 'spawn_error', errnoCode: 'EACCES' },
+    { settled: 'spawn_error', errnoCode: 'EPERM' },
+    { settled: 'exit', quotaSignal: true }, { settled: 'exit' },
+    { settled: 'refused', quotaSignal: true }, { settled: 'refused' },
+    { settled: 'invalid_handshake' }, { settled: 'cancelled' }, { settled: 'aborted' }, {}]) {
+    const code = classifyProbe(shape)
+    assert.ok(code === null || Object.hasOwn(DIAGNOSTICS, code),
+      `classifyProbe(${JSON.stringify(shape)}) returned ${code}, which DIAGNOSTICS does not define`)
+  }
+  assert.ok(Object.hasOwn(DIAGNOSTICS, 'quota_exhausted') && Object.hasOwn(DIAGNOSTICS, 'probe_timeout'))
+})
+
+test('acp_lane_probe refuses every shape that is not an explicit non-empty array of ids, and spawns nothing', async () => {
+  const spy = []
+  const transport = async (call) => { spy.push(call); return { settled: 'response' } }
+  const cases = [
+    [{}, /non-empty array of lane ids/],
+    [{ lanes: [] }, /non-empty array of lane ids/],
+    [{ lanes: 'zai' }, /non-empty array of lane ids/],
+    [{ lanes: [1, 2] }, /every entry in lanes must be a string/],
+    [{ lanes: ['no-such-lane'] }, /no such lane/],
+    [{ lanes: ['zai', 'no-such-lane'] }, /no such lane/],
+  ]
+  for (const [args, expected] of cases) {
+    const { reply, payload } = await callProbe(args, {}, transport)
+    assert.equal(reply.result.isError, true, `${JSON.stringify(args)} was not reported as refused`)
+    assert.match(payload.error, expected, `${JSON.stringify(args)} produced: ${payload.error}`)
+    assert.ok(payload.known.includes('zai'), 'a refusal that does not say what does exist is half an answer')
+  }
+  assert.equal(spy.length, 0,
+    'a call this server should have refused reached the transport — the anti-sweep guard is not structural')
+})
+
+test('a repeated lane id is probed once, not once per repetition', async () => {
+  let calls = 0
+  const transport = async () => { calls += 1; return { settled: 'response' } }
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
+  const { payload } = await callProbe({ lanes: ['claude', 'claude', 'claude'] }, bare, transport)
+  assert.equal(payload.lanes.length, 1, 'a deduped id must appear once in the answer, not three times')
+  assert.equal(calls, 1, 'the same lane id was probed more than once for one call')
+})
+
+test('a lane that is already invalid is reported from that diagnosis, and never contacted', async () => {
+  const bin = mkdtempSync(join(tmpdir(), 'lane-stub-'))
+  try {
+    // The wrapper and launcher must RESOLVE so the availability check passes and
+    // the endpoint check — the one this test is about — is what fires.
+    const transport = async () => { throw new Error('an already-invalid lane must never be contacted') }
+    const { payload } = await callProbe({ lanes: ['zai'] },
+      { HOME: '/nonexistent-layout', PATH: stubPathFor(bin, 'claude-zai', 'npx') }, transport)
+    const [lane] = payload.lanes
+    assert.equal(lane.probe, 'not_attempted')
+    assert.equal(lane.configuration, 'invalid')
+    assert.equal(lane.problem.code, 'endpoint_missing', 'reused the wrong config-time diagnostic')
+    assert.equal(lane.problem.detail, DIAGNOSTICS.endpoint_missing)
+  } finally {
+    rmSync(bin, { recursive: true, force: true })
+  }
+})
+
+test('an UNCHECKED lane is genuinely contacted — a live probe is the only signal that exists for it', async () => {
+  const spy = []
+  const transport = async (call) => { spy.push(call); return { settled: 'response' } }
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
+  const { payload } = await callProbe({ lanes: ['claude'] }, bare, transport)
+  assert.equal(spy.length, 1, 'the one lane with no parent-side check was never actually contacted')
+  assert.equal(spy[0].id, 'claude')
+  assert.ok(Array.isArray(spy[0].command) && spy[0].command.length, 'the transport got no command to spawn')
+  assert.ok(spy[0].env && typeof spy[0].env === 'object', 'the transport got no environment to spawn with')
+  // BOTH budgets, asserted at the CALL SITE. Defaults on the transport mean a
+  // deleted argument here would still produce a working probe, so nothing but
+  // this line notices the production wiring going missing.
+  assert.equal(spy[0].bootTimeoutMs, PROBE_BOOT_TIMEOUT_MS, 'the boot budget did not reach the transport')
+  assert.equal(spy[0].replyTimeoutMs, PROBE_REPLY_TIMEOUT_MS, 'the reply budget did not reach the transport')
+  assert.ok(PROBE_BOOT_TIMEOUT_MS > PROBE_REPLY_TIMEOUT_MS,
+    'the boot budget must outlast the reply budget: a cold `npx -y` install was measured at 190s and one word is not')
+  const [lane] = payload.lanes
+  assert.equal(lane.probe, 'reachable')
+  assert.equal(lane.configuration, 'unchecked')
+  assert.equal(lane.problem, null)
+  assert.ok(Array.isArray(lane.notProven) && lane.notProven.length >= 4,
+    'a live reachable answer with no stated boundary is the same overclaim ready:true was')
+})
+
+// ## Probe depth — and the only assertion that proves the money claim
+//
+// `depth: 'handshake'` exists because a completion is what a provider bills for.
+// Measured 2026-08-24 against four reproduced lane failures: an adapter whose
+// install was truncated died BEFORE `initialize`, while a 402 membership and a
+// missing payment method stayed invisible until a prompt was actually sent.
+//
+// A test that only checks the returned shape cannot tell a skipped prompt from
+// a quickly-answered one — and those differ by real money. So the stub records
+// every method it is ASKED, and the assertion is the absence of one.
+// ## Readiness — the light, the brake, and the way out
+//
+// The owner's complaint was that the plugin could not say whether it was ready
+// or what could be called, and that an unusable lane produced an error later
+// instead of a refusal now. Three guards, one per part, because the parts fail
+// independently: a status nobody reads, a brake wired to nothing, and a refusal
+// with no way forward are three different bugs.
+test('a lane whose executable is absent is refused BEFORE anything is spawned', async () => {
+  // CONSTRUCT the absence rather than inheriting it. This asserted that
+  // `ninerouter`'s wrapper is missing, which is true on the machine that wrote
+  // the test and is a fact about that machine — on a runner where `claude-9r`
+  // IS installed the lane would reach the transport and every assertion below
+  // would silently stop testing what it names. An openai review lane found it.
+  // A per-machine override points the lane at a name that cannot exist, so the
+  // absence is now a property of the fixture.
+  const home = mkdtempSync(join(tmpdir(), 'brake-absent-'))
+  let spawned = false
+  let payload
+  try {
+    mkdirSync(join(home, '.config', 'tmux-teams'), { recursive: true })
+    writeFileSync(join(home, '.config', 'tmux-teams', 'lanes.json'),
+      JSON.stringify({ ninerouter: { claudeExecutable: 'tmux-teams-no-such-binary-exists' } }))
+    ;({ payload } = await callProbe({ lanes: ['ninerouter'], depth: 'handshake' },
+      { ...process.env, HOME: home },
+      async () => { spawned = true; return { settled: 'handshake_ok' } }))
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+  const [lane] = payload.lanes
+
+  assert.equal(spawned, false,
+    'a process was spawned for a lane whose executable does not exist — the brake is not on the spawn path')
+  assert.equal(lane.probe, 'not_attempted')
+  assert.equal(lane.problem.code, 'executable_absent',
+    `the refusal named ${lane.problem.code} — the operator is sent to fix the wrong thing`)
+  assert.equal(lane.missing, 'tmux-teams-no-such-binary-exists',
+    'the refusal does not name WHICH executable is missing, so it is not actionable')
+  assert.match(lane.setup ?? '', /setup/,
+    'the refusal offers no way forward — an error the operator cannot act on is the state this replaced')
+
+  // ORDER IS THE FINDING, and the assertion that used to sit here could not
+  // fail: `notEqual(code, 'endpoint_missing')` directly under
+  // `equal(code, 'executable_absent')` tests the same value twice. A zai review
+  // lane called it dead weight and was right — it observed no ordering at all,
+  // only the final code.
+  //
+  // What actually proves the order is a lane that would FAIL BOTH checks: this
+  // fixture's wrapper is absent AND its routed settings are unreachable under an
+  // isolated HOME. An implementation that asked the endpoint question first
+  // answers `endpoint_missing` here and nothing else does.
+  assert.equal(lane.configuration, 'invalid',
+    'this fixture is meant to fail the configuration check too, or it cannot prove an order')
+})
+
+test('a listing says what this machine can actually call, not what the file declares', async () => {
+  const reply = await handle({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+    params: { name: 'acp_lanes', arguments: {} } }, process.env)
+  const payload = JSON.parse(reply.result.content[0].text)
+
+  assert.ok(Array.isArray(payload.callableLanes), 'the listing does not say which lanes are callable')
+  assert.equal(typeof payload.setupRequired, 'boolean', 'the listing carries no gate for a caller to read')
+  assert.ok(payload.plugin && typeof payload.plugin.ready === 'boolean',
+    'the listing says nothing about whether the PLUGIN itself is usable')
+
+  // Every lane states what it NEEDS. Three lanes used to report
+  // `executable: null`, which reads as "needs nothing" and is false — they need
+  // bunx or npx from command[0], where no listing surface was looking.
+  for (const lane of payload.lanes) {
+    assert.ok(Array.isArray(lane.needs) && lane.needs.length > 0,
+      `lane ${lane.lane} reports needing nothing, which is true of no lane here`)
+    assert.equal(typeof lane.available, 'boolean', `lane ${lane.lane} does not say whether it is callable`)
+  }
+})
+
+// The two layers must agree, and they did not. Readiness read the SHIPPED
+// profiles and never the per-machine file, so setting an override wrote the
+// file and the re-check went on reporting the shipped executable as missing —
+// a setting that looks applied and is not, which is the precise failure this
+// release exists to end, reproduced by the release itself. Caught by running
+// the round trip rather than by any unit test, which is why this one asserts
+// the round trip.
+// ## What a lane actually calls
+//
+// The v0.35.0 panel recorded a lane as "qwen" while the alias it requested was
+// resolved by that gateway to a deepseek model, and the only way anyone learned
+// that was opening the wrapper's settings file by hand. Two lanes can share one
+// gateway and answer as different families; the release record depends on
+// telling them apart.
+// A DESCRIPTION IS A CLAIM AND GETS THE SAME TREATMENT AS CODE. `acp_lanes`
+// advertised "touches nothing on this machine" while its handler resolved
+// executables on PATH, stat'd them, and read two local files. Two review
+// families raised it independently — this repository's must-fix threshold — and
+// it is the release's own defect shape in the sentence an agent reads to decide
+// whether calling the tool is free.
+test('the acp_lanes description does not deny the machine state it reads', async () => {
+  const advertised = TOOLS.find(t => t.name === 'acp_lanes')
+  assert.ok(advertised, 'acp_lanes is not advertised')
+  const text = advertised.description
+
+  assert.ok(!/touches nothing on this machine/.test(text),
+    'the description still claims to touch nothing while the handler reads PATH and two files')
+  for (const promised of [/PATH/, /override/, /setupRequired/]) {
+    assert.match(text, promised,
+      'the description does not tell a caller which machine state this tool reads')
+  }
+  // And the half that IS still true has to stay said, or a caller cannot tell
+  // this tool from the one that spends quota.
+  assert.match(text, /contacts NO endpoint|no provider quota/,
+    'the description no longer says this tool is free, which is the reason to prefer it')
+})
+
+test('a lane reports what it REQUESTS and what this machine resolves it to', async () => {
+  const { laneModel } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-models.mjs')).href)
+  const home = mkdtempSync(join(tmpdir(), 'lane-models-'))
+  try {
+    const dir = join(home, '.config', 'claude-profiles', 'demo')
+    mkdirSync(dir, { recursive: true })
+    // A settings file shaped like a real one: the alias map sits beside a
+    // credential, which is exactly why only the three alias keys may be read.
+    writeFileSync(join(dir, 'settings.json'), JSON.stringify({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: 'CANARY-TOKEN-MUST-NEVER-APPEAR-' + 'z'.repeat(16),
+        ANTHROPIC_BASE_URL: 'https://CANARY-ENDPOINT-MUST-NEVER-APPEAR.invalid/anthropic',
+        // A key nobody named. The promise is an ALLOWLIST of three alias keys,
+        // and a test that blocks two names by hand does not enforce one — an
+        // openai review lane pointed out that an implementation copying
+        // everything except those two would leak this and pass. Third time this
+        // fixture was strengthened; each round it was blocking names instead of
+        // permitting them.
+        SOME_OTHER_SECRET: 'CANARY-OTHER-MUST-NEVER-APPEAR',
+        ANTHROPIC_DEFAULT_OPUS_MODEL: 'a-real-model-id',
+      },
+    }))
+    const profile = {
+      model: 'recorded-identity',
+      requestModel: 'opus',
+      settingsRelativePath: '.config/claude-profiles/demo/settings.json',
+    }
+    const answer = laneModel('demo', profile, { home })
+
+    assert.equal(answer.requested, 'opus',
+      'the lane reported its recorded identity instead of the alias that goes on the wire')
+    assert.equal(answer.resolved, 'a-real-model-id',
+      'the alias was not resolved through this machine settings file')
+    assert.equal(answer.source, 'alias_resolved')
+    assert.notEqual(answer.declared, answer.resolved,
+      'this fixture is meant to have a declaration that differs from what answers')
+
+    // THE ASSERTION THAT MATTERS MOST. The alias map shares a file with a
+    // credential; a prefix match over env keys would carry the token out.
+    // Every VALUE in that file is canaried, not just the token. A deepseek review
+    // lane pointed out that this asserted the token value and the key NAMES while
+    // an endpoint value could have walked out unnoticed — and an endpoint is a
+    // machine fact this repository already refuses to put on the wire.
+    // AN ALLOWLIST, ASSERTED AS ONE. Every canary is a value this file holds and
+    // the listing has no business carrying; naming them individually is how the
+    // previous two versions of this test stayed too weak.
+    const dump = JSON.stringify(answer)
+    for (const canary of ['CANARY-TOKEN', 'CANARY-ENDPOINT', 'CANARY-OTHER']) {
+      assert.ok(!dump.includes(canary), `${canary} from the settings file reached the model listing`)
+    }
+    assert.ok(!/AUTH_TOKEN|BASE_URL|SOME_OTHER_SECRET/.test(dump),
+      'a key name from the settings file leaked into the listing')
+    // And the shape itself: the answer carries exactly these fields, so a new
+    // one cannot be added quietly and carry a file value out with it.
+    assert.deepEqual(Object.keys(answer).sort(),
+      ['aliasesOnThisMachine', 'declared', 'detail', 'lane', 'requested', 'resolved', 'source'],
+      'the answer grew or lost a field — anything new must be reviewed for what it can carry')
+    assert.deepEqual(Object.keys(answer.aliasesOnThisMachine ?? {}), ['opus'],
+      'the alias map carries a key outside the three-alias allowlist')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('a lane this machine cannot resolve says so instead of guessing', async () => {
+  const { laneModel } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-models.mjs')).href)
+
+  // No settings file at all — the overwhelmingly common case for an unrouted
+  // lane. A guess here would be a confident wrong answer, which this repository
+  // treats as worse than none.
+  const answer = laneModel('demo', { model: 'declared-only' }, { home: '/definitely/nonexistent' })
+  assert.equal(answer.resolved, null, 'a model was invented for a lane with nothing to read')
+  assert.equal(answer.source, 'declared',
+    'a declaration was reported as though this machine had confirmed it')
+  assert.match(answer.detail, /no machine evidence/,
+    'the boundary is not stated, so a declaration reads as a measurement')
+})
+
+// ONE PAYLOAD MUST NOT CONTRADICT ITSELF. The summary and the per-lane rows were
+// computed from different configurations: readinessReport applied the
+// per-machine override, laneWithAvailability got the raw profile, so
+// callableLanes counted a lane the operator had fixed while that lane's own row
+// still said available: false. A gemini review lane found it — the THIRD
+// consumer in this release to read the shipped profile instead of the machine's,
+// after two had already been fixed. The shape repeats, so this pins it.
+// EVERY consumer resolves from the environment it was HANDED, not the ambient
+// one. This release produced that defect five times — readiness, the brake, the
+// lane rows, the loader's own path, and buildAcpLaunch — and a review lane found
+// four of them. So the guard is not "does this one call site pass env": it walks
+// the real entry points with an isolated HOME and asserts none of them reads the
+// developer's actual configuration.
+// The BRAKE must read the override too. Every probe guard added in this release
+// probed the shipped profile only, so a brake that ignored the per-machine file
+// would refuse a lane the operator had already fixed and pass every one of
+// them. An openai review lane named the gap.
+// An overridable field that changes nothing is a field advertising a capability
+// it does not have — the defect shape of this whole release. `adapterPackage`
+// was exactly that: the package that actually launches lives in `command`, so
+// setting the field left the shipped package running while setup reported the
+// lane callable. An openai review lane found it; the first fix shipped with NO
+// guard, and a mutation that disabled it left the suite green.
+test('overriding the adapter package changes the command that actually runs', async () => {
+  const { applyLaneOverride } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-overrides.mjs')).href)
+
+  const shipped = REVIEW_PROFILES.codex
+  assert.ok(shipped.command.includes(shipped.adapterPackage),
+    'this test assumes the shipped command carries the adapter package verbatim')
+
+  const swapped = '@agentclientprotocol/codex-acp@9.9.9'
+  const resolved = applyLaneOverride(shipped, { adapterPackage: swapped }, {})
+
+  assert.equal(resolved.adapterPackage, swapped)
+  assert.ok(resolved.command.includes(swapped),
+    'the override changed the declared package while the command still launches the shipped one')
+  assert.ok(!resolved.command.includes(shipped.adapterPackage),
+    'the shipped package survived in the command, so both versions are named at once')
+  // The launch argv and the declared package must still agree — the repo
+  // asserts that binding at import for every profile, and an override that
+  // broke it would fail far from here.
+  assert.ok(resolved.command.includes(resolved.adapterPackage),
+    'the command and the declared adapterPackage disagree after the override')
+})
+
+// EXISTING IS NOT RUNNABLE. A mode-0644 file named like a wrapper resolves on
+// PATH and stats as a regular file, so a check stopping at isFile reports the
+// lane callable and hands the spawn an EACCES it was meant to prevent. An
+// openai review lane found it. This plugin already tells `executable_missing`
+// from `executable_unusable` for the same reason: installing a file that is
+// already sitting there fixes nothing.
+// AN OVERRIDE THAT CANNOT TAKE EFFECT IS REFUSED, NOT IGNORED. Substituting the
+// adapter package works only when the shipped command names it verbatim; a lane
+// whose command does not — a native-binary lane, or one naming no package —
+// would have accepted the field, changed a declaration, and launched the old
+// package anyway. A deepseek review lane found that the file's own comment
+// promised this refusal while nothing implemented it.
+// An env with NEITHER home variable must not fall through to the process's own
+// home. `laneModel`'s default parameter is `homedir()`, so handing it
+// `undefined` reads the SERVER's home rather than the caller's nothing — the
+// sixth instance of this release's shape, found by a deepseek review lane.
+test('a caller with no home in its environment gets unknown, not the server home', async () => {
+  const reply = await handle({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+    params: { name: 'acp_lanes', arguments: {} } }, { PATH: process.env.PATH })
+  const payload = JSON.parse(reply.result.content[0].text)
+
+  for (const lane of payload.lanes) {
+    assert.equal(lane.resolvedModel, null,
+      `lane ${lane.lane} resolved a model from a home the caller never supplied`)
+    assert.equal(lane.modelSource, 'unknown',
+      `lane ${lane.lane} claimed evidence it could not have had`)
+  }
+
+  // The control, CONSTRUCTED rather than inherited. This handed the tool
+  // `process.env` and hoped the runner's real home held alias settings — a fact
+  // about the machine that wrote the test, and the same anti-pattern removed
+  // from the brake fixture a few blocks up. A zai review lane caught the
+  // inconsistency. Build the alias map, then require resolution.
+  const home = mkdtempSync(join(tmpdir(), 'lane-model-control-'))
+  try {
+    // `kimi` because it REQUESTS the alias `opus`; a lane that names a model
+    // directly has no alias to resolve and would make this control fail for a
+    // reason that has nothing to do with what it is guarding.
+    const dir = join(home, '.config', 'claude-profiles', 'kimi')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'settings.json'),
+      JSON.stringify({ env: { ANTHROPIC_DEFAULT_OPUS_MODEL: 'control-model-id' } }))
+    const withHome = await handle({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'acp_lanes', arguments: {} } }, { ...process.env, HOME: home })
+    const resolved = JSON.parse(withHome.result.content[0].text).lanes
+      .filter(l => l.resolvedModel !== null)
+    assert.ok(resolved.length > 0,
+      'no lane resolved even from a home this test built, so the assertion above proves nothing')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('an adapterPackage override is refused on a lane whose command cannot carry it', async () => {
+  const { loadLaneOverrides } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-overrides.mjs')).href)
+
+  const profiles = {
+    swappable: { command: ['npx', '-y', 'pkg@1'], adapterPackage: 'pkg@1' },
+    native: { command: ['bunx', 'native-thing@1'], adapterPackage: 'something-else@1' },
+  }
+  const read = () => JSON.stringify({
+    native: { adapterPackage: 'pkg@2' },
+  })
+  const refused = loadLaneOverrides({ knownLanes: Object.keys(profiles), profiles, readFile: read })
+  assert.equal(refused.problems.length, 1, 'an override that cannot take effect was accepted')
+  assert.equal(refused.problems[0].code, 'bad_adapter_swap')
+  assert.deepEqual(refused.overrides, {}, 'a refused file was partly applied')
+
+  // The control: a lane whose command DOES name its package accepts the swap.
+  // Without this the test would pass against a loader that refuses every swap.
+  const ok = loadLaneOverrides({
+    knownLanes: Object.keys(profiles), profiles,
+    readFile: () => JSON.stringify({ swappable: { adapterPackage: 'pkg@2' } }),
+  })
+  assert.deepEqual(ok.problems, [], 'a swap the command can carry was refused')
+  assert.equal(ok.overrides.swappable.adapterPackage, 'pkg@2')
+})
+
+// The isFile/isExecutable checks lived ONLY in the wrapper branch. A zai review
+// lane pointed out that a mode-0644 file named `npx` earlier on PATH resolved,
+// left `blocking` empty, and reported every npx-launched lane callable with
+// setupRequired false — right up to a spawn dying EACCES. The same held for the
+// plugin binaries, so a non-executable `node` gave `plugin.ready: true`.
+test('a non-executable launcher or plugin binary is not mistaken for a working one', async () => {
+  const { laneAvailability, pluginReadiness } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-readiness.mjs')).href)
+  const shadow = mkdtempSync(join(tmpdir(), 'path-shadow-'))
+  try {
+    // A file with the launcher's name and no execute bit, placed AHEAD of the
+    // real one — the shape a broken install or a stray download leaves behind.
+    writeFileSync(join(shadow, 'npx'), '#!/bin/sh\nexit 0\n', { mode: 0o644 })
+    writeFileSync(join(shadow, 'node'), 'not a program', { mode: 0o644 })
+    const shadowedFirst = { PATH: `${shadow}${delimiter}${process.env.PATH}` }
+
+    // A shadowing non-executable must not HIDE the real one either: the walk
+    // continues, exactly as a shell's PATH lookup does.
+    const lane = laneAvailability('codex', REVIEW_PROFILES.codex, shadowedFirst)
+    assert.equal(lane.available, true,
+      'a non-executable file earlier on PATH hid the real launcher behind it')
+
+    // With ONLY the shadow on PATH there is nothing usable to find.
+    const onlyShadow = { PATH: shadow }
+    const dead = laneAvailability('codex', REVIEW_PROFILES.codex, onlyShadow)
+    assert.equal(dead.available, false,
+      'a lane whose only launcher is a non-executable file was reported callable')
+    assert.equal(dead.blocking[0].missing, 'npx')
+
+    const plugin = pluginReadiness(onlyShadow)
+    assert.equal(plugin.ready, false,
+      'a non-executable node was accepted as a ready plugin')
+    assert.ok(plugin.missing.some(m => m.missing === 'node'),
+      'the unusable binary is not named, so an operator cannot act on it')
+  } finally {
+    rmSync(shadow, { recursive: true, force: true })
+  }
+})
+
+test('a wrapper that exists but cannot be executed is not called callable', async () => {
+  const { laneAvailability } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-readiness.mjs')).href)
+  const dir = mkdtempSync(join(tmpdir(), 'lane-not-exec-'))
+  try {
+    const name = 'tmux-teams-fixture-wrapper'
+    writeFileSync(join(dir, name), '#!/bin/sh\nexit 0\n', { mode: 0o644 })
+
+    const env = { PATH: dir }
+    const profile = { command: ['node'], claudeExecutable: name }
+    const answer = laneAvailability('demo', profile, { ...env, PATH: `${dir}${delimiter}${process.env.PATH}` })
+
+    assert.equal(answer.available, false,
+      'a file with no execute bit was reported callable, so the spawn gets the EACCES instead')
+    assert.equal(answer.blocking[0].code, 'executable_not_executable',
+      `reported ${answer.blocking[0]?.code} — "missing" would send the operator to install a file that is already there`)
+
+    // And the control: the same file, made executable, is callable. Without it
+    // this test would pass against a check that refuses everything.
+    chmodSync(join(dir, name), 0o755)
+    const after = laneAvailability('demo', profile, { ...env, PATH: `${dir}${delimiter}${process.env.PATH}` })
+    assert.equal(after.available, true, 'an executable wrapper was still refused')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the pre-spawn brake honours a per-machine override', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'brake-override-'))
+  try {
+    mkdirSync(join(home, '.config', 'tmux-teams'), { recursive: true })
+    writeFileSync(join(home, '.config', 'tmux-teams', 'lanes.json'),
+      JSON.stringify({ ninerouter: { claudeExecutable: 'node' } }))
+
+    let spawned = false
+    const { payload } = await callProbe({ lanes: ['ninerouter'], depth: 'handshake' },
+      { ...process.env, HOME: home },
+      async () => { spawned = true; return { settled: 'handshake_ok' } })
+    const [lane] = payload.lanes
+
+    assert.notEqual(lane.problem?.code, 'executable_absent',
+      'the brake refused a lane whose executable the operator had already pointed at a real binary')
+    assert.equal(spawned || lane.probe === 'not_attempted', true,
+      'the lane neither ran nor produced a diagnosis')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+// A malformed override file must not read as "no overrides". Discarding the
+// loader's problems made readiness report from shipped defaults while
+// buildAcpLaunch throws on the same file — a green gate in front of a dispatch
+// that cannot start.
+test('a malformed override file forces setup rather than reading as empty', async () => {
+  const { readinessReport } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-readiness.mjs')).href)
+
+  const broken = () => ({ overrides: {}, problems: [{ code: 'not_json', lane: null, field: null }], present: true })
+  const report = readinessReport(REVIEW_PROFILES, { PATH: process.env.PATH }, { overrideLoader: broken })
+
+  assert.equal(report.setupRequired, true,
+    'a file that cannot be parsed was reported as a machine needing no setup')
+  assert.equal(report.overrideProblems.length, 1,
+    'the reason the file was refused is not reported, so a caller cannot say why')
+  assert.equal(report.overrideProblems[0].code, 'not_json')
+})
+
+test('no consumer reads the process home when it was given an environment', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'lane-env-'))
+  try {
+    mkdirSync(join(home, '.config', 'tmux-teams'), { recursive: true })
+    // An override that would be VISIBLE if the isolated HOME is honoured, and
+    // invisible if a consumer reaches for the process home instead.
+    // `codex` for the launch half: it is unrouted, so an isolated HOME does not
+    // trip the routed-endpoint check, which is a DIFFERENT and legitimate guard
+    // and would mask the one under test. `ninerouter` for the listing half,
+    // which never builds a launch.
+    writeFileSync(join(home, '.config', 'tmux-teams', 'lanes.json'),
+      JSON.stringify({
+        ninerouter: { claudeExecutable: 'node' },
+        codex: { adapterPackage: 'marker-from-the-given-home' },
+      }))
+    const env = { ...process.env, HOME: home }
+
+    const launch = buildAcpLaunch('codex', { env })
+    assert.equal(launch.overrideApplied, true,
+      'buildAcpLaunch ignored the HOME it was given and read the process home')
+    assert.equal(launch.profile.adapterPackage, 'marker-from-the-given-home',
+      'the override from the given HOME did not reach the resolved profile')
+
+    const reply = await handle({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'acp_lanes', arguments: {} } }, env)
+    const payload = JSON.parse(reply.result.content[0].text)
+    assert.ok(payload.callableLanes.includes('ninerouter'),
+      'acp_lanes ignored the HOME it was given')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('the lane rows and the summary in one answer agree with each other', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'lanes-consistency-'))
+  try {
+    mkdirSync(join(home, '.config', 'tmux-teams'), { recursive: true })
+    // Point an uncallable lane at a binary this machine certainly has.
+    writeFileSync(join(home, '.config', 'tmux-teams', 'lanes.json'),
+      JSON.stringify({ ninerouter: { claudeExecutable: 'node' } }))
+
+    const reply = await handle({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'acp_lanes', arguments: {} } }, { ...process.env, HOME: home })
+    const payload = JSON.parse(reply.result.content[0].text)
+
+    const disagreeing = payload.lanes.filter(l =>
+      l.available !== payload.callableLanes.includes(l.lane))
+    assert.deepEqual(disagreeing.map(l => l.lane), [],
+      'a lane row and the callable summary in the SAME answer disagree about that lane')
+
+    // AGREEMENT IS NOT ENOUGH. Two false answers agree perfectly, so an
+    // implementation that ignored the override entirely would satisfy the
+    // assertion above — an openai review lane pointed that out. Pin the
+    // override actually taking effect as well.
+    const row = payload.lanes.find(l => l.lane === 'ninerouter')
+    assert.equal(row.available, true,
+      'the override was ignored — this assertion is what stops the agreement check being vacuous')
+    assert.ok(payload.callableLanes.includes('ninerouter'))
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('readiness applies the per-machine override, not just the shipped profile', async () => {
+  const { readinessReport } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-readiness.mjs')).href)
+
+  const env = { PATH: process.env.PATH }
+  const shipped = readinessReport(REVIEW_PROFILES, env)
+  const before = shipped.lanes.find(l => l.lane === 'ninerouter')
+  assert.equal(before.available, false,
+    'this test needs a lane that is uncallable from the shipped profile alone')
+
+  // An override pointing the lane at a wrapper this machine really has.
+  const loader = () => ({
+    overrides: { ninerouter: { claudeExecutable: 'node' } },
+    problems: [],
+    present: true,
+  })
+  const after = readinessReport(REVIEW_PROFILES, env, { overrideLoader: loader })
+  const fixed = after.lanes.find(l => l.lane === 'ninerouter')
+  assert.equal(fixed.available, true,
+    'the per-machine override was written and readiness still reports the shipped executable')
+  assert.ok(after.callableLanes.includes('ninerouter'),
+    'the lane is callable but the callable list does not say so')
+})
+
+test('a missing plugin binary is reported once, not as one failure per lane', async () => {
+  const { pluginReadiness, readinessReport } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-readiness.mjs')).href)
+
+  const nothing = { PATH: '/definitely/nonexistent' }
+  const plugin = pluginReadiness(nothing)
+  assert.equal(plugin.ready, false, 'an empty PATH was reported as a ready plugin')
+  assert.ok(plugin.missing.length >= 3, 'an empty PATH lost almost nothing, so the check is not looking')
+
+  // The point of separating them: an operator whose `node` is missing must not
+  // read eight identical lane failures and go looking in eight wrong places.
+  const report = readinessReport(REVIEW_PROFILES, nothing)
+  assert.equal(report.setupRequired, true, 'a machine with no binaries at all did not require setup')
+  assert.deepEqual(report.callableLanes, [], 'lanes were called callable on a machine with an empty PATH')
+
+  // ASSERT THE ABSENCE THIS TEST IS NAMED FOR. An implementation that copied
+  // every missing plugin binary into every lane's diagnostics would keep
+  // setupRequired true and callableLanes empty, so both assertions above would
+  // pass while the operator read the same failure eight times and went looking
+  // in eight wrong places. An openai review lane pointed out the test never
+  // checked the thing its own title promises.
+  const pluginNames = new Set(plugin.missing.map(m => m.missing))
+  for (const lane of report.lanes) {
+    const repeated = lane.blocking.filter(b => pluginNames.has(b.missing) && b.code === 'binary_absent')
+    assert.deepEqual(repeated, [],
+      `lane ${lane.lane} repeats a PLUGIN-level missing binary in its own diagnostics`)
+  }
+})
+
+test('handshake depth completes the session and sends no prompt at all', async () => {
+  const stub = join(ROOT, 'tests', 'fixtures', 'probe-stub-agent.mjs')
+  const dir = mkdtempSync(join(tmpdir(), 'probe-depth-'))
+  try {
+    const runAt = async (depth) => {
+      const log = join(dir, `${depth}.log`)
+      writeFileSync(log, '')
+      const result = await realProbeTransport({
+        command: [process.execPath, stub],
+        env: { ...process.env, STUB_MODE: 'ok', STUB_LOG: log },
+        depth,
+        bootTimeoutMs: 8000, replyTimeoutMs: 8000,
+      })
+      const asked = readFileSync(log, 'utf8').split('\n').filter(Boolean)
+      return { result, asked }
+    }
+
+    const shallow = await runAt('handshake')
+    assert.deepEqual(shallow.result, { settled: 'handshake_ok' },
+      `handshake depth settled as ${JSON.stringify(shallow.result)}`)
+    assert.ok(shallow.asked.includes('initialize') && shallow.asked.includes('session/new'),
+      `handshake depth did not complete the handshake — it asked ${shallow.asked.join(', ')}`)
+    assert.ok(!shallow.asked.includes('session/prompt'),
+      'handshake depth SENT A PROMPT — the entire reason this depth exists is that a prompt is what gets billed')
+
+    // The control. Without it, a transport that never prompts at ANY depth
+    // would pass the assertion above and this feature would be a no-op that
+    // silently broke the paying path.
+    const deep = await runAt('prompt')
+    assert.deepEqual(deep.result, { settled: 'response' })
+    assert.ok(deep.asked.includes('session/prompt'),
+      'prompt depth did not send a prompt, so the assertion above proves nothing')
+
+    // Both are "nothing wrong at the depth asked for", and the classifier must
+    // say so for each — otherwise a healthy shallow check reads as a failure.
+    assert.equal(classifyProbe(shallow.result), null)
+    assert.equal(classifyProbe(deep.result), null)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// A typo must COST NOTHING. A caller who writes `handshakes` is asking to spend
+// no quota; silently treating that as the paying default would spend a whole
+// sweep's budget on a spelling mistake.
+test('an unknown depth is refused rather than defaulted to the paying one', async () => {
+  let contacted = false
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
+  const { payload } = await callProbe({ lanes: ['claude'], depth: 'handshakes' }, bare,
+    async () => { contacted = true; return { settled: 'response' } })
+  assert.match(payload.error ?? '', /depth must be one of/,
+    'an unknown depth was accepted')
+  assert.equal(contacted, false, 'a lane was contacted despite an invalid depth')
+  assert.deepEqual([...PROBE_DEPTHS], ['handshake', 'prompt'])
+  assert.equal(DEFAULT_PROBE_DEPTH, 'prompt',
+    'the default must remain the paying depth, so an existing caller is not silently downgraded')
+})
+
+// A shallower check proves less, and the boundary list is the only place a
+// caller is told so. Reporting the two identically is the overclaim this whole
+// tool exists to avoid.
+test('a handshake pass states a different boundary than a prompt pass', async () => {
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
+  const shallow = await callProbe({ lanes: ['claude'], depth: 'handshake' }, bare,
+    async () => ({ settled: 'handshake_ok' }))
+  const deep = await callProbe({ lanes: ['claude'] }, bare, async () => ({ settled: 'response' }))
+
+  const [s] = shallow.payload.lanes
+  const [d] = deep.payload.lanes
+  assert.equal(s.probe, 'reachable')
+  assert.equal(d.probe, 'reachable')
+  assert.equal(s.depth, 'handshake', 'the result does not say which depth produced it')
+  assert.equal(d.depth, 'prompt')
+
+  // AND THE DEPTH MUST REACH THE TRANSPORT, which is where it decides whether a
+  // billable prompt is sent. Everything else about depth was covered from both
+  // ends — the transport behaves correctly when handed one, and the tool accepts
+  // and reports one — with nothing in between: drop `depth` from the transport
+  // call and the transport falls back to its PAYING default while every one of
+  // those tests still passes. An openai review lane found the gap.
+  const forwarded = []
+  await callProbe({ lanes: ['claude'], depth: 'handshake' }, bare,
+    async (call) => { forwarded.push(call.depth); return { settled: 'handshake_ok' } })
+  await callProbe({ lanes: ['claude'] }, bare,
+    async (call) => { forwarded.push(call.depth); return { settled: 'response' } })
+  assert.deepEqual(forwarded, ['handshake', 'prompt'],
+    'the requested depth never reached the transport, so a handshake probe would send a billable prompt')
+  assert.notDeepEqual(s.notProven, d.notProven,
+    'a handshake pass claims exactly what a prompt pass claims — it proved strictly less')
+  assert.ok(s.notProven.some(line => /no prompt was sent/.test(line)),
+    'a handshake pass does not tell the caller that no prompt was sent')
+  assert.ok(s.notProven.some(line => /quota or billing/.test(line)),
+    'a handshake pass does not tell the caller it says nothing about billing')
+})
+
+test('every unreachable outcome the transport can report lands on a classified code, and nothing extra rides along', async () => {
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
+  const outcomes = [
+    [{ settled: 'timeout' }, 'probe_timeout'],
+    [{ settled: 'boot_timeout' }, 'probe_boot_timeout'],
+    [{ settled: 'spawn_error', errnoCode: 'ENOENT', rawStderr: 'CANARY-SHOULD-NEVER-SURFACE' }, 'executable_missing'],
+    [{ settled: 'exit', code: 1, quotaSignal: true, rawText: 'CANARY-QUOTA-TEXT' }, 'quota_exhausted'],
+    [{ settled: 'exit', code: 1, quotaSignal: false }, 'unclassified'],
+    [{ settled: 'a kind this file has never seen' }, 'unclassified'],
+  ]
+  for (const [outcome, code] of outcomes) {
+    const { payload } = await callProbe({ lanes: ['claude'] }, bare, async () => outcome)
+    const [lane] = payload.lanes
+    assert.equal(lane.probe, 'unreachable', JSON.stringify(outcome))
+    assert.equal(lane.problem.code, code, JSON.stringify(outcome))
+    assert.equal(lane.problem.detail, DIAGNOSTICS[code], 'the detail is not the constant sentence for its own code')
+    const wire = JSON.stringify(payload)
+    assert.ok(!wire.includes('CANARY'),
+      `a field the transport contract does not declare still reached the wire: ${wire}`)
+  }
+})
+
+test('a credential inside an unreadable settings file still never reaches a probe reply', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-lanes-probe-secret-'))
+  try {
+    const settings = join(dir, 'zai.json')
+    // A synthetic marker, not a credential-shaped literal: this repository's
+    // own pre-commit secret scanner reads `const secret = '...'` as the thing
+    // it exists to stop, and it is right to — build the value instead of
+    // writing it as one string.
+    const marker = 'PROBE-MARKER-NEVER-ON-THE-WIRE-' + 'q'.repeat(20)
+    writeFileSync(settings, `{ "token": "${marker}", this is not valid json`)
+    const transport = async () => { throw new Error('an invalid lane must never be contacted') }
+    const { payload } = await callProbe({ lanes: ['zai'] },
+      // Real PATH so the SETTINGS check is the one that fires: a fake PATH now
+      // refuses at the launcher first, which is a correct answer to a different
+      // question and would leave this test proving nothing about secrets.
+      // Stubs so the availability check passes and the SETTINGS check is what
+      // fires — this test is about a credential, and on a machine without
+      // `claude-zai` it used to stop one gate earlier and prove nothing.
+      { HOME: '/nonexistent-layout', PATH: stubPathFor(dir, 'claude-zai', 'npx'),
+        TMUX_TEAMS_REVIEW_ZAI_SETTINGS: settings },
+      transport)
+    assert.equal(payload.lanes[0].probe, 'not_attempted')
+    assert.equal(payload.lanes[0].problem.code, 'settings_unreadable')
+    assert.ok(!JSON.stringify(payload).includes(marker),
+      'a credential sitting inside an unreadable settings file reached a probe reply')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a live credential reaches the transport to spawn with, and never reaches the reply back', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-lanes-probe-live-secret-'))
+  try {
+    const settings = join(dir, 'zai.json')
+    const marker = 'LIVE-PROBE-MARKER-' + '9f3a'.repeat(5)
+    writeFileSync(settings, JSON.stringify({
+      env: { ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic', ANTHROPIC_AUTH_TOKEN: marker },
+    }))
+    const env = { HOME: dir, PATH: stubPathFor(dir, 'claude-zai', 'npx'),
+      TMUX_TEAMS_REVIEW_ZAI_SETTINGS: settings }
+    let sawMarkerInLaunchEnv = false
+    const transport = async (call) => {
+      sawMarkerInLaunchEnv = Object.values(call.env ?? {}).includes(marker)
+      return { settled: 'exit', code: 1, quotaSignal: true }
+    }
+    const { payload } = await callProbe({ lanes: ['zai'] }, env, transport)
+    assert.ok(sawMarkerInLaunchEnv,
+      'the transport never received the credential it would need to actually probe with — the test proves nothing')
+    assert.equal(payload.lanes[0].probe, 'unreachable')
+    assert.equal(payload.lanes[0].problem.code, 'quota_exhausted')
+    assert.ok(!JSON.stringify(payload).includes(marker),
+      'a credential that reached the transport also reached the reply')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('lanes are probed sequentially, never concurrently — a live probe spends real quota per lane', async () => {
+  let inFlight = 0
+  let maxInFlight = 0
+  const order = []
+  const transport = async (call) => {
+    inFlight += 1
+    maxInFlight = Math.max(maxInFlight, inFlight)
+    order.push(`start:${call.id}`)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    order.push(`end:${call.id}`)
+    inFlight -= 1
+    return { settled: 'response' }
+  }
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
+  const { payload } = await callProbe({ lanes: ['claude', 'codex'] }, bare, transport)
+  assert.equal(maxInFlight, 1,
+    'two lanes were in flight at once — that is Promise.all, and this tool must never spend two budgets for one call')
+  assert.deepEqual(order, ['start:claude', 'end:claude', 'start:codex', 'end:codex'])
+  assert.equal(payload.lanes.length, 2)
+})
+
+test('a transport that REJECTS is classified per lane, never leaks its message, and never scraps the batch', async () => {
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
+  const transport = async (call) => {
+    if (call.id === 'claude') throw new Error('PROVIDER-REJECT-MARKER: 401 invalid token for account 9f3a')
+    return { settled: 'response' }
+  }
+  const { reply, payload } = await callProbe({ lanes: ['claude', 'codex'] }, bare, transport)
+  // The whole tool call still answers — one lane's transport throwing must not
+  // reject `handle`'s own promise and take the reply down with it.
+  assert.equal(reply.result.isError, false, 'a per-lane failure is not a tool-call-level error')
+  assert.equal(payload.lanes.length, 2, 'the lane probed AFTER the rejecting one was dropped from the batch')
+  const [claude, codex] = payload.lanes
+  assert.equal(claude.lane, 'claude')
+  assert.equal(claude.probe, 'unreachable')
+  assert.equal(claude.problem.code, 'unclassified',
+    'a rejecting transport has to land in the same honest bucket a malformed signal does')
+  assert.equal(codex.lane, 'codex')
+  assert.equal(codex.probe, 'reachable', 'the lane probed after the rejecting one must still be attempted')
+  const wire = JSON.stringify(payload)
+  assert.ok(!wire.includes('PROVIDER-REJECT-MARKER') && !wire.includes('401') && !wire.includes('9f3a'),
+    `the rejecting transport's own message reached the wire: ${wire}`)
+})
+
+// ## Finding: `acp_lane_probe` calls were not serialized ACROSS requests
+//
+// The sequential loop proven above (`lanes are probed sequentially, never
+// concurrently`) only orders LANES within ONE call. An MCP host that
+// pipelines two SEPARATE `acp_lane_probe` `tools/call` requests before this
+// server answers the first used to have `serve()`'s own line callback invoke
+// `handle()` for both the instant their lines arrived, leaving both returned
+// promises in flight — two provider processes spawned at once, spending two
+// budgets for a tool whose own description promises one at a time. This
+// drives `serve()` itself (not `handle()` directly) because the defect lives
+// in the callback that decides WHEN to call `handle()`, not inside it.
+test('acp_lane_probe calls are queued globally across requests, and ping is still answered while one is in flight',
+  async () => {
+    const { serve } = await import('../plugins/tmux-teams/skills/party-mode/scripts/acp-lanes-mcp.mjs')
+    const { PassThrough } = await import('node:stream')
+    const written = []
+    const input = new PassThrough()
+    const output = new PassThrough()
+    output.on('data', (chunk) => written.push(String(chunk)))
+    const order = []
+    let releaseClaude
+    const claudeGate = new Promise((resolve) => { releaseClaude = resolve })
+    // `claude`/`codex` are `UNCHECKED_LANES` — the only lanes that reach a
+    // transport regardless of environment, which is what every other probe
+    // test in this file already uses `bare` env to reach deliberately.
+    const transport = async (call) => {
+      order.push(`start:${call.id}`)
+      if (call.id === 'claude') await claudeGate
+      order.push(`end:${call.id}`)
+      return { settled: 'response' }
+    }
+    const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
+    const lines = serve({ input, output, env: bare, deps: { probeTransport: transport } })
+    const send = (msg) => input.write(`${JSON.stringify(msg)}\n`)
+    send({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'acp_lane_probe', arguments: { lanes: ['claude'] } } })
+    send({ jsonrpc: '2.0', id: 2, method: 'ping' })
+    send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'acp_lane_probe', arguments: { lanes: ['codex'] } } })
+
+    // Enough real time for the synchronously-answerable `ping` and the
+    // dispatch bookkeeping of both probe calls to run — the claude call
+    // itself is parked on `claudeGate` and cannot progress further no matter
+    // how long this waits, so this is a floor, not a race.
+    await new Promise((r) => setTimeout(r, 50))
+
+    assert.deepEqual(order, ['start:claude'],
+      'the second probe call started before the first one finished — probes are not serialized across requests')
+    const repliesSoFar = written.join('').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
+    const pingReply = repliesSoFar.find((r) => r.id === 2)
+    assert.ok(pingReply,
+      'ping was not answered while a probe call was in flight — a non-probe method must not queue behind a probe')
+    assert.deepEqual(pingReply.result, {})
+    assert.ok(!repliesSoFar.some((r) => r.id === 3),
+      'the second probe call was already answered before the first one released — nothing is actually queued')
+
+    releaseClaude()
+    await new Promise((r) => setTimeout(r, 50))
+    assert.deepEqual(order, ['start:claude', 'end:claude', 'start:codex', 'end:codex'],
+      'the queued second probe call did not run once the first was released')
+
+    input.end()
+    await new Promise((done) => lines.on('close', done))
+  })
+
+// ## Finding: `notifications/cancelled` was dropped before dispatch, and a
+// cancelled `acp_lane_probe` kept spending quota for the rest of its lanes
+//
+// `handle()` used to return `null` for every notification before even
+// reading its `method` — correct for the notification's OWN reply (there is
+// never one), wrong for the ACTION `notifications/cancelled` is supposed to
+// trigger. This proves the fix end to end: (a) the lane named after the
+// cancelled one never starts, (b) the lane already running has its real
+// process GROUP confirmed gone — reusing `realProbeTransport`'s own
+// teardown (`finish`, the process-group kill, `waitForProbeGroupGone`), not a
+// second kill mechanism — before the call settles, and (c) the host that
+// cancelled the call gets no reply at all, which is what MCP 2025-06-18
+// requires of a cancelled request.
+test('a cancelled multi-lane probe stops the remaining lanes, reaps the active child\'s process group, '
+  + 'and the host gets no reply', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-lanes-cancel-'))
+  const pidFile = join(dir, 'pid')
+  try {
+    const script = join(dir, 'stay-alive.cjs')
+    // No SIGTERM handler of its own: Node's default behavior is to exit on
+    // SIGTERM, so an abort that reaches this script settles fast. The slow,
+    // SIGKILL-forcing shape ("ignore-term.cjs") is what the existing
+    // `finish() does not settle until a killed child has actually exited`
+    // test already covers; this test is about WHO gets to reach the kill at
+    // all, not about the kill ladder's own escalation timing.
+    writeFileSync(script, [
+      "const fs = require('fs')",
+      `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))`,
+      'setInterval(() => {}, 1000)',
+    ].join('\n'))
+    let codexStarted = false
+    const transport = async (call) => {
+      if (call.id === 'codex') { codexStarted = true; return { settled: 'response' } }
+      // The lane's own declared command is irrelevant to what this test
+      // proves — a real child process is what has to die, and reusing
+      // `realProbeTransport` itself (rather than a synthetic fake) is what
+      // proves the SHIPPED teardown is what does it, not a test-only stand-in.
+      return realProbeTransport({
+        command: [process.execPath, script], env: process.env, bootTimeoutMs: 6000, replyTimeoutMs: 6000,
+        abortSignal: call.abortSignal,
+      })
+    }
+    const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
+    const pendingProbes = new Map()
+    const deps = { probeTransport: transport, pendingProbes }
+    const requestId = 42
+    const started = Date.now()
+    const probePromise = handle({
+      jsonrpc: '2.0', id: requestId, method: 'tools/call',
+      params: { name: 'acp_lane_probe', arguments: { lanes: ['claude', 'codex'] } },
+    }, bare, deps)
+    const deadline = Date.now() + 4000
+    while (!existsSync(pidFile) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10))
+    assert.ok(existsSync(pidFile), 'the active lane never actually started — this proves nothing about a cancel mid-flight')
+    handle({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId } }, bare, deps)
+    const reply = await probePromise
+    const elapsed = Date.now() - started
+    assert.equal(reply, null,
+      'a cancelled acp_lane_probe call still produced a reply — MCP says a receiver must not send one')
+    assert.equal(codexStarted, false, 'the lane named after the cancelled one started anyway')
+    assert.ok(elapsed < 2000,
+      `settling a cancelled probe took ${elapsed}ms — it rode out the lane's own timeout instead of actually aborting`)
+    const pid = Number(readFileSync(pidFile, 'utf8'))
+    // `waitForProbeGroupGone` already confirmed the GROUP gone before this
+    // promise settled — checked here with `kill(pid, 0)` on the PID directly
+    // (what an operator would actually check) rather than repeating that same
+    // group-level check. The two can disagree for a few milliseconds under
+    // load: a process this call just killed can sit as a zombie — still
+    // visible to a direct PID probe — until this Node process's own libuv
+    // reaps its exit status on a later event-loop turn, independent of
+    // anything this fix controls. `elapsed < 2000` above already proves the
+    // teardown was prompt; this polls briefly rather than checking once so
+    // that ORDINARY reap latency cannot be mistaken for the child staying
+    // alive, which is the actual claim.
+    const aliveDeadline = Date.now() + 500
+    let alive = true
+    do {
+      try { process.kill(pid, 0); alive = true } catch { alive = false }
+      if (alive) await new Promise((r) => setTimeout(r, 20))
+    } while (alive && Date.now() < aliveDeadline)
+    assert.equal(alive, false, 'the active child was still alive (not merely an unreaped zombie) '
+      + 'half a second after the cancelled probe settled')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// `realProbeTransport` was the one piece of the probe nothing ran: every other
+// test injects a fake through `deps.probeTransport`, which exercises the
+// CLASSIFIER and says nothing about the code that spawns an adapter, writes
+// JSON-RPC frames and reads them back. The quota pattern is the sharpest case —
+// if it misses a provider's real wording, an exhausted lane reports
+// `unclassified`, and no fake transport can ever tell you that.
+//
+// A stub ACP agent costs nothing and contacts nobody.
+test('the real probe transport speaks to an agent and reads what comes back', async () => {
+  const stub = join(ROOT, 'tests', 'fixtures', 'probe-stub-agent.mjs')
+  const run = (mode, ms = 8000) => realProbeTransport({
+    command: [process.execPath, stub],
+    env: { ...process.env, STUB_MODE: mode },
+    bootTimeoutMs: ms, replyTimeoutMs: ms,
+  })
+
+  assert.deepEqual(await run('ok'), { settled: 'response' },
+    'a stub that answers all three methods was not read as reachable')
+
+  // An exhausted lane answers the handshake and refuses the PROMPT — that is
+  // the shape, not a 429 arriving out of nowhere.
+  //
+  // And the split is the point: the TRANSPORT reports a fact it observed
+  // (`exit`, plus a boolean it decided from the stream) and the CLASSIFIER
+  // turns that into the code an operator reads. Asserting both halves in one
+  // place is what proves they meet — a fake transport can satisfy the
+  // classifier forever while the real one never produces the shape it wants.
+  const quota = await run('quota')
+  assert.equal(quota.settled, 'exit', `an exhausted lane settled as ${quota.settled}`)
+  assert.equal(quota.quotaSignal, true, 'the transport did not notice the 429 on stderr')
+  assert.equal(classifyProbe(quota), 'quota_exhausted',
+    'the classifier did not turn a real exhausted lane into its own code')
+
+  // And the other direction, which is the one a keyword match gets wrong:
+  // quota-shaped words on stderr from a lane that ANSWERED are not a refusal.
+  // A lane that answered is reachable, whatever it printed on the way.
+  assert.deepEqual(await run('noisy'), { settled: 'response' },
+    'a lane that answered was called exhausted because of a warning it printed')
+
+  // A stub that never answers must TIME OUT rather than hang the caller, and
+  // the timeout has to be the transport's own — a test that waits for the
+  // production default measures the default, not the transport.
+  const started = Date.now()
+  const silent = await run('silent', 1200)
+  assert.equal(silent.settled, 'boot_timeout', `a silent agent settled as ${silent.settled}`)
+  assert.ok(Date.now() - started < 6000,
+    'the transport ignored the timeout it was given')
+
+  // THE REARM, proved by making the two budgets disagree. `mute` answers the
+  // handshake and then goes quiet, so the adapter is demonstrably up: the wait
+  // that follows belongs to the REPLY budget. Give it a boot budget long enough
+  // that riding it would blow this assertion's own clock, and a reply budget
+  // that fires quickly -- if the rearm is deleted, the surviving boot timer
+  // settles this as `boot_timeout` at 30s and both assertions below fail.
+  const muteStarted = Date.now()
+  const mute = await realProbeTransport({
+    command: [process.execPath, stub],
+    env: { ...process.env, STUB_MODE: 'mute' },
+    bootTimeoutMs: 30_000, replyTimeoutMs: 900,
+  })
+  const muteElapsed = Date.now() - muteStarted
+  assert.equal(mute.settled, 'timeout',
+    `an adapter that started and then went quiet settled as ${mute.settled} — the reply budget never took over`)
+  assert.ok(muteElapsed < 15_000,
+    `the probe waited ${muteElapsed}ms on a 900ms reply budget, so it was still riding the boot timer`)
+  assert.equal(classifyProbe(mute), 'probe_timeout',
+    'a live endpoint that went quiet must read as the endpoint timing out, not as the adapter failing to start')
+  assert.equal(classifyProbe(silent), 'probe_boot_timeout',
+    'an adapter that never answered initialize must not be reported as an endpoint that never replied')
+
+  // A command that does not exist is a spawn error carrying an errno CODE and
+  // never a message — this is the path that reaches an operator.
+  const missing = await realProbeTransport({
+    command: [join(ROOT, 'tests', 'fixtures', 'no-such-binary-here'), '--x'],
+    env: { ...process.env }, bootTimeoutMs: 4000, replyTimeoutMs: 4000,
+  })
+  assert.equal(missing.settled, 'spawn_error')
+  assert.equal(missing.errnoCode, 'ENOENT', `spawn failure reported ${missing.errnoCode}`)
+  assert.equal(missing.message, undefined, 'the transport leaked a message onto its result')
+})
+
+// ## Eight findings against the live probe, each reproduced for real
+//
+// A unit test of a helper proves nothing about a STREAM. Every test below that
+// claims to guard an async 'error' event spawns a real, separate OS process —
+// the real server for the output.write() case, a harness subprocess for the
+// child.stdin case — so an unguarded crash kills only that child, never this
+// test run, and the assertion is "did the child survive", not "was a guard
+// function called".
+
+test('serve() survives output.write() EPIPE — a host that disconnects mid-call does not take the whole server down', async () => {
+  const script = join(PLUGIN, 'skills', 'party-mode', 'scripts', 'acp-lanes-mcp.mjs')
+  const child = spawn(process.execPath, [script], { stdio: ['pipe', 'pipe', 'pipe'] })
+  try {
+    let out = ''
+    let stderr = ''
+    child.stdout.on('data', (d) => { out += d })
+    child.stderr.on('data', (d) => { stderr += d })
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' })}\n`)
+    const upDeadline = Date.now() + 5000
+    while (Date.now() < upDeadline && out.split('\n').filter(Boolean).length < 1) {
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    assert.equal(out.split('\n').filter(Boolean).length, 1,
+      'the server never answered an ordinary request before the pipe was broken')
+    // NOW break the pipe — the moral equivalent of piping the server through
+    // `head -c 10`, which is exactly how the finding measured this. Several
+    // writes follow so at least one lands after the close actually takes.
+    child.stdout.destroy()
+    for (let i = 0; i < 5; i += 1) {
+      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 10 + i, method: 'ping' })}\n`)
+      await new Promise((r) => setTimeout(r, 20))
+    }
+    await new Promise((r) => setTimeout(r, 500))
+    assert.equal(child.exitCode, null, `the server crashed on a write to a closed pipe: ${stderr}`)
+    assert.equal(child.signalCode, null, `the server was killed rather than surviving: ${stderr}`)
+    assert.ok(!/Unhandled ['"]error['"] event|write EPIPE/.test(stderr),
+      `an unhandled stream error reached the process: ${stderr}`)
+  } finally {
+    child.kill('SIGKILL')
+  }
+})
+
+test('realProbeTransport survives child.stdin.write() EPIPE — a child that closes stdin while staying alive does not crash the caller', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-stdin-epipe-'))
+  try {
+    const targetUrl = pathToFileURL(
+      join(PLUGIN, 'skills', 'party-mode', 'scripts', 'acp-lanes-mcp.mjs')).href
+    const stub = join(dir, 'close-after-initialize.cjs')
+    // Answers `initialize`, THEN closes its own fd 0 and stays alive. The
+    // close happens causally AFTER the parent's first write already landed —
+    // it rides on the reply the parent must first receive and act on — so the
+    // parent's NEXT write (session/new) is guaranteed to hit a closed pipe,
+    // rather than racing an unconditional close against process startup.
+    writeFileSync(stub, [
+      "const fs = require('fs')",
+      "const readline = require('readline')",
+      "const rl = readline.createInterface({ input: process.stdin })",
+      "rl.on('line', (line) => {",
+      '  let message',
+      '  try { message = JSON.parse(line) } catch { return }',
+      "  if (message.method === 'initialize') {",
+      "    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id,",
+      "      result: { protocolVersion: 1 } }) + '\\n')",
+      '    fs.closeSync(0)',
+      '  }',
+      '})',
+      'setInterval(() => {}, 1000)',
+    ].join('\n'))
+    const harness = join(dir, 'harness.mjs')
+    // Runs realProbeTransport in ITS OWN process: if the fix is missing, the
+    // unhandled 'error' event crashes THIS harness, not the test runner —
+    // exactly the isolation an in-process call could not give us.
+    writeFileSync(harness, [
+      `import { realProbeTransport } from ${JSON.stringify(targetUrl)}`,
+      'const result = await realProbeTransport({',
+      `  command: [process.execPath, ${JSON.stringify(stub)}],`,
+      '  env: process.env,',
+      '  bootTimeoutMs: 1500, replyTimeoutMs: 1500,',
+      '})',
+      "process.stdout.write('RESULT:' + JSON.stringify(result) + '\\n')",
+    ].join('\n'))
+    const out = spawnSync(process.execPath, [harness], { encoding: 'utf8', timeout: 8000 })
+    assert.equal(out.status, 0,
+      `the harness crashed instead of the promise settling: ${out.stderr}`)
+    assert.ok(!/Unhandled ['"]error['"] event|write EPIPE/.test(out.stderr ?? ''),
+      `an unhandled EPIPE reached the process: ${out.stderr}`)
+    const line = (out.stdout ?? '').split('\n').find((l) => l.startsWith('RESULT:'))
+    assert.ok(line, `realProbeTransport never settled — stdout=${out.stdout} stderr=${out.stderr}`)
+    const result = JSON.parse(line.slice('RESULT:'.length))
+    assert.equal(result.settled, 'timeout',
+      'a child that answered once and then closed its stdin should time out, not crash first')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a quota signal split across two stderr chunks is still detected, not defeated by chunk boundaries', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-quota-split-'))
+  try {
+    const script = join(dir, 'split-quota.cjs')
+    // Two ordinary, separate writes with a real gap between them — the shape
+    // the finding measured splitting across 'data' events at a high rate.
+    // Neither half alone ('resource_' / 'exhausted') matches QUOTA_SIGNAL.
+    writeFileSync(script, [
+      "process.stderr.write('resource_')",
+      "setTimeout(() => { process.stderr.write('exhausted'); process.exit(1) }, 50)",
+    ].join('\n'))
+    const result = await realProbeTransport({
+      command: [process.execPath, script], env: process.env, bootTimeoutMs: 4000, replyTimeoutMs: 4000,
+    })
+    assert.equal(result.settled, 'exit')
+    assert.equal(result.quotaSignal, true,
+      'a quota signal split across two writes was missed by testing each chunk in isolation')
+    assert.equal(classifyProbe(result), 'quota_exhausted')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a JSON-RPC error on session/prompt while quota is already signalled settles immediately, not after the full probe timeout', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-refused-quota-'))
+  try {
+    const script = join(dir, 'refuse-and-stay-alive.cjs')
+    // Answers the handshake, prints a quota-shaped line, then answers
+    // session/prompt with a JSON-RPC ERROR and never exits — an adapter
+    // idling for more input, not one that died mid-turn.
+    writeFileSync(script, [
+      "const readline = require('readline')",
+      "process.stderr.write('429 rate limited, please retry later\\n')",
+      "const rl = readline.createInterface({ input: process.stdin })",
+      "rl.on('line', (line) => {",
+      '  let message',
+      '  try { message = JSON.parse(line) } catch { return }',
+      '  const reply = (result) => process.stdout.write(',
+      "    JSON.stringify({ jsonrpc: '2.0', id: message.id, result }) + '\\n')",
+      "  if (message.method === 'initialize') reply({ protocolVersion: 1 })",
+      "  else if (message.method === 'session/new') reply({ sessionId: 'stub' })",
+      "  else if (message.method === 'session/prompt') {",
+      '    process.stdout.write(JSON.stringify({',
+      "      jsonrpc: '2.0', id: message.id, error: { code: -32000, message: 'refused' } }) + '\\n')",
+      '  }',
+      '})',
+    ].join('\n'))
+    const started = Date.now()
+    const result = await realProbeTransport({
+      command: [process.execPath, script], env: process.env, bootTimeoutMs: 6000, replyTimeoutMs: 6000,
+    })
+    const elapsed = Date.now() - started
+    assert.ok(elapsed < 2000,
+      `settling an already-signalled refusal took ${elapsed}ms — it must not wait for the full timeout`)
+    assert.equal(result.settled, 'refused')
+    assert.equal(result.quotaSignal, true)
+    assert.equal(classifyProbe(result), 'quota_exhausted')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('finish() does not settle until a killed child has actually exited', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-finish-waits-'))
+  const pidFile = join(dir, 'pid')
+  try {
+    const script = join(dir, 'ignore-term.cjs')
+    // Ignores SIGTERM on purpose, forcing the kill ladder all the way to
+    // SIGKILL — a `finish()` that settles as soon as it SENDS a signal, rather
+    // than once the child's own 'exit' event confirms it, resolves while this
+    // process is still alive.
+    writeFileSync(script, [
+      "const fs = require('fs')",
+      `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))`,
+      "process.on('SIGTERM', () => {})",
+      'setInterval(() => {}, 1000)',
+    ].join('\n'))
+    // 2000ms, not 300ms: the probe's deadline is also all the time the child
+    // has to BOOT and write its pid. Under full-suite load node had not started
+    // yet, and the sibling descendant test failed the same way on the first
+    // quiet full run of this release.
+    const result = await realProbeTransport({
+      command: [process.execPath, script], env: process.env, bootTimeoutMs: 2000, replyTimeoutMs: 2000,
+    })
+    // `boot_timeout`, not `timeout`: this wrapper never speaks ACP at all, so
+    // `initialize` is never answered and the reply budget is never armed. What
+    // this test is about is the REAPING below, and the code only has to be the
+    // one a non-answering wrapper really produces.
+    assert.equal(result.settled, 'boot_timeout')
+    assert.ok(existsSync(pidFile),
+      'the child was reaped before it could write its pid, so this test proved nothing — raise the probe budgets')
+    const pid = Number(readFileSync(pidFile, 'utf8'))
+    // POLL, and here is why that does not weaken the claim. This test failed
+    // once for a subagent and could not be reproduced by the caller — 3/3 alone
+    // at load 7.3, 2/2 over the file, 2/2 in the full suite — and was carried as
+    // OPEN and unreproduced. A later agent found the cause independently while
+    // hitting it in a test of its own: a SIGKILLed process stays a ZOMBIE, still
+    // answering `kill(pid, 0)`, for a few milliseconds until libuv reaps it. The
+    // single immediate check read that window as "still alive".
+    //
+    // A bounded poll is sound HERE specifically: this child ignores SIGTERM and
+    // otherwise loops forever, so the only thing that can end it is the SIGKILL
+    // `finish()`'s own ladder sends. Nothing else could make the pid disappear
+    // during the poll, so "gone within 500ms of finish() returning" still proves
+    // finish() drove the kill to completion. Do not copy this poll to a test
+    // whose child can exit on its own — there it WOULD weaken the claim.
+    const gone = await waitForPidGone(pid, 500)
+    assert.equal(gone, true,
+      'realProbeTransport resolved while the killed child was still alive — probeLanes\' next lane could start spawning over it')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a session/prompt that completes with stopReason cancelled is not reported reachable', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-cancelled-'))
+  try {
+    const script = join(dir, 'cancelled-turn.cjs')
+    writeFileSync(script, [
+      "const readline = require('readline')",
+      "const rl = readline.createInterface({ input: process.stdin })",
+      "rl.on('line', (line) => {",
+      '  let message',
+      '  try { message = JSON.parse(line) } catch { return }',
+      '  const reply = (result) => process.stdout.write(',
+      "    JSON.stringify({ jsonrpc: '2.0', id: message.id, result }) + '\\n')",
+      "  if (message.method === 'initialize') reply({ protocolVersion: 1 })",
+      "  else if (message.method === 'session/new') reply({ sessionId: 'stub' })",
+      "  else if (message.method === 'session/prompt') reply({ stopReason: 'cancelled' })",
+      '})',
+    ].join('\n'))
+    const result = await realProbeTransport({
+      command: [process.execPath, script], env: process.env, bootTimeoutMs: 4000, replyTimeoutMs: 4000,
+    })
+    assert.equal(result.settled, 'cancelled',
+      'a completed round trip carrying stopReason cancelled was reported the same as a real answer')
+    assert.notEqual(classifyProbe(result), null, 'a cancelled turn was classified reachable')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a spawn failure from a non-executable file is EACCES, told apart from ENOENT', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-eacces-'))
+  try {
+    const notExecutable = join(dir, 'not-executable')
+    writeFileSync(notExecutable, '#!/bin/sh\necho hi\n')
+    chmodSync(notExecutable, 0o644) // exists, but no execute bit for anybody
+    const result = await realProbeTransport({
+      command: [notExecutable], env: process.env, bootTimeoutMs: 4000, replyTimeoutMs: 4000,
+    })
+    assert.equal(result.settled, 'spawn_error')
+    assert.equal(result.errnoCode, 'EACCES', `spawn failure reported ${result.errnoCode}`)
+    assert.equal(classifyProbe(result), 'executable_unusable',
+      'a permission problem was classified the same as a missing file')
+    assert.notEqual(classifyProbe(result), 'executable_missing')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an EACCES spawn failure reaches the operator with its own sentence and its own fixes, not the missing-file one', async () => {
+  const bare = { HOME: '/definitely/nonexistent', PATH: process.env.PATH }
+  const transport = async () => ({ settled: 'spawn_error', errnoCode: 'EACCES' })
+  const { payload } = await callProbe({ lanes: ['claude'] }, bare, transport)
+  const [lane] = payload.lanes
+  assert.equal(lane.problem.code, 'executable_unusable')
+  assert.equal(lane.problem.detail, DIAGNOSTICS.executable_unusable)
+  assert.notEqual(lane.problem.detail, DIAGNOSTICS.executable_missing,
+    'an EACCES failure was told with the "not found" sentence, which is false for a file that exists')
+  assert.ok(lane.fixes.length > 0, 'an EACCES failure produced no fix at all')
+})
+
+test('a session/new success with no sessionId settles immediately as an invalid handshake, not after the full probe timeout', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-no-sessionid-'))
+  try {
+    const script = join(dir, 'no-session-id.cjs')
+    writeFileSync(script, [
+      "const readline = require('readline')",
+      "const rl = readline.createInterface({ input: process.stdin })",
+      "rl.on('line', (line) => {",
+      '  let message',
+      '  try { message = JSON.parse(line) } catch { return }',
+      '  const reply = (result) => process.stdout.write(',
+      "    JSON.stringify({ jsonrpc: '2.0', id: message.id, result }) + '\\n')",
+      "  if (message.method === 'initialize') reply({ protocolVersion: 1 })",
+      "  else if (message.method === 'session/new') reply({})",
+      '  // Never answers session/prompt, never exits.',
+      '})',
+    ].join('\n'))
+    const started = Date.now()
+    const result = await realProbeTransport({
+      command: [process.execPath, script], env: process.env, bootTimeoutMs: 6000, replyTimeoutMs: 6000,
+    })
+    const elapsed = Date.now() - started
+    assert.ok(elapsed < 2000,
+      `settling an invalid handshake took ${elapsed}ms — it must not wait for the full probe timeout`)
+    assert.equal(result.settled, 'invalid_handshake')
+    assert.equal(classifyProbe(result), 'unclassified')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// Round eight of the review of record asked whether a THIRD stream could still
+// emit an unhandled 'error', and the answer was two: `child.stderr` and
+// `child.stdout` carried only 'data' listeners. `child.on('error')` is the
+// ChildProcess, not either stdio Socket, so a read fault on one of them takes
+// the whole MCP server down — the same class already fixed twice in this file
+// and, it turned out, still open in five more places across the shipped tree.
+//
+// The error is INJECTED rather than waited for: a natural read fault on a pipe
+// is not something a test can schedule, and what is under test is the presence
+// of the listener, not the operating system.
+test('realProbeTransport survives an error on the child stdout and stderr streams', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-stream-error-'))
+  try {
+    const targetUrl = pathToFileURL(
+      join(PLUGIN, 'skills', 'party-mode', 'scripts', 'acp-lanes-mcp.mjs')).href
+    const stub = join(dir, 'quiet.cjs')
+    writeFileSync(stub, "setInterval(() => {}, 1000)\n")
+    for (const stream of ['stdout', 'stderr']) {
+      const harness = join(dir, `harness-${stream}.mjs`)
+      // The transport is called with a spawnFn that hands back the real child
+      // and then emits an error on the named stream once the listeners are
+      // attached. If the listener is missing this harness dies; the test
+      // runner never sees it, which is the whole point of the extra process.
+      writeFileSync(harness, [
+        `import { realProbeTransport } from ${JSON.stringify(targetUrl)}`,
+        "import { spawn } from 'node:child_process'",
+        'const spawnFn = (...args) => {',
+        '  const child = spawn(...args)',
+        `  setTimeout(() => child.${stream}.emit('error', Object.assign(new Error('injected'), { code: 'EIO' })), 150)`,
+        '  return child',
+        '}',
+        'const result = await realProbeTransport({',
+        `  command: [process.execPath, ${JSON.stringify(stub)}],`,
+        '  env: process.env,',
+        '  bootTimeoutMs: 1200, replyTimeoutMs: 1200,',
+        '  spawnFn,',
+        '})',
+        "process.stdout.write('RESULT:' + JSON.stringify(result) + '\\n')",
+      ].join('\n'))
+      const out = spawnSync(process.execPath, [harness], { encoding: 'utf8', timeout: 9000 })
+      assert.equal(out.status, 0,
+        `an error on child.${stream} crashed the process: ${out.stderr}`)
+      assert.ok(!/Unhandled ['"]error['"] event/.test(out.stderr ?? ''),
+        `an unhandled 'error' from child.${stream} reached the process: ${out.stderr}`)
+      const line = (out.stdout ?? '').split('\n').find((l) => l.startsWith('RESULT:'))
+      assert.ok(line, `the transport never settled after a child.${stream} error: ${out.stdout}${out.stderr}`)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 })
+  }
+})
+
+// `sessionId: {}` is truthy, so a guard written as `!session?.sessionId` let a
+// malformed handshake through and the lane came back `reachable` — an
+// actionable lie from the one tool whose job is classifying reachability.
+// Found by round eight. The cases are written out rather than looped from a
+// list, and `42` and `true` are here because the FIRST repair used a bare
+// regex: `RegExp.test` coerces, so both passed it.
+test('a handshake whose sessionId is not a well-formed string is invalid, not reachable', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-bad-session-'))
+  try {
+    // Driven through the real transport, because the point is not what
+    // `classifyProbe` does with `invalid_handshake` — that was already true
+    // before the repair — but that a malformed handshake REACHES it instead of
+    // sailing on to a `response`. `42` and `true` are here because the first
+    // repair used a bare regex and `RegExp.test` coerces, so both passed it.
+    for (const bad of ['{}', '42', 'true', '""', '"-leading-dash"']) {
+      const stub = join(dir, `stub-${Buffer.from(bad).toString('hex')}.cjs`)
+      writeFileSync(stub, [
+        "const readline = require('readline')",
+        "const rl = readline.createInterface({ input: process.stdin })",
+        "const say = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n')",
+        "rl.on('line', (line) => {",
+        '  let m; try { m = JSON.parse(line) } catch { return }',
+        "  if (m.method === 'initialize') return say(m.id, { protocolVersion: 1 })",
+        `  if (m.method === 'session/new') return say(m.id, { sessionId: ${bad} })`,
+        "  if (m.method === 'session/prompt') return say(m.id, { stopReason: 'end_turn' })",
+        '})',
+        'setInterval(() => {}, 1000)',
+      ].join('\n'))
+      const result = await realProbeTransport({
+        command: [process.execPath, stub], env: process.env, bootTimeoutMs: 4000, replyTimeoutMs: 4000,
+      })
+      assert.equal(result.settled, 'invalid_handshake',
+        `sessionId ${bad} was accepted as a handshake: ${JSON.stringify(result)}`)
+      assert.equal(classifyProbe(result), 'unclassified',
+        `sessionId ${bad} was reported to a caller as ${classifyProbe(result)}`)
+    }
+    // And a well-formed one still completes, so the guard is not refusing
+    // everything and calling that a pass.
+    const good = join(dir, 'good.cjs')
+    writeFileSync(good, [
+      "const readline = require('readline')",
+      "const rl = readline.createInterface({ input: process.stdin })",
+      "const say = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n')",
+      "rl.on('line', (line) => {",
+      '  let m; try { m = JSON.parse(line) } catch { return }',
+      "  if (m.method === 'initialize') return say(m.id, { protocolVersion: 1 })",
+      "  if (m.method === 'session/new') return say(m.id, { sessionId: 'sess_ok' })",
+      "  if (m.method === 'session/prompt') return say(m.id, { stopReason: 'end_turn' })",
+      '})',
+      'setInterval(() => {}, 1000)',
+    ].join('\n'))
+    const ok = await realProbeTransport({
+      command: [process.execPath, good], env: process.env, bootTimeoutMs: 4000, replyTimeoutMs: 4000,
+    })
+    assert.equal(ok.settled, 'response', `a well-formed handshake was refused: ${JSON.stringify(ok)}`)
+    assert.equal(classifyProbe(ok), null, 'a completed probe should classify as reachable')
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 })
+  }
+})
+
+test('the probe session-id rule has not drifted from the companion it names as its source', () => {
+  // The shape itself, pinned literally: this file deliberately imports no
+  // sibling script, so the drift answer is an assertion that its copy of the
+  // companion's session-id rule still matches the companion's own.
+  const companion = readFileSync(
+    join(PLUGIN, 'skills', 'tmux-teams', 'scripts', 'acp-companion.mjs'), 'utf8')
+  const theirs = companion.match(/^const SESSION_ID_RE = (.+)$/m)
+  assert.ok(theirs, 'the companion no longer declares SESSION_ID_RE — the copy below has nothing to track')
+  const ours = readFileSync(
+    join(PLUGIN, 'skills', 'party-mode', 'scripts', 'acp-lanes-mcp.mjs'), 'utf8')
+    .match(/^const PROBE_SESSION_ID_RE = (.+)$/m)
+  assert.ok(ours, 'the probe no longer declares PROBE_SESSION_ID_RE')
+  assert.equal(ours[1], theirs[1],
+    'the probe copy of the session-id rule has drifted from the companion it names as its source')
+})
+
+// Round nine of the review of record: the survey that closed seven `data`
+// receivers never named a readline Interface, and Node FORWARDS an input
+// stream's error onto the Interface — so `input.on('error')` does not cover it.
+// Reproduced by the lane against the real `serve()` path on Node v24.18.1, and
+// reproduced again here: a minimal readline still exits 1 with
+// `Unhandled 'error' event` naming the Interface even when the underlying
+// stream already has a listener.
+//
+// `serve()` is called with an injectable `input`, so this drives the shipped
+// function rather than a copy of its shape.
+test('serve() survives an error forwarded onto its readline interface', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-serve-rl-error-'))
+  try {
+    const targetUrl = pathToFileURL(
+      join(PLUGIN, 'skills', 'party-mode', 'scripts', 'acp-lanes-mcp.mjs')).href
+    const harness = join(dir, 'harness.mjs')
+    writeFileSync(harness, [
+      `import { serve } from ${JSON.stringify(targetUrl)}`,
+      "import { PassThrough } from 'node:stream'",
+      'const input = new PassThrough()',
+      'const output = new PassThrough()',
+      'output.resume()',
+      '// An error listener on the INPUT, so this test cannot pass by way of the',
+      '// stream-level guard the previous round added.',
+      "input.on('error', () => {})",
+      'serve({ input, output })',
+      'setTimeout(() => {',
+      "  input.emit('error', Object.assign(new Error('injected'), { code: 'EIO' }))",
+      "  setTimeout(() => { process.stdout.write('SURVIVED\\n'); process.exit(0) }, 150)",
+      '}, 100)',
+    ].join('\n'))
+    const out = spawnSync(process.execPath, [harness], { encoding: 'utf8', timeout: 9000 })
+    assert.equal(out.status, 0,
+      `an error forwarded onto the readline interface crashed the server: ${out.stderr}`)
+    assert.ok(!/Unhandled ['"]error['"] event/.test(out.stderr ?? ''),
+      `an unhandled Interface error reached the process: ${out.stderr}`)
+    assert.match(out.stdout ?? '', /SURVIVED/,
+      `serve() did not survive the injected interface error: ${out.stdout}${out.stderr}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 })
+  }
+})
+
+// ## Second batch of confirmed findings against acp-lanes-mcp.mjs
+//
+// Every shipped lane launches its adapter through a package-runner wrapper
+// (`npx`/`bunx`), so the process `realProbeTransport` spawns is never the ACP
+// agent itself. Signalling only that wrapper's own pid reaped the wrapper and
+// left the descendant it launched running, still able to answer a timed-out
+// provider call while `probeLanes`'s sequential loop started the next lane —
+// contradicting its own one-budget-at-a-time comment. Reproduced with a real
+// wrapper process that spawns a real descendant, the same shape every shipped
+// lane actually launches, not a mock of one.
+test('realProbeTransport reaps a descendant left behind by a package-runner wrapper, not only the wrapper itself', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-descendant-'))
+  const pidFile = join(dir, 'descendant-pid')
+  try {
+    const descendant = join(dir, 'descendant.cjs')
+    // Ignores SIGTERM on purpose — the same shape as the existing
+    // "finish() does not settle until a killed child has actually exited"
+    // test, forcing the kill ladder all the way to SIGKILL so a signal
+    // delivered only to the wrapper (and never to this process) would leave
+    // it running indefinitely instead of merely slow to die.
+    writeFileSync(descendant, [
+      "process.on('SIGTERM', () => {})",
+      'setInterval(() => {}, 1000)',
+    ].join('\n'))
+    const wrapper = join(dir, 'wrapper.cjs')
+    // A wrapper that execs the real work as a SEPARATE process sharing its
+    // process group — exactly what `npx`/`bunx` do — and never itself speaks
+    // ACP, so the probe has nothing to read and must time out, the same as a
+    // real wrapper stalled resolving a package while its own child idles.
+    writeFileSync(wrapper, [
+      "const { spawn } = require('child_process')",
+      "const fs = require('fs')",
+      `const child = spawn(process.execPath, [${JSON.stringify(descendant)}], { stdio: 'ignore' })`,
+      `fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid))`,
+      'setInterval(() => {}, 1000)',
+    ].join('\n'))
+    // 2000ms, not the 300ms this was written with. The probe's deadline is
+    // also the wrapper's whole lifetime, and a node process that has not
+    // BOOTED yet has not spawned the descendant this test is about. At 300ms
+    // the full suite killed the wrapper before it wrote `descendant-pid`, and
+    // the test died on a raw ENOENT stack — measured on the first quiet full
+    // run after this landed, while the file alone had passed 79/79 twice.
+    // A too-short deadline here does not make the test flaky, it makes it
+    // VACUOUS: no descendant ever existed to survive a sweep.
+    const result = await realProbeTransport({
+      command: [process.execPath, wrapper], env: process.env, bootTimeoutMs: 2000, replyTimeoutMs: 2000,
+    })
+    // `boot_timeout`, not `timeout`: this wrapper never speaks ACP at all, so
+    // `initialize` is never answered and the reply budget is never armed. What
+    // this test is about is the REAPING below, and the code only has to be the
+    // one a non-answering wrapper really produces.
+    assert.equal(result.settled, 'boot_timeout')
+    // And say which thing failed. An ENOENT stack names a temp path and
+    // nothing else; this names the precondition, so a future shortening of
+    // the deadline is diagnosed in one line instead of read as a real defect.
+    assert.ok(existsSync(pidFile),
+      'the wrapper was reaped before it could spawn a descendant, so this test proved nothing about '
+      + 'the sweep — raise the probe budgets rather than reading this as a reaping failure')
+    const descendantPid = Number(readFileSync(pidFile, 'utf8'))
+    const gone = await waitForPidGone(descendantPid, 2000)
+    assert.equal(gone, true,
+      'realProbeTransport settled while the wrapper\'s descendant was still alive — '
+      + 'probeLanes\' next lane could start spawning over it')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// The sibling test above kills the wrapper (via timeout); this one lets it
+// exit ON ITS OWN — a quota refusal or an ordinary completed run — which is a
+// SEPARATE path through `finish()` (the `child.once('exit', ...)` listener,
+// not the kill branch). A sweep gated on "is the wrapper still alive" reaches
+// only the first shape and settles this one with no sweep at all: the
+// process group id stays valid — and a member of it can still be alive —
+// until every member is gone, not merely until the leader is.
+test('a wrapper that exits on its own does not leave its descendant behind, either', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-descendant-natural-exit-'))
+  const pidFile = join(dir, 'descendant-pid')
+  try {
+    const descendant = join(dir, 'descendant.cjs')
+    writeFileSync(descendant, [
+      "process.on('SIGTERM', () => {})",
+      'setInterval(() => {}, 1000)',
+    ].join('\n'))
+    const wrapper = join(dir, 'wrapper.cjs')
+    writeFileSync(wrapper, [
+      "const { spawn } = require('child_process')",
+      "const fs = require('fs')",
+      `const child = spawn(process.execPath, [${JSON.stringify(descendant)}], { stdio: 'ignore' })`,
+      `fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid))`,
+      'process.exit(1)',
+    ].join('\n'))
+    const result = await realProbeTransport({
+      command: [process.execPath, wrapper], env: process.env, bootTimeoutMs: 4000, replyTimeoutMs: 4000,
+    })
+    assert.equal(result.settled, 'exit',
+      'a wrapper that exited cleanly on its own was not read as an "exit" outcome')
+    const descendantPid = Number(readFileSync(pidFile, 'utf8'))
+    const gone = await waitForPidGone(descendantPid, 2000)
+    assert.equal(gone, true,
+      'realProbeTransport settled while a descendant of an ALREADY-EXITED wrapper was still alive')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// `rate_limit_exceeded` used to fall through QUOTA_SIGNAL entirely: `_` is a
+// word character, so the `\b` closing the `rate.?limit(?:ed)?` alternative
+// refused to match right after "limit" with "_exceeded" following it — even
+// though `insufficient_quota` and `resource_exhausted`, spelled out as their
+// own literal alternatives in the same regex, matched fine.
+test('the machine-readable rate_limit_exceeded error code is recognized as a quota signal', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-quota-underscore-'))
+  try {
+    const script = join(dir, 'rate-limit-exceeded.cjs')
+    writeFileSync(script, [
+      "process.stderr.write('rate_limit_exceeded')",
+      'process.exit(1)',
+    ].join('\n'))
+    const result = await realProbeTransport({
+      command: [process.execPath, script], env: process.env, bootTimeoutMs: 4000, replyTimeoutMs: 4000,
+    })
+    assert.equal(result.settled, 'exit')
+    assert.equal(result.quotaSignal, true,
+      'the machine-readable rate_limit_exceeded code was not recognized as a quota signal')
+    assert.equal(classifyProbe(result), 'quota_exhausted',
+      'a recognized quota signal on exit did not classify as quota_exhausted')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// A JSON-RPC SUCCESS carrying `{}` or `null` for session/prompt is not an
+// answer, and nothing validated the result's own shape before this fix — any
+// non-error result that was not `stopReason: 'cancelled'` fell into
+// `settled: 'response'`, reporting a lane that produced no answer as reachable.
+test('a malformed session/prompt result -- {} or null -- is not reported reachable', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-malformed-prompt-'))
+  try {
+    for (const bad of ['{}', 'null']) {
+      const stub = join(dir, `stub-${bad === '{}' ? 'empty' : 'null'}.cjs`)
+      writeFileSync(stub, [
+        "const readline = require('readline')",
+        "const rl = readline.createInterface({ input: process.stdin })",
+        "const say = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n')",
+        "rl.on('line', (line) => {",
+        '  let m; try { m = JSON.parse(line) } catch { return }',
+        "  if (m.method === 'initialize') return say(m.id, { protocolVersion: 1 })",
+        "  if (m.method === 'session/new') return say(m.id, { sessionId: 'sess_ok' })",
+        `  if (m.method === 'session/prompt') return say(m.id, ${bad})`,
+        '})',
+        'setInterval(() => {}, 1000)',
+      ].join('\n'))
+      const started = Date.now()
+      const result = await realProbeTransport({
+        command: [process.execPath, stub], env: process.env, bootTimeoutMs: 4000, replyTimeoutMs: 4000,
+      })
+      const elapsed = Date.now() - started
+      assert.ok(elapsed < 2000,
+        `a malformed prompt result ${bad} was not classified until close to the full probe timeout (${elapsed}ms)`)
+      assert.notEqual(result.settled, 'response',
+        `a session/prompt result of ${bad} was reported reachable: ${JSON.stringify(result)}`)
+      assert.equal(classifyProbe(result), 'unclassified',
+        `a malformed prompt result ${bad} was reported to a caller as ${classifyProbe(result)}`)
+    }
+    // And a well-formed one still completes — the guard must not be refusing
+    // everything and calling that a pass.
+    const good = join(dir, 'good.cjs')
+    writeFileSync(good, [
+      "const readline = require('readline')",
+      "const rl = readline.createInterface({ input: process.stdin })",
+      "const say = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n')",
+      "rl.on('line', (line) => {",
+      '  let m; try { m = JSON.parse(line) } catch { return }',
+      "  if (m.method === 'initialize') return say(m.id, { protocolVersion: 1 })",
+      "  if (m.method === 'session/new') return say(m.id, { sessionId: 'sess_ok' })",
+      "  if (m.method === 'session/prompt') return say(m.id, { stopReason: 'end_turn' })",
+      '})',
+      'setInterval(() => {}, 1000)',
+    ].join('\n'))
+    const ok = await realProbeTransport({
+      command: [process.execPath, good], env: process.env, bootTimeoutMs: 4000, replyTimeoutMs: 4000,
+    })
+    assert.equal(ok.settled, 'response', `a well-formed prompt result was refused: ${JSON.stringify(ok)}`)
+    assert.equal(classifyProbe(ok), null, 'a completed probe should classify as reachable')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// An 'error' on the child's OWN stdout stream was swallowed by an empty
+// listener that stopped the crash but settled nothing: every pending
+// `send()` request was left unresolved forever, so the probe rode the full
+// timeout out reporting `probe_timeout` even though the stream itself had
+// just proven no further JSON-RPC frame could ever arrive. Run through a
+// harness process the same way the sibling stream-crash test above does: an
+// unhandled 'error' from a missing listener would kill the HARNESS, not this
+// test runner, which is the point of the extra process. The stub here never
+// answers anything, so a fast settlement can only come from the injected
+// stream error, never from a reply racing it.
+test('an error on the child stdout stream settles the probe immediately as a transport failure, not after the full timeout', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-stdout-error-settles-'))
+  try {
+    const targetUrl = pathToFileURL(
+      join(PLUGIN, 'skills', 'party-mode', 'scripts', 'acp-lanes-mcp.mjs')).href
+    const stub = join(dir, 'quiet.cjs')
+    writeFileSync(stub, "setInterval(() => {}, 1000)\n")
+    const harness = join(dir, 'harness.mjs')
+    writeFileSync(harness, [
+      `import { realProbeTransport } from ${JSON.stringify(targetUrl)}`,
+      "import { spawn } from 'node:child_process'",
+      'const spawnFn = (...args) => {',
+      '  const child = spawn(...args)',
+      "  setTimeout(() => child.stdout.emit('error', Object.assign(new Error('injected'), { code: 'EIO' })), 150)",
+      '  return child',
+      '}',
+      'const started = Date.now()',
+      'const result = await realProbeTransport({',
+      `  command: [process.execPath, ${JSON.stringify(stub)}],`,
+      '  env: process.env,',
+      '  bootTimeoutMs: 4000, replyTimeoutMs: 4000,',
+      '  spawnFn,',
+      '})',
+      'const elapsed = Date.now() - started',
+      "process.stdout.write('RESULT:' + JSON.stringify({ ...result, elapsed }) + '\\n')",
+    ].join('\n'))
+    const out = spawnSync(process.execPath, [harness], { encoding: 'utf8', timeout: 12000 })
+    assert.equal(out.status, 0, `the harness crashed instead of the promise settling: ${out.stderr}`)
+    assert.ok(!/Unhandled ['"]error['"] event/.test(out.stderr ?? ''),
+      `an unhandled 'error' from child.stdout reached the process: ${out.stderr}`)
+    const line = (out.stdout ?? '').split('\n').find((l) => l.startsWith('RESULT:'))
+    assert.ok(line, `realProbeTransport never settled after a stdout stream error: ${out.stdout}${out.stderr}`)
+    const result = JSON.parse(line.slice('RESULT:'.length))
+    assert.equal(result.settled, 'transport_error',
+      `a stdout stream error was not classified as a transport failure: ${JSON.stringify(result)}`)
+    assert.ok(result.elapsed < 2000,
+      `an already-failed stdout stream still rode out toward the 4s probe timeout (${result.elapsed}ms)`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 })
+  }
+})
+
+// PR #71 inline comment 3835247727: `if (outBytes > OUT_CAP) return` used to
+// be an unconditional, permanent stop — every 'data' event after the cap is
+// crossed is discarded with nothing calling `finish`, including the chunk
+// that carries a VALID `session/prompt` reply. An adapter whose verbose
+// reasoning or progress notifications overrun the 2MB cap before its real
+// answer arrives therefore rode the probe out to the full timeout and was
+// reported `probe_timeout` — telling an operator the endpoint never replied
+// when it plainly had. The stub below floods well past OUT_CAP BEFORE
+// answering `session/prompt`, and never exits on its own, so only the
+// cap-crossing path (or the timeout, if the bug is still present) can ever
+// settle this probe.
+test('an adapter that overruns OUT_CAP settles the probe immediately, not after the full timeout, even when a valid reply follows the flood', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acp-probe-stdout-overflow-'))
+  try {
+    const stub = join(dir, 'flood.cjs')
+    writeFileSync(stub, [
+      "const readline = require('readline')",
+      "const rl = readline.createInterface({ input: process.stdin })",
+      "const say = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n')",
+      "rl.on('line', (line) => {",
+      '  let m; try { m = JSON.parse(line) } catch { return }',
+      "  if (m.method === 'initialize') return say(m.id, { protocolVersion: 1 })",
+      "  if (m.method === 'session/new') return say(m.id, { sessionId: 'sess_ok' })",
+      "  if (m.method === 'session/prompt') {",
+      '    // ~2.6MB of notification noise, well past the 2MB OUT_CAP, written',
+      '    // BEFORE the real reply — the exact shape the finding named.',
+      "    const junk = 'x'.repeat(65536)",
+      '    for (let i = 0; i < 40; i++) {',
+      "      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'thinking', params: { text: junk } }) + '\\n')",
+      '    }',
+      "    return say(m.id, { stopReason: 'end_turn' })",
+      '  }',
+      '})',
+      'setInterval(() => {}, 1000)',
+    ].join('\n'))
+    const started = Date.now()
+    const result = await realProbeTransport({
+      command: [process.execPath, stub], env: process.env, bootTimeoutMs: 6000, replyTimeoutMs: 6000,
+    })
+    const elapsed = Date.now() - started
+    assert.equal(result.settled, 'transport_error',
+      `an adapter that overran OUT_CAP before replying was settled as ${JSON.stringify(result)}, not a transport failure`)
+    assert.equal(classifyProbe(result), 'unclassified',
+      `an OUT_CAP overrun was reported as ${classifyProbe(result)} — indistinguishable from a real probe_timeout`)
+    assert.ok(elapsed < 3000,
+      `an adapter that overran OUT_CAP still took ${elapsed}ms to settle — crossing the cap must settle immediately, not ride the 6s deadline`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 })
+  }
+})

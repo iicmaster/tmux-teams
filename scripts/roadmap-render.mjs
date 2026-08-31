@@ -11,7 +11,7 @@
 // The output is DETERMINISTIC — no timestamps, no randomness, nothing derived
 // from the machine. The same source always renders the same bytes, which is
 // what lets `--record` pin a digest and mean it.
-import { readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -182,19 +182,72 @@ ${renderBody(markdown)}
 `
 }
 
+// Every published page in this repository has a tracked source, and this is the
+// list. It exists because two of the three pages did NOT: they were HTML written
+// by hand, went stale by a week, and nothing could notice. The roadmap got a
+// source first; the other two joined on 2026-08-14.
+// One spelling per page. `./ROADMAP.md` and `ROADMAP.md` are the same file and
+// used to produce different marker names, forking a page's publication record
+// in a way nothing would ever reconcile.
+export const normalisePage = (source) => String(source ?? '').replace(/^\.\//, '').replace(/\/+/g, '/').trim()
+
+export const PAGES = Object.freeze([
+  { source: 'ROADMAP.md', out: 'docs/roadmap.html', slug: 'tmux-teams-next-plan' },
+  {
+    source: 'plugins/tmux-teams/skills/tmux-teams/references/event-subscriptions.md',
+    out: 'docs/event-subscriptions.html',
+    slug: 'tmux-teams-ddd-reading',
+  },
+  { source: 'RELEASE-PLAN.md', out: 'docs/release-plan.html', slug: 'tmux-teams-release-plan' },
+])
+
 export function runRenderCli(argv = [], { root = process.cwd(), stdout = process.stdout } = {}) {
-  const outIndex = argv.indexOf('--out')
-  const outPath = outIndex >= 0 ? argv[outIndex + 1] : join(root, 'docs', 'roadmap.html')
+  // Both forms. `--out=<path>` used to be dropped silently — `indexOf('--out')`
+  // never matches it — so a caller who asked for a different output got the
+  // declared page written instead, which is the same "accepts an instruction and
+  // ignores it" shape as the `--record=` bug next door. Found by three lanes.
+  const outIndex = argv.findIndex((arg) => arg === '--out' || arg.startsWith('--out='))
+  const inlineOut = outIndex >= 0 && argv[outIndex].startsWith('--out=')
+    ? argv[outIndex].slice('--out='.length)
+    : null
+  const positional = argv.filter((arg, i) => !arg.startsWith('--') && argv[i - 1] !== '--out')
+  // A flag this CLI does not know is an error, not something to swallow. Both
+  // filters used to discard every `--`-prefixed argument silently, so `--outt=x`
+  // or a second `--out` went unmentioned and the caller got the declared page —
+  // the third instance today of accepting an instruction and ignoring it.
+  const unknownFlag = argv.find((arg) => arg.startsWith('--') && arg !== '--out' && !arg.startsWith('--out='))
+  if (unknownFlag) {
+    stdout.write(`roadmap-render: unknown flag ${unknownFlag}. Usage: roadmap-render.mjs [<source.md>] [--out <file>]\n`)
+    return 1
+  }
+  const source = normalisePage(positional[0] ?? 'ROADMAP.md')
+  const known = PAGES.find((page) => page.source === source)
+  // An unknown source is an ERROR, never the roadmap by default. It used to
+  // fall back to the roadmap's output path, so a typo — or the same file spelled
+  // `./ROADMAP.md` — rendered some other document straight over the published
+  // roadmap page. Three review lanes found it independently. `--out` still lets
+  // a caller render anything anywhere; what is refused is guessing.
+  if (!known && outIndex < 0) {
+    stdout.write(`roadmap-render: ${source} is not a declared page. Known pages:\n`)
+    for (const page of PAGES) stdout.write(`    ${page.source}\n`)
+    stdout.write('Pass --out <file> to render something that is not one of them.\n')
+    return 1
+  }
+  const outPath = outIndex >= 0 ? (inlineOut ?? argv[outIndex + 1]) : join(root, known.out)
   if (outIndex >= 0 && !outPath) {
     stdout.write('roadmap-render: --out needs a path\n')
     return 1
   }
   let markdown
-  try { markdown = readFileSync(join(root, 'ROADMAP.md'), 'utf8') } catch (error) {
-    stdout.write(`roadmap-render: cannot read ROADMAP.md: ${error.message}\n`)
+  try { markdown = readFileSync(join(root, source), 'utf8') } catch (error) {
+    stdout.write(`roadmap-render: cannot read ${source === 'ROADMAP.md' ? 'ROADMAP.md' : source}: ${error.message}\n`)
     return 1
   }
-  writeFileSync(outPath, renderRoadmap(markdown), 'utf8')
+  // The output directory may not exist — `docs/` is machine-local and ignored,
+  // so a fresh clone has none until something writes one.
+  mkdirSync(dirname(outPath), { recursive: true })
+  const title = markdown.match(/^#\s+(.+)$/m)?.[1]?.trim()
+  writeFileSync(outPath, renderRoadmap(markdown, title ? { title } : {}), 'utf8')
   stdout.write(`roadmap-render: wrote ${outPath}\n`)
   return 0
 }

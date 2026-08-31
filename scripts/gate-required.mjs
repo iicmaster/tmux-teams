@@ -46,9 +46,10 @@ export const DOC_ONLY = new Set(['HANDOFF.md', 'README.md', 'CLAUDE.md'])
 // deliberate rather than overlooked (raised as non-blocking by the release
 // panel, AGY lane, 2026-08-10). Widen it only alongside a case that proves the
 // widened pattern still cannot swallow a semantic change.
-// The SIX places the release flow bumps, and the ONLY files where a changed
+// The SEVEN places the release flow bumps, and the ONLY files where a changed
 // semver may be read as "just the version". Everything else with an `x.y.z` in
-// it goes to the panel.
+// it goes to the panel. (Said SIX until 2026-08-19; ROADMAP.md was the seventh
+// and had been in the flow, unguarded and uncounted, since 2026-08-14.)
 //
 // Blanking every `x.y.z` in every file was a bypass, not a convenience: a
 // shipped dependency pin moving from `@agentclientprotocol/claude-agent-acp@0.61.0`
@@ -57,12 +58,23 @@ export const DOC_ONLY = new Set(['HANDOFF.md', 'README.md', 'CLAUDE.md'])
 // the thing that exists to catch it. Measured, not argued (`whyGated` answered
 // `null`). Found by the release panel (codex lane, 2026-08-10, round 2).
 //
-// A seventh place will appear — five have already, each found by a reader
-// rather than by the flow — and until it is added here its bump requires the
+// An eighth place will appear — SEVEN have already, each found by a reader
+// rather than by the flow, the seventh being ROADMAP.md, which sat in the flow
+// unguarded and uncounted from 2026-08-14 until a lane bumped the other six and
+// watched the suite pass — and until it is added here its bump requires the
 // panel. That is the safe direction, and it is the direction this list is
 // wrong in on purpose.
 export const VERSION_FILES = new Set([
   '.claude-plugin/marketplace.json',
+  // ROADMAP.md joined the tracked files on 2026-08-13 and the release flow on
+  // 2026-08-14, and it carries `Current release: **x.y.z**`. It is NOT doc-only:
+  // its content is the source of a published page and a substantive edit to it
+  // must still be gated. Only the version DECLARATION is exempt, which is what
+  // this set means. Without it, bumping the version demanded a full three-model
+  // panel for a one-line number change — the exact "charges the same price for a
+  // documentation edit" failure this gate was scoped to prevent, reproduced by
+  // the first release after the file arrived.
+  'ROADMAP.md',
   'plugins/tmux-teams/.claude-plugin/plugin.json',
   'plugins/tmux-teams/plugin.json',
   'tests/plugin-structure.test.mjs',
@@ -70,8 +82,8 @@ export const VERSION_FILES = new Set([
   // is already in DOC_ONLY and that check runs first, so an entry here would be
   // unreachable — a line a reader would maintain believing it decided
   // something. Raised as non-blocking by the release panel (zai lane,
-  // 2026-08-10, round 4). The "six places" the release flow bumps is a count of
-  // string positions, not of files: `marketplace.json` carries two.
+  // 2026-08-10, round 4). The "seven places" the release flow bumps is a count
+  // of string positions, not of files: `marketplace.json` carries two.
 ])
 
 // Release semver only — no pre-release suffix. A `-rc1` therefore does NOT
@@ -109,7 +121,7 @@ const SEMVER = /\d+\.\d+\.\d+/g
 // round 4) in the fix for the round-3 version of the same defect.
 //
 // Anchored patterns need no URL guard: a URL cannot match either of them.
-// A seventh bump site will appear — five have already — and until its shape is
+// An eighth bump site will appear — seven have already — and until its shape is
 // listed here its bump requires the panel. That is the safe direction.
 // PER FILE, not one pool. A generic pool let the JSON shape be accepted inside
 // `tests/plugin-structure.test.mjs`, which is executable and full of fixture
@@ -134,6 +146,11 @@ const VERSION_DECLARATIONS = new Map([
   ['plugins/tmux-teams/.claude-plugin/plugin.json', [/^ {2}"version": "\d+\.\d+\.\d+",$/]],
   ['plugins/tmux-teams/plugin.json', [/^ {2}"version": "\d+\.\d+\.\d+",$/]],
   ['tests/plugin-structure.test.mjs', [/^const RELEASE_VERSION = '\d+\.\d+\.\d+'$/]],
+  // The roadmap declares it in prose, and that ONE shape is all this exempts.
+  // Every other line in the file — a phase row, an open item, a decision — is a
+  // change and goes to the panel, which is why the file is here rather than in
+  // DOC_ONLY.
+  ['ROADMAP.md', [/^Current release: \*\*\d+\.\d+\.\d+\*\*$/]],
 ])
 const declaresAVersion = (path, line) =>
   (VERSION_DECLARATIONS.get(path) ?? []).some((shape) => shape.test(line))
@@ -183,8 +200,10 @@ export function whyGated(file) {
   // Sorting is kept for the version files, where it is the point: two identical
   // lines both moving is a different diff from one moving, which a Set would
   // miss. A reorder inside those five files still exempts, and that is bounded
-  // and acceptable — they are two JSON manifests, a test constant and a README
-  // line, none of which have execution order.
+  // and acceptable — they are three JSON manifests, a test constant and
+  // ROADMAP.md's release line, none of which have execution order. (README.md
+  // carries the seventh place and is not in this set: it reaches the exemption
+  // through DOC_ONLY instead.)
   if (!VERSION_FILES.has(file.path)) return 'changes more than the version string'
 
   // EVERY changed line in a version file has to BE a version declaration. The

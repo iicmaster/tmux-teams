@@ -13,7 +13,7 @@ New here? Read this file top to bottom, then
 [how-it-works.md](plugins/tmux-teams/skills/tmux-teams/references/how-it-works.md)
 for the diagrams.
 
-Current release: **0.21.0** (`.claude-plugin/marketplace.json` and
+Current release: **0.37.0** (`.claude-plugin/marketplace.json` and
 `plugins/tmux-teams/.claude-plugin/plugin.json`). Upgrading from an earlier
 0.14.x release needs no change to an existing `graph.json` — the seat fields
 in ข้อ 2 (`adapter`, `effort`, `display_model`) and the files in ข้อ 6 are all
@@ -47,7 +47,7 @@ Authenticate `gh`/git first if your GitHub setup requires it.
 | Node 20+ with `npx` | the ACP adapters. CI exercises Node 20 and Node 24 |
 | `tmux` and the `codex` CLI | the tmux worker lane |
 | `bun` | the `agy` ACP adapter (`bunx antigravity-acp@1.0.0`) |
-| `/usr/bin/bwrap` (Linux) | party-mode's 3-model review gate — it fails closed without it |
+| ~~`/usr/bin/bwrap`~~ | not used at all — removed 2026-08-24, see ADR 0006, so the gate runs on macOS and Linux without it |
 
 ### First run
 
@@ -239,6 +239,7 @@ work it has room for. One pass over the token ledgers decides, per token:
 | last event is `reviewed` `pass` (a delivery team's evaluator accepted it) | eligible to move |
 | last event is `intake` `accept` on the control team | eligible to move — admission is the claim, there is no artifact yet |
 | last leg `delivered` with a non-`done` terminal | `failed` — a rerun, not a handoff |
+| last leg `delivered` with terminal `blocked` | **escalated to a person** — a rerun would ask the same question again |
 | the ledger does not validate | `invalid` — every problem printed, nothing appended |
 | next team is under its WIP limit | `pulled`, signed by the **receiving** dispatcher |
 | next team is at its WIP limit | `blocked`, with the count, and the token stays put |
@@ -302,9 +303,18 @@ This is the most misunderstood part of the plugin.
 prior session), then **exactly one `session/prompt`**, and then waits for the
 worker's outbox file.
 
-There is **no channel for a person to type into a running worker session**. The
-companion's stdin is the JSON-RPC transport to the adapter, not a human input
-path. If you have seen this described as a live chat you can interject into, it
+There is **no channel for a person to type into a running worker session** on
+the ordinary dispatch path, which is every route but one. JSON-RPC travels on
+the ADAPTER's stdin, which the companion writes to; the companion's own stdin is
+read by nothing there. This sentence said the companion's stdin WAS the
+transport until a review lane read it against the two streams.
+
+The exception, added in v0.33.0, is `ACP_ENABLE_TERMINAL=1` login mode, so a
+person can finish an interactive provider login in the terminal the lane runs
+in. There the companion DOES read its own stdin and forwards it to the terminals
+it opened (`ensureTerminalStdinBridge` in `acp-companion.mjs`). That is still
+not a chat with the agent: the keystrokes reach the command the agent started,
+never the model. If you have seen this described as a live chat you can interject into, it
 is not that. Session continuity exists, but it is resume-by-id (`ACP_RESUME` +
 `session/load`, with prior-receipt lineage checks), not a conversation window.
 
@@ -389,15 +399,15 @@ relaying a person's words is expected to sign `human:` and name itself in
 
 ---
 
-## 4. The ten skills
+## 4. The thirteen skills
 
 **Setting up and running the loop**
 
 | Skill | Reach for it when |
 |---|---|
 | `tmux-teams:graph-setup` | first run, or the declaration is missing/rejected — interviews until `graph.json` is complete, then validates it |
+| `tmux-teams:lane-setup` | a review lane cannot start on this machine — reports what is missing per lane, writes the per-machine override, and re-checks that the lane became callable |
 | `tmux-teams:tmux-teams` | you are the PM: dispatch, completion detection, capture, the mailbox contract, the delivery loop |
-| `tmux-teams:codex-tmux-driver` | driving a live Codex TUI — its flags, calibrated markers, and dialog behavior |
 
 **Getting work done carefully**
 
@@ -406,17 +416,23 @@ relaying a person's words is expected to sign `human:` and name itself in
 | `tmux-teams:party-mode` | the umbrella: routes a request to one of the two lanes below |
 | `tmux-teams:party-auto` | executing multi-file or production-impacting work — planning, critique, file ownership, grill gate, verification, 3-model review |
 | `tmux-teams:party-advise` | advice, plan critique, tradeoff or risk review — read-only, never edits |
+| `tmux-teams:pm-delegation` | acting as PM over other agents — subagents or ACP lanes. One delegation or a whole spec: the brief contract, the STOP rule, and the autonomous run (tickets as a dependency graph, parallel implementers in worktrees, reviewed against the spec). Does not touch the delivery loop |
 | `tmux-teams:sqthink` | structured step-by-step analysis, comparison, or planning before deciding |
+| `tmux-teams:test-quality` | test-adequacy evidence contract for agent-authored code — CRAP as risk/triage signal, mutation testing as evidence, policy decision kept separate from evidence state. Contract only: no runner, no thresholds, no auto-execution |
 
 **Getting a second opinion**
 
 | Skill | Reach for it when |
 |---|---|
 | `tmux-teams:claude-advisor` | you want Claude's strongest model — pinned to `claude-fable-5`, model identity verified via `ACP_EXPECT_MODEL` |
-| `tmux-teams:codex-advisor` | you want a read from outside the Claude family — pinned to `gpt-5.6-sol` at `ultra` |
+| `tmux-teams:codex-advisor` | you want a read from outside the Claude family — `gpt-5.6-sol` by default, or `luna` / `terra`, always at `max` |
+| `tmux-teams:agy-advisor` | you want a third family — Gemini through Antigravity, `gemini-3.7-flash-high` by default |
 
-Both advisors return a round-table rather than a single voice, and both are
-read-only. Ask both on a hard call: where they disagree is the finding.
+**Three** advisors, added to over time — this said "Both advisors" while a third
+was shipping in the same release, which is how a reader comes to believe a seat
+does not exist. Each returns a round-table rather than a single voice and each is
+read-only. Ask more than one on a hard call: where they disagree is the finding,
+and two seats from the same vendor are not two families.
 
 **Closing out a session**
 
@@ -565,9 +581,15 @@ silently reviving it.
 One worker over ACP:
 
 ```bash
-node plugins/tmux-teams/skills/tmux-teams/scripts/acp-companion.mjs \
+node plugins/tmux-teams/skills/tmux-teams/scripts/acp-dispatch.mjs \
   codex <repo> <task-id> <brief-file> [stall-sec]
 ```
+
+`acp-dispatch.mjs` detaches the lane into its own process group and returns in
+seconds, so the calling shell's timeout is not the lane's deadline; running
+`acp-companion.mjs` directly puts it in the foreground, where it is. Ask
+`acp-dispatch.mjs status <repo> <task-id>` what happened, or
+`wait <repo> <task-id> [max-sec]` to block until the turn ends either way.
 
 The optional duration is an inactivity/stall lease, not a total task timeout;
 there is no wall-clock ceiling unless `ACP_HARD_TIMEOUT_SEC>0` is set. ACP
@@ -735,8 +757,11 @@ here is teams and workflows.
 
 party-mode's 3-model review uses its bundled JavaScript ACP gate
 (`plugins/tmux-teams/skills/party-mode/scripts/review-gate.mjs`), not `oc`/AGY/
-Codex review plugins or MCP review tools. On Linux it fails closed without
-`/usr/bin/bwrap`. It also needs the supported ACP reviewer runtimes:
+Codex review plugins or MCP review tools. It no longer requires
+`/usr/bin/bwrap`: ADR 0006 removed `osSandbox: 'bwrap'` from every shipped
+profile in 2026-08-13, and its 2026-08-24 amendment removed the machinery
+itself. There is no OS sandbox and no way to switch one back on; the gate runs
+on macOS and Linux alike. What it still checks never came from bwrap. It also needs the supported ACP reviewer runtimes:
 `antigravity-acp@1.0.0` + trusted `agy`, Qwen/Zai through the pinned
 Claude ACP adapter, and the Codex ACP adapter. `claude-zai` and `claude-qwen` must both use the
 pinned `@agentclientprotocol/claude-agent-acp` adapter with their machine-local
@@ -777,14 +802,22 @@ the source for its OpenClaw bridge. Codex and Claude load their own
 version-keyed plugin caches.
 
 1. Edit the skill under `plugins/tmux-teams/skills/` and commit here.
-2. Bump the version in **five files, six places**:
+2. Bump the version in **six files, seven places**:
    `.claude-plugin/marketplace.json` (twice — `metadata.version` and
    `plugins[0].version`), `plugins/tmux-teams/.claude-plugin/plugin.json`,
    `plugins/tmux-teams/plugin.json` (the vendor-neutral Agent Plugins manifest),
-   `RELEASE_VERSION` in `tests/plugin-structure.test.mjs`, and the
-   `Current release:` line above. That test is the only thing checking they
-   agree, so it has to state the number itself — and this list has been wrong at
-   every count so far, so **grep for the old number after every bump**.
+   `RELEASE_VERSION` in `tests/plugin-structure.test.mjs`, the
+   `Current release:` line above, and the `Current release:` line in
+   `ROADMAP.md`. That test is what checks they agree, so it has to state the
+   number itself — and this list has been wrong at every count so far, so
+   **grep for the old number after every bump**.
+
+   This paragraph said "five files, six places" and omitted ROADMAP.md while
+   CLAUDE.md said six and seven. A lane copied the checkout, bumped exactly the
+   five files named here, and the suite passed 21/21 with ROADMAP.md still on
+   the old version — a half-bump that a reader following this file would have
+   shipped. ROADMAP.md is guarded now, so the count and the test agree; note
+   that the test is what made the disagreement survivable, not the prose.
    This paragraph said "all three" while CLAUDE.md said five; a release reviewer
    found the contradiction, which is the fourth time a version location was
    found by a reader rather than by the process.

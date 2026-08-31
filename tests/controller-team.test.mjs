@@ -44,7 +44,7 @@ const GRAPH = {
 }
 
 const dirs = []
-test.after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }) })
+test.after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }) })
 
 function makeRepo() {
   const dir = mkdtempSync(join(tmpdir(), 'controller-team-'))

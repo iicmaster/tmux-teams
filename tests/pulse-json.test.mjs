@@ -38,7 +38,7 @@ function repo() {
 }
 
 test.afterEach(() => {
-  for (const dir of TEMP_REPOS) rmSync(dir, { recursive: true, force: true })
+  for (const dir of TEMP_REPOS) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 })
   TEMP_REPOS.clear()
 })
 

@@ -1541,6 +1541,17 @@ function nextStep(graph, team, item, { busy, busyTasks, nowMs, zombieSec, answer
         reason: `${last.agent_id} was refused for its declared model (${last.terminal}) — a rerun cannot change that, a human must fix the declaration`,
       }
     }
+    // `blocked` is TEAM_BLOCKED — the worker's own signal that a PERSON must
+    // decide, not a crashed leg. `failed` below would send it to `want(role)`
+    // and dispatch a fresh worker to ask the same question the first leg
+    // already answered; nothing about the token changes between legs, so
+    // escalate on the first one instead of spending more of them.
+    if (last.terminal === 'blocked') {
+      return {
+        action: 'escalate',
+        reason: `${last.agent_id} reported TEAM_BLOCKED — a person must act, a rerun would only ask the same question again`,
+      }
+    }
     const failed = last.event === 'lost' || (last.terminal && last.terminal !== 'done')
     if (failed) return want(role)
     if (role === 'worker') return want('evaluator')
@@ -2155,9 +2166,83 @@ export function planEscalation(repo, graph, items, plans, occupancy, { now = Dat
 // therefore refuses to pass it on. A test that needs the seam names it
 // deliberately through TMUX_TEAMS_ACP_CMD, which is an explicit dependency
 // rather than whatever the environment happened to be carrying.
+// ACP_ENABLE_TERMINAL is dropped for the reason `acp-companion.mjs` states in
+// its own comment: no ordinary caller, loop-runner included, may hand a lane the
+// terminal capability. It was reaching one from a shell that merely still had
+// the login-mode opt-in exported. `acp-dispatch.mjs` had the same shape and was
+// fixed one round earlier; this one stayed open because nobody went looking for
+// the second door after closing the first.
+// THE CRITERION IS BOUND-VERSUS-WIDEN, and it replaces "is it documented".
+// A review-of-record lane BLOCKED on the earlier rule, and it was right to: the
+// list was assembled by asking whether a name appeared in a SKILL.md, which is
+// circular — a knob is owned because nobody wrote it down, and nobody writes
+// down a knob that is owned. It also produced a wrong answer.
+//
+// Forwarded: a control that BOUNDS what a lane may do — how long it may run,
+// how long a cancellation waits, how a stall is handled. An operator setting
+// one is narrowing this loop's behaviour, and the P1 that produced this whole
+// section was a loop running with NO wall-clock ceiling because a bound the
+// operator set was silently dropped.
+//
+// Owned: anything that WIDENS what a lane can reach, or changes who it is.
+// ACP_ENV_PASSTHROUGH is the case that proves the criterion needed replacing.
+// It IS an operator control — `acp-companion.mjs`'s own comment calls it "the
+// operator's only route" past the adapter allowlist — so the documented-ness
+// rule got it wrong twice over: undocumented in any SKILL.md, and genuinely an
+// operator's. But it widens an allowlist rather than bounding a lane, and an
+// ambient `ACP_ENV_PASSTHROUGH=ANTHROPIC_API_KEY` would push a credential into
+// every lane's adapter environment from a shell nobody inspected. Owned.
+//
+// ACP_CANCEL_GRACE_SEC is a bound AND a live fallback: `acp-companion.mjs`
+// reads _MS and falls back to _SEC * 1000 when _MS is absent, so forwarding one
+// without the other would honour half a setting.
+//
+// ACP_TERMINAL_CLOSE_GRACE_MS and ACP_TERMINAL_KILL_GRACE_MS are bounds and are
+// still owned, for a reason that is not the criterion: they are INERT here. The
+// loop never enables the terminal capability — `ACP_ENABLE_TERMINAL` is dropped
+// below and a call-site test asserts a dispatched worker never receives it — so
+// forwarding them would advertise a knob that cannot do anything.
+export const LOOP_FORWARDED_ACP_CONTROLS = Object.freeze([
+  'ACP_CANCEL_GRACE_MS',
+  'ACP_CANCEL_GRACE_SEC',
+  'ACP_HARD_TIMEOUT_SEC',
+  'ACP_PROCESS_KILL_GRACE_MS',
+  'ACP_PROCESS_REAP_GRACE_MS',
+  'ACP_STALL_POLICY',
+])
+
 export function childEnv(source = process.env) {
-  const { ACP_CMD: _ambient, TMUX_TEAMS_ACP_CMD: injected, ...rest } = source
-  return injected ? { ...rest, ACP_CMD: injected } : rest
+  // Every ambient ACP_ variable is dropped EXCEPT the documented operator
+  // controls above, and the one this runner supplies is put back explicitly.
+  // Three doors of this shape were closed one review round apart — ACP_CMD,
+  // then ACP_ENABLE_TERMINAL, then ACP_SPAWN_NONCE — each fix naming the
+  // variable that had just been reported. Writing the guard as a SHAPE instead
+  // of a list immediately found five more: ACP_MODEL, ACP_EXPECT_MODEL,
+  // ACP_REASONING_EFFORT, ACP_RESUME and ACP_SESSION_OPERATION all reached a
+  // dispatched worker from whatever the operator's shell was carrying.
+  //
+  // AND THE SHAPE THEN CUT TOO WIDE — finding 3835247721, a P1 that this
+  // release's own fix created. Dropping the prefix dropped four controls the
+  // skill documents, so a loop launched with ACP_HARD_TIMEOUT_SEC ran with no
+  // wall-clock ceiling at all and said nothing. `tests/loop-smoke.test.mjs`
+  // supplied all four and never checked one arrived.
+  //
+  // Deny by default with a named exception is FAIL-CLOSED for a knob nobody
+  // has classified yet; filtering the dangerous classes instead would be
+  // fail-open for every name added after today. The list does not rot because
+  // `loop-runner-heartbeat-model.test.mjs` reads the companion's own source and
+  // refuses an ACP_ name that is in neither list.
+  //
+  // The model pair is the one that matters most, because `modelEnv()` returns
+  // {} for a seat declaring INHERIT_ACCOUNT_DEFAULT — the sentinel whose whole
+  // meaning is "request nothing". A leaked ambient ACP_MODEL therefore made
+  // that seat request something the graph never declared, and the identity
+  // check certified it as matched.
+  const forwarded = Object.fromEntries(Object.entries(source).filter(
+    ([key]) => !key.startsWith('ACP_') || LOOP_FORWARDED_ACP_CONTROLS.includes(key)))
+  const injected = source.TMUX_TEAMS_ACP_CMD
+  delete forwarded.TMUX_TEAMS_ACP_CMD
+  return injected ? { ...forwarded, ACP_CMD: injected } : forwarded
 }
 
 // codex BLOCKER 4 (retro-release-review round 5, 2026-08-04): a work item the

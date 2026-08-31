@@ -2,6 +2,11 @@
 
 ## Status
 
+**Superseded by its own amendment — 2026-08-24, on Master's instruction: "we
+will not use sandbox."** The 2026-08-13 decision below stopped SHORT of removal:
+it kept the machinery, kept it tested, and said turning it back on was one word.
+That halfway state is now closed. The code is gone. See "The amendment".
+
 Accepted — 2026-08-13, on Master's decision, after the room recommended it.
 
 ## Why this document exists
@@ -98,6 +103,96 @@ other way on evidence and on cost, not because the argument is weak.
 
 - Deleting the bwrap implementation. It stays, tested, opt-in.
 - Any change to the three-family requirement, the endpoint pins, or the
-  zero-tool contract. ADR 0001 is untouched — it never decided the sandbox; it
-  mentions bwrap once, in Consequences, as a platform requirement.
+  zero-tool contract.
+
+**Correction, 2026-08-19.** The sentence that stood here said ADR 0001 "never
+decided the sandbox" and "mentions bwrap once, in Consequences, as a platform
+requirement". Both halves are wrong, and a codex-advisor lane reading the two
+ADRs against each other found it: 0001 states in its Decision that on Linux each
+lane runs under bubblewrap with the target and host user-data roots hidden, a
+new PID namespace, a temporary workspace and an ephemeral home, and repeats the
+requirement in its Consequences. This ADR therefore SUPERSEDES that part of 0001
+rather than leaving it untouched, and 0001's Linux-sandbox statements are to be
+read through this one. The decision itself does not change — only the account of
+what it displaces, which was written from memory of the other document instead
+of from the document.
 - The macOS direct-ACP panel path, which is unchanged and already works.
+
+## The amendment — 2026-08-24
+
+**The sandbox is removed, not merely undeclared.**
+
+### What the halfway state actually cost
+
+The 2026-08-13 decision left the bwrap machinery in place "and still tested",
+on the reasoning that a profile could turn it back on with one word. Measured
+before removing it:
+
+- **No shipped profile declared `osSandbox`.** Zero, across all seven. Every
+  `profile.osSandbox === 'bwrap'` branch was dead on every path that runs.
+- **Four tests skipped themselves on every run**, gated on
+  `platform !== 'linux' || !existsSync('/usr/bin/bwrap')`. This repository's own
+  rule is that a skipped test is an UNEXECUTED GUARD, not a passing one. Those
+  four were the `4 skipped` that appeared at the end of every suite run for
+  months.
+- 257 lines of helper functions, plus an 87-line spawn branch and a 71-line
+  provider-state branch, reachable by nothing.
+
+"Retained and still tested" was true of the helpers and false of the thing they
+served: the sandbox itself was never exercised by any run on any machine here.
+
+### What was removed
+
+`acp-review-client.mjs` 1598 → 1157 lines. Gone: the bwrap spawn branch, the
+bubblewrap-required precondition, `prepareProviderState`'s sandbox half, and the
+helper cluster — `SANDBOX_MASKED_ROOTS`, `sandboxRebindRoots`,
+`needsSandboxStaging`, `sandboxStagedExecutables`, `swallowsStagingFailure`,
+`stageHomeExecutable`, `prepareSandboxResolver`, `rebindHomeSource`,
+`inspectAgySafeRead`, `canonicalSync`.
+
+`review-gate.mjs`: the isolation assertions that were conditional on `osSandbox`
+now assert the no-sandbox truth directly, and the sandbox-only
+`targetRepositoryCanonical` clause is gone.
+
+`tests/review-gate.test.mjs` 2254 → ~1580 lines, 27 test cases removed.
+
+**The suite now reports `1165 / 1165 pass / 0 fail / 0 skipped`.** The skip
+count reaching zero is the point: those four guards are no longer pretending.
+
+### Three guards were deleted by mistake and restored
+
+The filter used to find sandbox tests was "mentions bwrap", which is a proxy for
+the property, not the property. It caught three tests that only mentioned bwrap
+in a COMMENT or used a sandbox error string as a fixture:
+
+- a remote protocol error says what the remote said, redacted and on one line
+- a review carrying credential-shaped text is redacted and kept, not discarded
+- lanes that stop at one stage for different reasons are not announced as one
+
+All three are restored; the third's fixture and assertion use a different lane
+failure, since the bubblewrap precondition it named no longer exists. **This is
+the same mistake this repository keeps recording — filtering on a proxy instead
+of the property — and it was caught by reading the deletion list, not by a test.**
+
+### What this costs, stated as plainly as the original did
+
+The original ADR gave up OS-level filesystem confinement and said so. This
+amendment gives up the ability to get it back cheaply. Restoring a sandbox now
+means writing it again, not setting a field.
+
+Everything the gate still checks is unchanged and never came from bwrap: a
+temporary workspace, `toolCallsObserved: 0`, no built-in tools, no MCP servers,
+every permission denied, the endpoint pinned and verified in the PARENT before
+the child starts, and the packet redacted both ways.
+
+### The argument against, stated rather than omitted
+
+A review lane runs an external model against a prepared packet with the target
+repository visible on disk. Nothing at the OS level now stops a lane that
+decides to read outside its packet; only the ACP permission layer does, and that
+is the agent's own runtime rather than the kernel's. ADR 0001 assumed OS
+confinement when it was written and no longer gets it.
+
+If that trade stops being acceptable, the answer is a fresh sandbox designed for
+the platforms this project actually runs on — not the bwrap code that was
+removed, which never ran on any of them.

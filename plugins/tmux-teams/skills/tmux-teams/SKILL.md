@@ -1,6 +1,6 @@
 ---
 name: tmux-teams
-description: 'Use when acting as PM dispatching work to interactive CLI agents (codex, claude, claude-zai, opencode) inside tmux sessions — reliable prompt submission, completion detection, and output capture. Triggers: "สั่งงานผ่าน tmux", "ทีม codex/claude-zai", PM-via-tmux orchestration.'
+description: 'Drive interactive CLI agents (codex, claude, claude-zai, opencode) inside tmux — from ONE live session to a whole PM-run team. Reliable prompt submission, working/idle/approval state detection, completion detection, output capture, and session resume. Use when delegating coding work to a live Codex or Claude TUI, babysitting a long run, handling an approval prompt, or acting as PM over several mixed agents. Codex-specific flags, markers and dialog behaviour are in references/codex-tmux.md; for a one-shot headless codex run prefer codex exec. Triggers: "สั่งงานผ่าน tmux", "ขับ codex", "ทีม codex/claude-zai", PM-via-tmux orchestration.'
 ---
 
 # tmux-teams — orchestrating interactive CLI agents via tmux
@@ -9,9 +9,20 @@ Drive interactive TUI agents (codex / claude / claude-zai) as "teams": you plan
 and dispatch, teams execute. Every lesson below was paid for by a real failure.
 
 This skill owns the **generic protocol** (dispatch, completion, capture, PM
-discipline, mailbox pattern). Tool-specific facts live in per-tool driver skills
-and are the source of truth for that tool: **codex → `codex-tmux-driver`**
-(flags, calibrated markers, dialog behavior, notify caveats, slash commands).
+discipline, mailbox pattern) AND the tool-specific facts, because a tool's
+calibration is useless without the protocol it calibrates.
+
+Codex has enough of it to earn its own file:
+`references/codex-tmux.md` (flags, calibrated markers, dialog behavior, notify
+caveats, slash commands). claude-zai and opencode specifics stay inline below.
+
+**This file used to promise "per-tool driver skills" — plural — and only one
+ever existed.** Counted here before the collapse: codex 30 mentions and a driver
+skill of its own; claude-zai 3 and no driver; opencode 3 and no driver. An
+abstraction with one implementation, contradicted for every other tool it named.
+`codex-tmux-driver` was folded into `references/codex-tmux.md` rather than
+growing two more drivers, because the cost being paid was that nobody remembered
+the one that existed.
 
 ## 0. Delivery loop — declaration, custody, pull, tick
 
@@ -29,6 +40,7 @@ Read the system in this order:
 | `scripts/pull-controller.mjs` | receiver-owned pulls, route completion and WIP enforcement |
 | `scripts/loop-runner.mjs` | the ordered tick: harvest → pull → dispatch → escalate |
 | `scripts/acp-companion.mjs` | the ACP leg; its custody-ledger authority is limited to its own `assigned` and `delivered` events |
+| `scripts/acp-dispatch.mjs` | the operator's way in to that leg — detaches it into its own process group so the calling shell's cap is not the lane's deadline; `status <cwd> <task-id>` reads back liveness, outbox and the resume command, and `wait <cwd> <task-id> [max-sec]` blocks until the turn ends EITHER way. It imposes no deadline on a lane, including its own — the one thing it does kill is a lane whose pid or routing record could not be written, which would otherwise be a detached process with no way back to it |
 | `scripts/pulse.mjs` + `scripts/graph.mjs` + `scripts/kanban.mjs` | live transport, wiring and custody projections from the same evidence |
 | `scripts/kms.mjs` | immutable run memory; never a substitute for verification |
 
@@ -41,8 +53,16 @@ node <skill-root>/scripts/graph.mjs init <repo>
 node <skill-root>/scripts/graph.mjs check <repo>
 ```
 
-A missing declaration uses the bundled four-team template. A present but
-invalid declaration fails closed. WIP is always the worker count; it is not a
+**A missing declaration is not a default.** The bundled four-team template still
+LOADS, because the pages need something to draw while they explain what is
+missing — but the runner refuses to dispatch on it: `tick()` sees
+`graph.source === 'default'` and writes a heartbeat carrying
+`dispatching: false` and `no team graph declared`. This section said the
+template was simply used, with no qualifier, while `graph-setup/SKILL.md` said
+the opposite in the same breath and the code sided with graph-setup. Two panel
+families found the two files disagreeing.
+
+A present but invalid declaration fails closed. WIP is always the worker count; it is not a
 second number in the declaration. `inherit-account-default` requests no model
 and must never be displayed as a verified model.
 
@@ -240,7 +260,7 @@ echo TEAM_DONE
 
 - Run via Bash `run_in_background` (one team) or Monitor (streaming several).
 - Known done-markers as extra signal: claude prints `✻ Worked for Xs`; codex
-  markers/states are calibrated in `codex-tmux-driver` ข้อ 3 — use those verbatim.
+  markers/states are calibrated in `references/codex-tmux.md` ข้อ 3 — use those verbatim.
 - Always pair with a timeout; on "never started" warnings, first re-check the
   input box (see ข้อ 2) before assuming the team is slow.
 
@@ -350,7 +370,7 @@ versions submitted back-to-back.
 Design, delivery-loop script, and what does/doesn't transfer from the native
 feature: `references/teammates-messaging.md` (Part 3 = field-verified PoC results
 at the pattern level: round-trip, queueing proof, Enter-swallow every dispatch;
-codex-specific calibration lives in `codex-tmux-driver`).
+codex-specific calibration lives in `references/codex-tmux.md`).
 Proven loop: `scripts/deliver.sh`. If the whole team is Claude Code,
 consider native teams instead (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`,
 `--teammate-mode tmux`); this skill remains the path for mixed-tool teams.
@@ -420,7 +440,7 @@ is rejected by the adapter):
 
 ```bash
 ANTHROPIC_MODEL=claude-opus-4-8 \
-  node <skill-root>/scripts/acp-companion.mjs claude <repo> <task-id> <brief-file> [stall-sec]
+  node <skill-root>/scripts/acp-dispatch.mjs claude <repo> <task-id> <brief-file> [stall-sec]
 ```
 
 For a per-dispatch Codex choice, set `ACP_MODEL` and
@@ -442,7 +462,7 @@ ANTHROPIC_BASE_URL=https://api.kimi.com/coding/ \
 ANTHROPIC_AUTH_TOKEN="$KIMI_TOKEN" \
 ANTHROPIC_API_KEY= \
 ANTHROPIC_MODEL=k3 \
-  node <skill-root>/scripts/acp-companion.mjs claude <repo> <task-id> <brief-file> [stall-sec]
+  node <skill-root>/scripts/acp-dispatch.mjs claude <repo> <task-id> <brief-file> [stall-sec]
 ```
 
 The brief file carries the SAME ข้อ 6 contract text; the worker writes the same
@@ -455,7 +475,25 @@ is `suspected_stalled`; a second consecutive miss confirms `stalled`. Confirmed
 stalls and hard ceilings use one cancel-first coordinator (`session/cancel`,
 bounded grace/ACK observation, then TERM/KILL only if still unsettled). The
 `ACP_STALL_POLICY=report` mode remains observable and can recover without
-cancelling the ACP child. Snapshots use the exact `acp-liveness.v1` contract;
+cancelling the ACP child.
+
+**Which of these the LOOP forwards, and the rule that decides.** A loop leg is
+dispatched by `loop-runner.mjs`, which drops the ambient `ACP_*` environment so
+a shell that last ran a hand dispatch cannot silently reseat, resume or
+re-identify a lane. Six controls are forwarded and they are the whole set:
+`ACP_HARD_TIMEOUT_SEC`, `ACP_STALL_POLICY`, `ACP_CANCEL_GRACE_MS`,
+`ACP_CANCEL_GRACE_SEC`, `ACP_PROCESS_KILL_GRACE_MS`,
+`ACP_PROCESS_REAP_GRACE_MS`. The rule is **bound versus widen**: a control that
+BOUNDS what a lane may do is the operator's and is forwarded; anything that
+WIDENS what a lane can reach, or changes who it is, belongs to the runner and is
+dropped — `ACP_ENV_PASSTHROUGH` is an operator control everywhere else and is
+dropped here for exactly that reason. `ACP_TERMINAL_CLOSE_GRACE_MS` and
+`ACP_TERMINAL_KILL_GRACE_MS` are bounds and are dropped too, because the loop
+never enables the terminal capability and forwarding them would advertise a knob
+that cannot act. Set any of the six directly on the companion and it applies to
+that one dispatch; set one before a loop run and it applies to every leg.
+
+Snapshots use the exact `acp-liveness.v1` contract;
 the public projection is bounded to `tools` 64, `active_tools` 8,
 `stall_history` 32, and 64 KiB of UTF-8 JSON, with active tools selected first
 and deterministic compaction/fallback for terminal writes. Tool records are
@@ -469,7 +507,15 @@ cancel ACK, attempted/delivered TERM/KILL, child exit code/signal, child-settlem
 signal delivery, and descendant-only cleanup delivery separate. A clean child
 exit 0 remains `cancelled` when only descendant cleanup was signalled; descendant
 cleanup never reclassifies a clean child settlement as `stalled`/forced. Every
-terminal path closes and reaps the complete detached process group. `ACP_AGENT_ID`,
+terminal path closes and reaps the complete detached process group. **A login
+run drives at most ONE live terminal at a time**: a `terminal/create` while
+another is still live — neither exited nor released — is refused with an error
+naming the live id, rather than served. The stdin bridge delivers a keystroke to
+every live terminal, so two concurrent ones would hand the same login code to
+both children; the constraint is declared here rather than left an unstated
+assumption in a comment. A terminal stops being live the moment it exits or is
+released, so a sequential login flow — finish one command, open the next — is
+unaffected. `ACP_AGENT_ID`,
 when supplied, is validated and preserved as the stable
 Pulse identity; Codex children default to `INITIAL_AGENT_MODE=agent-full-access`
 unless the caller explicitly overrides it with `read-only`, `agent`, or
@@ -564,7 +610,7 @@ with a Vertex AI / AI Studio API key instead of OAuth.
 **Permissions (stall-tested 2026-07-20):** the two transports fail very
 differently here. On tmux, a TUI approval dialog SILENTLY STALLS the turn —
 deliver.sh can only WARN and wait — so workers MUST be launched with the
-right flags up front (codex approval/sandbox flags per codex-tmux-driver,
+right flags up front (codex approval/sandbox flags per `references/codex-tmux.md`,
 claude bypass-permissions, agy trust-once). On ACP there is no stall: under
 the most restrictive codex config (`approval_policy = "untrusted"` +
 `sandbox_mode = "read-only"`) the run still completed hands-free — approvals

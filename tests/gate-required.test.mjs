@@ -14,7 +14,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { DOC_ONLY, classifyRelease, parseDiff, whyGated } from '../scripts/gate-required.mjs'
+import { DOC_ONLY, VERSION_FILES, classifyRelease, parseDiff, whyGated } from '../scripts/gate-required.mjs'
 
 const file = (path, addedLines, removedLines) => ({ path, addedLines, removedLines })
 
@@ -475,4 +475,22 @@ test('a semver that is not THIS release version does not buy an exemption', () =
     ['    "version": "0.19.0"'], ['    "version": "0.18.2"'])), null)
   assert.equal(whyGated(file('tests/plugin-structure.test.mjs',
     ["const RELEASE_VERSION = '0.19.0'"], ["const RELEASE_VERSION = '0.18.2'"])), null)
+})
+
+test('a version-only bump to ROADMAP.md does not demand a panel', () => {
+  // It carries `Current release: **x.y.z**` and is neither doc-only nor, until
+  // 2026-08-14, a declared version file — so the first release after it joined
+  // the flow was gated on a one-line number change. Pinned literally as well,
+  // because a set is exactly the kind of constant a loop stops testing.
+  assert.equal(VERSION_FILES.has('ROADMAP.md'), true)
+  assert.equal(whyGated(file('ROADMAP.md',
+    ['Current release: **0.30.0**'],
+    ['Current release: **0.21.0**'])), null,
+    'a bare version bump in the roadmap was gated')
+
+  // And a real edit to it still is.
+  assert.notEqual(whyGated(file('ROADMAP.md',
+    ['Current release: **0.30.0**', '| **G** | started | something new |'],
+    ['Current release: **0.21.0**'])), null,
+    'a substantive roadmap change slipped through as a version bump')
 })

@@ -1,5 +1,89 @@
 # tmux-teams plugin repo — agent instructions
 
+<!-- bmad:context -->
+<!-- Verified 2026-08-16 against 7c97605. Managed by bmad-project-context;
+     edits inside this block are replaced on refresh. Keep anything you want
+     preserved outside the markers. -->
+
+## tmux-teams
+
+A Claude Code directory marketplace shipping one plugin, and the canonical
+source of the skills it bundles. Node with no dependencies; `node --test` is the
+whole test story and CI runs it on Node 20 and 24. **`ROADMAP.md` is the standing
+goal** — the phases, what is open and what is closed — so read it before choosing
+work. Everything below this block is the casebook: the same rules carrying the
+dates and measurements that produced them.
+
+## Policy
+
+- Ship a release as a pull request; never push a release to `main`. Merge on CI
+  green plus the `chatgpt-codex-connector` review. Only Master waives that, and
+  the waiver is recorded on the PR and in the release notes.
+- Three distinct model families read the release diff before a version is
+  stamped. `node scripts/gate-required.mjs` decides when it is owed — `0` exempt,
+  `2` required.
+- Push as `iicmaster`; run `gh auth switch --user iicmaster` first. The active
+  account is often `ngs-th`, which has read access here, and the `fork` remote
+  accepts its push without complaining.
+- Commit no secret, token, customer data, or machine-only path.
+- `~/agent-skills` is a separate repository on a different account. Touch only
+  `plugins/tmux-teams` there, with `git commit --only -- <path>`; other people's
+  work sits staged in it.
+
+## Where things are
+
+- The goal is `ROADMAP.md`; the state of play between sessions is `HANDOFF.md`.
+- Shipped skills live in `plugins/tmux-teams/skills/` — this repo is their
+  source, not a mirror of one.
+- Decisions that are not up for re-litigation: `plugins/tmux-teams/docs/adr/`.
+- Three pages publish from tracked sources through `scripts/roadmap-render.mjs`
+  and are gated per page by `scripts/roadmap-gate.mjs`.
+
+## Running and verifying
+
+- Run `node --test` with no path. A bare `node --test tests/` fails on Node 24
+  with MODULE_NOT_FOUND; pass a glob or nothing.
+- Gate on the count, not on a grep: piping the suite to `grep '✖'` exits 0 when
+  it finds failures. Assert `grep -q '^ℹ fail 0$'` instead.
+- Read the skipped count as unexecuted rather than passing; four tests skip
+  themselves off Linux.
+- Run the suite on a quiet machine. Measured beside ACP lanes or parallel
+  agents, it measures the contention.
+- `node scripts/run-fast.mjs fast` is an inner tier covering no ACP, CLI,
+  publisher or schema behaviour; run the full suite before committing.
+- Run `node scripts/gate-required.mjs` only after committing. It reads
+  `<last-tag>..HEAD`, cannot see the working tree, and answers EXEMPT with the
+  same confidence it answers REQUIRED.
+
+## Conventions that differ from defaults
+
+- Put no backtick in any exported string whose name ends in `CSS` or `SCRIPT`;
+  one inside a comment closes the template literal and the module stops parsing
+  far from the cause.
+- A scripted edit asserts its anchor before writing (`assert old in s`) — a
+  replace that matches nothing writes the file unchanged and tells nobody.
+- Bumping a version touches six files in seven places; grep the old number
+  afterwards, because the seventh was found by grepping and not by reading a list.
+
+## Known pitfalls
+
+- Build a review packet from the file list `scripts/gate-required.mjs` prints rather than
+  from memory; three of four panels for one release each missed the same two
+  files while every lane answered 3/3.
+- Reach for the built-in `advisor` to shape an approach, a `codex-advisor` lane
+  to attack finished bytes, and the three-family panel last as the record. The
+  panel is forbidden to run anything; an advisor lane can, and has blocked
+  changes the panel passed.
+- Test a boot path by booting it. `import.meta.url` is percent-encoded and Node
+  resolves it through symlinks, so comparing it against `argv[1]` fails on a path
+  containing a space and again on macOS `/var`.
+- Assert the sentence a diagnostic should produce, never that it produced
+  something; a non-empty wrong answer is worse than an empty one because it
+  sounds specific.
+- Report a measured outcome, never the constant you edited.
+
+<!-- /bmad:context -->
+
 This repo is a **Claude Code directory marketplace** delivering one plugin
 (`tmux-teams`, see `plugins/tmux-teams/`) — and it is the **canonical source**
 of its bundled skills. Edit them directly under
@@ -9,6 +93,16 @@ count written in prose here rots the first time one is added, and said "six"
 while nine were shipping. (Flipped 2026-07-21: agent-skills commit
 `dd43dc1` vendored this repo as the authoritative submodule and deleted its
 own `skills/shared/tmux-teams`; the old mirror/sync flow is gone.)
+
+## What to work on
+
+**`ROADMAP.md` is the standing goal, not a status page** — the phases, what is
+open, and what is closed are all in it, and it is tracked and gated for exactly
+that reason. Read it before asking anyone what to work on. On 2026-08-16 a
+session edited that file twice, ran its gate three times, published it, and then
+told Master there was no goal set. Work that arrives as a direct instruction and
+is not on the roadmap belongs on it before the session ends, or the next reader
+inherits a goal document that does not know what happened.
 
 ## Commands
 
@@ -20,6 +114,7 @@ claude plugin validate --strict .  # manifest validation
 node scripts/gate-required.mjs     # does this release owe the three-model panel? 0=exempt 2=required
 node scripts/roadmap-gate.mjs      # is the published roadmap page behind ROADMAP.md? 0=current 2=stale
 node scripts/roadmap-render.mjs    # ROADMAP.md -> docs/roadmap.html, deterministic, no deps
+node scripts/portable-root.mjs <dir>  # agent-plugins/ root copied out with its symlinks resolved
 ```
 
 `node scripts/run-fast.mjs fast` uses an explicit allowlist and prints every
@@ -117,7 +212,14 @@ one SSOT** and wins if the two ever disagree.
 
 ## Model policy for every ACP route
 
-- Every tmux-teams AGY route defaults to `gemini-3.6-flash-high`. Gemini 3.1
+- Every tmux-teams AGY route defaults to `gemini-3.7-flash-high` (Master,
+  2026-08-16, moved off 3.6). The measurement that prompted it is worth keeping:
+  the release panel of 2026-08-15 recorded the adapter ADVERTISING
+  `gemini-3.7-flash-high` while this repo still pinned 3.6 — the set-and-
+  acknowledge succeeded, so the lane really did run 3.6, but the adapter's own
+  default had moved underneath the pin and nothing here had noticed. The probe
+  transcript further down still shows the 3.6 strings; it is a record of what
+  was measured that day and stays as written. Gemini 3.1
   variants are prohibited for ACP planning, review, and delivery work; fail
   closed if a configured or acknowledged AGY model is Gemini 3.1, and never
   fall back to it.
@@ -267,11 +369,13 @@ not optional, and only a later explicit instruction from Master changes either.
    host is a prerequisite of that run, not a separate item.
 
    **It was Linux-only, and as of 2026-08-13 it is not — see ADR 0006.** No
-   shipped profile declares `osSandbox: 'bwrap'` any more, so the gate runs on
-   macOS too. The bwrap machinery is retained and still tested; a profile that
-   declares the field gets the full sandbox, and turning it back on is one word.
-   What was given up is filesystem confinement at the OS level, and the ADR
-   states that plainly along with the argument against the decision.
+   shipped profile declared `osSandbox: 'bwrap'` after that date, so the gate
+   ran on macOS too. **Its 2026-08-24 amendment removed the machinery entirely,
+   on Master's instruction**: 441 lines of dead helpers and branches, plus the
+   four tests that had skipped themselves on every run since. Restoring a
+   sandbox now means writing one, not setting a field. What was given up is
+   filesystem confinement at the OS level, and the ADR states that plainly
+   along with the argument against it.
    Everything else the gate checks is unchanged and never came from bwrap: a
    temporary workspace, `toolCallsObserved: 0`, no built-in tools, no MCP
    servers, every permission denied, the endpoint pinned and verified in the
@@ -285,6 +389,13 @@ not optional, and only a later explicit instruction from Master changes either.
    prepared packet at **128 KiB** (256 KiB raw), and a release diff will exceed
    that. Split by MEANING — shipped source in one packet, the tests that guard
    it in another — and require every part to pass. Do not raise the cap.
+
+   **Build the packet from the list `scripts/gate-required.mjs` PRINTS, never from
+   memory.** It names every deciding file. On 2026-08-15 three of the four
+   panels run for one release were assembled by hand and all three missed the
+   same two publication-marker files, so "the panel read the release diff" was
+   false while every lane answered 3/3 — caught only by re-reading the gate's
+   own output.
 
    **On macOS, run the same three families through direct ACP**
    (`plugins/tmux-teams/skills/tmux-teams/scripts/acp-companion.mjs`, one run
@@ -380,10 +491,12 @@ not optional, and only a later explicit instruction from Master changes either.
    still had no cheap way to answer it.
 6. Run `node --test`, `git diff --check`, and
    `claude plugin validate --strict .` locally.
-   **Read the SKIP count, not only the fail count.** Four tests skip themselves
-   on macOS (`process.platform !== 'linux' || !existsSync('/usr/bin/bwrap')`),
-   so the suite reads `847 pass / 0 fail / 4 skipped` here and `847/0/0` on a
-   Linux host. A skipped test is an UNEXECUTED GUARD, not a passing one: those
+   **Read the SKIP count, not only the fail count.** It should now be ZERO on
+   every platform: the four tests that skipped themselves on macOS
+   (`process.platform !== 'linux' || !existsSync('/usr/bin/bwrap')`) went with
+   the sandbox on 2026-08-24, and a non-zero skip count is a new one to
+   investigate rather than the familiar four. A skipped test is an UNEXECUTED
+   GUARD, not a passing one: those
    four had never run on any machine until 2026-08-09, and three of them failed
    the first time they did. `tests/acp-companion.test.mjs`
    was long treated as a timing flake — "a different name each time, re-run it
@@ -407,8 +520,32 @@ not optional, and only a later explicit instruction from Master changes either.
    are fixed; the file is 130/130 and the suite 494/494 on this machine. Rules:
    a test states the outcome before the words about it, and a platform branch
    that cannot answer must say UNKNOWN, never "no".
-7. Push (confirm with Master first — see Rules), then
-   `claude plugin marketplace update tmux-teams` and
+7. **A release goes out as a PULL REQUEST, never as a push to `main`** (Master,
+   2026-08-16). Branch, push the branch, `gh pr create`, and merge only after
+   BOTH gates answer: CI green, and the **codex bot review** (the
+   `chatgpt-codex-connector` reviewer that now runs automatically on every PR).
+   · **A comment from that bot is not a review.** On the first PR under this
+   rule it commented "You have reached your Codex usage limits for code
+   reviews" — an absent reviewer, which is neither a pass nor a failure. Treat
+   it exactly as this file already treats a missing panel lane: the release is
+   visibly blocked, no silent substitution, no reviewer-count degradation.
+   Check for a review STATE, not for the presence of any comment.
+   · When quota returns the bot does not re-review by itself. **Comment
+   `@codex review` on the PR** — measured 2026-08-16, it answers in about seven
+   seconds, so a same-turn poll settles whether quota is back rather than
+   leaving anyone to guess from silence. Pushing a commit re-triggers it too.
+   · Quota is per ACCOUNT, not per repository: this bot had reviewed PRs in
+   `iicmaster/artifact-sftp` and the limit it hit here was the same budget.
+   · **Only Master waives this gate, and a waiver that is not RECORDED is the
+   silent skip again** — the same rule this file already states for the panel
+   exemption, and the state v0.18.1 was left in. Waived on v0.31.0 because the
+   budget was spent and the release was not going to wait on it; the waiver is
+   a comment on the PR and a line in the release notes, naming what stood in
+   its place (CI green on the merged bytes, and the three-model panel 3/3 run
+   four times). Never waive it by merging and saying nothing.
+   · The three-model panel (step 2) is a SEPARATE obligation and neither gate
+   replaces the other: the panel reads the release diff, the bot reads the PR.
+   · After the merge: `claude plugin marketplace update tmux-teams` and
    `claude plugin update tmux-teams@tmux-teams` (install cache is version-keyed).
 8. **Watch the CI run that push triggers, and do not tag a red one.**
    `gh run list --limit 3` then `gh run view <id> --log-failed`. Added
@@ -420,7 +557,10 @@ not optional, and only a later explicit instruction from Master changes either.
    `~/.config/claude-profiles/`, and an `fs.watch` delivery assertion that holds
    on macOS FSEvents and not on CI's filesystem). Local green is necessary and
    is not sufficient.
-9. **Tag it and publish the GitHub release** — `git tag vX.Y.Z && git push
+9. **Tag the MERGED commit, not the branch tip.** `git checkout main && git pull`,
+   confirm `main...origin/main` carries no `ahead`, and tag that sha — a merge or
+   squash produces a NEW commit, so tagging the branch head ships a sha that is
+   not what `main` holds. Then publish the GitHub release — `git tag vX.Y.Z && git push
    origin vX.Y.Z`, then `gh release create vX.Y.Z --title vX.Y.Z --notes ...`
    with notes written from the real `git log <prev-tag>..vX.Y.Z`. A version
    number in three JSON files is not a release: this step was missing from the
@@ -430,15 +570,23 @@ not optional, and only a later explicit instruction from Master changes either.
    the marketplace resolves a version-keyed cache, so an untagged release is a
    number nobody else can fetch. Write the notes with a heredoc or `--notes-file`,
    never `printf` — the backfill put a literal `%ad` into all 30 notes.
-10. Bump the `plugins/tmux-teams` submodule pointer in `~/agent-skills` to the
-   new sha and push it. `agent-skills` uses that pin as the source for its
-   OpenClaw bridge; Codex and Claude plugin runtimes use version-keyed caches.
+10. **RETIRED — there is nothing to do in `~/agent-skills` any more** (owner
+   decision, 2026-08-30: "in the context of agent-skills there is no need to
+   reference a specific version"). Its `sync.sh` now fetches and checks out
+   the submodule's `origin/main` at run time and logs the sha it delivered, so
+   the recorded pin is informational and the bridge follows a release on its
+   own. The step is kept in the list, numbered, because the failure it used to
+   guard is worth remembering: the pin was hand-bumped after every release,
+   was forgotten at least once, and was one release stale on the day it was
+   retired. Codex and Claude plugin runtimes use version-keyed caches as
+   before.
 
 ## Rules
 
 - Only release and plugin files are tracked: `.github/`, `.claude-plugin/`,
   `.gitignore`, `plugins/`, `tests/`, `scripts/`, `README.md`, `CLAUDE.md`,
-  `ROADMAP.md`, `.roadmap-published.json`, and `HANDOFF.md`. The marker is
+  `ROADMAP.md`, `RELEASE-PLAN.md`, the `.published-*.json` markers (including
+  `.roadmap-published.json`), and `HANDOFF.md`. The marker is
   tracked for the same reason the roadmap is: one that only its author's machine
   can read makes the gate answer STALE forever for everybody else, which turns a
   gate into noise. `HANDOFF.md` is the state of play between sessions — what shipped,
@@ -469,6 +617,10 @@ not optional, and only a later explicit instruction from Master changes either.
   `tmux-teams`, `party-mode`, `party-auto`, `party-advise`, `sqthink`,
   `codex-tmux-driver` — its `PLUGIN_DELIVERED` names exactly those, and the
   plugin has bundled more since.
+  **`codex-tmux-driver` stopped being a skill in v0.35.0** — it is now
+  `skills/tmux-teams/references/codex-tmux.md`. That name is still correct in
+  the other repo's `PLUGIN_DELIVERED` list, which exists to PURGE stale copies,
+  and a name that no longer ships still needs purging. Do not remove it there.
   Treat THIS repo as authoritative; its submodule pin feeds the OpenClaw
   bridge, and must never be copied back from installed targets.
 - `~/.claude/skills` must NOT contain those same six (they were
@@ -532,3 +684,29 @@ not optional, and only a later explicit instruction from Master changes either.
   not the script. And on a mise/asdf machine `realpath $(command -v node)` is
   the version-manager binary itself — it dispatches on `argv[0]`, so it is not
   an interpreter. Use `process.execPath` whenever the real one is meant.
+- **Pick a review mechanism by what it can PROVE, and run them in that order.**
+  The built-in `advisor` sees this session's whole transcript, runs nothing, and
+  is the cheapest — use it before committing to an approach. A `codex-advisor`
+  ACP lane can EXECUTE: on 2026-08-16 it blocked an MCP change twice on bytes
+  the three-model panel had passed 3/3 with zero findings, reproducing a false
+  `ready: true` with one command. The panel reads a static packet and is
+  forbidden to call a tool, by design — what it proves is that three distinct
+  families read these bytes, which is the release RECORD, not a behavioural
+  check. So: advisor to shape, `codex-advisor` to attack while the code is still
+  cheap to change, panel last. Two panels were spent on this change before an
+  advisor read it, and both were wasted.
+- **A boot path is tested only by booting it.** `import.meta.url === \`file://${process.argv[1]}\``
+  is wrong twice over: `import.meta.url` is percent-encoded, so an install path
+  containing a space never matches, and Node's ESM loader resolves the module
+  URL through symlinks (`/var` → `/private/var` on macOS) while `argv[1]` keeps
+  the path as typed. Compare `realpathSync(fileURLToPath(import.meta.url))`
+  against `realpathSync(resolve(argv[1]))`, and spawn the script from a
+  directory whose name contains a space. Importing the module proves nothing
+  about the one line that decides whether it serves at all — and the second half
+  of this bug was found by the test written for the first half.
+- **"Non-empty" is not an acceptance criterion.** A diagnostic that answered a
+  failure with an empty list was "fixed" by emitting every generic sentence the
+  data allowed, and its test asserted only that something came back. That turned
+  an empty wrong answer into a non-empty wrong answer, which is worse: it sounds
+  specific and sends the reader to the wrong file. Assert the sentence that
+  names the thing that actually refused.

@@ -1,16 +1,31 @@
----
-name: codex-tmux-driver
-description: "Drive an OpenAI Codex CLI interactive session via tmux — launch codex with the right approval/sandbox flags, submit prompts reliably, detect working/idle/approval states, catch turn completion reliably (outbox contract first, notify hook, stability polling), capture results, and resume sessions. Use when delegating coding work to a live Codex TUI inside tmux, babysitting a long Codex run, or handling Codex approval prompts. ใช้เมื่อต้องขับ/สั่งงาน Codex CLI แบบ interactive ผ่าน tmux จาก Claude Code. For one-shot headless runs prefer codex exec (see references). NOT for orchestrating many mixed agents as PM (use tmux-teams)."
-metadata:
-  author: ngs
-  scope: claude
----
+# Driving a live Codex TUI through tmux
 
-# Codex tmux driver
+Codex-specific calibration for the generic protocol in `SKILL.md` — launch
+flags, state markers, approval-dialog behaviour, completion detection and
+session lifecycle. Read `SKILL.md` ข้อ 2-5 first; this file only says what is
+DIFFERENT about codex.
 
-Drive a live Codex CLI TUI from Claude Code through tmux. Codex-specific knowledge
-lives here; the generic tmux mechanics (send/verify/retry, PM discipline) live in
-`tmux-teams` and `interactive-agent-driver` — don't re-derive them.
+**This was a top-level skill (`codex-tmux-driver`) until v0.35.0.** It became a
+reference because the split it belonged to was never real: `SKILL.md` claimed
+tool-specific facts lived in per-tool driver skills, and exactly one such skill
+ever existed while claude-zai and opencode facts stayed inline in `SKILL.md`
+itself. The alternative — extracting drivers for those two as well — was
+rejected: it answers an asymmetry by adding two more things to forget, and
+forgetting this one is what prompted the change.
+
+For a one-shot headless run prefer `codex exec` — see
+`codex-cli-reference.md`. For orchestrating several mixed agents as PM, that is
+`SKILL.md` itself, not this file.
+
+## What this file assumes
+
+Codex-specific knowledge lives here; the generic tmux mechanics
+(send/verify/retry, PM discipline) live in
+`tmux-teams` — don't re-derive them. (`interactive-agent-driver` covered the
+same ground and is NOT shipped by this plugin; it lives in a separate skills
+repository, so treat it as optional background rather than a companion file you
+can open. A deepseek review lane flagged both names on the v0.35.0 diff as
+pointing at things a plugin-only reader cannot find.)
 
 Facts below marked "field-verified" were measured on codex-cli 0.144.1
 (2026-07-14, macOS, tmux 3.6a) — including a Codex self-audit run. Re-verify after
@@ -183,7 +198,7 @@ Send as ordinary text + Enter, one at a time:
 | `/resume` | interactive picker (arrow keys) — from a script prefer `codex resume --last` at launch (cwd-scoped, see ข้อ 1) |
 | `/review` | review current changes |
 | `/mcp` | list configured MCP tools (`/mcp verbose` for servers) |
-| `/init` | generate AGENTS.md (see `codex-md-management` for upkeep) |
+| `/init` | generate AGENTS.md (`codex-md-management`, a separate skills repo, covers upkeep) |
 | `/quit` | exit |
 
 Restart only when exited/crashed or context is truly unusable. At idle: `/quit`,

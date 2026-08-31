@@ -1,0 +1,1688 @@
+#!/usr/bin/env node
+// An MCP server that answers ONE question: which ACP review lanes exist here,
+// and what does each one still need on THIS machine. The per-machine overrides
+// `TMUX_TEAMS_REVIEW_<ID>_SETTINGS` and `_ENV_FILE` had worked since 2026-08-13
+// and nothing surfaced them — "read the comment at review-profiles.mjs" is a
+// document, not an answer.
+//
+// ## Credentials: it READS them and never returns them
+//
+// Deciding whether a lane is configured means calling `buildAcpLaunch`, which
+// reads the settings JSON and the credential file and copies provider secrets
+// from the environment. Do not claim otherwise: discarding a value you asked
+// for is not declining to read it (Master, 2026-08-16).
+//
+// The containment is OUTBOUND and enforced, not promised:
+//
+//   - **No reply carries a credential VALUE.** Tested by serialising whole
+//     replies built from secret-bearing fixtures, on the success path and on
+//     every failure path, for every provider-secret name this plugin knows.
+//   - **Credential field NAMES go out deliberately** — the `credential_missing`
+//     fixes must name `ANTHROPIC_AUTH_TOKEN` and the lane's own keys, because an
+//     operator not told the vocabulary writes the wrong key into the right file
+//     and gets the same silence. A name is not a secret; a value is.
+//   - A failure is a CODE from a closed set with a sentence that is a constant
+//     of this file. Raw exception text never reaches the wire — exporting
+//     `String(error.message)` would ship whatever a future diagnostic
+//     interpolates into it.
+//
+// ## "Valid configuration" does not mean the lane runs
+//
+// No endpoint is contacted, no credential accepted, no adapter resolved, no
+// session negotiated. Reporting `ready: true` for that is measurably wrong: with
+// no HOME, no PATH and no credentials the `claude` and `codex` lanes both
+// reported ready. They answer `unchecked`, because for those two no parent-side
+// check exists at all, and a diagnostic that says READY and then watches the
+// real gate refuse is worse than none.
+//
+// ## ADR 0003 stands
+//
+// A DISPATCHED agent receives no MCP server, enforced at runtime and asserted by
+// the suite. This server is the OPERATOR's surface. Nothing here adds an
+// allowlist, profile field or companion branch that makes crossing that easier.
+//
+// ## Read-only, structurally
+//
+// Tools and handlers come from ONE descriptor list, so the advertisement and the
+// dispatcher cannot disagree about which names exist. That is auditability in
+// one place, not impossibility — a differently named hidden branch added later
+// would still pass.
+
+import { readFileSync, realpathSync } from 'node:fs'
+import { createInterface } from 'node:readline'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { spawn } from 'node:child_process'
+import { tmpdir } from 'node:os'
+
+import { laneAvailability, readinessReport, READINESS_PROBLEMS } from './lane-readiness.mjs'
+import { laneModel } from './lane-models.mjs'
+import { loadLaneOverrides, applyLaneOverride } from './lane-overrides.mjs'
+import { REVIEW_PROFILES, ROUTED_PROFILES, buildAcpLaunch, AGY_BINARY_NAME,
+  AGY_BINARY_CANDIDATE_FORMS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys } from './review-profiles.mjs'
+
+const HERE = dirname(fileURLToPath(import.meta.url))
+const PLUGIN_ROOT = join(HERE, '..', '..', '..')
+
+// The version this server speaks. `initialize` answers with THIS, never with
+// whatever the client asked for: echoing the request tells a client naming a
+// version nobody implements that it got it.
+export const PROTOCOL_VERSION = '2025-06-18'
+
+// Read rather than restate. A version literal here would be an eighth place to
+// bump, and the release flow already records that every previous one was found
+// by a reader rather than by the flow.
+function pluginVersion() {
+  try {
+    return JSON.parse(readFileSync(join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json'), 'utf8')).version ?? 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
+
+const overrideNames = (id) => ({
+  settings: `TMUX_TEAMS_REVIEW_${id.toUpperCase()}_SETTINGS`,
+  credentials: `TMUX_TEAMS_REVIEW_${id.toUpperCase()}_ENV_FILE`,
+})
+
+// A closed set of outbound diagnostics. The raw exception is classified and
+// then DROPPED; each sentence is a constant of this file and can therefore
+// never contain anything a settings file put there.
+function deepFreeze(value) {
+  if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return value
+  Object.freeze(value)
+  for (const inner of Object.values(value)) deepFreeze(inner)
+  return value
+}
+
+// The capability names MCP 2025-06-18 types. Anything else is a client
+// extension and is not this server's to judge.
+// `roots` ALONE. MCP 2025-06-18 types `listChanged` on that capability and
+// leaves `sampling` and `elicitation` as open objects, so demanding a boolean
+// from those refuses a conforming `sampling: { listChanged: "vendor-extension" }`.
+// Read the schema for this list; three earlier versions were guesses at it.
+// TWO axes, kept in two lists. MCP 2025-06-18 types four client capability
+// members as objects and only `roots` types `listChanged` as a boolean —
+// collapsing them means narrowing one axis silently narrows the other, and a
+// test suite that only ever sends well-formed objects carrying odd VALUES will
+// not notice.
+const MCP_OBJECT_CAPABILITIES = Object.freeze(['roots', 'sampling', 'elicitation', 'experimental'])
+const MCP_LISTCHANGED_CAPABILITIES = Object.freeze(['roots'])
+
+export const DIAGNOSTICS = Object.freeze({
+  endpoint_missing: 'the lane is pinned to an endpoint and this machine supplies no base URL for it',
+  endpoint_mismatch: 'the base URL configured here is not the endpoint this lane is pinned to',
+  credential_missing: 'the endpoint is configured but no provider credential was found for it',
+  settings_unreadable: 'the settings this lane points at are not a readable JSON object',
+  credential_unreadable: 'the credential file this lane points at exists but could not be read',
+  executable_missing: 'an executable this lane needs was not found on this machine',
+  profile_incomplete: 'this lane routes to a provider but its shipped profile declares no endpoint to pin',
+  environment_unspawnable: 'the environment this lane would launch with cannot start a process',
+  environment_over_budget: 'the environment this lane would launch with is larger than this gate allows',
+  unclassified: 'the lane refused for a reason this server does not classify; run the gate for the detail',
+  // Added for `acp_lane_probe` — three outcomes a LIVE attempt can learn that
+  // `acp_lane_status` structurally cannot, because it contacts nothing. A code
+  // is added here only once the transport can genuinely tell it apart from a
+  // signal, never from provider text; anything that does not clear that bar
+  // stays `unclassified`.
+  quota_exhausted: 'the endpoint answered and reported no quota remaining for this credential',
+  probe_timeout: 'the endpoint did not answer a trivial prompt within the probe reply budget',
+  probe_boot_timeout: 'the lane adapter did not finish starting within the probe boot budget, so no endpoint was ever contacted',
+  // A live spawn failure the parent-side check can never see: EACCES/EPERM
+  // means the resolved candidate EXISTS and this process is refused
+  // permission to run it, which is a different repair from `executable_missing`
+  // ("was not found") and a false one if told the same sentence — installing
+  // or relocating a file that is already sitting right there fixes nothing.
+  executable_unusable: 'an executable this lane needs was found but this process is not permitted to run it',
+})
+
+// Classification reads the exception and keeps only which BUCKET it fell into.
+// Nothing derived from the message text survives this function.
+// Matched against the SHAPE this system throws, not against loose text anywhere
+// in the message. Every phrase below is one this module's own dependencies
+// raise as `<lane> review <phrase>`, and the anchor stops a settings PATH
+// containing the same words from selecting a diagnosis — otherwise a caller who
+// controls a filename controls the classification.
+const REVIEW_PHRASE = /(^|[\s:])review /
+
+export function classify(message, { fileKind = null } = {}) {
+  // `fileKind` is supplied by a caller that opened the file itself. It is the
+  // only trustworthy source for which read failed; a path is caller-controlled
+  // text and a message is not evidence of its own subject.
+  if (fileKind === 'credential') return 'credential_unreadable'
+  if (fileKind === 'settings') return 'settings_unreadable'
+  const raw = String(message ?? '')
+  // Ordinary filesystem failures were classified by nothing and fell through to
+  // `unclassified`, which told an operator to run the gate for a detail the
+  // gate would report as the same unreadable file.
+  // Which FILE failed decides the repair: aiming every filesystem error at the
+  // settings file sends the operator to edit the wrong file and variable.
+  if (/\b(ENOENT|EACCES|EISDIR|ELOOP|EPERM)\b/.test(raw)) {
+    // WHICH file failed is NOT knowable from the message. Searching the raw
+    // text — which includes the PATH — for 'credential' or '.env' lets a caller
+    // who controls a filename choose the diagnosis.
+    //
+    // The honest answer without call-site identity is the generic one. The
+    // caller that KNOWS which file it opened passes `fileKind` and gets the
+    // specific code; nothing guesses.
+    return 'settings_unreadable'
+  }
+  const text = REVIEW_PHRASE.test(raw) ? raw.slice(raw.search(REVIEW_PHRASE)) : raw
+  if (/requires ANTHROPIC_BASE_URL/.test(text)) return 'endpoint_missing'
+  if (/endpoint must be|must be a valid URL/.test(text)) return 'endpoint_mismatch'
+  if (/explicit provider credential/.test(text)) return 'credential_missing'
+  // `pins no endpoint` is a PROFILE defect — this lane routes and declares no
+  // endpoint to route to — and it used to be classified as unreadable SETTINGS.
+  // A release panel called it a false diagnosis with non-repairing
+  // instructions, and it was: the settings file is fine, the profile is not,
+  // and telling an operator to fix their JSON sends them to a file that has
+  // nothing wrong with it.
+  if (/pins no endpoint/.test(text)) return 'profile_incomplete'
+  if (/must be a JSON object/.test(text)) return 'settings_unreadable'
+  // A JSON.parse failure arrives as V8's own wording and never mentions this
+  // system at all, so the first version dropped ordinary malformed settings
+  // into `unclassified` — safe on the wire and useless as a diagnosis.
+  if (/JSON|Unexpected token|Unexpected end of/.test(text)) return 'settings_unreadable'
+  // Its own bucket rather than `credential_*`: the value may be a credential
+  // and may equally be a header, a model config or an oversized total, and
+  // telling an operator to fix a credential is a false instruction in three of
+  // those four cases.
+  if (/cannot start a process/.test(text)) return 'environment_unspawnable'
+  // A SEPARATE code, because the two sentences make different claims. "cannot
+  // start" is a fact about the platform; "over budget" is a decision of ours,
+  // and a lane measured this machine spawning an environment three times the
+  // ceiling. One code for both would have kept saying the false half.
+  if (/environment is over budget/.test(text)) return 'environment_over_budget'
+  if (/executable not found/.test(text)) return 'executable_missing'
+  return 'unclassified'
+}
+
+// The lanes for which NO parent-side configuration check exists. Naming them is
+// the honest half: `buildProfileEnv` validates a routed endpoint and the AGY
+// binary, and for these two it validates nothing, so a green answer from it
+// would mean only "no check ran".
+export const UNCHECKED_LANES = Object.freeze(['claude', 'codex'])
+
+// Stated once and returned on every status answer, so a reader never has to
+// infer the boundary from an adjective.
+const NOT_PROVEN = Object.freeze([
+  'that the endpoint can be reached',
+  'that the credential is accepted by the provider',
+  'that the adapter package resolves and starts',
+  'that a session negotiates the requested model and mode',
+])
+
+// `acp_lane_probe` proves a strict superset of `NOT_PROVEN` and a strict
+// subset of a real review — it is one trivial turn, once, right now. Stated
+// on every probe answer for the same reason `NOT_PROVEN` is: a green answer
+// that is silent about its own boundary is what `ready: true` cost this file
+// once already.
+// Two depths, and the shallower one is the point. Measured 2026-08-24 by
+// reproducing four real lane failures and recording where in the protocol each
+// became visible: an adapter whose install was truncated died BEFORE
+// `initialize`, while a 402 membership and a missing payment method were
+// invisible until a prompt was actually sent. A completion is what a provider
+// bills for, so a check that stops after the handshake can answer "can this
+// machine start this lane at all" for nothing.
+//
+// `prompt` stays the DEFAULT so an existing caller's behaviour does not change
+// under it.
+export const PROBE_DEPTHS = Object.freeze(['handshake', 'prompt'])
+export const DEFAULT_PROBE_DEPTH = 'prompt'
+
+// A handshake-depth pass proves strictly LESS than a prompt-depth one, and must
+// say so in the same field. Reporting the two identically is the overclaim this
+// tool exists to avoid — it would tell an operator a lane can answer when all
+// that was established is that it can start.
+const HANDSHAKE_NOT_PROVEN = Object.freeze([
+  'that this lane can answer a prompt at all — no prompt was sent',
+  'anything about quota or billing, which are only visible when a completion is attempted',
+  'that the model answering is the model this lane declares',
+  'that this lane stays reachable by the time a real review dispatches',
+])
+
+const PROBE_NOT_PROVEN = Object.freeze([
+  'that this lane stays reachable by the time a real review dispatches',
+  'that the model answering is the model this lane declares',
+  'that a review-sized brief succeeds the way this one-word probe did',
+  'anything about quota remaining beyond this single call',
+])
+
+// A routed lane declares a WRAPPER as well as an adapter, and `buildProfileEnv`
+// only writes its name into the child environment — resolution happens later,
+// inside `acp-review-client`. Measured by an advisor: setting PATH to a path
+// that does not exist left a routed lane answering `valid`. The adapter and the
+// wrapper are separate fields in this very object, so a caveat naming only the
+// adapter does not cover the wrapper. It is named.
+function notProvenFor(profile) {
+  if (!profile.claudeExecutable) return NOT_PROVEN
+  return Object.freeze([...NOT_PROVEN,
+    `that the wrapper \`${profile.claudeExecutable}\` exists on PATH`])
+}
+
+// What a lane DECLARES, which is knowable without touching this machine at all.
+export function laneFacts(id, profile) {
+  const endpoint = profile.endpoint
+  const pinned = ROUTED_PROFILES.has(id) && endpoint?.host
+  return {
+    lane: id,
+    family: profile.family ?? null,
+    provider: profile.provider ?? null,
+    model: profile.model ?? null,
+    adapter: profile.adapterPackage ?? null,
+    reviewMode: profile.reviewMode ?? null,
+    routing: pinned ? `pinned:${endpoint.host}${endpoint.path ?? ''}` : 'unrouted',
+    executable: profile.claudeExecutable ?? null,
+  }
+}
+
+// THE LIGHT, WIRED TO THE BRAKE. `laneFacts` above echoes a declaration; this
+// asks the disk. Both go out together on purpose, because a listing that shows
+// only the declaration is what let `ninerouter` sit beside working lanes while
+// the `claude-9r` it names does not exist on this machine.
+function laneWithAvailability(id, profile, env, override) {
+  // The override is applied HERE too. `readinessReport` below already
+  // applies it, so passing the raw profile to this function put two
+  // disagreeing answers in ONE payload: `callableLanes` counted a lane the
+  // operator had fixed while `lanes[].available` still said false. A gemini
+  // review lane found it — the third consumer to read the shipped profile
+  // instead of the machine's, in a release that had already fixed two.
+  const resolved = applyLaneOverride(profile, override, env)
+  const { available, blocking, needs } = laneAvailability(id, resolved, env)
+  // What this lane will actually REQUEST, and what this machine resolves that
+  // to. `model` from `laneFacts` is the identity the panel records; it is not
+  // always what goes on the wire, and on a shared gateway it is not always the
+  // family that answers.
+  // An env with NEITHER home variable must not fall through to the process's
+  // own home — `laneModel`'s default parameter is `homedir()`, so passing
+  // `undefined` reads the server's home instead of the caller's nothing. Sixth
+  // instance of this release's shape, found by a deepseek review lane.
+  const callerHome = env.HOME ?? env.USERPROFILE ?? null
+  const model = callerHome === null
+    ? { requested: resolved.requestModel ?? resolved.model ?? null, resolved: null, source: 'unknown' }
+    : laneModel(id, resolved, { home: callerHome })
+  return {
+    ...laneFacts(id, resolved),
+    requestedModel: model.requested,
+    resolvedModel: model.resolved,
+    modelSource: model.source,
+    available,
+    needs,
+    blocking: blocking.map(b => ({ ...b, detail: READINESS_PROBLEMS[b.code] })),
+  }
+}
+
+// Fixes keyed on the CAUSE. Ignoring `code` and emitting every generic setup
+// sentence the profile allows tells `agy` — which fails for a missing binary —
+// to repair the ADAPTER PACKAGE: worse than an unclassified answer, because it
+// sounds specific. Non-empty was never the property worth asserting; naming the
+// thing that actually refused is.
+function settingsFixes(id, profile) {
+  const names = overrideNames(id)
+  if (!profile.settingsRelativePath) return []
+  return [
+    `place this lane's settings JSON at $HOME/${profile.settingsRelativePath}`,
+    `or point ${names.settings} at wherever this machine keeps it`,
+  ]
+}
+
+function executableFixes(id, profile) {
+  const out = []
+  if (id === 'agy') {
+    // The UNRESOLVED forms. Interpolating the resolved candidate put whatever
+    // `HOME` happened to contain on the wire, and an advisor demonstrated a
+    // credential escaping that way while every credential FIELD stayed clean.
+    // Nothing in this sentence now comes from the environment.
+    out.push(`a trusted, EXECUTABLE \`${AGY_BINARY_NAME}\` must exist at one of: `
+      + AGY_BINARY_CANDIDATE_FORMS.join(', ')
+      + ' — a file that merely exists is not enough, it must be a regular file with the execute bit')
+  }
+  if (profile.claudeExecutable) {
+    out.push(`the wrapper \`${profile.claudeExecutable}\` must exist on PATH and select this provider`)
+  }
+  if (Array.isArray(profile.command) && profile.command.length) {
+    out.push(`the adapter this lane launches (\`${profile.command.join(' ')}\`) must resolve`)
+  }
+  return out
+}
+
+// Naming the keys that are actually accepted, because "point it at the env file
+// holding the credential" was true of the variable and false of the file: the
+// env-file loader dropped `ZAI_API_KEY` while the endpoint validator accepted
+// it ambient, so the prescribed repair left the lane refusing exactly as
+// before. The loader is fixed; the sentence now says which names work so a
+// reader is never left guessing at the vocabulary.
+function credentialFixes(id) {
+  if (!ROUTED_PROFILES.has(id)) return []
+  const names = overrideNames(id)
+  // The SAME function the validator calls, never a second list that agrees with
+  // it today — a hand-built copy drifts within a release and advertises names
+  // the validator will not accept, which is a fix that cannot repair its own
+  // refusal.
+  const accepted = acceptedCredentialNames(REVIEW_PROFILES[id])
+  return [
+    `if the credential lives outside that JSON, point ${names.credentials} at the env file holding it`,
+    // The FULL set the loader honours, not the credential subset. This named
+    // `acceptedCredentialNames` and then said every other name is ignored,
+    // which was false by the routed settings names — an operator who put
+    // ANTHROPIC_BASE_URL in that file was told it would be ignored while the
+    // loader read it.
+    `that file is read for ${[...acceptedRoutedKeys(REVIEW_PROFILES[id])].sort().join(', ')} `
+      + '— any other name in it is ignored',
+  ]
+}
+
+export function fixesFor(id, profile, code, { envKey = null } = {}) {
+  const names = overrideNames(id)
+  const settings = settingsFixes(id, profile)
+  switch (code) {
+    case 'endpoint_missing':
+    case 'endpoint_mismatch':
+      return settings.length ? settings
+        : [`this lane's base URL must come from ${names.settings} or ${names.credentials}`]
+    case 'credential_missing':
+      return [...credentialFixes(id), ...settings]
+    case 'environment_unspawnable':
+      // NAMES THE VALUE. The first version said "the refusal names which" while
+      // this boundary deliberately drops the raw exception, so it named nothing
+      // — and then pointed at the settings file, which a lane showed loses to
+      // the later ambient assignment for the very key that failed. The key
+      // travels on the error the same way `fileKind` does.
+      return [envKey
+        ? `${envKey} contains a NUL byte and cannot be passed to a process — `
+          + `clear it wherever it is set for this lane, which may be the ambient `
+          + `environment rather than ${overrideNames(id).settings}`
+        : 'one of the values this lane forwards contains a NUL byte and cannot be '
+          + 'passed to a process']
+    case 'environment_over_budget':
+      // NO "point it at a credential file". That was the second half of this
+      // sentence and it does not repair anything: `loadRoutedCredentialFile`
+      // reads the file and puts the same bytes into the child environment,
+      // where the same ceiling refuses them. A lane applied the advice and
+      // measured an identical refusal — which is the test this repository's own
+      // diagnostic contract asks for, that applying a fix changes the state.
+      return [envKey
+        ? `${envKey} is larger than this gate passes to a lane — it has to be `
+          + `SHORTER, and moving it to a credential file does not help because `
+          + `the file's contents reach the lane the same way`
+        : 'the values this lane forwards exceed the total this gate passes to a lane']
+    case 'settings_unreadable':
+      return ['the JSON this lane reads must parse and must be an object', ...settings]
+    case 'credential_unreadable':
+      // Deliberately does NOT point at the settings file. Aiming every
+      // filesystem failure at the settings repair is the defect this code was
+      // added for: it sent the operator to edit a file that was fine.
+      return ['the credential file exists but could not be read — check that it is '
+        + 'readable by this user, and that its mode is 0600 rather than a directory or a dangling link',
+      ...credentialFixes(id)]
+    case 'profile_incomplete':
+      // Nothing an operator can repair on their own machine: the profile ships
+      // with the plugin. Saying so is the honest answer.
+      return ['this is a defect in the shipped profile, not in your configuration — '
+        + 'the lane declares routing with no endpoint, and only a plugin change can fix it']
+    case 'executable_missing':
+      return executableFixes(id, profile)
+    default:
+      return [...settings, ...credentialFixes(id), ...executableFixes(id, profile)]
+  }
+}
+
+// Configuration validity, and never a claim beyond it.
+export function laneStatus(id, profile, env) {
+  const facts = laneFacts(id, profile)
+  if (UNCHECKED_LANES.includes(id)) {
+    return {
+      ...facts,
+      configuration: 'unchecked',
+      problem: null,
+      fixes: fixesFor(id, profile, null),
+      notProven: notProvenFor(profile),
+      note: 'no parent-side configuration check exists for this lane, so nothing here was verified',
+    }
+  }
+  try {
+    // The object this returns CONTAINS the credential. It is bound to nothing
+    // and referenced nowhere, which is the whole of what "never returned" means.
+    buildAcpLaunch(id, { env })
+    // `valid` means every parent-side check PASSED — not that some of them
+    // could not be run. A candidate whose shebang names an interpreter that is
+    // not on this machine passes `executableCandidate` (the kernel would accept
+    // the file and then fail to find the interpreter), so the lane used to
+    // answer `valid` for a configuration that cannot start. Two panel families
+    // raised it across two rounds.
+    //
+    // `unchecked` is what that state is, it is already in the vocabulary, and
+    // reaching it costs one 256-byte read — not the execution the old defence
+    // said it would require.
+    const unresolved = unresolvedInterpreterFor(id, { env })
+    if (unresolved) {
+      return {
+        ...facts,
+        configuration: 'unchecked',
+        problem: null,
+        fixes: [`the executable this lane resolves to begins \`#!\` naming an interpreter `
+          + `that is not on this machine — install it, or point the lane at a binary that needs none`],
+        notProven: notProvenFor(profile),
+        note: 'the configuration is complete, and the executable it resolves to cannot start here',
+      }
+    }
+    return { ...facts, configuration: 'valid', problem: null, fixes: [], notProven: notProvenFor(profile) }
+  } catch (error) {
+    // `error.fileKind` when the thrower knew which file it was opening. A pure
+    // function tested in isolation says nothing about its consumer — CLAUDE.md's
+    // own rule, and this line broke it: `classify` grew a `fileKind` parameter,
+    // the test called it directly, and NOTHING ever passed one, so the new
+    // diagnostic was dead on every path a caller can reach.
+    const code = classify(error?.message, { fileKind: error?.fileKind ?? null })
+    return {
+      ...facts,
+      configuration: 'invalid',
+      problem: { code, detail: DIAGNOSTICS[code] },
+      fixes: fixesFor(id, profile, code, { envKey: error?.envKey ?? null }),
+      notProven: notProvenFor(profile),
+    }
+  }
+}
+
+// ## `acp_lane_probe` — the one tool in this file that contacts an endpoint
+//
+// Everything above this line answers from declared facts or local files.
+// This section spawns a real process and speaks the minimum of ACP needed to
+// learn whether the OTHER end answers, is out of quota, or refuses for some
+// other reason — classified into a SIGNAL shape, never into text, so the
+// classifier below never sees a provider's own words.
+
+// A per-lane ceiling, not a suggestion. A probe that never returns is a probe
+// that was not cheap, and "cheap" is the entire justification for shipping
+// this at all.
+//
+// TWO ceilings, because this waits for two different things and one number
+// could not be right for both. Measured 2026-08-24 on macOS: a COLD
+// `npx -y @agentclientprotocol/claude-agent-acp@0.61.0` took 190s to answer
+// `initialize`, and a WARM one still took 24.4s to reach a prompt. The single
+// 20s ceiling that stood here was shorter than both, so every one of the five
+// lanes probed that day came back `probe_timeout` while the network was up,
+// every adapter resolved on PATH, and the pinned endpoint answered 200 in
+// 126ms. The tool whose whole job is classifying reachability was telling an
+// operator the endpoint never replied about lanes it had never finished
+// starting -- a wrong answer that sounds specific, which is the failure this
+// repository treats as worse than no answer at all.
+//
+// Raising the one number would have bought that back at the price of the
+// justification: a lane that is genuinely dead would then hold the full
+// ceiling, and a five-lane sweep of dead lanes costs five times it. Splitting
+// it does not, because a ceiling costs nothing when the lane answers -- and
+// the two waits have completely different shapes. Everything before
+// `initialize` resolves is package installation and process start, paid once
+// per machine. Everything after it is an endpoint being asked one word.
+export const PROBE_BOOT_TIMEOUT_MS = 240_000
+export const PROBE_REPLY_TIMEOUT_MS = 30_000
+
+// Deliberately not a question the model can answer at length. One word bounds
+// the reply this tool has to wait for and keeps every probe the same size.
+export const PROBE_BRIEF = 'Reply with exactly one word: ok.'
+
+// Printed only when the promise this tool returns rejects anyway. Every
+// EXPECTED failure — including a transport that rejects instead of resolving
+// a signal — is caught inside `probeOneLane` and turned into a classified,
+// per-lane `unclassified` result, so a bad lane never scraps the lanes probed
+// before it in the same call. This sentence is therefore a backstop against a
+// bug THIS file has, not an expected outcome. A rejected handler promise
+// reaching `serve()` with nothing to catch it is the EPIPE shape this project
+// has already lost a whole gate to.
+const PROBE_CRASHED = 'the probe crashed before producing a classified result'
+
+// The transport's contract is a closed SIGNAL shape, never text:
+//   { settled: 'response' }                    a session/prompt result arrived
+//   { settled: 'timeout' }                      the endpoint said nothing inside the REPLY budget
+//   { settled: 'spawn_error', errnoCode }        the process itself never started
+//   { settled: 'exit', code, quotaSignal }       the process exited before finishing the turn;
+//                                                 quotaSignal is a boolean the TRANSPORT decided,
+//                                                 never the bytes that decided it
+//   { settled: 'refused', quotaSignal }          session/prompt came back a JSON-RPC error and the
+//                                                 process did NOT exit — no 'exit' event is coming,
+//                                                 so this is the only place left that can still see
+//                                                 whatever quotaSignal was already true by then
+//   { settled: 'invalid_handshake' }             session/new succeeded with no sessionId
+//   { settled: 'invalid_prompt_result' }         session/prompt succeeded but the result itself
+//                                                 is not a well-formed object carrying a string
+//                                                 stopReason — {} and null both land here
+//   { settled: 'cancelled' }                     session/prompt completed carrying
+//                                                 stopReason: 'cancelled' — a round trip, not an answer
+//   { settled: 'transport_error' }                a live stream (stdout) faulted mid-probe, or the
+//                                                 probe deliberately stopped reading it past OUT_CAP —
+//                                                 either way no further JSON-RPC frame can arrive on it
+// `classifyProbe` reads only this shape. It is exported and pure so a test
+// can drive every branch with a plain object and never a subprocess.
+// The companion's own session-id shape, copied with its source named. This file
+// imports no sibling script on purpose, so the drift answer is a test that
+// asserts the two stay identical rather than a coupling.
+const PROBE_SESSION_ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$/
+
+export function classifyProbe(result) {
+  if (!result || typeof result !== 'object') return 'unclassified'
+  // Both are "nothing is wrong at the depth that was asked for". They are kept
+  // as separate SHAPES rather than one, so that a transport which settles
+  // `handshake_ok` while a caller asked for prompt depth cannot be read as a
+  // completed prompt.
+  if (result.settled === 'response') return null
+  if (result.settled === 'handshake_ok') return null
+  if (result.settled === 'timeout') return 'probe_timeout'
+  // Kept apart from `probe_timeout` on purpose: the repair is different. One
+  // says the endpoint went quiet, the other says the adapter never got far
+  // enough to ask it anything -- and the overwhelmingly common cause of the
+  // second is a package this machine has not downloaded yet.
+  if (result.settled === 'boot_timeout') return 'probe_boot_timeout'
+  if (result.settled === 'spawn_error') {
+    // ENOENT is "not found"; EACCES/EPERM is "found, and this process may not
+    // run it" — a permissions problem, not a missing binary. Collapsing both
+    // onto one code sent an operator to install or relocate a file that was
+    // already sitting right there.
+    return result.errnoCode === 'EACCES' || result.errnoCode === 'EPERM'
+      ? 'executable_unusable' : 'executable_missing'
+  }
+  if (result.settled === 'exit' && result.quotaSignal === true) return 'quota_exhausted'
+  if (result.settled === 'refused') return result.quotaSignal === true ? 'quota_exhausted' : 'unclassified'
+  // These return what the default below returns anyway, and that is exactly
+  // why they are pinned here rather than left to fall through it. It is a
+  // PIN, not a decision: it fixes the answer for every named shape this file
+  // settles on its own (never a provider's), so that changing the catch-all
+  // later cannot silently reclassify a cancelled turn, a handshake with no
+  // session, a malformed prompt result, or a faulted transport stream as
+  // something a caller would act on.
+  // `aborted` is settled by THIS file, not a provider: `notifications/cancelled`
+  // reaching `handle()` mid-probe threads a signal into the active
+  // `realProbeTransport` call, which reuses its own teardown and settles this
+  // shape once the child's process GROUP is confirmed gone. The reply this
+  // classification would sit inside is never sent — a cancelled request MUST
+  // NOT get one, per MCP — so this exists only so the shape stays inside the
+  // closed set rather than falling through to a bare, unpinned default.
+  if (result.settled === 'invalid_handshake' || result.settled === 'invalid_prompt_result'
+    || result.settled === 'cancelled' || result.settled === 'transport_error'
+    || result.settled === 'aborted') return 'unclassified'
+  return 'unclassified'
+}
+
+// The REAL transport. Nothing in this file's own suite drives it — the seam
+// below (`deps.probeTransport`) is what every test exercises instead, on
+// purpose, per the roadmap's own warning that a real probe spends real
+// minutes and real provider quota. Treat this function as unverified against
+// a live provider by this change's own tests, the same honesty this repo
+// already applies to `party-advise`'s bwrap gate: designed carefully, proven
+// only by a real run nobody has yet spent the quota to take.
+// EXPORTED so it can be exercised against a stub ACP agent. It was the one
+// piece of this feature nothing ran: every test injected a fake through
+// `deps.probeTransport`, which proves the classifier and proves nothing about
+// the code that actually spawns an adapter and reads its frames. The quota
+// pattern below is the sharpest example — if it misses a provider's real
+// wording, an exhausted lane reports `unclassified` and a fake transport can
+// never tell you.
+// `spawnFn` is a seam, defaulted to the real `spawn` so production has no
+// branch. It exists because the stream-level 'error' listeners below cannot be
+// reached any other way: a read fault on a pipe is not something a test can
+// schedule, and the first attempt at that test passed `spawnFn` to a function
+// that did not take it — so nothing was injected and it went green while the
+// listeners were deleted.
+//
+// Every shipped lane launches its adapter through a package-runner wrapper
+// (`npx`/`bunx` — see review-profiles.mjs), so the process this transport
+// spawns is never the ACP agent itself; it is a wrapper that resolves and
+// execs one. Signalling only `child.pid` reaps the WRAPPER and leaves the
+// agent it launched running, still holding the inherited pipes and still able
+// to answer a timed-out provider call while `probeLanes`'s own sequential loop
+// starts the NEXT lane — contradicting its one-budget-at-a-time comment.
+// `detached: true` on the spawn below makes `child.pid` the id of a NEW
+// process group the wrapper leads, so a NEGATIVE-pid signal reaches the
+// wrapper and every descendant sharing that group at once — the same
+// primitive `acp-companion.mjs` already uses for the same reason
+// (`process.kill(-agent.pid, signal)`, `groupPids`, `waitForGroupGone`).
+// `kill(-pgid, 0)` is POSIX and, per that file's own comment on the
+// primitive, fails only once no member of the group is left — proof enough
+// on its own that this probe needs no `ps` survey to get the same guarantee.
+async function waitForProbeGroupGone(groupId, timeoutMs) {
+  const deadline = Date.now() + Math.max(0, timeoutMs)
+  while (Date.now() <= deadline) {
+    try { process.kill(-groupId, 0) } catch { return true }
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  try { process.kill(-groupId, 0); return false } catch { return true }
+}
+
+// `abortSignal` — named apart from the POSIX signal STRINGS `killGroup` below
+// sends ('SIGTERM'/'SIGKILL') on purpose, so neither reads as the other.
+export async function realProbeTransport({ command, env, spawnFn = spawn, abortSignal,
+  depth = DEFAULT_PROBE_DEPTH,
+  bootTimeoutMs = PROBE_BOOT_TIMEOUT_MS, replyTimeoutMs = PROBE_REPLY_TIMEOUT_MS }) {
+  return new Promise((settle) => {
+    let done = false
+    let child
+    let killTimer = null
+    const finish = (result) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      if (killTimer) clearTimeout(killTimer)
+      if (abortSignal) abortSignal.removeEventListener('abort', onAbort)
+      // `pid` unset means the process never actually forked (a synchronous
+      // spawn() throw, or an async 'error' before any pid was assigned) — no
+      // 'exit' event is guaranteed for that shape on every platform, and
+      // waiting for one would trade a fast, correct classification for a
+      // probe that never settles. A child that DID fork gets its whole
+      // process GROUP swept before this promise resolves — on EVERY path,
+      // not only the one where this call is what killed it: the wrapper can
+      // just as easily exit ON ITS OWN (a quota refusal, an ordinary
+      // completed turn) while the descendant it launched is still there,
+      // reparented once the leader is gone, and the group id stays valid
+      // until every member of it is. Gating the sweep on "is the wrapper
+      // still alive" (an earlier version of this code) swept only the path
+      // where THIS call did the killing and settled the natural-exit path
+      // with no sweep at all — the exact shape the finding this fixes
+      // described, just on the other branch of it.
+      if (child?.pid !== undefined) {
+        const groupId = child.pid
+        const killGroup = (signal) => {
+          // The GROUP first: `detached: true` on the spawn below makes
+          // `groupId` the wrapper's own process-group id, so one call here
+          // reaches the wrapper (if still alive) and every descendant
+          // sharing it. Falling back to the single-pid form only when the
+          // group form itself throws is never worse than the old behaviour
+          // — it IS the old behaviour, kept as the last resort rather than
+          // the whole strategy. When the wrapper has already exited on its
+          // own this signals only whatever remains of its group, which is
+          // exactly the case this branch exists to reach.
+          try { process.kill(-groupId, signal); return }
+          catch { try { child.kill(signal) } catch { /* already gone */ } }
+        }
+        killGroup('SIGTERM')
+        killTimer = setTimeout(() => killGroup('SIGKILL'), 2000)
+        killTimer.unref?.()
+        ;(async () => {
+          // Bounded at 4s: 2s of SIGTERM grace plus room for the SIGKILL
+          // escalation that follows it to actually land. When the group is
+          // already empty — the overwhelmingly common case, wrapper exited
+          // clean with no descendant left behind — the first existence check
+          // inside this call fails immediately and this resolves in
+          // microseconds, not 4s: the cost of covering the natural-exit path
+          // is one syscall, not a wait. Clearing the escalation on the way
+          // out matters for the same reason it did before this change — a
+          // stub probe that answers in ~70ms must not hold this process
+          // alive for a SIGKILL timer nothing still needs.
+          await waitForProbeGroupGone(groupId, 4000)
+          if (killTimer) clearTimeout(killTimer)
+          settle(result)
+        })()
+        return
+      }
+      settle(result)
+    }
+    // `let`, because this is REARMED once the adapter proves it is up. `finish`
+    // above closes over the binding rather than the first timer, so whichever
+    // budget is live when a terminal outcome arrives is the one cleared.
+    let timer = setTimeout(() => finish({ settled: 'boot_timeout' }), bootTimeoutMs)
+    // Called exactly once, the moment `initialize` answers. That is the only
+    // point on the wire where "the adapter has not started" stops being a
+    // possible explanation and "the endpoint is not answering" starts being
+    // one, so it is where the budget changes meaning as well as size.
+    const armReplyBudget = () => {
+      clearTimeout(timer)
+      timer = setTimeout(() => finish({ settled: 'timeout' }), replyTimeoutMs)
+    }
+
+    // Finding: an MCP host that cancels an in-flight `acp_lane_probe` had no
+    // way to reach the process this promise is waiting on — `handle()` threads
+    // an `AbortSignal` down to exactly this call for that reason. `onAbort`
+    // calls the SAME `finish` every other terminal outcome calls, so the
+    // process-group kill and `waitForProbeGroupGone` wait below run exactly
+    // once, on whichever path gets there first; nothing new is invented for
+    // cancellation. An already-aborted signal (a cancellation that raced the
+    // spawn itself) is caught here, before anything is spawned at all — `return`
+    // exits this executor with nothing left behind to reap, rather than
+    // settling and then spawning a process nobody will ever wait for again.
+    const onAbort = () => finish({ settled: 'aborted' })
+    if (abortSignal) {
+      if (abortSignal.aborted) { finish({ settled: 'aborted' }); return }
+      abortSignal.addEventListener('abort', onAbort, { once: true })
+    }
+
+    const [bin, ...args] = command
+    try {
+      // `detached: true` makes the wrapper this spawns its OWN process-group
+      // leader (`child.pid` becomes the group id) rather than sharing this
+      // process's group — the precondition `killGroup`/`waitForProbeGroupGone`
+      // above rely on to reach the wrapper's descendants with one signal.
+      child = spawnFn(bin, args, { cwd: tmpdir(), env, stdio: ['pipe', 'pipe', 'pipe'], detached: true })
+    } catch (error) {
+      clearTimeout(timer)
+      finish({ settled: 'spawn_error', errnoCode: error?.code ?? null })
+      return
+    }
+    let spawnFailed = false
+    child.once('error', (error) => {
+      spawnFailed = true
+      finish({ settled: 'spawn_error', errnoCode: error?.code ?? null })
+    })
+    // A child that closes fd 0 at the OS level while staying alive (a
+    // non-Node adapter closing its input pipe, or exiting its read loop
+    // without exiting the process) delivers the parent's NEXT
+    // `child.stdin.write()` as an async 'error' event — measured directly:
+    // `write()` itself returns `false` with no throw, so the try/catch inside
+    // `send()`/`replyToChild()` below is a no-op, and the event fires after
+    // the call already returned. Swallowing here is correct, not a shortcut:
+    // the child's own `exit`/`error` handlers above already carry what
+    // happened; this listener only stops the write-side echo of that same
+    // event from becoming an unhandled one that kills the whole server.
+    child.stdin.on('error', () => {})
+
+    // A provider's own wording never leaves this function — this boolean is
+    // the ONLY thing either stream is allowed to produce for the caller.
+    let quotaSignal = false
+    // `rate_limit_exceeded` used to fall through this list entirely: `_` is a
+    // word character, so the `\b` that closes the `rate.?limit(?:ed)?`
+    // alternative refuses to match right after "limit" when the next
+    // character is the underscore in "_exceeded" — the same reason
+    // `insufficient_quota` and `resource_exhausted` are spelled out here as
+    // their OWN literal alternatives rather than assumed to fall out of
+    // `quota` alone. One gap, not a category: named explicitly rather than
+    // loosening the boundary rule this regex otherwise relies on.
+    const QUOTA_SIGNAL = /\b(quota|rate.?limit(?:ed)?|rate_limit_exceeded|429|insufficient_quota|resource_exhausted)\b/i
+    // Measured, not theoretical: two ordinary back-to-back writes of one word
+    // split across the write boundary ('resource_' then 'exhausted') arrived
+    // as two SEPARATE 'data' events in the majority of trials, and neither
+    // half alone matches. Testing each chunk in isolation misses the signal
+    // at a high rate. Carry a bounded TAIL of the previous chunk into the next
+    // test instead — the same reason the JSON-RPC line parser below
+    // accumulates into `buf` rather than trusting chunk boundaries.
+    //
+    // The cap is CODE UNITS. `String.prototype.slice` counts them, not bytes —
+    // this comment said both in consecutive sentences until a review lane read
+    // it. The quota tokens are ASCII and under 20 characters, so a 64-unit tail
+    // spans any of them however a chunk falls, and the memory is bounded for an
+    // agent that never stops talking. The name says CAP rather than BYTES for
+    // that reason, and ADR 0007 says characters where it once said bytes.
+    const QUOTA_TAIL_CAP = 64
+    const makeQuotaWatcher = () => {
+      let tail = ''
+      return (chunk) => {
+        const text = tail + String(chunk)
+        if (QUOTA_SIGNAL.test(text)) quotaSignal = true
+        tail = text.slice(-QUOTA_TAIL_CAP)
+      }
+    }
+    // One watcher per stream: stderr and stdout arrive on independent OS
+    // pipes, so a tail built from one must never be tested against a chunk
+    // from the other.
+    const noteStderrQuotaSignal = makeQuotaWatcher()
+    const noteStdoutQuotaSignal = makeQuotaWatcher()
+    // A stdio Socket emits its OWN 'error'; `child.on('error')` is the ChildProcess
+    // and does not cover it, so an unhandled read fault here takes the whole process
+    // down. Found on the third pass: two doors were named, a survey of every stream
+    // with a 'data' listener and no 'error' listener found seven.
+    child.stderr.on('error', () => {})
+    // stdout is different from stderr: losing stderr costs only the quota
+    // watcher, but every JSON-RPC frame this probe will ever read arrives on
+    // stdout. An empty listener here swallowed the fault and left the process
+    // alive with every pending `send()` unresolved, so the probe rode the
+    // full reply budget out reporting `probe_timeout` for a lane that had
+    // already told us, immediately, that no further reply could arrive.
+    // Settle now with what this call already knows, and let `finish` start
+    // the SAME teardown it runs for every other terminal outcome.
+    child.stdout.on('error', () => { finish({ settled: 'transport_error' }) })
+    child.stderr.on('data', noteStderrQuotaSignal)
+
+    // One JSON-RPC line at a time, id-correlated, exactly the framing this
+    // server itself speaks on its own stdio — the difference is this side is
+    // the CLIENT now.
+    let buf = ''
+    let outBytes = 0
+    // A generous multiple of a one-word answer, not a real turn's budget: an
+    // adapter emits one envelope per streamed token, and this project has
+    // already measured that amplify past 2MB on an ordinary answer.
+    const OUT_CAP = 2_000_000
+    let nextId = 1
+    const pending = new Map()
+    const send = (method, params) => new Promise((resolve, reject) => {
+      const id = nextId++
+      pending.set(id, { resolve, reject })
+      try {
+        child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
+      } catch (error) {
+        pending.delete(id)
+        reject(error)
+      }
+    })
+    const replyToChild = (id, result) => {
+      try { child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`) } catch { /* child is gone */ }
+    }
+
+    child.stdout.on('data', (chunk) => {
+      noteStdoutQuotaSignal(chunk)
+      outBytes += chunk.length
+      // Crossing the cap must SETTLE, not just stop parsing. A bare `return`
+      // here left every later 'data' event silently discarded with nothing
+      // calling `finish` — a lane whose adapter had already answered
+      // `session/prompt` past the cap (verbose reasoning, progress
+      // notifications) rode the full timeout and was reported
+      // `probe_timeout`, telling an operator the endpoint never replied when
+      // it plainly had (PR #71 inline comment 3835247727). `transport_error`
+      // is the same bucket `child.stdout` faulting uses just above: no
+      // further JSON-RPC frame can be read off this stream either way, and
+      // it is already pinned in `classifyProbe` to `unclassified`, never
+      // `probe_timeout` — distinguishable from a real timeout, and it starts
+      // the SAME teardown every other terminal outcome gets.
+      if (outBytes > OUT_CAP) { finish({ settled: 'transport_error' }); return }
+      buf += chunk
+      let idx
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx)
+        buf = buf.slice(idx + 1)
+        if (!line.trim()) continue
+        let message
+        try { message = JSON.parse(line) } catch { continue }
+        if (!message || typeof message !== 'object') continue
+        if ('id' in message && !('method' in message)) {
+          const entry = pending.get(message.id)
+          if (!entry) continue
+          pending.delete(message.id)
+          if (message.error) entry.reject(new Error('probe request refused'))
+          else entry.resolve(message.result)
+        } else if ('id' in message && 'method' in message) {
+          // A child-initiated request. NEVER granted — a probe proves
+          // reachability, it authorizes nothing. Answering immediately also
+          // keeps a spec-conforming child from stalling us to the timeout
+          // waiting on a reply that was never coming.
+          replyToChild(message.id, message.method === 'session/request_permission'
+            ? { outcome: { outcome: 'cancelled' } }
+            : {})
+        }
+        // A notification (no `id`) is ignored — this probe classifies the
+        // final outcome, not the stream of progress in between.
+      }
+    })
+
+    child.once('exit', (code) => {
+      if (spawnFailed) return
+      finish({ settled: 'exit', code, quotaSignal })
+    })
+
+    ;(async () => {
+      try {
+        await send('initialize', {
+          protocolVersion: 1,
+          clientInfo: { name: 'tmux-teams-acp-lane-probe', version: pluginVersion() },
+          clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
+        })
+        armReplyBudget()
+        const session = await send('session/new', { cwd: tmpdir(), mcpServers: [] })
+        // A well-formed success can still omit `sessionId` — nothing upstream
+        // validates the shape of a session/new result. Returning with nothing
+        // settled here left only the 20s timeout to close this out, reporting
+        // a lane that answered an invalid handshake immediately as one that
+        // never answered at all.
+        // TYPE, not truthiness. `sessionId: {}` is truthy, so the first version of
+        // this guard let a malformed handshake through and the lane was reported
+        // `reachable` — an actionable lie from the one tool whose entire job is
+        // classifying reachability. The shape is the companion's own
+        // `SESSION_ID_RE`, named here rather than imported because this file
+        // deliberately depends on no sibling script.
+        // `typeof` FIRST: `RegExp.test` coerces, so the regex alone accepts 42 and
+        // true — measured while writing this, one fix after the same mistake.
+        if (typeof session?.sessionId !== 'string' || !PROBE_SESSION_ID_RE.test(session.sessionId)) {
+          finish({ settled: 'invalid_handshake' }); return
+        }
+        // STOP HERE at handshake depth. Everything the shallow check can learn
+        // has been learned: the process started, spoke the protocol, and issued
+        // a well-formed session. Sending the prompt is what costs money, and
+        // the caller asked us not to.
+        if (depth === 'handshake') { finish({ settled: 'handshake_ok' }); return }
+        const result = await send('session/prompt',
+          { sessionId: session.sessionId, prompt: [{ type: 'text', text: PROBE_BRIEF }] })
+        // A JSON-RPC SUCCESS carrying `{}` or `null` is not an answer — nothing
+        // upstream validated the RESULT's own shape, only that a result (and
+        // not an error) arrived, so `result?.stopReason === 'cancelled' ?
+        // 'cancelled' : 'response'` sent every one of those down the
+        // `'response'` branch: a lane that produced no answer reported as one
+        // that did, from the one tool whose entire job is classifying
+        // reachability. Same precedent as the handshake guard above — TYPE
+        // first, because `RegExp.test` (or here, a bare truthy/coercing check)
+        // accepts shapes a caller never meant to send — and an object check
+        // alone still passes an array, so that is refused too.
+        if (result === null || typeof result !== 'object' || Array.isArray(result)
+          || typeof result.stopReason !== 'string') {
+          finish({ settled: 'invalid_prompt_result' }); return
+        }
+        // `stopReason: 'cancelled'` is what comes back when the turn itself
+        // was cut short — including by our OWN `replyToChild` above, which
+        // never grants a permission request. The round trip completed, but no
+        // answer was produced, which is not the claim `settled: 'response'`
+        // makes: treating any non-error result as reachable let a cancelled
+        // turn report the same as a real one.
+        finish({ settled: result.stopReason === 'cancelled' ? 'cancelled' : 'response' })
+      } catch {
+        // A rejected request means the child refused (auth, quota, malformed
+        // reply) WITHOUT exiting — the `exit` handler above cannot help here
+        // because the process is still alive, so the 20s timeout used to be
+        // the only thing that settled this, discarding an already-true
+        // quotaSignal for the entire wait and reporting the wrong code after
+        // the longest possible delay. Settle now with whatever this call
+        // already knows.
+        finish({ settled: 'refused', quotaSignal })
+      }
+    })()
+  })
+}
+
+// All shape enforcement for `acp_lane_probe` lives HERE, not in
+// `argumentsProblem` — that checker only types declared STRING properties
+// and does not read `required`, so `lanes` missing, empty, a bare string, or
+// carrying a non-string entry all pass the envelope check untouched. This
+// function is therefore the entire anti-sweep guard: every branch below
+// returns before a single process is spawned, and the ONLY way past it is a
+// non-empty array of ids this plugin already declares.
+function probeArgsProblem(args) {
+  const lanes = args?.lanes
+  if (!Array.isArray(lanes) || lanes.length === 0) {
+    return 'lanes is required and must be a non-empty array of lane ids — there is no probe-everything default'
+  }
+  if (!lanes.every((entry) => typeof entry === 'string')) {
+    return 'every entry in lanes must be a string lane id'
+  }
+  // A closed set, REFUSED rather than defaulted. A caller who types `depth:
+  // "handshakes"` means to spend nothing; silently giving them a prompt-depth
+  // sweep would spend real quota on a typo.
+  if (args.depth !== undefined && !PROBE_DEPTHS.includes(args.depth)) {
+    return 'depth must be one of: handshake, prompt'
+  }
+  return null
+}
+
+async function probeOneLane(id, profile, env, transport, abortSignal, depth = DEFAULT_PROBE_DEPTH) {
+  // The boundary list is chosen by DEPTH, not by outcome: a handshake pass
+  // and a prompt pass are both `reachable`, and they are not the same claim.
+  const notProven = depth === 'handshake' ? HANDSHAKE_NOT_PROVEN : PROBE_NOT_PROVEN
+  const status = laneStatus(id, profile, env)
+  // AVAILABILITY IS CHECKED FIRST, and the order is the finding. `ninerouter`
+  // declares a wrapper this machine does not have AND a local gateway it cannot
+  // reach, so the configuration check below reached it first and answered
+  // `endpoint_missing` — sending an operator to fix an endpoint when the real
+  // cause is an absent binary. A missing executable is the more fundamental
+  // fact: with no binary, the endpoint question cannot be asked at all.
+  // THE BRAKE, and the reason this whole surface exists. A lane whose declared
+  // executable is not on this machine cannot start, and spawning it anyway buys
+  // an operator a subprocess, a timeout, and a diagnosis that names the symptom
+  // instead of the cause — which is exactly what happened to `ninerouter` here.
+  // Refuse BEFORE the spawn and name the missing thing and the way out.
+  //
+  // This mirrors what the loop runner already does for a missing `graph.json`:
+  // it "refuses to dispatch against it, and says so rather than idling
+  // silently". The status existed for lanes; nothing was wired to it.
+  // The override is applied here too, or the brake refuses a lane the
+  // operator has already fixed on this machine.
+  const { overrides } = loadLaneOverrides({ knownLanes: Object.keys(REVIEW_PROFILES), profiles: REVIEW_PROFILES, env })
+  const availability = laneAvailability(id, applyLaneOverride(profile, overrides[id], env), env)
+  if (!availability.available) {
+    const first = availability.blocking[0]
+    return {
+      lane: id,
+      probe: 'not_attempted',
+      configuration: status.configuration,
+      problem: { code: first.code, detail: READINESS_PROBLEMS[first.code] },
+      missing: first.missing,
+      needs: availability.needs,
+      setup: 'run the tmux-teams:lane-setup skill — this machine cannot start this lane',
+      fixes: [],
+      notProven,
+      depth,
+    }
+  }
+  // Already known broken, and known WHY — a live attempt would learn nothing
+  // a spawn cannot already answer, and would spend a process on a lane that
+  // cannot start. `acp_lane_status`'s own diagnostic is the honest answer.
+  if (status.configuration === 'invalid') {
+    return {
+      lane: id,
+      probe: 'not_attempted',
+      configuration: 'invalid',
+      problem: status.problem,
+      fixes: status.fixes,
+      notProven,
+      depth,
+    }
+  }
+  let launch
+  try {
+    launch = buildAcpLaunch(id, { env })
+  } catch (error) {
+    const code = classify(error?.message, { fileKind: error?.fileKind ?? null })
+    return {
+      lane: id,
+      probe: 'unreachable',
+      configuration: status.configuration,
+      problem: { code, detail: DIAGNOSTICS[code] },
+      fixes: fixesFor(id, profile, code, { envKey: error?.envKey ?? null }),
+      notProven,
+      depth,
+    }
+  }
+  // A REJECTING transport is caught HERE, per lane, on purpose. Left
+  // unguarded, one misbehaving lane would reject the whole `probeLanes`
+  // promise and scrap every other lane already probed sequentially before
+  // it in the same call — and whatever the rejection carries, which may be a
+  // raw provider message, must never propagate any further than this catch.
+  // `classifyProbe(null)` already answers `unclassified`, so a rejection
+  // lands in the same honest bucket a malformed signal would.
+  let result
+  try {
+    // `abortSignal` reaches the ACTIVE call — the only one a cancellation can
+    // still change anything for. `probeLanes`'s own loop is what stops the
+    // NEXT lane from starting; this is what stops the one already running.
+    result = await transport({
+      id, command: launch.command, env: launch.env, abortSignal, depth,
+      bootTimeoutMs: PROBE_BOOT_TIMEOUT_MS, replyTimeoutMs: PROBE_REPLY_TIMEOUT_MS,
+    })
+  } catch {
+    result = null
+  }
+  const code = classifyProbe(result)
+  if (!code) {
+    return { lane: id, probe: 'reachable', configuration: status.configuration, problem: null, notProven, depth }
+  }
+  return {
+    lane: id,
+    probe: 'unreachable',
+    configuration: status.configuration,
+    problem: { code, detail: DIAGNOSTICS[code] },
+    fixes: (code === 'executable_missing' || code === 'executable_unusable')
+      ? executableFixes(id, profile) : [],
+    notProven,
+    depth,
+  }
+}
+
+// The anti-sweep guard AND the dedup guard live before the loop: a caller who
+// repeats a lane id must not spend that lane's quota twice for one call.
+async function probeLanes(args, env, transport, abortSignal) {
+  const problem = probeArgsProblem(args)
+  if (problem) return { error: problem, known: Object.keys(REVIEW_PROFILES) }
+  // Read AFTER validation, so an invalid depth is refused rather than
+  // silently falling back to the one that spends money.
+  const depth = args.depth ?? DEFAULT_PROBE_DEPTH
+  const ids = [...new Set(args.lanes)]
+  if (ids.some((id) => !Object.hasOwn(REVIEW_PROFILES, id))) {
+    return { error: 'no such lane', known: Object.keys(REVIEW_PROFILES) }
+  }
+  // Sequential, never Promise.all — a live probe spends real quota and real
+  // minutes, and running lanes concurrently would spend several budgets at
+  // once for a caller who typed one call. This orders LANES within this one
+  // call; it says nothing about a SECOND `acp_lane_probe` call arriving while
+  // this one is still running — that is `serve()`'s own queue, further down
+  // in this file, and is a separate guarantee this loop cannot provide alone.
+  const lanes = []
+  for (const id of ids) {
+    // Checked BEFORE starting each lane, never only once up front: a
+    // cancellation can arrive between two lanes of a multi-lane call, and the
+    // one thing this loop owes a cancelled request is that the NEXT lane
+    // never spawns. The lane already running is stopped by threading the same
+    // `abortSignal` into `probeOneLane`/the transport below, not by this check.
+    if (abortSignal?.aborted) break
+    lanes.push(await probeOneLane(id, REVIEW_PROFILES[id], env, transport, abortSignal, depth))
+  }
+  return { lanes }
+}
+
+// ONE list. `TOOLS` and the dispatcher are both derived from it, so an
+// unadvertised handler is not something a reviewer has to go looking for — it
+// is unrepresentable.
+// `Object.freeze` on an array freezes the ARRAY, not the records inside it, so
+// both of these stayed writable by an in-process importer while ADR 0007 called
+// the one-descriptor-list invariant not representable as drift. A panel lane
+// read the claim against the two calls. `deepFreeze` makes the claim true for
+// what it covers; it still cannot stop a differently named handler being added
+// later, which the ADR already says.
+export const TOOL_DESCRIPTORS = deepFreeze([
+  {
+    name: 'acp_lanes',
+    // The description said "Declared facts only - it touches nothing on this
+    // machine" while this handler resolves executables on PATH, stats them,
+    // reads the per-machine override file and reads a model-alias settings file.
+    // TWO review families raised it independently on the same bytes, which is
+    // this repository's must-fix threshold — and it is the same defect shape the
+    // whole release is about, in the sentence an agent reads to decide whether
+    // calling this tool is free.
+    description: 'List every ACP review lane this plugin declares — family, provider, model, '
+      + 'adapter package, pinned endpoint — AND whether this machine can actually start it. '
+      + 'It reads local state to answer that second half: it resolves each declared executable '
+      + 'and launcher on PATH and stats them, reads the per-machine override file, and reads '
+      + 'the model-alias settings a routed lane points at. It contacts NO endpoint, sends no '
+      + 'prompt and spends no provider quota, and it returns no credential value. Read '
+      + '`setupRequired` before dispatching: it is true when this machine cannot start anything.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    // Availability rides WITH the declaration, never instead of it: an operator
+    // needs to see what a lane claims AND whether this machine can honour the
+    // claim. `setupRequired` is the gate a caller reads BEFORE dispatching, and
+    // it is the whole difference between an answer now and an error later.
+    handler: (args, env) => {
+      // ONE load, shared by both halves of this answer, so the per-lane rows and
+      // the summary cannot be computed from different configurations. This
+      // comment said that while the code loaded twice — `readinessReport` again
+      // internally — and a deepseek review lane caught the two disagreeing. The
+      // loader is injected so there is now genuinely one read.
+      const loaded = loadLaneOverrides({ knownLanes: Object.keys(REVIEW_PROFILES), profiles: REVIEW_PROFILES, env })
+      const overrides = loaded.overrides
+      const report = readinessReport(REVIEW_PROFILES, env, { overrideLoader: () => loaded })
+      return {
+        lanes: Object.entries(REVIEW_PROFILES).map(([id, p]) => laneWithAvailability(id, p, env, overrides[id])),
+        plugin: report.plugin,
+        callableLanes: report.callableLanes,
+        callableFamilies: report.callableFamilies,
+        setupRequired: report.setupRequired,
+        setup: report.setupRequired
+          ? 'this machine cannot start one or more declared lanes — run the tmux-teams:lane-setup skill before dispatching'
+          : null,
+      }
+    },
+  },
+  {
+    name: 'acp_lane_status',
+    description: 'Report whether a lane\'s CONFIGURATION is valid on this machine, and when it is not, '
+      + 'which closed diagnostic applies and which environment variable points at the missing piece. '
+      + 'It reads settings and credential files to decide, and never returns a credential or a '
+      + 'credential value. It does not prove the lane runs: no endpoint is contacted and no session '
+      + 'is started. Read-only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        lane: { type: 'string', description: 'One lane id. Omit to report every lane.' },
+      },
+      additionalProperties: false,
+    },
+    handler: (args, env) => {
+      const wanted = args?.lane
+      if (wanted !== undefined && !Object.hasOwn(REVIEW_PROFILES, wanted)) {
+        // The `known` list already carries the vocabulary, so echoing what the
+        // caller sent adds nothing and contradicts this file's own stated
+        // invariant that every sentence it emits is a constant. Two panel
+        // lanes raised it independently.
+        return { error: 'no such lane', known: Object.keys(REVIEW_PROFILES) }
+      }
+      const ids = wanted === undefined ? Object.keys(REVIEW_PROFILES) : [wanted]
+      return { lanes: ids.map((id) => laneStatus(id, REVIEW_PROFILES[id], env)) }
+    },
+  },
+  {
+    name: 'acp_lane_probe',
+    description: 'Contact named ACP lanes LIVE, one trivial one-word brief each, and report each as '
+      + 'reachable, out of quota, or refused — classified into a closed code, never the provider\'s own '
+      + 'wording. This is the one tool on this server that contacts an endpoint: it spends real minutes '
+      + 'and real provider quota, bounded by a per-lane timeout. `lanes` is REQUIRED and must be a '
+      + 'non-empty array of lane ids named explicitly — there is no probe-everything default, so a sweep '
+      + 'has to be typed on purpose every time. A lane whose configuration is already invalid is reported '
+      + 'from that diagnosis without being contacted. This starts no review and no delivery work: one '
+      + 'process per named lane, asked one word, torn down. Pass `depth: "handshake"` to stop after the '
+      + 'session handshake instead: it still spawns the lane and still costs minutes, but sends no '
+      + 'prompt, so nothing a provider bills for is spent. Measured 2026-08-24: an adapter whose '
+      + 'install was truncated dies before `initialize`, while a 402 membership and a missing '
+      + 'payment method are invisible until a prompt is actually sent — so the shallow depth '
+      + 'answers "can this machine start this lane" and cannot answer "will it pay out".',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        lanes: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Lane ids to probe live, named explicitly. Required and non-empty — omitting it '
+            + 'or sending an empty array is refused rather than defaulting to every lane.',
+        },
+        depth: {
+          type: 'string',
+          enum: [...PROBE_DEPTHS],
+          description: 'How far to go. `handshake` spawns the lane, completes initialize and '
+            + 'session/new, and STOPS without sending a prompt — it answers whether this machine can '
+            + 'start this lane, and sends nothing a provider bills for. `prompt` (the default) also '
+            + 'sends the one-word brief, which is the only way quota and billing failures become '
+            + 'visible. A handshake pass proves strictly less and says so in its own notProven list.',
+        },
+      },
+      required: ['lanes'],
+      additionalProperties: false,
+    },
+    // `deps.probeTransport` is the seam every test in this file's suite
+    // drives instead of a subprocess. The real transport runs only when
+    // nothing injects one — i.e. only from the manifest-launched server.
+    // `deps.abortSignal` is `handle()`'s own doing: it is the ONE call this
+    // server tracks for `notifications/cancelled`, and this is the seam that
+    // carries the signal in without this handler needing to know anything
+    // about request ids or the registry that maps them to controllers.
+    handler: (args, env, deps = {}) => probeLanes(args, env, deps.probeTransport ?? realProbeTransport, deps.abortSignal),
+  },
+])
+
+export const TOOLS = deepFreeze(TOOL_DESCRIPTORS.map(({ handler, ...rest }) => rest))
+const HANDLERS = new Map(TOOL_DESCRIPTORS.map((d) => [d.name, d.handler]))
+
+export function callTool(name, args, env, deps) {
+  const handler = HANDLERS.get(name)
+  if (!handler) return { error: 'no such tool', known: [...HANDLERS.keys()] }
+  return handler(args, env, deps)
+}
+
+// ## Validation, and why there was none
+//
+// The first three versions of this file validated nothing about the envelope.
+// A Codex advisor drove the real stdio server with hand-built frames and got a
+// successful tool list out of `"jsonrpc":"1.0"`, successful content out of
+// `arguments: []` against an object-only schema, an unknown tool reported as a
+// SUCCESSFUL result carrying `isError`, and silence for an `id: null` request.
+// Every one of those contradicts MCP 2025-06-18 and JSON-RPC 2.0, and a
+// permissive host continuing anyway is not a conformance check — it is the
+// reason nobody noticed. Middleware that cannot tell protocol misuse from tool
+// failure is the concrete cost.
+export const RPC_INVALID_REQUEST = -32600
+export const RPC_METHOD_NOT_FOUND = -32601
+export const RPC_INVALID_PARAMS = -32602
+export const RPC_PARSE_ERROR = -32700
+
+// Each reason is a constant sentence, for the same reason every diagnostic in
+// this file is: nothing a caller sent may be echoed back out.
+export const REQUEST_PROBLEMS = Object.freeze({
+  batch: 'JSON-RPC batching is not supported by MCP 2025-06-18',
+  not_an_object: 'a request must be a JSON object',
+  jsonrpc: 'a request must carry jsonrpc "2.0"',
+  method: 'a request must carry a string method',
+  id: 'a request id must be a string or a finite number, and must not be null',
+})
+
+// Structure only. `null` means the frame is a legal request or a legal
+// notification; the caller decides which by whether an `id` member is present.
+export function requestProblem(message) {
+  if (Array.isArray(message)) return 'batch'
+  if (message === null || typeof message !== 'object') return 'not_an_object'
+  if (message.jsonrpc !== '2.0') return 'jsonrpc'
+  if (typeof message.method !== 'string') return 'method'
+  if ('id' in message) {
+    const { id } = message
+    // `id: null` is reserved for a response that could not determine one. As a
+    // REQUEST id it is invalid, and treating it as "no id" is what made the
+    // server drop such a frame in silence.
+    //
+    // Any NUMBER, not any integer. The first version demanded `Number.isInteger`
+    // and a Codex advisor caught it turning a SHOULD NOT into a MUST NOT:
+    // JSON-RPC 2.0 says fractional ids should not be used and MCP's `RequestId`
+    // is `string | number`, so `id: 1.5` is a legal request that this server was
+    // refusing — and refusing in the one way that loses the correlation, under
+    // `id: null`. Being stricter than the spec is not the safe direction when
+    // the cost is dropping legitimate traffic.
+    if (!(typeof id === 'string' || (typeof id === 'number' && Number.isFinite(id)))) return 'id'
+  }
+  return null
+}
+
+// Per-method params, because an envelope check is not a params check: validate
+// `tools/call` alone and `initialize` with no params, `tools/list` with
+// `params: []` and `ping` with unexpected params all answer SUCCESS.
+//
+// `initialize` requires everything MCP 2025-06-18 requires — `protocolVersion`,
+// `capabilities` and `clientInfo`. Being tolerant here was argued for and
+// reversed: the tolerance protects a case nobody has observed, while the
+// `2025-06-18` advertisement is made on every single initialize.
+// Every method this server answers. Pinned as a set rather than inferred from
+// the if-chain below, so a method that gains params validation and a method
+// that gains a handler cannot drift apart.
+export const KNOWN_METHODS = new Set(['initialize', 'ping', 'tools/list', 'tools/call'])
+
+export function paramsProblem(method, params) {
+  const isObject = params === undefined
+    || (params !== null && typeof params === 'object' && !Array.isArray(params))
+  if (!isObject) return `${method} params must be an object`
+  if (method === 'initialize') {
+    if (params === undefined) return 'initialize requires params'
+    if (typeof params.protocolVersion !== 'string') return 'initialize requires a string protocolVersion'
+    for (const key of ['capabilities', 'clientInfo']) {
+      const value = params[key]
+      if (value === null || value === undefined || typeof value !== 'object' || Array.isArray(value)) {
+        return `initialize requires an object ${key}`
+      }
+    }
+    // `clientInfo` is an Implementation: it requires `name` and `version`.
+    // Requiring the OBJECT and not its contents is half a rule, and two panel
+    // lanes said so — the file claims the check "matches the version this
+    // server claims to speak", and it did not.
+    for (const key of ['name', 'version']) {
+      if (typeof params.clientInfo[key] !== 'string') return `initialize clientInfo requires a string ${key}`
+    }
+    // `title` is OPTIONAL and typed as a string when present. A lane reproduced
+    // `clientInfo: { name, version, title: 42 }` returning success from a
+    // validator that claims to match this protocol version.
+    if (params.clientInfo.title !== undefined && typeof params.clientInfo.title !== 'string') {
+      return 'initialize clientInfo title must be a string'
+    }
+    // The known capability members are typed too — `roots.listChanged` and
+    // `sampling`/`elicitation` shapes. Same lane, same frame:
+    // `capabilities: { roots: { listChanged: "yes" } }` was accepted. Only the
+    // members MCP names are checked; an unknown capability is a client
+    // extension and stays legal, which is the difference between validating a
+    // protocol and refusing a future one.
+    // KNOWN members only, and NO caller text in the sentence. The previous
+    // version failed both ways at once, and a lane reproduced each: it demanded
+    // a boolean `listChanged` from EVERY capability name — so a legal
+    // `experimental` map carrying a `listChanged` of another shape was refused,
+    // turning a validator into a ceiling on a protocol that says extensions
+    // stay legal — and it interpolated the caller's capability NAME into the
+    // reply, which is the constant-sentence invariant this module states about
+    // itself, broken inside the check written to enforce a different one.
+    for (const name of MCP_OBJECT_CAPABILITIES) {
+      const member = params.capabilities[name]
+      if (member === undefined) continue
+      if (member === null || typeof member !== 'object' || Array.isArray(member)) {
+        return 'initialize capabilities members must be objects'
+      }
+    }
+    // `experimental` is `{ [key: string]: object }` — the VALUES are typed too,
+    // and checking only the outer object accepted `{"vendor": true}` from a
+    // live client. Found by driving the running server, not by reading: the
+    // outer-shape fix landed and read as complete, because the four names in
+    // the list above are the right four and nothing said the map had a second
+    // rule inside it.
+    if (params.capabilities.experimental !== undefined) {
+      for (const value of Object.values(params.capabilities.experimental)) {
+        if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+          return 'initialize capabilities experimental values must be objects'
+        }
+      }
+    }
+    for (const name of MCP_LISTCHANGED_CAPABILITIES) {
+      const member = params.capabilities[name]
+      if (member?.listChanged !== undefined && typeof member.listChanged !== 'boolean') {
+        return 'initialize capabilities listChanged must be a boolean'
+      }
+    }
+  }
+  if (method === 'tools/list' && params?.cursor !== undefined && typeof params.cursor !== 'string') {
+    return 'tools/list cursor must be a string'
+  }
+  // `ping` takes no params. The header comment said round four had reproduced
+  // `ping` with unexpected params answering SUCCESS and that it was fixed; a
+  // panel lane read the code and found nothing validating ping at all. The
+  // comment described a fix that was never written — worse than no comment,
+  // because it tells a reader to stop looking.
+  // `_meta` is legal on ANY request in MCP 2025-06-18, so "ping takes no params"
+  // rejected conforming traffic. Two commits after being told that tolerance was
+  // wrong, I was told strictness was — and both were right, because the line is
+  // the spec rather than a preference in either direction.
+  // `_meta` is legal on any request AND is typed as an object. Accepting it as
+  // any value was the overcorrection: one commit stopped refusing legal traffic
+  // and started accepting illegal traffic, and the same panel family caught
+  // both halves.
+  if (params !== undefined && params._meta !== undefined
+    && (typeof params._meta !== 'object' || params._meta === null || Array.isArray(params._meta))) {
+    return '_meta must be an object'
+  }
+  // `PingRequest.params` is an OPEN object in MCP 2025-06-18 — `_meta` plus
+  // arbitrary keys — so rejecting unknown keys refused conforming traffic
+  // (`{traceContext: {}}` is the reviewer's own reproduction). This line has
+  // now been wrong in both directions and the lesson is the same each time:
+  // the answer is the specification, and a preference for strictness is not a
+  // reading of it. `_meta`'s TYPE is still checked above, because the spec
+  // types that one.
+  return null
+}
+
+// A deliberately small schema check, matching only what the descriptors
+// declare: an object with typed, optional properties and no others. It is not a
+// JSON Schema implementation and must not grow into one — a descriptor that
+// needs more than this should be simplified instead.
+export function argumentsProblem(schema, args) {
+  if (args === undefined) return null
+  if (args === null || typeof args !== 'object' || Array.isArray(args)) return 'arguments must be an object'
+  // The names come from the DESCRIPTOR, never from the caller. Echoing the
+  // offending key back would be harmless to its sender and would still break
+  // the property this file is easiest to check against: every sentence it emits
+  // is a constant of the module.
+  const declaredNames = Object.keys(schema?.properties ?? {})
+  const allowed = declaredNames.length ? declaredNames.join(', ') : '(this tool takes no arguments)'
+  for (const [key, value] of Object.entries(args)) {
+    // `Object.hasOwn`, not a truthiness test on a lookup. `properties` is a
+    // plain object literal, so `properties['constructor']` resolves up the
+    // prototype chain and returns a function — which the old check read as "yes,
+    // that argument is declared". A panel lane found it: `additionalProperties:
+    // false` was bypassable by naming anything on Object.prototype.
+    const declared = Object.hasOwn(schema?.properties ?? {}, key) ? schema.properties[key] : undefined
+    if (!declared) return `arguments may contain only: ${allowed}`
+    // Safe to name: this branch is reached only when `key` matched a declared
+    // property, so the string is the descriptor's, not the caller's.
+    if (declared.type === 'string' && typeof value !== 'string') return `argument ${key} must be a string`
+  }
+  return null
+}
+
+function rpcError(id, code, message) {
+  return { jsonrpc: '2.0', id, error: { code, message } }
+}
+
+export function handle(message, env = process.env, deps) {
+  const problem = requestProblem(message)
+  // An unreadable frame has no id to answer under, so JSON-RPC's own answer is
+  // an error carrying `id: null`.
+  if (problem) return rpcError(null, RPC_INVALID_REQUEST, REQUEST_PROBLEMS[problem])
+  const { id, method, params } = message
+  // A notification is a request with NO id member — decided here, after the
+  // frame is known to be well formed. An earlier version treated `id === null`
+  // as a notification too, so a malformed request vanished without a word.
+  if (!('id' in message)) {
+    // `notifications/cancelled` is the one notification this server ACTS on
+    // before discarding it, same as every other one — it never gets a reply
+    // either way. It names the id of a still-answering `acp_lane_probe` call,
+    // and finding that id in `deps.pendingProbes` is the only way this server
+    // can stop that call from continuing to spend provider quota once the
+    // host no longer wants the answer. An id this server never registered —
+    // unknown, or a call that already finished — is silently ignored: MCP
+    // says a sender MUST NOT cancel a request that has already completed, so
+    // a receiver that gets one anyway for any reason has nothing left to act
+    // on.
+    if (method === 'notifications/cancelled' && params && typeof params === 'object') {
+      deps?.pendingProbes?.get(params.requestId)?.abort()
+    }
+    return null
+  }
+  // Method-not-found outranks bad params: a caller naming a method this server
+  // does not implement has to hear THAT, not a complaint about the arguments to
+  // something that does not exist.
+  if (!KNOWN_METHODS.has(method)) return rpcError(id, RPC_METHOD_NOT_FOUND, 'method not found')
+  const badParams = paramsProblem(method, params)
+  if (badParams) return rpcError(id, RPC_INVALID_PARAMS, badParams)
+  if (method === 'initialize') {
+    return {
+      jsonrpc: '2.0',
+      id,
+      result: {
+        // Ours, not the caller's. See PROTOCOL_VERSION.
+        protocolVersion: PROTOCOL_VERSION,
+        capabilities: { tools: {} },
+        serverInfo: { name: 'tmux-teams-acp-lanes', version: pluginVersion() },
+      },
+    }
+  }
+  // The spec says a receiver MUST answer ping with an empty result. Missing it
+  // means a host health check reads this server as dead and drops it, which is
+  // the silent-disconnection twin of the boot bug this file already had.
+  if (method === 'ping') return { jsonrpc: '2.0', id, result: {} }
+  if (method === 'tools/list') return { jsonrpc: '2.0', id, result: { tools: TOOLS } }
+  if (method === 'tools/call') {
+    if (params === null || typeof params !== 'object' || Array.isArray(params)) {
+      return rpcError(id, RPC_INVALID_PARAMS, 'tools/call params must be an object')
+    }
+    if (typeof params.name !== 'string') {
+      return rpcError(id, RPC_INVALID_PARAMS, 'tools/call params.name must be a string')
+    }
+    const descriptor = TOOL_DESCRIPTORS.find((d) => d.name === params.name)
+    // An unknown tool is a PROTOCOL error, not a tool that ran and failed. A
+    // client holding a stale tool cache has to be able to tell those apart, and
+    // reporting the first as the second is what makes that impossible.
+    if (!descriptor) return rpcError(id, RPC_INVALID_PARAMS, 'no such tool')
+    const badArgs = argumentsProblem(descriptor.inputSchema, params.arguments)
+    if (badArgs) return rpcError(id, RPC_INVALID_PARAMS, badArgs)
+    // `acp_lane_probe` is the one handler worth tracking for cancellation — it
+    // is the only one that spends real time and real provider quota, so it is
+    // the only one a `notifications/cancelled` naming this id can usefully act
+    // on. `deps.pendingProbes`, when the caller supplied one (only `serve()`
+    // does for a real connection; a test may supply its own Map to drive this
+    // path directly through `handle()`), is where this controller becomes
+    // visible to a LATER `handle()` call carrying the cancellation.
+    const isProbe = params.name === 'acp_lane_probe'
+    const controller = isProbe ? new AbortController() : null
+    if (controller) deps?.pendingProbes?.set(id, controller)
+    const forgetProbe = () => { if (controller) deps?.pendingProbes?.delete(id) }
+    const payload = callTool(params.name, params.arguments, env,
+      controller ? { ...deps, abortSignal: controller.signal } : deps)
+    const buildReply = (resolved) => {
+      // MCP: a receiver of `notifications/cancelled` SHOULD NOT send a
+      // response for the cancelled request — the host already said the
+      // answer is not wanted, so mailing one back anyway is not a courtesy,
+      // it is traffic the host explicitly opted out of. Returning `null`
+      // reuses the exact path a notification already takes above: `serve()`'s
+      // own line handler only ever writes a truthy reply, so this needs no
+      // second suppression mechanism.
+      if (controller?.signal.aborted) return null
+      return {
+        jsonrpc: '2.0',
+        id,
+        result: {
+          content: [{ type: 'text', text: JSON.stringify(resolved, null, 2) }],
+          // Reserved for a tool that RAN and reported a problem — an unknown lane
+          // (or, now, an unreachable one) is the only one left, and it is
+          // genuinely a tool-level result.
+          isError: Boolean(resolved?.error),
+        },
+      }
+    }
+    // Only `acp_lane_probe`'s handler returns a Promise — it is the only tool
+    // that spawns a process and has to wait on it. Every other handler still
+    // returns a plain object, so `handle` still answers SYNCHRONOUSLY for
+    // every caller that never reaches the async branch: no existing call site
+    // awaits it, and none has to. The `.catch` is load-bearing, not
+    // decoration — a rejected handler promise reaching a caller with nothing
+    // to catch it is the EPIPE-takes-the-whole-gate-down shape this project
+    // has already lost a release to once; `probeLanes` is written to never
+    // reject, and this is the backstop for the day it does anyway.
+    if (payload && typeof payload.then === 'function') {
+      return payload.then(
+        (resolved) => { forgetProbe(); return buildReply(resolved) },
+        () => { forgetProbe(); return controller?.signal.aborted ? null : buildReply({ error: PROBE_CRASHED }) },
+      )
+    }
+    forgetProbe()
+    return buildReply(payload)
+  }
+  return rpcError(id, RPC_METHOD_NOT_FOUND, 'method not found')
+}
+
+export function serve({ input = process.stdin, output = process.stdout, env = process.env, deps } = {}) {
+  // A host that closes its read pipe mid-call (disconnect, exit) delivers the
+  // NEXT output.write() as an async 'error' event on the stream itself, not a
+  // promise rejection — the `.catch(() => {})` a few lines below cannot see
+  // it, because it backstops a rejecting `handle()`, a different failure than
+  // a write-side EPIPE. This project has already lost a whole run to this
+  // exact shape on a child's stdin (acp-review-client.mjs, acp-dispatch.mjs);
+  // `output` gets the same swallow-and-move-on guard for the same reason: the
+  // caller who broke the pipe already lost this reply, and nothing here can
+  // un-break it, so an unhandled 'error' event killing every OTHER lane's
+  // in-flight or queued result is a worse outcome than one lost write.
+  output.on('error', () => {})
+  // Connection-scoped state `handle()` itself cannot hold, because it is
+  // called once per message and never sees the messages around it. Both of
+  // these exist for exactly one shape: `acp_lane_probe`, the one tool that
+  // spends real minutes and real provider quota.
+  //
+  // `pendingProbes` is what lets a `notifications/cancelled` line arriving
+  // LATER on this same connection find the controller a `tools/call` line
+  // registered earlier — `handle()` reads and writes it through `deps`, this
+  // function only owns its lifetime.
+  //
+  // `probeChain` is the fix for the finding this shipped for: an MCP host
+  // that pipelines two `acp_lane_probe` `tools/call` requests used to have
+  // this very callback invoke `handle()` for both the moment their lines
+  // arrived, leaving both promises in flight — `probeLanes` only orders LANES
+  // within one call, so two requests spent two providers' quota at once.
+  // Every probe dispatch on this connection is chained onto ONE promise here,
+  // so a second probe call never starts until the first has fully settled.
+  // Nothing else waits on it: `ping`, `tools/list`, `initialize`, and any
+  // non-probe `tools/call` still reach `handle()` the instant their line
+  // arrives, exactly as before — a host that cannot get a `ping` answered
+  // while a probe runs for minutes would read this server as dead.
+  const pendingProbes = new Map()
+  const callDeps = { ...deps, pendingProbes }
+  let probeChain = Promise.resolve()
+  const isProbeCall = (message) => Boolean(message) && typeof message === 'object'
+    && !Array.isArray(message) && message.method === 'tools/call'
+    && message.params && typeof message.params === 'object' && !Array.isArray(message.params)
+    && message.params.name === 'acp_lane_probe'
+  const dispatch = (message) => {
+    if (!isProbeCall(message)) return Promise.resolve(handle(message, env, callDeps))
+    const run = probeChain.then(() => handle(message, env, callDeps))
+    // The CHAIN survives a rejecting call — swallowed here, on the chain only.
+    // `run`, returned below, still carries the real rejection to its own
+    // `.catch` a few lines down; this `.then(ok, ok)` exists only so one bad
+    // probe cannot wedge the queue and block every probe after it forever.
+    probeChain = run.then(() => {}, () => {})
+    return run
+  }
+  const lines = createInterface({ input })
+  // A readline Interface is its OWN error receiver: Node FORWARDS an input
+  // stream's error onto the Interface, so a listener on `input` does not cover
+  // it. Measured on Node v24.18.1 — a minimal reproduction still exited 1 with
+  // `Unhandled 'error' event` naming the Interface, WITH an error listener
+  // already on the underlying stream. The survey that closed seven `data`
+  // receivers never named this shape, which is how it survived that sweep.
+  // Swallowed here for the same reason `output` is: the host that broke this
+  // pipe is already gone, and killing every other lane's queued result is the
+  // worse outcome.
+  lines.on('error', () => {})
+  lines.on('line', (line) => {
+    const text = line.trim()
+    if (!text) return
+    let message
+    try {
+      message = JSON.parse(text)
+    } catch {
+      output.write(JSON.stringify({
+        jsonrpc: '2.0', id: null, error: { code: RPC_PARSE_ERROR, message: 'parse error' },
+      }) + '\n')
+      return
+    }
+    // `handle` may answer synchronously (every method except a probe call) or
+    // return a Promise (only `acp_lane_probe`). `dispatch` decides WHEN to
+    // call it — immediately for everything else, queued behind any probe
+    // already running for `acp_lane_probe` — and its own return value is
+    // normalised the same way either branch used to be. The `.catch` here is
+    // the same backstop `handle` already applies — doubled deliberately,
+    // because a socket write after an unhandled rejection killed a whole
+    // review gate in this project once already.
+    Promise.resolve(dispatch(message)).then((reply) => {
+      if (reply) output.write(JSON.stringify(reply) + '\n')
+    }).catch(() => {})
+  })
+  return lines
+}
+
+// Compare PATHS, not a URL against a hand-built string, and compare them
+// through realpath. `import.meta.url` is a percent-encoded file URL, so on any
+// install path carrying a space or a non-ASCII character the naive `file://` +
+// argv[1] template never matches, `serve()` is never called, and node exits 0
+// with an empty event loop — a server that is declared, launched and silently
+// dead. Two review lanes raised that; it survived a manual stdio run only
+// because this machine's paths are plain ASCII.
+//
+// The realpath half came from the TEST rather than from the review. The fix
+// both lanes suggested (`fileURLToPath` vs `resolve`) is still wrong on macOS,
+// where `/var` is a symlink to `/private/var` and Node's ESM loader resolves the
+// module URL through it while `argv[1]` keeps the path as typed. Booting the
+// thing found that; reading it twice would not have.
+export function launchedDirectly(entry = process.argv[1]) {
+  if (!entry) return false
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(resolve(entry))
+  } catch {
+    return false
+  }
+}
+
+if (launchedDirectly()) serve()

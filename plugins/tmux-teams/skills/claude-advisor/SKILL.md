@@ -1,12 +1,25 @@
 ---
 name: claude-advisor
-description: "Consult a Claude-protocol advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. Defaults to the top Claude model (fable at the session's effort); optionally takes a routing pair — $claude-advisor <bin> <model> — to reach k3, qwen3.8-max, deepseek or glm through a routed profile. Use when the user invokes $claude-advisor, asks for a second opinion, or names a specific advisor seat. Read-only: it advises, it never edits."
+description: "Consult a Claude-protocol advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. Defaults to the top Claude model (fable at the session's effort); optionally takes a routing pair — $claude-advisor <bin> <model> — to reach k3, qwen3.8-max, deepseek or glm through a routed profile. Use when the user invokes $claude-advisor, asks for a second opinion, names a specific advisor seat, or adds --party <id> to seat a saved bmad-party-mode roster. Read-only by brief and by this skill issuing no write instruction; unlike the Codex lane there is no mode switch to enforce it."
 ---
 
 # Claude Advisor
 
-A consultation lane. It asks a Claude-protocol seat a question, returns a
-round-table, and **can prove which model answered**.
+A consultation lane. It asks a Claude-protocol seat a question and returns a
+round-table.
+
+**On the default seat it can prove which model answered; on a routed seat it
+cannot, and this line used to promise both.** A panel lane read the headline —
+"can prove which model answered" — against this file's own paragraph fifty lines
+down, which says a receipt recording `effective_identity: opus` has told you
+nothing about who answered, because `opus` on three different bins reaches three
+different vendors. Both cannot be true.
+
+What holds: the default seat asks for `claude-fable-5` and the receipt binds
+that exact string, so the identity IS the model. A ROUTED seat asks a gateway
+for an alias, and the receipt records the alias — the `<bin>` and the endpoint
+are the facts, the alias is a slot. Prove a routed seat's family from its
+endpoint, never from its identity.
 
 ## What this skill actually guarantees
 
@@ -39,6 +52,39 @@ $claude-advisor <bin> <model>        # a routed seat
 alias the wrapper maps onto a vendor model. Both are required together — a bin
 with no model, or a model with no bin, is a usage error, because the alias only
 means something inside a profile.
+
+### `--party <id>` — seat a saved bmad-party-mode roster
+
+Any seat above also takes `--party <id>`, the same flag `bmad-party-mode` takes.
+Instead of the lane inventing 3-5 voices, it answers as the operator's own saved
+party — real names, titles and scene. One script renders the roster so all three
+`*-advisor` skills seat it the same way:
+
+```bash
+node <plugin-root>/skills/tmux-teams/scripts/advisor-party.mjs <id>
+```
+
+`<plugin-root>` — the same spelling every dispatch command in this file uses,
+expanded to `$CLAUDE_PLUGIN_ROOT` when you run it. NOT a repository-relative
+path: an advisor is invoked from the operator's own project, where
+`plugins/tmux-teams/...` resolves under THAT tree and exits `MODULE_NOT_FOUND`,
+so `--party` would never reach the resolver. An openai review lane caught the
+relative form in all three skills at once.
+
+Paste what it prints into the brief **in place of** the invented-cast paragraph
+(the one that asks for three to five named voices); leave the READ-ONLY paragraph
+exactly as it is. Exit `0` is the only
+success. Exit `2` names why it refused — `unknown_party` (with the ids that do
+exist), `not_installed` (bmad-party-mode is a separate install, not shipped
+here), `uv_missing`, `resolver_failed`, or `party_substituted` (the resolver
+answered with a different party than the one asked for) — and on `2` **stop and
+tell the operator, then ask whether to run with the invented cast instead.**
+Exit `1` is a USAGE error in the command you typed — a missing id, a flag with
+no value, an extra argument — and it prints the usage line and nothing else; fix
+the command and run it again. A zai review lane found this section naming only
+`0` and `2`, which left a lane that branches on those two with no rule for `1`
+and free to proceed with the invented cast. Never substitute silently: someone
+who typed `--party` asked for a specific room.
 
 ### The seats, read off each profile's `settings.json` on 2026-08-09
 
@@ -134,6 +180,12 @@ consensus is itself a finding, usually that the question was too narrow.
    (paths, diffs, measurements — not a summary you composed), and this mandate:
 
    ```
+   You are READ-ONLY. Read anything you need; change nothing. Do not edit,
+   create, move or delete a file, do not run a command that writes, commits,
+   pushes or installs, and do not start any other agent. The one file you
+   write is your outbox, named above. If answering seems to require a
+   change, describe the change instead and say why you did not make it.
+
    Answer as a bmad-party-mode round-table. Cast 3-5 named voices with
    distinct expertise and real disagreements. They address each other, not
    only me. Do not resolve the clash into consensus; where they cannot
@@ -141,23 +193,52 @@ consensus is itself a finding, usually that the question was too narrow.
    State plainly whatever you could not verify.
    ```
 
-2. **Dispatch.** Default seat:
+   **The read-only paragraph is first because the guarantee rests on it.** A
+   panel lane read the frontmatter — read-only "rests on the brief" — against
+   this mandate and found the mandate contained only party format and
+   uncertainty instructions. The thing the guarantee leaned on did not carry
+   it, and the Codex lane's `INITIAL_AGENT_MODE=read-only` has no equivalent
+   here, so this text is the whole mechanism.
+
+2. **Dispatch** through `acp-dispatch.mjs`, which detaches the lane into its own
+   process group and returns in seconds. Running `acp-companion.mjs` directly
+   puts the lane in the FOREGROUND, where the calling shell's cap silently
+   becomes the lane's deadline — on 2026-08-17 that killed a finished review at
+   ten minutes with 461 protocol events recorded. `tests/acp-dispatch.test.mjs`
+   refuses this file if it teaches the killable form. Default seat:
 
    ```bash
+   ACP_SESSION_RECEIPT_REQUIRED=1 \
+   ACP_SESSION_OPERATION="new" \
    ANTHROPIC_MODEL="claude-fable-5" \
    ACP_EXPECT_MODEL="claude-fable-5" \
-   node <plugin-root>/skills/tmux-teams/scripts/acp-companion.mjs \
+   node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
      claude <cwd> <task-id> <brief-file> [stall-sec]
    ```
 
    Routed seat — the config-dir form, which is the one verified on this machine:
 
    ```bash
+   ACP_SESSION_RECEIPT_REQUIRED=1 \
+   ACP_SESSION_OPERATION="new" \
    CLAUDE_CONFIG_DIR="$HOME/.config/claude-profiles/<profile>" \
    ACP_MODEL="<model>" \
-   node <plugin-root>/skills/tmux-teams/scripts/acp-companion.mjs \
+   node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
      claude <cwd> <task-id> <brief-file> [stall-sec]
    ```
+
+   **`ACP_SESSION_RECEIPT_REQUIRED=1` on both, and it was missing from both.**
+   The default mode CONTINUES after a receipt-persistence failure and records
+   `receipt_digest: none`, so the identity this skill reports could rest on a
+   receipt that was never written — a release panel called the guarantee
+   fail-open and it was right. **A consultation with no receipt is a failed
+   consultation.** Report it as one; do not report an identity the run did not
+   prove.
+
+   There is no `INITIAL_AGENT_MODE` here — that is Codex's control, and this
+   lane has no equivalent switch. So the read-only property of a Claude advisor
+   rests on the brief and on this skill never issuing a write instruction, which
+   is weaker than the Codex lane and is stated rather than implied.
 
    Do **not** set `ACP_CMD` — it bypasses the companion's own launch path. Do
    **not** set `ACP_EXPECT_REASONING_EFFORT`; it cannot be satisfied on this lane
@@ -168,12 +249,31 @@ consensus is itself a finding, usually that the question was too narrow.
    prove which vendor served it — the endpoint does that, and it is the caller's
    job to say so.
 
-3. **Read the outbox.** No outbox file means no advice. A run that printed to
+3. **Arm a watcher, because the dispatch RETURNS while the lane runs.** That is
+   the point of it, and it is also how a finished answer sits unread. Run this in
+   the BACKGROUND — killing the waiter does not touch the lane:
+
+   ```bash
+   node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
+     wait <cwd> <task-id> 3600
+   ```
+
+   `0` = the outbox is written · `2` = there is no outbox, either because the
+   turn ended without writing one or because the lane stopped reporting without
+   reaching a terminal state (measured: `terminated:false, notReporting:true,
+   livenessState:"active"` also exits 2, so read the liveness before deciding
+   between a re-dispatch and a resume) · `1` = the
+   wait budget ran out while the lane is still going. It ends on BOTH terminal
+   outcomes on purpose: a watcher that looked only for an outbox would stay
+   silent through a turn that wrote nothing, and silence reads exactly like
+   still-running.
+
+4. **Read the outbox.** No outbox file means no advice. A run that printed to
    the terminal and wrote nothing has produced no consultation, however good the
    text looked scrolling past — this has happened with a real model, whose
    answer was correct and landed nowhere a reader could find it.
 
-4. **Report identity with the advice** — the acknowledged alias, the bin or
+5. **Report identity with the advice** — the acknowledged alias, the bin or
    profile, AND the endpoint it routes to. On a routed seat the alias alone is
    not provenance; that is the whole point of the table above.
 
@@ -196,12 +296,32 @@ changes state. If the consultation ends in work to be done, hand that to
 - **Empty outbox (`no_outbox`). TRY RESUME first, and never reconstruct.**
   Reconstructing from terminal output is attestation and this plugin does not
   accept attestation. Resume is cheap and is the only path that could still hold
-  the analysis, but it is unproven here: the one attempt on 2026-08-04 loaded
-  without its prior lineage and answered `I have nothing`. Send a short prompt
-  to the same session —
-  `ACP_RESUME=<session-id>`, "you already read it, write what you have to
-  `<path>`, do not redo the analysis" — which costs a few hundred tokens instead
-  of the whole consultation. Ask it to answer "I have nothing" plainly if the
+  the analysis. Two attempts are on record: 2026-08-04 loaded without its prior
+  lineage and answered `I have nothing`; 2026-08-18 recovered a complete
+  4,823-byte review with six findings from a lane that had run 343 progress
+  events and written nothing. The difference was the lineage.
+
+  **A resume under required receipts needs the same inputs a fresh dispatch
+  needs, plus its lineage** — a panel lane found this block supplying only
+  `ACP_RESUME`, while the fresh commands above declare a receiptless
+  consultation FAILED. Dropping receipt mode exactly when the first delivery is
+  missing is the moment it matters most.
+
+  ```bash
+  ACP_SESSION_RECEIPT_REQUIRED=1 \
+  ACP_SESSION_OPERATION="load" \
+  ACP_PRIOR_DISPATCH_ID="<dispatch_id from the failed run's receipt>" \
+  ACP_PRIOR_RECEIPT_DIGEST="<receipt_digest from that run>" \
+  ACP_RESUME="<session-id>" \
+  ANTHROPIC_MODEL="<the model the failed run used>" \
+  ACP_EXPECT_MODEL="<the same model>" \
+  node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
+    claude <cwd> <same-task-id> <recovery-prompt-file> [stall-sec]
+  ```
+
+  The recovery prompt is short: "you already read it, write what you have to
+  `<path>`, do not redo the analysis" — a few hundred tokens instead of the
+  whole consultation. Ask it to answer "I have nothing" plainly if the
   context really is gone; a short honest refusal is worth more than a
   reconstruction.
 

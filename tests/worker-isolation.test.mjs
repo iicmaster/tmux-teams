@@ -9,7 +9,11 @@
 // `defaultMode: plan` started it in plan mode, where it thought 442 times and
 // executed nothing.
 //
-// `CLAUDE_CODE_SIMPLE=1` is what `claude --bare` sets, and it is the lever this
+// `CLAUDE_CODE_SIMPLE=1` is what `claude --bare` sets — and bare mode ALSO reads
+// no OAuth and no keychain, so it is only safe for a worker whose profile
+// or its own environment carries a credential — an ANTHROPIC_API_KEY or an
+// ANTHROPIC_AUTH_TOKEN, and
+// NOT an apiKeyHelper, which was measured refused. It is the lever this
 // process can reach: the ACP adapter spawns the CLI itself so its argv is not
 // ours, but the child environment is. That it works was MEASURED, not read off
 // the help text — a project hook writing a marker file fired on a plain run and
@@ -18,7 +22,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -79,6 +83,15 @@ const runLane = (extraEnv = {}) => {
   writeFileSync(join(dir, 'brief.md'), 'build the thing\n')
   const env = hermeticEnv({ MOCK_REPO: dir, ACP_CMD: `${process.execPath} ${join(dir, 'stub.mjs')}`, ...extraEnv })
   delete env.CLAUDE_CODE_SIMPLE
+  // AND THE RUNNER'S OWN CREDENTIALS, for the same reason the sibling guard in
+  // tests/acp-companion.test.mjs scrubs them: this release made a credential in
+  // the ENVIRONMENT choose bare mode, so a maintainer whose shell exports
+  // ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY would see the two not-bare arms
+  // below fail while CI, with a clean HOME, stayed green. A zai lane found that
+  // the scrub had been added to one of the two files and not the other — the
+  // neighbour of a fix, which is where this release keeps finding its defects.
+  delete env.ANTHROPIC_API_KEY
+  delete env.ANTHROPIC_AUTH_TOKEN
   Object.assign(env, extraEnv)
   const out = execFileSync(process.execPath, [COMPANION, 'claude', dir, 'iso-task', join(dir, 'brief.md'), '30'],
     { env, encoding: 'utf8' })
@@ -94,22 +107,64 @@ const runLane = (extraEnv = {}) => {
   }
 }
 
-test('a claude worker is handed the bare-mode flag by default', () => {
-  // The name says what this proves and no more, after a reviewer pointed out
-  // that it claimed the outcome and measured the input. What is asserted here
-  // is that the child is HANDED `CLAUDE_CODE_SIMPLE=1` — the lever this process
-  // can actually reach, since the ACP adapter spawns the CLI itself and its
-  // argv is not ours.
+test('a claude worker whose profile carries a credential is handed the bare-mode flag; a bare profile dir and the default login are not', () => {
+  // This test used to be named "handed the bare-mode flag by default" and
+  // asserted '1' unconditionally. That WAS the behaviour, and it was the
+  // defect: the CLI's own --help says CLAUDE_CODE_SIMPLE=1 means "OAuth and
+  // keychain are never read", so the operator's default claude.ai login — whose
+  // only credential is the keychain entry — was refused on every dispatch for
+  // 22 days while four handoffs blamed the credential store. A green test
+  // named "by default" is what let the wrong rule look intentional.
   //
-  // That the flag SUPPRESSES a project hook was measured separately, by hand,
-  // with a hook that wrote a marker file: it fired on a plain run and did not
-  // fire with the variable set (see the file header). That measurement is not
-  // re-run here — it needs a real Claude CLI — so if a future release keeps
-  // accepting the variable and stops honouring it, this test stays green and
-  // says nothing about it. Written down because a test whose name promised the
-  // behaviour would have hidden exactly that.
-  const { seen } = runLane()
-  assert.equal(seen, '1', `the worker was handed CLAUDE_CODE_SIMPLE=${seen}`)
+  // The rule now: bare mode is the default only when a credential is actually
+  // reachable — in the lane's own environment, or in the settings of the profile
+  // CLAUDE_CONFIG_DIR names. The environment source is pinned by arm (b5) in
+  // tests/acp-companion.test.mjs; this file covers the profile source, and it
+  // said profile-only after the environment source shipped. Naming a profile is
+  // not enough,
+  // and the third fixture below is a profile that names one and carries none —
+  // the plan-mode isolation several workers use. This comment said "names a
+  // profile, because a routed profile's settings carry a token", a universal
+  // that its own third fixture disproves, and it said "both arms" for a guard
+  // with three; an openai lane and a zai lane each read the contradiction.
+  //
+  // Three arms, so that dropping bare mode entirely fails the second, restoring
+  // the old unconditional rule fails the first, and restoring the cruder
+  // any-profile-dir rule fails the third.
+  //
+  // What is asserted is still what this process can reach — the variable the
+  // child is HANDED. That the flag suppresses a project hook was measured by
+  // hand with a real CLI (see the file header) and is not re-run here.
+  const plain = runLane({ CLAUDE_CONFIG_DIR: '' })
+  assert.equal(plain.seen, '0',
+    `the default login was handed CLAUDE_CODE_SIMPLE=${plain.seen}, which forbids the only credential it has`)
+  // A profile that REALLY CARRIES A TOKEN. This passed a nonexistent path and
+  // asserted bare mode, which pinned "any non-empty CLAUDE_CONFIG_DIR" rather
+  // than the stated rule — two review families caught the same shortcut in the
+  // companion's own guard, and it lived here too.
+  const withToken = mkdtempSync(join(tmpdir(), 'worker-profile-'))
+  try {
+    writeFileSync(join(withToken, 'settings.json'),
+      JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: 'fixture-not-a-real-token' } }))
+    const routed = runLane({ CLAUDE_CONFIG_DIR: withToken })
+    assert.equal(routed.seen, '1',
+      `a routed worker was handed CLAUDE_CODE_SIMPLE=${routed.seen} and so inherits the repository hooks`)
+
+    // And a profile with no credential must NOT get bare mode: it would read
+    // neither OAuth nor keychain and be refused, which is the failure this rule
+    // exists to end.
+    const empty = mkdtempSync(join(tmpdir(), 'worker-profile-empty-'))
+    try {
+      writeFileSync(join(empty, 'settings.json'), JSON.stringify({ permissions: { defaultMode: 'plan' } }))
+      const isolated = runLane({ CLAUDE_CONFIG_DIR: empty })
+      assert.notEqual(isolated.seen, '1',
+        'a profile carrying no credential was put in bare mode, which forbids the OAuth it must fall back on')
+    } finally {
+      rmSync(empty, { recursive: true, force: true })
+    }
+  } finally {
+    rmSync(withToken, { recursive: true, force: true })
+  }
 })
 
 test('an operator can put the project config back, deliberately', () => {

@@ -1,676 +1,227 @@
-# HANDOFF — tmux-teams · **บัญชีที่นั่งเป็น event-sourced แล้ว · ที่นั่ง PM มีอยู่จริงเป็นครั้งแรก** (2026-08-14)
+# HANDOFF
 
-> เขียนให้ **agent** อ่านแล้วลงมือต่อได้ทันที
-> **ห้ามเขียนตัวเลขที่เปลี่ยนได้ลงในไฟล์นี้ — เขียนคำสั่งแทน**
+State of play for the next agent. Overwritten in place, never appended.
+Written 2026-08-31 through `bmad-party-mode` (installed; roster Mary, John,
+Sally, Winston, Amelia, with the adversary seat taken by Grumbal from
+`code-review-crew`).
 
-## อ่านก่อนอื่น
+## 1. READ THIS FIRST
+
+- Branch `feat/v0.37-advisors`, **23 commits on top of v0.36.0, NOT pushed**.
+  Tree clean. Worktree at `~/tmux-teams-v036`.
+- **v0.37.0 is stamped, gated and WAIVED, but NOT released.** Version in all
+  seven places, roadmap published at version 12 and recorded, suite 1202 green,
+  manifest valid.
+- **TWELVE release panels ran. Master waived the thirteenth on 2026-08-31** —
+  see THE WAIVER below. That waiver is the record; do not treat the release as
+  ungated, and do not start round 13 to "confirm" it.
+- **Pushing is still Master's gate and has NOT been given.** So is waiving the
+  codex bot review on the PR, which is a SEPARATE gate from the panel waiver.
+- Nothing here is dangerous to touch. The danger is procedural: this branch
+  looks finished, and two gates that belong to Master are still open.
+
+## 2. HOW TO VERIFY
 
 ```bash
-git log --oneline origin/main..HEAD     # ยังไม่ push กี่ตัว
-node scripts/gate-required.mjs          # 0=ยกเว้น 2=ต้องเข้าแผงสามโมเดล
-node --test 2>&1 | grep -E '^ℹ (tests|pass|fail|skipped)'
-gh issue list --state open
+cd ~/tmux-teams-v036
+node --test > /tmp/suite.log 2>&1; grep -E '^ℹ (tests|pass|fail|skipped)' /tmp/suite.log
+grep -q '^ℹ fail 0$' /tmp/suite.log || { grep '^✖' /tmp/suite.log | head; false; }
 ```
 
-- **ปล่อย v0.20.0 ครบทั้ง 10 ขั้นตอนแล้ว** — tag · GitHub release · marketplace + plugin update
-  · **หมุด submodule ปักที่ v0.20.0 แล้ว** (`60c2e64` ในเรพ `ngs-th/agent-skills`) ·
-  ใช้ `git commit --only -F <file> -- <path>` เพราะเรพนั้นมีงานคนอื่น staged ค้าง 7 ไฟล์
-  · ⚠️ **ทุกอย่างหลัง `--` เป็น pathspec** — `-m "msg"` ท้ายคำสั่งกลายเป็นชื่อไฟล์ commit ไม่ผ่าน
-  · และเรพนั้นไม่มี git identity ตั้งไว้ — อ่านจากคอมมิตปักหมุดครั้งก่อน อย่าเดา
-- **ไม่มีอะไรค้างครึ่งทาง** — ทั้งสองเรพไม่มี ahead · CI เขียว · หนี้ blocking และ non-blocking
-  จากทั้งสิบรอบปิดหมด
-- **สี่ที่ข้ามใน suite คือชุด bwrap** ที่ข้ามตัวเองบน macOS — ไม่ใช่ความล้มเหลว
-  · **13 ส.ค. รันจริงบนเครื่อง bwrap เป็นครั้งแรก · ล่าสุด `906 pass · fail 0 · skipped 0` ที่ `a3c74d5`**
-  · **หนึ่งในสี่แดงตอนรันครั้งแรก** และมันไม่ใช่บั๊กของโค้ด — ดูหัวข้อ "เทสที่เขียวทุกเครื่อง
-  ยกเว้นเครื่องเดียวที่สำคัญ" ข้างล่าง
-- **ไม่มีอิชชูและไม่มี PR เปิดค้างแล้ว (13 ส.ค.)** — ใบสุดท้ายปิดพร้อมหลักฐาน: staging ทำงานจริง
-  (qwen รัน 15 นาทีใต้ bwrap) · zai ตายเพราะ wrapper หาโปรไฟล์ตัวเองไม่เจอ **ไม่ใช่เพราะ staging**
-  · bwrap เป็น opt-in แล้ว (ADR 0006) · **PR สองใบของ `ngs-th` merge แล้วทั้งคู่ หลังวัดข้ออ้างเองก่อน**
-- **แก้ไปแปดชั้น ไม่ใช่ห้า** — บรรทัดนี้เขียนว่า "ห้า"
-  ตั้งแต่ `daeaa54` (9 ส.ค. 12:15) ถึง `dfef37c` (12 ส.ค. 23:44) **สามวัน ข้ามรีลีสที่ปล่อยจริงหนึ่งตัว
-  คือ v0.19.0** · ย่อหน้านั้นไม่ได้เน่าเพราะถูกทิ้ง — มันถูกเขียนตอน 12:15 แล้วชั้นที่มันไม่เอ่ยถึง
-  ลงตอน 12:34 กับ 13:56 **บ่ายวันเดียวกัน** ไม่มีใครกลับไปอ่านย่อหน้าที่เพิ่งเขียนจบเมื่อชั่วโมงก่อน
-  · **transport ทำงานครบวงจรแล้ว** — 9 ส.ค. เลน zai เดิน
-  `config → closed(127) → closed(1) → closed(1) → protocol → review` รัน 4 นาที 8 วินาที
-  **glm-5.2 อ่าน diff และตอบจริง** · ที่ยังเปิดอยู่ **ไม่ใช่ sandbox แล้ว และไม่ใช่โมเดลด้วย**
-  — ดูหัวข้อ "แผงสามตระกูล" และ "bwrap ปิดแล้ว" ข้างล่าง · **เกตผ่าน 3/3 บน macOS แล้ว**
+Green is **`1202 pass / 0 fail / 0 skipped`** — measured on `e8b6ef0`.
 
-## 🧯 เลนสำรองของแผงไม่เคยใช้งานได้เลย — เจอเพราะ*รัน* ไม่ใช่เพราะอ่าน
+**Gate on the count, never on a grep of the output.** `node --test | grep '✖'`
+exits 0 when it FINDS failures. This session committed on red once that way —
+the third time this repository has recorded it. Every commit after put
+`grep -q '^ℹ fail 0$'` between the run and the commit.
 
-เส้นทาง claude มีเลนสำรองตัวเดียวคือ `deepseek` · **มันพังสองชั้นซ้อน และไม่มีเทสไหนเอื้อมถึง
-เพราะไม่เคยมีอะไรไปถึงมัน**
+**Do not run the suite while ACP lanes are live.**
 
-```
-ชั้น 1  providerSecrets ไม่มีคีย์ 'deepseek'  → for...of undefined → CRASH ทั้งแผง
-        กลไกที่มีไว้กู้แผง กลายเป็นตัวล้มแผง
-ชั้น 2  sessionSettings pin 'sonnet' แต่ model คือ 'deepseek-v4-flash-0731'
-        → lane_rejected ที่ stage config ทุกครั้ง
+```bash
+git diff --check                    # whitespace — passes
+claude plugin validate --strict .   # "✔ Validation passed"
+node scripts/roadmap-gate.mjs       # 0 — the published page is current
+node scripts/gate-required.mjs      # 2 — panel owed; run only on a committed tree
+cd ~/tt-panel && python3 read-r12.py   # the last panel's verdicts and identities
 ```
 
-**ชั้นสองไม่ใช่ความผิดพลาด มันคือความจริงที่ไม่ได้ประกาศ** — เกตเวย์แมป alias ไปยังเวนเดอร์
-(`--model sonnet` ตอบ `deepseek-v4-flash-0731` วัดไว้ 8 ส.ค.) · โปรไฟล์จึงต้องประกาศ
-**`requestModel`** = ชื่อที่ใช้ขอ · ส่วน `model` = ตัวตนที่บันทึก · **pin ยังบังคับค่าเดียวเหมือนเดิม**
+## 3. STATE
 
-**การ์ดที่ใส่ไว้แล้ว:** ทุกโปรไฟล์ที่ประกาศต้องมีรายการ provider secret (ว่างได้ แต่ต้องมี)
-· โปรไฟล์ที่ pin ชื่อไม่ตรงกับ `model` ต้องประกาศ `requestModel` · **ถอดอันไหนออกก็แดง**
+### What v0.37.0 ships
 
-### qwen คืน `schema_invalid` เฉพาะซองเอกสาร
+**1. The default `claude` lane could not authenticate, and the recorded
+diagnosis was wrong for 22 days.** Not a stale `.credentials.json` against an
+unreachable keychain: `CLAUDE_CODE_SIMPLE=1`, set on every claude lane since
+`8a05d6d` to strip repository hooks, forbids OAuth and keychain outright.
 
-ซอง A (ซอร์ส) และ B (เทส) มันตอบได้ทุกครั้ง · **ซอง C ล้มสองรอบติด** ที่ `invalid finding summary`
-= สรุปยาวเกิน 1000 ตัวอักษร · **พรอมต์บอกเพดานไว้แล้ว** (`"summary":"8-1000 chars"`) โมเดลล้นเอง
-· ตัวแปรเดียวที่ต่างคือซองนี้ยัด diff ใหญ่สองก้อนไว้ด้วยกัน → **แบ่งเป็นสองใบตามความหมาย**
-· ⚠️ **ถ้าแยกแล้วยังล้ม แปลว่าเลนนี้ถือโปรโตคอลบนเนื้อหาแบบเอกสารไม่ได้ — ให้จดลงเรพ ไม่ใช่รันซ้ำจนโชคดี**
+Bare mode is the default only when a credential is REACHABLE — in the lane's own
+environment, or in the `settings.json` of the profile `CLAUDE_CONFIG_DIR` names.
 
-## 🏛️ แผงสามโมเดลบนงานนี้ — สิ่งที่มันจับได้และไม่มีอย่างอื่นจับได้
+- `acp-companion.mjs:2711` `CREDENTIAL_ENV_KEYS` · `:2712` `profileCarriesToken`
+  · `:2785` `envCarriesToken` · `:2788` `claudeBareByDefault`.
+- An explicit `CLAUDE_CODE_SIMPLE` wins; an EMPTY one is not explicit.
+- Guards: `tests/acp-companion.test.mjs` (seven labelled cases, nine `dumpOf`
+  runs — both numbers are in its header because one alone rotted three times)
+  and `tests/worker-isolation.test.mjs` (three, profile source only).
 
-แบ่งซองตามความหมาย 3 ใบ · **ผลตามจริง ไม่ปัดขึ้น**
+**The credential matrix, measured against the real binary, 2026-08-30:**
 
-```
-A  ซอร์สที่ ship   3/3   รอบ1 9 finding · รอบ2 7 finding      แก้ครบ
-B  เทสที่ค้ำ        3/3   10 finding                          แก้ 4 ที่เป็นเทสว่างเปล่าของผมเอง
-C-docs  35 KiB     3/3   3/3 บล็อกเรื่องเดียว: ROADMAP ขัดกันเอง
-C-rules 22 KiB     3/3   ← ล้ม 3 รอบที่ 72 KiB · ผ่านที่ 22 KiB เนื้อหาเดียวกัน
-C-log    3 KiB     3/3
-```
-
-**สามอย่างที่ทำให้ซอง C ผ่านได้ ทั้งหมดเป็นเรื่องของซอง ไม่ใช่ของเนื้อหา:**
-
-```
-1. เขียนกฎ "ห้ามเรียกเครื่องมือ" ลงในซอง   ← AGY เปิดไฟล์ → toolCallsObserved > 0 → เกตปฏิเสธทั้งใบ
-2. แยกซองตามความหมาย                       ← เอกสารอ้างอิง แยกจาก สัญญา
-3. ถอดคู่บรรทัดที่เปลี่ยนแค่สัญลักษณ์ 139 คู่  ← 72 KiB → 22 KiB · แถวยังอยู่เป็นบริบท
-```
-
-**เพดานซองจริงต่ำกว่า 128 KiB ที่เกตบังคับมาก และไม่มีที่ไหนเขียนไว้** — ซอร์ส 74 KiB ผ่าน
-· เทส 60 KiB ผ่าน · **ร้อยแก้วหนาแน่น 72 KiB ล้มสามรอบ** · ร้อยแก้วแพงกว่าโค้ด และเกตเตือนไม่ได้
-
-**ของที่แผงจับได้และสวีต/mutation/ผู้เขียน ไม่มีใครจับได้เลย:**
-
-- **3/3** `deriveTeamOccupancy` ถูกเก็บไว้เป็น "ฐานที่บัญชีต้องเห็นด้วย" **แล้วอ่านค่าคงที่ที่เพิ่งหด**
-  → มันไม่ใช่ของเก่าและไม่ใช่ของใหม่ · **ฐานที่ขยับตามสิ่งที่ถูกเทียบ ไม่ใช่ฐาน** · แช่ชุดห้าคำของตัวเองแล้ว
-- **3/3** docstring อ้างการเห็นด้วยที่โค้ดตั้งใจไม่มี · หดคำอ้างสองรอบ **รอบสองยังกว้างไป**
-  (`answered` เซ็นโดย controller · `reviewed` ข้ามทีม) → **เลิกอ้างแบบทั่วไป** ให้ระบุประวัติที่พูดถึงเสมอ
-- **2/3** คอมเมนต์พูดตรงข้ามกับโค้ดใต้มัน 3 จุด · ตาราง subscription ยังเขียน `opened` ว่า "—"
-- **2/3** **เกตความซื่อสัตย์ของฟิกซ์เจอร์ append ศูนย์ event** → จริงโดยว่างเปล่า
-- **1/3** เทส determinism เทียบ fold กับตัวเอง → ลบ `replay` ทิ้งก็เขียว
-- **1/3** เทส releasing ยืนยันแต่ฝั่ง true → คืน true ทุกคำก็ผ่าน
-
-**ข้อที่ผิดแต่มีค่าที่สุด (AGY):** *"โทเค็นที่ `completed` ถือที่นั่ง control ตลอดกาล ไม่มี event ไหนปลดได้"*
-· มันอ่านแค่ `planDispatches` ที่อยู่ในซอง · **ถูกต้องเมื่อเทียบกับสิ่งที่มันได้รับ** — `planEscalation` เป็นคนติดอาวุธการตรวจ
-· **แต่เราไม่เคยมีเทสเดินเส้นนั้นทั้งเส้น** → มีแล้ว: `completed → armed → audit_requested ถือ → audited ปลด → ประตูเปิด`
-
-**บทเรียนเรื่องซอง:** AGY ถูกปฏิเสธเพราะเรียก read tool — เลนรีวิวต้อง `toolCallsObserved: 0`
-· ซองที่เต็มไปด้วยพาธไฟล์ **ชวนให้มันไปเปิดของจริง** · ต้องเขียนกฎ "ทุกไบต์ที่ใช้ได้อยู่ในซองนี้" ลงไปเอง
-
-## 🧩 คำสั่ง "รื้อระบบ → DDD → MQ → 1 pub n sub" — เดินแล้ว 4 ใน 6 ช่อง
-
-**คำสั่งนี้หายไปจากทุกเอกสารที่สั่งงานเรา 8 วัน** · แบบทั้งหมดอยู่ในหน้า HTML ที่เผยแพร่ไปแล้ว
-(`docs/artifacts/claude/private/tmux-teams-ddd-reading/` · 17 เวอร์ชัน · `.gitignore` ทับ)
-· `git grep` มองไม่เห็น · ทุกเซสชันอ่าน HANDOFF กับ ROADMAP แล้วไปทำ release/gate/sandbox แทน
-· **กู้กลับมาเป็นไฟล์แล้ว: `references/event-subscriptions.md`**
-
-```
-publisher   ledger + appendEvent      ประตูเขียนเดียว 8 ผู้เรียก · 0 bypass   ← มีอยู่ก่อนแล้ว
-subscribers domain-{bus,team,token,workflow,display}.mjs
-carrier     watchForWork()            เลือกจากการวัดตัวขน 4 แบบ · ปล่อยไปแล้วก่อนหน้านี้
-ต่อสาย      teamOccupancy → team subscriber   ทุกตัวอ่านได้คำตอบเดียวกัน (สัญญาข้อ 13)
-```
-
-**หัวใจที่ไม่เคยถูกสร้าง — ตอนนี้มีแล้ว:** `RELEASING_EVENTS` เหลือ `{audited, abandoned}`
-· escalation **ถือสองที่นั่ง** (ทีมส่งงาน + control) · เส้นทางที่จบแล้วเป็นคิวของ control จนกว่าจะตรวจ
-· **ประตูหน้าปิดเมื่อ control ติดหนี้คำตัดสิน** = สัญญาณเตือนที่ Master อธิบายไว้
-
-**⚠️ 4 ใน 6 ไม่ใช่ 6** — ช่อง 3 กับ 5 มี subscriber แต่ไม่มีผู้เรียก (`nextStep` ยังอ่าน `last.terminal` ตรง ๆ
-· `awaitingAudit` ยังไล่ custody) · **เฟส D ยังไม่ถูกแตะ** `nextStep` ยัง 305 บรรทัด อ่าน route ศูนย์ครั้ง
-
-### สิ่งที่ต้องรู้ก่อนแตะบัญชีนี้
-
-- **"ใครถือ" ≠ "ใครตัดสิน"** · `counts` = WIP ถือทั้งสอง · `held` = ทีมที่ได้เดินหมาก ถือหนึ่ง
-  · ไม่แยก = โทเค็นเดียวถูกวางแผนสองครั้งในติ๊กเดียว
-- **วางตามคนที่ลงมือคือกลไกหลักของของเดิม** — `teamOf(agent_id)` · บัญชีใหม่ไม่มีตอนแรก
-  โทเค็นที่ประวัติเริ่มกลางทางจึงไม่ถูกวางเลย · **ใส่กลับแล้ว 31 แดง → 7 ทันที**
-- **ปล่อยที่นั่งต้องดูขา ไม่ใช่ดูคน** · ขาที่ตายเขียนคำสุดท้ายหลังขาใหม่นั่งแล้ว
-- **`CONTROL_QUEUE_EVENTS`** — `completed`/`audit_requested`/`audit_lost` อยู่ใน `held` แล้ว
-  ลูปต่อทีมต้องข้ามมันเอง เพราะ audit scan เป็นเจ้าของหมากนั้น
-
-### บทเรียนที่แพงที่สุดของวัน
-
-- **ต่อสายแค่ประตูหน้า = สร้าง "ตัวอ่านที่สอง" ที่สัญญาข้อ 13 ห้าม** · ประตูปฏิเสธขณะกระดานบอกว่า control ว่าง
-  · **970 เทสเขียวตลอด เพราะไม่มีเทสไหนถามคำถามเดียวกันกับตัวอ่านทั้งสอง**
-- **`domain-token` อ่านฟิลด์ `outcome` ที่ไม่มีใครเขียน** — ของจริงคือ `terminal` · ขาที่ล้มเหลวจะถูกอ่านว่าสำเร็จ
-  · เทสเขียวเพราะฟิกซ์เจอร์แต่งฟิลด์เดียวกับที่โค้ดอ่าน · **เทสว่างเปล่าตัวที่แปด**
-- **แก้สัญญาแล้วลืม grep คอมเมนต์ในโค้ด** — 5 จุดขัดกับโค้ดตัวเอง
-- **`339 fail` ครั้งหนึ่งคือ `ENOSPC`** ดิสก์เต็ม · เทสทิ้ง temp ไว้ 77,000 ไดเรกทอรี · **ดูก่อนโทษโค้ด**
-
-## 🚀 v0.20.0 — แผงเกตผ่าน 3/3 ทั้งสามซอง และเกตปฏิเสธรีลีสนี้สองครั้งก่อนยอม
-
-รันผ่าน `review-gate.mjs` (เส้นทางที่ CLAUDE.md เรียกว่า preferred) · diff รวมเกินเพดาน 128 KiB
-จึง **แบ่งตามความหมาย** และบังคับให้ผ่านทุกซอง
-
-```
-A shipped source   3/3 · finding 0   inputHash 578862a05fe85ed6…
-B tests+fixtures   3/3 · finding 0   inputHash b551918003816432…
-C ADRs             3/3 · finding 0   inputHash e343231b931fd9e9…
-
-zai   family zai     ::pinned:api.z.ai/api/anthropic
-qwen  family qwen    ::pinned:token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic
-agy   family gemini  antigravity-acp@1.0.0::unrouted
-```
-
-**นี่คือรีลีสแรกที่บันทึกเกตเป็นการพิสูจน์ ไม่ใช่การรายงานตัวเอง** — `familyProvenKey` ผูกกับ
-endpoint ที่ pin · `commandProvenSignature` คือ argv ที่ spawn จริง · `inputHash` คือไบต์ที่อ่าน
-· ทุกรีลีสก่อนหน้าจดได้แค่ "เลนนี้บอกว่าตัวเองชื่ออะไร"
-
-### เกตทำงานกับเราเองในวันที่เรารีบ — สองครั้ง
-
-1. **zai ตอบ strict JSON แค่ 1 จาก 4 ครั้ง** (qwen กับ agy 4/4) · เกตปฏิเสธ 2/3 **และไม่ยอมให้
-   ตัวสำรองเข้าแทน** เพราะ deepseek ใช้เกตเวย์เดียวกับ qwen → จะปลอมความหลากหลายตระกูล
-   · แก้ด้วย **tolerant parse**: ดึง JSON object แรกที่ *parse ได้* ออกมา · **ร้อยแก้วล้วนยังถูกปฏิเสธ**
-   และเทสยืนยันครึ่งหลังนั้นตรง ๆ · หลังแก้ ซอง B กลับมา 3/3 ทันที
-2. **qwen จับ ADR 0004 ชี้ไป ADR 0005** ทั้งที่การวัดอยู่ใน ADR 0001 · non-blocking แต่จริง
-
-> **extractor รุ่นแรกพลาดตรงกับดักที่ผมวางไว้ในม็อคเอง** — คืนวงเล็บสมดุลอันแรก ซึ่งคือ
-> `{not json}` · **เทสแดงในนาทีเดียว** · ตอนนี้ไล่ทุก `{` จนกว่าจะ parse ได้ จำกัด 64 ตัว
-
-## 🗺️ หน้า roadmap ที่ไม่อัปเดตซ้ำซาก — รากคือ **ไม่มีต้นฉบับในเรพ**
-
-`git grep artifacts.ngs.bz` ทั้งเรพ → **เจอที่เดียว: ร้อยแก้วใน HANDOFF** · ไม่มีไฟล์ต้นฉบับ
-ไม่มีสคริปต์ ไม่มีเทส ไม่มีเกต · ร่องรอยเดียวคือโน้ต 610 ไบต์ใน `.mailbox-out` จาก agent ที่
-เขียนหน้าใหม่ด้วยมือเมื่อ 10 ส.ค.
-
-· ⚠️ **แต่ประวัติหน้าที่เผยแพร่ไปแล้วอยู่บนดิสก์มาตลอด** — `docs/artifacts/claude/private/tmux-teams-next-plan/`
-(กระจกอ่านกลับของ artifact-sftp · 8 เวอร์ชัน · ล่าสุด 9 ส.ค.) · **untracked ทั้งก้อน `git grep`
-จึงมองไม่เห็น** · ข้อสรุป "ไม่มีต้นฉบับ" ถูกต้อง แต่ "ไม่มีร่องรอย" ไม่ถูก
-· **`git grep` ตอบเรื่องไฟล์ที่ track ไว้เท่านั้น — ไม่ใช่เรื่องดิสก์**
-
-**เอกสารอื่นที่เน่าวันนี้เราแก้ได้เพราะมันอยู่ในเรพและ `git grep` หาเจอ · หน้านั้น grep ไม่เจอ
-เพราะไม่มีอะไรให้ grep**
-
-```
-ROADMAP.md                   ต้นฉบับ track ที่รากเรพ (เหตุผลเดียวกับ HANDOFF.md)
-scripts/roadmap-gate.mjs     0=ตรง 2=ล้าสมัย 1=สคริปต์พัง   สัญญาเดียวกับ gate-required.mjs
-scripts/roadmap-render.mjs   ROADMAP.md → docs/roadmap.html · ไม่มี dep · เอาต์พุตคงที่
-.roadmap-published.json      track ไว้ ไม่งั้นเครื่องอื่นเห็น STALE ตลอดกาล = เกตกลายเป็นเสียงรบกวน
-release flow ข้อ 5            รีลีสหน้าสะดุดเอง ไม่ต้องมีใครจำ
-```
-
-**เกตอย่างเดียวไม่พอ และนี่คือส่วนที่เกือบพลาด** — เกตส่งเสียงเตือน **แต่ไม่ได้ทำให้การเผยแพร่ถูกลง**
-· ทุกเวอร์ชันของหน้านั้นคือ HTML ที่คนเขียนด้วยมือ "อัปเดตให้ทัน" จึงแปลว่า "จำได้ว่าต้องส่ง agent ไปเขียนใหม่"
-· **ถ้ามีแต่เกต มันจะรายงาน STALE ใส่ flow ที่ยังไม่มีวิธีตอบที่ถูก** = เสียงเตือนที่ดังขึ้นของความละเลยเดิม
-
-**ชิ้นที่รับน้ำหนักคือข้อเดียว: เกตไม่เขียนมาร์กเกอร์ให้ตัวเอง** — มีเทสยืนยันสองรอบว่าไม่ทิ้งไฟล์ไว้
-· ถ้ามันเขียนได้ มันจะผ่านตลอดกาล **รูปเดียวกับเทสว่างเปล่าเจ็ดตัวที่เจอวันนี้**
-· มาร์กเกอร์ที่เชื่อไม่ได้ (schema ผิด · ไม่มี digest · ไม่มี https url) **นับเป็นล้าสมัย ไม่ใช่ตรง**
-
-### ⚠️ ยังเผยแพร่ไม่ได้ — **`uv run` เปลี่ยน PATH · setup.sh ถาม `python3` ตัวผิด**
-
-**สมมติฐาน "โพรเซสเก่า" ที่เคยเขียนไว้ตรงนี้ผิด — พิสูจน์แล้ว 13 ส.ค.** ·
-สปอว์นเซิร์ฟเวอร์ใหม่ด้วยคำสั่งเดียวกับที่ลงทะเบียนไว้ แล้วเรียก `setup_status` ตรง ๆ:
-
-```
-โพรเซสเก่า (12 ส.ค. 22:50)   exit_code 10 · "Could not inspect readiness"   ← ทึบ
-โพรเซสใหม่ ไบต์ปัจจุบัน       exit_code 3  · "dependency: python3-paramiko missing"
-CLI ตรง ๆ                     READY                                          ← เครื่องพร้อมจริง
-```
-
-```
-setup.sh:126   python3 -c 'import paramiko'        ← เอา python3 ตัวแรกใน PATH
-service.py:59  PATH อยู่ใน allowlist ของ env ขั้นต่ำ  ← ส่งต่อ PATH ของพ่อ
-uv run         prepend .venv/bin เข้า PATH เสมอ
-.venv          ประกาศแค่ mcp[cli]==2.0.0 · ไม่มี paramiko ทั้งใน pyproject และ uv.lock
-system python3 paramiko 5.0.0                       ← ตัวที่ CLI เจอ
-```
-
-**env ขั้นต่ำที่ตั้งใจสร้างเพื่อความปลอดภัย สืบทอดตัวแปรเดียวที่ `uv run` เขียนทับ**
-· **รูปเดียวกับบทเรียน `process.execPath` ใน CLAUDE.md เป๊ะ** — อย่าถาม PATH ว่าอินเทอร์พรีเตอร์ไหน
-เมื่อมีตัวจัดการเวอร์ชันคั่นอยู่ · `kill 13375` ไม่ช่วย **และจะทำให้ error ทึบน้อยลงเท่านั้น**
-
-**แก้แล้วที่ต้นเหตุ (Master อนุมัติ 13 ส.ค.)** — `~/agent-skills/plugins/artifact-sftp`
-คอมมิต `0f5faba` บน **branch ใหม่ `fix/mcp-child-path-venv`** (แตกจาก HEAD ของเขา
-· **ไม่แตะ `fix/mcp-only-agent-routing`** · **ยังไม่ push** — ต้องขออนุญาตแยก)
-· ⚠️ **remote คือ `iicmaster/artifact-sftp` ไม่ใช่ `ngs-th`** — บรรทัดนี้เคยเขียนว่า ngs-th
-โดยไม่ได้รัน `git remote -v` เลย · **เดาเจ้าของเรพจากเรพข้างเคียง คือการเดา**
-
-```
-service.py  _path_without_own_runtime()  ถอดเฉพาะ venv ของ adapter ออกจาก PATH ของลูก
-            การ์ด: ถ้า sys.prefix == sys.base_prefix ให้ข้าม  ← ไม่งั้นลบ /usr/bin ทิ้ง
-tests/test_subprocess_env.py  3 เทส · ตัวแรกรัน SubprocessRunner จริงกับสคริปต์จริง
-mutation      ลบบรรทัดเรียกใช้ → เทสแรกแดงทันที · restore ตรวจ sha256
-suite         11/11 เขียว
-end-to-end    สปอว์นใหม่ → setup_status  ready: true · exit 0 · READY
-```
-
-**⚠️ `/mcp` reconnect เฉย ๆ ไม่พอ — วัดแล้วสองครั้ง** · Python โหลดโมดูลไว้ในหน่วยความจำ
-· หลัง reconnect โพรเซสยังเป็น PID เดิมและยังตอบ `exit_code 10`
-· **ต้อง `kill <pid>` ก่อน แล้วค่อย `/mcp` reconnect** — ตัวเก่าตายแล้วไม่สปอว์นเองด้วย
-· `ps -eo pid,lstart,command | grep agent-skills/plugins/artifact-sftp` คือวิธีดูว่าคุยกับตัวไหนอยู่
-
-**✅ เผยแพร่แล้ว v9 · เกตตอบ 0** — `https://artifacts.ngs.bz/claude/private/tmux-teams-next-plan/`
-· `.roadmap-published.json` ปักที่ `4eff28293790…` · publisher แทรกสองบรรทัดของมันเอง
-(สไตล์ชีตฟอนต์ Sarabun + footer เมทาดาทา) **เนื้อหาไม่ถูกแตะ** — diff ยืนยันแล้ว
-
-> **กับดักการวัดที่เกือบทำให้รายงานผิดอีกครั้ง** — probe ตัวแรกตัดบรรทัดที่ 900 ไบต์
-> `tools/list` เลยดูเหมือนมีทูลเดียว **เกือบเขียนว่า "branch นั้นถอดทูลออกสามตัว"**
-> · วัดใหม่แบบ parse จริง → **4 ทูลครบ** · **grep บนล็อกที่ถูกตัด ไม่ใช่การลิสต์**
-
-## 🏆 แผงสามตระกูล — **ครบ 3/3 ครั้งแรก** (13 ส.ค. direct ACP บน macOS)
-
-สิบรอบก่อนหน้าไม่เคยได้ครบพร้อมกันสักรอบ · รอบนี้ได้ และ **การวัดระหว่างทางลบข้อสันนิษฐาน
-สองข้อที่เราถือมานานออกไป**
-
-| เลน | `effective_identity` | verdict | finding |
-|---|---|---|---|
-| agy | `gemini-3.6-flash-high Gemini 3.6 Flash (High)` · unverified | OBJECTIONS | 2 (blocking 1) |
-| zai | `opus` → glm-5.2 · unverified | **PASS** | 0 |
-| qwen | `sonnet` → **deepseek-v4** ตามตารางเรา · unverified | OBJECTIONS | 1 blocking |
-
-**ทำซ้ำได้:** `CLAUDE_CONFIG_DIR=$HOME/.config/claude-profiles/<zai|qwen> node
-plugins/tmux-teams/skills/tmux-teams/scripts/acp-companion.mjs claude <run-dir> <task-id> <brief> 900`
-· ⚠️ **ประโยคเดิมตรงนี้ผิด** — เคยเขียนว่า "เครื่องนี้ไม่มี `claude-*` wrapper" เพราะไปลิสต์
-`~/.local/bin` ไดเรกทอรีเดียวแล้วสรุป · **wrapper อยู่ที่ `~/bin/claude-{zai,qwen,kimi}` และอยู่ใน PATH**
-— เกตพิสูจน์เองใน `commandProvenSignature` · `claude-advisor/SKILL.md` เขียนวิธีตรวจไว้แล้ว
-(`command -v claude-qwen || ls -d ...`) **และผมใช้วิธีที่อ่อนกว่า** · ทั้งสองรูปใช้ได้บนเครื่องนี้
-
-**รอบสาม: agy 2 blocking · qwen ตายที่เพดาน 32k output (ดูตารางจุดล้มนอกโค้ด) · zai ยังไม่ได้ยิง**
-· finding ทั้งสองของ agy คือ**ชั้นเดิมเป็นรอบที่สาม** — แก้ส่วนใหม่แล้วปล่อยส่วนเก่าไว้ขัดกัน
-· ประโยคที่มันเขียนคือประโยคที่ควรจำ: *"diff นี้อ้างว่าแก้เอกสารเน่า แล้วมันก็สร้างความเน่าแบบเดียวกันขึ้นใหม่"*
-· **บทเรียน: เมื่อแก้ข้อเท็จจริง ให้ `git grep` หาข้อความเก่าทุกที่ก่อน commit ไม่ใช่แก้เฉพาะย่อหน้าที่กำลังเขียน**
-· **และแพตเทิร์นที่ใช้ grep ต้องกว้างพอ** — 13 ส.ค. ตัวเลขสวีตเก่ารอดมาได้เพราะ grep หา `904/904`
-ส่วนข้อความจริงเขียนว่า `904 pass` · **สวีปด้วยตัวเลขเปล่า ไม่ใช่ด้วยรูปแบบที่จำได้**
-
-**รอบสองบนไบต์ที่แก้แล้ว: agy 2 blocking · zai 1 · qwen โดน SIGTERM ตอนงานพื้นหลังถูกหยุด**
-· สองในสาม finding **เป็นของที่การแก้รอบแรกสร้างขึ้นเอง** — ตรงกับรูปแบบที่เขียนไว้ข้างล่างเป๊ะ
-· ที่คมที่สุด: คอมเมนต์ใน `review-profiles.mjs` ยังเขียนว่า "เลนนี้ยังไม่เคยคืนรีวิวที่ parse ได้"
-ทั้งที่ HANDOFF **ในคอมมิตเดียวกัน** บันทึกว่ามันตอบ JSON สะอาดใน 87 วินาที
-— **ความผิดพลาดรูปแบบเดียวกับที่คอมมิตนั้นมีไว้เพื่อแก้** เขียนตอนบ่าย ความจริงเปลี่ยนตอนเย็น
-ไม่มีใครกลับไปอ่าน
-
-### สองข้อสันนิษฐานที่การวัดลบทิ้ง
-
-1. **"glm-5.2 ถือ plan mode กับโปรโตคอล JSON พร้อมกันไม่ได้"** — คอมเมนต์ในโปรไฟล์เขียนไว้แบบนั้น
-   · วัดแล้ว **plan mode ตอบ JSON สะอาดใน 87 วินาที** เร็วกว่า default mode (204 วิ) สองเท่า
-   · **ทั้งโมเดลและโหมดพ้นข้อกล่าวหา**
-2. **`sessionSettings.availableModels: ['glm-5.2']` ไม่ทำให้ adapter รู้จัก `glm-5.2`** —
-   `review-profiles.mjs` สมมติว่าทำ · adapter ตอบ `Invalid value for config option model: glm-5.2`
-   · และเมื่อส่ง `settingSources: []` แบบที่ review client ทำ **รายการโมเดลยุบเหลือ `['default']`
-   และ auth ล้มทันที** บนรูป config-dir · ตัวแปรที่เหลืออยู่หนึ่งเดียวคือรูปของ `session/new`
-   (`acp-companion` ส่ง `{cwd, mcpServers:[]}` เปล่า ๆ · review client ส่ง `_meta` ที่ตัด setting sources)
-
-### สามกับดักที่เจอตอนรันแผงนี้ — ไม่มีใครเคยบันทึก
-
-- **`exit 0` ไม่ได้แปลว่าเลนสำเร็จ** — เลน zai ตายด้วย SIGKILL ที่ `session/new` แล้ว companion
-  ยังออกด้วยรหัส 0 · **หลักฐานคือ `liveness_state` กับ outbox ที่มีจริง ไม่ใช่รหัสออก**
-- **ห้ามยิงหลายเลน ACP พร้อมกัน — แคช `npx` ก้อนเดียวกัน** · zai กับ qwen ยิง
-  `npx -y @agentclientprotocol/claude-agent-acp` พร้อมกัน qwen ชนะ zai โดน SIGKILL ·
-  รันเดี่ยวผ่านฉลุย · **กฎ "ทุกการวัดผ่านผู้เรียกคนเดียว" ไม่ได้ใช้แค่กับ CPU**
-- **outbox ของ companion เป็น strict JSON ไม่ได้** — สัญญาบังคับว่าบรรทัดสุดท้ายคือ
-  `TEAM_DONE <task-id>` · บรีฟที่สั่ง "JSON object เดียว ไม่มีอะไรอื่น" **ขัดกับ transport โดยโครงสร้าง**
-  · ผู้เรียกต้องตัดบรรทัดท้ายก่อน parse
-
-### 🔴 `unverified` ของ AGY ในตารางข้างบนไม่จำเป็นต้องเป็นแบบนั้น — สมมติฐานเก่าผิด
-
-CLAUDE.md เคยเขียนว่า adapter ของ agy *"rejects EVERY model config value"* จึงยกเว้นให้ AGY
-ไม่ต้อง `matched` · **วัดสดกับ agy 1.1.12 เมื่อ 13 ส.ค. — มันรับทั้งสองแบบ**
-
-```
-โฆษณา  "gemini-3.6-flash-high\tGemini 3.6 Flash (High)"        ← TAB
-set    "gemini-3.6-flash-high"           → ACCEPTED · currentValue ชื่อเปล่า
-set    "gemini-3.6-flash-high\tGemini…"  → ACCEPTED · currentValue เต็ม
-```
-
-**สองอย่างที่ทำให้สรุปผิด:** `assertConfigOptionValue` เทียบตรงตัวเป๊ะ **ชื่อเปล่าจึงถูกปฏิเสธโดยเราเอง
-ก่อนถาม adapter** · และสตริงตัวที่สองในประโยคเก่ามี**ช่องว่าง**ตรงที่ของจริงเป็น**แท็บ** — แท็บที่ล็อก
-เรนเดอร์เป็นช่องว่าง แล้วมีคนคัดกลับมาใช้ · **สิ่งประดิษฐ์จากการคัดลอกกลายเป็นข้อยกเว้นถาวร**
-
-**แก้แล้ว — PR #63 merge เข้า `main` แล้ว** · ต่อไป `unverified` บนเลนนั้นคือ**เรื่องที่ต้องสืบ ไม่ใช่สิทธิ์ที่มีอยู่**
-· **ถ้าจะเขียนข้อยกเว้นใหม่ ให้วัด adapter ก่อน และวางค่าที่ escape แล้ว ไม่ใช่ค่าที่เรนเดอร์แล้ว**
-
-### ช่องว่างของการบันทึกเกตที่เพิ่งเห็น
-
-`effective_identity` บนเส้นทาง direct ACP คืน **alias (`opus`, `sonnet`) ไม่ใช่รหัสโมเดล** ·
-โปรไฟล์ไหนก็รายงาน `opus` ได้ **ใบเสร็จจึงพิสูจน์ตระกูลไม่ได้** · สิ่งเดียวที่แยกสองเลนออกจากกัน
-คือ `CLAUDE_CONFIG_DIR` ที่ผู้เรียกตั้ง — และ**มันไม่ได้ถูกบันทึกลงใบเสร็จเลย**
-
-**แต่ `review-gate.mjs` แข็งกว่ามาก และเป็นเหตุผลให้ใช้มันเป็นเส้นทางหลัก** — ผลของเกตบันทึก
-`familyProvenKey`, `commandProvenSignature`, `routingProvenDeclaration` พร้อม `inputHash`
-เช่น `zai → @agentclientprotocol/claude-agent-acp@0.61.0::pinned:api.z.ai/api/anthropic`
-· **มันพิสูจน์ว่าเลนวิ่งไปที่ไหนจริง ไม่ใช่แค่รายงานว่าตัวเองชื่ออะไร**
-
-## 🔴 สิ่งที่มีค่าที่สุดจากวันนี้ — **เกตล้มด้วยเหตุนอกโค้ดห้าแบบ**
-
-เจอครบทั้งห้าภายในวันเดียว · **สี่แบบไม่มีใครเคยบันทึกไว้** และแต่ละแบบกินเวลาสิบถึงสามสิบนาที
-
-| อาการที่เห็น | เลนที่เจอ | คำสั่งที่แก้ |
+| credential | from the profile | from the environment |
 |---|---|---|
-| `Individual quota reached. Resets in Xh` | AGY | รอ · ไม่มีทางลัด |
-| `403 usage limit for this billing cycle` | kimi | รอรอบบิล |
-| `429 token-plan 1-week quota exhausted` | qwen | รอ |
-| `OAuth session expired and could not be refreshed` | โปรไฟล์ `default-clean` | **คนต้องล็อกอินเอง** — `! claude /login` |
-| `execution_profile_drift: ... unavailable or drifted` | codex | `npx -y @agentclientprotocol/codex-acp@1.1.7 --version` |
-| `Claude's response exceeded the 32000 output token maximum` | zai · **และ qwen 13 ส.ค.** | **ใส่ข้อจำกัดความยาวลงในบรีฟ** · และตั้ง `CLAUDE_CODE_MAX_OUTPUT_TOKENS` ได้แล้ว (ดูข้างล่าง) |
+| `ANTHROPIC_AUTH_TOKEN` | answers, `end_turn`, 917ms | `401 Invalid bearer token` |
+| `ANTHROPIC_API_KEY` | `401 API key is invalid` | `401 API key is invalid` |
+| `apiKeyHelper` | `Not logged in · Please run /login` | not tested |
+| nothing | refused, no API call | — |
 
-**เรื่อง 32k มีของแถมที่แถวเดียวเขียนไม่พอ** — 13 ส.ค. เลน qwen คิดอยู่ **21 นาที ปล่อย thought chunk
-16,500 ก้อน** แล้วตายด้วยข้อความนี้ · **ข้อความ error บอกปุ่มมาให้เอง (`CLAUDE_CODE_MAX_OUTPUT_TOKENS`)
-แต่ปุ่มนั้นไม่ได้อยู่ใน `LANE_ENV_KEYS.claude` — companion กรองมันทิ้ง** วิธีแก้ที่ error แนะนำจึงกดไม่ถึง
-ผ่านเส้นทาง dispatch ที่เป็นทางการ · **เพิ่มเข้า allowlist แล้ว** พร้อมเทสเชิงพฤติกรรมสองตัวใน
-`tests/worker-isolation.test.mjs` (ตัวหนึ่งพิสูจน์ว่าค่าที่ operator ตั้งไปถึง worker · อีกตัวพิสูจน์ว่า
-**ถ้าไม่ตั้ง ก็ต้องไม่มีค่าโผล่มา** — การเพิ่มชื่อลง allowlist ต้องไม่กลายเป็นการแจกค่าเริ่มต้น)
-· mutation ยืนยันแล้ว: ถอดชื่อออก เทสตัวแรกแดงทันที
+A 401 means the credential was READ AND TRIED. **`duration_api_ms` is 0 for a
+401 exactly as for "never found", so the MESSAGE is the discriminator** —
+reading the number alone would have removed `ANTHROPIC_API_KEY`.
 
-**ข้อเดียวที่มีเอกสารอยู่ก่อน (codex adapter) คือข้อเดียวที่ไม่เสียเวลา** — นั่นคือเหตุผลที่ตารางนี้อยู่บนสุด
+**2. `--party <id>` on all three `*-advisor` skills.**
 
-### รายการโมเดลของ ACP ≠ ของ CLI ≠ เท่ากันทุกโปรไฟล์
+- `advisor-party.mjs:99` — the resolver's `active` must equal the id asked for;
+  `:31` `party_substituted` is the code when it does not.
+- `:148` `NEUTRALISED` — substitution, never deletion. Deletion joins what sat
+  either side and rebuilt both a fence delimiter and a code fence.
+- `:175` `CONTROL_CHARS = /\p{C}/gu` · `:202` `MARKUP_OPENER` · `:256`
+  `CHARACTER_REFERENCE` · `:271` `VISIBLE`.
+- Exit `0` success, `2` a named refusal, `1` a usage error — all three
+  documented in all three SKILL.md files.
+- Guards: `tests/advisor-party.test.mjs`, nine tests.
 
-```
-โปรไฟล์ปริยาย:  ["default","opus[1m]","claude-fable-5[1m]","sonnet","haiku"]
-โปรไฟล์ zai:    "opus" ใช้ได้        ← คนละรายการ
-CLI:            --model fable ผ่าน   ← คนละรายการอีกชุด
-```
+**Measured live:** the fable lane answered as Vex / Grumbal / Boundary / Yui /
+Dana with no invented names.
 
-**อย่าเดา — ถาม adapter ตรง ๆ:** spawn มัน แล้วส่ง `initialize` + `session/new` แล้วอ่าน
-`result.configOptions` ที่ `id === 'model'` · **เดาผิดสามครั้งก่อนจะยอมไปดู**
+### THE WAIVER — Master, 2026-08-31
 
-**และเลน ACP ต้องการโปรไฟล์ที่มีโทเค็นในตัว** — OAuth ในคีย์เชนใช้ไม่ได้ เพราะ adapter ที่ถูก
-spawn เข้าไม่ถึง (`Authentication required` ทั้งที่ `claude -p` ตอบปกติ)
+**Twelve panel rounds ran; eleven blocked. Master waived the thirteenth.** This
+line is the record the release flow requires; it belongs in the PR body and the
+GitHub release notes verbatim:
 
-### `git fetch` ที่เงียบ ≠ ไม่มีของใหม่
+> `Gate: panel waived by Master after 12 rounds.` Rounds 11 and 12 each had
+> **gemini accept both packets and zai accept both packets**; only the openai
+> lane blocked, on P2/P3 findings. Every finding from all twelve rounds is
+> fixed or explicitly refused with its reason in the code. The final commit
+> `e8b6ef0` has not been read by a panel.
 
-`git fetch origin` เงียบแล้ว `rev-list HEAD..origin/main` ตอบ 0 — **แปลว่ายังไม่ได้ดู ไม่ใช่ไม่มี**
-ใช้ `git fetch --tags --prune --force` แล้ว**นับแท็ก**ก่อนสรุป · พลาดเรื่อง `artifact-sftp` v0.10.0 มาแล้ว
+**Identity, recorded because direct ACP pins nothing:** `agy` =
+`gemini-3.7-flash-high`, matched · `codex` = `gpt-5.6-sol[ultra]`, unverified ·
+`qwen` reached with `ACP_MODEL=opus` and the qwen profile, which resolves to a
+deepseek model here · `zai` = `default`, unverified, gateway announces no name.
 
-## 🔬 หนี้ ACP conformance — ปิดสามข้อ 13 ส.ค. (`bd2bb32`)
+**Findings per round: 4, 13, 6, 13, 6, 6, 6, 10, 4, 2, 4, 4.** P1s stopped after
+round 3 and returned twice. From round 5 on, most findings were against GUARDS
+written during the loop rather than against the release's own scope.
 
-**เราไม่เคยอ่านสเปก ACP มาก่อน** · พออ่านจริงเจอสามที่ที่ companion ไม่ทำตามที่โปรโตคอลบังคับ
+**Five classes were enumerated and had to become rules** — this is the most
+reusable thing the twelve rounds produced:
 
-| ข้อบังคับ (ACP v1 prompt-turn ข้อ Cancellation) | เดิม | ตอนนี้ |
+| class | started as | ended as |
 |---|---|---|
-| **MUST** ตอบ `session/request_permission` ที่ค้างด้วย outcome `cancelled` | **auto-approve ต่อ** แม้ส่ง `session/cancel` ไปแล้ว | ตอบ `cancelled` · เทสเชิงพฤติกรรม mutation แดงจริง |
-| **SHOULD** เลิก mark tool ที่ยังไม่จบว่ากำลังรัน | รายงานเป็น running ต่อ | เคลียร์ `activeToolIds` — **ไม่มีเทสค้ำ เหตุผลอยู่ในไฟล์เทส** |
-| ack ที่สเปกสัญญาคือ `stopReason: "cancelled"` บน prompt เดิม | รอ response ของ `session/cancel` ซึ่ง**เป็น notification สเปกไม่สัญญาว่าจะตอบ** | รับทั้งสองช่อง อันไหนมาก่อนชนะ |
+| line breaks | `[\r\n]` | seven codepoints, then subsumed |
+| control/format | hand-kept C0/C1 | `\p{C}` |
+| blank-rendering names | ten codepoints | `\p{Default_Ignorable_Code_Point}` + U+2800 |
+| character references | `&#?[a-zA-Z0-9]{1,10};` | numeric any form + a closed named set |
+| "looks like a secret" | six substrings | INVERTED — name what is safe to print |
 
-**ACP บังคับแข็งกว่า MCP** — MUST ตอบ `cancelled` stopReason ตามจริง ส่วน MCP บอกว่า
-*"eventual transition to cancelled is not guaranteed"* · **ข้อโต้แย้งใน ADR 0005 แข็งขึ้น**
-· ⚠️ **ACP v1 ไม่มีค่า status `cancelled` สำหรับ tool call เลย** (`pending, in_progress, completed, failed`
-คือทั้งหมด) — สเปกสั่งให้ mark เป็นค่าที่ schema ตัวเองไม่มี · `VALID_TOOL_STATUSES` เรา**ตรงสเปกอยู่แล้ว**
-เขียนคำนั้นลงไปต้องแก้ schema ที่ freeze ไว้ ซึ่งเป็น**การตัดสินใจ ไม่ใช่การซ่อมบั๊ก**
+**One finding was REFUSED with its reasoning in the code**: `queue<limit` is
+still neutralised, because `<` before an ASCII letter is TAG OPEN in the HTML
+tokenizer and really can swallow the closing fence, while `<` before a digit is
+not. See `advisor-party.mjs` above `MARKUP_OPENER`.
 
-### เทสที่เขียวทุกเครื่อง ยกเว้นเครื่องเดียวที่สำคัญ
+**Three earlier objections were refused on measurement** and are in section 5.
 
-`staging is decided by what the sandbox masks, never by $HOME` **แดงบนเครื่อง bwrap** ·
-**โค้ดถูก เทสผิด** — มันฮาร์ดโค้ด `/home/server/.local/share/mise/.../node` ซึ่งเป็นพาธจริงของ
-เครื่องนั้น และตั้งแต่ชั้นที่ 4 (`a3a7d60`) mount prefix ของ interpreter เข้า sandbox พาธนั้นก็
-**เลิกต้อง stage — เฉพาะบนเครื่องที่มันมีอยู่จริง** · **บทเรียน: ฟิกซ์เจอร์ที่ฮาร์ดโค้ดพาธของเครื่องหนึ่ง
-จะกลายเป็นเทสที่ขึ้นกับเครื่อง โดยไม่มีใครเห็นจนกว่าจะรันบนเครื่องนั้น**
+### Packets
 
-## 🧪 เทสว่างเปล่าหกตัวในรีลีสเดียว — **ทั้งหมดเขียนโดยผู้คุมงาน**
+`~/tt-panel/brief12-{src,tst}.md`, built from the eleven files
+`node scripts/gate-required.mjs` PRINTS — never from memory.
 
-ทุกตัวจับได้ด้วย**การอ่าน** ไม่ใช่ด้วยการรัน · รูปแบบที่ซ้ำ:
+## 4. DO NOT
 
-1. **ฟิกซ์เจอร์สร้างด้วยมือ ไม่ผ่านตัวอ่านจริง** — แก้ join เรื่อง effort สิบเจ็ดเทส mutation แดงสามครั้ง
-   **แล้วไม่ทำงานเลย** เพราะ reader ไม่ส่งฟิลด์นั้นออกมา · **เริ่มจากไฟล์บนดิสก์ อ่านขึ้นมา**
-2. **ฟังก์ชันออกก่อนถึงบรรทัดที่เทสอ้างว่าทดสอบ** — `realpathSync(mkdtempSync())` บน macOS ย้าย path
-   ออกจาก masked root ทุกตัว ฟังก์ชันจึง return `[]` ตั้งแต่ด่านแรก
-3. **เทสฟังก์ชันบริสุทธิ์ ไม่เทสผู้เรียก** — ลบการส่งพารามิเตอร์ที่ผู้เรียก แล้วยังเขียว
-4. **พึ่งลำดับที่ไม่มีใครสัญญา** — ไฟล์ล่อพึ่งลำดับ `readdirSync` · **วางล่อทั้งก่อนและหลัง**
-5. **เทสวนลูปจากค่าคงที่ที่ตัวเองควรตรวจ** — ลบสมาชิก ลูปเลิกตรวจ แล้วเขียว
-6. **ฟิกซ์เจอร์ใช้บรรทัดที่ไม่มีอยู่จริงในเรพ** — `"version": "0.18.3"` ไม่มีคอมมา ทั้งที่ไฟล์จริงมี
-7. **อ่านค่าที่ถูกล้างเสมอในสถานะปลายทาง** (13 ส.ค.) — `currentActiveToolEvidence()` คืน `[]`
-   ทุกครั้งที่ liveness เป็น terminal · เทสอ่านสแนปช็อต**สุดท้าย** จึงว่างไม่ว่าจะแก้หรือไม่แก้
-   · ถอดโค้ดออก 134/134 ยังเขียว · **ลบเทสทิ้งแล้วเขียนเหตุผลไว้แทน** ไม่ดัดให้ผ่าน
+- **Do not push, and do not open the PR, without Master saying so in their own
+  message.** The panel waiver is NOT that permission, and neither is a stop hook.
+- **Do not waive the codex bot yourself.** It is a separate gate from the panel.
+- **Do not start round 13.** Master closed the loop. Findings were still
+  arriving, and would have continued; that was the reason for the waiver, not an
+  argument against it.
+- **Never neutralise text by DELETING it.** Deletion joins what sat either side:
+  `PPARTY-ROSTER>>>ARTY-ROSTER>>>` rebuilt an exact delimiter, and
+  "``<<<PARTY-ROSTER`" rebuilt a code fence. Substitution cannot, and is linear.
+- **Over-neutralising is a defect too.** The mandate carries what the operator
+  saved. `risk<10%`, `n<3`, `Rock &roll;`, `Tom &Harry;`, `AT&T`, `Q&A` and
+  `a & b` must survive intact, and are asserted to.
+- **Do not read `duration_api_ms` as proof no API call was made.** A 401
+  reports 0.
+- **Do not let a test inherit the runner's credentials**, and do not let a
+  fixture serialise an environment. Both happened here.
+- **`tests/fixtures/mock-acp-agent.mjs` has a 64 KiB HARD BOUND** the companion
+  enforces on an adapter entry. Twelve lines of comment took it past and 39
+  tests went red *naming a checksum*, because one condition answered three facts
+  with one sentence. Both halves are fixed and guarded; explain in the TEST.
+- **Do not chain an edit behind `grep && python`.** One did here, the grep
+  matched nothing, the edit never ran, and the next command reported success.
+- **Do not read a panel outbox by stripping `TEAM_DONE` alone** — a blocking
+  lane ends `TEAM_BLOCKED`. `~/tt-panel/read-r*.py` strips all three sentinels.
+- **Do not name a test variable `secret`.** The repository's pre-commit scanner
+  blocks the commit, correctly: it cannot tell a decoy from a credential by name.
+- **Do not re-run `~/tt-panel/dispatch-r<N>.sh` to retry one lane.** Its `go()`
+  opens with `rm -rf "$dir"`.
+- **Do not work in `$TMPDIR` or the session scratchpad.**
 
-> **และกับดักการวัดที่เกือบทำให้รายงานผิด (13 ส.ค.):** probe บอกว่าไม่มีบรรทัดในคอนโทรลล็อก
-> จึงเกือบสรุปว่าโค้ดใหม่ไม่ทำงาน · **คอนโทรลล็อกเขียนเมื่อตั้ง `ACP_CONTROL_LOG` เท่านั้น และไม่ได้ตั้ง**
-> — **ไม่มีล็อกที่ไม่มีใครเปิด ≠ ไม่มีพฤติกรรม** · ถามเสมอว่าการวัดที่เพิ่งทำ*พิสูจน์อะไรได้จริง*
+## 5. DECIDED — DO NOT RELITIGATE
 
-> **กฎที่ได้: ฉีด mutation ใส่การแก้ที่เป็น _หัวใจของรีลีส_ ไม่ใช่แค่โค้ดที่เพิ่งพิมพ์**
-> เทส AC1 ที่ค้ำการแก้หลักของ ADR 0004 **ผ่านมาตลอดโดยไม่ค้ำอะไรเลย** — จับได้เพราะ codex
-> อ่าน**ลำดับ**ของตัวปลอม ไม่ใช่เพราะใครรันอะไร
+- **`ANTHROPIC_AUTH_TOKEN` stays a bare-mode credential** (round-2 objection,
+  overruled on measurement: it answers).
+- **`apiKeyHelper` is NOT one** (round-4 objection, upheld on measurement).
+- **A credential in the environment counts as well as one in a profile.**
+- **`queue<limit` is neutralised** (round-12 objection, refused on the HTML
+  tokenizer's tag-open rule).
+- **A roster is contained, not censored**, and what containment PROVES is
+  structural: roster text cannot break the block, stand as its own instruction
+  line, or get the last word. A persona that reads as an instruction INLINE is
+  still delivered.
+- **An advisor REFUSES an unknown or substituted party.**
+- **MCP stays read-only; the writing surface is a skill** — ADR 0007.
+- **Master, 2026-08-30: no version pin in `~/agent-skills`.** Release flow step
+  10 is retired (`aa0ab7c`).
+- **Master, 2026-08-31: the panel is waived after twelve rounds.**
 
-## 🎯 แผงสามโมเดล — 10 รอบ
+## 6. UNPROVEN
 
-| | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
-|---|---|---|---|---|---|---|---|---|---|---|
-| **agy** | 1 | 1 | ✅ | 1 | — | — | 1 | ✅ | ✅ | **1 เท็จ** |
-| **zai** | 1 | 1 | ✅ | ✅ | 1 | 1 | ✅ | — | ✅ | ✅ |
-| **codex** | 6 | 5 | 4 | 3 | 3 | 4 | 3 | 2 | 2 | 1 |
+- **No panel has read `e8b6ef0`.** The waiver covers this; the fact stands.
+- **CI has never run these bytes.** CI is Linux with a clean HOME; two releases
+  once shipped on a red CI.
+- **`--party` has been exercised on the claude/fable lane only.**
+- **`apiKeyHelper` was measured from a profile only**, not from the environment.
+- **The sanitizer is measured against the payloads named in this file and in the
+  tests.** It is not proved complete, and the comments say which parts are a
+  closed spec and which are a bounded denylist.
+- **Nothing has ever installed from `agent-plugins/tmux-teams/`.**
 
-**ไม่มีรอบไหนได้ 3/3 พร้อมกันเลยสักรอบ** — แต่ละครั้งที่ใกล้ มีเลนล้มด้วยเหตุนอกโค้ด ·
-**ปล่อยด้วยคำสั่ง Master พร้อมจดผลทุกรอบลง release notes** แบบเดียวกับ v0.18.0
-· **ไม่มีใครเขียน `Gate: 3/3` บนสองใบสักครั้ง** และประโยคที่เขียนลง notes คือ
-*"a gate line that rounds up is worse than no gate line"*
-
-**38 finding · จริง 37 · เท็จ 1** — ตัวเลขนี้มาจาก release notes ของ v0.19.0 ซึ่งเป็นบันทึกที่เชื่อถือได้
-· ⚠️ **เซลล์ในตารางข้างบนบวกได้ 42 ไม่ใช่ 38** (agy 5 · zai 4 · codex 33) — เลนรีวิว zai จับได้
-13 ส.ค. 2026 และ**ไม่เคยมีใครบวกตารางนั้นมาก่อน** · ข้อมูลรายรอบที่จะใช้ตัดสินว่าเซลล์ไหนผิด
-ไม่มีอยู่ในเรพนี้แล้ว **ยอดรวมเชื่อ release notes · เซลล์รายรอบให้ถือเป็นค่าประมาณ**
-· ใบเท็จใบเดียวมาจาก **เลนที่อ่านแต่ patch**: AGY รอบ 10
-อ้างว่า `field` ไม่มีใน `loop-runner.mjs` ทั้งที่ประกาศอยู่บรรทัด 269 **ในโค้ดที่ diff ไม่แตะ** ·
-zai เปิดไฟล์จริงแล้วบอกตรงข้าม · **บทเรียน: ให้ผู้รีวิวเห็นต้นไม้ ไม่ใช่แค่ diff — หรืออย่างน้อย
-สั่งในบรีฟว่าถ้าสัญลักษณ์ไม่อยู่ใน diff ให้เปิดไฟล์จริงก่อนเรียกว่าไม่มี**
-
-**`effective_identity` ของ codex เปลี่ยนกลางแผง** — `gpt-5.6-terra[max]` ทุกรอบ จนรอบ 10
-เป็น `gpt-5.6-luna[max]` · จดไว้ใน release notes แล้ว **เพราะใบรับรองที่ไม่รู้ว่าใครอ่านคือใบที่
-เชื่อไม่ได้ในรอบหน้า**
-
-**รูปแบบที่ต้องรู้ก่อนวางแผนรอบถัดไป:** ตั้งแต่รอบ 5 เป็นต้นมา **finding ส่วนใหญ่คือของที่เรา
-สร้างเองจากการแก้รอบก่อน** ไม่ใช่หนี้เก่า — รอบ 6 สามในสี่ · รอบ 7 หนึ่งในสาม · รอบ 9 หนึ่งในสอง
-**นั่นคือเกณฑ์หยุดที่ชัดกว่าจำนวนรอบ**
-
-### ที่แผงจับได้และไม่มีอย่างอื่นจับได้
-
-- **ช่องหลุดเกตห้าแบบในสคริปต์ตัดสินเกตเอง** — `+++ ` ในฮังก์ · diff ว่าง · `SEMVER` ทั้งไฟล์ ·
-  `$schema` URL · **สลับลำดับบรรทัด** (อันสุดท้ายมีมาตั้งแต่วันแรกและผ่านสามรอบแผง)
-- **`git mv` หนึ่งครั้งข้ามเกตได้ทั้งรีลีส** — `DOC_ONLY` ถูกเช็คก่อน `structural`
-- **หนีออกจาก sandbox** — `sandboxRebindRoots` คืนตัวเรพเป้าหมายได้ → `--ro-bind` ทับ mount ที่ซ่อนมัน
-- **ใบเสร็จเป็นพยานให้ตัวเอง** — สาขา effort อ่านค่าที่ขอจากใบเสร็จแล้วตรวจใบเสร็จด้วยค่านั้น
-
-## ✅ ADR 0004 — สถานะปัจจุบัน
-
-`plugins/tmux-teams/docs/adr/0004-*.md` · **อ่านก่อนแตะ `loop-runner.mjs`**
-
-claim จอง **ที่นั่ง _และ_ โทเค็น** · รูป `{ agent_id, task_id, work_item, pid, at }`
-
-**ลำดับปล่อยที่ห้ามสลับ:** `pid ตาย` → `liveness สด = ต่ออายุ` → `seen แต่ไม่ live = ลบ` → `grace`
-· สลับลำดับสองอันแรกแล้วขาที่เขียน heartbeat ครั้งเดียวแล้วตายจะถือที่นั่งไว้จนหมดอายุ
-· **แถวที่อ่านไม่ได้ (timestamp อนาคต) ต้องตกนอกทั้ง `live` และ `seen`** — ไม่ต่ออายุ **และไม่ปล่อย**
-
-**ข้ามโพรเซส:** liveness ไม่มี `work_item` แต่ **ใบเสร็จ `.tmux-teams/dispatch/<task>.md` มี**
-และ `flushPersistence` เขียนสองไฟล์ติดกัน · runner อ่านจากตรงนั้น **ไม่ต้องแตะ schema**
-
-## 🧱 bwrap ปิดแล้ว (13 ส.ค., ADR 0006) — และเกตรันบน macOS ได้แล้ว
-
-**ไม่มีโปรไฟล์ที่ ship ตัวไหนประกาศ `osSandbox: 'bwrap'` อีก** · เครื่องจักร bwrap **ไม่ได้ถูกลบ**
-ยังมีเทสค้ำ และโปรไฟล์ไหนประกาศฟิลด์นั้นก็ได้ sandbox เต็มกลับมา — **เปิดคืนได้ด้วยคำเดียว**
-
-**สิ่งที่เสียไป: การกักบริเวณระบบไฟล์ระดับ OS** · ถ้าการแยกตัวระดับโปรโตคอลพังพร้อมกันทั้งชุด
-จะไม่มีตัวรับสุดท้ายอีก · **ADR 0006 เขียนข้อโต้แย้งที่ค้านการตัดสินใจนี้ไว้ด้วย** — อ่านก่อนรื้อ
-
-**สิ่งที่ยังอยู่ทั้งหมด และไม่เคยมาจาก bwrap:** workspace ชั่วคราว · `toolCallsObserved: 0`
-(รันที่เห็น tool call ถูกปฏิเสธทั้งรัน) · ไม่มี built-in tool · ไม่มี MCP server · permission ถูกปฏิเสธทุกคำขอ
-· **endpoint ถูก pin และตรวจในโพรเซสแม่ก่อนลูกจะสตาร์ท** · redact ทั้งซองขาเข้าและรีวิวขาออก
-
-### ทำไมถึงปิด — สิบชั้น ไม่มีชั้นไหนเป็นเหตุการณ์ความปลอดภัย
-
-รันเกตได้จริงครั้งแรก 13 ส.ค. บนเครื่อง Ubuntu 26.04 · **agy `accepted`** (รีวิวแรกที่ผ่านเกต sandbox
-ในประวัติศาสตร์) · **qwen รันเต็ม 900 วินาทีแล้วหมดเวลา** ซึ่งเป็นหลักฐานเดียวที่ชัดว่า
-**เลน claude-routed รันใต้ bwrap ได้จริง** · **zai ตายเพราะ wrapper หาโปรไฟล์ตัวเองไม่เจอ**
-— `--tmpfs /home` ลบบ้านมันทิ้ง
-
-**ทั้งสิบชั้นคือ sandbox สู้กับ toolchain ของเครื่องเอง** (version manager ใต้ `$HOME` · `npx` ที่เป็น
-node script · ลำดับ bind · เพดานที่นับซอง · wrapper หา config ตัวเอง) · วันเดียวกันนั้น
-**สามตระกูลเดียวกันผ่าน direct ACP บน macOS โดยไม่มี sandbox ได้ 3/3** และ `toolCallsObserved` เป็น 0 ทุกเลน
-
-### ✅ พิสูจน์แล้ว — เกตผ่าน 3/3 บน macOS หลังปิด bwrap ไม่กี่นาที
+## 7. WHERE THINGS LIVE
 
 ```
-node plugins/tmux-teams/skills/party-mode/scripts/review-gate.mjs <packet.json> "$(pwd)"
-→ ok: true · zai accepted (PASS) · qwen accepted (PASS) · agy accepted (OBJECTIONS 1)
+~/tmux-teams-v036                          the worktree
+ROADMAP.md                                 the standing goal; gated, not exempt
+plugins/tmux-teams/skills/tmux-teams/scripts/
+  acp-companion.mjs:2711                   CREDENTIAL_ENV_KEYS
+  acp-companion.mjs:2712                   profileCarriesToken
+  acp-companion.mjs:2785                   envCarriesToken
+  acp-companion.mjs:2788                   claudeBareByDefault
+  advisor-party.mjs:31,99                  party_substituted and its check
+  advisor-party.mjs:148                    NEUTRALISED — substitution, not deletion
+  advisor-party.mjs:175                    CONTROL_CHARS — \p{C}
+  advisor-party.mjs:202                    MARKUP_OPENER — the tokenizer's rule
+  advisor-party.mjs:256                    CHARACTER_REFERENCE — the closed set
+  advisor-party.mjs:271                    VISIBLE
+plugins/tmux-teams/skills/{claude,codex,agy}-advisor/SKILL.md
+tests/advisor-party.test.mjs               nine tests
+tests/acp-companion.test.mjs               seven bare-mode cases, nine runs
+tests/worker-isolation.test.mjs            three more, profile source only
+tests/fixtures/mock-acp-agent.mjs          PLAINTEXT_SAFE_KEYS — 64 KiB bound
+scripts/gate-required.mjs                  DOC_ONLY at :41 is the only exemption
+~/tt-panel/                                twelve rounds of packets and run dirs
+~/.config/claude-profiles/                 the gateway profiles the lanes route through
 ```
 
-**เกตรีวิวไม่เคยเก็บครบสามตระกูลได้เลยตลอดมา** · บน macOS โปรไฟล์อยู่ที่
-`~/.config/claude-profiles/<ชื่อ>/settings.json` ซึ่งตรงกับ `providerConfigDir` ปริยาย **จึงไม่ต้อง override อะไร**
-
-### 🔴 finding ที่แผงจับได้ และมันเป็นของเราเอง — **redact ทำลายซอร์สในซอง**
-
-```
-โค้ดจริง :  const credentials = loadRoutedCredentialFile(profile, source)
-ในซอง    :  const credentials = [REDACTED]
-```
-
-`credentials` ตรงกับ `sensitiveName` และแพตเทิร์นการมอบค่าแทนที่**ตั้งแต่ชื่อจนจบบรรทัด**
-· ผู้รีวิวทั้งสามถูกส่งโค้ดที่พังไปให้อ่าน · AGY รายงานเป็น syntax error — **ถูกต้องทุกประการ
-เมื่อเทียบกับสิ่งที่มันได้รับ** · **finding จริงเรื่องไปป์ไลน์ · finding ลวงเรื่องโค้ด**
-
-**แก้แล้วใน `3ee01b2` — เก็บการ redact ไว้ แต่บอกผู้รีวิว** ว่ามาร์กเกอร์ `[REDACTED]` เป็นของ runner
-ไม่ใช่ของโค้ด ห้ามรายงานเป็นข้อบกพร่อง · เทสไม่ได้ grep พรอมต์ — **ม็อครายงานกลับว่าได้รับคำเตือนจริงไหม**
-
-### ⚠️ ยังค้างสองข้อจากแผงเดียวกัน — ยังไม่ได้แก้
-
-1. **ชื่อคีย์ JSON ที่รูปเหมือนความลับไม่ถูก redact ในรีวิวขาออก** — ผลจาก `keyNames: false`
-   ที่ตั้งใจตั้ง (ไม่งั้นฟิลด์ชื่อ `sawRawSecret` ถูกลบทั้งค่าแม้เป็น `false`) · พื้นผิวแคบแต่จริง
-2. **`cleanRemoteText` รวบเฉพาะ `\r\n\t`** — ESC/ANSI หรือ null จาก provider ยังไปถึงล็อกได้
-   · พื้นผิว log-injection ระดับต่ำ
-
-### 📌 อิชชูปิดครบแล้ว — และของที่ยังไม่ได้แก้อยู่ตรงนี้ ไม่ได้หายไปกับมัน
-
-ใบสุดท้ายปิด 13 ส.ค. พร้อมคอมเมนต์หลักฐานเต็ม (staging ทำงานจริง · zai ตายเพราะ wrapper
-หาโปรไฟล์ตัวเองไม่เจอ · bwrap เป็น opt-in แล้ว) · **จงใจไม่เปิดอิชชูใหม่ ให้เขียนไว้ตรงนี้แทน:**
-
-**ถ้าเปิด bwrap คืน — sandbox ยังไม่พาไฟล์โปรไฟล์ของ wrapper เข้าไปในบ้านชั่วคราว** ·
-เกตรู้แล้วว่าจะ**อ่าน**จากไหน (`TMUX_TEAMS_REVIEW_<ID>_SETTINGS` / `_ENV_FILE`)
-แต่ไม่เคย**วาง**มันไว้ที่ wrapper จะไปหา · **ทางแก้ที่ไม่ผูกกับเลย์เอาต์: สะท้อนพาธที่ผู้ใช้บอก
-โดยรักษาตำแหน่งเทียบกับ HOME** ไม่ใช่ฮาร์ดโค้ดเลย์เอาต์ที่สอง · ไม่มีอะไรถูกบล็อก เพราะ sandbox เป็น opt-in
-
-**และ finding เล็กสองข้อจากแผงยังค้าง** (ดูหัวข้อ bwrap ข้างบน) — ชื่อคีย์ JSON ไม่ถูก redact ขาออก
-· `cleanRemoteText` ไม่รวบ ESC/NUL
-
-### 🧪 guard ที่ยังไม่ถูกรันบนไบต์ปัจจุบัน
-
-**เทส bwrap สี่ตัวรันครั้งล่าสุดที่ `a3c74d5`** (บนเครื่อง Linux, `906/906 skipped 0`) ·
-`3ee01b2` ยังไม่เคยรันที่นั่น · bwrap เป็น opt-in แล้วเครื่องนั้นจึงไม่ใช่แพลตฟอร์มบังคับ
-**แต่สี่ guard นั้นคือ guard ที่ยังไม่ถูกรันบน HEAD** — ถ้าแตะ sandbox อีก ให้รันที่นั่นก่อน
-
-## 🔌 MCP — เราไม่ได้ implement มันเลย และนั่นคือการตัดสินใจ ไม่ใช่ช่องโหว่
-
-**ADR 0003** — dispatch ไม่รับ MCP server สักตัว · บังคับใช้จริงด้วย **AC135** (`mcp-servers-closed.test.mjs`)
-**ADR 0005** — MCP `2026-07-28` ย้าย async task ไปเป็น extension `io.modelcontextprotocol/tasks`
-ซึ่ง**ชนกับสิ่งที่ `acp-companion.mjs` เขียนเองแทบทุกช่อง** (durable handle · poll · terminal สามคำตรงกันเป๊ะ
-· cancel แบบร่วมมือ) · **เลือกอยู่อย่างเดิม** เพราะ MCP เพิ่งกลายเป็นไร้สถานะ (ถอด `initialize`) ส่วน ACP
-เป็น session-based ที่แก่น · ext-tasks ยังประกาศตัวเองว่า experimental · และการเปลี่ยนชื่อ `livenessState`
-คือการแก้สัญญา ไม่ใช่การจัดบ้าน · **ข้อที่ต้องรู้ก่อนใครจะรื้อ:** MCP บอกว่า cancel ไม่การันตี แต่ companion
-ไต่ถึง SIGKILL ได้เพราะเป็น**โพรเซสแม่ของ worker** — ชั้นคนละชั้น ไม่ขัดกัน · **อันตรายอยู่ที่วินัยตอนรับมาใช้:
-ห้ามหยิบคำศัพท์ MCP มาพร้อมกับการรับประกันที่อ่อนกว่าของมัน** ซึ่งจะพัง ADR 0004
-
-## 📌 ถัดไป — **ไม่มีอะไรเร่ง**
-
-**v0.20.0 ปล่อยครบแล้ว · ไม่มีอิชชู ไม่มี PR ไม่มีหนี้ blocking** · เลือกจากนี่ ไม่ใช่จากความรู้สึก
-
-**หนี้ roadmap ปิดครบแล้ว 13 ส.ค.** — ต้นฉบับ · เกต · **ตัวเรนเดอร์** · เผยแพร่ v9 · เกตตอบ `0`
-· ที่เหลือคือ **รีลีสหน้าติดแผงสามโมเดล** (`gate-required.mjs` ตอบ `2` เพราะ `scripts/` กับ `tests/` เปลี่ยน)
-
-1. ~~**เฟส C** — รันแผงสามตระกูลผ่าน bwrap บน Linux~~ **ปิดโดยเปลี่ยนคำถาม 13 ส.ค.**
-   · **เกตผ่าน 3/3 แล้วบน macOS** หลังปิด bwrap (ADR 0006) · sandbox ไม่ใช่ปัญหา โมเดลไม่ใช่ปัญหา
-   และตอนนี้ **แพลตฟอร์มก็ไม่ใช่ปัญหา** · ที่เหลือคือ **finding เล็กสองข้อ** (ดูหัวข้อ bwrap ข้างบน)
-   · ถ้าจะเปิด bwrap คืนวันหน้า เครื่องยังอยู่และของครบ:
-   · **เครื่องกลับมาแล้ว — `server@192.168.1.46`** (13 ส.ค.) Ubuntu 26.04 · `/usr/bin/bwrap` ·
-   node/npx/bunx ผ่าน mise · wrapper `claude-zai`/`claude-qwen` · โปรไฟล์ zai+qwen มีโทเค็น ·
-   `agy` 1.1.12 · 24 cores/30 GB · เรพส่งขึ้นด้วย `git bundle` ไม่แตะ remote
-   · **สวีตเต็มเขียวที่นั่นแล้ว `906/906 skipped 0` ที่ `a3c74d5`** — `3ee01b2` ยังไม่เคยรันที่นั่น
-   · ⚠️ **wrapper บนเครื่องนั้นใช้เลย์เอาต์ที่สาม** — `~/.claude/profiles/<ชื่อ>.json` + `.env`
-   แล้ว `exec claude --settings` · แต่ `review-profiles.mjs` ประกาศ
-   `providerConfigDir: '.config/claude-profiles/zai'` ซึ่งเครื่องนั้นไม่มี · **ใต้ bwrap สำคัญ
-   เพราะ `--tmpfs /home` ลบบ้านของ wrapper ทิ้ง** — นอก sandbox เรียก bin เฉย ๆ พอ
-   · **อย่าเดาแล้วแก้ล่วงหน้า** — ปล่อยให้เกตบอกเองว่าพังชั้นไหน แบบเดียวกับแปดชั้นเมื่อ 9 ส.ค.
-2. **เฟส F** — แยกชั้น pre-LLM / post-LLM script ต่อตำแหน่ง (ข้อเสนอของ Master, ยังไม่เริ่ม)
-   · สามข้อที่ต้องตอบก่อนเขียนโค้ดอยู่ใน roadmap
-3. **ประเมิน Shepherd แยกเป็นงานของตัวเอง** — ดูหัวข้อข้างล่าง · **อย่าแทรกกลางรีลีส**
-
-### ขั้นตอนปล่อยรีลีส (ทำครบมาแล้วรอบนี้)
-
-1. `node scripts/gate-required.mjs` · `2` = ต้องรันแผงก่อนสแตมป์เลข
-   · ⚠️ **รันหลัง commit เท่านั้น** — มันอ่าน `<แท็กล่าสุด>..HEAD` และ**มองไม่เห็นไฟล์ที่ยังไม่ commit**
-   แล้วตอบ EXEMPT ด้วยน้ำเสียงมั่นใจเท่ากับตอนตอบ REQUIRED · รูปที่พลาดคือ
-   แก้ → รันเกต → เห็น EXEMPT → commit → ปล่อย = ข้ามแผงโดยคนที่**ตรวจแล้ว**
-2. รันแผงบนไบต์ที่จะ ship · **ห้ามเขียน `3/3` บนสองใบ** — จดตามจริงว่าใบไหนได้อะไร
-3. บัมพ์ **5 ไฟล์ 6 จุด** แล้ว `git grep` หาเลขเก่า · **เลขเก่าที่เหลือในฟิกซ์เจอร์เทสและ
-   คอมเมนต์ประวัติต้องอยู่เหมือนเดิม** — ไล่แทนที่ทั้งหมดจะทำลายเทสของตัวเอง
-4. **`git commit` ไฟล์ที่บัมพ์** ← ขั้นตอนนี้หายไปจากลิสต์จนถึง 13 ส.ค. 2026 และเลนรีวิว agy
-   เป็นคนจับได้ · **`git push` ส่งเฉพาะสิ่งที่ commit แล้ว** — ทำตามลิสต์เดิมตามตัวอักษรคือ
-   push กับ tag คอมมิต*ก่อน*บัมพ์ ปล่อยแพ็กเกจที่เลขเวอร์ชันยังค้างใน working tree
-5. `node --test` + `git diff --check` + `claude plugin validate --strict .`
-6. push (ขออนุญาตก่อน) → เช็คไม่มี ahead → `gh run watch <id> --exit-status` **ห้าม tag ตัวแดง**
-7. `git tag` + `gh release create --notes-file` (**ห้าม `printf`** และ**ห้าม backtick ใน `-m`** —
-   เชลล์รันมันเป็นคำสั่ง ข้อความหายไปสองวลีมาแล้ววันนี้ · ข้อความยาวทุกชนิดไปทางไฟล์)
-8. `claude plugin marketplace update` + `claude plugin update`
-9. **ปักหมุด submodule ใน `~/agent-skills` แล้ว push** (บัญชี `ngs-th` — เรพนั้นเป็นของ ngs-th
-   คนละบัญชีกับ `iicmaster` ที่ push tmux-teams) · ใช้ `git commit --only -- <path>` เสมอ
-   **เพราะเรพนั้นมีงานคนอื่น staged ค้างอยู่** และ `git commit` เปล่า ๆ จะกวาดไปด้วย
-
-## 🧰 เครื่องมือที่เปลี่ยนไปวันนี้
-
-- **`artifact-sftp` v0.10.0 มี MCP แล้ว** — ลงทะเบียนแล้ว scope user (`claude mcp get artifact-sftp`
-  → Connected) · pin ใน `~/agent-skills` ปักที่ v0.10.0 และ **push แล้ว**
-  · ถ้า pin ย้อนกลับเมื่อไหร่ **MCP จะหายเงียบ** เพราะ entry point อยู่ใน 0.10.0 เท่านั้น
-- **`mattpocock-skills` ติดตั้งแล้ว** (มาร์เก็ตเพลสทางการ, 35 สกิล) · **ชนชื่อ `handoff` กับของเรา**
-  — ทั้งคู่มี prefix ของปลั๊กอินตัวเอง แต่ `/handoff` เปล่า ๆ ไม่การันตีว่าใครชนะ
-- **เลนเอกสาร AGY ใช้งานได้จริง** — บรีฟ + ตอบกลับห้าบรรทัด ห้องไม่ต้องอ่านเอกสารเลย
-  · **บทเรียนบรีฟ: ให้พาธ outbox แบบเต็ม** ไม่งั้นมันเขียนลงเรพที่ให้อ่าน · และ**อย่าสั่งห้ามแก้ไฟล์
-  ในเรพแล้วมอบไฟล์ในเรพให้แก้ในย่อหน้าเดียวกัน**
-
-## 🐑 Shepherd — ประเมินไว้ ยังไม่ตัดสิน
-
-`github.com/shepherd-agents/shepherd` · Python 3.11+ · alpha · เปเปอร์ arXiv
-
-**ไม่ใช่ตัวแทน KMS** — KMS คือสมุดเหตุการณ์หลังบ้าน · Shepherd คือ**ชั้นรันและชั้นสิทธิ์**
-ที่จะอยู่ **ใต้** KMS · สิ่งที่มันแทนได้จริงคือ **`acp-companion` + bwrap**
-
-น่าสนใจเพราะ **บังคับสิทธิ์ระดับ OS ได้ทั้ง macOS (Seatbelt) และ Linux (Landlock)** — macOS คือ
-แพลตฟอร์มที่เกต sandbox ของเรารันไม่ได้เลย · ข้อควรระวัง: alpha และ API เปลี่ยนได้ ·
-เป็น Python (สแตกเราเป็น Node) · ต้องการ `claude` CLI ที่ล็อกอินหรือ `CLAUDE_CODE_OAUTH_TOKEN`
-ซึ่งคือปัญหาที่เราเพิ่งเจอวันนี้ · **ถ้าจะประเมินจริง ทำเป็นงานแยก อย่าแทรกกลางรีลีส**
-
-## ⚠️ บทเรียนผู้คุมงาน — เกิดวันนี้
-
-- **เดาสามครั้งก่อนไปดูรายการจริง** (ชื่อโมเดล ACP) · **สิบนาทีที่เดา เทียบสามสิบวินาทีที่ดู**
-- **อ่าน `behind 0` จาก fetch ที่ไม่ได้ fetch ว่า "ไม่มีของใหม่"** แล้วรายงานผิดกับ Master
-- **แก้บั๊กแล้วสร้างบั๊กใหม่จากการแก้นั้น สองรอบติด** — รอบ 5 สร้างช่องโหว่ HOME · รอบ 6 สร้าง
-  "ลบ claim ที่ยังมีชีวิต" · รอบ 8 สร้าง self-attestation · **ทั้งสามมาจากการแก้ที่เลนเดียวกันขอ**
-- **เชื่อรายงานของ subagent ก่อนวัด** — เกือบทำ · คราวนี้วัดข้ออ้างทั้งสามก่อนแตะโค้ด และ
-  **การวัดนั้นคือสิ่งที่เลือกทางแก้ที่ดีกว่า** (ไม่ต้องแตะ schema) ไม่ใช่คำพูดของเอเจนต์
-
-## ที่ตัดสินแล้ว ห้ามรื้อ
-
-- **D1** ขา audit ที่ตายที่ transport **ค้างไว้** คนมาปลด · **D2** การกู้คือ **คำถาม** ไม่ใช่คำใหม่
-- **log ไม่ใช่พยาน** — `[terminal]` เป็นบรรทัด diagnostic · คำตัดสินคือไฟล์ outbox ที่ผูก `outbox_digest`
-- **ห้ามปล่อย claim ด้วย `assigned`** — ลงหลังสั่งไม่กี่วินาที จะย้ายบั๊กจาก 250ms ไป 180s
-- **`PLACES_BY_DESTINATION = {resumed}` เท่านั้น** · `escalated` ไม่อยู่โดยตั้งใจ
-- **หลักการตัดสินใจ (Master, 7 ส.ค.):** ทำสิ่งที่จำเป็น ในเวลาที่จำเป็น เท่าที่จำเป็น
-- **หัวใจของระบบ (Master, 6 ส.ค.):** งานติดที่ทีม = WIP ค้าง · escalate = WIP ของ PM ค้างจนเสร็จ
-  · **ทรงพลังเพราะทำให้ระบบหยุดเมื่อมีปัญหา**
-
-## 🧹 WIP ที่ผมสร้างเองแล้วลืมเก็บ — subagent ค้าง 17 ชั่วโมง
-
-`mcp-tasks-analyst` ถูก spawn ตอนต้นเซสชัน ส่งงานครบ **และส่ง idle notification มาสองครั้ง**
-· ผมอ่านแล้วเดินหน้าทำอย่างอื่นต่อ **ไม่มีอะไรบังคับให้เก็บ** · Master เป็นคนทัก
-· ⚠️ **`ListAgents` ไม่แสดงมัน แต่ `SendMessage` ถึงมันได้** — เอเจนต์ที่มีชีวิตแต่ไม่ปรากฏในรายการ
-คือเอเจนต์ที่ไม่มีใครเก็บได้เพราะไม่มีใครเห็น
-
-**ชั้นเดียวกับทุกอย่างวันนี้:** แผงถูกข้าม → `gate-required.mjs` · `git commit` หายจากลิสต์ →
-เพิ่มเป็นข้อ 4 · หน้า roadmap เน่า → `roadmap-gate.mjs` · **subagent ค้าง → ยังไม่มีอะไรถาม**
-· สัญญาณมีอยู่แล้ว (idle notification) **ปัญหาคือการเพิกเฉยต่อมันไม่มีราคา**
-
-**ยืนยันแล้วว่าเก็บจริง (13 ส.ค.):** `SendMessage` ตอบ `No agent named 'mcp-tasks-analyst' is reachable`
-· **นั่นคือหลักฐาน ไม่ใช่ "สั่งสำเร็จ"** — `ListAgents` ไม่แสดงมันตั้งแต่แรกอยู่แล้ว
-**การไม่อยู่ในรายการจึงพิสูจน์อะไรไม่ได้เลย ต้องยิงถึงตัวแล้วให้มันไม่ตอบ**
-
-## DO NOT — พลาดมาแล้ว อย่าทำซ้ำ
-
-1. **`grep -c` นับบรรทัด ไม่ใช่จำนวนครั้ง**
-2. **ไดเรกทอรีใหม่ทุกเลน ACP** — ใบเสร็จไม่แยกตามเลน
-3. **ห้าม `rm -rf` ไดเรกทอรีรันก่อนจดเลขเซสชัน** — `ACP_RESUME` กู้ได้ และต้องใส่ประโยค
-   *"ถ้าคอนเท็กซ์หายให้บอกว่าไม่มีอะไร"* ไม่งั้นได้รีวิวที่ประกอบจากบรีฟ
-4. **อย่า `npm cache clean --force`** ถ้ายังต้องใช้เลนรีวิว
-5. **ห้ามให้ subagent รัน `node --test`** — 15 pass ขนานทำโหลดขึ้น 28 บน 8 คอร์ · **ทุกการวัด
-   ผ่านผู้เรียกคนเดียว** · และ **subagent ที่เขียนไฟล์ต้องมีเวิร์กทรีของตัวเอง**
-6. **เทสที่รอเวลาตายตัวคือ flake** — รอ**เงื่อนไข** · และถ้ามี debounce อย่าเขียนถี่กว่า debounce
-7. **`ssh host 'cmd'` เป็น non-login shell** — `~/.local/bin` ไม่อยู่ใน PATH · ใช้ `bash -lc`
+Published roadmap: `https://artifacts.ngs.bz/claude/private/tmux-teams-roadmap/`

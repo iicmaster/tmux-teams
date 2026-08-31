@@ -1,9 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { renderBody, renderInline, renderRoadmap, runRenderCli } from '../scripts/roadmap-render.mjs'
+import { PAGES, renderBody, renderInline, renderRoadmap, runRenderCli } from '../scripts/roadmap-render.mjs'
 
 const REPO_ROOT = new URL('..', import.meta.url).pathname
 
@@ -109,4 +109,85 @@ test('a missing source fails the script rather than writing an empty page', () =
   const code = runRenderCli([], { root: dir, stdout: { write: (s) => { printed += s } } })
   assert.equal(code, 1)
   assert.match(printed, /cannot read ROADMAP\.md/)
+})
+
+test('every declared page has a source that exists and a distinct slug', () => {
+  // Two of the three published pages had no source in this repository at all,
+  // which is why they went a week stale with nothing able to notice. The list is
+  // the fix; a list naming a file that is not there would be the same failure
+  // wearing a checklist.
+  const root = new URL('..', import.meta.url).pathname
+  assert.ok(PAGES.length >= 2)
+  for (const page of PAGES) {
+    assert.equal(existsSync(join(root, page.source)), true, `${page.slug}: no source at ${page.source}`)
+    assert.ok(readFileSync(join(root, page.source), 'utf8').length > 200, `${page.slug}: source is a stub`)
+  }
+  assert.equal(new Set(PAGES.map((p) => p.slug)).size, PAGES.length, 'two pages publish to one slug')
+  assert.equal(new Set(PAGES.map((p) => p.out)).size, PAGES.length, 'two pages render to one file')
+})
+
+test('a page renders to the output its entry names, and takes its title from the source', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'roadmap-pages-'))
+  writeFileSync(join(dir, 'ROADMAP.md'), '# A Named Page\n\nbody text that is long enough.\n')
+  let printed = ''
+  assert.equal(runRenderCli([], { root: dir, stdout: { write: (s) => { printed += s } } }), 0)
+  const html = readFileSync(join(dir, PAGES[0].out), 'utf8')
+  assert.match(html, /<title>A Named Page<\/title>/, 'the page kept a title the source did not give it')
+})
+
+test('an undeclared source never renders over a declared page', () => {
+  // The whole defect in one line: the renderer fell back to the roadmap's output
+  // path for any source it did not know, so a typo — or the same file spelled
+  // `./ROADMAP.md` — rendered some other document straight over the published
+  // roadmap. Found by three review lanes independently.
+  const dir = mkdtempSync(join(tmpdir(), 'roadmap-unknown-'))
+  mkdirSync(join(dir, 'docs'), { recursive: true })
+  writeFileSync(join(dir, 'ROADMAP.md'), '# The Roadmap\n\nthe page that must not be overwritten.\n')
+  writeFileSync(join(dir, PAGES[0].out), '<html>the published roadmap</html>')
+  writeFileSync(join(dir, 'NOPE.md'), '# Not A Page\n\nsomething else entirely, long enough.\n')
+
+  let printed = ''
+  const code = runRenderCli(['NOPE.md'], { root: dir, stdout: { write: (s) => { printed += s } } })
+  assert.equal(code, 1)
+  assert.match(printed, /not a declared page/)
+  assert.equal(readFileSync(join(dir, PAGES[0].out), 'utf8'), '<html>the published roadmap</html>',
+    'an undeclared source overwrote the roadmap page')
+})
+
+test('a declared source renders to ITS output, named positionally', () => {
+  // The positional source argument — the core of the change — had no test at
+  // all; the only new one called the CLI with an empty argv.
+  const dir = mkdtempSync(join(tmpdir(), 'roadmap-positional-'))
+  const page = PAGES[1]
+  mkdirSync(join(dir, page.source.split('/').slice(0, -1).join('/')), { recursive: true })
+  writeFileSync(join(dir, page.source), '# Second Page\n\nbody long enough to be a real page.\n')
+  let printed = ''
+  assert.equal(runRenderCli([page.source], { root: dir, stdout: { write: (s) => { printed += s } } }), 0, printed)
+  assert.match(readFileSync(join(dir, page.out), 'utf8'), /<title>Second Page<\/title>/)
+  assert.equal(existsSync(join(dir, PAGES[0].out)), false, 'it also wrote the roadmap page')
+})
+
+test('--out=<path> is honoured, not silently dropped', () => {
+  // `indexOf('--out')` never matched the inline form, so a caller who asked for
+  // a different output got the declared page written instead — an instruction
+  // accepted and ignored. Three review lanes found it.
+  const dir = mkdtempSync(join(tmpdir(), 'roadmap-inline-out-'))
+  writeFileSync(join(dir, 'ROADMAP.md'), '# Inline\n\nbody long enough to be a real page.\n')
+  const out = join(dir, 'elsewhere.html')
+  let printed = ''
+  assert.equal(runRenderCli([`--out=${out}`], { root: dir, stdout: { write: (s) => { printed += s } } }), 0, printed)
+  assert.match(readFileSync(out, 'utf8'), /<h1>Inline<\/h1>/)
+  assert.equal(existsSync(join(dir, PAGES[0].out)), false, 'it wrote the declared page as well')
+})
+
+test('an unknown flag is refused by both CLIs, not swallowed', () => {
+  // The third instance today of accepting an instruction and ignoring it: both
+  // positional filters discarded every `--`-prefixed argument, so a typo'd flag
+  // went unmentioned and the caller got the declared page.
+  const dir = mkdtempSync(join(tmpdir(), 'roadmap-unknown-flag-'))
+  writeFileSync(join(dir, 'ROADMAP.md'), '# Title\n\nbody long enough to be a real page.\n')
+  let printed = ''
+  assert.equal(runRenderCli(['--outt=x'], { root: dir, stdout: { write: (s) => { printed += s } } }), 1)
+  assert.match(printed, /unknown flag/)
+  assert.equal(existsSync(join(dir, PAGES[0].out)), false, 'it rendered the page anyway')
 })

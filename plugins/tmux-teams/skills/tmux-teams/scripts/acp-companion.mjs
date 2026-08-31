@@ -30,6 +30,7 @@ import {
 import { join, dirname, basename } from 'node:path'
 import { homedir } from 'node:os'
 import { createInterface } from 'node:readline'
+import { StringDecoder } from 'node:string_decoder'
 import { fileURLToPath } from 'node:url'
 // ข้อ 13: this process is a sanctioned ledger writer, so it appends through the
 // same gate the runner does rather than keeping a private copy of the policy.
@@ -56,6 +57,18 @@ if (rawAgentId !== undefined && !ID_RE.test(rawAgentId)) {
 }
 const agentId = rawAgentId ?? ''
 
+// The dispatcher's proof that a later-read liveness record is the one THIS
+// spawn produced, not a predecessor's or a forgery stamped inside its
+// timestamp window (`acp-dispatch.mjs`'s `belongsToThisRun`). Optional here:
+// `loop-runner.mjs` starts companions directly and never checks this field, so
+// a lane it starts simply carries none.
+const rawSpawnNonce = process.env.ACP_SPAWN_NONCE
+if (rawSpawnNonce !== undefined && !ID_RE.test(rawSpawnNonce)) {
+  console.error(`invalid ACP_SPAWN_NONCE "${rawSpawnNonce}" — 1-64 chars, alphanumeric/_/-, starts alphanumeric or _`)
+  process.exit(2)
+}
+const spawnNonce = rawSpawnNonce ?? ''
+
 if (agentName.trim().toLowerCase() === 'gemini') {
   console.error(`unsupported agent "${agentName}" — use claude|codex|agy or another name with ACP_CMD`)
   process.exit(2)
@@ -71,6 +84,23 @@ if (agentName === 'codex' && explicitInitialAgentMode !== undefined
 const effectiveInitialAgentMode = agentName === 'codex'
   ? explicitInitialAgentMode ?? 'agent-full-access'
   : explicitInitialAgentMode
+
+// The ACP terminal capability, gated by explicit opt-in and off by default.
+// RULE: a dispatched review lane must never gain a terminal — the review
+// gate's whole contract is zero built-in tools, no MCP servers, every
+// permission denied, and a terminal is a bigger hole than any of those. So
+// this is never inferred from agentName or from anything the adapter says;
+// it is only ever true when an operator sets it, for a person-attended login
+// run where the adapter's own Claude Subscription / Console auth flow needs
+// somewhere to print a URL or code and read back what a human typed. No
+// caller in this repo (acp-dispatch.mjs, loop-runner.mjs, review-gate.mjs)
+// may ever set this for ordinary dispatch or review.
+const terminalCapabilityEnv = process.env.ACP_ENABLE_TERMINAL
+if (terminalCapabilityEnv !== undefined && terminalCapabilityEnv !== '0' && terminalCapabilityEnv !== '1') {
+  console.error('invalid ACP_ENABLE_TERMINAL — use 0 or 1')
+  process.exit(2)
+}
+const terminalCapabilityEnabled = terminalCapabilityEnv === '1'
 
 const receiptRequiredEnv = process.env.ACP_SESSION_RECEIPT_REQUIRED
 if (receiptRequiredEnv !== undefined && receiptRequiredEnv !== '0' && receiptRequiredEnv !== '1') {
@@ -152,6 +182,26 @@ const processKillGraceMs = process.env.ACP_PROCESS_KILL_GRACE_MS === undefined
 // SIGTERM→SIGKILL grace above. Production keeps the historical 1000 ms floor;
 // hermetic tests may shorten both reap waits explicitly.
 const processReapGraceMs = strictNonNegativeEnvNumber('ACP_PROCESS_REAP_GRACE_MS', 1000)
+// A terminal child gets its own grace rather than reusing processKillGraceMs
+// directly: it is a separate ladder (see killAllLiveTerminals) with no
+// process-group tracking of its own, and a test that needs a fast SIGKILL
+// escalation for a SIGTERM-trapping terminal must not also shorten the main
+// agent child's unrelated grace.
+const terminalKillGraceMs = strictNonNegativeEnvNumber('ACP_TERMINAL_KILL_GRACE_MS', processKillGraceMs)
+// A terminal child's `exit` can fire before its stdout/stderr pipes are fully
+// drained — Node's own docs say plainly that data may still be buffered at
+// that point — so finalizing the terminal record (ending both decoders,
+// releasing every `terminal/wait_for_exit` waiter) waits for `close` instead,
+// which fires only once those streams have actually finished. A launcher
+// command (a shell, npx, bunx, anything that forks) can leave a descendant
+// holding the same pipe open past the wrapper's own exit, and if that
+// descendant never lets go, `close` would never fire on its own — this bounds
+// that wait so a misbehaving terminal cannot hang `wait_for_exit` for the
+// rest of the turn. A dedicated grace rather than reusing processReapGraceMs
+// or terminalKillGraceMs: it bounds a different wait (stream finalization,
+// not process-group liveness or a kill escalation) and a hermetic test must
+// be able to shorten it without also shortening those.
+const terminalCloseGraceMs = strictNonNegativeEnvNumber('ACP_TERMINAL_CLOSE_GRACE_MS', 2000)
 const livenessTickMs = positiveNumber(
   process.env.ACP_LIVENESS_TICK_MS,
   Math.max(10, Math.min(1000, stallMs / 4)),
@@ -283,6 +333,7 @@ const snapshotByteBudget = Number.isFinite(configuredTestSnapshotBudget) && conf
   : MAX_SNAPSHOT_BYTES
 const MAX_WORKER = 64
 const MAX_DISPATCH_ID = 64
+const MAX_SPAWN_NONCE = 64
 const MAX_SESSION_ID = 128
 const MAX_MODEL = 128
 const MAX_REASONING_EFFORT = 64
@@ -291,6 +342,13 @@ const MAX_TERMINATION_REASON = 64
 // is a 42 KiB cross-vendor round-table; 4 MiB leaves that two orders of room and
 // still refuses a file nothing here should be reading into memory at once.
 const MAX_OUTBOX_BYTES = 4 * 1024 * 1024
+// A `terminal/create` request may ask for any outputByteLimit; this is the
+// ceiling regardless of what is requested, so a misbehaving or hostile agent
+// cannot make the companion retain unbounded output in memory. The default
+// (no outputByteLimit in the request) is smaller still — a login command's
+// real output is a URL and a short code, not a build log.
+const MAX_TERMINAL_OUTPUT_BYTES = 1024 * 1024
+const DEFAULT_TERMINAL_OUTPUT_BYTES = 64 * 1024
 const MAX_ERROR_TEXT = 512
 const MAX_TOOL_CALL_ID = 128
 const MAX_TOOL_TITLE = 128
@@ -1020,8 +1078,20 @@ function validateExecutionProfile(profile, profilePath) {
   if (profile.adapter.entry_path !== null) {
     let entryStat
     try { entryStat = lstatSync(profile.adapter.entry_path) } catch { throw Object.assign(new Error('execution profile adapter entry is unavailable'), { code: 'invalid_execution_profile' }) }
-    if (!entryStat.isFile() || entryStat.isSymbolicLink() || entryStat.size > MAX_PROFILE_BYTES
-      || sha256File(profile.adapter.entry_path) !== profile.adapter.entry_digest) {
+    // THREE DIFFERENT FACTS, AND THEY USED TO SHARE ONE SENTENCE. An entry that
+    // was too large answered "digest drifted", which is a specific claim about
+    // a different thing — and it cost a session an hour hunting a digest cache
+    // that does not exist, after `tests/fixtures/mock-acp-agent.mjs` grew 229
+    // bytes past this bound and 39 tests went red naming a checksum. A
+    // non-empty wrong diagnosis is worse than an empty one because it sounds
+    // like it knows.
+    if (!entryStat.isFile() || entryStat.isSymbolicLink()) {
+      throw Object.assign(new Error('execution profile adapter entry is not a regular file'), { code: 'execution_profile_drift' })
+    }
+    if (entryStat.size > MAX_PROFILE_BYTES) {
+      throw Object.assign(new Error(`execution profile adapter entry is ${entryStat.size} bytes, over the ${MAX_PROFILE_BYTES}-byte bound`), { code: 'execution_profile_drift' })
+    }
+    if (sha256File(profile.adapter.entry_path) !== profile.adapter.entry_digest) {
       throw Object.assign(new Error('execution profile adapter entry digest drifted'), { code: 'execution_profile_drift' })
     }
     // Hashing the entry proves a file has not changed. It says nothing about
@@ -1406,9 +1476,36 @@ function requestedConfigOverride(name, limit) {
 // per-dispatch session configuration; when no separate expectation is given,
 // the requested value becomes the expected value so the adapter cannot claim a
 // successful dispatch after the ACP agent silently ignored the override.
-const requestedModelOverride = requestedConfigOverride('ACP_MODEL', MAX_MODEL)
+// CLAUDE.md prohibits Gemini 3.1 on every tmux-teams route and says to fail
+// closed. `review-profiles.mjs` enforced that over the PINNED profile models at
+// import — and nothing checked the model an operator REQUESTS at dispatch, which
+// is the one an advisor skill taking a model argument would set. Measured
+// 2026-08-19: `ACP_MODEL=gemini-3.1-pro-high` on an agy lane was accepted and
+// reported `effective_identity: gemini-3.1-pro-high (matched)`, so the identity
+// check confirmed the prohibited model rather than refusing it. The AGY adapter
+// advertises both 3.1 seats, so this is reachable by typing, not by hacking.
+//
+// The pattern is COPIED from `review-profiles.mjs` with its source named,
+// because this file imports only node builtins on purpose; a test asserts the
+// two stay identical, which is the drift answer that does not require coupling
+// the two skills.
+export const PROHIBITED_MODEL = /(?:^|[^0-9a-z])gemini[-_ ]?3\.1(?:[^0-9]|$)/i
+
+function assertPermittedModel(value, name) {
+  if (typeof value === 'string' && PROHIBITED_MODEL.test(value)) {
+    console.error(`${name}: Gemini 3.1 is prohibited on tmux-teams routes, got ${value}`)
+    process.exit(2)
+  }
+  return value
+}
+
+const requestedModelOverride = assertPermittedModel(
+  requestedConfigOverride('ACP_MODEL', MAX_MODEL), 'ACP_MODEL')
 const requestedReasoningEffortOverride = requestedConfigOverride('ACP_REASONING_EFFORT', MAX_REASONING_EFFORT)
-const requestedModelExpected = process.env.ACP_EXPECT_MODEL?.trim() || requestedModelOverride
+// The EXPECTATION too: expecting a prohibited model is how a lane would be
+// certified as having run one.
+const requestedModelExpected = assertPermittedModel(
+  process.env.ACP_EXPECT_MODEL?.trim() || requestedModelOverride, 'ACP_EXPECT_MODEL')
 const requestedReasoningEffortExpected = process.env.ACP_EXPECT_REASONING_EFFORT?.trim() || requestedReasoningEffortOverride
 const requestedModel = boundedText(requestedModelExpected, '', MAX_MODEL)
 const requestedReasoningEffort = boundedText(requestedReasoningEffortExpected, '', MAX_REASONING_EFFORT)
@@ -1554,6 +1651,11 @@ function snapshotData({ toolLimit = MAX_PUBLIC_TOOL_RECORDS, historyLimit = MAX_
     work_observed: workObserved,
   }
   if (agentId) snapshot.agent_id = boundedText(agentId, '', MAX_WORKER)
+  // CONDITIONAL, not `null` when absent: a loop-runner lane never sets
+  // `ACP_SPAWN_NONCE`, and an unconditional field here would put a `spawn_nonce:
+  // null` into every snapshot that never had one, moving bytes no reader asked
+  // to see move.
+  if (spawnNonce) snapshot.spawn_nonce = boundedText(spawnNonce, '', MAX_SPAWN_NONCE)
   return snapshot
 }
 
@@ -1950,7 +2052,20 @@ function extractIdentity(session) {
     ? (normalizedReasoningEffort ? `${normalizedModel}[${normalizedReasoningEffort}]` : normalizedModel)
     : ''
   const identityRequested = requestedModelExpected || requestedReasoningEffortExpected
-  const status = !identityRequested ? 'unverified' :
+  // A seat that sets neither ACP_MODEL nor ACP_EXPECT_MODEL (the
+  // INHERIT_ACCOUNT_DEFAULT sentinel loop-runner sends for a seat that wants
+  // "whatever the account defaults to") reaches this function with
+  // identityRequested false — the branch below would otherwise report
+  // 'unverified' and enforceIdentity returns without ever comparing
+  // effectiveIdentity to PROHIBITED_MODEL. CLAUDE.md's own casebook records
+  // the AGY adapter's default drifting between releases without this repo
+  // noticing, so an account default is exactly the value that must still be
+  // checked — the refusal here does not depend on anything having been
+  // requested. Checked before the requested/expected branch so a lane cannot
+  // land on 'matched' or 'unverified' while running a prohibited model.
+  const prohibited = normalizedModel !== '' && PROHIBITED_MODEL.test(normalizedModel)
+  const status = prohibited ? 'mismatched' :
+    !identityRequested ? 'unverified' :
     (!normalizedModel || (requestedReasoningEffortExpected && !normalizedReasoningEffort) ? 'missing' :
       (requestedModelExpected && baseModel !== requestedModelExpected) ||
       (requestedReasoningEffortExpected && reasoningEffort !== requestedReasoningEffortExpected)
@@ -2056,6 +2171,12 @@ function enforceIdentity(session) {
   writeDispatchRecord()
   schedulePersistence()
   if (identity.status === 'unverified' || identity.status === 'matched') return
+  // Name the specific policy this lane just broke, not only the generic
+  // mismatch — the gap this closes was reported with "no console.error, no
+  // exit(2), no signal" that CLAUDE.md's fail-closed rule had been violated.
+  if (PROHIBITED_MODEL.test(identity.effectiveIdentity)) {
+    console.error(`observed session model: Gemini 3.1 is prohibited on tmux-teams routes, got ${identity.effectiveIdentity}`)
+  }
   const terminal = identity.status === 'missing' ? 'identity-missing' : 'identity-mismatch'
   const expected = `${requestedModel || 'missing'}${requestedReasoningEffort ? `[${requestedReasoningEffort}]` : ''}`
   throw Object.assign(new Error(`identity ${identity.status}: expected ${expected}, effective ${identity.effectiveIdentity || 'missing'}`), {
@@ -2546,10 +2667,138 @@ function adapterEnv(lane, source = process.env) {
 // The plan-mode half is not fixed here — that lives in the operator's user
 // settings, and the way out is an isolated `CLAUDE_CONFIG_DIR` for the worker
 // profile, which several already use.
+// BARE MODE ALSO DROPS OAUTH, and the comment above never said so. The CLI's own
+// --help for CLAUDE_CODE_SIMPLE=1 reads: "Anthropic auth is strictly
+// ANTHROPIC_API_KEY or apiKeyHelper via --settings (OAuth and keychain are never
+// read)". Since 8a05d6d (2026-08-08) this file set it for every claude lane, so
+// the DEFAULT lane — the operator's claude.ai subscription, whose only
+// credential is the keychain OAuth entry — answered "Authentication required"
+// on every dispatch, and four releases of handoffs recorded that as "the
+// keychain is unreachable from a subprocess". Measured 2026-08-30: the real
+// binary run as a node subprocess with no TTY authenticates fine; the same
+// binary with CLAUDE_CODE_SIMPLE=1 exits 1 at $0 without contacting the API.
+// The diagnosis was wrong for 22 days because this comment listed hooks, MCP,
+// commands and permissions as what bare mode drops, and not auth.
+//
+// Routed lanes are unaffected: they set CLAUDE_CONFIG_DIR to a profile whose
+// settings carry a token, which bare mode still reads. So bare mode is the
+// default only when that profile CARRIES A CREDENTIAL — not merely when the
+// variable is set, which is what this said while the code agreed with it, and
+// what it went on saying for one round after the code stopped. An explicit
+// CLAUDE_CODE_SIMPLE wins in both directions, as it already did.
+// THE RULE IS "carries a token", SO ASK THE FILE. This checked only that the
+// variable was set and non-empty, while the comment above and ROADMAP.md both
+// said "a profile whose settings carry a token" — the release's own defect
+// shape, written into the fix for that shape. Two review families found it
+// independently, which is this repository's must-fix threshold. An isolated
+// worker profile with no credential in its settings — the plan-mode isolation
+// the comment three paragraphs up says several already use — would have been
+// put in bare mode and refused exactly as before.
+//
+// A PROFILE THAT CANNOT BE READ IS TREATED AS CARRYING NO TOKEN, and the
+// caller cannot tell that case from a profile that genuinely has none. That is
+// deliberate and it is the whole of the behaviour: no caller has a use for the
+// distinction, so the return value does not carry one. This comment previously
+// claimed a read failure "means UNKNOWN, never no token" and that such a
+// profile "must not silently lose bare mode" — which the very next sentence
+// then contradicted, and which a boolean could not have delivered anyway. A zai
+// lane found it. The direction is the point: unreadable resolves to NOT bare,
+// because being refused for authentication is the failure this whole change
+// exists to end, and inheriting a repository's hooks is the milder cost.
+// The two credentials bare mode reads, wherever they arrive from: a profile's
+// settings.json or the lane's own environment. This sentence was truncated at
+// "— the" for four rounds; a zai lane read the shipped file to find it.
+const CREDENTIAL_ENV_KEYS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN']
+const profileCarriesToken = (dir) => {
+  if (typeof dir !== 'string' || dir === '') return false
+  try {
+    const parsed = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8'))
+    const env = parsed?.env
+    if (env && typeof env === 'object') {
+      for (const key of CREDENTIAL_ENV_KEYS) {
+        if (typeof env[key] === 'string' && env[key].length > 0) return true
+      }
+    }
+    // ANTHROPIC_AUTH_TOKEN IS ACCEPTED, AND THE HELP TEXT QUOTED ABOVE DOES NOT
+    // NAME IT. Two review families read that as the defect: a profile carrying
+    // only AUTH_TOKEN — the shape of every routed gateway seat here — would be
+    // pinned to bare mode and then refused, exactly the 22-day failure. So it
+    // was MEASURED, 2026-08-30, with the real binary and a control:
+    //
+    //   CLAUDE_CONFIG_DIR=<profile with env.ANTHROPIC_AUTH_TOKEN only>
+    //   CLAUDE_CODE_SIMPLE=1  ->  is_error false, end_turn, duration_api_ms 917
+    //   CLAUDE_CONFIG_DIR=<profile with no credential>
+    //   CLAUDE_CODE_SIMPLE=1  ->  is_error true,  duration_api_ms 0 (never called)
+    //   CLAUDE_CONFIG_DIR=<profile with env.ANTHROPIC_API_KEY only>
+    //   CLAUDE_CODE_SIMPLE=1  ->  "401 API key is invalid" — read, and tried
+    //
+    // DURATION IS NOT THE DISCRIMINATOR; the MESSAGE is. That 401 also reports
+    // `duration_api_ms 0`, so reading the number alone would have removed
+    // ANTHROPIC_API_KEY — the one credential the help text names outright — for
+    // looking identical to a profile with nothing in it. What tells the three
+    // apart is what the CLI says: an answer, a 401 from a key it read, or
+    // "Not logged in" from a credential it never found.
+    //
+    // Bare mode reads AUTH_TOKEN. The help text is narrower than the binary,
+    // and the control is what makes that a measurement rather than an opinion.
+    //
+    // `apiKeyHelper` IS NOT ACCEPTED, and it was until a zai lane pointed out
+    // that this arm — alone among the three — rested on a reading of prose
+    // rather than on a run, and that the help text scopes apiKeyHelper to
+    // `--settings` rather than to a profile directory. Measured 2026-08-30,
+    // the same way as the AUTH_TOKEN arm above:
+    //
+    //   CLAUDE_CONFIG_DIR=<profile whose settings.json has only apiKeyHelper>
+    //   CLAUDE_CODE_SIMPLE=1  ->  "Not logged in · Please run /login",
+    //                             duration_api_ms 0, the API never contacted
+    //
+    // So a profile carrying only an apiKeyHelper must NOT be pinned to bare
+    // mode: doing so recreates the exact 22-day refusal this change exists to
+    // end. It resolves to not-bare and keeps the login it can actually use.
+    return false
+  } catch {
+    return false
+  }
+}
+// THE DECISION IS TAKEN AGAINST THE CHILD'S ENVIRONMENT. This read
+// `process.env.CLAUDE_CONFIG_DIR` while the child's environment is built by
+// `adapterEnv(agentName)`, which filters through a per-lane allowlist — so the
+// two agree only for as long as CLAUDE_CONFIG_DIR stays on the claude lane's
+// list. It is on that list today, so nothing was reachable; a zai lane pointed
+// out that nothing was WATCHING it either. Reading the same object the child
+// gets removes the coupling; the arm in `tests/acp-companion.test.mjs` that
+// asserts the child was HANDED the same profile the decision was taken against
+// is what fails if the allowlist ever drops the key.
+// A CREDENTIAL IN THE ENVIRONMENT COUNTS TOO, and reading only the profile was
+// a regression this release introduced. Before `647102b` every claude lane was
+// bare unconditionally, so a lane carrying ANTHROPIC_AUTH_TOKEN or
+// ANTHROPIC_API_KEY directly in its environment and no CLAUDE_CONFIG_DIR
+// authenticated fine AND had the repository's hooks stripped. Asking only the
+// profile silently handed those hooks back — which is the failure `8a05d6d`
+// exists to prevent, revived by the fix for a different one.
+//
+// Measured 2026-08-30 with the real binary, no profile, bare mode:
+//   ANTHROPIC_AUTH_TOKEN=<fake>  ->  "401 Invalid bearer token"
+//   ANTHROPIC_API_KEY=<fake>     ->  "401 API key is invalid"
+// Both READ and TRIED — a credential-specific 401, not the "Not logged in"
+// that means none was found.
+const envCarriesToken = env => CREDENTIAL_ENV_KEYS.some(
+  key => typeof env?.[key] === 'string' && env[key].length > 0)
+const baseSpawnEnv = adapterEnv(agentName)
+const claudeBareByDefault = envCarriesToken(baseSpawnEnv)
+  || profileCarriesToken(baseSpawnEnv.CLAUDE_CONFIG_DIR)
 const spawnEnv = {
-  ...adapterEnv(agentName),
+  ...baseSpawnEnv,
   ...(agentName === 'claude' && process.env.ACP_INHERIT_PROJECT_CONFIG !== '1'
-    ? { CLAUDE_CODE_SIMPLE: process.env.CLAUDE_CODE_SIMPLE ?? '1' } : {}),
+    // `??` treats an EMPTY CLAUDE_CODE_SIMPLE as an explicit choice, so
+    // `CLAUDE_CODE_SIMPLE= node ...` silently beat the rule with a value that
+    // states nothing — the same shape as `CLAUDE_CONFIG_DIR=''`, which this
+    // file already reads as "not set". An explicit choice has to say something.
+    ? {
+      CLAUDE_CODE_SIMPLE: process.env.CLAUDE_CODE_SIMPLE
+        ? process.env.CLAUDE_CODE_SIMPLE
+        : (claudeBareByDefault ? '1' : '0'),
+    } : {}),
   ...(agentName === 'agy' ? { AGY_SKIP_DOWNLOAD: process.env.AGY_SKIP_DOWNLOAD ?? '1' } : {}),
   ...(agentName === 'codex' ? { INITIAL_AGENT_MODE: effectiveInitialAgentMode } : {}),
 }
@@ -2785,10 +3034,12 @@ async function waitForChildClose(timeoutMs) {
 // process in the group is left. Returning true unplaced on anything but Linux
 // declared the group reaped without looking, so the escalation below — the last
 // thing that would have signalled a surviving descendant — never ran once.
-async function waitForGroupGone(timeoutMs = 1000) {
+// `groupId` is a parameter rather than reading `agent?.pid` directly so the
+// terminal capability's own reap ladder (`reapTerminalGroup`) can reuse this
+// exact wait instead of a second copy scoped only to `agent`.
+async function waitForGroupGone(groupId, timeoutMs = 1000) {
   const deadline = Date.now() + Math.max(0, timeoutMs)
   while (Date.now() <= deadline) {
-    const groupId = agent?.pid
     let groupExists = false
     if (groupId) {
       try { process.kill(-groupId, 0); groupExists = true } catch {}
@@ -2796,7 +3047,6 @@ async function waitForGroupGone(timeoutMs = 1000) {
     if (!groupExists && groupPids(groupId).length === 0) return true
     await waitFor(20)
   }
-  const groupId = agent?.pid
   try { process.kill(-groupId, 0); return false } catch {}
   return groupPids(groupId).length === 0
 }
@@ -2839,13 +3089,13 @@ async function closeAndReapChild({ signalIfNeeded = true, closeGraceMs = process
   if (closeResult && signalIfNeeded && groupPids(agent?.pid).some((pid) => pid !== agent?.pid)) {
     reapSignal('SIGTERM', '[reap] signal SIGTERM for descendants after child settlement')
   }
-  let groupGone = await waitForGroupGone(Math.max(processReapGraceMs, processKillGraceMs * 2))
+  let groupGone = await waitForGroupGone(agent?.pid, Math.max(processReapGraceMs, processKillGraceMs * 2))
   if (!groupGone && signalIfNeeded) {
     reapSignal('SIGTERM', '[reap] signal SIGTERM for remaining process group')
-    groupGone = await waitForGroupGone(processKillGraceMs)
+    groupGone = await waitForGroupGone(agent?.pid, processKillGraceMs)
     if (!groupGone) {
       reapSignal('SIGKILL', '[reap] signal SIGKILL for remaining process group')
-      groupGone = await waitForGroupGone(processKillGraceMs)
+      groupGone = await waitForGroupGone(agent?.pid, processKillGraceMs)
     }
   }
   return {
@@ -2914,6 +3164,513 @@ function respond(id, result) {
   try { agent.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`) } catch {}
 }
 
+function respondError(id, code, message) {
+  try { agent.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } })}\n`) } catch {}
+}
+
+// ACP terminal/* — the methods `clientCapabilities.terminal: true` promises.
+// RULE: this is the one path that can actually grant a terminal, so it is
+// where "not enabled" is enforced, not only at `initialize`. An unadvertised
+// capability is a request a spec-conforming adapter should never send, but a
+// request that arrives anyway must still be refused HERE — a policy stated
+// only in what we advertise and never checked where it is served is not a
+// policy, it is a hope.
+const terminals = new Map() // terminalId -> term record, see createTerminal
+let terminalStdinBridgeInstalled = false
+
+function truncateToByteLimit(text, limit) {
+  const buf = Buffer.from(text, 'utf8')
+  if (buf.length <= limit) return text
+  let start = buf.length - limit
+  // TRAP: slicing a UTF-8 buffer at an arbitrary byte offset can land inside
+  // a multi-byte character. Walk forward past any continuation byte
+  // (10xxxxxx) so the kept tail always starts on a character boundary, same
+  // requirement the ACP spec states for this field.
+  while (start < buf.length && (buf[start] & 0xc0) === 0x80) start += 1
+  return buf.subarray(start).toString('utf8')
+}
+
+function appendTerminalOutput(term, text) {
+  term.outputText += text
+  if (Buffer.byteLength(term.outputText, 'utf8') > term.outputByteLimit) {
+    term.truncated = true
+    term.outputText = truncateToByteLimit(term.outputText, term.outputByteLimit)
+  }
+}
+
+function settleTerminalExit(term, status) {
+  if (term.exitStatus) return
+  term.exitStatus = status
+  const waiters = term.waiters
+  term.waiters = []
+  for (const resolve of waiters) resolve(status)
+  // A released-but-still-alive terminal is removed HERE, once it actually
+  // exits — not at release time. See releaseTerminal for why: removing it
+  // immediately took it out of killAllLiveTerminals' teardown sweep while the
+  // child could still be alive and ignoring the SIGTERM release itself sent.
+  //
+  // `released` alone is not enough: it says the wrapper's OWN exit settled,
+  // not that the whole process GROUP is gone. A wrapper that forked a plain
+  // (non-detached) descendant before dying — one that traps SIGTERM, or was
+  // never reached by release's own signal because release ran while the
+  // wrapper was still alive and only the wrapper died from it — leaves that
+  // descendant sharing the same pgid and still alive right here. Deleting on
+  // `released` alone would drop it from `terminals` before
+  // killAllLiveTerminals' teardown sweep ever runs, orphaning it permanently.
+  // Keeping the entry when the group is not yet gone costs nothing: it is
+  // still reaped as soon as `isGroupGone` says so, either by a later call
+  // here (it won't fire again for this wrapper) or, in practice, by the
+  // teardown sweep itself — `reapTerminalGroup`'s own `isGroupGone` check
+  // makes that a no-op the moment this becomes true on its own.
+  if (term.released && isGroupGone(term.child?.pid)) terminals.delete(term.terminalId)
+}
+
+// Only login mode ever reads the companion's OWN stdin — ordinary dispatch
+// never does, so this is never wired up unless a terminal actually exists.
+// Broadcast to every open terminal rather than routing per-terminal: a login
+// run drives one interactive command at a time, and createTerminal now
+// ENFORCES that instead of merely assuming it — a second `terminal/create`
+// while one is still live is refused there. With at most one live terminal,
+// this loop broadcasting to "every open terminal" is provably a unicast, not
+// a hope; building session-aware input routing for a case that cannot occur
+// would only be guessing at a requirement nobody has.
+function ensureTerminalStdinBridge() {
+  if (terminalStdinBridgeInstalled) return
+  terminalStdinBridgeInstalled = true
+  // The companion's own stdin is a stream too, and in login mode it is resumed.
+  process.stdin.on('error', () => {})
+  process.stdin.on('data', (chunk) => {
+    for (const term of terminals.values()) {
+      if (term.exitStatus || term.released) continue
+      try { term.child.stdin.write(chunk) } catch {}
+    }
+  })
+  // EOF has to travel too. A login command that reads until end-of-input — or an
+  // operator pressing Ctrl-D, or a finite pipe running dry — would otherwise sit
+  // blocked forever while `terminal/wait_for_exit` and the whole ACP turn hang,
+  // because the bridge forwarded every keystroke and never the end of them.
+  const closeTerminalInput = () => {
+    for (const term of terminals.values()) {
+      if (term.exitStatus || term.released) continue
+      try { term.child.stdin.end() } catch {}
+    }
+  }
+  // One listener, and no catch-up for an already-ended stdin. That catch-up was
+  // written here on the reasoning that a finite pipe could end before the first
+  // terminal exists — and then deleting it left the EOF test GREEN while
+  // deleting both turned it red at the 30s kill. It defends a case nobody could
+  // produce, which in this file is not a guard.
+  process.stdin.on('end', closeTerminalInput)
+  process.stdin.resume()
+  // TRAP: this file ends in `process.exitCode = exitCode`, not
+  // `process.exit(...)` — it relies on the event loop draining once every
+  // handle closes. A resumed TTY never emits 'end' on its own (only Ctrl-D or
+  // process exit closes it), so without unref() a real interactive login run
+  // would finish the whole ACP exchange and then hang forever instead of
+  // exiting with the code it already decided. unref() lets this stream keep
+  // delivering keystrokes while anything else holds the loop open, without
+  // itself being a reason the loop stays open once nothing else does.
+  process.stdin.unref?.()
+}
+
+// Decoding a raw child_process pipe chunk with `chunk.toString('utf8')` per
+// 'data' event corrupts any multi-byte UTF-8 character whose bytes land in
+// two different reads: 0xC3 alone and 0xA9 alone each decode to U+FFFD, where
+// the same two bytes decoded together (or via a stateful decoder) produce
+// 'é'. Measured directly against this exact split. `StringDecoder` carries
+// any trailing incomplete sequence forward to the NEXT `write()` instead of
+// discarding it, which is the fix — one decoder per stream (never shared
+// between stdout and stderr: those are independent pipes, so a byte sequence
+// split across a read always stays within the one stream it came from).
+//
+// The same per-chunk-arrival problem shows up a second way: mirroring raw
+// chunks to stderr put the "[terminal:id] " label wherever a chunk boundary
+// happened to fall, including the middle of a URL a human needs to copy
+// whole. Line-buffer the mirror so the label only ever starts a line — the
+// ACP `terminal/output` field itself (`appendTerminalOutput`, via
+// `onDecoded` below) is unaffected, since nothing there requires line
+// boundaries.
+function attachTerminalOutputStream(term, terminalId, stream) {
+  const decoder = new StringDecoder('utf8')
+  let mirrorBuffer = ''
+  const mirrorLine = (line) => {
+    try { process.stderr.write(redact(`[terminal:${terminalId}] ${line}\n`).slice(0, MAX_DISPLAY_TEXT)) } catch {}
+  }
+  const onDecoded = (text) => {
+    if (!text) return
+    appendTerminalOutput(term, text)
+    // The human at the keyboard is the only reader who can act on a login
+    // prompt (a URL to open, a code to paste back). Mirror it live, the same
+    // way the ACP adapter's own stderr is already mirrored below, so it
+    // actually reaches a screen instead of sitting only in `terminal/output`.
+    mirrorBuffer += text
+    const lines = mirrorBuffer.split('\n')
+    mirrorBuffer = lines.pop() ?? ''
+    for (const line of lines) mirrorLine(line)
+    // MAX_TERMINAL_OUTPUT_BYTES exists so "a misbehaving or hostile agent
+    // cannot make the companion retain unbounded output in memory" — a
+    // pending line with no '\n' yet is exactly such unbounded retention if
+    // nothing ever bounds it. mirrorLine already slices to MAX_DISPLAY_TEXT,
+    // so a pending line already past that cap gains nothing from waiting for
+    // its newline; flush it now instead of growing it forever.
+    if (mirrorBuffer.length > MAX_DISPLAY_TEXT) {
+      mirrorLine(mirrorBuffer)
+      mirrorBuffer = ''
+    }
+  }
+  // A stdio Socket emits its OWN 'error'; `child.on('error')` is the ChildProcess
+  // and does not cover it, so an unhandled read fault here takes the whole process
+  // down. Found on the third pass: two doors were named, a survey of every stream
+  // with a 'data' listener and no 'error' listener found seven.
+  stream.on('error', () => {})
+  stream.on('data', (chunk) => onDecoded(decoder.write(chunk)))
+  // Flush at exit: a trailing partial line with no '\n' yet must still reach
+  // the operator rather than being silently dropped, and `decoder.end()`
+  // resolves whatever incomplete byte sequence the pipe closed on (correctly
+  // as U+FFFD if the child genuinely wrote a truncated sequence — that case
+  // is real corruption at the source, not this bug).
+  return () => {
+    onDecoded(decoder.end())
+    if (mirrorBuffer) mirrorLine(mirrorBuffer)
+    mirrorBuffer = ''
+  }
+}
+
+function createTerminal(params) {
+  const command = typeof params?.command === 'string' && params.command ? params.command : null
+  if (!command) throw new Error('terminal/create requires a non-empty command string')
+  // A login run drives at most one live terminal at a time — the assumption
+  // ensureTerminalStdinBridge's broadcast already relies on. That used to be
+  // stated only in a comment and never checked where terminal/create is
+  // actually served, which this file's own RULE above says is not a policy,
+  // it is a hope: a second `terminal/create` while one is still live would
+  // make every future keystroke (including a login code meant for the first
+  // command) go to both children, and could corrupt both interactive flows.
+  // Refuse it outright rather than building session-aware input routing for
+  // a case the comment already says does not occur. A terminal stops being
+  // "live" the moment it exits OR is released — same test the stdin bridge
+  // itself uses (`term.exitStatus || term.released`) — so a login flow that
+  // finishes one command and then opens the next is unaffected.
+  const existingLive = [...terminals.values()].find((term) => !term.exitStatus && !term.released)
+  if (existingLive) {
+    throw new Error(
+      `terminal/create refused — a login run drives at most one live terminal at a time `
+      + `(terminal ${existingLive.terminalId} is still live)`)
+  }
+  // Refuse a malformed element rather than silently dropping it (args) or
+  // coercing it (env value). A `.filter` here used to spawn `echo a b` for
+  // `args: ['a', 1, 'b']` — the caller believing it asked for `echo a 1 b`
+  // and getting a different command run instead — and `value: {bad: 1}` used
+  // to set the child's env var to the literal string "[object Object]" with
+  // no signal that the request was never actually honored. The catch in
+  // handleTerminalRequest already maps a thrown error to -32602, so throwing
+  // needs no new plumbing.
+  // A non-array `args` (e.g. a bare string) used to fall through the ternary
+  // below to the `[]` branch just like `undefined` does, silently dropping
+  // every argument instead of refusing the malformed shape the element check
+  // already refuses one value at a time. `params.args === null` also lands
+  // here (typeof null is 'object') — deliberate: null is a present, non-array
+  // value, not an absent one, and gets the same refusal as any other.
+  //
+  // BOTH containers, checked together. The first version of this guard named
+  // `args` alone, and `env` one line down had the identical defect —
+  // `env: "FOO=1"` fell to `{}` and the caller's whole environment override
+  // vanished with no signal. That is the shape this repository keeps finding:
+  // a guard written for the container that was REPORTED, with its twin left
+  // open beside it. Both are optional arrays; neither may be a present
+  // non-array, `null` included.
+  for (const key of ['args', 'env']) {
+    if (params[key] !== undefined && !Array.isArray(params[key])) {
+      throw new Error(`terminal/create ${key} must be an array, got ${typeof params[key]}`)
+    }
+  }
+  const args = Array.isArray(params.args)
+    ? params.args.map((value, index) => {
+      if (typeof value !== 'string') {
+        throw new Error(`terminal/create args[${index}] must be a string, got ${typeof value}`)
+      }
+      return value
+    })
+    : []
+  const envOverrides = Array.isArray(params.env)
+    ? Object.fromEntries(params.env.map((entry, index) => {
+      if (!entry || typeof entry !== 'object' || typeof entry.name !== 'string') {
+        throw new Error(`terminal/create env[${index}] must be an object with a string name`)
+      }
+      if (entry.value !== undefined && entry.value !== null && typeof entry.value !== 'string') {
+        throw new Error(`terminal/create env[${index}].value must be a string, got ${typeof entry.value}`)
+      }
+      return [entry.name, entry.value ?? '']
+    }))
+    : {}
+  const terminalCwd = typeof params.cwd === 'string' && params.cwd.trim() ? params.cwd : cwd
+  const requestedLimit = Number.isFinite(params.outputByteLimit) && params.outputByteLimit > 0
+    ? Number(params.outputByteLimit)
+    : DEFAULT_TERMINAL_OUTPUT_BYTES
+  const outputByteLimit = Math.max(1, Math.min(requestedLimit, MAX_TERMINAL_OUTPUT_BYTES))
+
+  const terminalId = `term_${randomUUID()}`
+  let child
+  try {
+    // `detached: true` makes this child its OWN process-group leader (its pid
+    // doubles as its pgid), same trick the main `agent` child already relies
+    // on. A terminal command that is itself a launcher — a shell, npx, bunx,
+    // anything that forks — spawns its descendant WITHOUT `detached`, so that
+    // descendant inherits THIS group rather than the companion's own. That is
+    // what lets `signalTerminalGroup` reach the whole subtree via
+    // `process.kill(-pid, …)` instead of only ever touching the wrapper pid.
+    child = spawn(command, args, {
+      cwd: terminalCwd,
+      env: { ...process.env, ...envOverrides },
+      stdio: ['pipe', 'pipe', 'pipe'],
+      detached: true,
+    })
+  } catch (cause) {
+    throw new Error(`cannot spawn terminal command: ${cause.message}`)
+  }
+
+  const term = {
+    terminalId, child, outputText: '', outputByteLimit,
+    truncated: false, exitStatus: null, released: false, waiters: [],
+  }
+  terminals.set(terminalId, term)
+
+  const flushStdout = attachTerminalOutputStream(term, terminalId, child.stdout)
+  const flushStderr = attachTerminalOutputStream(term, terminalId, child.stderr)
+  child.stdin.on('error', () => {})
+
+  // `exit` gives the process's exit status; it is NOT proof the output is
+  // complete — see the grace comment above `terminalCloseGraceMs`. Keep the
+  // two apart: `exit` only records the raw status, `close` (or the bounded
+  // fallback below) is what actually finalizes the terminal record.
+  let rawExitStatus = null
+  let closeGraceTimer = null
+  const finalizeTerminalExit = (status) => {
+    if (closeGraceTimer) { clearTimeout(closeGraceTimer); closeGraceTimer = null }
+    flushStdout()
+    flushStderr()
+    settleTerminalExit(term, status)
+  }
+  child.on('error', (cause) => {
+    // A spawn failure never produced a real process or streams with output in
+    // flight, so there is nothing to wait for — finalize immediately, same as
+    // before this fix.
+    appendTerminalOutput(term, `\n[terminal spawn error] ${cause.message}\n`)
+    finalizeTerminalExit({ exitCode: null, signal: null })
+  })
+  child.on('exit', (code, signal) => {
+    rawExitStatus = { exitCode: code, signal }
+    closeGraceTimer = setTimeout(() => finalizeTerminalExit(rawExitStatus), terminalCloseGraceMs)
+    closeGraceTimer.unref?.()
+  })
+  child.on('close', (code, signal) => {
+    finalizeTerminalExit(rawExitStatus ?? { exitCode: code, signal })
+  })
+
+  ensureTerminalStdinBridge()
+  return { terminalId }
+}
+
+function requireTerminal(terminalId) {
+  const term = typeof terminalId === 'string' ? terminals.get(terminalId) : undefined
+  if (!term || term.released) throw new Error(`unknown or released terminal ${boundedText(terminalId, '?', 64)}`)
+  return term
+}
+
+function terminalOutputResult(term) {
+  return {
+    output: term.outputText,
+    truncated: term.truncated,
+    exitStatus: term.exitStatus ? { exitCode: term.exitStatus.exitCode, signal: term.exitStatus.signal } : null,
+  }
+}
+
+function waitForTerminalExit(term) {
+  if (term.exitStatus) return Promise.resolve({ exitCode: term.exitStatus.exitCode, signal: term.exitStatus.signal })
+  return new Promise((resolve) => {
+    term.waiters.push((status) => resolve({ exitCode: status.exitCode, signal: status.signal }))
+  })
+}
+
+// `terminal/kill` per spec: terminate without releasing — the terminal stays
+// valid for `output` and a later `wait_for_exit`. `terminal/release` per
+// spec: terminate AND free resources — the id becomes invalid afterward. The
+// two are different methods with different postconditions; collapsing them
+// would silently break whichever one a real adapter relies on.
+//
+// Both route through `reapTerminalGroup` (below), which signals the
+// terminal's WHOLE process group and escalates to SIGKILL if a bounded grace
+// period passes with something still alive — not just the wrapper's own pid.
+// `terminal/kill` used to send one SIGTERM to the wrapper and respond
+// immediately: a command that traps or ignores SIGTERM (or is itself a
+// launcher — a shell, npx, bunx, anything that forks — leaving a live
+// descendant behind) then stayed alive while the caller had already been
+// told the kill succeeded, and a caller that followed that ack with
+// `terminal/wait_for_exit` could block the whole turn on it. This now waits
+// for the escalation before treating the kill as done — the same ladder
+// shape the teardown sweep below already used, just applied to the request
+// itself instead of only at companion exit.
+// `term.exitStatus` only says the WRAPPER exited, not that its process GROUP
+// is empty — a launcher wrapper (shell, npx, bunx, anything that forks) can
+// settle while a plain descendant it spawned is still alive and sharing its
+// pgid. Guarding on `exitStatus` here used to skip the reap entirely for
+// exactly that terminal: the request answered as if the kill had done
+// something, while the still-live descendant was never even signalled once.
+// Ask the question this function actually needs answered — is the GROUP
+// gone — via the same `isGroupGone` probe `reapTerminalGroup` itself leads
+// with, so this stays a fast, harmless no-op for the ordinary case (the
+// wrapper exited AND nothing it forked outlived it) and only actually skips
+// when there is truly nothing left to reap.
+async function killTerminal(term) {
+  if (isGroupGone(term.child?.pid)) return
+  await reapTerminalGroup(term, 'SIGTERM', terminalKillGraceMs)
+}
+
+function releaseTerminal(term) {
+  // Same question as killTerminal above: whether to bother signalling is
+  // about the GROUP, not the wrapper's own `exitStatus`. A wrapper that
+  // already exited can still have a live descendant sharing its pgid, and
+  // that descendant has not yet been sent anything.
+  if (!isGroupGone(term.child?.pid)) signalTerminalGroup(term, 'SIGTERM')
+  term.released = true
+  // A child that traps or ignores the SIGTERM release just sent is still
+  // alive here — deleting it from `terminals` unconditionally used to make
+  // it invisible to killAllLiveTerminals' teardown sweep from this point on,
+  // so `terminal/release` defeated the very reap this file otherwise
+  // guarantees. Keep a still-live terminal in the map; settleTerminalExit
+  // deletes it once it actually exits. `requireTerminal` already refuses any
+  // request naming a released id via `term.released`, and the stdin bridge
+  // already skips released terminals, so the ACP postcondition (the id
+  // becomes invalid immediately) is unchanged for every caller. Release
+  // itself does not wait out the escalation ladder — the ACP method has no
+  // "still terminating" reply to give — but killAllLiveTerminals' teardown
+  // sweep runs that same ladder over every terminal still in this map
+  // regardless of `released`, so a released-but-still-alive group is still
+  // guaranteed gone before the companion exits.
+  //
+  // The guard below used to read `term.exitStatus`: true the instant the
+  // WRAPPER settled, even with a live descendant sharing its pgid still
+  // holding no pipe of its own — deleting right there hid that descendant
+  // from the teardown sweep forever, since nothing else ever deletes this
+  // entry for a wrapper that has already exited (settleTerminalExit only
+  // runs once, and it already ran before this call). Ask about the GROUP
+  // instead: if it is not yet gone, leave the entry in place so
+  // killAllLiveTerminals still finds it; `reapTerminalGroup`'s own
+  // `isGroupGone` check makes that sweep a cheap no-op the moment the group
+  // actually is gone, so a terminal that exited normally with nothing left
+  // behind is deleted here exactly as before.
+  if (isGroupGone(term.child?.pid)) terminals.delete(term.terminalId)
+}
+
+// One check, no signal sent: true only when nothing in this pid's process
+// group is left alive. Used as `reapTerminalGroup`'s fast path so a terminal
+// whose whole group is already gone costs this function nothing beyond one
+// `kill(-pid, 0)` probe.
+function isGroupGone(groupId) {
+  if (!groupId) return true
+  try { process.kill(-groupId, 0); return false } catch {}
+  return groupPids(groupId).length === 0
+}
+
+// Signal a terminal's WHOLE process group, not just the wrapper pid.
+// createTerminal spawns with `detached: true`, so `term.child.pid` doubles as
+// the group's own pgid — `process.kill(-pid, …)` reaches a shell/npx/bunx
+// descendant the wrapper forked (a plain, non-detached spawn from the
+// wrapper inherits that same pgid), the same trick `signalProcessGroup`
+// already uses for the main agent child. Falls back to a direct signal on
+// the wrapper only if the group call itself throws.
+function signalTerminalGroup(term, signal) {
+  const pid = term.child?.pid
+  if (!pid) return
+  try { process.kill(-pid, signal); return } catch {}
+  try { term.child.kill(signal) } catch {}
+}
+
+// Bounded SIGTERM -> SIGKILL escalation for one terminal's whole process
+// group, shared by the `terminal/kill` request path and the teardown sweep
+// below — a single SIGTERM was not enough: measured directly, a child that
+// traps or ignores it (`trap "" TERM`, or any adapter with its own signal
+// handling) kept running past a plain signal, its open stdio pipes keeping
+// Node's event loop alive, and this file exits through `process.exitCode`,
+// never `process.exit()`, so the companion would hang indefinitely instead
+// of leaving with the exit code it had already decided. `term.exitStatus`
+// only says the WRAPPER exited — a descendant it forked before dying can
+// still be alive and sharing its pgid — which is why this checks the GROUP
+// rather than trusting that field, and why killAllLiveTerminals (below) no
+// longer skips a terminal just because its wrapper already settled.
+async function reapTerminalGroup(term, signal, graceMs) {
+  const pid = term.child?.pid
+  if (!pid || isGroupGone(pid)) return
+  signalTerminalGroup(term, signal)
+  if (await waitForGroupGone(pid, graceMs)) return
+  signalTerminalGroup(term, 'SIGKILL')
+  await waitForGroupGone(pid, graceMs)
+}
+
+// RULE: a terminal the companion spawned is the companion's to reap. Called
+// from `main()`'s `finally`, which every JS-level exit path — normal
+// completion, a thrown error, a finished cancellation — runs through.
+// Best-effort only: a companion killed by an external SIGKILL runs no JS at
+// all, the same blind spot every in-process cleanup in this file has.
+//
+// Sweeps EVERY terminal still in the map, not only ones whose wrapper is
+// still running: `term.exitStatus` set only means the wrapper itself exited,
+// and a launcher command (a shell, npx, bunx, anything that forks) can leave
+// a live descendant behind sharing its process group after the wrapper is
+// gone. Skipping here on `term.exitStatus` used to make exactly that
+// descendant invisible to this sweep the moment its wrapper died.
+// `reapTerminalGroup`'s own `isGroupGone` check makes this a no-op for a
+// terminal whose whole group is already empty, so nothing here does extra
+// signalling for the common case of a terminal that fully exited on its own.
+async function killAllLiveTerminals(signal = 'SIGTERM') {
+  const candidates = [...terminals.values()]
+  if (!candidates.length) return
+  await Promise.all(candidates.map((term) => reapTerminalGroup(term, signal, terminalKillGraceMs)))
+}
+
+async function handleTerminalRequest(message) {
+  const { method, id, params } = message
+  if (!terminalCapabilityEnabled) {
+    // Defense in depth: even if this request should have been unreachable
+    // (the capability was never advertised), refuse it explicitly rather
+    // than falling through to the generic `respond(id, undefined)` an
+    // unrecognised method gets — a silent empty ack here would look served.
+    respondError(id, -32601, `${method} refused — terminal capability is not enabled on this lane`)
+    return
+  }
+  try {
+    switch (method) {
+      case 'terminal/create':
+        respond(id, createTerminal(params ?? {}))
+        break
+      case 'terminal/output':
+        respond(id, terminalOutputResult(requireTerminal(params?.terminalId)))
+        break
+      case 'terminal/wait_for_exit':
+        respond(id, await waitForTerminalExit(requireTerminal(params?.terminalId)))
+        break
+      case 'terminal/kill':
+        await killTerminal(requireTerminal(params?.terminalId))
+        respond(id, {})
+        break
+      case 'terminal/release':
+        releaseTerminal(requireTerminal(params?.terminalId))
+        respond(id, {})
+        break
+      default:
+        respondError(id, -32601, `unknown method ${boundedText(method, '?', 64)}`)
+    }
+  } catch (cause) {
+    respondError(id, -32602, boundedText(cause?.message, 'invalid terminal request', MAX_ERROR_TEXT))
+  }
+}
+
+// A stdio Socket emits its OWN 'error'; `child.on('error')` is the ChildProcess
+// and does not cover it, so an unhandled read fault here takes the whole process
+// down. Found on the third pass: two doors were named, a survey of every stream
+// with a 'data' listener and no 'error' listener found seven.
+agent.stderr.on('error', () => {})
+agent.stdout.on('error', () => {})
 agent.stderr.on('data', (chunk) => {
   const text = String(chunk)
   stderrBuf = `${stderrBuf}${text}`.slice(-MAX_STDERR)
@@ -3172,6 +3929,11 @@ function render(update) {
 }
 
 const rl = createInterface({ input: agent.stdout })
+// Node forwards the input stream's error onto the Interface, so the listener on
+// `agent.stdout` does not cover this one. Routed to `failProtocol` rather than
+// swallowed: a lane whose adapter stream failed has not produced an answer, and
+// a silently-continuing companion would settle as though it had.
+rl.on('error', (err) => failProtocol(err))
 rl.on('line', (rawLine) => {
   if (!rawLine.trim()) return
   let message
@@ -3233,7 +3995,12 @@ rl.on('line', (rawLine) => {
     else entry.resolve(message.result)
     return
   }
-  if (hasId && message.method) {
+  // TYPE, not truthiness. `.startsWith` below threw TypeError on a frame like
+  // `{"id":1,"method":42}`, and an uncaught throw inside the readline callback
+  // takes the companion down before its terminal snapshot — one bad frame from
+  // an adapter and the lane stops with no record of why. Found by the PR review
+  // bot on this release's own bytes.
+  if (hasId && typeof message.method === 'string' && message.method) {
     if (message.method === 'session/request_permission') {
       // ACP v1 prompt-turn, Cancellation: "The Client MUST respond to all
       // pending `session/request_permission` requests with the `cancelled`
@@ -3258,6 +4025,8 @@ rl.on('line', (rawLine) => {
         line(`[permission] ${quoteAgentField(message.params?.toolCall?.title, '?')} -> cancelled (no options)`)
         respond(message.id, { outcome: { outcome: 'cancelled' } })
       }
+    } else if (message.method.startsWith('terminal/')) {
+      void handleTerminalRequest(message)
     } else {
       respond(message.id, undefined)
     }
@@ -3809,7 +4578,17 @@ async function protocolRun() {
   const init = await request('initialize', {
     protocolVersion: 1,
     clientInfo: adapterProfile?.agent_info,
-    clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
+    // `terminal` is the ACP boolean capability (ClientCapabilities.terminal in
+    // the v1 schema, not an object like `fs`) that gates every `terminal/*`
+    // method. Advertising it when nobody asked for login mode would be
+    // offering the adapter a login route on an ordinary lane; the key is
+    // omitted entirely rather than sent as `false`, so a reader of the wire
+    // traffic sees an ABSENT capability, not a declined one, on every path
+    // that did not ask for it.
+    clientCapabilities: {
+      fs: { readTextFile: false, writeTextFile: false },
+      ...(terminalCapabilityEnabled ? { terminal: true } : {}),
+    },
   }, { trace: initializeTrace })
   assertProtocolFence('initialize response')
   enforceObservedInitializeIdentity(init)
@@ -3989,6 +4768,7 @@ async function main() {
     if (controllerSignalHandlerInstalled) {
       for (const [signal, handler] of controllerSignalHandlers) process.removeListener(signal, handler)
     }
+    await killAllLiveTerminals()
   }
 }
 

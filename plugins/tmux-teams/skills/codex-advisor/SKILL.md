@@ -1,6 +1,6 @@
 ---
 name: codex-advisor
-description: "Consult a Codex advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. Takes an optional model — $codex-advisor [luna|terra|sol] — and always runs at max reasoning effort, which this adapter reports and the dispatch verifies. Use when the user invokes $codex-advisor, wants a second opinion from outside the Claude family, or names a specific Codex seat. Read-only: it advises, it never edits."
+description: "Consult a Codex advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. Takes an optional model — $codex-advisor [luna|terra|sol] — and always runs at max reasoning effort, which this adapter reports and the dispatch verifies. Use when the user invokes $codex-advisor, wants a second opinion from outside the Claude family, names a specific Codex seat, or adds --party <id> to seat a saved bmad-party-mode roster. Read-only: it advises, it never edits."
 ---
 
 # Codex Advisor
@@ -40,6 +40,39 @@ A bare short name is accepted and expanded; the full `gpt-5.6-*` id is what
 reaches the adapter and what the receipt must show. Any other name is a usage
 error — **do not pass a model through unrecognised**, because an unknown value
 either fails the dispatch or silently seats something nobody chose.
+
+### `--party <id>` — seat a saved bmad-party-mode roster
+
+Any seat above also takes `--party <id>`, the same flag `bmad-party-mode` takes.
+Instead of the lane inventing 3-5 voices, it answers as the operator's own saved
+party — real names, titles and scene. One script renders the roster so all three
+`*-advisor` skills seat it the same way:
+
+```bash
+node <plugin-root>/skills/tmux-teams/scripts/advisor-party.mjs <id>
+```
+
+`<plugin-root>` — the same spelling every dispatch command in this file uses,
+expanded to `$CLAUDE_PLUGIN_ROOT` when you run it. NOT a repository-relative
+path: an advisor is invoked from the operator's own project, where
+`plugins/tmux-teams/...` resolves under THAT tree and exits `MODULE_NOT_FOUND`,
+so `--party` would never reach the resolver. An openai review lane caught the
+relative form in all three skills at once.
+
+Paste what it prints into the brief **in place of** the invented-cast paragraph
+(the one that asks for three to five named voices); leave the READ-ONLY paragraph
+exactly as it is. Exit `0` is the only
+success. Exit `2` names why it refused — `unknown_party` (with the ids that do
+exist), `not_installed` (bmad-party-mode is a separate install, not shipped
+here), `uv_missing`, `resolver_failed`, or `party_substituted` (the resolver
+answered with a different party than the one asked for) — and on `2` **stop and
+tell the operator, then ask whether to run with the invented cast instead.**
+Exit `1` is a USAGE error in the command you typed — a missing id, a flag with
+no value, an extra argument — and it prints the usage line and nothing else; fix
+the command and run it again. A zai review lane found this section naming only
+`0` and `2`, which left a lane that branches on those two with no rule for `1`
+and free to proceed with the invented cast. Never substitute silently: someone
+who typed `--party` asked for a specific room.
 
 ## Effort is LOCKED at `max` — it is not an argument
 
@@ -93,13 +126,53 @@ answer is a failed consultation — say so rather than passing it on.
    the expanded id — `gpt-5.6-sol` unless the caller named another:
 
    ```bash
+   # The binary first, and ABSOLUTELY. `buildBuiltinProfile` refuses a
+   # receipt-required Codex dispatch without an absolute CODEX_PATH and exits 2
+   # before a session exists. This command omitted it until 2026-08-22 and could
+   # not run as written on any machine — found by RUNNING it to dispatch a
+   # review round, not by reading it. `agy-advisor` had the identical gap with
+   # AGY_BIN and `claude-advisor` sets CLAUDE_CODE_EXECUTABLE, so this was the
+   # last of the three, and it was the review of record.
+   CODEX_PATH="$(realpath "$(command -v codex)" 2>/dev/null)"
+   [ -n "$CODEX_PATH" ] || { echo 'no codex binary on this machine — stop'; exit 1; }
+
+   INITIAL_AGENT_MODE="read-only" \
+   CODEX_PATH="$CODEX_PATH" \
+   ACP_SESSION_RECEIPT_REQUIRED=1 \
+   ACP_SESSION_OPERATION="new" \
    ACP_MODEL="<model>" \
    ACP_REASONING_EFFORT="max" \
    ACP_EXPECT_MODEL="<model>" \
    ACP_EXPECT_REASONING_EFFORT="max" \
-   node <plugin-root>/skills/tmux-teams/scripts/acp-companion.mjs \
+   node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
      codex <cwd> <task-id> <brief-file> [stall-sec]
    ```
+
+   **The first two lines are the read-only claim, and they were missing.** A
+   release panel read this skill's own frontmatter — "Read-only: it advises, it
+   never edits" — against the command below it and found nothing enforcing it:
+   Codex children default to `INITIAL_AGENT_MODE=agent-full-access`, so the
+   documented command launched a full-access advisor, and the brief was the only
+   thing asking it to behave. `read-only` is one of the three modes the
+   companion accepts, so this was an unenforced claim rather than an
+   unenforceable one.
+
+   And `ACP_SESSION_RECEIPT_REQUIRED=1`, because the default mode CONTINUES
+   after a receipt-persistence failure with `receipt_digest: none` — so the
+   identity this skill reports could rest on a receipt that was never written.
+   **A consultation with no receipt is a failed consultation**; report it as one
+   rather than reporting the identity it did not prove.
+
+   **`acp-dispatch.mjs`, never `acp-companion.mjs` — and this is not a style
+   preference.** The dispatcher puts the lane in its own process group and
+   returns in seconds; the companion runs the lane in the FOREGROUND, so
+   whatever cap the calling shell has becomes the lane's real deadline. On
+   2026-08-17 that cost a finished review: `stall-sec` 1200 typed into a shell
+   capped at 600, killed at exactly ten minutes with 461 protocol events
+   recorded and the answer unwritten. Both numbers were typed by the same
+   caller in the same command and nothing compared them.
+   `tests/acp-dispatch.test.mjs` now refuses this file if it teaches the
+   killable form.
 
    **Never set `ACP_CMD` on this lane.** The companion does not run `codex`
    directly: it launches a pinned `@agentclientprotocol/codex-acp` adapter whose
@@ -114,10 +187,31 @@ answer is a failed consultation — say so rather than passing it on.
    `identity_status: matched`. If the installed ACP agent does not advertise
    the requested model/effort, the adapter fails closed before the prompt.
 
-3. **Read the outbox.** No outbox file means no advice, whatever scrolled past
+3. **Arm a watcher, because the dispatch RETURNS while the lane runs.** That is
+   the point of it, and it is also how a finished review sits unread. Run this
+   in the BACKGROUND — killing the waiter does not touch the lane:
+
+   ```bash
+   node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
+     wait <cwd> <task-id> 3600
+   ```
+
+   It exits `0` when the outbox is written, `2` when there is no outbox and the
+   lane will not produce one — the turn ended without writing, OR it stopped
+   reporting without reaching a terminal state. Both are exit 2 and they need
+   different responses, so read the liveness rather than the code: a lane that
+   ENDED is a re-dispatch, a lane that went quiet may still hold a session worth
+   resuming. This said only "the turn ENDED" until a lane reproduced the second
+   case and got `{"exit":2,"terminated":false,"notReporting":true,"livenessState":"active"}`
+   (resume — see Failure modes), and `1` when the wait budget ran out with the
+   lane still going. Both terminal outcomes end the wait, on purpose: a watcher
+   that looked only for an outbox would stay silent through a turn that wrote
+   nothing, and silence reads exactly like still-running.
+
+4. **Read the outbox.** No outbox file means no advice, whatever scrolled past
    in the terminal.
 
-4. **Report identity with the advice** — the acknowledged model and effort beside
+5. **Report identity with the advice** — the acknowledged model and effort beside
    the round-table, so a reader never has to take provenance on trust.
 
 ## Using both advisors on one question
@@ -152,11 +246,56 @@ changes state. Work that comes out of a consultation goes to `party-auto`.
   analysis" — which costs a few hundred tokens instead of the whole review:
 
   ```bash
+  node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
+    status <cwd> <task-id>
+  ```
+
+  `status` prints the resume command with the session id already in it, so
+  nobody digs that out of `.tmux-teams/` by hand — and with `ACP_PRIOR_DISPATCH_ID`
+  and `ACP_PRIOR_RECEIPT_DIGEST` as visible placeholders, because status cannot
+  know them. **It is not ready to paste, and the two words were doing damage.**
+  This file used to call it ready-to-paste in one paragraph and explain nine
+  lines further down that a receipt-required load needs lineage status has no
+  way to supply. The code sided with the wrong paragraph: it emitted neither the
+  receipt flag nor the operation, so a paste did not fail, it DOWNGRADED — the
+  companion defaults `receiptRequired` to false, and the recovered consultation
+  came back without the guarantee the original ran under. Found by a
+  codex-advisor lane reading this skill against the function it describes.
+
+  Fill the two placeholders from the failed run's receipt before running it.
+  It looks like this, and the shape matters:
+
+  ```bash
+  INITIAL_AGENT_MODE="read-only" ACP_SESSION_RECEIPT_REQUIRED=1 \
+  ACP_SESSION_OPERATION="load" \
+  ACP_PRIOR_DISPATCH_ID="<dispatch-id from the failed run's receipt>" \
+  ACP_PRIOR_RECEIPT_DIGEST="<receipt_digest from that run>" \
   ACP_RESUME="<session-id>" ACP_MODEL="<model>" ACP_REASONING_EFFORT="max" \
   ACP_EXPECT_MODEL="<model>" ACP_EXPECT_REASONING_EFFORT="max" \
-  node <plugin-root>/skills/tmux-teams/scripts/acp-companion.mjs \
+  node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
     codex <cwd> <task-id> <recovery-prompt> [stall-sec]
   ```
+
+  **A receipt-required LOAD needs its lineage, and the first version of this
+  block had none of it.** `ACP_SESSION_OPERATION=load` plus the prior dispatch
+  id and receipt digest are what bind the resumed turn to the run that failed;
+  without them the companion refuses, and without the whole set the resume is
+  not receipt-backed at all. Three panel families reported the fresh-dispatch
+  half of this and one reported the resume half — all against a command block
+  that had been "fixed" the day before by adding one variable and testing that
+  the variable was PRESENT.
+
+  Read the two values out of the failed run's receipt; `status` cannot supply
+  them, which is stated here rather than left for a paste to discover.
+
+  **Resume under the SAME task id.** The companion tells the worker to write
+  `.mailbox-out/<task-id>` and then reads that exact path back, so a resume
+  under a fresh id moves the outbox out from under the prompt the agent was
+  already given. On 2026-08-17 a recovery ran as `<task>-recover` while its
+  prompt still named `.mailbox-out/<task>`: the agent wrote a complete 22KB
+  review and the companion reported `no_outbox`. `status` now lists anything
+  else sitting in `.mailbox-out/` for exactly that reason — read those before
+  paying for a re-dispatch.
 
   Resume the seat you dispatched. Recovering one session under a different
   model is a different agent reading someone else's lineage.

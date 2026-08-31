@@ -7,7 +7,7 @@
 import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -18,7 +18,7 @@ import { stateOf, readBoard } from '../plugins/tmux-teams/skills/tmux-teams/scri
 import { validateWorkItems } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-validate.mjs'
 import { appendEvent } from '../plugins/tmux-teams/skills/tmux-teams/scripts/ledger-writer.mjs'
 import { tick } from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs'
-import { projectLivenessEvidence } from '../plugins/tmux-teams/skills/tmux-teams/scripts/pulse-data.mjs'
+import { projectLivenessEvidence, validateAcpLivenessV1 } from '../plugins/tmux-teams/skills/tmux-teams/scripts/pulse-data.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
@@ -26,7 +26,22 @@ const MOCK = join(HERE, 'fixtures', 'mock-acp-agent.mjs')
 const PULSE = join(ROOT, 'plugins', 'tmux-teams', 'skills', 'tmux-teams', 'scripts', 'pulse.mjs')
 
 const dirs = []
-after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }) })
+after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }) })
+
+// Two tests in this file delete every ambient ACP_* key from THIS process and
+// then restore what they snapshotted. Both snapshotted an incomplete set at
+// some point and the suite stayed green, because the damage is to the process
+// the tests share rather than to any assertion they make. A sentinel is the
+// only thing that makes it visible: it is an ACP_* key nothing reads, so the
+// prefix delete takes it and only a prefix-wide restore puts it back.
+const ACP_SENTINEL = 'ACP_LOOP_SMOKE_SENTINEL'
+process.env[ACP_SENTINEL] = 'do-not-delete'
+after(() => {
+  const survived = process.env[ACP_SENTINEL]
+  delete process.env[ACP_SENTINEL]
+  assert.equal(survived, 'do-not-delete',
+    'a test in this file deleted an ambient ACP_* variable from this process and did not put it back')
+})
 
 // `workers` overridable so the control team D6 requires can name the outer
 // controller as its one seat.
@@ -129,7 +144,11 @@ async function waitFor(condition, description, repo) {
     await sleep(15)
   }
   const events = ledger(repo).map((entry) => entry.event).join(' -> ')
-  throw new Error(`${description} did not settle within 5s (ledger: ${events || 'empty'})`)
+  // The number comes from the deadline above rather than being typed twice.
+  // It said 5s beside a 20s wait — a diagnostic reporting a measurement it did
+  // not take, which is worse than none: it sends the reader looking for a
+  // timing problem that is not there.
+  throw new Error(`${description} did not settle within 20s (ledger: ${events || 'empty'})`)
 }
 
 async function settleStarted(repo, started) {
@@ -175,8 +194,25 @@ test('a real ACP route reaches audit and leaves coherent ledger, snapshot, and p
     'ACP_SESSION_RECEIPT_REQUIRED', 'ACP_STALL_POLICY', 'ECC_GATEGUARD', 'INITIAL_AGENT_MODE',
     'MOCK_EVIDENCE', 'MOCK_LOOP_VERDICTS', 'MOCK_SCENARIO', 'MOCK_TERMINAL', 'TMUX_TEAMS_PHASE',
   ].map((key) => [key, process.env[key]]))
+  // The named list decides what is restored, and it had missed the ACP_* keys
+  // the prefix delete below removes — so a caller's ambient ACP_REASONING_EFFORT
+  // or ACP_SPAWN_NONCE was deleted from this process and never put back, which
+  // is a leak out of the test rather than into it. Snapshot by the same prefix
+  // that deletes.
+  const inheritedAcp = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => key.startsWith('ACP_')))
 
   try {
+    // By PREFIX, not by the list above. That list is written by hand and it had
+    // missed `ACP_REASONING_EFFORT` — so this test failed for a caller whose
+    // shell happened to export it, and the reason had nothing to do with what
+    // the test checks. Found by running the whole suite from a hostile shell
+    // after a panel lane reported the same shape in the dispatcher suite; a
+    // grep for the shape would have found the spread and not the gap in a list.
+    // The named list still decides what is RESTORED afterwards.
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith('ACP_')) delete process.env[key]
+    }
     for (const key of Object.keys(inherited)) delete process.env[key]
     Object.assign(process.env, {
       // Named deliberately, not inherited. The runner refuses to pass an ambient
@@ -272,5 +308,99 @@ test('a real ACP route reaches audit and leaves coherent ledger, snapshot, and p
       if (value === undefined) delete process.env[key]
       else process.env[key] = value
     }
+    Object.assign(process.env, inheritedAcp)
   }
+})
+
+// The liveness validator, run against a snapshot a REAL companion produced in
+// this file's own loop — not a hand-written fixture, because a hand-written
+// fixture is how the list drifted from the writer in the first place.
+//
+// Measured before the fix: `validateAcpLivenessV1` answered
+// `raw liveness keys are not closed` for EVERY production snapshot, because
+// `work_observed` is written by `acp-companion.mjs` on every one and was absent
+// from the closed key set. `pulse.mjs` turns that into a throw, so the whole
+// liveness-evidence path refused real evidence. A validator that refuses
+// everything is off, and reads as a guard.
+test('the liveness validator accepts what the companion actually writes', async () => {
+  const repo = makeRepo()
+  const inherited = Object.fromEntries(['ACP_CMD', 'TMUX_TEAMS_ACP_CMD', 'MOCK_EVIDENCE',
+    'MOCK_LOOP_VERDICTS', 'ACP_STALL_POLICY', 'ECC_GATEGUARD'].map((k) => [k, process.env[k]]))
+  // Snapshot by the same prefix the next line deletes by. The sibling test above
+  // had this fixed and this one did not — the same shape, one function down,
+  // found by a review lane observing the PARENT process after the test rather
+  // than the child environment inside it.
+  const inheritedAcp = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => key.startsWith('ACP_')))
+  try {
+    for (const key of Object.keys(process.env)) if (key.startsWith('ACP_')) delete process.env[key]
+    Object.assign(process.env, {
+      TMUX_TEAMS_ACP_CMD: `${process.execPath} ${MOCK}`,
+      ACP_CANCEL_GRACE_MS: '100', ACP_HARD_TIMEOUT_SEC: '2',
+      ACP_PROCESS_KILL_GRACE_MS: '100', ACP_STALL_POLICY: 'cancel',
+      ECC_GATEGUARD: 'off', MOCK_EVIDENCE: '1', MOCK_LOOP_VERDICTS: LOOP_VERDICTS,
+    })
+    const result = tick(repo, { apply: true, tickSec: 1, scratchDir: join(repo, 'runner-briefs') })
+    assert.ok(result.ok, `tick refused: ${result.reason}`)
+    await settleStarted(repo, result.started)
+
+    const dir = join(repo, '.tmux-teams', 'liveness')
+    const files = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.json')) : []
+    assert.ok(files.length > 0, 'the loop produced no liveness snapshot to validate')
+    for (const file of files) {
+      const snapshot = JSON.parse(readFileSync(join(dir, file), 'utf8'))
+      const verdict = validateAcpLivenessV1(snapshot)
+      assert.equal(verdict.ok, true,
+        `${file} is a real snapshot this validator refuses: ${verdict.reason} — `
+        + `keys written: ${Object.keys(snapshot).sort().join(', ')}`)
+    }
+  } finally {
+    Object.assign(process.env, inheritedAcp)
+    for (const [key, value] of Object.entries(inherited)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value
+    }
+  }
+})
+
+// A closed set of KEY NAMES is not a closed contract, and v0.33.0 admitted two
+// fields to that set without giving either a type. Measured before the fix, from
+// the shipped fixture: `work_observed: 'false'` was ACCEPTED, and so was
+// `spawn_nonce: { forged: true }`. The consequence is not cosmetic —
+// `loop-runner.mjs` compares `work_observed === false`, so a truthy string reads
+// as work observed and the plan came back `expired`, withdrawing a delivery that
+// should have been held for a person. `spawn_nonce` is compared for equality
+// against a string, so an object silently never matches.
+//
+// The cases are written out rather than derived from the key list: a test that
+// iterates the constant it is validating stops testing whatever is deleted.
+test('the liveness validator closes types, not only key names', () => {
+  const fixture = JSON.parse(readFileSync(join(HERE, 'fixtures', 'acp-liveness-v1.json'), 'utf8'))
+  assert.equal(validateAcpLivenessV1(fixture).ok, true,
+    'the shipped fixture must be valid, or every case below proves nothing')
+
+  const refused = (patch, what) => {
+    const verdict = validateAcpLivenessV1({ ...fixture, ...patch })
+    assert.equal(verdict.ok, false, `${what} was accepted: ${JSON.stringify(patch)}`)
+    assert.equal(verdict.reason, 'raw liveness field is invalid',
+      `${what} was refused for the wrong reason: ${verdict.reason}`)
+  }
+
+  refused({ work_observed: 'false' }, 'a string work_observed')
+  refused({ work_observed: 'true' }, 'a truthy string work_observed')
+  refused({ work_observed: 1 }, 'a numeric work_observed')
+  refused({ work_observed: null }, 'a null work_observed')
+  refused({ spawn_nonce: { forged: true } }, 'an object spawn_nonce')
+  refused({ spawn_nonce: 42 }, 'a numeric spawn_nonce')
+  refused({ spawn_nonce: 'has a space' }, 'a spawn_nonce the companion would refuse')
+  refused({ spawn_nonce: '' }, 'an empty spawn_nonce')
+
+  // And the shapes that MUST stay legal, because refusing them would break every
+  // lane loop-runner starts, which writes no nonce at all.
+  assert.equal(validateAcpLivenessV1({ ...fixture, spawn_nonce: 'a-valid-nonce_1' }).ok, true,
+    'a well-formed spawn_nonce was refused')
+  assert.equal(validateAcpLivenessV1({ ...fixture, work_observed: false }).ok, true,
+    'work_observed false was refused')
+  const { spawn_nonce: _omitted, ...noNonce } = fixture
+  assert.equal(validateAcpLivenessV1(noNonce).ok, true,
+    'a snapshot with no spawn_nonce was refused — that is every loop-runner lane')
 })

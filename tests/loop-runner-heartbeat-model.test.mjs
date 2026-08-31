@@ -30,6 +30,7 @@ import { loopHealth, readRunnerHeartbeat } from '../plugins/tmux-teams/skills/tm
 import {
   INHERIT_ACCOUNT_DEFAULT, RUNNER_HEARTBEAT_FILE, applyHarvest,
   childEnv, declaredAdapter, declaredModel, modelEnv, tick,
+  LOOP_FORWARDED_ACP_CONTROLS,
 } from '../plugins/tmux-teams/skills/tmux-teams/scripts/loop-runner.mjs'
 import { validateWorkflowGraph } from '../plugins/tmux-teams/skills/tmux-teams/scripts/workflow-graph.mjs'
 
@@ -81,7 +82,7 @@ function repoWith({ graph = graphDecl(), ledgers = {}, pulseAgeSec = 5, rawGraph
   return dir
 }
 
-test.after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }) })
+test.after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }) })
 
 const at = (index) => `2026-07-27T0${index}:00:00.000Z`
 
@@ -287,6 +288,178 @@ test('an ambient ACP_CMD never reaches a dispatched worker', () => {
   const named = childEnv({ PATH: '/bin', ACP_CMD: 'node /stale.mjs', TMUX_TEAMS_ACP_CMD: 'node /mock.mjs' })
   assert.equal(named.ACP_CMD, 'node /mock.mjs')
   assert.equal('TMUX_TEAMS_ACP_CMD' in named, false)
+})
+
+// `acp-companion.mjs` states it in its own comment: no ordinary caller,
+// loop-runner included, may hand a lane the terminal capability. It was reaching
+// one from any shell that still had the login-mode opt-in exported —
+// `ACP_ENABLE_TERMINAL=1 node -e "childEnv().ACP_ENABLE_TERMINAL"` printed "1".
+// `acp-dispatch.mjs` had the identical shape and was closed one review round
+// earlier; this door stayed open because nobody went looking for the second one.
+//
+// This proves the FUNCTION. The call site is proved separately, in
+// tests/loop-runner-palette-dispatch.test.mjs, because deleting the childEnv()
+// call from dispatch would leave this test green.
+// Three doors of one shape have now been closed one review round apart:
+// ACP_CMD, then ACP_ENABLE_TERMINAL, then ACP_SPAWN_NONCE. Each time the fix
+// was for the variable that had been NAMED, and each time the next one was
+// still open. This test is the shape rather than the list: whatever ACP_*
+// variables a caller's shell is carrying, a dispatched worker sees only what
+// this runner decided to give it.
+//
+// The allowed set is written out. A test that derived it from `childEnv`'s own
+// destructuring would agree with whatever that line says, including a line
+// somebody widened.
+test('no ambient ACP_ variable survives childEnv except the ones this runner re-supplies', () => {
+  const ambient = {
+    PATH: '/bin',
+    ACP_CMD: 'node /somebody-elses-adapter.mjs',
+    ACP_ENABLE_TERMINAL: '1',
+    ACP_SPAWN_NONCE: 'a-stale-nonce-from-a-hand-run',
+    ACP_MODEL: 'somebody-elses-model',
+    ACP_EXPECT_MODEL: 'somebody-elses-expectation',
+    ACP_REASONING_EFFORT: 'low',
+    ACP_SESSION_OPERATION: 'load',
+    ACP_RESUME: 'somebody-elses-session',
+    // The documented operator controls, mixed in with the hostile ones. They
+    // MUST survive: finding 3835247721 is that the shape above dropped them
+    // too, so a loop launched with a wall-clock ceiling ran without one.
+    ACP_HARD_TIMEOUT_SEC: '900',
+    ACP_STALL_POLICY: 'report',
+    ACP_CANCEL_GRACE_MS: '100',
+    ACP_CANCEL_GRACE_SEC: '7',
+    ACP_PROCESS_KILL_GRACE_MS: '100',
+  }
+  const passed = childEnv(ambient)
+  const survivors = Object.keys(passed).filter((k) => k.startsWith('ACP_')).sort()
+  // `dispatch()` supplies model, effort, agent id and the rest deliberately
+  // AFTER this call. Nothing ambient is entitled to arrive on its own EXCEPT
+  // the controls the skill invites an operator to set.
+  assert.deepEqual(survivors, [
+    'ACP_CANCEL_GRACE_MS', 'ACP_CANCEL_GRACE_SEC', 'ACP_HARD_TIMEOUT_SEC',
+    'ACP_PROCESS_KILL_GRACE_MS', 'ACP_STALL_POLICY',
+  ], `wrong ACP_ variables reached a worker: ${survivors.join(', ')}`)
+  assert.equal(passed.ACP_HARD_TIMEOUT_SEC, '900',
+    'the wall-clock ceiling an operator set never reached the lane it was meant to bound')
+  assert.equal(passed.PATH, '/bin', 'the filter ate something it was not asked to')
+
+  // And the one ACP_ variable this runner DOES set, from its own explicit
+  // dependency rather than from the environment.
+  const named = childEnv({ ...ambient, TMUX_TEAMS_ACP_CMD: 'node /mock.mjs' })
+  assert.equal(named.ACP_CMD, 'node /mock.mjs')
+  assert.equal('TMUX_TEAMS_ACP_CMD' in named, false)
+  assert.equal('ACP_SPAWN_NONCE' in named, false, 'a stale nonce rode in beside the injected adapter')
+})
+
+// The names this runner OWNS: identity, routing, session lineage, adapter
+// selection and capability opt-ins. A leg gets whatever `dispatch()` decided,
+// never whatever the operator's shell was carrying. `ACP_TEST_*` is owned as a
+// CLASS by prefix — a test seam reaching a production lane is the same hazard
+// this filter exists for, and there are eleven of them.
+const LOOP_OWNED_ACP = [
+  'ACP_AGENT_ID', 'ACP_CMD', 'ACP_CONTROL_LOG', 'ACP_ENABLE_TERMINAL',
+  'ACP_EXECUTION_PROFILE', 'ACP_EXPECT_MODEL', 'ACP_EXPECT_REASONING_EFFORT',
+  'ACP_INHERIT_PROJECT_CONFIG', 'ACP_KMS_AUTO', 'ACP_LIVENESS_TICK_MS',
+  'ACP_LIVENESS_WRITE_INTERVAL_MS', 'ACP_MODEL', 'ACP_PRIOR_DISPATCH_ID',
+  'ACP_ENV_PASSTHROUGH', 'ACP_PRIOR_RECEIPT_DIGEST',
+  'ACP_REASONING_EFFORT', 'ACP_RESUME', 'ACP_SESSION_OPERATION',
+  'ACP_SESSION_RECEIPT_REQUIRED', 'ACP_SPAWN_NONCE',
+  'ACP_TERMINAL_CLOSE_GRACE_MS', 'ACP_TERMINAL_KILL_GRACE_MS',
+]
+
+// WHY THIS TEST EXISTS AND NOT JUST THE ONE ABOVE. Deny-by-default is only
+// fail-closed if somebody NOTICES an unclassified knob, and nobody reads a
+// filter in one file while adding an env read in another. This reads the
+// companion's own source: every ACP_ name it consumes must be in one list or
+// the other, so a new knob turns THIS red instead of being silently dropped in
+// production and found by a review bot two releases later.
+//
+// SCAN EVERY ACP_ IDENTIFIER, not the ways of reading one. This test was first
+// written with two patterns — `process.env.X` and `requestedConfigOverride('X')`
+// — on the reasoning that those were the two ways the companion read an env
+// var. **Within the hour a knob landed through a third**
+// (`strictNonNegativeEnvNumber('ACP_TERMINAL_CLOSE_GRACE_MS', 2000)`) and this
+// test reported full coverage over 35 names while 39 existed. Enumerating the
+// READING HELPERS is the same list problem one level up, and it rotted faster
+// than the list it was written to protect.
+//
+// So the scan is every `ACP_*` identifier in the file. Over-inclusive is the
+// safe direction: a name that is not an env var costs one line in a list,
+// while a name that is missed costs a silently dropped operator control.
+// Prefix FRAGMENTS used to build names (`ACP_EXPECT_`, `ACP_TEST_RECEIPT_`) are
+// excluded by the one property that distinguishes them — a real variable name
+// does not end in an underscore — rather than by naming them.
+test('every ACP_ variable the companion reads is classified as forwarded or owned', () => {
+  const src = readFileSync(
+    new URL('../plugins/tmux-teams/skills/tmux-teams/scripts/acp-companion.mjs', import.meta.url), 'utf8')
+  const names = new Set([...src.matchAll(/\bACP_[A-Z0-9_]+/g)]
+    .map((m) => m[0]).filter((name) => !name.endsWith('_')))
+  // A scan that quietly stops matching reports perfect classification.
+  assert.ok(names.size >= 39,
+    `the companion scan found only ${names.size} ACP_ names — the pattern stopped matching`)
+  // Three names, each read a DIFFERENT way, pinned so a narrowed scan is caught:
+  // a plain member access, a config-override call, and a helper call.
+  assert.ok(names.has('ACP_SPAWN_NONCE'), 'the scan missed a plain process.env read')
+  assert.ok(names.has('ACP_MODEL'), 'the scan missed a requestedConfigOverride name')
+  assert.ok(names.has('ACP_TERMINAL_CLOSE_GRACE_MS'),
+    'the scan missed a name read through an env helper — the exact hole that made this test lie')
+
+  const unclassified = [...names].filter((n) => !LOOP_FORWARDED_ACP_CONTROLS.includes(n)
+    && !LOOP_OWNED_ACP.includes(n) && !n.startsWith('ACP_TEST_')).sort()
+  assert.deepEqual(unclassified, [],
+    'the companion reads ACP_ variables this runner has never classified — decide for each whether it is '
+    + `an operator control or this runner's, rather than leaving it to the prefix: ${unclassified.join(', ')}`)
+
+  // Pinned literally, both of them. A test that read either list back from the
+  // module would agree with a line somebody widened, which is the failure this
+  // repository has now written down three times.
+  assert.deepEqual([...LOOP_FORWARDED_ACP_CONTROLS], [
+    'ACP_CANCEL_GRACE_MS', 'ACP_CANCEL_GRACE_SEC', 'ACP_HARD_TIMEOUT_SEC',
+    'ACP_PROCESS_KILL_GRACE_MS', 'ACP_PROCESS_REAP_GRACE_MS', 'ACP_STALL_POLICY',
+  ], 'the forwarded operator surface changed — SKILL.md documents it and must change with it')
+  assert.equal(LOOP_OWNED_ACP.length, 22)
+
+  // THE SCANNER'S REMAINING BLIND SPOT, named by the lane that blocked on it.
+  // Every check above reads NAMES out of the source, so a read whose name is
+  // COMPUTED is invisible to all of them and the classification would report
+  // complete while a whole family went unclassified.
+  //
+  // The first draft of this asserted there were NONE. There are four, and that
+  // is why it asserts a property instead of an absence. Two shapes are safe and
+  // one is not:
+  //
+  //   `process.env[name]` — a bare identifier, i.e. a helper parameter
+  //   (`strictNonNegativeEnvNumber`, `requestedConfigOverride`) or a loop
+  //   variable over a declared constant. Every CALL SITE passes a literal, and
+  //   the identifier scan above reads those.
+  //
+  //   `process.env[`ACP_TEST_..._FAILURE`]` — a name BUILT at runtime, whose
+  //   literal head sits inside a family this runner owns by prefix. Owned
+  //   whatever the tail turns out to be.
+  //
+  //   Anything else — a name built from a head that is not an owned family —
+  //   cannot be classified by reading names at all, and is refused here.
+  const bracketArgs = [...src.matchAll(/process\.env\[([^\]]*)\]/g)]
+    .map((m) => m[1].trim())
+    .filter((arg) => !/^['"][A-Za-z_][A-Za-z0-9_]*['"]$/.test(arg))
+    .filter((arg) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(arg))
+  const unclassifiable = bracketArgs.filter((arg) => !/^[`'"]ACP_TEST_/.test(arg))
+  assert.deepEqual(unclassifiable, [],
+    'the companion builds an env variable name from a head no owned family covers, so no scan over '
+    + `names can classify it — use a literal, or own the family by prefix: ${unclassifiable.join(' · ')}`)
+  // And the safe shapes are asserted to still BE the safe shapes, so this does
+  // not quietly become a filter that passes everything.
+  assert.ok(bracketArgs.length >= 1,
+    'the computed-read scan matched nothing at all — the pattern stopped working')
+})
+
+test('an ambient ACP_ENABLE_TERMINAL never reaches a dispatched worker', () => {
+  const ambient = childEnv({ PATH: '/bin', ACP_ENABLE_TERMINAL: '1' })
+  assert.equal('ACP_ENABLE_TERMINAL' in ambient, false, JSON.stringify(ambient))
+  assert.equal(ambient.PATH, '/bin', 'the filter ate something it was not asked to')
+  // '0' is a legal value the companion accepts, and it is dropped too: the
+  // point is that this caller never speaks about terminals at all.
+  assert.equal('ACP_ENABLE_TERMINAL' in childEnv({ PATH: '/bin', ACP_ENABLE_TERMINAL: '0' }), false)
 })
 
 // This test was named for the request and asserted only the expectation, so it

@@ -6,7 +6,7 @@
 import { spawn as nodeSpawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, realpathSync } from 'node:fs'
-import { chmod, copyFile, cp, mkdir, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -373,109 +373,6 @@ function isHarmlessAgyThink(update) {
     block.content.type === 'text' && typeof block.content.text === 'string')
 }
 
-function inspectAgySafeRead(update, home, workspace) {
-  if (!home || !isObject(update) || update.sessionUpdate !== 'tool_call' ||
-      update.kind !== 'read' || update.status !== 'completed' ||
-      typeof update.toolCallId !== 'string' || !Array.isArray(update.locations) ||
-      update.locations.length === 0) return { rejection: 'invalid-shape' }
-  if (Object.prototype.hasOwnProperty.call(update, 'rawOutput')) return { rejection: 'raw-output-present' }
-  const allowed = new Set([
-    'sessionUpdate', 'toolCallId', 'title', 'kind', 'status', 'content', 'locations', 'rawInput',
-  ])
-  if (Object.keys(update).some(key => !allowed.has(key))) return { rejection: 'unexpected-field' }
-  const canonical = value => {
-    try { return realpathSync(value) } catch { return null }
-  }
-  const hasTraversalSegment = value =>
-    typeof value === 'string' && value.split('/').some(segment => segment === '.' || segment === '..')
-  const lexicalRoots = {
-    runtime: resolve(join(home, '.gemini', 'antigravity-cli', 'builtin')),
-    workspace: resolve(workspace),
-    workspaceGuide: resolve(join(workspace, WORKSPACE_GUIDE_NAME)),
-  }
-  const roots = {
-    runtime: canonical(join(home, '.gemini', 'antigravity-cli', 'builtin')),
-    workspace: canonical(workspace),
-    workspaceGuide: canonical(join(workspace, WORKSPACE_GUIDE_NAME)),
-  }
-  if (!roots.workspace) return { rejection: 'workspace-canonicalization-failed' }
-  const workspacePathPairs = [
-    [lexicalRoots.workspace, roots.workspace],
-    [lexicalRoots.workspaceGuide, roots.workspaceGuide],
-  ].filter(([, canonicalPath]) => canonicalPath)
-  const locationDetails = update.locations.map(location => {
-    if (!isObject(location) || typeof location.path !== 'string' || !isAbsolute(location.path) ||
-        hasTraversalSegment(location.path) ||
-        Object.keys(location).some(key => !['path', 'line', 'column'].includes(key))) return null
-    const lexicalPath = resolve(location.path)
-    const canonicalPath = canonical(location.path)
-    if (!canonicalPath) return null
-    if (workspacePathPairs.some(([lexicalAllowed, canonicalAllowed]) =>
-      lexicalPath === lexicalAllowed && canonicalPath === canonicalAllowed)) {
-      return { scope: 'workspace', lexicalPath, canonicalPath }
-    }
-    if (roots.runtime &&
-        isWithin(lexicalPath, lexicalRoots.runtime) &&
-        isWithin(canonicalPath, roots.runtime)) {
-      return { scope: 'runtime', lexicalPath, canonicalPath }
-    }
-    return null
-  })
-  if (locationDetails.some(detail => detail === null)) return { rejection: 'location-outside-safe-roots' }
-  const scopes = locationDetails.map(detail => detail.scope)
-  if (new Set(scopes).size !== 1) return { rejection: 'mixed-read-scopes' }
-  const scope = scopes[0]
-  const allowedRoot = scope === 'runtime' ? roots.runtime : roots.workspace
-  const lexicalAllowedRoot = scope === 'runtime' ? lexicalRoots.runtime : lexicalRoots.workspace
-  const locationCanonicalPaths = new Set(locationDetails.map(detail => detail.canonicalPath))
-  if (update.rawInput !== undefined) {
-    if (!isObject(update.rawInput)) return { rejection: 'invalid-raw-input' }
-    const pathKeys = new Set([
-      'AbsolutePath', 'absolutePath', 'FilePath', 'filePath', 'DirectoryPath', 'directoryPath',
-    ])
-    const textKeys = new Set(['toolAction', 'toolSummary'])
-    const numberKeys = new Set([
-      'StartLine', 'startLine', 'EndLine', 'endLine', 'line', 'limit', 'offset',
-    ])
-    for (const [key, value] of Object.entries(update.rawInput)) {
-      if (pathKeys.has(key)) {
-        if (typeof value !== 'string' || !value || hasTraversalSegment(value)) {
-          return { rejection: 'invalid-raw-input-path' }
-        }
-        const lexicalCandidate = resolve(isAbsolute(value) ? value : resolve(lexicalAllowedRoot, value))
-        const candidate = canonical(lexicalCandidate)
-        if (!candidate) return { rejection: 'raw-input-canonicalization-failed' }
-        const insideScope = scope === 'workspace'
-          ? workspacePathPairs.some(([lexicalAllowed, canonicalAllowed]) =>
-              lexicalCandidate === lexicalAllowed && candidate === canonicalAllowed)
-          : isWithin(lexicalCandidate, lexicalRoots.runtime) && isWithin(candidate, allowedRoot)
-        if (!insideScope) return { rejection: 'raw-input-outside-safe-root' }
-        if (!locationCanonicalPaths.has(candidate)) return { rejection: 'raw-input-location-mismatch' }
-      } else if (textKeys.has(key)) {
-        if (typeof value !== 'string') return { rejection: 'invalid-raw-input-metadata' }
-      } else if (numberKeys.has(key)) {
-        if (!(Number.isFinite(value) || (typeof value === 'string' && /^\d+$/.test(value)))) {
-          return { rejection: 'invalid-raw-input-metadata' }
-        }
-      } else {
-        return { rejection: 'unexpected-raw-input-field' }
-      }
-    }
-  }
-  return { scope }
-}
-
-async function copyIfPresent(source, destination) {
-  if (!existsSync(source)) return
-  await mkdir(dirname(destination), { recursive: true })
-  await copyFile(source, destination)
-}
-
-async function copyTreeIfPresent(source, destination) {
-  if (!existsSync(source)) return
-  await mkdir(dirname(destination), { recursive: true })
-  await cp(source, destination, { recursive: true, force: true })
-}
 
 async function prepareProviderState(profile, stateRoot, sourceEnv) {
   const env = { ...sourceEnv }
@@ -483,77 +380,6 @@ async function prepareProviderState(profile, stateRoot, sourceEnv) {
   const home = env.HOME ?? env.USERPROFILE
   const stateHome = join(stateRoot, 'home')
   await mkdir(stateHome, { recursive: true, mode: 0o700 })
-  if (profile.osSandbox !== 'bwrap') return { env, mounts, home, stateHome }
-  if (home && (!isAbsolute(home) || resolve(home) === '/')) {
-    throw new ReviewTransportError('config', 'review provider HOME must be a non-root absolute path')
-  }
-  const statePath = relative => join(stateHome, relative)
-  const hostPath = relative => home ? join(home, relative) : null
-  const copyHomeFile = async relative => {
-    if (home) await copyIfPresent(hostPath(relative), statePath(relative))
-  }
-  const copyHomeTree = async relative => {
-    if (home) await copyTreeIfPresent(hostPath(relative), statePath(relative))
-  }
-  const emptyDirectory = relative => mkdir(statePath(relative), { recursive: true, mode: 0o700 })
-  const emptyFile = async (relative, contents = '') => {
-    await mkdir(dirname(statePath(relative)), { recursive: true })
-    await writeFile(statePath(relative), contents, { encoding: 'utf8', mode: 0o600 })
-  }
-
-  if (profile.id === 'agy') {
-    if (!home) throw new ReviewTransportError('config', 'AGY ACP review requires an explicit HOME')
-    await copyHomeFile(join('.agy-acp', 'models.json'))
-    await copyHomeFile(join('.gemini', 'antigravity-cli', 'antigravity-oauth-token'))
-    await copyHomeTree(join('.gemini', 'antigravity-cli', 'bin'))
-    await copyHomeTree(join('.gemini', 'antigravity-cli', 'builtin'))
-    for (const name of ['conversations', 'log', 'cache', 'crashes', 'scratch']) {
-      await emptyDirectory(join('.gemini', 'antigravity-cli', name))
-    }
-    await emptyFile(join('.gemini', 'antigravity-cli', 'history.jsonl'))
-  }
-  // The `claude-<provider>` wrapper points CLAUDE_CONFIG_DIR at this directory,
-  // so the child needs the settings file inside it — and nothing else. Copying
-  // the TREE put the operator's whole provider profile into a networked
-  // adapter's HOME: measured on this machine, kimi 657 MiB / 10,267 files, zai
-  // 569 MiB / 20,865, qwen 106 MiB / 11,006, and the default OpenAI panel takes
-  // two of them at once. Those trees hold `projects/`, `history.jsonl`,
-  // `file-history/`, `session-env/`, `shell-snapshots/`, `tasks/`, `teams/` —
-  // unrelated work a static-packet reviewer has no business reading, and
-  // SKILL.md ข้อ 28 promises the opposite ("ephemeral HOME with minimum copied
-  // auth and masked host user-data roots"). Nobody observed a provider sending
-  // those bytes; the exposure and the false contract are the defect
-  // (r4-codex, BLOCKER 1).
-  if (profile.providerConfigDir) await copyHomeFile(join(profile.providerConfigDir, 'settings.json'))
-  if (profile.id === 'zai' || profile.id === 'qwen' || profile.id === 'claude' || profile.id === 'kimi') {
-    const configDir = statePath('.claude')
-    await mkdir(configDir, { recursive: true })
-    await writeFile(join(configDir, 'settings.json'), '{}', { encoding: 'utf8', mode: 0o600 })
-    if (profile.id === 'claude' && home) {
-      await copyHomeFile(join('.claude', '.credentials.json'))
-    }
-    env.CLAUDE_CONFIG_DIR = home ? join(home, '.claude') : configDir
-  }
-  if (profile.id === 'codex') {
-    const codexHome = statePath('.codex')
-    await mkdir(codexHome, { recursive: true })
-    if (home) await copyHomeFile(join('.codex', 'auth.json'))
-    await writeFile(join(codexHome, 'config.toml'), [
-      'approval_policy = "never"',
-      'sandbox_mode = "read-only"',
-      '',
-    ].join('\n'), { encoding: 'utf8', mode: 0o600 })
-    env.CODEX_HOME = home ? join(home, '.codex') : codexHome
-  }
-  for (const relative of ['.config', '.cache', '.local/share']) await emptyDirectory(relative)
-  if (home) {
-    env.HOME = home
-    if (env.USERPROFILE) env.USERPROFILE = home
-    env.XDG_CONFIG_HOME = join(home, '.config')
-    env.XDG_CACHE_HOME = join(home, '.cache')
-    env.XDG_DATA_HOME = join(home, '.local', 'share')
-    mounts.push('--bind', stateHome, home)
-  }
   return { env, mounts, home, stateHome }
 }
 
@@ -623,12 +449,11 @@ export async function trustedExecutableRoots(env) {
   ]
 }
 
-// Exported for the same reason `sandboxStagedExecutables` below already is: the
-// EITHER/OR trust check this function makes is only ever reached through the
-// `platform === 'linux' && /usr/bin/bwrap` gate in `runAcpReview`, which no
-// non-Linux, no-bwrap machine can pass. A guard that cannot go red is not a
-// guard, so it is exercised directly here rather than only through a codepath
-// this repo cannot run.
+// Exported so its EITHER/OR trust check is exercised directly. Until v0.35.0
+// this was reachable only behind a `platform === 'linux' && /usr/bin/bwrap`
+// gate that no non-Linux machine could pass — a guard that cannot go red is not
+// a guard. The gate is gone with the sandbox; the direct exercise stays,
+// because that is what made it a guard in the first place.
 export async function resolveExecutable(command, env, {
   profileId,
   targetRepository,
@@ -677,42 +502,6 @@ export async function resolveExecutable(command, env, {
   return source
 }
 
-// #60: no claude-routed lane could run in the sandbox, because
-// `CLAUDE_CODE_EXECUTABLE` was never staged. The sandbox replaces /home with a
-// tmpfs and strips every $HOME entry from PATH, so a `claude-zai` wrapper and
-// the `claude` it execs both vanish and every such lane dies at `session/new`
-// with an empty stderr. On Linux that left AGY as the only survivor, which is
-// the release flow's three-family requirement failing on the one platform where
-// the sandboxed gate is allowed to run at all.
-//
-// The DECISION of what a lane must carry in is separated from the act of
-// carrying it, and exported, because the staging itself sits behind a
-// `platform === 'linux' && /usr/bin/bwrap` gate. A guard that cannot go red is
-// not a guard — so what is testable without that host is tested without it.
-//
-// **This paragraph used to end "this one has neither", and that was the whole
-// problem.** On 2026-08-09 the suite ran for the first time on a Linux host
-// with bwrap (Ubuntu 26.04) and all three sandbox tests failed identically —
-// they had been SKIPPED on every machine that ever ran them, so the code they
-// covered had never executed anywhere. See `needsSandboxStaging` for what they
-// found. The suite is now 841/841 with nothing skipped on that host.
-//
-// LIMITS, still unverified and stated rather than discovered: the wrapper is
-// copied, not bind-mounted, so a wrapper that hard-codes an ABSOLUTE path to
-// the CLI still fails and would need a mount instead. The CLI is staged under
-// the plain name `claude` on the runtime directory that leads PATH, which is
-// what a wrapper resolving it by name will find. A staged CLI is one FILE — a
-// node script whose own `node_modules` live under a masked root would resolve
-// nothing. None of those three have been exercised against a real routed lane
-// yet, and saying so is the only thing that stopped the last one being a
-// surprise.
-// The roots the sandbox replaces with an empty tmpfs. Exported and consumed BY
-// THE ARGV BUILDER ITSELF (below) so that the list bwrap is actually told and
-// the list the staging decision consults can never be two different truths —
-// which is exactly what they were until 2026-08-09.
-export const SANDBOX_MASKED_ROOTS = Object.freeze([
-  '/home', '/root', '/mnt', '/media', '/opt', '/srv', '/var', '/run', '/tmp',
-])
 
 /**
  * Will this path still exist once the sandbox is built? That is the only
@@ -727,9 +516,11 @@ export const SANDBOX_MASKED_ROOTS = Object.freeze([
  * not inherited — a rule this file enforces elsewhere and had not reconciled
  * with here. And on the AGY lanes `HOME` was the sandbox's own ephemeral home,
  * so the host's interpreter was correctly judged "not under it". Both paths led
- * to bwrap being handed a path it had just masked, and all three sandbox tests
- * died identically: `bwrap: execvp ...: No such file or directory`, 103 bytes
- * of stderr the transport digests away.
+ * (in the sandbox this repository ran until v0.35.0) to a masked path being
+ * handed straight back, and all three sandbox tests died identically with 103
+ * bytes of stderr the transport digests away. The sandbox is gone; the
+ * interpreter-root reasoning below is not, because it is about where a version
+ * manager installs, not about where a sandbox mounts.
  *
  * This generalises well past node: mise, nvm, fnm, volta and asdf all install
  * under $HOME, and anything under /opt or /var is equally invisible.
@@ -777,162 +568,13 @@ export const SANDBOX_MASKED_ROOTS = Object.freeze([
  * its interpreter and says so, which is loud, recoverable, and infinitely
  * preferable to handing a sandboxed reviewer the tree the mask just removed.
  */
-// `realpath` and fall back to `resolve` when the path does not exist. A path
-// that cannot be resolved must still be compared, not skipped: skipping it is
-// the fail-open this helper exists to prevent.
-//
-// BOTH sides go through it, which is the whole point. Canonicalising one side
-// and not the other is the same desynchronisation in a new place — and it is
-// not hypothetical: doing exactly that turned the HOME guard's own test red on
-// macOS, where `mkdtemp` hands back `/var/...` and its realpath is
-// `/private/var/...`.
-const canonicalSync = (path) => {
-  if (!path) return ''
-  try { return realpathSync(path) } catch { return resolve(path) }
-}
 
-// Where the home directory comes from, as its own exported function so both
-// halves of the guard can be checked. `process.env.HOME ?? ''` used to be read
-// inline, which made the direct-child refusal CONDITIONAL on an environment
-// variable: unset it and the guard did not run at all. `os.homedir()` answers
-// from the passwd database when the environment does not.
-export const rebindHomeSource = () => process.env.HOME || homedir() || ''
 
-export function sandboxRebindRoots(homeSource = rebindHomeSource(), targetRepository = null) {
-  const prefix = dirname(dirname(process.execPath))
-  if (!SANDBOX_MASKED_ROOTS.some(root => isWithin(prefix, root))) return []
-  const resolved = canonicalSync(prefix)
-  if (SANDBOX_MASKED_ROOTS.some(root => resolved === canonicalSync(root))) return []
-  // CANONICAL home, not the raw variable. `process.execPath` on Linux comes
-  // from `/proc/self/exe` and the kernel has already resolved it, so comparing
-  // it against a symlinked `$HOME` desynchronises the two and this guard fails
-  // OPEN — `~/.local` passes the direct-child test, passes the bin/lib test,
-  // and gets bound. That is the opposite direction from `interpreterRoots`,
-  // which fails closed, and an asymmetry worth naming: a guard that fails open
-  // is not a guard. Raised as non-blocking by the release panel (zai lane,
-  // 2026-08-10, round 4) and fixed anyway, because it is three lines.
-  // An UNKNOWN home is not an absent one. `const home = process.env.HOME ?? ''`
-  // made the whole guard conditional: unset the variable and the direct-child
-  // refusal simply did not run, so `~/.local` was bound. `os.homedir()` answers
-  // from the passwd database when the environment does not, and if even that
-  // cannot say, this refuses to bind at all rather than binding unchecked.
-  // A platform branch that cannot answer must say UNKNOWN, never "no" — the
-  // repo's own rule, from the day `groupPids()` answered "nobody else in the
-  // group" without looking. Found by the release panel (codex lane, 2026-08-10,
-  // round 4).
-  const home = canonicalSync(homeSource)
-  if (!home) return []
-  if (resolved === home || dirname(resolved) === home) return []
-  if (!existsSync(join(prefix, 'bin')) || !existsSync(join(prefix, 'lib'))) return []
-  // NEVER the target repository, and never anything containing it. The bwrap
-  // argv mounts a hidden target over the canonical path and THEN re-binds every
-  // root this returns, so a prefix that overlaps the target overwrites the
-  // masking mount and hands the reviewer the repository the gate certifies as
-  // hidden. Reachable with an interpreter inside the checkout —
-  // `<target>/bin/node` with a sibling `lib/` is all it takes. Found by the
-  // release panel (codex lane, 2026-08-10, round 5).
-  if (targetRepository) {
-    const target = canonicalSync(targetRepository)
-    if (target && (resolved === target || isWithin(resolved, target) || isWithin(target, resolved))) return []
-  }
-  return [prefix]
-}
 
-// `targetRepository` is threaded in rather than defaulted, because this
-// function and the bwrap argv must ask `sandboxRebindRoots` the SAME question.
-// They did not: this one called it with no target and got `[prefix]`, so it
-// skipped staging, while the argv called it WITH the target, got `[]`, and
-// refused the bind — leaving the executable neither copied in nor mounted, and
-// the lane dying at ENOENT/127. Two callers, one question, two answers. Found
-// by the release panel (AGY lane, 2026-08-10, round 7), in the round-5 fix that
-// added the parameter to one caller and not the other.
-export function needsSandboxStaging(source, env = {}, runtimeDirectory = null, targetRepository = null) {
-  if (!source) return false
-  // Already inside a directory the sandbox re-binds after masking — copying it
-  // into itself would be a no-op at best.
-  if (runtimeDirectory && isWithin(source, runtimeDirectory)) return false
-  // Inside the toolchain the sandbox re-binds at its real path — copying it out
-  // is what broke `npx`, whose relative require needs its neighbours.
-  if (sandboxRebindRoots(rebindHomeSource(), targetRepository).some(root => isWithin(source, root))) return false
-  if (SANDBOX_MASKED_ROOTS.some(root => isWithin(source, root))) return true
-  const home = env.HOME ?? env.USERPROFILE
-  return Boolean(home && isWithin(source, home))
-}
 
-export function sandboxStagedExecutables(env = {}) {
-  const staged = []
-  // The INTERPRETER, first, because every other entry may depend on it. `npx`
-  // is a node script with a `#!/usr/bin/env node` shebang: staged on its own it
-  // reaches the sandbox and dies with `env: 'node': No such file or directory`
-  // and exit 127 — measured on the zai lane, 2026-08-09, after two earlier
-  // fixes had already got it this far. AGY was immune the whole time only
-  // because `bunx` is a native binary, which is the second coincidence in one
-  // day to make one lane look healthy while its neighbour was not.
-  //
-  // `process.execPath`, NEVER `node` resolved off PATH. On a mise machine
-  // `node` is a shim whose realpath is the 109MB `mise` binary, which is not an
-  // interpreter at all — it dispatches on argv[0], so staged under the name
-  // `node` it would be a different program wearing the name.
-  //
-  // Harmless where it is unnecessary: needsSandboxStaging leaves a system
-  // interpreter at /usr/bin/node alone, because the sandbox binds / read-only
-  // and it is already visible inside.
-  // NOT the interpreter: `sandboxRebindRoots` mounts its whole prefix instead.
-  // Copying node alone was tried first and moved the failure from `env: 'node':
-  // No such file` to `Cannot find module '../lib/cli.js'` — one file cannot
-  // carry a package.
-  if (typeof env.AGY_BIN === 'string') {
-    staged.push({ command: env.AGY_BIN, outputName: 'agy', assignTo: 'AGY_BIN', required: true })
-  }
-  if (typeof env.CLAUDE_CODE_EXECUTABLE === 'string') {
-    staged.push({
-      command: env.CLAUDE_CODE_EXECUTABLE,
-      outputName: basename(env.CLAUDE_CODE_EXECUTABLE),
-      assignTo: 'CLAUDE_CODE_EXECUTABLE',
-      required: true,
-    })
-    // The wrapper execs this; without it the wrapper is staged and still broken.
-    staged.push({ command: 'claude', outputName: 'claude', assignTo: null, required: false })
-  }
-  return staged
-}
 
-// Extracted for the same reason `resolveExecutable` above now is: the catch
-// block that calls this lives inside the `profile.osSandbox === 'bwrap'`
-// branch of `runAcpReview`, reachable only past the `platform === 'linux' &&
-// /usr/bin/bwrap` gate — no machine without both can ever execute it, so the
-// DECISION is pulled out and tested directly, same move as `sandboxStagedExecutables`.
-//
-// ABSENCE is the only reason that may be swallowed. Until 2026-08-09 every
-// reason was, so a CLI that existed and was REFUSED left the lane to walk into
-// the sandbox and die at exit 127 with nothing said about why — measured on
-// the zai lane, and undiagnosable from the outside. A refusal is a
-// configuration fact and must be loud; only "not found" may be quiet, and only
-// for an optional entry.
-export function swallowsStagingFailure(entry, error) {
-  if (entry.required) return false
-  return /executable not found/.test(error?.message ?? '')
-}
 
-export async function stageHomeExecutable(command, env, runtimeDirectory, outputName = basename(command), options = {}) {
-  const { targetRepository = null } = options
-  const source = await resolveExecutable(command, env, options)
-  if (!source) throw new ReviewTransportError('config', `ACP review executable not found: ${basename(command)}`)
-  if (!needsSandboxStaging(source, env, runtimeDirectory, targetRepository)) return source
-  const destination = join(runtimeDirectory, outputName)
-  await copyFile(source, destination)
-  await chmod(destination, 0o700)
-  return destination
-}
 
-async function prepareSandboxResolver(stateRoot) {
-  if (!existsSync('/etc/resolv.conf')) return []
-  const destination = await realpath('/etc/resolv.conf')
-  const source = join(stateRoot, 'resolv.conf')
-  await copyFile('/etc/resolv.conf', source)
-  await chmod(source, 0o644)
-  return ['--ro-bind', source, destination]
-}
 
 /**
  * Execute exactly one ACP review turn. `command` and `args` must already be an
@@ -1012,6 +654,8 @@ export async function runAcpReview({
   const pending = new Map()
   const chunks = []
   const acknowledgements = {}
+  let claimedIdentity = null
+  let modelListWritten = false
   const clean = async () => { await rm(runRoot, { recursive: true, force: true }) }
   const reportProgress = event => {
     try {
@@ -1065,107 +709,81 @@ export async function runAcpReview({
       await writeFile(join(settingsDir, 'settings.local.json'), JSON.stringify({
         availableModels: [requested],
       }), { encoding: 'utf8', mode: 0o600 })
+      // Set AFTER the write, never from the condition that reaches it. The zai
+      // and qwen lanes both raised this on the first panel that saw the field:
+      // reading `profile.sessionSettings` back later is reading the TRIGGER, so
+      // the label would go on claiming a seeded list even if this write became
+      // conditional or moved. Two of three is must-fix here, and they were
+      // right — the comment below promised the act and half of it delivered a
+      // restated rule.
+      modelListWritten = true
     }
     // Refuse before preparing anything. `prepareProviderState` copies provider
     // auth and settings into a child-visible home, and on a host without
     // bubblewrap that work was done and then thrown away by the very next
     // check — writing provider state to disk for a sandbox that could never
     // start (r4-codex, BLOCKER 1). The cheapest check goes first.
-    if (profile.osSandbox === 'bwrap' && (process.platform !== 'linux' || !existsSync('/usr/bin/bwrap'))) {
-      throw new ReviewTransportError('config', 'bubblewrap is required for the ACP review sandbox')
-    }
     const providerState = await prepareProviderState(profile, stateRoot, env)
     let childEnv = providerState.env
     let spawnCommand = command
     let spawnArgs = args
     let canonicalTargetRepository
-    if (profile.osSandbox === 'bwrap') {
-      if (typeof targetRepository !== 'string' || !isAbsolute(targetRepository)) {
+    // CANONICALISE IT, or the check below is decoration. `targetRepository` was
+    // resolved inside the deleted bwrap block, so restoring the trust call
+    // without restoring this left `canonicalTargetRepository` declared and never
+    // assigned — `resolveExecutable` then received `undefined`, its
+    // `targetRepository &&` clause short-circuited, and a binary sitting in the
+    // reviewed checkout would have been accepted as trusted. The same openai
+    // lane that asked for the trust call back found that the call it got was
+    // hollow, one round later.
+    if (typeof targetRepository === 'string' && targetRepository.length > 0) {
+      if (!isAbsolute(targetRepository)) {
         throw new ReviewTransportError('input', 'runner-owned targetRepository must be an absolute path')
       }
       try {
-        canonicalTargetRepository = await realpath(resolve(targetRepository))
-        if (!(await stat(canonicalTargetRepository)).isDirectory()) {
-          throw new Error('not a directory')
-        }
+        canonicalTargetRepository = await realpath(targetRepository)
       } catch (error) {
         throw new ReviewTransportError('input', `runner-owned targetRepository is not an existing directory: ${error.message}`, error)
       }
       if (canonicalTargetRepository === '/') {
         throw new ReviewTransportError('input', 'runner-owned targetRepository must not be the filesystem root')
       }
-      const stagedCommand = await stageHomeExecutable(command, childEnv, runtimeDirectory, basename(command), {
-        profileId: profile.id,
-        targetRepository: canonicalTargetRepository,
-      })
-      if (basename(command).toLowerCase() === 'bunx' && stagedCommand !== command) {
-        const stagedBun = join(runtimeDirectory, 'bun')
-        await copyFile(stagedCommand, stagedBun)
-        await chmod(stagedBun, 0o700)
+      // A DIRECTORY, not merely an existing path. `realpath` succeeds on a
+      // regular file, which would leave the shadow check comparing candidate
+      // paths against a file — `isWithin` can never be true of one, so the
+      // guard silently passes everything. The v0.34.0 version did not check
+      // this either; an openai review lane raised it on the round after the
+      // canonicalisation was restored.
+      if (!(await stat(canonicalTargetRepository)).isDirectory()) {
+        throw new ReviewTransportError('input', 'runner-owned targetRepository must be a directory')
       }
-      const resolverMount = await prepareSandboxResolver(stateRoot)
-      for (const entry of sandboxStagedExecutables(childEnv)) {
-        try {
-          const destination = await stageHomeExecutable(entry.command, childEnv, runtimeDirectory, entry.outputName, {
-            targetRepository: canonicalTargetRepository,
-            expectedName: entry.outputName,
-          })
-          if (entry.assignTo) childEnv[entry.assignTo] = destination
-        } catch (error) {
-          // A required entry keeps the old behaviour: the lane refuses, loudly.
-          // The optional one is the CLI a wrapper execs, and a profile that does
-          // not route through a wrapper has no CLI to find — refusing there
-          // would break the lanes this change exists to unbreak. See
-          // `swallowsStagingFailure` above for the ABSENCE-only rule and why.
-          if (!swallowsStagingFailure(entry, error)) throw error
-        }
-      }
-      if (providerState.home) {
-        const systemPath = String(childEnv.PATH ?? '').split(delimiter)
-          .filter(Boolean)
-          .filter(entry => !isWithin(entry, providerState.home))
-        // The re-bound toolchain's own bin joins PATH, after the runtime
-        // directory and before the system. Binding the interpreter without
-        // putting it on PATH left `npx` failing with ENOENT *on itself* — the
-        // classic shebang trap, where a missing `#!/usr/bin/env node` is
-        // reported as the SCRIPT not existing. It exists; `node` did not.
-        const toolchainBin = sandboxRebindRoots(rebindHomeSource(), canonicalTargetRepository).length ? [dirname(process.execPath)] : []
-        childEnv.PATH = [runtimeDirectory, ...toolchainBin, ...systemPath].join(delimiter)
-      }
-      childEnv.TMPDIR = scratch
-      childEnv.TMP = scratch
-      childEnv.TEMP = scratch
-      spawnCommand = '/usr/bin/bwrap'
-      spawnArgs = [
-        '--die-with-parent',
-        '--new-session',
-        '--unshare-pid',
-        '--cap-drop', 'ALL',
-        '--ro-bind', '/', '/',
-        ...SANDBOX_MASKED_ROOTS.flatMap(root => ['--tmpfs', root]),
-        '--dev', '/dev',
-        '--proc', '/proc',
-        ...resolverMount,
-        '--ro-bind', hiddenTarget, canonicalTargetRepository,
-        '--bind', cwd, cwd,
-        ...(workspaceGuide ? ['--ro-bind', workspaceGuide, workspaceGuide] : []),
-        '--ro-bind', runtimeDirectory, runtimeDirectory,
-        '--bind', scratch, scratch,
-        ...providerState.mounts,
-        // AFTER providerState.mounts, and the order is the whole fix. That last
-        // mount puts an ephemeral home over $HOME itself, so a toolchain bind
-        // placed earlier — and the interpreter lives under $HOME on every machine
-        // that uses a version manager — is buried by it. Measured 2026-08-09 by
-        // printing the real argv: the bind was present, correct, and invisible,
-        // and PATH pointed at a path that no longer existed inside the sandbox.
-        ...sandboxRebindRoots(rebindHomeSource(), canonicalTargetRepository).flatMap(root => ['--ro-bind', root, root]),
-        '--chdir', cwd,
-        '--setenv', 'TMPDIR', scratch,
-        '--',
-        stagedCommand,
-        ...args,
-      ]
     }
+    // RESOLVE BEFORE SPAWNING, for every lane. This is the executable-trust
+    // boundary `party-mode/SKILL.md` promises: the profile-owned binary is
+    // resolved through PATH, refused if it resolves inside the target
+    // repository, and refused if neither the launcher path nor the real file
+    // sits under a trusted root.
+    //
+    // It was not being enforced, and not because this release broke it. At
+    // v0.34.0 the only production call to `resolveExecutable` lived inside
+    // `stageHomeExecutable`, which was called inside `if (profile.osSandbox ===
+    // 'bwrap')` — and ADR 0006 stopped any shipped profile declaring that on
+    // 2026-08-13, so no lane has resolved its executable since. Removing the
+    // sandbox deleted code that was already dead; what it exposed is that the
+    // guarantee had an audience and no enforcement.
+    //
+    // The function survived intact, exported and unit-tested, which is exactly
+    // why nothing went red: a pure function tested in isolation says nothing
+    // about its consumer, and its consumer had been gone for eleven days.
+    // Found by an openai review lane on the v0.35.0 release diff.
+    const resolved = await resolveExecutable(command, childEnv, {
+      profileId: profile.id,
+      targetRepository: canonicalTargetRepository,
+    })
+    if (!resolved) {
+      throw new ReviewTransportError('config', `ACP review executable not found: ${basename(command)}`)
+    }
+    spawnCommand = resolved
     agent = spawn(spawnCommand, spawnArgs, {
       cwd,
       env: neutralEnv(childEnv),
@@ -1265,26 +883,20 @@ export async function runAcpReview({
             })
             return
           }
-          const agyReadInspection = promptIssued && profile.id === 'agy' &&
-            profile.osSandbox === 'bwrap' && update?.kind === 'read'
-            ? inspectAgySafeRead(update, providerState.home, cwd)
-            : null
-          if (promptIssued && profile.id === 'agy' && profile.osSandbox === 'bwrap' &&
-              update?.kind === 'read' && agyReadInspection?.scope) {
-            if (agyReadInspection.scope === 'runtime') safeRuntimeReadsObserved++
-            else safeWorkspaceReadsObserved++
-            reportProgress({
-              kind: 'notification',
-              method: 'session/update',
-            })
-            return
-          }
+          // The AGY safe-read exception is GONE, not merely unreachable. It was
+          // a tolerance for one completed read confined to the sandbox's own
+          // `builtin/` tree, and both `inspectAgySafeRead` and that tree went
+          // with the sandbox. What was left here was `const agyReadInspection =
+          // null` guarding `if (null?.scope)` — a branch that can never run and
+          // two counters that can never leave zero, which read like a live
+          // allowance to anyone auditing the gate that still exempted them.
+          // Found by an openai review lane on the v0.35.0 release diff.
+          // An AGY tool call now blocks the lane exactly like any other.
           const safeKinds = new Set(['think', 'read', 'search', 'edit', 'execute', 'fetch', 'other'])
           const kind = safeKinds.has(update?.kind) ? update.kind : 'unknown'
           const status = ['pending', 'in_progress', 'completed', 'failed'].includes(update?.status)
             ? update.status : 'unknown'
-          const detail = agyReadInspection?.rejection ? `; rejected: ${agyReadInspection.rejection}` : ''
-          return protocolError(`ACP reviewer attempted a ${kind} tool call (${status}${detail})`)
+          return protocolError(`ACP reviewer attempted a ${kind} tool call (${status})`)
         }
         if (update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
           if (!promptIssued) return protocolError('ACP replay/pre-prompt agent message is not allowed')
@@ -1306,11 +918,22 @@ export async function runAcpReview({
       }
       return protocolError(`ACP notification not allowed: ${msg.method ?? 'unknown'}`)
     }
+    // A stdio Socket emits its OWN 'error'; `child.on('error')` is the ChildProcess
+    // and does not cover it, so an unhandled read fault here takes the whole process
+    // down. Found on the third pass: two doors were named, a survey of every stream
+    // with a 'data' listener and no 'error' listener found seven.
+    agent.stdout.on('error', () => {})
+    agent.stderr.on('error', () => {})
     agent.stdout.on('data', part => {
       stdoutBytes += part.length
       if (stdoutBytes > limits.stdoutBytes) protocolError('ACP stdout exceeds limit')
     })
     const lines = createInterface({ input: agent.stdout, crlfDelay: Infinity })
+    // Node forwards `agent.stdout`'s error onto this Interface, so the listener
+    // on the stream above does not cover it — measured, not assumed. Routed to
+    // `protocolError` rather than swallowed: a review transport that loses its
+    // input has failed, and saying so is the whole contract.
+    lines.on('error', err => protocolError(`ACP stdout stream failed: ${err?.code ?? err?.message ?? 'unknown'}`))
     lines.on('line', raw => { if (stdoutBytes <= limits.stdoutBytes) handle(raw) })
     agent.stderr.on('data', part => { if (stderr.length < limits.stderrBytes) stderr += part.toString().slice(0, limits.stderrBytes - stderr.length) })
     const fatalizeUnexpectedExit = (code, signal) => {
@@ -1400,11 +1023,37 @@ export async function runAcpReview({
       // Session-scoped values are authoritative when an adapter happens to
       // repeat a config id in initialize metadata.
       const options = [...configList(session), ...configList(init)]
+      // What the adapter SAYS it will answer as. Recorded, never counted.
+      //
+      // Measured 2026-08-15, and it is the reason the gate rule was NOT changed
+      // to count this: for `agy` the advertised list is the adapter's own, but
+      // every claude-routed lane is handed its list by this runner —
+      // `CLAUDE_MODEL_CONFIG` from `buildProfileEnv`, and the
+      // `.claude/settings.local.json` written above for any profile declaring
+      // `sessionSettings`. Reading that back as identity would be quoting
+      // ourselves. `runnerSeeded` is therefore derived from the ACT (the env we
+      // were handed) and from a flag set by the WRITE itself rather than by the
+      // condition that reaches it, so neither half can drift from the deed.
+      //
+      // `provenFamilyKey` stays the load-bearing family fact. This sits beside
+      // it as a claim so a receipt can show BOTH what a lane routed to and what
+      // it says it is — and show plainly when the second came from us.
+      const advertisedModelOption = options.find(x => x?.id === 'model' || x?.name === 'model')
+      claimedIdentity = Object.freeze({
+        advertisedModel: advertisedModelOption ? (currentValue(advertisedModelOption) ?? null) : null,
+        runnerSeeded: modelListWritten || Boolean(env.CLAUDE_MODEL_CONFIG),
+      })
       // Profile identity is runner-owned. Model and mode are accepted only
       // when the ACP session advertises and acknowledges their exact values.
+      // `requestModel` is what the wire is ASKED for (the alias the gateway
+      // takes); `profile.model` is the identity the panel RECORDS. The config
+      // acknowledgement must ask for the first — asking for the second made
+      // the ninerouter lane answer `-32603 Invalid value for model: glm-5.2`
+      // against a gateway that only knows its routed name. Same distinction
+      // `buildProfileEnv` already makes for CLAUDE_MODEL_CONFIG.
       const wantedConfig = {
         ...(profile.config && typeof profile.config === 'object' ? profile.config : {}),
-        ...(profile.model === undefined ? {} : { model: profile.model }),
+        ...(profile.requestModel ?? profile.model) === undefined ? {} : { model: profile.requestModel ?? profile.model },
       }
       for (const [id, wanted] of Object.entries(wantedConfig)) {
         if (wanted === undefined) continue
@@ -1502,14 +1151,15 @@ export async function runAcpReview({
       displayModel: profile.displayModel ?? `${profile.provider ?? profile.id ?? lane}/${profile.model}`,
       mode: profile.reviewMode,
       acknowledgements: Object.freeze({ ...acknowledgements }),
+      claimedIdentity,
       isolation: Object.freeze({
         workspace: 'temporary',
         targetRepositoryCwd: false,
-        targetRepositoryHidden: profile.osSandbox === 'bwrap',
+        targetRepositoryHidden: false,
         targetRepositoryCanonical: canonicalTargetRepository,
-        hostRootBaseReadOnly: profile.osSandbox === 'bwrap',
-        hostDataRootsMasked: profile.osSandbox === 'bwrap',
-        hostProcessNamespaceIsolated: profile.osSandbox === 'bwrap',
+        hostRootBaseReadOnly: false,
+        hostDataRootsMasked: false,
+        hostProcessNamespaceIsolated: false,
         mcpServers: 0,
         builtInToolsRequested: false,
         toolCallsObserved: 0,
@@ -1521,11 +1171,23 @@ export async function runAcpReview({
         safeRuntimeReadsObserved,
         safeWorkspaceReadsObserved,
         temporaryModelSettings: Boolean(profile.sessionSettings),
-        hostProviderHomeVisible: profile.osSandbox !== 'bwrap',
-        ephemeralProviderStateWritable: profile.osSandbox === 'bwrap',
-        hostProviderStatePersistent: profile.osSandbox !== 'bwrap',
+        hostProviderHomeVisible: true,
+        ephemeralProviderStateWritable: false,
+        hostProviderStatePersistent: true,
         providerMayPersistRemoteState: true,
-        networkSharedWithHost: profile.osSandbox === 'bwrap',
+        // TRUE, and it always should have been. This field states a FACT about
+        // sharing, while every sibling above states a fact about CONFINEMENT --
+        // an inverted polarity in the middle of a list, which is exactly why the
+        // sandbox removal flipped the neighbours and froze this one. Read the
+        // history: at v0.34.0 it was `profile.osSandbox === 'bwrap'`, so a
+        // sandboxed lane reported `true` and every other lane reported `false`.
+        // But the sandbox never unshared the network -- the bwrap argv carried
+        // `--unshare-pid` and nothing else -- so the network was shared with the
+        // host on BOTH sides of that expression, and `false` was a claim of
+        // network isolation that has never been true of any lane. It has been
+        // shipping since ADR 0006 stopped any profile declaring bwrap.
+        // Found by an openai review lane on the v0.35.0 release diff.
+        networkSharedWithHost: true,
         acpPermissionRequests: 'deny',
       }),
       ...result,

@@ -155,3 +155,40 @@ test('an escalation exit whose route still has an unheld team skips ahead to it'
     assert.equal(written, 1)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
+
+// The refusal SENTENCE, not merely the refusal. `planPulls` declines to hand a
+// non-`done` leg forward, which is right for every terminal — but it said
+// "needs a rerun, not a handoff" for all of them, and a `blocked` leg is the
+// one terminal a rerun cannot help: TEAM_BLOCKED is the worker's own signal
+// that a person must decide, and `loop-runner` now escalates it rather than
+// re-dispatching. A refusal telling an operator to rerun sends them to do the
+// single thing that is guaranteed not to work.
+test('a blocked leg is refused for what it is, not as something a rerun would fix', () => {
+  const blocked = gateHistory('tok-blocked', [
+    { at: '2026-08-05T09:00:00.000Z', event: 'opened', work_item: 'tok-blocked', workflow: 'two_leg', agent_id: 'b_d', to_team: 'B', reason: 'front door request', actor: 'human:ada' },
+    { at: '2026-08-05T09:00:01.000Z', event: 'intake', work_item: 'tok-blocked', workflow: 'two_leg', agent_id: 'b_d', verdict: 'accept', reason: 'workable' },
+    { at: '2026-08-05T09:00:02.000Z', event: 'assigned', work_item: 'tok-blocked', workflow: 'two_leg', agent_id: 'b_w', task_id: 'b-1', dispatch_id: 'b-1-d' },
+    { at: '2026-08-05T09:00:03.000Z', event: 'delivered', work_item: 'tok-blocked', workflow: 'two_leg', agent_id: 'b_w', task_id: 'b-1', terminal: 'blocked', timed_out: false, evidence_present: false },
+  ])
+  const decisions = planPulls(GRAPH, [itemOf('tok-blocked', 'two_leg', blocked)], '2026-08-05T09:05:00.000Z')
+  const refusal = decisions.find((d) => d.action === 'failed')
+  assert.ok(refusal, `a blocked leg was not refused at all: ${JSON.stringify(decisions)}`)
+  assert.match(refusal.reason, /needs a person/,
+    `the refusal does not say what a blocked token actually needs: ${refusal.reason}`)
+  assert.doesNotMatch(refusal.reason, /needs a rerun/,
+    `the refusal tells an operator to rerun a token that a rerun cannot help: ${refusal.reason}`)
+
+  // Every OTHER terminal still gets the rerun wording, which is correct for it —
+  // this fix must not sweep a genuine transport failure into the human gate.
+  const errored = gateHistory('tok-error', [
+    { at: '2026-08-05T09:00:00.000Z', event: 'opened', work_item: 'tok-error', workflow: 'two_leg', agent_id: 'b_d', to_team: 'B', reason: 'front door request', actor: 'human:ada' },
+    { at: '2026-08-05T09:00:01.000Z', event: 'intake', work_item: 'tok-error', workflow: 'two_leg', agent_id: 'b_d', verdict: 'accept', reason: 'workable' },
+    { at: '2026-08-05T09:00:02.000Z', event: 'assigned', work_item: 'tok-error', workflow: 'two_leg', agent_id: 'b_w', task_id: 'b-1', dispatch_id: 'b-1-d' },
+    { at: '2026-08-05T09:00:03.000Z', event: 'delivered', work_item: 'tok-error', workflow: 'two_leg', agent_id: 'b_w', task_id: 'b-1', terminal: 'protocol-error', timed_out: false, evidence_present: false },
+  ])
+  const other = planPulls(GRAPH, [itemOf('tok-error', 'two_leg', errored)], '2026-08-05T09:05:00.000Z')
+    .find((d) => d.action === 'failed')
+  assert.ok(other, 'a protocol-error leg stopped being refused')
+  assert.match(other.reason, /needs a rerun, not a handoff/,
+    `an ordinary failure lost its rerun advice: ${other.reason}`)
+})
