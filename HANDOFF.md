@@ -24,7 +24,7 @@ node --test > /tmp/suite.log 2>&1; grep -E '^ℹ (tests|pass|fail|skipped)' /tmp
 grep -q '^ℹ fail 0$' /tmp/suite.log || { grep '^✖' /tmp/suite.log | head; false; }
 ```
 
-Green is **`1202 pass / 0 fail / 0 skipped`** — measured 2026-09-03 on `0319e3a`.
+Green is **`1202 pass / 0 fail / 0 skipped`** — measured 2026-09-09 on `e481486` (v0.38.0 release commit).
 
 **Gate on the count, never on a grep of the output.** `node --test | grep '✖'`
 exits 0 when it FINDS failures, so chaining a commit after it with `&&` commits
