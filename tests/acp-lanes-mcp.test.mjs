@@ -2492,7 +2492,10 @@ test('readiness applies the per-machine override, not just the shipped profile',
   const { readinessReport } = await import(
     pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-readiness.mjs')).href)
 
-  const env = { PATH: process.env.PATH }
+  const pathParts = (process.env.PATH ?? '')
+    .split(delimiter)
+    .filter(p => !existsSync(join(p, 'claude-9r')))
+  const env = { PATH: pathParts.join(delimiter) }
   const shipped = readinessReport(REVIEW_PROFILES, env)
   const before = shipped.lanes.find(l => l.lane === 'ninerouter')
   assert.equal(before.available, false,

@@ -12,8 +12,8 @@
 > source, no publish script and nothing that could notice it had gone stale —
 > so it went stale, repeatedly, and nobody could tell without opening it.
 
-Current release: **0.37.0** — the version stamped in this tree, in flight on
-a pull request and not yet tagged. `main` carries **v0.34.0**, tagged at the
+Current release: **0.38.0** — the version stamped in this tree, in flight on
+a pull request and not yet tagged. `main` carries **v0.37.0**, tagged at the
 MERGED sha `d58307d` (not the branch tip `bede67c` — those are different
 commits, and tagging the wrong one ships a sha `main` does not hold). Anyone
 installing from the marketplace resolves the last TAG, not this line.
