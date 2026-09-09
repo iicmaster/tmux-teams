@@ -1,25 +1,20 @@
 # HANDOFF
 
 State of play for the next agent. Overwritten in place, never appended.
-Written 2026-09-03 through `bmad-party-mode` (installed; roster Mary, John,
-Sally, Winston, Amelia, with the adversary seat taken by Grumbal from
-`code-review-crew`).
+Written 2026-09-09 for v0.38.0 release.
 
 ## 1. READ THIS FIRST
 
-- On `main`, clean, in sync with `origin/main`. No open pull requests. No
-  branch is waiting to be pushed.
-- **v0.37.0 IS RELEASED** — tagged on the merged sha `cd9a90a`, GitHub release
-  published, marketplace and plugin cache moved 0.36.0 → 0.37.0.
-- **`main` carries ONE UNRELEASED SKILL**: `requirement-audit`, merged in
-  `0319e3a`. Every version file still says 0.37.0, which is correct — it ships
-  with the next release, and nobody has it yet.
-- **The most dangerous thing here is the panel.** `node scripts/gate-required.mjs`
-  answers REQUIRED for v0.38.0 and names two deciding files. The previous
-  release ran TWELVE panel rounds; do not assume that waiver carries forward. It
-  was for v0.37.0's bytes and Master granted it once.
-- Nothing in the tree is broken. The suite is green and both published gates
-  are current.
+- **v0.38.0 IS PREPARED** — version bumped to 0.38.0 across 6 files / 7 places,
+  published roadmap page current at version 14.
+- **What ships in v0.38.0**:
+  1. `requirement-audit` skill: 12-point requirement contract (6 Grill categories
+     for content, INVEST for shape) merged in PR #76.
+  2. `gpt-6-astra` support: added `astra` model alias in `codex-advisor` resolving
+     to `gpt-6-astra` with max reasoning effort, merged in PR #79.
+- **Gate**: PR #76 and PR #79 each had 100% CI passes and explicit review approvals
+  from `chatgpt-codex-connector` bot.
+- All 1202 tests pass (0 fail, 0 skipped), manifest validated, roadmap published.
 
 ## 2. HOW TO VERIFY
 
@@ -96,36 +91,21 @@ not — reading the number alone would have removed `ANTHROPIC_API_KEY`.
 Measured live: the fable lane answered as Vex / Grumbal / Boundary / Yui / Dana
 with no invented names.
 
-### On `main` and NOT released: `requirement-audit`
+### v0.38.0 Release
 
-`plugins/tmux-teams/skills/requirement-audit/SKILL.md` — a 12-point requirement
-contract: six Grill categories for content, INVEST for shape. It sat as an open
-pull request with red CI from 2026-08-28 until 2026-09-01.
+**1. `requirement-audit` skill** (`plugins/tmux-teams/skills/requirement-audit/SKILL.md`)
+12-point requirement contract: six Grill categories for content, INVEST for shape.
+Merged via PR #76 with CI green and `chatgpt-codex-connector` review approval.
 
-**The skill was never the problem.** Its branch added one file and registered it
-nowhere, and two assertions failed with one cause: `SKILLS` at
-`tests/plugin-structure.test.mjs:15` is the list of record, and the directory
-disagreed with it. Registering a new skill takes three edits the folder cannot
-carry itself:
+**2. `gpt-6-astra` support** (`plugins/tmux-teams/skills/codex-advisor/SKILL.md`)
+Added `astra` model alias resolving to `gpt-6-astra` with max reasoning effort.
+Merged via PR #79 with CI green and `chatgpt-codex-connector` review approval.
 
-1. `SKILLS` at `tests/plugin-structure.test.mjs:15` — read by both the structure
-   test and the portable-root check.
-2. The README skill table.
-3. The README heading's COUNT. It said "the thirteen skills" while fourteen
-   ship, and a test names the number it wants.
+**3. Test hermeticity fix** (`tests/acp-lanes-mcp.test.mjs`)
+Prevented host environment's `claude-9r` binary from polluting the unit test.
 
-`RELEASE_VERSION` is at `tests/plugin-structure.test.mjs:18` and still reads
-`'0.37.0'`. Fourteen skills ship from `main`.
-
-### What v0.38.0 owes
-
-`node scripts/gate-required.mjs` answers REQUIRED and names
-`plugins/tmux-teams/skills/requirement-audit/SKILL.md` and
-`tests/plugin-structure.test.mjs`. The bump itself is seven places in six files
-— `.claude-plugin/marketplace.json` twice, `plugins/tmux-teams/plugin.json`,
-`plugins/tmux-teams/.claude-plugin/plugin.json`,
-`tests/plugin-structure.test.mjs`, `README.md`, `ROADMAP.md` — and bumping
-`ROADMAP.md` makes the published page stale, so the roadmap step is not optional.
+`RELEASE_VERSION` is at `tests/plugin-structure.test.mjs:18` and reads `'0.38.0'`.
+Fourteen skills ship from `main`.
 
 ## 4. DO NOT
 
@@ -246,4 +226,4 @@ scripts/gate-required.mjs                  DOC_ONLY at :41 is the only exemption
 ```
 
 Published roadmap: `https://artifacts.ngs.bz/claude/private/tmux-teams-roadmap/`
-Release: `https://github.com/iicmaster/tmux-teams/releases/tag/v0.37.0`
+Release: `https://github.com/iicmaster/tmux-teams/releases/tag/v0.38.0`
