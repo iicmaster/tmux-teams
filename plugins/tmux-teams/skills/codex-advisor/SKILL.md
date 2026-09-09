@@ -1,6 +1,6 @@
 ---
 name: codex-advisor
-description: "Consult a Codex advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. Takes an optional model — $codex-advisor [luna|terra|sol] — and always runs at max reasoning effort, which this adapter reports and the dispatch verifies. Use when the user invokes $codex-advisor, wants a second opinion from outside the Claude family, names a specific Codex seat, or adds --party <id> to seat a saved bmad-party-mode roster. Read-only: it advises, it never edits."
+description: "Consult a Codex advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. Takes an optional model — $codex-advisor [luna|terra|sol|astra] — and always runs at max reasoning effort, which this adapter reports and the dispatch verifies. Use when the user invokes $codex-advisor, wants a second opinion from outside the Claude family, names a specific Codex seat, or adds --party <id> to seat a saved bmad-party-mode roster. Read-only: it advises, it never edits."
 ---
 
 # Codex Advisor
@@ -24,6 +24,7 @@ dispatch before prompt delivery rather than answering from a cheaper seat.
 
 ```
 $codex-advisor              # default seat: gpt-5.6-sol
+$codex-advisor astra        # gpt-6-astra
 $codex-advisor luna         # gpt-5.6-luna
 $codex-advisor terra        # gpt-5.6-terra
 $codex-advisor sol          # gpt-5.6-sol
@@ -32,11 +33,12 @@ $codex-advisor sol          # gpt-5.6-sol
 | `<model>` | dispatches | effort |
 |---|---|---|
 | *(omitted)* | `gpt-5.6-sol` | `max` |
+| `astra` | `gpt-6-astra` | `max` |
 | `luna` | `gpt-5.6-luna` | `max` |
 | `terra` | `gpt-5.6-terra` | `max` |
 | `sol` | `gpt-5.6-sol` | `max` |
 
-A bare short name is accepted and expanded; the full `gpt-5.6-*` id is what
+A bare short name is accepted and expanded; the full `gpt-6-*` or `gpt-5.6-*` id is what
 reaches the adapter and what the receipt must show. Any other name is a usage
 error — **do not pass a model through unrecognised**, because an unknown value
 either fails the dispatch or silently seats something nobody chose.
@@ -226,7 +228,7 @@ reason to have paid twice.
 Do not average them into a recommendation. Report the disagreement and let the
 person decide.
 
-Two Codex seats are not two vendors. `luna`, `terra` and `sol` are one family; a
+Two Codex seats are not two vendors. `astra`, `luna`, `terra` and `sol` are one family; a
 disagreement between them is worth reading but it is not the cross-vendor check
 this section is about.
 
@@ -321,7 +323,7 @@ changes state. Work that comes out of a consultation goes to `party-auto`.
   not expect it to fix this. Try resume, then re-dispatch — do not theorise.
 - **Identity refused.** The adapter did not acknowledge the requested model at
   `max`. Report and stop.
-- **Unknown model name.** Anything outside `luna`, `terra`, `sol` is a usage
+- **Unknown model name.** Anything outside `astra`, `luna`, `terra`, `sol` is a usage
   error. Ask, do not guess — a name that reaches the adapter unchecked either
   fails the dispatch or seats a model nobody chose.
 - **Effort inherited rather than set.** If the invocation did not name the
