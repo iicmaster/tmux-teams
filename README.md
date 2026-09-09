@@ -426,7 +426,7 @@ relaying a person's words is expected to sign `human:` and name itself in
 | Skill | Reach for it when |
 |---|---|
 | `tmux-teams:claude-advisor` | you want Claude's strongest model — pinned to `claude-fable-5`, model identity verified via `ACP_EXPECT_MODEL` |
-| `tmux-teams:codex-advisor` | you want a read from outside the Claude family — `gpt-5.6-sol` by default, or `luna` / `terra`, always at `max` |
+| `tmux-teams:codex-advisor` | you want a read from outside the Claude family — `gpt-5.6-sol` by default, or `astra` / `luna` / `terra`, always at `max` |
 | `tmux-teams:agy-advisor` | you want a third family — Gemini through Antigravity, `gemini-3.7-flash-high` by default |
 
 **Three** advisors, added to over time — this said "Both advisors" while a third
