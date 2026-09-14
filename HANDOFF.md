@@ -1,20 +1,20 @@
 # HANDOFF
 
 State of play for the next agent. Overwritten in place, never appended.
-Written 2026-09-09 for v0.38.0 release.
+Written 2026-09-14 for v0.39.0 release.
 
 ## 1. READ THIS FIRST
 
-- **v0.38.0 IS PREPARED** — version bumped to 0.38.0 across 6 files / 7 places,
-  published roadmap page current at version 14.
-- **What ships in v0.38.0**:
-  1. `requirement-audit` skill: 12-point requirement contract (6 Grill categories
-     for content, INVEST for shape) merged in PR #76.
-  2. `gpt-6-astra` support: added `astra` model alias in `codex-advisor` resolving
-     to `gpt-6-astra` with max reasoning effort, merged in PR #79.
-- **Gate**: PR #76 and PR #79 each had 100% CI passes and explicit review approvals
-  from `chatgpt-codex-connector` bot.
-- All 1202 tests pass (0 fail, 0 skipped), manifest validated, roadmap published.
+- **v0.39.0 IS PREPARED** — version bumped to 0.39.0 across 6 files / 7 places,
+  published roadmap page current.
+- **What ships in v0.39.0**:
+  1. `codex-advisor` reasoning effort: switched effort from `max` to `ultra`
+     across all supported Codex models (`gpt-5.6-sol`, `gpt-6-astra`,
+     `gpt-5.6-luna`, `gpt-5.6-terra`), aligned with review lanes. Merged in PR #81.
+- **Gate**: PR #81 had 100% CI passes (Node 20 and Node 24) and explicit review approval
+  from `chatgpt-codex-connector` bot ("Didn't find any major issues. Nice work!").
+  Release ordered explicitly by Master.
+- All tests pass (0 fail, 0 skipped), manifest validated, roadmap published.
 
 ## 2. HOW TO VERIFY
 
@@ -91,20 +91,13 @@ not — reading the number alone would have removed `ANTHROPIC_API_KEY`.
 Measured live: the fable lane answered as Vex / Grumbal / Boundary / Yui / Dana
 with no invented names.
 
-### v0.38.0 Release
+### v0.39.0 Release
 
-**1. `requirement-audit` skill** (`plugins/tmux-teams/skills/requirement-audit/SKILL.md`)
-12-point requirement contract: six Grill categories for content, INVEST for shape.
-Merged via PR #76 with CI green and `chatgpt-codex-connector` review approval.
+**1. `codex-advisor` reasoning effort switched from `max` to `ultra`** (`plugins/tmux-teams/skills/codex-advisor/SKILL.md`)
+Switched reasoning effort from `max` to `ultra` across all supported Codex models (`gpt-5.6-sol`, `gpt-6-astra`, `gpt-5.6-luna`, `gpt-5.6-terra`), aligning advisor lanes with review lanes.
+Merged via PR #81 with CI green and `chatgpt-codex-connector` review approval.
 
-**2. `gpt-6-astra` support** (`plugins/tmux-teams/skills/codex-advisor/SKILL.md`)
-Added `astra` model alias resolving to `gpt-6-astra` with max reasoning effort.
-Merged via PR #79 with CI green and `chatgpt-codex-connector` review approval.
-
-**3. Test hermeticity fix** (`tests/acp-lanes-mcp.test.mjs`)
-Prevented host environment's `claude-9r` binary from polluting the unit test.
-
-`RELEASE_VERSION` is at `tests/plugin-structure.test.mjs:18` and reads `'0.38.0'`.
+`RELEASE_VERSION` is at `tests/plugin-structure.test.mjs:18` and reads `'0.39.0'`.
 Fourteen skills ship from `main`.
 
 ## 4. DO NOT
@@ -226,4 +219,4 @@ scripts/gate-required.mjs                  DOC_ONLY at :41 is the only exemption
 ```
 
 Published roadmap: `https://artifacts.ngs.bz/claude/private/tmux-teams-roadmap/`
-Release: `https://github.com/iicmaster/tmux-teams/releases/tag/v0.38.0`
+Release: `https://github.com/iicmaster/tmux-teams/releases/tag/v0.39.0`
