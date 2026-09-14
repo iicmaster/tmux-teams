@@ -11,9 +11,11 @@ Written 2026-09-14 for v0.39.0 release.
   1. `codex-advisor` reasoning effort: switched effort from `max` to `ultra`
      across all supported Codex models (`gpt-5.6-sol`, `gpt-6-astra`,
      `gpt-5.6-luna`, `gpt-5.6-terra`), aligned with review lanes. Merged in PR #81.
-- **Gate**: PR #81 had 100% CI passes (Node 20 and Node 24) and explicit review approval
+- **Gate**: Panel waived by Master for v0.39.0 release — single-focus update
+  aligning `codex-advisor` reasoning effort (`max` -> `ultra`) across all models;
+  PR #81 had 100% CI passes (Node 20 and Node 24) and explicit review approval
   from `chatgpt-codex-connector` bot ("Didn't find any major issues. Nice work!").
-  Release ordered explicitly by Master.
+  Release ordered explicitly by Master in session instruction.
 - All tests pass (0 fail, 0 skipped), manifest validated, roadmap published.
 
 ## 2. HOW TO VERIFY
