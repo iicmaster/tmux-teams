@@ -119,8 +119,12 @@ answer is a failed consultation — say so rather than passing it on.
    State plainly whatever you could not verify.
    ```
 
-2. **Dispatch**, selecting and verifying the identity in one step. `<model>` is
-   the expanded id — `gpt-5.6-sol` unless the caller named another:
+2. **Dispatch**, selecting and verifying the identity in one step. Derive `<model>`
+   and `<effort>` from the chosen seat:
+   - default (omitted) or `sol` -> `<model>` is `gpt-5.6-sol`, `<effort>` is `max`
+   - `astra` -> `<model>` is `gpt-6-astra`, `<effort>` is `ultra`
+   - `luna` -> `<model>` is `gpt-5.6-luna`, `<effort>` is `ultra`
+   - `terra` -> `<model>` is `gpt-5.6-terra`, `<effort>` is `max`
 
    ```bash
    # The binary first, and ABSOLUTELY. `buildBuiltinProfile` refuses a
@@ -138,9 +142,9 @@ answer is a failed consultation — say so rather than passing it on.
    ACP_SESSION_RECEIPT_REQUIRED=1 \
    ACP_SESSION_OPERATION="new" \
    ACP_MODEL="<model>" \
-   ACP_REASONING_EFFORT="max" \
+   ACP_REASONING_EFFORT="<effort>" \
    ACP_EXPECT_MODEL="<model>" \
-   ACP_EXPECT_REASONING_EFFORT="max" \
+   ACP_EXPECT_REASONING_EFFORT="<effort>" \
    node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
      codex <cwd> <task-id> <brief-file> [stall-sec]
    ```
@@ -260,7 +264,8 @@ changes state. Work that comes out of a consultation goes to `party-auto`.
   came back without the guarantee the original ran under. Found by a
   codex-advisor lane reading this skill against the function it describes.
 
-  Fill the two placeholders from the failed run's receipt before running it.
+  Fill the placeholders from the failed run's receipt (using the `<model>` and
+  `<effort>` corresponding to the seat that was dispatched) before running it.
   It looks like this, and the shape matters:
 
   ```bash
@@ -268,8 +273,8 @@ changes state. Work that comes out of a consultation goes to `party-auto`.
   ACP_SESSION_OPERATION="load" \
   ACP_PRIOR_DISPATCH_ID="<dispatch-id from the failed run's receipt>" \
   ACP_PRIOR_RECEIPT_DIGEST="<receipt_digest from that run>" \
-  ACP_RESUME="<session-id>" ACP_MODEL="<model>" ACP_REASONING_EFFORT="max" \
-  ACP_EXPECT_MODEL="<model>" ACP_EXPECT_REASONING_EFFORT="max" \
+  ACP_RESUME="<session-id>" ACP_MODEL="<model>" ACP_REASONING_EFFORT="<effort>" \
+  ACP_EXPECT_MODEL="<model>" ACP_EXPECT_REASONING_EFFORT="<effort>" \
   node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
     codex <cwd> <task-id> <recovery-prompt> [stall-sec]
   ```
