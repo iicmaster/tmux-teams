@@ -11,8 +11,10 @@ Written 2026-09-17 for v0.40.0 release.
   1. `codex-advisor` reasoning effort: locked effort per model (`ultra` for
      `astra` and `luna`; `max` for `sol` and `terra`, default seat `sol[max]`),
      aligned with review lanes and model capabilities. Merged in PR #83.
-- **Gate**: PR #83 had 100% CI passes (Node 20 and Node 24) and explicit review approval
-  from `chatgpt-codex-connector` bot ("Didn't find any major issues. Delightful!").
+- **Gate**: Panel waived by Master for v0.40.0 release — single-focus update
+  locking `codex-advisor` reasoning effort tiers per model (`ultra` for `astra`/`luna`,
+  `max` for `sol`/`terra`); PR #83 had 100% CI passes (Node 20 and Node 24) and
+  explicit review approval from `chatgpt-codex-connector` bot ("Didn't find any major issues. Delightful!").
   Release ordered explicitly by Master in session instruction.
 - All tests pass (0 fail, 0 skipped), manifest validated, roadmap published.
 
