@@ -169,7 +169,7 @@ Party Advise:
 
 Frontier always (Master directive 2026-07-14 — supersedes the earlier thinking/Spark lane split):
 
-- **ALL Codex subagents** — thinking-heavy AND execution-heavy alike — MUST use the current latest Codex frontier model, currently `gpt-5.6-sol` at **ultra** reasoning effort. **Pass it explicitly — never inherit it.** This line used to claim the CLI default already was ultra; on 2026-07-29 `~/.codex/config.toml` read `model_reasoning_effort = "low"`, so every dispatch that trusted the sentence ran at the bottom of the range while this document promised the top. The model is correct in that file and the effort is not, which is exactly the shape no reader can see. Set it on the invocation, and on an ACP lane verify it came back with `ACP_EXPECT_REASONING_EFFORT`. Do not route any Codex work to Spark, inherited defaults, `OMX_DEFAULT_FRONTIER_MODEL`, or older frontier aliases — quota conservation is NOT a reason to downgrade unless Master explicitly says so.
+- **ALL Codex subagents** — thinking-heavy AND execution-heavy alike — MUST use the current latest Codex frontier model, currently `gpt-5.6-sol` at **max** reasoning effort. **Pass it explicitly — never inherit it.** This line used to claim the CLI default already was ultra; on 2026-07-29 `~/.codex/config.toml` read `model_reasoning_effort = "low"`, so every dispatch that trusted the sentence ran at the bottom of the range while this document promised the top. The model is correct in that file and the effort is not, which is exactly the shape no reader can see. Set it on the invocation, and on an ACP lane verify it came back with `ACP_EXPECT_REASONING_EFFORT`. Do not route any Codex work to Spark, inherited defaults, `OMX_DEFAULT_FRONTIER_MODEL`, or older frontier aliases — quota conservation is NOT a reason to downgrade unless Master explicitly says so.
 - **ALL Claude subagents** (critique personas, review lanes, execution agents) MUST use Opus at maximum reasoning effort — not sonnet/haiku.
 - Non-Codex/non-Claude runtimes map the same intent to their best available frontier model. If the runtime cannot select models, state the limitation and continue with the best available role/tool. Do not pretend the requested routing happened.
 - When the latest Codex frontier model changes, update the literal current model in this section; do not silently fall back to stale aliases.
@@ -287,7 +287,7 @@ Debug task add-on:
 ## Phase 3: VALIDATE (parallel critique)
 
 Spawn 3-5 critique agents in one concurrent batch when the runtime supports it.
-For Codex critique agents, use the current latest Codex frontier model only, currently `gpt-5.6-sol` at `ultra` reasoning effort.
+For Codex critique agents, use the current latest Codex frontier model only, currently `gpt-5.6-sol` at `max` reasoning effort.
 For non-Codex runtimes, use the best available frontier-equivalent thinking model when model selection is available.
 Each critique agent MUST receive a self-contained prompt containing:
 
@@ -351,7 +351,7 @@ Each task title should include owner, file or file set, and dependency batch.
 ## Phase 5: EXECUTE (parallel)
 
 Dispatch execution agents in concurrent batches only when their write scopes do not conflict.
-For Codex coding/refactoring/file-edit/implementation subagents, use the current latest Codex frontier model — currently `gpt-5.6-sol` at `ultra` reasoning effort, the same as thinking work (Frontier always; see Subagent Model Routing). Do not route execution to Codex Spark.
+For Codex coding/refactoring/file-edit/implementation subagents, use the current latest Codex frontier model — currently `gpt-5.6-sol` at `max` reasoning effort, the same as thinking work (Frontier always; see Subagent Model Routing). Do not route execution to Codex Spark.
 For non-Codex runtimes, use the closest fast execution model when model selection is available.
 
 Each execution brief MUST contain:
@@ -507,7 +507,7 @@ Test cases `TC-PA-01`..`TC-PA-33` live in `references/regression-checks.md` — 
 - Transport escape: a review plugin, MCP tool, tmux/TUI worker, or raw CLI review replaces the bundled ACP gate.
 - Isolation leak: the review packet is not static, the trusted target path came from packet data, the target or host data roots are mounted, the temporary workspace is shared with the target, the lane ran a mode other than the one its profile declares, MCP/built-in tools are enabled, or ACP permission requests are not denied. Plan mode is the default and `zai` is the one declared exception; what makes a lane read-only is the zero-tool contract, not the word, so the exception changes the mode and nothing else.
 - Schema theater: a structurally valid report is treated as semantic approval without PM review of the actual findings.
-- Model-routing drift: any Codex subagent — thinking or execution — uses anything other than `gpt-5.6-sol` at `ultra` reasoning effort, any Claude subagent uses anything other than Opus at maximum reasoning effort, or non-Codex routing silently misreports unavailable model selection.
+- Model-routing drift: any Codex subagent — thinking or execution — uses anything other than `gpt-5.6-sol` at `max` reasoning effort, any Claude subagent uses anything other than Opus at maximum reasoning effort, or non-Codex routing silently misreports unavailable model selection.
 - Simpler-path bypass: workflow expands to multi-agent execution without proving the complexity signal still warrants it.
 - Ledger theater: evidence or verification ledger exists but does not change decisions or rule anything in/out.
 - Sync drift: repo source, installed target, and Codex target disagree after a targeted sync.

@@ -8,13 +8,12 @@ Written 2026-09-14 for v0.39.0 release.
 - **v0.39.0 IS PREPARED** — version bumped to 0.39.0 across 6 files / 7 places,
   published roadmap page current.
 - **What ships in v0.39.0**:
-  1. `codex-advisor` reasoning effort: switched effort from `max` to `ultra`
-     across all supported Codex models (`gpt-5.6-sol`, `gpt-6-astra`,
-     `gpt-5.6-luna`, `gpt-5.6-terra`), aligned with review lanes. Merged in PR #81.
-- **Gate**: Panel waived by Master for v0.39.0 release — single-focus update
-  aligning `codex-advisor` reasoning effort (`max` -> `ultra`) across all models;
-  PR #81 had 100% CI passes (Node 20 and Node 24) and explicit review approval
-  from `chatgpt-codex-connector` bot ("Didn't find any major issues. Nice work!").
+  1. `codex-advisor` reasoning effort: locked effort per model (`ultra` for
+     `astra` and `luna`; `max` for `sol` and `terra`, default seat `sol[max]`),
+     aligned with review lanes and model capabilities. In flight in PR #83 (pending merge).
+- **Gate**: Panel waived by Master for release — single-focus update
+  aligning `codex-advisor` reasoning effort per model;
+  PR #83 had 100% CI passes (Node 20 and Node 24) and review feedback addressed.
   Release ordered explicitly by Master in session instruction.
 - All tests pass (0 fail, 0 skipped), manifest validated, roadmap published.
 
@@ -95,9 +94,9 @@ with no invented names.
 
 ### v0.39.0 Release
 
-**1. `codex-advisor` reasoning effort switched from `max` to `ultra`** (`plugins/tmux-teams/skills/codex-advisor/SKILL.md`)
-Switched reasoning effort from `max` to `ultra` across all supported Codex models (`gpt-5.6-sol`, `gpt-6-astra`, `gpt-5.6-luna`, `gpt-5.6-terra`), aligning advisor lanes with review lanes.
-Merged via PR #81 with CI green and `chatgpt-codex-connector` review approval.
+**1. `codex-advisor` reasoning effort locked per model** (`plugins/tmux-teams/skills/codex-advisor/SKILL.md`)
+Locked reasoning effort per model (`ultra` for `astra`/`luna`, `max` for `sol`/`terra`), with default seat `sol[max]`. Aligned codex review profile in `review-profiles.mjs` with `gpt-5.6-sol` at `max`.
+In review in PR #83 with CI green and review feedback addressed.
 
 `RELEASE_VERSION` is at `tests/plugin-structure.test.mjs:18` and reads `'0.39.0'`.
 Fourteen skills ship from `main`.

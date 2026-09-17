@@ -244,7 +244,7 @@ export const REVIEW_PROFILES = freeze({
     adapterPackage: '@agentclientprotocol/codex-acp@1.1.7',
     config: {
       model: 'gpt-5.6-sol',
-      reasoning_effort: 'ultra',
+      reasoning_effort: 'max',
       mode: 'read-only',
       collaboration_mode: 'plan',
     },

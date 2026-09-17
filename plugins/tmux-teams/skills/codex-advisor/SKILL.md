@@ -1,6 +1,6 @@
 ---
 name: codex-advisor
-description: "Consult a Codex advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. Takes an optional model — $codex-advisor [luna|terra|sol|astra] — where Sol (and the default seat) runs at max reasoning effort while the other seats run at ultra; the adapter reports and the dispatch verifies the selected effort. Use when the user invokes $codex-advisor, wants a second opinion from outside the Claude family, names a specific Codex seat, or adds --party <id> to seat a saved bmad-party-mode roster. Read-only: it advises, it never edits."
+description: "Consult a Codex advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. Takes an optional model — $codex-advisor [luna|terra|sol|astra] — and locks reasoning effort to each model's maximum (ultra for astra/luna, max for sol/terra; default sol[max]), which this adapter reports and the dispatch verifies. Use when the user invokes $codex-advisor, wants a second opinion from outside the Claude family, names a specific Codex seat, or adds --party <id> to seat a saved bmad-party-mode roster. Read-only: it advises, it never edits."
 ---
 
 # Codex Advisor
@@ -35,7 +35,7 @@ $codex-advisor sol          # gpt-5.6-sol
 | *(omitted)* | `gpt-5.6-sol` | `max` |
 | `astra` | `gpt-6-astra` | `ultra` |
 | `luna` | `gpt-5.6-luna` | `ultra` |
-| `terra` | `gpt-5.6-terra` | `ultra` |
+| `terra` | `gpt-5.6-terra` | `max` |
 | `sol` | `gpt-5.6-sol` | `max` |
 
 A bare short name is accepted and expanded; the full `gpt-6-*` or `gpt-5.6-*` id is what
@@ -76,16 +76,29 @@ the command and run it again. A zai review lane found this section naming only
 and free to proceed with the invented cast. Never substitute silently: someone
 who typed `--party` asked for a specific room.
 
-## Effort follows the selected seat — it is not a separate argument
+## Effort is LOCKED per model — it is not an argument
 
-The caller chooses the model. The effort is fixed by that seat:
+The caller chooses the model. The caller does **not** choose the effort. Each seat
+locks reasoning effort to the highest tier supported by that model: `ultra` for
+`astra` and `luna`, and `max` for `sol` and `terra`. The default seat runs
+`gpt-5.6-sol` at `max`. A request to change the effort tier is a request for a
+different skill.
 
-- `sol` and the omitted default: `max`
-- `luna`, `terra`, and `astra`: `ultra`
+The review lane in `plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs`
+similarly pins the codex review profile at `reasoning_effort: 'max'` for `gpt-5.6-sol`.
 
-Every dispatch sets and verifies the correlated pair. Pass both values explicitly;
-never inherit the machine default. Never downgrade for cost or quota. If the
-requested pair is unavailable, report that and stop.
+**Pass the model and effort explicitly; never inherit them.** On 2026-07-29
+`~/.codex/config.toml` read `model_reasoning_effort = "low"` while
+`party-mode/SKILL.md` asserted the default was already the top of the range.
+Every dispatch that trusted that sentence ran at the bottom while the document
+promised the top — the model was right in that file and the effort was not,
+which is a discrepancy no reader could see. The adapter now selects both values
+per dispatch and verifies the correlated session response rather than assuming a
+machine default.
+
+Never downgrade for cost or quota. If the requested seat (`ultra` for `astra`/`luna`,
+`max` for `sol`/`terra`) is unavailable, **report that and stop**; an answer from
+a lesser seat is not this skill.
 
 ## The consultation is a party. Only a party.
 
@@ -106,8 +119,12 @@ answer is a failed consultation — say so rather than passing it on.
    State plainly whatever you could not verify.
    ```
 
-2. **Dispatch**, selecting and verifying the identity in one step. `<model>` is
-   the expanded id — `gpt-5.6-sol` unless the caller named another:
+2. **Dispatch**, selecting and verifying the identity in one step. Derive `<model>`
+   and `<effort>` from the chosen seat:
+   - default (omitted) or `sol` -> `<model>` is `gpt-5.6-sol`, `<effort>` is `max`
+   - `astra` -> `<model>` is `gpt-6-astra`, `<effort>` is `ultra`
+   - `luna` -> `<model>` is `gpt-5.6-luna`, `<effort>` is `ultra`
+   - `terra` -> `<model>` is `gpt-5.6-terra`, `<effort>` is `max`
 
    ```bash
    # The binary first, and ABSOLUTELY. `buildBuiltinProfile` refuses a
@@ -124,10 +141,10 @@ answer is a failed consultation — say so rather than passing it on.
    CODEX_PATH="$CODEX_PATH" \
    ACP_SESSION_RECEIPT_REQUIRED=1 \
    ACP_SESSION_OPERATION="new" \
-   ACP_MODEL="gpt-5.6-sol" \
-   ACP_REASONING_EFFORT="max" \
-   ACP_EXPECT_MODEL="gpt-5.6-sol" \
-   ACP_EXPECT_REASONING_EFFORT="max" \
+   ACP_MODEL="<model>" \
+   ACP_REASONING_EFFORT="<effort>" \
+   ACP_EXPECT_MODEL="<model>" \
+   ACP_EXPECT_REASONING_EFFORT="<effort>" \
    node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
      codex <cwd> <task-id> <brief-file> [stall-sec]
    ```
@@ -167,7 +184,8 @@ answer is a failed consultation — say so rather than passing it on.
    `Error: stdin is not a terminal`, because bare `codex` opens a TUI rather
    than speaking ACP.
 
-   For the default/Sol seat the receipt should read `effective_identity: gpt-5.6-sol[max]`; other seats use the effort in the table,
+   The receipt should read `effective_identity: <model>[<effort>]` (`gpt-5.6-sol[max]`,
+   `gpt-6-astra[ultra]`, `gpt-5.6-luna[ultra]`, or `gpt-5.6-terra[max]`),
    `identity_status: matched`. If the installed ACP agent does not advertise
    the requested model/effort, the adapter fails closed before the prompt.
 
@@ -246,7 +264,8 @@ changes state. Work that comes out of a consultation goes to `party-auto`.
   came back without the guarantee the original ran under. Found by a
   codex-advisor lane reading this skill against the function it describes.
 
-  Fill the two placeholders from the failed run's receipt before running it.
+  Fill the placeholders from the failed run's receipt (using the `<model>` and
+  `<effort>` corresponding to the seat that was dispatched) before running it.
   It looks like this, and the shape matters:
 
   ```bash
@@ -254,8 +273,8 @@ changes state. Work that comes out of a consultation goes to `party-auto`.
   ACP_SESSION_OPERATION="load" \
   ACP_PRIOR_DISPATCH_ID="<dispatch-id from the failed run's receipt>" \
   ACP_PRIOR_RECEIPT_DIGEST="<receipt_digest from that run>" \
-  ACP_RESUME="<session-id>" ACP_MODEL="gpt-5.6-sol" ACP_REASONING_EFFORT="max" \
-  ACP_EXPECT_MODEL="gpt-5.6-sol" ACP_EXPECT_REASONING_EFFORT="max" \
+  ACP_RESUME="<session-id>" ACP_MODEL="<model>" ACP_REASONING_EFFORT="<effort>" \
+  ACP_EXPECT_MODEL="<model>" ACP_EXPECT_REASONING_EFFORT="<effort>" \
   node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
     codex <cwd> <task-id> <recovery-prompt> [stall-sec]
   ```
@@ -303,7 +322,8 @@ changes state. Work that comes out of a consultation goes to `party-auto`.
   identically, while 52KB had succeeded that morning. Putting a large diff on
   disk and giving the agent paths is still worth doing for its own sake, but do
   not expect it to fix this. Try resume, then re-dispatch — do not theorise.
-- **Identity refused.** The adapter did not acknowledge the requested model/effort pair. Report and stop.
+- **Identity refused.** The adapter did not acknowledge the requested model and effort
+  (`ultra` for `astra`/`luna`, `max` for `sol`/`terra`). Report and stop.
 - **Unknown model name.** Anything outside `astra`, `luna`, `terra`, `sol` is a usage
   error. Ask, do not guess — a name that reaches the adapter unchecked either
   fails the dispatch or seats a model nobody chose.
