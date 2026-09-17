@@ -189,14 +189,23 @@ answer is a failed consultation — say so rather than passing it on.
    `identity_status: matched`. If the installed ACP agent does not advertise
    the requested model/effort, the adapter fails closed before the prompt.
 
-3. **Arm a watcher, because the dispatch RETURNS while the lane runs.** That is
-   the point of it, and it is also how a finished review sits unread. Run this
-   in the BACKGROUND — killing the waiter does not touch the lane:
+3. **Arm a watcher, because the dispatch RETURNS while the lane runs.** Start
+   `wait` with the Bash tool using `run_in_background: true`; do not run a
+   foreground wait that blocks the main loop. Continue coordinating other work
+   while the advisor runs — that parallelism is the reason dispatch detaches.
+   Killing the background waiter does not touch the lane:
 
    ```bash
    node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
      wait <cwd> <task-id> 3600
+   # Bash tool option: run_in_background: true
    ```
+
+   Track the task id until a completion notification arrives. On notification,
+   read the outbox and the correlated receipt before using the advice. A
+   background dispatch with no collection step is abandoned work, not
+   consultation. Do not use foreground `wait` merely because the answer is
+   needed later; schedule independent coordination now and collect at the gate.
 
    It exits `0` when the outbox is written, `2` when there is no outbox and the
    lane will not produce one — the turn ended without writing, OR it stopped
@@ -239,7 +248,7 @@ changes state. Work that comes out of a consultation goes to `party-auto`.
 
 ## Failure modes
 
-- **`no_outbox` — the turn finished and wrote nothing. TRY RESUME before
+- **`no_outbox` — the turn finished and wrote nothing. TRY RESUME under the same task id before
   re-dispatching.** It is cheap and it is the only path that could still hold
   the analysis, but it is not guaranteed: tried once here on 2026-08-04, the
   load warned `load receipt lacks requested prior lineage` and the agent
