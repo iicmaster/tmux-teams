@@ -515,7 +515,19 @@ test('every shipped module parses', () => {
   // A floor, so a walk that finds nothing cannot pass as a clean sweep.
   assert.ok(files.length >= 20, `only ${files.length} shipped modules found — the walk is not walking`)
   for (const file of files) {
-    const checked = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' })
+    let checked = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' })
+    // Claude Code workflows (.js) run inside an async function runner where
+    // top-level return is the driver contract. Node >= 24.21 detects ESM from
+    // import/export and strictly rejects bare top-level return during node --check.
+    // Verify the workflow's syntax by checking it without the bare return keyword.
+    if (checked.status !== 0 && file.endsWith('.js') && checked.stderr.includes('Illegal return statement')) {
+      const source = readFileSync(file, 'utf8')
+      const sanitized = source.replace(/return\s+(\{[\s\S]*\})\s*$/m, 'void $1')
+      checked = spawnSync(process.execPath, ['--input-type=module', '--check'], {
+        input: sanitized,
+        encoding: 'utf8',
+      })
+    }
     assert.equal(checked.status, 0, `${file.slice(PLUGIN.length + 1)} does not parse:\n${checked.stderr}`)
   }
 })
