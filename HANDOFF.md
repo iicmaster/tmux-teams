@@ -1,21 +1,23 @@
 # HANDOFF
 
 State of play for the next agent. Overwritten in place, never appended.
-Written 2026-09-17 for v0.40.0 release.
+Written 2026-09-23 for v0.41.0 release.
 
 ## 1. READ THIS FIRST
 
-- **v0.40.0 IS PREPARED** — version bumped to 0.40.0 across 6 files / 7 places,
+- **v0.41.0 IS PREPARED** — version bumped to 0.41.0 across 6 files / 7 places,
   published roadmap page current.
-- **What ships in v0.40.0**:
-  1. `codex-advisor` reasoning effort: locked effort per model (`ultra` for
-     `astra` and `luna`; `max` for `sol` and `terra`, default seat `sol[max]`),
-     aligned with review lanes and model capabilities. Merged in PR #83.
-- **Gate**: Panel waived by Master for v0.40.0 release — single-focus update
-  locking `codex-advisor` reasoning effort tiers per model (`ultra` for `astra`/`luna`,
-  `max` for `sol`/`terra`); PR #83 had 100% CI passes (Node 20 and Node 24) and
-  explicit review approval from `chatgpt-codex-connector` bot ("Didn't find any major issues. Delightful!").
-  Release ordered explicitly by Master in session instruction.
+- **What ships in v0.41.0**:
+  1. Support newly released frontier models:
+     - Claude Opus 5.5: `claude-opus-5-5` (display `claude/opus-5.5`).
+     - Codex Sol 6: `gpt-6-sol` (effort: `max`).
+     - Codex Luna 6: `gpt-6-luna` (effort: `ultra`).
+  2. Updated defaults across the project:
+     - `codex-advisor` default seat: `gpt-6-sol[max]`.
+     - Review profiles: `claude` -> `claude-opus-5-5`, `codex` -> `gpt-6-sol`.
+     - `party-mode` / `tmux-teams` frontier model references: `gpt-6-sol` and `claude-opus-5-5`.
+  3. Merged in PR #85.
+- **Gate**: PR #85 passed 100% CI checks across Node 20 and Node 24 (push and pull_request). Codex bot review quota was exhausted on account (waiver recorded per CLAUDE.md step 7). Release ordered explicitly by Master.
 - All tests pass (0 fail, 0 skipped), manifest validated, roadmap published.
 
 ## 2. HOW TO VERIFY
