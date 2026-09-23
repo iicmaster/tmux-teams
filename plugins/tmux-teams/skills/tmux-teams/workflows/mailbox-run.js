@@ -27,7 +27,7 @@
 // - deliver.sh is launched DETACHED (setsid/nohup + disown) so it survives the
 //   agent that starts it — it is an OS process, not tied to the agent context.
 // - Model routing: the codex TUI is launched plainly and inherits its own frontier
-//   default (gpt-5.6-sol max per ~/.codex/config.toml). The Workflow's OWN agents
+//   default (gpt-6-sol max per ~/.codex/config.toml). The Workflow's OWN agents
 //   are Claude (Opus, inherited) — the verify lane runs at high effort.
 // - Control/sandbox split (load-bearing, per references/teammates-messaging.md): the
 //   delivery control dir (inboxes, deliver.sh, pidfile, stop flag) lives OUTSIDE the
@@ -179,7 +179,7 @@ const results = await pipeline(
       `0. FIX ID, THEN PRECONDITION — HARD FAIL, NEVER FABRICATE: Set DISPATCH_ID='${dispatchId}' exactly once; do not generate, alter, or infer it. Then test -d "${REPO}" || STOP NOW and return id="${w.id}", pane="", done=false, terminal="none", timed_out=false, session="", evidence_present=false, outbox="FATAL: target repo ${REPO} does not exist". You MUST NOT create, scaffold, or invent the target repo, its files, or the task's subject matter — not even to "make the run work". If the repo is missing or does not contain what the brief describes, that is a real failure to report, not a gap to fill. (Field-bitten 2026-07-16: an agent silently recreated a missing repo, planted the very bug it then dispatched a worker to fix, and reported pass.)`,
       `1. SETUP (ONE shared session per run, one window per worker): FOLDER=$(basename "${REPO}" | tr 'A-Z.:_ ' 'a-z----' | tr -s -). S="auto--$FOLDER${RUNID}".`,
       `   tmux new-session -d -s "$S" -c "${REPO}" -x 220 -y 50 2>/dev/null || true   ("duplicate session" from a concurrent worker is EXPECTED — NEVER kill-session here: other workers' windows live in it. Window 0 stays an idle PM shell.)`,
-      `   PANE=$(tmux new-window -t "=$S" -n "${w.id}" -c "${REPO}" -P -F '#{pane_id}'); tmux set-option -t "$PANE" -w automatic-rename off. Launch: tmux send-keys -t "$PANE" 'codex' Enter (codex inherits its own frontier default, gpt-5.6-sol max — do NOT pass a model flag).`,
+      `   PANE=$(tmux new-window -t "=$S" -n "${w.id}" -c "${REPO}" -P -F '#{pane_id}'); tmux set-option -t "$PANE" -w automatic-rename off. Launch: tmux send-keys -t "$PANE" 'codex' Enter (codex inherits its own frontier default, gpt-6-sol max — do NOT pass a model flag).`,
       `   Wait ~8s, capture-pane -t "$PANE", handle any trust dialog with a SINGLE keypress (no Enter). Window names are cosmetic — every later command targets "$PANE".`,
       `2. MAILBOX DIRS (control/sandbox split — load-bearing): control lives OUTSIDE the repo where the worker cannot tamper: mkdir -p "$CTL/inboxes/codex". The OUTBOX lives INSIDE the repo (the worker's writable sandbox): REPO_ABS=$(cd "${REPO}" && pwd); mkdir -p "$REPO_ABS/.mailbox-out"; OUTBOX_FILE="$REPO_ABS/.mailbox-out/${w.id}". Then CLEAR STALE STATE from any earlier run that reused this id — a leftover stop flag kills the new delivery loop instantly and a leftover outbox gets accepted as a fresh result (stale-replay): rm -f "$CTL/stop" "$OUTBOX_FILE" "$CTL/inboxes/codex"/* 2>/dev/null.`,
       `3. DISPATCH: record START=$(date -u +%FT%TZ) and T0=$(date +%s) FIRST — these become started_at and the basis for wait_sec, and they cannot be reconstructed later.`,

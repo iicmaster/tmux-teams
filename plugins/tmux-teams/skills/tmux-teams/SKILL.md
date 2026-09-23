@@ -439,7 +439,7 @@ per the routing directive pass Opus explicitly; a machine default of `fable`
 is rejected by the adapter):
 
 ```bash
-ANTHROPIC_MODEL=claude-opus-4-8 \
+ANTHROPIC_MODEL=claude-opus-5-5 \
   node <skill-root>/scripts/acp-dispatch.mjs claude <repo> <task-id> <brief-file> [stall-sec]
 ```
 
@@ -587,7 +587,7 @@ resumes automatically.
 **codex over ACP is UNLOCKED** via the official App Server adapter
 `@agentclientprotocol/codex-acp@1.1.7` (successor to the deprecated
 `zed-industries/codex-acp`): it drives the INSTALLED codex CLI, so
-`gpt-5.6-sol` + `max` work exactly as the Frontier-always directive
+`gpt-6-sol` + `max` work exactly as the Frontier-always directive
 requires — e2e-verified 2026-07-19. Do NOT use the old zed-industries binary
 (stale embedded core; the companion maps its failure signatures to a clear
 message). tmux remains the fallback lane for codex and agy. ข้อ 7's

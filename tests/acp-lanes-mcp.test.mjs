@@ -84,8 +84,8 @@ test('every declared lane is listed, and the list is pinned rather than derived 
   const declared = Object.fromEntries(out.lanes.map((l) => [l.lane, l]))
   for (const [lane, family, provider, model] of [
     ['agy', 'gemini', 'google-antigravity', 'gemini-3.7-flash-high'],
-    ['claude', 'claude', 'anthropic', 'claude-opus-4-8'],
-    ['codex', 'openai', 'openai', 'gpt-5.6-sol'],
+    ['claude', 'claude', 'anthropic', 'claude-opus-5-5'],
+    ['codex', 'openai', 'openai', 'gpt-6-sol'],
     ['deepseek', 'deepseek', 'qwen', 'deepseek-v4-flash-0731'],
     ['kimi', 'kimi', 'kimi', 'opus'],
     ['qwen', 'qwen', 'qwen', 'qwen3.8-max-preview'],

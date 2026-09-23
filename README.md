@@ -426,7 +426,7 @@ relaying a person's words is expected to sign `human:` and name itself in
 | Skill | Reach for it when |
 |---|---|
 | `tmux-teams:claude-advisor` | you want Claude's strongest model — pinned to `claude-fable-5`, model identity verified via `ACP_EXPECT_MODEL` |
-| `tmux-teams:codex-advisor` | you want a read from outside the Claude family — `gpt-5.6-sol` by default at `max`, or `astra` / `luna` at `ultra`, `terra` at `max` |
+| `tmux-teams:codex-advisor` | you want a read from outside the Claude family — `gpt-6-sol` by default at `max`, or `astra` / `luna` at `ultra`, `terra` at `max` |
 | `tmux-teams:agy-advisor` | you want a third family — Gemini through Antigravity, `gemini-3.7-flash-high` by default |
 
 **Three** advisors, added to over time — this said "Both advisors" while a third
@@ -572,7 +572,7 @@ transport-independent:
 | worker | primary | fallback |
 |---|---|---|
 | codex | ACP — `@agentclientprotocol/codex-acp@1.1.7` (drives the installed CLI; frontier model verified) | tmux |
-| claude | ACP — `@agentclientprotocol/claude-agent-acp` (pass `ANTHROPIC_MODEL=claude-opus-4-8`) | tmux |
+| claude | ACP — `@agentclientprotocol/claude-agent-acp` (pass `ANTHROPIC_MODEL=claude-opus-5-5`) | tmux |
 | agy | ACP — `antigravity-acp@1.0.0` (community adapter, source-audited 2026-07-21; needs `bun`; ToS risk — SKILL.md ข้อ 8) | tmux |
 
 The Gemini worker lane has been removed. The companion rejects that retired

@@ -200,13 +200,13 @@ export const REVIEW_PROFILES = freeze({
     config: { model: 'sonnet', mode: 'plan' },
   },
   claude: {
-    id: 'claude', provider: 'anthropic', family: 'claude', model: 'claude-opus-4-8',
-    displayModel: 'claude/opus-4.8',
+    id: 'claude', provider: 'anthropic', family: 'claude', model: 'claude-opus-5-5',
+    displayModel: 'claude/opus-5.5',
     reviewMode: 'plan',
     command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
     adapterPackage: '@agentclientprotocol/claude-agent-acp@0.61.0',
-    sessionSettings: { availableModels: ['claude-opus-4-8'] },
-    config: { model: 'claude-opus-4-8', mode: 'plan' },
+    sessionSettings: { availableModels: ['claude-opus-5-5'] },
+    config: { model: 'claude-opus-5-5', mode: 'plan' },
   },
   ninerouter: {
     // 2026-08-24, Master-approved: hosts whose ONLY reviewer route is the
@@ -237,13 +237,13 @@ export const REVIEW_PROFILES = freeze({
     endpoint: NINEROUTER_ENDPOINT,
   },
   codex: {
-    id: 'codex', provider: 'openai', family: 'openai', model: 'gpt-5.6-sol',
-    displayModel: 'openai/gpt-5.6-sol',
+    id: 'codex', provider: 'openai', family: 'openai', model: 'gpt-6-sol',
+    displayModel: 'openai/gpt-6-sol',
     reviewMode: 'plan',
     command: ['npx', '-y', '@agentclientprotocol/codex-acp@1.1.7'],
     adapterPackage: '@agentclientprotocol/codex-acp@1.1.7',
     config: {
-      model: 'gpt-5.6-sol',
+      model: 'gpt-6-sol',
       reasoning_effort: 'max',
       mode: 'read-only',
       collaboration_mode: 'plan',
