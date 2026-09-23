@@ -45,7 +45,7 @@ test('a Gemini 3.1 reviewer model is refused rather than run', () => {
   ]) {
     assert.throws(() => assertPermittedModel(name, 'probe'), /Gemini 3\.1 is prohibited/, name)
   }
-  for (const name of ['gemini-3.6-flash-high', 'gemini-3.10-pro', 'gpt-5.6-sol', null]) {
+  for (const name of ['gemini-3.6-flash-high', 'gemini-3.10-pro', 'gpt-5.6-sol', 'gpt-6-sol', null]) {
     assert.equal(assertPermittedModel(name, 'probe'), name)
   }
   for (const profile of Object.values(REVIEW_PROFILES)) {
@@ -75,7 +75,7 @@ test('immutable ACP profiles pin providers, models, argv, and AGY plan mode', ()
   assert.deepEqual(REVIEW_PROFILES.zai.config, { model: 'glm-5.2', mode: 'default' })
   assert.equal(REVIEW_PROFILES.zai.thinkingBudgetTokens, 4096)
   assert.deepEqual(REVIEW_PROFILES.codex.config, {
-    model: 'gpt-5.6-sol',
+    model: 'gpt-6-sol',
     reasoning_effort: 'max',
     mode: 'read-only',
     collaboration_mode: 'plan',

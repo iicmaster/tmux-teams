@@ -23,20 +23,20 @@ dispatch before prompt delivery rather than answering from a cheaper seat.
 ## Arguments
 
 ```
-$codex-advisor              # default seat: gpt-5.6-sol
+$codex-advisor              # default seat: gpt-6-sol
 $codex-advisor astra        # gpt-6-astra
-$codex-advisor luna         # gpt-5.6-luna
+$codex-advisor luna         # gpt-6-luna
 $codex-advisor terra        # gpt-5.6-terra
-$codex-advisor sol          # gpt-5.6-sol
+$codex-advisor sol          # gpt-6-sol
 ```
 
 | `<model>` | dispatches | effort |
 |---|---|---|
-| *(omitted)* | `gpt-5.6-sol` | `max` |
+| *(omitted)* | `gpt-6-sol` | `max` |
 | `astra` | `gpt-6-astra` | `ultra` |
-| `luna` | `gpt-5.6-luna` | `ultra` |
+| `luna` | `gpt-6-luna` | `ultra` |
 | `terra` | `gpt-5.6-terra` | `max` |
-| `sol` | `gpt-5.6-sol` | `max` |
+| `sol` | `gpt-6-sol` | `max` |
 
 A bare short name is accepted and expanded; the full `gpt-6-*` or `gpt-5.6-*` id is what
 reaches the adapter and what the receipt must show. Any other name is a usage
@@ -81,11 +81,11 @@ who typed `--party` asked for a specific room.
 The caller chooses the model. The caller does **not** choose the effort. Each seat
 locks reasoning effort to the highest tier supported by that model: `ultra` for
 `astra` and `luna`, and `max` for `sol` and `terra`. The default seat runs
-`gpt-5.6-sol` at `max`. A request to change the effort tier is a request for a
+`gpt-6-sol` at `max`. A request to change the effort tier is a request for a
 different skill.
 
 The review lane in `plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs`
-similarly pins the codex review profile at `reasoning_effort: 'max'` for `gpt-5.6-sol`.
+similarly pins the codex review profile at `reasoning_effort: 'max'` for `gpt-6-sol`.
 
 **Pass the model and effort explicitly; never inherit them.** On 2026-07-29
 `~/.codex/config.toml` read `model_reasoning_effort = "low"` while
@@ -121,9 +121,9 @@ answer is a failed consultation — say so rather than passing it on.
 
 2. **Dispatch**, selecting and verifying the identity in one step. Derive `<model>`
    and `<effort>` from the chosen seat:
-   - default (omitted) or `sol` -> `<model>` is `gpt-5.6-sol`, `<effort>` is `max`
+   - default (omitted) or `sol` -> `<model>` is `gpt-6-sol`, `<effort>` is `max`
    - `astra` -> `<model>` is `gpt-6-astra`, `<effort>` is `ultra`
-   - `luna` -> `<model>` is `gpt-5.6-luna`, `<effort>` is `ultra`
+   - `luna` -> `<model>` is `gpt-6-luna`, `<effort>` is `ultra`
    - `terra` -> `<model>` is `gpt-5.6-terra`, `<effort>` is `max`
 
    ```bash
@@ -184,8 +184,8 @@ answer is a failed consultation — say so rather than passing it on.
    `Error: stdin is not a terminal`, because bare `codex` opens a TUI rather
    than speaking ACP.
 
-   The receipt should read `effective_identity: <model>[<effort>]` (`gpt-5.6-sol[max]`,
-   `gpt-6-astra[ultra]`, `gpt-5.6-luna[ultra]`, or `gpt-5.6-terra[max]`),
+   The receipt should read `effective_identity: <model>[<effort>]` (`gpt-6-sol[max]`,
+   `gpt-6-astra[ultra]`, `gpt-6-luna[ultra]`, or `gpt-5.6-terra[max]`),
    `identity_status: matched`. If the installed ACP agent does not advertise
    the requested model/effort, the adapter fails closed before the prompt.
 
