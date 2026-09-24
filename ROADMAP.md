@@ -12,9 +12,9 @@
 > source, no publish script and nothing that could notice it had gone stale —
 > so it went stale, repeatedly, and nobody could tell without opening it.
 
-Current release: **0.41.0** — the version stamped in this tree, in flight on
-a pull request and not yet tagged. `main` carries **v0.40.0**, tagged at the
-MERGED sha `5f5f6f9` (not the branch tip `4103276` — those are different
+Current release: **0.42.0** — the version stamped in this tree, in flight on
+a pull request and not yet tagged. `main` carries **v0.41.0**, tagged at the
+MERGED sha `b2fbb98` (not the branch tip `c9877f3` — those are different
 commits, and tagging the wrong one ships a sha `main` does not hold). Anyone
 installing from the marketplace resolves the last TAG, not this line.
 

@@ -1,23 +1,20 @@
 # HANDOFF
 
 State of play for the next agent. Overwritten in place, never appended.
-Written 2026-09-23 for v0.41.0 release.
+Written 2026-09-25 for v0.42.0 release.
 
 ## 1. READ THIS FIRST
 
-- **v0.41.0 IS PREPARED** — version bumped to 0.41.0 across 6 files / 7 places,
+- **v0.42.0 IS PREPARED** — version bumped to 0.42.0 across 6 files / 7 places,
   published roadmap page current.
-- **What ships in v0.41.0**:
-  1. Support newly released frontier models:
-     - Claude Opus 5.5: `claude-opus-5-5` (display `claude/opus-5.5`).
-     - Codex Sol 6: `gpt-6-sol` (effort: `max`).
+- **What ships in v0.42.0**:
+  1. Support newly released frontier OpenAI models:
+     - Codex Sol 6: `gpt-6-sol` (effort: `max`, default seat `gpt-6-sol[max]`).
      - Codex Luna 6: `gpt-6-luna` (effort: `ultra`).
-  2. Updated defaults across the project:
-     - `codex-advisor` default seat: `gpt-6-sol[max]`.
-     - Review profiles: `claude` -> `claude-opus-5-5`, `codex` -> `gpt-6-sol`.
-     - `party-mode` / `tmux-teams` frontier model references: `gpt-6-sol` and `claude-opus-5-5`.
-  3. Merged in PR #85.
-- **Gate**: PR #85 passed 100% CI checks across Node 20 and Node 24 (push and pull_request). Codex bot review quota was exhausted on account (waiver recorded per CLAUDE.md step 7). Release ordered explicitly by Master.
+  2. Deprecated and removed all support and references for `gpt-5*` models (`gpt-5.6-terra`, `gpt-5.6-sol`, `gpt-5.6-luna`).
+  3. Fixed workflow syntax check regex in `tests/plugin-structure.test.mjs` for Node 24.21+ top-level return handling.
+  4. Merged in PR #88.
+- **Gate**: PR #88 passed 100% CI checks across Node 20 and Node 24 (push and pull_request). Codex bot review quota was exhausted on account (waiver recorded per CLAUDE.md step 7). Release ordered explicitly by Master.
 - All tests pass (0 fail, 0 skipped), manifest validated, roadmap published.
 
 ## 2. HOW TO VERIFY
