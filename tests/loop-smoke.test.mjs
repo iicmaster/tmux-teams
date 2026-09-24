@@ -26,7 +26,13 @@ const MOCK = join(HERE, 'fixtures', 'mock-acp-agent.mjs')
 const PULSE = join(ROOT, 'plugins', 'tmux-teams', 'skills', 'tmux-teams', 'scripts', 'pulse.mjs')
 
 const dirs = []
-after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }) })
+after(() => {
+  for (const dir of dirs) {
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+    } catch {}
+  }
+})
 
 // Two tests in this file delete every ambient ACP_* key from THIS process and
 // then restore what they snapshotted. Both snapshotted an incomplete set at

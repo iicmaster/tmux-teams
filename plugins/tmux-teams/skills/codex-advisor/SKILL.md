@@ -1,6 +1,6 @@
 ---
 name: codex-advisor
-description: "Consult a Codex advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. Takes an optional model — $codex-advisor [luna|sol|astra] — and locks reasoning effort to each model's maximum (ultra for astra/luna, max for sol; default sol[max]), which this adapter reports and the dispatch verifies. Use when the user invokes $codex-advisor, wants a second opinion from outside the Claude family, names a specific Codex seat, or adds --party <id> to seat a saved bmad-party-mode roster. Read-only: it advises, it never edits."
+description: "Consult a Codex advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. Takes an optional model — $codex-advisor [luna|sol|astra] — and locks reasoning effort to each model's maximum (ultra for astra, luna, and sol; default sol[ultra]), which this adapter reports and the dispatch verifies. Use when the user invokes $codex-advisor, wants a second opinion from outside the Claude family, names a specific Codex seat, or adds --party <id> to seat a saved bmad-party-mode roster. Read-only: it advises, it never edits."
 ---
 
 # Codex Advisor
@@ -23,18 +23,18 @@ dispatch before prompt delivery rather than answering from a cheaper seat.
 ## Arguments
 
 ```
-$codex-advisor              # default seat: gpt-6-sol
-$codex-advisor astra        # gpt-6-astra
-$codex-advisor luna         # gpt-6-luna
-$codex-advisor sol          # gpt-6-sol
+$codex-advisor              # default seat: gpt-6-sol[ultra]
+$codex-advisor astra        # gpt-6-astra[ultra]
+$codex-advisor luna         # gpt-6-luna[ultra]
+$codex-advisor sol          # gpt-6-sol[ultra]
 ```
 
 | `<model>` | dispatches | effort |
 |---|---|---|
-| *(omitted)* | `gpt-6-sol` | `max` |
+| *(omitted)* | `gpt-6-sol` | `ultra` |
 | `astra` | `gpt-6-astra` | `ultra` |
 | `luna` | `gpt-6-luna` | `ultra` |
-| `sol` | `gpt-6-sol` | `max` |
+| `sol` | `gpt-6-sol` | `ultra` |
 
 A bare short name is accepted and expanded; the full `gpt-6-*` id is what
 reaches the adapter and what the receipt must show. Any other name is a usage
@@ -78,12 +78,12 @@ who typed `--party` asked for a specific room.
 
 The caller chooses the model. The caller does **not** choose the effort. Each seat
 locks reasoning effort to the highest tier supported by that model: `ultra` for
-`astra` and `luna`, and `max` for `sol`. The default seat runs
-`gpt-6-sol` at `max`. A request to change the effort tier is a request for a
+all supported models (`astra`, `luna`, and `sol`). The default seat runs
+`gpt-6-sol` at `ultra`. A request to change the effort tier is a request for a
 different skill.
 
 The review lane in `plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs`
-similarly pins the codex review profile at `reasoning_effort: 'max'` for `gpt-6-sol`.
+similarly pins the codex review profile at `reasoning_effort: 'ultra'` for `gpt-6-sol`.
 
 **Pass the model and effort explicitly; never inherit them.** On 2026-07-29
 `~/.codex/config.toml` read `model_reasoning_effort = "low"` while
@@ -94,8 +94,8 @@ which is a discrepancy no reader could see. The adapter now selects both values
 per dispatch and verifies the correlated session response rather than assuming a
 machine default.
 
-Never downgrade for cost or quota. If the requested seat (`ultra` for `astra`/`luna`,
-`max` for `sol`) is unavailable, **report that and stop**; an answer from
+Never downgrade for cost or quota. If the requested seat (`ultra` for `astra`, `luna`,
+or `sol`) is unavailable, **report that and stop**; an answer from
 a lesser seat is not this skill.
 
 ## The consultation is a party. Only a party.
@@ -119,7 +119,7 @@ answer is a failed consultation — say so rather than passing it on.
 
 2. **Dispatch**, selecting and verifying the identity in one step. Derive `<model>`
    and `<effort>` from the chosen seat:
-   - default (omitted) or `sol` -> `<model>` is `gpt-6-sol`, `<effort>` is `max`
+   - default (omitted) or `sol` -> `<model>` is `gpt-6-sol`, `<effort>` is `ultra`
    - `astra` -> `<model>` is `gpt-6-astra`, `<effort>` is `ultra`
    - `luna` -> `<model>` is `gpt-6-luna`, `<effort>` is `ultra`
 
@@ -181,7 +181,7 @@ answer is a failed consultation — say so rather than passing it on.
    `Error: stdin is not a terminal`, because bare `codex` opens a TUI rather
    than speaking ACP.
 
-   The receipt should read `effective_identity: <model>[<effort>]` (`gpt-6-sol[max]`,
+   The receipt should read `effective_identity: <model>[<effort>]` (`gpt-6-sol[ultra]`,
    `gpt-6-astra[ultra]`, or `gpt-6-luna[ultra]`),
    `identity_status: matched`. If the installed ACP agent does not advertise
    the requested model/effort, the adapter fails closed before the prompt.

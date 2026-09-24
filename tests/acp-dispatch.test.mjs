@@ -396,7 +396,7 @@ test('a previous run\'s identity is never reported as this dispatch\'s', async (
   if (process.platform === 'win32') return t.skip('POSIX process groups')
   // Measured on 2026-08-17, resuming a lane into the run directory its dead
   // predecessor had used. The caller printed
-  // `effective_identity: gpt-6-sol[max] (matched)` and a session id — read
+  // `effective_identity: gpt-6-sol[ultra] (matched)` and a session id — read
   // straight out of the DEAD run's snapshot, one second before the live run
   // wrote `identity_status: missing`. On a plugin whose whole subject is
   // provenance, that is the worst small bug on offer.
