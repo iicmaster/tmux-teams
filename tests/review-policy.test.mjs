@@ -45,7 +45,7 @@ test('a Gemini 3.1 reviewer model is refused rather than run', () => {
   ]) {
     assert.throws(() => assertPermittedModel(name, 'probe'), /Gemini 3\.1 is prohibited/, name)
   }
-  for (const name of ['gemini-3.6-flash-high', 'gemini-3.10-pro', 'gpt-5.6-sol', 'gpt-6-sol', null]) {
+  for (const name of ['gemini-3.6-flash-high', 'gemini-3.10-pro', 'gpt-6-luna', 'gpt-6-sol', null]) {
     assert.equal(assertPermittedModel(name, 'probe'), name)
   }
   for (const profile of Object.values(REVIEW_PROFILES)) {
@@ -93,7 +93,7 @@ test('immutable ACP profiles pin providers, models, argv, and AGY plan mode', ()
 
 test('primary normalization is robust and blocks Gemini/unknown primaries', () => {
   const cases = [
-    [' GPT-5.6-sol ', 'openai'], [{ provider: 'Anthropic', model: 'x' }, 'claude'],
+    [' GPT-6-sol ', 'openai'], [{ provider: 'Anthropic', model: 'x' }, 'claude'],
     ['kimi-k3', 'kimi'], ['claude-kimi', 'kimi'], ['claude-qwen', 'qwen'], ['claude-zai', 'zai'],
     ['qwen3.8-max-preview', 'qwen'],
     ['GLM-5.2', 'zai'], ['google-antigravity', 'gemini'], ['?', 'unknown'],
@@ -107,7 +107,7 @@ test('primary normalization is robust and blocks Gemini/unknown primaries', () =
 
 test('mixed-family text in one primary field fails closed instead of selecting the first match', () => {
   for (const primary of [
-    'gpt-5.6 claude-opus-4-8',
+    'gpt-6-sol claude-opus-5-5',
     'codex+claude',
     'kimi-code/k3 + glm-5.2',
   ]) {

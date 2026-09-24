@@ -77,7 +77,7 @@ is the most fragile part of the whole loop):
 | `-a, --ask-for-approval` | `untrusted` \| `on-request` \| `never` | `never` + `workspace-write` = no command-approval prompts, writes constrained to the effective workspace permission set (cwd need not be a git repo; `--add-dir` widens it) |
 | `-s, --sandbox` | `read-only` \| `workspace-write` \| `danger-full-access` | `workspace-write` blocks network by default (config `[sandbox_workspace_write] network_access`) |
 | `--dangerously-bypass-approvals-and-sandbox` (`--yolo`) | — | only in disposable/isolated environments |
-| `--model NAME` / `--config key='value'` | e.g. `gpt-5.5` | per-run config.toml override |
+| `--model NAME` / `--config key='value'` | e.g. `gpt-6-sol` | per-run config.toml override |
 | `codex resume --last` / `codex resume SESSION_ID` | — | `--last` is scoped to the **current cwd** and skips non-interactive sessions; use `--all`, `--include-non-interactive`, or an explicit id otherwise |
 
 ## 2. Submit a prompt
