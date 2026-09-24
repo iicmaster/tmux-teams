@@ -345,7 +345,7 @@ Measured before the skill was written rather than after: the lane accepts
 `effective_identity: gemini-3.7-flash-high (matched)`. So it is held to the same
 enforcement as the Codex seat rather than excused like the Claude one, which has
 no mode switch. It has no reasoning-effort dimension, so its identity is the
-bare model id where Codex reads `gpt-6-sol[max]`.
+bare model id where Codex reads `gpt-6-sol[ultra]`.
 
 The guard mattered more than the skill: `tests/plugin-structure.test.mjs`
 matched advisor commands on the workers `codex|claude` only, so a new advisor's

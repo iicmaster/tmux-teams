@@ -10,7 +10,7 @@ Use these cases when testing or revising `party-mode` and its subskills:
 - `TC-PA-06`: runtime lacks a named tool and uses a safe equivalent with evidence.
 - `TC-PA-07`: Phase 2 invokes the bundled `node <party-mode>/scripts/review-gate.mjs <packet> <runner-owned-absolute-target>` ACP-only workflow with a static packet before critique agents; no review plugin, MCP review tool, tmux/TUI review, or raw CLI review is used.
 - `TC-PA-08`: Phase 6 local tests pass but the ACP 3-model gate finds a must-fix issue, causing a fix loop and re-review.
-- `TC-PA-09`: ALL Codex subagents — thinking-heavy and execution-heavy alike — route to the current Codex frontier model (`gpt-6-sol` at `max` reasoning effort; Frontier always, 2026-07-14) with no Spark or inherited-default downgrade; non-Codex runtimes report equivalent routing or model-selection limits.
+- `TC-PA-09`: ALL Codex subagents — thinking-heavy and execution-heavy alike — route to the current Codex frontier model (`gpt-6-sol` at `ultra` reasoning effort; Frontier always, 2026-07-14) with no Spark or inherited-default downgrade; non-Codex runtimes report equivalent routing or model-selection limits.
 - `TC-PA-10`: simpler-path gate records objective, cheaper path, and full-workflow justification before Phase 2.
 - `TC-PA-11`: skill sync preserves target-local changes, verifies the repo source first, and syncs only the changed skill.
 - `TC-PA-12`: post-sync verification proves repo, `~/.agents`, and `~/.codex` target copies match when those targets are in scope.
