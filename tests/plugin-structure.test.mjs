@@ -522,7 +522,10 @@ test('every shipped module parses', () => {
     // Verify the workflow's syntax by checking it without the bare return keyword.
     if (checked.status !== 0 && file.endsWith('.js') && checked.stderr.includes('Illegal return statement')) {
       const source = readFileSync(file, 'utf8')
-      const sanitized = source.replace(/return\s+(\{[\s\S]*\})\s*$/m, 'void $1')
+      const match = [...source.matchAll(/\n(\s*)return\s+/g)].pop()
+      const sanitized = match
+        ? source.slice(0, match.index) + `\n${match[1]}void ` + source.slice(match.index + match[0].length)
+        : source
       checked = spawnSync(process.execPath, ['--input-type=module', '--check'], {
         input: sanitized,
         encoding: 'utf8',
