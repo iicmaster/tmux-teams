@@ -1,20 +1,18 @@
 # HANDOFF
 
 State of play for the next agent. Overwritten in place, never appended.
-Written 2026-09-25 for v0.42.0 release.
+Written 2026-09-25 for v0.43.0 release.
 
 ## 1. READ THIS FIRST
 
-- **v0.42.0 IS PREPARED** — version bumped to 0.42.0 across 6 files / 7 places,
+- **v0.43.0 IS PREPARED** — version bumped to 0.43.0 across 6 files / 7 places,
   published roadmap page current.
-- **What ships in v0.42.0**:
-  1. Support newly released frontier OpenAI models:
-     - Codex Sol 6: `gpt-6-sol` (effort: `max`, default seat `gpt-6-sol[max]`).
-     - Codex Luna 6: `gpt-6-luna` (effort: `ultra`).
-  2. Deprecated and removed all support and references for `gpt-5*` models (`gpt-5.6-terra`, `gpt-5.6-sol`, `gpt-5.6-luna`).
-  3. Fixed workflow syntax check regex in `tests/plugin-structure.test.mjs` for Node 24.21+ top-level return handling.
-  4. Merged in PR #88.
-- **Gate**: PR #88 passed 100% CI checks across Node 20 and Node 24 (push and pull_request). Codex bot review quota was exhausted on account (waiver recorded per CLAUDE.md step 7). Release ordered explicitly by Master.
+- **What ships in v0.43.0**:
+  1. Upgrade Codex Sol 6 (`gpt-6-sol`) reasoning effort policy to `ultra`.
+  2. All OpenAI Codex advisor/review seats (`gpt-6-sol`, `gpt-6-luna`, `gpt-5.3-codex-astra`) now locked to maximum available reasoning effort `ultra`.
+  3. Fixed test runner temp dir race condition on Linux CI (`tests/loop-smoke.test.mjs`).
+  4. Merged in PR #90.
+- **Gate**: PR #90 passed 100% CI checks across Node 20 and Node 24 (push and pull_request). Codex bot review quota was exhausted on account (waiver recorded per CLAUDE.md step 7). Release ordered explicitly by Master.
 - All tests pass (0 fail, 0 skipped), manifest validated, roadmap published.
 
 ## 2. HOW TO VERIFY
