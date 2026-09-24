@@ -396,7 +396,7 @@ test('a previous run\'s identity is never reported as this dispatch\'s', async (
   if (process.platform === 'win32') return t.skip('POSIX process groups')
   // Measured on 2026-08-17, resuming a lane into the run directory its dead
   // predecessor had used. The caller printed
-  // `effective_identity: gpt-5.6-sol[max] (matched)` and a session id — read
+  // `effective_identity: gpt-6-sol[max] (matched)` and a session id — read
   // straight out of the DEAD run's snapshot, one second before the live run
   // wrote `identity_status: missing`. On a plugin whose whole subject is
   // provenance, that is the worst small bug on offer.
@@ -541,7 +541,7 @@ test('the companion refuses a prohibited model when it is reached without the di
   // isolates the ACP_MODEL call site.
   const cases = [
     { env: { ACP_EXPECT_MODEL: 'gemini-3.1-flash' }, label: 'ACP_EXPECT_MODEL', value: 'gemini-3.1-flash' },
-    { env: { ACP_MODEL: 'gemini-3.1-pro-high', ACP_EXPECT_MODEL: 'gpt-5.6-luna' },
+    { env: { ACP_MODEL: 'gemini-3.1-pro-high', ACP_EXPECT_MODEL: 'gpt-6-luna' },
       label: 'ACP_MODEL', value: 'gemini-3.1-pro-high' },
   ]
   for (const [i, probe] of cases.entries()) {
@@ -805,7 +805,7 @@ test('a lane that stopped reporting is not reported as running, however alive it
     next_lease_expiry_at: '2026-08-16T23:34:54.324Z',
     meaningful_progress_count: 461,
     worker: 'codex',
-    requested_model: 'gpt-5.6-sol',
+    requested_model: 'gpt-6-sol',
     requested_reasoning_effort: 'max',
   }
   const cwd = tempDir('acp-dispatch-lease-')
@@ -887,7 +887,7 @@ test('status hands over the resume command with the session id already in it', (
     liveness_state: 'failed',
     termination_reason: 'no_outbox',
     worker: 'codex',
-    requested_model: 'gpt-5.6-sol',
+    requested_model: 'gpt-6-sol',
     requested_reasoning_effort: 'max',
   }))
   // The routing the dispatch ACTUALLY used, recorded at spawn. The first
@@ -900,14 +900,14 @@ test('status hands over the resume command with the session id already in it', (
   writeFileSync(join(cwd, '.tmux-teams', 'dispatch-routing', 'lane.json'), JSON.stringify({
     worker: 'codex',
     env: {
-      ACP_MODEL: 'gpt-5.6-sol', ACP_EXPECT_MODEL: 'gpt-5.6-sol',
+      ACP_MODEL: 'gpt-6-sol', ACP_EXPECT_MODEL: 'gpt-6-sol',
       ACP_REASONING_EFFORT: 'max', ACP_EXPECT_REASONING_EFFORT: 'max',
       CLAUDE_CONFIG_DIR: '/home/someone/.config/claude-profiles/zai',
     },
   }))
   const text = formatStatus(statusReport(cwd, 'lane'))
   assert.match(text, /ACP_RESUME='01a00c81-0383-7522-963a-16e2d007d656'/)
-  assert.match(text, /ACP_EXPECT_MODEL='gpt-5\.6-sol'/)
+  assert.match(text, /ACP_EXPECT_MODEL='gpt-6-sol'/)
   assert.match(text, /ACP_EXPECT_REASONING_EFFORT='max'/)
   assert.match(text, /CLAUDE_CONFIG_DIR='\/home\/someone\/\.config\/claude-profiles\/zai'/,
     'the profile the dispatch routed through was dropped from its own recovery command')
@@ -919,7 +919,7 @@ test('status hands over the resume command with the session id already in it', (
 
 test('a resume reuses the task id, because a new one moves the outbox out from under the prompt', () => {
   const command = resumeCommand('/repo', 'round3', {
-    sessionId: 'sess-1', routing: { worker: 'codex', env: { ACP_MODEL: 'gpt-5.6-sol' } },
+    sessionId: 'sess-1', routing: { worker: 'codex', env: { ACP_MODEL: 'gpt-6-sol' } },
     briefFile: '/tmp/recover.md',
   })
   assert.match(command, /'codex' '\/repo' 'round3' '\/tmp\/recover\.md'/)
@@ -2549,7 +2549,7 @@ test('a receipt-required dispatch resumes as a receipt-required load', () => {
     sessionId: 'sess-1',
     routing: { worker: 'codex', briefFile: '/tmp/recover.md', stallSec: 600,
       env: { INITIAL_AGENT_MODE: 'read-only', ACP_SESSION_RECEIPT_REQUIRED: '1',
-        ACP_MODEL: 'gpt-5.6-sol' } },
+        ACP_MODEL: 'gpt-6-sol' } },
   })
   for (const key of ['ACP_SESSION_RECEIPT_REQUIRED', 'ACP_SESSION_OPERATION',
     'ACP_PRIOR_DISPATCH_ID', 'ACP_PRIOR_RECEIPT_DIGEST']) {
@@ -2642,11 +2642,11 @@ test('routing records the keys that were set and invents none', () => {
   writeFileSync(join(cwd, 'brief.md'), 'brief\n')
   spawnDetached('codex', cwd, 'rt', join(cwd, 'brief.md'), 600, {
     spawnFn: () => ({ pid: 424242, unref() {}, on() {} }),
-    env: { ACP_MODEL: 'gpt-5.6-sol', ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_REASONING_EFFORT: '',
+    env: { ACP_MODEL: 'gpt-6-sol', ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_REASONING_EFFORT: '',
       SOMETHING_UNRELATED: 'not routing' },
   })
   const recorded = recordedRouting(cwd, 'rt')?.env ?? {}
-  assert.deepEqual(recorded, { ACP_MODEL: 'gpt-5.6-sol', ACP_SESSION_RECEIPT_REQUIRED: '1' },
+  assert.deepEqual(recorded, { ACP_MODEL: 'gpt-6-sol', ACP_SESSION_RECEIPT_REQUIRED: '1' },
     `routing recorded something other than the keys that were set: ${JSON.stringify(recorded)}`)
   // Named explicitly, because "deepEqual to two keys" would also pass if the
   // capture had recorded the literal string "undefined" for a third.
@@ -2664,13 +2664,13 @@ test('a resume command names no setting the dispatch did not have', () => {
   // the reproduction did not happen to use.
   const command = resumeCommand('/run', 'rt', {
     sessionId: 'sess', routing: { worker: 'codex', briefFile: '/tmp/b.md', stallSec: 600,
-      env: { ACP_MODEL: 'gpt-5.6-sol', INITIAL_AGENT_MODE: '', ACP_AGENT_ID: '' } },
+      env: { ACP_MODEL: 'gpt-6-sol', INITIAL_AGENT_MODE: '', ACP_AGENT_ID: '' } },
   })
   assert.doesNotMatch(command, /=''/,
     `an empty recorded value was emitted as an empty assignment:\n${command}`)
   assert.doesNotMatch(command, /'undefined'/,
     `the resume command manufactured a literal undefined setting:\n${command}`)
-  assert.match(command, /ACP_MODEL='gpt-5.6-sol'/)
+  assert.match(command, /ACP_MODEL='gpt-6-sol'/)
   // INITIAL_AGENT_MODE='undefined' is the one that bites: the Codex adapter
   // rejects it, so a paste fails in a way that reads like a broken dispatcher.
   assert.doesNotMatch(command, /INITIAL_AGENT_MODE=/,

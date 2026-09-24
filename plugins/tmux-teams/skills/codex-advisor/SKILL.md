@@ -1,6 +1,6 @@
 ---
 name: codex-advisor
-description: "Consult a Codex advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. Takes an optional model — $codex-advisor [luna|terra|sol|astra] — and locks reasoning effort to each model's maximum (ultra for astra/luna, max for sol/terra; default sol[max]), which this adapter reports and the dispatch verifies. Use when the user invokes $codex-advisor, wants a second opinion from outside the Claude family, names a specific Codex seat, or adds --party <id> to seat a saved bmad-party-mode roster. Read-only: it advises, it never edits."
+description: "Consult a Codex advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. Takes an optional model — $codex-advisor [luna|sol|astra] — and locks reasoning effort to each model's maximum (ultra for astra/luna, max for sol; default sol[max]), which this adapter reports and the dispatch verifies. Use when the user invokes $codex-advisor, wants a second opinion from outside the Claude family, names a specific Codex seat, or adds --party <id> to seat a saved bmad-party-mode roster. Read-only: it advises, it never edits."
 ---
 
 # Codex Advisor
@@ -26,7 +26,6 @@ dispatch before prompt delivery rather than answering from a cheaper seat.
 $codex-advisor              # default seat: gpt-6-sol
 $codex-advisor astra        # gpt-6-astra
 $codex-advisor luna         # gpt-6-luna
-$codex-advisor terra        # gpt-5.6-terra
 $codex-advisor sol          # gpt-6-sol
 ```
 
@@ -35,10 +34,9 @@ $codex-advisor sol          # gpt-6-sol
 | *(omitted)* | `gpt-6-sol` | `max` |
 | `astra` | `gpt-6-astra` | `ultra` |
 | `luna` | `gpt-6-luna` | `ultra` |
-| `terra` | `gpt-5.6-terra` | `max` |
 | `sol` | `gpt-6-sol` | `max` |
 
-A bare short name is accepted and expanded; the full `gpt-6-*` or `gpt-5.6-*` id is what
+A bare short name is accepted and expanded; the full `gpt-6-*` id is what
 reaches the adapter and what the receipt must show. Any other name is a usage
 error — **do not pass a model through unrecognised**, because an unknown value
 either fails the dispatch or silently seats something nobody chose.
@@ -80,7 +78,7 @@ who typed `--party` asked for a specific room.
 
 The caller chooses the model. The caller does **not** choose the effort. Each seat
 locks reasoning effort to the highest tier supported by that model: `ultra` for
-`astra` and `luna`, and `max` for `sol` and `terra`. The default seat runs
+`astra` and `luna`, and `max` for `sol`. The default seat runs
 `gpt-6-sol` at `max`. A request to change the effort tier is a request for a
 different skill.
 
@@ -97,7 +95,7 @@ per dispatch and verifies the correlated session response rather than assuming a
 machine default.
 
 Never downgrade for cost or quota. If the requested seat (`ultra` for `astra`/`luna`,
-`max` for `sol`/`terra`) is unavailable, **report that and stop**; an answer from
+`max` for `sol`) is unavailable, **report that and stop**; an answer from
 a lesser seat is not this skill.
 
 ## The consultation is a party. Only a party.
@@ -124,7 +122,6 @@ answer is a failed consultation — say so rather than passing it on.
    - default (omitted) or `sol` -> `<model>` is `gpt-6-sol`, `<effort>` is `max`
    - `astra` -> `<model>` is `gpt-6-astra`, `<effort>` is `ultra`
    - `luna` -> `<model>` is `gpt-6-luna`, `<effort>` is `ultra`
-   - `terra` -> `<model>` is `gpt-5.6-terra`, `<effort>` is `max`
 
    ```bash
    # The binary first, and ABSOLUTELY. `buildBuiltinProfile` refuses a
@@ -185,7 +182,7 @@ answer is a failed consultation — say so rather than passing it on.
    than speaking ACP.
 
    The receipt should read `effective_identity: <model>[<effort>]` (`gpt-6-sol[max]`,
-   `gpt-6-astra[ultra]`, `gpt-6-luna[ultra]`, or `gpt-5.6-terra[max]`),
+   `gpt-6-astra[ultra]`, or `gpt-6-luna[ultra]`),
    `identity_status: matched`. If the installed ACP agent does not advertise
    the requested model/effort, the adapter fails closed before the prompt.
 
@@ -237,7 +234,7 @@ reason to have paid twice.
 Do not average them into a recommendation. Report the disagreement and let the
 person decide.
 
-Two Codex seats are not two vendors. `astra`, `luna`, `terra` and `sol` are one family; a
+Two Codex seats are not two vendors. `astra`, `luna`, and `sol` are one family; a
 disagreement between them is worth reading but it is not the cross-vendor check
 this section is about.
 
@@ -332,8 +329,8 @@ changes state. Work that comes out of a consultation goes to `party-auto`.
   disk and giving the agent paths is still worth doing for its own sake, but do
   not expect it to fix this. Try resume, then re-dispatch — do not theorise.
 - **Identity refused.** The adapter did not acknowledge the requested model and effort
-  (`ultra` for `astra`/`luna`, `max` for `sol`/`terra`). Report and stop.
-- **Unknown model name.** Anything outside `astra`, `luna`, `terra`, `sol` is a usage
+  (`ultra` for `astra`/`luna`, `max` for `sol`). Report and stop.
+- **Unknown model name.** Anything outside `astra`, `luna`, `sol` is a usage
   error. Ask, do not guess — a name that reaches the adapter unchecked either
   fails the dispatch or seats a model nobody chose.
 - **Effort inherited rather than set.** If the invocation did not name the

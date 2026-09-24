@@ -82,7 +82,7 @@ Exec mode defaults to a **read-only** sandbox.
 Model keys:
 
 ```toml
-model = "gpt-5.5"
+model = "gpt-6-sol"
 model_reasoning_effort = "xhigh"   # minimal | low | medium | high | xhigh
 model_verbosity = "medium"         # low | medium | high
 model_context_window = 400000      # known bug: sometimes not respected (issue #19185)

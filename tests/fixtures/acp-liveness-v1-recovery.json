@@ -61,9 +61,9 @@
   "plan_digest": null,
   "plan_entry_count": 0,
   "cancellation_unavailable": false,
-  "requested_model": "gpt-5.6-luna",
+  "requested_model": "gpt-6-luna",
   "requested_reasoning_effort": "ultra",
-  "effective_identity": "gpt-5.6-luna[ultra]",
+  "effective_identity": "gpt-6-luna[ultra]",
   "identity_status": "matched",
   "work_observed": true,
   "agent_id": "root_liveness_implementer"

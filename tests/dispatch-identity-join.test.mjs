@@ -131,12 +131,12 @@ test('a matched receipt carrying its requested reasoning effort agrees, it does 
   // effort as a contradiction — a false alarm on the HAPPY path, which is how a
   // new signal gets ignored. Found by the release panel (codex lane, 2026-08-10).
   const withEffort = {
-    ...receipt('gpt-5.6-terra', 'gpt-5.6-terra[max]', 'matched'),
+    ...receipt('gpt-6-sol', 'gpt-6-sol[max]', 'matched'),
     requested_reasoning_effort: 'max',
   }
-  const join_ = joinDispatchIdentity(assigned('gpt-5.6-terra'), withEffort)
+  const join_ = joinDispatchIdentity(assigned('gpt-6-sol'), withEffort)
   assert.equal(join_.verdict, 'alias_agreed')
-  assert.equal(join_.answered, 'gpt-5.6-terra[max]')
+  assert.equal(join_.answered, 'gpt-6-sol[max]')
 })
 
 test('the READER carries the effort through to the join, not just the fixture', () => {
@@ -156,9 +156,9 @@ test('the READER carries the effort through to the join, not just the fixture', 
     'agent_id: build_w1',
     'workflow: feature',
     'work_item: tok',
-    'requested_model: gpt-5.6-terra',
+    'requested_model: gpt-6-sol',
     'requested_reasoning_effort: max',
-    'effective_identity: gpt-5.6-terra[max]',
+    'effective_identity: gpt-6-sol[max]',
     'identity_status: matched',
     '',
   ].join('\n'))
@@ -178,11 +178,11 @@ test('the READER carries the effort through to the join, not just the fixture', 
 
   const fact = readDispatchFacts(repo).get('t1')
   assert.ok(fact, 'the receipt on disk was not read at all')
-  assert.equal(fact.requested_model, 'gpt-5.6-terra',
+  assert.equal(fact.requested_model, 'gpt-6-sol',
     'a mis-named file overwrote the real receipt for this task')
   assert.equal(fact.requested_reasoning_effort, 'max',
     'the reader dropped the effort, so the join below can only ever see null')
-  assert.equal(joinDispatchIdentity(assigned('gpt-5.6-terra'), fact).verdict, 'alias_agreed',
+  assert.equal(joinDispatchIdentity(assigned('gpt-6-sol'), fact).verdict, 'alias_agreed',
     'a clean effort-pinned leg read off its own receipt is still reported as a contradiction')
 })
 
@@ -216,24 +216,24 @@ test('widening for effort does not blind the join to a genuinely different model
   // The guard on the guard: accepting `model[effort]` must not accept
   // `something-else[effort]`.
   const wrongModel = {
-    ...receipt('gpt-5.6-terra', 'glm-5.2[max]', 'matched'),
+    ...receipt('gpt-6-sol', 'glm-5.2[max]', 'matched'),
     requested_reasoning_effort: 'max',
   }
-  assert.equal(joinDispatchIdentity(assigned('gpt-5.6-terra'), wrongModel).verdict, 'contradicted')
+  assert.equal(joinDispatchIdentity(assigned('gpt-6-sol'), wrongModel).verdict, 'contradicted')
 
   // ...nor `model[some-other-effort]`.
   const wrongEffort = {
-    ...receipt('gpt-5.6-terra', 'gpt-5.6-terra[low]', 'matched'),
+    ...receipt('gpt-6-sol', 'gpt-6-sol[low]', 'matched'),
     requested_reasoning_effort: 'max',
   }
-  assert.equal(joinDispatchIdentity(assigned('gpt-5.6-terra'), wrongEffort).verdict, 'contradicted')
+  assert.equal(joinDispatchIdentity(assigned('gpt-6-sol'), wrongEffort).verdict, 'contradicted')
 
   // ...nor a bare model when an effort WAS requested.
   const noSuffix = {
-    ...receipt('gpt-5.6-terra', 'gpt-5.6-terra', 'matched'),
+    ...receipt('gpt-6-sol', 'gpt-6-sol', 'matched'),
     requested_reasoning_effort: 'max',
   }
-  assert.equal(joinDispatchIdentity(assigned('gpt-5.6-terra'), noSuffix).verdict, 'contradicted')
+  assert.equal(joinDispatchIdentity(assigned('gpt-6-sol'), noSuffix).verdict, 'contradicted')
 })
 
 // ---------------------------------------------------------------------------

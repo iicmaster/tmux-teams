@@ -1421,7 +1421,7 @@ concurrentTest('identity mismatch publishes a failed immutable receipt before pr
   const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-receipt-identity-mismatch-'))
   const protocolLog = join(cwd, 'identity-mismatch.protocol.log')
   const r = await asyncRun('task-receipt-identity-mismatch', {
-    ACP_EXPECT_MODEL: 'gpt-5.6-luna',
+    ACP_EXPECT_MODEL: 'gpt-6-luna',
     ACP_EXPECT_REASONING_EFFORT: 'ultra',
     MOCK_MODEL: 'unexpected-model',
     MOCK_PROTOCOL_LOG: protocolLog,
@@ -2983,9 +2983,9 @@ concurrentTest('minimal terminal fallback preserves v1 shape and clears current 
   const r = await asyncRun(taskId, {
     MOCK_SCENARIO: 'unicode-large-tools',
     MOCK_UNICODE_TOOL_COUNT: '65',
-    MOCK_MODEL: 'gpt-5.6-luna',
+    MOCK_MODEL: 'gpt-6-luna',
     MOCK_REASONING_EFFORT: 'ultra',
-    ACP_EXPECT_MODEL: 'gpt-5.6-luna',
+    ACP_EXPECT_MODEL: 'gpt-6-luna',
     ACP_EXPECT_REASONING_EFFORT: 'ultra',
     ACP_TEST_SNAPSHOT_BUDGET_BYTES: '1070',
     ACP_LIVENESS_TICK_MS: '5',

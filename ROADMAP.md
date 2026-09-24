@@ -330,7 +330,7 @@ deliberate compatibility choice. The unqualified sentence stood here until a
 review lane read it against `acp-dispatch.mjs`.
 
 **Delivery model, also Master's, 2026-08-19:** implementation is dispatched to
-Sonnet subagents; `agy` and `codex` at `gpt-5.6-luna` review. The session drives
+Sonnet subagents; `agy` and `codex` at `gpt-6-luna` review. The session drives
 and measures rather than typing the change itself.
 
 **A third advisor seat: `agy-advisor`.** SHIPPED. `codex-advisor` and `claude-advisor`
@@ -345,7 +345,7 @@ Measured before the skill was written rather than after: the lane accepts
 `effective_identity: gemini-3.7-flash-high (matched)`. So it is held to the same
 enforcement as the Codex seat rather than excused like the Claude one, which has
 no mode switch. It has no reasoning-effort dimension, so its identity is the
-bare model id where Codex reads `gpt-5.6-sol[max]`.
+bare model id where Codex reads `gpt-6-sol[max]`.
 
 The guard mattered more than the skill: `tests/plugin-structure.test.mjs`
 matched advisor commands on the workers `codex|claude` only, so a new advisor's

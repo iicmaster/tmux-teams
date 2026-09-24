@@ -33,7 +33,7 @@
   "plan_digest": null,
   "plan_entry_count": 0,
   "cancellation_unavailable": true,
-  "requested_model": "gpt-5.6-luna",
+  "requested_model": "gpt-6-luna",
   "requested_reasoning_effort": "ultra",
   "effective_identity": null,
   "identity_status": "missing",
