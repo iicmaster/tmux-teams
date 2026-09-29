@@ -36,7 +36,8 @@ $codex-advisor sol          # gpt-6.1-sol[ultra]
 | `luna` | `gpt-6-luna` | `ultra` |
 | `sol` | `gpt-6.1-sol` | `ultra` |
 
-A bare short name is accepted and expanded; the full `gpt-6-*` id is what
+A bare short name is accepted and expanded; the full model id (`gpt-6.1-*`,
+`gpt-6-*`) is what
 reaches the adapter and what the receipt must show. Any other name is a usage
 error — **do not pass a model through unrecognised**, because an unknown value
 either fails the dispatch or silently seats something nobody chose.
@@ -329,7 +330,7 @@ changes state. Work that comes out of a consultation goes to `party-auto`.
   disk and giving the agent paths is still worth doing for its own sake, but do
   not expect it to fix this. Try resume, then re-dispatch — do not theorise.
 - **Identity refused.** The adapter did not acknowledge the requested model and effort
-  (`ultra` for `astra`/`luna`, `max` for `sol`). Report and stop.
+  (`ultra` for every seat: `astra`/`luna`/`sol`). Report and stop.
 - **Unknown model name.** Anything outside `astra`, `luna`, `sol` is a usage
   error. Ask, do not guess — a name that reaches the adapter unchecked either
   fails the dispatch or seats a model nobody chose.
