@@ -10,7 +10,7 @@ Use these cases when testing or revising `party-mode` and its subskills:
 - `TC-PA-06`: runtime lacks a named tool and uses a safe equivalent with evidence.
 - `TC-PA-07`: Phase 2 invokes the bundled `node <party-mode>/scripts/review-gate.mjs <packet> <runner-owned-absolute-target>` ACP-only workflow with a static packet before critique agents; no review plugin, MCP review tool, tmux/TUI review, or raw CLI review is used.
 - `TC-PA-08`: Phase 6 local tests pass but the ACP 3-model gate finds a must-fix issue, causing a fix loop and re-review.
-- `TC-PA-09`: ALL Codex subagents — thinking-heavy and execution-heavy alike — route to the current Codex frontier model (`gpt-6-sol` at `ultra` reasoning effort; Frontier always, 2026-07-14) with no Spark or inherited-default downgrade; non-Codex runtimes report equivalent routing or model-selection limits.
+- `TC-PA-09`: ALL Codex subagents — thinking-heavy and execution-heavy alike — route to the current Codex frontier model (`gpt-6.1-sol` at `ultra` reasoning effort; Frontier always, 2026-07-14) with no Spark or inherited-default downgrade; non-Codex runtimes report equivalent routing or model-selection limits.
 - `TC-PA-10`: simpler-path gate records objective, cheaper path, and full-workflow justification before Phase 2.
 - `TC-PA-11`: skill sync preserves target-local changes, verifies the repo source first, and syncs only the changed skill.
 - `TC-PA-12`: post-sync verification proves repo, `~/.agents`, and `~/.codex` target copies match when those targets are in scope.
@@ -36,7 +36,7 @@ Use these cases when testing or revising `party-mode` and its subskills:
 - `TC-PA-32`: a lane timeout is recorded as a gate failure or triggers only an eligible non-AGY reserve; no raw CLI, tmux, review plugin, or MCP review fallback is attempted.
 - `TC-PA-33`: the gate's executable workflow is invoked for both Phase 2 and Phase 6, and its schema validates transport, routing, identity, acknowledgement, packet, isolation, timeout, and report structure while PM review evaluates semantics.
 - `TC-PA-34`: a packet-supplied decoy `target_repo` cannot change the runner-owned canonical target; bubblewrap hides the real target and host user-data roots, uses an ephemeral provider HOME and new PID namespace, and denies target reads/writes.
-- `TC-PA-35`: mixed-family primary text such as `gpt-6-sol claude-opus` fails closed; the sanctioned `claude-qwen` and `claude-zai` ACP aliases retain their routed families, while legacy `claude-kimi` remains compatibility-only.
+- `TC-PA-35`: mixed-family primary text such as `gpt-6.1-sol claude-opus` fails closed; the sanctioned `claude-qwen` and `claude-zai` ACP aliases retain their routed families, while legacy `claude-kimi` remains compatibility-only.
 - `TC-PA-36`: Zai accepts only the explicit HTTPS `api.z.ai/api/anthropic` endpoint without URL credentials/query overrides; other endpoints fail closed before launch.
 - `TC-PA-37`: pre-prompt/effectful tool calls, credential-like output (including JSON Unicode escapes), nonzero post-response exits, malformed reports, and more than the bounded packet size all fail closed.
 - `TC-PA-38`: sandbox evidence states the network and same-process auth residuals; it never claims cryptographic remote-model proof or zero live-service reachability.

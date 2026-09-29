@@ -85,7 +85,7 @@ test('every declared lane is listed, and the list is pinned rather than derived 
   for (const [lane, family, provider, model] of [
     ['agy', 'gemini', 'google-antigravity', 'gemini-3.7-flash-high'],
     ['claude', 'claude', 'anthropic', 'claude-opus-5-5'],
-    ['codex', 'openai', 'openai', 'gpt-6-sol'],
+    ['codex', 'openai', 'openai', 'gpt-6.1-sol'],
     ['deepseek', 'deepseek', 'qwen', 'deepseek-v4-flash-0731'],
     ['kimi', 'kimi', 'kimi', 'opus'],
     ['qwen', 'qwen', 'qwen', 'qwen3.8-max-preview'],

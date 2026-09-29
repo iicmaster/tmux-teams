@@ -237,13 +237,13 @@ export const REVIEW_PROFILES = freeze({
     endpoint: NINEROUTER_ENDPOINT,
   },
   codex: {
-    id: 'codex', provider: 'openai', family: 'openai', model: 'gpt-6-sol',
-    displayModel: 'openai/gpt-6-sol',
+    id: 'codex', provider: 'openai', family: 'openai', model: 'gpt-6.1-sol',
+    displayModel: 'openai/gpt-6.1-sol',
     reviewMode: 'plan',
     command: ['npx', '-y', '@agentclientprotocol/codex-acp@1.1.7'],
     adapterPackage: '@agentclientprotocol/codex-acp@1.1.7',
     config: {
-      model: 'gpt-6-sol',
+      model: 'gpt-6.1-sol',
       reasoning_effort: 'ultra',
       mode: 'read-only',
       collaboration_mode: 'plan',

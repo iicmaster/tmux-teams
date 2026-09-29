@@ -75,7 +75,7 @@ test('immutable ACP profiles pin providers, models, argv, and AGY plan mode', ()
   assert.deepEqual(REVIEW_PROFILES.zai.config, { model: 'glm-5.2', mode: 'default' })
   assert.equal(REVIEW_PROFILES.zai.thinkingBudgetTokens, 4096)
   assert.deepEqual(REVIEW_PROFILES.codex.config, {
-    model: 'gpt-6-sol',
+    model: 'gpt-6.1-sol',
     reasoning_effort: 'ultra',
     mode: 'read-only',
     collaboration_mode: 'plan',
