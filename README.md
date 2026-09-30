@@ -13,7 +13,7 @@ New here? Read this file top to bottom, then
 [how-it-works.md](plugins/tmux-teams/skills/tmux-teams/references/how-it-works.md)
 for the diagrams.
 
-Current release: **0.43.0** (`.claude-plugin/marketplace.json` and
+Current release: **0.44.0** (`.claude-plugin/marketplace.json` and
 `plugins/tmux-teams/.claude-plugin/plugin.json`). Upgrading from an earlier
 0.14.x release needs no change to an existing `graph.json` — the seat fields
 in ข้อ 2 (`adapter`, `effort`, `display_model`) and the files in ข้อ 6 are all
@@ -426,7 +426,7 @@ relaying a person's words is expected to sign `human:` and name itself in
 | Skill | Reach for it when |
 |---|---|
 | `tmux-teams:claude-advisor` | you want Claude's strongest model — pinned to `claude-fable-5`, model identity verified via `ACP_EXPECT_MODEL` |
-| `tmux-teams:codex-advisor` | you want a read from outside the Claude family — `gpt-6-sol` by default at `ultra`, or `astra` / `luna` at `ultra` |
+| `tmux-teams:codex-advisor` | you want a read from outside the Claude family — `gpt-6.1-sol` by default at `ultra`, or `astra` / `luna` at `ultra` |
 | `tmux-teams:agy-advisor` | you want a third family — Gemini through Antigravity, `gemini-3.7-flash-high` by default |
 
 **Three** advisors, added to over time — this said "Both advisors" while a third

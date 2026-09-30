@@ -52,7 +52,7 @@ variables, writes a receipt, and reports
 
 **No reasoning-effort knob.** `codex-advisor` locks `ACP_REASONING_EFFORT=ultra`
 and verifies it, so its identity reads
-`gpt-6-sol[ultra]`. The Antigravity
+`gpt-6.1-sol[ultra]`. The Antigravity
 adapter has no such dimension — the AGY identity is the bare model id, and
 sending `ACP_REASONING_EFFORT` here asks for a config option the adapter does not
 advertise, which fails the dispatch before the prompt.
