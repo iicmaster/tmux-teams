@@ -60,7 +60,7 @@ measures the contention.
 git diff --check                    # clean
 claude plugin validate --strict .   # "✔ Validation passed"
 node scripts/roadmap-gate.mjs       # 0 — the published page is current
-node scripts/gate-required.mjs      # 0 — exempt once v0.44.0 is tagged (panel recorded, section 1)
+node scripts/gate-required.mjs      # 2 — fail-closed on the empty post-tag range; the panel is recorded (section 1)
 ```
 
 All four measured 2026-09-03.
