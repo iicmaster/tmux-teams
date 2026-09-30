@@ -1552,8 +1552,14 @@ test('resolveExecutable accepts EITHER a trusted launcher path or a trusted real
   writeFileSync(untrustedReal, '#!/bin/sh\necho untrusted-real\n', { mode: 0o755 })
   symlinkSync(untrustedReal, join(trustedDir, 'npx'))
   const resolvedA = await resolveExecutable('npx', { HOME: home, PATH: trustedDir })
-  assert.equal(resolvedA, realpathSync(untrustedReal),
-    'a trusted launcher pointing at an untrusted real file must resolve, not refuse')
+  // The launcher path is RETURNED, not its target: invocation identity is not
+  // byte identity. Measured 2026-09-30 — `bunx` is a symlink to `bun`, which
+  // is a different PROGRAM MODE under each name, so spawning the realpath ran
+  // `bun antigravity-acp@1.2.0` (file mode) and the AGY lane died with
+  // `File not found` before any ACP byte. When the launcher path is itself
+  // trusted, invoking it grants nothing a planted binary would not.
+  assert.equal(resolvedA, join(trustedDir, 'npx'),
+    'a trusted launcher must be INVOKED as itself, not collapsed to its target')
 
   // Case B: untrusted LAUNCHER PATH, trusted REAL FILE.
   const trustedReal = join(trustedDir, 'npx-actual')
@@ -1561,7 +1567,23 @@ test('resolveExecutable accepts EITHER a trusted launcher path or a trusted real
   symlinkSync(trustedReal, join(untrustedDir, 'npx'))
   const resolvedB = await resolveExecutable('npx', { HOME: home, PATH: untrustedDir })
   assert.equal(resolvedB, realpathSync(trustedReal),
-    'an untrusted launcher pointing at a trusted real file must resolve, not refuse')
+    'an untrusted launcher pointing at a trusted real file must resolve to the REAL FILE — invoking the untrusted path would depend on a symlink a stranger can re-point between check and spawn')
+})
+
+test('a trusted launcher whose target has a DIFFERENT basename is invoked as itself (the bunx shape)', async () => {
+  // The regression the launcher-return change exists for: `bunx` is a symlink
+  // to `bun`, and the AGY review lane spawned the realpath for months without
+  // anyone seeing why it could not boot. The trust decision is unchanged —
+  // this pins that a trusted launcher keeps its own NAME on the way to spawn.
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'review-trust-home-')))
+  const trustedDir = join(home, '.local', 'bin')
+  mkdirSync(trustedDir, { recursive: true })
+  const realRunner = join(trustedDir, 'runner-real')
+  writeFileSync(realRunner, '#!/bin/sh\necho runner\n', { mode: 0o755 })
+  symlinkSync(realRunner, join(trustedDir, 'bunx'))
+  const resolved = await resolveExecutable('bunx', { HOME: home, PATH: trustedDir })
+  assert.equal(resolved, join(trustedDir, 'bunx'),
+    'the launcher name survives resolution — basename(resolveExecutable(...)) must stay bunx')
 })
 
 test('resolveExecutable still refuses when NEITHER the launcher nor its real file is trusted', async () => {

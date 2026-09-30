@@ -475,6 +475,7 @@ export async function resolveExecutable(command, env, {
       (isWithin(resolve(found), targetRepository) || isWithin(source, targetRepository))) {
     throw new ReviewTransportError('config', 'ACP review executable resolves inside the target repository')
   }
+  let trustedLauncher = false
   if (!isAbsolute(command)) {
     const roots = await trustedExecutableRoots(env)
     const trusted = candidate => roots.some(root => isWithin(candidate, root))
@@ -498,8 +499,27 @@ export async function resolveExecutable(command, env, {
     if (!trusted(resolve(found)) && !trusted(source)) {
       throw new ReviewTransportError('config', 'ACP review executable is outside trusted runtime roots')
     }
+    trustedLauncher = trusted(resolve(found))
   }
-  return source
+  // INVOCATION identity is not BYTE identity. Spawning a symlink runs its
+  // target's bytes but keeps the symlink path as the program's own name, and
+  // one shipped launcher means exactly that: `bunx` is a symlink to `bun`,
+  // which switches into package-runner mode when invoked AS bunx and into
+  // file mode when invoked AS bun — so spawning the realpath ran
+  // `bun antigravity-acp@1.2.0`, bun answered `File not found` before any ACP
+  // byte, and the AGY lane died on every machine (measured 2026-09-30; `npx`
+  // never showed it because its realpath is the CLI script itself).
+  //
+  // So: when the launcher path PATH found is itself trusted, invoke IT — the
+  // trust question was already answered by the EITHER clause above, and
+  // swapping a symlink inside a trusted root needs exactly the write access
+  // that planting a binary there always granted. When only the REAL FILE is
+  // trusted (an untrusted shim directory resolved onto sanctioned bytes),
+  // keep returning the real file: executing the bytes directly does not
+  // depend on a symlink a stranger may re-point between this check and spawn.
+  // An absolute command has no PATH search behind it, so its contract stays
+  // exactly as it was.
+  return trustedLauncher ? found : source
 }
 
 
