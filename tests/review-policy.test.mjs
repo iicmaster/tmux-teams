@@ -55,7 +55,7 @@ test('a Gemini 3.1 reviewer model is refused rather than run', () => {
 
 test('immutable ACP profiles pin providers, models, argv, and AGY plan mode', () => {
   assert.ok(Object.isFrozen(REVIEW_PROFILES))
-  assert.deepEqual(REVIEW_PROFILES.agy.command, ['bunx', 'antigravity-acp@1.0.0'])
+  assert.deepEqual(REVIEW_PROFILES.agy.command, ['bunx', 'antigravity-acp@1.2.0'])
   assert.deepEqual(REVIEW_PROFILES.kimi.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
   assert.deepEqual(REVIEW_PROFILES.zai.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
   assert.deepEqual(REVIEW_PROFILES.qwen.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
@@ -282,7 +282,7 @@ test('environment is allowlisted, provider-scoped, and launch settings are injec
     settingsLoader: () => ({ mode: 'unsafe', transport: 'acp' }),
     agyBinaryResolver: () => '/trusted/agy',
   })
-  assert.deepEqual(launch.command, ['bunx', 'antigravity-acp@1.0.0'])
+  assert.deepEqual(launch.command, ['bunx', 'antigravity-acp@1.2.0'])
   assert.deepEqual(launch.settings, { mode: 'plan', transport: 'acp', model: 'gemini-3.7-flash-high' })
   assert.equal(launch.env.AGY_BIN, '/trusted/agy')
   assert.equal(launch.env.AGY_SKIP_DOWNLOAD, '1')

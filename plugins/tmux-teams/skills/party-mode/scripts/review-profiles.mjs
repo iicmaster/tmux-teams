@@ -73,8 +73,8 @@ export const REVIEW_PROFILES = freeze({
   agy: {
     id: 'agy', provider: 'google-antigravity', family: 'gemini', model: 'gemini-3.7-flash-high',
     displayModel: 'agy/gemini-3.7-flash-high',
-    reviewMode: 'plan', command: ['bunx', 'antigravity-acp@1.0.0'],
-    adapterPackage: 'antigravity-acp@1.0.0',
+    reviewMode: 'plan', command: ['bunx', 'antigravity-acp@1.2.0'],
+    adapterPackage: 'antigravity-acp@1.2.0',
     config: { model: 'gemini-3.7-flash-high', mode: 'plan' },
   },
   kimi: {

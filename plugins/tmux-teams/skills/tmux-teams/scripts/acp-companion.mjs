@@ -1271,7 +1271,7 @@ function buildBuiltinProfile(cmd) {
   }
   const packageSpec = process.env.ACP_CMD
     ? 'custom-command'
-    : cmd[0] === 'bunx' ? String(cmd[1]?.[0] ?? 'antigravity-acp@1.0.0') : String(cmd[1]?.at(-1) ?? 'custom-command')
+    : cmd[0] === 'bunx' ? String(cmd[1]?.[0] ?? 'antigravity-acp@1.2.0') : String(cmd[1]?.at(-1) ?? 'custom-command')
   const codexIdentity = agentName === 'codex' ? commandIdentity('codex') : { realpath: null, digest: null, version: 'not_codex' }
   return {
     schema: 'acp-execution-profile',
@@ -2523,7 +2523,7 @@ const preamble =
 const CMDS = {
   claude: ['npx', ['-y', '@agentclientprotocol/claude-agent-acp']],
   codex: ['npx', ['-y', CODEX_ADAPTER_PACKAGE_SPEC]],
-  agy: ['bunx', ['antigravity-acp@1.0.0']],
+  agy: ['bunx', ['antigravity-acp@1.2.0']],
 }
 let cmd
 if (process.env.ACP_CMD) {

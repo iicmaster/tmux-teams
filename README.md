@@ -46,7 +46,7 @@ Authenticate `gh`/git first if your GitHub setup requires it.
 |---|---|
 | Node 20+ with `npx` | the ACP adapters. CI exercises Node 20 and Node 24 |
 | `tmux` and the `codex` CLI | the tmux worker lane |
-| `bun` | the `agy` ACP adapter (`bunx antigravity-acp@1.0.0`) |
+| `bun` | the `agy` ACP adapter (`bunx antigravity-acp@1.2.0`) |
 | ~~`/usr/bin/bwrap`~~ | not used at all — removed 2026-08-24, see ADR 0006, so the gate runs on macOS and Linux without it |
 
 ### First run
@@ -573,7 +573,7 @@ transport-independent:
 |---|---|---|
 | codex | ACP — `@agentclientprotocol/codex-acp@1.1.7` (drives the installed CLI; frontier model verified) | tmux |
 | claude | ACP — `@agentclientprotocol/claude-agent-acp` (pass `ANTHROPIC_MODEL=claude-opus-5-5`) | tmux |
-| agy | ACP — `antigravity-acp@1.0.0` (community adapter, source-audited 2026-07-21; needs `bun`; ToS risk — SKILL.md ข้อ 8) | tmux |
+| agy | ACP — `antigravity-acp@1.2.0` (community adapter, 1.0.0 source-audited 2026-07-21, bumped 2026-09-30; needs `bun`; ToS risk — SKILL.md ข้อ 8) | tmux |
 
 The Gemini worker lane has been removed. The companion rejects that retired
 public agent name even when `ACP_CMD` is set, preventing an override from
@@ -763,7 +763,7 @@ Codex review plugins or MCP review tools. It no longer requires
 profile in 2026-08-13, and its 2026-08-24 amendment removed the machinery
 itself. There is no OS sandbox and no way to switch one back on; the gate runs
 on macOS and Linux alike. What it still checks never came from bwrap. It also needs the supported ACP reviewer runtimes:
-`antigravity-acp@1.0.0` + trusted `agy`, Qwen/Zai through the pinned
+`antigravity-acp@1.2.0` + trusted `agy`, Qwen/Zai through the pinned
 Claude ACP adapter, and the Codex ACP adapter. `claude-zai` and `claude-qwen` must both use the
 pinned `@agentclientprotocol/claude-agent-acp` adapter with their machine-local
 profile settings. Zai must use the explicit official
