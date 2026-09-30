@@ -428,7 +428,7 @@ transport-independent. Two transports carry it:
 | transport | for | mechanism |
 |---|---|---|
 | `tmux` | any TUI without ACP; codex/agy fallback | deliver.sh + markers (ข้อ 1-ข้อ 6) |
-| `acp` | codex (`@agentclientprotocol/codex-acp@1.1.7`, frontier-verified); claude (`@agentclientprotocol/claude-agent-acp`, official adapter — e2e-verified 2026-07-21, Task subagents work, effort via `MAX_THINKING_TOKENS`); agy (`antigravity-acp@1.0.0`, community adapter — audited + e2e-verified 2026-07-21, bun required, see ToS note) | `scripts/acp-companion.mjs` — JSON-RPC over stdio |
+| `acp` | codex (`@agentclientprotocol/codex-acp@1.1.7`, frontier-verified); claude (`@agentclientprotocol/claude-agent-acp`, official adapter — e2e-verified 2026-07-21, Task subagents work, effort via `MAX_THINKING_TOKENS`); agy (`antigravity-acp@1.2.0`, community adapter — 1.0.0 audited + e2e-verified 2026-07-21, bumped 2026-09-30 after 1.0.0's pinned `agy` release died upstream; bun required, see ToS note) | `scripts/acp-companion.mjs` — JSON-RPC over stdio |
 
 The Gemini lane has been removed. The companion normalizes and rejects that
 retired public agent name before considering `ACP_CMD`; a custom command cannot
@@ -595,12 +595,19 @@ message). tmux remains the fallback lane for codex and agy. ข้อ 7's
 plan/tasks-before-dispatch rule applies to BOTH transports.
 
 **agy over ACP is UNLOCKED (2026-07-21)** via the community adapter
-`antigravity-acp@1.0.0` (shubzkothekar) — version-pinned to the release whose
+`antigravity-acp` (shubzkothekar) — 1.0.0 was version-pinned to the release whose
 source was fully audited that day: no credential handling (OAuth stays inside
 the official `agy` binary it spawns), exactly one network call in the whole
 project (downloading `agy` from Google's official GitHub releases with a
 pinned SHA-256, refused on mismatch), no telemetry, two runtime deps (official
-ACP SDK + protobuf). The companion sets `AGY_SKIP_DOWNLOAD=1` so the installed
+ACP SDK + protobuf). **Bumped to `antigravity-acp@1.2.0` on 2026-09-30 (Master's
+approval)**: 1.0.0's runtime auto-installer wanted `agy` v1.0.13, whose
+upstream GitHub release no longer exists (404), so the lane could not boot.
+1.2.0 was verified from its published source before the bump — the config
+option ids the companion speaks (`model`, `mode: plan`) are unchanged, model
+option values are bare ids, and its binary resolution (postinstall `bin/agy` →
+`$AGY_BIN` → PATH) accepts the installed `agy` with no version lock. The
+companion sets `AGY_SKIP_DOWNLOAD=1` so the installed
 `agy` on PATH/$AGY_BIN is always used. Requires `bun` on PATH (the adapter is
 Bun-native). **ToS risk — say it out loud when proposing this lane:** Google's
 Antigravity terms name third-party tools driving an OAuth-authed agy as a
