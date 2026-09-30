@@ -588,7 +588,8 @@ resumes automatically.
 `@agentclientprotocol/codex-acp@1.1.7` (successor to the deprecated
 `zed-industries/codex-acp`): it drives the INSTALLED codex CLI, so
 `gpt-6.1-sol` + `ultra` work exactly as the Frontier-always directive
-requires — e2e-verified 2026-07-19. Do NOT use the old zed-industries binary
+requires (the Sol seat e2e-verified 2026-07-19 on its predecessor
+`gpt-6-sol`). Do NOT use the old zed-industries binary
 (stale embedded core; the companion maps its failure signatures to a clear
 message). tmux remains the fallback lane for codex and agy. ข้อ 7's
 plan/tasks-before-dispatch rule applies to BOTH transports.

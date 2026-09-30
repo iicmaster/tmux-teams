@@ -1,6 +1,6 @@
 ---
 name: codex-advisor
-description: "Consult a Codex advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. Takes an optional model — $codex-advisor [luna|sol|astra] — and locks reasoning effort to each model's maximum (ultra for astra, luna, and sol; default sol[ultra]), which this adapter reports and the dispatch verifies. Use when the user invokes $codex-advisor, wants a second opinion from outside the Claude family, names a specific Codex seat, or adds --party <id> to seat a saved bmad-party-mode roster. Read-only: it advises, it never edits."
+description: "Consult a Codex advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. Takes an optional model — $codex-advisor [luna|sol|astra] — and locks reasoning effort to each model's maximum (ultra for astra and sol, max for luna; default sol[ultra]), which this adapter reports and the dispatch verifies. Use when the user invokes $codex-advisor, wants a second opinion from outside the Claude family, names a specific Codex seat, or adds --party <id> to seat a saved bmad-party-mode roster. Read-only: it advises, it never edits."
 ---
 
 # Codex Advisor
@@ -25,7 +25,7 @@ dispatch before prompt delivery rather than answering from a cheaper seat.
 ```
 $codex-advisor              # default seat: gpt-6.1-sol[ultra]
 $codex-advisor astra        # gpt-6-astra[ultra]
-$codex-advisor luna         # gpt-6-luna[ultra]
+$codex-advisor luna         # gpt-6-luna[max]
 $codex-advisor sol          # gpt-6.1-sol[ultra]
 ```
 
@@ -33,10 +33,11 @@ $codex-advisor sol          # gpt-6.1-sol[ultra]
 |---|---|---|
 | *(omitted)* | `gpt-6.1-sol` | `ultra` |
 | `astra` | `gpt-6-astra` | `ultra` |
-| `luna` | `gpt-6-luna` | `ultra` |
+| `luna` | `gpt-6-luna` | `max` |
 | `sol` | `gpt-6.1-sol` | `ultra` |
 
-A bare short name is accepted and expanded; the full `gpt-6-*` id is what
+A bare short name is accepted and expanded; the full model id (`gpt-6.1-*`,
+`gpt-6-*`) is what
 reaches the adapter and what the receipt must show. Any other name is a usage
 error — **do not pass a model through unrecognised**, because an unknown value
 either fails the dispatch or silently seats something nobody chose.
@@ -78,7 +79,9 @@ who typed `--party` asked for a specific room.
 
 The caller chooses the model. The caller does **not** choose the effort. Each seat
 locks reasoning effort to the highest tier supported by that model: `ultra` for
-all supported models (`astra`, `luna`, and `sol`). The default seat runs
+`astra` and `sol`; `max` for `luna` — the 2026-09-30 model refresh removed
+luna's `ultra` tier, and the lane that asked for it was refused before its
+prompt. The default seat runs
 `gpt-6.1-sol` at `ultra`. A request to change the effort tier is a request for a
 different skill.
 
@@ -94,8 +97,8 @@ which is a discrepancy no reader could see. The adapter now selects both values
 per dispatch and verifies the correlated session response rather than assuming a
 machine default.
 
-Never downgrade for cost or quota. If the requested seat (`ultra` for `astra`, `luna`,
-or `sol`) is unavailable, **report that and stop**; an answer from
+Never downgrade for cost or quota. If the requested seat (`ultra` for `astra`
+or `sol`, `max` for `luna`) is unavailable, **report that and stop**; an answer from
 a lesser seat is not this skill.
 
 ## The consultation is a party. Only a party.
@@ -121,7 +124,7 @@ answer is a failed consultation — say so rather than passing it on.
    and `<effort>` from the chosen seat:
    - default (omitted) or `sol` -> `<model>` is `gpt-6.1-sol`, `<effort>` is `ultra`
    - `astra` -> `<model>` is `gpt-6-astra`, `<effort>` is `ultra`
-   - `luna` -> `<model>` is `gpt-6-luna`, `<effort>` is `ultra`
+   - `luna` -> `<model>` is `gpt-6-luna`, `<effort>` is `max`
 
    ```bash
    # The binary first, and ABSOLUTELY. `buildBuiltinProfile` refuses a
@@ -182,7 +185,7 @@ answer is a failed consultation — say so rather than passing it on.
    than speaking ACP.
 
    The receipt should read `effective_identity: <model>[<effort>]` (`gpt-6.1-sol[ultra]`,
-   `gpt-6-astra[ultra]`, or `gpt-6-luna[ultra]`),
+   `gpt-6-astra[ultra]`, or `gpt-6-luna[max]`),
    `identity_status: matched`. If the installed ACP agent does not advertise
    the requested model/effort, the adapter fails closed before the prompt.
 
@@ -329,7 +332,7 @@ changes state. Work that comes out of a consultation goes to `party-auto`.
   disk and giving the agent paths is still worth doing for its own sake, but do
   not expect it to fix this. Try resume, then re-dispatch — do not theorise.
 - **Identity refused.** The adapter did not acknowledge the requested model and effort
-  (`ultra` for `astra`/`luna`, `max` for `sol`). Report and stop.
+  (`ultra` for `astra`/`sol`, `max` for `luna`). Report and stop.
 - **Unknown model name.** Anything outside `astra`, `luna`, `sol` is a usage
   error. Ask, do not guess — a name that reaches the adapter unchecked either
   fails the dispatch or seats a model nobody chose.
