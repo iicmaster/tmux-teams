@@ -1,19 +1,41 @@
 # HANDOFF
 
 State of play for the next agent. Overwritten in place, never appended.
-Written 2026-09-25 for v0.43.0 release.
+Written 2026-09-30 for v0.44.0 release.
 
 ## 1. READ THIS FIRST
 
-- **v0.43.0 IS PREPARED** — version bumped to 0.43.0 across 6 files / 7 places,
-  published roadmap page current.
-- **What ships in v0.43.0**:
-  1. Upgrade Codex Sol 6 (`gpt-6-sol`) reasoning effort policy to `ultra`.
-  2. All OpenAI Codex advisor/review seats (`gpt-6-sol`, `gpt-6-luna`, `gpt-5.3-codex-astra`) now locked to maximum available reasoning effort `ultra`.
-  3. Fixed test runner temp dir race condition on Linux CI (`tests/loop-smoke.test.mjs`).
-  4. Merged in PR #90.
-- **Gate**: PR #90 passed 100% CI checks across Node 20 and Node 24 (push and pull_request). Codex bot review quota was exhausted on account (waiver recorded per CLAUDE.md step 7). Release ordered explicitly by Master.
-- All tests pass (0 fail, 0 skipped), manifest validated, roadmap published.
+- **v0.44.0 IS PREPARED** — version bumped to 0.44.0 across 6 files / 7 places,
+  published roadmap page current (v18, recorded `ea045637…`).
+- **What ships in v0.44.0**:
+  1. Codex frontier moves `gpt-6-sol` → `gpt-6.1-sol`: the default/`sol` seat of
+     `codex-advisor`, the four party-mode routing directives, the codex review
+     profile in `review-profiles.mjs`, the skill references and the
+     `mailbox-run.js` comments. Reasoning effort stays `ultra`.
+  2. The `luna` seat drops `ultra` → `max`: the 2026-09-30 refresh removed
+     luna's `ultra` tier — a live lane asking `gpt-6-luna[ultra]` was refused
+     `config-option-invalid` before its prompt, and Master confirmed the tier
+     is gone. Supersedes v0.43.0's "all seats ultra" claim for luna.
+  3. Follow-up doc/test currency: the stale "`max` for `sol`" failure-mode
+     bullet fixed, the ROADMAP frontier line renamed and dated, the 2026-07-19
+     e2e attribution kept honest, dated frontier-move notes, and
+     `review-policy` currency.
+  4. Merged via PRs #92 (core + bump) and #93/#94 (follow-ups, roadmap marker,
+     this file).
+- **Gate — three families, recorded per lane** (CLAUDE.md step 2): the
+  review-gate script could NOT assemble on this machine. Its AGY lane's pinned
+  adapter `antigravity-acp@1.0.0` self-downloads `agy` v1.0.13, whose upstream
+  GitHub release no longer exists (404), and the gate's env-neutrality refuses
+  `AGY_BIN`; AGY is mandatory, so the script fail-closed (report archived in
+  the session record). Master directed using the seats this machine holds
+  (2026-09-30, in-session), so the panel ran as three receipted read-only
+  advisor dispatches on the release bytes:
+  `codex:gpt-6-luna[max] (matched)` · `agy:gemini-3.7-flash-high (matched)` ·
+  `ninerouter:claude-deepseek-flash (matched)`. All three found no defect in
+  the bytes; the deepseek row held the tag on F1/F2, which are release-flow
+  steps and closed with this release.
+- All tests pass (**1204 pass / 0 fail / 0 skipped** on the release tip,
+  measured 2026-09-30), CI green on #92 and #93.
 
 ## 2. HOW TO VERIFY
 
@@ -23,7 +45,8 @@ node --test > /tmp/suite.log 2>&1; grep -E '^ℹ (tests|pass|fail|skipped)' /tmp
 grep -q '^ℹ fail 0$' /tmp/suite.log || { grep '^✖' /tmp/suite.log | head; false; }
 ```
 
-Green is **`1202 pass / 0 fail / 0 skipped`** — measured 2026-09-09 on `e481486` (v0.38.0 release commit).
+Green is **`1204 pass / 0 fail / 0 skipped`** — measured 2026-09-30 on the
+v0.44.0 release tip.
 
 **Gate on the count, never on a grep of the output.** `node --test | grep '✖'`
 exits 0 when it FINDS failures, so chaining a commit after it with `&&` commits
@@ -37,7 +60,7 @@ measures the contention.
 git diff --check                    # clean
 claude plugin validate --strict .   # "✔ Validation passed"
 node scripts/roadmap-gate.mjs       # 0 — the published page is current
-node scripts/gate-required.mjs      # 2 — panel owed for v0.38.0
+node scripts/gate-required.mjs      # 0 — exempt once v0.44.0 is tagged (panel recorded, section 1)
 ```
 
 All four measured 2026-09-03.
@@ -89,6 +112,21 @@ not — reading the number alone would have removed `ANTHROPIC_API_KEY`.
 
 Measured live: the fable lane answered as Vex / Grumbal / Boundary / Yui / Dana
 with no invented names.
+
+### v0.44.0 Release
+
+**The luna tier is now `max`, not `ultra`.** Everything that says
+`gpt-6-luna[ultra]` as CURRENT policy is wrong after 2026-09-30; dated
+historical notes and the two liveness fixtures (which record what the companion
+once emitted) stay as they are by decision of the panel. The review matrix to
+hold every future edit to: default/`sol` and `astra` at `ultra`, `luna` at
+`max`, codex review profile `gpt-6.1-sol[ultra]`.
+
+**The review-gate AGY lane is dead on this machine** until the pinned adapter
+gets an `agy` source it can actually reach: `antigravity-acp@1.0.0` wants
+`agy` v1.0.13 and its download URL 404s, while `AGY_BIN` cannot reach the lane
+through `neutralEnv`. Bumping the adapter pin or widening the env allowlist is
+a change to the gate machinery itself and needs its own review.
 
 ### v0.40.0 Release
 
@@ -172,6 +210,10 @@ Fourteen skills ship from `main`.
 
 ## 6. UNPROVEN
 
+- **`astra[ultra]` has no live evidence on this machine** and neither does the
+  bare `codex` default behind the `mailbox-run.js` comments — the v0.44.0 ACP
+  evidence covers `gpt-6.1-sol[ultra]`, `gpt-6-luna[max]` (refusal and match)
+  and the three panel lanes only.
 - **`requirement-audit` has never been invoked.** It is registered, its
   frontmatter satisfies the contract, and the structure tests pass — all of
   which is about REGISTRATION. Nobody has run the skill against a real
