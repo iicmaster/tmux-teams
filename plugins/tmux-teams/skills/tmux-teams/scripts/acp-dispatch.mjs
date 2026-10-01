@@ -701,13 +701,15 @@ export function pidAlive(pid) {
 // The pattern is COPIED — this file and the companion both take only node
 // builtins on purpose, and `review-profiles.mjs` is another skill. A test
 // asserts all THREE copies are character-identical, which is the drift answer
-// that does not couple them.
-const PROHIBITED_MODEL = /(?:^|[^0-9a-z])gemini[-_ ]?3\.1(?:[^0-9]|$)/i
+// that does not couple them. It currently carries TWO prohibitions: CLAUDE.md's
+// Gemini 3.1 ban, and Master's 2026-09-30 retirement of `gpt-6-sol` (only
+// `gpt-6.1-sol` may be dispatched).
+const PROHIBITED_MODEL = /(?:^|[^0-9a-z])(?:gemini[-_ ]?3\.1|gpt[-_ ]?6[-_ ]?sol)(?:[^0-9]|$)/i
 
 function assertPermittedModel(value, name) {
   if (typeof value === 'string' && PROHIBITED_MODEL.test(value)) {
     throw Object.assign(
-      new Error(`${name}: Gemini 3.1 is prohibited on tmux-teams routes, got ${value}`),
+      new Error(`${name}: prohibited model on tmux-teams routes (Gemini 3.1 is banned; gpt-6-sol is retired — the Codex frontier is gpt-6.1-sol), got ${value}`),
       { code: 'prohibited_model' },
     )
   }

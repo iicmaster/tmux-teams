@@ -543,13 +543,20 @@ test('the companion refuses a prohibited model when it is reached without the di
     { env: { ACP_EXPECT_MODEL: 'gemini-3.1-flash' }, label: 'ACP_EXPECT_MODEL', value: 'gemini-3.1-flash' },
     { env: { ACP_MODEL: 'gemini-3.1-pro-high', ACP_EXPECT_MODEL: 'gpt-6-luna' },
       label: 'ACP_MODEL', value: 'gemini-3.1-pro-high' },
+    // The retired generation: blocked even paired with a permitted expectation.
+    { env: { ACP_MODEL: 'gpt-6-sol', ACP_EXPECT_MODEL: 'gpt-6.1-sol' },
+      label: 'ACP_MODEL', value: 'gpt-6-sol' },
+    { env: { ACP_MODEL: 'gpt-6.1-sol', ACP_EXPECT_MODEL: 'gpt-6-sol' },
+      label: 'ACP_EXPECT_MODEL', value: 'gpt-6-sol' },
   ]
   for (const [i, probe] of cases.entries()) {
     const r = spawnSync(process.execPath, [join(SCRIPTS, 'acp-companion.mjs'), 'mock', cwd, `child-case-${i}`, brief, '120'],
       { cwd, encoding: 'utf8', env: laneEnv(probe.env), timeout: 20_000 })
     assert.equal(r.status, 2,
       `case ${i} (${JSON.stringify(probe.env)}) was accepted by the companion:\n${r.stdout}${r.stderr}`)
-    assert.match(r.stderr, new RegExp(`${probe.label}: Gemini 3\\.1 is prohibited on tmux-teams routes, got ${probe.value}`),
+    // The refusal sentence is deterministic, so assert it EXACTLY rather than
+    // through a regex that would need per-value escaping.
+    assert.ok(r.stderr.includes(`${probe.label}: prohibited model on tmux-teams routes (Gemini 3.1 is banned; gpt-6-sol is retired — the Codex frontier is gpt-6.1-sol), got ${probe.value}`),
       `case ${i} refused under the wrong name:\n${r.stderr}`)
   }
   // The mock agent writes `.adapter-env.json` unconditionally at its own top
@@ -2642,11 +2649,11 @@ test('routing records the keys that were set and invents none', () => {
   writeFileSync(join(cwd, 'brief.md'), 'brief\n')
   spawnDetached('codex', cwd, 'rt', join(cwd, 'brief.md'), 600, {
     spawnFn: () => ({ pid: 424242, unref() {}, on() {} }),
-    env: { ACP_MODEL: 'gpt-6-sol', ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_REASONING_EFFORT: '',
+    env: { ACP_MODEL: 'gpt-6.1-sol', ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_REASONING_EFFORT: '',
       SOMETHING_UNRELATED: 'not routing' },
   })
   const recorded = recordedRouting(cwd, 'rt')?.env ?? {}
-  assert.deepEqual(recorded, { ACP_MODEL: 'gpt-6-sol', ACP_SESSION_RECEIPT_REQUIRED: '1' },
+  assert.deepEqual(recorded, { ACP_MODEL: 'gpt-6.1-sol', ACP_SESSION_RECEIPT_REQUIRED: '1' },
     `routing recorded something other than the keys that were set: ${JSON.stringify(recorded)}`)
   // Named explicitly, because "deepEqual to two keys" would also pass if the
   // capture had recorded the literal string "undefined" for a third.
@@ -2699,22 +2706,29 @@ test('a prohibited model refuses the dispatch before a session exists', () => {
     { cwd, encoding: 'utf8', timeout: 60000,
       env: { ...laneEnv(), ACP_MODEL: model, ACP_EXPECT_MODEL: model } })
 
-  for (const model of ['gemini-3.1-pro-high', 'gemini-3.1-pro-low', 'Gemini 3.1']) {
+  for (const model of ['gemini-3.1-pro-high', 'gemini-3.1-pro-low', 'Gemini 3.1', 'gpt-6-sol', 'GPT-6-SOL']) {
     const r = run(model)
     const said = `${r.stdout}${r.stderr}`
     assert.notEqual(r.status, 0, `${model} was dispatched:\n${said.slice(0, 300)}`)
-    assert.match(said, /Gemini 3\.1 is prohibited/,
+    assert.match(said, /prohibited model on tmux-teams routes/,
       `${model} was refused for some other reason, or not refused at all:\n${said.slice(0, 300)}`)
   }
 
   // The EXPECTATION is checked too — expecting a prohibited model is how a lane
-  // gets certified as having run one.
+  // gets certified as having run one. The retired generation is held to the
+  // same rule in both slots.
   const expected = spawnSync(process.execPath,
     [DISPATCH, 'mock', cwd, 'p-expect', join(cwd, 'brief.md'), '20'],
     { cwd, encoding: 'utf8', timeout: 60000,
       env: { ...laneEnv(), ACP_MODEL: 'gemini-3.7-flash-high', ACP_EXPECT_MODEL: 'gemini-3.1-pro-low' } })
-  assert.match(`${expected.stdout}${expected.stderr}`, /Gemini 3\.1 is prohibited/,
+  assert.match(`${expected.stdout}${expected.stderr}`, /prohibited model on tmux-teams routes/,
     'a prohibited EXPECTATION was accepted')
+  const retiredExpected = spawnSync(process.execPath,
+    [DISPATCH, 'mock', cwd, 'p-expect-retired', join(cwd, 'brief.md'), '20'],
+    { cwd, encoding: 'utf8', timeout: 60000,
+      env: { ...laneEnv(), ACP_MODEL: 'gpt-6.1-sol', ACP_EXPECT_MODEL: 'gpt-6-sol' } })
+  assert.match(`${retiredExpected.stdout}${retiredExpected.stderr}`, /gpt-6-sol is retired/,
+    'a retired-generation EXPECTATION was accepted')
 
   // And a permitted model still starts, or the guard is just an outage.
   const ok = spawnSync(process.execPath,

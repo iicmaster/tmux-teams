@@ -251,17 +251,24 @@ export const REVIEW_PROFILES = freeze({
   },
 })
 
-// CLAUDE.md forbids Gemini 3.1 on every tmux-teams AGY route and says to fail
-// closed on one. Until now the rule lived only in the pin above, which means it
-// was enforced by whoever edited that line next: v0.13.1 shipped
-// `gemini-3.1-pro-high` here with a test asserting the forbidden value was
-// correct, and nothing compared either against the rule. This throws at import.
-const PROHIBITED_MODEL = /(?:^|[^0-9a-z])gemini[-_ ]?3\.1(?:[^0-9]|$)/i
+// TWO prohibitions live in this one pattern, and a test asserts every copy of
+// it (three files) stays character-identical:
+//   1. CLAUDE.md forbids Gemini 3.1 on every tmux-teams AGY route and says to
+//      fail closed on one. Until now the rule lived only in the pin above,
+//      which means it was enforced by whoever edited that line next: v0.13.1
+//      shipped `gemini-3.1-pro-high` here with a test asserting the forbidden
+//      value was correct, and nothing compared either against the rule.
+//   2. Master, 2026-09-30: `gpt-6-sol` is retired — only `gpt-6.1-sol` may be
+//      dispatched or reviewed. The pattern must NOT swallow `gpt-6.1-sol`
+//      (`[-_ ]?` cannot take the `.`), and it deliberately reaches the old
+//      generation's suffixed forms (`gpt-6-sol-fast`, `gpt-6-sol[max]`).
+// This throws at import.
+const PROHIBITED_MODEL = /(?:^|[^0-9a-z])(?:gemini[-_ ]?3\.1|gpt[-_ ]?6[-_ ]?sol)(?:[^0-9]|$)/i
 
 /** Reject a prohibited reviewer model rather than quietly running it. */
 export function assertPermittedModel(model, where) {
   if (typeof model === 'string' && PROHIBITED_MODEL.test(model)) {
-    throw new Error(`${where}: Gemini 3.1 is prohibited on tmux-teams review routes, got ${model}`)
+    throw new Error(`${where}: prohibited model on tmux-teams review routes (Gemini 3.1 is banned; gpt-6-sol is retired — the Codex frontier is gpt-6.1-sol), got ${model}`)
   }
   return model
 }

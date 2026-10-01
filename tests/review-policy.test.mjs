@@ -39,11 +39,13 @@ const object = (entries) => Object.fromEntries(entries)
 // that `agy.model` equals the right string is what the suite already did while
 // the string was the forbidden one — a value test cannot tell a pin from a
 // violation. These cases fail if the guard stops rejecting Gemini 3.1.
-test('a Gemini 3.1 reviewer model is refused rather than run', () => {
+test('a Gemini 3.1 or retired gpt-6-sol reviewer model is refused rather than run', () => {
   for (const name of [
     'gemini-3.1-pro-high', 'gemini-3.1-pro', 'Gemini 3.1', 'agy/gemini_3.1-flash',
+    // Master, 2026-09-30: the old generation is retired — only gpt-6.1-sol runs.
+    'gpt-6-sol', 'GPT-6-SOL', 'gpt-6-sol-fast',
   ]) {
-    assert.throws(() => assertPermittedModel(name, 'probe'), /Gemini 3\.1 is prohibited/, name)
+    assert.throws(() => assertPermittedModel(name, 'probe'), /prohibited model on tmux-teams review routes/, name)
   }
   for (const name of ['gemini-3.6-flash-high', 'gemini-3.10-pro', 'gpt-6-luna', 'gpt-6.1-sol', null]) {
     assert.equal(assertPermittedModel(name, 'probe'), name)
