@@ -2659,6 +2659,34 @@ test('a clean currentModelId does not shadow a retired model option in the same 
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('a SECOND recognized model option is screened, not shadowed by the first match', async () => {
+  // Round-3 panel counterexample (Quinn, codex lane): `.find()` read only the
+  // FIRST option matching the id/name predicate. Two recognized options — the
+  // first clean, the second carrying the retired generation — let the retired
+  // witness survive behind the clean one. `.filter()` screens them all.
+  const stub = join(ROOT, 'tests', 'fixtures', 'probe-stub-agent.mjs')
+  const dir = mkdtempSync(join(tmpdir(), 'probe-second-option-'))
+  try {
+    const log = join(dir, 'asked.log')
+    writeFileSync(log, '')
+    const result = await realProbeTransport({
+      command: [process.execPath, stub],
+      env: { ...process.env, STUB_MODE: 'ok', STUB_LOG: log,
+        STUB_CURRENT_MODEL: 'gpt-6.1-sol', STUB_OPTION_MODEL: 'gpt-6.1-sol',
+        STUB_OPTION2_MODEL: 'gpt-6-sol' },
+      depth: 'prompt',
+      bootTimeoutMs: 8000, replyTimeoutMs: 8000,
+    })
+    assert.deepEqual(result, { settled: 'prohibited_model' },
+      `a retired SECOND option settled as ${JSON.stringify(result)}`)
+    const asked = readFileSync(log, 'utf8').split('\n').filter(Boolean)
+    assert.ok(!asked.includes('session/prompt'),
+      'the probe paid for a turn while a second witness named the retired generation')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
 // A typo must COST NOTHING. A caller who writes `handshakes` is asking to spend
 // no quota; silently treating that as the paying default would spend a whole
 // sweep's budget on a spelling mistake.

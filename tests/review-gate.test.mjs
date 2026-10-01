@@ -1680,6 +1680,67 @@ test('a successor value in the same setter reply supersedes and the turn proceed
   assert.equal(out.isolation.toolCallsObserved, 0)
 }, { timeout: 10_000 })
 
+test('a successful model setter supersedes a retired seed in EVERY acknowledged reply shape', async () => {
+  // Round-3 panel counterexamples (codex lane, 2026-10-01): the session seeds
+  // the witness with the retired generation (models.currentModelId AND the
+  // advertised current), a model setter is required, and its successful
+  // reply may use ANY shape acknowledgedValue accepts. Only the list shape
+  // moved the witness — singular and scalar left the retired seed standing,
+  // so the operator asked for the successor, was acknowledged the successor,
+  // and was refused in the name of the old generation. All three shapes
+  // supersede; all three prompt.
+  for (const shape of ['list', 'singular', 'scalar']) {
+    const out = await invoke({
+      id: 'codex', lane: 'codex', provider: 'openai',
+      command: process.execPath,
+      args: [MOCK, 'retired-seed'],
+      reviewMode: 'plan', model: 'gpt-6.1-sol',
+      config: { model: 'gpt-6.1-sol', mode: 'plan' },
+    }, { MOCK_REVIEW_BEHAVIOUR: 'retired-seed', MOCK_REVIEW_MODEL: 'gpt-6.1-sol', MOCK_SETTER_SHAPE: shape })
+    // The run must COMPLETE — reaching a PASS verdict is itself the proof
+    // that the validated successor setter superseded the retired seed; the
+    // round-3 defect was the refusal, not a wrong verdict.
+    assert.equal(out.review.verdict, 'PASS',
+      `shape ${shape}: a validated successor setter must supersede the retired seed`)
+  }
+}, { timeout: 20_000 })
+
+test('an alias must not shadow a retired canonical model', () => {
+  // Round-3 panel (Ada): requestModel ?? model let an alias suppress the
+  // canonical screen — a profile recording gpt-6-sol behind a gateway alias
+  // passed the entry guard. Both names are screened independently. The
+  // control proves the alias+clean-canonical pair is NOT what trips it.
+  let spawned = false
+  const neverSpawn = () => { spawned = true; throw new Error('must not spawn') }
+  const env = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+  const attempt = (model) => runAcpReview({
+    lane: 'codex',
+    profile: { reviewMode: 'plan', model, requestModel: 'Gateway-Codex-Route' },
+    packet: {},
+    command: 'definitely-not-run',
+    args: [],
+    env,
+    spawn: neverSpawn,
+    timeoutMs: 1000,
+  })
+  return (async () => {
+    await assert.rejects(
+      attempt('gpt-6-sol'),
+      error => error.code === 'policy' && /gpt-6-sol is retired/.test(error.message),
+      'a retired CANONICAL behind an alias was accepted',
+    )
+    assert.equal(spawned, false)
+    // Control: the same alias over a clean canonical must pass the guard
+    // (it fails later, on the unresolvable executable — not as policy).
+    await assert.rejects(
+      attempt('gpt-6.1-sol'),
+      error => error.code !== 'policy',
+      'the alias+clean pair was refused as policy — the guard over-refuses',
+    )
+    assert.equal(spawned, false)
+  })()
+})
+
 test('resolveExecutable still refuses when NEITHER the launcher nor its real file is trusted', async () => {
   // The boundary the EITHER/OR change must not erase: accepting either half
   // is not the same as accepting everything. Kept next to the pass cases

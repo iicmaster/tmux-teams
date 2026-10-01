@@ -940,16 +940,24 @@ export async function realProbeTransport({ command, env, spawnFn = spawn, abortS
         // (Master, 2026-09-30: gpt-6-sol is retired — only gpt-6.1-sol runs).
         // A lane whose adapter maps its default onto the retired generation
         // must be reported as such, not probed into a paid turn on it. EVERY
-        // model-bearing field the session/new response carries is a witness
-        // and ALL of them are screened: `??`-chaining let a clean
-        // `models.currentModelId` shadow a retired `model` config option
-        // sitting in the same response (demonstrated by the v0.45.0 release
-        // panel, codex lane, round 2, 2026-10-01). Fires at BOTH depths on
-        // purpose: handshake depth never prompts, so the flag there is pure
-        // information about what prompt depth would have paid for.
+        // model-bearing field is a witness and ALL of them are screened:
+        // `models.currentModelId` AND every config option this code
+        // recognizes as the model (by id OR name). Two rounds of panel
+        // findings shaped this: round 2 killed the `??` chain that let a
+        // clean currentModelId shadow a retired option in the same response;
+        // round 3 killed the `.find()` that read only the FIRST matching
+        // option, so a second recognized option carrying the retired
+        // generation survived behind a clean first one (codex lane,
+        // 2026-10-01). Fires at BOTH depths on purpose: handshake depth never
+        // prompts, so the flag there is pure information about what prompt
+        // depth would have paid for.
         const observedProbeModels = [
           session?.models?.currentModelId,
-          session?.configOptions?.find?.((o) => o?.id === 'model' || o?.name === 'model')?.currentValue,
+          ...(Array.isArray(session?.configOptions)
+            ? session.configOptions
+                .filter((o) => o?.id === 'model' || o?.name === 'model')
+                .map((o) => o?.currentValue)
+            : []),
         ]
         for (const witness of observedProbeModels) {
           if (typeof witness !== 'string' || witness === '') continue

@@ -639,10 +639,15 @@ export async function runAcpReview({
   // shipped pins were checked at review-profiles import time, but a
   // caller-supplied profile or a lane override reaches this function after
   // that check ran, and this transport is the last thing between the request
-  // and the prompt. Wrapped as `policy` so the gate classifies it with the
-  // other refuses-rather-than-ran outcomes.
+  // and the prompt. BOTH names are screened independently: `requestModel` is
+  // the alias the wire is asked for and `model` is the identity this run
+  // RECORDS — an alias must not shadow a retired canonical (found by the
+  // v0.45.0 release panel, codex lane, round 3, 2026-10-01). Wrapped as
+  // `policy` so the gate classifies it with the other refuses-rather-than-ran
+  // outcomes.
   try {
-    assertPermittedModel(profile.requestModel ?? profile.model, 'ACP review model request')
+    assertPermittedModel(profile.requestModel, 'ACP review model request alias')
+    assertPermittedModel(profile.model, 'ACP review model request canonical')
   } catch (error) {
     throw new ReviewTransportError('policy', error.message, error)
   }
@@ -1123,13 +1128,24 @@ export async function runAcpReview({
           const acknowledged = acknowledgedValue(ack, option.id ?? id)
           if (acknowledged !== wanted) throw new ReviewTransportError('config', `ACP did not acknowledge ${id}=${wanted}`)
           acknowledgements[id] = Object.freeze({ value: acknowledged, source: 'set_config_option' })
-          // Only a reply that actually NAMES a model current value moves the
-          // witness; `configList` on a reply without one yields nothing, so a
-          // mode-only reply cannot fabricate a witness from the whole result.
-          const replyModelWitness = configList(ack).find(c => c?.id === 'model' || c?.name === 'model')
-          if (replyModelWitness) {
-            const witnessValue = currentValue(replyModelWitness)
-            if (typeof witnessValue === 'string' && witnessValue !== '') sessionModelWitness = witnessValue
+          if (id === 'model') {
+            // A SUCCESSFUL model setter supersedes the seeded witness in every
+            // reply shape acknowledgedValue accepts (list, singular,
+            // scalar) — the panel demonstrated a retired seed surviving a
+            // successor set whose reply was singular or scalar (codex lane,
+            // round 3, 2026-10-01). `acknowledged` is already validated ===
+            // wanted, so this is the wire-confirmed truth.
+            sessionModelWitness = acknowledged
+          } else {
+            // Other setters' replies may SMUGGLE a model change (a mode
+            // reply carrying a model field — round 2's counterexample). Only
+            // a reply that actually NAMES a model current value moves the
+            // witness; a reply without one fabricates nothing.
+            const replyModelWitness = configList(ack).find(c => c?.id === 'model' || c?.name === 'model')
+            if (replyModelWitness) {
+              const witnessValue = currentValue(replyModelWitness)
+              if (typeof witnessValue === 'string' && witnessValue !== '') sessionModelWitness = witnessValue
+            }
           }
         } else {
           acknowledgements[id] = Object.freeze({ value: wanted, source: 'session_config' })

@@ -136,6 +136,16 @@ rl.on('line', raw => {
   switch (m.method) {
     case 'initialize':
       if (behaviour === 'malformed') return process.stdout.write('{bad json\n')
+      if (behaviour === 'retired-seed') {
+        // The v0.45.0 round-3 P2 shape: the session SEEDS the witness with
+        // the retired generation (models.currentModelId and the advertised
+        // current), and a successful model setter must supersede it in every
+        // reply shape MOCK_SETTER_SHAPE picks.
+        return reply(m.id, { protocolVersion: 1, configOptions: [
+          { id: 'model', currentValue: 'gpt-6-sol' },
+          { id: 'mode', currentValue: 'plan' },
+        ] })
+      }
       if (behaviour === 'late-setter-model-swap' || behaviour === 'late-setter-clean') {
         // The v0.45.0 panel's counterexample: `mode` does not advertise as
         // already-set, so its setter fires, and the SETTER REPLY — not the
@@ -167,6 +177,17 @@ rl.on('line', raw => {
           },
         })
       }
+      if (behaviour === 'retired-seed') {
+        // The seed lives on session/new: models.currentModelId names the
+        // retired generation and the advertised current agrees. Only the
+        // MODEL setter will fire (mode is already acknowledged), so this
+        // isolates supersession from every other moving part.
+        return reply(m.id, {
+          sessionId: 'review-session',
+          models: { currentModelId: 'gpt-6-sol' },
+          configOptions: [{ id: 'model', currentValue: 'gpt-6-sol' }],
+        })
+      }
       toolsDisabled = m.params?._meta?.disableBuiltInTools === true &&
         Array.isArray(m.params?._meta?.claudeCode?.options?.tools) &&
         m.params._meta.claudeCode.options.tools.length === 0 &&
@@ -182,6 +203,19 @@ rl.on('line', raw => {
       return reply(m.id, { sessionId: 'review-session', configOptions: [] })
     case 'session/set_config_option':
       log(`config:${m.params.configId}=${m.params.value}`)
+      if (behaviour === 'retired-seed') {
+        // The successful model setter's reply shape is MOCK_SETTER_SHAPE:
+        // list | singular | scalar — all three are acknowledgedValue's
+        // accepted shapes, and all three must supersede the retired seed.
+        const value = m.params.value
+        if (process.env.MOCK_SETTER_SHAPE === 'singular') {
+          return reply(m.id, { configOption: { id: 'model', currentValue: value } })
+        }
+        if (process.env.MOCK_SETTER_SHAPE === 'scalar') {
+          return reply(m.id, { currentValue: value })
+        }
+        return reply(m.id, { configOptions: [{ id: 'model', currentValue: value }] })
+      }
       if (behaviour === 'late-setter-model-swap' || behaviour === 'late-setter-clean') {
         // The mode setter's reply smuggles a MODEL witness inside the same
         // response: the retired generation (swap) or the successor (clean).

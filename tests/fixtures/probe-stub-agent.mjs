@@ -45,11 +45,21 @@ rl.on('line', (line) => {
     // Unset keeps the original shape, so every existing stub test is
     // untouched.
     const sessionResult = { sessionId: 'stub-session' }
-    if (process.env.STUB_CURRENT_MODEL) {
-      sessionResult.models = { currentModelId: process.env.STUB_CURRENT_MODEL }
-    }
-    if (process.env.STUB_OPTION_MODEL) {
-      sessionResult.configOptions = [{ id: 'model', currentValue: process.env.STUB_OPTION_MODEL }]
+    if (process.env.STUB_CURRENT_MODEL || process.env.STUB_OPTION_MODEL || process.env.STUB_OPTION2_MODEL) {
+      if (process.env.STUB_CURRENT_MODEL) {
+        sessionResult.models = { currentModelId: process.env.STUB_CURRENT_MODEL }
+      }
+      // STUB_OPTION_MODEL seeds the FIRST recognized option (by id);
+      // STUB_OPTION2_MODEL seeds a SECOND recognized option (by name) — the
+      // round-3 shape where a clean first match shadowed a retired second.
+      const options = []
+      if (process.env.STUB_OPTION_MODEL) {
+        options.push({ id: 'model', currentValue: process.env.STUB_OPTION_MODEL })
+      }
+      if (process.env.STUB_OPTION2_MODEL) {
+        options.push({ name: 'model', currentValue: process.env.STUB_OPTION2_MODEL })
+      }
+      if (options.length > 0) sessionResult.configOptions = options
     }
     reply(sessionResult)
   }
