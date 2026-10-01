@@ -1489,11 +1489,11 @@ function requestedConfigOverride(name, limit) {
 // because this file imports only node builtins on purpose; a test asserts the
 // two stay identical, which is the drift answer that does not require coupling
 // the two skills.
-export const PROHIBITED_MODEL = /(?:^|[^0-9a-z])gemini[-_ ]?3\.1(?:[^0-9]|$)/i
+export const PROHIBITED_MODEL = /(?:^|[^0-9a-z])(?:gemini[-_ ]?3\.1|gpt[-_ ]?6[-_ ]?sol)(?:[^0-9]|$)/i
 
 function assertPermittedModel(value, name) {
   if (typeof value === 'string' && PROHIBITED_MODEL.test(value)) {
-    console.error(`${name}: Gemini 3.1 is prohibited on tmux-teams routes, got ${value}`)
+    console.error(`${name}: prohibited model on tmux-teams routes (Gemini 3.1 is banned; gpt-6-sol is retired — the Codex frontier is gpt-6.1-sol), got ${value}`)
     process.exit(2)
   }
   return value
@@ -2175,7 +2175,7 @@ function enforceIdentity(session) {
   // mismatch — the gap this closes was reported with "no console.error, no
   // exit(2), no signal" that CLAUDE.md's fail-closed rule had been violated.
   if (PROHIBITED_MODEL.test(identity.effectiveIdentity)) {
-    console.error(`observed session model: Gemini 3.1 is prohibited on tmux-teams routes, got ${identity.effectiveIdentity}`)
+    console.error(`observed session model: prohibited on tmux-teams routes (Gemini 3.1 is banned; gpt-6-sol is retired — the Codex frontier is gpt-6.1-sol), got ${identity.effectiveIdentity}`)
   }
   const terminal = identity.status === 'missing' ? 'identity-missing' : 'identity-mismatch'
   const expected = `${requestedModel || 'missing'}${requestedReasoningEffort ? `[${requestedReasoningEffort}]` : ''}`

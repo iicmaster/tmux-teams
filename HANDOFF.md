@@ -188,6 +188,12 @@ Fourteen skills ship from `main`.
 
 ## 5. DECIDED — DO NOT RELITIGATE
 
+- **Master, 2026-09-30: `gpt-6-sol` is blocked on every route — only
+  `gpt-6.1-sol` may be dispatched or reviewed.** Enforced by the shared
+  `PROHIBITED_MODEL` pattern (three character-identical copies: dispatcher,
+  companion, review profiles) at request, expectation AND observed-identity
+  time; the refusal names the successor. The same pattern carries CLAUDE.md's
+  Gemini 3.1 ban.
 - **Master, 2026-08-31: the v0.37.0 panel is waived after twelve rounds.**
   Recorded in that release's PR body and release notes.
 - **Master, 2026-09-01: merge over rebase for a stale published branch**, when

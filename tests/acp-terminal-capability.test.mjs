@@ -710,8 +710,26 @@ test('a session-reported model is refused when it is Gemini 3.1, even though not
   const run = runCompanion('task-term-prohibited-model', { MOCK_MODEL: 'gemini-3.1-pro-high' })
   assert.notEqual(run.status, 0,
     `a session reporting a prohibited Gemini 3.1 model must not be treated as a clean dispatch; stderr:\n${run.stderr}`)
-  assert.match(run.stderr, /Gemini 3\.1 is prohibited/,
+  assert.match(run.stderr, /prohibited on tmux-teams routes/,
     `expected the fail-closed refusal to name the prohibition; stderr:\n${run.stderr}`)
   assert.ok(!run.requests.some((entry) => entry.method === 'session/prompt'),
     'the turn proceeded on a prohibited model instead of being refused before session/prompt')
+})
+
+test('a session reporting the RETIRED gpt-6-sol is refused the same way, while its successor runs', () => {
+  // Master, 2026-09-30: only gpt-6.1-sol may answer. The OBSERVED screen —
+  // not just the requested/expected one — is what catches an account default
+  // or an adapter map still naming the old generation. The successor must
+  // pass the same screen, or the guard is an outage.
+  const retired = runCompanion('task-term-retired-sol', { MOCK_MODEL: 'gpt-6-sol' })
+  assert.notEqual(retired.status, 0,
+    `a session reporting retired gpt-6-sol must not be treated as a clean dispatch; stderr:\n${retired.stderr}`)
+  assert.match(retired.stderr, /gpt-6-sol is retired — the Codex frontier is gpt-6\.1-sol/,
+    `expected the refusal to name the successor; stderr:\n${retired.stderr}`)
+  assert.ok(!retired.requests.some((entry) => entry.method === 'session/prompt'),
+    'the turn proceeded on the retired model instead of being refused before session/prompt')
+
+  const current = runCompanion('task-term-current-sol', { MOCK_MODEL: 'gpt-6.1-sol' })
+  assert.ok(!current.stderr.includes('prohibited on tmux-teams routes'),
+    `the successor was caught by the prohibition guard; stderr:\n${current.stderr}`)
 })
