@@ -24,6 +24,27 @@ escalation, you want the loop, not this.
 
 # Part one — one delegation
 
+## Split first, then send the independent pieces together
+
+Before writing any brief, list the pieces the work breaks into and mark which
+ones need another piece's result. **Two or more pieces that do not depend on
+each other go out in the same turn** — several subagents in one message, or one
+`Workflow` run. Doing them one after another is only right when the next piece
+genuinely reads the previous one's output.
+
+- **Three or more pieces, or every piece needs its own check** → a `Workflow`
+  pipeline (do → verify per piece, no barrier between pieces). Each `agent()`
+  names its model.
+- **The caller plans, dispatches and checks.** A caller running shell commands
+  one at a time for work that splits is doing the implementers' job serially and
+  holding up everything behind it.
+- **Measure it.** Count `Workflow`/`Agent` against `Bash` in the caller's own
+  transcript for the day. Zero workflows on a day of multi-piece work is the
+  failure this section exists for. (Observed 2026-09-30 in a real deployment:
+  every PM lane at zero workflows by noon, the busiest caller at 142 shell calls
+  to 1 dispatch, while a downstream team sat blocked on work that split four
+  ways.)
+
 ## The brief
 
 A brief that does not carry all five of these is not ready to send.
@@ -165,6 +186,12 @@ Say which, and stop. It is not a slow moment to wait through.
    still checked out elsewhere. That has happened here, and nothing was lost by
    luck rather than care.
 
+   **A worktree only for an agent that writes.** Read-only research, review and
+   document-only pieces run without one. Each worktree is a full checkout —
+   dependencies and build output included — and on a disk shared by many lanes
+   they add up fast (one deployment reclaimed ~5 GB from 40+ abandoned
+   worktrees in a day).
+
    Each implementer gets: the primary checkout is off limits, its file radius,
    the research notes path, and its acceptance.
 
@@ -205,7 +232,11 @@ Say which, and stop. It is not a slow moment to wait through.
    and sequencing them inside one agent is cheaper than across several.
 
 9. **Clean up every worktree.** A worktree left behind is a checkout the next
-   run will collide with.
+   run will collide with. Remove each one as soon as its ticket is merged — not
+   in a sweep at the end, which a stopped or restarted run never reaches. Before
+   removing, save any uncommitted diff (`git -C <wt> diff > <file>`), then
+   `git worktree remove <wt>` and `git worktree prune`. At hand-back,
+   `git worktree list` shows none of this run's worktrees.
 
 10. **Hand back, and stop.** Report the branch name, the head commit, what each
     ticket landed, what the spec review said, and anything you could not prove.
