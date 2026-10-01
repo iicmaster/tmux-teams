@@ -58,7 +58,7 @@ import { tmpdir } from 'node:os'
 import { laneAvailability, readinessReport, READINESS_PROBLEMS } from './lane-readiness.mjs'
 import { laneModel } from './lane-models.mjs'
 import { loadLaneOverrides, applyLaneOverride } from './lane-overrides.mjs'
-import { REVIEW_PROFILES, ROUTED_PROFILES, buildAcpLaunch, AGY_BINARY_NAME,
+import { REVIEW_PROFILES, ROUTED_PROFILES, buildAcpLaunch, assertPermittedModel, AGY_BINARY_NAME,
   AGY_BINARY_CANDIDATE_FORMS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys } from './review-profiles.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -552,6 +552,9 @@ const PROBE_CRASHED = 'the probe crashed before producing a classified result'
 //   { settled: 'transport_error' }                a live stream (stdout) faulted mid-probe, or the
 //                                                 probe deliberately stopped reading it past OUT_CAP —
 //                                                 either way no further JSON-RPC frame can arrive on it
+//   { settled: 'prohibited_model' }               the session's OBSERVED model is the retired
+//                                                 gpt-6-sol generation — refused BEFORE session/prompt
+//                                                 (Master, 2026-09-30: only gpt-6.1-sol runs)
 // `classifyProbe` reads only this shape. It is exported and pure so a test
 // can drive every branch with a plain object and never a subprocess.
 // The companion's own session-id shape, copied with its source named. This file
@@ -567,6 +570,10 @@ export function classifyProbe(result) {
   // completed prompt.
   if (result.settled === 'response') return null
   if (result.settled === 'handshake_ok') return null
+  // Named apart from the other failures because the repair is a POLICY act,
+  // not a repair: the lane's default or mapped model is the retired
+  // gpt-6-sol generation. No retry, no depth change, fixes that.
+  if (result.settled === 'prohibited_model') return 'lane_prohibited'
   if (result.settled === 'timeout') return 'probe_timeout'
   // Kept apart from `probe_timeout` on purpose: the repair is different. One
   // says the endpoint went quiet, the other says the adapter never got far
@@ -928,6 +935,22 @@ export async function realProbeTransport({ command, env, spawnFn = spawn, abortS
         // true — measured while writing this, one fix after the same mistake.
         if (typeof session?.sessionId !== 'string' || !PROBE_SESSION_ID_RE.test(session.sessionId)) {
           finish({ settled: 'invalid_handshake' }); return
+        }
+        // Screen the OBSERVED session model before any prompt can be issued
+        // (Master, 2026-09-30: gpt-6-sol is retired — only gpt-6.1-sol runs).
+        // A lane whose adapter maps its default onto the retired generation
+        // must be reported as such, not probed into a paid turn on it. Two
+        // response shapes are read, because adapters differ: `models`
+        // (currentModelId, the App-Server shape) and the `model` config
+        // option's currentValue (the set_config_option shape). Fires at BOTH
+        // depths on purpose: handshake depth never prompts, so the flag there
+        // is pure information about what prompt depth would have paid for.
+        const observedProbeModel = session?.models?.currentModelId ??
+          session?.configOptions?.find?.((o) => o?.id === 'model' || o?.name === 'model')?.currentValue
+        try {
+          assertPermittedModel(observedProbeModel, 'ACP lane probe observed model')
+        } catch {
+          finish({ settled: 'prohibited_model' }); return
         }
         // STOP HERE at handshake depth. Everything the shallow check can learn
         // has been learned: the process started, spoke the protocol, and issued

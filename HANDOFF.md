@@ -63,7 +63,12 @@ node scripts/roadmap-gate.mjs       # 0 — the published page is current
 node scripts/gate-required.mjs      # 2 — fail-closed on the empty post-tag range; the panel is recorded (section 1)
 ```
 
-All four measured 2026-09-03.
+The first two lines were measured 2026-09-03 in the v0.37.0 verify block and
+have held through every release since; the gate-required line's post-tag
+behavior is new with v0.44.0 and was measured 2026-10-01 (exit 2 on the empty
+`v0.44.0..HEAD` range after tagging, with the panel recorded in that release's
+notes). Do not attach a historical date to a newly described behavior — a
+review lane called that splice out in the v0.45.0 panel.
 
 ## 3. STATE
 

@@ -2586,6 +2586,53 @@ test('handshake depth completes the session and sends no prompt at all', async (
   }
 })
 
+test('the probe refuses a lane whose OBSERVED default is the retired generation, before any prompt', async () => {
+  // Master, 2026-09-30: gpt-6-sol is retired — only gpt-6.1-sol runs. The
+  // probe is a route that reaches session/prompt, so it screens the model the
+  // session reports before paying for anything. Found by the v0.45.0 release
+  // panel (codex lane): the probe transport checked only the sessionId.
+  const stub = join(ROOT, 'tests', 'fixtures', 'probe-stub-agent.mjs')
+  const dir = mkdtempSync(join(tmpdir(), 'probe-prohibited-'))
+  try {
+    const log = join(dir, 'asked.log')
+    writeFileSync(log, '')
+    const result = await realProbeTransport({
+      command: [process.execPath, stub],
+      env: { ...process.env, STUB_MODE: 'ok', STUB_LOG: log, STUB_CURRENT_MODEL: 'gpt-6-sol' },
+      depth: 'prompt',
+      bootTimeoutMs: 8000, replyTimeoutMs: 8000,
+    })
+    assert.deepEqual(result, { settled: 'prohibited_model' },
+      `a retired-default session settled as ${JSON.stringify(result)}`)
+    const asked = readFileSync(log, 'utf8').split('\n').filter(Boolean)
+    assert.ok(asked.includes('session/new'), `the probe never opened a session: ${asked.join(', ')}`)
+    assert.ok(!asked.includes('session/prompt'),
+      'the probe PAID FOR A TURN on the retired generation — the screen must fire before session/prompt')
+    assert.equal(classifyProbe(result), 'lane_prohibited',
+      'an operator reading the classification must be pointed at policy, not at a timeout or a repair')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the successor passes the same probe at prompt depth', async () => {
+  // The control for the refusal above: without it, a guard that refused
+  // EVERYTHING would pass while the lane became unreachable for good.
+  const stub = join(ROOT, 'tests', 'fixtures', 'probe-stub-agent.mjs')
+  const dir = mkdtempSync(join(tmpdir(), 'probe-successor-'))
+  try {
+    const result = await realProbeTransport({
+      command: [process.execPath, stub],
+      env: { ...process.env, STUB_MODE: 'ok', STUB_CURRENT_MODEL: 'gpt-6.1-sol' },
+      depth: 'prompt',
+      bootTimeoutMs: 8000, replyTimeoutMs: 8000,
+    })
+    assert.deepEqual(result, { settled: 'response' },
+      `the successor was caught by the prohibition guard: ${JSON.stringify(result)}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
 // A typo must COST NOTHING. A caller who writes `handshakes` is asking to spend
 // no quota; silently treating that as the paying default would spend a whole
 // sweep's budget on a spelling mistake.

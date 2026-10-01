@@ -2,14 +2,14 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, writeFileSync, existsSync, readFileSync, symlinkSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, dirname } from 'node:path'
+import { join, dirname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runAcpReview, prepareReviewPacket, ReviewTransportError, interpreterRoots,
   trustedExecutableRoots, resolveExecutable,
 } from '../plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs'
 import { runReviewGate, runReviewGateCli, LANE_TIMEOUT_DEFAULT_MS, laneTimeoutMs, LANE_FAILURES,
 } from '../plugins/tmux-teams/skills/party-mode/scripts/review-gate.mjs'
-import { REVIEW_PROFILES } from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
+import { REVIEW_PROFILES, buildAcpLaunch } from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const MOCK = join(HERE, 'fixtures', 'mock-review-acp-agent.mjs')
@@ -1570,20 +1570,78 @@ test('resolveExecutable accepts EITHER a trusted launcher path or a trusted real
     'an untrusted launcher pointing at a trusted real file must resolve to the REAL FILE — invoking the untrusted path would depend on a symlink a stranger can re-point between check and spawn')
 })
 
-test('a trusted launcher whose target has a DIFFERENT basename is invoked as itself (the bunx shape)', async () => {
-  // The regression the launcher-return change exists for: `bunx` is a symlink
-  // to `bun`, and the AGY review lane spawned the realpath for months without
-  // anyone seeing why it could not boot. The trust decision is unchanged —
-  // this pins that a trusted launcher keeps its own NAME on the way to spawn.
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'review-trust-home-')))
+test('a trusted launcher found via a RELATIVE PATH entry is returned absolute, basename kept', async () => {
+  // Found by the v0.45.0 release panel (codex lane, 2026-10-01): the launcher
+  // return handed runAcpReview the raw PATH spelling, and the lane runs with a
+  // DIFFERENT cwd (the neutral workspace) — so a relative entry resolved
+  // against the workspace at spawn was a different pathname from the one the
+  // trust check validated. The returned path must be absolute, must keep the
+  // launcher's own basename (the bunx shape), and must NOT be collapsed to the
+  // symlink's target.
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'review-rel-launcher-')))
+  const work = mkdtempSync(join(tmpdir(), 'review-rel-cwd-'))
+  // The launcher sits in the home's trusted `.local/bin`, reached through a
+  // RELATIVE entry from the check-time cwd; its target sits outside every
+  // trusted root, so only the launcher half of the EITHER clause can pass.
+  const targetDir = join(home, 'untrusted-target')
+  mkdirSync(targetDir, { recursive: true })
+  const real = join(targetDir, 'bun-actual')
+  writeFileSync(real, '#!/bin/sh\n', { mode: 0o755 })
   const trustedDir = join(home, '.local', 'bin')
   mkdirSync(trustedDir, { recursive: true })
-  const realRunner = join(trustedDir, 'runner-real')
-  writeFileSync(realRunner, '#!/bin/sh\necho runner\n', { mode: 0o755 })
-  symlinkSync(realRunner, join(trustedDir, 'bunx'))
-  const resolved = await resolveExecutable('bunx', { HOME: home, PATH: trustedDir })
-  assert.equal(resolved, join(trustedDir, 'bunx'),
-    'the launcher name survives resolution — basename(resolveExecutable(...)) must stay bunx')
+  symlinkSync(real, join(trustedDir, 'bunx'))
+  const prevCwd = process.cwd()
+  process.chdir(work)
+  try {
+    const resolved = await resolveExecutable('bunx', { HOME: home, PATH: join('..', basename(home), '.local', 'bin') })
+    assert.equal(resolved, join(trustedDir, 'bunx'),
+      `the launcher must be returned at its validated ABSOLUTE location, got ${resolved}`)
+    assert.notEqual(resolved, realpathSync(real),
+      'the launcher must not be collapsed to its target — invocation identity is the feature')
+  } finally {
+    process.chdir(prevCwd)
+    rmSync(work, { recursive: true, force: true })
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('a lane override cannot seat the retired generation', () => {
+  // The import-time prohibition loop checks the SHIPPED pins; `model` is an
+  // overridable field, so the resolved profile is screened at the single
+  // resolution point. Found by the v0.45.0 release panel (codex lane).
+  const home = mkdtempSync(join(tmpdir(), 'review-override-prohibited-'))
+  try {
+    assert.throws(() => buildAcpLaunch('codex', {
+      env: { HOME: home, PATH: '/usr/bin:/bin' },
+      settingsLoader: () => ({}),
+      overrideLoader: () => ({ overrides: { codex: { model: 'gpt-6-sol' } }, problems: [] }),
+    }), /prohibited model on tmux-teams review routes/,
+    'an override naming the retired gpt-6-sol was accepted')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('runAcpReview refuses a retired-model request before anything spawns', async () => {
+  // The transport is the last thing between the request and the prompt, and
+  // caller-supplied profiles reach it after the import-time check ran. The
+  // refusal must classify as policy and must not even fork a process.
+  let spawned = false
+  await assert.rejects(
+    runAcpReview({
+      lane: 'codex',
+      profile: { reviewMode: 'plan', model: 'gpt-6-sol' },
+      packet: {},
+      command: 'definitely-not-run',
+      args: [],
+      env: { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' },
+      spawn: () => { spawned = true; throw new Error('must not spawn') },
+      timeoutMs: 1000,
+    }),
+    error => error.code === 'policy' && /prohibited model/.test(error.message),
+    'a retired-model request was not refused as policy',
+  )
+  assert.equal(spawned, false, 'a prohibited request reached the spawn call')
 })
 
 test('resolveExecutable still refuses when NEITHER the launcher nor its real file is trusted', async () => {

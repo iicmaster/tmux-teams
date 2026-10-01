@@ -1174,6 +1174,18 @@ export function buildAcpLaunch(profileId, {
     throw error
   }
   const profile = applyLaneOverride(shipped, overrides[profileId], env)
+  // The import-time prohibition loop above checked the SHIPPED pins only. An
+  // override can rewrite them afterwards — `model` is an overridable field —
+  // so the RESOLVED profile is screened here, at the single resolution point
+  // every consumer reads. Without this, an operator override (or a bad
+  // machine lane file) could seat the retired gpt-6-sol on a review route
+  // after the rule had already passed (found by the v0.45.0 release panel,
+  // codex lane, 2026-10-01). Master, 2026-09-30: gpt-6-sol is retired; only
+  // gpt-6.1-sol runs.
+  assertPermittedModel(profile.model, `${profileId} resolved review profile`)
+  assertPermittedModel(profile.requestModel, `${profileId} resolved review profile requestModel`)
+  assertPermittedModel(profile.displayModel, `${profileId} resolved review profile displayModel`)
+  assertPermittedModel(profile.config?.model, `${profileId} resolved review profile config`)
   const childEnv = buildProfileEnv(profileId, env, { settingsLoader: routedSettingsLoader, agyBinaryResolver })
   return Object.freeze({
     profile,

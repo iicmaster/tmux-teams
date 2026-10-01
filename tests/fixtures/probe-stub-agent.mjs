@@ -36,7 +36,15 @@ rl.on('line', (line) => {
   const reply = (result) => process.stdout.write(
     `${JSON.stringify({ jsonrpc: '2.0', id: message.id, result })}\n`)
   if (message.method === 'initialize') reply({ protocolVersion: 1, agentCapabilities: {} })
-  else if (message.method === 'session/new') reply({ sessionId: 'stub-session' })
+  else if (message.method === 'session/new') {
+    // STUB_CURRENT_MODEL makes the session report the App-Server shape's
+    // observed default (`models.currentModelId`), so a test can drive the
+    // probe's observed-model screen without a provider. Unset keeps the
+    // original shape, so every existing stub test is untouched.
+    reply(process.env.STUB_CURRENT_MODEL
+      ? { sessionId: 'stub-session', models: { currentModelId: process.env.STUB_CURRENT_MODEL } }
+      : { sessionId: 'stub-session' })
+  }
   else if (message.method === 'session/prompt') {
     if (mode === 'quota') {
       process.stderr.write('Error 429: you have exhausted your quota for today\n')
