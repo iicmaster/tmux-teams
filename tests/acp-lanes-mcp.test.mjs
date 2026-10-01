@@ -2633,6 +2633,32 @@ test('the successor passes the same probe at prompt depth', async () => {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('a clean currentModelId does not shadow a retired model option in the same response', async () => {
+  // Round-2 panel counterexample: `??`-chaining read only the first witness,
+  // so a clean `models.currentModelId` hid a retired `model` config option
+  // carried by the same session/new response. Both are screened.
+  const stub = join(ROOT, 'tests', 'fixtures', 'probe-stub-agent.mjs')
+  const dir = mkdtempSync(join(tmpdir(), 'probe-mixed-'))
+  try {
+    const log = join(dir, 'asked.log')
+    writeFileSync(log, '')
+    const result = await realProbeTransport({
+      command: [process.execPath, stub],
+      env: { ...process.env, STUB_MODE: 'ok', STUB_LOG: log,
+        STUB_CURRENT_MODEL: 'gpt-6.1-sol', STUB_OPTION_MODEL: 'gpt-6-sol' },
+      depth: 'prompt',
+      bootTimeoutMs: 8000, replyTimeoutMs: 8000,
+    })
+    assert.deepEqual(result, { settled: 'prohibited_model' },
+      `a retired option behind a clean currentModelId settled as ${JSON.stringify(result)}`)
+    const asked = readFileSync(log, 'utf8').split('\n').filter(Boolean)
+    assert.ok(!asked.includes('session/prompt'),
+      'the probe paid for a turn on a response carrying the retired generation')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
 // A typo must COST NOTHING. A caller who writes `handshakes` is asking to spend
 // no quota; silently treating that as the paying default would spend a whole
 // sweep's budget on a spelling mistake.

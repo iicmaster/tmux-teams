@@ -39,11 +39,19 @@ rl.on('line', (line) => {
   else if (message.method === 'session/new') {
     // STUB_CURRENT_MODEL makes the session report the App-Server shape's
     // observed default (`models.currentModelId`), so a test can drive the
-    // probe's observed-model screen without a provider. Unset keeps the
-    // original shape, so every existing stub test is untouched.
-    reply(process.env.STUB_CURRENT_MODEL
-      ? { sessionId: 'stub-session', models: { currentModelId: process.env.STUB_CURRENT_MODEL } }
-      : { sessionId: 'stub-session' })
+    // probe's observed-model screen without a provider. STUB_OPTION_MODEL
+    // additionally seeds a `model` config option, so the MIXED shape — a
+    // clean currentModelId shadowing a retired option — is reachable too.
+    // Unset keeps the original shape, so every existing stub test is
+    // untouched.
+    const sessionResult = { sessionId: 'stub-session' }
+    if (process.env.STUB_CURRENT_MODEL) {
+      sessionResult.models = { currentModelId: process.env.STUB_CURRENT_MODEL }
+    }
+    if (process.env.STUB_OPTION_MODEL) {
+      sessionResult.configOptions = [{ id: 'model', currentValue: process.env.STUB_OPTION_MODEL }]
+    }
+    reply(sessionResult)
   }
   else if (message.method === 'session/prompt') {
     if (mode === 'quota') {

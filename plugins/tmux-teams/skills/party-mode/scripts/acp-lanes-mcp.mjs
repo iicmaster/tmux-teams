@@ -939,18 +939,25 @@ export async function realProbeTransport({ command, env, spawnFn = spawn, abortS
         // Screen the OBSERVED session model before any prompt can be issued
         // (Master, 2026-09-30: gpt-6-sol is retired — only gpt-6.1-sol runs).
         // A lane whose adapter maps its default onto the retired generation
-        // must be reported as such, not probed into a paid turn on it. Two
-        // response shapes are read, because adapters differ: `models`
-        // (currentModelId, the App-Server shape) and the `model` config
-        // option's currentValue (the set_config_option shape). Fires at BOTH
-        // depths on purpose: handshake depth never prompts, so the flag there
-        // is pure information about what prompt depth would have paid for.
-        const observedProbeModel = session?.models?.currentModelId ??
-          session?.configOptions?.find?.((o) => o?.id === 'model' || o?.name === 'model')?.currentValue
-        try {
-          assertPermittedModel(observedProbeModel, 'ACP lane probe observed model')
-        } catch {
-          finish({ settled: 'prohibited_model' }); return
+        // must be reported as such, not probed into a paid turn on it. EVERY
+        // model-bearing field the session/new response carries is a witness
+        // and ALL of them are screened: `??`-chaining let a clean
+        // `models.currentModelId` shadow a retired `model` config option
+        // sitting in the same response (demonstrated by the v0.45.0 release
+        // panel, codex lane, round 2, 2026-10-01). Fires at BOTH depths on
+        // purpose: handshake depth never prompts, so the flag there is pure
+        // information about what prompt depth would have paid for.
+        const observedProbeModels = [
+          session?.models?.currentModelId,
+          session?.configOptions?.find?.((o) => o?.id === 'model' || o?.name === 'model')?.currentValue,
+        ]
+        for (const witness of observedProbeModels) {
+          if (typeof witness !== 'string' || witness === '') continue
+          try {
+            assertPermittedModel(witness, 'ACP lane probe observed model')
+          } catch {
+            finish({ settled: 'prohibited_model' }); return
+          }
         }
         // STOP HERE at handshake depth. Everything the shallow check can learn
         // has been learned: the process started, spoke the protocol, and issued

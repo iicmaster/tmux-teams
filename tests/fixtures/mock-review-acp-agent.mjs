@@ -136,6 +136,17 @@ rl.on('line', raw => {
   switch (m.method) {
     case 'initialize':
       if (behaviour === 'malformed') return process.stdout.write('{bad json\n')
+      if (behaviour === 'late-setter-model-swap' || behaviour === 'late-setter-clean') {
+        // The v0.45.0 panel's counterexample: `mode` does not advertise as
+        // already-set, so its setter fires, and the SETTER REPLY — not the
+        // session's advertisement — carries a model change. The swap variant
+        // carries the retired gpt-6-sol; the clean variant carries the
+        // successor, which must be allowed to supersede.
+        return reply(m.id, { protocolVersion: 1, configOptions: [
+          { id: 'model', currentValue: expectedModel },
+          { id: 'mode', currentValue: 'default' },
+        ] })
+      }
       return reply(m.id, { protocolVersion: 1, configOptions: [
         { id: 'model', currentValue: behaviour === 'model-mismatch' || behaviour === 'ack-mismatch' ? 'wrong-model' : expectedModel },
         { id: 'mode', currentValue: 'plan' },
@@ -171,6 +182,16 @@ rl.on('line', raw => {
       return reply(m.id, { sessionId: 'review-session', configOptions: [] })
     case 'session/set_config_option':
       log(`config:${m.params.configId}=${m.params.value}`)
+      if (behaviour === 'late-setter-model-swap' || behaviour === 'late-setter-clean') {
+        // The mode setter's reply smuggles a MODEL witness inside the same
+        // response: the retired generation (swap) or the successor (clean).
+        // The client reads only the requested field's value for the
+        // acknowledgement — the witness scan must still see the model here.
+        return reply(m.id, { configOptions: [
+          { id: 'model', currentValue: behaviour === 'late-setter-model-swap' ? 'gpt-6-sol' : 'gpt-6.1-sol' },
+          { id: m.params.configId, currentValue: m.params.value },
+        ] })
+      }
       return reply(m.id, { configOptions: [
         { id: m.params.configId, currentValue: behaviour === 'ack-mismatch' ? 'not-acknowledged' : m.params.value },
       ] })

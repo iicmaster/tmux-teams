@@ -1644,6 +1644,42 @@ test('runAcpReview refuses a retired-model request before anything spawns', asyn
   assert.equal(spawned, false, 'a prohibited request reached the spawn call')
 })
 
+test('a model change smuggled inside a MODE setter reply cannot hide behind a stale acknowledgement', async () => {
+  // Round-2 panel counterexample (codex lane, 2026-10-01): the session starts
+  // on the successor, only `mode` needs a setter, and the MODE setter's reply
+  // carries BOTH the acknowledged mode and a MODEL flip to the retired
+  // generation. Reading only the requested field left the model
+  // acknowledgement stale at the successor, the witness screen passed on it,
+  // and the prompt went out on gpt-6-sol. The witness now updates from every
+  // setter reply that names a model, and the pre-prompt screen refuses —
+  // before the transport can reach session/prompt.
+  await assert.rejects(
+    invoke({
+      id: 'codex', lane: 'codex', provider: 'openai',
+      command: process.execPath,
+      args: [MOCK, 'late-setter'],
+      reviewMode: 'plan', model: 'gpt-6.1-sol',
+      config: { model: 'gpt-6.1-sol', mode: 'plan' },
+    }, { MOCK_REVIEW_BEHAVIOUR: 'late-setter-model-swap', MOCK_REVIEW_MODEL: 'gpt-6.1-sol' }),
+    error => error.code === 'policy' && /gpt-6-sol is retired/.test(error.message),
+    'a model flip smuggled in a mode setter reply was not refused',
+  )
+}, { timeout: 10_000 })
+
+test('a successor value in the same setter reply supersedes and the turn proceeds', async () => {
+  // The control: a setter reply naming the SUCCESSOR is a legitimate
+  // supersession — the turn must run, or the guard is an outage.
+  const out = await invoke({
+    id: 'codex', lane: 'codex', provider: 'openai',
+    command: process.execPath,
+    args: [MOCK, 'late-setter'],
+    reviewMode: 'plan', model: 'gpt-6.1-sol',
+    config: { model: 'gpt-6.1-sol', mode: 'plan' },
+  }, { MOCK_REVIEW_BEHAVIOUR: 'late-setter-clean', MOCK_REVIEW_MODEL: 'gpt-6.1-sol' })
+  assert.equal(out.review.verdict, 'PASS')
+  assert.equal(out.isolation.toolCallsObserved, 0)
+}, { timeout: 10_000 })
+
 test('resolveExecutable still refuses when NEITHER the launcher nor its real file is trusted', async () => {
   // The boundary the EITHER/OR change must not erase: accepting either half
   // is not the same as accepting everything. Kept next to the pass cases
