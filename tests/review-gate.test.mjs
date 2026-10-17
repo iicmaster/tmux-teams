@@ -1666,6 +1666,23 @@ test('a model change smuggled inside a MODE setter reply cannot hide behind a st
   )
 }, { timeout: 10_000 })
 
+test('a shadowed model change in a setter reply cannot hide behind an earlier clean model entry', async () => {
+  // Codex review bot finding: if a setter reply carries multiple model entries
+  // (e.g. clean id='model' followed by prohibited name='model'), .filter() iterates
+  // and screens all of them so an earlier clean entry cannot suppress a later prohibited one.
+  await assert.rejects(
+    invoke({
+      id: 'codex', lane: 'codex', provider: 'openai',
+      command: process.execPath,
+      args: [MOCK, 'late-setter'],
+      reviewMode: 'plan', model: 'gpt-6.1-sol',
+      config: { model: 'gpt-6.1-sol', mode: 'plan' },
+    }, { MOCK_REVIEW_BEHAVIOUR: 'late-setter-shadowed-model-swap', MOCK_REVIEW_MODEL: 'gpt-6.1-sol' }),
+    error => error.code === 'policy' && /gpt-6-sol is retired/.test(error.message),
+    'a shadowed prohibited model flip was not refused',
+  )
+}, { timeout: 10_000 })
+
 test('a successor value in the same setter reply supersedes and the turn proceeds', async () => {
   // The control: a setter reply naming the SUCCESSOR is a legitimate
   // supersession — the turn must run, or the guard is an outage.

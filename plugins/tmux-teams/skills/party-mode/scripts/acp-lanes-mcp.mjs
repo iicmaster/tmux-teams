@@ -134,6 +134,7 @@ export const DIAGNOSTICS = Object.freeze({
   // ("was not found") and a false one if told the same sentence — installing
   // or relocating a file that is already sitting right there fixes nothing.
   executable_unusable: 'an executable this lane needs was found but this process is not permitted to run it',
+  lane_prohibited: 'the model observed on this lane is prohibited by policy; reconfigure the lane to a supported model',
 })
 
 // Classification reads the exception and keeps only which BUCKET it fell into.

@@ -321,7 +321,8 @@ test('every diagnostic code the classifier can return has a constant sentence', 
     // providers can trigger, and `executable_unusable` is EACCES/EPERM told
     // apart from ENOENT, which the parent-side check never spawns anything to
     // observe.
-    'quota_exhausted', 'probe_timeout', 'probe_boot_timeout', 'executable_unusable']
+    'quota_exhausted', 'probe_timeout', 'probe_boot_timeout', 'executable_unusable',
+    'lane_prohibited']
   assert.deepEqual(Object.keys(DIAGNOSTICS).sort(), [...codes].sort())
   // and the classifier maps real messages onto them rather than onto `unclassified`
   assert.equal(classify('zai review requires ANTHROPIC_BASE_URL'), 'endpoint_missing')
@@ -1913,6 +1914,7 @@ test('classifyProbe maps a closed SIGNAL shape onto a closed code, never onto te
     { settled: 'spawn_error', errnoCode: 'EPERM' },
     { settled: 'exit', quotaSignal: true }, { settled: 'exit' },
     { settled: 'refused', quotaSignal: true }, { settled: 'refused' },
+    { settled: 'prohibited_model' },
     { settled: 'invalid_handshake' }, { settled: 'cancelled' }, { settled: 'aborted' }, {}]) {
     const code = classifyProbe(shape)
     assert.ok(code === null || Object.hasOwn(DIAGNOSTICS, code),
@@ -2748,6 +2750,7 @@ test('every unreachable outcome the transport can report lands on a classified c
     [{ settled: 'spawn_error', errnoCode: 'ENOENT', rawStderr: 'CANARY-SHOULD-NEVER-SURFACE' }, 'executable_missing'],
     [{ settled: 'exit', code: 1, quotaSignal: true, rawText: 'CANARY-QUOTA-TEXT' }, 'quota_exhausted'],
     [{ settled: 'exit', code: 1, quotaSignal: false }, 'unclassified'],
+    [{ settled: 'prohibited_model' }, 'lane_prohibited'],
     [{ settled: 'a kind this file has never seen' }, 'unclassified'],
   ]
   for (const [outcome, code] of outcomes) {

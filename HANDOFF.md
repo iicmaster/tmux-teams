@@ -14,12 +14,14 @@ Written 2026-10-17 for v0.45.0 release.
   2. ACP review transport & lane probe hardening:
      - Session model witness tracks every setter reply to ensure no smuggled
        flip reaches the prompt (`acp-review-client.mjs`).
-     - Screen every model witness shape and alias shadowing across list, singular,
-       and scalar shapes.
+     - Screen every model witness shape, iterate all recognized model entries
+       in setter replies to prevent shadowing, and alias shadowing across list,
+       singular, and scalar shapes.
+     - Add `lane_prohibited` diagnostic constant and e2e probe test (`acp-lanes-mcp.mjs`).
      - Trusted launcher returns absolute path.
   3. Tests and policy verification for Gemini 4 Argon and witness guards.
 - **Gate**: PR passes 100% CI across Node 20 and Node 24 (push and pull_request).
-  Codex review bot quota monitored / waived per CLAUDE.md step 7. Release ordered
+  Codex review bot addressed (2/2 findings closed). Release ordered
   explicitly by Master in session instruction.
 - All tests pass, manifest validated, roadmap published.
 
