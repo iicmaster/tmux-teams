@@ -134,6 +134,7 @@ export const DIAGNOSTICS = Object.freeze({
   // ("was not found") and a false one if told the same sentence — installing
   // or relocating a file that is already sitting right there fixes nothing.
   executable_unusable: 'an executable this lane needs was found but this process is not permitted to run it',
+  executable_incompatible: 'an executable this lane needs was found but its version is below the required minimum or unreadable',
   lane_prohibited: 'the model observed on this lane is prohibited by policy; reconfigure the lane to a supported model',
 })
 
@@ -194,7 +195,8 @@ export function classify(message, { fileKind = null } = {}) {
   // and a lane measured this machine spawning an environment three times the
   // ceiling. One code for both would have kept saying the false half.
   if (/environment is over budget/.test(text)) return 'environment_over_budget'
-  if (/executable not found|did not report a valid version|required for Gemini 4 Argon support/.test(text)) return 'executable_missing'
+  if (/executable not found/.test(text)) return 'executable_missing'
+  if (/did not report a valid version|required for Gemini 4 Argon support/.test(text)) return 'executable_incompatible'
   return 'unclassified'
 }
 
@@ -423,6 +425,11 @@ export function fixesFor(id, profile, code, { envKey = null } = {}) {
         + 'the lane declares routing with no endpoint, and only a plugin change can fix it']
     case 'executable_missing':
       return executableFixes(id, profile)
+    case 'executable_incompatible':
+      return [
+        `the \`agy\` binary on this machine is incompatible with Gemini 4 Argon — `
+        + `upgrade agy via 'agy update' or your package manager (version >= 1.3.5 required)`,
+      ]
     default:
       return [...settings, ...credentialFixes(id), ...executableFixes(id, profile)]
   }

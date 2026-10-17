@@ -270,6 +270,22 @@ test('the agy lane checks that its binary is EXECUTABLE, not merely that a name 
   assert.equal(bare.problem.code, 'executable_missing')
 })
 
+test('the agy lane reports executable_incompatible when binary version is older or unreadable', () => {
+  const home = mkdtempSync(join(tmpdir(), 'acp-lanes-agy-incompatible-'))
+  try {
+    const bin = join(home, '.local', 'bin')
+    mkdirSync(bin, { recursive: true })
+    writeFileSync(join(bin, 'agy'), '#!/bin/sh\necho "1.3.4"\nexit 0\n')
+    chmodSync(join(bin, 'agy'), 0o755)
+    const got = laneStatus('agy', REVIEW_PROFILES.agy, { HOME: home, PATH: '/definitely/nonexistent' })
+    assert.equal(got.configuration, 'invalid')
+    assert.equal(got.problem.code, 'executable_incompatible')
+    assert.ok(got.fixes.some(f => /agy update|version >= 1\.3\.5/.test(f)), 'got no upgrade-shaped fix')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
 test('a routed lane names the WRAPPER among the things it did not prove', () => {
   // Measured by an advisor against the previous version: pointing PATH at a
   // path that does not exist left a routed lane answering `valid`, while
@@ -322,13 +338,19 @@ test('every diagnostic code the classifier can return has a constant sentence', 
     // apart from ENOENT, which the parent-side check never spawns anything to
     // observe.
     'quota_exhausted', 'probe_timeout', 'probe_boot_timeout', 'executable_unusable',
-    'lane_prohibited']
+    'executable_incompatible', 'lane_prohibited']
   assert.deepEqual(Object.keys(DIAGNOSTICS).sort(), [...codes].sort())
   // and the classifier maps real messages onto them rather than onto `unclassified`
   assert.equal(classify('zai review requires ANTHROPIC_BASE_URL'), 'endpoint_missing')
   assert.equal(classify('zai review endpoint must be https://api.z.ai/api/anthropic'), 'endpoint_mismatch')
   assert.equal(classify('zai review endpoint requires an explicit provider credential'), 'credential_missing')
   assert.equal(classify('trusted agy executable not found'), 'executable_missing')
+  assert.equal(classify('trusted agy binary at /path/to/agy did not report a valid version (expected >= 1.3.5)'),
+    'executable_incompatible')
+  assert.equal(classify('trusted agy binary at /path/to/agy is version 1.3.4, but version >= 1.3.5 is required for Gemini 4 Argon support'),
+    'executable_incompatible')
+  const incompatibleFixes = fixesFor('agy', REVIEW_PROFILES.agy, 'executable_incompatible')
+  assert.ok(incompatibleFixes.some(f => /agy update|version >= 1\.3\.5/.test(f)))
   // Its own bucket, not a credential one: the offending value may be a header,
   // a model config or an oversized total, and three of those four repairs have
   // nothing to do with a credential.
