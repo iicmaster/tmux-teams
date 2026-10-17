@@ -194,7 +194,7 @@ export function classify(message, { fileKind = null } = {}) {
   // and a lane measured this machine spawning an environment three times the
   // ceiling. One code for both would have kept saying the false half.
   if (/environment is over budget/.test(text)) return 'environment_over_budget'
-  if (/executable not found/.test(text)) return 'executable_missing'
+  if (/executable not found|did not report a valid version|required for Gemini 4 Argon support/.test(text)) return 'executable_missing'
   return 'unclassified'
 }
 
@@ -441,32 +441,22 @@ export function laneStatus(id, profile, env) {
       note: 'no parent-side configuration check exists for this lane, so nothing here was verified',
     }
   }
+  const unresolved = unresolvedInterpreterFor(id, { env })
+  if (unresolved) {
+    return {
+      ...facts,
+      configuration: 'unchecked',
+      problem: null,
+      fixes: [`the executable this lane resolves to begins \`#!\` naming an interpreter `
+        + `that is not on this machine — install it, or point the lane at a binary that needs none`],
+      notProven: notProvenFor(profile),
+      note: 'the configuration is complete, and the executable it resolves to cannot start here',
+    }
+  }
   try {
     // The object this returns CONTAINS the credential. It is bound to nothing
     // and referenced nowhere, which is the whole of what "never returned" means.
     buildAcpLaunch(id, { env })
-    // `valid` means every parent-side check PASSED — not that some of them
-    // could not be run. A candidate whose shebang names an interpreter that is
-    // not on this machine passes `executableCandidate` (the kernel would accept
-    // the file and then fail to find the interpreter), so the lane used to
-    // answer `valid` for a configuration that cannot start. Two panel families
-    // raised it across two rounds.
-    //
-    // `unchecked` is what that state is, it is already in the vocabulary, and
-    // reaching it costs one 256-byte read — not the execution the old defence
-    // said it would require.
-    const unresolved = unresolvedInterpreterFor(id, { env })
-    if (unresolved) {
-      return {
-        ...facts,
-        configuration: 'unchecked',
-        problem: null,
-        fixes: [`the executable this lane resolves to begins \`#!\` naming an interpreter `
-          + `that is not on this machine — install it, or point the lane at a binary that needs none`],
-        notProven: notProvenFor(profile),
-        note: 'the configuration is complete, and the executable it resolves to cannot start here',
-      }
-    }
     return { ...facts, configuration: 'valid', problem: null, fixes: [], notProven: notProvenFor(profile) }
   } catch (error) {
     // `error.fileKind` when the thrower knew which file it was opening. A pure

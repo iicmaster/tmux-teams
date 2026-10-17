@@ -243,7 +243,7 @@ test('the agy lane checks that its binary is EXECUTABLE, not merely that a name 
   const cases = [
     ['a regular file with no execute bit', (path, fs) => { fs.writeFileSync(path, ''); fs.chmodSync(path, 0o644) }, 'invalid'],
     ['a directory with the right name', (path, fs) => fs.mkdirSync(path), 'invalid'],
-    ['a real executable', (path, fs) => { fs.writeFileSync(path, '#!/bin/sh\nexit 0\n'); fs.chmodSync(path, 0o755) }, 'valid'],
+    ['a real executable', (path, fs) => { fs.writeFileSync(path, '#!/bin/sh\necho "1.4.0"\nexit 0\n'); fs.chmodSync(path, 0o755) }, 'valid'],
   ]
   for (const [label, make, expected] of cases) {
     const home = mkdtempSync(join(tmpdir(), 'acp-lanes-agy-'))

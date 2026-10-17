@@ -8,7 +8,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 import {
   PROVIDER_SECRET_KEYS, REVIEW_PROFILES, ROUTED_PROFILES, assertAdapterPackageBoundToCommand, assertPermittedModel, buildAcpLaunch,
   buildProfileEnv, loadProfileSettings, normalizePrimaryFamily, provenFamilyCollision, provenFamilyKey,
-  provenLaunchSignature, validateRoutedEndpoint, assertCompatibleAgyBinary, compareSemver, MINIMUM_AGY_VERSION,
+  provenLaunchSignature, validateRoutedEndpoint, assertCompatibleAgyBinary, compareSemver, MINIMUM_AGY_VERSION, agyBinaryVersion,
 } from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
 import {
   ROUTES, UNAVAILABLE_RESERVE_SUBSTITUTES, createReviewPlan, findingFingerprint, planFallback, synthesizeReviews, validateReviewOutput,
@@ -283,6 +283,7 @@ test('environment is allowlisted, provider-scoped, and launch settings are injec
     env: { ...source, AGY_BIN: '/evil/agy' },
     settingsLoader: () => ({ mode: 'unsafe', transport: 'acp' }),
     agyBinaryResolver: () => '/trusted/agy',
+    agyVersionResolver: () => '1.4.0',
   })
   assert.deepEqual(launch.command, ['bunx', 'antigravity-acp@1.2.0'])
   assert.deepEqual(launch.settings, { mode: 'plan', transport: 'acp', model: 'gemini-4-argon-high' })
@@ -291,10 +292,20 @@ test('environment is allowlisted, provider-scoped, and launch settings are injec
   assert.throws(() => loadProfileSettings('agy', () => 'bad'), /must return an object/)
 })
 
-test('assertCompatibleAgyBinary rejects agy versions below minimum and accepts compatible ones', () => {
+test('assertCompatibleAgyBinary fails closed on unreadable or incompatible agy versions and accepts compatible ones', () => {
   // Codex review bot finding: agy versions below 1.3.5 cannot serve Gemini 4 Argon
-  // and must fail with an actionable upgrade path.
+  // and must fail with an actionable upgrade path. Unreadable versions must fail closed.
   assert.equal(MINIMUM_AGY_VERSION, '1.3.5')
+  assert.throws(
+    () => assertCompatibleAgyBinary('/path/to/agy', { versionResolver: () => null }),
+    error => error instanceof TypeError && /did not report a valid version/.test(error.message),
+    'an unreadable agy binary version was accepted',
+  )
+  assert.throws(
+    () => assertCompatibleAgyBinary('/path/to/agy', { versionResolver: () => '' }),
+    error => error instanceof TypeError && /did not report a valid version/.test(error.message),
+    'an empty agy binary version was accepted',
+  )
   assert.throws(
     () => assertCompatibleAgyBinary('/path/to/agy', { versionResolver: () => '1.3.4' }),
     error => error instanceof TypeError && /version >= 1.3.5 is required/.test(error.message),
@@ -309,6 +320,33 @@ test('assertCompatibleAgyBinary rejects agy versions below minimum and accepts c
   assert.equal(compareSemver('1.3.4', '1.3.5'), -1)
   assert.equal(compareSemver('1.3.5', '1.3.5'), 0)
   assert.equal(compareSemver('1.4.0', '1.3.5'), 1)
+
+  // buildProfileEnv fails closed when agy binary version is unreadable
+  assert.throws(
+    () => buildProfileEnv('agy', { PATH: '/bin' }, {
+      agyBinaryResolver: () => '/mock/agy',
+      agyVersionResolver: () => null,
+    }),
+    error => error instanceof TypeError && /did not report a valid version/.test(error.message),
+    'buildProfileEnv did not fail closed on unreadable agy version',
+  )
+})
+
+test('agyBinaryVersion spawns --version with minimal allowlisted env and no ambient credentials', () => {
+  let capturedOptions = null
+  const mockSpawn = (bin, args, opts) => {
+    capturedOptions = opts
+    return { status: 0, stdout: 'agy 1.4.0 (darwin-arm64)\n' }
+  }
+  const version = agyBinaryVersion('/mock/bin/agy', { spawnFn: mockSpawn })
+  assert.equal(version, '1.4.0')
+  assert.ok(capturedOptions && capturedOptions.env)
+  assert.equal(capturedOptions.env.OPENAI_API_KEY, undefined)
+  assert.equal(capturedOptions.env.ANTHROPIC_API_KEY, undefined)
+  assert.equal(capturedOptions.env.AGY_API_KEY, undefined)
+  assert.ok(capturedOptions.env.PATH)
+  assert.ok(capturedOptions.env.HOME)
+  assert.ok(capturedOptions.env.TMPDIR)
 })
 
 test('Zai routing loads only allowlisted endpoint credentials from its explicit settings file', () => {

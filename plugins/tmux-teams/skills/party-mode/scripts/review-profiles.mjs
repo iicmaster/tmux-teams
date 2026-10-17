@@ -3,6 +3,7 @@
 import { accessSync, closeSync, constants as fsConstants, existsSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs'
 import { delimiter, join } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
 import { loadLaneOverrides, applyLaneOverride } from './lane-overrides.mjs'
 
 const runtimeKeys = new Set([
@@ -1002,9 +1003,16 @@ export function compareSemver(a, b) {
   return 0
 }
 
-export function agyBinaryVersion(binaryPath, { spawnFn = spawnSync } = {}) {
+export function agyBinaryVersion(binaryPath, {
+  spawnFn = spawnSync,
+  env = {
+    PATH: process.env.PATH ?? '/usr/bin:/bin',
+    HOME: process.env.HOME ?? tmpdir(),
+    TMPDIR: process.env.TMPDIR ?? tmpdir(),
+  },
+} = {}) {
   try {
-    const res = spawnFn(binaryPath, ['--version'], { encoding: 'utf8', timeout: 3000 })
+    const res = spawnFn(binaryPath, ['--version'], { encoding: 'utf8', timeout: 3000, env })
     if (res && res.status === 0 && res.stdout) {
       const match = String(res.stdout).match(/(\d+\.\d+\.\d+)/)
       if (match) return match[1]
@@ -1015,7 +1023,12 @@ export function agyBinaryVersion(binaryPath, { spawnFn = spawnSync } = {}) {
 
 export function assertCompatibleAgyBinary(binaryPath, { versionResolver = agyBinaryVersion } = {}) {
   const version = versionResolver(binaryPath)
-  if (!version) return
+  if (!version) {
+    throw new TypeError(
+      `trusted agy binary at ${binaryPath} did not report a valid version (expected >= ${MINIMUM_AGY_VERSION}); ` +
+      `verify 'agy --version' or upgrade via 'agy update'`
+    )
+  }
   if (compareSemver(version, MINIMUM_AGY_VERSION) < 0) {
     throw new TypeError(
       `trusted agy binary at ${binaryPath} is version ${version}, but version >= ${MINIMUM_AGY_VERSION} ` +
@@ -1024,12 +1037,9 @@ export function assertCompatibleAgyBinary(binaryPath, { versionResolver = agyBin
   }
 }
 
-function trustedAgyBinary(source, { versionChecker = assertCompatibleAgyBinary } = {}) {
+function trustedAgyBinary(source) {
   const found = agyBinaryCandidates(source).find(executableCandidate)
-  if (!found) return null
-  const real = realpathSync(found)
-  versionChecker(real)
-  return real
+  return found ? realpathSync(found) : null
 }
 
 /**
@@ -1040,6 +1050,7 @@ function trustedAgyBinary(source, { versionChecker = assertCompatibleAgyBinary }
 export function buildProfileEnv(profileId, source = process.env, {
   settingsLoader,
   agyBinaryResolver = trustedAgyBinary,
+  agyVersionResolver = agyBinaryVersion,
 } = {}) {
   const profile = getReviewProfile(profileId)
   const env = {}
@@ -1083,7 +1094,7 @@ export function buildProfileEnv(profileId, source = process.env, {
   if (profile.id === 'agy') {
     const agyBinary = agyBinaryResolver(source)
     if (!agyBinary) throw new TypeError('trusted agy executable not found')
-    assertCompatibleAgyBinary(agyBinary)
+    assertCompatibleAgyBinary(agyBinary, { versionResolver: agyVersionResolver })
     env.AGY_BIN = agyBinary
     env.AGY_SKIP_DOWNLOAD = '1'
   }
@@ -1194,6 +1205,7 @@ export function buildAcpLaunch(profileId, {
   settingsLoader,
   routedSettingsLoader,
   agyBinaryResolver,
+  agyVersionResolver,
   // The per-machine layer, injected rather than read here so a test can drive
   // every shape without writing into the developer's own home directory — the
   // same seam `settingsLoader` already is.
@@ -1232,7 +1244,11 @@ export function buildAcpLaunch(profileId, {
   assertPermittedModel(profile.requestModel, `${profileId} resolved review profile requestModel`)
   assertPermittedModel(profile.displayModel, `${profileId} resolved review profile displayModel`)
   assertPermittedModel(profile.config?.model, `${profileId} resolved review profile config`)
-  const childEnv = buildProfileEnv(profileId, env, { settingsLoader: routedSettingsLoader, agyBinaryResolver })
+  const childEnv = buildProfileEnv(profileId, env, {
+    settingsLoader: routedSettingsLoader,
+    agyBinaryResolver,
+    agyVersionResolver,
+  })
   return Object.freeze({
     profile,
     command: Object.freeze([...profile.command]),
