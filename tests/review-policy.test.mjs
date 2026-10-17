@@ -47,7 +47,7 @@ test('a Gemini 3.1 or retired gpt-6-sol reviewer model is refused rather than ru
   ]) {
     assert.throws(() => assertPermittedModel(name, 'probe'), /prohibited model on tmux-teams review routes/, name)
   }
-  for (const name of ['gemini-3.6-flash-high', 'gemini-3.10-pro', 'gpt-6-luna', 'gpt-6.1-sol', null]) {
+  for (const name of ['gemini-4-argon-high', 'gemini-4-argon-medium', 'gemini-4-argon-low', 'gemini-3.8-flash-high', 'gemini-3.6-flash-high', 'gemini-3.10-pro', 'gpt-6-luna', 'gpt-6.1-sol', null]) {
     assert.equal(assertPermittedModel(name, 'probe'), name)
   }
   for (const profile of Object.values(REVIEW_PROFILES)) {
@@ -63,7 +63,7 @@ test('immutable ACP profiles pin providers, models, argv, and AGY plan mode', ()
   assert.deepEqual(REVIEW_PROFILES.qwen.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
   assert.deepEqual(REVIEW_PROFILES.claude.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
   assert.deepEqual(REVIEW_PROFILES.codex.command, ['npx', '-y', '@agentclientprotocol/codex-acp@1.1.7'])
-  assert.deepEqual(REVIEW_PROFILES.agy.config, { model: 'gemini-3.7-flash-high', mode: 'plan' })
+  assert.deepEqual(REVIEW_PROFILES.agy.config, { model: 'gemini-4-argon-high', mode: 'plan' })
   assert.deepEqual(REVIEW_PROFILES.kimi.config, { model: 'opus', mode: 'plan' })
   assert.equal(REVIEW_PROFILES.kimi.displayModel, 'kimi/opus')
   assert.deepEqual(REVIEW_PROFILES.qwen.config, { model: 'qwen3.8-max-preview', mode: 'plan' })
@@ -285,7 +285,7 @@ test('environment is allowlisted, provider-scoped, and launch settings are injec
     agyBinaryResolver: () => '/trusted/agy',
   })
   assert.deepEqual(launch.command, ['bunx', 'antigravity-acp@1.2.0'])
-  assert.deepEqual(launch.settings, { mode: 'plan', transport: 'acp', model: 'gemini-3.7-flash-high' })
+  assert.deepEqual(launch.settings, { mode: 'plan', transport: 'acp', model: 'gemini-4-argon-high' })
   assert.equal(launch.env.AGY_BIN, '/trusted/agy')
   assert.equal(launch.env.AGY_SKIP_DOWNLOAD, '1')
   assert.throws(() => loadProfileSettings('agy', () => 'bad'), /must return an object/)

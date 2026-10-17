@@ -71,11 +71,11 @@ const NINEROUTER_ENDPOINT = freeze({ scheme: 'http', host: '127.0.0.1', port: '2
 
 export const REVIEW_PROFILES = freeze({
   agy: {
-    id: 'agy', provider: 'google-antigravity', family: 'gemini', model: 'gemini-3.7-flash-high',
-    displayModel: 'agy/gemini-3.7-flash-high',
+    id: 'agy', provider: 'google-antigravity', family: 'gemini', model: 'gemini-4-argon-high',
+    displayModel: 'agy/gemini-4-argon-high',
     reviewMode: 'plan', command: ['bunx', 'antigravity-acp@1.2.0'],
     adapterPackage: 'antigravity-acp@1.2.0',
-    config: { model: 'gemini-3.7-flash-high', mode: 'plan' },
+    config: { model: 'gemini-4-argon-high', mode: 'plan' },
   },
   kimi: {
     id: 'kimi', provider: 'kimi', family: 'kimi', model: 'opus',

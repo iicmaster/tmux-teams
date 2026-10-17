@@ -427,7 +427,7 @@ relaying a person's words is expected to sign `human:` and name itself in
 |---|---|
 | `tmux-teams:claude-advisor` | you want Claude's strongest model — pinned to `claude-fable-5`, model identity verified via `ACP_EXPECT_MODEL` |
 | `tmux-teams:codex-advisor` | you want a read from outside the Claude family — `gpt-6.1-sol` by default at `ultra`, or `astra` at `ultra` / `luna` at `max` |
-| `tmux-teams:agy-advisor` | you want a third family — Gemini through Antigravity, `gemini-3.7-flash-high` by default |
+| `tmux-teams:agy-advisor` | you want a third family — Gemini through Antigravity, `gemini-4-argon-high` by default |
 
 **Three** advisors, added to over time — this said "Both advisors" while a third
 was shipping in the same release, which is how a reader comes to believe a seat

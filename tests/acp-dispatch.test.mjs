@@ -1880,7 +1880,7 @@ test('the AGY seat the caller asked for is the seat dispatched, and an ambient r
 
   // NOT the default seat. A test that substitutes the default passes against a
   // command that hardcodes it, which is the defect.
-  const SEAT = 'gemini-3.7-flash-medium'
+  const SEAT = 'gemini-4-argon-medium'
   const script = block
     .replaceAll('<plugin-root>', join(SKILLS, '..'))
     .replaceAll('<model>', SEAT)
@@ -2720,7 +2720,7 @@ test('a prohibited model refuses the dispatch before a session exists', () => {
   const expected = spawnSync(process.execPath,
     [DISPATCH, 'mock', cwd, 'p-expect', join(cwd, 'brief.md'), '20'],
     { cwd, encoding: 'utf8', timeout: 60000,
-      env: { ...laneEnv(), ACP_MODEL: 'gemini-3.7-flash-high', ACP_EXPECT_MODEL: 'gemini-3.1-pro-low' } })
+      env: { ...laneEnv(), ACP_MODEL: 'gemini-4-argon-high', ACP_EXPECT_MODEL: 'gemini-3.1-pro-low' } })
   assert.match(`${expected.stdout}${expected.stderr}`, /prohibited model on tmux-teams routes/,
     'a prohibited EXPECTATION was accepted')
   const retiredExpected = spawnSync(process.execPath,
@@ -2734,7 +2734,7 @@ test('a prohibited model refuses the dispatch before a session exists', () => {
   const ok = spawnSync(process.execPath,
     [DISPATCH, 'mock', cwd, 'p-ok', join(cwd, 'brief.md'), '20'],
     { cwd, encoding: 'utf8', timeout: 60000,
-      env: { ...laneEnv(), ACP_MODEL: 'gemini-3.7-flash-high', ACP_EXPECT_MODEL: 'gemini-3.7-flash-high' } })
+      env: { ...laneEnv(), ACP_MODEL: 'gemini-4-argon-high', ACP_EXPECT_MODEL: 'gemini-4-argon-high' } })
   assert.doesNotMatch(`${ok.stdout}${ok.stderr}`, /is prohibited on tmux-teams routes/,
     'a permitted model was refused by the prohibition guard')
   // The dispatched LINE, not the exit code — this command's success code is not
