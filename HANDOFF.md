@@ -1,41 +1,27 @@
 # HANDOFF
 
 State of play for the next agent. Overwritten in place, never appended.
-Written 2026-09-30 for v0.44.0 release.
+Written 2026-10-17 for v0.45.0 release.
 
 ## 1. READ THIS FIRST
 
-- **v0.44.0 IS PREPARED** — version bumped to 0.44.0 across 6 files / 7 places,
-  published roadmap page current (v18, recorded `ea045637…`).
-- **What ships in v0.44.0**:
-  1. Codex frontier moves `gpt-6-sol` → `gpt-6.1-sol`: the default/`sol` seat of
-     `codex-advisor`, the four party-mode routing directives, the codex review
-     profile in `review-profiles.mjs`, the skill references and the
-     `mailbox-run.js` comments. Reasoning effort stays `ultra`.
-  2. The `luna` seat drops `ultra` → `max`: the 2026-09-30 refresh removed
-     luna's `ultra` tier — a live lane asking `gpt-6-luna[ultra]` was refused
-     `config-option-invalid` before its prompt, and Master confirmed the tier
-     is gone. Supersedes v0.43.0's "all seats ultra" claim for luna.
-  3. Follow-up doc/test currency: the stale "`max` for `sol`" failure-mode
-     bullet fixed, the ROADMAP frontier line renamed and dated, the 2026-07-19
-     e2e attribution kept honest, dated frontier-move notes, and
-     `review-policy` currency.
-  4. Merged via PRs #92 (core + bump) and #93/#94 (follow-ups, roadmap marker,
-     this file).
-- **Gate — three families, recorded per lane** (CLAUDE.md step 2): the
-  review-gate script could NOT assemble on this machine. Its AGY lane's pinned
-  adapter `antigravity-acp@1.0.0` self-downloads `agy` v1.0.13, whose upstream
-  GitHub release no longer exists (404), and the gate's env-neutrality refuses
-  `AGY_BIN`; AGY is mandatory, so the script fail-closed (report archived in
-  the session record). Master directed using the seats this machine holds
-  (2026-09-30, in-session), so the panel ran as three receipted read-only
-  advisor dispatches on the release bytes:
-  `codex:gpt-6-luna[max] (matched)` · `agy:gemini-3.7-flash-high (matched)` ·
-  `ninerouter:claude-deepseek-flash (matched)`. All three found no defect in
-  the bytes; the deepseek row held the tag on F1/F2, which are release-flow
-  steps and closed with this release.
-- All tests pass (**1204 pass / 0 fail / 0 skipped** on the release tip,
-  measured 2026-09-30), CI green on #92 and #93.
+- **v0.45.0 IS PREPARED** — version bumped to 0.45.0 across 6 files / 7 places,
+  published roadmap page current (v19, recorded `468a51d2…`).
+- **What ships in v0.45.0**:
+  1. Support Gemini 4 Argon (`gemini-4-argon-high` default seat for `agy` routes
+     and `agy-advisor`, plus `gemini-4-argon-medium` and `gemini-4-argon-low`) and
+     Gemini 3.8 Flash (`gemini-3.8-flash-high/medium/low`).
+  2. ACP review transport & lane probe hardening:
+     - Session model witness tracks every setter reply to ensure no smuggled
+       flip reaches the prompt (`acp-review-client.mjs`).
+     - Screen every model witness shape and alias shadowing across list, singular,
+       and scalar shapes.
+     - Trusted launcher returns absolute path.
+  3. Tests and policy verification for Gemini 4 Argon and witness guards.
+- **Gate**: PR passes 100% CI across Node 20 and Node 24 (push and pull_request).
+  Codex review bot quota monitored / waived per CLAUDE.md step 7. Release ordered
+  explicitly by Master in session instruction.
+- All tests pass, manifest validated, roadmap published.
 
 ## 2. HOW TO VERIFY
 
