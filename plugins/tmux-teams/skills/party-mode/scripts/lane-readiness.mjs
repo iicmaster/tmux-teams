@@ -46,6 +46,7 @@ import {
   compareSemver,
   trustedAgyBinaryDetailed,
   agyBinaryVersion,
+  agyEnvironment,
   isProhibitedModel,
 } from './review-profiles.mjs'
 
@@ -191,7 +192,7 @@ export function laneAvailability(id, profile, env = process.env, {
     if (!detailed.path) {
       blocking.push({ code: detailed.blocked ?? 'executable_absent', missing: AGY_BINARY_NAME })
     } else {
-      const version = agyVersionResolver(detailed.path)
+      const version = agyVersionResolver(detailed.path, { env: agyEnvironment(env), source: env })
       if (!version || compareSemver(version, MINIMUM_AGY_VERSION) < 0) {
         blocking.push({ code: 'executable_incompatible', missing: AGY_BINARY_NAME })
       }

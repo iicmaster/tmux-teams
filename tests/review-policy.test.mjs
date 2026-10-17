@@ -360,6 +360,28 @@ test('agyBinaryVersion spawns --version with minimal allowlisted env and no ambi
   assert.ok(capturedOptions.env.TMPDIR)
 })
 
+test('agyBinaryVersion uses effective environment from source PATH and HOME prepends', () => {
+  const home = mkdtempSync(join(tmpdir(), 'agy-version-env-'))
+  try {
+    const localBin = join(home, '.local', 'bin')
+    mkdirSync(localBin, { recursive: true })
+    let capturedOptions = null
+    const mockSpawn = (bin, args, opts) => {
+      capturedOptions = opts
+      return { status: 0, stdout: 'agy 1.4.1\n' }
+    }
+    const version = agyBinaryVersion('/mock/bin/agy', {
+      spawnFn: mockSpawn,
+      source: { HOME: home, PATH: '/usr/bin:/bin' },
+    })
+    assert.equal(version, '1.4.1')
+    assert.ok(capturedOptions?.env?.PATH.startsWith(`${localBin}:`),
+      `expected PATH to prepend ${localBin}, got ${capturedOptions?.env?.PATH}`)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
 test('Zai routing loads only allowlisted endpoint credentials from its explicit settings file', () => {
   const home = mkdtempSync(join(tmpdir(), 'review-profile-'))
   const settingsDir = join(home, '.config', 'claude-profiles', 'zai')

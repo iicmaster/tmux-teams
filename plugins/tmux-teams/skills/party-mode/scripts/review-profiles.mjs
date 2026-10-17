@@ -1007,16 +1007,27 @@ export function compareSemver(a, b) {
   return 0
 }
 
+export function agyEnvironment(source = process.env) {
+  const env = {}
+  for (const [key, value] of Object.entries(source ?? {})) {
+    if (value === undefined || value === null) continue
+    if ((runtimeKeys.has(key) || POSIX_LOCALE_VARS.has(key)) && spawnableValue(String(value))) {
+      env[key] = String(value)
+    }
+  }
+  const path = executablePath(source)
+  if (path) env.PATH = path
+  return env
+}
+
 export function agyBinaryVersion(binaryPath, {
   spawnFn = spawnSync,
-  env = {
-    PATH: process.env.PATH ?? '/usr/bin:/bin',
-    HOME: process.env.HOME ?? tmpdir(),
-    TMPDIR: process.env.TMPDIR ?? tmpdir(),
-  },
+  env,
+  source = process.env,
 } = {}) {
+  const runEnv = env ?? agyEnvironment(source)
   try {
-    const res = spawnFn(binaryPath, ['--version'], { encoding: 'utf8', timeout: 3000, env })
+    const res = spawnFn(binaryPath, ['--version'], { encoding: 'utf8', timeout: 3000, env: runEnv })
     if (res && res.status === 0 && res.stdout) {
       const match = String(res.stdout).match(/(\d+\.\d+\.\d+)/)
       if (match) return match[1]
@@ -1025,8 +1036,8 @@ export function agyBinaryVersion(binaryPath, {
   return null
 }
 
-export function assertCompatibleAgyBinary(binaryPath, { versionResolver = agyBinaryVersion } = {}) {
-  const version = versionResolver(binaryPath)
+export function assertCompatibleAgyBinary(binaryPath, { versionResolver = agyBinaryVersion, env, source = process.env } = {}) {
+  const version = versionResolver(binaryPath, { env: env ?? agyEnvironment(source) })
   if (!version) {
     throw Object.assign(
       new TypeError(
@@ -1122,7 +1133,7 @@ export function buildProfileEnv(profileId, source = process.env, {
   if (profile.id === 'agy') {
     const agyBinary = agyBinaryResolver(source)
     if (!agyBinary) throw Object.assign(new TypeError('trusted agy executable not found'), { code: 'config' })
-    assertCompatibleAgyBinary(agyBinary, { versionResolver: agyVersionResolver })
+    assertCompatibleAgyBinary(agyBinary, { versionResolver: agyVersionResolver, source })
     env.AGY_BIN = agyBinary
     env.AGY_SKIP_DOWNLOAD = '1'
   }

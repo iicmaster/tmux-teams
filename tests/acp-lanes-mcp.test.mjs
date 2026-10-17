@@ -2888,6 +2888,53 @@ test('a model option in initialize response is screened even when session/new om
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('a model option carrying value instead of currentValue is screened', async () => {
+  const stub = join(ROOT, 'tests', 'fixtures', 'probe-stub-agent.mjs')
+  const dir = mkdtempSync(join(tmpdir(), 'probe-value-model-'))
+  try {
+    const log = join(dir, 'asked.log')
+    writeFileSync(log, '')
+    const result = await realProbeTransport({
+      command: [process.execPath, stub],
+      env: { ...process.env, STUB_MODE: 'ok', STUB_LOG: log,
+        STUB_OPTION_VALUE_MODEL: 'gpt-6-sol' },
+      depth: 'prompt',
+      bootTimeoutMs: 8000, replyTimeoutMs: 8000,
+    })
+    assert.deepEqual(result, { settled: 'prohibited_model' },
+      `a retired model option with value field settled as ${JSON.stringify(result)}`)
+    const asked = readFileSync(log, 'utf8').split('\n').filter(Boolean)
+    assert.ok(!asked.includes('session/prompt'),
+      'the probe paid for a turn while session/new configOptions had value with retired model')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a model option in initialize carrying value instead of currentValue is screened', async () => {
+  const stub = join(ROOT, 'tests', 'fixtures', 'probe-stub-agent.mjs')
+  const dir = mkdtempSync(join(tmpdir(), 'probe-init-value-model-'))
+  try {
+    const log = join(dir, 'asked.log')
+    writeFileSync(log, '')
+    const result = await realProbeTransport({
+      command: [process.env.NODE || process.execPath, stub],
+      env: { ...process.env, STUB_MODE: 'ok', STUB_LOG: log,
+        STUB_INIT_VALUE_MODEL: 'gpt-6-sol' },
+      depth: 'prompt',
+      bootTimeoutMs: 8000, replyTimeoutMs: 8000,
+    })
+    assert.deepEqual(result, { settled: 'prohibited_model' },
+      `a retired model in initialize with value field settled as ${JSON.stringify(result)}`)
+    const asked = readFileSync(log, 'utf8').split('\n').filter(Boolean)
+    assert.ok(!asked.includes('session/prompt'),
+      'the probe paid for a turn while initialize configOptions had value with retired model')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 // A typo must COST NOTHING. A caller who writes `handshakes` is asking to spend
 // no quota; silently treating that as the paying default would spend a whole
 // sweep's budget on a spelling mistake.

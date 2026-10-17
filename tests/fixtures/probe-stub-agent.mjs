@@ -40,6 +40,9 @@ rl.on('line', (line) => {
     if (process.env.STUB_INIT_MODEL) {
       initResult.configOptions = [{ id: 'model', currentValue: process.env.STUB_INIT_MODEL }]
     }
+    if (process.env.STUB_INIT_VALUE_MODEL) {
+      initResult.configOptions = [{ id: 'model', value: process.env.STUB_INIT_VALUE_MODEL }]
+    }
     reply(initResult)
   }
   else if (message.method === 'session/new') {
@@ -51,7 +54,7 @@ rl.on('line', (line) => {
     // Unset keeps the original shape, so every existing stub test is
     // untouched.
     const sessionResult = { sessionId: 'stub-session' }
-    if (process.env.STUB_CURRENT_MODEL || process.env.STUB_OPTION_MODEL || process.env.STUB_OPTION2_MODEL) {
+    if (process.env.STUB_CURRENT_MODEL || process.env.STUB_OPTION_MODEL || process.env.STUB_OPTION2_MODEL || process.env.STUB_OPTION_VALUE_MODEL) {
       if (process.env.STUB_CURRENT_MODEL) {
         sessionResult.models = { currentModelId: process.env.STUB_CURRENT_MODEL }
       }
@@ -64,6 +67,9 @@ rl.on('line', (line) => {
       }
       if (process.env.STUB_OPTION2_MODEL) {
         options.push({ name: 'model', currentValue: process.env.STUB_OPTION2_MODEL })
+      }
+      if (process.env.STUB_OPTION_VALUE_MODEL) {
+        options.push({ id: 'model', value: process.env.STUB_OPTION_VALUE_MODEL })
       }
       if (options.length > 0) sessionResult.configOptions = options
     }

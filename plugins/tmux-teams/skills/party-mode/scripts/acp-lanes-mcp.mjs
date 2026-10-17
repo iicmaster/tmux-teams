@@ -60,7 +60,7 @@ import { laneModel } from './lane-models.mjs'
 import { loadLaneOverrides, applyLaneOverride } from './lane-overrides.mjs'
 import { REVIEW_PROFILES, ROUTED_PROFILES, buildAcpLaunch, assertPermittedModel, AGY_BINARY_NAME,
   AGY_BINARY_CANDIDATE_FORMS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys,
-  agyBinaryVersion } from './review-profiles.mjs'
+  agyBinaryVersion, agyEnvironment } from './review-profiles.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PLUGIN_ROOT = join(HERE, '..', '..', '..')
@@ -983,13 +983,13 @@ export async function realProbeTransport({ command, env, spawnFn = spawn, abortS
           ...(Array.isArray(session?.configOptions)
             ? session.configOptions
                 .filter((o) => o?.id === 'model' || o?.name === 'model')
-                .map((o) => o?.currentValue)
+                .map((o) => o?.currentValue ?? o?.value)
             : []),
           init?.models?.currentModelId,
           ...(Array.isArray(init?.configOptions)
             ? init.configOptions
                 .filter((o) => o?.id === 'model' || o?.name === 'model')
-                .map((o) => o?.currentValue)
+                .map((o) => o?.currentValue ?? o?.value)
             : []),
         ]
         for (const witness of observedProbeModels) {
@@ -1240,10 +1240,10 @@ export const TOOL_DESCRIPTORS = deepFreeze([
       const loaded = loadLaneOverrides({ knownLanes: Object.keys(REVIEW_PROFILES), profiles: REVIEW_PROFILES, env })
       const overrides = loaded.overrides
       let cachedVersion = undefined
-      const agyVersionResolver = (binPath) => {
+      const agyVersionResolver = (binPath, opts) => {
         if (cachedVersion !== undefined) return cachedVersion
         const resolver = deps?.agyVersionResolver ?? agyBinaryVersion
-        return (cachedVersion = resolver(binPath))
+        return (cachedVersion = resolver(binPath, opts ?? { env: agyEnvironment(env), source: env }))
       }
       const report = readinessReport(REVIEW_PROFILES, env, {
         overrideLoader: () => loaded,
