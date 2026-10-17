@@ -2145,7 +2145,7 @@ test('the acp_lanes description does not deny the machine state it reads', async
 
   assert.ok(!/touches nothing on this machine/.test(text),
     'the description still claims to touch nothing while the handler reads PATH and two files')
-  for (const promised of [/PATH/, /override/, /setupRequired/]) {
+  for (const promised of [/PATH/, /override/, /setupRequired/, /--version/]) {
     assert.match(text, promised,
       'the description does not tell a caller which machine state this tool reads')
   }
@@ -2590,6 +2590,23 @@ test('prohibited model overrides are excluded from callable lanes and refused at
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+test('an AGY override with prohibited model fails as lane_prohibited first and avoids probing the binary', async () => {
+  const { laneAvailability } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-readiness.mjs')).href)
+  let resolverCalled = false
+  const availability = laneAvailability('agy', {
+    ...REVIEW_PROFILES.agy,
+    model: 'gemini-3.1',
+  }, process.env, {
+    agyVersionResolver: () => { resolverCalled = true; return '1.3.4' },
+  })
+  assert.equal(availability.available, false)
+  assert.equal(availability.blocking[0].code, 'lane_prohibited')
+  assert.equal(availability.blocking[0].missing, 'gemini-3.1')
+  assert.equal(resolverCalled, false, 'agy binary was probed despite lane being prohibited by policy')
+})
+
 
 // A malformed override file must not read as "no overrides". Discarding the
 // loader's problems made readiness report from shipped defaults while

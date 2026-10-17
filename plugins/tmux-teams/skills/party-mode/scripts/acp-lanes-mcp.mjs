@@ -1229,8 +1229,9 @@ export const TOOL_DESCRIPTORS = deepFreeze([
     description: 'List every ACP review lane this plugin declares — family, provider, model, '
       + 'adapter package, pinned endpoint — AND whether this machine can actually start it. '
       + 'It reads local state to answer that second half: it resolves each declared executable '
-      + 'and launcher on PATH and stats them, reads the per-machine override file, and reads '
-      + 'the model-alias settings a routed lane points at. It contacts NO endpoint, sends no '
+      + 'and launcher on PATH and stats them, reads the per-machine override file, reads '
+      + 'the model-alias settings a routed lane points at, and verifies the installed agy binary '
+      + 'version via `--version`. It contacts NO endpoint, sends no '
       + 'prompt and spends no provider quota, and it returns no credential value. Read '
       + '`setupRequired` before dispatching: it is true when this machine cannot start anything.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },

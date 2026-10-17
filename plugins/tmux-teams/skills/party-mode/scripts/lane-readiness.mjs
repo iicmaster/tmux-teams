@@ -33,8 +33,9 @@
 // brake. This file applies the same three to lane executables, which had the
 // light and no brake.
 //
-// CHEAP ON PURPOSE. Everything here is PATH resolution and `stat` — no spawn,
-// no network, no provider quota. It answers "is the thing here", never "will it
+// CHEAP ON PURPOSE. Everything here is PATH resolution and `stat`, plus verifying
+// the installed agy binary version via `--version` when discovered — no network,
+// no provider quota. It answers "is the thing here and compatible", never "will it
 // answer", which is what `acp_lane_probe` is for. Keeping that line sharp is
 // what lets this run on every listing without an operator thinking about cost.
 import { accessSync, constants as fsConstants, existsSync, statSync } from 'node:fs'
@@ -165,6 +166,16 @@ export function laneAvailability(id, profile, env = process.env, {
 } = {}) {
   const blocking = []
 
+  // The prohibited model check. An override can configure a prohibited model
+  // (such as gpt-6-sol or Gemini 3.1), which fails closed in buildAcpLaunch().
+  // The pre-dispatch gate must exclude it from callable lanes first so policy
+  // refusals report actionable cause and avoid executing binaries for refused lanes.
+  const models = [profile?.model, profile?.requestModel, profile?.displayModel, profile?.config?.model]
+  const prohibited = models.find(m => isProhibitedModel(m))
+  if (prohibited) {
+    blocking.push({ code: 'lane_prohibited', missing: prohibited })
+  }
+
   // The wrapper, when the lane declares one — the check that was absent for
   // every wrapper except agy's. `ninerouter` names `claude-9r` and this machine
   // does not have it.
@@ -187,7 +198,8 @@ export function laneAvailability(id, profile, env = process.env, {
 
   // The agy binary check when the lane is agy. The agy adapter spawns the host's
   // agy binary, which must be installed and compatible (>= 1.3.5 for Gemini 4 Argon).
-  if (id === 'agy') {
+  // Skipped when the model is already prohibited by policy.
+  if (id === 'agy' && !prohibited) {
     const detailed = trustedAgyBinaryDetailed(env)
     if (!detailed.path) {
       blocking.push({ code: detailed.blocked ?? 'executable_absent', missing: AGY_BINARY_NAME })
@@ -197,15 +209,6 @@ export function laneAvailability(id, profile, env = process.env, {
         blocking.push({ code: 'executable_incompatible', missing: AGY_BINARY_NAME })
       }
     }
-  }
-
-  // The prohibited model check. An override can configure a prohibited model
-  // (such as gpt-6-sol or Gemini 3.1), which fails closed in buildAcpLaunch().
-  // The pre-dispatch gate must exclude it from callable lanes.
-  const models = [profile?.model, profile?.requestModel, profile?.displayModel, profile?.config?.model]
-  const prohibited = models.find(m => isProhibitedModel(m))
-  if (prohibited) {
-    blocking.push({ code: 'lane_prohibited', missing: prohibited })
   }
 
   return {
