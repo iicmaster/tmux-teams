@@ -1017,6 +1017,9 @@ export function agyEnvironment(source = process.env) {
   }
   const path = executablePath(source)
   if (path) env.PATH = path
+  if (!env.PATH) env.PATH = '/usr/bin:/bin'
+  if (!env.HOME) env.HOME = tmpdir()
+  if (!env.TMPDIR) env.TMPDIR = tmpdir()
   return env
 }
 
