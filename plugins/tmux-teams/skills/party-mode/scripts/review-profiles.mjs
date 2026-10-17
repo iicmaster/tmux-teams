@@ -2,6 +2,7 @@
 // profile-scoped environment, never a shell command or ambient credential bag.
 import { accessSync, closeSync, constants as fsConstants, existsSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs'
 import { delimiter, join } from 'node:path'
+import { spawnSync } from 'node:child_process'
 import { loadLaneOverrides, applyLaneOverride } from './lane-overrides.mjs'
 
 const runtimeKeys = new Set([
@@ -982,9 +983,53 @@ export function unresolvedInterpreterFor(id, { env = process.env } = {}) {
   return found ? shebangInterpreterMissing(found, { pathValue: executablePath(env) }) : null
 }
 
-function trustedAgyBinary(source) {
+export const MINIMUM_AGY_VERSION = '1.3.5'
+
+export function parseSemver(str) {
+  const match = String(str).trim().match(/^v?(\d+)\.(\d+)\.(\d+)/)
+  if (!match) return null
+  return [Number(match[1]), Number(match[2]), Number(match[3])]
+}
+
+export function compareSemver(a, b) {
+  const pa = parseSemver(a)
+  const pb = parseSemver(b)
+  if (!pa || !pb) return 0
+  for (let i = 0; i < 3; i++) {
+    if (pa[i] > pb[i]) return 1
+    if (pa[i] < pb[i]) return -1
+  }
+  return 0
+}
+
+export function agyBinaryVersion(binaryPath, { spawnFn = spawnSync } = {}) {
+  try {
+    const res = spawnFn(binaryPath, ['--version'], { encoding: 'utf8', timeout: 3000 })
+    if (res && res.status === 0 && res.stdout) {
+      const match = String(res.stdout).match(/(\d+\.\d+\.\d+)/)
+      if (match) return match[1]
+    }
+  } catch {}
+  return null
+}
+
+export function assertCompatibleAgyBinary(binaryPath, { versionResolver = agyBinaryVersion } = {}) {
+  const version = versionResolver(binaryPath)
+  if (!version) return
+  if (compareSemver(version, MINIMUM_AGY_VERSION) < 0) {
+    throw new TypeError(
+      `trusted agy binary at ${binaryPath} is version ${version}, but version >= ${MINIMUM_AGY_VERSION} ` +
+      `is required for Gemini 4 Argon support; upgrade agy via 'agy update' or your package manager`
+    )
+  }
+}
+
+function trustedAgyBinary(source, { versionChecker = assertCompatibleAgyBinary } = {}) {
   const found = agyBinaryCandidates(source).find(executableCandidate)
-  return found ? realpathSync(found) : null
+  if (!found) return null
+  const real = realpathSync(found)
+  versionChecker(real)
+  return real
 }
 
 /**
@@ -1038,6 +1083,7 @@ export function buildProfileEnv(profileId, source = process.env, {
   if (profile.id === 'agy') {
     const agyBinary = agyBinaryResolver(source)
     if (!agyBinary) throw new TypeError('trusted agy executable not found')
+    assertCompatibleAgyBinary(agyBinary)
     env.AGY_BIN = agyBinary
     env.AGY_SKIP_DOWNLOAD = '1'
   }

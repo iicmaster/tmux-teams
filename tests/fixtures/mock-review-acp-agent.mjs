@@ -146,7 +146,7 @@ rl.on('line', raw => {
           { id: 'mode', currentValue: 'plan' },
         ] })
       }
-      if (behaviour === 'late-setter-shadowed-model-swap' || behaviour === 'late-setter-model-swap' || behaviour === 'late-setter-clean') {
+      if (behaviour === 'late-setter-permitted-flip' || behaviour === 'late-setter-shadowed-model-swap' || behaviour === 'late-setter-model-swap' || behaviour === 'late-setter-clean') {
         // The v0.45.0 panel's counterexample: `mode` does not advertise as
         // already-set, so its setter fires, and the SETTER REPLY — not the
         // session's advertisement — carries a model change. The swap variant
@@ -221,6 +221,13 @@ rl.on('line', raw => {
           return reply(m.id, { currentValue: value })
         }
         return reply(m.id, { configOptions: [{ id: 'model', currentValue: value }] })
+      }
+      if (behaviour === 'late-setter-permitted-flip') {
+        // Codex review bot finding: setter reply alters model to another PERMITTED model (e.g. gpt-6-luna)
+        return reply(m.id, { configOptions: [
+          { id: 'model', currentValue: 'gpt-6-luna' },
+          { id: m.params.configId, currentValue: m.params.value },
+        ] })
       }
       if (behaviour === 'late-setter-shadowed-model-swap') {
         // Codex review bot finding: multiple model entries in setter reply

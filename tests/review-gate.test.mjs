@@ -1683,6 +1683,23 @@ test('a shadowed model change in a setter reply cannot hide behind an earlier cl
   )
 }, { timeout: 10_000 })
 
+test('a permitted model flip in a non-model setter reply is rejected as a config mismatch', async () => {
+  // Codex review bot finding: if a non-model setter alters the model to a different
+  // model (even a permitted one like gpt-6-luna), it must be rejected so the review's
+  // model identity evidence cannot be corrupted.
+  await assert.rejects(
+    invoke({
+      id: 'codex', lane: 'codex', provider: 'openai',
+      command: process.execPath,
+      args: [MOCK, 'late-setter'],
+      reviewMode: 'plan', model: 'gpt-6.1-sol',
+      config: { model: 'gpt-6.1-sol', mode: 'plan' },
+    }, { MOCK_REVIEW_BEHAVIOUR: 'late-setter-permitted-flip', MOCK_REVIEW_MODEL: 'gpt-6.1-sol' }),
+    error => error.code === 'config' && /mismatched model/.test(error.message),
+    'a permitted model flip in a mode setter reply was not refused',
+  )
+}, { timeout: 10_000 })
+
 test('a successor value in the same setter reply supersedes and the turn proceeds', async () => {
   // The control: a setter reply naming the SUCCESSOR is a legitimate
   // supersession — the turn must run, or the guard is an outage.
