@@ -2409,6 +2409,82 @@ test('a wrapper that exists but cannot be executed is not called callable', asyn
   }
 })
 
+test('laneAvailability, readinessReport and acp_lanes apply the agy version gate to exclude incompatible binaries', async () => {
+  const { laneAvailability, readinessReport } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-readiness.mjs')).href)
+  const home = mkdtempSync(join(tmpdir(), 'agy-readiness-'))
+  try {
+    const binDir = join(home, '.local', 'bin')
+    mkdirSync(binDir, { recursive: true })
+    const agyBin = join(binDir, 'agy')
+    writeFileSync(agyBin, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+
+    // Provide bunx launcher on PATH
+    const env = { HOME: home, PATH: `${binDir}${delimiter}${process.env.PATH}` }
+
+    // 1. Incompatible version (< 1.3.5)
+    const incompatible = laneAvailability('agy', REVIEW_PROFILES.agy, env, {
+      agyVersionResolver: () => '1.3.4',
+    })
+    assert.equal(incompatible.available, false)
+    assert.equal(incompatible.blocking[0].code, 'executable_incompatible')
+    assert.equal(incompatible.blocking[0].missing, 'agy')
+    assert.ok(incompatible.needs.includes('agy'))
+
+    // 2. Unreadable version
+    const unreadable = laneAvailability('agy', REVIEW_PROFILES.agy, env, {
+      agyVersionResolver: () => null,
+    })
+    assert.equal(unreadable.available, false)
+    assert.equal(unreadable.blocking[0].code, 'executable_incompatible')
+
+    // 3. Compatible version (>= 1.3.5)
+    const compatible = laneAvailability('agy', REVIEW_PROFILES.agy, env, {
+      agyVersionResolver: () => '1.3.5',
+    })
+    assert.equal(compatible.available, true)
+    assert.equal(compatible.blocking.length, 0)
+
+    // 4. readinessReport reflects the compatibility gate in callableLanes
+    const reportIncompatible = readinessReport({ agy: REVIEW_PROFILES.agy }, env, {
+      agyVersionResolver: () => '1.3.4',
+    })
+    assert.deepEqual(reportIncompatible.callableLanes, [])
+    assert.equal(reportIncompatible.lanes[0].available, false)
+
+    const reportCompatible = readinessReport({ agy: REVIEW_PROFILES.agy }, env, {
+      agyVersionResolver: () => '1.4.0',
+    })
+    assert.deepEqual(reportCompatible.callableLanes, ['agy'])
+    assert.equal(reportCompatible.lanes[0].available, true)
+
+    // 5. acp_lanes tool reflects the gate
+    const reply = await handle({ jsonrpc: '2.0', id: 10, method: 'tools/call',
+      params: { name: 'acp_lanes', arguments: {} } }, env, {
+      agyVersionResolver: () => '1.3.4',
+    })
+    const payload = JSON.parse(reply.result.content[0].text)
+    const agyLane = payload.lanes.find(l => l.lane === 'agy')
+    assert.equal(agyLane.available, false)
+    assert.equal(agyLane.blocking[0].code, 'executable_incompatible')
+    assert.ok(!payload.callableLanes.includes('agy'))
+
+    // 6. acp_lane_probe brake refuses the lane before probe
+    let probeContacted = false
+    const probeReply = await handle({ jsonrpc: '2.0', id: 11, method: 'tools/call',
+      params: { name: 'acp_lane_probe', arguments: { lanes: ['agy'] } } }, env, {
+      agyVersionResolver: () => '1.3.4',
+      probeTransport: async () => { probeContacted = true; return { settled: 'handshake_ok' } },
+    })
+    assert.equal(probeContacted, false, 'the probe contacted an incompatible agy lane instead of refusing at the brake')
+    const probePayload = JSON.parse(probeReply.result.content[0].text)
+    assert.equal(probePayload.lanes[0].probe, 'not_attempted')
+    assert.equal(probePayload.lanes[0].problem.code, 'executable_incompatible')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
 test('the pre-spawn brake honours a per-machine override', async () => {
   const home = mkdtempSync(join(tmpdir(), 'brake-override-'))
   try {

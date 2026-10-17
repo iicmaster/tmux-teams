@@ -9,6 +9,7 @@ import {
   PROVIDER_SECRET_KEYS, REVIEW_PROFILES, ROUTED_PROFILES, assertAdapterPackageBoundToCommand, assertPermittedModel, buildAcpLaunch,
   buildProfileEnv, loadProfileSettings, normalizePrimaryFamily, provenFamilyCollision, provenFamilyKey,
   provenLaunchSignature, validateRoutedEndpoint, assertCompatibleAgyBinary, compareSemver, MINIMUM_AGY_VERSION, agyBinaryVersion,
+  trustedAgyBinaryDetailed, trustedAgyBinary,
 } from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
 import {
   ROUTES, UNAVAILABLE_RESERVE_SUBSTITUTES, createReviewPlan, findingFingerprint, planFallback, synthesizeReviews, validateReviewOutput,
@@ -295,20 +296,21 @@ test('environment is allowlisted, provider-scoped, and launch settings are injec
 test('assertCompatibleAgyBinary fails closed on unreadable or incompatible agy versions and accepts compatible ones', () => {
   // Codex review bot finding: agy versions below 1.3.5 cannot serve Gemini 4 Argon
   // and must fail with an actionable upgrade path. Unreadable versions must fail closed.
+  // Both throwsites must attach code: 'config' so review-gate marks it lane_rejected.
   assert.equal(MINIMUM_AGY_VERSION, '1.3.5')
   assert.throws(
     () => assertCompatibleAgyBinary('/path/to/agy', { versionResolver: () => null }),
-    error => error instanceof TypeError && /did not report a valid version/.test(error.message),
+    error => error instanceof TypeError && /did not report a valid version/.test(error.message) && error.code === 'config',
     'an unreadable agy binary version was accepted',
   )
   assert.throws(
     () => assertCompatibleAgyBinary('/path/to/agy', { versionResolver: () => '' }),
-    error => error instanceof TypeError && /did not report a valid version/.test(error.message),
+    error => error instanceof TypeError && /did not report a valid version/.test(error.message) && error.code === 'config',
     'an empty agy binary version was accepted',
   )
   assert.throws(
     () => assertCompatibleAgyBinary('/path/to/agy', { versionResolver: () => '1.3.4' }),
-    error => error instanceof TypeError && /version >= 1.3.5 is required/.test(error.message),
+    error => error instanceof TypeError && /version >= 1.3.5 is required/.test(error.message) && error.code === 'config',
     'an older agy binary was accepted',
   )
   assert.doesNotThrow(
@@ -321,14 +323,23 @@ test('assertCompatibleAgyBinary fails closed on unreadable or incompatible agy v
   assert.equal(compareSemver('1.3.5', '1.3.5'), 0)
   assert.equal(compareSemver('1.4.0', '1.3.5'), 1)
 
-  // buildProfileEnv fails closed when agy binary version is unreadable
+  // buildProfileEnv fails closed when agy binary version is unreadable with code: 'config'
   assert.throws(
     () => buildProfileEnv('agy', { PATH: '/bin' }, {
       agyBinaryResolver: () => '/mock/agy',
       agyVersionResolver: () => null,
     }),
-    error => error instanceof TypeError && /did not report a valid version/.test(error.message),
+    error => error instanceof TypeError && /did not report a valid version/.test(error.message) && error.code === 'config',
     'buildProfileEnv did not fail closed on unreadable agy version',
+  )
+
+  // buildProfileEnv fails closed when trusted agy executable not found with code: 'config'
+  assert.throws(
+    () => buildProfileEnv('agy', { PATH: '/bin' }, {
+      agyBinaryResolver: () => null,
+    }),
+    error => error instanceof TypeError && /trusted agy executable not found/.test(error.message) && error.code === 'config',
+    'buildProfileEnv did not fail closed with code: config on missing agy binary',
   )
 })
 

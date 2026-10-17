@@ -283,7 +283,7 @@ export function laneFacts(id, profile) {
 // asks the disk. Both go out together on purpose, because a listing that shows
 // only the declaration is what let `ninerouter` sit beside working lanes while
 // the `claude-9r` it names does not exist on this machine.
-function laneWithAvailability(id, profile, env, override) {
+function laneWithAvailability(id, profile, env, override, options) {
   // The override is applied HERE too. `readinessReport` below already
   // applies it, so passing the raw profile to this function put two
   // disagreeing answers in ONE payload: `callableLanes` counted a lane the
@@ -291,7 +291,7 @@ function laneWithAvailability(id, profile, env, override) {
   // review lane found it — the third consumer to read the shipped profile
   // instead of the machine's, in a release that had already fixed two.
   const resolved = applyLaneOverride(profile, override, env)
-  const { available, blocking, needs } = laneAvailability(id, resolved, env)
+  const { available, blocking, needs } = laneAvailability(id, resolved, env, options)
   // What this lane will actually REQUEST, and what this machine resolves that
   // to. `model` from `laneFacts` is the identity the panel records; it is not
   // always what goes on the wire, and on a shared gateway it is not always the
@@ -1030,7 +1030,7 @@ function probeArgsProblem(args) {
   return null
 }
 
-async function probeOneLane(id, profile, env, transport, abortSignal, depth = DEFAULT_PROBE_DEPTH) {
+async function probeOneLane(id, profile, env, transport, abortSignal, depth = DEFAULT_PROBE_DEPTH, options = {}) {
   // The boundary list is chosen by DEPTH, not by outcome: a handshake pass
   // and a prompt pass are both `reachable`, and they are not the same claim.
   const notProven = depth === 'handshake' ? HANDSHAKE_NOT_PROVEN : PROBE_NOT_PROVEN
@@ -1053,7 +1053,7 @@ async function probeOneLane(id, profile, env, transport, abortSignal, depth = DE
   // The override is applied here too, or the brake refuses a lane the
   // operator has already fixed on this machine.
   const { overrides } = loadLaneOverrides({ knownLanes: Object.keys(REVIEW_PROFILES), profiles: REVIEW_PROFILES, env })
-  const availability = laneAvailability(id, applyLaneOverride(profile, overrides[id], env), env)
+  const availability = laneAvailability(id, applyLaneOverride(profile, overrides[id], env), env, options)
   if (!availability.available) {
     const first = availability.blocking[0]
     return {
@@ -1135,7 +1135,7 @@ async function probeOneLane(id, profile, env, transport, abortSignal, depth = DE
 
 // The anti-sweep guard AND the dedup guard live before the loop: a caller who
 // repeats a lane id must not spend that lane's quota twice for one call.
-async function probeLanes(args, env, transport, abortSignal) {
+async function probeLanes(args, env, transport, abortSignal, options = {}) {
   const problem = probeArgsProblem(args)
   if (problem) return { error: problem, known: Object.keys(REVIEW_PROFILES) }
   // Read AFTER validation, so an invalid depth is refused rather than
@@ -1159,7 +1159,7 @@ async function probeLanes(args, env, transport, abortSignal) {
     // never spawns. The lane already running is stopped by threading the same
     // `abortSignal` into `probeOneLane`/the transport below, not by this check.
     if (abortSignal?.aborted) break
-    lanes.push(await probeOneLane(id, REVIEW_PROFILES[id], env, transport, abortSignal, depth))
+    lanes.push(await probeOneLane(id, REVIEW_PROFILES[id], env, transport, abortSignal, depth, options))
   }
   return { lanes }
 }
@@ -1195,7 +1195,7 @@ export const TOOL_DESCRIPTORS = deepFreeze([
     // needs to see what a lane claims AND whether this machine can honour the
     // claim. `setupRequired` is the gate a caller reads BEFORE dispatching, and
     // it is the whole difference between an answer now and an error later.
-    handler: (args, env) => {
+    handler: (args, env, deps = {}) => {
       // ONE load, shared by both halves of this answer, so the per-lane rows and
       // the summary cannot be computed from different configurations. This
       // comment said that while the code loaded twice — `readinessReport` again
@@ -1203,9 +1203,13 @@ export const TOOL_DESCRIPTORS = deepFreeze([
       // loader is injected so there is now genuinely one read.
       const loaded = loadLaneOverrides({ knownLanes: Object.keys(REVIEW_PROFILES), profiles: REVIEW_PROFILES, env })
       const overrides = loaded.overrides
-      const report = readinessReport(REVIEW_PROFILES, env, { overrideLoader: () => loaded })
+      const report = readinessReport(REVIEW_PROFILES, env, {
+        overrideLoader: () => loaded,
+        agyVersionResolver: deps?.agyVersionResolver,
+      })
       return {
-        lanes: Object.entries(REVIEW_PROFILES).map(([id, p]) => laneWithAvailability(id, p, env, overrides[id])),
+        lanes: Object.entries(REVIEW_PROFILES).map(([id, p]) =>
+          laneWithAvailability(id, p, env, overrides[id], { agyVersionResolver: deps?.agyVersionResolver })),
         plugin: report.plugin,
         callableLanes: report.callableLanes,
         callableFamilies: report.callableFamilies,
@@ -1287,7 +1291,8 @@ export const TOOL_DESCRIPTORS = deepFreeze([
     // server tracks for `notifications/cancelled`, and this is the seam that
     // carries the signal in without this handler needing to know anything
     // about request ids or the registry that maps them to controllers.
-    handler: (args, env, deps = {}) => probeLanes(args, env, deps.probeTransport ?? realProbeTransport, deps.abortSignal),
+    handler: (args, env, deps = {}) =>
+      probeLanes(args, env, deps.probeTransport ?? realProbeTransport, deps.abortSignal, { agyVersionResolver: deps.agyVersionResolver }),
   },
 ])
 

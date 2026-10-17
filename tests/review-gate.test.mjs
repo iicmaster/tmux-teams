@@ -1330,6 +1330,34 @@ test('F7: a deterministic config/policy rejection is not told to re-run and diff
   assert.equal(transient.report.attempts.find(a => a.profile === 'oc').reason, 'lane_failed')
 })
 
+test('an incompatible agy binary version is marked as a deterministic config error and reports lane_rejected', async () => {
+  const profiles = keyedProfiles([profile('oc'), profile('codex'), profile('agy')])
+  const plan = testPlan(['oc', 'codex', 'agy'])
+  const res = await runReviewGate(packet(), {
+    profiles,
+    planReviewPanel: () => plan,
+    buildProfileEnv: (p) => {
+      if (p === 'agy' || p?.id === 'agy') {
+        throw Object.assign(
+          new TypeError("trusted agy binary at /mock/bin/agy is version 1.3.4, but version >= 1.3.5 is required"),
+          { code: 'config' },
+        )
+      }
+      return {}
+    },
+    planFallback: () => ({ blocked: true, reason: 'no reserve' }),
+    runAcpReview: async ({ profile: p }) => runnerResult(p, packet()),
+    validateReview: () => true,
+    synthesizeReviews: () => ({ verdict: 'PASS' }),
+  }).then(() => null, e => e)
+
+  const agyAttempt = res.report.attempts.find(a => a.profile === 'agy')
+  assert.equal(agyAttempt.stage, 'config')
+  assert.equal(agyAttempt.reason, 'lane_rejected')
+  assert.doesNotMatch(agyAttempt.action, /re-run|compare stderrDigest/i)
+  assert.match(agyAttempt.action, /fix the configuration or policy/i)
+})
+
 
 
 test('F7: a throwing fallback planner or synthesizer still leaves a structured report, not empty stdout', async () => {

@@ -40,6 +40,13 @@
 import { accessSync, constants as fsConstants, existsSync, statSync } from 'node:fs'
 import { delimiter, isAbsolute, join } from 'node:path'
 import { applyLaneOverride } from './lane-overrides.mjs'
+import {
+  AGY_BINARY_NAME,
+  MINIMUM_AGY_VERSION,
+  compareSemver,
+  trustedAgyBinaryDetailed,
+  agyBinaryVersion,
+} from './review-profiles.mjs'
 
 // The binaries the shipped scripts actually spawn, established by grepping
 // every `spawn`/`spawnSync` call site rather than from memory. `tmux` is
@@ -72,6 +79,7 @@ export const READINESS_PROBLEMS = Object.freeze({
   executable_not_executable: 'the executable this lane declares exists but this process may not run it',
   launcher_absent: 'the launcher this lane needs to start its adapter was not found on PATH',
   binary_absent: 'a binary this plugin invokes was not found on PATH',
+  executable_incompatible: 'an executable this lane needs was found but its version is below the required minimum or unreadable',
 })
 
 /**
@@ -149,7 +157,9 @@ export function resolveOnPathDetailed(command, env = process.env) {
  * thing that is missing — a name the operator typed or that this repo ships,
  * never a value read out of the environment.
  */
-export function laneAvailability(id, profile, env = process.env) {
+export function laneAvailability(id, profile, env = process.env, {
+  agyVersionResolver = agyBinaryVersion,
+} = {}) {
   const blocking = []
 
   // The wrapper, when the lane declares one — the check that was absent for
@@ -172,13 +182,27 @@ export function laneAvailability(id, profile, env = process.env) {
     blocking.push({ code: 'launcher_absent', missing: launcher })
   }
 
+  // The agy binary check when the lane is agy. The agy adapter spawns the host's
+  // agy binary, which must be installed and compatible (>= 1.3.5 for Gemini 4 Argon).
+  if (id === 'agy') {
+    const detailed = trustedAgyBinaryDetailed(env)
+    if (!detailed.path) {
+      blocking.push({ code: detailed.blocked ?? 'executable_absent', missing: AGY_BINARY_NAME })
+    } else {
+      const version = agyVersionResolver(detailed.path)
+      if (!version || compareSemver(version, MINIMUM_AGY_VERSION) < 0) {
+        blocking.push({ code: 'executable_incompatible', missing: AGY_BINARY_NAME })
+      }
+    }
+  }
+
   return {
     lane: id,
     available: blocking.length === 0,
     blocking: Object.freeze(blocking),
     // Named so a caller can show what a lane runs WITHOUT re-deriving it, and
     // so `executable: null` stops meaning two different things.
-    needs: Object.freeze([launcher, wrapper].filter(Boolean)),
+    needs: Object.freeze([launcher, wrapper, id === 'agy' ? AGY_BINARY_NAME : null].filter(Boolean)),
   }
 }
 
@@ -210,6 +234,7 @@ export function pluginReadiness(env = process.env) {
  */
 export function readinessReport(profiles, env = process.env, {
   overrideLoader = null,
+  agyVersionResolver = agyBinaryVersion,
 } = {}) {
   const plugin = pluginReadiness(env)
   // APPLY THE PER-MACHINE OVERRIDES FIRST. Readiness read the shipped profiles
@@ -233,7 +258,7 @@ export function readinessReport(profiles, env = process.env, {
   const overrideProblems = loaded?.problems ?? []
   const overrides = overrideProblems.length > 0 ? {} : (loaded?.overrides ?? {})
   const lanes = Object.entries(profiles).map(([id, p]) =>
-    laneAvailability(id, applyLaneOverride(p, overrides[id], env), env))
+    laneAvailability(id, applyLaneOverride(p, overrides[id], env), env, { agyVersionResolver }))
   const callable = lanes.filter(l => l.available)
   return {
     plugin,

@@ -1024,22 +1024,46 @@ export function agyBinaryVersion(binaryPath, {
 export function assertCompatibleAgyBinary(binaryPath, { versionResolver = agyBinaryVersion } = {}) {
   const version = versionResolver(binaryPath)
   if (!version) {
-    throw new TypeError(
-      `trusted agy binary at ${binaryPath} did not report a valid version (expected >= ${MINIMUM_AGY_VERSION}); ` +
-      `verify 'agy --version' or upgrade via 'agy update'`
+    throw Object.assign(
+      new TypeError(
+        `trusted agy binary at ${binaryPath} did not report a valid version (expected >= ${MINIMUM_AGY_VERSION}); ` +
+        `verify 'agy --version' or upgrade via 'agy update'`
+      ),
+      { code: 'config' },
     )
   }
   if (compareSemver(version, MINIMUM_AGY_VERSION) < 0) {
-    throw new TypeError(
-      `trusted agy binary at ${binaryPath} is version ${version}, but version >= ${MINIMUM_AGY_VERSION} ` +
-      `is required for Gemini 4 Argon support; upgrade agy via 'agy update' or your package manager`
+    throw Object.assign(
+      new TypeError(
+        `trusted agy binary at ${binaryPath} is version ${version}, but version >= ${MINIMUM_AGY_VERSION} ` +
+        `is required for Gemini 4 Argon support; upgrade agy via 'agy update' or your package manager`
+      ),
+      { code: 'config' },
     )
   }
 }
 
-function trustedAgyBinary(source) {
-  const found = agyBinaryCandidates(source).find(executableCandidate)
-  return found ? realpathSync(found) : null
+export function trustedAgyBinaryDetailed(source) {
+  const candidates = agyBinaryCandidates(source)
+  let blocked = null
+  for (const c of candidates) {
+    if (!existsSync(c)) continue
+    try {
+      if (!statSync(c).isFile()) {
+        if (!blocked) blocked = 'executable_not_file'
+        continue
+      }
+      accessSync(c, fsConstants.X_OK)
+      return { path: realpathSync(c), blocked: null }
+    } catch {
+      if (!blocked) blocked = 'executable_not_executable'
+    }
+  }
+  return { path: null, blocked }
+}
+
+export function trustedAgyBinary(source) {
+  return trustedAgyBinaryDetailed(source).path
 }
 
 /**
@@ -1093,7 +1117,7 @@ export function buildProfileEnv(profileId, source = process.env, {
   }
   if (profile.id === 'agy') {
     const agyBinary = agyBinaryResolver(source)
-    if (!agyBinary) throw new TypeError('trusted agy executable not found')
+    if (!agyBinary) throw Object.assign(new TypeError('trusted agy executable not found'), { code: 'config' })
     assertCompatibleAgyBinary(agyBinary, { versionResolver: agyVersionResolver })
     env.AGY_BIN = agyBinary
     env.AGY_SKIP_DOWNLOAD = '1'
