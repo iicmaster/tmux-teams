@@ -267,9 +267,13 @@ export const REVIEW_PROFILES = freeze({
 // This throws at import.
 const PROHIBITED_MODEL = /(?:^|[^0-9a-z])(?:gemini[-_ ]?3\.1|gpt[-_ ]?6[-_ ]?sol)(?:[^0-9]|$)/i
 
+export function isProhibitedModel(model) {
+  return typeof model === 'string' && PROHIBITED_MODEL.test(model)
+}
+
 /** Reject a prohibited reviewer model rather than quietly running it. */
 export function assertPermittedModel(model, where) {
-  if (typeof model === 'string' && PROHIBITED_MODEL.test(model)) {
+  if (isProhibitedModel(model)) {
     throw new Error(`${where}: prohibited model on tmux-teams review routes (Gemini 3.1 is banned; gpt-6-sol is retired — the Codex frontier is gpt-6.1-sol), got ${model}`)
   }
   return model

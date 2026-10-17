@@ -46,6 +46,7 @@ import {
   compareSemver,
   trustedAgyBinaryDetailed,
   agyBinaryVersion,
+  isProhibitedModel,
 } from './review-profiles.mjs'
 
 // The binaries the shipped scripts actually spawn, established by grepping
@@ -80,6 +81,7 @@ export const READINESS_PROBLEMS = Object.freeze({
   launcher_absent: 'the launcher this lane needs to start its adapter was not found on PATH',
   binary_absent: 'a binary this plugin invokes was not found on PATH',
   executable_incompatible: 'an executable this lane needs was found but its version is below the required minimum or unreadable',
+  lane_prohibited: 'the model configured for this lane is prohibited by policy; reconfigure the lane to a supported model',
 })
 
 /**
@@ -194,6 +196,15 @@ export function laneAvailability(id, profile, env = process.env, {
         blocking.push({ code: 'executable_incompatible', missing: AGY_BINARY_NAME })
       }
     }
+  }
+
+  // The prohibited model check. An override can configure a prohibited model
+  // (such as gpt-6-sol or Gemini 3.1), which fails closed in buildAcpLaunch().
+  // The pre-dispatch gate must exclude it from callable lanes.
+  const models = [profile?.model, profile?.requestModel, profile?.displayModel, profile?.config?.model]
+  const prohibited = models.find(m => isProhibitedModel(m))
+  if (prohibited) {
+    blocking.push({ code: 'lane_prohibited', missing: prohibited })
   }
 
   return {

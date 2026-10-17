@@ -2536,6 +2536,52 @@ test('the pre-spawn brake honours a per-machine override', async () => {
   }
 })
 
+test('prohibited model overrides are excluded from callable lanes and refused at the brake', async () => {
+  const { laneAvailability, readinessReport } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-readiness.mjs')).href)
+  const { loadLaneOverrides } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-overrides.mjs')).href)
+  const home = mkdtempSync(join(tmpdir(), 'prohibited-override-'))
+  try {
+    mkdirSync(join(home, '.config', 'tmux-teams'), { recursive: true })
+    writeFileSync(join(home, '.config', 'tmux-teams', 'lanes.json'),
+      JSON.stringify({ codex: { model: 'gpt-6-sol' } }))
+    const env = { ...process.env, HOME: home }
+
+    // 1. laneAvailability marks the prohibited model unavailable
+    const availability = laneAvailability('codex', { ...REVIEW_PROFILES.codex, model: 'gpt-6-sol' }, env)
+    assert.equal(availability.available, false)
+    assert.equal(availability.blocking[0].code, 'lane_prohibited')
+    assert.equal(availability.blocking[0].missing, 'gpt-6-sol')
+
+    // 2. readinessReport excludes the prohibited lane from callableLanes
+    const report = readinessReport(REVIEW_PROFILES, env, { overrideLoader: loadLaneOverrides })
+    assert.ok(!report.callableLanes.includes('codex'), 'prohibited override codex must not be callable')
+    const codexLane = report.lanes.find(l => l.lane === 'codex')
+    assert.equal(codexLane.available, false)
+    assert.equal(codexLane.blocking[0].code, 'lane_prohibited')
+
+    // 3. acp_lanes tool reflects unavailable prohibited lane
+    const reply = await handle({ jsonrpc: '2.0', id: 20, method: 'tools/call',
+      params: { name: 'acp_lanes', arguments: {} } }, env)
+    const payload = JSON.parse(reply.result.content[0].text)
+    assert.ok(!payload.callableLanes.includes('codex'))
+    const codexRow = payload.lanes.find(l => l.lane === 'codex')
+    assert.equal(codexRow.available, false)
+    assert.equal(codexRow.blocking[0].code, 'lane_prohibited')
+
+    // 4. acp_lane_probe pre-spawn brake refuses the prohibited lane without spawning
+    let spawned = false
+    const { payload: probePayload } = await callProbe({ lanes: ['codex'] }, env,
+      async () => { spawned = true; return { settled: 'handshake_ok' } })
+    assert.equal(spawned, false, 'prohibited lane must not be spawned by probe')
+    assert.equal(probePayload.lanes[0].probe, 'not_attempted')
+    assert.equal(probePayload.lanes[0].problem.code, 'lane_prohibited')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
 // A malformed override file must not read as "no overrides". Discarding the
 // loader's problems made readiness report from shipped defaults while
 // buildAcpLaunch throws on the same file — a green gate in front of a dispatch
