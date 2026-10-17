@@ -58,8 +58,9 @@ import { tmpdir } from 'node:os'
 import { laneAvailability, readinessReport, READINESS_PROBLEMS } from './lane-readiness.mjs'
 import { laneModel } from './lane-models.mjs'
 import { loadLaneOverrides, applyLaneOverride } from './lane-overrides.mjs'
-import { REVIEW_PROFILES, ROUTED_PROFILES, buildAcpLaunch, AGY_BINARY_NAME,
-  AGY_BINARY_CANDIDATE_FORMS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys } from './review-profiles.mjs'
+import { REVIEW_PROFILES, ROUTED_PROFILES, buildAcpLaunch, assertPermittedModel, AGY_BINARY_NAME,
+  AGY_BINARY_CANDIDATE_FORMS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys,
+  agyBinaryVersion, agyEnvironment } from './review-profiles.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PLUGIN_ROOT = join(HERE, '..', '..', '..')
@@ -134,6 +135,8 @@ export const DIAGNOSTICS = Object.freeze({
   // ("was not found") and a false one if told the same sentence — installing
   // or relocating a file that is already sitting right there fixes nothing.
   executable_unusable: 'an executable this lane needs was found but this process is not permitted to run it',
+  executable_incompatible: 'an executable this lane needs was found but its version is below the required minimum or unreadable',
+  lane_prohibited: 'the model observed on this lane is prohibited by policy; reconfigure the lane to a supported model',
 })
 
 // Classification reads the exception and keeps only which BUCKET it fell into.
@@ -194,6 +197,9 @@ export function classify(message, { fileKind = null } = {}) {
   // ceiling. One code for both would have kept saying the false half.
   if (/environment is over budget/.test(text)) return 'environment_over_budget'
   if (/executable not found/.test(text)) return 'executable_missing'
+  if (/did not report a valid version|required for Gemini 4 Argon support/.test(text)) return 'executable_incompatible'
+  if (/override file is unusable/.test(text)) return 'settings_unreadable'
+  if (/prohibited model/.test(text)) return 'lane_prohibited'
   return 'unclassified'
 }
 
@@ -280,7 +286,7 @@ export function laneFacts(id, profile) {
 // asks the disk. Both go out together on purpose, because a listing that shows
 // only the declaration is what let `ninerouter` sit beside working lanes while
 // the `claude-9r` it names does not exist on this machine.
-function laneWithAvailability(id, profile, env, override) {
+function laneWithAvailability(id, profile, env, override, options = {}) {
   // The override is applied HERE too. `readinessReport` below already
   // applies it, so passing the raw profile to this function put two
   // disagreeing answers in ONE payload: `callableLanes` counted a lane the
@@ -288,7 +294,7 @@ function laneWithAvailability(id, profile, env, override) {
   // review lane found it — the third consumer to read the shipped profile
   // instead of the machine's, in a release that had already fixed two.
   const resolved = applyLaneOverride(profile, override, env)
-  const { available, blocking, needs } = laneAvailability(id, resolved, env)
+  const { available, blocking, needs } = options?.availability ?? laneAvailability(id, resolved, env, options)
   // What this lane will actually REQUEST, and what this machine resolves that
   // to. `model` from `laneFacts` is the identity the panel records; it is not
   // always what goes on the wire, and on a shared gateway it is not always the
@@ -422,13 +428,20 @@ export function fixesFor(id, profile, code, { envKey = null } = {}) {
         + 'the lane declares routing with no endpoint, and only a plugin change can fix it']
     case 'executable_missing':
       return executableFixes(id, profile)
+    case 'executable_incompatible':
+      return [
+        `the \`agy\` binary on this machine is incompatible with Gemini 4 Argon — `
+        + `upgrade agy via 'agy update' or your package manager (version >= 1.3.5 required)`,
+      ]
+    case 'lane_prohibited':
+      return ['this model is prohibited by policy — remove the override or reconfigure to a supported model']
     default:
       return [...settings, ...credentialFixes(id), ...executableFixes(id, profile)]
   }
 }
 
 // Configuration validity, and never a claim beyond it.
-export function laneStatus(id, profile, env) {
+export function laneStatus(id, profile, env, options = {}) {
   const facts = laneFacts(id, profile)
   if (UNCHECKED_LANES.includes(id)) {
     return {
@@ -440,32 +453,53 @@ export function laneStatus(id, profile, env) {
       note: 'no parent-side configuration check exists for this lane, so nothing here was verified',
     }
   }
+  // Validate override configuration before deciding anything about the executable.
+  // If the per-machine override is malformed or configures a prohibited model,
+  // configuration is invalid regardless of whether the executable has a broken shebang.
+  const { overrides, problems } = loadLaneOverrides({ knownLanes: Object.keys(REVIEW_PROFILES), profiles: REVIEW_PROFILES, env })
+  if (problems.length > 0) {
+    const code = classify(`${id} review lane override file is unusable: ${problems[0].code}`)
+    return {
+      ...facts,
+      configuration: 'invalid',
+      problem: { code, detail: DIAGNOSTICS[code] },
+      fixes: fixesFor(id, profile, code),
+      notProven: notProvenFor(profile),
+    }
+  }
+  const resolved = applyLaneOverride(profile, overrides[id], env)
+  try {
+    assertPermittedModel(resolved.model, `${id} resolved review profile`)
+    assertPermittedModel(resolved.requestModel, `${id} resolved review profile requestModel`)
+    assertPermittedModel(resolved.displayModel, `${id} resolved review profile displayModel`)
+    assertPermittedModel(resolved.config?.model, `${id} resolved review profile config`)
+  } catch (error) {
+    const code = classify(error?.message)
+    return {
+      ...facts,
+      configuration: 'invalid',
+      problem: { code, detail: DIAGNOSTICS[code] },
+      fixes: fixesFor(id, profile, code),
+      notProven: notProvenFor(profile),
+    }
+  }
+
+  const unresolved = unresolvedInterpreterFor(id, { env })
+  if (unresolved) {
+    return {
+      ...facts,
+      configuration: 'unchecked',
+      problem: null,
+      fixes: [`the executable this lane resolves to begins \`#!\` naming an interpreter `
+        + `that is not on this machine — install it, or point the lane at a binary that needs none`],
+      notProven: notProvenFor(profile),
+      note: 'the configuration is complete, and the executable it resolves to cannot start here',
+    }
+  }
   try {
     // The object this returns CONTAINS the credential. It is bound to nothing
     // and referenced nowhere, which is the whole of what "never returned" means.
-    buildAcpLaunch(id, { env })
-    // `valid` means every parent-side check PASSED — not that some of them
-    // could not be run. A candidate whose shebang names an interpreter that is
-    // not on this machine passes `executableCandidate` (the kernel would accept
-    // the file and then fail to find the interpreter), so the lane used to
-    // answer `valid` for a configuration that cannot start. Two panel families
-    // raised it across two rounds.
-    //
-    // `unchecked` is what that state is, it is already in the vocabulary, and
-    // reaching it costs one 256-byte read — not the execution the old defence
-    // said it would require.
-    const unresolved = unresolvedInterpreterFor(id, { env })
-    if (unresolved) {
-      return {
-        ...facts,
-        configuration: 'unchecked',
-        problem: null,
-        fixes: [`the executable this lane resolves to begins \`#!\` naming an interpreter `
-          + `that is not on this machine — install it, or point the lane at a binary that needs none`],
-        notProven: notProvenFor(profile),
-        note: 'the configuration is complete, and the executable it resolves to cannot start here',
-      }
-    }
+    buildAcpLaunch(id, { env, agyVersionResolver: options.agyVersionResolver })
     return { ...facts, configuration: 'valid', problem: null, fixes: [], notProven: notProvenFor(profile) }
   } catch (error) {
     // `error.fileKind` when the thrower knew which file it was opening. A pure
@@ -552,6 +586,9 @@ const PROBE_CRASHED = 'the probe crashed before producing a classified result'
 //   { settled: 'transport_error' }                a live stream (stdout) faulted mid-probe, or the
 //                                                 probe deliberately stopped reading it past OUT_CAP —
 //                                                 either way no further JSON-RPC frame can arrive on it
+//   { settled: 'prohibited_model' }               the session's OBSERVED model is the retired
+//                                                 gpt-6-sol generation — refused BEFORE session/prompt
+//                                                 (Master, 2026-09-30: only gpt-6.1-sol runs)
 // `classifyProbe` reads only this shape. It is exported and pure so a test
 // can drive every branch with a plain object and never a subprocess.
 // The companion's own session-id shape, copied with its source named. This file
@@ -567,6 +604,10 @@ export function classifyProbe(result) {
   // completed prompt.
   if (result.settled === 'response') return null
   if (result.settled === 'handshake_ok') return null
+  // Named apart from the other failures because the repair is a POLICY act,
+  // not a repair: the lane's default or mapped model is the retired
+  // gpt-6-sol generation. No retry, no depth change, fixes that.
+  if (result.settled === 'prohibited_model') return 'lane_prohibited'
   if (result.settled === 'timeout') return 'probe_timeout'
   // Kept apart from `probe_timeout` on purpose: the repair is different. One
   // says the endpoint went quiet, the other says the adapter never got far
@@ -906,7 +947,7 @@ export async function realProbeTransport({ command, env, spawnFn = spawn, abortS
 
     ;(async () => {
       try {
-        await send('initialize', {
+        const init = await send('initialize', {
           protocolVersion: 1,
           clientInfo: { name: 'tmux-teams-acp-lane-probe', version: pluginVersion() },
           clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
@@ -928,6 +969,36 @@ export async function realProbeTransport({ command, env, spawnFn = spawn, abortS
         // true — measured while writing this, one fix after the same mistake.
         if (typeof session?.sessionId !== 'string' || !PROBE_SESSION_ID_RE.test(session.sessionId)) {
           finish({ settled: 'invalid_handshake' }); return
+        }
+        // Screen the OBSERVED session and initialize models before any prompt can be issued
+        // (Master, 2026-09-30: gpt-6-sol is retired — only gpt-6.1-sol runs).
+        // A lane whose adapter maps its default onto the retired generation
+        // must be reported as such, not probed into a paid turn on it. EVERY
+        // model-bearing field is a witness and ALL of them are screened:
+        // `models.currentModelId` AND every config option this code
+        // recognizes as the model (by id OR name) across BOTH session/new
+        // and initialize responses (codex finding).
+        const observedProbeModels = [
+          session?.models?.currentModelId,
+          ...(Array.isArray(session?.configOptions)
+            ? session.configOptions
+                .filter((o) => o?.id === 'model' || o?.name === 'model')
+                .map((o) => o?.currentValue ?? o?.value)
+            : []),
+          init?.models?.currentModelId,
+          ...(Array.isArray(init?.configOptions)
+            ? init.configOptions
+                .filter((o) => o?.id === 'model' || o?.name === 'model')
+                .map((o) => o?.currentValue ?? o?.value)
+            : []),
+        ]
+        for (const witness of observedProbeModels) {
+          if (typeof witness !== 'string' || witness === '') continue
+          try {
+            assertPermittedModel(witness, 'ACP lane probe observed model')
+          } catch {
+            finish({ settled: 'prohibited_model' }); return
+          }
         }
         // STOP HERE at handshake depth. Everything the shallow check can learn
         // has been learned: the process started, spoke the protocol, and issued
@@ -995,11 +1066,11 @@ function probeArgsProblem(args) {
   return null
 }
 
-async function probeOneLane(id, profile, env, transport, abortSignal, depth = DEFAULT_PROBE_DEPTH) {
+async function probeOneLane(id, profile, env, transport, abortSignal, depth = DEFAULT_PROBE_DEPTH, options = {}) {
   // The boundary list is chosen by DEPTH, not by outcome: a handshake pass
   // and a prompt pass are both `reachable`, and they are not the same claim.
   const notProven = depth === 'handshake' ? HANDSHAKE_NOT_PROVEN : PROBE_NOT_PROVEN
-  const status = laneStatus(id, profile, env)
+  const status = laneStatus(id, profile, env, options)
   // AVAILABILITY IS CHECKED FIRST, and the order is the finding. `ninerouter`
   // declares a wrapper this machine does not have AND a local gateway it cannot
   // reach, so the configuration check below reached it first and answered
@@ -1018,7 +1089,7 @@ async function probeOneLane(id, profile, env, transport, abortSignal, depth = DE
   // The override is applied here too, or the brake refuses a lane the
   // operator has already fixed on this machine.
   const { overrides } = loadLaneOverrides({ knownLanes: Object.keys(REVIEW_PROFILES), profiles: REVIEW_PROFILES, env })
-  const availability = laneAvailability(id, applyLaneOverride(profile, overrides[id], env), env)
+  const availability = laneAvailability(id, applyLaneOverride(profile, overrides[id], env), env, options)
   if (!availability.available) {
     const first = availability.blocking[0]
     return {
@@ -1050,7 +1121,7 @@ async function probeOneLane(id, profile, env, transport, abortSignal, depth = DE
   }
   let launch
   try {
-    launch = buildAcpLaunch(id, { env })
+    launch = buildAcpLaunch(id, { env, agyVersionResolver: options.agyVersionResolver })
   } catch (error) {
     const code = classify(error?.message, { fileKind: error?.fileKind ?? null })
     return {
@@ -1100,7 +1171,7 @@ async function probeOneLane(id, profile, env, transport, abortSignal, depth = DE
 
 // The anti-sweep guard AND the dedup guard live before the loop: a caller who
 // repeats a lane id must not spend that lane's quota twice for one call.
-async function probeLanes(args, env, transport, abortSignal) {
+async function probeLanes(args, env, transport, abortSignal, options = {}) {
   const problem = probeArgsProblem(args)
   if (problem) return { error: problem, known: Object.keys(REVIEW_PROFILES) }
   // Read AFTER validation, so an invalid depth is refused rather than
@@ -1116,6 +1187,13 @@ async function probeLanes(args, env, transport, abortSignal) {
   // call; it says nothing about a SECOND `acp_lane_probe` call arriving while
   // this one is still running — that is `serve()`'s own queue, further down
   // in this file, and is a separate guarantee this loop cannot provide alone.
+  let cachedVersion = undefined
+  const agyVersionResolver = (binPath, opts) => {
+    if (cachedVersion !== undefined) return cachedVersion
+    const resolver = options?.agyVersionResolver ?? agyBinaryVersion
+    return (cachedVersion = resolver(binPath, opts ?? { env: agyEnvironment(env), source: env }))
+  }
+  const probeOptions = { ...options, agyVersionResolver }
   const lanes = []
   for (const id of ids) {
     // Checked BEFORE starting each lane, never only once up front: a
@@ -1124,7 +1202,7 @@ async function probeLanes(args, env, transport, abortSignal) {
     // never spawns. The lane already running is stopped by threading the same
     // `abortSignal` into `probeOneLane`/the transport below, not by this check.
     if (abortSignal?.aborted) break
-    lanes.push(await probeOneLane(id, REVIEW_PROFILES[id], env, transport, abortSignal, depth))
+    lanes.push(await probeOneLane(id, REVIEW_PROFILES[id], env, transport, abortSignal, depth, probeOptions))
   }
   return { lanes }
 }
@@ -1151,8 +1229,9 @@ export const TOOL_DESCRIPTORS = deepFreeze([
     description: 'List every ACP review lane this plugin declares — family, provider, model, '
       + 'adapter package, pinned endpoint — AND whether this machine can actually start it. '
       + 'It reads local state to answer that second half: it resolves each declared executable '
-      + 'and launcher on PATH and stats them, reads the per-machine override file, and reads '
-      + 'the model-alias settings a routed lane points at. It contacts NO endpoint, sends no '
+      + 'and launcher on PATH and stats them, reads the per-machine override file, reads '
+      + 'the model-alias settings a routed lane points at, and verifies the installed agy binary '
+      + 'version via `--version`. It contacts NO endpoint, sends no '
       + 'prompt and spends no provider quota, and it returns no credential value. Read '
       + '`setupRequired` before dispatching: it is true when this machine cannot start anything.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
@@ -1160,7 +1239,7 @@ export const TOOL_DESCRIPTORS = deepFreeze([
     // needs to see what a lane claims AND whether this machine can honour the
     // claim. `setupRequired` is the gate a caller reads BEFORE dispatching, and
     // it is the whole difference between an answer now and an error later.
-    handler: (args, env) => {
+    handler: (args, env, deps = {}) => {
       // ONE load, shared by both halves of this answer, so the per-lane rows and
       // the summary cannot be computed from different configurations. This
       // comment said that while the code loaded twice — `readinessReport` again
@@ -1168,9 +1247,23 @@ export const TOOL_DESCRIPTORS = deepFreeze([
       // loader is injected so there is now genuinely one read.
       const loaded = loadLaneOverrides({ knownLanes: Object.keys(REVIEW_PROFILES), profiles: REVIEW_PROFILES, env })
       const overrides = loaded.overrides
-      const report = readinessReport(REVIEW_PROFILES, env, { overrideLoader: () => loaded })
+      let cachedVersion = undefined
+      const agyVersionResolver = (binPath, opts) => {
+        if (cachedVersion !== undefined) return cachedVersion
+        const resolver = deps?.agyVersionResolver ?? agyBinaryVersion
+        return (cachedVersion = resolver(binPath, opts ?? { env: agyEnvironment(env), source: env }))
+      }
+      const report = readinessReport(REVIEW_PROFILES, env, {
+        overrideLoader: () => loaded,
+        agyVersionResolver,
+      })
+      const availabilityByLane = new Map(report.lanes.map(l => [l.lane, l]))
       return {
-        lanes: Object.entries(REVIEW_PROFILES).map(([id, p]) => laneWithAvailability(id, p, env, overrides[id])),
+        lanes: Object.entries(REVIEW_PROFILES).map(([id, p]) =>
+          laneWithAvailability(id, p, env, overrides[id], {
+            agyVersionResolver,
+            availability: availabilityByLane.get(id),
+          })),
         plugin: report.plugin,
         callableLanes: report.callableLanes,
         callableFamilies: report.callableFamilies,
@@ -1195,7 +1288,7 @@ export const TOOL_DESCRIPTORS = deepFreeze([
       },
       additionalProperties: false,
     },
-    handler: (args, env) => {
+    handler: (args, env, deps = {}) => {
       const wanted = args?.lane
       if (wanted !== undefined && !Object.hasOwn(REVIEW_PROFILES, wanted)) {
         // The `known` list already carries the vocabulary, so echoing what the
@@ -1205,7 +1298,7 @@ export const TOOL_DESCRIPTORS = deepFreeze([
         return { error: 'no such lane', known: Object.keys(REVIEW_PROFILES) }
       }
       const ids = wanted === undefined ? Object.keys(REVIEW_PROFILES) : [wanted]
-      return { lanes: ids.map((id) => laneStatus(id, REVIEW_PROFILES[id], env)) }
+      return { lanes: ids.map((id) => laneStatus(id, REVIEW_PROFILES[id], env, deps)) }
     },
   },
   {
@@ -1252,7 +1345,8 @@ export const TOOL_DESCRIPTORS = deepFreeze([
     // server tracks for `notifications/cancelled`, and this is the seam that
     // carries the signal in without this handler needing to know anything
     // about request ids or the registry that maps them to controllers.
-    handler: (args, env, deps = {}) => probeLanes(args, env, deps.probeTransport ?? realProbeTransport, deps.abortSignal),
+    handler: (args, env, deps = {}) =>
+      probeLanes(args, env, deps.probeTransport ?? realProbeTransport, deps.abortSignal, { agyVersionResolver: deps.agyVersionResolver }),
   },
 ])
 

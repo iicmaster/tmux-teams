@@ -2,14 +2,14 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, writeFileSync, existsSync, readFileSync, symlinkSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, dirname } from 'node:path'
+import { join, dirname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runAcpReview, prepareReviewPacket, ReviewTransportError, interpreterRoots,
   trustedExecutableRoots, resolveExecutable,
 } from '../plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs'
 import { runReviewGate, runReviewGateCli, LANE_TIMEOUT_DEFAULT_MS, laneTimeoutMs, LANE_FAILURES,
 } from '../plugins/tmux-teams/skills/party-mode/scripts/review-gate.mjs'
-import { REVIEW_PROFILES } from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
+import { REVIEW_PROFILES, buildAcpLaunch } from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const MOCK = join(HERE, 'fixtures', 'mock-review-acp-agent.mjs')
@@ -1330,6 +1330,34 @@ test('F7: a deterministic config/policy rejection is not told to re-run and diff
   assert.equal(transient.report.attempts.find(a => a.profile === 'oc').reason, 'lane_failed')
 })
 
+test('an incompatible agy binary version is marked as a deterministic config error and reports lane_rejected', async () => {
+  const profiles = keyedProfiles([profile('oc'), profile('codex'), profile('agy')])
+  const plan = testPlan(['oc', 'codex', 'agy'])
+  const res = await runReviewGate(packet(), {
+    profiles,
+    planReviewPanel: () => plan,
+    buildProfileEnv: (p) => {
+      if (p === 'agy' || p?.id === 'agy') {
+        throw Object.assign(
+          new TypeError("trusted agy binary at /mock/bin/agy is version 1.3.4, but version >= 1.3.5 is required"),
+          { code: 'config' },
+        )
+      }
+      return {}
+    },
+    planFallback: () => ({ blocked: true, reason: 'no reserve' }),
+    runAcpReview: async ({ profile: p }) => runnerResult(p, packet()),
+    validateReview: () => true,
+    synthesizeReviews: () => ({ verdict: 'PASS' }),
+  }).then(() => null, e => e)
+
+  const agyAttempt = res.report.attempts.find(a => a.profile === 'agy')
+  assert.equal(agyAttempt.stage, 'config')
+  assert.equal(agyAttempt.reason, 'lane_rejected')
+  assert.doesNotMatch(agyAttempt.action, /re-run|compare stderrDigest/i)
+  assert.match(agyAttempt.action, /fix the configuration or policy/i)
+})
+
 
 
 test('F7: a throwing fallback planner or synthesizer still leaves a structured report, not empty stdout', async () => {
@@ -1570,20 +1598,226 @@ test('resolveExecutable accepts EITHER a trusted launcher path or a trusted real
     'an untrusted launcher pointing at a trusted real file must resolve to the REAL FILE — invoking the untrusted path would depend on a symlink a stranger can re-point between check and spawn')
 })
 
-test('a trusted launcher whose target has a DIFFERENT basename is invoked as itself (the bunx shape)', async () => {
-  // The regression the launcher-return change exists for: `bunx` is a symlink
-  // to `bun`, and the AGY review lane spawned the realpath for months without
-  // anyone seeing why it could not boot. The trust decision is unchanged —
-  // this pins that a trusted launcher keeps its own NAME on the way to spawn.
-  const home = realpathSync(mkdtempSync(join(tmpdir(), 'review-trust-home-')))
+test('a trusted launcher found via a RELATIVE PATH entry is returned absolute, basename kept', async () => {
+  // Found by the v0.45.0 release panel (codex lane, 2026-10-01): the launcher
+  // return handed runAcpReview the raw PATH spelling, and the lane runs with a
+  // DIFFERENT cwd (the neutral workspace) — so a relative entry resolved
+  // against the workspace at spawn was a different pathname from the one the
+  // trust check validated. The returned path must be absolute, must keep the
+  // launcher's own basename (the bunx shape), and must NOT be collapsed to the
+  // symlink's target.
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'review-rel-launcher-')))
+  const work = mkdtempSync(join(tmpdir(), 'review-rel-cwd-'))
+  // The launcher sits in the home's trusted `.local/bin`, reached through a
+  // RELATIVE entry from the check-time cwd; its target sits outside every
+  // trusted root, so only the launcher half of the EITHER clause can pass.
+  const targetDir = join(home, 'untrusted-target')
+  mkdirSync(targetDir, { recursive: true })
+  const real = join(targetDir, 'bun-actual')
+  writeFileSync(real, '#!/bin/sh\n', { mode: 0o755 })
   const trustedDir = join(home, '.local', 'bin')
   mkdirSync(trustedDir, { recursive: true })
-  const realRunner = join(trustedDir, 'runner-real')
-  writeFileSync(realRunner, '#!/bin/sh\necho runner\n', { mode: 0o755 })
-  symlinkSync(realRunner, join(trustedDir, 'bunx'))
-  const resolved = await resolveExecutable('bunx', { HOME: home, PATH: trustedDir })
-  assert.equal(resolved, join(trustedDir, 'bunx'),
-    'the launcher name survives resolution — basename(resolveExecutable(...)) must stay bunx')
+  symlinkSync(real, join(trustedDir, 'bunx'))
+  const prevCwd = process.cwd()
+  process.chdir(work)
+  try {
+    const resolved = await resolveExecutable('bunx', { HOME: home, PATH: join('..', basename(home), '.local', 'bin') })
+    assert.equal(resolved, join(trustedDir, 'bunx'),
+      `the launcher must be returned at its validated ABSOLUTE location, got ${resolved}`)
+    assert.notEqual(resolved, realpathSync(real),
+      'the launcher must not be collapsed to its target — invocation identity is the feature')
+  } finally {
+    process.chdir(prevCwd)
+    rmSync(work, { recursive: true, force: true })
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('a lane override cannot seat the retired generation', () => {
+  // The import-time prohibition loop checks the SHIPPED pins; `model` is an
+  // overridable field, so the resolved profile is screened at the single
+  // resolution point. Found by the v0.45.0 release panel (codex lane).
+  const home = mkdtempSync(join(tmpdir(), 'review-override-prohibited-'))
+  try {
+    assert.throws(() => buildAcpLaunch('codex', {
+      env: { HOME: home, PATH: '/usr/bin:/bin' },
+      settingsLoader: () => ({}),
+      overrideLoader: () => ({ overrides: { codex: { model: 'gpt-6-sol' } }, problems: [] }),
+    }), /prohibited model on tmux-teams review routes/,
+    'an override naming the retired gpt-6-sol was accepted')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('runAcpReview refuses a retired-model request before anything spawns', async () => {
+  // The transport is the last thing between the request and the prompt, and
+  // caller-supplied profiles reach it after the import-time check ran. The
+  // refusal must classify as policy and must not even fork a process.
+  let spawned = false
+  await assert.rejects(
+    runAcpReview({
+      lane: 'codex',
+      profile: { reviewMode: 'plan', model: 'gpt-6-sol' },
+      packet: {},
+      command: 'definitely-not-run',
+      args: [],
+      env: { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' },
+      spawn: () => { spawned = true; throw new Error('must not spawn') },
+      timeoutMs: 1000,
+    }),
+    error => error.code === 'policy' && /prohibited model/.test(error.message),
+    'a retired-model request was not refused as policy',
+  )
+  assert.equal(spawned, false, 'a prohibited request reached the spawn call')
+})
+
+test('a model change smuggled inside a MODE setter reply cannot hide behind a stale acknowledgement', async () => {
+  // Round-2 panel counterexample (codex lane, 2026-10-01): the session starts
+  // on the successor, only `mode` needs a setter, and the MODE setter's reply
+  // carries BOTH the acknowledged mode and a MODEL flip to the retired
+  // generation. Reading only the requested field left the model
+  // acknowledgement stale at the successor, the witness screen passed on it,
+  // and the prompt went out on gpt-6-sol. The witness now updates from every
+  // setter reply that names a model, and the pre-prompt screen refuses —
+  // before the transport can reach session/prompt.
+  await assert.rejects(
+    invoke({
+      id: 'codex', lane: 'codex', provider: 'openai',
+      command: process.execPath,
+      args: [MOCK, 'late-setter'],
+      reviewMode: 'plan', model: 'gpt-6.1-sol',
+      config: { model: 'gpt-6.1-sol', mode: 'plan' },
+    }, { MOCK_REVIEW_BEHAVIOUR: 'late-setter-model-swap', MOCK_REVIEW_MODEL: 'gpt-6.1-sol' }),
+    error => error.code === 'policy' && /gpt-6-sol is retired/.test(error.message),
+    'a model flip smuggled in a mode setter reply was not refused',
+  )
+}, { timeout: 10_000 })
+
+test('a shadowed model change in a setter reply cannot hide behind an earlier clean model entry', async () => {
+  // Codex review bot finding: if a setter reply carries multiple model entries
+  // (e.g. clean id='model' followed by prohibited name='model'), .filter() iterates
+  // and screens all of them so an earlier clean entry cannot suppress a later prohibited one.
+  await assert.rejects(
+    invoke({
+      id: 'codex', lane: 'codex', provider: 'openai',
+      command: process.execPath,
+      args: [MOCK, 'late-setter'],
+      reviewMode: 'plan', model: 'gpt-6.1-sol',
+      config: { model: 'gpt-6.1-sol', mode: 'plan' },
+    }, { MOCK_REVIEW_BEHAVIOUR: 'late-setter-shadowed-model-swap', MOCK_REVIEW_MODEL: 'gpt-6.1-sol' }),
+    error => error.code === 'policy' && /gpt-6-sol is retired/.test(error.message),
+    'a shadowed prohibited model flip was not refused',
+  )
+}, { timeout: 10_000 })
+
+test('a permitted model flip in a non-model setter reply is rejected as a config mismatch', async () => {
+  // Codex review bot finding: if a non-model setter alters the model to a different
+  // model (even a permitted one like gpt-6-luna), it must be rejected so the review's
+  // model identity evidence cannot be corrupted.
+  await assert.rejects(
+    invoke({
+      id: 'codex', lane: 'codex', provider: 'openai',
+      command: process.execPath,
+      args: [MOCK, 'late-setter'],
+      reviewMode: 'plan', model: 'gpt-6.1-sol',
+      config: { model: 'gpt-6.1-sol', mode: 'plan' },
+    }, { MOCK_REVIEW_BEHAVIOUR: 'late-setter-permitted-flip', MOCK_REVIEW_MODEL: 'gpt-6.1-sol' }),
+    error => error.code === 'config' && /mismatched model/.test(error.message),
+    'a permitted model flip in a mode setter reply was not refused',
+  )
+}, { timeout: 10_000 })
+
+test('a successor value in the same setter reply supersedes and the turn proceeds', async () => {
+  // The control: a setter reply naming the SUCCESSOR is a legitimate
+  // supersession — the turn must run, or the guard is an outage.
+  const out = await invoke({
+    id: 'codex', lane: 'codex', provider: 'openai',
+    command: process.execPath,
+    args: [MOCK, 'late-setter'],
+    reviewMode: 'plan', model: 'gpt-6.1-sol',
+    config: { model: 'gpt-6.1-sol', mode: 'plan' },
+  }, { MOCK_REVIEW_BEHAVIOUR: 'late-setter-clean', MOCK_REVIEW_MODEL: 'gpt-6.1-sol' })
+  assert.equal(out.review.verdict, 'PASS')
+  assert.equal(out.isolation.toolCallsObserved, 0)
+}, { timeout: 10_000 })
+
+test('a successful model setter supersedes a retired seed in EVERY acknowledged reply shape', async () => {
+  // Round-3 panel counterexamples (codex lane, 2026-10-01): the session seeds
+  // the witness with the retired generation (models.currentModelId AND the
+  // advertised current), a model setter is required, and its successful
+  // reply may use ANY shape acknowledgedValue accepts. Only the list shape
+  // moved the witness — singular and scalar left the retired seed standing,
+  // so the operator asked for the successor, was acknowledged the successor,
+  // and was refused in the name of the old generation. All three shapes
+  // supersede; all three prompt.
+  for (const shape of ['list', 'singular', 'scalar']) {
+    const out = await invoke({
+      id: 'codex', lane: 'codex', provider: 'openai',
+      command: process.execPath,
+      args: [MOCK, 'retired-seed'],
+      reviewMode: 'plan', model: 'gpt-6.1-sol',
+      config: { model: 'gpt-6.1-sol', mode: 'plan' },
+    }, { MOCK_REVIEW_BEHAVIOUR: 'retired-seed', MOCK_REVIEW_MODEL: 'gpt-6.1-sol', MOCK_SETTER_SHAPE: shape })
+    // The run must COMPLETE — reaching a PASS verdict is itself the proof
+    // that the validated successor setter superseded the retired seed; the
+    // round-3 defect was the refusal, not a wrong verdict.
+    assert.equal(out.review.verdict, 'PASS',
+      `shape ${shape}: a validated successor setter must supersede the retired seed`)
+  }
+}, { timeout: 20_000 })
+
+test('a shadowed prohibited model in a model setter reply is rejected', async () => {
+  // Codex review bot finding: even when id === 'model', duplicate/shadowed model
+  // entries in the setter reply (e.g. clean id='model' followed by prohibited name='model')
+  // must be screened and rejected before the prompt can be issued.
+  await assert.rejects(
+    invoke({
+      id: 'codex', lane: 'codex', provider: 'openai',
+      command: process.execPath,
+      args: [MOCK, 'retired-seed'],
+      reviewMode: 'plan', model: 'gpt-6.1-sol',
+      config: { model: 'gpt-6.1-sol', mode: 'plan' },
+    }, { MOCK_REVIEW_BEHAVIOUR: 'retired-seed', MOCK_REVIEW_MODEL: 'gpt-6.1-sol', MOCK_SETTER_SHADOWED: 'true' }),
+    error => error.code === 'policy' && /gpt-6-sol is retired/.test(error.message),
+    'a model setter reply carrying a shadowed prohibited model was not refused',
+  )
+}, { timeout: 10_000 })
+
+test('an alias must not shadow a retired canonical model', () => {
+  // Round-3 panel (Ada): requestModel ?? model let an alias suppress the
+  // canonical screen — a profile recording gpt-6-sol behind a gateway alias
+  // passed the entry guard. Both names are screened independently. The
+  // control proves the alias+clean-canonical pair is NOT what trips it.
+  let spawned = false
+  const neverSpawn = () => { spawned = true; throw new Error('must not spawn') }
+  const env = { HOME: '/definitely/nonexistent', PATH: '/definitely/nonexistent' }
+  const attempt = (model) => runAcpReview({
+    lane: 'codex',
+    profile: { reviewMode: 'plan', model, requestModel: 'Gateway-Codex-Route' },
+    packet: {},
+    command: 'definitely-not-run',
+    args: [],
+    env,
+    spawn: neverSpawn,
+    timeoutMs: 1000,
+  })
+  return (async () => {
+    await assert.rejects(
+      attempt('gpt-6-sol'),
+      error => error.code === 'policy' && /gpt-6-sol is retired/.test(error.message),
+      'a retired CANONICAL behind an alias was accepted',
+    )
+    assert.equal(spawned, false)
+    // Control: the same alias over a clean canonical must pass the guard
+    // (it fails later, on the unresolvable executable — not as policy).
+    await assert.rejects(
+      attempt('gpt-6.1-sol'),
+      error => error.code !== 'policy',
+      'the alias+clean pair was refused as policy — the guard over-refuses',
+    )
+    assert.equal(spawned, false)
+  })()
 })
 
 test('resolveExecutable still refuses when NEITHER the launcher nor its real file is trusted', async () => {

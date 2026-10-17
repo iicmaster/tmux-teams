@@ -83,7 +83,7 @@ test('every declared lane is listed, and the list is pinned rather than derived 
   // all four, per lane, literally.
   const declared = Object.fromEntries(out.lanes.map((l) => [l.lane, l]))
   for (const [lane, family, provider, model] of [
-    ['agy', 'gemini', 'google-antigravity', 'gemini-3.7-flash-high'],
+    ['agy', 'gemini', 'google-antigravity', 'gemini-4-argon-high'],
     ['claude', 'claude', 'anthropic', 'claude-opus-5-5'],
     ['codex', 'openai', 'openai', 'gpt-6.1-sol'],
     ['deepseek', 'deepseek', 'qwen', 'deepseek-v4-flash-0731'],
@@ -243,7 +243,7 @@ test('the agy lane checks that its binary is EXECUTABLE, not merely that a name 
   const cases = [
     ['a regular file with no execute bit', (path, fs) => { fs.writeFileSync(path, ''); fs.chmodSync(path, 0o644) }, 'invalid'],
     ['a directory with the right name', (path, fs) => fs.mkdirSync(path), 'invalid'],
-    ['a real executable', (path, fs) => { fs.writeFileSync(path, '#!/bin/sh\nexit 0\n'); fs.chmodSync(path, 0o755) }, 'valid'],
+    ['a real executable', (path, fs) => { fs.writeFileSync(path, '#!/bin/sh\necho "1.4.0"\nexit 0\n'); fs.chmodSync(path, 0o755) }, 'valid'],
   ]
   for (const [label, make, expected] of cases) {
     const home = mkdtempSync(join(tmpdir(), 'acp-lanes-agy-'))
@@ -268,6 +268,22 @@ test('the agy lane checks that its binary is EXECUTABLE, not merely that a name 
     { HOME: '/definitely/nonexistent', PATH: process.env.PATH })
   assert.equal(bare.configuration, 'invalid')
   assert.equal(bare.problem.code, 'executable_missing')
+})
+
+test('the agy lane reports executable_incompatible when binary version is older or unreadable', () => {
+  const home = mkdtempSync(join(tmpdir(), 'acp-lanes-agy-incompatible-'))
+  try {
+    const bin = join(home, '.local', 'bin')
+    mkdirSync(bin, { recursive: true })
+    writeFileSync(join(bin, 'agy'), '#!/bin/sh\necho "1.3.4"\nexit 0\n')
+    chmodSync(join(bin, 'agy'), 0o755)
+    const got = laneStatus('agy', REVIEW_PROFILES.agy, { HOME: home, PATH: '/definitely/nonexistent' })
+    assert.equal(got.configuration, 'invalid')
+    assert.equal(got.problem.code, 'executable_incompatible')
+    assert.ok(got.fixes.some(f => /agy update|version >= 1\.3\.5/.test(f)), 'got no upgrade-shaped fix')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
 })
 
 test('a routed lane names the WRAPPER among the things it did not prove', () => {
@@ -321,13 +337,20 @@ test('every diagnostic code the classifier can return has a constant sentence', 
     // providers can trigger, and `executable_unusable` is EACCES/EPERM told
     // apart from ENOENT, which the parent-side check never spawns anything to
     // observe.
-    'quota_exhausted', 'probe_timeout', 'probe_boot_timeout', 'executable_unusable']
+    'quota_exhausted', 'probe_timeout', 'probe_boot_timeout', 'executable_unusable',
+    'executable_incompatible', 'lane_prohibited']
   assert.deepEqual(Object.keys(DIAGNOSTICS).sort(), [...codes].sort())
   // and the classifier maps real messages onto them rather than onto `unclassified`
   assert.equal(classify('zai review requires ANTHROPIC_BASE_URL'), 'endpoint_missing')
   assert.equal(classify('zai review endpoint must be https://api.z.ai/api/anthropic'), 'endpoint_mismatch')
   assert.equal(classify('zai review endpoint requires an explicit provider credential'), 'credential_missing')
   assert.equal(classify('trusted agy executable not found'), 'executable_missing')
+  assert.equal(classify('trusted agy binary at /path/to/agy did not report a valid version (expected >= 1.3.5)'),
+    'executable_incompatible')
+  assert.equal(classify('trusted agy binary at /path/to/agy is version 1.3.4, but version >= 1.3.5 is required for Gemini 4 Argon support'),
+    'executable_incompatible')
+  const incompatibleFixes = fixesFor('agy', REVIEW_PROFILES.agy, 'executable_incompatible')
+  assert.ok(incompatibleFixes.some(f => /agy update|version >= 1\.3\.5/.test(f)))
   // Its own bucket, not a credential one: the offending value may be a header,
   // a model config or an oversized total, and three of those four repairs have
   // nothing to do with a credential.
@@ -1154,6 +1177,23 @@ test('a candidate whose interpreter is missing answers unchecked, not valid', ()
     assert.equal(lane.configuration, 'unchecked',
       `a lane that cannot start reported ${lane.configuration}`)
     assert.match(JSON.stringify(lane.fixes), /interpreter/)
+
+    // A malformed override file reports invalid configuration, never unchecked
+    const laneDir = join(home, '.config', 'tmux-teams')
+    mkdirSync(laneDir, { recursive: true })
+    const overrideFile = join(laneDir, 'lanes.json')
+    writeFileSync(overrideFile, '{ malformed json\n')
+    const badLane = callTool('acp_lane_status', { lane: 'agy' }, { HOME: home }).lanes[0]
+    assert.equal(badLane.configuration, 'invalid',
+      'malformed override file must report invalid configuration')
+    assert.equal(badLane.problem.code, 'settings_unreadable')
+
+    // A prohibited model override reports invalid configuration, never unchecked
+    writeFileSync(overrideFile, JSON.stringify({ agy: { model: 'gpt-6-sol' } }))
+    const prohibitedLane = callTool('acp_lane_status', { lane: 'agy' }, { HOME: home }).lanes[0]
+    assert.equal(prohibitedLane.configuration, 'invalid',
+      'prohibited model override must report invalid configuration')
+    assert.equal(prohibitedLane.problem.code, 'lane_prohibited')
   } finally {
     rmSync(home, { recursive: true, force: true })
   }
@@ -1913,6 +1953,7 @@ test('classifyProbe maps a closed SIGNAL shape onto a closed code, never onto te
     { settled: 'spawn_error', errnoCode: 'EPERM' },
     { settled: 'exit', quotaSignal: true }, { settled: 'exit' },
     { settled: 'refused', quotaSignal: true }, { settled: 'refused' },
+    { settled: 'prohibited_model' },
     { settled: 'invalid_handshake' }, { settled: 'cancelled' }, { settled: 'aborted' }, {}]) {
     const code = classifyProbe(shape)
     assert.ok(code === null || Object.hasOwn(DIAGNOSTICS, code),
@@ -2104,7 +2145,7 @@ test('the acp_lanes description does not deny the machine state it reads', async
 
   assert.ok(!/touches nothing on this machine/.test(text),
     'the description still claims to touch nothing while the handler reads PATH and two files')
-  for (const promised of [/PATH/, /override/, /setupRequired/]) {
+  for (const promised of [/PATH/, /override/, /setupRequired/, /--version/]) {
     assert.match(text, promised,
       'the description does not tell a caller which machine state this tool reads')
   }
@@ -2385,6 +2426,103 @@ test('a wrapper that exists but cannot be executed is not called callable', asyn
   }
 })
 
+test('laneAvailability, readinessReport and acp_lanes apply the agy version gate to exclude incompatible binaries', async () => {
+  const { laneAvailability, readinessReport } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-readiness.mjs')).href)
+  const home = mkdtempSync(join(tmpdir(), 'agy-readiness-'))
+  try {
+    const binDir = join(home, '.local', 'bin')
+    mkdirSync(binDir, { recursive: true })
+    const agyBin = join(binDir, 'agy')
+    writeFileSync(agyBin, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+    writeFileSync(join(binDir, 'bunx'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+
+    // Provide bunx launcher on PATH
+    const env = { HOME: home, PATH: `${binDir}${delimiter}${process.env.PATH}` }
+
+    // 1. Incompatible version (< 1.3.5)
+    const incompatible = laneAvailability('agy', REVIEW_PROFILES.agy, env, {
+      agyVersionResolver: () => '1.3.4',
+    })
+    assert.equal(incompatible.available, false)
+    assert.equal(incompatible.blocking[0].code, 'executable_incompatible')
+    assert.equal(incompatible.blocking[0].missing, 'agy')
+    assert.ok(incompatible.needs.includes('agy'))
+
+    // 2. Unreadable version
+    const unreadable = laneAvailability('agy', REVIEW_PROFILES.agy, env, {
+      agyVersionResolver: () => null,
+    })
+    assert.equal(unreadable.available, false)
+    assert.equal(unreadable.blocking[0].code, 'executable_incompatible')
+
+    // 3. Compatible version (>= 1.3.5)
+    const compatible = laneAvailability('agy', REVIEW_PROFILES.agy, env, {
+      agyVersionResolver: () => '1.3.5',
+    })
+    assert.equal(compatible.available, true)
+    assert.equal(compatible.blocking.length, 0)
+
+    // 4. readinessReport reflects the compatibility gate in callableLanes
+    const reportIncompatible = readinessReport({ agy: REVIEW_PROFILES.agy }, env, {
+      agyVersionResolver: () => '1.3.4',
+    })
+    assert.deepEqual(reportIncompatible.callableLanes, [])
+    assert.equal(reportIncompatible.lanes[0].available, false)
+
+    const reportCompatible = readinessReport({ agy: REVIEW_PROFILES.agy }, env, {
+      agyVersionResolver: () => '1.4.0',
+    })
+    assert.deepEqual(reportCompatible.callableLanes, ['agy'])
+    assert.equal(reportCompatible.lanes[0].available, true)
+
+    // 5. acp_lanes tool reflects the gate
+    const reply = await handle({ jsonrpc: '2.0', id: 10, method: 'tools/call',
+      params: { name: 'acp_lanes', arguments: {} } }, env, {
+      agyVersionResolver: () => '1.3.4',
+    })
+    const payload = JSON.parse(reply.result.content[0].text)
+    const agyLane = payload.lanes.find(l => l.lane === 'agy')
+    assert.equal(agyLane.available, false)
+    assert.equal(agyLane.blocking[0].code, 'executable_incompatible')
+    assert.ok(!payload.callableLanes.includes('agy'))
+
+    // 6. acp_lane_probe brake refuses the lane before probe
+    let probeContacted = false
+    const probeReply = await handle({ jsonrpc: '2.0', id: 11, method: 'tools/call',
+      params: { name: 'acp_lane_probe', arguments: { lanes: ['agy'] } } }, env, {
+      agyVersionResolver: () => '1.3.4',
+      probeTransport: async () => { probeContacted = true; return { settled: 'handshake_ok' } },
+    })
+    assert.equal(probeContacted, false, 'the probe contacted an incompatible agy lane instead of refusing at the brake')
+    const probePayload = JSON.parse(probeReply.result.content[0].text)
+    assert.equal(probePayload.lanes[0].probe, 'not_attempted')
+    assert.equal(probePayload.lanes[0].problem.code, 'executable_incompatible')
+
+    // 7. acp_lanes tool resolves agy version once per listing and reuses availability
+    let resolverCalls = 0
+    const countingReply = await handle({ jsonrpc: '2.0', id: 12, method: 'tools/call',
+      params: { name: 'acp_lanes', arguments: {} } }, env, {
+      agyVersionResolver: () => { resolverCalls++; return '1.3.5' },
+    })
+    assert.equal(resolverCalls, 1, `agyVersionResolver was called ${resolverCalls} times instead of once`)
+    const countingPayload = JSON.parse(countingReply.result.content[0].text)
+    assert.equal(countingPayload.callableLanes.includes('agy'), true)
+    assert.equal(countingPayload.lanes.find(l => l.lane === 'agy').available, true)
+
+    // 8. acp_lane_probe tool resolves agy version once across status, availability and launch preflight
+    let probeResolverCalls = 0
+    const countingProbeReply = await handle({ jsonrpc: '2.0', id: 13, method: 'tools/call',
+      params: { name: 'acp_lane_probe', arguments: { lanes: ['agy'] } } }, env, {
+      agyVersionResolver: () => { probeResolverCalls++; return '1.3.5' },
+      probeTransport: async () => ({ settled: 'handshake_ok' }),
+    })
+    assert.equal(probeResolverCalls, 1, `agyVersionResolver was called ${probeResolverCalls} times in probe instead of once`)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
 test('the pre-spawn brake honours a per-machine override', async () => {
   const home = mkdtempSync(join(tmpdir(), 'brake-override-'))
   try {
@@ -2406,6 +2544,69 @@ test('the pre-spawn brake honours a per-machine override', async () => {
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+test('prohibited model overrides are excluded from callable lanes and refused at the brake', async () => {
+  const { laneAvailability, readinessReport } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-readiness.mjs')).href)
+  const { loadLaneOverrides } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-overrides.mjs')).href)
+  const home = mkdtempSync(join(tmpdir(), 'prohibited-override-'))
+  try {
+    mkdirSync(join(home, '.config', 'tmux-teams'), { recursive: true })
+    writeFileSync(join(home, '.config', 'tmux-teams', 'lanes.json'),
+      JSON.stringify({ codex: { model: 'gpt-6-sol' } }))
+    const env = { ...process.env, HOME: home }
+
+    // 1. laneAvailability marks the prohibited model unavailable
+    const availability = laneAvailability('codex', { ...REVIEW_PROFILES.codex, model: 'gpt-6-sol' }, env)
+    assert.equal(availability.available, false)
+    assert.equal(availability.blocking[0].code, 'lane_prohibited')
+    assert.equal(availability.blocking[0].missing, 'gpt-6-sol')
+
+    // 2. readinessReport excludes the prohibited lane from callableLanes
+    const report = readinessReport(REVIEW_PROFILES, env, { overrideLoader: loadLaneOverrides })
+    assert.ok(!report.callableLanes.includes('codex'), 'prohibited override codex must not be callable')
+    const codexLane = report.lanes.find(l => l.lane === 'codex')
+    assert.equal(codexLane.available, false)
+    assert.equal(codexLane.blocking[0].code, 'lane_prohibited')
+
+    // 3. acp_lanes tool reflects unavailable prohibited lane
+    const reply = await handle({ jsonrpc: '2.0', id: 20, method: 'tools/call',
+      params: { name: 'acp_lanes', arguments: {} } }, env)
+    const payload = JSON.parse(reply.result.content[0].text)
+    assert.ok(!payload.callableLanes.includes('codex'))
+    const codexRow = payload.lanes.find(l => l.lane === 'codex')
+    assert.equal(codexRow.available, false)
+    assert.equal(codexRow.blocking[0].code, 'lane_prohibited')
+
+    // 4. acp_lane_probe pre-spawn brake refuses the prohibited lane without spawning
+    let spawned = false
+    const { payload: probePayload } = await callProbe({ lanes: ['codex'] }, env,
+      async () => { spawned = true; return { settled: 'handshake_ok' } })
+    assert.equal(spawned, false, 'prohibited lane must not be spawned by probe')
+    assert.equal(probePayload.lanes[0].probe, 'not_attempted')
+    assert.equal(probePayload.lanes[0].problem.code, 'lane_prohibited')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('an AGY override with prohibited model fails as lane_prohibited first and avoids probing the binary', async () => {
+  const { laneAvailability } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-readiness.mjs')).href)
+  let resolverCalled = false
+  const availability = laneAvailability('agy', {
+    ...REVIEW_PROFILES.agy,
+    model: 'gemini-3.1',
+  }, process.env, {
+    agyVersionResolver: () => { resolverCalled = true; return '1.3.4' },
+  })
+  assert.equal(availability.available, false)
+  assert.equal(availability.blocking[0].code, 'lane_prohibited')
+  assert.equal(availability.blocking[0].missing, 'gemini-3.1')
+  assert.equal(resolverCalled, false, 'agy binary was probed despite lane being prohibited by policy')
+})
+
 
 // A malformed override file must not read as "no overrides". Discarding the
 // loader's problems made readiness report from shipped defaults while
@@ -2586,6 +2787,180 @@ test('handshake depth completes the session and sends no prompt at all', async (
   }
 })
 
+test('the probe refuses a lane whose OBSERVED default is the retired generation, before any prompt', async () => {
+  // Master, 2026-09-30: gpt-6-sol is retired — only gpt-6.1-sol runs. The
+  // probe is a route that reaches session/prompt, so it screens the model the
+  // session reports before paying for anything. Found by the v0.45.0 release
+  // panel (codex lane): the probe transport checked only the sessionId.
+  const stub = join(ROOT, 'tests', 'fixtures', 'probe-stub-agent.mjs')
+  const dir = mkdtempSync(join(tmpdir(), 'probe-prohibited-'))
+  try {
+    const log = join(dir, 'asked.log')
+    writeFileSync(log, '')
+    const result = await realProbeTransport({
+      command: [process.execPath, stub],
+      env: { ...process.env, STUB_MODE: 'ok', STUB_LOG: log, STUB_CURRENT_MODEL: 'gpt-6-sol' },
+      depth: 'prompt',
+      bootTimeoutMs: 8000, replyTimeoutMs: 8000,
+    })
+    assert.deepEqual(result, { settled: 'prohibited_model' },
+      `a retired-default session settled as ${JSON.stringify(result)}`)
+    const asked = readFileSync(log, 'utf8').split('\n').filter(Boolean)
+    assert.ok(asked.includes('session/new'), `the probe never opened a session: ${asked.join(', ')}`)
+    assert.ok(!asked.includes('session/prompt'),
+      'the probe PAID FOR A TURN on the retired generation — the screen must fire before session/prompt')
+    assert.equal(classifyProbe(result), 'lane_prohibited',
+      'an operator reading the classification must be pointed at policy, not at a timeout or a repair')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the successor passes the same probe at prompt depth', async () => {
+  // The control for the refusal above: without it, a guard that refused
+  // EVERYTHING would pass while the lane became unreachable for good.
+  const stub = join(ROOT, 'tests', 'fixtures', 'probe-stub-agent.mjs')
+  const dir = mkdtempSync(join(tmpdir(), 'probe-successor-'))
+  try {
+    const result = await realProbeTransport({
+      command: [process.execPath, stub],
+      env: { ...process.env, STUB_MODE: 'ok', STUB_CURRENT_MODEL: 'gpt-6.1-sol' },
+      depth: 'prompt',
+      bootTimeoutMs: 8000, replyTimeoutMs: 8000,
+    })
+    assert.deepEqual(result, { settled: 'response' },
+      `the successor was caught by the prohibition guard: ${JSON.stringify(result)}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a clean currentModelId does not shadow a retired model option in the same response', async () => {
+  // Round-2 panel counterexample: `??`-chaining read only the first witness,
+  // so a clean `models.currentModelId` hid a retired `model` config option
+  // carried by the same session/new response. Both are screened.
+  const stub = join(ROOT, 'tests', 'fixtures', 'probe-stub-agent.mjs')
+  const dir = mkdtempSync(join(tmpdir(), 'probe-mixed-'))
+  try {
+    const log = join(dir, 'asked.log')
+    writeFileSync(log, '')
+    const result = await realProbeTransport({
+      command: [process.execPath, stub],
+      env: { ...process.env, STUB_MODE: 'ok', STUB_LOG: log,
+        STUB_CURRENT_MODEL: 'gpt-6.1-sol', STUB_OPTION_MODEL: 'gpt-6-sol' },
+      depth: 'prompt',
+      bootTimeoutMs: 8000, replyTimeoutMs: 8000,
+    })
+    assert.deepEqual(result, { settled: 'prohibited_model' },
+      `a retired option behind a clean currentModelId settled as ${JSON.stringify(result)}`)
+    const asked = readFileSync(log, 'utf8').split('\n').filter(Boolean)
+    assert.ok(!asked.includes('session/prompt'),
+      'the probe paid for a turn on a response carrying the retired generation')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a SECOND recognized model option is screened, not shadowed by the first match', async () => {
+  // Round-3 panel counterexample (Quinn, codex lane): `.find()` read only the
+  // FIRST option matching the id/name predicate. Two recognized options — the
+  // first clean, the second carrying the retired generation — let the retired
+  // witness survive behind the clean one. `.filter()` screens them all.
+  const stub = join(ROOT, 'tests', 'fixtures', 'probe-stub-agent.mjs')
+  const dir = mkdtempSync(join(tmpdir(), 'probe-second-option-'))
+  try {
+    const log = join(dir, 'asked.log')
+    writeFileSync(log, '')
+    const result = await realProbeTransport({
+      command: [process.execPath, stub],
+      env: { ...process.env, STUB_MODE: 'ok', STUB_LOG: log,
+        STUB_CURRENT_MODEL: 'gpt-6.1-sol', STUB_OPTION_MODEL: 'gpt-6.1-sol',
+        STUB_OPTION2_MODEL: 'gpt-6-sol' },
+      depth: 'prompt',
+      bootTimeoutMs: 8000, replyTimeoutMs: 8000,
+    })
+    assert.deepEqual(result, { settled: 'prohibited_model' },
+      `a retired SECOND option settled as ${JSON.stringify(result)}`)
+    const asked = readFileSync(log, 'utf8').split('\n').filter(Boolean)
+    assert.ok(!asked.includes('session/prompt'),
+      'the probe paid for a turn while a second witness named the retired generation')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a model option in initialize response is screened even when session/new omits configOptions', async () => {
+  // Codex review bot finding: adapters that advertise configOptions in initialize
+  // and omit them from session/new must still be screened, so a probe does not issue
+  // a paid prompt on a retired model announced during initialize.
+  const stub = join(ROOT, 'tests', 'fixtures', 'probe-stub-agent.mjs')
+  const dir = mkdtempSync(join(tmpdir(), 'probe-init-model-'))
+  try {
+    const log = join(dir, 'asked.log')
+    writeFileSync(log, '')
+    const result = await realProbeTransport({
+      command: [process.execPath, stub],
+      env: { ...process.env, STUB_MODE: 'ok', STUB_LOG: log,
+        STUB_INIT_MODEL: 'gpt-6-sol' },
+      depth: 'prompt',
+      bootTimeoutMs: 8000, replyTimeoutMs: 8000,
+    })
+    assert.deepEqual(result, { settled: 'prohibited_model' },
+      `a retired model in initialize settled as ${JSON.stringify(result)}`)
+    const asked = readFileSync(log, 'utf8').split('\n').filter(Boolean)
+    assert.ok(!asked.includes('session/prompt'),
+      'the probe paid for a turn while initialize advertised the retired generation')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a model option carrying value instead of currentValue is screened', async () => {
+  const stub = join(ROOT, 'tests', 'fixtures', 'probe-stub-agent.mjs')
+  const dir = mkdtempSync(join(tmpdir(), 'probe-value-model-'))
+  try {
+    const log = join(dir, 'asked.log')
+    writeFileSync(log, '')
+    const result = await realProbeTransport({
+      command: [process.execPath, stub],
+      env: { ...process.env, STUB_MODE: 'ok', STUB_LOG: log,
+        STUB_OPTION_VALUE_MODEL: 'gpt-6-sol' },
+      depth: 'prompt',
+      bootTimeoutMs: 8000, replyTimeoutMs: 8000,
+    })
+    assert.deepEqual(result, { settled: 'prohibited_model' },
+      `a retired model option with value field settled as ${JSON.stringify(result)}`)
+    const asked = readFileSync(log, 'utf8').split('\n').filter(Boolean)
+    assert.ok(!asked.includes('session/prompt'),
+      'the probe paid for a turn while session/new configOptions had value with retired model')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a model option in initialize carrying value instead of currentValue is screened', async () => {
+  const stub = join(ROOT, 'tests', 'fixtures', 'probe-stub-agent.mjs')
+  const dir = mkdtempSync(join(tmpdir(), 'probe-init-value-model-'))
+  try {
+    const log = join(dir, 'asked.log')
+    writeFileSync(log, '')
+    const result = await realProbeTransport({
+      command: [process.env.NODE || process.execPath, stub],
+      env: { ...process.env, STUB_MODE: 'ok', STUB_LOG: log,
+        STUB_INIT_VALUE_MODEL: 'gpt-6-sol' },
+      depth: 'prompt',
+      bootTimeoutMs: 8000, replyTimeoutMs: 8000,
+    })
+    assert.deepEqual(result, { settled: 'prohibited_model' },
+      `a retired model in initialize with value field settled as ${JSON.stringify(result)}`)
+    const asked = readFileSync(log, 'utf8').split('\n').filter(Boolean)
+    assert.ok(!asked.includes('session/prompt'),
+      'the probe paid for a turn while initialize configOptions had value with retired model')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 // A typo must COST NOTHING. A caller who writes `handshakes` is asking to spend
 // no quota; silently treating that as the paying default would spend a whole
 // sweep's budget on a spelling mistake.
@@ -2647,6 +3022,7 @@ test('every unreachable outcome the transport can report lands on a classified c
     [{ settled: 'spawn_error', errnoCode: 'ENOENT', rawStderr: 'CANARY-SHOULD-NEVER-SURFACE' }, 'executable_missing'],
     [{ settled: 'exit', code: 1, quotaSignal: true, rawText: 'CANARY-QUOTA-TEXT' }, 'quota_exhausted'],
     [{ settled: 'exit', code: 1, quotaSignal: false }, 'unclassified'],
+    [{ settled: 'prohibited_model' }, 'lane_prohibited'],
     [{ settled: 'a kind this file has never seen' }, 'unclassified'],
   ]
   for (const [outcome, code] of outcomes) {

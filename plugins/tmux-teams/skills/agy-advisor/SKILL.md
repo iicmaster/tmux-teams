@@ -37,16 +37,16 @@ node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
   agy <cwd> <task-id> <brief-file> [stall-sec]
 ```
 
-`<model>` is the expanded id — `gemini-3.7-flash-high` unless the caller named
+`<model>` is the expanded id — `gemini-4-argon-high` unless the caller named
 another seat, see Arguments below. It goes in BOTH assignments: the request
 without a matching expectation is a dispatch nobody verified. This command
 hardcoded `high` in both places while the Arguments table promised `medium` and
 `low`, so `$agy-advisor medium` ran high and produced a high receipt that
 MATCHED — a silently ignored seat is worse than a refused one.
 
-Measured 2026-08-19 rather than assumed: the lane accepts all three contract
-variables, writes a receipt, and reports
-`effective_identity: gemini-3.7-flash-high (matched)`.
+Measured 2026-10-17 against `agy` 1.3.5 rather than assumed: the lane accepts
+all three contract variables, writes a receipt, and reports
+`effective_identity: gemini-4-argon-high (matched)`.
 
 ## What differs from the Codex seat
 
@@ -82,7 +82,7 @@ above it walked straight into it, for the whole of v0.33.0's review cycle.
 
 ## Model policy — this is the part that fails closed
 
-The default is `gemini-3.7-flash-high` (Master, 2026-08-16, moved off 3.6).
+The default is `gemini-4-argon-high` (Master, 2026-10-17, moved off `gemini-3.7-flash-high`).
 
 **Gemini 3.1 variants are PROHIBITED for planning, review and delivery work.**
 If a configured or acknowledged model is a 3.1 variant, fail the dispatch — do
@@ -97,16 +97,19 @@ would have noticed if it had not.
 ## Arguments
 
 ```
-$agy-advisor              # default seat: gemini-3.7-flash-high
-$agy-advisor high         # gemini-3.7-flash-high
-$agy-advisor medium       # gemini-3.7-flash-medium
-$agy-advisor low          # gemini-3.7-flash-low
+$agy-advisor              # default seat: gemini-4-argon-high
+$agy-advisor high         # gemini-4-argon-high
+$agy-advisor medium       # gemini-4-argon-medium
+$agy-advisor low          # gemini-4-argon-low
+$agy-advisor flash-high   # gemini-3.8-flash-high
+$agy-advisor flash-medium # gemini-3.8-flash-medium
+$agy-advisor flash-low    # gemini-3.8-flash-low
 ```
 
-A bare alias is expanded; the full `gemini-3.7-flash-*` id is what reaches the
-adapter and what the receipt must show. Any other name is a usage error — do not
-pass a model through unrecognised, because an unknown value either fails the
-dispatch or silently seats something nobody chose.
+A bare alias is expanded; the full `gemini-4-argon-*` or `gemini-3.8-flash-*`
+id is what reaches the adapter and what the receipt must show. Any other name is
+a usage error — do not pass a model through unrecognised, because an unknown
+value either fails the dispatch or silently seats something nobody chose.
 
 ### `--party <id>` — seat a saved bmad-party-mode roster
 
@@ -142,17 +145,20 @@ and free to proceed with the invented cast. Never substitute silently: someone
 who typed `--party` asked for a specific room.
 
 **This said "One seat" until 2026-08-19, and it was false the day it was
-written.** Probed against the adapter, it advertises FOURTEEN values: the 3.7,
-3.6 and 3.5 Flash seats at high/medium/low, both Gemini 3.1 Pro seats, two
-Anthropic models and a GPT-OSS one. The sentence came from an assumption instead
-of a measurement.
+written.** Probed against `agy` 1.3.5 (2026-10-17), the adapter advertises
+THIRTEEN values: the Gemini 4 Argon and Gemini 3.8 Flash seats at
+high/medium/low, six Anthropic 5.5 seats (Opus and Sonnet at low/medium/high),
+and a GPT-OSS one (earlier adapter versions advertised fourteen, including
+3.7/3.6/3.5 Flash and both Gemini 3.1 Pro seats). The sentence came from an
+assumption instead of a measurement.
 
 ## Two refusals, and they are not style
 
-**Gemini 3.1 is PROHIBITED** and the adapter advertises `gemini-3.1-pro-high`
-and `gemini-3.1-pro-low` in the list above, so it is reachable by typing. The
-companion refuses both the request and the expectation and exits 2 before a
-session exists — measured, not assumed. Never route around it.
+**Gemini 3.1 is PROHIBITED** and older adapter versions advertised
+`gemini-3.1-pro-high` and `gemini-3.1-pro-low`, so it remains guarded in case
+an older binary or cached model list is present. The companion refuses both the
+request and the expectation and exits 2 before a session exists — measured, not
+assumed. Never route around it.
 
 **Never send a `claude-*` or `gpt-oss-*` value through this lane.** The adapter
 will take them, and the moment it does, this seat stops being the Gemini family:

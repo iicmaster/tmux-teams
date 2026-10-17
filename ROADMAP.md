@@ -12,9 +12,9 @@
 > source, no publish script and nothing that could notice it had gone stale —
 > so it went stale, repeatedly, and nobody could tell without opening it.
 
-Current release: **0.44.0** — the version stamped in this tree, in flight on
-a pull request and not yet tagged. `main` carries **v0.43.0**, tagged at the
-MERGED sha `abda276` (not the branch tip `d047838` — those are different
+Current release: **0.45.0** — the version stamped in this tree, in flight on
+a pull request and not yet tagged. `main` carries **v0.44.0**, tagged at the
+MERGED sha `18163c0` (not the branch tip `95f07b9` — those are different
 commits, and tagging the wrong one ships a sha `main` does not hold). Anyone
 installing from the marketplace resolves the last TAG, not this line.
 
@@ -342,7 +342,8 @@ Gemini seat through Antigravity is the cheapest way to stop that.
 Measured before the skill was written rather than after: the lane accepts
 `INITIAL_AGENT_MODE=read-only`, `ACP_SESSION_RECEIPT_REQUIRED=1` and
 `ACP_SESSION_OPERATION=new`, writes a receipt, and reports
-`effective_identity: gemini-3.7-flash-high (matched)`. So it is held to the same
+`effective_identity: gemini-3.7-flash-high (matched)` (AGY frontier moved to
+`gemini-4-argon-high` on 2026-10-17, Master's order). So it is held to the same
 enforcement as the Codex seat rather than excused like the Claude one, which has
 no mode switch. It has no reasoning-effort dimension, so its identity is the
 bare model id where Codex reads `gpt-6.1-sol[ultra]` (Codex frontier moved

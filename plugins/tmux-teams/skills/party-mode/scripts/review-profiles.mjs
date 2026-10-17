@@ -2,6 +2,8 @@
 // profile-scoped environment, never a shell command or ambient credential bag.
 import { accessSync, closeSync, constants as fsConstants, existsSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs'
 import { delimiter, join } from 'node:path'
+import { spawnSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
 import { loadLaneOverrides, applyLaneOverride } from './lane-overrides.mjs'
 
 const runtimeKeys = new Set([
@@ -71,11 +73,11 @@ const NINEROUTER_ENDPOINT = freeze({ scheme: 'http', host: '127.0.0.1', port: '2
 
 export const REVIEW_PROFILES = freeze({
   agy: {
-    id: 'agy', provider: 'google-antigravity', family: 'gemini', model: 'gemini-3.7-flash-high',
-    displayModel: 'agy/gemini-3.7-flash-high',
+    id: 'agy', provider: 'google-antigravity', family: 'gemini', model: 'gemini-4-argon-high',
+    displayModel: 'agy/gemini-4-argon-high',
     reviewMode: 'plan', command: ['bunx', 'antigravity-acp@1.2.0'],
     adapterPackage: 'antigravity-acp@1.2.0',
-    config: { model: 'gemini-3.7-flash-high', mode: 'plan' },
+    config: { model: 'gemini-4-argon-high', mode: 'plan' },
   },
   kimi: {
     id: 'kimi', provider: 'kimi', family: 'kimi', model: 'opus',
@@ -265,9 +267,13 @@ export const REVIEW_PROFILES = freeze({
 // This throws at import.
 const PROHIBITED_MODEL = /(?:^|[^0-9a-z])(?:gemini[-_ ]?3\.1|gpt[-_ ]?6[-_ ]?sol)(?:[^0-9]|$)/i
 
+export function isProhibitedModel(model) {
+  return typeof model === 'string' && PROHIBITED_MODEL.test(model)
+}
+
 /** Reject a prohibited reviewer model rather than quietly running it. */
 export function assertPermittedModel(model, where) {
-  if (typeof model === 'string' && PROHIBITED_MODEL.test(model)) {
+  if (isProhibitedModel(model)) {
     throw new Error(`${where}: prohibited model on tmux-teams review routes (Gemini 3.1 is banned; gpt-6-sol is retired — the Codex frontier is gpt-6.1-sol), got ${model}`)
   }
   return model
@@ -982,9 +988,100 @@ export function unresolvedInterpreterFor(id, { env = process.env } = {}) {
   return found ? shebangInterpreterMissing(found, { pathValue: executablePath(env) }) : null
 }
 
-function trustedAgyBinary(source) {
-  const found = agyBinaryCandidates(source).find(executableCandidate)
-  return found ? realpathSync(found) : null
+export const MINIMUM_AGY_VERSION = '1.3.5'
+
+export function parseSemver(str) {
+  const match = String(str).trim().match(/^v?(\d+)\.(\d+)\.(\d+)/)
+  if (!match) return null
+  return [Number(match[1]), Number(match[2]), Number(match[3])]
+}
+
+export function compareSemver(a, b) {
+  const pa = parseSemver(a)
+  const pb = parseSemver(b)
+  if (!pa || !pb) return 0
+  for (let i = 0; i < 3; i++) {
+    if (pa[i] > pb[i]) return 1
+    if (pa[i] < pb[i]) return -1
+  }
+  return 0
+}
+
+export function agyEnvironment(source = process.env) {
+  const env = {}
+  for (const [key, value] of Object.entries(source ?? {})) {
+    if (value === undefined || value === null) continue
+    if ((runtimeKeys.has(key) || POSIX_LOCALE_VARS.has(key)) && spawnableValue(String(value))) {
+      env[key] = String(value)
+    }
+  }
+  const path = executablePath(source)
+  if (path) env.PATH = path
+  if (!env.PATH) env.PATH = '/usr/bin:/bin'
+  if (!env.HOME) env.HOME = tmpdir()
+  if (!env.TMPDIR) env.TMPDIR = tmpdir()
+  return env
+}
+
+export function agyBinaryVersion(binaryPath, {
+  spawnFn = spawnSync,
+  env,
+  source = process.env,
+} = {}) {
+  const runEnv = env ?? agyEnvironment(source)
+  try {
+    const res = spawnFn(binaryPath, ['--version'], { encoding: 'utf8', timeout: 3000, env: runEnv })
+    if (res && res.status === 0 && res.stdout) {
+      const match = String(res.stdout).match(/(\d+\.\d+\.\d+)/)
+      if (match) return match[1]
+    }
+  } catch {}
+  return null
+}
+
+export function assertCompatibleAgyBinary(binaryPath, { versionResolver = agyBinaryVersion, env, source = process.env } = {}) {
+  const version = versionResolver(binaryPath, { env: env ?? agyEnvironment(source) })
+  if (!version) {
+    throw Object.assign(
+      new TypeError(
+        `trusted agy binary at ${binaryPath} did not report a valid version (expected >= ${MINIMUM_AGY_VERSION}); ` +
+        `verify 'agy --version' or upgrade via 'agy update'`
+      ),
+      { code: 'config' },
+    )
+  }
+  if (compareSemver(version, MINIMUM_AGY_VERSION) < 0) {
+    throw Object.assign(
+      new TypeError(
+        `trusted agy binary at ${binaryPath} is version ${version}, but version >= ${MINIMUM_AGY_VERSION} ` +
+        `is required for Gemini 4 Argon support; upgrade agy via 'agy update' or your package manager`
+      ),
+      { code: 'config' },
+    )
+  }
+}
+
+export function trustedAgyBinaryDetailed(source) {
+  const candidates = agyBinaryCandidates(source)
+  let blocked = null
+  for (const c of candidates) {
+    if (!existsSync(c)) continue
+    try {
+      if (!statSync(c).isFile()) {
+        if (!blocked) blocked = 'executable_not_file'
+        continue
+      }
+      accessSync(c, fsConstants.X_OK)
+      return { path: realpathSync(c), blocked: null }
+    } catch {
+      if (!blocked) blocked = 'executable_not_executable'
+    }
+  }
+  return { path: null, blocked }
+}
+
+export function trustedAgyBinary(source) {
+  return trustedAgyBinaryDetailed(source).path
 }
 
 /**
@@ -995,6 +1092,7 @@ function trustedAgyBinary(source) {
 export function buildProfileEnv(profileId, source = process.env, {
   settingsLoader,
   agyBinaryResolver = trustedAgyBinary,
+  agyVersionResolver = agyBinaryVersion,
 } = {}) {
   const profile = getReviewProfile(profileId)
   const env = {}
@@ -1037,7 +1135,8 @@ export function buildProfileEnv(profileId, source = process.env, {
   }
   if (profile.id === 'agy') {
     const agyBinary = agyBinaryResolver(source)
-    if (!agyBinary) throw new TypeError('trusted agy executable not found')
+    if (!agyBinary) throw Object.assign(new TypeError('trusted agy executable not found'), { code: 'config' })
+    assertCompatibleAgyBinary(agyBinary, { versionResolver: agyVersionResolver, source })
     env.AGY_BIN = agyBinary
     env.AGY_SKIP_DOWNLOAD = '1'
   }
@@ -1148,6 +1247,7 @@ export function buildAcpLaunch(profileId, {
   settingsLoader,
   routedSettingsLoader,
   agyBinaryResolver,
+  agyVersionResolver,
   // The per-machine layer, injected rather than read here so a test can drive
   // every shape without writing into the developer's own home directory — the
   // same seam `settingsLoader` already is.
@@ -1174,14 +1274,39 @@ export function buildAcpLaunch(profileId, {
     throw error
   }
   const profile = applyLaneOverride(shipped, overrides[profileId], env)
-  const childEnv = buildProfileEnv(profileId, env, { settingsLoader: routedSettingsLoader, agyBinaryResolver })
+  // The import-time prohibition loop above checked the SHIPPED pins only. An
+  // override can rewrite them afterwards — `model` is an overridable field —
+  // so the RESOLVED profile is screened here, at the single resolution point
+  // every consumer reads. Without this, an operator override (or a bad
+  // machine lane file) could seat the retired gpt-6-sol on a review route
+  // after the rule had already passed (found by the v0.45.0 release panel,
+  // codex lane, 2026-10-01). Master, 2026-09-30: gpt-6-sol is retired; only
+  // gpt-6.1-sol runs.
+  assertPermittedModel(profile.model, `${profileId} resolved review profile`)
+  assertPermittedModel(profile.requestModel, `${profileId} resolved review profile requestModel`)
+  assertPermittedModel(profile.displayModel, `${profileId} resolved review profile displayModel`)
+  assertPermittedModel(profile.config?.model, `${profileId} resolved review profile config`)
+  const childEnv = buildProfileEnv(profileId, env, {
+    settingsLoader: routedSettingsLoader,
+    agyBinaryResolver,
+    agyVersionResolver,
+  })
+  const mergedEnv = { ...childEnv, ...(profile.overrideEnv ?? {}) }
+  if (profileId === 'agy') {
+    // AGY_BIN and AGY_SKIP_DOWNLOAD are gate-owned keys. An operator's override in
+    // lanes.json cannot unpin or substitute an unverified binary over the trusted
+    // candidate that readiness and the version gate validated.
+    mergedEnv.AGY_BIN = childEnv.AGY_BIN
+    mergedEnv.AGY_SKIP_DOWNLOAD = childEnv.AGY_SKIP_DOWNLOAD
+    assertCompatibleAgyBinary(mergedEnv.AGY_BIN, { versionResolver: agyVersionResolver, source: mergedEnv })
+  }
   return Object.freeze({
     profile,
     command: Object.freeze([...profile.command]),
     // The override's env is merged onto the child environment last, and
     // `applyLaneOverride` has already let the real process environment win key
-    // by key.
-    env: Object.freeze({ ...childEnv, ...(profile.overrideEnv ?? {}) }),
+    // by key. Gate-owned keys like AGY_BIN and AGY_SKIP_DOWNLOAD remain gate-owned.
+    env: Object.freeze(mergedEnv),
     settings: loadProfileSettings(profileId, settingsLoader),
     overrideApplied: Boolean(overrides[profileId]),
   })

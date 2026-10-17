@@ -8,7 +8,8 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 import {
   PROVIDER_SECRET_KEYS, REVIEW_PROFILES, ROUTED_PROFILES, assertAdapterPackageBoundToCommand, assertPermittedModel, buildAcpLaunch,
   buildProfileEnv, loadProfileSettings, normalizePrimaryFamily, provenFamilyCollision, provenFamilyKey,
-  provenLaunchSignature, validateRoutedEndpoint,
+  provenLaunchSignature, validateRoutedEndpoint, assertCompatibleAgyBinary, compareSemver, MINIMUM_AGY_VERSION, agyBinaryVersion,
+  trustedAgyBinaryDetailed, trustedAgyBinary,
 } from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
 import {
   ROUTES, UNAVAILABLE_RESERVE_SUBSTITUTES, createReviewPlan, findingFingerprint, planFallback, synthesizeReviews, validateReviewOutput,
@@ -47,7 +48,7 @@ test('a Gemini 3.1 or retired gpt-6-sol reviewer model is refused rather than ru
   ]) {
     assert.throws(() => assertPermittedModel(name, 'probe'), /prohibited model on tmux-teams review routes/, name)
   }
-  for (const name of ['gemini-3.6-flash-high', 'gemini-3.10-pro', 'gpt-6-luna', 'gpt-6.1-sol', null]) {
+  for (const name of ['gemini-4-argon-high', 'gemini-4-argon-medium', 'gemini-4-argon-low', 'gemini-3.8-flash-high', 'gemini-3.6-flash-high', 'gemini-3.10-pro', 'gpt-6-luna', 'gpt-6.1-sol', null]) {
     assert.equal(assertPermittedModel(name, 'probe'), name)
   }
   for (const profile of Object.values(REVIEW_PROFILES)) {
@@ -63,7 +64,7 @@ test('immutable ACP profiles pin providers, models, argv, and AGY plan mode', ()
   assert.deepEqual(REVIEW_PROFILES.qwen.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
   assert.deepEqual(REVIEW_PROFILES.claude.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
   assert.deepEqual(REVIEW_PROFILES.codex.command, ['npx', '-y', '@agentclientprotocol/codex-acp@1.1.7'])
-  assert.deepEqual(REVIEW_PROFILES.agy.config, { model: 'gemini-3.7-flash-high', mode: 'plan' })
+  assert.deepEqual(REVIEW_PROFILES.agy.config, { model: 'gemini-4-argon-high', mode: 'plan' })
   assert.deepEqual(REVIEW_PROFILES.kimi.config, { model: 'opus', mode: 'plan' })
   assert.equal(REVIEW_PROFILES.kimi.displayModel, 'kimi/opus')
   assert.deepEqual(REVIEW_PROFILES.qwen.config, { model: 'qwen3.8-max-preview', mode: 'plan' })
@@ -283,12 +284,117 @@ test('environment is allowlisted, provider-scoped, and launch settings are injec
     env: { ...source, AGY_BIN: '/evil/agy' },
     settingsLoader: () => ({ mode: 'unsafe', transport: 'acp' }),
     agyBinaryResolver: () => '/trusted/agy',
+    agyVersionResolver: () => '1.4.0',
   })
   assert.deepEqual(launch.command, ['bunx', 'antigravity-acp@1.2.0'])
-  assert.deepEqual(launch.settings, { mode: 'plan', transport: 'acp', model: 'gemini-3.7-flash-high' })
+  assert.deepEqual(launch.settings, { mode: 'plan', transport: 'acp', model: 'gemini-4-argon-high' })
   assert.equal(launch.env.AGY_BIN, '/trusted/agy')
   assert.equal(launch.env.AGY_SKIP_DOWNLOAD, '1')
   assert.throws(() => loadProfileSettings('agy', () => 'bad'), /must return an object/)
+})
+
+test('buildAcpLaunch protects gate-owned AGY_BIN and AGY_SKIP_DOWNLOAD against lane override env replacement', () => {
+  const source = { PATH: '/bin', HOME: '/mock/home' }
+  const launch = buildAcpLaunch('agy', {
+    env: source,
+    overrideLoader: () => ({
+      overrides: { agy: { env: { AGY_BIN: '/evil/agy', AGY_SKIP_DOWNLOAD: '0' } } },
+      problems: [],
+    }),
+    agyBinaryResolver: () => '/trusted/agy',
+    agyVersionResolver: () => '1.4.0',
+  })
+  assert.equal(launch.env.AGY_BIN, '/trusted/agy', 'AGY_BIN was replaced by overrideEnv')
+  assert.equal(launch.env.AGY_SKIP_DOWNLOAD, '1', 'AGY_SKIP_DOWNLOAD was replaced by overrideEnv')
+})
+
+test('assertCompatibleAgyBinary fails closed on unreadable or incompatible agy versions and accepts compatible ones', () => {
+  // Codex review bot finding: agy versions below 1.3.5 cannot serve Gemini 4 Argon
+  // and must fail with an actionable upgrade path. Unreadable versions must fail closed.
+  // Both throwsites must attach code: 'config' so review-gate marks it lane_rejected.
+  assert.equal(MINIMUM_AGY_VERSION, '1.3.5')
+  assert.throws(
+    () => assertCompatibleAgyBinary('/path/to/agy', { versionResolver: () => null }),
+    error => error instanceof TypeError && /did not report a valid version/.test(error.message) && error.code === 'config',
+    'an unreadable agy binary version was accepted',
+  )
+  assert.throws(
+    () => assertCompatibleAgyBinary('/path/to/agy', { versionResolver: () => '' }),
+    error => error instanceof TypeError && /did not report a valid version/.test(error.message) && error.code === 'config',
+    'an empty agy binary version was accepted',
+  )
+  assert.throws(
+    () => assertCompatibleAgyBinary('/path/to/agy', { versionResolver: () => '1.3.4' }),
+    error => error instanceof TypeError && /version >= 1.3.5 is required/.test(error.message) && error.code === 'config',
+    'an older agy binary was accepted',
+  )
+  assert.doesNotThrow(
+    () => assertCompatibleAgyBinary('/path/to/agy', { versionResolver: () => '1.3.5' }),
+  )
+  assert.doesNotThrow(
+    () => assertCompatibleAgyBinary('/path/to/agy', { versionResolver: () => '1.4.0' }),
+  )
+  assert.equal(compareSemver('1.3.4', '1.3.5'), -1)
+  assert.equal(compareSemver('1.3.5', '1.3.5'), 0)
+  assert.equal(compareSemver('1.4.0', '1.3.5'), 1)
+
+  // buildProfileEnv fails closed when agy binary version is unreadable with code: 'config'
+  assert.throws(
+    () => buildProfileEnv('agy', { PATH: '/bin' }, {
+      agyBinaryResolver: () => '/mock/agy',
+      agyVersionResolver: () => null,
+    }),
+    error => error instanceof TypeError && /did not report a valid version/.test(error.message) && error.code === 'config',
+    'buildProfileEnv did not fail closed on unreadable agy version',
+  )
+
+  // buildProfileEnv fails closed when trusted agy executable not found with code: 'config'
+  assert.throws(
+    () => buildProfileEnv('agy', { PATH: '/bin' }, {
+      agyBinaryResolver: () => null,
+    }),
+    error => error instanceof TypeError && /trusted agy executable not found/.test(error.message) && error.code === 'config',
+    'buildProfileEnv did not fail closed with code: config on missing agy binary',
+  )
+})
+
+test('agyBinaryVersion spawns --version with minimal allowlisted env and no ambient credentials', () => {
+  let capturedOptions = null
+  const mockSpawn = (bin, args, opts) => {
+    capturedOptions = opts
+    return { status: 0, stdout: 'agy 1.4.0 (darwin-arm64)\n' }
+  }
+  const version = agyBinaryVersion('/mock/bin/agy', { spawnFn: mockSpawn })
+  assert.equal(version, '1.4.0')
+  assert.ok(capturedOptions && capturedOptions.env)
+  assert.equal(capturedOptions.env.OPENAI_API_KEY, undefined)
+  assert.equal(capturedOptions.env.ANTHROPIC_API_KEY, undefined)
+  assert.equal(capturedOptions.env.AGY_API_KEY, undefined)
+  assert.ok(capturedOptions.env.PATH)
+  assert.ok(capturedOptions.env.HOME)
+  assert.ok(capturedOptions.env.TMPDIR)
+})
+
+test('agyBinaryVersion uses effective environment from source PATH and HOME prepends', () => {
+  const home = mkdtempSync(join(tmpdir(), 'agy-version-env-'))
+  try {
+    const localBin = join(home, '.local', 'bin')
+    mkdirSync(localBin, { recursive: true })
+    let capturedOptions = null
+    const mockSpawn = (bin, args, opts) => {
+      capturedOptions = opts
+      return { status: 0, stdout: 'agy 1.4.1\n' }
+    }
+    const version = agyBinaryVersion('/mock/bin/agy', {
+      spawnFn: mockSpawn,
+      source: { HOME: home, PATH: '/usr/bin:/bin' },
+    })
+    assert.equal(version, '1.4.1')
+    assert.ok(capturedOptions?.env?.PATH.startsWith(`${localBin}:`),
+      `expected PATH to prepend ${localBin}, got ${capturedOptions?.env?.PATH}`)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
 })
 
 test('Zai routing loads only allowlisted endpoint credentials from its explicit settings file', () => {

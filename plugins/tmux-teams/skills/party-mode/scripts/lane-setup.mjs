@@ -42,6 +42,10 @@ const REPAIR = Object.freeze({
   launcher_absent: lane =>
     `install the launcher, or use the other one:\n`
     + `      node lane-setup.mjs set ${lane} command '["npx","-y","<adapter-package>"]'`,
+  executable_incompatible: () =>
+    `the executable version is below the required minimum (expected >= 1.3.5) — upgrade agy via 'agy update' or your package manager`,
+  lane_prohibited: lane =>
+    `the model configured for this lane is prohibited by policy — remove or update the model override in ${OVERRIDE_PATH}`,
   binary_absent: () => 'install it — the plugin invokes this directly and nothing here can substitute for it',
 })
 

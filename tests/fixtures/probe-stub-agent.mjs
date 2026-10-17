@@ -35,8 +35,46 @@ rl.on('line', (line) => {
   if (mode === 'silent') return
   const reply = (result) => process.stdout.write(
     `${JSON.stringify({ jsonrpc: '2.0', id: message.id, result })}\n`)
-  if (message.method === 'initialize') reply({ protocolVersion: 1, agentCapabilities: {} })
-  else if (message.method === 'session/new') reply({ sessionId: 'stub-session' })
+  if (message.method === 'initialize') {
+    const initResult = { protocolVersion: 1, agentCapabilities: {} }
+    if (process.env.STUB_INIT_MODEL) {
+      initResult.configOptions = [{ id: 'model', currentValue: process.env.STUB_INIT_MODEL }]
+    }
+    if (process.env.STUB_INIT_VALUE_MODEL) {
+      initResult.configOptions = [{ id: 'model', value: process.env.STUB_INIT_VALUE_MODEL }]
+    }
+    reply(initResult)
+  }
+  else if (message.method === 'session/new') {
+    // STUB_CURRENT_MODEL makes the session report the App-Server shape's
+    // observed default (`models.currentModelId`), so a test can drive the
+    // probe's observed-model screen without a provider. STUB_OPTION_MODEL
+    // additionally seeds a `model` config option, so the MIXED shape — a
+    // clean currentModelId shadowing a retired option — is reachable too.
+    // Unset keeps the original shape, so every existing stub test is
+    // untouched.
+    const sessionResult = { sessionId: 'stub-session' }
+    if (process.env.STUB_CURRENT_MODEL || process.env.STUB_OPTION_MODEL || process.env.STUB_OPTION2_MODEL || process.env.STUB_OPTION_VALUE_MODEL) {
+      if (process.env.STUB_CURRENT_MODEL) {
+        sessionResult.models = { currentModelId: process.env.STUB_CURRENT_MODEL }
+      }
+      // STUB_OPTION_MODEL seeds the FIRST recognized option (by id);
+      // STUB_OPTION2_MODEL seeds a SECOND recognized option (by name) — the
+      // round-3 shape where a clean first match shadowed a retired second.
+      const options = []
+      if (process.env.STUB_OPTION_MODEL) {
+        options.push({ id: 'model', currentValue: process.env.STUB_OPTION_MODEL })
+      }
+      if (process.env.STUB_OPTION2_MODEL) {
+        options.push({ name: 'model', currentValue: process.env.STUB_OPTION2_MODEL })
+      }
+      if (process.env.STUB_OPTION_VALUE_MODEL) {
+        options.push({ id: 'model', value: process.env.STUB_OPTION_VALUE_MODEL })
+      }
+      if (options.length > 0) sessionResult.configOptions = options
+    }
+    reply(sessionResult)
+  }
   else if (message.method === 'session/prompt') {
     if (mode === 'quota') {
       process.stderr.write('Error 429: you have exhausted your quota for today\n')
