@@ -59,7 +59,8 @@ import { laneAvailability, readinessReport, READINESS_PROBLEMS } from './lane-re
 import { laneModel } from './lane-models.mjs'
 import { loadLaneOverrides, applyLaneOverride } from './lane-overrides.mjs'
 import { REVIEW_PROFILES, ROUTED_PROFILES, buildAcpLaunch, assertPermittedModel, AGY_BINARY_NAME,
-  AGY_BINARY_CANDIDATE_FORMS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys } from './review-profiles.mjs'
+  AGY_BINARY_CANDIDATE_FORMS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys,
+  agyBinaryVersion } from './review-profiles.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PLUGIN_ROOT = join(HERE, '..', '..', '..')
@@ -197,6 +198,8 @@ export function classify(message, { fileKind = null } = {}) {
   if (/environment is over budget/.test(text)) return 'environment_over_budget'
   if (/executable not found/.test(text)) return 'executable_missing'
   if (/did not report a valid version|required for Gemini 4 Argon support/.test(text)) return 'executable_incompatible'
+  if (/override file is unusable/.test(text)) return 'settings_unreadable'
+  if (/prohibited model/.test(text)) return 'lane_prohibited'
   return 'unclassified'
 }
 
@@ -283,7 +286,7 @@ export function laneFacts(id, profile) {
 // asks the disk. Both go out together on purpose, because a listing that shows
 // only the declaration is what let `ninerouter` sit beside working lanes while
 // the `claude-9r` it names does not exist on this machine.
-function laneWithAvailability(id, profile, env, override, options) {
+function laneWithAvailability(id, profile, env, override, options = {}) {
   // The override is applied HERE too. `readinessReport` below already
   // applies it, so passing the raw profile to this function put two
   // disagreeing answers in ONE payload: `callableLanes` counted a lane the
@@ -291,7 +294,7 @@ function laneWithAvailability(id, profile, env, override, options) {
   // review lane found it — the third consumer to read the shipped profile
   // instead of the machine's, in a release that had already fixed two.
   const resolved = applyLaneOverride(profile, override, env)
-  const { available, blocking, needs } = laneAvailability(id, resolved, env, options)
+  const { available, blocking, needs } = options?.availability ?? laneAvailability(id, resolved, env, options)
   // What this lane will actually REQUEST, and what this machine resolves that
   // to. `model` from `laneFacts` is the identity the panel records; it is not
   // always what goes on the wire, and on a shared gateway it is not always the
@@ -430,6 +433,8 @@ export function fixesFor(id, profile, code, { envKey = null } = {}) {
         `the \`agy\` binary on this machine is incompatible with Gemini 4 Argon — `
         + `upgrade agy via 'agy update' or your package manager (version >= 1.3.5 required)`,
       ]
+    case 'lane_prohibited':
+      return ['this model is prohibited by policy — remove the override or reconfigure to a supported model']
     default:
       return [...settings, ...credentialFixes(id), ...executableFixes(id, profile)]
   }
@@ -448,6 +453,37 @@ export function laneStatus(id, profile, env) {
       note: 'no parent-side configuration check exists for this lane, so nothing here was verified',
     }
   }
+  // Validate override configuration before deciding anything about the executable.
+  // If the per-machine override is malformed or configures a prohibited model,
+  // configuration is invalid regardless of whether the executable has a broken shebang.
+  const { overrides, problems } = loadLaneOverrides({ knownLanes: Object.keys(REVIEW_PROFILES), profiles: REVIEW_PROFILES, env })
+  if (problems.length > 0) {
+    const code = classify(`${id} review lane override file is unusable: ${problems[0].code}`)
+    return {
+      ...facts,
+      configuration: 'invalid',
+      problem: { code, detail: DIAGNOSTICS[code] },
+      fixes: fixesFor(id, profile, code),
+      notProven: notProvenFor(profile),
+    }
+  }
+  const resolved = applyLaneOverride(profile, overrides[id], env)
+  try {
+    assertPermittedModel(resolved.model, `${id} resolved review profile`)
+    assertPermittedModel(resolved.requestModel, `${id} resolved review profile requestModel`)
+    assertPermittedModel(resolved.displayModel, `${id} resolved review profile displayModel`)
+    assertPermittedModel(resolved.config?.model, `${id} resolved review profile config`)
+  } catch (error) {
+    const code = classify(error?.message)
+    return {
+      ...facts,
+      configuration: 'invalid',
+      problem: { code, detail: DIAGNOSTICS[code] },
+      fixes: fixesFor(id, profile, code),
+      notProven: notProvenFor(profile),
+    }
+  }
+
   const unresolved = unresolvedInterpreterFor(id, { env })
   if (unresolved) {
     return {
@@ -1203,13 +1239,23 @@ export const TOOL_DESCRIPTORS = deepFreeze([
       // loader is injected so there is now genuinely one read.
       const loaded = loadLaneOverrides({ knownLanes: Object.keys(REVIEW_PROFILES), profiles: REVIEW_PROFILES, env })
       const overrides = loaded.overrides
+      let cachedVersion = undefined
+      const agyVersionResolver = (binPath) => {
+        if (cachedVersion !== undefined) return cachedVersion
+        const resolver = deps?.agyVersionResolver ?? agyBinaryVersion
+        return (cachedVersion = resolver(binPath))
+      }
       const report = readinessReport(REVIEW_PROFILES, env, {
         overrideLoader: () => loaded,
-        agyVersionResolver: deps?.agyVersionResolver,
+        agyVersionResolver,
       })
+      const availabilityByLane = new Map(report.lanes.map(l => [l.lane, l]))
       return {
         lanes: Object.entries(REVIEW_PROFILES).map(([id, p]) =>
-          laneWithAvailability(id, p, env, overrides[id], { agyVersionResolver: deps?.agyVersionResolver })),
+          laneWithAvailability(id, p, env, overrides[id], {
+            agyVersionResolver,
+            availability: availabilityByLane.get(id),
+          })),
         plugin: report.plugin,
         callableLanes: report.callableLanes,
         callableFamilies: report.callableFamilies,

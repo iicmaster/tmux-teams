@@ -1177,6 +1177,23 @@ test('a candidate whose interpreter is missing answers unchecked, not valid', ()
     assert.equal(lane.configuration, 'unchecked',
       `a lane that cannot start reported ${lane.configuration}`)
     assert.match(JSON.stringify(lane.fixes), /interpreter/)
+
+    // A malformed override file reports invalid configuration, never unchecked
+    const laneDir = join(home, '.config', 'tmux-teams')
+    mkdirSync(laneDir, { recursive: true })
+    const overrideFile = join(laneDir, 'lanes.json')
+    writeFileSync(overrideFile, '{ malformed json\n')
+    const badLane = callTool('acp_lane_status', { lane: 'agy' }, { HOME: home }).lanes[0]
+    assert.equal(badLane.configuration, 'invalid',
+      'malformed override file must report invalid configuration')
+    assert.equal(badLane.problem.code, 'settings_unreadable')
+
+    // A prohibited model override reports invalid configuration, never unchecked
+    writeFileSync(overrideFile, JSON.stringify({ agy: { model: 'gpt-6-sol' } }))
+    const prohibitedLane = callTool('acp_lane_status', { lane: 'agy' }, { HOME: home }).lanes[0]
+    assert.equal(prohibitedLane.configuration, 'invalid',
+      'prohibited model override must report invalid configuration')
+    assert.equal(prohibitedLane.problem.code, 'lane_prohibited')
   } finally {
     rmSync(home, { recursive: true, force: true })
   }
@@ -2481,6 +2498,17 @@ test('laneAvailability, readinessReport and acp_lanes apply the agy version gate
     const probePayload = JSON.parse(probeReply.result.content[0].text)
     assert.equal(probePayload.lanes[0].probe, 'not_attempted')
     assert.equal(probePayload.lanes[0].problem.code, 'executable_incompatible')
+
+    // 7. acp_lanes tool resolves agy version once per listing and reuses availability
+    let resolverCalls = 0
+    const countingReply = await handle({ jsonrpc: '2.0', id: 12, method: 'tools/call',
+      params: { name: 'acp_lanes', arguments: {} } }, env, {
+      agyVersionResolver: () => { resolverCalls++; return '1.3.5' },
+    })
+    assert.equal(resolverCalls, 1, `agyVersionResolver was called ${resolverCalls} times instead of once`)
+    const countingPayload = JSON.parse(countingReply.result.content[0].text)
+    assert.equal(countingPayload.callableLanes.includes('agy'), true)
+    assert.equal(countingPayload.lanes.find(l => l.lane === 'agy').available, true)
   } finally {
     rmSync(home, { recursive: true, force: true })
   }
