@@ -2418,6 +2418,7 @@ test('laneAvailability, readinessReport and acp_lanes apply the agy version gate
     mkdirSync(binDir, { recursive: true })
     const agyBin = join(binDir, 'agy')
     writeFileSync(agyBin, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+    writeFileSync(join(binDir, 'bunx'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
 
     // Provide bunx launcher on PATH
     const env = { HOME: home, PATH: `${binDir}${delimiter}${process.env.PATH}` }
