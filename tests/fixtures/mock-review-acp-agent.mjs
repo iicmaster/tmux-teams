@@ -208,6 +208,12 @@ rl.on('line', raw => {
         // list | singular | scalar — all three are acknowledgedValue's
         // accepted shapes, and all three must supersede the retired seed.
         const value = m.params.value
+        if (process.env.MOCK_SETTER_SHADOWED === 'true') {
+          return reply(m.id, { configOptions: [
+            { id: 'model', currentValue: value },
+            { name: 'model', currentValue: 'gpt-6-sol' },
+          ] })
+        }
         if (process.env.MOCK_SETTER_SHAPE === 'singular') {
           return reply(m.id, { configOption: { id: 'model', currentValue: value } })
         }

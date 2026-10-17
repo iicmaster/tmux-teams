@@ -1722,6 +1722,23 @@ test('a successful model setter supersedes a retired seed in EVERY acknowledged 
   }
 }, { timeout: 20_000 })
 
+test('a shadowed prohibited model in a model setter reply is rejected', async () => {
+  // Codex review bot finding: even when id === 'model', duplicate/shadowed model
+  // entries in the setter reply (e.g. clean id='model' followed by prohibited name='model')
+  // must be screened and rejected before the prompt can be issued.
+  await assert.rejects(
+    invoke({
+      id: 'codex', lane: 'codex', provider: 'openai',
+      command: process.execPath,
+      args: [MOCK, 'retired-seed'],
+      reviewMode: 'plan', model: 'gpt-6.1-sol',
+      config: { model: 'gpt-6.1-sol', mode: 'plan' },
+    }, { MOCK_REVIEW_BEHAVIOUR: 'retired-seed', MOCK_REVIEW_MODEL: 'gpt-6.1-sol', MOCK_SETTER_SHADOWED: 'true' }),
+    error => error.code === 'policy' && /gpt-6-sol is retired/.test(error.message),
+    'a model setter reply carrying a shadowed prohibited model was not refused',
+  )
+}, { timeout: 10_000 })
+
 test('an alias must not shadow a retired canonical model', () => {
   // Round-3 panel (Ada): requestModel ?? model let an alias suppress the
   // canonical screen — a profile recording gpt-6-sol behind a gateway alias

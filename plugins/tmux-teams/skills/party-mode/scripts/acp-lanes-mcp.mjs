@@ -914,7 +914,7 @@ export async function realProbeTransport({ command, env, spawnFn = spawn, abortS
 
     ;(async () => {
       try {
-        await send('initialize', {
+        const init = await send('initialize', {
           protocolVersion: 1,
           clientInfo: { name: 'tmux-teams-acp-lane-probe', version: pluginVersion() },
           clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
@@ -937,25 +937,24 @@ export async function realProbeTransport({ command, env, spawnFn = spawn, abortS
         if (typeof session?.sessionId !== 'string' || !PROBE_SESSION_ID_RE.test(session.sessionId)) {
           finish({ settled: 'invalid_handshake' }); return
         }
-        // Screen the OBSERVED session model before any prompt can be issued
+        // Screen the OBSERVED session and initialize models before any prompt can be issued
         // (Master, 2026-09-30: gpt-6-sol is retired — only gpt-6.1-sol runs).
         // A lane whose adapter maps its default onto the retired generation
         // must be reported as such, not probed into a paid turn on it. EVERY
         // model-bearing field is a witness and ALL of them are screened:
         // `models.currentModelId` AND every config option this code
-        // recognizes as the model (by id OR name). Two rounds of panel
-        // findings shaped this: round 2 killed the `??` chain that let a
-        // clean currentModelId shadow a retired option in the same response;
-        // round 3 killed the `.find()` that read only the FIRST matching
-        // option, so a second recognized option carrying the retired
-        // generation survived behind a clean first one (codex lane,
-        // 2026-10-01). Fires at BOTH depths on purpose: handshake depth never
-        // prompts, so the flag there is pure information about what prompt
-        // depth would have paid for.
+        // recognizes as the model (by id OR name) across BOTH session/new
+        // and initialize responses (codex finding).
         const observedProbeModels = [
           session?.models?.currentModelId,
           ...(Array.isArray(session?.configOptions)
             ? session.configOptions
+                .filter((o) => o?.id === 'model' || o?.name === 'model')
+                .map((o) => o?.currentValue)
+            : []),
+          init?.models?.currentModelId,
+          ...(Array.isArray(init?.configOptions)
+            ? init.configOptions
                 .filter((o) => o?.id === 'model' || o?.name === 'model')
                 .map((o) => o?.currentValue)
             : []),

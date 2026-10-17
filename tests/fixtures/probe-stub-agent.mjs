@@ -35,7 +35,13 @@ rl.on('line', (line) => {
   if (mode === 'silent') return
   const reply = (result) => process.stdout.write(
     `${JSON.stringify({ jsonrpc: '2.0', id: message.id, result })}\n`)
-  if (message.method === 'initialize') reply({ protocolVersion: 1, agentCapabilities: {} })
+  if (message.method === 'initialize') {
+    const initResult = { protocolVersion: 1, agentCapabilities: {} }
+    if (process.env.STUB_INIT_MODEL) {
+      initResult.configOptions = [{ id: 'model', currentValue: process.env.STUB_INIT_MODEL }]
+    }
+    reply(initResult)
+  }
   else if (message.method === 'session/new') {
     // STUB_CURRENT_MODEL makes the session report the App-Server shape's
     // observed default (`models.currentModelId`), so a test can drive the

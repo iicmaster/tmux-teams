@@ -1136,22 +1136,20 @@ export async function runAcpReview({
             // round 3, 2026-10-01). `acknowledged` is already validated ===
             // wanted, so this is the wire-confirmed truth.
             sessionModelWitness = acknowledged
-          } else {
-            // Other setters' replies may SMUGGLE a model change (a mode
-            // reply carrying a model field — round 2's counterexample).
-            // Screen EVERY recognized model entry in the reply rather than
-            // allowing a first match to suppress later witnesses (e.g. clean
-            // id='model' followed by prohibited name='model' — codex finding).
-            const replyModelOptions = configList(ack).filter(c => c?.id === 'model' || c?.name === 'model')
-            for (const replyModelWitness of replyModelOptions) {
-              const witnessValue = currentValue(replyModelWitness)
-              if (typeof witnessValue === 'string' && witnessValue !== '') {
-                sessionModelWitness = witnessValue
-                try {
-                  assertPermittedModel(witnessValue, 'ACP review session model witness')
-                } catch (error) {
-                  throw new ReviewTransportError('policy', error.message, error)
-                }
+          }
+          // For ALL setter replies (both model-setter and non-model-setter),
+          // screen EVERY recognized model entry in the reply so duplicate or
+          // shadowed prohibited witnesses (e.g. clean id='model' followed by
+          // prohibited name='model' — codex finding) are never accepted.
+          const replyModelOptions = configList(ack).filter(c => c?.id === 'model' || c?.name === 'model')
+          for (const replyModelWitness of replyModelOptions) {
+            const witnessValue = currentValue(replyModelWitness)
+            if (typeof witnessValue === 'string' && witnessValue !== '') {
+              if (id !== 'model') sessionModelWitness = witnessValue
+              try {
+                assertPermittedModel(witnessValue, 'ACP review session model witness')
+              } catch (error) {
+                throw new ReviewTransportError('policy', error.message, error)
               }
             }
           }
