@@ -2509,6 +2509,15 @@ test('laneAvailability, readinessReport and acp_lanes apply the agy version gate
     const countingPayload = JSON.parse(countingReply.result.content[0].text)
     assert.equal(countingPayload.callableLanes.includes('agy'), true)
     assert.equal(countingPayload.lanes.find(l => l.lane === 'agy').available, true)
+
+    // 8. acp_lane_probe tool resolves agy version once across status, availability and launch preflight
+    let probeResolverCalls = 0
+    const countingProbeReply = await handle({ jsonrpc: '2.0', id: 13, method: 'tools/call',
+      params: { name: 'acp_lane_probe', arguments: { lanes: ['agy'] } } }, env, {
+      agyVersionResolver: () => { probeResolverCalls++; return '1.3.5' },
+      probeTransport: async () => ({ settled: 'handshake_ok' }),
+    })
+    assert.equal(probeResolverCalls, 1, `agyVersionResolver was called ${probeResolverCalls} times in probe instead of once`)
   } finally {
     rmSync(home, { recursive: true, force: true })
   }

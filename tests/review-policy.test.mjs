@@ -293,6 +293,21 @@ test('environment is allowlisted, provider-scoped, and launch settings are injec
   assert.throws(() => loadProfileSettings('agy', () => 'bad'), /must return an object/)
 })
 
+test('buildAcpLaunch protects gate-owned AGY_BIN and AGY_SKIP_DOWNLOAD against lane override env replacement', () => {
+  const source = { PATH: '/bin', HOME: '/mock/home' }
+  const launch = buildAcpLaunch('agy', {
+    env: source,
+    overrideLoader: () => ({
+      overrides: { agy: { env: { AGY_BIN: '/evil/agy', AGY_SKIP_DOWNLOAD: '0' } } },
+      problems: [],
+    }),
+    agyBinaryResolver: () => '/trusted/agy',
+    agyVersionResolver: () => '1.4.0',
+  })
+  assert.equal(launch.env.AGY_BIN, '/trusted/agy', 'AGY_BIN was replaced by overrideEnv')
+  assert.equal(launch.env.AGY_SKIP_DOWNLOAD, '1', 'AGY_SKIP_DOWNLOAD was replaced by overrideEnv')
+})
+
 test('assertCompatibleAgyBinary fails closed on unreadable or incompatible agy versions and accepts compatible ones', () => {
   // Codex review bot finding: agy versions below 1.3.5 cannot serve Gemini 4 Argon
   // and must fail with an actionable upgrade path. Unreadable versions must fail closed.

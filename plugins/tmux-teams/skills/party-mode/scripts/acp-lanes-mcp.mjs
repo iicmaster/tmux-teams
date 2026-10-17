@@ -441,7 +441,7 @@ export function fixesFor(id, profile, code, { envKey = null } = {}) {
 }
 
 // Configuration validity, and never a claim beyond it.
-export function laneStatus(id, profile, env) {
+export function laneStatus(id, profile, env, options = {}) {
   const facts = laneFacts(id, profile)
   if (UNCHECKED_LANES.includes(id)) {
     return {
@@ -499,7 +499,7 @@ export function laneStatus(id, profile, env) {
   try {
     // The object this returns CONTAINS the credential. It is bound to nothing
     // and referenced nowhere, which is the whole of what "never returned" means.
-    buildAcpLaunch(id, { env })
+    buildAcpLaunch(id, { env, agyVersionResolver: options.agyVersionResolver })
     return { ...facts, configuration: 'valid', problem: null, fixes: [], notProven: notProvenFor(profile) }
   } catch (error) {
     // `error.fileKind` when the thrower knew which file it was opening. A pure
@@ -1070,7 +1070,7 @@ async function probeOneLane(id, profile, env, transport, abortSignal, depth = DE
   // The boundary list is chosen by DEPTH, not by outcome: a handshake pass
   // and a prompt pass are both `reachable`, and they are not the same claim.
   const notProven = depth === 'handshake' ? HANDSHAKE_NOT_PROVEN : PROBE_NOT_PROVEN
-  const status = laneStatus(id, profile, env)
+  const status = laneStatus(id, profile, env, options)
   // AVAILABILITY IS CHECKED FIRST, and the order is the finding. `ninerouter`
   // declares a wrapper this machine does not have AND a local gateway it cannot
   // reach, so the configuration check below reached it first and answered
@@ -1121,7 +1121,7 @@ async function probeOneLane(id, profile, env, transport, abortSignal, depth = DE
   }
   let launch
   try {
-    launch = buildAcpLaunch(id, { env })
+    launch = buildAcpLaunch(id, { env, agyVersionResolver: options.agyVersionResolver })
   } catch (error) {
     const code = classify(error?.message, { fileKind: error?.fileKind ?? null })
     return {
@@ -1187,6 +1187,13 @@ async function probeLanes(args, env, transport, abortSignal, options = {}) {
   // call; it says nothing about a SECOND `acp_lane_probe` call arriving while
   // this one is still running — that is `serve()`'s own queue, further down
   // in this file, and is a separate guarantee this loop cannot provide alone.
+  let cachedVersion = undefined
+  const agyVersionResolver = (binPath, opts) => {
+    if (cachedVersion !== undefined) return cachedVersion
+    const resolver = options?.agyVersionResolver ?? agyBinaryVersion
+    return (cachedVersion = resolver(binPath, opts ?? { env: agyEnvironment(env), source: env }))
+  }
+  const probeOptions = { ...options, agyVersionResolver }
   const lanes = []
   for (const id of ids) {
     // Checked BEFORE starting each lane, never only once up front: a
@@ -1195,7 +1202,7 @@ async function probeLanes(args, env, transport, abortSignal, options = {}) {
     // never spawns. The lane already running is stopped by threading the same
     // `abortSignal` into `probeOneLane`/the transport below, not by this check.
     if (abortSignal?.aborted) break
-    lanes.push(await probeOneLane(id, REVIEW_PROFILES[id], env, transport, abortSignal, depth, options))
+    lanes.push(await probeOneLane(id, REVIEW_PROFILES[id], env, transport, abortSignal, depth, probeOptions))
   }
   return { lanes }
 }
@@ -1280,7 +1287,7 @@ export const TOOL_DESCRIPTORS = deepFreeze([
       },
       additionalProperties: false,
     },
-    handler: (args, env) => {
+    handler: (args, env, deps = {}) => {
       const wanted = args?.lane
       if (wanted !== undefined && !Object.hasOwn(REVIEW_PROFILES, wanted)) {
         // The `known` list already carries the vocabulary, so echoing what the
@@ -1290,7 +1297,7 @@ export const TOOL_DESCRIPTORS = deepFreeze([
         return { error: 'no such lane', known: Object.keys(REVIEW_PROFILES) }
       }
       const ids = wanted === undefined ? Object.keys(REVIEW_PROFILES) : [wanted]
-      return { lanes: ids.map((id) => laneStatus(id, REVIEW_PROFILES[id], env)) }
+      return { lanes: ids.map((id) => laneStatus(id, REVIEW_PROFILES[id], env, deps)) }
     },
   },
   {

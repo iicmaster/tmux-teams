@@ -1291,13 +1291,22 @@ export function buildAcpLaunch(profileId, {
     agyBinaryResolver,
     agyVersionResolver,
   })
+  const mergedEnv = { ...childEnv, ...(profile.overrideEnv ?? {}) }
+  if (profileId === 'agy') {
+    // AGY_BIN and AGY_SKIP_DOWNLOAD are gate-owned keys. An operator's override in
+    // lanes.json cannot unpin or substitute an unverified binary over the trusted
+    // candidate that readiness and the version gate validated.
+    mergedEnv.AGY_BIN = childEnv.AGY_BIN
+    mergedEnv.AGY_SKIP_DOWNLOAD = childEnv.AGY_SKIP_DOWNLOAD
+    assertCompatibleAgyBinary(mergedEnv.AGY_BIN, { versionResolver: agyVersionResolver, source: mergedEnv })
+  }
   return Object.freeze({
     profile,
     command: Object.freeze([...profile.command]),
     // The override's env is merged onto the child environment last, and
     // `applyLaneOverride` has already let the real process environment win key
-    // by key.
-    env: Object.freeze({ ...childEnv, ...(profile.overrideEnv ?? {}) }),
+    // by key. Gate-owned keys like AGY_BIN and AGY_SKIP_DOWNLOAD remain gate-owned.
+    env: Object.freeze(mergedEnv),
     settings: loadProfileSettings(profileId, settingsLoader),
     overrideApplied: Boolean(overrides[profileId]),
   })
