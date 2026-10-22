@@ -1271,7 +1271,7 @@ function buildBuiltinProfile(cmd) {
   }
   const packageSpec = process.env.ACP_CMD
     ? 'custom-command'
-    : cmd[0] === 'bunx' ? String(cmd[1]?.[0] ?? 'antigravity-acp@1.2.0') : String(cmd[1]?.at(-1) ?? 'custom-command')
+    : cmd[0] === 'bunx' ? String(cmd[1]?.[0] ?? 'antigravity-acp@1.0.0') : String(cmd[1]?.at(-1) ?? 'custom-command')
   const codexIdentity = agentName === 'codex' ? commandIdentity('codex') : { realpath: null, digest: null, version: 'not_codex' }
   return {
     schema: 'acp-execution-profile',
@@ -1489,11 +1489,11 @@ function requestedConfigOverride(name, limit) {
 // because this file imports only node builtins on purpose; a test asserts the
 // two stay identical, which is the drift answer that does not require coupling
 // the two skills.
-export const PROHIBITED_MODEL = /(?:^|[^0-9a-z])(?:gemini[-_ ]?3\.1|gpt[-_ ]?6[-_ ]?sol)(?:[^0-9]|$)/i
+export const PROHIBITED_MODEL = /(?:^|[^0-9a-z])gemini[-_ ]?3\.1(?:[^0-9]|$)/i
 
 function assertPermittedModel(value, name) {
   if (typeof value === 'string' && PROHIBITED_MODEL.test(value)) {
-    console.error(`${name}: prohibited model on tmux-teams routes (Gemini 3.1 is banned; gpt-6-sol is retired — the Codex frontier is gpt-6.1-sol), got ${value}`)
+    console.error(`${name}: Gemini 3.1 is prohibited on tmux-teams routes, got ${value}`)
     process.exit(2)
   }
   return value
@@ -1732,6 +1732,7 @@ function dispatchRecordText() {
     `last_protocol_activity_at: ${persistedTimestamp(iso(lastProtocolActivityMs))}`,
     `last_meaningful_progress_at: ${persistedTimestamp(iso(lastMeaningfulProgressMs))}`,
     `meaningful_progress_count: ${meaningfulProgressCount}`,
+    ...(lastUsageSnapshot ? [`token_usage: ${stableJson(lastUsageSnapshot)}`] : []),
     `active_tools: ${JSON.stringify(currentActiveToolEvidence())}`,
     `liveness_path: .tmux-teams/liveness/${taskId}.json`,
     `receipt_digest: ${receiptDigest ?? 'none'}`,
@@ -2014,9 +2015,37 @@ function handleUpdate(update) {
     case 'plan':
       updatePlanProgress(update)
       break
+    case 'usage':
+      usageUpdate(update)
+      break
     default:
       break
   }
+}
+
+// The adapter's own account of what the model consumed, as an ACP `usage`
+// session update. Kept as the LAST snapshot, deliberately not summed: whether
+// an adapter reports per-turn deltas or a running total is the adapter's
+// business, and a measurement that assumed either one would be a guess
+// wearing a number. Adapters that never send usage leave this null, and the
+// dispatch record then carries no `token_usage` line at all — unknown is
+// absence here, never a zero that would read as "measured and free".
+let lastUsageSnapshot = null
+
+function usageUpdate(update) {
+  const raw = update?.usage ?? {}
+  const pick = (camel, snake) => {
+    const value = raw[camel] ?? raw[snake]
+    return Number.isSafeInteger(value) && value >= 0 ? value : null
+  }
+  const next = {}
+  const input = pick('inputTokens', 'input_tokens')
+  const output = pick('outputTokens', 'output_tokens')
+  const context = pick('contextTokens', 'context_tokens')
+  if (input !== null) next.input_tokens = input
+  if (output !== null) next.output_tokens = output
+  if (context !== null) next.context_tokens = context
+  if (Object.keys(next).length) lastUsageSnapshot = next
 }
 
 function extractIdentity(session) {
@@ -2175,7 +2204,7 @@ function enforceIdentity(session) {
   // mismatch — the gap this closes was reported with "no console.error, no
   // exit(2), no signal" that CLAUDE.md's fail-closed rule had been violated.
   if (PROHIBITED_MODEL.test(identity.effectiveIdentity)) {
-    console.error(`observed session model: prohibited on tmux-teams routes (Gemini 3.1 is banned; gpt-6-sol is retired — the Codex frontier is gpt-6.1-sol), got ${identity.effectiveIdentity}`)
+    console.error(`observed session model: Gemini 3.1 is prohibited on tmux-teams routes, got ${identity.effectiveIdentity}`)
   }
   const terminal = identity.status === 'missing' ? 'identity-missing' : 'identity-mismatch'
   const expected = `${requestedModel || 'missing'}${requestedReasoningEffort ? `[${requestedReasoningEffort}]` : ''}`
@@ -2523,7 +2552,7 @@ const preamble =
 const CMDS = {
   claude: ['npx', ['-y', '@agentclientprotocol/claude-agent-acp']],
   codex: ['npx', ['-y', CODEX_ADAPTER_PACKAGE_SPEC]],
-  agy: ['bunx', ['antigravity-acp@1.2.0']],
+  agy: ['bunx', ['antigravity-acp@1.0.0']],
 }
 let cmd
 if (process.env.ACP_CMD) {

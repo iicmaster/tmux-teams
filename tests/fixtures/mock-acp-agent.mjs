@@ -995,6 +995,11 @@ async function handlePrompt(message) {
     writeOutbox(message)
     return reply(message.id, { stopReason: 'end_turn' })
   }
+  if (scenario === 'usage-report') {
+    notify({ sessionUpdate: 'usage', usage: { inputTokens: 1200, outputTokens: 34 } })
+    writeOutbox(message)
+    return reply(message.id, { stopReason: 'end_turn' })
+  }
   if (scenario === 'silent-tool') {
     notify({
       sessionUpdate: 'tool_call',

@@ -1110,6 +1110,19 @@ concurrentTest('an unreadable persisted-session entry warns and starts fresh', a
   assert.equal(committed.effective_session_id, 'sess_mock')
 })
 
+concurrentTest('usage updates land on the dispatch record; silence stays absent, never zero', async () => {
+  const withUsage = mkdtempSync(join(tmpdir(), 'acp-companion-usage-'))
+  const r = await asyncRun('task-usage-report', { MOCK_SCENARIO: 'usage-report' }, withUsage)
+  assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
+  const dispatch = readFileSync(join(withUsage, '.tmux-teams', 'dispatch', 'task-usage-report.md'), 'utf8')
+  assert.equal(field(dispatch, 'token_usage'), '{"input_tokens":1200,"output_tokens":34}')
+  const withoutUsage = mkdtempSync(join(tmpdir(), 'acp-companion-usage-silent-'))
+  const plain = await asyncRun('task-usage-silent', {}, withoutUsage)
+  assert.equal(plain.status, 0, `exit 0 expected; stderr:\n${plain.stderr}`)
+  const silent = readFileSync(join(withoutUsage, '.tmux-teams', 'dispatch', 'task-usage-silent.md'), 'utf8')
+  assert.equal(silent.includes('token_usage:'), false, 'no usage report must read as unknown — absent, not zero')
+})
+
 concurrentTest('default mode writes a bounded new-session receipt before prompt delivery', async () => {
   const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-receipt-default-'))
   const protocolLog = join(cwd, 'protocol.log')
@@ -1421,7 +1434,7 @@ concurrentTest('identity mismatch publishes a failed immutable receipt before pr
   const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-receipt-identity-mismatch-'))
   const protocolLog = join(cwd, 'identity-mismatch.protocol.log')
   const r = await asyncRun('task-receipt-identity-mismatch', {
-    ACP_EXPECT_MODEL: 'gpt-6-luna',
+    ACP_EXPECT_MODEL: 'gpt-5.6-luna',
     ACP_EXPECT_REASONING_EFFORT: 'ultra',
     MOCK_MODEL: 'unexpected-model',
     MOCK_PROTOCOL_LOG: protocolLog,
@@ -2983,9 +2996,9 @@ concurrentTest('minimal terminal fallback preserves v1 shape and clears current 
   const r = await asyncRun(taskId, {
     MOCK_SCENARIO: 'unicode-large-tools',
     MOCK_UNICODE_TOOL_COUNT: '65',
-    MOCK_MODEL: 'gpt-6-luna',
+    MOCK_MODEL: 'gpt-5.6-luna',
     MOCK_REASONING_EFFORT: 'ultra',
-    ACP_EXPECT_MODEL: 'gpt-6-luna',
+    ACP_EXPECT_MODEL: 'gpt-5.6-luna',
     ACP_EXPECT_REASONING_EFFORT: 'ultra',
     ACP_TEST_SNAPSHOT_BUDGET_BYTES: '1070',
     ACP_LIVENESS_TICK_MS: '5',
