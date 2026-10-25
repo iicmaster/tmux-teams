@@ -145,12 +145,17 @@ settable model values — measured 2026-10-26 from the `session/new` response:
 `ocg/claude-haiku-5-5`. `$claude-advisor claude-9r claude-glm-5.3` puts that id
 in `ACP_MODEL`. What the receipt proves, precisely: the identity fields commit
 at session establishment, so `effective_identity: claude-glm-5.3 (matched)`
-proves the ADAPTER APPLIED that id — and because a router-native id is its own
-served name, unlike an alias the receipt string is not a slot standing in for
-something else. The turn itself is proved separately, by the outbox file and
-`[turn done] stopReason=end_turn` in the lane log (both present in the
-2026-10-26 probe); `operation_outcome: succeeded` on the receipt is the
-session-operation outcome and predates the prompt round-trip. The loopback
+proves the ADAPTER APPLIED that id. It witnesses adapter selection, not
+downstream routing — the gateway remains free to route a native id wherever
+its own table sends it, exactly as it maps an alias. The turn itself is
+proved separately, by the outbox file and `[turn done] stopReason=end_turn`
+in the lane log; `operation_outcome: succeeded` on the receipt is the
+session-operation outcome and predates the prompt round-trip. Both legs were
+observed on the 2026-10-26 probe of this seat (reported triple:
+`requested_model: claude-glm-5.3`, `effective_identity: claude-glm-5.3`,
+`identity_status: matched`); that probe's run directory was ephemeral, so the
+durable proof is the reproduction — dispatch the block above and read the
+receipt and outbox it writes. The loopback
 endpoint proves only that the gateway is the local 9Router — which family
 served is the gateway's routing that day, and the alias map in
 `~/.claude-9r/settings.json` is the fact to cite for it, never the loopback
@@ -304,7 +309,9 @@ consensus is itself a finding, usually that the question was too narrow.
    ```
 
    9Router seat — the config-dir form again, because `~/.claude-9r` IS what the
-   `claude-9r` wrapper exports (measured end to end 2026-10-25):
+   `claude-9r` wrapper exports (dispatched in the v0.46.0 release session:
+   receipt `44656a0b-65d6-4480-afbc-e94298540ad7`, `fable (matched)`, outbox
+   delivered; reproduce with this block):
 
    ```bash
    ACP_SESSION_RECEIPT_REQUIRED=1 \
@@ -320,9 +327,13 @@ consensus is itself a finding, usually that the question was too narrow.
    Any advertised router id substitutes for it — `ACP_MODEL="claude-glm-5.3"`
    dispatches that seat directly, and the receipt shows the id itself. In both
    forms `ACP_EXPECT_MODEL` defaults to `ACP_MODEL`, so the receipt must show
-   `effective_identity: fable (matched)` (or the id you named); that proves the
-   ALIAS was honoured, and the endpoint row of the table is what proves the
-   family.
+   `effective_identity: fable (matched)` (or the id you named). That proves
+   the adapter APPLIED what you asked — nothing more: what the gateway routed
+   to beyond itself is the gateway's business, and on this seat every endpoint
+   row is the same loopback address, which proves only that the gateway is the
+   local 9Router. When a FAMILY matters (two lanes that must differ), the
+   evidence is the gateway's own routing table that day — its model list and
+   alias map — never a matched identity string.
 
    **`ACP_SESSION_RECEIPT_REQUIRED=1` on every dispatch block above and the
    recovery block below — and it was once missing from all of them.**
@@ -434,13 +445,16 @@ changes state. If the consultation ends in work to be done, hand that to
 - **Zero protocol events at boot.** `status` showing `awaiting_agent` with
   `meaningful_progress: 0` means exactly one thing: the lane never completed
   `initialize`. It cannot tell you WHY. On this machine, in the v0.46.0 release
-  session (2026-10-25), the why was npm: the adapter binary answers
-  `initialize` in 620ms when spawned directly, while `npx -y
-  @agentclientprotocol/claude-agent-acp` re-extracted its dependency tree on
-  every boot because `~/.npm` symlinks to an external volume — 5-6 minutes a
-  boot, one interrupted boot spent 320s fetching a single tarball, and a boot
-  killed mid-reify leaves `_npx/<hash>/concurrency.lock` behind. Those numbers
-  are one afternoon's measurements on one machine, not a law about npm. Before
+  session (2026-10-25), the why was npm — observed then: the adapter binary
+  answered `initialize` in well under a second when spawned directly, while
+  `npx -y @agentclientprotocol/claude-agent-acp` re-extracted its dependency
+  tree on every boot because `~/.npm` symlinks to an external volume, with
+  boots running minutes and one interrupted boot spending most of that on a
+  single tarball fetch; a boot killed mid-reify leaves
+  `_npx/<hash>/concurrency.lock` behind. Those run directories were ephemeral;
+  the durable form of the observation is the reproduction — spawn the cached
+  adapter binary directly and compare its time-to-initialize against the same
+  spec through npx. It is one machine's account, not a law about npm. Before
   concluding "npm installing", look: a `ps` of the lane's children showing
   `npm exec` with no adapter child is that diagnosis; an adapter child that
   stays silent is a different fault. The default stall budget (600s) covered
