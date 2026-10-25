@@ -710,7 +710,7 @@ test('a session-reported model is refused when it is Gemini 3.1, even though not
   const run = runCompanion('task-term-prohibited-model', { MOCK_MODEL: 'gemini-3.1-pro-high' })
   assert.notEqual(run.status, 0,
     `a session reporting a prohibited Gemini 3.1 model must not be treated as a clean dispatch; stderr:\n${run.stderr}`)
-  assert.match(run.stderr, /prohibited on tmux-teams routes/,
+  assert.match(run.stderr, /prohibited (?:model )?on tmux-teams routes/,
     `expected the fail-closed refusal to name the prohibition; stderr:\n${run.stderr}`)
   assert.ok(!run.requests.some((entry) => entry.method === 'session/prompt'),
     'the turn proceeded on a prohibited model instead of being refused before session/prompt')
