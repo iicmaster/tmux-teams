@@ -143,10 +143,18 @@ settable model values — measured 2026-10-26 from the `session/new` response:
 `claude-deepseek-v4.1-flash-free`, `claude-glm-5.3-flash-free`,
 `claude-beam-free`), and the namespaced seats `ag/claude-*`, `cc/claude-*`,
 `ocg/claude-haiku-5-5`. `$claude-advisor claude-9r claude-glm-5.3` puts that id
-in `ACP_MODEL`, and the receipt then records the SERVED id verbatim
-(`requested_model: claude-glm-5.3`, `effective_identity: claude-glm-5.3
-(matched)`, `outcome: succeeded` — dispatched end to end 2026-10-26) — a
-tighter provenance than an alias, which only proves the slot was honoured.
+in `ACP_MODEL`. What the receipt proves, precisely: the identity fields commit
+at session establishment, so `effective_identity: claude-glm-5.3 (matched)`
+proves the ADAPTER APPLIED that id — and because a router-native id is its own
+served name, unlike an alias the receipt string is not a slot standing in for
+something else. The turn itself is proved separately, by the outbox file and
+`[turn done] stopReason=end_turn` in the lane log (both present in the
+2026-10-26 probe); `operation_outcome: succeeded` on the receipt is the
+session-operation outcome and predates the prompt round-trip. The loopback
+endpoint proves only that the gateway is the local 9Router — which family
+served is the gateway's routing that day, and the alias map in
+`~/.claude-9r/settings.json` is the fact to cite for it, never the loopback
+address.
 
 The acceptance set is the ADAPTER's, not the gateway's. The router's
 `/v1/models` also lists bare `thinker`/`worker`/`advisor`/`flash`, `cx/*`,
@@ -422,17 +430,21 @@ changes state. If the consultation ends in work to be done, hand that to
   where it recurred across 203KB, 203KB and 7KB briefs on one afternoon after a
   52KB brief had worked that morning. Size is not the variable. Putting large
   diffs on disk is worth doing anyway; do not expect it to prevent this.
-- **Zero protocol events at boot: the npx layer, not the lane.** Measured
-  2026-10-25 on this machine: the adapter binary answers `initialize` in 620ms
-  when spawned directly, but `npx -y @agentclientprotocol/claude-agent-acp`
-  re-extracts its whole dependency tree on EVERY boot when the npm cache is the
-  symlinked external volume (`~/.npm` → `/Volumes/KINGSTON/...`), taking 5-6
-  minutes — one interrupted boot was watched spending 320s on the
-  `claude-agent-sdk-darwin-arm64` tarball alone, and a boot killed mid-reify
-  leaves `_npx/<hash>/concurrency.lock` behind. The default stall budget (600s)
-  covers the reify; a caller-supplied short `[stall-sec]` does not, and killing
-  at the boot window is how the lane earned its "SIGKILL" reputation here. If
-  `status` shows `awaiting_agent` with `meaningful_progress: 0`, leave the lane
-  alone — it is npm installing, not the model thinking.
+- **Zero protocol events at boot.** `status` showing `awaiting_agent` with
+  `meaningful_progress: 0` means exactly one thing: the lane never completed
+  `initialize`. It cannot tell you WHY. On this machine, in the v0.46.0 release
+  session (2026-10-25), the why was npm: the adapter binary answers
+  `initialize` in 620ms when spawned directly, while `npx -y
+  @agentclientprotocol/claude-agent-acp` re-extracted its dependency tree on
+  every boot because `~/.npm` symlinks to an external volume — 5-6 minutes a
+  boot, one interrupted boot spent 320s fetching a single tarball, and a boot
+  killed mid-reify leaves `_npx/<hash>/concurrency.lock` behind. Those numbers
+  are one afternoon's measurements on one machine, not a law about npm. Before
+  concluding "npm installing", look: a `ps` of the lane's children showing
+  `npm exec` with no adapter child is that diagnosis; an adapter child that
+  stays silent is a different fault. The default stall budget (600s) covered
+  the 5-6 minute boots here; a shorter caller-supplied `[stall-sec]` kills
+  mid-install, and killing at the boot window is how this lane earned its
+  "SIGKILL" reputation on this machine.
 - **Frictionless consensus.** Report it as a finding about the question, not as
   a strong answer.

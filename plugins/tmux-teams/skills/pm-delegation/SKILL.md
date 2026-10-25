@@ -351,11 +351,23 @@ or equivalent) and the focused acceptance command still passes with the same
 target count. Full checkout is the fallback, and the budget check applies to
 the fallback too.
 
-**Symlink heavy dependencies.** For repositories where `node_modules`, vendor
-caches, or build directories dwarf the source, symlink them from the primary
-checkout into each worktree rather than letting each implementer install its
-own. The source tree stays isolated; the dependency tree is shared. Verify
-first that the project's toolchain follows symlinks (most do; a few do not).
+**Symlink heavy dependencies — shared READ-ONLY, never written by a worker.**
+For repositories where `node_modules`, vendor caches, or build directories
+dwarf the source, symlink them from the primary checkout into each worktree
+rather than letting each implementer install its own. Verify first that the
+project's toolchain follows symlinks (most do; a few do not). Know exactly
+what this gives up: the SOURCE trees stay isolated, the DEPENDENCY tree does
+not — one writable tree behind every worktree's symlink and behind the
+off-limits primary checkout at once. So the contract is: an implementer never
+runs an install (`npm install`, `pnpm install`, `bundle`, equivalents) inside
+a worktree, and never runs a build or generator whose outputs land inside the
+shared tree (`node_modules/.cache`, shim rewrites) while any other worker is
+live. Dependency changes are made in the primary checkout by the run's owner
+BETWEEN waves, not inside one; a ticket whose acceptance genuinely requires a
+new or rebuilt dependency either runs alone (WIP 1) or with its own installed
+copy, because two workers writing one dependency tree is not isolation at any
+price. The "will not do" list below forbids sharing a dependency tree workers
+may WRITE into — this paragraph is the same rule stated from the other side.
 
 **What this skill will not do.** It will not pool worktrees across runs, share
 a writable dependency tree, use filesystem reflinks, or auto-delete anything

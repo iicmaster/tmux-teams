@@ -2015,7 +2015,7 @@ function handleUpdate(update) {
     case 'plan':
       updatePlanProgress(update)
       break
-    case 'usage':
+    case 'usage_update':
       usageUpdate(update)
       break
     default:
@@ -2023,29 +2023,72 @@ function handleUpdate(update) {
   }
 }
 
-// The adapter's own account of what the model consumed, as an ACP `usage`
-// session update. Kept as the LAST snapshot, deliberately not summed: whether
-// an adapter reports per-turn deltas or a running total is the adapter's
-// business, and a measurement that assumed either one would be a guess
-// wearing a number. Adapters that never send usage leave this null, and the
+// The adapter's own account of what the model consumed, from the two surfaces
+// the installed adapter actually speaks — measured against
+// @agentclientprotocol/claude-agent-acp 0.95.0 on 2026-10-26, because the
+// first version of this handler listened for a `usage` session update no
+// adapter sends (a mock-invented shape; the v0.46.0 codex review lane caught
+// it shipping alongside the adapter's real reports):
+//   - the session/prompt RESPONSE carries `usage` — the SDK's session
+//     accumulators: inputTokens, outputTokens, cachedReadTokens,
+//     cachedWriteTokens, totalTokens; and
+//   - a `usage_update` notification whose `used`, when a bare number, is
+//     CONTEXT OCCUPANCY after a compaction (post_tokens), not consumption —
+//     recorded from its `cost` only, never from a numeric `used`.
+// Kept as the LAST snapshot, deliberately not summed: whether an adapter
+// reports per-turn deltas or a running total is the adapter's business, and a
+// measurement that assumed either one would be a guess wearing a number.
+// Fields merge per-key so a cost from the update and the token counts from the
+// response both survive; adapters that report neither leave this null, and the
 // dispatch record then carries no `token_usage` line at all — unknown is
 // absence here, never a zero that would read as "measured and free".
 let lastUsageSnapshot = null
 
-function usageUpdate(update) {
-  const raw = update?.usage ?? {}
-  const pick = (camel, snake) => {
-    const value = raw[camel] ?? raw[snake]
-    return Number.isSafeInteger(value) && value >= 0 ? value : null
-  }
+function recordUsageSnapshot(fields) {
+  if (!fields || typeof fields !== 'object') return
   const next = {}
-  const input = pick('inputTokens', 'input_tokens')
-  const output = pick('outputTokens', 'output_tokens')
-  const context = pick('contextTokens', 'context_tokens')
-  if (input !== null) next.input_tokens = input
-  if (output !== null) next.output_tokens = output
-  if (context !== null) next.context_tokens = context
-  if (Object.keys(next).length) lastUsageSnapshot = next
+  for (const key of ['input_tokens', 'output_tokens', 'cached_read_tokens',
+    'cached_write_tokens', 'total_tokens']) {
+    const value = fields[key]
+    if (Number.isSafeInteger(value) && value >= 0) next[key] = value
+  }
+  const cost = fields.cost_usd
+  if (typeof cost === 'number' && Number.isFinite(cost) && cost >= 0) next.cost_usd = cost
+  if (Object.keys(next).length) lastUsageSnapshot = { ...lastUsageSnapshot, ...next }
+}
+
+function usageUpdate(update) {
+  const cost = update?.cost
+  const costUsd = cost && typeof cost === 'object' && cost.currency === 'USD'
+    && typeof cost.amount === 'number' && Number.isFinite(cost.amount) && cost.amount >= 0
+    ? cost.amount : null
+  const used = update?.used
+  if (used !== null && typeof used === 'object') {
+    // No adapter observed sending this yet; the SDK types allow it, and the
+    // object form would carry real counters — recorded when it appears.
+    recordUsageSnapshot({
+      input_tokens: used.inputTokens ?? used.input_tokens,
+      output_tokens: used.outputTokens ?? used.output_tokens,
+      total_tokens: used.totalTokens ?? used.total_tokens,
+      ...(costUsd === null ? {} : { cost_usd: costUsd }),
+    })
+    return
+  }
+  // A bare numeric `used` is post-compaction occupancy — deliberately NOT
+  // recorded as consumption. The cost is.
+  if (costUsd !== null) recordUsageSnapshot({ cost_usd: costUsd })
+}
+
+function usageFromPromptResponse(response) {
+  const usage = response?.usage
+  if (!usage || typeof usage !== 'object') return
+  recordUsageSnapshot({
+    input_tokens: usage.inputTokens ?? usage.input_tokens,
+    output_tokens: usage.outputTokens ?? usage.output_tokens,
+    cached_read_tokens: usage.cachedReadTokens ?? usage.cached_read_tokens,
+    cached_write_tokens: usage.cachedWriteTokens ?? usage.cached_write_tokens,
+    total_tokens: usage.totalTokens ?? usage.total_tokens,
+  })
 }
 
 function extractIdentity(session) {
@@ -4741,6 +4784,7 @@ async function protocolRun() {
   })
   assertProtocolFence('session/prompt response')
   protocolCompleted = true
+  usageFromPromptResponse(response)
   line(`[turn done] stopReason=${boundedText(response?.stopReason, 'unknown')}`)
 }
 
