@@ -1,6 +1,6 @@
 ---
 name: pm-delegation
-description: "Act as PM over other agents — subagents or ACP lanes — from one delegation to a whole spec. Covers the brief contract, the STOP rule, what counts as evidence, and the autonomous run: tickets as a dependency graph, one research pass, parallel implementers each in its own worktree, merged as they land, reviewed against the spec, worktrees cleaned up. Use when dispatching work to subagents or ACP, writing a brief, judging a returned result, or implementing a whole spec with minimal supervision — 'implement the spec', 'work the tickets', 'ทำตาม spec', 'ลุยทั้ง spec'. ใช้เมื่อรับบทเป็น PM คุมงานเอเจนต์อื่น. Do not use for a single edit you can make yourself, and never to route work through the delivery loop — that is tmux-teams."
+description: "Act as PM over other agents — subagents or ACP lanes — from one delegation to a whole spec. Covers the brief contract, the STOP rule, what counts as evidence, and the autonomous run: tickets as a dependency graph, one research pass, every ticket audited with `requirement-audit` before dispatch, parallel implementers each in its own worktree bounded by a disk budget and a WIP limit, merged as they land, worktrees retired at merge, reviewed against the spec. Use when dispatching work to subagents or ACP, writing a brief, judging a returned result, or implementing a whole spec with minimal supervision — 'implement the spec', 'work the tickets', 'ทำตาม spec', 'ลุยทั้ง spec'. ใช้เมื่อรับบทเป็น PM คุมงานเอเจนต์อื่น. Do not use for a single edit you can make yourself, and never to route work through the delivery loop — that is tmux-teams."
 ---
 
 # PM over other agents
@@ -39,6 +39,13 @@ A brief that does not carry all five of these is not ready to send.
    not a copy**. Copied context goes stale between the brief being written and
    read, and a stale copy is more dangerous than an absent one because it looks
    authoritative.
+
+   For requirement work, read `../requirement-audit/SKILL.md` relative to this
+   skill's own directory; STOP if unavailable. Use its authoring mode when
+   drafting and its scope dial when auditing; reference the canonical
+   requirement and its verdict; do not copy them. A ticket without a
+   `📋 Grill:` block is still auditable — the audit judges content and shape,
+   not marker presence.
 4. **The blast radius.** Which files this delegation may touch, stated as a list.
    Everything else is off limits and saying so is not an insult — two agents
    editing one file is how a wave loses work.
@@ -131,20 +138,57 @@ it is one agent agreeing with itself.
 ## The frontier
 
 Tickets are a graph. The **frontier** is every ticket whose dependencies are
-complete — that is what you dispatch, not a list in order.
+complete AND whose requirement audit came back READY — that is what you
+dispatch, not a list in order.
+
+The frontier is not the same as "what dispatches right now." Dispatch is capped
+by the resident worktree limit (see below): a frontier may list ten tickets and
+only three may have a checkout open at once. A ticket that is eligible but
+waiting for a slot is not blocked — it is queued, and it enters the frontier
+the moment a slot frees. Do not confuse "queued for a slot" with "blocked on
+an audit answer"; they have different causes and different owners.
 
 Recompute it every time a ticket lands. A completion usually unblocks others,
 and dispatching those immediately is the whole reason to model dependencies
 rather than walk a list.
 
-**An empty frontier with tickets left means a cycle or a failed dependency.**
-Say which, and stop. It is not a slow moment to wait through.
+**An empty frontier with tickets left means a cycle, a failed dependency, or
+every remaining ticket waiting on an audit answer.** Say which, and stop. It is
+not a slow moment to wait through.
 
 ## Steps
 
 1. **Read the spec and every ticket. Build the graph and state it back** — ids
    and what blocks what — before dispatching anything. A graph nobody checked is
    a plan nobody agreed to.
+
+   **Pre-flight: disk and resident worktrees.** Before spending a token on
+   research, take inventory: run `git worktree list --porcelain`, count the
+   resident checkouts, and note what is free on the filesystem. Reclaim
+   orphaned worktrees from previous runs — delete the directory first, then
+   `git worktree prune` — but only when ownership, liveness, and authorization
+   are all provable; otherwise report them as candidates and leave them. Set the
+   WIP limit for this run: `N = min(DEFAULT_WIP_LIMIT, floor(free / cost))`,
+   where `cost` is the size of one full checkout of the current tree. If
+   `N < 1`, STOP here and say so; do not dispatch anything. The default
+   `DEFAULT_WIP_LIMIT` is 3, and it is configurable — raise it only when the
+   machine has the headroom and a run's audit shows the higher number did not
+   degrade throughput.
+
+   **Audit every ticket with `requirement-audit`.** Read
+   `../requirement-audit/SKILL.md` relative to this skill's own directory and
+   apply its audit mode to every ticket; if that file cannot be read, report
+   the missing skill and stop instead of reconstructing the audit from a
+   summary. A ticket without a `📋 Grill:` block is still auditable — the audit
+   judges content and shape, not marker presence. Audit the whole set HERE,
+   once, for the reason the next step gives for research — one pass, not one
+   per implementer.
+
+   A NOT READY ticket does not enter the frontier, and neither does anything
+   that depends on it; the independent frontier keeps moving, because this is
+   a pause and not a stop. Settling it is the owner's decision, never a
+   plausible guess. When the answer lands, audit the ticket AGAIN — an answer
+   to one dimension does not make the others pass.
 
 2. **Research once, in one read-only subagent.** Where things live, the existing
    patterns, what will fight the change. **It writes notes to a file outside the
@@ -174,6 +218,14 @@ Say which, and stop. It is not a slow moment to wait through.
    produced a serial run. Send the whole frontier, then handle results as they
    arrive.
 
+   **Resident worktree limit.** Never open more than N checkouts at once, where
+   N is the WIP limit set in the pre-flight. The frontier may be wider than N;
+   that is a queue, not a barrier. Dispatch up to N, and refill the slot the
+   moment one merges. Before creating each worktree, re-check free disk; if it
+   has dropped below the safety headroom, pause the dispatch of new tickets and
+   wait for a slot to free. Do not let the queue drain into silence — when a
+   slot frees, fill it immediately.
+
 5. **Merge each result as it lands, one at a time.** Do not batch — merging a
    finished ticket while others still run is the point of the parallelism, and a
    barrier at the end throws it away.
@@ -183,6 +235,13 @@ Say which, and stop. It is not a slow moment to wait through.
    the spec, the graph and every ticket already landed — the context a conflict
    is resolved from. An agent given only two diffs will guess, and a wrong guess
    inside a merge is the hardest kind to see afterwards.
+
+   **Retire the checkout the moment the merge and its acceptance are done.**
+   Merge, verify, then clean that worktree immediately — do not wait for step 9.
+   The whole point of streaming is that the slot frees for the next ticket; a
+   merge that lands and leaves the checkout open is a slot wasted. Retire means:
+   remove the worktree directory and prune its metadata, and confirm it is gone
+   before dispatching the next ticket.
 
 6. **Recompute the frontier, dispatch what became unblocked.** Repeat from 4.
 
@@ -204,8 +263,14 @@ Say which, and stop. It is not a slow moment to wait through.
 8. **Fix review findings in ONE implementer**, not one per finding. They overlap,
    and sequencing them inside one agent is cheaper than across several.
 
-9. **Clean up every worktree.** A worktree left behind is a checkout the next
-   run will collide with.
+9. **Reconcile the worktrees.** By now every ticket's checkout should have been
+   retired at merge (step 5). This step catches what slipped through: a ticket
+   that STOPped, a run that was interrupted, a merge that failed. For each
+   remaining worktree, verify ownership, liveness, and authorization before
+   removing — a dirty checkout, one a process is still using, one owned by
+   another run, or one carrying untracked or uncommitted data is reported as a
+   candidate and left alone, never force-deleted. Remove only what you can
+   prove is yours and finished. Report what remains and why.
 
 10. **Hand back, and stop.** Report the branch name, the head commit, what each
     ticket landed, what the spec review said, and anything you could not prove.
@@ -227,6 +292,76 @@ review. That number is the one that means anything — measured here, fifteen
 concurrent full passes took a load average to 28 on 8 cores and after 42 minutes
 not one agent had finished.
 
+The **requirement audit is yours too**, once over the whole set, in the prepare
+phase, and its verdict is per ticket — read them one ticket at a time, not as
+one verdict for the spec. An implementer auditing its own ticket is the
+duplication the research pass exists to prevent, and a self-audit has no teeth.
+
+The **disk budget and the worktree count are yours too.** The pre-flight sets
+the WIP limit from free space and repo size; the dispatch guard re-checks
+before each checkout; the retirement at merge frees the slot. An implementer
+does not create, count, or clean worktrees — that is the PM's, because the PM
+is the only one holding the graph and the disk state.
+
+## Resident worktrees and disk
+
+A worktree per ticket is the isolation the whole skill rests on; it is not
+negotiable, and the 2026-08-05 incident (five agents racing one checkout, a
+branch reset that did not hold) is why. What is negotiable is how many exist at
+once and when they are released.
+
+**The trap to avoid.** `git worktree add` does not copy the object database —
+Git shares `.git/objects` across worktrees from the start, so history is not
+the cost. The cost is the working-tree files plus anything untracked that the
+run creates: `node_modules`, build caches, target directories. A 50MB source
+tree becomes a 500MB checkout the moment the implementer installs dependencies.
+On a machine with 4GB free, eight tickets is 4GB — which is all of it.
+
+**Three rules:**
+
+1. **Cap the resident count.** Never open more than N checkouts at once, where
+   N is the WIP limit set in the pre-flight. The frontier may be wider than N;
+   that is a queue, not a barrier. Refill the slot the moment one merges.
+2. **Retire at merge.** Step 5 removes the checkout the moment its merge and
+   acceptance are done. Step 9 exists for what slipped through, not for the
+   happy path.
+3. **Reclaim before you start.** Step 1's pre-flight reclaims orphaned
+   worktrees from previous runs — but only those it can prove are orphaned and
+   safe to remove. `git worktree prune` removes metadata only; it does not
+   delete the directory. The directory must be removed first, and only when
+   ownership, liveness, and authorization are all provable. Otherwise report
+   the candidate and leave it.
+
+**GC that is safe.** A worktree is removable only when all of these hold:
+ownership (it is yours, recorded in the run's brief or notes), liveness (no
+process is using it), authorization (the merge succeeded and its result is
+recorded, or the ticket STOPped and the owner agreed to discard), and no
+untracked or uncommitted data. Age and a name that looks like an agent's are
+not proof of any of these. If any cannot be proved, keep the worktree and
+report it; a disk budget that is met by deleting someone else's work is not
+a budget, it is a loss.
+
+**Sparse checkout is opt-in, never the default.** `git worktree add --no-checkout`
+plus a sparse cone can shrink a checkout to its blast radius, but the blast
+radius is a prediction, not a jail: an implementer may need to read type
+definitions, config, or fixtures that live outside it, and a focused test needs
+the module graph and root configuration to load. Use sparse checkout only when
+the repository has a clear package boundary (`nx.json`, `pnpm-workspace.yaml`,
+or equivalent) and the focused acceptance command still passes with the same
+target count. Full checkout is the fallback, and the budget check applies to
+the fallback too.
+
+**Symlink heavy dependencies.** For repositories where `node_modules`, vendor
+caches, or build directories dwarf the source, symlink them from the primary
+checkout into each worktree rather than letting each implementer install its
+own. The source tree stays isolated; the dependency tree is shared. Verify
+first that the project's toolchain follows symlinks (most do; a few do not).
+
+**What this skill will not do.** It will not pool worktrees across runs, share
+a writable dependency tree, use filesystem reflinks, or auto-delete anything
+whose ownership it cannot prove. Those are optimizations that trade isolation
+for space, and isolation is the thing this skill exists to keep.
+
 ## Where a run stops on its own
 
 - **A ticket comes back STOPped.** The answer is a decision, not the same brief.
@@ -236,6 +371,14 @@ not one agent had finished.
   ticket, not the implementer. Re-read it before spending a third.
 - **A merge conflict the spec does not settle.** Two tickets disagree about the
   same lines and nothing says which wins. That is a spec question.
+- **No ticket can move and the reason is an audit answer.** The frontier is
+  empty because every remaining ticket is waiting on a requirement the owner
+  has not answered. Say that plainly, naming the dimension the verdict named —
+  do not fill the gap with an answer that sounds right. The audit reports a
+  missing dimension; it never guesses one.
+- **Disk cannot hold even one more worktree.** The pre-flight failed and
+  reclamation did not free enough. Report the capacity and stop — do not
+  dispatch anything.
 
 ## What this will not do
 

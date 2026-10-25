@@ -13,7 +13,7 @@ New here? Read this file top to bottom, then
 [how-it-works.md](plugins/tmux-teams/skills/tmux-teams/references/how-it-works.md)
 for the diagrams.
 
-Current release: **0.45.0** (`.claude-plugin/marketplace.json` and
+Current release: **0.46.0** (`.claude-plugin/marketplace.json` and
 `plugins/tmux-teams/.claude-plugin/plugin.json`). Upgrading from an earlier
 0.14.x release needs no change to an existing `graph.json` — the seat fields
 in ข้อ 2 (`adapter`, `effort`, `display_model`) and the files in ข้อ 6 are all
@@ -417,7 +417,7 @@ relaying a person's words is expected to sign `human:` and name itself in
 | `tmux-teams:party-auto` | executing multi-file or production-impacting work — planning, critique, file ownership, grill gate, verification, 3-model review |
 | `tmux-teams:party-advise` | advice, plan critique, tradeoff or risk review — read-only, never edits |
 | `tmux-teams:requirement-audit` | writing or reviewing a requirement or story before it is estimated or dispatched — the six Grill categories for content, INVEST for shape, answered domain-honestly. Reports a per-dimension verdict; rewrites nothing unless asked |
-| `tmux-teams:pm-delegation` | acting as PM over other agents — subagents or ACP lanes. One delegation or a whole spec: the brief contract, the STOP rule, and the autonomous run (tickets as a dependency graph, parallel implementers in worktrees, reviewed against the spec). Does not touch the delivery loop |
+| `tmux-teams:pm-delegation` | acting as PM over other agents — subagents or ACP lanes. One delegation or a whole spec: the brief contract, the STOP rule, and the autonomous run (tickets as a dependency graph, every ticket audited before dispatch, parallel implementers in worktrees bounded by a disk budget and a WIP limit, worktrees retired at merge, reviewed against the spec). Does not touch the delivery loop |
 | `tmux-teams:sqthink` | structured step-by-step analysis, comparison, or planning before deciding |
 | `tmux-teams:test-quality` | test-adequacy evidence contract for agent-authored code — CRAP as risk/triage signal, mutation testing as evidence, policy decision kept separate from evidence state. Contract only: no runner, no thresholds, no auto-execution |
 

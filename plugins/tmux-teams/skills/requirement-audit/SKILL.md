@@ -17,6 +17,16 @@ A requirement is ready only when every operational dimension is answered explici
 - **Authoring guardrail** — while writing: answer the Grill inline in the requirement text (a `📋 Grill:` block, one line per category); run INVEST silently before presenting.
 - **Audit mode** — given an existing requirement/story (file or pasted text): return the per-dimension verdict, blockers, concrete fixes. Do not rewrite unless asked; report.
 
+## Called from
+
+- `pm-delegation`'s Brief contract (Part one, item 3 "Where the facts are") points at
+  this skill's authoring mode for requirement work, and its step 1 (Part two)
+  applies this skill's audit mode to every ticket. Brief contract item 3 is the
+  delegation contract; this skill's Grill categories are the requirement quality
+  contract. The brief references the canonical requirement and its verdict; it
+  does not copy them, and it does not duplicate the Grill categories into its
+  own structure. A ticket without a `📋 Grill:` block is still auditable — this
+  skill judges content and shape, not marker presence.
 ## Part 1 — 6 Grill Categories (content — always)
 
 Each category must be answered **domain-honestly**: a solo local CLI tool, an embedded firmware component, and a public web app have different Performance and Security answers. Boilerplate copied from another domain is a fail, not a pass.
