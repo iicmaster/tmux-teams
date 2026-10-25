@@ -2052,7 +2052,13 @@ function extractIdentity(session) {
   const options = Array.isArray(session?.configOptions) ? session.configOptions : []
   const optionValue = (id) => {
     const option = options.find((item) => item?.id === id)
-    return typeof option?.currentValue === 'string' ? option.currentValue.trim() : ''
+    // agy 1.4.7 reports currentValue as the same nested `{value, name}` object
+    // it advertises (measured 2026-10-26); every other adapter seen here uses
+    // the bare string. Same eras as `optionValueMatches`, one level up.
+    const current = option?.currentValue
+    const raw = typeof current === 'string' ? current
+      : (current !== null && typeof current === 'object' && typeof current.value === 'string' ? current.value : '')
+    return raw.trim()
   }
   const currentModelId = typeof session?.models?.currentModelId === 'string'
     ? session.models.currentModelId.trim() : ''
@@ -2107,6 +2113,20 @@ function configOption(response, id) {
   return options.find((option) => option?.id === id) ?? null
 }
 
+// One shape per era of antigravity-acp, each measured against a real backend:
+// a plain string value (the ACP spec's shape, and what the mock agent speaks),
+// "<id>\t<display label>" (agy 1.0.0, probed against agy 1.1.12 on 2026-08-12),
+// and an OBJECT `{value, name}` where the bare id lives one level down (agy
+// 1.4.7, measured 2026-10-26: every model option came back nested, so the
+// companion refused EVERY seat at config-option-invalid while the gate-path
+// had already learned the same shape in `acp-lanes-mcp.mjs`'s probe). The
+// value the agent considers applied is the bare id in all three eras.
+function optionValueMatches(observed, value) {
+  return observed === value
+    || (typeof observed === 'string' && observed.split('\t')[0] === value)
+    || (observed !== null && typeof observed === 'object' && observed.value === value)
+}
+
 function assertConfigOptionValue(response, id, value, phase) {
   const option = configOption(response, id)
   if (!option) {
@@ -2114,15 +2134,8 @@ function assertConfigOptionValue(response, id, value, phase) {
       code: 'config-option-unsupported',
     })
   }
-  // antigravity-acp 1.0.0 advertises model option values as "<id>\t<display
-  // label>" while its session/set_config_option accepts the bare id and
-  // reports it back bare — the bare id is the value the agent itself
-  // considers applied (probed against agy 1.1.12, 2026-08-12). Match both
-  // forms here, or every agy seat dies at this pre-check with a value the
-  // server would have accepted.
   if (Array.isArray(option.options)
-    && !option.options.some((candidate) => candidate?.value === value
-      || (typeof candidate?.value === 'string' && candidate.value.split('\t')[0] === value))) {
+    && !option.options.some((candidate) => optionValueMatches(candidate?.value, value))) {
     throw Object.assign(new Error(`${phase} rejected unsupported ${id} value ${value}`), {
       code: 'config-option-invalid',
     })
@@ -2158,7 +2171,7 @@ async function applyRequestedSessionConfig(sessionId, response) {
       value,
       `ACP session/set_config_option(${configId}) response`,
     )
-    if (applied.currentValue !== value) {
+    if (!optionValueMatches(applied.currentValue, value)) {
       throw Object.assign(new Error(`ACP agent did not apply ${configId}=${value}`), {
         code: 'config-option-not-applied',
       })
