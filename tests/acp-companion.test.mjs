@@ -1118,6 +1118,10 @@ concurrentTest('usage updates land on the dispatch record; silence stays absent,
   // The prompt response's accumulators plus the usage_update's cost: numeric
   // `used` (occupancy) must NOT appear as consumption.
   assert.equal(field(dispatch, 'token_usage'), '{"cached_read_tokens":800,"cached_write_tokens":0,"cost_usd":0.012,"input_tokens":1200,"output_tokens":34,"total_tokens":2034}')
+  // The numeric `used` the mock sent (4096) is post-compaction occupancy and
+  // must never surface as consumption.
+  assert.ok(!field(dispatch, 'token_usage').includes('4096'),
+    'usage_update occupancy leaked into token_usage as consumption')
   const withoutUsage = mkdtempSync(join(tmpdir(), 'acp-companion-usage-silent-'))
   const plain = await asyncRun('task-usage-silent', {}, withoutUsage)
   assert.equal(plain.status, 0, `exit 0 expected; stderr:\n${plain.stderr}`)

@@ -204,9 +204,15 @@ command -v claude-qwen || ls -d "$HOME/.config/claude-profiles/qwen"
 `claude-9r` DOES exist on PATH while the profile directory it loads lives at
 `~/.claude-9r`, not under `~/.config/claude-profiles/` — so the directory probe
 above would report nothing for a bin that works. But the wrapper spelling is
-still the wrong one for this lane: it rides on `CLAUDE_CODE_EXECUTABLE`, which is
-not on the companion's claude-lane allowlist and dies at `adapterEnv`, so through
-`acp-dispatch.mjs` only the config-dir form reaches the adapter:
+still the wrong one for this lane, and for a worse reason than absence: it
+rides on `CLAUDE_CODE_EXECUTABLE`, which the companion's claude-lane allowlist
+does not carry — and `adapterEnv` does not REFUSE an unlisted variable, it
+STRIPS it silently, so a wrapper-form dispatch runs on with the adapter's
+default executable and answers from whatever profile that loads: a misroute
+wearing the wrapper's name, not a failure you would notice. The supported
+escape hatch is `ACP_ENV_PASSTHROUGH=CLAUDE_CODE_EXECUTABLE`; the form this
+file documents and has actually run is the config dir, which needs nothing
+beyond itself:
 
 ```bash
 command -v claude-9r            # exists here — but do not dispatch on it
