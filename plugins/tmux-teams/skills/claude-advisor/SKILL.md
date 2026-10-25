@@ -324,7 +324,8 @@ consensus is itself a finding, usually that the question was too narrow.
    ALIAS was honoured, and the endpoint row of the table is what proves the
    family.
 
-   **`ACP_SESSION_RECEIPT_REQUIRED=1` on both, and it was missing from both.**
+   **`ACP_SESSION_RECEIPT_REQUIRED=1` on every dispatch block above and the
+   recovery block below — and it was once missing from all of them.**
    The default mode CONTINUES after a receipt-persistence failure and records
    `receipt_digest: none`, so the identity this skill reports could rest on a
    receipt that was never written — a release panel called the guarantee
@@ -445,6 +446,9 @@ changes state. If the consultation ends in work to be done, hand that to
   stays silent is a different fault. The default stall budget (600s) covered
   the 5-6 minute boots here; a shorter caller-supplied `[stall-sec]` kills
   mid-install, and killing at the boot window is how this lane earned its
-  "SIGKILL" reputation on this machine.
+  "SIGKILL" reputation on this machine. Expect `acp-dispatch.mjs` itself to
+  report "identity not acknowledged after 120s — the lane is RUNNING" while
+  this goes on: that is its fixed boot window expiring, not a verdict on the
+  lane.
 - **Frictionless consensus.** Report it as a finding about the question, not as
   a strong answer.

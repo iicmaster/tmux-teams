@@ -1271,7 +1271,7 @@ function buildBuiltinProfile(cmd) {
   }
   const packageSpec = process.env.ACP_CMD
     ? 'custom-command'
-    : cmd[0] === 'bunx' ? String(cmd[1]?.[0] ?? 'antigravity-acp@1.0.0') : String(cmd[1]?.at(-1) ?? 'custom-command')
+    : cmd[0] === 'bunx' ? String(cmd[1]?.[0] ?? 'antigravity-acp@1.2.0') : String(cmd[1]?.at(-1) ?? 'custom-command')
   const codexIdentity = agentName === 'codex' ? commandIdentity('codex') : { realpath: null, digest: null, version: 'not_codex' }
   return {
     schema: 'acp-execution-profile',
@@ -2159,11 +2159,13 @@ function configOption(response, id) {
 // One shape per era of antigravity-acp, each measured against a real backend:
 // a plain string value (the ACP spec's shape, and what the mock agent speaks),
 // "<id>\t<display label>" (agy 1.0.0, probed against agy 1.1.12 on 2026-08-12),
-// and an OBJECT `{value, name}` where the bare id lives one level down (agy
-// 1.4.7, measured 2026-10-26: every model option came back nested, so the
-// companion refused EVERY seat at config-option-invalid while the gate-path
-// had already learned the same shape in `acp-lanes-mcp.mjs`'s probe). The
-// value the agent considers applied is the bare id in all three eras.
+// and an OBJECT `{value, name}` where the bare id lives one level down (seen
+// 2026-10-26 from the adapter pinned for agy 1.4.7: every model option came
+// back nested, so the companion refused EVERY seat at config-option-invalid).
+// The gate path's ac0038b fix is a DIFFERENT gap — a missing currentValue —
+// and reached no nested object; this check is where that shape first became
+// load-bearing. The value the agent considers applied is the bare id in all
+// three eras.
 function optionValueMatches(observed, value) {
   return observed === value
     || (typeof observed === 'string' && observed.split('\t')[0] === value)
@@ -2608,7 +2610,7 @@ const preamble =
 const CMDS = {
   claude: ['npx', ['-y', '@agentclientprotocol/claude-agent-acp']],
   codex: ['npx', ['-y', CODEX_ADAPTER_PACKAGE_SPEC]],
-  agy: ['bunx', ['antigravity-acp@1.0.0']],
+  agy: ['bunx', ['antigravity-acp@1.2.0']],
 }
 let cmd
 if (process.env.ACP_CMD) {
