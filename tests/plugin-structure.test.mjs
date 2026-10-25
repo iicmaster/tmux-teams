@@ -15,7 +15,7 @@ const PLUGIN = join(ROOT, 'plugins/tmux-teams')
 const SKILLS = ['tmux-teams', 'party-mode', 'party-auto', 'party-advise', 'sqthink',
   'graph-setup', 'claude-advisor', 'codex-advisor', 'agy-advisor', 'handoff',
   'pm-delegation', 'test-quality', 'lane-setup', 'requirement-audit']
-const RELEASE_VERSION = '0.45.0'
+const RELEASE_VERSION = '0.46.0'
 // The Stage 1 CLI entry points went on 2026-07-29 and the rest of the phase
 // subsystem — nine scripts, its gate, its store and its exporter — went on
 // 2026-08-02. The note that used to stand here said deleting the remainder
@@ -659,12 +659,12 @@ test('an advisor skill that claims read-only ships the switch that makes it read
     // The count is pinned too: a block that stops MATCHING is indistinguishable
     // from a block that passes, and `> 0` cannot tell them apart.
     // Pinned per file, and the numbers are what each skill documents: codex has
-    // a dispatch and a recovery, claude has a default seat, a routed seat and a
-    // recovery. The count is pinned at all because a block that stops MATCHING
-    // is indistinguishable from a block that passes, and `> 0` cannot tell them
-    // apart — but it is pinned per file so ADDING a documented command is a
-    // deliberate edit here rather than a silent one.
-    const expected = { 'codex-advisor': 2, 'claude-advisor': 3, 'agy-advisor': 1 }[name]
+    // a dispatch and a recovery, claude has a default seat, a routed seat, a
+    // 9Router seat and a recovery. The count is pinned at all because a block
+    // that stops MATCHING is indistinguishable from a block that passes, and
+    // `> 0` cannot tell them apart — but it is pinned per file so ADDING a
+    // documented command is a deliberate edit here rather than a silent one.
+    const expected = { 'codex-advisor': 2, 'claude-advisor': 4, 'agy-advisor': 1 }[name]
     assert.equal(blocks.length, expected,
       `${name} documents ${blocks.length} lane-launching commands, not ${expected}`)
     for (const block of blocks) {
