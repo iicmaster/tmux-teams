@@ -1110,6 +1110,25 @@ concurrentTest('an unreadable persisted-session entry warns and starts fresh', a
   assert.equal(committed.effective_session_id, 'sess_mock')
 })
 
+concurrentTest('usage updates land on the dispatch record; silence stays absent, never zero', async () => {
+  const withUsage = mkdtempSync(join(tmpdir(), 'acp-companion-usage-'))
+  const r = await asyncRun('task-usage-report', { MOCK_SCENARIO: 'usage-report' }, withUsage)
+  assert.equal(r.status, 0, `exit 0 expected; stderr:\n${r.stderr}`)
+  const dispatch = readFileSync(join(withUsage, '.tmux-teams', 'dispatch', 'task-usage-report.md'), 'utf8')
+  // The prompt response's accumulators plus the usage_update's cost: numeric
+  // `used` (occupancy) must NOT appear as consumption.
+  assert.equal(field(dispatch, 'token_usage'), '{"cached_read_tokens":800,"cached_write_tokens":0,"cost_usd":0.012,"input_tokens":1200,"output_tokens":34,"total_tokens":2034}')
+  // The numeric `used` the mock sent (4096) is post-compaction occupancy and
+  // must never surface as consumption.
+  assert.ok(!field(dispatch, 'token_usage').includes('4096'),
+    'usage_update occupancy leaked into token_usage as consumption')
+  const withoutUsage = mkdtempSync(join(tmpdir(), 'acp-companion-usage-silent-'))
+  const plain = await asyncRun('task-usage-silent', {}, withoutUsage)
+  assert.equal(plain.status, 0, `exit 0 expected; stderr:\n${plain.stderr}`)
+  const silent = readFileSync(join(withoutUsage, '.tmux-teams', 'dispatch', 'task-usage-silent.md'), 'utf8')
+  assert.equal(silent.includes('token_usage:'), false, 'no usage report must read as unknown — absent, not zero')
+})
+
 concurrentTest('default mode writes a bounded new-session receipt before prompt delivery', async () => {
   const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-receipt-default-'))
   const protocolLog = join(cwd, 'protocol.log')
@@ -1185,6 +1204,24 @@ concurrentTest('label-suffixed model option values (antigravity-acp shape) still
     readFileSync(protocolLog, 'utf8').trim().split('\n').map((line) => line.split(':')[0]),
     ['initialize', 'session/new', 'session/set_config_option', 'session/prompt'],
   )
+})
+
+concurrentTest('nested object model option values (agy 1.4.7 shape) still pin the bare id', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-nested-model-'))
+  const protocolLog = join(cwd, 'nested-model.protocol.log')
+  const r = await asyncRun('task-nested-model', {
+    ACP_MODEL: 'gemini-4-argon-high',
+    MOCK_CONFIG_IDENTITY: '1',
+    MOCK_MODEL: 'gemini-4-argon-medium',
+    MOCK_MODEL_OPTIONS: 'gemini-4-argon-high,gemini-4-argon-medium,gemini-4-argon-low',
+    MOCK_MODEL_OPTIONS_NESTED: '1',
+    MOCK_PROTOCOL_LOG: protocolLog,
+  }, cwd)
+  assert.equal(r.status, 0, `nested model value exit 0 expected; stderr:\n${r.stderr}`)
+  const committed = receipt(cwd)
+  assert.equal(committed.value.requested_model, 'gemini-4-argon-high')
+  assert.equal(committed.value.effective_identity, 'gemini-4-argon-high')
+  assert.equal(committed.value.identity_status, 'matched')
 })
 
 concurrentTest('a model absent from even the label-suffixed list is still refused', async () => {

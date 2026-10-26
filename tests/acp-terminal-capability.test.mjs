@@ -710,7 +710,7 @@ test('a session-reported model is refused when it is Gemini 3.1, even though not
   const run = runCompanion('task-term-prohibited-model', { MOCK_MODEL: 'gemini-3.1-pro-high' })
   assert.notEqual(run.status, 0,
     `a session reporting a prohibited Gemini 3.1 model must not be treated as a clean dispatch; stderr:\n${run.stderr}`)
-  assert.match(run.stderr, /prohibited on tmux-teams routes/,
+  assert.match(run.stderr, /prohibited (?:model )?on tmux-teams routes/,
     `expected the fail-closed refusal to name the prohibition; stderr:\n${run.stderr}`)
   assert.ok(!run.requests.some((entry) => entry.method === 'session/prompt'),
     'the turn proceeded on a prohibited model instead of being refused before session/prompt')
@@ -730,6 +730,13 @@ test('a session reporting the RETIRED gpt-6-sol is refused the same way, while i
     'the turn proceeded on the retired model instead of being refused before session/prompt')
 
   const current = runCompanion('task-term-current-sol', { MOCK_MODEL: 'gpt-6.1-sol' })
-  assert.ok(!current.stderr.includes('prohibited on tmux-teams routes'),
+  // Positive guard, not a substring absence: the refusal wording changed once
+  // already ('prohibited' -> 'prohibited model'), which silently emptied this
+  // check. The successor's proof is a clean dispatch that DELIVERS its prompt.
+  assert.equal(current.status, 0,
+    `the successor must dispatch cleanly; stderr:\n${current.stderr}`)
+  assert.ok(current.requests.some((entry) => entry.method === 'session/prompt'),
+    'the successor never reached session/prompt — a refusal here reads as success to the old substring check')
+  assert.ok(!current.stderr.includes('prohibited'),
     `the successor was caught by the prohibition guard; stderr:\n${current.stderr}`)
 })

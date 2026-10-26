@@ -1,6 +1,6 @@
 ---
 name: claude-advisor
-description: "Consult a Claude-protocol advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. Defaults to the top Claude model (fable at the session's effort); optionally takes a routing pair — $claude-advisor <bin> <model> — to reach k3, qwen3.8-max, deepseek or glm through a routed profile. Use when the user invokes $claude-advisor, asks for a second opinion, names a specific advisor seat, or adds --party <id> to seat a saved bmad-party-mode roster. Read-only by brief and by this skill issuing no write instruction; unlike the Codex lane there is no mode switch to enforce it."
+description: "Consult a Claude-protocol advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. Defaults to the top Claude model (fable at the session's effort); optionally takes a routing pair — $claude-advisor <bin> <model> — to reach k3, qwen3.8-max, deepseek, glm or the operator's local 9Router gateway (claude-9r) through a routed profile. Use when the user invokes $claude-advisor, asks for a second opinion, names a specific advisor seat, or adds --party <id> to seat a saved bmad-party-mode roster. Read-only by brief and by this skill issuing no write instruction; unlike the Codex lane there is no mode switch to enforce it."
 ---
 
 # Claude Advisor
@@ -112,6 +112,74 @@ running model for its own identifier rather than trusting the file
 `deepseek-v4-flash-0731`, measured 2026-08-08 — note the served id is not
 character-identical to the requested one). If a seat matters, ask it who it is.
 
+### The 9Router seat, read off `~/.claude-9r/settings.json` on 2026-10-25
+
+`claude-9r` is not one of the `claude-profiles` seats. Its wrapper
+(`~/.local/bin/claude-9r`) does exactly one thing — `CLAUDE_CONFIG_DIR="$HOME/.claude-9r"`
+— and that directory's `settings.json` points the CLI at the operator's own
+loopback gateway and supplies the alias map, so the bin exists but the PROFILE
+is the fact:
+
+| `<bin>` | `<model>` | answers as | endpoint |
+|---|---|---|---|
+| `claude-9r` | `opus` | `thinker[1m]` (gateway id `thinker`) | `http://127.0.0.1:20128/v1` (9Router, loopback) |
+| `claude-9r` | `sonnet` | `worker[1m]` (gateway id `worker`) | `http://127.0.0.1:20128/v1` (9Router, loopback) |
+| `claude-9r` | `fable` | `advisor` (gateway id `advisor`) | `http://127.0.0.1:20128/v1` (9Router, loopback) |
+| `claude-9r` | `haiku` | `flash` (gateway id `flash`) | `http://127.0.0.1:20128/v1` (9Router, loopback) |
+
+The aliases come from `ANTHROPIC_DEFAULT_{OPUS,SONNET,FABLE,HAIKU}_MODEL` in that
+settings file, and the gateway behind them can be re-pointed by editing it — same
+rule as every row above: the alias is a slot, the endpoint plus the settings file
+are the facts. `fable` → `advisor` is the 9Router counterpart of this lane's
+default seat (a consultation-grade model, not a worker).
+
+**Naming a router model directly.** The four aliases are the short list. The
+adapter under this config also advertises the router's own claude-shaped ids as
+settable model values — measured 2026-10-26 from the `session/new` response:
+`claude-glm-5.3`, `claude-glm-5.3-flash`, `claude-gemini-3.8-flash`,
+`claude-muse-spark-1.3`, `claude-gpt-6-luna`, `claude-deepseek-flash`,
+`claude-opus-5.5`, `claude-gpt-6.1-sol`, the `-free` seats
+(`claude-cat-jam-free`, `claude-longcat-2.5-preview-free`,
+`claude-deepseek-v4.1-flash-free`, `claude-glm-5.3-flash-free`,
+`claude-beam-free`), and the namespaced seats `ag/claude-*`, `cc/claude-*`,
+`ocg/claude-haiku-5-5`. `$claude-advisor claude-9r claude-glm-5.3` puts that id
+in `ACP_MODEL`. What the receipt proves, precisely: the identity fields commit
+at session establishment, so `effective_identity: claude-glm-5.3 (matched)`
+proves the ADAPTER APPLIED that id. It witnesses adapter selection, not
+downstream routing — the gateway remains free to route a native id wherever
+its own table sends it, exactly as it maps an alias. The turn itself is
+proved separately, by the outbox file and `[turn done] stopReason=end_turn`
+in the lane log; `operation_outcome: succeeded` on the receipt is the
+session-operation outcome and predates the prompt round-trip. Both legs were
+observed on the 2026-10-26 probe of this seat (reported triple:
+`requested_model: claude-glm-5.3`, `effective_identity: claude-glm-5.3`,
+`identity_status: matched`); that probe's run directory was ephemeral, so the
+durable proof is the reproduction — dispatch the block above and read the
+receipt and outbox it writes. The loopback
+endpoint proves only that the gateway is the local 9Router — which family
+served is the gateway's routing that day, and the alias map in
+`~/.claude-9r/settings.json` is the fact to cite for it, never the loopback
+address.
+
+The acceptance set is the ADAPTER's, not the gateway's. The router's
+`/v1/models` also lists bare `thinker`/`worker`/`advisor`/`flash`, `cx/*`,
+`glm/*` and `oc/*` — none of those is advertised, none can be named, and the
+dispatch refuses an unadvertised id at `config-option-invalid` BEFORE any prompt
+is delivered, so a typo costs no quota. The narrowing can bite inside the
+claude-shaped subset too: measured the same day, the gateway serves
+`cc/claude-fable-5-1` while the adapter does not advertise it — treat the curl
+below as the superset, not the settable list. The prohibition guard applies
+before all of this: `ag/gemini-3.1-pro-high` sits on the router but is neither
+advertised nor permitted (Gemini 3.1 is banned and `gpt-6-sol` retired on every
+tmux-teams route), and the companion exits 2 on it whatever the router serves.
+
+```bash
+curl -s http://127.0.0.1:20128/v1/models \
+  | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{
+    for (const m of JSON.parse(d).data)
+      if (/^(claude-|(ag|cc|ocg)\/claude)/.test(m.id)) console.log(m.id) })'
+```
+
 ### Two spellings, and which works depends on the machine
 
 A routed seat is selected either by the wrapper binary or by the profile
@@ -130,6 +198,25 @@ day. Check which exists before writing a command that assumes one:
 
 ```bash
 command -v claude-qwen || ls -d "$HOME/.config/claude-profiles/qwen"
+```
+
+**The 9Router seat inverts that check, measured 2026-10-25.** Here the wrapper
+`claude-9r` DOES exist on PATH while the profile directory it loads lives at
+`~/.claude-9r`, not under `~/.config/claude-profiles/` — so the directory probe
+above would report nothing for a bin that works. But the wrapper spelling is
+still the wrong one for this lane, and for a worse reason than absence: it
+rides on `CLAUDE_CODE_EXECUTABLE`, which the companion's claude-lane allowlist
+does not carry — and `adapterEnv` does not REFUSE an unlisted variable, it
+STRIPS it silently, so a wrapper-form dispatch runs on with the adapter's
+default executable and answers from whatever profile that loads: a misroute
+wearing the wrapper's name, not a failure you would notice. The supported
+escape hatch is `ACP_ENV_PASSTHROUGH=CLAUDE_CODE_EXECUTABLE`; the form this
+file documents and has actually run is the config dir, which needs nothing
+beyond itself:
+
+```bash
+command -v claude-9r            # exists here — but do not dispatch on it
+ls -d "$HOME/.claude-9r"        # the spelling that actually dispatches
 ```
 
 ## The pinned default — still not negotiable
@@ -227,7 +314,35 @@ consensus is itself a finding, usually that the question was too narrow.
      claude <cwd> <task-id> <brief-file> [stall-sec]
    ```
 
-   **`ACP_SESSION_RECEIPT_REQUIRED=1` on both, and it was missing from both.**
+   9Router seat — the config-dir form again, because `~/.claude-9r` IS what the
+   `claude-9r` wrapper exports (dispatched in the v0.46.0 release session:
+   receipt `44656a0b-65d6-4480-afbc-e94298540ad7`, `fable (matched)`, outbox
+   delivered; reproduce with this block):
+
+   ```bash
+   ACP_SESSION_RECEIPT_REQUIRED=1 \
+   ACP_SESSION_OPERATION="new" \
+   CLAUDE_CONFIG_DIR="$HOME/.claude-9r" \
+   ACP_MODEL="fable" \
+   node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
+     claude <cwd> <task-id> <brief-file> [stall-sec]
+   ```
+
+   `fable` names the consultation-grade seat through that gateway's alias map
+   (`opus`/`sonnet`/`haiku` reach the others — see the 9Router table above).
+   Any advertised router id substitutes for it — `ACP_MODEL="claude-glm-5.3"`
+   dispatches that seat directly, and the receipt shows the id itself. In both
+   forms `ACP_EXPECT_MODEL` defaults to `ACP_MODEL`, so the receipt must show
+   `effective_identity: fable (matched)` (or the id you named). That proves
+   the adapter APPLIED what you asked — nothing more: what the gateway routed
+   to beyond itself is the gateway's business, and on this seat every endpoint
+   row is the same loopback address, which proves only that the gateway is the
+   local 9Router. When a FAMILY matters (two lanes that must differ), the
+   evidence is the gateway's own routing table that day — its model list and
+   alias map — never a matched identity string.
+
+   **`ACP_SESSION_RECEIPT_REQUIRED=1` on every dispatch block above and the
+   recovery block below — and it was once missing from all of them.**
    The default mode CONTINUES after a receipt-persistence failure and records
    `receipt_digest: none`, so the identity this skill reports could rest on a
    receipt that was never written — a release panel called the guarantee
@@ -333,5 +448,27 @@ changes state. If the consultation ends in work to be done, hand that to
   where it recurred across 203KB, 203KB and 7KB briefs on one afternoon after a
   52KB brief had worked that morning. Size is not the variable. Putting large
   diffs on disk is worth doing anyway; do not expect it to prevent this.
+- **Zero protocol events at boot.** `status` showing `awaiting_agent` with
+  `meaningful_progress: 0` means exactly one thing: the lane never completed
+  `initialize`. It cannot tell you WHY. On this machine, in the v0.46.0 release
+  session (2026-10-25), the why was npm — observed then: the adapter binary
+  answered `initialize` in well under a second when spawned directly, while
+  `npx -y @agentclientprotocol/claude-agent-acp` re-extracted its dependency
+  tree on every boot because `~/.npm` symlinks to an external volume, with
+  boots running minutes and one interrupted boot spending most of that on a
+  single tarball fetch; a boot killed mid-reify leaves
+  `_npx/<hash>/concurrency.lock` behind. Those run directories were ephemeral;
+  the durable form of the observation is the reproduction — spawn the cached
+  adapter binary directly and compare its time-to-initialize against the same
+  spec through npx. It is one machine's account, not a law about npm. Before
+  concluding "npm installing", look: a `ps` of the lane's children showing
+  `npm exec` with no adapter child is that diagnosis; an adapter child that
+  stays silent is a different fault. The default stall budget (600s) covered
+  the 5-6 minute boots here; a shorter caller-supplied `[stall-sec]` kills
+  mid-install, and killing at the boot window is how this lane earned its
+  "SIGKILL" reputation on this machine. Expect `acp-dispatch.mjs` itself to
+  report "identity not acknowledged after 120s — the lane is RUNNING" while
+  this goes on: that is its fixed boot window expiring, not a verdict on the
+  lane.
 - **Frictionless consensus.** Report it as a finding about the question, not as
   a strong answer.

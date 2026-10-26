@@ -1,29 +1,53 @@
 # HANDOFF
 
 State of play for the next agent. Overwritten in place, never appended.
-Written 2026-10-17 for v0.45.0 release.
+Written 2026-10-17 for v0.45.0 release; updated 2026-10-26 for v0.46.0.
 
 ## 1. READ THIS FIRST
 
-- **v0.45.0 IS PREPARED** — version bumped to 0.45.0 across 6 files / 7 places,
-  published roadmap page current (v19, recorded `468a51d2…`).
-- **What ships in v0.45.0**:
-  1. Support Gemini 4 Argon (`gemini-4-argon-high` default seat for `agy` routes
-     and `agy-advisor`, plus `gemini-4-argon-medium` and `gemini-4-argon-low`) and
-     Gemini 3.8 Flash (`gemini-3.8-flash-high/medium/low`).
-  2. ACP review transport & lane probe hardening:
-     - Session model witness tracks every setter reply to ensure no smuggled
-       flip reaches the prompt (`acp-review-client.mjs`).
-     - Screen every model witness shape, iterate all recognized model entries
-       in setter replies to prevent shadowing, and alias shadowing across list,
-       singular, and scalar shapes.
-     - Add `lane_prohibited` diagnostic constant and e2e probe test (`acp-lanes-mcp.mjs`).
-     - Trusted launcher returns absolute path.
-  3. Tests and policy verification for Gemini 4 Argon and witness guards.
-- **Gate**: PR passes 100% CI across Node 20 and Node 24 (push and pull_request).
-  Codex review bot addressed (2/2 findings closed). Release ordered
-  explicitly by Master in session instruction.
-- All tests pass, manifest validated, roadmap published.
+- **v0.46.0 IS PREPARED** — version bumped to 0.46.0 across 6 files / 7 places,
+  published roadmap page current (v20, recorded `49f51b7e…`).
+- **What ships in v0.46.0** (on top of the already-committed `8eed50a`
+  token-usage record):
+  1. `gpt-6-sol` prohibition enforced in `acp-companion.mjs` — the companion's
+     `PROHIBITED_MODEL` now matches `acp-dispatch.mjs` and `review-profiles.mjs`
+     (Gemini 3.1 banned, gpt-6-sol retired, gpt-6.1-sol the frontier).
+  2. `pm-delegation` prepare phase audits every ticket through
+     `requirement-audit` before dispatch (NOT READY pauses ticket + dependents;
+     re-audit on change); `requirement-audit` documents the caller.
+  3. `claude-advisor` gains the 9Router seat: alias table read from
+     `~/.claude-9r/settings.json` (fable→advisor, opus→thinker[1m],
+     sonnet→worker[1m], haiku→flash, endpoint 127.0.0.1:20128), direct naming
+     of the router's claude-shaped model ids (`claude-glm-5.3` verified end to
+     end: `effective_identity: claude-glm-5.3 (matched)`, outcome succeeded,
+     2026-10-26), and the cold-npx-cache boot failure mode with the 620ms
+     direct-spawn control.
+- **The claude lane works again on this machine** — see the correction in
+  section 6b before quoting "cannot start" from it.
+- **Gate**: `review-gate.mjs` was attempted twice and blocked both times on
+  machine plumbing (homebrew node is outside the trusted-roots list — rerun
+  with nvm's npx on PATH; then the gate's pinned codex profile demanded an
+  unadvertised reasoning_effort option and its qwen lane died at npx exit
+  127). The panel then ran on the CLAUDE.md macOS direct-ACP path, one run
+  directory per lane. Round 1 (codex `gpt-6.1-sol[ultra]`, agy
+  `gemini-4-argon-high`, both matched) returned five blocking findings each;
+  all ten were resolved in `dcfb5a6` and `9e1dc48` — the largest being that
+  **`8eed50a` was assembled from stale bytes and reverted three post-v0.44
+  changes** (agy pin 1.2.0→1.0.0 twice, the gpt-6-sol prohibition arm, and the
+  gpt-6-luna test fixtures). The qwen and kimi gateways both refused the
+  prompt with "Authentication required" after a matched identity (expired
+  credentials, not this repo), so Master instructed the third leg directly
+  (2026-10-26): **claude-advisor through 9Router, `claude-glm-5.3`** — a seat
+  the gate's own routing would not have chosen (the primary family is zai),
+  seated by recorded operator instruction. That lane returned **PASS with
+  zero findings** on the committed 0.46.0 bytes and byte-verified the packet
+  against a fresh regeneration from HEAD. Panel of record — 3/3:
+  `agy:gemini-4-argon-high (matched)` PASS; `codex:gpt-6.1-sol[ultra]
+  (matched)` four rounds, every blocking finding resolved, one recorded
+  dissent on evidence conventions; `claude-9r:claude-glm-5.3 (matched)` PASS.
+  Suite **1234 pass / 0 fail / 0 skipped** (2026-10-26);
+  `claude plugin validate --strict` passed; `roadmap-gate` 0 (page v20,
+  `49f51b7e…`).
 
 ## 2. HOW TO VERIFY
 
@@ -33,8 +57,8 @@ node --test > /tmp/suite.log 2>&1; grep -E '^ℹ (tests|pass|fail|skipped)' /tmp
 grep -q '^ℹ fail 0$' /tmp/suite.log || { grep '^✖' /tmp/suite.log | head; false; }
 ```
 
-Green is **`1204 pass / 0 fail / 0 skipped`** — measured 2026-09-30 on the
-v0.44.0 release tip.
+Green is **`1234 pass / 0 fail / 0 skipped`** — measured 2026-10-26 on the
+v0.46.0 release tree.
 
 **Gate on the count, never on a grep of the output.** `node --test | grep '✖'`
 exits 0 when it FINDS failures, so chaining a commit after it with `&&` commits
@@ -213,10 +237,17 @@ Fourteen skills ship from `main`.
   bare `codex` default behind the `mailbox-run.js` comments — the v0.44.0 ACP
   evidence covers `gpt-6.1-sol[ultra]`, `gpt-6-luna[max]` (refusal and match)
   and the three panel lanes only.
-- **`requirement-audit` has never been invoked.** It is registered, its
-  frontmatter satisfies the contract, and the structure tests pass — all of
-  which is about REGISTRATION. Nobody has run the skill against a real
-  requirement, and it is not in any installed plugin cache yet.
+- **`requirement-audit` has never been invoked against a REAL requirement.**
+  Mechanically it now has been: 2026-10-23, a test spec + two tickets walked
+  `pm-delegation` step 1 end to end — T1 (full `📋 Grill:` block) came back
+  READY and entered the frontier, T2 (no Grill block) came back NOT READY with
+  six blockers and was held out while T1 proceeded. That is mechanical
+  verification that the wiring fires, not operational evidence that it works
+  on a real multi-ticket spec with a real dependency graph. It SHIPPED in
+  v0.44.0 and is in the installed plugin cache; an earlier note here said
+  otherwise and was wrong. `pm-delegation`'s prepare phase now instructs the
+  PM to run its audit mode on every ticket, and `requirement-audit` documents
+  the caller under "Called from".
 - **No panel has read anything after `e8b6ef0`.** That includes the whole
   `requirement-audit` merge.
 - **`--party` has been exercised on the claude/fable lane only.** The codex and
@@ -227,6 +258,40 @@ Fourteen skills ship from `main`.
   named-reference set is frozen) and which remain a bounded denylist (U+2800 is
   the only hand-listed blank-rendering codepoint).
 - **Nothing has ever installed from `agent-plugins/tmux-teams/`.**
+
+## 6b. ENVIRONMENTAL BLOCKERS ON THIS MACHINE (recorded 2026-10-23, this session)
+
+- **The claude ACP lane cannot start here.** Both the default seat and the
+  `kimi` profile die at `claude auth status did not answer within 5 s` →
+  `session/new failed before prompt` → SIGKILL. `claude auth status` answers
+  in 0.8 s when run directly from a login shell, so the 5 s window inside the
+  adapter is what misses — an environment/adapter issue, not a code bug in
+  this repo. Do not count the claude family in a panel on this machine until
+  that changes.
+  **CORRECTED 2026-10-26 — the lane dispatches, and the blocker above was the
+  npx layer, not auth.** Two receipt-backed probes ran end to end through
+  `CLAUDE_CONFIG_DIR="$HOME/.claude-9r"` (fable: `effective_identity: fable
+  (matched)`; claude-glm-5.3: `effective_identity: claude-glm-5.3 (matched)`,
+  both `outcome: succeeded`). The adapter answers `initialize` in 620ms when
+  spawned directly; `npx -y @agentclientprotocol/claude-agent-acp` re-extracts
+  its whole tree on EVERY boot because `~/.npm` symlinks to the external
+  KINGSTON volume (~5-6 min, one tarball alone measured at 320s), and any
+  stall budget shorter than that kills the install mid-flight and leaves a
+  stale `_npx/<hash>/concurrency.lock`. The default 600s stall survives it.
+  Recorded as a failure mode in `claude-advisor`'s SKILL.
+- **zai and qwen are quota-exhausted until 2026-10-23 17:28** (429,
+  Weekly/Monthly Limit Exhausted). gemini-4-argon is quota-exhausted for
+  ~68 h from 2026-10-21 (429, Individual quota reached). The lanes that ran
+  this session: codex (`gpt-6.1-sol[ultra]`) and agy (`gemini-3.8-flash-high`)
+  — both receipt-verified `matched`. A three-family panel needs the quota
+  reset first.
+- **The gpt-6-sol prohibition gap in `acp-companion.mjs` is CLOSED** (this
+  session). The companion's `PROHIBITED_MODEL` now carries the same
+  `(gemini 3.1 | gpt-6-sol)` alternation and refusal wording as
+  `acp-dispatch.mjs` and `review-profiles.mjs` — all three verified
+  character-identical, with the drift test (`tests/review-policy.test.mjs:861`)
+  passing. Previously the companion blocked Gemini 3.1 only and silently
+  accepted the retired `gpt-6-sol`; the dispatch test caught it.
 
 ## 7. WHERE THINGS LIVE
 
@@ -244,7 +309,7 @@ plugins/tmux-teams/skills/tmux-teams/scripts/
   advisor-party.mjs:256                    CHARACTER_REFERENCE — the closed set
   advisor-party.mjs:271                    VISIBLE
   acp-dispatch.mjs                         the operator's entry to a lane
-plugins/tmux-teams/skills/requirement-audit/SKILL.md   merged, unreleased
+plugins/tmux-teams/skills/requirement-audit/SKILL.md   shipped in v0.44.0
 plugins/tmux-teams/skills/{claude,codex,agy}-advisor/SKILL.md
 tests/plugin-structure.test.mjs:15         SKILLS — the list of record
 tests/plugin-structure.test.mjs:18         RELEASE_VERSION

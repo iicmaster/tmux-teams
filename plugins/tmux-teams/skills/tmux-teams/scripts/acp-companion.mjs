@@ -1732,6 +1732,7 @@ function dispatchRecordText() {
     `last_protocol_activity_at: ${persistedTimestamp(iso(lastProtocolActivityMs))}`,
     `last_meaningful_progress_at: ${persistedTimestamp(iso(lastMeaningfulProgressMs))}`,
     `meaningful_progress_count: ${meaningfulProgressCount}`,
+    ...(lastUsageSnapshot ? [`token_usage: ${stableJson(lastUsageSnapshot)}`] : []),
     `active_tools: ${JSON.stringify(currentActiveToolEvidence())}`,
     `liveness_path: .tmux-teams/liveness/${taskId}.json`,
     `receipt_digest: ${receiptDigest ?? 'none'}`,
@@ -2014,16 +2015,93 @@ function handleUpdate(update) {
     case 'plan':
       updatePlanProgress(update)
       break
+    case 'usage_update':
+      usageUpdate(update)
+      break
     default:
       break
   }
+}
+
+// The adapter's own account of what the model consumed, from the two surfaces
+// the installed adapter actually speaks — measured against
+// @agentclientprotocol/claude-agent-acp 0.95.0 on 2026-10-26, because the
+// first version of this handler listened for a `usage` session update no
+// adapter sends (a mock-invented shape; the v0.46.0 codex review lane caught
+// it shipping alongside the adapter's real reports):
+//   - the session/prompt RESPONSE carries `usage` — the SDK's session
+//     accumulators: inputTokens, outputTokens, cachedReadTokens,
+//     cachedWriteTokens, totalTokens; and
+//   - a `usage_update` notification whose `used`, when a bare number, is
+//     CONTEXT OCCUPANCY after a compaction (post_tokens), not consumption —
+//     recorded from its `cost` only, never from a numeric `used`.
+// Kept as the LAST snapshot, deliberately not summed: whether an adapter
+// reports per-turn deltas or a running total is the adapter's business, and a
+// measurement that assumed either one would be a guess wearing a number.
+// Fields merge per-key so a cost from the update and the token counts from the
+// response both survive; adapters that report neither leave this null, and the
+// dispatch record then carries no `token_usage` line at all — unknown is
+// absence here, never a zero that would read as "measured and free".
+let lastUsageSnapshot = null
+
+function recordUsageSnapshot(fields) {
+  if (!fields || typeof fields !== 'object') return
+  const next = {}
+  for (const key of ['input_tokens', 'output_tokens', 'cached_read_tokens',
+    'cached_write_tokens', 'total_tokens']) {
+    const value = fields[key]
+    if (Number.isSafeInteger(value) && value >= 0) next[key] = value
+  }
+  const cost = fields.cost_usd
+  if (typeof cost === 'number' && Number.isFinite(cost) && cost >= 0) next.cost_usd = cost
+  if (Object.keys(next).length) lastUsageSnapshot = { ...lastUsageSnapshot, ...next }
+}
+
+function usageUpdate(update) {
+  const cost = update?.cost
+  const costUsd = cost && typeof cost === 'object' && cost.currency === 'USD'
+    && typeof cost.amount === 'number' && Number.isFinite(cost.amount) && cost.amount >= 0
+    ? cost.amount : null
+  const used = update?.used
+  if (used !== null && typeof used === 'object') {
+    // No adapter observed sending this yet; the SDK types allow it, and the
+    // object form would carry real counters — recorded when it appears.
+    recordUsageSnapshot({
+      input_tokens: used.inputTokens ?? used.input_tokens,
+      output_tokens: used.outputTokens ?? used.output_tokens,
+      total_tokens: used.totalTokens ?? used.total_tokens,
+      ...(costUsd === null ? {} : { cost_usd: costUsd }),
+    })
+    return
+  }
+  // A bare numeric `used` is post-compaction occupancy — deliberately NOT
+  // recorded as consumption. The cost is.
+  if (costUsd !== null) recordUsageSnapshot({ cost_usd: costUsd })
+}
+
+function usageFromPromptResponse(response) {
+  const usage = response?.usage
+  if (!usage || typeof usage !== 'object') return
+  recordUsageSnapshot({
+    input_tokens: usage.inputTokens ?? usage.input_tokens,
+    output_tokens: usage.outputTokens ?? usage.output_tokens,
+    cached_read_tokens: usage.cachedReadTokens ?? usage.cached_read_tokens,
+    cached_write_tokens: usage.cachedWriteTokens ?? usage.cached_write_tokens,
+    total_tokens: usage.totalTokens ?? usage.total_tokens,
+  })
 }
 
 function extractIdentity(session) {
   const options = Array.isArray(session?.configOptions) ? session.configOptions : []
   const optionValue = (id) => {
     const option = options.find((item) => item?.id === id)
-    return typeof option?.currentValue === 'string' ? option.currentValue.trim() : ''
+    // agy 1.4.7 reports currentValue as the same nested `{value, name}` object
+    // it advertises (measured 2026-10-26); every other adapter seen here uses
+    // the bare string. Same eras as `optionValueMatches`, one level up.
+    const current = option?.currentValue
+    const raw = typeof current === 'string' ? current
+      : (current !== null && typeof current === 'object' && typeof current.value === 'string' ? current.value : '')
+    return raw.trim()
   }
   const currentModelId = typeof session?.models?.currentModelId === 'string'
     ? session.models.currentModelId.trim() : ''
@@ -2078,6 +2156,22 @@ function configOption(response, id) {
   return options.find((option) => option?.id === id) ?? null
 }
 
+// One shape per era of antigravity-acp, each measured against a real backend:
+// a plain string value (the ACP spec's shape, and what the mock agent speaks),
+// "<id>\t<display label>" (agy 1.0.0, probed against agy 1.1.12 on 2026-08-12),
+// and an OBJECT `{value, name}` where the bare id lives one level down (seen
+// 2026-10-26 from the adapter pinned for agy 1.4.7: every model option came
+// back nested, so the companion refused EVERY seat at config-option-invalid).
+// The gate path's ac0038b fix is a DIFFERENT gap — a missing currentValue —
+// and reached no nested object; this check is where that shape first became
+// load-bearing. The value the agent considers applied is the bare id in all
+// three eras.
+function optionValueMatches(observed, value) {
+  return observed === value
+    || (typeof observed === 'string' && observed.split('\t')[0] === value)
+    || (observed !== null && typeof observed === 'object' && observed.value === value)
+}
+
 function assertConfigOptionValue(response, id, value, phase) {
   const option = configOption(response, id)
   if (!option) {
@@ -2085,15 +2179,8 @@ function assertConfigOptionValue(response, id, value, phase) {
       code: 'config-option-unsupported',
     })
   }
-  // antigravity-acp 1.0.0 advertises model option values as "<id>\t<display
-  // label>" while its session/set_config_option accepts the bare id and
-  // reports it back bare — the bare id is the value the agent itself
-  // considers applied (probed against agy 1.1.12, 2026-08-12). Match both
-  // forms here, or every agy seat dies at this pre-check with a value the
-  // server would have accepted.
   if (Array.isArray(option.options)
-    && !option.options.some((candidate) => candidate?.value === value
-      || (typeof candidate?.value === 'string' && candidate.value.split('\t')[0] === value))) {
+    && !option.options.some((candidate) => optionValueMatches(candidate?.value, value))) {
     throw Object.assign(new Error(`${phase} rejected unsupported ${id} value ${value}`), {
       code: 'config-option-invalid',
     })
@@ -2129,7 +2216,7 @@ async function applyRequestedSessionConfig(sessionId, response) {
       value,
       `ACP session/set_config_option(${configId}) response`,
     )
-    if (applied.currentValue !== value) {
+    if (!optionValueMatches(applied.currentValue, value)) {
       throw Object.assign(new Error(`ACP agent did not apply ${configId}=${value}`), {
         code: 'config-option-not-applied',
       })
@@ -2175,7 +2262,7 @@ function enforceIdentity(session) {
   // mismatch — the gap this closes was reported with "no console.error, no
   // exit(2), no signal" that CLAUDE.md's fail-closed rule had been violated.
   if (PROHIBITED_MODEL.test(identity.effectiveIdentity)) {
-    console.error(`observed session model: prohibited on tmux-teams routes (Gemini 3.1 is banned; gpt-6-sol is retired — the Codex frontier is gpt-6.1-sol), got ${identity.effectiveIdentity}`)
+    console.error(`observed session model: prohibited model on tmux-teams routes (Gemini 3.1 is banned; gpt-6-sol is retired — the Codex frontier is gpt-6.1-sol), got ${identity.effectiveIdentity}`)
   }
   const terminal = identity.status === 'missing' ? 'identity-missing' : 'identity-mismatch'
   const expected = `${requestedModel || 'missing'}${requestedReasoningEffort ? `[${requestedReasoningEffort}]` : ''}`
@@ -4699,6 +4786,7 @@ async function protocolRun() {
   })
   assertProtocolFence('session/prompt response')
   protocolCompleted = true
+  usageFromPromptResponse(response)
   line(`[turn done] stopReason=${boundedText(response?.stopReason, 'unknown')}`)
 }
 

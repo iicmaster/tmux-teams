@@ -32,16 +32,15 @@ const PLAINTEXT_SAFE_KEYS = new Set(['CLAUDE_CODE_SIMPLE', 'CLAUDE_CONFIG_DIR'])
 // A DIGEST, NOT A PRESENCE FLAG: equality across dumps proves the child got the
 // value the lane was given, and reveals none of it.
 //
-// THIS FILE SITS UNDER A HARD 64 KiB BOUND the companion enforces on an adapter
-// entry. Explain in the TEST, not here.
+// THIS FILE SITS UNDER the companion's HARD 64 KiB adapter-entry bound.
+// Explain in the TEST, not here.
 const { createHash } = await import('node:crypto')
 const digest = value => createHash('sha256').update(String(value)).digest('hex').slice(0, 16)
 
 if (process.env.MOCK_ENV_DUMP) {
   const { writeFileSync } = await import('node:fs')
   const observed = {}
-  // MOCK_DUMP_EXTRA_KEYS widens the dumped set at runtime, so a guard can prove
-  // the safe-list decides — not the current contents of ENV_DUMP_KEYS.
+  // EXTRA_KEYS widens the dump at runtime: the safe-list decides.
   const keys = [...ENV_DUMP_KEYS, ...(process.env.MOCK_DUMP_EXTRA_KEYS ?? '').split(',').filter(Boolean)]
   for (const key of keys) {
     if (process.env[key] === undefined) continue
@@ -81,10 +80,8 @@ const envNumber = (name, fallback) => {
   return Number.isFinite(number) && number >= 0 ? number : fallback
 }
 
-// The delay defaults to 0 (unchanged handler-fires-immediately behavior).
-// A test can widen it to stand in for scheduler contention on the companion
-// side of the TERM->KILL race deterministically, instead of waiting for real
-// load to reproduce it. See acp-companion.test.mjs's FORCED_TERM_KILL_GRACE_MS.
+// Delay defaults to 0; a test widens it to stand in for scheduler contention
+// in the TERM->KILL race (see FORCED_TERM_KILL_GRACE_MS in the test).
 if (process.env.MOCK_SCENARIO === 'cancel-sigterm-exit-zero') {
   process.on('SIGTERM', () => setTimeout(() => process.exit(0), envNumber('MOCK_SIGTERM_EXIT_DELAY_MS', 0)))
 }
@@ -100,18 +97,19 @@ function identity() {
   if (process.env.MOCK_CONFIG_IDENTITY === '1') {
     const modelOptions = (process.env.MOCK_MODEL_OPTIONS?.split(',').map((value) => value.trim()).filter(Boolean) ?? [])
     const effortOptions = (process.env.MOCK_REASONING_EFFORT_OPTIONS?.split(',').map((value) => value.trim()).filter(Boolean) ?? [])
-    // With MOCK_MODEL_OPTIONS_STRICT the advertised list is exactly what the
-    // operator wrote — the shape antigravity-acp 1.0.0 presents, whose model
-    // values carry a "\t<display label>" suffix and never include the bare id
-    // a client requests. Without it the mock keeps its old courtesy of
-    // adding the current model so older tests stay meaningful.
+    // STRICT = exactly the operator's list (antigravity-acp 1.0.0's
+    // tab-suffixed shape, never the bare id); without it the current model is
+    // added as a courtesy so older tests stay meaningful.
     if (process.env.MOCK_MODEL_OPTIONS_STRICT !== '1' && !modelOptions.includes(model)) modelOptions.unshift(model)
     if (effort && !effortOptions.includes(effort)) effortOptions.unshift(effort)
+    // NESTED = agy 1.4.7 {value, name} objects.
+    const nested = process.env.MOCK_MODEL_OPTIONS_NESTED === '1'
+    const modelValue = (value) => (nested ? { value, name: value } : value)
     return {
       configOptions: [
         {
-          id: 'model', name: 'Model', type: 'select', currentValue: model,
-          options: modelOptions.map((value) => ({ value, name: value })),
+          id: 'model', name: 'Model', type: 'select', currentValue: modelValue(model),
+          options: modelOptions.map((value) => ({ value: modelValue(value), name: value })),
         },
         ...(effort ? [{
           id: 'reasoning_effort', name: 'Reasoning effort', type: 'select', currentValue: effort,
@@ -995,6 +993,12 @@ async function handlePrompt(message) {
     writeOutbox(message)
     return reply(message.id, { stopReason: 'end_turn' })
   }
+  if (scenario === 'usage-report') {
+    // 0.95.0 surfaces: usage_update cost + prompt-response usage.
+    notify({ sessionUpdate: 'usage_update', used: 4096, size: 200000, cost: { amount: 0.012, currency: 'USD' } })
+    writeOutbox(message)
+    return reply(message.id, { stopReason: 'end_turn', usage: { inputTokens: 1200, outputTokens: 34, cachedReadTokens: 800, cachedWriteTokens: 0, totalTokens: 2034 } })
+  }
   if (scenario === 'silent-tool') {
     notify({
       sessionUpdate: 'tool_call',
@@ -1207,6 +1211,8 @@ async function handleLine(line) {
       const advertised = (option) => option.value === value
         || (process.env.MOCK_MODEL_OPTIONS_STRICT === '1'
           && typeof option.value === 'string' && option.value.split('\t')[0] === value)
+        || (process.env.MOCK_MODEL_OPTIONS_NESTED === '1' && typeof option.value === 'object'
+          && option.value !== null && option.value.value === value)
       if (!current || typeof value !== 'string' || !current.options.some(advertised)) {
         return replyError(message.id, `mock rejected ${configId}`)
       }
