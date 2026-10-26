@@ -36,12 +36,18 @@ Written 2026-10-17 for v0.45.0 release; updated 2026-10-26 for v0.46.0.
   changes** (agy pin 1.2.0→1.0.0 twice, the gpt-6-sol prohibition arm, and the
   gpt-6-luna test fixtures). The qwen and kimi gateways both refused the
   prompt with "Authentication required" after a matched identity (expired
-  credentials, not this repo), so **the third family leg could not be seated
-  on this machine — the release is 2/3 and blocked on that leg; only Master
-  waives it** (CLAUDE.md release flow step 2). Round 2 verdicts (final bytes):
-  see the GitHub release notes. Suite **1234 pass / 0 fail / 0 skipped**
-  (2026-10-26); `claude plugin validate --strict` passed; `roadmap-gate` 0
-  (page v20, `49f51b7e…`).
+  credentials, not this repo), so Master instructed the third leg directly
+  (2026-10-26): **claude-advisor through 9Router, `claude-glm-5.3`** — a seat
+  the gate's own routing would not have chosen (the primary family is zai),
+  seated by recorded operator instruction. That lane returned **PASS with
+  zero findings** on the committed 0.46.0 bytes and byte-verified the packet
+  against a fresh regeneration from HEAD. Panel of record — 3/3:
+  `agy:gemini-4-argon-high (matched)` PASS; `codex:gpt-6.1-sol[ultra]
+  (matched)` four rounds, every blocking finding resolved, one recorded
+  dissent on evidence conventions; `claude-9r:claude-glm-5.3 (matched)` PASS.
+  Suite **1234 pass / 0 fail / 0 skipped** (2026-10-26);
+  `claude plugin validate --strict` passed; `roadmap-gate` 0 (page v20,
+  `49f51b7e…`).
 
 ## 2. HOW TO VERIFY
 
