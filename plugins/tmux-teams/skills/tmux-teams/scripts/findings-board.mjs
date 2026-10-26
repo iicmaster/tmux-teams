@@ -11,7 +11,8 @@
 // The contract this file does not get to reinterpret:
 //   * APPEND-ONLY. No subcommand edits or deletes; superseding means appending
 //     a new entry whose --ref names the old id. The only write paths are init's
-//     empty create and fs.appendFile (O_APPEND). With ≤8 writers each writing
+//     empty exclusive create (`wx` — a competing create is refused, never
+//     truncated) and fs.appendFile (O_APPEND). With ≤8 writers each writing
 //     one small line this is good enough — documented, not engineered.
 //   * id IS the 1-based line number, counted at append time from the lines
 //     already on disk. A hand-inserted garbage line therefore shifts the NEXT
@@ -148,20 +149,26 @@ One append-only JSONL board per run. Types: OBSERVED FACT FAIL CLAIM PATCH_SUMMA
 Caps: text <= 100 chars (300 for PATCH_SUMMARY), detail <= 2000. Supersede by
 appending with --ref <id> — nothing on the board is ever edited or deleted.`
 
-// One flag shape for every subcommand: positionals collect in order, the rest
-// must be `--name value` pairs. A flag missing its value is refused here rather
-// than read as an empty string, which would append an entry nobody meant.
+// One flag shape for every subcommand: a token is a flag only when it is one
+// of that subcommand's allowed flags; everything else — including a `--`-prefixed
+// argument — is a positional. Required positionals are DATA first: quoting is
+// the caller's only voice, so `append <board> FACT "--dry-run failed"` and the
+// grep keyword in `grep <board> --dry-run` must reach the board as text, not
+// die as an unknown flag. A flag missing its value is refused here rather than
+// read as an empty string, which would append an entry nobody meant.
 const parseArgs = (args, allowedFlags) => {
   const positionals = []
   const flags = {}
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]
-    if (!arg.startsWith('--')) { positionals.push(arg); continue }
-    if (!allowedFlags.includes(arg)) return { error: `unknown flag ${arg}` }
-    const value = args[i + 1]
-    if (value === undefined) return { error: `flag ${arg} needs a value` }
-    flags[arg] = value
-    i++
+    if (arg.startsWith('--') && allowedFlags.includes(arg)) {
+      const value = args[i + 1]
+      if (value === undefined) return { error: `flag ${arg} needs a value` }
+      flags[arg] = value
+      i++
+      continue
+    }
+    positionals.push(arg)
   }
   return { positionals, flags }
 }
@@ -188,11 +195,19 @@ function initBoard(args) {
     return fail(parsed.error || 'init takes exactly one argument: the board file')
   }
   const file = parsed.positionals[0]
-  if (existsSync(file)) {
-    return fail(`${file} already exists — init creates a board once; append to it instead`)
-  }
+  const exists = `${file} already exists — init creates a board once; append to it instead`
+  if (existsSync(file)) return fail(exists)
   mkdirSync(dirname(resolve(file)), { recursive: true })
-  writeFileSync(file, '')
+  try {
+    // `wx` is the point: the create is exclusive, so a board that a competing
+    // init slips into existence between the existsSync check and this open
+    // makes the open fail with EEXIST instead of truncating it. A plain `w`
+    // here is how a race destroys someone's entry while init still exits 0.
+    writeFileSync(file, '', { flag: 'wx' })
+  } catch (error) {
+    if (error?.code === 'EEXIST') return fail(exists)
+    throw error
+  }
   return 0
 }
 

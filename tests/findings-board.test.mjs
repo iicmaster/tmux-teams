@@ -54,6 +54,19 @@ test('init on an existing board exits 1 and names the file — no idempotent re-
   assert.match(again.stderr, /board\.jsonl/, 'the message names the file it refused')
 })
 
+// init is append-only too: the refusal must not disturb a byte already on the
+// board. A truncate-then-reject init passes the empty-board test above while
+// destroying every entry that landed between its check and its open.
+test('double-init on a written board refuses without disturbing one byte of it', () => {
+  const file = newBoard()
+  append(file, 'FACT', 'an already-known fact')
+  const before = readFileSync(file, 'utf8')
+  const again = run('init', file)
+  assert.equal(again.status, 1)
+  assert.match(again.stderr, /already exists/)
+  assert.equal(readFileSync(file, 'utf8'), before, 'a refused init must not truncate the entries it refuses')
+})
+
 test('append happy path: stdout, id, ISO-8601 UTC ts, agent default, detail/ref omitted', () => {
   const file = newBoard()
   const result = append(file, 'FACT', 'the build is red')
@@ -64,8 +77,11 @@ test('append happy path: stdout, id, ISO-8601 UTC ts, agent default, detail/ref 
   assert.equal(entry.type, 'FACT')
   assert.equal(entry.text, 'the build is red')
   assert.equal(entry.agent, 'unknown', 'agent defaults to unknown')
-  assert.ok(!Number.isNaN(Date.parse(entry.ts)), 'ts must parse as a date')
-  assert.ok(entry.ts.endsWith('Z'), 'ts must be UTC')
+  // ISO round-trip, not just parseability: a non-ISO UTC string like
+  // "Mon, 26 Oct 2026 00:00:00 Z" parses fine and still ends in Z, but only a
+  // true ISO-8601 UTC string is returned unchanged by toISOString.
+  assert.equal(new Date(entry.ts).toISOString(), entry.ts,
+    'ts must be ISO-8601 UTC: parse and re-serialize must return the exact string')
   assert.ok(!('detail' in entry), 'detail omitted when not provided, not null')
   assert.ok(!('ref' in entry), 'ref omitted when not provided, not null')
 })
@@ -83,6 +99,12 @@ test('all five types accepted; an unknown type exits 1 and writes nothing', () =
   assert.match(bad.stderr, /invalid type "NOTE"/)
   assert.match(bad.stderr, /PATCH_SUMMARY/, 'the message lists the legal types')
   assert.equal(readFileSync(file, 'utf8').trim().split('\n').length, 5, 'the rejected append wrote nothing')
+  // The accepted type must be the one that was appended — a serializer that
+  // quietly files CLAIM and PATCH_SUMMARY under FACT makes the five types a
+  // two-type board while every exit code still looks right.
+  const storedTypes = [1, 2, 3, 4, 5].map((line) => entryAt(file, line).type)
+  assert.deepEqual(storedTypes, ['OBSERVED', 'FACT', 'FAIL', 'CLAIM', 'PATCH_SUMMARY'],
+    'each entry must store the literal type it was appended as')
 })
 
 test('text cap is 100: exactly 100 appends, 101 exits 1 naming text and the cap', () => {
@@ -149,6 +171,19 @@ test('--agent, --detail and --ref land in the JSON with the right types', () => 
   assert.equal(typeof entry.ref, 'number', 'ref is the numeric id, not the string "--ref 1"')
 })
 
+// An argument beginning with `--` is DATA wherever a positional is required:
+// quoting is the caller's only voice, so the parser may not second-guess it
+// into a flag. Grep keywords are data all the way down.
+test('a text or keyword beginning with -- is data, not a flag', () => {
+  const file = newBoard()
+  const appended = append(file, 'FAIL', '--dry-run failed')
+  assert.equal(appended.status, 0, 'the text is the third positional; leading dashes do not make it a flag')
+  assert.equal(entryAt(file, 1).text, '--dry-run failed')
+  const hit = run('grep', file, '--dry-run')
+  assert.equal(hit.status, 0, 'a grep keyword beginning with -- is data too')
+  assert.deepEqual(stdoutLines(hit), ['#1 FAIL --dry-run failed'])
+})
+
 test('read defaults: digest, most recent 20 of 25, printed oldest to newest', () => {
   const file = newBoard()
   for (let n = 1; n <= 25; n++) append(file, 'OBSERVED', `finding ${n}`)
@@ -166,11 +201,13 @@ test('digest format is exact: supersedes suffix, then the four-space detail line
   append(file, 'FACT', 'the new fact', '--detail', 'why the old one is wrong', '--ref', '1')
   const result = run('read', file)
   assert.equal(result.status, 0)
-  assert.deepEqual(stdoutLines(result), [
+  // Raw stdout, no blank-line stripping: a digest that grew blank lines between
+  // records would be a different dialect, and this is the test where that dies.
+  assert.equal(result.stdout, [
     '#1 FACT the old fact',
     '#2 FACT the new fact (supersedes #1)',
     '    = why the old one is wrong',
-  ])
+  ].join('\n') + '\n')
 })
 
 test('read --type returns only that type, in chronological order', () => {

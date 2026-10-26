@@ -391,7 +391,9 @@ for space, and isolation is the thing this skill exists to keep.
 
 Each run keeps one findings board — a single append-only JSONL file in the
 run's workspace, created at prepare (step 1) and written only through
-`findings-board.mjs`. Entries are typed, one line each:
+`findings-board.mjs`. The append-only write holds for at most 8 concurrent
+writers, the PM's own appends included — a WIP limit raised past that ceiling
+is outside what the board promises. Entries are typed, one line each:
 
 - **OBSERVED** — something a worker saw, evidence still to point at.
 - **FACT** — established: an audit verdict, a confirmed pattern.
