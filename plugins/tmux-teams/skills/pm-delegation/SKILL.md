@@ -1,6 +1,6 @@
 ---
 name: pm-delegation
-description: "Act as PM over other agents — subagents or ACP lanes — from one delegation to a whole spec. Covers the brief contract, the STOP rule, what counts as evidence, and the autonomous run: tickets as a dependency graph, one research pass, every ticket audited with `requirement-audit` before dispatch, parallel implementers each in its own worktree bounded by a disk budget and a WIP limit, merged as they land, worktrees retired at merge, reviewed against the spec. Use when dispatching work to subagents or ACP, writing a brief, judging a returned result, or implementing a whole spec with minimal supervision — 'implement the spec', 'work the tickets', 'ทำตาม spec', 'ลุยทั้ง spec'. ใช้เมื่อรับบทเป็น PM คุมงานเอเจนต์อื่น. Do not use for a single edit you can make yourself, and never to route work through the delivery loop — that is tmux-teams."
+description: "Act as PM over other agents — subagents or ACP lanes — from one delegation to a whole spec. Covers the brief contract, the STOP rule, what counts as evidence, and the autonomous run: tickets as a dependency graph, one research pass, every ticket audited with `requirement-audit` before dispatch, a shared findings board carrying what every implementer learns, parallel implementers each in its own worktree bounded by a disk budget and a WIP limit, merged as they land, worktrees retired at merge, reviewed against the spec. Use when dispatching work to subagents or ACP, writing a brief, judging a returned result, or implementing a whole spec with minimal supervision — 'implement the spec', 'work the tickets', 'ทำตาม spec', 'ลุยทั้ง spec'. ใช้เมื่อรับบทเป็น PM คุมงานเอเจนต์อื่น. Do not use for a single edit you can make yourself, and never to route work through the delivery loop — that is tmux-teams."
 ---
 
 # PM over other agents
@@ -190,6 +190,13 @@ not a slow moment to wait through.
    plausible guess. When the answer lands, audit the ticket AGAIN — an answer
    to one dimension does not make the others pass.
 
+   **Init the run's findings board.** Create the run's board file in the run's
+   workspace with `findings-board.mjs init <board>` — the script ships in this
+   plugin's tmux-teams scripts directory — and append each ticket's audit
+   verdict to the board as FACT or FAIL while you audit, with the failing
+   dimension as `--detail` on a FAIL. What the board is, and how it is written,
+   is "The findings board" below.
+
 2. **Research once, in one read-only subagent.** Where things live, the existing
    patterns, what will fight the change. **It writes notes to a file outside the
    repository** and every implementer is given that path. One pass, not one per
@@ -210,13 +217,19 @@ not a slow moment to wait through.
    luck rather than care.
 
    Each implementer gets: the primary checkout is off limits, its file radius,
-   the research notes path, and its acceptance.
+   the research notes path, and its acceptance — plus the board path and a
+   fresh digest (`findings-board.mjs read <board> --format digest`), and the
+   instruction to append a CLAIM when it starts, OBSERVED / FACT / FAIL as it
+   learns them — a falsified hypothesis is the highest-value entry, because it
+   stops a peer re-deriving the same dead end — and a PATCH_SUMMARY when it
+   finishes.
 
    **Dispatch them in the background and do not wait on any one of them.** This
    is the sentence that makes the parallelism real: a caller who dispatches and
    then awaits each result in turn has followed every other rule here and still
    produced a serial run. Send the whole frontier, then handle results as they
-   arrive.
+   arrive. Stagger the starts by seconds rather than launching all at once —
+   simultaneous bursts trip rate limits.
 
    **Resident worktree limit.** Never open more than N checkouts at once, where
    N is the WIP limit set in the pre-flight. The frontier may be wider than N;
@@ -373,6 +386,25 @@ may WRITE into — this paragraph is the same rule stated from the other side.
 a writable dependency tree, use filesystem reflinks, or auto-delete anything
 whose ownership it cannot prove. Those are optimizations that trade isolation
 for space, and isolation is the thing this skill exists to keep.
+
+## The findings board
+
+Each run keeps one findings board — a single append-only JSONL file in the
+run's workspace, created at prepare (step 1) and written only through
+`findings-board.mjs`. Entries are typed, one line each:
+
+- **OBSERVED** — something a worker saw, evidence still to point at.
+- **FACT** — established: an audit verdict, a confirmed pattern.
+- **FAIL** — a falsified hypothesis, and the board's highest-value entry: a
+  dead end recorded once is one no peer re-derives.
+- **CLAIM** — a worker's belief, not yet verified.
+- **PATCH_SUMMARY** — a worker's final report of what it changed.
+
+Nobody edits or deletes an entry — superseding means appending a new one with
+`--ref` naming the old id, the PM's move when curation overtakes an entry.
+`detail` carries a pointer to the evidence, not a copy — the same rule as
+briefs — and a fresh digest rides in every brief, so each worker starts from
+everything the run already knows.
 
 ## Where a run stops on its own
 
