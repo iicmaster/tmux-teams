@@ -12,11 +12,13 @@
 > source, no publish script and nothing that could notice it had gone stale —
 > so it went stale, repeatedly, and nobody could tell without opening it.
 
-Current release: **0.46.0** — the version stamped in this tree, in flight on
-a pull request and not yet tagged. `main` carries **v0.45.0**, tagged at the
-MERGED sha `256ac26` (not the branch tip `1922ffc` — those are different
-commits, and tagging the wrong one ships a sha `main` does not hold). Anyone
-installing from the marketplace resolves the last TAG, not this line.
+Current release: **0.48.0** — the version stamped in this tree, in flight on
+a pull request and not yet tagged. v0.47.0 was prepared on a release branch
+and never tagged; its content (the findings board) ships inside v0.48.0.
+`main` carries **v0.46.0**, tagged at the
+MERGED sha `890768a` (the v0.45.0 lesson stands: tag the merged sha, never
+the branch tip — tagging the wrong one ships a sha `main` does not hold).
+Anyone installing from the marketplace resolves the last TAG, not this line.
 
 ## Where the phases stand
 
@@ -164,6 +166,40 @@ nobody can plan from.
   already in it. That listing is not decoration — a recovery run under a
   `-recover` task id while its prompt still named the original path produced a
   complete 22 KB review that the companion reported as `no_outbox`.
+
+- **The shared findings board — merged for v0.47.0, `db0bd28`/`a4f0c54`.** One
+  append-only JSONL file per delegation run: workers record CLAIM when starting,
+  OBSERVED/FACT/FAIL as they learn, PATCH_SUMMARY when done; the PM reads one
+  file instead of N transcripts and no peer re-derives a dead end. **FAIL — a
+  falsified hypothesis — is a first-class entry**, because recording a dead end
+  is the highest-value act on the board (the idea is taken from Microsoft's
+  Agensh harness, arXiv 2609.26781, and kept deliberately minimal: one file,
+  one 317-line script, no service, no daemon, no dedup engine — the PM
+  curates). Append-only is the contract the script does not get to reinterpret:
+  superseding means appending with `--ref` to the old id, and id IS the 1-based
+  line number counted at append time. `pm-delegation` inits the board in step
+  1, records each audit verdict as FACT or FAIL, and step 4's brief carries the
+  board path with a fresh digest plus the append instruction, staggering worker
+  starts by seconds. A `codex-advisor` lane reviewed the board round
+  (`fb-run 2026-10-26`) and its findings were closed before merge. Nothing
+  writes to the delivery loop or the custody ledger.
+
+- **v0.48.0 — the AGY seat's quota fallback (`590e393`).** Measured
+  2026-10-21: a `gemini-4-argon-high` dispatch died on the Antigravity
+  individual quota (`RESOURCE_EXHAUSTED (code 429)`, reset in 68 h) and the
+  consultation simply stopped on the error — while the lane's own
+  `termination_reason` said only `protocol_error`, so the evidence lived in
+  the runner log and nowhere else. Master's order (2026-10-30): fall back to
+  the gemini-3.8 flash seat at the SAME effort tier immediately and TELL the
+  operator — the work keeps moving. `agy-seat-fallback.mjs` classifies the
+  failure from the log through the dispatcher's own read boundary and maps
+  the seat; the `agy-advisor` skill carries the re-dispatch recipe — same
+  brief, same task id, both model variables on the fallback seat, receipt
+  verified, answer labelled as coming from it. One hop only: a 3.8 seat that
+  is ALSO rate-limited stops and reports both reset windows. Rate-limit
+  evidence is the ONLY trigger — identity refusals and prohibited models keep
+  failing closed, the codex and claude siblings keep their never-downgrade
+  rules, and Gemini 3.1 stays banned.
 
 ## The last release — v0.32.0, shipped
 

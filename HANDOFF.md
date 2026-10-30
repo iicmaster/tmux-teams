@@ -1,53 +1,45 @@
 # HANDOFF
 
 State of play for the next agent. Overwritten in place, never appended.
-Written 2026-10-17 for v0.45.0 release; updated 2026-10-26 for v0.46.0.
+Written 2026-10-30 for v0.48.0 release.
 
 ## 1. READ THIS FIRST
 
-- **v0.46.0 IS PREPARED** — version bumped to 0.46.0 across 6 files / 7 places,
-  published roadmap page current (v20, recorded `49f51b7e…`).
-- **What ships in v0.46.0** (on top of the already-committed `8eed50a`
-  token-usage record):
-  1. `gpt-6-sol` prohibition enforced in `acp-companion.mjs` — the companion's
-     `PROHIBITED_MODEL` now matches `acp-dispatch.mjs` and `review-profiles.mjs`
-     (Gemini 3.1 banned, gpt-6-sol retired, gpt-6.1-sol the frontier).
-  2. `pm-delegation` prepare phase audits every ticket through
-     `requirement-audit` before dispatch (NOT READY pauses ticket + dependents;
-     re-audit on change); `requirement-audit` documents the caller.
-  3. `claude-advisor` gains the 9Router seat: alias table read from
-     `~/.claude-9r/settings.json` (fable→advisor, opus→thinker[1m],
-     sonnet→worker[1m], haiku→flash, endpoint 127.0.0.1:20128), direct naming
-     of the router's claude-shaped model ids (`claude-glm-5.3` verified end to
-     end: `effective_identity: claude-glm-5.3 (matched)`, outcome succeeded,
-     2026-10-26), and the cold-npx-cache boot failure mode with the 620ms
-     direct-spawn control.
-- **The claude lane works again on this machine** — see the correction in
-  section 6b before quoting "cannot start" from it.
-- **Gate**: `review-gate.mjs` was attempted twice and blocked both times on
-  machine plumbing (homebrew node is outside the trusted-roots list — rerun
-  with nvm's npx on PATH; then the gate's pinned codex profile demanded an
-  unadvertised reasoning_effort option and its qwen lane died at npx exit
-  127). The panel then ran on the CLAUDE.md macOS direct-ACP path, one run
-  directory per lane. Round 1 (codex `gpt-6.1-sol[ultra]`, agy
-  `gemini-4-argon-high`, both matched) returned five blocking findings each;
-  all ten were resolved in `dcfb5a6` and `9e1dc48` — the largest being that
-  **`8eed50a` was assembled from stale bytes and reverted three post-v0.44
-  changes** (agy pin 1.2.0→1.0.0 twice, the gpt-6-sol prohibition arm, and the
-  gpt-6-luna test fixtures). The qwen and kimi gateways both refused the
-  prompt with "Authentication required" after a matched identity (expired
-  credentials, not this repo), so Master instructed the third leg directly
-  (2026-10-26): **claude-advisor through 9Router, `claude-glm-5.3`** — a seat
-  the gate's own routing would not have chosen (the primary family is zai),
-  seated by recorded operator instruction. That lane returned **PASS with
-  zero findings** on the committed 0.46.0 bytes and byte-verified the packet
-  against a fresh regeneration from HEAD. Panel of record — 3/3:
-  `agy:gemini-4-argon-high (matched)` PASS; `codex:gpt-6.1-sol[ultra]
-  (matched)` four rounds, every blocking finding resolved, one recorded
-  dissent on evidence conventions; `claude-9r:claude-glm-5.3 (matched)` PASS.
-  Suite **1234 pass / 0 fail / 0 skipped** (2026-10-26);
-  `claude plugin validate --strict` passed; `roadmap-gate` 0 (page v20,
-  `49f51b7e…`).
+- **v0.48.0 IS PREPARED** on branch `release/v0.48.0` — version bumped across
+  6 files / 7 places. `main` carries **v0.46.0**, tagged at the MERGED sha
+  `890768a`. **v0.47.0 was prepared on a release branch and never tagged**;
+  its content ships inside v0.48.0, and the ROADMAP current-release line
+  records exactly that.
+- **What ships in v0.48.0** — two things:
+  1. **The shared findings board** (the whole of the un-released v0.47.0,
+    `db0bd28`/`9d08832`/`e5d14c6`/`a4f0c54`): `findings-board.mjs`, one
+    append-only JSONL per delegation run (CLAIM / OBSERVED / FACT / FAIL /
+    PATCH_SUMMARY; FAIL — a falsified hypothesis — first-class; supersede by
+    appending with `--ref`; id IS the 1-based line number), wired into
+    `pm-delegation` (board init in step 1, audit verdicts as FACT/FAIL, the
+    board path + digest in step 4's brief). Guarded by
+    `tests/findings-board.test.mjs`. A `codex-advisor` lane reviewed that
+    round (`fb-run 2026-10-26`) and its findings were closed before merge.
+  2. **The AGY seat's rate-limit fallback** (`590e393`), Master's order
+    2026-10-30: a gemini-4 seat that dies on provider quota evidence falls
+    back to the gemini-3.8 flash seat at the SAME effort tier immediately,
+    with the operator told — not an error that stops the consultation.
+    `agy-seat-fallback.mjs` classifies the failure (`rate-limited <cwd>
+    <task-id>`) from liveness fields AND the whole runner log, through
+    `acp-dispatch.mjs`'s own read boundary, and maps the seat (`seat
+    <model>`); the `agy-advisor` skill carries the re-dispatch recipe (same
+    brief, same task id, both `ACP_MODEL`/`ACP_EXPECT_MODEL` on the fallback
+    seat, receipt verified, answer labelled). ONE HOP ONLY; rate-limit
+    evidence is the ONLY trigger; the codex/claude never-downgrade rules and
+    the Gemini 3.1 ban are untouched. Guarded by
+    `tests/agy-seat-fallback.test.mjs` (ten tests).
+- **Why the classifier reads the LOG**: in the measured event (2026-10-21,
+  `pmd-review-agy`, gemini-4-argon-high, `RESOURCE_EXHAUSTED (code 429)`,
+  68 h reset) the liveness record ended `termination_reason: "protocol_error"`
+  — the reason field names the protocol frame, not the provider condition.
+  Verified end to end against that real run directory.
+- **Suite on the bumped tree: 1277 pass / 0 fail / 0 skipped** (2026-10-30).
+  `git diff --check` clean; `claude plugin validate --strict` passed.
 
 ## 2. HOW TO VERIFY
 
@@ -57,8 +49,12 @@ node --test > /tmp/suite.log 2>&1; grep -E '^ℹ (tests|pass|fail|skipped)' /tmp
 grep -q '^ℹ fail 0$' /tmp/suite.log || { grep '^✖' /tmp/suite.log | head; false; }
 ```
 
-Green is **`1234 pass / 0 fail / 0 skipped`** — measured 2026-10-26 on the
-v0.46.0 release tree.
+Green is **`1277 pass / 0 fail / 0 skipped`** — measured 2026-10-30 on the
+v0.48.0 release tree. **On this Mac, first move
+`~/.config/tmux-teams/lanes.json` aside** (and put it back after): it pins
+`agy → gemini-3.8-flash-high` machine-wide, and `tests/acp-lanes-mcp.test.mjs`
+pins the shipped default `gemini-4-argon-high`, so one test fails on machine
+state alone — the same class as running the suite under live lanes.
 
 **Gate on the count, never on a grep of the output.** `node --test | grep '✖'`
 exits 0 when it FINDS failures, so chaining a commit after it with `&&` commits
@@ -71,18 +67,83 @@ measures the contention.
 ```bash
 git diff --check                    # clean
 claude plugin validate --strict .   # "✔ Validation passed"
-node scripts/roadmap-gate.mjs       # 0 — the published page is current
-node scripts/gate-required.mjs      # 2 — fail-closed on the empty post-tag range; the panel is recorded (section 1)
+node scripts/roadmap-gate.mjs       # 2 while the page is behind — publish, then --record
+node scripts/gate-required.mjs      # reads <last-tag>..HEAD; run only after committing
 ```
 
-The first two lines were measured 2026-09-03 in the v0.37.0 verify block and
-have held through every release since; the gate-required line's post-tag
-behavior is new with v0.44.0 and was measured 2026-10-01 (exit 2 on the empty
-`v0.44.0..HEAD` range after tagging, with the panel recorded in that release's
-notes). Do not attach a historical date to a newly described behavior — a
-review lane called that splice out in the v0.45.0 panel.
-
 ## 3. STATE
+
+### In the working tree, uncommitted: the handoff skill's size budget (2026-10-30)
+
+Master's direct instruction, from the 2 MB `HANDOFF.md` finding — measured
+2,052,245 bytes / 4,514 lines in an eight-lane project; an archive-once of
+1.7 MB (2026-10-11) regrew to 2 MB by 2026-10-29. Four files, uncommitted on
+`release/v0.48.0`, ported byte-identical (cmp-verified) from a worktree that
+has been removed; a release carrying them owes the panel — they are
+`plugins/` bytes.
+
+- `plugins/tmux-teams/skills/handoff/SKILL.md` — "The file has a budget":
+  32 KiB target / 48 KiB hard ceiling, `wc -c HANDOFF.md` before composing and
+  after writing, rotation to `docs/history/handoff-archive-YYYYMMDD.md` with
+  one pointer line per moved block, one-owner-one-block with pre-compaction
+  dumps in owner sidecars, and a reader guard for inherited over-ceiling
+  files. The room brief carries the budget; READ THIS FIRST caps at ten lines
+  and 2 KiB; "Before you finish" reports the byte count and proves old blocks
+  deleted.
+- `plugins/tmux-teams/docs/adr/0009-handoff-carries-a-size-budget.md` — the
+  decision, the measurement, and the strongest argument against it.
+- `tests/handoff-budget.test.mjs` — seven anchor tests, all passing.
+- `ROADMAP.md` — one entry under "Shipped since the phases were last written".
+
+Suite in the worktree at `79d43c2` + these files: 1263 tests, 1261 pass,
+2 fail, 0 skipped; an A/B at clean HEAD (same two files alone) reproduced
+both failures, 139/137/2 — **both are pre-existing on the branch, not from
+this change**:
+
+1. `tests/acp-lanes-mcp.test.mjs` "every declared lane is listed": pins
+   `gemini-4-argon-high`, the declaration says `gemini-3.8-flash-high`.
+   Adjacent work is in flight (`590e393`, agy rate-limit fallback onto the
+   3.8 seat) — coordinate before touching.
+2. `tests/plugin-structure.test.mjs` "every shipped module parses":
+   `skills/tmux-teams/workflows/mailbox-run.js` is ESM in a `.js` name with
+   no nearest `type: module`.
+
+Unproven: the 32/48 numbers are reader-cost numbers, not sufficiency numbers
+(ADR 0009 records this); the budget has not yet been exercised on a real
+handoff.
+
+**[v0.48.0 release session, 2026-10-30 — coordination note.** This release
+ships WITHOUT these four files; they sit uncommitted exactly as left. The
+ROADMAP entry above was accidentally captured by this session's release bump
+`git add` and was removed again by amending that commit before anything was
+pushed — the released ROADMAP does not describe this work, and committing
+these files remains their own session's step once the panel-review question
+is settled. The acp-lanes-mcp failure in item 1 is root-caused to
+`~/.config/tmux-teams/lanes.json` pinning `agy → gemini-3.8-flash-high`
+machine-wide (see 6b); it is not a branch defect. Item 2 did not reproduce
+in this session's two green full-suite runs (1277/0/0) — re-measure before
+believing either account.**]
+
+### Prepared: v0.48.0 (findings board + AGY quota fallback)
+
+See section 1. The fallback script ships in
+`plugins/tmux-teams/skills/tmux-teams/scripts/agy-seat-fallback.mjs`; its
+open decisions are stated in the file header and comments (the marker set is
+the measured 2026-10-21 vocabulary — `RESOURCE_EXHAUSTED`, standalone `429`,
+`quota reached`, `rate limit`, `too many requests`; the log is scanned whole,
+not tailed) so they can be argued with. **No advisor lane and no panel read
+these bytes**: Master ordered the release directly (2026-10-30), and that is
+recorded here rather than smoothed over — the PR's CI and the codex review
+bot are the only outside read this release gets.
+
+### Released: v0.46.0 (PR #99, panel of record 3/3)
+
+9Router advisor seat in `claude-advisor` (alias table from
+`~/.claude-9r/settings.json`, direct router-native ids, `claude-glm-5.3`
+verified end to end); `gpt-6-sol` prohibition enforced in `acp-companion.mjs`
+(three character-identical `PROHIBITED_MODEL` copies); `pm-delegation`
+prepare-phase audit through `requirement-audit`; the `8eed50a` stale-bytes
+reverts fixed (`dcfb5a6`, `9e1dc48`). Suite at ship: 1234/0/0 (2026-10-26).
 
 ### Released: v0.37.0
 
@@ -159,6 +220,12 @@ Fourteen skills ship from `main`.
 - **Do not push, open a PR, merge, tag or publish without Master saying so in
   their own message.** Each is its own gate. In the v0.37.0 session Master
   answered them one at a time and the answers were not interchangeable.
+- **Do not `git add` a file another session is editing.** Two sessions shared
+  this working tree on 2026-10-30 and a `git add ROADMAP.md` captured the
+  other session's uncommitted entry into a release commit; nothing had been
+  pushed, so an amend removed it. `git add` reads the WORKING TREE, not your
+  last edit — add narrow paths, and `git show --stat` every commit before it
+  leaves the machine.
 - **Do not treat the v0.37.0 panel waiver as covering anything else.** Master
   granted it on 2026-08-31 after twelve rounds, for those bytes.
 - **Do not reach for `--force` on a stale branch.** The `requirement-audit`
@@ -211,6 +278,11 @@ Fourteen skills ship from `main`.
   companion, review profiles) at request, expectation AND observed-identity
   time; the refusal names the successor. The same pattern carries CLAUDE.md's
   Gemini 3.1 ban.
+- **Master, 2026-10-30: the AGY seat falls back to the gemini-3.8 flash seat
+  on rate-limit evidence — immediately, at the same tier, with the operator
+  told.** The one automatic downgrade this seat takes; one hop only; codex and
+  claude keep their never-downgrade rules. Recorded in `agy-advisor/SKILL.md`
+  and shipped in v0.48.0.
 - **Master, 2026-08-31: the v0.37.0 panel is waived after twelve rounds.**
   Recorded in that release's PR body and release notes.
 - **Master, 2026-09-01: merge over rebase for a stale published branch**, when
@@ -233,6 +305,18 @@ Fourteen skills ship from `main`.
 
 ## 6. UNPROVEN
 
+- **No advisor lane and no panel have read the v0.48.0 fallback bytes.** The
+  findings-board half was codex-reviewed (`fb-run 2026-10-26`); the quota
+  fallback was verified by its tests and against the real 2026-10-21 run
+  directory only. Master ordered the release directly; the PR's CI and the
+  codex review bot are the only outside read it gets.
+- **The rate-limit marker set is one measured event deep.** It covers
+  `RESOURCE_EXHAUSTED`, a standalone `429`, `quota reached`, `rate limit` and
+  `too many requests` — the vocabulary of the 2026-10-21 log. A provider error
+  worded differently classifies as NOT rate-limited and the dispatch keeps
+  failing closed (the safe direction), but the set will need widening on the
+  next differently-worded quota death, and that widening should be driven by
+  the new log, not paraphrased from this one.
 - **`astra[ultra]` has no live evidence on this machine** and neither does the
   bare `codex` default behind the `mailbox-run.js` comments — the v0.44.0 ACP
   evidence covers `gpt-6.1-sol[ultra]`, `gpt-6-luna[max]` (refusal and match)
@@ -248,8 +332,9 @@ Fourteen skills ship from `main`.
   otherwise and was wrong. `pm-delegation`'s prepare phase now instructs the
   PM to run its audit mode on every ticket, and `requirement-audit` documents
   the caller under "Called from".
-- **No panel has read anything after `e8b6ef0`.** That includes the whole
-  `requirement-audit` merge.
+- **Nothing after `e8b6ef0` has been panel-read except the findings board**
+  (`fb-run 2026-10-26`, findings closed in `e5d14c6`). The v0.48.0 fallback
+  bytes continue that gap — see the first bullet.
 - **`--party` has been exercised on the claude/fable lane only.** The codex and
   agy advisor skills document the same command; neither was dispatched with it.
 - **`apiKeyHelper` was measured from a profile only**, not from the environment.
@@ -279,12 +364,17 @@ Fourteen skills ship from `main`.
   stall budget shorter than that kills the install mid-flight and leaves a
   stale `_npx/<hash>/concurrency.lock`. The default 600s stall survives it.
   Recorded as a failure mode in `claude-advisor`'s SKILL.
-- **zai and qwen are quota-exhausted until 2026-10-23 17:28** (429,
-  Weekly/Monthly Limit Exhausted). gemini-4-argon is quota-exhausted for
-  ~68 h from 2026-10-21 (429, Individual quota reached). The lanes that ran
-  this session: codex (`gpt-6.1-sol[ultra]`) and agy (`gemini-3.8-flash-high`)
-  — both receipt-verified `matched`. A three-family panel needs the quota
-  reset first.
+- **zai and qwen quota walls have EXPIRED** (reset 2026-10-23 17:28; recorded
+  here when they were live). gemini-4-argon's 68 h wall expired ~2026-10-24.
+  Treat those lanes as candidates again, and MEASURE rather than quote this
+  paragraph either way — the 2026-10-26 note below is the pattern: what a
+  lane "cannot do" changed twice in four days.
+- **`~/.config/tmux-teams/lanes.json` pins `agy → gemini-3.8-flash-high`
+  machine-wide** (recorded 2026-10-30). It is a hand-workaround of the same
+  quota the v0.48.0 fallback now handles in the skill, and it makes
+  `tests/acp-lanes-mcp.test.mjs` fail on this machine (the test pins the
+  shipped default). Move it aside to measure a green suite; whether it should
+  be deleted now that the skill falls back on its own is Master's call.
 - **The gpt-6-sol prohibition gap in `acp-companion.mjs` is CLOSED** (this
   session). The companion's `PROHIBITED_MODEL` now carries the same
   `(gemini 3.1 | gpt-6-sol)` alternation and refusal wording as
@@ -309,11 +399,14 @@ plugins/tmux-teams/skills/tmux-teams/scripts/
   advisor-party.mjs:256                    CHARACTER_REFERENCE — the closed set
   advisor-party.mjs:271                    VISIBLE
   acp-dispatch.mjs                         the operator's entry to a lane
+  findings-board.mjs                       the shared findings board (v0.47.0 work)
+  agy-seat-fallback.mjs                    AGY quota fallback: classify + seat map (v0.48.0)
 plugins/tmux-teams/skills/requirement-audit/SKILL.md   shipped in v0.44.0
 plugins/tmux-teams/skills/{claude,codex,agy}-advisor/SKILL.md
 tests/plugin-structure.test.mjs:15         SKILLS — the list of record
 tests/plugin-structure.test.mjs:18         RELEASE_VERSION
 tests/advisor-party.test.mjs               nine tests
+tests/agy-seat-fallback.test.mjs           ten tests (v0.48.0)
 tests/acp-companion.test.mjs               seven bare-mode cases, nine runs
 tests/worker-isolation.test.mjs            three more, profile source only
 tests/fixtures/mock-acp-agent.mjs          PLAINTEXT_SAFE_KEYS — under a 64 KiB bound
@@ -324,4 +417,4 @@ scripts/gate-required.mjs                  DOC_ONLY at :41 is the only exemption
 ```
 
 Published roadmap: `https://artifacts.ngs.bz/claude/private/tmux-teams-roadmap/`
-Release: `https://github.com/iicmaster/tmux-teams/releases/tag/v0.40.0`
+Release: `https://github.com/iicmaster/tmux-teams/releases/tag/v0.46.0`

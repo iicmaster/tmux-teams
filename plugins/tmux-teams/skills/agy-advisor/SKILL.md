@@ -94,6 +94,64 @@ advertising 3.7 while this repository still pinned 3.6, and the set-and-
 acknowledge succeeded, so the lane really did run what it was told — but nothing
 would have noticed if it had not.
 
+The 3.1 prohibition above is untouched by the rate-limit fallback in the next
+section: the fallback maps gemini-4 seats to gemini-3.8 flash seats at the same
+tier only, so it can never reach a 3.1 value and the two sections cannot be
+read as contradicting each other.
+
+## Rate-limit fallback — the one automatic downgrade this seat takes
+
+Measured 2026-10-21: a real dispatch (`pmd-review-agy`,
+`ACP_MODEL=gemini-4-argon-high`) died on the Antigravity individual quota. The
+runner log carried
+`AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached...","status":"RESOURCE_EXHAUSTED","error_code":429,"retryable":true,...}`
+— and the liveness record ended `liveness_state: "failed"` with
+`termination_reason: "protocol_error"`. **The termination_reason is a red
+herring**: it names the protocol frame the companion died on, not the provider
+condition underneath it, so the ONLY evidence is in the runner log. A
+classifier that read the liveness record alone would miss every one of these.
+
+The rule (Master, 2026-10-30): a gemini-4 seat that dies with rate-limit or
+quota evidence falls back IMMEDIATELY to the gemini-3.8 flash seat at the SAME
+effort tier — a `gemini-4-argon-high` seat falls back to `gemini-3.8-flash-high`,
+medium to medium, low to low — and the operator is TOLD before or with the
+re-dispatch, so the work keeps moving. An error that stops the consultation is
+the failure mode this section removes. `codex-advisor` says "Never downgrade
+for cost or quota" and `claude-advisor` says "Never downgrade for cost, quota
+or speed on your own initiative"; both keep their rules. This seat's quota
+fallback is the ordered exception, and the ONLY automatic downgrade it takes.
+
+```bash
+# 1. Classify the failure. Exit 0 = rate-limited, the excerpt names the line
+#    and where it came from; exit 1 = no rate-limit evidence; exit 2 = usage
+#    or an invalid task id.
+node <plugin-root>/skills/tmux-teams/scripts/agy-seat-fallback.mjs rate-limited <cwd> <task-id>
+
+# 2. Map the seat at the same effort tier. Prints the fallback id —
+#    `gemini-3.8-flash-high` here.
+node <plugin-root>/skills/tmux-teams/scripts/agy-seat-fallback.mjs seat gemini-4-argon-high
+```
+
+3. Re-dispatch the SAME brief under the SAME task id with BOTH `ACP_MODEL` and
+   `ACP_EXPECT_MODEL` set to the fallback seat — the dispatch command at the
+   top of this file with `<model>` replaced by the fallback id in BOTH
+   assignments, everything else unchanged: `AGY_BIN`, `AGY_SKIP_DOWNLOAD`, the
+   receipt requirement, the cleared reasoning variables. The SAME task id is
+   deliberate: the failed predecessor is settled, admission retires its
+   leaves, and the outbox path the brief already names must not move.
+4. Verify the new receipt's acknowledged identity IS the 3.8 seat (`matched`),
+   and label the answer to the operator as coming from the fallback seat — a
+   consultation that quietly changed seats is the same lie as a wrong identity.
+
+**ONE HOP ONLY.** If the gemini-3.8 seat is ALSO rate-limited, stop and report
+both events with their reset windows. Never a second hop, never another family,
+never 3.1.
+
+**Rate-limit evidence is the ONLY trigger for an automatic downgrade.**
+Identity refusals, prohibited models, a missing binary, an unreadable brief —
+each keeps failing closed exactly as before. Nothing here licenses a downgrade
+for cost, speed or convenience.
+
 ## Arguments
 
 ```
