@@ -1,53 +1,32 @@
 # HANDOFF
 
 State of play for the next agent. Overwritten in place, never appended.
-Written 2026-10-17 for v0.45.0 release; updated 2026-10-26 for v0.46.0.
+Written 2026-10-30 for v0.47.0 release.
 
 ## 1. READ THIS FIRST
 
-- **v0.46.0 IS PREPARED** — version bumped to 0.46.0 across 6 files / 7 places,
-  published roadmap page current (v20, recorded `49f51b7e…`).
-- **What ships in v0.46.0** (on top of the already-committed `8eed50a`
-  token-usage record):
-  1. `gpt-6-sol` prohibition enforced in `acp-companion.mjs` — the companion's
-     `PROHIBITED_MODEL` now matches `acp-dispatch.mjs` and `review-profiles.mjs`
-     (Gemini 3.1 banned, gpt-6-sol retired, gpt-6.1-sol the frontier).
-  2. `pm-delegation` prepare phase audits every ticket through
-     `requirement-audit` before dispatch (NOT READY pauses ticket + dependents;
-     re-audit on change); `requirement-audit` documents the caller.
-  3. `claude-advisor` gains the 9Router seat: alias table read from
-     `~/.claude-9r/settings.json` (fable→advisor, opus→thinker[1m],
-     sonnet→worker[1m], haiku→flash, endpoint 127.0.0.1:20128), direct naming
-     of the router's claude-shaped model ids (`claude-glm-5.3` verified end to
-     end: `effective_identity: claude-glm-5.3 (matched)`, outcome succeeded,
-     2026-10-26), and the cold-npx-cache boot failure mode with the 620ms
-     direct-spawn control.
-- **The claude lane works again on this machine** — see the correction in
-  section 6b before quoting "cannot start" from it.
-- **Gate**: `review-gate.mjs` was attempted twice and blocked both times on
-  machine plumbing (homebrew node is outside the trusted-roots list — rerun
-  with nvm's npx on PATH; then the gate's pinned codex profile demanded an
-  unadvertised reasoning_effort option and its qwen lane died at npx exit
-  127). The panel then ran on the CLAUDE.md macOS direct-ACP path, one run
-  directory per lane. Round 1 (codex `gpt-6.1-sol[ultra]`, agy
-  `gemini-4-argon-high`, both matched) returned five blocking findings each;
-  all ten were resolved in `dcfb5a6` and `9e1dc48` — the largest being that
-  **`8eed50a` was assembled from stale bytes and reverted three post-v0.44
-  changes** (agy pin 1.2.0→1.0.0 twice, the gpt-6-sol prohibition arm, and the
-  gpt-6-luna test fixtures). The qwen and kimi gateways both refused the
-  prompt with "Authentication required" after a matched identity (expired
-  credentials, not this repo), so Master instructed the third leg directly
-  (2026-10-26): **claude-advisor through 9Router, `claude-glm-5.3`** — a seat
-  the gate's own routing would not have chosen (the primary family is zai),
-  seated by recorded operator instruction. That lane returned **PASS with
-  zero findings** on the committed 0.46.0 bytes and byte-verified the packet
-  against a fresh regeneration from HEAD. Panel of record — 3/3:
-  `agy:gemini-4-argon-high (matched)` PASS; `codex:gpt-6.1-sol[ultra]
-  (matched)` four rounds, every blocking finding resolved, one recorded
-  dissent on evidence conventions; `claude-9r:claude-glm-5.3 (matched)` PASS.
-  Suite **1234 pass / 0 fail / 0 skipped** (2026-10-26);
-  `claude plugin validate --strict` passed; `roadmap-gate` 0 (page v20,
-  `49f51b7e…`).
+- **v0.47.0 IS PREPARED** — version bumped to 0.47.0 across 6 files / 7 places.
+  v0.46.0 is tagged on `main` at `890768a` (PR #99, panel 3/3 recorded there).
+- **What ships in v0.47.0** — the shared findings board, merged to `main`
+  after v0.46.0 in `db0bd28`/`9d08832`/`e5d14c6`/`a4f0c54`:
+  `findings-board.mjs` (one append-only JSONL per delegation run; CLAIM /
+  OBSERVED / FACT / FAIL / PATCH_SUMMARY; FAIL — a falsified hypothesis —
+  first-class; supersede by appending with `--ref`; id IS the 1-based line
+  number; no service, no daemon, the PM curates), wired into `pm-delegation`
+  (step 1 inits the board and records each audit verdict as FACT or FAIL;
+  step 4's brief carries the board path with a fresh digest and the append
+  instruction, staggering worker starts by seconds; a "The findings board"
+  section in the skill). Guarded by `tests/findings-board.test.mjs`
+  (316 lines). A `codex-advisor` lane reviewed the round (`fb-run
+  2026-10-26`) and its findings were closed before merge. Nothing writes to
+  the delivery loop or the custody ledger.
+- **Suite on the bumped tree: 1256 pass / 0 fail / 0 skipped** (2026-10-30).
+  `git diff --check` clean; `claude plugin validate --strict` passed.
+- **Roadmap page**: ROADMAP.md gained the findings-board entry under
+  "Shipped since the phases were last written" and the carried-release line
+  now names v0.46.0 @ `890768a`. Render happens via
+  `node scripts/roadmap-render.mjs`; the publish + `--record` step is recorded
+  in section 2's verify block.
 
 ## 2. HOW TO VERIFY
 
@@ -57,8 +36,8 @@ node --test > /tmp/suite.log 2>&1; grep -E '^ℹ (tests|pass|fail|skipped)' /tmp
 grep -q '^ℹ fail 0$' /tmp/suite.log || { grep '^✖' /tmp/suite.log | head; false; }
 ```
 
-Green is **`1234 pass / 0 fail / 0 skipped`** — measured 2026-10-26 on the
-v0.46.0 release tree.
+Green is **`1256 pass / 0 fail / 0 skipped`** — measured 2026-10-30 on the
+v0.47.0 release tree.
 
 **Gate on the count, never on a grep of the output.** `node --test | grep '✖'`
 exits 0 when it FINDS failures, so chaining a commit after it with `&&` commits
@@ -71,18 +50,28 @@ measures the contention.
 ```bash
 git diff --check                    # clean
 claude plugin validate --strict .   # "✔ Validation passed"
-node scripts/roadmap-gate.mjs       # 0 — the published page is current
-node scripts/gate-required.mjs      # 2 — fail-closed on the empty post-tag range; the panel is recorded (section 1)
+node scripts/roadmap-gate.mjs       # 2 while the page is behind — publish, then --record
+node scripts/gate-required.mjs      # reads <last-tag>..HEAD; run only after committing
 ```
 
-The first two lines were measured 2026-09-03 in the v0.37.0 verify block and
-have held through every release since; the gate-required line's post-tag
-behavior is new with v0.44.0 and was measured 2026-10-01 (exit 2 on the empty
-`v0.44.0..HEAD` range after tagging, with the panel recorded in that release's
-notes). Do not attach a historical date to a newly described behavior — a
-review lane called that splice out in the v0.45.0 panel.
-
 ## 3. STATE
+
+### Prepared: v0.47.0 (findings board)
+
+See section 1. The board script ships in
+`plugins/tmux-teams/skills/tmux-teams/scripts/findings-board.mjs`; its open
+spec decisions (filter-then-limit on `read --type`, malformed lines skipped
+never fatal, `--ref` unchecked, `append` never creates the file) are stated
+in the script header so they can be argued with.
+
+### Released: v0.46.0 (PR #99, panel of record 3/3)
+
+9Router advisor seat in `claude-advisor` (alias table from
+`~/.claude-9r/settings.json`, direct router-native ids, `claude-glm-5.3`
+verified end to end); `gpt-6-sol` prohibition enforced in `acp-companion.mjs`
+(three character-identical `PROHIBITED_MODEL` copies); `pm-delegation`
+prepare-phase audit through `requirement-audit`; the `8eed50a` stale-bytes
+reverts fixed (`dcfb5a6`, `9e1dc48`). Suite at ship: 1234/0/0 (2026-10-26).
 
 ### Released: v0.37.0
 
@@ -248,8 +237,9 @@ Fourteen skills ship from `main`.
   otherwise and was wrong. `pm-delegation`'s prepare phase now instructs the
   PM to run its audit mode on every ticket, and `requirement-audit` documents
   the caller under "Called from".
-- **No panel has read anything after `e8b6ef0`.** That includes the whole
-  `requirement-audit` merge.
+- **No panel has read anything after `e8b6ef0`, with one exception:** a
+  `codex-advisor` lane reviewed the findings-board round (`fb-run 2026-10-26`,
+  findings closed in `e5d14c6`). Nothing since that merge has been panel-read.
 - **`--party` has been exercised on the claude/fable lane only.** The codex and
   agy advisor skills document the same command; neither was dispatched with it.
 - **`apiKeyHelper` was measured from a profile only**, not from the environment.
@@ -279,12 +269,11 @@ Fourteen skills ship from `main`.
   stall budget shorter than that kills the install mid-flight and leaves a
   stale `_npx/<hash>/concurrency.lock`. The default 600s stall survives it.
   Recorded as a failure mode in `claude-advisor`'s SKILL.
-- **zai and qwen are quota-exhausted until 2026-10-23 17:28** (429,
-  Weekly/Monthly Limit Exhausted). gemini-4-argon is quota-exhausted for
-  ~68 h from 2026-10-21 (429, Individual quota reached). The lanes that ran
-  this session: codex (`gpt-6.1-sol[ultra]`) and agy (`gemini-3.8-flash-high`)
-  — both receipt-verified `matched`. A three-family panel needs the quota
-  reset first.
+- **zai and qwen quota walls have EXPIRED** (reset 2026-10-23 17:28; recorded
+  here when they were live). gemini-4-argon's 68 h wall expired ~2026-10-24.
+  Treat those lanes as candidates again, and MEASURE rather than quote this
+  paragraph either way — the 2026-10-26 note below is the pattern: what a
+  lane "cannot do" changed twice in four days.
 - **The gpt-6-sol prohibition gap in `acp-companion.mjs` is CLOSED** (this
   session). The companion's `PROHIBITED_MODEL` now carries the same
   `(gemini 3.1 | gpt-6-sol)` alternation and refusal wording as
@@ -309,6 +298,7 @@ plugins/tmux-teams/skills/tmux-teams/scripts/
   advisor-party.mjs:256                    CHARACTER_REFERENCE — the closed set
   advisor-party.mjs:271                    VISIBLE
   acp-dispatch.mjs                         the operator's entry to a lane
+  findings-board.mjs                       the shared findings board (v0.47.0)
 plugins/tmux-teams/skills/requirement-audit/SKILL.md   shipped in v0.44.0
 plugins/tmux-teams/skills/{claude,codex,agy}-advisor/SKILL.md
 tests/plugin-structure.test.mjs:15         SKILLS — the list of record
