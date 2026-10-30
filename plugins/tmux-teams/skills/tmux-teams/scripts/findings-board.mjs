@@ -12,14 +12,23 @@
 //   * APPEND-ONLY. No subcommand edits or deletes; superseding means appending
 //     a new entry whose --ref names the old id. The only write paths are init's
 //     empty exclusive create (`wx` — a competing create is refused, never
-//     truncated) and fs.appendFile (O_APPEND). With ≤8 writers each writing
-//     one small line this is good enough — documented, not engineered.
+//     truncated) and fs.appendFile (O_APPEND).
 //   * id IS the 1-based line number, counted at append time from the lines
 //     already on disk. A hand-inserted garbage line therefore shifts the NEXT
 //     append's id — which is correct: id is a line number, not a counter.
+//     Two promises collide here — ≤8 concurrent writers AND unique ids — and
+//     the id promise is the load-bearing one: --ref supersession addresses
+//     entries by id, and two writers that read the same line count store the
+//     same id on two lines (O_APPEND protects the write position, not the
+//     read-count-append sequence; the release panel of 2026-10-30 proved the
+//     interleaving with two writers). The smallest mechanism that keeps both
+//     promises is an exclusive sidecar directory held across count-and-append
+//     — mkdir is atomic everywhere this plugin runs — reclaimed by age when a
+//     writer crashes, never by a human.
 //   * Exit codes: 0 ok · 1 usage/validation · 2 file missing.
-//   * The board lives in the run's workspace and dies with it. No locking, no
-//     watch mode, no wiring into the delivery loop or the custody ledger.
+//   * The board lives in the run's workspace and dies with it (the lock is a
+//     sidecar of the board, so it dies with it too). No watch mode, no wiring
+//     into the delivery loop or the custody ledger.
 //
 // Decisions the spec left open, taken here and stated so they can be argued
 // with:
@@ -39,8 +48,8 @@
 //     yet); append never creates anything — a missing board is exit 2, never a
 //     silent new file, because a board created by accident looks exactly like
 //     one everybody forgot to init.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const TYPES = Object.freeze(['OBSERVED', 'FACT', 'FAIL', 'CLAIM', 'PATCH_SUMMARY'])
@@ -77,17 +86,66 @@ export function appendEntry(file, { type, text, agent, detail, ref }) {
     return { ok: false, exit: 1, message: `ref must be a positive integer entry id, got "${ref}"` }
   }
 
-  const existing = readFileSync(file, 'utf8')
-  const id = countLines(existing) + 1
-  // A hand edit that left the last line unterminated would fuse our JSON onto
-  // it — lead with the newline the file is missing. Still append-only: bytes
-  // are added, none rewritten.
-  const lead = existing !== '' && !existing.endsWith('\n') ? '\n' : ''
-  const entry = { id, ts: new Date().toISOString(), type, agent: agent || 'unknown', text }
-  if (detail !== undefined) entry.detail = detail
-  if (ref !== undefined) entry.ref = ref
-  appendFileSync(file, `${lead}${JSON.stringify(entry)}\n`)
-  return { ok: true, id }
+  // The whole read-count-append sequence runs under the sidecar lock: id is
+  // the physical line number, so the count and the append must be one
+  // indivisible step or two writers store the same id on two lines. See the
+  // header's id bullet for why the lock is the smallest mechanism that keeps
+  // both the ≤8-writers budget and the id promise.
+  return withBoardLock(file, () => {
+    const existing = readFileSync(file, 'utf8')
+    const id = countLines(existing) + 1
+    // A hand edit that left the last line unterminated would fuse our JSON onto
+    // it — lead with the newline the file is missing. Still append-only: bytes
+    // are added, none rewritten.
+    const lead = existing !== '' && !existing.endsWith('\n') ? '\n' : ''
+    const entry = { id, ts: new Date().toISOString(), type, agent: agent || 'unknown', text }
+    if (detail !== undefined) entry.detail = detail
+    if (ref !== undefined) entry.ref = ref
+    appendFileSync(file, `${lead}${JSON.stringify(entry)}\n`)
+    return { ok: true, id }
+  })
+}
+
+// Exclusive sidecar directory held across count-and-append. mkdir is atomic
+// on every filesystem this plugin names, so acquisition needs no further
+// protocol: EEXIST means somebody holds it. A holder that crashed leaves the
+// directory behind; age reclaims it (LOCK_STALE_MS), never a human. The lock
+// sits next to the board and dies with the run workspace like the board does.
+// A live holder is waited out up to LOCK_ACQUIRE_MS — with ≤8 writers each
+// holding for one small read-plus-append, an unacquirable lock means
+// something is wrong, and failing loudly (exit 1, named path) beats hanging.
+const LOCK_STALE_MS = 10_000
+const LOCK_ACQUIRE_MS = 15_000
+const LOCK_POLL_MS = 20
+
+const lockDirFor = (file) => `${file}.lock`
+
+const withBoardLock = (file, fn) => {
+  const dir = lockDirFor(file)
+  const started = Date.now()
+  for (;;) {
+    try {
+      mkdirSync(dir)
+      writeFileSync(join(dir, 'owner'), `${process.pid} ${new Date().toISOString()}\n`)
+      break
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err
+      let age = Infinity
+      try { age = Date.now() - statSync(dir).mtimeMs } catch { /* released between check and stat; retry now */ }
+      if (age > LOCK_STALE_MS) {
+        try { rmSync(dir, { recursive: true, force: true }) } catch { /* a concurrent reclaim won; retry */ }
+      }
+      if (Date.now() - started > LOCK_ACQUIRE_MS) {
+        return { ok: false, exit: 1, message: `board lock ${dir} not acquirable within ${LOCK_ACQUIRE_MS}ms — a holder may be wedged` }
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, LOCK_POLL_MS)
+    }
+  }
+  try {
+    return fn()
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }) } catch { /* already gone; the stale-reclaim path can win this race harmlessly */ }
+  }
 }
 
 // Line count of a text blob, counting a missing trailing newline as a line —
@@ -151,11 +209,14 @@ appending with --ref <id> — nothing on the board is ever edited or deleted.`
 
 // One flag shape for every subcommand: a token is a flag only when it is one
 // of that subcommand's allowed flags; everything else — including a `--`-prefixed
-// argument — is a positional. Required positionals are DATA first: quoting is
-// the caller's only voice, so `append <board> FACT "--dry-run failed"` and the
-// grep keyword in `grep <board> --dry-run` must reach the board as text, not
-// die as an unknown flag. A flag missing its value is refused here rather than
-// read as an empty string, which would append an entry nobody meant.
+// argument — is a positional. This scanner is honest ONLY for positionals that
+// cannot collide with the subcommand's own flags (grep has none; init none;
+// read's single positional colliding with --type/--limit/--format is REFUSED
+// as a missing positional, never silently mis-stored). Where a required
+// positional CAN collide — append's <text> against --agent/--detail/--ref —
+// the subcommand takes its positionals as data by position before calling
+// this; see appendBoard. A flag missing its value is refused here rather
+// than read as an empty string, which would append an entry nobody meant.
 const parseArgs = (args, allowedFlags) => {
   const positionals = []
   const flags = {}
@@ -212,11 +273,21 @@ function initBoard(args) {
 }
 
 function appendBoard(args) {
-  const parsed = parseArgs(args, ['--agent', '--detail', '--ref'])
-  if (parsed.error || parsed.positionals.length !== 3) {
-    return fail(parsed.error || 'append takes: <file> <TYPE> <text>')
-  }
-  const [file, type, text] = parsed.positionals
+  // Data by POSITION, then flags: `append <file> <TYPE> "<text>"` names its
+  // three positionals, so the first three tokens are data no matter what they
+  // look like. A text token exactly equal to a flag name — `append b FACT
+  // "--detail" --agent worker-a` — must store the literal text "--detail";
+  // the left-to-right scanner used here first consumed it as the option and
+  // then ate `--agent` as its value, storing text="worker-a",
+  // detail="--agent", agent="unknown" with exit 0: successful evidence
+  // corruption, caught by the release panel of 2026-10-30. The old comment
+  // promised "positionals are DATA first"; the loop never did it for a
+  // token that collides with one of append's own flags.
+  if (args.length < 3) return fail('append takes: <file> <TYPE> <text>')
+  const positionals = [args[0], args[1], args[2]]
+  const parsed = parseArgs(args.slice(3), ['--agent', '--detail', '--ref'])
+  if (parsed.error) return fail(parsed.error)
+  const [file, type, text] = positionals
   let ref
   if (parsed.flags['--ref'] !== undefined) {
     const parsedRef = positiveIntFlag(parsed.flags['--ref'], 'ref')

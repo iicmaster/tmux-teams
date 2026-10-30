@@ -9,8 +9,8 @@
 // is exercised, not just the functions underneath it.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -313,4 +313,84 @@ test('a malformed line is skipped with a warning on stderr, on read and grep, st
   assert.equal(grep.status, 0)
   assert.match(grep.stderr, /skipped malformed line 2\b/)
   assert.equal(stdoutLines(grep).length, 2, 'grep skips the same line read skips')
+})
+
+// ── Round-2 corrections (release panel of 2026-10-30) ─────────────────────
+// Two contract failures were proved on the pre-panel bytes and fixed: a text
+// token exactly equal to one of append's own flags was eaten as that flag
+// (storing the NEXT flag's name as the text — successful evidence corruption
+// with exit 0), and read-count-append had no serialization, so two writers
+// reading the same line count stored the same id on two lines. These tests
+// pin both corrections; deleting either reopens the finding the panel closed.
+
+test('append stores a text token identical to a flag name as text, not as the flag', () => {
+  const file = newBoard()
+  // Before the fix: text="worker-a", detail="--agent", agent="unknown", exit 0.
+  const one = append(file, 'FACT', '--detail', '--agent', 'worker-a')
+  assert.equal(one.status, 0, one.stderr)
+  const first = entryAt(file, 1)
+  assert.equal(first.text, '--detail', 'the flag-shaped token in the text POSITION is text')
+  assert.equal(first.agent, 'worker-a')
+  assert.equal(first.detail, undefined, 'no --detail flag was given, so none is stored')
+
+  // --ref as text alongside a real --ref flag: both must survive, separately.
+  const two = append(file, 'FACT', '--ref', '--ref', '1', '--agent', 'w2')
+  assert.equal(two.status, 0, two.stderr)
+  const second = entryAt(file, 2)
+  assert.equal(second.text, '--ref')
+  assert.equal(second.ref, 1, 'the REAL --ref flag still parses after the positionals')
+
+  // --agent as text with no flags at all.
+  const three = append(file, 'FACT', '--agent')
+  assert.equal(three.status, 0, three.stderr)
+  assert.equal(entryAt(file, 3).text, '--agent')
+})
+
+test('append with fewer than three positionals exits 1 and names the usage', () => {
+  const file = newBoard()
+  const result = run('append', file, 'FACT')
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /append takes:/)
+})
+
+// Real processes, real interleaving: 8 writers x 3 appends is the promised
+// concurrency budget, and id IS the physical line number, so the board must
+// hold exactly ids 1..24 with no duplicate. Without the sidecar lock this
+// schedule is exactly the one the panel proved could double-book an id.
+test('8 concurrent writers x 3 appends yield exactly ids 1..24, no duplicates', async () => {
+  const file = newBoard()
+  const spawns = []
+  for (let w = 1; w <= 8; w++) {
+    for (let j = 1; j <= 3; j++) {
+      spawns.push(new Promise((res, rej) => {
+        const child = spawn(process.execPath, [FINDINGS, 'append', file, 'FACT', `w${w}-finding-${j}`, '--agent', `w${w}`])
+        child.on('exit', (code) => code === 0 ? res() : rej(new Error(`writer w${w}#${j} exited ${code}`)))
+        child.on('error', rej)
+      }))
+    }
+  }
+  await Promise.all(spawns)
+
+  const ids = readFileSync(file, 'utf8').split('\n').filter((l) => l !== '').map((l) => JSON.parse(l).id)
+  const unique = new Set(ids)
+  assert.equal(ids.length, 24, 'every append landed')
+  assert.equal(unique.size, 24, 'no id is stored twice')
+  assert.deepEqual([...unique].sort((a, b) => a - b), Array.from({ length: 24 }, (_, i) => i + 1),
+    'the ids are exactly the physical line numbers 1..24')
+  assert.ok(!existsSync(`${file}.lock`), 'the lock is released when the last writer finishes')
+})
+
+test('a stale lock (a crashed writer) is reclaimed by age, and the append succeeds', () => {
+  const file = newBoard()
+  const lock = `${file}.lock`
+  mkdirSync(lock)
+  writeFileSync(join(lock, 'owner'), '999999 crashed-long-ago\n')
+  // Age the lock past LOCK_STALE_MS so the live writer reclaims it.
+  const old = new Date(Date.now() - 60_000)
+  utimesSync(lock, old, old)
+
+  const result = append(file, 'FACT', 'after the crash')
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(entryAt(file, 1).text, 'after the crash')
+  assert.ok(!existsSync(lock), 'the reclaimed lock is removed with the append')
 })
