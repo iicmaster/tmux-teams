@@ -130,8 +130,8 @@ const withBoardLock = (file, fn) => {
       break
     } catch (err) {
       if (err.code !== 'EEXIST') throw err
-      let age = Infinity
-      try { age = Date.now() - statSync(dir).mtimeMs } catch { /* released between check and stat; retry now */ }
+      let age = 0
+      try { age = Date.now() - statSync(dir).mtimeMs } catch { /* released between check and stat; retry now */ continue }
       if (age > LOCK_STALE_MS) {
         try { rmSync(dir, { recursive: true, force: true }) } catch { /* a concurrent reclaim won; retry */ }
       }
