@@ -10,6 +10,10 @@ import { mkdtempSync as fsMkdtempSync, mkdirSync, writeFileSync, existsSync, rea
 import { tmpdir } from 'node:os'
 import { join, dirname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
+// The oc-advisor producer's builder — profiles below are built through it, so
+// a drift between producer and validator shows up as a dispatch refusal, not
+// as a passing unit fragment.
+import { buildOpencodeProfile, profileCoreDigest } from '../plugins/tmux-teams/skills/tmux-teams/scripts/opencode-execution-profile.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const COMPANION = join(HERE, '..', 'plugins', 'tmux-teams', 'skills', 'tmux-teams', 'scripts', 'acp-companion.mjs')
@@ -729,6 +733,82 @@ test('a profile that hashes one entry and runs another is refused', () => {
   assert.match(result.stderr, /does not run the adapter entry it verified/)
 })
 
+// The oc-advisor path: a custom worker's profile records `codex: {null, null,
+// 'not_codex'}` — a STATEMENT that no Codex executable is involved — and the
+// companion must accept a complete null pair on a non-codex lane while still
+// refusing an incomplete one (null realpath beside a digest) and still
+// demanding a real executable on the codex lane itself. Built through the
+// producer's own builder, so a drift between producer and validator shows up
+// here as a dispatch refusal, not as a passing unit fragment.
+function writeOpencodeShapeProfile(cwd, { codexSlot = { executable_realpath: null, executable_digest: null, version: 'not_codex' }, worker = 'opencode', initialAgentMode = null } = {}) {
+  const identity = fixtureExecutionIdentity()
+  const profile = buildOpencodeProfile({
+    packageSpec: 'producer-test-acp@1.0.0',
+    resolvedVersion: '1.0.0',
+    metadataPath: MOCK,
+    entryPath: NODE_EXECUTABLE,
+    version: identity.nodeVersion,
+    expectedAgentInfo: { name: 'mock-acp-agent', version: '1' },
+    argvTail: basename(MOCK),
+  })
+  profile.argv = [NODE_EXECUTABLE, MOCK]
+  profile.codex = { ...codexSlot }
+  profile.initial_agent_mode = initialAgentMode
+  profile.profile_digest = profileCoreDigest(profile)
+  const path = join(cwd, 'opencode-shape.profile.json')
+  writeFileSync(path, `${JSON.stringify(profile, null, 2)}\n`, { mode: 0o600 })
+  return { path, worker }
+}
+
+test('a custom-worker profile with an explicit null Codex slot dispatches under receipt-required mode', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-oc-profile-'))
+  const { path, worker } = writeOpencodeShapeProfile(cwd)
+  const r = await asyncRun('task-oc-profile-null-codex', {
+    ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'new',
+    ACP_EXECUTION_PROFILE: path, ACP_CMD: `${NODE_EXECUTABLE} ${MOCK}`,
+  }, cwd, 30, worker)
+  assert.equal(r.status, 0, `exit 0 expected; stdout:\n${r.stdout}\nstderr:\n${r.stderr}`)
+  assert.match(readFileSync(join(r.cwd, '.mailbox-out', 'task-oc-profile-null-codex'), 'utf8'), /^DID: mock work/m)
+  const receipts = readdirSync(join(r.cwd, '.tmux-teams', 'receipts')).filter((name) => name.endsWith('.json'))
+  assert.equal(receipts.length, 1, 'a receipt-required dispatch must leave exactly one receipt')
+  const receipt = JSON.parse(readFileSync(join(r.cwd, '.tmux-teams', 'receipts', receipts[0]), 'utf8'))
+  // No ACP_MODEL/ACP_EXPECT_MODEL is set on this dispatch, so no identity was
+  // requested and `unverified` is the receipt's honest answer — the thing
+  // under test is the null Codex statement, not the model identity.
+  assert.equal(receipt.identity_status, 'unverified')
+  assert.equal(receipt.codex_executable_identity.realpath_digest, null,
+    'the null Codex statement must survive into the receipt verbatim')
+})
+
+test('an incomplete null Codex slot (null realpath beside a digest) is refused', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-oc-profile-bad-'))
+  const { path, worker } = writeOpencodeShapeProfile(cwd, {
+    codexSlot: { executable_realpath: null, executable_digest: 'sha256:' + '0'.repeat(64), version: 'not_codex' },
+  })
+  const result = runAs(worker, 'task-oc-profile-half-null', {
+    ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'new',
+    ACP_EXECUTION_PROFILE: path, ACP_CMD: `${NODE_EXECUTABLE} ${MOCK}`,
+  }, cwd)
+  assert.notEqual(result.status, 0, `half-null must fail; stdout:\n${result.stdout}`)
+  assert.match(result.stderr, /Codex identity is invalid/)
+})
+
+test('the codex lane still demands a real Codex executable in its own profile slot', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-oc-profile-codex-'))
+  // `initial_agent_mode` is set and the env carries the same value, so the
+  // codex mode-equality check passes and the refusal under test is the
+  // executable loop's — the null Codex slot itself, not a mode mismatch in
+  // front of it.
+  const { path } = writeOpencodeShapeProfile(cwd, { initialAgentMode: 'read-only' })
+  const result = runAs('codex', 'task-oc-profile-on-codex', {
+    ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_SESSION_OPERATION: 'new',
+    ACP_EXECUTION_PROFILE: path, ACP_CMD: `${NODE_EXECUTABLE} ${MOCK}`,
+    INITIAL_AGENT_MODE: 'read-only',
+  }, cwd)
+  assert.notEqual(result.status, 0, `null Codex slot must fail on the codex lane; stdout:\n${result.stdout}`)
+  assert.match(result.stderr, /Codex identity is invalid/)
+})
+
 function writeBinaryAdapterProfile(cwd, { divergent = false, oversize = false } = {}) {
   const adapterPath = join(cwd, divergent ? 'binary-adapter-divergent.mjs' : 'binary-adapter.mjs')
   const identity = fixtureExecutionIdentity()
@@ -1069,6 +1149,59 @@ concurrentTest('session/request_permission with empty options returns cancelled 
   assert.equal(r.status, 0, `exit 0 expected; stdout:\n${r.stdout}\nstderr:\n${r.stderr}`)
   assert.match(readFileSync(join(r.cwd, '.mailbox-out', taskId), 'utf8'),
     /^DID: mock work; permission=cancelled$/m)
+})
+
+// ACP_PERMISSIONS=deny — the oc-advisor lane's read-only enforcement. The
+// policy must hold even when the adapter's option list contains an allow:
+// prefer-always offers ONLY allow options, so deny answers cancelled (never
+// an allow), and prefer-once offers a reject, which deny must prefer over
+// any allow. The default-policy loop above is the regression guard that the
+// allow preference is unchanged when the policy is absent.
+for (const [scenario, decision] of [
+  ['prefer-always', 'cancelled'],
+  ['prefer-once', 'reject-once'],
+  ['fallback-first', 'reject-once'],
+  ['reject-always', 'reject-always'],
+]) {
+  concurrentTest(`ACP_PERMISSIONS=deny answers ${scenario} with ${decision}, never an allow`, async () => {
+    const taskId = `task-permission-deny-${scenario}`
+    const r = await asyncRun(taskId, { MOCK_REQUEST_PERMISSION: scenario, ACP_PERMISSIONS: 'deny' })
+    assert.equal(r.status, 0, `exit 0 expected; stdout:\n${r.stdout}\nstderr:\n${r.stderr}`)
+    assert.match(readFileSync(join(r.cwd, '.mailbox-out', taskId), 'utf8'),
+      new RegExp(`^DID: mock work; permission=${decision}$`, 'm'))
+  })
+}
+
+// A malformed option element (options: [null, allow]) must be ANSWERED, not
+// crash the companion inside the readline listener — an uncaught throw there
+// bypasses the controlled teardown with a detached child still running. Both
+// policies answer from the surviving element or cancel.
+concurrentTest('deny answers a malformed option list with cancelled and the lane completes', async () => {
+  const taskId = 'task-permission-deny-null-element'
+  const r = await asyncRun(taskId, { MOCK_REQUEST_PERMISSION: 'null-element', ACP_PERMISSIONS: 'deny' })
+  assert.equal(r.status, 0, `exit 0 expected; stdout:\n${r.stdout}\nstderr:\n${r.stderr}`)
+  assert.match(readFileSync(join(r.cwd, '.mailbox-out', taskId), 'utf8'),
+    /^DID: mock work; permission=cancelled$/m)
+})
+
+concurrentTest('the default policy survives a malformed option list too', async () => {
+  const taskId = 'task-permission-null-element'
+  const r = await asyncRun(taskId, { MOCK_REQUEST_PERMISSION: 'null-element' })
+  assert.equal(r.status, 0, `exit 0 expected; stdout:\n${r.stdout}\nstderr:\n${r.stderr}`)
+  assert.match(readFileSync(join(r.cwd, '.mailbox-out', taskId), 'utf8'),
+    /^DID: mock work; permission=allow-always$/m)
+})
+
+test('an invalid ACP_PERMISSIONS value is refused before spawn', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-permissions-'))
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'never dispatched\n')
+  const env = testEnv({ ACP_PERMISSIONS: 'allow-everything' })
+  const result = spawnSync('node', [COMPANION, 'mock', cwd, 'task-bad-permissions', brief, '30'],
+    { cwd, encoding: 'utf8', env })
+  assert.equal(result.status, 2)
+  assert.match(result.stderr, /invalid ACP_PERMISSIONS/)
+  assert.equal(existsSync(join(cwd, '.tmux-teams', 'dispatch')), false)
 })
 
 concurrentTest('a persisted session id resumes a later same-id dispatch', async () => {

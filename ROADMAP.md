@@ -12,11 +12,10 @@
 > source, no publish script and nothing that could notice it had gone stale —
 > so it went stale, repeatedly, and nobody could tell without opening it.
 
-Current release: **0.48.0** — the version stamped in this tree, in flight on
-a pull request and not yet tagged. v0.47.0 was prepared on a release branch
-and never tagged; its content (the findings board) ships inside v0.48.0.
-`main` carries **v0.46.0**, tagged at the
-MERGED sha `890768a` (the v0.45.0 lesson stands: tag the merged sha, never
+Current release: **0.49.0** — the version stamped in this tree, in flight on
+a pull request and not yet tagged.
+`main` carries **v0.48.0**, tagged at the
+MERGED sha `1d6da9b` (the v0.45.0 lesson stands: tag the merged sha, never
 the branch tip — tagging the wrong one ships a sha `main` does not hold).
 Anyone installing from the marketplace resolves the last TAG, not this line.
 
@@ -1146,6 +1145,22 @@ the fragility is the price of it being cheap.
 ## What is actually open
 
 These are real but unforced, and separate from the release above:
+
+- **The fourth advisor seat ships in v0.49.0: `oc-advisor`.** OpenCode's own
+  ACP server as a consultation lane — the free deepseek seat
+  (`opencode/deepseek-v4.1-flash-free`), receipt-backed through a produced
+  execution profile (`opencode-execution-profile.mjs`; the bin is a native
+  binary, measured 2026-11-07), read-only through the new
+  `ACP_PERMISSIONS=deny` transport policy with the residual stated in the
+  skill rather than claimed away. The 3-model plan gate was BLOCKED on the
+  review lanes that day; Master ordered the codex-advisor round-table as the
+  recorded substitute — a design round (five must-fix findings, all
+  implemented), a completion round that HOLDed on three defects and then
+  lifted them, and a release round that conditioned publish on the in-skill
+  update/LOAD warnings plus the full candidate checks. Measured 2026-11-08:
+  the seat runs KEYLESS — an expired stored opencode key actively blocks
+  every dispatch, while no key at all serves the free seat, and a full
+  three-voice consultation completed at zero cost.
 
 - **The raw companion is still runnable, and that is the honest limit of the
   word "impossible".** `loop-runner.mjs` spawns it and the suite drives it, so

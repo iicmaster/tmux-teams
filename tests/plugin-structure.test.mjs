@@ -13,9 +13,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PLUGIN = join(ROOT, 'plugins/tmux-teams')
 const SKILLS = ['tmux-teams', 'party-mode', 'party-auto', 'party-advise', 'sqthink',
-  'graph-setup', 'claude-advisor', 'codex-advisor', 'agy-advisor', 'handoff',
+  'graph-setup', 'claude-advisor', 'codex-advisor', 'agy-advisor', 'oc-advisor', 'handoff',
   'pm-delegation', 'test-quality', 'lane-setup', 'requirement-audit']
-const RELEASE_VERSION = '0.48.0'
+const RELEASE_VERSION = '0.49.0'
 // The Stage 1 CLI entry points went on 2026-07-29 and the rest of the phase
 // subsystem — nine scripts, its gate, its store and its exporter — went on
 // 2026-08-02. The note that used to stand here said deleting the remainder
@@ -627,6 +627,7 @@ test('an advisor skill that claims read-only ships the switch that makes it read
   const codex = readFileSync(join(PLUGIN, 'skills', 'codex-advisor', 'SKILL.md'), 'utf8')
   const claude = readFileSync(join(PLUGIN, 'skills', 'claude-advisor', 'SKILL.md'), 'utf8')
   const agy = readFileSync(join(PLUGIN, 'skills', 'agy-advisor', 'SKILL.md'), 'utf8')
+  const oc = readFileSync(join(PLUGIN, 'skills', 'oc-advisor', 'SKILL.md'), 'utf8')
 
   // every codex dispatch or resume block carries the mode
   // Truncate at the CLOSING fence. `split('```bash')` runs each piece on to the
@@ -641,7 +642,7 @@ test('an advisor skill that claims read-only ships the switch that makes it read
     // when the guard was written means the next advisor skill ships unguarded:
     // its commands match nothing, `blocks.length` is 0, and a full-access
     // command passes silently.
-    .filter((b) => /acp-dispatch\.mjs[\s\\]+\n?\s*(codex|claude|agy|mock) </.test(b))
+    .filter((b) => /acp-dispatch\.mjs[\s\\]+\n?\s*(codex|claude|agy|mock|opencode) </.test(b))
 
   const codexBlocks = commandBlocks(codex)
   assert.ok(codexBlocks.length >= 2, `expected dispatch and recovery blocks, got ${codexBlocks.length}`)
@@ -650,11 +651,27 @@ test('an advisor skill that claims read-only ships the switch that makes it read
       `a codex advisor command runs at the full-access default:\n${block.slice(0, 400)}`)
   }
 
+  // The oc-advisor lane has no measured mode switch — INITIAL_AGENT_MODE is
+  // neither sent nor claimed — so its read-only posture is the transport
+  // policy instead: every dispatch and recovery block must carry
+  // ACP_PERMISSIONS=deny, and the skill must not promise the switch the
+  // codex/agy lanes have.
+  const ocBlocks = commandBlocks(oc)
+  assert.ok(ocBlocks.length >= 2, `expected oc-advisor dispatch and recovery blocks, got ${ocBlocks.length}`)
+  for (const block of ocBlocks) {
+    assert.match(block, /ACP_PERMISSIONS="deny"/,
+      `an oc-advisor command ships without its read-only policy:\n${block.slice(0, 400)}`)
+    assert.doesNotMatch(block, /INITIAL_AGENT_MODE="read-only"/,
+      `an oc-advisor command claims a mode switch OpenCode is not measured to honor:\n${block.slice(0, 400)}`)
+  }
+  assert.doesNotMatch(oc, /Read-only: it advises, it never edits/,
+    'the oc advisor claims a sandbox-grade guarantee the lane does not hold')
+
   // and the identity guarantee is not fail-open: the default mode CONTINUES
   // after a receipt-persistence failure and records `receipt_digest: none`, so
   // an advisor could report an identity resting on a receipt never written.
   for (const [name, text] of [['codex-advisor', codex], ['claude-advisor', claude],
-    ['agy-advisor', agy]]) {
+    ['agy-advisor', agy], ['oc-advisor', oc]]) {
     const blocks = commandBlocks(text)
     // The count is pinned too: a block that stops MATCHING is indistinguishable
     // from a block that passes, and `> 0` cannot tell them apart.
@@ -664,7 +681,7 @@ test('an advisor skill that claims read-only ships the switch that makes it read
     // that stops MATCHING is indistinguishable from a block that passes, and
     // `> 0` cannot tell them apart — but it is pinned per file so ADDING a
     // documented command is a deliberate edit here rather than a silent one.
-    const expected = { 'codex-advisor': 2, 'claude-advisor': 4, 'agy-advisor': 1 }[name]
+    const expected = { 'codex-advisor': 2, 'claude-advisor': 4, 'agy-advisor': 1, 'oc-advisor': 2 }[name]
     assert.equal(blocks.length, expected,
       `${name} documents ${blocks.length} lane-launching commands, not ${expected}`)
     for (const block of blocks) {
@@ -735,7 +752,7 @@ test('the read-only guarantee is carried by the thing it says it rests on', () =
   // And the recovery path keeps the receipt contract the fresh commands
   // declare: dropping receipt mode exactly when the first delivery is missing
   // is the moment it matters most.
-  for (const skill of ['codex-advisor', 'claude-advisor']) {
+  for (const skill of ['codex-advisor', 'claude-advisor', 'oc-advisor']) {
     const text = readFileSync(join(PLUGIN, 'skills', skill, 'SKILL.md'), 'utf8')
     const recovery = text.split('```bash').slice(1).map((b) => b.split('```')[0])
       .filter((b) => b.includes('ACP_RESUME'))
@@ -787,7 +804,7 @@ test('the claude advisor does not promise an identity proof its routed seat cann
 test('every advisor carries the same contract: a party, and a model', () => {
   // Named literally as well as iterated. A loop over a list is a test of the
   // list: drop an entry and it simply stops checking that one.
-  const NAMES = ['codex-advisor', 'claude-advisor', 'agy-advisor']
+  const NAMES = ['codex-advisor', 'claude-advisor', 'agy-advisor', 'oc-advisor']
   assert.deepEqual(
     SKILLS.filter((s) => s.endsWith('-advisor')).sort(), [...NAMES].sort(),
     'an advisor skill exists that this contract does not cover')

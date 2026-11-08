@@ -360,7 +360,8 @@ const LOOP_OWNED_ACP = [
   'ACP_AGENT_ID', 'ACP_CMD', 'ACP_CONTROL_LOG', 'ACP_ENABLE_TERMINAL',
   'ACP_EXECUTION_PROFILE', 'ACP_EXPECT_MODEL', 'ACP_EXPECT_REASONING_EFFORT',
   'ACP_INHERIT_PROJECT_CONFIG', 'ACP_KMS_AUTO', 'ACP_LIVENESS_TICK_MS',
-  'ACP_LIVENESS_WRITE_INTERVAL_MS', 'ACP_MODEL', 'ACP_PRIOR_DISPATCH_ID',
+  'ACP_LIVENESS_WRITE_INTERVAL_MS', 'ACP_MODEL', 'ACP_PERMISSIONS',
+  'ACP_PRIOR_DISPATCH_ID',
   'ACP_ENV_PASSTHROUGH', 'ACP_PRIOR_RECEIPT_DIGEST',
   'ACP_REASONING_EFFORT', 'ACP_RESUME', 'ACP_SESSION_OPERATION',
   'ACP_SESSION_RECEIPT_REQUIRED', 'ACP_SPAWN_NONCE',
@@ -417,7 +418,7 @@ test('every ACP_ variable the companion reads is classified as forwarded or owne
     'ACP_CANCEL_GRACE_MS', 'ACP_CANCEL_GRACE_SEC', 'ACP_HARD_TIMEOUT_SEC',
     'ACP_PROCESS_KILL_GRACE_MS', 'ACP_PROCESS_REAP_GRACE_MS', 'ACP_STALL_POLICY',
   ], 'the forwarded operator surface changed — SKILL.md documents it and must change with it')
-  assert.equal(LOOP_OWNED_ACP.length, 22)
+  assert.equal(LOOP_OWNED_ACP.length, 23)
 
   // THE SCANNER'S REMAINING BLIND SPOT, named by the lane that blocked on it.
   // Every check above reads NAMES out of the source, so a read whose name is
