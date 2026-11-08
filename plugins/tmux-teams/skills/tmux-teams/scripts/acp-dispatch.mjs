@@ -392,6 +392,13 @@ export const ROUTING_ENV_KEYS = Object.freeze([
   'ACP_MODEL', 'ACP_REASONING_EFFORT', 'ACP_EXPECT_MODEL', 'ACP_EXPECT_REASONING_EFFORT',
   'ANTHROPIC_MODEL', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_EXECUTABLE', 'INITIAL_AGENT_MODE',
   'ACP_AGENT_ID', 'ACP_EXECUTION_PROFILE',
+  // Custom-worker lanes (e.g. an opencode advisor) name their executable
+  // through ACP_CMD; a resume that drops it cannot restart the lane at all —
+  // the companion answers `unknown agent` in a clean shell. ACP_PERMISSIONS is
+  // the same shape of loss but quieter: a dropped deny policy does not fail,
+  // it DOWNGRADES the lane to the allow preference while looking like the
+  // same dispatch. Neither is a secret; both select how the child runs.
+  'ACP_CMD', 'ACP_PERMISSIONS',
   // Recorded for the same reason as the rest: a resume that drops it does not
   // fail, it DOWNGRADES — the companion defaults `receiptRequired` to false, so
   // a lane that was dispatched under a receipt guarantee comes back without one

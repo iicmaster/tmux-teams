@@ -9,31 +9,18 @@ import { join } from 'node:path'
 const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`)
 const reply = (id, result) => send({ jsonrpc: '2.0', id, result })
 const replyError = (id, message = 'mock operation failed') => send({ jsonrpc: '2.0', id, error: { code: -32000, message } })
-// MOCK_ENV_DUMP=<file>: write the environment this agent was SPAWNED with, so
-// a test can assert what the companion actually handed the adapter rather than
-// what the companion's source appears to compute. Added for the bare-mode fix —
-// the claim under test is "the default claude lane no longer gets
-// CLAUDE_CODE_SIMPLE=1", and only the child can say what it received.
-//
-// IT WRITES AN ALLOWLIST, NOT THE ENVIRONMENT: serialising all of `process.env`
-// put whatever credential the shell carried into a temp file nothing removes.
+// MOCK_ENV_DUMP=<file>: write what the child was SPAWNED with (allowlist, not
+// process.env — a full dump wrote shell credentials to a temp file). A guard
+// must prove the credential REACHED the child; names unknown -> secret, the
+// direction that fails safe; digests, not presence flags. The test explains
+// each; THIS FILE SITS UNDER the companion's HARD 64 KiB adapter-entry bound —
+// explain there, not here.
 const ENV_DUMP_KEYS = ['CLAUDE_CODE_SIMPLE', 'CLAUDE_CONFIG_DIR']
 
-// A guard must prove the credential REACHED the child: the rule's output alone
-// cannot tell a companion reading the constructed child environment from one
-// reading its own process.env.
 const CREDENTIAL_DIGEST_KEYS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN']
 
-// Names what is SAFE to print, never what is secret: unknown resolves to
-// secret, the only direction that fails safe. See the guard in
-// tests/acp-companion.test.mjs for why this is inverted.
 const PLAINTEXT_SAFE_KEYS = new Set(['CLAUDE_CODE_SIMPLE', 'CLAUDE_CONFIG_DIR'])
 
-// A DIGEST, NOT A PRESENCE FLAG: equality across dumps proves the child got the
-// value the lane was given, and reveals none of it.
-//
-// THIS FILE SITS UNDER the companion's HARD 64 KiB adapter-entry bound.
-// Explain in the TEST, not here.
 const { createHash } = await import('node:crypto')
 const digest = value => createHash('sha256').update(String(value)).digest('hex').slice(0, 16)
 
@@ -299,6 +286,18 @@ function permissionOptions(scenario) {
       { optionId: 'allow-once', kind: 'allow_once', name: 'Allow once' },
       { optionId: 'reject-once', kind: 'reject_once', name: 'Reject once' },
     ]
+  }
+  if (scenario === 'reject-always') {
+    return [
+      { optionId: 'allow-always', kind: 'allow_always', name: 'Allow always' },
+      { optionId: 'reject-always', kind: 'reject_always', name: 'Reject always' },
+    ]
+  }
+  if (scenario === 'null-element') {
+    // A misbehaving adapter's malformed option list: one null element beside
+    // a valid allow. No policy may crash on it — both answer from the
+    // surviving element or cancel.
+    return [null, { optionId: 'allow-always', kind: 'allow_always', name: 'Allow always' }]
   }
   return [{ optionId: 'reject-once', kind: 'reject_once', name: 'Reject once' }]
 }

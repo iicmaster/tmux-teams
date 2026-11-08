@@ -102,6 +102,25 @@ if (terminalCapabilityEnv !== undefined && terminalCapabilityEnv !== '0' && term
 }
 const terminalCapabilityEnabled = terminalCapabilityEnv === '1'
 
+// The tool-permission policy, gated explicitly and `default` when unset.
+// RULE: an advisor lane claims read-only, so its dispatches set
+// ACP_PERMISSIONS=deny and this companion — not the brief — is what holds
+// that claim: every `session/request_permission` is answered with the
+// strongest reject the adapter offered (reject_always, then reject_once),
+// or cancelled when the adapter offered no reject, and terminal/* is
+// refused even when the ambient environment enables the capability.
+// `default` keeps the historical allow-preference unchanged for every lane
+// that does not ask for the policy. The value is per-dispatch environment,
+// NOT part of the receipt: a receipt attests the executable, session and
+// configured identity, never this policy — the routing record is what
+// restores it on resume.
+const permissionsEnv = process.env.ACP_PERMISSIONS
+if (permissionsEnv !== undefined && permissionsEnv !== 'default' && permissionsEnv !== 'deny') {
+  console.error('invalid ACP_PERMISSIONS — use default or deny')
+  process.exit(2)
+}
+const permissionsDeny = permissionsEnv === 'deny'
+
 const receiptRequiredEnv = process.env.ACP_SESSION_RECEIPT_REQUIRED
 if (receiptRequiredEnv !== undefined && receiptRequiredEnv !== '0' && receiptRequiredEnv !== '1') {
   console.error('invalid ACP_SESSION_RECEIPT_REQUIRED — use 0 or 1')
@@ -1104,16 +1123,31 @@ function validateExecutionProfile(profile, profilePath) {
     }
   }
   for (const [label, value] of [['Node', profile.node], ['Codex', profile.codex]]) {
-    if (typeof value.executable_realpath !== 'string' || (value.executable_realpath !== null && !value.executable_realpath.startsWith('/'))
-      || typeof value.executable_digest !== 'string' && value.executable_digest !== null
-      || (value.executable_digest !== null && !DIGEST_RE.test(value.executable_digest))
-      || typeof value.version !== 'string' || !value.version || value.version.length > MAX_RECEIPT_TEXT) {
+    // The Codex slot may be an explicit null pair ONLY on a lane that is not
+    // codex: a custom worker (e.g. opencode) has no Codex executable to
+    // attest, and the producer records that as {null, null, version} rather
+    // than naming a real file it did not verify. The null is a STATEMENT
+    // ("no codex executable involved"), accepted only when it is complete —
+    // a null realpath beside a non-null digest is still a malformed
+    // identity. The codex lane itself keeps the strict string requirement:
+    // its dispatch verifies the executable end to end.
+    const codexSlotOptional = label === 'Codex' && agentName !== 'codex'
+    const realpath = value.executable_realpath
+    const digest = value.executable_digest
+    const nullPair = realpath === null && digest === null
+    const malformed =
+      (realpath === null
+        ? !(codexSlotOptional && nullPair)
+        : typeof realpath !== 'string' || !realpath.startsWith('/'))
+      || (digest !== null && (typeof digest !== 'string' || !DIGEST_RE.test(digest)))
+      || typeof value.version !== 'string' || !value.version || value.version.length > MAX_RECEIPT_TEXT
+    if (malformed) {
       throw Object.assign(new Error(`execution profile ${label} identity is invalid`), { code: 'invalid_execution_profile' })
     }
-    if (value.executable_realpath !== null) {
+    if (realpath !== null) {
       let stat
-      try { stat = lstatSync(value.executable_realpath) } catch { throw Object.assign(new Error(`execution profile ${label} executable is unavailable`), { code: 'invalid_execution_profile' }) }
-      if (!stat.isFile() || stat.isSymbolicLink() || sha256File(value.executable_realpath) !== value.executable_digest) {
+      try { stat = lstatSync(realpath) } catch { throw Object.assign(new Error(`execution profile ${label} executable is unavailable`), { code: 'invalid_execution_profile' }) }
+      if (!stat.isFile() || stat.isSymbolicLink() || sha256File(realpath) !== digest) {
         throw Object.assign(new Error(`execution profile ${label} executable bytes drifted`), { code: 'execution_profile_drift' })
       }
     }
@@ -3717,12 +3751,17 @@ async function killAllLiveTerminals(signal = 'SIGTERM') {
 
 async function handleTerminalRequest(message) {
   const { method, id, params } = message
-  if (!terminalCapabilityEnabled) {
+  if (!terminalCapabilityEnabled || permissionsDeny) {
     // Defense in depth: even if this request should have been unreachable
     // (the capability was never advertised), refuse it explicitly rather
     // than falling through to the generic `respond(id, undefined)` an
     // unrecognised method gets — a silent empty ack here would look served.
-    respondError(id, -32601, `${method} refused — terminal capability is not enabled on this lane`)
+    // Under ACP_PERMISSIONS=deny the refusal fires even when the ambient
+    // environment enables the capability: terminal/create spawns a process
+    // without ever passing through the permission handler, so a deny lane
+    // that served terminals would carry a write/exec path its policy claims
+    // to refuse.
+    respondError(id, -32601, `${method} refused — ${permissionsDeny ? 'ACP_PERMISSIONS=deny' : 'terminal capability is not enabled on this lane'}`)
     return
   }
   try {
@@ -4102,14 +4141,29 @@ rl.on('line', (rawLine) => {
         return
       }
       const options = Array.isArray(message.params?.options) ? message.params.options : []
-      const pick = options.find((option) => option.kind === 'allow_always')
-        ?? options.find((option) => option.kind === 'allow_once')
-        ?? options[0]
+      // Malformed elements are dropped before any `.find`, in BOTH policies:
+      // `options: [null]` from a misbehaving adapter must reach here as an
+      // answerable request, not a TypeError inside the readline listener —
+      // an uncaught throw there takes the whole companion down past its
+      // controlled teardown, with a detached child still running.
+      const selectable = options.filter((option) => option && typeof option === 'object')
+      // The deny policy is checked BEFORE any allow preference: a lane that
+      // asked for ACP_PERMISSIONS=deny must never see an allow option leave
+      // this process, even when the adapter's option list contains one —
+      // under deny, an allow-only option list is answered cancelled, which
+      // is fail-closed and visible in the control log, not silently served.
+      const pick = permissionsDeny
+        ? selectable.find((option) => option.kind === 'reject_always')
+          ?? selectable.find((option) => option.kind === 'reject_once')
+          ?? null
+        : selectable.find((option) => option.kind === 'allow_always')
+          ?? selectable.find((option) => option.kind === 'allow_once')
+          ?? selectable[0]
       if (pick) {
         line(`[permission] ${quoteAgentField(message.params?.toolCall?.title, '?')} -> ${boundedText(pick.name ?? pick.optionId)}`)
         respond(message.id, { outcome: { outcome: 'selected', optionId: pick.optionId } })
       } else {
-        line(`[permission] ${quoteAgentField(message.params?.toolCall?.title, '?')} -> cancelled (no options)`)
+        line(`[permission] ${quoteAgentField(message.params?.toolCall?.title, '?')} -> cancelled (${permissionsDeny && selectable.length ? 'no reject option offered' : 'no options'})`)
         respond(message.id, { outcome: { outcome: 'cancelled' } })
       }
     } else if (message.method.startsWith('terminal/')) {

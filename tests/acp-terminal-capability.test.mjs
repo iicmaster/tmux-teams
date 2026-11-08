@@ -215,6 +215,26 @@ test('a terminal request arriving on an ordinary lane is REFUSED', () => {
   assert.equal(run.roundtrip.wait_for_exit, undefined)
 })
 
+test('ACP_PERMISSIONS=deny refuses a terminal request even when the capability is enabled', () => {
+  // terminal/create spawns a real process WITHOUT ever passing through the
+  // permission handler, so a deny lane that served terminals would carry a
+  // write/exec path its policy claims to refuse — the exact gap the oc-advisor
+  // read-only posture leans on this guard to close.
+  const run = runCompanion('task-term-deny', {
+    ACP_ENABLE_TERMINAL: '1',
+    ACP_PERMISSIONS: 'deny',
+    MOCK_SCENARIO: 'terminal-roundtrip',
+  })
+  assert.equal(run.status, 0,
+    `a deny-refused terminal request must not crash the dispatch; stderr:\n${run.stderr}`)
+  assert.ok(run.roundtrip, `mock never wrote .terminal-roundtrip.json; stderr:\n${run.stderr}`)
+  assert.equal(run.roundtrip.create.result, null,
+    `terminal/create must not succeed under ACP_PERMISSIONS=deny: ${JSON.stringify(run.roundtrip.create)}`)
+  assert.ok(run.roundtrip.create.error, 'the refusal must be a JSON-RPC error, not a silent empty ack')
+  assert.match(String(run.roundtrip.create.error.message), /ACP_PERMISSIONS=deny/)
+  assert.equal(run.roundtrip.wait_for_exit, undefined)
+})
+
 test('terminal output over the byte cap is truncated, and cut at a character boundary', () => {
   // 100 Thai characters at 3 bytes each against a 64-byte cap: the tail starts
   // 236 bytes in, two bytes INSIDE a character. Under-limit output proves
