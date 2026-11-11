@@ -216,12 +216,15 @@ test('Stage 1 field-evidence files and documentation links are wired', () => {
   // Only commands that still exist. The freeze/assign/capture/replay/rehearse
   // and phase-gate CLIs went with the Stage 1 entry points; docs promising a
   // command nobody can run is the same class of untruth as a page reporting
-  // work nobody did.
+  // work nobody did. The command mechanics moved to the operating manual in
+  // the 2026-11-10 README overhaul — the README stays thin — so the anchor is
+  // asserted there rather than against the README.
+  const manual = readText(join(PLUGIN, 'docs/manual.md'))
   const commandAnchors = [
     'pulse.mjs compat-v1',
   ]
   for (const anchor of commandAnchors) {
-    assert.ok(readme.includes(anchor), `README.md command missing: ${anchor}`)
+    assert.ok(manual.includes(anchor), `docs/manual.md command missing: ${anchor}`)
     assert.ok(skill.includes(anchor), `SKILL.md command missing: ${anchor}`)
   }
   // Seven anchors went with the phase subsystem on 2026-08-02: the Stage 1
@@ -235,7 +238,11 @@ test('Stage 1 field-evidence files and documentation links are wired', () => {
   // is just no longer a contract the docs teach. `acp-companion.mjs` refuses to
   // run in a repository still carrying one rather than silently downgrading it,
   // and that refusal is asserted where it lives, in the ACP suite.
-  for (const doc of [['README.md', readme], ['SKILL.md', skill]]) {
+  // The Pulse contract prose moved to the operating manual in the 2026-11-10
+  // README overhaul; the README keeps only the two schema links (asserted
+  // above) and points at the manual for the rest. The contract loop follows
+  // the prose, so it reads the manual where the contract now lives.
+  for (const doc of [['docs/manual.md', manual], ['SKILL.md', skill]]) {
     assert.match(doc[1], /pulse-v3\.schema\.json/, `${doc[0]}: Pulse v3 contract missing`)
     assert.match(doc[1], /pulse-v4\.schema\.json/, `${doc[0]}: Pulse v4 contract missing`)
     assert.match(doc[1], /Pulse v4 is the default/i, `${doc[0]}: Pulse v4 default missing`)
@@ -351,7 +358,11 @@ test('semantic anchors: canonical fixes actually shipped', () => {
     'acp-companion.mjs must normalize the retired public agent name')
   assert.match(acp, /unsupported agent/,
     'acp-companion.mjs must reject the retired public agent name before ACP_CMD')
-  for (const doc of [['README.md', readme], ['SKILL.md', tmux]]) {
+  // The timezone contract's documentation moved to the operating manual in
+  // the 2026-11-10 README overhaul (the README points at it); the contract
+  // strings are asserted where the contract is now documented.
+  const manual = readText(join(PLUGIN, 'docs/manual.md'))
+  for (const doc of [['docs/manual.md', manual], ['SKILL.md', tmux]]) {
     assert.match(doc[1], /PULSE_TIME_ZONE/, `${doc[0]}: Pulse timezone env contract missing`)
     assert.match(doc[1], /--time-zone/, `${doc[0]}: Pulse timezone CLI contract missing`)
     assert.match(doc[1], /RFC 3339 UTC/, `${doc[0]}: Pulse UTC data invariant missing`)

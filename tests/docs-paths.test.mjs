@@ -94,6 +94,10 @@ test('every documented .mjs path names an existing file', () => {
   const documents = [
     join(REPO_ROOT, 'README.md'),
     join(REPO_ROOT, 'CLAUDE.md'),
+    // The operating manual inherited the README's command mechanics in the
+    // 2026-11-10 README overhaul and documents .mjs paths freely — so it is
+    // scanned like every other shipped document.
+    join(REPO_ROOT, 'plugins/tmux-teams/docs/manual.md'),
     ...markdownFiles(SKILLS_ROOT),
   ].sort()
   const violations = documents.flatMap((path) => {
