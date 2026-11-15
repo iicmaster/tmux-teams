@@ -188,7 +188,8 @@ stating to the user:
   declared in this repo, ones the user names, or ones from the adapter they use.
 - A placeholder such as `inherit-account-default` is shape-valid and
   meaning-empty. Treat one as a blank and ask again. It is a template's way of
-  saying "nobody has chosen yet".
+  saying "nobody has chosen yet", and `validateWorkflowGraph` / `loop-runner`
+  reject `inherit-account-default` outright on any `adapter: "agy"` seat.
 - For `adapter: "agy"` (`agy >= 1.5.8`): the default worker is
   `gemini-4-hydrogen-high` and the recommended default thinker
   (`outer_controller_model`, `models.evaluator`) is `gemini-4-carbon-high`.
@@ -281,8 +282,10 @@ the validator enforces at load:
   right after the first spends an attempt to learn nothing. `A, B, A` is fine.
   All `agy` Gemini seats (`gemini-4-*`, `gemini-pro-orchestrator*`,
   `gemini-3.8-flash-*`) share one Antigravity quota pool (`bucket: "agy"`), so
-  palette fallbacks from an `agy` seat must switch adapter/family rather than
-  switching between Gemini tiers.
+  `validateWorkflowGraph` enforces canonical `bucket: "agy"`, rejects conflicting
+  explicit `bucket` labels on `agy` Gemini candidates, and palette fallbacks
+  from an `agy` seat must switch adapter/family rather than switching between
+  Gemini tiers.
 
 A palette does **not** cost extra worker seats — `wip_limit` counts
 `worker_ids`, never candidates. An eight-entry palette on a one-worker team is

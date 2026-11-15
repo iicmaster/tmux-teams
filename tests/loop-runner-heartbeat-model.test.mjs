@@ -504,6 +504,60 @@ test('the runner says which model each dispatch will ask for', () => {
   assert.ok(plain)
   assert.match(plain, /model=account default \(none requested\)/)
   assert.doesNotMatch(plain, new RegExp(INHERIT_ACCOUNT_DEFAULT))
+
+  // Non-AGY sentinel stays empty, while AGY sentinel/empty throws pre-spawn and refuses to spawn.
+  assert.throws(() => modelEnv(INHERIT_ACCOUNT_DEFAULT, 'agy'), { code: 'unpinned_agy_identity' })
+  assert.throws(() => modelEnv('', 'agy'), { code: 'unpinned_agy_identity' })
+  assert.deepEqual(modelEnv('gemini-4-hydrogen-high', 'agy'), {
+    ACP_MODEL: 'gemini-4-hydrogen-high',
+    ACP_EXPECT_MODEL: 'gemini-4-hydrogen-high',
+  })
+
+  // Unvalidated in-memory graph route with AGY sentinel still fails closed via disk/graph edge:
+  // explicit AGY seat sends ACP_MODEL + ACP_EXPECT_MODEL cleanly through real tick() spawnFn.
+  const agyExplicitDir = repoWith({
+    graph: {
+      ...graphDecl({ model: 'gemini-4-hydrogen-high', pmModel: 'gemini-4-carbon-high' }),
+      outer_controller_adapter: 'agy',
+      teams: [
+        { ...team('build', 'gemini-4-hydrogen-high'), adapters: { dispatcher: 'agy', worker: 'agy', evaluator: 'agy' } },
+        team('test', 'gemini-4-hydrogen-high'),
+        team('control', 'gemini-4-carbon-high', ['pm']),
+      ],
+    },
+    ledgers: { wip: HELD },
+  })
+  const agyCalls = []
+  saying(() => tick(agyExplicitDir, {
+    apply: true, tickSec: 20, scratchDir: join(agyExplicitDir, 'scratch'),
+    spawnFn: (cmd, args, opts) => { agyCalls.push({ args, env: opts.env }); return { pid: 555001, unref() {} } },
+  }))
+  const agyWorkerCall = agyCalls.find((call) => call.env.ACP_AGENT_ID === 'build_w1')
+  assert.ok(agyWorkerCall)
+  assert.equal(agyWorkerCall.args[1], 'agy')
+  assert.equal(agyWorkerCall.env.ACP_MODEL, 'gemini-4-hydrogen-high')
+  assert.equal(agyWorkerCall.env.ACP_EXPECT_MODEL, 'gemini-4-hydrogen-high')
+
+  // Graph declaring an AGY sentinel is refused by validateWorkflowGraph and tick() spawns nothing.
+  const sentinelRaw = {
+    ...graphDecl(),
+    teams: [
+      { ...team('build', INHERIT_ACCOUNT_DEFAULT), adapters: { worker: 'agy' } },
+      team('test', A_DECLARED_MODEL),
+      team('control', A_DECLARED_MODEL, ['pm']),
+    ],
+  }
+  const sentinelGraph = validateWorkflowGraph(sentinelRaw)
+  assert.equal(sentinelGraph.ok, false)
+  assert.match(sentinelGraph.reason, /inherit-account-default/)
+  const sentinelDir = repoWith({ graph: sentinelRaw, ledgers: { wip: HELD } })
+  let sentinelSpawns = 0
+  const sentinelTick = saying(() => tick(sentinelDir, {
+    apply: true, tickSec: 20,
+    spawnFn: () => { sentinelSpawns += 1; return { pid: 555002, unref() {} } },
+  })).result
+  assert.equal(sentinelTick.ok, false)
+  assert.equal(sentinelSpawns, 0, 'tick spawned an unpinned AGY sentinel seat')
 })
 
 // ── DECISION 4: the ledger ───────────────────────────────────────────────────

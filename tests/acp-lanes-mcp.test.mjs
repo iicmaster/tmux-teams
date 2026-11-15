@@ -113,6 +113,8 @@ test('per-machine lanes.json override updates reported model without changing un
     const out = callTool('acp_lanes', {}, { HOME: home, PATH: '/definitely/nonexistent' })
     const agyRow = out.lanes.find(l => l.lane === 'agy')
     assert.equal(agyRow.model, 'gemini-4-hydrogen-high')
+    const codexRow = out.lanes.find(l => l.lane === 'codex')
+    assert.equal(codexRow.model, 'gpt-6.1-sol')
   } finally {
     rmSync(home, { recursive: true, force: true })
   }

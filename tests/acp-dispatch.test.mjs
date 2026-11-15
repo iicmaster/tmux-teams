@@ -2746,3 +2746,84 @@ test('a prohibited model refuses the dispatch before a session exists', () => {
       `a permitted model (${permitted}) did not dispatch:\n${ok.stdout}${ok.stderr}`)
   }
 })
+
+test('agy dispatch refuses omitted, partial, mismatched, or inherit-account-default model identity before spawning', async () => {
+  const cwd = tempDir('acp-mg-')
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'probe\n')
+  let spawnCalls = 0
+  const spawnFn = () => {
+    spawnCalls += 1
+    return { pid: 999999, unref() {}, on() {} }
+  }
+  const cases = [
+    { name: 'none-set', env: {} },
+    { name: 'only-model', env: { ACP_MODEL: 'gemini-4-carbon-high' } },
+    { name: 'only-expect', env: { ACP_EXPECT_MODEL: 'gemini-4-carbon-high' } },
+    { name: 'mismatch', env: { ACP_MODEL: 'gemini-4-carbon-high', ACP_EXPECT_MODEL: 'gemini-4-hydrogen-high' } },
+    { name: 'sentinel-both', env: { ACP_MODEL: 'inherit-account-default', ACP_EXPECT_MODEL: 'inherit-account-default' } },
+  ]
+  for (const c of cases) {
+    assert.throws(
+      () => spawnDetached('agy', cwd, `agy-refuse-${c.name}`, brief, 20, { spawnFn, env: laneEnv(c.env) }),
+      { code: 'unpinned_agy_identity' },
+      `${c.name} should fail closed in spawnDetached`,
+    )
+    assert.equal(recordedRouting(cwd, `agy-refuse-${c.name}`), null,
+      `${c.name} wrote a routing record despite pre-spawn refusal`)
+
+    const r = spawnSync(process.execPath,
+      [DISPATCH, 'agy', cwd, `agy-cli-${c.name}`, brief, '20'],
+      { cwd, encoding: 'utf8', timeout: 60000, env: laneEnv(c.env) })
+    const said = `${r.stdout}${r.stderr}`
+    assert.notEqual(r.status, 0, `${c.name} exited 0:\n${said}`)
+    assert.match(said, /explicit matching ACP_MODEL and ACP_EXPECT_MODEL/,
+      `${c.name} refused with unexpected message:\n${said}`)
+  }
+  assert.equal(spawnCalls, 0, 'unpinned agy dispatch called spawnFn')
+
+  // Pinned matching AGY request+expectation succeeds cleanly through spawnDetached.
+  const lines = []
+  const exitCode = await main(['agy', cwd, 'agy-pinned-ok', brief, '20'], {
+    out: (s) => lines.push(s),
+    err: (s) => lines.push(s),
+    spawnFn: () => ({ pid: 424290, unref() {}, on() {} }),
+    env: laneEnv({ ACP_DISPATCH_BOOT_SEC: '1', ACP_MODEL: 'gemini-4-carbon-high', ACP_EXPECT_MODEL: 'gemini-4-carbon-high' }),
+  })
+  const routing = recordedRouting(cwd, 'agy-pinned-ok')
+  assert.equal(routing?.worker, 'agy')
+  assert.equal(routing?.env?.ACP_MODEL, 'gemini-4-carbon-high')
+  assert.equal(routing?.env?.ACP_EXPECT_MODEL, 'gemini-4-carbon-high')
+  // Boot timer expired with no liveness snapshot (status 1), proving it passed pre-spawn identity gate.
+  assert.equal(exitCode, 1, lines.join('\n'))
+})
+
+test('watchBoot on agy rejects an unverified liveness record rather than treating it as live', async () => {
+  const cwd = tempDir('acp-mg-boot-')
+  const brief = join(cwd, 'brief.md')
+  writeFileSync(brief, 'probe\n')
+  const lines = []
+  const p = main(['agy', cwd, 'agy-boot-unverified', brief, '120'], {
+    out: (s) => lines.push(s),
+    err: (s) => lines.push(s),
+    spawnFn: () => ({ pid: 424291, unref() {}, on() {} }),
+    env: laneEnv({
+      ACP_DISPATCH_BOOT_SEC: '2',
+      ACP_MODEL: 'gemini-4-carbon-high',
+      ACP_EXPECT_MODEL: 'gemini-4-carbon-high',
+    }),
+  })
+  const routing = recordedRouting(cwd, 'agy-boot-unverified')
+  assert.ok(routing?.spawnNonce, 'routing missing spawnNonce')
+  writeFileSync(join(cwd, '.tmux-teams', 'liveness', 'agy-boot-unverified.json'), JSON.stringify({
+    started_at: new Date(Date.now() + 1000).toISOString(),
+    worker: 'agy',
+    liveness_state: 'completed',
+    termination_reason: 'none',
+    effective_identity: 'gemini-4-carbon-medium',
+    identity_status: 'unverified',
+    spawn_nonce: routing.spawnNonce,
+  }))
+  const code = await p
+  assert.equal(code, 2, `watchBoot accepted an unverified AGY record:\n${lines.join('\n')}`)
+})

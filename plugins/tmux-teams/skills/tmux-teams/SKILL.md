@@ -64,7 +64,8 @@ families found the two files disagreeing.
 
 A present but invalid declaration fails closed. WIP is always the worker count; it is not a
 second number in the declaration. `inherit-account-default` requests no model
-and must never be displayed as a verified model.
+and must never be displayed as a verified model (and is rejected pre-spawn for
+`adapter: "agy"` routes).
 
 Admit work through the general ledger writer. `opened` is legal only as the
 first event and names the first receiving dispatcher and team. The example
@@ -454,9 +455,11 @@ non-applied response fails closed before prompt delivery.
 
 For the `agy` lane (`antigravity-acp@1.2.0` with `agy >= 1.5.8`), unset Codex-only
 effort variables (`ACP_REASONING_EFFORT` / `ACP_EXPECT_REASONING_EFFORT`) and
-set **both `ACP_MODEL` and `ACP_EXPECT_MODEL` explicitly**. Live `agy` 1.5.9
+set **both `ACP_MODEL` and `ACP_EXPECT_MODEL` explicitly** (`acp-dispatch.mjs`,
+`acp-companion.mjs`, and `workflow-graph.mjs` reject unpinned, mismatched, or
+`inherit-account-default` AGY dispatches pre-spawn). Live `agy` 1.5.9
 `session/new` starts on `gemini-4-carbon-medium` when unpinned, so omitting them
-silently drops the run onto Carbon Medium:
+would silently drop the run onto Carbon Medium:
 
 - Worker / execution default: `gemini-4-hydrogen-high`
 - Thinker / evaluator / `$agy-advisor` recommended default: `gemini-4-carbon-high`

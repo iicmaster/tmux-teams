@@ -223,8 +223,14 @@ export function declaredAdapter(graph, teamId, agentId) {
 // declaring anything else failed instead of being honored. The declared name in
 // `graph.json` was decoration. Both are sent now, so the request is made and
 // then verified, which is the pair the companion was built for.
-export function modelEnv(model) {
+export function modelEnv(model, adapter = DEFAULT_ADAPTER) {
   const name = typeof model === 'string' ? model.trim() : ''
+  if (adapter === 'agy' && (!name || name === INHERIT_ACCOUNT_DEFAULT)) {
+    throw Object.assign(
+      new Error('agy dispatch requires an explicit model; inherit-account-default is prohibited on agy'),
+      { code: 'unpinned_agy_identity' },
+    )
+  }
   return name && name !== INHERIT_ACCOUNT_DEFAULT ? { ACP_MODEL: name, ACP_EXPECT_MODEL: name } : {}
 }
 
@@ -1393,7 +1399,21 @@ function nextStep(graph, team, item, { busy, busyTasks, nowMs, zombieSec, answer
     // — never a genuine worker failure, which retries this same candidate
     // exactly as a no-palette seat already does, via `attemptsBy`/MAX_ATTEMPTS
     // above.
-    return { action: 'dispatch', role, agent_id: agentId, candidate: palette[misses % palette.length] }
+    const effectiveBucket = (candidate) =>
+      candidate?.adapter === 'agy' && /^gemini(?:$|[-_.\s])/i.test(String(candidate?.model ?? '').trim())
+        ? 'agy'
+        : (candidate?.bucket || candidate?.adapter || DEFAULT_ADAPTER)
+    const chosen = palette[misses % palette.length]
+    if (misses > 0) {
+      const prior = palette[(misses - 1) % palette.length]
+      if (effectiveBucket(prior) === effectiveBucket(chosen)) {
+        return {
+          action: 'escalate',
+          reason: `${agentId}'s palette fallback from ${prior.model} to ${chosen.model} stays in quota bucket ${effectiveBucket(chosen)} — refusing same-pool fallback`,
+        }
+      }
+    }
+    return { action: 'dispatch', role, agent_id: agentId, candidate: chosen }
   }
 
   const want = (role, hint = null) => {
@@ -2290,6 +2310,7 @@ export function buildTaskId(workItem, team, role, nowMs = Date.now()) {
 }
 
 function dispatch(repo, { workItem, team, role, agentId, workflow, model, adapter = DEFAULT_ADAPTER, effort }, briefPath, stallSec, { spawnFn = spawn } = {}) {
+  const resolvedModelEnv = modelEnv(model, adapter)
   const taskId = buildTaskId(workItem, team, role)
   // Keep every dispatch log. Discarding the adapter stderr is how a runner ends
   // up unable to explain its own failures — which is exactly what happened the
@@ -2313,7 +2334,7 @@ function dispatch(repo, { workItem, team, role, agentId, workflow, model, adapte
       // the page can finally print a real name instead of "default — none
       // pinned". `modelEnv` is what keeps the sentinel from becoming a request
       // the adapter would refuse — see its comment for why that matters.
-      ...modelEnv(model),
+      ...resolvedModelEnv,
       ...effortEnv(effort),
       ...(workflow ? { TMUX_TEAMS_WORKFLOW: workflow } : {}),
       ...(workItem ? { TMUX_TEAMS_WORK_ITEM: workItem } : {}),
@@ -2696,10 +2717,16 @@ export function tick(repoArg, {
     // seat with no palette, or a palette seat's very first leg, carries no
     // `candidate` and resolves exactly as it always has.
     const model = plan.candidate ? plan.candidate.model : declaredModel(graph.value, plan.team, plan.agent_id)
+    const adapter = plan.candidate ? plan.candidate.adapter : declaredAdapter(graph.value, plan.team, plan.agent_id)
+    if (adapter === 'agy' && (!model || model.trim() === '' || model.trim() === INHERIT_ACCOUNT_DEFAULT)) {
+      const reason = `refusing unpinned/inherit-account-default dispatch on agy seat ${plan.agent_id}`
+      log(`AGY    ${plan.work_item}: ${reason}`)
+      decisions.push({ work_item: plan.work_item, action: 'unpinned-agy', reason })
+      continue
+    }
     // Two different facts, said differently: a name the dispatch will hold the
     // adapter to, or the account default nobody pinned.
-    const says = modelEnv(model).ACP_EXPECT_MODEL || 'account default (none requested)'
-    const adapter = plan.candidate ? plan.candidate.adapter : declaredAdapter(graph.value, plan.team, plan.agent_id)
+    const says = modelEnv(model, adapter).ACP_EXPECT_MODEL || 'account default (none requested)'
     const effort = plan.candidate ? plan.candidate.effort : declaredEffort(graph.value, plan.team, plan.agent_id)
     const effortSays = effortEnv(effort).ACP_EXPECT_REASONING_EFFORT || 'unset (adapter default)'
     const paletteSays = plan.candidate ? ` bucket=${plan.candidate.bucket}` : ''
@@ -2732,38 +2759,41 @@ export function tick(repoArg, {
     // The controller is not a member of any team, so its model comes off the
     // graph's own seat for it rather than out of any team's `models` block.
     const pmModel = declaredModel(graph.value, null, escalation.agent_id)
-    const pmSays = modelEnv(pmModel).ACP_EXPECT_MODEL || 'account default (none requested)'
-    // The lane the delivery legs above already carry. Omitting it here let
-    // `dispatch`'s `adapter = DEFAULT_ADAPTER` default win, so a graph
-    // declaring `outer_controller_adapter: "codex"` validated, normalized and
-    // drew on the page — and spawned `claude`. The dispatch log said `model=`
-    // and not `lane=`, so nothing in the record could contradict it either.
     const pmAdapter = declaredAdapter(graph.value, null, escalation.agent_id)
-    const pmEffort = declaredEffort(graph.value, null, escalation.agent_id)
-    const pmEffortSays = effortEnv(pmEffort).ACP_EXPECT_REASONING_EFFORT || 'unset (adapter default)'
-    if (!apply) {
-      log(`would dispatch ${escalation.agent_id} (pm) about ${escalation.triggers.length} problem(s) lane=${pmAdapter} model=${pmSays} effort=${pmEffortSays}`)
-    } else if (busy.has(escalation.agent_id)) {
-      log(`pm     already running on ${escalation.triggers.length} problem(s)`)
+    if (pmAdapter === 'agy' && (!pmModel || pmModel.trim() === '' || pmModel.trim() === INHERIT_ACCOUNT_DEFAULT)) {
+      log(`pm     refusing unpinned/inherit-account-default dispatch on agy outer controller ${escalation.agent_id}`)
     } else {
-      const { taskId, pid } = legOf(spawnLeg(repo,
-        { workItem: '', team: '', role: 'pm', agentId: escalation.agent_id, workflow: '', model: pmModel, adapter: pmAdapter, effort: pmEffort },
-        briefPath, stallSec, { spawnFn }))
-      // This seat needs the claim MORE than a worker does, not less. A worker's
-      // `assigned` lands seconds later and is a second witness; the controller's
-      // ledger append is a deliberate no-op, so no `assigned` or `delivered`
-      // ever carries this task id and the only witnesses it will ever have are
-      // a pulse row, a liveness file, pid-death or CLAIM_GRACE_SEC — which is
-      // exactly what ADR 0004 already says about this leg and what contract
-      // AC137 means by "claims and liveness files cover it". Both sentences
-      // presuppose a claim that was never recorded: escalate token A, and 250 ms
-      // later token B reaches an outer controller whose liveness file does not
-      // exist yet, so `busy` reads the seat as free and dispatches a second one
-      // on top of the first. Found by the release panel (AGY lane, 2026-08-10),
-      // round 2, in the fix for the worker-side version of this same defect.
-      recordDispatchClaim(repo, { agentId: escalation.agent_id, taskId, pid })
-      log(`start  ${escalation.agent_id} (pm) <- board task=${taskId} lane=${pmAdapter} model=${pmSays} effort=${pmEffortSays}`)
-      started.push({ action: 'dispatch', role: 'pm', agent_id: escalation.agent_id, task_id: taskId, model: pmModel, effort: pmEffort })
+      const pmSays = modelEnv(pmModel, pmAdapter).ACP_EXPECT_MODEL || 'account default (none requested)'
+      // The lane the delivery legs above already carry. Omitting it here let
+      // `dispatch`'s `adapter = DEFAULT_ADAPTER` default win, so a graph
+      // declaring `outer_controller_adapter: "codex"` validated, normalized and
+      // drew on the page — and spawned `claude`. The dispatch log said `model=`
+      // and not `lane=`, so nothing in the record could contradict it either.
+      const pmEffort = declaredEffort(graph.value, null, escalation.agent_id)
+      const pmEffortSays = effortEnv(pmEffort).ACP_EXPECT_REASONING_EFFORT || 'unset (adapter default)'
+      if (!apply) {
+        log(`would dispatch ${escalation.agent_id} (pm) about ${escalation.triggers.length} problem(s) lane=${pmAdapter} model=${pmSays} effort=${pmEffortSays}`)
+      } else if (busy.has(escalation.agent_id)) {
+        log(`pm     already running on ${escalation.triggers.length} problem(s)`)
+      } else {
+        const { taskId, pid } = legOf(spawnLeg(repo,
+          { workItem: '', team: '', role: 'pm', agentId: escalation.agent_id, workflow: '', model: pmModel, adapter: pmAdapter, effort: pmEffort },
+          briefPath, stallSec, { spawnFn }))
+        // This seat needs the claim MORE than a worker does, not less. A worker's
+        // `assigned` lands seconds later and is a second witness; the controller's
+        // ledger append is a deliberate no-op, so no `assigned` or `delivered`
+        // ever carries this task id and the only witnesses it will ever have are
+        // a pulse row, a liveness file, pid-death or CLAIM_GRACE_SEC — which is
+        // exactly what ADR 0004 already says about this leg and what contract
+        // AC137 means by "claims and liveness files cover it". Both sentences
+        // presuppose a claim that was never recorded: escalate token A, and 250 ms
+        // later token B reaches an outer controller whose liveness file does not
+        // exist yet, so `busy` reads the seat as free and dispatches a second one
+        // on top of the first. Found by the release panel (AGY lane, 2026-08-10),
+        // round 2, in the fix for the worker-side version of this same defect.
+        recordDispatchClaim(repo, { agentId: escalation.agent_id, taskId, pid })
+        log(`start  ${escalation.agent_id} (pm) <- board task=${taskId} lane=${pmAdapter} model=${pmSays} effort=${pmEffortSays}`)
+        started.push({ action: 'dispatch', role: 'pm', agent_id: escalation.agent_id, task_id: taskId, model: pmModel, effort: pmEffort })
       // Each escalated token is marked so the loop stops re-triggering on it
       // while the controller is thinking.
       // A finished route is flagged, not parked: `audit_requested` releases the
@@ -2855,6 +2885,7 @@ export function tick(repoArg, {
       mkdirSync(notesDir, { recursive: true })
       const recorded = escalation.identity.split('\n').filter((id) => !unmarked.has(id)).join('\n')
       writeFileSync(join(notesDir, 'latest.md'), `${new Date().toISOString()}\n${recorded}\n`)
+      }
     }
   }
 

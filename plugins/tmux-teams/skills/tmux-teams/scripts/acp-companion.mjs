@@ -45,6 +45,7 @@ if (!agentName || !cwd || !taskId || !briefFile) {
 const ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/
 const SESSION_ID_RE = /^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$/
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/
+const INHERIT_ACCOUNT_DEFAULT = 'inherit-account-default'
 if (!ID_RE.test(taskId)) {
   console.error(`invalid task id "${taskId}" — 1-64 chars, alphanumeric/_/-, starts alphanumeric or _`)
   process.exit(2)
@@ -584,6 +585,12 @@ function validateReceiptValue(value) {
     }
     if (value.requested_model !== null && (value.identity_status !== 'matched' || value.effective_identity === null)) {
       throw new Error('successful receipt lacks matched requested identity')
+    }
+    if (value.worker === 'agy' && (value.requested_model === null
+      || value.requested_model === INHERIT_ACCOUNT_DEFAULT
+      || value.identity_status !== 'matched'
+      || value.effective_identity === null)) {
+      throw new Error('successful agy receipt lacks matched pinned model identity')
     }
     if (value.performed_operation === 'new') {
       if (value.requested_operation !== 'new' || value.operation_witness !== 'new_session_id_returned'
@@ -1538,8 +1545,16 @@ const requestedModelOverride = assertPermittedModel(
 const requestedReasoningEffortOverride = requestedConfigOverride('ACP_REASONING_EFFORT', MAX_REASONING_EFFORT)
 // The EXPECTATION too: expecting a prohibited model is how a lane would be
 // certified as having run one.
+const rawExpectedModel = process.env.ACP_EXPECT_MODEL?.trim() || ''
 const requestedModelExpected = assertPermittedModel(
   process.env.ACP_EXPECT_MODEL?.trim() || requestedModelOverride, 'ACP_EXPECT_MODEL')
+if (agentName === 'agy' && (!requestedModelOverride || !rawExpectedModel
+  || requestedModelOverride === INHERIT_ACCOUNT_DEFAULT
+  || rawExpectedModel === INHERIT_ACCOUNT_DEFAULT
+  || requestedModelOverride !== rawExpectedModel)) {
+  console.error('agy requires explicit matching ACP_MODEL and ACP_EXPECT_MODEL (account-default/unpinned AGY dispatch is prohibited)')
+  process.exit(2)
+}
 const requestedReasoningEffortExpected = process.env.ACP_EXPECT_REASONING_EFFORT?.trim() || requestedReasoningEffortOverride
 const requestedModel = boundedText(requestedModelExpected, '', MAX_MODEL)
 const requestedReasoningEffort = boundedText(requestedReasoningEffortExpected, '', MAX_REASONING_EFFORT)
@@ -2291,7 +2306,7 @@ function enforceIdentity(session) {
   identity = extractIdentity(session)
   writeDispatchRecord()
   schedulePersistence()
-  if (identity.status === 'unverified' || identity.status === 'matched') return
+  if (agentName === 'agy' ? identity.status === 'matched' : (identity.status === 'unverified' || identity.status === 'matched')) return
   // Name the specific policy this lane just broke, not only the generic
   // mismatch — the gap this closes was reported with "no console.error, no
   // exit(2), no signal" that CLAUDE.md's fail-closed rule had been violated.

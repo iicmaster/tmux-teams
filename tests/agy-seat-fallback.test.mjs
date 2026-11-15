@@ -161,7 +161,7 @@ test('rateLimitEvidence refuses a task id before it builds any path', () => {
     { code: 'invalid_task_id' });
 });
 
-test('the SKILL.md documents the fallback as the one automatic downgrade, in the file\'s own terms', () => {
+test('the SKILL.md documents shared-quota retirement and rate-limit diagnosis in the file\'s own terms', () => {
   assert.match(agySkill, /## Rate-limit diagnosis — no automatic fallback \(shared quota pool\)/);
   // The section, isolated so a phrase found elsewhere in the file cannot stand
   // in for the rule.
