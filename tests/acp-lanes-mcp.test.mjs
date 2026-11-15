@@ -64,7 +64,7 @@ test('the declaration names a command AND a script that both exist', () => {
 })
 
 test('every declared lane is listed, and the list is pinned rather than derived from itself', () => {
-  const out = callTool('acp_lanes', {}, {})
+  const out = callTool('acp_lanes', {}, { HOME: '/definitely/nonexistent', PATH: process.env.PATH })
   const listed = out.lanes.map(l => l.lane).sort()
   // Pinned literally. A test that only compared this against Object.keys of the
   // same object would keep passing while a lane quietly disappeared.
@@ -83,7 +83,7 @@ test('every declared lane is listed, and the list is pinned rather than derived 
   // all four, per lane, literally.
   const declared = Object.fromEntries(out.lanes.map((l) => [l.lane, l]))
   for (const [lane, family, provider, model] of [
-    ['agy', 'gemini', 'google-antigravity', 'gemini-4-argon-high'],
+    ['agy', 'gemini', 'google-antigravity', 'gemini-4-carbon-high'],
     ['claude', 'claude', 'anthropic', 'claude-opus-5-5'],
     ['codex', 'openai', 'openai', 'gpt-6.1-sol'],
     ['deepseek', 'deepseek', 'qwen', 'deepseek-v4-flash-0731'],
@@ -102,6 +102,22 @@ test('declared facts need nothing from this machine', () => {
   const out = callTool('acp_lanes', {}, { HOME: '/nonexistent' })
   assert.equal(out.lanes.length, 8)
   assert.ok(out.lanes.every(l => l.adapter), 'a lane with no adapter package is not a usable answer')
+})
+
+test('per-machine lanes.json override updates reported model without changing unconfigured lanes', () => {
+  const home = mkdtempSync(join(tmpdir(), 'acp-lanes-override-model-'))
+  try {
+    mkdirSync(join(home, '.config', 'tmux-teams'), { recursive: true })
+    writeFileSync(join(home, '.config', 'tmux-teams', 'lanes.json'),
+      JSON.stringify({ agy: { model: 'gemini-4-hydrogen-high' } }))
+    const out = callTool('acp_lanes', {}, { HOME: home, PATH: '/definitely/nonexistent' })
+    const agyRow = out.lanes.find(l => l.lane === 'agy')
+    assert.equal(agyRow.model, 'gemini-4-hydrogen-high')
+    const codexRow = out.lanes.find(l => l.lane === 'codex')
+    assert.equal(codexRow.model, 'gpt-6.1-sol')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
 })
 
 test('a lane with no parent-side check says UNCHECKED, and never that it is fine', () => {
@@ -243,7 +259,7 @@ test('the agy lane checks that its binary is EXECUTABLE, not merely that a name 
   const cases = [
     ['a regular file with no execute bit', (path, fs) => { fs.writeFileSync(path, ''); fs.chmodSync(path, 0o644) }, 'invalid'],
     ['a directory with the right name', (path, fs) => fs.mkdirSync(path), 'invalid'],
-    ['a real executable', (path, fs) => { fs.writeFileSync(path, '#!/bin/sh\necho "1.4.0"\nexit 0\n'); fs.chmodSync(path, 0o755) }, 'valid'],
+    ['a real executable', (path, fs) => { fs.writeFileSync(path, '#!/bin/sh\necho "1.5.9"\nexit 0\n'); fs.chmodSync(path, 0o755) }, 'valid'],
   ]
   for (const [label, make, expected] of cases) {
     const home = mkdtempSync(join(tmpdir(), 'acp-lanes-agy-'))
@@ -271,18 +287,20 @@ test('the agy lane checks that its binary is EXECUTABLE, not merely that a name 
 })
 
 test('the agy lane reports executable_incompatible when binary version is older or unreadable', () => {
-  const home = mkdtempSync(join(tmpdir(), 'acp-lanes-agy-incompatible-'))
-  try {
-    const bin = join(home, '.local', 'bin')
-    mkdirSync(bin, { recursive: true })
-    writeFileSync(join(bin, 'agy'), '#!/bin/sh\necho "1.3.4"\nexit 0\n')
-    chmodSync(join(bin, 'agy'), 0o755)
-    const got = laneStatus('agy', REVIEW_PROFILES.agy, { HOME: home, PATH: '/definitely/nonexistent' })
-    assert.equal(got.configuration, 'invalid')
-    assert.equal(got.problem.code, 'executable_incompatible')
-    assert.ok(got.fixes.some(f => /agy update|version >= 1\.3\.5/.test(f)), 'got no upgrade-shaped fix')
-  } finally {
-    rmSync(home, { recursive: true, force: true })
+  for (const oldVersion of ['1.3.5', '1.5.7']) {
+    const home = mkdtempSync(join(tmpdir(), 'acp-lanes-agy-incompatible-'))
+    try {
+      const bin = join(home, '.local', 'bin')
+      mkdirSync(bin, { recursive: true })
+      writeFileSync(join(bin, 'agy'), `#!/bin/sh\necho "${oldVersion}"\nexit 0\n`)
+      chmodSync(join(bin, 'agy'), 0o755)
+      const got = laneStatus('agy', REVIEW_PROFILES.agy, { HOME: home, PATH: '/definitely/nonexistent' })
+      assert.equal(got.configuration, 'invalid')
+      assert.equal(got.problem.code, 'executable_incompatible')
+      assert.ok(got.fixes.some(f => /agy update|version >= 1\.5\.8/.test(f)), 'got no upgrade-shaped fix')
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
   }
 })
 
@@ -345,12 +363,14 @@ test('every diagnostic code the classifier can return has a constant sentence', 
   assert.equal(classify('zai review endpoint must be https://api.z.ai/api/anthropic'), 'endpoint_mismatch')
   assert.equal(classify('zai review endpoint requires an explicit provider credential'), 'credential_missing')
   assert.equal(classify('trusted agy executable not found'), 'executable_missing')
-  assert.equal(classify('trusted agy binary at /path/to/agy did not report a valid version (expected >= 1.3.5)'),
+  assert.equal(classify('trusted agy binary at /path/to/agy did not report a valid version (expected >= 1.5.8)'),
     'executable_incompatible')
-  assert.equal(classify('trusted agy binary at /path/to/agy is version 1.3.4, but version >= 1.3.5 is required for Gemini 4 Argon support'),
+  assert.equal(classify('trusted agy binary at /path/to/agy is version 1.5.7, but version >= 1.5.8 is required for Gemini 4 family support'),
+    'executable_incompatible')
+  assert.equal(classify('trusted agy binary at /path/to/agy is version 1.3.5, but version >= 1.5.8 is required for Gemini 4 family support'),
     'executable_incompatible')
   const incompatibleFixes = fixesFor('agy', REVIEW_PROFILES.agy, 'executable_incompatible')
-  assert.ok(incompatibleFixes.some(f => /agy update|version >= 1\.3\.5/.test(f)))
+  assert.ok(incompatibleFixes.some(f => /agy update|version >= 1\.5\.8/.test(f)))
   // Its own bucket, not a credential one: the offending value may be a header,
   // a model config or an oversized total, and three of those four repairs have
   // nothing to do with a credential.
@@ -2440,14 +2460,16 @@ test('laneAvailability, readinessReport and acp_lanes apply the agy version gate
     // Provide bunx launcher on PATH
     const env = { HOME: home, PATH: `${binDir}${delimiter}${process.env.PATH}` }
 
-    // 1. Incompatible version (< 1.3.5)
-    const incompatible = laneAvailability('agy', REVIEW_PROFILES.agy, env, {
-      agyVersionResolver: () => '1.3.4',
-    })
-    assert.equal(incompatible.available, false)
-    assert.equal(incompatible.blocking[0].code, 'executable_incompatible')
-    assert.equal(incompatible.blocking[0].missing, 'agy')
-    assert.ok(incompatible.needs.includes('agy'))
+    // 1. Incompatible version (< 1.5.8)
+    for (const oldVersion of ['1.3.5', '1.5.7']) {
+      const incompatible = laneAvailability('agy', REVIEW_PROFILES.agy, env, {
+        agyVersionResolver: () => oldVersion,
+      })
+      assert.equal(incompatible.available, false)
+      assert.equal(incompatible.blocking[0].code, 'executable_incompatible')
+      assert.equal(incompatible.blocking[0].missing, 'agy')
+      assert.ok(incompatible.needs.includes('agy'))
+    }
 
     // 2. Unreadable version
     const unreadable = laneAvailability('agy', REVIEW_PROFILES.agy, env, {
@@ -2456,22 +2478,22 @@ test('laneAvailability, readinessReport and acp_lanes apply the agy version gate
     assert.equal(unreadable.available, false)
     assert.equal(unreadable.blocking[0].code, 'executable_incompatible')
 
-    // 3. Compatible version (>= 1.3.5)
+    // 3. Compatible version (>= 1.5.8)
     const compatible = laneAvailability('agy', REVIEW_PROFILES.agy, env, {
-      agyVersionResolver: () => '1.3.5',
+      agyVersionResolver: () => '1.5.8',
     })
     assert.equal(compatible.available, true)
     assert.equal(compatible.blocking.length, 0)
 
     // 4. readinessReport reflects the compatibility gate in callableLanes
     const reportIncompatible = readinessReport({ agy: REVIEW_PROFILES.agy }, env, {
-      agyVersionResolver: () => '1.3.4',
+      agyVersionResolver: () => '1.5.7',
     })
     assert.deepEqual(reportIncompatible.callableLanes, [])
     assert.equal(reportIncompatible.lanes[0].available, false)
 
     const reportCompatible = readinessReport({ agy: REVIEW_PROFILES.agy }, env, {
-      agyVersionResolver: () => '1.4.0',
+      agyVersionResolver: () => '1.5.9',
     })
     assert.deepEqual(reportCompatible.callableLanes, ['agy'])
     assert.equal(reportCompatible.lanes[0].available, true)
@@ -2479,7 +2501,7 @@ test('laneAvailability, readinessReport and acp_lanes apply the agy version gate
     // 5. acp_lanes tool reflects the gate
     const reply = await handle({ jsonrpc: '2.0', id: 10, method: 'tools/call',
       params: { name: 'acp_lanes', arguments: {} } }, env, {
-      agyVersionResolver: () => '1.3.4',
+      agyVersionResolver: () => '1.5.7',
     })
     const payload = JSON.parse(reply.result.content[0].text)
     const agyLane = payload.lanes.find(l => l.lane === 'agy')
@@ -2491,7 +2513,7 @@ test('laneAvailability, readinessReport and acp_lanes apply the agy version gate
     let probeContacted = false
     const probeReply = await handle({ jsonrpc: '2.0', id: 11, method: 'tools/call',
       params: { name: 'acp_lane_probe', arguments: { lanes: ['agy'] } } }, env, {
-      agyVersionResolver: () => '1.3.4',
+      agyVersionResolver: () => '1.5.7',
       probeTransport: async () => { probeContacted = true; return { settled: 'handshake_ok' } },
     })
     assert.equal(probeContacted, false, 'the probe contacted an incompatible agy lane instead of refusing at the brake')
@@ -2503,7 +2525,7 @@ test('laneAvailability, readinessReport and acp_lanes apply the agy version gate
     let resolverCalls = 0
     const countingReply = await handle({ jsonrpc: '2.0', id: 12, method: 'tools/call',
       params: { name: 'acp_lanes', arguments: {} } }, env, {
-      agyVersionResolver: () => { resolverCalls++; return '1.3.5' },
+      agyVersionResolver: () => { resolverCalls++; return '1.5.8' },
     })
     assert.equal(resolverCalls, 1, `agyVersionResolver was called ${resolverCalls} times instead of once`)
     const countingPayload = JSON.parse(countingReply.result.content[0].text)
@@ -2514,7 +2536,7 @@ test('laneAvailability, readinessReport and acp_lanes apply the agy version gate
     let probeResolverCalls = 0
     const countingProbeReply = await handle({ jsonrpc: '2.0', id: 13, method: 'tools/call',
       params: { name: 'acp_lane_probe', arguments: { lanes: ['agy'] } } }, env, {
-      agyVersionResolver: () => { probeResolverCalls++; return '1.3.5' },
+      agyVersionResolver: () => { probeResolverCalls++; return '1.5.8' },
       probeTransport: async () => ({ settled: 'handshake_ok' }),
     })
     assert.equal(probeResolverCalls, 1, `agyVersionResolver was called ${probeResolverCalls} times in probe instead of once`)
@@ -2599,7 +2621,7 @@ test('an AGY override with prohibited model fails as lane_prohibited first and a
     ...REVIEW_PROFILES.agy,
     model: 'gemini-3.1',
   }, process.env, {
-    agyVersionResolver: () => { resolverCalled = true; return '1.3.4' },
+    agyVersionResolver: () => { resolverCalled = true; return '1.5.7' },
   })
   assert.equal(availability.available, false)
   assert.equal(availability.blocking[0].code, 'lane_prohibited')

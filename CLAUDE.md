@@ -212,20 +212,36 @@ one SSOT** and wins if the two ever disagree.
 
 ## Model policy for every ACP route
 
-- Every tmux-teams AGY route defaults to `gemini-4-argon-high` (Master,
-  2026-10-17, moved off `gemini-3.7-flash-high`; previously moved off 3.6 on
-  2026-08-16). The measurement that prompted the 2026-08-16 move is worth
-  keeping: the release panel of 2026-08-15 recorded the adapter ADVERTISING
-  `gemini-3.7-flash-high` while this repo still pinned 3.6 — the set-and-
-  acknowledge succeeded, so the lane really did run 3.6, but the adapter's own
-  default had moved underneath the pin and nothing here had noticed. On
-  2026-10-17 `agy` 1.3.5 replaced `gemini-3.7-flash-*` with `gemini-4-argon-*`
-  and `gemini-3.8-flash-*`. The probe transcript further down still shows the
-  3.6 strings; it is a record of what was measured that day and stays as
-  written. Gemini 3.1
-  variants are prohibited for ACP planning, review, and delivery work; fail
-  closed if a configured or acknowledged AGY model is Gemini 3.1, and never
-  fall back to it.
+- Every tmux-teams AGY route supports the Gemini 4 family on `agy >= 1.5.8`
+  (Master, 2026-11-15, moved off `gemini-4-argon-high` after measuring live
+  `agy` 1.5.9 / `antigravity-acp@1.2.0` advertising 22 options):
+  - **Thinker / reviewer / advisor routes** (`REVIEW_PROFILES.agy`,
+    `$agy-advisor`, controller, evaluator, critique) default to
+    `gemini-4-carbon-high` (recommended default thinker).
+  - **Worker / execution routes** default to `gemini-4-hydrogen-high`.
+  - **Always pass both `ACP_MODEL` and `ACP_EXPECT_MODEL` explicitly** on AGY
+    dispatches: `agy` 1.5.9 `session/new` advertises `currentValue:
+    "gemini-4-carbon-medium"` when unpinned, so omitting them silently drops a
+    dispatch onto Carbon Medium instead of Carbon High or Hydrogen High.
+  - **Supported Gemini options on `agy >= 1.5.8`**: `gemini-4-carbon-{low,medium,high}`,
+    `gemini-4-argon-{low,medium,high}`, `gemini-4-hydrogen-{low,medium,high,xhigh}`,
+    `gemini-pro-orchestrator`, `gemini-pro-orchestrator-argon`, and
+    `gemini-3.8-flash-{low,medium,high}`.
+  - **No automatic quota fallback**: Antigravity now shares one quota pool
+    across all Gemini seats, so `agy-seat-fallback.mjs` keeps rate-limit log
+    classification (`rate-limited`) while retiring `SEAT_FALLBACKS` / automatic
+    seat switching (2026-11-15).
+  - Earlier moves and measurements remain part of the record: on 2026-08-16 we
+    moved off 3.6 because the 2026-08-15 release panel recorded the adapter
+    ADVERTISING `gemini-3.7-flash-high` while this repo still pinned 3.6 — the
+    set-and-acknowledge succeeded, so the lane really did run 3.6, but the
+    adapter's own default had moved underneath the pin and nothing here had
+    noticed; on 2026-10-17 `agy` 1.3.5 replaced `gemini-3.7-flash-*` with
+    `gemini-4-argon-*` and `gemini-3.8-flash-*`. The probe transcript further
+    down still shows the 3.6 strings; it is a record of what was measured that
+    day and stays as written. Gemini 3.1 variants are prohibited for ACP
+    planning, review, and delivery work; fail closed if a configured or
+    acknowledged AGY model is Gemini 3.1, and never fall back to it.
 - Determine agent progress from ACP/protocol/process state. Elapsed time alone
   is never proof that a delivery worker or reviewer is stalled.
 - A reviewer or read-only planning lane is read-only and cannot launch delivery

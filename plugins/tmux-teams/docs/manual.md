@@ -518,7 +518,7 @@ transport-independent:
 |---|---|---|
 | codex | ACP — `@agentclientprotocol/codex-acp@1.1.7` (drives the installed CLI; frontier model verified) | tmux |
 | claude | ACP — `@agentclientprotocol/claude-agent-acp` (pass `ANTHROPIC_MODEL=claude-opus-5-5`) | tmux |
-| agy | ACP — `antigravity-acp@1.2.0` (community adapter, 1.0.0 source-audited 2026-07-21, bumped 2026-09-30; needs `bun`; ToS risk — see the ACP transport lane section of [SKILL.md](../skills/tmux-teams/SKILL.md)) | tmux |
+| agy | ACP — `antigravity-acp@1.2.0` with `agy >= 1.5.8` (community adapter, 1.0.0 source-audited 2026-07-21, bumped 2026-09-30; default worker `gemini-4-hydrogen-high`, default thinker/reviewer `gemini-4-carbon-high`, always set `ACP_MODEL` + `ACP_EXPECT_MODEL` explicitly so `session/new` does not stay on `gemini-4-carbon-medium`; needs `bun`; ToS risk — see the ACP transport lane section of [SKILL.md](../skills/tmux-teams/SKILL.md)) | tmux |
 
 The Gemini worker lane has been removed. The companion rejects that retired
 public agent name even when `ACP_CMD` is set, preventing an override from
@@ -626,13 +626,15 @@ node plugins/tmux-teams/skills/tmux-teams/scripts/kms.mjs recall <repo> [terms..
   with a small CLI (`init` / `append` / `read`): typed entries under two caps,
   three exit codes, and a digest whose exact bytes the brief a worker receives
   is built from. The board is a contract, not a data structure.
-- **The AGY quota fallback** (`agy-seat-fallback.mjs`) — measured from the
-  2026-10-21 quota death: when the gemini-4 seat hits the provider limit
-  (RESOURCE_EXHAUSTED / 429 evidence in the lane's runner log or liveness
-  record), the seat falls back to the gemini-3.8 flash seat at the SAME effort
-  tier immediately and tells the operator. The codex and claude siblings keep
-  their never-downgrade rules; rate-limit evidence is this exception's only
-  trigger.
+- **The AGY rate-limit classifier** (`agy-seat-fallback.mjs`) — `rate-limited`
+  detects `RESOURCE_EXHAUSTED` / `429` evidence in the lane's runner log or
+  liveness record (measured from the 2026-10-21 quota death where liveness
+  reported only `protocol_error`). **Automatic quota fallback is retired
+  (2026-11-15)**: Antigravity now shares one quota pool across all Gemini seats
+  (`SEAT_FALLBACKS = {}`, `seat` exits `2`), so rate-limited AGY runs stop and
+  report the reset window rather than switching to `gemini-3.8-flash-*`. The
+  codex and claude siblings also keep their never-downgrade rules, and Gemini
+  3.1 remains banned.
 
 The plugin also ships an MCP server for the operator — lane discovery and
 status, plus a live lane-health preflight added by the 2026-08-20 amendment

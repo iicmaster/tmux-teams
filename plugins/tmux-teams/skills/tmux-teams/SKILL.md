@@ -64,7 +64,8 @@ families found the two files disagreeing.
 
 A present but invalid declaration fails closed. WIP is always the worker count; it is not a
 second number in the declaration. `inherit-account-default` requests no model
-and must never be displayed as a verified model.
+and must never be displayed as a verified model (and is rejected pre-spawn for
+`adapter: "agy"` routes).
 
 Admit work through the general ledger writer. `opened` is legal only as the
 first event and names the first receiving dispatcher and team. The example
@@ -451,6 +452,29 @@ the prompt. `ACP_EXPECT_MODEL` and `ACP_EXPECT_REASONING_EFFORT` remain
 available for an explicit identity witness; when omitted, each selector is
 also treated as its expected value. An unavailable option, rejected value, or
 non-applied response fails closed before prompt delivery.
+
+For the `agy` lane (`antigravity-acp@1.2.0` with `agy >= 1.5.8`), unset Codex-only
+effort variables (`ACP_REASONING_EFFORT` / `ACP_EXPECT_REASONING_EFFORT`) and
+set **both `ACP_MODEL` and `ACP_EXPECT_MODEL` explicitly** (`acp-dispatch.mjs`,
+`acp-companion.mjs`, and `workflow-graph.mjs` reject unpinned, mismatched, or
+`inherit-account-default` AGY dispatches pre-spawn). Live `agy` 1.5.9
+`session/new` starts on `gemini-4-carbon-medium` when unpinned, so omitting them
+would silently drop the run onto Carbon Medium:
+
+- Worker / execution default: `gemini-4-hydrogen-high`
+- Thinker / evaluator / `$agy-advisor` recommended default: `gemini-4-carbon-high`
+- Supported Gemini options (`agy >= 1.5.8`): `gemini-4-carbon-{low,medium,high}`,
+  `gemini-4-argon-{low,medium,high}`, `gemini-4-hydrogen-{low,medium,high,xhigh}`,
+  `gemini-pro-orchestrator`, `gemini-pro-orchestrator-argon`, and
+  `gemini-3.8-flash-{low,medium,high}` (Gemini 3.1 variants remain prohibited).
+
+```bash
+AGY_BIN="$(command -v agy || echo "$HOME/.local/bin/agy")"
+env -u ACP_REASONING_EFFORT -u ACP_EXPECT_REASONING_EFFORT \
+  AGY_BIN="$AGY_BIN" AGY_SKIP_DOWNLOAD=1 \
+  ACP_MODEL="gemini-4-hydrogen-high" ACP_EXPECT_MODEL="gemini-4-hydrogen-high" \
+  node <skill-root>/scripts/acp-dispatch.mjs agy <repo> <task-id> <brief-file> [stall-sec]
+```
 
 The claude adapter's endpoint and model are fully environment-driven; it is not
 limited to Anthropic-hosted models. A real ACP outbox round-trip was verified

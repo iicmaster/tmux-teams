@@ -48,7 +48,14 @@ test('a Gemini 3.1 or retired gpt-6-sol reviewer model is refused rather than ru
   ]) {
     assert.throws(() => assertPermittedModel(name, 'probe'), /prohibited model on tmux-teams review routes/, name)
   }
-  for (const name of ['gemini-4-argon-high', 'gemini-4-argon-medium', 'gemini-4-argon-low', 'gemini-3.8-flash-high', 'gemini-3.6-flash-high', 'gemini-3.10-pro', 'gpt-6-luna', 'gpt-6.1-sol', null]) {
+  for (const name of [
+    'gemini-4-carbon-high', 'gemini-4-carbon-medium', 'gemini-4-carbon-low',
+    'gemini-4-argon-high', 'gemini-4-argon-medium', 'gemini-4-argon-low',
+    'gemini-4-hydrogen-xhigh', 'gemini-4-hydrogen-high', 'gemini-4-hydrogen-medium', 'gemini-4-hydrogen-low',
+    'gemini-pro-orchestrator', 'gemini-pro-orchestrator-argon',
+    'gemini-3.8-flash-high', 'gemini-3.8-flash-medium', 'gemini-3.8-flash-low',
+    'gemini-3.6-flash-high', 'gemini-3.10-pro', 'gpt-6-luna', 'gpt-6.1-sol', null,
+  ]) {
     assert.equal(assertPermittedModel(name, 'probe'), name)
   }
   for (const profile of Object.values(REVIEW_PROFILES)) {
@@ -64,7 +71,8 @@ test('immutable ACP profiles pin providers, models, argv, and AGY plan mode', ()
   assert.deepEqual(REVIEW_PROFILES.qwen.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
   assert.deepEqual(REVIEW_PROFILES.claude.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
   assert.deepEqual(REVIEW_PROFILES.codex.command, ['npx', '-y', '@agentclientprotocol/codex-acp@1.1.7'])
-  assert.deepEqual(REVIEW_PROFILES.agy.config, { model: 'gemini-4-argon-high', mode: 'plan' })
+  assert.deepEqual(REVIEW_PROFILES.agy.config, { model: 'gemini-4-carbon-high', mode: 'plan' })
+  assert.equal(REVIEW_PROFILES.agy.displayModel, 'agy/gemini-4-carbon-high')
   assert.deepEqual(REVIEW_PROFILES.kimi.config, { model: 'opus', mode: 'plan' })
   assert.equal(REVIEW_PROFILES.kimi.displayModel, 'kimi/opus')
   assert.deepEqual(REVIEW_PROFILES.qwen.config, { model: 'qwen3.8-max-preview', mode: 'plan' })
@@ -284,10 +292,10 @@ test('environment is allowlisted, provider-scoped, and launch settings are injec
     env: { ...source, AGY_BIN: '/evil/agy' },
     settingsLoader: () => ({ mode: 'unsafe', transport: 'acp' }),
     agyBinaryResolver: () => '/trusted/agy',
-    agyVersionResolver: () => '1.4.0',
+    agyVersionResolver: () => '1.5.9',
   })
   assert.deepEqual(launch.command, ['bunx', 'antigravity-acp@1.2.0'])
-  assert.deepEqual(launch.settings, { mode: 'plan', transport: 'acp', model: 'gemini-4-argon-high' })
+  assert.deepEqual(launch.settings, { mode: 'plan', transport: 'acp', model: 'gemini-4-carbon-high' })
   assert.equal(launch.env.AGY_BIN, '/trusted/agy')
   assert.equal(launch.env.AGY_SKIP_DOWNLOAD, '1')
   assert.throws(() => loadProfileSettings('agy', () => 'bad'), /must return an object/)
@@ -302,17 +310,20 @@ test('buildAcpLaunch protects gate-owned AGY_BIN and AGY_SKIP_DOWNLOAD against l
       problems: [],
     }),
     agyBinaryResolver: () => '/trusted/agy',
-    agyVersionResolver: () => '1.4.0',
+    agyVersionResolver: () => '1.5.9',
   })
   assert.equal(launch.env.AGY_BIN, '/trusted/agy', 'AGY_BIN was replaced by overrideEnv')
   assert.equal(launch.env.AGY_SKIP_DOWNLOAD, '1', 'AGY_SKIP_DOWNLOAD was replaced by overrideEnv')
 })
 
 test('assertCompatibleAgyBinary fails closed on unreadable or incompatible agy versions and accepts compatible ones', () => {
-  // Codex review bot finding: agy versions below 1.3.5 cannot serve Gemini 4 Argon
-  // and must fail with an actionable upgrade path. Unreadable versions must fail closed.
+  // agy versions below 1.5.8 cannot serve the full Gemini 4 family and must
+  // fail with an actionable upgrade path. Unreadable versions must fail closed.
   // Both throwsites must attach code: 'config' so review-gate marks it lane_rejected.
-  assert.equal(MINIMUM_AGY_VERSION, '1.3.5')
+  assert.equal(MINIMUM_AGY_VERSION, '1.5.8')
+  const laneSetupSrc = readFileSync(join(ROOT, 'plugins', 'tmux-teams', 'skills', 'party-mode', 'scripts', 'lane-setup.mjs'), 'utf8')
+  assert.match(laneSetupSrc, /\bMINIMUM_AGY_VERSION\b/, 'lane-setup.mjs must derive its repair floor from MINIMUM_AGY_VERSION')
+  assert.doesNotMatch(laneSetupSrc, /expected >= 1\.3\.5/, 'lane-setup.mjs left a stale 1.3.5 version literal')
   assert.throws(
     () => assertCompatibleAgyBinary('/path/to/agy', { versionResolver: () => null }),
     error => error instanceof TypeError && /did not report a valid version/.test(error.message) && error.code === 'config',
@@ -323,20 +334,23 @@ test('assertCompatibleAgyBinary fails closed on unreadable or incompatible agy v
     error => error instanceof TypeError && /did not report a valid version/.test(error.message) && error.code === 'config',
     'an empty agy binary version was accepted',
   )
-  assert.throws(
-    () => assertCompatibleAgyBinary('/path/to/agy', { versionResolver: () => '1.3.4' }),
-    error => error instanceof TypeError && /version >= 1.3.5 is required/.test(error.message) && error.code === 'config',
-    'an older agy binary was accepted',
+  for (const oldVersion of ['1.3.5', '1.5.7']) {
+    assert.throws(
+      () => assertCompatibleAgyBinary('/path/to/agy', { versionResolver: () => oldVersion }),
+      error => error instanceof TypeError && /version >= 1\.5\.8 is required for Gemini 4 family support/.test(error.message) && error.code === 'config',
+      `older agy binary ${oldVersion} was accepted`,
+    )
+  }
+  assert.doesNotThrow(
+    () => assertCompatibleAgyBinary('/path/to/agy', { versionResolver: () => '1.5.8' }),
   )
   assert.doesNotThrow(
-    () => assertCompatibleAgyBinary('/path/to/agy', { versionResolver: () => '1.3.5' }),
+    () => assertCompatibleAgyBinary('/path/to/agy', { versionResolver: () => '1.5.9' }),
   )
-  assert.doesNotThrow(
-    () => assertCompatibleAgyBinary('/path/to/agy', { versionResolver: () => '1.4.0' }),
-  )
-  assert.equal(compareSemver('1.3.4', '1.3.5'), -1)
-  assert.equal(compareSemver('1.3.5', '1.3.5'), 0)
-  assert.equal(compareSemver('1.4.0', '1.3.5'), 1)
+  assert.equal(compareSemver('1.3.5', '1.5.8'), -1)
+  assert.equal(compareSemver('1.5.7', '1.5.8'), -1)
+  assert.equal(compareSemver('1.5.8', '1.5.8'), 0)
+  assert.equal(compareSemver('1.5.9', '1.5.8'), 1)
 
   // buildProfileEnv fails closed when agy binary version is unreadable with code: 'config'
   assert.throws(

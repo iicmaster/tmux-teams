@@ -329,3 +329,106 @@ test('a palette for a seat not on the team, or for the outer controller, is stil
     workflows: [{ workflow_id: 'full', name: 'Full', route: ['control', 'build'] }],
   })), /outer controller/)
 })
+
+// ── shared Antigravity Gemini quota & mandatory pinned AGY identity ──────────
+
+test('same-pool AGY Gemini Carbon-to-Hydrogen palette is refused even with distinct custom bucket labels', () => {
+  const omittedReason = rejected(graphWith({
+    teams: [
+      teamOf('build', ['b_w1'], {
+        seats: {
+          b_w1: {
+            palette: [
+              paletteEntry('gemini-4-carbon-high', { adapter: 'agy' }),
+              paletteEntry('gemini-4-hydrogen-high', { adapter: 'agy' }),
+            ],
+          },
+        },
+      }),
+      teamOf('verify', ['v_w1']),
+    ],
+  }))
+  assert.match(omittedReason, /agy/)
+  assert.match(omittedReason, /consecutive palette entries in bucket/)
+
+  const labeledReason = rejected(graphWith({
+    teams: [
+      teamOf('build', ['b_w1'], {
+        seats: {
+          b_w1: {
+            palette: [
+              paletteEntry('gemini-4-carbon-high', { adapter: 'agy', bucket: 'carbon' }),
+              paletteEntry('gemini-4-hydrogen-high', { adapter: 'agy', bucket: 'hydrogen' }),
+            ],
+          },
+        },
+      }),
+      teamOf('verify', ['v_w1']),
+    ],
+  }))
+  assert.match(labeledReason, /agy Gemini palette entry 0/)
+  assert.match(labeledReason, /share quota bucket "agy"/)
+
+  // Cross-adapter fallback (agy Gemini -> codex) validates and enforces canonical bucket "agy".
+  const crossAdapter = accepted(graphWith({
+    teams: [
+      teamOf('build', ['b_w1'], {
+        seats: {
+          b_w1: {
+            palette: [
+              paletteEntry('gemini-4-carbon-high', { adapter: 'agy', bucket: 'agy' }),
+              paletteEntry('gpt-6.1-sol', { adapter: 'codex' }),
+            ],
+          },
+        },
+      }),
+      teamOf('verify', ['v_w1']),
+    ],
+  }))
+  const seat = crossAdapter.teams[0].agents.find((agent) => agent.agent_id === 'b_w1')
+  assert.equal(seat.palette[0].bucket, 'agy')
+  assert.equal(seat.palette[1].bucket, 'codex')
+})
+
+test('inherit-account-default is refused on any resolved AGY controller, role, seat, or palette entry', () => {
+  assert.match(rejected(graphWith({
+    outer_controller_adapter: 'agy',
+    outer_controller_model: 'inherit-account-default',
+  })), /outer controller runs on agy.*inherit-account-default/)
+
+  assert.match(rejected(graphWith({
+    teams: [
+      {
+        ...teamOf('build', ['b_w1']),
+        models: { dispatcher: 'model-d', worker: 'inherit-account-default', evaluator: 'model-e' },
+        adapters: { worker: 'agy' },
+      },
+      teamOf('verify', ['v_w1']),
+    ],
+  })), /agy seat b_w1.*inherit-account-default/)
+
+  assert.match(rejected(graphWith({
+    teams: [
+      teamOf('build', ['b_w1'], {
+        seats: { b_w1: { adapter: 'agy', model: 'inherit-account-default' } },
+      }),
+      teamOf('verify', ['v_w1']),
+    ],
+  })), /agy seat b_w1.*inherit-account-default/)
+
+  assert.match(rejected(graphWith({
+    teams: [
+      teamOf('build', ['b_w1'], {
+        seats: {
+          b_w1: {
+            palette: [
+              paletteEntry('inherit-account-default', { adapter: 'agy' }),
+              paletteEntry('gpt-6.1-sol', { adapter: 'codex' }),
+            ],
+          },
+        },
+      }),
+      teamOf('verify', ['v_w1']),
+    ],
+  })), /palette entry 0 on the agy seat b_w1.*inherit-account-default/)
+})

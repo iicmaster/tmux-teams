@@ -1339,7 +1339,7 @@ test('an incompatible agy binary version is marked as a deterministic config err
     buildProfileEnv: (p) => {
       if (p === 'agy' || p?.id === 'agy') {
         throw Object.assign(
-          new TypeError("trusted agy binary at /mock/bin/agy is version 1.3.4, but version >= 1.3.5 is required"),
+          new TypeError("trusted agy binary at /mock/bin/agy is version 1.5.7, but version >= 1.5.8 is required for Gemini 4 family support"),
           { code: 'config' },
         )
       }

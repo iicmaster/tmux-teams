@@ -712,12 +712,27 @@ export function pidAlive(pid) {
 // Gemini 3.1 ban, and Master's 2026-09-30 retirement of `gpt-6-sol` (only
 // `gpt-6.1-sol` may be dispatched).
 const PROHIBITED_MODEL = /(?:^|[^0-9a-z])(?:gemini[-_ ]?3\.1|gpt[-_ ]?6[-_ ]?sol)(?:[^0-9]|$)/i
+const INHERIT_ACCOUNT_DEFAULT = 'inherit-account-default'
 
 function assertPermittedModel(value, name) {
   if (typeof value === 'string' && PROHIBITED_MODEL.test(value)) {
     throw Object.assign(
       new Error(`${name}: prohibited model on tmux-teams routes (Gemini 3.1 is banned; gpt-6-sol is retired — the Codex frontier is gpt-6.1-sol), got ${value}`),
       { code: 'prohibited_model' },
+    )
+  }
+}
+
+function assertPinnedAgyIdentity(worker, env) {
+  if (worker !== 'agy') return
+  const requested = typeof env.ACP_MODEL === 'string' ? env.ACP_MODEL.trim() : ''
+  const expected = typeof env.ACP_EXPECT_MODEL === 'string' ? env.ACP_EXPECT_MODEL.trim() : ''
+  if (!requested || !expected
+    || requested === INHERIT_ACCOUNT_DEFAULT || expected === INHERIT_ACCOUNT_DEFAULT
+    || requested !== expected) {
+    throw Object.assign(
+      new Error('agy dispatch requires explicit matching ACP_MODEL and ACP_EXPECT_MODEL (account-default/unpinned AGY dispatch is prohibited)'),
+      { code: 'unpinned_agy_identity' },
     )
   }
 }
@@ -730,6 +745,7 @@ export function spawnDetached(worker, cwd, taskId, briefFile, stallSec,
   // after either leaves state behind for a lane that was never allowed.
   assertPermittedModel(env.ACP_MODEL, 'ACP_MODEL')
   assertPermittedModel(env.ACP_EXPECT_MODEL, 'ACP_EXPECT_MODEL')
+  assertPinnedAgyIdentity(worker, env)
   const spawnedAtIso = new Date().toISOString()
   // Retire the PREDECESSOR's outbox before the new lane starts.
   //
@@ -1035,7 +1051,7 @@ export function belongsToThisRun(record, spawnedAtMs, expectedNonce, nowMs = Dat
 // dispatch that just minted the nonce, so it always has one and never falls
 // back.
 
-async function watchBoot(child, cwd, taskId, bootMs, spawnedAtMs, spawnNonce) {
+async function watchBoot(child, cwd, taskId, bootMs, spawnedAtMs, spawnNonce, { worker = '' } = {}) {
   const path = livenessPath(cwd, taskId)
   const deadline = Date.now() + bootMs
   let exited = null
@@ -1075,8 +1091,21 @@ async function watchBoot(child, cwd, taskId, bootMs, spawnedAtMs, spawnNonce) {
     // A record proves what a lane SAID; `exited` proves what happened to it.
     // When they disagree the process wins.
     if (exited && exited.code !== 0) return { outcome: 'exited', record, ...exited }
+    const agyLane = worker === 'agy' || record?.worker === 'agy'
+    if (agyLane && record && record.identity_status === 'unverified') {
+      return {
+        outcome: 'terminal',
+        record: {
+          ...record,
+          termination_reason: record.termination_reason && record.termination_reason !== 'none'
+            ? record.termination_reason
+            : 'unverified_agy_identity',
+        },
+      }
+    }
+    const acceptedStatuses = agyLane ? ['matched'] : ['matched', 'unverified']
     if (record && record.effective_identity
-      && ['matched', 'unverified'].includes(record.identity_status)) {
+      && acceptedStatuses.includes(record.identity_status)) {
       return { outcome: 'live', record }
     }
     // A `completed` record that never carried an accepted identity is a lane
@@ -1226,7 +1255,7 @@ export async function main(argv, { out = console.log, err = console.error, spawn
   const spawnNonce = randomUUID()
   const child = spawnDetached(worker, cwd, taskId, resolve(briefFile), stallSec, { spawnFn, env, nonce: spawnNonce })
   const bootMs = bootSec * 1000
-  const booted = await watchBoot(child, cwd, taskId, bootMs, spawnedAtMs, spawnNonce)
+  const booted = await watchBoot(child, cwd, taskId, bootMs, spawnedAtMs, spawnNonce, { worker })
 
   const self = shQuote(join(HERE, 'acp-dispatch.mjs'))
   out(`dispatched ${worker} as ${taskId} — pid ${child.pid}, detached, own process group`)

@@ -126,6 +126,8 @@ const show = (value) => (typeof value === 'string' ? JSON.stringify(value) : Str
 // install on somebody else's model choice, so it names none: a real install
 // replaces each of these through the setup skill.
 const TEMPLATE_MODEL = 'inherit-account-default'
+export const INHERIT_ACCOUNT_DEFAULT = TEMPLATE_MODEL
+export const isAgyGeminiModel = (model) => typeof model === 'string' && /^gemini(?:$|[-_.\s])/i.test(model.trim())
 
 const team = (id, name) => ({
   team_id: id,
@@ -235,6 +237,9 @@ export function validateWorkflowGraph(value) {
     : (value.outer_controller_adapter == null || value.outer_controller_adapter === '' ? DEFAULT_ADAPTER : value.outer_controller_adapter)
   if (controller !== null && !ADAPTERS.has(controllerAdapter)) {
     return invalid(`the outer controller has an unknown adapter — one of ${[...ADAPTERS].join(', ')}`)
+  }
+  if (controller !== null && controllerAdapter === 'agy' && controllerModel === TEMPLATE_MODEL) {
+    return invalid('the outer controller runs on agy and declares outer_controller_model "inherit-account-default" — unpinned/account-default AGY dispatch is prohibited; pin an explicit Gemini model')
   }
   // Optional, unlike model and adapter: a controller with no declared effort
   // requests nothing, exactly like a graph written before this field existed.
@@ -456,7 +461,14 @@ export function validateWorkflowGraph(value) {
             return invalid(`team ${teamId} has an invalid bucket on palette entry ${index} of the seat ${agentId} — a bucket is 1 to ${MODEL_MAX} characters with no control characters`)
           }
           const entryAdapter = entry.adapter == null || entry.adapter === '' ? laneOf(role) : entry.adapter
-          const entryBucket = 'bucket' in entry ? entry.bucket : entryAdapter
+          if (entryAdapter === 'agy' && entry.model === TEMPLATE_MODEL) {
+            return invalid(`team ${teamId} declares palette entry ${index} on the agy seat ${agentId} with model "inherit-account-default" — unpinned/account-default AGY dispatch is prohibited`)
+          }
+          const canonicalAgyBucket = entryAdapter === 'agy' && isAgyGeminiModel(entry.model)
+          if (canonicalAgyBucket && 'bucket' in entry && entry.bucket !== 'agy') {
+            return invalid(`team ${teamId} declares bucket ${show(entry.bucket)} on agy Gemini palette entry ${index} of the seat ${agentId} — all agy Gemini models share quota bucket "agy"`)
+          }
+          const entryBucket = canonicalAgyBucket ? 'agy' : ('bucket' in entry ? entry.bucket : entryAdapter)
           // The rule the whole design turns on (ข้อ 3.5): two CONSECUTIVE entries
           // in one bucket draw on the same rate limit, so trying the second
           // right after the first spends a leg to learn nothing. Refused, not
@@ -505,12 +517,13 @@ export function validateWorkflowGraph(value) {
     // effort and display_model fall back to "nothing requested".
     const resolvePaletteEntry = (entry, role) => {
       const adapter = entry.adapter == null || entry.adapter === '' ? laneOf(role) : entry.adapter
+      const canonicalAgyBucket = adapter === 'agy' && isAgyGeminiModel(entry.model)
       return {
         model: entry.model,
         adapter,
         effort: entry.effort == null || entry.effort === '' ? null : entry.effort,
         display_model: entry.display_model == null || entry.display_model === '' ? null : entry.display_model,
-        bucket: 'bucket' in entry ? entry.bucket : adapter,
+        bucket: canonicalAgyBucket ? 'agy' : ('bucket' in entry ? entry.bucket : adapter),
       }
     }
     // The full resolved palette for a seat, or `null` for a seat that declared
@@ -556,6 +569,10 @@ export function validateWorkflowGraph(value) {
       }
       if (seenAgents.has(agentId)) return invalid(`agent_id ${agentId} is assigned more than once`)
       seenAgents.add(agentId)
+      const role = roleOf(agentId)
+      if (seatLane(agentId, role) === 'agy' && seatModel(agentId, role) === TEMPLATE_MODEL) {
+        return invalid(`team ${teamId} assigns agy seat ${agentId} (${role}) model "inherit-account-default" — unpinned/account-default AGY dispatch is prohibited`)
+      }
     }
     seenTeams.add(teamId)
     teams.push({

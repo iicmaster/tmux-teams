@@ -501,3 +501,44 @@ test('the escalation reason claims only what was counted, never that no entry re
     'the reason must not assert something this ledger contradicts — leg 2 reached the model')
   assert.match(plan.reason, /3 transport failure/)
 })
+
+test('same-pool Carbon-to-Hydrogen AGY Gemini fallback cannot validate or dispatch at runtime', () => {
+  const rejectedSamePool = validateWorkflowGraph({
+    ...BASE,
+    teams: [
+      teamOf({
+        seats: {
+          b_w1: {
+            palette: [
+              { model: 'gemini-4-carbon-high', adapter: 'agy', bucket: 'carbon' },
+              { model: 'gemini-4-hydrogen-high', adapter: 'agy', bucket: 'hydrogen' },
+            ],
+          },
+        },
+      }),
+      CONTROL_TEAM,
+    ],
+  })
+  assert.equal(rejectedSamePool.ok, false)
+
+  // Defense in depth: even an unvalidated in-memory resolved graph cannot step
+  // from gemini-4-carbon-high to gemini-4-hydrogen-high within the shared AGY pool.
+  const syntheticGraph = {
+    ...NO_PALETTE_GRAPH,
+    teams: NO_PALETTE_GRAPH.teams.map((team) => (team.team_id !== 'build' ? team : {
+      ...team,
+      agents: team.agents.map((agent) => (agent.agent_id !== 'b_w1' ? agent : {
+        ...agent,
+        model: 'gemini-4-carbon-high',
+        adapter: 'agy',
+        palette: [
+          { model: 'gemini-4-carbon-high', adapter: 'agy', effort: null, display_model: null, bucket: 'carbon' },
+          { model: 'gemini-4-hydrogen-high', adapter: 'agy', effort: null, display_model: null, bucket: 'hydrogen' },
+        ],
+      })),
+    })),
+  }
+  const plan = planFor(syntheticGraph, [...ADMITTED, ...failedLeg(1, false)])
+  assert.equal(plan.action, 'escalate')
+  assert.match(plan.reason, /quota bucket agy/)
+})

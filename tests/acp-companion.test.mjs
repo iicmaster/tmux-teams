@@ -1339,22 +1339,24 @@ concurrentTest('label-suffixed model option values (antigravity-acp shape) still
   )
 })
 
-concurrentTest('nested object model option values (agy 1.4.7 shape) still pin the bare id', async () => {
-  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-nested-model-'))
-  const protocolLog = join(cwd, 'nested-model.protocol.log')
-  const r = await asyncRun('task-nested-model', {
-    ACP_MODEL: 'gemini-4-argon-high',
-    MOCK_CONFIG_IDENTITY: '1',
-    MOCK_MODEL: 'gemini-4-argon-medium',
-    MOCK_MODEL_OPTIONS: 'gemini-4-argon-high,gemini-4-argon-medium,gemini-4-argon-low',
-    MOCK_MODEL_OPTIONS_NESTED: '1',
-    MOCK_PROTOCOL_LOG: protocolLog,
-  }, cwd)
-  assert.equal(r.status, 0, `nested model value exit 0 expected; stderr:\n${r.stderr}`)
-  const committed = receipt(cwd)
-  assert.equal(committed.value.requested_model, 'gemini-4-argon-high')
-  assert.equal(committed.value.effective_identity, 'gemini-4-argon-high')
-  assert.equal(committed.value.identity_status, 'matched')
+concurrentTest('nested object model option values (agy >= 1.4.7 shape) pin Gemini 4 Carbon, Hydrogen, Orchestrator, and Argon ids', async () => {
+  for (const model of ['gemini-4-carbon-high', 'gemini-4-hydrogen-high', 'gemini-pro-orchestrator', 'gemini-4-argon-high']) {
+    const cwd = mkdtempSync(join(tmpdir(), `acp-companion-nested-model-${model}-`))
+    const protocolLog = join(cwd, 'nested-model.protocol.log')
+    const r = await asyncRun(`task-nested-${model}`, {
+      ACP_MODEL: model,
+      MOCK_CONFIG_IDENTITY: '1',
+      MOCK_MODEL: 'gemini-4-carbon-medium',
+      MOCK_MODEL_OPTIONS: 'gemini-4-carbon-medium,gemini-4-carbon-high,gemini-4-hydrogen-high,gemini-4-hydrogen-xhigh,gemini-pro-orchestrator,gemini-pro-orchestrator-argon,gemini-4-argon-high,gemini-4-argon-medium',
+      MOCK_MODEL_OPTIONS_NESTED: '1',
+      MOCK_PROTOCOL_LOG: protocolLog,
+    }, cwd)
+    assert.equal(r.status, 0, `nested model value (${model}) exit 0 expected; stderr:\n${r.stderr}`)
+    const committed = receipt(cwd)
+    assert.equal(committed.value.requested_model, model)
+    assert.equal(committed.value.effective_identity, model)
+    assert.equal(committed.value.identity_status, 'matched')
+  }
 })
 
 concurrentTest('a model absent from even the label-suffixed list is still refused', async () => {
@@ -3210,6 +3212,66 @@ test('concurrent readers never observe partial liveness or dispatch JSON/text', 
   assert.equal(result.status, 0, `exit 0 expected; stderr:\n${result.stderr}`)
   assert.deepEqual(failures, [])
   JSON.parse(readFileSync(join(cwd, '.tmux-teams', 'liveness', `${taskId}.json`), 'utf8'))
+})
+
+concurrentTest('agy companion exits 2 before adapter launch when ACP_MODEL or ACP_EXPECT_MODEL is unpinned, mismatched, or sentinel', async () => {
+  const cases = [
+    ['omitted', {}],
+    ['only-model', { ACP_MODEL: 'gemini-4-carbon-high' }],
+    ['only-expect', { ACP_EXPECT_MODEL: 'gemini-4-carbon-high' }],
+    ['mismatch', { ACP_MODEL: 'gemini-4-carbon-high', ACP_EXPECT_MODEL: 'gemini-4-hydrogen-high' }],
+    ['sentinel', { ACP_MODEL: 'inherit-account-default', ACP_EXPECT_MODEL: 'inherit-account-default' }],
+  ]
+  for (const [label, extra] of cases) {
+    const cwd = mkdtempSync(join(tmpdir(), `acp-companion-agy-pin-${label}-`))
+    const dump = join(cwd, 'child-env.json')
+    const r = await asyncRun(`task-agy-${label}`, { ...extra, MOCK_ENV_DUMP: dump }, cwd, 30, 'agy')
+    assert.equal(r.status, 2, `${label}: expected exit 2, got ${r.status}; stderr:\n${r.stderr}`)
+    assert.match(r.stderr, /agy requires explicit matching ACP_MODEL and ACP_EXPECT_MODEL/)
+    assert.equal(existsSync(dump), false, `${label}: mock adapter launched despite unpinned AGY env`)
+  }
+})
+
+concurrentTest('receipt validation rejects succeeded agy receipts lacking matched pinned model identity', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-agy-receipt-'))
+  const profile = writeExecutionProfile(cwd)
+  const taskId = 'task-agy-receipt-check'
+  const first = await asyncRun(taskId, {
+    ACP_SESSION_RECEIPT_REQUIRED: '1',
+    ACP_SESSION_OPERATION: 'new',
+    ACP_EXECUTION_PROFILE: profile,
+    ACP_AGENT_ID: 'agy-worker',
+    ACP_MODEL: 'gemini-4-carbon-high',
+    ACP_EXPECT_MODEL: 'gemini-4-carbon-high',
+    MOCK_CONFIG_IDENTITY: '1',
+    MOCK_MODEL: 'gemini-4-carbon-high',
+    MOCK_MODEL_OPTIONS: 'gemini-4-carbon-high',
+  }, cwd, 30, 'mock')
+  assert.equal(first.status, 0, `baseline exit 0 expected; stderr:\n${first.stderr}`)
+  const firstDispatch = field(readFileSync(join(cwd, '.tmux-teams', 'dispatch', `${taskId}.md`), 'utf8'), 'dispatch_id')
+
+  for (const mutation of [
+    (value) => ({ ...value, worker: 'agy', requested_model: null, identity_status: 'unverified' }),
+    (value) => ({ ...value, worker: 'agy', identity_status: 'unverified' }),
+    (value) => ({ ...value, worker: 'agy', requested_model: 'inherit-account-default', effective_identity: 'inherit-account-default', identity_status: 'matched' }),
+  ]) {
+    const mutated = rewritePriorReceiptPair(cwd, firstDispatch, mutation)
+    rmSync(join(cwd, '.initial-agent-mode'), { force: true })
+    const retry = await asyncRun(taskId, {
+      ACP_SESSION_RECEIPT_REQUIRED: '1',
+      ACP_SESSION_OPERATION: 'load',
+      ACP_RESUME: 'sess_mock',
+      ACP_PRIOR_DISPATCH_ID: firstDispatch,
+      ACP_PRIOR_RECEIPT_DIGEST: digest(mutated.raw),
+      ACP_EXECUTION_PROFILE: profile,
+      ACP_AGENT_ID: 'agy-worker',
+      ACP_MODEL: 'gemini-4-carbon-high',
+      ACP_EXPECT_MODEL: 'gemini-4-carbon-high',
+    }, cwd, 30, 'agy')
+    assert.equal(retry.status, 2, `unpinned agy prior receipt was accepted; stderr:\n${retry.stderr}`)
+    assert.match(retry.stderr, /successful agy receipt lacks matched pinned model identity/)
+    assert.equal(existsSync(join(cwd, '.initial-agent-mode')), false)
+  }
 })
 
 test('independent companion cases', { concurrency: 4 }, async (t) => {

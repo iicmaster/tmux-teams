@@ -20,7 +20,7 @@
 // looks applied and is not.
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { REVIEW_PROFILES } from './review-profiles.mjs'
+import { REVIEW_PROFILES, MINIMUM_AGY_VERSION } from './review-profiles.mjs'
 import { OVERRIDABLE_FIELDS, OVERRIDE_PATH, loadLaneOverrides, OVERRIDE_PROBLEMS } from './lane-overrides.mjs'
 import { readinessReport, READINESS_PROBLEMS } from './lane-readiness.mjs'
 
@@ -43,7 +43,7 @@ const REPAIR = Object.freeze({
     `install the launcher, or use the other one:\n`
     + `      node lane-setup.mjs set ${lane} command '["npx","-y","<adapter-package>"]'`,
   executable_incompatible: () =>
-    `the executable version is below the required minimum (expected >= 1.3.5) — upgrade agy via 'agy update' or your package manager`,
+    `the executable version is below the required minimum (expected >= ${MINIMUM_AGY_VERSION}) — upgrade agy via 'agy update' or your package manager`,
   lane_prohibited: lane =>
     `the model configured for this lane is prohibited by policy — remove or update the model override in ${OVERRIDE_PATH}`,
   binary_absent: () => 'install it — the plugin invokes this directly and nothing here can substitute for it',

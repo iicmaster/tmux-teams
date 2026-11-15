@@ -9,11 +9,15 @@
 // so in the measured event the runner log was the ONLY source that matched. A
 // classifier that reads the liveness record alone misses every one of these.
 //
-// Master's order (2026-10-30): when the gemini-4 seat hits the provider limit,
-// fall back to the gemini-3.8 flash seat at the SAME effort tier IMMEDIATELY
-// and TELL the operator — the work keeps moving. The codex and claude siblings
-// keep their never-downgrade rules; this is the ordered exception, and
-// rate-limit evidence is its only trigger.
+// Master's order (2026-10-30, superseded 2026-11-15): initially a rate-limited
+// gemini-4 seat fell back to the gemini-3.8 flash seat at the same tier. On
+// 2026-11-15 Antigravity pools quota and reset windows across all Gemini seats
+// (`gemini-4-carbon-*`, `gemini-4-argon-*`, `gemini-4-hydrogen-*`,
+// `gemini-pro-orchestrator*`, and `gemini-3.8-flash-*`), so there is no
+// separate quota bucket to fall back to. Automatic seat downgrade is retired
+// (`SEAT_FALLBACKS` is empty), while `rateLimitEvidence` / `rate-limited` stays
+// so operators still distinguish provider `429` / `RESOURCE_EXHAUSTED` in the
+// runner log from `termination_reason: "protocol_error"` in liveness.
 import { realpathSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -24,21 +28,17 @@ export const USAGE = [
   '       node agy-seat-fallback.mjs rate-limited <cwd> <task-id>',
 ].join('\n')
 
-// Same tier on both sides, by construction: `high` maps to `high`, `medium` to
-// `medium`, `low` to `low`. A quota death is not a reason to change the
-// operator's effort choice, and a mapping table that could express a tier
-// change is a table that will eventually be asked to.
-export const SEAT_FALLBACKS = Object.freeze({
-  'gemini-4-argon-high': 'gemini-3.8-flash-high',
-  'gemini-4-argon-medium': 'gemini-3.8-flash-medium',
-  'gemini-4-argon-low': 'gemini-3.8-flash-low',
-})
+// Automatic fallback is retired (Master, 2026-11-15): Antigravity shares one
+// quota pool across all Gemini seats, so re-dispatching onto another Gemini
+// seat spends into the identical limit. Kept frozen and empty so callers cannot
+// mutate it at runtime.
+export const SEAT_FALLBACKS = Object.freeze({})
 
-// Null for ANYTHING else, and that set is load-bearing. The 3.8 flash seats
-// themselves map to null — there is no second hop, because the order that
-// authorises one fallback authorises exactly one. A 3.1 value maps to null
-// because `SEAT_FALLBACKS` cannot produce one, and no caller may ask this
-// table for what it structurally never contains.
+// Null for everything — automatic fallback is retired because Antigravity shares
+// one quota pool across all Gemini seats (`gemini-4-carbon-*`,
+// `gemini-4-argon-*`, `gemini-4-hydrogen-*`, `gemini-pro-orchestrator*`, and
+// `gemini-3.8-flash-*`). Kept exported for compatibility with callers and
+// guards that assert `hasOwnProperty` against `'constructor'`.
 export function fallbackSeat(model) {
   if (typeof model !== 'string') return null
   // `hasOwnProperty`, not a bare lookup: this map is a frozen object LITERAL,
@@ -137,8 +137,7 @@ async function main(argv, { out = console.log, err = console.error } = {}) {
     if (!a) { err(USAGE); return 2 }
     const seat = fallbackSeat(a)
     if (seat === null) {
-      err(`no fallback exists for seat "${a}" — the gemini-3.8 flash seats are the last hop, `
-        + 'and a seat outside the gemini-4 argon family is never downgraded to')
+      err(`no fallback exists for seat "${a}" — Antigravity shares one quota pool across all Gemini seats, so automatic fallback is retired`)
       return 2
     }
     out(seat)
