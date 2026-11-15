@@ -1339,22 +1339,24 @@ concurrentTest('label-suffixed model option values (antigravity-acp shape) still
   )
 })
 
-concurrentTest('nested object model option values (agy 1.4.7 shape) still pin the bare id', async () => {
-  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-nested-model-'))
-  const protocolLog = join(cwd, 'nested-model.protocol.log')
-  const r = await asyncRun('task-nested-model', {
-    ACP_MODEL: 'gemini-4-argon-high',
-    MOCK_CONFIG_IDENTITY: '1',
-    MOCK_MODEL: 'gemini-4-argon-medium',
-    MOCK_MODEL_OPTIONS: 'gemini-4-argon-high,gemini-4-argon-medium,gemini-4-argon-low',
-    MOCK_MODEL_OPTIONS_NESTED: '1',
-    MOCK_PROTOCOL_LOG: protocolLog,
-  }, cwd)
-  assert.equal(r.status, 0, `nested model value exit 0 expected; stderr:\n${r.stderr}`)
-  const committed = receipt(cwd)
-  assert.equal(committed.value.requested_model, 'gemini-4-argon-high')
-  assert.equal(committed.value.effective_identity, 'gemini-4-argon-high')
-  assert.equal(committed.value.identity_status, 'matched')
+concurrentTest('nested object model option values (agy >= 1.4.7 shape) pin Gemini 4 Carbon, Hydrogen, Orchestrator, and Argon ids', async () => {
+  for (const model of ['gemini-4-carbon-high', 'gemini-4-hydrogen-high', 'gemini-pro-orchestrator', 'gemini-4-argon-high']) {
+    const cwd = mkdtempSync(join(tmpdir(), `acp-companion-nested-model-${model}-`))
+    const protocolLog = join(cwd, 'nested-model.protocol.log')
+    const r = await asyncRun(`task-nested-${model}`, {
+      ACP_MODEL: model,
+      MOCK_CONFIG_IDENTITY: '1',
+      MOCK_MODEL: 'gemini-4-carbon-medium',
+      MOCK_MODEL_OPTIONS: 'gemini-4-carbon-medium,gemini-4-carbon-high,gemini-4-hydrogen-high,gemini-4-hydrogen-xhigh,gemini-pro-orchestrator,gemini-pro-orchestrator-argon,gemini-4-argon-high,gemini-4-argon-medium',
+      MOCK_MODEL_OPTIONS_NESTED: '1',
+      MOCK_PROTOCOL_LOG: protocolLog,
+    }, cwd)
+    assert.equal(r.status, 0, `nested model value (${model}) exit 0 expected; stderr:\n${r.stderr}`)
+    const committed = receipt(cwd)
+    assert.equal(committed.value.requested_model, model)
+    assert.equal(committed.value.effective_identity, model)
+    assert.equal(committed.value.identity_status, 'matched')
+  }
 })
 
 concurrentTest('a model absent from even the label-suffixed list is still refused', async () => {

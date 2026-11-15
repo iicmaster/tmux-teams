@@ -2731,15 +2731,18 @@ test('a prohibited model refuses the dispatch before a session exists', () => {
     'a retired-generation EXPECTATION was accepted')
 
   // And a permitted model still starts, or the guard is just an outage.
-  const ok = spawnSync(process.execPath,
-    [DISPATCH, 'mock', cwd, 'p-ok', join(cwd, 'brief.md'), '20'],
-    { cwd, encoding: 'utf8', timeout: 60000,
-      env: { ...laneEnv(), ACP_MODEL: 'gemini-4-argon-high', ACP_EXPECT_MODEL: 'gemini-4-argon-high' } })
-  assert.doesNotMatch(`${ok.stdout}${ok.stderr}`, /is prohibited on tmux-teams routes/,
-    'a permitted model was refused by the prohibition guard')
-  // The dispatched LINE, not the exit code — this command's success code is not
-  // 0 by convention and asserting one I had not checked is how the previous
-  // version of this line failed on a lane that had dispatched perfectly well.
-  assert.match(`${ok.stdout}${ok.stderr}`, /dispatched mock as p-ok/,
-    `a permitted model did not dispatch:\n${ok.stdout}${ok.stderr}`)
+  for (const permitted of ['gemini-4-carbon-high', 'gemini-4-hydrogen-high', 'gemini-pro-orchestrator', 'gemini-4-argon-high']) {
+    const taskId = `p-ok-${permitted.replace(/[^a-z0-9]/gi, '')}`
+    const ok = spawnSync(process.execPath,
+      [DISPATCH, 'mock', cwd, taskId, join(cwd, 'brief.md'), '20'],
+      { cwd, encoding: 'utf8', timeout: 60000,
+        env: { ...laneEnv(), ACP_MODEL: permitted, ACP_EXPECT_MODEL: permitted } })
+    assert.doesNotMatch(`${ok.stdout}${ok.stderr}`, /is prohibited on tmux-teams routes/,
+      `a permitted model (${permitted}) was refused by the prohibition guard`)
+    // The dispatched LINE, not the exit code — this command's success code is not
+    // 0 by convention and asserting one I had not checked is how the previous
+    // version of this line failed on a lane that had dispatched perfectly well.
+    assert.match(`${ok.stdout}${ok.stderr}`, new RegExp(`dispatched mock as ${taskId}`),
+      `a permitted model (${permitted}) did not dispatch:\n${ok.stdout}${ok.stderr}`)
+  }
 })

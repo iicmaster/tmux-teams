@@ -37,16 +37,25 @@ node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
   agy <cwd> <task-id> <brief-file> [stall-sec]
 ```
 
-`<model>` is the expanded id — `gemini-4-argon-high` unless the caller named
+`<model>` is the expanded id — `gemini-4-carbon-high` unless the caller named
 another seat, see Arguments below. It goes in BOTH assignments: the request
 without a matching expectation is a dispatch nobody verified. This command
 hardcoded `high` in both places while the Arguments table promised `medium` and
 `low`, so `$agy-advisor medium` ran high and produced a high receipt that
 MATCHED — a silently ignored seat is worse than a refused one.
 
-Measured 2026-10-17 against `agy` 1.3.5 rather than assumed: the lane accepts
-all three contract variables, writes a receipt, and reports
-`effective_identity: gemini-4-argon-high (matched)`.
+Measured 2026-11-15 against `agy` 1.5.9 and `antigravity-acp@1.2.0` rather than
+assumed: `session/new` advertises `currentValue: "gemini-4-carbon-medium"` and
+22 model options (`gemini-4-carbon-{medium,high,low}`,
+`gemini-4-argon-{medium,high,low}`, `gemini-4-hydrogen-{high,xhigh,medium,low}`,
+`gemini-pro-orchestrator`, `gemini-pro-orchestrator-argon`,
+`gemini-3.8-flash-{high,medium,low}`, six `claude-{opus,sonnet}-5-5-{low,medium,high}`,
+and `gpt-oss-120b-medium`), and `session/set_config_option` binds bare ids
+verbatim (`gemini-4-carbon-high`, `gemini-4-hydrogen-xhigh`,
+`gemini-pro-orchestrator`, `gemini-4-argon-high`). Because `session/new` starts
+on `gemini-4-carbon-medium`, setting BOTH `ACP_MODEL` and `ACP_EXPECT_MODEL`
+explicitly is load-bearing; the lane accepts all three contract variables,
+writes a receipt, and reports `effective_identity: gemini-4-carbon-high (matched)`.
 
 ## What differs from the Codex seat
 
@@ -82,7 +91,10 @@ above it walked straight into it, for the whole of v0.33.0's review cycle.
 
 ## Model policy — this is the part that fails closed
 
-The default is `gemini-4-argon-high` (Master, 2026-10-17, moved off `gemini-3.7-flash-high`).
+The recommended default thinker seat is `gemini-4-carbon-high` (Master,
+2026-11-15, moved off `gemini-4-argon-high`, which had replaced
+`gemini-3.7-flash-high` on 2026-10-17). Worker lanes elsewhere default to
+`gemini-4-hydrogen-high`.
 
 **Gemini 3.1 variants are PROHIBITED for planning, review and delivery work.**
 If a configured or acknowledged model is a 3.1 variant, fail the dispatch — do
@@ -92,14 +104,11 @@ Verify the ACKNOWLEDGED identity, never the requested one. The adapter's own
 default has moved underneath a pin before: a release panel recorded the adapter
 advertising 3.7 while this repository still pinned 3.6, and the set-and-
 acknowledge succeeded, so the lane really did run what it was told — but nothing
-would have noticed if it had not.
+would have noticed if it had not. On `agy` 1.5.9 an unrequested `session/new`
+defaults to `gemini-4-carbon-medium`, so leaving `ACP_MODEL` /
+`ACP_EXPECT_MODEL` unset would silently run the medium tier.
 
-The 3.1 prohibition above is untouched by the rate-limit fallback in the next
-section: the fallback maps gemini-4 seats to gemini-3.8 flash seats at the same
-tier only, so it can never reach a 3.1 value and the two sections cannot be
-read as contradicting each other.
-
-## Rate-limit fallback — the one automatic downgrade this seat takes
+## Rate-limit diagnosis — no automatic fallback (shared quota pool)
 
 Measured 2026-10-21: a real dispatch (`pmd-review-agy`,
 `ACP_MODEL=gemini-4-argon-high`) died on the Antigravity individual quota. The
@@ -111,63 +120,62 @@ herring**: it names the protocol frame the companion died on, not the provider
 condition underneath it, so the ONLY evidence is in the runner log. A
 classifier that read the liveness record alone would miss every one of these.
 
-The rule (Master, 2026-10-30): a gemini-4 seat that dies with rate-limit or
-quota evidence falls back IMMEDIATELY to the gemini-3.8 flash seat at the SAME
-effort tier — a `gemini-4-argon-high` seat falls back to `gemini-3.8-flash-high`,
-medium to medium, low to low — and the operator is TOLD before or with the
-re-dispatch, so the work keeps moving. An error that stops the consultation is
-the failure mode this section removes. `codex-advisor` says "Never downgrade
-for cost or quota" and `claude-advisor` says "Never downgrade for cost, quota
-or speed on your own initiative"; both keep their rules. This seat's quota
-fallback is the ordered exception, and the ONLY automatic downgrade it takes.
+The rule (Master, 2026-11-15, superseding the 2026-10-30 3.8 Flash fallback):
+Antigravity shares one quota pool across ALL Gemini seats
+(`gemini-4-carbon-*`, `gemini-4-argon-*`, `gemini-4-hydrogen-*`,
+`gemini-pro-orchestrator*`, and `gemini-3.8-flash-*` share the same remaining
+percentage and reset timestamp). Never downgrade or re-dispatch on another Gemini
+seat for cost or quota — aligned with `codex-advisor` ("Never downgrade for
+cost or quota") and `claude-advisor` ("Never downgrade for cost, quota or speed
+on your own initiative"). Automatic seat fallback is retired, and
+`agy-seat-fallback.mjs seat <model>` now exits `2` unconditionally.
+
+Use the classifier to separate quota deaths from protocol failures:
 
 ```bash
-# 1. Classify the failure. Exit 0 = rate-limited, the excerpt names the line
-#    and where it came from; exit 1 = no rate-limit evidence; exit 2 = usage
-#    or an invalid task id.
+# Classify the failure. Exit 0 = rate-limited, the excerpt names the line
+# and where it came from; exit 1 = no rate-limit evidence; exit 2 = usage
+# or an invalid task id.
 node <plugin-root>/skills/tmux-teams/scripts/agy-seat-fallback.mjs rate-limited <cwd> <task-id>
-
-# 2. Map the seat at the same effort tier. Prints the fallback id —
-#    `gemini-3.8-flash-high` here.
-node <plugin-root>/skills/tmux-teams/scripts/agy-seat-fallback.mjs seat gemini-4-argon-high
 ```
 
-3. Re-dispatch the SAME brief under the SAME task id with BOTH `ACP_MODEL` and
-   `ACP_EXPECT_MODEL` set to the fallback seat — the dispatch command at the
-   top of this file with `<model>` replaced by the fallback id in BOTH
-   assignments, everything else unchanged: `AGY_BIN`, `AGY_SKIP_DOWNLOAD`, the
-   receipt requirement, the cleared reasoning variables. The SAME task id is
-   deliberate: the failed predecessor is settled, admission retires its
-   leaves, and the outbox path the brief already names must not move.
-4. Verify the new receipt's acknowledged identity IS the 3.8 seat (`matched`),
-   and label the answer to the operator as coming from the fallback seat — a
-   consultation that quietly changed seats is the same lie as a wrong identity.
-
-**ONE HOP ONLY.** If the gemini-3.8 seat is ALSO rate-limited, stop and report
-both events with their reset windows. Never a second hop, never another family,
-never 3.1.
-
-**Rate-limit evidence is the ONLY trigger for an automatic downgrade.**
-Identity refusals, prohibited models, a missing binary, an unreadable brief —
-each keeps failing closed exactly as before. Nothing here licenses a downgrade
-for cost, speed or convenience.
+When `rate-limited` exits `0`, STOP and report the quota excerpt and reset
+window to the operator. Never hop automatically to another Gemini seat, another
+family, or Gemini 3.1. Identity refusals, prohibited models, a missing binary,
+and an unreadable brief keep failing closed as before.
 
 ## Arguments
 
 ```
-$agy-advisor              # default seat: gemini-4-argon-high
-$agy-advisor high         # gemini-4-argon-high
-$agy-advisor medium       # gemini-4-argon-medium
-$agy-advisor low          # gemini-4-argon-low
-$agy-advisor flash-high   # gemini-3.8-flash-high
-$agy-advisor flash-medium # gemini-3.8-flash-medium
-$agy-advisor flash-low    # gemini-3.8-flash-low
+$agy-advisor                     # default seat: gemini-4-carbon-high (thinker)
+$agy-advisor high                # gemini-4-carbon-high
+$agy-advisor medium              # gemini-4-carbon-medium
+$agy-advisor low                 # gemini-4-carbon-low
+$agy-advisor carbon-high         # gemini-4-carbon-high
+$agy-advisor carbon-medium       # gemini-4-carbon-medium
+$agy-advisor carbon-low          # gemini-4-carbon-low
+$agy-advisor argon-high          # gemini-4-argon-high
+$agy-advisor argon-medium        # gemini-4-argon-medium
+$agy-advisor argon-low           # gemini-4-argon-low
+$agy-advisor hydrogen-xhigh      # gemini-4-hydrogen-xhigh
+$agy-advisor hydrogen-high       # gemini-4-hydrogen-high
+$agy-advisor hydrogen-medium     # gemini-4-hydrogen-medium
+$agy-advisor hydrogen-low        # gemini-4-hydrogen-low
+$agy-advisor orchestrator        # gemini-pro-orchestrator (Orchestrator Carbon)
+$agy-advisor orchestrator-argon  # gemini-pro-orchestrator-argon (Orchestrator Argon)
+$agy-advisor flash-high          # gemini-3.8-flash-high
+$agy-advisor flash-medium        # gemini-3.8-flash-medium
+$agy-advisor flash-low           # gemini-3.8-flash-low
 ```
 
-A bare alias is expanded; the full `gemini-4-argon-*` or `gemini-3.8-flash-*`
-id is what reaches the adapter and what the receipt must show. Any other name is
+A bare alias is expanded, or any of the 15 full Gemini ids above
+(`gemini-4-carbon-*`, `gemini-4-argon-*`, `gemini-4-hydrogen-*`,
+`gemini-pro-orchestrator`, `gemini-pro-orchestrator-argon`,
+`gemini-3.8-flash-*`) may be passed verbatim into BOTH `ACP_MODEL` and
+`ACP_EXPECT_MODEL`, and the receipt must show that exact id. Any other name is
 a usage error — do not pass a model through unrecognised, because an unknown
 value either fails the dispatch or silently seats something nobody chose.
+`claude-*`, `gpt-oss-*`, and `gemini-3.1*` remain refused.
 
 ### `--party <id>` — seat a saved bmad-party-mode roster
 
@@ -203,10 +211,13 @@ and free to proceed with the invented cast. Never substitute silently: someone
 who typed `--party` asked for a specific room.
 
 **This said "One seat" until 2026-08-19, and it was false the day it was
-written.** Probed against `agy` 1.3.5 (2026-10-17), the adapter advertises
-THIRTEEN values: the Gemini 4 Argon and Gemini 3.8 Flash seats at
-high/medium/low, six Anthropic 5.5 seats (Opus and Sonnet at low/medium/high),
-and a GPT-OSS one (earlier adapter versions advertised fourteen, including
+written.** Probed against `agy` 1.5.9 (2026-11-15), the adapter advertises
+TWENTY-TWO values: the ten Gemini 4 Carbon, Argon, and Hydrogen seats (Carbon
+and Argon at low/medium/high; Hydrogen at low/medium/high/xhigh), two
+Orchestrator seats (`gemini-pro-orchestrator` and `gemini-pro-orchestrator-argon`),
+three Gemini 3.8 Flash seats at low/medium/high, six Anthropic 5.5 seats (Opus
+and Sonnet at low/medium/high), and a GPT-OSS one (`agy` 1.3.5 on 2026-10-17
+advertised thirteen; earlier adapter versions advertised fourteen, including
 3.7/3.6/3.5 Flash and both Gemini 3.1 Pro seats). The sentence came from an
 assumption instead of a measurement.
 

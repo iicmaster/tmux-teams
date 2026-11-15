@@ -60,7 +60,7 @@ import { laneModel } from './lane-models.mjs'
 import { loadLaneOverrides, applyLaneOverride } from './lane-overrides.mjs'
 import { REVIEW_PROFILES, ROUTED_PROFILES, buildAcpLaunch, assertPermittedModel, AGY_BINARY_NAME,
   AGY_BINARY_CANDIDATE_FORMS, acceptedCredentialNames, unresolvedInterpreterFor, acceptedRoutedKeys,
-  agyBinaryVersion, agyEnvironment } from './review-profiles.mjs'
+  agyBinaryVersion, agyEnvironment, MINIMUM_AGY_VERSION } from './review-profiles.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PLUGIN_ROOT = join(HERE, '..', '..', '..')
@@ -197,7 +197,7 @@ export function classify(message, { fileKind = null } = {}) {
   // ceiling. One code for both would have kept saying the false half.
   if (/environment is over budget/.test(text)) return 'environment_over_budget'
   if (/executable not found/.test(text)) return 'executable_missing'
-  if (/did not report a valid version|required for Gemini 4 Argon support/.test(text)) return 'executable_incompatible'
+  if (/did not report a valid version|required for Gemini 4 (?:family|Argon) support/.test(text)) return 'executable_incompatible'
   if (/override file is unusable/.test(text)) return 'settings_unreadable'
   if (/prohibited model/.test(text)) return 'lane_prohibited'
   return 'unclassified'
@@ -430,8 +430,8 @@ export function fixesFor(id, profile, code, { envKey = null } = {}) {
       return executableFixes(id, profile)
     case 'executable_incompatible':
       return [
-        `the \`agy\` binary on this machine is incompatible with Gemini 4 Argon — `
-        + `upgrade agy via 'agy update' or your package manager (version >= 1.3.5 required)`,
+        `the \`agy\` binary on this machine is incompatible with the Gemini 4 family — `
+        + `upgrade agy via 'agy update' or your package manager (version >= ${MINIMUM_AGY_VERSION} required)`,
       ]
     case 'lane_prohibited':
       return ['this model is prohibited by policy — remove the override or reconfigure to a supported model']

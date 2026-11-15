@@ -116,7 +116,8 @@ Ask in this order. Each numbered item is one question.
    agent takes deadlocks and reads every finished route as a whole; it belongs
    to no team and does no team's work, so it needs its own id.
 3. `outer_controller_model` — see **Asking for a model** below. This seat is a
-   position like any other and may not be left blank.
+   position like any other and may not be left blank (for `adapter: "agy"`,
+   recommend `gemini-4-carbon-high`).
 4. **How many teams.** This answer is what tells you when the per-team loop
    below is finished, so ask it before you ask anything about a team. Recommend
    the number of distinct stages the user's own description implies, and 1 when
@@ -140,15 +141,18 @@ complete, and stop at the count answered in 4)
    worker may spawn its own sub-agents, so parallelism inside one worker is
    still available without widening the pool.
 8. `models.dispatcher` — recommend a model this repo can point at: one already
-   declared in an earlier answer or in the existing file. When the repo offers
+   declared in an earlier answer or in the existing file (for `adapter: "agy"`,
+   a Gemini 4 thinker seat such as `gemini-4-carbon-high`). When the repo offers
    no candidate, ship the question with the user's own options and **no**
    recommended default, and say why: a model name recalled from memory is shape-
    valid, so it passes the checker and fails only at dispatch time.
-9. `models.worker` — recommend the model just chosen for the dispatcher, and say
-   so plainly ("same as the dispatcher").
+9. `models.worker` — recommend the worker default when declared or otherwise
+   the model just chosen for the dispatcher, and say so plainly (for `adapter:
+   "agy"` with `agy >= 1.5.8`, `gemini-4-hydrogen-high` is the default worker).
 10. `models.evaluator` — recommend a different, stronger model where one is
-    available. Reason: an evaluator running the same model that produced the work
-    agrees with itself more often than it should.
+    available (for `adapter: "agy"`, `gemini-4-carbon-high` is the recommended
+    default thinker). Reason: an evaluator running the same model that produced
+    the work agrees with itself more often than it should.
 
 **The workflows**
 
@@ -185,6 +189,13 @@ stating to the user:
 - A placeholder such as `inherit-account-default` is shape-valid and
   meaning-empty. Treat one as a blank and ask again. It is a template's way of
   saying "nobody has chosen yet".
+- For `adapter: "agy"` (`agy >= 1.5.8`): the default worker is
+  `gemini-4-hydrogen-high` and the recommended default thinker
+  (`outer_controller_model`, `models.evaluator`) is `gemini-4-carbon-high`.
+  Supported Gemini IDs are `gemini-4-carbon-{low,medium,high}`,
+  `gemini-4-argon-{low,medium,high}`, `gemini-4-hydrogen-{low,medium,high,xhigh}`,
+  `gemini-pro-orchestrator`, `gemini-pro-orchestrator-argon`, and
+  `gemini-3.8-flash-{low,medium,high}`. Gemini 3.1 variants are prohibited.
 
 ## Writing the file
 
@@ -268,6 +279,10 @@ the validator enforces at load:
   rate-limit family (it defaults to the entry's lane). Two neighbours in one
   bucket are not a fallback: they draw on the same limit, so trying the second
   right after the first spends an attempt to learn nothing. `A, B, A` is fine.
+  All `agy` Gemini seats (`gemini-4-*`, `gemini-pro-orchestrator*`,
+  `gemini-3.8-flash-*`) share one Antigravity quota pool (`bucket: "agy"`), so
+  palette fallbacks from an `agy` seat must switch adapter/family rather than
+  switching between Gemini tiers.
 
 A palette does **not** cost extra worker seats — `wip_limit` counts
 `worker_ids`, never candidates. An eight-entry palette on a one-worker team is

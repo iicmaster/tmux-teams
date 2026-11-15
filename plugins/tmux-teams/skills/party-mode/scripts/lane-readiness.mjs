@@ -197,7 +197,7 @@ export function laneAvailability(id, profile, env = process.env, {
   }
 
   // The agy binary check when the lane is agy. The agy adapter spawns the host's
-  // agy binary, which must be installed and compatible (>= 1.3.5 for Gemini 4 Argon).
+  // agy binary, which must be installed and compatible (>= 1.5.8 for the Gemini 4 family).
   // Skipped when the model is already prohibited by policy.
   if (id === 'agy' && !prohibited) {
     const detailed = trustedAgyBinaryDetailed(env)

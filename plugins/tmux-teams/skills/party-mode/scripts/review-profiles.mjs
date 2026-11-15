@@ -73,11 +73,11 @@ const NINEROUTER_ENDPOINT = freeze({ scheme: 'http', host: '127.0.0.1', port: '2
 
 export const REVIEW_PROFILES = freeze({
   agy: {
-    id: 'agy', provider: 'google-antigravity', family: 'gemini', model: 'gemini-4-argon-high',
-    displayModel: 'agy/gemini-4-argon-high',
+    id: 'agy', provider: 'google-antigravity', family: 'gemini', model: 'gemini-4-carbon-high',
+    displayModel: 'agy/gemini-4-carbon-high',
     reviewMode: 'plan', command: ['bunx', 'antigravity-acp@1.2.0'],
     adapterPackage: 'antigravity-acp@1.2.0',
-    config: { model: 'gemini-4-argon-high', mode: 'plan' },
+    config: { model: 'gemini-4-carbon-high', mode: 'plan' },
   },
   kimi: {
     id: 'kimi', provider: 'kimi', family: 'kimi', model: 'opus',
@@ -988,7 +988,7 @@ export function unresolvedInterpreterFor(id, { env = process.env } = {}) {
   return found ? shebangInterpreterMissing(found, { pathValue: executablePath(env) }) : null
 }
 
-export const MINIMUM_AGY_VERSION = '1.3.5'
+export const MINIMUM_AGY_VERSION = '1.5.8'
 
 export function parseSemver(str) {
   const match = String(str).trim().match(/^v?(\d+)\.(\d+)\.(\d+)/)
@@ -1054,7 +1054,7 @@ export function assertCompatibleAgyBinary(binaryPath, { versionResolver = agyBin
     throw Object.assign(
       new TypeError(
         `trusted agy binary at ${binaryPath} is version ${version}, but version >= ${MINIMUM_AGY_VERSION} ` +
-        `is required for Gemini 4 Argon support; upgrade agy via 'agy update' or your package manager`
+        `is required for Gemini 4 family support; upgrade agy via 'agy update' or your package manager`
       ),
       { code: 'config' },
     )

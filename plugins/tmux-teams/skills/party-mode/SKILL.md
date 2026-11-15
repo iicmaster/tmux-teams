@@ -171,6 +171,7 @@ Frontier always (Master directive 2026-07-14 — supersedes the earlier thinking
 
 - **ALL Codex subagents** — thinking-heavy AND execution-heavy alike — MUST use the current latest Codex frontier model, currently `gpt-6.1-sol` at **ultra** reasoning effort (frontier moved from `gpt-6-sol` on 2026-09-30). **Pass it explicitly — never inherit it.** This line used to claim the CLI default already was ultra; on 2026-07-29 `~/.codex/config.toml` read `model_reasoning_effort = "low"`, so every dispatch that trusted the sentence ran at the bottom of the range while this document promised the top. The model is correct in that file and the effort is not, which is exactly the shape no reader can see. Set it on the invocation, and on an ACP lane verify it came back with `ACP_EXPECT_REASONING_EFFORT`. Do not route any Codex work to Spark, inherited defaults, `OMX_DEFAULT_FRONTIER_MODEL`, or older frontier aliases — quota conservation is NOT a reason to downgrade unless Master explicitly says so.
 - **ALL Claude subagents** (critique personas, review lanes, execution agents) MUST use Opus at maximum reasoning effort — not sonnet/haiku.
+- **AGY / Gemini subagents (`agy >= 1.5.8`)**: route thinking/critique/review lanes to `gemini-4-carbon-high` (recommended default thinker) and worker/execution lanes to `gemini-4-hydrogen-high` (`gemini-4-carbon-*`, `gemini-4-argon-*`, `gemini-4-hydrogen-{low,medium,high,xhigh}`, `gemini-pro-orchestrator`, `gemini-pro-orchestrator-argon`, and `gemini-3.8-flash-*` are supported). **Pass `ACP_MODEL` and `ACP_EXPECT_MODEL` explicitly** on every AGY ACP dispatch because `agy` 1.5.9 `session/new` defaults to `gemini-4-carbon-medium` when unpinned. Gemini 3.1 variants are prohibited.
 - Non-Codex/non-Claude runtimes map the same intent to their best available frontier model. If the runtime cannot select models, state the limitation and continue with the best available role/tool. Do not pretend the requested routing happened.
 - When the latest Codex frontier model changes, update the literal current model in this section; do not silently fall back to stale aliases.
 - Role choice still matters: pair thinking work with `architect`, `analyst`, `critic`, or `test-engineer`; pair execution work with `executor`, `build-fixer`, or focused implementation agents.
@@ -288,6 +289,7 @@ Debug task add-on:
 
 Spawn 3-5 critique agents in one concurrent batch when the runtime supports it.
 For Codex critique agents, use the current latest Codex frontier model only, currently `gpt-6.1-sol` at `ultra` reasoning effort.
+For AGY critique agents, use `gemini-4-carbon-high` (recommended default thinker) with both `ACP_MODEL` and `ACP_EXPECT_MODEL` set explicitly (`agy >= 1.5.8`; Gemini 3.1 is prohibited).
 For non-Codex runtimes, use the best available frontier-equivalent thinking model when model selection is available.
 Each critique agent MUST receive a self-contained prompt containing:
 
@@ -352,6 +354,7 @@ Each task title should include owner, file or file set, and dependency batch.
 
 Dispatch execution agents in concurrent batches only when their write scopes do not conflict.
 For Codex coding/refactoring/file-edit/implementation subagents, use the current latest Codex frontier model — currently `gpt-6.1-sol` at `ultra` reasoning effort, the same as thinking work (Frontier always; see Subagent Model Routing). Do not route execution to Codex Spark.
+For AGY worker/execution subagents, use `gemini-4-hydrogen-high` (default worker) with both `ACP_MODEL` and `ACP_EXPECT_MODEL` set explicitly (`agy >= 1.5.8`; never leave `session/new` unpinned on `gemini-4-carbon-medium`).
 For non-Codex runtimes, use the closest fast execution model when model selection is available.
 
 Each execution brief MUST contain:
@@ -507,7 +510,7 @@ Test cases `TC-PA-01`..`TC-PA-33` live in `references/regression-checks.md` — 
 - Transport escape: a review plugin, MCP tool, tmux/TUI worker, or raw CLI review replaces the bundled ACP gate.
 - Isolation leak: the review packet is not static, the trusted target path came from packet data, the target or host data roots are mounted, the temporary workspace is shared with the target, the lane ran a mode other than the one its profile declares, MCP/built-in tools are enabled, or ACP permission requests are not denied. Plan mode is the default and `zai` is the one declared exception; what makes a lane read-only is the zero-tool contract, not the word, so the exception changes the mode and nothing else.
 - Schema theater: a structurally valid report is treated as semantic approval without PM review of the actual findings.
-- Model-routing drift: any Codex subagent — thinking or execution — uses anything other than `gpt-6.1-sol` at `ultra` reasoning effort, any Claude subagent uses anything other than Opus at maximum reasoning effort, or non-Codex routing silently misreports unavailable model selection.
+- Model-routing drift: any Codex subagent — thinking or execution — uses anything other than `gpt-6.1-sol` at `ultra` reasoning effort, any Claude subagent uses anything other than Opus at maximum reasoning effort, any AGY subagent uses Gemini 3.1 or omits `ACP_MODEL`/`ACP_EXPECT_MODEL` (falling back to `agy` 1.5.9's `gemini-4-carbon-medium` default instead of `gemini-4-carbon-high` for thinking or `gemini-4-hydrogen-high` for workers), or non-Codex routing silently misreports unavailable model selection.
 - Simpler-path bypass: workflow expands to multi-agent execution without proving the complexity signal still warrants it.
 - Ledger theater: evidence or verification ledger exists but does not change decisions or rule anything in/out.
 - Sync drift: repo source, installed target, and Codex target disagree after a targeted sync.

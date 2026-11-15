@@ -198,7 +198,22 @@ nobody can plan from.
   is ALSO rate-limited stops and reports both reset windows. Rate-limit
   evidence is the ONLY trigger — identity refusals and prohibited models keep
   failing closed, the codex and claude siblings keep their never-downgrade
-  rules, and Gemini 3.1 stays banned.
+  rules, and Gemini 3.1 stays banned. **Retired 2026-11-15**: Antigravity now
+  shares one quota pool across all Gemini seats, so `agy-seat-fallback.mjs`
+  retires `SEAT_FALLBACKS` (`seat` exits `2`) while keeping `rate-limited` log
+  classification to surface reset windows cleanly.
+- **2026-11-15 — Gemini 4 family support across AGY seats (`agy >= 1.5.8`).**
+  Measured live `agy` 1.5.9 + `antigravity-acp@1.2.0` advertising 22 options,
+  including `gemini-4-carbon-{low,medium,high}`, `gemini-4-argon-{low,medium,high}`,
+  `gemini-4-hydrogen-{low,medium,high,xhigh}`, `gemini-pro-orchestrator`,
+  `gemini-pro-orchestrator-argon`, and `gemini-3.8-flash-{low,medium,high}`.
+  Master's order: split thinker (`gemini-4-carbon-high` recommended default for
+  `REVIEW_PROFILES.agy`, `$agy-advisor`, controllers, evaluators, critique)
+  and worker (`gemini-4-hydrogen-high` default), always set `ACP_MODEL` and
+  `ACP_EXPECT_MODEL` explicitly (`session/new` otherwise starts on
+  `gemini-4-carbon-medium`), bump `MINIMUM_AGY_VERSION` to `'1.5.8'`, keep
+  Gemini 3.1 banned, and retire automatic quota fallback due to the shared
+  quota pool.
 
 ## The last release — v0.32.0, shipped
 
@@ -378,7 +393,10 @@ Measured before the skill was written rather than after: the lane accepts
 `INITIAL_AGENT_MODE=read-only`, `ACP_SESSION_RECEIPT_REQUIRED=1` and
 `ACP_SESSION_OPERATION=new`, writes a receipt, and reports
 `effective_identity: gemini-3.7-flash-high (matched)` (AGY frontier moved to
-`gemini-4-argon-high` on 2026-10-17, Master's order). So it is held to the same
+`gemini-4-argon-high` on 2026-10-17, and on 2026-11-15 for `agy >= 1.5.8` to
+the Gemini 4 family with `gemini-4-carbon-high` as recommended default thinker /
+`$agy-advisor` / review seat and `gemini-4-hydrogen-high` as default worker,
+Master's order). So it is held to the same
 enforcement as the Codex seat rather than excused like the Claude one, which has
 no mode switch. It has no reasoning-effort dimension, so its identity is the
 bare model id where Codex reads `gpt-6.1-sol[ultra]` (Codex frontier moved
