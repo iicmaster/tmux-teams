@@ -12,10 +12,10 @@
 > source, no publish script and nothing that could notice it had gone stale —
 > so it went stale, repeatedly, and nobody could tell without opening it.
 
-Current release: **0.49.0** — the version stamped in this tree, in flight on
+Current release: **0.50.0** — the version stamped in this tree, in flight on
 a pull request and not yet tagged.
-`main` carries **v0.48.0**, tagged at the
-MERGED sha `1d6da9b` (the v0.45.0 lesson stands: tag the merged sha, never
+`main` carries **v0.49.0**, tagged at the
+MERGED sha `30a0dda` (the v0.45.0 lesson stands: tag the merged sha, never
 the branch tip — tagging the wrong one ships a sha `main` does not hold).
 Anyone installing from the marketplace resolves the last TAG, not this line.
 
@@ -202,7 +202,7 @@ nobody can plan from.
   shares one quota pool across all Gemini seats, so `agy-seat-fallback.mjs`
   retires `SEAT_FALLBACKS` (`seat` exits `2`) while keeping `rate-limited` log
   classification to surface reset windows cleanly.
-- **2026-11-15 — Gemini 4 family support across AGY seats (`agy >= 1.5.8`).**
+- **v0.50.0 — Gemini 4 family support across AGY seats (`agy >= 1.5.8`), plus newcomer-first README and operating manual (`#102`).**
   Measured live `agy` 1.5.9 + `antigravity-acp@1.2.0` advertising 22 options,
   including `gemini-4-carbon-{low,medium,high}`, `gemini-4-argon-{low,medium,high}`,
   `gemini-4-hydrogen-{low,medium,high,xhigh}`, `gemini-pro-orchestrator`,
