@@ -95,9 +95,9 @@ test('the skill does not claim an answer layer it has not measured', () => {
   // claim is exactly what a reader takes as "the advisor answers".
   assert.doesNotMatch(skill, /fresh-dispatch path is\s+measured end to end/,
     'the skill claims an end-to-end measurement it does not have')
-  assert.match(skill, /answer layer is NOT measured on this machine/,
+  assert.match(skill, /answer layer\s+is NOT measured/,
     'the skill must state which layer is unmeasured')
-  assert.match(skill, /do not read a matched receipt as a working answer/i,
+  assert.match(skill, /Do not read a matched\s+receipt as a working answer/,
     'the receipt-vs-answer distinction is not stated')
   assert.match(skill, /does not attest\s+`ACP_PERMISSIONS`/,
     'the receipt is described as attesting the deny policy')

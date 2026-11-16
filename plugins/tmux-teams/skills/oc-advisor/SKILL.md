@@ -242,17 +242,20 @@ the printed resume command includes them; pasting a resume without the deny
 policy downgrades the lane to the allow preference while looking like the
 same dispatch.
 
-**What is measured, stated by LAYER — and the layers differ.** The
-session/model-configuration layer is measured: a fresh dispatch reaches
-`session/new`, is acknowledged by `session/set_config_option`, and commits a
-receipt reading `identity_status: matched` (2026-11-09 on both seats). The
-**answer layer is NOT measured on this machine**: as of 2026-11-16,
-`session/prompt` fails inside OpenCode with `Unexpected server error` for the
-minimax seat, the deepseek seat AND a keyed `zai-coding-plan` seat alike, so
-no round-table outbox has been produced through the ACP path since the
-2026-11-08 keyless run. Do not read a matched receipt as a working answer.
-Receipt-backed LOAD is likewise unverified — treat the first resume as the
-measurement, and report what actually happened rather than assuming it.
+**What is measured, stated by LAYER — and the layers differ.** Evidence exists
+for the session/model-configuration layer only, and it stops where the prompt
+begins: a fresh dispatch reaches `session/new`, is acknowledged by
+`session/set_config_option`, and commits a receipt reading
+`identity_status: matched` (observed 2026-11-09 on both seats, per this
+repository's own dispatch records — not re-measured since). The **answer layer
+is NOT measured**: as of 2026-11-16 `session/prompt` fails inside OpenCode with
+`Unexpected server error` for the minimax seat, the deepseek seat AND a keyed
+`zai-coding-plan` seat alike, so no round-table outbox has been produced
+through the ACP path since the 2026-11-08 keyless run. Do not read a matched
+receipt as a working answer, and do not read this file as a claim that either
+seat currently answers. Receipt-backed LOAD is likewise unverified — treat the
+first resume as the measurement, and report what actually happened rather than
+assuming it.
 
 ```bash
 env -u ACP_REASONING_EFFORT -u ACP_EXPECT_REASONING_EFFORT -u INITIAL_AGENT_MODE \
