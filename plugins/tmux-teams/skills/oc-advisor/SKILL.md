@@ -6,10 +6,11 @@ description: "Consult an OpenCode advisor over ACP and get the answer back as a 
 # OpenCode Advisor
 
 The fourth sibling of `codex-advisor`, `claude-advisor` and `agy-advisor`. This
-one reaches the minimax family by default (with deepseek as its one-hop
-fallback) through OpenCode's own ACP server (`opencode acp` — no separate
-adapter package in between), so a disagreement between the four seats is worth
-reading.
+one reaches OpenCode's own free seats through its ACP server (`opencode acp` —
+no separate adapter package in between): MiniMax by default, deepseek as a
+one-hop fallback. Those are two models behind one provider, not two vendors,
+so a disagreement here with codex/agy is the cross-vendor read — a
+disagreement between the two OpenCode seats is worth reading but is not.
 
 **Read `codex-advisor/SKILL.md` for the parts that are the same** — why an
 advisor is an ACP lane rather than an agent, how the round-table is assembled
@@ -125,34 +126,57 @@ either fails the dispatch or silently seats something nobody verified. Both
 ids were probed against `opencode acp` 1.18.21 on 2026-11-09: advertised in
 `configOptions` and accepted by `session/set_config_option`.
 
+`$oc-advisor deepseek` is not a general-purpose switch. It is the ladder's
+second seat, so an operator typing it deliberately is making an explicit,
+disclosed choice — but the reason to be on it is one of the entry conditions
+below, and an answer produced there must still be labelled with its seat.
+
 ## The fallback seat — one ladder, and the evidence that enters it
 
 `deepseek` is the fallback, not a preference. Take it when the **default seat
 cannot answer**, and only then — a working answer from the default seat is
-always the answer, however much a reader dislikes it.
+always the answer, however much a reader dislikes it. This changes the SEAT,
+not the account: a provider-side condition affecting the whole OpenCode
+service is not ladder evidence (see the last entry).
 
-Enter the ladder on exactly one of these:
+Enter the ladder on exactly one of these, each requiring evidence about **this
+seat's model identity**, not merely a dispatch that stopped:
 
-1. **The default seat's identity is refused or unavailable** — `ACP_MODEL` not
-   advertised, `identity_status` anything but `matched`, or the dispatch
-   refuses before the prompt. Re-dispatch the SAME brief with
-   `ACP_MODEL`/`ACP_EXPECT_MODEL` set to the fallback id in both places.
-2. **The provider refuses the account for that seat** — quota, membership,
-   or a retired model id, named in the lane log. Same re-dispatch.
+1. **The adapter refuses the model, terminally** — `ACP_MODEL` not advertised,
+   or a receipt whose `identity_status` is `mismatched`/`missing` for a
+   dispatch that has ENDED. A lane still RUNNING is not a refusal: a pending
+   identity is `identity_status: missing` while the companion keeps polling,
+   so **wait and re-read `status` — never hop on a pending value.** Other
+   pre-prompt refusals (profile/config/receipt-path/boot failures) are NOT
+   ladder evidence: fix or report them with the seat unchanged.
+2. **The provider refuses the account for that seat** — a quota, membership,
+   or retired-model-id condition **named in the lane log for that seat**. Same
+   brief, fresh dispatch.
 3. **The default seat repeats `no_outbox` after one resume** under the same
-   task id, with the lane having ENDED (not merely gone quiet). The resume
-   first, because it holds the analysis already paid for.
+   task id, with the lane having ENDED (not merely gone quiet) — **unless the
+   denial came from `ACP_PERMISSIONS=deny` itself**, which outranks this rule:
+   a permission-denied outbox write is the policy working, so it is never a
+   ladder entry, however many times it repeats. The permission-allowed
+   recovery path above is the answer there, and it is labelled as such.
 
-Do NOT enter it for: a slow lane, an answer you judge weak, a denied
-outbox write under `ACP_PERMISSIONS=deny` (that is the policy working), or a
-single `no_outbox` that has not been resumed once. Label the answer with the
-seat that produced it, every time — a consultation that quietly changed
-seats is the same lie as a wrong identity, which is the rule `agy-advisor`
-already carries for its own quota fallback.
+Do NOT enter it for: a slow lane, a pending (unsettled) identity, an answer
+you judge weak, a denied outbox write under `ACP_PERMISSIONS=deny`, a single
+`no_outbox` that has not been resumed once, a **failed LOAD** (`resume_status:
+load_failed` is not a second `no_outbox`), or a `session/prompt` that errored
+without a seat-specific diagnosis — a generic `UnknownError` from OpenCode is
+a service condition, so report it and stop, never hop. Label the answer with
+the seat that produced it, every time — a consultation that quietly changed
+seats is the same lie as a wrong identity. (`agy-advisor` carried that
+labelling rule for an automatic quota fallback until 2026-11-15, when the
+shared Gemini quota pool retired that fallback; the labelling rule is the part
+kept here, and this ladder is the only place it fires.)
 
-**One hop only.** If the fallback seat also fails, stop and report both
-events. Never a third seat, never another family: the point of this advisor
-is which family answered.
+**One hop only, inside these two seats.** If the fallback seat also fails,
+stop and report both events. Never a third seat, never a model outside the two
+documented ids, and never another family: the point of this advisor is which
+family answered. Moving minimax → deepseek is a disclosed, bounded hop within
+this advisor's own free seats — it is not a licence to route an OpenCode
+failure to codex, agy or claude.
 
 ### `--party <id>` — seat a saved bmad-party-mode roster
 
@@ -183,15 +207,21 @@ than assuming the default: after a fallback the two disagree, and the receipt
 is the one that is right.
 
 The receipt proves the executable, the session and the configured identity.
-It does NOT prove the provider answered. Measured on this account,
+It does NOT prove the provider answered, and it does not attest
+`ACP_PERMISSIONS` — the deny policy lives in per-dispatch environment and in
+the routing record, never in the receipt. Measured on this account,
 2026-11-08: the free seat runs WITHOUT any stored opencode credential —
 `~/.local/share/opencode/auth.json` needs no `opencode` entry at all — but an
 EXPIRED key stored there actively blocks every dispatch with
 `API key has expired` before the first turn. The fix for that error is to
-remove or renew the stored key, never to add one blindly. A provider-side
-failure of any other kind is reported as it happened — the lane's log
-carries the provider's own error — and is never routed to another family,
-because the point of this advisor is the family, not the endpoint.
+remove or renew the stored key, never to add one blindly.
+
+A provider-side failure is reported as it happened — the lane's log carries
+the provider's own error. Within the two documented seats, and only on the
+seat-specific conditions listed under the ladder above, the one permitted
+consequence is the single minimax → deepseek hop; anything wider, including
+routing a generic service error to another family (codex, agy, claude),
+changes what the reader is buying and is forbidden.
 
 ## Waiting and resuming
 
@@ -212,10 +242,17 @@ the printed resume command includes them; pasting a resume without the deny
 policy downgrades the lane to the allow preference while looking like the
 same dispatch.
 
-**Receipt-backed LOAD is documented by the same contract as every advisor
-but is NOT yet verified live on this seat** — the fresh-dispatch path is
-measured end to end; the load path is not. Treat the first resume as the
-measurement and report what actually happened, never assume it.
+**What is measured, stated by LAYER — and the layers differ.** The
+session/model-configuration layer is measured: a fresh dispatch reaches
+`session/new`, is acknowledged by `session/set_config_option`, and commits a
+receipt reading `identity_status: matched` (2026-11-09 on both seats). The
+**answer layer is NOT measured on this machine**: as of 2026-11-16,
+`session/prompt` fails inside OpenCode with `Unexpected server error` for the
+minimax seat, the deepseek seat AND a keyed `zai-coding-plan` seat alike, so
+no round-table outbox has been produced through the ACP path since the
+2026-11-08 keyless run. Do not read a matched receipt as a working answer.
+Receipt-backed LOAD is likewise unverified — treat the first resume as the
+measurement, and report what actually happened rather than assuming it.
 
 ```bash
 env -u ACP_REASONING_EFFORT -u ACP_EXPECT_REASONING_EFFORT -u INITIAL_AGENT_MODE \
@@ -265,15 +302,28 @@ residuals named there are part of this contract, not a footnote to it.
 - **`no_outbox` under `ACP_PERMISSIONS=deny`.** First resume under the same
   task id with the policy intact. If the runner log shows the denied request
   was the outbox write itself, the exception path above applies — unset the
-  flag in a recorded, labeled recovery, never silently. A second
-  `no_outbox` with the lane ENDED is a ladder entry, not a third retry.
+  flag in a recorded, labeled recovery, never silently. **A denied outbox
+  write outranks the repeat rule: it is never a ladder entry, however many
+  times it repeats.** A second `no_outbox` with the lane ENDED, where deny was
+  NOT the cause, is ladder entry 3.
 - **Identity refused.** The adapter did not acknowledge the seat that was
-  requested. A refused DEFAULT seat is ladder entry 1 — re-dispatch once with
-  `deepseek`; a refused FALLBACK seat is the end of the ladder. Report which
-  seat failed and stop.
-- **Provider billing failure on the first turn.** Report the provider's own
-  error from the lane log. This family is the point of the seat; routing the
-  question to codex or agy instead changes the answer's provenance.
+  requested. A TERMINAL refused DEFAULT seat (`mismatched`/`missing` on an
+  ENDED dispatch) is ladder entry 1 — re-dispatch once with `deepseek`; a
+  still-RUNNING lane with a pending `missing` is not a refusal, so `status`
+  again rather than hopping. A refused FALLBACK seat is the end of the
+  ladder. Report which seat failed and stop.
+- **A generic `session/prompt` error (`UnknownError` / `Unexpected server
+  error`).** A service condition, not a seat verdict: report it and stop.
+  Never hop, never call it quota, never retry under the other seat on this
+  evidence.
+- **A failed LOAD** (`resume_status: load_failed`). Not a second `no_outbox`
+  and not ladder evidence — report it and stop.
+- **Provider billing/account failure named for the seat on the first turn.**
+  Report the provider's own error from the lane log. Only a seat-specific
+  condition named for THIS seat is ladder entry 2; routing the question to
+  codex, agy or claude instead changes the answer's provenance and is
+  forbidden.
 - **Profile refuses.** The producer's exit-2 reasons are each a real
-  condition — resolve the cache state, never hand-edit the generated profile.
+  condition — resolve the cache state, never hand-edit the generated profile,
+  and never change the seat to work around it.
 - **Single voice returned.** Not a consultation.

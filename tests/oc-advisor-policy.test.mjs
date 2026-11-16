@@ -59,13 +59,48 @@ test('the default seat and its one-hop fallback are both pinned, and the ladder 
     'the arguments table no longer pins the fallback alias')
   assert.match(skill, /`deepseek` is the fallback, not a preference/,
     'the ladder must say the fallback is not a preference')
-  assert.match(skill, /\*\*One hop only\.\*\*/, 'the ladder has no ceiling')
-  assert.match(skill, /Label the answer with the\s+seat that produced it/,
+  assert.match(skill, /\*\*One hop only, inside these two seats\.\*\*/, 'the ladder has no ceiling')
+  assert.match(skill, /Label the answer with\s+the seat that produced it/,
     'a consultation that quietly changed seats is the same lie as a wrong identity')
   assert.doesNotMatch(skill, /opencode\/deepseek-v4\.1-flash-free.*default seat/i,
     'deepseek is described as the default seat again')
   assert.doesNotMatch(skill, /reaches the deepseek family/i,
     'intro prose still names deepseek as the default family')
+})
+
+// The release round-table (ocseat-review1) found three P1 holes in the first
+// ladder wording: a pending identity read as a refusal, a catch-all pre-prompt
+// refusal that let profile/config faults move the seat, and a denied outbox
+// write that could still trigger entry 3. Each is pinned here — a rule the
+// prose states but no test holds is the same unenforced claim in one file
+// instead of two.
+test('the ladder cannot be entered on stale, pending, or policy-caused evidence', () => {
+  assert.match(skill, /never hop on a pending value/i,
+    'a pending identity can still be read as a terminal refusal')
+  assert.match(skill, /Other\s+pre-prompt refusals \(profile\/config\/receipt-path\/boot failures\) are NOT\s+ladder evidence/,
+    'a catch-all pre-prompt refusal still moves the seat')
+  assert.match(skill, /A denied outbox\s+write outranks the repeat rule: it is never a ladder entry/,
+    'a permission-denied outbox write can still be counted as entry 3')
+  assert.match(skill, /failed LOAD[\s\S]{0,120}Not a second `no_outbox`/,
+    'a load_failed resume can still be counted as entry 3')
+  assert.match(skill, /generic `session\/prompt` error[\s\S]{0,160}Never hop, never call it quota/,
+    'a generic provider error can still be called quota and hopped on')
+  assert.match(skill, /never change the seat to work around it/,
+    'a profile refusal can still be worked around by switching seats')
+})
+
+test('the skill does not claim an answer layer it has not measured', () => {
+  // The receipt is committed before session/prompt, so `succeeded` describes
+  // the session/config layer. Saying "measured end to end" next to a receipt
+  // claim is exactly what a reader takes as "the advisor answers".
+  assert.doesNotMatch(skill, /fresh-dispatch path is\s+measured end to end/,
+    'the skill claims an end-to-end measurement it does not have')
+  assert.match(skill, /answer layer is NOT measured on this machine/,
+    'the skill must state which layer is unmeasured')
+  assert.match(skill, /do not read a matched receipt as a working answer/i,
+    'the receipt-vs-answer distinction is not stated')
+  assert.match(skill, /does not attest\s+`ACP_PERMISSIONS`/,
+    'the receipt is described as attesting the deny policy')
 })
 
 test('the oc-advisor lane neither sends nor claims an unmeasured mode or effort', () => {
@@ -107,6 +142,6 @@ test('the credential residual is stated as measured fact, never as a route', () 
   assert.match(skill, /EXPIRED key stored there actively blocks/,
     'the skill must state an expired key is an active block, not an absence')
   assert.match(skill, /remove or renew the stored key, never to add one blindly/)
-  assert.match(skill, /never routed to another family/,
+  assert.match(skill, /changes the answer's provenance and is\s+forbidden/,
     'an unmeasured family swap changes the answer\'s provenance and must be forbidden')
 })
