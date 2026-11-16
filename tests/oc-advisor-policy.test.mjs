@@ -34,9 +34,38 @@ test('every oc-advisor lane-launching block carries the full dispatch contract',
       `a custom-worker block that never names its executable:\n${block.slice(0, 400)}`)
     assert.match(block, /ACP_EXECUTION_PROFILE=/,
       `a receipt-required custom dispatch without its closed profile:\n${block.slice(0, 400)}`)
-    assert.match(block, /ACP_MODEL="opencode\/deepseek-v4\.1-flash-free"/)
-    assert.match(block, /ACP_EXPECT_MODEL="opencode\/deepseek-v4\.1-flash-free"/)
+    // The id is a placeholder now that the seat has a fallback: a block that
+    // hardcodes ONE id cannot express "dispatch the seat you chose" and would
+    // send a resumed session to a different model than the one holding it.
+    assert.match(block, /ACP_MODEL="<model>"/,
+      `a block that does not take the seat from the chosen one:\n${block.slice(0, 400)}`)
+    assert.match(block, /ACP_EXPECT_MODEL="<model>"/,
+      `a request without a matching expectation is a dispatch nobody verified:\n${block.slice(0, 400)}`)
   }
+})
+
+test('the default seat and its one-hop fallback are both pinned, and the ladder is explicit', () => {
+  // Measured 2026-11-09 against opencode acp 1.18.21: both ids are advertised
+  // in configOptions and accepted by session/set_config_option. The DEFAULT is
+  // minimax; deepseek is the fallback and must not be described as a
+  // preference, or a weak answer becomes a silent seat change.
+  assert.match(skill, /default seat is opencode\/minimax-m3\.1-flash-free/,
+    'the frontmatter no longer states the default seat')
+  assert.match(skill, /opencode\/deepseek-v4\.1-flash-free as its one-hop fallback/,
+    'the frontmatter no longer states the fallback seat')
+  assert.match(skill, /\| \*\(omitted\)\* \| `opencode\/minimax-m3\.1-flash-free` \|/,
+    'the arguments table no longer pins the default seat')
+  assert.match(skill, /\| `deepseek` \| `opencode\/deepseek-v4\.1-flash-free` \|/,
+    'the arguments table no longer pins the fallback alias')
+  assert.match(skill, /`deepseek` is the fallback, not a preference/,
+    'the ladder must say the fallback is not a preference')
+  assert.match(skill, /\*\*One hop only\.\*\*/, 'the ladder has no ceiling')
+  assert.match(skill, /Label the answer with the\s+seat that produced it/,
+    'a consultation that quietly changed seats is the same lie as a wrong identity')
+  assert.doesNotMatch(skill, /opencode\/deepseek-v4\.1-flash-free.*default seat/i,
+    'deepseek is described as the default seat again')
+  assert.doesNotMatch(skill, /reaches the deepseek family/i,
+    'intro prose still names deepseek as the default family')
 })
 
 test('the oc-advisor lane neither sends nor claims an unmeasured mode or effort', () => {

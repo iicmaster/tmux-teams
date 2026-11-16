@@ -1,14 +1,15 @@
 ---
 name: oc-advisor
-description: "Consult an OpenCode advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. The seat is the free OpenCode line, pinned to opencode/deepseek-v4.1-flash-free with identity verified via ACP_EXPECT_MODEL. Read-only posture: permission requests are denied at the transport (ACP_PERMISSIONS=deny) and the brief forbids edits — that is a policy guard and a documented residual, not a sandbox claim. Use when the user invokes $oc-advisor, wants a fourth family's read on a question, or adds --party <id> to seat a saved bmad-party-mode roster."
+description: "Consult an OpenCode advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. The default seat is opencode/minimax-m3.1-flash-free with opencode/deepseek-v4.1-flash-free as its one-hop fallback, and identity is verified via ACP_EXPECT_MODEL. Read-only posture: permission requests are denied at the transport (ACP_PERMISSIONS=deny) and the brief forbids edits — that is a policy guard and a documented residual, not a sandbox claim. Use when the user invokes $oc-advisor, wants a fourth family's read on a question, names a seat, or adds --party <id> to seat a saved bmad-party-mode roster."
 ---
 
 # OpenCode Advisor
 
 The fourth sibling of `codex-advisor`, `claude-advisor` and `agy-advisor`. This
-one reaches the deepseek family through OpenCode's own ACP server (`opencode
-acp` — no separate adapter package in between), so a disagreement between the
-four seats is worth reading.
+one reaches the minimax family by default (with deepseek as its one-hop
+fallback) through OpenCode's own ACP server (`opencode acp` — no separate
+adapter package in between), so a disagreement between the four seats is worth
+reading.
 
 **Read `codex-advisor/SKILL.md` for the parts that are the same** — why an
 advisor is an ACP lane rather than an agent, how the round-table is assembled
@@ -51,8 +52,8 @@ keeps its historical name; on this lane it names the OpenCode binary.
 env -u ACP_REASONING_EFFORT -u ACP_EXPECT_REASONING_EFFORT -u INITIAL_AGENT_MODE \
 ACP_SESSION_RECEIPT_REQUIRED=1 \
 ACP_SESSION_OPERATION="new" \
-ACP_MODEL="opencode/deepseek-v4.1-flash-free" \
-ACP_EXPECT_MODEL="opencode/deepseek-v4.1-flash-free" \
+ACP_MODEL="<model>" \
+ACP_EXPECT_MODEL="<model>" \
 ACP_PERMISSIONS="deny" \
 ACP_CMD="<exe> acp" \
 ACP_EXECUTION_PROFILE="<profile.json>" \
@@ -64,7 +65,10 @@ node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
 printed, and keep them together: the profile's argv is what the dispatch
 verifies `ACP_CMD` against, and a mismatch fails before a session exists.
 `<model>` is the full id in BOTH assignments; a request without a matching
-expectation is a dispatch nobody verified.
+expectation is a dispatch nobody verified. See Arguments for which id — the
+default seat, or the fallback after a ladder step. **Never send the fallback
+because an answer merely disappointed you**: the ladder is entered only on the
+failure evidence listed there.
 
 The `env -u` line is the agy lesson applied here: a shell that just
 dispatched a codex lane still carries `ACP_REASONING_EFFORT` and
@@ -103,14 +107,52 @@ permission-allowed run. Never flip it silently.
 ## Arguments
 
 ```
-$oc-advisor        # default seat: opencode/deepseek-v4.1-flash-free (free)
-$oc-advisor free   # the same seat, named explicitly
+$oc-advisor           # default seat: opencode/minimax-m3.1-flash-free (free)
+$oc-advisor free      # the same seat, named explicitly
+$oc-advisor deepseek  # fallback seat: opencode/deepseek-v4.1-flash-free (free)
 ```
+
+| `<seat>` | dispatches |
+|---|---|
+| *(omitted)* | `opencode/minimax-m3.1-flash-free` |
+| `free` | `opencode/minimax-m3.1-flash-free` |
+| `deepseek` | `opencode/deepseek-v4.1-flash-free` |
 
 A bare alias is expanded to the full `opencode/...` id, which is what reaches
 the adapter and what the receipt must show. Any other model id is a usage
-error: this file documents exactly one measured seat, and an unmeasured id
-either fails the dispatch or silently seats something nobody verified.
+error: this file documents exactly two measured seats, and an unmeasured id
+either fails the dispatch or silently seats something nobody verified. Both
+ids were probed against `opencode acp` 1.18.21 on 2026-11-09: advertised in
+`configOptions` and accepted by `session/set_config_option`.
+
+## The fallback seat — one ladder, and the evidence that enters it
+
+`deepseek` is the fallback, not a preference. Take it when the **default seat
+cannot answer**, and only then — a working answer from the default seat is
+always the answer, however much a reader dislikes it.
+
+Enter the ladder on exactly one of these:
+
+1. **The default seat's identity is refused or unavailable** — `ACP_MODEL` not
+   advertised, `identity_status` anything but `matched`, or the dispatch
+   refuses before the prompt. Re-dispatch the SAME brief with
+   `ACP_MODEL`/`ACP_EXPECT_MODEL` set to the fallback id in both places.
+2. **The provider refuses the account for that seat** — quota, membership,
+   or a retired model id, named in the lane log. Same re-dispatch.
+3. **The default seat repeats `no_outbox` after one resume** under the same
+   task id, with the lane having ENDED (not merely gone quiet). The resume
+   first, because it holds the analysis already paid for.
+
+Do NOT enter it for: a slow lane, an answer you judge weak, a denied
+outbox write under `ACP_PERMISSIONS=deny` (that is the policy working), or a
+single `no_outbox` that has not been resumed once. Label the answer with the
+seat that produced it, every time — a consultation that quietly changed
+seats is the same lie as a wrong identity, which is the rule `agy-advisor`
+already carries for its own quota fallback.
+
+**One hop only.** If the fallback seat also fails, stop and report both
+events. Never a third seat, never another family: the point of this advisor
+is which family answered.
 
 ### `--party <id>` — seat a saved bmad-party-mode roster
 
@@ -131,10 +173,14 @@ command you typed. Never substitute silently.
 
 ## The receipt, and what it does not prove
 
-The receipt should read `effective_identity:
-opencode/deepseek-v4.1-flash-free`, `identity_status: matched`; the adapter
+The receipt should read `effective_identity: <seat>`,
+`identity_status: matched` where `<seat>` is the id that was dispatched —
+`opencode/minimax-m3.1-flash-free` on the default seat, or
+`opencode/deepseek-v4.1-flash-free` after a ladder step. The adapter
 acknowledges the model through `session/set_config_option` before the prompt,
-and a mismatch fails the dispatch first.
+and a mismatch fails the dispatch first. Read the seat off the receipt rather
+than assuming the default: after a fallback the two disagree, and the receipt
+is the one that is right.
 
 The receipt proves the executable, the session and the configured identity.
 It does NOT prove the provider answered. Measured on this account,
@@ -178,14 +224,18 @@ ACP_SESSION_OPERATION="load" \
 ACP_PRIOR_DISPATCH_ID="<dispatch-id from the failed run's receipt>" \
 ACP_PRIOR_RECEIPT_DIGEST="<receipt_digest from that run>" \
 ACP_RESUME="<session-id>" \
-ACP_MODEL="opencode/deepseek-v4.1-flash-free" \
-ACP_EXPECT_MODEL="opencode/deepseek-v4.1-flash-free" \
+ACP_MODEL="<model>" \
+ACP_EXPECT_MODEL="<model>" \
 ACP_PERMISSIONS="deny" \
 ACP_CMD="<exe> acp" \
 ACP_EXECUTION_PROFILE="<profile.json>" \
 node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
   opencode <cwd> <task-id> <recovery-prompt> [stall-sec]
 ```
+
+Resume the seat you dispatched, not the default: a session belongs to the
+model that held it, and loading it under the fallback is a different model
+reading someone else's lineage. Take `<model>` from the failed run's receipt.
 
 ## The consultation is a party. Only a party.
 
@@ -215,9 +265,12 @@ residuals named there are part of this contract, not a footnote to it.
 - **`no_outbox` under `ACP_PERMISSIONS=deny`.** First resume under the same
   task id with the policy intact. If the runner log shows the denied request
   was the outbox write itself, the exception path above applies — unset the
-  flag in a recorded, labeled recovery, never silently.
-- **Identity refused.** The adapter did not acknowledge
-  `opencode/deepseek-v4.1-flash-free`. Report and stop; do not re-seat.
+  flag in a recorded, labeled recovery, never silently. A second
+  `no_outbox` with the lane ENDED is a ladder entry, not a third retry.
+- **Identity refused.** The adapter did not acknowledge the seat that was
+  requested. A refused DEFAULT seat is ladder entry 1 — re-dispatch once with
+  `deepseek`; a refused FALLBACK seat is the end of the ladder. Report which
+  seat failed and stop.
 - **Provider billing failure on the first turn.** Report the provider's own
   error from the lane log. This family is the point of the seat; routing the
   question to codex or agy instead changes the answer's provenance.
