@@ -215,6 +215,21 @@ nobody can plan from.
   Gemini 3.1 banned, and retire automatic quota fallback due to the shared
   quota pool.
 
+- **The handoff skill carries a size budget — 32 KiB target / 48 KiB hard
+  ceiling, rotation, one owner one block (ADR 0009,
+  `tests/handoff-budget.test.mjs`).** Direct instruction from Master after
+  the 2026-10-30 finding: one project's `HANDOFF.md` measured **2,052,245
+  bytes / 4,514 lines** (~454 bytes per line), eight role-lanes each
+  appending a full pre-compaction dump, every block claiming to supersede
+  its predecessor while physically leaving it in place; the 1.7 MB
+  archive-once of 2026-10-11 had regrown to 2 MB by 2026-10-29 because
+  writer behaviour never changed. The skill now measures with
+  `wc -c HANDOFF.md` before composing and again after writing, rotates
+  superseded detail to `docs/history/handoff-archive-YYYYMMDD.md` with one
+  pointer line left behind, sends full dumps to per-owner sidecars, and
+  guards the reader that inherits an over-ceiling file; the room brief
+  carries the budget as a fact. Seven anchor tests pin the mechanism.
+
 ## The last release — v0.32.0, shipped
 
 Scope set by Master, 2026-08-17: **one release carrying both** the MCP

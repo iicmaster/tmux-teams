@@ -73,14 +73,17 @@ node scripts/gate-required.mjs      # reads <last-tag>..HEAD; run only after com
 
 ## 3. STATE
 
-### In the working tree, uncommitted: the handoff skill's size budget (2026-10-30)
+### On branch `handoff-budget`, PR open: the handoff skill's size budget (2026-10-30)
 
 Master's direct instruction, from the 2 MB `HANDOFF.md` finding — measured
 2,052,245 bytes / 4,514 lines in an eight-lane project; an archive-once of
-1.7 MB (2026-10-11) regrew to 2 MB by 2026-10-29. Four files, uncommitted on
-`release/v0.48.0`, ported byte-identical (cmp-verified) from a worktree that
-has been removed; a release carrying them owes the panel — they are
-`plugins/` bytes.
+1.7 MB (2026-10-11) regrew to 2 MB by 2026-10-29. Four files committed on
+`handoff-budget` (PR open); a release carrying them owes the panel — they
+are `plugins/` bytes. The first working-tree copy was lost twice in
+shared-tree churn (the v0.48.0 shared-tree incident, then the v0.49–v0.51
+syncs) and reconstructed byte-for-byte from the recorded diff before
+commit — the worktree-based flow that survived is: branch from `origin/main`
+in a fresh worktree, never from this checkout's dirty state.
 
 - `plugins/tmux-teams/skills/handoff/SKILL.md` — "The file has a budget":
   32 KiB target / 48 KiB hard ceiling, `wc -c HANDOFF.md` before composing and
@@ -95,18 +98,11 @@ has been removed; a release carrying them owes the panel — they are
 - `tests/handoff-budget.test.mjs` — seven anchor tests, all passing.
 - `ROADMAP.md` — one entry under "Shipped since the phases were last written".
 
-Suite in the worktree at `79d43c2` + these files: 1263 tests, 1261 pass,
-2 fail, 0 skipped; an A/B at clean HEAD (same two files alone) reproduced
-both failures, 139/137/2 — **both are pre-existing on the branch, not from
-this change**:
-
-1. `tests/acp-lanes-mcp.test.mjs` "every declared lane is listed": pins
-   `gemini-4-argon-high`, the declaration says `gemini-3.8-flash-high`.
-   Adjacent work is in flight (`590e393`, agy rate-limit fallback onto the
-   3.8 seat) — coordinate before touching.
-2. `tests/plugin-structure.test.mjs` "every shipped module parses":
-   `skills/tmux-teams/workflows/mailbox-run.js` is ESM in a `.js` name with
-   no nearest `type: module`.
+Suite in this worktree at `84fbae1` + these files: 1309 tests, 1308 pass,
+0 fail, 1 skipped — the skip is `claude CLI not on PATH`, a fact of this
+machine's PATH, not of the change (both reds recorded here on 2026-10-30
+are fixed on main: pinned agy identity landed in v0.50.0, and
+`mailbox-run.js` parses).
 
 Unproven: the 32/48 numbers are reader-cost numbers, not sufficiency numbers
 (ADR 0009 records this); the budget has not yet been exercised on a real
