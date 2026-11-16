@@ -12,10 +12,10 @@
 > source, no publish script and nothing that could notice it had gone stale —
 > so it went stale, repeatedly, and nobody could tell without opening it.
 
-Current release: **0.50.0** — the version stamped in this tree, in flight on
+Current release: **0.51.0** — the version stamped in this tree, in flight on
 a pull request and not yet tagged.
-`main` carries **v0.49.0**, tagged at the
-MERGED sha `30a0dda` (the v0.45.0 lesson stands: tag the merged sha, never
+`main` carries **v0.50.0**, tagged at the
+MERGED sha `ad4db5f` (the v0.45.0 lesson stands: tag the merged sha, never
 the branch tip — tagging the wrong one ships a sha `main` does not hold).
 Anyone installing from the marketplace resolves the last TAG, not this line.
 
@@ -1165,8 +1165,10 @@ the fragility is the price of it being cheap.
 These are real but unforced, and separate from the release above:
 
 - **The fourth advisor seat ships in v0.49.0: `oc-advisor`.** OpenCode's own
-  ACP server as a consultation lane — the free deepseek seat
-  (`opencode/deepseek-v4.1-flash-free`), receipt-backed through a produced
+  ACP server as a consultation lane — the default free seat is MiniMax
+  (`opencode/minimax-m3.1-flash-free`, moved from deepseek 2026-11-16) with
+  `opencode/deepseek-v4.1-flash-free` as its one-hop fallback, receipt-backed
+  through a produced
   execution profile (`opencode-execution-profile.mjs`; the bin is a native
   binary, measured 2026-11-07), read-only through the new
   `ACP_PERMISSIONS=deny` transport policy with the residual stated in the
