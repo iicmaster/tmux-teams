@@ -12,7 +12,7 @@
 > source, no publish script and nothing that could notice it had gone stale —
 > so it went stale, repeatedly, and nobody could tell without opening it.
 
-Current release: **0.51.0** — the version stamped in this tree, in flight on
+Current release: **0.52.0** — the version stamped in this tree, in flight on
 a pull request and not yet tagged.
 `main` carries **v0.50.0**, tagged at the
 MERGED sha `ad4db5f` (the v0.45.0 lesson stands: tag the merged sha, never
