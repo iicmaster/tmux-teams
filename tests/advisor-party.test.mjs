@@ -16,7 +16,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SCRIPT = join(ROOT, 'plugins', 'tmux-teams', 'skills', 'tmux-teams', 'scripts', 'advisor-party.mjs')
-const { resolveParty, renderPartyMandate, main, PARTY_PROBLEMS } = await import(pathToFileURL(SCRIPT).href)
+const { resolveParty, listGroups, selectGroup, renderPartyMandate, main, PARTY_PROBLEMS, SELECTION_CATALOG } =
+  await import(pathToFileURL(SCRIPT).href)
 
 // The shape bmad-party-mode's resolve_party.py returns, copied from a real run
 // of `--party code-review-crew` on 2026-08-30 and cut to two members.
@@ -560,5 +561,208 @@ test('invoked directly, the script refuses a missing id with usage and exit 1', 
     assert.match(r.stderr, /usage: node advisor-party\.mjs <party-id>/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ── automatic party-type selection ──────────────────────────────────────────
+// One classifier in advisor-party.mjs. The resolver is injected at both entry
+// points (--list-groups and --party), and the brief is injected as readFile, so
+// none of these tests needs uv, a real install, or a file on disk.
+const GROUPS = [
+  { id: 'code-review-crew', name: 'Code Review Crew', member_count: 2 },
+  { id: 'anti-consensus-club', name: 'Anti-Consensus Club', member_count: 2 },
+]
+const DEFAULT_NAMES = {
+  'code-review-crew': 'Code Review Crew',
+  'anti-consensus-club': 'Anti-Consensus Club',
+}
+const autoRun = ({ groups = GROUPS, name = null } = {}) => (cmd, args) => {
+  if (args.includes('--list-groups')) return { status: 0, stdout: JSON.stringify({ groups }) }
+  const at = args.indexOf('--party')
+  const id = at === -1 ? 'code-review-crew' : args[at + 1]
+  return { status: 0, stdout: JSON.stringify({ ...PARTY, active: id, name: name ?? DEFAULT_NAMES[id] ?? PARTY.name }) }
+}
+const autoEnv = (root) => ({ BMAD_PARTY_MODE_ROOT: root })
+
+test('selectGroup counts distinct keywords, lowercases once, and never breaks a tie', () => {
+  const ids = GROUPS.map(g => g.id)
+  // Derive a keyword from the exported catalog so the test cannot drift from it.
+  const reviewKeyword = SELECTION_CATALOG['code-review-crew'][0]
+  assert.equal(selectGroup(`Please ${reviewKeyword.toUpperCase()} this. Look for a bug.`, ids), 'code-review-crew')
+  assert.equal(selectGroup('Weigh the options and the tradeoff; question the hidden assumption.', ids), 'anti-consensus-club')
+  // Distinct, not raw occurrences: repeating one keyword cannot manufacture a win.
+  assert.equal(selectGroup('bug bug bug bug', ids), 'code-review-crew')
+  // A tie at the top is no-match, as is zero hits, regardless of catalog order.
+  assert.equal(selectGroup('bug options', ids), null)
+  assert.equal(selectGroup('the quick brown fox', ids), null)
+  // Thai keywords are substrings too.
+  assert.equal(selectGroup('ช่วยตรวจโค้ดหน่อย', ids), 'code-review-crew')
+  // A catalogued group absent from the saved menu is never selected; an
+  // uncatalogued saved group is never selected either.
+  assert.equal(selectGroup('bug', ['anti-consensus-club']), null)
+  assert.equal(selectGroup('anything', [...ids, 'uncatalogued-room']), null)
+})
+
+test('listGroups reads ids from the menu and keeps the resolver refusal codes', () => {
+  const root = fakeInstall()
+  try {
+    const ok = listGroups({ env: autoEnv(root), run: autoRun() })
+    assert.deepEqual(ok, { ok: true, ids: ['code-review-crew', 'anti-consensus-club'] })
+    assert.equal(listGroups({ env: autoEnv('/definitely/nonexistent'), run: () => assert.fail('ran uv') }).code, 'not_installed')
+    assert.equal(listGroups({ env: autoEnv(root), run: () => ({ error: { code: 'ENOENT' }, stdout: '' }) }).code, 'uv_missing')
+    assert.equal(listGroups({ env: autoEnv(root), run: () => ({ status: 1, stdout: '{}' }) }).code, 'resolver_failed')
+    // Malformed menu entries never become a selected id.
+    const dirty = listGroups({ env: autoEnv(root), run: () => ({ status: 0, stdout: JSON.stringify({ groups: [null, { id: 7 }, { name: 'no id' }, { id: 'ok' }] }) }) })
+    assert.deepEqual(dirty.ids, ['ok'])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('auto hit prints the explicit mandate on stdout and names the room on stderr', () => {
+  const root = fakeInstall()
+  try {
+    const brief = 'Please review this code — a regression and an edge case stand out.'
+    const readFile = () => brief
+    const opts = { env: autoEnv(root), run: autoRun(), readFile }
+    const stdout = []
+    const stderr = []
+    const code = main(['auto', '--task-file', '/brief.md'], {
+      ...opts, out: m => stdout.push(m), err: m => stderr.push(m),
+    })
+    assert.equal(code, 0)
+    // Byte-identical to the same group seated by an explicit id.
+    const explicit = []
+    main(['code-review-crew'], { ...opts, out: m => explicit.push(m), err: () => {} })
+    assert.deepEqual(stdout, explicit, 'auto mandate differs from the explicit code-review-crew mandate')
+    assert.match(stderr.join('\n'), /^selected-party: Code Review Crew \(code-review-crew\)$/m)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('an unnamed party with a --task-file enters the same auto selection', () => {
+  const root = fakeInstall()
+  try {
+    const stdout = []
+    const stderr = []
+    const code = main(['--task-file', '/brief.md'], {
+      env: autoEnv(root), run: autoRun(), readFile: () => 'Weigh the options, assess the evidence, reach a decision.',
+      out: m => stdout.push(m), err: m => stderr.push(m),
+    })
+    assert.equal(code, 0)
+    assert.match(stdout.join('\n'), /Anti-Consensus Club/)
+    assert.match(stderr.join('\n'), /selected-party: Anti-Consensus Club \(anti-consensus-club\)/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('auto tie or zero hits is exit 3 with no mandate and no announcement', () => {
+  const root = fakeInstall()
+  try {
+    for (const brief of ['bug and options', 'nothing catalogued here']) {
+      const stdout = []
+      const stderr = []
+      const code = main(['auto', '--task-file', '/brief.md'], {
+        env: autoEnv(root), run: autoRun(), readFile: () => brief,
+        out: m => stdout.push(m), err: m => stderr.push(m),
+      })
+      assert.equal(code, 3, `expected no-match for ${JSON.stringify(brief)}`)
+      assert.deepEqual(stdout, [], 'a mandate was rendered on no-match')
+      assert.deepEqual(stderr, [], 'a selection was announced on no-match')
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('auto with no readable --task-file is a usage refusal, exit 2', () => {
+  const root = fakeInstall()
+  try {
+    const opts = { env: autoEnv(root), run: () => assert.fail('the resolver ran with no brief') }
+    // `auto` with no file at all.
+    const noFlag = []
+    assert.equal(main(['auto'], { ...opts, out: () => assert.fail('rendered a mandate'), err: m => noFlag.push(m) }), 2)
+    assert.match(noFlag.join('\n'), /task_file_unreadable/)
+    // A path the injected reader cannot read.
+    const unreadable = []
+    assert.equal(main(['auto', '--task-file', '/gone.md'], {
+      ...opts, readFile: () => { throw new Error('ENOENT') },
+      out: () => assert.fail('rendered a mandate'), err: m => unreadable.push(m),
+    }), 2)
+    assert.match(unreadable.join('\n'), /task_file_unreadable/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('auto refuses when --list-groups itself fails: exit 2, no mandate', () => {
+  const root = fakeInstall()
+  try {
+    // The listing is the same resolver/install/uv as --party; its refusals must
+    // surface instead of silently falling through to the invented cast.
+    for (const refusal of [
+      { code: 'resolver_failed', run: () => ({ status: 1, stdout: '{}' }) },
+      { code: 'uv_missing', run: () => ({ error: { code: 'ENOENT' }, stdout: '' }) },
+    ]) {
+      const stdout = []
+      const stderr = []
+      const code = main(['auto', '--task-file', '/brief.md'], {
+        env: autoEnv(root), run: refusal.run, readFile: () => 'review the code, bug',
+        out: m => stdout.push(m), err: m => stderr.push(m),
+      })
+      assert.equal(code, 2, `expected exit 2 on ${refusal.code}`)
+      assert.match(stderr.join('\n'), new RegExp(refusal.code))
+      assert.deepEqual(stdout, [], `a mandate was rendered on ${refusal.code}`)
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a hostile room name is neutralised in the stderr announcement; the mandate is unchanged', () => {
+  const root = fakeInstall()
+  try {
+    // Invisible direction/isolate characters: hostile bytes that the sanitiser
+    // strips to exactly the clean name, so a byte-for-byte mandate comparison is
+    // meaningful rather than a tautology.
+    const hostile = `Code Review Crew\u202e\u2066\u2069`
+    const stdout = []
+    const stderr = []
+    const code = main(['auto', '--task-file', '/brief.md'], {
+      env: autoEnv(root), run: autoRun({ name: hostile }), readFile: () => 'review the code, bug, security',
+      out: m => stdout.push(m), err: m => stderr.push(m),
+    })
+    assert.equal(code, 0)
+    const printed = stderr.join('\n')
+    assert.ok(!/[^\n]/u.test(printed.replace(/[^\p{C}]/gu, '')),
+      'a control or format character reached the terminal in the announcement')
+    assert.match(printed, /^selected-party: /m)
+    // The hostile name must not change the rendered mandate: compare stdout to
+    // the mandate rendered explicitly from the clean party object.
+    assert.deepEqual(stdout, [renderPartyMandate(PARTY)],
+      'the hostile name changed the rendered mandate')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('an explicit id still refuses unknown rooms with exit 2 and never auto-falls-back', () => {
+  const root = fakeInstall()
+  try {
+    const err = []
+    const code = main(['unknown-room', '--task-file', '/brief.md'], {
+      env: autoEnv(root),
+      run: () => ({ status: 1, stdout: JSON.stringify({ error: 'unknown_group', available: [{ id: 'code-review-crew' }] }) }),
+      readFile: () => assert.fail('a named id must not read the brief'),
+      out: () => assert.fail('rendered a mandate for an unknown id'),
+      err: m => err.push(m),
+    })
+    assert.equal(code, 2)
+    assert.match(err.join('\n'), /unknown_party/)
+    assert.doesNotMatch(err.join('\n'), /selected-party:/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
   }
 })

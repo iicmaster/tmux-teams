@@ -181,7 +181,7 @@ value either fails the dispatch or silently seats something nobody chose.
 
 Any seat above also takes `--party <id>`, the same flag `bmad-party-mode` takes.
 Instead of the lane inventing 3-5 voices, it answers as the operator's own saved
-party — real names, titles and scene. One script renders the roster so all three
+party — real names, titles and scene. One script renders the roster so all four
 `*-advisor` skills seat it the same way:
 
 ```bash
@@ -193,7 +193,35 @@ expanded to `$CLAUDE_PLUGIN_ROOT` when you run it. NOT a repository-relative
 path: an advisor is invoked from the operator's own project, where
 `plugins/tmux-teams/...` resolves under THAT tree and exits `MODULE_NOT_FOUND`,
 so `--party` would never reach the resolver. An openai review lane caught the
-relative form in all three skills at once.
+relative form in all four skills at once.
+
+### Automatic party selection
+
+If the operator names no room, or names `auto`, the script chooses a saved room
+from the assigned work instead of inventing a cast. Pass the brief as a file:
+
+```bash
+node <plugin-root>/skills/tmux-teams/scripts/advisor-party.mjs auto --task-file <brief>
+```
+
+Leaving the id off entirely (`--task-file <brief>` alone) does the same thing.
+Selection is a deterministic keyword count over the brief against the
+`SELECTION_CATALOG` constant in `advisor-party.mjs` (documented for maintainers at
+`_bmad-output/specs/spec-advisor-party-type/selection-catalog.md`); it makes no
+network or model call.
+A named id still wins and takes the resolve-or-refuse path unchanged.
+
+On a hit, stdout is byte-identical to the mandate for that id seated explicitly,
+so paste it into the brief exactly as above. One `selected-party: <name> (<id>)`
+line goes to **stderr** — that is where the operator reads which room was chosen;
+it is never part of the brief. Exit `0` means a room was selected.
+
+Exit `3` means auto selection found no room (no catalog keyword hit, or a tie at
+the top score): stdout is empty. **On `3`, emit the original "Cast 3-5 named
+voices" paragraph and tell the operator that no saved room matched.** Auto never
+fails open to a guessed room. Exit `2` here means `task_file_unreadable` (no
+readable `--task-file`) or a resolver refusal — stop and tell the operator, as
+with any `2`. Exit `1` is a command-usage error.
 
 Paste what it prints into the brief **in place of** the invented-cast paragraph
 (the one that asks for three to five named voices); leave the READ-ONLY paragraph
