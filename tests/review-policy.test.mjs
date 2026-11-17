@@ -143,7 +143,10 @@ test('each deterministic route yields exactly three distinct non-primary familie
   }
 })
 
-test('fallback routes unavailable direct Claude through claude-zai only when all panel invariants hold', () => {
+// Superseded by Master 2026-11-17: kimi/zai/qwen retired, claude reseated,
+// opencode free-seat ladder replaces the claude->zai availability alias.
+// The replacement policy is covered by tests/review-advisor-seats.test.mjs.
+test.skip('fallback routes unavailable direct Claude through claude-zai only when all panel invariants hold', () => {
   assert.deepEqual(UNAVAILABLE_RESERVE_SUBSTITUTES, { claude: 'zai' })
   const openai = createReviewPlan('openai')
   assert.match(planFallback(openai, 'qwen').reason, /duplicate/)

@@ -432,7 +432,10 @@ test('gate starts three primaries in parallel and reports exactly three accepted
   assert.equal(out.synthesis.count, 3)
 })
 
-test('real gate, transport, schema validator, and synthesis accept exactly three mock ACP reviews', async () => {
+// Superseded by Master 2026-11-17 seat change (kimi/zai/qwen retired, claude
+// reseated, model-distinct panels). Their contract is covered by
+// tests/review-advisor-seats.test.mjs; kept as historical documentation.
+test.skip('real gate, transport, schema validator, and synthesis accept exactly three mock ACP reviews', async () => {
   const profiles = keyedProfiles([
     gateProfile('kimi', 'kimi'),
     gateProfile('zai', 'zai'),
@@ -457,21 +460,28 @@ test('real gate, transport, schema validator, and synthesis accept exactly three
   assert.equal(out.synthesis.verdict, 'PASS')
 })
 
-test('panel preflight rejects duplicate or primary-matching runtime families', async () => {
+test('panel preflight rejects duplicate models or primary-matching runtime families', async () => {
   const cases = [
     {
+      // Same model twice is a duplicate seat even when families are labelled
+      // differently — Master 2026-11-17 makes the acknowledged model the
+      // distinctness criterion.
       profiles: [
-        gateProfile('first', 'kimi'), gateProfile('second', 'kimi'), gateProfile('agy', 'gemini'),
+        { ...gateProfile('first', 'kimi'), model: 'same-model' },
+        { ...gateProfile('second', 'kimi'), model: 'same-model' },
+        gateProfile('agy', 'gemini'),
       ],
       primaryFamily: 'openai',
-      message: /reviewer-family diversity/,
+      message: /reviewer-model diversity/,
     },
     {
+      // Same model as the primary is a duplicate seat under Master 2026-11-17.
       profiles: [
-        gateProfile('first', 'openai'), gateProfile('second', 'kimi'), gateProfile('agy', 'gemini'),
+        { ...gateProfile('first', 'openai'), model: 'primary-model' },
+        { ...gateProfile('second', 'kimi'), model: 'primary-model' }, gateProfile('agy', 'gemini'),
       ],
       primaryFamily: 'openai',
-      message: /reviewer-family diversity/,
+      message: /reviewer-model diversity/,
     },
   ]
   for (const item of cases) {
@@ -485,6 +495,7 @@ test('panel preflight rejects duplicate or primary-matching runtime families', a
         reviewers: item.profiles.map(selected => selected.id),
         reserve: null,
         primaryFamily: item.primaryFamily,
+        ...(item.primary_model ? { primary_model: item.primary_model } : {}),
       }),
       validateReview: () => ({ ok: true }),
       synthesizeReviews: () => ({ verdict: 'PASS' }),
@@ -527,15 +538,14 @@ test('the gate rejects an AGY safe-read count, which it used to be exempt from',
   }
 })
 
-test('final gate rejects a fallback that introduces duplicate or primary-matching runtime families', async () => {
+test('final gate rejects a fallback that duplicates an accepted model', async () => {
   const cases = [
-    { reserveFamily: 'kimi', message: /families are not distinct/ },
-    { reserveFamily: 'openai', message: /matches the primary family/ },
+    { reserveFamily: 'openai', message: /models are not distinct/ },
   ]
   for (const item of cases) {
     const profiles = keyedProfiles([
       gateProfile('failed', 'claude'), gateProfile('second', 'kimi'),
-      gateProfile('agy', 'gemini'), gateProfile('reserve', item.reserveFamily),
+      gateProfile('agy', 'gemini'), { ...gateProfile('reserve', item.reserveFamily), model: gateProfile('second', 'kimi').model },
     ])
     const plan = {
       blocked: false,
@@ -563,7 +573,7 @@ test('final gate rejects a fallback that introduces duplicate or primary-matchin
   }
 })
 
-test('real transport/schema failure uses one non-Claude reserve and still synthesizes an exact-three panel', async () => {
+test.skip('real transport/schema failure uses one non-Claude reserve and still synthesizes an exact-three panel', async () => {
   const profiles = keyedProfiles([
     gateProfile('kimi', 'kimi'),
     gateProfile('zai', 'zai'),
@@ -620,7 +630,7 @@ test('a non-AGY failure gets one reserve only after originals settle; AGY failur
   }), /AGY review lane failed/)
 })
 
-test('provider-limited direct Claude is never launched when claude-zai would violate the final panel', async () => {
+test.skip('provider-limited direct Claude is never launched when claude-zai would violate the final panel', async () => {
   const calls = []
   const profiles = keyedProfiles([
     gateProfile('qwen', 'qwen'), gateProfile('zai', 'zai'), gateProfile('agy', 'gemini'), gateProfile('claude', 'claude'),
@@ -638,7 +648,7 @@ test('provider-limited direct Claude is never launched when claude-zai would vio
   assert.deepEqual(calls.sort(), ['agy', 'qwen', 'zai'])
 })
 
-test('provider-limited Claude lane falls back to claude-zai before any direct Claude launch', async () => {
+test.skip('provider-limited Claude lane falls back to claude-zai before any direct Claude launch', async () => {
   const calls = []
   const profiles = keyedProfiles([
     gateProfile('claude', 'claude'), gateProfile('qwen', 'qwen'),
@@ -667,7 +677,7 @@ test('provider-limited Claude lane falls back to claude-zai before any direct Cl
   ])
 })
 
-test('canonical availability matrix never launches or prepares direct Claude', async () => {
+test.skip('canonical availability matrix never launches or prepares direct Claude', async () => {
   const makeProfiles = () => keyedProfiles([
     gateProfile('agy', 'gemini'),
     gateProfile('kimi', 'kimi'),
@@ -1087,10 +1097,11 @@ test('the gate refuses a panel whose lanes share one unproven adapter identity (
     synthesizeReviews: () => ({ verdict: 'PASS' }),
   }), e => e.code === 'policy' && /proven-identity diversity/.test(e.message))
 
-  // Today's real, legitimate `openai` route -- qwen seated alongside zai, not
-  // claude -- is unaffected: both routed profiles have different parent-
-  // verified endpoint pins.
-  const legitimatePlan = { blocked: false, primaryFamily: 'openai', reviewers: ['qwen', 'zai', 'agy'], reserve: 'claude' }
+  // Master 2026-11-17: a legitimate panel may seat two opencode free seats
+  // (same adapter binary) because their acknowledged MODELS differ — a stronger
+  // fact than launcher bytes. Distinguishing by model is scoped to opencode,
+  // so the unpinned claude twin above still collides and blocks.
+  const legitimatePlan = { blocked: false, primaryFamily: 'openai', reviewers: ['opencode', 'opencodeDeepseek', 'agy'], reserve: null }
   const out = await runReviewGate(packet(), {
     profiles: REVIEW_PROFILES,
     runAcpReview: runner,
@@ -1100,11 +1111,9 @@ test('the gate refuses a panel whose lanes share one unproven adapter identity (
     synthesizeReviews: () => ({ verdict: 'PASS' }),
   })
   assert.equal(out.ok, true)
-  assert.deepEqual(out.route, ['qwen', 'zai', 'agy'])
-  assert.equal(out.reviews.find(item => item.profile === 'qwen').familyProvenKey,
-    '@agentclientprotocol/claude-agent-acp@0.61.0::pinned:token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic')
-  assert.equal(out.reviews.find(item => item.profile === 'zai').familyProvenKey,
-    '@agentclientprotocol/claude-agent-acp@0.61.0::pinned:api.z.ai/api/anthropic')
+  assert.deepEqual(out.route, ['opencode', 'opencodeDeepseek', 'agy'])
+  assert.equal(out.reviews.find(item => item.profile === 'opencode').model, 'minimax-m3.1-flash-free')
+  assert.equal(out.reviews.find(item => item.profile === 'opencodeDeepseek').model, 'deepseek-v4.1-flash-free')
 })
 
 test('a fallback substitution that reintroduces a proven-identity collision is caught after the original panel already cleared preflight', async () => {
