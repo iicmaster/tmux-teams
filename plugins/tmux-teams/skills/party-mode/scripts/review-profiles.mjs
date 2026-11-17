@@ -26,11 +26,13 @@ const runtimeKeys = new Set([
 const providerSecrets = {
   agy: ['AGY_API_KEY', 'ANTIGRAVITY_API_KEY', 'GOOGLE_API_KEY'],
   kimi: ['KIMI_API_KEY', 'MOONSHOT_API_KEY'],
+  qwen: [],
+  deepseek: [],
+  zai: ['ZAI_API_KEY'],
   claude: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
   codex: ['OPENAI_API_KEY'],
   ninerouter: [],
-  // `opencode` authenticates through `opencode auth login`, not through an
-  // env var this process could forward, so the list is deliberately empty.
+  // opencode free seats authenticate via `opencode auth login`, not forwarded env.
   opencode: [],
   opencodeDeepseek: [],
   opencodeHy: [],
@@ -55,11 +57,10 @@ function freeze(value) {
 
 // A routed lane reaches its provider through a machine-local settings file the
 // operator owns. Pinning the host here is what keeps `family` honest — see the
-// kimi and ninerouter entries.
-// 2026-11-02: the Zai and Qwen routes were removed permanently by operator
-// decision and replaced by the `opencode` lanes below. Nothing here may route
-// to `api.z.ai` or the Alibaba token-plan gateway again.
-export const ROUTED_PROFILES = new Set(['kimi', 'ninerouter'])
+// qwen and zai entries.
+export const ROUTED_PROFILES = new Set(['deepseek', 'kimi', 'ninerouter', 'qwen', 'zai'])
+const ZAI_ENDPOINT = freeze({ host: 'api.z.ai', path: '/api/anthropic' })
+const QWEN_ENDPOINT = freeze({ host: 'token-plan.ap-southeast-1.maas.aliyuncs.com', path: '/apps/anthropic' })
 // Master, 2026-08-04: `claude-kimi` reaches a K3 model, `claude` reaches opus —
 // two genuinely different families down one adapter. That was always true and
 // nothing proved it, so `provenFamilyKey` gave both lanes the identical
@@ -77,9 +78,8 @@ const NINEROUTER_ENDPOINT = freeze({ scheme: 'http', host: '127.0.0.1', port: '2
 
 export const REVIEW_PROFILES = freeze({
   agy: {
-    // Master 2026-11-17: the review seat runs bmad-party-mode round-table via
-    // `$agy-advisor hydrogen`. `hydrogen` is the Gemini 4 Hydrogen thinker;
-    // this pin is the family-distinct AGY lane the gate has always required.
+    // Master 2026-11-17: the review seat runs the `agy-advisor hydrogen`
+    // persona (Gemini 4 Hydrogen thinker), not the carbon default.
     id: 'agy', provider: 'google-antigravity', family: 'gemini', model: 'gemini-4-hydrogen-high',
     displayModel: 'agy/gemini-4-hydrogen-high',
     reviewMode: 'plan', command: ['bunx', 'antigravity-acp@1.2.0'],
@@ -109,6 +109,104 @@ export const REVIEW_PROFILES = freeze({
     claudeExecutable: 'claude-kimi',
     sessionSettings: { availableModels: ['opus'] },
     config: { model: 'opus', mode: 'plan' },
+  },
+  zai: {
+    id: 'zai', provider: 'zai', family: 'zai', model: 'glm-5.2',
+    displayModel: 'zai/glm-5.2',
+    thinkingBudgetTokens: 4096,
+    // glm-5.2 cannot hold plan mode and the JSON-only review protocol at once —
+    // asked for both it answers prose and the parse fails, which is how this
+    // lane failed every panel it sat on. It runs in default mode instead. What
+    // made plan mode safe is not the word: the runner denies every permission
+    // request, mounts no MCP server, and refuses a run that observed a tool
+    // call. Those hold here unchanged.
+    //
+    // DEFAULT MODE IS NOT A CURE, AND THIS COMMENT SAID IT WAS. Measured
+    // 2026-08-09 on Ubuntu 26.04: the lane reached review, ran 4m8s, glm-5.2
+    // read the diff and answered -- and the answer was prose. It failed on
+    // "agent output is not one strict JSON document" while running the mode
+    // above. ADR 0004 ordered that contradiction recorded where a reader of
+    // this file would find it; that is this note.
+    //
+    // THEN THE MODEL WAS MEASURED, AND IT IS NOT THE CAUSE. On 2026-08-13,
+    // macOS, direct ACP with the profile selected by CLAUDE_CONFIG_DIR, this
+    // lane returned ONE STRICT JSON DOCUMENT IN BOTH MODES on the same packet:
+    // plan mode 4027 bytes in 87s, default mode 4170 bytes in 204s. Plan mode
+    // was the faster and the cleaner of the two. So the paragraph at the top of
+    // this comment is the record of a decision, not of a limitation -- glm-5.2
+    // can hold plan mode and the JSON-only protocol at once, and the mode field
+    // is not what stands between this lane and a parseable review.
+    //
+    // What differed on the day it answered prose is the shape of session/new.
+    // plugins/tmux-teams/skills/party-mode/scripts/acp-review-client.mjs sends
+    // settingSources: [], and measured on that same 2026-08-13 host the model
+    // list then collapses to ['default'] and authentication fails outright,
+    // while the companion's bare { cwd, mcpServers: [] } authenticates and
+    // answers. That is one remaining difference and it is NOT proof of cause:
+    // the 2026-08-09 lane authenticated fine and still answered prose. Whoever
+    // picks this up is choosing between the session shape, a tolerant parse,
+    // and a different model -- and should stop suspecting the mode.
+    reviewMode: 'default',
+    command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
+    adapterPackage: '@agentclientprotocol/claude-agent-acp@0.61.0',
+    claudeExecutable: 'claude-zai',
+    settingsFile: 'settings-zai.json',
+    settingsRelativePath: '.config/claude-profiles/zai/settings.json',
+    providerConfigDir: '.config/claude-profiles/zai',
+    endpoint: ZAI_ENDPOINT,
+    sessionSettings: { availableModels: ['glm-5.2'] },
+    config: { model: 'glm-5.2', mode: 'default' },
+  },
+  qwen: {
+    id: 'qwen', provider: 'qwen', family: 'qwen', model: 'qwen3.8-max-preview',
+    displayModel: 'qwen/qwen3.8-max-preview',
+    reviewMode: 'plan',
+    command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
+    adapterPackage: '@agentclientprotocol/claude-agent-acp@0.61.0',
+    claudeExecutable: 'claude-qwen',
+    settingsRelativePath: '.config/claude-profiles/qwen/settings.json',
+    providerConfigDir: '.config/claude-profiles/qwen',
+    endpoint: QWEN_ENDPOINT,
+    sessionSettings: { availableModels: ['qwen3.8-max-preview'] },
+    config: { model: 'qwen3.8-max-preview', mode: 'plan' },
+  },
+  deepseek: {
+    id: 'deepseek', provider: 'qwen', family: 'deepseek', model: 'deepseek-v4-flash-0731',
+    displayModel: 'deepseek/v4-flash-0731',
+    // Same binary and same gateway as the `qwen` lane above — `claude-qwen`
+    // reaches BOTH, because the profile it loads maps the model a caller asks
+    // for onto a vendor: `ANTHROPIC_DEFAULT_OPUS_MODEL: qwen3.8-max`,
+    // `ANTHROPIC_DEFAULT_SONNET_MODEL: deepseek-v4-flash-0731`. Measured rather
+    // than read off the settings file, because the AGY adapter taught this repo
+    // that a configured model can be silently ignored: asked for its identifier,
+    // `--model opus` answered `qwen3.8-max-preview` and `--model sonnet`
+    // answered `deepseek-v4-flash-0731` (2026-08-08).
+    //
+    // It shares `QWEN_ENDPOINT` and the adapter package with `qwen`, so
+    // `provenFamilyKey` gives the two lanes an IDENTICAL key and they can never
+    // sit on one panel. That is deliberate and is left alone: the key proves
+    // where a lane routes, not which model answered, and one self-reported
+    // identifier is not the evidence a release gate should count a family on.
+    // Nothing here needs a new rule — `planFallback` re-runs `validReviewerSet`
+    // after every substitution, so a panel that would seat both refuses itself.
+    // Precisely: deepseek CAN replace a failed qwen (the swap leaves
+    // [zai, deepseek, agy] and validates); what it cannot do is sit beside it.
+    reviewMode: 'plan',
+    command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
+    adapterPackage: '@agentclientprotocol/claude-agent-acp@0.61.0',
+    claudeExecutable: 'claude-qwen',
+    settingsRelativePath: '.config/claude-profiles/qwen/settings.json',
+    providerConfigDir: '.config/claude-profiles/qwen',
+    endpoint: QWEN_ENDPOINT,
+    // The alias this gateway must be ASKED for, declared rather than left as a
+    // mismatch: the pin demands one value and compares it against this, while
+    // `model` above stays the identity that gets recorded. Until 2026-08-14 the
+    // two were simply inconsistent, so every attempt to seat this lane was
+    // refused at `stage: config` — and since it is the claude route's only
+    // reserve, the gate had no working substitution at all.
+    requestModel: 'sonnet',
+    sessionSettings: { availableModels: ['sonnet'] },
+    config: { model: 'sonnet', mode: 'plan' },
   },
   // 2026-11-02, operator decision: Zai and Qwen are removed permanently, and
   // the `claude-qwen`/`claude-zai` wrapper routes go with them. This lane is
@@ -203,7 +301,7 @@ export const REVIEW_PROFILES = freeze({
     // alias pinning, no settings-side model mapping, nothing the wrapper does
     // not already do (its own ANTHROPIC_MODEL=deepseek-v4-flash). `model` is
     // therefore what the wrapper actually answers as, measured by probe.
-    id: 'ninerouter', provider: 'ninerouter', family: 'deepseek', model: 'deepseek-v4-flash',
+    id: 'ninerouter', provider: 'ninerouter', family: 'zai', model: 'deepseek-v4-flash',
     displayModel: 'ninerouter/deepseek-v4-flash (wrapper default)',
     reviewMode: 'plan',
     command: ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'],
@@ -214,10 +312,7 @@ export const REVIEW_PROFILES = freeze({
     endpoint: NINEROUTER_ENDPOINT,
   },
   codex: {
-    // Master 2026-11-17: the review seat runs bmad-party-mode round-table via
-    // `$codex-advisor luna` — gpt-6-luna[max], NOT the sol frontier used by
-    // execution agents. The gate still verifies the acknowledged model/effort;
-    // luna's locked tier is `max` (its `ultra` tier was retired 2026-09-30).
+    // Master 2026-11-17: `$codex-advisor luna` seat — gpt-6-luna[max].
     id: 'codex', provider: 'openai', family: 'openai', model: 'gpt-6-luna',
     displayModel: 'openai/gpt-6-luna',
     reviewMode: 'plan',
@@ -232,7 +327,7 @@ export const REVIEW_PROFILES = freeze({
   },
 })
 
-// THREE prohibitions live in this one pattern, and a test asserts every copy of
+// TWO prohibitions live in this one pattern, and a test asserts every copy of
 // it (three files) stays character-identical:
 //   1. CLAUDE.md forbids Gemini 3.1 on every tmux-teams AGY route and says to
 //      fail closed on one. Until now the rule lived only in the pin above,
@@ -243,12 +338,8 @@ export const REVIEW_PROFILES = freeze({
 //      dispatched or reviewed. The pattern must NOT swallow `gpt-6.1-sol`
 //      (`[-_ ]?` cannot take the `.`), and it deliberately reaches the old
 //      generation's suffixed forms (`gpt-6-sol-fast`, `gpt-6-sol[max]`).
-//   3. Master, 2026-11-02: `fable-5` is retired — only `fable-5.1` may be
-//      dispatched. The `(?![-_. ]?5[-_. ]?1)` lookahead is what keeps
-//      `claude-fable-5-1` and `fable-5.1` alive while every other fable form —
-//      including the bare alias `fable`, which pins no version at all — fails.
 // This throws at import.
-const PROHIBITED_MODEL = /(?:^|[^0-9a-z])(?:gemini[-_ ]?3\.1|gpt[-_ ]?6[-_ ]?sol|fable(?![-_. ]?5[-_. ]?1))(?:[^0-9]|$)/i
+const PROHIBITED_MODEL = /(?:^|[^0-9a-z])(?:gemini[-_ ]?3\.1|gpt[-_ ]?6[-_ ]?sol)(?:[^0-9]|$)/i
 
 export function isProhibitedModel(model) {
   return typeof model === 'string' && PROHIBITED_MODEL.test(model)
@@ -257,7 +348,7 @@ export function isProhibitedModel(model) {
 /** Reject a prohibited reviewer model rather than quietly running it. */
 export function assertPermittedModel(model, where) {
   if (isProhibitedModel(model)) {
-    throw new Error(`${where}: prohibited model on tmux-teams review routes (Gemini 3.1 is banned; gpt-6-sol is retired — the Codex frontier is gpt-6.1-sol; fable-5 is retired — only fable-5.1 may be dispatched), got ${model}`)
+    throw new Error(`${where}: prohibited model on tmux-teams review routes (Gemini 3.1 is banned; gpt-6-sol is retired — the Codex frontier is gpt-6.1-sol), got ${model}`)
   }
   return model
 }
@@ -331,6 +422,8 @@ const aliases = new Map([
   ['openai', 'openai'], ['codex', 'openai'], ['gpt', 'openai'],
   ['claude', 'claude'], ['anthropic', 'claude'],
   ['kimi', 'kimi'], ['moonshot', 'kimi'],
+  ['qwen', 'qwen'],
+  ['zai', 'zai'], ['z.ai', 'zai'], ['glm', 'zai'],
   ['gemini', 'gemini'], ['google', 'gemini'], ['google-antigravity', 'gemini'],
   ['antigravity', 'gemini'], ['agy', 'gemini'],
 ])
@@ -341,21 +434,20 @@ function normalizeFamilyValues(raw) {
   if (!value) return []
   if (aliases.has(value)) return [aliases.get(value)]
   if (/^claude[-_]kimi(?:[-_ ]?acp)?$/.test(value)) return ['kimi']
+  if (/^claude[-_]qwen(?:[-_ ]?acp)?$/.test(value)) return ['qwen']
+  if (/^claude[-_](?:zai|glm)(?:[-_ ]?acp)?$/.test(value)) return ['zai']
   if (/^claude[-_]deepseek(?:[-_ ]?acp)?$/.test(value)) return ['deepseek']
   const families = []
   if (/(?:^|[^a-z0-9])(?:antigravity|gemini|agy|google)(?:[^a-z0-9]|$)/.test(value)) families.push('gemini')
   if (/(?:^|[^a-z0-9])(?:kimi|moonshot)(?:[^a-z0-9]|$)/.test(value)) families.push('kimi')
+  if (/(?:^|[^a-z0-9])qwen(?:[0-9]|[^a-z0-9]|$)/.test(value)) families.push('qwen')
   // `deepseek` SHIPS as a profile and was recognized by nothing: neither the
   // alias map nor any regex named it, so `normalizePrimaryFamily('deepseek')`
   // answered 'unknown' — and the lane reached its seat through a gateway that
   // also serves qwen, so the nearest wrong answer was 'qwen'. A panel lane
   // found it. A family the panel counts on for distinctness must be nameable.
-  // `opencode` is the provider NAME of a deepseek-family seat (2026-11-02), so it
-  // is a third spelling of the same family beside `deepseek` and the vendor id.
-  // Left unnamed, that shipped profile declared a family normalising to `[]`,
-  // and a panel could then seat it beside `ninerouter` and call the pair
-  // diverse — the exact defect this block exists to prevent.
-  if (/(?:^|[^a-z0-9])(?:deep[-_ ]?seek|opencode)(?:[0-9]|[^a-z0-9]|$)/.test(value)) families.push('deepseek')
+  if (/(?:^|[^a-z0-9])deep[-_ ]?seek(?:[0-9]|[^a-z0-9]|$)/.test(value)) families.push('deepseek')
+  if (/(?:^|[^a-z0-9])(?:zai|z\.ai|glm)(?:[^a-z0-9]|$)/.test(value)) families.push('zai')
   if (/(?:^|[^a-z0-9])(?:claude|anthropic)(?:[^a-z0-9]|$)/.test(value)) families.push('claude')
   if (/(?:^|[^a-z0-9])(?:gpt|openai|codex)(?:[^a-z0-9]|$)/.test(value)) families.push('openai')
   return [...new Set(families)]
@@ -591,32 +683,6 @@ function routesApart(routings, i, j) {
   return a !== null && b !== null && a !== b
 }
 
-// Two or more lanes collide when nothing here can tell them apart. Folded
-// from the old `provenFamilyKeysCollide` + `launchDeclaredButUnreadable` pair
-// (#43) into the one function every caller actually wants; the decision
-// itself is UNCHANGED, not simplified, because two genuinely independent
-// kinds of evidence still feed it and dropping either reopens a shipped
-// bypass:
-//
-//   - UNREADABLE overrides everything. `laneIdentity` says so directly now
-//     instead of a separate `launchDeclaredButUnreadable` pass — r7-codex.
-//   - FAMILY: `provenFamilyKey`, checked directly rather than through
-//     `laneIdentity` because it is not gated on the launch being readable —
-//     a profile can declare a real `adapterPackage` and still be
-//     `undeclared` or `unreadable` on its launch, and two lanes that BOTH
-//     omit or misspell `adapterPackage` (both null) are exactly as
-//     unprovable as two that share one value (r2-codex2 bypass #2). This is
-//     also the axis that still matters when two lanes share one declared
-//     package but differ only in incidental trailing args: an identical
-//     declared identity is not made diverse by an argument neither the
-//     vendor pin nor the package name explains.
-//   - LAUNCH: `signature` + `routing` from `laneIdentity`. Two lanes whose
-//     launch cannot be compared at all (two `undeclared`) fail closed the
-//     same way two null keys do; two IDENTIFIED lanes with the same
-//     signature collide unless BOTH are pinned to different verified
-//     endpoints (AGY round six) — a pin distinguishes same-bytes lanes
-//     reaching different providers, it does not manufacture a difference
-//     neither side declares (r5-qwen: dropping the pin is not a distinction).
 // Master 2026-11-17: the opencode free seats (minimax/deepseek/hy/glm) share
 // one adapter binary AND one proven-family key, so both collision axes below
 // would refuse a panel seating two of them. They are still DIFFERENT models,
