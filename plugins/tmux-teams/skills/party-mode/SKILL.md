@@ -74,7 +74,7 @@ no reviewer may be the primary model.
 |---|---|---|
 | OpenAI / Codex / `gpt-*` | AGY + Claude Opus + OC `minimax-m3.1-flash-free` | `minimax -> deepseek -> hy -> glm`; then block and ask Master |
 | Claude | AGY + Codex `gpt-6-luna[max]` + OC `minimax-m3.1-flash-free` | same opencode ladder |
-| Deepseek | AGY + Codex `gpt-6-luna[max]` + Claude Opus | opencode seats share the primary family; ninerouter only if model-distinct |
+| Deepseek | AGY + Codex `gpt-6-luna[max]` + Claude Opus | `opencodeDeepseek` (distinct model); family label is not an exclusion |
 | Gemini / AGY / unknown | fail closed | none |
 
   Codex is prohibited from an OpenAI/Codex/`gpt-*` primary panel. Gemini, AGY, and unknown primaries fail closed rather than guessing a reviewer set. When an opencode seat hits free quota the gate steps to the next model in strength order `minimax -> deepseek -> hy -> glm`. If the replacement also fails, the gate blocks; the PM then asks Master whether to skip the review or wait for the daily quota reset — never pick a weaker seat to avoid the question.

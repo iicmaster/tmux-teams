@@ -130,8 +130,8 @@ function validReviewerSet(primaryFamily, ids) {
   // legitimately share a family and adapter but are different models, each
   // verified at the gate's `model_identity` stage. `provenFamilyCollision`
   // still guards the independent launch-identity axis (scoped to opencode for
-  // the model discriminator). A reviewer may not share the PRIMARY's family
-  // — that is the one family exclusion that stays.
+  // the model discriminator). The PRIMARY's family is not excluded: a
+  // different model from a same-family seat is a distinct reviewer.
   return new Set(models).size === 3 && !provenFamilyCollision(profiles)
 }
 
