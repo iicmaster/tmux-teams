@@ -10,7 +10,7 @@ and a declaration that cannot be read fails the page closed with the reason.
 It is for operators running agent teams who want the board to report what
 actually happened.
 
-Current release: **0.52.0** (`.claude-plugin/marketplace.json` and
+Current release: **0.53.0** (`.claude-plugin/marketplace.json` and
 `plugins/tmux-teams/.claude-plugin/plugin.json`). Upgrading from an earlier
 release: [plugins/tmux-teams/docs/UPGRADING.md](plugins/tmux-teams/docs/UPGRADING.md).
 
@@ -23,7 +23,7 @@ release: [plugins/tmux-teams/docs/UPGRADING.md](plugins/tmux-teams/docs/UPGRADIN
    claude plugin install tmux-teams@tmux-teams
    ```
 
-   You should see the marketplace registered and the plugin installed at version 0.52.0.
+   You should see the marketplace registered and the plugin installed at version 0.53.0.
 
 2. Declare the loop by invoking the bundled `tmux-teams:graph-setup` skill —
    an interview that runs until `.tmux-teams/graph.json` is complete, then validates it.
@@ -57,7 +57,7 @@ release: [plugins/tmux-teams/docs/UPGRADING.md](plugins/tmux-teams/docs/UPGRADIN
 The review gate declares no OS sandbox; why, and what it checks instead, is
 [ADR 0006](plugins/tmux-teams/docs/adr/0006-the-review-gate-stops-declaring-bwrap.md).
 
-## 4. The fifteen skills
+## 4. The sixteen skills
 
 **Entry and orchestration**
 
@@ -80,6 +80,7 @@ The review gate declares no OS sandbox; why, and what it checks instead, is
 
 - `tmux-teams:pm-delegation` — act as PM over other agents: the brief contract, tickets as a dependency graph, audited worktrees.
 - `tmux-teams:handoff` — end a session by writing `HANDOFF.md` for the next reader, which is another agent.
+- `tmux-teams:release` — the default release lane: branch → PR → `codex-advisor[luna]` review → merge → version bump → tag + GitHub release → cache sync.
 - `tmux-teams:lane-setup` — get a review lane callable on this machine, reporting what is missing per lane.
 
 **Parties**
