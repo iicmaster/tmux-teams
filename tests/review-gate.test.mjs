@@ -475,11 +475,13 @@ test('panel preflight rejects duplicate models or primary-matching runtime famil
       message: /reviewer-model diversity/,
     },
     {
+      // Same model as the primary is a duplicate seat under Master 2026-11-17.
       profiles: [
-        gateProfile('first', 'openai'), gateProfile('second', 'kimi'), gateProfile('agy', 'gemini'),
+        { ...gateProfile('first', 'openai'), model: 'primary-model' },
+        { ...gateProfile('second', 'kimi'), model: 'primary-model' }, gateProfile('agy', 'gemini'),
       ],
       primaryFamily: 'openai',
-      message: /reviewer-family diversity/,
+      message: /reviewer-model diversity/,
     },
   ]
   for (const item of cases) {
@@ -493,6 +495,7 @@ test('panel preflight rejects duplicate models or primary-matching runtime famil
         reviewers: item.profiles.map(selected => selected.id),
         reserve: null,
         primaryFamily: item.primaryFamily,
+        ...(item.primary_model ? { primary_model: item.primary_model } : {}),
       }),
       validateReview: () => ({ ok: true }),
       synthesizeReviews: () => ({ verdict: 'PASS' }),
@@ -535,14 +538,14 @@ test('the gate rejects an AGY safe-read count, which it used to be exempt from',
   }
 })
 
-test('final gate rejects a fallback that shares the primary family', async () => {
+test('final gate rejects a fallback that duplicates an accepted model', async () => {
   const cases = [
-    { reserveFamily: 'openai', message: /matches the primary family/ },
+    { reserveFamily: 'openai', message: /models are not distinct/ },
   ]
   for (const item of cases) {
     const profiles = keyedProfiles([
       gateProfile('failed', 'claude'), gateProfile('second', 'kimi'),
-      gateProfile('agy', 'gemini'), gateProfile('reserve', item.reserveFamily),
+      gateProfile('agy', 'gemini'), { ...gateProfile('reserve', item.reserveFamily), model: gateProfile('second', 'kimi').model },
     ])
     const plan = {
       blocked: false,

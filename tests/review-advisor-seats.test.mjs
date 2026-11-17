@@ -39,11 +39,39 @@ test('two opencode free seats stand apart only because their acknowledged models
   assert.equal(provenFamilyCollision([REVIEW_PROFILES.opencode, REVIEW_PROFILES.opencode, REVIEW_PROFILES.agy]), true)
 })
 
-test('preferred panels keep AGY final and exclude the primary family', () => {
+test('preferred panels keep AGY final and use three distinct models', () => {
   for (const primary of ['openai', 'claude', 'deepseek']) {
     const plan = createReviewPlan(primary)
     assert.equal(plan.blocked, false)
     assert.equal(plan.reviewers.at(-1), 'agy')
     assert.equal(new Set(plan.reviewers.map(id => REVIEW_PROFILES[id].model)).size, 3)
+  }
+})
+
+test('openai route: a failed claude lane walks past the seated opencode to its ladder rung', () => {
+  const plan = createReviewPlan('openai')
+  assert.deepEqual(plan.reviewers, ['claude', 'opencode', 'agy'])
+  const afterClaude = planFallback(plan, 'claude')
+  assert.equal(afterClaude.blocked, false, 'must not pick the already-seated opencode')
+  assert.deepEqual(afterClaude.reviewers, ['opencodeDeepseek', 'opencode', 'agy'])
+  assert.equal(afterClaude.replaced.replacement, 'opencodeDeepseek')
+  // A failed opencode takes its own next rung, not one already seated.
+  const afterOc = planFallback(plan, 'opencode')
+  assert.deepEqual(afterOc.reviewers, ['claude', 'opencodeDeepseek', 'agy'])
+})
+
+test('every route reserve is usable under that route own diversity rule', () => {
+  for (const primary of ['openai', 'claude', 'deepseek']) {
+    const plan = createReviewPlan(primary)
+    const reserveProfile = REVIEW_PROFILES[plan.reserve]
+    assert.ok(reserveProfile, `${primary} reserve ${plan.reserve} must exist`)
+    const primaryModel = ({ openai: 'gpt-6-luna', claude: 'claude-opus-5-5', deepseek: 'deepseek-v4-flash-free' })[primary]
+    assert.notEqual(reserveProfile.model, primaryModel, `${primary} reserve is the primary model`)
+    // For each non-AGY reviewer, some fallback must produce a valid panel.
+    for (const reviewer of plan.reviewers.filter(id => id !== 'agy')) {
+      const result = planFallback(plan, reviewer)
+      assert.equal(result.blocked, false, `${primary}/${reviewer} fallback blocked: ${result.reason}`)
+      assert.equal(new Set(result.reviewers.map(id => REVIEW_PROFILES[id].model)).size, 3)
+    }
   }
 })

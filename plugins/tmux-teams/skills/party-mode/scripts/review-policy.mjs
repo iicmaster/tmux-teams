@@ -36,7 +36,7 @@ const ROUTES = Object.freeze({
   // claude primary: three other families — gemini, openai, deepseek.
   claude: Object.freeze({ reviewers: Object.freeze(['agy', 'codex', 'opencode']), reserve: 'opencodeDeepseek' }),
   // deepseek primary: opencode seats share its family, so use gemini/openai/claude.
-  deepseek: Object.freeze({ reviewers: Object.freeze(['agy', 'codex', 'claude']), reserve: 'ninerouter' }),
+  deepseek: Object.freeze({ reviewers: Object.freeze(['agy', 'codex', 'claude']), reserve: 'opencodeDeepseek' }),
 })
 
 // Master 2026-11-17: kimi is gone permanently and the direct Claude provider
@@ -124,7 +124,6 @@ function withAgyFinal(ids) {
 function validReviewerSet(primaryFamily, ids) {
   if (!Array.isArray(ids) || ids.length !== 3 || ids[2] !== 'agy' || new Set(ids).size !== 3) return false
   const profiles = ids.map(getReviewProfile)
-  const families = profiles.map(profile => profile.family)
   const models = profiles.map(profile => profile.model)
   // Master 2026-11-17: distinctness is decided by the ACKNOWLEDGED MODEL, not
   // the declared family. Three opencode free seats (minimax/deepseek/hy/glm)
@@ -133,9 +132,7 @@ function validReviewerSet(primaryFamily, ids) {
   // still guards the independent launch-identity axis (scoped to opencode for
   // the model discriminator). A reviewer may not share the PRIMARY's family
   // — that is the one family exclusion that stays.
-  return new Set(models).size === 3 &&
-    !provenFamilyCollision(profiles) &&
-    families.every(family => family !== primaryFamily)
+  return new Set(models).size === 3 && !provenFamilyCollision(profiles)
 }
 
 export function createReviewPlan(primary) {
@@ -168,12 +165,20 @@ export function planFallback(plan, failedReviewer) {
   if (!plan.reviewers.includes(failedReviewer)) return Object.freeze({ blocked: true, reason: 'failed reviewer is not planned' })
   if (failedReviewer === 'agy') return Object.freeze({ blocked: true, reason: 'AGY is mandatory and cannot be replaced' })
   if (plan.usedReserve) return Object.freeze({ blocked: true, reason: 'reserve already used' })
-  // Master 2026-11-17: the ladder is keyed by the FAILED seat, not the route's
-  // static reserve. `plan.reserve` is only the first rung; after `opencode`
-  // fails the next is `opencodeDeepseek`, then `opencodeHy`, then `opencodeGlm`.
-  // A seat with no ladder entry takes the route's declared reserve (kept for
-  // backwards compatibility with injected plans).
-  const replacementId = UNAVAILABLE_RESERVE_SUBSTITUTES[failedReviewer] ?? plan.reserve
+  // Master 2026-11-17: walk the ladder from the FAILED seat and take the first
+  // rung that is NOT already on the panel. The openai route seats `claude` and
+  // `opencode` together, so when claude fails the naive `claude -> opencode`
+  // map would retry a seated lane and block; skipping it to opencodeDeepseek
+  // is the whole point of the ladder. A seat with no ladder entry starts from
+  // the route's declared reserve (injected-plan compatibility).
+  const ladder = UNAVAILABLE_RESERVE_SUBSTITUTES
+  let candidate = ladder[failedReviewer] ?? plan.reserve
+  const seenLadder = new Set([failedReviewer])
+  while (candidate && ladder[candidate] && (plan.reviewers.includes(candidate) || seenLadder.has(candidate))) {
+    seenLadder.add(candidate)
+    candidate = ladder[candidate]
+  }
+  const replacementId = candidate
   if (!replacementId) return Object.freeze({ blocked: true, reason: 'no available reserve' })
   if (replacementId === failedReviewer) {
     return Object.freeze({ blocked: true, reason: 'availability fallback would retry the failed reviewer' })

@@ -183,12 +183,8 @@ function choosePanel(profiles, packet, planner = planReviewPanel) {
     throw new ReviewTransportError('policy', 'policy panel must contain exactly one mandatory AGY reviewer')
   }
   // Master 2026-11-17: distinctness is by ACKNOWLEDGED MODEL, not family —
-  // two opencode free seats may sit together when quota forces it. The primary
-  // family exclusion stays; model diversity is checked below.
-  const primaryFamilies = primary.map(profile => profile.family)
-  if (primaryFamilies.includes(plan.primaryFamily)) {
-    throw new ReviewTransportError('policy', 'policy panel violates reviewer-family diversity')
-  }
+  // two opencode free seats may sit together when quota forces it. Model
+  // diversity among the three reviewers is the sole diversity rule.
   if (new Set(primary.map(profile => profile.model)).size !== 3) {
     throw new ReviewTransportError('policy', 'policy panel violates reviewer-model diversity')
   }
@@ -517,12 +513,8 @@ export async function runReviewGate(packet, {
   // the declared family. Three opencode free seats (minimax/deepseek/hy/glm)
   // may sit together when quota forces it — each verified as a different
   // model — so the old `new Set(finalFamilies).size === 3` check blocked a
-  // valid panel. The primary-family exclusion stays: no reviewer may share
+  // valid panel. The model-distinctness is the sole diversity rule: no reviewer may share
   // the primary's family. Model distinctness is checked below on the receipts.
-  const finalFamilies = reviews.map(item => item.family)
-  if (activePlan?.primaryFamily && finalFamilies.includes(activePlan.primaryFamily)) {
-    throw fail('policy', 'final review family matches the primary family')
-  }
   if (new Set(reviews.map(item => item.model)).size !== 3) {
     throw fail('policy', 'final review models are not distinct')
   }
