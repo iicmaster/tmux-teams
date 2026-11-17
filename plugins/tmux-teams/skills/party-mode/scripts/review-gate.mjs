@@ -15,7 +15,6 @@ import { ACP_REVIEW_LIMITS, prepareReviewPacket, runAcpReview, ReviewTransportEr
 // collision decision on raw profiles.
 import { REVIEW_PROFILES, buildProfileEnv, provenFamilyKey, provenFamilyCollision, laneIdentity, launchArgv } from './review-profiles.mjs'
 import {
-  UNAVAILABLE_RESERVE_SUBSTITUTES,
   planReviewPanel,
   planFallback,
   validateReview,
@@ -183,15 +182,18 @@ function choosePanel(profiles, packet, planner = planReviewPanel) {
   if (primary.filter(profile => profile.id === 'agy').length !== 1) {
     throw new ReviewTransportError('policy', 'policy panel must contain exactly one mandatory AGY reviewer')
   }
+  // Master 2026-11-17: distinctness is by ACKNOWLEDGED MODEL, not family —
+  // two opencode free seats may sit together when quota forces it. The primary
+  // family exclusion stays; model diversity is checked below.
   const primaryFamilies = primary.map(profile => profile.family)
-  if (new Set(primaryFamilies).size !== 3 || primaryFamilies.includes(plan.primaryFamily)) {
+  if (primaryFamilies.includes(plan.primaryFamily)) {
     throw new ReviewTransportError('policy', 'policy panel violates reviewer-family diversity')
   }
   if (new Set(primary.map(profile => profile.model)).size !== 3) {
     throw new ReviewTransportError('policy', 'policy panel violates reviewer-model diversity')
   }
-  // Declared family diversity (checked above) is necessary but not sufficient
-  // (issue #38): two profiles can name different families while resolving to
+  // Declared model diversity (checked above) is necessary but not sufficient
+  // (issue #38): two profiles can name different models while resolving to
   // the identical, unpinned adapter identity — see provenFamilyKey in
   // review-profiles.mjs. A planner that ignores this (the default one does
   // not; an injected one might) is caught here before any lane spawns.
@@ -207,9 +209,11 @@ function reserveFor(original, all) {
 }
 
 async function defaultLaneRunner(profile, packet, deps) {
-  if (UNAVAILABLE_RESERVE_SUBSTITUTES[profile.id]) {
-    throw new ReviewTransportError('policy', 'direct Claude provider is unavailable; only policy-eligible claude-zai may be used')
-  }
+  // Master 2026-11-17: `claude` (Opus) is a seated reviewer again when the
+  // primary shares another reviewer's family. The old blanket block on the
+  // `claude` profile came from the era when the direct Claude provider was
+  // limited; it is no longer applied here. Availability is decided by the
+  // route and by each lane's own transport result.
   const env = typeof deps.buildProfileEnv === 'function' ? deps.buildProfileEnv(profile.id ?? profile) : {}
   // ONE computation of "what does this profile actually run", shared with the
   // collision check. This line used to spell it out again — and differently:
@@ -509,10 +513,13 @@ export async function runReviewGate(packet, {
   if (reviews.filter(item => item.profile === 'agy').length !== 1) {
     throw fail('policy', 'final review panel must contain exactly one AGY identity')
   }
+  // Master 2026-11-17: distinctness is decided by the ACKNOWLEDGED MODEL, not
+  // the declared family. Three opencode free seats (minimax/deepseek/hy/glm)
+  // may sit together when quota forces it — each verified as a different
+  // model — so the old `new Set(finalFamilies).size === 3` check blocked a
+  // valid panel. The primary-family exclusion stays: no reviewer may share
+  // the primary's family. Model distinctness is checked below on the receipts.
   const finalFamilies = reviews.map(item => item.family)
-  if (new Set(finalFamilies).size !== 3) {
-    throw fail('policy', 'final review families are not distinct')
-  }
   if (activePlan?.primaryFamily && finalFamilies.includes(activePlan.primaryFamily)) {
     throw fail('policy', 'final review family matches the primary family')
   }

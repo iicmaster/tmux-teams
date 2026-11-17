@@ -1,32 +1,58 @@
 import { createHash } from 'node:crypto'
 import { declaredPrimaryFamilies, getReviewProfile, normalizePrimaryFamily, provenFamilyCollision } from './review-profiles.mjs'
 
+// 2026-11-02, operator decision: the Zai and Qwen routes are gone for good, and
+// so is `deepseek` — it only ever reached the market through the Qwen gateway
+// that was removed with them. Every seat is now AGY, a local adapter, or one of
+// the free `opencode` lanes. The reserve is an opencode lane of a family the
+// panel is not already seating, so a substitution cannot manufacture
+// distinctness it does not have: `planFallback` re-runs `validReviewerSet`
+// after every swap and refuses a panel that would seat one family twice.
+// Every panel seats three DISTINCT families, none of them the primary's, with
+// AGY last. The reserve is a seat the panel is NOT already holding — that is
+// the whole rule, and it is why the openai route's reserve is `ninerouter` and
+// not `codex`: codex IS the openai family, so seating it would fail the very
+// `families.every(family => family !== primaryFamily)` check `planFallback`
+// re-runs after every swap. A reserve is still worth declaring when it can only
+// cover ONE lane: `planFallback` removes the failed reviewer first, so
+// `ninerouter` legitimately covers a failed `opencode` even though the two
+// share the deepseek family, and is refused with a diversity reason for any
+// other lane. That asymmetry is checked in the tests, not assumed here.
+// Master 2026-11-17: kimi is retired permanently — no route seats it. Each
+// reviewer lane runs a bmad-party-mode round-table via its advisor skill
+// (`agy-advisor hydrogen`, `codex-advisor luna`, `oc-advisor` free seats), but
+// the gate keeps its own transport, acknowledgement and schema checks: the
+// round-table happens INSIDE the lane before it returns the closed-schema JSON.
+// Distinctness is now by ACKNOWLEDGED MODEL, not declared family, so up to
+// three opencode free models (minimax/deepseek/hy/glm) can sit together when
+// quota forces it — each still verified as a different model before synthesis.
+// The preferred panel still uses three families where quota allows.
 const ROUTES = Object.freeze({
-  openai: Object.freeze({ reviewers: Object.freeze(['agy', 'qwen', 'zai']), reserve: 'claude' }),
-  // 2026-08-08: was `['agy', 'codex', 'qwen']` with reserve `zai`, and that left
-  // the gate with NO reserve at all — codex's quota is exhausted until
-  // September, so every claude-primary release spent the reserve on the first
-  // substitution and any second lane failure blocked the release outright. The
-  // panel now seats the three lanes that actually answer on this machine, and
-  // `deepseek` is the reserve: a different vendor down the same gateway as
-  // `qwen`. It CAN replace a failed qwen — that swap leaves [zai, deepseek, agy]
-  // and validates. What it can never do is sit ALONGSIDE qwen, which is why a
-  // failed zai has no cover: whichever of the pair is not seated collides with
-  // the one that is. `planFallback` re-validates and refuses that on its own.
-  // Put codex back when its quota returns.
-  claude: Object.freeze({ reviewers: Object.freeze(['agy', 'zai', 'qwen']), reserve: 'deepseek' }),
-  // 2026-08-24: the kimi route seats the local 9Router lane in place of zai
-  // where the only reviewer upstream is the operator's loopback gateway.
-  kimi: Object.freeze({ reviewers: Object.freeze(['agy', 'codex', 'ninerouter']), reserve: 'claude' }),
-  zai: Object.freeze({ reviewers: Object.freeze(['agy', 'codex', 'qwen']), reserve: 'claude' }),
-  qwen: Object.freeze({ reviewers: Object.freeze(['agy', 'codex', 'zai']), reserve: 'claude' }),
+  // openai primary: codex (luna) is the same family, so it is excluded; the
+  // preferred panel is AGY + claude opus + opencode minimax. If claude opus is
+  // unavailable the gate swaps in the next opencode free model, which stays
+  // distinct by acknowledged model.
+  openai: Object.freeze({ reviewers: Object.freeze(['agy', 'claude', 'opencode']), reserve: 'opencodeDeepseek' }),
+  // claude primary: three other families — gemini, openai, deepseek.
+  claude: Object.freeze({ reviewers: Object.freeze(['agy', 'codex', 'opencode']), reserve: 'opencodeDeepseek' }),
+  // deepseek primary: opencode seats share its family, so use gemini/openai/claude.
+  deepseek: Object.freeze({ reviewers: Object.freeze(['agy', 'codex', 'claude']), reserve: 'ninerouter' }),
 })
 
-// Master has declared the direct Claude provider unavailable.  `claude-zai`
-// is an availability alias, not a new model: it launches the existing pinned
-// Zai GLM-5.2 ACP profile.  The final-panel validation below decides whether
-// that alias is eligible for a particular failed lane.
-const UNAVAILABLE_RESERVE_SUBSTITUTES = Object.freeze({ claude: 'zai' })
+// Master 2026-11-17: kimi is gone permanently and the direct Claude provider
+// is unavailable as an availability stand-in. The opencode free seats form the
+// substitution ladder, ranked by strength (minimax -> deepseek -> hy -> glm).
+// Each entry names the NEXT seat when the value hits quota; `planFallback`
+// re-validates diversity after every swap, so a seat already on the panel is
+// refused rather than duplicated. The gate performs at most one swap per run
+// — when the replacement also fails, the run blocks and the PM asks Master
+// whether to skip the review or wait for the daily quota reset.
+const UNAVAILABLE_RESERVE_SUBSTITUTES = Object.freeze({
+  claude: 'opencode',
+  opencode: 'opencodeDeepseek',
+  opencodeDeepseek: 'opencodeHy',
+  opencodeHy: 'opencodeGlm',
+})
 
 const MAX_FINDINGS = 32
 const MAX_RESIDUAL_RISKS = 16
@@ -100,12 +126,14 @@ function validReviewerSet(primaryFamily, ids) {
   const profiles = ids.map(getReviewProfile)
   const families = profiles.map(profile => profile.family)
   const models = profiles.map(profile => profile.model)
-  // `family` alone is a label this table asserts about itself (issue #38): two
-  // profiles can declare different families while resolving to the identical,
-  // unpinned adapter identity (see provenFamilyKey in review-profiles.mjs).
-  // This is the second, independent axis -- distinct declared families is
-  // necessary but not sufficient.
-  return new Set(families).size === 3 && new Set(models).size === 3 &&
+  // Master 2026-11-17: distinctness is decided by the ACKNOWLEDGED MODEL, not
+  // the declared family. Three opencode free seats (minimax/deepseek/hy/glm)
+  // legitimately share a family and adapter but are different models, each
+  // verified at the gate's `model_identity` stage. `provenFamilyCollision`
+  // still guards the independent launch-identity axis (scoped to opencode for
+  // the model discriminator). A reviewer may not share the PRIMARY's family
+  // — that is the one family exclusion that stays.
+  return new Set(models).size === 3 &&
     !provenFamilyCollision(profiles) &&
     families.every(family => family !== primaryFamily)
 }
@@ -140,7 +168,12 @@ export function planFallback(plan, failedReviewer) {
   if (!plan.reviewers.includes(failedReviewer)) return Object.freeze({ blocked: true, reason: 'failed reviewer is not planned' })
   if (failedReviewer === 'agy') return Object.freeze({ blocked: true, reason: 'AGY is mandatory and cannot be replaced' })
   if (plan.usedReserve) return Object.freeze({ blocked: true, reason: 'reserve already used' })
-  const replacementId = UNAVAILABLE_RESERVE_SUBSTITUTES[plan.reserve] ?? plan.reserve
+  // Master 2026-11-17: the ladder is keyed by the FAILED seat, not the route's
+  // static reserve. `plan.reserve` is only the first rung; after `opencode`
+  // fails the next is `opencodeDeepseek`, then `opencodeHy`, then `opencodeGlm`.
+  // A seat with no ladder entry takes the route's declared reserve (kept for
+  // backwards compatibility with injected plans).
+  const replacementId = UNAVAILABLE_RESERVE_SUBSTITUTES[failedReviewer] ?? plan.reserve
   if (!replacementId) return Object.freeze({ blocked: true, reason: 'no available reserve' })
   if (replacementId === failedReviewer) {
     return Object.freeze({ blocked: true, reason: 'availability fallback would retry the failed reviewer' })
@@ -155,7 +188,10 @@ export function planFallback(plan, failedReviewer) {
     reserve: replacementId,
     reviewers,
     usedReserve: true,
-    ...(plan.reserve === 'claude' ? { availabilityFallback: 'claude-zai' } : {}),
+    // The row records that this seat came from the unavailable-provider swap.
+    // Naming the substitute by what it actually resolved to (`claude-zai` was
+    // the old label, and that lane is gone) keeps the receipt honest.
+    ...(plan.reserve === 'claude' ? { availabilityFallback: replacementId } : {}),
     replaced: Object.freeze({ failed: failedReviewer, replacement: replacementId }),
   })
 }
