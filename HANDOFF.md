@@ -73,40 +73,75 @@ node scripts/gate-required.mjs      # reads <last-tag>..HEAD; run only after com
 
 ## 3. STATE
 
-### In the working tree, uncommitted: the handoff skill's size budget (2026-10-30)
+### On branch `handoff-budget`, PR open: the handoff skill's size budget (2026-10-30)
 
 Master's direct instruction, from the 2 MB `HANDOFF.md` finding — measured
 2,052,245 bytes / 4,514 lines in an eight-lane project; an archive-once of
-1.7 MB (2026-10-11) regrew to 2 MB by 2026-10-29. Four files, uncommitted on
-`release/v0.48.0`, ported byte-identical (cmp-verified) from a worktree that
-has been removed; a release carrying them owes the panel — they are
-`plugins/` bytes.
+1.7 MB (2026-10-11) regrew to 2 MB by 2026-10-29. Four files committed on
+`handoff-budget` (PR open); a release carrying them owes the panel — they
+are `plugins/` bytes. The first working-tree copy was lost twice in
+shared-tree churn (the v0.48.0 shared-tree incident, then the v0.49–v0.51
+syncs) and reconstructed byte-for-byte from the recorded diff before
+commit — the worktree-based flow that survived is: branch from `origin/main`
+in a fresh worktree, never from this checkout's dirty state.
 
 - `plugins/tmux-teams/skills/handoff/SKILL.md` — "The file has a budget":
-  32 KiB target / 48 KiB hard ceiling, `wc -c HANDOFF.md` before composing and
-  after writing, rotation to `docs/history/handoff-archive-YYYYMMDD.md` with
-  one pointer line per moved block, one-owner-one-block with pre-compaction
-  dumps in owner sidecars, and a reader guard for inherited over-ceiling
-  files. The room brief carries the budget; READ THIS FIRST caps at ten lines
-  and 2 KiB; "Before you finish" reports the byte count and proves old blocks
-  deleted.
+  32 KiB target / 48 KiB hard ceiling measured with `wc -c HANDOFF.md`
+  before and after writing (a post-write over-ceiling measure does not
+  stand), rotation to `docs/history/handoff-archive-YYYYMMDD.md` with one
+  pointer line per moved block plus pointer consolidation, one-owner-one-
+  block with tagged `### [<tag>]` headings as block boundaries, VERBATIM
+  moves of other owners' superseded blocks (move ≠ rewrite) and a sidecar +
+  escalate escape that closes the cross-owner deadlock, and a reader guard
+  reading the first 2 KiB of section 1 plus headers. The room brief carries
+  the budget; READ THIS FIRST caps at ten lines and 2 KiB; "Before you
+  finish" reports the byte count, resolves pointers (sidecars included),
+  and commits the archive in the same commit.
 - `plugins/tmux-teams/docs/adr/0009-handoff-carries-a-size-budget.md` — the
-  decision, the measurement, and the strongest argument against it.
-- `tests/handoff-budget.test.mjs` — seven anchor tests, all passing.
+  decision, the measurement, the strongest argument against it, and the
+  tooling tripwire.
+- `tests/handoff-budget.test.mjs` — ten anchor tests (nine rules plus one
+  real-grep fixture), all passing.
 - `ROADMAP.md` — one entry under "Shipped since the phases were last written".
 
-Suite in the worktree at `79d43c2` + these files: 1263 tests, 1261 pass,
-2 fail, 0 skipped; an A/B at clean HEAD (same two files alone) reproduced
-both failures, 139/137/2 — **both are pre-existing on the branch, not from
-this change**:
+Three-family panel round 1 (2026-11-19, direct ACP, every identity
+matched — agy `gemini-4-hydrogen-high`, claude `opus`, codex
+`gpt-6-luna[max]`): **3/3 FINDINGS**, converging independently on the
+cross-owner deadlock (2/3 must-fix rule) plus an undefined owner marker
+(3/3 in some form). Round-1 verdicts: PR #105 comment 6988075290. Round 2
+on the fix bytes (3/3 identities matched): all round-1 objections CLOSED
+in the skill; remaining must-fixes — the ADR still carried the unqualified
+round-1 prohibition (2/3), pointer lines needed the original heading or
+the next rewrite orphaned the archive (claude), machine-local sidecar
+pointers failed the resolve check cross-machine (agy), and the ROADMAP
+test count was stale (3/3) — all closed in the round-2 fix commit. Round 3
+(3/3 identities matched) found the self-contradictions the round-2 fix
+itself introduced — the bare-bullet pointer example, the grep proof
+counting archived pointer headings, and the newest-block rule reading a
+pointer as the owner's newest block — closed in the round-3 fix commit
+with a real-grep fixture. Round 4 (3/3) found structural hygiene — a
+nested fixture test, the pointer example become a live heading, stale
+counts, one-block scoping — closed in the round-4 fix commit. Round 5:
+codex CLEAR; agy and claude FINDINGS on one stale ADR sentence (the
+retired grep proof) and this block's own stale narrative — closed in the
+round-5 fix commit. Round 6 (on `84fbae1..98d9831`): **3/3 CLEAR** — agy
+`gemini-4-hydrogen-high`, codex `gpt-6-luna[max]`, claude `opus`, all
+identities matched, zero must-fix; `Gate: 3/3` for the release notes.
+Non-blocking observations on record: the sidecar escape can strand
+archive pointers on a machine-local sidecar until compaction (one-clause
+fix in a later pass), the fixture skips by platform not tool presence,
+and the grep proof checks per section by line number. A round-2a
+dispatch was invalidated by a stale
+GitHub-served
+diff fetched seconds after push (two lanes caught the mismatch
+themselves); round-2b ran on the locally verified diff — verify the diff
+carries the claimed fixes before dispatching, never trust a same-second
+`gh pr diff`.
 
-1. `tests/acp-lanes-mcp.test.mjs` "every declared lane is listed": pins
-   `gemini-4-argon-high`, the declaration says `gemini-3.8-flash-high`.
-   Adjacent work is in flight (`590e393`, agy rate-limit fallback onto the
-   3.8 seat) — coordinate before touching.
-2. `tests/plugin-structure.test.mjs` "every shipped module parses":
-   `skills/tmux-teams/workflows/mailbox-run.js` is ESM in a `.js` name with
-   no nearest `type: module`.
+Suite in this worktree at `84fbae1` + these files: 1312 tests, 1311 pass,
+1 fail — `review-policy.test.mjs` "environment is allowlisted…", proven
+pre-existing/environment-dependent by A/B at clean `84fbae1` (30/31
+identical with the changes stashed; CI on the branch is 4/4 SUCCESS).
 
 Unproven: the 32/48 numbers are reader-cost numbers, not sufficiency numbers
 (ADR 0009 records this); the budget has not yet been exercised on a real

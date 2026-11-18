@@ -30,6 +30,11 @@ Fall back to this plugin's own `party-mode`, and if neither is installed say so
 and write it solo rather than stalling — a handoff that exists beats a handoff
 that was going to be excellent.
 
+The room argues inside a stated budget. Give it the current
+`wc -c HANDOFF.md` figure and the 32 KiB target as facts of the brief, and
+what cannot justify its bytes rotates to the archive instead of staying —
+an argument with no budget ends by keeping everything.
+
 ## What changes when the reader is an agent
 
 A person skims, gets bored, and stops. An agent **does what the file says**, in
@@ -44,11 +49,92 @@ order, without getting bored. That cuts both ways:
 
 So: **no hedges, mark every claim's status, and pin every reference.**
 
+## The file has a budget
+
+The reader loads this file whole, so its size is a cost every following
+session pays. Budget: **32 KiB target (32,768 bytes), 48 KiB hard ceiling
+(49,152 bytes)** — a file over the ceiling never stays written. Measure
+with `wc -c HANDOFF.md` before composing and again after writing; a
+post-write measure over the ceiling does not stand — rotate, then write
+smaller.
+
+When the existing file or the new draft passes 32 KiB, do not write on top
+of it — **rotate first**: superseded detail moves to
+`docs/history/handoff-archive-YYYYMMDD.md` (that date's file, appended,
+created if absent), and exactly one pointer line stays where the detail
+came from — the detail's original `### [<tag>]` heading, turned into the
+pointer. When pointer blocks alone pass a few KiB, consolidate them — fold
+YOUR pointers, and pointers for blocks you moved, into ONE headed pointer
+per tag and archive file (`### [<tag>] <what> → archived YYYY-MM-DD:
+<path>`), and carry every pointer line your previous block held into your
+new block; never fold another owner's pointers. A pointer heading is any
+`### [<tag>]` heading carrying `→ archived` or `→ sidecar`:
+
+```
+### [PR] attestation rules → archived 2026-10-30: docs/history/handoff-archive-20261030.md
+```
+
+Archives are cold storage: no session reads one whole, and a pointer is
+followed only when that detail is actually needed.
+
+State that lives in a system of record — a board, a registry, a ticket file
+— is referenced by path and row/id, never copied into HANDOFF.md. A copy is
+a second source of truth with no owner.
+
+### One owner, one block
+
+When several agents or roles share one HANDOFF.md, each owner keeps at
+most ONE live, non-pointer block per section; writing a new version of
+your block physically deletes your previous one from the file.
+
+Head your block with your owner tag and make the heading its boundary: a
+block is one `### [<tag>] <what>` heading plus the lines under it, ending
+at the next `##` or `###` heading, and the tag is the same every time —
+the proof below greps it. Never delete or rewrite another owner's live block — if it is
+wrong or stale, say so to the user and leave it.
+
+Another owner's SUPERSEDED block may be moved, never edited: everything but
+their newest block per section — the last non-pointer `### [<tag>]` heading
+in the section, kept in written order with the newest last so the file
+itself shows which is which — is superseded by the one-block rule, and you may move those older blocks VERBATIM —
+byte-for-byte, nothing rewritten, summarised or shortened — to the archive,
+leaving the original heading in place as the pointer line —
+`### [<tag>] <what> → archived YYYY-MM-DD: <path>` — so the pointer stays
+its own block. A bare pointer line with no heading left OUTSIDE your own block is
+swallowed by the block above it and dies with that block's rewrite; never
+leave one — pointers inside your own block are body lines you carry
+forward into your next block. Moving
+superseded bytes is not rewriting them. If the file still cannot fit under
+the ceiling after every superseded block is archived, do not write past it:
+put your new state in your sidecar, leave one pointer line — the pointer
+replaces your previous block, the same heading turned into
+`### [<tag>] <what> → sidecar: <path>` — and put "compact the handoff" in
+front of the user as the first order of business. If even the
+pointer line does not fit under the ceiling, the sidecar alone holds the
+state and the compaction request carries the pointer, and your previous
+block stays in the file untouched — stale, and named in the request.
+
+A full pre-compaction dump goes to the owner's own sidecar
+(`.pm/<owner>/HANDOFF-YYYYMMDD-HHMM.md`, or wherever the project already
+keeps per-owner state) with one pointer line here: snapshots live in
+sidecars, state lives here. If the sidecar lives under a gitignored path,
+its pointer line says so — machine-local state is not another machine's.
+
+### Inheriting a bloated file
+
+If a HANDOFF.md you open is over the ceiling (measure with `wc -c` — never
+trust how it scrolls), do not read it whole. Read the first 2 KiB of
+section 1 and the headers
+(`grep '^## ' HANDOFF.md`), then put "compact the handoff" in front of the
+user as the first order of business before the real work. A session that
+swallows 2 MB of superseded state pays for every block it will never act on.
+
 ## The sections, in this order
 
 Order is load-bearing: an agent reads top-down and may act before finishing.
 
-**1. READ THIS FIRST** — ten lines, hard limit. Branch and whether it is pushed.
+**1. READ THIS FIRST** — ten lines and 2 KiB, hard limits. Branch and whether
+it is pushed.
 Whether the tree is clean. The single most dangerous thing about the current
 state. If there is nothing dangerous, say that in those words.
 
@@ -107,5 +193,19 @@ Paths only, no prose.
   noun is a bug.
 - Check that every `file:line` still resolves — line numbers rot, and a wrong
   one sends the reader somewhere confidently incorrect.
-- If the repo tracks `HANDOFF.md`, commit it. A handoff only one machine can
-  read is a handoff to nobody.
+- Report the `wc -c HANDOFF.md` result, and refuse to call the file done
+  above 48 KiB (target 32). A budget nobody reports is a budget nobody kept.
+- Every archive pointer line resolves to a file that exists — archive and
+  sidecar alike; a pointer marked machine-local (a gitignored sidecar) is
+  skipped on machines that do not hold the sidecar, not failed. A pointer
+  to nothing sends the next session hunting for state that was never
+  stored.
+- Your own previous blocks are physically gone from the file —
+  `grep -nE '^### \[<tag>\]' HANDOFF.md | grep -vE '→ (archived|sidecar)'`
+  returns at most one hit per section, your live block; the pointer
+  headings a mover left behind do not count against you, and sections
+  where you hold no block return none.
+- If the repo tracks `HANDOFF.md`, commit it in the same commit as the
+  archive file any rotation created — a pointer committed alone resolves to
+  nothing on another machine. A handoff only one machine can read is a
+  handoff to nobody.
