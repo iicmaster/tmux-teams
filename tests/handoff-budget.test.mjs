@@ -16,8 +16,10 @@
 // 2026-11-19). The rules themselves are pinned, not the line breaks.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { join, dirname } from 'node:path'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -78,6 +80,8 @@ test('one owner, one block: tagged, bounded, previous block deleted, other owner
     'the one-owner-one-block heading is gone')
   has(budget, 'Head your block with your owner tag and make the heading its boundary',
     'the owner tag and block boundary are undefined — physical replacement and the grep proof are not actionable')
+  has(budget, 'ONE live, non-pointer block per section',
+    'the one-block rule lost its live/non-pointer scope — archived and sidecar pointer headings are blocks too')
   has(budget, 'a block is one `### [<tag>] <what>` heading plus the lines under it, ending at the next `##` or `###` heading',
     'the block boundary is no longer the heading — owners cannot tell where their block ends')
   has(budget, 'the tag is the same every time',
@@ -108,8 +112,10 @@ test('cross-owner deadlock closed: superseded blocks move verbatim; otherwise si
     'the move-vs-rewrite boundary is gone — the two rules contradict without it')
   has(budget, 'do not write past it: put your new state in your sidecar, leave one pointer line',
     'the writer escape is gone — an owner who cannot fit under the ceiling has nowhere to put its state')
-  has(budget, 'the pointer replaces your previous block, under the same heading',
-    'the escape pointer no longer replaces the writer\'s stale block — stale state lingers in the file')
+  has(budget, 'the same heading turned into `### [<tag>] <what> → sidecar: <path>`',
+    'the escape pointer has no sidecar marker — a mover cannot tell a pointer heading from a live block')
+  has(budget, 'A pointer heading is any `### [<tag>]` heading carrying `→ archived` or `→ sidecar`',
+    'pointer heading is undefined — the newest rule and the grep proof both scope against it')
   has(budget, 'the sidecar alone holds the state and the compaction request carries the pointer',
     'the near-ceiling corner is unhandled — even a pointer line can cross the ceiling')
   has(budget, 'your previous block stays in the file untouched',
@@ -162,29 +168,43 @@ test('"Before you finish" reports the byte count, resolves pointers, and commits
     'the archive-pointer resolution check is gone or no longer covers sidecars')
   has(finish, 'a pointer marked machine-local (a gitignored sidecar) is skipped on machines that do not hold the sidecar, not failed',
     'the machine-local pointer exception is gone — a committed gitignored sidecar pointer fails the check on every other machine')
-  has(finish, "`grep -E '^### \\[<tag>\\]' HANDOFF.md | grep -vF '→ archived'` returns exactly one non-archived hit per section",
-    'the grep proof is gone or unscoped — archived pointer headings share the tag and would fail an honest writer')
+  has(finish, "`grep -nE '^### \\[<tag>\\]' HANDOFF.md | grep -vE '→ (archived|sidecar)'` returns at most one hit per section, your live block",
+    'the grep proof is gone or unscoped — archived and sidecar pointer headings share the tag and would fail an honest writer')
 
-test('the grep proof survives archived pointer headings: one non-archived hit per section (fixture)', () => {
-  // The exact pipeline the skill prescribes, run over a fixture that holds a
-  // live block AND an archived pointer heading under the same tag — the
-  // round-3 cross-owner scenario that broke the round-2 proof.
-  const fixture = [
-    '### [DBA] live block',
-    'current state lines',
-    '### [DBA] older rules → archived 2026-11-19: docs/history/handoff-archive-20261119.md',
-    '### [MD] another owner live',
-  ]
-  const grepE = (lines) => lines.filter((l) => l.startsWith('### [DBA] '))
-  const grepVFArchived = (lines) => lines.filter((l) => !l.includes('→ archived'))
-  const hits = grepVFArchived(grepE(fixture))
-  assert.equal(hits.length, 1,
-    'the prescribed pipeline does not return exactly one non-archived hit — an honest writer fails the finish checklist')
-  assert.match(hits[0], /live block/,
-    'the single surviving hit is not the live block — the proof points at the wrong block')
-})
   has(finish, 'commit it in the same commit as the archive file any rotation created',
     'the commit-together rule is gone — a pointer committed alone resolves to nothing on another machine')
+})
+
+test('the grep proof runs the real pipeline over a fixture with archived and sidecar pointer headings', () => {
+  // Runs the skill's actual pipeline over a fixture holding a live block
+  // AND both pointer-heading kinds under the same tag — the round-3/4
+  // cross-owner scenario that broke earlier proofs. Real grep, not a JS
+  // stand-in, so a regression in the prescribed command shape is caught
+  // behaviorally; skipped only where grep itself is missing.
+  if (!['linux', 'darwin'].includes(process.platform)) return
+  const dir = mkdtempSync(join(tmpdir(), 'hb-grep-fixture-'))
+  try {
+    const file = join(dir, 'HANDOFF.md')
+    writeFileSync(file, [
+      '### [DBA] live block',
+      'current state lines',
+      '### [DBA] older rules → archived 2026-11-19: docs/history/handoff-archive-20261119.md',
+      '### [DBA] parked state → sidecar: .pm/dba/HANDOFF-20261119-0900.md',
+      '### [MD] another owner live',
+      '',
+    ].join('\n'))
+    const out = execFileSync('sh', [
+      '-c',
+      `grep -nE '^### \\[DBA\\]' '${file}' | grep -vE '→ (archived|sidecar)'`,
+    ], { encoding: 'utf8' })
+    const hits = out.trim().split('\n').filter((l) => l !== '')
+    assert.equal(hits.length, 1,
+      'the prescribed pipeline does not return at most one hit — pointer headings still fail an honest writer')
+    assert.match(hits[0], /live block/,
+      'the single surviving hit is not the live block — the proof points at the wrong block')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('ADR 0009 records the 2 KiB cap, the tooling tripwire, and agrees with the skill on ownership', () => {
@@ -196,7 +216,7 @@ test('ADR 0009 records the 2 KiB cap, the tooling tripwire, and agrees with the 
     'the ADR still carries the unqualified round-1 prohibition — the decision record contradicts the skill word for word')
   has(ADR, 'the writer parks its state in the sidecar and puts "compact the handoff" in front of the user',
     'the ADR omits the sidecar+escalate escape — the decision record and the skill disagree on the deadlock answer')
-  has(ADR, 'under the detail\'s original tagged heading',
+  has(ADR, "the detail's original tagged heading, turned into the pointer",
     'the ADR rotation bullet omits the pointer-heading requirement — the record predates the round-2 fix')
   has(ADR, 'machine-local sidecar pointers are skipped on machines that do not hold the sidecar',
     'the ADR consequences omit the machine-local pointer exception — the record and the skill disagree again')

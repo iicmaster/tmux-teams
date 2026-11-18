@@ -62,14 +62,17 @@ When the existing file or the new draft passes 32 KiB, do not write on top
 of it — **rotate first**: superseded detail moves to
 `docs/history/handoff-archive-YYYYMMDD.md` (that date's file, appended,
 created if absent), and exactly one pointer line stays where the detail
-came from, under the detail's original `### [<tag>]` heading. When pointer
-blocks alone pass a few KiB, consolidate them — fold YOUR pointers, and
-pointers for blocks you moved, into ONE headed pointer per tag and archive
-file (`### [<tag>] <what> → archived YYYY-MM-DD: <path>`), and carry every
-pointer line your previous block held into your new block; never fold
-another owner's pointers:
+came from — the detail's original `### [<tag>]` heading, turned into the
+pointer. When pointer blocks alone pass a few KiB, consolidate them — fold
+YOUR pointers, and pointers for blocks you moved, into ONE headed pointer
+per tag and archive file (`### [<tag>] <what> → archived YYYY-MM-DD:
+<path>`), and carry every pointer line your previous block held into your
+new block; never fold another owner's pointers. A pointer heading is any
+`### [<tag>]` heading carrying `→ archived` or `→ sidecar`:
 
+```
 ### [PR] attestation rules → archived 2026-10-30: docs/history/handoff-archive-20261030.md
+```
 
 Archives are cold storage: no session reads one whole, and a pointer is
 followed only when that detail is actually needed.
@@ -80,9 +83,9 @@ a second source of truth with no owner.
 
 ### One owner, one block
 
-When several agents or roles share one HANDOFF.md, each owner keeps at most
-ONE block per section; writing a new version of your block physically
-deletes your previous one from the file.
+When several agents or roles share one HANDOFF.md, each owner keeps at
+most ONE live, non-pointer block per section; writing a new version of
+your block physically deletes your previous one from the file.
 
 Head your block with your owner tag and make the heading its boundary: a
 block is one `### [<tag>] <what>` heading plus the lines under it, ending
@@ -104,8 +107,9 @@ forward into your next block. Moving
 superseded bytes is not rewriting them. If the file still cannot fit under
 the ceiling after every superseded block is archived, do not write past it:
 put your new state in your sidecar, leave one pointer line — the pointer
-replaces your previous block, under the same heading — and put "compact the
-handoff" in front of the user as the first order of business. If even the
+replaces your previous block, the same heading turned into
+`### [<tag>] <what> → sidecar: <path>` — and put "compact the handoff" in
+front of the user as the first order of business. If even the
 pointer line does not fit under the ceiling, the sidecar alone holds the
 state and the compaction request carries the pointer, and your previous
 block stays in the file untouched — stale, and named in the request.
@@ -197,9 +201,10 @@ Paths only, no prose.
   to nothing sends the next session hunting for state that was never
   stored.
 - Your own previous blocks are physically gone from the file —
-  `grep -E '^### \[<tag>\]' HANDOFF.md | grep -vF '→ archived'` returns
-  exactly one non-archived hit per section; the `→ archived` pointer
-  headings a mover left behind do not count against you.
+  `grep -nE '^### \[<tag>\]' HANDOFF.md | grep -vE '→ (archived|sidecar)'`
+  returns at most one hit per section, your live block; the pointer
+  headings a mover left behind do not count against you, and sections
+  where you hold no block return none.
 - If the repo tracks `HANDOFF.md`, commit it in the same commit as the
   archive file any rotation created — a pointer committed alone resolves to
   nothing on another machine. A handoff only one machine can read is a

@@ -231,8 +231,8 @@ nobody can plan from.
   carries the budget as a fact. Panel round 1 (three families,
   2026-11-19) found the cross-owner deadlock and an undefined owner marker
   — fixed with the verbatim-move escape, owner-tagged headings as block
-  boundaries, and the commit-together rule; nine whitespace-tolerant anchor
-  tests pin the mechanism.
+  boundaries, and the commit-together rule; ten anchor tests (nine rules
+  plus a real-grep fixture) pin the mechanism.
 
 ## The last release — v0.32.0, shipped
 

@@ -36,19 +36,19 @@ preference.
 
 **The handoff skill carries a built-in size-management system:**
 
-- **32 KiB target, 48 KiB hard ceiling.** A file over the ceiling is never
-  written; the writer measures with `wc -c HANDOFF.md` before composing and
-  again after writing.
+- **32 KiB target, 48 KiB hard ceiling.** A file over the ceiling never
+  stays written; the writer measures with `wc -c HANDOFF.md` before
+  composing and again after writing.
 - **Rotation over ceiling-sitting.** When the existing file or the new draft
   passes 32 KiB, superseded detail moves to
   `docs/history/handoff-archive-YYYYMMDD.md` — that date's file, appended,
   created if absent — and exactly one pointer line stays where the detail
-  came from, under the detail's original tagged heading; the writer's new
-  block carries its old pointer lines forward.
+  came from — the detail's original tagged heading, turned into the
+  pointer; the writer's new block carries its old pointer lines forward.
 - **One owner, one block.** Each owner sharing a HANDOFF.md keeps at most
-  one block per section under a tagged `### [<tag>] <what>` heading that is
-  the block's boundary, and writing the new version physically deletes the
-  previous one. Another owner's SUPERSEDED block may be moved VERBATIM to
+  one live, non-pointer block per section under a tagged
+  `### [<tag>] <what>` heading that is the block's boundary, and writing
+  the new version physically deletes the previous one. Another owner's SUPERSEDED block may be moved VERBATIM to
   the archive — move is not rewrite — leaving the original heading as the
   pointer line; what stays forbidden is rewriting, summarising or deleting
   another owner's live block. A full pre-compaction dump goes to the

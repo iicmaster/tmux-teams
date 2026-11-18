@@ -100,8 +100,8 @@ in a fresh worktree, never from this checkout's dirty state.
 - `plugins/tmux-teams/docs/adr/0009-handoff-carries-a-size-budget.md` — the
   decision, the measurement, the strongest argument against it, and the
   tooling tripwire.
-- `tests/handoff-budget.test.mjs` — nine whitespace-tolerant anchor tests,
-  all passing.
+- `tests/handoff-budget.test.mjs` — ten anchor tests (nine rules plus one
+  real-grep fixture), all passing.
 - `ROADMAP.md` — one entry under "Shipped since the phases were last written".
 
 Three-family panel round 1 (2026-11-19, direct ACP, every identity
@@ -127,7 +127,7 @@ themselves); round-2b ran on the locally verified diff — verify the diff
 carries the claimed fixes before dispatching, never trust a same-second
 `gh pr diff`.
 
-Suite in this worktree at `84fbae1` + these files: 1311 tests, 1310 pass,
+Suite in this worktree at `84fbae1` + these files: 1312 tests, 1311 pass,
 1 fail — `review-policy.test.mjs` "environment is allowlisted…", proven
 pre-existing/environment-dependent by A/B at clean `84fbae1` (30/31
 identical with the changes stashed; CI on the branch is 4/4 SUCCESS).
