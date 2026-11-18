@@ -70,7 +70,7 @@ test('immutable ACP profiles pin providers, models, argv, and AGY plan mode', ()
   assert.deepEqual(REVIEW_PROFILES.zai.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
   assert.deepEqual(REVIEW_PROFILES.qwen.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
   assert.deepEqual(REVIEW_PROFILES.claude.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
-  assert.deepEqual(REVIEW_PROFILES.codex.command, ['npx', '-y', '@agentclientprotocol/codex-acp@1.1.7'])
+  assert.deepEqual(REVIEW_PROFILES.codex.command, ["npx", "-y", "@agentclientprotocol/codex-acp@2.7.0"])
   assert.deepEqual(REVIEW_PROFILES.agy.config, { model: 'gemini-4-hydrogen-high', mode: 'plan' })
   assert.equal(REVIEW_PROFILES.agy.displayModel, 'agy/gemini-4-hydrogen-high')
   assert.deepEqual(REVIEW_PROFILES.kimi.config, { model: 'opus', mode: 'plan' })
@@ -838,6 +838,20 @@ test('every declared profile has a provider-secret list, even an empty one', () 
   assert.ok(Array.isArray(PROVIDER_SECRET_KEYS.deepseek), 'the reserve lane lost its entry again')
   assert.deepEqual(PROVIDER_SECRET_KEYS.deepseek, [],
     'deepseek reaches its provider through a routed wrapper and must forward no key from this process')
+})
+
+test('every opencode seat requests the provider-qualified model id', () => {
+  // Measured 2026-11-19: the opencode ACP adapter answers set_config_option with
+  // `model not found: deepseek-v4.1-flash-free` for the bare id, so every rung of
+  // the opencode ladder failed and the ladder could never rescue a panel.
+  // every seat launched through the opencode adapter, whatever its endpoint
+  const seats = Object.values(REVIEW_PROFILES).filter(p => p.provider === 'opencode' || p.adapterPackage?.startsWith('opencode-ai@'))
+  assert.ok(seats.length >= 3)
+  for (const seat of seats) {
+    assert.ok(!seat.model.startsWith('opencode/'), `${seat.id}: recorded identity must stay the bare model`)
+    assert.equal(seat.requestModel, `opencode/${seat.model}`, seat.id)
+    assert.equal(seat.config.model, seat.requestModel, seat.id)
+  }
 })
 
 test('a profile whose sessionSettings name something other than its model declares the alias', () => {

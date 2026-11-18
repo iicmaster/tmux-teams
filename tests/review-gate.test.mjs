@@ -333,6 +333,40 @@ test('malformed JSON-RPC, malformed review, and timeout never become accepted re
   await assert.rejects(runAcpReview({ profile: profile('oc'), lane: 'oc', packet: packet(), timeoutMs: 25, env: { MOCK_REVIEW_BEHAVIOUR: 'late' } }), e => e.code === 'timeout')
 })
 
+test('a measured-inert ACP extension notification is ignored; any other unknown notification still fails', async () => {
+  // Measured 2026-11-19: codex-acp 2.7.0 sends `_auth/status_update` and the
+  // gate died with "ACP notification not allowed". ACP reserves `_` methods for
+  // extensions that a client which does not recognise them must ignore.
+  const out = await invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'extension-notification' })
+  assert.equal(out.review.verdict, 'PASS')
+  // same method without the `_` prefix: still refused
+  await assert.rejects(invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'unknown-notification' }),
+    e => e.code === 'protocol' && /notification not allowed: auth\/status_update/.test(e.message))
+  // an id-bearing `_` message is a REQUEST, not a notification: still refused
+  await assert.rejects(invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'extension-request' }),
+    e => e.code === 'protocol' && /request not allowed: _auth\/confirm/.test(e.message))
+  // an extension the client has NOT measured as inert: refused (it could carry tool activity)
+  await assert.rejects(invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'other-extension-notification' }),
+    e => e.code === 'protocol' && /notification not allowed: _tools\/ran/.test(e.message))
+  await assert.rejects(invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'response-then-invalid' }), e => e.code === 'protocol')
+})
+
+test('a profile requestModel is the value put on the wire; the bare id is refused by an adapter that needs the qualified one', async () => {
+  // Measured 2026-11-19 against opencode: `model not found: deepseek-v4.1-flash-free`
+  // for the bare id, accepted as `opencode/deepseek-v4.1-flash-free`.
+  const wire = 'opencode/mock-seat-free'
+  // config.model is deliberately the BARE id: only requestModel can put the qualified one on the wire
+  const qualified = profile('oc', { model: 'mock-seat-free', requestModel: wire, config: { model: 'mock-seat-free', mode: 'plan' } })
+  const out = await runAcpReview({ profile: qualified, lane: 'oc', packet: packet(), timeoutMs: 3_000,
+    env: { MOCK_REVIEW_BEHAVIOUR: 'require-model', MOCK_REVIEW_MODEL: wire } })
+  assert.equal(out.review.verdict, 'PASS')
+  assert.equal(out.model, 'mock-seat-free', 'the recorded identity stays the bare model')
+  const bare = profile('oc', { model: 'mock-seat-free', config: { model: 'mock-seat-free', mode: 'plan' } })
+  await assert.rejects(runAcpReview({ profile: bare, lane: 'oc', packet: packet(), timeoutMs: 3_000,
+    env: { MOCK_REVIEW_BEHAVIOUR: 'require-model', MOCK_REVIEW_MODEL: wire } }),
+    e => e.code === 'protocol' && /model not found/.test(e.message))
+})
+
 test('null timeout disables elapsed cancellation and emits correlated ACP progress', async () => {
   const progress = []
   const out = await runAcpReview({
