@@ -175,13 +175,13 @@ test('"Before you finish" reports the byte count, resolves pointers, and commits
     'the commit-together rule is gone — a pointer committed alone resolves to nothing on another machine')
 })
 
-test('the grep proof runs the real pipeline over a fixture with archived and sidecar pointer headings', () => {
+test('the grep proof runs the real pipeline over a fixture with archived and sidecar pointer headings', (t) => {
   // Runs the skill's actual pipeline over a fixture holding a live block
   // AND both pointer-heading kinds under the same tag — the round-3/4
   // cross-owner scenario that broke earlier proofs. Real grep, not a JS
   // stand-in, so a regression in the prescribed command shape is caught
-  // behaviorally; skipped only where grep itself is missing.
-  if (!['linux', 'darwin'].includes(process.platform)) return
+  // behaviorally; reported as SKIP, never PASS, where it cannot run.
+  if (!['linux', 'darwin'].includes(process.platform)) return t.skip('grep pipeline is POSIX-only')
   const dir = mkdtempSync(join(tmpdir(), 'hb-grep-fixture-'))
   try {
     const file = join(dir, 'HANDOFF.md')
@@ -214,10 +214,12 @@ test('ADR 0009 records the 2 KiB cap, the tooling tripwire, and agrees with the 
     'the tooling tripwire is gone — nothing answers the writers-ignore-the-ceiling repeat')
   has(ADR, "Another owner's SUPERSEDED block may be moved VERBATIM to the archive — move is not rewrite",
     'the ADR still carries the unqualified round-1 prohibition — the decision record contradicts the skill word for word')
-  has(ADR, 'the writer parks its state in the sidecar and puts "compact the handoff" in front of the user',
+  has(ADR, "the writer parks its state in the sidecar — the previous block's heading becomes the `→ sidecar` pointer — and puts \"compact the handoff\" in front of the user",
     'the ADR omits the sidecar+escalate escape — the decision record and the skill disagree on the deadlock answer')
   has(ADR, "the detail's original tagged heading, turned into the pointer",
     'the ADR rotation bullet omits the pointer-heading requirement — the record predates the round-2 fix')
   has(ADR, 'machine-local sidecar pointers are skipped on machines that do not hold the sidecar',
     'the ADR consequences omit the machine-local pointer exception — the record and the skill disagree again')
+  has(ADR, "`grep -nE '^### \\[<tag>\\]' HANDOFF.md | grep -vE '→ (archived|sidecar)'`: at most one hit per section, the writer's live block",
+    'the ADR consequences still carry a retired grep proof — the decision record and the skill disagree on the finish check')
 })

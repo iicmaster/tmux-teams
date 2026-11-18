@@ -115,13 +115,17 @@ round-1 prohibition (2/3), pointer lines needed the original heading or
 the next rewrite orphaned the archive (claude), machine-local sidecar
 pointers failed the resolve check cross-machine (agy), and the ROADMAP
 test count was stale (3/3) — all closed in the round-2 fix commit. Round 3
-(3/3 identities matched) found the two self-contradictions the round-2 fix
-itself introduced — the bare-bullet pointer example versus the bare-pointer
-prohibition (3/3), and the grep proof counting archived pointer headings
-that the pointer-heading rule keeps (agy + claude, with the newest-block
-rule reading a pointer as the owner's newest block) — all closed in this
-commit with a fixture test for the grep pipeline; round 4 re-runs all
-three. A round-2a dispatch was invalidated by a stale GitHub-served
+(3/3 identities matched) found the self-contradictions the round-2 fix
+itself introduced — the bare-bullet pointer example, the grep proof
+counting archived pointer headings, and the newest-block rule reading a
+pointer as the owner's newest block — closed in the round-3 fix commit
+with a real-grep fixture. Round 4 (3/3) found structural hygiene — a
+nested fixture test, the pointer example become a live heading, stale
+counts, one-block scoping — closed in the round-4 fix commit. Round 5:
+codex CLEAR; agy and claude FINDINGS on one stale ADR sentence (the
+retired grep proof) and this block's own stale narrative — closed here;
+round 6 re-runs all three. A round-2a dispatch was invalidated by a stale
+GitHub-served
 diff fetched seconds after push (two lanes caught the mismatch
 themselves); round-2b ran on the locally verified diff — verify the diff
 carries the claimed fixes before dispatching, never trust a same-second

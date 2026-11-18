@@ -56,7 +56,9 @@ preference.
   (`.pm/<owner>/HANDOFF-YYYYMMDD-HHMM.md`, or wherever the project already
   keeps per-owner state) with one pointer line in the handoff; if the file
   still cannot fit under the ceiling, the writer parks its state in the
-  sidecar and puts "compact the handoff" in front of the user.
+  sidecar — the previous block's heading becomes the `→ sidecar` pointer —
+  and puts "compact the handoff" in front of the user; if even the pointer
+  does not fit, the previous block stays untouched, named in the request.
 - **A reader guard.** A session opening a HANDOFF.md over the ceiling does
   not read it whole: the first 2 KiB of section 1 and the headers, then
   "compact the handoff" goes in front of the user as the first order of
@@ -84,8 +86,10 @@ copied in: a copy is a second source of truth with no owner.
   checks that every archive pointer resolves to a file that exists —
   machine-local sidecar pointers are skipped on machines that do not hold
   the sidecar — and proves its previous blocks are physically gone with
-  `grep -E '^### \[<tag>\]'` minus the `→ archived` lines, exactly one
-  non-archived hit per section.
+  `grep -nE '^### \[<tag>\]' HANDOFF.md | grep -vE '→ (archived|sidecar)'`:
+  at most one hit per section, the writer's live block; pointer headings a
+  mover left behind do not count, and sections where the writer holds none
+  return none.
 - **The failure this answers is measured, not hypothetical.** The 2 MB file
   grew back from a 1.7 MB archive in under three weeks; the budget binds
   every write, which is the only thing that has not been tried.
