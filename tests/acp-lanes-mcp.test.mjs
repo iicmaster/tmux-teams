@@ -68,7 +68,7 @@ test('every declared lane is listed, and the list is pinned rather than derived 
   const listed = out.lanes.map(l => l.lane).sort()
   // Pinned literally. A test that only compared this against Object.keys of the
   // same object would keep passing while a lane quietly disappeared.
-  assert.deepEqual(listed, ['agy', 'claude', 'codex', 'deepseek', 'kimi', 'ninerouter', 'qwen', 'zai'])
+  assert.deepEqual(listed, ['agy', 'claude', 'codex', 'deepseek', 'kimi', 'ninerouter', 'opencode', 'opencodeDeepseek', 'opencodeGlm', 'opencodeHy', 'qwen', 'zai'])
   assert.deepEqual(listed, Object.keys(REVIEW_PROFILES).sort(),
     'the tool and the profile registry disagree about which lanes exist')
   assert.equal(out.lanes.find(l => l.lane === 'zai').routing, 'pinned:api.z.ai/api/anthropic')
@@ -83,13 +83,20 @@ test('every declared lane is listed, and the list is pinned rather than derived 
   // all four, per lane, literally.
   const declared = Object.fromEntries(out.lanes.map((l) => [l.lane, l]))
   for (const [lane, family, provider, model] of [
-    ['agy', 'gemini', 'google-antigravity', 'gemini-4-carbon-high'],
+    ['agy', 'gemini', 'google-antigravity', 'gemini-4-hydrogen-high'],
     ['claude', 'claude', 'anthropic', 'claude-opus-5-5'],
-    ['codex', 'openai', 'openai', 'gpt-6.1-sol'],
+    ['codex', 'openai', 'openai', 'gpt-6-luna'],
     ['deepseek', 'deepseek', 'qwen', 'deepseek-v4-flash-0731'],
     ['kimi', 'kimi', 'kimi', 'opus'],
     ['qwen', 'qwen', 'qwen', 'qwen3.8-max-preview'],
     ['zai', 'zai', 'zai', 'glm-5.2'],
+    // v0.52.0 seated the opencode free ladder (PR #106); all four are family
+    // 'deepseek' behind one provider, which is why the panel counts them as
+    // one family, not four.
+    ['opencode', 'deepseek', 'opencode', 'minimax-m3.1-flash-free'],
+    ['opencodeDeepseek', 'deepseek', 'opencode', 'deepseek-v4.1-flash-free'],
+    ['opencodeHy', 'deepseek', 'opencode', 'hy4-flash-free'],
+    ['opencodeGlm', 'deepseek', 'opencode', 'glm-5.3-flash-free'],
   ]) {
     assert.equal(declared[lane].family, family, `${lane} family`)
     assert.equal(declared[lane].provider, provider, `${lane} provider`)
@@ -100,7 +107,7 @@ test('every declared lane is listed, and the list is pinned rather than derived 
 
 test('declared facts need nothing from this machine', () => {
   const out = callTool('acp_lanes', {}, { HOME: '/nonexistent' })
-  assert.equal(out.lanes.length, 8)
+  assert.equal(out.lanes.length, 12)
   assert.ok(out.lanes.every(l => l.adapter), 'a lane with no adapter package is not a usable answer')
 })
 
@@ -114,7 +121,7 @@ test('per-machine lanes.json override updates reported model without changing un
     const agyRow = out.lanes.find(l => l.lane === 'agy')
     assert.equal(agyRow.model, 'gemini-4-hydrogen-high')
     const codexRow = out.lanes.find(l => l.lane === 'codex')
-    assert.equal(codexRow.model, 'gpt-6.1-sol')
+    assert.equal(codexRow.model, 'gpt-6-luna')
   } finally {
     rmSync(home, { recursive: true, force: true })
   }
@@ -138,7 +145,7 @@ test('a lane with no parent-side check says UNCHECKED, and never that it is fine
 
 test('every status answer states what it did NOT prove', () => {
   const out = call('acp_lane_status', undefined, { HOME: '/definitely/nonexistent' })
-  assert.equal(out.lanes.length, 8)
+  assert.equal(out.lanes.length, 12)
   for (const lane of out.lanes) {
     assert.ok(Array.isArray(lane.notProven) && lane.notProven.length >= 4,
       `${lane.lane} claims a state with no boundary stated beside it`)
@@ -517,6 +524,10 @@ test('no provider secret this plugin knows about reaches the wire, from any lane
     claude: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
     codex: ['OPENAI_API_KEY'],
     ninerouter: [],
+    opencode: [],
+    opencodeDeepseek: [],
+    opencodeHy: [],
+    opencodeGlm: [],
   }, 'a provider secret changed which LANE owns it')
 
   // And behaviourally, because a constant can be edited to match a test: a key
@@ -927,7 +938,7 @@ test('the manifest command boots the server and answers a real client handshake,
       assert.equal(byId.get(1).result.protocolVersion, PROTOCOL_VERSION)
       assert.deepEqual(byId.get(2).result.tools.map(t => t.name),
         ['acp_lanes', 'acp_lane_status', 'acp_lane_probe'])
-      assert.equal(JSON.parse(byId.get(3).result.content[0].text).lanes.length, 8)
+      assert.equal(JSON.parse(byId.get(3).result.content[0].text).lanes.length, 12)
       const probeRefusal = JSON.parse(byId.get(4).result.content[0].text)
       assert.equal(byId.get(4).result.isError, true, 'a probe call with no lanes must be reported as refused')
       assert.match(probeRefusal.error, /non-empty array of lane ids/)
