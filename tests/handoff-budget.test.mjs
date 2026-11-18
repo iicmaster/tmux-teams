@@ -60,8 +60,12 @@ test('rotation names its destination: docs/history/handoff-archive-YYYYMMDD.md',
     'the archive path template is gone, so rotation has nowhere defined to go')
   has(budget, "that date's file, appended, created if absent",
     'the append-or-create rule is gone — two writers must not fork the archive')
-  has(budget, '- PR attestation rules → archived 2026-10-30: docs/history/handoff-archive-20261030.md',
-    'the one-pointer-line example is gone — without it a rotation leaves either nothing or everything')
+  has(budget, '### [PR] attestation rules → archived 2026-10-30: docs/history/handoff-archive-20261030.md',
+    'the pointer example is gone or bare — an unheaded example teaches the exact form the skill forbids')
+  has(budget, 'ONE headed pointer per tag and archive file',
+    'consolidation no longer preserves per-tag addressability — folded pointers must stay headed blocks')
+  has(budget, 'carry every pointer line your previous block held into your new block',
+    'the carry-forward rule is gone — a rewrite deletes its own block\'s pointers and orphans the archive')
   has(budget, 'cold storage',
     'archives are no longer declared cold storage, so a session will read one whole')
   has(budget, 'pass a few KiB, consolidate them',
@@ -80,8 +84,8 @@ test('one owner, one block: tagged, bounded, previous block deleted, other owner
     'the tag stability rule is gone — an unstable tag makes "grep your tag" useless')
   has(budget, 'writing a new version of your block physically deletes your previous one from the file',
     'the delete-your-previous-block rule is gone — this is the rule the eight-lane file died of')
-  has(budget, "Never delete or rewrite another owner's block",
-    "the never-touch-another-owner's-block rule is gone")
+  has(budget, "Never delete or rewrite another owner's live block",
+    "the never-touch-another-owner's-block rule is gone or lost its live qualifier — the ADR says live")
   has(budget, '`.pm/<owner>/HANDOFF-YYYYMMDD-HHMM.md`',
     'the sidecar path for full pre-compaction dumps is gone')
   has(budget, 'snapshots live in sidecars, state lives here',
@@ -108,6 +112,10 @@ test('cross-owner deadlock closed: superseded blocks move verbatim; otherwise si
     'the escape pointer no longer replaces the writer\'s stale block — stale state lingers in the file')
   has(budget, 'the sidecar alone holds the state and the compaction request carries the pointer',
     'the near-ceiling corner is unhandled — even a pointer line can cross the ceiling')
+  has(budget, 'your previous block stays in the file untouched',
+    'the near-ceiling corner no longer names the fate of the writer\'s previous block')
+  has(budget, 'the last non-pointer `### [<tag>]` heading in the section',
+    'newest is no longer defined by what the file shows — "written last" is invisible to a static file')
   has(budget, 'never fold another owner\'s pointers',
     'the consolidation ownership rule is gone — folding another owner\'s pointers rewrites protected bytes')
   has(budget, 'If the sidecar lives under a gitignored path, its pointer line says so',
@@ -154,8 +162,27 @@ test('"Before you finish" reports the byte count, resolves pointers, and commits
     'the archive-pointer resolution check is gone or no longer covers sidecars')
   has(finish, 'a pointer marked machine-local (a gitignored sidecar) is skipped on machines that do not hold the sidecar, not failed',
     'the machine-local pointer exception is gone — a committed gitignored sidecar pointer fails the check on every other machine')
-  has(finish, "`grep -F '### [<tag>]'` proves it, exactly one hit per section",
-    'the grep proof is gone or naive — an unescaped bracketed tag is a regex character class that proves nothing')
+  has(finish, "`grep -E '^### \\[<tag>\\]' HANDOFF.md | grep -vF '→ archived'` returns exactly one non-archived hit per section",
+    'the grep proof is gone or unscoped — archived pointer headings share the tag and would fail an honest writer')
+
+test('the grep proof survives archived pointer headings: one non-archived hit per section (fixture)', () => {
+  // The exact pipeline the skill prescribes, run over a fixture that holds a
+  // live block AND an archived pointer heading under the same tag — the
+  // round-3 cross-owner scenario that broke the round-2 proof.
+  const fixture = [
+    '### [DBA] live block',
+    'current state lines',
+    '### [DBA] older rules → archived 2026-11-19: docs/history/handoff-archive-20261119.md',
+    '### [MD] another owner live',
+  ]
+  const grepE = (lines) => lines.filter((l) => l.startsWith('### [DBA] '))
+  const grepVFArchived = (lines) => lines.filter((l) => !l.includes('→ archived'))
+  const hits = grepVFArchived(grepE(fixture))
+  assert.equal(hits.length, 1,
+    'the prescribed pipeline does not return exactly one non-archived hit — an honest writer fails the finish checklist')
+  assert.match(hits[0], /live block/,
+    'the single surviving hit is not the live block — the proof points at the wrong block')
+})
   has(finish, 'commit it in the same commit as the archive file any rotation created',
     'the commit-together rule is gone — a pointer committed alone resolves to nothing on another machine')
 })
@@ -169,4 +196,8 @@ test('ADR 0009 records the 2 KiB cap, the tooling tripwire, and agrees with the 
     'the ADR still carries the unqualified round-1 prohibition — the decision record contradicts the skill word for word')
   has(ADR, 'the writer parks its state in the sidecar and puts "compact the handoff" in front of the user',
     'the ADR omits the sidecar+escalate escape — the decision record and the skill disagree on the deadlock answer')
+  has(ADR, 'under the detail\'s original tagged heading',
+    'the ADR rotation bullet omits the pointer-heading requirement — the record predates the round-2 fix')
+  has(ADR, 'machine-local sidecar pointers are skipped on machines that do not hold the sidecar',
+    'the ADR consequences omit the machine-local pointer exception — the record and the skill disagree again')
 })

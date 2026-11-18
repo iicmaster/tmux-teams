@@ -43,7 +43,8 @@ preference.
   passes 32 KiB, superseded detail moves to
   `docs/history/handoff-archive-YYYYMMDD.md` — that date's file, appended,
   created if absent — and exactly one pointer line stays where the detail
-  came from.
+  came from, under the detail's original tagged heading; the writer's new
+  block carries its old pointer lines forward.
 - **One owner, one block.** Each owner sharing a HANDOFF.md keeps at most
   one block per section under a tagged `### [<tag>] <what>` heading that is
   the block's boundary, and writing the new version physically deletes the
@@ -80,8 +81,11 @@ copied in: a copy is a second source of truth with no owner.
   act on; the guard makes compaction the user's first decision instead.
 - **The "Before you finish" list closes the loop.** The writer reports the
   `wc -c` result, refuses to call the file done above 48 KiB (target 32),
-  checks that every archive pointer resolves to a file that exists, and
-  greps its own tag to prove its previous blocks are physically gone.
+  checks that every archive pointer resolves to a file that exists —
+  machine-local sidecar pointers are skipped on machines that do not hold
+  the sidecar — and proves its previous blocks are physically gone with
+  `grep -E '^### \[<tag>\]'` minus the `→ archived` lines, exactly one
+  non-archived hit per section.
 - **The failure this answers is measured, not hypothetical.** The 2 MB file
   grew back from a 1.7 MB archive in under three weeks; the budget binds
   every write, which is the only thing that has not been tried.
