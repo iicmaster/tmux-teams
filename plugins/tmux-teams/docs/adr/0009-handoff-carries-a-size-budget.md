@@ -51,8 +51,12 @@ preference.
   (`.pm/<owner>/HANDOFF-YYYYMMDD-HHMM.md`, or wherever the project already
   keeps per-owner state) with one pointer line in the handoff.
 - **A reader guard.** A session opening a HANDOFF.md over the ceiling does
-  not read it whole: section 1 and the headers, then "compact the handoff"
-  goes in front of the user as the first order of business.
+  not read it whole: the first 2 KiB of section 1 and the headers, then
+  "compact the handoff" goes in front of the user as the first order of
+  business.
+- **READ THIS FIRST capped at ten lines and 2 KiB.** The ten-line rule the
+  skill already stated failed the moment lines ran a thousand bytes; both
+  limits are hard.
 
 Archives are cold storage, never read whole; a pointer is followed only when
 that detail is actually needed. State that lives in a system of record — a
@@ -85,6 +89,9 @@ copied in: a copy is a second source of truth with no owner.
 - An owner ruling that their project's handoffs are intentionally archival.
   The budget lives in the skill, so that ruling would have to be recorded
   against this ADR rather than made quietly.
+- A tracked HANDOFF.md found over the ceiling again — writers ignoring a
+  prose ceiling is the exact failure this answers; if it recurs, the tooling
+  exclusion reverses and the ceiling becomes a mechanical check.
 
 ## The strongest argument against this decision
 
@@ -103,9 +110,9 @@ no ceiling at all.
 
 ## Out of scope
 
-- Any change to the handoff's section order, prose rules, or the room
-  ladder. This decision adds a budget to the existing skill; it does not
-  rewrite it.
+- Any change to the handoff's section order or the room ladder. This
+  decision adds a budget, a byte cap, and ownership rules to the existing
+  skill; it does not rewrite it.
 - Tooling to enforce the ceiling. The measure is `wc -c` and the proof is a
   grep, both of which a session already runs; a script would add a surface
   for a rule a writer can keep with two commands.

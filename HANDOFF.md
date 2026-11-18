@@ -86,23 +86,35 @@ commit — the worktree-based flow that survived is: branch from `origin/main`
 in a fresh worktree, never from this checkout's dirty state.
 
 - `plugins/tmux-teams/skills/handoff/SKILL.md` — "The file has a budget":
-  32 KiB target / 48 KiB hard ceiling, `wc -c HANDOFF.md` before composing and
-  after writing, rotation to `docs/history/handoff-archive-YYYYMMDD.md` with
-  one pointer line per moved block, one-owner-one-block with pre-compaction
-  dumps in owner sidecars, and a reader guard for inherited over-ceiling
-  files. The room brief carries the budget; READ THIS FIRST caps at ten lines
-  and 2 KiB; "Before you finish" reports the byte count and proves old blocks
-  deleted.
+  32 KiB target / 48 KiB hard ceiling measured with `wc -c HANDOFF.md`
+  before and after writing (a post-write over-ceiling measure does not
+  stand), rotation to `docs/history/handoff-archive-YYYYMMDD.md` with one
+  pointer line per moved block plus pointer consolidation, one-owner-one-
+  block with tagged `### [<tag>]` headings as block boundaries, VERBATIM
+  moves of other owners' superseded blocks (move ≠ rewrite) and a sidecar +
+  escalate escape that closes the cross-owner deadlock, and a reader guard
+  reading the first 2 KiB of section 1 plus headers. The room brief carries
+  the budget; READ THIS FIRST caps at ten lines and 2 KiB; "Before you
+  finish" reports the byte count, resolves pointers (sidecars included),
+  and commits the archive in the same commit.
 - `plugins/tmux-teams/docs/adr/0009-handoff-carries-a-size-budget.md` — the
-  decision, the measurement, and the strongest argument against it.
-- `tests/handoff-budget.test.mjs` — seven anchor tests, all passing.
+  decision, the measurement, the strongest argument against it, and the
+  tooling tripwire.
+- `tests/handoff-budget.test.mjs` — nine whitespace-tolerant anchor tests,
+  all passing.
 - `ROADMAP.md` — one entry under "Shipped since the phases were last written".
 
-Suite in this worktree at `84fbae1` + these files: 1309 tests, 1308 pass,
-0 fail, 1 skipped — the skip is `claude CLI not on PATH`, a fact of this
-machine's PATH, not of the change (both reds recorded here on 2026-10-30
-are fixed on main: pinned agy identity landed in v0.50.0, and
-`mailbox-run.js` parses).
+Three-family panel round 1 (2026-11-19, direct ACP, every identity
+matched — agy `gemini-4-hydrogen-high`, claude `opus`, codex
+`gpt-6-luna[max]`): **3/3 FINDINGS**, converging independently on the
+cross-owner deadlock (2/3 must-fix rule) plus an undefined owner marker
+(3/3 in some form); the fix commit closes both and the lanes re-run on the
+new bytes. Round-1 verdicts: PR #105 comment 6988075290.
+
+Suite in this worktree at `84fbae1` + these files: 1311 tests, 1310 pass,
+1 fail — `review-policy.test.mjs` "environment is allowlisted…", proven
+pre-existing/environment-dependent by A/B at clean `84fbae1` (30/31
+identical with the changes stashed; CI on the branch is 4/4 SUCCESS).
 
 Unproven: the 32/48 numbers are reader-cost numbers, not sufficiency numbers
 (ADR 0009 records this); the budget has not yet been exercised on a real
