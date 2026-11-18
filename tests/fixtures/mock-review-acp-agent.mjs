@@ -165,6 +165,10 @@ rl.on('line', raw => {
       // codex-acp 2.x announces auth state with an ACP extension notification
       // (`_`-prefixed method) before answering session/new; a client must ignore it.
       if (behaviour === 'extension-notification') send({ jsonrpc: '2.0', method: '_auth/status_update', params: { status: 'authenticated' } })
+      // the same shape WITHOUT the extension prefix, and an extension REQUEST (it
+      // carries an id, so it expects an answer): both must still fail closed.
+      if (behaviour === 'unknown-notification') send({ jsonrpc: '2.0', method: 'auth/status_update', params: { status: 'authenticated' } })
+      if (behaviour === 'extension-request') send({ jsonrpc: '2.0', id: 9001, method: '_auth/confirm', params: {} })
       // A remote error on session/new — the exact shape the zai lane produced
       // on the bwrap host, where the adapter answered and nothing died. The
       // message deliberately carries a credential and a newline so the test can
@@ -206,6 +210,11 @@ rl.on('line', raw => {
       return reply(m.id, { sessionId: 'review-session', configOptions: [] })
     case 'session/set_config_option':
       log(`config:${m.params.configId}=${m.params.value}`)
+      // opencode's adapter answers a bare model id with -32602 `model not found`;
+      // this mode accepts ONLY the exact value the lane must put on the wire.
+      if (behaviour === 'require-model' && m.params.configId === 'model' && m.params.value !== expectedModel) {
+        return send({ jsonrpc: '2.0', id: m.id, error: { code: -32602, message: `Invalid params: model not found: ${m.params.value}` } })
+      }
       if (behaviour === 'retired-seed') {
         // The successful model setter's reply shape is MOCK_SETTER_SHAPE:
         // list | singular | scalar — all three are acknowledgedValue's

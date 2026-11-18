@@ -844,9 +844,11 @@ test('every opencode seat requests the provider-qualified model id', () => {
   // Measured 2026-11-19: the opencode ACP adapter answers set_config_option with
   // `model not found: deepseek-v4.1-flash-free` for the bare id, so every rung of
   // the opencode ladder failed and the ladder could never rescue a panel.
-  const seats = Object.values(REVIEW_PROFILES).filter(p => p.provider === 'opencode' && !p.endpoint)
+  // every seat launched through the opencode adapter, whatever its endpoint
+  const seats = Object.values(REVIEW_PROFILES).filter(p => p.provider === 'opencode' || p.adapterPackage?.startsWith('opencode-ai@'))
   assert.ok(seats.length >= 3)
   for (const seat of seats) {
+    assert.ok(!seat.model.startsWith('opencode/'), `${seat.id}: recorded identity must stay the bare model`)
     assert.equal(seat.requestModel, `opencode/${seat.model}`, seat.id)
     assert.equal(seat.config.model, seat.requestModel, seat.id)
   }
