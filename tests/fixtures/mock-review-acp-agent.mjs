@@ -169,6 +169,7 @@ rl.on('line', raw => {
       // carries an id, so it expects an answer): both must still fail closed.
       if (behaviour === 'unknown-notification') send({ jsonrpc: '2.0', method: 'auth/status_update', params: { status: 'authenticated' } })
       if (behaviour === 'extension-request') send({ jsonrpc: '2.0', id: 9001, method: '_auth/confirm', params: {} })
+      if (behaviour === 'other-extension-notification') send({ jsonrpc: '2.0', method: '_tools/ran', params: { tool: 'shell' } })
       // A remote error on session/new — the exact shape the zai lane produced
       // on the bwrap host, where the adapter answered and nothing died. The
       // message deliberately carries a credential and a newline so the test can

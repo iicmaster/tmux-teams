@@ -255,6 +255,7 @@ function remoteErrorDetail(error) {
   return ` (remote code ${code}: ${said})`
 }
 const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v)
+const INERT_EXTENSION_NOTIFICATIONS = new Set(['_auth/status_update'])
 const configList = result => Array.isArray(result?.configOptions) ? result.configOptions : []
 const currentValue = option => option?.currentValue ?? option?.value
 const acknowledgedValue = (result, id) => {
@@ -969,9 +970,11 @@ export async function runAcpReview({
         }
         return
       }
-      // ACP reserves `_`-prefixed methods for extensions; a client that does not
-      // recognise one must ignore it. codex-acp 2.x sends `_auth/status_update`.
-      if (typeof msg.method === 'string' && msg.method.startsWith('_')) return
+      // Extension notifications this client has MEASURED and knows to be inert.
+      // An allowlist, not every `_` method: an adapter could report its own tool
+      // activity through an extension, and that must keep failing the lane.
+      // codex-acp 2.x sends `_auth/status_update` before session/new returns.
+      if (INERT_EXTENSION_NOTIFICATIONS.has(msg.method)) return
       return protocolError(`ACP notification not allowed: ${msg.method ?? 'unknown'}`)
     }
     // A stdio Socket emits its OWN 'error'; `child.on('error')` is the ChildProcess
