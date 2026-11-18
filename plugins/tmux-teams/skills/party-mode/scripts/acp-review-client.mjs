@@ -969,6 +969,9 @@ export async function runAcpReview({
         }
         return
       }
+      // ACP reserves `_`-prefixed methods for extensions; a client that does not
+      // recognise one must ignore it. codex-acp 2.x sends `_auth/status_update`.
+      if (typeof msg.method === 'string' && msg.method.startsWith('_')) return
       return protocolError(`ACP notification not allowed: ${msg.method ?? 'unknown'}`)
     }
     // A stdio Socket emits its OWN 'error'; `child.on('error')` is the ChildProcess

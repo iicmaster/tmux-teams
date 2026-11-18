@@ -241,6 +241,9 @@ export const REVIEW_PROFILES = freeze({
     // release record that already named one.
     command: ['npx', '-y', 'opencode-ai@1.18.21', 'acp'],
     adapterPackage: 'opencode-ai@1.18.21',
+    // opencode's ACP adapter resolves only the provider-qualified id; the bare
+    // `model` above stays the identity the panel records.
+    requestModel: 'opencode/minimax-m3.1-flash-free',
     config: { model: 'opencode/minimax-m3.1-flash-free' },
   },
   // Master 2026-11-17 ladder: when a seat hits its free quota the gate swaps
@@ -256,6 +259,9 @@ export const REVIEW_PROFILES = freeze({
     reviewMode: 'plan',
     command: ['npx', '-y', 'opencode-ai@1.18.21', 'acp'],
     adapterPackage: 'opencode-ai@1.18.21',
+    // opencode's ACP adapter resolves only the provider-qualified id; the bare
+    // `model` above stays the identity the panel records.
+    requestModel: 'opencode/deepseek-v4.1-flash-free',
     config: { model: 'opencode/deepseek-v4.1-flash-free' },
   },
   opencodeHy: {
@@ -264,6 +270,9 @@ export const REVIEW_PROFILES = freeze({
     reviewMode: 'plan',
     command: ['npx', '-y', 'opencode-ai@1.18.21', 'acp'],
     adapterPackage: 'opencode-ai@1.18.21',
+    // opencode's ACP adapter resolves only the provider-qualified id; the bare
+    // `model` above stays the identity the panel records.
+    requestModel: 'opencode/hy4-flash-free',
     config: { model: 'opencode/hy4-flash-free' },
   },
   opencodeGlm: {
@@ -272,6 +281,9 @@ export const REVIEW_PROFILES = freeze({
     reviewMode: 'plan',
     command: ['npx', '-y', 'opencode-ai@1.18.21', 'acp'],
     adapterPackage: 'opencode-ai@1.18.21',
+    // opencode's ACP adapter resolves only the provider-qualified id; the bare
+    // `model` above stays the identity the panel records.
+    requestModel: 'opencode/glm-5.3-flash-free',
     config: { model: 'opencode/glm-5.3-flash-free' },
   },
   claude: {
@@ -316,8 +328,10 @@ export const REVIEW_PROFILES = freeze({
     id: 'codex', provider: 'openai', family: 'openai', model: 'gpt-6-luna',
     displayModel: 'openai/gpt-6-luna',
     reviewMode: 'plan',
-    command: ['npx', '-y', '@agentclientprotocol/codex-acp@1.1.7'],
-    adapterPackage: '@agentclientprotocol/codex-acp@1.1.7',
+    // codex-acp 1.1.7 rejects this lane's session/set_config_option with -32602;
+    // 2.x accepts it (measured 2026-11-19 against codex-cli 0.170.0).
+    command: ['npx', '-y', '@agentclientprotocol/codex-acp@2.7.0'],
+    adapterPackage: '@agentclientprotocol/codex-acp@2.7.0',
     config: {
       model: 'gpt-6-luna',
       reasoning_effort: 'max',

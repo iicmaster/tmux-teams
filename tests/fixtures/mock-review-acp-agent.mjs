@@ -162,6 +162,9 @@ rl.on('line', raw => {
         { id: 'mode', currentValue: 'plan' },
       ] })
     case 'session/new':
+      // codex-acp 2.x announces auth state with an ACP extension notification
+      // (`_`-prefixed method) before answering session/new; a client must ignore it.
+      if (behaviour === 'extension-notification') send({ jsonrpc: '2.0', method: '_auth/status_update', params: { status: 'authenticated' } })
       // A remote error on session/new — the exact shape the zai lane produced
       // on the bwrap host, where the adapter answered and nothing died. The
       // message deliberately carries a credential and a newline so the test can

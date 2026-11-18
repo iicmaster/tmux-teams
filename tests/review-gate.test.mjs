@@ -333,6 +333,15 @@ test('malformed JSON-RPC, malformed review, and timeout never become accepted re
   await assert.rejects(runAcpReview({ profile: profile('oc'), lane: 'oc', packet: packet(), timeoutMs: 25, env: { MOCK_REVIEW_BEHAVIOUR: 'late' } }), e => e.code === 'timeout')
 })
 
+test('an ACP extension notification (`_`-prefixed) is ignored; any other unknown notification still fails', async () => {
+  // Measured 2026-11-19: codex-acp 2.7.0 sends `_auth/status_update` and the
+  // gate died with "ACP notification not allowed". ACP reserves `_` methods for
+  // extensions that a client which does not recognise them must ignore.
+  const out = await invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'extension-notification' })
+  assert.equal(out.review.verdict, 'PASS')
+  await assert.rejects(invoke(profile('oc'), { MOCK_REVIEW_BEHAVIOUR: 'response-then-invalid' }), e => e.code === 'protocol')
+})
+
 test('null timeout disables elapsed cancellation and emits correlated ACP progress', async () => {
   const progress = []
   const out = await runAcpReview({
