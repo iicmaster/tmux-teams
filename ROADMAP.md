@@ -228,7 +228,11 @@ nobody can plan from.
   superseded detail to `docs/history/handoff-archive-YYYYMMDD.md` with one
   pointer line left behind, sends full dumps to per-owner sidecars, and
   guards the reader that inherits an over-ceiling file; the room brief
-  carries the budget as a fact. Seven anchor tests pin the mechanism.
+  carries the budget as a fact. Panel round 1 (three families,
+  2026-11-19) found the cross-owner deadlock and an undefined owner marker
+  — fixed with the verbatim-move escape, owner-tagged headings as block
+  boundaries, and the commit-together rule; nine whitespace-tolerant anchor
+  tests pin the mechanism.
 
 ## The last release — v0.32.0, shipped
 

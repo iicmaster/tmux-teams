@@ -74,7 +74,7 @@ test('one owner, one block: tagged, bounded, previous block deleted, other owner
     'the one-owner-one-block heading is gone')
   has(budget, 'Head your block with your owner tag and make the heading its boundary',
     'the owner tag and block boundary are undefined — physical replacement and the grep proof are not actionable')
-  has(budget, 'a block is one `### [<tag>] <what>` heading plus the lines under it, ending at the next heading',
+  has(budget, 'a block is one `### [<tag>] <what>` heading plus the lines under it, ending at the next `##` or `###` heading',
     'the block boundary is no longer the heading — owners cannot tell where their block ends')
   has(budget, 'the tag is the same every time',
     'the tag stability rule is gone — an unstable tag makes "grep your tag" useless')
@@ -94,10 +94,22 @@ test('cross-owner deadlock closed: superseded blocks move verbatim; otherwise si
     'the verbatim-move rule is gone — the writer the 2 MB file trapped has no escape path')
   has(budget, 'byte-for-byte, nothing rewritten, summarised or shortened',
     'the verbatim definition is gone — "moved" without "verbatim" invites silent rewriting')
+  has(budget, 'leaving the original heading in place as the pointer line',
+    'the pointer-heading rule is gone — a bare pointer line is swallowed by the block above it and orphaned with its rewrite')
+  has(budget, '`### [<tag>] <what> → archived YYYY-MM-DD: <path>`',
+    'the pointer-line form is gone — pointers without a heading are not blocks')
+  has(budget, 'A bare pointer line with no heading',
+    'the bare-pointer prohibition is gone — pointer lines get absorbed into the previous owner\'s block')
   has(budget, 'Moving superseded bytes is not rewriting them',
     'the move-vs-rewrite boundary is gone — the two rules contradict without it')
   has(budget, 'do not write past it: put your new state in your sidecar, leave one pointer line',
     'the writer escape is gone — an owner who cannot fit under the ceiling has nowhere to put its state')
+  has(budget, 'the pointer replaces your previous block, under the same heading',
+    'the escape pointer no longer replaces the writer\'s stale block — stale state lingers in the file')
+  has(budget, 'the sidecar alone holds the state and the compaction request carries the pointer',
+    'the near-ceiling corner is unhandled — even a pointer line can cross the ceiling')
+  has(budget, 'never fold another owner\'s pointers',
+    'the consolidation ownership rule is gone — folding another owner\'s pointers rewrites protected bytes')
   has(budget, 'If the sidecar lives under a gitignored path, its pointer line says so',
     'the gitignored-sidecar disclosure is gone — a committed pointer to machine-local state strands other machines')
 })
@@ -140,15 +152,21 @@ test('"Before you finish" reports the byte count, resolves pointers, and commits
     'the finish checklist no longer refuses to call the file done above the ceiling')
   has(finish, 'Every archive pointer line resolves to a file that exists — archive and sidecar alike',
     'the archive-pointer resolution check is gone or no longer covers sidecars')
-  has(finish, 'grep your tag',
-    'the prove-your-old-blocks-are-gone check is gone — claiming deletion is not deleting')
+  has(finish, 'a pointer marked machine-local (a gitignored sidecar) is skipped on machines that do not hold the sidecar, not failed',
+    'the machine-local pointer exception is gone — a committed gitignored sidecar pointer fails the check on every other machine')
+  has(finish, "`grep -F '### [<tag>]'` proves it, exactly one hit per section",
+    'the grep proof is gone or naive — an unescaped bracketed tag is a regex character class that proves nothing')
   has(finish, 'commit it in the same commit as the archive file any rotation created',
     'the commit-together rule is gone — a pointer committed alone resolves to nothing on another machine')
 })
 
-test('ADR 0009 records the 2 KiB cap and carries the tooling tripwire', () => {
+test('ADR 0009 records the 2 KiB cap, the tooling tripwire, and agrees with the skill on ownership', () => {
   has(ADR, 'READ THIS FIRST capped at ten lines and 2 KiB',
     'the ADR no longer records the 2 KiB cap — a decision document that omits a rule invites relitigation')
   has(ADR, 'the tooling exclusion reverses and the ceiling becomes a mechanical check',
     'the tooling tripwire is gone — nothing answers the writers-ignore-the-ceiling repeat')
+  has(ADR, "Another owner's SUPERSEDED block may be moved VERBATIM to the archive — move is not rewrite",
+    'the ADR still carries the unqualified round-1 prohibition — the decision record contradicts the skill word for word')
+  has(ADR, 'the writer parks its state in the sidecar and puts "compact the handoff" in front of the user',
+    'the ADR omits the sidecar+escalate escape — the decision record and the skill disagree on the deadlock answer')
 })

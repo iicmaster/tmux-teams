@@ -45,11 +45,17 @@ preference.
   created if absent — and exactly one pointer line stays where the detail
   came from.
 - **One owner, one block.** Each owner sharing a HANDOFF.md keeps at most
-  one block per section, and writing the new version physically deletes the
-  previous one. An owner never touches another owner's block; a full
-  pre-compaction dump goes to the owner's own sidecar
+  one block per section under a tagged `### [<tag>] <what>` heading that is
+  the block's boundary, and writing the new version physically deletes the
+  previous one. Another owner's SUPERSEDED block may be moved VERBATIM to
+  the archive — move is not rewrite — leaving the original heading as the
+  pointer line; what stays forbidden is rewriting, summarising or deleting
+  another owner's live block. A full pre-compaction dump goes to the
+  owner's own sidecar
   (`.pm/<owner>/HANDOFF-YYYYMMDD-HHMM.md`, or wherever the project already
-  keeps per-owner state) with one pointer line in the handoff.
+  keeps per-owner state) with one pointer line in the handoff; if the file
+  still cannot fit under the ceiling, the writer parks its state in the
+  sidecar and puts "compact the handoff" in front of the user.
 - **A reader guard.** A session opening a HANDOFF.md over the ceiling does
   not read it whole: the first 2 KiB of section 1 and the headers, then
   "compact the handoff" goes in front of the user as the first order of

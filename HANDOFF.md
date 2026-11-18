@@ -108,8 +108,18 @@ Three-family panel round 1 (2026-11-19, direct ACP, every identity
 matched — agy `gemini-4-hydrogen-high`, claude `opus`, codex
 `gpt-6-luna[max]`): **3/3 FINDINGS**, converging independently on the
 cross-owner deadlock (2/3 must-fix rule) plus an undefined owner marker
-(3/3 in some form); the fix commit closes both and the lanes re-run on the
-new bytes. Round-1 verdicts: PR #105 comment 6988075290.
+(3/3 in some form). Round-1 verdicts: PR #105 comment 6988075290. Round 2
+on the fix bytes (3/3 identities matched): all round-1 objections CLOSED
+in the skill; remaining must-fixes — the ADR still carried the unqualified
+round-1 prohibition (2/3), pointer lines needed the original heading or
+the next rewrite orphaned the archive (claude), machine-local sidecar
+pointers failed the resolve check cross-machine (agy), and the ROADMAP
+test count was stale (3/3) — all closed in this commit; round 3 re-runs
+all three. A round-2a dispatch was invalidated by a stale GitHub-served
+diff fetched seconds after push (two lanes caught the mismatch
+themselves); round-2b ran on the locally verified diff — verify the diff
+carries the claimed fixes before dispatching, never trust a same-second
+`gh pr diff`.
 
 Suite in this worktree at `84fbae1` + these files: 1311 tests, 1310 pass,
 1 fail — `review-policy.test.mjs` "environment is allowlisted…", proven
