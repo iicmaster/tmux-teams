@@ -123,8 +123,15 @@ with a real-grep fixture. Round 4 (3/3) found structural hygiene — a
 nested fixture test, the pointer example become a live heading, stale
 counts, one-block scoping — closed in the round-4 fix commit. Round 5:
 codex CLEAR; agy and claude FINDINGS on one stale ADR sentence (the
-retired grep proof) and this block's own stale narrative — closed here;
-round 6 re-runs all three. A round-2a dispatch was invalidated by a stale
+retired grep proof) and this block's own stale narrative — closed in the
+round-5 fix commit. Round 6 (on `84fbae1..98d9831`): **3/3 CLEAR** — agy
+`gemini-4-hydrogen-high`, codex `gpt-6-luna[max]`, claude `opus`, all
+identities matched, zero must-fix; `Gate: 3/3` for the release notes.
+Non-blocking observations on record: the sidecar escape can strand
+archive pointers on a machine-local sidecar until compaction (one-clause
+fix in a later pass), the fixture skips by platform not tool presence,
+and the grep proof checks per section by line number. A round-2a
+dispatch was invalidated by a stale
 GitHub-served
 diff fetched seconds after push (two lanes caught the mismatch
 themselves); round-2b ran on the locally verified diff — verify the diff
