@@ -195,6 +195,34 @@ Exit `0` is the only success. Exit `2` names why it refused —
 to run with the invented cast instead. Exit `1` is a usage error in the
 command you typed. Never substitute silently.
 
+### Automatic party selection
+
+If the operator names no room, or names `auto`, the script chooses a saved room
+from the assigned work instead of inventing a cast. Pass the brief as a file:
+
+```bash
+node <plugin-root>/skills/tmux-teams/scripts/advisor-party.mjs auto --task-file <brief>
+```
+
+Leaving the id off entirely (`--task-file <brief>` alone) does the same thing.
+Selection is a deterministic keyword count over the brief against the
+`SELECTION_CATALOG` constant in `advisor-party.mjs` (documented for maintainers at
+`_bmad-output/specs/spec-advisor-party-type/selection-catalog.md`); it makes no
+network or model call. A named id still wins and takes the resolve-or-refuse path
+unchanged.
+
+On a hit, stdout is byte-identical to the mandate for that id seated explicitly,
+so paste it into the brief exactly as above. One `selected-party: <name> (<id>)`
+line goes to **stderr** — that is where the operator reads which room was chosen;
+it is never part of the brief. Exit `0` means a room was selected.
+
+Exit `3` means auto selection found no room (no catalog keyword hit, or a tie at
+the top score): stdout is empty. **On `3`, emit the original "Cast 3-5 named
+voices" paragraph and tell the operator that no saved room matched.** Auto never
+fails open to a guessed room. Exit `2` here means `task_file_unreadable` (no
+readable `--task-file`) or a resolver refusal — stop and tell the operator, as
+with any `2`. Exit `1` is a command-usage error.
+
 ## The receipt, and what it does not prove
 
 The receipt should read `effective_identity: <seat>`,

@@ -19,7 +19,7 @@
 // bmad-party-mode is a separate install and is NOT shipped by this plugin, so
 // its absence is an ordinary outcome here, reported as `not_installed`.
 import { spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -29,6 +29,26 @@ export const PARTY_PROBLEMS = Object.freeze({
   unknown_party: 'no saved party has that id',
   resolver_failed: 'the party resolver ran and did not return a roster',
   party_substituted: 'the party resolver returned a different party than the one asked for',
+  task_file_unreadable: 'no readable --task-file was given, so automatic party selection has no brief to score',
+})
+
+// Auto-selection keywords, keyed by the exact saved group id. This is the
+// repo-local half of the contract; selection-catalog.md documents the same
+// lists for maintainers. A saved group absent here stays explicitly selectable
+// by id but is never auto-selected. Update both files together.
+export const SELECTION_CATALOG = Object.freeze({
+  'code-review-crew': [
+    'code review', 'adversarial review', 'review the code', 'review this',
+    'vulnerability', 'injection', 'authz', 'race condition', 'edge case', 'security',
+    'regression', 'bug', 'refactor', 'simplify', 'test suite', 'tests fail',
+    'ตรวจโค้ด', 'รีวิวโค้ด', 'บั๊ก', 'ช่องโหว่', 'ความปลอดภัย', 'รีแฟคเตอร์', 'เทสต์', 'ทดสอบ',
+  ],
+  'anti-consensus-club': [
+    'options', 'alternative', 'hidden assumption', 'assumption', 'tradeoff',
+    'evidence', 'confidence', 'consensus', 'disagree', 'decision', 'brainstorm',
+    'ทางเลือก', 'ข้อสันนิษฐาน', 'หลักฐาน', 'ความมั่นใจ', 'ความเห็นตรงกัน',
+    'ตัดสินใจ', 'วางแผน', 'อภิปราย', 'ไม่เห็นด้วย',
+  ],
 })
 
 export function partyModeRoot(env = process.env) {
@@ -98,6 +118,50 @@ export function resolveParty(id, { env = process.env, projectRoot = process.cwd(
   // behind it.
   if (parsed.active !== id) return { ok: false, code: 'party_substituted', available: [] }
   return { ok: true, party: parsed }
+}
+
+/**
+ * List saved group ids via `resolve_party.py --list-groups`. Returns
+ * `{ ok: true, ids }` or `{ ok: false, code }` with the same refusal codes as
+ * resolveParty (the listing is the same resolver, same install, same uv). The
+ * menu carries id + name + member_count; only the id drives selection.
+ */
+export function listGroups({ env = process.env, projectRoot = process.cwd(), run = spawnSync } = {}) {
+  const root = partyModeRoot(env)
+  const script = join(root, 'scripts', 'resolve_party.py')
+  if (!existsSync(script)) return { ok: false, code: 'not_installed', ids: [] }
+  const r = run('uv', ['run', script, '--project-root', projectRoot, '--skill', root, '--list-groups'],
+    { encoding: 'utf8', env })
+  if (r.error?.code === 'ENOENT') return { ok: false, code: 'uv_missing', ids: [] }
+  let parsed
+  try { parsed = JSON.parse(r.stdout ?? '') } catch { return { ok: false, code: 'resolver_failed', ids: [] } }
+  if (r.status !== 0) return { ok: false, code: 'resolver_failed', ids: [] }
+  if (!Array.isArray(parsed?.groups)) return { ok: false, code: 'resolver_failed', ids: [] }
+  const ids = parsed.groups
+    .filter(g => g !== null && typeof g === 'object' && typeof g.id === 'string')
+    .map(g => g.id)
+  return { ok: true, ids }
+}
+
+/**
+ * Deterministic lexical scoring of a brief. Lowercase once; a keyword hits
+ * when the lowercased text contains it as a substring; count DISTINCT hits per
+ * group. A strict top winner is selected; a tie at the top or zero hits returns
+ * null (no-match). List/catalog order never breaks a tie. No network, no model.
+ */
+export function selectGroup(text, availableIds, catalog = SELECTION_CATALOG) {
+  const lower = String(text).toLowerCase()
+  const scores = new Map()
+  for (const id of availableIds) {
+    const keywords = catalog[id]
+    if (!Array.isArray(keywords)) continue
+    const distinct = new Set(keywords.filter(k => typeof k === 'string' && lower.includes(k.toLowerCase())))
+    scores.set(id, distinct.size)
+  }
+  const top = Math.max(0, ...scores.values())
+  if (top === 0) return null
+  const winners = [...scores.entries()].filter(([, n]) => n === top)
+  return winners.length === 1 ? winners[0][0] : null
 }
 
 /**
@@ -310,33 +374,71 @@ export function renderPartyMandate(party) {
   ].join('\n\n')
 }
 
-export function main(argv, { env = process.env, out = console.log, err = console.error, run = spawnSync } = {}) {
+export function main(argv, { env = process.env, out = console.log, err = console.error, run = spawnSync, readFile = readFileSync } = {}) {
   const args = [...argv]
   let projectRoot = process.cwd()
-  const i = args.indexOf('--project-root')
-  if (i !== -1) {
-    // A FLAG WITH NO VALUE IS A USAGE ERROR, not an `undefined` forwarded into
-    // spawnSync's argv — which is an uncaught TypeError from child_process
-    // where every document about this file promises a closed refusal. A zai
-    // lane found it.
-    const value = args[i + 1]
+  // Pull a named flag out of argv after checking it HAS a value. A flag with no
+  // value must be a usage error, not an `undefined` forwarded into spawnSync —
+  // the uncaught TypeError a zai lane found on --project-root.
+  const take = (flag) => {
+    const at = args.indexOf(flag)
+    if (at === -1) return null
+    const value = args[at + 1]
     if (typeof value !== 'string' || value === '' || value.startsWith('-')) {
-      err('usage: node advisor-party.mjs <party-id> [--project-root <dir>]')
-      return 1
+      err('usage: node advisor-party.mjs <party-id>|auto [--project-root <dir>] [--task-file <file>] (omit id with --task-file for auto)')
+      return undefined
     }
-    projectRoot = value
-    args.splice(i, 2)
+    args.splice(at, 2)
+    return value
   }
-  // ONE PARTY ID AND NOTHING ELSE. An unrecognised extra argument was ignored
-  // in silence while this file and all three skills that document it advertise
+  const rootValue = take('--project-root')
+  if (rootValue === undefined) return 1
+  if (rootValue !== null) projectRoot = rootValue
+  const taskValue = take('--task-file')
+  if (taskValue === undefined) return 1
+
+  // ONE PARTY SLOT AND NOTHING ELSE. An unrecognised extra argument was ignored
+  // in silence while this file and all four skills that document it advertise
   // a closed set of outcomes — and an operator who typed a second thing meant
   // it. Refusing costs a usage line; ignoring costs a run that did not do what
   // was asked and said nothing.
-  const id = args[0]
-  if (!id || id.startsWith('-') || args.length > 1) {
-    err('usage: node advisor-party.mjs <party-id> [--project-root <dir>]')
+  const slot = args[0]
+  if ((slot && slot.startsWith('-')) || args.length > 1) {
+    err('usage: node advisor-party.mjs <party-id>|auto [--project-root <dir>] [--task-file <file>] (omit id with --task-file for auto)')
     return 1
   }
+
+  // `auto`, or an unnamed party with a --task-file, enters selection. A named
+  // id keeps the resolve-or-refuse path byte-for-byte.
+  const auto = slot === 'auto' || (!slot && taskValue !== null)
+  if (!auto && !slot) {
+    err('usage: node advisor-party.mjs <party-id>|auto [--project-root <dir>] [--task-file <file>] (omit id with --task-file for auto)')
+    return 1
+  }
+
+  let id = slot
+  if (auto) {
+    let brief
+    if (taskValue === null) {
+      err(`${'task_file_unreadable'}: ${PARTY_PROBLEMS.task_file_unreadable}`)
+      return 2
+    }
+    try { brief = readFile(taskValue, 'utf8') } catch {
+      err(`${'task_file_unreadable'}: ${PARTY_PROBLEMS.task_file_unreadable}`)
+      return 2
+    }
+    const listed = listGroups({ env, projectRoot, run })
+    if (!listed.ok) {
+      err(`${listed.code}: ${PARTY_PROBLEMS[listed.code]}`)
+      return 2
+    }
+    id = selectGroup(brief, listed.ids)
+    // A tie at the top score or zero hits is no-match: no mandate, exit 3. The
+    // calling skill then emits the invented-cast paragraph. List order never
+    // breaks a tie.
+    if (id === null) return 3
+  }
+
   const result = resolveParty(id, { env, projectRoot, run })
   if (!result.ok) {
     // THE REFUSAL PATH PRINTS ROSTER-DERIVED TEXT TOO. The ids come from the
@@ -348,6 +450,10 @@ export function main(argv, { env = process.env, out = console.log, err = console
     if (result.available.length) err(`available: ${result.available.map(asDescription).filter(Boolean).join(', ')}`)
     return 2
   }
+  // The announcement is stderr precisely because stdout is pasted verbatim into
+  // the brief. Name and id are roster-derived, so both pass through the same
+  // sanitiser the mandate uses — a hostile room name cannot rewrite the line.
+  if (auto) err(`selected-party: ${asDescription(result.party.name)} (${asDescription(result.party.active)})`)
   out(renderPartyMandate(result.party))
   return 0
 }

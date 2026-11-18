@@ -71,8 +71,8 @@ test('immutable ACP profiles pin providers, models, argv, and AGY plan mode', ()
   assert.deepEqual(REVIEW_PROFILES.qwen.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
   assert.deepEqual(REVIEW_PROFILES.claude.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
   assert.deepEqual(REVIEW_PROFILES.codex.command, ['npx', '-y', '@agentclientprotocol/codex-acp@1.1.7'])
-  assert.deepEqual(REVIEW_PROFILES.agy.config, { model: 'gemini-4-carbon-high', mode: 'plan' })
-  assert.equal(REVIEW_PROFILES.agy.displayModel, 'agy/gemini-4-carbon-high')
+  assert.deepEqual(REVIEW_PROFILES.agy.config, { model: 'gemini-4-hydrogen-high', mode: 'plan' })
+  assert.equal(REVIEW_PROFILES.agy.displayModel, 'agy/gemini-4-hydrogen-high')
   assert.deepEqual(REVIEW_PROFILES.kimi.config, { model: 'opus', mode: 'plan' })
   assert.equal(REVIEW_PROFILES.kimi.displayModel, 'kimi/opus')
   assert.deepEqual(REVIEW_PROFILES.qwen.config, { model: 'qwen3.8-max-preview', mode: 'plan' })
@@ -86,8 +86,8 @@ test('immutable ACP profiles pin providers, models, argv, and AGY plan mode', ()
   assert.deepEqual(REVIEW_PROFILES.zai.config, { model: 'glm-5.2', mode: 'default' })
   assert.equal(REVIEW_PROFILES.zai.thinkingBudgetTokens, 4096)
   assert.deepEqual(REVIEW_PROFILES.codex.config, {
-    model: 'gpt-6.1-sol',
-    reasoning_effort: 'ultra',
+    model: 'gpt-6-luna',
+    reasoning_effort: 'max',
     mode: 'read-only',
     collaboration_mode: 'plan',
   })
@@ -143,7 +143,10 @@ test('each deterministic route yields exactly three distinct non-primary familie
   }
 })
 
-test('fallback routes unavailable direct Claude through claude-zai only when all panel invariants hold', () => {
+// Superseded by Master 2026-11-17: kimi/zai/qwen retired, claude reseated,
+// opencode free-seat ladder replaces the claude->zai availability alias.
+// The replacement policy is covered by tests/review-advisor-seats.test.mjs.
+test.skip('fallback routes unavailable direct Claude through claude-zai only when all panel invariants hold', () => {
   assert.deepEqual(UNAVAILABLE_RESERVE_SUBSTITUTES, { claude: 'zai' })
   const openai = createReviewPlan('openai')
   assert.match(planFallback(openai, 'qwen').reason, /duplicate/)
@@ -209,8 +212,8 @@ test('closed bounded schema rejects metadata, malformed findings, and invalid ve
 
 test('synthesis requires exactly three planned reviews and ignores model-returned metadata', () => {
   const plan = createReviewPlan('openai')
-  assert.equal(synthesizeReviews(plan, { agy: pass, qwen: pass }).verdict, 'BLOCKED')
-  const results = synthesizeReviews(plan, { agy: pass, qwen: pass, zai: { ...pass, reviewer: 'forged' } })
+  assert.equal(synthesizeReviews(plan, { agy: pass, claude: pass }).verdict, 'BLOCKED')
+  const results = synthesizeReviews(plan, { agy: pass, claude: pass, opencode: { ...pass, reviewer: 'forged' } })
   assert.equal(results.verdict, 'BLOCKED')
 })
 
@@ -220,8 +223,8 @@ test('two matching fingerprints are must-fix; unique objections remain residual'
   assert.equal(findingFingerprint(shared), findingFingerprint({ ...shared, summary: 'different prose' }))
   const result = synthesizeReviews(plan, {
     agy: { ...pass, verdict: 'OBJECTIONS', findings: [shared] },
-    qwen: { ...pass, verdict: 'OBJECTIONS', findings: [{ ...shared, evidence: 'Independent trace confirms it.' }, finding({ criterion_id: 'AC-2', location: 'b:1' })] },
-    zai: pass,
+    claude: { ...pass, verdict: 'OBJECTIONS', findings: [{ ...shared, evidence: 'Independent trace confirms it.' }, finding({ criterion_id: 'AC-2', location: 'b:1' })] },
+    opencode: pass,
   })
   assert.equal(result.verdict, 'OBJECTIONS')
   assert.equal(result.mustFix.length, 1)
@@ -232,11 +235,11 @@ test('two matching fingerprints are must-fix; unique objections remain residual'
 test('two PASS reviews can pass with a unique objection, while a BLOCKED lane blocks the panel', () => {
   const plan = createReviewPlan('claude')
   const result = synthesizeReviews(plan, {
-    agy: { ...pass, verdict: 'OBJECTIONS', findings: [finding()] }, zai: pass, qwen: pass,
+    agy: { ...pass, verdict: 'OBJECTIONS', findings: [finding()] }, opencode: pass, codex: pass,
   })
   assert.equal(result.verdict, 'PASS')
   assert.equal(result.residualObjections.length, 1)
-  assert.equal(synthesizeReviews(plan, { agy: pass, zai: blocked, qwen: pass }).verdict, 'BLOCKED')
+  assert.equal(synthesizeReviews(plan, { agy: pass, opencode: blocked, codex: pass }).verdict, 'BLOCKED')
 })
 
 test('two unrelated objections remain residual PM judgments rather than becoming consensus blockers', () => {
@@ -247,12 +250,12 @@ test('two unrelated objections remain residual PM judgments rather than becoming
       verdict: 'OBJECTIONS',
       findings: [finding({ criterion_id: 'AC-A', location: 'packet:a' })],
     },
-    qwen: {
+    claude: {
       ...pass,
       verdict: 'OBJECTIONS',
       findings: [finding({ criterion_id: 'AC-B', location: 'packet:b' })],
     },
-    zai: pass,
+    opencode: pass,
   })
   assert.equal(result.verdict, 'PASS')
   assert.equal(result.passCount, 1)
@@ -266,8 +269,8 @@ test('duplicate copies of one reviewer finding never count as two independent vo
   const duplicate = finding()
   const result = synthesizeReviews(plan, {
     agy: { ...pass, verdict: 'OBJECTIONS', findings: [duplicate, { ...duplicate }] },
-    qwen: pass,
-    zai: pass,
+    claude: pass,
+    opencode: pass,
   })
   assert.equal(result.verdict, 'PASS')
   assert.equal(result.mustFix.length, 0)
@@ -295,7 +298,7 @@ test('environment is allowlisted, provider-scoped, and launch settings are injec
     agyVersionResolver: () => '1.5.9',
   })
   assert.deepEqual(launch.command, ['bunx', 'antigravity-acp@1.2.0'])
-  assert.deepEqual(launch.settings, { mode: 'plan', transport: 'acp', model: 'gemini-4-carbon-high' })
+  assert.deepEqual(launch.settings, { mode: 'plan', transport: 'acp', model: 'gemini-4-hydrogen-high' })
   assert.equal(launch.env.AGY_BIN, '/trusted/agy')
   assert.equal(launch.env.AGY_SKIP_DOWNLOAD, '1')
   assert.throws(() => loadProfileSettings('agy', () => 'bad'), /must return an object/)

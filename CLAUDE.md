@@ -272,7 +272,7 @@ not optional, and only a later explicit instruction from Master changes either.
    2026-08-04 and inherits its reason — no version number is stamped on work a
    second model family has not read — but one reader was not enough, and the
    heavier gate that did exist was being spent at dispatch time instead of here.
-   Three substantive reviews from three distinct model families, AGY mandatory.
+   Three substantive reviews from three distinct acknowledged models, AGY mandatory (Master 2026-11-17: seats are `agy-advisor[hydrogen]`, `codex-advisor[luna]`, `oc-advisor` free `minimax`; opencode ladder `minimax -> deepseek -> hy -> glm` on quota, then ask Master).
    "2/3" means an objection that two of the three raise is must-fix, NOT that
    two reports are enough. Any blocking finding stops the bump — resolve it and
    rerun all three on the new bytes; never retry an objection away. Fewer than

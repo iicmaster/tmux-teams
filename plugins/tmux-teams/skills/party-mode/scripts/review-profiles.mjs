@@ -32,6 +32,11 @@ const providerSecrets = {
   claude: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
   codex: ['OPENAI_API_KEY'],
   ninerouter: [],
+  // opencode free seats authenticate via `opencode auth login`, not forwarded env.
+  opencode: [],
+  opencodeDeepseek: [],
+  opencodeHy: [],
+  opencodeGlm: [],
 }
 
 export const PROVIDER_SECRET_KEYS = providerSecrets
@@ -73,11 +78,13 @@ const NINEROUTER_ENDPOINT = freeze({ scheme: 'http', host: '127.0.0.1', port: '2
 
 export const REVIEW_PROFILES = freeze({
   agy: {
-    id: 'agy', provider: 'google-antigravity', family: 'gemini', model: 'gemini-4-carbon-high',
-    displayModel: 'agy/gemini-4-carbon-high',
+    // Master 2026-11-17: the review seat runs the `agy-advisor hydrogen`
+    // persona (Gemini 4 Hydrogen thinker), not the carbon default.
+    id: 'agy', provider: 'google-antigravity', family: 'gemini', model: 'gemini-4-hydrogen-high',
+    displayModel: 'agy/gemini-4-hydrogen-high',
     reviewMode: 'plan', command: ['bunx', 'antigravity-acp@1.2.0'],
     adapterPackage: 'antigravity-acp@1.2.0',
-    config: { model: 'gemini-4-carbon-high', mode: 'plan' },
+    config: { model: 'gemini-4-hydrogen-high', mode: 'plan' },
   },
   kimi: {
     id: 'kimi', provider: 'kimi', family: 'kimi', model: 'opus',
@@ -201,6 +208,72 @@ export const REVIEW_PROFILES = freeze({
     sessionSettings: { availableModels: ['sonnet'] },
     config: { model: 'sonnet', mode: 'plan' },
   },
+  // 2026-11-02, operator decision: Zai and Qwen are removed permanently, and
+  // the `claude-qwen`/`claude-zai` wrapper routes go with them. This lane is
+  // the replacement free seat: opencode serves ACP itself (`opencode acp`), so
+  // there is no adapter package in between and no gateway credential of ours.
+  //
+  // ONE LANE, NOT THREE, AND THAT IS THE POINT. `provenFamilyKey` is
+  // `adapterPackage::endpoint`, so three profiles over one binary are three
+  // identical keys — the collision rule would refuse a panel seating them
+  // together, correctly, because the launcher cannot prove they reach different
+  // families. Distinctness has to come from somewhere this repo can verify.
+  //
+  // 2026-11-02, operator: this seat serves the deepseek family, NOT nemotron.
+  // That makes it and `ninerouter` ONE family in two seats — the panel rule
+  // (three distinct families) therefore allows only one of them per panel, and
+  // which one is seated is a routing decision, not a diversity claim. They are
+  // still two distinct proven identities (`opencode-ai` unrouted vs the pinned
+  // claude-adapter wrapper), so `provenFamilyCollision` is not what keeps them
+  // apart; the declared family is.
+  opencode: {
+    // Master 2026-11-17: the review seat runs bmad-party-mode round-table via
+    // `$oc-advisor` on its DEFAULT free seat (minimax-m3.1-flash-free), never
+    // the deepseek seat — Master reserves deepseek for the bounded ladder when
+    // minimax cannot answer. The family label stays `deepseek` because this
+    // generic OpenCode ACP adapter is unrouted; the seat is chosen by `config`.
+    id: 'opencode', provider: 'opencode', family: 'deepseek', model: 'minimax-m3.1-flash-free',
+    displayModel: 'opencode/minimax-m3.1-flash-free',
+    reviewMode: 'plan',
+    // `opencode` execs the token after argv[0], and `acp` is a subcommand, not a
+    // package — hence the npx form, which is also what makes `adapterPackage`
+    // bind to something real. Pinned: an unpinned lane changes model under a
+    // release record that already named one.
+    command: ['npx', '-y', 'opencode-ai@1.18.21', 'acp'],
+    adapterPackage: 'opencode-ai@1.18.21',
+    config: { model: 'opencode/minimax-m3.1-flash-free' },
+  },
+  // Master 2026-11-17 ladder: when a seat hits its free quota the gate swaps
+  // in the NEXT opencode free model, ranked by strength
+  // minimax -> deepseek -> hy -> glm. These share one adapter binary, so the
+  // old `provenFamilyCollision` (which counts adapter identity) would refuse a
+  // panel seating two of them. The gate verifies each lane's ACKNOWLEDGED
+  // model (`model_identity` stage), so distinctness is now decided by that
+  // verified model, not by the launcher bytes. See `provenFamilyCollision`.
+  opencodeDeepseek: {
+    id: 'opencodeDeepseek', provider: 'opencode', family: 'deepseek', model: 'deepseek-v4.1-flash-free',
+    displayModel: 'opencode/deepseek-v4.1-flash-free',
+    reviewMode: 'plan',
+    command: ['npx', '-y', 'opencode-ai@1.18.21', 'acp'],
+    adapterPackage: 'opencode-ai@1.18.21',
+    config: { model: 'opencode/deepseek-v4.1-flash-free' },
+  },
+  opencodeHy: {
+    id: 'opencodeHy', provider: 'opencode', family: 'deepseek', model: 'hy4-flash-free',
+    displayModel: 'opencode/hy4-flash-free',
+    reviewMode: 'plan',
+    command: ['npx', '-y', 'opencode-ai@1.18.21', 'acp'],
+    adapterPackage: 'opencode-ai@1.18.21',
+    config: { model: 'opencode/hy4-flash-free' },
+  },
+  opencodeGlm: {
+    id: 'opencodeGlm', provider: 'opencode', family: 'deepseek', model: 'glm-5.3-flash-free',
+    displayModel: 'opencode/glm-5.3-flash-free',
+    reviewMode: 'plan',
+    command: ['npx', '-y', 'opencode-ai@1.18.21', 'acp'],
+    adapterPackage: 'opencode-ai@1.18.21',
+    config: { model: 'opencode/glm-5.3-flash-free' },
+  },
   claude: {
     id: 'claude', provider: 'anthropic', family: 'claude', model: 'claude-opus-5-5',
     displayModel: 'claude/opus-5.5',
@@ -239,14 +312,15 @@ export const REVIEW_PROFILES = freeze({
     endpoint: NINEROUTER_ENDPOINT,
   },
   codex: {
-    id: 'codex', provider: 'openai', family: 'openai', model: 'gpt-6.1-sol',
-    displayModel: 'openai/gpt-6.1-sol',
+    // Master 2026-11-17: `$codex-advisor luna` seat — gpt-6-luna[max].
+    id: 'codex', provider: 'openai', family: 'openai', model: 'gpt-6-luna',
+    displayModel: 'openai/gpt-6-luna',
     reviewMode: 'plan',
     command: ['npx', '-y', '@agentclientprotocol/codex-acp@1.1.7'],
     adapterPackage: '@agentclientprotocol/codex-acp@1.1.7',
     config: {
-      model: 'gpt-6.1-sol',
-      reasoning_effort: 'ultra',
+      model: 'gpt-6-luna',
+      reasoning_effort: 'max',
       mode: 'read-only',
       collaboration_mode: 'plan',
     },
@@ -609,37 +683,28 @@ function routesApart(routings, i, j) {
   return a !== null && b !== null && a !== b
 }
 
-// Two or more lanes collide when nothing here can tell them apart. Folded
-// from the old `provenFamilyKeysCollide` + `launchDeclaredButUnreadable` pair
-// (#43) into the one function every caller actually wants; the decision
-// itself is UNCHANGED, not simplified, because two genuinely independent
-// kinds of evidence still feed it and dropping either reopens a shipped
-// bypass:
-//
-//   - UNREADABLE overrides everything. `laneIdentity` says so directly now
-//     instead of a separate `launchDeclaredButUnreadable` pass — r7-codex.
-//   - FAMILY: `provenFamilyKey`, checked directly rather than through
-//     `laneIdentity` because it is not gated on the launch being readable —
-//     a profile can declare a real `adapterPackage` and still be
-//     `undeclared` or `unreadable` on its launch, and two lanes that BOTH
-//     omit or misspell `adapterPackage` (both null) are exactly as
-//     unprovable as two that share one value (r2-codex2 bypass #2). This is
-//     also the axis that still matters when two lanes share one declared
-//     package but differ only in incidental trailing args: an identical
-//     declared identity is not made diverse by an argument neither the
-//     vendor pin nor the package name explains.
-//   - LAUNCH: `signature` + `routing` from `laneIdentity`. Two lanes whose
-//     launch cannot be compared at all (two `undeclared`) fail closed the
-//     same way two null keys do; two IDENTIFIED lanes with the same
-//     signature collide unless BOTH are pinned to different verified
-//     endpoints (AGY round six) — a pin distinguishes same-bytes lanes
-//     reaching different providers, it does not manufacture a difference
-//     neither side declares (r5-qwen: dropping the pin is not a distinction).
+// Master 2026-11-17: the opencode free seats (minimax/deepseek/hy/glm) share
+// one adapter binary AND one proven-family key, so both collision axes below
+// would refuse a panel seating two of them. They are still DIFFERENT models,
+// and the gate verifies each lane's acknowledged model at its `model_identity`
+// stage — a stronger fact than launcher bytes or a declared family label.
+// Scope this discriminator to opencode ONLY: appending a model globally would
+// reopen r4-codex's `qwen-shadow` (same bytes, no adapterPackage, different
+// model string) that this function exists to stop. Other lanes are compared
+// exactly as before; the acknowledged value is re-checked before synthesis,
+// so a lane that actually answered from another model still blocks there.
+function identityDiscriminator(profile) {
+  return profile?.provider === 'opencode' ? `::model:${profile.model}` : ''
+}
+
 export function provenFamilyCollision(profiles) {
   const list = profiles ?? []
   if (list.some(profile => laneIdentity(profile).unreadable === true)) return true
 
-  const keys = list.map(provenFamilyKey)
+  const keys = list.map(profile => {
+    const key = provenFamilyKey(profile)
+    return key === null ? null : `${key}${identityDiscriminator(profile)}`
+  })
   if (keys.filter(key => key === null).length >= 2) return true
   const knownKeys = keys.filter(key => key !== null)
   if (new Set(knownKeys).size !== knownKeys.length) return true
@@ -648,7 +713,10 @@ export function provenFamilyCollision(profiles) {
   // (r4-codex's `qwen-shadow`: real command, no `adapterPackage`, null key,
   // byte-identical launch). So the signature is compared for EVERY lane
   // regardless of what the key check above already found.
-  const signatures = list.map(provenLaunchSignature)
+  const signatures = list.map(profile => {
+    const signature = provenLaunchSignature(profile)
+    return signature === null ? null : `${signature}${identityDiscriminator(profile)}`
+  })
   const routings = list.map(routingDeclaration)
   if (signatures.filter(signature => signature === null).length >= 2) return true
   const seen = new Map()
