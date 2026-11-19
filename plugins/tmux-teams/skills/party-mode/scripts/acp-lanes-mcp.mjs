@@ -1175,6 +1175,7 @@ async function probeOneLane(id, profile, env, transport, abortSignal, depth = DE
       ? executableFixes(id, profile) : [],
     notProven,
     depth,
+    ...(launch.fallback ? { fallback: launch.fallback } : {}),
   }
 }
 

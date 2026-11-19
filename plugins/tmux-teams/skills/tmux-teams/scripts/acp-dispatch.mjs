@@ -714,7 +714,7 @@ export function pidAlive(pid) {
 // refused. Floors: fable 5.2 (bare `fable` with no version is refused), Codex
 // sol/astra 6.2, terra 6.1, luna 6. Raising a floor means editing the digits
 // in all three copies together.
-const PROHIBITED_MODEL = /(?:^|[^0-9a-z])(?:(?:gemini[-_ ]?3[-_.]1|gpt[-_ ]?(?:[0-5](?:[-_.][0-9]+)*[-_. ]?(?:sol|astra|terra|luna)|6(?:[-_. ][01](?:[-_.][0-9]+)*)?[-_. ]?(?:sol|astra)|6(?:[-_. ]0(?:[-_.][0-9]+)*)?[-_. ]?terra))(?:[^0-9]|$)|fable(?![a-z])(?![-_. ]?(?:5[-_. ]?(?:[2-9]|[1-9][0-9])(?![0-9])|(?:[6-9]|[1-9][0-9])(?![0-9]))))/i
+const PROHIBITED_MODEL = /(?:^|[^0-9a-z])(?:(?:gemini[-_ ]?3[-_.]1|gpt[-_ ]?(?:[0-5](?:[-_.][0-9]+)*[-_. ]?(?:sol|astra|terra|luna)|6(?:[-_. ][01](?:[-_.][0-9]+)*)?[-_. ]?(?:sol|astra)|6(?:[-_. ]0(?:[-_.][0-9]+)*)?[-_. ]?terra))(?:[^0-9]|$)|fable(?![a-z])(?![-_. ]?(?:5[-_. ]?(?!(?:19|20)[0-9]{6}(?![0-9]))(?:[2-9]|[1-9][0-9]+)(?![0-9])|(?!(?:19|20)[0-9]{6}(?![0-9]))(?:[6-9]|[1-9][0-9]+)(?![0-9]))))/i
 const INHERIT_ACCOUNT_DEFAULT = 'inherit-account-default'
 
 function assertPermittedModel(value, name) {
