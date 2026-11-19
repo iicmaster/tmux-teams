@@ -939,3 +939,25 @@ test('opencode-free opt-in policy produces a valid 3-model plan and passes synth
 
   assert.equal(createReviewPlan('gpt-6.2-sol', { policyMode: 'bogus' }).blocked, true)
 })
+
+test('opencode-free fallback defers absent opencodeGlm until all v2.3.2-present seats are exhausted', () => {
+  let plan = createReviewPlan('gpt-6.2-sol', { policyMode: 'opencode-free' })
+  const expectedOrder = [
+    'opencodeHy',
+    'opencodeLongcat',
+    'opencodeFlint',
+    'opencodeBeam',
+    'opencodeNemotronSuperVl',
+    'opencodeNemotronLightning',
+    'opencodeGlm',
+  ]
+  let failedSeat = 'opencodeInkling'
+  for (const expectedReplacement of expectedOrder) {
+    plan = planFallback(plan, failedSeat)
+    assert.equal(plan.blocked, false, `unexpected block while walking to ${expectedReplacement}`)
+    assert.equal(plan.replaced.replacement, expectedReplacement)
+    failedSeat = expectedReplacement
+  }
+  const exhausted = planFallback(plan, 'opencodeGlm')
+  assert.equal(exhausted.blocked, true)
+})

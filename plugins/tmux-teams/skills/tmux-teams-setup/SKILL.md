@@ -10,8 +10,11 @@ Prerequisite verifier and bootstrapper for machines that do not yet have
 
 Because OpenCode (`@opencode/cli@2.3.2`) ships more than three distinct free
 models (`deepseek-v4.1-flash-free`, `inkling-2-small-free`,
-`mimo-v2.6-flash-free`, `hy4-flash-free`, `longcat-2.5-free`, and others), a
-fresh machine with only **BMAD** + **OpenCode** can run `party-auto` right away
+`mimo-v2.6-flash-free`, `hy4-flash-free`, `longcat-2.5-free`, and others — with
+the first three live-verified keyless via `opencode acp` `session/prompt` and
+`REVIEW_GATE_MODE=opencode-free` `review-gate.mjs` under an ephemeral keyless
+`$HOME` whose `$HOME/.local/bin/npx` launches `@opencode/cli@2.3.2`), a fresh
+machine with only **BMAD** + **OpenCode** can run `party-auto` right away
 using opt-in `REVIEW_GATE_MODE=opencode-free`.
 
 ## Commands
@@ -60,8 +63,12 @@ node <plugin-root>/skills/party-mode/scripts/review-gate.mjs <packet.json> <abs-
 
 `opencode-free` seats three distinct live-verified free OpenCode models
 (`deepseek-v4.1-flash-free`, `inkling-2-small-free`, `mimo-v2.6-flash-free`),
-skips any model matching the primary, walks the ten-rung OpenCode ladder on quota
-failure, and labels `singleProviderQuorum: true` on the gate report.
+skips any model matching the primary, walks the nine v2.3.2-present OpenCode
+rungs before the absent `glm-5.3-flash-free` compatibility rung on quota failure,
+and labels `singleProviderQuorum: true` on the gate report. Note that
+`review-gate.mjs` requires `npx` inside a trusted runtime root (such as
+`$HOME/.local/bin`, `$HOME/.nvm/versions/node`, or `/usr`); standalone Homebrew
+`/opt/homebrew/...` paths outside those roots require a symlink or `nvm` install.
 
 ## Safety & Manual Prerequisites
 

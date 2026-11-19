@@ -60,15 +60,11 @@ index and covers 7 of 12 candidate seats; the other five have no common
 denominator. Retrieval date for every source below: 2026-11-18. Probe evidence:
 all ten rung ids were advertised in `configOptions` AND accepted by
 `session/set_config_option` (ACK each) on `opencode acp` 1.18.21, 2026-11-18.
-Live probe update (2026-11-19 on `@opencode/cli@2.3.2`, `opencode acp` v2.3.2
-`initialize` + `session/new`, zero prompt quota spent): OpenCode v2.3.2 advertised
-11 `opencode/*` free models (`beam-free`, `big-pickle`, `deepseek-v4.1-flash-free`,
-`flint-40b-free`, `hy4-flash-free`, `iceman-free`, `inkling-2-small-free`,
-`longcat-2.5-free`, `mimo-v2.6-flash-free`, `nemotron-3.5-lightning-free`,
-`nemotron-3.5-super-vl-free`), while `glm-5.3-flash-free` was absent from the
-v2.3.2 catalog. `opencodeGlm` stays in `UNAVAILABLE_RESERVE_SUBSTITUTES` for
-catalog compatibility, while opt-in `REVIEW_GATE_MODE=opencode-free` defaults to
-`deepseek-v4.1-flash-free`, `inkling-2-small-free`, and `mimo-v2.6-flash-free`.
+Live probe update (2026-11-19 on `@opencode/cli@2.3.2`):
+1. `opencode acp` v2.3.2 `initialize` + `session/new` advertised 11 `opencode/*` free models (`beam-free`, `big-pickle`, `deepseek-v4.1-flash-free`, `flint-40b-free`, `hy4-flash-free`, `iceman-free`, `inkling-2-small-free`, `longcat-2.5-free`, `mimo-v2.6-flash-free`, `nemotron-3.5-lightning-free`, `nemotron-3.5-super-vl-free`), while `glm-5.3-flash-free` was absent from the v2.3.2 catalog.
+2. Live keyless `opencode acp` `session/prompt` probes succeeded (`stopReason: "end_turn"`, `"OK"`) on all three default seats (`opencode/deepseek-v4.1-flash-free`, `opencode/inkling-2-small-free`, `opencode/mimo-v2.6-flash-free`).
+3. Live keyless `REVIEW_GATE_MODE=opencode-free` `review-gate.mjs` smoke test (ephemeral keyless `$HOME` with `$HOME/.local/bin/npx` symlinked to the host plant launcher) returned `PASS` (`passCount: 3`, `singleProviderQuorum: true`, `toolCallsObserved: 0`) across `deepseek-v4.1-flash-free`, `inkling-2-small-free`, and `mimo-v2.6-flash-free`.
+4. `opencodeGlm` stays in `UNAVAILABLE_RESERVE_SUBSTITUTES` for strict-mode catalog compatibility, while `opencode-free` defaults to `deepseek-v4.1-flash-free`, `inkling-2-small-free`, and `mimo-v2.6-flash-free` and walks `OPENCODE_FREE_FALLBACK_LADDER` (all nine v2.3.2-present rungs before `opencodeGlm`). Rungs 5–10 and `$oc-advisor` round-table/resume outbox runs on v2.3.2 remain unmeasured at prompt level.
 This ranking is PRELIMINARY — re-measure before trusting a rung boundary,
 especially between adjacent AA scores (33/31, 28/27) and among the three
 unscored middle rungs.

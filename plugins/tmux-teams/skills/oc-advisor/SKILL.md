@@ -91,7 +91,7 @@ with tests, not brief prose.
 
 **Residual, stated plainly:** this lane does NOT claim "it never edits". A
 permission request is the only gate the transport holds; whether every
-mutating tool of OpenCode 1.18.21 requests one is not proven from this
+mutating tool of OpenCode 2.3.2 requests one is not proven from this
 repository, and the MCP servers, configuration and skills the operator's
 OpenCode install loads are the operator's own. The lane's posture is the
 claude-advisor posture plus a hard guard: the brief forbids edits, the
@@ -297,25 +297,10 @@ the printed resume command includes them; pasting a resume without the deny
 policy downgrades the lane to the allow preference while looking like the
 same dispatch.
 
-**What is measured, stated by LAYER — and the layers differ.** Evidence exists
-for the session/model-configuration layer only, and it stops where the prompt
-begins: a fresh dispatch reaches `session/new`, is acknowledged by
-`session/set_config_option`, and commits a receipt reading
-`identity_status: matched` (observed 2026-11-09 on the seats documented then,
-per this repository's own dispatch records — not re-measured since). The
-2026-11-18 probe extends that config layer to all ten rung ids — advertised in
-`configOptions` and accepted by `session/set_config_option` — and the 2026-11-19
-probe of `@opencode/cli@2.3.2` confirmed 11 free models in `session/new` (nine
-rungs present; `glm-5.3-flash-free` absent in v2.3.2). No prompt was sent, so
-the probe proves nothing past the ACK. The **answer layer
-is NOT measured**: as of 2026-11-16 `session/prompt` fails inside OpenCode with
-`Unexpected server error` for the deepseek seat, the glm seat AND a keyed
-`zai-coding-plan` seat alike, so no round-table outbox has been produced
-through the ACP path since the 2026-11-08 keyless run. Do not read a matched
-receipt as a working answer, and do not read this file as a claim that any
-rung currently answers. Receipt-backed LOAD is likewise unverified — treat the
-first resume as the measurement, and report what actually happened rather than
-assuming it.
+**What is measured, stated by LAYER — and the layers differ.**
+- **Session/config layer:** a fresh dispatch reaches `session/new`, is acknowledged by `session/set_config_option`, and commits a receipt reading `identity_status: matched` (observed 2026-11-09 on the seats documented then). The 2026-11-18 probe on OpenCode 1.18.21 extended config ACKs to all ten rung ids, and the 2026-11-19 probe on `@opencode/cli@2.3.2` confirmed 11 free models in `session/new` (9 of 10 rungs present; `glm-5.3-flash-free` absent in v2.3.2).
+- **Keyless prompt & review-gate layer (`@opencode/cli@2.3.2`, 2026-11-19):** headless keyless `opencode acp` (`initialize` -> `session/new` -> `session/set_config_option` -> `session/prompt`) succeeded (`stopReason: "end_turn"`, `"OK"`) on all three default seats (`opencode/deepseek-v4.1-flash-free`, `opencode/inkling-2-small-free`, `opencode/mimo-v2.6-flash-free`), superseding the historical 2026-11-16 OpenCode 1.x `Unexpected server error` failure on prompt delivery. A live keyless `REVIEW_GATE_MODE=opencode-free` `review-gate.mjs` run (using an ephemeral keyless `$HOME` with `$HOME/.local/bin/npx` symlinked to the host plant launcher) also completed 3/3 `PASS` across those three models with `singleProviderQuorum: true`, `toolCallsObserved: 0`, and `acpPermissionRequests: "deny"`.
+- **Unmeasured `$oc-advisor` round-table outbox & resume layer:** through the `$oc-advisor` `acp-dispatch.mjs` round-table/outbox path itself, the **answer layer is NOT measured** on `@opencode/cli@2.3.2` (no multi-turn round-table `.mailbox-out` file has been produced through `acp-dispatch.mjs` under `ACP_PERMISSIONS=deny` on v2.3.2). Do not read a matched receipt as a working answer, and do not read this file as a claim that any rung past the three tested defaults currently answers. Receipt-backed `LOAD` is likewise unverified — treat the first resume as the measurement, and report what actually happened rather than assuming it.
 
 ```bash
 env -u ACP_REASONING_EFFORT -u ACP_EXPECT_REASONING_EFFORT -u INITIAL_AGENT_MODE \

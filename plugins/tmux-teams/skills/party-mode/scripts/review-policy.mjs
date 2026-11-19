@@ -58,6 +58,13 @@ const OPENCODE_FREE_POOL = Object.freeze([
   'opencodeGlm',
 ])
 
+// In opencode-free mode (targeting @opencode/cli@2.3.2), walk the 9 v2.3.2-present
+// seats in OPENCODE_FREE_POOL first before falling back to opencodeGlm (absent in
+// v2.3.2 catalog, retained at the tail for catalog compatibility).
+const OPENCODE_FREE_FALLBACK_LADDER = Object.freeze(
+  Object.fromEntries(OPENCODE_FREE_POOL.slice(0, -1).map((seat, i) => [seat, OPENCODE_FREE_POOL[i + 1]])),
+)
+
 // Master 2026-11-18: kimi is gone permanently and the direct Claude provider
 // is unavailable as an availability stand-in. The opencode free seats form the
 // substitution ladder, strength-ranked per the Master contract of 2026-11-18
@@ -318,7 +325,9 @@ export function planFallback(plan, failedReviewer) {
   // skipping it to the next rung is the whole point of the ladder. A seat with
   // no ladder entry starts from the route's declared reserve (injected-plan
   // compatibility).
-  const ladder = UNAVAILABLE_RESERVE_SUBSTITUTES
+  const ladder = plan.policyMode === 'opencode-free'
+    ? OPENCODE_FREE_FALLBACK_LADDER
+    : UNAVAILABLE_RESERVE_SUBSTITUTES
   const unavailable = candidate =>
     plan.reviewers.includes(candidate) ||
     seenLadder.has(candidate) ||
