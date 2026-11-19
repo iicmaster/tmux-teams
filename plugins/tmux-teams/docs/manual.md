@@ -516,7 +516,7 @@ transport-independent:
 
 | worker | primary | fallback |
 |---|---|---|
-| codex | ACP — `@agentclientprotocol/codex-acp@1.1.7` (drives the installed CLI; frontier model verified) | tmux |
+| codex | ACP — `@agentclientprotocol/codex-acp@2.7.0` (drives the installed CLI; frontier model verified) | tmux |
 | claude | ACP — `@agentclientprotocol/claude-agent-acp` (pass `ANTHROPIC_MODEL=claude-opus-5-5`) | tmux |
 | agy | ACP — `antigravity-acp@1.2.0` with `agy >= 1.5.8` (community adapter, 1.0.0 source-audited 2026-07-21, bumped 2026-09-30; default worker `gemini-4-hydrogen-high`, default thinker/reviewer `gemini-4-carbon-high`, always set `ACP_MODEL` + `ACP_EXPECT_MODEL` explicitly so `session/new` does not stay on `gemini-4-carbon-medium`; needs `bun`; ToS risk — see the ACP transport lane section of [SKILL.md](../skills/tmux-teams/SKILL.md)) | tmux |
 
@@ -583,12 +583,12 @@ prompt delivery when the receipt pair cannot be committed. In default mode, an
 unavailable receipt is reported with `receipt_digest: none` and the legacy
 prompt path continues; required mode never degrades this way.
 Required Codex dispatches resolve the locally pinned
-`@agentclientprotocol/codex-acp@1.1.7` package, verify its package metadata
+`@agentclientprotocol/codex-acp@2.7.0` package, verify its package metadata
 and entry bytes, bind the profile to the real Node and `CODEX_PATH` executable
 bytes/version, and spawn that verified Node/entry pair. Cache drift, PATH
 shadowing, fake version output, profile drift, or an unsafe receipt directory
 fails before spawn; the resulting failure is represented by a null-operation
-receipt tombstone when publication is possible.
+receipt tombstone when publication is possible (prior 1.1.7 session receipts keep their own historical lineage and should drain or start fresh under 2.7.0).
 
 See [SKILL.md](../skills/tmux-teams/SKILL.md) sections 6–8 — "Scaling up:
 mailbox pattern", "PM workflow integration", and "ACP transport lane" — for
@@ -742,16 +742,19 @@ party-mode's 3-model review uses its bundled JavaScript ACP gate
 removed `osSandbox: 'bwrap'` from every shipped profile in 2026-08-13, and its
 2026-08-24 amendment removed the machinery itself. There is no OS sandbox and
 no way to switch one back on; the gate runs on macOS and Linux alike. What it
-still checks never came from bwrap. It also needs the supported ACP reviewer
-runtimes: `antigravity-acp@1.2.0` + trusted `agy`, Qwen/Zai through the pinned
-Claude ACP adapter, and the Codex ACP adapter. `claude-zai` and `claude-qwen`
-must both use the pinned `@agentclientprotocol/claude-agent-acp` adapter with
-their machine-local profile settings. Zai must use the explicit official
-`https://api.z.ai/api/anthropic` settings route. AGY plus exactly two valid,
-distinct reviewers are mandatory, and unsupported primary routes fail closed.
-While the direct Claude provider is limited, the policy never launches it:
-`claude-zai` resolves to the pinned Zai GLM-5.2 ACP profile and is accepted
-only when it does not duplicate a reviewer/model or match the primary family.
+still checks never came from bwrap. Default `strict` mode requires AGY
+(`agy-advisor[hydrogen]`, `antigravity-acp@1.2.0` + trusted `agy`) plus two
+distinct non-primary reviewers — preferring three families across `codex-advisor[luna]`
+(`@agentclientprotocol/codex-acp@2.7.0`), direct Claude Opus (`@agentclientprotocol/claude-agent-acp`),
+and `oc-advisor` (`@opencode/cli@2.3.2` ten-rung free ladder, where two OpenCode
+free models + AGY remain valid after fallback when quota forces substitution);
+unsupported primary routes fail closed.
+
+Run the prerequisite check or setup bootstrap first on fresh machines:
+
+```bash
+node plugins/tmux-teams/skills/tmux-teams-setup/scripts/tmux-teams-setup.mjs check --project-root "$PWD"
+```
 
 Run the gate from a trusted workflow with the target repository as a separate,
 runner-owned absolute argument; never take it from the untrusted packet:
@@ -761,16 +764,32 @@ node plugins/tmux-teams/skills/party-mode/scripts/review-gate.mjs \
   <static-packet.json> "$PWD" > <review-report.json>
 ```
 
-Each reviewer gets a fresh temporary workspace, an ephemeral provider HOME, no
-MCP servers or built-in tools, denied ACP permission requests, and no mount of
-the target repository or host user-data roots. The provider network remains
-shared so its remote API can be reached; adapter auth is available inside its
-ephemeral same-process HOME and the provider may retain remote state. Model
-evidence means the pinned ACP model was configured and acknowledged, not
-cryptographic proof of the remote serving model. AGY may report a completed
-read only for copied provider-runtime documentation under its isolated
-`builtin/` tree; target, arbitrary, search, fetch, edit, and execute calls
-remain blocked.
+On machines with only the free OpenCode (`@opencode/cli@2.3.2`) runtime, opt in
+explicitly at the runner/CLI boundary (`REVIEW_GATE_MODE=opencode-free` env, not
+in packet JSON) to single-provider free quorum (`deepseek-v4.1-flash-free`,
+`inkling-2-small-free`, `mimo-v2.6-flash-free`):
+
+```bash
+REVIEW_GATE_MODE=opencode-free \
+node plugins/tmux-teams/skills/party-mode/scripts/review-gate.mjs \
+  <static-packet.json> "$PWD" > <review-report.json>
+```
+
+> Upgrading from `0.52.0` (`lanes.json` note): `opencodeDeepseek` was absorbed
+> into `opencode`. `plugins/tmux-teams/skills/party-mode/scripts/lane-overrides.mjs`
+> automatically migrates a lone `opencodeDeepseek` entry onto `opencode`, and fails
+> closed with `legacy_lane_conflict` (`node plugins/tmux-teams/skills/party-mode/scripts/lane-setup.mjs check`)
+> only if both `opencodeDeepseek` and `opencode` are present at once.
+
+Each reviewer runs in a fresh temporary workspace (`cwd`), with the target
+repository excluded from its working directory, MCP servers and built-in tools
+requested off, and ACP permission requests denied. Provider network access
+remains available and host provider HOME/auth state remains reachable
+in-process as a documented residual boundary (the provider may also retain
+remote state). Model evidence means the pinned ACP model was configured and
+acknowledged, not cryptographic proof of the remote serving model. Every tool
+call — including AGY reads, searches, fetches, edits, and executions — is
+rejected by the gate (`toolCallsObserved === 0`).
 
 ## 6. Update lifecycle (this repository is canonical — flipped 2026-07-21)
 

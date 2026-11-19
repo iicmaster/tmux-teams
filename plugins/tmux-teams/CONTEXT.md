@@ -67,6 +67,21 @@ attempt budget) or `abandon`; parking it silently is not an available answer.
 **Lost Leg** — An assignment whose process is gone and which recorded nothing.
 Recording that is not the same as inventing a delivery.
 
+**opencode-free Gate Mode** — An opt-in review gate mode (`REVIEW_GATE_MODE=opencode-free`)
+for free-only hosts that retains exact-three distinct acknowledged models,
+primary exclusion, and zero-tool isolation while waiving AGY and multi-family
+requirements to seat three free OpenCode models.
+
+**Single-provider Quorum** — A review gate verdict produced by three distinct
+models served behind one OpenCode provider (`singleProviderQuorum: true` in
+`opencode-free` mode), distinguished explicitly from a cross-vendor three-family
+quorum.
+
+**Core vs Optional Plugin Binaries** — Separation of runtime binaries required
+by every lane (`node`, `git`, `npx`) from optional lane-specific binaries
+(`bunx`, `tmux`) whose absence limits only those specific transports rather than
+marking the whole plugin unready.
+
 > The four-phase governed runtime that this glossary used to define alongside
 > the loop graph was removed on 2026-08-02, with its commands and its
 > documentation. There is one delivery model now: teams are a pool and

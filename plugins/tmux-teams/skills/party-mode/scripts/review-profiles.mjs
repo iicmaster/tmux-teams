@@ -33,10 +33,19 @@ const providerSecrets = {
   codex: ['OPENAI_API_KEY'],
   ninerouter: [],
   // opencode free seats authenticate via `opencode auth login`, not forwarded env.
+  // Master 2026-11-18: the ladder is ten seats deep (every one needs an entry,
+  // for the same reason as above — an unlisted reserve crashes the substitution
+  // path instead of rescuing the panel).
   opencode: [],
-  opencodeDeepseek: [],
-  opencodeHy: [],
+  opencodeInkling: [],
   opencodeGlm: [],
+  opencodeMimo: [],
+  opencodeHy: [],
+  opencodeLongcat: [],
+  opencodeFlint: [],
+  opencodeBeam: [],
+  opencodeNemotronSuperVl: [],
+  opencodeNemotronLightning: [],
 }
 
 export const PROVIDER_SECRET_KEYS = providerSecrets
@@ -75,6 +84,29 @@ const KIMI_ENDPOINT = freeze({ host: 'api.kimi.com', path: '/coding' })
 // Loopback-only pin. `scheme: 'http'` is read by validateRoutedEndpoint; a
 // remote name would defeat the whole point of a pin this machine can verify.
 const NINEROUTER_ENDPOINT = freeze({ scheme: 'http', host: '127.0.0.1', port: '20128', path: '/v1' })
+
+// Keep `party-mode/scripts/` self-contained (standalone staging must not depend
+// on sibling skill dirs); `tests/review-advisor-seats.test.mjs` asserts parity
+// with `opencode-execution-profile.mjs`'s `OPENCODE_PACKAGE_SPEC`.
+export const OPENCODE_PACKAGE_SPEC = '@opencode/cli@2.3.2'
+
+const opencodeFreeSeat = (id, model) => ({
+  id,
+  provider: 'opencode',
+  family: 'deepseek',
+  model,
+  displayModel: `opencode/${model}`,
+  reviewMode: 'plan',
+  // `opencode` execs the token after argv[0], and `acp` is a subcommand, not a
+  // package — hence the npx form, which is also what makes `adapterPackage`
+  // bind to something real. Pinned to OPENCODE_PACKAGE_SPEC (`@opencode/cli@2.3.2`).
+  command: ['npx', '-y', OPENCODE_PACKAGE_SPEC, 'acp'],
+  adapterPackage: OPENCODE_PACKAGE_SPEC,
+  // OpenCode's ACP session/set_config_option needs the provider-qualified id;
+  // bare `model` overwrites config.model on the wire (`model not found`).
+  requestModel: `opencode/${model}`,
+  config: { model: `opencode/${model}` },
+})
 
 export const REVIEW_PROFILES = freeze({
   agy: {
@@ -226,54 +258,37 @@ export const REVIEW_PROFILES = freeze({
   // still two distinct proven identities (`opencode-ai` unrouted vs the pinned
   // claude-adapter wrapper), so `provenFamilyCollision` is not what keeps them
   // apart; the declared family is.
-  opencode: {
-    // Master 2026-11-17: the review seat runs bmad-party-mode round-table via
-    // `$oc-advisor` on its DEFAULT free seat (minimax-m3.1-flash-free), never
-    // the deepseek seat — Master reserves deepseek for the bounded ladder when
-    // minimax cannot answer. The family label stays `deepseek` because this
-    // generic OpenCode ACP adapter is unrouted; the seat is chosen by `config`.
-    id: 'opencode', provider: 'opencode', family: 'deepseek', model: 'minimax-m3.1-flash-free',
-    displayModel: 'opencode/minimax-m3.1-flash-free',
-    reviewMode: 'plan',
-    // `opencode` execs the token after argv[0], and `acp` is a subcommand, not a
-    // package — hence the npx form, which is also what makes `adapterPackage`
-    // bind to something real. Pinned: an unpinned lane changes model under a
-    // release record that already named one.
-    command: ['npx', '-y', 'opencode-ai@1.18.21', 'acp'],
-    adapterPackage: 'opencode-ai@1.18.21',
-    config: { model: 'opencode/minimax-m3.1-flash-free' },
-  },
-  // Master 2026-11-17 ladder: when a seat hits its free quota the gate swaps
-  // in the NEXT opencode free model, ranked by strength
-  // minimax -> deepseek -> hy -> glm. These share one adapter binary, so the
-  // old `provenFamilyCollision` (which counts adapter identity) would refuse a
-  // panel seating two of them. The gate verifies each lane's ACKNOWLEDGED
-  // model (`model_identity` stage), so distinctness is now decided by that
-  // verified model, not by the launcher bytes. See `provenFamilyCollision`.
-  opencodeDeepseek: {
-    id: 'opencodeDeepseek', provider: 'opencode', family: 'deepseek', model: 'deepseek-v4.1-flash-free',
-    displayModel: 'opencode/deepseek-v4.1-flash-free',
-    reviewMode: 'plan',
-    command: ['npx', '-y', 'opencode-ai@1.18.21', 'acp'],
-    adapterPackage: 'opencode-ai@1.18.21',
-    config: { model: 'opencode/deepseek-v4.1-flash-free' },
-  },
-  opencodeHy: {
-    id: 'opencodeHy', provider: 'opencode', family: 'deepseek', model: 'hy4-flash-free',
-    displayModel: 'opencode/hy4-flash-free',
-    reviewMode: 'plan',
-    command: ['npx', '-y', 'opencode-ai@1.18.21', 'acp'],
-    adapterPackage: 'opencode-ai@1.18.21',
-    config: { model: 'opencode/hy4-flash-free' },
-  },
-  opencodeGlm: {
-    id: 'opencodeGlm', provider: 'opencode', family: 'deepseek', model: 'glm-5.3-flash-free',
-    displayModel: 'opencode/glm-5.3-flash-free',
-    reviewMode: 'plan',
-    command: ['npx', '-y', 'opencode-ai@1.18.21', 'acp'],
-    adapterPackage: 'opencode-ai@1.18.21',
-    config: { model: 'opencode/glm-5.3-flash-free' },
-  },
+  // Master 2026-11-18 ladder (re-pinned 2026-11-19 to @opencode/cli@2.3.2):
+  // when a seat hits its free quota the gate WALKS to the NEXT opencode free
+  // model, repeatedly, strength-ranked:
+  // deepseek -> inkling -> glm -> mimo -> hy4 -> longcat -> flint -> beam ->
+  // nemotron-super-vl -> nemotron-lightning.
+  // Default seat is deepseek-v4.1-flash-free (`minimax-m3.1-flash-free` retired
+  // upstream; old `opencodeDeepseek` is absorbed into `opencode`). Note: live
+  // 2026-11-19 probe of @opencode/cli@2.3.2 found 11 free models with
+  // `glm-5.3-flash-free` absent from v2.3.2 catalog (retained in the ladder for
+  // catalog compatibility; opencode-free default panel seats deepseek, inkling,
+  // and mimo). Distinctness is decided by acknowledged model; see
+  // `provenFamilyCollision`.
+  opencode: opencodeFreeSeat('opencode', 'deepseek-v4.1-flash-free'),
+  // Rung 2 — AA 31; DeepSWE 72.1.
+  opencodeInkling: opencodeFreeSeat('opencodeInkling', 'inkling-2-small-free'),
+  // Rung 3 — AA 28; SWE-Ver 79.1 (absent from live v2.3.2 probe 2026-11-19; ladder compatibility).
+  opencodeGlm: opencodeFreeSeat('opencodeGlm', 'glm-5.3-flash-free'),
+  // Rung 4 — AA 27; DeepSWE 67.9.
+  opencodeMimo: opencodeFreeSeat('opencodeMimo', 'mimo-v2.6-flash-free'),
+  // Rung 5 — DeepSWE 64.6.
+  opencodeHy: opencodeFreeSeat('opencodeHy', 'hy4-flash-free'),
+  // Rung 6 — TB2.1 88.4.
+  opencodeLongcat: opencodeFreeSeat('opencodeLongcat', 'longcat-2.5-free'),
+  // Rung 7 — SWE-Pro v2 89.7 / TB2.1 54.9.
+  opencodeFlint: opencodeFreeSeat('opencodeFlint', 'flint-40b-free'),
+  // Rung 8 — AA 18; SWE-Ver 81.6.
+  opencodeBeam: opencodeFreeSeat('opencodeBeam', 'beam-free'),
+  // Rung 9 — AA 14; SWE-Ver 71.1.
+  opencodeNemotronSuperVl: opencodeFreeSeat('opencodeNemotronSuperVl', 'nemotron-3.5-super-vl-free'),
+  // Rung 10 — AA 6; terminal rung (no outbound entry in UNAVAILABLE_RESERVE_SUBSTITUTES).
+  opencodeNemotronLightning: opencodeFreeSeat('opencodeNemotronLightning', 'nemotron-3.5-lightning-free'),
   claude: {
     id: 'claude', provider: 'anthropic', family: 'claude', model: 'claude-opus-5-5',
     displayModel: 'claude/opus-5.5',
@@ -316,8 +331,8 @@ export const REVIEW_PROFILES = freeze({
     id: 'codex', provider: 'openai', family: 'openai', model: 'gpt-6-luna',
     displayModel: 'openai/gpt-6-luna',
     reviewMode: 'plan',
-    command: ['npx', '-y', '@agentclientprotocol/codex-acp@1.1.7'],
-    adapterPackage: '@agentclientprotocol/codex-acp@1.1.7',
+    command: ['npx', '-y', '@agentclientprotocol/codex-acp@2.7.0'],
+    adapterPackage: '@agentclientprotocol/codex-acp@2.7.0',
     config: {
       model: 'gpt-6-luna',
       reasoning_effort: 'max',
@@ -334,12 +349,15 @@ export const REVIEW_PROFILES = freeze({
 //      which means it was enforced by whoever edited that line next: v0.13.1
 //      shipped `gemini-3.1-pro-high` here with a test asserting the forbidden
 //      value was correct, and nothing compared either against the rule.
-//   2. Master, 2026-09-30: `gpt-6-sol` is retired — only `gpt-6.1-sol` may be
-//      dispatched or reviewed. The pattern must NOT swallow `gpt-6.1-sol`
-//      (`[-_ ]?` cannot take the `.`), and it deliberately reaches the old
-//      generation's suffixed forms (`gpt-6-sol-fast`, `gpt-6-sol[max]`).
+//   2. Master, 2026-11-19: every pre-6.2 `sol`/`astra` generation is retired —
+//      only `gpt-6.2-sol` / `gpt-6.2-astra` may be dispatched or reviewed.
+//      That includes `gpt-6`, `gpt-6.0` and `gpt-6.1` with any of the
+//      established separators, plus suffixed forms (`gpt-6.1-sol-fast`,
+//      `gpt-6-astra[max]`). The pattern must NOT swallow `gpt-6.2-*`
+//      (`[-_. ]?` before the generation digit cannot take the `.` before 2).
+//      Also prohibits `fable-5` (`fable-5.1` allowed).
 // This throws at import.
-const PROHIBITED_MODEL = /(?:^|[^0-9a-z])(?:gemini[-_ ]?3\.1|gpt[-_ ]?6[-_ ]?sol)(?:[^0-9]|$)/i
+const PROHIBITED_MODEL = /(?:^|[^0-9a-z])(?:gemini[-_ ]?3\.1|gpt[-_ ]?6(?:[-_. ]?[01])?[-_. ]?(?:sol|astra)|fable(?![-_. ]?5[-_. ]?1))(?:[^0-9]|$)/i
 
 export function isProhibitedModel(model) {
   return typeof model === 'string' && PROHIBITED_MODEL.test(model)
@@ -348,7 +366,7 @@ export function isProhibitedModel(model) {
 /** Reject a prohibited reviewer model rather than quietly running it. */
 export function assertPermittedModel(model, where) {
   if (isProhibitedModel(model)) {
-    throw new Error(`${where}: prohibited model on tmux-teams review routes (Gemini 3.1 is banned; gpt-6-sol is retired — the Codex frontier is gpt-6.1-sol), got ${model}`)
+    throw new Error(`${where}: prohibited model on tmux-teams review routes (Gemini 3.1 is banned; pre-6.2 Codex sol/astra is retired — the frontier is gpt-6.2-sol / gpt-6.2-astra), got ${model}`)
   }
   return model
 }
@@ -922,7 +940,7 @@ function acceptedCredential(profile, env) {
   return acceptedCredentialNames(profile).some((key) => spawnableValue(env?.[key]))
 }
 
-function executablePath(source) {
+export function executablePath(source) {
   const home = source?.HOME ?? source?.USERPROFILE
   const current = source?.PATH ?? source?.Path ?? ''
   if (!home) return current

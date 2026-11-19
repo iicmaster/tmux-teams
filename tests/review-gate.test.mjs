@@ -630,6 +630,157 @@ test('a non-AGY failure gets one reserve only after originals settle; AGY failur
   }), /AGY review lane failed/)
 })
 
+test('a reserve that also fails walks to the next ladder rung, and the gate completes with every hop labelled (real planFallback, real profiles)', async () => {
+  const calls = []
+  const runner = async ({ profile }) => {
+    calls.push(profile.id)
+    if (['claude', 'opencodeInkling'].includes(profile.id)) {
+      throw new ReviewTransportError('timeout', `${profile.id} free quota`)
+    }
+    return runnerResult(profile, packet())
+  }
+  const out = await runReviewGate(packet(), {
+    profiles: REVIEW_PROFILES,
+    runAcpReview: runner,
+    buildProfileEnv: () => ({}),
+    validateReview: () => ({ ok: true }),
+    synthesizeReviews: () => ({ verdict: 'PASS' }),
+  })
+  assert.equal(out.ok, true)
+  assert.deepEqual(out.route, ['opencodeGlm', 'opencode', 'agy'])
+  assert.deepEqual(out.substitution, {
+    used: true, replaced: 'opencodeInkling', replacement: 'opencodeGlm', remaining: 0, reason: null,
+  })
+  assert.deepEqual(out.attempts.map(item => [item.profile, item.status, item.replaces ?? null]), [
+    ['claude', 'failed', null], ['opencode', 'accepted', null], ['agy', 'accepted', null],
+    ['opencodeInkling', 'failed', 'claude'], ['opencodeGlm', 'accepted', 'opencodeInkling'],
+  ])
+  assert.deepEqual(calls, ['claude', 'opencode', 'agy', 'opencodeInkling', 'opencodeGlm'])
+  assert.equal(out.count, 3)
+})
+
+test('two failed non-AGY primaries recover sequentially across the ladder when distinct reserves exist', async () => {
+  const calls = []
+  const out = await runReviewGate(packet(), {
+    profiles: REVIEW_PROFILES,
+    runAcpReview: async ({ profile }) => {
+      calls.push(profile.id)
+      if (['claude', 'opencode'].includes(profile.id)) {
+        throw new ReviewTransportError('timeout', `${profile.id} unavailable`)
+      }
+      return runnerResult(profile, packet())
+    },
+    buildProfileEnv: () => ({}),
+    validateReview: () => ({ ok: true }),
+    synthesizeReviews: () => ({ verdict: 'PASS' }),
+  })
+  assert.equal(out.ok, true)
+  assert.deepEqual(out.route, ['opencodeInkling', 'opencodeGlm', 'agy'])
+  assert.deepEqual(calls, ['claude', 'opencode', 'agy', 'opencodeInkling', 'opencodeGlm'])
+})
+
+test('opencode-free opt-in gate completes with three verified free OpenCode models without AGY and rejects disallowed extension notifications while ignoring _auth/status_update', async () => {
+  const out = await runReviewGate(packet({ primary: 'gpt-6.2-sol' }), {
+    policyMode: 'opencode-free',
+    profiles: REVIEW_PROFILES,
+    runAcpReview: async ({ profile }) => runnerResult(profile, packet()),
+    buildProfileEnv: () => ({}),
+    validateReview: () => ({ ok: true }),
+    synthesizeReviews: () => ({ verdict: 'PASS' }),
+  })
+  assert.equal(out.ok, true)
+  assert.equal(out.policyMode, 'opencode-free')
+  assert.equal(out.singleProviderQuorum, true)
+  assert.deepEqual(out.route, ['opencode', 'opencodeInkling', 'opencodeMimo'])
+
+  // Transport-level PR #109 check: _auth/status_update succeeds while un-allowlisted extension notification blocks
+  const baseEnv = { MOCK_REVIEW_MODEL: 'gpt-6-luna' }
+  const okRes = await runAcpReview({
+    lane: 'codex',
+    profile: {
+      id: 'codex', lane: 'codex', provider: 'openai', reviewMode: 'plan',
+      command: process.execPath, args: [MOCK, 'auth-status'], model: 'gpt-6-luna',
+      config: { model: 'gpt-6-luna', mode: 'plan' },
+    },
+    command: process.execPath,
+    args: [MOCK, 'auth-status'],
+    packet: packet(),
+    env: { ...baseEnv, MOCK_REVIEW_BEHAVIOUR: 'auth-status-update' },
+    timeoutMs: 10_000,
+  })
+  assert.equal(okRes.review.verdict, 'PASS')
+
+  await assert.rejects(
+    runAcpReview({
+      lane: 'codex',
+      profile: {
+        id: 'codex', lane: 'codex', provider: 'openai', reviewMode: 'plan',
+        command: process.execPath, args: [MOCK, 'unknown-ext'], model: 'gpt-6-luna',
+        config: { model: 'gpt-6-luna', mode: 'plan' },
+      },
+      command: process.execPath,
+      args: [MOCK, 'unknown-ext'],
+      packet: packet(),
+      env: { ...baseEnv, MOCK_REVIEW_BEHAVIOUR: 'unknown-extension-notification' },
+      timeoutMs: 10_000,
+    }),
+    error => error.code === 'protocol' && /_vendor\/tool_activity/.test(error.message),
+  )
+})
+
+test('untrusted packet.policyMode cannot bypass strict mode, invalid policyMode drops input bytes, and final excludedSeats guard blocks', async () => {
+  const savedMode = process.env.REVIEW_GATE_MODE
+  delete process.env.REVIEW_GATE_MODE
+  try {
+    const strictOut = await runReviewGate(packet({ primary: 'gpt-6.2-sol', policyMode: 'opencode-free' }), {
+      profiles: REVIEW_PROFILES,
+      runAcpReview: async ({ profile }) => runnerResult(profile, packet()),
+      buildProfileEnv: () => ({}),
+      validateReview: () => ({ ok: true }),
+      synthesizeReviews: () => ({ verdict: 'PASS' }),
+    })
+    assert.equal(strictOut.policyMode, 'strict')
+    assert.equal(strictOut.singleProviderQuorum, false)
+    assert.equal(strictOut.route.includes('agy'), true)
+  } finally {
+    if (savedMode !== undefined) process.env.REVIEW_GATE_MODE = savedMode
+  }
+
+  await assert.rejects(
+    runReviewGate(packet(), { policyMode: 'secret-bad-token-xyz' }),
+    (error) => error.message === 'unsupported review policy mode' && !error.message.includes('secret-bad-token-xyz'),
+  )
+
+  await assert.rejects(
+    runReviewGate(packet({ primary: 'deepseek-v4.1-flash-free' }), {
+      profiles: REVIEW_PROFILES,
+      runAcpReview: async ({ profile }) => {
+        if (profile.id === 'codex') throw new Error('codex down')
+        return runnerResult(profile, packet())
+      },
+      buildProfileEnv: () => ({}),
+      planReviewPanel: () => ({
+        blocked: false,
+        primaryFamily: 'deepseek',
+        policyMode: 'strict',
+        requireAgy: true,
+        singleProviderQuorum: false,
+        excludedSeats: ['opencode'],
+        reviewers: ['codex', 'claude', 'agy'],
+        reserve: 'opencode',
+      }),
+      planFallback: (plan) => ({
+        ...plan,
+        reviewers: ['opencode', 'claude', 'agy'],
+        replaced: { failed: 'codex', replacement: 'opencode' },
+      }),
+      validateReview: () => ({ ok: true }),
+      synthesizeReviews: () => ({ verdict: 'PASS' }),
+    }),
+    /final review panel cannot seat the primary model/,
+  )
+})
+
 test.skip('provider-limited direct Claude is never launched when claude-zai would violate the final panel', async () => {
   const calls = []
   const profiles = keyedProfiles([
@@ -1018,8 +1169,11 @@ test('a blocked gate emits a distinguishable per-lane diagnostic, never a zero-b
   })
 
   // A reserve that launched and also failed: four lanes, two stages, none left.
+  let bothFailedCalls = 0
   const bothFailed = await blockedGate({
-    planFallback: () => ({ ...plan, reviewers: ['codex', 'zai', 'agy'], replaced: { failed: 'kimi', replacement: 'codex' }, usedReserve: true }),
+    planFallback: () => (bothFailedCalls++ === 0
+      ? { ...plan, reviewers: ['codex', 'zai', 'agy'], replaced: { failed: 'kimi', replacement: 'codex' }, usedReserve: true }
+      : { blocked: true, reason: 'no available reserve' }),
     runAcpReview: async ({ profile: selected }) => {
       if (selected.id === 'kimi') throw new ReviewTransportError('timeout', 'kimi timeout')
       if (selected.id === 'codex') throw new ReviewTransportError('spawn', 'codex spawn')
@@ -1032,7 +1186,7 @@ test('a blocked gate emits a distinguishable per-lane diagnostic, never a zero-b
   ])
   assert.equal(laneOf(bothFailed, 'codex').replaces, 'kimi')
   assert.deepEqual(bothFailed.report.substitution, {
-    used: true, replaced: 'kimi', replacement: 'codex', remaining: 0, reason: null,
+    used: true, replaced: 'codex', replacement: 'codex', remaining: 0, reason: 'no available reserve',
   })
 
   // Nothing a runner or planner supplies reaches the report unbounded. This is
@@ -1101,7 +1255,7 @@ test('the gate refuses a panel whose lanes share one unproven adapter identity (
   // (same adapter binary) because their acknowledged MODELS differ — a stronger
   // fact than launcher bytes. Distinguishing by model is scoped to opencode,
   // so the unpinned claude twin above still collides and blocks.
-  const legitimatePlan = { blocked: false, primaryFamily: 'openai', reviewers: ['opencode', 'opencodeDeepseek', 'agy'], reserve: null }
+  const legitimatePlan = { blocked: false, primaryFamily: 'openai', reviewers: ['opencode', 'opencodeInkling', 'agy'], reserve: null }
   const out = await runReviewGate(packet(), {
     profiles: REVIEW_PROFILES,
     runAcpReview: runner,
@@ -1111,9 +1265,9 @@ test('the gate refuses a panel whose lanes share one unproven adapter identity (
     synthesizeReviews: () => ({ verdict: 'PASS' }),
   })
   assert.equal(out.ok, true)
-  assert.deepEqual(out.route, ['opencode', 'opencodeDeepseek', 'agy'])
-  assert.equal(out.reviews.find(item => item.profile === 'opencode').model, 'minimax-m3.1-flash-free')
-  assert.equal(out.reviews.find(item => item.profile === 'opencodeDeepseek').model, 'deepseek-v4.1-flash-free')
+  assert.deepEqual(out.route, ['opencode', 'opencodeInkling', 'agy'])
+  assert.equal(out.reviews.find(item => item.profile === 'opencode').model, 'deepseek-v4.1-flash-free')
+  assert.equal(out.reviews.find(item => item.profile === 'opencodeInkling').model, 'inkling-2-small-free')
 })
 
 test('a fallback substitution that reintroduces a proven-identity collision is caught after the original panel already cleared preflight', async () => {
@@ -1695,10 +1849,10 @@ test('a model change smuggled inside a MODE setter reply cannot hide behind a st
       id: 'codex', lane: 'codex', provider: 'openai',
       command: process.execPath,
       args: [MOCK, 'late-setter'],
-      reviewMode: 'plan', model: 'gpt-6.1-sol',
-      config: { model: 'gpt-6.1-sol', mode: 'plan' },
-    }, { MOCK_REVIEW_BEHAVIOUR: 'late-setter-model-swap', MOCK_REVIEW_MODEL: 'gpt-6.1-sol' }),
-    error => error.code === 'policy' && /gpt-6-sol is retired/.test(error.message),
+      reviewMode: 'plan', model: 'gpt-6.2-sol',
+      config: { model: 'gpt-6.2-sol', mode: 'plan' },
+    }, { MOCK_REVIEW_BEHAVIOUR: 'late-setter-model-swap', MOCK_REVIEW_MODEL: 'gpt-6.2-sol' }),
+    error => error.code === 'policy' && /pre-6\.2 Codex sol\/astra is retired/.test(error.message),
     'a model flip smuggled in a mode setter reply was not refused',
   )
 }, { timeout: 10_000 })
@@ -1712,10 +1866,10 @@ test('a shadowed model change in a setter reply cannot hide behind an earlier cl
       id: 'codex', lane: 'codex', provider: 'openai',
       command: process.execPath,
       args: [MOCK, 'late-setter'],
-      reviewMode: 'plan', model: 'gpt-6.1-sol',
-      config: { model: 'gpt-6.1-sol', mode: 'plan' },
-    }, { MOCK_REVIEW_BEHAVIOUR: 'late-setter-shadowed-model-swap', MOCK_REVIEW_MODEL: 'gpt-6.1-sol' }),
-    error => error.code === 'policy' && /gpt-6-sol is retired/.test(error.message),
+      reviewMode: 'plan', model: 'gpt-6.2-sol',
+      config: { model: 'gpt-6.2-sol', mode: 'plan' },
+    }, { MOCK_REVIEW_BEHAVIOUR: 'late-setter-shadowed-model-swap', MOCK_REVIEW_MODEL: 'gpt-6.2-sol' }),
+    error => error.code === 'policy' && /pre-6\.2 Codex sol\/astra is retired/.test(error.message),
     'a shadowed prohibited model flip was not refused',
   )
 }, { timeout: 10_000 })
@@ -1729,9 +1883,9 @@ test('a permitted model flip in a non-model setter reply is rejected as a config
       id: 'codex', lane: 'codex', provider: 'openai',
       command: process.execPath,
       args: [MOCK, 'late-setter'],
-      reviewMode: 'plan', model: 'gpt-6.1-sol',
-      config: { model: 'gpt-6.1-sol', mode: 'plan' },
-    }, { MOCK_REVIEW_BEHAVIOUR: 'late-setter-permitted-flip', MOCK_REVIEW_MODEL: 'gpt-6.1-sol' }),
+      reviewMode: 'plan', model: 'gpt-6.2-sol',
+      config: { model: 'gpt-6.2-sol', mode: 'plan' },
+    }, { MOCK_REVIEW_BEHAVIOUR: 'late-setter-permitted-flip', MOCK_REVIEW_MODEL: 'gpt-6.2-sol' }),
     error => error.code === 'config' && /mismatched model/.test(error.message),
     'a permitted model flip in a mode setter reply was not refused',
   )
@@ -1744,9 +1898,9 @@ test('a successor value in the same setter reply supersedes and the turn proceed
     id: 'codex', lane: 'codex', provider: 'openai',
     command: process.execPath,
     args: [MOCK, 'late-setter'],
-    reviewMode: 'plan', model: 'gpt-6.1-sol',
-    config: { model: 'gpt-6.1-sol', mode: 'plan' },
-  }, { MOCK_REVIEW_BEHAVIOUR: 'late-setter-clean', MOCK_REVIEW_MODEL: 'gpt-6.1-sol' })
+    reviewMode: 'plan', model: 'gpt-6.2-sol',
+    config: { model: 'gpt-6.2-sol', mode: 'plan' },
+  }, { MOCK_REVIEW_BEHAVIOUR: 'late-setter-clean', MOCK_REVIEW_MODEL: 'gpt-6.2-sol' })
   assert.equal(out.review.verdict, 'PASS')
   assert.equal(out.isolation.toolCallsObserved, 0)
 }, { timeout: 10_000 })
@@ -1765,9 +1919,9 @@ test('a successful model setter supersedes a retired seed in EVERY acknowledged 
       id: 'codex', lane: 'codex', provider: 'openai',
       command: process.execPath,
       args: [MOCK, 'retired-seed'],
-      reviewMode: 'plan', model: 'gpt-6.1-sol',
-      config: { model: 'gpt-6.1-sol', mode: 'plan' },
-    }, { MOCK_REVIEW_BEHAVIOUR: 'retired-seed', MOCK_REVIEW_MODEL: 'gpt-6.1-sol', MOCK_SETTER_SHAPE: shape })
+      reviewMode: 'plan', model: 'gpt-6.2-sol',
+      config: { model: 'gpt-6.2-sol', mode: 'plan' },
+    }, { MOCK_REVIEW_BEHAVIOUR: 'retired-seed', MOCK_REVIEW_MODEL: 'gpt-6.2-sol', MOCK_SETTER_SHAPE: shape })
     // The run must COMPLETE — reaching a PASS verdict is itself the proof
     // that the validated successor setter superseded the retired seed; the
     // round-3 defect was the refusal, not a wrong verdict.
@@ -1785,10 +1939,10 @@ test('a shadowed prohibited model in a model setter reply is rejected', async ()
       id: 'codex', lane: 'codex', provider: 'openai',
       command: process.execPath,
       args: [MOCK, 'retired-seed'],
-      reviewMode: 'plan', model: 'gpt-6.1-sol',
-      config: { model: 'gpt-6.1-sol', mode: 'plan' },
-    }, { MOCK_REVIEW_BEHAVIOUR: 'retired-seed', MOCK_REVIEW_MODEL: 'gpt-6.1-sol', MOCK_SETTER_SHADOWED: 'true' }),
-    error => error.code === 'policy' && /gpt-6-sol is retired/.test(error.message),
+      reviewMode: 'plan', model: 'gpt-6.2-sol',
+      config: { model: 'gpt-6.2-sol', mode: 'plan' },
+    }, { MOCK_REVIEW_BEHAVIOUR: 'retired-seed', MOCK_REVIEW_MODEL: 'gpt-6.2-sol', MOCK_SETTER_SHADOWED: 'true' }),
+    error => error.code === 'policy' && /pre-6\.2 Codex sol\/astra is retired/.test(error.message),
     'a model setter reply carrying a shadowed prohibited model was not refused',
   )
 }, { timeout: 10_000 })
@@ -1814,14 +1968,14 @@ test('an alias must not shadow a retired canonical model', () => {
   return (async () => {
     await assert.rejects(
       attempt('gpt-6-sol'),
-      error => error.code === 'policy' && /gpt-6-sol is retired/.test(error.message),
+      error => error.code === 'policy' && /pre-6\.2 Codex sol\/astra is retired/.test(error.message),
       'a retired CANONICAL behind an alias was accepted',
     )
     assert.equal(spawned, false)
     // Control: the same alias over a clean canonical must pass the guard
     // (it fails later, on the unresolvable executable — not as policy).
     await assert.rejects(
-      attempt('gpt-6.1-sol'),
+      attempt('gpt-6.2-sol'),
       error => error.code !== 'policy',
       'the alias+clean pair was refused as policy — the guard over-refuses',
     )

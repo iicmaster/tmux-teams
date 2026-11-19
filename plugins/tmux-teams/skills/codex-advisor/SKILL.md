@@ -23,24 +23,30 @@ dispatch before prompt delivery rather than answering from a cheaper seat.
 ## Arguments
 
 ```
-$codex-advisor              # default seat: gpt-6.1-sol[ultra]
-$codex-advisor astra        # gpt-6-astra[ultra]
+$codex-advisor              # default seat: gpt-6.2-sol[ultra]
+$codex-advisor astra        # gpt-6.2-astra[ultra]
 $codex-advisor luna         # gpt-6-luna[max]
-$codex-advisor sol          # gpt-6.1-sol[ultra]
+$codex-advisor sol          # gpt-6.2-sol[ultra]
 ```
 
 | `<model>` | dispatches | effort |
 |---|---|---|
-| *(omitted)* | `gpt-6.1-sol` | `ultra` |
-| `astra` | `gpt-6-astra` | `ultra` |
+| *(omitted)* | `gpt-6.2-sol` | `ultra` |
+| `astra` | `gpt-6.2-astra` | `ultra` |
 | `luna` | `gpt-6-luna` | `max` |
-| `sol` | `gpt-6.1-sol` | `ultra` |
+| `sol` | `gpt-6.2-sol` | `ultra` |
 
-A bare short name is accepted and expanded; the full model id (`gpt-6.1-*`,
+A bare short name is accepted and expanded; the full model id (`gpt-6.2-*`,
 `gpt-6-*`) is what
 reaches the adapter and what the receipt must show. Any other name is a usage
 error — **do not pass a model through unrecognised**, because an unknown value
 either fails the dispatch or silently seats something nobody chose.
+
+**Retired generations (Master 2026-11-19):** every pre-6.2 `sol`/`astra` id —
+`gpt-6-sol`, `gpt-6.0-sol`, `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6.0-astra`,
+`gpt-6.1-astra` and their suffixed/separator forms — is refused on request,
+expectation, and observed identity on every tmux-teams route. Only the `6.2`
+seats above may answer; `luna` is unaffected.
 
 ### `--party <id>` — seat a saved bmad-party-mode roster
 
@@ -52,6 +58,10 @@ party — real names, titles and scene. One script renders the roster so all fou
 ```bash
 node <plugin-root>/skills/tmux-teams/scripts/advisor-party.mjs <id>
 ```
+
+By default `advisor-party.mjs` reads global `bmad-party-mode` data without
+invoking project `_bmad/scripts` helpers; saved rosters that depend on project
+helpers require explicit `--allow-project-party`.
 
 `<plugin-root>` — the same spelling every dispatch command in this file uses,
 expanded to `$CLAUDE_PLUGIN_ROOT` when you run it. NOT a repository-relative
@@ -110,11 +120,13 @@ locks reasoning effort to the highest tier supported by that model: `ultra` for
 `astra` and `sol`; `max` for `luna` — the 2026-09-30 model refresh removed
 luna's `ultra` tier, and the lane that asked for it was refused before its
 prompt. The default seat runs
-`gpt-6.1-sol` at `ultra`. A request to change the effort tier is a request for a
+`gpt-6.2-sol` at `ultra`. A request to change the effort tier is a request for a
 different skill.
 
 The review lane in `plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs`
-similarly pins the codex review profile at `reasoning_effort: 'ultra'` for `gpt-6.1-sol`.
+pins the codex review profile to the `luna` seat (`gpt-6-luna` at `reasoning_effort:
+'max'`, Master 2026-11-17) — that is a reviewer seat, not the `sol`/`astra`
+frontier this skill dispatches.
 
 **Pass the model and effort explicitly; never inherit them.** On 2026-07-29
 `~/.codex/config.toml` read `model_reasoning_effort = "low"` while
@@ -150,8 +162,8 @@ answer is a failed consultation — say so rather than passing it on.
 
 2. **Dispatch**, selecting and verifying the identity in one step. Derive `<model>`
    and `<effort>` from the chosen seat:
-   - default (omitted) or `sol` -> `<model>` is `gpt-6.1-sol`, `<effort>` is `ultra`
-   - `astra` -> `<model>` is `gpt-6-astra`, `<effort>` is `ultra`
+   - default (omitted) or `sol` -> `<model>` is `gpt-6.2-sol`, `<effort>` is `ultra`
+   - `astra` -> `<model>` is `gpt-6.2-astra`, `<effort>` is `ultra`
    - `luna` -> `<model>` is `gpt-6-luna`, `<effort>` is `max`
 
    ```bash
@@ -212,8 +224,8 @@ answer is a failed consultation — say so rather than passing it on.
    `Error: stdin is not a terminal`, because bare `codex` opens a TUI rather
    than speaking ACP.
 
-   The receipt should read `effective_identity: <model>[<effort>]` (`gpt-6.1-sol[ultra]`,
-   `gpt-6-astra[ultra]`, or `gpt-6-luna[max]`),
+   The receipt should read `effective_identity: <model>[<effort>]` (`gpt-6.2-sol[ultra]`,
+   `gpt-6.2-astra[ultra]`, or `gpt-6-luna[max]`),
    `identity_status: matched`. If the installed ACP agent does not advertise
    the requested model/effort, the adapter fails closed before the prompt.
 

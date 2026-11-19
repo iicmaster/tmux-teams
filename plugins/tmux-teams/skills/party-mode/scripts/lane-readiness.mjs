@@ -55,13 +55,16 @@ import {
 // every `spawn`/`spawnSync` call site rather than from memory. `tmux` is
 // reached only from deliver.sh and is the transport the skill documents as the
 // fallback, so it is required for the loop and not for a review lane.
-export const PLUGIN_BINARIES = Object.freeze([
+export const CORE_PLUGIN_BINARIES = Object.freeze([
   { name: 'node', why: 'the companion, the dispatcher and the pulse writer all re-invoke node' },
   { name: 'git', why: 'worktrees, and every release and review path that reads a diff' },
   { name: 'npx', why: 'launches the ACP adapters that are node packages' },
+])
+export const OPTIONAL_PLUGIN_BINARIES = Object.freeze([
   { name: 'bunx', why: 'launches the antigravity adapter, which is a native binary' },
   { name: 'tmux', why: 'the fallback transport for driving an interactive agent' },
 ])
+export const PLUGIN_BINARIES = CORE_PLUGIN_BINARIES
 
 // Closed vocabulary. A caller reads a CODE; nothing here is built from an
 // environment value or a provider's wording, so a hostile PATH entry cannot
@@ -229,13 +232,15 @@ export function laneAvailability(id, profile, env = process.env, {
  * wrong place.
  */
 export function pluginReadiness(env = process.env) {
-  const missing = PLUGIN_BINARIES
-    .filter(b => !resolveOnPath(b.name, env))
-    .map(b => ({ code: 'binary_absent', missing: b.name, why: b.why }))
+  const toMissing = b => ({ code: 'binary_absent', missing: b.name, why: b.why })
+  const missing = CORE_PLUGIN_BINARIES.filter(b => !resolveOnPath(b.name, env)).map(toMissing)
+  const optionalMissing = OPTIONAL_PLUGIN_BINARIES.filter(b => !resolveOnPath(b.name, env)).map(toMissing)
   return {
     ready: missing.length === 0,
     missing: Object.freeze(missing),
-    checked: Object.freeze(PLUGIN_BINARIES.map(b => b.name)),
+    optionalMissing: Object.freeze(optionalMissing),
+    checked: Object.freeze(CORE_PLUGIN_BINARIES.map(b => b.name)),
+    optionalChecked: Object.freeze(OPTIONAL_PLUGIN_BINARIES.map(b => b.name)),
   }
 }
 
@@ -272,8 +277,11 @@ export function readinessReport(profiles, env = process.env, {
     : { overrides: {}, problems: [] }
   const overrideProblems = loaded?.problems ?? []
   const overrides = overrideProblems.length > 0 ? {} : (loaded?.overrides ?? {})
-  const lanes = Object.entries(profiles).map(([id, p]) =>
-    laneAvailability(id, applyLaneOverride(p, overrides[id], env), env, { agyVersionResolver }))
+  const effectiveProfiles = Object.fromEntries(
+    Object.entries(profiles).map(([id, p]) => [id, applyLaneOverride(p, overrides[id], env)]),
+  )
+  const lanes = Object.entries(effectiveProfiles).map(([id, p]) =>
+    laneAvailability(id, p, env, { agyVersionResolver }))
   const callable = lanes.filter(l => l.available)
   return {
     plugin,
@@ -281,9 +289,10 @@ export function readinessReport(profiles, env = process.env, {
     overrideProblems: Object.freeze(overrideProblems),
     callableLanes: Object.freeze(callable.map(l => l.lane)),
     setupRequired: !plugin.ready || callable.length === 0 || overrideProblems.length > 0,
-    // A review panel needs three distinct families. Reporting "two lanes work"
-    // without that is a number an operator cannot act on.
+    // A review panel needs three distinct models (or three families in strict mode).
     callableFamilies: Object.freeze([...new Set(
       callable.map(l => profiles[l.lane]?.family).filter(Boolean))]),
+    callableModels: Object.freeze([...new Set(
+      callable.map(l => effectiveProfiles[l.lane]?.model).filter(Boolean))]),
   }
 }

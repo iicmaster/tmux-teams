@@ -145,3 +145,25 @@ it misses an OAuth `code=` in a device-flow URL, which is precisely what an
 unauthenticated lane prints. `stage`, `stderrDigest` and `stderrBytes` stay the
 boundary. A typed, closed set of reason codes with fixed operator actions is the
 open follow-up; free provider text is not it.
+
+## Amendment 2026-11-19 — opt-in `opencode-free` single-provider mode and sequential multi-failure ladder walk
+
+1. **Default remains strict**: With no mode override (`strict`, default), every
+   rule above stays in force: exact-three reviewers, AGY mandatory, primary
+   exclusion, distinct acknowledged models, and zero-tool ACP isolation.
+2. **Opt-in `REVIEW_GATE_MODE=opencode-free`**: On fresh machines bootstrapped
+   with only free prerequisites (`bmad-method` and `@opencode/cli@2.3.2` —
+   no AGY/Codex/Claude accounts installed), an operator may explicitly opt into
+   `policyMode: 'opencode-free'`. The gate retains exact-three distinct
+   acknowledged models, primary-model exclusion, closed-schema validation, and
+   zero-tool isolation while waiving the AGY seat requirement to seat three
+   live-verified free OpenCode models (`deepseek-v4.1-flash-free`,
+   `inkling-2-small-free`, `mimo-v2.6-flash-free`, walking the ten-rung
+   ladder on quota or exclusion). Every report emitted in this mode explicitly
+   sets `policyMode: 'opencode-free'` and `singleProviderQuorum: true` so a
+   single-vendor free quorum is never mistaken for a cross-vendor three-family
+   review.
+3. **Sequential multi-failure ladder walk**: Rather than failing on
+   `originalFailures.length > 1`, `review-gate.mjs` walks failed non-AGY chairs
+   sequentially up to `LADDER_GUARD` (`12`) launches whenever distinct reserve
+   models remain on the ladder.

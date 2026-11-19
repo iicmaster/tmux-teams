@@ -1,6 +1,6 @@
 ---
 name: claude-advisor
-description: "Consult a Claude-protocol advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. Defaults to the top Claude model (fable at the session's effort); optionally takes a routing pair — $claude-advisor <bin> <model> — to reach k3, qwen3.8-max, deepseek, glm or the operator's local 9Router gateway (claude-9r) through a routed profile. Use when the user invokes $claude-advisor, asks for a second opinion, names a specific advisor seat, or adds --party <id> to seat a saved bmad-party-mode roster. Read-only by brief and by this skill issuing no write instruction; unlike the Codex lane there is no mode switch to enforce it."
+description: "Consult a Claude-protocol advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. Defaults to the top Claude model (opus-5.5 at the session's effort); optionally takes a routing pair — $claude-advisor <bin> <model> — to reach k3, qwen3.8-max, deepseek, glm or the operator's local 9Router gateway (claude-9r) through a routed profile. Use when the user invokes $claude-advisor, asks for a second opinion, names a specific advisor seat, or adds --party <id> to seat a saved bmad-party-mode roster. Read-only by brief and by this skill issuing no write instruction; unlike the Codex lane there is no mode switch to enforce it."
 ---
 
 # Claude Advisor
@@ -8,25 +8,28 @@ description: "Consult a Claude-protocol advisor over ACP and get the answer back
 A consultation lane. It asks a Claude-protocol seat a question and returns a
 round-table.
 
-**On the default seat it can prove which model answered; on a routed seat it
-cannot, and this line used to promise both.** A panel lane read the headline —
-"can prove which model answered" — against this file's own paragraph fifty lines
-down, which says a receipt recording `effective_identity: opus` has told you
-nothing about who answered, because `opus` on three different bins reaches three
-different vendors. Both cannot be true.
+**On the default seat it can prove which alias answered, and on the Anthropic
+endpoint that alias is a fact; on a routed seat the same receipt proves nothing
+about the vendor.** The default seat cannot prove the VERSION (see below); this
+file has claimed both of the other things.
 
-What holds: the default seat asks for `claude-fable-5` and the receipt binds
-that exact string, so the identity IS the model. A ROUTED seat asks a gateway
-for an alias, and the receipt records the alias — the `<bin>` and the endpoint
-are the facts, the alias is a slot. Prove a routed seat's family from its
-endpoint, never from its identity.
+Measured 2026-11-02: the default seat asks for `claude-opus-5-5` and the Claude
+ACP adapter canonicalizes it to `opus`. Expecting the full string fails the
+dispatch (`identity mismatched: expected claude-opus-5-5, effective opus`), so
+`ACP_EXPECT_MODEL` on this seat is `opus`, and the receipt binds THAT. Treat it
+as "the alias was honoured on the default Anthropic endpoint", not as
+"version 5.5 answered" — the adapter exposes no version string to prove the
+latter. A ROUTED seat records the alias a gateway was asked for; there the
+`<bin>` and the endpoint are the facts and the alias is a slot. Prove either
+seat's family from its endpoint, never from its identity.
 
 ## What this skill actually guarantees
 
-Not "the most expensive model". **Provable identity.** The default seat is the
-top Claude model; a caller may name a different one, and the receipt still has
-to say who answered. A silent downgrade is the failure this lane exists to stop
-— a *declared* choice of seat is not one.
+Not "the most expensive model". **Provable identity** — of the alias, on the
+endpoint the seat names. The default seat is the top Claude model; a caller may
+name a different one, and the receipt still has to say which seat answered. A
+silent downgrade is the failure this lane exists to stop — a *declared* choice
+of seat is not one.
 
 ## Why it is an ACP lane and not a subagent
 
@@ -44,7 +47,7 @@ for.
 ## Arguments
 
 ```
-$claude-advisor                      # default seat: claude-fable-5
+$claude-advisor                      # default seat: claude-opus-5-5
 $claude-advisor <bin> <model>        # a routed seat
 ```
 
@@ -118,7 +121,7 @@ who typed `--party` asked for a specific room.
 
 | `<bin>` | `<model>` | answers as | endpoint |
 |---|---|---|---|
-| *(omitted)* | *(omitted)* | `claude-fable-5` | Anthropic |
+| *(omitted)* | *(omitted)* | `claude-opus-5-5` | Anthropic |
 | `claude-kimi` | `opus` | `k3` | `api.kimi.com` |
 | `claude-kimi` | `sonnet` | `kimi-for-coding` | `api.kimi.com` |
 | `claude-qwen` | `opus` | `qwen3.8-max` | Alibaba MaaS |
@@ -152,14 +155,22 @@ is the fact:
 |---|---|---|---|
 | `claude-9r` | `opus` | `thinker[1m]` (gateway id `thinker`) | `http://127.0.0.1:20128/v1` (9Router, loopback) |
 | `claude-9r` | `sonnet` | `worker[1m]` (gateway id `worker`) | `http://127.0.0.1:20128/v1` (9Router, loopback) |
-| `claude-9r` | `fable` | `advisor` (gateway id `advisor`) | `http://127.0.0.1:20128/v1` (9Router, loopback) |
+| `claude-9r` | ~~`fable`~~ | **refused by policy** — see below | `http://127.0.0.1:20128/v1` (9Router, loopback) |
 | `claude-9r` | `haiku` | `flash` (gateway id `flash`) | `http://127.0.0.1:20128/v1` (9Router, loopback) |
 
 The aliases come from `ANTHROPIC_DEFAULT_{OPUS,SONNET,FABLE,HAIKU}_MODEL` in that
 settings file, and the gateway behind them can be re-pointed by editing it — same
 rule as every row above: the alias is a slot, the endpoint plus the settings file
-are the facts. `fable` → `advisor` is the 9Router counterpart of this lane's
-default seat (a consultation-grade model, not a worker).
+are the facts.
+
+**`fable` is not a seat any more — Master retired `fable-5` on 2026-11-02.** The
+model guard (`PROHIBITED_MODEL`, one copy per script) refuses every fable form
+except `fable-5.1`: `fable-5`, `claude-fable-5`, `claude-fable-5[1m]`, and the
+bare alias `fable` — which pins no version at all, and that is the whole reason
+the rule exists. Measured: `claude-fable-5-1` on the DEFAULT seat binds verbatim
+(`effective_identity: claude-fable-5-1 (matched)`), while the same id through
+9Router fails `config-option-invalid` because that adapter does not advertise
+it. So the surviving fable seat is the default one, and this gateway has none.
 
 **Naming a router model directly.** The four aliases are the short list. The
 adapter under this config also advertises the router's own claude-shaped ids as
@@ -198,8 +209,12 @@ claude-shaped subset too: measured the same day, the gateway serves
 `cc/claude-fable-5-1` while the adapter does not advertise it — treat the curl
 below as the superset, not the settable list. The prohibition guard applies
 before all of this: `ag/gemini-3.1-pro-high` sits on the router but is neither
-advertised nor permitted (Gemini 3.1 is banned and `gpt-6-sol` retired on every
-tmux-teams route), and the companion exits 2 on it whatever the router serves.
+advertised nor permitted (Gemini 3.1 is banned; every pre-6.2 Codex `sol`/`astra`
+id — `gpt-6-sol`, `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6.1-astra` and their
+separator/suffixed forms — is retired since 2026-11-19; and `fable-5` is retired
+— only `fable-5.1` is accepted — on every tmux-teams route), and the companion
+exits 2 on it whatever the router serves. (`claude-gpt-6.1-sol` above is a dated
+2026-10-26 router-advertised id, not a claim that it is still permitted.)
 
 ```bash
 curl -s http://127.0.0.1:20128/v1/models \
@@ -251,17 +266,23 @@ ls -d "$HOME/.claude-9r"        # the spelling that actually dispatches
 
 | | | |
 |---|---|---|
-| Model | `claude-fable-5` | **verified** — `ACP_EXPECT_MODEL`, `identity_status: matched` |
+| Model | `claude-opus-5-5` requested | **verified as the alias `opus`** — `ACP_EXPECT_MODEL=opus`, `identity_status: matched` (measured 2026-11-02) |
 | Reasoning effort | session's | **not verifiable on this lane** — see below |
 | Lane | `claude` (ACP) | |
 
+Changed 2026-11-02: the default seat was `claude-fable-5`; it is now
+`claude-opus-5-5`, and `ACP_EXPECT_MODEL` is `opus` because the adapter
+canonicalizes the version string. Expecting `claude-opus-5-5` fails every
+dispatch with `identity mismatched: expected claude-opus-5-5, effective opus`.
+
 ### Effort cannot be proved here, and the skill says so
 
-Measured 2026-07-29 by dispatching this lane: the Claude ACP adapter reports
-`effective_identity: claude-fable-5` and `requested_reasoning_effort: none`. It
-exposes no reasoning-effort field at all, so `ACP_EXPECT_REASONING_EFFORT` can
-never match and setting it fails every dispatch with
-`identity missing: expected claude-fable-5[max], effective claude-fable-5`.
+Measured 2026-07-29 by dispatching this lane (it ran the then-default
+`claude-fable-5`): the Claude ACP adapter reports `effective_identity:
+claude-fable-5` and `requested_reasoning_effort: none`. It exposes no
+reasoning-effort field at all, so `ACP_EXPECT_REASONING_EFFORT` can never match
+and setting it fails every dispatch with `identity missing: expected
+<model>[max], effective <model>`.
 
 An earlier draft of this file claimed effort was pinned and verified here. It
 was not, and the claim survived only because nobody had run it — the same
@@ -325,8 +346,8 @@ consensus is itself a finding, usually that the question was too narrow.
    ```bash
    ACP_SESSION_RECEIPT_REQUIRED=1 \
    ACP_SESSION_OPERATION="new" \
-   ANTHROPIC_MODEL="claude-fable-5" \
-   ACP_EXPECT_MODEL="claude-fable-5" \
+   ANTHROPIC_MODEL="claude-opus-5-5" \
+   ACP_EXPECT_MODEL="opus" \
    node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
      claude <cwd> <task-id> <brief-file> [stall-sec]
    ```
@@ -343,25 +364,27 @@ consensus is itself a finding, usually that the question was too narrow.
    ```
 
    9Router seat — the config-dir form again, because `~/.claude-9r` IS what the
-   `claude-9r` wrapper exports (dispatched in the v0.46.0 release session:
-   receipt `44656a0b-65d6-4480-afbc-e94298540ad7`, `fable (matched)`, outbox
-   delivered; reproduce with this block):
+   `claude-9r` wrapper exports (a `fable (matched)` run on this block was
+   dispatched in the v0.46.0 release session; that alias is now refused by
+   policy — see the 9Router table above — so the block names `opus`, which
+   reaches `thinker[1m]` through the same alias map):
 
    ```bash
    ACP_SESSION_RECEIPT_REQUIRED=1 \
    ACP_SESSION_OPERATION="new" \
    CLAUDE_CONFIG_DIR="$HOME/.claude-9r" \
-   ACP_MODEL="fable" \
+   ACP_MODEL="opus" \
    node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
      claude <cwd> <task-id> <brief-file> [stall-sec]
    ```
 
-   `fable` names the consultation-grade seat through that gateway's alias map
-   (`opus`/`sonnet`/`haiku` reach the others — see the 9Router table above).
+   `opus`/`sonnet`/`haiku` name the seats through that gateway's alias map
+   (`fable` used to name the consultation-grade one and is no longer accepted —
+   see the 9Router table above).
    Any advertised router id substitutes for it — `ACP_MODEL="claude-glm-5.3"`
    dispatches that seat directly, and the receipt shows the id itself. In both
    forms `ACP_EXPECT_MODEL` defaults to `ACP_MODEL`, so the receipt must show
-   `effective_identity: fable (matched)` (or the id you named). That proves
+   `effective_identity: opus (matched)` (or the id you named). That proves
    the adapter APPLIED what you asked — nothing more: what the gateway routed
    to beyond itself is the gateway's business, and on this seat every endpoint
    row is the same loopback address, which proves only that the gateway is the

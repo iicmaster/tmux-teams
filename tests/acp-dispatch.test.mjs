@@ -544,9 +544,9 @@ test('the companion refuses a prohibited model when it is reached without the di
     { env: { ACP_MODEL: 'gemini-3.1-pro-high', ACP_EXPECT_MODEL: 'gpt-6-luna' },
       label: 'ACP_MODEL', value: 'gemini-3.1-pro-high' },
     // The retired generation: blocked even paired with a permitted expectation.
-    { env: { ACP_MODEL: 'gpt-6-sol', ACP_EXPECT_MODEL: 'gpt-6.1-sol' },
+    { env: { ACP_MODEL: 'gpt-6-sol', ACP_EXPECT_MODEL: 'gpt-6-luna' },
       label: 'ACP_MODEL', value: 'gpt-6-sol' },
-    { env: { ACP_MODEL: 'gpt-6.1-sol', ACP_EXPECT_MODEL: 'gpt-6-sol' },
+    { env: { ACP_MODEL: 'gpt-6.2-sol', ACP_EXPECT_MODEL: 'gpt-6-sol' },
       label: 'ACP_EXPECT_MODEL', value: 'gpt-6-sol' },
   ]
   for (const [i, probe] of cases.entries()) {
@@ -556,7 +556,7 @@ test('the companion refuses a prohibited model when it is reached without the di
       `case ${i} (${JSON.stringify(probe.env)}) was accepted by the companion:\n${r.stdout}${r.stderr}`)
     // The refusal sentence is deterministic, so assert it EXACTLY rather than
     // through a regex that would need per-value escaping.
-    assert.ok(r.stderr.includes(`${probe.label}: prohibited model on tmux-teams routes (Gemini 3.1 is banned; gpt-6-sol is retired — the Codex frontier is gpt-6.1-sol), got ${probe.value}`),
+    assert.ok(r.stderr.includes(`${probe.label}: prohibited model on tmux-teams routes (Gemini 3.1 is banned; pre-6.2 Codex sol/astra is retired — the frontier is gpt-6.2-sol / gpt-6.2-astra; fable-5 is retired — only fable-5.1 may be dispatched), got ${probe.value}`),
       `case ${i} refused under the wrong name:\n${r.stderr}`)
   }
   // The mock agent writes `.adapter-env.json` unconditionally at its own top
@@ -2649,11 +2649,11 @@ test('routing records the keys that were set and invents none', () => {
   writeFileSync(join(cwd, 'brief.md'), 'brief\n')
   spawnDetached('codex', cwd, 'rt', join(cwd, 'brief.md'), 600, {
     spawnFn: () => ({ pid: 424242, unref() {}, on() {} }),
-    env: { ACP_MODEL: 'gpt-6.1-sol', ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_REASONING_EFFORT: '',
+    env: { ACP_MODEL: 'gpt-6.2-sol', ACP_SESSION_RECEIPT_REQUIRED: '1', ACP_REASONING_EFFORT: '',
       SOMETHING_UNRELATED: 'not routing' },
   })
   const recorded = recordedRouting(cwd, 'rt')?.env ?? {}
-  assert.deepEqual(recorded, { ACP_MODEL: 'gpt-6.1-sol', ACP_SESSION_RECEIPT_REQUIRED: '1' },
+  assert.deepEqual(recorded, { ACP_MODEL: 'gpt-6.2-sol', ACP_SESSION_RECEIPT_REQUIRED: '1' },
     `routing recorded something other than the keys that were set: ${JSON.stringify(recorded)}`)
   // Named explicitly, because "deepEqual to two keys" would also pass if the
   // capture had recorded the literal string "undefined" for a third.
@@ -2706,7 +2706,7 @@ test('a prohibited model refuses the dispatch before a session exists', () => {
     { cwd, encoding: 'utf8', timeout: 60000,
       env: { ...laneEnv(), ACP_MODEL: model, ACP_EXPECT_MODEL: model } })
 
-  for (const model of ['gemini-3.1-pro-high', 'gemini-3.1-pro-low', 'Gemini 3.1', 'gpt-6-sol', 'GPT-6-SOL']) {
+  for (const model of ['gemini-3.1-pro-high', 'gemini-3.1-pro-low', 'Gemini 3.1', 'gpt-6-sol', 'GPT-6-SOL', 'gpt-6-astra', 'gpt-6.0-sol', 'gpt-6_1_sol']) {
     const r = run(model)
     const said = `${r.stdout}${r.stderr}`
     assert.notEqual(r.status, 0, `${model} was dispatched:\n${said.slice(0, 300)}`)
@@ -2726,8 +2726,8 @@ test('a prohibited model refuses the dispatch before a session exists', () => {
   const retiredExpected = spawnSync(process.execPath,
     [DISPATCH, 'mock', cwd, 'p-expect-retired', join(cwd, 'brief.md'), '20'],
     { cwd, encoding: 'utf8', timeout: 60000,
-      env: { ...laneEnv(), ACP_MODEL: 'gpt-6.1-sol', ACP_EXPECT_MODEL: 'gpt-6-sol' } })
-  assert.match(`${retiredExpected.stdout}${retiredExpected.stderr}`, /gpt-6-sol is retired/,
+      env: { ...laneEnv(), ACP_MODEL: 'gpt-6.2-sol', ACP_EXPECT_MODEL: 'gpt-6-sol' } })
+  assert.match(`${retiredExpected.stdout}${retiredExpected.stderr}`, /pre-6\.2 Codex sol\/astra is retired/,
     'a retired-generation EXPECTATION was accepted')
 
   // And a permitted model still starts, or the guard is just an outage.

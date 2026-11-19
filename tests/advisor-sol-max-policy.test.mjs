@@ -8,15 +8,24 @@ const claudeMd = readFileSync(new URL('../CLAUDE.md', import.meta.url), 'utf8');
 const tmuxSkill = readFileSync(new URL('../plugins/tmux-teams/skills/tmux-teams/SKILL.md', import.meta.url), 'utf8');
 
 test('codex-advisor documents model effort tiers and derived dispatch', () => {
-  assert.match(skill, /\| `sol` \| `gpt-6\.1-sol` \| `ultra` \|/);
+  assert.match(skill, /\| `sol` \| `gpt-6\.2-sol` \| `ultra` \|/);
   assert.doesNotMatch(skill, /\| `terra` \|/);
   assert.doesNotMatch(skill, /gpt-5/);
   assert.match(skill, /\| `luna` \| `gpt-6-luna` \| `max` \|/);
   assert.doesNotMatch(skill, /gpt-6-luna\[ultra\]/);
-  assert.match(skill, /\| `astra` \| `gpt-6-astra` \| `ultra` \|/);
+  assert.match(skill, /\| `astra` \| `gpt-6\.2-astra` \| `ultra` \|/);
   assert.match(skill, /ACP_MODEL="<model>"[\s\S]*ACP_REASONING_EFFORT="<effort>"[\s\S]*ACP_EXPECT_REASONING_EFFORT="<effort>"/);
-  assert.match(skill, /gpt-6\.1-sol\[ultra\]/);
-  assert.doesNotMatch(skill, /gpt-6-sol/);
+  assert.match(skill, /gpt-6\.2-sol\[ultra\]/);
+  const lines = skill.split('\n')
+  const noteStart = lines.findIndex(line => line.startsWith('**Retired generations'))
+  assert.notEqual(noteStart, -1, 'the retired-generations note is missing')
+  const noteLines = new Set([noteStart, noteStart + 1, noteStart + 2])
+  const oldId = /gpt-6(?:[._-]?[01])?[._-]?(?:sol|astra)/
+  for (const [index, line] of lines.entries()) {
+    if (oldId.test(line)) assert.ok(noteLines.has(index), `retired id outside the note at line ${index + 1}: ${line}`)
+  }
+  assert.match(lines[noteStart + 2] ?? '', /gpt-6\.1-astra/, 'the retired note lost its astra entry')
+  assert.match(skill, /every pre-6\.2 `sol`\/`astra` id/);
 });
 
 test('agy-advisor documents Gemini 4 Carbon default and Carbon / Argon / Hydrogen / Orchestrator / 3.8 Flash seats', () => {

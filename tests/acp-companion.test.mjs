@@ -1655,7 +1655,7 @@ concurrentTest('required Codex mode rejects a drifted pinned adapter cache befor
   mkdirSync(binRoot, { recursive: true })
   writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({
     name: '@agentclientprotocol/codex-acp',
-    version: '1.1.7',
+    version: '2.7.0',
     bin: { 'codex-acp': 'bin/codex-acp' },
   }), { mode: 0o600 })
   writeExecutable(join(binRoot, 'codex-acp'), '#!/bin/sh\nexit 0\n')

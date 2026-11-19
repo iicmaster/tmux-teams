@@ -21,7 +21,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { REVIEW_PROFILES, MINIMUM_AGY_VERSION } from './review-profiles.mjs'
-import { OVERRIDABLE_FIELDS, OVERRIDE_PATH, loadLaneOverrides, OVERRIDE_PROBLEMS } from './lane-overrides.mjs'
+import { LEGACY_LANE_ALIASES, OVERRIDABLE_FIELDS, OVERRIDE_PATH, loadLaneOverrides, OVERRIDE_PROBLEMS } from './lane-overrides.mjs'
 import { readinessReport, READINESS_PROBLEMS } from './lane-readiness.mjs'
 
 const LANES = Object.keys(REVIEW_PROFILES)
@@ -49,10 +49,6 @@ const REPAIR = Object.freeze({
   binary_absent: () => 'install it — the plugin invokes this directly and nothing here can substitute for it',
 })
 
-const readOverrides = async () => {
-  try { return JSON.parse(await readFile(OVERRIDE_PATH, 'utf8')) } catch { return {} }
-}
-
 async function check() {
   const report = readinessReport(REVIEW_PROFILES, process.env, { overrideLoader: loadLaneOverrides })
   const { problems } = loadLaneOverrides({ knownLanes: LANES, profiles: REVIEW_PROFILES })
@@ -76,10 +72,15 @@ async function check() {
     console.log(`    missing ${m.missing} — ${m.why}`)
     console.log(`      ${REPAIR.binary_absent()}`)
   }
+  for (const m of report.plugin.optionalMissing ?? []) {
+    console.log(`    optional missing ${m.missing} — ${m.why}`)
+  }
 
   console.log(`\n  lanes callable on this machine: ${report.callableLanes.length}/${report.lanes.length}`)
   console.log(`  families callable: ${report.callableFamilies.length}`
-    + (report.callableFamilies.length < 3 ? '  — a review panel needs three distinct families' : ''))
+    + (report.callableFamilies.length < 3 ? '  — a strict review panel requires AGY plus two distinct models (prefers three families)' : ''))
+  console.log(`  distinct models configured: ${report.callableModels?.length ?? 0}`
+    + ((report.callableModels?.length ?? 0) >= 3 && report.callableFamilies.length < 3 ? '  — distinct local declarations exist (live model availability still depends on remote catalog)' : ''))
   console.log('')
   for (const lane of report.lanes) {
     const mark = lane.available ? 'ok  ' : 'NOT '
@@ -108,8 +109,66 @@ async function check() {
   return report.setupRequired ? 2 : 0
 }
 
+/**
+ * Prepare a validated lanes.json update, migrating any lone legacy key
+ * (e.g. `opencodeDeepseek` -> `opencode`) while refusing conflicting pairs
+ * or invalid overrides BEFORE touching disk.
+ */
+export function prepareOverrideUpdate(current, lane, key, value, {
+  knownLanes = LANES,
+  profiles = REVIEW_PROFILES,
+} = {}) {
+  if (current === null || typeof current !== 'object' || Array.isArray(current)) {
+    return { ok: false, error: 'not_object', problems: [{ code: 'not_object', lane: null, field: null }] }
+  }
+  const targetLane = LEGACY_LANE_ALIASES[lane] ?? lane
+  if (!knownLanes.includes(targetLane)) {
+    return { ok: false, error: 'unknown_lane', problems: [{ code: 'unknown_lane', lane, field: null }] }
+  }
+  if (!OVERRIDABLE_FIELDS.includes(key)) {
+    return { ok: false, error: 'unknown_field', problems: [{ code: 'unknown_field', lane: targetLane, field: key }] }
+  }
+  const base = { ...current }
+  for (const [legacyKey, canonicalKey] of Object.entries(LEGACY_LANE_ALIASES)) {
+    if (Object.hasOwn(base, legacyKey)) {
+      if (Object.hasOwn(base, canonicalKey)) {
+        return { ok: false, error: 'legacy_lane_conflict', problems: [{ code: 'legacy_lane_conflict', lane: legacyKey, field: null }] }
+      }
+      const legacyEntry = base[legacyKey]
+      if (legacyEntry === null || typeof legacyEntry !== 'object' || Array.isArray(legacyEntry)) {
+        return { ok: false, error: 'lane_not_object', problems: [{ code: 'lane_not_object', lane: legacyKey, field: null }] }
+      }
+      delete base[legacyKey]
+      base[canonicalKey] = { ...legacyEntry }
+    }
+  }
+  if (Object.hasOwn(base, targetLane)) {
+    const existingTarget = base[targetLane]
+    if (existingTarget === null || typeof existingTarget !== 'object' || Array.isArray(existingTarget)) {
+      return { ok: false, error: 'lane_not_object', problems: [{ code: 'lane_not_object', lane: targetLane, field: null }] }
+    }
+  }
+  const next = {
+    ...base,
+    [targetLane]: {
+      ...(base[targetLane] ?? {}),
+      [key]: value,
+    },
+  }
+  const { problems } = loadLaneOverrides({
+    knownLanes,
+    profiles,
+    readFile: () => JSON.stringify(next),
+  })
+  if (problems.length > 0) {
+    return { ok: false, error: problems[0].code, problems }
+  }
+  return { ok: true, lane: targetLane, next, problems: [] }
+}
+
 async function set(lane, key, rawValue) {
-  if (!LANES.includes(lane)) {
+  const targetLane = LEGACY_LANE_ALIASES[lane] ?? lane
+  if (!LANES.includes(targetLane)) {
     console.error(`no such lane: ${lane}\nknown: ${LANES.join(', ')}`)
     return 1
   }
@@ -124,17 +183,38 @@ async function set(lane, key, rawValue) {
   if (key === 'command' || key === 'env') {
     try { value = JSON.parse(rawValue) } catch {
       console.error(`${key} must be valid JSON — for example:\n  ${key === 'command'
-        ? `'["npx","-y","@agentclientprotocol/codex-acp@1.1.7"]'`
+        ? `'["npx","-y","@agentclientprotocol/codex-acp@2.7.0"]'`
         : `'{"NPM_CONFIG_CACHE":"/path/to/cache"}'`}`)
       return 1
     }
   }
 
-  const current = await readOverrides()
-  const next = { ...current, [lane]: { ...(current[lane] ?? {}), [key]: value } }
+  let current = {}
+  const existingRaw = await readFile(OVERRIDE_PATH, 'utf8').catch((err) => {
+    if (err?.code === 'ENOENT') return null
+    throw err
+  }).catch(() => undefined)
+  if (existingRaw === undefined) {
+    console.log(`\n  ${OVERRIDE_PROBLEMS.unreadable} — ${OVERRIDE_PATH}\n`)
+    return 2
+  }
+  if (existingRaw !== null) {
+    try { current = JSON.parse(existingRaw) } catch {
+      console.log(`\n  ${OVERRIDE_PROBLEMS.not_json} — ${OVERRIDE_PATH}\n`)
+      return 2
+    }
+  }
+
+  const prepared = prepareOverrideUpdate(current, lane, key, value)
+  if (!prepared.ok) {
+    const first = prepared.problems[0]
+    console.log(`\n  refused update without modifying ${OVERRIDE_PATH} — ${first.code}: ${OVERRIDE_PROBLEMS[first.code]}\n`)
+    return 2
+  }
+
   await mkdir(dirname(OVERRIDE_PATH), { recursive: true })
-  await writeFile(OVERRIDE_PATH, `${JSON.stringify(next, null, 2)}\n`, 'utf8')
-  console.log(`\n  wrote ${lane}.${key} to ${OVERRIDE_PATH}`)
+  await writeFile(OVERRIDE_PATH, `${JSON.stringify(prepared.next, null, 2)}\n`, 'utf8')
+  console.log(`\n  wrote ${prepared.lane}.${key} to ${OVERRIDE_PATH}`)
 
   // THE RE-CHECK. Writing is not the outcome; the lane becoming callable is.
   const { problems } = loadLaneOverrides({ knownLanes: LANES, profiles: REVIEW_PROFILES })
@@ -144,12 +224,12 @@ async function set(lane, key, rawValue) {
     return 2
   }
   const report = readinessReport(REVIEW_PROFILES, process.env, { overrideLoader: loadLaneOverrides })
-  const after = report.lanes.find(l => l.lane === lane)
+  const after = report.lanes.find(l => l.lane === prepared.lane)
   if (after?.available) {
-    console.log(`  ${lane} is now callable on this machine.\n`)
+    console.log(`  ${prepared.lane} is now callable on this machine.\n`)
     return 0
   }
-  console.log(`  ${lane} is still NOT callable:`)
+  console.log(`  ${prepared.lane} is still NOT callable:`)
   for (const b of after?.blocking ?? []) console.log(`    ${b.code}: ${b.missing}`)
   console.log('')
   return 2

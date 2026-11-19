@@ -377,7 +377,7 @@ test('same-pool AGY Gemini Carbon-to-Hydrogen palette is refused even with disti
           b_w1: {
             palette: [
               paletteEntry('gemini-4-carbon-high', { adapter: 'agy', bucket: 'agy' }),
-              paletteEntry('gpt-6.1-sol', { adapter: 'codex' }),
+              paletteEntry('gpt-6.2-sol', { adapter: 'codex' }),
             ],
           },
         },
@@ -423,7 +423,7 @@ test('inherit-account-default is refused on any resolved AGY controller, role, s
           b_w1: {
             palette: [
               paletteEntry('inherit-account-default', { adapter: 'agy' }),
-              paletteEntry('gpt-6.1-sol', { adapter: 'codex' }),
+              paletteEntry('gpt-6.2-sol', { adapter: 'codex' }),
             ],
           },
         },

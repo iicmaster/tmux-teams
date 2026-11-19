@@ -744,12 +744,12 @@ test('a session reporting the RETIRED gpt-6-sol is refused the same way, while i
   const retired = runCompanion('task-term-retired-sol', { MOCK_MODEL: 'gpt-6-sol' })
   assert.notEqual(retired.status, 0,
     `a session reporting retired gpt-6-sol must not be treated as a clean dispatch; stderr:\n${retired.stderr}`)
-  assert.match(retired.stderr, /gpt-6-sol is retired — the Codex frontier is gpt-6\.1-sol/,
+  assert.match(retired.stderr, /pre-6\.2 Codex sol\/astra is retired — the frontier is gpt-6\.2-sol/,
     `expected the refusal to name the successor; stderr:\n${retired.stderr}`)
   assert.ok(!retired.requests.some((entry) => entry.method === 'session/prompt'),
     'the turn proceeded on the retired model instead of being refused before session/prompt')
 
-  const current = runCompanion('task-term-current-sol', { MOCK_MODEL: 'gpt-6.1-sol' })
+  const current = runCompanion('task-term-current-sol', { MOCK_MODEL: 'gpt-6.2-sol' })
   // Positive guard, not a substring absence: the refusal wording changed once
   // already ('prohibited' -> 'prohibited model'), which silently emptied this
   // check. The successor's proof is a clean dispatch that DELIVERS its prompt.

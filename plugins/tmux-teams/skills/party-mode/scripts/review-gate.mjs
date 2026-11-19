@@ -15,6 +15,7 @@ import { ACP_REVIEW_LIMITS, prepareReviewPacket, runAcpReview, ReviewTransportEr
 // collision decision on raw profiles.
 import { REVIEW_PROFILES, buildProfileEnv, provenFamilyKey, provenFamilyCollision, laneIdentity, launchArgv } from './review-profiles.mjs'
 import {
+  REVIEW_POLICY_MODES,
   planReviewPanel,
   planFallback,
   validateReview,
@@ -36,6 +37,10 @@ const laneStage = code => LANE_STAGES.has(code) ? code : 'transport'
 // attempt, so they earn a distinct reason from `lane_failed`'s "re-run and
 // compare the digest" advice below, which only fits a transient stage.
 const DETERMINISTIC_LANE_STAGES = new Set(['input', 'config', 'policy'])
+// Master 2026-11-18: substitution is a bounded LADDER WALK, not one swap.
+// Cap total sequential reserve launches so an injected planner returning valid
+// seats that keep failing cannot spin indefinitely.
+const LADDER_GUARD = 12
 // Printable ASCII only — no newline, no carriage return, no ANSI/C0 control
 // bytes. `validate` is a public injection seam (`runReviewGate({
 // validateReview })`); a custom validator's `reason` is untrusted text, not
@@ -162,7 +167,7 @@ const attemptRecord = attempt => Object.freeze({
   } : {}),
 })
 
-function choosePanel(profiles, packet, planner = planReviewPanel) {
+function choosePanel(profiles, packet, planner = planReviewPanel, policyMode = 'strict') {
   if (Array.isArray(profiles)) {
     throw new ReviewTransportError('input', 'review profiles must be a policy-keyed object, not an arbitrary array')
   }
@@ -173,13 +178,14 @@ function choosePanel(profiles, packet, planner = planReviewPanel) {
     primaryProfile: packet?.primaryProfile,
     primary_model: packet?.primary_model,
   }
-  const plan = planner(primaryInput)
+  const plan = policyMode === 'strict' ? planner(primaryInput) : planner(primaryInput, { policyMode })
   if (plan?.blocked) throw new ReviewTransportError('policy', plan.reason ?? 'review panel is blocked')
   const primary = (plan?.reviewers ?? []).map(id => profiles[id]).filter(Boolean)
   if (primary.length !== 3 || new Set(primary.map(profile => profile.id)).size !== 3) {
     throw new ReviewTransportError('policy', 'policy did not resolve three distinct review profiles')
   }
-  if (primary.filter(profile => profile.id === 'agy').length !== 1) {
+  const requireAgy = policyMode === 'opencode-free' ? Boolean(plan?.requireAgy) : true
+  if (requireAgy && primary.filter(profile => profile.id === 'agy').length !== 1) {
     throw new ReviewTransportError('policy', 'policy panel must contain exactly one mandatory AGY reviewer')
   }
   // Master 2026-11-17: distinctness is by ACKNOWLEDGED MODEL, not family —
@@ -415,11 +421,18 @@ export async function runReviewGate(packet, {
   synthesizeReviews: synthesize = synthesizeReviews,
   planReviewPanel: planner = planReviewPanel,
   planFallback: fallbackPlanner = planFallback,
+  policyMode: optionPolicyMode,
   timeoutMs,
   targetRepository,
 } = {}) {
-  const { primary, all, plan } = choosePanel(profiles, packet, planner)
+  const policyMode = optionPolicyMode ?? process.env.REVIEW_GATE_MODE ?? 'strict'
+  if (!REVIEW_POLICY_MODES.includes(policyMode)) {
+    throw new ReviewTransportError('policy', 'unsupported review policy mode')
+  }
+  const { primary, all, plan } = choosePanel(profiles, packet, planner, policyMode)
   let activePlan = plan
+  const requireAgy = policyMode === 'opencode-free' ? Boolean(activePlan?.requireAgy) : true
+  const singleProviderQuorum = Boolean(activePlan?.singleProviderQuorum ?? (policyMode === 'opencode-free'))
   const expectedInputHash = prepareReviewPacket(packet).inputHash
   const deps = { runAcpReview: laneRunner, buildProfileEnv: profileEnv, timeoutMs, targetRepository }
   const settled = await Promise.allSettled(primary.map(profile => defaultLaneRunner(profile, packet, deps)))
@@ -440,6 +453,8 @@ export async function runReviewGate(packet, {
       ok: false,
       blocked: true,
       code,
+      policyMode,
+      singleProviderQuorum,
       inputHash: expectedInputHash,
       primaryFamily: activePlan?.primaryFamily ?? null,
       substitution: Object.freeze({ ...substitution }),
@@ -447,53 +462,67 @@ export async function runReviewGate(packet, {
     })
     return error
   }
-  const agy = attempts.find(a => isAgy(a.profile))
-  if (!agy || !agy.valid) {
-    const kind = agy?.failureKind === 'review' ? 'review' : 'transport'
-    substitution.remaining = 0
-    substitution.reason = 'AGY is mandatory and cannot be replaced'
-    throw fail(kind, `AGY review lane failed (${agy?.failure ?? 'missing'}); external review is blocked`)
+  if (requireAgy) {
+    const agy = attempts.find(a => isAgy(a.profile))
+    if (!agy || !agy.valid) {
+      const kind = agy?.failureKind === 'review' ? 'review' : 'transport'
+      substitution.remaining = 0
+      substitution.reason = 'AGY is mandatory and cannot be replaced'
+      throw fail(kind, `AGY review lane failed (${agy?.failure ?? 'missing'}); external review is blocked`)
+    }
   }
   // Reserves are deliberately sequential and only begin after all primaries
   // settle, which prevents duplicated concurrent reviews of the same packet.
-  const originalFailures = attempts.filter(a => !a.valid && !isAgy(a.profile))
-  if (originalFailures.length > 1) {
+  //
+  // Master 2026-11-18: substitution is a bounded LADDER WALK, not one swap.
+  // Both multiple failed primaries and reserves that subsequently fail walk
+  // sequentially through `planFallback` up to `LADDER_GUARD`.
+  const pendingFailures = attempts.filter(a => !a.valid && (!requireAgy || !isAgy(a.profile)))
+  let steps = 0
+  while (pendingFailures.length > 0 && steps < LADDER_GUARD) {
+    const activeFailure = pendingFailures.shift()
     substitution.remaining = 0
-    substitution.reason = 'one reserve cannot restore an exact-three panel'
-    throw fail('transport', 'more than one non-AGY review lane failed; one reserve cannot restore an exact-three panel')
-  }
-  const originalFailure = originalFailures[0]
-  if (originalFailure) {
-    substitution.replaced = originalFailure.profile.id ?? originalFailure.profile.lane
-    substitution.remaining = 0
+    substitution.replaced = activeFailure.profile.id ?? activeFailure.profile.lane
     let reserve
-    if (plan && typeof fallbackPlanner === 'function') {
+    if (activePlan && typeof fallbackPlanner === 'function') {
       let replacement
       try {
-        replacement = fallbackPlanner(plan, originalFailure.profile.id)
+        replacement = fallbackPlanner(activePlan, activeFailure.profile.id)
       } catch (error) {
         // A throwing planner is a bug in the injected dependency, not a lane
         // fault — but it must still leave the operator a report to read
         // instead of empty stdout and a bare stack line on stderr.
         throw fail('transport', `review fallback planner threw: ${error?.message ?? 'unknown error'}`)
       }
-      if (!replacement?.blocked) {
-        activePlan = replacement
-        reserve = profiles[replacement.replaced?.replacement ?? replacement.reserve]
-      } else substitution.reason = boundedReason(replacement.reason)
-    } else reserve = reserveFor(originalFailure.profile, all)
+      if (replacement?.blocked) {
+        substitution.reason = boundedReason(replacement.reason)
+        break
+      }
+      activePlan = replacement
+      reserve = profiles[replacement.replaced?.replacement ?? replacement.reserve]
+    } else {
+      const candidate = reserveFor(activeFailure.profile, all)
+      reserve = candidate && !attempts.some(a => a.profile.id === candidate.id) ? candidate : null
+    }
     if (reserve) {
       substitution.used = true
       substitution.replacement = reserve.id ?? reserve.lane
       const [result] = await Promise.allSettled([defaultLaneRunner(reserve, packet, deps)])
-      attempts.push(await assessAttempt({
+      const attempt = await assessAttempt({
         profile: reserve,
         result,
         fallback: true,
         replaces: substitution.replaced,
-      }, validate, expectedInputHash))
-    } else substitution.reason ??= 'no eligible reserve for this route'
+      }, validate, expectedInputHash)
+      attempts.push(attempt)
+      steps += 1
+      if (!attempt.valid) pendingFailures.unshift(attempt)
+    } else {
+      substitution.reason ??= 'no eligible reserve for this route'
+      break
+    }
   }
+  if (pendingFailures.length > 0) substitution.reason ??= 'ladder guard exhausted'
   const accepted = attempts.filter(a => a.valid)
   if (accepted.length !== 3) throw fail('transport', `review gate accepted ${accepted.length}; exactly three are required`)
   // Keeps the whole attempt, not just `.item`: the final collision recheck
@@ -506,15 +535,17 @@ export async function runReviewGate(packet, {
   if (reviews.length !== 3 || new Set(reviews.map(item => item.profile)).size !== 3) {
     throw fail('policy', 'final review profiles are not exactly three distinct identities')
   }
-  if (reviews.filter(item => item.profile === 'agy').length !== 1) {
+  if (requireAgy && reviews.filter(item => item.profile === 'agy').length !== 1) {
     throw fail('policy', 'final review panel must contain exactly one AGY identity')
   }
-  // Master 2026-11-17: distinctness is decided by the ACKNOWLEDGED MODEL, not
-  // the declared family. Three opencode free seats (minimax/deepseek/hy/glm)
-  // may sit together when quota forces it — each verified as a different
-  // model — so the old `new Set(finalFamilies).size === 3` check blocked a
-  // valid panel. The model-distinctness is the sole diversity rule: no reviewer may share
-  // the primary's family. Model distinctness is checked below on the receipts.
+  if (activePlan?.excludedSeats?.some(excludedId => reviews.some(item => item.profile === excludedId))) {
+    throw fail('policy', 'final review panel cannot seat the primary model')
+  }
+  // Master 2026-11-18: distinctness is decided by the ACKNOWLEDGED MODEL, not
+  // the declared family. The ten opencode free seats may sit together when
+  // quota forces it — each verified as a different model — so the old
+  // `new Set(finalFamilies).size === 3` check blocked a valid panel. Model
+  // distinctness is checked below on the receipts.
   if (new Set(reviews.map(item => item.model)).size !== 3) {
     throw fail('policy', 'final review models are not distinct')
   }
@@ -553,6 +584,8 @@ export async function runReviewGate(packet, {
   const report = Object.freeze({
     ok: synthesis?.verdict === 'PASS',
     count: reviews.length,
+    policyMode,
+    singleProviderQuorum,
     primaryFamily: activePlan?.primaryFamily ?? null,
     route: Object.freeze(reviews.map(item => item.profile)),
     inputHash: expectedInputHash,
@@ -610,7 +643,11 @@ export async function runReviewGateCli([packetPath, targetRepository] = [], {
     } finally {
       await handle?.close()
     }
-    const result = await gate(packet, { targetRepository, timeoutMs: laneTimeoutMs() })
+    const result = await gate(packet, {
+      targetRepository,
+      timeoutMs: laneTimeoutMs(),
+      policyMode: process.env.REVIEW_GATE_MODE ?? 'strict',
+    })
     stdout.write(JSON.stringify(result) + '\n')
     return REVIEW_GATE_EXIT.ok
   } catch (error) {

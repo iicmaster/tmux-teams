@@ -40,11 +40,15 @@ const object = (entries) => Object.fromEntries(entries)
 // that `agy.model` equals the right string is what the suite already did while
 // the string was the forbidden one — a value test cannot tell a pin from a
 // violation. These cases fail if the guard stops rejecting Gemini 3.1.
-test('a Gemini 3.1 or retired gpt-6-sol reviewer model is refused rather than run', () => {
+test('Gemini 3.1, fable-5 and every pre-6.2 Codex sol/astra reviewer model is refused', () => {
   for (const name of [
     'gemini-3.1-pro-high', 'gemini-3.1-pro', 'Gemini 3.1', 'agy/gemini_3.1-flash',
-    // Master, 2026-09-30: the old generation is retired — only gpt-6.1-sol runs.
-    'gpt-6-sol', 'GPT-6-SOL', 'gpt-6-sol-fast',
+    // Master, 2026-11-19: every pre-6.2 sol/astra generation is retired — only the 6.2 seats run.
+    'gpt-6-sol', 'GPT-6-SOL', 'gpt-6-sol-fast', 'gpt-6.0-sol', 'gpt-6.1-sol',
+    'gpt-6_1_sol', 'gpt-6.1-sol[ultra]',
+    'gpt-6-astra', 'gpt-6.1-astra', 'gpt-6-1-astra', 'GPT-6.1-ASTRA',
+    'gpt-6.1.sol', 'gpt-6.astra', 'gpt-6_1_astra',
+    'fable-5', 'claude-fable-5', 'fable',
   ]) {
     assert.throws(() => assertPermittedModel(name, 'probe'), /prohibited model on tmux-teams review routes/, name)
   }
@@ -54,7 +58,8 @@ test('a Gemini 3.1 or retired gpt-6-sol reviewer model is refused rather than ru
     'gemini-4-hydrogen-xhigh', 'gemini-4-hydrogen-high', 'gemini-4-hydrogen-medium', 'gemini-4-hydrogen-low',
     'gemini-pro-orchestrator', 'gemini-pro-orchestrator-argon',
     'gemini-3.8-flash-high', 'gemini-3.8-flash-medium', 'gemini-3.8-flash-low',
-    'gemini-3.6-flash-high', 'gemini-3.10-pro', 'gpt-6-luna', 'gpt-6.1-sol', null,
+    'gemini-3.6-flash-high', 'gemini-3.10-pro', 'gpt-6-luna', 'gpt-6.2-sol',
+    'gpt-6.2-astra', 'gpt-6.2-sol[ultra]', 'fable-5.1', null,
   ]) {
     assert.equal(assertPermittedModel(name, 'probe'), name)
   }
@@ -70,7 +75,7 @@ test('immutable ACP profiles pin providers, models, argv, and AGY plan mode', ()
   assert.deepEqual(REVIEW_PROFILES.zai.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
   assert.deepEqual(REVIEW_PROFILES.qwen.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
   assert.deepEqual(REVIEW_PROFILES.claude.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
-  assert.deepEqual(REVIEW_PROFILES.codex.command, ['npx', '-y', '@agentclientprotocol/codex-acp@1.1.7'])
+  assert.deepEqual(REVIEW_PROFILES.codex.command, ['npx', '-y', '@agentclientprotocol/codex-acp@2.7.0'])
   assert.deepEqual(REVIEW_PROFILES.agy.config, { model: 'gemini-4-hydrogen-high', mode: 'plan' })
   assert.equal(REVIEW_PROFILES.agy.displayModel, 'agy/gemini-4-hydrogen-high')
   assert.deepEqual(REVIEW_PROFILES.kimi.config, { model: 'opus', mode: 'plan' })
@@ -104,7 +109,7 @@ test('immutable ACP profiles pin providers, models, argv, and AGY plan mode', ()
 
 test('primary normalization is robust and blocks Gemini/unknown primaries', () => {
   const cases = [
-    [' GPT-6.1-sol ', 'openai'], [{ provider: 'Anthropic', model: 'x' }, 'claude'],
+    [' GPT-6.2-sol ', 'openai'], [{ provider: 'Anthropic', model: 'x' }, 'claude'],
     ['kimi-k3', 'kimi'], ['claude-kimi', 'kimi'], ['claude-qwen', 'qwen'], ['claude-zai', 'zai'],
     ['qwen3.8-max-preview', 'qwen'],
     ['GLM-5.2', 'zai'], ['google-antigravity', 'gemini'], ['?', 'unknown'],
@@ -118,7 +123,7 @@ test('primary normalization is robust and blocks Gemini/unknown primaries', () =
 
 test('mixed-family text in one primary field fails closed instead of selecting the first match', () => {
   for (const primary of [
-    'gpt-6.1-sol claude-opus-5-5',
+    'gpt-6.2-sol claude-opus-5-5',
     'codex+claude',
     'kimi-code/k3 + glm-5.2',
   ]) {
@@ -293,6 +298,7 @@ test('environment is allowlisted, provider-scoped, and launch settings are injec
   })
   const launch = buildAcpLaunch('agy', {
     env: { ...source, AGY_BIN: '/evil/agy' },
+    overrideLoader: () => ({ overrides: {}, problems: [] }),
     settingsLoader: () => ({ mode: 'unsafe', transport: 'acp' }),
     agyBinaryResolver: () => '/trusted/agy',
     agyVersionResolver: () => '1.5.9',
@@ -911,4 +917,25 @@ test('the runtime model request is held to the same prohibition as the pinned on
     'ACP_MODEL is read without being checked against the prohibition')
   assert.match(text, /ACP_EXPECT_MODEL\?\.trim\(\) \|\| requestedModelOverride, 'ACP_EXPECT_MODEL'\)/,
     'ACP_EXPECT_MODEL is read without being checked against the prohibition')
+})
+
+test('opencode-free opt-in policy produces a valid 3-model plan and passes synthesizeReviews without AGY', () => {
+  const strictGemini = createReviewPlan('gemini-4-hydrogen-high')
+  assert.equal(strictGemini.blocked, true)
+
+  const plan = createReviewPlan('gpt-6.2-sol', { policyMode: 'opencode-free' })
+  assert.equal(plan.blocked, false)
+  assert.equal(plan.requireAgy, false)
+  assert.equal(plan.singleProviderQuorum, true)
+  assert.deepEqual(plan.reviewers, ['opencode', 'opencodeInkling', 'opencodeMimo'])
+
+  const syn = synthesizeReviews(plan, {
+    opencode: pass,
+    opencodeInkling: pass,
+    opencodeMimo: pass,
+  })
+  assert.equal(syn.verdict, 'PASS')
+  assert.equal(syn.passCount, 3)
+
+  assert.equal(createReviewPlan('gpt-6.2-sol', { policyMode: 'bogus' }).blocked, true)
 })

@@ -52,6 +52,10 @@ export const OVERRIDABLE_FIELDS = Object.freeze([
   'env',
 ])
 
+export const LEGACY_LANE_ALIASES = Object.freeze({
+  opencodeDeepseek: 'opencode',
+})
+
 // Closed diagnostic vocabulary, the same discipline as the lane-probe codes: a
 // caller reads a CODE, never a sentence built from the file's bytes. Nothing
 // derived from the file's CONTENT appears in any of these strings, so a
@@ -61,6 +65,7 @@ export const OVERRIDE_PROBLEMS = Object.freeze({
   not_json: 'the per-machine lane override file is not valid JSON',
   not_object: 'the per-machine lane override file must hold a JSON object at its top level',
   unknown_lane: 'the override file names a lane this plugin does not ship',
+  legacy_lane_conflict: 'both legacy key "opencodeDeepseek" and "opencode" are set; remove "opencodeDeepseek" and keep only "opencode" in lanes.json',
   lane_not_object: 'an override entry must be a JSON object',
   unknown_field: 'an override entry sets a field that is not overridable',
   bad_command: 'an override command must be a non-empty array of strings',
@@ -74,7 +79,7 @@ const isPlainObject = value => value !== null && typeof value === 'object' && !A
 /**
  * Read and validate the per-machine override file.
  *
- * Returns `{ overrides, problems, present }`. Every `problems[].code` is a key
+ * Returns `{ overrides, problems, present, migrations }`. Every `problems[].code` is a key
  * of `OVERRIDE_PROBLEMS` and nothing else. When `problems` is non-empty,
  * `overrides` is EMPTY — a file applies whole or not at all, so one bad line
  * cannot leave a caller half-configured and unaware of which half took.
@@ -96,44 +101,51 @@ export function loadLaneOverrides({
     // ENOENT is the ordinary case — most machines never write this file — and
     // is not a problem. Anything else (a permission error, a directory where a
     // file belongs) IS one: the operator meant something to be there.
-    if (error?.code === 'ENOENT') return { overrides: {}, problems: [], present: false }
-    return { overrides: {}, problems: [{ code: 'unreadable', lane: null, field: null }], present: true }
+    if (error?.code === 'ENOENT') return { overrides: {}, problems: [], present: false, migrations: Object.freeze([]) }
+    return { overrides: {}, problems: [{ code: 'unreadable', lane: null, field: null }], present: true, migrations: Object.freeze([]) }
   }
 
   let parsed
   try {
     parsed = JSON.parse(raw)
   } catch {
-    return { overrides: {}, problems: [{ code: 'not_json', lane: null, field: null }], present: true }
+    return { overrides: {}, problems: [{ code: 'not_json', lane: null, field: null }], present: true, migrations: Object.freeze([]) }
   }
   if (!isPlainObject(parsed)) {
-    return { overrides: {}, problems: [{ code: 'not_object', lane: null, field: null }], present: true }
+    return { overrides: {}, problems: [{ code: 'not_object', lane: null, field: null }], present: true, migrations: Object.freeze([]) }
   }
 
   const problems = []
   const overrides = {}
-  for (const [lane, entry] of Object.entries(parsed)) {
-    if (!known.has(lane)) { problems.push({ code: 'unknown_lane', lane, field: null }); continue }
-    if (!isPlainObject(entry)) { problems.push({ code: 'lane_not_object', lane, field: null }); continue }
+  const migrations = []
+  for (const [rawLane, entry] of Object.entries(parsed)) {
+    const mappedLane = Object.hasOwn(LEGACY_LANE_ALIASES, rawLane) ? LEGACY_LANE_ALIASES[rawLane] : null
+    if (mappedLane && Object.hasOwn(parsed, mappedLane)) {
+      problems.push({ code: 'legacy_lane_conflict', lane: rawLane, field: null })
+      continue
+    }
+    const effectiveLane = mappedLane ?? rawLane
+    if (!known.has(effectiveLane)) { problems.push({ code: 'unknown_lane', lane: rawLane, field: null }); continue }
+    if (!isPlainObject(entry)) { problems.push({ code: 'lane_not_object', lane: rawLane, field: null }); continue }
     const clean = {}
     for (const [field, value] of Object.entries(entry)) {
       if (!OVERRIDABLE_FIELDS.includes(field)) {
-        problems.push({ code: 'unknown_field', lane, field }); continue
+        problems.push({ code: 'unknown_field', lane: rawLane, field }); continue
       }
       if (field === 'command') {
         if (!Array.isArray(value) || value.length === 0 || !value.every(v => typeof v === 'string' && v.length > 0)) {
-          problems.push({ code: 'bad_command', lane, field }); continue
+          problems.push({ code: 'bad_command', lane: rawLane, field }); continue
         }
         clean.command = Object.freeze([...value])
       } else if (field === 'env') {
         if (!isPlainObject(value)
           || !Object.entries(value).every(([k, v]) => typeof k === 'string' && typeof v === 'string')) {
-          problems.push({ code: 'bad_env', lane, field }); continue
+          problems.push({ code: 'bad_env', lane: rawLane, field }); continue
         }
         clean.env = Object.freeze({ ...value })
       } else {
         if (typeof value !== 'string' || value.length === 0) {
-          problems.push({ code: 'bad_string', lane, field }); continue
+          problems.push({ code: 'bad_string', lane: rawLane, field }); continue
         }
         clean[field] = value
       }
@@ -146,20 +158,21 @@ export function loadLaneOverrides({
     // package. A deepseek review lane found that this file's own comment
     // promised this refusal while nothing implemented it.
     if (clean.adapterPackage && profiles) {
-      const shipped = profiles[lane]
+      const shipped = profiles[effectiveLane]
       const command = Array.isArray(shipped?.command) ? shipped.command : []
       if (!shipped?.adapterPackage || !command.includes(shipped.adapterPackage)) {
-        problems.push({ code: 'bad_adapter_swap', lane, field: 'adapterPackage' })
+        problems.push({ code: 'bad_adapter_swap', lane: rawLane, field: 'adapterPackage' })
         continue
       }
     }
-    overrides[lane] = Object.freeze(clean)
+    overrides[effectiveLane] = Object.freeze(clean)
+    if (mappedLane) migrations.push(Object.freeze({ from: rawLane, to: effectiveLane }))
   }
 
   // Whole or nothing. Half-applying a file the operator got wrong is how a
   // setting comes to look applied while the original failure carries on.
-  if (problems.length > 0) return { overrides: {}, problems, present: true }
-  return { overrides: Object.freeze(overrides), problems: [], present: true }
+  if (problems.length > 0) return { overrides: {}, problems, present: true, migrations: Object.freeze([]) }
+  return { overrides: Object.freeze(overrides), problems: [], present: true, migrations: Object.freeze(migrations) }
 }
 
 /**

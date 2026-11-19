@@ -25,12 +25,48 @@ import { join } from 'node:path'
 
 export const PARTY_PROBLEMS = Object.freeze({
   not_installed: 'bmad-party-mode is not installed at the expected root, so no saved party can be seated',
-  uv_missing: 'uv is not on PATH, and bmad-party-mode resolves its rosters through uv',
+  uv_missing: 'neither uv nor python3 (>= 3.11) is available on PATH to run bmad-party-mode roster resolution',
   unknown_party: 'no saved party has that id',
   resolver_failed: 'the party resolver ran and did not return a roster',
   party_substituted: 'the party resolver returned a different party than the one asked for',
   task_file_unreadable: 'no readable --task-file was given, so automatic party selection has no brief to score',
 })
+
+const SCRUBBED_SECRET_ENV_KEYS = new Set([
+  'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN',
+  'ZAI_API_KEY', 'KIMI_API_KEY', 'MOONSHOT_API_KEY',
+  'GH_TOKEN', 'GITHUB_TOKEN', 'NPM_TOKEN',
+  'OPENROUTER_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY',
+  'AGY_API_KEY', 'ANTIGRAVITY_API_KEY',
+])
+
+export function buildSafePythonEnv(env = process.env) {
+  const out = {}
+  for (const [k, v] of Object.entries(env ?? {})) {
+    if (v === undefined) continue
+    if (SCRUBBED_SECRET_ENV_KEYS.has(k) || /(?:_API_KEY|_AUTH_TOKEN)$/i.test(k)) continue
+    out[k] = v
+  }
+  return out
+}
+
+export function parsePythonVersion(output) {
+  const m = String(output ?? '').match(/Python\s+(\d+)\.(\d+)(?:\.(\d+))?/i)
+  if (!m) return null
+  return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3] ?? 0) }
+}
+
+function runPartyResolver(script, args, { env = process.env, run = spawnSync } = {}) {
+  const safeEnv = buildSafePythonEnv(env)
+  const uvResult = run('uv', ['run', script, ...args], { encoding: 'utf8', env: safeEnv })
+  if (uvResult?.error?.code !== 'ENOENT') return uvResult
+  const pyProbe = run('python3', ['--version'], { encoding: 'utf8', env: safeEnv })
+  const ver = pyProbe && !pyProbe.error && pyProbe.status === 0
+    ? parsePythonVersion(`${pyProbe.stdout ?? ''}\n${pyProbe.stderr ?? ''}`)
+    : null
+  if (!ver || ver.major < 3 || (ver.major === 3 && ver.minor < 11)) return uvResult
+  return run('python3', [script, ...args], { encoding: 'utf8', env: safeEnv })
+}
 
 // Auto-selection keywords, keyed by the exact saved group id. This is the
 // repo-local half of the contract; selection-catalog.md documents the same
@@ -56,16 +92,36 @@ export function partyModeRoot(env = process.env) {
 }
 
 /**
+ * Safe party root resolution: uses `$BMAD_PARTY_MODE_ROOT` or global
+ * `~/.claude/skills/bmad-party-mode` by default, and checks project-local
+ * roots ONLY when `allowProjectParty` is explicitly opted in.
+ */
+export function resolvePartyRoot({
+  env = process.env,
+  projectRoot = process.cwd(),
+  allowProjectParty = false,
+} = {}) {
+  if (env.BMAD_PARTY_MODE_ROOT) return env.BMAD_PARTY_MODE_ROOT
+  const globalRoot = join(env.HOME ?? homedir(), '.claude', 'skills', 'bmad-party-mode')
+  if (!allowProjectParty || existsSync(join(globalRoot, 'scripts', 'resolve_party.py'))) return globalRoot
+  for (const rel of ['.agents', '.claude']) {
+    const candidate = join(projectRoot, rel, 'skills', 'bmad-party-mode')
+    if (existsSync(join(candidate, 'scripts', 'resolve_party.py'))) return candidate
+  }
+  return globalRoot
+}
+
+/**
  * Resolve a party id to bmad-party-mode's own JSON. Returns
  * `{ ok: true, party }` or `{ ok: false, code, available }`.
  * `run` is injectable so a test never needs uv or a real install.
  */
-export function resolveParty(id, { env = process.env, projectRoot = process.cwd(), run = spawnSync } = {}) {
-  const root = partyModeRoot(env)
+export function resolveParty(id, { env = process.env, projectRoot = process.cwd(), allowProjectParty = false, run = spawnSync } = {}) {
+  const root = resolvePartyRoot({ env, projectRoot, allowProjectParty })
   const script = join(root, 'scripts', 'resolve_party.py')
   if (!existsSync(script)) return { ok: false, code: 'not_installed', available: [] }
-  const r = run('uv', ['run', script, '--project-root', projectRoot, '--skill', root, '--party', id],
-    { encoding: 'utf8', env })
+  const effectiveProjectRoot = allowProjectParty ? projectRoot : root
+  const r = runPartyResolver(script, ['--project-root', effectiveProjectRoot, '--skill', root, '--party', id], { env, run })
   if (r.error?.code === 'ENOENT') return { ok: false, code: 'uv_missing', available: [] }
   // A ROSTER IS ONLY A ROSTER IF THE RESOLVER SUCCEEDED. This read stdout and
   // never the exit status, so a resolver that printed a valid-looking roster and
@@ -126,12 +182,12 @@ export function resolveParty(id, { env = process.env, projectRoot = process.cwd(
  * resolveParty (the listing is the same resolver, same install, same uv). The
  * menu carries id + name + member_count; only the id drives selection.
  */
-export function listGroups({ env = process.env, projectRoot = process.cwd(), run = spawnSync } = {}) {
-  const root = partyModeRoot(env)
+export function listGroups({ env = process.env, projectRoot = process.cwd(), allowProjectParty = false, run = spawnSync } = {}) {
+  const root = resolvePartyRoot({ env, projectRoot, allowProjectParty })
   const script = join(root, 'scripts', 'resolve_party.py')
   if (!existsSync(script)) return { ok: false, code: 'not_installed', ids: [] }
-  const r = run('uv', ['run', script, '--project-root', projectRoot, '--skill', root, '--list-groups'],
-    { encoding: 'utf8', env })
+  const effectiveProjectRoot = allowProjectParty ? projectRoot : root
+  const r = runPartyResolver(script, ['--project-root', effectiveProjectRoot, '--skill', root, '--list-groups'], { env, run })
   if (r.error?.code === 'ENOENT') return { ok: false, code: 'uv_missing', ids: [] }
   let parsed
   try { parsed = JSON.parse(r.stdout ?? '') } catch { return { ok: false, code: 'resolver_failed', ids: [] } }
@@ -380,12 +436,13 @@ export function main(argv, { env = process.env, out = console.log, err = console
   // Pull a named flag out of argv after checking it HAS a value. A flag with no
   // value must be a usage error, not an `undefined` forwarded into spawnSync —
   // the uncaught TypeError a zai lane found on --project-root.
+  const usage = 'usage: node advisor-party.mjs <party-id>|auto [--project-root <dir>] [--task-file <file>] [--allow-project-party] (omit id with --task-file for auto)'
   const take = (flag) => {
     const at = args.indexOf(flag)
     if (at === -1) return null
     const value = args[at + 1]
     if (typeof value !== 'string' || value === '' || value.startsWith('-')) {
-      err('usage: node advisor-party.mjs <party-id>|auto [--project-root <dir>] [--task-file <file>] (omit id with --task-file for auto)')
+      err(usage)
       return undefined
     }
     args.splice(at, 2)
@@ -396,6 +453,12 @@ export function main(argv, { env = process.env, out = console.log, err = console
   if (rootValue !== null) projectRoot = rootValue
   const taskValue = take('--task-file')
   if (taskValue === undefined) return 1
+  let allowProjectParty = false
+  const allowIdx = args.indexOf('--allow-project-party')
+  if (allowIdx !== -1) {
+    allowProjectParty = true
+    args.splice(allowIdx, 1)
+  }
 
   // ONE PARTY SLOT AND NOTHING ELSE. An unrecognised extra argument was ignored
   // in silence while this file and all four skills that document it advertise
@@ -404,7 +467,7 @@ export function main(argv, { env = process.env, out = console.log, err = console
   // was asked and said nothing.
   const slot = args[0]
   if ((slot && slot.startsWith('-')) || args.length > 1) {
-    err('usage: node advisor-party.mjs <party-id>|auto [--project-root <dir>] [--task-file <file>] (omit id with --task-file for auto)')
+    err(usage)
     return 1
   }
 
@@ -412,7 +475,7 @@ export function main(argv, { env = process.env, out = console.log, err = console
   // id keeps the resolve-or-refuse path byte-for-byte.
   const auto = slot === 'auto' || (!slot && taskValue !== null)
   if (!auto && !slot) {
-    err('usage: node advisor-party.mjs <party-id>|auto [--project-root <dir>] [--task-file <file>] (omit id with --task-file for auto)')
+    err(usage)
     return 1
   }
 
@@ -427,7 +490,7 @@ export function main(argv, { env = process.env, out = console.log, err = console
       err(`${'task_file_unreadable'}: ${PARTY_PROBLEMS.task_file_unreadable}`)
       return 2
     }
-    const listed = listGroups({ env, projectRoot, run })
+    const listed = listGroups({ env, projectRoot, allowProjectParty, run })
     if (!listed.ok) {
       err(`${listed.code}: ${PARTY_PROBLEMS[listed.code]}`)
       return 2
@@ -439,7 +502,7 @@ export function main(argv, { env = process.env, out = console.log, err = console
     if (id === null) return 3
   }
 
-  const result = resolveParty(id, { env, projectRoot, run })
+  const result = resolveParty(id, { env, projectRoot, allowProjectParty, run })
   if (!result.ok) {
     // THE REFUSAL PATH PRINTS ROSTER-DERIVED TEXT TOO. The ids come from the
     // same editable party store the mandate defends against, and they reached
