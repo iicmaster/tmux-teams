@@ -518,7 +518,7 @@ transport-independent:
 |---|---|---|
 | codex | ACP — `@agentclientprotocol/codex-acp@2.7.0` (drives the installed CLI; frontier model verified) | tmux |
 | claude | ACP — `@agentclientprotocol/claude-agent-acp` (pass `ANTHROPIC_MODEL=claude-opus-5-5`) | tmux |
-| agy | ACP — `antigravity-acp@1.2.0` with `agy >= 1.5.8` (community adapter, 1.0.0 source-audited 2026-07-21, bumped 2026-09-30; default worker `gemini-4-hydrogen-high`, default thinker/reviewer `gemini-4-carbon-high`, always set `ACP_MODEL` + `ACP_EXPECT_MODEL` explicitly so `session/new` does not stay on `gemini-4-carbon-medium`; needs `bun`; ToS risk — see the ACP transport lane section of [SKILL.md](../skills/tmux-teams/SKILL.md)) | tmux |
+| agy | ACP — `antigravity-acp@1.2.0` with `agy >= 1.5.8` (community adapter, 1.0.0 source-audited 2026-07-21, bumped 2026-09-30; default for every role `gemini-pro-orchestrator-neon` since 2026-11-19, falling back to `gemini-4-hydrogen-xhigh` (thinker/reviewer) or `gemini-4-hydrogen-medium` (worker) only when `agy models` lacks it — `agy-seat-fallback.mjs default <thinker|worker>` resolves and reports it; always set `ACP_MODEL` + `ACP_EXPECT_MODEL` explicitly so `session/new` does not stay on `gemini-4-carbon-medium`; needs `bun`; ToS risk — see the ACP transport lane section of [SKILL.md](../skills/tmux-teams/SKILL.md)) | tmux |
 
 The Gemini worker lane has been removed. The companion rejects that retired
 public agent name even when `ACP_CMD` is set, preventing an override from

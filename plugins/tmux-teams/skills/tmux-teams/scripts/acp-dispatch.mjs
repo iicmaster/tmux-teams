@@ -708,17 +708,19 @@ export function pidAlive(pid) {
 // The pattern is COPIED — this file and the companion both take only node
 // builtins on purpose, and `review-profiles.mjs` is another skill. A test
 // asserts all THREE copies are character-identical, which is the drift answer
-// that does not couple them. It carries: CLAUDE.md's Gemini 3.1 ban, Master's
-// 2026-11-19 retirement of every pre-6.2 `sol`/`astra` generation (only
-// `gpt-6.2-sol` / `gpt-6.2-astra` may be dispatched), and the fable-5 ban
-// (`fable-5.1` is allowed).
-const PROHIBITED_MODEL = /(?:^|[^0-9a-z])(?:gemini[-_ ]?3\.1|gpt[-_ ]?6(?:[-_. ]?[01])?[-_. ]?(?:sol|astra)|fable(?![-_. ]?5[-_. ]?1))(?:[^0-9]|$)/i
+// that does not couple them. It carries CLAUDE.md's Gemini 3.1 ban and a
+// VERSION FLOOR per family (Master, 2026-11-19): a release at or above the
+// floor passes even when this plugin has never heard of it, anything below is
+// refused. Floors: fable 5.2 (bare `fable` with no version is refused), Codex
+// sol/astra 6.2, terra 6.1, luna 6. Raising a floor means editing the digits
+// in all three copies together.
+const PROHIBITED_MODEL = /(?:^|[^0-9a-z])(?:(?:gemini[-_ ]?3[-_.]1|gpt[-_ ]?(?:[0-5](?:[-_.][0-9]+)*[-_. ]?(?:sol|astra|terra|luna)|6(?:[-_. ][01](?:[-_.][0-9]+)*)?[-_. ]?(?:sol|astra)|6(?:[-_. ]0(?:[-_.][0-9]+)*)?[-_. ]?terra))(?:[^0-9]|$)|fable(?![a-z])(?![-_. ]?(?:5[-_. ]?(?:[2-9]|[1-9][0-9])(?![0-9])|(?:[6-9]|[1-9][0-9])(?![0-9]))))/i
 const INHERIT_ACCOUNT_DEFAULT = 'inherit-account-default'
 
 function assertPermittedModel(value, name) {
   if (typeof value === 'string' && PROHIBITED_MODEL.test(value)) {
     throw Object.assign(
-      new Error(`${name}: prohibited model on tmux-teams routes (Gemini 3.1 is banned; pre-6.2 Codex sol/astra is retired — the frontier is gpt-6.2-sol / gpt-6.2-astra), got ${value}`),
+      new Error(`${name}: prohibited model on tmux-teams routes (Gemini 3.1 is banned; Codex below its version floor is retired — sol/astra need 6.2 or newer, terra 6.1 or newer, luna 6 or newer; fable older than 5.2 is retired — fable-5.2 or newer may be dispatched), got ${value}`),
       { code: 'prohibited_model' },
     )
   }

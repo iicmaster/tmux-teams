@@ -45,8 +45,26 @@ either fails the dispatch or silently seats something nobody chose.
 **Retired generations (Master 2026-11-19):** every pre-6.2 `sol`/`astra` id —
 `gpt-6-sol`, `gpt-6.0-sol`, `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6.0-astra`,
 `gpt-6.1-astra` and their suffixed/separator forms — is refused on request,
-expectation, and observed identity on every tmux-teams route. Only the `6.2`
-seats above may answer; `luna` is unaffected.
+expectation, and observed identity on every tmux-teams route.
+
+**The lock is a version floor per family, not a list of names** (Master,
+2026-11-19). A release at or above its floor passes even when this plugin has
+never heard of it (a future `gpt-6.3-astra` or `gpt-7-sol` needs no plugin
+change); anything below is refused:
+
+- `sol` / `astra`: `6.2` or newer
+- `terra`: `6.1` or newer (no `terra` seat is offered here; the floor only
+  decides what a hand-typed id may reach)
+- `luna`: `6` or newer
+- `fable` (Claude routes): `5.2` or newer — see `claude-advisor`
+- Gemini `3.1` stays banned outright
+
+The floor lives in ONE regex, `PROHIBITED_MODEL`, copied character-identical
+into `skills/party-mode/scripts/review-profiles.mjs`, `acp-dispatch.mjs` and
+`acp-companion.mjs`. To raise
+a floor, edit its digits in all three copies together; the parity test in
+`tests/review-policy.test.mjs` fails on any drift. A floor change is a policy
+change for Master to make, not a seat swap.
 
 ### `--party <id>` — seat a saved bmad-party-mode roster
 

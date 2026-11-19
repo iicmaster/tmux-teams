@@ -215,10 +215,24 @@ one SSOT** and wins if the two ever disagree.
 - Every tmux-teams AGY route supports the Gemini 4 family on `agy >= 1.5.8`
   (Master, 2026-11-15, moved off `gemini-4-argon-high` after measuring live
   `agy` 1.5.9 / `antigravity-acp@1.2.0` advertising 22 options):
-  - **Thinker / reviewer / advisor routes** (`REVIEW_PROFILES.agy`,
-    `$agy-advisor`, controller, evaluator, critique) default to
-    `gemini-4-carbon-high` (recommended default thinker).
-  - **Worker / execution routes** default to `gemini-4-hydrogen-high`.
+  - **Every AGY role defaults to `gemini-pro-orchestrator-neon`** (Master,
+    2026-11-19) — thinker, reviewer, advisor (`REVIEW_PROFILES.agy`,
+    `$agy-advisor`, controller, evaluator, critique) AND worker/execution. The
+    orchestrator thinks with Neon and sends its subagents to work on
+    Hydrogen, so it is faster and cheaper than pure Neon. Measured that day:
+    live `antigravity-acp@1.2.0` on `agy` 1.5.12 advertises it in
+    `session/new` configOptions.
+  - **Fallback only when this machine lacks it**: when `agy models` (10s
+    timeout, cached per process) is READ successfully and does not list
+    `gemini-pro-orchestrator-neon`, thinker/advisor/review gate fall back to
+    `gemini-4-hydrogen-xhigh` and workers to `gemini-4-hydrogen-medium`. An
+    unreadable list (no binary, timeout, exit != 0) keeps Neon and the
+    companion pre-check fails closed. Every fallback records requested model,
+    used model and reason (`fallback` on `buildAcpLaunch`, stderr of
+    `agy-seat-fallback.mjs default <thinker|worker>`). A `lanes.json` model
+    override or a named advisor alias is never resolved over.
+  - Before 2026-11-19: thinker routes `gemini-4-carbon-high`, worker routes
+    `gemini-4-hydrogen-high` (2026-11-15).
   - **Always pass both `ACP_MODEL` and `ACP_EXPECT_MODEL` explicitly** on AGY
     dispatches: `agy` 1.5.9 `session/new` advertises `currentValue:
     "gemini-4-carbon-medium"` when unpinned, so omitting them silently drops a
@@ -226,7 +240,17 @@ one SSOT** and wins if the two ever disagree.
   - **Supported Gemini options on `agy >= 1.5.8`**: `gemini-4-carbon-{low,medium,high}`,
     `gemini-4-argon-{low,medium,high}`, `gemini-4-hydrogen-{low,medium,high,xhigh}`,
     `gemini-pro-orchestrator`, `gemini-pro-orchestrator-argon`, and
-    `gemini-3.8-flash-{low,medium,high}`.
+    `gemini-3.8-flash-{low,medium,high}`; `agy` 1.5.12 adds
+    `gemini-4-neon-{low,medium,high,xhigh}` and `gemini-pro-orchestrator-neon`.
+  - **Model lock is a VERSION FLOOR per family** (Master, 2026-11-19), held by
+    one regex copied character-identical into
+    `skills/party-mode/scripts/review-profiles.mjs`,
+    `acp-dispatch.mjs` and `acp-companion.mjs`: a release at or above its
+    floor passes even when the plugin has never heard of it, anything below is
+    refused. Floors: fable `5.2` (bare `fable` refused), Codex sol/astra
+    `6.2`, terra `6.1`, luna `6`; Gemini 3.1 stays banned. Raising a floor
+    means editing the digits in all three copies together (the parity test in
+    `tests/review-policy.test.mjs` checks them).
   - **No automatic quota fallback**: Antigravity now shares one quota pool
     across all Gemini seats, so `agy-seat-fallback.mjs` keeps rate-limit log
     classification (`rate-limited`) while retiring `SEAT_FALLBACKS` / automatic
@@ -272,7 +296,7 @@ not optional, and only a later explicit instruction from Master changes either.
    2026-08-04 and inherits its reason — no version number is stamped on work a
    second model family has not read — but one reader was not enough, and the
    heavier gate that did exist was being spent at dispatch time instead of here.
-   Three substantive reviews from three distinct acknowledged models, AGY mandatory (Master 2026-11-17; seats/ladder updated Master 2026-11-18: seats are `agy-advisor[hydrogen]`, `codex-advisor[luna]`, `oc-advisor` free `deepseek`; opencode ladder `deepseek -> inkling -> glm -> mimo -> hy4 -> longcat -> flint -> beam -> nemotron-super-vl -> nemotron-lightning` on quota, then ask Master; free-only machines bootstrapped via `tmux-teams-setup` may opt in with `REVIEW_GATE_MODE=opencode-free` for single-provider free quorum without changing the default `strict` release gate).
+   Three substantive reviews from three distinct acknowledged models, AGY mandatory (Master 2026-11-17; seats/ladder updated Master 2026-11-18: seats are `agy-advisor` default (`gemini-pro-orchestrator-neon`, Master 2026-11-19; was `agy-advisor[hydrogen]`), `codex-advisor[luna]`, `oc-advisor` free `deepseek`; opencode ladder `deepseek -> inkling -> glm -> mimo -> hy4 -> longcat -> flint -> beam -> nemotron-super-vl -> nemotron-lightning` on quota, then ask Master; free-only machines bootstrapped via `tmux-teams-setup` may opt in with `REVIEW_GATE_MODE=opencode-free` for single-provider free quorum without changing the default `strict` release gate).
    "2/3" means an objection that two of the three raise is must-fix, NOT that
    two reports are enough. Any blocking finding stops the bump — resolve it and
    rerun all three on the new bytes; never retry an objection away. Fewer than

@@ -10,6 +10,7 @@ import {
   buildProfileEnv, loadProfileSettings, normalizePrimaryFamily, provenFamilyCollision, provenFamilyKey,
   provenLaunchSignature, validateRoutedEndpoint, assertCompatibleAgyBinary, compareSemver, MINIMUM_AGY_VERSION, agyBinaryVersion,
   trustedAgyBinaryDetailed, trustedAgyBinary,
+  AGY_DEFAULT_MODEL, AGY_FALLBACK_MODELS, parseAgyModels, agyAvailableModels, resolveAgyDefaultModel, resetAgyModelsCache,
 } from '../plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs'
 import {
   ROUTES, UNAVAILABLE_RESERVE_SUBSTITUTES, createReviewPlan, findingFingerprint, planFallback, synthesizeReviews, validateReviewOutput,
@@ -40,15 +41,18 @@ const object = (entries) => Object.fromEntries(entries)
 // that `agy.model` equals the right string is what the suite already did while
 // the string was the forbidden one — a value test cannot tell a pin from a
 // violation. These cases fail if the guard stops rejecting Gemini 3.1.
-test('Gemini 3.1, fable-5 and every pre-6.2 Codex sol/astra reviewer model is refused', () => {
+test('Gemini 3.1 and every model below its family version floor is refused; at or above the floor passes', () => {
   for (const name of [
-    'gemini-3.1-pro-high', 'gemini-3.1-pro', 'Gemini 3.1', 'agy/gemini_3.1-flash',
-    // Master, 2026-11-19: every pre-6.2 sol/astra generation is retired — only the 6.2 seats run.
+    'gemini-3.1-pro-high', 'gemini-3.1-pro', 'Gemini 3.1', 'agy/gemini_3.1-flash', 'gemini-3-1-pro-high',
+    // Master, 2026-11-19: version floor — sol/astra >= 6.2, terra >= 6.1, luna >= 6.
     'gpt-6-sol', 'GPT-6-SOL', 'gpt-6-sol-fast', 'gpt-6.0-sol', 'gpt-6.1-sol',
-    'gpt-6_1_sol', 'gpt-6.1-sol[ultra]',
+    'gpt-6_1_sol', 'gpt-6.1-sol[ultra]', 'gpt-6.1.0-sol', 'gpt-6.0.1-sol',
     'gpt-6-astra', 'gpt-6.1-astra', 'gpt-6-1-astra', 'GPT-6.1-ASTRA',
     'gpt-6.1.sol', 'gpt-6.astra', 'gpt-6_1_astra',
-    'fable-5', 'claude-fable-5', 'fable',
+    'gpt-5.5-sol', 'gpt-5-sol', 'gpt-6-terra', 'gpt-6.0-terra', 'gpt-6.0.1-terra', 'gpt-5.9-terra', 'gpt-5-luna', 'gpt-5.1.2-luna',
+    // fable floor 5.2; bare alias, separator-less, and dated pre-5.2 ids are refused.
+    'fable-5.1', 'claude-fable-5-1', 'fable-5', 'claude-fable-5[1m]', 'fable',
+    'fable5', 'fable5.1', 'claude-fable-5-20260514', 'fable-20260101',
   ]) {
     assert.throws(() => assertPermittedModel(name, 'probe'), /prohibited model on tmux-teams review routes/, name)
   }
@@ -56,10 +60,13 @@ test('Gemini 3.1, fable-5 and every pre-6.2 Codex sol/astra reviewer model is re
     'gemini-4-carbon-high', 'gemini-4-carbon-medium', 'gemini-4-carbon-low',
     'gemini-4-argon-high', 'gemini-4-argon-medium', 'gemini-4-argon-low',
     'gemini-4-hydrogen-xhigh', 'gemini-4-hydrogen-high', 'gemini-4-hydrogen-medium', 'gemini-4-hydrogen-low',
-    'gemini-pro-orchestrator', 'gemini-pro-orchestrator-argon',
+    'gemini-pro-orchestrator', 'gemini-pro-orchestrator-argon', 'gemini-pro-orchestrator-neon',
+    'gemini-4-neon-high', 'gemini-4-neon-xhigh',
     'gemini-3.8-flash-high', 'gemini-3.8-flash-medium', 'gemini-3.8-flash-low',
     'gemini-3.6-flash-high', 'gemini-3.10-pro', 'gpt-6-luna', 'gpt-6.2-sol',
-    'gpt-6.2-astra', 'gpt-6.2-sol[ultra]', 'fable-5.1', null,
+    'gpt-6.2-astra', 'gpt-6.2-sol[ultra]', 'gpt-6.3-astra', 'gpt-7-sol', 'gpt-61-sol',
+    'gpt-6.1-terra', 'gpt-60-terra', 'gpt-6-luna[max]',
+    'fable-5.2', 'claude-fable-5-2[1m]', 'claude-fable-5-2-20261119', 'fable-5.10', 'fable-6', 'fabled', null,
   ]) {
     assert.equal(assertPermittedModel(name, 'probe'), name)
   }
@@ -76,8 +83,8 @@ test('immutable ACP profiles pin providers, models, argv, and AGY plan mode', ()
   assert.deepEqual(REVIEW_PROFILES.qwen.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
   assert.deepEqual(REVIEW_PROFILES.claude.command, ['npx', '-y', '@agentclientprotocol/claude-agent-acp@0.61.0'])
   assert.deepEqual(REVIEW_PROFILES.codex.command, ['npx', '-y', '@agentclientprotocol/codex-acp@2.7.0'])
-  assert.deepEqual(REVIEW_PROFILES.agy.config, { model: 'gemini-4-hydrogen-high', mode: 'plan' })
-  assert.equal(REVIEW_PROFILES.agy.displayModel, 'agy/gemini-4-hydrogen-high')
+  assert.deepEqual(REVIEW_PROFILES.agy.config, { model: 'gemini-pro-orchestrator-neon', mode: 'plan' })
+  assert.equal(REVIEW_PROFILES.agy.displayModel, 'agy/gemini-pro-orchestrator-neon')
   assert.deepEqual(REVIEW_PROFILES.kimi.config, { model: 'opus', mode: 'plan' })
   assert.equal(REVIEW_PROFILES.kimi.displayModel, 'kimi/opus')
   assert.deepEqual(REVIEW_PROFILES.qwen.config, { model: 'qwen3.8-max-preview', mode: 'plan' })
@@ -302,9 +309,10 @@ test('environment is allowlisted, provider-scoped, and launch settings are injec
     settingsLoader: () => ({ mode: 'unsafe', transport: 'acp' }),
     agyBinaryResolver: () => '/trusted/agy',
     agyVersionResolver: () => '1.5.9',
+    agyModelsResolver: () => ['gemini-pro-orchestrator-neon'],
   })
   assert.deepEqual(launch.command, ['bunx', 'antigravity-acp@1.2.0'])
-  assert.deepEqual(launch.settings, { mode: 'plan', transport: 'acp', model: 'gemini-4-hydrogen-high' })
+  assert.deepEqual(launch.settings, { mode: 'plan', transport: 'acp', model: 'gemini-pro-orchestrator-neon' })
   assert.equal(launch.env.AGY_BIN, '/trusted/agy')
   assert.equal(launch.env.AGY_SKIP_DOWNLOAD, '1')
   assert.throws(() => loadProfileSettings('agy', () => 'bad'), /must return an object/)
@@ -960,4 +968,144 @@ test('opencode-free fallback defers absent opencodeGlm until all v2.3.2-present 
   }
   const exhausted = planFallback(plan, 'opencodeGlm')
   assert.equal(exhausted.blocked, true)
+})
+
+// Master, 2026-11-19: every AGY role defaults to the Neon orchestrator, and
+// falls back ONLY when `agy models` was read successfully and lacks it.
+test('the AGY default is the Neon orchestrator with hydrogen fallbacks per role', () => {
+  assert.equal(AGY_DEFAULT_MODEL, 'gemini-pro-orchestrator-neon')
+  assert.deepEqual(AGY_FALLBACK_MODELS, { thinker: 'gemini-4-hydrogen-xhigh', worker: 'gemini-4-hydrogen-medium' })
+  assert.ok(Object.isFrozen(AGY_FALLBACK_MODELS))
+  assert.equal(REVIEW_PROFILES.agy.model, 'gemini-pro-orchestrator-neon')
+})
+
+test('agy models output parses through a TTY spinner, OSC escapes, mixed case, and ignores prose warnings', () => {
+  const raw = '\r⠋ Fetching available models...\r⠙ Fetching available models...\r\u001b]0;agy\u0007GEMINI-4-NEON-HIGH\tGemini 4 Neon (High)\r\n'
+    + 'gemini-pro-orchestrator-neon   Orchestrator (Neon)\r\n\u001b[0mgemini-3.8-flash-low           Gemini 3.8 Flash (Low)\n\n'
+  assert.deepEqual(parseAgyModels(raw), ['gemini-4-neon-high', 'gemini-pro-orchestrator-neon', 'gemini-3.8-flash-low'])
+  assert.deepEqual(parseAgyModels(''), [])
+  assert.deepEqual(parseAgyModels('Error: not signed in\nre-authenticate required\nnon-interactive mode\n'), [])
+})
+
+test('resolveAgyDefaultModel keeps Neon when present, empty, or unreadable, and records every fallback', () => {
+  assert.deepEqual(resolveAgyDefaultModel('thinker', ['gemini-pro-orchestrator-neon', 'gemini-4-hydrogen-xhigh']),
+    { model: 'gemini-pro-orchestrator-neon', fallback: null })
+  assert.deepEqual(resolveAgyDefaultModel('worker', ['gemini-pro-orchestrator-neon']),
+    { model: 'gemini-pro-orchestrator-neon', fallback: null })
+  // Unreadable or empty list: Neon stays and the companion pre-check fails closed.
+  assert.deepEqual(resolveAgyDefaultModel('thinker', null), { model: 'gemini-pro-orchestrator-neon', fallback: null })
+  assert.deepEqual(resolveAgyDefaultModel('thinker', []), { model: 'gemini-pro-orchestrator-neon', fallback: null })
+  const thinker = resolveAgyDefaultModel('thinker', ['gemini-4-hydrogen-xhigh', 'gemini-4-carbon-high'])
+  assert.equal(thinker.model, 'gemini-4-hydrogen-xhigh')
+  assert.deepEqual({ ...thinker.fallback }, {
+    role: 'thinker', requested: 'gemini-pro-orchestrator-neon', model: 'gemini-4-hydrogen-xhigh',
+    reason: "gemini-pro-orchestrator-neon is not in this machine's `agy models` list; thinker fallback is gemini-4-hydrogen-xhigh",
+  })
+  const worker = resolveAgyDefaultModel('worker', ['gemini-4-hydrogen-medium'])
+  assert.equal(worker.model, 'gemini-4-hydrogen-medium')
+  assert.equal(worker.fallback.requested, 'gemini-pro-orchestrator-neon')
+  assert.equal(worker.fallback.model, 'gemini-4-hydrogen-medium')
+  assert.throws(() => resolveAgyDefaultModel('reviewer', []), /unknown AGY role "reviewer" \(expected thinker or worker\)/)
+})
+
+test('agyAvailableModels runs `agy models` with a 10s timeout, keys cache by binary+HOME, does not pin null failures, and resets via resetAgyModelsCache', () => {
+  const calls = []
+  const ok = (bin, args, opts) => {
+    calls.push({ bin, args, timeout: opts.timeout, home: opts.env?.HOME })
+    return { status: 0, stdout: 'gemini-pro-orchestrator-neon   Orchestrator (Neon)\n' }
+  }
+  const cache = new Map()
+  assert.deepEqual(agyAvailableModels('/bin/agy-a', { spawnFn: ok, cache, source: { HOME: '/h1' } }), ['gemini-pro-orchestrator-neon'])
+  assert.deepEqual(agyAvailableModels('/bin/agy-a', { spawnFn: ok, cache, source: { HOME: '/h1' } }), ['gemini-pro-orchestrator-neon'])
+  assert.equal(calls.length, 1, 'same binary + HOME must hit cache')
+  assert.deepEqual(agyAvailableModels('/bin/agy-a', { spawnFn: ok, cache, source: { HOME: '/h2' } }), ['gemini-pro-orchestrator-neon'])
+  assert.equal(calls.length, 2, 'different HOME must not collide in cache')
+  assert.equal(calls[0].timeout, 10000)
+
+  // Default module cache clears cleanly via resetAgyModelsCache().
+  resetAgyModelsCache()
+  let defaultCalls = 0
+  const countOk = () => { defaultCalls += 1; return { status: 0, stdout: 'gemini-pro-orchestrator-neon\tOrchestrator (Neon)\n' } }
+  assert.deepEqual(agyAvailableModels('/bin/agy-reset', { spawnFn: countOk, source: { HOME: '/hr' } }), ['gemini-pro-orchestrator-neon'])
+  assert.deepEqual(agyAvailableModels('/bin/agy-reset', { spawnFn: countOk, source: { HOME: '/hr' } }), ['gemini-pro-orchestrator-neon'])
+  assert.equal(defaultCalls, 1)
+  resetAgyModelsCache()
+  assert.deepEqual(agyAvailableModels('/bin/agy-reset', { spawnFn: countOk, source: { HOME: '/hr' } }), ['gemini-pro-orchestrator-neon'])
+  assert.equal(defaultCalls, 2)
+  resetAgyModelsCache()
+
+  // Failure shapes: non-zero exit, timeout, a throw, and prose-only exit 0 -> null, and NOT permanently cached.
+  const failures = [
+    () => ({ status: 1, stdout: '' }),
+    () => ({ status: null, error: Object.assign(new Error('spawnSync agy ETIMEDOUT'), { code: 'ETIMEDOUT' }), stdout: '' }),
+    () => { throw new Error('ENOENT') },
+    () => ({ status: 0, stdout: 'Fetching available models...\nre-authenticate required\n' }),
+  ]
+  for (const [i, spawnFn] of failures.entries()) {
+    const failCache = new Map()
+    let n = 0
+    const counted = (...args) => { n += 1; return spawnFn(...args) }
+    assert.equal(agyAvailableModels(`/bin/agy-f${i}`, { spawnFn: counted, cache: failCache }), null, `failure ${i}`)
+    assert.equal(agyAvailableModels(`/bin/agy-f${i}`, { spawnFn: counted, cache: failCache }), null, `failure ${i} retry`)
+    assert.equal(n, 2, `failure ${i} must not be cached permanently so transient failures recover`)
+  }
+  assert.equal(agyAvailableModels(null, { spawnFn: ok, cache: new Map() }), null)
+})
+
+test('buildAcpLaunch resolves the AGY default from the machine list and records the fallback', () => {
+  const base = {
+    env: { PATH: '/bin', HOME: '/nonexistent' },
+    agyBinaryResolver: () => '/trusted/agy',
+    agyVersionResolver: () => '1.5.12',
+    overrideLoader: () => ({ overrides: {}, problems: [] }),
+  }
+  const seen = []
+  const present = buildAcpLaunch('agy', { ...base, agyModelsResolver: (bin, opts) => { seen.push({ bin, hasSource: Boolean(opts?.source) }); return ['gemini-pro-orchestrator-neon'] } })
+  assert.deepEqual(seen, [{ bin: '/trusted/agy', hasSource: true }])
+  assert.equal(present.profile.model, 'gemini-pro-orchestrator-neon')
+  assert.equal(present.fallback, null)
+
+  const absent = buildAcpLaunch('agy', { ...base, agyModelsResolver: () => ['gemini-4-hydrogen-xhigh'] })
+  assert.equal(absent.profile.model, 'gemini-4-hydrogen-xhigh')
+  assert.equal(absent.profile.displayModel, 'agy/gemini-4-hydrogen-xhigh')
+  assert.equal(absent.profile.config.model, 'gemini-4-hydrogen-xhigh')
+  assert.equal(absent.profile.config.mode, 'plan')
+  assert.equal(absent.settings.model, 'gemini-4-hydrogen-xhigh')
+  assert.equal(absent.fallback.requested, 'gemini-pro-orchestrator-neon')
+  assert.equal(absent.fallback.model, 'gemini-4-hydrogen-xhigh')
+  assert.equal(absent.fallback.role, 'thinker')
+  assert.match(absent.fallback.reason, /not in this machine's `agy models` list/)
+  assert.equal(REVIEW_PROFILES.agy.model, 'gemini-pro-orchestrator-neon', 'the shipped profile is never mutated')
+
+  const unreadable = buildAcpLaunch('agy', { ...base, agyModelsResolver: () => null })
+  assert.equal(unreadable.profile.model, 'gemini-pro-orchestrator-neon')
+  assert.equal(unreadable.fallback, null)
+
+  // Non-AGY lanes never ask agy anything.
+  const codex = buildAcpLaunch('codex', { ...base, env: { PATH: '/bin', OPENAI_API_KEY: 'x' }, agyModelsResolver: () => { throw new Error('asked') } })
+  assert.equal(codex.fallback, null)
+})
+
+test('an operator lanes.json model override for agy is used as written and never asks agy models', () => {
+  let asked = 0
+  const launch = buildAcpLaunch('agy', {
+    env: { PATH: '/bin', HOME: '/nonexistent' },
+    agyBinaryResolver: () => '/trusted/agy',
+    agyVersionResolver: () => '1.5.12',
+    overrideLoader: () => ({ overrides: { agy: { model: 'gemini-4-hydrogen-high' } }, problems: [] }),
+    agyModelsResolver: () => { asked += 1; return [] },
+  })
+  assert.equal(launch.profile.model, 'gemini-4-hydrogen-high')
+  assert.equal(launch.fallback, null)
+  assert.equal(asked, 0)
+  // Even an override that names Neon itself is the operator's choice: no resolve.
+  const neon = buildAcpLaunch('agy', {
+    env: { PATH: '/bin', HOME: '/nonexistent' },
+    agyBinaryResolver: () => '/trusted/agy',
+    agyVersionResolver: () => '1.5.12',
+    overrideLoader: () => ({ overrides: { agy: { model: 'gemini-pro-orchestrator-neon' } }, problems: [] }),
+    agyModelsResolver: () => { asked += 1; return [] },
+  })
+  assert.equal(neon.profile.model, 'gemini-pro-orchestrator-neon')
+  assert.equal(asked, 0)
 })

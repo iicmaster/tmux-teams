@@ -461,18 +461,29 @@ set **both `ACP_MODEL` and `ACP_EXPECT_MODEL` explicitly** (`acp-dispatch.mjs`,
 `session/new` starts on `gemini-4-carbon-medium` when unpinned, so omitting them
 would silently drop the run onto Carbon Medium:
 
-- Worker / execution default: `gemini-4-hydrogen-high`
-- Thinker / evaluator / `$agy-advisor` recommended default: `gemini-4-carbon-high`
+- Default for EVERY role (worker / execution, thinker / evaluator, `$agy-advisor`):
+  `gemini-pro-orchestrator-neon` (Master, 2026-11-19) — it thinks with Neon and
+  sends its subagents to work on Hydrogen, so it is faster and cheaper than pure Neon.
+- Fallback only when `agy models` was read successfully and lacks it: worker →
+  `gemini-4-hydrogen-medium`, thinker / evaluator / advisor / review gate →
+  `gemini-4-hydrogen-xhigh`. An unreadable list keeps Neon (the companion
+  pre-check then fails closed). Ask the script rather than guessing — it prints
+  the model id on stdout and the reason for any fallback on stderr:
+  `node <skill-root>/scripts/agy-seat-fallback.mjs default <thinker|worker>`.
+  This is never a quota fallback: on a 429 stop and report.
 - Supported Gemini options (`agy >= 1.5.8`): `gemini-4-carbon-{low,medium,high}`,
   `gemini-4-argon-{low,medium,high}`, `gemini-4-hydrogen-{low,medium,high,xhigh}`,
   `gemini-pro-orchestrator`, `gemini-pro-orchestrator-argon`, and
-  `gemini-3.8-flash-{low,medium,high}` (Gemini 3.1 variants remain prohibited).
+  `gemini-3.8-flash-{low,medium,high}`; `agy` 1.5.12 adds
+  `gemini-4-neon-{low,medium,high,xhigh}` and `gemini-pro-orchestrator-neon`
+  (Gemini 3.1 variants remain prohibited).
 
 ```bash
 AGY_BIN="$(command -v agy || echo "$HOME/.local/bin/agy")"
+MODEL="$(node <skill-root>/scripts/agy-seat-fallback.mjs default worker)" || exit 1
 env -u ACP_REASONING_EFFORT -u ACP_EXPECT_REASONING_EFFORT \
   AGY_BIN="$AGY_BIN" AGY_SKIP_DOWNLOAD=1 \
-  ACP_MODEL="gemini-4-hydrogen-high" ACP_EXPECT_MODEL="gemini-4-hydrogen-high" \
+  ACP_MODEL="$MODEL" ACP_EXPECT_MODEL="$MODEL" \
   node <skill-root>/scripts/acp-dispatch.mjs agy <repo> <task-id> <brief-file> [stall-sec]
 ```
 

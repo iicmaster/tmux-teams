@@ -26,6 +26,7 @@ import { safeTaskId, livenessPath, logPath, readLeafSync } from './acp-dispatch.
 export const USAGE = [
   'usage: node agy-seat-fallback.mjs seat <model>',
   '       node agy-seat-fallback.mjs rate-limited <cwd> <task-id>',
+  '       node agy-seat-fallback.mjs default <thinker|worker>',
 ].join('\n')
 
 // Automatic fallback is retired (Master, 2026-11-15): Antigravity shares one
@@ -130,8 +131,32 @@ export function rateLimitEvidence(cwd, taskId) {
   return { rateLimited: false, where: null, excerpt: '' }
 }
 
+// The model a default AGY route runs on THIS machine (Master, 2026-11-19):
+// `gemini-pro-orchestrator-neon` for every role, unless `agy models` was read
+// successfully and lacks it — then thinker -> gemini-4-hydrogen-xhigh, worker
+// -> gemini-4-hydrogen-medium, with the reason on stderr so the switch is never
+// silent. An unreadable list keeps Neon. This is NOT a quota fallback: `seat`
+// above still refuses one. Lazy import, so `seat` / `rate-limited` never load
+// the review-profiles module.
+async function defaultModel(role, env = process.env) {
+  const profiles = await import('../../party-mode/scripts/review-profiles.mjs')
+  const binary = profiles.trustedAgyBinary(env)
+  const available = binary ? profiles.agyAvailableModels(binary, { source: env }) : null
+  return profiles.resolveAgyDefaultModel(role, available)
+}
+
 async function main(argv, { out = console.log, err = console.error } = {}) {
   const [mode, a, b] = argv
+
+  if (mode === 'default') {
+    if (argv.length !== 2 || (a !== 'thinker' && a !== 'worker')) { err(USAGE); return 2 }
+    const { model, fallback } = await defaultModel(a)
+    if (fallback) {
+      err(`agy default fallback: requested ${fallback.requested}, using ${fallback.model} (${fallback.role}) — ${fallback.reason}`)
+    }
+    out(model)
+    return 0
+  }
 
   if (mode === 'seat') {
     if (!a) { err(USAGE); return 2 }

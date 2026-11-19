@@ -117,7 +117,7 @@ Ask in this order. Each numbered item is one question.
    to no team and does no team's work, so it needs its own id.
 3. `outer_controller_model` — see **Asking for a model** below. This seat is a
    position like any other and may not be left blank (for `adapter: "agy"`,
-   recommend `gemini-4-carbon-high`).
+   recommend `gemini-pro-orchestrator-neon`).
 4. **How many teams.** This answer is what tells you when the per-team loop
    below is finished, so ask it before you ask anything about a team. Recommend
    the number of distinct stages the user's own description implies, and 1 when
@@ -142,16 +142,16 @@ complete, and stop at the count answered in 4)
    still available without widening the pool.
 8. `models.dispatcher` — recommend a model this repo can point at: one already
    declared in an earlier answer or in the existing file (for `adapter: "agy"`,
-   a Gemini 4 thinker seat such as `gemini-4-carbon-high`). When the repo offers
+   the AGY default `gemini-pro-orchestrator-neon`). When the repo offers
    no candidate, ship the question with the user's own options and **no**
    recommended default, and say why: a model name recalled from memory is shape-
    valid, so it passes the checker and fails only at dispatch time.
 9. `models.worker` — recommend the worker default when declared or otherwise
    the model just chosen for the dispatcher, and say so plainly (for `adapter:
-   "agy"` with `agy >= 1.5.8`, `gemini-4-hydrogen-high` is the default worker).
+   "agy"`, `gemini-pro-orchestrator-neon` is the default worker too).
 10. `models.evaluator` — recommend a different, stronger model where one is
-    available (for `adapter: "agy"`, `gemini-4-carbon-high` is the recommended
-    default thinker). Reason: an evaluator running the same model that produced
+    available (for `adapter: "agy"`, the default thinker is
+    `gemini-pro-orchestrator-neon` as well). Reason: an evaluator running the same model that produced
     the work agrees with itself more often than it should.
 
 **The workflows**
@@ -190,12 +190,19 @@ stating to the user:
   meaning-empty. Treat one as a blank and ask again. It is a template's way of
   saying "nobody has chosen yet", and `validateWorkflowGraph` / `loop-runner`
   reject `inherit-account-default` outright on any `adapter: "agy"` seat.
-- For `adapter: "agy"` (`agy >= 1.5.8`): the default worker is
-  `gemini-4-hydrogen-high` and the recommended default thinker
-  (`outer_controller_model`, `models.evaluator`) is `gemini-4-carbon-high`.
-  Supported Gemini IDs are `gemini-4-carbon-{low,medium,high}`,
+- For `adapter: "agy"` (`agy >= 1.5.8`): every seat — worker, dispatcher,
+  `outer_controller_model`, `models.evaluator` — defaults to
+  `gemini-pro-orchestrator-neon` (Master, 2026-11-19: it thinks with Neon and
+  sends its subagents to work on Hydrogen). Check this machine has it with
+  `node <plugin-root>/skills/tmux-teams/scripts/agy-seat-fallback.mjs default <thinker|worker>`:
+  when `agy models` lacks it the script prints the fallback
+  (`gemini-4-hydrogen-xhigh` for thinker seats, `gemini-4-hydrogen-medium` for
+  workers) and the reason on stderr — tell the user which one you recommend
+  and why. Supported Gemini IDs are `gemini-4-neon-{low,medium,high,xhigh}`,
+  `gemini-4-carbon-{low,medium,high}`,
   `gemini-4-argon-{low,medium,high}`, `gemini-4-hydrogen-{low,medium,high,xhigh}`,
-  `gemini-pro-orchestrator`, `gemini-pro-orchestrator-argon`, and
+  `gemini-pro-orchestrator`, `gemini-pro-orchestrator-argon`,
+  `gemini-pro-orchestrator-neon`, and
   `gemini-3.8-flash-{low,medium,high}`. Gemini 3.1 variants are prohibited.
 
 ## Writing the file

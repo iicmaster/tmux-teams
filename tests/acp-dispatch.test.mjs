@@ -548,6 +548,15 @@ test('the companion refuses a prohibited model when it is reached without the di
       label: 'ACP_MODEL', value: 'gpt-6-sol' },
     { env: { ACP_MODEL: 'gpt-6.2-sol', ACP_EXPECT_MODEL: 'gpt-6-sol' },
       label: 'ACP_EXPECT_MODEL', value: 'gpt-6-sol' },
+    // Below the version floor: fable < 5.2 (including dated & separator-less) and terra < 6.1.
+    { env: { ACP_MODEL: 'fable-5.1', ACP_EXPECT_MODEL: 'fable-5.2' },
+      label: 'ACP_MODEL', value: 'fable-5.1' },
+    { env: { ACP_MODEL: 'claude-fable-5-20260514', ACP_EXPECT_MODEL: 'fable-5.2' },
+      label: 'ACP_MODEL', value: 'claude-fable-5-20260514' },
+    { env: { ACP_MODEL: 'fable5.1', ACP_EXPECT_MODEL: 'fable-5.2' },
+      label: 'ACP_MODEL', value: 'fable5.1' },
+    { env: { ACP_MODEL: 'gpt-6.1-terra', ACP_EXPECT_MODEL: 'gpt-6-terra' },
+      label: 'ACP_EXPECT_MODEL', value: 'gpt-6-terra' },
   ]
   for (const [i, probe] of cases.entries()) {
     const r = spawnSync(process.execPath, [join(SCRIPTS, 'acp-companion.mjs'), 'mock', cwd, `child-case-${i}`, brief, '120'],
@@ -556,7 +565,7 @@ test('the companion refuses a prohibited model when it is reached without the di
       `case ${i} (${JSON.stringify(probe.env)}) was accepted by the companion:\n${r.stdout}${r.stderr}`)
     // The refusal sentence is deterministic, so assert it EXACTLY rather than
     // through a regex that would need per-value escaping.
-    assert.ok(r.stderr.includes(`${probe.label}: prohibited model on tmux-teams routes (Gemini 3.1 is banned; pre-6.2 Codex sol/astra is retired — the frontier is gpt-6.2-sol / gpt-6.2-astra; fable-5 is retired — only fable-5.1 may be dispatched), got ${probe.value}`),
+    assert.ok(r.stderr.includes(`${probe.label}: prohibited model on tmux-teams routes (Gemini 3.1 is banned; Codex below its version floor is retired — sol/astra need 6.2 or newer, terra 6.1 or newer, luna 6 or newer; fable older than 5.2 is retired — fable-5.2 or newer may be dispatched), got ${probe.value}`),
       `case ${i} refused under the wrong name:\n${r.stderr}`)
   }
   // The mock agent writes `.adapter-env.json` unconditionally at its own top
@@ -2706,7 +2715,9 @@ test('a prohibited model refuses the dispatch before a session exists', () => {
     { cwd, encoding: 'utf8', timeout: 60000,
       env: { ...laneEnv(), ACP_MODEL: model, ACP_EXPECT_MODEL: model } })
 
-  for (const model of ['gemini-3.1-pro-high', 'gemini-3.1-pro-low', 'Gemini 3.1', 'gpt-6-sol', 'GPT-6-SOL', 'gpt-6-astra', 'gpt-6.0-sol', 'gpt-6_1_sol']) {
+  for (const model of ['gemini-3.1-pro-high', 'gemini-3.1-pro-low', 'Gemini 3.1', 'gpt-6-sol', 'GPT-6-SOL', 'gpt-6-astra', 'gpt-6.0-sol', 'gpt-6_1_sol',
+    // Version floor (Master, 2026-11-19): fable >= 5.2, terra >= 6.1, luna >= 6, sol/astra >= 6.2.
+    'fable-5.1', 'claude-fable-5[1m]', 'fable', 'gpt-6-terra', 'gpt-5.9-terra', 'gpt-5-luna', 'gpt-5.5-sol']) {
     const r = run(model)
     const said = `${r.stdout}${r.stderr}`
     assert.notEqual(r.status, 0, `${model} was dispatched:\n${said.slice(0, 300)}`)
@@ -2727,11 +2738,11 @@ test('a prohibited model refuses the dispatch before a session exists', () => {
     [DISPATCH, 'mock', cwd, 'p-expect-retired', join(cwd, 'brief.md'), '20'],
     { cwd, encoding: 'utf8', timeout: 60000,
       env: { ...laneEnv(), ACP_MODEL: 'gpt-6.2-sol', ACP_EXPECT_MODEL: 'gpt-6-sol' } })
-  assert.match(`${retiredExpected.stdout}${retiredExpected.stderr}`, /pre-6\.2 Codex sol\/astra is retired/,
+  assert.match(`${retiredExpected.stdout}${retiredExpected.stderr}`, /Codex below its version floor is retired/,
     'a retired-generation EXPECTATION was accepted')
 
   // And a permitted model still starts, or the guard is just an outage.
-  for (const permitted of ['gemini-4-carbon-high', 'gemini-4-hydrogen-high', 'gemini-pro-orchestrator', 'gemini-4-argon-high']) {
+  for (const permitted of ['gemini-pro-orchestrator-neon', 'gemini-4-carbon-high', 'gemini-4-hydrogen-high', 'gemini-pro-orchestrator', 'gemini-4-argon-high']) {
     const taskId = `p-ok-${permitted.replace(/[^a-z0-9]/gi, '')}`
     const ok = spawnSync(process.execPath,
       [DISPATCH, 'mock', cwd, taskId, join(cwd, 'brief.md'), '20'],

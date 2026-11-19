@@ -37,8 +37,17 @@ node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
   agy <cwd> <task-id> <brief-file> [stall-sec]
 ```
 
-`<model>` is the expanded id — `gemini-4-carbon-high` unless the caller named
-another seat, see Arguments below. It goes in BOTH assignments: the request
+`<model>` is the expanded id of the seat the caller named (see Arguments
+below). With no seat named, it is what this prints — the Neon orchestrator, or,
+only when `agy models` was read and lacks it, the thinker fallback with the
+reason on stderr:
+
+```bash
+node <plugin-root>/skills/tmux-teams/scripts/agy-seat-fallback.mjs default thinker
+```
+
+A seat the caller NAMED is used as written and never resolved over. It goes in
+BOTH assignments: the request
 without a matching expectation is a dispatch nobody verified. This command
 hardcoded `high` in both places while the Arguments table promised `medium` and
 `low`, so `$agy-advisor medium` ran high and produced a high receipt that
@@ -56,6 +65,12 @@ verbatim (`gemini-4-carbon-high`, `gemini-4-hydrogen-xhigh`,
 on `gemini-4-carbon-medium`, setting BOTH `ACP_MODEL` and `ACP_EXPECT_MODEL`
 explicitly is load-bearing; the lane accepts all three contract variables,
 writes a receipt, and reports `effective_identity: gemini-4-carbon-high (matched)`.
+
+Re-measured 2026-11-19 against `agy` 1.5.12, same adapter: `session/new` now
+advertises 27 options and starts on `currentValue: "gemini-4-neon-high"`; the
+five new ones are `gemini-4-neon-{high,xhigh,medium,low}` and
+`gemini-pro-orchestrator-neon`, the default seat. `agy models` prints the same
+27 ids, which is the list `default thinker` reads.
 
 ## What differs from the Codex seat
 
@@ -91,10 +106,27 @@ above it walked straight into it, for the whole of v0.33.0's review cycle.
 
 ## Model policy — this is the part that fails closed
 
-The recommended default thinker seat is `gemini-4-carbon-high` (Master,
-2026-11-15, moved off `gemini-4-argon-high`, which had replaced
-`gemini-3.7-flash-high` on 2026-10-17). Worker lanes elsewhere default to
-`gemini-4-hydrogen-high`.
+The default seat is `gemini-pro-orchestrator-neon` (Master, 2026-11-19), for
+this advisor and for every other AGY role. The orchestrator thinks with Neon and
+sends its subagents to work on Hydrogen, so it is faster and cheaper than pure
+Neon. Measured that day: live `antigravity-acp@1.2.0` on `agy` 1.5.12 advertises
+it in `session/new` configOptions. (Before: `gemini-4-carbon-high` from
+2026-11-15, `gemini-4-argon-high` from 2026-10-17.)
+
+**Fallback is about this MACHINE, never about quota.** Run
+`agy-seat-fallback.mjs default thinker` first. It reads `agy models` (10s
+timeout, cached per process):
+
+- the list carries `gemini-pro-orchestrator-neon` → it prints that id, nothing on stderr;
+- the list was read and LACKS it → it prints `gemini-4-hydrogen-xhigh` (thinker;
+  `default worker` prints `gemini-4-hydrogen-medium`) and states requested,
+  used and why on stderr — carry that line into the report, never switch silently;
+- the list could not be read (no binary, timeout, exit ≠ 0) → it keeps Neon, and
+  the companion's set-and-acknowledge pre-check fails closed if Neon is really absent.
+
+A seat the caller named (`$agy-advisor hydrogen-high`, a full id) or a
+`lanes.json` model override is used as written — never resolved over. A 429 is
+NOT a reason to fall back: see the rate-limit section.
 
 **Gemini 3.1 variants are PROHIBITED for planning, review and delivery work.**
 If a configured or acknowledged model is a 3.1 variant, fail the dispatch — do
@@ -147,7 +179,12 @@ and an unreadable brief keep failing closed as before.
 ## Arguments
 
 ```
-$agy-advisor                     # default seat: gemini-4-carbon-high (thinker)
+$agy-advisor                     # default seat: gemini-pro-orchestrator-neon (via `default thinker`)
+$agy-advisor orchestrator-neon   # gemini-pro-orchestrator-neon (Orchestrator Neon)
+$agy-advisor neon-xhigh          # gemini-4-neon-xhigh
+$agy-advisor neon-high           # gemini-4-neon-high
+$agy-advisor neon-medium         # gemini-4-neon-medium
+$agy-advisor neon-low            # gemini-4-neon-low
 $agy-advisor high                # gemini-4-carbon-high
 $agy-advisor medium              # gemini-4-carbon-medium
 $agy-advisor low                 # gemini-4-carbon-low
@@ -168,10 +205,10 @@ $agy-advisor flash-medium        # gemini-3.8-flash-medium
 $agy-advisor flash-low           # gemini-3.8-flash-low
 ```
 
-A bare alias is expanded, or any of the 15 full Gemini ids above
-(`gemini-4-carbon-*`, `gemini-4-argon-*`, `gemini-4-hydrogen-*`,
+A bare alias is expanded, or any of the 20 full Gemini ids above
+(`gemini-4-neon-*`, `gemini-4-carbon-*`, `gemini-4-argon-*`, `gemini-4-hydrogen-*`,
 `gemini-pro-orchestrator`, `gemini-pro-orchestrator-argon`,
-`gemini-3.8-flash-*`) may be passed verbatim into BOTH `ACP_MODEL` and
+`gemini-pro-orchestrator-neon`, `gemini-3.8-flash-*`) may be passed verbatim into BOTH `ACP_MODEL` and
 `ACP_EXPECT_MODEL`, and the receipt must show that exact id. Any other name is
 a usage error — do not pass a model through unrecognised, because an unknown
 value either fails the dispatch or silently seats something nobody chose.

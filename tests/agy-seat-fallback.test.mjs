@@ -221,3 +221,67 @@ test('CLI: rate-limited against the measured shape exits 0 with the excerpt and 
   assert.equal(evil.status, 2);
   assert.match(evil.stderr, /invalid task id/);
 });
+
+// `default <thinker|worker>` (Master, 2026-11-19): the Neon orchestrator for
+// every role unless this machine's `agy models` was READ and lacks it. A fake
+// agy under a temp HOME stands in for the machine; `trustedAgyBinary` finds
+// `$HOME/.local/bin/agy` first.
+function fakeAgyHome(script) {
+  const home = tempDir('agy-default-home-');
+  mkdirSync(join(home, '.local', 'bin'), { recursive: true });
+  const bin = join(home, '.local', 'bin', 'agy');
+  writeFileSync(bin, `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+  return home;
+}
+const runDefault = (home, role) => spawnSync(process.execPath, [SCRIPT, 'default', ...(role ? [role] : [])],
+  { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: home } });
+
+test('CLI: default prints the Neon orchestrator when agy models lists it', () => {
+  const home = fakeAgyHome(`printf 'gemini-4-hydrogen-xhigh        Gemini 4 Hydrogen (XHigh)\\ngemini-pro-orchestrator-neon   Orchestrator (Neon)\\n'`);
+  for (const role of ['thinker', 'worker']) {
+    const r = runDefault(home, role);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout, 'gemini-pro-orchestrator-neon\n');
+    assert.equal(r.stderr, '', 'no fallback, so nothing to explain');
+  }
+});
+
+test('CLI: default falls back per role when the list was read and lacks Neon, and says why on stderr', () => {
+  const home = fakeAgyHome(`printf 'gemini-4-hydrogen-xhigh        Gemini 4 Hydrogen (XHigh)\\ngemini-4-hydrogen-medium       Gemini 4 Hydrogen (Medium)\\n'`);
+  const thinker = runDefault(home, 'thinker');
+  assert.equal(thinker.status, 0, thinker.stderr);
+  assert.equal(thinker.stdout, 'gemini-4-hydrogen-xhigh\n');
+  assert.equal(thinker.stderr.trim(),
+    "agy default fallback: requested gemini-pro-orchestrator-neon, using gemini-4-hydrogen-xhigh (thinker) — gemini-pro-orchestrator-neon is not in this machine's `agy models` list; thinker fallback is gemini-4-hydrogen-xhigh");
+  const worker = runDefault(home, 'worker');
+  assert.equal(worker.status, 0, worker.stderr);
+  assert.equal(worker.stdout, 'gemini-4-hydrogen-medium\n');
+  assert.match(worker.stderr, /requested gemini-pro-orchestrator-neon, using gemini-4-hydrogen-medium \(worker\)/);
+});
+
+test('CLI: default keeps Neon when agy models cannot be read', () => {
+  const home = fakeAgyHome(`echo 'error: not signed in' >&2\nexit 1`);
+  const r = runDefault(home, 'thinker');
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, 'gemini-pro-orchestrator-neon\n');
+  assert.equal(r.stderr, '');
+});
+
+test('CLI: default with a missing, unknown, or extra argument is a usage error, and seat still refuses Neon', () => {
+  const home = fakeAgyHome(`exit 1`);
+  for (const role of [undefined, 'reviewer']) {
+    const r = runDefault(home, role);
+    assert.equal(r.status, 2);
+    assert.equal(r.stdout, '');
+    assert.match(r.stderr, /node agy-seat-fallback\.mjs default <thinker\|worker>/);
+  }
+  const extra = spawnSync(process.execPath, [SCRIPT, 'default', 'thinker', 'extra'],
+    { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: home } });
+  assert.equal(extra.status, 2);
+  assert.equal(extra.stdout, '');
+  assert.match(extra.stderr, /node agy-seat-fallback\.mjs default <thinker\|worker>/);
+  // `default` is not a quota fallback: `seat` refuses every Gemini seat, Neon included.
+  const seat = spawnSync(process.execPath, [SCRIPT, 'seat', 'gemini-pro-orchestrator-neon'], { encoding: 'utf8' });
+  assert.equal(seat.status, 2);
+  assert.match(seat.stderr, /no fallback exists for seat "gemini-pro-orchestrator-neon"/);
+});
