@@ -64,8 +64,8 @@ test('Gemini 3.1 and every model below its family version floor is refused; at o
     'gemini-4-neon-high', 'gemini-4-neon-xhigh',
     'gemini-3.8-flash-high', 'gemini-3.8-flash-medium', 'gemini-3.8-flash-low',
     'gemini-3.6-flash-high', 'gemini-3.10-pro', 'gpt-6-luna', 'gpt-6.2-sol',
-    'gpt-6.2-astra', 'gpt-6.2-sol[ultra]', 'gpt-6.3-astra', 'gpt-7-sol', 'gpt-61-sol',
-    'gpt-6.1-terra', 'gpt-60-terra', 'gpt-6-luna[max]',
+    'gpt-6.2-astra', 'gpt-6.2-sol[ultra]', 'gpt-6.3-astra', 'gpt-6.10-sol', 'gpt-6.10-astra', 'gpt-6.100-sol', 'gpt-7-sol', 'gpt-61-sol',
+    'gpt-6.1-terra', 'gpt-6.10-terra', 'gpt-60-terra', 'gpt-6-luna[max]',
     'fable-5.2', 'claude-fable-5-2[1m]', 'claude-fable-5-2-20261119', 'fable-5.10', 'fable-5.100', 'fable-6', 'fable-100', 'fabled', null,
   ]) {
     assert.equal(assertPermittedModel(name, 'probe'), name)

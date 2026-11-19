@@ -150,8 +150,10 @@ complete, and stop at the count answered in 4)
    the model just chosen for the dispatcher, and say so plainly (for `adapter:
    "agy"`, `gemini-pro-orchestrator-neon` is the default worker too).
 10. `models.evaluator` — recommend a different, stronger model where one is
-    available (for `adapter: "agy"`, the default thinker is
-    `gemini-pro-orchestrator-neon` as well). Reason: an evaluator running the same model that produced
+    available (for `adapter: "agy"`, prefer a cross-family evaluator such as
+    Claude Opus or Codex when available, or `gemini-4-neon-xhigh` to keep an
+    AGY evaluator distinct from the `gemini-pro-orchestrator-neon` worker; if
+    both seats intentionally share the Neon default, say so explicitly). Reason: an evaluator running the same model that produced
     the work agrees with itself more often than it should.
 
 **The workflows**
