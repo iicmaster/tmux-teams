@@ -1532,7 +1532,7 @@ function requestedConfigOverride(name, limit) {
 // the two skills. Since 2026-11-19 it is a per-family VERSION FLOOR rather than
 // a list of retired names: fable >= 5.2, Codex sol/astra >= 6.2, terra >= 6.1,
 // luna >= 6 pass even when unknown to this plugin; anything older is refused.
-export const PROHIBITED_MODEL = /(?:^|[^0-9a-z])(?:(?:gemini[-_ ]?3[-_.]1|gpt[-_ ]?(?:0*[0-5](?:[-_.][0-9]+)*[-_. ]?(?:sol|astra|terra|luna)|0*6(?:[-_. ]0*[01](?:[-_.][0-9]+)*)?[-_. ]?(?:sol|astra)|0*6(?:[-_. ]0+(?:[-_.][0-9]+)*)?[-_. ]?terra))(?:[^0-9]|$)|fable(?![a-z])(?![-_. ]?(?:5[-_. ]?(?!(?:19|20)[0-9]{6}(?![0-9]))(?:[2-9]|[1-9][0-9]+)(?![0-9])|(?!(?:19|20)[0-9]{6}(?![0-9]))(?:[6-9]|[1-9][0-9]+)(?![0-9]))))/i
+export const PROHIBITED_MODEL = /(?:^|[^0-9a-z])(?:(?:gemini[-_ ]?3[-_.]1|gpt[-_ ]?(?:0*[0-5](?:[-_.][0-9]+)*[-_. ]?(?:sol|astra|terra|luna)|0*6(?:[-_. ]0*[01](?:[-_.][0-9]+)*)?[-_. ]?(?:sol|astra)|0*6(?:[-_. ]0+(?:[-_.][0-9]+)*)?[-_. ]?terra))(?:[^0-9]|$)|fable(?![a-z])(?![-_. ]?(?:0*5[-_. ]?(?!(?:19|20)[0-9]{6}(?![0-9]))0*(?:[2-9]|[1-9][0-9]+)(?![0-9])|(?!(?:19|20)[0-9]{6}(?![0-9]))0*(?:[6-9]|[1-9][0-9]+)(?![0-9]))))/i
 
 function assertPermittedModel(value, name) {
   if (typeof value === 'string' && PROHIBITED_MODEL.test(value)) {

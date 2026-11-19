@@ -52,7 +52,7 @@ test('Gemini 3.1 and every model below its family version floor is refused; at o
     'gpt-5.5-sol', 'gpt-5-sol', 'gpt-6-terra', 'gpt-6.0-terra', 'gpt-6.00-terra', 'gpt-6.0.1-terra', 'gpt-5.9-terra', 'gpt-5-luna', 'gpt-5.1.2-luna', 'gpt-05.9-luna',
     // fable floor 5.2; bare alias, separator-less, and dated pre-5.2 ids are refused.
     'fable-5.1', 'claude-fable-5-1', 'fable-5', 'claude-fable-5[1m]', 'fable',
-    'fable5', 'fable5.1', 'claude-fable-5-20260514', 'fable-20260101',
+    'fable5', 'fable5.1', 'fable-5.01', 'fable-05.1', 'claude-fable-5-20260514', 'fable-20260101',
   ]) {
     assert.throws(() => assertPermittedModel(name, 'probe'), /prohibited model on tmux-teams review routes/, name)
   }
@@ -66,7 +66,7 @@ test('Gemini 3.1 and every model below its family version floor is refused; at o
     'gemini-3.6-flash-high', 'gemini-3.10-pro', 'gpt-6-luna', 'gpt-6.2-sol',
     'gpt-6.2-astra', 'gpt-6.2-sol[ultra]', 'gpt-6.3-astra', 'gpt-6.10-sol', 'gpt-6.10-astra', 'gpt-6.100-sol', 'gpt-7-sol', 'gpt-61-sol',
     'gpt-6.1-terra', 'gpt-6.10-terra', 'gpt-60-terra', 'gpt-6-luna[max]',
-    'fable-5.2', 'claude-fable-5-2[1m]', 'claude-fable-5-2-20261119', 'fable-5.10', 'fable-5.100', 'fable-6', 'fable-100', 'fabled', null,
+    'fable-5.2', 'fable-5.02', 'fable-05.2', 'claude-fable-5-2[1m]', 'claude-fable-5-2-20261119', 'fable-5.10', 'fable-5.100', 'fable-6', 'fable-06', 'fable-100', 'fabled', null,
   ]) {
     assert.equal(assertPermittedModel(name, 'probe'), name)
   }
