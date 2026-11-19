@@ -46,10 +46,10 @@ test('Gemini 3.1 and every model below its family version floor is refused; at o
     'gemini-3.1-pro-high', 'gemini-3.1-pro', 'Gemini 3.1', 'agy/gemini_3.1-flash', 'gemini-3-1-pro-high',
     // Master, 2026-11-19: version floor — sol/astra >= 6.2, terra >= 6.1, luna >= 6.
     'gpt-6-sol', 'GPT-6-SOL', 'gpt-6-sol-fast', 'gpt-6.0-sol', 'gpt-6.1-sol',
-    'gpt-6_1_sol', 'gpt-6.1-sol[ultra]', 'gpt-6.1.0-sol', 'gpt-6.0.1-sol',
-    'gpt-6-astra', 'gpt-6.1-astra', 'gpt-6-1-astra', 'GPT-6.1-ASTRA',
+    'gpt-6_1_sol', 'gpt-6.1-sol[ultra]', 'gpt-6.1.0-sol', 'gpt-6.0.1-sol', 'gpt-6.01-sol', 'gpt-06.1-sol',
+    'gpt-6-astra', 'gpt-6.1-astra', 'gpt-6-1-astra', 'GPT-6.1-ASTRA', 'gpt-06.01-astra',
     'gpt-6.1.sol', 'gpt-6.astra', 'gpt-6_1_astra',
-    'gpt-5.5-sol', 'gpt-5-sol', 'gpt-6-terra', 'gpt-6.0-terra', 'gpt-6.0.1-terra', 'gpt-5.9-terra', 'gpt-5-luna', 'gpt-5.1.2-luna',
+    'gpt-5.5-sol', 'gpt-5-sol', 'gpt-6-terra', 'gpt-6.0-terra', 'gpt-6.00-terra', 'gpt-6.0.1-terra', 'gpt-5.9-terra', 'gpt-5-luna', 'gpt-5.1.2-luna', 'gpt-05.9-luna',
     // fable floor 5.2; bare alias, separator-less, and dated pre-5.2 ids are refused.
     'fable-5.1', 'claude-fable-5-1', 'fable-5', 'claude-fable-5[1m]', 'fable',
     'fable5', 'fable5.1', 'claude-fable-5-20260514', 'fable-20260101',

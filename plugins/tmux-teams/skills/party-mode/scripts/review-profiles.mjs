@@ -381,7 +381,7 @@ export const REVIEW_PROFILES = freeze({
 //      three character-identical. Gemini generations are named after elements
 //      and do not order numerically, so no Gemini floor exists beyond 3.1.
 // This throws at import.
-const PROHIBITED_MODEL = /(?:^|[^0-9a-z])(?:(?:gemini[-_ ]?3[-_.]1|gpt[-_ ]?(?:[0-5](?:[-_.][0-9]+)*[-_. ]?(?:sol|astra|terra|luna)|6(?:[-_. ][01](?:[-_.][0-9]+)*)?[-_. ]?(?:sol|astra)|6(?:[-_. ]0(?:[-_.][0-9]+)*)?[-_. ]?terra))(?:[^0-9]|$)|fable(?![a-z])(?![-_. ]?(?:5[-_. ]?(?!(?:19|20)[0-9]{6}(?![0-9]))(?:[2-9]|[1-9][0-9]+)(?![0-9])|(?!(?:19|20)[0-9]{6}(?![0-9]))(?:[6-9]|[1-9][0-9]+)(?![0-9]))))/i
+const PROHIBITED_MODEL = /(?:^|[^0-9a-z])(?:(?:gemini[-_ ]?3[-_.]1|gpt[-_ ]?(?:0*[0-5](?:[-_.][0-9]+)*[-_. ]?(?:sol|astra|terra|luna)|0*6(?:[-_. ]0*[01](?:[-_.][0-9]+)*)?[-_. ]?(?:sol|astra)|0*6(?:[-_. ]0+(?:[-_.][0-9]+)*)?[-_. ]?terra))(?:[^0-9]|$)|fable(?![a-z])(?![-_. ]?(?:5[-_. ]?(?!(?:19|20)[0-9]{6}(?![0-9]))(?:[2-9]|[1-9][0-9]+)(?![0-9])|(?!(?:19|20)[0-9]{6}(?![0-9]))(?:[6-9]|[1-9][0-9]+)(?![0-9]))))/i
 
 export function isProhibitedModel(model) {
   return typeof model === 'string' && PROHIBITED_MODEL.test(model)
