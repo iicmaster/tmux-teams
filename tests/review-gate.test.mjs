@@ -1852,7 +1852,7 @@ test('a model change smuggled inside a MODE setter reply cannot hide behind a st
       reviewMode: 'plan', model: 'gpt-6.2-sol',
       config: { model: 'gpt-6.2-sol', mode: 'plan' },
     }, { MOCK_REVIEW_BEHAVIOUR: 'late-setter-model-swap', MOCK_REVIEW_MODEL: 'gpt-6.2-sol' }),
-    error => error.code === 'policy' && /pre-6\.2 Codex sol\/astra is retired/.test(error.message),
+    error => error.code === 'policy' && /Codex below its version floor is retired/.test(error.message),
     'a model flip smuggled in a mode setter reply was not refused',
   )
 }, { timeout: 10_000 })
@@ -1869,7 +1869,7 @@ test('a shadowed model change in a setter reply cannot hide behind an earlier cl
       reviewMode: 'plan', model: 'gpt-6.2-sol',
       config: { model: 'gpt-6.2-sol', mode: 'plan' },
     }, { MOCK_REVIEW_BEHAVIOUR: 'late-setter-shadowed-model-swap', MOCK_REVIEW_MODEL: 'gpt-6.2-sol' }),
-    error => error.code === 'policy' && /pre-6\.2 Codex sol\/astra is retired/.test(error.message),
+    error => error.code === 'policy' && /Codex below its version floor is retired/.test(error.message),
     'a shadowed prohibited model flip was not refused',
   )
 }, { timeout: 10_000 })
@@ -1942,7 +1942,7 @@ test('a shadowed prohibited model in a model setter reply is rejected', async ()
       reviewMode: 'plan', model: 'gpt-6.2-sol',
       config: { model: 'gpt-6.2-sol', mode: 'plan' },
     }, { MOCK_REVIEW_BEHAVIOUR: 'retired-seed', MOCK_REVIEW_MODEL: 'gpt-6.2-sol', MOCK_SETTER_SHADOWED: 'true' }),
-    error => error.code === 'policy' && /pre-6\.2 Codex sol\/astra is retired/.test(error.message),
+    error => error.code === 'policy' && /Codex below its version floor is retired/.test(error.message),
     'a model setter reply carrying a shadowed prohibited model was not refused',
   )
 }, { timeout: 10_000 })
@@ -1968,7 +1968,7 @@ test('an alias must not shadow a retired canonical model', () => {
   return (async () => {
     await assert.rejects(
       attempt('gpt-6-sol'),
-      error => error.code === 'policy' && /pre-6\.2 Codex sol\/astra is retired/.test(error.message),
+      error => error.code === 'policy' && /Codex below its version floor is retired/.test(error.message),
       'a retired CANONICAL behind an alias was accepted',
     )
     assert.equal(spawned, false)
@@ -2197,4 +2197,25 @@ test('lanes that stop at one stage for different reasons are not announced as on
   ])
   assert.match(shared, /one shared precondition, not one fault per profile/,
     `the #51 sentence stopped being said when it was true:\n${shared}`)
+})
+
+test('runReviewGate falls back AGY from Neon to gemini-4-hydrogen-xhigh when agy models lacks Neon and records modelFallback', async () => {
+  const seenModels = new Map()
+  const p = packet()
+  const report = await runReviewGate(p, {
+    profiles: REVIEW_PROFILES,
+    buildProfileEnv: (id) => (id === 'agy' ? { AGY_BIN: '/trusted/agy', AGY_SKIP_DOWNLOAD: '1' } : {}),
+    agyModelsResolver: () => ['gemini-4-hydrogen-xhigh', 'gemini-4-carbon-high'],
+    runAcpReview: async ({ profile: prof }) => {
+      seenModels.set(prof.id, prof.model)
+      return runnerResult(prof, p)
+    },
+  })
+  assert.equal(report.ok, true)
+  assert.equal(seenModels.get('agy'), 'gemini-4-hydrogen-xhigh')
+  const agyLane = report.reviews.find(r => r.profile === 'agy')
+  assert.equal(agyLane?.model, 'gemini-4-hydrogen-xhigh')
+  assert.equal(agyLane?.modelFallback?.requested, 'gemini-pro-orchestrator-neon')
+  assert.equal(agyLane?.modelFallback?.model, 'gemini-4-hydrogen-xhigh')
+  assert.equal(agyLane?.modelFallback?.role, 'thinker')
 })

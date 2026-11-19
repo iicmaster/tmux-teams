@@ -744,7 +744,7 @@ test('a session reporting the RETIRED gpt-6-sol is refused the same way, while i
   const retired = runCompanion('task-term-retired-sol', { MOCK_MODEL: 'gpt-6-sol' })
   assert.notEqual(retired.status, 0,
     `a session reporting retired gpt-6-sol must not be treated as a clean dispatch; stderr:\n${retired.stderr}`)
-  assert.match(retired.stderr, /pre-6\.2 Codex sol\/astra is retired — the frontier is gpt-6\.2-sol/,
+  assert.match(retired.stderr, /Codex below its version floor is retired — sol\/astra need 6\.2 or newer/,
     `expected the refusal to name the successor; stderr:\n${retired.stderr}`)
   assert.ok(!retired.requests.some((entry) => entry.method === 'session/prompt'),
     'the turn proceeded on the retired model instead of being refused before session/prompt')

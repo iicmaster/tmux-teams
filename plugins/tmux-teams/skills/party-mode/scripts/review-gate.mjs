@@ -13,7 +13,10 @@ import { ACP_REVIEW_LIMITS, prepareReviewPacket, runAcpReview, ReviewTransportEr
 // it); `provenFamilyKey` stays a direct import because the receipt still
 // names a family by it, and `provenFamilyCollision` still does the actual
 // collision decision on raw profiles.
-import { REVIEW_PROFILES, buildProfileEnv, provenFamilyKey, provenFamilyCollision, laneIdentity, launchArgv } from './review-profiles.mjs'
+import {
+  REVIEW_PROFILES, AGY_DEFAULT_MODEL, agyAvailableModels, resolveAgyDefaultModel,
+  buildProfileEnv, provenFamilyKey, provenFamilyCollision, laneIdentity, launchArgv,
+} from './review-profiles.mjs'
 import {
   REVIEW_POLICY_MODES,
   planReviewPanel,
@@ -147,6 +150,7 @@ const attemptRecord = attempt => Object.freeze({
   profile: attempt.profile.id,
   status: attempt.valid ? 'accepted' : 'failed',
   fallback: attempt.fallback,
+  ...(attempt.modelFallback ? { modelFallback: attempt.modelFallback } : {}),
   ...(attempt.replaces ? { replaces: attempt.replaces } : {}),
   ...(!attempt.valid ? {
     failureKind: attempt.failureKind,
@@ -210,13 +214,13 @@ function reserveFor(original, all) {
   return all.find(p => p.reserve && (p.reserveFor === key || p.for === key || p.lane === original.reserveLane))
 }
 
-async function defaultLaneRunner(profile, packet, deps) {
+async function defaultLaneRunner(profile, packet, deps, precomputedEnv = null) {
   // Master 2026-11-17: `claude` (Opus) is a seated reviewer again when the
   // primary shares another reviewer's family. The old blanket block on the
   // `claude` profile came from the era when the direct Claude provider was
   // limited; it is no longer applied here. Availability is decided by the
   // route and by each lane's own transport result.
-  const env = typeof deps.buildProfileEnv === 'function' ? deps.buildProfileEnv(profile.id ?? profile) : {}
+  const env = precomputedEnv ?? (typeof deps.buildProfileEnv === 'function' ? deps.buildProfileEnv(profile.id ?? profile) : {})
   // ONE computation of "what does this profile actually run", shared with the
   // collision check. This line used to spell it out again — and differently:
   // it never read `profile.args`, while `provenLaunchSignature` (the only
@@ -408,8 +412,35 @@ async function assessAttempt(attempt, validate, expectedInputHash) {
       provenance: value.provenance,
       packetBytes: value.packetBytes,
       fallback: attempt.fallback,
+      ...(attempt.modelFallback ? { modelFallback: attempt.modelFallback } : {}),
       ...(attempt.replaces ? { replaces: attempt.replaces } : {}),
     }),
+  }
+}
+
+function resolvePrimaryAgyDefault(profile, deps) {
+  if (profile?.id !== 'agy' || profile.model !== AGY_DEFAULT_MODEL) {
+    return { profile, env: null, modelFallback: null }
+  }
+  let env = null
+  if (typeof deps.buildProfileEnv === 'function') {
+    try { env = deps.buildProfileEnv(profile.id) } catch { return { profile, env: null, modelFallback: null } }
+  }
+  if (!env?.AGY_BIN && !deps.customAgyModelsResolver) {
+    return { profile, env, modelFallback: null }
+  }
+  const available = deps.agyModelsResolver(env?.AGY_BIN, { source: env ?? {} })
+  const resolved = resolveAgyDefaultModel('thinker', available)
+  if (!resolved.fallback) return { profile, env, modelFallback: null }
+  return {
+    profile: Object.freeze({
+      ...profile,
+      model: resolved.model,
+      displayModel: `agy/${resolved.model}`,
+      config: Object.freeze({ ...(profile.config ?? {}), model: resolved.model }),
+    }),
+    env,
+    modelFallback: resolved.fallback,
   }
 }
 
@@ -417,6 +448,7 @@ export async function runReviewGate(packet, {
   profiles = REVIEW_PROFILES,
   runAcpReview: laneRunner = runAcpReview,
   buildProfileEnv: profileEnv = buildProfileEnv,
+  agyModelsResolver,
   validateReview: validate = validateReview,
   synthesizeReviews: synthesize = synthesizeReviews,
   planReviewPanel: planner = planReviewPanel,
@@ -434,10 +466,18 @@ export async function runReviewGate(packet, {
   const requireAgy = policyMode === 'opencode-free' ? Boolean(activePlan?.requireAgy) : true
   const singleProviderQuorum = Boolean(activePlan?.singleProviderQuorum ?? (policyMode === 'opencode-free'))
   const expectedInputHash = prepareReviewPacket(packet).inputHash
-  const deps = { runAcpReview: laneRunner, buildProfileEnv: profileEnv, timeoutMs, targetRepository }
-  const settled = await Promise.allSettled(primary.map(profile => defaultLaneRunner(profile, packet, deps)))
-  const attempts = await Promise.all(primary.map((profile, index) => assessAttempt(
-    { profile, result: settled[index], fallback: false },
+  const deps = {
+    runAcpReview: laneRunner,
+    buildProfileEnv: profileEnv,
+    agyModelsResolver: agyModelsResolver ?? agyAvailableModels,
+    customAgyModelsResolver: typeof agyModelsResolver === 'function',
+    timeoutMs,
+    targetRepository,
+  }
+  const preparedPrimary = primary.map(profile => resolvePrimaryAgyDefault(profile, deps))
+  const settled = await Promise.allSettled(preparedPrimary.map(entry => defaultLaneRunner(entry.profile, packet, deps, entry.env)))
+  const attempts = await Promise.all(preparedPrimary.map((entry, index) => assessAttempt(
+    { profile: entry.profile, result: settled[index], fallback: false, modelFallback: entry.modelFallback },
     validate,
     expectedInputHash,
   )))

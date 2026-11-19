@@ -499,7 +499,9 @@ export function laneStatus(id, profile, env, options = {}) {
   try {
     // The object this returns CONTAINS the credential. It is bound to nothing
     // and referenced nowhere, which is the whole of what "never returned" means.
-    buildAcpLaunch(id, { env, agyVersionResolver: options.agyVersionResolver })
+    // Status stays local-only and never blocks on `agy models`; pass a no-op
+    // resolver here so credential/config validation runs without network I/O.
+    buildAcpLaunch(id, { env, agyVersionResolver: options.agyVersionResolver, agyModelsResolver: () => null })
     return { ...facts, configuration: 'valid', problem: null, fixes: [], notProven: notProvenFor(profile) }
   } catch (error) {
     // `error.fileKind` when the thrower knew which file it was opening. A pure
@@ -1121,7 +1123,11 @@ async function probeOneLane(id, profile, env, transport, abortSignal, depth = DE
   }
   let launch
   try {
-    launch = buildAcpLaunch(id, { env, agyVersionResolver: options.agyVersionResolver })
+    launch = buildAcpLaunch(id, {
+      env,
+      agyVersionResolver: options.agyVersionResolver,
+      agyModelsResolver: options.agyModelsResolver,
+    })
   } catch (error) {
     const code = classify(error?.message, { fileKind: error?.fileKind ?? null })
     return {
@@ -1155,7 +1161,10 @@ async function probeOneLane(id, profile, env, transport, abortSignal, depth = DE
   }
   const code = classifyProbe(result)
   if (!code) {
-    return { lane: id, probe: 'reachable', configuration: status.configuration, problem: null, notProven, depth }
+    return {
+      lane: id, probe: 'reachable', configuration: status.configuration, problem: null, notProven, depth,
+      ...(launch.fallback ? { fallback: launch.fallback } : {}),
+    }
   }
   return {
     lane: id,
@@ -1166,6 +1175,7 @@ async function probeOneLane(id, profile, env, transport, abortSignal, depth = DE
       ? executableFixes(id, profile) : [],
     notProven,
     depth,
+    ...(launch.fallback ? { fallback: launch.fallback } : {}),
   }
 }
 

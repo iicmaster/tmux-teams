@@ -163,11 +163,17 @@ settings file, and the gateway behind them can be re-pointed by editing it — s
 rule as every row above: the alias is a slot, the endpoint plus the settings file
 are the facts.
 
-**`fable` is not a seat any more — Master retired `fable-5` on 2026-11-02.** The
-model guard (`PROHIBITED_MODEL`, one copy per script) refuses every fable form
-except `fable-5.1`: `fable-5`, `claude-fable-5`, `claude-fable-5[1m]`, and the
-bare alias `fable` — which pins no version at all, and that is the whole reason
-the rule exists. Measured: `claude-fable-5-1` on the DEFAULT seat binds verbatim
+**`fable` is not a seat on this gateway — and the rule is a VERSION FLOOR.**
+Master retired `fable-5` on 2026-11-02; on 2026-11-19 the guard became a floor:
+`PROHIBITED_MODEL` (one copy per script, character-identical) passes fable
+`5.2` or newer — `fable-5.2`, `claude-fable-5-2[1m]`, `fable-5.10`, `fable-6`,
+including releases this plugin has never heard of — and refuses everything
+older: `fable-5.1`, `claude-fable-5-1`, `fable-5`, `claude-fable-5[1m]`, and the
+bare alias `fable`, which pins no version at all, and that is the whole reason
+the rule exists. Raising the floor means editing its digits in all three copies
+(`skills/party-mode/scripts/review-profiles.mjs`, `acp-dispatch.mjs`, `acp-companion.mjs`) together; the
+parity test fails on drift. The measurement below is dated and predates the
+floor — `claude-fable-5-1` is refused now. Measured: `claude-fable-5-1` on the DEFAULT seat binds verbatim
 (`effective_identity: claude-fable-5-1 (matched)`), while the same id through
 9Router fails `config-option-invalid` because that adapter does not advertise
 it. So the surviving fable seat is the default one, and this gateway has none.
@@ -209,12 +215,12 @@ claude-shaped subset too: measured the same day, the gateway serves
 `cc/claude-fable-5-1` while the adapter does not advertise it — treat the curl
 below as the superset, not the settable list. The prohibition guard applies
 before all of this: `ag/gemini-3.1-pro-high` sits on the router but is neither
-advertised nor permitted (Gemini 3.1 is banned; every pre-6.2 Codex `sol`/`astra`
-id — `gpt-6-sol`, `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6.1-astra` and their
-separator/suffixed forms — is retired since 2026-11-19; and `fable-5` is retired
-— only `fable-5.1` is accepted — on every tmux-teams route), and the companion
-exits 2 on it whatever the router serves. (`claude-gpt-6.1-sol` above is a dated
-2026-10-26 router-advertised id, not a claim that it is still permitted.)
+advertised nor permitted (Gemini 3.1 is banned; Codex below its version floor
+— `sol`/`astra` `< 6.2`, `terra` `< 6.1`, `luna` `< 6` — and `fable` `< 5.2`
+including bare `fable` are retired on every tmux-teams route since 2026-11-19),
+and the companion exits 2 on them whatever the router serves. (`claude-gpt-6.1-sol`
+above is a dated 2026-10-26 router-advertised id, not a claim that it is still
+permitted.)
 
 ```bash
 curl -s http://127.0.0.1:20128/v1/models \

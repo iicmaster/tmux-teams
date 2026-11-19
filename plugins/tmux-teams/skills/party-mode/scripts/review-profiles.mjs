@@ -108,15 +108,33 @@ const opencodeFreeSeat = (id, model) => ({
   config: { model: `opencode/${model}` },
 })
 
+// Master 2026-11-19: every AGY role (thinker, advisor, review gate, worker)
+// defaults to the Neon orchestrator. It thinks with Neon and sends its
+// subagents to work on Hydrogen, so it is faster and cheaper than pure Neon.
+// Measured the same day: live `antigravity-acp@1.2.0` on agy 1.5.12 advertises
+// `gemini-pro-orchestrator-neon` in `session/new` configOptions.
+//
+// FALLBACK ONLY when this machine's `agy models` list was READ successfully
+// and does not carry it — see `resolveAgyDefaultModel`. An unreadable list
+// (no binary, timeout, exit != 0) keeps Neon and lets the companion's
+// set-and-acknowledge pre-check fail closed. Never on quota/429: that stops
+// and reports, exactly as before.
+export const AGY_DEFAULT_MODEL = 'gemini-pro-orchestrator-neon'
+export const AGY_FALLBACK_MODELS = Object.freeze({
+  thinker: 'gemini-4-hydrogen-xhigh',
+  worker: 'gemini-4-hydrogen-medium',
+})
+
 export const REVIEW_PROFILES = freeze({
   agy: {
-    // Master 2026-11-17: the review seat runs the `agy-advisor hydrogen`
-    // persona (Gemini 4 Hydrogen thinker), not the carbon default.
-    id: 'agy', provider: 'google-antigravity', family: 'gemini', model: 'gemini-4-hydrogen-high',
-    displayModel: 'agy/gemini-4-hydrogen-high',
+    // Master 2026-11-19: the review seat runs the Neon orchestrator. When the
+    // list `agy models` returns lacks it, `buildAcpLaunch` resolves the
+    // thinker fallback (`gemini-4-hydrogen-xhigh`) and records why.
+    id: 'agy', provider: 'google-antigravity', family: 'gemini', model: AGY_DEFAULT_MODEL,
+    displayModel: `agy/${AGY_DEFAULT_MODEL}`,
     reviewMode: 'plan', command: ['bunx', 'antigravity-acp@1.2.0'],
     adapterPackage: 'antigravity-acp@1.2.0',
-    config: { model: 'gemini-4-hydrogen-high', mode: 'plan' },
+    config: { model: AGY_DEFAULT_MODEL, mode: 'plan' },
   },
   kimi: {
     id: 'kimi', provider: 'kimi', family: 'kimi', model: 'opus',
@@ -349,15 +367,21 @@ export const REVIEW_PROFILES = freeze({
 //      which means it was enforced by whoever edited that line next: v0.13.1
 //      shipped `gemini-3.1-pro-high` here with a test asserting the forbidden
 //      value was correct, and nothing compared either against the rule.
-//   2. Master, 2026-11-19: every pre-6.2 `sol`/`astra` generation is retired —
-//      only `gpt-6.2-sol` / `gpt-6.2-astra` may be dispatched or reviewed.
-//      That includes `gpt-6`, `gpt-6.0` and `gpt-6.1` with any of the
-//      established separators, plus suffixed forms (`gpt-6.1-sol-fast`,
-//      `gpt-6-astra[max]`). The pattern must NOT swallow `gpt-6.2-*`
-//      (`[-_. ]?` before the generation digit cannot take the `.` before 2).
-//      Also prohibits `fable-5` (`fable-5.1` allowed).
+//   2. Master, 2026-11-19: a VERSION FLOOR per family instead of a denylist.
+//      A release at or above its floor passes even when this plugin has never
+//      heard of it (`fable-5.10`, `gpt-6.3-astra`, `gpt-7-sol`); anything
+//      below is refused, with any of the established separators and suffixes
+//      (`gpt-6.1-sol-fast`, `gpt-6-astra[max]`, `claude-fable-5[1m]`).
+//        fable          >= 5.2   (bare `fable` with no version is refused)
+//        gpt sol/astra  >= 6.2
+//        gpt terra      >= 6.1
+//        gpt luna       >= 6
+//      To raise a floor, edit its digits here AND in the two copies in
+//      `acp-dispatch.mjs` / `acp-companion.mjs`; the parity test holds all
+//      three character-identical. Gemini generations are named after elements
+//      and do not order numerically, so no Gemini floor exists beyond 3.1.
 // This throws at import.
-const PROHIBITED_MODEL = /(?:^|[^0-9a-z])(?:gemini[-_ ]?3\.1|gpt[-_ ]?6(?:[-_. ]?[01])?[-_. ]?(?:sol|astra)|fable(?![-_. ]?5[-_. ]?1))(?:[^0-9]|$)/i
+const PROHIBITED_MODEL = /(?:^|[^0-9a-z])(?:(?:gemini[-_ ]?3[-_.]1|gpt[-_ ]?(?:0*[0-5](?:[-_.][0-9]+)*[-_. ]?(?:sol|astra|terra|luna)|0*6(?:[-_. ]0*[01](?:[-_.][0-9]+)*)?[-_. ]?(?:sol|astra)|0*6(?:[-_. ]0+(?:[-_.][0-9]+)*)?[-_. ]?terra))(?:[^0-9]|$)|fable(?![a-z])(?![-_. ]?(?:0*5[-_. ]?(?!(?:19|20)[0-9]{6}(?![0-9]))0*(?:[2-9]|[1-9][0-9]+)(?![0-9])|(?!(?:19|20)[0-9]{6}(?![0-9]))0*(?:[6-9]|[1-9][0-9]+)(?![0-9]))))/i
 
 export function isProhibitedModel(model) {
   return typeof model === 'string' && PROHIBITED_MODEL.test(model)
@@ -366,7 +390,7 @@ export function isProhibitedModel(model) {
 /** Reject a prohibited reviewer model rather than quietly running it. */
 export function assertPermittedModel(model, where) {
   if (isProhibitedModel(model)) {
-    throw new Error(`${where}: prohibited model on tmux-teams review routes (Gemini 3.1 is banned; pre-6.2 Codex sol/astra is retired — the frontier is gpt-6.2-sol / gpt-6.2-astra), got ${model}`)
+    throw new Error(`${where}: prohibited model on tmux-teams review routes (Gemini 3.1 is banned; Codex below its version floor is retired — sol/astra need 6.2 or newer, terra 6.1 or newer, luna 6 or newer; fable older than 5.2 is retired — fable-5.2 or newer may be dispatched), got ${model}`)
   }
   return model
 }
@@ -1125,6 +1149,93 @@ export function agyBinaryVersion(binaryPath, {
   return null
 }
 
+// Parse `agy models` output into lowercase model ids. `agy models` prints a
+// tab- or multi-space-delimited table (`<id>  <display name>`) and may sit
+// behind a TTY spinner that rewrites the line with bare `\r`. Only rows whose
+// first token looks like a model id (a letter, then letters/digits/`.`/`-`,
+// containing at least one `-`) count; spinner frames start with a braille
+// glyph and never match.
+export function parseAgyModels(text) {
+  const models = []
+  const clean = String(text ?? '')
+    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, '')
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
+  for (const raw of clean.split(/\r\n|\n|\r/)) {
+    const line = raw.trim()
+    if (!line) continue
+    // Match `<id>\t<display>` or `<id>  <display>`, or a bare known model id on its own line.
+    const row = line.match(/^([a-z][a-z0-9._]*-[a-z0-9._-]*[a-z0-9])(?:\t|\s{2,})\S/i)
+      ?? line.match(/^((?:gemini|claude|gpt)-[a-z0-9._-]*[a-z0-9])$/i)
+    if (row) {
+      const id = row[1].toLowerCase()
+      if (!models.includes(id)) models.push(id)
+    }
+  }
+  return models
+}
+
+const agyModelsCache = new Map()
+
+/** Drop the per-process `agy models` cache (tests). */
+export function resetAgyModelsCache() {
+  agyModelsCache.clear()
+}
+
+// The models this machine's agy offers, or `null` when the list could not be
+// read (no binary, spawn error, timeout, exit != 0, nothing parseable).
+// Successful lists are cached per (binary, HOME, XDG_CONFIG_HOME) for the life
+// of the process; `null` failures are not cached permanently so transient
+// timeouts or pre-login errors recover on the next call. Measured 2026-11-19:
+// 2.5s on agy 1.5.12, so 10s is the ceiling.
+export function agyAvailableModels(binaryPath, {
+  spawnFn = spawnSync,
+  timeoutMs = 10000,
+  env,
+  source = process.env,
+  cache = agyModelsCache,
+} = {}) {
+  if (typeof binaryPath !== 'string' || binaryPath === '') return null
+  const runEnv = env ?? agyEnvironment(source)
+  const cacheKey = JSON.stringify([binaryPath, runEnv.HOME ?? '', runEnv.XDG_CONFIG_HOME ?? ''])
+  if (cache.has(cacheKey)) return cache.get(cacheKey)
+  let models = null
+  try {
+    const res = spawnFn(binaryPath, ['models'], {
+      encoding: 'utf8', timeout: timeoutMs, env: runEnv,
+    })
+    if (res && res.status === 0 && !res.error && typeof res.stdout === 'string') {
+      const parsed = parseAgyModels(res.stdout)
+      if (parsed.length > 0) models = Object.freeze(parsed)
+    }
+  } catch {}
+  if (models !== null) cache.set(cacheKey, models)
+  return models
+}
+
+// Decide the model a default AGY route runs. `available` is the list from
+// `agyAvailableModels` — `null` or empty means it could not be read, and Neon
+// is kept (the companion pre-check then fails closed if Neon really is absent).
+// Only a non-empty list READ successfully that lacks Neon falls back, and the
+// fallback is always returned for the caller to record, never applied silently.
+export function resolveAgyDefaultModel(role, available) {
+  if (!Object.hasOwn(AGY_FALLBACK_MODELS, role)) {
+    throw new TypeError(`unknown AGY role ${JSON.stringify(role)} (expected thinker or worker)`)
+  }
+  if (!Array.isArray(available) || available.length === 0 || available.includes(AGY_DEFAULT_MODEL)) {
+    return { model: AGY_DEFAULT_MODEL, fallback: null }
+  }
+  const model = AGY_FALLBACK_MODELS[role]
+  return {
+    model,
+    fallback: Object.freeze({
+      role,
+      requested: AGY_DEFAULT_MODEL,
+      model,
+      reason: `${AGY_DEFAULT_MODEL} is not in this machine's \`agy models\` list; ${role} fallback is ${model}`,
+    }),
+  }
+}
+
 export function assertCompatibleAgyBinary(binaryPath, { versionResolver = agyBinaryVersion, env, source = process.env } = {}) {
   const version = versionResolver(binaryPath, { env: env ?? agyEnvironment(source) })
   if (!version) {
@@ -1334,6 +1445,9 @@ export function buildAcpLaunch(profileId, {
   routedSettingsLoader,
   agyBinaryResolver,
   agyVersionResolver,
+  // Reads this machine's `agy models` list; injectable like the version
+  // resolver so a test can drive Neon present / absent / unreadable.
+  agyModelsResolver = agyAvailableModels,
   // The per-machine layer, injected rather than read here so a test can drive
   // every shape without writing into the developer's own home directory — the
   // same seam `settingsLoader` already is.
@@ -1359,15 +1473,15 @@ export function buildAcpLaunch(profileId, {
     error.overrideProblems = problems
     throw error
   }
-  const profile = applyLaneOverride(shipped, overrides[profileId], env)
+  let profile = applyLaneOverride(shipped, overrides[profileId], env)
   // The import-time prohibition loop above checked the SHIPPED pins only. An
   // override can rewrite them afterwards — `model` is an overridable field —
   // so the RESOLVED profile is screened here, at the single resolution point
   // every consumer reads. Without this, an operator override (or a bad
-  // machine lane file) could seat the retired gpt-6-sol on a review route
+  // machine lane file) could seat a retired model on a review route
   // after the rule had already passed (found by the v0.45.0 release panel,
-  // codex lane, 2026-10-01). Master, 2026-09-30: gpt-6-sol is retired; only
-  // gpt-6.1-sol runs.
+  // codex lane, 2026-10-01). Master, 2026-11-19: every pre-6.2 sol/astra
+  // generation is retired; only the 6.2 seats run.
   assertPermittedModel(profile.model, `${profileId} resolved review profile`)
   assertPermittedModel(profile.requestModel, `${profileId} resolved review profile requestModel`)
   assertPermittedModel(profile.displayModel, `${profileId} resolved review profile displayModel`)
@@ -1386,14 +1500,38 @@ export function buildAcpLaunch(profileId, {
     mergedEnv.AGY_SKIP_DOWNLOAD = childEnv.AGY_SKIP_DOWNLOAD
     assertCompatibleAgyBinary(mergedEnv.AGY_BIN, { versionResolver: agyVersionResolver, source: mergedEnv })
   }
+  // The Neon default resolves HERE, the single resolution point, and only when
+  // nobody chose a model: an operator's lanes.json `model` override is used as
+  // written and `agy models` is never asked.
+  let fallback = null
+  const operatorChoseModel = typeof overrides[profileId]?.model === 'string' && overrides[profileId].model.trim() !== ''
+  if (profileId === 'agy' && !operatorChoseModel && profile.model === AGY_DEFAULT_MODEL) {
+    const available = agyModelsResolver(mergedEnv.AGY_BIN, { source: mergedEnv })
+    const resolved = resolveAgyDefaultModel('thinker', available)
+    fallback = resolved.fallback
+    if (resolved.model !== profile.model) {
+      assertPermittedModel(resolved.model, `${profileId} resolved default model`)
+      profile = freeze({
+        ...profile,
+        model: resolved.model,
+        displayModel: `agy/${resolved.model}`,
+        config: { ...(profile.config ?? {}), model: resolved.model },
+      })
+    }
+  }
   return Object.freeze({
     profile,
+    fallback,
     command: Object.freeze([...profile.command]),
     // The override's env is merged onto the child environment last, and
     // `applyLaneOverride` has already let the real process environment win key
     // by key. Gate-owned keys like AGY_BIN and AGY_SKIP_DOWNLOAD remain gate-owned.
     env: Object.freeze(mergedEnv),
-    settings: loadProfileSettings(profileId, settingsLoader),
+    // The settings follow the resolved model, so a fallback launch never asks
+    // the adapter for the Neon id it just decided this machine lacks.
+    settings: fallback
+      ? Object.freeze({ ...loadProfileSettings(profileId, settingsLoader), model: profile.model })
+      : loadProfileSettings(profileId, settingsLoader),
     overrideApplied: Boolean(overrides[profileId]),
   })
 }

@@ -1529,12 +1529,14 @@ function requestedConfigOverride(name, limit) {
 // The pattern is COPIED from `review-profiles.mjs` with its source named,
 // because this file imports only node builtins on purpose; a test asserts the
 // two stay identical, which is the drift answer that does not require coupling
-// the two skills.
-export const PROHIBITED_MODEL = /(?:^|[^0-9a-z])(?:gemini[-_ ]?3\.1|gpt[-_ ]?6(?:[-_. ]?[01])?[-_. ]?(?:sol|astra)|fable(?![-_. ]?5[-_. ]?1))(?:[^0-9]|$)/i
+// the two skills. Since 2026-11-19 it is a per-family VERSION FLOOR rather than
+// a list of retired names: fable >= 5.2, Codex sol/astra >= 6.2, terra >= 6.1,
+// luna >= 6 pass even when unknown to this plugin; anything older is refused.
+export const PROHIBITED_MODEL = /(?:^|[^0-9a-z])(?:(?:gemini[-_ ]?3[-_.]1|gpt[-_ ]?(?:0*[0-5](?:[-_.][0-9]+)*[-_. ]?(?:sol|astra|terra|luna)|0*6(?:[-_. ]0*[01](?:[-_.][0-9]+)*)?[-_. ]?(?:sol|astra)|0*6(?:[-_. ]0+(?:[-_.][0-9]+)*)?[-_. ]?terra))(?:[^0-9]|$)|fable(?![a-z])(?![-_. ]?(?:0*5[-_. ]?(?!(?:19|20)[0-9]{6}(?![0-9]))0*(?:[2-9]|[1-9][0-9]+)(?![0-9])|(?!(?:19|20)[0-9]{6}(?![0-9]))0*(?:[6-9]|[1-9][0-9]+)(?![0-9]))))/i
 
 function assertPermittedModel(value, name) {
   if (typeof value === 'string' && PROHIBITED_MODEL.test(value)) {
-    console.error(`${name}: prohibited model on tmux-teams routes (Gemini 3.1 is banned; pre-6.2 Codex sol/astra is retired — the frontier is gpt-6.2-sol / gpt-6.2-astra; fable-5 is retired — only fable-5.1 may be dispatched), got ${value}`)
+    console.error(`${name}: prohibited model on tmux-teams routes (Gemini 3.1 is banned; Codex below its version floor is retired — sol/astra need 6.2 or newer, terra 6.1 or newer, luna 6 or newer; fable older than 5.2 is retired — fable-5.2 or newer may be dispatched), got ${value}`)
     process.exit(2)
   }
   return value
@@ -2311,7 +2313,7 @@ function enforceIdentity(session) {
   // mismatch — the gap this closes was reported with "no console.error, no
   // exit(2), no signal" that CLAUDE.md's fail-closed rule had been violated.
   if (PROHIBITED_MODEL.test(identity.effectiveIdentity)) {
-    console.error(`observed session model: prohibited model on tmux-teams routes (Gemini 3.1 is banned; pre-6.2 Codex sol/astra is retired — the frontier is gpt-6.2-sol / gpt-6.2-astra; fable-5 is retired — only fable-5.1 may be dispatched), got ${identity.effectiveIdentity}`)
+    console.error(`observed session model: prohibited model on tmux-teams routes (Gemini 3.1 is banned; Codex below its version floor is retired — sol/astra need 6.2 or newer, terra 6.1 or newer, luna 6 or newer; fable older than 5.2 is retired — fable-5.2 or newer may be dispatched), got ${identity.effectiveIdentity}`)
   }
   const terminal = identity.status === 'missing' ? 'identity-missing' : 'identity-mismatch'
   const expected = `${requestedModel || 'missing'}${requestedReasoningEffort ? `[${requestedReasoningEffort}]` : ''}`

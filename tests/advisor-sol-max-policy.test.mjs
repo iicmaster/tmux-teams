@@ -26,10 +26,24 @@ test('codex-advisor documents model effort tiers and derived dispatch', () => {
   }
   assert.match(lines[noteStart + 2] ?? '', /gpt-6\.1-astra/, 'the retired note lost its astra entry')
   assert.match(skill, /every pre-6\.2 `sol`\/`astra` id/);
+  // Master, 2026-11-19: the lock is a per-family version floor.
+  assert.match(skill, /- `sol` \/ `astra`: `6\.2` or newer/);
+  assert.match(skill, /- `terra`: `6\.1` or newer/);
+  assert.match(skill, /- `luna`: `6` or newer/);
+  assert.match(skill, /- `fable` \(Claude routes\): `5\.2` or newer/);
+  assert.match(skill, /edit its digits in all three copies together/);
 });
 
-test('agy-advisor documents Gemini 4 Carbon default and Carbon / Argon / Hydrogen / Orchestrator / 3.8 Flash seats', () => {
-  assert.match(agySkill, /\$agy-advisor\s+# default seat: gemini-4-carbon-high/);
+test('agy-advisor documents the Neon orchestrator default and Neon / Carbon / Argon / Hydrogen / Orchestrator / 3.8 Flash seats', () => {
+  assert.match(agySkill, /\$agy-advisor\s+# default seat: gemini-pro-orchestrator-neon \(via `default thinker`\)/);
+  assert.match(agySkill, /node <plugin-root>\/skills\/tmux-teams\/scripts\/agy-seat-fallback\.mjs default thinker/);
+  assert.match(agySkill, /A seat the caller NAMED is used as written and never resolved over\./);
+  assert.match(agySkill, /\$agy-advisor orchestrator-neon\s+# gemini-pro-orchestrator-neon/);
+  for (const tier of ['xhigh', 'high', 'medium', 'low']) {
+    assert.match(agySkill, new RegExp(`\\$agy-advisor neon-${tier}\\s+# gemini-4-neon-${tier}`));
+  }
+  assert.match(agySkill, /prints `gemini-4-hydrogen-xhigh` \(thinker;/);
+  assert.match(agySkill, /`default worker` prints `gemini-4-hydrogen-medium`/);
   assert.match(agySkill, /\$agy-advisor high\s+# gemini-4-carbon-high/);
   assert.match(agySkill, /\$agy-advisor medium\s+# gemini-4-carbon-medium/);
   assert.match(agySkill, /\$agy-advisor low\s+# gemini-4-carbon-low/);
@@ -51,10 +65,11 @@ test('agy-advisor documents Gemini 4 Carbon default and Carbon / Argon / Hydroge
   assert.match(agySkill, /effective_identity: gemini-4-carbon-high \(matched\)/);
 });
 
-test('CLAUDE.md and tmux-teams SKILL.md document gemini-4-hydrogen-high worker and gemini-4-carbon-high thinker defaults', () => {
-  assert.match(claudeMd, /gemini-4-carbon-high/);
-  assert.match(claudeMd, /gemini-4-hydrogen-high/);
+test('CLAUDE.md and tmux-teams SKILL.md document the Neon orchestrator default for every AGY role and its hydrogen fallbacks', () => {
+  assert.match(claudeMd, /\*\*Every AGY role defaults to `gemini-pro-orchestrator-neon`\*\*/);
+  assert.match(claudeMd, /thinker\/advisor\/review gate fall back to\s+`gemini-4-hydrogen-xhigh` and workers to `gemini-4-hydrogen-medium`/);
   assert.match(claudeMd, /gemini-pro-orchestrator-argon/);
-  assert.match(tmuxSkill, /Worker \/ execution default: `gemini-4-hydrogen-high`/);
-  assert.match(tmuxSkill, /Thinker \/ evaluator \/ `\$agy-advisor` recommended default: `gemini-4-carbon-high`/);
+  assert.match(claudeMd, /Floors: fable `5\.2` \(bare `fable` refused\), Codex sol\/astra\s+`6\.2`, terra `6\.1`, luna `6`/);
+  assert.match(tmuxSkill, /Default for EVERY role \(worker \/ execution, thinker \/ evaluator, `\$agy-advisor`\):\s+`gemini-pro-orchestrator-neon`/);
+  assert.match(tmuxSkill, /worker →\s+`gemini-4-hydrogen-medium`, thinker \/ evaluator \/ advisor \/ review gate →\s+`gemini-4-hydrogen-xhigh`/);
 });

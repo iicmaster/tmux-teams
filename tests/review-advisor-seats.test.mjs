@@ -19,7 +19,7 @@ test('review-profiles OPENCODE_PACKAGE_SPEC matches opencode-execution-profile S
 })
 
 test('the three preferred reviewer seats map to advisor skills with locked identities', () => {
-  assert.equal(REVIEW_PROFILES.agy.model, 'gemini-4-hydrogen-high', 'agy-advisor hydrogen')
+  assert.equal(REVIEW_PROFILES.agy.model, 'gemini-pro-orchestrator-neon', 'agy-advisor default Neon orchestrator')
   assert.equal(REVIEW_PROFILES.codex.model, 'gpt-6-luna', 'codex-advisor luna')
   assert.equal(REVIEW_PROFILES.codex.config.reasoning_effort, 'max', 'luna locks max, not ultra')
   assert.equal(REVIEW_PROFILES.opencode.model, 'deepseek-v4.1-flash-free', 'oc-advisor default free seat')

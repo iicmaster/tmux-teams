@@ -10,7 +10,8 @@ Run steps in order; stop at any gate that fails and report the blocker.
 
 ## 0. Preflight — facts before action
 
-1. `git status --short`, `git branch --show-current`, `git tag --sort=-v:refname | head`.
+1. `git status --short`, `git branch --show-current`, `git worktree list`, `git tag --sort=-v:refname | head`.
+   - Check `git worktree list` before switching branches or creating a release branch: if `main` is already checked out in another worktree, or the current worktree is on a stale/dirty branch, create a clean worktree from `origin/main` (e.g. `git worktree add -b release/<topic> /tmp/<release-worktree> origin/main`) rather than branching from the dirty tree or disturbing the other worktree.
 2. Read the current version from all SIX occurrences:
    - `plugins/tmux-teams/plugin.json`
    - `plugins/tmux-teams/.claude-plugin/plugin.json`
@@ -27,7 +28,7 @@ Run steps in order; stop at any gate that fails and report the blocker.
 
 ## 1. Branch and commit
 
-- From `main`, create `release/<topic>`. Never commit from detached HEAD.
+- From `main` (or a clean worktree branched from `origin/main` when the current worktree is dirty or on another branch), create `release/<topic>`. Never commit from detached HEAD.
 - Stage ONLY the agreed files. Unstage anything already staged that is out of
   scope (`git restore --staged <path>`), then re-check `git diff --cached --name-only`.
 - Run the task-appropriate verification before committing. Record the result.
@@ -88,7 +89,7 @@ wrote the code.
 
 ## 5. Bump the version and tag
 
-After merge, on `main`:
+After merge, on `main` (if `main` is checked out in another worktree per `git worktree list`, pull and run the bump/tag in that `main` worktree rather than forcing a duplicate checkout):
 
 1. Set all six occurrences to the new version. Run the version-structure test
    (`node --test tests/plugin-structure.test.mjs`) — it asserts all six agree.
