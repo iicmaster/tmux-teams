@@ -10,7 +10,7 @@ and a declaration that cannot be read fails the page closed with the reason.
 It is for operators running agent teams who want the board to report what
 actually happened.
 
-Current release: **0.54.0** (`.claude-plugin/marketplace.json` and
+Current release: **0.55.0** (`.claude-plugin/marketplace.json` and
 `plugins/tmux-teams/.claude-plugin/plugin.json`). Upgrading from an earlier
 release: [plugins/tmux-teams/docs/UPGRADING.md](plugins/tmux-teams/docs/UPGRADING.md).
 
@@ -23,7 +23,7 @@ release: [plugins/tmux-teams/docs/UPGRADING.md](plugins/tmux-teams/docs/UPGRADIN
    claude plugin install tmux-teams@tmux-teams
    ```
 
-   You should see the marketplace registered and the plugin installed at version 0.54.0.
+   You should see the marketplace registered and the plugin installed at version 0.55.0.
 
 2. Declare the loop by invoking the bundled `tmux-teams:graph-setup` skill —
    an interview that runs until `.tmux-teams/graph.json` is complete, then validates it.
