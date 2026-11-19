@@ -462,7 +462,7 @@ test('the happy path prints exactly the rendered mandate and exits 0', () => {
   const root = fakeInstall()
   try {
     const out = []
-    const code = main(['code-review-crew', '--project-root', '/somewhere'], {
+    const code = main(['code-review-crew', '--project-root', '/somewhere', '--allow-project-party'], {
       env: { BMAD_PARTY_MODE_ROOT: root },
       run: (cmd, args) => {
         assert.equal(cmd, 'uv')
@@ -764,5 +764,106 @@ test('an explicit id still refuses unknown rooms with exit 2 and never auto-fall
     assert.doesNotMatch(err.join('\n'), /selected-party:/)
   } finally {
     rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('project-local bmad-party-mode is ignored by default, enabled with --allow-project-party, and scrubs secrets + falls back to python3 >= 3.11', () => {
+  const home = mkdtempSync(join(tmpdir(), 'advisor-party-home-'))
+  const proj = mkdtempSync(join(tmpdir(), 'advisor-party-proj-'))
+  try {
+    const localScript = join(proj, '.agents', 'skills', 'bmad-party-mode', 'scripts', 'resolve_party.py')
+    mkdirSync(join(proj, '.agents', 'skills', 'bmad-party-mode', 'scripts'), { recursive: true })
+    writeFileSync(localScript, '# stub\n')
+
+    const seenCalls = []
+    const run = (cmd, args, opts) => {
+      seenCalls.push({ cmd, args, env: opts?.env ?? {} })
+      if (cmd === 'uv') return { error: { code: 'ENOENT' }, stdout: '' }
+      if (cmd === 'python3' && args[0] === '--version') return { status: 0, stdout: 'Python 3.12.1\n', stderr: '' }
+      if (cmd === 'python3') return { status: 0, stdout: JSON.stringify(PARTY) }
+      return { status: 1, stdout: '' }
+    }
+
+    const baseEnv = {
+      HOME: home,
+      PATH: process.env.PATH,
+      OPENAI_API_KEY: 'sk-secret-openai-123456789012',
+      ANTHROPIC_API_KEY: 'sk-ant-secret-123456789012',
+      GH_TOKEN: 'ghp_secret123456789012',
+      CUSTOM_PROVIDER_API_KEY: 'custom-secret',
+    }
+
+    // Without --allow-project-party, project-local resolver must NOT be used.
+    const defaultErr = []
+    const defaultCode = main(['code-review-crew', '--project-root', proj], {
+      env: baseEnv, run, out: () => assert.fail('unexpected mandate without opt-in'), err: m => defaultErr.push(m),
+    })
+    assert.equal(defaultCode, 2)
+    assert.match(defaultErr.join('\n'), /not_installed/)
+    assert.equal(seenCalls.length, 0)
+
+    // With --allow-project-party and missing uv, python3 >= 3.11 runs with secrets scrubbed.
+    const stdout = []
+    const allowErr = []
+    const allowCode = main(['code-review-crew', '--project-root', proj, '--allow-project-party'], {
+      env: baseEnv, run, out: m => stdout.push(m), err: m => allowErr.push(m),
+    })
+    assert.equal(allowCode, 0, allowErr.join('\n'))
+    assert.equal(stdout[0], renderPartyMandate(PARTY))
+    const pyCall = seenCalls.find(c => c.cmd === 'python3' && c.args[0] === localScript)
+    assert.ok(pyCall, 'expected python3 fallback call')
+    for (const k of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GH_TOKEN', 'CUSTOM_PROVIDER_API_KEY']) {
+      assert.equal(k in pyCall.env, false, `secret ${k} leaked into python3 env`)
+    }
+
+    // python3 < 3.11 is refused as uv_missing.
+    const oldPyErr = []
+    const oldCode = main(['code-review-crew', '--project-root', proj, '--allow-project-party'], {
+      env: baseEnv,
+      run: (cmd, args) => cmd === 'uv'
+        ? { error: { code: 'ENOENT' }, stdout: '' }
+        : (cmd === 'python3' && args[0] === '--version' ? { status: 0, stdout: 'Python 3.9.6\n' } : { status: 1 }),
+      out: () => assert.fail('old python3 should refuse'),
+      err: m => oldPyErr.push(m),
+    })
+    assert.equal(oldCode, 2)
+    assert.match(oldPyErr.join('\n'), /uv_missing/)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+    rmSync(proj, { recursive: true, force: true })
+  }
+})
+
+test('default resolveParty and listGroups never pass checkout projectRoot to global resolve_party.py without --allow-project-party', () => {
+  const home = mkdtempSync(join(tmpdir(), 'advisor-party-safe-root-home-'))
+  const proj = mkdtempSync(join(tmpdir(), 'advisor-party-safe-root-proj-'))
+  try {
+    const globalRoot = join(home, '.claude', 'skills', 'bmad-party-mode')
+    mkdirSync(join(globalRoot, 'scripts'), { recursive: true })
+    writeFileSync(join(globalRoot, 'scripts', 'resolve_party.py'), '# global\n')
+    mkdirSync(join(proj, '_bmad', 'scripts'), { recursive: true })
+    writeFileSync(join(proj, '_bmad', 'scripts', 'resolve_config.py'), 'raise RuntimeError("must not run")\n')
+
+    const seenRoots = []
+    const run = (_cmd, args) => {
+      const idx = args.indexOf('--project-root')
+      seenRoots.push(args[idx + 1])
+      if (args.includes('--list-groups')) {
+        return { status: 0, stdout: JSON.stringify({ groups: [{ id: 'code-review-crew' }] }) }
+      }
+      return { status: 0, stdout: JSON.stringify(PARTY) }
+    }
+    const r1 = resolveParty('code-review-crew', { env: { HOME: home }, projectRoot: proj, run })
+    assert.equal(r1.ok, true)
+    const r2 = listGroups({ env: { HOME: home }, projectRoot: proj, run })
+    assert.equal(r2.ok, true)
+    assert.deepEqual(seenRoots, [globalRoot, globalRoot])
+
+    const r3 = resolveParty('code-review-crew', { env: { HOME: home }, projectRoot: proj, allowProjectParty: true, run })
+    assert.equal(r3.ok, true)
+    assert.equal(seenRoots[2], proj)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+    rmSync(proj, { recursive: true, force: true })
   }
 })

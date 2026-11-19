@@ -418,8 +418,9 @@ the Gemini 4 family with `gemini-4-carbon-high` as recommended default thinker /
 Master's order). So it is held to the same
 enforcement as the Codex seat rather than excused like the Claude one, which has
 no mode switch. It has no reasoning-effort dimension, so its identity is the
-bare model id where Codex reads `gpt-6.1-sol[ultra]` (Codex frontier moved
-from `gpt-6-sol` on 2026-09-30, Master's order).
+bare model id where Codex reads `gpt-6.2-sol[ultra]` (Codex frontier moved
+`gpt-6-sol` -> `gpt-6.1-sol` on 2026-09-30 -> `gpt-6.2-sol` on 2026-11-19,
+Master's order; every pre-6.2 `sol`/`astra` id is prohibited).
 
 The guard mattered more than the skill: `tests/plugin-structure.test.mjs`
 matched advisor commands on the workers `codex|claude` only, so a new advisor's
@@ -1183,20 +1184,15 @@ the fragility is the price of it being cheap.
 
 These are real but unforced, and separate from the release above:
 
-- **The fourth advisor seat ships in v0.49.0: `oc-advisor`.** OpenCode's own
-  ACP server as a consultation lane — the default free seat is MiniMax
-  (`opencode/minimax-m3.1-flash-free`, moved from deepseek 2026-11-16) with
-  `opencode/deepseek-v4.1-flash-free` as its one-hop fallback, receipt-backed
-  through a produced
-  execution profile (`opencode-execution-profile.mjs`; the bin is a native
-  binary, measured 2026-11-07), read-only through the new
-  `ACP_PERMISSIONS=deny` transport policy with the residual stated in the
-  skill rather than claimed away. The 3-model plan gate was BLOCKED on the
-  review lanes that day; Master ordered the codex-advisor round-table as the
-  recorded substitute — a design round (five must-fix findings, all
-  implemented), a completion round that HOLDed on three defects and then
-  lifted them, and a release round that conditioned publish on the in-skill
-  update/LOAD warnings plus the full candidate checks. Measured 2026-11-08:
+- **The fourth advisor seat (`oc-advisor`) + free-first bootstrap (`tmux-teams-setup`).**
+  OpenCode's own ACP server (`@opencode/cli@2.3.2`) acts as the free advisor
+  lane with DeepSeek (`opencode/deepseek-v4.1-flash-free`) as default and a
+  ten-rung strength-ordered free ladder behind it, receipt-backed through
+  `opencode-execution-profile.mjs` and read-only through `ACP_PERMISSIONS=deny`.
+  `tmux-teams-setup` verifies and installs the free prerequisites (`bmad-method@6.12.4`,
+  `@opencode/cli@2.3.2`, `bmad-party-mode`, `uv`/`python3 >= 3.11`), while opt-in
+  `REVIEW_GATE_MODE=opencode-free` enables out-of-the-box `party-auto` 3-model
+  free quorum (`singleProviderQuorum: true`). Measured 2026-11-08:
   the seat runs KEYLESS — an expired stored opencode key actively blocks
   every dispatch, while no key at all serves the free seat, and a full
   three-voice consultation completed at zero cost.

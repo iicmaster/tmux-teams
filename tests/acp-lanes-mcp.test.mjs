@@ -68,7 +68,7 @@ test('every declared lane is listed, and the list is pinned rather than derived 
   const listed = out.lanes.map(l => l.lane).sort()
   // Pinned literally. A test that only compared this against Object.keys of the
   // same object would keep passing while a lane quietly disappeared.
-  assert.deepEqual(listed, ['agy', 'claude', 'codex', 'deepseek', 'kimi', 'ninerouter', 'opencode', 'opencodeDeepseek', 'opencodeGlm', 'opencodeHy', 'qwen', 'zai'])
+  assert.deepEqual(listed, ['agy', 'claude', 'codex', 'deepseek', 'kimi', 'ninerouter', 'opencode', 'opencodeBeam', 'opencodeFlint', 'opencodeGlm', 'opencodeHy', 'opencodeInkling', 'opencodeLongcat', 'opencodeMimo', 'opencodeNemotronLightning', 'opencodeNemotronSuperVl', 'qwen', 'zai'])
   assert.deepEqual(listed, Object.keys(REVIEW_PROFILES).sort(),
     'the tool and the profile registry disagree about which lanes exist')
   assert.equal(out.lanes.find(l => l.lane === 'zai').routing, 'pinned:api.z.ai/api/anthropic')
@@ -93,10 +93,16 @@ test('every declared lane is listed, and the list is pinned rather than derived 
     // v0.52.0 seated the opencode free ladder (PR #106); all four are family
     // 'deepseek' behind one provider, which is why the panel counts them as
     // one family, not four.
-    ['opencode', 'deepseek', 'opencode', 'minimax-m3.1-flash-free'],
-    ['opencodeDeepseek', 'deepseek', 'opencode', 'deepseek-v4.1-flash-free'],
-    ['opencodeHy', 'deepseek', 'opencode', 'hy4-flash-free'],
+    ['opencode', 'deepseek', 'opencode', 'deepseek-v4.1-flash-free'],
+    ['opencodeInkling', 'deepseek', 'opencode', 'inkling-2-small-free'],
     ['opencodeGlm', 'deepseek', 'opencode', 'glm-5.3-flash-free'],
+    ['opencodeMimo', 'deepseek', 'opencode', 'mimo-v2.6-flash-free'],
+    ['opencodeHy', 'deepseek', 'opencode', 'hy4-flash-free'],
+    ['opencodeLongcat', 'deepseek', 'opencode', 'longcat-2.5-free'],
+    ['opencodeFlint', 'deepseek', 'opencode', 'flint-40b-free'],
+    ['opencodeBeam', 'deepseek', 'opencode', 'beam-free'],
+    ['opencodeNemotronSuperVl', 'deepseek', 'opencode', 'nemotron-3.5-super-vl-free'],
+    ['opencodeNemotronLightning', 'deepseek', 'opencode', 'nemotron-3.5-lightning-free'],
   ]) {
     assert.equal(declared[lane].family, family, `${lane} family`)
     assert.equal(declared[lane].provider, provider, `${lane} provider`)
@@ -107,7 +113,7 @@ test('every declared lane is listed, and the list is pinned rather than derived 
 
 test('declared facts need nothing from this machine', () => {
   const out = callTool('acp_lanes', {}, { HOME: '/nonexistent' })
-  assert.equal(out.lanes.length, 12)
+  assert.equal(out.lanes.length, 18)
   assert.ok(out.lanes.every(l => l.adapter), 'a lane with no adapter package is not a usable answer')
 })
 
@@ -145,7 +151,7 @@ test('a lane with no parent-side check says UNCHECKED, and never that it is fine
 
 test('every status answer states what it did NOT prove', () => {
   const out = call('acp_lane_status', undefined, { HOME: '/definitely/nonexistent' })
-  assert.equal(out.lanes.length, 12)
+  assert.equal(out.lanes.length, 18)
   for (const lane of out.lanes) {
     assert.ok(Array.isArray(lane.notProven) && lane.notProven.length >= 4,
       `${lane.lane} claims a state with no boundary stated beside it`)
@@ -525,9 +531,15 @@ test('no provider secret this plugin knows about reaches the wire, from any lane
     codex: ['OPENAI_API_KEY'],
     ninerouter: [],
     opencode: [],
-    opencodeDeepseek: [],
-    opencodeHy: [],
+    opencodeInkling: [],
     opencodeGlm: [],
+    opencodeMimo: [],
+    opencodeHy: [],
+    opencodeLongcat: [],
+    opencodeFlint: [],
+    opencodeBeam: [],
+    opencodeNemotronSuperVl: [],
+    opencodeNemotronLightning: [],
   }, 'a provider secret changed which LANE owns it')
 
   // And behaviourally, because a constant can be edited to match a test: a key
@@ -938,7 +950,7 @@ test('the manifest command boots the server and answers a real client handshake,
       assert.equal(byId.get(1).result.protocolVersion, PROTOCOL_VERSION)
       assert.deepEqual(byId.get(2).result.tools.map(t => t.name),
         ['acp_lanes', 'acp_lane_status', 'acp_lane_probe'])
-      assert.equal(JSON.parse(byId.get(3).result.content[0].text).lanes.length, 12)
+      assert.equal(JSON.parse(byId.get(3).result.content[0].text).lanes.length, 18)
       const probeRefusal = JSON.parse(byId.get(4).result.content[0].text)
       assert.equal(byId.get(4).result.isError, true, 'a probe call with no lanes must be reported as refused')
       assert.match(probeRefusal.error, /non-empty array of lane ids/)
@@ -2391,6 +2403,90 @@ test('an adapterPackage override is refused on a lane whose command cannot carry
   assert.equal(ok.overrides.swappable.adapterPackage, 'pkg@2')
 })
 
+test('legacy opencodeDeepseek override migrates to opencode unless both keys conflict', async () => {
+  const { LEGACY_LANE_ALIASES, OVERRIDE_PROBLEMS, loadLaneOverrides } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-overrides.mjs')).href)
+
+  assert.equal(LEGACY_LANE_ALIASES.opencodeDeepseek, 'opencode')
+  const migrated = loadLaneOverrides({
+    knownLanes: ['agy', 'codex', 'opencode'],
+    readFile: () => JSON.stringify({ opencodeDeepseek: { model: 'deepseek-v4.1-flash-free' } }),
+  })
+  assert.deepEqual(migrated.problems, [])
+  assert.equal(migrated.overrides.opencode.model, 'deepseek-v4.1-flash-free')
+  assert.deepEqual(migrated.migrations, [{ from: 'opencodeDeepseek', to: 'opencode' }])
+
+  const conflicted = loadLaneOverrides({
+    knownLanes: ['agy', 'codex', 'opencode'],
+    readFile: () => JSON.stringify({
+      opencodeDeepseek: { model: 'old' },
+      opencode: { model: 'new' },
+    }),
+  })
+  assert.equal(conflicted.problems.length, 1)
+  assert.equal(conflicted.problems[0].code, 'legacy_lane_conflict')
+  assert.deepEqual(conflicted.overrides, {})
+  assert.ok(OVERRIDE_PROBLEMS.legacy_lane_conflict.includes('opencodeDeepseek'))
+})
+
+test('lane-setup prepareOverrideUpdate migrates lone opencodeDeepseek and rejects conflicting or invalid writes before touching disk', async () => {
+  const { prepareOverrideUpdate } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-setup.mjs')).href)
+
+  const migrated = prepareOverrideUpdate(
+    { opencodeDeepseek: { env: { FOO: 'bar' } } },
+    'opencode',
+    'model',
+    'deepseek-v4.1-flash-free',
+  )
+  assert.equal(migrated.ok, true)
+  assert.equal(migrated.lane, 'opencode')
+  assert.equal('opencodeDeepseek' in migrated.next, false)
+  assert.deepEqual(migrated.next.opencode, { env: { FOO: 'bar' }, model: 'deepseek-v4.1-flash-free' })
+
+  const conflict = prepareOverrideUpdate(
+    { opencodeDeepseek: { model: 'old' }, opencode: { model: 'new' } },
+    'opencode',
+    'model',
+    'deepseek-v4.1-flash-free',
+  )
+  assert.equal(conflict.ok, false)
+  assert.equal(conflict.problems[0].code, 'legacy_lane_conflict')
+
+  const badSwap = prepareOverrideUpdate(
+    {},
+    'native',
+    'adapterPackage',
+    'other-pkg@1',
+    { knownLanes: ['native'], profiles: { native: { command: ['bunx', 'native-thing@1'], adapterPackage: 'something-else@1' } } },
+  )
+  assert.equal(badSwap.ok, false)
+  assert.equal(badSwap.problems[0].code, 'bad_adapter_swap')
+
+  const badEnv = prepareOverrideUpdate({}, 'agy', 'env', 'not-an-object')
+  assert.equal(badEnv.ok, false)
+  assert.equal(badEnv.problems[0].code, 'bad_env')
+
+  const notObj = prepareOverrideUpdate([], 'agy', 'model', 'gemini-4-hydrogen-high')
+  assert.equal(notObj.ok, false)
+  assert.equal(notObj.problems[0].code, 'not_object')
+
+  const badTarget = prepareOverrideUpdate({ opencode: 'broken' }, 'opencode', 'model', 'deepseek-v4.1-flash-free')
+  assert.equal(badTarget.ok, false)
+  assert.equal(badTarget.problems[0].code, 'lane_not_object')
+
+  const crossLaneMigrate = prepareOverrideUpdate(
+    { opencodeDeepseek: { env: { FOO: '1' } } },
+    'agy',
+    'model',
+    'gemini-4-hydrogen-high',
+  )
+  assert.equal(crossLaneMigrate.ok, true)
+  assert.equal('opencodeDeepseek' in crossLaneMigrate.next, false)
+  assert.deepEqual(crossLaneMigrate.next.opencode, { env: { FOO: '1' } })
+  assert.equal(crossLaneMigrate.next.agy.model, 'gemini-4-hydrogen-high')
+})
+
 // The isFile/isExecutable checks lived ONLY in the wrapper branch. A zai review
 // lane pointed out that a mode-0644 file named `npx` earlier on PATH resolved,
 // left `blocking` empty, and reported every npx-launched lane callable with
@@ -2778,6 +2874,32 @@ test('a missing plugin binary is reported once, not as one failure per lane', as
   }
 })
 
+test('missing optional bunx and tmux do not fail plugin.ready and readinessReport tracks callableModels', async () => {
+  const { chmodSync } = await import('node:fs')
+  const { pluginReadiness, readinessReport } = await import(
+    pathToFileURL(join(PLUGIN, 'skills', 'party-mode', 'scripts', 'lane-readiness.mjs')).href)
+
+  const dir = mkdtempSync(join(tmpdir(), 'core-vs-optional-bins-'))
+  try {
+    for (const core of ['node', 'git', 'npx']) {
+      const bin = join(dir, core)
+      writeFileSync(bin, '#!/bin/sh\nexit 0\n')
+      chmodSync(bin, 0o755)
+    }
+    const plugin = pluginReadiness({ PATH: dir })
+    assert.equal(plugin.ready, true)
+    assert.deepEqual(plugin.missing, [])
+    assert.deepEqual(plugin.optionalMissing.map(m => m.missing).sort(), ['bunx', 'tmux'])
+
+    const report = readinessReport(REVIEW_PROFILES, { PATH: dir })
+    assert.equal(report.setupRequired, false, 'opencode free lanes require only node/git/npx')
+    assert.ok(report.callableModels.includes('deepseek-v4.1-flash-free'))
+    assert.ok(report.callableModels.length >= 10)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('handshake depth completes the session and sends no prompt at all', async () => {
   const stub = join(ROOT, 'tests', 'fixtures', 'probe-stub-agent.mjs')
   const dir = mkdtempSync(join(tmpdir(), 'probe-depth-'))
@@ -2857,7 +2979,7 @@ test('the successor passes the same probe at prompt depth', async () => {
   try {
     const result = await realProbeTransport({
       command: [process.execPath, stub],
-      env: { ...process.env, STUB_MODE: 'ok', STUB_CURRENT_MODEL: 'gpt-6.1-sol' },
+      env: { ...process.env, STUB_MODE: 'ok', STUB_CURRENT_MODEL: 'gpt-6.2-sol' },
       depth: 'prompt',
       bootTimeoutMs: 8000, replyTimeoutMs: 8000,
     })
@@ -2880,7 +3002,7 @@ test('a clean currentModelId does not shadow a retired model option in the same 
     const result = await realProbeTransport({
       command: [process.execPath, stub],
       env: { ...process.env, STUB_MODE: 'ok', STUB_LOG: log,
-        STUB_CURRENT_MODEL: 'gpt-6.1-sol', STUB_OPTION_MODEL: 'gpt-6-sol' },
+        STUB_CURRENT_MODEL: 'gpt-6.2-sol', STUB_OPTION_MODEL: 'gpt-6-sol' },
       depth: 'prompt',
       bootTimeoutMs: 8000, replyTimeoutMs: 8000,
     })
@@ -2907,7 +3029,7 @@ test('a SECOND recognized model option is screened, not shadowed by the first ma
     const result = await realProbeTransport({
       command: [process.execPath, stub],
       env: { ...process.env, STUB_MODE: 'ok', STUB_LOG: log,
-        STUB_CURRENT_MODEL: 'gpt-6.1-sol', STUB_OPTION_MODEL: 'gpt-6.1-sol',
+        STUB_CURRENT_MODEL: 'gpt-6.2-sol', STUB_OPTION_MODEL: 'gpt-6.2-sol',
         STUB_OPTION2_MODEL: 'gpt-6-sol' },
       depth: 'prompt',
       bootTimeoutMs: 8000, replyTimeoutMs: 8000,

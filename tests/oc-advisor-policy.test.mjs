@@ -44,28 +44,39 @@ test('every oc-advisor lane-launching block carries the full dispatch contract',
   }
 })
 
-test('the default seat and its one-hop fallback are both pinned, and the ladder is explicit', () => {
-  // Measured 2026-11-09 against opencode acp 1.18.21: both ids are advertised
-  // in configOptions and accepted by session/set_config_option. The DEFAULT is
-  // minimax; deepseek is the fallback and must not be described as a
-  // preference, or a weak answer becomes a silent seat change.
-  assert.match(skill, /default seat is opencode\/minimax-m3\.1-flash-free/,
+test('the default seat and the ten-rung ladder are both pinned, and the ceiling is explicit', () => {
+  // Probed 2026-11-18 against opencode acp 1.18.21 and 2026-11-19 against
+  // @opencode/cli@2.3.2: nine of ten rung ids present in v2.3.2 (`glm` absent
+  // from v2.3.2 catalog). The DEFAULT is deepseek (rung 1); rungs 2-10 are the
+  // ladder and must not be described as preferences.
+  assert.match(skill, /default seat is opencode\/deepseek-v4\.1-flash-free/,
     'the frontmatter no longer states the default seat')
-  assert.match(skill, /opencode\/deepseek-v4\.1-flash-free as its one-hop fallback/,
-    'the frontmatter no longer states the fallback seat')
-  assert.match(skill, /\| \*\(omitted\)\* \| `opencode\/minimax-m3\.1-flash-free` \|/,
+  assert.match(skill, /ten-rung strength-ordered free-seat ladder/,
+    'the frontmatter no longer states the fallback ladder')
+  assert.match(skill, /\| \*\(omitted\)\* \| `opencode\/deepseek-v4\.1-flash-free` \|/,
     'the arguments table no longer pins the default seat')
   assert.match(skill, /\| `deepseek` \| `opencode\/deepseek-v4\.1-flash-free` \|/,
-    'the arguments table no longer pins the fallback alias')
-  assert.match(skill, /`deepseek` is the fallback, not a preference/,
-    'the ladder must say the fallback is not a preference')
-  assert.match(skill, /\*\*One hop only, inside these two seats\.\*\*/, 'the ladder has no ceiling')
+    'the arguments table no longer pins the default alias')
+  assert.match(skill, /\| `inkling` \| `opencode\/inkling-2-small-free` \|/,
+    'the arguments table no longer pins ladder rung 2')
+  assert.match(skill, /\| `nemotron-lightning` \| `opencode\/nemotron-3.5-lightning-free` \|/,
+    'the arguments table no longer pins the last ladder rung')
+  assert.match(skill, /entered only on evidence, never as a preference/,
+    'the ladder must be entered on evidence, never as a preference')
+  assert.match(skill, /\*\*One rung at a time, inside these ten seats\.\*\*/, 'the ladder has no ceiling')
+  assert.match(skill, /still not a cross-vendor read/,
+    'the intro no longer carries the one-provider reasoning')
   assert.match(skill, /Label the answer with\s+the seat that produced it/,
     'a consultation that quietly changed seats is the same lie as a wrong identity')
-  assert.doesNotMatch(skill, /opencode\/deepseek-v4\.1-flash-free.*default seat/i,
-    'deepseek is described as the default seat again')
-  assert.doesNotMatch(skill, /reaches the deepseek family/i,
-    'intro prose still names deepseek as the default family')
+  assert.doesNotMatch(skill, /minimax[^`]*default seat/i,
+    'minimax is described as the default seat again')
+})
+
+test('the skill names the ten-rung order and links the strength ranking it rests on', () => {
+  assert.match(skill, /deepseek -> inkling -> glm -> mimo -> hy4 -> longcat -> flint -> beam -> nemotron-super-vl -> nemotron-lightning/,
+    'the ten-rung order is not named inline (the skill must stand alone)')
+  assert.match(skill, /oc-advisor-free-seat-strength\.md/,
+    'the strength basis of the rung order is not linked')
 })
 
 // The release round-table (ocseat-review1) found three P1 holes in the first

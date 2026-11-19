@@ -388,11 +388,11 @@ const MAX_RECEIPT_BYTES = 32 * 1024
 const MAX_RECEIPT_TEXT = 256
 const MAX_PROFILE_BYTES = 64 * 1024
 const MAX_EXECUTABLE_BYTES = 512 * 1024 * 1024
-const CODEX_ADAPTER_PACKAGE_SPEC = '@agentclientprotocol/codex-acp@1.1.7'
-const CODEX_ADAPTER_RESOLVED_VERSION = '1.1.7'
-const CODEX_ADAPTER_INTEGRITY = 'sha512-bhFLbGtOMEw6+PAp33vNERb6dXlULOfV3mWbRdps4v7sY7PHha/C2T1dnlG0yVcvBu9W+NYPzL0CAupnVoFTiQ=='
-const CODEX_ADAPTER_ENTRY_DIGEST = 'sha256:0deb6b820dfed8804cd76b16a50210fe12202e5e339b5edaa23f6987f1742e0a'
-const CODEX_ADAPTER_METADATA_DIGEST = 'sha256:bf44bf3dfdd5f4e5b9830b15e3a01f096bda6d08514c5b3e3129d7df640c4cf7'
+const CODEX_ADAPTER_PACKAGE_SPEC = '@agentclientprotocol/codex-acp@2.7.0'
+const CODEX_ADAPTER_RESOLVED_VERSION = '2.7.0'
+const CODEX_ADAPTER_INTEGRITY = 'sha512-fFFU/tV5DltBzN4cZIh5tJEWGTZFXbwHU7I5RxPkmrGraw3jhAIuvTeudYwK3wAbV311WgIi7qONl2I8uRV2jw=='
+const CODEX_ADAPTER_ENTRY_DIGEST = 'sha256:37900513f38892d482c42dc565b3c987047a6630cefe64b97eb5120e1172dd2f'
+const CODEX_ADAPTER_METADATA_DIGEST = 'sha256:4e57b4025ae2157b31a587187b6c5aa5d3d60471f0922eeaf38b99b983303f11'
 const RECEIPT_COMMIT_SCHEMA = 'acp-session-receipt-commit'
 const RECEIPT_COMMIT_SCHEMA_VERSION = 'acp-session-receipt-commit.v1'
 const RECEIPT_COMMIT_STATES = new Set(['committed'])
@@ -1261,7 +1261,7 @@ function resolvePinnedCodexAdapter() {
     }
   }
   if (!candidates.length) {
-    throw Object.assign(new Error('locally verified @agentclientprotocol/codex-acp@1.1.7 package is unavailable or drifted'), { code: 'execution_profile_drift' })
+    throw Object.assign(new Error('locally verified @agentclientprotocol/codex-acp@2.7.0 package is unavailable or drifted'), { code: 'execution_profile_drift' })
   }
   const distinct = new Set(candidates.map((candidate) => stableJson({
     metadata_digest: candidate.metadata_digest,
@@ -1530,11 +1530,11 @@ function requestedConfigOverride(name, limit) {
 // because this file imports only node builtins on purpose; a test asserts the
 // two stay identical, which is the drift answer that does not require coupling
 // the two skills.
-export const PROHIBITED_MODEL = /(?:^|[^0-9a-z])(?:gemini[-_ ]?3\.1|gpt[-_ ]?6[-_ ]?sol)(?:[^0-9]|$)/i
+export const PROHIBITED_MODEL = /(?:^|[^0-9a-z])(?:gemini[-_ ]?3\.1|gpt[-_ ]?6(?:[-_. ]?[01])?[-_. ]?(?:sol|astra)|fable(?![-_. ]?5[-_. ]?1))(?:[^0-9]|$)/i
 
 function assertPermittedModel(value, name) {
   if (typeof value === 'string' && PROHIBITED_MODEL.test(value)) {
-    console.error(`${name}: prohibited model on tmux-teams routes (Gemini 3.1 is banned; gpt-6-sol is retired — the Codex frontier is gpt-6.1-sol), got ${value}`)
+    console.error(`${name}: prohibited model on tmux-teams routes (Gemini 3.1 is banned; pre-6.2 Codex sol/astra is retired — the frontier is gpt-6.2-sol / gpt-6.2-astra; fable-5 is retired — only fable-5.1 may be dispatched), got ${value}`)
     process.exit(2)
   }
   return value
@@ -2311,7 +2311,7 @@ function enforceIdentity(session) {
   // mismatch — the gap this closes was reported with "no console.error, no
   // exit(2), no signal" that CLAUDE.md's fail-closed rule had been violated.
   if (PROHIBITED_MODEL.test(identity.effectiveIdentity)) {
-    console.error(`observed session model: prohibited model on tmux-teams routes (Gemini 3.1 is banned; gpt-6-sol is retired — the Codex frontier is gpt-6.1-sol), got ${identity.effectiveIdentity}`)
+    console.error(`observed session model: prohibited model on tmux-teams routes (Gemini 3.1 is banned; pre-6.2 Codex sol/astra is retired — the frontier is gpt-6.2-sol / gpt-6.2-astra; fable-5 is retired — only fable-5.1 may be dispatched), got ${identity.effectiveIdentity}`)
   }
   const terminal = identity.status === 'missing' ? 'identity-missing' : 'identity-mismatch'
   const expected = `${requestedModel || 'missing'}${requestedReasoningEffort ? `[${requestedReasoningEffort}]` : ''}`

@@ -12,7 +12,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PLUGIN = join(ROOT, 'plugins/tmux-teams')
-const SKILLS = ['tmux-teams', 'party-mode', 'party-auto', 'party-advise', 'sqthink',
+const SKILLS = ['tmux-teams', 'tmux-teams-setup', 'party-mode', 'party-auto', 'party-advise', 'sqthink',
   'graph-setup', 'claude-advisor', 'codex-advisor', 'agy-advisor', 'oc-advisor', 'handoff',
   'pm-delegation', 'test-quality', 'lane-setup', 'requirement-audit', 'release']
 const RELEASE_VERSION = '0.53.0'

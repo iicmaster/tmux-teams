@@ -57,11 +57,12 @@ release: [plugins/tmux-teams/docs/UPGRADING.md](plugins/tmux-teams/docs/UPGRADIN
 The review gate declares no OS sandbox; why, and what it checks instead, is
 [ADR 0006](plugins/tmux-teams/docs/adr/0006-the-review-gate-stops-declaring-bwrap.md).
 
-## 4. The sixteen skills
+## 4. The seventeen skills
 
 **Entry and orchestration**
 
 - `tmux-teams:tmux-teams` — you are the PM: dispatch, completion detection, capture, the mailbox contract, the delivery loop.
+- `tmux-teams:tmux-teams-setup` — verify and install free prerequisites (`bmad-method`, OpenCode v2, `bmad-party-mode`, Python runtime) and inspect local plugin caches.
 
 **Advisors**
 

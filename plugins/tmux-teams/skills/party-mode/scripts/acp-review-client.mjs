@@ -5,7 +5,7 @@
 // under the profile's HOME and is reported as a residual boundary.
 import { spawn as nodeSpawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, realpathSync } from 'node:fs'
+import { existsSync, realpathSync, statSync } from 'node:fs'
 import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
@@ -255,6 +255,7 @@ function remoteErrorDetail(error) {
   return ` (remote code ${code}: ${said})`
 }
 const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v)
+const INERT_EXTENSION_NOTIFICATIONS = new Set(['_auth/status_update'])
 const configList = result => Array.isArray(result?.configOptions) ? result.configOptions : []
 const currentValue = option => option?.currentValue ?? option?.value
 const acknowledgedValue = (result, id) => {
@@ -440,13 +441,10 @@ export function interpreterRoots(canonicalHome) {
     isWithin(root, canonicalHome) && resolve(root) !== resolve(canonicalHome))
 }
 
-export async function trustedExecutableRoots(env) {
-  const roots = ['/usr', '/bin']
-  const home = env.HOME ?? env.USERPROFILE
-  if (!home || !isAbsolute(home) || !existsSync(home)) return roots
-  const canonicalHome = await realpath(home)
+function buildTrustedRootsForHome(canonicalHome) {
   return [
-    ...roots,
+    '/usr',
+    '/bin',
     join(canonicalHome, '.local', 'bin'),
     join(canonicalHome, '.bun', 'bin'),
     join(canonicalHome, '.kimi-code', 'bin'),
@@ -455,35 +453,42 @@ export async function trustedExecutableRoots(env) {
   ]
 }
 
-// Exported so its EITHER/OR trust check is exercised directly. Until v0.35.0
-// this was reachable only behind a `platform === 'linux' && /usr/bin/bwrap`
-// gate that no non-Linux machine could pass — a guard that cannot go red is not
-// a guard. The gate is gone with the sandbox; the direct exercise stays,
-// because that is what made it a guard in the first place.
-export async function resolveExecutable(command, env, {
-  profileId,
-  targetRepository,
-  expectedName = expectedProfileExecutable[profileId],
-} = {}) {
+export async function trustedExecutableRoots(env) {
+  const roots = ['/usr', '/bin']
+  const home = env.HOME ?? env.USERPROFILE
+  if (!home || !isAbsolute(home) || !existsSync(home)) return roots
+  const canonicalHome = await realpath(home)
+  return buildTrustedRootsForHome(canonicalHome)
+}
+
+export function trustedExecutableRootsSync(env) {
+  const roots = ['/usr', '/bin']
+  const home = env?.HOME ?? env?.USERPROFILE
+  if (!home || !isAbsolute(home) || !existsSync(home)) return roots
+  const canonicalHome = realpathSync(home)
+  return buildTrustedRootsForHome(canonicalHome)
+}
+
+function findExecutableCandidate(command, env, profileId, expectedName) {
   if (!isAbsolute(command) && expectedName && basename(command) !== expectedName) {
     throw new ReviewTransportError('config', `${profileId} review executable identity is not allowed`)
   }
   const candidates = isAbsolute(command)
     ? [command]
     : String(env.PATH ?? '').split(delimiter).filter(Boolean).map(entry => join(entry, command))
-  const found = candidates.find(existsSync)
-  if (!found) return null
-  const source = await realpath(found)
-  if (!(await stat(source)).isFile()) {
+  return candidates.find(existsSync) ?? null
+}
+
+function validateResolvedExecutable({ command, found, source, canonicalFound, isFile, targetRepository, roots }) {
+  if (!isFile) {
     throw new ReviewTransportError('config', 'ACP review executable must resolve to a file')
   }
   if (targetRepository &&
-      (isWithin(resolve(found), targetRepository) || isWithin(source, targetRepository))) {
+      (isWithin(resolve(found), targetRepository) || isWithin(canonicalFound, targetRepository) || isWithin(source, targetRepository))) {
     throw new ReviewTransportError('config', 'ACP review executable resolves inside the target repository')
   }
   let trustedLauncher = false
   if (!isAbsolute(command)) {
-    const roots = await trustedExecutableRoots(env)
     const trusted = candidate => roots.some(root => isWithin(candidate, root))
     // EITHER, not BOTH. The two clauses guard different things and each is
     // sufficient alone: a trusted REAL FILE means the bytes come from somewhere
@@ -536,6 +541,39 @@ export async function resolveExecutable(command, env, {
   // release panel, codex lane, 2026-10-01). resolve() keeps the launcher's
   // own basename — the bunx-shape property the return exists to preserve.
   return trustedLauncher ? resolve(found) : source
+}
+
+// Exported so its EITHER/OR trust check is exercised directly. Until v0.35.0
+// this was reachable only behind a `platform === 'linux' && /usr/bin/bwrap`
+// gate that no non-Linux machine could pass — a guard that cannot go red is not
+// a guard. The gate is gone with the sandbox; the direct exercise stays,
+// because that is what made it a guard in the first place.
+export async function resolveExecutable(command, env, {
+  profileId,
+  targetRepository,
+  expectedName = expectedProfileExecutable[profileId],
+} = {}) {
+  const found = findExecutableCandidate(command, env, profileId, expectedName)
+  if (!found) return null
+  const source = await realpath(found)
+  const isFile = (await stat(source)).isFile()
+  const canonicalFound = join(await realpath(dirname(found)), basename(found))
+  const roots = !isAbsolute(command) ? await trustedExecutableRoots(env) : []
+  return validateResolvedExecutable({ command, found, source, canonicalFound, isFile, targetRepository, roots })
+}
+
+export function resolveExecutableSync(command, env, {
+  profileId,
+  targetRepository,
+  expectedName = expectedProfileExecutable[profileId],
+} = {}) {
+  const found = findExecutableCandidate(command, env, profileId, expectedName)
+  if (!found) return null
+  const source = realpathSync(found)
+  const isFile = statSync(source).isFile()
+  const canonicalFound = join(realpathSync(dirname(found)), basename(found))
+  const roots = !isAbsolute(command) ? trustedExecutableRootsSync(env) : []
+  return validateResolvedExecutable({ command, found, source, canonicalFound, isFile, targetRepository, roots })
 }
 
 
@@ -969,6 +1007,11 @@ export async function runAcpReview({
         }
         return
       }
+      // Extension notifications this client has MEASURED and knows to be inert.
+      // An allowlist, not every `_` method: an adapter could report its own tool
+      // activity through an extension, and that must keep failing the lane.
+      // codex-acp 2.x sends `_auth/status_update` before session/new returns.
+      if (INERT_EXTENSION_NOTIFICATIONS.has(msg.method)) return
       return protocolError(`ACP notification not allowed: ${msg.method ?? 'unknown'}`)
     }
     // A stdio Socket emits its OWN 'error'; `child.on('error')` is the ChildProcess

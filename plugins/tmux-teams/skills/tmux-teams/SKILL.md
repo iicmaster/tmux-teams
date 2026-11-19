@@ -429,7 +429,7 @@ transport-independent. Two transports carry it:
 | transport | for | mechanism |
 |---|---|---|
 | `tmux` | any TUI without ACP; codex/agy fallback | deliver.sh + markers (ข้อ 1-ข้อ 6) |
-| `acp` | codex (`@agentclientprotocol/codex-acp@1.1.7`, frontier-verified); claude (`@agentclientprotocol/claude-agent-acp`, official adapter — e2e-verified 2026-07-21, Task subagents work, effort via `MAX_THINKING_TOKENS`); agy (`antigravity-acp@1.2.0`, community adapter — 1.0.0 audited + e2e-verified 2026-07-21, bumped 2026-09-30 after 1.0.0's pinned `agy` release died upstream; bun required, see ToS note) | `scripts/acp-companion.mjs` — JSON-RPC over stdio |
+| `acp` | codex (`@agentclientprotocol/codex-acp@2.7.0`, frontier-verified); claude (`@agentclientprotocol/claude-agent-acp`, official adapter — e2e-verified 2026-07-21, Task subagents work, effort via `MAX_THINKING_TOKENS`); agy (`antigravity-acp@1.2.0`, community adapter — 1.0.0 audited + e2e-verified 2026-07-21, bumped 2026-09-30 after 1.0.0's pinned `agy` release died upstream; bun required, see ToS note) | `scripts/acp-companion.mjs` — JSON-RPC over stdio |
 
 The Gemini lane has been removed. The companion normalizes and rejects that
 retired public agent name before considering `ACP_CMD`; a custom command cannot
@@ -574,7 +574,7 @@ KMS, and terminal evidence by `dispatch_id`. In optional/default mode a
 persistence failure is explicitly warned and carries `receipt_digest: none`;
 required mode always fails closed instead of continuing without the receipt.
 Required Codex dispatches resolve the locally pinned
-`@agentclientprotocol/codex-acp@1.1.7` package, verify package metadata and
+`@agentclientprotocol/codex-acp@2.7.0` package, verify package metadata and
 entry bytes, bind the profile to the real Node and `CODEX_PATH` executable
 bytes/version, and spawn that verified Node/entry pair. PATH shadowing, fake
 version output, cache/profile drift, or an unsafe receipt directory fails before
@@ -609,9 +609,9 @@ stored per task-id under `.tmux-teams/sessions/`, so re-dispatching the same id
 resumes automatically.
 
 **codex over ACP is UNLOCKED** via the official App Server adapter
-`@agentclientprotocol/codex-acp@1.1.7` (successor to the deprecated
+`@agentclientprotocol/codex-acp@2.7.0` (successor to the deprecated
 `zed-industries/codex-acp`): it drives the INSTALLED codex CLI, so
-`gpt-6.1-sol` + `ultra` work exactly as the Frontier-always directive
+`gpt-6.2-sol` + `ultra` work exactly as the Frontier-always directive
 requires (the Sol seat e2e-verified 2026-07-19 on its predecessor
 `gpt-6-sol`). Do NOT use the old zed-industries binary
 (stale embedded core; the companion maps its failure signatures to a clear

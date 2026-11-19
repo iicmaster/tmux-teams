@@ -200,6 +200,16 @@ rl.on('line', raw => {
         title: 'read file before prompt',
         status: 'in_progress',
       })
+      if (behaviour === 'auth-status-update') send({
+        jsonrpc: '2.0',
+        method: '_auth/status_update',
+        params: { authenticated: true },
+      })
+      if (behaviour === 'unknown-extension-notification') send({
+        jsonrpc: '2.0',
+        method: '_vendor/tool_activity',
+        params: {},
+      })
       return reply(m.id, { sessionId: 'review-session', configOptions: [] })
     case 'session/set_config_option':
       log(`config:${m.params.configId}=${m.params.value}`)
@@ -233,7 +243,7 @@ rl.on('line', raw => {
         // Codex review bot finding: multiple model entries in setter reply
         // where a clean entry (id='model') is followed by a prohibited entry (name='model')
         return reply(m.id, { configOptions: [
-          { id: 'model', currentValue: 'gpt-6.1-sol' },
+          { id: 'model', currentValue: 'gpt-6.2-sol' },
           { name: 'model', currentValue: 'gpt-6-sol' },
           { id: m.params.configId, currentValue: m.params.value },
         ] })
@@ -244,7 +254,7 @@ rl.on('line', raw => {
         // The client reads only the requested field's value for the
         // acknowledgement — the witness scan must still see the model here.
         return reply(m.id, { configOptions: [
-          { id: 'model', currentValue: behaviour === 'late-setter-model-swap' ? 'gpt-6-sol' : 'gpt-6.1-sol' },
+          { id: 'model', currentValue: behaviour === 'late-setter-model-swap' ? 'gpt-6-sol' : 'gpt-6.2-sol' },
           { id: m.params.configId, currentValue: m.params.value },
         ] })
       }

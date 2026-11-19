@@ -1,16 +1,17 @@
 ---
 name: oc-advisor
-description: "Consult an OpenCode advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. The default seat is opencode/minimax-m3.1-flash-free with opencode/deepseek-v4.1-flash-free as its one-hop fallback, and identity is verified via ACP_EXPECT_MODEL. Read-only posture: permission requests are denied at the transport (ACP_PERMISSIONS=deny) and the brief forbids edits — that is a policy guard and a documented residual, not a sandbox claim. Use when the user invokes $oc-advisor, wants a fourth family's read on a question, names a seat, or adds --party <id> to seat a saved bmad-party-mode roster."
+description: "Consult an OpenCode advisor over ACP and get the answer back as a bmad-party-mode round-table, never as a single voice. The default seat is opencode/deepseek-v4.1-flash-free with a ten-rung strength-ordered free-seat ladder behind it, and identity is verified via ACP_EXPECT_MODEL. Read-only posture: permission requests are denied at the transport (ACP_PERMISSIONS=deny) and the brief forbids edits — that is a policy guard and a documented residual, not a sandbox claim. Use when the user invokes $oc-advisor, wants a fourth family's read on a question, names a seat, or adds --party <id> to seat a saved bmad-party-mode roster."
 ---
 
 # OpenCode Advisor
 
 The fourth sibling of `codex-advisor`, `claude-advisor` and `agy-advisor`. This
 one reaches OpenCode's own free seats through its ACP server (`opencode acp` —
-no separate adapter package in between): MiniMax by default, deepseek as a
-one-hop fallback. Those are two models behind one provider, not two vendors,
-so a disagreement here with codex/agy is the cross-vendor read — a
-disagreement between the two OpenCode seats is worth reading but is not.
+no separate adapter package in between): DeepSeek by default, with a
+ten-rung strength-ordered free-seat ladder behind it. Those are ten seats
+behind one provider, not ten vendors, so a disagreement here with codex/agy is
+the cross-vendor read — a disagreement between two OpenCode seats is worth
+reading but is still not a cross-vendor read.
 
 **Read `codex-advisor/SKILL.md` for the parts that are the same** — why an
 advisor is an ACP lane rather than an agent, how the round-table is assembled
@@ -25,11 +26,10 @@ profile before a session exists — copying the skill and the producer forward
 without updating the plugin is not enough.
 
 A receipt-required custom-worker dispatch refuses `ACP_CMD` without a closed
-`acp-execution-profile`, and `opencode-ai` ships no JS launcher: its bin IS a
-native binary (measured 2026-11-07 on 1.18.21: `bin/opencode.exe`, Mach-O
-arm64). The producer pins that binary, its `package.json`, and the agent
-identity OpenCode reported over a live initialize (`{name: "OpenCode",
-version: "1.18.21"}`):
+`acp-execution-profile`, and `@opencode/cli` ships no JS launcher: its bin IS a
+native binary (measured 2026-11-19 on `2.3.2`: `bin/opencode.exe`). The producer
+pins that binary, its `package.json`, and the agent identity OpenCode reported
+over a live initialize (`{name: "OpenCode", version: "2.3.2"}`):
 
 ```bash
 node <plugin-root>/skills/tmux-teams/scripts/opencode-execution-profile.mjs \
@@ -39,7 +39,7 @@ node <plugin-root>/skills/tmux-teams/scripts/opencode-execution-profile.mjs \
 Exit `0` prints the two variables the dispatch below consumes
 (`ACP_CMD`, `ACP_EXECUTION_PROFILE`). Exit `1` is usage; exit `2` is a refusal
 — no verified pinned install in the npm caches (run
-`npx -y opencode-ai@1.18.21 --version` once, then retry), an ambiguous or
+`npx -y @opencode/cli@2.3.2 --version` once, then retry), an ambiguous or
 drifted set of cache hits (clear them and install fresh), or a whitespace
 path the dispatch command cannot carry. Run it again after any cache change:
 the profile is a local snapshot of bytes found at production time — it binds
@@ -67,7 +67,7 @@ printed, and keep them together: the profile's argv is what the dispatch
 verifies `ACP_CMD` against, and a mismatch fails before a session exists.
 `<model>` is the full id in BOTH assignments; a request without a matching
 expectation is a dispatch nobody verified. See Arguments for which id — the
-default seat, or the fallback after a ladder step. **Never send the fallback
+default seat, or the next rung after a ladder step. **Never hop a rung
 because an answer merely disappointed you**: the ladder is entered only on the
 failure evidence listed there.
 
@@ -91,7 +91,7 @@ with tests, not brief prose.
 
 **Residual, stated plainly:** this lane does NOT claim "it never edits". A
 permission request is the only gate the transport holds; whether every
-mutating tool of OpenCode 1.18.21 requests one is not proven from this
+mutating tool of OpenCode 2.3.2 requests one is not proven from this
 repository, and the MCP servers, configuration and skills the operator's
 OpenCode install loads are the operator's own. The lane's posture is the
 claude-advisor posture plus a hard guard: the brief forbids edits, the
@@ -108,36 +108,63 @@ permission-allowed run. Never flip it silently.
 ## Arguments
 
 ```
-$oc-advisor           # default seat: opencode/minimax-m3.1-flash-free (free)
-$oc-advisor free      # the same seat, named explicitly
-$oc-advisor deepseek  # fallback seat: opencode/deepseek-v4.1-flash-free (free)
+$oc-advisor                     # default seat (ladder rung 1): opencode/deepseek-v4.1-flash-free (free)
+$oc-advisor free                # the same seat, named explicitly
+$oc-advisor deepseek            # the same seat by model name
+$oc-advisor inkling             # ladder rung 2: opencode/inkling-2-small-free (free)
+$oc-advisor glm                 # ladder rung 3: opencode/glm-5.3-flash-free (free)
+$oc-advisor mimo                # ladder rung 4: opencode/mimo-v2.6-flash-free (free)
+$oc-advisor hy4                 # ladder rung 5: opencode/hy4-flash-free (free)
+$oc-advisor longcat             # ladder rung 6: opencode/longcat-2.5-free (free)
+$oc-advisor flint               # ladder rung 7: opencode/flint-40b-free (free)
+$oc-advisor beam                # ladder rung 8: opencode/beam-free (free)
+$oc-advisor nemotron-super-vl   # ladder rung 9: opencode/nemotron-3.5-super-vl-free (free)
+$oc-advisor nemotron-lightning  # ladder rung 10: opencode/nemotron-3.5-lightning-free (free)
 ```
 
 | `<seat>` | dispatches |
 |---|---|
-| *(omitted)* | `opencode/minimax-m3.1-flash-free` |
-| `free` | `opencode/minimax-m3.1-flash-free` |
+| *(omitted)* | `opencode/deepseek-v4.1-flash-free` |
+| `free` | `opencode/deepseek-v4.1-flash-free` |
 | `deepseek` | `opencode/deepseek-v4.1-flash-free` |
+| `inkling` | `opencode/inkling-2-small-free` |
+| `glm` | `opencode/glm-5.3-flash-free` |
+| `mimo` | `opencode/mimo-v2.6-flash-free` |
+| `hy4` | `opencode/hy4-flash-free` |
+| `longcat` | `opencode/longcat-2.5-free` |
+| `flint` | `opencode/flint-40b-free` |
+| `beam` | `opencode/beam-free` |
+| `nemotron-super-vl` | `opencode/nemotron-3.5-super-vl-free` |
+| `nemotron-lightning` | `opencode/nemotron-3.5-lightning-free` |
 
 A bare alias is expanded to the full `opencode/...` id, which is what reaches
 the adapter and what the receipt must show. Any other model id is a usage
-error: this file documents exactly two measured seats, and an unmeasured id
-either fails the dispatch or silently seats something nobody verified. Both
-ids were probed against `opencode acp` 1.18.21 on 2026-11-09: advertised in
-`configOptions` and accepted by `session/set_config_option`.
+error: this file documents exactly ten measured seats, and an unmeasured id
+either fails the dispatch or silently seats something nobody verified. All ten
+ids were probed against `opencode acp` 1.18.21 on 2026-11-18 (advertised in
+`configOptions` and accepted by `session/set_config_option`); a follow-up probe
+on `@opencode/cli@2.3.2` on 2026-11-19 confirmed the other nine rungs present in
+v2.3.2 while `glm-5.3-flash-free` was absent from the v2.3.2 catalog.
 
-`$oc-advisor deepseek` is not a general-purpose switch. It is the ladder's
-second seat, so an operator typing it deliberately is making an explicit,
-disclosed choice — but the reason to be on it is one of the entry conditions
-below, and an answer produced there must still be labelled with its seat.
+A named rung below the default is not a general-purpose switch. It is a ladder
+seat, so an operator typing one deliberately is making an explicit, disclosed
+choice — but the reason to be on it is one of the entry conditions below, and
+an answer produced there must still be labelled with its seat.
 
-## The fallback seat — one ladder, and the evidence that enters it
+## The fallback ladder — rungs in strength order, and the evidence that enters each hop
 
-`deepseek` is the fallback, not a preference. Take it when the **default seat
-cannot answer**, and only then — a working answer from the default seat is
-always the answer, however much a reader dislikes it. This changes the SEAT,
-not the account: a provider-side condition affecting the whole OpenCode
-service is not ladder evidence (see the last entry).
+`deepseek` — ladder rung 1 — is the default seat; the nine rungs below it are
+the ladder, entered only on evidence, never as a preference. Take the next
+rung when the **current seat cannot answer**, and only then — a working answer
+from any rung is the answer, however much a reader dislikes it. This changes
+the SEAT, not the account: a provider-side condition affecting the whole
+OpenCode service is not ladder evidence (see the last entry).
+
+The rungs, in strength order: `deepseek -> inkling -> glm -> mimo -> hy4 -> longcat -> flint -> beam -> nemotron-super-vl -> nemotron-lightning`. That
+order is the measured-strength ranking recorded in
+[../../docs/oc-advisor-free-seat-strength.md](../../docs/oc-advisor-free-seat-strength.md);
+the full `opencode/...` ids sit in the Arguments table above. Each hop
+descends exactly one rung, on its own evidence.
 
 Enter the ladder on exactly one of these, each requiring evidence about **this
 seat's model identity**, not merely a dispatch that stopped:
@@ -152,7 +179,7 @@ seat's model identity**, not merely a dispatch that stopped:
 2. **The provider refuses the account for that seat** — a quota, membership,
    or retired-model-id condition **named in the lane log for that seat**. Same
    brief, fresh dispatch.
-3. **The default seat repeats `no_outbox` after one resume** under the same
+3. **The current seat repeats `no_outbox` after one resume** under the same
    task id, with the lane having ENDED (not merely gone quiet) — **unless the
    denial came from `ACP_PERMISSIONS=deny` itself**, which outranks this rule:
    a permission-denied outbox write is the policy working, so it is never a
@@ -171,12 +198,12 @@ labelling rule for an automatic quota fallback until 2026-11-15, when the
 shared Gemini quota pool retired that fallback; the labelling rule is the part
 kept here, and this ladder is the only place it fires.)
 
-**One hop only, inside these two seats.** If the fallback seat also fails,
-stop and report both events. Never a third seat, never a model outside the two
-documented ids, and never another family: the point of this advisor is which
-family answered. Moving minimax → deepseek is a disclosed, bounded hop within
-this advisor's own free seats — it is not a licence to route an OpenCode
-failure to codex, agy or claude.
+**One rung at a time, inside these ten seats.** Hop to the NEXT rung only,
+each hop on its own evidence; when the last rung also fails, stop and report
+every event. Never a model outside the documented ids, and never another
+family: the point of this advisor is which family answered. Walking the ladder
+is a disclosed, bounded descent within this advisor's own free seats — it is
+not a licence to route an OpenCode failure to codex, agy or claude.
 
 ### `--party <id>` — seat a saved bmad-party-mode roster
 
@@ -227,11 +254,11 @@ with any `2`. Exit `1` is a command-usage error.
 
 The receipt should read `effective_identity: <seat>`,
 `identity_status: matched` where `<seat>` is the id that was dispatched —
-`opencode/minimax-m3.1-flash-free` on the default seat, or
-`opencode/deepseek-v4.1-flash-free` after a ladder step. The adapter
+`opencode/deepseek-v4.1-flash-free` on the default seat, or the id of the seat
+that actually answered after a ladder step. The adapter
 acknowledges the model through `session/set_config_option` before the prompt,
 and a mismatch fails the dispatch first. Read the seat off the receipt rather
-than assuming the default: after a fallback the two disagree, and the receipt
+than assuming the default: after a ladder hop the two disagree, and the receipt
 is the one that is right.
 
 The receipt proves the executable, the session and the configured identity.
@@ -245,11 +272,11 @@ EXPIRED key stored there actively blocks every dispatch with
 remove or renew the stored key, never to add one blindly.
 
 A provider-side failure is reported as it happened — the lane's log carries
-the provider's own error. Within the two documented seats, and only on the
+the provider's own error. Within the ten documented seats, and only on the
 seat-specific conditions listed under the ladder above, the one permitted
-consequence is the single minimax → deepseek hop; anything wider, including
-routing a generic service error to another family (codex, agy, claude),
-changes what the reader is buying and is forbidden.
+consequence is the bounded descent — one rung at a time, in ladder order;
+anything wider, including routing a generic service error to another family
+(codex, agy, claude), changes what the reader is buying and is forbidden.
 
 ## Waiting and resuming
 
@@ -270,20 +297,10 @@ the printed resume command includes them; pasting a resume without the deny
 policy downgrades the lane to the allow preference while looking like the
 same dispatch.
 
-**What is measured, stated by LAYER — and the layers differ.** Evidence exists
-for the session/model-configuration layer only, and it stops where the prompt
-begins: a fresh dispatch reaches `session/new`, is acknowledged by
-`session/set_config_option`, and commits a receipt reading
-`identity_status: matched` (observed 2026-11-09 on both seats, per this
-repository's own dispatch records — not re-measured since). The **answer layer
-is NOT measured**: as of 2026-11-16 `session/prompt` fails inside OpenCode with
-`Unexpected server error` for the minimax seat, the deepseek seat AND a keyed
-`zai-coding-plan` seat alike, so no round-table outbox has been produced
-through the ACP path since the 2026-11-08 keyless run. Do not read a matched
-receipt as a working answer, and do not read this file as a claim that either
-seat currently answers. Receipt-backed LOAD is likewise unverified — treat the
-first resume as the measurement, and report what actually happened rather than
-assuming it.
+**What is measured, stated by LAYER — and the layers differ.**
+- **Session/config layer:** a fresh dispatch reaches `session/new`, is acknowledged by `session/set_config_option`, and commits a receipt reading `identity_status: matched` (observed 2026-11-09 on the seats documented then). The 2026-11-18 probe on OpenCode 1.18.21 extended config ACKs to all ten rung ids, and the 2026-11-19 probe on `@opencode/cli@2.3.2` confirmed 11 free models in `session/new` (9 of 10 rungs present; `glm-5.3-flash-free` absent in v2.3.2).
+- **Keyless prompt & review-gate layer (`@opencode/cli@2.3.2`, 2026-11-19):** headless keyless `opencode acp` (`initialize` -> `session/new` -> `session/set_config_option` -> `session/prompt`) succeeded (`stopReason: "end_turn"`, `"OK"`) on all three default seats (`opencode/deepseek-v4.1-flash-free`, `opencode/inkling-2-small-free`, `opencode/mimo-v2.6-flash-free`), superseding the historical 2026-11-16 OpenCode 1.x `Unexpected server error` failure on prompt delivery. A live keyless `REVIEW_GATE_MODE=opencode-free` `review-gate.mjs` run (using an ephemeral keyless `$HOME` with `$HOME/.local/bin/npx` symlinked to the host plant launcher) also completed 3/3 `PASS` across those three models with `singleProviderQuorum: true`, `toolCallsObserved: 0`, and `acpPermissionRequests: "deny"`.
+- **Unmeasured `$oc-advisor` round-table outbox & resume layer:** through the `$oc-advisor` `acp-dispatch.mjs` round-table/outbox path itself, the **answer layer is NOT measured** on `@opencode/cli@2.3.2` (no multi-turn round-table `.mailbox-out` file has been produced through `acp-dispatch.mjs` under `ACP_PERMISSIONS=deny` on v2.3.2). Do not read a matched receipt as a working answer, and do not read this file as a claim that any rung past the three tested defaults currently answers. Receipt-backed `LOAD` is likewise unverified — treat the first resume as the measurement, and report what actually happened rather than assuming it.
 
 ```bash
 env -u ACP_REASONING_EFFORT -u ACP_EXPECT_REASONING_EFFORT -u INITIAL_AGENT_MODE \
@@ -302,7 +319,7 @@ node <plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs \
 ```
 
 Resume the seat you dispatched, not the default: a session belongs to the
-model that held it, and loading it under the fallback is a different model
+model that held it, and loading it under a different seat is a different model
 reading someone else's lineage. Take `<model>` from the failed run's receipt.
 
 ## The consultation is a party. Only a party.
@@ -338,14 +355,14 @@ residuals named there are part of this contract, not a footnote to it.
   times it repeats.** A second `no_outbox` with the lane ENDED, where deny was
   NOT the cause, is ladder entry 3.
 - **Identity refused.** The adapter did not acknowledge the seat that was
-  requested. A TERMINAL refused DEFAULT seat (`mismatched`/`missing` on an
-  ENDED dispatch) is ladder entry 1 — re-dispatch once with `deepseek`; a
-  still-RUNNING lane with a pending `missing` is not a refusal, so `status`
-  again rather than hopping. A refused FALLBACK seat is the end of the
-  ladder. Report which seat failed and stop.
+  requested. A TERMINAL refused seat (`mismatched`/`missing` on an ENDED
+  dispatch) is ladder entry 1 — the default seat hops to rung 2, and a refused
+  rung hops to its next rung the same way; a still-RUNNING lane with a pending
+  `missing` is not a refusal, so `status` again rather than hopping. A refusal
+  at the last rung is the end of the ladder: report every event and stop.
 - **A generic `session/prompt` error (`UnknownError` / `Unexpected server
   error`).** A service condition, not a seat verdict: report it and stop.
-  Never hop, never call it quota, never retry under the other seat on this
+  Never hop, never call it quota, never retry under another seat on this
   evidence.
 - **A failed LOAD** (`resume_status: load_failed`). Not a second `no_outbox`
   and not ladder evidence — report it and stop.
