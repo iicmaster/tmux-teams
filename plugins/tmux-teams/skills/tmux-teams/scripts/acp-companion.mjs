@@ -222,6 +222,15 @@ const terminalKillGraceMs = strictNonNegativeEnvNumber('ACP_TERMINAL_KILL_GRACE_
 // not process-group liveness or a kill escalation) and a hermetic test must
 // be able to shorten it without also shortening those.
 const terminalCloseGraceMs = strictNonNegativeEnvNumber('ACP_TERMINAL_CLOSE_GRACE_MS', 2000)
+// antigravity-acp loads ~/.agy-acp/models.json synchronously on startup and only
+// pushes fresh `agy models` results via `session/update` (`config_option_update`)
+// a few seconds later. Wait only when a requested option/value is absent so
+// warm caches and non-AGY lanes pay zero delay, while still failing closed if
+// the refreshed catalog never advertises it.
+const configOptionRefreshTimeoutMs = Math.min(
+  strictNonNegativeEnvNumber('ACP_TEST_CONFIG_OPTION_REFRESH_TIMEOUT_MS', agentName === 'agy' ? 12_000 : 0),
+  60_000,
+)
 const livenessTickMs = positiveNumber(
   process.env.ACP_LIVENESS_TICK_MS,
   Math.max(10, Math.min(1000, stallMs / 4)),
@@ -2069,6 +2078,11 @@ function handleUpdate(update) {
     case 'usage_update':
       usageUpdate(update)
       break
+    case 'config_option_update':
+      if (Array.isArray(update.configOptions)) {
+        notifyConfigOptionUpdate(update.configOptions)
+      }
+      break
     default:
       break
   }
@@ -2223,6 +2237,84 @@ function optionValueMatches(observed, value) {
     || (observed !== null && typeof observed === 'object' && observed.value === value)
 }
 
+let latestUpdatedConfigOptions = null
+const configOptionWaiters = new Set()
+
+function configOptionHasValue(response, id, value) {
+  const option = configOption(response, id)
+  if (!option) return false
+  return !Array.isArray(option.options)
+    || option.options.some((candidate) => optionValueMatches(candidate?.value, value))
+}
+
+function notifyConfigOptionUpdate(configOptions) {
+  if (!Array.isArray(configOptions)) return
+  latestUpdatedConfigOptions = configOptions
+  for (const waiter of [...configOptionWaiters]) {
+    waiter.onUpdate(configOptions)
+  }
+}
+
+function rejectConfigOptionWaiters(cause) {
+  for (const waiter of [...configOptionWaiters]) {
+    configOptionWaiters.delete(waiter)
+    waiter.onReject(cause)
+  }
+}
+
+function waitForConfigOptionValue(effectiveResponse, configId, value, timeoutMs) {
+  if (configOptionHasValue(effectiveResponse, configId, value)) {
+    return Promise.resolve(effectiveResponse)
+  }
+  let latest = effectiveResponse
+  if (latestUpdatedConfigOptions) {
+    const candidate = { ...effectiveResponse, configOptions: latestUpdatedConfigOptions }
+    if (configOptionHasValue(candidate, configId, value)) {
+      return Promise.resolve(candidate)
+    }
+  }
+  if (timeoutMs <= 0) return Promise.resolve(latest)
+  if (controllerInterrupted) return Promise.reject(interruptionError(`config_option_update(${configId})`))
+  if (protocolFailure) return Promise.reject(protocolFailure)
+  if (agentClosed) return Promise.reject(new Error(`ACP child closed while waiting for config_option_update(${configId})`))
+  return new Promise((resolve, reject) => {
+    let settled = false
+    let timer = null
+    const cleanup = () => {
+      if (timer) {
+        clearTimeout(timer)
+        timer = null
+      }
+      configOptionWaiters.delete(waiter)
+    }
+    const waiter = {
+      onUpdate(configOptions) {
+        if (settled) return
+        latest = { ...effectiveResponse, configOptions }
+        if (configOptionHasValue(latest, configId, value)) {
+          settled = true
+          cleanup()
+          resolve(latest)
+        }
+      },
+      onReject(cause) {
+        if (settled) return
+        settled = true
+        cleanup()
+        reject(cause)
+      },
+    }
+    configOptionWaiters.add(waiter)
+    timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve(latest)
+    }, timeoutMs)
+    timer.unref?.()
+  })
+}
+
 function assertConfigOptionValue(response, id, value, phase) {
   const option = configOption(response, id)
   if (!option) {
@@ -2248,6 +2340,15 @@ async function applyRequestedSessionConfig(sessionId, response) {
 
   let effectiveResponse = response
   for (const [configId, value] of requested) {
+    if (!configOptionHasValue(effectiveResponse, configId, value)) {
+      effectiveResponse = await waitForConfigOptionValue(
+        effectiveResponse,
+        configId,
+        value,
+        configOptionRefreshTimeoutMs,
+      )
+      assertProtocolFence(`config_option_update(${configId})`)
+    }
     assertConfigOptionValue(effectiveResponse, configId, value, 'ACP session response')
     const result = await request('session/set_config_option', {
       sessionId,
@@ -2961,6 +3062,7 @@ function receiveControllerSignal(signal) {
   if (!controllerInterrupted) {
     controllerInterrupted = true
     controllerSignal = signal
+    rejectConfigOptionWaiters(interruptionError('config_option_update'))
     setTerminationReason('controller_interrupted')
     console.error(`[controller] ${signal} latched; no new ACP protocol call may begin`)
     recordTestStage('controller-signal-latched')
@@ -3009,6 +3111,7 @@ const childClosedPromise = new Promise((resolve) => {
   agent.once('close', (code, signal) => {
     agentClosed = true
     agentCloseResult = { code, signal }
+    rejectConfigOptionWaiters(new Error(`ACP child closed while waiting for config_option_update: ${code ?? signal ?? 'unknown'}`))
     resolve(agentCloseResult)
   })
 })
@@ -3266,6 +3369,7 @@ function codexGuard(text) {
 let nextId = 1
 const pending = new Map()
 function rejectPending(cause) {
+  rejectConfigOptionWaiters(cause)
   for (const [id, entry] of pending.entries()) {
     pending.delete(id)
     entry.reject(cause)
@@ -4300,6 +4404,7 @@ function beginCancellation(reason, targetState, { timedOut = false } = {}) {
   cancellationReason = boundedText(reason, 'unknown', MAX_TERMINATION_REASON)
   cancellationTargetState = targetState
   cancellationTimedOut = timedOut
+  rejectConfigOptionWaiters(new Error(`ACP session cancelled during config_option_update (${reason})`))
   setTerminationReason(reason)
   setLivenessState('cancelling')
   // ACP v1 prompt-turn: "The Client SHOULD preemptively mark all non-finished
@@ -4775,6 +4880,7 @@ async function protocolRun() {
   }
   const startNewSession = async (fallback = false) => {
     activeSessionId = null
+    latestUpdatedConfigOptions = null
     setLivenessState('awaiting_agent')
     operationTrace = {}
     operationContext.operationTrace = operationTrace
@@ -4790,6 +4896,7 @@ async function protocolRun() {
   }
   if (requestedOperation === 'load' && resumeId && canLoad) {
     activeSessionId = resumeId
+    latestUpdatedConfigOptions = null
     line(`[resume] loading ${boundedText(resumeId, '<unknown-session>', MAX_SESSION_ID)} — the agent will replay its history below`)
     setLivenessState('awaiting_agent')
     operationTrace = {}
@@ -4811,9 +4918,9 @@ async function protocolRun() {
   } else {
     await startNewSession(false)
   }
+  activeSessionId = sessionId
   sessionResponse = await applyRequestedSessionConfig(sessionId, sessionResponse)
   enforceIdentity(sessionResponse)
-  activeSessionId = sessionId
   await waitForTestGate('pre-receipt')
   assertProtocolFence('receipt commit')
   line(`[session] ${boundedText(sessionId, '<unknown-session>', MAX_SESSION_ID)}`)
