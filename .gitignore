@@ -30,3 +30,6 @@ output/
 # regenerates from ROADMAP.md. Leading slash on purpose —
 # `plugins/tmux-teams/docs/adr/` is tracked and must stay that way.
 /docs/
+
+# machine-local zcode scratch drafts
+.zcode/

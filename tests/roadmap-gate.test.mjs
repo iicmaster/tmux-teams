@@ -193,3 +193,23 @@ test('the gate refuses an unknown flag rather than checking anyway', () => {
   assert.equal(code, ROADMAP_EXIT.failed)
   assert.match(out, /unknown flag/)
 })
+
+test('a standalone version-line bump in ROADMAP.md does not mark the page stale', () => {
+  const before = '# ROADMAP\n\nCurrent release: **0.55.0**\n\nsomething true today.\n'
+  const bumped = '# ROADMAP\n\nCurrent release: **0.56.0**\n\nsomething true today.\n'
+  const recorded = marker({ source_sha256: sourceDigest(Buffer.from(before)) })
+
+  assert.equal(classifyRoadmap(Buffer.from(bumped), recorded).stale, false)
+
+  // Adding prose onto the version line or editing other content still marks it stale.
+  const withSuffix = '# ROADMAP\n\nCurrent release: **0.56.0** — extra prose\n\nsomething true today.\n'
+  const withBodyEdit = '# ROADMAP\n\nCurrent release: **0.56.0**\n\nsomething else changed.\n'
+  assert.equal(classifyRoadmap(Buffer.from(withSuffix), recorded).stale, true)
+  assert.equal(classifyRoadmap(Buffer.from(withBodyEdit), recorded).stale, true)
+
+  // Other pages do not exempt a version-line change.
+  assert.equal(
+    classifyRoadmap(Buffer.from(bumped), recorded, '.published-RELEASE-PLAN.json', 'RELEASE-PLAN.md').stale,
+    true,
+  )
+})

@@ -57,9 +57,9 @@ test('a changed shipped source file always requires the panel', () => {
 // assertion would still be green while semantic edits to the decider became
 // exempt. Found by the release panel (codex lane, 2026-08-10); it is the trap
 // CLAUDE.md already names, written again by the author who wrote the warning.
-const ALLOWLIST = ['HANDOFF.md', 'README.md', 'CLAUDE.md']
+const ALLOWLIST = ['HANDOFF.md', 'README.md', 'CLAUDE.md', 'CASEBOOK.md']
 
-test('the documentation allowlist is exactly these three files', () => {
+test('the documentation allowlist is exactly these four files', () => {
   assert.deepEqual([...DOC_ONLY].sort(), [...ALLOWLIST].sort(),
     'the shipped allowlist drifted from the list this file pins — if the change is intended, change it HERE too and say why')
 })

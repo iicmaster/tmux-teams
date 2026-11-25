@@ -1,755 +1,116 @@
 # tmux-teams plugin repo — agent instructions
 
 <!-- bmad:context -->
-<!-- Verified 2026-08-16 against 7c97605. Managed by bmad-project-context;
+<!-- Verified 2026-11-25 against a532b82. Managed by bmad-project-context;
      edits inside this block are replaced on refresh. Keep anything you want
      preserved outside the markers. -->
 
 ## tmux-teams
 
-A Claude Code directory marketplace shipping one plugin, and the canonical
-source of the skills it bundles. Node with no dependencies; `node --test` is the
-whole test story and CI runs it on Node 20 and 24. **`ROADMAP.md` is the standing
-goal** — the phases, what is open and what is closed — so read it before choosing
-work. Everything below this block is the casebook: the same rules carrying the
-dates and measurements that produced them.
+A Claude Code directory marketplace shipping one plugin (`tmux-teams`, under
+`plugins/tmux-teams/`) and the canonical source of its bundled skills. Node
+with zero runtime dependencies; `node --test` is the whole test story (CI runs
+Node 20 and 24). **`ROADMAP.md` is the standing goal** — read it before
+choosing work. Detailed dated incident logs and historical measurements live in
+`CASEBOOK.md`.
 
 ## Policy
 
-- Ship a release as a pull request; never push a release to `main`. Merge on CI
-  green plus the `chatgpt-codex-connector` review. Only Master waives that, and
-  the waiver is recorded on the PR and in the release notes.
-- Three distinct model families read the release diff before a version is
-  stamped. `node scripts/gate-required.mjs` decides when it is owed — `0` exempt,
-  `2` required.
-- Push as `iicmaster`; run `gh auth switch --user iicmaster` first. The active
-  account is often `ngs-th`, which has read access here, and the `fork` remote
-  accepts its push without complaining.
-- Commit no secret, token, customer data, or machine-only path.
-- `~/agent-skills` is a separate repository on a different account. Touch only
-  `plugins/tmux-teams` there, with `git commit --only -- <path>`; other people's
-  work sits staged in it.
+- **Owner approval gates:** Never `git push`, open a PR, merge, tag, or publish
+  without Master's explicit order for that action.
+- **Release flow (Master-approved, 2026-11-17 / reaffirmed 2026-11-25):** Branch,
+  commit only scoped files, open a PR, and run a mandatory read-only
+  `codex-advisor[luna]` (`gpt-6-luna[max]`, `identity_status: matched`) review
+  on the local diff (`git diff origin/main...HEAD`). Merge on CI green plus a
+  non-blocking luna verdict (`chatgpt-codex-connector` bot is advisory, not a
+  merge blocker). After merge, bump the version and tag on `main` (see
+  `plugins/tmux-teams/skills/release/SKILL.md`).
+- **GitHub account & remotes:** Push as `iicmaster` (`gh auth switch --user
+  iicmaster` first). The active account is often `ngs-th`, which has read-only
+  access on `origin` while `fork` accepts its push silently. Verify
+  `git status -sb` shows `main...origin/main` with no `ahead`.
+- **No leaks:** Commit no secret, token, customer data, email, or machine-only
+  home path.
+- **Tracked files:** Only `.github/`, `.claude-plugin/`, `.gitignore`,
+  `agent-plugins/`, `plugins/`, `tests/`, `scripts/`, `README.md`, `CLAUDE.md`,
+  `AGENTS.md` (relative symlink to `CLAUDE.md`), `CASEBOOK.md`, `ROADMAP.md`,
+  `RELEASE-PLAN.md`, `HANDOFF.md`, and `.published-*.json` /
+  `.roadmap-published.json` markers are tracked. BMAD scaffold dirs, `.claude/`,
+  `.zcode/`, and `/docs/` stay gitignored.
+- **Separate parent repo:** `~/agent-skills` is a separate repository on a
+  different account whose submodule pin feeds its OpenClaw bridge (and purges
+  duplicate copies via `PLUGIN_DELIVERED`). Routine releases no longer touch
+  `~/agent-skills`; never commit there unless explicitly ordered.
+
+## Model policy (ACP routes)
+
+- **Every AGY role defaults to `gemini-pro-orchestrator-neon`** (orchestrator,
+  thinker, reviewer, advisor, worker/execution). Only when `agy models` succeeds
+  and omits it do thinker/advisor/review gate fall back to
+  `gemini-4-hydrogen-xhigh` and workers to `gemini-4-hydrogen-medium` (unreadable
+  list keeps Neon and fails closed; named seats and `lanes.json` overrides are
+  never resolved over). Supported Gemini families include
+  `gemini-4-{neon,carbon,argon,hydrogen}-*`, `gemini-pro-orchestrator`,
+  `gemini-pro-orchestrator-argon`, and `gemini-3.8-flash-*`.
+- **Always pin AGY explicitly:** Pass both `ACP_MODEL` and `ACP_EXPECT_MODEL`,
+  and verify `identity_status: matched` in the receipt.
+- **Version floors (fail closed):**
+  Floors: fable `5.2` (bare `fable` refused), Codex sol/astra `6.2`, terra `6.1`, luna `6`;
+  Gemini 3.1 stays banned. Raising a floor requires editing all three copies together
+  (`plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs`,
+  `plugins/tmux-teams/skills/tmux-teams/scripts/acp-dispatch.mjs`,
+  `plugins/tmux-teams/skills/tmux-teams/scripts/acp-companion.mjs`).
+- **No automatic quota fallback:** On 429/rate-limit, stop and ask Master
+  instead of silently switching seats.
 
 ## Where things are
 
-- The goal is `ROADMAP.md`; the state of play between sessions is `HANDOFF.md`.
-- Shipped skills live in `plugins/tmux-teams/skills/` — this repo is their
-  source, not a mirror of one.
-- Decisions that are not up for re-litigation: `plugins/tmux-teams/docs/adr/`.
-- Three pages publish from tracked sources through `scripts/roadmap-render.mjs`
-  and are gated per page by `scripts/roadmap-gate.mjs`.
+- Standing goal: `ROADMAP.md`; session state: `HANDOFF.md`; release checklist:
+  `plugins/tmux-teams/skills/release/SKILL.md`.
+- Shipped skills & scripts: `plugins/tmux-teams/skills/` (list of record:
+  `SKILLS` in `tests/plugin-structure.test.mjs`).
+- Settled architecture decisions: `plugins/tmux-teams/docs/adr/`.
+- Historical incident casebook (open when modifying `scripts/gate-required.mjs`,
+  `acp-companion.mjs`, `review-gate.mjs`, or verifying published HTML pages):
+  `CASEBOOK.md`.
+- Published pages render via `scripts/roadmap-render.mjs` and are gated by
+  `scripts/roadmap-gate.mjs` (version-line-only bumps in `ROADMAP.md` do not
+  mark the page stale; publish when roadmap content changes).
 
 ## Running and verifying
 
-- Run `node --test` with no path. A bare `node --test tests/` fails on Node 24
-  with MODULE_NOT_FOUND; pass a glob or nothing.
-- Gate on the count, not on a grep: piping the suite to `grep '✖'` exits 0 when
-  it finds failures. Assert `grep -q '^ℹ fail 0$'` instead.
-- Read the skipped count as unexecuted rather than passing; four tests skip
-  themselves off Linux.
-- Run the suite on a quiet machine. Measured beside ACP lanes or parallel
-  agents, it measures the contention.
-- `node scripts/run-fast.mjs fast` is an inner tier covering no ACP, CLI,
-  publisher or schema behaviour; run the full suite before committing.
-- Run `node scripts/gate-required.mjs` only after committing. It reads
-  `<last-tag>..HEAD`, cannot see the working tree, and answers EXEMPT with the
-  same confidence it answers REQUIRED.
+- Run bare `node --test` (never `node --test tests/` — fails on Node 24 with
+  `MODULE_NOT_FOUND`). Gate on `grep -q '^ℹ fail 0$'`, never `grep '✖'`.
+- Read the skipped count as unexecuted work: baseline on `main` is 6
+  unconditional skips (retired kimi/zai/qwen profiles); investigate any new
+  skip.
+- Run full `node --test` only on a quiet machine, serialized through one caller
+  (never in parallel across subagents or beside live ACP lanes).
+- `node scripts/run-fast.mjs fast` is an inner tier (no ACP, CLI, publisher, or
+  schema tests); run bare `node --test`, `git diff --check`, and
+  `claude plugin validate --strict .` before committing.
+- `node scripts/gate-required.mjs` reads committed `<last-tag>..HEAD` only —
+  commit first or it falsely reports `EXEMPT`.
 
-## Conventions that differ from defaults
+## Conventions & known pitfalls
 
-- Put no backtick in any exported string whose name ends in `CSS` or `SCRIPT`;
-  one inside a comment closes the template literal and the module stops parsing
-  far from the cause.
-- A scripted edit asserts its anchor before writing (`assert old in s`) — a
-  replace that matches nothing writes the file unchanged and tells nobody.
-- Bumping a version touches six files in seven places; grep the old number
-  afterwards, because the seventh was found by grepping and not by reading a list.
-
-## Known pitfalls
-
-- Build a review packet from the file list `scripts/gate-required.mjs` prints rather than
-  from memory; three of four panels for one release each missed the same two
-  files while every lane answered 3/3.
-- Reach for the built-in `advisor` to shape an approach, a `codex-advisor` lane
-  to attack finished bytes, and the three-family panel last as the record. The
-  panel is forbidden to run anything; an advisor lane can, and has blocked
-  changes the panel passed.
-- Test a boot path by booting it. `import.meta.url` is percent-encoded and Node
-  resolves it through symlinks, so comparing it against `argv[1]` fails on a path
-  containing a space and again on macOS `/var`.
-- Assert the sentence a diagnostic should produce, never that it produced
-  something; a non-empty wrong answer is worse than an empty one because it
-  sounds specific.
-- Report a measured outcome, never the constant you edited.
+- **Worktree & git hygiene:** Give every writing subagent its own git worktree
+  outside `$TMPDIR`; keep the primary checkout off limits. Stage only scoped
+  files and inspect `git diff --cached --name-only`. Update published/stale
+  branches with `git merge`, never `git push --force`.
+- **Edit canonical `CLAUDE.md`, not `AGENTS.md`:** `AGENTS.md` is a relative
+  symlink (`CLAUDE.md`); atomic-rename edits on `AGENTS.md` replace the symlink
+  with a plain file.
+- **Version bumps:** Bump all 6 files / 7 guarded places (`.claude-plugin/marketplace.json`
+  has `metadata.version` + `plugins[0].version`), then run `rg -F '<old-version>'`
+  across the repo to catch prose copies such as `README.md`.
+- **ACP `no_outbox`:** Record the session id before cleaning any run directory;
+  try `ACP_RESUME=<session-id>` with an explicit "say I have nothing plainly if
+  context is gone" instruction before paying for a fresh run.
+- **Published pages:** Measure AND look at a screenshot; report measured
+  outcomes, never constants you edited.
+- **Scripted edits & tests:** Assert `old in s` before writing; test boot paths
+  by spawning from a path with spaces (`realpathSync(fileURLToPath(...))`);
+  assert the exact diagnostic sentence, not merely non-empty output.
 
 <!-- /bmad:context -->
-
-This repo is a **Claude Code directory marketplace** delivering one plugin
-(`tmux-teams`, see `plugins/tmux-teams/`) — and it is the **canonical source**
-of its bundled skills. Edit them directly under
-`plugins/tmux-teams/skills/`. `SKILLS` in `tests/plugin-structure.test.mjs` is
-the list of record and the only thing that checks a skill is really there — a
-count written in prose here rots the first time one is added, and said "six"
-while nine were shipping. (Flipped 2026-07-21: agent-skills commit
-`dd43dc1` vendored this repo as the authoritative submodule and deleted its
-own `skills/shared/tmux-teams`; the old mirror/sync flow is gone.)
-
-## What to work on
-
-**`ROADMAP.md` is the standing goal, not a status page** — the phases, what is
-open, and what is closed are all in it, and it is tracked and gated for exactly
-that reason. Read it before asking anyone what to work on. On 2026-08-16 a
-session edited that file twice, ran its gate three times, published it, and then
-told Master there was no goal set. Work that arrives as a direct instruction and
-is not on the roadmap belongs on it before the session ends, or the next reader
-inherits a goal document that does not know what happened.
-
-## Commands
-
-```bash
-node scripts/run-fast.mjs fast     # explicit in-process inner tier
-node --test                        # whole suite — structure, semantics, KMS; run before commit
-git diff --check                   # repository whitespace gate
-claude plugin validate --strict .  # manifest validation
-node scripts/gate-required.mjs     # does this release owe the three-model panel? 0=exempt 2=required
-node scripts/roadmap-gate.mjs      # is the published roadmap page behind ROADMAP.md? 0=current 2=stale
-node scripts/roadmap-render.mjs    # ROADMAP.md -> docs/roadmap.html, deterministic, no deps
-node scripts/portable-root.mjs <dir>  # agent-plugins/ root copied out with its symlinks resolved
-```
-
-`node scripts/run-fast.mjs fast` uses an explicit allowlist and prints every
-full-only test file, so a new `tests/**/*.test.mjs` stays visible and is still
-covered by the full tier. A fast pass does not cover ACP, CLI/subprocess,
-publisher, schema, or other full-only behavior; run bare `node --test` before a
-commit.
-
-`node --test tests/` (a bare directory) fails on Node 24 with MODULE_NOT_FOUND —
-pass no path at all, or a glob like `tests/*.test.mjs`.
-
-**A grep over the suite output is not a gate.** `node --test | grep -E '✖|fail'`
-exits 0 when it FINDS failures, so chaining a commit after it with `&&` commits
-on red — done twice on 2026-08-03 before anyone noticed. Gate on the count:
-
-```bash
-node --test > /tmp/suite.log 2>&1; grep -E '^ℹ (tests|pass|fail)' /tmp/suite.log
-grep -q '^ℹ fail 0$' /tmp/suite.log || { grep '^✖' /tmp/suite.log | head; false; }
-```
-
-**Never fan out subagents that each run this suite.** It spawns dozens of ACP
-subprocesses per pass — one pass takes about two minutes on an idle dev box, and
-several at once do not share nicely. On 2026-08-03 five agents were each told to
-apply a fix, run `node --test`, revert and run it again: fifteen concurrent
-passes drove the load average to 28 on 8 cores, and after 42 minutes not one
-agent had finished. The wasted time is not the point — the numbers are. Earlier
-that same day `tests/acp-companion.test.mjs` went RED at 79s with only a
-headless browser and one `python3 -m http.server` competing for CPU, and passed
-at 35s on a quiet machine. A verification phase run under contention measures
-the contention. **Parallelise the reading and the design; serialise every
-measurement through one caller.** Say it in the agent's prompt: do not copy the
-repo, do not run `node --test` at all, return a diff that applies by string
-match plus the exact commands the caller runs once.
-
-**Every subagent that WRITES gets its own git worktree.** The rule above is about
-CPU; this one is about the working tree, and it cost a wave on 2026-08-05. Five
-agents were fanned out into this one checkout with no isolation. They raced each
-other on `git checkout -b`: one agent's cherry-pick landed on a branch another
-agent had just created, a third was mid-edit on the contract when HEAD moved
-under it, and the agent that noticed force-reset the polluted branch — a reset
-that **did not hold**, because the directory it reset was still being checked out
-by somebody else. Nothing was lost, and that was luck plus `origin/main` being
-ahead of the damage, not care.
-
-Two things follow. Pass `isolation: 'worktree'` for any agent that commits, and
-say in its prompt that the primary checkout is off limits — a capable agent will
-`cd` there to "check something" and take HEAD with it. And treat a git write
-performed in a shared directory as unverified until it is read back: a
-force-reset, a branch delete, a checkout can all be undone by a concurrent
-process between the command and the next one, silently and with a zero exit code.
-
-A read-only agent needs no worktree, but give it one anyway when it sits beside
-writers — `gh` and `grep` work the same there, and it removes the one way it
-could still move HEAD.
-
-```bash
-node plugins/tmux-teams/skills/tmux-teams/scripts/pulse.mjs once <repo>
-```
-
-Republishes `pulse.html`, `graph.html`, `kanban.html` — the repo argument is
-required, and a bare `pulse.mjs once` only prints usage.
-
-## Checking a published page
-
-**Measure AND look. Neither one alone is a check.** This section said only the
-first half for a long time, and on 2026-08-06 that cost four "done" reports in
-a row on the same page — a gap reported as halved that had moved nine pixels, a
-wire attachment measured at a perfect `dx 0` while the wire rendered as a loop
-floating between two cards, and a bow that went wide again. Every number was
-right. Nobody had opened the picture. Master caught all four.
-
-- A **measurement** proves a quantity and a logic. It cannot prove a shape.
-- A **screenshot** proves a shape. It cannot prove motion, or that the number
-  behind the shape is right.
-- So: any change a reader can SEE gets a screenshot after it is finished, and
-  the screenshot gets looked at before the word "done" is used. Report the
-  measured OUTCOME, never the constant you edited — `OUTSIDE_GAP 150 -> 75` is
-  not a result, `the gap went 347px -> 338px` is, and it is the sentence that
-  would have caught this on the first round instead of the fourth.
-- Ask what the check you just ran is capable of proving. Running the full
-  ritual and passing is not the same as having verified the thing that changed:
-  the mutation checks, the checksummed restores and the 748 green tests were
-  all present for every one of those four misses.
-
-Never from a screenshot alone: a still image cannot show whether anything is moving,
-and four "fixed" reports were made against one on 2026-08-01. Serve the store
-over HTTP, then MEASURE — `getComputedStyle(el).animationName`, count
-`animateMotion` nodes and match `path` against each wire's `d`, compare
-`getBoundingClientRect()` of a halo with the card it rings. Every wire carries
-`data-from`/`data-to` so a check never reverse-engineers geometry.
-`plugins/tmux-teams/skills/tmux-teams/references/loop-graph-page.md` ข้อ 9 is the
-method for this, and the rest of that file is what `graph.html` may draw. It is
-a chapter of `references/loop-system-contract.md` ข้อ 12 — **the contract is the
-one SSOT** and wins if the two ever disagree.
-
-## Model policy for every ACP route
-
-- Every tmux-teams AGY route supports the Gemini 4 family on `agy >= 1.5.8`
-  (Master, 2026-11-15, moved off `gemini-4-argon-high` after measuring live
-  `agy` 1.5.9 / `antigravity-acp@1.2.0` advertising 22 options):
-  - **Every AGY role defaults to `gemini-pro-orchestrator-neon`** (Master,
-    2026-11-19) — thinker, reviewer, advisor (`REVIEW_PROFILES.agy`,
-    `$agy-advisor`, controller, evaluator, critique) AND worker/execution. The
-    orchestrator thinks with Neon and sends its subagents to work on
-    Hydrogen, so it is faster and cheaper than pure Neon. Measured that day:
-    live `antigravity-acp@1.2.0` on `agy` 1.5.12 advertises it in
-    `session/new` configOptions.
-  - **Fallback only when this machine lacks it**: when `agy models` (10s
-    timeout, cached per process) is READ successfully and does not list
-    `gemini-pro-orchestrator-neon`, thinker/advisor/review gate fall back to
-    `gemini-4-hydrogen-xhigh` and workers to `gemini-4-hydrogen-medium`. An
-    unreadable list (no binary, timeout, exit != 0) keeps Neon and the
-    companion pre-check fails closed. Every fallback records requested model,
-    used model and reason (`fallback` on `buildAcpLaunch`, stderr of
-    `agy-seat-fallback.mjs default <thinker|worker>`). A `lanes.json` model
-    override or a named advisor alias is never resolved over.
-  - Before 2026-11-19: thinker routes `gemini-4-carbon-high`, worker routes
-    `gemini-4-hydrogen-high` (2026-11-15).
-  - **Always pass both `ACP_MODEL` and `ACP_EXPECT_MODEL` explicitly** on AGY
-    dispatches: `agy` 1.5.9 `session/new` advertises `currentValue:
-    "gemini-4-carbon-medium"` when unpinned, so omitting them silently drops a
-    dispatch onto Carbon Medium instead of Carbon High or Hydrogen High.
-  - **Supported Gemini options on `agy >= 1.5.8`**: `gemini-4-carbon-{low,medium,high}`,
-    `gemini-4-argon-{low,medium,high}`, `gemini-4-hydrogen-{low,medium,high,xhigh}`,
-    `gemini-pro-orchestrator`, `gemini-pro-orchestrator-argon`, and
-    `gemini-3.8-flash-{low,medium,high}`; `agy` 1.5.12 adds
-    `gemini-4-neon-{low,medium,high,xhigh}` and `gemini-pro-orchestrator-neon`.
-  - **Model lock is a VERSION FLOOR per family** (Master, 2026-11-19), held by
-    one regex copied character-identical into
-    `skills/party-mode/scripts/review-profiles.mjs`,
-    `acp-dispatch.mjs` and `acp-companion.mjs`: a release at or above its
-    floor passes even when the plugin has never heard of it, anything below is
-    refused. Floors: fable `5.2` (bare `fable` refused), Codex sol/astra
-    `6.2`, terra `6.1`, luna `6`; Gemini 3.1 stays banned. Raising a floor
-    means editing the digits in all three copies together (the parity test in
-    `tests/review-policy.test.mjs` checks them).
-  - **No automatic quota fallback**: Antigravity now shares one quota pool
-    across all Gemini seats, so `agy-seat-fallback.mjs` keeps rate-limit log
-    classification (`rate-limited`) while retiring `SEAT_FALLBACKS` / automatic
-    seat switching (2026-11-15).
-  - Earlier moves and measurements remain part of the record: on 2026-08-16 we
-    moved off 3.6 because the 2026-08-15 release panel recorded the adapter
-    ADVERTISING `gemini-3.7-flash-high` while this repo still pinned 3.6 — the
-    set-and-acknowledge succeeded, so the lane really did run 3.6, but the
-    adapter's own default had moved underneath the pin and nothing here had
-    noticed; on 2026-10-17 `agy` 1.3.5 replaced `gemini-3.7-flash-*` with
-    `gemini-4-argon-*` and `gemini-3.8-flash-*`. The probe transcript further
-    down still shows the 3.6 strings; it is a record of what was measured that
-    day and stays as written. Gemini 3.1 variants are prohibited for ACP
-    planning, review, and delivery work; fail closed if a configured or
-    acknowledged AGY model is Gemini 3.1, and never fall back to it.
-- Determine agent progress from ACP/protocol/process state. Elapsed time alone
-  is never proof that a delivery worker or reviewer is stalled.
-- A reviewer or read-only planning lane is read-only and cannot launch delivery
-  work. (Kept from the retired dispatch gate below, because it was never a rule
-  about dispatch.)
-
-## Worker dispatch — the three-model gate is RETIRED (Master, 2026-08-06)
-
-Dispatching a delivery worker no longer requires a frozen bounded plan, bound
-objective/acceptance/brief hashes, a dispatch-ledger record, or three accepted
-reviews. It is gone by owner decision, not by drift.
-
-Read why, because the shape repeats: the gate charged its full price at every
-retry and every corrective dispatch, while the failures worth stopping kept
-arriving at RELEASE time — which is where the weight moves to. See Release flow
-step 2.
-
-Plan review before a dispatch is now a judgement call. Worth it when a change
-crosses domain boundaries or amends the contract; skipped for ordinary work.
-Nothing about this licenses a silent bypass elsewhere: the release gate below is
-not optional, and only a later explicit instruction from Master changes either.
-
-## Release flow
-
-1. Edit skills under `plugins/tmux-teams/skills/` (this repo IS canonical).
-2. **Three model families read the release diff BEFORE the version is marked.**
-   Master's rule, 2026-08-06. It replaces the single-`codex-advisor` rule of
-   2026-08-04 and inherits its reason — no version number is stamped on work a
-   second model family has not read — but one reader was not enough, and the
-   heavier gate that did exist was being spent at dispatch time instead of here.
-   Three substantive reviews from three distinct acknowledged models, AGY mandatory (Master 2026-11-17; seats/ladder updated Master 2026-11-18: seats are `agy-advisor` default (`gemini-pro-orchestrator-neon`, Master 2026-11-19; was `agy-advisor[hydrogen]`), `codex-advisor[luna]`, `oc-advisor` free `deepseek`; opencode ladder `deepseek -> inkling -> glm -> mimo -> hy4 -> longcat -> flint -> beam -> nemotron-super-vl -> nemotron-lightning` on quota, then ask Master; free-only machines bootstrapped via `tmux-teams-setup` may opt in with `REVIEW_GATE_MODE=opencode-free` for single-provider free quorum without changing the default `strict` release gate).
-   "2/3" means an objection that two of the three raise is must-fix, NOT that
-   two reports are enough. Any blocking finding stops the bump — resolve it and
-   rerun all three on the new bytes; never retry an objection away. Fewer than
-   three accepted reviews leaves the release visibly blocked: no silent
-   substitution, no two-reviewer degradation.
-
-   **WHEN the panel is owed is decided by `git diff`, never by whoever is
-   holding the release** (Master, 2026-08-09). The rule above stood unscoped
-   until v0.18.1 and v0.18.2 shipped with ZERO lanes. Nobody bypassed it on
-   purpose: it charged the same price for a documentation edit as for a rewrite
-   of the companion, so it got skipped — and a rule skipped twice running is not
-   a rule, it is a wish. **Scoped, not retired:**
-
-   ```bash
-   node scripts/gate-required.mjs   # 0 = exempt · 2 = panel required · 1 = the script itself failed
-   ```
-
-   **Run it AFTER committing, never on a dirty tree.** It reads
-   `<last-tag>..HEAD` and nothing else — uncommitted work is invisible to it, so
-   a finished-but-unstaged change to a shipped file reads back as EXEMPT and
-   says so with the same confidence it says REQUIRED. Caught 2026-08-12 by an
-   operator who ran it on a working tree holding a `plugins/` edit; committing
-   the same bytes flipped it to REQUIRED. The failure shape is edit → run gate →
-   see EXEMPT → commit → release, which is a panel skipped by somebody who
-   checked.
-
-   It exempts a file only on PROOF, and there are two: the file is `HANDOFF.md`,
-   `README.md` or `CLAUDE.md`, or every changed line in it is identical once
-   semver numbers are blanked (which is what lets a version bump touch
-   `tests/plugin-structure.test.mjs` alone). Everything else requires the panel,
-   including a change shape the parser cannot read — binary, rename, empty diff.
-   **Never widen that allowlist to a path under `plugins/`**: those bytes reach
-   an installed plugin, and they are the entire thing the panel is for.
-
-   **An exemption that is not RECORDED is just the old silent skip.** An exempt
-   release carries `Gate: exempt (docs/version-only) — <files>` in its GitHub
-   release notes; a gated release carries `Gate: 3/3` with every lane's
-   `effective_identity`. A release with neither line is in exactly the state
-   v0.18.1 was left in — ungated and unrecorded. And note what the decider says
-   about the past: run it over `v0.17.0..v0.18.0`, `v0.18.0..v0.18.1` and
-   `v0.18.1..v0.18.2` and it answers REQUIRED for all three. **The new scope
-   excuses none of them, and it was not built to.**
-
-   **HOW you run the panel depends on the machine, and this rule named a tool
-   that cannot run on half of them** (found 2026-08-08, the first time anyone
-   tried it here). `party-advise`'s ACP-only gate —
-   `node <party-mode>/scripts/review-gate.mjs <packet> <abs-target>` — is the
-   preferred path and the stronger one: it sandboxes each lane, hides the target
-   repository, and pins the endpoint every profile routes to.
-
-   **STRONGER IN DESIGN, UNPROVEN IN PRACTICE — it has never yet assembled a
-   three-family panel.** Measured 2026-08-09 on Ubuntu 26.04 with `/usr/bin/bwrap`
-   present, the first time anyone ran it on a host that could. AGY reached
-   `status: accepted`; every claude-routed lane died, EIGHT distinct layers deep
-   — five that stopped a lane before it could start, then three more that only a
-   running gate could ever have shown. This paragraph said "five" from
-   `daeaa54` (2026-08-09 12:15) to `dfef37c` (2026-08-12 23:44) — three days,
-   across one shipped release, v0.19.0. Read those timestamps before repeating
-   the easy explanation: the paragraph was not left stale by neglect, it was
-   written at 12:15 and the layers it does not mention landed at 12:34 and
-   13:56 THE SAME AFTERNOON. Nobody re-read a paragraph they had finished an
-   hour earlier. The first five, each fix revealing the next: staging asked
-   "is it under `$HOME`" instead of "does the sandbox mask it"; the
-   trusted-roots list knew `~/.nvm`
-   and not mise; no interpreter was staged at all; `npx` is a node script whose
-   relative `require` a single-file copy cannot satisfy; and the shebang then
-   found no `node` on the sandbox PATH. **AGY survived all five only because
-   `bunx` is a native binary** — one lane healthy by coincidence while its
-   neighbour was not. **Those five are fixed and committed** (`fe42d4a`,
-   `2a1868e`, `a3a7d60` — all 2026-08-09, not the 08-10 this line claimed until
-   somebody checked `git log`): staging asks whether the sandbox MASKS a path
-   rather than whether it is under `$HOME`; trusted roots are derived from
-   `process.execPath`; the interpreter prefix is re-bound — and refused when it
-   is a home directory, one of its direct children, or overlapping the target
-   repository; `npx` resolves because the whole prefix is mounted rather than one
-   file copied; and the sandbox PATH carries the toolchain bin.
-
-   **The other three (`0228f6b`, same day) are the ones worth reading, because
-   no unit test could have reached any of them.** A dying lane took the WHOLE
-   gate down: `write` checked `stdin.writable` and then wrote, and a child
-   exiting between those two steps leaves an EPIPE with no listener, which Node
-   promotes to an unhandled error and kills the process — the run died in 2.6s
-   with a stack trace naming a socket, losing every lane's result and hiding its
-   own cause. The toolchain bind was correct, present, and BURIED: printing the
-   real bwrap argv showed `--ro-bind <node prefix>` sitting before the
-   `--bind <ephemeral home>` that lands on the host home directory, which mounts
-   over `$HOME` itself, and
-   on any version-manager machine the interpreter lives under `$HOME` — two
-   correct instructions in the wrong order, so nothing but a run could catch it.
-   And the stdout ceiling counted ENVELOPES, not output: an ACP adapter emits one
-   JSON-RPC envelope per streamed token, so 8,531 envelopes carrying roughly 20 KB
-   of thinking totalled 2,097,253 bytes — ~100x amplification, and the 2 MiB
-   ceiling fired on an ordinary answer. Raised to 16 MiB; `lineBytes` and
-   `messageBytes` are what bound a hostile agent and neither moved.
-
-   **What all eight bought, and it is more than this file used to admit:** the
-   zai lane went `config -> closed(127) -> closed(1) -> closed(1) -> protocol ->
-   review`, ran 4m8s, and glm-5.2 read the diff and answered. **The transport
-   works end to end.** It failed on `agent output is not one strict JSON
-   document` — prose instead of JSON, in the very mode
-   `plugins/tmux-teams/skills/party-mode/scripts/review-profiles.mjs` claimed
-   prevents that (see the note now standing beside the zai profile).
-   This line also said "two fixed, three open" for a full release-panel round
-   after that stopped being true, and a reviewer caught it — the same rot, twice,
-   in the same paragraph. Until someone runs three families through green on a
-   Linux host, this is still the path with the better design and the thinner
-   evidence — but what is open is no longer the sandbox, and as of 2026-08-13 it
-   is no longer the lane either. Measured that day on macOS through direct ACP,
-   the zai lane returned one strict JSON document in BOTH modes (plan 87s,
-   default 204s) and a three-family panel completed 3/3 — the first time this
-   project has ever assembled one. **What is left is one thing: nobody has run
-   three families through bwrap on a Linux host.** A `qwen` provisioned on that
-   host is a prerequisite of that run, not a separate item.
-
-   **It was Linux-only, and as of 2026-08-13 it is not — see ADR 0006.** No
-   shipped profile declared `osSandbox: 'bwrap'` after that date, so the gate
-   ran on macOS too. **Its 2026-08-24 amendment removed the machinery entirely,
-   on Master's instruction**: 441 lines of dead helpers and branches, plus the
-   four tests that had skipped themselves on every run since. Restoring a
-   sandbox now means writing one, not setting a field. What was given up is
-   filesystem confinement at the OS level, and the ADR states that plainly
-   along with the argument against it.
-   Everything else the gate checks is unchanged and never came from bwrap: a
-   temporary workspace, `toolCallsObserved: 0`, no built-in tools, no MCP
-   servers, every permission denied, the endpoint pinned and verified in the
-   PARENT before the child starts, and the packet redacted both ways.
-
-   The old shape is still worth recognising if you re-enable it: on a non-Linux
-   host all three lanes refuse together at `stage: config` with `stderrBytes: 0`,
-   which reads like three broken profiles and is one precondition.
-
-   Two further limits worth knowing before you build the packet: the gate caps a
-   prepared packet at **128 KiB** (256 KiB raw), and a release diff will exceed
-   that. Split by MEANING — shipped source in one packet, the tests that guard
-   it in another — and require every part to pass. Do not raise the cap.
-
-   **Build the packet from the list `scripts/gate-required.mjs` PRINTS, never from
-   memory.** It names every deciding file. On 2026-08-15 three of the four
-   panels run for one release were assembled by hand and all three missed the
-   same two publication-marker files, so "the panel read the release diff" was
-   false while every lane answered 3/3 — caught only by re-reading the gate's
-   own output.
-
-   **On macOS, run the same three families through direct ACP**
-   (`plugins/tmux-teams/skills/tmux-teams/scripts/acp-companion.mjs`, one run
-   directory per lane — receipts are not
-   namespaced by lane, so a shared directory makes the second lane try to resume
-   the first one's session). Owner decision, 2026-08-08. The family requirement
-   does not move; the isolation does. Direct ACP gives no sandbox and no
-   endpoint pin, so **record `effective_identity` for EVERY lane, not just AGY**
-   — it is read from that lane's `.tmux-teams/liveness/<task-id>.json`, and on
-   this path it is the only evidence of who actually read the diff. Write the
-   brief to a file and point the lane at it; never paste a long brief.
-
-   **The AGY exemption from `identity_status: matched` rested on a false premise,
-   and the premise is now disproven** (measured 2026-08-13, twice: in PR #63 and
-   again live from this repo). The 2026-08-07 note said the `antigravity-acp`
-   adapter "rejects EVERY model config value". It does not. Probed directly
-   against agy 1.1.12:
-
-   ```
-   advertised            "gemini-3.6-flash-high\tGemini 3.6 Flash (High)"   ← a TAB
-   set "gemini-3.6-flash-high"          -> ACCEPTED, currentValue bare
-   set "gemini-3.6-flash-high\tGemini…" -> ACCEPTED, currentValue with the tab
-   ```
-
-   **Both are accepted.** Two things produced the old conclusion. Our own
-   `assertConfigOptionValue` compared the requested value against the advertised
-   list by exact equality, so the bare id — the form the adapter actually
-   prefers — was refused BY US before the adapter was ever asked. And the second
-   string in that old sentence has a SPACE where the real value has a tab: a tab
-   rendered as whitespace in a log, copied back, and refused for not existing.
-   A transcription artefact became a permanent exemption.
-
-   So AGY's model CAN be requested and its identity CAN be matched. The fix is
-   merged (PR #63). Treat `unverified` on that lane as a thing to investigate,
-   not a standing allowance — and if you re-add an exemption, measure the
-   adapter first and paste the escaped value, never the rendered one.
-
-   **What does not change: RECORDING.** If a review is accepted from AGY without
-   its reported identity written down, the release is not gated — it is
-   unrecorded. That was always the load-bearing half.
-
-   The exemption is about MATCHING, not about recording, and the direct-ACP path
-   above widens the recording obligation to every lane for a different reason:
-   there, nothing pins where a lane routed, so its own reported identity is all
-   there is. Two lanes can also share one gateway — `claude-qwen` reaches
-   qwen3.8-max on `--model opus` and deepseek-v4 on `--model sonnet` — so a
-   recorded identity is what tells two families apart on a path that cannot
-   prove them apart.
-
-   Review the actual diff
-   that would ship — `git log --oneline <last-tag-or-release-sha>..HEAD` plus
-   `git diff <that sha>..HEAD` — not a summary of it, and not the plan that
-   produced it. This exists because every release before it was marked on one model's
-   reading, and the three corrections that mattered most on 2026-08-03 all came
-   from the advisor rather than from this room.
-3. Bump the version in SIX files, SEVEN places — the counts differ because one
-   file carries it twice, and saying only the smaller one is how a marketplace
-   half-bump gets past a checklist. `README.md` said it correctly while this
-   line said "all FIVE places" and then listed six; a release reviewer caught
-   the contradiction. The files: `.claude-plugin/marketplace.json`
-   (twice: `metadata.version` and `plugins[0].version`),
-   `plugins/tmux-teams/.claude-plugin/plugin.json`, `RELEASE_VERSION` in
-   `tests/plugin-structure.test.mjs`, the `Current release: **X.Y.Z**` line
-   in `README.md`, `plugins/tmux-teams/plugin.json` (the vendor-neutral Agent
-   Plugins manifest, added 2026-08-08 — it arrived WITH its guard rather than
-   waiting for a release to notice, which is the first time that happened), and
-   — found 2026-08-14, by grepping rather than by reading this list — the
-   `Current release:` line in `ROADMAP.md`, which additionally has its own gate:
-   bumping it makes the published page stale, so the roadmap step is not
-   optional on a version bump. That test is the only thing checking they agree, so it has
-   to state the number itself. This step said "BOTH" until 2026-08-01, and
-   v0.12.0 reached the bump with the third one still on 0.11.1 until the test
-   caught it — then said "THREE" until 2026-08-05, when the v0.15.0
-   documentation review found README.md carrying the version in prose with no
-   test guarding it at all. It has one now. **The pattern is the lesson: each
-   time a place was added, it was found by a reader rather than by the flow, so
-   assume there is a fifth and grep for the old number after every bump.**
-4. **`git commit` the bumped files.** This step was missing from the flow until
-   2026-08-13, when the AGY review lane found it: `git push` sends only what is
-   committed, so following the old list literally pushed and tagged the PRE-bump
-   commit while the new version numbers sat uncommitted in the working tree. It
-   was added to `HANDOFF.md` the same hour and NOT here, and the release panel
-   caught that too — one document is not both documents.
-5. **`node scripts/roadmap-gate.mjs`** — `2` means the published roadmap page is
-   behind `ROADMAP.md`. Then `node scripts/roadmap-render.mjs`, publish
-   `docs/roadmap.html`, and `--record <url>`. Before 2026-08-13 that
-   page had no source in this repository at all, so nothing could notice it had
-   rotted; it rotted, repeatedly. The gate never records for you.
-   **The renderer landed the same day and for a second reason: a gate raises the
-   alarm without lowering the cost.** Every published version of that page was
-   HTML written by hand, so "keep it current" meant remembering to dispatch an
-   agent at it — and the gate would have gone on reporting STALE at a flow that
-   still had no cheap way to answer it.
-6. Run `node --test`, `git diff --check`, and
-   `claude plugin validate --strict .` locally.
-   **Read the SKIP count, not only the fail count.** It should now be ZERO on
-   every platform: the four tests that skipped themselves on macOS
-   (`process.platform !== 'linux' || !existsSync('/usr/bin/bwrap')`) went with
-   the sandbox on 2026-08-24, and a non-zero skip count is a new one to
-   investigate rather than the familiar four. A skipped test is an UNEXECUTED
-   GUARD, not a passing one: those
-   four had never run on any machine until 2026-08-09, and three of them failed
-   the first time they did. `tests/acp-companion.test.mjs`
-   was long treated as a timing flake — "a different name each time, re-run it
-   alone and expect 120/120". **That clause was false**, and it let a real
-   failure be dismissed for an unknown number of releases: on a clean tree at
-   v0.13.1 `controller signal after exact load response fences the pre-receipt
-   barrier` failed alone, twice in a row. Cause: the cancellation ladder and
-   post-settlement descendant cleanup wrote the SAME control-log line, so a test
-   demanded a `grace` step in front of a sweep that has nothing to wait for.
-   Both now carry `(cancel)` / `(reap)`. Treat any failure there as OPEN —
-   never as noise. The clause survived because nothing ever compared it against
-   a run, which is the failure mode this repo exists to make impossible.
-   **It happened again, and worse.** From `f528168` (2026-07-27) to 2026-08-03
-   this file was 125/130 on macOS across three shipped releases, while HANDOFF
-   recorded a clean suite. `groupPids()` and `waitForGroupGone()` both began
-   `process.platform !== 'linux'` and answered "nobody else in the group" /
-   "the group is gone" WITHOUT LOOKING, so every descendant sweep was a no-op
-   here and a detached process outlived every cancellation. Two things hid it:
-   the suite is green on Linux, and the test asserted the receipt's wording
-   BEFORE `assertPidGone`, so a live orphan surfaced as a regex mismatch. Both
-   are fixed; the file is 130/130 and the suite 494/494 on this machine. Rules:
-   a test states the outcome before the words about it, and a platform branch
-   that cannot answer must say UNKNOWN, never "no".
-7. **A release goes out as a PULL REQUEST, never as a push to `main`** (Master,
-   2026-08-16). Branch, push the branch, `gh pr create`, and merge only after
-   BOTH gates answer: CI green, and the **codex bot review** (the
-   `chatgpt-codex-connector` reviewer that now runs automatically on every PR).
-   · **A comment from that bot is not a review.** On the first PR under this
-   rule it commented "You have reached your Codex usage limits for code
-   reviews" — an absent reviewer, which is neither a pass nor a failure. Treat
-   it exactly as this file already treats a missing panel lane: the release is
-   visibly blocked, no silent substitution, no reviewer-count degradation.
-   Check for a review STATE, not for the presence of any comment.
-   · When quota returns the bot does not re-review by itself. **Comment
-   `@codex review` on the PR** — measured 2026-08-16, it answers in about seven
-   seconds, so a same-turn poll settles whether quota is back rather than
-   leaving anyone to guess from silence. Pushing a commit re-triggers it too.
-   · Quota is per ACCOUNT, not per repository: this bot had reviewed PRs in
-   `iicmaster/artifact-sftp` and the limit it hit here was the same budget.
-   · **Only Master waives this gate, and a waiver that is not RECORDED is the
-   silent skip again** — the same rule this file already states for the panel
-   exemption, and the state v0.18.1 was left in. Waived on v0.31.0 because the
-   budget was spent and the release was not going to wait on it; the waiver is
-   a comment on the PR and a line in the release notes, naming what stood in
-   its place (CI green on the merged bytes, and the three-model panel 3/3 run
-   four times). Never waive it by merging and saying nothing.
-   · The three-model panel (step 2) is a SEPARATE obligation and neither gate
-   replaces the other: the panel reads the release diff, the bot reads the PR.
-   · After the merge: `claude plugin marketplace update tmux-teams` and
-   `claude plugin update tmux-teams@tmux-teams` (install cache is version-keyed).
-8. **Watch the CI run that push triggers, and do not tag a red one.**
-   `gh run list --limit 3` then `gh run view <id> --log-failed`. Added
-   2026-08-08 because it was missing and it cost two releases: CI had been
-   failing since before v0.16.0 and v0.17.0 shipped on it, while the local
-   suite read 793 pass / 0 fail against CI's 785 / 2. **The same command on the
-   same commit does not see the same thing** — CI runs Linux and a clean HOME,
-   and both failures lived in that gap (a test reading the author's
-   `~/.config/claude-profiles/`, and an `fs.watch` delivery assertion that holds
-   on macOS FSEvents and not on CI's filesystem). Local green is necessary and
-   is not sufficient.
-9. **Tag the MERGED commit, not the branch tip.** `git checkout main && git pull`,
-   confirm `main...origin/main` carries no `ahead`, and tag that sha — a merge or
-   squash produces a NEW commit, so tagging the branch head ships a sha that is
-   not what `main` holds. Then publish the GitHub release — `git tag vX.Y.Z && git push
-   origin vX.Y.Z`, then `gh release create vX.Y.Z --title vX.Y.Z --notes ...`
-   with notes written from the real `git log <prev-tag>..vX.Y.Z`. A version
-   number in three JSON files is not a release: this step was missing from the
-   flow until 2026-08-04, and by then THIRTY versions between v0.1.1 and
-   v0.14.4 had been "released" with no tag and no release page — the whole
-   history had to be backfilled from git in one sitting. Anyone installing from
-   the marketplace resolves a version-keyed cache, so an untagged release is a
-   number nobody else can fetch. Write the notes with a heredoc or `--notes-file`,
-   never `printf` — the backfill put a literal `%ad` into all 30 notes.
-10. **RETIRED — there is nothing to do in `~/agent-skills` any more** (owner
-   decision, 2026-08-30: "in the context of agent-skills there is no need to
-   reference a specific version"). Its `sync.sh` now fetches and checks out
-   the submodule's `origin/main` at run time and logs the sha it delivered, so
-   the recorded pin is informational and the bridge follows a release on its
-   own. The step is kept in the list, numbered, because the failure it used to
-   guard is worth remembering: the pin was hand-bumped after every release,
-   was forgotten at least once, and was one release stale on the day it was
-   retired. Codex and Claude plugin runtimes use version-keyed caches as
-   before.
-
-## Rules
-
-- Only release and plugin files are tracked: `.github/`, `.claude-plugin/`,
-  `.gitignore`, `plugins/`, `tests/`, `scripts/`, `README.md`, `CLAUDE.md`,
-  `ROADMAP.md`, `RELEASE-PLAN.md`, the `.published-*.json` markers (including
-  `.roadmap-published.json`), and `HANDOFF.md`. The marker is
-  tracked for the same reason the roadmap is: one that only its author's machine
-  can read makes the gate answer STALE forever for everybody else, which turns a
-  gate into noise. `HANDOFF.md` is the state of play between sessions — what shipped,
-  what is open, what was decided and must not be relitigated, and where the
-  disagreements were left. It is tracked so a fresh clone gets it too; a handoff
-  only one machine can read is a handoff to nobody.
-  BMAD scaffold dirs are gitignored — keep it that way. (`scripts/` was added
-  2026-07-29 for `run-fast.mjs`: the Commands section above documents it, so it
-  has to exist for anyone who clones this. Dev tooling only — nothing the
-  plugin ships.)
-- The marketplace on this machine is registered from GitHub
-  (`iicmaster/tmux-teams`) — a release is NOT live until pushed; after
-  pushing run `claude plugin marketplace update tmux-teams` then
-  `claude plugin update tmux-teams@tmux-teams`. Confirm with Master before
-  the push that ships a release.
-- **Push as `iicmaster`.** This machine has three GitHub accounts in `gh`
-  (`ngs-th`, `iicmaster`, `warawut-grit`) and the active one is often `ngs-th`,
-  which has READ access here — `git pull` works, `git push origin` returns 403.
-  `gh auth switch --user iicmaster` first. A second remote, `fork`
-  (`ngs-th/tmux-teams`), accepts a push from the wrong account, so an
-  unattended session can believe it shipped while `origin/main` never moved:
-  on 2026-08-03 three fixes sat in that fork until someone looked. Check
-  `git status -sb` says `main...origin/main` with no `ahead`, not just that a
-  push printed a hash. Never bump the submodule pin in `~/agent-skills` to a
-  sha that is only on the fork — that URL is `iicmaster`, and the pin would be
-  unresolvable for everyone else while looking fine locally.
-- `~/agent-skills` no longer carries standalone copies of the six it used to:
-  `tmux-teams`, `party-mode`, `party-auto`, `party-advise`, `sqthink`,
-  `codex-tmux-driver` — its `PLUGIN_DELIVERED` names exactly those, and the
-  plugin has bundled more since.
-  **`codex-tmux-driver` stopped being a skill in v0.35.0** — it is now
-  `skills/tmux-teams/references/codex-tmux.md`. That name is still correct in
-  the other repo's `PLUGIN_DELIVERED` list, which exists to PURGE stale copies,
-  and a name that no longer ships still needs purging. Do not remove it there.
-  Treat THIS repo as authoritative; its submodule pin feeds the OpenClaw
-  bridge, and must never be copied back from installed targets.
-- `~/.claude/skills` must NOT contain those same six (they were
-  deduplicated 2026-07-19; `agent-skills/scripts/sync.sh` purges them for the
-  tool roots). Restoring them by hand recreates double-triggering.
-- **An ACP dispatch that ends `no_outbox` may be recoverable — try resume
-  before re-dispatching.** `ACP_RESUME=<session-id>` plus a short "write what you
-  already have, do not redo the analysis" prompt costs a few hundred tokens
-  against a whole re-run, so it is worth trying first even though it is not
-  guaranteed: the one time it was tried here (2026-08-04) the load warned
-  `load receipt lacks requested prior lineage` and the agent answered
-  `I have nothing`. **Always include the "say I have nothing plainly if the
-  context is gone" clause** — that honest refusal is what made the failure
-  legible instead of producing a review reconstructed from the prompt. The id lives in the run cwd's `.tmux-teams/` (the
-  companion's persisted session file) and, for the codex lane, in
-  `~/.codex/sessions/<yyyy>/<mm>/<dd>/rollout-*-<session-id>.jsonl` — grep those
-  for a phrase from the brief to tell attempts apart.
-  **Never `rm -rf` an ACP run directory before recording the session id.** On
-  2026-08-04 a 200KB brief made the codex lane finish its turn and write nothing
-  twice; the directory was wiped before each retry, so three fresh runs were
-  paid for while a 456KB session holding the finished analysis sat on disk. It
-  took Master asking "we're on ACP, can't we resume?" to notice.
-  Brief size was the first suspect and it is **not** the cause: 203KB failed
-  twice and a 7KB brief failed the same way an hour later, while 52KB had
-  succeeded that morning. Whatever produces `no_outbox` on this lane is
-  unexplained — do not write a size rule into a skill on the strength of two
-  data points, which is what this paragraph said until the third arrived.
-- `acp-companion.mjs` honors `ACP_CMD="node <stub>.mjs"` — point it at a stub
-  ACP agent (answers initialize/session/new/session/prompt) for fast,
-  model-free tests of the outbox/timeout logic.
-- A demo or study page must IMPORT the shipping module, never paste a copy of
-  it. A pasted copy of the graph engine drifted within an hour, and it was the
-  page being read, so four fixes were reported against stale bytes.
-- Client code shipped as a JS template literal (`TOUR_SCRIPT`, `TOUR_CSS`,
-  `NAV_CSS`, and the stylesheet inside `graph.mjs`) may contain no backtick —
-  one in a comment closes the template and the module stops parsing a long way
-  from the cause. Eleven occurrences so far. `tests/plugin-structure.test.mjs`
-  now walks the whole shipped tree for this rather than naming strings by hand:
-  it `node --check`s every `.mjs` and refuses a backtick in any export whose
-  name ends in `CSS` or `SCRIPT`. Run `node --check` yourself before the suite
-  anyway — it names the file in a second.
-- A scripted edit (python `str.replace`) must `assert old in s` before writing.
-  A replace that finds nothing writes the file unchanged and says nothing; two
-  patches silently failed to apply that way on 2026-08-01.
-- **Two ways a mutation survives that are the TEST's fault, both hit within an
-  hour on 2026-08-09.** A test that ITERATES the constant it is validating
-  proves nothing — delete an entry and the loop simply stops testing it, so pin
-  the list literally as well. And a pure function tested in isolation says
-  nothing about its CONSUMER — delete the call site and every test still passes.
-  Check the wiring behaviourally; a source grep for the call is a tripwire, not
-  a test. Both misses were found by mutation and by nothing else.
-- **`ssh host 'cmd'` runs a NON-login shell, so `~/.local/bin` is absent from
-  PATH** and `command -v claude` answers MISSING for tools that are installed —
-  a whole survey was reported wrong that way. Use `ssh host 'bash -lc "…"'`, and
-  write anything with nested quotes to a file and `scp` it instead of escaping
-  it through zsh and bash in turn.
-- **`git bundle create /tmp/x.bundle main` then `scp` moves unpushed commits to
-  another machine without touching any remote** — the way to try work on a test
-  box while `origin` stays untouched.
-- **An ENOENT that names a SCRIPT means its shebang interpreter is missing**,
-  not the script. And on a mise/asdf machine `realpath $(command -v node)` is
-  the version-manager binary itself — it dispatches on `argv[0]`, so it is not
-  an interpreter. Use `process.execPath` whenever the real one is meant.
-- **Pick a review mechanism by what it can PROVE, and run them in that order.**
-  The built-in `advisor` sees this session's whole transcript, runs nothing, and
-  is the cheapest — use it before committing to an approach. A `codex-advisor`
-  ACP lane can EXECUTE: on 2026-08-16 it blocked an MCP change twice on bytes
-  the three-model panel had passed 3/3 with zero findings, reproducing a false
-  `ready: true` with one command. The panel reads a static packet and is
-  forbidden to call a tool, by design — what it proves is that three distinct
-  families read these bytes, which is the release RECORD, not a behavioural
-  check. So: advisor to shape, `codex-advisor` to attack while the code is still
-  cheap to change, panel last. Two panels were spent on this change before an
-  advisor read it, and both were wasted.
-- **A boot path is tested only by booting it.** `import.meta.url === \`file://${process.argv[1]}\``
-  is wrong twice over: `import.meta.url` is percent-encoded, so an install path
-  containing a space never matches, and Node's ESM loader resolves the module
-  URL through symlinks (`/var` → `/private/var` on macOS) while `argv[1]` keeps
-  the path as typed. Compare `realpathSync(fileURLToPath(import.meta.url))`
-  against `realpathSync(resolve(argv[1]))`, and spawn the script from a
-  directory whose name contains a space. Importing the module proves nothing
-  about the one line that decides whether it serves at all — and the second half
-  of this bug was found by the test written for the first half.
-- **"Non-empty" is not an acceptance criterion.** A diagnostic that answered a
-  failure with an empty list was "fixed" by emitting every generic sentence the
-  data allowed, and its test asserted only that something came back. That turned
-  an empty wrong answer into a non-empty wrong answer, which is worse: it sounds
-  specific and sends the reader to the wrong file. Assert the sentence that
-  names the thing that actually refused.

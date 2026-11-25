@@ -12,12 +12,7 @@
 > source, no publish script and nothing that could notice it had gone stale —
 > so it went stale, repeatedly, and nobody could tell without opening it.
 
-Current release: **0.55.0** — the version stamped in this tree, in flight on
-a pull request and not yet tagged.
-`main` carries **v0.50.0**, tagged at the
-MERGED sha `ad4db5f` (the v0.45.0 lesson stands: tag the merged sha, never
-the branch tip — tagging the wrong one ships a sha `main` does not hold).
-Anyone installing from the marketplace resolves the last TAG, not this line.
+Current release: **0.55.0**
 
 ## Where the phases stand
 
