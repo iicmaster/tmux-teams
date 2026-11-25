@@ -207,10 +207,16 @@ approval by the same model that wrote the code.
 
 Handle branch protection and existing worktrees cleanly:
 
-- If `<default-branch>` allows direct bump commits: after merge, refresh
-  `<default-branch>` with `git pull --ff-only <base-remote> <default-branch>`.
+- If `<default-branch>` allows direct bump commits: after merge, move onto the
+  merged `<default-branch>` before pulling and bumping:
+  - If `<default-branch>` is not checked out in any worktree per
+    `git worktree list`: in your clean release worktree, switch to
+    `<default-branch>` (`git checkout <default-branch>` or
+    `git switch <default-branch>`), then run
+    `git pull --ff-only <base-remote> <default-branch>`.
   - If `<default-branch>` is already checked out cleanly in another worktree per
-    `git worktree list`, pull and run the bump/tag in that worktree.
+    `git worktree list`, run `git pull --ff-only <base-remote> <default-branch>`
+    and the bump/tag in that worktree.
   - If `<default-branch>` is checked out with dirty/unrelated changes in another
     worktree, do NOT disturb that worktree; instead, in your clean release
     worktree run
@@ -219,10 +225,10 @@ Handle branch protection and existing worktrees cleanly:
     `git push <base-remote> HEAD:refs/heads/<default-branch>`.
 - If `<default-branch>` is protected against direct pushes: bump the version
   before merge on the release branch (Step 1), or open a dedicated version-bump
-  PR per the project's policy, then refresh `<default-branch>` with
-  `git pull --ff-only <base-remote> <default-branch>` (or detached
-  `<base-remote>/<default-branch>`) after merge. Never force-push or bypass
-  branch protection.
+  PR per the project's policy, then switch to `<default-branch>` (or detached
+  `<base-remote>/<default-branch>`) and refresh with
+  `git pull --ff-only <base-remote> <default-branch>` after merge. Never
+  force-push or bypass branch protection.
 
 Then:
 

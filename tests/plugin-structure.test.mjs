@@ -1157,8 +1157,12 @@ test('release skill is project-agnostic and preserves review/safety gates', () =
   // Load-bearing workflow, review, and safety gates (covering every I/O Matrix row).
   assert.match(releaseSkill, /git fetch\s+<base-remote>\s+--tags/,
     'release/SKILL.md preflight must fetch remote refs and tags from <base-remote>')
-  assert.match(releaseSkill, /<base-remote>[\s\S]*<push-remote>/,
-    'release/SKILL.md must distinguish <base-remote> and <push-remote> consistently')
+  assert.match(releaseSkill, /git push -u <push-remote> release\/<topic>/,
+    'release/SKILL.md must push the release branch to <push-remote>')
+  assert.match(releaseSkill, /git push <base-remote> "refs\/tags\/<tag>"/,
+    'release/SKILL.md must push the single release tag to <base-remote>')
+  assert.match(releaseSkill, /git checkout <default-branch>[\s\S]*git pull --ff-only <base-remote> <default-branch>/,
+    'release/SKILL.md must explicitly switch to <default-branch> before pulling in the single-worktree path')
   assert.match(releaseSkill, /git tag\s+--sort=-v:refname/,
     'release/SKILL.md must inspect latest git tags')
   assert.match(releaseSkill, /anchor on the latest tag/i,
