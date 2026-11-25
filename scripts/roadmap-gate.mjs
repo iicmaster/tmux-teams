@@ -32,8 +32,20 @@ export const MARKER_SCHEMA = 'tmux-teams.roadmap-published.v1'
 
 export const ROADMAP_EXIT = Object.freeze({ current: 0, failed: 1, stale: 2 })
 
-export function sourceDigest(bytes) {
-  return createHash('sha256').update(bytes).digest('hex')
+const ROADMAP_VERSION_LINE = /^Current release: \*\*\d+\.\d+\.\d+\*\*\r?$/m
+
+function normaliseSourceBytes(bytes, sourceName = ROADMAP_SOURCE) {
+  if (sourceName !== ROADMAP_SOURCE) return bytes
+  const text = Buffer.isBuffer(bytes) ? bytes.toString('utf8') : String(bytes)
+  if (!ROADMAP_VERSION_LINE.test(text)) return bytes
+  return Buffer.from(
+    text.replace(ROADMAP_VERSION_LINE, 'Current release: **<version>**'),
+    'utf8',
+  )
+}
+
+export function sourceDigest(bytes, sourceName = ROADMAP_SOURCE) {
+  return createHash('sha256').update(normaliseSourceBytes(bytes, sourceName)).digest('hex')
 }
 
 /**
@@ -41,7 +53,7 @@ export function sourceDigest(bytes) {
  * Returns `{ stale, reason }` — `reason` is null when the page is current.
  */
 export function classifyRoadmap(sourceBytes, marker, markerName = ROADMAP_MARKER, sourceName = ROADMAP_SOURCE) {
-  const digest = sourceDigest(sourceBytes)
+  const digest = sourceDigest(sourceBytes, sourceName)
   if (marker === null || marker === undefined) {
     return { stale: true, digest, reason: `no ${markerName}: the page has never been recorded as published` }
   }
@@ -131,7 +143,7 @@ export function runRoadmapGateCli(argv = [], {
     }
     const marker = {
       schema: MARKER_SCHEMA,
-      source_sha256: sourceDigest(bytes),
+      source_sha256: sourceDigest(bytes, source),
       url,
       published_at: now(),
     }

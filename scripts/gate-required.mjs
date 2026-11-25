@@ -38,7 +38,7 @@ export const REPO_ROOT = resolve(HERE, '..')
 // they can change. `docs/` is deliberately absent: it is untracked in this
 // repo (see CLAUDE.md Rules), so it can never appear in a release diff, and
 // listing it would be a guard against something that cannot happen.
-export const DOC_ONLY = new Set(['HANDOFF.md', 'README.md', 'CLAUDE.md'])
+export const DOC_ONLY = new Set(['HANDOFF.md', 'README.md', 'CLAUDE.md', 'CASEBOOK.md'])
 
 // Release semver only — no pre-release suffix. A `-rc1` therefore does NOT
 // blank to the same text as the release it replaces, `sameLines` disagrees, and

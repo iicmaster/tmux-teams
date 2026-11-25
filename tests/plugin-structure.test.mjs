@@ -4,7 +4,7 @@
 // with semantic anchors instead of brittle prose regexes.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, readdirSync, statSync, lstatSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync, lstatSync, readlinkSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
@@ -428,6 +428,7 @@ test('no hardcoded home paths in release-facing files', () => {
     'plugins/tmux-teams/commands/mailbox-run.md',
     'README.md',
     'CLAUDE.md',
+    'CASEBOOK.md',
   ]) {
     assert.doesNotMatch(readText(join(ROOT, p)), /\/(?:home|Users)\/[^/\s]+/,
       `${p}: hardcoded absolute home path`)
@@ -436,9 +437,15 @@ test('no hardcoded home paths in release-facing files', () => {
 
 test('tracked-files policy includes release CI and repository instructions', () => {
   const policy = readText(join(ROOT, 'CLAUDE.md'))
-  for (const tracked of ['`.github/`', '`.claude-plugin/`', '`.gitignore`', '`plugins/`', '`tests/`', '`README.md`', '`CLAUDE.md`', '`ROADMAP.md`']) {
+  for (const tracked of ['`.github/`', '`.claude-plugin/`', '`.gitignore`', '`plugins/`', '`tests/`', '`README.md`', '`CLAUDE.md`', '`AGENTS.md`', '`CASEBOOK.md`', '`ROADMAP.md`']) {
     assert.ok(policy.includes(tracked), `tracked-files policy missing ${tracked}`)
   }
+})
+
+test('AGENTS.md is a relative symlink to CLAUDE.md', () => {
+  const link = join(ROOT, 'AGENTS.md')
+  assert.equal(lstatSync(link).isSymbolicLink(), true, 'AGENTS.md must remain a symlink to CLAUDE.md')
+  assert.equal(readlinkSync(link), 'CLAUDE.md', 'AGENTS.md must be a relative symlink to CLAUDE.md')
 })
 
 test('release docs describe the canonical submodule topology without stale install claims', () => {
@@ -1016,7 +1023,7 @@ test('the tracked top-level entries are exactly the ones this repository declare
     '.claude-plugin', '.github', '.gitignore', 'agent-plugins',
     '.published-RELEASE-PLAN.json', '.published-event-subscriptions.json',
     '.roadmap-published.json',
-    'CLAUDE.md', 'HANDOFF.md', 'README.md', 'RELEASE-PLAN.md', 'ROADMAP.md',
+    'AGENTS.md', 'CASEBOOK.md', 'CLAUDE.md', 'HANDOFF.md', 'README.md', 'RELEASE-PLAN.md', 'ROADMAP.md',
     'plugins', 'scripts', 'tests',
   ].sort()
   const unexpected = actual.filter((e) => !allowed.includes(e))
