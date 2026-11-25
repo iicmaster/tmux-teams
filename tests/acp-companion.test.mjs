@@ -3274,6 +3274,164 @@ concurrentTest('receipt validation rejects succeeded agy receipts lacking matche
   }
 })
 
+function writeAgyConfigRefreshStub(cwd, taskId, {
+  includeModelOptionInNew = true,
+  updates = [],
+  protocolLogPath,
+} = {}) {
+  const stubPath = join(cwd, 'agy-config-refresh-stub.mjs')
+  const outboxPath = join(cwd, '.mailbox-out', taskId)
+  const source = `
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
+import { createInterface } from 'node:readline'
+
+const INCLUDE_MODEL_IN_NEW = ${JSON.stringify(includeModelOptionInNew)}
+const UPDATES = ${JSON.stringify(updates)}
+const LOG_PATH = ${JSON.stringify(protocolLogPath)}
+const OUTBOX_PATH = ${JSON.stringify(outboxPath)}
+const SESSION_ID = 'sess_agy_refresh'
+
+const send = (msg) => process.stdout.write(JSON.stringify(msg) + '\\n')
+const log = (method) => { if (LOG_PATH) appendFileSync(LOG_PATH, method + '\\n') }
+let currentModel = 'gemini-4-neon-high'
+let latestModelOptions = INCLUDE_MODEL_IN_NEW
+  ? [{ value: 'gemini-4-neon-high', name: 'Gemini 4 Neon (High)' }]
+  : []
+const modeOption = {
+  id: 'mode', name: 'Mode', type: 'select', currentValue: 'default',
+  options: [{ value: 'default', name: 'Standard' }],
+}
+const buildConfigOptions = (modelOptions) => [
+  ...(modelOptions.length ? [{
+    id: 'model', name: 'Model', type: 'select', currentValue: currentModel, options: modelOptions,
+  }] : []),
+  modeOption,
+]
+
+const timers = []
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity })
+rl.on('line', (line) => {
+  if (!line.trim()) return
+  const msg = JSON.parse(line)
+  log(msg.method)
+  if (msg.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: 1, agentCapabilities: {}, agentInfo: { name: 'stub-agy', version: '1.0.0' } } })
+  } else if (msg.method === 'session/new') {
+    send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: SESSION_ID, configOptions: buildConfigOptions(latestModelOptions) } })
+    for (const item of UPDATES) {
+      const t = setTimeout(() => {
+        latestModelOptions = item.options.map((v) => ({ value: v, name: v }))
+        send({
+          jsonrpc: '2.0',
+          method: 'session/update',
+          params: {
+            sessionId: SESSION_ID,
+            update: { sessionUpdate: 'config_option_update', configOptions: buildConfigOptions(latestModelOptions) },
+          },
+        })
+      }, item.delayMs)
+      timers.push(t)
+    }
+  } else if (msg.method === 'session/set_config_option') {
+    if (msg.params?.configId === 'model') currentModel = msg.params.value
+    send({ jsonrpc: '2.0', id: msg.id, result: { configOptions: buildConfigOptions(latestModelOptions) } })
+  } else if (msg.method === 'session/prompt') {
+    mkdirSync(dirname(OUTBOX_PATH), { recursive: true })
+    writeFileSync(OUTBOX_PATH, 'advice body\\nTEAM_DONE ' + ${JSON.stringify(taskId)} + '\\n')
+    send({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } })
+    for (const t of timers) clearTimeout(t)
+  }
+})
+rl.on('close', () => { for (const t of timers) clearTimeout(t) })
+`
+  writeFileSync(stubPath, source, 'utf8')
+  return stubPath
+}
+
+concurrentTest('agy waits past stale config_option_update until refreshed catalog advertises requested carbon seat', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-agy-refresh-stale-'))
+  const taskId = 'task-agy-refresh-stale'
+  const protocolLog = join(cwd, 'protocol.log')
+  const stubPath = writeAgyConfigRefreshStub(cwd, taskId, {
+    includeModelOptionInNew: true,
+    updates: [
+      { delayMs: 20, options: ['gemini-4-neon-high', 'gemini-4-hydrogen-high'] },
+      { delayMs: 60, options: ['gemini-4-neon-high', 'gemini-4-carbon-high'] },
+    ],
+    protocolLogPath: protocolLog,
+  })
+  const r = await asyncRun(taskId, {
+    ACP_CMD: `${NODE_EXECUTABLE} ${stubPath}`,
+    ACP_MODEL: 'gemini-4-carbon-high',
+    ACP_EXPECT_MODEL: 'gemini-4-carbon-high',
+    ACP_TEST_CONFIG_OPTION_REFRESH_TIMEOUT_MS: '2000',
+  }, cwd, 30, 'agy')
+  assert.equal(r.status, 0, `expected exit 0 after config_option_update refresh; stderr:\n${r.stderr}`)
+  const committed = receipt(cwd)
+  assert.equal(committed.value.requested_model, 'gemini-4-carbon-high')
+  assert.equal(committed.value.effective_identity, 'gemini-4-carbon-high')
+  assert.equal(committed.value.identity_status, 'matched')
+  assert.deepEqual(
+    readFileSync(protocolLog, 'utf8').trim().split('\n'),
+    ['initialize', 'session/new', 'session/set_config_option', 'session/prompt'],
+  )
+})
+
+concurrentTest('agy waits when session/new omits model option (cold cache) until config_option_update supplies it', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-agy-refresh-cold-'))
+  const taskId = 'task-agy-refresh-cold'
+  const protocolLog = join(cwd, 'protocol.log')
+  const stubPath = writeAgyConfigRefreshStub(cwd, taskId, {
+    includeModelOptionInNew: false,
+    updates: [
+      { delayMs: 40, options: ['gemini-4-neon-high', 'gemini-4-carbon-high'] },
+    ],
+    protocolLogPath: protocolLog,
+  })
+  const r = await asyncRun(taskId, {
+    ACP_CMD: `${NODE_EXECUTABLE} ${stubPath}`,
+    ACP_MODEL: 'gemini-4-carbon-high',
+    ACP_EXPECT_MODEL: 'gemini-4-carbon-high',
+    ACP_TEST_CONFIG_OPTION_REFRESH_TIMEOUT_MS: '2000',
+  }, cwd, 30, 'agy')
+  assert.equal(r.status, 0, `expected exit 0 after cold-cache config_option_update; stderr:\n${r.stderr}`)
+  const committed = receipt(cwd)
+  assert.equal(committed.value.requested_model, 'gemini-4-carbon-high')
+  assert.equal(committed.value.effective_identity, 'gemini-4-carbon-high')
+  assert.equal(committed.value.identity_status, 'matched')
+  assert.deepEqual(
+    readFileSync(protocolLog, 'utf8').trim().split('\n'),
+    ['initialize', 'session/new', 'session/set_config_option', 'session/prompt'],
+  )
+})
+
+concurrentTest('agy still fails closed at config-option-invalid when refreshed catalog never advertises requested model', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-companion-agy-refresh-missing-'))
+  const taskId = 'task-agy-refresh-missing'
+  const protocolLog = join(cwd, 'protocol.log')
+  const stubPath = writeAgyConfigRefreshStub(cwd, taskId, {
+    includeModelOptionInNew: true,
+    updates: [
+      { delayMs: 20, options: ['gemini-4-neon-high', 'gemini-4-hydrogen-high'] },
+    ],
+    protocolLogPath: protocolLog,
+  })
+  const r = await asyncRun(taskId, {
+    ACP_CMD: `${NODE_EXECUTABLE} ${stubPath}`,
+    ACP_MODEL: 'gemini-4-carbon-high',
+    ACP_EXPECT_MODEL: 'gemini-4-carbon-high',
+    ACP_TEST_CONFIG_OPTION_REFRESH_TIMEOUT_MS: '150',
+  }, cwd, 30, 'agy')
+  assert.notEqual(r.status, 0, 'unadvertised model after refresh timeout must fail closed')
+  assert.match(r.stderr, /rejected unsupported model value gemini-4-carbon-high/)
+  assert.equal(snapshot(cwd, taskId).termination_reason, 'config-option-invalid')
+  assert.deepEqual(
+    readFileSync(protocolLog, 'utf8').trim().split('\n'),
+    ['initialize', 'session/new'],
+  )
+})
+
 test('independent companion cases', { concurrency: 4 }, async (t) => {
   const settled = await Promise.allSettled(CONCURRENT_TEST_CASES.map(({ name, fn }) => t.test(name, fn)))
   const failure = settled.find((result) => result.status === 'rejected')

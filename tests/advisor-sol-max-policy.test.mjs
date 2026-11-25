@@ -47,6 +47,7 @@ test('agy-advisor documents the Neon orchestrator default and Neon / Carbon / Ar
   assert.match(agySkill, /\$agy-advisor high\s+# gemini-4-carbon-high/);
   assert.match(agySkill, /\$agy-advisor medium\s+# gemini-4-carbon-medium/);
   assert.match(agySkill, /\$agy-advisor low\s+# gemini-4-carbon-low/);
+  assert.match(agySkill, /\$agy-advisor carbon\s+# gemini-4-carbon-high/);
   assert.match(agySkill, /\$agy-advisor carbon-high\s+# gemini-4-carbon-high/);
   assert.match(agySkill, /\$agy-advisor carbon-medium\s+# gemini-4-carbon-medium/);
   assert.match(agySkill, /\$agy-advisor carbon-low\s+# gemini-4-carbon-low/);

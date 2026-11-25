@@ -72,6 +72,18 @@ five new ones are `gemini-4-neon-{high,xhigh,medium,low}` and
 `gemini-pro-orchestrator-neon`, the default seat. `agy models` prints the same
 27 ids, which is the list `default thinker` reads.
 
+Measured 2026-11-23 against `agy` 1.5.14 and `antigravity-acp@1.2.0`: the
+adapter loads `~/.agy-acp/models.json` synchronously at startup and spawns
+`agy models` asynchronously (~5s), pushing fresh options in a `session/update`
+(`config_option_update`) notification. When a requested seat (such as
+`gemini-4-carbon-high`) is missing from a stale or cold cache on `session/new`,
+`acp-companion.mjs` waits up to 12s for `config_option_update` to advertise it
+before running `session/set_config_option`, and still fails closed at
+`config-option-invalid` if the refreshed catalog does not carry it.
+Antigravity's advertised model list is also per-account, so if
+`config-option-invalid` still fires after the 12s refresh wait, run `agy models`
+to verify the active account provisions that seat.
+
 ## What differs from the Codex seat
 
 **No reasoning-effort knob.** `codex-advisor` locks `ACP_REASONING_EFFORT=ultra`
@@ -188,6 +200,7 @@ $agy-advisor neon-low            # gemini-4-neon-low
 $agy-advisor high                # gemini-4-carbon-high
 $agy-advisor medium              # gemini-4-carbon-medium
 $agy-advisor low                 # gemini-4-carbon-low
+$agy-advisor carbon              # gemini-4-carbon-high
 $agy-advisor carbon-high         # gemini-4-carbon-high
 $agy-advisor carbon-medium       # gemini-4-carbon-medium
 $agy-advisor carbon-low          # gemini-4-carbon-low
