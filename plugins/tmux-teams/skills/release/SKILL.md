@@ -19,19 +19,25 @@ Run steps in order; stop at any gate that fails and report the blocker.
 ## 0. Preflight — facts before action
 
 1. Refresh remote state and inspect repository, worktrees, and host readiness:
-   - Fetch remote refs and tags first (`git fetch origin --tags`, or the repo's
-     configured upstream remote such as `upstream` when working from a fork).
-     If `refs/remotes/origin/HEAD` is unset, run `git remote set-head origin -a`
-     before reading the default branch.
+   - Identify `<base-remote>` (the canonical repository remote, typically `origin`,
+     or `upstream` in a fork workflow) and `<push-remote>` (typically `origin` —
+     your fork in a fork workflow, or the same as `<base-remote>` when pushing
+     directly). Use `<base-remote>` consistently for base refs, tags, diffs,
+     post-merge pulls, and release tagging, and `<push-remote>` for pushing the
+     `release/<topic>` branch.
+   - Fetch remote refs and tags first (`git fetch <base-remote> --tags`).
+     If `refs/remotes/<base-remote>/HEAD` is unset, run
+     `git remote set-head <base-remote> -a` before reading the default branch.
    - Run `git status --short`, `git branch --show-current`, `git worktree list`,
      and `git tag --sort=-v:refname | head`.
    - Detect the repository's default branch dynamically rather than assuming
      `main`:
      ```bash
-     DEFAULT_BRANCH="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
+     DEFAULT_BRANCH="$(git symbolic-ref --short "refs/remotes/${BASE_REMOTE}/HEAD" 2>/dev/null | sed "s|^${BASE_REMOTE}/||")"
      ```
-     If `refs/remotes/origin/HEAD` is still unset, inspect `git remote show origin`
-     or ask the user before creating a branch or opening a PR.
+     If `refs/remotes/<base-remote>/HEAD` is still unset, inspect
+     `git remote show <base-remote>` or ask the user before creating a branch
+     or opening a PR.
    - Verify host CLI/auth readiness without hardcoding any account or profile
      (e.g. `gh auth status` for GitHub, or the repo's GitLab/Gitea/Bitbucket
      CLI and remote workflow). Ask the user if credentials or remote selection
@@ -39,8 +45,8 @@ Run steps in order; stop at any gate that fails and report the blocker.
    - Check `git worktree list` before switching branches or creating a release
      branch: if `<default-branch>` is already checked out in another worktree, or
      the current worktree is dirty or on an unrelated/stale branch, create a
-     clean worktree from `origin/<default-branch>` (e.g.
-     `git worktree add -b release/<topic> /tmp/<release-worktree> origin/<default-branch>`)
+     clean worktree from `<base-remote>/<default-branch>` (e.g.
+     `git worktree add -b release/<topic> /tmp/<release-worktree> <base-remote>/<default-branch>`)
      rather than branching from a dirty tree or disturbing the other worktree.
 2. Discover project conventions, version locations, and gates dynamically:
    - Read the project's own documentation and release policy first (such as
@@ -71,9 +77,9 @@ Run steps in order; stop at any gate that fails and report the blocker.
 
 ## 1. Branch and commit
 
-- From `origin/<default-branch>` (or a clean worktree branched from
-  `origin/<default-branch>` when the current worktree is dirty or on another
-  branch), create `release/<topic>`. Never commit from detached HEAD.
+- From `<base-remote>/<default-branch>` (or a clean worktree branched from
+  `<base-remote>/<default-branch>` when the current worktree is dirty or on
+  another branch), create `release/<topic>`. Never commit from detached HEAD.
 - If `<default-branch>` is protected against direct pushes and repo policy puts
   the version bump inside the release PR, apply the version bump (Step 5.1)
   now before committing so the bumped files go through Step 3 review and Step 4
@@ -91,9 +97,12 @@ Run steps in order; stop at any gate that fails and report the blocker.
 
 - Invoking `/release` authorizes pushing the release branch and opening the PR;
   never auto-push outside an invoked release.
-- `git push -u origin release/<topic>` (using the user's configured remote and
-  credentials; never hardcode an account or profile).
-- Open a PR targeting `<default-branch>` (e.g. via `gh pr create --base <default-branch> --head release/<topic> --title "Release <tag>: <topic>" --body "..."` or the host CLI equivalent).
+- `git push -u <push-remote> release/<topic>` (using the user's configured
+  remote and credentials; never hardcode an account or profile).
+- Open a PR targeting `<default-branch>` on `<base-remote>` (e.g. via
+  `gh pr create --base <default-branch> --head release/<topic> --title "Release <tag>: <topic>" --body "..."`,
+  using `--head <push-owner>:release/<topic>` in a fork workflow, or the host
+  CLI equivalent).
 - The body carries: summary, test plan (actual commands and results), and a
   note that review is requested from `codex-advisor[luna]`.
 
@@ -107,15 +116,16 @@ The review is a read-only ACP round-table through the `codex-advisor` skill
 (`../codex-advisor/SKILL.md`), NOT a host-agent review and NOT a second PR
 approval by the same model that wrote the code.
 
-1. Generate the diff locally using three-dot merge-base syntax rather than
-   relying on remote PR diff caches (which can lag behind a push) or two-dot
-   diffs (which include unrelated commits on `<default-branch>`):
+1. Generate the diff locally using three-dot merge-base syntax against
+   `<base-remote>/<default-branch>` rather than relying on remote PR diff caches
+   (which can lag behind a push) or two-dot diffs (which include unrelated
+   commits on `<default-branch>`):
    ```bash
-   git diff origin/<default-branch>...HEAD > /tmp/pr-<topic>.diff
-   git diff --check origin/<default-branch>...HEAD
+   git diff <base-remote>/<default-branch>...HEAD > /tmp/pr-<topic>.diff
+   git diff --check <base-remote>/<default-branch>...HEAD
    ```
-   (Or resolve `BASE_SHA="$(git merge-base origin/<default-branch> HEAD)"` and
-   diff `"$BASE_SHA"..HEAD`.)
+   (Or resolve `BASE_SHA="$(git merge-base <base-remote>/<default-branch> HEAD)"`
+   and diff `"$BASE_SHA"..HEAD`.)
 2. Isolate dispatcher artifacts and write the brief:
    - `acp-dispatch.mjs` writes `.tmux-teams/` and `.mailbox-out/<task-id>` under
      `<cwd>`, which arbitrary repositories do not `.gitignore`. Pass a scratch
@@ -126,15 +136,18 @@ approval by the same model that wrote the code.
    - Write a brief containing: objective, `<base>..HEAD` commits, change
      summary, verification results, the explicit outbox destination
      `.mailbox-out/<task-id>` (matching `<task-id>` passed to
-     `acp-dispatch.mjs`), a "no tools — every byte is here" rule, the
+     `acp-dispatch.mjs`, noting that writing `.mailbox-out/<task-id>` is
+     required while repo edits remain forbidden), a "every byte of the diff is
+     inlined here — do not inspect files or run repo commands" rule, the
      round-table mandate (3-5 named voices, real disagreement, no forced
      consensus), and an explicit review output format requiring: verdict
      (`PASS` / `CHANGES_REQUESTED` / `BLOCKED`), per-voice bottom lines, and
      findings with severity and `file:line` references.
-   - INLINE the full diff into the brief — the lane has zero tools and cannot
-     open file paths. For oversized diffs, exclude lockfile/generated/binary
-     noise (documenting exclusions in the brief) or split packets by meaning
-     across separate review runs; never silently truncate.
+   - INLINE the full diff into the brief — the lane cannot inspect repo files
+     not included in the brief. For oversized diffs, exclude
+     lockfile/generated/binary noise (documenting exclusions in the brief) or
+     split packets by meaning across separate review runs; never silently
+     truncate.
 3. Dispatch, selecting and verifying the seat in one step (`<plugin-root>` is
    `$CLAUDE_PLUGIN_ROOT` or the installed plugin directory):
 
@@ -177,9 +190,10 @@ approval by the same model that wrote the code.
    `effective_identity` and `identity_status`.
 7. Apply must-fix findings (two-or-more matching voices, or any blocking
    finding) with a new commit on `release/<topic>`, re-run the project's
-   verification checks and `git diff --check`, push the fix commits to the PR
-   branch, and re-run Step 3 on the new `git diff origin/<default-branch>...HEAD`.
-   A `BLOCKED` verdict stops the release outright.
+   verification checks and `git diff --check`, push the fix commits to
+   `<push-remote>`, and re-run Step 3 on the new
+   `git diff <base-remote>/<default-branch>...HEAD`. A `BLOCKED` verdict stops
+   the release outright.
 
 ## 4. Merge
 
@@ -194,18 +208,21 @@ approval by the same model that wrote the code.
 Handle branch protection and existing worktrees cleanly:
 
 - If `<default-branch>` allows direct bump commits: after merge, refresh
-  `<default-branch>` with `git pull --ff-only origin <default-branch>`.
+  `<default-branch>` with `git pull --ff-only <base-remote> <default-branch>`.
   - If `<default-branch>` is already checked out cleanly in another worktree per
     `git worktree list`, pull and run the bump/tag in that worktree.
   - If `<default-branch>` is checked out with dirty/unrelated changes in another
     worktree, do NOT disturb that worktree; instead, in your clean release
-    worktree run `git fetch origin --tags && git checkout --detach origin/<default-branch>`,
-    commit the bump, and push with `git push origin HEAD:refs/heads/<default-branch>`.
+    worktree run
+    `git fetch <base-remote> --tags && git checkout --detach <base-remote>/<default-branch>`,
+    commit the bump, and push with
+    `git push <base-remote> HEAD:refs/heads/<default-branch>`.
 - If `<default-branch>` is protected against direct pushes: bump the version
   before merge on the release branch (Step 1), or open a dedicated version-bump
   PR per the project's policy, then refresh `<default-branch>` with
-  `git pull --ff-only origin <default-branch>` (or detached `origin/<default-branch>`)
-  after merge. Never force-push or bypass branch protection.
+  `git pull --ff-only <base-remote> <default-branch>` (or detached
+  `<base-remote>/<default-branch>`) after merge. Never force-push or bypass
+  branch protection.
 
 Then:
 
@@ -217,16 +234,20 @@ Then:
    dependency constraints are not overwritten. Re-run the project's verification
    suite plus `git diff --check`.
 2. If you made a post-merge bump commit (e.g. `chore(release): <tag>`), push
-   it to `<default-branch>` (`git push origin <default-branch>`, or
-   `git push origin HEAD:refs/heads/<default-branch>` when on detached HEAD).
-3. Tag the merged commit on `<default-branch>` (matching the repo's tag
-   convention, e.g. `vX.Y.Z`, and never tagging an unmerged branch tip):
+   it to `<base-remote>` (`git push <base-remote> <default-branch>`, or
+   `git push <base-remote> HEAD:refs/heads/<default-branch>` when on detached
+   HEAD).
+3. Tag the final release commit on `<default-branch>` — i.e., the post-bump
+   release commit (`HEAD` of `<default-branch>` after Step 5.2's bump commit, or
+   the merged commit if the version bump already landed in the PR before merge),
+   matching the repo's tag convention (e.g. `vX.Y.Z`) and never tagging an
+   unmerged or pre-bump commit:
    ```bash
    git tag -a <tag> -m "<tag>"
-   git push origin "refs/tags/<tag>"
+   git push <base-remote> "refs/tags/<tag>"
    ```
-   Push ONLY the release tag with `refs/tags/<tag>` rather than a blanket
-   tag push.
+   Push ONLY the release tag to `<base-remote>` with `refs/tags/<tag>` rather
+   than a blanket tag push.
 4. Create and publish the release if the repo uses GitHub Releases:
    `gh release create <tag> --generate-notes --title "<tag>"` (add
    `--verify-tag` only when tag protection requires it; pass `--draft` or
@@ -251,14 +272,15 @@ When the project's docs or the user requests a post-release publish or sync
 
 ## Failure modes
 
-- Skipping `git fetch` or hardcoding `main` instead of detecting `<default-branch>` → stale tags, wrong base branch, or broken PR/diff range.
+- Skipping `git fetch` or mixing up `<base-remote>` vs `<push-remote>` or hardcoding `main` → stale tags, fork base mismatch, or wrong push target.
 - Reading version only from files instead of the latest git tag → wrong release number.
 - Sweeping unrelated staged or dirty worktree files into the release commit → violates change boundaries.
-- Running a two-dot diff (`origin/<default-branch>..HEAD`) or stale remote PR diff → unrelated `<default-branch>` commits or cached diff reviewed instead of `git diff origin/<default-branch>...HEAD`.
+- Running a two-dot diff (`<base-remote>/<default-branch>..HEAD`) or stale remote PR diff → unrelated `<default-branch>` commits or cached diff reviewed instead of `git diff <base-remote>/<default-branch>...HEAD`.
 - Leaving untracked `.tmux-teams/` or `.mailbox-out/` inside the repo without isolation or `.git/info/exclude` → dispatcher artifacts leak into release commits.
 - Omitting `.mailbox-out/<task-id>` in the brief or resuming under a new `<task-id>` → `no_outbox` even when analysis completed.
 - Posting "reviewed" without a matched `gpt-6-luna[max]` receipt → attestation, not review.
 - Merging before the luna outbox is written, or auto-pushing/auto-merging/auto-tagging outside an invoked release → review theater or unauthorized release.
+- Tagging a pre-bump commit instead of the post-bump release commit on `<default-branch>` → release tag points to the old version.
 - Pushing blanket `--tags` instead of `refs/tags/<tag>` → accidentally publishes unrelated local tags.
 - Running blind `git grep` replacements without inspecting matches → overwrites historical changelog entries or dependency version constraints.
 - Force-pushing or bypassing branch protection when `<default-branch>` forbids direct pushes.

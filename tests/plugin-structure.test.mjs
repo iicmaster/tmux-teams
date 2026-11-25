@@ -1145,7 +1145,7 @@ test('release skill is project-agnostic and preserves review/safety gates', () =
     /\bMaster\b/,
     /v0\.51\.0/,
     /\bgh pr diff\b/,
-    /git diff[^\n]*origin\/<default-branch>\.\.HEAD/,
+    /git diff[^\n]*(?:origin|<base-remote>)\/<default-branch>\.\.HEAD/,
     /git push[^\n]*--tags/,
     /gh release create[^\n]*--verify(?:\s|$)/,
     /\/(?:home|Users)\/[^/\s]+/,
@@ -1155,8 +1155,10 @@ test('release skill is project-agnostic and preserves review/safety gates', () =
   }
 
   // Load-bearing workflow, review, and safety gates (covering every I/O Matrix row).
-  assert.match(releaseSkill, /git fetch/,
-    'release/SKILL.md preflight must fetch remote refs and tags before inspecting state')
+  assert.match(releaseSkill, /git fetch\s+<base-remote>\s+--tags/,
+    'release/SKILL.md preflight must fetch remote refs and tags from <base-remote>')
+  assert.match(releaseSkill, /<base-remote>[\s\S]*<push-remote>/,
+    'release/SKILL.md must distinguish <base-remote> and <push-remote> consistently')
   assert.match(releaseSkill, /git tag\s+--sort=-v:refname/,
     'release/SKILL.md must inspect latest git tags')
   assert.match(releaseSkill, /anchor on the latest tag/i,
@@ -1167,10 +1169,10 @@ test('release skill is project-agnostic and preserves review/safety gates', () =
     'release/SKILL.md must keep git worktree list preflight')
   assert.match(releaseSkill, /never sweep unrelated files/i,
     'release/SKILL.md must forbid sweeping unrelated files into a release commit')
-  assert.match(releaseSkill, /git symbolic-ref(?:\s+--short)?\s+refs\/remotes\/origin\/HEAD/,
-    'release/SKILL.md must detect the default branch dynamically via refs/remotes/origin/HEAD')
-  assert.match(releaseSkill, /git diff\s+[^\n]*\.\.\.HEAD/,
-    'release/SKILL.md must generate the review diff locally via three-dot git diff ...HEAD')
+  assert.match(releaseSkill, /refs\/remotes\/\$\{?BASE_REMOTE\}?\/HEAD|refs\/remotes\/<base-remote>\/HEAD/,
+    'release/SKILL.md must detect the default branch dynamically via refs/remotes/<base-remote>/HEAD')
+  assert.match(releaseSkill, /git diff\s+<base-remote>\/<default-branch>\.\.\.HEAD/,
+    'release/SKILL.md must generate the review diff locally via three-dot <base-remote>/<default-branch>...HEAD')
   assert.match(releaseSkill, /\.git\/info\/exclude/,
     'release/SKILL.md must isolate .tmux-teams/ and .mailbox-out/ via scratch cwd or .git/info/exclude')
   assert.match(releaseSkill, /\.mailbox-out\/<task-id>/,
@@ -1187,8 +1189,8 @@ test('release skill is project-agnostic and preserves review/safety gates', () =
     'release/SKILL.md must account for branch protection on the default branch')
   assert.match(releaseSkill, /Never\s+force-push\s+or\s+bypass\s+branch\s+protection/i,
     'release/SKILL.md must forbid force-pushing or bypassing branch protection')
-  assert.match(releaseSkill, /refs\/tags\//,
-    'release/SKILL.md must push only the single release tag via refs/tags/<tag>')
+  assert.match(releaseSkill, /Tag the final release commit on `?<default-branch>`?[\s\S]*post-bump\s+release commit[\s\S]*refs\/tags\//,
+    'release/SKILL.md must explicitly tag the post-bump release commit on <default-branch> and push refs/tags/<tag>')
   assert.match(releaseSkill, /--verify-tag/,
     'release/SKILL.md must use --verify-tag (never invalid --verify) for protected tag releases')
   assert.match(releaseSkill, /^##\s*6\..*optional/im,
