@@ -1109,3 +1109,110 @@ test('the materialised portable root is self-contained and byte-identical to wha
     rmSync(out, { recursive: true, force: true })
   }
 })
+
+test('release skill is project-agnostic and preserves review/safety gates', () => {
+  const releaseSkill = readText(join(PLUGIN, 'skills', 'release', 'SKILL.md'))
+  const readme = readText(join(ROOT, 'README.md'))
+
+  // Frontmatter keeps `name: release` and stays project-agnostic.
+  const fm = releaseSkill.match(/^---\n([\s\S]*?)\n---/)
+  assert.ok(fm, 'release/SKILL.md missing frontmatter')
+  assert.match(fm[1], /^name:\s*release$/m, 'release/SKILL.md must keep name: release')
+
+  // Strip the single allowed plugin script path and dispatcher runtime state
+  // directory (`.tmux-teams/`) before checking that `tmux-teams` never leaks
+  // back in as a target project.
+  const withoutPluginArtifacts = releaseSkill
+    .replaceAll('<plugin-root>/skills/tmux-teams/scripts/acp-dispatch.mjs', '<plugin-dispatch-script>')
+    .replaceAll('.tmux-teams/', '<dispatch-state-dir>/')
+  assert.doesNotMatch(withoutPluginArtifacts, /tmux-teams/i,
+    'release/SKILL.md must not hardcode tmux-teams as a target project')
+
+  for (const forbidden of [
+    /plugins\/tmux-teams\//,
+    /\.claude-plugin\/marketplace\.json/,
+    /ROADMAP\.md/,
+    /tests\/plugin-structure\.test\.mjs/,
+    /RELEASE_VERSION/,
+    /\.zcode\b/,
+    /\bMaster\b/,
+    /v0\.51\.0/,
+    /\bgh pr diff\b/,
+    /git diff[^\n]*origin\/<default-branch>\.\.HEAD/,
+    /git push[^\n]*--tags/,
+    /gh release create[^\n]*--verify(?:\s|$)/,
+    /\/(?:home|Users)\/[^/\s]+/,
+  ]) {
+    assert.doesNotMatch(releaseSkill, forbidden,
+      `release/SKILL.md must stay project-agnostic and follow safe git/gh flags (matched ${forbidden})`)
+  }
+
+  // Load-bearing workflow, review, and safety gates (covering every I/O Matrix row).
+  assert.match(releaseSkill, /git fetch/,
+    'release/SKILL.md preflight must fetch remote refs and tags before inspecting state')
+  assert.match(releaseSkill, /git tag\s+--sort=-v:refname/,
+    'release/SKILL.md must inspect latest git tags')
+  assert.match(releaseSkill, /anchor on the latest tag/i,
+    'release/SKILL.md must anchor version selection on the latest git tag when files disagree')
+  assert.match(releaseSkill, /git grep/,
+    'release/SKILL.md must grep for the previous version after bumping')
+  assert.match(releaseSkill, /git worktree list/,
+    'release/SKILL.md must keep git worktree list preflight')
+  assert.match(releaseSkill, /never sweep unrelated files/i,
+    'release/SKILL.md must forbid sweeping unrelated files into a release commit')
+  assert.match(releaseSkill, /git symbolic-ref(?:\s+--short)?\s+refs\/remotes\/origin\/HEAD/,
+    'release/SKILL.md must detect the default branch dynamically via refs/remotes/origin/HEAD')
+  assert.match(releaseSkill, /git diff\s+[^\n]*\.\.\.HEAD/,
+    'release/SKILL.md must generate the review diff locally via three-dot git diff ...HEAD')
+  assert.match(releaseSkill, /\.git\/info\/exclude/,
+    'release/SKILL.md must isolate .tmux-teams/ and .mailbox-out/ via scratch cwd or .git/info/exclude')
+  assert.match(releaseSkill, /\.mailbox-out\/<task-id>/,
+    'release/SKILL.md must instruct callers to name .mailbox-out/<task-id> in the review brief')
+  assert.match(releaseSkill, /no_outbox[\s\S]*codex-advisor\/SKILL\.md/,
+    'release/SKILL.md must point no_outbox recovery to receipt-backed resume in codex-advisor/SKILL.md')
+  assert.match(releaseSkill, /never auto-push/i,
+    'release/SKILL.md must forbid auto-pushing without explicit user order')
+  assert.match(releaseSkill, /branch protection/i,
+    'release/SKILL.md must account for branch protection on the default branch')
+  assert.match(releaseSkill, /Never\s+force-push\s+or\s+bypass\s+branch\s+protection/i,
+    'release/SKILL.md must forbid force-pushing or bypassing branch protection')
+  assert.match(releaseSkill, /refs\/tags\//,
+    'release/SKILL.md must push only the single release tag via refs/tags/<tag>')
+  assert.match(releaseSkill, /--verify-tag/,
+    'release/SKILL.md must use --verify-tag (never invalid --verify) for protected tag releases')
+  assert.match(releaseSkill, /^##\s*6\..*optional/im,
+    'release/SKILL.md Step 6 must be explicitly optional')
+  assert.match(releaseSkill, /Compare target copies first[\s\S]*diff -q/,
+    'release/SKILL.md Step 6 must require comparing target copies before syncing and verifying with diff -q')
+
+  const dispatchBlocks = releaseSkill.split('```bash').slice(1)
+    .map((b) => b.split('```')[0])
+    .filter((b) => /acp-dispatch\.mjs[\s\\]+\n?\s*codex </.test(b))
+  assert.equal(dispatchBlocks.length, 1,
+    `release/SKILL.md must document exactly 1 codex-advisor[luna] dispatch block, got ${dispatchBlocks.length}`)
+  const dispatchBlock = dispatchBlocks[0]
+  assert.match(dispatchBlock, /CODEX_PATH=/,
+    'release dispatch block must resolve and pass CODEX_PATH=')
+  assert.match(dispatchBlock, /INITIAL_AGENT_MODE="read-only"/,
+    'release dispatch block must enforce INITIAL_AGENT_MODE="read-only"')
+  assert.match(dispatchBlock, /ACP_SESSION_RECEIPT_REQUIRED=1/,
+    'release dispatch block must enforce ACP_SESSION_RECEIPT_REQUIRED=1')
+  assert.match(dispatchBlock, /ACP_SESSION_OPERATION="new"/,
+    'release dispatch block must enforce ACP_SESSION_OPERATION="new"')
+  assert.match(dispatchBlock, /ACP_MODEL="gpt-6-luna"/,
+    'release dispatch block must pin ACP_MODEL="gpt-6-luna"')
+  assert.match(dispatchBlock, /ACP_EXPECT_MODEL="gpt-6-luna"/,
+    'release dispatch block must pin ACP_EXPECT_MODEL="gpt-6-luna"')
+  assert.match(dispatchBlock, /ACP_REASONING_EFFORT="max"/,
+    'release dispatch block must pin ACP_REASONING_EFFORT="max"')
+  assert.match(dispatchBlock, /ACP_EXPECT_REASONING_EFFORT="max"/,
+    'release dispatch block must pin ACP_EXPECT_REASONING_EFFORT="max"')
+
+  // README inventory line stays aligned with the project-agnostic release skill.
+  const releaseReadmeLine = readme.match(/^- `tmux-teams:release`.*$/m)?.[0]
+  assert.ok(releaseReadmeLine, 'README.md missing tmux-teams:release summary line')
+  assert.match(releaseReadmeLine, /project-agnostic/i,
+    'README.md tmux-teams:release summary should describe the generic release lane')
+  assert.doesNotMatch(releaseReadmeLine, /cache sync\.\s*$/i,
+    'README.md tmux-teams:release summary must not end with plugin-specific cache sync')
+})

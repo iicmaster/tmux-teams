@@ -81,7 +81,7 @@ The review gate declares no OS sandbox; why, and what it checks instead, is
 
 - `tmux-teams:pm-delegation` — act as PM over other agents: the brief contract, tickets as a dependency graph, audited worktrees.
 - `tmux-teams:handoff` — end a session by writing `HANDOFF.md` for the next reader, which is another agent.
-- `tmux-teams:release` — the default release lane: branch → PR → `codex-advisor[luna]` review → merge → version bump → tag + GitHub release → cache sync.
+- `tmux-teams:release` — a project-agnostic release lane: preflight → branch → PR → `codex-advisor[luna]` review → merge → tag/release (with branch-protection-safe version bump) → optional post-release publish/sync.
 - `tmux-teams:lane-setup` — get a review lane callable on this machine, reporting what is missing per lane.
 
 **Parties**
