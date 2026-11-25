@@ -1,11 +1,19 @@
 ---
 name: release
-description: "Default release process for any git repository: preflight default branch/worktree/versions, branch, commit, PR, codex-advisor[luna] review, merge, bump version occurrences, tag and release, and optional post-release publish/sync. Use when the user asks to publish a new release, ship a version, or bump a project version. Read-only review happens through the bundled advisor ACP lane; never auto-push without the user's explicit order."
+description: "Default release process for any git repository: preflight default branch/worktree/versions, branch, commit, PR, codex-advisor[luna] review, merge, bump version occurrences, tag and release, and optional post-release publish/sync. Use when the user asks to publish a new release, ship a version, or bump a project version. Invoking this skill authorizes running the release flow through publish without redundant per-step confirmation prompts; read-only review happens through the mandatory codex-advisor[luna] ACP lane; never auto-push outside an invoked release."
 ---
 
 # Release
 
 Project-agnostic process for shipping a versioned release from a git repository.
+Invoking `/release` (or `$release`) authorizes running the entire release
+workflow end-to-end through publish — branch, commit, push, PR, mandatory
+`codex-advisor[luna]` review, merge, version bump, tag, release creation, and
+any documented post-release publish/sync — without stopping to ask permission
+between steps. Stop only on real blockers (failing tests/CI, `BLOCKED` or
+mismatched review identity, ambiguous bump type when unclear, or unrelated dirty
+files outside release scope). Never auto-push or release outside an invoked
+release workflow.
 Run steps in order; stop at any gate that fails and report the blocker.
 
 ## 0. Preflight — facts before action
@@ -81,8 +89,8 @@ Run steps in order; stop at any gate that fails and report the blocker.
 
 ## 2. Push and open the PR
 
-- Never auto-push without the user's explicit order. Ask before pushing or
-  opening a PR.
+- Invoking `/release` authorizes pushing the release branch and opening the PR;
+  never auto-push outside an invoked release.
 - `git push -u origin release/<topic>` (using the user's configured remote and
   credentials; never hardcode an account or profile).
 - Open a PR targeting `<default-branch>` (e.g. via `gh pr create --base <default-branch> --head release/<topic> --title "Release <tag>: <topic>" --body "..."` or the host CLI equivalent).
@@ -91,6 +99,10 @@ Run steps in order; stop at any gate that fails and report the blocker.
 
 ## 3. Review — codex-advisor[luna], mandatory
 
+`codex-advisor[luna]` (`gpt-6-luna[max]`) is the mandatory review gate for this
+skill — dispatch it directly without asking whether to run it. Any additional
+CI checks or repository-specific review gates run alongside it and never
+substitute for `codex-advisor[luna]`.
 The review is a read-only ACP round-table through the `codex-advisor` skill
 (`../codex-advisor/SKILL.md`), NOT a host-agent review and NOT a second PR
 approval by the same model that wrote the code.
@@ -165,33 +177,35 @@ approval by the same model that wrote the code.
    `effective_identity` and `identity_status`.
 7. Apply must-fix findings (two-or-more matching voices, or any blocking
    finding) with a new commit on `release/<topic>`, re-run the project's
-   verification checks and `git diff --check`, re-run Step 3 on the new
-   `git diff origin/<default-branch>...HEAD`, and push the fix commits to the
-   PR branch (with user confirmation) before merging. A `BLOCKED` verdict stops
-   the release outright.
+   verification checks and `git diff --check`, push the fix commits to the PR
+   branch, and re-run Step 3 on the new `git diff origin/<default-branch>...HEAD`.
+   A `BLOCKED` verdict stops the release outright.
 
 ## 4. Merge
 
 - Only after `codex-advisor[luna]`'s verdict is non-blocking and posted, and
   required CI checks or extra repo review gates pass:
   `gh pr merge <N> --merge` (or `--squash` / `--rebase` if the user or repo
-  policy requires).
-- Never auto-push or auto-merge without the user's explicit order.
+  policy requires). Invoking `/release` authorizes merging once all gates pass;
+  never auto-merge outside an invoked release.
 
 ## 5. Bump the version, tag, and release
 
-Handle branch protection cleanly:
+Handle branch protection and existing worktrees cleanly:
 
 - If `<default-branch>` allows direct bump commits: after merge, refresh
-  `<default-branch>` with `git pull --ff-only origin <default-branch>` (if
-  `<default-branch>` is checked out in another worktree per `git worktree list`,
-  pull and run the bump/tag in that worktree rather than forcing a duplicate
-  checkout).
+  `<default-branch>` with `git pull --ff-only origin <default-branch>`.
+  - If `<default-branch>` is already checked out cleanly in another worktree per
+    `git worktree list`, pull and run the bump/tag in that worktree.
+  - If `<default-branch>` is checked out with dirty/unrelated changes in another
+    worktree, do NOT disturb that worktree; instead, in your clean release
+    worktree run `git fetch origin --tags && git checkout --detach origin/<default-branch>`,
+    commit the bump, and push with `git push origin HEAD:refs/heads/<default-branch>`.
 - If `<default-branch>` is protected against direct pushes: bump the version
   before merge on the release branch (Step 1), or open a dedicated version-bump
   PR per the project's policy, then refresh `<default-branch>` with
-  `git pull --ff-only origin <default-branch>` after merge. Never force-push or
-  bypass branch protection.
+  `git pull --ff-only origin <default-branch>` (or detached `origin/<default-branch>`)
+  after merge. Never force-push or bypass branch protection.
 
 Then:
 
@@ -202,9 +216,9 @@ Then:
    inspect each match before editing so historical changelog/archive entries or
    dependency constraints are not overwritten. Re-run the project's verification
    suite plus `git diff --check`.
-2. If you made a post-merge bump commit on `<default-branch>` (e.g.
-   `chore(release): <tag>`), confirm with the user before pushing, tagging, or
-   publishing, and push `<default-branch>`.
+2. If you made a post-merge bump commit (e.g. `chore(release): <tag>`), push
+   it to `<default-branch>` (`git push origin <default-branch>`, or
+   `git push origin HEAD:refs/heads/<default-branch>` when on detached HEAD).
 3. Tag the merged commit on `<default-branch>` (matching the repo's tag
    convention, e.g. `vX.Y.Z`, and never tagging an unmerged branch tip):
    ```bash
@@ -213,11 +227,11 @@ Then:
    ```
    Push ONLY the release tag with `refs/tags/<tag>` rather than a blanket
    tag push.
-4. Create the release if the repo uses GitHub Releases:
+4. Create and publish the release if the repo uses GitHub Releases:
    `gh release create <tag> --generate-notes --title "<tag>"` (add
-   `--verify-tag` only when tag protection requires it; add `--draft` when the
-   user wants to review/edit generated notes before publishing, or pass
-   `--notes-file <file>` with pre-approved notes).
+   `--verify-tag` only when tag protection requires it; pass `--draft` or
+   `--notes-file <file>` only when the user asks to draft or customize notes
+   before publishing).
 5. Clean up any temporary release worktree created in Step 0
    (`git worktree remove <path>`) after the release (and optional Step 6)
    finishes.
@@ -244,7 +258,7 @@ When the project's docs or the user requests a post-release publish or sync
 - Leaving untracked `.tmux-teams/` or `.mailbox-out/` inside the repo without isolation or `.git/info/exclude` → dispatcher artifacts leak into release commits.
 - Omitting `.mailbox-out/<task-id>` in the brief or resuming under a new `<task-id>` → `no_outbox` even when analysis completed.
 - Posting "reviewed" without a matched `gpt-6-luna[max]` receipt → attestation, not review.
-- Merging before the luna outbox is written, or auto-pushing/auto-merging/auto-tagging without the user's explicit order → review theater or unauthorized release.
+- Merging before the luna outbox is written, or auto-pushing/auto-merging/auto-tagging outside an invoked release → review theater or unauthorized release.
 - Pushing blanket `--tags` instead of `refs/tags/<tag>` → accidentally publishes unrelated local tags.
 - Running blind `git grep` replacements without inspecting matches → overwrites historical changelog entries or dependency version constraints.
 - Force-pushing or bypassing branch protection when `<default-branch>` forbids direct pushes.

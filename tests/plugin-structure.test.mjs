@@ -1171,7 +1171,11 @@ test('release skill is project-agnostic and preserves review/safety gates', () =
   assert.match(releaseSkill, /no_outbox[\s\S]*codex-advisor\/SKILL\.md/,
     'release/SKILL.md must point no_outbox recovery to receipt-backed resume in codex-advisor/SKILL.md')
   assert.match(releaseSkill, /never auto-push/i,
-    'release/SKILL.md must forbid auto-pushing without explicit user order')
+    'release/SKILL.md must forbid auto-pushing outside an invoked release')
+  assert.match(releaseSkill, /Invoking `?\/release`?[\s\S]*without stopping to ask permission/i,
+    'release/SKILL.md must state that invoking /release authorizes running through publish without redundant prompts')
+  assert.match(releaseSkill, /codex-advisor\[luna\][^\n]*mandatory review gate/i,
+    'release/SKILL.md must explicitly declare codex-advisor[luna] as the mandatory review gate')
   assert.match(releaseSkill, /branch protection/i,
     'release/SKILL.md must account for branch protection on the default branch')
   assert.match(releaseSkill, /Never\s+force-push\s+or\s+bypass\s+branch\s+protection/i,
